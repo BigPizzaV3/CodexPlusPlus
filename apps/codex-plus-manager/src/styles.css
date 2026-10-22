@@ -10533,24 +10533,23 @@ select {
 .provider-aggregate-toolbar{display:flex;justify-content:flex-end;margin:0 0 10px}
 @media(max-width:760px){.provider-view-tabs{width:100%}.provider-view-tabs button{flex:1;justify-content:center}.provider-aggregate-empty{align-items:flex-start;flex-direction:column}}
 
-/* 左栏是增强项，右栏是它们共同依赖的受管副本（前置条件）。 */
+/* 顶部通栏是所有增强共同依赖的受管副本（状态 + 操作）；下方左栏增强开关、右栏上手步骤。 */
 .claude-localization-page {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 14px; align-items: start; max-width: 1180px;
 }
+.claude-localization-page > .claude-l10n-hero { grid-column: 1 / -1; }
 .claude-l10n-column { display: grid; gap: 14px; align-content: start; }
 /* 左栏里每项增强都是一个开关行，两者之间用分隔线断开。 */
 .claude-l10n-column .switch-row + .switch-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid hsl(var(--border)); }
 .claude-l10n-column .switch-row strong { font-size: 14px; }
 .claude-l10n-column .switch-row small { margin-top: 5px; line-height: 1.6; }
-/* 左栏卡片比右栏窄：标题与说明改竖排，否则说明会被挤成右对齐的两行。 */
+/* 下方两栏卡片都偏窄：标题与说明改竖排、左对齐，否则说明会被挤成右对齐的两行。 */
 .claude-l10n-column .panel-head { display: grid; gap: 6px; align-items: start; }
+.claude-l10n-column .panel-head p { max-width: none; text-align: left; font-size: 12px; line-height: 1.6; }
 /* 上手步骤：带编号，完成的一步打勾，当前该做的那一步高亮。 */
-.claude-l10n-steps {
-  display: grid; gap: 12px; margin-top: 14px;
-  padding: 16px 18px; border: 1px solid hsl(var(--brand-accent) / 0.35); border-radius: 12px;
-  background: hsl(var(--brand-accent) / 0.05);
-}
+.claude-l10n-steps { display: grid; gap: 14px; }
+.claude-l10n-guide-body { display: grid; gap: 16px; }
 .claude-l10n-step { display: flex; align-items: flex-start; gap: 12px; }
 .claude-l10n-step-no {
   width: 22px; height: 22px; flex: none; border-radius: 50%;
@@ -10574,7 +10573,10 @@ select {
 @media (max-width: 1040px) { .claude-localization-page { grid-template-columns: minmax(0, 1fr); } }
 
 /* 概览卡：标题 + 状态徽标、四项数据卡、提示条与操作区。 */
-.claude-l10n-hero .card-content { display: grid; gap: 24px; padding: 24px 28px; }
+.claude-l10n-hero-body { display: grid; gap: 18px; padding: 22px 24px; }
+/* 卡片内部靠 grid gap 控制间距，子块自带的上边距会叠出大空洞。 */
+.claude-l10n-hero .claude-l10n-progress,
+.claude-l10n-hero .claude-l10n-hint { margin-top: 0; padding-top: 0; border-top: 0; }
 .claude-l10n-hero-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .claude-l10n-hero-title { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .claude-l10n-hero-icon {
@@ -10598,33 +10600,45 @@ select {
 .claude-l10n-status-warn { color: hsl(var(--status-warning)); border-color: hsl(var(--status-warning) / 0.4); background: hsl(var(--status-warning) / 0.08); }
 .claude-l10n-status-warn i { background: hsl(var(--status-warning)); }
 
-/* 数据卡：按可用宽度自动折行（右栏变窄时从四列退到三列、两列），数值不再被省略号截断。 */
-.claude-l10n-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 12px; margin-top: 14px; }
+/* 数据卡：一行四格的紧凑条，数值不再被省略号截断；很窄时退到两列。 */
+.claude-l10n-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .claude-l10n-stat {
-  display: grid; gap: 6px; min-width: 0;
-  padding: 14px 16px; border: 1px solid hsl(var(--border)); border-radius: 12px;
+  display: grid; gap: 4px; min-width: 0;
+  padding: 10px 12px; border: 1px solid hsl(var(--border)); border-radius: 10px;
   background: hsl(var(--surface-sunken) / 0.45);
 }
-.claude-l10n-stat span { color: hsl(var(--muted-foreground)); font-size: 12px; }
-.claude-l10n-stat strong { font-size: 14.5px; letter-spacing: -0.01em; word-break: break-word; }
+.claude-l10n-stat span { color: hsl(var(--muted-foreground)); font-size: 11.5px; }
+.claude-l10n-stat strong { font-size: 13.5px; letter-spacing: -0.01em; word-break: break-word; }
 
 .claude-l10n-note {
   display: flex; align-items: flex-start; gap: 11px;
-  margin-top: 14px;
-  padding: 16px 18px; border: 1px dashed hsl(var(--brand-accent) / 0.4); border-radius: 12px;
-  background: hsl(var(--brand-accent) / 0.05);
-  color: hsl(var(--muted-foreground)); font-size: 13px; line-height: 1.7;
+  padding: 12px 14px; border: 1px dashed hsl(var(--brand-accent) / 0.35); border-radius: 10px;
+  background: hsl(var(--brand-accent) / 0.04);
+  color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.65;
 }
 .claude-l10n-note svg { flex: none; margin-top: 2px; color: hsl(var(--brand-accent)); }
 
-.claude-l10n-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 20px; border-top: 1px solid hsl(var(--border)); }
-.claude-l10n-actions-secondary { display: inline-flex; gap: 10px; margin-left: auto; }
+.claude-l10n-progress { display: grid; gap: 8px; margin-top: 16px; }
+.claude-l10n-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: hsl(var(--muted-foreground)); font-size: 12.5px; }
+.claude-l10n-progress-pct { font-variant-numeric: tabular-nums; color: hsl(var(--brand-accent)); font-weight: 600; }
+.claude-l10n-progress-track { height: 6px; border-radius: 999px; background: hsl(var(--border)); overflow: hidden; }
+.claude-l10n-progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, hsl(var(--brand-accent)), hsl(var(--brand-accent) / 0.55)); transition: width 0.25s ease; }
+.claude-l10n-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px 12px; flex-wrap: wrap; padding-top: 18px; border-top: 1px solid hsl(var(--border)); }
+.claude-l10n-actions-primary,
+.claude-l10n-actions-secondary { display: inline-flex; flex-wrap: wrap; gap: 10px; }
+/* 操作失败（例如 Claude 还开着）：醒目的警示条，而不是一行裸文字。 */
+.claude-l10n-error {
+  padding: 10px 14px; border: 1px solid hsl(var(--status-warning) / 0.45); border-radius: 10px;
+  background: hsl(var(--status-warning) / 0.08); color: hsl(var(--status-warning));
+  font-size: 12.5px; line-height: 1.6;
+}
 
-@media (max-width: 860px) { .claude-l10n-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) {
   .claude-l10n-hero-head { flex-direction: column; }
-  .claude-l10n-actions-secondary { margin-left: 0; }
 }
+/* 按卡片自身宽度而不是窗口宽度折行：单栏/双栏切换时右卡宽度跳变很大。 */
+.claude-l10n-hero-body { container-type: inline-size; }
+@container (max-width: 440px) { .claude-l10n-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* 聚合「默认成员登录同步」开关：跟默认供应商提示同处一块，但要能一眼看出是可选项。 */
 .aggregate-default-login-sync {
@@ -10732,6 +10746,49 @@ select {
 }
 
 /* ── 代理设置页：供应商独立代理列表 ───────────────────────────── */
+/* 请求避震：重试的 HTTP 状态码标签编辑器 */
+.retry-status-editor {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.retry-status-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.retry-status-list:empty {
+  display: none;
+}
+.retry-status-chip {
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  min-height: 28px;
+  padding: 4px 9px;
+}
+.retry-status-chip:hover {
+  border-color: hsl(var(--primary));
+}
+.retry-status-chip:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+.retry-status-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.retry-status-input-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .proxy-provider-list {
   display: flex;
   flex-direction: column;

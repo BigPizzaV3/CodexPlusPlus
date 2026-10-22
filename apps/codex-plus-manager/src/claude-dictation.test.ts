@@ -62,6 +62,20 @@ test("听写凭据文件名与状态目录跨语言一致", () => {
   );
 });
 
+test("hook 优先从所在 runtime_dir 的上一级读凭据，跟随被覆盖的状态目录", () => {
+  // 状态目录可被 CODEX_PLUS_STATE_DIR 覆盖（本地构建、多开），launcher 的凭据写在那里；
+  // 只读家目录时会报「语音服务未运行」。推导前提：runtime_dir = 状态目录/claude-localization。
+  assert.ok(
+    /fn runtime_dir\(\) -> PathBuf \{\s*crate::paths::default_app_state_dir\(\)\.join\("claude-localization"\)/.test(
+      localization,
+    ),
+    "runtime_dir 必须是状态目录下的一级子目录，hook 才能按上一级找到凭据",
+  );
+  const first = hook.indexOf("path.join(path.dirname(DIR), RECEIPT_NAME)");
+  const fallback = hook.indexOf("path.join(os.homedir(), '.codex-session-delete', RECEIPT_NAME)");
+  assert.ok(first >= 0 && fallback > first, "状态目录那份必须排在家目录兜底之前");
+});
+
 test("语音脚本被登记进受管副本的资产清单", () => {
   assert.ok(
     localization.includes('"page-dictation.js"'),
@@ -93,12 +107,29 @@ test("音频上传字段按白名单收敛，不把页面内容塞进请求头",
   );
 });
 
+test("hook 可能早于 app ready 装载，不能在装载时同步读 session.defaultSession", () => {
+  // ready 之前读 defaultSession 会抛错，整条 hook 失败，汉化和语音入口一起消失。
+  assert.ok(
+    hook.includes(".then(() => allowMicrophone(session.defaultSession))"),
+    "麦克风放行必须等 app.whenReady()",
+  );
+  assert.ok(
+    !/^\s*allowMicrophone\(session\.defaultSession\);/m.test(hook),
+    "不能在装载时同步调用 allowMicrophone(session.defaultSession)",
+  );
+});
+
 test("Code 与 Cowork 两套发送键都要认得", () => {
   // 两套界面的发送键 testid 与文案完全不同：Code 是 code-prompt-send /「发送」，
   // Cowork 是 chat-input-send /「开始任务」。少认一套，入口就会掉到编辑器容器的末尾。
   assert.ok(page.includes("code-prompt-send"), "缺少 Code 模式的发送键 testid");
   assert.ok(page.includes("chat-input-send"), "缺少 Cowork 模式的发送键 testid");
   assert.ok(page.includes("开始任务"), "Cowork 的发送键标签是「开始任务」，兜底匹配必须覆盖");
+  // Code 模式空闲且输入框为空时不渲染发送键，只剩右侧动作区空壳；不认它，入口会掉到左下角。
+  assert.ok(
+    page.includes("code-prompt-trailing-controls") && page.includes("code-prompt-send-cell"),
+    "空输入框时没有发送键，必须按常驻的 trailing-controls / send-cell 定位",
+  );
   assert.ok(
     page.includes("setInterval(schedule"),
     "模式切换后 composer 会被整块重建，需要低频兜底重挂",

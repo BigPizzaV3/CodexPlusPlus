@@ -74,9 +74,23 @@ pub async fn claude_localization_status() -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub async fn claude_localization_action(action: String) -> CommandResult<Value> {
+pub async fn claude_localization_action(
+    app: tauri::AppHandle,
+    action: String,
+) -> CommandResult<Value> {
+    use tauri::Emitter;
     let result = tauri::async_runtime::spawn_blocking(move || {
-        codex_plus_core::claude_localization::perform(&action)
+        let result = codex_plus_core::claude_localization::perform_with_progress(&action, &move |percent, message| {
+            let _ = app.emit(
+                "claude-localization-progress",
+                json!({ "percent": percent, "message": message }),
+            );
+        });
+        // 刚制作好副本或刚启动副本时，语音入口需要 helper 在线（见 sync_resident_helper）。
+        if result.is_ok() {
+            sync_resident_helper();
+        }
+        result
     })
     .await;
     match result {
@@ -92,7 +106,12 @@ pub async fn claude_localization_action(action: String) -> CommandResult<Value> 
 #[tauri::command]
 pub async fn claude_localization_set_voice_input(enabled: bool) -> CommandResult<Value> {
     match tauri::async_runtime::spawn_blocking(move || {
-        codex_plus_core::claude_localization::set_voice_input(enabled)
+        let status = codex_plus_core::claude_localization::set_voice_input(enabled);
+        // 打开时立即拉起 helper；关闭时不停，helper 可能还在给协议代理用。
+        if enabled && status.is_ok() {
+            sync_resident_helper();
+        }
+        status
     }).await {
         Ok(Ok(status)) => ok(
             if enabled { "语音输入已开启。" } else { "语音输入已关闭。" },
@@ -110,6 +129,24 @@ pub async fn claude_localization_set_localization(enabled: bool) -> CommandResul
     }).await {
         Ok(Ok(status)) => ok(
             if enabled { "界面汉化已开启。" } else { "界面汉化已关闭。" },
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_localization_set_computer_use(enabled: bool) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_computer_use(enabled)
+    }).await {
+        Ok(Ok(status)) => ok(
+            if enabled {
+                "Computer Use 已勾选；重新准备副本后生效。"
+            } else {
+                "Computer Use 已关闭；重新准备副本后移除。"
+            },
             serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
@@ -2279,6 +2316,8 @@ pub fn run_auto_takeover_launch(request: LaunchRequest) -> Result<(), String> {
         status_store: StatusStore::default(),
         ..Default::default()
     };
+    // 自动接管也走常驻 helper：Codex 之后退出时本地代理仍可被外部客户端使用。
+    sync_resident_helper();
     codex_plus_launcher::start(launch_options).map_err(|error| error.to_string())
 }
 
@@ -2533,6 +2572,71 @@ fn restart_stop_failure_message(error: &RestartStopError) -> String {
     }
 }
 
+/// 让本地协议代理 helper 常驻（见 core `resident_helper`）。
+///
+/// helper 过去只随 `launch_and_inject` 的 Codex 会话启动、Codex 退出即关闭；
+/// 而 live `config.toml` 里写死了本地代理地址，于是终端 `codex`、IDE 插件等
+/// 不经过 Codex++ 启动的客户端会连到一个没人监听的端口。现在只要管理器在跑、
+/// 且当前供应商需要本地代理，就把 helper 托管在管理器进程里：Codex 会话退出
+/// 不影响它，只有 Codex++ 退出才停止。Claude 副本开着语音输入时同理常驻，
+/// 它的转写也走这个 helper。
+///
+/// 返回实际监听的端口；当前配置不需要本地代理或启动失败时返回 `None`。
+/// 失败只记诊断日志，不打断调用方（启动链路会按旧逻辑自行 bind/重试）。
+pub fn sync_resident_helper() -> Option<u16> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let settings = match SettingsStore::default().load() {
+        Ok(settings) => Some(settings),
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.resident_helper.settings_failed",
+                serde_json::json!({ "message": error.to_string() }),
+            );
+            None
+        }
+    };
+    // 两个信号取并集：
+    // - 设置里当前供应商需要固定协议代理端口（启动流程随后会把 config.toml 指向它）；
+    // - live config.toml 已经指向本地代理（Codex 现在就会把请求发过来，哪怕设置
+    //   尚未同步/更新）。
+    let settings_need_proxy = settings
+        .as_ref()
+        .and_then(codex_plus_core::launcher::required_fixed_helper_port)
+        .is_some();
+    // 第三个信号：Claude 副本的语音入口要靠 helper 转写，没在跑 Codex 时也得有人监听。
+    let claude_voice_needs_helper = settings
+        .as_ref()
+        .is_some_and(codex_plus_core::claude_localization::voice_input_needs_helper);
+    if !settings_need_proxy
+        && !claude_voice_needs_helper
+        && !codex_plus_core::relay_config::live_config_uses_managed_protocol_proxy_in_home(&home)
+    {
+        return None;
+    }
+    let port = codex_plus_core::protocol_proxy::protocol_proxy_port();
+    if let Some(settings) = &settings {
+        codex_plus_core::launcher::set_http_body_limit_bytes(
+            settings.helper_max_request_body_bytes(),
+        );
+    }
+    match codex_plus_core::resident_helper::ensure_resident_helper(port) {
+        Ok(()) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.resident_helper.ready",
+                serde_json::json!({ "port": port }),
+            );
+            Some(port)
+        }
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.resident_helper.failed",
+                serde_json::json!({ "port": port, "message": error.to_string() }),
+            );
+            None
+        }
+    }
+}
+
 fn prepare_fixed_helper_port_for_restart(settings: Option<&BackendSettings>) -> anyhow::Result<()> {
     let loaded;
     let settings = match settings {
@@ -2552,6 +2656,11 @@ fn prepare_fixed_helper_port_for_restart(settings: Option<&BackendSettings>) -> 
     // 与 launcher 启动时同一套迁移：端口落在 Windows 保留区间（10013）时先换端口，
     // 否则下面会对着永远绑不上的旧端口等满超时，重启必然失败（#1163）。
     let port = codex_plus_core::protocol_proxy::ensure_protocol_proxy_port_available();
+    // 常驻 helper 占着该端口是预期状态（它归管理器所有），不是「旧 launcher
+    // 还没释放」，不能按忙等处理，否则重启会白等到超时。
+    if codex_plus_core::resident_helper::resident_helper_port() == Some(port) {
+        return Ok(());
+    }
     codex_plus_core::launcher::wait_for_fixed_helper_port(
         port,
         codex_plus_core::launcher::protocol_proxy_bind_retry_timeout_ms(),
@@ -2902,6 +3011,9 @@ fn current_timestamp_ms() -> u64 {
 
 fn start_embedded_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
     anyhow::ensure!(!crate::app_is_exiting(), "Codex++ 正在退出，未启动 Codex");
+    // 先让常驻 helper 占住协议代理端口：启动链路会识别并复用，Codex 会话退出
+    // 时就不再关闭它，从而实现「Codex++ 在跑，本地代理就一直可用」。
+    sync_resident_helper();
     codex_plus_launcher::start(codex_plus_launcher::LaunchOptions {
         app_dir: (!request.app_path.trim().is_empty())
             .then(|| PathBuf::from(request.app_path.trim())),
@@ -2918,6 +3030,9 @@ pub fn resume_existing_codex_background(app: tauri::AppHandle, start_if_missing:
         if crate::app_is_exiting() {
             return;
         }
+        // 必须先于 resume：resume 会走 launch_and_inject，如果它先 bind 了 helper，
+        // Codex 退出时就把端口带走了；这里先托管常驻实例，会话会复用同一监听。
+        sync_resident_helper();
         let settings = SettingsStore::default().load().unwrap_or_default();
         let latest = StatusStore::default().load_latest().unwrap_or(None);
         let options = codex_plus_launcher::LaunchOptions {
@@ -3542,6 +3657,11 @@ pub fn save_settings(mut settings: BackendSettings, expected_revision: Option<St
             }
             // 自动接管是常驻行为，保存后立刻生效，不必重启管理器。
             crate::auto_takeover::apply_enabled(settings.codex_app_auto_takeover);
+            // 请求体上限是运行期策略：保存后立刻让正在运行的本地代理按新上限收请求，
+            // 不必重启 Codex++/Codex。等待下一次 helper 启动的路径也会读到同一设置。
+            codex_plus_core::launcher::set_http_body_limit_bytes(
+                settings.helper_max_request_body_bytes(),
+            );
             settings_payload("设置已保存。", "设置保存后重新读取失败")
         }
         Err(error) => {
@@ -4771,6 +4891,11 @@ fn normalized_codex_app_path_for_save(raw: &str) -> String {
 
 fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSettings {
     settings.codex_app_path = normalized_codex_app_path_for_save(&settings.codex_app_path);
+    // 请求体上限在落盘前夹取到 32~512 MiB，settings.json 永远是可用值。
+    settings.helper_max_request_body_mib =
+        codex_plus_core::settings::clamp_helper_max_request_body_mib(
+            settings.helper_max_request_body_mib,
+        );
     settings.relay_common_config_contents =
         codex_plus_core::relay_config::sanitize_common_config_contents(
             &settings.relay_common_config_contents,
@@ -6927,6 +7052,9 @@ pub fn switch_relay_profile(
                     "backupPath": result.backup_path.as_ref()
                 }),
             );
+            // 新配置已经写进 config.toml：需要本地代理时立即让它常驻，
+            // 这样不经过 Codex++ 启动的客户端也能直接用。
+            sync_resident_helper();
             ok(
                 "供应商已切换。",
                 relay_switch_payload(result.settings, status, result.backup_path),
@@ -6940,11 +7068,13 @@ pub fn switch_relay_profile(
                 json!({
                     "previousActiveRelayId": previous_active_relay_id,
                     "activeRelayId": settings.active_relay_id,
-                    "error": error.to_string()
+                    // `{:#}` 带上完整错误链：只取最外层会只剩「保存供应商设置失败」，
+                    // 看不到真正原因（#2651）。
+                    "error": format!("{error:#}")
                 }),
             );
             failed(
-                &format!("供应商切换失败：{error}"),
+                &format!("供应商切换失败：{error:#}"),
                 relay_switch_payload(settings, status, None),
             )
         }
@@ -7891,6 +8021,8 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
                 &home,
                 "manager.apply_relay_injection.aggregate",
             );
+            // 聚合也走本地代理：配置写好后立即常驻，供外部客户端直接使用。
+            sync_resident_helper();
         }
         return response;
     }
@@ -7913,6 +8045,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
                     result.backup_path.as_ref(),
                     None,
                 );
+                sync_resident_helper();
                 ok(
                     "已按兼容切换规则切换供应商。",
                     relay_payload(status, result.backup_path),
@@ -7972,6 +8105,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
                 result.backup_path.as_ref(),
                 None,
             );
+            sync_resident_helper();
             ok(
                 "中转配置已写入，密钥未在界面明文显示。",
                 relay_payload(status, result.backup_path),
@@ -8114,6 +8248,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
                         relay_payload(status, result.backup_path),
                     );
                 }
+                sync_resident_helper();
                 ok(
                     "已按兼容切换规则切换供应商。",
                     relay_payload(status, result.backup_path),
@@ -8163,6 +8298,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
                     relay_payload(status, result.backup_path),
                 );
             }
+            sync_resident_helper();
             ok(
                 "纯 API 模式已写入：config.toml 已写入 custom provider，auth.json 已切换为当前供应商。",
                 relay_payload(status, result.backup_path),
@@ -10661,6 +10797,29 @@ enabled = true
             normalized.codex_app_path.is_empty(),
             "指向 Codex++ 自身的路径不该落库，实际是 {}",
             normalized.codex_app_path
+        );
+    }
+
+    #[test]
+    fn normalize_settings_before_save_clamps_helper_body_limit() {
+        let settings = BackendSettings {
+            helper_max_request_body_mib: 9999,
+            ..BackendSettings::default()
+        };
+        assert_eq!(
+            normalize_settings_before_save(settings)
+                .helper_max_request_body_mib,
+            512
+        );
+
+        let settings = BackendSettings {
+            helper_max_request_body_mib: 1,
+            ..BackendSettings::default()
+        };
+        assert_eq!(
+            normalize_settings_before_save(settings)
+                .helper_max_request_body_mib,
+            32
         );
     }
 

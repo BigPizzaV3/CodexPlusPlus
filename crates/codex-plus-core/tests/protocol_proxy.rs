@@ -7708,7 +7708,7 @@ async fn serve_scripted_responses(
 async fn proxy_auto_retry_does_not_retry_http_status_errors() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
-    // 即便 body 文案写得像容量错误，HTTP 非 2xx 也不在自动重试范围：
+    // 即便 body 文案写得像容量错误，默认（未勾选任何状态码）HTTP 非 2xx 也不重试：
     // 只重试 200 流内 response.failed 的 server_overloaded。
     let responses = vec![proxy_http_response(
         "429 Too Many Requests",
@@ -7806,6 +7806,120 @@ async fn proxy_auto_retry_does_not_retry_client_errors() {
 
     assert_eq!(result.status_code, 400);
     assert_eq!(server.await.unwrap().len(), 1, "400 不应触发自动重试");
+}
+
+// ---------------------------------------------------------------------------
+// 用户勾选的 HTTP 状态码（issue #2653）：默认空列表不重试，勾选后由代理退避重发。
+// ---------------------------------------------------------------------------
+
+fn proxy_http_response_with_retry_after(status: &str, retry_after: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nretry-after: {retry_after}\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_retries_opted_in_status_and_honors_retry_after() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![
+        proxy_http_response_with_retry_after(
+            "429 Too Many Requests",
+            "1",
+            r#"{"error":{"message":"rate limited","code":"rate_limit_exceeded"}}"#,
+        ),
+        proxy_sse_response(&success_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    settings.protocol_proxy_auto_retry_status_codes = vec![429];
+
+    let started = Instant::now();
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 200);
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    assert_eq!(trace.retry_reasons, vec!["upstream_http_status:429".to_string()]);
+    assert_eq!(trace.attempt_details.len(), 1);
+    let detail = &trace.attempt_details[0];
+    assert_eq!(detail.attempt, 1);
+    assert_eq!(detail.code.as_deref(), Some("rate_limit_exceeded"));
+    assert_eq!(detail.message.as_deref(), Some("rate limited"));
+    // Retry-After: 1 优先于 0 秒的设置间隔（地板 250ms）。
+    assert_eq!(detail.delay_ms, Some(1000));
+    assert!(started.elapsed() >= Duration::from_millis(900));
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert!(!body.contains("rate limited"), "重试成功后不能把 429 交给 Codex");
+    assert_eq!(server.await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_skips_status_codes_not_opted_in() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![proxy_http_response(
+        "503 Service Unavailable",
+        r#"{"error":{"message":"upstream unavailable"}}"#,
+    )];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+    settings.protocol_proxy_auto_retry_status_codes = vec![429];
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 503);
+    assert_eq!(server.await.unwrap().len(), 1, "未勾选的状态码不应重试");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_returns_last_status_body_when_budget_is_exhausted() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![
+        proxy_http_response("429 Too Many Requests", r#"{"error":{"message":"first"}}"#),
+        proxy_http_response("429 Too Many Requests", r#"{"error":{"message":"still limited"}}"#),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 1;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    settings.protocol_proxy_auto_retry_status_codes = vec![429, 503];
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 429);
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    // 预算用尽时最后一次的错误体必须完整交给 Codex，不能因预读而丢失。
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("still limited"), "{body}");
+    assert_eq!(server.await.unwrap().len(), 2);
 }
 
 // ---------------------------------------------------------------------------

@@ -289,6 +289,45 @@ pub fn responses_proxy_configured_in_home(home: &Path) -> bool {
         )
 }
 
+/// live `config.toml` 是否把 Codex 请求指向本机协议代理。
+///
+/// 覆盖两种形态：
+/// - 普通中转：活动 provider 的 `model_providers.<id>.base_url` 是本机代理地址；
+/// - 官方会话身份（Remote Control / 官方 + API 混合）：根键 `openai_base_url`
+///   指向本机代理。
+///
+/// 只认活动 provider，避免配置里残留的其它 provider 造成误判。管理器据此判断
+/// 「Codex 即使不经过 Codex++ 启动也会把请求发给本地代理」，从而决定是否常驻
+/// 本地 helper。
+pub fn live_config_uses_managed_protocol_proxy_in_home(home: &Path) -> bool {
+    let contents = match std::fs::read_to_string(home.join("config.toml")) {
+        Ok(contents) => contents,
+        Err(_) => return false,
+    };
+    live_config_contents_use_managed_protocol_proxy(&contents)
+}
+
+fn live_config_contents_use_managed_protocol_proxy(contents: &str) -> bool {
+    if root_key_string(contents, OPENAI_BASE_URL_KEY)
+        .is_some_and(|value| crate::protocol_proxy::is_managed_protocol_proxy_base_url(&value))
+    {
+        return true;
+    }
+    let Ok(doc) = parse_toml_document(contents) else {
+        return false;
+    };
+    let Some(provider_id) = active_provider_id(&doc) else {
+        return false;
+    };
+    doc.get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(&provider_id))
+        .and_then(Item::as_table)
+        .and_then(|provider| provider.get("base_url"))
+        .and_then(Item::as_str)
+        .is_some_and(|value| crate::protocol_proxy::is_managed_protocol_proxy_base_url(value))
+}
+
 pub fn ensure_active_protocol_proxy_config_in_home(
     home: &Path,
     settings: &BackendSettings,
@@ -5685,6 +5724,63 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_config_detects_managed_protocol_proxy_for_active_provider_only() {
+        let home = tempfile::tempdir().unwrap();
+        let config_path = home.path().join("config.toml");
+        let managed = managed_openai_base_url();
+        let direct = "https://upstream.example/v1";
+
+        // 没有 config.toml：不需要本地代理。
+        assert!(!live_config_uses_managed_protocol_proxy_in_home(
+            home.path()
+        ));
+
+        // 活动 provider 直连上游：不需要。
+        std::fs::write(
+            &config_path,
+            format!("model_provider = 'custom'\n[model_providers.custom]\nbase_url = '{direct}'\n"),
+        )
+        .unwrap();
+        assert!(!live_config_uses_managed_protocol_proxy_in_home(
+            home.path()
+        ));
+
+        // 活动 provider 指向本地代理：需要常驻。
+        std::fs::write(
+            &config_path,
+            format!(
+                "model_provider = 'custom'\n[model_providers.custom]\nbase_url = '{managed}'\n"
+            ),
+        )
+        .unwrap();
+        assert!(live_config_uses_managed_protocol_proxy_in_home(home.path()));
+
+        // 只有非活动 provider 指向本地代理时不能误判，否则会拉起用不到的 helper。
+        std::fs::write(
+            &config_path,
+            format!(
+                "model_provider = 'custom'\n[model_providers.custom]\nbase_url = '{direct}'\n\
+                 [model_providers.other]\nbase_url = '{managed}'\n"
+            ),
+        )
+        .unwrap();
+        assert!(!live_config_uses_managed_protocol_proxy_in_home(
+            home.path()
+        ));
+
+        // 官方会话身份：根键 openai_base_url 指向本地代理。
+        std::fs::write(
+            &config_path,
+            format!(
+                "model_provider = 'openai'\nopenai_base_url = '{managed}'\n\
+                 [model_providers.custom]\nbase_url = 'https://chatgpt.com/backend-api/codex'\n"
+            ),
+        )
+        .unwrap();
+        assert!(live_config_uses_managed_protocol_proxy_in_home(home.path()));
+    }
 
     #[test]
     fn independent_proxy_routes_responses_and_preserves_the_real_upstream() {

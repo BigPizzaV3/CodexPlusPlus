@@ -451,6 +451,11 @@ async fn download_local_asset(client: &reqwest::Client, asset: &LocalAsset, comp
         if failed.is_none() && (bytes != asset.bytes || format!("{:x}", digest.finalize()) != asset.sha256) {
             failed = Some("模型文件完整性校验失败".to_string());
         }
+        // tokio 的 write_all 只把数据交给后台线程，不 flush 就 drop/rename，文件可能还没写完：
+        // 发布出去的是半截模型，随后的校验在 Windows 上会失败（CI 偶发红过）。
+        if failed.is_none() && tokio::io::AsyncWriteExt::flush(&mut file).await.is_err() {
+            failed = Some("写入模型文件失败".to_string());
+        }
         drop(file);
         if failed.is_none() {
             if tokio::fs::rename(&partial, &destination).await.is_ok() { return Ok(destination); }

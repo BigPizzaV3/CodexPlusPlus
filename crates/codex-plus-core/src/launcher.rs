@@ -513,7 +513,7 @@ pub async fn launch_and_inject(options: LaunchOptions) -> anyhow::Result<LaunchH
 
 /// 判断错误链里是不是「端口已被占用」。只有这一种失败值得等前任让位重试，
 /// 其余（权限不足、地址非法等）重试多少次都一样，直接冒泡更快也更好排查。
-fn error_is_address_in_use(error: &anyhow::Error) -> bool {
+pub(crate) fn error_is_address_in_use(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<std::io::Error>()
@@ -687,6 +687,9 @@ where
     let mut debug_port = hooks.select_debug_port(options.debug_port);
     let mut helper_port = hooks.select_helper_port(options.helper_port);
     let settings = hooks.load_settings().await?;
+    // 请求体上限必须在 helper 绑定端口、开始接收请求前生效；环境变量优先级更高，
+    // 由 configured_http_body_bytes 统一处理。
+    set_http_body_limit_bytes(settings.helper_max_request_body_bytes());
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let status_store = options.status_store.clone();
     let mut helper_started = false;
@@ -1124,6 +1127,15 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
+        // 常驻 helper 已经监听同一端口时直接复用：会话不再二次 bind，也不会在
+        // Codex 退出时关掉它（本实例没有持有它的 shutdown 句柄）。
+        if crate::resident_helper::resident_helper_port() == Some(helper_port) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "helper.reuse_resident",
+                serde_json::json!({ "helper_port": helper_port }),
+            );
+            return Ok(());
+        }
         let bind_host = helper_bind_host();
         let listener = tokio::net::TcpListener::bind((bind_host.as_str(), helper_port))
             .await
@@ -1574,8 +1586,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         Ok(())
     }
 
-    async fn shutdown_helper(&self, _helper_port: u16) {
-        remove_dictation_helper_receipt();
+    async fn shutdown_helper(&self, helper_port: u16) {
         if let Some(runtime) = self.bridge_watchdog.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -1583,6 +1594,16 @@ impl LaunchHooks for DefaultLaunchHooks {
         if let Some(runtime) = self.helper.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
+            // 只有真正持有 helper 的实例才删除听写凭据：复用了常驻 helper 的
+            // 会话收尾时不能把常驻 helper 的凭据删掉。
+            remove_dictation_helper_receipt_for_port(helper_port);
+        }
+        // 会话 helper 启动时会写凭据并覆盖掉常驻 helper 的；收尾后若常驻实例
+        // 还在监听，把凭据补回常驻端口，避免听写路由因为凭据指向已关闭端口而失效。
+        if let Some(port) = crate::resident_helper::resident_helper_port()
+            && port != helper_port
+        {
+            write_dictation_helper_receipt(port);
         }
     }
 
@@ -1670,12 +1691,24 @@ fn write_dictation_helper_receipt_at(path: &Path, helper_port: u16, token: &str)
     let _ = std::fs::rename(&temporary, path);
 }
 
-fn remove_dictation_helper_receipt() {
-    remove_dictation_helper_receipt_at(&dictation_helper_receipt_path());
+/// 删除属于指定端口的听写 helper 凭据。
+///
+/// 同一进程里可能同时存在常驻 helper 与会话 helper（例如协议转换已关闭但
+/// 常驻实例还没退出）：只删除端口匹配的凭据，避免一方收尾时把另一方的凭据
+/// 误删。凭据整体只在 helper 停止时清理，与旧行为一致。
+fn remove_dictation_helper_receipt_for_port(helper_port: u16) {
+    remove_dictation_helper_receipt_at_for_port(&dictation_helper_receipt_path(), helper_port);
 }
 
-fn remove_dictation_helper_receipt_at(path: &Path) {
-    let _ = std::fs::remove_file(path);
+fn remove_dictation_helper_receipt_at_for_port(path: &Path, helper_port: u16) {
+    let matches = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .and_then(|value| value.get("port").and_then(Value::as_u64))
+        .is_some_and(|port| port == u64::from(helper_port));
+    if matches {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 async fn handle_helper_connection(
@@ -2936,7 +2969,10 @@ mod dictation_receipt_tests {
         assert_eq!(again["port"], 57322);
         assert_eq!(again["token"], "token-def");
         assert!(!path.with_extension("json.tmp").exists(), "临时文件必须被改名走");
-        remove_dictation_helper_receipt_at(&path);
+        // 端口不匹配时不能误删：常驻 helper 与会话 helper 可能同时在跑。
+        remove_dictation_helper_receipt_at_for_port(&path, 57321);
+        assert!(path.exists(), "非本端口的凭据必须保留");
+        remove_dictation_helper_receipt_at_for_port(&path, 57322);
         assert!(!path.exists());
     }
 }
@@ -3531,16 +3567,65 @@ mod computer_use_tests {
 }
 
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
-const MAX_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
-const MAX_CONFIGURED_HTTP_BODY_BYTES: usize = 512 * 1024 * 1024;
+/// 默认请求体上限 128 MiB；与设置项默认值共用同一组常量，避免两处漂移。
+const DEFAULT_HTTP_BODY_BYTES: usize =
+    crate::settings::DEFAULT_HELPER_MAX_REQUEST_BODY_MIB as usize * 1024 * 1024;
+/// 允许的最低请求体上限 32 MiB；更低会误伤正常请求。
+const MIN_HTTP_BODY_BYTES: usize =
+    crate::settings::MIN_HELPER_MAX_REQUEST_BODY_MIB as usize * 1024 * 1024;
+/// 允许的最高请求体上限 512 MiB；helper 会整段缓冲，再高内存开销不可控。
+const MAX_HTTP_BODY_BYTES: usize =
+    crate::settings::MAX_HELPER_MAX_REQUEST_BODY_MIB as usize * 1024 * 1024;
+
+/// 运行期生效的请求体上限（字节）。0 表示设置尚未应用，回落到默认值。
+static CONFIGURED_HTTP_BODY_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// 把设置里的请求体上限应用给正在运行的 helper。
+///
+/// 启动流程在 helper 绑定端口前调用；管理器保存设置后也会调用，这样调大上限
+/// 不必重启 Codex++/Codex 就能让下一次请求生效。超出 32~512 MiB 的值会被夹取。
+pub fn set_http_body_limit_bytes(bytes: usize) {
+    CONFIGURED_HTTP_BODY_BYTES.store(
+        normalize_http_body_bytes(bytes),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn normalize_http_body_bytes(bytes: usize) -> usize {
+    bytes.clamp(MIN_HTTP_BODY_BYTES, MAX_HTTP_BODY_BYTES)
+}
+
+/// 解析环境变量里的字节数：低于下限视为无效（打错不缩小上限），高于上限则夹取。
+fn parse_env_http_body_bytes(value: &str) -> Option<usize> {
+    value
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|bytes| *bytes >= MIN_HTTP_BODY_BYTES)
+        .map(normalize_http_body_bytes)
+}
+
+/// 解析最终生效的请求体上限：环境变量优先，其次设置，最后默认值。
+fn resolve_http_body_bytes(env_value: Option<&str>, setting_bytes: usize) -> usize {
+    env_value
+        .and_then(parse_env_http_body_bytes)
+        .unwrap_or_else(|| normalize_http_body_bytes(setting_bytes))
+}
 
 fn configured_http_body_bytes() -> usize {
-    std::env::var("CODEX_PLUS_MAX_HTTP_BODY_BYTES")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value >= MAX_HTTP_BODY_BYTES)
-        .map(|value| value.min(MAX_CONFIGURED_HTTP_BODY_BYTES))
-        .unwrap_or(MAX_HTTP_BODY_BYTES)
+    let stored = CONFIGURED_HTTP_BODY_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    let setting_bytes = if stored == 0 {
+        DEFAULT_HTTP_BODY_BYTES
+    } else {
+        stored
+    };
+    resolve_http_body_bytes(
+        std::env::var("CODEX_PLUS_MAX_HTTP_BODY_BYTES")
+            .ok()
+            .as_deref(),
+        setting_bytes,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3550,10 +3635,15 @@ struct HttpBodyLimits {
 }
 
 fn http_body_limits() -> HttpBodyLimits {
-    let decoded = configured_http_body_bytes();
+    http_body_limits_from(configured_http_body_bytes())
+}
+
+fn http_body_limits_from(decoded: usize) -> HttpBodyLimits {
+    let decoded = normalize_http_body_bytes(decoded);
     HttpBodyLimits {
         decoded,
-        encoded: decoded.saturating_mul(2).min(MAX_CONFIGURED_HTTP_BODY_BYTES),
+        // 请求体可能带压缩（zstd 等），编码后允许到解码上限的 2 倍，封顶最高上限。
+        encoded: decoded.saturating_mul(2).min(MAX_HTTP_BODY_BYTES),
     }
 }
 
@@ -3577,10 +3667,11 @@ impl HttpRequestReadError {
     }
 
     fn payload_too_large_with_limit(limit: usize) -> Self {
+        let limit_mib = limit / (1024 * 1024);
         Self {
             status: "413 Payload Too Large",
             message: format!(
-                "HTTP 请求体超过 {limit} 字节限制（可通过 CODEX_PLUS_MAX_HTTP_BODY_BYTES 调大）"
+                "HTTP 请求体超过 {limit_mib} MiB（{limit} 字节）上限：请在 Codex++「代理设置」调大「请求体上限」，或设置环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES"
             ),
         }
     }
@@ -3632,7 +3723,7 @@ struct ChunkedScanState {
 
 impl ChunkedScanState {
     fn advance(&mut self, encoded: &[u8]) -> Result<ChunkedBodyScan, HttpRequestReadError> {
-        self.advance_with_limit(encoded, MAX_HTTP_BODY_BYTES)
+        self.advance_with_limit(encoded, DEFAULT_HTTP_BODY_BYTES)
     }
 
     fn advance_with_limit(
@@ -3713,7 +3804,13 @@ impl ChunkedScanState {
 async fn read_http_request(
     stream: &mut tokio::net::TcpStream,
 ) -> Result<HttpRequest, HttpRequestReadError> {
-    let limits = http_body_limits();
+    read_http_request_with_limits(stream, http_body_limits()).await
+}
+
+async fn read_http_request_with_limits(
+    stream: &mut tokio::net::TcpStream,
+    limits: HttpBodyLimits,
+) -> Result<HttpRequest, HttpRequestReadError> {
     let mut buffer = Vec::new();
     let mut chunk = vec![0_u8; 4096];
     let mut header_end = None;
@@ -3838,7 +3935,7 @@ fn content_length_body(
     encoded: &[u8],
     content_length: usize,
 ) -> Result<Vec<u8>, HttpRequestReadError> {
-    content_length_body_with_limit(encoded, content_length, MAX_HTTP_BODY_BYTES)
+    content_length_body_with_limit(encoded, content_length, DEFAULT_HTTP_BODY_BYTES)
 }
 
 fn content_length_body_with_limit(
@@ -3856,7 +3953,7 @@ fn content_length_body_with_limit(
 }
 
 fn decode_chunked_body(encoded: &[u8]) -> Result<ChunkedBody, HttpRequestReadError> {
-    decode_chunked_body_with_limit(encoded, MAX_HTTP_BODY_BYTES)
+    decode_chunked_body_with_limit(encoded, DEFAULT_HTTP_BODY_BYTES)
 }
 
 fn decode_chunked_body_with_limit(
@@ -5845,18 +5942,23 @@ mod tests {
         assert_eq!(multiple.status(), "400 Bad Request");
     }
 
+    /// 测试用的小上限，避免为了验证边界在测试里真的分配/扫描 128 MiB。
+    const TEST_HTTP_BODY_BYTES: usize = 4 * 1024;
+
     #[test]
     fn chunked_decoder_accepts_exact_body_limit_and_rejects_one_byte_more() {
-        let mut exact = format!("{:X}\r\n", MAX_HTTP_BODY_BYTES).into_bytes();
-        exact.resize(exact.len() + MAX_HTTP_BODY_BYTES, b'a');
+        let mut exact = format!("{:X}\r\n", TEST_HTTP_BODY_BYTES).into_bytes();
+        exact.resize(exact.len() + TEST_HTTP_BODY_BYTES, b'a');
         exact.extend_from_slice(b"\r\n0\r\n\r\n");
-        let ChunkedBody::Complete(decoded) = decode_chunked_body(&exact).unwrap() else {
+        let ChunkedBody::Complete(decoded) =
+            decode_chunked_body_with_limit(&exact, TEST_HTTP_BODY_BYTES).unwrap()
+        else {
             panic!("expected complete chunked body");
         };
-        assert_eq!(decoded.len(), MAX_HTTP_BODY_BYTES);
+        assert_eq!(decoded.len(), TEST_HTTP_BODY_BYTES);
 
-        let oversized = format!("{:X}\r\n", MAX_HTTP_BODY_BYTES + 1).into_bytes();
-        let error = decode_chunked_body(&oversized).unwrap_err();
+        let oversized = format!("{:X}\r\n", TEST_HTTP_BODY_BYTES + 1).into_bytes();
+        let error = decode_chunked_body_with_limit(&oversized, TEST_HTTP_BODY_BYTES).unwrap_err();
         assert_eq!(error.status(), "413 Payload Too Large");
     }
 
@@ -5894,16 +5996,112 @@ mod tests {
 
     #[test]
     fn content_length_body_accepts_exact_limit_and_rejects_one_byte_more() {
-        let exact = vec![b'a'; MAX_HTTP_BODY_BYTES];
+        let exact = vec![b'a'; TEST_HTTP_BODY_BYTES];
         assert_eq!(
-            content_length_body(&exact, MAX_HTTP_BODY_BYTES)
+            content_length_body_with_limit(&exact, TEST_HTTP_BODY_BYTES, TEST_HTTP_BODY_BYTES)
                 .unwrap()
                 .len(),
-            MAX_HTTP_BODY_BYTES
+            TEST_HTTP_BODY_BYTES
         );
 
-        let error = content_length_body(&[], MAX_HTTP_BODY_BYTES + 1).unwrap_err();
+        let error =
+            content_length_body_with_limit(&[], TEST_HTTP_BODY_BYTES + 1, TEST_HTTP_BODY_BYTES)
+                .unwrap_err();
         assert_eq!(error.status(), "413 Payload Too Large");
+    }
+
+    #[test]
+    fn http_body_limit_defaults_to_128_mib_and_resolves_env_over_setting() {
+        let mib = 1024 * 1024;
+        assert_eq!(DEFAULT_HTTP_BODY_BYTES, 128 * mib);
+        assert_eq!(MIN_HTTP_BODY_BYTES, 32 * mib);
+        assert_eq!(MAX_HTTP_BODY_BYTES, 512 * mib);
+        assert_eq!(
+            resolve_http_body_bytes(None, DEFAULT_HTTP_BODY_BYTES),
+            128 * mib
+        );
+
+        // 设置值生效；越界值夹取到 32~512 MiB。
+        assert_eq!(resolve_http_body_bytes(None, 256 * mib), 256 * mib);
+        assert_eq!(resolve_http_body_bytes(None, 8 * mib), 32 * mib);
+        assert_eq!(resolve_http_body_bytes(None, 4096 * mib), 512 * mib);
+
+        // 环境变量优先于设置；低于下限或非法值忽略，高于上限夹取。
+        assert_eq!(resolve_http_body_bytes(Some(" 402653184 "), 64 * mib), 384 * mib);
+        assert_eq!(resolve_http_body_bytes(Some("1048576"), 64 * mib), 64 * mib);
+        assert_eq!(resolve_http_body_bytes(Some("not-a-number"), 64 * mib), 64 * mib);
+        assert_eq!(resolve_http_body_bytes(Some("1073741824"), 64 * mib), 512 * mib);
+    }
+
+    #[test]
+    fn http_body_limits_allow_double_encoded_body_and_cap_at_512_mib() {
+        let mib = 1024 * 1024;
+        let limits = http_body_limits_from(128 * mib);
+        assert_eq!(limits.decoded, 128 * mib);
+        assert_eq!(limits.encoded, 256 * mib);
+
+        let limits = http_body_limits_from(MAX_HTTP_BODY_BYTES);
+        assert_eq!(limits.decoded, MAX_HTTP_BODY_BYTES);
+        assert_eq!(limits.encoded, MAX_HTTP_BODY_BYTES);
+
+        // 低于下限的输入按 32 MiB 处理，避免配置错误把上限缩到不可用。
+        assert_eq!(http_body_limits_from(1).decoded, 32 * mib);
+    }
+
+    #[tokio::test]
+    async fn read_http_request_uses_injected_limit_instead_of_global_default() {
+        let limits = HttpBodyLimits {
+            decoded: TEST_HTTP_BODY_BYTES,
+            encoded: TEST_HTTP_BODY_BYTES * 2,
+        };
+
+        // 超过注入上限：只发请求头，服务端必须在读正文前拒绝。
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            stream
+                .write_all(
+                    format!(
+                        "POST /v1/responses HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+                        TEST_HTTP_BODY_BYTES + 1
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+        let (mut server, _) = listener.accept().await.unwrap();
+        let error = read_http_request_with_limits(&mut server, limits)
+            .await
+            .err()
+            .expect("oversized body should be rejected");
+        assert_eq!(error.status(), "413 Payload Too Large");
+        client.await.unwrap();
+
+        // 正好等于注入上限：正常读入正文。
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload = "a".repeat(TEST_HTTP_BODY_BYTES);
+        let request_text = format!(
+            "POST /v1/responses HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            TEST_HTTP_BODY_BYTES, payload
+        );
+        let client = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            stream.write_all(request_text.as_bytes()).await.unwrap();
+        });
+        let (mut server, _) = listener.accept().await.unwrap();
+        let request = read_http_request_with_limits(&mut server, limits)
+            .await
+            .unwrap();
+        assert_eq!(request.body.len(), TEST_HTTP_BODY_BYTES);
+        client.await.unwrap();
     }
 
     #[tokio::test]
@@ -5920,7 +6118,7 @@ mod tests {
     async fn helper_returns_413_before_reading_oversized_content_length_body() {
         let request = format!(
             "POST /v1/audio/transcriptions HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=x\r\nContent-Length: {}\r\n\r\n",
-            MAX_HTTP_BODY_BYTES + 1
+            DEFAULT_HTTP_BODY_BYTES + 1
         );
         let response = send_raw_helper_request(request.as_bytes()).await;
 

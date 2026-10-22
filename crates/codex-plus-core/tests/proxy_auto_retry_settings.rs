@@ -137,3 +137,52 @@ fn legacy_streaming_mode_is_preserved_and_unknown_modes_fall_back() {
         "streaming"
     );
 }
+
+#[test]
+fn proxy_auto_retry_status_codes_default_empty_and_normalize() {
+    // 默认不重试任何 HTTP 状态码，旧 settings.json 升级后行为不变。
+    assert!(BackendSettings::default()
+        .protocol_proxy_auto_retry_status_codes
+        .is_empty());
+    let old: BackendSettings = serde_json::from_value(json!({})).unwrap();
+    assert!(old.protocol_proxy_auto_retry_status_codes.is_empty());
+
+    // 手改的坏值逐项丢弃，不能让整份设置读失败。
+    let parsed: BackendSettings = serde_json::from_value(json!({
+        "protocolProxyAutoRetryStatusCodes": [503, "429", 429, 200, 99999, -1, "abc", null],
+    }))
+    .unwrap();
+    assert_eq!(parsed.protocol_proxy_auto_retry_status_codes, vec![429, 503]);
+    let not_array: BackendSettings = serde_json::from_value(json!({
+        "protocolProxyAutoRetryStatusCodes": "429",
+    }))
+    .unwrap();
+    assert!(not_array.protocol_proxy_auto_retry_status_codes.is_empty());
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("settings.json");
+    let store = SettingsStore::new(path.clone());
+    let mut settings = BackendSettings::default();
+    settings.protocol_proxy_auto_retry_status_codes = vec![502, 429, 429, 302];
+    store.save(&settings).unwrap();
+    assert_eq!(
+        store.load().unwrap().protocol_proxy_auto_retry_status_codes,
+        vec![429, 502]
+    );
+
+    // /settings/set 部分更新也要登记这个键，并且同样归一化。
+    store
+        .update(json!({"protocolProxyAutoRetryStatusCodes": [504, 500, 100]}))
+        .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(raw["protocolProxyAutoRetryStatusCodes"], json!([500, 504]));
+    store
+        .update(json!({"protocolProxyAutoRetryStatusCodes": []}))
+        .unwrap();
+    assert!(store
+        .load()
+        .unwrap()
+        .protocol_proxy_auto_retry_status_codes
+        .is_empty());
+}
