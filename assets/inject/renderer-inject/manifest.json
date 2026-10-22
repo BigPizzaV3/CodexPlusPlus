@@ -58,7 +58,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1157
+      "lines": 1177
     },
     {
       "name": "71-model-picker-groups.js",

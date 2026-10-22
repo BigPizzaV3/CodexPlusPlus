@@ -3672,6 +3672,9 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
     assert_eq!(cases["remoteJsonAndMessageModelsPreserved"], true);
     assert_eq!(cases["sessionDeleteOnlyRegistersNativeClient"], true);
     assert_eq!(cases["globalStatsigWithoutHostPreserved"], true);
+    assert_eq!(cases["remoteControlGateRepaired"], true);
+    assert_eq!(cases["remoteControlGateKeptForCustomProvider"], true);
+    assert_eq!(cases["remoteControlGateKeptWithoutRelayUpstream"], true);
 }
 
 fn run_native_tier_and_provider_contract_harness() -> serde_json::Value {
@@ -4549,6 +4552,46 @@ const deleteOnlyClient = new window.__codexPlusAppServerClientClass("ssh:delete-
 await deleteOnlyClient.sendRequest("ping", {{}});
 const sessionDeleteOnlyRegistersNativeClient = deleteOnlyInstalled
   && window.__codexPlusNativeHostClients.get("ssh:delete-only")?.ref?.deref() === deleteOnlyClient;
+api.setBackendSettings({{
+  enhancementsEnabled: true,
+  relayProfilesEnabled: true,
+  activeRelayId: "remote-control-openai",
+  activeRelaySessionProvider: "openai",
+  relayProfiles: [{{
+    id: "remote-control-openai",
+    relayMode: "pureApi",
+    officialMixApiKey: false,
+    upstreamBaseUrl: "http://localhost:8317/v1",
+  }}],
+}});
+const remoteControlDispatchMessages = [];
+const remoteControlDispatcher = {{
+  __codexServiceTierOriginalDispatchMessage(type, payload) {{
+    remoteControlDispatchMessages.push({{ type, payload }});
+    return true;
+  }},
+}};
+api.dispatchMessage(remoteControlDispatcher, "electron-desktop-features-changed", {{ control: false, computerUse: true }});
+const remoteControlGateRepaired = remoteControlDispatchMessages.at(-1)?.payload?.control === true;
+api.setBackendSettings({{
+  activeRelayId: "remote-control-custom",
+  activeRelaySessionProvider: "custom",
+  relayProfiles: [{{
+    id: "remote-control-custom",
+    relayMode: "pureApi",
+    officialMixApiKey: false,
+    upstreamBaseUrl: "http://localhost:8317/v1",
+  }}],
+}});
+api.dispatchMessage(remoteControlDispatcher, "electron-desktop-features-changed", {{ control: false, computerUse: true }});
+const remoteControlGateKeptForCustomProvider = remoteControlDispatchMessages.at(-1)?.payload?.control === false;
+api.setBackendSettings({{
+  activeRelayId: "remote-control-official-only",
+  activeRelaySessionProvider: "openai",
+  relayProfiles: [{{ id: "remote-control-official-only", relayMode: "official", upstreamBaseUrl: "" }}],
+}});
+api.dispatchMessage(remoteControlDispatcher, "electron-desktop-features-changed", {{ control: false, computerUse: true }});
+const remoteControlGateKeptWithoutRelayUpstream = remoteControlDispatchMessages.at(-1)?.payload?.control === false;
 process.stdout.write(JSON.stringify({{
   withoutNativeTier,
   customModelNativeTier,
@@ -4652,6 +4695,9 @@ process.stdout.write(JSON.stringify({{
   unknownHostModelsPreserved,
   remoteJsonAndMessageModelsPreserved,
   sessionDeleteOnlyRegistersNativeClient,
+  remoteControlGateRepaired,
+  remoteControlGateKeptForCustomProvider,
+  remoteControlGateKeptWithoutRelayUpstream,
   globalStatsigWithoutHostPreserved,
 }}), () => process.exit(0));
 }}).catch((error) => {{
