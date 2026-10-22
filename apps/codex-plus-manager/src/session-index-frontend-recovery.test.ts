@@ -548,7 +548,20 @@ test("metadata updates survive immutable native snapshots and synchronous subscr
   assert.equal(original.turnHistory.history.entitiesByKey[uuid(2)].durationMs, null);
   assert.equal(h.data.turnHistory.history.entitiesByKey[uuid(2)].durationMs, 3210);
   assert.equal(h.data.turnHistory.history.generation, original.turnHistory.history.generation);
-  assert.equal(h.broadcasts, 1); assert.equal(h.calls.length, 0);
+  assert.equal(h.broadcasts, 0); assert.equal(h.calls.length, 0);
+});
+
+test("synchronous retirement after metadata commit cannot broadcast a stale snapshot", async () => {
+  const h = harness(); missingMetadata(h);
+  h.manager.updateConversationState = (_id, mutate) => {
+    const draft = structuredClone(h.data);
+    mutate(draft);
+    h.data = draft;
+    h.manager.disposed = true;
+  };
+  assert.equal((await h.run()).status, "partial");
+  assert.equal(h.data.turnHistory.history.entitiesByKey[uuid(2)].durationMs, 3210);
+  assert.equal(h.broadcasts, 0); assert.equal(h.calls.length, 0);
 });
 
 test("follower and terminal submission receipts cannot trigger metadata writes", async () => {

@@ -15239,7 +15239,7 @@
             }
           }
         }, false);
-        if (changed) manager.broadcastConversationSnapshot(target.id);
+        if (changed && writable(current())) manager.broadcastConversationSnapshot(target.id);
         cursor = page.nextCursor ?? null;
       } while (pending.size && cursor != null);
       const snapshot = current();
