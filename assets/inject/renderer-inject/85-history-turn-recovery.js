@@ -235,14 +235,20 @@
         ...initialIslands.flat().filter(historyTurnRecoveryNeedsMetadata).map((turn) => turn.turnId),
       ])];
       const ids = new Set(eligible.slice(0, 32));
-      const metadataComplete = await recoverHistoryTurnMetadata(owner, target, ids, current, result, deadline);
-      if (result.metadataPages) result.status = "partial";
       // 没有常驻扫描或延迟重试；消息与元数据共享 128 页预算。
       while (!state.disposed) {
         const snapshot = current();
         if (!snapshot) return result;
         const turn = historyTurnRecoveryCandidates(snapshot.islands).find((turn) => ids.has(turn.turnId));
-        if (!turn) return { ...result, status: metadataComplete && eligible.length <= 32 ? "completed" : "partial" };
+        if (!turn) {
+          // 先补正文/文件；慢元数据查询不能耗尽预算后让消息补载一次都无法开始。
+          const metadataComplete = await recoverHistoryTurnMetadata(owner, target, ids, current, result, deadline);
+          if (result.metadataPages) result.status = "partial";
+          const updated = current();
+          if (!updated) return result;
+          const itemsComplete = !historyTurnRecoveryCandidates(updated.islands).some((turn) => ids.has(turn.turnId));
+          return { ...result, status: metadataComplete && itemsComplete && eligible.length <= 32 ? "completed" : "partial" };
+        }
         if (Date.now() >= deadline || result.loadedPages + result.metadataPages >= 128) return { ...result, status: "partial" };
         const previousCount = turn.items.length;
         const previousCursor = JSON.stringify(turn.itemsPagination.olderCursor);

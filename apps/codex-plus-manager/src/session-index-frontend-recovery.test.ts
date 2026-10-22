@@ -505,7 +505,8 @@ test("metadata ownership, generation, navigation and receipt guards are rechecke
     (h: ReturnType<typeof harness>) => { h.manager.disposed = true; },
     (h: ReturnType<typeof harness>) => { h.scope.get = () => ({ ...h.manager }); },
   ]) {
-    const h = harness(); const entry = missingMetadata(h);
+    const h = harness(conversation([[turn(1, true), turn(2, true), turn(3, true)]]));
+    const entry = missingMetadata(h);
     h.setMetadataLoader(async () => { change(h); return { data: [metadataRow()], nextCursor: null }; });
     await h.run();
     assert.equal(entry.durationMs, null); assert.equal(entry.turnStartedAtMs, null);
@@ -535,7 +536,7 @@ test("an already retired manager cannot read or mutate history", async () => {
 });
 
 test("metadata updates survive immutable native snapshots and synchronous subscriptions", async () => {
-  const h = harness(); missingMetadata(h);
+  const h = harness(conversation([[turn(1, true), turn(2, true), turn(3, true)]])); missingMetadata(h);
   const original = h.data;
   h.manager.updateConversationState = (_id, mutate) => {
     const draft = structuredClone(h.data);
@@ -552,7 +553,7 @@ test("metadata updates survive immutable native snapshots and synchronous subscr
 });
 
 test("synchronous retirement after metadata commit cannot broadcast a stale snapshot", async () => {
-  const h = harness(); missingMetadata(h);
+  const h = harness(conversation([[turn(1, true), turn(2, true), turn(3, true)]])); missingMetadata(h);
   h.manager.updateConversationState = (_id, mutate) => {
     const draft = structuredClone(h.data);
     mutate(draft);
@@ -593,14 +594,19 @@ test("metadata pages share the deadline and total page budget with item recovery
     const entry = h.data.turnHistory.history.entitiesByKey[id as string];
     entry.items.push({ type: "commandExecution" });
     (entry.itemsPagination as any).olderCursor = `item-page-${h.calls.length}`;
+    if (h.calls.length === 96) entry.itemsPagination.hasLoadedOldest = true;
   });
   const result = await h.run();
   assert.equal(result.status, "partial");
-  assert.equal(result.metadataPages, 64); assert.equal(result.loadedPages, 64);
+  assert.equal(result.metadataPages, 32); assert.equal(result.loadedPages, 96);
+  const metadataOnly = harness(conversation([[turn(1, true), turn(2, true), turn(3, true)]]));
+  missingMetadata(metadataOnly);
+  metadataOnly.setMetadataLoader(async () => ({ data: [], nextCursor: `page-${metadataOnly.metadataCalls.length}` }));
+  assert.equal((await metadataOnly.run()).metadataPages, 64);
   const slow = harness(); missingMetadata(slow);
   slow.setMetadataLoader(async () => { slow.elapse(12000); return { data: [], nextCursor: "older-page" }; });
   assert.equal((await slow.run()).status, "partial");
-  assert.equal(slow.metadataCalls.length, 1); assert.equal(slow.calls.length, 0);
+  assert.equal(slow.metadataCalls.length, 1); assert.equal(slow.calls.length, 1);
 });
 
 test("a repeated metadata cursor cannot loop or prevent native item recovery", async () => {
