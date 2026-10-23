@@ -667,6 +667,63 @@ impl DictationSettings {
     }
 }
 
+/// Claude Code Bash 工具的两级执行时限。只有从 Codex++ 启动增强版时才注入环境变量。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ClaudeBashTimeoutSettings {
+    /// 总开关；关闭时不覆盖 Claude 的任何默认值。
+    pub enabled: bool,
+    /// 是否覆盖未显式传 timeout 时使用的默认执行时限。
+    pub default_enabled: bool,
+    pub default_seconds: u64,
+    /// 是否覆盖显式传 timeout 时允许的最大执行时限。
+    pub max_enabled: bool,
+    pub max_seconds: u64,
+}
+
+impl Default for ClaudeBashTimeoutSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_enabled: true,
+            default_seconds: 120,
+            max_enabled: true,
+            max_seconds: 1800,
+        }
+    }
+}
+
+impl ClaudeBashTimeoutSettings {
+    /// 毫秒值与 Cowork 外层 watchdog 的 60 秒余量需共同留在 i32 范围内。
+    const MAX_SECONDS: u64 = 2_147_423;
+
+    pub fn normalize(&mut self) {
+        self.default_seconds = self.default_seconds.clamp(1, Self::MAX_SECONDS);
+        self.max_seconds = self.max_seconds.clamp(1, Self::MAX_SECONDS);
+    }
+
+    /// 返回需要注入 Claude 进程的环境变量；关闭的子项不会写入。
+    pub fn environment(&self) -> Vec<(&'static str, String)> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        let mut values = Vec::with_capacity(2);
+        if self.default_enabled {
+            values.push((
+                "BASH_DEFAULT_TIMEOUT_MS",
+                self.default_seconds.saturating_mul(1000).to_string(),
+            ));
+        }
+        if self.max_enabled {
+            values.push((
+                "BASH_MAX_TIMEOUT_MS",
+                self.max_seconds.saturating_mul(1000).to_string(),
+            ));
+        }
+        values
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
     /// 读取快照的版本，只用于条件保存，不写入 settings.json。
@@ -734,6 +791,10 @@ pub struct BackendSettings {
     // 功能本身还受订阅与组织策略约束；误开没有收益，显式勾选才做。
     #[serde(rename = "claudeAppComputerUse", default)]
     pub claude_app_computer_use: bool,
+    // 默认关闭：只影响从 Codex++ 启动的 Claude 增强版。默认值与最大值的覆盖
+    // 可分别启停，单位均为秒。
+    #[serde(rename = "claudeAppBashTimeout", default)]
+    pub claude_app_bash_timeout: ClaudeBashTimeoutSettings,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
     // 默认关闭：撤下的那版会主动从 settings.json 删掉这个键，老用户升级后读不到，
@@ -1014,6 +1075,7 @@ impl Default for BackendSettings {
             claude_app_voice_input: true,
             claude_app_localization: true,
             claude_app_computer_use: false,
+            claude_app_bash_timeout: ClaudeBashTimeoutSettings::default(),
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
@@ -2891,6 +2953,7 @@ fn preserve_unknown_settings_fields(
 }
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
     settings.dictation.normalize();
+    settings.claude_app_bash_timeout.normalize();
     settings.codex_app_whale_balance_protocol =
         match settings.codex_app_whale_balance_protocol.trim() {
             "custom" => "custom",
@@ -3262,6 +3325,52 @@ mod tests {
         let parsed: BackendSettings = serde_json::from_value(off).unwrap();
         assert!(!parsed.claude_app_voice_input, "显式关闭必须被尊重");
         assert!(!parsed.claude_app_localization, "显式关闭必须被尊重");
+    }
+
+    #[test]
+    fn claude_bash_timeout_defaults_off_and_normalizes_seconds() {
+        let settings = BackendSettings::default();
+        assert!(!settings.claude_app_bash_timeout.enabled);
+        assert!(settings.claude_app_bash_timeout.default_enabled);
+        assert_eq!(settings.claude_app_bash_timeout.default_seconds, 120);
+        assert!(settings.claude_app_bash_timeout.max_enabled);
+        assert_eq!(settings.claude_app_bash_timeout.max_seconds, 1800);
+
+        let mut value = serde_json::to_value(settings).unwrap();
+        value["claudeAppBashTimeout"] = json!({
+            "enabled": true,
+            "defaultEnabled": false,
+            "defaultSeconds": 0,
+            "maxEnabled": true,
+            "maxSeconds": 99_999_999
+        });
+        let parsed = normalize_settings_config_sections(
+            serde_json::from_value::<BackendSettings>(value).unwrap(),
+        );
+        assert!(parsed.claude_app_bash_timeout.enabled);
+        assert!(!parsed.claude_app_bash_timeout.default_enabled);
+        assert_eq!(parsed.claude_app_bash_timeout.default_seconds, 1);
+        assert_eq!(
+            parsed.claude_app_bash_timeout.max_seconds,
+            ClaudeBashTimeoutSettings::MAX_SECONDS
+        );
+    }
+
+    #[test]
+    fn claude_bash_timeout_environment_only_contains_enabled_overrides() {
+        let mut settings = ClaudeBashTimeoutSettings {
+            enabled: true,
+            default_enabled: false,
+            default_seconds: 90,
+            max_enabled: true,
+            max_seconds: 1800,
+        };
+        assert_eq!(
+            settings.environment(),
+            vec![("BASH_MAX_TIMEOUT_MS", "1800000".to_string())]
+        );
+        settings.enabled = false;
+        assert!(settings.environment().is_empty());
     }
 
     #[test]

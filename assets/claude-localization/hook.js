@@ -303,6 +303,13 @@ function install() {
     SHIM = '';
     log('localization disabled by settings');
   }
+  if (SHIM && globalThis.__claudeCnOverlayDir) {
+    require('./overlay.js').installOverlay(
+      { files: require('node:fs/promises'), net: electron.net },
+      globalThis.__claudeCnOverlayDir,
+      path.join(process.resourcesPath, 'ion-dist'),
+    );
+  }
 
   const HOST = /(^|\.)claude\.(ai|com)$/;
   const hostOf = (url) => {
@@ -318,6 +325,16 @@ function install() {
 
   const ARMED = new WeakSet();
   const RELOADED = new WeakSet();
+  let ready;
+  const pageReady = new Promise((resolve) => { ready = resolve; });
+  const timeoutReady = (globalThis.__claudeCnBashTimeoutReady ?? require('./bash-timeout.js').installTimeoutOverrides(globalThis.__claudeCnBashTimeout))
+    .then((result) => {
+      globalThis.__claudeCnBashTimeoutResult = result;
+      log('bash timeout ' + JSON.stringify(result));
+      return result;
+    });
+  globalThis.__claudeCnInjectionReady = Promise.all([pageReady, timeoutReady]);
+  globalThis.__claudeCnInjectionReady.catch((error) => log('bash timeout injection failed: ' + error.message));
 
   const isDefaultSession = (wc) => {
     try {
@@ -419,7 +436,12 @@ function install() {
           if (DICTATION) {
             dbg.sendCommand('Runtime.evaluate', { expression: DICTATION }).catch(() => {});
           }
+          if (SHIM && globalThis.__claudeCnOverlayDir && wc.getURL().startsWith('app://localhost') && !RELOADED.has(wc)) {
+            RELOADED.add(wc);
+            wc.reloadIgnoringCache();
+          }
           verify(wc, '(armed)');
+          ready();
         })
         .catch((e) => {
           ARMED.delete(wc);

@@ -56,6 +56,7 @@ const VOICE_INPUT = String(argOf('--voice-input', process.env.CODEX_PLUS_CLAUDE_
  * 与「准备副本」无关——副本是所有增强共同的前置条件。
  */
 const LOCALIZATION = String(argOf('--localization', process.env.CODEX_PLUS_CLAUDE_LOCALIZATION ?? '1')) !== '0';
+const BASH_TIMEOUT = JSON.parse(process.env.CODEX_PLUS_CLAUDE_BASH_TIMEOUT || 'null');
 if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(LOCALE)) throw new Error('无效的语言代码');
 
 const EXEC = process.platform === 'win32'
@@ -242,17 +243,38 @@ async function evaluate(c, expression) {
   }
 
   const c = await connect(target.webSocketDebuggerUrl);
+  let verified = false;
+  let closingInspector = false;
   try {
+    const bootstrap = `(() => {
+      if (!Number.isInteger(process.pid) || typeof process.resourcesPath !== 'string') return false;
+      const req = typeof require === 'function' ? require : process.getBuiltinModule('module').createRequire(process.resourcesPath + '/app.asar/package.json');
+      const fs = req('node:fs');
+      if (fs.realpathSync(process.execPath) !== fs.realpathSync(${JSON.stringify(EXEC)})) throw Error('Unexpected Claude executable');
+      globalThis.__claudeCnBashTimeout = ${JSON.stringify(BASH_TIMEOUT)};
+      globalThis.__claudeCnBashTimeoutReady = req(${JSON.stringify(path.join(path.dirname(HOOK), 'bash-timeout.js'))}).installTimeoutOverrides(globalThis.__claudeCnBashTimeout);
+      globalThis.__claudeCnBashTimeoutReady.catch(() => {});
+      return true;
+    })()`;
+    const bootstrapDeadline = Date.now() + TIMEOUT;
+    while (!(await evaluate(c, bootstrap))) {
+      if (Date.now() >= bootstrapDeadline) throw new Error('Claude Node 初始化超时');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    verified = true;
     // 启动期主线程可能被占用，evaluate 会排队等待，这里给几次重试
     const execPath = await evaluateRetry(c, 'process.execPath');
     if (fs.realpathSync(execPath) !== fs.realpathSync(EXEC)) {
       console.error(`✗ 目标进程不是这个副本（${execPath}），放弃注入。`);
       process.exit(1);
     }
+    verified = true;
     const version = await evaluateRetry(c, "require('electron').app.getVersion()");
     log(`→ 已连上主进程（Claude ${version}, pid ${await evaluateRetry(c, 'process.pid')}）`);
 
     await evaluate(c, `globalThis.__claudeCnTargetLocale = ${JSON.stringify(LOCALE)}; globalThis.__claudeCnVoiceInput = ${VOICE_INPUT ? 'true' : 'false'}; globalThis.__claudeCnLocalization = ${LOCALIZATION ? 'true' : 'false'}; require(${JSON.stringify(HOOK)})`);
+    const timeoutReady = await c.send('Runtime.evaluate', { expression: 'globalThis.__claudeCnInjectionReady', awaitPromise: true, returnByValue: true });
+    if (timeoutReady.exceptionDetails) throw new Error('Claude 增强注入失败，请检查 hook.log');
     const okFlag = await evaluate(c, 'globalThis.__claudeCnHookInstalled === true');
     if (!okFlag) {
       console.error('✗ hook 没有装载成功，看看 ' + HOOK_LOG);
@@ -262,6 +284,7 @@ async function evaluate(c, expression) {
 
     try {
       // 这一句会把 inspector 和当前连接一起关掉，所以大概率等不到返回值，属正常
+      closingInspector = true;
       await evaluate(c, "setImmediate(()=>require('node:inspector').close()); 'closing'");
     } catch (e) {}
     try { c.close(); } catch (e) {}
@@ -274,6 +297,9 @@ async function evaluate(c, expression) {
     }
     log(stillOpen ? `（提示：${port} 端口可能仍开着）` : '→ inspector 已关闭（不留调试端口）');
   } finally {
+    if (verified && !closingInspector) {
+      try { await evaluate(c, "setTimeout(()=>require('node:inspector').close(), 250); 'closing'"); } catch (e) {}
+    }
     try { c.close(); } catch (e) {}
   }
 
