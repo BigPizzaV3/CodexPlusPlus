@@ -113,6 +113,10 @@ fn replace_copy_with(
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("bash-timeout.js", include_bytes!("../../../assets/claude-localization/bash-timeout.js")),
+    ("native-launch.cs", include_bytes!("../../../assets/claude-localization/native-launch.cs")),
+    ("start-in-package.ps1", include_bytes!("../../../assets/claude-localization/start-in-package.ps1")),
+    ("overlay.js", include_bytes!("../../../assets/claude-localization/overlay.js")),
     (
         "build-copy.py",
         include_bytes!("../../../assets/claude-localization/build-copy.py"),
@@ -183,6 +187,8 @@ pub struct ClaudeLocalizationStatus {
     /// 当前平台是否真的能应用 Computer Use；Windows 的构建脚本不改写 asar，
     /// 打开开关只会存设置，界面据此禁用该开关（#2673）。
     pub computer_use_supported: bool,
+    /// 从 Codex++ 启动增强版时覆盖的 Bash 默认时限与最大时限。
+    pub bash_timeout: crate::settings::ClaudeBashTimeoutSettings,
 }
 
 #[derive(Debug, Serialize)]
@@ -326,7 +332,7 @@ fn copy_app(_source: &Path) -> PathBuf { runtime_dir().join(COPY_BUNDLE_NAME) }
 
 #[cfg(target_os = "windows")]
 fn copy_app(source: &Path) -> PathBuf {
-    if windows_msix_source(source) { source.to_path_buf() } else { runtime_dir().join(COPY_DIR_NAME).join("Claude.exe") }
+    runtime_dir().join(COPY_DIR_NAME).join(if windows_msix_source(source) { "entry.json" } else { "Claude.exe" })
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -500,6 +506,10 @@ fn initial_status(source: &Path, copy: &Path) -> ClaudeLocalizationStatus {
         localization: settings.as_ref().is_none_or(|settings| settings.claude_app_localization),
         computer_use: computer_use_enabled(),
         computer_use_supported: cfg!(target_os = "macos"),
+        bash_timeout: settings
+            .as_ref()
+            .map(|settings| settings.claude_app_bash_timeout.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -542,6 +552,12 @@ fn inspect_installed_source(
     Ok(state)
 }
 
+fn prepared_receipt_matches(receipt: &Value, layout: Option<&str>) -> bool {
+    // 旧 MSIX 记录只检测过安装入口，不能证明已有支持启动注入的副本。
+    receipt.get("msix").and_then(Value::as_bool) != Some(true)
+        && layout.is_none_or(|layout| receipt.get("windowsLayout").and_then(Value::as_str) == Some(layout))
+}
+
 pub fn status() -> Result<ClaudeLocalizationStatus> {
     migrate_legacy_copy();
     let deadline = Instant::now() + STATUS_TIMEOUT;
@@ -549,12 +565,16 @@ pub fn status() -> Result<ClaudeLocalizationStatus> {
     let copy = copy_app(&source);
     inspect_installed_source(&source, AppLayout::current(), initial_status(&source, &copy), |state| {
         state.source_version = app_version(&source, "CFBundleShortVersionString", deadline)?;
-        state.copy_version = app_version(&copy, "CFBundleShortVersionString", deadline)?;
+        let native = windows_msix_source(&source);
         let current_build = if cfg!(windows) { state.source_version.clone() }
             else { app_version(&source, "CFBundleVersion", deadline)? };
         let receipt = fs::read(runtime_dir().join("prepared.json")).ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        state.copy_version = if native {
+            receipt.as_ref().and_then(|r| r.get("sourceBuild")).and_then(Value::as_str).unwrap_or_default().to_string()
+        } else { app_version(&copy, "CFBundleShortVersionString", deadline)? };
         state.prepared = AppLayout::current().exists(&copy) && receipt.is_some();
+        let layout = cfg!(windows).then_some(if native { "native-runtime-v1" } else { "copy-v1" });
         state.needs_rebuild = copy_needs_rebuild(
             state.prepared,
             receipt.as_ref(),
@@ -563,7 +583,10 @@ pub fn status() -> Result<ClaudeLocalizationStatus> {
             &state.source_version,
             state.computer_use,
             state.computer_use_supported,
-        );
+        ) || (state.prepared && receipt.as_ref().is_none_or(|r| {
+            !prepared_receipt_matches(r, layout)
+                || (native && r.get("sourcePath").and_then(Value::as_str) != Some(source.to_string_lossy().as_ref()))
+        }));
         state.shell_locale = read_config(&config_path()).ok()
             .and_then(|v| v.get("locale")?.as_str().map(str::to_string));
         state.running = claude_running(deadline)?;
@@ -603,6 +626,14 @@ fn computer_use_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// 读取 Bash 时限覆盖配置；读不到时返回默认关闭状态。
+fn bash_timeout_settings() -> crate::settings::ClaudeBashTimeoutSettings {
+    crate::settings::SettingsStore::default()
+        .load()
+        .map(|settings| settings.claude_app_bash_timeout)
+        .unwrap_or_default()
+}
+
 /// 界面汉化开关。同样是读不到就按开启处理。
 fn localization_enabled() -> bool {
     crate::settings::SettingsStore::default()
@@ -626,6 +657,18 @@ pub fn set_computer_use(enabled: bool) -> Result<ClaudeLocalizationStatus> {
     let store = crate::settings::SettingsStore::default();
     let mut settings = store.load()?;
     settings.claude_app_computer_use = enabled;
+    store.save(&settings)?;
+    status()
+}
+
+/// 写入 Bash 时限覆盖配置。它只在启动增强版时注入环境变量，不修改官方应用或副本。
+pub fn set_bash_timeout(
+    mut timeout: crate::settings::ClaudeBashTimeoutSettings,
+) -> Result<ClaudeLocalizationStatus> {
+    timeout.normalize();
+    let store = crate::settings::SettingsStore::default();
+    let mut settings = store.load()?;
+    settings.claude_app_bash_timeout = timeout;
     store.save(&settings)?;
     status()
 }
@@ -700,11 +743,17 @@ fn run_script(
     if cfg!(target_os = "windows") && script.ends_with(".ps1") {
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
     }
+    let timeout = bash_timeout_settings();
+    command.env("CODEX_PLUS_CLAUDE_BASH_TIMEOUT", serde_json::to_string(&timeout)?);
+    for (key, value) in timeout.environment() {
+        command.env(key, value);
+    }
     let mut child = command
         .arg(root.join(script))
         .args(args)
         .env("CODEX_PLUS_CLAUDE_SOURCE", source)
         .env("CODEX_PLUS_CLAUDE_COPY", copy)
+        .env("CODEX_PLUS_CLAUDE_MSIX", if windows_msix_source(source) { "1" } else { "0" })
         // 启动脚本据此决定要不要给页面注入语音入口；构建/校验脚本读到也无害。
         .env(
             "CODEX_PLUS_CLAUDE_VOICE_INPUT",
@@ -848,14 +897,8 @@ pub fn perform_with_progress(
                 find_runtime("node", Instant::now() + STATUS_TIMEOUT)?.is_some(),
                 "需要带有内置 WebSocket 的 Node.js 22 或更新版本才能中文启动"
             );
-            if cfg!(target_os = "windows") && windows_msix_source(&source) {
-                fs::write(root.join("prepared.json"), serde_json::to_vec(&json!({
-                    "sourceBuild": app_version(&source, "ProductVersion", Instant::now() + STATUS_TIMEOUT)?,
-                    "msix": true
-                }))?)?;
-                "已检测到 Windows MSIX 版 Claude；保留官方包不变，使用启动注入。".to_string()
-            } else {
-            let staged = staged_copy_path(&format!("Claude-staging-{}", uuid::Uuid::new_v4()));
+            let mut staged = staged_copy_path(&format!("Claude-staging-{}", uuid::Uuid::new_v4()));
+            if windows_msix_source(&source) { staged.set_file_name("entry.json"); }
             let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
             progress(2, "准备增强版目录");
             run_script(&script_runtime, script, &source, &staged, &[], progress)?;
@@ -868,21 +911,19 @@ pub fn perform_with_progress(
                 root.join("prepared.json"),
                 serde_json::to_vec(&json!({
                     "sourceBuild": app_version(&source, "CFBundleVersion", Instant::now() + STATUS_TIMEOUT)?,
-                    "computerUse": computer_use_enabled()
+                    "computerUse": computer_use_enabled(),
+                    "sourcePath": source,
+                    "windowsLayout": if windows_msix_source(&source) { "native-runtime-v1" } else { "copy-v1" }
                 }))?,
             )?;
-            "增强版已制作，签名与 app.asar 校验通过。".to_string()
-            }
+            if cfg!(windows) { "增强入口已制作，注入开关与资源校验通过。".to_string() }
+            else { "增强版已制作，签名与 app.asar 校验通过。".to_string() }
         }
         "check" => {
-            if cfg!(target_os = "windows") && windows_msix_source(&source) {
-                ensure!(source.exists(), "未找到 Claude MSIX 安装入口");
-                "Windows MSIX 安装入口已检测到，采用原版包启动注入。".to_string()
-            } else {
-                let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
-                run_script(&script_runtime, script, &source, &copy, &["--check"], &|_, _| {})?;
-                "副本签名、中文词表、注入开关及 app.asar 一致性校验通过。".to_string()
-            }
+            let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
+            run_script(&script_runtime, script, &source, &copy, &["--check"], &|_, _| {})?;
+            if cfg!(windows) { "增强入口、中文词表、注入开关及 app.asar 一致性校验通过。".to_string() }
+            else { "副本签名、中文词表、注入开关及 app.asar 一致性校验通过。".to_string() }
         }
         "launch" | "restore" => {
             let launcher = if cfg!(target_os = "windows") {
@@ -890,10 +931,11 @@ pub fn perform_with_progress(
             } else {
                 find_runtime("node", Instant::now() + STATUS_TIMEOUT)?.context("未找到带内置 WebSocket 的 Node.js 22 或更新版本")?
             };
-            if !(cfg!(target_os = "windows") && windows_msix_source(&source)) {
-                let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
-                run_script(&script_runtime, script, &source, &copy, &["--check"], &|_, _| {})?;
+            if cfg!(windows) {
+                ensure!(!windows_msix_source(&copy), "拒绝向官方 MSIX 安装目录注入，请重新制作增强版");
             }
+            let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
+            run_script(&script_runtime, script, &source, &copy, &["--check"], &|_, _| {})?;
             let config = config_path();
             let backup = config.with_extension("codex-plus-locale-backup.json");
             let previous = read_config(&config)?.get("locale").cloned();
@@ -956,6 +998,101 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_msix_receipt_cannot_certify_a_managed_copy() {
+        assert!(!prepared_receipt_matches(&json!({"sourceBuild": "3.6556.1", "msix": true}), None));
+        let receipt = json!({"sourceBuild": "3.6556.1", "computerUse": false});
+        assert!(prepared_receipt_matches(&receipt, None));
+        assert!(!prepared_receipt_matches(&receipt, Some("linked-resources-v1")));
+        let linked = json!({"sourceBuild": "3.6556.1", "windowsLayout": "linked-resources-v1"});
+        assert!(prepared_receipt_matches(&linked, Some("linked-resources-v1")));
+        assert!(!prepared_receipt_matches(&linked, Some("native-runtime-v1")));
+        let native = json!({"sourceBuild": "3.6556.1", "windowsLayout": "native-runtime-v1"});
+        assert!(prepared_receipt_matches(&native, Some("native-runtime-v1")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn msix_copy_target_is_outside_the_official_package() {
+        let source = Path::new(r"C:\Program Files\WindowsApps\Claude_3.6556.1.0_x64__publisher\app\Claude.exe");
+        let copy = copy_app(source);
+        assert_ne!(copy, source);
+        assert!(!windows_msix_source(&copy));
+        assert!(copy.ends_with(Path::new(r"Claude Enhanced\entry.json")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_copy_script_patches_and_validates_fuse_without_touching_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = seed_windows_copy(&dir.path().join("source"), b"asar fixture");
+        let mut executable = b"fake invalid fuse dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX\0\x09".to_vec();
+        executable.extend_from_slice(b"010011011 valid fuse dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX\x01\x09");
+        let flag_offset = executable.len();
+        executable.extend_from_slice(b"010011011");
+        fs::write(&source, &executable).unwrap();
+        let ion = source.parent().unwrap().join("resources/ion-dist");
+        fs::create_dir_all(ion.join("assets")).unwrap();
+        fs::create_dir_all(ion.join("i18n")).unwrap();
+        fs::write(ion.join("i18n/en-US.json"), b"{}").unwrap();
+        fs::write(ion.join("index.html"), "<head></head>").unwrap();
+        fs::write(ion.join("assets/main.js"), r#"["en-US","de-DE","fr-FR","ko-KR","ja-JP","es-419","es-ES","it-IT","hi-IN","pt-BR","id-ID"]"#).unwrap();
+        // 用真实脚本和词表，假应用不执行，只检查复制和校验行为。
+        let assets = dir.path().join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        for (name, bytes) in ASSETS {
+            let target = assets.join(name);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, bytes).unwrap();
+        }
+        let copy = dir.path().join("copy/Claude.exe");
+        let run = |copy: &Path, check: bool, linked: bool| {
+            let mut command = hidden_script_command(Path::new("powershell.exe"));
+            command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+                .arg(if check { "& { & $env:CODEX_PLUS_TEST_BUILD_SCRIPT --check } 2>&1" } else { "& { & $env:CODEX_PLUS_TEST_BUILD_SCRIPT } 2>&1" })
+                .env("CODEX_PLUS_TEST_BUILD_SCRIPT", assets.join("build-copy.ps1"))
+                .env("CODEX_PLUS_CLAUDE_SOURCE", &source)
+                .env("CODEX_PLUS_CLAUDE_COPY", copy)
+                .env("CODEX_PLUS_CLAUDE_MSIX", if linked { "1" } else { "0" });
+            if check { command.arg("--check"); }
+            command.output().unwrap()
+        };
+        let built = run(&copy, false, false);
+        assert!(built.status.success(), "{} {}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+        let mut expected = executable.clone();
+        expected[flag_offset + 3] = b'1';
+        assert_eq!(fs::read(&copy).unwrap(), expected);
+        assert_eq!(fs::read(&source).unwrap(), executable);
+        assert!(run(&copy, true, false).status.success());
+        fs::write(&copy, &executable).unwrap();
+        assert!(!run(&copy, true, false).status.success(), "未启用调试入口的副本不能通过校验");
+        assert!(!run(&source, true, false).status.success(), "源路径不得充当副本");
+        assert_eq!(fs::read(&source).unwrap(), executable);
+        fs::write(&copy, &expected).unwrap();
+        fs::write(copy.parent().unwrap().join("resources/app.asar"), b"tampered").unwrap();
+        assert!(!run(&copy, true, false).status.success(), "asar 损坏不能通过校验");
+        let native = dir.path().join("native/entry.json");
+        assert!(!run(&native, false, true).status.success(), "原版启动必须拒绝未签名的源程序");
+        assert!(!native.parent().unwrap().exists());
+        // 使用系统自带的有效签名 PE，仅测试资源准备，不执行该文件。
+        let signed_exe = PathBuf::from(std::env::var_os("WINDIR").unwrap()).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let signed_bytes = fs::read(signed_exe).unwrap();
+        fs::write(&source, &signed_bytes).unwrap();
+        let built = run(&native, false, true);
+        assert!(built.status.success(), "{} {}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+        assert!(!native.parent().unwrap().join("resources").exists(), "原版启动不复制资源目录");
+        assert!(!native.parent().unwrap().join("Claude.exe").exists(), "原版启动不复制 EXE");
+        assert_eq!(fs::read(&source).unwrap(), signed_bytes);
+        assert_eq!(fs::read(ion.join("index.html")).unwrap(), b"<head></head>");
+        assert!(!ion.join("i18n/zh-Hans.json").exists(), "共享目录不能被写入中文词表");
+        assert!(run(&native, true, true).status.success());
+        let overlay = native.parent().unwrap().join(".codex-plus-overlay");
+        assert!(overlay.join("i18n/zh-Hans.json").is_file());
+        fs::write(overlay.join("assets/main.js"), b"tampered overlay").unwrap();
+        assert!(!run(&native, true, true).status.success(), "增强资源损坏不能通过校验");
+        assert_eq!(fs::read(source.parent().unwrap().join("resources/app.asar")).unwrap(), b"asar fixture");
+    }
+
+    #[test]
     fn claude_msix_namespace_discovery_and_classification_agree() {
         let packages = br#"[{"Name":"AnthropicPBC.Claude","InstallLocation":"C:\\Program Files\\WindowsApps\\AnthropicPBC.Claude_2.42304.0.0_x64__fnn82j28hfe8t"},{"Name":"ClaudeFork","InstallLocation":"C:\\Other"}]"#;
         let locations = claude_package_locations(packages).unwrap();
@@ -971,6 +1108,72 @@ mod tests {
         );
         assert!(claude_package_locations(b"").unwrap().is_empty());
         assert!(claude_package_locations(b"not JSON").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_inspector_port_check_rejects_other_processes_and_closed_ports() {
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("native-launch.cs");
+        fs::write(&helper, ASSETS.iter().find(|(name, _)| *name == "native-launch.cs").unwrap().1).unwrap();
+        let output = hidden_script_command(Path::new("powershell.exe"))
+            .args(["-NoProfile", "-Command", r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -Path $env:CODEX_PLUS_TEST_NATIVE_HELPER
+$method = [ClaudeNativeLaunch].GetMethod('OwnsPort', [Reflection.BindingFlags]'NonPublic,Static')
+$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$listener.Start()
+try {
+  $port = $listener.LocalEndpoint.Port
+  if (-not $method.Invoke($null, @([int]$port, [uint32]$PID))) { throw 'Own listener was rejected' }
+  if ($method.Invoke($null, @([int]$port, [uint32]0))) { throw 'Wrong owner was accepted' }
+} finally { $listener.Stop() }
+if ($method.Invoke($null, @([int]$port, [uint32]$PID))) { throw 'Closed listener was accepted' }
+"#])
+            .env("CODEX_PLUS_TEST_NATIVE_HELPER", &helper)
+            .output().unwrap();
+        assert!(output.status.success(), "{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_inspector_connection_reaps_only_the_new_verified_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("inject-cn.ps1");
+        fs::write(&script, ASSETS.iter().find(|(name, _)| *name == "inject-cn.ps1").unwrap().1).unwrap();
+        let output = hidden_script_command(Path::new("powershell.exe"))
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", r#"
+$ErrorActionPreference = 'Stop'
+$env:CODEX_PLUS_CLAUDE_MSIX = '0'
+$env:CODEX_PLUS_CLAUDE_COPY = "$PSHOME\powershell.exe"
+$env:CODEX_PLUS_CLAUDE_BASH_TIMEOUT = ''
+function Start-Process {
+  $info = [Diagnostics.ProcessStartInfo]::new("$PSHOME\powershell.exe", '-NoProfile -Command Start-Sleep 60')
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+  $global:testChild = [Diagnostics.Process]::Start($info)
+  return $global:testChild
+}
+function Invoke-RestMethod {
+  return [pscustomobject]@{ type = 'node'; webSocketDebuggerUrl = 'ws://127.0.0.1:1' }
+}
+$failed = $false
+try { & $env:CODEX_PLUS_TEST_INJECT_SCRIPT } catch { $failed = $true }
+try {
+  if (-not $failed) { throw 'Invalid inspector connection succeeded' }
+  if (-not $testChild) { throw 'Fixture did not start its child' }
+  if (-not $testChild.WaitForExit(5000)) { throw 'Failed launch left its child alive' }
+} finally {
+  if ($testChild) {
+    if (-not $testChild.HasExited) { $testChild.Kill(); $testChild.WaitForExit() }
+    $testChild.Dispose()
+  }
+}
+"#])
+            .env("CODEX_PLUS_TEST_INJECT_SCRIPT", &script)
+            .output().unwrap();
+        assert!(output.status.success(), "{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(!dir.path().join("launch-diagnostics.json").exists());
     }
 
     #[test]
@@ -1008,6 +1211,7 @@ mod tests {
             node_available: false, python_available: false, shell_locale: None,
             catalog_entries: 0, voice_input: true, localization: true, computer_use: false,
             computer_use_supported: cfg!(target_os = "macos"),
+            bash_timeout: Default::default(),
         }
     }
 
@@ -1115,7 +1319,21 @@ mod tests {
         assert!(build.contains("[Security.Cryptography.SHA256]::Create()"));
         assert!(!build.contains("Get-FileHash"));
         let inject = std::str::from_utf8(ASSETS.iter().find(|(name, _)| *name == "inject-cn.ps1").unwrap().1).unwrap();
-        assert!(!inject.contains("-WindowStyle Hidden"));
+        for line in inject.lines().filter(|line| line.contains("Start-Process")) {
+            assert!(!line.contains("-WindowStyle"), "Claude 主窗口不能隐藏");
+        }
+        let wrapper = std::str::from_utf8(ASSETS.iter().find(|(name, _)| *name == "start-in-package.ps1").unwrap().1).unwrap();
+        assert!(wrapper.contains("[ClaudeNativeLaunch]::Start"));
+        assert!(!wrapper.contains("-WindowStyle"));
+        assert!(inject.contains("Invoke-CommandInDesktopPackage"));
+        assert!(inject.contains("__claudeCnInjectionReady"));
+        assert!(!inject.contains("--inspect-brk"));
+        assert!(inject.find("installTimeoutOverrides(options.bashTimeout)").unwrap() < inject.find("await electron.app.whenReady()").unwrap());
+        assert!(inject.find("$verified = $true").unwrap() < inject.find("$ws.ConnectAsync").unwrap());
+        assert!(wrapper.contains("inspectorOwnedByChild"));
+        let native = std::str::from_utf8(ASSETS.iter().find(|(name, _)| *name == "native-launch.cs").unwrap().1).unwrap();
+        assert!(native.find("Check(FreeConsole(),").unwrap() < native.find("Check(CreateProcessW(").unwrap(), "先解除 Electron 可以重新附着的父控制台");
+        assert!(native.contains("createSuspended | detachedProcess"));
     }
 
     /// 超时回归的子进程就是当前测试二进制，不运行 shell 或用户安装的脚本。

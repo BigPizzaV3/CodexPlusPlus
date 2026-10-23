@@ -13273,6 +13273,14 @@ function Panel({ children, fill = false, className = "" }: { children: React.Rea
   );
 }
 
+type ClaudeBashTimeoutSettings = {
+  enabled: boolean;
+  defaultEnabled: boolean;
+  defaultSeconds: number;
+  maxEnabled: boolean;
+  maxSeconds: number;
+};
+
 type ClaudeLocalizationStatus = {
   supported: boolean;
   sourceApp: string;
@@ -13291,6 +13299,7 @@ type ClaudeLocalizationStatus = {
   computerUse: boolean;
   /** 当前平台能否真正应用 Computer Use；Windows 为 false（#2673）。 */
   computerUseSupported: boolean;
+  bashTimeout: ClaudeBashTimeoutSettings;
 };
 
 /**
@@ -13312,8 +13321,15 @@ function ClaudeLocalizationScreen() {
   const [error, setError] = useState<string | null>(null);
   /** 制作增强版时宿主推送的阶段进度（0-100）。 */
   const [progress, setProgress] = useState<{ percent: number; message: string } | null>(null);
+  const [bashTimeoutDraft, setBashTimeoutDraft] = useState<ClaudeBashTimeoutSettings | null>(
+    claudeLocalizationMemo.status?.status === "ok"
+      ? claudeLocalizationMemo.status.bashTimeout
+      : null,
+  );
   const mounted = useRef(true);
   const pending = useRef(false);
+  const bashTimeoutSaving = useRef(false);
+  const bashTimeoutQueued = useRef<ClaudeBashTimeoutSettings | null>(null);
   /**
    * 页头右上角的操作槽：「启动增强版」放在和 Codex 页「启动 Codex」相同的位置。
    * 页头与本页都按路由重建、同一次提交挂载，所以在 layout effect 里取，首帧绘制前就到位。
@@ -13337,7 +13353,10 @@ function ClaudeLocalizationScreen() {
     // 先记下有效结果再判断挂载：检测中切走页面，回来时仍能看到这次的结果。
     if (result.status === "ok") claudeLocalizationMemo.status = result;
     if (!mounted.current) return;
-    if (result.status === "ok") setStatus(result);
+    if (result.status === "ok") {
+      setStatus(result);
+      setBashTimeoutDraft(result.bashTimeout);
+    }
     else setError(result.message);
   };
   const refresh = async () => {
@@ -13407,6 +13426,43 @@ function ClaudeLocalizationScreen() {
       if (mounted.current) setBusy(null);
     }
   };
+  const saveBashTimeout = async (next: ClaudeBashTimeoutSettings) => {
+    if (pending.current && !bashTimeoutSaving.current) return;
+    bashTimeoutQueued.current = next;
+    setBashTimeoutDraft(next);
+    if (bashTimeoutSaving.current) return;
+    let confirmed = status?.status === "ok" ? status.bashTimeout : null;
+    pending.current = true;
+    bashTimeoutSaving.current = true;
+    setBusy("bashTimeout"); setError(null);
+    try {
+      // 失焦保存先于开关点击；串行处理后续草稿，避免吞掉这次点击。
+      while (bashTimeoutQueued.current) {
+        const timeout = bashTimeoutQueued.current;
+        bashTimeoutQueued.current = null;
+        const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
+          "claude_localization_set_bash_timeout",
+          { timeout },
+        );
+        if (result.status !== "ok") throw new Error(result.message);
+        confirmed = result.bashTimeout;
+        claudeLocalizationMemo.status = result;
+        if (mounted.current) setStatus(result);
+        if (!bashTimeoutQueued.current) accept(result);
+      }
+    } catch (cause) {
+      bashTimeoutQueued.current = null;
+      if (mounted.current) {
+        setBashTimeoutDraft(confirmed);
+        setError(stringifyError(cause));
+      }
+    }
+    finally {
+      bashTimeoutSaving.current = false;
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  };
   const toggleLocalization = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
@@ -13426,6 +13482,8 @@ function ClaudeLocalizationScreen() {
     }
   };
   const s = status;
+  const nativeLaunch = Boolean(s?.copyApp?.endsWith("entry.json"));
+  const bashTimeout = bashTimeoutDraft ?? s?.bashTimeout;
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
   const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
@@ -13447,8 +13505,8 @@ function ClaudeLocalizationScreen() {
             <div className="claude-l10n-hero-title">
               <span className="claude-l10n-hero-icon"><PackageOpen className="h-5 w-5" /></span>
               <div>
-                <strong>{t("受管增强版")}</strong>
-                <span className="claude-l10n-hero-subtitle">{t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}</span>
+                <strong>{nativeLaunch ? t("原版启动") : t("受管增强版")}</strong>
+                <span className="claude-l10n-hero-subtitle">{nativeLaunch ? t("使用官方安装与原有数据，仅保存增强资源；不复制或改写官方程序。") : t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}</span>
               </div>
             </div>
             <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
@@ -13462,7 +13520,7 @@ function ClaudeLocalizationScreen() {
               <strong title={s?.sourceVersion || undefined}>{!s ? t("未检测") : s.sourceVersion || t("未检测到")}</strong>
             </div>
             <div className="claude-l10n-stat">
-              <span>{t("副本版本")}</span>
+              <span>{nativeLaunch ? t("资源适配版本") : t("副本版本")}</span>
               <strong title={s?.copyVersion || undefined}>{s?.copyVersion || t("未准备")}</strong>
             </div>
             <div className="claude-l10n-stat">
@@ -13511,6 +13569,8 @@ function ClaudeLocalizationScreen() {
               <PackageOpen className="h-4 w-4" />
               {busy === "prepare"
                 ? t("制作中…")
+                : nativeLaunch
+                  ? t("准备增强资源")
                 : s?.needsRebuild
                   ? t("更新副本")
                   : s?.prepared
@@ -13535,7 +13595,7 @@ function ClaudeLocalizationScreen() {
         <Panel>
           <CardHead
             title={t("增强功能")}
-            detail={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}
+            detail={t("各自独立开关，互不影响；改动在重新启动增强版后应用。")}
           />
           <CardContent>
             <label className="switch-row compact">
@@ -13547,7 +13607,7 @@ function ClaudeLocalizationScreen() {
               />
               <span>
                 <strong>{t("界面汉化")}</strong>
-                <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。")}</small>
+                <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后按原语言启动。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -13574,11 +13634,106 @@ function ClaudeLocalizationScreen() {
               <span>
                 <strong>{t("Computer Use")}</strong>
                 <small>{s?.computerUseSupported === false
-                  ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
+                  ? t("暂仅支持 macOS：Windows 不改写 app.asar，此开关不会生效。")
                   : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}</small>
               </span>
               <ToggleVisual />
             </label>
+            <label className="switch-row compact">
+              <input
+                aria-label={t("解锁 Bash 时间限制")}
+                checked={Boolean(bashTimeout?.enabled)}
+                disabled={(busy !== null && busy !== "bashTimeout") || !bashTimeout}
+                onChange={(event) => {
+                  if (bashTimeout) void saveBashTimeout({ ...bashTimeout, enabled: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("解锁 Bash 时间限制")}</strong>
+                <small>{t("同时适用于 Claude Code 的 Bash 和 Cowork 工作区的 Bash；覆盖默认等待时间、显式 timeout / timeout_ms 的最大值及 Cowork 外层等待时限。关闭时保持原生行为，重启增强版后生效。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            {bashTimeout?.enabled ? (
+              <div className="claude-bash-timeout-editor">
+                <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存；最大值低于默认值时会按默认值执行。")}</p>
+                <label className="switch-row compact claude-bash-timeout-toggle">
+                  <input
+                    aria-label={t("修改默认等待时间")}
+                    checked={bashTimeout.defaultEnabled}
+                    disabled={busy !== null && busy !== "bashTimeout"}
+                    onChange={(event) => void saveBashTimeout({
+                      ...bashTimeout,
+                      defaultEnabled: event.currentTarget.checked,
+                    })}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("修改默认等待时间")}</strong>
+                    <small>{t("未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。")}</small>
+                  </span>
+                  <ToggleVisual />
+                </label>
+                <div className="claude-bash-timeout-value">
+                  <span>{t("默认等待时间")}</span>
+                  <Input
+                    aria-label={t("默认等待时间（秒）")}
+                    disabled={busy !== null || !bashTimeout.defaultEnabled}
+                    max={2147423}
+                    min={1}
+                    onChange={(event) => {
+                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                      setBashTimeoutDraft((current) => current ? { ...current, defaultSeconds: seconds } : current);
+                    }}
+                    onBlur={() => void saveBashTimeout(bashTimeout)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                    type="number"
+                    value={bashTimeout.defaultSeconds}
+                  />
+                  <span>{t("秒")}</span>
+                </div>
+                <label className="switch-row compact claude-bash-timeout-toggle">
+                  <input
+                    aria-label={t("修改最大等待时间")}
+                    checked={bashTimeout.maxEnabled}
+                    disabled={busy !== null && busy !== "bashTimeout"}
+                    onChange={(event) => void saveBashTimeout({
+                      ...bashTimeout,
+                      maxEnabled: event.currentTarget.checked,
+                    })}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("修改最大等待时间")}</strong>
+                    <small>{t("显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。")}</small>
+                  </span>
+                  <ToggleVisual />
+                </label>
+                <div className="claude-bash-timeout-value">
+                  <span>{t("最大等待时间")}</span>
+                  <Input
+                    aria-label={t("最大等待时间（秒）")}
+                    disabled={busy !== null || !bashTimeout.maxEnabled}
+                    max={2147423}
+                    min={1}
+                    onChange={(event) => {
+                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                      setBashTimeoutDraft((current) => current ? { ...current, maxSeconds: seconds } : current);
+                    }}
+                    onBlur={() => void saveBashTimeout(bashTimeout)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                    type="number"
+                    value={bashTimeout.maxSeconds}
+                  />
+                  <span>{t("秒")}</span>
+                </div>
+              </div>
+            ) : null}
             {s?.supported && !s.prepared ? (
               <p className="claude-l10n-hint">
                 {t("增强版还没制作：开关会先存下来，等你在上方制作好增强版并启动后生效。")}
@@ -13592,35 +13747,35 @@ function ClaudeLocalizationScreen() {
         <Panel className="claude-l10n-guide">
           <CardHead
             title={t("上手步骤")}
-            detail={t("增强只在副本里生效，官方版和登录态不受影响。")}
+            detail={nativeLaunch ? t("官方安装与工作数据共用，增强仅在本次启动的进程中生效。") : t("增强只在副本里生效，官方版和登录态不受影响。")}
           />
           <CardContent className="claude-l10n-guide-body">
             <div className="claude-l10n-steps" role="list">
               <div className="claude-l10n-step" data-done={s?.prepared ? "true" : "false"} role="listitem">
                 <span className="claude-l10n-step-no" aria-hidden="true">{s?.prepared ? "✓" : "1"}</span>
                 <div className="claude-l10n-step-body">
-                  <strong>{t("制作增强版")}</strong>
-                  <small>{t("用上方的按钮制作增强版；官方 Claude.app 与 app.asar 保持原样。")}</small>
+                  <strong>{nativeLaunch ? t("准备增强资源") : t("制作增强版")}</strong>
+                  <small>{nativeLaunch ? t("使用官方安装与原有数据，仅保存增强资源；不复制或改写官方程序。") : t("用上方的按钮制作增强版；官方 Claude.app 与 app.asar 保持原样。")}</small>
                 </div>
               </div>
               <div className="claude-l10n-step" data-done={s?.running ? "true" : "false"} role="listitem">
                 <span className="claude-l10n-step-no" aria-hidden="true">{s?.running ? "✓" : "2"}</span>
                 <div className="claude-l10n-step-body">
                   <strong>{t("启动增强版")}</strong>
-                  <small>{t("从 Codex++ 启动副本，增强在启动时注入。")}</small>
+                  <small>{nativeLaunch ? t("从 Codex++ 启动官方程序，增强在启动时注入。") : t("从 Codex++ 启动副本，增强在启动时注入。")}</small>
                 </div>
               </div>
               <div className="claude-l10n-step" role="listitem">
                 <span className="claude-l10n-step-no" aria-hidden="true">3</span>
                 <div className="claude-l10n-step-body">
                   <strong>{t("在左边开启需要的增强")}</strong>
-                  <small>{t("界面汉化、语音输入与 Computer Use 各自独立，改动在重启副本后应用。")}</small>
+                  <small>{t("各项增强按平台支持情况独立启用，改动在重新启动增强版后应用。")}</small>
                 </div>
               </div>
             </div>
             <div className="claude-l10n-note" role="note">
               <Info className="h-4 w-4" />
-              <span>{t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}</span>
+              <span>{nativeLaunch ? t("官方安装与工作数据共用，增强仅在本次启动的进程中生效。") : t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}</span>
             </div>
           </CardContent>
         </Panel>

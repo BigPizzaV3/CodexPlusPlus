@@ -565,6 +565,30 @@ export const EN_PLAIN: Record<string, string> = {
   "Watcher 自动接管": "Watcher auto-takeover",
   "仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。":
     "V2 pets only; pet files are never modified. Maps the V2 Computer Use cursor-look animation to the real mouse cursor. V1 pets safely remain unchanged, while dragging, native hover, and active Computer Use take priority.",
+  "解锁 Bash 时间限制": "Unlock Bash timeout limits",
+  "同时适用于 Claude Code 的 Bash 和 Cowork 工作区的 Bash；覆盖默认等待时间、显式 timeout / timeout_ms 的最大值及 Cowork 外层等待时限。关闭时保持原生行为，重启增强版后生效。":
+    "Applies to Claude Code Bash and local Cowork Bash: overrides defaults, explicit timeout / timeout_ms limits, and Cowork's outer wait budget. Disabled preserves native behavior. Restart to apply.",
+  "两项可分别启停，单位均为秒。修改数字后离开输入框即保存；最大值低于默认值时会按默认值执行。":
+    "Enable either override independently. Values are in seconds and are saved when the input loses focus. If the maximum is lower than the default, the default value is used.",
+  "修改默认等待时间": "Override default wait",
+  "未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。":
+    "Used without an explicit timeout / timeout_ms. Claude Code and local Cowork Bash default to 120 seconds.",
+  "默认等待时间": "Default wait",
+  "默认等待时间（秒）": "Default wait (seconds)",
+  "秒": "sec",
+  "修改最大等待时间": "Override maximum wait",
+  "显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。":
+    "Maximum explicit timeout / timeout_ms. The native parameter cap is 600 seconds; Cowork also has an outer wait budget.",
+  "最大等待时间": "Maximum wait",
+  "最大等待时间（秒）": "Maximum wait (seconds)",
+  "各自独立开关，互不影响；改动在重新启动增强版后应用。":
+    "Each enhancement is independent. Restart the enhanced app to apply changes.",
+  "启动时注入官方中文词表，界面语言切到简体中文；关掉后按原语言启动。":
+    "Injects the official Chinese catalog and switches to Simplified Chinese. Disable to launch in the original language.",
+  "暂仅支持 macOS：Windows 不改写 app.asar，此开关不会生效。":
+    "Currently macOS only: Windows does not rewrite app.asar, so this switch has no effect.",
+  "各项增强按平台支持情况独立启用，改动在重新启动增强版后应用。":
+    "Enable supported enhancements independently. Restart the enhanced app to apply changes.",
   "cc-switch 导入": "cc-switch import",
   "config.toml 预览": "config.toml preview",
   "provider 未记录": "provider not recorded",
@@ -1335,6 +1359,12 @@ export const EN_PLAIN: Record<string, string> = {
     "\"{0}\" is the configured model: Codex always publishes it in the model list, so removing it only brings it back on save. To drop models, change the configured model above to the one you keep, then delete this row.",
   "未设置（未匹配到成员的请求会报错）": "Not set (requests matching no member will error)",
   "副本版本": "Copy version",
+  "原版启动": "Original App Launch",
+  "资源适配版本": "Resource version",
+  "准备增强资源": "Prepare enhancement resources",
+  "使用官方安装与原有数据，仅保存增强资源；不复制或改写官方程序。": "Uses the official installation and existing data. Only enhancement resources are stored; the official program is not copied or modified.",
+  "官方安装与工作数据共用，增强仅在本次启动的进程中生效。": "Shares the official installation and work data. Enhancements apply only to the process launched here.",
+  "从 Codex++ 启动官方程序，增强在启动时注入。": "Launch the official app from Codex++ to inject enhancements at startup.",
   "模型固定绑定 · {0} 个成员": "Models stay bound · {0} members",
   "把成员模型合并到 Codex 列表，选择模型后固定发送到对应供应商。": "Merge member models into Codex and bind each selected model to its provider.",
   "聚合方式": "Aggregation mode",

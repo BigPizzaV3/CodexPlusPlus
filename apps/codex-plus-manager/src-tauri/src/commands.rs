@@ -155,6 +155,22 @@ pub async fn claude_localization_set_computer_use(enabled: bool) -> CommandResul
 }
 
 #[tauri::command]
+pub async fn claude_localization_set_bash_timeout(
+    timeout: codex_plus_core::settings::ClaudeBashTimeoutSettings,
+) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_bash_timeout(timeout)
+    }).await {
+        Ok(Ok(status)) => ok(
+            "Bash 时间限制设置已保存；重启增强版后生效。",
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn scan_agent_cache() -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(|| -> anyhow::Result<Value> {
         let mut slot = AGENT_CACHE_PLAN
