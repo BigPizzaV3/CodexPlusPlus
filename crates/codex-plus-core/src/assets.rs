@@ -588,10 +588,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             format!(
                 "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});",
                 native_fast_unlock_script(),
-                json!({
-                    "enhancementsEnabled": settings.enhancements_enabled,
-                    "codexAppNativeFastUnlock": settings.codex_app_native_fast_unlock,
-                }),
+                json!(crate::native_fast::runtime_settings(settings)),
             ),
             renderer_runtime
         ),

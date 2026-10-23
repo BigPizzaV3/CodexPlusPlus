@@ -880,6 +880,7 @@
       globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
         enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
         codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
+        nativeFastLocalApiConfigured: codexPlusBackendSettings.nativeFastLocalApiConfigured === true,
       });
     } catch (_) {
       return false;

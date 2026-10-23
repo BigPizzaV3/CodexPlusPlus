@@ -830,6 +830,7 @@ fn settings_payload_value(
         &settings.active_relay_profile(),
     );
     settings.dictation = crate::dictation::effective_settings(&settings);
+    let native_fast = crate::native_fast::runtime_settings(&settings);
     let mut value = serde_json::to_value(settings)?;
     fn remove_named_keys(value: &mut Value) {
         match value {
@@ -872,6 +873,10 @@ fn settings_payload_value(
         object.insert(
             "codexAppVersion".to_string(),
             Value::String(codex_app_version),
+        );
+        object.insert(
+            "nativeFastLocalApiConfigured".to_string(),
+            Value::Bool(native_fast.native_fast_local_api_configured),
         );
     }
     Ok(value)

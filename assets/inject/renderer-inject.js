@@ -6024,6 +6024,7 @@
       globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
         enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
         codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
+        nativeFastLocalApiConfigured: codexPlusBackendSettings.nativeFastLocalApiConfigured === true,
       });
     } catch (_) {
       return false;
@@ -6164,6 +6165,7 @@
         globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
           enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
           codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
+          nativeFastLocalApiConfigured: codexPlusBackendSettings.nativeFastLocalApiConfigured === true,
         });
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
       }

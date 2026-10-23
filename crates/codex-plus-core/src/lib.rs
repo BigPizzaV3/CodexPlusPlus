@@ -42,6 +42,7 @@ pub mod models;
 pub mod multi_worker;
 pub mod native_browser;
 pub mod native_browser_connection;
+pub(crate) mod native_fast;
 pub mod official_login;
 pub mod packaged_launch;
 pub mod paths;
