@@ -75,3 +75,13 @@ export function createRelayApiKey(apiKeys: RelayApiKey[]): RelayApiKey {
     apiKey: "",
   };
 }
+
+/** 预览只露头尾各 6 位，同一供应商存了多个 Key 时用来区分（#2656）。 */
+const API_KEY_PREVIEW_EDGE = 6;
+
+/** 生成 Key 预览；太短的 Key 露头尾就等于露全文，不给预览。 */
+export function apiKeyPreview(apiKey: string): string {
+  const value = apiKey.trim();
+  if (value.length <= API_KEY_PREVIEW_EDGE * 2 + 4) return "";
+  return `${value.slice(0, API_KEY_PREVIEW_EDGE)}…${value.slice(-API_KEY_PREVIEW_EDGE)}`;
+}

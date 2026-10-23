@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""给「Claude CN.app」副本做 ad-hoc 重签名（自底向上，DR 只给外层）。
+"""给「Claude Enhanced.app」副本做 ad-hoc 重签名（自底向上，DR 只给外层）。
 
 为什么不能直接 `codesign --force --deep`：
   --deep 会把 `-r`（自定义 designated requirement）也套到每个嵌套组件上，
@@ -23,7 +23,7 @@ import sys
 import tempfile
 
 SRC_DEFAULT = "/Applications/Claude.app"
-COPY_DEFAULT = os.path.expanduser("~/Library/Application Support/ClaudeCN/Claude CN.app")
+COPY_DEFAULT = os.path.expanduser("~/.codex-session-delete/claude-localization/Claude Enhanced.app")
 DR = 'designated => (identifier "com.anthropic.claudefordesktop" and ! anchor apple generic)'
 STRIP = {
     "com.apple.application-identifier",
@@ -66,8 +66,29 @@ def original_entitlements(src_app, rel):
     return ent
 
 
+SIGN_IDENTITY_NAME = "Claude Enhanced Local"
+
+
+def resolve_identity():
+    """优先用固定自签证书：TCC 按「证书 + identifier」识别，重签不会掉授权。
+
+    找不到证书时回退 ad-hoc（每次重签 cdhash 都会变，系统授权随之失效）。
+    """
+    override = os.environ.get("CODEX_PLUS_CLAUDE_SIGN_IDENTITY")
+    if override:
+        return override
+    r = run(["security", "find-identity", "-p", "codesigning"])
+    text = (r.stdout or "") + (r.stderr or "")
+    if SIGN_IDENTITY_NAME in text:
+        return SIGN_IDENTITY_NAME
+    return "-"
+
+
+SIGN_IDENTITY = resolve_identity()
+
+
 def sign(path, ent_path, extra=None):
-    args = ["codesign", "--force", "--sign", "-", "--options", "runtime", "--timestamp=none"]
+    args = ["codesign", "--force", "--sign", SIGN_IDENTITY, "--options", "runtime", "--timestamp=none"]
     if ent_path:
         args += ["--entitlements", ent_path]
     if extra:
@@ -144,11 +165,14 @@ def main():
 
     print("--- 校验")
     v = run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", copy_app])
-    if v.returncode == 0 and not v.stderr.strip():
-        print("✓ codesign --verify --deep --strict 通过")
+    text = (v.stderr or "") + (v.stdout or "")
+    # 自签证书没有受信任根，verify 会报 CSSMERR_TP_NOT_TRUSTED；签名本身是有效的。
+    untrusted_only = "CSSMERR_TP_NOT_TRUSTED" in text
+    if (v.returncode == 0 and not v.stderr.strip()) or untrusted_only:
+        print(f"✓ codesign 校验通过（签名身份：{SIGN_IDENTITY}）")
     else:
         print("verify 输出：")
-        print((v.stderr or v.stdout).strip()[:2000])
+        print(text.strip()[:2000])
     d = run(["codesign", "-d", "-r-", copy_app])
     dr = [l.strip() for l in (d.stderr or d.stdout).splitlines() if "designated" in l]
     print("DR：", dr[-1] if dr else "(未读到)")

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys } from "./provider-api-keys.ts";
+import { apiKeyPreview, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys } from "./provider-api-keys.ts";
 import type { RelayProfile } from "./App.tsx";
 
 test("旧单 Key 自动迁移为默认命名 Key", () => {
@@ -46,4 +46,12 @@ test("当前命名 Key 始终决定运行时 apiKey", () => {
     ],
   } as RelayProfile;
   assert.equal(relayProfileWithNormalizedApiKeys(profile).apiKey, "sk-backup");
+});
+
+test("Key 预览只露头尾各 6 位，短 Key 不预览（#2656）", () => {
+  assert.equal(apiKeyPreview("sk-proj-abcdefghijklmnop-123456"), "sk-pro…123456");
+  assert.equal(apiKeyPreview("  sk-proj-abcdefghijklmnop-123456  "), "sk-pro…123456");
+  assert.equal(apiKeyPreview("sk-short-key-0001"), "sk-sho…y-0001");
+  assert.equal(apiKeyPreview("sk-1234567890ab"), "", "露头尾等于露全文的短 Key 不给预览");
+  assert.equal(apiKeyPreview(""), "");
 });

@@ -79,7 +79,7 @@ import {
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
 import { PRESETS, type ProviderPreset } from "./presets";
 import { createPortal } from "react-dom";
-import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -185,7 +185,7 @@ import {
   normalizeAggregateDefaultRelayId,
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
-import { createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
+import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -348,15 +348,21 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppNativeMenuPlacement: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
   codexAppNativeFastUnlock: boolean;
+  /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
+  codexAppDisableWorkView: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppActivityOverlayRight: boolean;
   /** 协议代理内部自动重试（与 Rust `protocol_proxy_auto_retry` 对应）。 */
   protocolProxyAutoRetry: boolean;
   protocolProxyAutoRetryMaxAttempts: number;
   protocolProxyAutoRetryIntervalSeconds: number;
+  /** 命中这些上游 HTTP 状态码时由代理退避重发；空数组表示不重试。与 Rust `protocol_proxy_auto_retry_status_codes` 对应。 */
+  protocolProxyAutoRetryStatusCodes: number[];
   protocolProxyAutoRetryMode: "streaming" | "streaming-legacy" | "buffered";
   /** 流式避震下首段可见输出后到提交的延迟（毫秒）；0 表示一出现可见输出立即提交。与 Rust `protocol_proxy_auto_retry_commit_delay_ms` 对应。 */
   protocolProxyAutoRetryCommitDelayMs: number;
+  /** 本地协议代理单次请求体上限（MiB，32~512，默认 128）。与 Rust `helper_max_request_body_mib` 对应。 */
+  helperMaxRequestBodyMib: number;
   codexAppCapacityAutoRetry: boolean;
   codexAppStepwiseEnabled: boolean;
   codexAppAnswerOutlineEnabled: boolean;
@@ -1242,13 +1248,16 @@ const defaultSettings: BackendSettings = {
   codexAppNativeMenuPlacement: true,
   codexAppNativeBrowserRequireIdentification: false,
   codexAppNativeFastUnlock: false,
+  codexAppDisableWorkView: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,
   protocolProxyAutoRetry: true,
   protocolProxyAutoRetryMaxAttempts: 5,
   protocolProxyAutoRetryIntervalSeconds: 2,
+  protocolProxyAutoRetryStatusCodes: [],
   protocolProxyAutoRetryMode: "streaming",
   protocolProxyAutoRetryCommitDelayMs: 1000,
+  helperMaxRequestBodyMib: 128,
   codexAppCapacityAutoRetry: false,
   codexAppStepwiseEnabled: false,
   codexAppAnswerOutlineEnabled: false,
@@ -4044,7 +4053,8 @@ export function App() {
             <h1>{routeTitle(route)}</h1>
             <p>{routeSubtitle(route)}</p>
           </div>
-          <div className="topbar-actions">
+          {/* data-topbar-actions：页面级操作的挂载点，Claude 增强页把「启动增强版」portal 进来。 */}
+          <div className="topbar-actions" data-topbar-actions>
             {activeTool === "codex" && !isGlobalPage ? (
               <>
                 <span className="codex-app-state" aria-live="polite">
@@ -5179,6 +5189,15 @@ function ProxySettingsScreen({
   const [proxyUrls, setProxyUrls] = useState<Record<string, string>>({});
   const [proxyConfigured, setProxyConfigured] = useState<Record<string, boolean>>({});
   const [proxyBusyId, setProxyBusyId] = useState<string | null>(null);
+  const [retryStatusInput, setRetryStatusInput] = useState("");
+  const setRetryStatusCodes = (codes: number[]) =>
+    onFormChange({ ...form, protocolProxyAutoRetryStatusCodes: normalizeRetryStatusCodes(codes) });
+  const addRetryStatusCodes = () => {
+    const next = retryStatusInput.split(/[,，\s]+/).map(Number);
+    if (!normalizeRetryStatusCodes(next).length) return;
+    setRetryStatusCodes([...form.protocolProxyAutoRetryStatusCodes, ...next]);
+    setRetryStatusInput("");
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -5242,7 +5261,7 @@ function ProxySettingsScreen({
       <Panel>
         <CardHead
           title={t("本地协议代理")}
-          detail={t("从 Codex++ 启动 Codex 时承载协议转换、聚合与请求避震")}
+          detail={t("需要协议转换、聚合或请求避震时随 Codex++ 常驻；Codex 退出不影响，退出 Codex++ 才关闭")}
         />
         <CardContent className="settings-content">
           <div className="status-table">
@@ -5265,13 +5284,33 @@ function ProxySettingsScreen({
           <p className="field-hint">
             {t("本地代理地址由 Codex++ 写入 config.toml；切换供应商或修改协议后重启 Codex 生效。")}
           </p>
+          <div className="form-row">
+            <Field label={t("请求体上限（MiB）")}>
+              <Input
+                max={512}
+                min={32}
+                step={16}
+                type="number"
+                value={form.helperMaxRequestBodyMib}
+                onChange={(event) =>
+                  onFormChange({
+                    ...form,
+                    helperMaxRequestBodyMib: clampNumber(Number(event.currentTarget.value), 32, 512),
+                  })
+                }
+              />
+            </Field>
+          </div>
+          <p className="field-hint">
+            {t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}
+          </p>
         </CardContent>
       </Panel>
 
       <Panel>
         <CardHead
           title={t("请求避震")}
-          detail={t("代理层吸收上游过载冲击：自动重试模型容量/过载错误（含推理与工具调用阶段），尽量不把错误交给 Codex")}
+          detail={t("在本地代理内消化上游过载与限流，尽量不把错误交给 Codex")}
         />
         <CardContent className="settings-content">
           <div className="settings-block">
@@ -5286,7 +5325,7 @@ function ProxySettingsScreen({
               <span>{t("启用请求避震")}</span>
             </label>
             <p className="field-hint">
-              {t("请求避震只处理经过本地协议代理、且以 200 流式响应返回的上游过载/容量错误（server_overloaded、server_is_overloaded、at capacity 等）。流式避震下：推理、工具调用参数等不可见阶段先缓冲，工具调用整项完成或首段可见输出后再等「首字提交延迟」；这段窗口内遇到过载由代理退避重试；提交之后遇到同类过载，会改写成 Codex 可识别的容量错误，由 Codex 自己重试；连接失败、429/5xx、限流等其它错误不重试。保留的「流式避震（旧行为）」模式仍按旧逻辑：第一个输出事件就交给 Codex。整段缓冲避震下，任何时点的过载都由代理重试，但失去流式。")}
+              {t("仅作用于经过本地协议代理的请求：自动重试 200 流内的过载/容量错误，以及下方选择的 HTTP 状态码。")}
             </p>
             <div className="form-row">
               <Field label={t("最多自动重试次数")}>
@@ -5327,7 +5366,58 @@ function ProxySettingsScreen({
               </Field>
             </div>
             <p className="field-hint">
-              {t("之后按 2 倍指数退避，单次最长 30 秒；上游返回 Retry-After 时优先采用（同样受上限约束）。")}
+              {t("之后按 2 倍退避，单次最长 30 秒；有 Retry-After 时优先采用。")}
+            </p>
+            {/* 不能用 Field：它是 <label>。WebKit 里被点的标签按钮已被 React 移除后，
+                label 会把这次点击转发给它的第一个按钮，一次删掉两个状态码。 */}
+            <div className="field text-sm font-medium leading-none" role="group" aria-label={t("重试的 HTTP 状态码")}>
+              <span>{t("重试的 HTTP 状态码")}</span>
+              <div className="retry-status-editor">
+                <div className="retry-status-list">
+                  {form.protocolProxyAutoRetryStatusCodes.map((status) => (
+                    <button
+                      key={status}
+                      className="retry-status-chip"
+                      onClick={() =>
+                        setRetryStatusCodes(
+                          form.protocolProxyAutoRetryStatusCodes.filter((item) => item !== status),
+                        )
+                      }
+                      title={t("点击移除")}
+                      type="button"
+                    >
+                      {status} ×
+                    </button>
+                  ))}
+                </div>
+                <div className="retry-status-input-row">
+                  <Input
+                    aria-label={t("输入状态码后回车")}
+                    inputMode="numeric"
+                    placeholder={t("输入状态码后回车，如 429")}
+                    value={retryStatusInput}
+                    onChange={(event) => setRetryStatusInput(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addRetryStatusCodes();
+                      }
+                    }}
+                  />
+                  <Button
+                    onClick={() =>
+                      setRetryStatusCodes([...form.protocolProxyAutoRetryStatusCodes, ...COMMON_RETRY_STATUS_CODES])
+                    }
+                    type="button"
+                    variant="outline"
+                  >
+                    {t("填入常用")}
+                  </Button>
+                </div>
+              </div>
+            </div>
+            <p className="field-hint">
+              {t("命中时退避重发，次数用尽后把错误交给 Codex。默认不选；常用 429（限流）和 5xx（服务端故障）。")}
             </p>
             <div className="form-row">
               <Field label={t("避震模式")}>
@@ -5346,9 +5436,9 @@ function ProxySettingsScreen({
                     })
                   }
                 >
-                  <option value="streaming">{t("流式避震：工具调用参数与首字宽限内由代理重试，提交后交给 Codex 原生重试")}</option>
-                  <option value="streaming-legacy">{t("流式避震（旧行为）：首个输出事件立即提交，之后交给 Codex 原生重试")}</option>
-                  <option value="buffered">{t("整段缓冲避震：任何时点过载都由代理重试（失去流式）")}</option>
+                  <option value="streaming">{t("流式（推荐）")}</option>
+                  <option value="streaming-legacy">{t("流式（旧行为）")}</option>
+                  <option value="buffered">{t("整段缓冲")}</option>
                 </select>
               </Field>
               {form.protocolProxyAutoRetryMode === "streaming" ? (
@@ -5370,7 +5460,7 @@ function ProxySettingsScreen({
               ) : null}
             </div>
             <p className="field-hint">
-              {t("流式避震保留实时输出；「首字提交延迟」把首段可见输出也算进可重试窗口：0 = 一出现正文就提交，1000 = 再缓冲 1 秒，期间过载仍由代理重试；工具调用的参数生成阶段始终整项缓冲，不额外增加首字延迟。选「旧行为」则不做这些缓冲，完全回到旧逻辑。整段缓冲避震在所有情况下都不会把过载错误交给 Codex，但回复要等整段生成完才显示。")}
+              {t("流式：保留实时输出，正文提交前遇到过载由代理重试，之后交给 Codex；「首字提交延迟」为出现正文后再缓冲的时长，0 表示立即提交。整段缓冲：始终由代理重试，但要等整段生成完才显示。")}
             </p>
           </div>
         </CardContent>
@@ -7032,6 +7122,7 @@ function EnhanceScreen({
               </FeatureGroup>
               <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
                 <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
+                <FeatureToggle title={t("纯 API 模式禁用 Work 视图")} detail={t("Work 视图要求 ChatGPT 账号身份，纯 API Key 下发送消息会报 Work browser access requires an authenticated account。开启后每次启动 Codex 前把详情模式写回 Codex；保存并重新启动 Codex 生效。")} checked={form.codexAppDisableWorkView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppDisableWorkView", value)} />
                 <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
                 <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
                 <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
@@ -10692,6 +10783,11 @@ function RelayProfileEditor({
                                 key.id === entry.id ? { ...key, apiKey: event.currentTarget.value } : key))}
                               placeholder={t("输入供应商的 API Key")}
                             />
+                            {apiKeyPreview(entry.apiKey) ? (
+                              <span className="relay-api-key-preview" title={t("Key 首尾预览")}>
+                                {apiKeyPreview(entry.apiKey)}
+                              </span>
+                            ) : null}
                             <Button
                               aria-label={t("删除 Key")}
                               disabled={normalizedApiKeys.apiKeys.length === 1}
@@ -11446,7 +11542,7 @@ function RelayProfileEditor({
                 />
                 <span>
                   <strong>{t("本地压缩缓存复用（实验）")}</strong>
-                  <small>{t("用户实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。默认关闭，仅作用于当前供应商的本地压缩。")}</small>
+                  <small>{t("实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。默认关闭，仅作用于当前供应商的本地压缩。")}</small>
                 </span>
                 <ToggleVisual />
               </label>
@@ -13101,19 +13197,52 @@ type ClaudeLocalizationStatus = {
   catalogEntries: number;
   voiceInput: boolean;
   localization: boolean;
+  computerUse: boolean;
 };
 
+/**
+ * Claude 增强页跨挂载的记忆：Codex++ 运行期间只在第一次进入时自动检测一次，
+ * 之后再进来直接显示上次结果，需要时手动点「检测 Claude」刷新。
+ *
+ * 检测已在后台线程跑、带 15 秒超时，未安装 Claude 时直接早退（#2539 的死机不会再现），
+ * 所以首次进入自动检测是安全的；但每次切回来都重新探测进程和运行时没有必要。
+ */
+const claudeLocalizationMemo: {
+  status: CommandResult<ClaudeLocalizationStatus> | null;
+  autoDetected: boolean;
+} = { status: null, autoDetected: false };
+
 function ClaudeLocalizationScreen() {
-  const [status, setStatus] = useState<CommandResult<ClaudeLocalizationStatus> | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [status, setStatus] = useState<CommandResult<ClaudeLocalizationStatus> | null>(claudeLocalizationMemo.status);
+  // 首次进入会自动检测：初值就标成检测中，免得第一帧先闪出「点击重试」。
+  const [busy, setBusy] = useState<string | null>(claudeLocalizationMemo.autoDetected ? null : "detect");
   const [error, setError] = useState<string | null>(null);
+  /** 制作增强版时宿主推送的阶段进度（0-100）。 */
+  const [progress, setProgress] = useState<{ percent: number; message: string } | null>(null);
   const mounted = useRef(true);
   const pending = useRef(false);
+  /**
+   * 页头右上角的操作槽：「启动增强版」放在和 Codex 页「启动 Codex」相同的位置。
+   * 页头与本页都按路由重建、同一次提交挂载，所以在 layout effect 里取，首帧绘制前就到位。
+   */
+  const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    setTopbarSlot(document.querySelector<HTMLElement>("[data-topbar-actions]"));
+  }, []);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ percent: number; message: string }>("claude-localization-progress", (event) => {
+      if (mounted.current) setProgress(event.payload);
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
   const accept = (result: CommandResult<ClaudeLocalizationStatus>) => {
+    // 先记下有效结果再判断挂载：检测中切走页面，回来时仍能看到这次的结果。
+    if (result.status === "ok") claudeLocalizationMemo.status = result;
     if (!mounted.current) return;
     if (result.status === "ok") setStatus(result);
     else setError(result.message);
@@ -13129,10 +13258,16 @@ function ClaudeLocalizationScreen() {
       if (mounted.current) setBusy(null);
     }
   };
+  useEffect(() => {
+    if (claudeLocalizationMemo.autoDetected) return;
+    claudeLocalizationMemo.autoDetected = true;
+    void refresh();
+  }, []);
   const act = async (action: "prepare" | "launch" | "restore" | "check") => {
     if (pending.current) return;
     pending.current = true;
     setBusy(action); setError(null);
+    if (action === "prepare") setProgress({ percent: 0, message: t("准备开始…") });
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
@@ -13142,6 +13277,7 @@ function ClaudeLocalizationScreen() {
     finally {
       pending.current = false;
       if (mounted.current) setBusy(null);
+      if (action === "prepare") setTimeout(() => { if (mounted.current) setProgress(null); }, 1500);
     }
   };
   const toggleVoiceInput = async (enabled: boolean) => {
@@ -13155,6 +13291,22 @@ function ClaudeLocalizationScreen() {
       );
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      accept(result);
+    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  };
+  const toggleComputerUse = async (enabled: boolean) => {
+    if (pending.current) return;
+    pending.current = true;
+    setBusy("computerUse"); setError(null);
+    try {
+      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
+        "claude_localization_set_computer_use",
+        { enabled },
+      );
       accept(result);
     } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
     finally {
@@ -13186,7 +13338,106 @@ function ClaudeLocalizationScreen() {
   const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
   return (
     <div className="claude-localization-page">
-      {/* 左栏：增强项。每一项都跑在右边的受管副本上，汉化只是其中之一。 */}
+      {topbarSlot
+        ? createPortal(
+            <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")} title={t("启动增强版")}>
+              <Rocket className="h-4 w-4" />
+              {busy === "launch" ? t("启动中…") : t("启动增强版")}
+            </Button>,
+            topbarSlot,
+          )
+        : null}
+      {/* 顶部通栏：所有增强共同的前置条件。状态和操作放在第一屏，不用滚动就能点到。 */}
+      <Panel className="claude-l10n-hero">
+        <CardContent className="claude-l10n-hero-body">
+          <div className="claude-l10n-hero-head">
+            <div className="claude-l10n-hero-title">
+              <span className="claude-l10n-hero-icon"><PackageOpen className="h-5 w-5" /></span>
+              <div>
+                <strong>{t("受管增强版")}</strong>
+                <span className="claude-l10n-hero-subtitle">{t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}</span>
+              </div>
+            </div>
+            <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
+              <i aria-hidden="true" />
+              {statusText}
+            </span>
+          </div>
+          <div className="claude-l10n-stats">
+            <div className="claude-l10n-stat">
+              <span>{t("官方版本")}</span>
+              <strong title={s?.sourceVersion || undefined}>{!s ? t("未检测") : s.sourceVersion || t("未检测到")}</strong>
+            </div>
+            <div className="claude-l10n-stat">
+              <span>{t("副本版本")}</span>
+              <strong title={s?.copyVersion || undefined}>{s?.copyVersion || t("未准备")}</strong>
+            </div>
+            <div className="claude-l10n-stat">
+              <span>{t("外壳语言")}</span>
+              <strong>{s?.shellLocale || t("未设置")}</strong>
+            </div>
+            <div className="claude-l10n-stat">
+              <span>{t("官方词条")}</span>
+              <strong>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}</strong>
+            </div>
+          </div>
+          {!s ? (
+            <p className="claude-l10n-hint">
+              {busy === "detect"
+                ? t("正在读取 Claude 安装状态，只读检测，不会修改应用。")
+                : t("没有读到安装状态，点击“检测 Claude”重试；检测不会修改应用。")}
+            </p>
+          ) : !s.supported ? (
+            <p className="claude-l10n-hint">{t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")}</p>
+          ) : null}
+          {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
+          {progress ? (
+            <div
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={progress.percent}
+              className="claude-l10n-progress"
+              role="progressbar"
+            >
+              <div className="claude-l10n-progress-head">
+                <span>{progress.message || t("处理中…")}</span>
+                <span className="claude-l10n-progress-pct">{progress.percent}%</span>
+              </div>
+              <div className="claude-l10n-progress-track">
+                <div
+                  className="claude-l10n-progress-fill"
+                  style={{ width: `${Math.min(100, Math.max(2, progress.percent))}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
+          {/* 制作在左，检测类的次要操作收在右边，窄时整组换行而不是剩一个按钮掉下去。启动在页头右上角。 */}
+          <div className="claude-l10n-actions">
+            <div className="claude-l10n-actions-primary">
+            <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
+              <PackageOpen className="h-4 w-4" />
+              {busy === "prepare"
+                ? t("制作中…")
+                : s?.needsRebuild
+                  ? t("更新副本")
+                  : s?.prepared
+                    ? t("重新制作增强版")
+                    : t("制作增强版")}
+            </Button>
+            </div>
+            <div className="claude-l10n-actions-secondary">
+              <Button disabled={busy !== null} onClick={() => void refresh()} variant="secondary">
+                <RefreshCw className={`h-4 w-4 ${busy === "detect" ? "animate-spin" : ""}`} />
+                {busy === "detect" ? t("检测中…") : t("检测 Claude")}
+              </Button>
+              <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
+                <ShieldCheck className="h-4 w-4" />{t("检查增强版")}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Panel>
+      {/* 左栏：增强项。每一项都跑在上方的受管副本上，汉化只是其中之一。 */}
       <div className="claude-l10n-column">
         <Panel>
           <CardHead
@@ -13220,108 +13471,64 @@ function ClaudeLocalizationScreen() {
               </span>
               <ToggleVisual />
             </label>
+            <label className="switch-row compact">
+              <input
+                checked={Boolean(s?.computerUse)}
+                disabled={busy !== null || !s?.supported}
+                onChange={(event) => void toggleComputerUse(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("Computer Use")}</strong>
+                <small>{t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
             {s?.supported && !s.prepared ? (
               <p className="claude-l10n-hint">
-                {t("副本还没准备：开关会先存下来，等你在右边准备好副本并启动后生效。")}
+                {t("增强版还没制作：开关会先存下来，等你在上方制作好增强版并启动后生效。")}
               </p>
             ) : null}
           </CardContent>
         </Panel>
       </div>
-      {/* 右栏：所有增强共同的前置条件。 */}
+      {/* 右栏：上手步骤与说明。 */}
       <div className="claude-l10n-column">
-      <Panel className="claude-l10n-hero">
-        <CardContent>
-          <div className="claude-l10n-hero-head">
-            <div className="claude-l10n-hero-title">
-              <span className="claude-l10n-hero-icon"><PackageOpen className="h-5 w-5" /></span>
-              <div>
-                <strong>{t("受管副本")}</strong>
-                <span className="claude-l10n-hero-subtitle">{t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}</span>
+        <Panel className="claude-l10n-guide">
+          <CardHead
+            title={t("上手步骤")}
+            detail={t("增强只在副本里生效，官方版和登录态不受影响。")}
+          />
+          <CardContent className="claude-l10n-guide-body">
+            <div className="claude-l10n-steps" role="list">
+              <div className="claude-l10n-step" data-done={s?.prepared ? "true" : "false"} role="listitem">
+                <span className="claude-l10n-step-no" aria-hidden="true">{s?.prepared ? "✓" : "1"}</span>
+                <div className="claude-l10n-step-body">
+                  <strong>{t("制作增强版")}</strong>
+                  <small>{t("用上方的按钮制作增强版；官方 Claude.app 与 app.asar 保持原样。")}</small>
+                </div>
+              </div>
+              <div className="claude-l10n-step" data-done={s?.running ? "true" : "false"} role="listitem">
+                <span className="claude-l10n-step-no" aria-hidden="true">{s?.running ? "✓" : "2"}</span>
+                <div className="claude-l10n-step-body">
+                  <strong>{t("启动增强版")}</strong>
+                  <small>{t("从 Codex++ 启动副本，增强在启动时注入。")}</small>
+                </div>
+              </div>
+              <div className="claude-l10n-step" role="listitem">
+                <span className="claude-l10n-step-no" aria-hidden="true">3</span>
+                <div className="claude-l10n-step-body">
+                  <strong>{t("在左边开启需要的增强")}</strong>
+                  <small>{t("界面汉化、语音输入与 Computer Use 各自独立，改动在重启副本后应用。")}</small>
+                </div>
               </div>
             </div>
-            <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
-              <i aria-hidden="true" />
-              {statusText}
-            </span>
-          </div>
-          <div className="claude-l10n-steps" role="list">
-            <div className="claude-l10n-step" data-done={s?.prepared ? "true" : "false"} role="listitem">
-              <span className="claude-l10n-step-no" aria-hidden="true">{s?.prepared ? "✓" : "1"}</span>
-              <div className="claude-l10n-step-body">
-                <strong>{t("准备副本")}</strong>
-                <small>{t("用下面的按钮创建受管副本；官方 Claude.app 与 app.asar 保持原样。")}</small>
-              </div>
+            <div className="claude-l10n-note" role="note">
+              <Info className="h-4 w-4" />
+              <span>{t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}</span>
             </div>
-            <div className="claude-l10n-step" data-done={s?.running ? "true" : "false"} role="listitem">
-              <span className="claude-l10n-step-no" aria-hidden="true">{s?.running ? "✓" : "2"}</span>
-              <div className="claude-l10n-step-body">
-                <strong>{t("启动 Claude 副本")}</strong>
-                <small>{t("增强只在副本里生效，官方版和登录态不受影响。")}</small>
-              </div>
-            </div>
-            <div className="claude-l10n-step" role="listitem">
-              <span className="claude-l10n-step-no" aria-hidden="true">3</span>
-              <div className="claude-l10n-step-body">
-                <strong>{t("在左边开启需要的增强")}</strong>
-                <small>{t("界面汉化与语音输入各自独立，改动在重启副本后应用。")}</small>
-              </div>
-            </div>
-          </div>
-          <div className="claude-l10n-stats">
-            <div className="claude-l10n-stat">
-              <span>{t("官方版本")}</span>
-              <strong title={s?.sourceVersion || undefined}>{!s ? t("未检测") : s.sourceVersion || t("未检测到")}</strong>
-            </div>
-            <div className="claude-l10n-stat">
-              <span>{t("副本版本")}</span>
-              <strong title={s?.copyVersion || undefined}>{s?.copyVersion || t("未准备")}</strong>
-            </div>
-            <div className="claude-l10n-stat">
-              <span>{t("外壳语言")}</span>
-              <strong>{s?.shellLocale || t("未设置")}</strong>
-            </div>
-            <div className="claude-l10n-stat">
-              <span>{t("官方词条")}</span>
-              <strong>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}</strong>
-            </div>
-          </div>
-          <div className="claude-l10n-note" role="note">
-            <Info className="h-4 w-4" />
-            <span>{t("首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}</span>
-          </div>
-          {!s ? (
-            <p className="claude-l10n-hint">{t("点击“检测 Claude”读取安装状态；进入此页不会自动检测或修改应用。")}</p>
-          ) : !s.supported ? (
-            <p className="claude-l10n-hint">{t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")}</p>
-          ) : null}
-          {error ? <div className="inline-error">{error}</div> : null}
-          <div className="claude-l10n-actions">
-            <Button disabled={busy !== null} onClick={() => void refresh()} variant="secondary">
-              <RefreshCw className={`h-4 w-4 ${busy === "detect" ? "animate-spin" : ""}`} />
-              {busy === "detect" ? t("检测中…") : t("检测 Claude")}
-            </Button>
-            <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
-              <PackageOpen className="h-4 w-4" />
-              {busy === "prepare"
-                ? t("准备中…")
-                : s?.needsRebuild
-                  ? t("更新副本")
-                  : s?.prepared
-                    ? t("重新准备副本")
-                    : t("准备副本")}
-            </Button>
-            <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")}>
-              <Play className="h-4 w-4" />{busy === "launch" ? t("启动中…") : t("启动 Claude 副本")}
-            </Button>
-            <div className="claude-l10n-actions-secondary">
-              <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
-                <RefreshCw className="h-4 w-4" />{t("检查副本")}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
+          </CardContent>
+        </Panel>
       </div>
     </div>
   );
@@ -14059,7 +14266,7 @@ function routeSubtitle(route: Route) {
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
     grok: t("管理 Grok CLI 的模型与 API 端点"),
-    claude: t("保留官方 Claude.app 原样，通过受管副本为 Claude 应用增强功能"),
+    claude: t("保留官方 Claude.app 原样，通过增强版为 Claude 应用增强功能"),
     relayEnvironment: t("统一管理本地协议代理、供应商代理与重试策略"),
     requestLog: t("查看代理请求的状态、模型、重试、token 用量与缓存命中"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
@@ -14824,6 +15031,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
           : "streaming",
     protocolProxyAutoRetryCommitDelayMs: clampNumber(settings.protocolProxyAutoRetryCommitDelayMs ?? 1000, 0, 10000),
     protocolProxyAutoRetryIntervalSeconds: clampNumber(settings.protocolProxyAutoRetryIntervalSeconds ?? 2, 0, 30),
+    protocolProxyAutoRetryStatusCodes: normalizeRetryStatusCodes(settings.protocolProxyAutoRetryStatusCodes),
+    helperMaxRequestBodyMib: clampNumber(settings.helperMaxRequestBodyMib ?? 128, 32, 512),
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
     codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,
@@ -14861,6 +15070,18 @@ function backendSettingsEqual(left: BackendSettings, right: BackendSettings): bo
   const { revision: _leftRevision, ...leftValues } = normalizeSettings(left);
   const { revision: _rightRevision, ...rightValues } = normalizeSettings(right);
   return JSON.stringify(leftValues) === JSON.stringify(rightValues);
+}
+
+/** 「填入常用」：限流与常见的服务端/网关瞬时错误。 */
+const COMMON_RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
+
+/** 与 Rust `normalize_protocol_proxy_auto_retry_status_codes` 保持一致：400~599、去重升序、最多 20 个。 */
+function normalizeRetryStatusCodes(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const codes = value
+    .map(Number)
+    .filter((status) => Number.isInteger(status) && status >= 400 && status <= 599);
+  return Array.from(new Set(codes)).sort((a, b) => a - b).slice(0, 20);
 }
 
 function clampNumber(value: number, min: number, max: number): number {

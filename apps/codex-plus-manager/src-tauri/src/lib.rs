@@ -57,18 +57,23 @@ pub fn run() {
             }
         }
     }
-    if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load()
-        && let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
+    if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load() {
+        // 请求体上限是运行期策略：管理器启动即按设置应用，之后启动的 helper 直接继承，
+        // 不必等完整启动流程。环境变量仍由 launcher 侧统一优先。
+        codex_plus_core::launcher::set_http_body_limit_bytes(
+            settings.helper_max_request_body_bytes(),
+        );
+        if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled
                 && settings.codex_app_dream_skin_enabled
                 && !settings.codex_app_dream_skin_paused,
             &settings.codex_app_dream_skin_theme_config,
-        )
-    {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "manager.dream_skin_base_theme_sync_failed",
-            serde_json::json!({ "message": error.to_string() }),
-        );
+        ) {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.dream_skin_base_theme_sync_failed",
+                serde_json::json!({ "message": error.to_string() }),
+            );
+        }
     }
     let show_update = commands::startup_should_show_update();
     let autostart = std::env::args().any(|arg| arg == "--autostart");
@@ -148,6 +153,7 @@ pub fn run() {
             commands::claude_localization_action,
             commands::claude_localization_set_voice_input,
             commands::claude_localization_set_localization,
+            commands::claude_localization_set_computer_use,
             commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,
@@ -310,6 +316,9 @@ pub fn run() {
                                     serde_json::json!({ "message": error.to_string() }),
                                 );
                             }
+                            // 常驻本地代理只在 Codex++ 退出时停止；Codex 会话结束
+                            // 不会关它（见 core::resident_helper）。
+                            codex_plus_core::resident_helper::stop_resident_helper();
                             SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                             app.exit(0);
                         });

@@ -94,6 +94,24 @@ function runNativeQuotaTests(createGate) {
   runtime.update(legacy);
   main.setData(updated);
   equal(main.state.data.rate_limit.allowed, false, "missing standalone switch must stay off");
+  // Codex 26.1016 起按模型单独限额（#2646）：当前模型那一条用完也会锁发送。
+  const perModel = {
+    ...raw, rate_limit: { allowed: true, limit_reached: false, used_percent: 40 },
+    additional_rate_limits: [
+      { limit_name: "gpt-6.1-sol", rate_limit: { allowed: false, limit_reached: true, used_percent: 100 } },
+      { limit_name: "gpt-reserve", rate_limit: { allowed: true, limit_reached: false } },
+    ],
+  };
+  runtime.update(mixed);
+  main.setData(perModel);
+  const [modelLimit, reserveLimit] = main.state.data.additional_rate_limits;
+  equal(modelLimit.rate_limit.allowed, true, "per-model limit must unlock");
+  equal(modelLimit.rate_limit.limit_reached, false, "per-model limit_reached must clear");
+  equal(modelLimit.rate_limit.used_percent, 100, "per-model usage percentage must survive");
+  equal(modelLimit.limit_name, "gpt-6.1-sol", "per-model limit name must survive");
+  equal(reserveLimit, perModel.additional_rate_limits[1], "unlocked entries must stay untouched");
+  runtime.update(official);
+  equal(main.state.data.additional_rate_limits[0].rate_limit.allowed, false, "per-model lock must restore");
   return "Native quota policy, existing cache, publication, restoration, structural sharing and reinjection passed";
 }
 module.exports = runNativeQuotaTests;

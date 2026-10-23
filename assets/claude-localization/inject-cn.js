@@ -196,7 +196,7 @@ async function evaluate(c, expression) {
       const mineRunning = running.find((r) => r.cmd.includes(APP));
       if (mineRunning) {
         console.error('✗ 本地化副本已经在运行了（pid ' + mineRunning.pid + '），但启动时没有带 --inspect，无法注入。');
-        console.error('  请先 ⌘Q 退出「Claude CN」，再重新运行本启动器。');
+        console.error('  请先 ⌘Q 退出「Claude Enhanced」，再重新运行本启动器。');
         process.exit(2);
       }
       const other = running[0];

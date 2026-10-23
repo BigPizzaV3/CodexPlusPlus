@@ -12287,6 +12287,16 @@
     return codexPlusModelPickerNormalizeStrict(value).replace(/^gpt-/u, "");
   }
 
+  /** 宽松归一化：忽略大小写、`gpt-` 前缀、空白以及 `-`/`_` 等分隔符。
+   * 目录里的 slug 是 `deepseek-flash`，原生行文本是 `DeepSeek Flash`，
+   * 先用严格归一化会漏掉这些别名，行就退化成 legacy 分组，同一家被切成好几段。 */
+  function codexPlusModelPickerNormalizeLoose(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/^gpt[\s_-]*/u, "")
+      .replace(/[^\p{L}\p{N}]+/gu, "");
+  }
+
   /**
    * 目录里的键和选择器里的名字不一定逐字相同。
    *
@@ -12353,6 +12363,44 @@
   }
 
   /**
+   * 目录里每一行“完整展示名 -> 权威归属”的精确索引。
+   *
+   * 行的原生文本就是目录的 `displayName`（带 `（供应商）` 后缀）。拿完整文本
+   * 匹配才能区分“多个成员都发布了同名上游模型”（例如三家都有
+   * `DeepSeek-V4-Pro`）的情况；只按裸模型名匹配会命中目录里第一个同名成员，
+   * 把另外两家的行并进错误的组。
+   */
+  function codexPlusModelPickerCatalogExactMap() {
+    const map = new Map();
+    const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
+    if (!modelMetadata || typeof modelMetadata !== "object") return map;
+    const register = (entry) => {
+      if (!entry || typeof entry !== "object") return;
+      const displayName = entry.displayName || entry.display_name;
+      if (typeof displayName !== "string" || !displayName) return;
+      const provider = providerNameOf(entry);
+      const groupId =
+        typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
+      if (!provider || !groupId) return;
+      const value = { provider, groupId };
+      const fullKey = codexPlusModelPickerNormalizeLoose(displayName);
+      if (fullKey && !map.has(fullKey)) map.set(fullKey, value);
+      const split = codexPlusModelPickerSplitLabel(displayName);
+      if (split.name && split.provider) {
+        const pairKey = `${codexPlusModelPickerNormalizeLoose(split.name)}\u0000${codexPlusModelPickerNormalizeLoose(split.provider)}`;
+        if (!map.has(pairKey)) map.set(pairKey, value);
+      }
+    };
+    const slugList = Array.isArray(codexModelCatalog?.models)
+      ? codexModelCatalog.models.filter((slug) => typeof slug === "string" && slug)
+      : [];
+    const bySlug = new Map(Object.entries(modelMetadata));
+    for (const slug of slugList) register(bySlug.get(slug));
+    for (const entry of Object.values(modelMetadata)) register(entry);
+    return map;
+  }
+
+  /**
    * 一行的可分组身份。
    *
    * 原生结构（实测 2026-10 Codex 桌面版）：
@@ -12399,6 +12447,8 @@
    */
   function codexPlusModelPickerRows(list) {
     const providers = codexPlusModelPickerCatalogProviderMap();
+    const exact = codexPlusModelPickerCatalogExactMap();
+    const defaultGroupId = codexPlusModelPickerDefaultGroupId();
     const rows = [];
     const items = list.querySelectorAll('[role="menuitemradio"]');
     items.forEach((row) => {
@@ -12406,16 +12456,25 @@
       if (!identity?.groupable) return;
       const split = codexPlusModelPickerSplitLabel(identity.text);
       if (split.provider) codexPlusModelPickerRememberProvider(split.name, split.provider, true);
-      // 分组键：只信"行上有后缀"和"目录里的权威分组 id"这两个来源。
-      // 早期版本拿目录展示名去拟合行文本，别名一多就把模型分到了错的组（同一家被切成
-      // 好几段），所以目录查询只用来补 **分组 id**，不用来决定显示成哪一组。
-      const known = providers.get(codexPlusModelPickerNormalizeStrict(split.name))
-        || providers.get(codexPlusModelPickerNormalize(split.name));
+      // 分组键：优先用「完整展示名」或「模型名 + 后缀供应商」做精确匹配。
+      // 有后缀的行成员归属由后缀决定，不能再拿裸模型名去查目录——三家都发布
+      // `DeepSeek-V4-Pro` 时，裸名别名只会命中目录里第一个成员，把别人的
+      // 模型并进错误的组（同一家被切成好几段 / 同名分组出现多次）。
+      const pairKey = split.provider
+        ? `${codexPlusModelPickerNormalizeLoose(split.name)}\u0000${codexPlusModelPickerNormalizeLoose(split.provider)}`
+        : "";
+      const known = exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
+        || (pairKey ? exact.get(pairKey) : null)
+        || (!split.provider
+          ? providers.get(codexPlusModelPickerNormalizeStrict(split.name))
+            || providers.get(codexPlusModelPickerNormalize(split.name))
+          : null);
       const groupId = known?.groupId
-        || (split.provider ? split.provider : codexPlusModelPickerDefaultGroupId());
+        || (split.provider ? `provider:${split.provider}` : defaultGroupId);
       // 显示名按行文本：有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
       const provider = split.provider || known?.provider || codexPlusModelPickerDefaultProviderName();
-      const authoritativeGroupId = !!known?.groupId || (!split.provider && !!codexPlusModelPickerDefaultGroupId());
+      const authoritativeGroupId = !!known?.groupId
+        || (split.provider ? true : !!defaultGroupId);
       rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId });
     });
     return rows;
@@ -17732,6 +17791,22 @@
       && queryKey[1] !== "image-generation";
   }
 
+  // Codex 26.1016 起还会按模型单独限额：additional_rate_limits 里当前模型那一条
+  // limit_reached 为 true 或 allowed 为 false 时，同样锁住发送（#2646）。
+  // 混入时一并解锁，只改这两个字段，其余额度信息不动。
+  function unlockAdditionalRateLimits(limits) {
+    if (!Array.isArray(limits)) return null;
+    let changed = false;
+    const next = limits.map((entry) => {
+      const rateLimit = entry?.rate_limit;
+      if (!rateLimit || typeof rateLimit !== "object") return entry;
+      if (rateLimit.allowed !== false && rateLimit.limit_reached !== true) return entry;
+      changed = true;
+      return { ...entry, rate_limit: { ...rateLimit, allowed: true, limit_reached: false } };
+    });
+    return changed ? next : null;
+  }
+
   // 低额度提示和发送锁都只看当前是不是官登混入 Key。纯官登不改这份用量。
   // 桌面端发送按钮读 rate_limit.allowed；limit_reached 为 true 也会被当成已用完。
   // 混入时在查询发布前把 allowed 写成 true，并清掉 limit_reached。
@@ -17751,6 +17826,13 @@
     const rateLimit = value.rate_limit;
     if (policy.unlockSend && (rateLimit.allowed !== true || rateLimit.limit_reached === true)) {
       next.rate_limit = { ...rateLimit, allowed: true, limit_reached: false };
+      changed = true;
+    }
+    const additionalRateLimits = policy.unlockSend
+      ? unlockAdditionalRateLimits(value.additional_rate_limits)
+      : null;
+    if (additionalRateLimits) {
+      next.additional_rate_limits = additionalRateLimits;
       changed = true;
     }
     if (policy.hideAlerts) {

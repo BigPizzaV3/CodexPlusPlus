@@ -288,11 +288,16 @@ const PROXY_AUTO_RETRY_TOTAL_BUDGET: Duration = Duration::from_secs(120);
 /// 即使用户把间隔设成 0 秒，也给一个短地板值，避免容量错误被打成热循环。
 const PROXY_AUTO_RETRY_MIN_DELAY: Duration = Duration::from_millis(250);
 
-/// 容量错误的退避状态。只用于官方 server_overloaded 的 200 流内失败，不跨请求持久化。
+/// HTTP 错误重试时预读错误体的上限：只用来记请求日志，读不全就退回状态码。
+const PROXY_AUTO_RETRY_ERROR_BODY_LIMIT: usize = 64 * 1024;
+
+/// 自动重试的退避状态：200 流内的过载/容量失败，以及命中用户所选状态码的
+/// HTTP 错误共用同一份次数与等待预算。不跨请求持久化。
 struct ProxyAutoRetry {
     remaining: u32,
     next_delay: Duration,
     waited: Duration,
+    status_codes: Vec<u16>,
 }
 
 impl ProxyAutoRetry {
@@ -310,7 +315,12 @@ impl ProxyAutoRetry {
             remaining: attempts,
             next_delay: base,
             waited: Duration::ZERO,
+            status_codes: settings.protocol_proxy_auto_retry_status_codes.clone(),
         })
+    }
+
+    fn retries_status(&self, status_code: u16) -> bool {
+        self.status_codes.contains(&status_code)
     }
 
     /// 返回本次应等待的时长；None 表示重试预算已用尽。
@@ -348,9 +358,30 @@ async fn schedule_proxy_auto_retry(
     let Some(state) = state.as_mut() else {
         return None;
     };
-    let Some(delay) = state.schedule(retry_after) else {
-        return None;
-    };
+    let delay = state.schedule(retry_after)?;
+    wait_scheduled_proxy_auto_retry(
+        delay,
+        state.remaining,
+        relay,
+        request_attempt,
+        reason,
+        retry_reasons,
+        live_request_id,
+    )
+    .await;
+    Some(delay)
+}
+
+/// 已经占用了一次重试预算之后的等待：写诊断日志、更新请求日志并 sleep。
+async fn wait_scheduled_proxy_auto_retry(
+    delay: Duration,
+    retries_remaining: u32,
+    relay: &crate::settings::RelayProfile,
+    request_attempt: usize,
+    reason: &str,
+    retry_reasons: &mut Vec<String>,
+    live_request_id: Option<&str>,
+) {
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "protocol_proxy.upstream_auto_retry",
         json!({
@@ -359,7 +390,7 @@ async fn schedule_proxy_auto_retry(
             "reason": reason,
             "requestAttempt": request_attempt,
             "delayMs": delay.as_millis(),
-            "retriesRemaining": state.remaining,
+            "retriesRemaining": retries_remaining,
         }),
     );
     if let Some(id) = live_request_id {
@@ -375,7 +406,6 @@ async fn schedule_proxy_auto_retry(
     }
     tokio::time::sleep(delay).await;
     retry_reasons.push(reason.to_string());
-    Some(delay)
 }
 
 /// 构造一次失败尝试的日志摘要；message 只保留前 200 字符，避免日志膨胀。
@@ -4059,6 +4089,47 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     }),
                 );
                 continue;
+            }
+            // 已经没有可切换的成员：命中用户所选状态码（默认 429/5xx）就退避后
+            // 从第一个成员重来一轮。此时还没向 Codex 写出任何字节，可以整次重发。
+            // 先占用预算再读错误体，预算用尽时响应体原样交给 Codex。
+            let retry_after = exec_retry_after_duration(upstream.headers(), SystemTime::now());
+            let scheduled = auto_retry
+                .as_mut()
+                .filter(|retry| retry.retries_status(status_code))
+                .and_then(|retry| {
+                    retry
+                        .schedule(retry_after)
+                        .map(|delay| (delay, retry.remaining))
+                });
+            if let Some((delay, retries_remaining)) = scheduled {
+                let body = read_limited_upstream_body(
+                    &mut upstream,
+                    PROXY_AUTO_RETRY_ERROR_BODY_LIMIT,
+                )
+                .await
+                .unwrap_or_default();
+                drop(upstream);
+                let (message, _, code, _) =
+                    upstream_error_parts(status_code, &content_type, &body);
+                let code = code.unwrap_or_else(|| status_code.to_string());
+                wait_scheduled_proxy_auto_retry(
+                    delay,
+                    retries_remaining,
+                    &relay,
+                    request_attempt,
+                    &format!("upstream_http_status:{status_code}"),
+                    &mut retry_reasons,
+                    live_request_id,
+                )
+                .await;
+                let detail = attempt_detail(request_attempt, Some(&code), Some(&message), delay);
+                if let Some(id) = live_request_id {
+                    crate::request_log::update_running_attempt_detail(id, detail.clone());
+                }
+                request_trace.attempt_details.push(detail);
+                candidate_index = 0;
+                continue 'request_attempts;
             }
         }
         if (200..300).contains(&status_code)

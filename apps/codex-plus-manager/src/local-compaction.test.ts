@@ -113,6 +113,8 @@ test("provider checkbox binds draft state and is hidden for Anthropic and aggreg
   assert.match(checkbox, /updateDraft\(\{ localCompactionPromptAtEnd: event\.currentTarget\.checked \}\)/);
   assert.match(checkbox, /type="checkbox"/);
   assert.match(checkbox, /本地压缩缓存复用（实验）/);
+  assert.match(checkbox, /实测可改善压缩请求的缓存命中概率/);
+  assert.doesNotMatch(checkbox, /用户实测/);
   assert.match(checkbox, /不保证每次命中/);
   assert.match(checkbox, /不保证后置压缩提示不影响摘要质量/);
   assert.doesNotMatch(source, /webSearchHistoryCompat|搜索历史压缩兼容/);

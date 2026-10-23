@@ -240,6 +240,15 @@
      * 正好落在同一排。官方自己的动作按钮都排在带 gap 的 flex 里，优先用那种容器。
      */
     function findActionRow(scope) {
+      // Code 模式在「空闲 + 输入框为空」时不渲染发送键（官方把它换成 idleSendAction），
+      // 只剩 trailing-controls 和占位的 send-cell 空壳。按发送键找就会落空、退化到编辑器
+      // 容器末尾，入口掉到输入框左下角。所以先认这个常驻的右侧动作区。
+      var trailing = scope.querySelector('[data-testid="code-prompt-trailing-controls"]');
+      if (trailing) {
+        var cell = trailing.querySelector('[data-testid="code-prompt-send-cell"]');
+        while (cell && cell.parentElement && cell.parentElement !== trailing) cell = cell.parentElement;
+        return { row: trailing, before: cell || trailing.firstElementChild, spaced: true };
+      }
       var send = scope.querySelector(
         '[data-testid="code-prompt-send"], [data-testid="chat-input-send"], [data-testid="epitaxy-cds-send"]',
       );
@@ -534,7 +543,7 @@
 
     /**
      * 往上找输入框外壳：发送键不一定和编辑器同容器（实测它在外层动作区里），
-     * 所以从编辑器逐层向上，取第一个能查到发送键的祖先。
+     * 所以从编辑器逐层向上，取第一个能查到发送键（或 Code 模式常驻的右侧动作区）的祖先。
      */
     function composerScope(editor) {
       var node = editor;
@@ -542,7 +551,8 @@
         if (
           node.querySelector &&
           node.querySelector(
-            '[data-testid="code-prompt-send"], [data-testid="chat-input-send"], [data-testid="epitaxy-cds-send"]',
+            '[data-testid="code-prompt-trailing-controls"], [data-testid="code-prompt-send"], ' +
+              '[data-testid="chat-input-send"], [data-testid="epitaxy-cds-send"]',
           )
         ) {
           return node;

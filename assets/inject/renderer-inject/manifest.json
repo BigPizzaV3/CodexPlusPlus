@@ -63,7 +63,7 @@
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器按供应商分组折叠（聚合供应商场景）",
-      "lines": 1036
+      "lines": 1095
     },
     {
       "name": "80-session-share.js",
@@ -118,7 +118,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 938
+      "lines": 961
     },
     {
       "name": "96-whale-compat.js",

@@ -1216,6 +1216,8 @@ where
         let mut eligible_rewrite_plans = Vec::new();
         for plan in &rewrite_plans {
             let mut writer = HashingWriter::new(std::io::sink());
+            // 规划之后才被独占打开的 rollout（Windows 共享冲突）与重写阶段一样跳过，
+            // 不能让一个被锁的文件把整次同步打成失败。
             let before = match stream_rewrite_rollout_session_meta_providers(
                 &plan.path,
                 &target_provider,

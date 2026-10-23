@@ -6,6 +6,8 @@
   const apiKey = "`apiKey`";
   const local = "`local`";
   const critical = "`critical`";
+  // 新版 Codex 会往同一门控里追加官方登录方式（如 amazonBedrock），只接受纯字面量。
+  const literal = "`[A-Za-z]\\w*`";
 
   const runtime = {
     update(settings) {
@@ -42,7 +44,7 @@
       pattern: [
         `function ${id}\\((?<argument>${id})\\)\\{let ${id}=\\(0,${id}\\.c\\)\\(\\d+\\),(?<fallback>${id})=${id}\\(${id}\\),`,
         `(?<host>${id})=\\k<argument>\\?\\.hostId\\?\\?\\k<fallback>,(?<identity>${id})=${id}\\(\\k<host>\\),`,
-        `(?<variable>${id})=(?<gate>\\k<identity>\\?\\.authMethod===${chatgpt}\\|\\|\\k<identity>\\?\\.authMethod===${token}),`,
+        `(?<variable>${id})=(?<gate>\\k<identity>\\?\\.authMethod===${chatgpt}\\|\\|\\k<identity>\\?\\.authMethod===${token}(?:\\|\\|\\k<identity>\\?\\.authMethod===${literal})*),`,
         `(?<method>${id})=\\k<identity>\\?\\.authMethod\\?\\?null,[^{}]{0,300}\\{authMethod:\\k<method>,hostId:\\k<host>\\}`,
         `[^{}]{0,300}\\{data:(?<data>${id}),isPending:(?<pending>${id})\\}=${id}\\(${id},${id}\\),`,
         `(?<loading>${id})=!!\\k<identity>\\?\\.isLoading\\|\\|\\k<variable>&&\\k<pending>,${id};`,
@@ -55,7 +57,7 @@
       kind: "request-access",
       pattern: [
         `async function ${id}\\((?<scope>${id}),(?<host>${id})\\)\\{let (?<auth>${id})=await ${id}\\(\\k<scope>,\\k<host>\\);`,
-        `if\\((?<gate>\\k<auth>!==${chatgpt}&&\\k<auth>!==${token})\\)return null;`,
+        `if\\((?<gate>\\k<auth>!==${chatgpt}&&\\k<auth>!==${token}(?:&&\\k<auth>!==${literal})*)\\)return null;`,
         `let (?<requirements>${id})=await ${id}\\(\\k<scope>,\\k<host>,\\{priority:${critical}\\}\\);`,
         `return \\k<scope>\\.query\\.setData\\(${id},\\{authMethod:\\k<auth>,hostId:\\k<host>\\},\\k<requirements>\\),${id}\\(\\k<requirements>\\)\\}`,
       ].join(""),
@@ -63,15 +65,32 @@
     },
     {
       kind: "queue-default-access",
-      pattern: [
-        `function ${id}\\((?<manager>${id}),\\{runtime:(?<runtime>${id}),storage:(?<storage>${id})\\},(?<before>${id}),${id}\\)\\{let (?<pending>${id})=null;`,
-        `return\\{async readServiceTier\\((?<model>${id})\\)\\{for\\(;\\k<pending>!=null;\\)await \\k<pending>\\.catch\\(\\(\\)=>void 0\\);`,
-        `return \\k<before>\\(\\),${id}\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,\\k<model>,async\\(\\)=>`,
-        `\\k<manager>\\.getHostId\\(\\)===${local}&&await \\k<storage>\\.readGlobalState\\(\`use-copilot-auth-if-available\`\\)===!0&&await \\k<runtime>\\.isCopilotApiAvailable\\(\\)\\?!1:`,
-        `(?<gate>(?<account>\\(await \\k<manager>\\.getAccount\\(\\{priority:${critical}\\}\\)\\)\\.account\\?\\.type)===${chatgpt})\\)\\},async writeServiceTier\\(`,
-      ].join(""),
-      // includes 只消费一次 account/read；外层 Copilot 分支原样保留。
-      replacement: (groups) => `[${chatgpt},...(${allow(`${groups.manager}.getHostId()`, apiKey)}?[${apiKey}]:[])].includes(${groups.account})`,
+      variants: [
+        {
+          pattern: [
+            `function ${id}\\((?<manager>${id}),\\{runtime:(?<runtime>${id}),storage:(?<storage>${id})\\},(?<before>${id}),${id}\\)\\{let (?<pending>${id})=null;`,
+            `return\\{async readServiceTier\\((?<model>${id})\\)\\{for\\(;\\k<pending>!=null;\\)await \\k<pending>\\.catch\\(\\(\\)=>void 0\\);`,
+            `return \\k<before>\\(\\),${id}\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,\\k<model>,async\\(\\)=>`,
+            `\\k<manager>\\.getHostId\\(\\)===${local}&&await \\k<storage>\\.readGlobalState\\(\`use-copilot-auth-if-available\`\\)===!0&&await \\k<runtime>\\.isCopilotApiAvailable\\(\\)\\?!1:`,
+            `(?<gate>(?<account>\\(await \\k<manager>\\.getAccount\\(\\{priority:${critical}\\}\\)\\)\\.account\\?\\.type)===${chatgpt})\\)\\},async writeServiceTier\\(`,
+          ].join(""),
+          // includes 只消费一次 account/read；外层 Copilot 分支原样保留。
+          replacement: (groups) => `[${chatgpt},...(${allow(`${groups.manager}.getHostId()`, apiKey)}?[${apiKey}]:[])].includes(${groups.account})`,
+        },
+        {
+          // 26.10 起改成 if/return 语句体，账号结果先落到局部变量再比较。
+          pattern: [
+            `function ${id}\\((?<manager>${id}),\\{runtime:(?<runtime>${id}),storage:(?<storage>${id})\\},(?<before>${id}),${id}\\)\\{let (?<pending>${id})=null;`,
+            `return\\{async readServiceTier\\((?<model>${id})\\)\\{for\\(;\\k<pending>!=null;\\)await \\k<pending>\\.catch\\(\\(\\)=>void 0\\);`,
+            `return \\k<before>\\(\\),${id}\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,\\k<model>,async\\(\\)=>\\{`,
+            `if\\(\\k<manager>\\.getHostId\\(\\)===${local}&&await \\k<storage>\\.readGlobalState\\(\`use-copilot-auth-if-available\`\\)===!0&&await \\k<runtime>\\.isCopilotApiAvailable\\(\\)\\)return!1;`,
+            `let (?<result>${id})=await \\k<manager>\\.getAccount\\(\\{priority:${critical}\\}\\);`,
+            `return (?<gate>\\k<result>\\.account\\?\\.type===${chatgpt}(?:\\|\\|\\k<result>\\.account\\?\\.type===${literal})*)\\}\\)\\},async writeServiceTier\\(`,
+          ].join(""),
+          distinct: ["manager", "result"],
+          replacement: (groups) => `(${groups.gate}||${allow(`${groups.manager}.getHostId()`, `${groups.result}.account?.type`)})`,
+        },
+      ],
     },
     {
       kind: "queue-explicit-access",
@@ -81,8 +100,10 @@
         `(?<host>${id})=\\k<options>\\?\\.executionHostId\\?\\?\\k<manager>\\.getHostId\\(\\);`,
         `[\\s\\S]{0,1800}?let\\[${id},${id}\\]=await Promise\\.all\\(\\[\\(async\\(\\)=>\\{if\\(\\k<options>==null\\)return \\k<readDefault>\\(${id}\\?\\.latestModel\\|\\|null\\);`,
         `if\\(\\k<options>\\.serviceTier==null\\)return null;let\\{account:(?<account>${id})\\}=await \\k<manager>\\.getAccount\\(\\{priority:${critical}\\}\\);`,
-        `return (?<gate>\\k<account>\\?\\.type===${chatgpt})\\?\\k<options>\\.serviceTier:null\\}\\)\\(\\),\\k<options>\\?\\.usePermissionSelection\\?\\?\\k<settings>\\.readPermissionRefreshEnabled\\(\\)\\]\\)`,
+        `return (?<gate>\\k<account>\\?\\.type===${chatgpt}(?:\\|\\|\\k<account>\\?\\.type===${literal})*)\\?\\k<options>\\.serviceTier:null\\}\\)\\(\\),\\k<options>\\?\\.usePermissionSelection\\?\\?\\k<settings>\\.readPermissionRefreshEnabled\\(\\)\\]\\)`,
       ].join(""),
+      // 补丁文本在内层箭头函数里引用这些绑定；账号解构名与它们重名会被遮蔽，必须拒绝。
+      distinct: ["manager", "storage", "runtime", "host", "account"],
       // manager 和实际执行端都必须是本机；所选 Copilot 不能借底层 API 身份放行。
       replacement: (groups) => `(${groups.gate}||${groups.host}===${local}&&${allow(`${groups.manager}.getHostId()`, `${groups.account}?.type`)}&&!(await ${groups.storage}.readGlobalState(\`use-copilot-auth-if-available\`)===!0&&await ${groups.runtime}.isCopilotApiAvailable()))`,
     },
@@ -96,17 +117,21 @@
     }
     const replacements = [];
     for (const definition of gates) {
-      const matches = [...source.matchAll(new RegExp(definition.pattern, "g"))];
+      // 同一门控的多个历史结构合并计数：任何版本只允许恰好命中一处。
+      const matches = (definition.variants ?? [definition]).flatMap((variant) =>
+        [...source.matchAll(new RegExp(variant.pattern, "g"))].map((match) => ({ match, variant })));
       diagnostics.matches[definition.kind] = matches.length;
       if (matches.length !== 1) continue;
-      const match = matches[0];
+      const { match, variant } = matches[0];
+      const names = (variant.distinct ?? []).map((name) => match.groups[name]);
+      if (new Set(names).size !== names.length) return failed("shadowed-bindings");
       const gate = match.groups.gate;
       const offset = match[0].indexOf(gate);
       if (offset < 0 || offset !== match[0].lastIndexOf(gate) || /[\r\n]/.test(gate)) {
         return failed("unsupported-shape");
       }
       const start = match.index + offset;
-      const text = definition.replacement(match.groups);
+      const text = variant.replacement(match.groups);
       if (/[\r\n]/.test(text)) return failed("unsupported-shape");
       replacements.push({ kind: definition.kind, start, end: start + gate.length, text });
     }

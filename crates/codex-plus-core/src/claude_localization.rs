@@ -178,6 +178,8 @@ pub struct ClaudeLocalizationStatus {
     pub voice_input: bool,
     /// 是否注入中文界面；关掉后副本按原语言启动，与「准备副本」互不影响。
     pub localization: bool,
+    /// 是否在副本里解锁 Computer Use（改写 asar + 关闭 asar 完整性校验）。
+    pub computer_use: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -310,16 +312,34 @@ fn home_dir() -> PathBuf {
         .unwrap_or_default()
 }
 
+/// 副本名不再带「CN」：汉化只是可选增强之一，装了 Computer Use 之类的功能时名字不该暗示语言。
+const COPY_BUNDLE_NAME: &str = "Claude Enhanced.app";
+const COPY_DIR_NAME: &str = "Claude Enhanced";
+const LEGACY_BUNDLE_NAME: &str = "Claude CN.app";
+const LEGACY_DIR_NAME: &str = "Claude CN";
+
 #[cfg(target_os = "macos")]
-fn copy_app(_source: &Path) -> PathBuf { runtime_dir().join("Claude CN.app") }
+fn copy_app(_source: &Path) -> PathBuf { runtime_dir().join(COPY_BUNDLE_NAME) }
 
 #[cfg(target_os = "windows")]
 fn copy_app(source: &Path) -> PathBuf {
-    if windows_msix_source(source) { source.to_path_buf() } else { runtime_dir().join("Claude CN").join("Claude.exe") }
+    if windows_msix_source(source) { source.to_path_buf() } else { runtime_dir().join(COPY_DIR_NAME).join("Claude.exe") }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn copy_app(_source: &Path) -> PathBuf { runtime_dir().join("Claude CN") }
+fn copy_app(_source: &Path) -> PathBuf { runtime_dir().join(COPY_DIR_NAME) }
+
+/// 老副本还叫「Claude CN」，改名后原地迁移一次，避免用户被迫重新准备。
+fn migrate_legacy_copy() {
+    let root = runtime_dir();
+    #[cfg(target_os = "macos")]
+    let (legacy, current) = (root.join(LEGACY_BUNDLE_NAME), root.join(COPY_BUNDLE_NAME));
+    #[cfg(not(target_os = "macos"))]
+    let (legacy, current) = (root.join(LEGACY_DIR_NAME), root.join(COPY_DIR_NAME));
+    if legacy.exists() && !current.exists() {
+        let _ = fs::rename(&legacy, &current);
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn staged_copy_path(label: &str) -> PathBuf {
@@ -475,6 +495,7 @@ fn initial_status(source: &Path, copy: &Path) -> ClaudeLocalizationStatus {
         catalog_entries: catalog_entries(),
         voice_input: settings.as_ref().is_none_or(|settings| settings.claude_app_voice_input),
         localization: settings.as_ref().is_none_or(|settings| settings.claude_app_localization),
+        computer_use: computer_use_enabled(),
     }
 }
 
@@ -492,6 +513,7 @@ fn inspect_installed_source(
 }
 
 pub fn status() -> Result<ClaudeLocalizationStatus> {
+    migrate_legacy_copy();
     let deadline = Instant::now() + STATUS_TIMEOUT;
     let source = source_app(deadline)?;
     let copy = copy_app(&source);
@@ -503,9 +525,15 @@ pub fn status() -> Result<ClaudeLocalizationStatus> {
         let receipt = fs::read(runtime_dir().join("prepared.json")).ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
         state.prepared = AppLayout::current().exists(&copy) && receipt.is_some();
+        let prepared_computer_use = receipt
+            .as_ref()
+            .and_then(|r| r.get("computerUse"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         state.needs_rebuild = state.prepared &&
             (receipt.as_ref().and_then(|r| r.get("sourceBuild")).and_then(Value::as_str) != Some(current_build.as_str())
-                || state.copy_version != state.source_version);
+                || state.copy_version != state.source_version
+                || prepared_computer_use != state.computer_use);
         state.shell_locale = read_config(&config_path()).ok()
             .and_then(|v| v.get("locale")?.as_str().map(str::to_string));
         state.running = claude_running(deadline)?;
@@ -522,6 +550,27 @@ fn voice_input_enabled() -> bool {
         .load()
         .map(|settings| settings.claude_app_voice_input)
         .unwrap_or(true)
+}
+
+/// 副本的语音入口靠 Codex++ helper 转写（hook.js 读 helper 落下的凭据）。helper 原本只随
+/// Codex 会话或协议代理常驻，没在跑 Codex 时 Claude 里点麦克风只会提示「语音服务未运行」。
+/// 所以开关打开且已经制作过副本时，管理器要把 helper 常驻起来。
+///
+/// 只看副本凭据，不探测版本与进程，启动链路可以廉价调用；没做过副本的用户不占端口。
+pub fn voice_input_needs_helper(settings: &crate::settings::BackendSettings) -> bool {
+    voice_input_needs_helper_at(&runtime_dir(), settings.claude_app_voice_input)
+}
+
+fn voice_input_needs_helper_at(root: &Path, voice_input: bool) -> bool {
+    voice_input && root.join("prepared.json").is_file()
+}
+
+/// Computer Use 开关。读不到按关闭处理——这条会改 asar，不能默认开。
+fn computer_use_enabled() -> bool {
+    crate::settings::SettingsStore::default()
+        .load()
+        .map(|settings| settings.claude_app_computer_use)
+        .unwrap_or(false)
 }
 
 /// 界面汉化开关。同样是读不到就按开启处理。
@@ -542,6 +591,15 @@ pub fn set_voice_input(enabled: bool) -> Result<ClaudeLocalizationStatus> {
 }
 
 /// 写入界面汉化开关。副本是否已准备、是否重建，与这个开关无关。
+/// 写入 Computer Use 开关。只改设置；副本要重新准备才会带上/去掉 asar 改写。
+pub fn set_computer_use(enabled: bool) -> Result<ClaudeLocalizationStatus> {
+    let store = crate::settings::SettingsStore::default();
+    let mut settings = store.load()?;
+    settings.claude_app_computer_use = enabled;
+    store.save(&settings)?;
+    status()
+}
+
 pub fn set_localization(enabled: bool) -> Result<ClaudeLocalizationStatus> {
     let store = crate::settings::SettingsStore::default();
     let mut settings = store.load()?;
@@ -596,7 +654,14 @@ fn hidden_script_command(program: &Path) -> Command {
     command
 }
 
-fn run_script(program: &Path, script: &str, source: &Path, copy: &Path, args: &[&str]) -> Result<()> {
+fn run_script(
+    program: &Path,
+    script: &str,
+    source: &Path,
+    copy: &Path,
+    args: &[&str],
+    progress: &dyn Fn(u8, &str),
+) -> Result<()> {
     let root = runtime_dir();
     let log = root.join("operation.log");
     let output = fs::File::create(&log)?;
@@ -615,17 +680,38 @@ fn run_script(program: &Path, script: &str, source: &Path, copy: &Path, args: &[
             "CODEX_PLUS_CLAUDE_VOICE_INPUT",
             if voice_input_enabled() { "1" } else { "0" },
         )
+        // 只有勾选后才改写副本 asar（并关闭 asar 完整性校验）。
+        .env(
+            "CODEX_PLUS_CLAUDE_COMPUTER_USE",
+            if computer_use_enabled() { "1" } else { "0" },
+        )
         // 同理：注入器按这个决定要不要带中文界面那一段。
         .env(
             "CODEX_PLUS_CLAUDE_LOCALIZATION",
             if localization_enabled() { "1" } else { "0" },
+        )
+        .env(
+            "CODEX_PLUS_CLAUDE_PROGRESS",
+            root.join("progress.json"),
         )
         .stdout(output.try_clone()?)
         .stderr(output)
         .spawn()
         .context("无法启动汉化组件")?;
     let deadline = Instant::now() + Duration::from_secs(300);
+    let progress_file = root.join("progress.json");
+    let mut last_percent = 0u8;
     loop {
+        if let Ok(text) = fs::read_to_string(&progress_file) {
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                let percent = value.get("percent").and_then(Value::as_u64).unwrap_or(0).min(100) as u8;
+                let message = value.get("message").and_then(Value::as_str).unwrap_or("");
+                if percent != last_percent {
+                    last_percent = percent;
+                    progress(percent, message);
+                }
+            }
+        }
         if let Some(exit) = child.try_wait()? {
             if exit.success() {
                 return Ok(());
@@ -693,6 +779,14 @@ fn set_locale_at(config: &Path, backup: &Path, locale: Option<&str>, restore: bo
 }
 
 pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
+    perform_with_progress(action, &|_, _| {})
+}
+
+/// 带进度回调的版本：percent 0-100，message 是给用户看的中文短句。
+pub fn perform_with_progress(
+    action: &str,
+    progress: &dyn Fn(u8, &str),
+) -> Result<ClaudeLocalizationResult> {
     ensure!(cfg!(any(target_os = "macos", target_os = "windows")), "Claude 增强目前支持 macOS 和 Windows");
     ensure!(
         ["prepare", "check", "launch", "restore"].contains(&action),
@@ -733,18 +827,21 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
             } else {
             let staged = staged_copy_path(&format!("Claude-staging-{}", uuid::Uuid::new_v4()));
             let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
-            run_script(&script_runtime, script, &source, &staged, &[])?;
-            run_script(&script_runtime, script, &source, &staged, &["--check"])?;
+            progress(2, "准备增强版目录");
+            run_script(&script_runtime, script, &source, &staged, &[], progress)?;
+            progress(92, "校验增强版");
+            run_script(&script_runtime, script, &source, &staged, &["--check"], progress)?;
             // 校验通过后才替换；旧副本保留，构建失败时不会影响它。
             let old = staged_copy_path(&format!("Claude-backup-{}", uuid::Uuid::new_v4()));
             replace_copy(AppLayout::current(), &staged, &copy, &old)?;
             fs::write(
                 root.join("prepared.json"),
                 serde_json::to_vec(&json!({
-                    "sourceBuild": app_version(&source, "CFBundleVersion", Instant::now() + STATUS_TIMEOUT)?
+                    "sourceBuild": app_version(&source, "CFBundleVersion", Instant::now() + STATUS_TIMEOUT)?,
+                    "computerUse": computer_use_enabled()
                 }))?,
             )?;
-            "副本已准备并通过签名及 app.asar 一致性校验。".to_string()
+            "增强版已制作，签名与 app.asar 校验通过。".to_string()
             }
         }
         "check" => {
@@ -753,7 +850,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
                 "Windows MSIX 安装入口已检测到，采用原版包启动注入。".to_string()
             } else {
                 let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
-                run_script(&script_runtime, script, &source, &copy, &["--check"])?;
+                run_script(&script_runtime, script, &source, &copy, &["--check"], &|_, _| {})?;
                 "副本签名、中文词表、注入开关及 app.asar 一致性校验通过。".to_string()
             }
         }
@@ -765,7 +862,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
             };
             if !(cfg!(target_os = "windows") && windows_msix_source(&source)) {
                 let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
-                run_script(&script_runtime, script, &source, &copy, &["--check"])?;
+                run_script(&script_runtime, script, &source, &copy, &["--check"], &|_, _| {})?;
             }
             let config = config_path();
             let backup = config.with_extension("codex-plus-locale-backup.json");
@@ -796,7 +893,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
                 }
             };
             let script = if cfg!(target_os = "windows") { "inject-cn.ps1" } else { "inject-cn.js" };
-            if let Err(error) = run_script(&launcher, script, &source, &copy, &[if cfg!(windows) { "-Locale" } else { "--locale" }, locale.as_str()]) {
+            if let Err(error) = run_script(&launcher, script, &source, &copy, &[if cfg!(windows) { "-Locale" } else { "--locale" }, locale.as_str()], &|_, _| {}) {
                 // 启动失败后只在应用未运行时还原本次外壳语言，避免与 Claude 写盘竞争。
                 if !claude_running(Instant::now() + PROBE_TIMEOUT).unwrap_or(true) {
                     let _ = set_locale_at(
@@ -879,7 +976,7 @@ mod tests {
             source_version: String::new(), copy_version: String::new(),
             prepared: false, needs_rebuild: false, running: false,
             node_available: false, python_available: false, shell_locale: None,
-            catalog_entries: 0, voice_input: true, localization: true,
+            catalog_entries: 0, voice_input: true, localization: true, computer_use: false,
         }
     }
 
@@ -1060,5 +1157,15 @@ mod tests {
         )
         .unwrap();
         assert!(!dynamic.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn voice_input_needs_helper_only_after_copy_is_prepared() {
+        let dir = tempfile::tempdir().unwrap();
+        // 没做过副本：语音开关默认开启也不能让管理器常驻 helper 占端口。
+        assert!(!voice_input_needs_helper_at(dir.path(), true));
+        fs::write(dir.path().join("prepared.json"), b"{}").unwrap();
+        assert!(voice_input_needs_helper_at(dir.path(), true));
+        assert!(!voice_input_needs_helper_at(dir.path(), false));
     }
 }

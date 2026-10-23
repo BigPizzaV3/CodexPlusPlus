@@ -56,6 +56,7 @@ const demoSettings = {
   protocolProxyAutoRetryIntervalSeconds: 2,
   protocolProxyAutoRetryMode: "streaming",
   protocolProxyAutoRetryCommitDelayMs: 1000,
+  helperMaxRequestBodyMib: 128,
   codexAppCapacityAutoRetry: false,
   codexAppStepwiseEnabled: false,
   codexAppAnswerOutlineEnabled: false,
@@ -162,7 +163,7 @@ const overview = ok({
     debugger: { status: "disconnected", address: null, message: "等待 Codex 连接" },
     protocol_conversion_enabled: true,
   },
-  current_version: "1.10.1",
+  current_version: "1.11.1",
   update_status: "up_to_date",
   settings_path: "演示模式",
   logs_path: "演示模式",
@@ -202,7 +203,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "load_pending_dream_skin_community": return ok({ versionId: "" }) as T;
     case "load_watcher_state": return ok({ enabled: false, running: false, status: "disabled", message: "演示模式" }) as T;
     case "load_auto_takeover_state": return ok({ running: false, enabled: false, message: "演示模式" }) as T;
-    case "update_check": return ok({ currentVersion: "1.10.1", latestVersion: "1.10.1", updateAvailable: false }) as T;
+    case "update_check": return ok({ currentVersion: "1.11.1", latestVersion: "1.11.1", updateAvailable: false }) as T;
     case "refresh_script_market": return ok({ market: { status: "ok", message: "演示模式", scripts: [] }, user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
     case "load_ccs_providers": return ok({ providers: [] }) as T;
     case "weixin_connect_status": return ok({ state: "disconnected", message: "演示模式", accountId: "", hasToken: false, lastPeerId: "", lastMessageAtMs: 0, processedMessages: 0 }) as T;
