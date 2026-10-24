@@ -15,6 +15,9 @@ use serde_json::{Map, Value, json};
 use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
+mod local_compaction;
+pub use local_compaction::build_request as build_local_compaction_request;
+
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
 
 /// 工具调用上需要跨 turn 原样带回的供应商附带数据，按 `call_id` 索引。
@@ -3178,6 +3181,7 @@ pub async fn open_responses_proxy_request_for_path_with_session_headers(
         beta_features,
         session_headers,
         None,
+        false,
     )
     .await
 }
@@ -3201,6 +3205,7 @@ pub async fn open_responses_proxy_request_for_path_with_session_headers_and_live
         beta_features,
         session_headers,
         live_request_id,
+        false,
     )
     .await
 }
@@ -3217,6 +3222,7 @@ pub async fn open_responses_proxy_request_with_settings(
         None,
         ProxySessionHeaders::default(),
         None,
+        false,
     )
     .await
 }
@@ -3234,6 +3240,7 @@ pub async fn open_responses_proxy_request_with_settings_for_path(
         None,
         ProxySessionHeaders::default(),
         None,
+        false,
     )
     .await
 }
@@ -3269,6 +3276,32 @@ pub async fn open_responses_proxy_request_with_settings_for_path_and_session_hea
         beta_features,
         session_headers,
         None,
+        false,
+    )
+    .await
+}
+
+/// 使用完整当前请求直接生成本地摘要，不从旧缓存补字段，也不向上游添加模式标记。
+pub async fn open_local_compaction_request_with_settings(
+    current_request: &Value,
+    summary_prompt: &str,
+    settings: crate::settings::BackendSettings,
+    session_headers: ProxySessionHeaders<'_>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    anyhow::ensure!(
+        !request_has_compaction_trigger(current_request),
+        "完整当前请求的本地摘要不能包含远程 compaction_trigger"
+    );
+    let body = build_local_compaction_request(current_request, summary_prompt)?;
+    open_responses_proxy_request_with_settings_and_user_agent(
+        &body.to_string(),
+        settings,
+        None,
+        "/responses",
+        None,
+        session_headers,
+        None,
+        true,
     )
     .await
 }
@@ -3281,9 +3314,13 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     beta_features: Option<&str>,
     session_headers: ProxySessionHeaders<'_>,
     live_request_id: Option<&str>,
+    full_current_compaction: bool,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
+    let local_compaction_request = !is_responses_compact_proxy_path(request_path)
+        && !request_has_compaction_trigger(&request_json)
+        && local_compaction::is_local_request(&request_json, COMPACTION_SUMMARY_INSTRUCTION);
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -3375,6 +3412,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let attempt = candidate_index;
         candidate_index += 1;
         let relay = relays[attempt].clone();
+        // 完整请求模式仅为本地调用状态，不进入上游 JSON、请求头或追踪元数据。
+        let local_compaction_request = local_compaction_request
+            || (full_current_compaction && relay.local_compaction_prompt_at_end_enabled());
         request_attempt += 1;
         if let Some(id) = live_request_id {
             crate::request_log::update_running_retry(
@@ -3425,10 +3465,63 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let probe_native_compaction = request_has_compaction_trigger(&request_json)
             && relay.protocol == RelayProtocol::Responses
             && !is_responses_compact_proxy_path(request_path);
+        let mut logical_body = request_json.clone();
+        if let Some(model) = model_override.as_deref().map(str::trim).filter(|model| !model.is_empty()) {
+            logical_body["model"] = json!(model);
+        }
+        let experimental_local_compaction =
+            local_compaction_request && relay.local_compaction_prompt_at_end_enabled();
+        let cache_key = relay.local_compaction_prompt_at_end_enabled()
+            .then(|| local_compaction::key(&relay, &logical_body, session_headers))
+            .flatten();
+        let cache_context = if !local_compaction_request {
+            cache_key.as_ref()
+                .and_then(|_| local_compaction::RequestContext::from_request(&logical_body))
+        } else {
+            None
+        };
+        let full_current_request = experimental_local_compaction && full_current_compaction;
+        let local_candidate = if local_compaction_request && !full_current_request {
+            cache_key
+                .as_deref()
+                .and_then(|key| local_compaction::candidate(key, &logical_body))
+        } else {
+            None
+        };
+        if experimental_local_compaction {
+            let detail = if full_current_request {
+                json!({"relayId":relay.id, "action":"current_request_suffix"})
+            } else if let Some(candidate) = &local_candidate {
+                json!({
+                    "relayId":relay.id, "action":"reuse_context",
+                    "contextFieldsMatch":candidate.context_fields_match,
+                    "historyPrefixMatches":candidate.history_prefix_matches
+                })
+            } else {
+                json!({
+                    "relayId":relay.id, "action":"original_request",
+                    "reason":if cache_key.is_some() {
+                        "no_request_context"
+                    } else {
+                        "missing_session_identity"
+                    }
+                })
+            };
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.local_compaction",
+                detail,
+            );
+        }
+        let local_exec_adapted = local_candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.exec_adapted);
+        if let Some(candidate) = local_candidate {
+            logical_body = candidate.body;
+        }
         let (mut endpoint, mut upstream_body, mut wire_api, compaction) =
             match upstream_request_parts(
                 &relay,
-                request_json.clone(),
+                logical_body,
                 request_path,
                 model_override.as_deref(),
                 preserve_native_request,
@@ -3451,6 +3544,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let legacy_native_compaction = relay.protocol == RelayProtocol::Responses
             && is_responses_compact_proxy_path(request_path);
         let is_compaction_request = compaction || probe_native_compaction || legacy_native_compaction;
+        if local_exec_adapted
+            && wire_api == UpstreamWireApi::Responses
+        {
+            // 声明与当前全部历史同时转换，不能对已转换的声明再拼入原始新工具结果。
+            upstream_body = crate::responses_exec::adapt_request(upstream_body)?;
+        }
         request_trace.relay_id = relay.id.clone();
         request_trace.relay_name = relay.name.clone();
         request_trace.wire_api = upstream_wire_api_label(wire_api).to_string();
@@ -3482,6 +3581,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
         let eligible = wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
+            && !local_compaction_request
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
         let mut key = None;
         let mut exec_adapted = false;
@@ -4032,6 +4132,14 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 continue 'request_attempts;
             }
         }
+        if (200..300).contains(&status_code)
+            && !local_compaction_request
+            && !is_compaction_request
+            && let Some(key) = cache_key
+        {
+            // buffered 模式会提前返回，也必须记录普通请求的逻辑上下文字段。
+            local_compaction::remember(key, cache_context, exec_adapted);
+        }
         // 200 的流式响应也可能带着 response.failed（官方 server_overloaded
         // 就是先回 200 再在流里失败）。在向 Codex 写出任何字节前先预读；
         // 若识别到容量失败就退避后重发同一次上游请求。
@@ -4040,6 +4148,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             && (200..300).contains(&status_code)
             && wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
+            && !experimental_local_compaction
             && !exec_adapted
             && auto_retry.is_some()
             && buffered_mode
@@ -4103,7 +4212,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         request_trace: Some(request_trace),
                         exec_adapted: false,
                         exec_outcome: None,
-                        response: None,
+                        // 仅保留真实响应头供启动器转发计数标记，不再读取剩余 body。
+                        response: Some(upstream),
                     });
                 }
                 BufferedResponsesStream::Overflow {
@@ -4120,6 +4230,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             && (200..300).contains(&status_code)
             && wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
+            && !experimental_local_compaction
             && !exec_adapted
             && auto_retry.is_some()
         {
@@ -4271,7 +4382,7 @@ fn select_model_route(
     if target_relay_id == source.id {
         anyhow::bail!("模型路由不能指向当前供应商自身：{model}");
     }
-    let target = settings
+    let mut target = settings
         .relay_profiles
         .iter()
         .find(|profile| profile.id == target_relay_id)
@@ -4283,6 +4394,7 @@ fn select_model_route(
     if target.protocol != RelayProtocol::Responses {
         anyhow::bail!("模型路由目标必须使用 Responses API：{}", target.name);
     }
+    target.local_compaction_prompt_at_end |= source.local_compaction_prompt_at_end_enabled();
 
     let upstream_model = if route.target_model.trim().is_empty() {
         model.to_string()
@@ -4899,14 +5011,13 @@ async fn upstream_request_parts(
         let official_auto_repair = official_base.is_some()
             && !legacy_compact_path
             && request_declares_no_tools(&body);
-        let opt_in_repair = relay.web_search_history_compat_enabled() && !legacy_compact_path;
-        if (opt_in_repair || official_auto_repair) && ensure_web_search_tool_for_history(&mut body)
+        if official_auto_repair && ensure_web_search_tool_for_history(&mut body)
         {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.web_search_history_compat",
                 json!({
                     "action": "declare_web_search",
-                    "source": if official_auto_repair { "official_login" } else { "provider_opt_in" },
+                    "source": "official_login",
                     "inputContainsWebSearchCall": true
                 }),
             );

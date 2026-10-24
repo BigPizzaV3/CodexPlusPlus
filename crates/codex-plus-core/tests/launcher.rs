@@ -2039,7 +2039,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
-            web_search_history_compat: false,
+            local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             anthropic_auth_header: String::new(),
@@ -2147,18 +2147,18 @@ async fn launch_starts_helper_when_model_routing_is_enabled() {
 }
 
 #[tokio::test]
-async fn launch_starts_helper_when_web_search_history_compat_is_enabled() {
+async fn launch_starts_helper_when_local_compaction_prompt_at_end_is_enabled() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let settings = BackendSettings {
         enhancements_enabled: false,
-        active_relay_id: "search-compat".to_string(),
+        active_relay_id: "local-compaction".to_string(),
         relay_profiles: vec![RelayProfile {
-            id: "search-compat".to_string(),
+            id: "local-compaction".to_string(),
             relay_mode: codex_plus_core::settings::RelayMode::PureApi,
-            web_search_history_compat: true,
+            local_compaction_prompt_at_end: true,
             ..RelayProfile::default()
         }],
         ..BackendSettings::default()

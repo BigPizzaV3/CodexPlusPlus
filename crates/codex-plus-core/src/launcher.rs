@@ -934,6 +934,9 @@ where
             // 再写 config.toml，保证 base_url、helper 与路由使用同一个端口（#1163）。
             helper_port = crate::protocol_proxy::ensure_protocol_proxy_port_available();
             hooks.ensure_active_protocol_proxy_config(&settings).await?;
+        } else {
+            crate::relay_config::restore_inactive_protocol_proxy_config_in_home(&home, &settings)
+                .context("恢复已停用的受管协议代理地址失败")?;
         }
         if settings.enhancements_enabled || protocol_proxy_enabled {
             // macOS 重启时旧 launcher 的 socket 释放可能稍晚于进程退出。
@@ -2711,7 +2714,14 @@ async fn handle_protocol_proxy_connection(
         return Ok(());
     }
     if upstream.is_stream {
-        write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8").await?;
+        let reasoning_included = (upstream.wire_api
+            == crate::protocol_proxy::UpstreamWireApi::Responses)
+            .then(|| upstream.response.as_ref()
+                .and_then(|response| response.headers().get("x-reasoning-included")))
+            .flatten();
+        write_http_stream_headers_with_reasoning(
+            stream, "200 OK", "text/event-stream; charset=utf-8", reasoning_included,
+        ).await?;
         if let Some(body) = upstream.buffered_body.take() {
             // buffered 模式：整段 SSE 已由协议代理收齐并重试完成，这里一次性转发。
             let mut transformer =
@@ -3453,10 +3463,25 @@ async fn write_http_stream_headers(
     status: &str,
     content_type: &str,
 ) -> anyhow::Result<()> {
+    write_http_stream_headers_with_reasoning(stream, status, content_type, None).await
+}
+
+async fn write_http_stream_headers_with_reasoning(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    reasoning_included: Option<&reqwest::header::HeaderValue>,
+) -> anyhow::Result<()> {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n"
     );
     stream.write_all(response.as_bytes()).await?;
+    if let Some(value) = reasoning_included {
+        stream.write_all(b"x-reasoning-included: ").await?;
+        stream.write_all(value.as_bytes()).await?;
+        stream.write_all(b"\r\n").await?;
+    }
+    stream.write_all(b"\r\n").await?;
     Ok(())
 }
 
@@ -6363,6 +6388,93 @@ mod tests {
 
         assert_eq!(decoded.as_bytes(), body);
         assert!(decode_protocol_proxy_request_body(body, Some("gzip")).is_err());
+    }
+
+    #[tokio::test]
+    async fn helper_preserves_only_genuine_upstream_reasoning_markers() {
+        use std::time::Duration;
+
+        let _settings_guard = crate::paths::settings_path_test_guard();
+        struct Restore(Option<PathBuf>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::paths::set_settings_path_for_tests(self.0.take());
+            }
+        }
+        for (mode, marker) in ["streaming", "buffered"].into_iter().flat_map(|mode| {
+            [None, Some("true"), Some("false")].map(|marker| (mode, marker))
+        }) {
+            let temp = tempfile::tempdir().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let _restore = Restore(crate::paths::set_settings_path_for_tests(Some(settings_path.clone())));
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let settings = crate::settings::BackendSettings {
+                protocol_proxy_auto_retry: true,
+                protocol_proxy_auto_retry_mode: mode.into(),
+                relay_profiles_enabled: true,
+                active_relay_id: "marker-fixture".into(),
+                relay_profiles: vec![crate::settings::RelayProfile {
+                    id: "marker-fixture".into(),
+                    relay_mode: crate::settings::RelayMode::PureApi,
+                    base_url: base_url.clone(),
+                    upstream_base_url: base_url.clone(),
+                    api_key: "fixture-key".into(),
+                    ..crate::settings::RelayProfile::default()
+                }],
+                ..crate::settings::BackendSettings::default()
+            };
+            let store = crate::settings::SettingsStore::new(settings_path);
+            store.save(&settings).unwrap();
+            let loaded = store.load().unwrap().active_relay_profile();
+            assert_eq!(loaded.base_url, base_url);
+            assert_eq!(loaded.api_key, "fixture-key");
+            let upstream = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    let read = socket.read(&mut buffer).await.unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&buffer[..read]);
+                    if let Some(end) = find_header_end(&request) {
+                        let length = header_value_from_headers(
+                            &String::from_utf8_lossy(&request[..end]), "content-length",
+                        ).unwrap().parse::<usize>().unwrap();
+                        if request.len() >= end + 4 + length { break; }
+                    }
+                }
+                let body = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_marker\",\"status\":\"completed\",\"output\":[]}}\n\n";
+                let marker_header = marker.map(|value| format!("x-reasoning-included: {value}\r\n")).unwrap_or_default();
+                socket.write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n{marker_header}X-Private-Fixture: private\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                ).as_bytes()).await.unwrap();
+            });
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let helper = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                handle_protocol_proxy_connection(
+                    &mut socket, r#"{"model":"fixture","input":"fixture","stream":true}"#,
+                    None, None, crate::protocol_proxy::ProxySessionHeaders::default(),
+                    "POST", "/v1/responses", None,
+                ).await.unwrap();
+            });
+            let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+            let mut response = Vec::new();
+            tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut response))
+                .await.expect("reasoning marker response timed out").unwrap();
+            assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"));
+            tokio::time::timeout(Duration::from_secs(10), helper)
+                .await.expect("reasoning marker helper timed out").unwrap();
+            tokio::time::timeout(Duration::from_secs(10), upstream)
+                .await.expect("reasoning marker upstream timed out").unwrap();
+            let end = find_header_end(&response).unwrap();
+            let headers = String::from_utf8_lossy(&response[..end]);
+            assert_eq!(header_value_from_headers(&headers, "x-reasoning-included").as_deref(), marker);
+            assert!(!headers.to_ascii_lowercase().contains("x-private-fixture"));
+        }
     }
 
     #[tokio::test]

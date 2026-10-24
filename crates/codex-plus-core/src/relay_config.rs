@@ -445,6 +445,76 @@ pub fn ensure_active_protocol_proxy_config_in_home(
     Ok(true)
 }
 
+/// 退役代理功能后仅恢复实时上游地址，不重放供应商快照中的其它配置。
+pub fn restore_inactive_protocol_proxy_config_in_home(
+    home: &Path,
+    settings: &BackendSettings,
+) -> anyhow::Result<bool> {
+    let profile = settings.active_relay_profile();
+    if !settings.relay_profiles_enabled
+        || settings.active_relay_uses_protocol_proxy()
+        || profile.protocol != RelayProtocol::Responses
+        || (profile.relay_mode == crate::settings::RelayMode::Official
+            && !profile.official_mix_api_key)
+    {
+        return Ok(false);
+    }
+    let upstream = profile.upstream_base_url.trim();
+    if !valid_relay_endpoint(upstream) {
+        return Ok(false);
+    }
+    let config_path = home.join("config.toml");
+    let existing = match std::fs::read_to_string(&config_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error)
+            .with_context(|| format!("读取 {} 失败", config_path.display())),
+    };
+    let Some(recognized_endpoint) = provider_string_from_config(&existing, "base_url") else {
+        return Ok(false);
+    };
+    let recorded_endpoint_matches = settings.retired_protocol_proxy_endpoints
+        .get(&profile.id)
+        .filter(|endpoint| is_loopback_responses_endpoint(endpoint))
+        .is_some_and(|endpoint| {
+            provider_string_from_config(&existing, "base_url").is_some_and(|live| {
+                normalize_relay_endpoint(endpoint) == normalize_relay_endpoint(&live)
+            })
+        });
+    if !recorded_endpoint_matches && !recognized_managed_proxy_endpoint(&profile, &existing) {
+        return Ok(false);
+    }
+    let mut doc = parse_toml_document(&existing)?;
+    let provider_id = active_or_default_provider_id(&doc);
+    let Some(base_url) = doc
+        .get_mut("model_providers")
+        .and_then(Item::as_table_mut)
+        .and_then(|providers| providers.get_mut(&provider_id))
+        .and_then(Item::as_table_mut)
+        .and_then(|provider| provider.get_mut("base_url"))
+        .and_then(Item::as_value_mut)
+    else {
+        return Ok(false);
+    };
+    // 识别函数允许旧配置回退查找；写入仍须严格限定到当前 provider。
+    if !base_url.as_str().is_some_and(|live| {
+        is_loopback_responses_endpoint(live)
+            && normalize_relay_endpoint(live) == normalize_relay_endpoint(&recognized_endpoint)
+    }) {
+        return Ok(false);
+    }
+    if base_url.as_str().is_some_and(|live| {
+        normalize_relay_endpoint(live) == normalize_relay_endpoint(upstream)
+    }) {
+        return Ok(false);
+    }
+    let decor = base_url.decor().clone();
+    *base_url = toml_edit::Value::from(upstream);
+    *base_url.decor_mut() = decor;
+    crate::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
+    Ok(true)
+}
+
 pub fn apply_relay_config_to_home(
     home: &Path,
     base_url: &str,
@@ -1579,6 +1649,23 @@ fn valid_relay_endpoint(endpoint: &str) -> bool {
         .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
 }
 
+pub(crate) fn retired_protocol_proxy_endpoint(profile: &RelayProfile) -> Option<String> {
+    if profile.id.trim().is_empty()
+        || profile.protocol != RelayProtocol::Responses
+        || (profile.relay_mode == crate::settings::RelayMode::Official
+            && !profile.official_mix_api_key)
+        || profile.relay_mode == crate::settings::RelayMode::Aggregate
+        || !valid_relay_endpoint(&profile.upstream_base_url)
+    {
+        return None;
+    }
+    let endpoint = provider_string_from_config(&profile.config_contents, "base_url")?;
+    (is_loopback_responses_endpoint(&endpoint)
+        && normalize_relay_endpoint(&endpoint)
+            != normalize_relay_endpoint(&profile.upstream_base_url))
+        .then_some(endpoint)
+}
+
 fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bool {
     let Some(live) = provider_string_from_config(config, "base_url") else {
         return false;
@@ -1594,7 +1681,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.has_model_routes()
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
-        || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
@@ -1607,8 +1694,8 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
             normalize_relay_endpoint(&upstream)
                 == normalize_relay_endpoint(&relay_profile_base_url(profile))
         });
-    let saved_real_upstream = !profile.upstream_base_url.trim().is_empty()
-        && !is_loopback_responses_endpoint(&profile.upstream_base_url);
+    let saved_real_upstream = valid_relay_endpoint(&profile.upstream_base_url)
+        && normalize_relay_endpoint(&profile.upstream_base_url) != normalize_relay_endpoint(&live);
     (proxy_mode && (saved_endpoint_matches || legacy_upstream_matches))
         || (saved_endpoint_matches && saved_real_upstream)
 }
@@ -1628,7 +1715,7 @@ fn managed_proxy_base_urls_for_profile(profile: &RelayProfile) -> Vec<String> {
 fn saved_proxy_endpoint_has_real_upstream(profile: &RelayProfile, endpoint: &str) -> bool {
     is_loopback_responses_endpoint(endpoint)
         && valid_relay_endpoint(&profile.upstream_base_url)
-        && !is_loopback_responses_endpoint(&profile.upstream_base_url)
+        && normalize_relay_endpoint(&profile.upstream_base_url) != normalize_relay_endpoint(endpoint)
 }
 
 pub(crate) fn live_endpoint_matches_profile(profile: &RelayProfile, config: &str) -> bool {
@@ -4936,7 +5023,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     if profile.has_model_routes()
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
-        || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || has_managed_proxy_config
     {
@@ -5142,7 +5229,7 @@ fn complete_relay_profile_config_with_proxy_port(
     let provider_base_url = if profile.has_model_routes()
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
-        || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
     {
         crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
