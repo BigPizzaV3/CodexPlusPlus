@@ -1024,7 +1024,7 @@ fn provider_sync_skips_rollout_locked_after_planning() {
 
     assert!(held_rollout.is_some());
     drop(held_rollout);
-    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
     assert!(result.skipped_locked_rollout_files.contains(&rollout));
     assert_eq!(fs::read(&rollout).unwrap(), original_rollout);
 }
@@ -1040,23 +1040,34 @@ fn provider_sync_skips_rollout_unreadable_after_planning() {
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
     write_provider_config(&home, "apigather");
-    let rollout = home.join("sessions/rollout-unreadable.jsonl");
-    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let rollout = home.join("sessions/rollout-blocked.jsonl");
+    let writable = home.join("sessions/rollout-writable.jsonl");
+    write_rollout(&rollout, "openai", "thread-blocked", "C:/workspace");
+    write_rollout(&writable, "openai", "thread-writable", "C:/workspace");
     let original_rollout = fs::read(&rollout).unwrap();
-    let mut revoked = false;
+    let permissions = fs::metadata(&rollout).unwrap().permissions();
+    let mut blocked = false;
+    let mut read_denied = false;
 
     let result = run_provider_sync_with_target_and_progress(Some(&home), None, |event| {
-        if !revoked && event.phase == ProviderSyncProgressPhase::Planning {
-            fs::set_permissions(&rollout, fs::Permissions::from_mode(0o000)).unwrap();
-            revoked = true;
+        if !blocked && event.phase == ProviderSyncProgressPhase::Planning {
+            fs::set_permissions(&rollout, fs::Permissions::from_mode(0)).unwrap();
+            read_denied = fs::File::open(&rollout).is_err();
+            blocked = true;
         }
     });
 
-    fs::set_permissions(&rollout, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(revoked);
-    assert_eq!(result.status, ProviderSyncStatus::Synced, "{}", result.message);
+    fs::set_permissions(&rollout, permissions).unwrap();
+    assert!(blocked);
+    // 特权用户可能绕过权限位，此时没有产生本用例需要的 IO 拒绝。
+    if !read_denied {
+        return;
+    }
+    assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+    assert_eq!(result.changed_session_files, 1);
     assert!(result.skipped_locked_rollout_files.contains(&rollout));
     assert_eq!(fs::read(&rollout).unwrap(), original_rollout);
+    assert!(fs::read_to_string(writable).unwrap().contains("apigather"));
 }
 
 #[test]

@@ -1295,15 +1295,36 @@ pub fn clear_relay_config_to_home_with_auth(
         .ok()
         .and_then(|doc| active_provider_id(&doc));
     let mut doc = parse_toml_document(&existing)?;
-    // 中转站与旧版 provider 的整段配置一律移除，不看它是否当前激活：
+    // 官方 HTTP provider 只改变传输方式，重启同步不能取消它，否则会重新启用 WebSocket。
+    // 只认可无额外路由/凭据字段的显式配置，不能仅凭 provider 名字保留第三方连接。
+    let preserve_official_http = active_provider
+        .as_deref()
+        .and_then(|id| doc.get("model_providers")?.get(id))
+        .and_then(Item::as_table_like)
+        .is_some_and(|provider| {
+            provider.get("wire_api").and_then(Item::as_str) == Some("responses")
+                && provider.get("requires_openai_auth").and_then(Item::as_bool) == Some(true)
+                && provider.get("supports_websockets").and_then(Item::as_bool) == Some(false)
+                && provider.iter().all(|(key, _)| {
+                    matches!(
+                        key,
+                        "name" | "wire_api" | "requires_openai_auth" | "supports_websockets"
+                    )
+                })
+        });
+    // 除上面确认的官方 HTTP 配置外，中转站与旧版 provider 的整段配置一律移除：
     // 只删认证字段会留下 base_url（切回官方后请求仍发往中转站，issue #2216），
     // 而「未被激活就跳过」会让切走时残留的 token 继续留在文件里。
     // 这里清的是 Codex++ 自己管理的 provider（custom / 旧版名），
     // 用户自定义的其它 provider（如 custom1）不受影响。
     for legacy_provider in LEGACY_RELAY_PROVIDERS {
-        remove_provider_table(&mut doc, legacy_provider);
+        if !preserve_official_http || active_provider.as_deref() != Some(*legacy_provider) {
+            remove_provider_table(&mut doc, legacy_provider);
+        }
     }
-    remove_provider_table(&mut doc, RELAY_PROVIDER);
+    if !preserve_official_http || active_provider.as_deref() != Some(RELAY_PROVIDER) {
+        remove_provider_table(&mut doc, RELAY_PROVIDER);
+    }
     let mut updated = normalize_optional_toml(doc);
     for key in [
         "OPENAI_API_KEY",
@@ -1316,13 +1337,17 @@ pub fn clear_relay_config_to_home_with_auth(
         "env_key",
         "requires_openai_auth",
     ] {
+        if key == "model_provider" && preserve_official_http {
+            continue;
+        }
         updated = remove_root_key(&updated, key);
     }
     // 只用在中转站 provider 名下时才清 model；用户手写的官方模型名要保留。
-    if active_provider.as_deref() == Some(RELAY_PROVIDER)
-        || active_provider
-            .as_deref()
-            .is_some_and(|provider| LEGACY_RELAY_PROVIDERS.contains(&provider))
+    if !preserve_official_http
+        && (active_provider.as_deref() == Some(RELAY_PROVIDER)
+            || active_provider
+                .as_deref()
+                .is_some_and(|provider| LEGACY_RELAY_PROVIDERS.contains(&provider)))
     {
         updated = remove_root_key(&updated, "model");
     }

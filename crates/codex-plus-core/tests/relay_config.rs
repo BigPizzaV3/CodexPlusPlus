@@ -3351,6 +3351,81 @@ base_url = "https://old.example.test/v1"
 }
 
 #[test]
+fn clear_relay_config_preserves_explicit_official_http_transport_across_restarts() {
+    // “重启 Codex”会调用 clear_relay_config_to_home_with_auth；重复同步不能取消 HTTP 选择。
+    for provider_id in ["openai-http", "custom", "CodexPP"] {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!(
+                "model_provider = \"{provider_id}\"\nmodel = \"gpt-5\"\n\n[model_providers.{provider_id}]\nname = \"OpenAI (HTTP)\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
+            ),
+        )
+        .unwrap();
+        let auth = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"fixture-oauth"}}"#;
+        for _ in 0..2 {
+            clear_relay_config_to_home_with_auth(temp.path(), Some(auth)).unwrap();
+            let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Table>().unwrap();
+            assert_eq!(
+                parsed.get("model_provider").and_then(toml::Value::as_str),
+                Some(provider_id)
+            );
+            assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
+            assert_eq!(
+                parsed["model_providers"][provider_id]["supports_websockets"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+                auth
+            );
+        }
+    }
+}
+
+#[test]
+fn clear_relay_config_does_not_preserve_http_selection_with_relay_overrides() {
+    for (wire_api, requires_auth, websockets, extra) in [
+        (
+            "responses",
+            true,
+            false,
+            "base_url = \"https://relay.example.test/v1\"",
+        ),
+        (
+            "responses",
+            true,
+            false,
+            "experimental_bearer_token = \"fixture-api\"",
+        ),
+        ("responses", true, false, "env_key = \"RELAY_KEY\""),
+        (
+            "responses",
+            true,
+            false,
+            "http_headers = { X-Custom = \"fixture\" }",
+        ),
+        ("responses", false, false, ""),
+        ("responses", true, true, ""),
+        ("chat", true, false, ""),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!(
+                "model_provider = \"custom\"\n[model_providers.custom]\nname = \"OpenAI (HTTP)\"\nwire_api = \"{wire_api}\"\nrequires_openai_auth = {requires_auth}\nsupports_websockets = {websockets}\n{extra}\n"
+            ),
+        )
+        .unwrap();
+        clear_relay_config_to_home(temp.path()).unwrap();
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(!config.contains("model_provider"), "{extra}: {config}");
+        assert!(!config.contains("fixture"), "{extra}: {config}");
+    }
+}
+
+#[test]
 fn clear_relay_config_removes_model_provider_and_preserves_other_config() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
