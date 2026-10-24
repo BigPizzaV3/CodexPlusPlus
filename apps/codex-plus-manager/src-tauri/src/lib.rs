@@ -9,7 +9,7 @@ mod runtime_health;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 const TRAY_ID: &str = "codex_plus_tray";
@@ -449,7 +449,6 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
         .tooltip("Codex++")
-        .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_MENU_SHOW => {
                 show_main_window(app);
@@ -460,15 +459,23 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             }
             _ => {}
         })
-        .on_tray_icon_event(|tray, event| match event {
-            TrayIconEvent::DoubleClick {
-                button: MouseButton::Left,
-                ..
-            } => {
-                show_main_window(&tray.app_handle());
+        .on_tray_icon_event(|tray, event| {
+            if tray_event_shows_main_window(&event) {
+                show_main_window(tray.app_handle());
             }
-            _ => {}
         });
+
+    // 左键单击是否弹出菜单按平台区分（issue #2676）：Windows 的托盘惯例是
+    // 左键唤起主窗口、右键弹菜单；macOS 菜单栏图标惯例是任意点击弹出菜单，
+    // Linux 同样保持既有行为不变。
+    #[cfg(windows)]
+    {
+        tray_builder = tray_builder.show_menu_on_left_click(false);
+    }
+    #[cfg(not(windows))]
+    {
+        tray_builder = tray_builder.show_menu_on_left_click(true);
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -486,6 +493,28 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+// 托盘图标事件是否唤起主窗口（issue #2676）。Windows 遵循「左键单击唤窗、
+// 右键弹菜单」的平台惯例，单击在按钮抬起时触发一次；其余平台左键仍由托盘
+// 菜单处理，只保留原有的左键双击唤窗行为，macOS / Linux 行为不变。
+fn tray_event_shows_main_window(event: &TrayIconEvent) -> bool {
+    let left_click_up = matches!(
+        event,
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        }
+    );
+    let left_double_click = matches!(
+        event,
+        TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        }
+    );
+    left_double_click || (cfg!(windows) && left_click_up)
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn macos_tray_icon() -> tauri::image::Image<'static> {
     tauri::include_image!("icons/icon.png")
@@ -493,6 +522,9 @@ fn macos_tray_icon() -> tauri::image::Image<'static> {
 
 #[cfg(test)]
 mod tray_tests {
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent, TrayIconId};
+    use tauri::{PhysicalPosition, Rect};
+
     #[test]
     fn macos_tray_preserves_the_brand_icons_colour_and_transparency() {
         let icon = super::macos_tray_icon();
@@ -504,6 +536,57 @@ mod tray_tests {
                 .any(|pixel| pixel[3] > 0 && pixel[2] > pixel[0])
         );
         assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
+    }
+
+    fn click(button: MouseButton, button_state: MouseButtonState) -> TrayIconEvent {
+        TrayIconEvent::Click {
+            id: TrayIconId::new(super::TRAY_ID),
+            position: PhysicalPosition::default(),
+            rect: Rect::default(),
+            button,
+            button_state,
+        }
+    }
+
+    fn double_click(button: MouseButton) -> TrayIconEvent {
+        TrayIconEvent::DoubleClick {
+            id: TrayIconId::new(super::TRAY_ID),
+            position: PhysicalPosition::default(),
+            rect: Rect::default(),
+            button,
+        }
+    }
+
+    // issue #2676：左键单击唤窗只在 Windows 生效；右键留给托盘菜单，
+    // 按下的中间过程不触发；左键双击唤窗是各平台原有行为，保持不变。
+    // CI 只在 Windows 跑测试，平台门控的守护见 windows_subsystem.rs 的
+    // 文本断言；这里按平台各写死字面量，避免 assert_eq!(…, cfg!(windows))
+    // 在单一平台上沦为同义反复。
+    #[test]
+    fn tray_left_click_restores_the_main_window_only_on_windows() {
+        #[cfg(windows)]
+        assert!(super::tray_event_shows_main_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        #[cfg(not(windows))]
+        assert!(!super::tray_event_shows_main_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(!super::tray_event_shows_main_window(&click(
+            MouseButton::Right,
+            MouseButtonState::Up
+        )));
+        assert!(!super::tray_event_shows_main_window(&click(
+            MouseButton::Middle,
+            MouseButtonState::Up
+        )));
+        assert!(!super::tray_event_shows_main_window(&click(
+            MouseButton::Left,
+            MouseButtonState::Down
+        )));
+        assert!(super::tray_event_shows_main_window(&double_click(MouseButton::Left)));
+        assert!(!super::tray_event_shows_main_window(&double_click(MouseButton::Right)));
+        assert!(!super::tray_event_shows_main_window(&TrayIconEvent::Enter {
+            id: TrayIconId::new(super::TRAY_ID),
+            position: PhysicalPosition::default(),
+            rect: Rect::default(),
+        }));
     }
 }
 
