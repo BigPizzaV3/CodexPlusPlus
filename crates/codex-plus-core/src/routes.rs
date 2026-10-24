@@ -450,6 +450,19 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
         }
+        "/side-chat/source" | "/side-chat/save" => {
+            let request = payload.clone();
+            let operation = if path == "/side-chat/source" {
+                crate::side_chat::source_snapshot
+            } else {
+                crate::side_chat::save
+            };
+            tokio::task::spawn_blocking(move || {
+                operation(&crate::codex_home::default_codex_home_dir(), &request)
+            })
+            .await
+            .unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())))
+        }
         "/proxy-status" => {
             // 代理进程的实时请求状态只存在管理器内存里；桥接进程通过本地 helper
             // 的只读路由取一份快照，供 Codex 页面里的状态条轮询。

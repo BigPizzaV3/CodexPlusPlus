@@ -30,6 +30,7 @@
       "[data-codex-archive-delete-all]",
       '[data-message-author-role]',
       '[data-testid="conversation-turn"]',
+      '[data-tab-id^="sidechat:"]',
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       ".composer-footer",

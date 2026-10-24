@@ -715,6 +715,8 @@ pub struct BackendSettings {
     pub codex_app_model_whitelist_unlock: bool,
     #[serde(rename = "codexAppSessionDelete", default = "default_true")]
     pub codex_app_session_delete: bool,
+    #[serde(rename = "codexAppSideChatSave", default)]
+    pub codex_app_side_chat_save: bool,
     #[serde(rename = "codexAppMarkdownExport", default = "default_true")]
     pub codex_app_markdown_export: bool,
     #[serde(rename = "codexAppSessionShare", default = "default_true")]
@@ -1020,6 +1022,7 @@ impl Default for BackendSettings {
             codex_app_plugin_marketplace_unlock: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
+            codex_app_side_chat_save: false,
             codex_app_markdown_export: true,
             codex_app_session_share: true,
             codex_app_usage_status_line: true,
@@ -2296,6 +2299,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
+    merge_bool_setting(target, source, "codexAppSideChatSave");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppSessionShare");
     merge_bool_setting(target, source, "codexAppUsageStatusLine");
@@ -4298,6 +4302,7 @@ experimental_bearer_token = "sk-existing""#
             "codexAppPath": "C:\\Portable\\Codex\\Codex.exe",
             "enhancementsEnabled": false,
             "codexAppSessionDelete": false,
+            "codexAppSideChatSave": true,
             "codexAppConversationView": true,
             "codexAppThreadIdBadge": true,
             "codexAppNativeFastUnlock": true,
@@ -4314,6 +4319,7 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(updated.codex_app_path, r"C:\Portable\Codex\Codex.exe");
         assert!(!updated.enhancements_enabled);
         assert!(!updated.codex_app_session_delete);
+        assert!(updated.codex_app_side_chat_save);
         assert!(updated.codex_app_conversation_view);
         assert!(updated.codex_app_thread_id_badge);
         assert!(updated.codex_app_native_fast_unlock);

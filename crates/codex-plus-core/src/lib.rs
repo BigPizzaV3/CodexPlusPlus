@@ -67,6 +67,7 @@ pub(crate) mod responses_exec_transport;
 pub mod routes;
 pub mod script_market;
 pub mod session_share;
+pub mod side_chat;
 pub mod settings;
 pub mod share;
 pub mod skills;

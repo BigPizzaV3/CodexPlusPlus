@@ -356,6 +356,8 @@ export const EN_PLAIN: Record<string, string> = {
   "插件与模型": "Plugins and models",
   "管理插件市场、模型列表和服务档位相关增强。": "Manage enhancements for the plugin marketplace, model list and service tier.",
   "对话与输入": "Conversation and input",
+  "旁支保存": "Save side chats",
+  "在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。": "Show Save on local side chat tabs. Once the reply finishes, save as a normal conversation including the parent history at the fork. Enable before creating a side chat.",
   "调整会话管理、输入行为和对话阅读体验。": "Adjust session management, input behavior and conversation reading experience.",
   "点击建议后直接发送到当前会话。": "Send a suggestion directly to the current conversation when clicked.",
   "控制下一步建议与回答大纲。": "Configure next-step suggestions and the answer outline.",

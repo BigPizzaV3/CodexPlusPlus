@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2728
+      "lines": 2743
     },
     {
       "name": "20-menu.js",
@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1959
+      "lines": 1963
     },
     {
       "name": "50-navigation.js",
@@ -58,7 +58,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1150
+      "lines": 1157
     },
     {
       "name": "71-model-picker-groups.js",
@@ -91,6 +91,11 @@
       "lines": 280
     },
     {
+      "name": "85-side-chat-save.js",
+      "description": "本地旁支保存：主历史读取引用、原生缓存采集与普通会话恢复",
+      "lines": 333
+    },
+    {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
       "lines": 890
@@ -118,7 +123,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 961
+      "lines": 962
     },
     {
       "name": "96-whale-compat.js",
@@ -133,7 +138,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 174
+      "lines": 175
     },
     {
       "name": "98-avatar-overlay-layout.js",

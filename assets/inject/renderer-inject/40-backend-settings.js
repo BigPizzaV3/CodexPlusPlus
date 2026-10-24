@@ -1275,6 +1275,10 @@
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionShare"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">旁支保存</div><div class="codex-plus-row-description">在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sideChatSave"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
                 </div>
