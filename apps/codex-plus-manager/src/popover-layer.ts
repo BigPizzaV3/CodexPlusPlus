@@ -98,6 +98,64 @@ export function resolvePopoverLayout({
   return { left, top, width, maxHeight: Math.round(finalHeight), placement };
 }
 
+export type AnchoredMenuLayout = {
+  /** `bottom`：贴在触发按钮下方；`top`：下方不够、已向上展开。 */
+  placement: PopoverPlacement;
+  top: number;
+  right: number;
+  maxHeight: number;
+};
+
+export const ANCHORED_MENU_DEFAULT_GAP = 8;
+export const ANCHORED_MENU_DEFAULT_EDGE = 12;
+/**
+ * 菜单至少要留出的可用高度。低于这个值就不再「贴着触发按钮」了：
+ * 宁可压住按钮，也不能把高度算成 0 让整个菜单消失（#2648 review）。
+ */
+export const ANCHORED_MENU_MIN_HEIGHT = 240;
+
+/**
+ * 贴在触发按钮下方、右边缘对齐的 fixed 菜单的坐标与限高。
+ *
+ * 这类菜单（如「从第三方导入」）内容长度不可预期（cc-switch 里有多少供应商就有多少行），
+ * 所以关键是**把触发按钮自身的 top 偏移从视口高度里扣掉**：只写
+ * `max-height: calc(100vh - 24px)` 时，菜单越靠下、底部溢出越多，最后一排按钮
+ * （导入 / 刷新列表）会掉到窗口外面——issue #1906 的「点了没反应」就是这么来的。
+ *
+ * 但只扣 top 还不够：触发按钮贴着窗口底部时会扣成 0 高，菜单直接消失。所以这里
+ * 和 `resolvePopoverLayout` 同口径——下方连最小可用高度都放不下、且上方更宽裕时
+ * 向上展开；两侧都不宽裕时保留最小可用高度，并整体夹进视口。
+ */
+export function resolveAnchoredMenuLayout(
+  trigger: PopoverRect,
+  viewport: PopoverViewport,
+  gap = ANCHORED_MENU_DEFAULT_GAP,
+  edge = ANCHORED_MENU_DEFAULT_EDGE,
+): AnchoredMenuLayout {
+  const right = Math.round(Math.max(edge, viewport.width - trigger.right));
+  const spaceBelow = viewport.height - edge - (trigger.bottom + gap);
+  const spaceAbove = trigger.top - edge - gap;
+  const placement: PopoverPlacement =
+    spaceBelow >= ANCHORED_MENU_MIN_HEIGHT || spaceBelow >= spaceAbove ? "bottom" : "top";
+  const available = Math.max(0, placement === "bottom" ? spaceBelow : spaceAbove);
+  // 上限永远不超过视口可用高度，下限保底到 ANCHORED_MENU_MIN_HEIGHT。
+  const maxHeight = Math.round(
+    Math.min(
+      Math.max(available, ANCHORED_MENU_MIN_HEIGHT),
+      Math.max(0, viewport.height - edge * 2),
+    ),
+  );
+  const preferredTop =
+    placement === "bottom" ? trigger.bottom + gap : trigger.top - gap - maxHeight;
+  const top = Math.round(
+    Math.min(
+      Math.max(preferredTop, edge),
+      Math.max(edge, viewport.height - edge - maxHeight),
+    ),
+  );
+  return { placement, top, right, maxHeight };
+}
+
 /** 触发器（几乎）滚出视口时弹层就该收起来，避免菜单挂在看不到的地方。 */
 export function isTriggerVisible(
   trigger: PopoverRect,

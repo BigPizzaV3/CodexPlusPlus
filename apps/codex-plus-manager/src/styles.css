@@ -810,10 +810,15 @@ body {
   right: 0;
   top: calc(100% + 8px);
   z-index: 20;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
   min-width: 260px;
-  /* 视口内兜底：菜单改 fixed 定位后也不允许超出窗口，超高时内部滚动。 */
+  /* 视口内兜底：菜单改 fixed 定位后也不允许超出窗口，超高时内部滚动。
+     真正的限高由 `resolveAnchoredMenuLayout` 按触发按钮的 top 算出来走内联样式，
+     这里只是没量到坐标时的回退（固定 100vh 不减 top 会把按钮顶到窗口外面）。
+     正常情况下只有供应商列表滚动（下面的 .third-party-import-list）；只有窗口
+     矮到连菜单头尾都放不下时，才由菜单自己滚动兜底，保证按钮仍可达。 */
   max-width: calc(100vw - 24px);
   max-height: calc(100vh - 24px);
   overflow-y: auto;
@@ -822,6 +827,34 @@ body {
   background: hsl(var(--popover));
   box-shadow: 0 12px 26px hsl(var(--foreground) / 0.08);
   padding: 8px;
+}
+
+/* 除供应商列表外的子项一律不压缩：否则「实际来源：…」这类一行文字会被 flex 挤成 4px 高。 */
+.third-party-import-menu > *:not(.third-party-import-list) {
+  flex: none;
+}
+
+/* 供应商列表是唯一可滚动的区域：上面的路径/操作与下面的导入按钮始终可见。 */
+.third-party-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* 只有列表参与伸缩：被压缩时由它让出高度，其它子项保持原始高度。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.third-party-import-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.third-party-import-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .third-party-import-menu button {
