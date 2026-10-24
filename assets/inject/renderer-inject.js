@@ -5926,12 +5926,12 @@
   function installCodexServiceTierDispatcherPatch() {
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
     if (serviceTierDispatcherPatchDisabled) return;
-    // 上一轮没跑完就不要再起一轮：loadDispatcher() 会依次试三个前缀，
+    // 上一轮没跑完就不要再起一轮：loadDispatcher() 会依次试四个前缀，
     // 没有这道去重时 scan 的频率就直接变成并发全量扫描的频率。
     if (serviceTierDispatcherPatchPromise) return;
     const loadDispatcher = async () => {
       const errors = [];
-      for (const assetPrefix of ["setting-storage-", "vscode-api-", "app-initial-"]) {
+      for (const assetPrefix of ["setting-storage-", "vscode-api-", "app-initial-", "app-shared-"]) {
         try {
           const module = await loadCodexAppModule(assetPrefix);
           const dispatcher = codexServiceTierDispatcherFromModule(module);
@@ -10846,13 +10846,40 @@
   }
 
   function dispatchCodexPlusMessage(dispatcher, type, payload) {
-    const message = codexServiceTierRequestOverride({ ...(payload || {}), type });
+    const message = applyCodexRemoteControlFeatureOverride(
+      codexServiceTierRequestOverride({ ...(payload || {}), type })
+    );
     const nextType = message?.type || type;
     const { type: _type, ...nextPayload } = message || {};
     if (nextType === "browser-use-session-route-capture") {
       observeCodexRemoteSessionNotification({ type: nextType, params: nextPayload });
     }
     return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
+  }
+
+  // Codex 26.1016 gates the desktop Connections page on the `control` desktop
+  // feature. Relay profiles that keep the ChatGPT session identity lose that
+  // flag even though the OAuth login and device enrollment are still valid, so
+  // the page collapses to the SSH tab. Restore only the flag; the app still
+  // runs its own auth and environment checks.
+  function codexRemoteControlGateRepairEnabled() {
+    if (!codexPlusBackendSettings || codexPlusBackendSettings.enhancementsEnabled === false) return false;
+    if (codexPlusBackendSettings.relayProfilesEnabled === false) return false;
+    const sessionProvider = String(
+      codexPlusBackendSettings.activeRelaySessionProvider || ""
+    ).trim().toLowerCase();
+    if (sessionProvider !== "openai") return false;
+    const profile = codexRemoteSessionActiveProfile();
+    if (!profile) return false;
+    // Official-only sessions have no relay upstream; leave those untouched.
+    return String(profile.upstreamBaseUrl || "").trim().length > 0;
+  }
+
+  function applyCodexRemoteControlFeatureOverride(message) {
+    if (!message || message.type !== "electron-desktop-features-changed") return message;
+    if (message.control === true) return message;
+    if (!codexRemoteControlGateRepairEnabled()) return message;
+    return { ...message, control: true };
   }
 
   function objectGlobalState(value) {
