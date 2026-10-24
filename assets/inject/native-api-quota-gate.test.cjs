@@ -10,6 +10,8 @@ function runNativeQuotaTests(createGate) {
   const official = { ...mixed, relayProfiles: [{ ...mixed.relayProfiles[0], officialMixApiKey: false }] };
   const raw = {
     plan_type: "plus", rate_limit: { allowed: false, limit_reached: true, used_percent: 100 },
+    rate_limit_reached_type: { type: "rate_limit_reached", details: "default" },
+    model_picker_upsell: { banner_type: "plus_rate_limit_reached" },
     rate_limit_warning: { text: "keep" }, credits: { balance: 0 },
   };
   const publications = [];
@@ -45,6 +47,8 @@ function runNativeQuotaTests(createGate) {
   const runtime = gate.installNative(mixed);
   equal(main.state.data.rate_limit.allowed, true, "existing exhausted cache must unlock");
   equal(main.state.data.rate_limit.limit_reached, false, "limit_reached must clear");
+  equal(main.state.data.rate_limit_reached_type, null, "rate_limit_reached_type must clear to bypass Iei check");
+  equal(main.state.data.model_picker_upsell, null, "model_picker_upsell must clear to unblock model selection");
   equal(main.state.data.rate_limit.used_percent, 100, "usage percentage must survive");
   equal(main.state.data.rate_limit_warning, raw.rate_limit_warning, "alerts are outside standalone scope");
   equal(main.state.data.credits, raw.credits, "credits must survive");

@@ -131,14 +131,23 @@
 
   // 低额度提示和发送锁都只看当前是不是官登混入 Key。纯官登不改这份用量。
   // 桌面端发送按钮读 rate_limit.allowed；limit_reached 为 true 也会被当成已用完。
-  // 混入时在查询发布前把 allowed 写成 true，并清掉 limit_reached。
+  // 混入时在查询发布前把 allowed 写成 true，并清掉 limit_reached 与 rate_limit_reached_type。
   // 百分比、重置时间、账号、积分和消费上限不动。图片额度横幅单独留下。
   function rewriteOfficialUsageStatus(value, policy = officialUsagePolicy()) {
     if (!policy.unlockSend || !isOfficialUsageStatus(value)) return null;
     const next = { ...value };
     let changed = false;
+    if (value.rate_limit_reached_type != null) {
+      next.rate_limit_reached_type = null;
+      changed = true;
+    }
+    if (value.model_picker_upsell != null) {
+      next.model_picker_upsell = null;
+      changed = true;
+    }
+    const rateLimit = value.rate_limit;
     if (value.rate_limit.allowed !== true || value.rate_limit.limit_reached === true) {
-      next.rate_limit = { ...value.rate_limit, allowed: true, limit_reached: false };
+      next.rate_limit = { ...rateLimit, allowed: true, limit_reached: false };
       changed = true;
     }
     const additionalRateLimits = unlockAdditionalRateLimits(value.additional_rate_limits);
