@@ -408,7 +408,9 @@ async fn nonmatching_errors_do_not_trigger_exec_negotiation() {
             .respond_with(rejection(status, error_type, message, param))
             .mount(&server)
             .await;
-        let original = request("other-model");
+        // 用列表内的非默认模型：该断言逐字节比对上游收到的请求体，模型名必须在
+        // 供应商 model_list 里，才会按「目录外模型映射」语义原样透传。
+        let original = request("gpt-5.6-sol");
         let mut upstream = open_responses_proxy_request_with_settings_for_path(
             &original.to_string(),
             settings.settings.clone(),

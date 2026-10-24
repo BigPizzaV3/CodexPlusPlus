@@ -56,6 +56,7 @@ const demoSettings = {
   protocolProxyAutoRetryIntervalSeconds: 2,
   protocolProxyAutoRetryMode: "streaming",
   protocolProxyAutoRetryCommitDelayMs: 1000,
+  protocolProxyMapUnlistedModels: true,
   helperMaxRequestBodyMib: 128,
   codexAppCapacityAutoRetry: false,
   codexAppStepwiseEnabled: false,

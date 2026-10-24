@@ -980,6 +980,15 @@ pub struct BackendSettings {
         default = "default_protocol_proxy_auto_retry_commit_delay_ms"
     )]
     pub protocol_proxy_auto_retry_commit_delay_ms: u64,
+    /// 目录外模型名映射（#1183 / #1446 / #1457）：Codex 客户端的自动审查
+    /// （codex-auto-review）与标题/摘要等后台任务固定使用 gpt-* 等内部模型名，
+    /// 不经用户选模；第三方上游没有这些名字，原样转发只会得到
+    /// 「No available channel / 模型不存在」类错误，还可能按失败重试持续消耗额度。
+    /// 开启后，本地协议代理把「不在当前供应商公布模型集里的请求模型」改写为
+    /// 该供应商的默认模型再转发；在公布集合里的模型（含用户显式配置的 gpt-*）
+    /// 不受影响。官方登录（未混入 API）与聚合供应商不适用本映射。
+    #[serde(rename = "protocolProxyMapUnlistedModels", default = "default_true")]
+    pub protocol_proxy_map_unlisted_models: bool,
     /// 本地协议代理（helper）单次 HTTP 请求体上限，单位 MiB。
     ///
     /// 默认 128 MiB：1M 上下文窗口的长会话（带截图历史）实测请求体可到 ~50 MB，
@@ -1099,6 +1108,7 @@ impl Default for BackendSettings {
             protocol_proxy_auto_retry_mode: default_protocol_proxy_auto_retry_mode(),
             protocol_proxy_auto_retry_commit_delay_ms:
                 default_protocol_proxy_auto_retry_commit_delay_ms(),
+            protocol_proxy_map_unlisted_models: true,
             helper_max_request_body_mib: default_helper_max_request_body_mib(),
             tools: BTreeMap::new(),
             active_tool: ToolId::Codex,
@@ -2232,6 +2242,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     // 协议代理自动重试：管理器整份保存也会经过 normalize，这里补上部分更新路径，
     // 保证任何走 /settings/set 的调用都不会被静默丢弃。
     merge_bool_setting(target, source, "protocolProxyAutoRetry");
+    // 目录外模型映射开关同上：漏登记会让 /settings/set 补丁「保存了但没生效」。
+    merge_bool_setting(target, source, "protocolProxyMapUnlistedModels");
     if let Some(value) = source
         .get("protocolProxyAutoRetryMaxAttempts")
         .and_then(Value::as_u64)

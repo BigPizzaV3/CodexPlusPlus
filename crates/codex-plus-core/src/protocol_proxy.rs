@@ -3332,6 +3332,16 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     {
         request_json["model"] = Value::String(route.upstream_model.clone());
     }
+    // 后台任务固定模型名映射（#1183/#1446/#1457）：聚合与显式路由都没接住、
+    // 且模型不在当前供应商公布集合里时，改写为默认模型再转发。
+    // `source_model` 保持原始值，轮转粘性与请求日志仍按用户视角的模型归因。
+    if aggregate_model.is_none()
+        && model_route.is_none()
+        && let Some(replacement) = unlisted_model_replacement(&settings, &source_model)
+    {
+        log_unlisted_model_mapping(&source_model, &replacement);
+        request_json["model"] = Value::String(replacement);
+    }
     let model = (!source_model.trim().is_empty()).then(|| source_model.clone());
     let context = RotationContext {
         conversation_id: conversation_id_from_responses_request(&request_json),
@@ -4251,6 +4261,76 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     }
 }
 
+/// 目录外模型名 → 当前供应商默认模型的映射（#1183 / #1446 / #1457）。
+///
+/// Codex 客户端的自动审查（`codex-auto-review`）、标题/摘要、子代理等后台任务
+/// 固定使用 gpt-* 或内部模型名，不经用户选模；第三方上游没有这些名字，原样
+/// 转发只会得到「No available channel / 模型不存在」类错误，还可能按失败重试
+/// 持续消耗额度。维护者定的方向是「按来源映射」，不丢弃请求
+/// （<https://github.com/BigPizzaV3/CodexPlusPlus/issues/1183#issuecomment-6052622554>）。
+///
+/// 规则：请求模型（剥掉 `[1M]` 窗口后缀后，忽略大小写）不在当前供应商公布的
+/// 模型集里时，改写为该供应商的默认模型。公布的模型集沿用
+/// `active_published_model_ids` 的口径——官方登录（未混入 API）返回空集
+/// （chatgpt.com 后端本来就有 gpt-*，不映射）；聚合供应商有自己的按成员归因
+/// 与「不做静默改派」策略，不在此处理。返回 `None` 表示照原样转发。
+fn unlisted_model_replacement(
+    settings: &crate::settings::BackendSettings,
+    model: &str,
+) -> Option<String> {
+    if !settings.protocol_proxy_map_unlisted_models
+        || settings.active_aggregate_relay_profile().is_some()
+    {
+        return None;
+    }
+    let published = crate::model_catalog::active_published_model_ids(settings);
+    if published.is_empty() {
+        return None;
+    }
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let (slug, _) = crate::model_suffix::parse_model_suffix(model);
+    let slug_lower = slug.to_ascii_lowercase();
+    let raw_lower = model.to_ascii_lowercase();
+    if published.iter().any(|id| {
+        let id = id.to_ascii_lowercase();
+        id == slug_lower || id == raw_lower
+    }) {
+        return None;
+    }
+    let replacement = crate::relay_config::relay_profile_model(&settings.active_relay_profile())
+        .trim()
+        .to_string();
+    (!replacement.is_empty()).then_some(replacement)
+}
+
+/// 每对「来源 → 目标」只记一条映射诊断日志：#1183 的后台探测约每秒一次，
+/// 逐请求记录会把诊断文件刷大（同类投诉见 #2681）。
+fn log_unlisted_model_mapping(source: &str, replacement: &str) {
+    static LOGGED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let key = format!(
+        "{}->{}",
+        source.to_ascii_lowercase(),
+        replacement.to_ascii_lowercase()
+    );
+    let logged = LOGGED.get_or_init(Default::default);
+    // 临界区只有 HashSet::insert，不会恐慌；即便锁中毒（Err）也取回内部
+    // 状态继续去重，保证「每对只记一条」在任何情况下都成立。
+    let mut guard = logged
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !guard.insert(key) {
+        return;
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.unlisted_model_mapped",
+        json!({"from": source, "to": replacement}),
+    );
+}
+
 fn select_model_route(
     settings: &crate::settings::BackendSettings,
     model: &str,
@@ -4686,7 +4766,18 @@ pub async fn open_chat_completions_proxy_request(
         anyhow::bail!("Chat Completions 上游 Key 不能为空");
     }
 
-    let request_json: Value = serde_json::from_str(body)?;
+    let mut request_json: Value = serde_json::from_str(body)?;
+    // 与 Responses 路径同规则的目录外模型映射（#1183/#1446/#1457）：
+    // 这条直通路径此前对模型名零干预，后台任务的 gpt-* 原样打到上游。
+    let requested_model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if let Some(replacement) = unlisted_model_replacement(&settings, &requested_model) {
+        log_unlisted_model_mapping(&requested_model, &replacement);
+        request_json["model"] = Value::String(replacement);
+    }
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -10658,6 +10749,122 @@ mod exec_retry_after_tests {
                 "{value}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod unlisted_model_mapping_tests {
+    use super::*;
+
+    fn api_settings(model_list: &str, model: &str) -> crate::settings::BackendSettings {
+        let profile = crate::settings::RelayProfile {
+            id: "relay-api".to_string(),
+            name: "API 中转".to_string(),
+            model: model.to_string(),
+            model_list: model_list.to_string(),
+            relay_mode: crate::settings::RelayMode::PureApi,
+            ..crate::settings::RelayProfile::default()
+        };
+        let mut settings = crate::settings::BackendSettings::default();
+        settings.relay_profiles = vec![profile];
+        settings.active_relay_id = "relay-api".to_string();
+        settings
+    }
+
+    #[test]
+    fn unlisted_background_models_map_to_profile_default() {
+        let settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "minimax-m2.5");
+        // Codex 后台任务（标题/摘要/子代理）与自动审查的固定模型名（#1183/#1446）。
+        assert_eq!(
+            unlisted_model_replacement(&settings, "gpt-5.4").as_deref(),
+            Some("minimax-m2.5")
+        );
+        assert_eq!(
+            unlisted_model_replacement(&settings, "codex-auto-review").as_deref(),
+            Some("minimax-m2.5")
+        );
+    }
+
+    #[test]
+    fn listed_models_pass_through_unchanged() {
+        let settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "minimax-m2.5");
+        assert_eq!(unlisted_model_replacement(&settings, "minimax-m2.5"), None);
+        assert_eq!(unlisted_model_replacement(&settings, "deepseek-v4-pro"), None);
+        // 带 [1M] 窗口后缀的写法与列表里的同名模型等价。
+        assert_eq!(unlisted_model_replacement(&settings, "deepseek-v4-pro[1M]"), None);
+        // 用户显式把 gpt-* 配进列表时照原样转发，映射不能劫持。
+        let with_gpt = api_settings("gpt-5.4\nminimax-m2.5", "minimax-m2.5");
+        assert_eq!(unlisted_model_replacement(&with_gpt, "GPT-5.4"), None);
+    }
+
+    #[test]
+    fn switch_off_disables_mapping() {
+        let mut settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "minimax-m2.5");
+        settings.protocol_proxy_map_unlisted_models = false;
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+    }
+
+    #[test]
+    fn official_login_without_mix_never_maps() {
+        let mut settings = api_settings("minimax-m2.5", "minimax-m2.5");
+        settings.relay_profiles[0].relay_mode = crate::settings::RelayMode::Official;
+        settings.relay_profiles[0].official_mix_api_key = false;
+        // 官方登录未混 API：公布的模型集为空（chatgpt.com 后端自带 gpt-*）。
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+    }
+
+    #[test]
+    fn aggregate_active_profile_skips_mapping() {
+        let mut settings = api_settings("minimax-m2.5", "minimax-m2.5");
+        settings.relay_profiles[0].relay_mode = crate::settings::RelayMode::Aggregate;
+        settings.aggregate_relay_profiles = vec![crate::settings::AggregateRelayProfile {
+            id: "relay-api".to_string(),
+            name: "聚合".to_string(),
+            session_provider: Default::default(),
+            model_aggregation_enabled: false,
+            strategy: Default::default(),
+            members: Vec::new(),
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+        }];
+        // 聚合有自己的按成员归因与「不做静默改派」策略，不在此映射。
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+    }
+
+    #[test]
+    fn config_contents_model_takes_priority_as_replacement() {
+        // relay_profile_model 优先读 config_contents 的 model 键（真正写进
+        // config.toml 的值）；映射目标必须与它一致，而不是表单里的 model 字段。
+        let mut settings = api_settings("minimax-m2.5", "form-model");
+        settings.relay_profiles[0].config_contents =
+            "model = \"deepseek-v4-pro\"\n".to_string();
+        assert_eq!(
+            unlisted_model_replacement(&settings, "gpt-5.4").as_deref(),
+            Some("deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn official_mix_api_key_maps_by_profile_models() {
+        // 官方登录但混入 API Key：公布的模型集是 profile 的 model_list（上游仍是
+        // 第三方），后台固定模型名同样应改写到默认模型。
+        let mut settings = api_settings("minimax-m2.5\ngpt-5.4", "minimax-m2.5");
+        settings.relay_profiles[0].relay_mode = crate::settings::RelayMode::Official;
+        settings.relay_profiles[0].official_mix_api_key = true;
+        assert_eq!(unlisted_model_replacement(&settings, "codex-auto-review").as_deref(), Some("minimax-m2.5"));
+        // 混入模式下列表里显式配置的 gpt-* 仍然原样转发。
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+    }
+
+    #[test]
+    fn empty_default_model_never_maps() {
+        // 列表非空但默认模型为空时没有改写目标，保持原样转发。
+        let settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "");
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+        // 空模型名的请求不处理。
+        let settings = api_settings("minimax-m2.5", "minimax-m2.5");
+        assert_eq!(unlisted_model_replacement(&settings, "  "), None);
     }
 }
 

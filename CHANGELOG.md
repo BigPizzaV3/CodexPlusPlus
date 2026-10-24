@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 修复
+
+- **第三方上游反复收到 gpt-\* / codex-auto-review 请求并报错扣费**（#1183，同族 #1446 / #1457）：Codex 客户端的自动审查（`codex-auto-review`）与标题/摘要、子代理等后台任务固定使用 gpt-\* 等内部模型名，不经用户选模；第三方上游没有这些名字，本地代理原样转发只会得到「No available channel / 模型不存在」类错误，还可能按失败重试持续消耗额度。现在本地协议代理（Responses 与 Chat Completions 两条路径）会把「不在当前供应商公布模型集里的请求模型」改写为该供应商的默认模型再转发：用户显式配置进列表的 gpt-\* 照原样转发；官方登录（未混入 API）与聚合供应商不适用（前者后端本来就有官方模型，后者有自己的按成员归因策略）。设置页新增「目录外模型映射」开关（默认开启，对应 `protocolProxyMapUnlistedModels`），每对「来源 → 目标」只记一条诊断日志（`protocol_proxy.unlisted_model_mapped`），不会刷大日志。
+
 ### 新增
 
 - **Computer Use 接入（原生直通 Codex 桌面版的 CU server）**：新增「Computer Use」页，把 Codex 桌面版的 computer use 以 MCP 接给 Claude Code 与 Claude Desktop。做法不是重写鼠标键盘模拟，也不是转译 cua-repl 的 JS 工具，而是**直通原生 CU server**（`SkyComputerUseClient mcp`）：它对外就是标准 stdio MCP，10 个离散工具（`list_apps` / `get_app_state` / `click` / `perform_secondary_action` / `set_value` / `select_text` / `scroll` / `drag` / `press_key` / `type_text`），带 `annotations`。唯一门槛是它校验「直接父进程的代码签名」——非 OpenAI 签名会被拒为 `-10000 Sender process is not authenticated`；因此由 ChatGPT.app 自带的签名 node 执行一个只负责 `spawn` 的 shim 拉起，中间不插 shell。工具面、AX 树信封、diff 语义（`There has been no change…`）、截图原分辨率、`frontmost` 标记全部原样透传，不再逐项手工对齐。代理只做三件事：字节转发、`initialize` 时替客户端补 `elicitation` 能力、按策略处理审批。「运行自检」走同一条直通链路（`tools/list` 校验工具面 + `tools/call list_apps`），失败按「未安装 / 父进程不受信 / 未授权 / 服务未就绪」分类提示。写入配置仍是「锁 → 读 → 比对 → 备份 → 原子写」，同名条目不是本功能写入的一律不覆盖；接入后需重启对应客户端会话。Codex 自己会把 `[mcp_servers.computer-use]` 写进 `~/.codex/config.toml`，桌面版与 CLI 共用该文件，因此不再重复接入。

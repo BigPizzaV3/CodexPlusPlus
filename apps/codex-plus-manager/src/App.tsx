@@ -363,6 +363,8 @@ type BackendSettings = WhaleBalanceSettings & {
   protocolProxyAutoRetryMode: "streaming" | "streaming-legacy" | "buffered";
   /** 流式避震下首段可见输出后到提交的延迟（毫秒）；0 表示一出现可见输出立即提交。与 Rust `protocol_proxy_auto_retry_commit_delay_ms` 对应。 */
   protocolProxyAutoRetryCommitDelayMs: number;
+  /** 把不在当前供应商模型列表里的请求模型（Codex 后台任务的 gpt-* / codex-auto-review）改写为该供应商默认模型。与 Rust `protocol_proxy_map_unlisted_models` 对应。 */
+  protocolProxyMapUnlistedModels: boolean;
   /** 本地协议代理单次请求体上限（MiB，32~512，默认 128）。与 Rust `helper_max_request_body_mib` 对应。 */
   helperMaxRequestBodyMib: number;
   codexAppCapacityAutoRetry: boolean;
@@ -1266,6 +1268,7 @@ const defaultSettings: BackendSettings = {
   protocolProxyAutoRetryStatusCodes: [],
   protocolProxyAutoRetryMode: "streaming",
   protocolProxyAutoRetryCommitDelayMs: 1000,
+  protocolProxyMapUnlistedModels: true,
   helperMaxRequestBodyMib: 128,
   codexAppCapacityAutoRetry: false,
   codexAppStepwiseEnabled: false,
@@ -5513,6 +5516,30 @@ function ProxySettingsScreen({
             </div>
             <p className="field-hint">
               {t("流式：保留实时输出，正文提交前遇到过载由代理重试，之后交给 Codex；「首字提交延迟」为出现正文后再缓冲的时长，0 表示立即提交。整段缓冲：始终由代理重试，但要等整段生成完才显示。")}
+            </p>
+          </div>
+        </CardContent>
+      </Panel>
+
+      <Panel>
+        <CardHead
+          title={t("目录外模型映射")}
+          detail={t("把 Codex 后台任务的固定模型名改写为当前供应商的默认模型")}
+        />
+        <CardContent className="settings-content">
+          <div className="settings-block">
+            <label className="check-row">
+              <input
+                checked={form.protocolProxyMapUnlistedModels}
+                onChange={(event) =>
+                  onFormChange({ ...form, protocolProxyMapUnlistedModels: event.currentTarget.checked })
+                }
+                type="checkbox"
+              />
+              <span>{t("改写目录外模型名")}</span>
+            </label>
+            <p className="field-hint">
+              {t("Codex 的自动审查（codex-auto-review）与标题/摘要等后台任务固定使用 gpt-* 等内部模型名，不经选模；第三方上游没有这些名字，原样转发只会报「模型不存在」并可能反复消耗额度。开启后，不在当前供应商模型列表里的请求模型会改写为该供应商的默认模型再转发（#1183 / #1446 / #1457）；官方登录与聚合供应商不受影响。")}
             </p>
           </div>
         </CardContent>
@@ -15122,6 +15149,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     protocolProxyAutoRetry: settings.protocolProxyAutoRetry !== false,
+    protocolProxyMapUnlistedModels: settings.protocolProxyMapUnlistedModels !== false,
     protocolProxyAutoRetryMaxAttempts: clampNumber(settings.protocolProxyAutoRetryMaxAttempts ?? 5, 0, 20),
     protocolProxyAutoRetryMode:
       settings.protocolProxyAutoRetryMode === "buffered"
