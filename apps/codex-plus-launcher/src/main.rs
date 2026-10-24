@@ -627,7 +627,12 @@ async fn run_embedded_session(
             let (host_stop, result) = run_periodic_until_exit(
                 wait_for_session_exit_or_stop(handle.wait_for_codex_exit(), &mut stop),
                 std::time::Duration::from_secs(30 * 60),
-                || repair_session_index_automatically(hooks.index_repair_checks_setting()),
+                || {
+                    repair_session_index_automatically(
+                        hooks.index_repair_checks_setting(),
+                        Some(handle.debug_port),
+                    )
+                },
             )
             .await;
             handle.stop_isolated_api_quota_gate().await;
@@ -815,14 +820,16 @@ where
     }
 }
 
-async fn repair_session_index_automatically(check_setting: bool) {
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+async fn repair_session_index_automatically(check_setting: bool, debug_port: Option<u16>) {
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<
+        Option<codex_plus_data::SessionIndexRepairReport>,
+    > {
         if check_setting
             && !codex_plus_core::settings::SettingsStore::default()
                 .load()?
                 .provider_sync_enabled
         {
-            return Ok(());
+            return Ok(None);
         }
         let report = codex_plus_data::repair_session_index(None)?;
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -834,16 +841,26 @@ async fn repair_session_index_automatically(check_setting: bool) {
                 "repaired_items": report.repaired_items,
             }),
         );
-        Ok(())
+        Ok(Some(report))
     })
     .await
     .map_err(anyhow::Error::from)
     .and_then(|result| result);
-    if let Err(error) = result {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "launcher.session_index_repair.failed",
-            json!({ "message": error.to_string() }),
-        );
+    match result {
+        Ok(Some(report)) => {
+            codex_plus_core::history_turn_recovery::after_index_repair(
+                debug_port,
+                report.aborted_reason.is_some(),
+            )
+            .await;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.session_index_repair.failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
     }
 }
 
@@ -871,7 +888,11 @@ async fn run_activation_provider_sync(
             json!({ "message": error.to_string() }),
         );
     }
-    repair_session_index_automatically(hooks.index_repair_checks_setting()).await;
+    repair_session_index_automatically(
+        hooks.index_repair_checks_setting(),
+        session_snapshot().debug_port,
+    )
+    .await;
     codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
         &home,
         "launcher.activate_existing.after_provider_sync",
@@ -2706,8 +2727,9 @@ mod tests {
         // 同步失败只记日志，不能把用户这次「激活已有窗口」的诉求一起弄失败。
         assert!(!body.contains("hooks.run_provider_sync().await?"));
         assert!(body.contains("launcher.activate_existing_provider_sync.failed"));
-        assert!(body.contains(
-            "repair_session_index_automatically(hooks.index_repair_checks_setting()).await"
+        let compact = body.split_whitespace().collect::<String>();
+        assert!(compact.contains(
+            "repair_session_index_automatically(hooks.index_repair_checks_setting(),session_snapshot().debug_port,).await"
         ));
     }
 

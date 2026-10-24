@@ -91,6 +91,11 @@
       "lines": 280
     },
     {
+      "name": "85-history-turn-recovery.js",
+      "description": "会话索引检查完成后的单次限量原生补载",
+      "lines": 287
+    },
+    {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
       "lines": 890
