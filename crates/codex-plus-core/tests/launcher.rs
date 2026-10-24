@@ -910,12 +910,29 @@ fn launcher_packaged_activation_can_preserve_process_id() {
 }
 
 #[test]
-fn launcher_applies_codexplusplus_window_icon_after_packaged_activation() {
+fn launcher_keeps_taskbar_integration_without_overriding_codex_icons() {
     let source = include_str!("../src/launcher.rs");
-
-    assert!(source.contains("apply_codexplusplus_window_icon_after_launch(process_id);"));
-    assert!(source.contains("WindowIconApplyState::default()"));
-    assert!(source.contains("windows_integration::apply_codexplusplus_icon_attempt"));
+    assert!(source.contains("apply_codexplusplus_taskbar_after_launch(process_id);"));
+    assert!(source.contains("windows_integration::apply_codexplusplus_taskbar_to_process_window(process_id)"));
+    for forbidden in [
+        "apply_codexplusplus_window_icon",
+        "apply_native_codex_taskbar",
+        "apply_codexplusplus_icon",
+        "windows_apply_codexplusplus_icon",
+        "WM_SETICON",
+        "PKEY_AppUserModel",
+        "ImplicitAppShortcuts",
+    ] {
+        assert!(!source.contains(forbidden), "launcher must not override Codex icons: {forbidden}");
+    }
+    for production in [
+        include_str!("../src/windows_integration.rs"),
+        include_str!("../src/windows_taskbar.rs"),
+    ] {
+        for forbidden in ["PKEY_AppUserModel_RelaunchIconResource", "WM_SETICON", "ImplicitAppShortcuts"] {
+            assert!(!production.contains(forbidden), "integration must not override Codex icons: {forbidden}");
+        }
+    }
 }
 
 #[test]

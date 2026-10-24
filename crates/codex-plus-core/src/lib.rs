@@ -85,6 +85,8 @@ pub mod whale_full;
 // 是一个只含少数无平台依赖项（如 current_process_is_elevated 的桩实现）的空模块。
 // 门控在模块级会导致 `if cfg!(windows)` 这类运行时分支在非 Windows 平台找不到符号。
 mod windows_integration;
+#[cfg(windows)]
+mod windows_taskbar;
 
 #[cfg(windows)]
 pub fn windows_create_no_window() -> u32 {
@@ -101,12 +103,19 @@ pub fn windows_activate_process_window(process_id: u32) -> bool {
     windows_integration::activate_process_window(process_id)
 }
 
+/// 设置 Codex++ 任务栏分组、名称和重启入口，保留 Codex 自己的图标。
+#[cfg(windows)]
+pub fn windows_apply_codexplusplus_taskbar_to_process_window(process_id: u32) -> bool {
+    windows_integration::apply_codexplusplus_taskbar_to_process_window(process_id)
+}
+
+/// 兼容旧调用方；图标参数不再使用，行为与任务栏接口一致。
 #[cfg(windows)]
 pub fn windows_apply_codexplusplus_icon_to_process_window(
     process_id: u32,
-    icon_resource_path: std::path::PathBuf,
+    _icon_resource_path: std::path::PathBuf,
 ) -> bool {
-    windows_integration::apply_codexplusplus_icon_to_process_window(process_id, icon_resource_path)
+    windows_apply_codexplusplus_taskbar_to_process_window(process_id)
 }
 
 #[cfg(windows)]
