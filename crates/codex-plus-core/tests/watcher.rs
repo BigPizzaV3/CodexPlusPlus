@@ -25,6 +25,14 @@ fn cdp_listening_returns_true_for_bound_loopback_port() {
 
 #[test]
 fn cdp_listening_returns_true_for_bound_ipv6_loopback_port() {
+    // Windows 环境可能禁用 IPv6 loopback 访问；不可用时跳过这个环境专用回归。
+    let probe_listener = std::net::TcpListener::bind("[::1]:0").unwrap();
+    let probe_port = probe_listener.local_addr().unwrap().port();
+    if std::net::TcpStream::connect(("::1", probe_port)).is_err() {
+        return;
+    }
+    drop(probe_listener);
+
     let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
     let port = listener.local_addr().unwrap().port();
 

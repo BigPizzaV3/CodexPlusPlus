@@ -20,6 +20,7 @@ pub mod computer_use_approval;
 pub mod computer_use_proxy;
 pub mod disclaimed_spawn;
 pub mod connect;
+pub(crate) mod context_usage;
 pub mod diagnostic_log;
 pub mod dictation;
 pub mod dream_skin;

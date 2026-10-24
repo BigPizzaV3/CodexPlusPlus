@@ -18,7 +18,7 @@ use std::process::Command;
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, oneshot};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -5242,6 +5242,16 @@ fn pick_injectable_codex_page_target_requires_websocket() {
 
 #[tokio::test]
 async fn list_targets_can_query_ipv6_loopback_cdp_endpoint() {
+    // Windows 环境可能禁用 IPv6 loopback 访问；不可用时跳过这个环境专用回归。
+    let probe_listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("IPv6 loopback listener should bind");
+    let probe_addr = probe_listener.local_addr().unwrap();
+    if TcpStream::connect(probe_addr).await.is_err() {
+        return;
+    }
+    drop(probe_listener);
+
     let listener = TcpListener::bind("[::1]:0")
         .await
         .expect("IPv6 loopback listener should bind");
