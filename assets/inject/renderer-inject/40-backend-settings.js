@@ -669,12 +669,22 @@
     return Number.isFinite(expiresAt) && expiresAt < Date.now();
   }
 
+  /**
+   * 广告落地页只认 http(s)。
+   *
+   * 清单来自远程，`javascript:` 之类的 scheme 一旦写进 `<a href>`，点击就会在
+   * Codex 渲染进程里执行脚本；`escapeHtml` 只挡得住标签，挡不住 scheme。
+   */
+  function isCodexPlusAdWebUrl(value) {
+    return /^https?:\/\/[^\s/]/i.test(String(value || "").trim());
+  }
+
   function normalizeCodexPlusAds(payload) {
     if (!payload || !Array.isArray(payload.ads)) return [];
     // 只留赞助商推荐。上游清单里的 normal 条目不属于合作伙伴分组，
     // 放进来只会让「有数据但渲染不出东西」的状态变得难以判断。
     return payload.ads.filter((ad) => {
-      return ad && ad.type === "sponsor" && ad.title && ad.description && ad.url && !isCodexPlusAdExpired(ad);
+      return ad && ad.type === "sponsor" && ad.title && ad.description && isCodexPlusAdWebUrl(ad.url) && !isCodexPlusAdExpired(ad);
     }).map((ad) => ({
       id: String(ad.id || ad.title),
       type: ad.type,
@@ -1523,9 +1533,11 @@
       // Discord / Telegram / Issues 按钮也一律走 window.open）。
       const adCard = target?.closest("[data-codex-plus-ad-url]");
       if (adCard) {
+        // 无论 URL 合不合法都先掐掉 <a> 的默认行为：留下它，非 http(s) 的
+        // scheme 就会走原生跳转，而不是被下面这层挡掉。
+        event.preventDefault();
         const adUrl = adCard.getAttribute("data-codex-plus-ad-url") || "";
-        if (/^https?:\/\//i.test(adUrl)) {
-          event.preventDefault();
+        if (isCodexPlusAdWebUrl(adUrl)) {
           window.open(adUrl, "_blank", "noopener,noreferrer");
         }
         return;

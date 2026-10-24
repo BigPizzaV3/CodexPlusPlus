@@ -1008,6 +1008,29 @@ return {
     runtime.set({ ads: [] });
     assert.match(runtime.render(), /暂无推荐内容。/);
   });
+
+  it("drops sponsor destinations that are not http(s)", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const runtime = new Function(`${escapeSource(renderer)}\n${segment(renderer, "  const codexPlusAdsUrl =", "  function cacheBustCodexPlusAdUrl(")}
+return {
+  render: renderCodexPlusAds,
+  set(payload, loaded = true) { codexPlusAds = normalizeCodexPlusAds(payload); codexPlusAdsLoaded = loaded; return codexPlusAds; }
+};`)() as { render: () => string; set: (payload: unknown, loaded?: boolean) => Array<Record<string, unknown>> };
+    const base = { type: "sponsor", title: "赞助商", description: "推荐内容" };
+    const normalized = runtime.set({
+      ads: [
+        { ...base, id: "ok", url: "https://example.test/partner" },
+        { ...base, id: "javascript", url: " javascript:alert(document.domain)" },
+        { ...base, id: "data", url: "data:text/html,<script>alert(1)</script>" },
+        { ...base, id: "file", url: "file:///etc/passwd" },
+        { ...base, id: "scheme-relative", url: "//example.test/partner" },
+      ],
+    });
+    assert.deepEqual(normalized.map((ad) => ad.id), ["ok"]);
+    const html = runtime.render();
+    assert.ok(html.includes('data-codex-plus-ad-url="https://example.test/partner"'));
+    assert.doesNotMatch(html, /javascript:|data:text\/html|file:\/\/|scheme-relative/);
+  });
 });
 
 describe("renderer injection scan scheduling", () => {

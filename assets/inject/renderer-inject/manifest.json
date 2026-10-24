@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1959
+      "lines": 1971
     },
     {
       "name": "50-navigation.js",

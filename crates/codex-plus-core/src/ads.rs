@@ -34,7 +34,7 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
             matches!(ad_type, Some("sponsor" | "normal"))
                 && title.is_some_and(|value| !value.trim().is_empty())
                 && description.is_some_and(|value| !value.trim().is_empty())
-                && url.is_some_and(|value| !value.trim().is_empty())
+                && url.is_some_and(is_web_url)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -63,6 +63,19 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
     normalized
 }
 
+/// 广告落地页只接受 http(s) 外链。
+///
+/// 广告清单是远程内容，`javascript:` / `data:` / `file:` 一旦漏进 `<a href>`，
+/// 点击就会在 Codex 渲染进程里执行脚本。管理端打开链接的入口已经只认
+/// http(s)，这里在归一层再挡一次，保证注入端拿到的数据本身就是干净的。
+fn is_web_url(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"));
+    rest.is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
+}
+
 /// 一条广告是否可用（类型、标题、描述、URL 齐全）。
 fn is_usable_ad(ad: &Value) -> bool {
     let ad_type = ad.get("type").and_then(Value::as_str);
@@ -74,7 +87,7 @@ fn is_usable_ad(ad: &Value) -> bool {
     matches!(ad_type, Some("sponsor" | "normal"))
         && field("title")
         && field("description")
-        && field("url")
+        && ad.get("url").and_then(Value::as_str).is_some_and(is_web_url)
 }
 
 fn fill_known_remote_logos(ads: &mut [Value]) {

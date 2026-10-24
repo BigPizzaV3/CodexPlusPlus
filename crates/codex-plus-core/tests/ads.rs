@@ -72,6 +72,73 @@ fn normalizes_remote_ads_for_plugin_and_manager_rendering() {
 }
 
 #[test]
+fn drops_ads_whose_destination_is_not_a_web_url() {
+    let payload = normalize_ad_payload(json!({
+        "version": 1,
+        "ads": [
+            {
+                "id": "ok",
+                "type": "normal",
+                "title": "正常",
+                "description": "普通推荐",
+                "url": "https://example.test/partner"
+            },
+            {
+                "id": "javascript",
+                "type": "normal",
+                "title": "脚本",
+                "description": "普通推荐",
+                "url": "javascript:alert(document.domain)"
+            },
+            {
+                "id": "data",
+                "type": "normal",
+                "title": "数据",
+                "description": "普通推荐",
+                "url": "data:text/html,<script>alert(1)</script>"
+            },
+            {
+                "id": "file",
+                "type": "normal",
+                "title": "本地文件",
+                "description": "普通推荐",
+                "url": "file:///etc/passwd"
+            },
+            {
+                "id": "scheme-relative",
+                "type": "normal",
+                "title": "协议相对",
+                "description": "普通推荐",
+                "url": "//example.test/partner"
+            },
+            {
+                "id": "uppercase",
+                "type": "normal",
+                "title": "大写 scheme",
+                "description": "普通推荐",
+                "url": "HTTPS://example.test/partner"
+            }
+        ],
+        "top_ad": {
+            "id": "top-javascript",
+            "type": "sponsor",
+            "title": "置顶",
+            "description": "置顶推荐",
+            "url": "javascript:alert(1)"
+        }
+    }));
+
+    let ids = payload["ads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|ad| ad["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["ok", "uppercase"]);
+    assert!(payload.get("topAd").is_none(), "非 http(s) 的置顶位必须丢弃");
+}
+
+#[test]
 fn builtin_sponsors_are_not_appended_to_remote_ads() {
     let payload = normalize_ad_payload(json!({
         "version": 1,
