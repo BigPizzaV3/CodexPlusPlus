@@ -776,6 +776,8 @@ pub struct BackendSettings {
     pub codex_app_activity_overlay_right: bool,
     #[serde(rename = "codexAppCapacityAutoRetry", default)]
     pub codex_app_capacity_auto_retry: bool,
+    #[serde(rename = "codexAppTurnRewind", default)]
+    pub codex_app_turn_rewind: bool,
     #[serde(rename = "codexAppWhaleWidgetEnabled", default)]
     pub codex_app_whale_widget_enabled: bool,
     #[serde(
@@ -1039,6 +1041,7 @@ impl Default for BackendSettings {
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
             codex_app_capacity_auto_retry: false,
+            codex_app_turn_rewind: false,
             codex_app_whale_widget_enabled: false,
             codex_app_whale_balance_protocol: default_whale_balance_protocol(),
             codex_app_whale_balance_path: String::new(),
@@ -2318,6 +2321,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppActivityOverlayRight");
     merge_bool_setting(target, source, "codexAppCapacityAutoRetry");
+    merge_bool_setting(target, source, "codexAppTurnRewind");
     merge_bool_setting(target, source, "codexAppWhaleWidgetEnabled");
     if let Some(value @ ("auto" | "custom" | "off")) =
         source.get("codexAppWhaleBalanceProtocol").and_then(Value::as_str)
@@ -5033,6 +5037,19 @@ experimental_bearer_token = "sk-existing""#
         let reloaded = store.load().unwrap();
         assert!(reloaded.codex_app_auto_takeover);
         assert_eq!(reloaded.codex_app_auto_takeover_when_active, "immediate");
+    }
+
+    #[test]
+    fn turn_rewind_is_opt_in_and_round_trips_through_settings_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        assert!(!BackendSettings::default().codex_app_turn_rewind);
+        store.save(&BackendSettings::default()).unwrap();
+        let updated = store.update(json!({ "codexAppTurnRewind": true })).unwrap();
+        assert!(updated.codex_app_turn_rewind);
+        assert!(store.load().unwrap().codex_app_turn_rewind);
+        store.update(json!({ "codexAppTurnRewind": false })).unwrap();
+        assert!(!store.load().unwrap().codex_app_turn_rewind);
     }
 
 }

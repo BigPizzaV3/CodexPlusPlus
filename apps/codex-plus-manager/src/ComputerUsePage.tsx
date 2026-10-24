@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, CheckCircle2, Loader2, MonitorSmartphone, Play, Plug, RefreshCw, Unplug } from "lucide-react";
-import { ComputerUsePreview } from "./ComputerUsePreview";
 import { PageHeader } from "./ManagementPages";
 import { t } from "./i18n";
 import "./ComputerUsePage.css";
@@ -452,7 +451,6 @@ export function ComputerUsePage() {
         {approval && (approval.approvals?.length ?? 0) === 0 && <p className="cu-hint">{t("还没有记住任何应用。选择「交给 Claude 审批」后，Claude 批准过的应用会出现在这里。")}</p>}
       </section>
 
-      <ComputerUsePreview />
 
       <section className="cu-card" aria-labelledby="cu-check-title">
         <div className="cu-card-head">

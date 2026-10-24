@@ -5,6 +5,8 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "轮次回退（实验性）": "Turn rewind (experimental)",
+  "在回答菜单中撤销本轮及后续轮次的可恢复操作，AI 报告全部完成后才截断会话。仅支持本地聊天；恢复记录保存在本机，不是系统快照。": "Undo recoverable operations from a reply and later turns, then truncate history only after the AI reports full completion. Local chats only; recovery records stay on this device. This is not a system snapshot.",
   "修复与维护": "Repair and maintenance",
   "自动修复已开启": "Automatic repair on",
   "自动修复已关闭": "Automatic repair off",

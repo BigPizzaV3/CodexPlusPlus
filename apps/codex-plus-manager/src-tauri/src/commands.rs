@@ -11629,7 +11629,8 @@ model_reasoning_effort = "high"
             }),
         );
         assert!(with_detail.contains("该进程没有程序包标识符"));
-        assert!(with_detail.contains("Microsoft Store"));
+        assert!(!with_detail.contains("Microsoft Store"));
+        assert!(with_detail.contains("codex-plus.log"));
     }
 
     // 旧版 manifest 里没有 launchResult 字段，升级后必须仍能读出来（默认 None）。
