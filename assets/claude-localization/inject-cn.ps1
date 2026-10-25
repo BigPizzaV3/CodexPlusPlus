@@ -1,5 +1,6 @@
 ﻿param([string]$Locale = 'zh-Hans')
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $app = $env:CODEX_PLUS_CLAUDE_COPY
 $hook = Join-Path (Split-Path $MyInvocation.MyCommand.Path -Parent) 'hook.js'
 if (-not (Test-Path $app)) { throw "找不到 Claude：$app" }
@@ -19,7 +20,7 @@ $nextId = 0
 function Invoke-CDP([string]$expression) {
   $script:nextId++
   $id = $script:nextId
-  $payload = @{ id = $id; method = 'Runtime.evaluate'; params = @{ expression = $expression; returnByValue = $true; includeCommandLineAPI = $true } } | ConvertTo-Json -Compress
+  $payload = @{ id = $id; method = 'Runtime.evaluate'; params = @{ expression = $expression; returnByValue = $true; includeCommandLineAPI = $true; awaitPromise = $true } } | ConvertTo-Json -Compress
   $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
   $ws.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
   $buffer = New-Object byte[] 65536; $result = ''
@@ -29,9 +30,34 @@ function Invoke-CDP([string]$expression) {
 
 $hookEscaped = $hook.Replace('\','\\').Replace("'", "\\'")
 $localeEscaped = $Locale.Replace("'", "\\'")
+$timeoutJson = $(if ($env:CODEX_PLUS_CLAUDE_BASH_TIMEOUT) { $env:CODEX_PLUS_CLAUDE_BASH_TIMEOUT } else { 'null' }) | ConvertTo-Json -Compress
+$timeoutHelper = Join-Path (Split-Path $hook -Parent) 'bash-timeout.js'
+$timeoutHelperJson = $timeoutHelper | ConvertTo-Json -Compress
+$bootstrap = @"
+(() => {
+  try {
+    globalThis.__claudeCnBashTimeout = JSON.parse($timeoutJson);
+    require($timeoutHelperJson).beginTimeoutOverrides(globalThis.__claudeCnBashTimeout);
+  } catch (error) {
+    globalThis.__claudeCnBashTimeoutResult = { enabled: true, prepared: false, error: String(error.message || error) };
+    globalThis.__claudeCnBashTimeoutReady = Promise.resolve(globalThis.__claudeCnBashTimeoutResult);
+  }
+  return true;
+})()
+"@
+$null = Invoke-CDP $bootstrap
 $eval = "globalThis.__claudeCnTargetLocale='$localeEscaped'; require('$hookEscaped'); globalThis.__claudeCnHookInstalled === true"
 $response = Invoke-CDP $eval
 if (-not $response.result.result.value) { throw 'Claude hook 注入失败' }
+try {
+  $timeoutResponse = Invoke-CDP 'globalThis.__claudeCnBashTimeoutReady'
+  $timeoutResult = $timeoutResponse.result.result.value
+  if ($timeoutResponse.result.exceptionDetails -or -not $timeoutResult) { throw '未收到 Cowork Bash 适配结果' }
+  Write-Output ('CODEX_PLUS_CLAUDE_BASH_RESULT=' + ($timeoutResult | ConvertTo-Json -Compress))
+  if ($timeoutResult.error) { Write-Warning ('Cowork Bash 时限增强未生效，其他增强继续启动：' + $timeoutResult.error) }
+} catch {
+  Write-Warning 'Cowork Bash 适配结果不可用，其他增强继续启动。'
+}
 try { Invoke-CDP "setImmediate(()=>require('node:inspector').close()); 'closing'" | Out-Null } catch {}
 $ws.Dispose()
 Write-Output 'Windows Claude 中文注入已完成'

@@ -283,6 +283,7 @@ pub fn run() {
             commands::claude_localization_set_voice_input,
             commands::claude_localization_set_localization,
             commands::claude_localization_set_computer_use,
+            commands::claude_localization_set_bash_timeout,
             computer_use_commands::computer_use_status,
             computer_use_commands::computer_use_install,
             computer_use_commands::computer_use_uninstall,

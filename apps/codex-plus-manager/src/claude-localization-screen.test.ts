@@ -20,26 +20,30 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
   /** 页头槽位：createPortal 渲染进来的元素记在这里，用来断言「启动增强版」在右上角。 */
   const topbarSlot = { portal: null as unknown };
   const cleanups: (() => void)[] = [];
-  const calls: { command: string; resolve: (value: unknown) => void }[] = [];
+  const calls: { command: string; args: unknown[]; resolve: (value: unknown) => void; reject: (cause: unknown) => void }[] = [];
   let cursor = 0;
   let changes = 0;
   const context = vm.createContext({
     React: { createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
-    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck"].map((name) => [name, name])),
+    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck"].map((name) => [name, name])),
     t: (text: string) => text,
+    clampNumber: (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value))),
     claudeLocalizationMemo: memo,
     listen: () => Promise.resolve(() => {}),
     document: { querySelector: (selector: string) => (selector === "[data-topbar-actions]" ? topbarSlot : null) },
     createPortal: (child: unknown, target: typeof topbarSlot) => { target.portal = child; return null; },
     stringifyError: String,
-    // Computer Use 接入状态只用来决定是否提示二选一：立即返回，不计入下面断言的调用顺序。
-    invoke: (command: string) => command === "computer_use_status"
+    // Computer Use 接入状态不计入设置操作；同时记录 Bash 保存的参数和失败结果。
+    invoke: (command: string, ...args: unknown[]) => command === "computer_use_status"
       ? Promise.resolve(cuStatus)
-      : new Promise((resolve) => calls.push({ command, resolve })),
+      : new Promise((resolve, reject) => calls.push({ command, args, resolve, reject })),
     useState: (initial: unknown) => {
       const index = cursor++;
       if (!(index in hooks)) hooks[index] = initial;
-      return [hooks[index], (value: unknown) => { changes++; hooks[index] = value; }];
+      return [hooks[index], (value: unknown) => {
+        changes++;
+        hooks[index] = typeof value === "function" ? (value as (current: unknown) => unknown)(hooks[index]) : value;
+      }];
     },
     useRef: (initial: unknown) => {
       const index = cursor++;
@@ -75,11 +79,20 @@ function buttons(element: any): Element[] {
   if (Array.isArray(element)) return element.flatMap(buttons);
   return [...(element.type === "Button" ? [element] : []), ...buttons(element.props.children)];
 }
+function inputs(element: any): Element[] {
+  if (element == null || typeof element !== "object") return [];
+  if (Array.isArray(element)) return element.flatMap(inputs);
+  return [
+    ...(element.type === "input" || element.type === "Input" ? [element] : []),
+    ...inputs(element.props.children),
+  ];
+}
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ready = {
   status: "ok", supported: true, prepared: true, needsRebuild: false,
   running: false, nodeAvailable: true, sourceVersion: "1.2.3", copyVersion: "1.2.3",
-  catalogEntries: 1234, localization: true, voiceInput: true,
+  catalogEntries: 1234, localization: true, voiceInput: true, computerUse: false,
+  bashTimeout: { enabled: false, defaultEnabled: true, defaultSeconds: 120, maxEnabled: true, maxSeconds: 1800 },
 };
 
 test("首次进入自动检测一次，再次进入沿用上次结果；手动检测不并发", async () => {
@@ -176,4 +189,147 @@ test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开�
   const page = quiet.render();
   assert.equal(warning(page), false, "未接入时不应显示冲突提醒");
   assert.ok(text(page).includes("二选一"), "仍保留一句二选一的说明");
+});
+
+test("Bash 时间限制可分别修改默认值和最大值", async () => {
+  const screen = harness();
+  screen.render();
+  screen.calls[0].resolve(ready);
+  await tick();
+  let page = screen.render();
+  assert.match(text(page), /解锁 Bash 时间限制/);
+  const toggle = inputs(page).find((input) => input.props["aria-label"] === "解锁 Bash 时间限制");
+  assert.ok(toggle);
+  toggle.props.onChange({ currentTarget: { checked: true } });
+  assert.equal(screen.calls[1].command, "claude_localization_set_bash_timeout");
+  screen.calls[1].resolve({
+    ...ready,
+    bashTimeout: { ...ready.bashTimeout, enabled: true },
+  });
+  await tick();
+  page = screen.render();
+  assert.match(text(page), /修改默认等待时间/);
+  assert.match(text(page), /修改最大等待时间/);
+  const defaultValue = inputs(page).find((input) => input.props["aria-label"] === "默认等待时间（秒）");
+  assert.equal(defaultValue!.props.value, 120);
+  defaultValue!.props.onChange({ currentTarget: { value: "300" } });
+  page = screen.render();
+  inputs(page).find((input) => input.props["aria-label"] === "默认等待时间（秒）")!.props.onBlur();
+  assert.equal(screen.calls[2].command, "claude_localization_set_bash_timeout");
+  assert.deepEqual(
+    (screen.calls[2].args[0] as { timeout: { defaultSeconds: number } }).timeout.defaultSeconds,
+    300,
+  );
+});
+
+test("Cowork 适配警告不覆盖启动成功状态，其他增强保持可用", async () => {
+  const screen = harness({ status: { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } }, autoDetected: true });
+  screen.render();
+  screen.render();
+  screen.topbar()!.props.onClick();
+  screen.calls[0].resolve({ ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true }, bashTimeoutWarning: "不支持的 Cowork Bash 参数校验结构" });
+  await tick();
+  const page = screen.render();
+  assert.match(text(page), /Cowork Bash 时限增强未生效，其他增强不受影响/);
+  assert.match(text(page), /不支持的 Cowork Bash 参数校验结构/);
+  assert.equal(screen.topbar()!.props.disabled, false);
+  assert.equal(inputs(page).find((input) => String(input.props.onChange).includes("toggleLocalization"))!.props.disabled, false);
+  assert.equal(inputs(page).find((input) => String(input.props.onChange).includes("toggleVoiceInput"))!.props.disabled, false);
+});
+
+test("Bash 总开关保存失败后恢复已保存值，并允许重试", async () => {
+  const screen = harness({ status: ready, autoDetected: true });
+  const toggle = () => inputs(screen.render()).find((input) => input.props["aria-label"] === "解锁 Bash 时间限制")!;
+  toggle().props.onChange({ currentTarget: { checked: true } });
+  screen.calls[0].resolve({ status: "failed", message: "写入失败", data: {} });
+  await tick();
+  assert.equal(toggle().props.checked, false);
+  assert.match(text(screen.render()), /写入失败/);
+  assert.equal(toggle().props.disabled, false);
+  toggle().props.onChange({ currentTarget: { checked: true } });
+  assert.equal(screen.calls.length, 2);
+  screen.calls[1].resolve({ ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } });
+  await tick();
+  assert.equal(toggle().props.checked, true);
+});
+
+test("Bash 数字保存抛出异常时恢复已保存值，而非编辑草稿", async () => {
+  const saved = { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } };
+  const screen = harness({ status: saved, autoDetected: true });
+  const input = () => inputs(screen.render()).find((input) => input.props["aria-label"] === "默认等待时间（秒）")!;
+  input().props.onChange({ currentTarget: { value: "300" } });
+  input().props.onBlur();
+  screen.calls[0].reject(new Error("连接失败"));
+  await tick();
+  assert.equal(input().props.value, 120);
+  assert.match(text(screen.render()), /连接失败/);
+});
+
+test("Bash 数字失焦后点击开关串行保存，不丢点击、不被旧响应覆盖", async () => {
+  const saved = { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } };
+  const screen = harness({ status: saved, autoDetected: true });
+  const input = (name: string) => inputs(screen.render()).find((item) => item.props["aria-label"] === name)!;
+  input("默认等待时间（秒）").props.onChange({ currentTarget: { value: "300" } });
+  input("默认等待时间（秒）").props.onBlur();
+  assert.equal(input("修改最大等待时间").props.disabled, false);
+  input("修改最大等待时间").props.onChange({ currentTarget: { checked: false } });
+  assert.equal(screen.calls.length, 1, "前一次保存完成前不并发写入");
+  screen.calls[0].resolve({ ...saved, bashTimeout: { ...saved.bashTimeout, defaultSeconds: 300 } });
+  await tick();
+  assert.equal(screen.calls.length, 2);
+  assert.equal(input("修改最大等待时间").props.checked, false, "旧响应不能覆盖后续点击");
+  const timeout = (screen.calls[1].args[0] as { timeout: typeof saved.bashTimeout }).timeout;
+  assert.equal(timeout.defaultSeconds, 300);
+  assert.equal(timeout.maxEnabled, false);
+  screen.calls[1].resolve({ ...saved, bashTimeout: timeout });
+  await tick();
+  assert.equal(input("默认等待时间（秒）").props.value, 300);
+  assert.equal(input("修改最大等待时间").props.checked, false);
+  assert.equal(input("默认等待时间（秒）").props.disabled, false);
+});
+
+test("Bash 排队保存失败回到最后一次成功值，离开页面后不写入组件状态", async () => {
+  const saved = { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } };
+  const memo: Memo = { status: saved, autoDetected: true };
+  const screen = harness(memo);
+  const input = (name: string) => inputs(screen.render()).find((item) => item.props["aria-label"] === name)!;
+  input("默认等待时间（秒）").props.onChange({ currentTarget: { value: "300" } });
+  input("默认等待时间（秒）").props.onBlur();
+  input("修改最大等待时间").props.onChange({ currentTarget: { checked: false } });
+  screen.calls[0].resolve({ ...saved, bashTimeout: { ...saved.bashTimeout, defaultSeconds: 300 } });
+  await tick();
+  screen.calls[1].resolve({ status: "failed", message: "第二次保存失败" });
+  await tick();
+  assert.equal(input("默认等待时间（秒）").props.value, 300);
+  assert.equal(input("修改最大等待时间").props.checked, true);
+  input("修改最大等待时间").props.onChange({ currentTarget: { checked: false } });
+  screen.unmount();
+  const before = screen.changes();
+  screen.calls[2].resolve({ ...saved, bashTimeout: { ...saved.bashTimeout, defaultSeconds: 300, maxEnabled: false } });
+  await tick();
+  assert.equal(screen.changes(), before);
+  assert.equal(inputs(harness(memo).render()).find((item) => item.props["aria-label"] === "修改最大等待时间")!.props.checked, false);
+});
+
+test("Bash 秒数允许清空后重输，失焦才显示规范值并保存数字", async () => {
+  const saved = { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } };
+  const screen = harness({ status: saved, autoDetected: true });
+  const input = (name: string) => inputs(screen.render()).find((item) => item.props["aria-label"] === name)!;
+  for (const [name, field, value] of [
+    ["默认等待时间（秒）", "defaultSeconds", "1"],
+    ["最大等待时间（秒）", "maxSeconds", "3"],
+  ] as const) {
+    input(name).props.onChange({ currentTarget: { value: "" } });
+    assert.equal(input(name).props.value, "", "清空时不能立即补 1，否则新数字会被拼接");
+    input(name).props.onChange({ currentTarget: { value } });
+    assert.equal(input(name).props.value, value);
+    input(name).props.onBlur();
+    const call = screen.calls.at(-1)!;
+    const timeout = (call.args[0] as { timeout: typeof saved.bashTimeout }).timeout;
+    assert.equal(timeout[field], Number(value));
+    assert.equal(typeof timeout[field], "number");
+    call.resolve({ ...saved, bashTimeout: timeout });
+    await tick();
+    assert.equal(input(name).props.value, Number(value));
+  }
 });

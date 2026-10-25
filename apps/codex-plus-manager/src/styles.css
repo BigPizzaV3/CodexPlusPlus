@@ -10525,6 +10525,37 @@ select {
 .claude-l10n-column .switch-row + .switch-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid hsl(var(--border)); }
 .claude-l10n-column .switch-row strong { font-size: 14px; }
 .claude-l10n-column .switch-row small { margin-top: 5px; line-height: 1.6; }
+/* Bash 时间限制展开项：两个覆盖值各自启停，数字输入固定显示秒。 */
+.claude-bash-timeout-editor {
+  grid-column: 1 / -1;
+  display: grid; gap: 10px; margin-top: 12px; padding: 12px;
+  border: 1px solid hsl(var(--border)); border-radius: 8px;
+  background: hsl(var(--surface-sunken) / 0.45);
+}
+.claude-bash-timeout-editor > p {
+  margin: 0; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.6;
+}
+.claude-l10n-feature-grid > .claude-bash-timeout-master { grid-column: 1 / -1; }
+.claude-bash-timeout-warning { color: hsl(var(--foreground)); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.claude-l10n-column .claude-bash-timeout-editor .switch-row {
+  margin: 0; padding: 10px; background: hsl(var(--background) / 0.72);
+}
+.claude-l10n-column .claude-bash-timeout-editor .switch-row + .switch-row {
+  margin-top: 0; padding-top: 10px; border-top: 0;
+}
+.claude-bash-timeout-value {
+  display: grid; grid-template-columns: minmax(0, 1fr) 132px 18px;
+  gap: 8px; align-items: center; padding: 0 10px 10px;
+}
+.claude-bash-timeout-value > span:first-child {
+  color: hsl(var(--muted-foreground)); font-size: 12.5px;
+}
+.claude-bash-timeout-value > span:last-child {
+  color: hsl(var(--muted-foreground)); font-size: 12px;
+}
+@media (max-width: 560px) {
+  .claude-bash-timeout-value { grid-template-columns: minmax(0, 1fr) 108px 18px; padding-left: 0; padding-right: 0; }
+}
 /* 下方两栏卡片都偏窄：标题与说明改竖排、左对齐，否则说明会被挤成右对齐的两行。 */
 .claude-l10n-column .panel-head { display: grid; gap: 6px; align-items: start; }
 .claude-l10n-column .panel-head p { max-width: none; text-align: left; font-size: 12px; line-height: 1.6; }

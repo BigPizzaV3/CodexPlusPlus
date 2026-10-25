@@ -14875,6 +14875,14 @@ function Panel({ children, fill = false, className = "", id }: { children: React
   );
 }
 
+type ClaudeBashTimeoutSettings = {
+  enabled: boolean;
+  defaultEnabled: boolean;
+  defaultSeconds: number;
+  maxEnabled: boolean;
+  maxSeconds: number;
+};
+
 type ClaudeLocalizationStatus = {
   supported: boolean;
   sourceApp: string;
@@ -14893,6 +14901,8 @@ type ClaudeLocalizationStatus = {
   computerUse: boolean;
   /** 当前平台能否真正应用 Computer Use；Windows 为 false（#2673）。 */
   computerUseSupported: boolean;
+  bashTimeout: ClaudeBashTimeoutSettings;
+  bashTimeoutWarning?: string | null;
 };
 
 /**
@@ -14916,6 +14926,16 @@ function ClaudeLocalizationScreen() {
   const [progress, setProgress] = useState<{ percent: number; message: string } | null>(null);
   const mounted = useRef(true);
   const pending = useRef(false);
+  const [bashTimeoutDraft, setBashTimeoutDraft] = useState<ClaudeBashTimeoutSettings | null>(
+    claudeLocalizationMemo.status?.status === "ok"
+      ? claudeLocalizationMemo.status.bashTimeout
+      : null,
+  );
+  // 编辑时保留空字符串，避免清空输入框立刻补 1 后把新数字拼在后面。
+  const [bashTimeoutDefaultText, setBashTimeoutDefaultText] = useState<string | null>(null);
+  const [bashTimeoutMaxText, setBashTimeoutMaxText] = useState<string | null>(null);
+  const bashTimeoutSaving = useRef(false);
+  const bashTimeoutQueued = useRef<ClaudeBashTimeoutSettings | null>(null);
   /**
    * 页头右上角的操作槽：「启动增强版」放在和 Codex 页「启动 Codex」相同的位置。
    * 页头与本页都按路由重建、同一次提交挂载，所以在 layout effect 里取，首帧绘制前就到位。
@@ -14939,7 +14959,12 @@ function ClaudeLocalizationScreen() {
     // 先记下有效结果再判断挂载：检测中切走页面，回来时仍能看到这次的结果。
     if (result.status === "ok") claudeLocalizationMemo.status = result;
     if (!mounted.current) return;
-    if (result.status === "ok") setStatus(result);
+    if (result.status === "ok") {
+      setStatus(result);
+      setBashTimeoutDraft(result.bashTimeout);
+      setBashTimeoutDefaultText(null);
+      setBashTimeoutMaxText(null);
+    }
     else setError(result.message);
   };
   const refresh = async () => {
@@ -15024,6 +15049,43 @@ function ClaudeLocalizationScreen() {
       if (mounted.current) setBusy(null);
     }
   };
+  const saveBashTimeout = async (next: ClaudeBashTimeoutSettings) => {
+    if (pending.current && !bashTimeoutSaving.current) return;
+    bashTimeoutQueued.current = next;
+    setBashTimeoutDraft(next);
+    if (bashTimeoutSaving.current) return;
+    let confirmed = status?.status === "ok" ? status.bashTimeout : null;
+    pending.current = true;
+    bashTimeoutSaving.current = true;
+    setBusy("bashTimeout"); setError(null);
+    try {
+      // 失焦保存先于开关点击；串行处理后续草稿，避免吞掉这次点击。
+      while (bashTimeoutQueued.current) {
+        const timeout = bashTimeoutQueued.current;
+        bashTimeoutQueued.current = null;
+        const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
+          "claude_localization_set_bash_timeout",
+          { timeout },
+        );
+        if (result.status !== "ok") throw new Error(result.message);
+        confirmed = result.bashTimeout;
+        claudeLocalizationMemo.status = result;
+        if (mounted.current) setStatus(result);
+        if (!bashTimeoutQueued.current) accept(result);
+      }
+    } catch (cause) {
+      bashTimeoutQueued.current = null;
+      if (mounted.current) {
+        setBashTimeoutDraft(confirmed);
+        setError(stringifyError(cause));
+      }
+    }
+    finally {
+      bashTimeoutSaving.current = false;
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  };
   const toggleLocalization = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
@@ -15043,6 +15105,7 @@ function ClaudeLocalizationScreen() {
     }
   };
   const s = status;
+  const bashTimeout = bashTimeoutDraft ?? s?.bashTimeout;
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
   const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
@@ -15216,6 +15279,114 @@ function ClaudeLocalizationScreen() {
                   {t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}
                 </p>
               )
+            ) : null}
+            <label className="switch-row compact claude-bash-timeout-master">
+              <input
+                aria-label={t("解锁 Bash 时间限制")}
+                checked={Boolean(bashTimeout?.enabled)}
+                disabled={(busy !== null && busy !== "bashTimeout") || !bashTimeout}
+                onChange={(event) => {
+                  if (bashTimeout) void saveBashTimeout({ ...bashTimeout, enabled: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("解锁 Bash 时间限制")}</strong>
+                <small>{t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            {bashTimeout?.enabled ? (
+              <div className="claude-bash-timeout-editor">
+                {s?.bashTimeoutWarning ? (
+                  <div className="claude-bash-timeout-warning" role="status">
+                    {t("Cowork Bash 时限增强未生效，其他增强不受影响：")}{s.bashTimeoutWarning}
+                  </div>
+                ) : null}
+                <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存；最大值低于默认值时会按默认值执行。")}</p>
+                <label className="switch-row compact claude-bash-timeout-toggle">
+                  <input
+                    aria-label={t("修改默认等待时间")}
+                    checked={bashTimeout.defaultEnabled}
+                    disabled={busy !== null && busy !== "bashTimeout"}
+                    onChange={(event) => void saveBashTimeout({
+                      ...bashTimeout,
+                      defaultEnabled: event.currentTarget.checked,
+                    })}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("修改默认等待时间")}</strong>
+                    <small>{t("未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。")}</small>
+                  </span>
+                  <ToggleVisual />
+                </label>
+                <div className="claude-bash-timeout-value">
+                  <span>{t("默认等待时间")}</span>
+                  <Input
+                    aria-label={t("默认等待时间（秒）")}
+                    disabled={busy !== null || !bashTimeout.defaultEnabled}
+                    max={2147423}
+                    min={1}
+                    onChange={(event) => {
+                      setBashTimeoutDefaultText(event.currentTarget.value);
+                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                      setBashTimeoutDraft((current) => current ? { ...current, defaultSeconds: seconds } : current);
+                    }}
+                    onBlur={() => {
+                      setBashTimeoutDefaultText(null);
+                      void saveBashTimeout(bashTimeout);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                    type="number"
+                    value={bashTimeoutDefaultText ?? bashTimeout.defaultSeconds}
+                  />
+                  <span>{t("秒")}</span>
+                </div>
+                <label className="switch-row compact claude-bash-timeout-toggle">
+                  <input
+                    aria-label={t("修改最大等待时间")}
+                    checked={bashTimeout.maxEnabled}
+                    disabled={busy !== null && busy !== "bashTimeout"}
+                    onChange={(event) => void saveBashTimeout({
+                      ...bashTimeout,
+                      maxEnabled: event.currentTarget.checked,
+                    })}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("修改最大等待时间")}</strong>
+                    <small>{t("显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。")}</small>
+                  </span>
+                  <ToggleVisual />
+                </label>
+                <div className="claude-bash-timeout-value">
+                  <span>{t("最大等待时间")}</span>
+                  <Input
+                    aria-label={t("最大等待时间（秒）")}
+                    disabled={busy !== null || !bashTimeout.maxEnabled}
+                    max={2147423}
+                    min={1}
+                    onChange={(event) => {
+                      setBashTimeoutMaxText(event.currentTarget.value);
+                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                      setBashTimeoutDraft((current) => current ? { ...current, maxSeconds: seconds } : current);
+                    }}
+                    onBlur={() => {
+                      setBashTimeoutMaxText(null);
+                      void saveBashTimeout(bashTimeout);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                    type="number"
+                    value={bashTimeoutMaxText ?? bashTimeout.maxSeconds}
+                  />
+                  <span>{t("秒")}</span>
+                </div>
+              </div>
             ) : null}
             {s?.supported && !s.prepared ? (
               <p className="claude-l10n-hint">

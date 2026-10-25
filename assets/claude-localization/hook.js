@@ -319,6 +319,19 @@ function install() {
   const ARMED = new WeakSet();
   const RELOADED = new WeakSet();
 
+  try {
+    const timeoutReady = globalThis.__claudeCnBashTimeoutReady
+      ?? require('./bash-timeout.js').beginTimeoutOverrides(globalThis.__claudeCnBashTimeout);
+    Promise.resolve(timeoutReady).then((result) => {
+      if (result?.error) log('Cowork Bash timeout unavailable: ' + result.error);
+    }).catch((error) => log('Cowork Bash timeout unavailable: ' + String(error?.message || error)));
+  } catch (error) {
+    const result = { enabled: true, prepared: false, error: String(error?.message || error) };
+    globalThis.__claudeCnBashTimeoutResult = result;
+    globalThis.__claudeCnBashTimeoutReady = Promise.resolve(result);
+    log('Cowork Bash timeout unavailable: ' + result.error);
+  }
+
   const isDefaultSession = (wc) => {
     try {
       return wc.session === session.defaultSession;

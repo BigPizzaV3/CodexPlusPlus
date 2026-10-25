@@ -114,6 +114,10 @@ fn replace_copy_with(
 
 const ASSETS: &[(&str, &[u8])] = &[
     (
+        "bash-timeout.js",
+        include_bytes!("../../../assets/claude-localization/bash-timeout.js"),
+    ),
+    (
         "build-copy.py",
         include_bytes!("../../../assets/claude-localization/build-copy.py"),
     ),
@@ -183,6 +187,9 @@ pub struct ClaudeLocalizationStatus {
     /// 当前平台是否真的能应用 Computer Use；Windows 的构建脚本不改写 asar，
     /// 打开开关只会存设置，界面据此禁用该开关（#2673）。
     pub computer_use_supported: bool,
+    pub bash_timeout: crate::settings::ClaudeBashTimeoutSettings,
+    /// 仅本次启动的 Cowork 适配警告，不改变其他增强的成功状态。
+    pub bash_timeout_warning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -596,6 +603,8 @@ fn initial_status(source: &Path, copy: &Path) -> ClaudeLocalizationStatus {
         localization: settings.as_ref().is_none_or(|settings| settings.claude_app_localization),
         computer_use: computer_use_enabled(),
         computer_use_supported: cfg!(target_os = "macos"),
+        bash_timeout: bash_timeout_settings(),
+        bash_timeout_warning: None,
     }
 }
 
@@ -727,6 +736,55 @@ pub fn set_computer_use(enabled: bool) -> Result<ClaudeLocalizationStatus> {
     status()
 }
 
+fn bash_timeout_settings() -> crate::settings::ClaudeBashTimeoutSettings {
+    crate::settings::SettingsStore::default()
+        .load()
+        .map(|settings| settings.claude_app_bash_timeout)
+        .unwrap_or_default()
+}
+
+pub fn set_bash_timeout(
+    mut timeout: crate::settings::ClaudeBashTimeoutSettings,
+) -> Result<ClaudeLocalizationStatus> {
+    timeout.normalize();
+    let store = crate::settings::SettingsStore::default();
+    let mut settings = store.load()?;
+    settings.claude_app_bash_timeout = timeout;
+    store.save(&settings)?;
+    status()
+}
+
+fn bash_timeout_warning(
+    report: &Path,
+    settings: &crate::settings::ClaudeBashTimeoutSettings,
+) -> Option<String> {
+    if !settings.enabled || (!settings.default_enabled && !settings.max_enabled) {
+        return None;
+    }
+    let result = fs::read_to_string(report).ok().and_then(|text| {
+        text.lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("CODEX_PLUS_CLAUDE_BASH_RESULT="))
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())
+    });
+    if let Some(error) = result
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str)
+    {
+        return Some(error.to_string());
+    }
+    if result
+        .as_ref()
+        .and_then(|value| value.get("prepared"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return None;
+    }
+    Some("未收到 Cowork Bash 适配结果，尚未确认该项生效。".to_string())
+}
+
 pub fn set_localization(enabled: bool) -> Result<ClaudeLocalizationStatus> {
     let store = crate::settings::SettingsStore::default();
     let mut settings = store.load()?;
@@ -795,6 +853,16 @@ fn run_script(
     let mut command = hidden_script_command(program);
     if cfg!(target_os = "windows") && script.ends_with(".ps1") {
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+    }
+    if script.starts_with("inject-cn.") {
+        let timeout = bash_timeout_settings();
+        command.env(
+            "CODEX_PLUS_CLAUDE_BASH_TIMEOUT",
+            serde_json::to_string(&timeout)?,
+        );
+        for (key, value) in timeout.environment() {
+            command.env(key, value);
+        }
     }
     let mut child = command
         .arg(root.join(script))
@@ -942,6 +1010,7 @@ pub fn perform_with_progress(
     let root = runtime_dir();
     install_assets(&root)?;
     let copy = copy_app(&source);
+    let mut timeout_warning = None;
     let message = match action {
         "prepare" => {
             ensure!(
@@ -1037,6 +1106,9 @@ pub fn perform_with_progress(
                 }
                 return Err(error);
             }
+            // operation.log 已由本次 run_script 截断，不会沿用上一轮的适配结果。
+            timeout_warning =
+                bash_timeout_warning(&root.join("operation.log"), &bash_timeout_settings());
             if action == "restore" {
                 "已还原保存的语言并启动副本。".to_string()
             } else if !localization {
@@ -1047,8 +1119,10 @@ pub fn perform_with_progress(
         }
         _ => unreachable!(),
     };
+    let mut state = status()?;
+    state.bash_timeout_warning = timeout_warning;
     Ok(ClaudeLocalizationResult {
-        status: status()?,
+        status: state,
         message,
     })
 }
@@ -1067,6 +1141,25 @@ mod tests {
         localize_configs(&[config.clone()], "zh-Hans").unwrap();
         assert_eq!(read_config(&config).unwrap()["locale"], "zh-Hans");
         assert_eq!(read_config(&config).unwrap()["other"], 1);
+    }
+
+    #[test]
+    fn optional_cowork_report_preserves_failure_and_unknown_without_failing_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("operation.log");
+        let mut settings = crate::settings::ClaudeBashTimeoutSettings::default();
+        assert!(bash_timeout_warning(&report, &settings).is_none());
+        settings.enabled = true;
+        assert!(bash_timeout_warning(&report, &settings).unwrap().contains("尚未确认"));
+        fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":false,\"error\":\"unsupported workspace\"}\nlaunch complete").unwrap();
+        assert_eq!(bash_timeout_warning(&report, &settings).as_deref(), Some("unsupported workspace"));
+        fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":true,\"loaded\":false}\nlaunch complete").unwrap();
+        assert!(bash_timeout_warning(&report, &settings).is_none());
+        fs::write(&report, b"not json").unwrap();
+        assert!(bash_timeout_warning(&report, &settings).is_some());
+        settings.default_enabled = false;
+        settings.max_enabled = false;
+        assert!(bash_timeout_warning(&report, &settings).is_none());
     }
 
     #[test]
@@ -1122,6 +1215,8 @@ mod tests {
             node_available: false, python_available: false, shell_locale: None,
             catalog_entries: 0, voice_input: true, localization: true, computer_use: false,
             computer_use_supported: cfg!(target_os = "macos"),
+            bash_timeout: Default::default(),
+            bash_timeout_warning: None,
         }
     }
 
