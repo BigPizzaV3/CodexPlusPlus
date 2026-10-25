@@ -372,6 +372,8 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppNativeFastUnlock: boolean;
   /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
   codexAppDisableWorkView: boolean;
+  /** 默认关闭；只修复 OpenAI 身份中转下的 Remote Control 入口。 */
+  codexAppRemoteControlGateRepairEnabled: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppActivityOverlayRight: boolean;
   /** 协议代理内部自动重试（与 Rust `protocol_proxy_auto_retry` 对应）。 */
@@ -1297,6 +1299,7 @@ const defaultSettings: BackendSettings = {
   codexAppNativeBrowserRequireIdentification: false,
   codexAppNativeFastUnlock: false,
   codexAppDisableWorkView: false,
+  codexAppRemoteControlGateRepairEnabled: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,
   protocolProxyAutoRetry: true,
@@ -7607,6 +7610,13 @@ function EnhanceScreen({
                 <FeatureToggle title={t("旁支保存")} detail={t("在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。")} checked={form.codexAppSideChatSave} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSideChatSave", value)} />
                 <FeatureToggle title={t("轮次回退（实验性）")} detail={t("在回答菜单中撤销本轮及后续轮次的可恢复操作，AI 报告全部完成后才截断会话。仅支持本地聊天；恢复记录保存在本机，不是系统快照。")} checked={form.codexAppTurnRewind} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppTurnRewind", value)} />
                 <FeatureToggle title={t("纯 API 模式禁用 Work 视图")} detail={t("Work 视图要求 ChatGPT 账号身份，纯 API Key 下发送消息会报 Work browser access requires an authenticated account。开启后每次启动 Codex 前把详情模式写回 Codex；重新启动 Codex 后生效。")} checked={form.codexAppDisableWorkView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppDisableWorkView", value)} />
+                <FeatureToggle
+                  title={t("修复远程控制入口")}
+                  detail={t("中转保留 OpenAI 会话身份时，Codex 可能把 Connections 页的远程控制入口误判为不可用。开启后只修复当前 OpenAI 中转配置；官方账号仍按原生灰度判断。")}
+                  checked={form.codexAppRemoteControlGateRepairEnabled}
+                  disabled={!masterEnabled}
+                  onChange={(value) => setEnhanceFlag("codexAppRemoteControlGateRepairEnabled", value)}
+                />
                 <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
                 <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
                 <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />

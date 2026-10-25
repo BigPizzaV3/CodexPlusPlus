@@ -3673,6 +3673,7 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
     assert_eq!(cases["sessionDeleteOnlyRegistersNativeClient"], true);
     assert_eq!(cases["globalStatsigWithoutHostPreserved"], true);
     assert_eq!(cases["remoteControlGateDefaultSettingsIgnored"], true);
+    assert_eq!(cases["remoteControlGateRequiresOptIn"], true);
     assert_eq!(cases["remoteControlGateRepairedAfterSettingsLoad"], true);
     assert_eq!(cases["remoteControlGateRevertedAfterProfileSwitch"], true);
     assert_eq!(cases["remoteControlGateKeptWithoutRelayUpstream"], true);
@@ -4566,6 +4567,7 @@ const remoteControlGateDefaultSettingsIgnored = remoteControlDispatchMessages.at
 api.setBackendSettings({{
   enhancementsEnabled: true,
   relayProfilesEnabled: true,
+  codexAppRemoteControlGateRepairEnabled: false,
   activeRelayId: "remote-control-openai",
   activeRelaySessionProvider: "openai",
   relayProfiles: [{{
@@ -4574,6 +4576,10 @@ api.setBackendSettings({{
     officialMixApiKey: false,
     upstreamBaseUrl: "http://localhost:8317/v1",
   }}],
+}});
+const remoteControlGateRequiresOptIn = remoteControlDispatchMessages.at(-1)?.payload?.control === false;
+api.setBackendSettings({{
+  codexAppRemoteControlGateRepairEnabled: true,
 }});
 const remoteControlGateRepairedAfterSettingsLoad = remoteControlDispatchMessages.at(-1)?.payload?.control === true;
 api.setBackendSettings({{
@@ -4704,6 +4710,7 @@ process.stdout.write(JSON.stringify({{
   remoteJsonAndMessageModelsPreserved,
   sessionDeleteOnlyRegistersNativeClient,
   remoteControlGateDefaultSettingsIgnored,
+  remoteControlGateRequiresOptIn,
   remoteControlGateRepairedAfterSettingsLoad,
   remoteControlGateRevertedAfterProfileSwitch,
   remoteControlGateKeptWithoutRelayUpstream,

@@ -728,6 +728,10 @@ pub struct BackendSettings {
     /// 纯 API 供应商下启动前把详情模式写回 Codex 视图，避开 Work 视图要求 ChatGPT 账号（#2632）。
     #[serde(rename = "codexAppDisableWorkView", default)]
     pub codex_app_disable_work_view: bool,
+    /// 默认关闭（opt-in）：只在 OpenAI 身份的中转配置下修复 Remote Control 入口，
+    /// 不替用户打开官方 Statsig 灰度。
+    #[serde(rename = "codexAppRemoteControlGateRepairEnabled", default)]
+    pub codex_app_remote_control_gate_repair_enabled: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
     pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
@@ -1063,6 +1067,7 @@ impl Default for BackendSettings {
             enhancements_enabled: true,
             codex_app_standalone_quota_unlock: false,
             codex_app_disable_work_view: false,
+            codex_app_remote_control_gate_repair_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
@@ -2362,6 +2367,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     merge_bool_setting(target, source, "codexAppStandaloneQuotaUnlock");
     merge_bool_setting(target, source, "codexAppDisableWorkView");
+    merge_bool_setting(target, source, "codexAppRemoteControlGateRepairEnabled");
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
@@ -4989,6 +4995,13 @@ experimental_bearer_token = "sk-existing""#
             .remove("standardOpenaiProtocol");
         let profile: RelayProfile = serde_json::from_value(legacy).unwrap();
         assert!(!profile.standard_openai_protocol);
+    }
+
+    #[test]
+    fn remote_control_gate_repair_defaults_off_for_legacy_settings() {
+        // 旧 settings.json 没有该字段：读进来必须保持关闭。
+        let settings: BackendSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.codex_app_remote_control_gate_repair_enabled);
     }
 
     #[test]

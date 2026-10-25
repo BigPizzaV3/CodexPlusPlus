@@ -1015,6 +1015,8 @@ export const EN_PLAIN: Record<string, string> = {
   "启动前自动修复历史会话": "Auto-repair historical sessions before launch",
   "纯 API 模式禁用 Work 视图": "Disable Work view in Pure API mode",
   "Work 视图要求 ChatGPT 账号身份，纯 API Key 下发送消息会报 Work browser access requires an authenticated account。开启后每次启动 Codex 前把详情模式写回 Codex；重新启动 Codex 后生效。": "Work view requires a ChatGPT account identity; with a Pure API key, sending a message fails with \"Work browser access requires an authenticated account\". When enabled, the detail mode is switched back to Codex before each launch. Restart Codex to apply.",
+  "修复远程控制入口": "Repair the remote control entry",
+  "中转保留 OpenAI 会话身份时，Codex 可能把 Connections 页的远程控制入口误判为不可用。开启后只修复当前 OpenAI 中转配置；官方账号仍按原生灰度判断。": "When a relay keeps the OpenAI session identity, Codex may incorrectly hide the remote control entry on the Connections page. When enabled, Codex++ repairs it only for the active OpenAI relay profile; official accounts keep their native rollout decision.",
   "自动审批模型": "Auto-review model",
   "留空则原样转发 codex-auto-review": "Leave empty to forward codex-auto-review unchanged",
   "切换模型后旧会话跟随新默认": "Existing sessions follow the new default model",

@@ -21,6 +21,7 @@
   function codexRemoteControlFeatureSettingsKey() {
     const profile = codexRemoteSessionActiveProfile();
     return JSON.stringify([
+      codexPlusBackendSettings?.codexAppRemoteControlGateRepairEnabled,
       codexPlusBackendSettings?.enhancementsEnabled,
       codexPlusBackendSettings?.relayProfilesEnabled,
       codexPlusBackendSettings?.activeRelayId,
@@ -50,11 +51,12 @@
   }
 
   // Codex 26.1016 gates the desktop Connections page on the `control` desktop
-  // feature. Relay profiles that keep the ChatGPT session identity lose that
-  // flag even though the OAuth login and device enrollment are still valid, so
-  // the page collapses to the SSH tab. Restore only the flag; the app still
-  // runs its own auth and environment checks.
+  // feature. Relay profiles that keep the ChatGPT session identity can lose
+  // that flag even though OAuth login and device enrollment are still valid.
+  // This is explicitly opt-in so an account that is genuinely outside the
+  // rollout keeps its native gate value.
   function codexRemoteControlGateRepairEnabled() {
+    if (codexPlusBackendSettings?.codexAppRemoteControlGateRepairEnabled !== true) return false;
     if (!codexPlusBackendSettings || codexPlusBackendSettings.enhancementsEnabled === false) return false;
     if (codexPlusBackendSettings.relayProfilesEnabled === false) return false;
     const sessionProvider = String(
