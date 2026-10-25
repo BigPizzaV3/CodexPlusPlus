@@ -3,15 +3,50 @@
   }
 
   function dispatchCodexPlusMessage(dispatcher, type, payload) {
-    const message = applyCodexRemoteControlFeatureOverride(
-      codexServiceTierRequestOverride({ ...(payload || {}), type })
-    );
+    const originalMessage = codexServiceTierRequestOverride({ ...(payload || {}), type });
+    rememberCodexRemoteControlFeatureMessage(dispatcher, originalMessage);
+    const message = applyCodexRemoteControlFeatureOverride(originalMessage);
     const nextType = message?.type || type;
     const { type: _type, ...nextPayload } = message || {};
     if (nextType === "browser-use-session-route-capture") {
       observeCodexRemoteSessionNotification({ type: nextType, params: nextPayload });
     }
     return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
+  }
+
+  let codexRemoteControlFeaturePayload = null;
+  let codexRemoteControlFeatureDispatcher = null;
+  let codexRemoteControlFeatureSyncKey = "";
+
+  function codexRemoteControlFeatureSettingsKey() {
+    const profile = codexRemoteSessionActiveProfile();
+    return JSON.stringify([
+      codexPlusBackendSettings?.enhancementsEnabled,
+      codexPlusBackendSettings?.relayProfilesEnabled,
+      codexPlusBackendSettings?.activeRelayId,
+      codexPlusBackendSettings?.activeRelaySessionProvider,
+      profile?.relayMode,
+      profile?.upstreamBaseUrl,
+    ]);
+  }
+
+  function rememberCodexRemoteControlFeatureMessage(dispatcher, message) {
+    if (!message || message.type !== "electron-desktop-features-changed") return;
+    codexRemoteControlFeaturePayload = { ...message };
+    codexRemoteControlFeatureDispatcher = dispatcher;
+  }
+
+  function syncCodexRemoteControlFeatureGate(force = false) {
+    if (!codexRemoteControlFeaturePayload || !codexRemoteControlFeatureDispatcher) return false;
+    const nextKey = codexRemoteControlFeatureSettingsKey();
+    if (!force && nextKey === codexRemoteControlFeatureSyncKey) return false;
+    codexRemoteControlFeatureSyncKey = nextKey;
+    dispatchCodexPlusMessage(
+      codexRemoteControlFeatureDispatcher,
+      "electron-desktop-features-changed",
+      codexRemoteControlFeaturePayload
+    );
+    return true;
   }
 
   // Codex 26.1016 gates the desktop Connections page on the `control` desktop
@@ -100,6 +135,7 @@
       setBackendSettings: (settings = {}) => {
         codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
         codexPlusBackendSettingsLoaded = true;
+        syncCodexRemoteControlFeatureGate();
       },
       providerPatchEnabled: () => codexRemoteSessionProviderPatchEnabled(),
       providerNormalizationEnabled: () => codexRemoteSessionProviderNormalizationEnabled(),
