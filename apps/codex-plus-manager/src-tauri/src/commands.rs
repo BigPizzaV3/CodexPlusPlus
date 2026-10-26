@@ -6763,7 +6763,11 @@ pub fn set_relay_feature(profile_id: String, stabilize_prompt_prefix: bool) -> C
 #[tauri::command]
 pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
-    match read_tail(&path, request.lines) {
+    read_latest_logs_at(&path, request)
+}
+
+fn read_latest_logs_at(path: &Path, request: LogRequest) -> CommandResult<LogsPayload> {
+    match read_tail(path, request.lines) {
         Ok(tail) => ok(
             "日志已读取。",
             LogsPayload {
@@ -9019,7 +9023,17 @@ struct TailRead {
 }
 
 fn read_tail(path: &Path, max_lines: usize) -> std::io::Result<TailRead> {
-    let mut file = fs::File::open(path)?;
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TailRead {
+                text: String::new(),
+                truncated: false,
+                file_size: 0,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let file_size = file.metadata()?.len();
     if max_lines == 0 || file_size == 0 {
         return Ok(TailRead {
@@ -9816,12 +9830,19 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
-    fn missing_logs_return_failed_status() {
-        let result = read_latest_logs(LogRequest { lines: 25 });
+    fn read_latest_logs_after_clear_returns_empty_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex-plus.log");
+        std::fs::write(&path, "old log\n").unwrap();
+        std::fs::remove_file(&path).unwrap();
 
-        if result.payload.text.is_empty() {
-            assert_eq!(result.status, "failed");
-        }
+        let result = read_latest_logs_at(&path, LogRequest { lines: 25 });
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.message, "日志已读取。");
+        assert_eq!(result.payload.path, path.to_string_lossy());
+        assert!(result.payload.text.is_empty());
+        assert_eq!(result.payload.file_size, 0);
     }
 
     #[test]
