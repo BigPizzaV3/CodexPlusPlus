@@ -782,12 +782,14 @@
   function installCodexServiceTierDispatcherPatch() {
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
     if (serviceTierDispatcherPatchDisabled) return;
-    // 上一轮没跑完就不要再起一轮：loadDispatcher() 会依次试三个前缀，
+    // 上一轮没跑完就不要再起一轮：loadDispatcher() 会依次试四个前缀，
     // 没有这道去重时 scan 的频率就直接变成并发全量扫描的频率。
     if (serviceTierDispatcherPatchPromise) return;
     const loadDispatcher = async () => {
       const errors = [];
-      for (const assetPrefix of ["setting-storage-", "vscode-api-", "app-initial-"]) {
+      // 26.1016 起 dispatcher 类定义并导出在 app-shared-*，app-initial-* 只导入不再导出，
+      // setting-storage-* / vscode-api-* 也已不存在；缺这个前缀整层请求改写都装不上（#2657）。
+      for (const assetPrefix of ["setting-storage-", "vscode-api-", "app-initial-", "app-shared-"]) {
         try {
           const module = await loadCodexAppModule(assetPrefix);
           const dispatcher = codexServiceTierDispatcherFromModule(module);
@@ -880,6 +882,7 @@
       globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
         enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
         codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
+        nativeFastLocalApiConfigured: codexPlusBackendSettings.nativeFastLocalApiConfigured === true,
       });
     } catch (_) {
       return false;

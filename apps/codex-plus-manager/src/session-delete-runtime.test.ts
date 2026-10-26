@@ -149,7 +149,8 @@ test("local deletion hides React-rebuilt rows of the deleted thread until undo",
   const style = f.styles.get("codex-plus-deleted-session-rows");
   assert.ok(style, "本地删除后应写入隐藏样式表");
   assert.equal(style.getAttribute("data-codex-plus-ext"), "deleted-session-rows");
-  assert.match(style.textContent, new RegExp(`data-app-action-sidebar-thread-id="${uuid}"`));
+  // #2671：React 重建时同一会话可能换成 `local:<uuid>` 等写法，按 uuid 后缀匹配覆盖全部变体。
+  assert.match(style.textContent, new RegExp(`data-app-action-sidebar-thread-id\\$="${uuid}"`));
   assert.doesNotMatch(style.textContent, new RegExp(otherUuid), "不能隐藏其它会话");
   f.context.unhideDeletedSessionRows([uuid]);
   assert.equal(f.styles.has("codex-plus-deleted-session-rows"), false, "撤销后应移除样式表");
@@ -238,12 +239,50 @@ test("route identity must match rather than merely sharing the same pathname", (
   assert.equal(f.context.isCurrentSessionRow(f.rows[0], f.context.sessionRefFromRow(f.rows[0])), false);
 });
 
-test("missing or ambiguous native new-chat affordances never trigger a reload", async () => {
+test("native new-chat affordances never trigger a reload", async () => {
   for (const ambiguous of [false, true]) {
     const f = deleteFixture();
-    if (ambiguous) { const duplicate = new Element({ "aria-label": "New chat" }); duplicate.parentElement = new Element(); f.buttons.push(duplicate); }
+    const duplicate = new Element({ "aria-label": "New chat" }); duplicate.parentElement = new Element();
+    if (ambiguous) f.buttons.push(duplicate);
     else f.native.visible = false;
     await f.begin(); await f.finish();
-    assert.equal(f.native.clicks, 0); assert.equal(f.timers.length, 0); assert.equal(f.reloads(), 0);
+    // 不可见但唯一时照常跳转（#2671）；真正有歧义时不点。两种情况都不能整页刷新。
+    assert.equal(f.native.clicks, ambiguous ? 0 : 1);
+    assert.equal(duplicate.clicks, 0);
+    assert.equal(f.timers.length, 0); assert.equal(f.reloads(), 0);
   }
+});
+
+test("hide rules follow the thread uuid across id spellings (#2671)", async () => {
+  const f = deleteFixture();
+  f.rows[0].setAttribute("data-app-action-sidebar-thread-id", `local:${uuid}`);
+  await f.begin(); await f.finish();
+  const style = f.styles.get("codex-plus-deleted-session-rows");
+  assert.ok(style);
+  assert.match(style.textContent, new RegExp(`data-app-action-sidebar-thread-id\\$="${uuid}"`));
+  // 非 uuid 的 id 没有后缀可依，退回精确匹配原值。
+  f.context.hideDeletedSessionRows("opaque-thread-key");
+  assert.match(style.textContent, /data-app-action-sidebar-thread-id="opaque-thread-key"/);
+  assert.equal(style.textContent.split("\n").length, 2, "同一会话只留一条规则");
+});
+
+test("deletion still navigates when the new chat button is not visible (#2671)", async () => {
+  const f = deleteFixture();
+  f.native.visible = false;
+  await f.begin(); await f.finish();
+  assert.equal(f.native.clicks, 1, "侧栏折叠时也要能跳到新会话");
+  assert.doesNotMatch(f.toasts.join(" "), /请点击新聊天/, "跳转成功就不再提示手动点击");
+  assert.ok(f.diagnostics.some((entry: any) => entry.event === "delete_session_new_chat_fallback"));
+});
+
+test("ambiguous invisible new chat candidates are not clicked (#2671)", async () => {
+  const f = deleteFixture();
+  f.native.visible = false;
+  const twin = new Element({ "aria-label": "新聊天" });
+  twin.parentElement = new Element();
+  twin.visible = false;
+  f.buttons.push(twin);
+  await f.begin(); await f.finish();
+  assert.equal(f.native.clicks + twin.clicks, 0, "多个不可见候选无法判定，不能乱点");
+  assert.match(f.toasts.join(" "), /新聊天/);
 });

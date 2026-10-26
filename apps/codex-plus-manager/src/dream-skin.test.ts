@@ -8,6 +8,7 @@ import {
   isDreamSkinDraftDirty,
   normalizeDreamSkinTheme,
   resolveDreamSkinStylePreset,
+  runExclusiveDreamSkinInstall,
 } from "./dream-skin.ts";
 
 describe("dream skin theme helpers", () => {
@@ -37,6 +38,94 @@ describe("dream skin theme helpers", () => {
     assert.equal(resolveDreamSkinStylePreset("preset-cyber-neon", undefined), "cyber-neon");
     assert.equal(resolveDreamSkinStylePreset("codex-snow-skin", "dream-original"), "codex-snow");
     assert.equal(resolveDreamSkinStylePreset("custom-theme", undefined), "dream-original");
+  });
+
+  it("locks theme installation synchronously and releases the lock after completion", async () => {
+    const lock = { current: false };
+    const pending: boolean[] = [];
+    let finish!: (value: boolean) => void;
+    let runs = 0;
+    const task = () => {
+      runs += 1;
+      return new Promise<boolean>((resolve) => { finish = resolve; });
+    };
+
+    const first = runExclusiveDreamSkinInstall(lock, (value) => pending.push(value), task);
+    const duplicate = await runExclusiveDreamSkinInstall(lock, (value) => pending.push(value), task);
+
+    assert.equal(duplicate, null);
+    assert.equal(runs, 1);
+    assert.equal(lock.current, true);
+    assert.deepEqual(pending, [true]);
+
+    finish(true);
+    assert.equal(await first, true);
+    assert.equal(lock.current, false);
+    assert.deepEqual(pending, [true, false]);
+  });
+
+  it("releases the theme installation lock when the request throws", async () => {
+    const lock = { current: false };
+    const pending: boolean[] = [];
+
+    await assert.rejects(
+      runExclusiveDreamSkinInstall(lock, (value) => pending.push(value), async () => {
+        throw new Error("network failed");
+      }),
+      /network failed/,
+    );
+
+    assert.equal(lock.current, false);
+    assert.deepEqual(pending, [true, false]);
+  });
+
+  it("keeps the real task locked when the initiating view unmounts and remounts", async () => {
+    const appLock = { current: false };
+    let runs = 0;
+    let finish!: (value: boolean) => void;
+    const task = () => {
+      runs += 1;
+      return new Promise<boolean>((resolve) => { finish = resolve; });
+    };
+    const mountView = () => () => runExclusiveDreamSkinInstall(appLock, () => {}, task);
+
+    const firstView = mountView();
+    const activeTask = firstView();
+    const remountedView = mountView();
+    const duplicate = await remountedView();
+
+    assert.equal(duplicate, null);
+    assert.equal(runs, 1);
+    assert.equal(appLock.current, true);
+
+    finish(true);
+    assert.equal(await activeTask, true);
+    assert.equal(appLock.current, false);
+  });
+
+  it("keeps global indeterminate install state across theme views and every install entry", async () => {
+    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+    assert.match(app, /const \[dreamSkinInstallOperation, setDreamSkinInstallOperation\] = useState<DreamSkinInstallOperation \| null>\(null\)/);
+    assert.match(app, /const dreamSkinInstallLockRef = useRef\(false\)/);
+    assert.match(app, /runExclusiveDreamSkinInstall\([\s\S]*dreamSkinInstallLockRef,[\s\S]*setDreamSkinInstallOperation/);
+    for (const source of ["market", "community", "pending-community", "import"]) {
+      assert.match(app, new RegExp(`source: "${source}"`));
+    }
+    assert.doesNotMatch(app, /const installLock = useRef\(false\)/);
+    assert.match(app, /const installing = installOperation\?\.source === "market"/);
+    assert.match(app, /const installing = installOperation\?\.source === "community"/);
+    assert.match(app, /disabled=\{installBlocked\}/);
+    assert.match(app, /disabled=\{installBlocked \|\| !theme\.applyCompatible\}/);
+    assert.match(app, /aria-busy=\{installing\}/);
+    assert.match(app, /installOperation=\{dreamSkinInstallOperation\}/);
+    assert.match(app, /DreamSkinInstallProgress label=\{dreamSkinInstallOperationLabel\(installOperation\)\}/);
+    assert.match(app, /installPending=\{dreamSkinInstallOperation\?\.source === "pending-community"\}/);
+    assert.match(app, /disabled=\{Boolean\(installOperation\)\} variant="outline" onClick=\{\(\) => void actions\.importDreamSkinThemePackage\(\)\}/);
+    assert.match(app, /className="dream-skin-install-progress-bar" role="progressbar"/);
+    assert.doesNotMatch(app, /dream-skin-install-progress-bar[^>]*aria-valuenow/);
+    assert.match(css, /\.dream-skin-install-progress-bar > div\s*\{[^}]*animation:\s*task-progress-indeterminate/s);
   });
 
   it("runs the unmodified target renderers instead of the rewritten theme packages", async () => {
@@ -140,7 +229,7 @@ describe("dream skin theme helpers", () => {
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "26-dream-skin-1.5.20"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "27-dream-skin-1.5.20-wallpaper-shell"/);
     assert.match(assets, /DREAM_SKIN_COMMUNITY_COMPAT_CSS/);
     assert.match(assets, /format!\("\{compiled\}\\n\{DREAM_SKIN_COMMUNITY_COMPAT_CSS\}"\)/);
   });

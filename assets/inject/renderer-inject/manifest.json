@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2728
+      "lines": 2746
     },
     {
       "name": "20-menu.js",
@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 891
+      "lines": 894
     },
     {
       "name": "31-config-read-deadline.js",
@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1959
+      "lines": 1980
     },
     {
       "name": "50-navigation.js",
@@ -58,7 +58,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1150
+      "lines": 1157
     },
     {
       "name": "71-model-picker-groups.js",
@@ -68,7 +68,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具；分享入口已撤出管理器扫描",
-      "lines": 756
+      "lines": 774
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -91,9 +91,24 @@
       "lines": 280
     },
     {
+      "name": "85-turn-rewind-controller.js",
+      "description": "本地轮次回退执行、恢复记录与失败保护",
+      "lines": 259
+    },
+    {
+      "name": "86-turn-rewind-menu.js",
+      "description": "默认关闭的回答菜单回退入口与原生导出适配",
+      "lines": 318
+    },
+    {
+      "name": "85-side-chat-save.js",
+      "description": "本地旁支保存：主历史读取引用、原生缓存采集与普通会话恢复",
+      "lines": 333
+    },
+    {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 890
+      "lines": 955
     },
     {
       "name": "91-extension-api.js",
@@ -118,7 +133,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 961
+      "lines": 964
     },
     {
       "name": "96-whale-compat.js",
@@ -133,7 +148,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 174
+      "lines": 178
     },
     {
       "name": "98-avatar-overlay-layout.js",

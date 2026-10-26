@@ -59,23 +59,6 @@ fn input_digest(items: &[Value]) -> Option<[u8; 32]> {
     Some(Sha256::digest(serde_json::to_vec(items).ok()?).into())
 }
 
-/// 对完整的当前普通请求只追加摘要提示；不执行请求，也不替换任何历史。
-pub fn build_request(current: &Value, summary_prompt: &str) -> anyhow::Result<Value> {
-    anyhow::ensure!(!summary_prompt.trim().is_empty(), "摘要提示不能为空");
-    let mut body = current.clone();
-    let input = body
-        .get_mut("input")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| anyhow::anyhow!("本地压缩需要完整的 Responses input 数组"))?;
-    input.push(json!({
-        "type":"message", "role":"user",
-        "content":[{"type":"input_text","text":summary_prompt}]
-    }));
-    body["tool_choice"] = json!("none");
-    body["parallel_tool_calls"] = json!(false);
-    Ok(body)
-}
-
 struct Entry {
     context: RequestContext,
     exec_adapted: bool,
@@ -302,67 +285,6 @@ mod tests {
         assert!(!is_local_request(&body, canonical));
         body.as_object_mut().unwrap().remove("client_metadata");
         assert!(!is_local_request(&body, canonical));
-    }
-
-    #[test]
-    fn builder_appends_one_user_prompt_and_keeps_the_complete_current_request() {
-        let current = json!({
-            "model":"model", "instructions":"Current rules.", "stream":true,
-            "tools":[{"type":"function","name":"run"}],
-            "tool_choice":"auto", "parallel_tool_calls":true,
-            "reasoning":{"effort":"high"}, "prompt_cache_key":"thread",
-            "previous_response_id":"current-response", "max_output_tokens":1024,
-            "client_metadata":{"keep":"value","x-codex-turn-metadata":
-                json!({"turn_id":"current","request_kind":"regular"}).to_string()},
-            "input":[
-                {"role":"developer","content":"New current instruction."},
-                {"role":"user","content":"Current task."},
-                {"type":"function_call","call_id":"latest","name":"run","arguments":"{}"},
-                {"type":"function_call_output","call_id":"latest","output":"Latest result."},
-                {"role":"assistant","content":"Latest progress."}
-            ]
-        });
-        let before = current.clone();
-        let prompt = "Summarize the complete current context.\r\nKeep recent progress.";
-        let mut built = build_request(&current, prompt).unwrap();
-        assert_eq!(current, before, "the caller's snapshot is immutable");
-        assert_eq!(built["input"].as_array().unwrap().len(), 6);
-        assert_eq!(
-            &built["input"].as_array().unwrap()[..5],
-            current["input"].as_array().unwrap().as_slice()
-        );
-        assert_eq!(built["input"][5]["role"], "user");
-        assert_eq!(built["input"][5]["content"][0]["text"], prompt);
-        assert_eq!(built["tools"], current["tools"]);
-        assert_eq!(built["client_metadata"], current["client_metadata"]);
-        let object = built.as_object_mut().unwrap();
-        for name in ["input", "tool_choice", "parallel_tool_calls"] {
-            object.insert(name.into(), current[name].clone());
-        }
-        assert_eq!(built, current, "only suffix and tool controls change");
-    }
-
-    #[test]
-    fn builder_rejects_missing_history_or_empty_prompt_and_preserves_opaque_metadata() {
-        for current in [
-            json!({"input":"not a full input array"}),
-            json!({"input":null}),
-            json!({}),
-            Value::Null,
-        ] {
-            let before = current.clone();
-            assert!(build_request(&current, "Summary").is_err());
-            assert_eq!(current, before);
-        }
-        for metadata in [
-            Value::Null,
-            json!({"x-codex-turn-metadata":"opaque bytes \r\n"}),
-        ] {
-            let current = json!({"input":[],"client_metadata":metadata});
-            let built = build_request(&current, "Summary").unwrap();
-            assert_eq!(built["client_metadata"], current["client_metadata"]);
-        }
-        assert!(build_request(&json!({"input":[]}), " \r\n").is_err());
     }
 
     #[test]

@@ -5,7 +5,7 @@ import { Blocks, Bot, CheckCheck, ChevronRight, RefreshCw, Sparkles, Trash2, X }
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { t, tf } from "./i18n";
-import { cacheApps, cacheCleanupSummary, cacheSelection, selectableCacheGroups, type CacheGroup } from "./agent-cache-model";
+import { cacheApps, cacheCleanupSummary, cacheKindTotals, cacheSelection, selectableCacheGroups, type CacheGroup } from "./agent-cache-model";
 
 type CacheReport = { scanId: string; groups: CacheGroup[]; warnings: string[] };
 type CleanResult = { removedFiles: number; removedBytes: number; skippedFiles: number; failures: string[] };
@@ -22,6 +22,14 @@ function kindLabel(kind: string) {
   if (kind === "logs") return t("日志（单独选择）");
   if (kind === "update") return t("更新下载缓存");
   if (kind === "temporary") return t("临时文件（仅统计）");
+  return t("应用缓存");
+}
+
+// 卡片内的类型小计用短名；完整说明（单独选择 / 仅统计）留在目录明细里。
+function kindShortLabel(kind: string) {
+  if (kind === "logs") return t("日志");
+  if (kind === "update") return t("更新下载");
+  if (kind === "temporary") return t("临时文件");
   return t("应用缓存");
 }
 
@@ -103,14 +111,15 @@ export function AgentCachePanel() {
   const apps = cacheApps(report?.groups ?? []);
   const selectable = cacheSelection(report?.groups ?? [], "all");
 
-  async function scan() {
+  /** `keepResult`：清理后自动重扫时保留上一次的清理结果提示。 */
+  async function scan(keepResult = false) {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy("scan");
     setError("");
     setReport(null);
     setSelected([]);
-    setResult(null);
+    if (!keepResult) setResult(null);
     try {
       const response = await invoke<Response<{ report?: CacheReport }>>("scan_agent_cache");
       if (response.status !== "ok" || !response.report) throw new Error(t(response.message));
@@ -150,7 +159,15 @@ export function AgentCachePanel() {
         if (submitted) { setReport(null); setSelected([]); }
       }
     }
+    // 清理后旧快照已失效：直接重扫给出剩余占用，不让用户对着空卡片再手动点一次。
+    if (submitted && mounted.current) void scan(true);
   }
+
+  // 打开即扫描：扫描只读统计、不删任何文件，空着一排「—」等用户点按钮没有意义。
+  useEffect(() => {
+    void scan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <Card className="panel agent-cache-panel">
@@ -196,8 +213,14 @@ export function AgentCachePanel() {
                   <Icon aria-hidden="true" />
                 </span>
                 <strong>{report ? bytes(app.totalBytes) : "—"}</strong>
-                <span>{report ? tf("可清理 {0}", [bytes(app.eligibleBytes)]) : t("扫描后查看占用")}</span>
+                <span>{report ? tf("可清理 {0}", [bytes(app.eligibleBytes)]) : busy === "scan" ? t("正在扫描…") : t("扫描后查看占用")}</span>
               </div>
+              {report && app.groups.length > 0 ? <ul className="agent-cache-kinds" aria-label={tf("{0} 的占用构成", [app.name])}>
+                {cacheKindTotals(app.groups).map((entry) => <li key={entry.kind} data-kind={entry.kind}>
+                  <span>{kindShortLabel(entry.kind)}</span>
+                  <strong>{bytes(entry.totalBytes)}</strong>
+                </li>)}
+              </ul> : null}
               <div className="agent-cache-card-selection">{tf("已选择 {0}", [bytes(selectedBytes)])}</div>
               {app.groups.length > 0 ? <CacheDirectories app={app.name} groups={app.groups}
                 selected={selected} disabled={busy !== null} onChange={setSelected} />

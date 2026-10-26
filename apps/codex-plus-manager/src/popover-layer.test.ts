@@ -6,6 +6,7 @@ import {
   registerOpenPopover,
   releaseOpenPopover,
   resetOpenPopovers,
+  resolveAnchoredMenuLayout,
   resolvePopoverLayout,
   type PopoverRect,
 } from "./popover-layer.ts";
@@ -140,5 +141,69 @@ describe("open popover registry", () => {
     assert.deepEqual(closed, []);
     assert.equal(openPopoverCount(), 1);
     resetOpenPopovers();
+  });
+});
+
+describe("resolveAnchoredMenuLayout", () => {
+  // issue #1906：「从第三方导入」菜单里 cc-switch 供应商有几十行时，
+  // 最后一排按钮（ccswitch 导入 / 刷新列表）会掉到窗口外面点不到。
+  it("限高按触发按钮的位置扣掉，菜单底边不会超出视口", () => {
+    const trigger = rect({ top: 200, left: 900 });
+    const layout = resolveAnchoredMenuLayout(trigger, viewport);
+    assert.equal(layout.top, trigger.bottom + 8);
+    assert.equal(layout.maxHeight, viewport.height - layout.top - 12);
+    assert.ok(layout.top + layout.maxHeight + 12 <= viewport.height, "菜单必须留在视口内");
+  });
+
+  it("供应商越多、触发按钮越靠下，限高必须比裸 100vh 更紧", () => {
+    const low = resolveAnchoredMenuLayout(rect({ top: 420, left: 900 }), viewport);
+    assert.ok(low.maxHeight < viewport.height - 24);
+    // 34 行供应商约 1900px 内容，滚动区只可能拿到限高内的空间。
+    assert.ok(low.maxHeight < 1900);
+  });
+
+  it("右边缘对齐触发按钮并至少留出安全距离", () => {
+    const aligned = resolveAnchoredMenuLayout(rect({ top: 100, left: 1000, width: 200 }), viewport);
+    assert.equal(aligned.right, 12);
+    const wide = resolveAnchoredMenuLayout(rect({ top: 100, left: 100, width: 200 }), viewport);
+    assert.equal(wide.right, viewport.width - 300);
+  });
+
+  it("触发按钮贴顶时向下展开，top 不小于安全距离", () => {
+    const atTop = resolveAnchoredMenuLayout(rect({ top: 0, left: 100 }), viewport);
+    assert.equal(atTop.placement, "bottom");
+    assert.equal(atTop.top, 40 + 8);
+    assert.ok(atTop.maxHeight > 0);
+  });
+
+  // #2648 review：触发按钮贴着窗口底部时，只扣 top 会把高度算成 0，
+  // 配合 overflow 就是「整个菜单消失」。必须向上展开，不能返回 0 高。
+  it("触发按钮贴底时向上展开，菜单仍在视口内", () => {
+    const trigger = rect({ top: 780, left: 900 });
+    const layout = resolveAnchoredMenuLayout(trigger, { width: 1200, height: 820 });
+    assert.equal(layout.placement, "top");
+    assert.ok(layout.maxHeight > 0, "不能返回 0 高度把菜单藏起来");
+    assert.ok(layout.top >= 12);
+    assert.ok(layout.top + layout.maxHeight <= 820 - 12);
+    assert.ok(layout.top + layout.maxHeight <= trigger.top, "向上展开不能盖住触发按钮");
+  });
+
+  it("上下都放不下时保底最小可用高度，并整体夹进视口", () => {
+    const layout = resolveAnchoredMenuLayout(rect({ top: 150, left: 100 }), { width: 1200, height: 200 });
+    assert.ok(layout.maxHeight >= 0 && layout.maxHeight <= 200 - 24);
+    assert.ok(layout.top >= 12);
+    assert.ok(layout.top + layout.maxHeight <= 200 - 12);
+    assert.ok(layout.maxHeight > 0, "再矮也要留出可操作高度");
+  });
+
+  it("任何触发位置都不会算出 0 高菜单", () => {
+    for (let top = 0; top <= 800; top += 40) {
+      for (const height of [400, 600, 820]) {
+        const layout = resolveAnchoredMenuLayout(rect({ top, left: 100 }), { width: 1200, height });
+        assert.ok(layout.maxHeight > 0, `top=${top} height=${height} 得到 0 高`);
+        assert.ok(layout.top >= 12);
+        assert.ok(layout.top + layout.maxHeight <= height - 12, `top=${top} height=${height} 超出视口`);
+      }
+    }
   });
 });

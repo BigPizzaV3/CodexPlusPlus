@@ -13,6 +13,7 @@ export type RelayModelRouteProfile = {
   relayMode: "official" | "mixedApi" | "pureApi" | "aggregate";
   officialMixApiKey: boolean;
   noAuth?: boolean;
+  webSearchHistoryCompat?: boolean;
   localCompactionPromptAtEnd?: boolean;
   strictResponsesReasoning?: boolean;
   modelMetadata?: string;
@@ -89,6 +90,15 @@ export function findRelayModelRouteIssue(
   return null;
 }
 
+export function webSearchHistoryCompatEnabled(
+  profile: Pick<RelayModelRouteProfile, "protocol" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat">,
+): boolean {
+  return profile.webSearchHistoryCompat === true
+    && profile.protocol === "responses"
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+}
+
 export function localCompactionPromptAtEndEnabled(
   profile: Pick<RelayModelRouteProfile, "protocol" | "relayMode" | "officialMixApiKey" | "localCompactionPromptAtEnd">,
 ): boolean {
@@ -108,6 +118,7 @@ export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): b
     || (active.relayMode === "pureApi" && active.noAuth === true)
     || (active.relayMode === "official" && active.officialMixApiKey)
     || independentProxyEnabled(active)
+    || webSearchHistoryCompatEnabled(active)
     || localCompactionPromptAtEndEnabled(active)
     || requestCompatibilityEnabled(active)
     || normalizeRelayModelRoutes(active.modelRoutes).some(

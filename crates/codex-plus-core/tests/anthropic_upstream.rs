@@ -538,11 +538,11 @@ fn anthropic_protocol_requires_protocol_proxy_transport() {
     assert!(settings.active_relay_transport_uses_protocol_proxy());
     assert!(settings.relay_profiles[0].requires_protocol_proxy_conversion());
 
-    // 回归保护：本地压缩实验不对 Anthropic 协议开放。
+    // 回归保护：Chat Completions 专有开关不能因为新增协议被顺手放开。
     let mut profile = anthropic_profile("https://api.anthropic.com".to_string());
-    profile.local_compaction_prompt_at_end = true;
+    profile.standard_openai_protocol = true;
     assert!(
-        !profile.local_compaction_prompt_at_end_enabled(),
-        "本地压缩实验只对 Responses 和 Chat Completions 生效"
+        !profile.web_search_history_compat_enabled(),
+        "web_search_history_compat 只对 Responses 生效"
     );
 }

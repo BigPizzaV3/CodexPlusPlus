@@ -563,6 +563,39 @@ fn protocol_validation_distinguishes_transport_incomplete_and_complete() {
         ),
         (true, "incomplete".into())
     );
+    // 被测试请求自身的 16 token 上限截断属正常（#2638）
+    assert_eq!(
+        validate_relay_test_response(
+            RelayProtocol::Responses,
+            200,
+            r#"{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"reasoning"}]}"#
+        ),
+        (true, "completed".into())
+    );
+    assert_eq!(
+        validate_relay_test_response(
+            RelayProtocol::ChatCompletions,
+            200,
+            r#"{"choices":[{"message":{"content":"h"},"finish_reason":"length"}]}"#
+        ),
+        (true, "completed".into())
+    );
+    assert_eq!(
+        validate_relay_test_response(
+            RelayProtocol::AnthropicMessages,
+            200,
+            r#"{"type":"message","content":[],"stop_reason":"max_tokens"}"#
+        ),
+        (true, "completed".into())
+    );
+    assert_eq!(
+        validate_relay_test_response(
+            RelayProtocol::ChatCompletions,
+            200,
+            r#"{"choices":[{"message":{"content":""},"finish_reason":"content_filter"}]}"#
+        ),
+        (true, "incomplete".into())
+    );
     assert!(
         validate_relay_test_response(
             RelayProtocol::ChatCompletions,

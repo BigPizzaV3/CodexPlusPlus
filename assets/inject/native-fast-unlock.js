@@ -22,13 +22,17 @@
         enabled: enhancementsEnabled && optedIn,
         enhancementsEnabled,
         optedIn,
+        localApiConfigured: settings?.nativeFastLocalApiConfigured === true,
         settingsLoaded: !!settings && typeof settings === "object",
       };
     },
     allow(hostId, authMethod) {
-      return hostId === "local"
-        && (authMethod === "apikey" || authMethod === "apiKey")
-        && runtime.status().enabled;
+      const status = runtime.status();
+      // 自定义供应商直接携带凭据时原生账号可能为空；只能使用后端对生效配置的布尔投影，
+      // 不能把所有 null 身份当作 API key，更不能借本机配置放行远端或其它认证方式。
+      return hostId === "local" && status.enabled
+        && (authMethod === "apikey" || authMethod === "apiKey"
+          || authMethod == null && status.localApiConfigured);
     },
   };
 
@@ -74,8 +78,9 @@
             `\\k<manager>\\.getHostId\\(\\)===${local}&&await \\k<storage>\\.readGlobalState\\(\`use-copilot-auth-if-available\`\\)===!0&&await \\k<runtime>\\.isCopilotApiAvailable\\(\\)\\?!1:`,
             `(?<gate>(?<account>\\(await \\k<manager>\\.getAccount\\(\\{priority:${critical}\\}\\)\\)\\.account\\?\\.type)===${chatgpt})\\)\\},async writeServiceTier\\(`,
           ].join(""),
-          // includes 只消费一次 account/read；外层 Copilot 分支原样保留。
-          replacement: (groups) => `[${chatgpt},...(${allow(`${groups.manager}.getHostId()`, apiKey)}?[${apiKey}]:[])].includes(${groups.account})`,
+          // includes 只消费一次 account/read；空账号也必须经过同一份本机 API 策略。
+          // 外层 Copilot 分支原样保留，不能用本机自定义供应商冒充所选 Copilot。
+          replacement: (groups) => `[${chatgpt},...(${allow(`${groups.manager}.getHostId()`, apiKey)}?[${apiKey}]:[]),...(${allow(`${groups.manager}.getHostId()`, "null")}?[null,void 0]:[])].includes(${groups.account})`,
         },
         {
           // 26.10 起改成 if/return 语句体，账号结果先落到局部变量再比较。

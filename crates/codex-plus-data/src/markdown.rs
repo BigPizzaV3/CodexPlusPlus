@@ -145,8 +145,30 @@ fn lookup_thread_record(
             },
         );
         return match row {
-            Ok(row) => Ok(ThreadLookup::Found(row)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ThreadLookup::Missing),
+            Ok(mut row) => {
+                // threads 记录的 rollout_path 可能已失效（例如会话被归档、文件被移到
+                // archived_sessions/），此时按会话 id 在本地会话目录里再找一次。
+                let recorded_is_file = row.rollout_path.as_deref().is_some_and(Path::is_file);
+                if !recorded_is_file {
+                    if let Some(found) =
+                        discover_rollout_path(db_path, thread_id, RolloutScan::FileNameOnly)?
+                    {
+                        row.rollout_path = Some(found);
+                    }
+                }
+                Ok(ThreadLookup::Found(row))
+            }
+            // threads 表里没有这一行时（如数据库缺行、多库只登记在另一个库），
+            // 只要 rollout 文件仍在 sessions/ 或 archived_sessions/ 下就照样导出。
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                match discover_rollout_path(db_path, thread_id, RolloutScan::FileNameOnly)? {
+                    Some(rollout_path) => Ok(ThreadLookup::Found(ThreadRecord {
+                        title: None,
+                        rollout_path: Some(rollout_path),
+                    })),
+                    None => Ok(ThreadLookup::Missing),
+                }
+            }
             Err(err) => Err(err.into()),
         };
     }
@@ -169,7 +191,11 @@ fn lookup_thread_record(
         return match row {
             Ok(title) => Ok(ThreadLookup::Found(ThreadRecord {
                 title,
-                rollout_path: discover_rollout_path(db_path, thread_id)?,
+                rollout_path: discover_rollout_path(
+                    db_path,
+                    thread_id,
+                    RolloutScan::FileNameThenContents,
+                )?,
             })),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ThreadLookup::Missing),
             Err(err) => Err(err.into()),
@@ -179,7 +205,22 @@ fn lookup_thread_record(
     Ok(ThreadLookup::Unsupported)
 }
 
-fn discover_rollout_path(db_path: &Path, thread_id: &str) -> anyhow::Result<Option<PathBuf>> {
+/// rollout 查找范围。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RolloutScan {
+    /// 只校验文件名包含会话 id 的 jsonl（codex 的 rollout 文件名自带会话 id），
+    /// 找不到也不整读其余文件，避免“会话确实不存在”时扫遍全部历史。
+    FileNameOnly,
+    /// 先按文件名命中，再回退到逐个读取 session_meta（自动化会话沿用的旧行为）。
+    FileNameThenContents,
+}
+
+/// 只读地在本地 codex 会话目录（sessions/、archived_sessions/）里按会话 id 找 rollout 文件。
+fn discover_rollout_path(
+    db_path: &Path,
+    thread_id: &str,
+    scan: RolloutScan,
+) -> anyhow::Result<Option<PathBuf>> {
     for home in codex_home_candidates(db_path) {
         let mut candidates = Vec::new();
         collect_jsonl_files(&home.join("sessions"), &mut candidates)?;
@@ -191,9 +232,24 @@ fn discover_rollout_path(db_path: &Path, thread_id: &str) -> anyhow::Result<Opti
                     .ok(),
             )
         });
-        for path in candidates {
+        let (named, others): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|path| {
+            !thread_id.is_empty()
+                && path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.contains(thread_id))
+        });
+        // 文件名命中后仍用 session_meta 校验，避免 id 只是另一个 id 的子串时误匹配。
+        for path in named {
             if rollout_matches_thread(&path, thread_id)? {
                 return Ok(Some(path));
+            }
+        }
+        if scan == RolloutScan::FileNameThenContents {
+            for path in others {
+                if rollout_matches_thread(&path, thread_id)? {
+                    return Ok(Some(path));
+                }
             }
         }
     }

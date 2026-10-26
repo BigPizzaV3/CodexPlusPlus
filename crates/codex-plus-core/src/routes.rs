@@ -450,6 +450,19 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
         }
+        "/side-chat/source" | "/side-chat/save" => {
+            let request = payload.clone();
+            let operation = if path == "/side-chat/source" {
+                crate::side_chat::source_snapshot
+            } else {
+                crate::side_chat::save
+            };
+            tokio::task::spawn_blocking(move || {
+                operation(&crate::codex_home::default_codex_home_dir(), &request)
+            })
+            .await
+            .unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())))
+        }
         "/proxy-status" => {
             // 代理进程的实时请求状态只存在管理器内存里；桥接进程通过本地 helper
             // 的只读路由取一份快照，供 Codex 页面里的状态条轮询。
@@ -830,6 +843,7 @@ fn settings_payload_value(
         &settings.active_relay_profile(),
     );
     settings.dictation = crate::dictation::effective_settings(&settings);
+    let native_fast = crate::native_fast::runtime_settings(&settings);
     let mut value = serde_json::to_value(settings)?;
     fn remove_named_keys(value: &mut Value) {
         match value {
@@ -872,6 +886,10 @@ fn settings_payload_value(
         object.insert(
             "codexAppVersion".to_string(),
             Value::String(codex_app_version),
+        );
+        object.insert(
+            "nativeFastLocalApiConfigured".to_string(),
+            Value::Bool(native_fast.native_fast_local_api_configured),
         );
     }
     Ok(value)

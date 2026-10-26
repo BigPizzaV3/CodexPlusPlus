@@ -83,10 +83,17 @@ test("checkbox draft and generated config route to proxy and restore the real up
     const config = context.buildRelayConfigToml(value, { includeBearerToken: false });
     assert.ok(config.includes(`base_url = "${value.localCompactionPromptAtEnd ? PROTOCOL_PROXY_BASE_URL : original.baseUrl}"`));
   }
-  const retired = { ...original, baseUrl: PROTOCOL_PROXY_BASE_URL, webSearchHistoryCompat: true };
-  const config = context.buildRelayConfigToml(retired, { includeBearerToken: false });
-  assert.ok(config.includes(`base_url = "${original.upstreamBaseUrl}"`));
-  assert.equal(settingsRequireLocalHelper({ ...settings(), relayProfiles: [retired] }), false);
+  for (const search of [false, true]) {
+    for (const local of [false, true]) {
+      const value = { ...original, webSearchHistoryCompat: search, localCompactionPromptAtEnd: local };
+      const config = context.buildRelayConfigToml(value, { includeBearerToken: false });
+      assert.ok(config.includes(`base_url = "${search || local ? PROTOCOL_PROXY_BASE_URL : original.baseUrl}"`));
+      assert.equal(settingsRequireLocalHelper({ ...settings(), relayProfiles: [value] }), search || local);
+    }
+  }
+  const differentSavedUpstream = { ...original, upstreamBaseUrl: "https://other.example/v1" };
+  assert.ok(context.buildRelayConfigToml(differentSavedUpstream, { includeBearerToken: false })
+    .includes(`base_url = "${original.baseUrl}"`), "disabled feature preserves main's baseUrl selection");
 });
 
 test("independent Responses proxy enables the helper per provider and clearing it removes cached routing", () => {
@@ -108,7 +115,7 @@ test("provider checkbox binds draft state and is hidden for Anthropic and aggreg
   const start = source.indexOf("relay-field-local-compaction");
   assert.ok(start >= 0);
   const checkbox = source.slice(start, source.indexOf("</label>", start));
-  assert.match(checkbox, /checked=\{profile\.localCompactionPromptAtEnd\}/);
+  assert.match(checkbox, /checked=\{profile\.localCompactionPromptAtEnd === true\}/);
   assert.match(source.slice(start - 180, start), /showApiFields && profile\.relayMode !== "aggregate" && profile\.protocol !== "anthropicMessages"/);
   assert.match(checkbox, /updateDraft\(\{ localCompactionPromptAtEnd: event\.currentTarget\.checked \}\)/);
   assert.match(checkbox, /type="checkbox"/);
@@ -117,6 +124,6 @@ test("provider checkbox binds draft state and is hidden for Anthropic and aggreg
   assert.doesNotMatch(checkbox, /用户实测/);
   assert.match(checkbox, /不保证每次命中/);
   assert.match(checkbox, /不保证后置压缩提示不影响摘要质量/);
-  assert.doesNotMatch(source, /webSearchHistoryCompat|搜索历史压缩兼容/);
+  assert.match(source, /webSearchHistoryCompat|搜索历史压缩兼容/);
   assert.match(source, /localCompactionPromptAtEnd: profile\.localCompactionPromptAtEnd === true/);
 });

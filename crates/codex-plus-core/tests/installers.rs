@@ -214,6 +214,29 @@ fn windows_installer_waits_for_normal_exit_and_cancels_without_writing_apps() {
 }
 
 #[test]
+fn windows_uninstaller_restores_proxy_config_before_deleting_main_exe() {
+    // issue #406：卸载后 config.toml 仍指向本机代理，官方 Codex 一直 502。
+    // 卸载器必须在进程退出后、删除主程序前让主程序清理一次。
+    let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi")
+        .unwrap()
+        .replace("\r\n", "\n");
+    let section = nsi
+        .split_once("Section \"Uninstall\"")
+        .unwrap()
+        .1
+        .split_once("SectionEnd")
+        .unwrap()
+        .0;
+    let cleanup = section
+        .find(r#"ExecWait '"$INSTDIR\codex-plus-plus.exe" --codex-plus-uninstall-cleanup'"#)
+        .expect("卸载器应调用主程序清理代理配置");
+    let last_wait = section.rfind("Call un.WaitForProcessExit").unwrap();
+    let delete_exe = section.find(r#"Delete "$INSTDIR\codex-plus-plus.exe""#).unwrap();
+    assert!(last_wait < cleanup);
+    assert!(cleanup < delete_exe);
+}
+
+#[test]
 fn macos_dmg_includes_one_visible_app_and_hidden_legacy_updater() {
     let script = std::fs::read_to_string("../../scripts/installer/macos/package-dmg.sh").unwrap();
     assert!(script.contains("ln -s /Applications \"$STAGE/Applications\""));

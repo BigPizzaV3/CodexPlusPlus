@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveProviderName, tomlSectionStringValue } from "./provider-name.ts";
+import { providerAvatarText, resolveProviderName, tomlSectionStringValue } from "./provider-name.ts";
 
 // issue #1886：用户把 name 改成 OpenAi，保存/重启后不能被改回 custom
 test("keeps a user-customized provider name", () => {
@@ -60,4 +60,22 @@ test("handles single quotes and escaped characters", () => {
 name = 'My \\'Relay\\''
 `;
   assert.equal(resolveProviderName(contents, "custom"), "My 'Relay'");
+});
+
+test("provider avatar prefers two characters of different kinds", () => {
+  const cases: Array<[string, string]> = [
+    ["哈基米 国模 kimi", "哈K"],
+    ["供应商 4", "供4"],
+    ["a 哥国模", "A哥"],
+    ["聚合供应商 1", "聚1"],
+    ["哈基米 国模", "哈国"],
+    ["Max JOJO Code（ccswitch）", "MJ"],
+    ["DeepSeek", "DS"],
+    ["jojocodemax", "JO"],
+    ["智谱", "智谱"],
+    ["x", "X"],
+    ["  ", "供"],
+    ["!!!", "供"],
+  ];
+  for (const [name, expected] of cases) assert.equal(providerAvatarText(name), expected, name);
 });

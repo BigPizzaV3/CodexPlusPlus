@@ -1,6 +1,5 @@
 use codex_plus_core::protocol_proxy::{
-    ProxySessionHeaders, UpstreamProxyResponse, build_local_compaction_request,
-    open_local_compaction_request_with_settings,
+    ProxySessionHeaders, UpstreamProxyResponse,
     open_responses_proxy_request_with_settings_for_path_and_session_headers,
 };
 use codex_plus_core::settings::{
@@ -160,24 +159,6 @@ async fn send(
     .unwrap()
 }
 
-async fn send_current(
-    current: &Value,
-    settings: &BackendSettings,
-    thread: &str,
-) -> UpstreamProxyResponse {
-    open_local_compaction_request_with_settings(
-        current,
-        PROMPT,
-        settings.clone(),
-        ProxySessionHeaders {
-            thread_id: Some(thread),
-            ..ProxySessionHeaders::default()
-        },
-    )
-    .await
-    .unwrap()
-}
-
 #[tokio::test]
 async fn local_compaction_preserves_tools_without_enabling_calls_for_json_and_sse() {
     for protocol in [RelayProtocol::Responses, RelayProtocol::ChatCompletions] {
@@ -217,6 +198,64 @@ async fn local_compaction_preserves_tools_without_enabling_calls_for_json_and_ss
                 assert_eq!(requests[1]["client_metadata"], compact["client_metadata"]);
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn local_compaction_and_search_history_compatibility_remain_independent() {
+    for (local, search) in [(false, false), (false, true), (true, false), (true, true)] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let mut settings = settings(
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+            RelayProtocol::Responses,
+            local,
+        );
+        settings.relay_profiles[0].web_search_history_compat = search;
+        let before = serde_json::to_value(&settings).unwrap();
+        let reply = success(RelayProtocol::Responses, false);
+        let server = tokio::spawn(capture(listener, vec![reply.clone(), reply]));
+        let mut normal = normal(false);
+        normal["input"].as_array_mut().unwrap().push(json!({
+            "type":"web_search_call","id":"ws_prior","status":"completed",
+            "action":{"type":"search","query":"fixture"}
+        }));
+        send(&normal, &settings, Some("search-interaction"))
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        let compact = compact(&normal);
+        send(&compact, &settings, Some("search-interaction"))
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let mut expected_normal = normal.clone();
+        let mut expected_compact = compact.clone();
+        if local {
+            expected_compact["tools"] = normal["tools"].clone();
+        }
+        if search {
+            let tool = json!({"type":"web_search","external_web_access":false});
+            expected_normal["tools"]
+                .as_array_mut()
+                .unwrap()
+                .push(tool.clone());
+            expected_compact["tools"].as_array_mut().unwrap().push(tool);
+        }
+        assert_eq!(
+            requests[0], expected_normal,
+            "ordinary search repair must not depend on the local compaction switch"
+        );
+        assert_eq!(
+            requests[1], expected_compact,
+            "local compaction must retain the existing independent search repair"
+        );
+        assert_eq!(serde_json::to_value(&settings).unwrap(), before);
     }
 }
 
@@ -410,162 +449,6 @@ async fn local_compaction_restores_tool_context_before_chat_namespace_history_pr
 }
 
 #[tokio::test]
-async fn current_request_builder_sends_exactly_one_summary_without_cache_seed_or_validation() {
-    for mode in ["streaming", "buffered"] {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let mut settings = settings(
-            format!("http://{}/v1", listener.local_addr().unwrap()),
-            RelayProtocol::Responses,
-            true,
-        );
-        settings.protocol_proxy_auto_retry = true;
-        settings.protocol_proxy_auto_retry_mode = mode.into();
-        settings.protocol_proxy_auto_retry_max_attempts = 1;
-        let body = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_overloaded\",\"message\":\"overloaded\"}}}\n\n";
-        let server = tokio::spawn(capture(
-            listener,
-            vec![(200, "text/event-stream", body.into())],
-        ));
-        let mut current = normal(true);
-        current["input"].as_array_mut().unwrap().push(json!({
-            "type":"message","role":"assistant",
-            "content":[{"type":"output_text","text":"Latest progress, not in a previous request."}]
-        }));
-        let built = build_local_compaction_request(&current, PROMPT).unwrap();
-        let mut result = send_current(&current, &settings, "direct-builder").await;
-        assert!(result.buffered_body.is_none());
-        assert!(result.stream_prefix.is_empty());
-        assert_eq!(result.read_body().await.unwrap(), body.as_bytes());
-        let requests = server.await.unwrap();
-        assert_eq!(
-            requests.len(),
-            1,
-            "no ordinary warm call and no summary resend"
-        );
-        assert_eq!(requests[0], built);
-        assert_eq!(requests[0]["tools"], current["tools"]);
-        let input = requests[0]["input"].as_array().unwrap();
-        assert_eq!(
-            &input[..input.len() - 1],
-            current["input"].as_array().unwrap().as_slice()
-        );
-    }
-}
-
-#[tokio::test]
-async fn current_request_summary_rejects_remote_triggers_before_any_upstream_send() {
-    let current = json!({"input":[{"type":"compaction_trigger"}]});
-    let error = match open_local_compaction_request_with_settings(
-        &current,
-        PROMPT,
-        BackendSettings::default(),
-        ProxySessionHeaders::default(),
-    )
-    .await
-    {
-        Ok(_) => panic!("remote triggers cannot enter the full-current local summary path"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("compaction_trigger"));
-}
-
-#[tokio::test]
-async fn current_request_builder_does_not_borrow_old_fields_even_with_a_warm_cache() {
-    for empty_tools in [false, true] {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let settings = settings(
-            format!("http://{}/v1", listener.local_addr().unwrap()),
-            RelayProtocol::Responses,
-            true,
-        );
-        let reply = success(RelayProtocol::Responses, false);
-        let server = tokio::spawn(capture(listener, vec![reply.clone(), reply]));
-        let mut previous = normal(false);
-        previous["reasoning"] = json!({"effort":"high"});
-        previous["text"] =
-            json!({"format":{"type":"json_schema","name":"old","schema":{"type":"object"}}});
-        send(&previous, &settings, Some("direct-warm"))
-            .await
-            .read_body()
-            .await
-            .unwrap();
-        let mut current = previous.clone();
-        for name in ["instructions", "reasoning", "text", "prompt_cache_key"] {
-            current.as_object_mut().unwrap().remove(name);
-        }
-        current["tools"] = if empty_tools {
-            json!([])
-        } else {
-            json!([{"type":"function","name":"new","parameters":{"type":"object"}}])
-        };
-        current["input"].as_array_mut().unwrap().push(json!({
-            "role":"assistant","content":[{"type":"output_text","text":"Newest progress."}]
-        }));
-        let built = build_local_compaction_request(&current, PROMPT).unwrap();
-        send_current(&current, &settings, "direct-warm")
-            .await
-            .read_body()
-            .await
-            .unwrap();
-        let requests = server.await.unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(
-            requests[1], built,
-            "full current requests must not import older fields"
-        );
-    }
-}
-
-#[tokio::test]
-async fn current_request_builder_does_not_apply_an_old_exec_projection_to_current_tools() {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap();
-    let settings = settings(
-        format!("http://{}/v1", listener.local_addr().unwrap()),
-        RelayProtocol::Responses,
-        true,
-    );
-    let reply = success(RelayProtocol::Responses, false);
-    let rejection = (
-        400,
-        "application/json",
-        json!({"error":{
-            "type":"invalid_request_error",
-            "message":"Unsupported custom tool: 'exec'. Only 'apply_patch' is supported.",
-            "param":"tools[0]"
-        }})
-        .to_string(),
-    );
-    let server = tokio::spawn(capture(listener, vec![rejection, reply.clone(), reply]));
-    let mut previous = normal(false);
-    previous["tools"] = json!([{"type":"custom","name":"exec","description":"Old context."}]);
-    previous["tool_choice"] = json!("auto");
-    send(&previous, &settings, Some("direct-current-tools"))
-        .await
-        .read_body()
-        .await
-        .unwrap();
-    let mut current = normal(false);
-    current["tools"] = json!([{"type":"custom","name":"exec","description":"New context."}]);
-    let built = build_local_compaction_request(&current, PROMPT).unwrap();
-    send_current(&current, &settings, "direct-current-tools")
-        .await
-        .read_body()
-        .await
-        .unwrap();
-    let requests = server.await.unwrap();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(requests[1]["tools"][0]["type"], "function");
-    assert_eq!(requests[2], built);
-    assert_eq!(requests[2]["tools"][0]["type"], "custom");
-}
-
-#[tokio::test]
 async fn full_tools_compaction_metadata_preserves_exec_negotiation_when_experiment_is_disabled() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -593,8 +476,13 @@ async fn full_tools_compaction_metadata_preserves_exec_negotiation_when_experime
     current["tools"] = json!([{"type":"custom","name":"exec","description":"Current."}]);
     current["client_metadata"] = json!({"x-codex-turn-metadata":
         json!({"request_kind":"compaction","compaction":{"implementation":"responses"}}).to_string()});
-    let built = build_local_compaction_request(&current, PROMPT).unwrap();
-    send_current(&current, &settings, "disabled-full-tools")
+    current["input"].as_array_mut().unwrap().push(json!({
+        "type":"message","role":"user",
+        "content":[{"type":"input_text","text":PROMPT}]
+    }));
+    current["tool_choice"] = json!("none");
+    current["parallel_tool_calls"] = json!(false);
+    send(&current, &settings, Some("disabled-full-tools"))
         .await
         .read_body()
         .await
@@ -605,9 +493,9 @@ async fn full_tools_compaction_metadata_preserves_exec_negotiation_when_experime
         2,
         "default-off retains the existing explicit exec negotiation"
     );
-    assert_eq!(requests[0], built);
+    assert_eq!(requests[0], current);
     assert_eq!(requests[1]["tools"][0]["type"], "function");
-    assert_eq!(requests[1]["input"], built["input"]);
+    assert_eq!(requests[1]["input"], current["input"]);
 }
 
 #[tokio::test]
@@ -653,7 +541,7 @@ async fn local_compaction_uses_latest_tools_and_clears_them_after_an_empty_tools
 
 #[tokio::test]
 async fn local_compaction_inherits_only_entry_or_target_opt_in_and_keeps_target_model() {
-    for (entry, target) in [(true, false), (false, true), (false, false)] {
+    for (entry, target) in [(true, false), (false, true), (true, true), (false, false)] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
@@ -679,6 +567,7 @@ async fn local_compaction_inherits_only_entry_or_target_opt_in_and_keeps_target_
             },
         );
         settings.active_relay_id = "entry".into();
+        let before = serde_json::to_value(&settings).unwrap();
         let reply = success(RelayProtocol::Responses, false);
         let server = tokio::spawn(capture(listener, vec![reply.clone(), reply]));
         let normal = normal(false);
@@ -699,6 +588,11 @@ async fn local_compaction_inherits_only_entry_or_target_opt_in_and_keeps_target_
             !(entry || target)
         );
         assert_eq!(requests[1]["tool_choice"], "none");
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap(),
+            before,
+            "entry opt-in applies only to the request's target clone"
+        );
     }
 }
 

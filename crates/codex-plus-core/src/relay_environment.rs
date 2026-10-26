@@ -145,10 +145,11 @@ fn yaml_top_level_bool(contents: &str, key: &str) -> Option<bool> {
     })
 }
 
+/// NO_PROXY 只是「不走代理」的排除列表，本身不会让流量走代理，不算需要清理的代理变量（#2691）。
 fn is_proxy_environment_name(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_uppercase().as_str(),
-        "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY" | "FTP_PROXY"
+        "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "FTP_PROXY"
     )
 }
 
@@ -270,7 +271,7 @@ mod tests {
                 .iter()
                 .map(|item| item.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["HTTPS_PROXY", "NO_PROXY"]
+            vec!["HTTPS_PROXY"]
         );
     }
 

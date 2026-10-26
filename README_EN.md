@@ -16,7 +16,7 @@
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ is a unified management application for the OpenAI Codex / ChatGPT desktop app. Double-clicking opens its window; the official app is started from that window. It uses the Chromium DevTools Protocol and an embedded runtime for provider switching, protocol conversion, session management, and UI enhancements without modifying the official app's `app.asar` or installation files.
+Codex++ is a unified manager for AI coding agents. It started with the OpenAI Codex / ChatGPT desktop app — provider switching, protocol conversion, session management, and UI enhancements — and now also manages Claude Code, Claude Desktop, and the Grok CLI, with Computer Use sharing and sub-agent collaboration across agents. Double-click to open its window and launch each app from there. It never modifies any official app's installation files.
 
 ## Quick Start
 
@@ -41,54 +41,87 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 
 ## Current Features
 
+| Agent | What Codex++ does |
+| --- | --- |
+| **Codex desktop** | Provider switching and protocol conversion, request shock absorption, session management, UI enhancements, multi-launch, extensions, and the usage widget |
+| **Claude Code** | One-click provider switching; Computer Use connection |
+| **Claude Desktop** | Enhanced copy (Chinese UI, dictation, Computer Use); Computer Use connection |
+| **Grok CLI** | Model and API endpoint configuration |
+| **DeepSeek Harness and more** | Computer Use connection; callable as a sub-agent from Codex chats |
+
 | Area | Capabilities |
 | --- | --- |
-| Provider configuration | Official login, official login plus API, pure API, and aggregate providers; Grok provider management; Responses / Chat Completions; model tests, model discovery, Provider Doctor, cc-switch and deep-link imports |
-| Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, model metadata import (models.json), shared config, and per-provider MCP, Skill, and Plugin selection |
-| Session management | Local session scanning, bulk deletion, Markdown export, token usage history, Provider metadata sync, and backups |
-| WeChat connection | QR login connects personal WeChat to local Codex sessions; each WeChat contact maps to a separate session, with an allowed-user list |
-| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, API-key dictation, conversation width and scroll restore, native Fast unlock, Goals, next-step suggestions, skin management, and image overlay |
-| Native Fast for API keys | Opt in to Codex's native Standard / Fast controls for models configured with Fast (priority) support; disabled by default, with availability and pricing determined by the provider |
-| Development workflow | Project move and thread IDs |
-| Usage status line | Live generation speed, cache hit rate, and context usage below the composer, read from local Codex session records; the context share follows the per-model window Codex sees |
-| Request shock absorption | Absorb upstream overload errors (`server_overloaded`, `server_is_overloaded`, `at capacity`, ...) at the proxy with backoff retries. Streaming mode keeps live output and hands post-first-token overloads to Codex's native retry; buffered mode buffers the whole response and retries at any point (no streaming). Switch under Proxy settings → Request shock absorption; the request log shows in-flight requests, time to first token and total duration live |
-| Codex multi-launch | Start an isolated Codex instance per provider identity, each with its own config, sessions, and user data directory; running instances are listed together and can be restarted or stopped individually |
-| Sub-agent collaboration | Delegate in natural language from a Codex chat to Codex CLI, DeepSeek Harness (dsh), or Claude Code and receive results in the same chat; configure a default agent, model routes, and optional reuse of saved DSH authentication |
-| Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
+| Provider configuration | Official login, official login plus API, pure API, and aggregate providers (Failover / Model aggregation); Responses / Chat Completions; model tests, model discovery, Provider Doctor, third-party and deep-link imports; optional auto-review model per provider |
+| Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, model metadata import (models.json), and per-provider MCP, Skill, and Plugin selection |
+| Computer Use sharing · new | Expose the Computer Use and Chrome browser control built into the Codex desktop app (ChatGPT.app) over MCP to Claude Code, Claude Desktop, Codex CLI, DeepSeek Harness, ZCode, and WorkBuddy, with a selectable approval policy (macOS) |
+| Beyond Codex · new | Claude Code provider switching with imports from other tools; an enhanced Claude.app copy with Chinese UI, composer dictation, and Computer Use; Grok CLI model and endpoint management |
+| Request shock absorption and request log | Back off and retry upstream overload errors at the proxy, optionally by HTTP status code; streaming or fully buffered mode; the always-on local proxy keeps running after Codex quits. The request log shows in-flight requests, time to first token, retry reasons, and token usage, filterable by conversation |
+| Session management | Local session scanning, bulk deletion, Markdown export, token usage history, project move, thread IDs, opt-in [turn rewind](docs/turn-rewind.md), and side chats saved as ordinary conversations |
+| Codex multi-launch | Start an isolated Codex instance per provider identity, each with its own config, sessions, and user data directory; restart or stop each one individually |
+| Sub-agent collaboration | Delegate in natural language from a Codex chat to Codex CLI, DeepSeek Harness (dsh), or Claude Code and receive results in the same chat |
+| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, dictation with a global hotkey, conversation width and scroll restore, native Fast unlock, Goals, next-step suggestions, skins, and image overlays |
+| Usage status line | Live generation speed, cache hit rate, and context usage below the composer, read from local Codex session records |
+| WeChat connection | QR login connects personal WeChat to local Codex sessions; each contact maps to a separate session, with an allowed-user list |
+| Maintenance | User scripts, AI agent cache cleanup (Codex, Claude, Codex++), app detection, shortcuts, launch at login, settings export / import, logs, diagnostics, and Release updates |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
-**Usage status line** shows live generation speed, cache hit rate, and context usage below the composer. Values come from the session records Codex writes locally, using the same definitions as Codex: cache hit is `cached_input_tokens / input_tokens`, and context usage compares the latest call's tokens against the per-model window Codex sees from the generated model catalog. It is on by default and can be disabled under Codex Enhancements → General → Usage status line. Speed is throughput measured between adjacent token events, so it includes tool execution time and reads below raw decode speed.
+## Screenshots
+
+**Overview** — current provider, last 24 hours of requests, and health checks.
+
+<p align="center">
+  <img src="docs/images/readme-preview/manager-overview.png" alt="Overview: current provider, 24-hour request stats, and health checks" width="100%">
+</p>
+
+**Computer Use sharing** — click Connect (「接入」) next to a client and restart it; tools appear as `mcp__codex-plus-cu__*` and `mcp__codex-plus-browser__*` (macOS).
+
+<p align="center">
+  <img src="docs/images/readme-preview/manager-computer-use.png" alt="Computer Use: AI clients reach ChatGPT.app's native Computer Use and the Chrome extension through Codex++ MCP servers" width="100%">
+</p>
+
+**Request log and automatic retries**
+
+<p align="center">
+  <img src="docs/images/readme-preview/manager-request-log.png" alt="Request log: in-flight requests, automatic retries, time to first token, and input, output, and cached tokens" width="100%">
+</p>
+
+**Claude Code, Claude enhancements, Grok, and AI agent cache cleanup**
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/readme-preview/manager-claude-providers.png" alt="Claude Code providers" width="100%"></td>
+    <td width="50%"><img src="docs/images/readme-preview/manager-claude-enhance.png" alt="Claude enhancements: localization, dictation, and Computer Use" width="100%"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/readme-preview/manager-grok.png" alt="Grok configuration" width="100%"></td>
+    <td><img src="docs/images/readme-preview/manager-agent-cache.png" alt="AI agent cache cleanup for Codex, Claude, and Codex++" width="100%"></td>
+  </tr>
+</table>
+
+**Usage status line**
 
 <p align="center">
   <img src="docs/images/usage-statusline.png" alt="Usage status line below the composer: 51 tok/s, cache hit 99.9%, context usage 19%" width="100%">
 </p>
 
-**Codex multi-launch** starts one isolated Codex instance per provider identity. Each instance keeps its own config, sessions, and user data directory, so a single Responses or Chat Completions provider can run side by side with others without sharing sessions. The running main Codex and multi-launch instances are listed together and can be restarted or stopped individually.
+**Codex multi-launch**
 
 <p align="center">
   <img src="docs/images/codex-multi-launch.png" alt="Codex multi-launch: running DeepSeek and Zhipu GLM instances with restart and stop actions" width="100%">
 </p>
 
-**Sub-agent collaboration** lets you say “Have DeepSeek implement this feature” or “Ask Claude Code to review the changes” directly in a Codex chat. Codex++ starts the corresponding native CLI through MCP and returns its results to the same chat. It supports Codex CLI, DeepSeek Harness (`dsh`), and Claude Code; naming an agent selects that agent, while an unspecified delegation uses your configured default.
-
-Configure the default agent, CLI paths, models, and DeepSeek's `provider/model` route in the manager. You can optionally enable reuse of DSH's saved login and keys, letting dsh use its native authentication without storing another copy in Codex++.
-
-1. Open **Agent collaboration**, enable collaboration and the agents you want to use, select a default agent, and save.
-2. Click **Connect and refresh** (「一键接入并刷新」) to add the collaboration tools to Codex.
-3. Return to the Codex chat, name an agent and its task, and wait for the result.
+**Sub-agent collaboration** — say “Have DeepSeek implement this feature” in a Codex chat; see the [guide](docs/agent-collaboration.md).
 
 <p align="center">
   <img src="docs/images/agent-collaboration.png" alt="Verified DeepSeek example: ask what 1+1 equals and receive 2 through the Codex Plus Collaboration integration" width="100%">
 </p>
 
-Verified example: “Ask DeepSeek what 1+1 equals” → the collaboration integration returns DeepSeek's answer, “1+1 equals 2.” See the [sub-agent collaboration guide](docs/agent-collaboration.md) for model routes, authentication, and task settings.
-
-Enable the optional Codex usage widget under Codex Enhancements → General → Widgets and pets. It includes the original character, modular bubble editor, sound library and waveform trimming, character/image/audio management, edge snapping and alerts. View session and local usage, observed subscription windows and costs estimated from configured prices, or connect provider balance and quota templates. See the [widget guide](docs/whale-widget.md) and [feature verification](docs/whale-parity.md).
+The optional usage widget lives under Codex Enhancements → General → Widgets and pets; see the [widget guide](docs/whale-widget.md).
 
 **Whale widget source and credits:** The original features, complete UI engine, character, built-in sounds and animations come from [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget), adapted here as a built-in Codex++ feature. The Codex desktop architecture also references [Yang-huai406/Codex-Whale-Public](https://github.com/Yang-huai406/Codex-Whale-Public). The upstream [LICENSE](assets/inject/upstream/whale-widget/LICENSE) and [PROVENANCE.md](assets/inject/upstream/whale-widget/PROVENANCE.md) are preserved; the media assets are not claimed as original work by this project.
 
-## Provider Modes
+## Codex Provider Modes
 
 Official login, mixed API, and pure API are stored and switched separately:
 
@@ -103,13 +136,7 @@ Each provider can configure Responses or Chat Completions, model lists, a test m
 
 Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
 
-When creating an aggregate provider, first choose **Failover** or **Model aggregation**. The two types have separate forms and runtime behavior. Model aggregation merges member models into Codex's model list and binds `cpx-<provider-id>/` entries to that member; Failover uses failover, rotation, and weights. Each member keeps its own model list, context window, and auto-compact settings.
-
-Members can be ordinary API providers or official accounts with a completed ChatGPT login. For official members the proxy sends requests to the chatgpt.com backend with that account's OAuth credentials, refreshes the access token with its refresh token when needed (writing the rotated tokens back to the provider snapshot), and retries once after a 401. When the same account is also used directly, the live auth.json credentials take precedence so refresh-token rotation cannot invalidate the snapshot.
-
-### A model picker that folds by provider
-
-Model aggregation merges several members' models into one catalog. The native model picker now folds them into a collapsible group per provider: headers show the provider name and model count, model names drop the repeated "（provider）" suffix, and the default member's group carries a **Default** badge. An "expand all / collapse all" control sits in the corner, collapse state is remembered per provider, and opening the picker expands just the group holding the current selection (or the default provider when nothing is selected). Single-provider setups keep the untouched native list.
+With model aggregation, the native model picker folds models into one group per provider.
 
 <p align="center">
   <img src="docs/images/readme-preview/model-picker-groups.png" alt="Model picker folded by provider: Provider 4 group (Default, 7 models) and DeepSeek group (2 models)" width="560">
@@ -168,7 +195,11 @@ Run the model test or Provider Doctor from the provider detail page. Verify that
 
 ### Does it support Intel Macs?
 
-Yes. Releases provide both `macos-x64.dmg` and `macos-arm64.dmg`. Intel Macs should use the x64 package, while Apple Silicon Macs should use the arm64 package.
+Yes. The `macos-universal.dmg` package runs on both Intel and Apple Silicon Macs.
+
+### Computer Use tools do not appear in my client
+
+Restart the client after connecting. Fully quit Claude Desktop before connecting, because it rewrites its own config on exit. If the tools are still missing, check the config directory the client actually reads under **Config paths and custom directories** (「配置路径与自定义目录」) on the Computer Use page, and make sure ChatGPT has Accessibility and Screen Recording permissions.
 
 ## Development
 
@@ -206,8 +237,8 @@ Copyright (C) 2026 BigPizzaV3
 
 CodexPlusPlus is licensed under the [GNU Affero General Public License v3.0](LICENSE), SPDX identifier `AGPL-3.0-only`. Modified versions that are distributed or offered to users over a network must provide the corresponding source code as required by AGPLv3.
 
-The license covers CodexPlusPlus code only. It does not grant rights to OpenAI, ChatGPT, Codex trademarks, application assets, or other third-party content.
+The license covers CodexPlusPlus code only. It does not grant rights to OpenAI, ChatGPT, Codex, Anthropic, Claude, xAI, or Grok trademarks, application assets, or other third-party content.
 
 ## Compatibility
 
-Codex++ depends on the official desktop app's page structure, CDP behavior, and local data formats. Official app updates may require injection updates. Keep backups before changing provider configuration or local session data.
+Codex++ depends on each official app's page structure, CDP behavior, and local data formats. Official app updates may require injection updates. Keep backups before changing provider configuration or local session data.

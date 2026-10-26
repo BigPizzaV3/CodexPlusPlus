@@ -696,6 +696,18 @@ async fn launcher_session(
             !hooks.attach_only,
             "已有 Codex++ 后台服务正在运行，不能重复恢复"
         );
+        // 多开实例必须是一个独立进程：每个实例有自己的 `--user-data-dir` 和调试端口，
+        // 复用主实例只会让目标端口永远无人监听（issue #2684）。走到这里说明本实例
+        // 的 guard 锁没拿到，绝大多数是主实例的默认 guard 端口覆盖了
+        // `CODEX_PLUS_LAUNCHER_GUARD_PORT`，所以直接失败并说明原因，不激活已有窗口。
+        if multi_instance_mode() {
+            anyhow::bail!(
+                "Codex 多开实例未能获得独立的启动锁（guard 端口 {}），已停止，避免误接管主实例。\
+                 请确认主 Codex 正常后再试；若反复出现，请附 codex-plus.log 中 \
+                 launcher.already_running 那一行。",
+                codex_plus_core::ports::launcher_guard_port()
+            );
+        }
         if codex_plus_core::watcher::find_codex_processes().is_empty()
             && !codex_plus_core::watcher::cdp_listening(options.debug_port)
         {
@@ -871,6 +883,14 @@ fn current_timestamp_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// 当前进程是不是「Codex 多开」worker。
+///
+/// 多开 worker 会在自己的进程里跑一套 launcher 会话，因此这里读的是进程环境变量，
+/// 与 `codex-plus-core` 里判断隔离实例用的是同一个标记。
+fn multi_instance_mode() -> bool {
+    std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").is_some_and(|value| value == "1")
 }
 
 fn acquire_single_instance_guard(
@@ -2121,6 +2141,36 @@ mod tests {
         assert!(source.contains("launcher.already_running"));
         assert!(source.contains("Existing Codex instance activated"));
         assert!(source.contains("status: \"failed\".to_string()"));
+    }
+
+    #[test]
+    fn multi_instance_worker_never_falls_back_to_activating_the_main_instance() {
+        // issue #2684：多开 worker 拿不到 guard 锁时，若退化成「激活已有实例」，
+        // 目标调试端口永远不会被监听。必须先按多开身份失败，再考虑激活分支。
+        let source = include_str!("main.rs");
+        let start = source.find("async fn launcher_session(").unwrap();
+        let end = source[start..]
+            .find("async fn activate_and_write_running_status(")
+            .unwrap()
+            + start;
+        let body = &source[start..end];
+        let multi_guard = body.find("if multi_instance_mode()").unwrap();
+        let activate = body.find("activate_and_write_running_status(&options").unwrap();
+        assert!(
+            multi_guard < activate,
+            "多开判断必须排在激活已有实例之前"
+        );
+        assert!(body[multi_guard..activate].contains("anyhow::bail!"));
+    }
+
+    #[test]
+    fn multi_instance_mode_reads_the_worker_env_flag() {
+        let source = include_str!("main.rs");
+        let start = source.find("fn multi_instance_mode()").unwrap();
+        let end = source[start..].find("\n}\n").unwrap() + start;
+        let body = &source[start..end];
+        assert!(body.contains("CODEX_PLUS_MULTI_INSTANCE"));
+        assert!(body.contains("\"1\""));
     }
 
     #[test]

@@ -3,13 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Codex++ — 让 Codex 更顺手</title>
-<meta name="description" content="Codex++ 是面向 Codex 桌面应用的统一管理工具：供应商与模型、上下文窗口、子 Agent 协作、会话管理、界面增强、拓展与桌宠。给 Codex 桌面应用加一点「++」。">
+<title>Codex++ — 让 AI 编程 Agent 更顺手</title>
+<meta name="description" content="Codex++ 是 AI 编程 Agent 的统一管理工具：以 Codex 桌面版为核心，同时管理 Claude Code、Claude Desktop 与 Grok 的供应商和增强，并把 Computer Use 共享给各个 Agent。">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Codex++">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:title" content="Codex++ — 让 AI 编程 Agent 更顺手">
+<meta property="og:description" content="Codex++ 是 AI 编程 Agent 的统一管理工具：以 Codex 桌面版为核心，同时管理 Claude Code、Claude Desktop 与 Grok 的供应商和增强，并把 Computer Use 共享给各个 Agent。">
+<meta property="og:url" content="https://codexpp.cc/">
+<meta property="og:image" content="https://codexpp.cc/assets/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/png" href="assets/logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,800;1,400&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=20261021-manager-layout-1">
+<link rel="stylesheet" href="css/style.css?v=20261025-agents-5">
 </head>
 <body>
 
@@ -21,10 +29,9 @@
       <span class="brand-name">Codex<b>++</b></span>
     </a>
     <nav class="nav-links">
-      <a href="#manager-live" data-nav>在线体验</a>
       <a href="#features" data-nav>功能</a>
-      <a href="#modes" data-nav>接入方式</a>
       <a href="#showcase" data-nav>实拍</a>
+      <a href="#modes" data-nav>Codex 供应商</a>
       <a href="#steps" data-nav>快速上手</a>
       <a href="#community" data-nav>社区</a>
       <a href="#download" data-nav>下载</a>
@@ -55,12 +62,16 @@
 
   <div class="hero-inner">
     <div class="hero-copy">
-    <p class="eyebrow reveal"><span class="pulse-dot"></span>YOUR CODEX, UPGRADED — 开源 · 本地 · Rust + Tauri</p>
+    <p class="eyebrow reveal"><span class="pulse-dot"></span>YOUR AGENTS, UPGRADED — 开源 · 本地 · Rust + Tauri</p>
     <h1 class="hero-title">
-      <span class="line"><span class="w">让</span> <span class="w">Codex</span></span>
+      <span class="line"><span class="w">让</span> <span class="w">Agent</span></span>
       <span class="line"><span class="w grad">更顺手</span><span class="w plus">++</span></span>
     </h1>
-    <p class="hero-sub reveal">统一管理供应商与模型，让会话更好用，也让工作区更像你。<br>不改 <span class="mono">app.asar</span>，不写安装目录，双击打开就能用。</p>
+    <p class="hero-sub reveal">Codex、Claude Code、Claude Desktop、Grok 的供应商、增强与 Computer Use，一个管理器搞定。<br>不改官方应用的安装文件，双击打开就能用。</p>
+    <div class="hero-agents reveal" aria-label="支持的 Agent">
+      <span class="hero-agents-label">支持的 Agent</span>
+      <ul><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/chatgpt.svg);mask-image:url(assets/agents/chatgpt.svg)" aria-hidden="true"></span>Codex</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude Code</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude Desktop</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/grok.svg);mask-image:url(assets/agents/grok.svg)" aria-hidden="true"></span>Grok</li><li class="more">DeepSeek Harness 等</li></ul>
+    </div>
     <div class="hero-cta reveal">
       <a class="btn btn-primary btn-lg magnetic" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
         <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -73,14 +84,14 @@
     </div>
     <dl class="hero-stats reveal">
       <div class="stat"><dt class="mono" data-count="32114" data-format="wan">0</dt><dd>GitHub Stars</dd></div>
-      <div class="stat"><dt class="mono" data-count="150" data-suffix="+">0</dt><dd>可接入主流模型</dd></div>
-      <div class="stat"><dt class="mono" data-count="1" data-format="m">0</dt><dd>单模型最大上下文窗口</dd></div>
-      <div class="stat"><dt class="mono">0</dt><dd>对官方应用的文件改动</dd></div>
+      <div class="stat"><dt class="mono" data-count="4">0</dt><dd>统一管理的 Agent</dd></div>
+      <div class="stat"><dt class="mono" data-count="6">0</dt><dd>Computer Use 客户端</dd></div>
+      <div class="stat"><dt class="mono">0</dt><dd>官方文件改动</dd></div>
     </dl>
     </div>
     <div class="hero-manager" id="manager-live">
       <div class="hero-manager-window">
-        <iframe title="Codex++ 管理器真实前端交互演示" src="manager-preview/?previewRoute=enhance&amp;lang=zh" loading="eager"></iframe>
+        <iframe title="Codex++ 管理器真实前端交互演示" src="manager-preview/?previewRoute=overview&amp;lang=zh&amp;v=20261025" loading="eager"></iframe>
       </div>
     </div>
   </div>
@@ -90,107 +101,162 @@
   </a>
 </section>
 
-<!-- ========== 打字特效现场 ========== -->
-<section class="demo" id="demo">
-  <div class="demo-bg" aria-hidden="true"></div>
-  <div class="section-head">
-    <p class="eyebrow">LIVE DEMO · 光标打字特效</p>
-    <h2>敲下的每个字符，<em>都有回应</em></h2>
-    <p class="section-sub">这不是视频，是跑在你屏幕上的真实特效——Codex++ 同款粒子引擎，在这里先敲一把试试。</p>
-  </div>
-  <div class="composer tilt" id="composer">
-    <div class="composer-bar">
-      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-      <span class="composer-title mono">Codex composer · codex++</span>
-    </div>
-    <div class="composer-input" id="composerInput" contenteditable="true" spellcheck="false" data-placeholder="与 Codex 协作，说点什么……"></div>
-    <div class="composer-foot">
-      <span class="chip">＋ 附件</span>
-      <span class="chip chip-warn">⛨ 完全访问</span>
-      <span class="spacer"></span>
-      <span class="chip chip-model">DeepSeek Flash · Max ▾</span>
-      <span class="chip send">↑</span>
-    </div>
-  </div>
-</section>
-
 <!-- ========== 功能矩阵 ========== -->
 <section class="features" id="features">
   <div class="section-head">
     <p class="eyebrow">FEATURES · 功能矩阵</p>
     <h2>一个管理工具，<em>管到底</em></h2>
-    <p class="section-sub">从供应商配置到界面增强，从会话管理到桌宠挂件。所有增强可单独开关，关掉总开关，供应商与启动管理照常可用。</p>
+    <p class="section-sub">以 Codex 为核心，覆盖 Claude Code、Claude Desktop 与 Grok。所有增强可单独开关，关掉总开关，供应商与启动管理照常可用。</p>
   </div>
   <div class="feature-grid">
     <article class="fcard tilt">
       <span class="fcard-no mono">01</span>
       <h3>供应商自由切换</h3>
-      <p>官方登录、官方登录 + API、纯 API 与聚合供应商。故障转移在多个供应商间失败切换，模型聚合按模型固定成员；支持 Responses / Chat Completions 协议转换、模型测试与 Provider Doctor。</p>
+      <p>官方登录、官方 + API、纯 API、故障转移与模型聚合。</p>
+    </article>
+    <article class="fcard tilt" id="computer-use-feature">
+      <span class="fcard-no mono">02</span><span class="fcard-new">NEW</span>
+      <h3>Computer Use 共享</h3>
+      <p>把 Codex 的桌面与浏览器控制接给其他 Agent。</p>
     </article>
     <article class="fcard tilt">
-      <span class="fcard-no mono">02</span>
-      <h3>每个模型，各有空间</h3>
-      <p>按模型设置上下文窗口与自动压缩阈值，生成独立 <span class="mono">model_catalog_json</span>，Codex 按当前模型识别窗口；支持模型元数据导入，按供应商选择 MCP、Skill 和 Plugin。</p>
+      <span class="fcard-no mono">03</span><span class="fcard-new">NEW</span>
+      <h3>不止 Codex</h3>
+      <p>Claude Code 供应商、Claude 增强版与 Grok CLI。</p>
     </article>
     <article class="fcard tilt">
-      <span class="fcard-no mono">03</span>
-      <h3>会话管理更省心</h3>
-      <p>本地会话扫描、删除与撤销、批量管理、Markdown 导出、Token 历史、项目移动和线程 ID，历史会话想找就找、想删就删。</p>
-    </article>
-    <article class="fcard tilt">
-      <span class="fcard-no mono">04</span>
-      <h3>拓展你的工作区</h3>
-      <p>浏览与管理社区用户脚本，按需添加模型选择、用量统计等能力；另有 MCP、Skill 与 Codex 插件管理，也可以写自己的脚本热重载调试。</p>
+      <span class="fcard-no mono">04</span><span class="fcard-new">NEW</span>
+      <h3>请求日志</h3>
+      <p>每次请求的状态、重试与 Token 用量都看得见。</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">05</span>
-      <h3>输入与阅读，都顺手</h3>
-      <p>语音输入、粘贴修复、会话宽度、滚动位置恢复、下一步建议、回答大纲，还有刚才那一手的光标打字特效。</p>
+      <h3>请求避震</h3>
+      <p>上游过载时在代理层自动退避重试。</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">06</span>
-      <h3>同一台电脑，多个 Codex</h3>
-      <p>为每个供应商身份启动相互隔离的 Codex 实例：独立配置、会话和用户数据目录，可同时运行，集中列表里单独重启或结束。</p>
+      <h3>每个模型，各有空间</h3>
+      <p>按模型设置上下文窗口与自动压缩阈值。</p>
     </article>
-    <article class="fcard tilt">
+    <article class="fcard tilt" id="agent-feature">
       <span class="fcard-no mono">07</span>
-      <h3>用量状态栏</h3>
-      <p>输入框下方实时显示生成速度、缓存命中率与上下文占用；数据取自本机 Codex 会话记录，口径与 Codex 一致，默认开启。</p>
+      <h3>一句话，派给子 Agent</h3>
+      <p>在 Codex 对话里委派 DeepSeek、Claude Code。</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">08</span>
-      <h3>用量可见，也有陪伴</h3>
-      <p>用量挂件与桌宠角色：Token 统计、任务状态与预算提醒，可拖动、缩放、换皮肤与自定义图片，认真工作也有点趣味。</p>
+      <h3>会话管理更省心</h3>
+      <p>扫描、删除撤销、批量管理、导出与轮次回退。</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">09</span>
-      <h3>微信连接</h3>
-      <p>扫码连接本机 Codex，每个联系人映射到独立会话，并可配置允许访问的微信用户。出门在外，也能远程派活。</p>
-    </article>
-    <article class="fcard tilt" id="agent-feature">
-      <span class="fcard-no mono">10</span>
-      <h3>一句话，派给子 Agent</h3>
-      <p>在当前 Codex 对话中委派 DeepSeek Harness（dsh）、Claude Code 或另一个 Codex，由对应 CLI 执行，再把结果带回原对话。管理器可配置默认 Agent、CLI 路径和模型；点名时交给指定对象。</p>
+      <h3>同一台电脑，多个 Codex</h3>
+      <p>每个供应商一个隔离的 Codex 实例。</p>
     </article>
     <article class="fcard tilt" id="native-fast-feature">
-      <span class="fcard-no mono">11</span>
+      <span class="fcard-no mono">10</span>
       <h3>API Key 也能用原生 Fast</h3>
-      <p>纯 API Key 模式恢复 Codex 的原生 Fast 开关，沿用 Standard / ⚡ Fast 控件。默认关闭，模型需声明 Fast（priority）支持；实际可用性与计费由供应商决定。</p>
+      <p>纯 API Key 也能用原生 Standard / ⚡ Fast。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">11</span>
+      <h3>用量状态栏</h3>
+      <p>输入框下方显示速度、缓存命中与上下文占用。</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">12</span>
-      <h3>请求避震</h3>
-      <p>模型容量/过载错误（server_overloaded、server_is_overloaded、at capacity）在代理层自动退避重试，不再频繁打断 Codex 会话。状态行显示请求阶段、模型、耗时、重试次数与上一次失败原因；流式避震保留实时输出，整段缓冲避震则在任何时点吸收过载。</p>
+      <h3>输入与阅读，都顺手</h3>
+      <p>语音输入、粘贴修复、下一步建议与打字特效。</p>
     </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">13</span>
+      <h3>拓展你的工作区</h3>
+      <p>社区脚本、MCP、Skill 与 Codex 插件管理。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">14</span>
+      <h3>微信连接</h3>
+      <p>扫码连接本机 Codex，出门也能派活。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">15</span><span class="fcard-new">NEW</span>
+      <h3>AI Agent 缓存清理</h3>
+      <p>扫描并清理 Codex、Claude 与 Codex++ 的缓存。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">16</span>
+      <h3>用量可见，也有陪伴</h3>
+      <p>用量挂件与桌宠，换张图就是你的角色。</p>
+    </article>
+  </div>
+</section>
+
+<!-- ========== 点选实拍 ========== -->
+<section class="showcase" id="showcase">
+  <div class="showcase-inner">
+    <div class="section-head">
+      <p class="eyebrow">SHOWCASE · 真实截图</p>
+      <h2>所见，<em>即所得</em></h2>
+      <p class="section-sub">以下包含 Codex++ 的真实界面与功能介绍图。点选缩略图切换预览，点击大图查看原图。</p>
+    </div>
+    <div class="showcase-track" id="showcaseTrack">
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-computer-use.png" target="_blank" rel="noopener"><img src="assets/manager-computer-use.png" alt="Computer Use 工作原理：AI 客户端经 Codex++ MCP 服务调用 ChatGPT.app 的原生 Computer Use 与 Chrome 扩展" loading="lazy"></a>
+        <figcaption><b>Computer Use 共享</b><span>点「接入」，其他 Agent 就能操作桌面和浏览器。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-overview.png" target="_blank" rel="noopener"><img src="assets/manager-overview.png" alt="概览页：当前供应商、最近 24 小时请求统计与健康检查" loading="lazy"></a>
+        <figcaption><b>概览</b><span>当前供应商、最近请求与健康检查，一屏看完。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-request-log.png" target="_blank" rel="noopener"><img src="assets/manager-request-log.png" alt="请求日志：进行中的请求、自动重试、首字耗时、输入输出与缓存 Token" loading="lazy"></a>
+        <figcaption><b>请求日志</b><span>状态、重试、首字耗时与 Token 用量，实时更新。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-claude-providers.png?v=2" target="_blank" rel="noopener"><img src="assets/manager-claude-providers.png?v=2" alt="Claude Code 供应商列表：官方登录、API 中转与当前配置" loading="lazy"></a>
+        <figcaption><b>Claude Code 供应商</b><span>Claude Code 的供应商列表，一键切换。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-claude-enhance.png" target="_blank" rel="noopener"><img src="assets/manager-claude-enhance.png" alt="Claude 增强：受管增强版，可开关界面汉化、语音输入与 Computer Use" loading="lazy"></a>
+        <figcaption><b>Claude 增强</b><span>中文界面、语音输入与 Computer Use，官方应用原样不动。</span></figcaption>
+      </figure>
+      <figure class="shot shot-agent" id="agent-collaboration">
+        <a class="shot-frame shot-preview" href="assets/agent-collaboration.png" target="_blank" rel="noopener" aria-label="打开子 Agent 协作实测截图原图">
+          <img src="assets/agent-collaboration.png" width="1766" height="630" loading="lazy" alt="Codex 对话中请求问问 DeepSeek 1+1 是多少，调用 Codex Plus Collaboration 后，DeepSeek 回答 1+1 等于 2">
+        </a>
+        <figcaption><b>子 Agent 协作实测</b><span>Codex 通过 dsh 委派 DeepSeek，结果回到同一对话。点击截图查看原图。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/codex-multi-launch.png" target="_blank" rel="noopener"><img src="assets/codex-multi-launch.png" alt="Codex 多开：列出运行中的 DeepSeek 与 Zhipu GLM 实例" loading="lazy"></a>
+        <figcaption><b>Codex 多开</b><span>每个供应商身份一个隔离实例，互不打扰。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/model-picker-groups.png" target="_blank" rel="noopener"><img src="assets/model-picker-groups.png" alt="模型选择器按供应商分组折叠：供应商 4 组（默认，7 个模型）与 DeepSeek 组（2 个模型）" loading="lazy"></a>
+        <figcaption><b>模型选择器分组</b><span>聚合模型按供应商折叠，表头带数量与「默认」标志。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/extension-market.png" target="_blank" rel="noopener"><img src="assets/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具" loading="lazy"></a>
+        <figcaption><b>拓展市场</b><span>社区脚本即装即用：用量面板、模型矩阵、提示词优化。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/usage-statusline.png" target="_blank" rel="noopener"><img src="assets/usage-statusline.png" alt="输入框下方的用量状态栏：51 tok/s、缓存命中 99.9%、上下文占用 19%" loading="lazy"></a>
+        <figcaption><b>用量状态栏</b><span>51 tok/s · 缓存命中 99.9% · 上下文 19%，就在输入框下方。</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/typing-effects.png" target="_blank" rel="noopener"><img src="assets/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" loading="lazy"></a>
+        <figcaption><b>打字特效</b><span>彩虹粒子、烟花与星光，可随系统「减少动态效果」自动暂停。</span></figcaption>
+      </figure>
+    </div>
   </div>
 </section>
 
 <!-- ========== 供应商接入方式 ========== -->
 <section class="modes" id="modes">
   <div class="section-head">
-    <p class="eyebrow">PROVIDER MODES · 接入方式</p>
-    <h2>四种接法，<em>随你切换</em></h2>
-    <p class="section-sub">从纯官方账号到多供应商聚合，每种模式独立配置、一键切换；切换时先保存当前配置，再写入目标配置。</p>
+    <p class="eyebrow">CODEX PROVIDERS · Codex 供应商</p>
+    <h2>Codex 供应商，<em>随你切换</em></h2>
+    <p class="section-sub">四种接法独立配置、一键切换；每个模型还能单独声明上下文窗口。</p>
   </div>
   <div class="seg" role="tablist" aria-label="供应商接入方式">
     <span class="seg-pill" aria-hidden="true"></span>
@@ -217,102 +283,44 @@
       <span class="route-node route-hot">OpenAI</span>
     </div>
   </div>
-</section>
-
-<!-- ========== 点选实拍 ========== -->
-<section class="showcase" id="showcase">
-  <div class="showcase-inner">
-    <div class="section-head">
-      <p class="eyebrow">SHOWCASE · 真实截图</p>
-      <h2>所见，<em>即所得</em></h2>
-      <p class="section-sub">以下包含 Codex++ 的真实界面与功能介绍图。点选缩略图切换预览，点击大图查看原图。</p>
+  <div class="modes-context">
+    <div class="modes-context-head">
+      <h3>一行后缀，百万窗口</h3>
+      <p>模型列表里写上窗口后缀，Codex++ 生成独立的 <span class="mono">model_catalog_json</span>，让 Codex 按当前模型使用对应窗口。未指定的模型继续沿用供应商级配置。</p>
     </div>
-    <div class="showcase-track" id="showcaseTrack">
-      <figure class="shot shot-agent" id="agent-collaboration">
-        <a class="shot-frame shot-preview" href="assets/agent-collaboration.png" target="_blank" rel="noopener" aria-label="打开子 Agent 协作实测截图原图">
-          <img src="assets/agent-collaboration.png" width="1766" height="630" loading="lazy" alt="Codex 对话中请求问问 DeepSeek 1+1 是多少，调用 Codex Plus Collaboration 后，DeepSeek 回答 1+1 等于 2">
-        </a>
-        <figcaption><b>子 Agent 协作实测</b><span>Codex 通过 dsh 委派 DeepSeek，结果回到同一对话。点击截图查看原图。</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/manager-enhancements.png" target="_blank" rel="noopener"><img src="assets/manager-enhancements.png" alt="Codex++ 管理工具：集中管理模型、会话、输入体验和挂件设置" loading="lazy"></a>
-        <figcaption><b>增强集中管理</b><span>插件与模型、对话与输入、挂件与桌宠，一页开关。</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/codex-multi-launch.png" target="_blank" rel="noopener"><img src="assets/codex-multi-launch.png" alt="Codex 多开：列出运行中的 DeepSeek 与 Zhipu GLM 实例" loading="lazy"></a>
-        <figcaption><b>Codex 多开</b><span>每个供应商身份一个隔离实例，互不打扰。</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/model-picker-groups.png" target="_blank" rel="noopener"><img src="assets/model-picker-groups.png" alt="模型选择器按供应商分组折叠：供应商 4 组（默认，7 个模型）与 DeepSeek 组（2 个模型）" loading="lazy"></a>
-        <figcaption><b>模型选择器分组</b><span>聚合模型按供应商折叠，表头带数量与「默认」标志。</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/extension-market.png" target="_blank" rel="noopener"><img src="assets/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具" loading="lazy"></a>
-        <figcaption><b>拓展市场</b><span>社区脚本即装即用：用量面板、模型矩阵、提示词优化。</span></figcaption>
-      </figure>
-      <figure class="shot shot-feature">
-        <a class="shot-frame shot-preview" href="assets/request-status-auto-retry.png" target="_blank" rel="noopener"><img src="assets/request-status-auto-retry.png" alt="请求状态与自动重试：展示发送请求、模型繁忙后自动等待、重试成功并继续生成的流程，以及重试次数和上一次过载原因" loading="lazy"></a>
-        <figcaption><b>请求状态与自动重试</b><span>模型繁忙时自动等待并重试，状态行显示当前进度与失败原因。</span></figcaption>
-      </figure>
-      <figure class="shot shot-feature">
-        <a class="shot-frame shot-preview" href="assets/request-log-auto-retry.png" target="_blank" rel="noopener"><img src="assets/request-log-auto-retry.png" alt="请求日志与自动重试：实时显示进行中的请求、模型已满、自动重试次数和重试成功结果" loading="lazy"></a>
-        <figcaption><b>请求日志与自动重试</b><span>实时看到进行中的请求；模型已满时自动重试并记录每次结果。</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/usage-statusline.png" target="_blank" rel="noopener"><img src="assets/usage-statusline.png" alt="输入框下方的用量状态栏：51 tok/s、缓存命中 99.9%、上下文占用 19%" loading="lazy"></a>
-        <figcaption><b>用量状态栏</b><span>51 tok/s · 缓存命中 99.9% · 上下文 19%，就在输入框下方。</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview shot-dark" href="assets/usage-widget.png" target="_blank" rel="noopener"><img src="assets/usage-widget.png" alt="角色用量挂件：气泡显示 Token 统计和运行状态" loading="lazy"></a>
-        <figcaption><b>桌宠用量挂件</b><span>今日用量、任务状态、预算提醒，换张图就是你的角色。</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/typing-effects.png" target="_blank" rel="noopener"><img src="assets/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" loading="lazy"></a>
-        <figcaption><b>打字特效</b><span>彩虹粒子、烟花与星光，可随系统「减少动态效果」自动暂停。</span></figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<!-- ========== 上下文窗口 ========== -->
-<section class="context" id="context">
-  <div class="section-head">
-    <p class="eyebrow">PER-MODEL CONTEXT · 各模型，各有空间</p>
-    <h2>一行后缀，<em>百万窗口</em></h2>
-    <p class="section-sub">模型列表里写上窗口后缀，Codex++ 生成独立的 <span class="mono">model_catalog_json</span>，让 Codex 按当前模型使用对应窗口。未指定的模型继续沿用供应商级配置。</p>
-  </div>
-  <div class="context-cols">
-    <div class="term tilt" id="term">
-      <div class="term-bar">
-        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-        <span class="mono term-title">model_list · config</span>
+    <div class="context-cols">
+      <div class="term tilt" id="term">
+        <div class="term-bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="mono term-title">model_list · config</span>
+        </div>
+        <pre class="term-body mono"><code><span class="t-cm"># 在模型列表里直接写窗口后缀</span>
+  deepseek-v4-pro<span class="t-hl">[1M]</span>
+  claude-opus-5.5<span class="t-hl">[200K]</span>
+  your-model<span class="t-hl">[128000]</span>
+  
+  <span class="t-cm"># Codex++ 生成 model_catalog_json</span>
+  <span class="t-cm"># codex 按当前模型识别各自窗口 ↓</span></code></pre>
+        <div class="term-out mono" id="termOut"><span class="t-ok">✓ catalog 已注入</span> <span class="t-dim">config.toml · model_catalog_json</span></div>
       </div>
-      <pre class="term-body mono"><code><span class="t-cm"># 在模型列表里直接写窗口后缀</span>
-deepseek-v4-pro<span class="t-hl">[1M]</span>
-claude-opus-5.5<span class="t-hl">[200K]</span>
-your-model<span class="t-hl">[128000]</span>
-
-<span class="t-cm"># Codex++ 生成 model_catalog_json</span>
-<span class="t-cm"># codex 按当前模型识别各自窗口 ↓</span></code></pre>
-      <div class="term-out mono" id="termOut"><span class="t-ok">✓ catalog 已注入</span> <span class="t-dim">config.toml · model_catalog_json</span></div>
-    </div>
-    <div class="bars">
-      <div class="bar-row" data-pct="20">
-        <span class="bar-label mono">generic-model</span>
-        <div class="bar-track"><div class="bar-fill"></div></div>
-        <span class="bar-val mono">200K</span>
+      <div class="bars">
+        <div class="bar-row" data-pct="20">
+          <span class="bar-label mono">generic-model</span>
+          <div class="bar-track"><div class="bar-fill"></div></div>
+          <span class="bar-val mono">200K</span>
+        </div>
+        <div class="bar-row" data-pct="40">
+          <span class="bar-label mono">claude-opus-5.5</span>
+          <div class="bar-track"><div class="bar-fill"></div></div>
+          <span class="bar-val mono">400K</span>
+        </div>
+        <div class="bar-row hot" data-pct="100">
+          <span class="bar-label mono">deepseek-v4-pro</span>
+          <div class="bar-track"><div class="bar-fill"></div></div>
+          <span class="bar-val mono">1M</span>
+        </div>
+        <p class="bars-note">按模型声明窗口，互不挤占；状态栏的「上下文占用」也按各模型窗口计算。</p>
       </div>
-      <div class="bar-row" data-pct="40">
-        <span class="bar-label mono">claude-opus-5.5</span>
-        <div class="bar-track"><div class="bar-fill"></div></div>
-        <span class="bar-val mono">400K</span>
-      </div>
-      <div class="bar-row hot" data-pct="100">
-        <span class="bar-label mono">deepseek-v4-pro</span>
-        <div class="bar-track"><div class="bar-fill"></div></div>
-        <span class="bar-val mono">1M</span>
-      </div>
-      <p class="bars-note">按模型声明窗口，互不挤占；状态栏的「上下文占用」也按各模型窗口计算。</p>
     </div>
   </div>
 </section>
@@ -322,7 +330,7 @@ your-model<span class="t-hl">[128000]</span>
   <div class="section-head">
     <p class="eyebrow">GETTING STARTED · 快速上手</p>
     <h2>三步，<em>开整</em></h2>
-    <p class="section-sub">Codex++ 配合官方 Codex / ChatGPT 桌面应用使用，首次启动前请确认已安装对应的官方应用。</p>
+    <p class="section-sub">Codex 功能配合官方 Codex / ChatGPT 桌面应用使用；Claude、Grok 相关功能需安装对应客户端。</p>
   </div>
   <div class="steps-track">
     <article class="step tilt">
@@ -376,6 +384,10 @@ your-model<span class="t-hl">[128000]</span>
     <details class="faq-item" id="faq-native-fast">
       <summary>开启原生 Fast 后，为什么仍然看不到开关？<span class="faq-x" aria-hidden="true"></span></summary>
       <div class="faq-a"><p>先确认已经保存，并通过 Codex++ 重启 Codex。当前模型还需要声明 Fast 服务等级：在「供应商配置」中打开该模型的配置，设置「Fast（priority）支持」，保存模型与供应商后重启。请按供应商实际能力声明；此功能只恢复客户端入口，服务限制与计费仍以供应商为准。</p></div>
+    </details>
+    <details class="faq-item" id="faq-computer-use">
+      <summary>Computer Use 接入后，客户端里为什么没有工具？<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>接入后需要重启对应客户端才会加载工具；Claude Desktop 退出时会重写自己的配置，建议先完全退出再接入。仍然没有时，在「Computer Use」页的「配置路径与自定义目录」里核对客户端实际读取的目录，并确认已给 ChatGPT 授予辅助功能与屏幕录制权限。目前仅支持 macOS。</p></div>
     </details>
     <details class="faq-item">
       <summary>增强功能可以关闭吗？官方应用更新后还能用吗？<span class="faq-x" aria-hidden="true"></span></summary>
@@ -432,7 +444,7 @@ your-model<span class="t-hl">[128000]</span>
     <div class="cta-shade" aria-hidden="true"></div>
   </div>
   <div class="cta-inner">
-    <h2>你的 Codex，<em>值得这两个加号</em></h2>
+    <h2>你的 Agent，<em>值得这两个加号</em></h2>
     <p class="cta-sub">免费开源 · AGPL-3.0 · Windows 与 macOS 双平台<br>配置与会话数据都在你自己的电脑上。</p>
     <div class="dl-cards">
       <a class="dl-card tilt" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
@@ -448,7 +460,7 @@ your-model<span class="t-hl">[128000]</span>
         <i>下载 →</i>
       </a>
     </div>
-    <p class="cta-note">配合官方 Codex / ChatGPT 桌面应用使用；安装后双击打开 Codex++，配置好供应商，从界面里点「启动」。</p>
+    <p class="cta-note">配合官方 Codex、Claude、Grok 等客户端使用；安装后双击打开 Codex++，配置好供应商，从界面里点「启动」。</p>
   </div>
 </section>
 
@@ -459,7 +471,7 @@ your-model<span class="t-hl">[128000]</span>
       <img src="assets/logo.png" alt="" class="brand-logo">
       <div>
         <b>Codex++</b>
-        <p>给 Codex 桌面应用加一点「++」。<br>AGPL-3.0-only · Rust + Tauri</p>
+        <p>给你的 AI 编程 Agent 加一点「++」。<br>AGPL-3.0-only · Rust + Tauri</p>
       </div>
     </div>
     <nav class="footer-links">
@@ -472,7 +484,7 @@ your-model<span class="t-hl">[128000]</span>
       <a href="en.html" hreflang="en" lang="en">English</a>
     </nav>
   </div>
-  <p class="footer-fine">Codex++ 是社区开源项目，与 OpenAI 无隶属关系；截图来自真实界面，桌宠角色素材来源见项目仓库说明。</p>
+  <p class="footer-fine">Codex++ 是社区开源项目，与 OpenAI、Anthropic、xAI 无隶属关系；截图来自真实界面，桌宠角色素材来源见项目仓库说明。</p>
 </footer>
 
 <!-- 打字特效层 -->
@@ -482,6 +494,6 @@ your-model<span class="t-hl">[128000]</span>
 <script src="assets/gsap.min.js"></script>
 <script src="assets/ScrollTrigger.min.js"></script>
 <script src="js/nebula.js"></script>
-<script src="js/main.js?v=20261017-gallery-3"></script>
+<script src="js/main.js?v=20261025-agents-1"></script>
 </body>
 </html>

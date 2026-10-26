@@ -4,7 +4,8 @@ use std::path::Path;
 use anyhow::Context;
 
 use crate::relay_config::{
-    backfill_relay_profile_from_home_with_common, relay_config_status_from_home,
+    LiveEndpointChanged, RelayBackfillPolicy, backfill_relay_profile_from_home_with_common,
+    backfill_relay_profile_from_home_with_common_and_policy, relay_config_status_from_home,
 };
 use crate::settings::{BackendSettings, RelayMode, SettingsStore};
 
@@ -15,12 +16,65 @@ pub struct RelaySwitchResult {
     pub backup_path: Option<String>,
 }
 
+/// 切换前回填上一个供应商时，实时配置的 endpoint 已被外部改过（#2666）。
+/// 管理器据此弹窗让用户选择，`message` 保持原来的完整报错文案。
+#[derive(Debug)]
+pub struct LiveEndpointConflict {
+    pub profile_id: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for LiveEndpointConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LiveEndpointConflict {}
+
+/// 遇到 [`LiveEndpointConflict`] 时用户的选择。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LiveConflictResolution {
+    /// 默认：照旧停下，不动任何文件。
+    #[default]
+    Stop,
+    /// 把实时 config.toml / auth.json 采纳为一个新供应商，再继续切换。
+    ImportAsNewProfile,
+    /// 先备份实时配置，上一个供应商保留原快照，再继续切换。
+    DiscardLiveChanges,
+}
+
+/// 冲突处理的附带结果，供管理器拼提示。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LiveConflictOutcome {
+    pub imported_profile_id: Option<String>,
+    pub live_backup_path: Option<String>,
+}
+
 pub fn switch_relay_profile_in_home(
     store: &SettingsStore,
     home: &Path,
     next_settings: BackendSettings,
     previous_active_relay_id: &str,
 ) -> anyhow::Result<RelaySwitchResult> {
+    switch_relay_profile_in_home_resolving_conflict(
+        store,
+        home,
+        next_settings,
+        previous_active_relay_id,
+        LiveConflictResolution::Stop,
+    )
+    .map(|(result, _)| result)
+}
+
+pub fn switch_relay_profile_in_home_resolving_conflict(
+    store: &SettingsStore,
+    home: &Path,
+    next_settings: BackendSettings,
+    previous_active_relay_id: &str,
+    resolution: LiveConflictResolution,
+) -> anyhow::Result<(RelaySwitchResult, LiveConflictOutcome)> {
     let mut selected_settings = next_settings;
     if !selected_settings.relay_profiles_enabled {
         anyhow::bail!("供应商配置总开关已关闭，未写入 config.toml / auth.json。");
@@ -37,10 +91,27 @@ pub fn switch_relay_profile_in_home(
     // 先补回被过滤掉的供应商，再做上一个供应商的回填：回填按 id 在列表里找
     // 「当前供应商」，子集请求里同样可能缺它（否则会误报「已不在配置列表中」）。
     restore_missing_saved_profiles(&mut selected_settings, &saved_settings);
+    let mut outcome = LiveConflictOutcome::default();
     if !previous_active_relay_id.trim().is_empty()
         && previous_active_relay_id != selected_settings.active_relay_id
     {
-        backfill_profile_before_switch(home, &mut selected_settings, previous_active_relay_id)?;
+        match resolution {
+            LiveConflictResolution::Stop => {
+                backfill_profile_before_switch(home, &mut selected_settings, previous_active_relay_id)?;
+            }
+            LiveConflictResolution::ImportAsNewProfile => {
+                outcome.imported_profile_id = Some(import_live_as_new_profile(
+                    home,
+                    &mut selected_settings,
+                    previous_active_relay_id,
+                )?);
+            }
+            LiveConflictResolution::DiscardLiveChanges => {
+                // 不回填：上一个供应商保留原快照，实时改动只留在备份里。
+                outcome.live_backup_path = crate::relay_config::backup_live_files(home)
+                    .context("备份实时配置失败，已停止切换")?;
+            }
+        }
     }
     crate::codex_app_state::capture_app_state_snapshot_nonfatal(home, "relay_switch.before");
 
@@ -51,6 +122,7 @@ pub fn switch_relay_profile_in_home(
 
     match apply_selected_relay_profile(home, &selected_settings) {
         Ok(result) => {
+            let result = (result, outcome);
             crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
                 home,
                 "relay_switch.after",
@@ -201,7 +273,53 @@ fn backfill_profile_before_switch(
         &mut settings.relay_context_config_contents,
     )
     .with_context(|| format!("回填当前供应商配置失败（供应商：{previous_active_relay_id}）"))
-    .map_err(|error| anyhow::anyhow!("{error:#}"))
+    .map_err(|error| {
+        let message = format!("{error:#}");
+        // endpoint 被外部改过是用户能选择怎么处理的一类（#2666），保留类型交给管理器弹窗。
+        if error.chain().any(|cause| cause.is::<LiveEndpointChanged>()) {
+            anyhow::Error::new(LiveEndpointConflict {
+                profile_id: previous_active_relay_id.to_string(),
+                message,
+            })
+        } else {
+            anyhow::anyhow!(message)
+        }
+    })
+}
+
+/// 把实时 config.toml / auth.json 采纳成一个新供应商（复制上一个供应商的其余设置），
+/// 上一个供应商保留原快照不动。返回新供应商的 id。
+fn import_live_as_new_profile(
+    home: &Path,
+    settings: &mut BackendSettings,
+    previous_active_relay_id: &str,
+) -> anyhow::Result<String> {
+    let source = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == previous_active_relay_id)
+        .cloned()
+        .with_context(|| {
+            format!("当前供应商（{previous_active_relay_id}）已不在配置列表中，无法导入实时配置。")
+        })?;
+    let mut imported = source.clone();
+    imported.id = format!("relay-{}", uuid::Uuid::new_v4());
+    let base_name = if source.name.trim().is_empty() {
+        source.id.as_str()
+    } else {
+        source.name.trim()
+    };
+    imported.name = format!("{base_name}（实时配置）");
+    backfill_relay_profile_from_home_with_common_and_policy(
+        home,
+        &mut imported,
+        &mut settings.relay_context_config_contents,
+        RelayBackfillPolicy::AdoptLiveIdentity,
+    )
+    .context("把实时配置导入为新供应商失败，已停止切换")?;
+    let id = imported.id.clone();
+    settings.relay_profiles.push(imported);
+    Ok(id)
 }
 
 fn apply_selected_relay_profile(

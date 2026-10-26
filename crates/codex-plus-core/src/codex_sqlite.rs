@@ -259,6 +259,73 @@ pub fn backfill_thread_models_to_default(
     Ok(updated)
 }
 
+/// 待迁移记录放在 codex home 下，与受管 catalog 同级；只由 Codex++ 读写。
+const PENDING_THREAD_MODEL_MIGRATION_FILE: &str = "codex-plus-pending-thread-model-migration.json";
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct PendingThreadModelMigration {
+    /// 依次经历过的旧默认模型；连续切换 A→B→C 时 A、B 两类会话都迁到 C。
+    from: Vec<String>,
+    to: String,
+}
+
+fn pending_thread_model_migration_path(home: &Path) -> PathBuf {
+    home.join(PENDING_THREAD_MODEL_MIGRATION_FILE)
+}
+
+/// 切换供应商/默认模型成功后调用：只记录「旧默认 → 新默认」，不碰 sqlite。
+///
+/// 切换时 Codex 可能仍在运行并持有 WAL 写锁，直接回填有锁冲突和覆盖用户手选的
+/// 风险（#2081 维护者结论），所以拆成延迟迁移：真正的写入留给下一次启动前
+/// [`apply_pending_thread_model_migration`]。
+pub fn record_pending_thread_model_migration(
+    home: &Path,
+    previous_model: &str,
+    new_model: &str,
+) -> anyhow::Result<()> {
+    let previous_model = previous_model.trim();
+    let new_model = new_model.trim();
+    if previous_model.is_empty() || new_model.is_empty() || previous_model == new_model {
+        return Ok(());
+    }
+    let path = pending_thread_model_migration_path(home);
+    let mut pending = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<PendingThreadModelMigration>(&bytes).ok())
+        .unwrap_or_default();
+    if !pending.from.iter().any(|model| model == previous_model) {
+        pending.from.push(previous_model.to_string());
+    }
+    // 切回曾经的默认模型时，它不再是「旧默认」。
+    pending.from.retain(|model| model != new_model);
+    pending.to = new_model.to_string();
+    if pending.from.is_empty() {
+        let _ = fs::remove_file(&path);
+        return Ok(());
+    }
+    crate::settings::atomic_write(&path, &serde_json::to_vec_pretty(&pending)?)?;
+    Ok(())
+}
+
+/// 启动 Codex 之前消费待迁移记录。`enabled` 为 false 时只丢弃记录，
+/// 避免用户之后打开开关时把很早以前的切换翻出来执行。返回回填的会话数。
+pub fn apply_pending_thread_model_migration(home: &Path, enabled: bool) -> anyhow::Result<usize> {
+    let path = pending_thread_model_migration_path(home);
+    let Ok(bytes) = fs::read(&path) else {
+        return Ok(0);
+    };
+    let pending = serde_json::from_slice::<PendingThreadModelMigration>(&bytes);
+    let mut updated = 0;
+    if let (true, Ok(pending)) = (enabled, &pending) {
+        for previous_model in &pending.from {
+            updated += backfill_thread_models_to_default(home, previous_model, &pending.to)?;
+        }
+    }
+    // 回填失败时上面已经返回，记录保留到下次重试；成功或关闭时清掉。
+    let _ = fs::remove_file(&path);
+    Ok(updated)
+}
+
 fn backfill_thread_models_in_db(
     db_path: &Path,
     previous_model: &str,

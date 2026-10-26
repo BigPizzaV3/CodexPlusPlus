@@ -3,7 +3,7 @@ use super::{
     table_columns,
 };
 use rusqlite::{Connection, OpenFlags, Row, params_from_iter};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -26,8 +26,65 @@ pub struct LocalSessionPager {
     databases: Vec<(PathBuf, CachedDatabase)>,
     // 只缓存 ID、排序键和来源，不缓存可能很长的标题或路径，也不常驻数据库连接。
     order: Vec<(usize, usize)>,
+    // Codex 侧栏线程名（session_index.jsonl）的缓存，文件不变就不重读（#1976）。
+    thread_names: ThreadNameCache,
     #[cfg(test)]
     after_snapshot: Option<Box<dyn FnOnce() + Send>>,
+}
+
+#[derive(Default)]
+struct ThreadNameCache {
+    path: PathBuf,
+    refreshed_at: Option<Instant>,
+    stamp: Option<FileStamp>,
+    names: HashMap<String, String>,
+}
+
+impl ThreadNameCache {
+    fn names(&mut self, path: &Path) -> &HashMap<String, String> {
+        // 只比较长度与时间戳：Codex 改名是追加写，我们自己的清理是原子替换，两者都会改变指纹。
+        let stamp = FileStamp::read(path, 0).ok().flatten();
+        let reusable = self.path == path
+            && stamp.is_some()
+            && stamp == self.stamp
+            && self
+                .refreshed_at
+                .is_some_and(|time| time.elapsed() < INDEX_MAX_AGE);
+        if !reusable {
+            self.path = path.to_path_buf();
+            self.refreshed_at = Some(Instant::now());
+            // 线程名只是显示用途；读不到就回落 threads.title，不把整页标记为失败。
+            self.names = match std::fs::read(path) {
+                Ok(bytes) if stamp.is_some() => parse_session_index_thread_names(&bytes),
+                _ => HashMap::new(),
+            };
+            self.stamp = stamp;
+        }
+        &self.names
+    }
+}
+
+/// 解析 Codex 的 session_index.jsonl：追加写，同一 ID 以最后一条非空 thread_name 为准，坏行跳过。
+fn parse_session_index_thread_names(bytes: &[u8]) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let Ok(record) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        let (Some(id), Some(name)) = (
+            record.get("id").and_then(serde_json::Value::as_str),
+            record
+                .get("thread_name")
+                .and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        let (id, name) = (id.trim(), name.trim());
+        if !id.is_empty() && !name.is_empty() {
+            names.insert(id.to_string(), name.to_string());
+        }
+    }
+    names
 }
 
 #[derive(Default)]
@@ -99,6 +156,27 @@ impl DatabaseStamp {
 }
 
 impl LocalSessionPager {
+    /// 与 `list_page` 相同，但标题优先取 Codex 侧栏使用的线程名（`CODEX_HOME/session_index.jsonl`），
+    /// 没有对应条目时保留 threads.title。只改显示标题，ID、排序和删除流程不受影响（#1976）。
+    pub fn list_page_with_thread_names(
+        &mut self,
+        codex_home: &Path,
+        paths: &[PathBuf],
+        offset: usize,
+        limit: usize,
+    ) -> LocalSessionPage {
+        let mut page = self.list_page(paths, offset, limit);
+        let names = self
+            .thread_names
+            .names(&codex_home.join("session_index.jsonl"));
+        for session in &mut page.sessions {
+            if let Some(name) = names.get(&session.id) {
+                session.title.clone_from(name);
+            }
+        }
+        page
+    }
+
     /// 每个库在短读事务内校验索引并读取详情，确保同一库的总数和页面一致。
     /// 独立数据库之间没有全局事务；同一 ID 按最新时间取值，时间相同时保留输入路径顺序。
     pub fn list_page(

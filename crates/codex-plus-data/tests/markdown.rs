@@ -185,3 +185,132 @@ fn markdown_exporter_returns_failed_for_missing_or_empty_rollout() {
 
     assert_eq!(result.status, ExportStatus::Failed);
 }
+
+fn write_codex_rollout(path: &Path, thread_id: &str, text: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        path,
+        format!(
+            concat!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\"}}}}\n",
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{text}\"}}]}}}}\n",
+            ),
+            id = thread_id,
+            text = text,
+        ),
+    )
+    .unwrap();
+}
+
+// #167：threads 表存在但没有该会话的行，rollout 仍在 sessions/ 下时应照常导出。
+#[test]
+fn markdown_exporter_falls_back_to_sessions_dir_when_threads_row_missing() {
+    let tmp = tempdir().unwrap();
+    let codex_home = tmp.path().join(".codex");
+    let db_path = codex_home.join("state_5.sqlite");
+    let thread_id = "019e1f2a-aaaa-7bbb-8ccc-0123456789ab";
+    fs::create_dir_all(&codex_home).unwrap();
+    create_codex_thread_db(
+        &db_path,
+        &codex_home.join("sessions").join("other.jsonl"),
+        "other-thread",
+        "Other",
+    );
+    write_codex_rollout(
+        &codex_home
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("19")
+            .join(format!("rollout-2026-05-19T06-00-00-{thread_id}.jsonl")),
+        thread_id,
+        "Hello without threads row",
+    );
+
+    let result = MarkdownExportService::new(Some(&db_path))
+        .export(&session(&format!("local:{thread_id}"), "Sidebar Title"));
+
+    assert_eq!(result.status, ExportStatus::Exported, "{}", result.message);
+    assert_eq!(result.session_id, thread_id);
+    assert_eq!(
+        result.filename,
+        Some(format!("Sidebar Title-{thread_id}.md"))
+    );
+    assert!(
+        result
+            .markdown
+            .unwrap()
+            .contains("Hello without threads row")
+    );
+}
+
+// #167：threads 行记录的 rollout_path 已失效，实际文件被移到 archived_sessions/ 时应能找到。
+#[test]
+fn markdown_exporter_recovers_stale_rollout_path_from_archived_sessions() {
+    let tmp = tempdir().unwrap();
+    let codex_home = tmp.path().join(".codex");
+    let db_path = codex_home.join("state_5.sqlite");
+    let thread_id = "019e1f2a-dddd-7eee-8fff-0123456789ab";
+    let file_name = format!("rollout-2026-05-19T06-00-00-{thread_id}.jsonl");
+    fs::create_dir_all(&codex_home).unwrap();
+    create_codex_thread_db(
+        &db_path,
+        &codex_home
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("19")
+            .join(&file_name),
+        thread_id,
+        "Archived Title",
+    );
+    write_codex_rollout(
+        &codex_home.join("archived_sessions").join(&file_name),
+        thread_id,
+        "Hello from archive",
+    );
+
+    let result = MarkdownExportService::new(Some(&db_path)).export(&session(thread_id, "Ignored"));
+
+    assert_eq!(result.status, ExportStatus::Exported, "{}", result.message);
+    assert_eq!(
+        result.filename,
+        Some(format!("Archived Title-{thread_id}.md"))
+    );
+    assert!(result.markdown.unwrap().contains("Hello from archive"));
+}
+
+// 两处都找不到时仍报「未找到对应会话」；文件名含 id 但 session_meta 不符的文件不算命中。
+#[test]
+fn markdown_exporter_still_reports_missing_when_rollout_not_found() {
+    let tmp = tempdir().unwrap();
+    let codex_home = tmp.path().join(".codex");
+    let db_path = codex_home.join("state_5.sqlite");
+    fs::create_dir_all(&codex_home).unwrap();
+    create_codex_thread_db(
+        &db_path,
+        &codex_home.join("sessions").join("other.jsonl"),
+        "other-thread",
+        "Other",
+    );
+    write_codex_rollout(
+        &codex_home
+            .join("sessions")
+            .join("rollout-2026-05-19T06-00-00-missing-thread-extra.jsonl"),
+        "missing-thread-extra",
+        "Not this one",
+    );
+
+    let result =
+        MarkdownExportService::new(Some(&db_path)).export(&session("missing-thread", "Ignored"));
+
+    assert_eq!(result.status, ExportStatus::Failed);
+    assert_eq!(result.message, "未找到对应会话");
+
+    let result = codex_plus_data::export_markdown_from_paths(
+        [db_path],
+        &session("missing-thread", "Ignored"),
+    );
+    assert_eq!(result.status, ExportStatus::Failed);
+    assert_eq!(result.message, "未找到对应会话");
+}

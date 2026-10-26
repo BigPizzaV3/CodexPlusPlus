@@ -6,15 +6,16 @@ use codex_plus_core::relay_config::{
     apply_relay_profile_to_home_with_switch_rules_and_proxy_port,
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
     chatgpt_auth_status_from_home, cleanup_unsupported_approval_policies_in_home,
-    clear_relay_config_to_home, clear_relay_config_to_home_with_auth,
+    clear_managed_proxy_config_for_uninstall, clear_relay_config_to_home,
+    clear_relay_config_to_home_with_auth,
     delete_context_entry_from_common_config, ensure_active_protocol_proxy_config_in_home,
     extract_common_config_from_config, list_context_entries_from_common_config,
     merge_common_config_into_config, normalize_relay_profile_for_storage,
     prepare_common_config_for_apply, relay_config_status_from_home, relay_profile_api_key,
+    relay_profile_test_model,
     sanitize_common_config_contents, set_codex_goals_feature_in_home,
     strip_common_config_from_config, sync_live_config_context_entries,
     upsert_context_entry_in_common_config,
-    restore_inactive_protocol_proxy_config_in_home,
 };
 use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
@@ -1268,9 +1269,9 @@ base_url = "https://responses.example.test/v1"
 }
 
 #[test]
-fn local_compaction_opt_in_routes_through_proxy_and_disable_restores_upstream() {
+fn web_search_history_opt_in_routes_through_proxy_and_disable_restores_upstream() {
     let mut profile = RelayProfile {
-        id: "local-compaction".to_string(),
+        id: "search-compat".to_string(),
         relay_mode: RelayMode::PureApi,
         base_url: "https://responses.example.test/v1".to_string(),
         upstream_base_url: "https://responses.example.test/v1".to_string(),
@@ -1279,7 +1280,7 @@ fn local_compaction_opt_in_routes_through_proxy_and_disable_restores_upstream() 
     };
     codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
     assert!(profile.config_contents.contains("https://responses.example.test/v1"));
-    profile.local_compaction_prompt_at_end = true;
+    profile.web_search_history_compat = true;
     codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
     assert!(profile.config_contents.contains("http://127.0.0.1:57321/v1"));
     assert_eq!(profile.upstream_base_url, "https://responses.example.test/v1");
@@ -1297,221 +1298,11 @@ fn local_compaction_opt_in_routes_through_proxy_and_disable_restores_upstream() 
     assert!(ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
     assert!(!ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
 
-    profile.local_compaction_prompt_at_end = false;
+    profile.web_search_history_compat = false;
     codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
     assert!(profile.config_contents.contains("https://responses.example.test/v1"));
     assert!(!profile.config_contents.contains("http://127.0.0.1:57321/v1"));
     assert_eq!(profile.base_url, "https://responses.example.test/v1");
-}
-
-#[test]
-fn retired_search_history_restores_saved_upstream_from_managed_proxy_config() {
-    for endpoint in ["http://127.0.0.1:57321/v1", "http://127.0.0.1:58432/v1"] {
-        let mut legacy = serde_json::to_value(RelayProfile {
-            relay_mode: RelayMode::PureApi,
-            base_url: endpoint.to_string(),
-            upstream_base_url: "https://responses.example.test/v1".to_string(),
-            config_contents: format!(
-                "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n"
-            ),
-            ..RelayProfile::default()
-        }).unwrap();
-        legacy["webSearchHistoryCompat"] = serde_json::json!(true);
-        let mut profile: RelayProfile = serde_json::from_value(legacy).unwrap();
-        assert_eq!(
-            codex_plus_core::relay_config::relay_profile_base_url(&profile),
-            "https://responses.example.test/v1",
-        );
-        normalize_relay_profile_for_storage(&mut profile).unwrap();
-        assert!(!profile.local_compaction_prompt_at_end_enabled());
-        assert_eq!(profile.base_url, "https://responses.example.test/v1");
-        assert_eq!(profile.upstream_base_url, "https://responses.example.test/v1");
-        assert!(profile.config_contents.contains("https://responses.example.test/v1"));
-        assert!(!profile.config_contents.contains(endpoint));
-    }
-}
-
-#[test]
-fn retired_search_history_restores_only_live_proxy_endpoint_without_replaying_profile() {
-    for (endpoint, upstream) in [
-        ("http://127.0.0.1:57321/v1", "https://responses.example.test/v1"),
-        ("http://127.0.0.1:58432/v1", "https://responses.example.test/v1"),
-        ("http://127.0.0.1:57321/v1", "http://localhost:3000/v1"),
-        ("http://127.0.0.1:58432/v1", "http://127.0.0.1:3000/v1"),
-    ] {
-        let temp = tempfile::tempdir().unwrap();
-        let original = format!(
-            "# live settings\nmodel_provider = \"custom\"\nmodel = \"live-model\"\nmodel_reasoning_effort = \"max\"\nmodel_catalog_json = \"live-catalog.json\"\ncustom_setting = \"keep\"\n\n[model_providers.custom]\nbase_url = \"{endpoint}\" # keep endpoint comment\nexperimental_bearer_token = \"live-key\"\n\n[plugins.example]\nenabled = true\n"
-        );
-        let config_path = temp.path().join("config.toml");
-        std::fs::write(&config_path, &original).unwrap();
-        std::fs::write(temp.path().join("auth.json"), b"preserve-auth-bytes").unwrap();
-        std::fs::write(temp.path().join("live-catalog.json"), b"preserve-catalog-bytes").unwrap();
-        let legacy = serde_json::json!({
-            "relayProfilesEnabled": true,
-            "activeRelayId": "legacy",
-            "relayProfiles": [{
-                "id": "legacy", "name": "Legacy", "relayMode": "pureApi",
-                "protocol": "responses", "webSearchHistoryCompat": true,
-                "upstreamBaseUrl": upstream,
-                "configContents": format!("model_provider = \"custom\"\nmodel = \"stale-model\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n")
-            }]
-        });
-        let settings_path = temp.path().join("settings.json");
-        std::fs::write(&settings_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let store = codex_plus_core::settings::SettingsStore::new(settings_path.clone());
-        let mut settings = store.load().unwrap();
-        assert_eq!(settings.retired_protocol_proxy_endpoints.get("legacy").map(String::as_str), Some(endpoint));
-        assert!(!settings.relay_profiles[0].config_contents.contains(endpoint));
-        settings.codex_extra_args = vec!["--example-preference".to_string()];
-        store.save(&settings).unwrap();
-        let saved: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(settings_path).unwrap()).unwrap();
-        assert_eq!(saved["retiredProtocolProxyEndpoints"]["legacy"], endpoint);
-        assert!(saved["relayProfiles"][0].get("webSearchHistoryCompat").is_none());
-        let settings = store.load().unwrap();
-        assert!(restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
-        let expected = original.replace(endpoint, upstream);
-        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), expected);
-        assert_eq!(std::fs::read(temp.path().join("auth.json")).unwrap(), b"preserve-auth-bytes");
-        assert_eq!(std::fs::read(temp.path().join("live-catalog.json")).unwrap(), b"preserve-catalog-bytes");
-        assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
-        assert_eq!(std::fs::read_to_string(config_path).unwrap(), expected);
-    }
-}
-
-#[test]
-fn retired_proxy_restoration_does_not_write_a_different_fallback_provider_endpoint() {
-    let temp = tempfile::tempdir().unwrap();
-    let endpoint = "http://127.0.0.1:58432/v1";
-    let original = format!(
-        "model_provider = \"openai\"\n[model_providers.openai]\nbase_url = \"{endpoint}\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:59999/v1\"\n"
-    );
-    let path = temp.path().join("config.toml");
-    std::fs::write(&path, &original).unwrap();
-    let settings = BackendSettings {
-        relay_profiles_enabled: true,
-        active_relay_id: "retired".into(),
-        retired_protocol_proxy_endpoints: [("retired".into(), endpoint.into())].into(),
-        relay_profiles: vec![RelayProfile {
-            id: "retired".into(),
-            relay_mode: RelayMode::PureApi,
-            base_url: "https://responses.example.test/v1".into(),
-            upstream_base_url: "https://responses.example.test/v1".into(),
-            config_contents: format!(
-                "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n"
-            ),
-            ..RelayProfile::default()
-        }],
-        ..BackendSettings::default()
-    };
-    assert!(!settings.active_relay_uses_protocol_proxy(), "fixture must reach endpoint ownership checks");
-    assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), original);
-}
-
-#[test]
-fn retired_proxy_restoration_preserves_unrelated_endpoints_and_disabled_profiles() {
-    let saved = "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:58432/v1\"\n";
-    for (endpoint, enabled, upstream) in [
-        ("http://127.0.0.1:59999/v1", true, "https://responses.example.test/v1"),
-        ("http://localhost:58432/v1", true, "https://responses.example.test/v1"),
-        ("https://unrelated.example/v1", true, "https://responses.example.test/v1"),
-        ("http://127.0.0.1:57321/v1", false, "https://responses.example.test/v1"),
-        ("http://127.0.0.1:57321/v1", true, ""),
-        ("http://127.0.0.1:57321/v1", true, "http://127.0.0.1:57321/v1"),
-    ] {
-        let temp = tempfile::tempdir().unwrap();
-        let original = format!("model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n");
-        let path = temp.path().join("config.toml");
-        std::fs::write(&path, &original).unwrap();
-        let settings = BackendSettings {
-            relay_profiles_enabled: enabled,
-            relay_profiles: vec![RelayProfile {
-                relay_mode: RelayMode::PureApi,
-                upstream_base_url: upstream.to_string(),
-                config_contents: saved.to_string(),
-                ..RelayProfile::default()
-            }],
-            ..BackendSettings::default()
-        };
-        assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
-        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
-    }
-}
-
-#[test]
-fn retired_proxy_evidence_survives_first_update_with_normalized_profiles() {
-    for (endpoint, upstream) in [
-        ("http://127.0.0.1:57321/v1", "https://responses.example.test/v1"),
-        ("http://127.0.0.1:58432/v1", "http://localhost:3000/v1"),
-    ] {
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let live = format!("model_provider = \"custom\"\nmodel_reasoning_effort = \"max\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n");
-        std::fs::write(temp.path().join("config.toml"), &live).unwrap();
-        let legacy = serde_json::json!({
-            "relayProfilesEnabled": true, "activeRelayId": "legacy",
-            "relayProfiles": [{
-                "id": "legacy", "name": "Legacy", "relayMode": "pureApi",
-                "protocol": "responses", "webSearchHistoryCompat": true,
-                "upstreamBaseUrl": upstream, "configContents": live
-            }]
-        });
-        std::fs::write(&settings_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let store = codex_plus_core::settings::SettingsStore::new(settings_path.clone());
-        let loaded = store.load().unwrap();
-        let profiles = serde_json::to_value(&loaded.relay_profiles).unwrap();
-        assert!(profiles[0].get("webSearchHistoryCompat").is_none());
-        assert!(!loaded.relay_profiles[0].config_contents.contains(endpoint));
-        let updated = store.update(serde_json::json!({
-            "revision": loaded.settings_revision,
-            "relayProfiles": profiles,
-            "codexExtraArgs": ["--example-preference"]
-        })).unwrap();
-        assert_eq!(updated.retired_protocol_proxy_endpoints.get("legacy").map(String::as_str), Some(endpoint));
-        let reloaded = store.load().unwrap();
-        let profiles = serde_json::to_value(&reloaded.relay_profiles).unwrap();
-        store.update(serde_json::json!({
-            "revision": reloaded.settings_revision, "relayProfiles": profiles
-        })).unwrap();
-        let saved: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(settings_path).unwrap()).unwrap();
-        assert_eq!(saved["retiredProtocolProxyEndpoints"]["legacy"], endpoint);
-        assert!(saved["relayProfiles"][0].get("webSearchHistoryCompat").is_none());
-        let settings = store.load().unwrap();
-        assert!(restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
-        assert_eq!(
-            std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
-            live.replace(endpoint, upstream),
-        );
-    }
-}
-
-#[test]
-fn retired_proxy_endpoint_evidence_requires_the_old_opt_in_and_exact_live_match() {
-    for enabled in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let legacy = serde_json::json!({
-            "relayProfilesEnabled": true, "activeRelayId": "legacy",
-            "relayProfiles": [{
-                "id": "legacy", "name": "Legacy", "relayMode": "pureApi",
-                "protocol": "responses", "webSearchHistoryCompat": enabled,
-                "upstreamBaseUrl": "http://localhost:3000/v1",
-                "configContents": "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:58432/v1\"\n"
-            }]
-        });
-        std::fs::write(&settings_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let store = codex_plus_core::settings::SettingsStore::new(settings_path);
-        let settings = store.load().unwrap();
-        assert_eq!(settings.retired_protocol_proxy_endpoints.contains_key("legacy"), enabled);
-        let live = "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:59999/v1\"\n";
-        let config_path = temp.path().join("config.toml");
-        std::fs::write(&config_path, live).unwrap();
-        assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
-        assert_eq!(std::fs::read_to_string(config_path).unwrap(), live);
-    }
 }
 
 #[test]
@@ -3562,6 +3353,81 @@ base_url = "https://old.example.test/v1"
 }
 
 #[test]
+fn clear_relay_config_preserves_explicit_official_http_transport_across_restarts() {
+    // “重启 Codex”会调用 clear_relay_config_to_home_with_auth；重复同步不能取消 HTTP 选择。
+    for provider_id in ["openai-http", "custom", "CodexPP"] {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!(
+                "model_provider = \"{provider_id}\"\nmodel = \"gpt-5\"\n\n[model_providers.{provider_id}]\nname = \"OpenAI (HTTP)\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = false\n"
+            ),
+        )
+        .unwrap();
+        let auth = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"fixture-oauth"}}"#;
+        for _ in 0..2 {
+            clear_relay_config_to_home_with_auth(temp.path(), Some(auth)).unwrap();
+            let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+            let parsed = config.parse::<toml::Table>().unwrap();
+            assert_eq!(
+                parsed.get("model_provider").and_then(toml::Value::as_str),
+                Some(provider_id)
+            );
+            assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
+            assert_eq!(
+                parsed["model_providers"][provider_id]["supports_websockets"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+                auth
+            );
+        }
+    }
+}
+
+#[test]
+fn clear_relay_config_does_not_preserve_http_selection_with_relay_overrides() {
+    for (wire_api, requires_auth, websockets, extra) in [
+        (
+            "responses",
+            true,
+            false,
+            "base_url = \"https://relay.example.test/v1\"",
+        ),
+        (
+            "responses",
+            true,
+            false,
+            "experimental_bearer_token = \"fixture-api\"",
+        ),
+        ("responses", true, false, "env_key = \"RELAY_KEY\""),
+        (
+            "responses",
+            true,
+            false,
+            "http_headers = { X-Custom = \"fixture\" }",
+        ),
+        ("responses", false, false, ""),
+        ("responses", true, true, ""),
+        ("chat", true, false, ""),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!(
+                "model_provider = \"custom\"\n[model_providers.custom]\nname = \"OpenAI (HTTP)\"\nwire_api = \"{wire_api}\"\nrequires_openai_auth = {requires_auth}\nsupports_websockets = {websockets}\n{extra}\n"
+            ),
+        )
+        .unwrap();
+        clear_relay_config_to_home(temp.path()).unwrap();
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(!config.contains("model_provider"), "{extra}: {config}");
+        assert!(!config.contains("fixture"), "{extra}: {config}");
+    }
+}
+
+#[test]
 fn clear_relay_config_removes_model_provider_and_preserves_other_config() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -4985,6 +4851,74 @@ experimental_bearer_token = "sk-official-mix"
     assert!(config.contains(r#"experimental_bearer_token = "sk-official-mix""#));
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"openai_base_url = "http://127.0.0.1:57321/v1""#));
+}
+
+#[test]
+fn uninstall_cleanup_restores_config_pointing_to_local_proxy() {
+    // issue #406：卸载后本地代理已不存在，残留的 127.0.0.1:57321 让官方 Codex 一直 502。
+    let temp = tempfile::tempdir().unwrap();
+    let original = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+experimental_bearer_token = "sk-test-redacted"
+
+[features]
+js_repl = false
+"#;
+    std::fs::write(temp.path().join("config.toml"), original).unwrap();
+
+    assert!(clear_managed_proxy_config_for_uninstall(temp.path()).unwrap());
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("127.0.0.1"), "{config}");
+    assert!(!config.contains("model_provider"), "{config}");
+    assert!(!config.contains("sk-test-redacted"), "{config}");
+    assert!(config.contains("js_repl = false"), "{config}");
+    // 清理前必须留一份原始备份，用户可以找回。
+    let backups: Vec<_> = std::fs::read_dir(temp.path().join("backups"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(backups[0].join("config.toml")).unwrap(),
+        original
+    );
+    // 再次执行不应重复改动。
+    assert!(!clear_managed_proxy_config_for_uninstall(temp.path()).unwrap());
+}
+
+#[test]
+fn uninstall_cleanup_keeps_config_with_remote_relay_untouched() {
+    let temp = tempfile::tempdir().unwrap();
+    let original = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "deepseek"
+base_url = "https://api.deepseek.com"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+    std::fs::write(temp.path().join("config.toml"), original).unwrap();
+
+    assert!(!clear_managed_proxy_config_for_uninstall(temp.path()).unwrap());
+
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+        original
+    );
+    assert!(!temp.path().join("backups").exists());
+}
+
+#[test]
+fn uninstall_cleanup_without_config_is_noop() {
+    let temp = tempfile::tempdir().unwrap();
+    assert!(!clear_managed_proxy_config_for_uninstall(temp.path()).unwrap());
+    assert!(!temp.path().join("config.toml").exists());
 }
 
 #[test]
@@ -7254,4 +7188,175 @@ fn unparsable_live_config_does_not_block_switching_provider() {
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains("base_url = \"https://relay.example/v1\""), "{config}");
     assert!(config.parse::<toml_edit::DocumentMut>().is_ok(), "写出的配置必须可解析：{config}");
+}
+
+fn responses_profile_with_model(model: &str) -> RelayProfile {
+    RelayProfile {
+        id: "custom".to_string(),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::Responses,
+        config_contents: format!(
+            r#"model = "{model}"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://responses.example.test/v1"
+"#
+        ),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        ..RelayProfile::default()
+    }
+}
+
+/// issue #2081：切换默认模型时只记录待迁移项，不碰 sqlite；
+/// 下次启动前（opt-in）才把仍停在旧默认的会话迁到新默认，手选模型保持不变。
+#[test]
+fn switching_default_model_defers_thread_model_migration_until_launch() {
+    use codex_plus_core::codex_sqlite::apply_pending_thread_model_migration;
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let db_path = home.join("state_5.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, model TEXT, updated_at INTEGER)",
+        [],
+    )
+    .unwrap();
+    for (id, model) in [("old", "gpt-5.4"), ("picked", "claude-opus-5")] {
+        conn.execute(
+            "INSERT INTO threads (id, model, updated_at) VALUES (?1, ?2, 1000)",
+            [id, model],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let model_of = |id: &str| -> String {
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .query_row("SELECT model FROM threads WHERE id = ?1", [id], |row| row.get(0))
+            .unwrap()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(home, &responses_profile_with_model("gpt-5.4"), "")
+        .unwrap();
+    apply_relay_profile_to_home_with_switch_rules(home, &responses_profile_with_model("glm-5.2"), "")
+        .unwrap();
+
+    // 切换本身不写 sqlite
+    assert_eq!(model_of("old"), "gpt-5.4");
+
+    assert_eq!(apply_pending_thread_model_migration(home, true).unwrap(), 1);
+    assert_eq!(model_of("old"), "glm-5.2");
+    assert_eq!(model_of("picked"), "claude-opus-5");
+    // 记录已消费，重复启动不再迁移
+    assert_eq!(apply_pending_thread_model_migration(home, true).unwrap(), 0);
+}
+
+/// 开关关闭时启动只丢弃记录，之后再打开也不会翻出旧切换。
+#[test]
+fn disabled_thread_model_migration_discards_pending_record() {
+    use codex_plus_core::codex_sqlite::apply_pending_thread_model_migration;
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let db_path = home.join("state_5.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, model TEXT, updated_at INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO threads (id, model, updated_at) VALUES ('old', 'gpt-5.4', 1000)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    apply_relay_profile_to_home_with_switch_rules(home, &responses_profile_with_model("gpt-5.4"), "")
+        .unwrap();
+    apply_relay_profile_to_home_with_switch_rules(home, &responses_profile_with_model("glm-5.2"), "")
+        .unwrap();
+
+    assert_eq!(apply_pending_thread_model_migration(home, false).unwrap(), 0);
+    assert_eq!(apply_pending_thread_model_migration(home, true).unwrap(), 0);
+    let model: String = rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .query_row("SELECT model FROM threads WHERE id = 'old'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(model, "gpt-5.4");
+}
+
+/// issue #1021：codex-auto-review 的改写发生在本地协议代理里，只填了「自动审批模型」
+/// 的 Responses 供应商也必须改走本地代理；留空时保持上游直连，不改变现有行为。
+#[test]
+fn auto_review_model_routes_responses_profile_through_local_proxy() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = responses_profile_with_model("gpt-5.6-sol");
+
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
+        .unwrap();
+    let direct = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(direct.contains("https://responses.example.test/v1"));
+    assert!(!direct.contains("127.0.0.1:57321"));
+
+    profile.auto_review_model = "deepseek-v4-flash".to_string();
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
+        .unwrap();
+    let proxied = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(proxied.contains("127.0.0.1:57321"), "{proxied}");
+}
+
+/// issue #2021：`[memories]` 是用户在 Codex 里配置的本机设置，切换供应商时要从 live 补回。
+#[test]
+fn switching_relay_profile_preserves_live_memories_table() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5.4"
+
+[memories]
+extract_model = "gpt-5.4-mini"
+consolidation_model = "gpt-5.4"
+"#,
+    )
+    .unwrap();
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &responses_profile_with_model("glm-5.2"), "")
+        .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(doc["memories"]["extract_model"].as_str(), Some("gpt-5.4-mini"));
+    assert_eq!(doc["memories"]["consolidation_model"].as_str(), Some("gpt-5.4"));
+    assert_eq!(doc["model"].as_str(), Some("glm-5.2"));
+}
+
+#[test]
+fn provider_test_uses_the_profile_default_model() {
+    // 旧配置里残留的测试模型不再生效：测的就是供应商实际使用的默认模型。
+    let profile = RelayProfile {
+        model: "deepseek-v4-pro".into(),
+        test_model: "legacy-test-model".into(),
+        model_list: "glm-5.3[200K]".into(),
+        ..RelayProfile::default()
+    };
+    assert_eq!(relay_profile_test_model(&profile), "deepseek-v4-pro");
+
+    // 没配默认模型时取模型列表第一项（去掉窗口后缀）。
+    let profile = RelayProfile {
+        model_list: "\nglm-5.3[200K]\nkimi-k3".into(),
+        ..RelayProfile::default()
+    };
+    assert_eq!(relay_profile_test_model(&profile), "glm-5.3");
+
+    // 都没有时才用内置兜底。
+    assert_eq!(
+        relay_profile_test_model(&RelayProfile::default()),
+        codex_plus_core::settings::default_relay_test_model()
+    );
 }

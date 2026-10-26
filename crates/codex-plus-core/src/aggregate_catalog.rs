@@ -457,6 +457,17 @@ fn owned_catalog_path(home: &Path, aggregate: &str, pointer: &str) -> Option<std
     (name == legacy || (name.starts_with(&prefix) && name.ends_with(".json"))).then_some(path)
 }
 
+/// 聚合目录的指针写法必须和单供应商一致：原生 Windows 写绝对路径（#2529），
+/// WSL 写共享 home 下的相对路径（#2591）。聚合发布与崩溃恢复都走这里。
+fn aggregate_catalog_pointer(home: &Path, catalog: &Path, config: &str) -> anyhow::Result<String> {
+    let relative = catalog
+        .strip_prefix(home)
+        .unwrap_or(catalog)
+        .to_string_lossy()
+        .to_string();
+    crate::relay_config::managed_catalog_pointer(home, &relative, config)
+}
+
 fn config_catalog_pointer(config: &str) -> Option<String> {
     config
         .parse::<toml_edit::DocumentMut>()
@@ -517,7 +528,8 @@ pub fn recover_pending_catalog_refresh(store: &SettingsStore, home: &Path) -> an
                 return Ok(false);
             }
             let mut doc: toml_edit::DocumentMut = config.parse()?;
-            doc["model_catalog_json"] = toml_edit::value(path.to_string_lossy().as_ref());
+            let pointer = aggregate_catalog_pointer(home, &path, &config)?;
+            doc["model_catalog_json"] = toml_edit::value(pointer);
             crate::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
         }
         pending["status"] = json!("completed");
@@ -589,8 +601,8 @@ fn save_with_catalog_publisher(
         )
     };
     let mut doc: toml_edit::DocumentMut = config.parse()?;
-    doc["model_catalog_json"] =
-        toml_edit::value(std::path::absolute(&staged)?.to_string_lossy().as_ref());
+    let pointer = aggregate_catalog_pointer(home, &staged, &config)?;
+    doc["model_catalog_json"] = toml_edit::value(pointer);
     let result = store.save_with_prepared_commit(
         next,
         |revision| {

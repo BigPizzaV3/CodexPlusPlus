@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cacheApps, cacheCleanupSummary, cacheSelection, type CacheGroup } from "./agent-cache-model.ts";
+import { cacheApps, cacheCleanupSummary, cacheKindTotals, cacheSelection, type CacheGroup } from "./agent-cache-model.ts";
 
 const group = (id: string, patch: Partial<CacheGroup> = {}): CacheGroup => ({
   id, app: "Codex", kind: "cache", path: `/test/${id}`, totalBytes: 100,
@@ -40,4 +40,20 @@ test("cleanup summary stays compact with many directories and excludes ineligibl
     apps: ["Codex", "Claude", "Codex++"], files: 202, bytes: 6060,
   });
   assert.deepEqual(cacheCleanupSummary([]), { apps: [], files: 0, bytes: 0 });
+});
+
+test("kind totals list each kind once in a fixed order and count only cleanable bytes as eligible", () => {
+  const groups = [
+    group("logs", { kind: "logs", totalBytes: 50, eligibleBytes: 40 }),
+    group("cache-a"),
+    group("cache-b", { totalBytes: 300, eligibleBytes: 200 }),
+    group("temporary", { kind: "temporary", totalBytes: 80, eligibleBytes: 80, cleanable: false }),
+    group("empty-update", { kind: "update", totalBytes: 0, eligibleBytes: 0 }),
+  ];
+  assert.deepEqual(cacheKindTotals(groups), [
+    { kind: "cache", totalBytes: 400, eligibleBytes: 260 },
+    { kind: "logs", totalBytes: 50, eligibleBytes: 40 },
+    { kind: "temporary", totalBytes: 80, eligibleBytes: 0 },
+  ]);
+  assert.deepEqual(cacheKindTotals([]), []);
 });

@@ -24,15 +24,12 @@ struct InterceptorState {
     fetch_attempted: bool,
 }
 
-fn bootstrap_script(enhancements_enabled: bool, native_fast_unlock: bool) -> String {
-    // 只把功能开关送入 renderer，不能把后端 settings（含 relay 凭据）整体序列化。
+fn bootstrap_script(settings: crate::native_fast::RuntimeSettings) -> String {
+    // 只发送功能开关和本机 API 身份投影，不能序列化含供应商凭据的后端 settings。
     format!(
         "{}\n;window.__codexPlusNativeFastUnlock.runtime.update({});\nwindow.__codexPlusNativeFastPatchState='armed';\nwindow.__codexPlusNativeFastAssetPatchReady=true;",
         crate::assets::native_fast_unlock_script(),
-        json!({
-            "enhancementsEnabled": enhancements_enabled,
-            "codexAppNativeFastUnlock": native_fast_unlock,
-        })
+        json!(settings)
     )
 }
 
@@ -47,7 +44,7 @@ pub(super) async fn install(
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket);
     let mut state = InterceptorState::default();
-    let bootstrap = bootstrap_script(true, true);
+    let bootstrap = bootstrap_script(crate::native_fast::runtime_settings(&settings));
     let initialized = async {
         let location = evaluate(&mut session, "location.protocol").await?;
         if location
@@ -600,7 +597,11 @@ mod tests {
             let result = initialize_module(
                 &mut session,
                 &mut state,
-                &bootstrap_script(true, true),
+                &bootstrap_script(crate::native_fast::RuntimeSettings {
+                    enhancements_enabled: true,
+                    codex_app_native_fast_unlock: true,
+                    native_fast_local_api_configured: false,
+                }),
                 &generation,
             )
             .await;
@@ -793,9 +794,17 @@ mod tests {
         let mut session = CdpSession::new(socket);
         let mut state = InterceptorState::default();
         tokio::time::timeout(Duration::from_secs(5), async {
-            initialize(&mut session, &mut state, &bootstrap_script(true, true))
-                .await
-                .unwrap();
+            initialize(
+                &mut session,
+                &mut state,
+                &bootstrap_script(crate::native_fast::RuntimeSettings {
+                    enhancements_enabled: true,
+                    codex_app_native_fast_unlock: true,
+                    native_fast_local_api_configured: false,
+                }),
+            )
+            .await
+            .unwrap();
             watch(&mut session, &generation).await.unwrap();
             cleanup(&mut session, &generation, &state).await;
         })
@@ -835,7 +844,11 @@ mod tests {
         ] {
             assert!(!is_local_asset(url), "{url}");
         }
-        let bootstrap = bootstrap_script(true, false);
+        let bootstrap = bootstrap_script(crate::native_fast::RuntimeSettings {
+            enhancements_enabled: true,
+            codex_app_native_fast_unlock: false,
+            native_fast_local_api_configured: true,
+        });
         let (_, update) = bootstrap
             .rsplit_once("\n;window.__codexPlusNativeFastUnlock.runtime.update(")
             .unwrap();
@@ -846,6 +859,7 @@ mod tests {
             json!({
                 "codexAppNativeFastUnlock": false,
                 "enhancementsEnabled": true,
+                "nativeFastLocalApiConfigured": true,
             })
         );
         assert!(bootstrap.contains("__codexPlusNativeFastPatchState='armed'"));
@@ -950,9 +964,17 @@ mod tests {
         let socket = connect_cdp_websocket(&websocket_url).await.unwrap();
         let mut interceptor = CdpSession::new(socket);
         let mut state = InterceptorState::default();
-        initialize(&mut interceptor, &mut state, &bootstrap_script(true, true))
-            .await
-            .unwrap();
+        initialize(
+            &mut interceptor,
+            &mut state,
+            &bootstrap_script(crate::native_fast::RuntimeSettings {
+                enhancements_enabled: true,
+                codex_app_native_fast_unlock: true,
+                native_fast_local_api_configured: false,
+            }),
+        )
+        .await
+        .unwrap();
         let watching_generation = generation.clone();
         let watcher = tokio::spawn(async move {
             let result = watch(&mut interceptor, &watching_generation).await;

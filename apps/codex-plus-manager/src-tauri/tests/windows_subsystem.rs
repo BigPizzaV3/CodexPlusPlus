@@ -87,6 +87,44 @@ fn manager_keeps_a_visible_brand_tray_and_click_menu_when_hiding_the_macos_dock_
     assert!(lib_rs.contains(".tooltip(\"Codex++\")"));
 }
 
+// 返回 needle 之前文本最近的 #[cfg(...)] 属性。前提是设置语句与其平台门控
+// 属性之间没有插入其他 #[cfg(（install_tray 内的布局保证了这一点）；
+// 若日后重排语句，请同步调整这里的假设或改用语法解析。
+fn nearest_cfg_before<'a>(source: &'a str, needle: &str) -> &'a str {
+    let at = source.find(needle).expect(needle);
+    let before = &source[..at];
+    let start = before
+        .rfind("#[cfg(")
+        .expect("cfg attribute before the setting");
+    let end = before[start..]
+        .find(']')
+        .map(|offset| start + offset)
+        .expect("cfg attribute end");
+    &before[start..=end]
+}
+
+// issue #2676：Windows 左键单击直接唤起主窗口（菜单只留给右键），
+// 非 Windows 平台保持「点击弹出菜单」的原有行为不变。
+#[test]
+fn windows_tray_left_click_restores_the_window_and_keeps_the_menu_for_right_click() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert_eq!(
+        nearest_cfg_before(&lib_rs, ".show_menu_on_left_click(false)"),
+        "#[cfg(windows)]"
+    );
+    assert_eq!(
+        nearest_cfg_before(&lib_rs, ".show_menu_on_left_click(true)"),
+        "#[cfg(not(windows))]"
+    );
+    // 左键单击唤窗走统一的事件判定，不绕过 show_main_window。
+    assert!(lib_rs.contains("tray_event_shows_main_window(&event)"));
+    // CI 只在 Windows 跑 cargo test，谓词的平台门控靠这里文本守护：
+    // 去掉 cfg!(windows) && 会让非 Windows 平台的左键单击也唤窗（#2676 回归）。
+    assert!(lib_rs.contains("cfg!(windows) && left_click_up"));
+}
+
 #[test]
 fn manager_reopens_hidden_window_when_macos_dock_requests_reopen() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))

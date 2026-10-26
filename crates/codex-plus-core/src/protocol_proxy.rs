@@ -16,7 +16,6 @@ use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
 mod local_compaction;
-pub use local_compaction::build_request as build_local_compaction_request;
 
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
 
@@ -2987,6 +2986,14 @@ impl ChatSseToResponsesConverter {
         }
     }
 
+    pub(crate) fn model(&self) -> &str {
+        &self.state.model
+    }
+
+    pub(crate) fn latest_usage(&self) -> Option<&Value> {
+        self.state.latest_usage.as_ref()
+    }
+
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
         append_utf8_safe(&mut self.buffer, &mut self.utf8_remainder, bytes);
         let mut output = String::new();
@@ -3181,7 +3188,6 @@ pub async fn open_responses_proxy_request_for_path_with_session_headers(
         beta_features,
         session_headers,
         None,
-        false,
     )
     .await
 }
@@ -3205,7 +3211,6 @@ pub async fn open_responses_proxy_request_for_path_with_session_headers_and_live
         beta_features,
         session_headers,
         live_request_id,
-        false,
     )
     .await
 }
@@ -3222,7 +3227,6 @@ pub async fn open_responses_proxy_request_with_settings(
         None,
         ProxySessionHeaders::default(),
         None,
-        false,
     )
     .await
 }
@@ -3240,7 +3244,6 @@ pub async fn open_responses_proxy_request_with_settings_for_path(
         None,
         ProxySessionHeaders::default(),
         None,
-        false,
     )
     .await
 }
@@ -3276,32 +3279,6 @@ pub async fn open_responses_proxy_request_with_settings_for_path_and_session_hea
         beta_features,
         session_headers,
         None,
-        false,
-    )
-    .await
-}
-
-/// 使用完整当前请求直接生成本地摘要，不从旧缓存补字段，也不向上游添加模式标记。
-pub async fn open_local_compaction_request_with_settings(
-    current_request: &Value,
-    summary_prompt: &str,
-    settings: crate::settings::BackendSettings,
-    session_headers: ProxySessionHeaders<'_>,
-) -> anyhow::Result<UpstreamProxyResponse> {
-    anyhow::ensure!(
-        !request_has_compaction_trigger(current_request),
-        "完整当前请求的本地摘要不能包含远程 compaction_trigger"
-    );
-    let body = build_local_compaction_request(current_request, summary_prompt)?;
-    open_responses_proxy_request_with_settings_and_user_agent(
-        &body.to_string(),
-        settings,
-        None,
-        "/responses",
-        None,
-        session_headers,
-        None,
-        true,
     )
     .await
 }
@@ -3314,7 +3291,6 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     beta_features: Option<&str>,
     session_headers: ProxySessionHeaders<'_>,
     live_request_id: Option<&str>,
-    full_current_compaction: bool,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
@@ -3369,6 +3345,16 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     {
         request_json["model"] = Value::String(route.upstream_model.clone());
     }
+    // 后台任务固定模型名映射（#1183/#1446/#1457）：聚合与显式路由都没接住、
+    // 且模型不在当前供应商公布集合里时，改写为默认模型再转发。
+    // `source_model` 保持原始值，轮转粘性与请求日志仍按用户视角的模型归因。
+    if aggregate_model.is_none()
+        && model_route.is_none()
+        && let Some(replacement) = unlisted_model_replacement(&settings, &source_model)
+    {
+        log_unlisted_model_mapping(&source_model, &replacement);
+        request_json["model"] = Value::String(replacement);
+    }
     let model = (!source_model.trim().is_empty()).then(|| source_model.clone());
     let context = RotationContext {
         conversation_id: conversation_id_from_responses_request(&request_json),
@@ -3412,9 +3398,6 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let attempt = candidate_index;
         candidate_index += 1;
         let relay = relays[attempt].clone();
-        // 完整请求模式仅为本地调用状态，不进入上游 JSON、请求头或追踪元数据。
-        let local_compaction_request = local_compaction_request
-            || (full_current_compaction && relay.local_compaction_prompt_at_end_enabled());
         request_attempt += 1;
         if let Some(id) = live_request_id {
             crate::request_log::update_running_retry(
@@ -3466,7 +3449,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             && relay.protocol == RelayProtocol::Responses
             && !is_responses_compact_proxy_path(request_path);
         let mut logical_body = request_json.clone();
-        if let Some(model) = model_override.as_deref().map(str::trim).filter(|model| !model.is_empty()) {
+        if relay.local_compaction_prompt_at_end_enabled()
+            && let Some(model) = model_override.as_deref().map(str::trim).filter(|model| !model.is_empty())
+        {
             logical_body["model"] = json!(model);
         }
         let experimental_local_compaction =
@@ -3480,8 +3465,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         } else {
             None
         };
-        let full_current_request = experimental_local_compaction && full_current_compaction;
-        let local_candidate = if local_compaction_request && !full_current_request {
+        let local_candidate = if experimental_local_compaction {
             cache_key
                 .as_deref()
                 .and_then(|key| local_compaction::candidate(key, &logical_body))
@@ -3489,9 +3473,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             None
         };
         if experimental_local_compaction {
-            let detail = if full_current_request {
-                json!({"relayId":relay.id, "action":"current_request_suffix"})
-            } else if let Some(candidate) = &local_candidate {
+            let detail = if let Some(candidate) = &local_candidate {
                 json!({
                     "relayId":relay.id, "action":"reuse_context",
                     "contextFieldsMatch":candidate.context_fields_match,
@@ -3526,6 +3508,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 model_override.as_deref(),
                 preserve_native_request,
                 official_base.as_deref(),
+                session_headers,
             )
             .await
             {
@@ -3581,7 +3564,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
         let eligible = wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
-            && !local_compaction_request
+            && !experimental_local_compaction
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
         let mut key = None;
         let mut exec_adapted = false;
@@ -3971,6 +3954,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 model_override.as_deref(),
                 false,
                 official_base.as_deref(),
+                session_headers,
             )
             .await;
             let (fallback_endpoint, fallback_body, fallback_wire, _) = match fallback {
@@ -4212,8 +4196,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         request_trace: Some(request_trace),
                         exec_adapted: false,
                         exec_outcome: None,
-                        // 仅保留真实响应头供启动器转发计数标记，不再读取剩余 body。
-                        response: Some(upstream),
+                        response: None,
                     });
                 }
                 BufferedResponsesStream::Overflow {
@@ -4360,6 +4343,82 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             response: Some(upstream),
         });
     }
+}
+
+/// 目录外模型名 → 当前供应商默认模型的映射（#1183 / #1446 / #1457）。
+///
+/// Codex 客户端的自动审查（`codex-auto-review`）、标题/摘要、子代理等后台任务
+/// 固定使用 gpt-* 或内部模型名，不经用户选模；第三方上游没有这些名字，原样
+/// 转发只会得到「No available channel / 模型不存在」类错误，还可能按失败重试
+/// 持续消耗额度。维护者定的方向是「按来源映射」，不丢弃请求
+/// （<https://github.com/BigPizzaV3/CodexPlusPlus/issues/1183#issuecomment-6052622554>）。
+///
+/// 规则：请求模型（剥掉 `[1M]` 窗口后缀后，忽略大小写）不在当前供应商公布的
+/// 模型集里时，改写为该供应商的默认模型。公布的模型集沿用
+/// `active_published_model_ids` 的口径——官方登录（未混入 API）返回空集
+/// （chatgpt.com 后端本来就有 gpt-*，不映射）；聚合供应商有自己的按成员归因
+/// 与「不做静默改派」策略，不在此处理。返回 `None` 表示照原样转发。
+fn unlisted_model_replacement(
+    settings: &crate::settings::BackendSettings,
+    model: &str,
+) -> Option<String> {
+    if !settings.protocol_proxy_map_unlisted_models
+        || settings.active_aggregate_relay_profile().is_some()
+    {
+        return None;
+    }
+    let model = model.trim();
+    // 自动审批模型优先（#1446）：供应商配置了 autoReviewModel 时，codex-auto-review
+    // 交给 `auto_review_model_rewrite` 按配置改写；这里若先改成默认模型，
+    // 那条规则就再也匹配不上，用户配置的审批模型会被静默覆盖。
+    if auto_review_model_rewrite(&settings.active_relay_profile(), model).is_some() {
+        return None;
+    }
+    let published = crate::model_catalog::active_published_model_ids(settings);
+    if published.is_empty() {
+        return None;
+    }
+    if model.is_empty() {
+        return None;
+    }
+    let (slug, _) = crate::model_suffix::parse_model_suffix(model);
+    let slug_lower = slug.to_ascii_lowercase();
+    let raw_lower = model.to_ascii_lowercase();
+    if published.iter().any(|id| {
+        let id = id.to_ascii_lowercase();
+        id == slug_lower || id == raw_lower
+    }) {
+        return None;
+    }
+    let replacement = crate::relay_config::relay_profile_model(&settings.active_relay_profile())
+        .trim()
+        .to_string();
+    (!replacement.is_empty()).then_some(replacement)
+}
+
+/// 每对「来源 → 目标」只记一条映射诊断日志：#1183 的后台探测约每秒一次，
+/// 逐请求记录会把诊断文件刷大（同类投诉见 #2681）。
+fn log_unlisted_model_mapping(source: &str, replacement: &str) {
+    static LOGGED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let key = format!(
+        "{}->{}",
+        source.to_ascii_lowercase(),
+        replacement.to_ascii_lowercase()
+    );
+    let logged = LOGGED.get_or_init(Default::default);
+    // 临界区只有 HashSet::insert，不会恐慌；即便锁中毒（Err）也取回内部
+    // 状态继续去重，保证「每对只记一条」在任何情况下都成立。
+    let mut guard = logged
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !guard.insert(key) {
+        return;
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.unlisted_model_mapped",
+        json!({"from": source, "to": replacement}),
+    );
 }
 
 fn select_model_route(
@@ -4798,7 +4857,21 @@ pub async fn open_chat_completions_proxy_request(
         anyhow::bail!("Chat Completions 上游 Key 不能为空");
     }
 
-    let request_json: Value = serde_json::from_str(body)?;
+    let mut request_json: Value = serde_json::from_str(body)?;
+    // 与 Responses 路径同规则的目录外模型映射（#1183/#1446/#1457）：
+    // 这条直通路径此前对模型名零干预，后台任务的 gpt-* 原样打到上游。
+    let requested_model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    // 自动审批模型优先于目录外映射（与 Responses 路径的 upstream_request_parts 一致）。
+    if let Some(auto_review_model) = auto_review_model_rewrite(&relay, &requested_model) {
+        request_json["model"] = json!(auto_review_model);
+    } else if let Some(replacement) = unlisted_model_replacement(&settings, &requested_model) {
+        log_unlisted_model_mapping(&requested_model, &replacement);
+        request_json["model"] = Value::String(replacement);
+    }
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -4938,6 +5011,20 @@ fn project_strict_reasoning_history(body: &mut Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Codex 自动审批（「替我审批」）请求使用的固定模型 slug。
+const CODEX_AUTO_REVIEW_MODEL: &str = "codex-auto-review";
+
+/// codex-auto-review 的改写目标：供应商配置了审批模型（#1446）时返回它，否则 `None`。
+/// 目录外模型映射（#1183）也用它判断是否让路，两处共用同一条规则。
+fn auto_review_model_rewrite<'a>(
+    relay: &'a crate::settings::RelayProfile,
+    model: &str,
+) -> Option<&'a str> {
+    let auto_review_model = relay.auto_review_model.trim();
+    (!auto_review_model.is_empty() && model == CODEX_AUTO_REVIEW_MODEL)
+        .then_some(auto_review_model)
+}
+
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     mut request_json: Value,
@@ -4945,6 +5032,7 @@ async fn upstream_request_parts(
     model_override: Option<&str>,
     preserve_compaction_trigger: bool,
     official_base: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi, bool)> {
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
@@ -4966,6 +5054,14 @@ async fn upstream_request_parts(
         .filter(|value| !value.is_empty())
     {
         request_json["model"] = json!(model);
+    }
+    // issue #1446：「替我审批」固定请求 codex-auto-review，第三方上游不认识，
+    // 供应商配置了审批模型时按供应商改写；未配置保持原样转发。
+    if let Some(auto_review_model) = auto_review_model_rewrite(
+        relay,
+        request_json.get("model").and_then(Value::as_str).unwrap_or(""),
+    ) {
+        request_json["model"] = json!(auto_review_model);
     }
     let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
     let compatibility_enabled = relay.request_compatibility_enabled();
@@ -5011,19 +5107,33 @@ async fn upstream_request_parts(
         let official_auto_repair = official_base.is_some()
             && !legacy_compact_path
             && request_declares_no_tools(&body);
-        if official_auto_repair && ensure_web_search_tool_for_history(&mut body)
+        let opt_in_repair = relay.web_search_history_compat_enabled() && !legacy_compact_path;
+        if (opt_in_repair || official_auto_repair) && ensure_web_search_tool_for_history(&mut body)
         {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.web_search_history_compat",
                 json!({
                     "action": "declare_web_search",
-                    "source": "official_login",
+                    "source": if official_auto_repair { "official_login" } else { "provider_opt_in" },
                     "inputContainsWebSearchCall": true
                 }),
             );
         }
         dedupe_responses_tool_search_outputs(&mut body);
         normalize_responses_item_ids(&mut body);
+    }
+
+    // base64 图片一旦落进文本字段会把 token 估算撑到不可用，必须在 VLM 预处理前清掉。
+    if guard_inline_image_data_urls(&mut body) {
+        let model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "inline_image_data_url_leak",
+            json!({ "model": model, "protocol": format!("{:?}", relay.protocol) }),
+        );
     }
 
     // Image handling (per-model): send-as-is / strip / VLM analysis
@@ -5052,12 +5162,13 @@ async fn upstream_request_parts(
 
                     for key in &["messages", "input"] {
                         if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
-                            crate::vision::strip_image_blocks(
+                            crate::vision::strip_image_blocks_with_context(
                                 arr,
                                 &vlm_config,
                                 &relay.model_windows,
                                 &relay.context_window,
                                 &model,
+                                session_headers.thread_id,
                                 relay.protocol == crate::settings::RelayProtocol::Responses,
                             )
                             .await?;
@@ -5065,14 +5176,6 @@ async fn upstream_request_parts(
                     }
             }
         }
-    }
-
-    if guard_inline_image_data_urls(&mut body) {
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "inline_image_data_url_leak",
-            json!({ "model": model, "protocol": format!("{:?}", relay.protocol) }),
-        );
-        debug_assert!(false, "base64 图片泄漏进文本字段，检查协议转换路径");
     }
 
     let wire_api = match relay.protocol {
@@ -10773,6 +10876,151 @@ mod exec_retry_after_tests {
 }
 
 #[cfg(test)]
+mod unlisted_model_mapping_tests {
+    use super::*;
+
+    fn api_settings(model_list: &str, model: &str) -> crate::settings::BackendSettings {
+        let profile = crate::settings::RelayProfile {
+            id: "relay-api".to_string(),
+            name: "API 中转".to_string(),
+            model: model.to_string(),
+            model_list: model_list.to_string(),
+            relay_mode: crate::settings::RelayMode::PureApi,
+            ..crate::settings::RelayProfile::default()
+        };
+        let mut settings = crate::settings::BackendSettings::default();
+        settings.relay_profiles = vec![profile];
+        settings.active_relay_id = "relay-api".to_string();
+        // 开关默认关闭（opt-in），以下用例除专门测关闭的以外都显式开启。
+        settings.protocol_proxy_map_unlisted_models = true;
+        settings
+    }
+
+    #[test]
+    fn mapping_is_off_by_default() {
+        let mut settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "minimax-m2.5");
+        settings.protocol_proxy_map_unlisted_models =
+            crate::settings::BackendSettings::default().protocol_proxy_map_unlisted_models;
+        assert!(!settings.protocol_proxy_map_unlisted_models);
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+        assert_eq!(unlisted_model_replacement(&settings, "codex-auto-review"), None);
+    }
+
+    #[test]
+    fn configured_auto_review_model_wins_over_unlisted_mapping() {
+        let mut settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "minimax-m2.5");
+        settings.relay_profiles[0].auto_review_model = "deepseek-v4-flash".to_string();
+        // codex-auto-review 让路给 upstream_request_parts 的审批模型改写（#1446）。
+        assert_eq!(unlisted_model_replacement(&settings, "codex-auto-review"), None);
+        assert_eq!(
+            auto_review_model_rewrite(&settings.active_relay_profile(), "codex-auto-review"),
+            Some("deepseek-v4-flash")
+        );
+        // 其他目录外模型仍按默认模型映射。
+        assert_eq!(
+            unlisted_model_replacement(&settings, "gpt-5.4").as_deref(),
+            Some("minimax-m2.5")
+        );
+    }
+
+    #[test]
+    fn unlisted_background_models_map_to_profile_default() {
+        let settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "minimax-m2.5");
+        // Codex 后台任务（标题/摘要/子代理）与自动审查的固定模型名（#1183/#1446）。
+        assert_eq!(
+            unlisted_model_replacement(&settings, "gpt-5.4").as_deref(),
+            Some("minimax-m2.5")
+        );
+        assert_eq!(
+            unlisted_model_replacement(&settings, "codex-auto-review").as_deref(),
+            Some("minimax-m2.5")
+        );
+    }
+
+    #[test]
+    fn listed_models_pass_through_unchanged() {
+        let settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "minimax-m2.5");
+        assert_eq!(unlisted_model_replacement(&settings, "minimax-m2.5"), None);
+        assert_eq!(unlisted_model_replacement(&settings, "deepseek-v4-pro"), None);
+        // 带 [1M] 窗口后缀的写法与列表里的同名模型等价。
+        assert_eq!(unlisted_model_replacement(&settings, "deepseek-v4-pro[1M]"), None);
+        // 用户显式把 gpt-* 配进列表时照原样转发，映射不能劫持。
+        let with_gpt = api_settings("gpt-5.4\nminimax-m2.5", "minimax-m2.5");
+        assert_eq!(unlisted_model_replacement(&with_gpt, "GPT-5.4"), None);
+    }
+
+    #[test]
+    fn switch_off_disables_mapping() {
+        let mut settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "minimax-m2.5");
+        settings.protocol_proxy_map_unlisted_models = false;
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+    }
+
+    #[test]
+    fn official_login_without_mix_never_maps() {
+        let mut settings = api_settings("minimax-m2.5", "minimax-m2.5");
+        settings.relay_profiles[0].relay_mode = crate::settings::RelayMode::Official;
+        settings.relay_profiles[0].official_mix_api_key = false;
+        // 官方登录未混 API：公布的模型集为空（chatgpt.com 后端自带 gpt-*）。
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+    }
+
+    #[test]
+    fn aggregate_active_profile_skips_mapping() {
+        let mut settings = api_settings("minimax-m2.5", "minimax-m2.5");
+        settings.relay_profiles[0].relay_mode = crate::settings::RelayMode::Aggregate;
+        settings.aggregate_relay_profiles = vec![crate::settings::AggregateRelayProfile {
+            id: "relay-api".to_string(),
+            name: "聚合".to_string(),
+            session_provider: Default::default(),
+            model_aggregation_enabled: false,
+            strategy: Default::default(),
+            members: Vec::new(),
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+        }];
+        // 聚合有自己的按成员归因与「不做静默改派」策略，不在此映射。
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+    }
+
+    #[test]
+    fn config_contents_model_takes_priority_as_replacement() {
+        // relay_profile_model 优先读 config_contents 的 model 键（真正写进
+        // config.toml 的值）；映射目标必须与它一致，而不是表单里的 model 字段。
+        let mut settings = api_settings("minimax-m2.5", "form-model");
+        settings.relay_profiles[0].config_contents =
+            "model = \"deepseek-v4-pro\"\n".to_string();
+        assert_eq!(
+            unlisted_model_replacement(&settings, "gpt-5.4").as_deref(),
+            Some("deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn official_mix_api_key_maps_by_profile_models() {
+        // 官方登录但混入 API Key：公布的模型集是 profile 的 model_list（上游仍是
+        // 第三方），后台固定模型名同样应改写到默认模型。
+        let mut settings = api_settings("minimax-m2.5\ngpt-5.4", "minimax-m2.5");
+        settings.relay_profiles[0].relay_mode = crate::settings::RelayMode::Official;
+        settings.relay_profiles[0].official_mix_api_key = true;
+        assert_eq!(unlisted_model_replacement(&settings, "codex-auto-review").as_deref(), Some("minimax-m2.5"));
+        // 混入模式下列表里显式配置的 gpt-* 仍然原样转发。
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+    }
+
+    #[test]
+    fn empty_default_model_never_maps() {
+        // 列表非空但默认模型为空时没有改写目标，保持原样转发。
+        let settings = api_settings("minimax-m2.5\ndeepseek-v4-pro", "");
+        assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
+        // 空模型名的请求不处理。
+        let settings = api_settings("minimax-m2.5", "minimax-m2.5");
+        assert_eq!(unlisted_model_replacement(&settings, "  "), None);
+    }
+}
+
+#[cfg(test)]
 mod proxy_auto_retry_tests {
     use super::*;
 
@@ -11933,7 +12181,15 @@ mod parallel_tool_call_pairing_tests {
         ], "tools": [{"type": "custom", "name": "view_image"}, {"type": "custom", "name": "exec"}]});
 
         let (_, out, _, _) =
-            upstream_request_parts(&relay, body, "/v1/responses", None, false, None)
+            upstream_request_parts(
+                &relay,
+                body,
+                "/v1/responses",
+                None,
+                false,
+                None,
+                ProxySessionHeaders::default(),
+            )
                 .await
                 .unwrap();
         assert_pairing(&out, 3);
@@ -11942,6 +12198,39 @@ mod parallel_tool_call_pairing_tests {
         let input = adapted["input"].as_array().unwrap();
         assert_eq!(input[4]["type"], "custom_tool_call_output", "图片输出不应被改成 function_call_output");
         assert_eq!(input[6]["type"], "function_call_output");
+    }
+
+    /// issue #1446：配置了审批模型时把 codex-auto-review 改写成供应商模型；
+    /// 未配置时原样转发，普通请求不受影响。
+    #[tokio::test]
+    async fn auto_review_model_is_rewritten_only_when_configured() {
+        let mut relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            base_url: "https://relay.example.test/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        let review = || json!({"model": "codex-auto-review", "input": "review"});
+
+        let (_, out, _, _) =
+            upstream_request_parts(&relay, review(), "/v1/responses", None, false, None, ProxySessionHeaders::default())
+                .await
+                .unwrap();
+        assert_eq!(out["model"], "codex-auto-review");
+
+        relay.auto_review_model = " deepseek-v4-flash ".into();
+        let (_, out, _, _) =
+            upstream_request_parts(&relay, review(), "/v1/responses", None, false, None, ProxySessionHeaders::default())
+                .await
+                .unwrap();
+        assert_eq!(out["model"], "deepseek-v4-flash");
+
+        let normal = json!({"model": "deepseek-v4-pro", "input": "hi"});
+        let (_, out, _, _) =
+            upstream_request_parts(&relay, normal, "/v1/responses", None, false, None, ProxySessionHeaders::default())
+                .await
+                .unwrap();
+        assert_eq!(out["model"], "deepseek-v4-pro");
     }
 
     fn assert_pairing(body: &Value, expected: usize) {

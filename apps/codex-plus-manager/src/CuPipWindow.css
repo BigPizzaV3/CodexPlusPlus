@@ -1,0 +1,106 @@
+/* Computer Use 悬浮预览：无边框小窗，标题栏可拖动，画面按比例铺满。 */
+html.cu-pip-root,
+html.cu-pip-root body,
+html.cu-pip-root #app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: hsl(var(--background));
+}
+
+.cu-pip {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  overflow: hidden;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  user-select: none;
+}
+
+.cu-pip-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid hsl(var(--border));
+  font-size: 12px;
+  cursor: grab;
+}
+
+.cu-pip-brand {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* 正在操作的应用：标题栏右侧的小标签。 */
+.cu-pip-app {
+  max-width: 45%;
+  overflow: hidden;
+  padding: 1px 7px;
+  border: 1px solid hsl(var(--brand-accent) / 0.35);
+  border-radius: 999px;
+  background: hsl(var(--brand-accent) / 0.1);
+  color: hsl(var(--brand-accent));
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cu-pip-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: hsl(var(--brand-accent));
+  box-shadow: 0 0 0 3px hsl(var(--brand-accent) / 0.2);
+  animation: cu-pip-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes cu-pip-pulse {
+  50% { opacity: 0.45; }
+}
+
+.cu-pip-head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+.cu-pip-head button:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+.cu-pip-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--surface-sunken) / 0.6);
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.cu-pip-body img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
