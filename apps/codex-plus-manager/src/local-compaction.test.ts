@@ -124,6 +124,8 @@ test("provider checkbox binds draft state and is hidden for Anthropic and aggreg
   assert.doesNotMatch(checkbox, /用户实测/);
   assert.match(checkbox, /不保证每次命中/);
   assert.match(checkbox, /不保证后置压缩提示不影响摘要质量/);
+  assert.match(checkbox, /未命中供应商缓存时，补回的工具声明会增加输入 token 开销/);
+  assert.match(checkbox, /上游若忽略禁用工具调用要求，可能返回空摘要/);
   assert.match(source, /webSearchHistoryCompat|搜索历史压缩兼容/);
   assert.match(source, /localCompactionPromptAtEnd: profile\.localCompactionPromptAtEnd === true/);
 });

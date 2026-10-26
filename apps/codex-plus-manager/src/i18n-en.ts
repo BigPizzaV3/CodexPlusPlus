@@ -657,7 +657,7 @@ export const EN_PLAIN: Record<string, string> = {
   "纯标准协议": "Standard protocol only",
   "本地压缩缓存复用（实验）": "Local compaction cache reuse (experimental)",
   "搜索历史压缩兼容（实验）": "Search history compaction compatibility (experimental)",
-  "实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。默认关闭，仅作用于当前供应商的本地压缩。": "Testing suggests improved cache hit probability for compaction requests, but hits are not guaranteed and placing the compaction prompt at the end may affect summary quality. Off by default; applies only to local compaction for this provider.",
+  "实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。未命中供应商缓存时，补回的工具声明会增加输入 token 开销；上游若忽略禁用工具调用要求，可能返回空摘要。默认关闭，仅作用于当前供应商的本地压缩。": "Testing suggests improved cache hit probability for compaction requests, but hits are not guaranteed and placing the compaction prompt at the end may affect summary quality. Restored tool declarations add input tokens when the provider cache misses; an upstream that ignores disabled tool calls may return an empty summary. Off by default; applies only to local compaction for this provider.",
   "仅限 Responses API。": "Responses API only.",
   "此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？": "This request setting requires the local protocol proxy. Saving will immediately restart Codex so the setting can take effect safely. Continue?",
   "仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。": "Available only when the upstream protocol is Chat Completions. Responses API requests are forwarded unchanged.",

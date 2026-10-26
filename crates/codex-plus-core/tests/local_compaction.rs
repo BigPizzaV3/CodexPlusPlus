@@ -636,6 +636,71 @@ async fn local_compaction_does_not_validate_or_retry_summary_responses() {
 }
 
 #[tokio::test]
+async fn local_compaction_forwards_tool_calls_from_upstreams_ignoring_none_without_retry() {
+    let tool_call = json!({
+        "type":"function_call", "id":"fc_ignored_none", "call_id":"call_ignored_none",
+        "name":"lookup", "arguments":"{}", "status":"completed"
+    });
+    let response = json!({
+        "id":"resp_ignored_none", "object":"response", "status":"completed",
+        "output":[tool_call.clone()]
+    });
+    for mode in ["streaming", "buffered"] {
+        for streaming in [false, true] {
+            let body = if streaming {
+                format!(
+                    "event: response.output_item.done\ndata: {}\n\nevent: response.completed\ndata: {}\n\ndata: [DONE]\n\n",
+                    json!({"type":"response.output_item.done","output_index":0,"item":tool_call}),
+                    json!({"type":"response.completed","response":response}),
+                )
+            } else {
+                response.to_string()
+            };
+            let content_type = if streaming {
+                "text/event-stream"
+            } else {
+                "application/json"
+            };
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let mut settings = settings(
+                format!("http://{}/v1", listener.local_addr().unwrap()),
+                RelayProtocol::Responses,
+                true,
+            );
+            settings.protocol_proxy_auto_retry = true;
+            settings.protocol_proxy_auto_retry_mode = mode.into();
+            let server = tokio::spawn(capture(
+                listener,
+                vec![
+                    success(RelayProtocol::Responses, false),
+                    (200, content_type, body.clone()),
+                ],
+            ));
+            let normal = normal(false);
+            send(&normal, &settings, Some("ignored-none"))
+                .await
+                .read_body()
+                .await
+                .unwrap();
+            let mut compact = compact(&normal);
+            compact["stream"] = json!(streaming);
+            let mut result = send(&compact, &settings, Some("ignored-none")).await;
+            assert_eq!(result.status_code, 200);
+            assert!(result.buffered_body.is_none());
+            assert_eq!(result.read_body().await.unwrap(), body.as_bytes());
+            let requests = server.await.unwrap();
+            assert_eq!(requests.len(), 2, "no second summary request");
+            assert_eq!(requests[1]["tools"], normal["tools"]);
+            assert_eq!(requests[1]["tool_choice"], "none");
+            assert_eq!(requests[1]["parallel_tool_calls"], false);
+            assert_eq!(requests[1]["input"], compact["input"]);
+        }
+    }
+}
+
+#[tokio::test]
 async fn local_compaction_returns_stream_headers_without_waiting_for_the_summary() {
     for mode in ["streaming", "buffered"] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))

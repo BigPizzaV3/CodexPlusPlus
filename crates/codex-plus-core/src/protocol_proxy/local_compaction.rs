@@ -215,11 +215,14 @@ impl RequestCache {
                         .is_some_and(Vec::is_empty));
             if cleared_tools || !object.contains_key(name) {
                 object.insert(name.clone(), value.clone());
-                restored_tools |= name == "tools";
+                restored_tools |= name == "tools"
+                    && value.as_array().is_some_and(|tools| !tools.is_empty());
             }
         }
-        object.insert("tool_choice".into(), json!("none"));
-        object.insert("parallel_tool_calls".into(), json!(false));
+        if restored_tools {
+            object.insert("tool_choice".into(), json!("none"));
+            object.insert("parallel_tool_calls".into(), json!(false));
+        }
         let context_fields_match = entry
             .context
             .fields
@@ -463,6 +466,50 @@ mod tests {
                 "current tools cannot inherit old exec state"
             );
         }
+    }
+
+    #[test]
+    fn candidate_preserves_current_tool_controls_unless_nonempty_tools_are_restored() {
+        for old_tools in [None, Some(Value::Null), Some(json!([]))] {
+            let mut cache = RequestCache::default();
+            let mut old = json!({"instructions":"Ordinary rules."});
+            if let Some(tools) = old_tools {
+                old["tools"] = tools;
+            }
+            cache.remember("session".into(), RequestContext::from_request(&old), true);
+            for current_tools in [None, Some(Value::Null), Some(json!([]))] {
+                for controls in [json!({}), json!({
+                    "tool_choice":"required", "parallel_tool_calls":true
+                })] {
+                    let mut current = controls;
+                    current["instructions"] = old["instructions"].clone();
+                    current["input"] = json!([{"role":"user","content":"Summary"}]);
+                    if let Some(tools) = &current_tools {
+                        current["tools"] = tools.clone();
+                    }
+                    let candidate = cache.candidate("session", &current).unwrap();
+                    for name in ["tool_choice", "parallel_tool_calls", "input"] {
+                        assert_eq!(candidate.body.get(name), current.get(name));
+                    }
+                    assert!(!candidate.exec_adapted);
+                }
+            }
+        }
+        let mut cache = RequestCache::default();
+        cache.remember(
+            "session".into(),
+            RequestContext::from_request(&json!({
+                "tools":[{"type":"function","name":"old"}]
+            })),
+            true,
+        );
+        let current = json!({
+            "tools":[{"type":"function","name":"current"}],
+            "tool_choice":"required", "parallel_tool_calls":true
+        });
+        let candidate = cache.candidate("session", &current).unwrap();
+        assert_eq!(candidate.body, current);
+        assert!(!candidate.exec_adapted);
     }
 
     #[test]
