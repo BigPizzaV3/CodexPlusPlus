@@ -93,7 +93,7 @@
     {
       "name": "85-history-turn-recovery.js",
       "description": "会话索引检查完成后的单次限量原生补载",
-      "lines": 295
+      "lines": 300
     },
     {
       "name": "85-turn-rewind-controller.js",
