@@ -5795,9 +5795,11 @@ function ProxySettingsScreen({
                     aria-label={tf("{0} 的独立代理", [profile.name || t("未命名供应商")])}
                     placeholder={t("例如 http://127.0.0.1:7890，留空表示使用系统代理")}
                     value={proxyUrls[profile.id] ?? ""}
-                    onChange={(event) =>
-                      setProxyUrls((current) => ({ ...current, [profile.id]: event.currentTarget.value }))
-                    }
+                    onChange={(event) => {
+                      // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏（#2705）
+                      const value = event.currentTarget.value;
+                      setProxyUrls((current) => ({ ...current, [profile.id]: value }));
+                    }}
                   />
                   <Button
                     disabled={
@@ -6610,7 +6612,7 @@ function RelayScreen({
                         </span>
                         <select
                           aria-label={tf("{0} 导入为", [provider.name])}
-                          onChange={(event) => setCcsBindings((current) => ({ ...current, [provider.sourceId]: event.currentTarget.value }))}
+                          onChange={(event) => { const value = event.currentTarget.value; setCcsBindings((current) => ({ ...current, [provider.sourceId]: value })); }}
                           value={ccsBindings[provider.sourceId] || ""}
                         >
                           <option value="">{t("新增（同名自动关联）")}</option>
@@ -7165,7 +7167,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
             <input
               checked={globalHotkey.enabled}
               disabled={globalHotkeyBusy || !form.enhancementsEnabled}
-              onChange={(event) => setGlobalHotkey((current) => ({ ...current, enabled: event.currentTarget.checked }))}
+              onChange={(event) => { const enabled = event.currentTarget.checked; setGlobalHotkey((current) => ({ ...current, enabled })); }}
               type="checkbox"
             />
             <span><strong>{t("全局听写热键")}</strong><small>{t("Windows 首版：按一次开始录音，再按一次停止并插入文字。")}</small></span>
@@ -7173,7 +7175,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
           </label>
           <div className="form-row">
             <Field label={t("全局热键") }>
-              <Input value={globalHotkey.hotkey} onChange={(event) => setGlobalHotkey((current) => ({ ...current, hotkey: event.currentTarget.value }))} placeholder="Ctrl+Shift+Space" />
+              <Input value={globalHotkey.hotkey} onChange={(event) => { const hotkey = event.currentTarget.value; setGlobalHotkey((current) => ({ ...current, hotkey })); }} placeholder="Ctrl+Shift+Space" />
             </Field>
             <Button disabled={globalHotkeyBusy} onClick={() => void saveGlobalHotkey()} type="button" variant="secondary">{t("保存全局热键")}</Button>
           </div>
