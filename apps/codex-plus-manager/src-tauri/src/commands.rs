@@ -5413,10 +5413,15 @@ pub async fn repair_session_index() -> CommandResult<Value> {
             codex_plus_core::history_turn_recovery::after_index_repair(
                 debug_port,
                 report.aborted_reason.is_some(),
+                report.checked_at_ms,
             );
+            let mut payload = json!(report);
+            payload["frontendRecovery"] = json!({
+                "status": "pending", "loadedPages": 0, "metadataPages": 0,
+            });
             ok(
                 &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
-                json!(report),
+                payload,
             )
         }
         Err(error) => failed(&format!("修复会话索引失败：{error}"), json!({})),
@@ -5426,7 +5431,17 @@ pub async fn repair_session_index() -> CommandResult<Value> {
 #[tauri::command]
 pub async fn load_session_index_repair_report() -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(|| {
-        codex_plus_data::load_session_index_repair_report(None)
+        codex_plus_data::load_session_index_repair_report(None).map(|report| {
+            report.map(|report| {
+                let frontend = codex_plus_core::history_turn_recovery::load_report(
+                    &codex_plus_core::relay_config::default_codex_home_dir(),
+                    report.checked_at_ms,
+                );
+                let mut payload = json!(report);
+                payload["frontendRecovery"] = json!(frontend);
+                payload
+            })
+        })
     })
     .await
     .map_err(|error| anyhow::anyhow!("session index report task failed: {error}"))

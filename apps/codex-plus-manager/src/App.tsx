@@ -200,6 +200,7 @@ import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from ".
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
+import { historyRecoveryStatusLabel, type FrontendRecoveryReport } from "./history-recovery-report";
 import { usePopoverLayer } from "./use-popover-layer";
 import { resolveAnchoredMenuLayout, type AnchoredMenuLayout } from "./popover-layer";
 import { providerAvatarText, resolveProviderName } from "./provider-name";
@@ -984,6 +985,7 @@ type UpdateProgressEvent = {
 };
 
 type SessionIndexRepairReport = {
+  frontendRecovery?: FrontendRecoveryReport | null;
   scannedFiles: number;
   cachedFiles: number;
   repairedItems: number;
@@ -9109,6 +9111,18 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
               <p>
                 {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
               </p>
+              {sessionIndexRepairReport.frontendRecovery ? (
+                <p role="status" className="break-all">
+                  <strong>{t("历史轮次补载：")}</strong>
+                  {t(historyRecoveryStatusLabel(sessionIndexRepairReport.frontendRecovery))}
+                  {" · "}{sessionIndexRepairReport.frontendRecovery.status}
+                  {" · "}{t("消息页")} {sessionIndexRepairReport.frontendRecovery.loadedPages}
+                  {" · "}{t("元数据页")} {sessionIndexRepairReport.frontendRecovery.metadataPages}
+                  {sessionIndexRepairReport.frontendRecovery.reason ? (
+                    <small> · {t("原因：")}{sessionIndexRepairReport.frontendRecovery.reason}</small>
+                  ) : null}
+                </p>
+              ) : null}
               <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
               <p><small>{t("自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
               <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>

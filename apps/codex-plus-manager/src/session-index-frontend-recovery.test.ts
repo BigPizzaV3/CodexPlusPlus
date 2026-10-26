@@ -145,6 +145,20 @@ test("registration is inert with no heartbeat, polling or independent repair tri
   assert.doesNotMatch(backendSync, /syncCodexPlusHistoryTurnRecovery|runHistoryTurnRecovery/);
 });
 
+test("hidden windows and unavailable native APIs return content-free diagnostic reasons", async () => {
+  const hidden = harness(); hidden.document.hidden = true;
+  const skip = await hidden.run();
+  assert.equal(skip.status, "skipped"); assert.equal(skip.reason, "window_hidden");
+  assert.equal(hidden.fetches, 0); assert.equal(hidden.scopeReads, 0);
+  const unavailable = harness(); unavailable.setDiscovery("private fixture text");
+  const result = await unavailable.run();
+  assert.equal(result.status, "unavailable"); assert.equal(result.reason, "native_api_unavailable");
+  assert.doesNotMatch(JSON.stringify(result), /private fixture text/);
+  assert.equal(unavailable.calls.length, 0); assert.equal(unavailable.metadataCalls.length, 0);
+  const completed = await harness().run();
+  assert.equal(completed.status, "completed"); assert.equal(completed.reason, null);
+});
+
 test("the default-off recovery switch is exposed in both settings UIs and uses the backend mapping", () => {
   const app = readFileSync(path.join(root, "apps/codex-plus-manager/src/App.tsx"), "utf8");
   const styles = readFileSync(path.join(fragments, "10-style.js"), "utf8");
@@ -216,6 +230,9 @@ test("only existing successful repair calls notify frontend; report refresh stay
   assert.doesNotMatch(command, /after_index_repair\([^;]+\.await/s);
   const reportRead = manager.slice(manager.indexOf("pub async fn load_session_index_repair_report()"), manager.indexOf("pub async fn preview_session_index_cleanup()"));
   assert.doesNotMatch(reportRead, /after_index_repair/);
+  assert.match(reportRead, /history_turn_recovery::load_report\([\s\S]*report\.checked_at_ms/);
+  assert.match(command, /after_index_repair\([\s\S]*report\.checked_at_ms/);
+  assert.match(command, /payload\["frontendRecovery"\]/);
   const launcher = readFileSync(path.join(root, "apps/codex-plus-launcher/src/main.rs"), "utf8");
   assert.match(launcher, /Ok\(Some\(report\)\) => \{[\s\S]*after_index_repair\(/);
   assert.doesNotMatch(launcher, /after_index_repair\([^;]+\.await/s);

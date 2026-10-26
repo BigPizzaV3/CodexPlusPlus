@@ -350,6 +350,14 @@ export const EN_PLAIN: Record<string, string> = {
   "检查次数：": "Checks: ",
   "修复已中止：": "Repair aborted: ",
   "修复警告：": "Repair warning: ",
+  "历史轮次补载：": "History turn recovery: ",
+  "后台补载中": "Recovering in background",
+  "部分完成": "Partially completed",
+  "已完成": "Completed",
+  "不可用": "Unavailable",
+  "已跳过": "Skipped",
+  "消息页": "Message pages",
+  "元数据页": "Metadata pages",
   "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。":
     "Repair session ownership and check for missing messages before launch; recheck the index every 30 minutes while running. Save settings to apply.",
   "自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。":

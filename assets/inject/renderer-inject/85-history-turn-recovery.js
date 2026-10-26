@@ -205,26 +205,30 @@
   async function runHistoryTurnRecovery(requestId) {
     const state = historyTurnRecoveryState;
     const ledger = historyTurnRecoveryLedger;
-    const result = { status: "skipped", loadedPages: 0, metadataPages: 0 };
+    const result = { status: "skipped", reason: "context_changed", loadedPages: 0, metadataPages: 0 };
     if (state.disposed || !historyTurnRecoveryEnabled()
-        || !normalizedCodexThreadUuid(requestId) || ledger.requests.has(requestId)) return result;
+        || !normalizedCodexThreadUuid(requestId) || ledger.requests.has(requestId)) {
+      return { ...result, reason: state.disposed ? "disposed" : !historyTurnRecoveryEnabled() ? "disabled" : "duplicate_request" };
+    }
     ledger.requests.add(requestId);
     if (ledger.requests.size > 64) ledger.requests.delete(ledger.requests.values().next().value);
-    if (ledger.flight) return { ...result, status: "busy" };
+    if (ledger.flight) return { ...result, status: "busy", reason: "recovery_busy" };
     ledger.flight = state;
     const deadline = Date.now() + 12000;
     try {
       const target = historyTurnRecoveryTarget();
-      if (!target) return result;
+      if (!target) return { ...result, reason: document.hidden ? "window_hidden"
+        : /[?&]initialRoute=/.test(window.location.search) ? "unsupported_window" : "no_local_thread" };
       if (!ledger.api) {
         ledger.api = await discoverHistoryTurnRecoveryApi().catch(() => null);
-        if (!ledger.api) return { ...result, status: "unavailable" };
+        if (!ledger.api) return { ...result, status: "unavailable", reason: "native_api_unavailable" };
       }
       if (state.disposed || !historyTurnRecoveryEnabled()) return result;
       const owner = historyTurnRecoveryManager(ledger.api, target.marker);
       const initial = owner?.getConversation(target.id);
       const initialIslands = historyTurnRecoveryIslands(initial);
-      if (!initialIslands || historyTurnRecoveryBusy(initial, initialIslands)) return result;
+      if (!initialIslands) return { ...result, status: "unavailable", reason: "native_state_unavailable" };
+      if (historyTurnRecoveryBusy(initial, initialIslands)) return { ...result, reason: "thread_busy" };
       const generation = initial.turnHistory.history.generation;
       const current = () => {
         if (state.disposed || !historyTurnRecoveryEnabled()) return null;
@@ -255,9 +259,10 @@
           const updated = current();
           if (!updated) return result;
           const itemsComplete = !historyTurnRecoveryCandidates(updated.islands).some((turn) => ids.has(turn.turnId));
-          return { ...result, status: metadataComplete && itemsComplete && eligible.length <= 32 ? "completed" : "partial" };
+          const complete = metadataComplete && itemsComplete && eligible.length <= 32;
+          return { ...result, status: complete ? "completed" : "partial", reason: complete ? null : "incomplete" };
         }
-        if (Date.now() >= deadline || result.loadedPages + result.metadataPages >= 128) return { ...result, status: "partial" };
+        if (Date.now() >= deadline || result.loadedPages + result.metadataPages >= 128) return { ...result, status: "partial", reason: "budget_exhausted" };
         const previousCount = turn.items.length;
         const previousCursor = JSON.stringify(turn.itemsPagination.olderCursor);
         result.status = "partial";
@@ -275,12 +280,12 @@
         const done = loaded?.itemsPagination?.hasLoadedOldest === true;
         const failed = rejected || !loaded || (!done && loaded.items.length <= previousCount
           && JSON.stringify(loaded.itemsPagination?.olderCursor) === previousCursor);
-        if (failed) return { ...result, status: "partial" };
+        if (failed) return { ...result, status: "partial", reason: "native_read_failed" };
       }
       return { ...result, status: "partial" };
     } catch {
       // 不记录聊天内容、会话 ID 或原生异常正文。
-      return { ...result, status: "unavailable" };
+      return { ...result, status: "unavailable", reason: "native_api_unavailable" };
     } finally {
       if (ledger.flight === state) ledger.flight = null;
     }

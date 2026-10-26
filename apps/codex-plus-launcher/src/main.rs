@@ -851,6 +851,7 @@ async fn repair_session_index_automatically(check_setting: bool, debug_port: Opt
             codex_plus_core::history_turn_recovery::after_index_repair(
                 debug_port,
                 report.aborted_reason.is_some(),
+                report.checked_at_ms,
             );
         }
         Ok(None) => {}
