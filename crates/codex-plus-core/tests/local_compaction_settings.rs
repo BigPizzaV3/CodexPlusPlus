@@ -58,11 +58,9 @@ fn local_compaction_defaults_off_and_preserves_search_compatibility_independentl
                 saved.active_relay_transport_uses_protocol_proxy(),
                 search || local
             );
-            let updated = store
-                .update(json!({"relayProfiles": [{
-                    "id": "test", "localCompactionPromptAtEnd": !local
-                }]}))
-                .unwrap();
+            let mut profiles = serde_json::to_value(&saved.relay_profiles).unwrap();
+            profiles[0]["localCompactionPromptAtEnd"] = json!(!local);
+            let updated = store.update(json!({"relayProfiles": profiles})).unwrap();
             assert_eq!(
                 updated
                     .active_relay_profile()
