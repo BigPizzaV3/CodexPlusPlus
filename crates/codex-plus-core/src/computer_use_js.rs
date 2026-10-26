@@ -88,8 +88,9 @@ impl JsBridge {
                 ClientFrame::Forward
             }
             Some("tools/call") => {
-                inject_turn_metadata(&mut message, &self.session_id, &self.turn_id());
-                self.touched_turn = true;
+                if inject_turn_metadata(&mut message, &self.session_id, &self.turn_id()) {
+                    self.touched_turn = true;
+                }
                 ClientFrame::Rewritten(message)
             }
             _ => ClientFrame::Forward,
@@ -164,9 +165,12 @@ fn turn_metadata(session_id: &str, turn_id: &str) -> Value {
 }
 
 /// 在 `params._meta` 里写入回合信息，`_meta` 里客户端原有的其它键保留。
-fn inject_turn_metadata(message: &mut Value, session_id: &str, turn_id: &str) {
+///
+/// Codex 会自己传入完整的 `x-codex-turn-metadata`（包含真实 thread/turn）。
+/// 这种元数据必须保留，否则浏览器标签和回合归属会被改写到代理生成的随机会话。
+fn inject_turn_metadata(message: &mut Value, session_id: &str, turn_id: &str) -> bool {
     let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) else {
-        return;
+        return false;
     };
     let meta = params
         .entry("_meta")
@@ -175,11 +179,28 @@ fn inject_turn_metadata(message: &mut Value, session_id: &str, turn_id: &str) {
         *meta = Value::Object(serde_json::Map::new());
     }
     if let Some(meta) = meta.as_object_mut() {
+        let has_codex_turn = meta
+            .get("x-codex-turn-metadata")
+            .and_then(Value::as_object)
+            .is_some_and(|turn| {
+                turn.get("session_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                    && turn
+                        .get("turn_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
+            });
+        if has_codex_turn {
+            return false;
+        }
         meta.insert(
             "x-codex-turn-metadata".into(),
             turn_metadata(session_id, turn_id),
         );
+        return true;
     }
+    false
 }
 
 /// 自检用的 JS：只读列出应用，结果包在标记里，和 `cua_repl` 首次调用附带的说明分开。
@@ -216,6 +237,28 @@ mod tests {
         assert_eq!(meta["x-codex-turn-metadata"]["turn_id"], "s1-1");
         // 其它请求原样转发。
         assert_eq!(bridge.on_client(json!({ "id": 1, "method": "initialize" })), ClientFrame::Forward);
+    }
+
+    #[test]
+    fn codex_turn_metadata_is_preserved_instead_of_overwritten() {
+        let mut bridge = bridge();
+        let turn = json!({
+            "session_id": "codex-session",
+            "thread_id": "codex-thread",
+            "turn_id": "codex-turn",
+            "thread_source": "subagent"
+        });
+        let call = json!({
+            "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": {
+                "name": "js",
+                "arguments": { "code": "1" },
+                "_meta": { "x-codex-turn-metadata": turn.clone() }
+            }
+        });
+        let ClientFrame::Rewritten(out) = bridge.on_client(call) else { panic!("should rewrite") };
+        assert_eq!(out["params"]["_meta"]["x-codex-turn-metadata"], turn);
+        assert!(bridge.end_turn().is_none(), "Codex owns the turn boundary");
     }
 
     #[test]

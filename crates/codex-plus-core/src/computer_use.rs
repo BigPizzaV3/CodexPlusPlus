@@ -42,6 +42,12 @@ pub const BROWSER_SERVER_ID: &str = "codex-plus-browser";
 /// Codex `config.toml` 里的键名（TOML 里不能用连字符之外的字符，这里用下划线保持一致）。
 pub const CODEX_SERVER_ID: &str = "codex_plus_cu";
 
+/// Codex 自带统一 Computer Use 插件注册的 MCP 服务名。
+/// 用户级 `[mcp_servers.cua_repl]` 会覆盖插件条目，是停用原生工具面的稳定入口。
+const CODEX_NATIVE_CU_SERVER_ID: &str = "cua_repl";
+const CODEX_PROXY_ARG: &str = "--codex-plus-cu-mcp";
+const CODEX_NATIVE_OVERRIDE_ENV: &str = "CODEX_PLUS_MANAGED_CU_OVERRIDE";
+
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_BACKUPS: usize = 5;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -1169,24 +1175,47 @@ fn status_at(
             ),
             Err(error) => (false, "foreign", error.to_string()),
         },
-        // Codex 目标的条目指向 cua-repl；直通路径不依赖它，但写进去的条目要用它，
-        // 缺了就不该把坏路径写进别人的 config.toml。
+        // Codex++ 代理内部仍拉起 cua-repl；当前 ChatGPT.app 缺了它时不应写坏条目。
         Target::Codex if !std::path::Path::new(&runtime.cua_repl).is_file() => (
             false,
             "unsupported",
             "当前 ChatGPT.app 不再提供 cua-repl，Codex 目标不可用（Claude 目标不受影响）".to_string(),
         ),
-        Target::Codex => match read_codex_entry(&config_paths[0], CODEX_SERVER_ID) {
-            Ok(None) => (false, "missing", "尚未接入".to_string()),
-            Ok(Some(entry)) if codex_entry_matches(&entry, runtime) => {
+        Target::Codex => match read_codex_config_state(&config_paths[0]) {
+            Ok((None, None)) => (
+                false,
+                "missing",
+                "尚未接入，当前使用 Codex 原生 Computer Use".to_string(),
+            ),
+            Ok((None, Some(native)))
+                if codex_native_override_looks_like_ours(&native, Some(runtime)) =>
+            (
+                true,
+                "needs_update",
+                "检测到 Codex++ 残留的原生 Computer Use 覆盖项，请重新应用或关闭开关".to_string(),
+            ),
+            Ok((None, Some(_))) => (
+                false,
+                "missing",
+                "尚未接入；Codex 已有自定义 cua_repl 配置，未改动".to_string(),
+            ),
+            Ok((Some(entry), Some(native)))
+                if codex_entry_matches(&entry, runtime)
+                    && codex_native_override_matches_disabled(&native, runtime) =>
+            {
                 (true, "registered", "已接入".to_string())
             }
-            Ok(Some(entry)) if codex_entry_looks_like_ours(&entry, runtime) => (
+            Ok((Some(entry), _)) if codex_entry_matches(&entry, runtime) => (
+                true,
+                "needs_update",
+                "已接入，但 Codex 原生 cua_repl 尚未被安全停用".to_string(),
+            ),
+            Ok((Some(entry), _)) if codex_entry_looks_like_ours(&entry, Some(runtime)) => (
                 true,
                 "needs_update",
                 "已接入，但运行时路径或版本已变化".to_string(),
             ),
-            Ok(Some(_)) => (
+            Ok((Some(_), _)) => (
                 false,
                 "foreign",
                 "同名条目由其他工具写入，未改动".to_string(),
@@ -1388,65 +1417,148 @@ fn install_codex_entry(
         .unwrap_or("")
         .parse()
         .with_context(|| format!("{} 不是合法 TOML，未修改", path.display()))?;
-    if document.get("mcp_servers").is_none() {
-        let mut servers = Table::new();
-        servers.set_implicit(true);
-        document.insert("mcp_servers", Item::Table(servers));
-    }
-    let servers = document
-        .get_mut("mcp_servers")
-        .and_then(Item::as_table_like_mut)
-        .with_context(|| format!("{} 的 mcp_servers 不是表，未修改", path.display()))?;
-    if let Some(existing) = servers.get(CODEX_SERVER_ID) {
-        ensure!(
-            codex_entry_looks_like_ours(existing, runtime),
-            "{} 里已有同名 {} 且不是本功能写入的，未覆盖",
-            path.display(),
-            CODEX_SERVER_ID
-        );
-        if codex_entry_matches(existing, runtime) {
-            return receipt(target, false, None);
+    let entry_matches = {
+        if document.get("mcp_servers").is_none() {
+            let mut servers = Table::new();
+            servers.set_implicit(true);
+            document.insert("mcp_servers", Item::Table(servers));
         }
+        let servers = document
+            .get_mut("mcp_servers")
+            .and_then(Item::as_table_like_mut)
+            .with_context(|| format!("{} 的 mcp_servers 不是表，未修改", path.display()))?;
+        let existing_matches = if let Some(existing) = servers.get(CODEX_SERVER_ID) {
+            ensure!(
+                codex_entry_looks_like_ours(existing, Some(runtime)),
+                "{} 里已有同名 {} 且不是本功能写入的，未覆盖",
+                path.display(),
+                CODEX_SERVER_ID
+            );
+            codex_entry_matches(existing, runtime)
+        } else {
+            false
+        };
+        if !existing_matches {
+            let mut table = Table::new();
+            table.insert(
+                "command",
+                Item::Value(TomlValue::from(runtime.self_command())),
+            );
+            let mut args = toml_edit::Array::new();
+            args.push(CODEX_PROXY_ARG);
+            table.insert("args", Item::Value(TomlValue::Array(args)));
+            if let Some(state_dir) = crate::paths::state_dir_override() {
+                let mut env = Table::new();
+                env.insert(
+                    crate::paths::STATE_DIR_ENV,
+                    Item::Value(TomlValue::from(state_dir.to_string_lossy().into_owned())),
+                );
+                table.insert("env", Item::Table(env));
+            }
+            table.insert("enabled", Item::Value(TomlValue::from(true)));
+            servers.insert(CODEX_SERVER_ID, Item::Table(table));
+        }
+        existing_matches
+    };
+    let native_changed = {
+        let servers = document
+            .get_mut("mcp_servers")
+            .and_then(Item::as_table_like_mut)
+            .with_context(|| format!("{} 的 mcp_servers 不是表，未修改", path.display()))?;
+        let native_matches = if let Some(existing) = servers.get(CODEX_NATIVE_CU_SERVER_ID) {
+            ensure!(
+                codex_native_override_looks_like_ours(existing, Some(runtime)),
+                "{} 里已有自定义 {}，无法安全切换 Codex Computer Use",
+                path.display(),
+                CODEX_NATIVE_CU_SERVER_ID
+            );
+            codex_native_override_matches_disabled(existing, runtime)
+        } else {
+            false
+        };
+        if !native_matches {
+            let mut table = Table::new();
+            table.insert("command", Item::Value(TomlValue::from(runtime.node.clone())));
+            let mut args = toml_edit::Array::new();
+            args.push(runtime.cua_repl.clone());
+            table.insert("args", Item::Value(TomlValue::Array(args)));
+            let mut env = Table::new();
+            env.insert(
+                CODEX_NATIVE_OVERRIDE_ENV,
+                Item::Value(TomlValue::from("1")),
+            );
+            table.insert("env", Item::Table(env));
+            table.insert("enabled", Item::Value(TomlValue::from(false)));
+            servers.insert(CODEX_NATIVE_CU_SERVER_ID, Item::Table(table));
+        }
+        !native_matches
+    };
+    if entry_matches && !native_changed {
+        return receipt(target, false, None);
     }
-    let mut table = Table::new();
-    table.insert(
-        "command",
-        Item::Value(TomlValue::from(runtime.node.clone())),
-    );
-    let mut args = toml_edit::Array::new();
-    args.push(runtime.cua_repl.clone());
-    table.insert("args", Item::Value(TomlValue::Array(args)));
-    let mut env = Table::new();
-    for (key, value) in runtime.env() {
-        env.insert(&key, Item::Value(TomlValue::from(value)));
-    }
-    table.insert("env", Item::Table(env));
-    table.insert("enabled", Item::Value(TomlValue::from(true)));
-    servers.insert(CODEX_SERVER_ID, Item::Table(table));
     let rendered = document.to_string();
     let backup = write_with_backup(path, before.as_deref(), &rendered)?;
     receipt(target, true, backup)
 }
 
 fn uninstall_codex_entry(path: &Path, target: Target) -> anyhow::Result<InstallReceipt> {
-    use toml_edit::{DocumentMut, Item};
+    use toml_edit::DocumentMut;
     let Some(before) = read_text(path)? else {
         return receipt(target, false, None);
     };
     let mut document: DocumentMut = before
         .parse()
         .with_context(|| format!("{} 不是合法 TOML，未修改", path.display()))?;
-    let removed = document
-        .get_mut("mcp_servers")
-        .and_then(Item::as_table_like_mut)
-        .and_then(|servers| servers.remove(CODEX_SERVER_ID))
-        .is_some();
-    if !removed {
+    if !remove_codex_integration(&mut document, path)? {
         return receipt(target, false, None);
     }
     let rendered = document.to_string();
     let backup = write_with_backup(path, Some(&before), &rendered)?;
     receipt(target, true, backup)
+}
+
+/// 卸载 Codex++ 前清掉注入，并恢复 Codex 原生 Unified Computer Use。
+pub fn cleanup_codex_integration_for_uninstall() -> anyhow::Result<bool> {
+    with_lock(|| {
+        let path = codex_config_path();
+        let Some(before) = read_text(&path)? else {
+            return Ok(false);
+        };
+        let mut document: toml_edit::DocumentMut = before
+            .parse()
+            .with_context(|| format!("{} 不是合法 TOML，未修改", path.display()))?;
+        if !remove_codex_integration(&mut document, &path)? {
+            return Ok(false);
+        }
+        let rendered = document.to_string();
+        write_with_backup(&path, Some(&before), &rendered)?;
+        Ok(true)
+    })
+}
+
+fn remove_codex_integration(
+    document: &mut toml_edit::DocumentMut,
+    path: &Path,
+) -> anyhow::Result<bool> {
+    use toml_edit::Item;
+    let removed = if let Some(servers) = document
+        .get_mut("mcp_servers")
+        .and_then(Item::as_table_like_mut)
+        && let Some(entry) = servers.get(CODEX_SERVER_ID)
+    {
+        ensure!(
+            codex_entry_looks_like_ours(entry, None),
+            "{} 里的 {} 由其他工具写入，未移除",
+            path.display(),
+            CODEX_SERVER_ID
+        );
+        servers.remove(CODEX_SERVER_ID);
+        true
+    } else {
+        false
+    };
+    let native_changed = remove_managed_codex_native_override(document);
+    Ok(removed || native_changed)
 }
 
 fn receipt(
@@ -2031,42 +2143,56 @@ fn looks_like_ours(entry: &Value, runtime: &RuntimeLocation) -> bool {
     if first_arg == "--codex-plus-cu-mcp" || first_arg == "--codex-plus-browser-mcp" {
         // 同一份配置可能在 debug / release / 安装位置之间被复用：只认「是不是
         // Codex++ 自己的二进制」，而不是某一条绝对路径，否则换个构建就会被判成他人条目。
-        if command == runtime.self_command() {
-            return true;
-        }
-        // bundle 里叫 CodexPlusPlus，cargo 产物叫 codex-plus-plus，两种都认。
-        return std::path::Path::new(command)
-            .file_name()
-            .map(|name| {
-                let lower = name.to_string_lossy().to_lowercase();
-                let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
-                stem.starts_with("codexplusplus") || stem.starts_with("codex-plus-plus")
-            })
-            .unwrap_or(false);
+        return command_looks_like_codex_plus(command, runtime);
     }
     // 兼容早期直连 cua-repl 的写法：升级后仍能识别成自己的条目并改写。
     command == runtime.node && first_arg == runtime.cua_repl
 }
 
-fn read_codex_entry(path: &Path, server_id: &str) -> anyhow::Result<Option<toml_edit::Item>> {
+fn command_looks_like_codex_plus(command: &str, runtime: &RuntimeLocation) -> bool {
+    command == runtime.self_command() || command_name_looks_like_codex_plus(command)
+}
+
+fn command_name_looks_like_codex_plus(command: &str) -> bool {
+    // bundle 里叫 CodexPlusPlus，cargo 产物叫 codex-plus-plus，两种都认。
+    std::path::Path::new(command)
+        .file_name()
+        .map(|name| {
+            let lower = name.to_string_lossy().to_lowercase();
+            let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+            stem.starts_with("codexplusplus") || stem.starts_with("codex-plus-plus")
+        })
+        .unwrap_or(false)
+}
+
+fn read_codex_config_state(
+    path: &Path,
+) -> anyhow::Result<(Option<toml_edit::Item>, Option<toml_edit::Item>)> {
     let Some(text) = read_text(path)? else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let document: toml_edit::DocumentMut = text
         .parse()
         .with_context(|| format!("{} 不是合法 TOML", path.display()))?;
-    Ok(document
+    let servers = document
         .get("mcp_servers")
-        .and_then(toml_edit::Item::as_table_like)
-        .and_then(|servers| servers.get(server_id))
-        .cloned())
+        .and_then(toml_edit::Item::as_table_like);
+    let entry = servers
+        .and_then(|servers| servers.get(CODEX_SERVER_ID))
+        .cloned();
+    let native_override = servers
+        .and_then(|servers| servers.get(CODEX_NATIVE_CU_SERVER_ID))
+        .cloned();
+    Ok((entry, native_override))
 }
 
 fn codex_entry_matches(entry: &toml_edit::Item, runtime: &RuntimeLocation) -> bool {
     let Some(table) = entry.as_table_like() else {
         return false;
     };
-    if table.get("command").and_then(toml_edit::Item::as_str) != Some(runtime.node.as_str()) {
+    if table.get("command").and_then(toml_edit::Item::as_str)
+        != Some(runtime.self_command().as_str())
+    {
         return false;
     }
     if table.get("enabled").and_then(toml_edit::Item::as_bool) != Some(true) {
@@ -2075,13 +2201,30 @@ fn codex_entry_matches(entry: &toml_edit::Item, runtime: &RuntimeLocation) -> bo
     let args_ok = table
         .get("args")
         .and_then(toml_edit::Item::as_array)
-        .and_then(|args| args.get(0))
-        .and_then(toml_edit::Value::as_str)
-        == Some(runtime.cua_repl.as_str());
-    args_ok
+        .is_some_and(|args| {
+            args.len() == 1
+                && args
+                    .get(0)
+                    .and_then(toml_edit::Value::as_str)
+                    == Some(CODEX_PROXY_ARG)
+        });
+    if !args_ok {
+        return false;
+    }
+    let actual_state_dir = table
+        .get("env")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|env| env.get(crate::paths::STATE_DIR_ENV))
+        .and_then(toml_edit::Item::as_str);
+    let expected_state_dir =
+        crate::paths::state_dir_override().map(|path| path.to_string_lossy().into_owned());
+    actual_state_dir == expected_state_dir.as_deref()
 }
 
-fn codex_entry_looks_like_ours(entry: &toml_edit::Item, runtime: &RuntimeLocation) -> bool {
+fn codex_entry_looks_like_ours(
+    entry: &toml_edit::Item,
+    runtime: Option<&RuntimeLocation>,
+) -> bool {
     let Some(table) = entry.as_table_like() else {
         return false;
     };
@@ -2089,7 +2232,117 @@ fn codex_entry_looks_like_ours(entry: &toml_edit::Item, runtime: &RuntimeLocatio
         .get("command")
         .and_then(toml_edit::Item::as_str)
         .unwrap_or_default();
-    command == runtime.node
+    let first_arg = table
+        .get("args")
+        .and_then(toml_edit::Item::as_array)
+        .and_then(|args| args.get(0))
+        .and_then(toml_edit::Value::as_str)
+        .unwrap_or_default();
+    let current_exe = std::env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
+    let proxy_owned = first_arg == CODEX_PROXY_ARG
+        && (command_name_looks_like_codex_plus(command)
+            || current_exe.as_deref() == Some(command)
+            || runtime.is_some_and(|runtime| command == runtime.self_command()));
+    let legacy_node = std::path::Path::new(command)
+        .file_name()
+        .is_some_and(|name| name == "node" || name == "node.exe");
+    let legacy_owned = (first_arg.contains("@oai/cua-repl/bin/cua-repl.mjs") && legacy_node)
+        || runtime.is_some_and(|runtime| command == runtime.node && first_arg == runtime.cua_repl);
+    proxy_owned || legacy_owned
+}
+
+fn codex_native_override_matches_disabled(
+    entry: &toml_edit::Item,
+    runtime: &RuntimeLocation,
+) -> bool {
+    let Some(table) = entry.as_table_like() else {
+        return false;
+    };
+    let command_matches =
+        table.get("command").and_then(toml_edit::Item::as_str) == Some(runtime.node.as_str());
+    let args_match = table
+        .get("args")
+        .and_then(toml_edit::Item::as_array)
+        .is_some_and(|args| {
+            args.len() == 1
+                && args
+                    .get(0)
+                    .and_then(toml_edit::Value::as_str)
+                    == Some(runtime.cua_repl.as_str())
+        });
+    command_matches
+        && args_match
+        && table
+            .get("env")
+            .and_then(toml_edit::Item::as_table_like)
+            .and_then(|env| env.get(CODEX_NATIVE_OVERRIDE_ENV))
+            .and_then(toml_edit::Item::as_str)
+            == Some("1")
+        && table.get("enabled").and_then(toml_edit::Item::as_bool) == Some(false)
+}
+
+fn codex_native_override_looks_like_ours(
+    entry: &toml_edit::Item,
+    runtime: Option<&RuntimeLocation>,
+) -> bool {
+    let Some(table) = entry.as_table_like() else {
+        return false;
+    };
+    if table.get("enabled").and_then(toml_edit::Item::as_bool) != Some(false) {
+        return false;
+    }
+    let managed = table
+        .get("env")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|env| env.get(CODEX_NATIVE_OVERRIDE_ENV))
+        .and_then(toml_edit::Item::as_str)
+        == Some("1");
+    if !managed {
+        return false;
+    }
+    let command = table
+        .get("command")
+        .and_then(toml_edit::Item::as_str)
+        .unwrap_or_default();
+    let node_command = std::path::Path::new(command)
+        .file_name()
+        .is_some_and(|name| name == "node" || name == "node.exe");
+    let native_args = table
+        .get("args")
+        .and_then(toml_edit::Item::as_array)
+        .is_some_and(|args| {
+            args.len() == 1
+                && args
+                    .get(0)
+                    .and_then(toml_edit::Value::as_str)
+                    .is_some_and(|arg| {
+                        arg.contains("@oai/cua-repl/bin/cua-repl.mjs")
+                            || arg.ends_with("/cua-repl.mjs")
+                            || arg.ends_with("\\cua-repl.mjs")
+                    })
+        });
+    (node_command && native_args)
+        || runtime.is_some_and(|runtime| codex_native_override_matches_disabled(entry, runtime))
+}
+
+fn remove_managed_codex_native_override(document: &mut toml_edit::DocumentMut) -> bool {
+    use toml_edit::Item;
+    let Some(servers) = document
+        .get_mut("mcp_servers")
+        .and_then(Item::as_table_like_mut)
+    else {
+        return false;
+    };
+    let Some(entry) = servers.get(CODEX_NATIVE_CU_SERVER_ID) else {
+        return false;
+    };
+    if !codex_native_override_looks_like_ours(entry, None) {
+        return false;
+    }
+    servers.remove(CODEX_NATIVE_CU_SERVER_ID);
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -2296,7 +2549,13 @@ mod tests {
         let path = temp.path().join("config.toml");
         fs::write(
             &path,
-            "model = \"gpt-6\"\n\n[mcp_servers.other]\ncommand = \"keep\"\n",
+            concat!(
+                "model = \"gpt-6\"\n\n",
+                "[plugins.\"unified-computer-use@openai-bundled\"]\n",
+                "enabled = true\n\n",
+                "[mcp_servers.other]\n",
+                "command = \"keep\"\n",
+            ),
         )
         .unwrap();
         let runtime = sample_runtime(temp.path());
@@ -2306,7 +2565,13 @@ mod tests {
         assert!(text.contains("model = \"gpt-6\""));
         assert!(text.contains("[mcp_servers.other]"));
         assert!(text.contains("[mcp_servers.codex_plus_cu]"));
+        assert!(text.contains("[mcp_servers.cua_repl]"));
+        assert!(text.contains("--codex-plus-cu-mcp"));
+        assert!(text.contains("[plugins.\"unified-computer-use@openai-bundled\"]"));
         assert!(text.contains("enabled = true"));
+        assert!(text.contains(&format!("command = \"{}\"", runtime.node)));
+        assert!(text.contains(CODEX_NATIVE_OVERRIDE_ENV));
+        assert!(text.contains("enabled = false"));
 
         let second = install_codex_entry(&path, &runtime, Target::Codex).unwrap();
         assert!(!second.changed, "重复安装不应该重写 TOML");
@@ -2315,7 +2580,106 @@ mod tests {
         assert!(removed.changed);
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("codex_plus_cu"));
+        assert!(!text.contains("[mcp_servers.cua_repl]"));
         assert!(text.contains("[mcp_servers.other]"));
+        assert!(text.contains("[plugins.\"unified-computer-use@openai-bundled\"]"));
+        assert!(text.contains("enabled = true"));
+    }
+
+    #[test]
+    fn codex_mode_does_not_touch_a_foreign_entry() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        fs::write(
+            &path,
+            concat!(
+                "[plugins.\"unified-computer-use@openai-bundled\"]\n",
+                "enabled = true\n\n",
+                "[mcp_servers.codex_plus_cu]\n",
+                "command = \"/other/tool\"\n",
+                "args = [\"serve\"]\n",
+            ),
+        )
+        .unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+        let runtime = sample_runtime(temp.path());
+
+        let error = install_codex_entry(&path, &runtime, Target::Codex).unwrap_err();
+        assert!(error.to_string().contains("同名"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+
+        let error = uninstall_codex_entry(&path, Target::Codex).unwrap_err();
+        assert!(error.to_string().contains("其他工具写入"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn codex_mode_migrates_legacy_direct_cua_repl_entry() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let runtime = sample_runtime(temp.path());
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "[plugins.\"unified-computer-use@openai-bundled\"]\n",
+                    "enabled = true\n\n",
+                    "[mcp_servers.codex_plus_cu]\n",
+                    "command = \"{}\"\n",
+                    "args = [\"{}\"]\n",
+                    "enabled = true\n",
+                ),
+                runtime.node, runtime.cua_repl
+            ),
+        )
+        .unwrap();
+
+        assert!(install_codex_entry(&path, &runtime, Target::Codex).unwrap().changed);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("--codex-plus-cu-mcp"));
+        assert!(text.contains("[mcp_servers.cua_repl]"));
+        assert!(text.contains("enabled = false"));
+    }
+
+    #[test]
+    fn codex_status_requires_native_server_override() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let runtime = sample_runtime(temp.path());
+        install_codex_entry(&path, &runtime, Target::Codex).unwrap();
+        let (entry, native_override) = read_codex_config_state(&path).unwrap();
+        let entry = entry.expect("codex entry");
+        let native_override = native_override.expect("native override");
+        assert!(codex_entry_matches(&entry, &runtime));
+        assert!(codex_native_override_matches_disabled(
+            &native_override,
+            &runtime
+        ));
+        assert!(codex_native_override_looks_like_ours(
+            &native_override,
+            None
+        ));
+    }
+
+    #[test]
+    fn codex_mode_does_not_overwrite_a_custom_native_server() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        fs::write(
+            &path,
+            concat!(
+                "[mcp_servers.cua_repl]\n",
+                "command = \"/custom/node\"\n",
+                "args = [\"custom.mjs\"]\n",
+                "enabled = true\n",
+            ),
+        )
+        .unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+        let runtime = sample_runtime(temp.path());
+        let error = install_codex_entry(&path, &runtime, Target::Codex).unwrap_err();
+        assert!(error.to_string().contains("自定义 cua_repl"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]

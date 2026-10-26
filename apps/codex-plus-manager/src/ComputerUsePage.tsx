@@ -71,8 +71,7 @@ type CuApprovalState = {
   turnHooks?: { installed?: boolean; events?: string[]; settings?: string } | null;
 };
 
-// Codex 桌面版自己会把 [mcp_servers.computer-use] 写进 ~/.codex/config.toml，
-// 再挂一份只会让同一个 CU 服务出现两条连接，所以不列 Codex。
+// Codex 由下方“原生 / Codex++ 注入”开关单独管理，不放进通用接入列表。
 const targetIds: CuTargetId[] = ["claudeCode", "claudeDesktop", "dsh", "zcode", "workBuddy"];
 const targetFallback: Record<CuTargetId, { label: string; configPath: string }> = {
   claudeCode: { label: "Claude Code", configPath: "~/.claude.json" },
@@ -359,7 +358,13 @@ export function ComputerUsePage() {
         } : current));
       }
       if (result.status === "ok") {
-        setNotice(action === "install" ? `${label} · ${t("已接入，重启客户端后加载工具")}` : `${label} · ${t("已移除")}`);
+        setNotice(target === "codex"
+          ? action === "install"
+            ? t("已切换到 Codex++ Computer Use；重启 Codex 后生效。")
+            : t("已恢复 Codex 原生 Computer Use；重启 Codex 后生效。")
+          : action === "install"
+            ? `${label} · ${t("已接入，重启客户端后加载工具")}`
+            : `${label} · ${t("已移除")}`);
         setBackups((current) => {
           const next = { ...current };
           if (action === "install" && result.backupPath) next[target] = result.backupPath;
@@ -510,6 +515,11 @@ export function ComputerUsePage() {
   const locked = Boolean(busy);
   const loading = busy === "refresh" && !status;
   const found = status?.runtimeFound === true;
+  const codexTarget = status?.targets?.codex;
+  const codexInjected = codexTarget?.state === "registered";
+  const codexToggleWorking = busy === "install:codex" || busy === "uninstall:codex";
+  const codexToggleDisabled = locked || !found || !codexTarget
+    || codexTarget.state === "unsupported" || codexTarget.state === "foreign";
   const apps = (check?.sampleApps ?? []).slice(0, 8);
 
   // 已接入的客户端数：内置目标 + 自定义目标，「需更新」也算已接入。
@@ -585,7 +595,7 @@ export function ComputerUsePage() {
     <div className="cu-card-head">
       <div>
         <h2 id="cu-flow-title">{t("工作原理")}</h2>
-        <p>{t("Codex++ 把 ChatGPT.app 里现成的 Computer Use 与 Chrome 扩展，通过 MCP 转给其它 AI 客户端。左边点「接入」；操作方式、审批与悬浮预览在图下方设置。")}</p>
+        <p>{t("Codex++ 把 ChatGPT.app 里现成的 Computer Use 与 Chrome 扩展，通过 MCP 转给其它 AI 客户端；Codex 自身可在下方选择原生或 Codex++ 注入。左边点「接入」；操作方式、审批与悬浮预览在图下方设置。")}</p>
       </div>
     </div>
     <div className="cu-flow-scroll">
@@ -639,6 +649,26 @@ export function ComputerUsePage() {
     </div>
     <div className="cu-settings" aria-labelledby="cu-settings-title">
       <div className="cu-settings-head" id="cu-settings-title">{t("codex-plus-cu 设置")}<small>{t("对新开的客户端会话生效")}</small></div>
+      <label className="cu-setting">
+        <span className="cu-setting-copy">
+          <strong>{t("在 Codex 中使用 Codex++ Computer Use")}</strong>
+          <small>{t("关闭时只使用 Codex 原生 Computer Use。开启后会用受管条目停用 Codex 自带的 cua_repl 服务，并写入 Codex++ 的 codex_plus_cu 代理，避免两套电脑控制同时出现。重启 Codex 后生效。")}</small>
+          {codexToggleWorking
+            ? <small>{t("正在更新 Codex 配置…")}</small>
+            : codexTarget?.state === "needs_update"
+              ? <small className="cu-flow-warn">{t("检测到旧配置或原生 cua_repl 未正确停用；打开开关可重新应用。")}</small>
+              : codexTarget?.state === "foreign" || codexTarget?.state === "unsupported"
+                ? <small className="cu-flow-warn">{codexTarget.message}</small>
+                : <small>{codexInjected ? t("当前：Codex++ 注入") : t("当前：Codex 原生")}</small>}
+        </span>
+        <input
+          className="cu-setting-check"
+          type="checkbox"
+          checked={codexInjected}
+          disabled={codexToggleDisabled}
+          onChange={(event) => void mutateTarget("codex", event.currentTarget.checked ? "install" : "uninstall")}
+        />
+      </label>
       <div className="cu-setting">
         <div className="cu-setting-copy">
           <strong>{t("操作方式")}</strong>
@@ -981,7 +1011,7 @@ export function ComputerUsePage() {
             </div>}
         </section>
         <p className="cu-note">{t("接入后需要重启对应客户端（Claude Code 会话、DeepSeek Harness、ZCode、WorkBuddy）才会加载工具，工具名以")}<code>mcp__codex-plus-cu__</code>{t("与")}<code>mcp__codex-plus-browser__</code>{t("前缀出现在工具列表中。")}</p>
-        <p className="cu-note">{t("Codex 桌面版与终端 CLI 共用")}<code>~/.codex/config.toml</code>{t("，其中已由 Codex 自己写入")}<code>[mcp_servers.computer-use]</code>{t("，无需重复接入；仅当你要在没有该条目的环境里单独启用时，才使用")}<code>--codex-plus-cu-cli install codex</code>{t("。")}</p>
+        <p className="cu-note">{t("Codex 桌面版与终端 CLI 共用")}<code>~/.codex/config.toml</code>{t("。关闭上方开关时使用 Codex 原生 Computer Use；开启时写入")}<code>[mcp_servers.codex_plus_cu]</code>{t("并用受管覆盖项停用")}<code>cua_repl</code>{t("，重启 Codex 后生效。")}</p>
       </>}
     </div>
   </div>;

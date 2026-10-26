@@ -1820,6 +1820,25 @@ export const EN_PLAIN: Record<string, string> = {
     "Claude Desktop is also connected to codex-plus-cu on the Computer Use page, so one conversation sees two sets of computer control: Claude may mix them, they can fight over the foreground app, and each app asks for approval twice. Pick one: keep this switch and disconnect Claude Desktop on the Computer Use page, or turn this switch off.",
   "这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。":
     "This computer control and the codex-plus-cu connection for Claude Desktop on the Computer Use page are separate implementations. Use one or the other in Claude Desktop, not both.",
+  "已切换到 Codex++ Computer Use；重启 Codex 后生效。":
+    "Switched to Codex++ Computer Use. Restart Codex to apply.",
+  "已恢复 Codex 原生 Computer Use；重启 Codex 后生效。":
+    "Restored Codex native Computer Use. Restart Codex to apply.",
+  "Codex++ 把 ChatGPT.app 里现成的 Computer Use 与 Chrome 扩展，通过 MCP 转给其它 AI 客户端；Codex 自身可在下方选择原生或 Codex++ 注入。左边点「接入」；操作方式、审批与悬浮预览在图下方设置。":
+    "Codex++ exposes the Computer Use and Chrome extension runtime from ChatGPT.app over MCP to other AI clients. For Codex itself, choose native or Codex++ injection below. Connect clients on the left; configure operation mode, approvals, and picture-in-picture below the diagram.",
+  "在 Codex 中使用 Codex++ Computer Use": "Use Codex++ Computer Use in Codex",
+  "关闭时只使用 Codex 原生 Computer Use。开启后会用受管条目停用 Codex 自带的 cua_repl 服务，并写入 Codex++ 的 codex_plus_cu 代理，避免两套电脑控制同时出现。重启 Codex 后生效。":
+    "When off, Codex uses only its native Computer Use. When on, Codex++ uses a managed override to disable the built-in cua_repl service and writes its codex_plus_cu proxy so the two computer-control stacks never appear together. Restart Codex to apply.",
+  "正在更新 Codex 配置…": "Updating Codex configuration…",
+  "检测到旧配置或原生 cua_repl 未正确停用；打开开关可重新应用。":
+    "An old configuration or an improperly disabled native cua_repl service was found. Turn the switch on to reapply.",
+  "当前：Codex++ 注入": "Current: Codex++ injection",
+  "当前：Codex 原生": "Current: Codex native",
+  "Codex 桌面版与终端 CLI 共用": "Codex Desktop and the terminal CLI share",
+  "。关闭上方开关时使用 Codex 原生 Computer Use；开启时写入":
+    ". With the switch above off, Codex uses native Computer Use. Turning it on writes",
+  "并用受管覆盖项停用": "and disables",
+  "，重启 Codex 后生效。": "with a managed override. Restart Codex to apply.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.

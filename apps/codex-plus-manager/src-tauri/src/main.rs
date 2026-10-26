@@ -34,16 +34,23 @@ fn main() {
     // 结果只写诊断日志，失败也以 0 退出，不能让卸载器卡住。
     if args.get(1).is_some_and(|arg| arg == "--codex-plus-uninstall-cleanup") {
         let home = codex_plus_core::codex_home::default_codex_home_dir();
+        let codex_computer_use =
+            match codex_plus_core::computer_use::cleanup_codex_integration_for_uninstall() {
+                Ok(changed) => serde_json::json!({ "changed": changed }),
+                Err(error) => serde_json::json!({ "error": format!("{error:#}") }),
+            };
         let detail = match codex_plus_core::relay_config::clear_managed_proxy_config_for_uninstall(
             &home,
         ) {
             Ok(changed) => serde_json::json!({
                 "home": home.to_string_lossy(),
                 "changed": changed,
+                "codexComputerUse": codex_computer_use,
             }),
             Err(error) => serde_json::json!({
                 "home": home.to_string_lossy(),
                 "error": format!("{error:#}"),
+                "codexComputerUse": codex_computer_use,
             }),
         };
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(

@@ -1,5 +1,15 @@
 # 更新日志
 
+## Unreleased
+
+### 新增
+
+- **Codex Computer Use 二选一**：在「Computer Use」页可选择 Codex 使用原生 Computer Use，或切换到 Codex++ 注入。注入时会用受管覆盖项停用官方 `cua_repl` 服务并写入 `codex_plus_cu` 代理，避免同一会话同时出现两套电脑控制；关闭开关会移除受管条目并恢复原生服务。
+
+### 修复
+
+- **Codex 注入保留原生回合元数据**：Codex++ MCP 代理不再覆盖 Codex 传入的 session/thread/turn 信息，浏览器标签和回合归属保持一致。
+
 ## 1.12.1 - 2026-10-25
 
 本次为补丁更新，完善 Computer Use 的浏览器控制与悬浮预览。
