@@ -13,10 +13,10 @@ fn local_compaction_defaults_off_and_preserves_search_compatibility_independentl
             .unwrap()
             .local_compaction_prompt_at_end_enabled()
     );
-    let temp = tempfile::tempdir().unwrap();
-    let store = SettingsStore::new(temp.path().join("settings.json"));
     for search in [false, true] {
         for local in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = SettingsStore::new(temp.path().join("settings.json"));
             let mut profile = RelayProfile {
                 id: "test".into(),
                 relay_mode: RelayMode::PureApi,
@@ -71,13 +71,16 @@ fn local_compaction_defaults_off_and_preserves_search_compatibility_independentl
                 updated.active_relay_profile().web_search_history_compat,
                 search
             );
+            let reloaded = store.load().unwrap();
             assert_eq!(
-                store
-                    .load()
-                    .unwrap()
-                    .active_relay_profile()
-                    .web_search_history_compat,
+                reloaded.active_relay_profile().web_search_history_compat,
                 search
+            );
+            assert_eq!(
+                reloaded
+                    .active_relay_profile()
+                    .local_compaction_prompt_at_end,
+                !local
             );
         }
     }
