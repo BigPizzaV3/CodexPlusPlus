@@ -27,4 +27,4 @@
 - 跳过或不完整原因使用不含聊天内容、会话 ID 和原生异常正文的固定代码，同步写入 `session_index_repair.frontend` 诊断：`window_hidden` 为窗口隐藏，`debug_port_unavailable` 为没有可用调试端口，`disabled_or_settings_unavailable` 为开关关闭或设置不可读，`index_repair_aborted` 为索引检查中止；`no_local_thread` / `unsupported_window` 为没有可确认的本机会话或不支持的窗口，`thread_busy` / `recovery_busy` 为原生会话或已有补载忙碌。接口不兼容使用 `native_api_unavailable` / `native_state_unavailable` / `frontend_unavailable`，超时使用 `frontend_timeout`，上下文变化使用 `context_changed`；预算、读取停滞或元数据缺值使用 `budget_exhausted` / `native_read_failed` / `incomplete`。可在条件恢复后再次点击原有修复按钮。
 - 仅适配主窗口中的本机会话；远端主机、活动悬浮层和快捷聊天不在此阶段范围内。
 
-此功能是对已确认症状的有界恢复措施，不表示已经查明最初漏加载的触发原因。用户已报告 Windows 上现有补载功能经过真人实测；默认关闭开关、后台调度及新增防护改动仍需后续实际页面验收，不能由已有实测结果推定其已通过。验收应记录实际客户端版本、内部管理器源码守卫恰好命中一次，以及「默认关闭 → 开启 → 点击修复 → 数据库报告先返回 → 后台补载状态更新」的实际结果；本轮代码与测试不构成这些真实客户端结果的证明。
+此功能是对已确认症状的有界恢复措施，不表示已经查明最初漏加载的触发原因。2026-10-27 已按维护者要求在 Windows 真实安装测试通过，人工反馈确认「默认关闭 → 开启 → 点击修复 → 数据库报告先返回 → 后台补载生效及状态更新」。同机 Codex 客户端版本为 `26.1021.3705.0`；对已安装客户端的 `app-initial-438d1df57f70.js` 静态复核，内部管理器源码守卫与对应导出均恰好命中一次。真人验收结论来自实际安装使用反馈，源码匹配次数来自独立静态检查，不以 mock 或隔离启动代替真人验收。
