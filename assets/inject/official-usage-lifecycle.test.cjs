@@ -133,3 +133,15 @@ test("reinjecting before DOM readiness leaves only the newest observer",()=>{
   for(const callback of [...f.domReady])callback();
   assert.equal(f.observers.filter(o=>o.active).length,1);
 });
+test("mixed mode also unlocks the per-model limit that blocks sending (#2646)",()=>{
+  const f=fixture(),api=f.inject(true);
+  const perModel={...usage(true),additional_rate_limits:[{limit_name:"gpt-6.1-sol",rate_limit:{allowed:false,limit_reached:true,used_percent:100}}]};
+  f.main.setData(perModel);
+  const limit=f.main.state.data.additional_rate_limits[0];
+  assert.equal(limit.rate_limit.allowed,true);
+  assert.equal(limit.rate_limit.limit_reached,false);
+  assert.equal(limit.rate_limit.used_percent,100);
+  assert.equal(limit.limit_name,"gpt-6.1-sol");
+  api.setBackendSettings(settings(false));api.install();
+  assert.equal(f.main.state.data.additional_rate_limits[0].rate_limit.allowed,false);
+});

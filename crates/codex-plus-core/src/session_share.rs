@@ -4,7 +4,7 @@ use base64::Engine;
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -51,8 +51,9 @@ pub fn clear_pending_session_share() -> anyhow::Result<()> {
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("清理待导入会话链接失败：{}", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("清理待导入会话链接失败：{}", path.display()))
+        }
     }
 }
 
@@ -63,12 +64,12 @@ pub async fn import_shared_session_url(home: &Path, url: &str) -> anyhow::Result
         .find(|(key, _)| key == "s")
         .map(|(_, value)| value.into_owned())
         .or_else(|| {
-            parsed
-                .path_segments()
-                .and_then(|mut segments| match (segments.next(), segments.next()) {
+            parsed.path_segments().and_then(|mut segments| {
+                match (segments.next(), segments.next()) {
                     (Some("s"), Some(id)) => Some(id.to_string()),
                     _ => None,
-                })
+                }
+            })
         })
         .filter(|id| (20..=32).contains(&id.len()))
         .context("分享链接缺少有效的会话 ID")?;
@@ -85,16 +86,10 @@ pub async fn import_shared_session_url(home: &Path, url: &str) -> anyhow::Result
         .json::<Value>()
         .await
         .context("分享会话响应格式无效")?;
-    let encrypted = record
-        .get("encrypted")
-        .context("分享会话缺少加密内容")?;
+    let encrypted = record.get("encrypted").context("分享会话缺少加密内容")?;
     let key_value = parsed
         .fragment()
-        .and_then(|fragment| {
-            fragment
-                .split('&')
-                .find_map(|pair| pair.strip_prefix("k="))
-        })
+        .and_then(|fragment| fragment.split('&').find_map(|pair| pair.strip_prefix("k=")))
         .context("分享链接缺少解密密钥")?;
     let plaintext = decrypt_shared_payload(encrypted, key_value)?;
     let payload: Value = serde_json::from_slice(&plaintext).context("分享会话内容格式无效")?;
@@ -106,7 +101,11 @@ pub async fn import_shared_session_url(home: &Path, url: &str) -> anyhow::Result
 
 fn validate_share_url(url: &str) -> anyhow::Result<reqwest::Url> {
     let parsed = reqwest::Url::parse(url.trim()).context("分享 URL 格式无效")?;
-    if parsed.scheme() != "https" || !parsed.host_str().is_some_and(|host| SHARE_HOSTS.contains(&host)) {
+    if parsed.scheme() != "https"
+        || !parsed
+            .host_str()
+            .is_some_and(|host| SHARE_HOSTS.contains(&host))
+    {
         bail!("仅支持 Codex++ 分享站点链接");
     }
     if parsed.fragment().is_none() {
@@ -178,13 +177,7 @@ pub fn import_rollout_file(home: &Path, source_path: &Path) -> anyhow::Result<Va
 }
 
 pub fn export_rollout(home: &Path, session_id: &str) -> anyhow::Result<Value> {
-    let session_id = session_id.trim();
-    if session_id.is_empty() {
-        bail!("会话 ID 为空");
-    }
-    let path =
-        find_rollout(home, session_id).ok_or_else(|| anyhow::anyhow!("找不到原生会话文件"))?;
-    let bytes = fs::read(&path).with_context(|| format!("读取会话文件失败：{}", path.display()))?;
+    let (path, bytes) = read_rollout(home, session_id, Some(MAX_ROLLOUT_BYTES as u64 + 1))?;
     if bytes.len() > MAX_ROLLOUT_BYTES {
         bail!("会话文件超过分享大小限制");
     }
@@ -192,10 +185,32 @@ pub fn export_rollout(home: &Path, session_id: &str) -> anyhow::Result<Value> {
     Ok(json!({
         "status": "ok",
         "kind": "codex-rollout",
-        "session_id": session_id,
+        "session_id": session_id.trim(),
         "content": content,
         "filename": path.file_name().and_then(|value| value.to_str()).unwrap_or("rollout.jsonl"),
     }))
+}
+
+/// 共用文件定位和读取；length 仅指定读取截止位置，不包含分享或保存的大小策略。
+pub(crate) fn read_rollout(
+    home: &Path,
+    session_id: &str,
+    length: Option<u64>,
+) -> anyhow::Result<(PathBuf, Vec<u8>)> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        bail!("会话 ID 为空");
+    }
+    let path =
+        find_rollout(home, session_id).ok_or_else(|| anyhow::anyhow!("找不到原生会话文件"))?;
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .and_then(|file| {
+            file.take(length.unwrap_or(u64::MAX))
+                .read_to_end(&mut bytes)
+        })
+        .with_context(|| format!("读取会话文件失败：{}", path.display()))?;
+    Ok((path, bytes))
 }
 
 pub fn import_rollout(home: &Path, payload: &Value) -> anyhow::Result<Value> {
@@ -227,10 +242,11 @@ pub fn import_rollout(home: &Path, payload: &Value) -> anyhow::Result<Value> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let directory = home.join("sessions").join("imported");
-    fs::create_dir_all(&directory).context("创建会话目录失败")?;
-    let path = directory.join(format!("rollout-{now}-{new_id}.jsonl"));
-    fs::write(&path, rewritten).context("写入导入会话失败")?;
+    let path = write_rollout(
+        &home.join("sessions").join("imported"),
+        &format!("rollout-{now}-{new_id}.jsonl"),
+        &rewritten,
+    )?;
 
     register_imported_thread(home, &new_id, &path, title, content, now)?;
 
@@ -254,6 +270,38 @@ pub fn import_rollout(home: &Path, payload: &Value) -> anyhow::Result<Value> {
     Ok(
         json!({ "status": "ok", "session_id": new_id, "title": if title.is_empty() { "导入的会话" } else { title } }),
     )
+}
+
+/// 原子写入完整历史。索引登记由调用方或原生 thread/resume 完成。
+pub(crate) fn write_rollout(
+    directory: &Path,
+    filename: &str,
+    content: &str,
+) -> anyhow::Result<PathBuf> {
+    fs::create_dir_all(directory).context("创建会话目录失败")?;
+    let path = directory.join(filename);
+    if path.exists() {
+        if fs::read_to_string(&path)? == content {
+            return Ok(path);
+        }
+        bail!("保存目标已存在且内容不同，未覆盖原文件");
+    }
+    let temporary = directory.join(format!("{}.tmp", Uuid::new_v4()));
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        // 原子发布且不覆盖同名文件，避免并发重试时 rename 覆盖已有内容。
+        fs::hard_link(&temporary, &path)?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&temporary);
+    result.context("写入导入会话失败")?;
+    Ok(path)
 }
 
 fn register_imported_thread(

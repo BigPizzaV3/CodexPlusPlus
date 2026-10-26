@@ -15,7 +15,7 @@ const source = ts.transpileModule(component.getText(app), {
 type Element = { type: string; props: Record<string, any> };
 type Memo = { status: unknown; autoDetected: boolean };
 /** memo 对应模块级的 claudeLocalizationMemo：传同一个对象模拟「Codex++ 运行期间再次进入页面」。 */
-function harness(memo: Memo = { status: null, autoDetected: false }) {
+function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: unknown = {}) {
   const hooks: any[] = [];
   /** 页头槽位：createPortal 渲染进来的元素记在这里，用来断言「启动增强版」在右上角。 */
   const topbarSlot = { portal: null as unknown };
@@ -32,7 +32,10 @@ function harness(memo: Memo = { status: null, autoDetected: false }) {
     document: { querySelector: (selector: string) => (selector === "[data-topbar-actions]" ? topbarSlot : null) },
     createPortal: (child: unknown, target: typeof topbarSlot) => { target.portal = child; return null; },
     stringifyError: String,
-    invoke: (command: string) => new Promise((resolve) => calls.push({ command, resolve })),
+    // Computer Use 接入状态只用来决定是否提示二选一：立即返回，不计入下面断言的调用顺序。
+    invoke: (command: string) => command === "computer_use_status"
+      ? Promise.resolve(cuStatus)
+      : new Promise((resolve) => calls.push({ command, resolve })),
     useState: (initial: unknown) => {
       const index = cursor++;
       if (!(index in hooks)) hooks[index] = initial;
@@ -155,4 +158,22 @@ test("「启动增强版」放在页头右上角（与 Codex 的启动按钮同�
   assert.equal(screen.calls[1].command, "claude_localization_action");
   screen.render();
   assert.ok(buttons(screen.topbar()).some((button) => text(button) === "启动中…"));
+});
+
+test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开时，提示二选一", async () => {
+  const conflict = { targets: { claudeDesktop: { state: "registered" } } };
+  const screen = harness(undefined, conflict);
+  screen.render();
+  screen.calls[0].resolve({ ...ready, computerUse: true, computerUseSupported: true });
+  await tick();
+  const warning = (page: Element) => JSON.stringify(page).includes("is-warning");
+  assert.ok(warning(screen.render()), "两套都开时应显示冲突提醒");
+
+  const quiet = harness(undefined, { targets: { claudeDesktop: { state: "missing" } } });
+  quiet.render();
+  quiet.calls[0].resolve({ ...ready, computerUse: true, computerUseSupported: true });
+  await tick();
+  const page = quiet.render();
+  assert.equal(warning(page), false, "未接入时不应显示冲突提醒");
+  assert.ok(text(page).includes("二选一"), "仍保留一句二选一的说明");
 });

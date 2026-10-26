@@ -6,8 +6,9 @@
 //! （Grok / Claude Code / …）预留同名分片。迁移是纯增量的 —— 扁平字段不删、
 //! 不改名、继续序列化，所以老版本管理器读新文件照常工作。
 //!
-//! 每个工具的写盘适配放各自的子模块，见 [`grok`]。
+//! 每个工具的写盘适配放各自的子模块，见 [`grok`]、[`claude`]。
 
+pub mod claude;
 pub mod grok;
 
 use std::path::PathBuf;
@@ -159,7 +160,7 @@ pub fn tool_home_dir(id: &ToolId) -> PathBuf {
 
 /// 该工具的 profile 是否已经能真正写盘并切换。
 pub fn tool_is_switchable(id: &ToolId) -> bool {
-    // Claude 的供应商切换尚未接入，但工具页本身可以打开并管理本地化副本。
+    // Claude 的供应商存在独立的 claude-providers.json，见 [`claude`]。
     matches!(id, ToolId::Codex | ToolId::Grok | ToolId::Claude)
 }
 

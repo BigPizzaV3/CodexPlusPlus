@@ -39,6 +39,8 @@ function conversation(groups = [[turn(1, true), turn(2), turn(3, true)]]) {
 function harness(data = conversation()) {
   let currentId = threadId, host = "local", now = 100000;
   let discoverySource = nativeSource, fetches = 0, scopeReads = 0, nextTimer = 0;
+  let pageTouches = 0, conversationReads = 0;
+  const settings = { enhancementsEnabled: true, codexAppHistoryTurnRecovery: true as unknown };
   const timers = new Map<number, () => unknown>();
   const calls: unknown[][] = [];
   const metadataCalls: unknown[][] = [];
@@ -58,7 +60,7 @@ function harness(data = conversation()) {
   const manager = {
     hostId: "local", disposed: false, getHostId: () => "local",
     getStreamRole: () => ({ role }),
-    getConversation: (id: string) => id === currentId ? data : null,
+    getConversation: (id: string) => { conversationReads++; return id === currentId ? data : null; },
     sendRequest: async (...args: unknown[]) => {
       metadataCalls.push(args);
       assert.equal(args[0], "thread/turns/list");
@@ -94,7 +96,9 @@ function harness(data = conversation()) {
   };
   const context = vm.createContext({
     window, document, Map, Set, URL, AbortController, Date: { now: () => now },
-    currentSessionRef: () => ({ session_id: currentId, host_id: host }),
+    codexPlusBackendSettingsLoaded: true,
+    codexPlusBackendSettings: settings,
+    currentSessionRef: () => { pageTouches++; return { session_id: currentId, host_id: host }; },
     normalizedCodexThreadUuid: (id: unknown) => typeof id === "string" && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(id) ? id : "",
     codexAppAssetUrl: () => "app://-/assets/app-initial-fixture.js",
     codexAppAssetUrlFromScriptText: async () => "",
@@ -115,12 +119,16 @@ function harness(data = conversation()) {
     context, signal, scope, manager, marker, document, window, calls, metadataCalls, timers,
     get api() { return context.testApi; },
     get fetches() { return fetches; }, get scopeReads() { return scopeReads; },
+    get pageTouches() { return pageTouches; }, get conversationReads() { return conversationReads; },
     get broadcasts() { return broadcasts; }, get updates() { return updates; },
     get data() { return data; }, set data(value) { data = value; },
     navigate(id: string, h = "local") { currentId = id; host = h; },
     setLoader(fn: typeof load) { load = fn; },
     setMetadataLoader(fn: typeof metadataLoad) { metadataLoad = fn; },
     setRole(value: string) { role = value; },
+    setEnabled(value: unknown) { settings.codexAppHistoryTurnRecovery = value; },
+    setMasterEnabled(value: boolean) { settings.enhancementsEnabled = value; },
+    setSettingsLoaded(value: boolean) { context.codexPlusBackendSettingsLoaded = value; },
     setDiscovery(value: string) { discoverySource = value; },
     elapse(ms: number) { now += ms; },
     inject,
@@ -128,25 +136,89 @@ function harness(data = conversation()) {
   };
 }
 
-test("registration is inert with no independent settings, UI, heartbeat or polling", () => {
+test("registration is inert with no heartbeat, polling or independent repair trigger", () => {
   const h = harness();
   assert.equal(h.fetches, 0); assert.equal(h.scopeReads, 0);
   assert.equal(h.calls.length, 0); assert.equal(h.timers.size, 0);
-  assert.doesNotMatch(source, /historyTurnRecoveryPollMs|scheduleHistoryTurnRecovery|showToast|codexPlusSettings/);
-  for (const file of [
-    "apps/codex-plus-manager/src/App.tsx", "crates/codex-plus-core/src/settings.rs",
-    "assets/inject/renderer-inject/10-style.js", "assets/inject/renderer-inject/40-backend-settings.js",
-  ]) assert.doesNotMatch(readFileSync(path.join(root, file), "utf8"), /codexAppHistoryTurnRecovery|syncCodexPlusHistoryTurnRecovery|历史空轮次补载（实验）/);
+  assert.doesNotMatch(source, /historyTurnRecoveryPollMs|scheduleHistoryTurnRecovery|showToast/);
+  const backendSync = readFileSync(path.join(fragments, "40-backend-settings.js"), "utf8");
+  assert.doesNotMatch(backendSync, /syncCodexPlusHistoryTurnRecovery|runHistoryTurnRecovery/);
+});
+
+test("the default-off recovery switch is exposed in both settings UIs and uses the backend mapping", () => {
+  const app = readFileSync(path.join(root, "apps/codex-plus-manager/src/App.tsx"), "utf8");
+  const styles = readFileSync(path.join(fragments, "10-style.js"), "utf8");
+  const backend = readFileSync(path.join(fragments, "40-backend-settings.js"), "utf8");
+  assert.match(app, /codexAppHistoryTurnRecovery: boolean/);
+  assert.match(app, /codexAppHistoryTurnRecovery: false/);
+  assert.match(app, /checked=\{form\.codexAppHistoryTurnRecovery\} disabled=\{!masterEnabled\} onChange=\{\(value\) => setEnhanceFlag\("codexAppHistoryTurnRecovery", value\)\}/);
+  assert.match(styles, /historyTurnRecovery: false/);
+  assert.match(styles, /historyTurnRecovery: "codexAppHistoryTurnRecovery"/);
+  assert.match(backend, /data-codex-plus-setting="historyTurnRecovery"/);
+});
+
+test("the in-app switch maps saved settings and persists only its backend partial update", async () => {
+  const style = readFileSync(path.join(fragments, "10-style.js"), "utf8");
+  const writes: Array<[string, unknown]> = [];
+  const stored = new Map<string, string>();
+  const context = vm.createContext({
+    window: {}, conversationViewDefaultWidth: 900, codexPlusSettingsKey: "settings",
+    codexPlusBackendSettings: {} as Record<string, unknown>, codexPlusBackendSettingsLoaded: true,
+    localStorage: { getItem: (key: string) => stored.get(key) || null, setItem: (key: string, value: string) => stored.set(key, value) },
+    setBackendSetting: async (key: string, value: unknown) => { writes.push([key, value]); },
+    loadBackendSettings: async () => {}, syncStepwisePanel: () => {},
+  });
+  const start = style.indexOf("  function defaultCodexPlusSettings()");
+  const end = style.indexOf("  // Dream skin runtime", start);
+  const setter = style.indexOf("  function setCodexPlusSetting(");
+  const setterEnd = style.indexOf("  function syncStepwisePanel(", setter);
+  assert.ok(start >= 0 && end > start && setter >= 0 && setterEnd > setter);
+  vm.runInContext(`${style.slice(start, end)}\n${style.slice(setter, setterEnd)}`, context);
+  assert.equal(context.codexPlusSettings().historyTurnRecovery, false);
+  context.codexPlusBackendSettings = { enhancementsEnabled: true, codexAppHistoryTurnRecovery: true };
+  assert.equal(context.codexPlusSettings().historyTurnRecovery, true);
+  context.codexPlusBackendSettings.enhancementsEnabled = false;
+  assert.equal(context.codexPlusSettings().historyTurnRecovery, false);
+  context.codexPlusBackendSettings.enhancementsEnabled = true;
+  for (const enabled of [false, true]) context.setCodexPlusSetting("historyTurnRecovery", enabled);
+  await Promise.resolve();
+  assert.deepEqual(writes, [["codexAppHistoryTurnRecovery", false], ["codexAppHistoryTurnRecovery", true]]);
+  assert.equal(stored.size, 0);
+});
+
+test("disabled, unloaded or non-boolean opt-in cannot inspect the page or consume a request", async () => {
+  for (const change of [
+    (h: ReturnType<typeof harness>) => h.setEnabled(undefined),
+    (h: ReturnType<typeof harness>) => h.setEnabled(false),
+    (h: ReturnType<typeof harness>) => h.setEnabled("true"),
+    (h: ReturnType<typeof harness>) => h.setEnabled(1),
+    (h: ReturnType<typeof harness>) => h.setSettingsLoaded(false),
+    (h: ReturnType<typeof harness>) => h.setMasterEnabled(false),
+  ]) {
+    const h = harness(); change(h);
+    h.context.codexPlusSettings = () => ({ historyTurnRecovery: true });
+    const original = structuredClone(h.data);
+    assert.equal((await h.run()).status, "skipped");
+    assert.equal(h.pageTouches, 0); assert.equal(h.fetches, 0); assert.equal(h.scopeReads, 0);
+    assert.equal(h.conversationReads, 0); assert.equal(h.calls.length, 0); assert.equal(h.metadataCalls.length, 0);
+    assert.equal(h.updates, 0); assert.equal(h.broadcasts, 0); assert.equal(h.timers.size, 0);
+    assert.equal(h.api.ledger.requests.size, 0); assert.equal(h.api.ledger.flight, null);
+    assert.deepEqual(h.data, original);
+    h.setEnabled(true); h.setSettingsLoaded(true); h.setMasterEnabled(true);
+    assert.equal((await h.run()).status, "completed");
+  }
 });
 
 test("only existing successful repair calls notify frontend; report refresh stays read-only", () => {
   const manager = readFileSync(path.join(root, "apps/codex-plus-manager/src-tauri/src/commands.rs"), "utf8");
   const command = manager.slice(manager.indexOf("pub async fn repair_session_index()"), manager.indexOf("pub async fn load_session_index_repair_report()"));
   assert.match(command, /Ok\(report\) => \{[\s\S]*after_index_repair\([\s\S]*report\.aborted_reason\.is_some\(\)/);
+  assert.doesNotMatch(command, /after_index_repair\([^;]+\.await/s);
   const reportRead = manager.slice(manager.indexOf("pub async fn load_session_index_repair_report()"), manager.indexOf("pub async fn preview_session_index_cleanup()"));
   assert.doesNotMatch(reportRead, /after_index_repair/);
   const launcher = readFileSync(path.join(root, "apps/codex-plus-launcher/src/main.rs"), "utf8");
   assert.match(launcher, /Ok\(Some\(report\)\) => \{[\s\S]*after_index_repair\(/);
+  assert.doesNotMatch(launcher, /after_index_repair\([^;]+\.await/s);
   assert.match(launcher, /Some\(handle\.debug_port\)/);
   assert.match(launcher, /std::time::Duration::from_secs\(30 \* 60\)/);
 });
@@ -160,6 +232,34 @@ test("discovers only the uniquely exported raw family without executing source",
   assert.equal(h.api.signal({}, nativeSource), null);
   assert.equal(h.api.signal({ managerToken: { ...h.signal, kind: "readable-family" } }, nativeSource), null);
   assert.equal(h.scopeReads, 0);
+});
+
+test("zero or multiple family guards and ambiguous exports are unavailable with no native reads or writes", async () => {
+  for (const discovery of [
+    "export{};",
+    `${nativeSource};${nativeSource}`,
+    nativeSource.replace("rawManagers as managerToken", "rawManagers as managerToken,rawManagers as anotherToken"),
+  ]) {
+    const h = harness(); h.setDiscovery(discovery);
+    const original = structuredClone(h.data);
+    const report = await h.run();
+    assert.equal(report.status, "unavailable");
+    assert.equal(report.loadedPages, 0); assert.equal(report.metadataPages, 0);
+    assert.equal(h.scopeReads, 0); assert.equal(h.conversationReads, 0);
+    assert.equal(h.calls.length, 0); assert.equal(h.metadataCalls.length, 0);
+    assert.equal(h.updates, 0); assert.equal(h.broadcasts, 0);
+    assert.deepEqual(h.data, original);
+    assert.equal(h.api.ledger.flight, null); assert.equal(h.timers.size, 0);
+  }
+});
+
+test("switching recovery off during discovery prevents native manager and conversation access", async () => {
+  const h = harness();
+  const pending = h.run(); h.setEnabled(false); await pending;
+  assert.equal(h.scopeReads, 0); assert.equal(h.conversationReads, 0);
+  assert.equal(h.calls.length, 0); assert.equal(h.metadataCalls.length, 0);
+  assert.equal(h.updates, 0); assert.equal(h.broadcasts, 0);
+  assert.equal(h.timers.size, 0);
 });
 
 test("invalid and duplicate request IDs cannot discover or repeat work, even after reinjection", async () => {
@@ -495,6 +595,8 @@ test("malformed or unproven server metadata is never fabricated", async () => {
 
 test("metadata ownership, generation, navigation and receipt guards are rechecked after reads", async () => {
   for (const change of [
+    (h: ReturnType<typeof harness>) => h.setEnabled(false),
+    (h: ReturnType<typeof harness>) => h.setSettingsLoaded(false),
     (h: ReturnType<typeof harness>) => { h.data.turnHistory.history.generation++; },
     (h: ReturnType<typeof harness>) => { h.data.threadRuntimeStatus.type = "active"; },
     (h: ReturnType<typeof harness>) => { (h.data as any).unconfirmedTurnSubmissions = [{ terminal: true }]; },
@@ -515,16 +617,25 @@ test("metadata ownership, generation, navigation and receipt guards are rechecke
 });
 
 test("metadata setter repeats guards before touching a draft", async () => {
-  for (const retire of [false, true]) {
+  for (const change of ["receipt", "retire", "disable"]) {
     const h = harness(); const entry = missingMetadata(h);
     h.manager.updateConversationState = (_id, mutate) => {
-      if (retire) h.manager.disposed = true;
+      if (change === "retire") h.manager.disposed = true;
+      else if (change === "disable") h.setEnabled(false);
       else (h.data as any).unconfirmedTurnSubmissions = [{ terminal: true }];
       mutate(h.data);
     };
     await h.run();
     assert.equal(entry.durationMs, null); assert.equal(h.broadcasts, 0);
   }
+});
+
+test("switching recovery off while an item load is pending stops subsequent reads", async () => {
+  const h = harness();
+  h.setLoader(async () => { h.setEnabled(false); });
+  await h.run();
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.metadataCalls.length, 0); assert.equal(h.updates, 0); assert.equal(h.broadcasts, 0);
 });
 
 test("an already retired manager cannot read or mutate history", async () => {

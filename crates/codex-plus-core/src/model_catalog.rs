@@ -233,13 +233,28 @@ fn relay_profile_model_ui_metadata_map(profile: &RelayProfile, models: &[String]
             .unwrap_or_default();
     let fallback = crate::model_suffix::parse_window_token(&profile.context_window);
     for model in models {
-        let window = crate::model_suffix::lookup_model_map(&windows, model)
-            .and_then(|token| crate::model_suffix::parse_window_token(token))
-            .or(fallback);
-        if let Some(window) = window {
+        let manual = crate::model_suffix::lookup_model_map(&windows, model)
+            .and_then(|token| crate::model_suffix::parse_window_token(token));
+        if let Some(window) = manual {
+            // 逐模型手工窗口优先级最高，覆盖内置模板。
             let entry = metadata.entry(model.clone()).or_insert_with(|| json!({}));
             for field in ["contextWindow", "maxContextWindow", "context_window", "max_context_window"] {
                 entry[field] = json!(window);
+            }
+            continue;
+        }
+        // 没有手工窗口时，供应商级「上下文大小」只作兜底：模型模板里已经声明了
+        // 自己的窗口就别拿全局值盖掉它。否则多模型列表 + 全局窗口会把每个模型都
+        // 压成同一个数，模型自身的真实窗口反而丢失（issue #2590）。
+        let Some(fallback) = fallback else { continue };
+        let entry = metadata.entry(model.clone()).or_insert_with(|| json!({}));
+        for field in ["contextWindow", "maxContextWindow", "context_window", "max_context_window"] {
+            let missing = entry
+                .get(field)
+                .and_then(Value::as_u64)
+                .is_none_or(|existing| existing == 0);
+            if missing {
+                entry[field] = json!(fallback);
             }
         }
     }
@@ -263,6 +278,26 @@ mod window_override_tests {
             assert_eq!(metadata["gpt-5.5"][field], 1_000_000);
             assert_eq!(metadata["vendor-model"][field], 128_000);
         }
+
+        // issue #2590：全局窗口只兜底，不能盖掉模型模板自带的窗口。
+        // 同一份列表里 gpt-5.5 有内置模板、vendor-model 没有，前者应保持模板值。
+        let builtin_only = relay_profile_model_ui_metadata_map(&RelayProfile::default(), &models);
+        let builtin_window = builtin_only["gpt-5.5"]["contextWindow"]
+            .as_u64()
+            .expect("gpt-5.5 应有内置窗口");
+        assert_ne!(builtin_window, 128_000, "前置条件：内置窗口不应恰好等于全局值");
+        assert_eq!(metadata["gpt-5.5"]["contextWindow"], 1_000_000);
+        let global_only = RelayProfile {
+            context_window: "128K".into(),
+            ..Default::default()
+        };
+        let with_global = relay_profile_model_ui_metadata_map(&global_only, &models);
+        assert_eq!(
+            with_global["gpt-5.5"]["contextWindow"], builtin_window,
+            "全局窗口不应压过内置模板"
+        );
+        assert_eq!(with_global["vendor-model"]["contextWindow"], 128_000);
+
         let metadata = relay_profile_model_ui_metadata_map(&RelayProfile::default(), &models);
         assert!(metadata["gpt-5.5"]["contextWindow"].as_u64().is_some());
         assert!(metadata.get("vendor-model").is_none());

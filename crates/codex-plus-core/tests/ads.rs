@@ -72,6 +72,73 @@ fn normalizes_remote_ads_for_plugin_and_manager_rendering() {
 }
 
 #[test]
+fn drops_ads_whose_destination_is_not_a_web_url() {
+    let payload = normalize_ad_payload(json!({
+        "version": 1,
+        "ads": [
+            {
+                "id": "ok",
+                "type": "normal",
+                "title": "正常",
+                "description": "普通推荐",
+                "url": "https://example.test/partner"
+            },
+            {
+                "id": "javascript",
+                "type": "normal",
+                "title": "脚本",
+                "description": "普通推荐",
+                "url": "javascript:alert(document.domain)"
+            },
+            {
+                "id": "data",
+                "type": "normal",
+                "title": "数据",
+                "description": "普通推荐",
+                "url": "data:text/html,<script>alert(1)</script>"
+            },
+            {
+                "id": "file",
+                "type": "normal",
+                "title": "本地文件",
+                "description": "普通推荐",
+                "url": "file:///etc/passwd"
+            },
+            {
+                "id": "scheme-relative",
+                "type": "normal",
+                "title": "协议相对",
+                "description": "普通推荐",
+                "url": "//example.test/partner"
+            },
+            {
+                "id": "uppercase",
+                "type": "normal",
+                "title": "大写 scheme",
+                "description": "普通推荐",
+                "url": "HTTPS://example.test/partner"
+            }
+        ],
+        "top_ad": {
+            "id": "top-javascript",
+            "type": "sponsor",
+            "title": "置顶",
+            "description": "置顶推荐",
+            "url": "javascript:alert(1)"
+        }
+    }));
+
+    let ids = payload["ads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|ad| ad["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["ok", "uppercase"]);
+    assert!(payload.get("topAd").is_none(), "非 http(s) 的置顶位必须丢弃");
+}
+
+#[test]
 fn builtin_sponsors_are_not_appended_to_remote_ads() {
     let payload = normalize_ad_payload(json!({
         "version": 1,
@@ -104,13 +171,6 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
     let payload = normalize_ad_payload(json!({
         "version": 1,
         "ads": [
-            {
-                "id": "volcengine-ark-agent-plan",
-                "type": "sponsor",
-                "title": "火山方舟",
-                "description": "远端推荐内容",
-                "url": "https://example.test/volcengine"
-            },
             {
                 "id": "0029-token-bridge",
                 "type": "sponsor",
@@ -154,13 +214,6 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
                 "url": "https://example.test/baikewei"
             },
             {
-                "id": "deepkey-api-key",
-                "type": "sponsor",
-                "title": "deepkey",
-                "description": "远端推荐内容",
-                "url": "https://example.test/deepkey"
-            },
-            {
                 "id": "jojocode-codex-relay",
                 "type": "sponsor",
                 "title": "JOJO Code",
@@ -173,11 +226,9 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
     let ads = payload["ads"].as_array().unwrap();
 
     for id in [
-        "volcengine-ark-agent-plan",
         "0029-token-bridge",
         "apikey-fun-ai-relay",
         "runapi-openrouter-alternative",
-        "deepkey-api-key",
     ] {
         let ad = ads.iter().find(|ad| ad["id"] == json!(id)).unwrap();
         assert!(

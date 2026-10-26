@@ -62,22 +62,46 @@ async fn recover(debug_port: u16) -> anyhow::Result<RecoveryReport> {
     Ok(report)
 }
 
-/// 只接在原有成功且未中止的索引检查后；失败不反转已提交的数据库修复。
+/// 数据库修复完成后只安排后台补载，不延迟返回其报告或延长数据库事务生命周期。
 /// 超时可能意味着原生读取仍在进行，因此不自动重发，也不排队等待页面出现。
-pub async fn after_index_repair(debug_port: Option<u16>, aborted: bool) {
-    let Some(debug_port) = debug_port.filter(|port| *port != 0 && !aborted) else {
-        return;
-    };
-    let report = tokio::time::timeout(Duration::from_secs(20), recover(debug_port)).await;
-    let details = match report {
-        Ok(Ok(report)) => json!({
-            "status": report.status,
-            "loaded_pages": report.loaded_pages,
-            "metadata_pages": report.metadata_pages,
-        }),
-        _ => json!({"status": "unconfirmed"}),
-    };
-    let _ = crate::diagnostic_log::append_diagnostic_log("session_index_repair.frontend", details);
+pub fn after_index_repair(debug_port: Option<u16>, aborted: bool) {
+    let _ = spawn_after_index_repair(
+        debug_port,
+        aborted,
+        crate::settings::SettingsStore::default(),
+    );
+}
+
+fn spawn_after_index_repair(
+    debug_port: Option<u16>,
+    aborted: bool,
+    store: crate::settings::SettingsStore,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let debug_port = debug_port.filter(|port| *port != 0 && !aborted)?;
+    Some(tokio::spawn(async move {
+        // 设置缺失、读取失败或总增强关闭时均不访问 CDP，也不触碰原生页面。
+        let enabled = tokio::task::spawn_blocking(move || store.load())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .is_some_and(|settings| {
+                settings.enhancements_enabled && settings.codex_app_history_turn_recovery
+            });
+        if !enabled {
+            return;
+        }
+        let report = tokio::time::timeout(Duration::from_secs(20), recover(debug_port)).await;
+        let details = match report {
+            Ok(Ok(report)) => json!({
+                "status": report.status,
+                "loaded_pages": report.loaded_pages,
+                "metadata_pages": report.metadata_pages,
+            }),
+            _ => json!({"status": "unconfirmed"}),
+        };
+        let _ =
+            crate::diagnostic_log::append_diagnostic_log("session_index_repair.frontend", details);
+    }))
 }
 
 #[cfg(test)]
@@ -132,14 +156,75 @@ mod tests {
     async fn absent_port_and_aborted_repairs_do_not_contact_the_page() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        after_index_repair(None, false).await;
-        after_index_repair(Some(0), false).await;
-        after_index_repair(Some(port), true).await;
+        after_index_repair(None, false);
+        after_index_repair(Some(0), false);
+        after_index_repair(Some(port), true);
         assert!(
             tokio::time::timeout(Duration::from_millis(25), listener.accept())
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn disabled_missing_or_unreadable_settings_do_not_contact_the_page() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        for contents in [
+            None,
+            Some("{}"),
+            Some(r#"{"codexAppHistoryTurnRecovery":false}"#),
+            Some(r#"{"codexAppHistoryTurnRecovery":true,"enhancementsEnabled":false}"#),
+            Some("{invalid"),
+        ] {
+            if let Some(contents) = contents {
+                std::fs::write(&path, contents).unwrap();
+            }
+            spawn_after_index_repair(
+                Some(port),
+                false,
+                crate::settings::SettingsStore::new(path.clone()),
+            )
+            .unwrap()
+            .await
+            .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(25), listener.accept())
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduling_returns_without_waiting_for_the_frontend_result() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"codexAppHistoryTurnRecovery":true}"#).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (connected, pending) = tokio::sync::oneshot::channel();
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            connected.send(()).unwrap();
+            let _ = wait.await;
+        });
+        let task =
+            spawn_after_index_repair(Some(port), false, crate::settings::SettingsStore::new(path))
+                .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        // 触发方已拿回控制权；前端没有响应也不阻塞数据库报告返回。
+        assert!(!task.is_finished());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]

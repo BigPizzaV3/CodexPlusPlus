@@ -1,5 +1,6 @@
 use codex_plus_core::codex_sqlite::{
-    backfill_thread_models_to_default, sanitize_historical_model_suffixes,
+    apply_pending_thread_model_migration, backfill_thread_models_to_default,
+    record_pending_thread_model_migration, sanitize_historical_model_suffixes,
 };
 use rusqlite::Connection;
 
@@ -364,4 +365,54 @@ fn backfill_skips_database_without_threads_table() {
         backfill_thread_models_to_default(&home, "gpt-5.4", "glm-5.2").unwrap(),
         0
     );
+}
+
+/// 连续切换 A→B→C：A、B 两类会话都迁到 C；切回曾经的默认模型时它不再算旧默认。
+#[test]
+fn pending_migration_chains_consecutive_switches() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join(".codex");
+    std::fs::create_dir_all(&home).unwrap();
+    let db_path = home.join("state_5.sqlite");
+    let conn = Connection::open(&db_path).unwrap();
+    create_threads_table(&conn);
+    for (id, model) in [("a", "model-a"), ("b", "model-b"), ("c", "model-c")] {
+        conn.execute(
+            "INSERT INTO threads (id, model, updated_at) VALUES (?1, ?2, ?3)",
+            [id, model, "1000"],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    record_pending_thread_model_migration(&home, "model-a", "model-b").unwrap();
+    record_pending_thread_model_migration(&home, "model-b", "model-a").unwrap();
+    record_pending_thread_model_migration(&home, "model-a", "model-c").unwrap();
+
+    assert_eq!(apply_pending_thread_model_migration(&home, true).unwrap(), 2);
+    let conn = Connection::open(&db_path).unwrap();
+    for id in ["a", "b", "c"] {
+        let model: String = conn
+            .query_row("SELECT model FROM threads WHERE id = ?1", [id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(model, "model-c", "thread {id}");
+    }
+}
+
+/// 新默认模型总会从「旧默认」集合里剔除：A→B→A→B 之后只剩 A→B。
+#[test]
+fn pending_migration_drops_new_default_from_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join(".codex");
+    std::fs::create_dir_all(&home).unwrap();
+
+    record_pending_thread_model_migration(&home, "model-a", "model-b").unwrap();
+    record_pending_thread_model_migration(&home, "model-b", "model-a").unwrap();
+    record_pending_thread_model_migration(&home, "model-a", "model-b").unwrap();
+    // 新旧相同是 no-op
+    record_pending_thread_model_migration(&home, "model-b", "model-b").unwrap();
+    let raw = std::fs::read_to_string(home.join("codex-plus-pending-thread-model-migration.json")).unwrap();
+    let pending: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(pending["to"], "model-b");
+    assert_eq!(pending["from"], serde_json::json!(["model-a"]));
 }

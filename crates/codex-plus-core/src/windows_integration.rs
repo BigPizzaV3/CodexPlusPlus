@@ -7,9 +7,6 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
 use std::path::PathBuf;
 #[cfg(windows)]
-use std::sync::OnceLock;
-
-#[cfg(windows)]
 use anyhow::Context;
 #[cfg(windows)]
 use windows::Win32::Foundation::{
@@ -37,10 +34,8 @@ use windows::Win32::System::Threading::{
     WaitForSingleObject,
 };
 #[cfg(windows)]
-use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
-#[cfg(windows)]
 use windows::Win32::UI::Shell::{
-    ExtractIconExW, FOLDERID_Desktop, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    FOLDERID_Desktop, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
     ShellExecuteW, ShellLink,
 };
 #[cfg(windows)]
@@ -52,11 +47,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ShowWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::{
-    HICON, ICON_BIG, ICON_SMALL, PostMessageW, SendMessageW, WM_CLOSE, WM_SETICON,
-};
+use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
 #[cfg(windows)]
-use windows::core::{Interface, PCWSTR, PROPVARIANT, PWSTR};
+use windows::core::{Interface, PCWSTR, PWSTR};
 
 /// 请求归属 `process_id` 的可见主窗口关闭（`WM_CLOSE`）。
 ///
@@ -1150,66 +1143,12 @@ pub fn activate_process_window(process_id: u32) -> bool {
     }
 }
 
-/// 同一窗口分别确认图标与任务栏属性；换 HWND 后不能沿用上一窗口的成功状态。
-#[cfg(any(windows, test))]
-#[derive(Default)]
-pub(crate) struct WindowIconApplyState {
-    target: Option<usize>,
-    window_icon: bool,
-    taskbar: bool,
-}
-
-#[cfg(any(windows, test))]
-impl WindowIconApplyState {
-    fn apply(&mut self, target: usize, icon: impl FnOnce() -> bool, taskbar: impl FnOnce() -> bool) -> bool {
-        if self.target != Some(target) {
-            *self = Self { target: Some(target), ..Self::default() };
-        }
-        if !self.window_icon { self.window_icon = icon(); }
-        if !self.taskbar { self.taskbar = taskbar(); }
-        self.window_icon && self.taskbar
-    }
-}
-
 #[cfg(windows)]
-pub fn apply_codexplusplus_icon_to_process_window(
-    process_id: u32,
-    icon_resource_path: PathBuf,
-) -> bool {
-    apply_codexplusplus_icon_attempt(process_id, &icon_resource_path, &mut WindowIconApplyState::default())
-}
-
-#[cfg(windows)]
-pub(crate) fn apply_codexplusplus_icon_attempt(
-    process_id: u32,
-    icon_resource_path: &PathBuf,
-    state: &mut WindowIconApplyState,
-) -> bool {
+pub(crate) fn apply_codexplusplus_taskbar_to_process_window(process_id: u32) -> bool {
     let Some(hwnd) = visible_window_for_process(process_id) else {
         return false;
     };
-    let complete = state.apply(hwnd.0 as usize,
-        || apply_window_icons(hwnd, icon_resource_path),
-        || apply_taskbar_properties(hwnd, icon_resource_path).is_ok());
-    if !complete {
-        let _ = crate::diagnostic_log::append_diagnostic_log("launcher.window_icon.partial", serde_json::json!({
-            "process_id": process_id, "window_icon": state.window_icon, "taskbar": state.taskbar,
-        }));
-    }
-    complete
-}
-
-#[cfg(test)]
-mod icon_retry_tests {
-    use super::WindowIconApplyState;
-    #[test]
-    fn partial_success_retries_only_failed_steps_and_resets_for_a_new_window() {
-        let mut state = WindowIconApplyState::default();
-        assert!(!state.apply(1, || false, || true));
-        assert!(state.apply(1, || true, || panic!("任务栏已经成功，不应重复设置")));
-        assert!(!state.apply(2, || true, || false));
-        assert!(state.apply(2, || panic!("图标已经成功，不应重复设置"), || true));
-    }
+    crate::windows_taskbar::apply_to_window(hwnd).is_ok()
 }
 
 #[cfg(windows)]
@@ -1337,112 +1276,6 @@ fn is_auxiliary_window_class(class_name: &str) -> bool {
         class_name.to_ascii_lowercase().as_str(),
         "ime" | "msctfime ui" | "tray_icon_app" | "tao thread event target"
     )
-}
-
-#[cfg(windows)]
-fn apply_window_icons(hwnd: HWND, icon_resource_path: &PathBuf) -> bool {
-    let Some((large_icon, small_icon)) = load_cached_icons(icon_resource_path) else {
-        return false;
-    };
-    unsafe {
-        SendMessageW(
-            hwnd,
-            WM_SETICON,
-            WPARAM(ICON_BIG as usize),
-            LPARAM(large_icon.0 as isize),
-        );
-        SendMessageW(
-            hwnd,
-            WM_SETICON,
-            WPARAM(ICON_SMALL as usize),
-            LPARAM(small_icon.0 as isize),
-        );
-    }
-    true
-}
-
-#[cfg(windows)]
-fn load_cached_icons(icon_resource_path: &PathBuf) -> Option<(HICON, HICON)> {
-    static ICONS: OnceLock<(usize, usize)> = OnceLock::new();
-    let icons = ICONS.get_or_init(|| {
-        let path = wide_null(icon_resource_path.as_os_str());
-        let mut large_icon = HICON::default();
-        let mut small_icon = HICON::default();
-        let loaded = unsafe {
-            ExtractIconExW(
-                PCWSTR(path.as_ptr()),
-                0,
-                Some(&mut large_icon),
-                Some(&mut small_icon),
-                1,
-            )
-        };
-        if loaded == 0 {
-            (0, 0)
-        } else {
-            (large_icon.0 as usize, small_icon.0 as usize)
-        }
-    });
-    if icons.0 == 0 || icons.1 == 0 {
-        None
-    } else {
-        Some((
-            HICON(icons.0 as *mut core::ffi::c_void),
-            HICON(icons.1 as *mut core::ffi::c_void),
-        ))
-    }
-}
-
-#[cfg(windows)]
-fn apply_taskbar_properties(hwnd: HWND, icon_resource_path: &PathBuf) -> anyhow::Result<()> {
-    use windows::Win32::Storage::EnhancedStorage::{
-        PKEY_AppUserModel_ID, PKEY_AppUserModel_RelaunchCommand,
-        PKEY_AppUserModel_RelaunchDisplayNameResource, PKEY_AppUserModel_RelaunchIconResource,
-    };
-
-    let store: IPropertyStore = unsafe { SHGetPropertyStoreForWindow(hwnd)? };
-    let icon_resource = format!("{},0", icon_resource_path.to_string_lossy());
-    let relaunch_command = std::env::current_exe()
-        .ok()
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|| "codex-plus-plus.exe".to_string());
-    set_property_string(
-        &store,
-        &PKEY_AppUserModel_ID,
-        "com.bigpizzav3.codexplusplus.codex",
-    )?;
-    set_property_string(
-        &store,
-        &PKEY_AppUserModel_RelaunchIconResource,
-        &icon_resource,
-    )?;
-    set_property_string(
-        &store,
-        &PKEY_AppUserModel_RelaunchDisplayNameResource,
-        "Codex++",
-    )?;
-    set_property_string(
-        &store,
-        &PKEY_AppUserModel_RelaunchCommand,
-        &relaunch_command,
-    )?;
-    unsafe {
-        store.Commit()?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn set_property_string(
-    store: &IPropertyStore,
-    key: &windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY,
-    value: &str,
-) -> anyhow::Result<()> {
-    let variant = PROPVARIANT::from(value);
-    unsafe {
-        store.SetValue(key, &variant)?;
-    }
-    Ok(())
 }
 
 #[cfg(windows)]

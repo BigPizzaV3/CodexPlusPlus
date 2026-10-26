@@ -1,0 +1,283 @@
+/* Claude Code 供应商页。列表卡片复用 .relay-management-page 下 Codex 供应商的样式。 */
+
+.claude-provider-page .relay-profile-card {
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+}
+
+.claude-live-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--border));
+}
+
+.claude-live-item {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 12px;
+  background: hsl(var(--surface-raised));
+}
+
+.claude-live-item em {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-style: normal;
+}
+
+.claude-live-item span {
+  overflow: hidden;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-live-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid hsl(var(--status-warning) / 0.4);
+  border-radius: 8px;
+  background: hsl(var(--status-warning) / 0.08);
+  color: hsl(var(--foreground));
+  font-size: 12.5px;
+}
+
+.claude-live-alert > svg {
+  flex-shrink: 0;
+  color: hsl(var(--status-warning));
+}
+
+.claude-live-alert > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.claude-live-alert.info {
+  border-color: hsl(var(--primary) / 0.35);
+  background: hsl(var(--primary) / 0.07);
+}
+
+.claude-live-alert.info > svg {
+  color: hsl(var(--primary));
+}
+
+.claude-provider-empty {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  padding: 36px 16px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 10px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.claude-provider-empty strong {
+  color: hsl(var(--foreground));
+  font-size: 14px;
+}
+
+.claude-provider-footnote {
+  margin: 14px 0 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 编辑抽屉 */
+
+.claude-editor {
+  display: grid;
+  gap: 18px;
+}
+
+.claude-editor-section {
+  display: grid;
+  gap: 10px;
+}
+
+.claude-editor-section h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.claude-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.claude-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.claude-editor-grid .span-2 {
+  grid-column: 1 / -1;
+}
+
+.claude-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.claude-field > span {
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.claude-field > span small {
+  margin-left: 4px;
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+}
+
+.claude-field-hint {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.claude-key-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.claude-key-row > input {
+  flex: 1;
+  min-width: 0;
+}
+
+.claude-select {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 8px;
+  background: hsl(var(--input) / 0.35);
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12px;
+}
+
+.claude-preset-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.claude-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.claude-preset-label {
+  min-width: 58px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+
+.claude-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 7px;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--motion-ease), background var(--motion-fast) var(--motion-ease);
+}
+
+.claude-preset-chip:hover {
+  border-color: hsl(var(--primary) / 0.6);
+}
+
+.claude-preset-chip.active {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+
+.claude-compat-list {
+  display: grid;
+  gap: 8px;
+}
+
+.claude-compat {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.claude-compat input {
+  margin-top: 3px;
+}
+
+.claude-compat span {
+  display: grid;
+  gap: 2px;
+}
+
+.claude-compat strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.claude-compat small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.claude-compat code {
+  font-size: 11px;
+}
+
+.claude-json {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.claude-editor-footer {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+}
+
+.claude-editor-error {
+  flex: 1;
+  min-width: 0;
+  color: hsl(var(--status-error));
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .claude-live-strip,
+  .claude-editor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

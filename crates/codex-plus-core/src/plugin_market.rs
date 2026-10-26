@@ -869,7 +869,8 @@ async fn resolve_git_proxy(work: &Path, url: &str) -> anyhow::Result<Option<Stri
         work,
         url,
         has_proxy_env,
-        crate::proxy::detect_system_proxy,
+        // 按仓库地址求值，Windows PAC / 自动检测代理也能生效（#2475）
+        || crate::proxy::detect_system_proxy_for_url(url),
     )
     .await
 }
@@ -1755,6 +1756,7 @@ fn installed_fallback(home: &Path, source: Source, installed: &InstalledPlugin) 
 /// 原生 UI 形状适配。虚拟市场的 read/install 由注入层独占拦截，不传给原生下载器。
 pub async fn native_request(home: &Path, method: &str, params: Value) -> anyhow::Result<Value> {
     let home = prepare_home(home)?;
+    crate::relay_config::cleanup_legacy_official_marketplace_overrides_in_home(&home)?;
     let state = read_state(&home)?;
     let enabled = configured_plugin_enabled(&home)?;
     match method {

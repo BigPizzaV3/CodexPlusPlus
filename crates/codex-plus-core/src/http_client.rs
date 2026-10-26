@@ -26,6 +26,7 @@ fn apply_configured_ca_certificate(
 fn build_proxied_client_with_timeouts(
     user_agent: &str,
     proxy_override: Option<&str>,
+    target_url: Option<&str>,
     connect_timeout: Option<std::time::Duration>,
     total_timeout: Option<std::time::Duration>,
 ) -> anyhow::Result<reqwest::Client> {
@@ -45,13 +46,20 @@ fn build_proxied_client_with_timeouts(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-        .or_else(|| crate::proxy::detect_system_proxy())
+        // 已知目标地址时按 URL 求值，Windows PAC / 自动检测代理才能生效（#1329）
+        .or_else(|| match target_url {
+            Some(url) => crate::proxy::detect_system_proxy_for_url(url),
+            None => crate::proxy::detect_system_proxy(),
+        })
         .or_else(|| std::env::var("HTTPS_PROXY").ok())
         .or_else(|| std::env::var("https_proxy").ok())
         .or_else(|| std::env::var("ALL_PROXY").ok())
         .or_else(|| std::env::var("all_proxy").ok())
     {
-        builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+        // 显式代理会关掉 reqwest 自带的 NO_PROXY 处理，这里补回来；回环地址始终直连
+        let no_proxy = reqwest::NoProxy::from_env()
+            .or_else(|| reqwest::NoProxy::from_string("localhost,127.0.0.1,::1"));
+        builder = builder.proxy(reqwest::Proxy::all(proxy)?.no_proxy(no_proxy));
     }
     Ok(apply_configured_ca_certificate(builder)?.build()?)
 }
@@ -60,7 +68,7 @@ fn build_proxied_client(
     user_agent: &str,
     proxy_override: Option<&str>,
 ) -> anyhow::Result<reqwest::Client> {
-    build_proxied_client_with_timeouts(user_agent, proxy_override, None, None)
+    build_proxied_client_with_timeouts(user_agent, proxy_override, None, None, None)
 }
 
 /// 走系统代理 / 环境变量代理的 client，并显式指定连接与总超时。
@@ -73,6 +81,25 @@ pub fn proxied_client_with_timeouts(
     build_proxied_client_with_timeouts(
         user_agent,
         None,
+        None,
+        Some(connect_timeout),
+        Some(total_timeout),
+    )
+}
+
+/// 同 `proxied_client_with_timeouts`，但按目标地址解析系统代理，
+/// Windows 上配置了 PAC 脚本或「自动检测设置」时也能拿到实际代理。
+/// 脚本市场、主题市场这类固定访问 GitHub raw 的请求走这里（#1329 / #1339）。
+pub fn proxied_client_for_url_with_timeouts(
+    user_agent: &str,
+    target_url: &str,
+    connect_timeout: std::time::Duration,
+    total_timeout: std::time::Duration,
+) -> anyhow::Result<reqwest::Client> {
+    build_proxied_client_with_timeouts(
+        user_agent,
+        None,
+        Some(target_url),
         Some(connect_timeout),
         Some(total_timeout),
     )

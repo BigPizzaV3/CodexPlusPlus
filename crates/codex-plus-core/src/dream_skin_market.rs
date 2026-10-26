@@ -237,15 +237,14 @@ fn validate_market_theme(theme: &DreamSkinMarketTheme) -> anyhow::Result<()> {
     Ok(())
 }
 
+// 主题市场同样固定访问 GitHub raw，需尊重系统代理（与脚本市场同源，#1329）
 fn market_http_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .user_agent(format!(
-            "CodexPlusPlus-Themes/{}",
-            env!("CARGO_PKG_VERSION")
-        ))
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(30))
-        .build()?)
+    crate::http_client::proxied_client_for_url_with_timeouts(
+        &format!("CodexPlusPlus-Themes/{}", env!("CARGO_PKG_VERSION")),
+        DEFAULT_MARKET_RAW_BASE_URL,
+        Duration::from_secs(8),
+        Duration::from_secs(30),
+    )
 }
 
 async fn download_limited(

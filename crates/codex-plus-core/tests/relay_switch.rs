@@ -1013,3 +1013,86 @@ fn switch_current_relay_profile(
     settings.settings_revision = store.revision()?;
     switch_relay_profile_in_home(store, home, settings, previous_active_relay_id)
 }
+
+/// issue #2601：live auth.json 是 Codex 自己写的 API Key 登录态
+/// （`auth_mode = "apikey"`），当前供应商是内置的「默认中转」（官方登录、非混合）。
+/// 切换前回填过去会把这份 API Key 认证原样吸进官方快照，随后存储校验判为
+/// 「不支持的官方认证存档格式」，整次切换失败、config.toml 不再写入。
+#[test]
+fn switch_from_default_official_ignores_live_api_key_auth() {
+    for saved_auth in [
+        String::new(),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("codex");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"high\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("auth.json"),
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#,
+        )
+        .unwrap();
+        let log_path = temp.path().join("diagnostic.log");
+        codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        let official = RelayProfile {
+            auth_contents: saved_auth.clone(),
+            ..RelayProfile::default()
+        };
+        let pure = pure_profile("deepseek", "https://api.deepseek.example/v1", "sk-deepseek");
+        let original = BackendSettings {
+            active_relay_id: "default".to_string(),
+            relay_profiles: vec![official.clone(), pure.clone()],
+            ..BackendSettings::default()
+        };
+        store.save(&original).unwrap();
+        let next = BackendSettings {
+            active_relay_id: "deepseek".to_string(),
+            relay_profiles: vec![official, pure],
+            ..BackendSettings::default()
+        };
+
+        let result = switch_current_relay_profile(&store, &home, next, "default");
+        codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+        let result = result
+            .unwrap_or_else(|error| panic!("切换不应失败（saved_auth={saved_auth}）：{error:#}"));
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            log.contains("relay_backfill.official_auth.kept_snapshot") && !log.contains("sk-test"),
+            "应记一条不含密钥的诊断日志：{log}"
+        );
+
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(
+            config.contains("https://api.deepseek.example/v1"),
+            "目标供应商应写入 config.toml：{config}"
+        );
+        let stored = store.load().unwrap();
+        assert_eq!(stored.active_relay_id, "deepseek");
+        for settings in [&result.settings, &stored] {
+            let default = settings
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == "default")
+                .unwrap();
+            assert!(
+                !default.auth_contents.contains("sk-test")
+                    && !default.auth_contents.contains("apikey"),
+                "官方快照不应吸收 live 的 API Key 身份：{}",
+                default.auth_contents
+            );
+            if !saved_auth.is_empty() {
+                assert!(
+                    default.auth_contents.contains("\"access_token\""),
+                    "原有官方登录快照应保留：{}",
+                    default.auth_contents
+                );
+            }
+        }
+    }
+}

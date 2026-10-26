@@ -14,6 +14,8 @@ const methodFunction = model.slice(model.indexOf("  function appServerModelReque
 const clientPatch = native.slice(native.indexOf("  function patchPluginMarketplaceRequestClient("), native.indexOf("  function patchPluginMarketplaceRequestMessage("));
 const transportPatch = native.slice(native.indexOf("  function installPluginMarketplaceBridgePatch("), native.indexOf("  const pluginMarketplaceRequestPatchMaxMisses"));
 const prototypePatch = model.slice(model.indexOf("    function installCodexAppServerClientPrototypePatch("), model.indexOf("  const appServerModelRequestPatchMaxMisses"));
+// 原型补丁里经旁支保存（#2660）包装原生请求；辅助函数定义在截取范围外，需要一并带上。
+const sideChatSend = model.slice(model.indexOf("  function sendAppServerRequestWithSideChat("), model.indexOf("  // issue #2177："));
 const flush = async () => { await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setImmediate(resolve)); };
 const sentinel = (source = "public") => `/fixture/.tmp/codex-plus-plugin-market/virtual-${source}/.agents/plugins/marketplace.json`;
 const managedSummary = { name: "sample", id: "sample@codex-plus-plugin-market-123456789abc", codexPlusIndexId: "original-id", installed: false };
@@ -74,7 +76,7 @@ function fixture(handler, { enabled = true } = {}) {
       throw new Error(`Unexpected request: ${path}`);
     },
   });
-  vm.runInContext(`${methodFunction}\n${sessionConnection}\n${adapter}\n${clientPatch}\n${transportPatch}\n${prototypePatch}\nglobalThis.api = {
+  vm.runInContext(`${methodFunction}\n${sessionConnection}\n${adapter}\n${clientPatch}\n${transportPatch}\n${sideChatSend}\n${prototypePatch}\nglobalThis.api = {
     intercept: codexPlusPluginNativeInterceptClient, operation: codexPlusPluginNativeOperation,
     outgoing: codexPlusPluginNativeInterceptOutgoing, incoming: codexPlusPluginNativeInterceptIncoming,
     patchClient: patchPluginMarketplaceRequestClient, patchBridge: installPluginMarketplaceBridgePatch,

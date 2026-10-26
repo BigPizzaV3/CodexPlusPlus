@@ -144,7 +144,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "26-dream-skin-1.5.20";
+const DREAM_SKIN_RENDERER_REVISION: &str = "27-dream-skin-1.5.20-wallpaper-shell";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -588,10 +588,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             format!(
                 "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});",
                 native_fast_unlock_script(),
-                json!({
-                    "enhancementsEnabled": settings.enhancements_enabled,
-                    "codexAppNativeFastUnlock": settings.codex_app_native_fast_unlock,
-                }),
+                json!(crate::native_fast::runtime_settings(settings)),
             ),
             renderer_runtime
         ),
@@ -791,6 +788,36 @@ mod tests {
                 "unexpected media/layer override: {excluded}"
             );
         }
+    }
+
+    #[test]
+    fn wallpaper_shell_compatibility_is_gated_and_preserves_theme_colors() {
+        let css = DREAM_SKIN_COMMUNITY_COMPAT_CSS;
+        let wallpaper_rules = css.split("@layer theme {").nth(1).unwrap();
+        for rule in wallpaper_rules.split('}').filter(|rule| rule.contains('{')) {
+            let selector = rule.split('{').next().unwrap();
+            for guard in [
+                "[data-dream-skin=\"active\"]",
+                "[data-dream-art-ready=\"true\"]",
+                "[data-dream-art-wide=\"true\"]",
+                "[data-dream-task-mode=\"ambient\"]",
+                "[data-dream-task-mode=\"banner\"]",
+                "[data-dream-task-mode=\"full\"]",
+            ] {
+                assert!(
+                    selector.contains(guard),
+                    "unguarded wallpaper rule: {selector}"
+                );
+            }
+        }
+        assert!(wallpaper_rules.contains("_PageSurfaceLayout_"));
+        assert!(wallpaper_rules.contains("main[data-app-shell-main-surface]"));
+        assert!(wallpaper_rules.contains("background-color: transparent !important"));
+        assert!(wallpaper_rules.contains("rgb(var(--ds-panel-rgb) / .68)"));
+        assert!(wallpaper_rules.contains("color: var(--ds-text) !important"));
+        assert!(wallpaper_rules.contains("[data-app-shell-titlebar=\"true\"]"));
+        assert!(wallpaper_rules.contains("#codex-plus-usage-statusline"));
+        assert!(wallpaper_rules.contains(".codex-token-usage-badge"));
     }
 
     #[test]

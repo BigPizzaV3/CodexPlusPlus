@@ -3,13 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Codex++ — Make Codex nicer to use</title>
-<meta name="description" content="Codex++ is a unified manager for the Codex desktop app: providers and models, per-model context windows, sub-agent collaboration, session management, interface enhancements, extensions and desktop pets.">
+<title>Codex++ — Make your AI coding agents nicer to use</title>
+<meta name="description" content="Codex++ is a unified manager for AI coding agents: built around the Codex desktop app, it also manages providers and enhancements for Claude Code, Claude Desktop, and Grok, and shares Computer Use across agents.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Codex++">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Codex++ — Better AI coding agents">
+<meta property="og:description" content="Codex++ is a unified manager for AI coding agents: built around the Codex desktop app, it also manages providers and enhancements for Claude Code, Claude Desktop, and Grok, and shares Computer Use across agents.">
+<meta property="og:url" content="https://codexpp.cc/en.html">
+<meta property="og:image" content="https://codexpp.cc/assets/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/png" href="assets/logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,800;1,400&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=20261021-manager-layout-1">
+<link rel="stylesheet" href="css/style.css?v=20261025-agents-5">
 </head>
 <body>
 
@@ -20,10 +28,9 @@
       <span class="brand-name">Codex<b>++</b></span>
     </a>
     <nav class="nav-links">
-      <a href="#manager-live" data-nav>Live UI</a>
       <a href="#features" data-nav>Features</a>
-      <a href="#modes" data-nav>Modes</a>
       <a href="#showcase" data-nav>Showcase</a>
+      <a href="#modes" data-nav>Codex providers</a>
       <a href="#steps" data-nav>Get started</a>
       <a href="#community" data-nav>Community</a>
       <a href="#download" data-nav>Download</a>
@@ -53,12 +60,16 @@
 
   <div class="hero-inner">
     <div class="hero-copy">
-    <p class="eyebrow reveal"><span class="pulse-dot"></span>YOUR CODEX, UPGRADED — OPEN SOURCE · LOCAL · RUST + TAURI</p>
+    <p class="eyebrow reveal"><span class="pulse-dot"></span>AGENTS, UPGRADED — OPEN SOURCE · LOCAL</p>
     <h1 class="hero-title">
-      <span class="line"><span class="w">Make</span> <span class="w">Codex</span></span>
-      <span class="line"><span class="w grad">nicer</span><span class="w plus">++</span></span>
+      <span class="line"><span class="w">Better</span></span>
+      <span class="line"><span class="w grad">agents</span><span class="w plus">++</span></span>
     </h1>
-    <p class="hero-sub reveal">Manage providers and models in one place, make conversations easier to use,<br>and shape your workspace around you. No <span class="mono">app.asar</span> patches, nothing written into install dirs.</p>
+    <p class="hero-sub reveal">Providers, enhancements, and Computer Use for Codex, Claude Code, Claude Desktop, and Grok — in one manager.<br>No official app files modified; double-click and go.</p>
+    <div class="hero-agents reveal" aria-label="Works with">
+      <span class="hero-agents-label">Works with</span>
+      <ul><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/chatgpt.svg);mask-image:url(assets/agents/chatgpt.svg)" aria-hidden="true"></span>Codex</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude Code</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude Desktop</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/grok.svg);mask-image:url(assets/agents/grok.svg)" aria-hidden="true"></span>Grok</li><li class="more">DeepSeek Harness and more</li></ul>
+    </div>
     <div class="hero-cta reveal">
       <a class="btn btn-primary btn-lg magnetic" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
         <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -71,14 +82,14 @@
     </div>
     <dl class="hero-stats reveal">
       <div class="stat"><dt class="mono" data-count="32114" data-format="wan">0</dt><dd>GitHub Stars</dd></div>
-      <div class="stat"><dt class="mono" data-count="150" data-suffix="+">0</dt><dd>Mainstream models</dd></div>
-      <div class="stat"><dt class="mono" data-count="1" data-format="m">0</dt><dd>Max per-model context</dd></div>
-      <div class="stat"><dt class="mono">0</dt><dd>Files patched in the official app</dd></div>
+      <div class="stat"><dt class="mono" data-count="4">0</dt><dd>Agents managed</dd></div>
+      <div class="stat"><dt class="mono" data-count="6">0</dt><dd>Computer Use clients</dd></div>
+      <div class="stat"><dt class="mono">0</dt><dd>Official files patched</dd></div>
     </dl>
     </div>
     <div class="hero-manager" id="manager-live">
       <div class="hero-manager-window">
-        <iframe title="Codex++ manager live frontend demo" src="manager-preview/?previewRoute=enhance&amp;lang=en" loading="eager"></iframe>
+        <iframe title="Codex++ manager live frontend demo" src="manager-preview/?previewRoute=overview&amp;lang=en&amp;v=20261025" loading="eager"></iframe>
       </div>
     </div>
   </div>
@@ -88,104 +99,159 @@
   </a>
 </section>
 
-<section class="demo" id="demo">
-  <div class="demo-bg" aria-hidden="true"></div>
-  <div class="section-head">
-    <p class="eyebrow">LIVE DEMO · TYPING EFFECTS</p>
-    <h2>Every keystroke <em>answers back</em></h2>
-    <p class="section-sub">Not a video — the real particle engine shipped in Codex++, running on your screen right now. Type something.</p>
-  </div>
-  <div class="composer tilt" id="composer">
-    <div class="composer-bar">
-      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-      <span class="composer-title mono">Codex composer · codex++</span>
-    </div>
-    <div class="composer-input" id="composerInput" contenteditable="true" spellcheck="false" data-placeholder="Work with Codex, say something…"></div>
-    <div class="composer-foot">
-      <span class="chip">＋ Attach</span>
-      <span class="chip chip-warn">⛨ Full access</span>
-      <span class="spacer"></span>
-      <span class="chip chip-model">DeepSeek Flash · Max ▾</span>
-      <span class="chip send">↑</span>
-    </div>
-  </div>
-</section>
-
 <section class="features" id="features">
   <div class="section-head">
     <p class="eyebrow">FEATURES · THE MATRIX</p>
     <h2>One manager, <em>top to bottom</em></h2>
-    <p class="section-sub">Every enhancement has its own switch; with the master switch off, provider and launch management keep working.</p>
+    <p class="section-sub">Built around Codex, now covering Claude Code, Claude Desktop, and Grok. Every enhancement has its own switch; with the master switch off, provider and launch management keep working.</p>
   </div>
   <div class="feature-grid">
     <article class="fcard tilt">
       <span class="fcard-no mono">01</span>
       <h3>Switch providers freely</h3>
-      <p>Official sign-in, official + API, API-only, and aggregates. Failover switches members on errors; model aggregation pins models to members. Responses / Chat Completions conversion, model tests and Provider Doctor included.</p>
+      <p>Official login, official + API, pure API, failover, and model aggregation.</p>
+    </article>
+    <article class="fcard tilt" id="computer-use-feature">
+      <span class="fcard-no mono">02</span><span class="fcard-new">NEW</span>
+      <h3>Share Computer Use</h3>
+      <p>Lend Codex's desktop and browser control to other agents.</p>
     </article>
     <article class="fcard tilt">
-      <span class="fcard-no mono">02</span>
-      <h3>Every model, its own space</h3>
-      <p>Set context windows and compaction thresholds per model. Codex++ generates a dedicated <span class="mono">model_catalog_json</span> so Codex reads each model's window. Import model metadata; pick MCP, skills and plugins per provider.</p>
+      <span class="fcard-no mono">03</span><span class="fcard-new">NEW</span>
+      <h3>Beyond Codex</h3>
+      <p>Claude Code providers, an enhanced Claude.app, and the Grok CLI.</p>
     </article>
     <article class="fcard tilt">
-      <span class="fcard-no mono">03</span>
-      <h3>Simpler session management</h3>
-      <p>Local session scanning, delete with undo, batch management, Markdown export, token history, project moves and thread IDs.</p>
-    </article>
-    <article class="fcard tilt">
-      <span class="fcard-no mono">04</span>
-      <h3>Extend your workspace</h3>
-      <p>Browse community user scripts for model selectors, usage stats and more. Manage MCP servers, skills and Codex plugins, or hot-reload your own scripts.</p>
+      <span class="fcard-no mono">04</span><span class="fcard-new">NEW</span>
+      <h3>Request log</h3>
+      <p>Status, retries, and token usage for every request.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">05</span>
-      <h3>Smoother writing and reading</h3>
-      <p>Voice input, paste fixes, conversation width, scroll restoration, next-step suggestions, answer outlines — and the typing effects you just tried.</p>
+      <h3>Request shock absorption</h3>
+      <p>Back off and retry upstream overloads at the proxy.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">06</span>
-      <h3>Many Codex, one machine</h3>
-      <p>Launch isolated Codex instances per provider identity: separate config, sessions and data directories, running side by side, each restartable on its own.</p>
+      <h3>Every model, its own space</h3>
+      <p>Per-model context windows and auto-compact limits.</p>
     </article>
-    <article class="fcard tilt">
+    <article class="fcard tilt" id="agent-feature">
       <span class="fcard-no mono">07</span>
-      <h3>Usage status line</h3>
-      <p>Live generation speed, cache hit rate and context usage below the composer, read from local Codex session records with matching definitions. On by default.</p>
+      <h3>Delegate in a sentence</h3>
+      <p>Delegate to DeepSeek or Claude Code from a Codex chat.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">08</span>
-      <h3>Usage, with company</h3>
-      <p>Usage widgets and desktop pets: token stats, task status and budget alerts. Drag, resize, reskin, or bring your own character art.</p>
+      <h3>Simpler session management</h3>
+      <p>Scan, delete and undo, bulk-manage, export, and rewind turns.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">09</span>
-      <h3>WeChat connect</h3>
-      <p>Scan a QR code to reach your local Codex. Each contact maps to an isolated session, with an allow-list of WeChat users. Hand off work from anywhere.</p>
-    </article>
-    <article class="fcard tilt" id="agent-feature">
-      <span class="fcard-no mono">10</span>
-      <h3>Delegate in a sentence</h3>
-      <p>Ask your current Codex chat to delegate to DeepSeek Harness (dsh), Claude Code or another Codex. The selected CLI runs the task and returns results to the same chat. Configure the default agent, CLI paths and models; naming an agent selects that target.</p>
+      <h3>Many Codex, one machine</h3>
+      <p>One isolated Codex instance per provider.</p>
     </article>
     <article class="fcard tilt" id="native-fast-feature">
-      <span class="fcard-no mono">11</span>
+      <span class="fcard-no mono">10</span>
       <h3>Native Fast with an API key</h3>
-      <p>Restore the native Fast switch in API-only mode and use Codex's own Standard / ⚡ Fast controls. Off by default; the model must declare Fast (priority) support. Availability and billing depend on your provider.</p>
+      <p>Native Standard / ⚡ Fast controls with a pure API key.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">11</span>
+      <h3>Usage status line</h3>
+      <p>Speed, cache hits, and context usage under the composer.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">12</span>
-      <h3>Request shock absorption</h3>
-      <p>Absorb model capacity/overload errors (server_overloaded, server_is_overloaded, at capacity) at the proxy with backoff retries so Codex sessions are interrupted less often. The status line shows the request phase, model, elapsed time, retry count and last failure reason; streaming mode keeps live output while buffered mode absorbs overloads at any point.</p>
+      <h3>Smoother writing and reading</h3>
+      <p>Dictation, paste fix, next-step suggestions, and typing effects.</p>
     </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">13</span>
+      <h3>Extend your workspace</h3>
+      <p>Community scripts plus MCP, Skill, and Codex plugin management.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">14</span>
+      <h3>WeChat connect</h3>
+      <p>Scan to connect local Codex and dispatch work on the go.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">15</span><span class="fcard-new">NEW</span>
+      <h3>AI agent cache cleanup</h3>
+      <p>Scan and clear Codex, Claude, and Codex++ caches.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">16</span>
+      <h3>Usage, with company</h3>
+      <p>A usage widget and desktop pet in your own style.</p>
+    </article>
+  </div>
+</section>
+
+<section class="showcase" id="showcase">
+  <div class="showcase-inner">
+    <div class="section-head">
+      <p class="eyebrow">SHOWCASE · REAL UI</p>
+      <h2>What you see <em>is what ships</em></h2>
+      <p class="section-sub">Real Codex++ UI and feature graphics. Select a thumbnail to preview; click the large image to view it full size.</p>
+    </div>
+    <div class="showcase-track" id="showcaseTrack">
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-computer-use.png" target="_blank" rel="noopener"><img src="assets/manager-computer-use.png" alt="Computer Use: AI clients reach ChatGPT.app's native Computer Use and the Chrome extension through Codex++ MCP servers" loading="lazy"></a>
+        <figcaption><b>Share Computer Use</b><span>Click Connect and other agents can drive your desktop and browser.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-overview.png" target="_blank" rel="noopener"><img src="assets/manager-overview.png" alt="Overview: current provider, 24-hour request stats, and health checks" loading="lazy"></a>
+        <figcaption><b>Overview</b><span>Current provider, recent requests, and health checks at a glance.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-request-log.png" target="_blank" rel="noopener"><img src="assets/manager-request-log.png" alt="Request log: in-flight requests, automatic retries, time to first token, and token usage" loading="lazy"></a>
+        <figcaption><b>Request log</b><span>Status, retries, time to first token, and tokens, live.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-claude-providers.png?v=2" target="_blank" rel="noopener"><img src="assets/manager-claude-providers.png?v=2" alt="Claude Code provider list" loading="lazy"></a>
+        <figcaption><b>Claude Code providers</b><span>Claude Code providers with one-click switching.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/manager-claude-enhance.png" target="_blank" rel="noopener"><img src="assets/manager-claude-enhance.png" alt="Claude enhancements: localization, dictation, and Computer Use" loading="lazy"></a>
+        <figcaption><b>Claude enhancements</b><span>Chinese UI, dictation, and Computer Use; the official app stays untouched.</span></figcaption>
+      </figure>
+      <figure class="shot shot-agent" id="agent-collaboration">
+        <a class="shot-frame shot-preview" href="assets/agent-collaboration.png" target="_blank" rel="noopener" aria-label="Open the full-size sub-agent collaboration screenshot">
+          <img src="assets/agent-collaboration.png" width="1766" height="630" loading="lazy" alt="A Codex chat asks DeepSeek what 1+1 is, uses Codex Plus Collaboration, then shows DeepSeek's answer: 1+1 equals 2">
+        </a>
+        <figcaption><b>Sub-agents, in action</b><span>Codex delegates to DeepSeek via dsh and returns the result in the same chat. Click to view full size.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/codex-multi-launch.png" target="_blank" rel="noopener"><img src="assets/codex-multi-launch.png" alt="Codex multi-launch: running DeepSeek and Zhipu GLM instances" loading="lazy"></a>
+        <figcaption><b>Multi-launch</b><span>One isolated instance per provider identity, no cross-talk.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/model-picker-groups.png" target="_blank" rel="noopener"><img src="assets/model-picker-groups.png" alt="Model picker folded by provider: Provider 4 group (Default, 7 models) and DeepSeek group (2 models)" loading="lazy"></a>
+        <figcaption><b>Grouped model picker</b><span>Folded by provider, with counts and a Default badge.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/extension-market.png" target="_blank" rel="noopener"><img src="assets/extension-market.png" alt="Codex++ extension marketplace: community scripts and workflow tools" loading="lazy"></a>
+        <figcaption><b>Extension market</b><span>Install community scripts in one click: usage panels, model matrix, prompt tools.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/usage-statusline.png" target="_blank" rel="noopener"><img src="assets/usage-statusline.png" alt="Usage status line: 51 tok/s, 99.9% cache hits, 19% context" loading="lazy"></a>
+        <figcaption><b>Usage status line</b><span>51 tok/s · 99.9% cache hits · 19% context, right under the composer.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/typing-effects.png" target="_blank" rel="noopener"><img src="assets/typing-effects.png" alt="Rainbow particle typing effects in the Codex composer" loading="lazy"></a>
+        <figcaption><b>Typing effects</b><span>Rainbow particles, fireworks and starlight; pause automatically with Reduce Motion.</span></figcaption>
+      </figure>
+    </div>
   </div>
 </section>
 
 <section class="modes" id="modes">
   <div class="section-head">
-    <p class="eyebrow">PROVIDER MODES</p>
-    <h2>Four ways in, <em>your call</em></h2>
-    <p class="section-sub">Each mode is configured independently and switches in one click — the current profile is saved before the target one is written.</p>
+    <p class="eyebrow">CODEX PROVIDERS</p>
+    <h2>Codex providers, <em>your call</em></h2>
+    <p class="section-sub">Four ways in, each configured independently and switched in one click — plus a context window per model.</p>
   </div>
   <div class="seg" role="tablist" aria-label="Provider modes">
     <span class="seg-pill" aria-hidden="true"></span>
@@ -212,100 +278,44 @@
       <span class="route-node route-hot">OpenAI</span>
     </div>
   </div>
-</section>
-
-<section class="showcase" id="showcase">
-  <div class="showcase-inner">
-    <div class="section-head">
-      <p class="eyebrow">SHOWCASE · REAL UI</p>
-      <h2>What you see <em>is what ships</em></h2>
-      <p class="section-sub">Real Codex++ UI and feature graphics. Select a thumbnail to preview; click the large image to view it full size.</p>
+  <div class="modes-context">
+    <div class="modes-context-head">
+      <h3>One suffix, a million tokens</h3>
+      <p>Write a window suffix in the model list and Codex++ generates a dedicated <span class="mono">model_catalog_json</span> so Codex uses the right window per model. Models without a suffix keep provider-level settings.</p>
     </div>
-    <div class="showcase-track" id="showcaseTrack">
-      <figure class="shot shot-agent" id="agent-collaboration">
-        <a class="shot-frame shot-preview" href="assets/agent-collaboration.png" target="_blank" rel="noopener" aria-label="Open the full-size sub-agent collaboration screenshot">
-          <img src="assets/agent-collaboration.png" width="1766" height="630" loading="lazy" alt="A Codex chat asks DeepSeek what 1+1 is, uses Codex Plus Collaboration, then shows DeepSeek's answer: 1+1 equals 2">
-        </a>
-        <figcaption><b>Sub-agents, in action</b><span>Codex delegates to DeepSeek via dsh and returns the result in the same chat. Click to view full size.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/manager-enhancements.png" target="_blank" rel="noopener"><img src="assets/manager-enhancements.png" alt="Codex++ Manager: models, sessions, input behavior and widget settings in one place" loading="lazy"></a>
-        <figcaption><b>Enhancements hub</b><span>Plugins &amp; models, dialogs &amp; input, widgets &amp; pets — one page of switches.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/codex-multi-launch.png" target="_blank" rel="noopener"><img src="assets/codex-multi-launch.png" alt="Codex multi-launch: running DeepSeek and Zhipu GLM instances" loading="lazy"></a>
-        <figcaption><b>Multi-launch</b><span>One isolated instance per provider identity, no cross-talk.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/model-picker-groups.png" target="_blank" rel="noopener"><img src="assets/model-picker-groups.png" alt="Model picker folded by provider: Provider 4 group (Default, 7 models) and DeepSeek group (2 models)" loading="lazy"></a>
-        <figcaption><b>Grouped model picker</b><span>Folded by provider, with counts and a Default badge.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/extension-market.png" target="_blank" rel="noopener"><img src="assets/extension-market.png" alt="Codex++ extension marketplace: community scripts and workflow tools" loading="lazy"></a>
-        <figcaption><b>Extension market</b><span>Install community scripts in one click: usage panels, model matrix, prompt tools.</span></figcaption>
-      </figure>
-      <figure class="shot shot-feature">
-        <a class="shot-frame shot-preview" href="assets/request-status-auto-retry.png" target="_blank" rel="noopener"><img src="assets/request-status-auto-retry.png" alt="Request status and automatic retry: send a request, wait while the model is busy, then resume generation after a successful retry" loading="lazy"></a>
-        <figcaption><b>Request status and automatic retry</b><span>Wait and retry automatically when the model is busy, with progress and the last failure reason shown inline.</span></figcaption>
-      </figure>
-      <figure class="shot shot-feature">
-        <a class="shot-frame shot-preview" href="assets/request-log-auto-retry.png" target="_blank" rel="noopener"><img src="assets/request-log-auto-retry.png" alt="Request log and automatic retry: see in-flight requests, model capacity errors, retry counts and successful recovery in real time" loading="lazy"></a>
-        <figcaption><b>Request log and automatic retry</b><span>See in-flight requests in real time and follow every retry when a model is at capacity.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/usage-statusline.png" target="_blank" rel="noopener"><img src="assets/usage-statusline.png" alt="Usage status line: 51 tok/s, 99.9% cache hits, 19% context" loading="lazy"></a>
-        <figcaption><b>Usage status line</b><span>51 tok/s · 99.9% cache hits · 19% context, right under the composer.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview shot-dark" href="assets/usage-widget.png" target="_blank" rel="noopener"><img src="assets/usage-widget.png" alt="Desktop pet usage widget with token stats bubble" loading="lazy"></a>
-        <figcaption><b>Pet widget</b><span>Today's usage, task status and budget alerts — swap in your own character.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/typing-effects.png" target="_blank" rel="noopener"><img src="assets/typing-effects.png" alt="Rainbow particle typing effects in the Codex composer" loading="lazy"></a>
-        <figcaption><b>Typing effects</b><span>Rainbow particles, fireworks and starlight; pause automatically with Reduce Motion.</span></figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<section class="context" id="context">
-  <div class="section-head">
-    <p class="eyebrow">PER-MODEL CONTEXT</p>
-    <h2>One suffix, <em>a million tokens</em></h2>
-    <p class="section-sub">Write a window suffix in the model list and Codex++ generates a dedicated <span class="mono">model_catalog_json</span> so Codex uses the right window per model. Models without a suffix keep provider-level settings.</p>
-  </div>
-  <div class="context-cols">
-    <div class="term tilt" id="term">
-      <div class="term-bar">
-        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-        <span class="mono term-title">model_list · config</span>
+    <div class="context-cols">
+      <div class="term tilt" id="term">
+        <div class="term-bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="mono term-title">model_list · config</span>
+        </div>
+        <pre class="term-body mono"><code><span class="t-cm"># Write window suffixes right in the model list</span>
+  deepseek-v4-pro<span class="t-hl">[1M]</span>
+  claude-opus-5.5<span class="t-hl">[200K]</span>
+  your-model<span class="t-hl">[128000]</span>
+  
+  <span class="t-cm"># Codex++ generates model_catalog_json</span>
+  <span class="t-cm"># codex reads each model's own window ↓</span></code></pre>
+        <div class="term-out mono" id="termOut"><span class="t-ok">✓ catalog injected</span> <span class="t-dim">config.toml · model_catalog_json</span></div>
       </div>
-      <pre class="term-body mono"><code><span class="t-cm"># Write window suffixes right in the model list</span>
-deepseek-v4-pro<span class="t-hl">[1M]</span>
-claude-opus-5.5<span class="t-hl">[200K]</span>
-your-model<span class="t-hl">[128000]</span>
-
-<span class="t-cm"># Codex++ generates model_catalog_json</span>
-<span class="t-cm"># codex reads each model's own window ↓</span></code></pre>
-      <div class="term-out mono" id="termOut"><span class="t-ok">✓ catalog injected</span> <span class="t-dim">config.toml · model_catalog_json</span></div>
-    </div>
-    <div class="bars">
-      <div class="bar-row" data-pct="20">
-        <span class="bar-label mono">generic-model</span>
-        <div class="bar-track"><div class="bar-fill"></div></div>
-        <span class="bar-val mono">200K</span>
+      <div class="bars">
+        <div class="bar-row" data-pct="20">
+          <span class="bar-label mono">generic-model</span>
+          <div class="bar-track"><div class="bar-fill"></div></div>
+          <span class="bar-val mono">200K</span>
+        </div>
+        <div class="bar-row" data-pct="40">
+          <span class="bar-label mono">claude-opus-5.5</span>
+          <div class="bar-track"><div class="bar-fill"></div></div>
+          <span class="bar-val mono">400K</span>
+        </div>
+        <div class="bar-row hot" data-pct="100">
+          <span class="bar-label mono">deepseek-v4-pro</span>
+          <div class="bar-track"><div class="bar-fill"></div></div>
+          <span class="bar-val mono">1M</span>
+        </div>
+        <p class="bars-note">Each model declares its own window; the status line's context share follows the same per-model numbers.</p>
       </div>
-      <div class="bar-row" data-pct="40">
-        <span class="bar-label mono">claude-opus-5.5</span>
-        <div class="bar-track"><div class="bar-fill"></div></div>
-        <span class="bar-val mono">400K</span>
-      </div>
-      <div class="bar-row hot" data-pct="100">
-        <span class="bar-label mono">deepseek-v4-pro</span>
-        <div class="bar-track"><div class="bar-fill"></div></div>
-        <span class="bar-val mono">1M</span>
-      </div>
-      <p class="bars-note">Each model declares its own window; the status line's context share follows the same per-model numbers.</p>
     </div>
   </div>
 </section>
@@ -314,7 +324,7 @@ your-model<span class="t-hl">[128000]</span>
   <div class="section-head">
     <p class="eyebrow">GETTING STARTED</p>
     <h2>Three steps, <em>done</em></h2>
-    <p class="section-sub">Codex++ works alongside the official Codex / ChatGPT desktop app — install that first.</p>
+    <p class="section-sub">Codex features work alongside the official Codex / ChatGPT desktop app; Claude and Grok features need their own clients installed.</p>
   </div>
   <div class="steps-track">
     <article class="step tilt">
@@ -366,6 +376,10 @@ your-model<span class="t-hl">[128000]</span>
     <details class="faq-item" id="faq-native-fast">
       <summary>Why is the native Fast switch still missing?<span class="faq-x" aria-hidden="true"></span></summary>
       <div class="faq-a"><p>Confirm that you saved and restarted Codex through Codex++. In your provider's model settings, set “Fast (priority) support”, then save both the model and provider before restarting. Only declare support that your provider actually offers; unlocking the client control does not change service limits or billing.</p></div>
+    </details>
+    <details class="faq-item" id="faq-computer-use">
+      <summary>Computer Use tools don't show up in my client<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>Restart the client after connecting. Fully quit Claude Desktop first, because it rewrites its own config on exit. If the tools are still missing, check the config directory the client actually reads under “Config paths and custom directories” on the Computer Use page, and make sure ChatGPT has Accessibility and Screen Recording permissions. macOS only for now.</p></div>
     </details>
     <details class="faq-item">
       <summary>Can enhancements be disabled? Will they survive official app updates?<span class="faq-x" aria-hidden="true"></span></summary>
@@ -420,7 +434,7 @@ your-model<span class="t-hl">[128000]</span>
     <div class="cta-shade" aria-hidden="true"></div>
   </div>
   <div class="cta-inner">
-    <h2>Your Codex deserves <em>these two pluses</em></h2>
+    <h2>Your agents deserve <em>these two pluses</em></h2>
     <p class="cta-sub">Free &amp; open source · AGPL-3.0 · Windows and macOS<br>Your config and sessions never leave your machine.</p>
     <div class="dl-cards">
       <a class="dl-card tilt" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
@@ -436,7 +450,7 @@ your-model<span class="t-hl">[128000]</span>
         <i>Download →</i>
       </a>
     </div>
-    <p class="cta-note">Works with the official Codex / ChatGPT desktop app. Open Codex++, configure a provider, and hit "Launch" in the manager.</p>
+    <p class="cta-note">Works with the official Codex, Claude, and Grok clients. Open Codex++, configure a provider, and hit "Launch" in the manager.</p>
   </div>
 </section>
 
@@ -446,7 +460,7 @@ your-model<span class="t-hl">[128000]</span>
       <img src="assets/logo.png" alt="" class="brand-logo">
       <div>
         <b>Codex++</b>
-        <p>Add a little ++ to the Codex desktop app.<br>AGPL-3.0-only · Rust + Tauri</p>
+        <p>Add a little ++ to your AI coding agents.<br>AGPL-3.0-only · Rust + Tauri</p>
       </div>
     </div>
     <nav class="footer-links">
@@ -459,7 +473,7 @@ your-model<span class="t-hl">[128000]</span>
       <a href="index.html" hreflang="zh-CN" lang="zh-CN">中文</a>
     </nav>
   </div>
-  <p class="footer-fine">Codex++ is a community open-source project, not affiliated with OpenAI. Screenshots are of the real interface; desktop-pet character credits live in the repository.</p>
+  <p class="footer-fine">Codex++ is a community open-source project, not affiliated with OpenAI, Anthropic, or xAI. Screenshots are of the real interface; desktop-pet character credits live in the repository.</p>
 </footer>
 
 <canvas id="fx" aria-hidden="true"></canvas>
@@ -468,6 +482,6 @@ your-model<span class="t-hl">[128000]</span>
 <script src="assets/gsap.min.js"></script>
 <script src="assets/ScrollTrigger.min.js"></script>
 <script src="js/nebula.js"></script>
-<script src="js/main.js?v=20261017-gallery-3"></script>
+<script src="js/main.js?v=20261025-agents-1"></script>
 </body>
 </html>

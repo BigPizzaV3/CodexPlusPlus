@@ -346,3 +346,66 @@ fn migration_preserves_a_symlinked_user_config() {
     );
     assert_eq!(std::fs::read_to_string(&external_config).unwrap(), original);
 }
+
+#[test]
+fn wsl_aggregate_catalog_pointer_stays_relative() {
+    // #2591：聚合成员的目录发布走另一条写指针的路径，也必须遵守 WSL 的相对路径。
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "[desktop]\nrunCodexInWindowsSubsystemForLinux = true\n",
+    )
+    .unwrap();
+    let api = RelayProfile {
+        id: "api".to_string(),
+        relay_mode: RelayMode::PureApi,
+        base_url: "https://api.example/v1".to_string(),
+        api_key: "sk-api".to_string(),
+        model: "agg-model".to_string(),
+        model_list: "agg-model".to_string(),
+        ..RelayProfile::default()
+    };
+    let settings = BackendSettings {
+        relay_profiles_enabled: true,
+        active_relay_id: "agg".to_string(),
+        relay_profiles: vec![api],
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: "agg".to_string(),
+            name: "聚合供应商".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: true,
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember { relay_id: "api".to_string(), weight: 1 }],
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+        }],
+        active_aggregate_relay_id: "agg".to_string(),
+        ..BackendSettings::default()
+    };
+    // 聚合目录已发布过（旧版发布的 legacy 名字），这次保存应重写指针。
+    std::fs::create_dir_all(temp.path().join("model-catalogs")).unwrap();
+    std::fs::write(temp.path().join("model-catalogs/agg.json"), "{\"models\":[]}").unwrap();
+    let mut config = std::fs::read_to_string(temp.path().join("config.toml"))
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    config["model_catalog_json"] = toml_edit::value("model-catalogs/agg.json");
+    std::fs::write(temp.path().join("config.toml"), config.to_string()).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    store.save(&settings).unwrap();
+    let mut saved = settings.clone();
+    saved.settings_revision = store.revision().unwrap();
+    codex_plus_core::aggregate_catalog::save_with_active_catalog_refresh(
+        &store,
+        temp.path(),
+        &saved,
+    )
+    .unwrap();
+    let actual = pointer(temp.path());
+    assert!(
+        actual.is_relative(),
+        "WSL 下聚合目录指针不能写成 Windows 绝对路径：{actual:?}"
+    );
+    assert!(temp.path().join(&actual).is_file(), "{actual:?}");
+}

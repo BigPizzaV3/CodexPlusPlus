@@ -8,6 +8,11 @@
   historyTurnRecoveryLedger.requests ||= new Set();
   const historyTurnRecoveryState = { disposed: false };
 
+  function historyTurnRecoveryEnabled() {
+    return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
+      && codexPlusBackendSettings.codexAppHistoryTurnRecovery === true;
+  }
+
   function historyTurnRecoveryTarget() {
     if (document.hidden || /[?&]initialRoute=/.test(window.location.search)) return null;
     const ref = currentSessionRef();
@@ -201,7 +206,8 @@
     const state = historyTurnRecoveryState;
     const ledger = historyTurnRecoveryLedger;
     const result = { status: "skipped", loadedPages: 0, metadataPages: 0 };
-    if (state.disposed || !normalizedCodexThreadUuid(requestId) || ledger.requests.has(requestId)) return result;
+    if (state.disposed || !historyTurnRecoveryEnabled()
+        || !normalizedCodexThreadUuid(requestId) || ledger.requests.has(requestId)) return result;
     ledger.requests.add(requestId);
     if (ledger.requests.size > 64) ledger.requests.delete(ledger.requests.values().next().value);
     if (ledger.flight) return { ...result, status: "busy" };
@@ -214,12 +220,14 @@
         ledger.api = await discoverHistoryTurnRecoveryApi().catch(() => null);
         if (!ledger.api) return { ...result, status: "unavailable" };
       }
+      if (state.disposed || !historyTurnRecoveryEnabled()) return result;
       const owner = historyTurnRecoveryManager(ledger.api, target.marker);
       const initial = owner?.getConversation(target.id);
       const initialIslands = historyTurnRecoveryIslands(initial);
       if (!initialIslands || historyTurnRecoveryBusy(initial, initialIslands)) return result;
       const generation = initial.turnHistory.history.generation;
       const current = () => {
+        if (state.disposed || !historyTurnRecoveryEnabled()) return null;
         const mounted = historyTurnRecoveryTarget();
         if (state.disposed || owner.disposed === true || mounted?.id !== target.id
             || historyTurnRecoveryManager(ledger.api, mounted.marker) !== owner

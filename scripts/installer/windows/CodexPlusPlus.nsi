@@ -167,6 +167,12 @@ Section "Uninstall"
   Push "codex-plus-plus-manager.exe"
   Call un.WaitForProcessExit
 
+  ; 删除主程序前恢复 config.toml：仍指向本机代理 127.0.0.1:57321 时清回官方配置，
+  ; 否则卸载后官方 Codex 每次请求都 502（issue #406）。静默卸载同样执行；
+  ; 主程序失败也以 0 退出，不阻塞卸载。
+  IfFileExists "$INSTDIR\codex-plus-plus.exe" 0 +2
+    ExecWait '"$INSTDIR\codex-plus-plus.exe" --codex-plus-uninstall-cleanup'
+
   Delete "$DESKTOP\Codex++.lnk"
   Delete "$DESKTOP\Codex++ 管理工具.lnk"
   Delete "$DESKTOP\Codex++ 绠＄悊宸ュ叿.lnk"

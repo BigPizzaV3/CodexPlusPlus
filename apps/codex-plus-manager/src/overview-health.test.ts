@@ -14,18 +14,21 @@ function functionSource(name: string) {
   return declaration.getText(app);
 }
 
-test("overview merges the local server and protocol conversion and keeps the debugger", () => {
+test("overview lists the local server and protocol conversion separately and keeps the debugger", () => {
   const screen = functionSource("OverviewScreen");
   const items = functionSource("healthItems");
   assert.match(screen, /t\("Codex 版本"\)/);
   assert.match(items, /t\("Codex 应用"\)/);
   assert.doesNotMatch(screen + items, /management_shortcut|Codex\+\+ 应用入口|actions\.(checkHealth|repairShortcuts)/);
-  for (const title of ["本地服务器状态", "调试连接状态"]) {
+  // 本地服务器与协议转换拆成两项：状态互相独立（服务器在跑、转换没开是常态）。
+  for (const title of ["本地服务器状态", "协议转换", "调试连接状态"]) {
     assert.ok(items.includes(`t("${title}")`));
   }
   assert.match(items, /runtime_health/);
-  assert.match(items, /协议转换已启用/);
-  assert.match(items, /协议转换未启用/);
+  // 协议转换单独一项：开 / 关都有说明，关闭时是中性的「未启用」而不是警告。
+  assert.match(items, /经本地服务器转成 Responses/);
+  assert.match(items, /当前供应商直连 Responses/);
+  assert.match(items, /"off"/);
   assert.doesNotMatch(items, /后台服务状态|代理服务器状态|proxy_server/);
   assert.match(screen, /overview-health-grid/);
   assert.doesNotMatch(screen, /最近启动|LatestLaunch/);
@@ -40,7 +43,8 @@ test("overview merges the local server and protocol conversion and keeps the deb
   assert.match(screen, /aria-label=\{t\("刷新状态"\)\}/);
   assert.match(screen, /actions\.refreshCurrent/);
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-  assert.match(css, /\.overview-health-grid\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  // 五项按卡片最小宽度自动排列：窄窗口两列、宽窗口三列。
+  assert.match(css, /\.overview-health-grid\s*\{\s*grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(320px,\s*1fr\)\)/);
 });
 
 test("maintenance retains application entrypoint checks and repairs", () => {
@@ -51,7 +55,7 @@ test("maintenance retains application entrypoint checks and repairs", () => {
 });
 
 test("settings exposes reviewed configuration export and draft import", () => {
-  const screen = functionSource("SettingsScreen");
+  const screen = functionSource("GlobalSettingsScreen");
   assert.match(screen, /actions\.exportSettings\(\)/);
   assert.match(screen, /actions\.importSettings\(\)/);
   const entry = functionSource("App");

@@ -6,9 +6,62 @@
 
   function removeActionGroups(row) {
     document.querySelectorAll(`.${moreMenuClass}`).forEach((menu) => {
-      if (menu.__codexSessionMoreRow === row) menu.remove();
+      if (menu.__codexSessionMoreRow === row) disposeSessionMoreMenu(menu);
     });
     row.querySelectorAll(`.${actionGroupClass}`).forEach((group) => group.remove());
+  }
+
+  function closeSessionMoreMenu(menu) {
+    menu.hidden = true;
+    const row = menu.__codexSessionMoreRow || menu.closest?.("[data-codex-delete-row]");
+    row?.classList?.remove("codex-session-more-open");
+    menu.__codexSessionMoreGroup?.querySelector?.(`.${moreButtonClass}`)?.setAttribute("aria-expanded", "false");
+  }
+
+  function disposeSessionMoreMenu(menu) {
+    closeSessionMoreMenu(menu);
+    menu.__codexSessionMoreCleanup?.();
+    const group = menu.__codexSessionMoreGroup;
+    if (group?.__codexSessionMoreMenu === menu) group.__codexSessionMoreMenu = null;
+    menu.__codexSessionMoreCleanup = null;
+    menu.__codexSessionMoreRow = null;
+    menu.__codexSessionMoreGroup = null;
+    menu.remove();
+  }
+
+  function pruneSessionMoreMenus(removedMenus = []) {
+    let needsScan = false;
+    const needsDelete = codexPlusSettings().sessionDelete;
+    // 菜单挂在 body 下，不会随 React 会话行一起卸载；复用现有观察器及时释放。
+    const menus = new Set([...document.querySelectorAll(`.${moreMenuClass}`), ...removedMenus]);
+    menus.forEach((menu) => {
+      const row = menu.__codexSessionMoreRow;
+      const group = menu.__codexSessionMoreGroup;
+      if (!menu.isConnected || !row?.isConnected || !group?.isConnected || !row.contains(group)
+          || !group.querySelector(`.${moreButtonClass}`)
+          || (needsDelete && !group.querySelector(`.${buttonClass}`))) {
+        if (row?.isConnected) needsScan = true;
+        disposeSessionMoreMenu(menu);
+      }
+    });
+    return needsScan;
+  }
+
+  function pruneRemovedSessionActions(mutations) {
+    let relevantRemoval = false;
+    const removedMenus = new Set();
+    const menuSelector = `.${moreMenuClass}`;
+    const actionSelector = `.${actionGroupClass}, .${moreButtonClass}, .${buttonClass}, ${menuSelector}`;
+    for (const mutation of mutations || []) {
+      for (const node of mutation.removedNodes) {
+        if (node.nodeType !== 1 || (!node.matches(actionSelector) && !node.querySelector(actionSelector))) continue;
+        relevantRemoval = true;
+        if (node.matches(menuSelector)) removedMenus.add(node);
+        node.querySelectorAll(menuSelector).forEach((menu) => removedMenus.add(menu));
+      }
+    }
+    // 同步移动和按钮克隆替换在观察器回调前已完成，只依据最终连接状态判断。
+    return relevantRemoval && pruneSessionMoreMenus(removedMenus);
   }
 
   function stopActionButtonEvent(row, button, event) {
@@ -50,9 +103,7 @@
   function closeSessionMoreMenus(exceptMenu = null) {
     document.querySelectorAll(`.${moreMenuClass}`).forEach((menu) => {
       if (menu !== exceptMenu) {
-        menu.hidden = true;
-        menu.closest?.("[data-codex-delete-row]")?.classList.remove("codex-session-more-open");
-        menu.__codexSessionMoreRow?.classList?.remove("codex-session-more-open");
+        closeSessionMoreMenu(menu);
       }
     });
   }
@@ -67,19 +118,27 @@
 
   function installSessionMoreMenuAutoClose(row, menu) {
     const group = menu.__codexSessionMoreGroup || menu.closest?.(`.${actionGroupClass}`);
+    let closeTimer = null;
     const closeIfOutside = () => {
-      window.setTimeout(() => {
+      window.clearTimeout(closeTimer);
+      closeTimer = window.setTimeout(() => {
+        closeTimer = null;
         if (menu.hidden) return;
         const active = document.activeElement;
         if (group?.matches?.(":hover") || menu.matches?.(":hover") || menu.contains(active)) return;
-        menu.hidden = true;
-        row.classList.remove("codex-session-more-open");
-        group?.querySelector?.(`.${moreButtonClass}`)?.setAttribute("aria-expanded", "false");
+        closeSessionMoreMenu(menu);
       }, 80);
     };
     group?.addEventListener("pointerleave", closeIfOutside, true);
     menu.addEventListener("pointerleave", closeIfOutside, true);
     menu.addEventListener("focusout", closeIfOutside, true);
+    menu.__codexSessionMoreCleanup = () => {
+      window.clearTimeout(closeTimer);
+      closeTimer = null;
+      group?.removeEventListener("pointerleave", closeIfOutside, true);
+      menu.removeEventListener("pointerleave", closeIfOutside, true);
+      menu.removeEventListener("focusout", closeIfOutside, true);
+    };
   }
 
   function updateSessionMoreMenuDirection(button, menu) {
@@ -185,7 +244,10 @@
     const missingMore = needsMoreMenu && !existingMoreButton;
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !missingDelete && !missingMore) {
+    const existingMenu = existingGroup?.__codexSessionMoreMenu;
+    const menuReady = !needsMoreMenu || (existingMenu?.isConnected
+      && existingMenu.__codexSessionMoreRow === row && existingMenu.__codexSessionMoreGroup === existingGroup);
+    if (groupReady && deleteReady && menuReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !missingDelete && !missingMore) {
       return;
     }
     removeActionGroups(row);
@@ -195,6 +257,7 @@
     row.dataset.codexDeleteRow = "true";
     const group = document.createElement("div");
     group.className = actionGroupClass;
+    group.setAttribute("data-codex-plus-ext", "session-actions");
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
     if (needsMoreMenu) {
       const moreButton = document.createElement("button");
@@ -205,6 +268,7 @@
       configureActionButton(moreButton, "更多操作", "…");
       const moreMenu = document.createElement("div");
       moreMenu.className = moreMenuClass;
+      moreMenu.setAttribute("data-codex-plus-ext", "session-more-menu");
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
       if (settings.markdownExport) {
@@ -241,6 +305,7 @@
       group.appendChild(moreButton);
       moreMenu.__codexSessionMoreRow = row;
       moreMenu.__codexSessionMoreGroup = group;
+      group.__codexSessionMoreMenu = moreMenu;
       document.body.appendChild(moreMenu);
       installSessionMoreMenuAutoClose(row, moreMenu);
     }

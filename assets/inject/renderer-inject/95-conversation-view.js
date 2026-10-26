@@ -186,6 +186,7 @@
   }
 
   function scanLightweight() {
+    if (typeof syncCodexPlusTurnRewind === "function") runScanStep(syncCodexPlusTurnRewind);
     installStyle();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();
@@ -250,6 +251,22 @@
       && queryKey[1] !== "image-generation";
   }
 
+  // Codex 26.1016 起还会按模型单独限额：additional_rate_limits 里当前模型那一条
+  // limit_reached 为 true 或 allowed 为 false 时，同样锁住发送（#2646）。
+  // 混入时一并解锁，只改这两个字段，其余额度信息不动。
+  function unlockAdditionalRateLimits(limits) {
+    if (!Array.isArray(limits)) return null;
+    let changed = false;
+    const next = limits.map((entry) => {
+      const rateLimit = entry?.rate_limit;
+      if (!rateLimit || typeof rateLimit !== "object") return entry;
+      if (rateLimit.allowed !== false && rateLimit.limit_reached !== true) return entry;
+      changed = true;
+      return { ...entry, rate_limit: { ...rateLimit, allowed: true, limit_reached: false } };
+    });
+    return changed ? next : null;
+  }
+
   // 低额度提示和发送锁都只看当前是不是官登混入 Key。纯官登不改这份用量。
   // 桌面端发送按钮读 rate_limit.allowed；limit_reached 为 true 也会被当成已用完。
   // 混入时在查询发布前把 allowed 写成 true，并清掉 limit_reached。
@@ -269,6 +286,13 @@
     const rateLimit = value.rate_limit;
     if (policy.unlockSend && (rateLimit.allowed !== true || rateLimit.limit_reached === true)) {
       next.rate_limit = { ...rateLimit, allowed: true, limit_reached: false };
+      changed = true;
+    }
+    const additionalRateLimits = policy.unlockSend
+      ? unlockAdditionalRateLimits(value.additional_rate_limits)
+      : null;
+    if (additionalRateLimits) {
+      next.additional_rate_limits = additionalRateLimits;
       changed = true;
     }
     if (policy.hideAlerts) {
@@ -913,6 +937,7 @@
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
+    refreshSideChatSaveButtons();
     removeLegacyCodexServiceTierBadges();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
@@ -928,6 +953,7 @@
   }
 
   function scan() {
+    pruneSessionMoreMenus();
     if (document.hidden) {
       window.__codexSessionDeleteScanPending = true;
       return;

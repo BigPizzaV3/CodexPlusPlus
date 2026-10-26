@@ -388,3 +388,70 @@ fn wal_reuse_with_unchanged_size_and_timestamps_is_detected_by_index_header() {
     assert_eq!(fresh.total_count, 12);
     assert_eq!(fresh.sessions[0].id, "b");
 }
+
+#[test]
+fn thread_names_from_session_index_override_titles_with_latest_entry() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    let paths = [home.join("state_5.sqlite")];
+    let db = threads(&paths[0]);
+    insert(&db, "renamed", "你好", Some(2));
+    insert(&db, "plain", "首条消息", Some(1));
+    let index = home.join("session_index.jsonl");
+    // Codex 追加写：同一 ID 后写的名字生效；坏行、空名字和别的会话都不影响结果。
+    std::fs::write(
+        &index,
+        concat!(
+            r#"{"id":"renamed","thread_name":"旧名","updated_at":"2026-01-01T00:00:00Z"}"#,
+            "\n",
+            "not json\n",
+            r#"{"id":"renamed","thread_name":"新名","updated_at":"2026-01-02T00:00:00Z"}"#,
+            "\r\n",
+            r#"{"id":"renamed","thread_name":"  ","updated_at":"2026-01-03T00:00:00Z"}"#,
+            "\n",
+            r#"{"id":"ghost","thread_name":"不存在的会话"}"#,
+            "\n",
+            r#"{"thread_name":"缺 ID"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    let mut pager = LocalSessionPager::default();
+    let page = pager.list_page_with_thread_names(home, &paths, 0, 10);
+    assert_eq!(ids(&page), ["renamed", "plain"]);
+    assert_eq!(page.sessions[0].title, "新名");
+    assert_eq!(page.sessions[1].title, "首条消息");
+    // 普通 list_page 不读索引，保持原有行为。
+    assert_eq!(pager.list_page(&paths, 0, 10).sessions[0].title, "你好");
+
+    // 再次改名（文件变长）后应重新读取，而不是沿用缓存。
+    let mut text = std::fs::read_to_string(&index).unwrap();
+    text.push_str(r#"{"id":"plain","thread_name":"后来改的名"}"#);
+    std::fs::write(&index, text).unwrap();
+    let page = pager.list_page_with_thread_names(home, &paths, 0, 10);
+    assert_eq!(page.sessions[0].title, "新名");
+    assert_eq!(page.sessions[1].title, "后来改的名");
+}
+
+#[test]
+fn thread_names_fall_back_to_thread_title_without_session_index() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    let paths = [home.join("state_5.sqlite")];
+    let db = threads(&paths[0]);
+    insert(&db, "a", "你好", Some(1));
+    let mut pager = LocalSessionPager::default();
+    let page = pager.list_page_with_thread_names(home, &paths, 0, 10);
+    assert_eq!(ids(&page), ["a"]);
+    assert_eq!(page.sessions[0].title, "你好");
+
+    // 索引出现后生效；索引被删掉后回落 threads.title。
+    let index = home.join("session_index.jsonl");
+    std::fs::write(&index, r#"{"id":"a","thread_name":"改过的名"}"#).unwrap();
+    let page = pager.list_page_with_thread_names(home, &paths, 0, 10);
+    assert_eq!(page.sessions[0].title, "改过的名");
+    std::fs::remove_file(&index).unwrap();
+    let page = pager.list_page_with_thread_names(home, &paths, 0, 10);
+    assert_eq!(page.sessions[0].title, "你好");
+}

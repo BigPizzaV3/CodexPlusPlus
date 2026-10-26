@@ -98,6 +98,21 @@ const HELPER_BIND_RETRY_TIMEOUT_MS: u64 = 6_000;
 const PROTOCOL_PROXY_BIND_RETRY_TIMEOUT_MS: u64 = 10_000;
 const HELPER_BIND_RETRY_INTERVAL_MS: u64 = 200;
 
+/// 注入重试的总时长预算（issue #2681）。
+///
+/// 过去这里只有「最多 120 次」这一个上限，而单次失败本身还要等 CDP 连接超时
+/// （实测约 92 秒），于是 Codex 根本没监听调试端口时，启动器会空转三个多小时，
+/// 期间界面上一直停在「启动中」。改成按总时长收敛：预算耗尽即判失败并降级，
+/// 由上层写入 `running_degraded` 让用户知道增强没生效。
+const INJECTION_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+/// 两次注入尝试之间的间隔；失败很快时用它避免忙等。
+const INJECTION_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// 注入失败日志的节流周期：只在第 1 次和之后每隔这么多次各记一条。
+///
+/// 每次失败都记完整错误串会把诊断日志刷到十几 MB（issue #2681），
+/// 而这些记录内容彼此相同，保留首末与次数就够了。
+const INJECTION_LOG_EVERY_ATTEMPTS: u32 = 10;
+
 /// Asynchronous callback used by the bridge watchdog to restore a launcher-specific bridge.
 ///
 /// Callers that install a custom [`crate::routes::BridgeContext`] should configure this callback
@@ -433,29 +448,44 @@ pub trait LaunchHooks: Send + Sync {
         self.inject(debug_port, helper_port).await
     }
     async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
-        for attempt in 1..=120 {
-            let result = match self.bridge_context(debug_port, app_dir).await {
-                Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
-                Ok(None) => self.inject(debug_port, helper_port).await,
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(()) => return true,
-                Err(error) => {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.ensure_injection_retry_failed",
-                        serde_json::json!({
-                            "debug_port": debug_port,
-                            "helper_port": helper_port,
-                            "attempt": attempt,
-                            "message": error.to_string()
-                        }),
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let outcome = run_injection_attempts(
+            INJECTION_TOTAL_BUDGET,
+            INJECTION_RETRY_INTERVAL,
+            INJECTION_LOG_EVERY_ATTEMPTS,
+            |attempt, message| {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.ensure_injection_retry_failed",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "helper_port": helper_port,
+                        "attempt": attempt,
+                        "message": message,
+                    }),
+                );
+            },
+            |_attempt| async move {
+                match self.bridge_context(debug_port, app_dir).await {
+                    Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
+                    Ok(None) => self.inject(debug_port, helper_port).await,
+                    Err(error) => Err(error),
                 }
-            }
-        }
-        false
+            },
+        )
+        .await;
+        // 只在结束时记一条结论，避免每次失败都刷一整条 JSON（issue #2681）。
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.ensure_injection_done",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "helper_port": helper_port,
+                "ready": outcome.ready,
+                "attempts": outcome.attempts,
+                "elapsed_ms": outcome.elapsed_ms,
+                "reason": outcome.reason.as_str(),
+                "last_error": outcome.last_error,
+            }),
+        );
+        outcome.ready
     }
     /// 初次启动初始化结束时固定身份（包含注入降级）；watchdog 不能重新绑定实例。
     async fn capture_injected_launch_identity(&self, _debug_port: u16) {}
@@ -533,6 +563,116 @@ fn error_is_bind_forbidden(error: &anyhow::Error) -> bool {
             .downcast_ref::<std::io::Error>()
             .is_some_and(crate::ports::port_bind_forbidden)
     })
+}
+
+/// 一次注入重试过程为什么停下（issue #2681）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InjectionStopReason {
+    /// 注入成功，可以继续启动流程。
+    Succeeded,
+    /// 总时长预算耗尽，按失败降级处理。
+    BudgetExhausted,
+}
+
+impl InjectionStopReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::BudgetExhausted => "budget_exhausted",
+        }
+    }
+}
+
+/// 注入重试的结果，供调用方写一条结论日志。
+#[derive(Debug, Clone)]
+struct InjectionOutcome {
+    ready: bool,
+    attempts: u32,
+    elapsed_ms: u128,
+    reason: InjectionStopReason,
+    last_error: Option<String>,
+}
+
+/// 带总时长预算的注入重试循环（issue #2681）。
+///
+/// 单次注入失败往往要等 CDP 连接超时（实测约 92 秒），只按次数封顶会让启动器
+/// 空转数小时。这里改成到点即停，并把失败日志按 `log_every_attempts` 节流，
+/// 既保证「注入失败」能很快反映到界面，也不会把诊断日志刷爆。
+///
+/// `log_failure` 由调用方注入，是为了让节流行为能在测试里直接数调用次数，
+/// 而不必去动进程级的诊断日志路径（那是全局状态，并发测试会互相干扰）。
+async fn run_injection_attempts<F, Fut, L>(
+    budget: std::time::Duration,
+    retry_interval: std::time::Duration,
+    log_every_attempts: u32,
+    mut log_failure: L,
+    mut attempt: F,
+) -> InjectionOutcome
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+    L: FnMut(u32, &str),
+{
+    let started = std::time::Instant::now();
+    let deadline = started + budget;
+    let log_every_attempts = log_every_attempts.max(1);
+    let mut attempts = 0u32;
+    let mut last_error: Option<String> = None;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return InjectionOutcome {
+                ready: false,
+                attempts,
+                elapsed_ms: started.elapsed().as_millis(),
+                reason: InjectionStopReason::BudgetExhausted,
+                last_error,
+            };
+        }
+        attempts += 1;
+        match tokio::time::timeout(remaining, attempt(attempts)).await {
+            Ok(Ok(())) => {
+                return InjectionOutcome {
+                    ready: true,
+                    attempts,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    reason: InjectionStopReason::Succeeded,
+                    last_error: None,
+                };
+            }
+            Ok(Err(error)) => last_error = Some(error.to_string()),
+            // 单次尝试把剩余预算耗光：算超时，不再往下重试。
+            Err(_) => {
+                last_error = Some(format!(
+                    "injection attempt timed out after {} ms of the total budget",
+                    budget.as_millis()
+                ));
+                return InjectionOutcome {
+                    ready: false,
+                    attempts,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    reason: InjectionStopReason::BudgetExhausted,
+                    last_error,
+                };
+            }
+        }
+        // 首次失败立刻记一条，之后每隔 N 次记一条，避免 100+ 条同内容记录。
+        if attempts == 1 || attempts % log_every_attempts == 0 {
+            log_failure(attempts, last_error.as_deref().unwrap_or_default());
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return InjectionOutcome {
+                ready: false,
+                attempts,
+                elapsed_ms: started.elapsed().as_millis(),
+                reason: InjectionStopReason::BudgetExhausted,
+                last_error,
+            };
+        }
+        tokio::time::sleep(remaining.min(retry_interval)).await;
+    }
 }
 
 /// 把 helper 端口 bind 失败翻译成用户能照着处理的提示。
@@ -759,6 +899,42 @@ where
             }
         }
         timeline.mark("sanitize_historical_model_suffixes_done", 50);
+        // issue #2081：切换时只记录了待迁移项，这里 Codex 尚未启动，再回填旧会话模型。
+        match crate::codex_sqlite::apply_pending_thread_model_migration(
+            &home,
+            settings.thread_model_follow_switch_enabled,
+        ) {
+            Ok(0) => {}
+            Ok(updated) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.thread_model_migration",
+                    serde_json::json!({ "updated": updated }),
+                );
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.thread_model_migration_failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+        // issue #2632：纯 API 供应商下 Work 视图要求 ChatGPT 账号身份，发送即失败。
+        // 开关打开时在 Codex 启动前把详情模式写回 Codex 视图；失败不阻断启动。
+        match crate::work_view::apply_detail_mode_preference(&home, &settings) {
+            Ok(Some(previous)) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.work_view_disabled",
+                    serde_json::json!({ "previous": previous }),
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.work_view_disable_failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
             || remote_control_provider_proxy_enabled(&settings);
         // issue #2264：重启链路上的模型漂移修复。launcher 不重放完整 apply（那会
@@ -958,27 +1134,17 @@ fn active_relay_profile_is_official_mix(settings: &BackendSettings) -> bool {
     profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
 #[cfg(windows)]
-fn apply_codexplusplus_window_icon_after_launch(process_id: u32) {
-    let icon_resource_path =
-        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-plus-plus.exe"));
+fn apply_codexplusplus_taskbar_after_launch(process_id: u32) {
     tokio::spawn(async move {
-        let mut state = crate::windows_integration::WindowIconApplyState::default();
         for attempt in 1..=30 {
-            if crate::windows_integration::apply_codexplusplus_icon_attempt(
-                process_id,
-                &icon_resource_path,
-                &mut state,
-            ) {
+            if crate::windows_integration::apply_codexplusplus_taskbar_to_process_window(process_id) {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             if attempt == 30 {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.window_icon.apply_failed",
-                    serde_json::json!({
-                        "process_id": process_id,
-                        "icon_resource_path": icon_resource_path.to_string_lossy()
-                    }),
+                    "launcher.taskbar.apply_failed",
+                    serde_json::json!({ "process_id": process_id }),
                 );
             }
         }
@@ -986,7 +1152,7 @@ fn apply_codexplusplus_window_icon_after_launch(process_id: u32) {
 }
 
 #[cfg(not(windows))]
-fn apply_codexplusplus_window_icon_after_launch(_process_id: u32) {}
+fn apply_codexplusplus_taskbar_after_launch(_process_id: u32) {}
 
 pub trait IntoLaunchHooks {
     fn into_launch_hooks(self) -> Arc<dyn LaunchHooks>;
@@ -1262,7 +1428,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                             *self.packaged_activation_process.lock().await = process;
                             *self.packaged_launch_identity.lock().await = None;
                         }
-                        apply_codexplusplus_window_icon_after_launch(process_id);
+                        apply_codexplusplus_taskbar_after_launch(process_id);
                         return Ok(match activation {
                             CodexLaunch::PackagedActivation {
                                 app_user_model_id,
@@ -2705,6 +2871,7 @@ async fn handle_protocol_proxy_connection(
             upstream.take_response()?,
             upstream.wire_api,
             request_json.as_ref(),
+            session_headers.thread_id,
         )
         .await?;
         if let Some(first_output_at_ms) = first_output_at_ms {
@@ -3327,6 +3494,7 @@ async fn forward_protocol_proxy_stream(
     response: reqwest::Response,
     wire_api: crate::protocol_proxy::UpstreamWireApi,
     request: Option<&Value>,
+    thread_id: Option<&str>,
 ) -> anyhow::Result<(
     Option<String>,
     Option<crate::request_log::RequestUsage>,
@@ -3486,7 +3654,17 @@ async fn forward_protocol_proxy_stream(
         ));
     }
     stream.write_all(&converter.finish()).await?;
+    record_chat_converter_usage(thread_id, &converter);
     Ok((None, None, None, first_output_at_ms))
+}
+
+fn record_chat_converter_usage(
+    thread_id: Option<&str>,
+    converter: &crate::protocol_proxy::ChatSseToResponsesConverter,
+) {
+    if let Some(usage) = converter.latest_usage() {
+        crate::context_usage::record_usage(thread_id, converter.model(), usage);
+    }
 }
 
 fn log_helper_response(
@@ -7252,7 +7430,7 @@ mod proxy_stream_tests {
         let (mut writer, _) = downstream.accept().await.unwrap();
         let forwarded = tokio::spawn(async move {
             let (result, _usage, _detail, first_output_at_ms) =
-                forward_protocol_proxy_stream(&mut writer, &prefix, response, wire, None)
+                forward_protocol_proxy_stream(&mut writer, &prefix, response, wire, None, None)
                     .await
                     .unwrap();
             writer.shutdown().await.unwrap();
@@ -7502,7 +7680,14 @@ mod proxy_stream_tests {
 
         let forwarded = timeout(
             Duration::from_secs(20),
-            forward_protocol_proxy_stream(&mut writer, &[], response, UpstreamWireApi::Responses, None),
+            forward_protocol_proxy_stream(
+                &mut writer,
+                &[],
+                response,
+                UpstreamWireApi::Responses,
+                None,
+                None,
+            ),
         )
         .await
         .expect("上游发完终止块后转发必须结束")
@@ -7515,5 +7700,102 @@ mod proxy_stream_tests {
         assert!(forwarded_bytes.len() > 5 * 1024 * 1024, "超大事件必须完整转发，收到 {} 字节", forwarded_bytes.len());
         assert!(forwarded_bytes.ends_with(b"data:{\"type\":\"response.completed\"}\n\n"));
         upstream_task.abort();
+    }
+}
+
+#[cfg(test)]
+mod injection_budget_tests {
+    use super::{InjectionStopReason, run_injection_attempts};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn injection_stops_when_total_budget_is_exhausted() {
+        // 每次尝试都卡住：总预算耗尽后必须返回，而不是跑满次数上限（issue #2681）。
+        let outcome = run_injection_attempts(
+            Duration::from_millis(120),
+            Duration::from_millis(10),
+            10,
+            |_attempt, _message| {},
+            |_attempt| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                anyhow::bail!("should never finish");
+            },
+        )
+        .await;
+
+        assert!(!outcome.ready);
+        assert_eq!(outcome.reason, InjectionStopReason::BudgetExhausted);
+        assert_eq!(outcome.attempts, 1, "单次尝试吃光预算后不应再重试");
+        assert!(
+            outcome
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("timed out"),
+            "应记录超时原因，实际 {:?}",
+            outcome.last_error
+        );
+        assert!(
+            outcome.elapsed_ms < 3_000,
+            "总耗时必须收敛到预算量级，实际 {} ms",
+            outcome.elapsed_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn injection_succeeds_on_later_attempt() {
+        let mut calls = 0;
+        let outcome = run_injection_attempts(
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            10,
+            |_attempt, _message| {},
+            |_attempt| {
+                calls += 1;
+                let attempt = calls;
+                async move {
+                    if attempt < 3 {
+                        anyhow::bail!("cdp not ready yet");
+                    }
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        assert!(outcome.ready);
+        assert_eq!(outcome.reason, InjectionStopReason::Succeeded);
+        assert_eq!(outcome.attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn injection_failure_logging_is_throttled() {
+        let logged_attempts = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+        let logged = logged_attempts.clone();
+
+        let outcome = run_injection_attempts(
+            Duration::from_millis(400),
+            Duration::from_millis(1),
+            10,
+            |attempt, message| {
+                assert!(message.contains("connect refused"));
+                logged.lock().unwrap().push(attempt);
+            },
+            |_attempt| async { anyhow::bail!("connect refused") },
+        )
+        .await;
+
+        assert!(!outcome.ready);
+        assert!(outcome.attempts >= 20, "失败很快时应尝试足够多次");
+        let logged = logged_attempts.lock().unwrap();
+        // 首次 + 每 10 次一条；关键是不能随尝试次数线性增长。
+        assert_eq!(logged.first().copied(), Some(1));
+        assert_eq!(logged.len(), 1 + (outcome.attempts as usize / 10));
+        assert!(
+            logged.len() * 5 < outcome.attempts as usize,
+            "{} 次尝试只应记少量日志，实际 {} 条",
+            outcome.attempts,
+            logged.len()
+        );
     }
 }

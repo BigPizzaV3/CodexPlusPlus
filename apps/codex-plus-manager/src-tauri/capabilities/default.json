@@ -1,9 +1,13 @@
 {
   "identifier": "default",
-  "description": "Default permissions for the Codex++ Manager main window. Grants the dialog plugin's default permission set so the file/folder picker can be opened from settings (fixes #345).",
-  "windows": ["main"],
+  "description": "Default permissions for the Codex++ Manager main window. Grants the dialog plugin's default permission set so the file/folder picker can be opened from settings (fixes #345). The cu-pip window is the Computer Use floating preview.",
+  "windows": [
+    "main",
+    "cu-pip"
+  ],
   "permissions": [
     "core:default",
-    "dialog:default"
+    "dialog:default",
+    "core:window:allow-start-dragging"
   ]
 }

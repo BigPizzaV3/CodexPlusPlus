@@ -52,12 +52,12 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
     },
     formatProgressPercent: (value: number) => String(value),
     Panel: "Panel", CardHead: "CardHead", CardContent: "CardContent", Field: "Field", AppSelect: "AppSelect", Button: "Button", ToggleVisual: "ToggleVisual",
-    RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", Info: "Info", ChevronDown: "ChevronDown", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
+    RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", SettingsAutoSave: "SettingsAutoSave", Info: "Info", ChevronDown: "ChevronDown", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
   });
   vm.runInContext(ts.transpileModule(fn.getText(app), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
   let synced = 0; let repaired = 0; let saved = 0; let recovered = 0;
   const targets: string[] = []; const drafts: any[] = [];
-  const props = { form: { providerSyncEnabled: false }, providerSyncProgress: { active: false, percent: 0 }, sessionIndexRepairActive: false,
+  const props = { dirty: true, form: { providerSyncEnabled: false }, providerSyncProgress: { active: false, percent: 0 }, sessionIndexRepairActive: false,
     sessionIndexRepairReport: null, sessionIndexRepairReportError: null,
     providerSyncTargets: { targets: [{ id: "target", isResolvable: true, isCurrentProvider: false }] }, selectedProviderSyncTarget: "target",
     onFormChange: (draft: any) => { drafts.push(draft); }, actions: {
@@ -82,10 +82,12 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
   assert.equal(button("修复历史会话").props.disabled, false);
   button("修复历史会话").props.onClick();
   button("修复会话索引").props.onClick();
-  button("保存设置").props.onClick();
+  // 开关改为自动保存：面板里不再有「保存设置」按钮，由 SettingsAutoSave 接管。
+  assert.equal(button("保存设置"), undefined);
+  assert.equal(nodes.find((node) => node.type === "SettingsAutoSave").props.dirty, true);
   nodes.find((node) => node.type === "AppSelect").props.onChange("another-target");
   nodes.find((node) => node.type === "input" && node.props.type === "checkbox").props.onChange({ currentTarget: { checked: true } });
-  assert.equal(synced, 1); assert.equal(repaired, 1); assert.equal(saved, 1);
+  assert.equal(synced, 1); assert.equal(repaired, 1); assert.equal(saved, 0);
   assert.deepEqual(targets, ["another-target"]); assert.equal(drafts[0].providerSyncEnabled, true);
   tree.props.onToggle({ currentTarget: { open: false } });
   assert.equal(render(props).props.open, false);

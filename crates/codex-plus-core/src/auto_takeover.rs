@@ -136,7 +136,6 @@ impl Default for ActivePolicy {
 /// 为什么必须跳过：`osascript quit`（macOS）与 `taskkill /T`（Windows）都是按
 /// **进程/应用**动作的，会把用户正在用的第二实例一起收掉。多开实例各自带着自己的
 /// 调试端口，所以「端口不同」就是最可靠的判据。
-#[cfg(any(target_os = "macos", windows, test))]
 pub fn has_other_desktop_instance(
     app_dir: &Path,
     exclude_port: u16,
@@ -178,6 +177,11 @@ pub fn has_other_desktop_instance(
         return main_pids.iter().any(|process_id| {
             !debug_port_pids.contains(process_id) && Some(*process_id) != current_pid
         });
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (app_dir, exclude_port, current_pid);
+        false
     }
 }
 

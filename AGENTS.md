@@ -92,3 +92,4 @@
 
 - 默认直接提交并合入 `main`。
 - 仅在用户明确要求时创建 PR。
+- 提交信息、PR 描述里不加 `Co-Authored-By: Claude …` 等 AI 署名；本地 `.git/hooks/commit-msg` 也会自动删掉这一行。

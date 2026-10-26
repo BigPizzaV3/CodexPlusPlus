@@ -7,6 +7,9 @@ use crate::user_scripts::UserScriptManager;
 pub const DEFAULT_MARKET_INDEX_URL: &str =
     "https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlusScriptMarket/main/index.json";
 
+const MARKET_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const MARKET_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ScriptMarketManifest {
     pub version: u64,
@@ -62,8 +65,22 @@ pub fn parse_market_manifest(raw: Value) -> anyhow::Result<ScriptMarketManifest>
     })
 }
 
+/// 脚本市场固定访问 GitHub raw，必须走系统代理 / 环境变量代理，
+/// 否则需要代理的网络里会一直连不上（#1329 / #1339）。
+fn market_http_client(url: &str) -> anyhow::Result<reqwest::Client> {
+    crate::http_client::proxied_client_for_url_with_timeouts(
+        "CodexPlusPlus/script-market",
+        url,
+        MARKET_CONNECT_TIMEOUT,
+        MARKET_TOTAL_TIMEOUT,
+    )
+    .context("无法建立脚本市场连接")
+}
+
 pub async fn fetch_market_manifest(url: &str) -> anyhow::Result<ScriptMarketManifest> {
-    let raw = reqwest::get(url)
+    let raw = market_http_client(url)?
+        .get(url)
+        .send()
         .await
         .with_context(|| format!("failed to request script market index {url}"))?
         .error_for_status()
@@ -75,7 +92,9 @@ pub async fn fetch_market_manifest(url: &str) -> anyhow::Result<ScriptMarketMani
 }
 
 pub async fn download_script(url: &str) -> anyhow::Result<Vec<u8>> {
-    Ok(reqwest::get(url)
+    Ok(market_http_client(url)?
+        .get(url)
+        .send()
         .await
         .with_context(|| format!("failed to request script {url}"))?
         .error_for_status()

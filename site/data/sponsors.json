@@ -13,16 +13,6 @@
   },
   "ads": [
     {
-      "id": "grooroute",
-      "type": "sponsor",
-      "title": "GrooRoute",
-      "description": "GrooRoute 提供 Claude 与 GPT 全系官方原模型，一行配置即可接入 Claude Code、Codex 或直接调用 API，官方承诺不掺假、永久保真。",
-      "url": "https://grooroute.com/register?aff=2B3KJR5SRNTX",
-      "image": "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/grooroute-lockup.png",
-      "expires_at": "2026-10-15",
-      "highlights": ["Claude / GPT 全系官方模型", "一行配置接入", "永久保真"]
-    },
-    {
       "id": "runapi-openrouter-alternative",
       "type": "sponsor",
       "title": "RunAPI",
@@ -49,7 +39,7 @@
       "description": "FennoAI 是稳定、高效的 API 中转服务商，兼容 OpenAI 及 Anthropic 协议，可灵活接入 Codex、Claude Code、OpenCode 等主流编程工具，支持公对公结算、开票。",
       "url": "https://api.fenno.ai/s/ZZM7",
       "image": "https://cdn.jsdelivr.net/gh/BigPizzaV3/CodexPlusPlus@main/docs/images/sponsor-fenno-ai.png",
-      "expires_at": "2026-12-31",
+      "expires_at": "2026-11-27",
       "highlights": ["兼容 OpenAI / Anthropic 协议", "企业级稳定性", "支持开票"]
     },
     {
@@ -59,7 +49,7 @@
       "description": "七牛云 AI 是七牛云（02567.HK）旗下企业级大模型 MaaS 平台，可一站式调用全球 150 多个主流模型，兼容全球主流模型厂商协议，覆盖文本、图像、音频、视频、文件处理等全模态能力。",
       "url": "https://s.qiniu.com/7zUJri",
       "image": "https://cdn.jsdelivr.net/gh/BigPizzaV3/CodexPlusPlus@main/docs/images/sponsor-qiniu-ai.png",
-      "expires_at": "2026-12-31",
+      "expires_at": "2026-11-27",
       "highlights": ["150+ 主流模型", "企业级 MaaS", "全模态能力"]
     },
     {
@@ -69,7 +59,7 @@
       "description": "百可为AI 是面向开发者、团队和 AI 工具用户的一站式大模型 API 服务平台，支持 Claude、OpenAI、Gemini、Codex 等主流模型能力接入，提供稳定中转、灵活计费、用量统计与余额管理。",
       "url": "https://cn.hb-api.online/register?aff=8KA2ZKWNHND8",
       "image": "https://cdn.jsdelivr.net/gh/BigPizzaV3/CodexPlusPlus@main/docs/images/sponsor-baikewei-ai.jpg",
-      "expires_at": "2026-12-31",
+      "expires_at": "2026-11-13",
       "highlights": ["一站式接入", "稳定中转", "灵活计费"]
     }
   ]

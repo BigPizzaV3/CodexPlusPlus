@@ -62,6 +62,7 @@
         globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
           enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
           codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
+          nativeFastLocalApiConfigured: codexPlusBackendSettings.nativeFastLocalApiConfigured === true,
         });
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
       }
@@ -669,12 +670,22 @@
     return Number.isFinite(expiresAt) && expiresAt < Date.now();
   }
 
+  /**
+   * 广告落地页只认 http(s)。
+   *
+   * 清单来自远程，`javascript:` 之类的 scheme 一旦写进 `<a href>`，点击就会在
+   * Codex 渲染进程里执行脚本；`escapeHtml` 只挡得住标签，挡不住 scheme。
+   */
+  function isCodexPlusAdWebUrl(value) {
+    return /^https?:\/\/[^\s/]/i.test(String(value || "").trim());
+  }
+
   function normalizeCodexPlusAds(payload) {
     if (!payload || !Array.isArray(payload.ads)) return [];
     // 只留赞助商推荐。上游清单里的 normal 条目不属于合作伙伴分组，
     // 放进来只会让「有数据但渲染不出东西」的状态变得难以判断。
     return payload.ads.filter((ad) => {
-      return ad && ad.type === "sponsor" && ad.title && ad.description && ad.url && !isCodexPlusAdExpired(ad);
+      return ad && ad.type === "sponsor" && ad.title && ad.description && isCodexPlusAdWebUrl(ad.url) && !isCodexPlusAdExpired(ad);
     }).map((ad) => ({
       id: String(ad.id || ad.title),
       type: ad.type,
@@ -1247,6 +1258,10 @@
               <h2 class="codex-plus-settings-section-title">对话与输入</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">轮次回退（实验性）</div><div class="codex-plus-row-description">在回答的“分支到新聊天”下增加回退入口。先保存恢复记录，再由 AI 撤销可恢复操作，全部完成后截断本轮及后续历史。仅支持本地聊天；无法撤销的操作会保留记录。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="turnRewind"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">悬浮球 · 下一步建议</div><div class="codex-plus-row-description">生成下一步建议。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
                 </div>
@@ -1273,6 +1288,10 @@
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">分享会话按钮</div><div class="codex-plus-row-description">在当前会话工具栏显示分享按钮，关闭后立即隐藏。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionShare"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">旁支保存</div><div class="codex-plus-row-description">在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sideChatSave"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
@@ -1314,6 +1333,10 @@
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">历史轮次补载（实验）</div><div class="codex-plus-row-description">索引检查后补齐当前会话的历史消息和用时，默认关闭。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="historyTurnRecovery"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">Codex 用量挂件</div><div class="codex-plus-row-description">显示当前 Codex 会话用量、任务状态与可用的供应商余额。可拖动、上传角色图片和设置提醒；默认静音。</div></div>
@@ -1523,9 +1546,11 @@
       // Discord / Telegram / Issues 按钮也一律走 window.open）。
       const adCard = target?.closest("[data-codex-plus-ad-url]");
       if (adCard) {
+        // 无论 URL 合不合法都先掐掉 <a> 的默认行为：留下它，非 http(s) 的
+        // scheme 就会走原生跳转，而不是被下面这层挡掉。
+        event.preventDefault();
         const adUrl = adCard.getAttribute("data-codex-plus-ad-url") || "";
-        if (/^https?:\/\//i.test(adUrl)) {
-          event.preventDefault();
+        if (isCodexPlusAdWebUrl(adUrl)) {
           window.open(adUrl, "_blank", "noopener,noreferrer");
         }
         return;

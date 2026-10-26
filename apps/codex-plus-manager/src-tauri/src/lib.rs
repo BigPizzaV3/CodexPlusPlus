@@ -1,5 +1,7 @@
 mod auto_takeover;
 mod agent_collaboration_commands;
+mod computer_use_commands;
+mod cu_pip;
 mod global_dictation;
 pub mod commands;
 pub mod install;
@@ -8,7 +10,7 @@ mod runtime_health;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 const TRAY_ID: &str = "codex_plus_tray";
@@ -16,6 +18,8 @@ const TRAY_ID: &str = "codex_plus_tray";
 static APP_EXITING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
+/// 退出清理的等待上限（秒）：超过就直接退出，避免卡在托盘里退不掉（#2611）。
+const SHUTDOWN_WATCHDOG: u64 = 10;
 const TRAY_MENU_SHOW: &str = "tray_show_main";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
 const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
@@ -26,6 +30,109 @@ pub(crate) fn app_is_exiting() -> bool {
 
 pub fn run_agent_collaboration_mcp(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
     agent_collaboration_commands::run_mcp(args)
+}
+
+/// Computer Use 诊断入口。只给命令行与排障使用，不经过 GUI，也不注册到路由。
+/// Computer Use 的 MCP 入口（stdio）。作为代理运行，直到客户端断开。
+pub fn run_computer_use_mcp() -> anyhow::Result<()> {
+    codex_plus_core::computer_use_proxy::serve()
+}
+
+/// 浏览器控制的 MCP 入口（stdio）。与 CU 分开：原生 CU server 没有浏览器工具，
+/// 浏览器面走 Codex 的 Chrome 扩展桥，需要 cua-repl 且每次调用带 turn 元数据。
+pub fn run_browser_use_mcp() -> anyhow::Result<()> {
+    codex_plus_core::browser_use::serve()
+}
+
+pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
+    // CLI 进程没有 GUI，抓帧前必须先连上 WindowServer，否则 CoreGraphics 会断言崩溃
+    codex_plus_core::window_capture::ensure_graphics_initialized();
+    let action = args
+        .first()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "status".to_string());
+    let target = args.get(1).map(|value| value.to_string_lossy().into_owned());
+    let output = match action.as_str() {
+        "status" => serde_json::to_value(codex_plus_core::computer_use::status()?)?,
+        "check" => serde_json::to_value(codex_plus_core::computer_use::check())?,
+        "install" => {
+            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("install 需要 target：claudeCode / claudeDesktop / codex / dsh / zcode / workBuddy"))?;
+            let parsed = codex_plus_core::computer_use::Target::parse(id)?;
+            serde_json::to_value(codex_plus_core::computer_use::install(parsed)?)?
+        }
+        "uninstall" => {
+            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / codex / dsh / zcode / workBuddy"))?;
+            let parsed = codex_plus_core::computer_use::Target::parse(id)?;
+            serde_json::to_value(codex_plus_core::computer_use::uninstall(parsed)?)?
+        }
+        // 浏览器回合钩子：install / uninstall，不传就是 read。
+        "hooks" => {
+            let action = target.as_deref().unwrap_or("read");
+            let receipt = match action {
+                "install" => serde_json::to_value(codex_plus_core::claude_hooks::install()?)?,
+                "uninstall" => serde_json::to_value(codex_plus_core::claude_hooks::uninstall()?)?,
+                "read" => serde_json::json!({
+                    "installed": codex_plus_core::claude_hooks::is_installed(),
+                    "events": codex_plus_core::claude_hooks::installed_events(),
+                    "settings": codex_plus_core::claude_hooks::claude_settings_path().display().to_string(),
+                }),
+                other => anyhow::bail!("hooks 只支持 install / uninstall / read，收到 {other}"),
+            };
+            receipt
+        }
+        // 窗口取流诊断：list 列出可预览窗口；frame <window_id> [缩放] 抓一帧存到临时文件
+        "preview" => {
+            let action = target.as_deref().unwrap_or("list");
+            match action {
+                "list" => serde_json::json!({
+                    "permitted": codex_plus_core::window_capture::has_permission(),
+                    "windows": codex_plus_core::window_capture::list_windows()?,
+                }),
+                "frame" => {
+                    let id = args
+                        .get(2)
+                        .and_then(|v| v.to_string_lossy().parse::<u32>().ok())
+                        .ok_or_else(|| anyhow::anyhow!("frame 需要 window_id"))?;
+                    let scale = args
+                        .get(3)
+                        .and_then(|v| v.to_string_lossy().parse::<f64>().ok())
+                        .unwrap_or(0.5);
+                    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+                    let handle = codex_plus_core::window_capture::start_preview(
+                        id,
+                        scale,
+                        12.0,
+                        codex_plus_core::window_capture::CaptureMode::Screenshot,
+                        move |jpeg| {
+                            let _ = tx.send(jpeg);
+                        },
+                    )?;
+                    let frame = rx.recv_timeout(std::time::Duration::from_secs(20));
+                    let thread_error = handle.error();
+                    handle.stop();
+                    match frame {
+                        Ok(bytes) => {
+                            let path = std::env::temp_dir().join("codex-plus-preview-frame.jpg");
+                            std::fs::write(&path, &bytes)?;
+                            serde_json::json!({
+                                "windowId": id,
+                                "bytes": bytes.len(),
+                                "path": path.display().to_string(),
+                            })
+                        }
+                        Err(error) => {
+                            let reason = thread_error.unwrap_or_else(|| "（线程没有留下原因）".into());
+                            anyhow::bail!("20 秒内没有拿到帧：{error}；线程报告：{reason}")
+                        }
+                    }
+                }
+                other => anyhow::bail!("preview 只支持 list / frame，收到 {other}"),
+            }
+        }
+        other => anyhow::bail!("未知的 Computer Use 诊断动作：{other}"),
+    };
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
 }
 
 pub fn run() {
@@ -114,6 +221,8 @@ pub fn run() {
                 Ok(())
             });
             start_window_activation_listener(app.handle().clone());
+            // Computer Use 操作后台应用时的悬浮预览（同 Codex 的画中画）。
+            cu_pip::start(app.handle().clone());
             commands::start_weixin_connect_from_saved_settings();
             register_main_window_events(main_window);
             commands::resume_existing_codex_background(
@@ -154,6 +263,29 @@ pub fn run() {
             commands::claude_localization_set_voice_input,
             commands::claude_localization_set_localization,
             commands::claude_localization_set_computer_use,
+            computer_use_commands::computer_use_status,
+            computer_use_commands::computer_use_install,
+            computer_use_commands::computer_use_uninstall,
+            computer_use_commands::computer_use_custom_add,
+            computer_use_commands::computer_use_custom_rename,
+            computer_use_commands::computer_use_mode_set,
+            computer_use_commands::computer_use_pip_set,
+            cu_pip::cu_pip_target,
+            cu_pip::cu_pip_dismiss,
+            cu_pip::cu_pip_activate,
+            computer_use_commands::computer_use_custom_remove,
+            computer_use_commands::computer_use_check,
+            computer_use_commands::computer_use_open_app,
+            computer_use_commands::computer_use_browser_extension_status,
+            computer_use_commands::computer_use_open_extension_store,
+            computer_use_commands::computer_use_approval_get,
+            computer_use_commands::computer_use_approval_set,
+            computer_use_commands::computer_use_approval_forget,
+            computer_use_commands::computer_use_approval_clear,
+            computer_use_commands::computer_use_preview_windows,
+            computer_use_commands::computer_use_preview_request_permission,
+            computer_use_commands::computer_use_preview_start,
+            computer_use_commands::computer_use_preview_stop,
             commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,
@@ -162,6 +294,12 @@ pub fn run() {
             commands::save_grok_config,
             commands::load_grok_providers,
             commands::apply_grok_relay_profile,
+            commands::load_claude_providers,
+            commands::save_claude_provider,
+            commands::delete_claude_provider,
+            commands::switch_claude_provider,
+            commands::import_claude_live_provider,
+            commands::import_claude_providers_from_cc_switch,
             commands::weixin_connect_qr_start,
             commands::weixin_connect_qr_status,
             commands::weixin_connect_status,
@@ -304,6 +442,22 @@ pub fn run() {
                     if !SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) {
                         APP_EXITING.store(true, Ordering::SeqCst);
                         auto_takeover::stop_supervisor();
+                        // 退出清理里任何一步卡住（例如等待启动器或常驻代理），
+                        // 进程就会停在「已阻止退出、尚未完成」的状态：托盘菜单点了没反应，
+                        // 再点也不会重来（SHUTDOWN_STARTED 已经是 true），任务管理器里也
+                        // 只能强杀（#2611）。这里给清理设一个上限，到点直接退出，
+                        // 先写日志留下是超时退出的证据。
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(SHUTDOWN_WATCHDOG));
+                            if SHUTDOWN_COMPLETE.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                                "app.shutdown_watchdog_forced",
+                                serde_json::json!({ "waitedSeconds": SHUTDOWN_WATCHDOG }),
+                            );
+                            std::process::exit(0);
+                        });
                         let app = app_handle.clone();
                         tauri::async_runtime::spawn_blocking(move || {
                             // 退出前先等待自有 CLI 任务清理，避免进程退出后遗留执行器。
@@ -384,7 +538,6 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
         .tooltip("Codex++")
-        .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_MENU_SHOW => {
                 show_main_window(app);
@@ -395,15 +548,23 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             }
             _ => {}
         })
-        .on_tray_icon_event(|tray, event| match event {
-            TrayIconEvent::DoubleClick {
-                button: MouseButton::Left,
-                ..
-            } => {
-                show_main_window(&tray.app_handle());
+        .on_tray_icon_event(|tray, event| {
+            if tray_event_shows_main_window(&event) {
+                show_main_window(tray.app_handle());
             }
-            _ => {}
         });
+
+    // 左键单击是否弹出菜单按平台区分（issue #2676）：Windows 的托盘惯例是
+    // 左键唤起主窗口、右键弹菜单；macOS 菜单栏图标惯例是任意点击弹出菜单，
+    // Linux 同样保持既有行为不变。
+    #[cfg(windows)]
+    {
+        tray_builder = tray_builder.show_menu_on_left_click(false);
+    }
+    #[cfg(not(windows))]
+    {
+        tray_builder = tray_builder.show_menu_on_left_click(true);
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -421,6 +582,28 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+// 托盘图标事件是否唤起主窗口（issue #2676）。Windows 遵循「左键单击唤窗、
+// 右键弹菜单」的平台惯例，单击在按钮抬起时触发一次；其余平台左键仍由托盘
+// 菜单处理，只保留原有的左键双击唤窗行为，macOS / Linux 行为不变。
+fn tray_event_shows_main_window(event: &TrayIconEvent) -> bool {
+    let left_click_up = matches!(
+        event,
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        }
+    );
+    let left_double_click = matches!(
+        event,
+        TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        }
+    );
+    left_double_click || (cfg!(windows) && left_click_up)
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn macos_tray_icon() -> tauri::image::Image<'static> {
     tauri::include_image!("icons/icon.png")
@@ -428,6 +611,9 @@ fn macos_tray_icon() -> tauri::image::Image<'static> {
 
 #[cfg(test)]
 mod tray_tests {
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent, TrayIconId};
+    use tauri::{PhysicalPosition, Rect};
+
     #[test]
     fn macos_tray_preserves_the_brand_icons_colour_and_transparency() {
         let icon = super::macos_tray_icon();
@@ -439,6 +625,57 @@ mod tray_tests {
                 .any(|pixel| pixel[3] > 0 && pixel[2] > pixel[0])
         );
         assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
+    }
+
+    fn click(button: MouseButton, button_state: MouseButtonState) -> TrayIconEvent {
+        TrayIconEvent::Click {
+            id: TrayIconId::new(super::TRAY_ID),
+            position: PhysicalPosition::default(),
+            rect: Rect::default(),
+            button,
+            button_state,
+        }
+    }
+
+    fn double_click(button: MouseButton) -> TrayIconEvent {
+        TrayIconEvent::DoubleClick {
+            id: TrayIconId::new(super::TRAY_ID),
+            position: PhysicalPosition::default(),
+            rect: Rect::default(),
+            button,
+        }
+    }
+
+    // issue #2676：左键单击唤窗只在 Windows 生效；右键留给托盘菜单，
+    // 按下的中间过程不触发；左键双击唤窗是各平台原有行为，保持不变。
+    // CI 只在 Windows 跑测试，平台门控的守护见 windows_subsystem.rs 的
+    // 文本断言；这里按平台各写死字面量，避免 assert_eq!(…, cfg!(windows))
+    // 在单一平台上沦为同义反复。
+    #[test]
+    fn tray_left_click_restores_the_main_window_only_on_windows() {
+        #[cfg(windows)]
+        assert!(super::tray_event_shows_main_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        #[cfg(not(windows))]
+        assert!(!super::tray_event_shows_main_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(!super::tray_event_shows_main_window(&click(
+            MouseButton::Right,
+            MouseButtonState::Up
+        )));
+        assert!(!super::tray_event_shows_main_window(&click(
+            MouseButton::Middle,
+            MouseButtonState::Up
+        )));
+        assert!(!super::tray_event_shows_main_window(&click(
+            MouseButton::Left,
+            MouseButtonState::Down
+        )));
+        assert!(super::tray_event_shows_main_window(&double_click(MouseButton::Left)));
+        assert!(!super::tray_event_shows_main_window(&double_click(MouseButton::Right)));
+        assert!(!super::tray_event_shows_main_window(&TrayIconEvent::Enter {
+            id: TrayIconId::new(super::TRAY_ID),
+            position: PhysicalPosition::default(),
+            rect: Rect::default(),
+        }));
     }
 }
 

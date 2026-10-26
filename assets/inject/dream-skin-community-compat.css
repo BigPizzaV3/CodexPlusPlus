@@ -32,3 +32,47 @@ html[data-dream-skin="active"][data-codex-os="win32"][data-dream-art-wide="true"
   border-color: var(--ds-line) !important;
   backdrop-filter: blur(24px) saturate(1.2) !important;
 }
+
+/* 新版原生容器会遮住 body 上的宽幅壁纸；只清除图片模式的容器底色。
+   原生 Tailwind 分层中的 !important 优先于未分层规则，因此放入 theme 层。 */
+@layer theme {
+  :root[data-dream-skin="active"][data-dream-art-ready="true"][data-dream-art-wide="true"]:is(
+    [data-dream-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-task-mode="full"]
+  ) #root :is([class*="_PageSurfaceLayout_"], main[data-app-shell-main-surface], main[class*="_MainContentSurface_"]) {
+    background-color: transparent !important;
+  }
+
+  /* 顶部与底部共用主题色半透明底板，明亮壁纸下仍可读，不修改布局和交互。 */
+  :root[data-dream-skin="active"][data-dream-art-ready="true"][data-dream-art-wide="true"]:is(
+    [data-dream-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-task-mode="full"]
+  ) :is([data-app-shell-titlebar="true"], #codex-plus-usage-statusline, .codex-token-usage-badge) {
+    background-color: rgb(var(--ds-panel-rgb) / .68) !important;
+    color: var(--ds-text) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border-color: rgb(var(--ds-muted-rgb) / .35) !important;
+  }
+
+  :root[data-dream-skin="active"][data-dream-art-ready="true"][data-dream-art-wide="true"]:is(
+    [data-dream-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-task-mode="full"]
+  ) [data-app-shell-titlebar="true"] {
+    --button-text-color: var(--ds-text) !important;
+    --button-text-color-hover: var(--ds-text) !important;
+  }
+
+  :root[data-dream-skin="active"][data-dream-art-ready="true"][data-dream-art-wide="true"]:is(
+    [data-dream-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-task-mode="full"]
+  ) [data-app-shell-titlebar="true"] button:not(:disabled) {
+    --button-text-color: var(--ds-text) !important;
+    --button-text-color-hover: var(--ds-text) !important;
+  }
+
+  :root[data-dream-skin="active"][data-dream-art-ready="true"][data-dream-art-wide="true"]:is(
+    [data-dream-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-task-mode="full"]
+  ) :is(#codex-plus-usage-statusline, .codex-token-usage-badge) {
+    border: 1px solid rgb(var(--ds-muted-rgb) / .35) !important;
+    border-radius: 9px !important;
+    padding: 5px 10px !important;
+    line-height: 1.55 !important;
+  }
+}

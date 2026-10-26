@@ -308,13 +308,12 @@ fn resolve_context_window(
     context_window_str: &str,
     request_model: &str,
 ) -> u64 {
-    let model_name = request_model.rsplit('/').next().unwrap_or(request_model);
     if let Ok(map) =
         serde_json::from_str::<std::collections::BTreeMap<String, String>>(model_windows_json)
-        && let Some(token) = lookup_model_map(&map, model_name)
-        && let Some(w) = crate::model_suffix::parse_window_token(&token)
     {
-        return w;
+        if let Some(w) = lookup_context_window(&map, request_model) {
+            return w;
+        }
     }
     if let Ok(w) = context_window_str.parse::<u64>() {
         if w > 0 {
@@ -324,10 +323,143 @@ fn resolve_context_window(
     272_000
 }
 
-/// bytes/2 粗估 token 数。主流 tokenizer 对中英文混合内容的压缩比约 1.5-2 bytes/token，
-/// 用 bytes/2 确保估计值偏向保守，避免注入描述后实际 token 数超出模型窗口。
+/// 完整名优先，短名回退，最后才把配置 key 的 provider 前缀剥掉。
+/// 多个 provider 剥头后撞名时不猜，避免把 A 供应商的窗口套到 B 供应商上。
+fn lookup_context_window(
+    map: &std::collections::BTreeMap<String, String>,
+    request_model: &str,
+) -> Option<u64> {
+    for candidate in [request_model, &provider_short_name(request_model)] {
+        if let Some(token) = lookup_model_map(map, candidate)
+            && let Some(window) = crate::model_suffix::parse_window_token(&token)
+        {
+            return Some(window);
+        }
+    }
+
+    let request_short_name = provider_short_name(request_model);
+    let normalized_matches: Vec<_> = map
+        .iter()
+        .filter(|(key, _)| provider_short_name(key).eq_ignore_ascii_case(&request_short_name))
+        .collect();
+
+    if let Some(provider) = request_model.split_once('/').map(|(provider, _)| provider) {
+        let same_provider: Vec<_> = normalized_matches
+            .iter()
+            .filter(|(key, _)| {
+                key.split_once('/')
+                    .map(|(key_provider, _)| key_provider.eq_ignore_ascii_case(provider))
+                    .unwrap_or(false)
+            })
+            .collect();
+        if same_provider.len() == 1
+            && let Some(window) = crate::model_suffix::parse_window_token(same_provider[0].1)
+        {
+            return Some(window);
+        }
+    }
+
+    if normalized_matches.len() == 1
+        && let Some(window) = crate::model_suffix::parse_window_token(normalized_matches[0].1)
+    {
+        return Some(window);
+    }
+    None
+}
+
+fn provider_short_name(raw: &str) -> String {
+    let normalized = crate::model_suffix::normalize_model_key(raw);
+    normalized
+        .rsplit('/')
+        .next()
+        .unwrap_or(&normalized)
+        .to_string()
+}
+
+const MESSAGE_OVERHEAD_TOKENS: usize = 8;
+
+/// 只估算模型会看到的语义文本，不把 JSON key、id、图片块和转义开销整包算进去。
 fn estimate_tokens(messages: &[Value]) -> usize {
-    serde_json::to_string(messages).unwrap_or_default().len() / 2
+    let mut ascii_chars = 0usize;
+    let mut non_ascii_chars = 0usize;
+    for message in messages {
+        collect_semantic_text(message, "", &mut ascii_chars, &mut non_ascii_chars);
+    }
+    let text_tokens = ascii_chars.div_ceil(3) + non_ascii_chars;
+    text_tokens.saturating_add(messages.len().saturating_mul(MESSAGE_OVERHEAD_TOKENS))
+}
+
+fn collect_semantic_text(
+    value: &Value,
+    key: &str,
+    ascii_chars: &mut usize,
+    non_ascii_chars: &mut usize,
+) {
+    match value {
+        Value::String(text) if is_semantic_text_key(key) => {
+            for character in text.chars() {
+                if character.is_ascii() {
+                    *ascii_chars = ascii_chars.saturating_add(1);
+                } else {
+                    *non_ascii_chars = non_ascii_chars.saturating_add(1);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_semantic_text(item, key, ascii_chars, non_ascii_chars);
+            }
+        }
+        Value::Object(map) => {
+            for (child_key, child) in map {
+                collect_semantic_text(child, child_key, ascii_chars, non_ascii_chars);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_semantic_text_key(key: &str) -> bool {
+    matches!(key, "content" | "text" | "output" | "arguments" | "name")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ContextTokenEstimate {
+    tokens: u64,
+    method: &'static str,
+    actual_context_used: Option<u64>,
+    estimated_new_tokens: Option<usize>,
+}
+
+fn resolve_context_token_estimate(
+    messages: &[Value],
+    request_model: &str,
+    thread_id: Option<&str>,
+) -> ContextTokenEstimate {
+    let anchor = crate::context_usage::anchor_for(thread_id, request_model);
+    if let Some(anchor) = anchor.as_ref().filter(|anchor| {
+        messages.len() >= anchor.covered_message_count
+            && messages
+                .get(anchor.boundary_message_index)
+                .is_some_and(|message| {
+                    crate::context_usage::message_matches_anchor(message, anchor)
+                })
+    }) {
+        let new_tokens = estimate_tokens(&messages[anchor.covered_message_count..]);
+        ContextTokenEstimate {
+            tokens: anchor.context_used.saturating_add(new_tokens as u64),
+            method: "actual_usage_plus_delta",
+            actual_context_used: Some(anchor.context_used),
+            estimated_new_tokens: Some(new_tokens),
+        }
+    } else {
+        ContextTokenEstimate {
+            tokens: estimate_tokens(messages) as u64,
+            method: "semantic_text_v1",
+            actual_context_used: None,
+            estimated_new_tokens: None,
+        }
+    }
 }
 
 // ── VLM API call ──────────────────────────────────────────────────────
@@ -904,16 +1036,56 @@ pub async fn strip_image_blocks(
     request_model: &str,
     responses: bool,
 ) -> Result<VlmPreprocessReport, VlmPreprocessError> {
-    // 0. 上下文溢出保护：基于剥离图片后的纯文本预估，因为图片最终会被删掉。
+    strip_image_blocks_with_context(
+        messages,
+        vlm_config,
+        model_windows_json,
+        context_window_str,
+        request_model,
+        None,
+        responses,
+    )
+    .await
+}
+
+pub(crate) async fn strip_image_blocks_with_context(
+    messages: &mut [Value],
+    vlm_config: &VlmConfig,
+    model_windows_json: &str,
+    context_window_str: &str,
+    request_model: &str,
+    thread_id: Option<&str>,
+    responses: bool,
+) -> Result<VlmPreprocessReport, VlmPreprocessError> {
+    // 0. 先确认有没有图片。纯文本请求直接返回，不产生误导性的 overflow 日志。
+    let all_image_msgs = collect_recent_image_messages(messages, ANALYZE_DEPTH_LIMIT);
+    // 必须先读取上一轮锚点，再把本轮请求写成 Pending；否则会覆盖可复用的 Anchor。
+    let token_estimate = if all_image_msgs.is_empty() {
+        None
+    } else {
+        Some(resolve_context_token_estimate(
+            messages,
+            request_model,
+            thread_id,
+        ))
+    };
+    // 即使本轮没有图片，也要登记请求边界；usage 回来后下一轮仍可复用真实 token。
+    crate::context_usage::remember_request_boundary(thread_id, request_model, messages);
+    if all_image_msgs.is_empty() {
+        // 最近窗口没有图片不代表整段历史都没有：长对话里图片消息会被挤出
+        // 50 条分析窗口，漏发到纯文本上游（glm-5.3 等）会直接 400 且无法重试恢复。
+        // 这里必须沿用旧逻辑的全量兜底清理，只跳过 VLM 分析与描述注入。
+        strip_all_images(messages);
+        return Ok(VlmPreprocessReport::default());
+    }
+
+    // 1. 上下文溢出保护：优先使用上游真实 usage，只估算锚点之后的新增消息。
     let context_window =
         resolve_context_window(model_windows_json, context_window_str, request_model);
     // 留 10% 安全余量给上游 tokenizer 差异。
     let effective_window = (context_window as f64 * CONTEXT_SAFETY_MARGIN) as u64;
-    let current_tokens = {
-        let mut stripped = messages.to_vec();
-        strip_all_images(&mut stripped);
-        estimate_tokens(&stripped)
-    };
+    let token_estimate = token_estimate.expect("image request must have a token estimate");
+    let current_tokens = token_estimate.tokens;
     let available = effective_window.saturating_sub(current_tokens as u64);
     // 1 token 安全余量，防止零宽窗口。
     if available <= 1 {
@@ -935,26 +1107,25 @@ pub async fn strip_image_blocks(
                 );
             }
         }
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "vlm_context_overflow",
-            json!({
+        let mut detail = json!({
                 "context_window": context_window,
-                "text_only_estimated_tokens": current_tokens,
+                "effective_threshold": effective_window,
+                "estimated_tokens": current_tokens,
+                "estimate_method": token_estimate.method,
                 "skipped_images": image_count,
-            }),
-        );
+        });
+        if let Some(actual) = token_estimate.actual_context_used {
+            detail["actual_context_used"] = json!(actual);
+        }
+        if let Some(new_tokens) = token_estimate.estimated_new_tokens {
+            detail["estimated_new_tokens"] = json!(new_tokens);
+        }
+        let _ = crate::diagnostic_log::append_diagnostic_log("vlm_context_overflow", detail);
         return Ok(VlmPreprocessReport::default());
     }
 
-    // 1. 计算注入预算 X = available / AVG_DESC_BUDGET。
+    // 2. 计算注入预算 X = available / AVG_DESC_BUDGET。
     let x_budget = (available / AVG_DESC_BUDGET) as usize;
-
-    // 2. 收集 50 轮对话中的带图消息（最新优先）。
-    let all_image_msgs = collect_recent_image_messages(messages, ANALYZE_DEPTH_LIMIT);
-    if all_image_msgs.is_empty() {
-        strip_all_images(messages);
-        return Ok(VlmPreprocessReport::default());
-    }
 
     // 3. 确定黄金窗口边界（最近 GOLDEN_WINDOW_DEPTH 条 user/tool 消息中最早一条的 index）。
     let golden_user_cutoff = {
@@ -1413,6 +1584,34 @@ mod tests {
             ),
             256_000
         );
+        // modelWindows 里的 key 也可能带 provider 前缀；不能只剥请求模型的前缀。
+        assert_eq!(
+            resolve_context_window(
+                r#"{"z-ai/glm-5.3":"1M"}"#,
+                "",
+                "z-ai/glm-5.3"
+            ),
+            1_000_000
+        );
+        // 反向兼容：map 用短名、请求模型带前缀时也要能命中。
+        assert_eq!(
+            resolve_context_window(r#"{"glm-5.3":"1M"}"#, "", "z-ai/glm-5.3"),
+            1_000_000
+        );
+        // 双边归一化：请求短名、配置完整名也能命中。
+        assert_eq!(
+            resolve_context_window(r#"{"z-ai/glm-5.3":"1M"}"#, "", "glm-5.3"),
+            1_000_000
+        );
+        // 多个 provider 剥头后撞名时不能随机选一个。
+        assert_eq!(
+            resolve_context_window(
+                r#"{"z-ai/glm-5.3":"1M","other/glm-5.3":"256k"}"#,
+                "200000",
+                "glm-5.3"
+            ),
+            200_000
+        );
     }
 
     #[test]
@@ -1692,6 +1891,40 @@ mod tests {
         assert!(l > s, "larger input should produce larger estimate");
     }
 
+    #[test]
+    fn estimate_tokens_ignores_transport_only_fields_and_images() {
+        let text_only = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hello world"}]
+        })];
+        let with_transport_noise = vec![serde_json::json!({
+            "role": "user",
+            "tool_call_id": "call-12345678901234567890",
+            "content": [
+                {"type": "text", "text": "hello world"},
+                {"type": "image_url", "image_url": {"url": "[image omitted]"}}
+            ]
+        })];
+
+        assert_eq!(estimate_tokens(&text_only), estimate_tokens(&with_transport_noise));
+    }
+
+    #[test]
+    fn estimate_tokens_counts_cjk_more_conservatively_than_ascii() {
+        let ascii = vec![serde_json::json!({
+            "role": "user",
+            "content": "abcdefghij"
+        })];
+        let cjk = vec![serde_json::json!({
+            "role": "user",
+            "content": "一二三四五六七八九十"
+        })];
+
+        // 10 个 ASCII 约 4 token；10 个中文字符按 10 token 估算。
+        assert_eq!(estimate_tokens(&ascii), 4 + MESSAGE_OVERHEAD_TOKENS);
+        assert_eq!(estimate_tokens(&cjk), 10 + MESSAGE_OVERHEAD_TOKENS);
+    }
+
     // ── is_retryable ──────────────────────────────────────────────
 
     #[test]
@@ -1886,6 +2119,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strip_image_blocks_uses_actual_usage_plus_delta() {
+        let thread_id = "vlm-actual-usage-plus-delta-test";
+        let model = "fixture-vlm-model";
+        let base_message = serde_json::json!({
+            "role": "user",
+            "content": "a".repeat(3000)
+        });
+        let base_messages = vec![base_message.clone()];
+        crate::context_usage::remember_request_boundary(Some(thread_id), model, &base_messages);
+        crate::context_usage::record_usage(
+            Some(thread_id),
+            model,
+            &serde_json::json!({"total_tokens": 800}),
+        );
+
+        cache_insert(
+            url_hash("https://actual-usage.example.com/current.png"),
+            "actual usage cached description".to_string(),
+        );
+        let mut messages = vec![
+            base_message,
+            serde_json::json!({"role": "assistant", "content": "ok"}),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "current"},
+                    {"type": "image_url", "image_url": {"url": "https://actual-usage.example.com/current.png"}}
+                ]
+            }),
+        ];
+        let vlm_config = VlmConfig {
+            api_key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+        };
+
+        strip_image_blocks_with_context(
+            &mut messages,
+            &vlm_config,
+            "{}",
+            "1000",
+            model,
+            Some(thread_id),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let current_text = messages[2]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            current_text.contains("actual usage cached description"),
+            "cached description should be injected when actual usage plus delta fits"
+        );
+    }
+
+    #[tokio::test]
     async fn strip_image_blocks_no_images_in_messages() {
         let mut messages = vec![serde_json::json!({
             "role": "user",
@@ -1904,6 +2199,61 @@ mod tests {
         let parts = messages[0]["content"].as_array().unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["text"], "just text");
+    }
+
+    #[tokio::test]
+    async fn strip_image_blocks_still_strips_images_outside_recent_window() {
+        // 回归（issue：glm-5.3 纯文本上游对 image_url 直接 400）：
+        // 图片消息滑出最近 50 条 user/tool 分析窗口后，不允许原样发给上游。
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "old screenshot"},
+                {"type": "image_url", "image_url": {"url": "https://out-of-window.example.com/old.png"}},
+            ]
+        })];
+        for i in 0..(ANALYZE_DEPTH_LIMIT + 5) {
+            messages.push(serde_json::json!({
+                "role": "user",
+                "content": [{"type": "text", "text": format!("round {i}")}]
+            }));
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": format!("reply {i}")
+            }));
+        }
+
+        let vlm_config = VlmConfig {
+            api_key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+        };
+        strip_image_blocks_with_context(
+            &mut messages,
+            &vlm_config,
+            "{}",
+            "1000000",
+            "fixture-out-of-window-model",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let has_image = messages.iter().any(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|parts| {
+                    parts
+                        .iter()
+                        .any(|part| part.get("type").and_then(Value::as_str) == Some("image_url"))
+                })
+        });
+        assert!(
+            !has_image,
+            "images outside the recent window must still be stripped"
+        );
     }
 
     #[tokio::test]

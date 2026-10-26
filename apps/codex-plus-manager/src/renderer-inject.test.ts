@@ -2,6 +2,240 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
 
+describe("session more menu lifecycle", () => {
+  async function runtime() {
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/90-action-groups.js", import.meta.url), "utf8",
+    );
+    const menus: ReturnType<typeof fixture>[] = [];
+    const timers = new Map<number, () => void>();
+    let timerId = 0;
+    let menuQueries = 0;
+    const events = () => {
+      const listeners = new Map<string, () => void>();
+      return {
+        listeners,
+        addEventListener: (name: string, callback: () => void) => listeners.set(name, callback),
+        removeEventListener: (name: string) => listeners.delete(name),
+      };
+    };
+    function fixture() {
+      const classes = new Set(["codex-session-more-open"]);
+      const button = { expanded: "true", setAttribute: (_: string, value: string) => { button.expanded = value; } };
+      const deleteButton = { dataset: { codexDeleteVersion: "7" } };
+      const group = {
+        ...events(), isConnected: true, hasDelete: true, dataset: { codexActionGroupVersion: "7" },
+        __codexSessionMoreMenu: null as unknown,
+        querySelector: (selector: string) => selector === ".more-button" ? button
+          : selector === ".delete-button" && group.hasDelete ? deleteButton : null,
+        matches: () => false, remove: () => { group.isConnected = false; },
+      };
+      const row = {
+        isConnected: true, dataset: {}, querySelectorAll: () => [group],
+        contains: (node: unknown) => node === group, classList: { remove: (name: string) => classes.delete(name) },
+      };
+      const menu = {
+        ...events(), hidden: false, removed: false, isConnected: true, classes, row, group, button,
+        __codexSessionMoreRow: row as typeof row | null,
+        __codexSessionMoreGroup: group as typeof group | null,
+        __codexSessionMoreCleanup: null as (() => void) | null,
+        remove: () => { menu.removed = true; menu.isConnected = false; },
+        matches: () => false, contains: () => false,
+      };
+      group.__codexSessionMoreMenu = menu;
+      return menu;
+    }
+    const api = new Function("document", "window", "codexPlusSettings", "codexPlusBackendSettings",
+      "moreMenuClass", "moreButtonClass", "buttonClass", "actionGroupClass", "exportButtonClass",
+      "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
+      `${source.split("  function tryAttachButton(row)")[0]}
+       return { pruneSessionMoreMenus, pruneRemovedSessionActions, attachButton, closeSessionMoreMenus, installSessionMoreMenuAutoClose };`,
+    )(
+      { querySelectorAll: () => { menuQueries++; return menus.filter((menu) => !menu.removed); }, activeElement: null },
+      {
+        setTimeout: (callback: () => void) => {
+          const id = ++timerId;
+          timers.set(id, () => { timers.delete(id); callback(); });
+          return id;
+        },
+        clearTimeout: (id: number) => timers.delete(id),
+      },
+      () => ({ sessionDelete: true, markdownExport: true }), { enhancementsEnabled: true },
+      "more-menu", "more-button", "delete-button", "actions", "export-button", "7", "7",
+      (row: { querySelectorAll: () => unknown[] }) => row.querySelectorAll()[0], () => ({}),
+    );
+    return {
+      ...api, timers, menuQueries: () => menuQueries,
+      fixture: () => {
+        const menu = fixture();
+        menus.push(menu);
+        return menu;
+      },
+    };
+  }
+
+  it("disposes detached owners and groups without removing connected or synchronously moved rows", async () => {
+    const api = await runtime();
+    const live = api.fixture();
+    const detachedRow = api.fixture();
+    const detachedGroup = api.fixture();
+    const unrelatedGroup = api.fixture();
+    const moved = api.fixture();
+    detachedRow.row.isConnected = false;
+    detachedGroup.group.isConnected = false;
+    unrelatedGroup.row.contains = () => false;
+    moved.row.isConnected = false;
+    moved.row.isConnected = true;
+    assert.equal(api.pruneSessionMoreMenus(), true);
+    assert.equal(live.removed, false);
+    assert.equal(moved.removed, false);
+    for (const menu of [detachedRow, detachedGroup, unrelatedGroup]) {
+      assert.equal(menu.removed, true);
+      assert.equal(menu.hidden, true);
+      assert.equal(menu.button.expanded, "false");
+      assert.equal(menu.classes.has("codex-session-more-open"), false);
+      assert.equal(menu.__codexSessionMoreRow, null);
+      assert.equal(menu.__codexSessionMoreGroup, null);
+      assert.equal(menu.group.__codexSessionMoreMenu, null);
+    }
+    assert.equal(api.pruneSessionMoreMenus(), false);
+    assert.equal(live.removed, false);
+  });
+
+  it("only reuses action groups with a connected menu owned by the same row and group", async () => {
+    const api = await runtime();
+    const live = api.fixture();
+    api.attachButton(live.row);
+    assert.equal(live.group.isConnected, true);
+    for (const damage of ["disposed", "menu-removed", "different-owner", "different-group"]) {
+      const menu = api.fixture();
+      if (damage === "disposed") {
+        menu.row.isConnected = false;
+        api.pruneSessionMoreMenus();
+        menu.row.isConnected = true;
+      } else if (damage === "menu-removed") menu.isConnected = false;
+      else if (damage === "different-owner") menu.__codexSessionMoreRow = live.row;
+      else menu.__codexSessionMoreGroup = live.group;
+      api.attachButton(menu.row);
+      assert.equal(menu.group.isConnected, false, `${damage} must rebuild the retained group`);
+    }
+  });
+
+  it("requests repair for a missing delete button but leaves complete action groups alone", async () => {
+    const api = await runtime();
+    const menu = api.fixture();
+    assert.equal(api.pruneSessionMoreMenus(), false);
+    menu.group.hasDelete = false;
+    assert.equal(api.pruneSessionMoreMenus(), true);
+    assert.equal(menu.removed, true);
+    assert.equal(api.pruneSessionMoreMenus(), false);
+  });
+
+  it("ignores unrelated removals and checks action ancestors and removed body menus", async () => {
+    const api = await runtime();
+    const menu = api.fixture();
+    const node = (matches: boolean, descendant: boolean) => ({
+      nodeType: 1, matches: () => matches, querySelector: () => descendant ? {} : null,
+      querySelectorAll: () => [],
+    });
+    for (let i = 0; i < 200; i++) api.pruneRemovedSessionActions([{ removedNodes: [node(false, false)] }]);
+    assert.equal(api.menuQueries(), 0, "streamed prose must not sweep body menus");
+    assert.equal(api.pruneRemovedSessionActions([{ removedNodes: [node(false, true)] }]), false);
+    assert.equal(api.menuQueries(), 1, "a synchronous move still checks final owner state");
+    menu.row.isConnected = false;
+    api.pruneRemovedSessionActions([{ removedNodes: [node(false, true)] }]);
+    assert.equal(menu.removed, true, "sidebar ancestor removal must release owner references");
+    const removed = api.fixture();
+    removed.remove();
+    Object.assign(removed, node(true, false));
+    assert.equal(api.pruneRemovedSessionActions([{ removedNodes: [removed] }]), true);
+    assert.equal(removed.__codexSessionMoreRow, null, "body menu removal must also be disposed");
+  });
+
+  it("resets expansion state when another menu opens or all menus close", async () => {
+    const api = await runtime();
+    const first = api.fixture();
+    const second = api.fixture();
+    api.closeSessionMoreMenus(second);
+    assert.equal(first.hidden, true);
+    assert.equal(first.button.expanded, "false");
+    assert.equal(second.hidden, false);
+    api.closeSessionMoreMenus();
+    assert.equal(second.hidden, true);
+    assert.equal(second.button.expanded, "false");
+  });
+
+  it("coalesces auto-close timers and cancels listeners and timers on disposal", async () => {
+    const api = await runtime();
+    const menu = api.fixture();
+    api.installSessionMoreMenuAutoClose(menu.row, menu);
+    menu.group.listeners.get("pointerleave")!();
+    menu.listeners.get("focusout")!();
+    assert.equal(api.timers.size, 1);
+    for (const callback of api.timers.values()) callback();
+    assert.equal(menu.hidden, true);
+    assert.equal(menu.button.expanded, "false");
+    menu.listeners.get("pointerleave")!();
+    menu.row.isConnected = false;
+    api.pruneSessionMoreMenus();
+    assert.equal(api.timers.size, 0);
+    assert.equal(menu.group.listeners.size, 0);
+    assert.equal(menu.listeners.size, 0);
+    assert.equal(menu.__codexSessionMoreCleanup, null);
+  });
+
+  it("prunes removed elements before pending, hidden and relevance scan guards", async () => {
+    const schedule = await readFile(
+      new URL("../../../assets/inject/renderer-inject/98-scan-schedule.js", import.meta.url), "utf8",
+    );
+    const source = schedule.slice(schedule.indexOf("  function scheduleScan("), schedule.indexOf("  const onScanVisibilityChange"));
+    let pruned = 0;
+    let relevanceChecks = 0;
+    const window = { __codexSessionDeleteScanPending: true };
+    const scheduleScan = new Function("window", "document", "pruneRemovedSessionActions", "shouldScheduleScan",
+      `${source}\nreturn scheduleScan;`,
+    )(window, { hidden: true }, (mutations: Array<{ removedNodes: Array<{ nodeType: number }> }>) => {
+      if (mutations.some((mutation) => mutation.removedNodes.some((node) => node.nodeType === 1))) pruned++;
+    }, () => { relevanceChecks++; return false; });
+    scheduleScan([{ removedNodes: [{ nodeType: 1 }] }]);
+    assert.equal(pruned, 1);
+    assert.equal(relevanceChecks, 0);
+    window.__codexSessionDeleteScanPending = false;
+    scheduleScan([{ removedNodes: [{ nodeType: 1 }] }]);
+    assert.equal(pruned, 2);
+    assert.equal(relevanceChecks, 1);
+    scheduleScan([{ removedNodes: [{ nodeType: 3 }] }]);
+    assert.equal(pruned, 2);
+    const view = await readFile(
+      new URL("../../../assets/inject/renderer-inject/95-conversation-view.js", import.meta.url), "utf8",
+    );
+    assert.match(view, /function scan\(\) \{\s*pruneSessionMoreMenus\(\);\s*if \(document.hidden\)/);
+  });
+
+  it("schedules one repair for a removed owned group even when normal relevance filtering skips it", async () => {
+    const schedule = await readFile(
+      new URL("../../../assets/inject/renderer-inject/98-scan-schedule.js", import.meta.url), "utf8",
+    );
+    const source = schedule.slice(schedule.indexOf("  function scheduleScan("), schedule.indexOf("  const onScanVisibilityChange"));
+    const window = { __codexSessionDeleteScanPending: false };
+    const timers: Array<() => void> = [];
+    let needsScan = true;
+    const scheduleScan = new Function("window", "document", "pruneRemovedSessionActions", "shouldScheduleScan",
+      "setTimeout", "runScheduledScan", `${source}\nreturn scheduleScan;`,
+    )(window, { hidden: false }, () => needsScan, () => false,
+      (callback: () => void) => { timers.push(callback); return timers.length; },
+      () => { window.__codexSessionDeleteScanPending = false; });
+    const removed = [{ removedNodes: [{ nodeType: 1 }] }];
+    scheduleScan(removed);
+    scheduleScan(removed);
+    assert.equal(timers.length, 1);
+    timers[0]();
+    needsScan = false;
+    scheduleScan(removed);
+    assert.equal(timers.length, 1, "normal removal of owned UI must not feed a scan loop");
+  });
+});
+
 it("keeps background-resume scan scheduling bounded and independent of retired features", async () => {
   const schedule = await readFile(
     new URL("../../../assets/inject/renderer-inject/98-scan-schedule.js", import.meta.url),
@@ -983,14 +1217,14 @@ return { refresh: refreshCodexPlusExtensionsView, selection: () => codexPlusExte
 
   it("preserves sponsor logos, destinations and highlights in the native recommendation list", async () => {
     const renderer = await readFile(rendererPath, "utf8");
-    const logo = await readFile(new URL("../../../docs/images/sponsor-volcengine.png", import.meta.url));
+    const logo = await readFile(new URL("../../../docs/images/sponsor-runapi.png", import.meta.url));
     const image = `data:image/png;base64,${logo.toString("base64")}`;
     const runtime = new Function(`${escapeSource(renderer)}\n${segment(renderer, "  const codexPlusAdsUrl =", "  function cacheBustCodexPlusAdUrl(")}
 return {
   render: renderCodexPlusAds,
   set(payload, loaded = true) { codexPlusAds = normalizeCodexPlusAds(payload); codexPlusAdsLoaded = loaded; return codexPlusAds; }
 };`)() as { render: () => string; set: (payload: unknown, loaded?: boolean) => Array<Record<string, unknown>> };
-    const ad = { id: "volcengine", type: "sponsor", title: "火山方舟｜套餐", description: "原始 <描述>", url: "https://example.test/partner?plan=pro&source=codex", image, highlights: ['原始 "优惠" & 说明', "保留第二条亮点"] };
+    const ad = { id: "runapi", type: "sponsor", title: "RunAPI｜套餐", description: "原始 <描述>", url: "https://example.test/partner?plan=pro&source=codex", image, highlights: ['原始 "优惠" & 说明', "保留第二条亮点"] };
     const normalized = runtime.set({ ads: [ad, { ...ad, id: "normal", type: "normal" }, { ...ad, id: "expired", expires_at: "2000-01-01" }] });
     assert.equal(normalized.length, 1);
     assert.equal(normalized[0].image, image);
@@ -1007,6 +1241,29 @@ return {
     assert.match(runtime.render(), /推荐内容加载中…/);
     runtime.set({ ads: [] });
     assert.match(runtime.render(), /暂无推荐内容。/);
+  });
+
+  it("drops sponsor destinations that are not http(s)", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const runtime = new Function(`${escapeSource(renderer)}\n${segment(renderer, "  const codexPlusAdsUrl =", "  function cacheBustCodexPlusAdUrl(")}
+return {
+  render: renderCodexPlusAds,
+  set(payload, loaded = true) { codexPlusAds = normalizeCodexPlusAds(payload); codexPlusAdsLoaded = loaded; return codexPlusAds; }
+};`)() as { render: () => string; set: (payload: unknown, loaded?: boolean) => Array<Record<string, unknown>> };
+    const base = { type: "sponsor", title: "赞助商", description: "推荐内容" };
+    const normalized = runtime.set({
+      ads: [
+        { ...base, id: "ok", url: "https://example.test/partner" },
+        { ...base, id: "javascript", url: " javascript:alert(document.domain)" },
+        { ...base, id: "data", url: "data:text/html,<script>alert(1)</script>" },
+        { ...base, id: "file", url: "file:///etc/passwd" },
+        { ...base, id: "scheme-relative", url: "//example.test/partner" },
+      ],
+    });
+    assert.deepEqual(normalized.map((ad) => ad.id), ["ok"]);
+    const html = runtime.render();
+    assert.ok(html.includes('data-codex-plus-ad-url="https://example.test/partner"'));
+    assert.doesNotMatch(html, /javascript:|data:text\/html|file:\/\/|scheme-relative/);
   });
 });
 
@@ -1266,6 +1523,53 @@ describe("renderer injection service tier dispatcher patch", () => {
     harness.install();
     await harness.settle();
     assert.equal(harness.attempts(), settled);
+  });
+
+  // #2657：26.1016 的 dispatcher 只从 app-shared-* 导出（带 getInstance 的类），
+  // app-initial-* 能加载但不导出它，setting-storage-* / vscode-api-* 已不存在。
+  it("finds the dispatcher class exported from app-shared on Codex 26.1016", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const start = renderer.indexOf("  const serviceTierDispatcherPatchMaxMisses = ");
+    const end = renderer.indexOf("\n  async function loadBackendSettingsState(", start);
+    const fromStart = renderer.indexOf("  function codexServiceTierDispatcherFromModule(");
+    const fromEnd = renderer.indexOf("\n  }\n", fromStart) + 4;
+    assert.ok(start >= 0 && end > start && fromStart >= 0 && fromEnd > fromStart);
+
+    class Dispatcher {
+      static instance: Dispatcher | null = null;
+      static getInstance() { return (this.instance ??= new Dispatcher()); }
+      dispatchMessage() {}
+      subscribe() {}
+    }
+    const modules: Record<string, unknown> = {
+      "app-initial-": { idt: "not-a-dispatcher", unrelated: () => undefined },
+      "app-shared-": { idt: "OwlRemoteSearchSuggestions", AFt: Dispatcher },
+    };
+    const details: Array<[string, unknown]> = [];
+    const install = new Function(
+      "window",
+      "codexServiceTierRequestOverrideVersion",
+      "loadCodexAppModule",
+      "dispatchCodexPlusMessage",
+      "installCodexRemoteSessionDispatcherSubscription",
+      "sendCodexPlusDiagnostic",
+      `${renderer.slice(fromStart, fromEnd)}\n${renderer.slice(start, end)}\nreturn installCodexServiceTierDispatcherPatch;`,
+    )(
+      {},
+      1,
+      async (prefix: string) => {
+        if (prefix in modules) return modules[prefix];
+        throw new Error(`未找到 Codex App asset: ${prefix}`);
+      },
+      () => undefined,
+      () => undefined,
+      (event: string, detail: unknown) => details.push([event, detail]),
+    ) as () => void;
+
+    install();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    assert.deepEqual(details, [["service_tier_dispatcher_patch_installed", { assetPrefix: "app-shared-" }]]);
   });
 
   it("keeps working normally when the dispatcher is found", async () => {
