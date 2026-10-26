@@ -36,35 +36,44 @@ test("Cowork 适配只改 Bash 参数、Bash 预算和子进程 watchdog，未�
 });
 
 for (const wrapped of [false, true]) test(`启动期编译适配（${wrapped ? 'Electron CJS' : 'Node'}）：1800 秒通过校验及预算`, () => {
-  try {
-    const compile = (source: string) => {
-      const compiled = vm.runInThisContext(wrapped ? Module.wrap(source) : source, { filename: "codex-plus-timeout-fixture.js" });
-      if (wrapped) compiled({}, () => {}, {}, '', '');
-    };
-    compile(fixture);
-    const global = globalThis as any;
-    const original = global.__codexPlusTimeoutFixture.make;
-    assert.throws(() => original().schema.timeout_ms.parse(1800000), /too_big/);
-    assert.equal(original().call({ timeout_ms: 600000 }), 178000);
-    global.__codexPlusBashTimeout = overrides(settings);
-    const loader = { _extensions: { '.js': () => { throw Error('Unexpected original loader'); } } };
-    patchOnLoad(loader, 'workspace.js', patchWorkspaceSource(fixture), () => {});
-    (loader._extensions['.js'] as any)({ _compile: compile }, 'workspace.js');
-    const make = global.__codexPlusTimeoutFixture.make;
-    const tool = make();
-    assert.equal(tool.schema.timeout_ms.parse(1800000), 1800000);
-    assert.match(tool.schema.timeout_ms.description, /max 1800000/);
-    assert.equal(tool.call({ timeout_ms: 1800000 }), 1800000);
-    assert.equal(tool.call({}), 120000);
-    assert.equal(global.__codexPlusTimeoutFixture.launch().MCP_TOOL_TIMEOUT, "1860000");
-    assert.throws(() => tool.schema.timeout_ms.parse(1800001), /too_big/);
-    global.__codexPlusBashTimeout = overrides({ ...settings, maxSeconds: 3, defaultSeconds: 1 });
-    assert.equal(make().call({ timeout_ms: 3000 }), 3000);
-    assert.equal(make().call({}), 1000);
-  } finally {
-    delete (globalThis as any).__codexPlusTimeoutFixture;
-    delete (globalThis as any).__codexPlusBashTimeout;
-  }
+  let elapsedMs = 0;
+  let clockReads = 0;
+  // 每次工具调用各读取一次起点与当前时间；只控制 fixture 的时钟，不改真实全局时钟。
+  const context = vm.createContext({
+    Date: { now: () => 1_000_000 + (clockReads++ % 2 === 0 ? 0 : elapsedMs) },
+  });
+  const global = context as any;
+  const compile = (source: string) => {
+    const compiled = vm.runInContext(wrapped ? Module.wrap(source) : source, context, { filename: "codex-plus-timeout-fixture.js" });
+    if (wrapped) compiled({}, () => {}, {}, '', '');
+  };
+  compile(fixture);
+  const original = global.__codexPlusTimeoutFixture.make;
+  assert.throws(() => original().schema.timeout_ms.parse(1800000), /too_big/);
+  assert.equal(original().call({ timeout_ms: 600000 }), 178000);
+  elapsedMs = 1;
+  assert.equal(original().call({ timeout_ms: 600000 }), 177999);
+  elapsedMs = 0;
+  global.__codexPlusBashTimeout = overrides(settings);
+  const loader = { _extensions: { '.js': () => { throw Error('Unexpected original loader'); } } };
+  patchOnLoad(loader, 'workspace.js', patchWorkspaceSource(fixture), () => {});
+  (loader._extensions['.js'] as any)({ _compile: compile }, 'workspace.js');
+  const make = global.__codexPlusTimeoutFixture.make;
+  const tool = make();
+  assert.equal(tool.schema.timeout_ms.parse(1800000), 1800000);
+  assert.match(tool.schema.timeout_ms.description, /max 1800000/);
+  assert.equal(tool.call({ timeout_ms: 1800000 }), 1800000);
+  assert.equal(tool.call({}), 120000);
+  assert.equal(global.__codexPlusTimeoutFixture.launch().MCP_TOOL_TIMEOUT, "1860000");
+  assert.throws(() => tool.schema.timeout_ms.parse(1800001), /too_big/);
+  elapsedMs = 61000;
+  assert.equal(tool.call({ timeout_ms: 1800000 }), 1797000, "外层预算扣除已耗时间与工具余量");
+  elapsedMs = 1860000;
+  assert.equal(tool.call({ timeout_ms: 1800000 }), 1000, "外层预算耗尽后仍保留原生最低等待值");
+  elapsedMs = 0;
+  global.__codexPlusBashTimeout = overrides({ ...settings, maxSeconds: 3, defaultSeconds: 1 });
+  assert.equal(make().call({ timeout_ms: 3000 }), 3000);
+  assert.equal(make().call({}), 1000);
 });
 
 test("总开关或两个子项关闭时，不装调试器、不修改运行时", async () => {
