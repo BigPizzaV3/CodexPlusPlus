@@ -376,6 +376,7 @@
       "include_plugin_usage_instructions": false,
       "include_apps_usage_instructions": false,
       "default_reasoning_summary": "none",
+      "supports_reasoning_summaries": true,
       "support_verbosity": true,
       "default_verbosity": "low",
       "apply_patch_tool_type": "freeform",

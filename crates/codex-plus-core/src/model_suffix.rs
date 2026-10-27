@@ -759,6 +759,16 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
                     .unwrap_or_else(|| json!(""));
                 model["base_instructions"] = mirrored;
             }
+            if !model.get("supports_reasoning_summaries").is_some_and(Value::is_boolean) {
+                let supported = bundled_template_entry(&entry.slug)
+                    .and_then(|template| {
+                        template
+                            .get("supports_reasoning_summaries")
+                            .and_then(Value::as_bool)
+                    })
+                    .unwrap_or(false);
+                model["supports_reasoning_summaries"] = json!(supported);
+            }
             model["availability_nux"] = Value::Null;
             model["upgrade"] = Value::Null;
             model
