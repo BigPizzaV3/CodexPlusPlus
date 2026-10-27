@@ -4,8 +4,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
-const text = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+// Windows checkout 使用 CRLF；源码结构断言统一按 LF 检查。
+const text = readFileSync(new URL("./App.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 function functionSource(name: string) {
@@ -86,7 +87,7 @@ test("Claude / Grok 的供应商配置页已去掉：要么经网关接入供应
 });
 
 test("页面不再画第二条标题栏：PageHeader 和工具页的操作都送进外壳顶栏", () => {
-  const management = readFileSync(new URL("./ManagementPages.tsx", import.meta.url), "utf8");
+  const management = readFileSync(new URL("./ManagementPages.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const extra = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
   const cache = readFileSync(new URL("./agent-cache.tsx", import.meta.url), "utf8");
   assert.match(management, /export function PageHeader\([^)]*\) \{\n  return <TopbarActions>\{actions\}<\/TopbarActions>;/);
