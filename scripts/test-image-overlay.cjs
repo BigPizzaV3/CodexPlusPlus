@@ -552,6 +552,17 @@ for (const direction of ["ltr", "rtl"]) for (const width of [480, 800])
     assert.deepEqual(await rect(page, "#footer"), original);
   }, { width, height: 600 });
 
+check("painted surfaces pin wallpaper geometry to the viewport", async page => {
+  await html(page,
+    '#composer{position:absolute;left:100px;top:400px;width:300px;height:100px;background:#363636}',
+    '<div id="composer" class="_ComposerLayoutRoot_test"></div>');
+  await configure(page, { dataUrl: assets.pattern, fitMode: "fill", opacity: .2 });
+  assert.deepEqual(await page.$eval("#composer", node => {
+    const paint = getComputedStyle(node, "::after");
+    return [paint.backgroundSize, paint.backgroundPosition, paint.backgroundAttachment];
+  }), ["1200px 600px", "-300px -400px", "scroll"]);
+});
+
 check("browser chrome, retained right panes and extension pages", async page => {
   await html(page, `
     #portal{position:fixed;inset:0;pointer-events:none;contain:paint}

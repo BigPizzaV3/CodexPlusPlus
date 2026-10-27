@@ -577,7 +577,7 @@
         content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
         corner-shape:inherit;z-index:-1;opacity:${opacity};
         background-size:${fitStyles.size};background-position:${fitStyles.position};
-        background-repeat:${fitStyles.repeat};background-attachment:fixed;
+        background-repeat:${fitStyles.repeat};background-attachment:scroll;
       }
       [${controlAttribute}] { z-index:${wallpaperLayer}!important; }
       [${topControlAttribute}] { z-index:${wallpaperLayer + 2}!important; }
@@ -808,11 +808,48 @@
       return surface;
     };
     const nativeSurfacePaint = surface => ({ id: ++nextControl, surface,
-      pseudo: ["after", "before"].find(pseudo => ["none", "normal"].includes(computed(surface, `::${pseudo}`).content)) });
+      pseudo: ["after", "before"].find(pseudo => ["none", "normal"].includes(computed(surface, `::${pseudo}`).content)),
+      geometryKey: "" });
+    // Keep every local paint aligned with the same viewport image as the fixed overlay.
+    const wallpaperGeometry = surface => {
+      const box = surface.getBoundingClientRect();
+      const viewportWidth = innerWidth;
+      const viewportHeight = innerHeight;
+      const scaleX = box.width / (surface.offsetWidth || box.width) || 1;
+      const scaleY = box.height / (surface.offsetHeight || box.height) || 1;
+      let width = viewportWidth;
+      let height = viewportHeight;
+      if (fitMode === "tile") {
+        return {
+          key: [box.x, box.y, box.width, box.height, viewportWidth, viewportHeight, scaleX, scaleY].join("|"),
+          size: `${resource.width / scaleX}px ${resource.height / scaleY}px`,
+          position: `${-box.x / scaleX}px ${-box.y / scaleY}px`,
+        };
+      }
+      if (fitMode === "center") {
+        width = resource.width;
+        height = resource.height;
+      } else if (fitMode === "fill" || fitMode === "fit") {
+        const scale = fitMode === "fill"
+          ? Math.max(viewportWidth / resource.width, viewportHeight / resource.height)
+          : Math.min(viewportWidth / resource.width, viewportHeight / resource.height);
+        width = resource.width * scale;
+        height = resource.height * scale;
+      }
+      const left = (viewportWidth - width) / 2;
+      const top = (viewportHeight - height) / 2;
+      return {
+        key: [box.x, box.y, box.width, box.height, viewportWidth, viewportHeight, scaleX, scaleY].join("|"),
+        size: `${width / scaleX}px ${height / scaleY}px`,
+        position: `${(left - box.x) / scaleX}px ${(top - box.y) / scaleY}px`,
+      };
+    };
     const registerPaint = (node, paint = records.get(node).paint || nativeSurfacePaint(node)) => {
       const previous = records.get(node).paint;
       if (previous && previous.surface !== paint.surface) unmark(previous.surface, paintAttribute);
       records.get(node).paint = paint;
+      const geometry = wallpaperGeometry(paint.surface);
+      paint.geometryKey = geometry.key;
       if (node.matches(headerSelector)) {
         unmark(paint.surface, paintAttribute);
         const id = `background-${paint.id}`;
@@ -823,7 +860,7 @@
           const color = native.backgroundColor;
           if (color === "transparent" || color.startsWith("rgba(") || color.includes("/") || native.backgroundImage !== "none") return "";
           const tint = `color-mix(in srgb, ${color} ${(1 - opacity) * 100}%, transparent)`;
-          return `[${paintAttribute}="${id}"]${pseudo}{background-image:linear-gradient(${tint},${tint}),url(${JSON.stringify(resource.imageSource)})!important;background-size:auto,${fitStyles.size}!important;background-position:0 0,${fitStyles.position}!important;background-repeat:no-repeat,${fitStyles.repeat}!important;background-attachment:fixed!important;}`;
+          return `[${paintAttribute}="${id}"]${pseudo}{background-image:linear-gradient(${tint},${tint}),url(${JSON.stringify(resource.imageSource)})!important;background-size:auto,${geometry.size}!important;background-position:0 0,${geometry.position}!important;background-repeat:no-repeat,${fitStyles.repeat}!important;background-attachment:scroll!important;}`;
         }).join("\n");
         mark(paint.surface, paintAttribute, id);
         paintedNodes.add(node);
@@ -839,10 +876,19 @@
         return;
       }
       const id = (paint.pseudo === "before" ? "before-" : "") + paint.id;
-      records.get(node).wallRule = `[${paintAttribute}="${id}"]::${paint.pseudo}{background-image:url(${JSON.stringify(resource.imageSource)});}`;
+      records.get(node).wallRule = `[${paintAttribute}="${id}"]::${paint.pseudo}{background-image:url(${JSON.stringify(resource.imageSource)})!important;background-size:${geometry.size}!important;background-position:${geometry.position}!important;background-repeat:${fitStyles.repeat}!important;background-attachment:scroll!important;}`;
       mark(paint.surface, paintAttribute, id);
       paintedNodes.add(node);
       writeRules();
+    };
+    const refreshPaintGeometry = () => {
+      for (const node of paintedNodes) {
+        const paint = records.get(node)?.paint;
+        if (!paint || !paint.surface.isConnected) continue;
+        const geometry = wallpaperGeometry(paint.surface);
+        if (geometry.key === paint.geometryKey) continue;
+        registerPaint(node, paint);
+      }
     };
     const removeWithin = (registry, tree, remove, includeRoot = true) => {
       for (const [node, record] of registry)
@@ -1605,6 +1651,7 @@
         if (record.rule) activeControls.add(node);
         else activeControls.delete(node);
       }
+      refreshPaintGeometry();
       writeRules();
       geometryDirty = false;
     };
