@@ -4182,6 +4182,7 @@ export function App() {
       saveSettings,
       saveSettingsValue,
       autoSaveSettings,
+      previewSettingsForm: (next: BackendSettings) => setSettingsForm(normalizeSettings(next)),
       refreshSettings,
       resetSettings,
       exportSettings,
@@ -4958,6 +4959,8 @@ type Actions = {
   saveSettings: () => Promise<void>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
   autoSaveSettings: (settings: BackendSettings) => Promise<AutoSaveOutcome>;
+  /// 乐观写入表单（不落盘）：拖拽排序松手时先让列表立即重排，落位动画才连贯。
+  previewSettingsForm: (settings: BackendSettings) => void;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
   exportSettings: () => Promise<void>;
@@ -6849,6 +6852,30 @@ function RelayScreen({
   const saveRelaySettings = async (next: BackendSettings) => {
     return actions.saveSettingsValue(next, true);
   };
+  // 拖拽排序专用保存：松手时乐观写入表单，卡片立即落位；等 save_settings 回读
+  // 会让卡片先弹回原位、保存完成后再整体跳一次。详情页保存与「配置切换」开关
+  // 仍走 saveRelaySettings，不参与乐观更新。
+  // 连续快速拖拽共用一条回滚基线：只有链尾那次失败才回滚，且基线随链中的成功
+  // 保存推进，早先的失败不会盖掉后续已落盘的结果。
+  const relayReorderSeqRef = useRef(0);
+  const relayReorderRollbackRef = useRef<BackendSettings | null>(null);
+  const reorderRelaySettings = async (next: BackendSettings) => {
+    const seq = ++relayReorderSeqRef.current;
+    if (seq === 1) relayReorderRollbackRef.current = form;
+    actions.previewSettingsForm(next);
+    const saved = await actions.saveSettingsValue(next, true);
+    if (seq === relayReorderSeqRef.current) {
+      if (!saved) {
+        const rollback = relayReorderRollbackRef.current;
+        if (rollback) actions.previewSettingsForm(rollback);
+      }
+      relayReorderSeqRef.current = 0;
+      relayReorderRollbackRef.current = null;
+    } else if (saved) {
+      relayReorderRollbackRef.current = saved;
+    }
+    return saved;
+  };
   const createNewAggregateProfile = (mode: AggregateMode) => {
     const draft = aggregateProfileForMode(createAggregateRelayProfile(normalized), normalized, mode);
     setDetailProfileId(null);
@@ -7209,6 +7236,7 @@ function RelayScreen({
                 visibleProfiles={visibleProfiles}
                 onEdit={(profileId) => void editRelayProfile(profileId)}
                 onFormChange={saveRelaySettings}
+                onReorder={reorderRelaySettings}
                 onSwitchProfile={switchRelayProfileFromList}
                 disabled={actions.relaySwitching}
                 actions={actions}
@@ -10434,6 +10462,7 @@ function RelayProfileList({
   form,
   visibleProfiles = form.relayProfiles,
   onFormChange,
+  onReorder,
   onEdit,
   onSwitchProfile,
   disabled = false,
@@ -10442,6 +10471,8 @@ function RelayProfileList({
   form: BackendSettings;
   visibleProfiles?: RelayProfile[];
   onFormChange: (value: BackendSettings) => void;
+  /// 拖拽排序落手专用：只走乐观更新路径；复制、删除等表单改动仍走 onFormChange。
+  onReorder: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
   onSwitchProfile: (id: string) => void;
   disabled?: boolean;
@@ -10459,7 +10490,7 @@ function RelayProfileList({
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const next = reorderRelayProfiles(form, String(active.id), String(over.id));
-    if (next !== form) onFormChange(next);
+    if (next !== form) onReorder(next);
   };
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
