@@ -49,15 +49,18 @@ test("设置菜单只属于 Codex，Claude / Grok 不再显示只有跳转按钮
   assert.doesNotMatch(agent, /没有独立设置项|前往 Grok 配置|前往 Claude 增强/);
 });
 
-test("Computer Use 独立在最左栏，不再出现在每个 Agent 的菜单里", () => {
+test("Computer Use 放在侧栏「工具」组，不再出现在每个 Agent 的菜单里", () => {
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"computerUse"/);
 
   const globalNavigation = text.slice(text.indexOf("const globalNavigationRoutes"), text.indexOf("const defaultSettings"));
   assert.match(globalNavigation, /"computerUse"/);
-  // 图标和 Agent 排在最左栏上方同一组，不放进底部的系统导航。
-  assert.match(globalNavigation, /const railAgentGroupRoutes: Route\[\] = \["computerUse"\]/);
-  assert.match(functionSource("ApplicationRail"), /railAgentGroupRoutes\.map\(renderNavItem\)/);
+  // 「工具」组第一个是推荐内容（用户要求置顶），Computer Use 紧随其后；网关自己一组。
+  assert.match(globalNavigation, /const toolNavigationRoutes: Route\[\] = \["recommendations", "computerUse",/);
+  assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gateway",/);
+  const sidebar = functionSource("AppSidebar");
+  assert.match(sidebar, /gatewayNavigationRoutes\.map/);
+  assert.match(sidebar, /toolNavigationRoutes\.map/);
 });
 
 test("Agent 设置标题跟随当前 Agent，整体设置标题固定", () => {

@@ -1,0 +1,311 @@
+/* Agent 桌宠页：沿用 feature-group / feature-toggle 的外观，只补图库、预览和滑块。 */
+.agent-pet-page {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-pet-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.agent-pet-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 248px;
+  gap: 12px;
+  align-items: start;
+  transition: opacity var(--motion-normal) var(--motion-ease);
+}
+
+.agent-pet-layout.is-off {
+  opacity: 0.62;
+}
+
+.agent-pet-main {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.agent-pet-group-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.agent-pet-group-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-pet-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.agent-pet-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--background));
+  cursor: pointer;
+  font-size: 0.82rem;
+  padding: 5px 12px;
+}
+
+.agent-pet-agent input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-pet-agent.is-checked {
+  border-color: hsl(var(--primary) / 0.6);
+  background: hsl(var(--primary) / 0.08);
+  color: hsl(var(--foreground));
+}
+
+.agent-pet-agent.is-disabled {
+  cursor: not-allowed;
+  color: hsl(var(--muted-foreground));
+}
+
+.agent-pet-agent small {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.72rem;
+}
+
+.agent-pet-agent:focus-within {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.agent-pet-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.agent-pet-tile {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  padding: 8px 4px 6px;
+  transition:
+    border-color var(--motion-normal) var(--motion-ease),
+    background-color var(--motion-normal) var(--motion-ease);
+}
+
+.agent-pet-tile:hover {
+  border-color: hsl(var(--primary) / 0.32);
+  background: hsl(var(--accent) / 0.45);
+}
+
+.agent-pet-tile.is-selected {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.08);
+  color: hsl(var(--foreground));
+}
+
+.agent-pet-tile-image {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+}
+
+.agent-pet-tile-image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.agent-pet-tile-name {
+  font-size: 0.76rem;
+}
+
+.agent-pet-custom {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  color: hsl(var(--muted-foreground));
+  padding: 6px 8px 6px 10px;
+}
+
+.agent-pet-custom.is-selected {
+  border-color: hsl(var(--primary));
+}
+
+.agent-pet-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.agent-pet-range {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 48px;
+  gap: 10px;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.agent-pet-range input {
+  width: 100%;
+  accent-color: hsl(var(--primary));
+}
+
+.agent-pet-range output {
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.agent-pet-sound {
+  display: grid;
+  gap: 10px;
+  transition: opacity var(--motion-normal) var(--motion-ease);
+}
+
+.agent-pet-sound.is-off {
+  opacity: 0.5;
+}
+
+.agent-pet-sound-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.agent-pet-segmented {
+  display: inline-flex;
+  justify-self: start;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.4);
+  padding: 2px;
+}
+
+.agent-pet-segmented button {
+  border-radius: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.8rem;
+  padding: 4px 12px;
+}
+
+.agent-pet-segmented button.is-selected {
+  background: hsl(var(--background));
+  box-shadow: 0 1px 2px hsl(var(--foreground) / 0.08);
+  color: hsl(var(--foreground));
+}
+
+.agent-pet-segmented button:disabled {
+  cursor: not-allowed;
+}
+
+.agent-pet-preview {
+  position: sticky;
+  top: 12px;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.2);
+  padding: 12px;
+}
+
+.agent-pet-preview-label {
+  justify-self: start;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.78rem;
+}
+
+.agent-pet-stage {
+  display: grid;
+  place-items: end center;
+  width: 100%;
+  min-height: 260px;
+  border-radius: 6px;
+  background:
+    linear-gradient(hsl(var(--background) / 0.6), hsl(var(--background) / 0.6)),
+    repeating-conic-gradient(hsl(var(--muted)) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+  padding: 12px 8px 16px;
+}
+
+.agent-pet-stage > :not(.agent-pet-figure) {
+  align-self: center;
+}
+
+/* 与 Codex 里的桌宠同一套参数：以底边为支点压扁，松开时带一点过冲回弹。 */
+.agent-pet-figure {
+  display: block;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+  padding: 0;
+  touch-action: none;
+  transform-origin: 50% 100%;
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  user-select: none;
+}
+
+.agent-pet-figure.is-pressed {
+  transform: scaleY(0.88) scaleX(1.05);
+  cursor: grabbing;
+}
+
+.agent-pet-figure img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.agent-pet-muted {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.agent-pet-error {
+  margin-top: 8px;
+  color: hsl(var(--destructive));
+  font-size: 0.78rem;
+}
+
+@media (max-width: 860px) {
+  .agent-pet-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-pet-preview {
+    position: static;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-pet-figure {
+    transition: none;
+  }
+}

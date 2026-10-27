@@ -163,12 +163,21 @@ test("the default-off recovery switch is exposed in both settings UIs and uses t
   const app = readFileSync(path.join(root, "apps/codex-plus-manager/src/App.tsx"), "utf8");
   const styles = readFileSync(path.join(fragments, "10-style.js"), "utf8");
   const backend = readFileSync(path.join(fragments, "40-backend-settings.js"), "utf8");
+  const catalog = JSON.parse(readFileSync(path.join(root, "crates/codex-plus-core/assets/enhancement-settings.json"), "utf8"));
+  const entries = catalog.items.filter((item: { key: string }) => item.key === "codexAppHistoryTurnRecovery");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].group, "chat");
+  assert.equal(entries[0].control, "bool");
+  assert.deepEqual(entries[0].surfaces, ["manager", "codex"]);
+  assert.notEqual(entries[0].masterGated, false);
+  assert.equal(entries[0].title, "历史轮次补载（实验）");
   assert.match(app, /codexAppHistoryTurnRecovery: boolean/);
   assert.match(app, /codexAppHistoryTurnRecovery: false/);
-  assert.match(app, /checked=\{form\.codexAppHistoryTurnRecovery\} disabled=\{!masterEnabled\} onChange=\{\(value\) => setEnhanceFlag\("codexAppHistoryTurnRecovery", value\)\}/);
+  assert.match(app, /managerGroupItems\(group\.id, enhancementPlatform\)\.map\(renderSetting\)/);
   assert.match(styles, /historyTurnRecovery: false/);
   assert.match(styles, /historyTurnRecovery: "codexAppHistoryTurnRecovery"/);
-  assert.match(backend, /data-codex-plus-setting="historyTurnRecovery"/);
+  assert.match(backend, /renderCodexPlusSettingsCatalogSections\(\)/);
+  assert.match(backend, /Object\.keys\(codexPlusBackendSettingMap\)/);
 });
 
 test("the in-app switch maps saved settings and persists only its backend partial update", async () => {

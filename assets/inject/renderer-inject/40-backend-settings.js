@@ -6,10 +6,12 @@
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
-    if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+    if (loaded && typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
     // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
     // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
     if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+    // 后端可用后预取设置项清单，首次打开设置页时不必再等一次请求。
+    if (loaded && typeof loadCodexPlusSettingsCatalog === "function") void loadCodexPlusSettingsCatalog();
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     return loaded;
   }
@@ -36,9 +38,11 @@
       if (loaded) {
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
-        if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+        if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
         if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+        // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
+        syncCodexPlusBackendToggleButtons();
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -71,17 +75,28 @@
     }
   }
 
+  /**
+   * 把直接写后端字段的开关同步成当前值。心跳每 5 秒也会调用，
+   * 值没变就不写属性，避免无谓的 DOM 变更触发扫描。
+   */
+  function syncCodexPlusBackendToggleButtons() {
+    document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
+      const key = button.getAttribute("data-codex-backend-setting");
+      const enabled = String(!!codexPlusBackendSettings[key]);
+      if (button.dataset.enabled === enabled) return;
+      button.dataset.enabled = enabled;
+      button.setAttribute("aria-checked", enabled);
+    });
+    syncCodexPlusSettingsCatalogDescriptions();
+  }
+
   function refreshCodexPlusBackendToggles() {
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__?.();
-    document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
-      const key = button.getAttribute("data-codex-backend-setting");
-      button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
-      button.setAttribute("aria-checked", button.dataset.enabled);
-    });
+    syncCodexPlusBackendToggleButtons();
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
-    if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+    if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
     renderCodexPlusMenu();
     scan();
   }
@@ -1200,6 +1215,218 @@
     };
   }
 
+  // ── 设置项清单 ──────────────────────────────────────────────────────────────
+  // 设置页里每个开关的标题、说明、分组都来自后端 /settings/catalog，
+  // 与管理器「Codex → 增强」页 import 的是同一份 JSON（crates/codex-plus-core/assets/enhancement-settings.json）。
+  // 这里不写任何一份设置文案：拿不到清单时只显示原因与重试，绝不退回写死的副本。
+  let codexPlusSettingsCatalog = null;
+  // idle / loading / failed / ok。idle 与 loading 渲染相同的“正在读取”。
+  let codexPlusSettingsCatalogStatus = { status: "idle", message: "" };
+  let codexPlusSettingsCatalogRequest = null;
+
+  function normalizeCodexPlusSettingsCatalog(value) {
+    if (!value || typeof value !== "object" || !Array.isArray(value.groups) || !Array.isArray(value.items)) return null;
+    const groups = value.groups.filter((group) => group && typeof group.id === "string" && typeof group.title === "string");
+    const items = value.items.filter((item) => item && typeof item.key === "string" && typeof item.group === "string"
+      && typeof item.title === "string" && Array.isArray(item.surfaces));
+    return groups.length && items.length ? { groups, items } : null;
+  }
+
+  function codexPlusSettingsCatalogItemVisible(item) {
+    const platform = codexPlusIsWindowsPlatform ? "windows" : codexPlusIsMacPlatform ? "macos" : "linux";
+    return item.surfaces.includes("codex") && (!Array.isArray(item.platforms) || item.platforms.includes(platform));
+  }
+
+  /** 读一次清单并缓存；失败后由设置页上的「重试」再次触发。 */
+  function loadCodexPlusSettingsCatalog() {
+    if (codexPlusSettingsCatalog) return Promise.resolve(codexPlusSettingsCatalog);
+    if (codexPlusSettingsCatalogRequest) return codexPlusSettingsCatalogRequest;
+    const retrying = codexPlusSettingsCatalogStatus.status === "failed";
+    codexPlusSettingsCatalogStatus = { status: "loading", message: "" };
+    if (retrying) refreshCodexPlusSettingsCatalogView();
+    codexPlusSettingsCatalogRequest = Promise.resolve()
+      .then(() => postJson("/settings/catalog", {}))
+      .then((result) => {
+        const catalog = normalizeCodexPlusSettingsCatalog(result);
+        if (catalog) {
+          codexPlusSettingsCatalog = catalog;
+          codexPlusSettingsCatalogStatus = { status: "ok", message: "" };
+          return;
+        }
+        const message = result?.status === "failed" && result.message ? String(result.message) : "后端返回的设置项清单格式不正确";
+        codexPlusSettingsCatalogStatus = { status: "failed", message };
+      }, (error) => {
+        codexPlusSettingsCatalogStatus = { status: "failed", message: error?.message || String(error) };
+      })
+      .then(() => {
+        codexPlusSettingsCatalogRequest = null;
+        if (codexPlusSettingsCatalogStatus.status === "failed") {
+          sendCodexPlusDiagnostic("settings_catalog_load_failed", { message: codexPlusSettingsCatalogStatus.message });
+        }
+        refreshCodexPlusSettingsCatalogView();
+        return codexPlusSettingsCatalog;
+      });
+    return codexPlusSettingsCatalogRequest;
+  }
+
+  function renderCodexPlusSettingsSection(title, rows) {
+    const label = escapeHtml(title);
+    return `
+            <section class="codex-plus-settings-section" aria-label="${label}" data-codex-plus-settings-catalog="section">
+              <h2 class="codex-plus-settings-section-title">${label}</h2>
+              <div class="codex-plus-settings-card">${rows}</div>
+            </section>`;
+  }
+
+  /** 后端连接状态不是设置项，固定放在第一组的最前面（清单读取失败时也要能看到它）。 */
+  function renderCodexPlusBackendStatusRow() {
+    return `
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态。</div></div>
+                  <div class="codex-plus-backend-status">
+                    <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
+                  </div>
+                </div>`;
+  }
+
+  /**
+   * 只在 Codex 设置页出现的行内输入框（值存在本页 localStorage，管理器读不到）。
+   * 清单只给读屏标签与悬停提示；取值范围、当前值仍由运行时常量和读写函数决定。
+   */
+  function renderCodexPlusSettingsCatalogInput(input) {
+    const specs = {
+      capacityAutoRetryIntervalSeconds: () => ({ attribute: "data-codex-plus-capacity-retry-interval", min: 0, max: capacityAutoRetryIntervalCeilingSeconds, step: 1, value: capacityAutoRetryIntervalSeconds() }),
+      capacityAutoRetryMaxAttempts: () => ({ attribute: "data-codex-plus-capacity-retry-max-attempts", min: 1, max: capacityAutoRetryMaxAttemptsCeiling, step: 1, value: capacityAutoRetryMaxAttempts() }),
+      conversationViewMaxWidth: () => ({ attribute: "data-codex-plus-conversation-view-width", min: conversationViewMinWidth, max: conversationViewMaxAllowedWidth, step: 10, value: conversationViewWidth() }),
+    };
+    const spec = specs[input?.id];
+    if (!spec) return "";
+    const { attribute, min, max, step, value } = spec();
+    const label = escapeHtml(input.label || "");
+    return `<input class="codex-plus-width-input" ${attribute}="true" min="${min}" max="${max}" step="${step}" type="number" value="${value}" title="${escapeHtml(input.hint || input.label || "")}" aria-label="${label}">`;
+  }
+
+  /** 打字特效沿用自绘下拉：隐藏的 select 保留 change 契约，选项文案来自清单。 */
+  function renderCodexPlusTypingEffectControl(item) {
+    const title = escapeHtml(item.title);
+    const options = Array.isArray(item.options) ? item.options : [];
+    return `
+                  <select class="codex-plus-typing-effect-select" data-codex-plus-typing-effect="true" aria-label="${title}" hidden aria-hidden="true" tabindex="-1">
+                    ${options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}
+                  </select>
+                  <button type="button" class="codex-plus-dropdown-trigger" data-codex-plus-typing-effect-trigger="true" aria-label="${title}" aria-haspopup="listbox" aria-expanded="false" aria-controls="codex-plus-typing-effect-menu">
+                    <span data-codex-plus-dropdown-label="true">${escapeHtml(options[0]?.label || "")}</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                  </button>`;
+  }
+
+  /** 下拉菜单挂在 overlay 根部（避开滚动裁剪），选项同样按清单生成。 */
+  function syncCodexPlusTypingEffectMenu(overlay) {
+    const menu = overlay?.querySelector("[data-codex-plus-typing-effect-menu]");
+    if (!menu) return;
+    const item = codexPlusSettingsCatalog?.items.find((candidate) => candidate.key === "codexAppTypingEffect");
+    const options = Array.isArray(item?.options) ? item.options : [];
+    menu.setAttribute("aria-label", item?.title || "");
+    menu.innerHTML = options.map((option) => `
+          <button type="button" class="codex-plus-dropdown-option" data-codex-plus-typing-effect-option="${escapeHtml(option.value)}" role="option" aria-selected="false" tabindex="-1">
+            <span>${escapeHtml(option.label)}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          </button>
+        `).join("");
+  }
+
+  /** 清单 key 是 BackendSettings 字段；能映射到本页设置 key 的走 setCodexPlusSetting（带即时副作用）。 */
+  function codexPlusLocalSettingKey(backendKey) {
+    return Object.keys(codexPlusBackendSettingMap).find((key) => codexPlusBackendSettingMap[key] === backendKey) || "";
+  }
+
+  function codexPlusSettingsCatalogDescription(item) {
+    const enhancementsOn = codexPlusBackendSettings.enhancementsEnabled !== false;
+    return (enhancementsOn && item.descriptionWhenEnhancementsOn) || item.description || "";
+  }
+
+  /** 总开关变化后刷新带两套说明的行。 */
+  function syncCodexPlusSettingsCatalogDescriptions() {
+    if (!codexPlusSettingsCatalog) return;
+    document.querySelectorAll("[data-codex-plus-setting-description]").forEach((node) => {
+      const key = node.getAttribute("data-codex-plus-setting-description");
+      const item = codexPlusSettingsCatalog.items.find((candidate) => candidate.key === key);
+      const description = item ? codexPlusSettingsCatalogDescription(item) : "";
+      if (item && node.textContent !== description) node.textContent = description;
+    });
+  }
+
+  function renderCodexPlusSettingsCatalogRow(item) {
+    const title = escapeHtml(item.title);
+    let control = "";
+    if (item.key === "codexAppTypingEffect" && item.control === "select") {
+      control = renderCodexPlusTypingEffectControl(item);
+    } else if (item.control === "bool") {
+      const localKey = codexPlusLocalSettingKey(item.key);
+      const binding = localKey ? `data-codex-plus-setting="${escapeHtml(localKey)}"` : `data-codex-backend-setting="${escapeHtml(item.key)}"`;
+      const toggle = `<button type="button" class="codex-plus-toggle" ${binding} role="switch" aria-checked="false" aria-label="${title}"><span></span></button>`;
+      const inputs = (Array.isArray(item.codexInputs) ? item.codexInputs : []).map(renderCodexPlusSettingsCatalogInput).join("");
+      control = inputs ? `<div class="codex-plus-width-control">${inputs}${toggle}</div>` : toggle;
+    }
+    // 不认识的控件类型宁可不显示，也不显示一个点了不生效的行。
+    if (!control) return "";
+    // 独立模式补丁在增强开启时换一句说明，与管理器一致；切换由 syncCodexPlusSettingsCatalogDescriptions 完成。
+    const description = escapeHtml(codexPlusSettingsCatalogDescription(item));
+    const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
+    return `
+                <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}">
+                  <div><div class="codex-plus-row-title">${title}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div></div>
+                  ${control}
+                </div>`;
+  }
+
+  /** 设置页主体：清单就绪时按分组生成，否则显示读取中 / 读取失败与重试。 */
+  function renderCodexPlusSettingsCatalogSections() {
+    const catalog = codexPlusSettingsCatalog;
+    if (!catalog) {
+      const failed = codexPlusSettingsCatalogStatus.status === "failed";
+      const message = codexPlusSettingsCatalogStatus.message;
+      const state = failed
+        ? `
+                <div class="codex-plus-row" data-codex-plus-settings-catalog-state="failed" role="alert">
+                  <div><div class="codex-plus-row-title">设置项读取失败</div><div class="codex-plus-row-description">无法从 Codex++ 后端读取设置项清单${message ? `：${escapeHtml(message)}` : ""}。确认后端已连接后重试。</div></div>
+                  <button type="button" class="codex-plus-action-button" data-codex-plus-settings-catalog-retry="true">重试</button>
+                </div>`
+        : `
+                <div class="codex-plus-row" data-codex-plus-settings-catalog-state="loading" role="status">
+                  <div><div class="codex-plus-row-title">正在读取设置项…</div><div class="codex-plus-row-description">设置项清单由 Codex++ 后端提供，读取完成后显示。</div></div>
+                </div>`;
+      return renderCodexPlusSettingsSection("设置", renderCodexPlusBackendStatusRow() + state);
+    }
+    return catalog.groups.map((group, index) => {
+      const rows = catalog.items
+        .filter((item) => item.group === group.id && codexPlusSettingsCatalogItemVisible(item))
+        .map(renderCodexPlusSettingsCatalogRow)
+        .filter(Boolean);
+      if (index === 0) rows.unshift(renderCodexPlusBackendStatusRow());
+      return rows.length ? renderCodexPlusSettingsSection(group.title, rows.join("")) : "";
+    }).join("");
+  }
+
+  /** 清单状态变化后重建设置页里由清单生成的部分，并把开关状态同步回来。 */
+  function refreshCodexPlusSettingsCatalogView() {
+    let rendered = false;
+    document.querySelectorAll('[data-codex-plus-panel="home"]').forEach((panel) => {
+      const anchor = panel.querySelector("[data-codex-plus-settings-tools]");
+      if (!anchor) return;
+      const retryFocused = !!document.activeElement?.closest?.("[data-codex-plus-settings-catalog-retry]");
+      panel.querySelectorAll("[data-codex-plus-settings-catalog]").forEach((node) => node.remove());
+      anchor.insertAdjacentHTML("beforebegin", renderCodexPlusSettingsCatalogSections());
+      syncCodexPlusTypingEffectMenu(panel.closest(".codex-plus-modal-overlay, .codex-plus-page-overlay"));
+      if (retryFocused) {
+        panel.querySelector("[data-codex-plus-settings-catalog-retry], [data-codex-plus-settings-catalog] .codex-plus-toggle")?.focus({ preventScroll: true });
+      }
+      rendered = true;
+    });
+    if (!rendered) return;
+    renderBackendStatus();
+    refreshCodexPlusBackendToggles();
+  }
+
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     const initialTab = codexPlusModalTab(options.tab);
@@ -1222,135 +1449,10 @@
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel codex-plus-settings" data-codex-plus-panel="home">
-            <section class="codex-plus-settings-section" aria-label="常规">
-              <h2 class="codex-plus-settings-section-title">常规</h2>
-              <div class="codex-plus-settings-card">
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态。</div></div>
-                  <div class="codex-plus-backend-status">
-                    <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
-                  </div>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">Codex增强</div><div class="codex-plus-row-description">关闭后停用删除、导出、插件相关和菜单位置增强。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">扩展插件市场请求，尽量显示完整插件列表。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
-                </div>
-              </div>
-            </section>
-            <section class="codex-plus-settings-section" aria-label="模型与服务">
-              <h2 class="codex-plus-settings-section-title">模型与服务</h2>
-              <div class="codex-plus-settings-card">
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">原生 Fast 强制解锁</div><div class="codex-plus-row-description">纯 API Key 模式恢复原生 Fast 开关；保存后重新启动 Codex 生效，实际支持与计费由供应商决定。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeFastUnlock"><span></span></button>
-                </div>
-              </div>
-            </section>
-            <section class="codex-plus-settings-section" aria-label="对话与输入">
-              <h2 class="codex-plus-settings-section-title">对话与输入</h2>
-              <div class="codex-plus-settings-card">
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">轮次回退（实验性）</div><div class="codex-plus-row-description">在回答的“分支到新聊天”下增加回退入口。先保存恢复记录，再由 AI 撤销可恢复操作，全部完成后截断本轮及后续历史。仅支持本地聊天；无法撤销的操作会保留记录。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="turnRewind"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">悬浮球 · 下一步建议</div><div class="codex-plus-row-description">生成下一步建议。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">悬浮球 · 回答大纲</div><div class="codex-plus-row-description">整理回答结构。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="answerOutline"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">容量错误自动重试</div><div class="codex-plus-row-description">模型容量不足时（横幅文案如 “Selected model is at capacity”），自动点「重试」。Codex 原生只会自动重试 4 次，之后只剩手动按钮；开启后由 Codex++ 立刻接管（原生倒计时也一并接管，前 4 次同样不等它），直到成功或达到次数上限。间隔 0 秒表示失败后立刻重试（内部最小 1 秒，避免连发）。</div></div>
-                  <div class="codex-plus-width-control">
-                    <input class="codex-plus-width-input" data-codex-plus-capacity-retry-interval="true" min="0" max="${capacityAutoRetryIntervalCeilingSeconds}" step="1" type="number" value="${capacityAutoRetryIntervalSeconds()}" title="重试间隔（秒），0 表示立刻重试" aria-label="重试间隔（秒）">
-                    <input class="codex-plus-width-input" data-codex-plus-capacity-retry-max-attempts="true" min="1" max="${capacityAutoRetryMaxAttemptsCeiling}" step="1" type="number" value="${capacityAutoRetryMaxAttempts()}" title="最大自动重试次数" aria-label="最大自动重试次数">
-                    <button type="button" class="codex-plus-toggle" data-codex-plus-setting="capacityAutoRetry"><span></span></button>
-                  </div>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">Markdown 导出</div><div class="codex-plus-row-description">在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">分享会话按钮</div><div class="codex-plus-row-description">在当前会话工具栏显示分享按钮，关闭后立即隐藏。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionShare"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">旁支保存</div><div class="codex-plus-row-description">在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sideChatSave"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
-                </div>
-              </div>
-            </section>
-            <section class="codex-plus-settings-section" aria-label="外观与布局">
-              <h2 class="codex-plus-settings-section-title">外观与布局</h2>
-              <div class="codex-plus-settings-card">
-                ${codexPlusSupportsPetRealMouseLook ? `<div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">桌宠跟随真实鼠标</div><div class="codex-plus-row-description">仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="petRealMouseLook"><span></span></button>
-                </div>` : ""}
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">打字特效（彩虹 P）</div><div class="codex-plus-row-description">在输入框的光标附近显示彩虹粒子、烟花或星光。系统减少动态效果时暂停。</div></div>
-                  <select class="codex-plus-typing-effect-select" data-codex-plus-typing-effect="true" aria-label="打字特效（彩虹 P）" hidden aria-hidden="true" tabindex="-1">
-                    <option value="off">关闭</option>
-                    <option value="rainbow">彩虹粒子</option>
-                    <option value="fireworks">烟花</option>
-                    <option value="stars">星光</option>
-                  </select>
-                  <button type="button" class="codex-plus-dropdown-trigger" data-codex-plus-typing-effect-trigger="true" aria-label="打字特效（彩虹 P）" aria-haspopup="listbox" aria-expanded="false" aria-controls="codex-plus-typing-effect-menu">
-                    <span data-codex-plus-dropdown-label="true">关闭</span>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-                  </button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadIdBadge"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
-                  <div class="codex-plus-width-control">
-                    <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
-                    <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationView"><span></span></button>
-                  </div>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">历史轮次补载（实验）</div><div class="codex-plus-row-description">索引检查后补齐当前会话的历史消息和用时，默认关闭。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="historyTurnRecovery"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">Codex 用量挂件</div><div class="codex-plus-row-description">显示当前 Codex 会话用量、任务状态与可用的供应商余额。可拖动、上传角色图片和设置提醒；默认静音。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="whaleWidget"><span></span></button>
-                </div>
-              </div>
-            </section>
-            <section class="codex-plus-settings-section" aria-label="工具与关于">
+            ${renderCodexPlusSettingsCatalogSections()}
+            <section class="codex-plus-settings-section" aria-label="工具与关于" data-codex-plus-settings-tools="true">
               <h2 class="codex-plus-settings-section-title">工具与关于</h2>
               <div class="codex-plus-settings-card">
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
-                </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">配置增强功能、模型和语音服务。</div></div>
                   <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
@@ -1405,14 +1507,9 @@
           </div>
         </div>
       </div>
-      <div id="codex-plus-typing-effect-menu" class="codex-plus-dropdown-menu" data-codex-plus-typing-effect-menu="true" role="listbox" aria-label="打字特效（彩虹 P）" hidden>
-        ${[["off", "关闭"], ["rainbow", "彩虹粒子"], ["fireworks", "烟花"], ["stars", "星光"]].map(([value, label]) => `
-          <button type="button" class="codex-plus-dropdown-option" data-codex-plus-typing-effect-option="${value}" role="option" aria-selected="false" tabindex="-1">
-            <span>${label}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-          </button>
-        `).join("")}
-      </div>
+      <div id="codex-plus-typing-effect-menu" class="codex-plus-dropdown-menu" data-codex-plus-typing-effect-menu="true" role="listbox" hidden></div>
     `;
+    syncCodexPlusTypingEffectMenu(overlay);
     overlay.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting], .codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       button.setAttribute("role", "switch");
       button.setAttribute("aria-checked", "false");
@@ -1499,6 +1596,10 @@
       const pageNav = target?.closest("[data-codex-plus-page-nav]");
       if (pageNav) {
         selectCodexPlusTab(pageNav.getAttribute("data-codex-plus-page-nav"));
+        return;
+      }
+      if (target?.closest("[data-codex-plus-settings-catalog-retry]")) {
+        void loadCodexPlusSettingsCatalog();
         return;
       }
       if (target?.closest("[data-codex-open-devtools]")) {
@@ -1657,6 +1758,8 @@
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
     loadUserScripts();
+    // 清单已缓存时上面的模板已经按清单渲染；否则读完后再替换“正在读取”占位。
+    if (!codexPlusSettingsCatalog) void loadCodexPlusSettingsCatalog();
   }
 
   function openCodexPlusPage() {

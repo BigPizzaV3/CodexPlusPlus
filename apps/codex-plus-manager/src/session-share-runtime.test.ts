@@ -174,22 +174,28 @@ test("the in-app share toggle persists a backend update rather than a temporary 
   vm.runInContext(`${style.slice(start, end)}\n${style.slice(setterStart, setterEnd)}`, context);
   context.setCodexPlusSetting("sessionShare", false); await Promise.resolve();
   assert.deepEqual(writes, [["codexAppSessionShare", false]]);
-  assert.ok(fragment("40-backend-settings.js").includes('data-codex-plus-setting="sessionShare"'));
+  // 设置页的分享开关按清单生成：清单字段映射到本页的 sessionShare，由 setCodexPlusSetting 写后端。
+  const catalog = JSON.parse(readFileSync(new URL("../../../crates/codex-plus-core/assets/enhancement-settings.json", import.meta.url), "utf8"));
+  const shareItem = catalog.items.find((item: { key: string }) => item.key === "codexAppSessionShare");
+  assert.ok(shareItem?.surfaces.includes("codex"));
+  assert.match(style, /sessionShare: "codexAppSessionShare"/);
 });
 
 test("backend refresh synchronizes share immediately and skips failed heartbeat reads", async () => {
   const source = fragment("40-backend-settings.js");
-  let loaded = true, installs = 0;
+  let loaded = true, installs = 0, toggleSyncs = 0;
   const context = vm.createContext({ codexPlusSettings: () => ({ conversationView: false }),
     loadBackendSettingsState: async () => loaded, syncOfficialUsagePolicy: () => {},
     syncCodexPlusTypingEffects: () => {}, renderCodexPlusMenu: () => {}, refreshConversationView: () => {},
     installSessionShareButton: () => { installs += 1; }, runScanStep: (fn: () => void) => fn(),
+    syncCodexPlusBackendToggleButtons: () => { toggleSyncs += 1; },
   });
   const start = source.indexOf("  let syncBackendSettingsInFlight");
   const end = source.indexOf("  async function setBackendSetting(", start);
   vm.runInContext(source.slice(start, end), context);
-  await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 0);
-  loaded = false; await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 0);
+  // 心跳读到设置后同步设置页开关（管理器里改的值实时反映到 Codex）；读取失败不动。
+  await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 0); assert.equal(toggleSyncs, 1);
+  loaded = false; await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 0); assert.equal(toggleSyncs, 1);
 });
 
 test("optimistic backend writes immediately clean up sharing before their response arrives", async () => {

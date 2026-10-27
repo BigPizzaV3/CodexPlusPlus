@@ -135,8 +135,8 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
       语音输入、粘贴修复、会话宽度、滚动位置恢复、下一步建议、回答大纲与光标打字特效。
     </td>
     <td valign="top">
-      <h3>🐳 用量可见，也有陪伴</h3>
-      用量挂件、可更换的桌宠角色、任务状态和预算提醒，搭配皮肤与自定义图片，让界面更有自己的风格。
+      <h3>🐳 Agent 桌宠，工作也有陪伴</h3>
+      在 Codex 里放一只桌宠，点一下会压扁并播放音效；图片从内置图库挑选或换成自己的。
     </td>
   </tr>
   <tr>
@@ -192,22 +192,13 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
 
 ### 认真工作，也可以有点趣味
 
-<table>
-  <tr>
-    <td width="42%" valign="top">
-      <strong>用量挂件与桌宠</strong><br>
-      查看本地会话 Token 与任务状态，支持拖动、缩放和更换角色图片。
-      <p><img src="docs/images/readme-preview/usage-widget.png" alt="角色用量挂件：气泡显示 Token 统计和运行状态" width="100%"></p>
-    </td>
-    <td width="58%" valign="top">
-      <strong>光标打字特效</strong><br>
-      彩虹粒子、烟花与星光，让输入多一点反馈。可随时关闭，系统减少动态效果时暂停。
-      <p><img src="docs/images/readme-preview/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" width="100%"></p>
-    </td>
-  </tr>
-</table>
+<p>
+  <strong>光标打字特效</strong><br>
+  彩虹粒子、烟花与星光，让输入多一点反馈。可随时关闭，系统减少动态效果时暂停。
+  <img src="docs/images/readme-preview/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" width="58%">
+</p>
 
-用量挂件默认关闭，可在「Codex 增强 → 常用增强 → 挂件与桌宠」开启。API 余额为可选能力，与会话 Token、订阅额度分别统计，详见 [用量挂件说明](docs/whale-widget.md)。角色素材归属见该文档的参考来源。
+Agent 桌宠默认关闭，可在管理器「Agent 桌宠」页开启，目前支持 Codex。图片在运行时联网拉取并缓存在本机，详见 [Agent 桌宠说明](docs/agent-pet.md)。
 
 ## 快速上手
 

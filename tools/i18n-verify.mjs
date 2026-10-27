@@ -55,6 +55,22 @@ function scanFile(relPath) {
 
 for (const f of SRC_FILES) scanFile(f);
 
+// 增强设置项清单的文案在管理器里以 t(item.title) 这类动态参数翻译，扫描调用点看不到，
+// 这里按 src/enhancement-catalog.ts 的 enhancementCatalogStrings() 同样的字段补进来。
+const catalog = JSON.parse(
+  readFileSync(path.join(repoRoot, "crates", "codex-plus-core", "assets", "enhancement-settings.json"), "utf8"),
+);
+for (const group of catalog.groups) {
+  usedPlain.add(group.title);
+  if (group.description) usedPlain.add(group.description);
+}
+for (const item of catalog.items) {
+  usedPlain.add(item.title);
+  usedPlain.add(item.description);
+  if (item.descriptionWhenEnhancementsOn) usedPlain.add(item.descriptionWhenEnhancementsOn);
+  for (const option of item.options ?? []) usedPlain.add(option.label);
+}
+
 // ── Read the dictionary keys out of i18n-en.ts. ─────────────────────────────
 const dictSource = readFileSync(path.join(appRoot, "src", "i18n-en.ts"), "utf8");
 

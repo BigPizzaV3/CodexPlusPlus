@@ -792,285 +792,14 @@ pub struct SkillsPayload {
     pub repo_errors: Vec<String>,
     pub skills_dir: String,
     pub codex_skills_dir: String,
+    /// Codex 之外各 Agent 的 skills 目录（Agent id → 目录），前端用来标列头的提示。
+    pub agent_skills_dirs: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartupPayload {
     pub show_update: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrokProvidersPayload {
-    /// Grok 分区里已保存的供应商（存在 settings.json 的 tools.grok）。
-    pub profiles: Vec<RelayProfile>,
-    pub active_relay_id: String,
-    /// 磁盘上 Grok config.toml 的现状，用来展示「Grok 现在连的是谁」。
-    pub live: codex_plus_core::grok_config::GrokConfigPayload,
-    /// 把磁盘现状按供应商语义反推出来的 profile，供 UI 比对。
-    pub live_profile: RelayProfile,
-}
-
-/// 读取 Grok 侧的供应商列表 + 磁盘现状。
-#[tauri::command]
-pub fn load_grok_providers() -> CommandResult<GrokProvidersPayload> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let shard = settings.tool_config(&codex_plus_core::tools::ToolId::Grok);
-
-    match codex_plus_core::tools::grok::load_grok_state() {
-        Ok(live) => {
-            let live_profile = codex_plus_core::tools::grok::read_grok_profile_from_config(&live);
-            ok(
-                "Grok 供应商配置已加载。",
-                GrokProvidersPayload {
-                    profiles: shard.relay_profiles,
-                    active_relay_id: shard.active_relay_id,
-                    live,
-                    live_profile,
-                },
-            )
-        }
-        Err(error) => failed(
-            &format!("读取 Grok 配置失败：{error}"),
-            GrokProvidersPayload {
-                profiles: shard.relay_profiles,
-                active_relay_id: shard.active_relay_id,
-                live: empty_grok_config_payload(),
-                live_profile: RelayProfile::default(),
-            },
-        ),
-    }
-}
-
-/// 把 Grok 分区里当前选中的供应商写进 `~/.grok/config.toml`。
-///
-/// 这是**破坏性**操作：Grok 里所有受管的 `[model.*]` 表会被这个供应商的模型
-/// 列表整体替换（`[ui]` / `[models].web_search` 等未管理字段保留）。前端必须先
-/// 让用户确认，所以这里不做隐式调用。
-#[tauri::command]
-pub fn apply_grok_relay_profile(settings: BackendSettings) -> CommandResult<GrokProvidersPayload> {
-    let store = SettingsStore::default();
-    let mut next = settings;
-    let shard = next.tool_config(&codex_plus_core::tools::ToolId::Grok);
-    let Some(profile) = codex_plus_core::tools::grok::active_grok_profile(&shard) else {
-        return failed(
-            "Grok 还没有配置任何供应商。",
-            GrokProvidersPayload {
-                profiles: shard.relay_profiles,
-                active_relay_id: shard.active_relay_id,
-                live: empty_grok_config_payload(),
-                live_profile: RelayProfile::default(),
-            },
-        );
-    };
-
-    let backup_root = codex_plus_core::paths::default_app_state_dir().join("backups");
-    let live = match codex_plus_core::tools::grok::apply_profile_to_grok(&profile, &backup_root) {
-        Ok(live) => live,
-        Err(error) => {
-            return failed(
-                &format!("应用 Grok 供应商失败：{error}"),
-                GrokProvidersPayload {
-                    profiles: shard.relay_profiles,
-                    active_relay_id: shard.active_relay_id,
-                    live: codex_plus_core::tools::grok::load_grok_state()
-                        .unwrap_or_else(|_| empty_grok_config_payload()),
-                    live_profile: RelayProfile::default(),
-                },
-            );
-        }
-    };
-
-    // 先写盘再保存设置：写 config.toml 失败时不该留下「设置里说切了、磁盘上没切」
-    // 的不一致状态。
-    let mut saved_shard = shard.clone();
-    saved_shard.active_relay_id = profile.id.clone();
-    next.set_tool_config(&codex_plus_core::tools::ToolId::Grok, saved_shard);
-    if let Err(error) = store.save(&next) {
-        return failed(
-            &format!("Grok 配置已写入，但保存供应商设置失败：{error}"),
-            GrokProvidersPayload {
-                profiles: shard.relay_profiles,
-                active_relay_id: shard.active_relay_id,
-                live: live.clone(),
-                live_profile: codex_plus_core::tools::grok::read_grok_profile_from_config(&live),
-            },
-        );
-    }
-
-    let live_profile = codex_plus_core::tools::grok::read_grok_profile_from_config(&live);
-    ok(
-        &format!("已把供应商「{}」应用到 Grok。", profile.name),
-        GrokProvidersPayload {
-            profiles: shard.relay_profiles,
-            active_relay_id: profile.id,
-            live,
-            live_profile,
-        },
-    )
-}
-
-#[tauri::command]
-pub fn load_grok_config() -> CommandResult<codex_plus_core::grok_config::GrokConfigPayload> {
-    match codex_plus_core::grok_config::load_grok_config() {
-        Ok(payload) => ok("Grok 配置已加载。", payload),
-        Err(error) => failed(
-            &format!("读取 Grok 配置失败：{error}"),
-            empty_grok_config_payload(),
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn save_grok_config(
-    request: codex_plus_core::grok_config::SaveGrokConfigRequest,
-) -> CommandResult<codex_plus_core::grok_config::SaveGrokConfigResult> {
-    let backup_root = codex_plus_core::paths::default_app_state_dir().join("backups");
-    match codex_plus_core::grok_config::save_grok_config(&request, &backup_root) {
-        Ok(payload) => ok("Grok 配置已保存。", payload),
-        Err(error) => failed(
-            &format!("保存 Grok 配置失败：{error}"),
-            codex_plus_core::grok_config::SaveGrokConfigResult {
-                config: empty_grok_config_payload(),
-                backup_path: None,
-            },
-        ),
-    }
-}
-
-/// Claude Code 供应商命令的统一出口：失败时附上磁盘上的最新状态，前端据此回滚界面。
-fn claude_provider_result(
-    success: impl FnOnce(&codex_plus_core::tools::claude::ClaudeProvidersPayload) -> String,
-    failure: &str,
-    result: anyhow::Result<codex_plus_core::tools::claude::ClaudeProvidersPayload>,
-) -> CommandResult<Option<codex_plus_core::tools::claude::ClaudeProvidersPayload>> {
-    use codex_plus_core::tools::claude;
-    match result {
-        Ok(payload) => ok(&success(&payload), Some(payload)),
-        Err(error) => failed(
-            &format!("{failure}：{error:#}"),
-            claude::load(&claude::ClaudeContext::default_paths()).ok(),
-        ),
-    }
-}
-
-/// 读取 Claude Code 的供应商列表与 `settings.json` 现状。
-#[tauri::command]
-pub fn load_claude_providers()
--> CommandResult<Option<codex_plus_core::tools::claude::ClaudeProvidersPayload>> {
-    use codex_plus_core::tools::claude;
-    claude_provider_result(
-        |_| "Claude 供应商已加载。".to_string(),
-        "读取 Claude 供应商失败",
-        claude::load(&claude::ClaudeContext::default_paths()),
-    )
-}
-
-/// 新增或保存一个 Claude 供应商；保存的是当前供应商时同步写入 `settings.json`。
-#[tauri::command]
-pub fn save_claude_provider(
-    provider: codex_plus_core::tools::claude::ClaudeProvider,
-) -> CommandResult<Option<codex_plus_core::tools::claude::ClaudeProvidersPayload>> {
-    use codex_plus_core::tools::claude;
-    let name = provider.name.trim().to_string();
-    claude_provider_result(
-        |payload| {
-            if payload.backup_path.is_some() {
-                format!("供应商「{name}」已保存，并已同步到 Claude Code。")
-            } else {
-                format!("供应商「{name}」已保存。")
-            }
-        },
-        "保存 Claude 供应商失败",
-        claude::save_provider(&claude::ClaudeContext::default_paths(), provider),
-    )
-}
-
-#[tauri::command]
-pub fn delete_claude_provider(
-    id: String,
-) -> CommandResult<Option<codex_plus_core::tools::claude::ClaudeProvidersPayload>> {
-    use codex_plus_core::tools::claude;
-    claude_provider_result(
-        |_| "供应商已删除。".to_string(),
-        "删除 Claude 供应商失败",
-        claude::delete_provider(&claude::ClaudeContext::default_paths(), &id),
-    )
-}
-
-/// 切换 Claude Code 的当前供应商：改写 `~/.claude/settings.json` 的关键字段，写前备份。
-#[tauri::command]
-pub fn switch_claude_provider(
-    id: String,
-) -> CommandResult<Option<codex_plus_core::tools::claude::ClaudeProvidersPayload>> {
-    use codex_plus_core::tools::claude;
-    claude_provider_result(
-        |payload| {
-            let name = payload
-                .providers
-                .iter()
-                .find(|provider| provider.id == payload.current_id)
-                .map(|provider| provider.name.as_str())
-                .unwrap_or_default();
-            let mut message = format!("已切换到「{name}」，新开的 Claude Code 会话生效。");
-            if payload.imported > 0 {
-                message.push_str("切换前 settings.json 里的配置已保存为「切换前的配置」。");
-            }
-            message
-        },
-        "切换 Claude 供应商失败",
-        claude::switch_provider(&claude::ClaudeContext::default_paths(), &id),
-    )
-}
-
-/// 把 `settings.json` 现有的地址、Key、模型存成一个供应商。
-#[tauri::command]
-pub fn import_claude_live_provider()
--> CommandResult<Option<codex_plus_core::tools::claude::ClaudeProvidersPayload>> {
-    use codex_plus_core::tools::claude;
-    claude_provider_result(
-        |_| "已把 Claude Code 当前配置保存为供应商。".to_string(),
-        "导入 Claude 当前配置失败",
-        claude::import_live(&claude::ClaudeContext::default_paths()),
-    )
-}
-
-/// 从 CC Switch 的数据库导入 Claude 供应商（只读打开，不改 CC Switch）。
-#[tauri::command]
-pub fn import_claude_providers_from_cc_switch()
--> CommandResult<Option<codex_plus_core::tools::claude::ClaudeProvidersPayload>> {
-    use codex_plus_core::tools::claude;
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let configured = settings.ccs_db_path.trim();
-    let db_path = if configured.is_empty() {
-        codex_plus_core::ccs_import::default_ccs_db_path()
-    } else {
-        std::path::PathBuf::from(configured)
-    };
-    claude_provider_result(
-        |payload| match payload.imported {
-            0 => "CC Switch 里没有新的 Claude 供应商。".to_string(),
-            count => format!("已从 CC Switch 导入 {count} 个 Claude 供应商。"),
-        },
-        "从 CC Switch 导入失败",
-        claude::import_from_cc_switch(&claude::ClaudeContext::default_paths(), &db_path),
-    )
-}
-
-fn empty_grok_config_payload() -> codex_plus_core::grok_config::GrokConfigPayload {
-    let home = codex_plus_core::grok_config::default_grok_home_dir();
-    codex_plus_core::grok_config::GrokConfigPayload {
-        grok_home: home.to_string_lossy().to_string(),
-        config_path: home.join("config.toml").to_string_lossy().to_string(),
-        config_exists: false,
-        cli_path: None,
-        cli_installed: false,
-        revision: String::new(),
-        default_model: String::new(),
-        models_base_url: String::new(),
-        models: Vec::new(),
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2572,31 +2301,9 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         10,
     ));
     let native_browser_shutdown = match stop_codex_plus_for_restart(
-        || {
-            // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
-            // 这里允许「按端口没匹配到就退回全局结束」，否则重启会卡在
-            // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
-            #[cfg(windows)]
-            codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(
-                request.debug_port,
-                true,
-            );
-            #[cfg(not(windows))]
-            codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(
-                request.debug_port,
-            );
-            anyhow::ensure!(
-                !codex_plus_core::cdp::endpoint_available(request.debug_port),
-                "Codex 进程尚未退出；未启动新实例"
-            );
-            Ok(())
-        },
+        || stop_main_codex_process(request.debug_port),
         codex_plus_launcher::stop,
-        || {
-            codex_plus_core::native_browser::wait_for_monitor_shutdown(
-                std::time::Duration::from_secs(10),
-            )
-        },
+        wait_native_browser_shutdown,
     ) {
         Ok(shutdown) => shutdown,
         Err(error) => {
@@ -2690,6 +2397,93 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
 }
 
+/// 结束主 Codex 进程并确认调试端口已关闭。重启和「停止 Codex」共用。
+fn stop_main_codex_process(debug_port: u16) -> anyhow::Result<()> {
+    // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
+    // 这里允许「按端口没匹配到就退回全局结束」，否则会卡在
+    // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
+    #[cfg(windows)]
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(debug_port, true);
+    #[cfg(not(windows))]
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(debug_port);
+    anyhow::ensure!(
+        !codex_plus_core::cdp::endpoint_available(debug_port),
+        "Codex 进程尚未退出"
+    );
+    Ok(())
+}
+
+fn wait_native_browser_shutdown()
+-> anyhow::Result<codex_plus_core::native_browser::NativeBrowserShutdown> {
+    codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10))
+}
+
+/// 侧栏 Codex 行的「停止」：走和重启相同的停止流程（结束进程 → 清理后台服务 → 等浏览器恢复），
+/// 只是不再启动新实例。状态记为 stopped / user_stopped，前端据此不把它当成「意外停止」。
+#[tauri::command]
+pub async fn stop_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || stop_codex_plus_blocking(request)).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("停止后台任务失败：{error}"), json!({})),
+    }
+}
+
+fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
+    let _launch_guard = match try_acquire_launch_guard() {
+        Ok(guard) => guard,
+        Err(message) => return failed(message, json!({})),
+    };
+    let request = normalize_launch_request(request);
+    if !codex_plus_core::cdp::endpoint_available(request.debug_port) {
+        return ok("Codex 没有在运行。", json!({}));
+    }
+    let Ok(_guard) = relay_switch_mutex().try_lock() else {
+        return failed("供应商切换正在进行，未停止 Codex；请稍后重试。", json!({}));
+    };
+    let _provider_guard = match ensure_provider_sync_is_idle_before_stop() {
+        Ok(guard) => guard,
+        Err(message) => return failed(&message, json!({})),
+    };
+    let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
+        &request,
+        "stopping",
+        "正在停止 Codex 并清理后台服务…",
+        current_timestamp_ms(),
+        "user_stopping",
+        10,
+    ));
+    match stop_codex_plus_for_restart(
+        || stop_main_codex_process(request.debug_port),
+        codex_plus_launcher::stop,
+        wait_native_browser_shutdown,
+    ) {
+        Ok(_) => {
+            let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
+                &request,
+                "stopped",
+                "Codex 已停止。",
+                current_timestamp_ms(),
+                "user_stopped",
+                100,
+            ));
+            ok("Codex 已停止。", json!({}))
+        }
+        Err(error) => failed(&stop_failure_message(&error), json!({})),
+    }
+}
+
+fn stop_failure_message(error: &RestartStopError) -> String {
+    match error {
+        RestartStopError::Codex(error) => format!("Codex 进程尚未确认退出：{error}"),
+        RestartStopError::NativeBrowser(error) => {
+            format!("Codex 已停止，但原生浏览器文件尚未恢复：{error}")
+        }
+        RestartStopError::Runtime(error) => {
+            format!("Codex 已停止，但后台服务尚未清理完成：{error}")
+        }
+    }
+}
+
 fn stop_codex_plus_for_restart(
     stop_codex: impl FnOnce() -> anyhow::Result<()>,
     stop_runtime: impl FnOnce() -> anyhow::Result<()>,
@@ -2765,8 +2559,11 @@ pub fn sync_resident_helper() -> Option<u16> {
     let claude_voice_needs_helper = settings
         .as_ref()
         .is_some_and(codex_plus_core::claude_localization::voice_input_needs_helper);
+    // 第四个信号：有 Agent 开着网关模式，它的请求随时会打到 helper 的 `/gw/*`。
+    let gateway_needs_helper = codex_plus_core::gateway::needs_helper();
     if !settings_need_proxy
         && !claude_voice_needs_helper
+        && !gateway_needs_helper
         && !codex_plus_core::relay_config::live_config_uses_managed_protocol_proxy_in_home(&home)
     {
         return None;
@@ -6389,6 +6186,11 @@ fn skills_payload(
         repo_errors,
         skills_dir: manager.source_dir().to_string_lossy().to_string(),
         codex_skills_dir: manager.linked_dir().to_string_lossy().to_string(),
+        agent_skills_dirs: manager
+            .agent_dirs()
+            .iter()
+            .map(|(agent, dir)| (agent.clone(), dir.to_string_lossy().to_string()))
+            .collect(),
     }
 }
 
@@ -6403,6 +6205,29 @@ fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
         codex_plus_core::paths::default_skills_state_path(),
         codex_plus_core::codex_home::default_codex_home_dir(),
     )
+    // Claude Code 与 Grok 都按 `<dir>/<id>/SKILL.md` 读 Skill，可以同一份源软链过去。
+    .with_agent_dirs(vec![
+        ("claude".to_string(), codex_plus_core::tools::default_claude_home_dir().join("skills")),
+        ("grok".to_string(), codex_plus_core::grok_config::default_grok_home_dir().join("skills")),
+    ])
+}
+
+/// 把 Skill 启用到 / 停用于某个 Agent（codex / claude / grok）。
+#[tauri::command]
+pub fn set_skill_enabled_for(agent: String, id: String, enabled: bool) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let name = match agent.as_str() {
+        "claude" => "Claude Code",
+        "grok" => "Grok",
+        _ => "Codex",
+    };
+    match manager.set_enabled_for(agent.trim(), id.trim(), enabled) {
+        Ok(()) => ok(
+            &if enabled { format!("已启用到 {name}，下次对话生效。") } else { format!("已在 {name} 停用。") },
+            current_skills_payload(&manager),
+        ),
+        Err(error) => failed(&format!("Skill 启停失败：{error:#}"), current_skills_payload(&manager)),
+    }
 }
 
 /// 上一次成功拉取的远端清单，按仓库 key 存。
@@ -6785,7 +6610,11 @@ pub fn set_relay_feature(profile_id: String, stabilize_prompt_prefix: bool) -> C
 #[tauri::command]
 pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
-    match read_tail(&path, request.lines) {
+    read_latest_logs_at(&path, request)
+}
+
+fn read_latest_logs_at(path: &Path, request: LogRequest) -> CommandResult<LogsPayload> {
+    match read_tail(path, request.lines) {
         Ok(tail) => ok(
             "日志已读取。",
             LogsPayload {
@@ -7205,6 +7034,17 @@ pub fn switch_relay_profile(
     let previous_active_relay_id = request.previous_active_relay_id;
     let settings = normalize_settings_before_save(request.settings);
     let resolution = request.live_conflict_resolution;
+    // Codex 被网关接管时不能在这里直接切走：先断开并还原，网关才能把接入前的配置恢复干净。
+    if codex_plus_core::gateway::apply::codex_switch_blocked_by_gateway(&store, &settings.active_relay_id) {
+        return failed(
+            "Codex 正由 Codex++ 网关接管：先在「供应商配置」顶部或「Agent 接入」里点「断开并还原」，再切换供应商。",
+            relay_switch_payload(
+                store.load().unwrap_or_default(),
+                codex_plus_core::relay_config::relay_status_from_home(&home),
+                None,
+            ),
+        );
+    }
     log_manager_event(
         "manager.switch_relay_profile.start",
         json!({
@@ -7231,6 +7071,12 @@ pub fn switch_relay_profile(
                     "importedProfileId": outcome.imported_profile_id.as_ref(),
                     "liveBackupPath": outcome.live_backup_path.as_ref()
                 }),
+            );
+            // 在 Codex 供应商页切到别的供应商等于断开网关，切回「Codex++ 网关」等于重新接入。
+            let _ = codex_plus_core::gateway::apply::note_codex_switched(
+                &codex_plus_core::gateway::store::GatewayStore::default(),
+                &result.settings.active_relay_id,
+                &previous_active_relay_id,
             );
             // 新配置已经写进 config.toml：需要本地代理时立即让它常驻，
             // 这样不经过 Codex++ 启动的客户端也能直接用。
@@ -9041,7 +8887,17 @@ struct TailRead {
 }
 
 fn read_tail(path: &Path, max_lines: usize) -> std::io::Result<TailRead> {
-    let mut file = fs::File::open(path)?;
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TailRead {
+                text: String::new(),
+                truncated: false,
+                file_size: 0,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let file_size = file.metadata()?.len();
     if max_lines == 0 || file_size == 0 {
         return Ok(TailRead {
@@ -9838,12 +9694,19 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
-    fn missing_logs_return_failed_status() {
-        let result = read_latest_logs(LogRequest { lines: 25 });
+    fn read_latest_logs_after_clear_returns_empty_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex-plus.log");
+        std::fs::write(&path, "old log\n").unwrap();
+        std::fs::remove_file(&path).unwrap();
 
-        if result.payload.text.is_empty() {
-            assert_eq!(result.status, "failed");
-        }
+        let result = read_latest_logs_at(&path, LogRequest { lines: 25 });
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.message, "日志已读取。");
+        assert_eq!(result.payload.path, path.to_string_lossy());
+        assert!(result.payload.text.is_empty());
+        assert_eq!(result.payload.file_size, 0);
     }
 
     #[test]
@@ -10433,6 +10296,25 @@ base_url = "https://example.invalid/v1"
             anyhow::anyhow!("Invalid native cleanup receipt"),
         ));
         assert!(failed.contains("原生浏览器文件恢复失败"));
+    }
+
+    #[test]
+    fn stop_errors_name_the_step_without_mentioning_a_new_instance() {
+        // 侧栏「停止 Codex」不会启动新实例，提示里不能出现「未启动新实例」这类重启用语。
+        let codex = stop_failure_message(&RestartStopError::Codex(anyhow::anyhow!(
+            "app remains running"
+        )));
+        let runtime = stop_failure_message(&RestartStopError::Runtime(anyhow::anyhow!(
+            "runtime still exiting"
+        )));
+        let browser =
+            stop_failure_message(&RestartStopError::NativeBrowser(anyhow::anyhow!("receipt")));
+        assert!(codex.contains("Codex 进程尚未确认退出"));
+        assert!(runtime.contains("后台服务尚未清理完成"));
+        assert!(browser.contains("原生浏览器文件尚未恢复"));
+        for message in [codex, runtime, browser] {
+            assert!(!message.contains("新实例"), "{message}");
+        }
     }
 
     #[test]
@@ -11233,99 +11115,6 @@ enabled = true
         assert!(claude.switchable);
         assert!(!claude.active);
         assert!(claude.home_dir.ends_with(".claude"));
-    }
-
-    /// 走一遍真实的命令链路：Grok 分区里配一个供应商 → apply 写进 config.toml。
-    ///
-    /// 全程用临时的 `GROK_HOME` / settings 路径，不碰用户真实的 ~/.grok。
-    #[test]
-    fn apply_grok_relay_profile_writes_the_selected_provider_to_disk() {
-        let _guard = lock_codex_home_for_test();
-        let previous_grok_home = std::env::var_os("GROK_HOME");
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let previous_settings =
-            codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
-        let grok_home = temp.path().join("grok-home");
-        std::fs::create_dir_all(&grok_home).unwrap();
-        // 用户已有配置：未管理字段必须活下来。
-        std::fs::write(
-            grok_home.join("config.toml"),
-            "[ui]\nyolo = false\n\n[models]\nweb_search = \"search-model\"\n",
-        )
-        .unwrap();
-        unsafe {
-            std::env::set_var("GROK_HOME", &grok_home);
-        }
-
-        let settings = BackendSettings {
-            active_tool: codex_plus_core::tools::ToolId::Grok,
-            tools: [(
-                codex_plus_core::tools::ToolId::Grok,
-                codex_plus_core::tools::ToolConfig {
-                    relay_profiles: vec![RelayProfile {
-                        id: "vendor-a".to_string(),
-                        name: "供应商 A".to_string(),
-                        relay_mode: codex_plus_core::settings::RelayMode::PureApi,
-                        upstream_base_url: "https://vendor-a.example/v1".to_string(),
-                        api_key: "sk-vendor-a".to_string(),
-                        model_list: "grok-4.5[1M]\ngrok-4.1-fast".to_string(),
-                        ..RelayProfile::default()
-                    }],
-                    active_relay_id: "vendor-a".to_string(),
-                    ..codex_plus_core::tools::ToolConfig::default()
-                },
-            )]
-            .into_iter()
-            .collect(),
-            ..BackendSettings::default()
-        };
-
-        let result = apply_grok_relay_profile(settings);
-        codex_plus_core::paths::set_settings_path_for_tests(previous_settings);
-        let written = std::fs::read_to_string(grok_home.join("config.toml"));
-        unsafe {
-            match previous_grok_home {
-                Some(value) => std::env::set_var("GROK_HOME", value),
-                None => std::env::remove_var("GROK_HOME"),
-            }
-        }
-        let written = written.unwrap();
-
-        assert_eq!(result.status, "ok");
-        assert!(
-            written.contains("[model.\"grok-4.5\"]"),
-            "实际写出：\n{written}"
-        );
-        assert!(written.contains("base_url = \"https://vendor-a.example/v1\""));
-        assert!(written.contains("api_key = \"sk-vendor-a\""));
-        assert!(written.contains("context_window = 1000000"));
-        // 未管理字段原样保留。
-        assert!(written.contains("[ui]"));
-        assert!(written.contains("web_search = \"search-model\""));
-    }
-
-    /// 还没填模型列表的供应商不允许应用。
-    ///
-    /// 这里用默认的 Grok 分区：它带着一个默认 profile，但 `model_list` 是空的。
-    /// 应用它会把 Grok 里所有受管的 `[model.*]` 表清空，所以必须被拦下来。
-    #[test]
-    fn apply_grok_relay_profile_rejects_a_provider_without_models() {
-        let _guard = lock_codex_home_for_test();
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let previous_settings =
-            codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
-
-        let result = apply_grok_relay_profile(BackendSettings::default());
-        codex_plus_core::paths::set_settings_path_for_tests(previous_settings);
-
-        assert_eq!(result.status, "failed");
-        assert!(
-            result.message.contains("没有配置模型列表"),
-            "实际消息：{}",
-            result.message
-        );
     }
 
     #[test]

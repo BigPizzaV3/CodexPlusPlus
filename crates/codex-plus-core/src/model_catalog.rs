@@ -29,6 +29,8 @@ struct ModelSource {
     api_key: String,
     /// 供应商自定义请求头（issue #1685）。非供应商来源为空。
     headers: Vec<crate::settings::RelayHeaderKeyValue>,
+    /// Anthropic Messages 协议：模型列表要 `x-api-key` + `anthropic-version`，且默认只返回 20 条。
+    anthropic: bool,
 }
 
 #[derive(Debug, Default)]
@@ -581,6 +583,7 @@ fn model_sources_from_environment(
             api_key
         },
         headers: Vec::new(),
+        anthropic: false,
     }]
 }
 
@@ -618,6 +621,7 @@ fn model_source_from_config(
         base_url,
         api_key,
         headers: Vec::new(),
+        anthropic: false,
     })
 }
 
@@ -677,7 +681,12 @@ async fn fetch_models_from_source_with_timeout(
     source: &ModelSource,
     timeout: std::time::Duration,
 ) -> (Vec<String>, Value) {
-    let endpoint = models_endpoint(&source.base_url);
+    let mut endpoint = models_endpoint(&source.base_url);
+    if source.anthropic && !endpoint.is_empty() {
+        // Anthropic 的 /v1/models 默认一页 20 条，一次取满（上限 1000）。
+        endpoint.push(if endpoint.contains('?') { '&' } else { '?' });
+        endpoint.push_str("limit=1000");
+    }
     let mut safe_source = json!({
         "id": source.source_id,
         "type": source.source_type,
@@ -697,8 +706,19 @@ async fn fetch_models_from_source_with_timeout(
         .get(&endpoint)
         .header(reqwest::header::ACCEPT, "application/json");
     // 与协议代理、供应商测试共用 relay_headers：显式 Authorization 优先于 API Key。
-    if !source.api_key.is_empty() && !crate::relay_headers::has_authorization(&source.headers) {
+    let has_header = |name: &str| source.headers.iter().any(|header| header.key.trim().eq_ignore_ascii_case(name));
+    let official_anthropic = source.anthropic && endpoint.contains("anthropic.com");
+    if !source.api_key.is_empty() && !crate::relay_headers::has_authorization(&source.headers) && !official_anthropic {
         request = request.bearer_auth(&source.api_key);
+    }
+    if source.anthropic {
+        // 官方只认 x-api-key；第三方中转常常两种都收，Bearer 已在上面带上。
+        if !source.api_key.is_empty() && !has_header("x-api-key") {
+            request = request.header("x-api-key", &source.api_key);
+        }
+        if !has_header("anthropic-version") {
+            request = request.header("anthropic-version", crate::anthropic_bridge::ANTHROPIC_VERSION);
+        }
     }
     request = crate::relay_headers::apply_headers(request, &source.headers);
 
@@ -890,12 +910,13 @@ pub async fn fetch_relay_profile_model_ids(
         },
         api_key: crate::relay_config::relay_profile_api_key(profile),
         headers: profile.custom_headers.clone(),
+        anthropic: profile.protocol == crate::settings::RelayProtocol::AnthropicMessages,
     };
     if source.base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");
     }
     let endpoint = models_endpoint(&source.base_url);
-    let client = crate::http_client::proxied_client_for_profile(&profile.user_agent, &profile.id)?;
+    let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, &profile)?;
     let (models, status) = fetch_models_from_source(&client, &source).await;
     if models.is_empty() {
         let message = status
@@ -908,7 +929,7 @@ pub async fn fetch_relay_profile_model_ids(
 }
 
 /// 官方模型目录的客户端版本参数；与 Codex CLI 的取值保持一致。
-const OFFICIAL_MODELS_CLIENT_VERSION: &str = "0.159.0";
+pub(crate) const OFFICIAL_MODELS_CLIENT_VERSION: &str = "0.159.0";
 
 /// 官方登录 profile 的模型列表：带账号 OAuth 凭据请求 chatgpt.com 官方目录。
 async fn fetch_official_login_model_ids(
@@ -917,7 +938,7 @@ async fn fetch_official_login_model_ids(
     let credential = crate::official_login::resolve_official_credential(profile, false).await?;
     let base = crate::official_login::official_base_url();
     let endpoint = format!("{}/models", base.trim().trim_end_matches('/'));
-    let client = crate::http_client::proxied_client_for_profile(&profile.user_agent, &profile.id)?;
+    let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, &profile)?;
     let mut request = client
         .get(&endpoint)
         .query(&[("client_version", OFFICIAL_MODELS_CLIENT_VERSION)])
@@ -1459,6 +1480,7 @@ mod model_fetch_tests {
             base_url: format!("http://{address}"),
             api_key: "key".to_string(),
             headers: Vec::new(),
+            anthropic: false,
         };
         let (_, status) = fetch_models_from_source_with_timeout(
             &client,

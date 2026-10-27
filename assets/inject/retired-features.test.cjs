@@ -16,7 +16,8 @@ test("retired project enhancements have no UI, dispatch or scanner entry", () =>
   assert.match(source, /upstreamWorktreeDialogClass = "codex-upstream-worktree-dialog"/);
   assert.match(source, /function installCodexRemoteSessionRecoveryListener\(/);
   assert.match(source, /function installSessionShareButton\(/);
-  assert.match(source, /function activateSessionCopyMenuItem\(/);
+  // 会话行「…」菜单里的原地复制 / 自动重命名已整体下线，函数与入口都不该回来。
+  assert.doesNotMatch(source, /function (?:activateSessionCopyMenuItem|activateSessionAutoRenameMenuItem)\(/);
 });
 
 test("old backend switches cannot enable retired features", () => {

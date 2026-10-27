@@ -2068,6 +2068,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             anthropic_prompt_cache: true,
             anthropic_impersonate_claude_code: false,
             anthropic_thinking_mode: String::new(),
+            gateway_proxy: None,
         }],
         active_relay_id: "relay-chat".to_string(),
         ..BackendSettings::default()

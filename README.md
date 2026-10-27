@@ -168,7 +168,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用。它从 OpenAI Codex / ChatGP
     <td valign="top"><strong>🧹 AI Agent 缓存清理 · 新</strong><br>扫描并清理 Codex、Claude 缓存。</td>
   </tr>
   <tr>
-    <td valign="top"><strong>🐳 用量挂件与桌宠 · 开发预览</strong><br>Token 统计、任务状态与预算提醒。</td>
+    <td valign="top"><strong>🐳 Agent 桌宠 · 新</strong><br>点一下会压扁、带音效，图片随心换。</td>
     <td valign="top"><strong>🎨 皮肤与个性化</strong><br>社区主题与自定义图片。</td>
   </tr>
 </table>
@@ -248,22 +248,12 @@ Codex++ 是 AI 编程 Agent 的统一管理应用。它从 OpenAI Codex / ChatGP
 
 ### 认真工作，也可以有点趣味
 
-<table>
-  <tr>
-    <td width="42%" valign="top">
-      <strong>用量挂件与桌宠 · 开发预览</strong>
-      <p><img src="docs/images/readme-preview/usage-widget.png" alt="角色用量挂件：气泡显示 Token 统计和运行状态" width="100%"></p>
-    </td>
-    <td width="58%" valign="top">
-      <strong>光标打字特效</strong>
-      <p><img src="docs/images/readme-preview/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" width="100%"></p>
-    </td>
-  </tr>
-</table>
+<p>
+  <strong>光标打字特效</strong><br>
+  <img src="docs/images/readme-preview/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" width="58%">
+</p>
 
-用量挂件在「Codex 增强 → 常用增强 → 挂件与桌宠」开启，说明见 [Codex 用量挂件](docs/whale-widget.md)。
-
-**鲸鱼功能来源与鸣谢：**原始功能、完整界面引擎、鲸鱼角色及内置音效/动图来自 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，本项目将其适配为 Codex++ 内置功能；Codex 桌面版技术路线另参考 [Yang-huai406/Codex-Whale-Public](https://github.com/Yang-huai406/Codex-Whale-Public)。原始代码与素材声明见随项目保留的 [LICENSE](assets/inject/upstream/whale-widget/LICENSE) 和 [PROVENANCE.md](assets/inject/upstream/whale-widget/PROVENANCE.md)，素材不重新声明为本项目原创。
+**Agent 桌宠**：在 Codex 里放一只可拖动的桌宠，点击会压扁并播放音效；图片可从内置图库（Fluent Emoji，运行时联网拉取）挑选，也可填自己的 https 图片地址。在管理器「Agent 桌宠」页开启，目前支持 Codex，说明见 [Agent 桌宠](docs/agent-pet.md)。
 
 <details>
   <summary><strong>纯 API Key 如何开启原生 Fast</strong></summary>

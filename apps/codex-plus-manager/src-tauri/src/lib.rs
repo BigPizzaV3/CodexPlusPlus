@@ -1,11 +1,17 @@
 mod auto_takeover;
 mod agent_collaboration_commands;
+mod agent_launch_commands;
+mod agent_mcp_commands;
+mod agent_pet_commands;
+mod provider_lookup_commands;
 mod computer_use_commands;
 mod cu_pip;
+mod gateway_commands;
 mod global_dictation;
 pub mod commands;
 pub mod install;
 mod runtime_health;
+mod tray_panel;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,7 +19,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
-const TRAY_ID: &str = "codex_plus_tray";
+pub(crate) const TRAY_ID: &str = "codex_plus_tray";
 
 static APP_EXITING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
@@ -56,12 +62,12 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
         "status" => serde_json::to_value(codex_plus_core::computer_use::status()?)?,
         "check" => serde_json::to_value(codex_plus_core::computer_use::check())?,
         "install" => {
-            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("install 需要 target：claudeCode / claudeDesktop / codex / dsh / zcode / workBuddy"))?;
+            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("install 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy"))?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::install(parsed)?)?
         }
         "uninstall" => {
-            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / codex / dsh / zcode / workBuddy"))?;
+            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy（codex：移除旧版本留在 Codex 里的条目）"))?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::uninstall(parsed)?)?
         }
@@ -208,6 +214,8 @@ pub fn run() {
             }
             let main_window = main_window_builder.build()?;
             install_tray(app)?;
+            gateway_commands::set_app_handle(app.handle().clone());
+            codex_plus_core::settings::set_external_settings_change_listener(gateway_commands::notify_settings_changed);
             if start_minimized {
                 set_manager_activation_policy(app.handle(), false);
             }
@@ -229,6 +237,8 @@ pub fn run() {
                 app.handle().clone(),
                 start_codex_at_login || start_codex_on_open,
             );
+            // 网关模式：有 Agent 走网关时常驻 helper 必须在线。
+            gateway_commands::start_from_saved_state();
             // 自动接管官方 App（默认关闭）：设置里开着才起守护线程。
             auto_takeover::start_supervisor();
             if let Err(error) = global_dictation::apply_config() {
@@ -251,6 +261,7 @@ pub fn run() {
             commands::stop_codex_multi_instance,
             commands::restart_codex_multi_instance,
             commands::restart_codex_plus,
+            commands::stop_codex_plus,
             commands::load_settings,
             commands::load_request_logs,
             commands::clear_request_logs,
@@ -290,16 +301,45 @@ pub fn run() {
             commands::save_settings,
             commands::list_tools,
             commands::test_vlm,
-            commands::load_grok_config,
-            commands::save_grok_config,
-            commands::load_grok_providers,
-            commands::apply_grok_relay_profile,
-            commands::load_claude_providers,
-            commands::save_claude_provider,
-            commands::delete_claude_provider,
-            commands::switch_claude_provider,
-            commands::import_claude_live_provider,
-            commands::import_claude_providers_from_cc_switch,
+            provider_lookup_commands::fetch_provider_models,
+            provider_lookup_commands::lookup_model_prices,
+            agent_pet_commands::agent_pet_catalog,
+            agent_pet_commands::agent_pet_image,
+            agent_pet_commands::agent_pet_sounds,
+            agent_launch_commands::open_agent_terminal,
+            agent_mcp_commands::load_agent_mcp,
+            agent_mcp_commands::save_agent_mcp,
+            gateway_commands::load_gateway,
+            gateway_commands::save_gateway_binding,
+            gateway_commands::disable_gateway_binding,
+            gateway_commands::rotate_gateway_token,
+            gateway_commands::save_gateway_options,
+            gateway_commands::reset_gateway_key_health,
+            gateway_commands::create_gateway_provider,
+            gateway_commands::update_gateway_provider,
+            gateway_commands::delete_gateway_provider,
+            gateway_commands::set_gateway_provider_enabled,
+            gateway_commands::reorder_gateway_providers,
+            gateway_commands::import_gateway_provider,
+            gateway_commands::save_gateway_group,
+            gateway_commands::delete_gateway_group,
+            gateway_commands::reveal_gateway_agent_config,
+            gateway_commands::load_gateway_usage,
+            gateway_commands::clear_gateway_usage,
+            gateway_commands::load_gateway_balances,
+            gateway_commands::list_agent_sessions,
+            gateway_commands::resume_agent_session,
+            gateway_commands::delete_agent_session,
+            gateway_commands::login_gateway_chatgpt,
+            gateway_commands::start_gateway_copilot_login,
+            gateway_commands::finish_gateway_copilot_login,
+            gateway_commands::login_gateway_grok,
+            gateway_commands::login_gateway_chatgpt_api,
+            gateway_commands::import_gateway_opencode_key,
+            gateway_commands::save_gateway_provider_extras,
+            gateway_commands::save_gateway_tray_panel,
+            tray_panel::tray_panel_action,
+            tray_panel::refresh_tray_mode,
             commands::weixin_connect_qr_start,
             commands::weixin_connect_qr_status,
             commands::weixin_connect_status,
@@ -366,6 +406,7 @@ pub fn run() {
             commands::install_skill,
             commands::update_skill,
             commands::set_skill_enabled,
+            commands::set_skill_enabled_for,
             commands::uninstall_skill,
             commands::restore_skill_backup,
             commands::delete_skill_backup,
@@ -472,6 +513,7 @@ pub fn run() {
                             }
                             // 常驻本地代理只在 Codex++ 退出时停止；Codex 会话结束
                             // 不会关它（见 core::resident_helper）。
+                            gateway_commands::restore_for_exit();
                             codex_plus_core::resident_helper::stop_resident_helper();
                             SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                             app.exit(0);
@@ -549,6 +591,10 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
+            // 快捷面板打开时左键单击交给面板；关掉时保持原来的行为。
+            if tray_panel::handle_tray_event(tray.app_handle(), &event) {
+                return;
+            }
             if tray_event_shows_main_window(&event) {
                 show_main_window(tray.app_handle());
             }
@@ -579,6 +625,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     // Tauri 的资源表持有托盘对象，局部句柄释放不会移除菜单栏入口。
     let _ = tray_builder.build(app)?;
+    tray_panel::apply_tray_mode(app.handle(), TRAY_ID);
     Ok(())
 }
 
@@ -743,6 +790,17 @@ fn update_tray_labels<R: tauri::Runtime>(
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_title(&window_title);
     }
+}
+
+/// 托盘快捷面板的「打开 Codex++」。
+pub(crate) fn show_main_window_from<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    show_main_window(app_handle);
+}
+
+/// 托盘快捷面板的「退出」：与托盘菜单的退出一致。
+pub(crate) fn request_app_exit<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    APP_EXITING.store(true, Ordering::SeqCst);
+    app_handle.exit(0);
 }
 
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {

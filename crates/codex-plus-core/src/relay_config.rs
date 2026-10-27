@@ -1086,7 +1086,7 @@ pub async fn test_relay_profile(
         crate::anthropic_bridge::CLAUDE_CODE_USER_AGENT
     } else if !profile.user_agent.trim().is_empty() { profile.user_agent.trim() }
     else { "CodexPlusPlus/RelayTest" };
-    let client = crate::http_client::proxied_client_for_profile(user_agent, &profile.id)?;
+    let client = crate::http_client::proxied_client_for_relay(user_agent, &profile)?;
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => crate::protocol_proxy::responses_url(base_url),
         RelayProtocol::ChatCompletions => crate::protocol_proxy::chat_completions_url(base_url),

@@ -20,6 +20,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// 网关模式托管的供应商 id：开启 Claude Code 网关时写入、关闭时删掉。
+pub const GATEWAY_PROVIDER_ID: &str = "codex-plus-gateway";
+
 const SETTINGS_FILE: &str = "settings.json";
 const STORE_FILE: &str = "claude-providers.json";
 const STORE_VERSION: u32 = 1;
@@ -379,6 +382,28 @@ pub fn switch_provider(ctx: &ClaudeContext, id: &str) -> anyhow::Result<ClaudePr
     store.current_id = target.id;
     write_store(&ctx.store_path, &store)?;
     Ok(payload(ctx, store, backup_path, imported))
+}
+
+/// 当前供应商 id（没有时为空串）。
+pub fn current_provider_id(ctx: &ClaudeContext) -> anyhow::Result<String> {
+    Ok(read_store(&ctx.store_path)?.current_id)
+}
+
+/// 清掉当前供应商写进 settings.json 的关键字段与独有字段，并清空当前指针。
+///
+/// 网关模式关闭、而开启前没有可切回的供应商时用：settings.json 回到「没配供应商」的样子，
+/// 用户的 hooks、permissions 等其余键不动。
+pub fn clear_current(ctx: &ClaudeContext) -> anyhow::Result<ClaudeProvidersPayload> {
+    let mut store = read_store(&ctx.store_path)?;
+    let prev = store
+        .providers
+        .iter()
+        .find(|provider| provider.id == store.current_id)
+        .map(|provider| Projection::of(&provider.settings_config));
+    let backup_path = write_live(ctx, prev.as_ref(), &Projection::default())?;
+    store.current_id.clear();
+    write_store(&ctx.store_path, &store)?;
+    Ok(payload(ctx, store, backup_path, 0))
 }
 
 /// 把 settings.json 现有的关键字段存成一个供应商，并把它设为当前供应商（live 本来就是它）。

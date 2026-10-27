@@ -2,6 +2,18 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import ts from "typescript";
+import {
+  enhancementCatalog,
+  enhancementCatalogStrings,
+  enhancementGroup,
+  enhancementGroupAnchorId,
+  enhancementItem,
+  managerGeneralGroups,
+  managerGroupItems,
+  managerStandaloneGroup,
+  type EnhancementPlatform,
+} from "./enhancement-catalog.ts";
+import { EN_PLAIN } from "./i18n-en.ts";
 
 const appSource = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
 const app = ts.createSourceFile("App.tsx", appSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -93,34 +105,119 @@ test("retired enhancements have no settings, navigation or command references in
   assert.deepEqual([...new Set(references)], []);
 });
 
+const ENHANCEMENT_COMPONENTS = ["EnhanceScreen", "StandaloneModeGroup", "StepwiseSettingsPanel", "EnhancementSettingControl"];
+
+function settingControls(node: ts.Node) {
+  return elements(node).filter((element) => element.tagName.getText(app) === "EnhancementSettingControl");
+}
+
 test("unified enhancements use the master switch and Chinese suggestion labels", () => {
-  const enhance = component("EnhanceScreen");
-  const toggles = elements(enhance).filter((element) => element.tagName.getText(app) === "FeatureToggle");
-  assert.ok(toggles.length > 0);
-  for (const toggle of toggles) assert.equal(attribute(toggle, "disabled"), "!masterEnabled");
-  assert.equal(attribute(fieldControl(enhance, "form.codexAppPluginMarketplaceUnlock"), "disabled"), "!masterEnabled");
-  const petGroup = elements(enhance).find((element) => element.tagName.getText(app) === "FeatureGroup"
-    && attribute(element, "title") === 't("挂件与桌宠")');
-  assert.ok(petGroup);
-  assert.equal(attribute(petGroup, "detail"), 't("在 Codex 中查看用量，设置自己的角色和互动方式。")');
-  const petLook = fieldControl(petGroup.parent, "form.codexAppPetRealMouseLook");
-  assert.ok(descendants(enhance).some((node) => ts.isConditionalExpression(node)
-    && node.condition.getText(app) === "supportsPetRealMouseLook" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must be available on Windows and macOS");
-  assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
-    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must not stay Windows-only");
-  const whaleWidget = fieldControl(petGroup.parent, "form.codexAppWhaleWidgetEnabled");
-  assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
-    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(whaleWidget)), "the Codex usage widget must be available on every platform");
-  assert.ok(fieldControl(petGroup.parent, "form.codexAppActivityOverlayRight"), "the native activity overlay mirror belongs with the pet layout settings");
+  // 开关统一经 EnhancementSettingControl 渲染：受总开关控制的项在增强关闭时禁用。
+  const control = component("EnhancementSettingControl");
+  const disabled = descendants(control).find((node) => ts.isVariableDeclaration(node) && node.name.getText(app) === "disabled");
+  assert.ok(disabled && ts.isVariableDeclaration(disabled));
+  assert.equal(disabled.initializer?.getText(app), "isEnhancementItemMasterGated(item) && !masterEnabled");
+  for (const element of elements(control).filter((candidate) => ["FeatureToggle", "AppSelect"].includes(candidate.tagName.getText(app)))) {
+    assert.equal(attribute(element, "disabled"), "disabled");
+  }
+  for (const name of ["EnhanceScreen", "StandaloneModeGroup"]) {
+    const placements = settingControls(component(name));
+    assert.ok(placements.length > 0, `${name} renders catalog settings`);
+    for (const placement of placements) assert.equal(attribute(placement, "masterEnabled"), "masterEnabled");
+  }
+  assert.equal(attribute(settingControls(component("StepwiseSettingsPanel"))[0], "masterEnabled"), "form.enhancementsEnabled");
+  for (const item of enhancementCatalog.items) {
+    const standalone = enhancementGroup(item.group).standalone === true;
+    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled"].includes(item.key);
+    assert.equal(item.masterGated !== false, !standalone && !unmanaged, `${item.key} master gating`);
+  }
+
+  const petGroup = enhancementGroup("pet");
+  assert.equal(petGroup.title, "桌宠与活动");
+  assert.equal(petGroup.description, "调整 Codex 原生桌宠与活动进度条。可点按的 Agent 桌宠在「工具 → Agent 桌宠」里设置。");
+  const visible = (platform: EnhancementPlatform) => managerGroupItems("pet", platform).map((item) => item.key);
+  for (const platform of ["windows", "macos"] as const) {
+    assert.ok(visible(platform).includes("codexAppPetRealMouseLook"), "native pet mouse tracking must be available on Windows and macOS");
+  }
+  assert.ok(!visible("linux").includes("codexAppPetRealMouseLook"));
+  for (const platform of ["windows", "macos", "linux"] as const) {
+    assert.ok(visible(platform).includes("codexAppActivityOverlayRight"), "the native activity overlay mirror belongs with the pet layout settings");
+  }
+  // Agent 桌宠是独立页面，原「Codex 用量挂件」也已移出增强页，清单里不能再出现。
+  assert.ok(!component("EnhanceScreen").getText(app).includes("agentPet"), "Agent 桌宠是独立页面，不再放在 Codex 增强里");
+  assert.ok(!enhancementCatalog.items.some((item) => /WhaleWidget|AgentPet/.test(item.key)));
 
   const visibleEnglish = descendants(app).filter((node) => ts.isStringLiteral(node)
     || ts.isNoSubstitutionTemplateLiteral(node) || ts.isJsxText(node)).filter((node) => /Stepwise/.test(node.getText(app)));
   assert.deepEqual(visibleEnglish.map((node) => node.getText(app)), [], "internal Stepwise fields stay compatible but visible names must use Chinese");
+  for (const text of enhancementCatalogStrings()) assert.doesNotMatch(text, /Stepwise/);
   const suggestions = component("StepwiseSettingsPanel");
   const header = elements(suggestions).find((element) => element.tagName.getText(app) === "CardHead");
   assert.ok(header);
-  assert.equal(attribute(header, "title"), 't("下一步建议")');
-  assert.equal(attribute(fieldControl(suggestions, "form.codexAppStepwiseDirectSend"), "title"), 't("建议直接发送")');
+  assert.equal(attribute(header, "title"), "t(group.title)");
+  assert.equal(enhancementGroup("stepwise").title, "下一步建议");
+  assert.equal(enhancementItem("codexAppStepwiseDirectSend").title, "建议直接发送");
+});
+
+test("enhancement switches come only from the settings catalog", () => {
+  // 管理器里不能再写死一份开关文案：清单中的标题/说明不得以 t("字面量") 出现在增强页组件里。
+  const catalogStrings = new Set(enhancementCatalogStrings());
+  for (const name of ENHANCEMENT_COMPONENTS) {
+    const node = component(name);
+    assert.deepEqual(elements(node).filter((element) => element.tagName.getText(app) === "FeatureToggle"
+      && /^t\("/.test(attribute(element, "title") ?? "")).map((element) => attribute(element, "title")), [], `${name} has a hard-coded switch`);
+    const literals = descendants(node).filter(ts.isCallExpression)
+      .filter((call) => call.expression.getText(app) === "t" && call.arguments[0] && ts.isStringLiteral(call.arguments[0]))
+      .map((call) => (call.arguments[0] as ts.StringLiteral).text)
+      .filter((text) => catalogStrings.has(text));
+    assert.deepEqual(literals, [], `${name} duplicates catalog text`);
+  }
+  for (const item of enhancementCatalog.items) {
+    assert.ok(!appSource.includes(`t("${item.description}")`), `${item.key} description is duplicated in App.tsx`);
+  }
+  // 会话维护页的自动修复开关与 Codex 设置页同一条文案。
+  assert.match(appSource, /const providerSyncItem = enhancementItem\("providerSyncEnabled"\);/);
+  assert.match(appSource, /<strong>\{t\(providerSyncItem\.title\)\}<\/strong>/);
+  assert.match(appSource, /<strong>\{t\(masterItem\.title\)\}<\/strong>/);
+});
+
+test("every manager-visible catalog item has exactly one place in the manager", () => {
+  for (const platform of ["windows", "macos", "linux"] as const) {
+    const placed = [
+      ...managerGeneralGroups().flatMap((group) => managerGroupItems(group.id, platform)),
+      ...managerGroupItems(managerStandaloneGroup().id, platform),
+      ...managerGroupItems("stepwise", platform),
+      enhancementItem("enhancementsEnabled"),
+      enhancementItem("providerSyncEnabled"),
+    ].map((item) => item.key);
+    const expected = enhancementCatalog.items
+      .filter((item) => item.surfaces.includes("manager") && (!item.platforms || item.platforms.includes(platform)))
+      .map((item) => item.key);
+    assert.deepEqual([...placed].sort(), [...expected].sort(), `manager switches on ${platform} must match the catalog`);
+    assert.equal(new Set(placed).size, placed.length);
+  }
+  assert.equal(enhancementGroup("stepwise").managerTab, "stepwise");
+  // 左侧目录（PageSectionNav）的分组同样按清单生成，锚点 id 保持既有值，深链和滚动定位不受影响。
+  assert.deepEqual(
+    [...managerGeneralGroups(), managerStandaloneGroup()].map(enhancementGroupAnchorId),
+    ["enhance-group-plugins", "enhance-group-chat", "enhance-group-pet", "enhance-group-standalone"],
+  );
+  assert.match(appSource, /const generalSections = \[\.\.\.managerGeneralGroups\(\), managerStandaloneGroup\(\)\]\s*\.map\(\(group\) => \(\{ id: enhancementGroupAnchorId\(group\), label: t\(group\.title\) \}\)\);/);
+  for (const name of ["EnhanceScreen", "StandaloneModeGroup"]) {
+    const groups = elements(component(name)).filter((element) => element.tagName.getText(app) === "FeatureGroup");
+    assert.ok(groups.length > 0);
+    for (const group of groups) assert.equal(attribute(group, "id"), "enhancementGroupAnchorId(group)", `${name} groups keep their anchor id`);
+  }
+  const enhance = component("EnhanceScreen");
+  const generalGroups = descendants(enhance).find((node) => ts.isCallExpression(node) && node.expression.getText(app) === "managerGeneralGroups().map");
+  assert.ok(generalGroups, "general tab groups are generated from the catalog");
+  const stepwise = component("StepwiseSettingsPanel");
+  assert.ok(descendants(stepwise).some((node) => ts.isCallExpression(node) && node.expression.getText(app) === "managerGroupItems(group.id, enhancementPlatform).map"));
+});
+
+test("every catalog string the manager shows has an English translation", () => {
+  const missing = enhancementCatalogStrings().filter((text) => !EN_PLAIN[text]);
+  assert.deepEqual(missing, []);
 });
 
 test("complete voice and Stepwise panels share the enhancement form and save action", () => {
@@ -169,8 +266,11 @@ test("enhancement panels retain every service field, private key input and Stepw
   assert.equal(attribute(fieldControl(dictation, "form.dictation.apiKey"), "type"), "password");
 
   const stepwise = component("StepwiseSettingsPanel");
+  // 三个开关按清单「下一步建议」组生成，其余连接参数仍是面板里的定制字段。
+  assert.deepEqual(managerGroupItems("stepwise", "macos").map((item) => item.key),
+    ["codexAppStepwiseEnabled", "codexAppAnswerOutlineEnabled", "codexAppStepwiseDirectSend"]);
+  assert.ok(settingControls(stepwise).length > 0);
   for (const field of [
-    "codexAppStepwiseEnabled", "codexAppAnswerOutlineEnabled", "codexAppStepwiseDirectSend",
     "codexAppStepwiseProtocol", "codexAppStepwiseGenerationMode", "codexAppStepwiseBaseUrl",
     "codexAppStepwiseApiKey", "codexAppStepwiseApiKeyEnv", "codexAppStepwiseModel",
     "codexAppStepwiseMaxItems", "codexAppStepwiseMaxInputChars", "codexAppStepwiseMaxOutputTokens", "codexAppStepwiseTimeoutMs",
@@ -251,21 +351,26 @@ test("enhancement settings save automatically and show a permanent status at the
 test("standalone quota unlock lives in its own group inside the general tab and stays editable when enhancements are off", () => {
   const enhance = component("EnhanceScreen");
   const group = component("StandaloneModeGroup");
-  const standalone = fieldControl(group, "form.codexAppStandaloneQuotaUnlock");
-  assert.equal(standalone.tagName.getText(app), "FeatureToggle");
-  assert.equal(attribute(standalone, "title"), 't("官方额度解锁")');
-  assert.equal(attribute(standalone, "disabled"), undefined, "独立模式补丁不能被增强总开关禁用");
-  assert.match(attribute(standalone, "detail") || "", /masterEnabled/, "开关说明要区分增强开启/关闭两种状态");
-  assert.match(appSource, /增强开启时此能力已自动生效；此开关只在关闭增强后生效。/);
-  assert.match(appSource, /官方登录 \+ API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。/);
-  const handler = eventHandlerNodes(group, standalone, "onChange");
-  assert.ok(handler.some((node) => ts.isCallExpression(node) && node.expression.getText(app) === "onFormChange"));
-  assert.ok(handler.some((node) => ts.isPropertyAssignment(node) && node.name.getText(app) === "codexAppStandaloneQuotaUnlock"));
+  const standaloneGroup = managerStandaloneGroup();
+  assert.equal(standaloneGroup.title, "独立模式");
+  assert.equal(standaloneGroup.description, "增强总开关关闭后仍会生效的补丁。");
+  assert.deepEqual(managerGroupItems(standaloneGroup.id, "macos").map((item) => item.key), ["codexAppStandaloneQuotaUnlock"]);
+  const standalone = enhancementItem("codexAppStandaloneQuotaUnlock");
+  assert.equal(standalone.title, "官方额度解锁");
+  assert.equal(standalone.control, "bool");
+  assert.equal(standalone.masterGated, false, "独立模式补丁不能被增强总开关禁用");
+  // 开关说明要区分增强开启/关闭两种状态。
+  assert.equal(standalone.descriptionWhenEnhancementsOn, "增强开启时此能力已自动生效；此开关只在关闭增强后生效。");
+  assert.match(standalone.description, /官方登录 \+ API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。/);
+  const control = component("EnhancementSettingControl");
+  assert.match(control.getText(app), /masterEnabled && item\.descriptionWhenEnhancementsOn \? item\.descriptionWhenEnhancementsOn : item\.description/);
+  assert.match(control.getText(app), /onToggle \?\? \(\(value\) => onFormChange\(\{ \.\.\.form, \[key\]: value \}\)\)/);
 
   const featureGroup = elements(group).find((element) => element.tagName.getText(app) === "FeatureGroup");
   assert.ok(featureGroup);
-  assert.equal(attribute(featureGroup, "title"), 't("独立模式")');
-  assert.equal(attribute(featureGroup, "detail"), 't("增强总开关关闭后仍会生效的补丁。")');
+  assert.equal(attribute(featureGroup, "title"), "t(group.title)");
+  assert.equal(attribute(featureGroup, "detail"), 't(group.description ?? "")');
+  assert.ok(settingControls(group).length === 1);
 
   // EnhanceScreen 只负责按总开关状态换位置：关闭增强时置顶，开启增强时置底。
   const placements = elements(enhance).filter((element) => element.tagName.getText(app) === "StandaloneModeGroup");
@@ -294,14 +399,14 @@ test("standalone quota unlock lives in its own group inside the general tab and 
 });
 
 test("native Fast unlock is the only Fast enhancement toggle and keeps the provider support notice", () => {
-  const enhance = component("EnhanceScreen");
-  const nativeFast = fieldControl(enhance, "form.codexAppNativeFastUnlock");
-  assert.equal(nativeFast.tagName.getText(app), "FeatureToggle");
-  assert.equal(attribute(nativeFast, "title"), 't("原生 Fast 强制解锁")');
-  assert.equal(attribute(nativeFast, "disabled"), "!masterEnabled");
-  assert.match(attribute(nativeFast, "detail") || "", /纯 API Key.*原生 Fast.*供应商决定/);
-  const handler = eventHandlerNodes(enhance, nativeFast, "onChange");
-  assert.ok(handler.some((node) => ts.isStringLiteral(node) && node.text === "codexAppNativeFastUnlock"));
+  const nativeFast = enhancementItem("codexAppNativeFastUnlock");
+  assert.equal(nativeFast.control, "bool");
+  assert.equal(nativeFast.title, "原生 Fast 强制解锁");
+  assert.notEqual(nativeFast.masterGated, false, "原生 Fast 受增强总开关控制");
+  assert.match(nativeFast.description, /纯 API Key.*原生 Fast.*供应商决定/);
+  assert.ok(managerGeneralGroups().some((group) => group.id === nativeFast.group));
+  assert.ok(nativeFast.surfaces.includes("manager") && nativeFast.surfaces.includes("codex"));
+  assert.deepEqual(enhancementCatalog.items.filter((item) => /Fast/.test(item.title)).map((item) => item.key), ["codexAppNativeFastUnlock"]);
+  assert.ok(!enhancementCatalog.items.some((item) => item.key === "codexAppServiceTierControls"));
   assert.match(appSource, /codexAppNativeFastUnlock: false,/);
-  assert.ok(!elements(enhance).some((element) => attribute(element, "checked") === "form.codexAppServiceTierControls"));
 });

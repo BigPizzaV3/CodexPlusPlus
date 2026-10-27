@@ -43,7 +43,7 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 
 | Agent | What Codex++ does |
 | --- | --- |
-| **Codex desktop** | Provider switching and protocol conversion, request shock absorption, session management, UI enhancements, multi-launch, extensions, and the usage widget |
+| **Codex desktop** | Provider switching and protocol conversion, request shock absorption, session management, UI enhancements, multi-launch, extensions, and the Agent pet |
 | **Claude Code** | One-click provider switching; Computer Use connection |
 | **Claude Desktop** | Enhanced copy (Chinese UI, dictation, Computer Use); Computer Use connection |
 | **Grok CLI** | Model and API endpoint configuration |
@@ -117,9 +117,7 @@ Every UI enhancement is independently configurable. Disabling the global enhance
   <img src="docs/images/agent-collaboration.png" alt="Verified DeepSeek example: ask what 1+1 equals and receive 2 through the Codex Plus Collaboration integration" width="100%">
 </p>
 
-The optional usage widget lives under Codex Enhancements → General → Widgets and pets; see the [widget guide](docs/whale-widget.md).
-
-**Whale widget source and credits:** The original features, complete UI engine, character, built-in sounds and animations come from [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget), adapted here as a built-in Codex++ feature. The Codex desktop architecture also references [Yang-huai406/Codex-Whale-Public](https://github.com/Yang-huai406/Codex-Whale-Public). The upstream [LICENSE](assets/inject/upstream/whale-widget/LICENSE) and [PROVENANCE.md](assets/inject/upstream/whale-widget/PROVENANCE.md) are preserved; the media assets are not claimed as original work by this project.
+**Agent pet:** an optional clickable desktop pet for Codex that squishes with a sound effect when clicked. Pick an image from the built-in gallery (Fluent Emoji, fetched at runtime) or use your own https image URL. Turn it on from the manager's “Agent pet” page; see the [Agent pet guide](docs/agent-pet.md).
 
 ## Codex Provider Modes
 

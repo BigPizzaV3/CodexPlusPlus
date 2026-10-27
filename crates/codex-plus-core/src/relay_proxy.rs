@@ -67,6 +67,16 @@ pub fn configured_proxy_for_profile(profile_id: &str) -> Option<String> {
         .or_else(|| non_empty_proxy(std::env::var("CODEX_PLUS_PROXY").ok()))
 }
 
+/// 供应商实际要用的代理。网关供应商（`gateway_proxy` 为 Some）只看自己的设置，
+/// 没填时退回进程级的 `CODEX_PLUS_PROXY`；直连模式的按 id 查。
+pub fn proxy_for_relay(relay: &crate::settings::RelayProfile) -> Option<String> {
+    match &relay.gateway_proxy {
+        Some(proxy) => non_empty_proxy(Some(proxy.clone()))
+            .or_else(|| non_empty_proxy(std::env::var("CODEX_PLUS_PROXY").ok())),
+        None => configured_proxy_for_profile(&relay.id),
+    }
+}
+
 fn non_empty_proxy(value: Option<String>) -> Option<String> {
     value.map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
 }

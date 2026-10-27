@@ -1,0 +1,298 @@
+/* Claude Code / Grok 概览仪表板。规则都带 .shell：正式版里 styles.css 在组件样式之后加载。 */
+.shell .agent-dash {
+  display: grid;
+  gap: 12px;
+}
+
+/* 顶部接入状态栏 */
+.shell .agent-dash-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 14px;
+  padding: 14px 16px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, hsl(var(--brand-accent) / 0.12), transparent 60%),
+    hsl(var(--card));
+}
+.shell .agent-dash-glyph {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--surface-raised));
+}
+.shell .agent-dash-glyph .hub-agent-glyph {
+  width: 22px;
+  height: 22px;
+}
+.shell .agent-dash-title {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 200px;
+}
+.shell .agent-dash-title strong {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 650;
+}
+.shell .agent-dash-title strong small {
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.shell .agent-dash-title > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+.shell .agent-dash-title > span i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: hsl(var(--muted-foreground) / 0.6);
+}
+.shell .agent-dash-title > span[data-tone="gateway"] i {
+  background: hsl(var(--status-success));
+  box-shadow: 0 0 0 3px hsl(var(--status-success) / 0.18);
+}
+.shell .agent-dash-title > span[data-tone="drift"] {
+  color: hsl(var(--status-warning));
+}
+.shell .agent-dash-title > span[data-tone="drift"] i {
+  background: hsl(var(--status-warning));
+}
+.shell .agent-dash-actions {
+  display: flex;
+  gap: 8px;
+}
+.shell .agent-dash-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 7px;
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.shell .agent-dash-button:hover:not(:disabled) {
+  background: hsl(var(--accent));
+}
+.shell .agent-dash-button[data-primary="true"] {
+  border-color: transparent;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.shell .agent-dash-button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+/* 一排今日数据 */
+.shell .agent-dash-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.shell .agent-dash-stats > div {
+  padding: 12px 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+}
+.shell .agent-dash-stats dt {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.shell .agent-dash-stats dd {
+  margin: 4px 0 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 20px;
+  font-weight: 600;
+}
+.shell .agent-dash-stats dd[data-tone="ok"] {
+  color: hsl(var(--status-success));
+}
+.shell .agent-dash-stats dd[data-tone="warn"] {
+  color: hsl(var(--status-warning));
+}
+
+/* 最近会话 / 最近请求 */
+.shell .agent-dash-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.shell .agent-dash-card {
+  min-width: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+  overflow: hidden;
+}
+.shell .agent-dash-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+.shell .agent-dash-card h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.shell .agent-dash-card > header button,
+.shell .agent-dash-foot button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.shell .agent-dash-card > header button:hover,
+.shell .agent-dash-foot button:hover {
+  color: hsl(var(--foreground));
+}
+.shell .agent-dash-card ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.shell .agent-dash-card li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 14px;
+  border-bottom: 1px solid hsl(var(--border) / 0.6);
+}
+.shell .agent-dash-card li:last-child {
+  border-bottom: 0;
+}
+.shell .agent-dash-main {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.shell .agent-dash-main strong,
+.shell .agent-dash-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell .agent-dash-main strong {
+  font-size: 12.5px;
+  font-weight: 550;
+}
+.shell .agent-dash-main small {
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.shell .agent-dash-card time {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.shell .agent-dash-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+.shell .agent-dash-icon:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.shell .agent-dash-state[data-tone="ok"] {
+  color: hsl(var(--status-success));
+}
+.shell .agent-dash-state[data-tone="err"] {
+  color: hsl(var(--status-error));
+}
+.shell .agent-dash-empty {
+  margin: 0;
+  padding: 18px 14px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+.shell .agent-dash-spin {
+  animation: agent-dash-spin 1s linear infinite;
+}
+@keyframes agent-dash-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 底部配置摘要 */
+.shell .agent-dash-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 2px 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.shell .agent-dash-foot b {
+  margin-left: 4px;
+  color: hsl(var(--foreground));
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+}
+.shell .agent-dash-foot code {
+  font-size: 11px;
+}
+
+@media (max-width: 860px) {
+  .shell .agent-dash-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .shell .agent-dash-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.shell .agent-dash-stats dd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell .agent-dash-stats dd[data-mono="false"] {
+  font-size: 16px;
+  line-height: 30px;
+}
+.shell .agent-dash-actions .agent-dash-select {
+  width: 200px;
+}
+.shell .agent-dash-title > span[data-tone="relay"] i {
+  background: hsl(var(--brand-accent));
+}
