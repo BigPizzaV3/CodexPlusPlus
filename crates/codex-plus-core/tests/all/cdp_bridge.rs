@@ -3345,7 +3345,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"27\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"28\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3390,6 +3390,7 @@ fn model_whitelist_never_claims_the_host_default_model() {
         format!(
             r#"
 const codexModelCatalog = {{
+  status: "ok",
   default_model: "supplier-default",
   model: "supplier-default",
   provider_name: "Supplier",
@@ -3399,28 +3400,31 @@ const codexPlusModelMetadata = () => null;
 const modelReasoningEfforts = () => [];
 const applyCodexPlusModelMetadata = () => false;
 const codexPlusModelNames = () => ["supplier-default", "extra-model"];
-const codexRemoteSessionActiveProfile = () => ({{ id: "custom", relayMode: "official" }});
+let relayMode = "official";
+const codexRemoteSessionActiveProfile = () => ({{ id: "custom", relayMode }});
 const codexPlusModelUnlockEnabled = () => true;
 const codexPlusBackendSettingsLoaded = true;
 const codexPlusModelCollectionSnapshots = new WeakMap();
 const codexPlusModelDefaultSnapshots = new WeakMap();
 {function_source}
 
+for (const mode of ["official", "pureApi"]) {{
+relayMode = mode;
 const missingDefault = {{ value: {{ available_models: ["native-model"] }} }};
-const patchedMissingDefault = patchStatsigModelDynamicConfig(missingDefault);
+const patchedMissingDefault = patchStatsigModelDynamicConfig(missingDefault, "local");
 if (Object.prototype.hasOwnProperty.call(patchedMissingDefault.value, "default_model")) process.exit(2);
 if (!patchedMissingDefault.value.available_models.includes("supplier-default")) process.exit(3);
 if (!patchedMissingDefault.value.available_models.includes("extra-model")) process.exit(4);
 
 const existingDefault = {{ value: {{ available_models: ["native-model"], default_model: "thread-model" }} }};
-const patchedExistingDefault = patchStatsigModelDynamicConfig(existingDefault);
+const patchedExistingDefault = patchStatsigModelDynamicConfig(existingDefault, "local");
 if (patchedExistingDefault.value.default_model !== "thread-model") process.exit(5);
 
 const missingContainerDefault = {{
   models: [{{ model: "native-model", isDefault: true }}],
   availableModels: ["native-model"],
 }};
-patchModelContainer(missingContainerDefault);
+patchModelContainer(missingContainerDefault, "local");
 if (Object.prototype.hasOwnProperty.call(missingContainerDefault, "defaultModel")) process.exit(6);
 if (Object.prototype.hasOwnProperty.call(missingContainerDefault, "model")) process.exit(7);
 const injectedDefault = missingContainerDefault.models.find((item) => item.model === "supplier-default");
@@ -3434,9 +3438,21 @@ const existingContainerDefault = {{
   defaultModel: hostDefault,
   model: hostModel,
 }};
-patchModelContainer(existingContainerDefault);
+patchModelContainer(existingContainerDefault, "local");
 if (existingContainerDefault.defaultModel !== hostDefault) process.exit(9);
 if (existingContainerDefault.model !== hostModel) process.exit(10);
+}}
+
+const originalDefault = {{ model: "native-model" }};
+const legacyDefault = {{ model: "supplier-default" }};
+const legacy = {{ defaultModel: legacyDefault, default_model: "new-native-choice" }};
+codexPlusModelDefaultSnapshots.set(legacy, {{ fields: {{
+  defaultModel: {{ original: originalDefault, patched: legacyDefault }},
+  default_model: {{ original: "old-native-choice", patched: "supplier-default" }},
+}} }});
+patchModelContainer(legacy, "local");
+if (legacy.defaultModel !== originalDefault || legacy.default_model !== "new-native-choice") process.exit(11);
+if (codexPlusModelDefaultSnapshots.has(legacy)) process.exit(12);
 "#
         ),
     )
@@ -3664,8 +3680,8 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
     assert_eq!(cases["pureApiThreadStartProvider"], "custom");
-    assert_eq!(cases["pureApiThreadResumeProvider"], "custom");
-    assert_eq!(cases["pureApiNativeResumeProvider"], "custom");
+    assert_eq!(cases["pureApiThreadResumePreserved"], true);
+    assert_eq!(cases["pureApiNativeResumePreserved"], true);
     assert_eq!(cases["pureApiExplicitResumePreserved"], true);
     assert_eq!(cases["officialResumePreserved"], true);
     assert_eq!(cases["pureApiTurnStartProvider"], "custom");
@@ -3712,8 +3728,8 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
         cases["unfilteredModelScenarios"],
         json!([true, true, true, true, true])
     );
-    assert_eq!(cases["pureApiDefaultModel"], "relay-model");
-    assert_eq!(cases["pureApiStatsigDefault"], "relay-model");
+    assert_eq!(cases["pureApiDefaultModel"], "gpt-unavailable");
+    assert_eq!(cases["pureApiStatsigDefault"], "gpt-unavailable");
     assert_eq!(cases["modelsRestoredAfterModeChange"], true);
     assert_eq!(cases["modelsRestoredAfterReinjection"], true);
     assert_eq!(cases["modelsRestoredAfterCatalogFailure"], true);
@@ -4309,9 +4325,9 @@ const pureApiThreadResumeParams = {{
   threadId: "thread-mobile-pure-api",
   model_provider: "openai",
 }};
-const pureApiThreadResumeProvider = api.applyProviderOverride("thread/resume", pureApiThreadResumeParams)?.modelProvider;
+const pureApiThreadResumePreserved = api.applyProviderOverride("thread/resume", pureApiThreadResumeParams) === pureApiThreadResumeParams;
 const pureApiNativeResumeParams = {{ threadId: "thread-mobile-native-resume" }};
-const pureApiNativeResumeProvider = api.applyProviderOverride("thread/resume", pureApiNativeResumeParams)?.modelProvider;
+const pureApiNativeResumePreserved = api.applyProviderOverride("thread/resume", pureApiNativeResumeParams) === pureApiNativeResumeParams;
 const explicitResume = {{ threadId: "thread-other-provider", modelProvider: "other", model: "gpt-custom", reasoningEffort: "high" }};
 const pureApiExplicitResumePreserved = api.applyProviderOverride("thread/resume", explicitResume) === explicitResume;
 const pureApiTurnStartProvider = api.applyProviderOverride("turn/start", {{
@@ -4669,8 +4685,8 @@ process.stdout.write(JSON.stringify({{
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,
   pureApiThreadStartProvider,
-  pureApiThreadResumeProvider,
-  pureApiNativeResumeProvider,
+  pureApiThreadResumePreserved,
+  pureApiNativeResumePreserved,
   pureApiExplicitResumePreserved,
   officialResumePreserved,
   pureApiTurnStartProvider,

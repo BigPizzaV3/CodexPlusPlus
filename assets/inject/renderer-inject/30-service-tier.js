@@ -90,8 +90,8 @@
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
     const profile = codexRemoteSessionActiveProfile();
     const pureApi = String(profile?.relayMode || "") === "pureApi";
-    // Pure API 恢复旧会话时必须覆盖持久化的 openai；官登会话保留原生恢复语义。
-    if (requestMethod === "thread/resume" && !pureApi) return params;
+    // 仅有 threadId 的恢复必须让原生读取保存的模型和推理设置；注入 provider 会跳过它们。
+    if (requestMethod === "thread/resume" && (!pureApi || !params.model)) return params;
     if (requestMethod === "turn/start" && !pureApi) return params;
     const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
       || Object.prototype.hasOwnProperty.call(params, "model_provider");
