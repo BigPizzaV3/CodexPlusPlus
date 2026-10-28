@@ -68,9 +68,9 @@ pub trait BridgeSettingsService: Send + Sync {
         Ok(String::new())
     }
 
-    fn whale_ledger_path(&self) -> PathBuf {
-        // 账本固定在状态目录：迁移设置文件路径后不能跟着换位置，否则余额历史看似清空。
-        crate::paths::default_app_state_dir().join("whale-balance.sqlite3")
+    /// Agent 桌宠图片缓存目录；测试可覆盖成临时目录，避免写进真实状态目录。
+    fn agent_pet_cache_dir(&self) -> PathBuf {
+        crate::agent_pet::default_cache_dir()
     }
 }
 
@@ -172,9 +172,6 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
-    async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
-        Ok(json!({"status":"unavailable","message":"本机用量统计暂不可用"}))
-    }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
@@ -183,9 +180,6 @@ pub trait BridgeDataService: Send + Sync {
     /// 内置状态栏专用，不进第三方拓展路由白名单。
     async fn thread_usage_live(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "本机用量快照暂不可用", "events": []}))
-    }
-    async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
-        Ok(json!({"status": "unavailable", "message": "当前后端暂不支持会话用量摘要"}))
     }
     async fn find_archived_thread_by_title(
         &self,
@@ -286,8 +280,15 @@ pub async fn handle_bridge_request(
             crate::dictation::cancel_bridge(&payload).map_err(anyhow::Error::from)
         }
         "/settings/set" => {
-            settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
+            let result = ctx.settings.set_settings(payload.clone()).await;
+            // Codex 设置页改了设置：通知管理器重新读取，两边开关保持一致。
+            if result.is_ok() {
+                crate::settings::notify_external_settings_change();
+            }
+            settings_value(&ctx, result).await
         }
+        // 只读：设置项清单（标题、说明、分组等），注入页据此生成设置行。
+        "/settings/catalog" => crate::settings_catalog::enhancement_settings_catalog(),
         "/user-scripts/list" => {
             ctx.runtime
                 .user_script_inventory_with_runtime_status(payload.clone())
@@ -382,56 +383,30 @@ pub async fn handle_bridge_request(
                 .thread_usage_live(session_from_payload(&payload))
                 .await
         }
-        // 仅内置挂件使用，不加入第三方拓展路由白名单。
-        "/whale/history" => match ctx.settings.get_settings().await {
-            Ok(settings)
-                if crate::whale::enabled(&settings)
-                    && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
-            {
-                ctx.data.whale_history(payload.clone()).await
-            }
-            Ok(_) => Ok(json!({"status":"disabled"})),
-            Err(_) => Ok(json!({"status":"unavailable","message":"无法读取挂件设置"})),
-        },
-        "/whale/full" => match ctx.settings.get_settings().await {
-            Ok(settings) => {
-                let path = ctx.settings.whale_ledger_path();
-                let requested_path = payload
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let history = if crate::whale::enabled(&settings)
-                    && crate::whale_full::history_enabled(&path)
-                    && matches!(
-                        requested_path,
-                        "/dsh-whale/usage-records.json" | "/dsh-whale/api-models.json"
-                    ) {
-                    ctx.data
-                        .whale_history(crate::whale_full::history_query(&path))
-                        .await
-                        .unwrap_or_else(|_| json!({"status":"unavailable"}))
-                } else {
-                    Value::Null
-                };
-                Ok(crate::whale_full::handle(&settings, path, payload.clone(), history).await)
-            }
-            Err(_) => Ok(json!({"status":503,"body":{"ok":false,"error":"无法读取挂件设置"}})),
-        },
-        "/whale/balance" => match ctx.settings.get_settings().await {
-            Ok(settings) => {
-                Ok(crate::whale::balance(&settings, ctx.settings.whale_ledger_path()).await)
-            }
-            Err(_) => Ok(crate::whale::unavailable("无法读取挂件设置")),
-        },
-        "/whale/session" => match ctx.settings.get_settings().await {
-            Ok(settings)
-                if crate::whale::enabled(&settings)
-                    && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
-            {
-                ctx.data.whale_session(session_from_payload(&payload)).await
+        // 仅内置 Agent 桌宠使用，不加入第三方拓展路由白名单。payload 忽略，只按当前设置取图。
+        "/agent-pet/image" => match ctx.settings.get_settings().await {
+            Ok(settings) if crate::agent_pet::enabled_for(&settings.agent_pet, "codex") => {
+                let pet = &settings.agent_pet;
+                match crate::agent_pet::load_image(
+                    &pet.image,
+                    &pet.custom_image_url,
+                    &ctx.settings.agent_pet_cache_dir(),
+                )
+                .await
+                {
+                    Ok(image) => Ok(json!({
+                        "status": "ok",
+                        "image": image.data_uri,
+                        "id": pet.image,
+                    })),
+                    Err(error) => Ok(json!({"status": "failed", "message": format!("{error:#}")})),
+                }
             }
             Ok(_) => Ok(json!({"status": "disabled"})),
-            Err(_) => Ok(json!({"status": "unavailable", "message": "无法读取挂件设置"})),
+            Err(error) => Ok(json!({
+                "status": "failed",
+                "message": format!("无法读取 Agent 桌宠设置：{error}"),
+            })),
         },
         "/archived-thread" => {
             let title = payload

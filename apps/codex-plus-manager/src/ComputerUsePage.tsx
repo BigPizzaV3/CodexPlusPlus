@@ -1,10 +1,15 @@
 /** Computer Use：复用 Codex app 的 Computer Use 与 Chrome 控制，通过 MCP 提供给 Claude Code、DeepSeek Harness、ZCode 等客户端。 */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
+import { appConfirm } from "./app-dialog";
 import { AlertTriangle, AppWindow, Check, CheckCircle2, FolderOpen, Globe, Loader2, MonitorSmartphone, MousePointerClick, Pencil, Play, Plug, Plus, RefreshCw, ShieldCheck, Trash2, Unplug, X } from "lucide-react";
 import { ComputerUsePreview } from "./ComputerUsePreview";
+import { AppSelect } from "./AppSelect";
 import { PageHeader } from "./ManagementPages";
+import { HubTopology } from "./HubOverview";
+import { APP_LOGO_URL } from "./gateway-ui";
+import type { HubLink } from "./hub-overview-model";
 import { t, tf } from "./i18n";
 import "./ComputerUsePage.css";
 
@@ -71,8 +76,8 @@ type CuApprovalState = {
   turnHooks?: { installed?: boolean; events?: string[]; settings?: string } | null;
 };
 
-// Codex 桌面版自己会把 [mcp_servers.computer-use] 写进 ~/.codex/config.toml，
-// 再挂一份只会让同一个 CU 服务出现两条连接，所以不列 Codex。
+// Codex 自带 Computer Use，不提供接入；status 里的 codex 只用来发现旧版本留下的条目，
+// 那会让 Codex 同时出现两套电脑控制工具，见下方的残留提示。
 const targetIds: CuTargetId[] = ["claudeCode", "claudeDesktop", "dsh", "zcode", "workBuddy"];
 const targetFallback: Record<CuTargetId, { label: string; configPath: string }> = {
   claudeCode: { label: "Claude Code", configPath: "~/.claude.json" },
@@ -452,9 +457,9 @@ export function ComputerUsePage() {
 
   const removeCustomTarget = async (target: CuCustomTarget) => {
     if (lock.current) return;
-    const confirmed = await confirm(
+    const confirmed = await appConfirm(
       `${t("删除后会先移除写入")} ${target.configPath} ${t("的 Codex++ 条目（别人写的不动），再从列表里去掉。")}`,
-      { title: t("删除自定义目标"), kind: "warning" },
+      { title: t("删除自定义目标"), confirmText: t("删除"), danger: true },
     );
     if (!confirmed || !mounted.current) return;
     lock.current = true;
@@ -511,6 +516,7 @@ export function ComputerUsePage() {
   const loading = busy === "refresh" && !status;
   const found = status?.runtimeFound === true;
   const apps = (check?.sampleApps ?? []).slice(0, 8);
+  const codexLeftover = status?.targets?.codex?.registered === true;
 
   // 已接入的客户端数：内置目标 + 自定义目标，「需更新」也算已接入。
   const connectedCount = [
@@ -526,40 +532,37 @@ export function ComputerUsePage() {
   const approvalMode: CuApprovalMode = approval?.mode ?? "auto";
   const cuMode: CuMode = approval?.cuMode ?? "js";
 
-  /** 图里的一个客户端：状态点 + 名称 + 一键接入/移除。路径等细节放在悬停提示与下方折叠区。 */
+  /** 左列的一个客户端：状态点 + 名称 + 一键接入/移除。路径等细节放在悬停提示与下方折叠区。 */
   const flowClient = (id: string, label: string, target: CuTarget | undefined, custom?: CuCustomTarget) => {
     const state = target?.state ?? "missing";
     const working = busy === `install:${id}` || busy === `uninstall:${id}`;
     const tip = [target?.configPath, target?.message].filter(Boolean).join("\n");
-    return <div className="cu-flow-client" data-state={status ? state : "unknown"} key={id} title={tip || undefined}>
-      <span className="cu-flow-dot" aria-hidden="true" />
-      <span className="cu-flow-client-name">{label}{custom && <em>{t("自定义")}</em>}</span>
-      {!status
-        ? <span className="cu-flow-client-state">{t("未检测")}</span>
+    const tone = !status ? "off" : state === "registered" ? "ok" : state === "needs_update" ? "warn" : "off";
+    return <div className="hub-node cu-hub-client" data-node={`cu-client:${id}`} data-state={status ? state : "unknown"} key={id} title={tip || undefined}>
+      <span className="hub-node-text">
+        <strong>{label}<i className="hub-dot" data-tone={tone} />{custom && <em>{t("自定义")}</em>}</strong>
+        <small>{!status ? t("未检测") : state === "registered" ? t("已接入") : stateLabel(state)}</small>
+      </span>
+      {!status ? null
         : state === "registered"
-          ? <>
-              <span className="cu-flow-client-state">{t("已接入")}</span>
-              <button className="cu-flow-icon-button" type="button" disabled={locked} title={tf("从 {0} 移除", [label])} aria-label={tf("从 {0} 移除", [label])} onClick={() => void mutateTarget(id, "uninstall")}>
-                {working ? <Loader2 size={12} className="cu-spin" /> : <Unplug size={12} />}
-              </button>
-            </>
-          : state === "unsupported"
-            ? <span className="cu-flow-client-state">{stateLabel(state)}</span>
-            : <button className="cu-flow-client-action" type="button" disabled={locked || !found} title={!found ? t("先安装并打开一次 ChatGPT 后再接入") : target?.message} onClick={() => void mutateTarget(id, "install")}>
+          ? <button className="cu-hub-icon-button" type="button" disabled={locked} title={tf("从 {0} 移除", [label])} aria-label={tf("从 {0} 移除", [label])} onClick={() => void mutateTarget(id, "uninstall")}>
+              {working ? <Loader2 size={12} className="cu-spin" /> : <Unplug size={12} />}
+            </button>
+          : state === "unsupported" ? null
+            : <button className="cu-hub-action" type="button" disabled={locked || !found} title={!found ? t("先安装并打开一次 ChatGPT 后再接入") : target?.message} onClick={() => void mutateTarget(id, "install")}>
                 {working ? <Loader2 size={12} className="cu-spin" /> : null}{state === "needs_update" ? t("更新") : t("接入")}
               </button>}
     </div>;
   };
 
-  const flowNode = (icon: ReactNode, title: string, detail: ReactNode, tone?: string, extra?: ReactNode) => (
-    <div className="cu-flow-node" data-tone={tone}>
-      <div className="cu-flow-node-main">
-        <span className="cu-flow-icon" aria-hidden="true">{icon}</span>
-        <span className="cu-flow-text">
-          <strong>{title}</strong>
-          <small>{detail}</small>
-        </span>
-      </div>
+  /** 右列「被操作的对象」：图标 + 名称 + 经由哪个运行时；运行时缺失时显示原因与补救按钮。 */
+  const flowTarget = (node: string, icon: ReactNode, title: string, detail: ReactNode, warn: boolean, extra?: ReactNode) => (
+    <div className="hub-node cu-hub-target" data-node={node} data-warn={warn || undefined}>
+      <span className="hub-node-icon" aria-hidden="true">{icon}</span>
+      <span className="hub-node-text">
+        <strong>{title}{warn ? <i className="hub-dot" data-tone="warn" /> : null}</strong>
+        <small>{detail}</small>
+      </span>
       {extra}
     </div>
   );
@@ -575,68 +578,65 @@ export function ComputerUsePage() {
   };
 
   /**
-   * 交互式工作原理图：客户端 → Codex++ 两个 MCP 服务 → Codex 运行时 → 被操作的对象。
-   *
-   * 接入直接在图上操作：左列每个客户端一键接入/移除。codex-plus-cu 节点只显示当前的操作方式、
-   * 审批与悬浮预览状态，开关放在图下方的设置区——塞进节点会把整张图的行高撑开。
-   * 用 CSS grid 而不是 SVG，文字随窗口换行、跟随主题。
+   * 工作原理图，布局与网关总览一致：左列 AI 客户端 → 中间 Codex++ MCP 服务 → 右列被操作的对象，
+   * 用同一个 HubTopology 按节点真实位置画曲线。已接入的客户端实线连到中间，未接入的虚线；
+   * 运行时（ChatGPT.app、Chrome 扩展）缺失时右侧连线变成告警色。
    */
-  const renderFlow = () => <section className="cu-card cu-flow-card" aria-labelledby="cu-flow-title">
-    <div className="cu-card-head">
-      <div>
-        <h2 id="cu-flow-title">{t("工作原理")}</h2>
-        <p>{t("Codex++ 把 ChatGPT.app 里现成的 Computer Use 与 Chrome 扩展，通过 MCP 转给其它 AI 客户端。左边点「接入」；操作方式、审批与悬浮预览在图下方设置。")}</p>
+  const renderFlow = () => {
+    const clients: Array<{ id: string; label: string; target: CuTarget | undefined; custom?: CuCustomTarget }> = [
+      ...targetIds.map((id) => ({ id, label: status?.targets?.[id]?.label || targetFallback[id].label, target: status?.targets?.[id] })),
+      ...(status?.customTargets ?? []).map((target) => ({ id: target.id, label: target.label, target, custom: target })),
+    ];
+    const chromeReady = extStatus?.installed === true;
+    const links: HubLink[] = [
+      ...clients.map((client): HubLink => {
+        const on = client.target?.registered === true;
+        return { from: `cu-client:${client.id}`, to: "cu-core", tone: on ? "idle" : "off", weight: on ? 0.25 : 0 };
+      }),
+      { from: "cu-core", to: "cu-target:desktop", tone: !status || found ? "idle" : "warn", weight: 0.25 },
+      { from: "cu-core", to: "cu-target:chrome", tone: extStatus == null || chromeReady ? "idle" : "warn", weight: 0.25 },
+    ];
+    return <section className="cu-card cu-flow-card" aria-labelledby="cu-flow-title">
+      <div className="cu-card-head">
+        <div>
+          <h2 id="cu-flow-title">{t("工作原理")}</h2>
+          <p>{t("Codex++ 把 ChatGPT.app 里现成的 Computer Use 与 Chrome 扩展，通过 MCP 转给其它 AI 客户端。左边点「接入」；操作方式、审批与悬浮预览在图下方设置。")}</p>
+        </div>
       </div>
-    </div>
-    <div className="cu-flow-scroll">
-      <div className="cu-flow">
-        <span className="cu-flow-col" style={{ gridColumn: 1 }}><b>1</b>{t("你的 AI 客户端")}{status ? <i>{tf("已接入 {0} 个", [connectedCount])}</i> : null}</span>
-        <span className="cu-flow-col" style={{ gridColumn: 3 }}><b>2</b>{t("Codex++ MCP 服务")}</span>
-        <span className="cu-flow-col" style={{ gridColumn: 5 }}><b>3</b>{t("Codex 运行时")}</span>
-        <span className="cu-flow-col" style={{ gridColumn: 7 }}><b>4</b>{t("被操作的对象")}</span>
-
-        <div className="cu-flow-clients">
-          {targetIds.map((id) => {
-            const target = status?.targets?.[id];
-            return flowClient(id, target?.label || targetFallback[id].label, target);
-          })}
-          {(status?.customTargets ?? []).map((target) => flowClient(target.id, target.label, target, target))}
-          <button className="cu-flow-add" type="button" onClick={openTargetDetails}><Plus size={12} aria-hidden="true" />{t("添加自定义配置目录")}</button>
+      <HubTopology links={links}>
+        <div className="hub-col">
+          <div className="hub-col-head"><span>{t("你的 AI 客户端")}</span><span>{status ? tf("已接入 {0} 个", [connectedCount]) : ""}</span></div>
+          {clients.map((client) => flowClient(client.id, client.label, client.target, client.custom))}
+          <button className="hub-node hub-node-ghost" type="button" onClick={openTargetDetails}><Plus size={14} aria-hidden="true" />{t("添加自定义配置目录")}</button>
         </div>
-        <div className="cu-flow-link cu-flow-link-fan"><span>MCP</span></div>
 
-        <div className="cu-flow-lane-a" style={{ gridColumn: 3 }}>
-          {flowNode(<MousePointerClick size={16} />, "codex-plus-cu", t("桌面操控"), "cu",
-            <div className="cu-flow-summary" title={t("在下方「codex-plus-cu 设置」里修改")}>
-              <span data-accent={cuMode === "js" ? "true" : undefined}>{cuMode === "js" ? t("JS") : t("离散工具")}</span>
-              <span>{approvalMode === "auto" ? t("自动放行") : t("弹卡确认")}</span>
-              {approval?.pip ?? true ? <span>{t("悬浮预览")}</span> : null}
-            </div>)}
+        <div className="hub-core cu-hub-core" data-node="cu-core" data-running={found}>
+          <img alt="" src={APP_LOGO_URL} />
+          <strong>{t("Codex++ MCP 服务")}</strong>
+          <div className="cu-hub-services">
+            <div><MousePointerClick size={14} aria-hidden="true" /><b>codex-plus-cu</b><small>{t("桌面操控")}</small></div>
+            <div><Globe size={14} aria-hidden="true" /><b>codex-plus-browser</b><small>{cuMode === "js" ? t("JS 方式下并入 codex-plus-cu") : t("浏览器控制")}</small></div>
+          </div>
+          <div className="hub-caps" title={t("在下方「codex-plus-cu 设置」里修改")}>
+            <span data-accent={cuMode === "js" ? "true" : undefined}>{cuMode === "js" ? t("JS（同 Codex）") : t("离散工具")}</span>
+            <span><ShieldCheck size={11} aria-hidden="true" />{approvalMode === "auto" ? t("自动放行") : t("弹卡确认")}</span>
+            {approval?.pip ?? true ? <span>{t("悬浮预览")}</span> : null}
+          </div>
         </div>
-        <div className="cu-flow-link cu-flow-lane-a" style={{ gridColumn: 4 }}><span><ShieldCheck size={12} aria-hidden="true" />{t("审批")}</span></div>
-        <div className="cu-flow-lane-a" style={{ gridColumn: 5 }}>
-          {flowNode(<MonitorSmartphone size={16} />, "ChatGPT.app",
-            !status ? t("检测中…") : found ? t("原生 Computer Use · 已找到") : t("未找到，先安装 Codex 桌面版"),
-            status && !found ? "warn" : undefined)}
-        </div>
-        <div className="cu-flow-link cu-flow-lane-a" style={{ gridColumn: 6 }} />
-        <div className="cu-flow-lane-a" style={{ gridColumn: 7 }}>{flowNode(<AppWindow size={16} />, t("本机桌面应用"), t("Finder、微信、系统设置…"), "target")}</div>
 
-        <div className="cu-flow-lane-b" style={{ gridColumn: 3 }}>{flowNode(<Globe size={16} />, "codex-plus-browser",
-          cuMode === "js" ? t("JS 方式下并入 codex-plus-cu，同 Codex") : t("浏览器控制"), "browser")}</div>
-        <div className="cu-flow-link cu-flow-lane-b" style={{ gridColumn: 4 }} />
-        <div className="cu-flow-lane-b" style={{ gridColumn: 5 }}>
-          {flowNode(<Plug size={16} />, t("Chrome 扩展"),
-            extStatus == null ? t("检测中…") : extStatus.installed ? t("ChatGPT for Chrome · 已安装") : t("未安装，浏览器工具不可用"),
-            extStatus && !extStatus.installed ? "warn" : undefined,
-            extStatus && !extStatus.installed
-              ? <button className="cu-flow-client-action" type="button" disabled={locked} onClick={() => void invoke("computer_use_open_extension_store")}>{t("安装扩展")}</button>
+        <div className="hub-col">
+          <div className="hub-col-head"><span>{t("被操作的对象")}</span><span /></div>
+          {flowTarget("cu-target:desktop", <AppWindow size={16} />, t("本机桌面应用"),
+            !status ? t("检测中…") : found ? t("经 ChatGPT.app 原生 Computer Use") : t("未找到 ChatGPT.app，先安装 Codex 桌面版"),
+            Boolean(status) && !found)}
+          {flowTarget("cu-target:chrome", <Globe size={16} />, t("Chrome 标签页"),
+            extStatus == null ? t("检测中…") : chromeReady ? t("经 ChatGPT for Chrome 扩展，用你已登录的浏览器") : t("未安装 ChatGPT for Chrome 扩展"),
+            extStatus != null && !chromeReady,
+            extStatus && !chromeReady
+              ? <button className="cu-hub-action" type="button" disabled={locked} onClick={() => void invoke("computer_use_open_extension_store")}>{t("安装扩展")}</button>
               : null)}
         </div>
-        <div className="cu-flow-link cu-flow-lane-b" style={{ gridColumn: 6 }} />
-        <div className="cu-flow-lane-b" style={{ gridColumn: 7 }}>{flowNode(<Globe size={16} />, t("Chrome 标签页"), t("你已登录的真实浏览器"), "target")}</div>
-      </div>
-    </div>
+      </HubTopology>
     <div className="cu-settings" aria-labelledby="cu-settings-title">
       <div className="cu-settings-head" id="cu-settings-title">{t("codex-plus-cu 设置")}<small>{t("对新开的客户端会话生效")}</small></div>
       <div className="cu-setting">
@@ -680,7 +680,8 @@ export function ComputerUsePage() {
     <p className="cu-flow-foot">{cuMode === "js"
       ? t("接入后重启对应客户端。JS 方式下桌面与浏览器都用 mcp__codex-plus-cu__js，codex-plus-browser 不提供工具。")
       : t("接入后重启对应客户端，工具名以 mcp__codex-plus-cu__ 与 mcp__codex-plus-browser__ 开头。")}</p>
-  </section>;
+    </section>;
+  };
 
   /** 一行接入目标。内置与自定义共用；传了 `custom` 才显示「自定义」标记和删除按钮。 */
   const renderTarget = (id: string, target: CuTarget | undefined, label: string, configPath: string, custom?: CuCustomTarget) => {
@@ -767,7 +768,8 @@ export function ComputerUsePage() {
         </button>
       </div>}
 
-      <div className="mg-tabs cu-tabs" role="tablist" aria-label={t("Computer Use 分页")}>
+      {/* 与会话页等其他页面同一种下划线页签（tp-tabs）。 */}
+      <div className="tp-tabs cu-tabs" role="tablist" aria-label={t("Computer Use 分页")}>
         {cuTabs.map((item) => <button key={item.id} type="button" role="tab" aria-selected={activeTab === item.id} data-active={activeTab === item.id} onClick={() => setTab(item.id)}>{item.label}</button>)}
       </div>
 
@@ -775,6 +777,12 @@ export function ComputerUsePage() {
         {renderFlow()}
         {status?.claudeDesktopRunning ? (
           <p className="cu-note cu-note-warn">{t("Claude Desktop 正在运行：它退出时会重写自己的配置，接入前建议先完全退出 Claude Desktop，改完再打开。")}</p>
+        ) : null}
+        {codexLeftover ? (
+          <div className="cu-note cu-note-warn cu-leftover" role="alert">
+            <span>{t("Codex 配置里残留了旧版本写入的 Codex++ Computer Use 条目，会和 Codex 自带的重复，可能出现 ambiguous 报错。移除后重启 Codex 生效。")}</span>
+            <button className="mg-button" type="button" disabled={locked} onClick={() => void mutateTarget("codex", "uninstall")}>{t("移除")}</button>
+          </div>
         ) : null}
 
         <details className="cu-more" ref={targetsDetails} open={showTargets} onToggle={(event) => setShowTargets(event.currentTarget.open)}>
@@ -801,15 +809,14 @@ export function ComputerUsePage() {
                 <p className="cu-hint">{t("客户端改用了别的配置目录时（例如被包装器设置了 CLAUDE_CONFIG_DIR），上面的默认路径它读不到。在这里登记它实际读取的目录，可添加任意多个；也可以直接填配置文件路径。")}</p>
               </div>
               <div className="cu-custom-add-row">
-                <select
-                  className="cu-custom-kind"
-                  value={newKind}
+                <AppSelect
+                  ariaLabel={t("客户端类型")}
+                  className="cu-custom-kind-select"
                   disabled={locked}
-                  aria-label={t("客户端类型")}
-                  onChange={(event) => setNewKind(event.target.value as CuTargetId)}
-                >
-                  {customKinds.map((kind) => <option key={kind} value={kind}>{targetFallback[kind].label}</option>)}
-                </select>
+                  onChange={(next) => setNewKind(next)}
+                  options={customKinds.map((kind) => ({ value: kind, label: targetFallback[kind].label }))}
+                  value={newKind}
+                />
                 <input
                   className="cu-custom-name"
                   type="text"
@@ -981,7 +988,6 @@ export function ComputerUsePage() {
             </div>}
         </section>
         <p className="cu-note">{t("接入后需要重启对应客户端（Claude Code 会话、DeepSeek Harness、ZCode、WorkBuddy）才会加载工具，工具名以")}<code>mcp__codex-plus-cu__</code>{t("与")}<code>mcp__codex-plus-browser__</code>{t("前缀出现在工具列表中。")}</p>
-        <p className="cu-note">{t("Codex 桌面版与终端 CLI 共用")}<code>~/.codex/config.toml</code>{t("，其中已由 Codex 自己写入")}<code>[mcp_servers.computer-use]</code>{t("，无需重复接入；仅当你要在没有该条目的环境里单独启用时，才使用")}<code>--codex-plus-cu-cli install codex</code>{t("。")}</p>
       </>}
     </div>
   </div>;

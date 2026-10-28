@@ -704,7 +704,7 @@ pub fn catalog_summary(
     }))
 }
 
-fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Value> {
+pub(crate) fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Value> {
     let entries = profile_catalog_entries(profile)?;
     if entries.is_empty() {
         return Ok(json!({ "models": [] }));

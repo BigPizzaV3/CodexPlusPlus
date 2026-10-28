@@ -115,8 +115,8 @@ async function run(page, source, zoom, mode) {
       const rows=Array.from(document.querySelectorAll('.row'),row=>{
         const group=row.querySelector('.codex-session-actions');
         const values=['--codex-session-title-mask','--codex-session-title-max-width'].map(k=>row.style.getPropertyValue(k));
-        return [...values,...['--codex-session-actions-right','--codex-session-action-color','--codex-session-action-hover-color',
-          '--codex-session-action-hover-background'].map(k=>group.style.getPropertyValue(k)),
+        // 颜色变量已撤下（按钮改为直接套用原生类名），这里只比对定位与标题遮罩。
+        return [...values,group.style.getPropertyValue('--codex-session-actions-right'),
           group.dataset.codexActionLayoutStable];
       });
       return {ms,metrics,rows};
@@ -147,7 +147,7 @@ async function main(){
       const oldRun=await run(page,baseline,zoom,mode),nextRun=await run(page,candidate,zoom,mode);
       const old=oldRun.results,next=nextRun.results;
       for(let i=0;i<old.length;i++){
-        assert.deepEqual(next[i].rows,old[i].rows,`original positioning/colors/title mask at ${zoom}/${mode}/${i}`);
+        assert.deepEqual(next[i].rows,old[i].rows,`original positioning/title mask at ${zoom}/${mode}/${i}`);
         assert.ok(next[i].metrics.flushes<=3,`bounded read/write phases: ${JSON.stringify(next[i].metrics)}`);
         assert.ok(old[i].metrics.flushes>100,'baseline reproduces per-row thrashing');
       }

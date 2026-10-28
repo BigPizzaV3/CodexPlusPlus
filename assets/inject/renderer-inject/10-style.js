@@ -20,24 +20,43 @@
         background: transparent;
       }
       .${actionButtonClass} {
-        width: 20px;
-        height: 20px;
+        flex: 0 0 auto;
+        -webkit-app-region: no-drag;
+      }
+      /* 外观优先套用同一行原生「置顶 / 归档」按钮的类名与 data-* 属性（见
+         90-action-groups.js 的 syncNativeSessionActionStyle），套上后带
+         data-codex-native-style，下面这组兜底规则就不再生效。兜底按 Codex 原生
+         secondary / transparent / 3xs 图标按钮复刻：20px 方形、14px 图标、
+         默认三级文字色，悬停只提亮颜色、不铺底色。 */
+      .${actionButtonClass}:not([data-codex-native-style]) {
+        position: relative;
+        width: var(--control-size-4xs, 20px);
+        height: var(--control-size-4xs, 20px);
         display: inline-flex;
         align-items: center;
         justify-content: center;
         border: 0;
-        border-radius: 6px;
+        border-radius: var(--control-radius-sm, var(--radius-sm, 6px));
         background: transparent;
-        color: var(--codex-session-action-color, var(--color-token-text-tertiary, var(--codex-plus-text-tertiary, rgba(255,255,255,.5))));
-        font: 14px/1 system-ui, sans-serif;
+        color: var(--color-text-secondary-ghost, var(--color-text-tertiary, var(--color-token-text-tertiary, var(--codex-plus-text-tertiary, rgba(255,255,255,.5)))));
+        font: inherit;
         padding: 0;
         cursor: default;
         text-align: center;
+        transition: color var(--transition-duration-basic, .15s) var(--transition-ease-basic, ease);
       }
-      .${actionButtonClass} svg {
+      .${actionButtonClass}:not([data-codex-native-style]) svg {
         display: block;
-        width: 16px;
-        height: 16px;
+        width: var(--control-icon-size-xs, 14px);
+        height: var(--control-icon-size-xs, 14px);
+      }
+      .codex-session-action-inner {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
       }
       [data-codex-plus-ext="side-chat-save"] > .codex-plus-side-chat-save-spinner {
         display: inline-block;
@@ -52,10 +71,11 @@
         animation: codex-plus-side-chat-save-spin .8s linear infinite;
       }
       @keyframes codex-plus-side-chat-save-spin { to { transform: rotate(360deg); } }
-      .${actionButtonClass}:hover,
-      .${actionButtonClass}:focus-visible {
-        background: var(--codex-session-action-hover-background, transparent);
-        color: var(--codex-session-action-hover-color, var(--codex-session-action-color, var(--color-token-text-primary, #f4f4f5)));
+      .${actionButtonClass}:not([data-codex-native-style]):hover,
+      .${actionButtonClass}:not([data-codex-native-style]):focus-visible,
+      .${actionButtonClass}:not([data-codex-native-style])[aria-expanded="true"] {
+        background: transparent;
+        color: var(--color-text-secondary-ghost-hover, var(--color-text, var(--color-token-text-primary, #f4f4f5)));
         outline: none;
       }
       .${moreMenuClass} {
@@ -142,9 +162,6 @@
         border-color: var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
         background: var(--color-token-bg-secondary, transparent);
         color: var(--color-token-text-primary, inherit);
-      }
-      .${sessionCopyMenuItemClass} {
-        cursor: pointer;
       }
       .${sessionShareButtonClass} {
         position: static;
@@ -1156,18 +1173,6 @@
       .codex-session-more-menu-item { border-radius: var(--border-radius-sm, 6px); font-family: inherit; }
       .codex-session-more-menu-item:hover,
       .codex-session-more-menu-item:focus-visible { background: var(--codex-plus-bg-hover); }
-      .${actionButtonClass} {
-        width: var(--h-token-button-composer-sm, 28px);
-        height: var(--h-token-button-composer-sm, 28px);
-        border-radius: var(--border-radius-lg, 8px);
-        color: var(--codex-session-action-color, var(--codex-plus-text-tertiary));
-        font-family: inherit;
-      }
-      .${actionButtonClass}:hover,
-      .${actionButtonClass}:focus-visible {
-        background: var(--codex-session-action-hover-background, var(--codex-plus-bg-hover));
-        color: var(--codex-session-action-hover-color, var(--codex-plus-text));
-      }
       .${sessionShareButtonClass}:hover,
       .${sessionShareButtonClass}:focus-visible {
         background: var(--codex-plus-bg-hover);
@@ -1825,12 +1830,12 @@
   }
 
   function defaultCodexPlusSettings() {
-    // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、whale-widget、
+    // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、agent-pet、
     // session-share-runtime…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1842,7 +1847,6 @@
     sessionShare: "codexAppSessionShare",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
-    whaleWidget: "codexAppWhaleWidgetEnabled",
     threadScrollRestore: "codexAppThreadScrollRestore",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     nativeFastUnlock: "codexAppNativeFastUnlock",
@@ -1886,7 +1890,6 @@
         typingEffect: "off",
         threadIdBadge: false,
         conversationView: false,
-        whaleWidget: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
         nativeMenuPlacement: false,

@@ -288,3 +288,98 @@
   .plugin-market-controls { gap: 8px; }
   .plugin-market-search { order: 1; flex-basis: 100%; }
 }
+
+/* ── 紧凑布局：工具栏不套卡片，卡片高度随内容、说明两行、底部一行操作 ──
+   选择器都带 .shell：正式版里 styles.css 在组件样式之后加载，同权重的 .panel { padding: 0 } 会把卡片内边距清零。 */
+.shell .plugin-market-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.shell .plugin-market-toolbar .plugin-market-controls {
+  flex: 1 1 560px;
+}
+.shell .plugin-market-toolbar .plugin-market-summary {
+  margin: 0;
+}
+.shell .plugin-market-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 14px;
+}
+.shell .plugin-market-card {
+  height: auto;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.shell .plugin-market-card > :first-child,
+.shell .plugin-market-card > :last-child {
+  padding: 0;
+}
+.shell .plugin-market-card > .plugin-market-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+}
+.shell .plugin-market-card-heading h3 {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-line-clamp: 1;
+}
+.shell .plugin-market-card .plugin-market-package {
+  width: 16px;
+  height: 16px;
+}
+.shell .plugin-market-card .plugin-market-status {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  margin: 0;
+}
+.shell .plugin-market-card .plugin-market-description {
+  min-height: calc(2 * 1.55em);
+  font-size: 12px;
+  -webkit-line-clamp: 2;
+}
+.shell .plugin-market-card > .plugin-market-card-foot {
+  flex: none;
+  flex-direction: row;
+  justify-content: flex-start;
+}
+.shell .plugin-market-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+}
+.shell .plugin-market-card-foot .plugin-market-metadata {
+  display: flex;
+  flex: 1;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  gap: 10px;
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.shell .plugin-market-card-foot .plugin-market-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin: 0;
+}
+
+/* 插件筛选下拉（AppSelect） */
+.shell .plugin-market-filter .app-select { width: 150px; }
+.shell .plugin-market-filter .app-select-trigger { min-height: 36px; font-weight: 500; }

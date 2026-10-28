@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Loader2, MonitorPlay, RefreshCw, ShieldAlert, Square } from "lucide-react";
 import { t } from "./i18n";
+import { AppSelect } from "./AppSelect";
 
 /// 与 Rust 侧 `window_capture::CaptureWindow` 对齐
 type PreviewWindow = {
@@ -199,32 +200,30 @@ export function ComputerUsePreview() {
       </div>
 
       <div className="cu-preview-picker">
-        <label className="cu-preview-select">
+        <div className="cu-preview-select">
           <span>{t("目标窗口")}</span>
-          <select
-            value={selected ?? ""}
+          <AppSelect
+            ariaLabel={t("目标窗口")}
             disabled={locked || running || windows.length === 0}
-            onChange={(event) => setSelected(event.target.value ? Number(event.target.value) : null)}
-          >
-            {windows.length === 0 && <option value="">{t("没有可预览的窗口")}</option>}
-            {windows.map((win) => (
-              <option key={win.window_id} value={win.window_id}>
-                {describe(win)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="cu-preview-select">
+            onChange={(next) => setSelected(next ? Number(next) : null)}
+            options={windows.map((win) => ({ value: String(win.window_id), label: describe(win) }))}
+            placeholder={t("没有可预览的窗口")}
+            value={selected == null ? "" : String(selected)}
+          />
+        </div>
+        <div className="cu-preview-select">
           <span>{t("抓取方式")}</span>
-          <select
-            value={captureMode}
+          <AppSelect
+            ariaLabel={t("抓取方式")}
             disabled={locked || running}
-            onChange={(e) => setCaptureMode(e.target.value as CaptureMode)}
-          >
-            <option value="screenshot">{t("截图模式（无共享标志）")}</option>
-            <option value="stream">{t("流模式（低延迟，显示共享标志）")}</option>
-          </select>
-        </label>
+            onChange={(next) => setCaptureMode(next)}
+            options={[
+              { value: "screenshot", label: t("截图模式（无共享标志）") },
+              { value: "stream", label: t("流模式（低延迟，显示共享标志）") },
+            ]}
+            value={captureMode}
+          />
+        </div>
         {running ? (
           <button className="mg-button" type="button" onClick={() => void stop()}>
             <Square size={14} />{t("停止预览")}

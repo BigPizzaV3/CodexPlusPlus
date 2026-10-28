@@ -1,9 +1,10 @@
 {
   "identifier": "default",
-  "description": "Default permissions for the Codex++ Manager main window. Grants the dialog plugin's default permission set so the file/folder picker can be opened from settings (fixes #345). The cu-pip window is the Computer Use floating preview.",
+  "description": "Default permissions for the Codex++ Manager main window. Grants the dialog plugin's default permission set so the file/folder picker can be opened from settings (fixes #345). The cu-pip window is the Computer Use floating preview; tray-panel is the tray quick panel.",
   "windows": [
     "main",
-    "cu-pip"
+    "cu-pip",
+    "tray-panel"
   ],
   "permissions": [
     "core:default",

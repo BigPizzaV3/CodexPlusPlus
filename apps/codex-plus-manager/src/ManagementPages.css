@@ -47,25 +47,13 @@
 .mg-skills-page .mg-drawer>header>.mg-icon-button{flex-shrink:0}
 @media (max-width:900px){.mg-skill-head,.mg-skill-row{grid-template-columns:minmax(0,1fr) 110px 124px 116px;gap:8px}}
 @media (max-width:680px){.mg-skill-head,.mg-skill-row{grid-template-columns:minmax(0,1fr) 80px 104px 105px;gap:6px;padding-inline:8px}.mg-form-grid{grid-template-columns:1fr}.mg-skill-row .mg-button{padding-inline:6px}.mg-status-toggle{width:36px}.mg-skill-status{gap:5px}}
-/* 仓库管理占满窗口；列表、目录和底部编辑区各自拥有滚动边界。 */
+/* Skills 页的颜色、按钮和表格与 MCP 页共用；这里只保留仓库抽屉自己的分隔线和强调色。 */
 .mg-skills-page {
   --mg-divider: color-mix(in srgb, hsl(var(--border)), hsl(var(--foreground)) 17%);
   --mg-accent-ink: color-mix(in srgb, hsl(var(--brand-accent)), hsl(var(--foreground)) 28%);
-  background:hsl(var(--background));
 }
-.dark .mg-skills-page {
-  --background:228 8% 11%;
-  --surface-raised:228 7% 15%;
-  --surface-sunken:228 8% 9%;
-  --muted:228 7% 17%;
-}
-.mg-skills-page :is(.mg-skill-list,.mg-skill-head,.mg-skill-row,.mg-drawer,.mg-drawer>header,.mg-drawer>footer) { border-color:var(--mg-divider); }
-.mg-skills-page :is(.mg-header-title h1,.mg-drawer h2,.mg-skill-name strong) { letter-spacing:0; }
-.mg-skills-page .mg-skill-list { border-radius:8px; box-shadow:none; }
-.mg-skills-page :is(.mg-button,.mg-icon-button) { font-size:12px; font-weight:500; height:32px; white-space:nowrap; box-sizing:border-box; transition:background-color .14s,border-color .14s; }
-.mg-skills-page .mg-button { border-color:var(--mg-divider); box-shadow:none; }
-.mg-skills-page .mg-primary { background:hsl(232 76% 54%); color:#fff; border-color:transparent; }
-.mg-skills-page .mg-primary:hover { filter:brightness(1.1); }
+.mg-skills-page :is(.mg-drawer,.mg-drawer>header,.mg-drawer>footer) { border-color:var(--mg-divider); }
+.mg-skills-page .mg-drawer h2 { letter-spacing:0; }
 .mg-skills-page :is(button,input):focus-visible { outline:2px solid hsl(var(--ring)); outline-offset:2px; }
 .mg-skills-page .mg-link-button { color:var(--mg-accent-ink); }
 .mg-drawer.mg-drawer-wide { width:100vw; max-width:none; height:100dvh; border:0; box-shadow:none; }
@@ -288,3 +276,37 @@
   .mg-session-group-count { min-width:52px; }
   .mg-session-page .mg-pagination { flex-wrap:wrap; }
 }
+
+/* 多 Agent 矩阵：名称 | 每个 Agent 一列开关 | 操作 */
+.mg-agent-matrix .mg-matrix-head,
+.mg-agent-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) repeat(var(--mg-agent-columns,3),84px) 84px; gap:0; }
+.mg-agent-matrix[data-columns="1"] { --mg-agent-columns:1; }
+.mg-agent-column { gap:2px; color:hsl(var(--muted-foreground)); font-weight:500; }
+.mg-agent-column .hub-agent-glyph { width:15px; height:15px; color:hsl(var(--foreground)); }
+.mg-agent-column span { font-size:11px; white-space:nowrap; }
+.mg-agent-column small { font-family:var(--font-mono,monospace); font-size:10px; }
+.mg-agent-matrix .mg-cell { justify-self:center; }
+.mg-target-list { display:flex; flex-wrap:wrap; gap:6px 16px; }
+.mg-target-list .hub-agent-glyph { width:14px; height:14px; }
+
+
+/* Skills 与 MCP 共用 .mg-agent-matrix：名称 | 来源 | 每个 Agent 一列勾选 | 操作；分组标题是表格里的一行 */
+.mg-push { margin-left:auto; }
+.mg-toolbar-actions { display:flex; align-items:center; gap:6px; }
+.mg-agent-matrix.mg-skill-matrix .mg-matrix-head,
+.mg-agent-matrix.mg-skill-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) 150px repeat(3,84px) 120px; }
+.mg-skill-matrix .mg-row-main { width:100%; cursor:pointer; }
+.mg-skill-matrix .mg-skill-source { min-width:0; padding-right:12px; }
+.mg-skill-matrix .mg-skill-source .mg-link-button { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
+.mg-skill-matrix .mg-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; }
+.mg-skill-matrix .mg-skill-group-row { display:flex; align-items:center; gap:8px; min-height:36px; padding:0 12px 0 8px; border-bottom:1px solid hsl(var(--border)); background:hsl(var(--muted) / .5); }
+.mg-skill-matrix .mg-skill-group-row .mg-group-head { flex:1; height:36px; padding:0 4px; border:0; background:transparent; }
+.mg-skill-matrix .mg-skill-group-row .mg-row-actions { display:flex; gap:4px; }
+.mg-skill-matrix .mg-skill-group-row .mg-button { height:24px; padding:0 8px; font-size:12px; }
+.mg-menu .mg-menu-label { padding:6px 7px 3px; font-size:11px; color:hsl(var(--muted-foreground)); }
+.mg-menu button[aria-checked="true"]::after { content:"✓"; float:right; color:hsl(var(--brand-accent)); }
+.mg-skill-matrix .mg-skill-group { margin:0; }
+.mg-skill-matrix .mg-skill-source small { font-size:11px; color:hsl(var(--muted-foreground)); }
+/* 多 Agent 表头（MCP / Skills）：Agent 列是图标 + 名字 + 数量三行，比普通表头高，上下留出边距 */
+.shell .mg-agent-matrix .mg-matrix-head { padding-top: 8px; padding-bottom: 8px; }
+.shell .mg-agent-matrix .mg-agent-column { gap: 3px; }

@@ -313,7 +313,7 @@ check("extension widgets keep their native layer above the composer", async page
     '#widget{position:fixed;left:60px;top:60px;width:80px;height:80px;background:#00ff00;z-index:9999}' +
     '#typing{position:fixed;left:160px;top:60px;width:80px;height:80px;z-index:2147483000;pointer-events:none}',
     '<div id="composer" class="_ComposerLayoutRoot_test"><input></div>' +
-    '<div id="widget" data-codex-plus-ext="whale-widget"></div>' +
+    '<div id="widget" data-codex-plus-ext="agent-pet"></div>' +
     '<canvas id="typing" data-codex-plus-ext="builtin-typing-effects" width="80" height="80"></canvas>');
   await page.$eval("#typing", canvas => { const context = canvas.getContext("2d"); context.fillStyle = "#dc2832"; context.fillRect(0, 0, 80, 80); });
   await configure(page);

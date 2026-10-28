@@ -17,9 +17,10 @@ it("keeps the single-row entry point and batches global action layout", () => {
   assert.doesNotMatch(all, /forEach|syncActionGroupLayout\(/);
 });
 
-it("snapshots native colors and separates each action layout measurement phase", () => {
+it("separates each action layout measurement phase without copying native resting colors", () => {
   const layout = extract("syncActionGroupLayouts");
-  assert.match(layout, /color: nativeStyle\?\.color, background: nativeStyle\?\.backgroundColor/);
+  // 外观改为直接套用原生按钮类名；布局阶段不再读计算样式、也不写颜色变量。
+  assert.doesNotMatch(layout, /getComputedStyle|--codex-session-action-(?:color|hover-color|hover-background)/);
   assert.match(layout, /force \|\| group\.dataset\.codexActionLayoutStable !== "true"/);
   assert.match(layout, /layout\.group\.getBoundingClientRect\(\)\.right/);
   assert.match(layout, /layout\.group\.getBoundingClientRect\(\)\.left/);

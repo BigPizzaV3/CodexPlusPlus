@@ -128,6 +128,9 @@ pub struct RequestLogEntry {
     pub usage: Option<RequestUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_hit_ratio: Option<f64>,
+    /// 网关模式下发起请求的 Agent（claude / grok）；Codex 直连代理的旧记录为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 impl RequestLogEntry {
@@ -186,6 +189,10 @@ pub fn finish_request(entry: &RequestLogEntry) {
         live.remove(&entry.id);
     }
     let _ = append_request_log(entry);
+    // 单元测试里默认路径指向真实用户状态目录，同样不写。
+    if !(cfg!(test) && log_path_override().is_none()) {
+        crate::gateway::usage::record_entry(entry);
+    }
 }
 
 /// 更新进行中请求的快照（例如上游地址/首字耗时在请求结束前就已知）。
@@ -459,6 +466,7 @@ mod tests {
                 reasoning_tokens: 50,
             }),
             cache_hit_ratio: None,
+            agent: None,
         }
     }
 

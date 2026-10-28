@@ -33,11 +33,10 @@ test("overview lists the local server and protocol conversion separately and kee
   assert.match(screen, /overview-health-grid/);
   assert.doesNotMatch(screen, /最近启动|LatestLaunch/);
   const entry = functionSource("App");
-  assert.match(entry, /codexAppRunning \? actions\.restart\(\) : actions\.launch\(\)/);
+  // 顶栏不再放 Codex 状态与启动 / 重启按钮：启动、停止在侧栏 Codex 行的播放键上。
   assert.match(entry, /runtime_health\?\.codex_app/);
-  assert.match(entry, /codex-app-state/);
-  assert.doesNotMatch(entry, /<span>Codex APP<\/span>/);
-  assert.match(entry, /Codex \{statusLabel\(overview\?\.runtime_health\?\.codex_app\?\.status/);
+  assert.doesNotMatch(entry, /codex-app-state/);
+  assert.match(entry, /codexRun=\{\{ running: codexAppRunning/);
   assert.doesNotMatch(entry, /aria-label=\{t\("刷新状态"\)\}/);
   assert.match(screen, /overview-health-header-actions/);
   assert.match(screen, /aria-label=\{t\("刷新状态"\)\}/);

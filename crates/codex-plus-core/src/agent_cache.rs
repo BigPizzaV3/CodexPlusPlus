@@ -529,11 +529,12 @@ impl CachePlan {
             .iter()
             .filter(|group| ids.contains(&group.id))
         {
-            let app = if group.app == "Codex++" {
-                "Codex"
-            } else {
-                &group.app
-            };
+            // Codex++ 的备份、更新包和自身缓存不被 Codex 客户端占用；
+            // 管理器自己就是 Codex++，无法先退出，只靠 24 小时与快照校验兜底。
+            if group.app == "Codex++" {
+                continue;
+            }
+            let app = &group.app;
             ensure!(
                 !running.contains(app),
                 "请先退出 {app} 应用及其 CLI，再重新扫描清理。"
@@ -602,13 +603,18 @@ fn apps_from_process_names(names: &str) -> BTreeSet<String> {
             .next()
             .unwrap_or("")
             .trim_end_matches(".exe");
-        // 管理工具自身需要保持运行；Codex++ 客户端与 Codex 共用缓存。
-        if executable.contains("manager") || executable == "ps" {
+        // Codex++ 已合并为单一应用（管理器 + 启动运行时），正在执行清理的就是它，
+        // 不能算作 Codex 在运行，否则任何清理都会被自己拦下。
+        if executable.contains("manager")
+            || executable == "ps"
+            || name.contains("codex++.app/")
+            || ["codex++", "codexplusplus", "codex-plus-launcher", "codex-plus-plus"]
+                .contains(&executable)
+        {
             continue;
         }
         if name.contains("codex.app/")
-            || name.contains("codex++.app/")
-            || ["codex", "codex++", "codex-plus-launcher", "codex-plus-plus"].contains(&executable)
+            || executable == "codex"
             || executable.starts_with("codex helper")
         {
             running.insert("Codex".into());
@@ -677,6 +683,30 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(groups.iter().any(|group| group.kind == "backup" && group.eligible_files == 1));
         assert!(groups.iter().any(|group| group.kind == "update" && group.eligible_files == 1));
+    }
+
+    #[test]
+    fn codex_plus_plus_groups_clean_while_codex_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let update = home.join(".codex-session-delete/updates/old-installer.dmg");
+        old_file(&update, "update");
+        let roots = discover_roots(&home, &home.join(".codex")).unwrap();
+        let plan = scan(&home, roots, SystemTime::now()).unwrap();
+        let ids = plan
+            .report
+            .groups
+            .iter()
+            .filter(|group| group.app == "Codex++" && group.eligible_files > 0)
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let id = plan.report.scan_id.clone();
+        let running = apps_from_process_names("/Applications/Codex.app/Contents/MacOS/Codex");
+        let result = plan
+            .clean_with_processes(&id, &ids, true, SystemTime::now(), running)
+            .unwrap();
+        assert_eq!(result.removed_files, 1);
+        assert!(!update.exists());
     }
 
     fn selected(plan: &CachePlan) -> Vec<String> {
@@ -758,6 +788,11 @@ mod tests {
             "/Applications/Codex.app/Contents/MacOS/Codex\nclaude\nCodexPlusPlusManager",
         );
         assert_eq!(running.len(), 2);
+        // 管理器自身（Codex++.app / codex-plus-plus.exe）不算 Codex 在运行。
+        assert!(apps_from_process_names(
+            "/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus\nC:\\Program Files\\Codex++\\codex-plus-plus.exe\ncodex-plus-launcher",
+        )
+        .is_empty());
         assert!(
             plan.clean_with_processes(&id, &ids, true, SystemTime::now(), running)
                 .is_err()

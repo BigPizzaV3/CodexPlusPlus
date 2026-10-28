@@ -1,0 +1,269 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "id": "core",
+      "title": "常规"
+    },
+    {
+      "id": "plugins",
+      "title": "插件与模型",
+      "description": "管理插件市场、模型列表和服务档位相关增强。",
+      "managerTab": "general"
+    },
+    {
+      "id": "chat",
+      "title": "对话与输入",
+      "description": "调整会话管理、输入行为和对话阅读体验。",
+      "managerTab": "general"
+    },
+    {
+      "id": "pet",
+      "title": "桌宠与活动",
+      "description": "调整 Codex 原生桌宠与活动进度条。可点按的 Agent 桌宠在「工具 → Agent 桌宠」里设置。",
+      "managerTab": "general"
+    },
+    {
+      "id": "stepwise",
+      "title": "下一步建议",
+      "description": "控制下一步建议与回答大纲。",
+      "managerTab": "stepwise"
+    },
+    {
+      "id": "standalone",
+      "title": "独立模式",
+      "description": "增强总开关关闭后仍会生效的补丁。",
+      "managerTab": "general",
+      "standalone": true
+    }
+  ],
+  "items": [
+    {
+      "key": "enhancementsEnabled",
+      "group": "core",
+      "control": "bool",
+      "title": "启用 Codex增强",
+      "description": "关闭后暂停增强功能，服务配置会保留。",
+      "masterGated": false,
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "providerSyncEnabled",
+      "group": "core",
+      "control": "bool",
+      "title": "启动前自动修复历史会话",
+      "description": "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。",
+      "masterGated": false,
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppNativeBrowserRequireIdentification",
+      "group": "plugins",
+      "control": "bool",
+      "title": "原生 Edge / Chrome 请求标识兼容（实验）",
+      "description": "此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。",
+      "platforms": ["windows"],
+      "surfaces": ["manager"]
+    },
+    {
+      "key": "codexAppPluginMarketplaceUnlock",
+      "group": "plugins",
+      "control": "bool",
+      "title": "插件市场解锁",
+      "description": "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppModelWhitelistUnlock",
+      "group": "plugins",
+      "control": "bool",
+      "title": "模型白名单解锁",
+      "description": "从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppNativeFastUnlock",
+      "group": "plugins",
+      "control": "bool",
+      "title": "原生 Fast 强制解锁",
+      "description": "纯 API Key 模式恢复原生 Fast 开关；重新启动 Codex 后生效，实际支持与计费由供应商决定。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppSessionDelete",
+      "group": "chat",
+      "control": "bool",
+      "title": "会话删除",
+      "description": "在会话列表悬停显示删除按钮，并支持撤销。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppSideChatSave",
+      "group": "chat",
+      "control": "bool",
+      "title": "旁支保存",
+      "description": "在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppTurnRewind",
+      "group": "chat",
+      "control": "bool",
+      "title": "轮次回退（实验性）",
+      "description": "在回答菜单中撤销本轮及后续轮次的可恢复操作，AI 报告全部完成后才截断会话。仅支持本地聊天；恢复记录保存在本机，不是系统快照。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppDisableWorkView",
+      "group": "chat",
+      "control": "bool",
+      "title": "纯 API 模式禁用 Work 视图",
+      "description": "Work 视图要求 ChatGPT 账号身份，纯 API Key 下发送消息会报 Work browser access requires an authenticated account。开启后每次启动 Codex 前把详情模式写回 Codex；重新启动 Codex 后生效。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppMarkdownExport",
+      "group": "chat",
+      "control": "bool",
+      "title": "Markdown 导出",
+      "description": "在会话列表显示导出按钮，导出带时间戳的 Markdown。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppSessionShare",
+      "group": "chat",
+      "control": "bool",
+      "title": "分享会话按钮",
+      "description": "在当前会话工具栏显示分享按钮，关闭后立即隐藏。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppPasteFix",
+      "group": "chat",
+      "control": "bool",
+      "title": "粘贴修复",
+      "description": "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppForceChineseLocale",
+      "group": "chat",
+      "control": "bool",
+      "title": "强制中文界面",
+      "description": "强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppCapacityAutoRetry",
+      "group": "chat",
+      "control": "bool",
+      "title": "容量错误自动重试",
+      "description": "模型容量不足（Selected model is at capacity）时自动点「重试」。Codex 原生只会自动重试 4 次且带 10/30/120/300 秒倒计时，之后只剩手动按钮；开启后由 Codex++ 立刻接管，原生倒计时也不等。",
+      "surfaces": ["manager", "codex"],
+      "codexInputs": [
+        { "id": "capacityAutoRetryIntervalSeconds", "label": "重试间隔（秒）", "hint": "重试间隔（秒），0 表示立刻重试" },
+        { "id": "capacityAutoRetryMaxAttempts", "label": "最大自动重试次数", "hint": "最大自动重试次数" }
+      ]
+    },
+    {
+      "key": "codexAppTypingEffect",
+      "group": "chat",
+      "control": "select",
+      "title": "打字特效（彩虹 P）",
+      "description": "在 Codex 输入框的光标附近显示特效；系统减少动态效果时暂停。",
+      "options": [
+        { "value": "off", "label": "关闭" },
+        { "value": "rainbow", "label": "彩虹粒子" },
+        { "value": "fireworks", "label": "烟花" },
+        { "value": "stars", "label": "星光" }
+      ],
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppThreadIdBadge",
+      "group": "chat",
+      "control": "bool",
+      "title": "会话 ID 标识",
+      "description": "在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppConversationView",
+      "group": "chat",
+      "control": "bool",
+      "title": "对话居中宽度",
+      "description": "把主对话和输入框限制到固定最大宽度，适合大屏阅读。",
+      "surfaces": ["manager", "codex"],
+      "codexInputs": [
+        { "id": "conversationViewMaxWidth", "label": "对话最大宽度（像素）", "hint": "对话最大宽度（像素）" }
+      ]
+    },
+    {
+      "key": "codexAppThreadScrollRestore",
+      "group": "chat",
+      "control": "bool",
+      "title": "切换对话保留位置",
+      "description": "切换 thread 时恢复上一次浏览位置。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppUsageStatusLine",
+      "group": "chat",
+      "control": "bool",
+      "title": "用量状态栏",
+      "description": "在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppActivityOverlayRight",
+      "group": "pet",
+      "control": "bool",
+      "title": "活动进度条右侧布局",
+      "description": "把 Codex 原生活动进度条、状态波形和活动悬浮框移到右侧，并镜像波形方向。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppPetRealMouseLook",
+      "group": "pet",
+      "control": "bool",
+      "title": "桌宠跟随真实鼠标",
+      "description": "仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。",
+      "platforms": ["windows", "macos"],
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppStepwiseEnabled",
+      "group": "stepwise",
+      "control": "bool",
+      "title": "下一步建议",
+      "description": "根据当前回答生成下一步建议。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppAnswerOutlineEnabled",
+      "group": "stepwise",
+      "control": "bool",
+      "title": "回答大纲",
+      "description": "整理当前回答的结构。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppStepwiseDirectSend",
+      "group": "stepwise",
+      "control": "bool",
+      "title": "建议直接发送",
+      "description": "点击建议后直接发送到当前会话。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppStandaloneQuotaUnlock",
+      "group": "standalone",
+      "control": "bool",
+      "title": "官方额度解锁",
+      "description": "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。",
+      "descriptionWhenEnhancementsOn": "增强开启时此能力已自动生效；此开关只在关闭增强后生效。",
+      "masterGated": false,
+      "surfaces": ["manager", "codex"]
+    }
+  ]
+}

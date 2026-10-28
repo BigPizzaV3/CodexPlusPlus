@@ -8,7 +8,8 @@ struct RegisteredHotkey<H> {
     _handle: H,
 }
 
-static REGISTRATION: OnceLock<Mutex<Option<RegisteredHotkey<GlobalHotkeyHandle>>>> = OnceLock::new();
+static REGISTRATION: OnceLock<Mutex<Option<RegisteredHotkey<GlobalHotkeyHandle>>>> =
+    OnceLock::new();
 
 pub fn apply_config() -> anyhow::Result<()> {
     let config = codex_plus_core::global_dictation::load_config();
@@ -23,13 +24,20 @@ fn update_config(
     config: &GlobalDictationConfig,
     persist: impl FnOnce(&GlobalDictationConfig) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let mut registration = REGISTRATION.get_or_init(|| Mutex::new(None))
-        .lock().map_err(|_| anyhow::anyhow!("全局听写热键状态不可用"))?;
-    update_registration(&mut registration, config, |hotkey| {
-        codex_plus_core::global_dictation::start(hotkey, || {
-            let _ = tauri::async_runtime::block_on(trigger_global_toggle());
-        })
-    }, persist)
+    let mut registration = REGISTRATION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("全局听写热键状态不可用"))?;
+    update_registration(
+        &mut registration,
+        config,
+        |hotkey| {
+            codex_plus_core::global_dictation::start(hotkey, || {
+                let _ = tauri::async_runtime::block_on(trigger_global_toggle());
+            })
+        },
+        persist,
+    )
 }
 
 fn update_registration<H>(
@@ -69,11 +77,15 @@ async fn trigger_global_toggle() -> anyhow::Result<()> {
         .unwrap_or(9229);
     let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
     let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
-    let websocket = target.web_socket_debugger_url.as_deref().context("Codex 页面没有 websocket")?;
+    let websocket = target
+        .web_socket_debugger_url
+        .as_deref()
+        .context("Codex 页面没有 websocket")?;
     codex_plus_core::bridge::evaluate_script(
         websocket,
         "window.__codexPlusDictationGlobalToggle?.()",
-    ).await?;
+    )
+    .await?;
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "dictation.global_hotkey_toggle",
         json!({ "debugPort": debug_port }),
@@ -84,8 +96,8 @@ async fn trigger_global_toggle() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct TestHandle(Arc<AtomicBool>);
 
@@ -96,12 +108,21 @@ mod tests {
     }
 
     fn config(enabled: bool, hotkey: &str) -> GlobalDictationConfig {
-        GlobalDictationConfig { enabled, hotkey: hotkey.into() }
+        GlobalDictationConfig {
+            enabled,
+            hotkey: hotkey.into(),
+        }
     }
 
     fn active(hotkey: &str) -> (Option<RegisteredHotkey<TestHandle>>, Arc<AtomicBool>) {
         let dropped = Arc::new(AtomicBool::new(false));
-        (Some(RegisteredHotkey { hotkey: hotkey.into(), _handle: TestHandle(dropped.clone()) }), dropped)
+        (
+            Some(RegisteredHotkey {
+                hotkey: hotkey.into(),
+                _handle: TestHandle(dropped.clone()),
+            }),
+            dropped,
+        )
     }
 
     #[test]
@@ -111,27 +132,36 @@ mod tests {
         let old_config = config(true, "Ctrl+Shift+Space");
         std::fs::write(&path, serde_json::to_vec(&old_config).unwrap()).unwrap();
         let (mut registration, old_dropped) = active(&old_config.hotkey);
-        let result = update_registration(&mut registration, &config(true, "Ctrl+Alt+Space"),
+        let result = update_registration(
+            &mut registration,
+            &config(true, "Ctrl+Alt+Space"),
             |_| anyhow::bail!("occupied"),
-            |_| panic!("注册失败时不应保存配置"));
+            |_| panic!("注册失败时不应保存配置"),
+        );
 
         assert!(result.is_err());
         assert!(!old_dropped.load(Ordering::SeqCst));
         assert_eq!(registration.as_ref().unwrap().hotkey, old_config.hotkey);
-        assert_eq!(serde_json::from_slice::<GlobalDictationConfig>(&std::fs::read(path).unwrap()).unwrap(), old_config);
+        assert_eq!(
+            serde_json::from_slice::<GlobalDictationConfig>(&std::fs::read(path).unwrap()).unwrap(),
+            old_config
+        );
     }
 
     #[test]
     fn failed_save_releases_new_registration_and_keeps_old_one() {
         let (mut registration, old_dropped) = active("Ctrl+Shift+Space");
         let new_dropped = Arc::new(AtomicBool::new(false));
-        let result = update_registration(&mut registration, &config(true, "Ctrl+Alt+Space"),
+        let result = update_registration(
+            &mut registration,
+            &config(true, "Ctrl+Alt+Space"),
             |_| Ok(TestHandle(new_dropped.clone())),
             |_| {
                 assert!(!old_dropped.load(Ordering::SeqCst));
                 assert!(!new_dropped.load(Ordering::SeqCst));
                 anyhow::bail!("disk full")
-            });
+            },
+        );
 
         assert!(result.is_err());
         assert!(!old_dropped.load(Ordering::SeqCst));
@@ -146,27 +176,41 @@ mod tests {
         let new_config = config(true, "Ctrl+Alt+Space");
         let (mut registration, old_dropped) = active("Ctrl+Shift+Space");
         let new_dropped = Arc::new(AtomicBool::new(false));
-        update_registration(&mut registration, &new_config,
+        update_registration(
+            &mut registration,
+            &new_config,
             |_| Ok(TestHandle(new_dropped.clone())),
             |value| {
                 assert!(!old_dropped.load(Ordering::SeqCst));
                 std::fs::write(&path, serde_json::to_vec(value)?)?;
                 Ok(())
-            }).unwrap();
+            },
+        )
+        .unwrap();
 
         assert!(old_dropped.load(Ordering::SeqCst));
         assert!(!new_dropped.load(Ordering::SeqCst));
         assert_eq!(registration.as_ref().unwrap().hotkey, new_config.hotkey);
-        assert_eq!(serde_json::from_slice::<GlobalDictationConfig>(&std::fs::read(path).unwrap()).unwrap(), new_config);
+        assert_eq!(
+            serde_json::from_slice::<GlobalDictationConfig>(&std::fs::read(path).unwrap()).unwrap(),
+            new_config
+        );
     }
 
     #[test]
     fn saving_same_hotkey_reuses_current_registration() {
         let (mut registration, old_dropped) = active("Ctrl+Shift+Space");
         let saved = AtomicBool::new(false);
-        update_registration(&mut registration, &config(true, "Ctrl+Shift+Space"),
+        update_registration(
+            &mut registration,
+            &config(true, "Ctrl+Shift+Space"),
             |_| panic!("同键重存不应重复注册"),
-            |_| { saved.store(true, Ordering::SeqCst); Ok(()) }).unwrap();
+            |_| {
+                saved.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
         assert!(saved.load(Ordering::SeqCst));
         assert!(!old_dropped.load(Ordering::SeqCst));
     }
@@ -175,8 +219,13 @@ mod tests {
     #[test]
     fn saving_equivalent_hotkey_spelling_reuses_current_registration() {
         let (mut registration, old_dropped) = active("Ctrl+Shift+Space");
-        update_registration(&mut registration, &config(true, "shift + CONTROL + space"),
-            |_| panic!("同义组合键不应重复注册"), |_| Ok(())).unwrap();
+        update_registration(
+            &mut registration,
+            &config(true, "shift + CONTROL + space"),
+            |_| panic!("同义组合键不应重复注册"),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert!(!old_dropped.load(Ordering::SeqCst));
     }
 
@@ -184,14 +233,28 @@ mod tests {
     fn disabling_keeps_registration_until_config_is_saved() {
         let (mut registration, old_dropped) = active("Ctrl+Shift+Space");
         let disabled = config(false, "Ctrl+Shift+Space");
-        assert!(update_registration(&mut registration, &disabled,
-            |_| panic!("关闭时不应注册"), |_| anyhow::bail!("disk full")).is_err());
+        assert!(
+            update_registration(
+                &mut registration,
+                &disabled,
+                |_| panic!("关闭时不应注册"),
+                |_| anyhow::bail!("disk full")
+            )
+            .is_err()
+        );
         assert!(!old_dropped.load(Ordering::SeqCst));
         assert!(registration.is_some());
 
-        update_registration(&mut registration, &disabled,
+        update_registration(
+            &mut registration,
+            &disabled,
             |_| panic!("关闭时不应注册"),
-            |_| { assert!(!old_dropped.load(Ordering::SeqCst)); Ok(()) }).unwrap();
+            |_| {
+                assert!(!old_dropped.load(Ordering::SeqCst));
+                Ok(())
+            },
+        )
+        .unwrap();
         assert!(old_dropped.load(Ordering::SeqCst));
         assert!(registration.is_none());
     }

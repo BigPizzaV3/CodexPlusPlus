@@ -1927,6 +1927,17 @@ async fn handle_helper_connection(
         }),
     );
 
+    if crate::gateway::is_gateway_path(path) {
+        return crate::gateway::server::handle(
+            &mut stream,
+            method,
+            path,
+            &request_headers,
+            &request.body,
+            remote_addr_text,
+        )
+        .await;
+    }
     if matches!(path, "/dictation/transcribe" | "/dictation/status") {
         return handle_dictation_connection(
             &mut stream,
@@ -2043,6 +2054,7 @@ async fn handle_helper_connection(
             method,
             path,
             remote_addr_text,
+            ProxyOpener::Legacy,
         )
         .await;
     }
@@ -2203,7 +2215,7 @@ async fn handle_helper_connection(
     Ok(())
 }
 
-fn decode_protocol_proxy_request_body(
+pub(crate) fn decode_protocol_proxy_request_body(
     body: &[u8],
     content_encoding: Option<&str>,
 ) -> anyhow::Result<String> {
@@ -2462,18 +2474,31 @@ async fn handle_models_proxy_connection(
 ///
 /// 用 Drop 兜底写盘：这个函数分支很多（错误、非 2xx、原生压缩、流式、协议转换），
 /// 每个分支都手写一遍落盘容易漏；字段在分支里按需补齐，析构时统一写一条记录。
-struct ProxyRequestLog {
+pub(crate) struct ProxyRequestLog {
     started: std::time::Instant,
-    entry: crate::request_log::RequestLogEntry,
+    pub(crate) entry: crate::request_log::RequestLogEntry,
     written: bool,
+    /// 不进请求日志：Codex 以官方身份接入网关时，本地代理这一跳只是转给网关，
+    /// 网关那一跳会记一条带 Agent 与路由的，这里不重复记。
+    silent: bool,
 }
 
 impl ProxyRequestLog {
-    fn begin(
+    pub(crate) fn begin(
         method: &str,
         path: &str,
         request: Option<&Value>,
         thread_id: Option<String>,
+    ) -> Self {
+        Self::begin_with(method, path, request, thread_id, false)
+    }
+
+    pub(crate) fn begin_with(
+        method: &str,
+        path: &str,
+        request: Option<&Value>,
+        thread_id: Option<String>,
+        silent: bool,
     ) -> Self {
         let started_at_ms = current_time_ms();
         let model = request
@@ -2511,14 +2536,48 @@ impl ProxyRequestLog {
                 stream_outcome: None,
                 usage: None,
                 cache_hit_ratio: None,
+                agent: None,
             },
             written: false,
+            silent,
         };
-        crate::request_log::start_request(&log.entry);
+        if !silent {
+            crate::request_log::start_request(&log.entry);
+        }
         log
     }
 
-    fn record_upstream(&mut self, upstream: &crate::protocol_proxy::UpstreamProxyResponse) {
+    pub(crate) fn set_agent(&mut self, agent: &crate::tools::ToolId) {
+        self.entry.agent = Some(agent.as_str().to_string());
+        self.update_running();
+    }
+
+    /// 网关自己写出响应（不经 `UpstreamProxyResponse`）时记录路由痕迹。
+    pub(crate) fn record_trace(
+        &mut self,
+        trace: &crate::request_log::RequestTrace,
+        status_code: u16,
+        stream: bool,
+    ) {
+        self.entry.status_code = status_code;
+        self.entry.success = (200..300).contains(&status_code);
+        self.entry.stream = stream;
+        self.entry.relay_id = trace.relay_id.clone();
+        self.entry.relay_name = trace.relay_name.clone();
+        self.entry.upstream_model = trace.upstream_model.clone();
+        self.entry.wire_api = trace.wire_api.clone();
+        self.entry.attempts = trace.attempts;
+        self.entry.auto_retries = trace.auto_retries;
+        self.entry.retry_reasons = trace.retry_reasons.clone();
+        self.entry.attempt_details = trace.attempt_details.clone();
+        if let Some(first_output_at_ms) = trace.first_output_at_ms {
+            self.entry.first_token_ms =
+                Some(first_output_at_ms.saturating_sub(self.entry.started_at_ms));
+        }
+        self.update_running();
+    }
+
+    pub(crate) fn record_upstream(&mut self, upstream: &crate::protocol_proxy::UpstreamProxyResponse) {
         self.entry.status_code = upstream.status_code;
         self.entry.success = upstream.is_success();
         self.entry.stream = upstream.is_stream;
@@ -2536,10 +2595,10 @@ impl ProxyRequestLog {
                     Some(first_output_at_ms.saturating_sub(self.entry.started_at_ms));
             }
         }
-        crate::request_log::update_running(&self.entry);
+        self.update_running();
     }
 
-    fn record_error(&mut self, status: &str, error: String) {
+    pub(crate) fn record_error(&mut self, status: &str, error: String) {
         self.entry.status_code = status
             .split_whitespace()
             .next()
@@ -2549,13 +2608,13 @@ impl ProxyRequestLog {
         self.entry.error = Some(error);
     }
 
-    fn record_usage_json(&mut self, body: &[u8]) {
+    pub(crate) fn record_usage_json(&mut self, body: &[u8]) {
         if self.entry.usage.is_none() {
             self.entry.usage = crate::request_log::usage_from_body_bytes(body);
         }
     }
 
-    fn record_stream(
+    pub(crate) fn record_stream(
         &mut self,
         failure: Option<&str>,
         usage: Option<crate::request_log::RequestUsage>,
@@ -2580,17 +2639,23 @@ impl ProxyRequestLog {
     }
 
     /// 记录首字耗时（从请求开始到第一段上游输出）。只记第一次。
-    fn mark_first_token_at(&mut self, first_output_at_ms: u64) {
+    pub(crate) fn mark_first_token_at(&mut self, first_output_at_ms: u64) {
         if self.entry.first_token_ms.is_none() {
             self.entry.first_token_ms =
                 Some(first_output_at_ms.saturating_sub(self.entry.started_at_ms));
             self.entry.phase = Some("generating".to_string());
+            self.update_running();
+        }
+    }
+
+    fn update_running(&self) {
+        if !self.silent {
             crate::request_log::update_running(&self.entry);
         }
     }
 
     fn write(&mut self) {
-        if self.written {
+        if self.written || self.silent {
             return;
         }
         self.written = true;
@@ -2611,14 +2676,21 @@ impl Drop for ProxyRequestLog {
     }
 }
 
-fn current_time_ms() -> u64 {
+pub(crate) fn current_time_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
 }
 
-async fn handle_protocol_proxy_connection(
+/// 协议代理请求由谁选上游：Codex 直连代理读当前供应商；网关按 Agent 绑定选。
+#[derive(Debug, Clone)]
+pub(crate) enum ProxyOpener {
+    Legacy,
+    Gateway(crate::tools::ToolId),
+}
+
+pub(crate) async fn handle_protocol_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &str,
     request_user_agent: Option<&str>,
@@ -2627,6 +2699,7 @@ async fn handle_protocol_proxy_connection(
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
+    opener: ProxyOpener,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
     let request_thread_id = session_headers
@@ -2635,19 +2708,45 @@ async fn handle_protocol_proxy_connection(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let mut request_log =
-        ProxyRequestLog::begin(method, path, request_json.as_ref(), request_thread_id);
+    let quiet = matches!(opener, ProxyOpener::Legacy)
+        && crate::gateway::apply::codex_hops_through_gateway();
+    let mut request_log = ProxyRequestLog::begin_with(
+        method,
+        path,
+        request_json.as_ref(),
+        request_thread_id,
+        quiet,
+    );
     let live_request_id = request_log.entry.id.clone();
+    // 经网关的非 Codex 客户端（Grok 等）不认识 ChatGPT 订阅后端的私有事件。
+    let foreign_client =
+        matches!(&opener, ProxyOpener::Gateway(agent) if *agent != crate::tools::ToolId::Codex);
+    let opened = match &opener {
+        ProxyOpener::Legacy => {
+            crate::protocol_proxy::open_responses_proxy_request_for_path_with_session_headers_and_live_id(
+                request_body,
+                request_user_agent,
+                path,
+                request_beta_features,
+                session_headers,
+                Some(live_request_id.as_str()),
+            )
+            .await
+        }
+        ProxyOpener::Gateway(agent) => {
+            request_log.set_agent(agent);
+            crate::gateway::server::open_responses_for_agent(
+                agent,
+                request_body,
+                request_user_agent,
+                session_headers,
+                Some(live_request_id.as_str()),
+            )
+            .await
+        }
+    };
     let mut upstream =
-        match crate::protocol_proxy::open_responses_proxy_request_for_path_with_session_headers_and_live_id(
-            request_body,
-            request_user_agent,
-            path,
-            request_beta_features,
-            session_headers,
-            Some(live_request_id.as_str()),
-        )
-        .await
+        match opened
         {
             Ok(upstream) => upstream,
             Err(error) => {
@@ -2741,7 +2840,8 @@ async fn handle_protocol_proxy_connection(
         if let Some(body) = upstream.buffered_body.take() {
             // buffered 模式：整段 SSE 已由协议代理收齐并重试完成，这里一次性转发。
             let mut transformer =
-                crate::protocol_proxy::ResponsesSseTransformer::for_request(request_json.as_ref());
+                crate::protocol_proxy::ResponsesSseTransformer::for_request(request_json.as_ref())
+                    .stripping_backend_events(foreign_client);
             let out = transformer.push_bytes(&body);
             stream.write_all(&out).await?;
             let usage = transformer.take_usage();
@@ -2865,15 +2965,17 @@ async fn handle_protocol_proxy_connection(
             return Ok(());
         }
         let stream_prefix = std::mem::take(&mut upstream.stream_prefix);
-        let (failure, usage, failure_detail, first_output_at_ms) = forward_protocol_proxy_stream(
-            stream,
-            &stream_prefix,
-            upstream.take_response()?,
-            upstream.wire_api,
-            request_json.as_ref(),
-            session_headers.thread_id,
-        )
-        .await?;
+        let (failure, usage, failure_detail, first_output_at_ms) =
+            forward_protocol_proxy_stream_for_client(
+                stream,
+                &stream_prefix,
+                upstream.take_response()?,
+                upstream.wire_api,
+                request_json.as_ref(),
+                session_headers.thread_id,
+                foreign_client,
+            )
+            .await?;
         if let Some(first_output_at_ms) = first_output_at_ms {
             request_log.mark_first_token_at(first_output_at_ms);
         }
@@ -2987,28 +3089,11 @@ async fn handle_protocol_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-    let upstream_json: serde_json::Value = serde_json::from_slice(&upstream_body)?;
-    // Anthropic 上游先落成 chat 响应体，再复用同一份 chat → Responses 映射；
-    // 签名思考块要挂回 Responses 的 reasoning item，下一轮才能原样回放。
-    let (chat_json, thinking_blocks) =
-        if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::AnthropicMessages {
-            let blocks =
-                crate::anthropic_bridge::thinking_blocks_from_anthropic_message(&upstream_json);
-            (
-                crate::anthropic_bridge::anthropic_message_to_chat_completion(upstream_json)?,
-                blocks,
-            )
-        } else {
-            (upstream_json, Vec::new())
-        };
-    let mut response_json = if let Some(request_json) = request_json.as_ref() {
-        crate::protocol_proxy::chat_completion_to_response_with_request(chat_json, request_json)?
-    } else {
-        crate::protocol_proxy::chat_completion_to_response(chat_json)?
-    };
-    if !thinking_blocks.is_empty() {
-        crate::anthropic_bridge::attach_thinking_to_responses(&mut response_json, &thinking_blocks);
-    }
+    let response_json = non_stream_body_to_responses(
+        upstream.wire_api,
+        &upstream_body,
+        request_json.as_ref(),
+    )?;
     let body = serde_json::to_vec(&response_json)?;
     request_log.record_usage_json(&body);
     write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
@@ -3022,6 +3107,48 @@ async fn handle_protocol_proxy_connection(
     stream.shutdown().await?;
     Ok(())
 }
+/// 非流式的 Chat / Anthropic 上游响应体 → Responses 响应 JSON。
+pub(crate) fn non_stream_body_to_responses(
+    wire_api: crate::protocol_proxy::UpstreamWireApi,
+    upstream_body: &[u8],
+    request_json: Option<&Value>,
+) -> anyhow::Result<Value> {
+    if wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
+        // ChatGPT 订阅后端只回流式结果：客户端要非流式时，从 response.completed 里取完整响应。
+        if let Ok(upstream_json) = serde_json::from_slice::<serde_json::Value>(upstream_body) {
+            return Ok(upstream_json);
+        }
+        if let Some(response) =
+            crate::gateway::chatgpt_backend::responses_json_from_sse(upstream_body)
+        {
+            return Ok(response);
+        }
+    }
+    let upstream_json: serde_json::Value = serde_json::from_slice(upstream_body)?;
+    // Anthropic 上游先落成 chat 响应体，再复用同一份 chat → Responses 映射；
+    // 签名思考块要挂回 Responses 的 reasoning item，下一轮才能原样回放。
+    let (chat_json, thinking_blocks) =
+        if wire_api == crate::protocol_proxy::UpstreamWireApi::AnthropicMessages {
+            let blocks =
+                crate::anthropic_bridge::thinking_blocks_from_anthropic_message(&upstream_json);
+            (
+                crate::anthropic_bridge::anthropic_message_to_chat_completion(upstream_json)?,
+                blocks,
+            )
+        } else {
+            (upstream_json, Vec::new())
+        };
+    let mut response_json = if let Some(request_json) = request_json {
+        crate::protocol_proxy::chat_completion_to_response_with_request(chat_json, request_json)?
+    } else {
+        crate::protocol_proxy::chat_completion_to_response(chat_json)?
+    };
+    if !thinking_blocks.is_empty() {
+        crate::anthropic_bridge::attach_thinking_to_responses(&mut response_json, &thinking_blocks);
+    }
+    Ok(response_json)
+}
+
 async fn handle_dictation_connection(
     stream: &mut tokio::net::TcpStream,
     method: &str,
@@ -3460,7 +3587,7 @@ async fn handle_chat_completions_proxy_connection(
     Ok(())
 }
 
-async fn write_http_response(
+pub(crate) async fn write_http_response(
     stream: &mut tokio::net::TcpStream,
     status: &str,
     content_type: &str,
@@ -3475,7 +3602,7 @@ async fn write_http_response(
     Ok(())
 }
 
-async fn write_http_stream_headers(
+pub(crate) async fn write_http_stream_headers(
     stream: &mut tokio::net::TcpStream,
     status: &str,
     content_type: &str,
@@ -3487,9 +3614,23 @@ async fn write_http_stream_headers(
     Ok(())
 }
 
+/// 协议代理流式输出的落点。
+///
+/// 默认直接写 TCP 连接；网关模式把它换成「Responses SSE → 客户端协议 SSE」的转换器，
+/// 上游 → Responses 的整条归一化链路（Chat / Anthropic / 原生 Responses）因此只有一份。
+pub(crate) trait SseSink {
+    async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+}
+
+impl SseSink for tokio::net::TcpStream {
+    async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.write_all(bytes).await
+    }
+}
+
 // 返回流失败原因与（可选的）usage；HTTP 响应头已经发送，不能再把失败伪装成第二个 HTTP 502。
-async fn forward_protocol_proxy_stream(
-    stream: &mut tokio::net::TcpStream,
+pub(crate) async fn forward_protocol_proxy_stream<S: SseSink>(
+    stream: &mut S,
     prefix: &[u8],
     response: reqwest::Response,
     wire_api: crate::protocol_proxy::UpstreamWireApi,
@@ -3501,14 +3642,37 @@ async fn forward_protocol_proxy_stream(
     Option<String>,
     Option<u64>,
 )> {
+    forward_protocol_proxy_stream_for_client(
+        stream, prefix, response, wire_api, request, thread_id, false,
+    )
+    .await
+}
+
+/// 同 `forward_protocol_proxy_stream`；`foreign_client` 为真时下游不是 Codex，
+/// Responses 流里去掉 ChatGPT 订阅后端的私有事件。
+pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
+    stream: &mut S,
+    prefix: &[u8],
+    response: reqwest::Response,
+    wire_api: crate::protocol_proxy::UpstreamWireApi,
+    request: Option<&Value>,
+    thread_id: Option<&str>,
+    foreign_client: bool,
+) -> anyhow::Result<(
+    Option<String>,
+    Option<crate::request_log::RequestUsage>,
+    Option<String>,
+    Option<u64>,
+)> {
     let mut chunks = response.bytes_stream();
     let mut first_output_at_ms = None;
     if wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
-        let mut transformer = crate::protocol_proxy::ResponsesSseTransformer::for_request(request);
+        let mut transformer = crate::protocol_proxy::ResponsesSseTransformer::for_request(request)
+            .stripping_backend_events(foreign_client);
         // 代理预读过的开头必须先原样补写，否则 Codex 会丢掉 response.created 等事件。
         if !prefix.is_empty() {
             let out = transformer.push_bytes(prefix);
-            stream.write_all(&out).await?;
+            stream.send(&out).await?;
             if transformer.has_failed() {
                 let usage = transformer.take_usage();
                 let detail = transformer.take_failure_detail();
@@ -3522,7 +3686,7 @@ async fn forward_protocol_proxy_stream(
                         first_output_at_ms = Some(current_time_ms());
                     }
                     let out = transformer.push_bytes(&bytes);
-                    stream.write_all(&out).await?;
+                    stream.send(&out).await?;
                     // 超限等终态失败要立即结束流，不能等上游 EOF；
                     // 否则上游保持连接时失败迟迟不上报，残片也会继续被转发。
                     if transformer.has_failed() {
@@ -3560,7 +3724,7 @@ async fn forward_protocol_proxy_stream(
                     }
                     let converted = converter.push_bytes(&bytes);
                     if !converted.is_empty() {
-                        stream.write_all(&converted).await?;
+                        stream.send(&converted).await?;
                     }
                     if converter.has_failed() {
                         return Ok((
@@ -3576,7 +3740,7 @@ async fn forward_protocol_proxy_stream(
                         "上游响应流读取失败".to_string(),
                         Some("stream_error".to_string()),
                     );
-                    stream.write_all(&failed).await?;
+                    stream.send(&failed).await?;
                     return Ok((
                         Some(error.without_url().to_string()),
                         None,
@@ -3593,7 +3757,7 @@ async fn forward_protocol_proxy_stream(
                 "上游在完成事件前结束了响应流".to_string(),
                 Some("stream_incomplete".to_string()),
             );
-            stream.write_all(&failed).await?;
+            stream.send(&failed).await?;
             return Ok((
                 Some("上游缺少完成事件".to_string()),
                 None,
@@ -3601,7 +3765,7 @@ async fn forward_protocol_proxy_stream(
                 first_output_at_ms,
             ));
         }
-        stream.write_all(&converter.finish()).await?;
+        stream.send(&converter.finish()).await?;
         return Ok((None, None, None, first_output_at_ms));
     }
     let mut converter = request
@@ -3614,7 +3778,7 @@ async fn forward_protocol_proxy_stream(
                     first_output_at_ms = Some(current_time_ms());
                 }
                 let converted = converter.push_bytes(&bytes);
-                stream.write_all(&converted).await?;
+                stream.send(&converted).await?;
                 if converter.has_failed() {
                     return Ok((
                         Some("上游返回了流式错误事件".to_string()),
@@ -3629,7 +3793,7 @@ async fn forward_protocol_proxy_stream(
                     "上游响应流读取失败".to_string(),
                     Some("stream_error".to_string()),
                 );
-                stream.write_all(&failed).await?;
+                stream.send(&failed).await?;
                 return Ok((
                     Some(error.without_url().to_string()),
                     None,
@@ -3645,7 +3809,7 @@ async fn forward_protocol_proxy_stream(
             "上游在完成事件前结束了响应流".to_string(),
             Some("stream_incomplete".to_string()),
         );
-        stream.write_all(&failed).await?;
+        stream.send(&failed).await?;
         return Ok((
             Some("上游缺少完成事件".to_string()),
             None,
@@ -3653,7 +3817,7 @@ async fn forward_protocol_proxy_stream(
             first_output_at_ms,
         ));
     }
-    stream.write_all(&converter.finish()).await?;
+    stream.send(&converter.finish()).await?;
     record_chat_converter_usage(thread_id, &converter);
     Ok((None, None, None, first_output_at_ms))
 }
@@ -3667,7 +3831,7 @@ fn record_chat_converter_usage(
     }
 }
 
-fn log_helper_response(
+pub(crate) fn log_helper_response(
     event: &str,
     method: &str,
     path: &str,
@@ -3692,7 +3856,7 @@ fn log_helper_response(
 /// 日志里也查不到为什么（issue #2385）。原因必须落进日志，否则
 /// 「上游不可达 / 没配可用中转 / 请求体解析失败」这几种完全不同的故障
 /// 在现场长得一模一样。
-fn log_helper_proxy_failure(
+pub(crate) fn log_helper_proxy_failure(
     event: &str,
     method: &str,
     path: &str,
@@ -4203,7 +4367,7 @@ fn scan_chunked_body(encoded: &[u8]) -> Result<ChunkedBodyScan, HttpRequestReadE
     ChunkedScanState::default().advance(encoded)
 }
 
-fn header_value_from_headers(headers: &str, header_name: &str) -> Option<String> {
+pub(crate) fn header_value_from_headers(headers: &str, header_name: &str) -> Option<String> {
     headers
         .lines()
         .skip(1)

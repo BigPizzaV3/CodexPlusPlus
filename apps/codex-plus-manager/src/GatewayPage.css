@@ -1,0 +1,3880 @@
+/* 本地网关页：中性平面风格——白底圆角卡片、分隔行、大写小标题、黑色开关。 */
+
+.gateway-page,
+.gw-portal,
+.gw-agent-modal {
+  --gw-card: hsl(var(--card));
+  --gw-line: hsl(var(--border) / 0.8);
+  --gw-soft: hsl(var(--muted) / 0.55);
+  --gw-ink: hsl(var(--foreground));
+  --gw-mute: hsl(var(--muted-foreground));
+  --gw-ok: hsl(var(--status-success));
+  --gw-warn: hsl(var(--status-warning));
+  --gw-err: hsl(var(--status-error));
+}
+
+.gateway-page {
+  background: hsl(var(--background));
+}
+
+/* 顶部工具条：分段标签居中，刷新靠右。页面标题由外层框架显示。 */
+.gw-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  padding: 12px 22px 4px;
+}
+
+.gw-toolbar .gw-icon-button {
+  position: absolute;
+  right: 22px;
+}
+
+/* 顶部分段标签：居中，选中项白底浮起。 */
+.gw-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: hsl(var(--muted) / 0.8);
+}
+
+.gw-tabs button {
+  height: 30px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gw-mute);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.gw-tabs button:hover {
+  color: var(--gw-ink);
+}
+
+.gw-tabs button[data-active="true"] {
+  background: var(--gw-card);
+  color: var(--gw-ink);
+  box-shadow: 0 1px 2px hsl(var(--shadow-color) / 0.12), 0 0 0 1px var(--gw-line);
+}
+
+.gw-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gw-mute);
+  cursor: pointer;
+}
+
+.gw-icon-button:hover {
+  background: hsl(var(--accent));
+  color: var(--gw-ink);
+}
+
+.gw-content {
+  gap: 14px;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding-top: 6px;
+  padding-bottom: 28px;
+}
+
+.gw-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid hsl(var(--status-warning) / 0.4);
+  border-radius: 10px;
+  background: hsl(var(--status-warning) / 0.08);
+  font-size: 12.5px;
+}
+
+.gw-alert svg {
+  flex-shrink: 0;
+  color: var(--gw-warn);
+}
+
+/* 卡片：整块圆角，行与行之间细线分隔。 */
+.gw-card {
+  overflow: visible;
+  border: 1px solid var(--gw-line);
+  border-radius: 16px;
+  background: var(--gw-card);
+  box-shadow: 0 1px 2px hsl(var(--shadow-color) / 0.05);
+}
+
+.gw-card > * + * {
+  border-top: 1px solid var(--gw-line);
+}
+
+.gw-section-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  margin-top: 6px;
+  padding: 0 4px;
+}
+
+.gw-section-label > span,
+.gw-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gw-section-label em,
+.gw-section-aside em {
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.85;
+}
+
+.gw-section-aside {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+
+.gw-text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--gw-mute);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.gw-text-button:hover {
+  color: var(--gw-ink);
+}
+
+.gw-text-button.strong {
+  color: var(--gw-ink);
+}
+
+.gw-text-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.gw-empty {
+  display: grid;
+  gap: 4px;
+  padding: 22px 18px;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.gw-empty strong {
+  color: var(--gw-ink);
+  font-size: 13.5px;
+}
+
+.gw-footnote {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--gw-mute);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 状态点 */
+.gw-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+.gw-dot[data-tone="on"] {
+  background: var(--gw-ok);
+}
+
+.gw-dot[data-tone="error"] {
+  background: var(--gw-err);
+}
+
+.gw-dot[data-tone="agent"] {
+  background: hsl(var(--gw-hue) 70% 55%);
+}
+
+/* 字母头像 */
+.gw-avatar {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: hsl(var(--gw-hue, 230) 70% 55% / 0.14);
+  color: hsl(var(--gw-hue, 230) 60% 46%);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.gw-avatar[data-size="sm"] {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 10px;
+}
+
+.gw-avatar-plus {
+  background: var(--gw-soft);
+  color: var(--gw-mute);
+}
+
+.gw-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--gw-soft);
+  color: var(--gw-mute);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.gw-pill[data-tone="ok"] {
+  background: hsl(var(--status-success) / 0.14);
+  color: var(--gw-ok);
+}
+
+.gw-pill[data-tone="warning"] {
+  background: hsl(var(--status-warning) / 0.14);
+  color: var(--gw-warn);
+}
+
+.gw-pill-outline {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--gw-line);
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.gw-pill-solid {
+  height: 24px;
+  padding: 0 12px;
+  background: var(--gw-ink);
+  color: hsl(var(--background));
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gw-chip {
+  overflow: hidden;
+  max-width: 260px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--gw-soft);
+  color: var(--gw-mute);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 黑色开关 */
+.gw-switch {
+  flex-shrink: 0;
+  width: 44px;
+  height: 26px;
+  padding: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: hsl(var(--switch-track));
+  cursor: pointer;
+  transition: background-color 0.16s;
+}
+
+.gw-switch span {
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: hsl(var(--background));
+  box-shadow: 0 1px 2px hsl(var(--shadow-color) / 0.3);
+  transition: transform 0.16s;
+}
+
+.gw-switch.is-on {
+  background: var(--gw-ink);
+}
+
+.gw-switch.is-on span {
+  transform: translateX(18px);
+}
+
+.gw-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* —— 智能体 —— */
+
+.gw-agent-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gw-agent-main small {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 配置被别的工具改掉时，状态行末尾的「重新接入」 */
+.gw-drift-reconnect {
+  margin-left: 8px;
+  font-size: inherit;
+}
+
+.gw-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  color: var(--gw-mute);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.gw-link:hover {
+  color: var(--gw-ink);
+}
+
+.gw-link svg {
+  transition: transform 0.16s;
+}
+
+.gw-agent[data-expanded="true"] .gw-agent-row {
+  border-bottom: 1px solid var(--gw-line);
+}
+
+/* 模型选择器 */
+.gw-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.gw-picker-button:hover,
+.gw-picker-button[aria-expanded="true"] {
+  border-color: hsl(var(--primary) / 0.55);
+}
+
+.gw-picker-button > span {
+  overflow: hidden;
+  flex: 1;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-picker-button[data-empty="true"] > span {
+  color: var(--gw-mute);
+}
+
+.gw-picker-button > svg:last-child {
+  flex-shrink: 0;
+  color: var(--gw-mute);
+}
+
+.gw-picker-glyph {
+  flex-shrink: 0;
+  color: var(--gw-mute);
+}
+
+.gw-popover {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--gw-line);
+  border-radius: 14px;
+  background: hsl(var(--popover));
+  box-shadow: 0 18px 48px hsl(var(--shadow-color) / 0.22);
+}
+
+.gw-popover-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--gw-line);
+  color: var(--gw-mute);
+}
+
+.gw-popover-search input,
+.gw-sheet-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 13.5px;
+}
+
+.gw-popover-body {
+  display: grid;
+  grid-template-columns: 50px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+
+.gw-popover-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  overflow-y: auto;
+  padding: 10px 0;
+  border-right: 1px solid var(--gw-line);
+}
+
+.gw-popover-rail button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--gw-mute);
+  cursor: pointer;
+}
+
+.gw-popover-rail button:hover,
+.gw-popover-rail button[data-active="true"] {
+  background: var(--gw-soft);
+  color: var(--gw-ink);
+}
+
+.gw-rail-divider {
+  width: 22px;
+  height: 1px;
+  flex-shrink: 0;
+  background: var(--gw-line);
+}
+
+.gw-popover-list {
+  position: relative;
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+}
+
+.gw-popover-heading {
+  padding: 10px 8px 4px;
+  color: var(--gw-mute);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gw-popover-item:hover {
+  background: var(--gw-soft);
+}
+
+.gw-popover-item[data-selected="true"] {
+  background: hsl(var(--primary) / 0.1);
+}
+
+.gw-popover-item-label {
+  overflow: hidden;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-popover-check {
+  flex-shrink: 0;
+  color: hsl(var(--primary));
+}
+
+/* 展开的档位 / 高级设置 */
+
+.gw-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.gw-field > span {
+  font-weight: 500;
+}
+
+.gw-field small {
+  margin-left: 4px;
+  color: var(--gw-mute);
+  font-weight: 400;
+}
+
+.gw-select {
+  height: 34px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.gw-error {
+  flex: 1;
+  min-width: 0;
+  color: var(--gw-err);
+  font-size: 12px;
+}
+
+/* —— 供应商 —— */
+
+.gw-status {
+  color: var(--gw-mute);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.gw-status[data-state="busy"],
+.gw-status[data-state="answered"] {
+  color: var(--gw-ink);
+}
+
+.gw-status[data-state="cooling"] {
+  color: var(--gw-err);
+}
+
+/* 添加供应商 */
+
+.gw-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 4px;
+}
+
+.gw-sheet-head .gw-section-title {
+  margin-right: auto;
+}
+
+.gw-sheet-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 280px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--gw-line);
+  border-radius: 9px;
+  background: var(--gw-card);
+  color: var(--gw-mute);
+}
+
+.shell .gw-dispatch-more {
+  width: 100%;
+  height: 38px;
+  border: 0;
+  border-top: 1px solid var(--gw-line);
+  border-radius: 0 0 16px 16px;
+  background: transparent;
+  color: var(--gw-mute);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.shell .gw-dispatch-more:hover {
+  color: var(--gw-ink);
+}
+
+.shell .gw-dispatch-none {
+  margin: 0;
+  padding: 16px 20px;
+  color: var(--gw-mute);
+  font-size: 13px;
+}
+
+.gw-group-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 70px;
+  padding: 10px 18px;
+}
+
+.gw-avatar-stack {
+  display: flex;
+}
+
+.gw-avatar-stack .gw-avatar {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--gw-card);
+  border-radius: 50%;
+  font-size: 10px;
+}
+
+.gw-avatar-stack .gw-avatar + .gw-avatar {
+  margin-left: -8px;
+}
+
+.gw-group-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gw-group-main > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gw-group-main strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.gw-group-main small {
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* —— 网关 —— */
+.gw-setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 10px 18px;
+}
+
+.gw-setting-row > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* 右侧控件（开关、下拉、输入框、状态）一律贴右对齐 */
+.gw-setting-row > :last-child:not(:first-child) {
+  justify-self: end;
+}
+
+.gw-setting-row strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.gw-setting-row small {
+  color: var(--gw-mute);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.gw-setting-row code {
+  overflow: hidden;
+  max-width: 360px;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* —— 网关设置里的新旧共用设置 —— */
+/* 数字输入：单位放在框里，所有框同宽，右边与开关、下拉对齐 */
+.gw-unit-input {
+  display: inline-flex;
+  align-items: center;
+  width: 150px;
+  height: 34px;
+  padding: 0 12px 0 0;
+  border: 1px solid hsl(var(--input));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  cursor: text;
+}
+
+.gw-unit-input:focus-within {
+  border-color: hsl(var(--primary) / 0.5);
+}
+
+.gw-unit-input input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px 0 12px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* 去掉原生的上下微调箭头 */
+.gw-unit-input input::-webkit-outer-spin-button,
+.gw-unit-input input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.gw-unit-input span {
+  flex: none;
+}
+
+/* 下拉与输入框同宽同高 */
+.gw-setting-row .app-select,
+.gw-inline-field .app-select {
+  width: 150px;
+}
+
+.gw-setting-row .app-select-trigger,
+.gw-inline-field .app-select-trigger {
+  min-height: 34px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.gw-inline-field .app-select {
+  width: 170px;
+}
+
+/* 状态码一行放不下：说明在上，编辑区在下 */
+.gw-setting-row-stacked {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.gw-setting-row-stacked > :last-child:not(:first-child) {
+  justify-self: stretch;
+}
+
+.gw-retry-codes {
+  display: flex !important;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px !important;
+}
+
+.gw-retry-code {
+  cursor: pointer;
+}
+
+.gw-retry-code:hover {
+  color: var(--gw-err);
+}
+
+.gw-retry-input {
+  width: 140px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 7px;
+  background: hsl(var(--background));
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+@media (max-width: 900px) {
+}
+
+@media (max-width: 760px) {
+  .gw-tabs button {
+    padding: 0 10px;
+  }
+
+  .gw-sheet-head {
+    flex-wrap: wrap;
+  }
+
+  .gw-sheet-search {
+    width: 100%;
+  }
+}
+
+/* 供应商行右侧操作 */
+
+/* 预设表单弹窗 */
+.gw-modal-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: hsl(var(--shadow-color) / 0.45);
+}
+
+.gw-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--gw-line);
+  border-radius: 16px;
+  background: hsl(var(--popover));
+  color: var(--gw-ink);
+  box-shadow: 0 24px 64px hsl(var(--shadow-color) / 0.35);
+}
+
+.gw-modal header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--gw-line);
+}
+
+.gw-modal header strong {
+  flex: 1;
+  font-size: 15px;
+}
+
+.gw-modal-body {
+  display: grid;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+
+.gw-modal-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 10px;
+}
+
+.gw-modal footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--gw-line);
+}
+
+@media (max-width: 560px) {
+  .gw-modal-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ———————————— 智能体：一行一个 Agent，展开后是「标签 | 值」的明细 ———————————— */
+.gw-agent-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto minmax(220px, 320px) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 64px;
+  padding: 10px 20px;
+}
+
+.gw-agent-icon {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+
+.gw-agent-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gw-agent-title strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.gw-version {
+  color: var(--gw-mute);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-subhead {
+  padding: 14px 20px 6px;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+}
+
+.gw-card > .gw-subhead + .gw-agent {
+  border-top: 0;
+}
+
+.gw-soft-button {
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--gw-soft);
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gw-picker-button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--gw-soft);
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.gw-picker-agent,
+.gw-popover-agent {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.gw-agent[data-expanded="true"] > .gw-agent-row {
+  border-bottom: 1px solid var(--gw-line);
+}
+
+.gw-agent-detail {
+  display: grid;
+  padding: 4px 20px 4px 72px;
+}
+
+.gw-detail-row {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  min-height: 52px;
+  padding: 8px 0;
+}
+
+.gw-detail-row + .gw-detail-row {
+  border-top: 1px solid var(--gw-line);
+}
+
+.gw-detail-label {
+  color: var(--gw-mute);
+  font-size: 13px;
+}
+
+.gw-detail-value {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 13.5px;
+}
+
+.gw-chip-row {
+  flex-wrap: wrap;
+}
+
+.gw-code {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--gw-soft);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+
+.gw-model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px 0 7px;
+  border: 1px solid var(--gw-line);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.gw-model-chip em {
+  color: var(--gw-mute);
+  font-style: normal;
+}
+
+.gw-muted {
+  color: var(--gw-mute);
+  font-size: 12.5px;
+}
+
+.gw-tier-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  max-width: 260px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--gw-soft);
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gw-tier-button em {
+  color: var(--gw-mute);
+  font-style: normal;
+}
+
+.gw-tier-button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-tier-button > svg:last-child {
+  flex-shrink: 0;
+  color: var(--gw-mute);
+}
+
+.gw-tier-default {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  font-weight: 600;
+}
+
+.gw-inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.gw-inline-field > span {
+  color: var(--gw-mute);
+}
+
+.gw-inline-input {
+  width: 96px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.gw-inline-check {
+  cursor: pointer;
+}
+
+.gw-inline-check > span {
+  color: var(--gw-ink);
+}
+
+.gw-detail-file {
+  grid-column: span 1;
+  white-space: nowrap;
+}
+
+.gw-detail-file code {
+  color: var(--gw-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+
+.gw-detail-foot {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.gw-detail-foot .gw-detail-value {
+  justify-content: space-between;
+}
+
+.gw-danger-link {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--gw-err);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.gw-danger-link:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.gw-collapse-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  border-top: 1px solid var(--gw-line);
+  background: hsl(var(--muted) / 0.22);
+}
+
+.gw-agent:last-child .gw-collapse-bar {
+  border-radius: 0 0 16px 16px;
+}
+
+.gw-collapse-manage {
+  position: absolute;
+  right: 20px;
+}
+
+/* 挑选供应商 */
+.gw-select-list {
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+}
+
+.gw-select-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.gw-select-item:hover {
+  background: var(--gw-soft);
+}
+
+.gw-select-item > span:not(.gw-avatar) {
+  flex: 1;
+}
+
+.gw-select-item em {
+  color: var(--gw-mute);
+  font-style: normal;
+}
+
+/* 紧凑密度：「挑选」弹层挂在 body 上、不在 .shell 里，原来写成 .shell .gw-select-item 的紧凑规则对它不生效。
+   用 .gw-portal 前缀（比上面的基础规则权重高，与加载顺序无关）。 */
+.gw-portal .gw-select-item {
+  gap: 8px;
+  min-height: 32px;
+  padding: 3px 8px;
+  font-size: 12.5px;
+}
+
+.gw-portal .gw-select-item em {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+/* 模型选择器的条目：图标 · 名字 · 「经 Codex++」 · 说明 · 收藏 · 勾 */
+.gw-model-popover {
+  min-height: 0;
+}
+
+.gw-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  color: var(--gw-ink);
+  cursor: pointer;
+  outline: none;
+}
+
+.gw-popover-item:hover,
+.gw-popover-item:focus-visible {
+  background: var(--gw-soft);
+}
+
+.gw-popover-item[data-selected="true"] {
+  background: hsl(var(--primary) / 0.14);
+}
+
+.gw-popover-item-label {
+  flex-shrink: 0;
+  max-width: 52%;
+}
+
+.gw-via {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: hsl(var(--primary) / 0.14);
+  color: hsl(var(--primary));
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.gw-via-off {
+  background: var(--gw-soft);
+  color: var(--gw-mute);
+}
+
+.gw-popover-item small {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-star {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--gw-mute);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.gw-popover-item:hover .gw-star,
+.gw-star[data-on="true"] {
+  opacity: 1;
+}
+
+.gw-star[data-on="true"] svg {
+  color: hsl(var(--status-warning));
+  fill: currentColor;
+}
+
+span.gw-popover-check {
+  width: 16px;
+  flex-shrink: 0;
+}
+
+/* 打包的品牌图标 */
+.gw-avatar-brand {
+  background: var(--gw-soft);
+}
+
+.gw-avatar-brand img {
+  width: 62%;
+  height: 62%;
+  object-fit: contain;
+}
+
+.gw-avatar[data-size="lg"] {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+/* ———————————— 供应商 ———————————— */
+.gw-provider-search-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.gw-pool-row {
+  display: grid;
+  grid-template-columns: 16px 36px minmax(0, 1fr) auto auto 24px;
+  align-items: center;
+  gap: 14px;
+  min-height: 64px;
+  padding: 10px 16px 10px 8px;
+}
+
+.gw-grip {
+  display: inline-flex;
+  color: var(--gw-mute);
+  opacity: 0;
+  cursor: grab;
+}
+
+.gw-pool-item:hover .gw-grip {
+  opacity: 0.8;
+}
+
+.gw-pool-item[data-dragging="true"] {
+  opacity: 0.45;
+}
+
+.gw-pool-item[data-off="true"] .gw-pool-main,
+.gw-pool-item[data-off="true"] .gw-avatar {
+  opacity: 0.5;
+}
+
+.gw-pool-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gw-pool-main strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.gw-pool-main small {
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-pool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--gw-mute);
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+
+.gw-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--gw-mute);
+  cursor: pointer;
+}
+
+.gw-chevron svg {
+  transition: transform 0.16s;
+}
+
+.gw-chevron[data-open="true"] svg {
+  transform: rotate(90deg);
+}
+
+.gw-pool-item[data-dragging="false"] > .gw-pool-detail {
+  border-top: 1px solid var(--gw-line);
+}
+
+.gw-pool-detail {
+  padding-left: 74px;
+}
+
+.gw-key-failure {
+  color: var(--gw-warn);
+  font-size: 12.5px;
+}
+
+.gw-add-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+  padding: 4px;
+  border: 0;
+  background: none;
+  color: var(--gw-mute);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.gw-add-row:hover {
+  color: var(--gw-ink);
+}
+
+.gw-dot[data-tone="added"] {
+  background: hsl(var(--primary));
+}
+
+/* 添加供应商目录：标题 + 灰色说明，四列图标 + 名字 */
+.gw-catalog {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.gw-catalog .gw-sheet-head {
+  margin-bottom: 6px;
+}
+
+.gw-catalog-section {
+  padding: 8px 4px 6px;
+}
+
+.gw-catalog-section h4 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.gw-catalog-section h4 span {
+  margin-left: 10px;
+  color: var(--gw-mute);
+  font-size: 13.5px;
+  font-weight: 400;
+}
+
+.gw-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px 16px;
+}
+
+.gw-catalog-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  height: 44px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 14.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gw-catalog-item:hover:not(:disabled) {
+  background: var(--gw-soft);
+}
+
+.gw-catalog-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-catalog-logo {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+/* 导入弹窗 */
+.gw-import-title {
+  margin: 4px 0 6px;
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.gw-import-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--gw-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gw-import-item:hover:not(:disabled) {
+  background: var(--gw-soft);
+}
+
+.gw-import-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 头像组件本身也是 span，只能让文字那一块占满剩余宽度，否则头像会被拉成半行宽的横条。 */
+.gw-import-item > span:not(.gw-avatar) {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.gw-import-item > .gw-avatar {
+  flex: none;
+}
+
+.gw-import-item small {
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.gw-import-empty {
+  margin: 0 8px 8px;
+}
+
+@media (max-width: 900px) {
+  .gw-agent-row {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+  }
+
+  .gw-agent-row .gw-picker {
+    grid-column: 2 / 4;
+  }
+
+  .gw-agent-detail,
+  .gw-pool-detail {
+    padding-left: 20px;
+  }
+
+  .gw-detail-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .gw-catalog-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 路由组列表右侧的编辑 / 删除 */
+.gw-row-buttons {
+  display: inline-flex;
+  gap: 14px;
+}
+
+.gw-group-row {
+  grid-template-columns: 76px minmax(0, 1fr) auto auto;
+}
+
+/* 路由组编辑弹窗 */
+.gw-group-modal {
+  width: min(600px, 100%);
+}
+
+.gw-mode-tabs {
+  width: max-content;
+}
+
+.gw-member-list {
+  display: grid;
+  gap: 6px;
+}
+
+.gw-member-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--gw-line);
+  border-radius: 10px;
+}
+
+.gw-member-edit-name {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.gw-member-edit-name strong,
+.gw-member-edit-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-member-edit-name strong {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.gw-member-edit-name small {
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.gw-member-edit .gw-icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.gw-weight-input {
+  width: 64px;
+}
+
+/* Key 输入框：多行但不明文显示 */
+.gw-secret {
+  -webkit-text-security: disc;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.gw-import-note {
+  margin: 0 0 4px;
+}
+
+/* 单色厂商图标：用遮罩按当前文字颜色着色 */
+.gw-mono-icon {
+  display: block;
+  width: 62%;
+  height: 62%;
+  background: currentColor;
+  -webkit-mask: var(--gw-icon) center / contain no-repeat;
+  mask: var(--gw-icon) center / contain no-repeat;
+}
+
+.gw-avatar-brand {
+  color: var(--gw-ink);
+}
+
+.gw-catalog-item .gw-avatar-brand,
+.gw-catalog-item .gw-avatar {
+  background: transparent;
+}
+
+/* ———————————— 用量 ———————————— */
+.gw-usage-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.gw-range-tabs {
+  margin: 0;
+}
+
+.gw-balance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.gw-balance-card {
+  display: grid;
+  gap: 18px;
+  padding: 16px 20px;
+}
+
+.gw-balance-card > * + * {
+  border-top: 0;
+}
+
+.gw-balance-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gw-balance-name strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.gw-balance-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--gw-mute);
+  font-size: 13px;
+}
+
+.gw-balance-row strong {
+  color: var(--gw-ink);
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-chart {
+  position: relative;
+}
+
+.gw-chart-axis {
+  position: relative;
+  height: 22px;
+  margin-top: 8px;
+  border-top: 1px solid var(--gw-line);
+}
+
+.gw-chart-axis span {
+  position: absolute;
+  top: 6px;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.gw-split-tabs {
+  margin: 0;
+}
+
+.gw-split-tabs button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+.gw-price-row {
+  display: grid;
+  grid-template-columns: 110px repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px;
+}
+
+.gw-price-row label {
+  display: grid;
+  gap: 4px;
+}
+
+.gw-price-row label span {
+  color: var(--gw-mute);
+  font-size: 11.5px;
+}
+
+/* ———————————— 会话 ———————————— */
+.gw-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gw-tab-icon {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+}
+
+.gw-tab-count {
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-session-search {
+  flex: 1;
+  max-width: 340px;
+  margin-left: auto;
+}
+
+.gw-session-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 8px 18px;
+}
+
+.gw-session-agent {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.gw-session-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gw-session-main strong,
+.gw-session-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-session-main strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.gw-session-main small {
+  color: var(--gw-mute);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+.gw-session-time {
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.gw-session-resume {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 760px) {
+  .gw-session-row {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+  }
+
+  .gw-session-time,
+  .gw-session-row .gw-icon-button {
+    display: none;
+  }
+}
+
+/* Copilot 设备码 */
+.gw-device-modal {
+  width: min(440px, 100%);
+}
+
+.gw-device-code {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 16px;
+  border: 1px dashed var(--gw-line);
+  border-radius: 12px;
+  background: var(--gw-soft);
+  color: var(--gw-ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.gw-device-code span {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+/* 头像（供应商图标）本身也是 span：各种「xxx span { flex: 1 }」的列表规则会把它拉成横条（导入弹窗、挑选弹层都出过）。
+   这里用更高的权重钉死它的尺寸，任何列表里都不参与伸缩。 */
+span.gw-avatar[data-size] {
+  flex: none;
+}
+
+/* Claude Code、Grok 的单色图标：用遮罩按当前文字颜色绘制，深浅主题都看得清（原来当 <img> 显示是黑的）。 */
+.gw-agent-mono {
+  display: inline-block;
+  flex: none;
+  background: currentColor;
+  -webkit-mask: var(--gw-agent-icon) center / contain no-repeat;
+  mask: var(--gw-agent-icon) center / contain no-repeat;
+}
+
+.gw-node-agent .gw-node-agent-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* 会话行：Agent 图标（单色图标跟随文字颜色）与删除按钮 */
+.gw-session-agent-wrap {
+  display: grid;
+  flex: none;
+  place-items: center;
+}
+.gw-session-delete:hover:not(:disabled) {
+  color: hsl(var(--status-error));
+}
+
+/* 用量图表的鼠标交互：悬停的一天高亮、其余变暗，上方浮出明细卡；明细行与数据卡悬停有反馈 */
+.gw-bar-hit {
+  fill: transparent;
+  cursor: crosshair;
+}
+.gw-bar[data-active="true"] .gw-bar-hit {
+  fill: hsl(var(--primary) / 0.08);
+}
+.gw-chart-tip {
+  position: absolute;
+  top: 6px;
+  z-index: 2;
+  min-width: 180px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--popover, var(--card)));
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.3);
+  font-size: 12px;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.gw-chart-tip[data-edge="start"] {
+  transform: translateX(-10%);
+}
+.gw-chart-tip[data-edge="end"] {
+  transform: translateX(-90%);
+}
+.gw-chart-tip strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.gw-chart-tip dl {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+.gw-chart-tip dl > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.gw-chart-tip dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--gw-mute);
+}
+.gw-chart-tip dd {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+.gw-chart-tip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: transparent;
+}
+.gw-chart-axis span[data-active="true"] {
+  color: var(--gw-ink);
+  font-weight: 600;
+}
+/* 添加供应商：弹出框（原来铺在页面里） */
+.gw-modal.gw-catalog-modal {
+  width: min(860px, 100%);
+  height: min(640px, 100%);
+}
+.gw-catalog-modal header .gw-sheet-search {
+  flex: 1;
+  max-width: 320px;
+  margin-left: auto;
+}
+.gw-catalog-modal header strong {
+  flex: none;
+}
+.gw-catalog-modal .gw-modal-body.gw-catalog {
+  display: block;
+  margin: 0;
+  padding: 6px 14px 14px;
+}
+
+/* 供应商池为空时的引导 */
+.gw-pool-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 32px 20px;
+  text-align: center;
+}
+.gw-pool-empty strong {
+  font-size: 14px;
+}
+.gw-pool-empty span {
+  max-width: 420px;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+}
+.gw-primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  margin-top: 8px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 细节微调：开关打开用主题色；供应商行悬停有底色；Agent 图标放在圆角方块里 */
+.shell .gw-switch.is-on {
+  background: hsl(var(--primary));
+}
+.shell .gw-switch.is-on span {
+  background: #fff;
+}
+.gw-pool-row {
+  transition: background-color 0.12s ease;
+}
+.shell .gw-pool-row:hover {
+  background: var(--gw-soft);
+}
+.gw-agent-icon-box {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--gw-soft);
+}
+.shell .gw-agent-icon-box .gw-agent-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* 模型下拉：搜索 + 横向筛选 / 两行条目（模型名 · 供应商）/ 底部操作。 */
+.gw-portal .gw-mp {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.gw-portal .gw-mp-top {
+  display: grid;
+  gap: 8px;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--gw-line);
+}
+
+.gw-portal .gw-mp-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--gw-line);
+  border-radius: 8px;
+  background: var(--gw-soft);
+  color: var(--gw-mute);
+}
+
+.gw-portal .gw-mp-search:focus-within {
+  border-color: hsl(var(--primary) / 0.5);
+}
+
+.gw-portal .gw-mp-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.gw-portal .gw-mp-search em {
+  flex: none;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-portal .gw-mp-filters {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.gw-portal .gw-mp-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.gw-portal .gw-mp-filters button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  max-width: 160px;
+  padding: 0 9px;
+  border: 1px solid var(--gw-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--gw-mute);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gw-portal .gw-mp-filters button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .gw-mp-filters button:hover {
+  color: var(--gw-ink);
+}
+
+.gw-portal .gw-mp-filters button[data-active="true"] {
+  border-color: transparent;
+  background: var(--gw-ink);
+  color: hsl(var(--popover));
+}
+
+.gw-portal .gw-mp-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+
+.gw-portal .gw-mp-section + .gw-mp-section {
+  margin-top: 4px;
+  border-top: 1px dashed var(--gw-line);
+}
+
+.gw-portal .gw-mp-heading {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px 4px;
+  background: hsl(var(--popover));
+  color: var(--gw-ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.gw-portal .gw-mp-heading span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .gw-mp-heading em {
+  margin-left: auto;
+  color: var(--gw-mute);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-portal .gw-mp-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 16px;
+  cursor: pointer;
+  outline: none;
+}
+
+.gw-portal .gw-mp-item:hover,
+.gw-portal .gw-mp-item:focus-visible {
+  background: var(--gw-soft);
+}
+
+.gw-portal .gw-mp-item[data-selected="true"]::before {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: hsl(var(--primary));
+  content: "";
+}
+
+.gw-portal .gw-mp-text {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+}
+
+.gw-portal .gw-mp-text strong {
+  overflow: hidden;
+  color: var(--gw-ink);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .gw-mp-item[data-selected="true"] strong {
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+.gw-portal .gw-mp-text small {
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .gw-mp-star {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--gw-mute);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.gw-portal .gw-mp-item:hover .gw-mp-star,
+.gw-portal .gw-mp-item:focus-visible .gw-mp-star,
+.gw-portal .gw-mp-star[data-on="true"] {
+  opacity: 1;
+}
+
+.gw-portal .gw-mp-star[data-on="true"] {
+  color: #e0a100;
+}
+
+.gw-portal .gw-mp-star[data-on="true"] svg {
+  fill: currentColor;
+}
+
+.gw-portal .gw-mp-check {
+  flex: none;
+  color: hsl(var(--primary));
+}
+
+.gw-portal .gw-mp-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--gw-line);
+  background: var(--gw-soft);
+}
+
+.gw-portal .gw-mp-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--gw-line);
+  border-radius: 7px;
+  background: hsl(var(--popover));
+  color: var(--gw-ink);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.gw-portal .gw-mp-action:hover {
+  border-color: hsl(var(--primary) / 0.45);
+}
+
+.gw-portal .gw-mp-action[data-active="true"] {
+  border-color: hsl(var(--primary) / 0.45);
+  color: hsl(var(--primary));
+}
+
+.gw-portal .gw-mp-action .gw-popover-agent {
+  width: 15px;
+  height: 15px;
+}
+
+/* 添加供应商：给哪些 Agent 用（目录弹窗底部、填写表单里各一排）。 */
+.gw-portal .gw-agent-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+}
+
+.gw-portal .gw-agent-picks > span {
+  margin-right: 4px;
+}
+
+.gw-portal .gw-agent-picks button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px dashed var(--gw-line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.gw-portal .gw-agent-picks button[data-on="true"] {
+  border-style: solid;
+  border-color: hsl(var(--primary) / 0.45);
+  background: hsl(var(--primary) / 0.08);
+  color: var(--gw-ink);
+}
+
+.gw-portal .gw-agent-picks button[data-on="true"] svg {
+  color: hsl(var(--primary));
+}
+
+.gw-portal .gw-agent-picks button[data-on="false"] .gw-agent-pick-icon {
+  opacity: 0.45;
+}
+
+.gw-portal .gw-agent-pick-icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  object-fit: contain;
+}
+
+.gw-portal .gw-agent-picks em {
+  font-size: 11.5px;
+  font-style: normal;
+}
+
+.gw-portal .gw-catalog-foot {
+  padding: 10px 18px;
+}
+
+.gw-portal .pf-agents {
+  padding: 10px 16px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+/* 供应商池：右上角「添加供应商」、整行点击展开、指针拖动排序。 */
+.shell .gw-provider-search-row {
+  align-items: center;
+  gap: 10px;
+}
+
+.shell .gw-pool-row {
+  cursor: pointer;
+}
+
+.shell .gw-grip {
+  touch-action: none;
+}
+
+.shell .gw-pool-item[data-dragging="true"] {
+  position: relative;
+  z-index: 1;
+  background: var(--gw-soft);
+  opacity: 1;
+  box-shadow: 0 6px 18px hsl(var(--shadow-color) / 0.18);
+}
+
+.shell .gw-pool-item[data-dragging="true"] .gw-grip {
+  opacity: 1;
+}
+
+body.gw-sorting,
+body.gw-sorting * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+/* 明细最后一行左边是一句长说明，不能套用上面固定宽度的标签列，否则会压到右边的按钮。 */
+.shell .gw-detail-row.gw-detail-foot {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+/* Key 数量：钥匙图标 + 数字 */
+.shell .gw-key-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell .gw-key-count svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  opacity: 0.75;
+}
+
+.shell .gw-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Agent 接入：图标 · 名称与状态标签 · 默认模型 · 开关 · 展开箭头 */
+.shell .gw-agent > .gw-agent-row {
+  grid-template-columns: 34px minmax(0, 1fr) minmax(200px, 300px) auto 24px;
+  gap: 14px;
+}
+
+.shell .gw-agent > .gw-agent-row[data-clickable="true"] {
+  cursor: pointer;
+}
+
+.shell .gw-agent > .gw-agent-row[data-clickable="true"]:hover {
+  background: var(--gw-soft);
+}
+
+.shell .gw-agent > .gw-agent-row .gw-chevron:disabled {
+  visibility: hidden;
+}
+
+.shell .gw-agent-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.shell .gw-agent-meta > span:not(.gw-agent-badge):not(.gw-agent-count) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shell .gw-agent-badge {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--gw-line);
+  border-radius: 5px;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  line-height: 18px;
+}
+
+.shell .gw-agent-badge[data-tone="on"] {
+  border-color: hsl(var(--status-success, 142 60% 45%) / 0.4);
+  color: hsl(var(--status-success, 142 60% 45%));
+}
+
+.shell .gw-agent-badge[data-tone="error"] {
+  border-color: hsl(var(--status-error) / 0.4);
+  color: hsl(var(--status-error));
+}
+
+.shell .gw-agent-count {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell .gw-agent-count svg {
+  width: 13px;
+  height: 13px;
+  opacity: 0.75;
+}
+
+.shell .gw-agent-card > .gw-subhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shell .gw-agent-card > .gw-subhead em {
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 供应商池顶栏：搜索框和「添加供应商」同高、垂直居中 */
+.shell .gw-provider-search-row .gw-sheet-search,
+.shell .gw-provider-search-row .gw-primary-button {
+  box-sizing: border-box;
+  height: 34px;
+}
+
+.shell .gw-provider-search-row .gw-primary-button {
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* 后台检查发现的新模型 */
+.shell .gw-new-models {
+  padding: 1px 8px;
+  border: 1px solid hsl(var(--primary) / 0.4);
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+/* 总览里就地「接入 Agent」的弹窗：里面就是 Agent 接入列表 */
+.shell .gw-modal.gw-agent-modal {
+  width: min(920px, 100%);
+}
+
+.shell .gw-agent-modal-body {
+  display: block;
+  margin: 0;
+  padding: 14px 18px 18px;
+}
+
+.shell .gw-sync-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* —— 模型组：通配符成员 —— */
+.gw-portal .gw-add-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.gw-portal .gw-pattern-input {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 220px;
+  height: 32px;
+  padding: 0 4px 0 10px;
+  border: 1px dashed var(--gw-line);
+  border-radius: 8px;
+  color: var(--gw-mute);
+}
+
+.gw-portal .gw-pattern-input:focus-within {
+  border-style: solid;
+  border-color: hsl(var(--primary) / 0.5);
+}
+
+.gw-portal .gw-pattern-input input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--gw-ink);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.gw-portal .gw-pattern-input .gw-text-button {
+  white-space: nowrap;
+}
+
+.gw-portal .gw-member-edit[data-pattern="true"] strong {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+/* —— 订阅额度 —— */
+.shell .gw-quota-badge,
+.shell .gw-quota-window {
+  --gw-quota-color: var(--gw-ok);
+}
+
+.shell .gw-quota-badge[data-tone="mid"],
+.shell .gw-quota-window[data-tone="mid"] {
+  --gw-quota-color: var(--gw-warn);
+}
+
+.shell .gw-quota-badge[data-tone="low"],
+.shell .gw-quota-window[data-tone="low"] {
+  --gw-quota-color: var(--gw-err);
+}
+
+.shell .gw-quota-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shell .gw-quota-badge i,
+.shell .gw-quota-window i {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: hsl(var(--muted-foreground) / 0.2);
+}
+
+.shell .gw-quota-badge i::after,
+.shell .gw-quota-window i::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--gw-quota);
+  border-radius: inherit;
+  background: var(--gw-quota-color);
+  content: "";
+}
+
+.shell .gw-quota-windows {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+
+.shell .gw-quota-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell .gw-quota-window b {
+  font-weight: 500;
+}
+
+.shell .gw-quota-window i {
+  width: 56px;
+}
+
+.shell .gw-quota-window small {
+  color: var(--gw-mute);
+  font-size: 11.5px;
+}
+
+/* 模型组一行：图标、名称、模式、会话固定、按钮。 */
+.shell .gw-group-row {
+  grid-template-columns: 76px minmax(0, 1fr) auto auto auto;
+}
+
+/* ———————————— 用量 ———————————— */
+.shell .gw-usage-refresh {
+  margin-left: auto;
+}
+
+/* 统计格：每格画右边和下边的细线，贴卡片边缘的那几条被裁掉，换行时也整齐。 */
+.shell .gw-usage-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(176px, 1fr));
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.shell .gw-usage-stats > * + * {
+  border-top: 0;
+}
+
+.shell .gw-usage-stat {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 16px 20px 18px;
+  box-shadow: 1px 0 0 var(--gw-line), 0 1px 0 var(--gw-line);
+  transition: background-color 0.12s ease;
+}
+
+.shell .gw-usage-stat:hover {
+  background: color-mix(in srgb, var(--gw-card) 92%, hsl(var(--foreground)));
+}
+
+.shell .gw-usage-stat > span {
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.shell .gw-usage-stat strong {
+  overflow: hidden;
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell .gw-usage-stat[data-kind="cost"] strong {
+  color: hsl(var(--primary));
+}
+
+.shell .gw-usage-stat small {
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell .gw-usage-stat small[data-tone="err"],
+.shell .gw-usage-num[data-tone="err"] {
+  color: var(--gw-warn);
+}
+
+.shell .gw-usage-meter {
+  display: block;
+  height: 4px;
+  margin-top: 2px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--gw-soft);
+}
+
+.shell .gw-usage-meter b {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: hsl(var(--status-success) / 0.75);
+}
+
+/* 图表卡片 */
+.shell .gw-chart-card {
+  padding: 16px 22px 14px;
+}
+
+.shell .gw-chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+}
+
+.shell .gw-chart-head > strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.shell .gw-chart-legend,
+.shell .gw-chart-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.shell .gw-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shell .gw-chart-facts {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell .gw-chart-legend i,
+.shell .gw-chart-tip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+/* 右侧留出刻度数字的位置，柱子不会压到数字。 */
+.shell .gw-chart-plot {
+  position: relative;
+  height: 180px;
+  margin: 18px 48px 0 0;
+}
+
+.shell .gw-chart-plot svg {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.shell .gw-chart-grid {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-top: 1px dashed var(--gw-line);
+  pointer-events: none;
+}
+
+.shell .gw-chart-grid em {
+  position: absolute;
+  top: -8px;
+  right: -48px;
+  width: 42px;
+  color: var(--gw-mute);
+  font-size: 11px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell .gw-bar-input,
+.shell :is(.gw-chart-legend, .gw-chart-tip) i[data-kind="input"] {
+  fill: hsl(var(--primary) / 0.32);
+  background: hsl(var(--primary) / 0.32);
+}
+
+.shell .gw-bar-cache,
+.shell :is(.gw-chart-legend, .gw-chart-tip) i[data-kind="cache"] {
+  fill: hsl(var(--status-success) / 0.55);
+  background: hsl(var(--status-success) / 0.55);
+}
+
+.shell .gw-bar-output,
+.shell :is(.gw-chart-legend, .gw-chart-tip) i[data-kind="output"] {
+  fill: hsl(var(--primary));
+  background: hsl(var(--primary));
+}
+
+.shell .gw-bar-empty {
+  fill: hsl(var(--muted-foreground) / 0.25);
+}
+
+.shell .gw-bar :is(.gw-bar-input, .gw-bar-cache, .gw-bar-output, .gw-bar-empty) {
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.shell .gw-chart[data-hovering="true"] .gw-bar:not([data-active="true"]) :is(.gw-bar-input, .gw-bar-cache, .gw-bar-output) {
+  opacity: 0.35;
+}
+
+.shell .gw-chart-tip p {
+  margin: 0;
+  color: var(--gw-mute);
+}
+
+.shell .gw-chart-axis {
+  position: relative;
+  height: 22px;
+  margin: 0 48px 0 0;
+  border-top: 1px solid var(--gw-line);
+}
+
+/* 按 Agent 的占比条 */
+.shell .gw-usage-agents {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--gw-line);
+}
+
+.shell .gw-usage-agents-bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 99px;
+}
+
+.shell .gw-usage-agents-bar i,
+.shell .gw-usage-agents-legend i {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+.shell :is(.gw-usage-agents-bar, .gw-usage-agents-legend) i[data-agent="codex"] {
+  background: hsl(var(--primary));
+}
+
+.shell :is(.gw-usage-agents-bar, .gw-usage-agents-legend) i[data-agent="claude"] {
+  background: hsl(var(--brand-accent));
+}
+
+.shell :is(.gw-usage-agents-bar, .gw-usage-agents-legend) i[data-agent="grok"] {
+  background: hsl(var(--brand-accent-2));
+}
+
+.shell .gw-usage-agents-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.shell .gw-usage-agents-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shell .gw-usage-agents-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.shell .gw-usage-agents-legend b {
+  color: var(--gw-ink);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 明细表 */
+.shell .gw-usage-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.5fr) minmax(110px, 1.2fr) 64px 72px 72px 52px 96px;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 6px 20px;
+  transition: background-color 0.12s ease;
+}
+
+.shell .gw-usage-row:hover:not(.gw-usage-row-head) {
+  background: var(--gw-soft);
+}
+
+.shell .gw-usage-row-head {
+  min-height: 34px;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.shell .gw-usage-row-head > span:nth-child(n + 3) {
+  text-align: right;
+}
+
+.shell .gw-usage-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.shell .gw-usage-name strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell .gw-usage-agent {
+  width: 20px;
+  height: 20px;
+}
+
+.shell .gw-usage-share {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.shell .gw-usage-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--gw-soft);
+}
+
+.shell .gw-usage-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.7);
+}
+
+.shell .gw-usage-row:hover .gw-usage-bar i {
+  filter: brightness(1.2);
+}
+
+.shell .gw-usage-share em {
+  width: 42px;
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.shell .gw-usage-num {
+  overflow: hidden;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 一个价格都没填时不占「费用」一列。 */
+.shell .gw-usage-table[data-cost="false"] .gw-usage-row {
+  grid-template-columns: minmax(150px, 1.5fr) minmax(110px, 1.2fr) 64px 72px 72px 52px;
+}
+
+.shell .gw-usage-table[data-cost="false"] .gw-usage-row > :nth-child(7) {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .shell .gw-usage-row,
+  .shell .gw-usage-table[data-cost="false"] .gw-usage-row {
+    grid-template-columns: minmax(0, 1fr) 56px 64px 80px;
+  }
+
+  .shell .gw-usage-table[data-cost="false"] .gw-usage-row {
+    grid-template-columns: minmax(0, 1fr) 56px 64px;
+  }
+
+  .shell .gw-usage-row > :nth-child(2),
+  .shell .gw-usage-row > :nth-child(5),
+  .shell .gw-usage-row > :nth-child(6) {
+    display: none;
+  }
+
+  .shell .gw-chart-facts {
+    margin-left: 0;
+  }
+}
+
+/* —— 从直连模式导入：多选 —— */
+.gw-portal .gw-import-modal header .gw-text-button {
+  margin-left: auto;
+}
+
+.gw-portal .gw-import-check {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid hsl(var(--muted-foreground) / 0.5);
+  border-radius: 4px;
+  color: hsl(var(--primary-foreground));
+}
+
+.gw-portal .gw-import-item[data-on="true"] .gw-import-check {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary));
+}
+
+.gw-portal .gw-import-login {
+  cursor: default;
+}
+
+.gw-portal .gw-import-login .gw-import-check {
+  visibility: hidden;
+}
+
+.gw-portal .gw-import-badge {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--gw-soft);
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.gw-portal .gw-import-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 18px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.gw-portal .gw-import-foot .gw-primary-button {
+  margin-top: 0;
+  margin-left: auto;
+}
+
+.shell .gw-pool-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.shell .gw-pool-empty-actions > button {
+  height: 32px;
+  margin-top: 0;
+}
+
+/* 导入条目里的勾选框不跟文字一起撑满。 */
+.gw-portal .gw-import-item > .gw-import-check {
+  display: inline-flex;
+  flex: 0 0 16px;
+}
+
+/* 空池卡片：说明和按钮之间不画分隔线；次要按钮描边。 */
+.shell .gw-pool-empty > * + * {
+  border-top: 0;
+}
+
+.shell .gw-pool-empty-actions .gw-soft-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid var(--gw-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gw-ink);
+  font-size: 13px;
+}
+
+/* 浏览器登录进行中的提示条：挂在 body 上、固定在窗口底部，不挡其它操作。 */
+.gw-portal.gw-login-pending {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--gw-line);
+  border-radius: 999px;
+  background: var(--gw-card);
+  color: var(--gw-ink);
+  font-size: 12.5px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.16);
+  transform: translateX(-50%);
+}
+
+.gw-portal.gw-login-pending > svg {
+  flex: none;
+  color: var(--gw-mute);
+}
+
+.gw-portal.gw-login-pending > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 网关弹窗（遮罩 z-index 1000）里打开的下拉（币种、未知模型名等）：下拉菜单挂在 body 上、默认 z-index 240，
+   会被弹窗盖住看不见。弹窗开着时把下拉抬到弹窗之上；用 :has 只在有网关弹窗时生效，权重高于基础规则，与加载顺序无关。 */
+body:has(.gw-modal-backdrop) .app-select-menu-portal {
+  z-index: 1010;
+}
+
+/* 模型按钮上的「自动」：多家自动切换的模型。 */
+.shell .gw-auto-tag,
+.tray-panel .gw-auto-tag,
+.gw-portal .gw-auto-tag {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 99px;
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  font-size: 11px;
+  font-style: normal;
+  line-height: 18px;
+}
+
+/* ———————— 路由页工具栏、供应商池「按模型」矩阵 ———————— */
+.shell .gw-models-tabs {
+  display: inline-flex;
+  gap: 4px;
+  width: max-content;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--gw-soft);
+}
+
+.shell .gw-models-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gw-mute);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.shell .gw-models-tabs button[data-active="true"] {
+  background: var(--gw-card);
+  color: var(--gw-ink);
+  box-shadow: 0 1px 2px hsl(var(--shadow-color) / 0.12), 0 0 0 1px var(--gw-line);
+}
+
+.shell .gw-models-tabs em,
+.shell .gw-models-filters em {
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell .gw-models-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.shell .gw-models-toolbar .gw-primary-button {
+  margin: 0 0 0 auto;
+}
+
+.shell .gw-models-toolbar .gw-models-hint {
+  flex: 1;
+  min-width: 260px;
+}
+
+.shell .gw-models-search {
+  flex: 1;
+  max-width: 360px;
+  min-width: 200px;
+}
+
+.shell .gw-models-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  color: var(--gw-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.shell .gw-models-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shell .gw-models-filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--gw-line);
+  border-radius: 99px;
+  background: transparent;
+  color: var(--gw-ink);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.shell .gw-models-filters button[data-active="true"] {
+  border-color: hsl(var(--primary) / 0.5);
+  background: hsl(var(--primary) / 0.1);
+}
+
+.shell .gw-models-filters .gw-avatar {
+  width: 18px;
+  height: 18px;
+}
+
+.shell .gw-models-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin: 0;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.shell .gw-matrix-card {
+  overflow: hidden;
+}
+
+.shell .gw-matrix-scroll {
+  overflow-x: auto;
+}
+
+.shell .gw-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.shell .gw-matrix th,
+.shell .gw-matrix td {
+  padding: 0;
+  border-bottom: 1px solid var(--gw-line);
+  text-align: center;
+  vertical-align: middle;
+}
+
+.shell .gw-matrix tbody tr:last-child th,
+.shell .gw-matrix tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.shell .gw-matrix thead th {
+  height: 44px;
+  padding: 0 12px;
+  background: var(--gw-soft);
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.shell .gw-matrix td {
+  min-width: 112px;
+  height: 46px;
+}
+
+.shell .gw-matrix tbody tr:hover > * {
+  background: hsl(var(--muted) / 0.35);
+}
+
+/* 模型列固定在左边，供应商多时横向滚动也看得到是哪个模型。 */
+.shell .gw-matrix .gw-matrix-model {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 38%;
+  min-width: 220px;
+  padding: 6px 20px;
+  background: var(--gw-card);
+  text-align: left;
+}
+
+.shell .gw-matrix thead .gw-matrix-model {
+  background: var(--gw-soft);
+}
+
+.shell .gw-matrix tbody .gw-matrix-model {
+  display: table-cell;
+}
+
+.shell .gw-matrix tbody .gw-matrix-model strong {
+  display: block;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell .gw-matrix tbody .gw-matrix-model code {
+  display: block;
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell .gw-matrix-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--gw-ink);
+}
+
+.shell .gw-matrix-provider .gw-avatar {
+  width: 20px;
+  height: 20px;
+}
+
+/* 格子：有这个模型就放这家的图标；外圈颜色是状态，变淡是有 Agent 不用这家；下面一行小字是平均首包耗时。 */
+.shell .gw-matrix-cell,
+.shell .gw-models-legend .gw-matrix-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+/* 不让图标自己的 title 盖掉格子的状态提示。 */
+.shell .gw-matrix-cell .gw-avatar {
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+  border-radius: 7px;
+  box-shadow: 0 0 0 2px transparent;
+}
+
+.shell .gw-matrix-cell[data-state="answered"] .gw-avatar {
+  box-shadow: 0 0 0 2px var(--gw-ok);
+}
+
+.shell .gw-matrix-cell[data-state="cooling"] .gw-avatar {
+  box-shadow: 0 0 0 2px var(--gw-warn);
+}
+
+.shell .gw-matrix-cell[data-excluded="true"] .gw-avatar {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
+.shell .gw-matrix-cell small {
+  color: var(--gw-mute);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.shell .gw-models-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: -4px 0 0;
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.shell .gw-models-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 图例用小方块示意外圈与变淡。 */
+.shell .gw-models-legend .gw-matrix-cell i {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--gw-soft);
+}
+
+.shell .gw-models-legend .gw-matrix-cell[data-state="answered"] i {
+  box-shadow: 0 0 0 2px var(--gw-ok);
+}
+
+.shell .gw-models-legend .gw-matrix-cell[data-state="cooling"] i {
+  box-shadow: 0 0 0 2px var(--gw-warn);
+}
+
+.shell .gw-models-legend .gw-matrix-cell[data-excluded="true"] i {
+  background: hsl(var(--muted-foreground) / 0.35);
+  opacity: 0.5;
+}
+
+@media (max-width: 760px) {
+  .shell .gw-models-auto {
+    margin-left: 0;
+  }
+}
+
+/* 页面内容是网格：表的最小宽度不能把整页撑宽，横向滚动只发生在表里。 */
+.shell .gw-matrix-card,
+.shell .gw-models-filters,
+.shell .gw-models-hint,
+.shell .gw-models-toolbar {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.shell .gateway-page,
+.shell .gateway-page > .gw-content {
+  min-width: 0;
+}
+
+.shell .gw-provider-search-row .gw-primary-button {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 矩阵列头：点了去供应商池展开这一家。 */
+.shell button.gw-matrix-provider {
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.shell button.gw-matrix-provider svg {
+  color: var(--gw-mute);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.shell button.gw-matrix-provider:hover {
+  background: hsl(var(--muted) / 0.6);
+}
+
+.shell button.gw-matrix-provider:hover svg,
+.shell button.gw-matrix-provider:focus-visible svg {
+  opacity: 1;
+}
+
+/* 模型下拉里「模型组」标题旁的「管理」。 */
+.gw-portal .gw-mp-manage,
+.gw-agent-modal .gw-mp-manage {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: hsl(var(--primary));
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.gw-portal .gw-mp-manage + em,
+.gw-agent-modal .gw-mp-manage + em {
+  margin-left: 6px;
+}
+
+/* ———————— 路由页：组卡片 ———————— */
+.shell .gw-section-label > span > em {
+  margin-left: 6px;
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.shell .gw-route-group {
+  overflow: visible;
+}
+
+.shell .gw-route-group[data-auto="true"] {
+  border-style: dashed;
+}
+
+.shell .gw-route-group > * + * {
+  border-top: 1px solid var(--gw-line);
+}
+
+.shell .gw-route-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 14px 18px;
+}
+
+.shell .gw-route-group-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 8px;
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+}
+
+.shell .gw-route-group-title {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.shell .gw-route-group-title strong {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.shell .gw-route-group-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.shell .gw-route-group-controls > * {
+  min-width: 132px;
+}
+
+.shell .gw-route-members {
+  display: grid;
+  margin: 0;
+  padding: 6px 10px;
+  list-style: none;
+}
+
+.shell .gw-route-member-row {
+  display: grid;
+  grid-template-columns: 22px 22px minmax(0, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gw-ink);
+  font: inherit;
+  text-align: left;
+}
+
+.shell button.gw-route-member-row {
+  cursor: pointer;
+}
+
+.shell button.gw-route-member-row:hover:not(:disabled) {
+  background: hsl(var(--muted) / 0.45);
+}
+
+.shell button.gw-route-member-row:disabled {
+  cursor: default;
+}
+
+.shell .gw-route-member[data-picked="true"] .gw-route-member-row {
+  background: hsl(var(--primary) / 0.08);
+}
+
+.shell .gw-route-member[data-state="cooling"] .gw-route-member-name {
+  opacity: 0.65;
+}
+
+.shell .gw-route-member-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shell .gw-route-member-mark > i {
+  color: var(--gw-mute);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.shell .gw-radio-dot {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid hsl(var(--muted-foreground) / 0.6);
+  border-radius: 50%;
+}
+
+.shell .gw-radio-dot[data-on="true"] {
+  border-color: hsl(var(--primary));
+  box-shadow: inset 0 0 0 3px hsl(var(--card)), inset 0 0 0 8px hsl(var(--primary));
+}
+
+.shell .gw-route-member-name {
+  display: grid;
+  min-width: 0;
+}
+
+.shell .gw-route-member-name strong,
+.shell .gw-route-member-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell .gw-route-member-name strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.shell .gw-route-member-name small {
+  color: var(--gw-mute);
+  font-size: 11.5px;
+}
+
+.shell .gw-route-member-weight,
+.shell .gw-route-member-speed {
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shell .gw-route-member-status {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.shell .gw-route-member-status[data-state="cooling"] {
+  color: var(--gw-warn);
+}
+
+.shell .gw-route-member-status[data-state="answered"],
+.shell .gw-route-member-status[data-state="busy"] {
+  color: var(--gw-ok);
+}
+
+.shell .gw-route-member .gw-quota-badge {
+  margin-left: 0;
+}
+
+.shell .gw-route-member-empty {
+  padding: 10px 8px;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+}
+
+.shell .gw-route-group-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 18px;
+}
+
+.shell .gw-route-hide {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.shell .gw-route-group-mode {
+  flex: 1;
+  min-width: 200px;
+  color: var(--gw-mute);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.shell .gw-hidden-autos {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.shell .gw-hidden-auto {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 14px;
+  border: 1px dashed var(--gw-line);
+  border-radius: 10px;
+  color: var(--gw-mute);
+  font-size: 12.5px;
+}
+
+.shell .gw-hidden-auto code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.shell .gw-hidden-auto button {
+  margin-left: auto;
+}
+
+.shell .gw-provider-search-row .gw-models-tabs {
+  flex: none;
+}
+
+.shell .gw-provider-search-gap {
+  flex: 1;
+}
+
+@media (max-width: 760px) {
+  .shell .gw-route-member-row {
+    grid-template-columns: 22px 22px minmax(0, 1fr) auto;
+  }
+
+  .shell .gw-route-member-row > .gw-quota-badge,
+  .shell .gw-route-member-row > .gw-route-member-speed,
+  .shell .gw-route-member-row > .gw-route-member-weight {
+    display: none;
+  }
+}
+
+/* 卡片右上的两个下拉并排；窄屏再换行。 */
+.shell .gw-route-group-controls > * {
+  width: 150px;
+  min-width: 0;
+  flex: none;
+}
+
+.shell .gw-models-toolbar .gw-models-auto + .gw-primary-button {
+  margin-left: 0;
+}
+
+/* 生图模型的下拉要放得下「自动 · 供应商 · 模型」。 */
+.gw-setting-row .app-select.gw-image-select {
+  width: 280px;
+}

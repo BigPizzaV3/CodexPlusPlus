@@ -10,10 +10,13 @@ const readText = async (name: string) =>
 const app = await readText("./App.tsx");
 const hookSource = await readText("./use-popover-layer.ts");
 const styles = await readText("./styles.css");
+// AppSelect 抽成了独立模块，全应用共用。
+const selectSource = await readText("./AppSelect.tsx");
 
 function componentSource(name: string) {
   // 终止行必须是顶格单独一个 }（`}: {` 这种行首是 } 的不算）。
-  const match = app.match(new RegExp(`^function ${name}[<(][^]*?^\\}$`, "m"));
+  const source = name === "AppSelect" ? selectSource : app;
+  const match = source.match(new RegExp(`^(?:export )?function ${name}[<(][^]*?^\\}$`, "m"));
   assert.ok(match, `missing ${name}`);
   return match[0];
 }
@@ -33,7 +36,8 @@ describe("manager popover layer contract", () => {
     assert.match(hook, /rootRef\.current\?\.contains\(target\) \|\| menuRef\.current\?\.contains\(target\)/);
     assert.match(hook, /registerOpenPopover\(layerId, close\)/);
     assert.match(hook, /releaseOpenPopover\(layerId\)/);
-    assert.match(hook, /event\.key !== "Escape"/);
+    // Esc 走全局的 Esc 栈：只关最上层，不连带关掉外面的弹窗。
+    assert.match(hook, /useEscapeLayer\(open, \(\) => \{/);
     assert.match(hook, /isTriggerVisible\(trigger/);
   });
 

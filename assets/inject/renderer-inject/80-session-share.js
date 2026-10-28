@@ -732,22 +732,16 @@
         const native = nativeButtons.map(button => ({ button, rect: button.getBoundingClientRect() }))
           .filter(({ rect }) => rect.width > 0 && rect.height > 0)
           .sort((a, b) => a.rect.left - b.rect.left)[0];
-        const nativeStyle = native && getComputedStyle(native.button);
         const right = native ? Math.max(28, Math.round(rowRect.right - native.rect.left + 8)) : 28;
         const titleLeft = row.querySelector(selectors.threadTitle)?.getBoundingClientRect().left || rowRect.left + 40;
         const renderScale = row.offsetWidth > 0 ? rowRect.width / row.offsetWidth : 1;
         return { row, group, native, right, effectiveRight: right, titleLeft, renderScale,
-          groupWidth: Math.ceil(group.getBoundingClientRect().width || 96),
-          color: nativeStyle?.color, background: nativeStyle?.backgroundColor };
+          groupWidth: Math.ceil(group.getBoundingClientRect().width || 96) };
       });
     for (const layout of layouts) {
-      const { group, right, native, color, background } = layout;
-      group.style.setProperty("--codex-session-actions-right", `${right}px`);
-      if (native) {
-        group.style.setProperty("--codex-session-action-color", color);
-        group.style.setProperty("--codex-session-action-hover-color", color);
-        group.style.setProperty("--codex-session-action-hover-background", background);
-      }
+      // 颜色与悬停态不再从原生按钮的计算样式抄：那样拿到的是静止态，悬停时
+      // 既不提亮也不变底色。外观改由按钮直接套用原生类名（syncNativeSessionActionStyle）。
+      layout.group.style.setProperty("--codex-session-actions-right", `${layout.right}px`);
     }
     for (const layout of layouts) {
       if (!layout.native) continue;

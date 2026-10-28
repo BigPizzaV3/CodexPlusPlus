@@ -20,6 +20,6 @@ fn diagnostic_bridge_success_stops_fallback_and_failures_try_once() {
 
 #[test]
 #[ignore = "需要已有 Playwright 与 Chromium；设置 NODE_PATH 和 CODEX_TEST_BROWSER_PATH 后运行"]
-fn native_rename_and_theme_cascade_real_browser_fixture() {
+fn theme_cascade_real_browser_fixture() {
     run_fixture("--browser");
 }

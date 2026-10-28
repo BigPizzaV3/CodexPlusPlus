@@ -441,16 +441,13 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
         AppProbe::Running(key) => Some(key.pid),
         _ => None,
     };
-    let multi_instance_running = app_dir
-        .as_deref()
-        .is_some_and(|app_dir| {
-            codex_plus_core::auto_takeover::has_other_desktop_instance(
-                app_dir,
-                actual_port,
-                current_pid,
-            )
-        })
-        || multi_instance_running();
+    let multi_instance_running = app_dir.as_deref().is_some_and(|app_dir| {
+        codex_plus_core::auto_takeover::has_other_desktop_instance(
+            app_dir,
+            actual_port,
+            current_pid,
+        )
+    }) || multi_instance_running();
     let user_active = user_seems_active();
 
     let session = SessionSnapshot {

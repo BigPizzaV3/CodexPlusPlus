@@ -1,2 +1,5 @@
-@import "tailwindcss";
+/* 预览站点的 Vite 根目录是 web-preview，Tailwind 默认扫不到 ../src：
+   在这里引入应用样式（含 @theme），再补上扫描范围，两者必须在同一棵样式树里，
+   否则 border-border/70 这类带透明度的颜色会找不到主题变量而退回 currentColor。 */
+@import "../src/styles.css";
 @source "../src";

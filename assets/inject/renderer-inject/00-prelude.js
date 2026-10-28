@@ -5,7 +5,6 @@
   if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
   const codexPlusIsMacPlatform = /\bMacintosh\b/i.test(navigator.userAgent || "");
-  const codexPlusSupportsPetRealMouseLook = codexPlusIsWindowsPlatform || codexPlusIsMacPlatform;
 
   function codexPlusStatsigClients() {
     const root = window.__STATSIG__ || globalThis.__STATSIG__;
@@ -386,22 +385,18 @@
   // 已发布的旧类名保留兼容；对应功能不再安装。
   const zedRemoteButtonClass = "codex-zed-remote-button";
   const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";
-  const sessionCopyMenuItemClass = "codex-session-copy-menu-item";
-  const sessionCopyMenuItemVersion = "1";
-  const sessionCopyMenuActivationTimeoutMs = 12000;
   const sessionShareButtonClass = "codex-session-share-button";
   const sessionShareButtonVersion = "1";
   const codexPlusShareBaseUrl = "https://share.codexpp.cc";
   const codexPlusShareFallbackBaseUrl = "https://codexpp-share.pages.dev";
   const codexPlusShareMaxCharacters = 900000;
-  const sessionAutoRenameTimeoutMs = 20000;
   const zedRemoteToastClass = "codex-zed-remote-toast";
   const upstreamWorktreeDialogClass = "codex-upstream-worktree-dialog";
   const upstreamBranchOptionAttribute = "data-codex-upstream-branch-option";
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "34";
+  const codexDeleteStyleVersion = "35";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -424,7 +419,7 @@
   const codexPlusWindowZoomVar = "--codex-window-zoom";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
-  const codexActionGroupVersion = "7";
+  const codexActionGroupVersion = "8";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationViewVersion = "1";
@@ -434,7 +429,6 @@
   const codexServiceTierBadgeVersion = "3";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
-  let lastSessionActionTrigger = null;
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";

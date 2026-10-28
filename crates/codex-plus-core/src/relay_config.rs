@@ -1086,7 +1086,7 @@ pub async fn test_relay_profile(
         crate::anthropic_bridge::CLAUDE_CODE_USER_AGENT
     } else if !profile.user_agent.trim().is_empty() { profile.user_agent.trim() }
     else { "CodexPlusPlus/RelayTest" };
-    let client = crate::http_client::proxied_client_for_profile(user_agent, &profile.id)?;
+    let client = crate::http_client::proxied_client_for_relay(user_agent, &profile)?;
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => crate::protocol_proxy::responses_url(base_url),
         RelayProtocol::ChatCompletions => crate::protocol_proxy::chat_completions_url(base_url),
@@ -5073,6 +5073,26 @@ pub fn relay_profile_model(profile: &RelayProfile) -> String {
         .and_then(|value| sanitize_relay_model_name(&value))
         .or_else(|| sanitize_relay_model_name(&profile.model))
         .unwrap_or_default()
+}
+
+/// 改 profile 的默认模型：`model` 字段和配置快照里的根键 `model =` 一起改。
+/// [`relay_profile_model`] 优先读快照，只改字段的话，读盘规范化时会把旧模型改回来、
+/// 再并回模型列表。快照为空时只改字段（规范化会按字段补全快照）；`model` 为空时去掉根键。
+pub fn set_relay_profile_model(profile: &mut RelayProfile, model: &str) -> anyhow::Result<()> {
+    let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    let slug = slug.trim().to_string();
+    profile.model = slug.clone();
+    if profile.config_contents.trim().is_empty() {
+        return Ok(());
+    }
+    let mut doc = parse_toml_document(&profile.config_contents)?;
+    if slug.is_empty() {
+        doc.as_table_mut().remove("model");
+    } else {
+        doc["model"] = toml_edit::value(slug);
+    }
+    profile.config_contents = normalize_optional_toml(doc);
+    Ok(())
 }
 
 /// 「测试供应商」与 Provider Doctor 使用的模型：供应商配置的默认模型 → 模型列表第一项 → 内置兜底。
