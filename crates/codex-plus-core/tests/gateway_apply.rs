@@ -452,19 +452,7 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
         .unwrap();
 
     enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
-    let config = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
-    let pointer = config
-        .lines()
-        .find_map(|line| line.strip_prefix("model_catalog_json = "))
-        .map(|value| value.trim().trim_matches('"').to_string())
-        .unwrap_or_else(|| panic!("网关供应商要写模型目录：{config}"));
-    let pointer = std::path::PathBuf::from(pointer);
-    let path = if pointer.is_absolute() {
-        pointer
-    } else {
-        ctx.codex_home.join(pointer)
-    };
-    let catalog: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let catalog = codex_catalog(ctx);
     let model = |slug: &str| {
         catalog["models"]
             .as_array()
@@ -1379,9 +1367,14 @@ fn auto_group_settings_save_and_reset_to_default() {
 fn codex_catalog(ctx: &ApplyContext) -> Value {
     let config = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
     let pointer = config
-        .lines()
-        .find_map(|line| line.strip_prefix("model_catalog_json = "))
-        .map(|value| value.trim().trim_matches('"').to_string())
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|document| {
+            document
+                .get("model_catalog_json")
+                .and_then(|item| item.as_str())
+        })
+        .map(str::to_string)
         .unwrap_or_else(|| panic!("网关供应商要写模型目录：{config}"));
     let pointer = std::path::PathBuf::from(pointer);
     let path = if pointer.is_absolute() {
