@@ -21,6 +21,12 @@ assets/native-browser/*.cjs text eol=lf
 assets/native-browser/fixtures/*.mjs text eol=lf
 assets/native-browser/inspector-NOTICE.txt text eol=lf
 
+# Manager source is read back directly by source-contract tests. Keep it LF on
+# Windows so regex assertions see the same text as macOS/Linux checkouts.
+apps/codex-plus-manager/src/**/*.ts text eol=lf
+apps/codex-plus-manager/src/**/*.tsx text eol=lf
+apps/codex-plus-manager/src/**/*.css text eol=lf
+
 # Keep every byte-exact upstream theme asset stable on all checkout platforms.
 assets/inject/upstream/**/*.js text eol=lf
 assets/inject/upstream/**/*.css text eol=lf
