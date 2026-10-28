@@ -4,9 +4,13 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
-// Windows checkout 使用 CRLF；源码结构断言统一按 LF 检查。
-const text = readFileSync(new URL("./App.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+// 源码契约与 checkout 行尾无关，统一后仍保留全部结构与空白断言。
+function readSource(path: string) {
+  return readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+}
+
+const text = readSource("./App.tsx");
+const styles = readSource("./styles.css");
 const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 function functionSource(name: string) {
@@ -47,7 +51,7 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(sidebar, /onClick=\{codexRun\.running \? codexRun\.onStop : codexRun\.onStart\}/);
   // 主动停止写 user_stopped，崩溃检测不把它当成意外停止。
   assert.match(text, /const stoppedByUser = result\.latest_launch\?\.phase === "user_stopped";/);
-  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const lib = readSource("../src-tauri/src/lib.rs");
   assert.match(lib, /commands::stop_codex_plus,/);
   // 侧栏不再列当前 Agent 的页面。
   assert.doesNotMatch(sidebar, /agent-pages|navigationSections/);
@@ -87,9 +91,9 @@ test("Claude / Grok 的供应商配置页已去掉：要么经网关接入供应
 });
 
 test("页面不再画第二条标题栏：PageHeader 和工具页的操作都送进外壳顶栏", () => {
-  const management = readFileSync(new URL("./ManagementPages.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  const extra = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-  const cache = readFileSync(new URL("./agent-cache.tsx", import.meta.url), "utf8");
+  const management = readSource("./ManagementPages.tsx");
+  const extra = readSource("./ManagementExtra.tsx");
+  const cache = readSource("./agent-cache.tsx");
   assert.match(management, /export function PageHeader\([^)]*\) \{\n  return <TopbarActions>\{actions\}<\/TopbarActions>;/);
   assert.match(extra, /function Header\([^)]*\) \{ return <TopbarActions>\{actions\}<\/TopbarActions>; \}/);
   for (const source of [management, extra]) assert.doesNotMatch(source, /className="mg-header"/);
@@ -156,8 +160,8 @@ test("旧版 Codex 供应商配置页顶部：没接入时建议改用新版网�
 });
 
 test("Skills 与 MCP 共用一张多 Agent 表：每个 Agent 一列勾选，不再有页面自己的配色和按钮尺寸", () => {
-  const extra = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-  const css = readFileSync(new URL("./ManagementPages.css", import.meta.url), "utf8");
+  const extra = readSource("./ManagementExtra.tsx");
+  const css = readSource("./ManagementPages.css");
   assert.match(extra, /className="mg-matrix mg-agent-matrix mg-skill-matrix"/);
   assert.match(extra, /MCP_AGENTS\.map\(\(agent\) => <AgentColumn /);
   assert.match(extra, /MCP_AGENTS\.map\(\(agent\) => <MatrixCell /);
@@ -166,7 +170,7 @@ test("Skills 与 MCP 共用一张多 Agent 表：每个 Agent 一列勾选，不
 });
 
 test("Agent 页签条不能是滚动容器：否则在 .screen 的 grid 里会被长页面挤成 1px，点进去就看不到页签", () => {
-  const css = readFileSync(new URL("./ToolPages.css", import.meta.url), "utf8");
+  const css = readSource("./ToolPages.css");
   const rules = [...css.matchAll(/\.agent-page-tabs\s*\{([^}]*)\}/g)].map((match) => match[1]);
   assert.ok(rules.length > 0);
   for (const body of rules) assert.doesNotMatch(body, /overflow/);
@@ -197,7 +201,7 @@ test("设置类页面共用左侧分类目录：增强、设置、微信连接�
   for (const page of ["settings-page enhance-page sectioned-page", "settings-page codex-settings-page sectioned-page", "weixin-connect-page sectioned-page"]) {
     assert.ok(text.includes(`className="${page}"`), page);
   }
-  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const css = readSource("./styles.css");
   assert.match(css, /\.shell \.sectioned-page \{[^}]*grid-template-columns:\s*172px minmax\(0, 880px\)/);
   // 「（实验）」和「需重启」从文字里拿出来做成标题旁的小标签。
   const toggle = functionSource("FeatureToggle");
@@ -206,7 +210,7 @@ test("设置类页面共用左侧分类目录：增强、设置、微信连接�
 });
 
 test("插件市场紧凑布局的规则带 .shell 前缀：正式版 styles.css 后加载，同权重的 .panel { padding: 0 } 会清掉卡片内边距", () => {
-  const css = readFileSync(new URL("./PluginMarketScreen.css", import.meta.url), "utf8");
+  const css = readSource("./PluginMarketScreen.css");
   const block = css.slice(css.lastIndexOf("/*", css.indexOf("紧凑布局"))).replace(/\/\*[\s\S]*?\*\//g, "");
   const selectors = [...block.matchAll(/(?:^|\})\s*([^{}]+?)\s*\{/g)].map((match) => match[1].trim()).filter(Boolean);
   assert.ok(selectors.length > 10);
@@ -215,7 +219,7 @@ test("插件市场紧凑布局的规则带 .shell 前缀：正式版 styles.css 
 });
 
 test("导入供应商弹窗：只有文字那块占满宽度，头像（也是 span）保持固定尺寸", () => {
-  const css = readFileSync(new URL("./GatewayPage.css", import.meta.url), "utf8");
+  const css = readSource("./GatewayPage.css");
   assert.doesNotMatch(css, /\.gw-import-item > span \{/);
   assert.match(css, /\.gw-import-item > span:not\(\.gw-avatar\) \{[^}]*flex: 1/);
   assert.match(css, /\.gw-import-item > \.gw-avatar \{[^}]*flex: none/);
@@ -248,10 +252,10 @@ test("Codex 被网关接管时，旧版供应商页的配置切换、从第三�
 });
 
 test("用量图表有鼠标交互：整列感应、高亮当天、浮出明细卡", () => {
-  const usage = readFileSync(new URL("./GatewayUsage.tsx", import.meta.url), "utf8");
+  const usage = readSource("./GatewayUsage.tsx");
   assert.match(usage, /className="gw-bar-hit"/);
   assert.match(usage, /className="gw-chart-tip"/);
-  const css = readFileSync(new URL("./GatewayPage.css", import.meta.url), "utf8");
+  const css = readSource("./GatewayPage.css");
   assert.match(css, /\.gw-chart\[data-hovering="true"\] \.gw-bar:not\(\[data-active="true"\]\)/);
   assert.match(css, /\.gw-usage-row:hover/);
 });
@@ -270,7 +274,7 @@ test("从 Agent 概览点「全部」「请求日志」：会话页停在这个 
   const app = functionSource("App");
   assert.match(app, /if \(kind === "sessions"\) setSessionTab\(agent\);\n\s*else setRequestLogAgentFilter\(agent\);/);
   assert.match(app, /<RequestLogScreen initialAgent=\{requestLogAgentFilter\}/);
-  const dashboard = readFileSync(new URL("./AgentDashboard.tsx", import.meta.url), "utf8");
+  const dashboard = readSource("./AgentDashboard.tsx");
   assert.match(dashboard, /onOpenList\("sessions", agent\)/);
   assert.match(dashboard, /onOpenList\("requestLog", agent\)/);
 });
@@ -288,11 +292,11 @@ test("「关于」并进「设置」：侧栏底部只留齿轮，合并页用�
 });
 
 test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
-  const page = readFileSync(new URL("./ComputerUsePage.tsx", import.meta.url), "utf8");
+  const page = readSource("./ComputerUsePage.tsx");
   assert.match(page, /<HubTopology links=\{links\}>/);
   assert.match(page, /data-node="cu-core"/);
   assert.match(page, /data-node=\{`cu-client:\$\{id\}`\}/);
-  const hub = readFileSync(new URL("./HubOverview.tsx", import.meta.url), "utf8");
+  const hub = readSource("./HubOverview.tsx");
   assert.match(hub, /export function HubTopology\(/);
 });
 
@@ -302,7 +306,7 @@ test("首次使用引导：首次启动自动打开（预览模式除外），�
   assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
   assert.match(functionSource("initialTourOpen"), /has\("previewRoute"\)/);
   assert.match(functionSource("GlobalSettingsScreen"), /onClick=\{onOpenTour\}/);
-  const model = readFileSync(new URL("./onboarding-model.ts", import.meta.url), "utf8");
+  const model = readSource("./onboarding-model.ts");
   const sidebar = functionSource("AppSidebar");
   for (const match of model.matchAll(/target: "([^"]+)"/g)) {
     const target = match[1];
@@ -319,48 +323,56 @@ test("设置页「版本与更新」：已是最新时不显示旧版本的安�
 });
 
 test("Computer Use 的页签与会话页等同一种下划线页签（tp-tabs），不再改写 mg-tabs", () => {
-  const page = readFileSync(new URL("./ComputerUsePage.tsx", import.meta.url), "utf8");
+  const page = readSource("./ComputerUsePage.tsx");
   assert.match(page, /<div className="tp-tabs cu-tabs" role="tablist"/);
-  const css = readFileSync(new URL("./ComputerUsePage.css", import.meta.url), "utf8");
+  const css = readSource("./ComputerUsePage.css");
   assert.doesNotMatch(css, /\.mg-tabs\.cu-tabs/);
 });
 
 test("供应商头像在任何列表里都不参与伸缩：挑选弹层、导入弹窗都出过被拉成横条的问题", () => {
-  const css = readFileSync(new URL("./GatewayPage.css", import.meta.url), "utf8");
+  const css = readSource("./GatewayPage.css");
   assert.match(css, /span\.gw-avatar\[data-size\] \{\s*flex: none;/);
   assert.doesNotMatch(css, /\.gw-select-item span \{/);
 });
 
 test("Claude Code / Grok 的概览是仪表板：接入状态、今日数据、最近会话与请求、配置摘要", () => {
   assert.match(functionSource("OverviewScreen"), /<AgentDashboard agent=\{activeTool\}/);
-  const dashboard = readFileSync(new URL("./AgentDashboard.tsx", import.meta.url), "utf8");
+  const dashboard = readSource("./AgentDashboard.tsx");
   for (const command of ["load_gateway_usage", "load_request_logs", "list_agent_sessions", "load_agent_mcp", "list_installed_skills", "open_agent_terminal"]) {
     assert.ok(dashboard.includes(`"${command}"`), command);
   }
-  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const lib = readSource("../src-tauri/src/lib.rs");
   assert.match(lib, /agent_launch_commands::open_agent_terminal,/);
 });
 
 test("网关页的 Agent 图标：Claude Code / Grok 用遮罩按文字颜色绘制，不再把黑色单色图当 <img>", () => {
   for (const name of ["GatewayAgents.tsx", "TrayPanel.tsx", "GatewayPage.tsx"]) {
-    const source = readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
+    const source = readSource(`./${name}`);
     assert.doesNotMatch(source, /src=\{agentIcon\(/, name);
   }
-  const css = readFileSync(new URL("./GatewayPage.css", import.meta.url), "utf8");
+  const css = readSource("./GatewayPage.css");
   assert.match(css, /\.gw-agent-mono \{[^}]*mask: var\(--gw-agent-icon\)/);
 });
 
 test("内层滚动的页面（网关各页、Computer Use）滚动区延伸到窗口边，滚动条不压内容", () => {
-  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const css = readSource("./styles.css");
   assert.match(css, /\.shell :is\(\.gw-content, \.cu-content\) \{[^}]*width: calc\(100% \+ 20px\);[^}]*margin-right: -20px;[^}]*padding-right: 20px;/);
 });
 
 test("会话页可以删除会话，不再有「在终端继续」；Claude Code / Grok 走 delete_agent_session，Codex 走 delete_local_session", () => {
-  const sessions = readFileSync(new URL("./GatewaySessions.tsx", import.meta.url), "utf8");
+  const sessions = readSource("./GatewaySessions.tsx");
   assert.doesNotMatch(sessions, /在终端继续|resume_agent_session/);
   assert.match(sessions, /"delete_agent_session"/);
   assert.match(sessions, /"delete_local_session"/);
   assert.match(sessions, /appConfirm\(/);
-  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const lib = readSource("../src-tauri/src/lib.rs");
   assert.match(lib, /gateway_commands::delete_agent_session,/);
+});
+
+test("添加供应商是弹出框，不再铺在供应商池页面里；池为空时显示引导", () => {
+  const providers = readSource("./GatewayProviders.tsx");
+  assert.match(providers, /className="gw-modal gw-catalog-modal"/);
+  assert.match(providers, /\{catalogOpen \? \(\n\s*<ProviderCatalog/);
+  assert.doesNotMatch(providers, /showCatalog/);
+  assert.match(providers, /className="gw-card gw-pool-empty"/);
 });

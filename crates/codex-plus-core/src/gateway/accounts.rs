@@ -349,6 +349,7 @@ pub const COPILOT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+const COPILOT_USER_URL: &str = "https://api.github.com/copilot_internal/user";
 const GITHUB_USER_URL: &str = "https://api.github.com/user";
 const COPILOT_DEFAULT_API: &str = "https://api.githubcopilot.com";
 /// 凭据里标识账号类型的字段。
@@ -499,6 +500,8 @@ pub struct CopilotToken {
     pub token: String,
     pub expires_at_ms: u64,
     pub api_base: String,
+    /// 订阅档位（GitHub 返回的 `sku`，如 `free_limited_copilot`、`plus_monthly_subscriber_quota`），没有时为空。
+    pub sku: String,
 }
 
 pub fn parse_copilot_token(value: &Value) -> anyhow::Result<CopilotToken> {
@@ -520,7 +523,40 @@ pub fn parse_copilot_token(value: &Value) -> anyhow::Result<CopilotToken> {
         token,
         expires_at_ms: value.get("expires_at").and_then(Value::as_u64).unwrap_or(0) * 1000,
         api_base,
+        sku: value
+            .get("sku")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     })
+}
+
+/// Copilot 账号信息（含本月高级请求额度）：`api.github.com/copilot_internal/user`。
+pub async fn copilot_user(relay: &RelayProfile) -> anyhow::Result<Value> {
+    let github_token = account_kind(relay)
+        .and_then(|(_, value)| {
+            value
+                .get("github_token")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|token| !token.is_empty())
+        .context("Copilot 登录信息不完整，请重新登录")?;
+    let mut request = http_client()?
+        .get(COPILOT_USER_URL)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("token {github_token}"),
+        )
+        .header(reqwest::header::ACCEPT, "application/json");
+    for (key, value) in copilot_headers() {
+        request = request.header(key, value);
+    }
+    let response = request.send().await.context("连不上 GitHub")?;
+    if !response.status().is_success() {
+        bail!("查询 Copilot 额度失败：HTTP {}", response.status().as_u16());
+    }
+    Ok(response.json().await?)
 }
 
 pub async fn copilot_exchange(github_token: &str) -> anyhow::Result<CopilotToken> {
@@ -638,6 +674,7 @@ pub fn copilot_relay(
         "copilot_token": token.token,
         "expires_at_ms": token.expires_at_ms,
         "api_base": token.api_base,
+        "sku": token.sku,
     });
     RelayProfile {
         name: if login.is_empty() {
@@ -964,15 +1001,17 @@ async fn prepare_grok(relay: &RelayProfile, value: &Value) -> anyhow::Result<Rel
     updated.auth_contents = auth.to_string();
     updated.api_key = tokens.access_token.clone();
     updated.base_url = GROK_PROXY_BASE.to_string();
-    if let Ok(mut gateway) = store.load()
-        && let Some(provider) = gateway
+    // 后台刷新 token 和界面命令可能同时改 gateway.json：带锁读改写，免得互相覆盖。
+    let _ = store.update(|gateway| {
+        if let Some(provider) = gateway
             .providers
             .iter_mut()
             .find(|provider| provider.relay.id == relay.id)
-    {
-        provider.relay.auth_contents = updated.auth_contents.clone();
-        let _ = store.save(&gateway);
-    }
+        {
+            provider.relay.auth_contents = updated.auth_contents.clone();
+        }
+        Ok(())
+    });
     Ok(updated)
 }
 
@@ -1476,15 +1515,17 @@ async fn prepare_chatgpt_api(relay: &RelayProfile, value: &Value) -> anyhow::Res
     let Some(ready) = chatgpt_api_from_auth(&updated, &auth) else {
         bail!("刷新 ChatGPT API 登录失败：新 token 的有效期太短");
     };
-    if let Ok(mut gateway) = store.load()
-        && let Some(provider) = gateway
+    // 后台刷新 token 和界面命令可能同时改 gateway.json：带锁读改写，免得互相覆盖。
+    let _ = store.update(|gateway| {
+        if let Some(provider) = gateway
             .providers
             .iter_mut()
             .find(|provider| provider.relay.id == relay.id)
-    {
-        provider.relay.auth_contents = ready.auth_contents.clone();
-        let _ = store.save(&gateway);
-    }
+        {
+            provider.relay.auth_contents = ready.auth_contents.clone();
+        }
+        Ok(())
+    });
     Ok(ready)
 }
 
@@ -1535,6 +1576,122 @@ fn now_ms() -> u64 {
 }
 
 /// 账号类供应商的类型（`copilot` / `grok` / `chatgpt-api`）；普通供应商为 None。
+/// 订阅账号的套餐，如「ChatGPT Pro」「Copilot Pro+」「SuperGrok」；不是订阅账号或读不出来时为空。
+/// 只读登录时存下的凭据，不发请求。
+pub fn account_plan(relay: &RelayProfile) -> String {
+    if crate::official_login::member_uses_official_login_transport(relay) {
+        let value: Value = serde_json::from_str(&relay.auth_contents).unwrap_or(Value::Null);
+        let id_token = value
+            .pointer("/tokens/id_token")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let plan = jwt_claims(id_token)
+            .pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        return with_plan("ChatGPT", &plan);
+    }
+    let Some((kind, value)) = account_kind(relay) else {
+        return String::new();
+    };
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    match kind.as_str() {
+        "chatgpt-api" => with_plan("ChatGPT", &text("plan")),
+        "copilot" => copilot_plan_label(&text("sku"), &text("api_base")),
+        "grok" => "SuperGrok".to_string(),
+        _ => String::new(),
+    }
+}
+
+/// `pro` → 「ChatGPT Pro」；没有套餐时只写产品名。
+fn with_plan(product: &str, plan: &str) -> String {
+    let plan = plan.trim();
+    if plan.is_empty() {
+        return product.to_string();
+    }
+    let mut chars = plan.chars();
+    let first = chars
+        .next()
+        .map(|c| c.to_uppercase().collect::<String>())
+        .unwrap_or_default();
+    format!("{product} {first}{}", chars.as_str())
+}
+
+/// Copilot 的 `sku` → 套餐名。旧账号没存 `sku` 时按 API 地址（individual / business / enterprise）推断。
+pub fn copilot_plan_label(sku: &str, api_base: &str) -> String {
+    let sku = sku.to_ascii_lowercase();
+    let label = if sku.contains("enterprise") {
+        "Copilot Enterprise"
+    } else if sku.contains("business") {
+        "Copilot Business"
+    } else if sku.contains("plus") {
+        "Copilot Pro+"
+    } else if sku.contains("educational") {
+        "Copilot Pro"
+    } else if sku.contains("free") {
+        "Copilot Free"
+    } else if !sku.is_empty() {
+        "Copilot Pro"
+    } else if api_base.contains(".enterprise.") {
+        "Copilot Enterprise"
+    } else if api_base.contains(".business.") {
+        "Copilot Business"
+    } else {
+        "Copilot"
+    };
+    label.to_string()
+}
+
+/// 账号名打码，与管理器的 `maskAccountName` 一致：邮箱只打本地部分；
+/// 「ChatGPT / Copilot / SuperGrok … · 账号」里不是邮箱的账号整体打码。写进 Agent 配置、给 Agent 看的名字都要过它。
+pub fn mask_account_name(name: &str) -> String {
+    let masked = name
+        .split(' ')
+        .map(|word| match word.split_once('@') {
+            Some((local, domain))
+                if !local.is_empty() && domain.contains('.') && !domain.ends_with('.') =>
+            {
+                format!("{}@{domain}", mask_token(local))
+            }
+            _ => word.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let account_prefix = ["ChatGPT", "Copilot", "SuperGrok", "GitHub Copilot"]
+        .iter()
+        .any(|prefix| masked.starts_with(prefix));
+    if let Some((head, rest)) = masked.split_once('·')
+        && account_prefix
+        && !rest.contains('@')
+        && !rest.trim().is_empty()
+    {
+        let spaces = &rest[..rest.len() - rest.trim_start().len()];
+        return format!("{head}·{spaces}{}", mask_token(rest.trim()));
+    }
+    masked
+}
+
+/// 4 个字符以内只留第一个；更长的留头两个、尾两个，中间固定 4 个星号（不暴露长度）。
+fn mask_token(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= 4 {
+        return format!(
+            "{}***",
+            chars.first().map(char::to_string).unwrap_or_default()
+        );
+    }
+    let head: String = chars[..2].iter().collect();
+    let tail: String = chars[chars.len() - 2..].iter().collect();
+    format!("{head}****{tail}")
+}
+
 pub fn relay_account_kind(relay: &RelayProfile) -> Option<String> {
     account_kind(relay).map(|(kind, _)| kind)
 }
@@ -1615,26 +1772,53 @@ async fn prepare_copilot(relay: &RelayProfile, value: &Value) -> anyhow::Result<
     auth["copilot_token"] = json!(token.token);
     auth["expires_at_ms"] = json!(token.expires_at_ms);
     auth["api_base"] = json!(token.api_base);
+    if !token.sku.is_empty() {
+        auth["sku"] = json!(token.sku);
+    }
     updated.auth_contents = auth.to_string();
     updated.api_key = token.token.clone();
     updated.base_url = format!("{}#", token.api_base);
-    if let Ok(mut gateway) = store.load()
-        && let Some(provider) = gateway
+    // 后台刷新 token 和界面命令可能同时改 gateway.json：带锁读改写，免得互相覆盖。
+    let _ = store.update(|gateway| {
+        if let Some(provider) = gateway
             .providers
             .iter_mut()
             .find(|provider| provider.relay.id == relay.id)
-    {
-        provider.relay.auth_contents = updated.auth_contents.clone();
-        provider.relay.api_key = updated.api_key.clone();
-        provider.relay.base_url = updated.base_url.clone();
-        let _ = store.save(&gateway);
-    }
+        {
+            provider.relay.auth_contents = updated.auth_contents.clone();
+            provider.relay.api_key = updated.api_key.clone();
+            provider.relay.base_url = updated.base_url.clone();
+        }
+        Ok(())
+    });
     Ok(updated)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn masks_account_names_like_the_manager() {
+        assert_eq!(
+            mask_account_name("ChatGPT Pro · 2649340134@qq.com"),
+            "ChatGPT Pro · 26****34@qq.com"
+        );
+        assert_eq!(
+            mask_account_name("ChatGPT Plus · ab@x.io"),
+            "ChatGPT Plus · a***@x.io"
+        );
+        assert_eq!(
+            mask_account_name("Copilot Pro+ · octocat-dev"),
+            "Copilot Pro+ · oc****ev"
+        );
+        assert_eq!(mask_account_name("DeepSeek"), "DeepSeek");
+        assert_eq!(
+            mask_account_name("Relay · team"),
+            "Relay · team",
+            "普通供应商名不动"
+        );
+    }
 
     fn jwt(payload: Value) -> String {
         let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -1717,8 +1901,15 @@ mod tests {
                 enabled: true,
                 source: "login:chatgpt".to_string(),
                 price: None,
+                model_prices: Default::default(),
+                model_windows: Default::default(),
+                context_window: None,
                 proxy: String::new(),
+                upstream_new: Vec::new(),
+                upstream_gone: Vec::new(),
+                models_checked_at_ms: 0,
                 relay,
+                extra: Default::default(),
             });
         store.save(&gateway).unwrap();
         crate::official_login::persist_gateway_login(
@@ -1795,6 +1986,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_copilot_tokens_are_used_as_is() {
         let token = CopilotToken {
+            sku: String::new(),
             token: "fresh".to_string(),
             expires_at_ms: now_ms() + 3_600_000,
             api_base: "https://api.githubcopilot.com".to_string(),
@@ -1958,5 +2150,49 @@ mod tests {
             merge_siwc_models(&json!({ "data": [{ "id": "gpt-5.5" }] }), &Value::Null),
             vec!["gpt-5.5"]
         );
+    }
+
+    #[test]
+    fn account_plan_reads_stored_credentials() {
+        let copilot = |sku: &str, api: &str| copilot_plan_label(sku, api);
+        assert_eq!(copilot("free_limited_copilot", ""), "Copilot Free");
+        assert_eq!(copilot("plus_monthly_subscriber_quota", ""), "Copilot Pro+");
+        assert_eq!(copilot("monthly_subscriber_quota", ""), "Copilot Pro");
+        assert_eq!(copilot("free_educational_quota", ""), "Copilot Pro");
+        assert_eq!(
+            copilot("copilot_for_business_seat_quota", ""),
+            "Copilot Business"
+        );
+        assert_eq!(
+            copilot("", "https://api.enterprise.githubcopilot.com"),
+            "Copilot Enterprise"
+        );
+        assert_eq!(
+            copilot("", "https://api.individual.githubcopilot.com"),
+            "Copilot"
+        );
+
+        let grok = grok_relay(
+            &GrokTokens {
+                access_token: "a".into(),
+                refresh_token: "r".into(),
+                expires_at_ms: 0,
+                email: "g@x.ai".into(),
+            },
+            &[],
+        );
+        assert_eq!(account_plan(&grok), "SuperGrok");
+
+        let account = account_from_tokens(&json!({
+            "access_token": "a",
+            "refresh_token": "r",
+            "id_token": jwt(json!({
+                "email": "me@example.com",
+                "https://api.openai.com/auth": { "chatgpt_account_id": "acc", "chatgpt_plan_type": "pro" }
+            })),
+        }))
+        .unwrap();
+        assert_eq!(account_plan(&chatgpt_relay(&account, &[])), "ChatGPT Pro");
+        assert_eq!(account_plan(&RelayProfile::default()), "");
     }
 }

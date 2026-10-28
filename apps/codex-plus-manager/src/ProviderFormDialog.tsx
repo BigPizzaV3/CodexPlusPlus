@@ -1,5 +1,5 @@
 /** 网关「添加 / 编辑供应商」弹窗：连接（名称、协议、地址、多个 Key）、模型（从上游获取）、价格（按公开价格表自动填）。 */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, Plus, RefreshCw, Search, Star, X } from "lucide-react";
@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import {
+  maskAccountName,
   presetHost,
   providerDraftFromEntry,
   providerDraftFromPreset,
@@ -17,20 +18,19 @@ import {
   type ProviderDraft,
 } from "./gateway-model";
 import { Avatar } from "./gateway-ui";
-import { lookupPublicPrice } from "./ProviderExtrasDialog";
+import { useEscapeLayer } from "./use-escape-layer";
+import { lookupPublicPrices } from "./ProviderExtrasDialog";
 import {
   FETCHED_DIRECT_LIMIT,
   addModel,
   defaultModel,
   draftKeys,
   draftModels,
-  draftWithPrice,
-  formatPrice,
   hasPrice,
+  priceFromMatch,
   removeModel,
   withKeys,
   withModels,
-  type PriceMatch,
 } from "./provider-form-model";
 import "./ProviderFormDialog.css";
 
@@ -48,16 +48,19 @@ export function ProviderFormDialog({
   busy,
   onSubmit,
   onCancel,
+  agentPicks,
 }: {
   form: ProviderFormState;
   busy: string | null;
   onSubmit: (draft: ProviderDraft) => void;
   onCancel: () => void;
+  /** 新添加时显示「给哪些 Agent 用」，编辑时不传。 */
+  agentPicks?: ReactNode;
 }) {
   const editing = form.mode === "edit";
   const preset = form.mode === "preset" ? form.preset : null;
   const [draft, setDraft] = useState<ProviderDraft>(() => (form.mode === "edit" ? providerDraftFromEntry(form.entry) : providerDraftFromPreset(preset)));
-  // 价格在供应商池的详情里编辑；新添加时按公开价格表悄悄填上（查不到就不填）。
+  // 价格在供应商池的详情里按模型编辑；新添加时按公开价格表给每个模型悄悄填上（查不到的不填）。
   const autoPrice = useRef(!editing && !hasPrice(draft));
   const [fetching, setFetching] = useState(false);
   const [fetchNote, setFetchNote] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
@@ -71,26 +74,24 @@ export function ProviderFormDialog({
   const firstKey = keys.map((key) => key.trim()).find(Boolean) ?? "";
   const canFetch = Boolean(draft.baseUrl.trim()) && (Boolean(firstKey) || editing) && !fetching;
 
-  useEffect(() => {
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancel();
-    };
-    document.addEventListener("keydown", escape);
-    return () => document.removeEventListener("keydown", escape);
-  }, [onCancel]);
+  // Esc 栈：「从上游获取」的勾选列表开着时 Esc 先收起列表。
+  useEscapeLayer(true, onCancel);
 
-  const lookupPrice = async (model: string, baseUrl: string) => {
-    const match = await lookupPublicPrice(baseUrl, model);
-    if (match && autoPrice.current) setDraft((previous) => draftWithPrice(previous, match));
+  const lookupPrices = async (list: string[], baseUrl: string) => {
+    const found = await lookupPublicPrices(baseUrl, list);
+    if (!autoPrice.current) return;
+    const modelPrices = Object.fromEntries(Object.entries(found).map(([model, match]) => [model, priceFromMatch(match)]));
+    setDraft((previous) => ({ ...previous, modelPrices }));
   };
 
-  // 地址或默认模型变了就重新查价（停顿半秒再查，打字时不反复请求）。
+  // 地址或模型列表变了就重新查价（停顿半秒再查，打字时不反复请求）。
+  const modelKey = models.join("\n");
   useEffect(() => {
-    if (!autoPrice.current || !chosenModel || !draft.baseUrl.trim()) return;
-    const timer = window.setTimeout(() => void lookupPrice(chosenModel, draft.baseUrl.trim()), 500);
+    if (!autoPrice.current || !models.length || !draft.baseUrl.trim()) return;
+    const timer = window.setTimeout(() => void lookupPrices(models, draft.baseUrl.trim()), 500);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft.baseUrl, chosenModel]);
+  }, [draft.baseUrl, modelKey]);
 
   const fetchModels = async () => {
     setFetching(true);
@@ -119,7 +120,7 @@ export function ProviderFormDialog({
     }
   };
 
-  const title = form.mode === "edit" ? tf("编辑 {0}", [form.entry.name]) : preset ? tf("添加 {0}", [preset.name]) : t("添加自定义供应商");
+  const title = form.mode === "edit" ? tf("编辑 {0}", [maskAccountName(form.entry.name)]) : preset ? tf("添加 {0}", [preset.name]) : t("添加自定义供应商");
   const subtitle = preset?.apiKeyUrl ? tf("在 {0} 获取 Key", [presetHost(preset.apiKeyUrl)]) : editing ? tf("现有 {0} 个 Key", [form.entry.keyCount]) : t("任意 OpenAI / Anthropic 兼容接口");
   const keyHint = editing ? t("留空表示不改") : preset?.defaultKey ? t("本机服务不校验 Key，保留默认值即可") : t("多个自动轮换");
 
@@ -172,7 +173,11 @@ export function ProviderFormDialog({
                     autoComplete="off"
                     autoFocus={index === 0 && Boolean(preset && !preset.defaultKey)}
                     className="pf-mono"
-                    onChange={(event) => setDraft((previous) => withKeys(previous, draftKeys(previous).map((item, position) => (position === index ? event.currentTarget.value : item))))}
+                    onChange={(event) => {
+                      // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏
+                      const value = event.currentTarget.value;
+                      setDraft((previous) => withKeys(previous, draftKeys(previous).map((item, position) => (position === index ? value : item))));
+                    }}
                     placeholder={editing ? t("不改就留空") : "sk-..."}
                     spellCheck={false}
                     type="password"
@@ -229,6 +234,7 @@ export function ProviderFormDialog({
 
         </div>
 
+        {agentPicks ? <div className="pf-agents">{agentPicks}</div> : null}
         <footer className="pf-foot">
           <span className="pf-error">{validation ? t(validation) : ""}</span>
           <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
@@ -254,6 +260,8 @@ function ModelPicker({
     const query = picker.query.trim().toLowerCase();
     return query ? picker.models.filter((model) => model.toLowerCase().includes(query)) : picker.models;
   }, [picker.models, picker.query]);
+  // 勾选列表也是一层：Esc 只收起它，不关掉整个表单。
+  useEscapeLayer(true, () => setPicker(null));
   const toggle = (model: string) => {
     const selected = new Set(picker.selected);
     if (selected.has(model)) selected.delete(model);
@@ -264,7 +272,16 @@ function ModelPicker({
     <div className="pf-picker">
       <div className="pf-picker-head">
         <Search />
-        <input autoFocus onChange={(event) => setPicker({ ...picker, query: event.currentTarget.value })} placeholder={tf("上游有 {0} 个模型，搜索后勾选", [picker.models.length])} value={picker.query} />
+        <input
+          autoFocus
+          onChange={(event) => setPicker({ ...picker, query: event.currentTarget.value })}
+          onKeyDown={(event) => {
+            // 这个搜索框在表单里：回车只是搜索，不能提交整个表单。
+            if (event.key === "Enter") event.preventDefault();
+          }}
+          placeholder={tf("上游有 {0} 个模型，搜索后勾选", [picker.models.length])}
+          value={picker.query}
+        />
         <button className="pf-link" onClick={() => setPicker({ ...picker, selected: new Set([...picker.selected, ...visible]) })} type="button">{t("全选当前")}</button>
       </div>
       <div className="pf-picker-list">

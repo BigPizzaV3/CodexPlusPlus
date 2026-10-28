@@ -15,7 +15,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
@@ -25,6 +25,7 @@ import {
   Blocks,
   Cable,
   BookOpen,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -114,13 +115,14 @@ import { rebaseSettingsEdits } from "./settings-rebase";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { SectionLabel, Switch } from "./gateway-ui";
+import { parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { SessionsView } from "./GatewaySessions";
-import { agentName, maskAccountName } from "./gateway-model";
+import { agentName, maskAccountName, type GatewayResult } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
 import { agentTabGroups, agentTarget } from "./page-groups";
@@ -1272,8 +1274,9 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "agentPet", get label() { return t("Agent 桌宠"); }, icon: PawPrint },
   // 网关：任意 Agent 经 Codex++ 接入任意供应商，与具体 Agent 无关，是应用级页面。
   { id: "hub", get label() { return t("总览"); }, icon: Waypoints },
-  { id: "gateway", get label() { return t("Agent 接入"); }, icon: Plug },
+  // 先有供应商，再接 Agent；路由是进阶设置，放在 Agent 接入之后。
   { id: "gatewayProviders", get label() { return t("供应商池"); }, icon: Server },
+  { id: "gateway", get label() { return t("Agent 接入"); }, icon: Plug },
   { id: "gatewayRouting", get label() { return t("路由"); }, icon: Split },
   { id: "gatewayUsage", get label() { return t("用量"); }, icon: BarChart3 },
   { id: "gatewaySettings", get label() { return t("网关设置"); }, icon: SlidersHorizontal },
@@ -1309,9 +1312,9 @@ const lastAgentRoute = new Map<string, Route>();
  * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
  * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
  */
-const globalNavigationRoutes: Route[] = ["hub", "gateway", "gatewayProviders", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
+const globalNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
 /** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
-const gatewayNavigationRoutes: Route[] = ["hub", "gateway", "gatewayProviders", "gatewayRouting", "gatewayUsage", "gatewaySettings"];
+const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings"];
 /** 侧栏「全局管理」分组：同时管理所有 Agent 的请求日志、会话、MCP 与 Skills。 */
 const managementNavigationRoutes: Route[] = ["requestLog", "sessions", "context", "skills"];
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
@@ -2743,20 +2746,25 @@ export function App() {
     }
   };
 
-  const launch = async () => {
-    if (launchPendingRef.current) return;
+  /** 启动 Codex；返回是否确认启动成功（托盘面板据此决定要不要把主窗口叫出来看提示）。 */
+  const launch = async (): Promise<boolean> => {
+    if (launchPendingRef.current) return false;
     launchPendingRef.current = true;
     setLaunchPending(true);
     try {
       const result = await launchCommand("launch_codex_plus");
-      if (!result) return;
+      if (!result) return false;
       if (!isSuccessStatus(result.status)) {
         showNotice(t("启动任务"), result.message, result.status);
-        return;
+        return false;
       }
       showNotice(t("启动任务"), t("正在等待 Codex 启动结果…"), "accepted");
       const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
       showLaunchCompletionNotice(t("启动任务"), completion, result.launchStartedAtMs);
+      return Boolean(
+        completion
+        && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
+      );
     } finally {
       launchPendingRef.current = false;
       setLaunchPending(false);
@@ -2796,14 +2804,15 @@ export function App() {
   };
 
   /** 侧栏 Codex 行的「停止」：结束主 Codex，和重启共用停止流程。 */
-  const stopCodex = async () => {
-    if (launchPendingRef.current) return;
+  const stopCodex = async (): Promise<boolean> => {
+    if (launchPendingRef.current) return false;
     launchPendingRef.current = true;
     setLaunchPending(true);
     try {
       const result = await launchCommand("stop_codex_plus");
       if (result) showNotice(t("停止 Codex"), result.message, result.status);
       await refreshOverview(true);
+      return Boolean(result && isSuccessStatus(result.status));
     } finally {
       launchPendingRef.current = false;
       setLaunchPending(false);
@@ -3605,15 +3614,15 @@ export function App() {
     next: BackendSettings,
     previousActiveRelayId = settingsForm.activeRelayId,
     liveConflictResolution?: LiveConflictResolution,
-  ) => {
+  ): Promise<boolean> => {
     if (relaySwitching) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
-      return;
+      return false;
     }
     let switchSettings = normalizeSettings(next);
     if (!switchSettings.relayProfilesEnabled) {
       showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。"), "failed");
-      return;
+      return false;
     }
     const targetBeforeSnapshot = activeRelayProfile(switchSettings);
     logDiagnostic("switchRelayProfile.start", {
@@ -3631,7 +3640,7 @@ export function App() {
         error: validationError,
       });
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
-      return;
+      return false;
     }
     // 用户已在冲突弹窗里做了选择时，回填交给后端按选择处理，不再先跑一遍注定失败的回填。
     if (!liveConflictResolution) {
@@ -3648,6 +3657,7 @@ export function App() {
       liveConflictResolution: liveConflictResolution ?? null,
     });
     let liveConflict: { profileId: string; profileName: string } | null = null;
+    let switched = false;
     setRelaySwitching(true);
     try {
       const result = await run(() =>
@@ -3659,7 +3669,7 @@ export function App() {
         logDiagnostic("switchRelayProfile.apply_no_result", {
           targetRelayId: selectedAfterSave.id,
         });
-        return;
+        return false;
       }
       const selectedSettings = normalizeSettings(result.settings);
       setSettings({
@@ -3699,12 +3709,15 @@ export function App() {
           status: result.status,
         });
         if (liveConflictResolution) showNotice(t("供应商切换"), result.message, result.status);
+        switched = true;
       }
     } finally {
       setRelaySwitching(false);
     }
     const conflict = liveConflict;
-    if (!conflict) return;
+    if (!conflict) return switched;
+    // 从托盘面板发起时主窗口可能是隐藏的：弹窗前先把主窗口叫出来，否则弹窗没人看得见。
+    void invoke("tray_panel_action", { action: "open" }).catch(() => {});
     const choice = await new Promise<LiveConflictResolution | null>((resolve) => {
       setLiveConflictDialog({ profileName: conflict.profileName, resolve });
     });
@@ -3712,7 +3725,8 @@ export function App() {
       profileId: conflict.profileId,
       choice: choice ?? "cancel",
     });
-    if (choice) await switchRelayProfile(next, previousActiveRelayId, choice);
+    if (!choice) return false;
+    return switchRelayProfile(next, previousActiveRelayId, choice);
   };
 
   const snapshotActiveRelayFilesBeforeSwitch = async (
@@ -3832,6 +3846,46 @@ export function App() {
     let stopListening: (() => void) | undefined;
     void listen(MANAGER_NAVIGATION_EVENT, () => {
       if (!disposed) void consumePendingManagerNavigation();
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        stopListening = unlisten;
+      }
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
+
+  // 托盘快捷面板发来的请求：打开某页、启动 / 重启 / 停止 Codex。
+  // 复用主窗口现有流程（校验、冲突弹窗、等待启动结果），做完给面板回一个结果；
+  // 没成功时把主窗口叫出来，失败提示是在主窗口里弹的。
+  // 监听只注册一次，处理函数每次渲染更新到 ref 里，读到的总是最新状态。
+  const trayRequestHandlerRef = useRef<(request: TrayRequest) => Promise<TrayResult>>(async (request) => ({ id: request.id, ok: false }));
+  trayRequestHandlerRef.current = async (request: TrayRequest): Promise<TrayResult> => {
+    const revealMainWindow = () => void invoke("tray_panel_action", { action: "open" }).catch(() => {});
+    if (request.kind === "navigate") {
+      if (request.route === "sessions" || request.route === "requestLog") setActiveTool("codex");
+      await navigate(request.route);
+      return { id: request.id, ok: true };
+    }
+    const done = request.kind === "launch" ? await launch() : request.kind === "restart" ? await restart() : await stopCodex();
+    if (!done) revealMainWindow();
+    return { id: request.id, ok: done };
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void listen<unknown>(TRAY_REQUEST_EVENT, (event) => {
+      const request = parseTrayRequest(event.payload);
+      if (disposed || !request) return;
+      void trayRequestHandlerRef.current(request)
+        .catch((error): TrayResult => ({ id: request.id, ok: false, message: stringifyError(error) }))
+        .then((result) => emit(TRAY_RESULT_EVENT, result))
+        .catch(() => {});
     }).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -4562,6 +4616,7 @@ export function App() {
           {route === "hub" ? (
             <HubOverview
               codex={{ running: codexAppRunning, providerName: toolEntries.find((entry) => entry.id === "codex")?.activeRelayName ?? null }}
+              notify={actions.showMessage}
               onNavigate={(next) => void navigate(next)}
               onOpenAgent={(agent) => void switchTool(agent, agentHomeRoute[agent] ?? "overview")}
             />
@@ -4818,8 +4873,8 @@ function ModelReasoningLevelsCell({
                 role="option"
                 type="button"
               >
-                {selected ? <CheckCircle2 className="h-4 w-4" /> : <span className="app-select-option-spacer" />}
-                <span>{level}</span>
+                <span className="app-select-option-label">{level}</span>
+                {selected ? <Check aria-hidden className="app-select-check" /> : null}
               </button>
             );
           })}
@@ -4865,7 +4920,7 @@ type AutoSaveOutcome = { status: "saved" } | { status: "invalid" | "failed"; mes
 
 type Actions = {
   refreshCurrent: () => Promise<void>;
-  launch: () => Promise<void>;
+  launch: () => Promise<boolean>;
   launchMultiInstance: (profile: RelayProfile) => Promise<void>;
   multiLaunchPending: string | null;
   multiLaunchInstances: MultiLaunchInstance[];
@@ -4875,7 +4930,7 @@ type Actions = {
   restartMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
   stopMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
   restart: (syncActiveRelay?: boolean) => Promise<boolean>;
-  stopCodex: () => Promise<void>;
+  stopCodex: () => Promise<boolean>;
   repairShortcuts: () => Promise<void>;
   checkUpdate: () => Promise<void>;
   performUpdate: () => Promise<void>;
@@ -4960,7 +5015,7 @@ type Actions = {
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
-  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
+  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<boolean>;
   relaySwitching: boolean;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
@@ -5936,9 +5991,11 @@ function ProxySettingsScreen({
                     aria-label={tf("{0} 的独立代理", [profile.name || t("未命名供应商")])}
                     placeholder={t("例如 http://127.0.0.1:7890，留空表示使用系统代理")}
                     value={proxyUrls[profile.id] ?? ""}
-                    onChange={(event) =>
-                      setProxyUrls((current) => ({ ...current, [profile.id]: event.currentTarget.value }))
-                    }
+                    onChange={(event) => {
+                      // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏（#2705）
+                      const value = event.currentTarget.value;
+                      setProxyUrls((current) => ({ ...current, [profile.id]: value }));
+                    }}
                   />
                   <Button
                     disabled={
@@ -6493,6 +6550,8 @@ function codexGatewayKeepsLogin(profile: RelayProfile | undefined): boolean {
 
 /**
  * 旧版 Codex 供应商配置页顶部的提示。
+ * - Codex 还指向托管供应商、网关里却没有它的接入记录（降级后又升级、gateway.json 换过或坏了）：
+ *   给「切回直连」，否则页面一直显示「被网关接管」却断不开；
  * - Codex 正经网关接入：显示状态，可去管理或直接断开并还原；
  * - 断开过但托管供应商还在：提示点它的「使用」即可重新接入；
  * - 其余：建议改用新版网关的供应商池（这里的配置照旧生效）。
@@ -6510,7 +6569,42 @@ function LegacyRelayGatewayHint({
 }) {
   const [disconnecting, setDisconnecting] = useState(false);
   const managed = form.relayProfiles.find((profile) => profile.id === CODEX_GATEWAY_RELAY_ID);
-  if (managed && form.activeRelayId === CODEX_GATEWAY_RELAY_ID) {
+  const onGateway = form.activeRelayId === CODEX_GATEWAY_RELAY_ID;
+  // 网关里有没有开着的 Codex 接入记录；读不出 gateway.json 也算没有。
+  const [bound, setBound] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!onGateway) return;
+    let cancelled = false;
+    invoke<GatewayResult>("load_gateway")
+      .then((result) => {
+        if (!cancelled) setBound(result.status === "ok" && result.gateway?.bindings?.codex?.enabled === true);
+      })
+      .catch(() => {
+        if (!cancelled) setBound(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onGateway, form.relayProfiles]);
+  const disconnect = () => {
+    setDisconnecting(true);
+    void onDisconnect().finally(() => setDisconnecting(false));
+  };
+  if (onGateway && (!managed || bound === false)) {
+    return (
+      <div className="legacy-gateway-hint" data-state="orphan" role="status">
+        <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
+        <div className="legacy-gateway-hint-text">
+          <strong>{t("Codex 还指向网关托管的供应商")}</strong>
+          <span>{t("网关里没有 Codex 的接入记录（可能降级后又升级过，或网关状态文件损坏），请求可能连不上。点「切回直连」切回接入前或列表里第一个直连供应商。")}</span>
+        </div>
+        <Button disabled={disconnecting} onClick={disconnect} size="sm">
+          {disconnecting ? t("切换中…") : t("切回直连")}
+        </Button>
+      </div>
+    );
+  }
+  if (managed && onGateway) {
     const count = codexGatewayModelCount(managed);
     return (
       <div className="legacy-gateway-hint" data-state="connected" role="status">
@@ -6530,15 +6624,7 @@ function LegacyRelayGatewayHint({
           {t("管理接入")}
           <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
         </Button>
-        <Button
-          disabled={disconnecting}
-          onClick={() => {
-            setDisconnecting(true);
-            void onDisconnect().finally(() => setDisconnecting(false));
-          }}
-          size="sm"
-          variant="outline"
-        >
+        <Button disabled={disconnecting} onClick={disconnect} size="sm" variant="outline">
           {disconnecting ? t("断开中…") : t("断开并还原")}
         </Button>
       </div>
@@ -6931,7 +7017,7 @@ function RelayScreen({
           {/* Codex 被新版网关接管：旧版列表整块隐藏，断开并还原后恢复（状态与断开按钮在页面顶部）。 */}
           {normalized.relayProfilesEnabled && takenOverByGateway ? (
             <p className="relay-switch-off-note" role="status">
-              {t("Codex 正由 Codex++ 网关接管，旧版供应商列表已隐藏。点上方「断开并还原」后恢复。")}
+              {t("Codex 正由 Codex++ 网关接管，旧版供应商列表已隐藏。点上方「断开并还原」（或「切回直连」）后恢复。")}
             </p>
           ) : null}
           {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
@@ -7393,7 +7479,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
             <input
               checked={globalHotkey.enabled}
               disabled={globalHotkeyBusy || !form.enhancementsEnabled}
-              onChange={(event) => setGlobalHotkey((current) => ({ ...current, enabled: event.currentTarget.checked }))}
+              onChange={(event) => { const enabled = event.currentTarget.checked; setGlobalHotkey((current) => ({ ...current, enabled })); }}
               type="checkbox"
             />
             <span><strong>{t("全局听写热键")}</strong><small>{t("Windows 首版：按一次开始录音，再按一次停止并插入文字。")}</small></span>
@@ -7401,7 +7487,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
           </label>
           <div className="form-row">
             <Field label={t("全局热键") }>
-              <Input value={globalHotkey.hotkey} onChange={(event) => setGlobalHotkey((current) => ({ ...current, hotkey: event.currentTarget.value }))} placeholder="Ctrl+Shift+Space" />
+              <Input value={globalHotkey.hotkey} onChange={(event) => { const hotkey = event.currentTarget.value; setGlobalHotkey((current) => ({ ...current, hotkey })); }} placeholder="Ctrl+Shift+Space" />
             </Field>
             <Button disabled={globalHotkeyBusy} onClick={() => void saveGlobalHotkey()} type="button" variant="secondary">{t("保存全局热键")}</Button>
           </div>
@@ -10059,6 +10145,34 @@ function AgentSettingsScreen({
   );
 }
 
+/// 托盘快捷面板开关。值仍存在 gateway.json 的 `trayPanel`（老版本在网关设置里改过的选择照样有效），
+/// 由后端命令读写，后端同时更新托盘行为和内存缓存。
+function useTrayPanelSetting() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<boolean>("tray_panel_enabled")
+      .then((value) => { if (!cancelled) setEnabled(value !== false); })
+      .catch(() => { if (!cancelled) setEnabled(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const toggle = async () => {
+    if (enabled === null || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      setEnabled(await invoke<boolean>("set_tray_panel_enabled", { enabled: !enabled }));
+    } catch (failure) {
+      setError(stringifyError(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return { enabled, saving, error, toggle };
+}
+
 /// 整体设置页（最左侧齿轮）。
 ///
 /// 只放与当前 Agent 无关的应用级选项，内容不随 Agent 切换而变。
@@ -10081,6 +10195,7 @@ function GlobalSettingsScreen({
   onOpenAgentSettings: () => void;
 }) {
   const settingsPath = settings?.settings_path ?? "";
+  const trayPanel = useTrayPanelSetting();
   // 每一项都是同一种行：左边标题 + 说明，右边操作。路径只在「配置文件路径」里出现一次。
   return (
     <div className="settings-page global-settings-page">
@@ -10095,6 +10210,15 @@ function GlobalSettingsScreen({
             </div>
             <div className="global-setting-actions">
               <Button size="sm" variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
+            </div>
+          </div>
+          <div className="global-setting-row">
+            <div className="global-setting-copy">
+              <strong>{t("点击托盘图标弹出快捷面板")}</strong>
+              <span>{trayPanel.error || t("面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，网关用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。")}</span>
+            </div>
+            <div className="global-setting-actions">
+              <Switch disabled={trayPanel.enabled === null || trayPanel.saving} label={t("点击托盘图标弹出快捷面板")} on={trayPanel.enabled ?? true} onToggle={() => void trayPanel.toggle()} />
             </div>
           </div>
           <div className="global-setting-row">
@@ -14797,7 +14921,7 @@ function loadCollapsedGroups(): string[] {
  * 唯一的侧栏：任意 Agent → Codex++ → 任意供应商。
  *
  * - 顶部是网关状态卡和 ⌘K 快速跳转；
- * - 「网关」：总览、Agent 接入、供应商池、路由、用量、网关设置；
+ * - 「网关」：总览、供应商池、Agent 接入、路由、用量、网关设置；
  * - 「全局管理」：请求日志、会话、MCP、Skills，同时管理所有 Agent；
  * - 「Agent」：每个 Agent 一行（状态点表示接入方式）；它自己的页面（供应商配置、增强、皮肤……）在内容区顶部的页签里；
  * - 「工具」：服务所有 Agent、但与供应商无关的页面；
@@ -15209,7 +15333,7 @@ function routeSubtitle(route: Route) {
     hub: t("任意 Agent 经 Codex++ 接入任意供应商：谁在用、走哪家、是否健康，一屏看全"),
     gateway: t("选择哪些 Agent 经 Codex++ 网关接入，以及它们默认用哪个模型"),
     gatewayProviders: t("所有接入的 Agent 共用的供应商池，支持多 Key 轮换"),
-    gatewayRouting: t("按模型名选择供应商，路由组决定多家之间的顺序与分配"),
+    gatewayRouting: t("多家都有的模型怎么分、你建的组怎么走：路由方式、会话固定、出错换谁"),
     gatewayUsage: t("按 Agent、供应商与模型统计调用、token、缓存与费用"),
     gatewaySettings: t("监听地址、Key 轮换方式与退出时的恢复策略"),
     maintenance: t("入口检查与修复、开机启动与应用路径"),

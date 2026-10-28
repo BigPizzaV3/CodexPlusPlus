@@ -257,6 +257,17 @@ pub fn order_keys(
     conversation: Option<&str>,
     now: Instant,
 ) -> (Vec<KeyCandidate>, Option<Duration>) {
+    order_keys_with(relay, mode, conversation, now, true)
+}
+
+/// 同 [`order_keys`]；`advance` 为 false 时只按当前轮询进度排、不往前推（预览用）。
+pub fn order_keys_with(
+    relay: &RelayProfile,
+    mode: KeyRotationMode,
+    conversation: Option<&str>,
+    now: Instant,
+    advance: bool,
+) -> (Vec<KeyCandidate>, Option<Duration>) {
     let all = expand_keys(relay);
     let mut state = lock();
     if let Some(provider) = state.providers.get(&relay.id)
@@ -302,9 +313,18 @@ pub fn order_keys(
             let pinned = available.remove(position);
             available.insert(0, pinned);
         } else if mode == KeyRotationMode::RoundRobin {
-            let counter = state.round_robin.entry(relay.id.clone()).or_default();
-            let offset = *counter % available.len();
-            *counter = counter.wrapping_add(1);
+            let offset = if advance {
+                let counter = state.round_robin.entry(relay.id.clone()).or_default();
+                let current = *counter;
+                *counter = counter.wrapping_add(1);
+                current
+            } else {
+                state
+                    .round_robin
+                    .get(&relay.id)
+                    .copied()
+                    .unwrap_or_default()
+            } % available.len();
             available.rotate_left(offset);
         }
     }
@@ -382,6 +402,7 @@ pub fn reset(relay_id: &str) {
     state.keys.retain(|(relay, _), _| relay != relay_id);
     state.providers.remove(relay_id);
     state.sticky.retain(|(relay, _), _| relay != relay_id);
+    state.round_robin.remove(relay_id);
 }
 
 /// UI 展示用的健康快照，不含 Key 原文。
@@ -700,6 +721,22 @@ mod tests {
             .key_id
             .clone();
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn preview_ordering_does_not_advance_round_robin() {
+        let relay = relay("kp-rr-preview", &[("a", "sk-a"), ("b", "sk-b")]);
+        let now = Instant::now();
+        let first = |advance| {
+            order_keys_with(&relay, KeyRotationMode::RoundRobin, None, now, advance).0[0]
+                .key
+                .key_id
+                .clone()
+        };
+        let preview = first(false);
+        assert_eq!(first(false), preview, "预览不推进轮询");
+        assert_eq!(first(true), preview, "预览看到的就是下一个真实请求的 Key");
+        assert_ne!(first(true), preview);
     }
 
     #[test]

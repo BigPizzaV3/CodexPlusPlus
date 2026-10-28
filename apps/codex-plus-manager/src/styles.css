@@ -2444,18 +2444,17 @@ details.relay-fold[open] > .relay-fold-body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: 9px;
   background: hsl(var(--surface-raised));
   color: hsl(var(--foreground));
   padding: 0 12px;
   text-align: left;
   font: inherit;
-  font-weight: 650;
+  font-weight: 500;
   cursor: pointer;
   transition:
     border-color var(--motion-fast) var(--motion-ease),
-    background-color var(--motion-fast) var(--motion-ease),
     box-shadow var(--motion-fast) var(--motion-ease);
 }
 
@@ -2476,15 +2475,15 @@ details.relay-fold[open] > .relay-fold-body {
   transform: rotate(180deg);
 }
 
-.app-select-trigger:hover:not(:disabled),
-.app-select.open .app-select-trigger {
-  border-color: hsl(var(--brand-accent) / 0.72);
-  background: hsl(var(--accent));
+/* 悬停只描边，不换底色；展开时多一圈淡光，和网关的模型选择器一致。 */
+.app-select-trigger:hover:not(:disabled) {
+  border-color: hsl(var(--primary) / 0.55);
 }
 
+.app-select.open .app-select-trigger,
 .app-select-trigger:focus-visible {
-  border-color: hsl(var(--brand-accent) / 0.72);
-  box-shadow: 0 0 0 1px hsl(var(--brand-accent) / 0.32);
+  border-color: hsl(var(--primary) / 0.6);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.12);
   outline: none;
 }
 
@@ -2499,36 +2498,39 @@ details.relay-fold[open] > .relay-fold-body {
   top: calc(100% + 6px);
   left: 0;
   display: grid;
+  align-content: start;
+  gap: 1px;
   width: 100%;
   min-width: 180px;
   max-height: 260px;
   overflow: auto;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: 12px;
   background: hsl(var(--popover));
   color: hsl(var(--popover-foreground));
-  padding: 5px;
-  box-shadow: 0 16px 40px hsl(0 0% 0% / 0.36);
+  padding: 4px;
+  box-shadow: 0 18px 48px hsl(var(--shadow-color) / 0.22);
 }
 
+/* 选项：文字在左，选中项文字变主色、右边一个小勾；没有前置图标列。 */
 .app-select-option {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  min-height: 34px;
+  gap: 10px;
+  min-height: 32px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: inherit;
-  padding: 0 9px;
+  padding: 0 10px;
   text-align: left;
   font: inherit;
-  font-weight: 650;
+  font-weight: 500;
   cursor: pointer;
 }
 
-.app-select-option > span:last-child {
+.app-select-option-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2537,21 +2539,25 @@ details.relay-fold[open] > .relay-fold-body {
 
 .app-select-option:hover:not(:disabled),
 .app-select-option:focus-visible {
-  background: hsl(var(--brand-accent) / 0.16);
+  background: hsl(var(--muted) / 0.6);
   outline: none;
 }
 
 .app-select-option.selected {
-  color: hsl(var(--brand-accent));
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+.app-select-check {
+  width: 14px;
+  height: 14px;
+  color: hsl(var(--primary));
 }
 
 .app-select-option:disabled {
   cursor: not-allowed;
   opacity: 0.52;
-}
-
-.app-select-option-spacer {
-  width: 18px;
 }
 
 .app-select-placeholder {
@@ -2581,7 +2587,7 @@ details.relay-fold[open] > .relay-fold-body {
 .app-select-option-text small {
   color: hsl(var(--muted-foreground));
   font-size: 11.5px;
-  font-weight: 450;
+  font-weight: 400;
   line-height: 1.4;
   white-space: normal;
 }
@@ -12804,9 +12810,6 @@ button.side-item:hover {
   max-width: none;
   padding-top: 0;
 }
-.shell .gw-lead {
-  font-size: 13px;
-}
 .shell .gw-agent-row {
   grid-template-columns: 30px minmax(0, 1fr) auto minmax(180px, 260px) auto;
   gap: 14px;
@@ -13661,16 +13664,6 @@ button.side-item:hover {
 .shell .gw-detail-value {
   gap: 8px;
   font-size: 12.5px;
-}
-.shell .gw-select-item {
-  gap: 8px;
-  min-height: 32px;
-  padding: 3px 8px;
-  font-size: 12.5px;
-}
-.shell .gw-select-item em {
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
 }
 
 /* 内层滚动的页面（网关各页、Computer Use）：滚动区向右延伸到窗口边、再补回同样的内边距，

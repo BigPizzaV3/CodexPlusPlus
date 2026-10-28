@@ -8,6 +8,7 @@
 //! | `POST /gw/grok/v1/responses` | Grok | Responses，复用 Codex 代理的输出链路 |
 //! | `GET /gw/grok/v1/models` | Grok | 模型列表（OpenAI 格式） |
 //! | `POST /gw/codex/v1/responses` | Codex | Responses，同上（保留 ChatGPT 订阅后端的私有事件） |
+//! | `POST /gw/<agent>/v1/images/generations`、`/images/edits` | 任意 | 生图，发给这个 Agent 的「生图模型」（见 [`crate::gateway::images`]） |
 //!
 //! 身份靠路径，鉴权靠网关签发给该 Agent 的本地 token（`x-api-key` 或 `Authorization: Bearer`）。
 
@@ -176,8 +177,113 @@ pub(crate) async fn handle(
             )
             .await
         }
+        (_, "POST", "/images/generations" | "/images/edits") => {
+            let edits = tail == "/images/edits";
+            handle_images(
+                stream,
+                &gateway,
+                &agent,
+                edits,
+                headers,
+                body,
+                method,
+                path,
+                remote_addr_text,
+            )
+            .await
+        }
         _ => write_error(stream, &agent, 404, &format!("网关不支持 {method} {tail}")).await,
     }
+}
+
+/// 生图：按「生图模型」排出上游依次试，鉴权失败、限流、上游出错时换下一家；最后一家的答复原样返回。
+#[allow(clippy::too_many_arguments)]
+async fn handle_images(
+    stream: &mut tokio::net::TcpStream,
+    gateway: &GatewaySettings,
+    agent: &ToolId,
+    edits: bool,
+    headers: &str,
+    body: &[u8],
+    method: &str,
+    path: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
+    let content_type = header_value_from_headers(headers, "content-type").unwrap_or_default();
+    let requested = crate::gateway::images::requested_model(body, &content_type);
+    let targets = match crate::gateway::images::targets(gateway, agent, requested.as_deref()) {
+        Ok(targets) => targets,
+        Err(message) => return write_error(stream, agent, 400, &message).await,
+    };
+    let user_agent = header_value_from_headers(headers, "user-agent");
+    let count = targets.len();
+    let mut last_error = String::new();
+    for (index, target) in targets.into_iter().enumerate() {
+        let has_more = index + 1 < count;
+        let (keys, _) = crate::gateway::key_pool::order_keys_with(
+            &target.relay,
+            gateway.key_policy.mode,
+            None,
+            std::time::Instant::now(),
+            true,
+        );
+        let Some(key) = keys.into_iter().next() else {
+            last_error = format!("{} 的 Key 都在冷却或熔断中", target.relay.name);
+            continue;
+        };
+        let relay = match crate::gateway::accounts::prepare_relay(&key.relay).await {
+            Ok(relay) => relay,
+            Err(error) => {
+                last_error = format!("{}：{error:#}", target.relay.name);
+                continue;
+            }
+        };
+        let request = match &target.model {
+            Some(model) => crate::gateway::images::rewrite_model(body, &content_type, model),
+            None => body.to_vec(),
+        };
+        let mut upstream = match crate::protocol_proxy::open_gateway_image_request(
+            &relay,
+            edits,
+            &request,
+            &content_type,
+            user_agent.as_deref(),
+        )
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                last_error = format!("{}：{error:#}", target.relay.name);
+                continue;
+            }
+        };
+        if has_more && crate::gateway::images::should_try_next(upstream.status_code) {
+            last_error = format!("{} 返回 {}", target.relay.name, upstream.status_code);
+            continue;
+        }
+        let status = upstream.status();
+        let content_type = if upstream.content_type.is_empty() {
+            JSON.to_string()
+        } else {
+            upstream.content_type.clone()
+        };
+        let answer = upstream.read_body().await?;
+        write_http_response(stream, &status, &content_type, &answer).await?;
+        log_helper_response(
+            if upstream.is_success() {
+                "gateway.image_ok"
+            } else {
+                "gateway.image_upstream_error"
+            },
+            method,
+            path,
+            &status,
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    write_error(stream, agent, 502, &format!("生图失败：{last_error}")).await
 }
 
 /// Grok 等 Responses 客户端：按 Agent 绑定选上游，返回值交给 Codex 代理的输出链路。
@@ -709,7 +815,8 @@ async fn handle_claude_count_tokens(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    if let Ok(plan) = route::resolve_plan(gateway, &agent, &model, None)
+    // 只是数 token，不真正发请求：用预览，别推进模型组轮换和 Key 轮询的进度。
+    if let Ok(plan) = route::preview_plan(gateway, &agent, &model, None)
         && let Some(candidate) = plan.candidates.first()
         && candidate.relay.protocol == crate::settings::RelayProtocol::AnthropicMessages
     {

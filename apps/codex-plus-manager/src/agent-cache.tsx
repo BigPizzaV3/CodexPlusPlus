@@ -114,15 +114,14 @@ export function AgentCachePanel() {
   const apps = cacheApps(report?.groups ?? []);
   const selectable = cacheSelection(report?.groups ?? [], "all");
 
-  /** `keepResult`：清理后自动重扫时保留上一次的清理结果提示。 */
+  /** `keepResult`：清理后自动重扫时保留上一次的清理结果或失败原因。 */
   async function scan(keepResult = false) {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy("scan");
-    setError("");
     setReport(null);
     setSelected([]);
-    if (!keepResult) setResult(null);
+    if (!keepResult) { setResult(null); setError(""); }
     try {
       const response = await invoke<Response<{ report?: CacheReport }>>("scan_agent_cache");
       if (response.status !== "ok" || !response.report) throw new Error(t(response.message));

@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { t } from "./i18n";
+import { useEscapeLayer } from "./use-escape-layer";
 
 type DialogKind = "confirm" | "alert" | "prompt";
 
@@ -125,6 +126,9 @@ function AppDialog({ request }: { request: DialogRequest }) {
   const cancel = () => close(request.kind === "prompt" ? null : false);
   const confirm = () => close(request.kind === "prompt" ? value : true);
 
+  // Esc 走全局的 Esc 栈：确认框总是后打开的，只关它自己，不连带关掉下面的弹窗。
+  useEscapeLayer(true, cancel);
+
   useEffect(() => {
     if (request.kind === "prompt") {
       inputRef.current?.focus();
@@ -132,17 +136,7 @@ function AppDialog({ request }: { request: DialogRequest }) {
     } else {
       confirmRef.current?.focus();
     }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        cancel();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // 每个对话框只挂一次。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [request.kind]);
 
   return (
     <div

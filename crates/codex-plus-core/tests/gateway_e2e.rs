@@ -139,8 +139,15 @@ fn providers(relays: Vec<RelayProfile>) -> Vec<GatewayProvider> {
             enabled: true,
             source: String::new(),
             price: None,
+            model_prices: Default::default(),
+            model_windows: Default::default(),
+            context_window: None,
             proxy: String::new(),
+            upstream_new: Vec::new(),
+            upstream_gone: Vec::new(),
+            models_checked_at_ms: 0,
             relay,
+            extra: Default::default(),
         })
         .collect()
 }
@@ -519,6 +526,7 @@ async fn gateway_end_to_end() {
         id: "group".into(),
         name: "group".into(),
         mode: GroupMode::InOrder,
+        sticky: Default::default(),
         members: vec![
             GroupMember {
                 model: "bad/deepseek-v4-pro".into(),
@@ -529,6 +537,8 @@ async fn gateway_end_to_end() {
                 weight: 1,
             },
         ],
+        extra: Default::default(),
+        ..GatewayGroup::default()
     }];
     gateway
         .bindings
@@ -930,6 +940,82 @@ async fn gateway_end_to_end() {
         .collect::<Vec<_>>();
     assert_eq!(codex_entries.len(), 1, "{codex_entries:?}");
     assert_eq!(codex_entries[0].agent.as_deref(), Some("codex"));
+
+    // —— 8e. 生图：自动选池里的生图模型，第一家 5xx 换下一家，请求里的模型名换成那一家的 ——
+    let (bad_base, _) = mock_upstream(vec![(
+        500,
+        "application/json",
+        "{\"error\":\"boom\"}".to_string(),
+    )])
+    .await;
+    let (image_base, image_seen) = mock_upstream(vec![(
+        200,
+        "application/json",
+        json!({ "data": [{ "b64_json": "AAAA" }] }).to_string(),
+    )])
+    .await;
+    gateway.providers = providers(vec![
+        relay(
+            "chatonly",
+            &grok_base,
+            "sk-grok",
+            RelayProtocol::ChatCompletions,
+            "glm-5.3",
+        ),
+        relay(
+            "bad",
+            &bad_base,
+            "sk-bad",
+            RelayProtocol::Responses,
+            "gpt-image-1",
+        ),
+        relay(
+            "painter",
+            &image_base,
+            "sk-paint",
+            RelayProtocol::Responses,
+            "flux-1-schnell",
+        ),
+    ]);
+    save(&gateway);
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{port}/gw/grok/v1/images/generations"
+        ))
+        .bearer_auth("cpx-gw-grok-e2e")
+        .json(&json!({ "model": "gpt-image-2", "prompt": "a cat" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(response.text().await.unwrap().contains("AAAA"));
+    {
+        let seen = image_seen.lock().unwrap();
+        let (head, body) = &seen[0];
+        assert!(head.starts_with("POST /v1/images/generations"), "{head}");
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer sk-paint"),
+            "{head}"
+        );
+        assert_eq!(body["model"], "flux-1-schnell");
+        assert_eq!(body["prompt"], "a cat");
+    }
+    // 关掉生图：直接报错，不发给上游。
+    gateway.image_models.insert("grok".into(), "off".into());
+    save(&gateway);
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{port}/gw/grok/v1/images/generations"
+        ))
+        .bearer_auth("cpx-gw-grok-e2e")
+        .json(&json!({ "prompt": "a cat" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    assert!(response.text().await.unwrap().contains("生图已关闭"));
+    gateway.image_models.clear();
 
     // —— 9. 关闭绑定后返回 503，旧的 Codex 代理路径不受影响 ——
     gateway.bindings.get_mut("claude").unwrap().enabled = false;

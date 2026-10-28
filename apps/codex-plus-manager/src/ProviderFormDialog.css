@@ -431,3 +431,206 @@
   color: hsl(var(--status-error));
   font-size: 12px;
 }
+
+/* 按模型的价格表：模型名 + 输入 / 缓存命中 / 输出，最后一行是「其它模型」的默认价。 */
+.gw-portal .pf-price-table {
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+}
+
+.gw-portal .pf-price-rows {
+  max-height: 264px;
+  overflow-y: auto;
+}
+
+.gw-portal .pf-price-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+}
+
+.gw-portal .pf-price-row + .pf-price-row {
+  border-top: 1px solid hsl(var(--border) / 0.6);
+}
+
+.gw-portal .pf-price-head {
+  background: hsl(var(--surface-sunken));
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.gw-portal .pf-price-row code {
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .pf-price-row input {
+  height: 28px;
+  font-size: 12.5px;
+}
+
+/* 上下文窗口：模型一列、窗口一列 */
+.gw-portal .pf-price-row.pf-window-row {
+  grid-template-columns: minmax(0, 1fr) 140px;
+}
+
+.gw-portal .pf-window-row[data-invalid="true"] input {
+  border-color: hsl(var(--status-error));
+}
+
+.gw-portal .pf-price-fallback {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.gw-portal .pf-section h4 {
+  white-space: nowrap;
+}
+
+.gw-portal .pf-section h4 .pf-currency {
+  flex: none;
+  width: 96px;
+  margin-left: auto;
+}
+
+.gw-portal .pf-section h4 .pf-currency + .pf-action {
+  margin-left: 0;
+}
+
+/* 模型列表弹窗：上游新增 / 已下架 */
+.gw-portal .pf-model-diff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 8px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+
+.gw-portal .pf-model-diff > span {
+  margin-right: 4px;
+}
+
+.gw-portal .pf-chip-new {
+  gap: 3px;
+  padding: 0 7px 0 4px;
+  border-style: dashed;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.gw-portal .pf-chip-new svg {
+  width: 11px;
+  height: 11px;
+}
+
+.gw-portal .pf-text-action {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: hsl(var(--primary));
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.gw-portal .pf-chip[data-gone="true"] > span {
+  color: hsl(var(--muted-foreground));
+  text-decoration: line-through;
+}
+
+/* 思考等级：每个模型一块，上面是名字和默认档、思考参数，下面一排档位开关。 */
+.gw-portal .pf-reasoning-modal {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.gw-portal .pf-reasoning-list {
+  display: grid;
+  overflow-y: auto;
+  max-height: 420px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+}
+
+.gw-portal .pf-reasoning-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.gw-portal .pf-reasoning-row + .pf-reasoning-row {
+  border-top: 1px solid hsl(var(--border) / 0.6);
+}
+
+.gw-portal .pf-reasoning-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 130px 150px;
+  align-items: center;
+  gap: 8px;
+}
+
+.gw-portal .pf-reasoning-head code {
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .pf-reasoning-tag {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+
+.gw-portal .pf-reasoning-reset {
+  border: 0;
+  background: none;
+  color: hsl(var(--primary));
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.gw-portal .pf-reasoning-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.gw-portal .pf-reasoning-levels button {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.gw-portal .pf-reasoning-levels button[aria-pressed="true"] {
+  border-color: hsl(var(--primary) / 0.5);
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+
+/* 没改过：档位来自内置资料，颜色淡一点。 */
+.gw-portal .pf-reasoning-row[data-overridden="false"] .pf-reasoning-levels button[aria-pressed="true"] {
+  border-style: dashed;
+}
+
+.gw-portal .pf-reasoning-levels[data-disabled="true"] {
+  opacity: 0.45;
+}

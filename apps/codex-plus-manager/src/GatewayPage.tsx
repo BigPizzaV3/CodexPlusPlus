@@ -1,42 +1,54 @@
-/** 本地网关：让 Claude Code、Grok 经 Codex++ 使用统一的供应商池，支持多 Key 轮换与路由组。 */
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+/** 本地网关：让 Claude Code、Grok 经 Codex++ 使用统一的供应商池，支持多 Key 轮换与模型组。 */
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
-import { AlertTriangle, ChevronDown, ChevronUp, Plus, RefreshCw, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Asterisk, ChevronDown, ChevronRight, ChevronUp, Plus, RefreshCw, Search, Shuffle, Waypoints, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import {
   agentName,
-  connectedAgents,
+  formatElapsed,
   groupModeDescription,
   groupModeLabel,
   groupModelId,
+  groupStickyDescription,
+  groupStickyLabel,
+  isPattern,
   memberLabel,
-  memberStatus,
+  parseWeight,
+  dispatchStatus,
+  modelDispatch,
   modelDisplay,
-  routeMembers,
-  routeNarrative,
+  patternMatches,
+  prettyModelName,
+  speedOf,
   slugify,
-  type AgentActivityView,
-  type GatewayAgentId,
   type GatewayGroupEntry,
   type GatewayPayload,
   type GatewayResult,
   type GroupMember,
   type GroupMode,
-  type MemberStatus,
-  type RouteRecordView,
+  type GroupSticky,
+  agentPoolProviders,
   maskAccountName,
+  type DispatchRow,
+  type MemberStatus,
+  memberTarget,
+  type AutoGroupEntry,
 } from "./gateway-model";
 import { AgentsView, Floating, ModelList } from "./GatewayAgents";
 import { AppSelect } from "./AppSelect";
 import { ProvidersView } from "./GatewayProviders";
 import { SessionsView } from "./GatewaySessions";
 import { UsageView } from "./GatewayUsage";
-import { AGENT_ICONS, APP_LOGO_URL, Avatar, SectionLabel, Switch, type Notify, type Run, AgentIcon } from "./gateway-ui";
+import { Avatar, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
+import { shortProviderName } from "./GatewayModelMatrix";
 import { TopbarActions } from "./TopbarActions";
+import { GatewayNavContext } from "./gateway-store";
+import { useEscapeLayer } from "./use-escape-layer";
+import { publishGatewayPayload } from "./gateway-store";
 import "./GatewayPage.css";
 
 type Tab = "agents" | "sessions" | "providers" | "routing" | "usage" | "gateway";
@@ -44,17 +56,14 @@ export type GatewayTab = Tab;
 
 const memo: { payload: GatewayPayload | null; tab: Tab } = { payload: null, tab: "agents" };
 
-/** 路由图里各 Agent 连线的色相。 */
-const AGENT_HUES: Record<string, number> = { claude: 18, grok: 210, codex: 250 };
-/** 路由页实时刷新间隔。 */
+/** 组编辑器的模型选择不排除任何供应商；模块级常量，避免每次渲染都换新数组让列表重算。 */
+const NO_EXCLUDE: string[] = [];
+
+/** 路由页刷新供应商状态的间隔。 */
 const LIVE_REFRESH_MS = 2500;
 
 function hasPayload(result: GatewayResult): result is GatewayResult & GatewayPayload {
   return Boolean(result.gateway && Array.isArray(result.pool));
-}
-
-function statusText(status: MemberStatus): string {
-  return status.args.length ? tf(status.text, status.args) : t(status.text);
 }
 
 /**
@@ -90,27 +99,12 @@ export function GatewayPage({
     if (hasPayload(result)) {
       memo.payload = result;
       setPayload(result);
+      // 侧栏状态卡、总览共用的数据也立刻更新，不等它们下次轮询。
+      publishGatewayPayload(result);
     }
   };
 
-  const run: Run = async (key, command, args, title, silent = false) => {
-    setBusy(key);
-    try {
-      const result = await invoke<GatewayResult>(command, args);
-      accept(result);
-      if (result.status !== "ok") {
-        await notify(tf("{0}失败", [title]), result.message, "failed");
-        return false;
-      }
-      if (!silent) await notify(title, result.message, "ok");
-      return true;
-    } catch (error) {
-      await notify(t("调用失败"), String(error), "failed");
-      return false;
-    } finally {
-      setBusy(null);
-    }
-  };
+  const run: Run = makeRun(setBusy, accept, notify);
 
   const refresh = async (silent = true) => {
     setBusy("load");
@@ -150,7 +144,7 @@ export function GatewayPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 路由页实时刷新：静默读取，不占用 busy，也不弹错误。
+  // 路由页定时刷新供应商状态：静默读取，不占用 busy，也不弹错误。
   useEffect(() => {
     if (tab !== "routing") return;
     let cancelled = false;
@@ -168,14 +162,18 @@ export function GatewayPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
+  // 与侧栏同序：供应商 → Agent → 路由。
   const tabs: Array<{ id: Tab; label: string }> = [
-    { id: "agents", label: t("智能体") },
-    { id: "sessions", label: t("会话") },
     { id: "providers", label: t("供应商") },
+    { id: "agents", label: t("智能体") },
     { id: "routing", label: t("路由") },
+    { id: "sessions", label: t("会话") },
     { id: "usage", label: t("用量") },
     { id: "gateway", label: t("网关") },
   ];
+
+  // 模型下拉里「我的组」旁的「管理」→ 路由页。
+  const nav = { openModelGroups: () => setTab("routing") };
 
   const refreshButton = (
     <button aria-label={t("刷新")} className="gw-icon-button" disabled={busy !== null} onClick={() => void refresh(false)} title={t("刷新")} type="button">
@@ -201,6 +199,7 @@ export function GatewayPage({
           {refreshButton}
         </div>
       )}
+      <GatewayNavContext.Provider value={nav}>
       <div className="mg-content gw-content">
         {payload && !payload.helperRunning && payload.agents.some((agent) => agent.enabled) ? (
           <p className="gw-alert" role="alert">
@@ -216,86 +215,155 @@ export function GatewayPage({
         {tab === "gateway" ? <GatewayView busy={busy} payload={payload} run={run} /> : null}
         {tab === "gateway" && extraSettings ? extraSettings : null}
       </div>
+      </GatewayNavContext.Provider>
     </div>
   );
 }
 
 /* —————————————————————— 路由 —————————————————————— */
 
+/** 卡片上路由方式的选项（顺序与组编辑器一致）。 */
+const MODE_OPTIONS: GroupMode[] = ["inOrder", "rotate", "weighted", "usage", "fast", "manual"];
+const STICKY_OPTIONS: GroupSticky[] = ["cache", "session", "off"];
+
+/** 路由页：你建的组和自动组，每张卡片上直接改路由方式、会话固定、隐藏成员，手动模式下点成员锁定。 */
 function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
-  const agents = connectedAgents(payload);
   const [editing, setEditing] = useState<GatewayGroupEntry | "new" | null>(null);
-  const remove = async (group: GatewayGroupEntry) => {
-    const ok = await appConfirm(tf("删除路由组「{0}」？引用它的其它组会去掉这个成员。", [group.name]), { title: t("删除路由组"), confirmText: t("删除"), danger: true });
-    if (ok) await run(`group:${group.id}`, "delete_gateway_group", { id: group.id }, t("删除路由组"));
+  const [query, setQuery] = useState("");
+  const [showHidden, setShowHidden] = useState(false);
+  const autoOn = payload?.gateway.autoModels !== false;
+  const needle = query.trim().toLowerCase();
+  const hit = (group: GatewayGroupEntry) =>
+    !needle || group.name.toLowerCase().includes(needle) || group.members.some((member) => member.model.toLowerCase().includes(needle));
+  const mine = (payload?.groups ?? []).filter(hit);
+  const autos = (payload?.autoGroups ?? []).filter(hit);
+  const visibleAutos = autos.filter((group) => !group.hidden);
+  const hiddenAutos = autos.filter((group) => group.hidden);
+
+  const saveMine = (group: GatewayGroupEntry, patch: Partial<GatewayGroupEntry>) => {
+    const next = { ...group, ...patch };
+    void run(`group:${group.id}`, "save_gateway_group", {
+      group: { id: next.id, name: next.name, mode: next.mode, sticky: next.sticky ?? "cache", members: next.members, hideMembers: next.hideMembers ?? false, pick: next.pick ?? "" },
+    }, t("保存组"), true);
   };
+  const saveAuto = (group: AutoGroupEntry, patch: Partial<AutoGroupEntry>) => {
+    const next = { ...group, ...patch };
+    void run(`auto:${group.id}`, "save_gateway_auto_group", {
+      model: group.name,
+      settings: { mode: next.mode, sticky: next.sticky ?? "cache", hidden: next.hidden, hideMembers: next.hideMembers ?? false, pick: next.pick ?? "" },
+    }, t("保存自动组"), true);
+  };
+  const remove = async (group: GatewayGroupEntry) => {
+    const ok = await appConfirm(tf("删除组「{0}」？引用它的其它组会去掉这个成员。", [group.name]), { title: t("删除组"), confirmText: t("删除"), danger: true });
+    if (ok) await run(`group:${group.id}`, "delete_gateway_group", { id: group.id }, t("删除组"));
+  };
+
   return (
     <>
-      <SectionLabel>
-        {t("路由")}
-        <i className="gw-dot gw-dot-live" data-tone={payload?.helperRunning ? "on" : "off"} />
-        <em>{payload?.helperRunning ? t("实时，按网关的实际决策") : t("网关没有运行")}</em>
-      </SectionLabel>
-      {agents.length === 0 ? (
-        <div className="gw-card gw-empty">
-          <strong>{t("还没有 Agent 经网关")}</strong>
-          <span>{t("在「智能体」里为 Claude Code 或 Grok 选好模型并打开开关，这里会实时显示每个请求怎么走。")}</span>
+      <div className="gw-models-toolbar">
+        <label className="gw-sheet-search gw-models-search">
+          <Search className="h-4 w-4" />
+          <input aria-label={t("搜索组或模型")} onChange={(event) => setQuery(event.target.value)} placeholder={t("搜索组或模型")} value={query} />
+        </label>
+        <div className="gw-models-auto" title={t("多家都有的模型自动成一个组：Agent 选不带供应商的模型名时走它。关掉后只列出你建的组，不带供应商的模型名按供应商池的顺序依次尝试。")}>
+          <span>{t("自动建组")}</span>
+          <Switch
+            disabled={busy !== null || !payload}
+            label={t("自动建组")}
+            on={autoOn}
+            onToggle={() => void run("auto-models", "save_gateway_auto_models", { enabled: !autoOn }, t("自动建组"), true)}
+          />
         </div>
-      ) : (
-        <RouteCard agents={agents} payload={payload} />
-      )}
-
-      <SectionLabel
-        aside={(
-          <>
-            <em>{t("Agent 可以把路由组当作一个模型来选")}</em>
-            <button className="gw-text-button strong" disabled={busy !== null} onClick={() => setEditing("new")} type="button">{t("新建路由组")}</button>
-          </>
-        )}
-      >
-        {t("路由组")}
-      </SectionLabel>
-      <div className="gw-card">
-        {(payload?.groups ?? []).map((group) => {
-          const joiner = group.mode === "inOrder" ? " → " : " · ";
-          const icons = group.members
-            .map((member) => modelDisplay(payload, member.model))
-            .filter((view) => !view.group && view.sub)
-            .slice(0, 3);
-          return (
-            <div className="gw-group-row" key={group.id}>
-              <span className="gw-avatar-stack">
-                {icons.length ? icons.map((view, index) => <Avatar key={`${view.sub}-${index}`} name={view.sub} size="sm" />) : <Waypoints className="h-4 w-4" />}
-              </span>
-              <div className="gw-group-main">
-                <div>
-                  <strong>{group.name}</strong>
-                  <code className="gw-chip">{groupModelId(group.id)}</code>
-                </div>
-                <small>{group.members.length ? group.members.map((member) => memberLabel(payload, member.model)).join(joiner) : t("没有成员")}</small>
-              </div>
-              <span className="gw-pill gw-pill-outline">{t(groupModeLabel(group.mode))}</span>
-              <span className="gw-row-buttons">
-                <button className="gw-text-button" disabled={busy !== null} onClick={() => setEditing(group)} type="button">{t("编辑")}</button>
-                <button className="gw-text-button" disabled={busy !== null} onClick={() => void remove(group)} type="button">{t("删除")}</button>
-              </span>
-            </div>
-          );
-        })}
-        {payload && payload.groups.length === 0 ? (
-          <div className="gw-empty">
-            <strong>{t("还没有路由组")}</strong>
-            <span>{t("把几个模型编成一组，Agent 在模型列表里把它当一个模型来选：按顺序、轮换或按权重回答，组里也可以再放组。")}</span>
-          </div>
-        ) : null}
+        <button className="gw-primary-button" disabled={busy !== null || !payload} onClick={() => setEditing("new")} type="button">
+          <Plus className="h-4 w-4" />
+          {t("新建组")}
+        </button>
       </div>
+      <p className="gw-models-hint">{t("组让 Agent 把几个模型当成一个来选：按什么方式先试哪个、同一会话要不要固定、出错换谁，都在卡片上改。")}</p>
+
+      {!payload ? <div className="gw-card gw-empty">{t("正在读取…")}</div> : null}
+
+      {payload ? (
+        <SectionLabel aside={<em>{t("Agent 里以 group/<id> 出现")}</em>}>
+          {t("我的组")}<em>{mine.length}</em>
+        </SectionLabel>
+      ) : null}
+      {payload && mine.length === 0 ? (
+        <div className="gw-card gw-empty">
+          <strong>{needle ? t("没有匹配的组") : t("还没有自己建的组")}</strong>
+          {needle ? null : <span>{t("比如把两家的同一个模型编成「依次」组：第一家出错自动换第二家；或者把几个便宜模型编成「轮换」组分摊用量。")}</span>}
+        </div>
+      ) : null}
+      {mine.map((group) => (
+        <GroupCard
+          busy={busy}
+          group={group}
+          key={group.id}
+          onChange={(patch) => saveMine(group, patch)}
+          onDelete={() => void remove(group)}
+          onEdit={() => setEditing(group)}
+          payload={payload}
+        />
+      ))}
+
+      {payload ? (
+        <SectionLabel aside={<em>{autoOn ? t("多家都有的模型自动成组，Agent 选不带供应商的模型名时走它") : t("自动建组已关闭")}</em>}>
+          {t("自动组")}<em>{visibleAutos.length}</em>
+        </SectionLabel>
+      ) : null}
+      {payload && !autoOn ? (
+        <div className="gw-card gw-empty">
+          <strong>{t("自动建组已关闭")}</strong>
+          <span>{t("打开后，多家都有的模型会自动成一个组；不带供应商的模型名现在按供应商池的顺序依次尝试。")}</span>
+        </div>
+      ) : null}
+      {payload && autoOn && autos.length === 0 ? (
+        <div className="gw-card gw-empty">
+          <strong>{needle ? t("没有匹配的组") : t("还没有多家都有的模型")}</strong>
+          {needle ? null : <span>{t("两家以上的供应商都提供同一个模型时，这里会自动多出一个组。")}</span>}
+        </div>
+      ) : null}
+      {autoOn
+        ? visibleAutos.map((group) => (
+          <GroupCard
+            auto
+            busy={busy}
+            group={group}
+            key={group.id}
+            onChange={(patch) => saveAuto(group, patch)}
+            onHide={() => saveAuto(group, { hidden: true })}
+            onReset={group.customized ? () => void run(`auto:${group.id}`, "save_gateway_auto_group", { model: group.name, settings: {} }, t("恢复默认"), true) : undefined}
+            payload={payload}
+          />
+        ))
+        : null}
+      {autoOn && hiddenAutos.length ? (
+        <div className="gw-hidden-autos">
+          <button className="gw-text-button" onClick={() => setShowHidden(!showHidden)} type="button">
+            {showHidden ? t("收起已隐藏的") : tf("已隐藏 {0} 个", [hiddenAutos.length])}
+          </button>
+          {showHidden
+            ? hiddenAutos.map((group) => (
+              <div className="gw-hidden-auto" key={group.id}>
+                <strong>{prettyModelName(group.name)}</strong>
+                <code>{group.name}</code>
+                <button className="gw-text-button strong" disabled={busy !== null} onClick={() => saveAuto(group, { hidden: false })} type="button">{t("恢复")}</button>
+              </div>
+            ))
+            : null}
+        </div>
+      ) : null}
+
       {editing ? (
         <GroupEditor
           busy={busy}
           group={editing === "new" ? null : editing}
           onCancel={() => setEditing(null)}
           onSave={async (input) => {
-            if (await run("group:save", "save_gateway_group", { group: input }, t("保存路由组"))) setEditing(null);
+            // 编辑器不管「隐藏成员」和手动选中的成员：沿用卡片上已有的。
+            const previous = editing === "new" ? null : editing;
+            const group = { ...input, hideMembers: previous?.hideMembers ?? false, pick: previous?.pick ?? "" };
+            if (await run("group:save", "save_gateway_group", { group }, t("保存组"))) setEditing(null);
           }}
           payload={payload}
         />
@@ -304,7 +372,147 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
   );
 }
 
-/** 新建 / 编辑路由组：名称、模式、成员（池里的模型或别的组）。 */
+/** 一张组卡片：标题（名字、Agent 里怎么选它）、路由方式、会话固定、成员列表（状态、额度、耗时）、隐藏成员。 */
+function GroupCard({
+  group,
+  payload,
+  busy,
+  auto = false,
+  onChange,
+  onEdit,
+  onDelete,
+  onHide,
+  onReset,
+}: {
+  group: GatewayGroupEntry;
+  payload: GatewayPayload | null;
+  busy: string | null;
+  auto?: boolean;
+  onChange: (patch: Partial<GatewayGroupEntry>) => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+  onHide?: () => void;
+  onReset?: () => void;
+}) {
+  const manual = group.mode === "manual";
+  const picked = manual ? (group.members.find((member) => member.model.toLowerCase() === (group.pick ?? "").toLowerCase()) ?? group.members[0])?.model : "";
+  const disabled = busy !== null;
+  return (
+    <section className="gw-card gw-route-group" data-auto={auto}>
+      <header className="gw-route-group-head">
+        <span className="gw-route-group-icon">{auto ? <Shuffle className="h-4 w-4" /> : <Waypoints className="h-4 w-4" />}</span>
+        <div className="gw-route-group-title">
+          <strong>{auto ? prettyModelName(group.name) : group.name}</strong>
+          <code className="gw-chip" title={t("Agent 里选这个名字就走这个组")}>{auto ? group.name : groupModelId(group.id)}</code>
+          {auto ? <span className="gw-pill gw-pill-outline">{t("自动")}</span> : null}
+        </div>
+        <div className="gw-route-group-controls">
+          <AppSelect
+            disabled={disabled}
+            label={t("路由方式")}
+            onChange={(mode) => onChange({ mode })}
+            options={MODE_OPTIONS.map((mode) => ({ value: mode, label: t(groupModeLabel(mode)), hint: t(groupModeDescription(mode)) }))}
+            size="sm"
+            value={group.mode}
+          />
+          <AppSelect
+            disabled={disabled || manual}
+            label={t("会话固定")}
+            onChange={(sticky) => onChange({ sticky })}
+            options={STICKY_OPTIONS.map((sticky) => ({ value: sticky, label: t(groupStickyLabel(sticky)), hint: t(groupStickyDescription(sticky)) }))}
+            size="sm"
+            title={manual ? t("手动模式只用选中的那个成员，不需要会话固定") : undefined}
+            value={group.sticky ?? "cache"}
+          />
+        </div>
+      </header>
+      <ol className="gw-route-members" data-manual={manual}>
+        {group.members.map((member, index) => (
+          <RouteMember
+            disabled={disabled}
+            index={index}
+            key={`${member.model}-${index}`}
+            manual={manual}
+            member={member}
+            mode={group.mode}
+            onPick={() => onChange({ pick: member.model })}
+            payload={payload}
+            picked={picked === member.model}
+          />
+        ))}
+        {group.members.length === 0 ? <li className="gw-route-member-empty">{t("没有成员")}</li> : null}
+      </ol>
+      <footer className="gw-route-group-foot">
+        <label className="gw-route-hide" title={t("打开后，组里的模型不再单独出现在 Agent 的模型列表里，只能通过这个组来选；直接写名字仍然能用。")}>
+          <Switch disabled={disabled} label={t("隐藏成员")} on={group.hideMembers === true} onToggle={() => onChange({ hideMembers: !group.hideMembers })} />
+          <span>{t("隐藏成员")}</span>
+        </label>
+        <span className="gw-route-group-mode">{t(groupModeDescription(group.mode))}</span>
+        <span className="gw-row-buttons">
+          {onEdit ? <button className="gw-text-button" disabled={disabled} onClick={onEdit} type="button">{t("编辑")}</button> : null}
+          {onReset ? <button className="gw-text-button" disabled={disabled} onClick={onReset} title={t("回到依次、缓存期内固定、不隐藏成员")} type="button">{t("恢复默认")}</button> : null}
+          {onHide ? <button className="gw-text-button" disabled={disabled} onClick={onHide} title={t("这个自动组不再出现在 Agent 里，不带供应商的模型名按供应商池的顺序依次尝试")} type="button">{t("隐藏")}</button> : null}
+          {onDelete ? <button className="gw-text-button" disabled={disabled} onClick={onDelete} type="button">{t("删除")}</button> : null}
+        </span>
+      </footer>
+    </section>
+  );
+}
+
+/** 组里的一个成员：先后 / 手动选中、供应商与模型、状态、额度、平均耗时。 */
+function RouteMember({
+  member,
+  index,
+  mode,
+  manual,
+  picked,
+  payload,
+  disabled,
+  onPick,
+}: {
+  member: GroupMember;
+  index: number;
+  mode: GroupMode;
+  manual: boolean;
+  picked: boolean;
+  payload: GatewayPayload | null;
+  disabled: boolean;
+  onPick: () => void;
+}) {
+  const target = memberTarget(payload, member.model);
+  const view = modelDisplay(payload, member.model);
+  const status = target ? dispatchStatus(payload, target.entry.id, target.model) : null;
+  const speed = target ? speedOf(payload, target.entry.id, target.model) : null;
+  const quota = target?.entry.quota ?? null;
+  const body = (
+    <>
+      <span className="gw-route-member-mark">
+        {manual ? <i className="gw-radio-dot" data-on={picked} /> : <i>{mode === "inOrder" || mode === "usage" || mode === "fast" ? index + 1 : "·"}</i>}
+      </span>
+      {target ? <Avatar baseUrl={target.entry.baseUrl} name={target.entry.name} size="sm" /> : view.group ? <Waypoints className="gw-picker-glyph h-4 w-4" /> : <Shuffle className="gw-picker-glyph h-4 w-4" />}
+      <span className="gw-route-member-name">
+        <strong>{target ? maskAccountName(shortProviderName(target.entry.name)) : view.title}</strong>
+        <small>{target ? prettyModelName(target.model) : member.model}</small>
+      </span>
+      {mode === "weighted" ? <span className="gw-route-member-weight">{tf("权重 {0}", [member.weight])}</span> : null}
+      {status ? <span className="gw-route-member-status" data-state={status.state}><MemberStatusLabel status={status} /></span> : null}
+      {quota ? <QuotaBadge quota={quota} /> : null}
+      {speed !== null ? <small className="gw-route-member-speed" title={t("最近的平均首包耗时")}>{formatElapsed(speed)}</small> : null}
+    </>
+  );
+  return (
+    <li className="gw-route-member" data-picked={picked} data-state={status?.state ?? "idle"}>
+      {manual ? (
+        <button className="gw-route-member-row" disabled={disabled || picked} onClick={onPick} title={picked ? t("正在用这一个") : t("改成只用这一个")} type="button">{body}</button>
+      ) : (
+        <div className="gw-route-member-row">{body}</div>
+      )}
+    </li>
+  );
+}
+
+
+/** 新建 / 编辑模型组：名称、模式、成员（池里的模型或别的组）。 */
 function GroupEditor({
   payload,
   group,
@@ -315,45 +523,60 @@ function GroupEditor({
   payload: GatewayPayload | null;
   group: GatewayGroupEntry | null;
   busy: string | null;
-  onSave: (input: { id: string; name: string; mode: GroupMode; members: GroupMember[] }) => void;
+  onSave: (input: { id: string; name: string; mode: GroupMode; sticky: GroupSticky; members: GroupMember[] }) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(group?.name ?? "");
   const [mode, setMode] = useState<GroupMode>(group?.mode ?? "inOrder");
+  const [sticky, setSticky] = useState<GroupSticky>(group?.sticky ?? "cache");
+  const [pattern, setPattern] = useState("");
   const [members, setMembers] = useState<GroupMember[]>(group?.members.map((member) => ({ ...member })) ?? []);
   const [picking, setPicking] = useState(false);
   const addRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !picking) onCancel();
-    };
-    document.addEventListener("keydown", escape);
-    return () => document.removeEventListener("keydown", escape);
-  }, [onCancel, picking]);
+  // Esc 栈：「添加成员」浮层、模式下拉开着时 Esc 先关它们。
+  useEscapeLayer(true, onCancel);
+  // 权重输入框正在编辑的原始文字（允许暂时为空），失焦时再规范成 ≥ 1 的整数。
+  const [weightText, setWeightText] = useState<Record<number, string>>({});
   const move = (index: number, delta: number) => {
     const next = [...members];
     const [item] = next.splice(index, 1);
     next.splice(Math.max(0, Math.min(next.length, index + delta)), 0, item);
     setMembers(next);
   };
-  const error = !name.trim() ? t("请填写路由组名称") : members.length === 0 ? t("路由组至少要有一个成员") : "";
+  const error = !name.trim() ? t("请填写模型组名称") : members.length === 0 ? t("模型组至少要有一个成员") : "";
   const modes: Array<{ value: GroupMode; label: string }> = [
     { value: "inOrder", label: t("依次") },
     { value: "rotate", label: t("轮换") },
     { value: "weighted", label: t("按权重") },
+    { value: "usage", label: t("额度优先") },
+    { value: "fast", label: t("速度优先") },
+    { value: "manual", label: t("手动") },
   ];
+  const stickies: GroupSticky[] = ["cache", "session", "off"];
+  const patternText = pattern.trim();
+  const patternHits = isPattern(patternText) ? patternMatches(payload, patternText) : [];
+  const addPattern = () => {
+    if (!isPattern(patternText)) return;
+    if (!members.some((member) => member.model === patternText)) setMembers([...members, { model: patternText, weight: 1 }]);
+    setPattern("");
+  };
+  const memberHint = mode === "inOrder"
+    ? t("从上到下依次尝试")
+    : mode === "usage" || mode === "fast"
+      ? t("额度 / 速度相同时按列表顺序")
+      : t("答不了时按列表顺序换下一个");
   return createPortal(
     <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
       <form
         className="gw-modal gw-group-modal"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!error) onSave({ id: group?.id ?? "", name: name.trim(), mode, members });
+          if (!error) onSave({ id: group?.id ?? "", name: name.trim(), mode, sticky, members });
         }}
       >
         <header>
           <span className="gw-avatar gw-avatar-plus"><Waypoints className="h-4 w-4" /></span>
-          <strong>{group ? tf("编辑 {0}", [group.name]) : t("新建路由组")}</strong>
+          <strong>{group ? tf("编辑 {0}", [group.name]) : t("新建模型组")}</strong>
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onCancel} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body">
@@ -373,16 +596,33 @@ function GroupEditor({
             <small className="gw-muted">{t(groupModeDescription(mode))}</small>
           </div>
           <div className="gw-field">
-            <span>{t("成员")} <small>{mode === "inOrder" ? t("从上到下依次尝试") : t("答不了时按列表顺序换下一个")}</small></span>
+            <span>{t("会话固定")}</span>
+            <div className="gw-tabs gw-mode-tabs" role="radiogroup">
+              {stickies.map((item) => (
+                <button aria-checked={sticky === item} data-active={sticky === item} key={item} onClick={() => setSticky(item)} role="radio" type="button">
+                  {t(groupStickyLabel(item))}
+                </button>
+              ))}
+            </div>
+            <small className="gw-muted">{t(groupStickyDescription(sticky))}</small>
+          </div>
+          <div className="gw-field">
+            <span>{t("成员")} <small>{memberHint}</small></span>
             <div className="gw-member-list">
               {members.map((member, index) => {
                 const view = modelDisplay(payload, member.model);
+                const wildcard = isPattern(member.model);
+                const hits = wildcard ? patternMatches(payload, member.model) : [];
                 return (
-                  <div className="gw-member-edit" key={`${member.model}-${index}`}>
-                    {view.group ? <Waypoints className="gw-picker-glyph h-4 w-4" /> : <Avatar name={view.sub || view.title} size="sm" />}
+                  <div className="gw-member-edit" data-pattern={wildcard} key={`${member.model}-${index}`}>
+                    {wildcard ? <Asterisk className="gw-picker-glyph h-4 w-4" /> : view.group ? <Waypoints className="gw-picker-glyph h-4 w-4" /> : <Avatar name={view.sub || view.title} size="sm" />}
                     <span className="gw-member-edit-name">
-                      <strong>{view.title}</strong>
-                      <small>{view.group ? view.sub : view.sub || t("池里还没有提供它的供应商")}</small>
+                      <strong>{wildcard ? member.model : view.title}</strong>
+                      {wildcard ? (
+                        <small title={hits.join("\n")}>{hits.length ? tf("通配符 · 现在匹配 {0} 个模型", [hits.length]) : t("通配符 · 现在没有匹配的模型")}</small>
+                      ) : (
+                        <small>{view.group ? view.sub : view.sub || t("池里还没有提供它的供应商")}</small>
+                      )}
                     </span>
                     {mode === "weighted" ? (
                       <label className="gw-inline-field">
@@ -390,13 +630,26 @@ function GroupEditor({
                         <input
                           className="gw-inline-input gw-weight-input"
                           min={1}
+                          onBlur={() => {
+                            setWeightText((previous) => {
+                              const next = { ...previous };
+                              delete next[index];
+                              return next;
+                            });
+                          }}
                           onChange={(event) => {
-                            const next = [...members];
-                            next[index] = { ...member, weight: Math.max(1, Number(event.currentTarget.value) || 1) };
-                            setMembers(next);
+                            const text = event.currentTarget.value;
+                            setWeightText((previous) => ({ ...previous, [index]: text }));
+                            // 能读成数的就先记下；删空、输入到一半时保留原值，失焦后显示规范值。
+                            const parsed = parseWeight(text);
+                            if (parsed !== null) {
+                              const next = [...members];
+                              next[index] = { ...member, weight: parsed };
+                              setMembers(next);
+                            }
                           }}
                           type="number"
-                          value={member.weight}
+                          value={weightText[index] ?? String(member.weight)}
                         />
                       </label>
                     ) : null}
@@ -406,13 +659,36 @@ function GroupEditor({
                   </div>
                 );
               })}
-              <button className="gw-add-row" onClick={() => setPicking(!picking)} ref={addRef} type="button">
-                <Plus className="h-4 w-4" />
-                {t("添加成员")}
-              </button>
+              <div className="gw-add-line">
+                <button className="gw-add-row" onClick={() => setPicking(!picking)} ref={addRef} type="button">
+                  <Plus className="h-4 w-4" />
+                  {t("添加成员")}
+                </button>
+                <span className="gw-pattern-input">
+                  <Asterisk aria-hidden className="h-3.5 w-3.5" />
+                  <input
+                    aria-label={t("通配符成员")}
+                    onChange={(event) => setPattern(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addPattern();
+                      }
+                    }}
+                    placeholder={t("通配符，如 openrouter/*:free")}
+                    value={pattern}
+                  />
+                  {patternText ? (
+                    <button className="gw-text-button strong" disabled={!isPattern(patternText)} onClick={addPattern} title={patternHits.slice(0, 20).join("\n")} type="button">
+                      {isPattern(patternText) ? tf("添加（{0} 个）", [patternHits.length]) : t("要带 *")}
+                    </button>
+                  ) : null}
+                </span>
+              </div>
+              <small className="gw-muted">{t("通配符按「供应商 id/模型」或模型名匹配，* 代表任意字符；上游新增的模型会自动算进来。")}</small>
               <Floating anchorRef={addRef} className="gw-model-popover" onClose={() => setPicking(false)} open={picking} width={520}>
                 <ModelList
-                  exclude={[]}
+                  exclude={NO_EXCLUDE}
                   onPick={(item) => {
                     setPicking(false);
                     if (!members.some((member) => member.model === item.model)) setMembers([...members, { model: item.model, weight: 1 }]);
@@ -436,140 +712,13 @@ function GroupEditor({
   );
 }
 
-function RouteCard({ payload, agents }: { payload: GatewayPayload | null; agents: GatewayAgentId[] }) {
-  const activity = (payload?.activity?.agents ?? []).filter((item): item is AgentActivityView => agents.includes(item.agent as GatewayAgentId));
-  const latest = activity
-    .filter((item) => item.last)
-    .sort((left, right) => (right.last?.finishedAtMs ?? 0) - (left.last?.finishedAtMs ?? 0))[0];
-  const records = activity.map((item) => item.last).filter((record): record is RouteRecordView => Boolean(record));
-  const members = routeMembers(payload, records);
-  const totals = activity.reduce((sum, item) => ({ requests: sum.requests + item.requests, rerouted: sum.rerouted + item.rerouted, errors: sum.errors + item.errors }), { requests: 0, rerouted: 0, errors: 0 });
-  const lastGroup = latest?.last?.groupId ? payload?.groups.find((group) => group.id === latest.last?.groupId) : undefined;
-  const summary = latest?.last?.planned[0]
-    ? tf("{0} 排在第一个。", [maskAccountName(latest.last.planned[0].relayName)])
-    : t("还没有请求经过这里。在 Agent 里发一条消息试试。");
-
-  return (
-    <div className="gw-card gw-route-card">
-      <div className="gw-route-head">
-        <strong>{t("供应商池")}</strong>
-        <span> · {tf("{0} 个供应商 · {1} 个 Agent", [members.length, agents.length])}</span>
-        <p>{lastGroup ? t(groupModeDescription(lastGroup.mode)) : t("按模型名选供应商：Agent 请求哪个模型，就发给池里提供它的供应商；同一个模型有多家时按池里的顺序依次尝试，每家再按自己的 Key 轮换。")}</p>
-      </div>
-      <RouteDiagram
-        activeAgent={latest?.agent ?? null}
-        agents={agents.map((agent) => ({ id: agent, binding: payload?.gateway.bindings[agent] }))}
-        hubPill={lastGroup ? t(groupModeLabel(lastGroup.mode)) : t("按模型")}
-        members={members.map((member) => ({ ...member, status: memberStatus(payload, member.relayId) }))}
-        payload={payload}
-      />
-      <div className="gw-route-summary">
-        <p>{summary}</p>
-        <dl>
-          <div><dt>{totals.requests}</dt><dd>{t("个请求")}</dd></div>
-          <div><dt>{totals.rerouted}</dt><dd>{t("次换上游")}</dd></div>
-          <div><dt>{totals.errors}</dt><dd>{t("个错误交给了 Agent")}</dd></div>
-        </dl>
-      </div>
-      {latest?.last ? (
-        <div className="gw-route-trace">
-          <h4>{t("上一个请求是怎么路由的")}</h4>
-          <ul>
-            {routeNarrative(latest.agent, latest.last, payload).map((line, index) => (
-              <li data-tone={line.tone} key={index}>{tf(line.text, line.args.map((arg) => (typeof arg === "string" && /^[一-龥]/.test(arg) ? t(arg) : arg)))}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-const AGENT_NODE_H = 76;
-const AGENT_NODE_GAP = 12;
-const MEMBER_ROW_H = 46;
-const MEMBER_ROW_GAP = 8;
-const HUB_H = 118;
-const LINK_W = 64;
-
-/** 路由图：左边 Agent，中间网关，右边成员；最近一次请求走过的线用虚线高亮。 */
-function RouteDiagram({
-  payload,
-  agents,
-  members,
-  activeAgent,
-  hubPill,
-}: {
-  payload: GatewayPayload | null;
-  agents: Array<{ id: GatewayAgentId; binding: GatewayPayload["gateway"]["bindings"][GatewayAgentId] }>;
-  members: Array<{ relayId: string; name: string; model: string; status: MemberStatus }>;
-  activeAgent: string | null;
-  hubPill: string;
-}) {
-  const agentsH = agents.length * AGENT_NODE_H + Math.max(0, agents.length - 1) * AGENT_NODE_GAP;
-  const membersH = members.length * MEMBER_ROW_H + Math.max(0, members.length - 1) * MEMBER_ROW_GAP;
-  const height = Math.max(agentsH, membersH, HUB_H);
-  const agentTop = (height - agentsH) / 2;
-  const memberTop = (height - membersH) / 2;
-  const middle = height / 2;
-  const agentY = (index: number) => agentTop + index * (AGENT_NODE_H + AGENT_NODE_GAP) + AGENT_NODE_H / 2;
-  const memberY = (index: number) => memberTop + index * (MEMBER_ROW_H + MEMBER_ROW_GAP) + MEMBER_ROW_H / 2;
-  const curve = (fromY: number, toY: number) => `M0 ${fromY} C${LINK_W / 2} ${fromY}, ${LINK_W / 2} ${toY}, ${LINK_W} ${toY}`;
-  const hue = AGENT_HUES[activeAgent ?? ""] ?? 232;
-  const activeStyle = { "--gw-hue": hue } as CSSProperties;
-
-  return (
-    <div className="gw-diagram" style={{ height }}>
-      <div className="gw-diagram-col" style={{ paddingTop: agentTop, gap: AGENT_NODE_GAP }}>
-        {agents.map((agent) => (
-          <div className="gw-node-agent" key={agent.id} style={{ height: AGENT_NODE_H, "--gw-hue": AGENT_HUES[agent.id] ?? 232 } as CSSProperties}>
-            <AgentIcon agent={agent.id} className="gw-node-agent-icon" />
-            <strong><i className="gw-dot" data-tone="agent" />{agentName(agent.id)}</strong>
-            <small>{agent.binding ? modelDisplay(payload, agent.binding.model, agent.binding.poolExclude ?? []).title : ""}</small>
-          </div>
-        ))}
-      </div>
-      <svg aria-hidden className="gw-links" height={height} width={LINK_W}>
-        {agents.map((agent, index) => (
-          <path className={agent.id === activeAgent ? "active" : ""} d={curve(agentY(index), middle)} key={agent.id} style={agent.id === activeAgent ? activeStyle : undefined} />
-        ))}
-      </svg>
-      <div className="gw-diagram-col" style={{ paddingTop: (height - HUB_H) / 2 }}>
-        <div className="gw-hub" style={{ height: HUB_H }}>
-          <img alt="" src={APP_LOGO_URL} />
-          <strong>{t("Codex++ 网关")}</strong>
-          <small>{`127.0.0.1:${payload?.port ?? ""}`}</small>
-          <span className="gw-pill gw-pill-solid">{hubPill}</span>
-        </div>
-      </div>
-      <svg aria-hidden className="gw-links" height={height} width={LINK_W}>
-        {members.map((member, index) => {
-          const active = member.status.state === "answered" || member.status.state === "busy";
-          return <path className={active ? "active" : ""} d={curve(middle, memberY(index))} key={member.relayId} style={active ? activeStyle : undefined} />;
-        })}
-      </svg>
-      <div className="gw-diagram-col" style={{ paddingTop: memberTop, gap: MEMBER_ROW_GAP }}>
-        {members.map((member) => (
-          <div className="gw-member" data-state={member.status.state} key={member.relayId} style={{ height: MEMBER_ROW_H }}>
-            <i className="gw-radio" />
-            <Avatar name={member.name} size="sm" />
-            <strong>{maskAccountName(member.name)}</strong>
-            {member.model ? <code className="gw-chip">{member.model}</code> : null}
-            <span className="gw-status" data-state={member.status.state}>{statusText(member.status)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 /* —————————————————————— 网关 —————————————————————— */
 
 function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
   if (!payload) return null;
   const mode = payload.gateway.keyPolicy.mode;
   const restoreOnExit = payload.gateway.restoreOnExit;
-  const trayPanel = payload.gateway.trayPanel !== false;
+  const modelSuffix = payload.gateway.modelSuffix !== false;
   const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
   return (
     <>
@@ -631,17 +780,17 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
         </div>
         <div className="gw-setting-row">
           <div>
-            <strong>{t("点击托盘图标弹出快捷面板")}</strong>
-            <small>{t("面板里能直接给各 Agent 换模型、看最近的请求；右键仍是原来的菜单，双击打开主窗口。关掉恢复原来的点击行为。")}</small>
+            <strong>{t("模型名后带供应商")}</strong>
+            <small>{modelSuffix
+              ? t("多家都有的模型，在 Codex 的模型列表和输入框里显示成「GPT-6 Astra（ChatGPT Pro）」，自动组显示「（自动）」。")
+              : t("只显示模型名「GPT-6 Astra」，看不出是哪一家；Codex 选择器里仍按供应商分组。")}</small>
           </div>
           <span />
           <Switch
             disabled={busy !== null}
-            label={t("点击托盘图标弹出快捷面板")}
-            on={trayPanel}
-            onToggle={() => void (async () => {
-              if (await run("tray-panel", "save_gateway_tray_panel", { enabled: !trayPanel }, t("保存网关选项"), true)) await invoke("refresh_tray_mode");
-            })()}
+            label={t("模型名后带供应商")}
+            on={modelSuffix}
+            onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
           />
         </div>
       </div>

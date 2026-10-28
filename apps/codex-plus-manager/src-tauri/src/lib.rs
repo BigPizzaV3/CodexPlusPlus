@@ -1,15 +1,15 @@
-mod auto_takeover;
 mod agent_collaboration_commands;
 mod agent_launch_commands;
 mod agent_mcp_commands;
 mod agent_pet_commands;
-mod provider_lookup_commands;
+mod auto_takeover;
+pub mod commands;
 mod computer_use_commands;
 mod cu_pip;
 mod gateway_commands;
 mod global_dictation;
-pub mod commands;
 pub mod install;
+mod provider_lookup_commands;
 mod runtime_health;
 mod tray_panel;
 
@@ -57,12 +57,18 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
         .first()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| "status".to_string());
-    let target = args.get(1).map(|value| value.to_string_lossy().into_owned());
+    let target = args
+        .get(1)
+        .map(|value| value.to_string_lossy().into_owned());
     let output = match action.as_str() {
         "status" => serde_json::to_value(codex_plus_core::computer_use::status()?)?,
         "check" => serde_json::to_value(codex_plus_core::computer_use::check())?,
         "install" => {
-            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("install 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy"))?;
+            let id = target.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "install 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy"
+                )
+            })?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::install(parsed)?)?
         }
@@ -127,7 +133,8 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
                             })
                         }
                         Err(error) => {
-                            let reason = thread_error.unwrap_or_else(|| "（线程没有留下原因）".into());
+                            let reason =
+                                thread_error.unwrap_or_else(|| "（线程没有留下原因）".into());
                             anyhow::bail!("20 秒内没有拿到帧：{error}；线程报告：{reason}")
                         }
                     }
@@ -190,8 +197,7 @@ pub fn run() {
     }
     let show_update = commands::startup_should_show_update();
     let autostart = std::env::args().any(|arg| arg == "--autostart");
-    let start_minimized = autostart
-        && codex_plus_core::watcher::watcher_start_minimized();
+    let start_minimized = autostart && codex_plus_core::watcher::watcher_start_minimized();
     let start_codex_at_login = autostart && codex_plus_core::watcher::watcher_start_codex();
     let start_codex_on_open = !autostart && codex_plus_core::watcher::watcher_start_codex_on_open();
     let app_result = tauri::Builder::default()
@@ -215,7 +221,9 @@ pub fn run() {
             let main_window = main_window_builder.build()?;
             install_tray(app)?;
             gateway_commands::set_app_handle(app.handle().clone());
-            codex_plus_core::settings::set_external_settings_change_listener(gateway_commands::notify_settings_changed);
+            codex_plus_core::settings::set_external_settings_change_listener(
+                gateway_commands::notify_settings_changed,
+            );
             if start_minimized {
                 set_manager_activation_policy(app.handle(), false);
             }
@@ -239,6 +247,7 @@ pub fn run() {
             );
             // 网关模式：有 Agent 走网关时常驻 helper 必须在线。
             gateway_commands::start_from_saved_state();
+            gateway_commands::start_model_watch();
             // 自动接管官方 App（默认关闭）：设置里开着才起守护线程。
             auto_takeover::start_supervisor();
             if let Err(error) = global_dictation::apply_config() {
@@ -313,14 +322,21 @@ pub fn run() {
             gateway_commands::save_gateway_binding,
             gateway_commands::disable_gateway_binding,
             gateway_commands::rotate_gateway_token,
+            gateway_commands::save_gateway_model_suffix,
+            gateway_commands::save_gateway_auto_group,
+            gateway_commands::save_gateway_auto_models,
+            gateway_commands::save_gateway_favorites,
             gateway_commands::save_gateway_options,
             gateway_commands::reset_gateway_key_health,
             gateway_commands::create_gateway_provider,
             gateway_commands::update_gateway_provider,
             gateway_commands::delete_gateway_provider,
+            gateway_commands::check_gateway_provider_models,
+            gateway_commands::save_gateway_provider_models,
+            gateway_commands::refresh_gateway_quota,
+            gateway_commands::sync_gateway_provider_prices,
             gateway_commands::set_gateway_provider_enabled,
             gateway_commands::reorder_gateway_providers,
-            gateway_commands::import_gateway_provider,
             gateway_commands::save_gateway_group,
             gateway_commands::delete_gateway_group,
             gateway_commands::reveal_gateway_agent_config,
@@ -335,10 +351,16 @@ pub fn run() {
             gateway_commands::finish_gateway_copilot_login,
             gateway_commands::login_gateway_grok,
             gateway_commands::login_gateway_chatgpt_api,
-            gateway_commands::import_gateway_opencode_key,
+            gateway_commands::cancel_gateway_login,
+            gateway_commands::import_gateway_providers,
             gateway_commands::save_gateway_provider_extras,
-            gateway_commands::save_gateway_tray_panel,
+            gateway_commands::save_gateway_provider_windows,
+            gateway_commands::save_gateway_provider_metadata,
+            gateway_commands::gateway_provider_reasoning,
+            gateway_commands::save_gateway_image_model,
             tray_panel::tray_panel_action,
+            tray_panel::tray_panel_enabled,
+            tray_panel::set_tray_panel_enabled,
             tray_panel::refresh_tray_mode,
             commands::weixin_connect_qr_start,
             commands::weixin_connect_qr_status,
@@ -701,9 +723,15 @@ mod tray_tests {
     #[test]
     fn tray_left_click_restores_the_main_window_only_on_windows() {
         #[cfg(windows)]
-        assert!(super::tray_event_shows_main_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(super::tray_event_shows_main_window(&click(
+            MouseButton::Left,
+            MouseButtonState::Up
+        )));
         #[cfg(not(windows))]
-        assert!(!super::tray_event_shows_main_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(!super::tray_event_shows_main_window(&click(
+            MouseButton::Left,
+            MouseButtonState::Up
+        )));
         assert!(!super::tray_event_shows_main_window(&click(
             MouseButton::Right,
             MouseButtonState::Up
@@ -716,13 +744,19 @@ mod tray_tests {
             MouseButton::Left,
             MouseButtonState::Down
         )));
-        assert!(super::tray_event_shows_main_window(&double_click(MouseButton::Left)));
-        assert!(!super::tray_event_shows_main_window(&double_click(MouseButton::Right)));
-        assert!(!super::tray_event_shows_main_window(&TrayIconEvent::Enter {
-            id: TrayIconId::new(super::TRAY_ID),
-            position: PhysicalPosition::default(),
-            rect: Rect::default(),
-        }));
+        assert!(super::tray_event_shows_main_window(&double_click(
+            MouseButton::Left
+        )));
+        assert!(!super::tray_event_shows_main_window(&double_click(
+            MouseButton::Right
+        )));
+        assert!(!super::tray_event_shows_main_window(
+            &TrayIconEvent::Enter {
+                id: TrayIconId::new(super::TRAY_ID),
+                position: PhysicalPosition::default(),
+                rect: Rect::default(),
+            }
+        ));
     }
 }
 

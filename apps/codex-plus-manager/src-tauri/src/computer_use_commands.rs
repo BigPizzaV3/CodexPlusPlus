@@ -27,7 +27,10 @@ pub async fn computer_use_status() -> CommandResult<Value> {
             } else {
                 "未找到 ChatGPT.app，Computer Use 暂时不可接入。"
             };
-            ok(message, serde_json::to_value(report).unwrap_or_else(|_| json!({})))
+            ok(
+                message,
+                serde_json::to_value(report).unwrap_or_else(|_| json!({})),
+            )
         }
         Err(error) => failed(&error, json!({})),
     }
@@ -80,8 +83,8 @@ pub async fn computer_use_install(target: String) -> CommandResult<Value> {
         Ok(receipt) => {
             // 只有 Claude Code 有 hooks。装完 MCP 顺手挂上回合结束钩子，
             // 否则浏览器标签不会在回合结束时清理（见 claude_hooks 模块注释）。
-            let hooks = hooks_path
-                .and_then(|path| codex_plus_core::claude_hooks::install_at(&path).ok());
+            let hooks =
+                hooks_path.and_then(|path| codex_plus_core::claude_hooks::install_at(&path).ok());
             let message = if receipt.changed {
                 "已接入；重启对应客户端后生效。"
             } else {
@@ -117,8 +120,8 @@ pub async fn computer_use_uninstall(target: String) -> CommandResult<Value> {
     match outcome {
         Ok(receipt) => {
             // 撤掉接入时同步摘掉回合结束钩子，别在用户不用的客户端里留一条空命令。
-            let hooks = hooks_path
-                .and_then(|path| codex_plus_core::claude_hooks::uninstall_at(&path).ok());
+            let hooks =
+                hooks_path.and_then(|path| codex_plus_core::claude_hooks::uninstall_at(&path).ok());
             let message = if receipt.changed {
                 "已移除接入；原配置已备份。"
             } else {
@@ -230,9 +233,7 @@ pub async fn computer_use_open_app() -> CommandResult<Value> {
     .await;
     match result {
         Ok(app_path) => {
-            let status = std::process::Command::new("open")
-                .arg(&app_path)
-                .status();
+            let status = std::process::Command::new("open").arg(&app_path).status();
             match status {
                 Ok(status) if status.success() => ok(
                     "已打开 ChatGPT；请确认 Computer Use 的辅助功能与屏幕录制权限已授予。",
@@ -271,12 +272,14 @@ pub async fn computer_use_browser_extension_status() -> CommandResult<Value> {
     let host_registered = host_json.is_file();
     // Chrome 扩展目录：有任意一个 ID 目录就视为已安装。
     let ext_base = home.join("Library/Application Support/Google/Chrome/Default/Extensions");
-    let ext_installed = EXT_IDS
-        .iter()
-        .any(|id| ext_base.join(id).is_dir());
+    let ext_installed = EXT_IDS.iter().any(|id| ext_base.join(id).is_dir());
     let installed = host_registered || ext_installed;
     ok(
-        if installed { "Chrome 浏览器扩展已安装。" } else { "Chrome 浏览器扩展未安装。" },
+        if installed {
+            "Chrome 浏览器扩展已安装。"
+        } else {
+            "Chrome 浏览器扩展未安装。"
+        },
         json!({
             "installed": installed,
             "hostRegistered": host_registered,
@@ -392,7 +395,11 @@ pub async fn computer_use_pip_set(enabled: bool) -> CommandResult<Value> {
     .await
     {
         Ok(()) => ok(
-            if enabled { "已开启悬浮预览。" } else { "已关闭悬浮预览。" },
+            if enabled {
+                "已开启悬浮预览。"
+            } else {
+                "已关闭悬浮预览。"
+            },
             json!({}),
         ),
         Err(error) => failed(&error, json!({})),
@@ -546,10 +553,7 @@ pub async fn computer_use_preview_stop() -> CommandResult<Value> {
 }
 
 fn stop_preview() {
-    let handle = PREVIEW
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
+    let handle = PREVIEW.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(handle) = handle {
         handle.stop();
     }

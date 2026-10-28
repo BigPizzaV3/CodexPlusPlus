@@ -53,7 +53,7 @@ export function hubAgents(payload: GatewayPayload | null, codex: CodexSummary): 
   const codexViaGateway = (payload?.agents ?? []).some((agent) => agent.agent === "codex" && agent.enabled);
   const nodes: HubAgentNode[] = codexViaGateway
     ? []
-    : [{ id: "codex", name: "Codex", enabled: false, direct: true, detail: codex.providerName ?? "", requests: 0, live: false }];
+    : [{ id: "codex", name: "Codex", enabled: false, direct: true, detail: maskAccountName(codex.providerName ?? ""), requests: 0, live: false }];
   for (const agent of payload?.agents ?? []) {
     if (agent.agent === "codex" && !codexViaGateway) continue;
     const binding = payload?.gateway.bindings[agent.agent];
@@ -81,6 +81,13 @@ export function hubProviders(payload: GatewayPayload | null, callsByProvider: Ma
     status: memberStatus(payload, entry.id),
     calls: callsByProvider ? callsByProvider.get(entry.id) ?? 0 : null,
   }));
+}
+
+/** 供应商池的状态：读取中 / 空池 / 池里有但全部关闭 / 有打开的。总览用它决定右列显示什么。 */
+export function hubPoolState(payload: GatewayPayload | null): "loading" | "empty" | "allOff" | "ready" {
+  if (!payload) return "loading";
+  if (payload.pool.length === 0) return "empty";
+  return payload.pool.some(providerEnabled) ? "ready" : "allOff";
 }
 
 /** 连线：Agent → hub、hub → 供应商。粗细按请求量 / 今日调用量归一。 */
@@ -120,7 +127,8 @@ function feedItem(agent: string, record: RouteRecordView): HubFeedItem {
   const rerouted = record.result === "answered" && record.steps.length > 1;
   return {
     agent,
-    requested: record.requestedModel,
+    // 老记录或直接转发的请求可能没记请求的模型名，退回实际发出的模型。
+    requested: record.requestedModel || record.model,
     provider: maskAccountName(target?.relayName ?? ""),
     model: target?.model ?? record.model,
     elapsedMs: record.elapsedMs,

@@ -3,11 +3,12 @@
 use codex_plus_core::gateway::apply::{
     ApplyContext, GroupInput, ProviderInput, codex_importable, copy_claude_provider,
     copy_codex_provider, create_provider, delete_group, delete_provider, disable_binding,
-    enable_binding, note_claude_switched, note_codex_switched, reapply_if_port_changed,
-    refresh_enabled, reorder_providers, save_group, set_provider_enabled, update_provider,
+    enable_binding, note_claude_switched, note_codex_switched, provider_reasoning,
+    reapply_if_port_changed, refresh_enabled, reorder_providers, save_group, set_provider_enabled,
+    set_provider_metadata, set_provider_windows, update_provider,
 };
 use codex_plus_core::gateway::store::{
-    AgentBinding, ClaudeRoleModels, GatewayStore, GroupMember, GroupMode,
+    AgentBinding, ClaudeRoleModels, GatewayStore, GroupMember, GroupMode, GroupSticky,
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use codex_plus_core::tools::ToolId;
@@ -38,7 +39,7 @@ fn fixture(port: u16) -> Fixture {
     std::fs::create_dir_all(&ctx.claude.claude_home).unwrap();
     std::fs::create_dir_all(&ctx.grok_home).unwrap();
     // 网关池里放一个供应商；直连模式的 settings 与它无关。
-    create_provider(&ctx.gateway, &deepseek_input(), "preset:deepseek").unwrap();
+    create_provider(&ctx.gateway, &deepseek_input(), "preset:deepseek", None).unwrap();
     Fixture { _temp: temp, ctx }
 }
 
@@ -51,6 +52,7 @@ fn deepseek_input() -> ProviderInput {
         model: "deepseek-v4-pro".into(),
         model_list: "deepseek-v4-pro\ndeepseek-v4-flash".into(),
         price: None,
+        model_prices: None,
         proxy: None,
     }
 }
@@ -206,7 +208,12 @@ fn claude_with_nothing_configured_is_cleared_on_disable() {
     let ctx = &fixture.ctx;
     enable_binding(ctx, &ToolId::Claude, binding()).unwrap();
     disable_binding(ctx, &settings(), &ToolId::Claude).unwrap();
-    let live = read_settings_json(ctx);
+    // 接入前没有 settings.json：还原成没有（之后有别的改动时才留下文件）。
+    let path = ctx.claude.claude_home.join("settings.json");
+    let live: Value = std::fs::read_to_string(&path)
+        .ok()
+        .map(|text| serde_json::from_str(&text).unwrap())
+        .unwrap_or_else(|| json!({}));
     let env = live
         .get("env")
         .and_then(Value::as_object)
@@ -266,6 +273,13 @@ fn grok_enable_writes_gateway_endpoint_and_disable_restores_profile() {
         model_list: "grok-5".into(),
         ..RelayProfile::default()
     };
+    // Grok 页应用过这个供应商：接入前 config.toml 指向它。
+    codex_plus_core::tools::grok::apply_profile_to_grok_at(
+        &ctx.grok_home,
+        &grok_profile,
+        &ctx.backup_root,
+    )
+    .unwrap();
     let mut shard = settings.tool_config(&ToolId::Grok);
     shard.relay_profiles = vec![grok_profile];
     shard.active_relay_id = "grok-direct".into();
@@ -386,6 +400,185 @@ fn codex_enable_switches_to_managed_gateway_profile_and_disable_switches_back() 
     let binding = saved.binding(&ToolId::Codex).unwrap();
     assert!(binding.enabled);
     assert_eq!(binding.restore.codex_previous_relay_id, "direct");
+}
+
+/// 网关模式给 Codex 的模型目录与直连模式的按模型聚合一样：显示名、推理档位、按供应商分组，
+/// 模型组单独一组。没有内置元数据的模型（第三方的 claude-*）也要有推理档位。
+#[test]
+fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
+    let fixture = fixture(57394);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "ChatGPT Pro · 2649340134@qq.com".into(),
+            base_url: "https://relay.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            keys: vec!["sk-relay".into()],
+            model: "claude-opus-5-5".into(),
+            model_list: "claude-opus-5-5\ndeepseek-v4-pro".into(),
+            price: None,
+            model_prices: None,
+            proxy: None,
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Daily".into(),
+            mode: GroupMode::InOrder,
+            members: vec![GroupMember {
+                model: "claude-opus-5-5".into(),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    // 打开「多家自动切换」；收藏里有一个旧版的裸名收藏。
+    ctx.gateway
+        .update(|gateway| {
+            gateway.auto_models = true;
+            gateway.favorite_models = vec!["deepseek-v4-pro".into()];
+            Ok(())
+        })
+        .unwrap();
+
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let catalog = codex_catalog(ctx);
+    let model = |slug: &str| {
+        catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == slug)
+            .cloned()
+            .unwrap_or_else(|| panic!("目录里没有 {slug}：{catalog}"))
+    };
+
+    let opus = model("claude-opus-5-5");
+    assert_eq!(opus["display_name"], "Claude-Opus-5-5");
+    assert!(
+        opus["supported_reasoning_levels"]
+            .as_array()
+            .is_some_and(|levels| !levels.is_empty()),
+        "{opus}"
+    );
+    // 分组名和描述显示在 Codex 的模型选择器里，账号要打码。
+    assert_eq!(opus["codex_plus_group"], "ChatGPT Pro · 26****34@qq.com");
+    assert!(
+        !opus["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("2649340134"),
+        "悬停说明里也不能有原始账号：{}",
+        opus["description"]
+    );
+    // 两家都提供的模型：每家名下各一份固定的（带供应商前缀，显示名带后缀分得开），
+    // 再加一份裸名的「自动切换」入口单独成组。
+    let deepseek_id = profile_id_of(ctx, "DeepSeek");
+    let pinned = model(&format!("{deepseek_id}/deepseek-v4-pro"));
+    assert_eq!(pinned["codex_plus_group"], "DeepSeek");
+    assert_eq!(pinned["display_name"], "DeepSeek-V4-Pro（DeepSeek）");
+    let second_id = profile_id_of(ctx, "ChatGPT Pro · 2649340134@qq.com");
+    let second = model(&format!("{second_id}/deepseek-v4-pro"));
+    // 打码后的账号名超过注入层认的后缀长度：用「·」前那段（池里没有别家同名开头）；分组名仍是完整账号名。
+    assert_eq!(second["display_name"], "DeepSeek-V4-Pro（ChatGPT Pro）");
+    assert_eq!(second["codex_plus_group"], "ChatGPT Pro · 26****34@qq.com");
+    let auto = model("deepseek-v4-pro");
+    assert_eq!(auto["display_name"], "DeepSeek-V4-Pro（自动）");
+    assert_eq!(auto["codex_plus_group"], "自动组");
+    // 旧版的裸名收藏：自动那份和各家那几份都标收藏（Codex 选择器里画星标）；别的模型不标。
+    assert_eq!(auto["codex_plus_favorite"], true);
+    assert_eq!(pinned["codex_plus_favorite"], true);
+    assert_eq!(second["codex_plus_favorite"], true);
+    assert!(
+        model("claude-opus-5-5")
+            .get("codex_plus_favorite")
+            .is_none()
+    );
+    // 只有一家的模型照旧用裸名、不带后缀。
+    assert_eq!(model("claude-opus-5-5")["display_name"], "Claude-Opus-5-5");
+    let group = model("group/daily");
+    assert_eq!(group["display_name"], "Daily");
+    assert_eq!(group["codex_plus_group"], "模型组");
+
+    // 注入层读的模型元数据（托管供应商的 model_metadata）同样给出推理档位与分组。
+    let settings = ctx.settings.load().unwrap();
+    let profile = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "codex-plus-gateway")
+        .unwrap();
+    let metadata: Value = serde_json::from_str(&profile.model_metadata).unwrap();
+    let ui = codex_plus_core::model_suffix::model_ui_metadata_with_override(
+        "claude-opus-5-5",
+        metadata.get("claude-opus-5-5"),
+    )
+    .unwrap();
+    assert_eq!(ui["displayName"], "Claude-Opus-5-5");
+    assert!(
+        ui["supportedReasoningEfforts"]
+            .as_array()
+            .is_some_and(|levels| !levels.is_empty())
+    );
+    assert_eq!(
+        ui["codex_plus_group_id"],
+        profile_id_of(ctx, "ChatGPT Pro · 2649340134@qq.com")
+    );
+
+    // 关掉「模型名后带供应商」：同名几份的显示名只差看不见的零宽字符，去掉它们都是模型名本身，但互不相同。
+    ctx.gateway
+        .update(|gateway| {
+            gateway.model_suffix = false;
+            Ok(())
+        })
+        .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let settings = ctx.settings.load().unwrap();
+    let profile = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "codex-plus-gateway")
+        .unwrap();
+    let metadata: Value = serde_json::from_str(&profile.model_metadata).unwrap();
+    let names: Vec<String> = [
+        format!("{deepseek_id}/deepseek-v4-pro"),
+        format!("{second_id}/deepseek-v4-pro"),
+        "deepseek-v4-pro".to_string(),
+    ]
+    .iter()
+    .map(|slug| metadata[slug]["display_name"].as_str().unwrap().to_string())
+    .collect();
+    for name in &names {
+        assert_eq!(
+            name.replace(['\u{200B}', '\u{200C}'], ""),
+            "DeepSeek-V4-Pro",
+            "{name:?}"
+        );
+        assert!(!name.contains('（'), "看不到供应商后缀：{name:?}");
+    }
+    assert_ne!(names[0], names[1]);
+    assert_ne!(names[1], names[2]);
+    assert_ne!(names[0], names[2]);
+}
+
+fn profile_id_of(ctx: &ApplyContext, name: &str) -> String {
+    ctx.gateway
+        .load()
+        .unwrap()
+        .providers
+        .iter()
+        .find(|provider| provider.relay.name == name)
+        .map(|provider| provider.relay.id.clone())
+        .unwrap()
 }
 
 /// Codex 的实时配置被别的工具改过（直连模式里切换会报「实时配置冲突」）：
@@ -587,7 +780,7 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
         ..RelayProfile::default()
     };
     let (_, pool_id) =
-        codex_plus_core::gateway::apply::add_provider(&ctx.gateway, chatgpt, "login:chatgpt")
+        codex_plus_core::gateway::apply::add_provider(&ctx.gateway, chatgpt, "login:chatgpt", None)
             .unwrap();
 
     enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
@@ -638,7 +831,7 @@ fn gateway_provider_proxy_is_its_own_setting() {
     let mut input = deepseek_input();
     input.name = "代理测试".into();
     input.proxy = Some(" http://127.0.0.1:7890 ".into());
-    let (_, id) = create_provider(&ctx.gateway, &input, "preset:deepseek").unwrap();
+    let (_, id) = create_provider(&ctx.gateway, &input, "preset:deepseek", None).unwrap();
     let loaded = ctx.gateway.load().unwrap();
     let provider = loaded.provider(&id).unwrap();
     assert_eq!(provider.proxy, "http://127.0.0.1:7890");
@@ -678,28 +871,61 @@ fn gateway_provider_proxy_is_its_own_setting() {
     );
 
     // 详情里单独改价格与代理：地址、Key、模型不动。
-    let before = ctx.gateway.load().unwrap().provider(&id).unwrap().relay.clone();
+    let before = ctx
+        .gateway
+        .load()
+        .unwrap()
+        .provider(&id)
+        .unwrap()
+        .relay
+        .clone();
     let price = codex_plus_core::gateway::store::ProviderPrice {
         currency: "USD".into(),
         input: 2.0,
         cached_input: 0.1,
         output: 10.0,
     };
+    let pro = codex_plus_core::gateway::store::ProviderPrice {
+        currency: "USD".into(),
+        input: 4.0,
+        cached_input: 0.2,
+        output: 16.0,
+    };
     let saved = codex_plus_core::gateway::apply::set_provider_extras(
         &ctx.gateway,
         &id,
         Some(price.clone()),
+        Some(
+            [
+                ("deepseek-v4-pro".to_string(), pro.clone()),
+                ("deepseek-v4-flash".to_string(), Default::default()),
+            ]
+            .into(),
+        ),
         "socks5://127.0.0.1:1080",
     )
     .unwrap();
     let provider = saved.provider(&id).unwrap();
-    assert_eq!(provider.price, Some(price));
+    assert_eq!(provider.price, Some(price.clone()));
+    // 按模型的价格优先，没填（全 0）的项丢掉、回落到默认价；窗口后缀和大小写不影响匹配。
+    assert_eq!(provider.model_prices.len(), 1);
+    assert_eq!(provider.price_for("DeepSeek-V4-Pro[1M]"), Some(&pro));
+    assert_eq!(provider.price_for("deepseek-v4-flash"), Some(&price));
+    // 不传按模型的价格时保留原来的。
+    let kept =
+        codex_plus_core::gateway::apply::set_provider_extras(&ctx.gateway, &id, None, None, "")
+            .unwrap();
+    assert_eq!(kept.provider(&id).unwrap().model_prices.len(), 1);
+    assert_eq!(
+        kept.provider(&id).unwrap().price_for("deepseek-v4-flash"),
+        None
+    );
     assert_eq!(provider.proxy, "socks5://127.0.0.1:1080");
     assert_eq!(provider.relay.base_url, before.base_url);
     assert_eq!(provider.relay.api_key, before.api_key);
     assert_eq!(provider.relay.model_list, before.model_list);
     assert!(
-        codex_plus_core::gateway::apply::set_provider_extras(&ctx.gateway, &id, None, "bad")
+        codex_plus_core::gateway::apply::set_provider_extras(&ctx.gateway, &id, None, None, "bad")
             .is_err()
     );
 }
@@ -723,13 +949,47 @@ fn enabling_requires_a_pool_and_a_routable_model() {
 }
 
 #[test]
+fn new_providers_follow_agent_picks_and_auto_join() {
+    let fixture = fixture(57401);
+    let store = &fixture.ctx.gateway;
+    // Grok 关掉「添加供应商时自动加入」，Claude 保持默认。
+    let mut gateway = store.load().unwrap();
+    gateway.bindings.insert("claude".into(), binding());
+    let mut grok = binding();
+    grok.auto_join_providers = false;
+    gateway.bindings.insert("grok".into(), grok);
+    store.save(&gateway).unwrap();
+
+    // 没传勾选：按各 Agent 的设置。
+    let (gateway, id) = create_provider(store, &deepseek_input(), "preset:deepseek", None).unwrap();
+    assert!(!gateway.bindings["claude"].pool_exclude.contains(&id));
+    assert!(gateway.bindings["grok"].pool_exclude.contains(&id));
+
+    // 传了勾选：取消勾选的 Agent 不用它，哪怕之前没有绑定也记下来。
+    let skip = vec!["claude".to_string(), "codex".to_string()];
+    let (gateway, id) =
+        create_provider(store, &deepseek_input(), "preset:deepseek", Some(&skip)).unwrap();
+    assert!(gateway.bindings["claude"].pool_exclude.contains(&id));
+    assert!(gateway.bindings["codex"].pool_exclude.contains(&id));
+    assert!(!gateway.bindings["codex"].enabled);
+    assert!(
+        !gateway.bindings["grok"].pool_exclude.contains(&id),
+        "勾选了就给它用"
+    );
+
+    // 旧数据没有这个字段时默认自动加入。
+    let parsed: AgentBinding = serde_json::from_str("{}").unwrap();
+    assert!(parsed.auto_join_providers);
+}
+
+#[test]
 fn providers_live_only_in_the_gateway_store() {
     let fixture = fixture(57392);
     let store = &fixture.ctx.gateway;
     // 新建：多个 Key 写成命名 Key；重名换成新短名。
     let mut input = deepseek_input();
     input.keys = vec!["sk-a".into(), " sk-b ".into(), "sk-a".into()];
-    let (gateway, id) = create_provider(store, &input, "preset:deepseek").unwrap();
+    let (gateway, id) = create_provider(store, &input, "preset:deepseek", None).unwrap();
     assert_eq!(id, "deepseek-2");
     let relay = &gateway.provider("deepseek-2").unwrap().relay;
     assert_eq!(relay.api_keys.len(), 2);
@@ -770,6 +1030,7 @@ fn providers_live_only_in_the_gateway_store() {
             id: String::new(),
             name: "Daily coding".into(),
             mode: GroupMode::InOrder,
+            sticky: GroupSticky::Session,
             members: vec![
                 GroupMember {
                     model: "deepseek-2/deepseek-v4-pro".into(),
@@ -780,10 +1041,16 @@ fn providers_live_only_in_the_gateway_store() {
                     weight: 1,
                 },
             ],
+            ..GroupInput::default()
         },
     )
     .unwrap();
     assert_eq!(group, "daily-coding");
+    assert_eq!(
+        store.load().unwrap().group("daily-coding").unwrap().sticky,
+        GroupSticky::Session,
+        "会话固定方式随组保存"
+    );
     let gateway = delete_provider(store, "deepseek-2").unwrap();
     assert!(gateway.provider("deepseek-2").is_none());
     assert_eq!(
@@ -840,6 +1107,7 @@ fn groups_are_saved_validated_and_unlinked_on_delete() {
     assert_eq!(saved.members.len(), 1, "去掉自引用和重复成员");
     assert_eq!(saved.members[0].weight, 1, "权重至少为 1");
     assert_eq!(saved.mode, GroupMode::Rotate);
+    assert_eq!(saved.sticky, GroupSticky::Cache, "没填时默认缓存期内固定");
     let gateway = delete_group(store, &fast).unwrap();
     assert_eq!(
         gateway.group(&coder).unwrap().members.len(),
@@ -917,7 +1185,7 @@ fn pool_changes_follow_into_grok_model_list() {
     kimi.name = "Kimi".into();
     kimi.model = "kimi-k3".into();
     kimi.model_list = "kimi-k3".into();
-    create_provider(&ctx.gateway, &kimi, "").unwrap();
+    create_provider(&ctx.gateway, &kimi, "", None).unwrap();
     assert_eq!(refresh_enabled(ctx).unwrap(), 1);
     assert!(config().contains("kimi-k3"), "{}", config());
     save_group(
@@ -937,4 +1205,317 @@ fn pool_changes_follow_into_grok_model_list() {
     set_provider_enabled(&ctx.gateway, "kimi", false).unwrap();
     refresh_enabled(ctx).unwrap();
     assert!(!config().contains("kimi-k3"), "{}", config());
+}
+
+fn direct_relay(id: &str, model: &str) -> RelayProfile {
+    RelayProfile {
+        id: id.to_string(),
+        name: format!("中转 {id}"),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::Responses,
+        base_url: format!("https://{id}.test/v1"),
+        api_key: format!("sk-{id}"),
+        model: model.to_string(),
+        model_list: model.to_string(),
+        ..RelayProfile::default()
+    }
+}
+
+#[test]
+fn direct_aggregates_move_into_the_gateway_as_pool_providers_and_a_group() {
+    use codex_plus_core::gateway::apply::{add_provider, codex_aggregates, import_codex_aggregate};
+    use codex_plus_core::settings::{
+        AggregateRelayMember, AggregateRelayProfile, AggregateRelayRoute, AggregateRelayStrategy,
+    };
+    let fixture = fixture(57395);
+    let store = &fixture.ctx.gateway;
+    let member = |relay_id: &str, weight: u32| AggregateRelayMember {
+        relay_id: relay_id.to_string(),
+        weight,
+    };
+    let aggregate = |id: &str, by_model: bool| AggregateRelayProfile {
+        id: id.to_string(),
+        name: format!("聚合 {id}"),
+        session_provider: Default::default(),
+        model_aggregation_enabled: by_model,
+        strategy: AggregateRelayStrategy::WeightedRoundRobin,
+        members: vec![
+            member("relay-a", 3),
+            member("relay-b", 1),
+            member("gone", 1),
+        ],
+        routes: vec![AggregateRelayRoute {
+            pattern: "gpt-*".into(),
+            relay_id: "relay-b".into(),
+            priority: 0,
+        }],
+        default_relay_id: String::new(),
+        sync_default_member_login: false,
+    };
+    let settings = BackendSettings {
+        relay_profiles: vec![
+            direct_relay("relay-a", "model-a"),
+            direct_relay("relay-b", "model-b"),
+        ],
+        aggregate_relay_profiles: vec![
+            aggregate("agg", false),
+            aggregate("by-model", true),
+            AggregateRelayProfile {
+                members: Vec::new(),
+                ..aggregate("empty", false)
+            },
+        ],
+        ..BackendSettings::default()
+    };
+    // relay-a 之前单独导入过：复用，不再复制一份。
+    let (_, imported_a) = add_provider(
+        store,
+        copy_codex_provider(&settings, "relay-a").unwrap(),
+        "codex:relay-a",
+        None,
+    )
+    .unwrap();
+
+    let result = import_codex_aggregate(store, &settings, "agg", None).unwrap();
+    assert_eq!(result.added, 1, "只新导入 relay-b");
+    let gateway = store.load().unwrap();
+    let group = gateway.group(result.group.as_deref().unwrap()).unwrap();
+    assert_eq!(group.name, "聚合 agg");
+    assert_eq!(group.mode, GroupMode::Weighted);
+    let imported_b = gateway
+        .providers
+        .iter()
+        .find(|provider| provider.source == "codex:relay-b")
+        .unwrap()
+        .relay
+        .id
+        .clone();
+    assert_eq!(
+        group
+            .members
+            .iter()
+            .map(|member| (member.model.clone(), member.weight))
+            .collect::<Vec<_>>(),
+        vec![
+            (format!("{imported_a}/model-a"), 3),
+            (format!("{imported_b}/model-b"), 1)
+        ]
+    );
+    assert!(
+        result.notes.iter().any(|note| note.contains("gone")),
+        "{:?}",
+        result.notes
+    );
+    assert!(
+        result.notes.iter().any(|note| note.contains("路由规则")),
+        "{:?}",
+        result.notes
+    );
+    assert!(
+        codex_aggregates(&settings, &gateway)
+            .iter()
+            .any(|item| item.id == "agg" && item.imported && item.mode == GroupMode::Weighted)
+    );
+
+    // 再搬一次：不多导供应商、不多出模型组。
+    let again = import_codex_aggregate(store, &settings, "agg", None).unwrap();
+    assert_eq!(again.added, 0);
+    assert_eq!(again.group, result.group);
+    assert_eq!(store.load().unwrap().groups.len(), 1);
+
+    // 按模型聚合：成员进池就够了，不建组。
+    let by_model = import_codex_aggregate(store, &settings, "by-model", None).unwrap();
+    assert_eq!((by_model.added, by_model.group), (0, None));
+    assert!(
+        by_model
+            .notes
+            .iter()
+            .any(|note| note.contains("按模型聚合"))
+    );
+    // 导入列表只列会建模型组的：按模型聚合（成员就是普通供应商）和没有成员的都不列。
+    let listed: Vec<String> = codex_aggregates(&settings, &store.load().unwrap())
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    assert_eq!(listed, vec!["agg".to_string()]);
+}
+
+#[test]
+fn auto_group_settings_save_and_reset_to_default() {
+    use codex_plus_core::gateway::apply::save_auto_group;
+    use codex_plus_core::gateway::store::AutoGroupSettings;
+    let fixture = fixture(57396);
+    let store = &fixture.ctx.gateway;
+    // 新文件：自动建组默认开。
+    assert!(store.load().unwrap().auto_models);
+    let changed = AutoGroupSettings {
+        mode: GroupMode::Manual,
+        pick: " kimi/deepseek-v4-pro ".into(),
+        hide_members: true,
+        ..AutoGroupSettings::default()
+    };
+    let gateway = save_auto_group(store, "DeepSeek-V4-Pro", changed).unwrap();
+    let saved = gateway.auto_groups.get("deepseek-v4-pro").unwrap();
+    assert_eq!(saved.mode, GroupMode::Manual);
+    assert_eq!(saved.pick, "kimi/deepseek-v4-pro", "去掉首尾空格");
+    assert!(saved.hide_members);
+    // 改回默认：记录删掉，自动组回到「没改过」、跟着池子变。
+    let gateway = save_auto_group(store, "deepseek-v4-pro", AutoGroupSettings::default()).unwrap();
+    assert!(gateway.auto_groups.is_empty());
+}
+
+/// 读 Codex 的模型目录：`config.toml` 里 `model_catalog_json` 指向的文件。按 TOML 解析取值：
+/// Windows 上路径里的反斜杠在 TOML 字符串里是转义过的，按文本截引号会得到错的路径。
+fn codex_catalog(ctx: &ApplyContext) -> Value {
+    let config = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    let pointer = parsed
+        .get("model_catalog_json")
+        .and_then(toml::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| panic!("网关供应商要写模型目录：{config}"));
+    let pointer = std::path::PathBuf::from(pointer);
+    let path = if pointer.is_absolute() {
+        pointer
+    } else {
+        ctx.codex_home.join(pointer)
+    };
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn context_windows_follow_each_model_in_the_pool() {
+    let fixture = fixture(57396);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    let id = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    set_provider_windows(
+        &ctx.gateway,
+        &id,
+        [("DeepSeek-V4-Pro".to_string(), 1_000_000)].into(),
+        Some(128_000),
+    )
+    .unwrap();
+
+    // Agent 的默认窗口只给没写窗口的模型兜底；池里按模型写的优先。
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let catalog = codex_catalog(ctx);
+    let window = |slug: &str| {
+        catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["slug"] == slug)
+            .unwrap_or_else(|| panic!("目录里没有 {slug}：{catalog}"))["context_window"]
+            .clone()
+    };
+    assert_eq!(window("deepseek-v4-pro"), 1_000_000);
+    assert_eq!(
+        window("deepseek-v4-flash"),
+        128_000,
+        "没单独写的用这家的默认窗口"
+    );
+
+    // Claude Code 只有一个窗口：按默认模型的。
+    enable_binding(ctx, &ToolId::Claude, binding()).unwrap();
+    assert_eq!(
+        read_settings_json(ctx)["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"],
+        "1000000"
+    );
+
+    // 清掉供应商的窗口后回到 Agent 的默认窗口。
+    set_provider_windows(&ctx.gateway, &id, Default::default(), None).unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    let flash = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["slug"] == "deepseek-v4-flash")
+        .unwrap()["context_window"]
+        .clone();
+    assert_eq!(flash, 1_000_000);
+}
+
+#[test]
+fn imported_windows_move_into_the_gateway_provider() {
+    let fixture = fixture(57397);
+    let ctx = &fixture.ctx;
+    let relay = RelayProfile {
+        id: "relay".into(),
+        name: "Relay".into(),
+        relay_mode: RelayMode::PureApi,
+        base_url: "https://relay.test/v1".into(),
+        api_key: "sk-relay".into(),
+        model: "kimi-k3".into(),
+        model_list: "kimi-k3[256K]\nglm-5".into(),
+        context_window: "200K".into(),
+        ..RelayProfile::default()
+    };
+    codex_plus_core::gateway::apply::add_provider(&ctx.gateway, relay, "codex:relay", None)
+        .unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    let provider = gateway.provider("relay").unwrap();
+    assert_eq!(provider.window_for("kimi-k3"), Some(256_000));
+    assert_eq!(provider.window_for("glm-5"), Some(200_000));
+    assert!(
+        provider
+            .relay
+            .model_windows
+            .trim_matches(['{', '}'])
+            .is_empty()
+    );
+    assert!(provider.relay.context_window.is_empty());
+}
+
+#[test]
+fn reasoning_levels_are_edited_per_model_and_survive_provider_edits() {
+    let fixture = fixture(57398);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    let id = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+
+    let builtin = provider_reasoning(&ctx.gateway.load().unwrap(), &id).unwrap();
+    assert_eq!(builtin[0].model, "deepseek-v4-pro");
+    assert!(!builtin[0].builtin_levels.is_empty(), "内置资料里有档位");
+
+    set_provider_metadata(
+        &ctx.gateway,
+        &id,
+        r#"{"deepseek-v4-pro":{"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],"default_reasoning_level":"high"}}"#,
+    )
+    .unwrap();
+    // 编辑供应商（地址、Key、模型）不丢思考等级。
+    update_provider(&ctx.gateway, &id, &deepseek_input()).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let catalog = codex_catalog(ctx);
+    let pro = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["slug"] == "deepseek-v4-pro")
+        .unwrap()
+        .clone();
+    let efforts: Vec<&str> = pro["supported_reasoning_levels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|level| level["effort"].as_str().unwrap())
+        .collect();
+    assert_eq!(efforts, ["low", "high"]);
+    assert_eq!(pro["default_reasoning_level"], "high");
+    // 内置档位读的是没改过的。
+    let again = provider_reasoning(&ctx.gateway.load().unwrap(), &id).unwrap();
+    assert_eq!(again[0].builtin_levels, builtin[0].builtin_levels);
+
+    assert!(
+        set_provider_metadata(&ctx.gateway, &id, "[1, 2]").is_err(),
+        "不是对象要拒绝"
+    );
 }

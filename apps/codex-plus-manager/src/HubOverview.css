@@ -350,17 +350,92 @@
   list-style: none;
 }
 
-.hub-feed li {
-  display: grid;
-  grid-template-columns: 120px minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
+.hub-feed > li {
   border-top: 1px solid hsl(var(--border));
 }
 
-.hub-feed li:first-child {
+.hub-feed > li:first-child {
   border-top: 0;
+}
+
+.shell .hub-feed-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto auto 14px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shell .hub-feed-row:disabled {
+  cursor: default;
+}
+
+.shell .hub-feed-row:not(:disabled):hover {
+  background: hsl(var(--muted) / 0.4);
+}
+
+.shell .hub-feed-chevron {
+  color: hsl(var(--muted-foreground) / 0.7);
+  transition: transform 0.15s ease;
+}
+
+.shell .hub-feed-row:disabled .hub-feed-chevron {
+  visibility: hidden;
+}
+
+.shell .hub-feed > li[data-open="true"] .hub-feed-chevron {
+  transform: rotate(180deg);
+}
+
+/* 展开后的路由经过：一行一步，圆点颜色表示这一步的结果。 */
+.shell .hub-feed-trace {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 16px 12px 44px;
+  list-style: none;
+}
+
+.shell .hub-feed-trace li {
+  position: relative;
+  padding-left: 16px;
+  color: hsl(var(--foreground));
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.shell .hub-feed-trace li::before {
+  position: absolute;
+  top: 0.55em;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: hsl(var(--foreground));
+  content: "";
+}
+
+.shell .hub-feed-trace li[data-tone="muted"] {
+  color: hsl(var(--muted-foreground));
+}
+
+.shell .hub-feed-trace li[data-tone="muted"]::before {
+  background: hsl(var(--muted-foreground) / 0.6);
+}
+
+.shell .hub-feed-trace li[data-tone="ok"]::before {
+  background: hsl(var(--status-success));
+}
+
+.shell .hub-feed-trace li[data-tone="fail"]::before {
+  background: hsl(var(--status-error));
 }
 
 .hub-feed-agent {
@@ -504,4 +579,10 @@
   .hub-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* 供应商池空着、直连模式里有供应商时的导入入口：比「添加供应商」醒目一点。 */
+.shell .hub-node-import {
+  border-color: hsl(var(--primary) / 0.45);
+  color: hsl(var(--primary));
 }

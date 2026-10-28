@@ -393,9 +393,11 @@
   color: hsl(var(--brand-accent));
 }
 
-.cache-dialog {
+/* 全局 reset 把 <dialog> 的 margin 清成 0，模态框会贴到左上角；这里补回居中。 */
+.shell .cache-dialog {
   width: min(640px, calc(100vw - 48px));
   max-height: min(640px, calc(100vh - 80px));
+  margin: auto;
   padding: 0;
   overflow: hidden;
   border: 1px solid hsl(var(--input));
@@ -405,7 +407,7 @@
   color: hsl(var(--popover-foreground));
 }
 
-.cache-dialog[open] {
+.shell .cache-dialog[open] {
   display: flex;
   flex-direction: column;
 }

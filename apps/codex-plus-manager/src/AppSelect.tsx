@@ -4,7 +4,7 @@
  */
 import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { CheckCircle2, ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import { usePopoverLayer } from "./use-popover-layer";
 
 export type AppSelectOption<T extends string> = {
@@ -79,7 +79,7 @@ export function AppSelect<T extends string>({
         type="button"
       >
         <span className={selected ? undefined : "app-select-placeholder"}>{selected ? selected.label : placeholder}</span>
-        <ChevronDown className="h-4 w-4" />
+        <ChevronDown className="h-3.5 w-3.5" />
       </button>
       {open && !disabled ? createPortal(
         <div
@@ -103,15 +103,15 @@ export function AppSelect<T extends string>({
               title={option.title}
               type="button"
             >
-              {option.value === value ? <CheckCircle2 className="h-4 w-4" /> : <span className="app-select-option-spacer" />}
               {option.hint ? (
                 <span className="app-select-option-text">
                   <span>{option.label}</span>
                   <small>{option.hint}</small>
                 </span>
               ) : (
-                <span>{option.label}</span>
+                <span className="app-select-option-label">{option.label}</span>
               )}
+              {option.value === value ? <Check aria-hidden className="app-select-check" /> : null}
             </button>
           ))}
         </div>,

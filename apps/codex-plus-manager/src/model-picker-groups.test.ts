@@ -152,7 +152,12 @@ it("目录条目按别名匹配，且只用它补分组 id、不用它决定显�
   assert.match(source, /replace\(\/\^gpt\[-\\s\]\*\/iu, ""\)/);
   // 早期版本的教训：拿目录展示名去拟合行文本会把同一家切成好几段。
   assert.match(source, /const groupId = known\?\.groupId/);
-  assert.match(source, /const provider = split\.provider \|\| known\?\.provider/);
+  // 只有整行精确命中目录（含 `（后缀）` 的完整展示名）时，才用目录里的分组名做显示归属：
+  // 网关把同名模型的后几家写成 `名字（供应商 id）`，标题要显示打过码的完整账号名；别名命中仍不决定归属。
+  assert.match(source, /const provider = exactKnown\?\.provider \|\| split\.provider \|\| known\?\.provider/);
+  // 先按原文比（网关关掉「模型名后带供应商」时同名几份只差零宽字符），再按宽松归一化比。
+  assert.match(source, /const exactKnown = exact\.get\(`raw\\u0000\$\{identity\.text\}`\)\s*\|\| exact\.get\(codexPlusModelPickerNormalizeLoose\(identity\.text\)\)/);
+  assert.match(source, /const rawKey = `raw\\u0000\$\{String\(displayName\)/);
   // 组内任意一行命中默认分组即认定该组是默认（裸名行的 id 可能来自目录）。
   assert.match(source, /group\.entries\.some\(\(entry\) => entry\.groupId === defaultGroupId/);
 });
@@ -173,4 +178,14 @@ it("默认标志不改变无障碍语义：读屏会念出「默认供应商」"
   const source = await readShard();
   assert.match(source, /（默认供应商）/);
   assert.match(source, /\(default provider\)/);
+});
+
+it("在 Codex++ 里收藏的模型在选择器行尾画星标，取消收藏或还原时拿掉", async () => {
+  const source = await readShard();
+  assert.match(source, /favorite: entry\.codex_plus_favorite === true/);
+  assert.match(source, /favorite: exactKnown\?\.favorite === true/);
+  assert.match(source, /codexPlusModelPickerFavoriteClass = "codex-plus-model-group-favorite"/);
+  // 星标节点带归属标记，扫描不会把它当成原生标签，也不会自喂循环。
+  assert.match(source, /star\.setAttribute\("data-codex-plus-ext", codexPlusModelPickerGroupsExtMark\)/);
+  assert.match(source, /content\.querySelector\(`\.\$\{codexPlusModelPickerFavoriteClass\}`\)\?\.remove\(\)/);
 });

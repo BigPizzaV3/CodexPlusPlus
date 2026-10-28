@@ -8,6 +8,7 @@ use serde::Serialize;
 use codex_plus_core::gateway::activity::{self, ActivitySnapshot};
 use codex_plus_core::gateway::apply::{self, ApplyContext, GroupInput, ProviderInput};
 use codex_plus_core::gateway::key_pool::{self, PoolSnapshot};
+use codex_plus_core::gateway::model_sync;
 use codex_plus_core::gateway::store::{
     AgentBinding, GatewayGroup, GatewaySettings, GatewayStore, KeyRotationMode, new_client_token,
 };
@@ -32,12 +33,31 @@ pub struct GatewayPoolEntry {
     /// 预设 key 或导入来源，界面判断「已添加」用。
     pub source: String,
     pub price: Option<codex_plus_core::gateway::store::ProviderPrice>,
+    /// 按模型的价格（上游模型名 → 价格）。
+    pub model_prices:
+        std::collections::BTreeMap<String, codex_plus_core::gateway::store::ProviderPrice>,
+    /// 能画图的模型（不进聊天模型列表）：ChatGPT 账号是内置的一项，其余按名字挑。
+    pub image_models: Vec<String>,
+    /// 按模型的模型资料（思考等级等），格式同直连模式的「模型配置」JSON。
+    pub model_metadata: String,
+    /// 按模型的上下文窗口（上游模型名 → token）。
+    pub model_windows: std::collections::BTreeMap<String, u64>,
+    /// 没单独写窗口的模型用的窗口。
+    pub context_window: Option<u64>,
     /// 登录得到的账号：`chatgpt` / `copilot` / `grok`；普通供应商为空。
     pub account: String,
+    /// 订阅账号的套餐（如「ChatGPT Pro」「Copilot Pro+」）；普通供应商为空。
+    pub plan: String,
     /// 这个 ChatGPT 账号正借给 Codex 登录（Codex 以官方身份接入网关）。
     pub lent_to_codex: bool,
     /// 网关供应商单独走的 HTTP 代理（空串表示不单独走代理）。
     pub proxy: String,
+    /// 上次检查时上游有、列表里没有的模型（界面提示新模型）。
+    pub upstream_new: Vec<String>,
+    /// 上次检查时列表里有、上游已经没有的模型。
+    pub upstream_gone: Vec<String>,
+    /// 订阅账号的额度（ChatGPT 5 小时 / 每周、Copilot 本月高级请求）；查不到或普通供应商为空。
+    pub quota: Option<codex_plus_core::gateway::quota::ProviderQuota>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +77,16 @@ pub struct GatewayAgentView {
     pub drift: Option<codex_plus_core::gateway::drift::Drift>,
 }
 
+/// 界面上的自动组：组本身 + 是否隐藏 + 有没有改过设置。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoGroupView {
+    #[serde(flatten)]
+    pub group: GatewayGroup,
+    pub hidden: bool,
+    pub customized: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewaySourceEntry {
@@ -73,16 +103,28 @@ pub struct GatewayPayload {
     pub helper_running: bool,
     pub pool: Vec<GatewayPoolEntry>,
     pub groups: Vec<GatewayGroup>,
+    /// 自动组：池里多家都有的模型各一个（含已隐藏的）。
+    pub auto_groups: Vec<AutoGroupView>,
     pub agents: Vec<GatewayAgentView>,
     pub health: PoolSnapshot,
     /// 路由动态：各 Agent 最近一次请求怎么走的、计数、正在回答的上游。
     pub activity: ActivitySnapshot,
+    /// 各（供应商, 模型）最近的平均首包耗时，「路由」页、供应商池「按模型」和「速度优先」用。
+    pub speeds: Vec<codex_plus_core::gateway::speed::SpeedView>,
     /// 可复制进网关的直连模式供应商。
     pub codex_providers: Vec<GatewayPoolEntry>,
     pub claude_providers: Vec<GatewaySourceEntry>,
     pub grok_profiles: Vec<GatewaySourceEntry>,
     /// OpenCode 自己保存的 OpenCode Go / Zen Key（不含 Key 本身）。
     pub opencode_keys: Vec<GatewaySourceEntry>,
+    /// 直连模式的聚合供应商：可以搬进网关（成员进池 + 同名模型组）。
+    pub codex_aggregates: Vec<apply::AggregateSource>,
+    /// 直连模式的官方登录账号：不能复制，要在网关里单独登录（名字已打码）。
+    pub codex_official: Vec<GatewaySourceEntry>,
+    /// 「生图模型」能选的：ChatGPT 订阅账号和各家的生图模型。
+    pub image_options: Vec<codex_plus_core::gateway::images::ImageOption>,
+    /// 生图选「自动」时先用的那一项。
+    pub image_auto: Option<codex_plus_core::gateway::images::ImageOption>,
 }
 
 const GATEWAY_AGENTS: &[ToolId] = &[ToolId::Codex, ToolId::Claude, ToolId::Grok];
@@ -109,6 +151,11 @@ fn pool_entry(
     enabled: bool,
     source: &str,
     price: Option<codex_plus_core::gateway::store::ProviderPrice>,
+    model_prices: std::collections::BTreeMap<
+        String,
+        codex_plus_core::gateway::store::ProviderPrice,
+    >,
+    upstream: (Vec<String>, Vec<String>),
 ) -> GatewayPoolEntry {
     GatewayPoolEntry {
         id: relay.id.clone(),
@@ -121,9 +168,18 @@ fn pool_entry(
         enabled,
         source: source.to_string(),
         price,
+        model_prices,
+        model_windows: Default::default(),
+        context_window: None,
+        model_metadata: relay.model_metadata.clone(),
+        image_models: codex_plus_core::gateway::images::provider_image_models(relay),
         account: account_kind(relay),
+        plan: codex_plus_core::gateway::accounts::account_plan(relay),
         lent_to_codex: codex_plus_core::official_login::is_lent_to_codex(relay),
         proxy: relay.gateway_proxy.clone().unwrap_or_default(),
+        upstream_new: upstream.0,
+        upstream_gone: upstream.1,
+        quota: codex_plus_core::gateway::quota::get(&relay.id),
     }
 }
 
@@ -147,18 +203,42 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
     let pool = gateway
         .providers
         .iter()
-        .map(|provider| {
-            pool_entry(
+        .map(|provider| GatewayPoolEntry {
+            model_windows: provider.model_windows.clone(),
+            context_window: provider.context_window,
+            ..pool_entry(
                 &provider.relay,
                 provider.enabled,
                 &provider.source,
                 provider.price.clone(),
+                provider.model_prices.clone(),
+                (
+                    provider.upstream_new.clone(),
+                    provider.upstream_gone.clone(),
+                ),
             )
+        })
+        .collect();
+    let codex_aggregates = apply::codex_aggregates(settings, &gateway);
+    let codex_official = apply::codex_official_accounts(settings)
+        .into_iter()
+        .map(|relay| GatewaySourceEntry {
+            id: relay.id.clone(),
+            name: codex_plus_core::gateway::accounts::mask_account_name(&relay.name),
         })
         .collect();
     let codex_providers = apply::codex_importable(settings)
         .into_iter()
-        .map(|relay| pool_entry(relay, true, "", None))
+        .map(|relay| {
+            pool_entry(
+                relay,
+                true,
+                "",
+                None,
+                Default::default(),
+                Default::default(),
+            )
+        })
         .collect();
     let drift_ctx = ApplyContext::default_paths(port);
     let agents = GATEWAY_AGENTS
@@ -210,17 +290,38 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         })
         .unwrap_or_default();
     let groups = gateway.groups.clone();
+    let auto_groups = codex_plus_core::gateway::route::auto_groups(&gateway)
+        .into_iter()
+        .map(|group| {
+            let key = group.name.to_ascii_lowercase();
+            AutoGroupView {
+                hidden: gateway
+                    .auto_groups
+                    .get(&key)
+                    .is_some_and(|settings| settings.hidden),
+                customized: gateway.auto_groups.contains_key(&key),
+                group,
+            }
+        })
+        .collect();
+    // 生图选项要在清掉供应商之前算。
+    let image_options = codex_plus_core::gateway::images::options(&gateway);
+    let image_auto = codex_plus_core::gateway::images::auto_choice(&gateway);
     let mut gateway = gateway;
     gateway.providers.clear();
     GatewayPayload {
+        image_options,
+        image_auto,
         gateway,
         port,
         helper_running: codex_plus_core::resident_helper::resident_helper_port().is_some(),
         pool,
         groups,
+        auto_groups,
         agents,
         health: key_pool::snapshot(std::time::Instant::now()),
         activity: activity::snapshot(),
+        speeds: codex_plus_core::gateway::speed::snapshot(),
         codex_providers,
         claude_providers,
         grok_profiles,
@@ -231,6 +332,8 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 name: key.name,
             })
             .collect(),
+        codex_aggregates,
+        codex_official,
     }
 }
 
@@ -283,8 +386,17 @@ fn refresh_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
     result
 }
 
+/// 界面每隔几秒轮询一次：读设置、gateway.json、检查各 Agent 配置漂移都是文件 IO，
+/// 放到阻塞线程池里做，不占主线程。返回格式不变。
 #[tauri::command]
-pub fn load_gateway() -> CommandResult<Option<GatewayPayload>> {
+pub async fn load_gateway() -> CommandResult<Option<GatewayPayload>> {
+    match tauri::async_runtime::spawn_blocking(load_gateway_blocking).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("读取网关状态失败：{error}"), None),
+    }
+}
+
+fn load_gateway_blocking() -> CommandResult<Option<GatewayPayload>> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     match GatewayStore::default().load() {
         Ok(gateway) => ok("网关状态已加载。", Some(build_payload(&settings, gateway))),
@@ -371,20 +483,147 @@ pub fn save_gateway_options(
     respond("网关选项已保存。", "保存网关选项失败", result)
 }
 
+/// 「多家自动切换」开关：多家都有的模型额外列一份按顺序自动切换的入口。改完重写开着的 Agent 配置。
+#[tauri::command]
+pub fn save_gateway_auto_models(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
+    let result = GatewayStore::default().update(|gateway| {
+        gateway.auto_models = enabled;
+        Ok(())
+    });
+    respond(
+        "网关选项已保存。",
+        "保存网关选项失败",
+        refresh_agents(result),
+    )
+}
+
+/// 「模型名后带供应商」：多家都有的模型在 Codex 的模型列表和输入框里名字后面带不带「（供应商）」。
+#[tauri::command]
+pub fn save_gateway_model_suffix(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
+    let result = GatewayStore::default().update(|gateway| {
+        gateway.model_suffix = enabled;
+        Ok(())
+    });
+    respond(
+        "网关选项已保存。",
+        "保存网关选项失败",
+        refresh_agents(result),
+    )
+}
+
+/// 某个 Agent 的生图模型：空串是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。
+#[tauri::command]
+pub fn save_gateway_image_model(
+    agent: String,
+    model: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent).and_then(|agent| {
+        GatewayStore::default().update(|gateway| {
+            let model = model.trim();
+            if model.is_empty() {
+                gateway.image_models.remove(agent.as_str());
+            } else {
+                gateway
+                    .image_models
+                    .insert(agent.as_str().to_string(), model.to_string());
+            }
+            Ok(())
+        })
+    });
+    respond("生图模型已保存。", "保存生图模型失败", result)
+}
+
+/// 供应商各模型内置的思考等级（编辑思考等级时当作没改过的显示值）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderReasoningPayload {
+    pub models: Vec<apply::ModelReasoningView>,
+}
+
+#[tauri::command]
+pub fn gateway_provider_reasoning(id: String) -> CommandResult<Option<ProviderReasoningPayload>> {
+    let result = GatewayStore::default()
+        .load()
+        .and_then(|gateway| apply::provider_reasoning(&gateway, &id));
+    match result {
+        Ok(models) => ok(
+            "已读取思考等级。",
+            Some(ProviderReasoningPayload { models }),
+        ),
+        Err(error) => failed(&format!("读取思考等级失败：{error:#}"), None),
+    }
+}
+
+/// 保存供应商按模型的思考等级（模型资料 JSON）；写进 Agent 的模型目录，存完重写 Agent 配置。
+#[tauri::command]
+pub fn save_gateway_provider_metadata(
+    id: String,
+    model_metadata: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "思考等级已保存。",
+        "保存思考等级失败",
+        refresh_agents(apply::set_provider_metadata(
+            &GatewayStore::default(),
+            &id,
+            &model_metadata,
+        )),
+    )
+}
+
+/// 自动组卡片上的设置（模式、会话固定、隐藏成员、手动选中的成员、隐藏整个自动组）。和默认一样时记录会被删掉。
+#[tauri::command]
+pub fn save_gateway_auto_group(
+    model: String,
+    settings: codex_plus_core::gateway::store::AutoGroupSettings,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "自动组已保存。",
+        "保存自动组失败",
+        refresh_agents(apply::save_auto_group(
+            &GatewayStore::default(),
+            &model,
+            settings,
+        )),
+    )
+}
+
+/// 保存模型收藏（管理器模型下拉里的星标）。写给 Codex 的模型目录会标出收藏，所以也要重写开着的 Agent 配置。
+#[tauri::command]
+pub fn save_gateway_favorites(models: Vec<String>) -> CommandResult<Option<GatewayPayload>> {
+    let mut list: Vec<String> = Vec::new();
+    for model in models
+        .iter()
+        .map(|model| model.trim())
+        .filter(|model| !model.is_empty())
+    {
+        if !list.iter().any(|known| known == model) {
+            list.push(model.to_string());
+        }
+    }
+    let result = GatewayStore::default().update(|gateway| {
+        gateway.favorite_models = list;
+        Ok(())
+    });
+    respond("收藏已保存。", "保存收藏失败", refresh_agents(result))
+}
+
 /// 用内置预设或手填的地址、Key 新建网关供应商。
 #[tauri::command]
 pub fn create_gateway_provider(
     input: ProviderInput,
     source: String,
+    skip_agents: Option<Vec<String>>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let name = input.name.trim().to_string();
     respond(
         &format!("已添加「{name}」，接入的 Agent 现在能用它的模型了。"),
         "添加供应商失败",
-        refresh_agents(apply::create_provider(
+        refresh_added(apply::create_provider(
             &GatewayStore::default(),
             &input,
             &source,
+            skip_agents.as_deref(),
         )),
     )
 }
@@ -395,15 +634,16 @@ pub fn update_gateway_provider(
     id: String,
     input: ProviderInput,
 ) -> CommandResult<Option<GatewayPayload>> {
-    respond(
-        "供应商已保存。",
-        "保存供应商失败",
-        refresh_agents(apply::update_provider(
-            &GatewayStore::default(),
-            &id,
-            &input,
-        )),
-    )
+    let result = refresh_agents(apply::update_provider(
+        &GatewayStore::default(),
+        &id,
+        &input,
+    ));
+    // 表单里可能改了模型列表：新模型按公开价格表补价格。
+    if result.is_ok() {
+        autofill_prices(Some(id));
+    }
+    respond("供应商已保存。", "保存供应商失败", result)
 }
 
 /// 只改供应商的价格与独立代理（在供应商池的详情里编辑）。
@@ -411,13 +651,145 @@ pub fn update_gateway_provider(
 pub fn save_gateway_provider_extras(
     id: String,
     price: Option<codex_plus_core::gateway::store::ProviderPrice>,
+    model_prices: Option<
+        std::collections::BTreeMap<String, codex_plus_core::gateway::store::ProviderPrice>,
+    >,
     proxy: String,
 ) -> CommandResult<Option<GatewayPayload>> {
     respond(
         "已保存。",
         "保存失败",
-        apply::set_provider_extras(&GatewayStore::default(), &id, price, &proxy),
+        apply::set_provider_extras(&GatewayStore::default(), &id, price, model_prices, &proxy),
     )
+}
+
+/// 改供应商的上下文窗口（按模型的和其余模型用的默认值）；窗口写在 Agent 的模型资料里，存完重写 Agent 配置。
+#[tauri::command]
+pub fn save_gateway_provider_windows(
+    id: String,
+    windows: std::collections::BTreeMap<String, u64>,
+    fallback: Option<u64>,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "上下文窗口已保存。",
+        "保存上下文窗口失败",
+        refresh_agents(apply::set_provider_windows(
+            &GatewayStore::default(),
+            &id,
+            windows,
+            fallback,
+        )),
+    )
+}
+
+/// 用存下的凭据重新拉一个供应商的模型，和现有列表比较（不改列表，只记下差异供界面提示）。
+#[tauri::command]
+pub async fn check_gateway_provider_models(
+    id: String,
+) -> CommandResult<Option<model_sync::ModelDiff>> {
+    match model_sync::check_provider(&GatewayStore::default(), &id).await {
+        Ok(diff) => ok(
+            &format!(
+                "上游有 {} 个模型：新增 {} 个，已下架 {} 个。",
+                diff.upstream.len(),
+                diff.added.len(),
+                diff.removed.len()
+            ),
+            Some(diff),
+        ),
+        Err(error) => failed(&format!("获取模型列表失败：{error:#}"), None),
+    }
+}
+
+/// 保存手动编辑或刷新后的模型列表；新加的模型按公开价格表补价格。
+#[tauri::command]
+pub fn save_gateway_provider_models(
+    id: String,
+    models: Vec<String>,
+    default_model: Option<String>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = refresh_agents(model_sync::set_provider_models(
+        &GatewayStore::default(),
+        &id,
+        &models,
+        default_model.as_deref(),
+    ));
+    if result.is_ok() {
+        autofill_prices(Some(id));
+    }
+    respond("模型列表已保存。", "保存模型列表失败", result)
+}
+
+/// 添加供应商之后：同 [`refresh_agents`]，并在后台按公开价格表给新模型填好价格。
+fn refresh_added<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
+    if result.is_ok() {
+        autofill_prices(None);
+        refresh_quotas();
+    }
+    refresh_agents(result)
+}
+
+/// 一键同步价格：按公开价格表更新这个供应商所有模型的价格并保存。
+#[tauri::command]
+pub async fn sync_gateway_provider_prices(id: String) -> CommandResult<Option<GatewayPayload>> {
+    match model_sync::sync_public_prices(&GatewayStore::default(), &id).await {
+        Ok((0, total)) => failed(
+            &format!("公开价格表里没找到这 {total} 个模型，需要的话手动填写。"),
+            current_payload(),
+        ),
+        Ok((found, total)) => ok(
+            &format!("已按公开价格表更新 {found} / {total} 个模型的价格。"),
+            current_payload(),
+        ),
+        Err(error) => failed(&format!("同步价格失败：{error:#}"), current_payload()),
+    }
+}
+
+/// 后台按公开价格表给没填价的模型补价格（添加供应商、改模型列表后调用）。补完由界面的轮询读到。
+fn autofill_prices(only: Option<String>) {
+    tauri::async_runtime::spawn(async move {
+        let _ = model_sync::fill_missing_prices(&GatewayStore::default(), only.as_deref()).await;
+    });
+}
+
+/// 后台查一遍订阅账号的额度（刚登录的账号不用等下一轮）。
+fn refresh_quotas() {
+    tauri::async_runtime::spawn(async move {
+        let Ok(gateway) = GatewayStore::default().load() else {
+            return;
+        };
+        for provider in gateway.providers.iter().filter(|provider| provider.enabled) {
+            if codex_plus_core::gateway::quota::supports(&provider.relay) {
+                let _ = codex_plus_core::gateway::quota::refresh(&provider.relay).await;
+            }
+        }
+    });
+}
+
+/// 手动刷新一个账号的额度。
+#[tauri::command]
+pub async fn refresh_gateway_quota(id: String) -> CommandResult<Option<GatewayPayload>> {
+    let relay = GatewayStore::default()
+        .load()
+        .ok()
+        .and_then(|gateway| gateway.provider(&id).map(|provider| provider.relay.clone()));
+    let Some(relay) = relay else {
+        return failed(&format!("供应商不存在：{id}"), current_payload());
+    };
+    match codex_plus_core::gateway::quota::refresh(&relay).await {
+        Ok(Some(_)) => ok("额度已刷新。", current_payload()),
+        Ok(None) => failed("这个供应商没有可查的额度。", current_payload()),
+        Err(error) => failed(&format!("查询额度失败：{error:#}"), current_payload()),
+    }
+}
+
+/// 后台任务：启动时补一次价格，之后每小时看一眼，超过一天没检查的供应商重新拉上游模型；
+/// 另外每 10 分钟查一遍订阅账号的额度。
+pub fn start_model_watch() {
+    tauri::async_runtime::spawn(model_sync::watch(GatewayStore::default()));
+    tauri::async_runtime::spawn(codex_plus_core::gateway::quota::watch(
+        GatewayStore::default(),
+    ));
 }
 
 /// 删除网关供应商（直连模式的数据不受影响）。
@@ -467,7 +839,7 @@ pub fn set_gateway_provider_enabled(
         if enabled {
             "已打开，接入的 Agent 能用它的模型了。"
         } else {
-            "已关闭，它不再参与路由。"
+            "已关闭，它不再参与调度。"
         },
         "切换供应商失败",
         refresh_agents(apply::set_provider_enabled(
@@ -488,83 +860,155 @@ pub fn reorder_gateway_providers(ids: Vec<String>) -> CommandResult<Option<Gatew
     )
 }
 
-/// 从直连模式复制一个供应商进网关：`codex` / `claude` / `grok`。复制后两边互不影响。
-#[tauri::command]
-pub fn import_gateway_provider(
-    source: String,
-    id: String,
-) -> CommandResult<Option<GatewayPayload>> {
-    let result = (|| {
-        let relay = match source.as_str() {
-            "codex" => apply::copy_codex_provider(&SettingsStore::default().load()?, &id)?,
-            "claude" => {
-                let provider = claude::load(&ClaudeContext::default_paths())?
-                    .providers
-                    .into_iter()
-                    .find(|provider| provider.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("Claude 供应商不存在：{id}"))?;
-                apply::copy_claude_provider(&provider)?
-            }
-            "grok" => apply::copy_grok_profile(&SettingsStore::default().load()?, &id)?,
-            other => anyhow::bail!("不认识的导入来源：{other}"),
-        };
-        apply::add_provider(&GatewayStore::default(), relay, &format!("{source}:{id}"))
-    })();
-    respond(
-        "已复制进网关的供应商池，原来的供应商不受影响。",
-        "导入失败",
-        refresh_agents(result),
-    )
+/// 把 OpenCode 里保存的 OpenCode Go / Zen Key 加进网关池，模型取目录里网关能用的。
+async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Result<String> {
+    use codex_plus_core::gateway::opencode;
+    let (entry, key) = opencode::load_stored_keys()
+        .into_iter()
+        .find(|(entry, _)| entry.id == id)
+        .ok_or_else(|| anyhow::anyhow!("OpenCode 里没有 {id} 的 Key"))?;
+    let base_url = opencode::base_url_of(&entry.id)
+        .ok_or_else(|| anyhow::anyhow!("不认识的 OpenCode 网关：{id}"))?;
+    let models = match opencode::plan_of(base_url) {
+        Some(plan) => opencode::catalog_models(plan).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let input = ProviderInput {
+        name: entry.name.clone(),
+        base_url: base_url.to_string(),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        keys: vec![key],
+        model: models.first().cloned().unwrap_or_default(),
+        model_list: models.join("\n"),
+        price: None,
+        model_prices: None,
+        proxy: None,
+    };
+    apply::create_provider(
+        &GatewayStore::default(),
+        &input,
+        &format!("opencode:{id}"),
+        skip_agents,
+    )?;
+    Ok(if models.is_empty() {
+        format!(
+            "已添加「{}」。没读到模型目录，请在供应商里获取模型。",
+            entry.name
+        )
+    } else {
+        format!("已添加「{}」，{} 个模型。", entry.name, models.len())
+    })
 }
 
-/// 把 OpenCode 里保存的 OpenCode Go / Zen Key 加进网关池，模型取目录里网关能用的。
+/// 批量导入里的一项：`source` 是 `codex` / `claude` / `grok` / `opencode` / `aggregate`。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ImportItem {
+    pub source: String,
+    pub id: String,
+}
+
+/// 从直连模式（和 OpenCode）一次导入多个供应商。已在池里的跳过；聚合供应商搬成「成员进池 + 同名模型组」。
+/// 每项单独成败，结果汇总成一句话，没法照搬的地方附在后面。
 #[tauri::command]
-pub async fn import_gateway_opencode_key(id: String) -> CommandResult<Option<GatewayPayload>> {
-    use codex_plus_core::gateway::opencode;
-    let result = async {
-        let (entry, key) = opencode::load_stored_keys()
-            .into_iter()
-            .find(|(entry, _)| entry.id == id)
-            .ok_or_else(|| anyhow::anyhow!("OpenCode 里没有 {id} 的 Key"))?;
-        let base_url = opencode::base_url_of(&entry.id)
-            .ok_or_else(|| anyhow::anyhow!("不认识的 OpenCode 网关：{id}"))?;
-        let models = match opencode::plan_of(base_url) {
-            Some(plan) => opencode::catalog_models(plan).await.unwrap_or_default(),
-            None => Vec::new(),
+pub async fn import_gateway_providers(
+    items: Vec<ImportItem>,
+    skip_agents: Option<Vec<String>>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let skip = skip_agents.as_deref();
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    let mut groups: Vec<String> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for item in &items {
+        let already = GatewayStore::default().load().is_ok_and(|gateway| {
+            gateway
+                .providers
+                .iter()
+                .any(|provider| provider.source == format!("{}:{}", item.source, item.id))
+        });
+        if already {
+            skipped += 1;
+            continue;
+        }
+        let result: anyhow::Result<()> = match item.source.as_str() {
+            "opencode" => import_opencode(&item.id, skip).await.map(|_| added += 1),
+            "aggregate" => (|| {
+                let settings = SettingsStore::default().load()?;
+                let outcome = apply::import_codex_aggregate(
+                    &GatewayStore::default(),
+                    &settings,
+                    &item.id,
+                    skip,
+                )?;
+                // 部分成员失败时 outcome 照样带着已导入的数目，失败原因在 notes 里。
+                added += outcome.added;
+                notes.extend(outcome.notes);
+                if let Some(id) = outcome.group {
+                    let name = GatewayStore::default()
+                        .load()
+                        .ok()
+                        .and_then(|gateway| gateway.group(&id).map(|group| group.name.clone()))
+                        .unwrap_or(id);
+                    groups.push(name);
+                }
+                Ok(())
+            })(),
+            source => import_from_direct(source, &item.id, skip).map(|_| added += 1),
         };
-        let input = ProviderInput {
-            name: entry.name.clone(),
-            base_url: base_url.to_string(),
-            protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
-            keys: vec![key],
-            model: models.first().cloned().unwrap_or_default(),
-            model_list: models.join("\n"),
-            price: None,
-            proxy: None,
-        };
-        apply::create_provider(&GatewayStore::default(), &input, &format!("opencode:{id}"))?;
-        Ok(if models.is_empty() {
-            format!(
-                "已添加「{}」。没读到模型目录，请在供应商里获取模型。",
-                entry.name
-            )
-        } else {
-            format!("已添加「{}」，{} 个模型。", entry.name, models.len())
-        })
+        if let Err(error) = result {
+            failures.push(format!("{error:#}"));
+        }
     }
-    .await;
-    match refresh_agents(result) {
-        Ok(message) => ok(&message, current_payload()),
-        Err(error) => failed(&format!("导入失败：{error:#}"), current_payload()),
+    let _ = refresh_added(Ok(()));
+    let mut message = format!("已导入 {added} 个供应商");
+    if !groups.is_empty() {
+        message.push_str(&format!("，建好模型组「{}」", groups.join("」「")));
     }
+    if skipped > 0 {
+        message.push_str(&format!("，{skipped} 个已在池里"));
+    }
+    message.push('。');
+    for note in notes.iter().chain(failures.iter()) {
+        message.push_str(&format!("\n· {note}"));
+    }
+    if added == 0 && groups.is_empty() && !failures.is_empty() {
+        failed(&message, current_payload())
+    } else {
+        ok(&message, current_payload())
+    }
+}
+
+/// 从直连模式复制一项进池：`codex` / `claude` / `grok`。
+fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow::Result<String> {
+    let relay = match source {
+        "codex" => apply::copy_codex_provider(&SettingsStore::default().load()?, id)?,
+        "claude" => {
+            let provider = claude::load(&ClaudeContext::default_paths())?
+                .providers
+                .into_iter()
+                .find(|provider| provider.id == id)
+                .ok_or_else(|| anyhow::anyhow!("Claude 供应商不存在：{id}"))?;
+            apply::copy_claude_provider(&provider)?
+        }
+        "grok" => apply::copy_grok_profile(&SettingsStore::default().load()?, id)?,
+        other => anyhow::bail!("不认识的导入来源：{other}"),
+    };
+    let (_, id) = apply::add_provider(
+        &GatewayStore::default(),
+        relay,
+        &format!("{source}:{id}"),
+        skip,
+    )?;
+    Ok(id)
 }
 
 /// 新建或编辑网关路由组。
 #[tauri::command]
 pub fn save_gateway_group(group: GroupInput) -> CommandResult<Option<GatewayPayload>> {
     respond(
-        "路由组已保存。",
-        "保存路由组失败",
+        "模型组已保存。",
+        "保存模型组失败",
         refresh_agents(apply::save_group(&GatewayStore::default(), &group)),
     )
 }
@@ -573,8 +1017,8 @@ pub fn save_gateway_group(group: GroupInput) -> CommandResult<Option<GatewayPayl
 #[tauri::command]
 pub fn delete_gateway_group(id: String) -> CommandResult<Option<GatewayPayload>> {
     respond(
-        "路由组已删除。",
-        "删除路由组失败",
+        "模型组已删除。",
+        "删除模型组失败",
         refresh_agents(apply::delete_group(&GatewayStore::default(), &id)),
     )
 }
@@ -809,12 +1253,23 @@ pub fn delete_agent_session(agent: String, id: String) -> CommandResult<Option<S
     use codex_plus_core::gateway::sessions;
     let trash = sessions::default_trash_dir();
     let result = match agent.as_str() {
-        "claude" => sessions::delete_claude_session(&ClaudeContext::default_paths().claude_home, &id, &trash),
-        "grok" => sessions::delete_grok_session(&codex_plus_core::grok_config::default_grok_home_dir(), &id, &trash),
+        "claude" => sessions::delete_claude_session(
+            &ClaudeContext::default_paths().claude_home,
+            &id,
+            &trash,
+        ),
+        "grok" => sessions::delete_grok_session(
+            &codex_plus_core::grok_config::default_grok_home_dir(),
+            &id,
+            &trash,
+        ),
         other => Err(anyhow::anyhow!("{other} 的会话不在这里删除")),
     };
     match result {
-        Ok(path) => ok("会话已移到废纸篓，需要时可以从废纸篓找回。", Some(path.display().to_string())),
+        Ok(path) => ok(
+            "会话已移到废纸篓，需要时可以从废纸篓找回。",
+            Some(path.display().to_string()),
+        ),
         Err(error) => failed(&format!("删除失败：{error:#}"), None),
     }
 }
@@ -838,27 +1293,6 @@ pub fn resume_agent_session(
     }
 }
 
-/// 托盘快捷面板开关。
-#[tauri::command]
-pub fn save_gateway_tray_panel(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
-    let result = (|| {
-        let store = GatewayStore::default();
-        let mut gateway = store.load()?;
-        gateway.tray_panel = enabled;
-        store.save(&gateway)?;
-        Ok(gateway)
-    })();
-    respond(
-        if enabled {
-            "点击托盘图标会弹出快捷面板。"
-        } else {
-            "托盘图标恢复原来的点击行为。"
-        },
-        "保存失败",
-        result,
-    )
-}
-
 /// 用系统默认浏览器打开登录页。
 fn open_in_browser(url: &str) {
     #[cfg(target_os = "macos")]
@@ -871,12 +1305,134 @@ fn open_in_browser(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
+/// 进行中的订阅登录（ChatGPT / ChatGPT API / SuperGrok 的浏览器回调、Copilot 的设备码轮询）。
+/// 同一时间只留一个：登录跑在单独的任务里，取消或开始新的登录时 abort 掉它，
+/// 回调端口随监听器一起释放、轮询随任务停止。存的是（序号，中止函数）。
+type LoginAbort = (u64, Box<dyn Fn() + Send>);
+static LOGIN_TASK: std::sync::Mutex<Option<LoginAbort>> = std::sync::Mutex::new(None);
+static LOGIN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 登录被用户取消时的提示；界面按 status `cancelled` 识别，不弹失败提示。
+const LOGIN_CANCELLED: &str = "登录已取消。";
+
+fn login_slot() -> std::sync::MutexGuard<'static, Option<LoginAbort>> {
+    LOGIN_TASK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 登录的结局：完成（成功或失败）或被取消。
+enum LoginOutcome<T> {
+    Done(anyhow::Result<T>),
+    Cancelled,
+}
+
+/// 把一次登录放进可取消的任务里跑完。开始前先中止上一次还没结束的登录。
+async fn cancellable_login<T, F>(login: F) -> LoginOutcome<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+{
+    let handle = tauri::async_runtime::spawn(login);
+    let id = LOGIN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    {
+        let abort = handle.inner().abort_handle();
+        let mut slot = login_slot();
+        if let Some((_, previous)) = slot.take() {
+            previous();
+        }
+        *slot = Some((id, Box::new(move || abort.abort())));
+    }
+    let joined = handle.await;
+    {
+        let mut slot = login_slot();
+        if slot.as_ref().is_some_and(|(current, _)| *current == id) {
+            *slot = None;
+        }
+    }
+    match joined {
+        Ok(result) => LoginOutcome::Done(result),
+        Err(tauri::Error::JoinError(error)) if error.is_cancelled() => LoginOutcome::Cancelled,
+        Err(error) => LoginOutcome::Done(Err(anyhow::anyhow!("登录任务异常退出：{error}"))),
+    }
+}
+
+/// 登录命令统一的返回：成功刷新价格 / 额度 / Agent，取消时返回 `cancelled`。
+fn login_response(outcome: LoginOutcome<String>) -> CommandResult<Option<GatewayPayload>> {
+    match outcome {
+        LoginOutcome::Cancelled => CommandResult {
+            status: "cancelled".to_string(),
+            message: LOGIN_CANCELLED.to_string(),
+            payload: current_payload(),
+        },
+        LoginOutcome::Done(result) => match refresh_added(result) {
+            Ok(message) => ok(&message, current_payload()),
+            Err(error) => failed(&format!("登录失败：{error:#}"), current_payload()),
+        },
+    }
+}
+
+/// 取消进行中的订阅登录（关掉验证码弹窗、点「取消登录」时调用）。没有进行中的登录时什么也不做。
+#[tauri::command]
+pub fn cancel_gateway_login() -> CommandResult<()> {
+    let cancelled = login_slot().take().map(|(_, abort)| abort()).is_some();
+    ok(
+        if cancelled {
+            LOGIN_CANCELLED
+        } else {
+            "没有进行中的登录。"
+        },
+        (),
+    )
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::{LoginOutcome, cancel_gateway_login, cancellable_login, login_slot};
+
+    /// 等后台登录任务登记好中止函数。
+    fn wait_registered() {
+        for _ in 0..200 {
+            if login_slot().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("登录任务没有登记");
+    }
+
+    #[test]
+    fn login_can_be_cancelled_and_a_new_login_aborts_the_previous_one() {
+        tauri::async_runtime::block_on(async {
+            // 取消：一直等不到回调的登录被中止，返回 Cancelled，登记位清空。
+            let waiting = tauri::async_runtime::spawn(cancellable_login(std::future::pending::<
+                anyhow::Result<String>,
+            >()));
+            wait_registered();
+            assert_eq!(cancel_gateway_login().status, "ok");
+            assert!(matches!(waiting.await.unwrap(), LoginOutcome::Cancelled));
+            assert!(login_slot().is_none());
+
+            // 开始新的登录时中止上一次；新的照常完成。
+            let first = tauri::async_runtime::spawn(cancellable_login(std::future::pending::<
+                anyhow::Result<String>,
+            >()));
+            wait_registered();
+            let second = cancellable_login(async { Ok("done".to_string()) }).await;
+            assert!(matches!(second, LoginOutcome::Done(Ok(ref message)) if message == "done"));
+            assert!(matches!(first.await.unwrap(), LoginOutcome::Cancelled));
+            assert!(login_slot().is_none());
+        });
+    }
+}
+
 /// 在网关里登录 ChatGPT 订阅：浏览器登录后加进网关的供应商池。同一个账号再登录只更新 token。
 /// 与 Codex 自己的登录是两次独立的登录，互不影响。
 #[tauri::command]
-pub async fn login_gateway_chatgpt() -> CommandResult<Option<GatewayPayload>> {
+pub async fn login_gateway_chatgpt(
+    skip_agents: Option<Vec<String>>,
+) -> CommandResult<Option<GatewayPayload>> {
     use codex_plus_core::gateway::accounts;
-    let result: anyhow::Result<String> = async {
+    let outcome = cancellable_login(async move {
         let account = accounts::chatgpt_login(open_in_browser).await?;
         let store = GatewayStore::default();
         let mut gateway = store.load()?;
@@ -900,19 +1456,15 @@ pub async fn login_gateway_chatgpt() -> CommandResult<Option<GatewayPayload>> {
             .unwrap_or_default();
         relay = accounts::chatgpt_relay(&account, &models);
         let name = relay.name.clone();
-        apply::add_provider(&store, relay, "login:chatgpt")?;
+        apply::add_provider(&store, relay, "login:chatgpt", skip_agents.as_deref())?;
         Ok(if models.is_empty() {
             format!("已添加「{name}」。没读到模型列表，请在供应商里编辑补上。")
         } else {
             format!("已添加「{name}」，{} 个模型。", models.len())
         })
-    }
+    })
     .await;
-    let result = refresh_agents(result);
-    match result {
-        Ok(message) => ok(&message, current_payload()),
-        Err(error) => failed(&format!("登录失败：{error:#}"), current_payload()),
-    }
+    login_response(outcome)
 }
 
 /// 账号类供应商（Copilot / SuperGrok）加进网关池；同一个账号（按 `identity_field`）已存在时只换凭据。
@@ -920,6 +1472,7 @@ fn add_account_provider(
     relay: codex_plus_core::settings::RelayProfile,
     kind: &str,
     identity_field: &str,
+    skip_agents: Option<&[String]>,
 ) -> anyhow::Result<String> {
     use codex_plus_core::gateway::accounts::ACCOUNT_KIND_FIELD;
     let identity = |contents: &str| {
@@ -957,7 +1510,7 @@ fn add_account_provider(
         .lines()
         .filter(|line| !line.trim().is_empty())
         .count();
-    apply::add_provider(&store, relay, &format!("login:{kind}"))?;
+    apply::add_provider(&store, relay, &format!("login:{kind}"), skip_agents)?;
     Ok(format!("已添加「{name}」，{count} 个模型。"))
 }
 
@@ -978,40 +1531,44 @@ pub async fn start_gateway_copilot_login()
 #[tauri::command]
 pub async fn finish_gateway_copilot_login(
     code: codex_plus_core::gateway::accounts::DeviceCode,
+    skip_agents: Option<Vec<String>>,
 ) -> CommandResult<Option<GatewayPayload>> {
-    let result = async {
+    let outcome = cancellable_login(async move {
         let relay = codex_plus_core::gateway::accounts::copilot_finish(&code).await?;
-        add_account_provider(relay, "copilot", "login")
-    }
+        add_account_provider(relay, "copilot", "login", skip_agents.as_deref())
+    })
     .await;
-    match refresh_agents(result) {
-        Ok(message) => ok(&message, current_payload()),
-        Err(error) => failed(&format!("登录失败：{error:#}"), current_payload()),
-    }
+    login_response(outcome)
 }
 
 /// 在网关里登录 SuperGrok：浏览器登录后加进网关池。与 Grok CLI 自己的登录互不影响。
 #[tauri::command]
-pub async fn login_gateway_grok() -> CommandResult<Option<GatewayPayload>> {
+pub async fn login_gateway_grok(
+    skip_agents: Option<Vec<String>>,
+) -> CommandResult<Option<GatewayPayload>> {
     use codex_plus_core::gateway::accounts;
-    let result = async {
+    let outcome = cancellable_login(async move {
         let tokens = accounts::grok_login(open_in_browser).await?;
         let models = accounts::grok_models(&tokens.access_token).await;
-        add_account_provider(accounts::grok_relay(&tokens, &models), "grok", "email")
-    }
+        add_account_provider(
+            accounts::grok_relay(&tokens, &models),
+            "grok",
+            "email",
+            skip_agents.as_deref(),
+        )
+    })
     .await;
-    match refresh_agents(result) {
-        Ok(message) => ok(&message, current_payload()),
-        Err(error) => failed(&format!("登录失败：{error:#}"), current_payload()),
-    }
+    login_response(outcome)
 }
 
 /// 在网关里登录 ChatGPT API（OpenAI 的「用 ChatGPT 登录」）：套餐额度直接用在 api.openai.com 上，
 /// Agent 的指令原样保留。与 ChatGPT（Codex 订阅）是两种独立的登录。
 #[tauri::command]
-pub async fn login_gateway_chatgpt_api() -> CommandResult<Option<GatewayPayload>> {
+pub async fn login_gateway_chatgpt_api(
+    skip_agents: Option<Vec<String>>,
+) -> CommandResult<Option<GatewayPayload>> {
     use codex_plus_core::gateway::accounts;
-    let result = async {
+    let outcome = cancellable_login(async move {
         let state_dir = codex_plus_core::paths::default_app_state_dir();
         let account = accounts::chatgpt_api_login(&state_dir, open_in_browser).await?;
         let models = accounts::chatgpt_api_models(
@@ -1023,13 +1580,11 @@ pub async fn login_gateway_chatgpt_api() -> CommandResult<Option<GatewayPayload>
             accounts::chatgpt_api_relay(&account, &models),
             "chatgpt-api",
             "subject",
+            skip_agents.as_deref(),
         )
-    }
+    })
     .await;
-    match refresh_agents(result) {
-        Ok(message) => ok(&message, current_payload()),
-        Err(error) => failed(&format!("登录失败：{error:#}"), current_payload()),
-    }
+    login_response(outcome)
 }
 
 /// 清掉某个供应商的 Key 冷却与熔断状态。
@@ -1039,7 +1594,7 @@ pub fn reset_gateway_key_health(relay_id: String) -> CommandResult<Option<Gatewa
     ok("已重置该供应商的 Key 状态。", current_payload())
 }
 
-/// 管理器启动时：有 Agent 开着网关就拉起常驻 helper，并在端口变化或退出时恢复过直连的情况下重写配置。
+/// 管理器启动时：有 Agent 开着网关就拉起常驻 helper，并在端口变化或退出 / 更新前恢复过直连的情况下重写配置。
 pub fn start_from_saved_state() {
     let Ok(gateway) = GatewayStore::default().load() else {
         return;
@@ -1051,7 +1606,7 @@ pub fn start_from_saved_state() {
         return;
     };
     let ctx = ApplyContext::default_paths(port);
-    let result = if gateway.restore_on_exit {
+    let result = if gateway.restore_on_exit || gateway.restored_at_exit {
         apply::reapply_enabled(&ctx)
     } else {
         apply::reapply_if_port_changed(&ctx)
@@ -1065,13 +1620,39 @@ pub fn start_from_saved_state() {
     }
 }
 
-/// 管理器退出时：用户要求的话把走网关的 Agent 恢复成直连。
+/// 管理器退出时：用户要求的话（默认开）把走网关的 Agent 恢复成直连。
 pub fn restore_for_exit() {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    if let Err(error) = apply::restore_all_for_exit(&context(), &settings) {
+    if let Err(error) = apply::restore_all_for_exit(&context(), &settings, false) {
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
             "gateway.exit_restore_failed",
             serde_json::json!({ "message": format!("{error:#}") }),
         );
     }
+}
+
+/// 安装更新前：不管「退出时恢复直连」开没开，都把走网关的 Agent 恢复成直连。
+/// 新版本没起来（安装失败、降级到不认识网关的旧版）时 Agent 也能直接连上游。返回是否有 Agent 被还原。
+pub fn restore_for_update() -> bool {
+    let has_enabled = GatewayStore::default()
+        .load()
+        .is_ok_and(|gateway| gateway.any_enabled());
+    if !has_enabled {
+        return false;
+    }
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let result = apply::restore_all_for_exit(&context(), &settings, true);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "gateway.update_restore",
+        serde_json::json!({
+            "ok": result.is_ok(),
+            "message": result.as_ref().err().map(|error| format!("{error:#}")),
+        }),
+    );
+    true
+}
+
+/// 更新没装成、Codex++ 继续运行：把更新前恢复成直连的 Agent 重新接回网关。
+pub fn undo_restore_for_update() {
+    start_from_saved_state();
 }

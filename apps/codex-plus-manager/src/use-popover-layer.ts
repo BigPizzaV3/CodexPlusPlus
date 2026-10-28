@@ -16,13 +16,14 @@ import {
   type PopoverAlign,
   type PopoverLayout,
 } from "./popover-layer";
+import { useEscapeLayer } from "./use-escape-layer";
 
 /**
  * 下拉弹层统一挂到 body 下的 fixed 层：
  * - 菜单不再被父级 overflow 裁掉（模型列表行、详情滚动区都会裁）；
  * - 用 document 上的 pointerdown 判定外点关闭：WKWebView 里点非可聚焦元素不会触发
  *   blur，光靠 onBlur 根本收不起来，还会多个下拉同时展开；
- * - Escape 关闭并还焦点；滚动/缩放跟随触发器，触发器滚出视口就收起；
+ * - Escape 关闭并还焦点（走 Esc 栈：只关最上层，不连带关掉外面的弹窗）；滚动/缩放跟随触发器，触发器滚出视口就收起；
  * - 打开时通过 registry 关掉其它弹层，保证同一时刻只展开一个。
  *
  * 用法：把返回的 rootRef 挂到包含触发器的容器上，menuRef + menuStyle 挂到
@@ -96,6 +97,11 @@ export function usePopoverLayer({
     measure();
   });
 
+  useEscapeLayer(open, () => {
+    close();
+    rootRef.current?.querySelector<HTMLElement>("button, input")?.focus();
+  });
+
   useEffect(() => {
     if (!open) return;
     registerOpenPopover(layerId, close);
@@ -104,11 +110,6 @@ export function usePopoverLayer({
       if (!target) return;
       if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
       close();
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      close();
-      rootRef.current?.querySelector<HTMLElement>("button, input")?.focus();
     };
     // 键盘 Tab 走焦点离开时也要收；点非可聚焦元素不产生 focusin，由 pointerdown 兜底。
     const handleFocusIn = (event: FocusEvent) => {
@@ -131,7 +132,6 @@ export function usePopoverLayer({
       });
     };
     document.addEventListener("pointerdown", handlePointerDown, true);
-    document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("focusin", handleFocusIn);
     window.addEventListener("resize", follow);
     // capture 监听内层滚动容器的滚动。
@@ -139,7 +139,6 @@ export function usePopoverLayer({
     return () => {
       releaseOpenPopover(layerId);
       document.removeEventListener("pointerdown", handlePointerDown, true);
-      document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("focusin", handleFocusIn);
       window.removeEventListener("resize", follow);
       window.removeEventListener("scroll", follow, { capture: true });

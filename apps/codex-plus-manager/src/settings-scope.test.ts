@@ -57,7 +57,7 @@ test("Computer Use 放在侧栏「工具」组，不再出现在每个 Agent 的
   assert.match(globalNavigation, /"computerUse"/);
   // 「工具」组第一个是推荐内容（用户要求置顶），Computer Use 紧随其后；网关自己一组。
   assert.match(globalNavigation, /const toolNavigationRoutes: Route\[\] = \["recommendations", "computerUse",/);
-  assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gateway",/);
+  assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /gatewayNavigationRoutes\.map/);
   assert.match(sidebar, /toolNavigationRoutes\.map/);

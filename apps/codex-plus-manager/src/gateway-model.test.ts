@@ -6,6 +6,7 @@ import {
   bindingFromDraft,
   blankBinding,
   connectedAgents,
+  dispatchStatus,
   draftFromBinding,
   formatRemaining,
   activeSponsorIds,
@@ -13,7 +14,9 @@ import {
   groupModelId,
   memberLabel,
   memberStatus,
+  modelDispatch,
   modelDisplay,
+  prettyModelName,
   modelRoutable,
   parseContextWindow,
   pickerSections,
@@ -22,7 +25,6 @@ import {
   providerDraftFromEntry,
   providerDraftFromPreset,
   providerInput,
-  routeMembers,
   routeNarrative,
   slugify,
   splitModels,
@@ -117,14 +119,23 @@ test("模型选择器：每个供应商一组，路由组作为 group/ 模型在
 });
 
 test("模型显示：模型名 + 提供它的供应商；<供应商>/<模型> 拆开；路由组显示组名", () => {
-  assert.deepEqual(modelDisplay(payload(), ""), { title: "deepseek-v4-pro", sub: "DeepSeek", group: false });
-  assert.deepEqual(modelDisplay(payload(), "glm-5.3"), { title: "glm-5.3", sub: "GLM", group: false });
-  assert.deepEqual(modelDisplay(payload(), "deepseek/deepseek-v4-flash"), { title: "deepseek-v4-flash", sub: "DeepSeek", group: false });
+  assert.deepEqual(modelDisplay(payload(), ""), { title: "DeepSeek-V4-Pro", sub: "DeepSeek", group: false });
+  assert.deepEqual(modelDisplay(payload(), "glm-5.3"), { title: "GLM-5.3", sub: "GLM", group: false });
+  assert.deepEqual(modelDisplay(payload(), "deepseek/deepseek-v4-flash"), { title: "DeepSeek-V4-Flash", sub: "DeepSeek", group: false });
   assert.deepEqual(modelDisplay(payload(), "group/daily"), { title: "Daily", sub: "group/daily", group: true });
-  assert.equal(memberLabel(payload(), "deepseek/deepseek-v4-flash"), "DeepSeek · deepseek-v4-flash");
+  assert.equal(memberLabel(payload(), "deepseek/deepseek-v4-flash"), "DeepSeek · DeepSeek-V4-Flash");
   assert.equal(memberLabel(payload(), "group/daily"), "Daily");
   assert.equal(groupModelId("daily"), "group/daily");
   assert.equal(slugify(" 系统 默认 "), "系统-默认");
+});
+
+test("模型名显示成正式写法，只影响显示", () => {
+  assert.equal(prettyModelName("gpt-6.1-sol"), "GPT-6.1-Sol");
+  assert.equal(prettyModelName("kimi-k2-turbo"), "Kimi-K2-Turbo");
+  assert.equal(prettyModelName("qwen3-235b-a22b"), "Qwen3-235B-A22B");
+  assert.equal(prettyModelName("o3-mini"), "o3-Mini");
+  assert.equal(prettyModelName("anthropic/claude-sonnet-5[1M]"), "anthropic/Claude-Sonnet-5[1M]");
+  assert.equal(prettyModelName("MiniMax-M2"), "MiniMax-M2", "本来就带大写的原样保留");
 });
 
 function withActivity(): GatewayPayload {
@@ -162,9 +173,10 @@ function withActivity(): GatewayPayload {
   return data;
 }
 
-test("成员状态：正在回答 > 熔断 / Key 全部冷却 > 最近回答了谁 > Key 数", () => {
+test("成员状态：正在回答 > 熔断 / Key 全部冷却 > 10 分钟内哪个 Agent 用过 > Key 数", () => {
   const data = withActivity();
-  assert.deepEqual(memberStatus(data, "glm"), { state: "answered", text: "回答了 {0}", args: ["Claude Code"] });
+  assert.deepEqual(memberStatus(data, "glm", 60_000), { state: "answered", text: "{0} 刚用过", args: ["Claude Code"] });
+  assert.equal(memberStatus(data, "glm", 11 * 60_000).state, "idle", "超过 10 分钟不再显示，回到 Key 数");
   assert.deepEqual(memberStatus(data, "deepseek"), { state: "idle", text: "{0} 个 Key", args: [2] });
   data.health.keys = [{ relayId: "deepseek", keyId: "key-1", state: "cooling", remainingMs: 35_000, lastFailure: "rate_limited" }];
   assert.deepEqual(memberStatus(data, "deepseek"), { state: "idle", text: "{0} 个 Key · {1} 个冷却中", args: [2, 1] });
@@ -174,18 +186,20 @@ test("成员状态：正在回答 > 熔断 / Key 全部冷却 > 最近回答了�
   assert.equal(memberStatus(data, "glm").state, "cooling");
   data.activity!.agents[0].inFlight = ["glm"];
   assert.deepEqual(memberStatus(data, "glm"), { state: "busy", text: "正在回答…", args: [] });
-  assert.deepEqual(memberStatus(payload(), "bare"), { state: "idle", text: "一个 Key", args: [] });
+  assert.deepEqual(memberStatus(payload(), "bare"), { state: "idle", text: "{0} 个 Key", args: [1] });
 });
 
-test("路由页：所有接入的 Agent 共用一张卡片；成员是池里打开的供应商", () => {
+test("「模型」页矩阵：每个模型列出提供它的供应商，按池顺序；有备用的排前面，关掉的不算，标出排除它的 Agent", () => {
   const data = withActivity();
   assert.deepEqual(connectedAgents(data), ["claude"]);
-  const records = data.activity!.agents.map((agent) => agent.last!);
-  assert.deepEqual(routeMembers(data, records), [
-    { relayId: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash" },
-    { relayId: "glm", name: "GLM", model: "glm-5.3" },
-    { relayId: "bare", name: "Bare", model: "" },
-  ]);
+  data.pool[2].models = ["glm-5.3", "GLM-5.3", "bare-1"];
+  data.pool.push({ id: "off", name: "Off", baseUrl: "https://off.test/v1", protocol: "responses", official: false, models: ["glm-5.3"], keyCount: 1, enabled: false, source: "" });
+  data.gateway.bindings.claude = { ...data.gateway.bindings.claude!, poolExclude: ["bare"] };
+  const rows = modelDispatch(data);
+  assert.deepEqual(rows.map((row) => row.model), ["glm-5.3", "deepseek-v4-pro", "deepseek-v4-flash", "bare-1"]);
+  assert.deepEqual(rows[0].providers.map((provider) => provider.id), ["glm", "bare"], "大小写不同算同一个模型；关掉的供应商不在里面");
+  assert.deepEqual(rows[0].providers[1].excludedBy, ["claude"]);
+  assert.deepEqual(rows[0].providers[0].excludedBy, []);
 });
 
 test("上一个请求的路由说明：先列计划，再逐个尝试，最后谁回答", () => {
@@ -193,8 +207,19 @@ test("上一个请求的路由说明：先列计划，再逐个尝试，最后�
   const lines = routeNarrative("claude", data.activity!.agents[0].last!, data);
   assert.deepEqual(lines.map((line) => line.tone), ["muted", "step", "step", "ok"]);
   assert.deepEqual(lines[0].args, ["Claude Code", "claude-sonnet-5", "Daily", "DeepSeek/deepseek-v4-flash, GLM/glm-5.3"]);
-  assert.deepEqual(lines[2].args, ["DeepSeek", "key-1", "被限流", " · HTTP 429"]);
+  // 失败原因是界面文案，标成 { zh } 交给界面翻译；供应商名、Key id 原样显示。
+  assert.deepEqual(lines[2].args, ["DeepSeek", "key-1", { zh: "被限流" }, " · HTTP 429"]);
   assert.deepEqual(lines[3].args, ["GLM", "glm-5.3", "1.2 s"]);
+});
+
+test("调度表的状态按模型：「刚用过」只标在真正被请求的模型上，冷却按整家供应商", () => {
+  const data = withActivity();
+  data.pool[1].models = ["glm-5.3", "glm-5.3-air"];
+  assert.deepEqual(dispatchStatus(data, "glm", "GLM-5.3", 60_000), { state: "answered", text: "{0} 刚用过", args: ["Claude Code"] });
+  assert.equal(dispatchStatus(data, "glm", "glm-5.3-air", 60_000), null, "同一家的其它模型不标");
+  assert.equal(dispatchStatus(data, "glm", "glm-5.3", 11 * 60_000), null, "超过 10 分钟不标");
+  data.health.providers = [{ relayId: "glm", breakerOpen: true, remainingMs: 30_000 } as GatewayPayload["health"]["providers"][number]];
+  assert.equal(dispatchStatus(data, "glm", "glm-5.3-air", 60_000)?.state, "cooling");
 });
 
 test("冷却剩余时间显示", () => {
@@ -243,6 +268,7 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
     model: "deepseek-v4-pro",
     modelList: "a\nb",
     price: null,
+    modelPrices: null,
     proxy: "",
   });
   assert.equal(validateProviderDraft({ ...editing, proxy: "127.0.0.1:7890" }, true), "代理地址要写成 http://主机:端口（也支持 https:// 与 socks5://）");
@@ -270,7 +296,7 @@ test("网关页接入导航，命令已注册", () => {
     "delete_gateway_provider",
     "set_gateway_provider_enabled",
     "reorder_gateway_providers",
-    "import_gateway_provider",
+    "import_gateway_providers",
     "save_gateway_group",
     "delete_gateway_group",
     "reveal_gateway_agent_config",

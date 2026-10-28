@@ -4658,6 +4658,34 @@ async fn open_image_proxy_request(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    open_image_request_with_relay(&relay, body, content_type, original_user_agent, endpoint_kind).await
+}
+
+/// 网关的生图入口：发给指定的上游（网关按「生图模型」选好，Key 也已换好）。
+/// `edits` 为 true 时走 `/images/edits`（multipart），否则 `/images/generations`。
+pub async fn open_gateway_image_request(
+    relay: &crate::settings::RelayProfile,
+    edits: bool,
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let endpoint_kind = if edits {
+        ImageProxyEndpoint::Edits
+    } else {
+        ImageProxyEndpoint::Generations
+    };
+    open_image_request_with_relay(relay, body, content_type, original_user_agent, endpoint_kind).await
+}
+
+async fn open_image_request_with_relay(
+    relay: &crate::settings::RelayProfile,
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+    endpoint_kind: ImageProxyEndpoint,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let relay = relay.clone();
     let content_type = normalize_image_content_type(content_type, endpoint_kind)?;
     // 官方登录成员：Codex CLI 的 imagegen 扩展会把图片请求发给当前 provider 的
     // base_url；聚合代理下该地址是本地协议代理，这里要像 /responses、/models 一样

@@ -34,7 +34,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "agents-connect",
     target: "nav-gateway",
     title: "第二步：接入 Agent",
-    body: "选择哪些 Agent 经网关接入，并给每个 Agent 指定默认模型。打开「接入」后，模型会出现在 Agent 自己的模型列表里。",
+    body: "左侧开关决定哪些 Agent 经网关接入，右侧给它选默认模型；接入后供应商池里的模型会出现在 Agent 自己的模型列表里。",
   },
   {
     id: "agents",

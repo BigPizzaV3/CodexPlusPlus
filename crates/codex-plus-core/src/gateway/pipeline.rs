@@ -114,11 +114,12 @@ async fn open_candidates(
                 busy: None,
             });
         }
-        anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或路由组是否配置了地址和 Key");
+        anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
     }
     let count = plan.candidates.len();
     let mut last_error: Option<anyhow::Error> = None;
-    for (index, candidate) in plan.candidates.iter().enumerate() {
+    let ordered = fit_first(&plan.candidates, estimate_tokens(&request));
+    for (index, candidate) in ordered.into_iter().enumerate() {
         let has_more = index + 1 < count;
         trace.attempts += 1;
         trace.relay_id = candidate.relay.id.clone();
@@ -135,6 +136,10 @@ async fn open_candidates(
             },
             Err(error) => {
                 recorder.step(candidate, "transport", Some("auth_invalid"), None);
+                crate::gateway::speed::record_failure(
+                    &candidate.relay.id,
+                    &candidate.upstream_model,
+                );
                 log_attempt_failure(candidate, None, Some(&error), has_more);
                 last_error = Some(error);
                 continue;
@@ -155,6 +160,7 @@ async fn open_candidates(
         }
         let candidate = &prepared;
         let busy = recorder.begin(candidate);
+        let started = Instant::now();
         let native = request
             .anthropic
             .as_ref()
@@ -170,6 +176,13 @@ async fn open_candidates(
             Ok(Attempt::Success(upstream)) => {
                 recorder.step(candidate, "answered", None, upstream.status_code());
                 key_pool::record_success(&candidate.key, plan.conversation.as_deref());
+                crate::gateway::speed::record(
+                    &candidate.relay.id,
+                    &candidate.upstream_model,
+                    started.elapsed(),
+                );
+                crate::gateway::route::remember_answer(plan, candidate);
+                observe_quota(&candidate.relay.id, &upstream);
                 if let GatewayUpstream::Pipeline(response) = &upstream
                     && let Some(inner) = &response.request_trace
                 {
@@ -193,6 +206,11 @@ async fn open_candidates(
                     upstream.status_code(),
                 );
                 let failover = key_pool::record_failure(&candidate.key, &class, Instant::now());
+                // 失败也算「试过了」：速度优先的组不再把它当没测过的排第一。
+                crate::gateway::speed::record_failure(
+                    &candidate.relay.id,
+                    &candidate.upstream_model,
+                );
                 log_attempt_failure(candidate, Some(&class), None, has_more && failover);
                 if !failover || !has_more {
                     return Ok(GatewayOutcome {
@@ -211,6 +229,10 @@ async fn open_candidates(
                     &FailureClass::ServerError,
                     Instant::now(),
                 );
+                crate::gateway::speed::record_failure(
+                    &candidate.relay.id,
+                    &candidate.upstream_model,
+                );
                 log_attempt_failure(candidate, None, Some(&error), has_more);
                 Some(error)
             }
@@ -221,6 +243,39 @@ async fn open_candidates(
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("网关的所有上游都失败了")))
+}
+
+/// 请求比窗口还长的候选排到最后（不去掉）：它们多半只会拒绝，别家都不行时再试一次。
+/// 没写窗口的候选当作装得下。
+fn fit_first(candidates: &[GatewayCandidate], tokens: u64) -> Vec<&GatewayCandidate> {
+    let (fits, short): (Vec<_>, Vec<_>) = candidates
+        .iter()
+        .partition(|candidate| candidate.window.is_none_or(|window| window >= tokens));
+    fits.into_iter().chain(short).collect()
+}
+
+/// 请求大概有多少 token：按文字的字节数粗估（约 4 字节一个）。图片这类 `data:` 内容、
+/// 加密的推理内容和签名按字节算会大出好几倍，不计入。
+fn estimate_tokens(request: &GatewayRequest<'_>) -> u64 {
+    let body = request
+        .anthropic
+        .as_ref()
+        .map_or(&request.responses_body, |passthrough| passthrough.body);
+    text_bytes(body) / 4
+}
+
+fn text_bytes(value: &Value) -> u64 {
+    match value {
+        Value::String(text) if text.starts_with("data:") => 0,
+        Value::String(text) => text.len() as u64,
+        Value::Array(items) => items.iter().map(text_bytes).sum(),
+        Value::Object(fields) => fields
+            .iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "data" | "encrypted_content" | "signature"))
+            .map(|(_, value)| text_bytes(value))
+            .sum(),
+        _ => 0,
+    }
 }
 
 enum Attempt {
@@ -350,6 +405,28 @@ async fn attempt_pipeline(
         upstream: GatewayUpstream::Pipeline(response),
         class,
     })
+}
+
+/// ChatGPT 后端的响应头带着这个账号的额度，顺手记下（模型组「额度优先」、供应商池显示用）。
+fn observe_quota(relay_id: &str, upstream: &GatewayUpstream) {
+    let headers = match upstream {
+        GatewayUpstream::Pipeline(response) => {
+            response.response.as_ref().map(reqwest::Response::headers)
+        }
+        GatewayUpstream::Native(response) => {
+            response.response.as_ref().map(reqwest::Response::headers)
+        }
+        GatewayUpstream::Cooling(_) => None,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0);
+    if let Some(quota) =
+        headers.and_then(|headers| crate::gateway::quota::from_codex_headers(headers, now))
+    {
+        crate::gateway::quota::record(relay_id, quota);
+    }
 }
 
 /// 标识同一个对话的种子：客户端带的会话头，或请求里的缓存键，或按对话开头算的键。
@@ -514,4 +591,61 @@ fn log_attempt_failure(
             "willFailover": will_failover,
         }),
     );
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use crate::gateway::key_pool::KeyRef;
+    use serde_json::json;
+
+    fn candidate(id: &str, window: Option<u64>) -> GatewayCandidate {
+        GatewayCandidate {
+            relay: crate::settings::RelayProfile {
+                id: id.to_string(),
+                ..Default::default()
+            },
+            key: KeyRef {
+                relay_id: id.to_string(),
+                key_id: String::new(),
+                fingerprint: 0,
+            },
+            upstream_model: "m".to_string(),
+            window,
+        }
+    }
+
+    #[test]
+    fn too_short_windows_go_last_but_stay() {
+        let candidates = vec![
+            candidate("small", Some(1_000)),
+            candidate("unknown", None),
+            candidate("big", Some(1_000_000)),
+        ];
+        let order: Vec<&str> = fit_first(&candidates, 5_000)
+            .iter()
+            .map(|candidate| candidate.relay.id.as_str())
+            .collect();
+        assert_eq!(order, ["unknown", "big", "small"]);
+        let order: Vec<&str> = fit_first(&candidates, 10)
+            .iter()
+            .map(|candidate| candidate.relay.id.as_str())
+            .collect();
+        assert_eq!(order, ["small", "unknown", "big"], "装得下就不动顺序");
+    }
+
+    #[test]
+    fn estimate_skips_images_and_encrypted_blobs() {
+        let body = json!({
+            "input": [
+                { "type": "message", "content": [
+                    { "type": "input_text", "text": "a".repeat(4_000) },
+                    { "type": "input_image", "image_url": format!("data:image/png;base64,{}", "A".repeat(400_000)) }
+                ]},
+                { "type": "reasoning", "encrypted_content": "B".repeat(400_000) }
+            ]
+        });
+        let tokens = text_bytes(&body) / 4;
+        assert!((1_000..1_100).contains(&tokens), "{tokens}");
+    }
 }

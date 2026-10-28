@@ -1,7 +1,7 @@
-/** 网关总览：任意 Agent → Codex++ → 任意供应商。左列 Agent、中间网关、右列供应商池，下方是路由动态与今日用量。 */
+/** 网关总览：任意 Agent → Codex++ → 任意供应商。左列 Agent、中间网关、右列供应商池，下方是最近请求与今日用量。 */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowUpRight, Plus } from "lucide-react";
+import { ArrowUpRight, ChevronDown, Plus } from "lucide-react";
 import { t, tf } from "./i18n";
 import {
   agentName,
@@ -9,41 +9,23 @@ import {
   formatElapsed,
   formatMoney,
   formatTokens,
+  routeNarrative,
+  pendingImportCount,
   type GatewayPayload,
-  type GatewayResult,
   type UsageSummary,
 } from "./gateway-model";
-import { hubAgents, hubFeed, hubLinks, hubProviders, hubTotals, successRate, type CodexSummary, type HubFeedItem, type HubLink } from "./hub-overview-model";
-import { AGENT_ICONS, APP_LOGO_URL, Avatar } from "./gateway-ui";
+import { hubAgents, hubFeed, hubLinks, hubPoolState, hubProviders, hubTotals, successRate, type CodexSummary, type HubFeedItem, type HubLink } from "./hub-overview-model";
+import { AGENT_ICONS, APP_LOGO_URL, Avatar, KeyCount, MemberStatusLabel, makeRun, type Notify, type Run } from "./gateway-ui";
+import { publishGatewayPayload, useGatewayPayload } from "./gateway-store";
+import { AgentConnectDialog } from "./GatewayAgents";
+import { ProviderAdder } from "./GatewayProviders";
 import "./HubOverview.css";
 
 const LIVE_REFRESH_MS = 3000;
 const USAGE_REFRESH_MS = 30_000;
 
-/** 侧栏状态卡和总览页共用的网关数据：各自按自己的间隔静默刷新，失败时保留上一次的值。 */
-const shared: { payload: GatewayPayload | null } = { payload: null };
-
-export function useGatewayPayload(intervalMs: number): GatewayPayload | null {
-  const [payload, setPayload] = useState<GatewayPayload | null>(shared.payload);
-  useEffect(() => {
-    let cancelled = false;
-    const load = () =>
-      invoke<GatewayResult>("load_gateway")
-        .then((result) => {
-          if (cancelled || !result.gateway || !Array.isArray(result.pool)) return;
-          shared.payload = result as GatewayPayload;
-          setPayload(shared.payload);
-        })
-        .catch(() => undefined);
-    void load();
-    const timer = window.setInterval(load, intervalMs);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [intervalMs]);
-  return payload;
-}
+/** 侧栏状态卡、总览、网关页共用的网关数据在 gateway-store 里；这里转出 hook，保持原来的引用路径。 */
+export { useGatewayPayload };
 
 function useTodayUsage(): UsageSummary | null {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
@@ -73,13 +55,15 @@ export function AgentGlyph({ agent, className = "" }: { agent: string; className
 
 export function HubOverview({
   codex,
+  notify,
   onOpenAgent,
   onNavigate,
 }: {
   codex: CodexSummary;
+  notify: Notify;
   onOpenAgent: (agent: string) => void;
   /** 跳到网关的某个页签或其它页面。 */
-  onNavigate: (target: "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage") => void;
+  onNavigate: (target: "gateway" | "gatewayProviders" | "gatewayUsage" | "requestLog") => void;
 }) {
   const payload = useGatewayPayload(LIVE_REFRESH_MS);
   const usage = useTodayUsage();
@@ -93,13 +77,21 @@ export function HubOverview({
   const totals = hubTotals(payload);
   const feed = hubFeed(payload);
   const connected = agents.filter((agent) => agent.enabled).length;
+  // 「接入 Agent」「添加供应商」就地弹窗，不跳到对应页面。
+  const [adding, setAdding] = useState<"agent" | "provider" | "import" | null>(null);
+  const pendingImports = pendingImportCount(payload);
+  const [busy, setBusy] = useState<string | null>(null);
+  const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
+  const poolState = hubPoolState(payload);
 
   return (
     <div className="hub-page">
       {/* 页面标题已在外壳顶栏，这里只留一句现状说明。 */}
       <header className="hub-intro">
         <p>
-          {tf("{0} 个 Agent 通过 Codex++ 共用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [connected, providers.length])}
+          {payload
+            ? tf("{0} 个 Agent 通过 Codex++ 共用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [connected, providers.length])
+            : t("正在读取网关状态…")}
         </p>
       </header>
 
@@ -124,7 +116,7 @@ export function HubOverview({
                 {agent.enabled ? <span className="hub-node-num">{agent.requests}</span> : null}
               </button>
             ))}
-            <button className="hub-node hub-node-ghost" onClick={() => onNavigate("gateway")} type="button">
+            <button className="hub-node hub-node-ghost" onClick={() => setAdding("agent")} type="button">
               <Plus aria-hidden="true" className="h-4 w-4" />
               {t("接入 Agent")}
             </button>
@@ -141,7 +133,7 @@ export function HubOverview({
               <span>{t("按模型名路由")}</span>
               <span>{t("协议互转")}</span>
               <span>{payload?.gateway.keyPolicy.mode === "roundRobin" ? t("逐请求轮换 Key") : t("会话粘性 Key")}</span>
-              {payload?.groups.length ? <span>{tf("{0} 个路由组", [payload.groups.length])}</span> : null}
+              {payload?.groups.length ? <span>{tf("{0} 个模型组", [payload.groups.length])}</span> : null}
             </div>
             <dl>
               <div><dt>{t("请求")}</dt><dd>{totals.requests}</dd></div>
@@ -153,7 +145,14 @@ export function HubOverview({
 
           <div className="hub-col">
             <div className="hub-col-head"><span>{t("供应商池")}</span><span>{t("今日调用")}</span></div>
-            {providers.length === 0 ? <p className="hub-empty">{t("供应商池还是空的。")}</p> : null}
+            {poolState === "loading" ? <p className="hub-empty">{t("读取中…")}</p> : null}
+            {poolState === "empty" ? <p className="hub-empty">{t("供应商池还是空的。")}</p> : null}
+            {poolState === "allOff" ? <p className="hub-empty">{tf("池里的 {0} 个供应商都已关闭。", [payload?.pool.length ?? 0])}</p> : null}
+            {poolState === "empty" && pendingImports ? (
+              <button className="hub-node hub-node-ghost hub-node-import" onClick={() => setAdding("import")} type="button">
+                {tf("导入直连模式的 {0} 个供应商", [pendingImports])}
+              </button>
+            ) : null}
             {providers.map((provider) => (
               <button className="hub-node" data-node={`provider:${provider.id}`} key={provider.id} onClick={() => onNavigate("gatewayProviders")} type="button">
                 <Avatar baseUrl={provider.baseUrl} name={provider.name} size="sm" />
@@ -163,15 +162,13 @@ export function HubOverview({
                     {provider.status.state === "cooling" ? <i className="hub-dot" data-tone="warn" /> : null}
                   </strong>
                   <small data-state={provider.status.state}>
-                    {provider.status.state === "idle"
-                      ? tf("{0} 个 Key", [provider.keyCount])
-                      : provider.status.args.length ? tf(provider.status.text, provider.status.args) : t(provider.status.text)}
+                    {provider.status.state === "idle" ? <KeyCount count={provider.keyCount} /> : <MemberStatusLabel status={provider.status} />}
                   </small>
                 </span>
                 {provider.calls !== null ? <span className="hub-node-num">{provider.calls}</span> : null}
               </button>
             ))}
-            <button className="hub-node hub-node-ghost" onClick={() => onNavigate("gatewayProviders")} type="button">
+            <button className="hub-node hub-node-ghost" onClick={() => setAdding("provider")} type="button">
               <Plus aria-hidden="true" className="h-4 w-4" />
               {t("添加供应商")}
             </button>
@@ -182,13 +179,13 @@ export function HubOverview({
       <div className="hub-grid">
         <section className="hub-card">
           <div className="hub-card-head">
-            <h3>{t("路由动态")}</h3>
-            <button className="hub-link" onClick={() => onNavigate("gatewayRouting")} type="button">{t("路由")}<ArrowUpRight className="h-3.5 w-3.5" /></button>
+            <h3>{t("最近请求")}</h3>
+            <button className="hub-link" onClick={() => onNavigate("requestLog")} type="button">{t("请求日志")}<ArrowUpRight className="h-3.5 w-3.5" /></button>
           </div>
           {feed.length === 0 ? (
             <p className="hub-empty">{t("还没有请求经过网关。在已接入的 Agent 里发一条消息试试。")}</p>
           ) : (
-            <ul className="hub-feed">{feed.map((item) => <FeedRow item={item} key={`${item.agent}-${item.finishedAtMs}`} />)}</ul>
+            <ul className="hub-feed">{feed.map((item) => <FeedRow item={item} key={`${item.agent}-${item.finishedAtMs}`} payload={payload} />)}</ul>
           )}
         </section>
         <section className="hub-card">
@@ -199,11 +196,27 @@ export function HubOverview({
           <UsageStats usage={usage} />
         </section>
       </div>
+
+      {adding === "agent" ? (
+        <AgentConnectDialog
+          busy={busy}
+          notify={notify}
+          onClose={() => setAdding(null)}
+          onManage={() => { setAdding(null); onNavigate("gateway"); }}
+          payload={payload}
+          run={run}
+        />
+      ) : null}
+      {adding === "provider" || adding === "import" ? (
+        <ProviderAdder busy={busy} notify={notify} onClose={() => setAdding(null)} payload={payload} run={run} startWith={adding === "import" ? "import" : "catalog"} />
+      ) : null}
     </div>
   );
 }
 
-function FeedRow({ item }: { item: HubFeedItem }) {
+/** 一条最近请求；点开列出这次怎么走的：计划、每次尝试、最后谁回答。 */
+function FeedRow({ item, payload }: { item: HubFeedItem; payload: GatewayPayload | null }) {
+  const [open, setOpen] = useState(false);
   const label: Record<HubFeedItem["result"], string> = {
     answered: t("成功"),
     rerouted: t("换上游"),
@@ -211,16 +224,27 @@ function FeedRow({ item }: { item: HubFeedItem }) {
     cooling: t("冷却"),
     busy: t("进行中"),
   };
+  const record = payload?.activity?.agents.find((agent) => agent.agent === item.agent)?.last;
   return (
-    <li>
-      <span className="hub-feed-agent"><AgentGlyph agent={item.agent} />{agentName(item.agent)}</span>
-      <span className="hub-feed-route">
-        {item.requested}
-        <i>→</i>
-        <b>{item.provider ? `${item.provider} / ${item.model}` : item.model}</b>
-      </span>
-      <span className="hub-feed-ms">{formatElapsed(item.elapsedMs)}</span>
-      <span className="hub-badge" data-result={item.result}>{label[item.result]}</span>
+    <li data-open={open}>
+      <button aria-expanded={open} className="hub-feed-row" disabled={!record} onClick={() => setOpen(!open)} type="button">
+        <span className="hub-feed-agent"><AgentGlyph agent={item.agent} />{agentName(item.agent)}</span>
+        <span className="hub-feed-route">
+          {item.requested}
+          <i>→</i>
+          <b>{item.provider ? `${item.provider} / ${item.model}` : item.model}</b>
+        </span>
+        <span className="hub-feed-ms">{formatElapsed(item.elapsedMs)}</span>
+        <span className="hub-badge" data-result={item.result}>{label[item.result]}</span>
+        <ChevronDown aria-hidden className="hub-feed-chevron h-3.5 w-3.5" />
+      </button>
+      {open && record ? (
+        <ol className="hub-feed-trace">
+          {routeNarrative(item.agent, record, payload).map((line, index) => (
+            <li data-tone={line.tone} key={index}>{tf(line.text, line.args.map((arg) => (typeof arg === "object" ? t(arg.zh) : arg)))}</li>
+          ))}
+        </ol>
+      ) : null}
     </li>
   );
 }

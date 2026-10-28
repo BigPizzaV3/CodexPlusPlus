@@ -36,7 +36,8 @@ describe("manager popover layer contract", () => {
     assert.match(hook, /rootRef\.current\?\.contains\(target\) \|\| menuRef\.current\?\.contains\(target\)/);
     assert.match(hook, /registerOpenPopover\(layerId, close\)/);
     assert.match(hook, /releaseOpenPopover\(layerId\)/);
-    assert.match(hook, /event\.key !== "Escape"/);
+    // Esc 走全局的 Esc 栈：只关最上层，不连带关掉外面的弹窗。
+    assert.match(hook, /useEscapeLayer\(open, \(\) => \{/);
     assert.match(hook, /isTriggerVisible\(trigger/);
   });
 
