@@ -3874,7 +3874,8 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   margin-left: 0;
 }
 
-/* 生图模型的下拉要放得下「自动 · 供应商 · 模型」。 */
-.gw-setting-row .app-select.gw-image-select {
-  width: 280px;
+/* Agent 详情里的生图模型下拉：放得下「自动 · 供应商 · 模型」，不铺满整行。 */
+.shell .gw-detail-value .app-select.gw-image-select {
+  flex: none;
+  width: 320px;
 }

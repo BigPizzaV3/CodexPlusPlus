@@ -36,6 +36,8 @@ pub struct GatewayPoolEntry {
     /// 按模型的价格（上游模型名 → 价格）。
     pub model_prices:
         std::collections::BTreeMap<String, codex_plus_core::gateway::store::ProviderPrice>,
+    /// 能画图的模型（不进聊天模型列表）：ChatGPT 账号是内置的一项，其余按名字挑。
+    pub image_models: Vec<String>,
     /// 按模型的模型资料（思考等级等），格式同直连模式的「模型配置」JSON。
     pub model_metadata: String,
     /// 按模型的上下文窗口（上游模型名 → token）。
@@ -170,6 +172,7 @@ fn pool_entry(
         model_windows: Default::default(),
         context_window: None,
         model_metadata: relay.model_metadata.clone(),
+        image_models: codex_plus_core::gateway::images::provider_image_models(relay),
         account: account_kind(relay),
         plan: codex_plus_core::gateway::accounts::account_plan(relay),
         lent_to_codex: codex_plus_core::official_login::is_lent_to_codex(relay),
@@ -508,12 +511,24 @@ pub fn save_gateway_model_suffix(enabled: bool) -> CommandResult<Option<GatewayP
     )
 }
 
-/// 生图模型：空串是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。
+/// 某个 Agent 的生图模型：空串是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。
 #[tauri::command]
-pub fn save_gateway_image_model(model: String) -> CommandResult<Option<GatewayPayload>> {
-    let result = GatewayStore::default().update(|gateway| {
-        gateway.image_model = model.trim().to_string();
-        Ok(())
+pub fn save_gateway_image_model(
+    agent: String,
+    model: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent).and_then(|agent| {
+        GatewayStore::default().update(|gateway| {
+            let model = model.trim();
+            if model.is_empty() {
+                gateway.image_models.remove(agent.as_str());
+            } else {
+                gateway
+                    .image_models
+                    .insert(agent.as_str().to_string(), model.to_string());
+            }
+            Ok(())
+        })
     });
     respond("生图模型已保存。", "保存生图模型失败", result)
 }

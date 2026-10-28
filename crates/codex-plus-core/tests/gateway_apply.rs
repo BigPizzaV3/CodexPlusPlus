@@ -1364,17 +1364,15 @@ fn auto_group_settings_save_and_reset_to_default() {
     assert!(gateway.auto_groups.is_empty());
 }
 
+/// 读 Codex 的模型目录：`config.toml` 里 `model_catalog_json` 指向的文件。按 TOML 解析取值：
+/// Windows 上路径里的反斜杠在 TOML 字符串里是转义过的，按文本截引号会得到错的路径。
 fn codex_catalog(ctx: &ApplyContext) -> Value {
     let config = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
-    let pointer = config
-        .parse::<toml_edit::DocumentMut>()
-        .ok()
-        .and_then(|document| {
-            document
-                .get("model_catalog_json")
-                .and_then(|item| item.as_str())
-                .map(str::to_string)
-        })
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    let pointer = parsed
+        .get("model_catalog_json")
+        .and_then(toml::Value::as_str)
+        .map(str::to_string)
         .unwrap_or_else(|| panic!("网关供应商要写模型目录：{config}"));
     let pointer = std::path::PathBuf::from(pointer);
     let path = if pointer.is_absolute() {

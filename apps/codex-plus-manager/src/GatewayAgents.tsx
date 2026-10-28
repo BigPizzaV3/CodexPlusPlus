@@ -21,11 +21,13 @@ import {
   type GatewayPayload,
   type PickerItem,
   maskAccountName,
+  type ImageOption,
   isFavoriteModel,
   toggleFavoriteModel,
   type GatewayResult,
 } from "./gateway-model";
 import { AppSelect } from "./AppSelect";
+import { shortProviderName } from "./GatewayModelMatrix";
 import { GatewayNavContext, publishGatewayPayload } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { AGENT_ICONS, AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
@@ -370,6 +372,8 @@ function AgentDetail({
           </div>
         </div>
       ) : null}
+      {/* 目前只有 Codex 自己会发生图请求；别的 Agent 有了生图工具再显示。 */}
+      {agent.agent === "codex" ? <ImageModelRow agent={agent.agent} busy={busy} payload={payload} run={run} /> : null}
       <div className="gw-detail-row">
         <span className="gw-detail-label">{t("其它")}</span>
         <div className="gw-detail-value gw-chip-row">
@@ -624,6 +628,46 @@ export function ModelList({
         ))}
       </div>
       {head ? <div className="gw-mp-foot">{head}</div> : null}
+    </div>
+  );
+}
+
+/** 一项生图选项的显示名：「ChatGPT Pro · gpt-image」。 */
+function imageOptionLabel(option: ImageOption): string {
+  return `${maskAccountName(shortProviderName(option.providerName))} · ${option.model}`;
+}
+
+/** Agent 详情里的「生图模型」：这个 Agent 的生图请求经网关发给谁。 */
+function ImageModelRow({ agent, payload, busy, run }: { agent: string; payload: GatewayPayload | null; busy: string | null; run: Run }) {
+  const value = payload?.gateway.imageModels?.[agent] ?? "";
+  const options = payload?.imageOptions ?? [];
+  const auto = payload?.imageAuto ?? null;
+  const known = value === "" || value === "off" || options.some((option) => option.id === value);
+  const items = [
+    { value: "", label: auto ? tf("自动 · {0}", [imageOptionLabel(auto)]) : t("自动"), hint: t("ChatGPT 账号优先，其次按池里的顺序每家试一次，优先用请求里写的模型") },
+    ...options.map((option) => ({
+      value: option.id,
+      label: imageOptionLabel(option),
+      hint: option.vendorPicks ? t("ChatGPT 后端自己选生图模型") : t("只发给这一家，失败不换"),
+    })),
+    ...(known ? [] : [{ value, label: tf("{0}（已不可用）", [value]), hint: t("所在的供应商已删除或关闭") }]),
+    { value: "off", label: t("关闭"), hint: t("生图请求直接报错") },
+  ];
+  return (
+    <div className="gw-detail-row">
+      <span className="gw-detail-label">{t("生图模型")}</span>
+      <div className="gw-detail-value gw-chip-row">
+        <AppSelect
+          className="gw-image-select"
+          disabled={busy !== null}
+          label={t("生图模型")}
+          menuWidth={320}
+          onChange={(next) => void run(`image:${agent}`, "save_gateway_image_model", { agent, model: next }, t("保存生图模型"), true)}
+          options={items}
+          value={value}
+        />
+        {value === "" && !auto ? <span className="gw-muted">{t("池里还没有能生图的模型：登录 ChatGPT 账号，或给供应商加上生图模型")}</span> : null}
+      </div>
     </div>
   );
 }

@@ -206,10 +206,13 @@ test("上下文窗口按模型在供应商池里填，Agent 页只留兜底的�
   assert.match(read("GatewayAgents.tsx"), /<span>\{t\("默认窗口"\)\}<\/span>/);
 });
 
-test("网关设置里选生图模型；供应商池按模型改思考等级，存的是和直连模式同格式的模型资料", () => {
-  const page = read("GatewayPage.tsx");
-  assert.match(page, /"save_gateway_image_model", \{ model: next \}/);
-  assert.match(page, /\{ value: "off", label: t\("关闭"\)/);
+test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思考等级，存的是和直连模式同格式的模型资料", () => {
+  const agents = read("GatewayAgents.tsx");
+  assert.match(agents, /"save_gateway_image_model", \{ agent, model: next \}/);
+  assert.match(agents, /\{ value: "off", label: t\("关闭"\)/);
+  assert.match(agents, /agent\.agent === "codex" \? <ImageModelRow/, "目前只有 Codex 会发生图请求");
+  assert.doesNotMatch(read("GatewayPage.tsx"), /save_gateway_image_model/, "网关设置里不再有全局的生图模型");
+  assert.match(read("GatewayProviders.tsx"), /const chatModels = entry\.models\.filter/, "供应商详情里生图模型单独一行");
   const dialog = read("ProviderReasoningDialog.tsx");
   assert.match(dialog, /setModelReasoningLevelsForSlug\(current, model, levels, defaultLevel\)/);
   assert.match(dialog, /invoke<ReasoningResult>\("gateway_provider_reasoning", \{ id: entry\.id \}\)/);

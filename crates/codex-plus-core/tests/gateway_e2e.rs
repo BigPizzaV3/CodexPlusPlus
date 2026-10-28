@@ -1002,7 +1002,7 @@ async fn gateway_end_to_end() {
         assert_eq!(body["prompt"], "a cat");
     }
     // 关掉生图：直接报错，不发给上游。
-    gateway.image_model = "off".into();
+    gateway.image_models.insert("grok".into(), "off".into());
     save(&gateway);
     let response = reqwest::Client::new()
         .post(format!(
@@ -1015,7 +1015,7 @@ async fn gateway_end_to_end() {
         .unwrap();
     assert_eq!(response.status().as_u16(), 400);
     assert!(response.text().await.unwrap().contains("生图已关闭"));
-    gateway.image_model = String::new();
+    gateway.image_models.clear();
 
     // —— 9. 关闭绑定后返回 503，旧的 Codex 代理路径不受影响 ——
     gateway.bindings.get_mut("claude").unwrap().enabled = false;

@@ -27,7 +27,6 @@ import {
   slugify,
   type GatewayGroupEntry,
   type GatewayPayload,
-  type ImageOption,
   type GatewayResult,
   type GroupMember,
   type GroupMode,
@@ -792,56 +791,6 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
             label={t("模型名后带供应商")}
             on={modelSuffix}
             onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
-          />
-        </div>
-      </div>
-      <ImageModelCard busy={busy} payload={payload} run={run} />
-    </>
-  );
-}
-
-/** 一项生图选项的显示名：「ChatGPT Pro · gpt-image」。 */
-function imageOptionLabel(option: ImageOption): string {
-  return `${maskAccountName(shortProviderName(option.providerName))} · ${option.model}`;
-}
-
-/** 生图模型：Agent 的生图请求（如 Codex 的 imagegen）经网关发给这里选的模型。 */
-function ImageModelCard({ payload, busy, run }: { payload: GatewayPayload; busy: string | null; run: Run }) {
-  const value = payload.gateway.imageModel ?? "";
-  const options = payload.imageOptions ?? [];
-  const auto = payload.imageAuto ?? null;
-  const known = value === "" || value === "off" || options.some((option) => option.id === value);
-  const items = [
-    { value: "", label: auto ? tf("自动 · {0}", [imageOptionLabel(auto)]) : t("自动"), hint: t("ChatGPT 账号优先，其次按池里的顺序找有生图模型的供应商") },
-    ...options.map((option) => ({
-      value: option.id,
-      label: imageOptionLabel(option),
-      hint: option.vendorPicks ? t("ChatGPT 后端自己选生图模型") : undefined,
-    })),
-    ...(known ? [] : [{ value, label: tf("{0}（已不可用）", [value]), hint: t("所在的供应商已删除或关闭") }]),
-    { value: "off", label: t("关闭"), hint: t("生图请求直接报错") },
-  ];
-  const missing = value === "" && !auto;
-  return (
-    <>
-      <SectionLabel>{t("生图")}</SectionLabel>
-      <div className="gw-card">
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("生图模型")}</strong>
-            <small>{missing
-              ? t("池里还没有能生图的模型：登录一个 ChatGPT 账号，或给供应商加上生图模型（如 gpt-image-1）。")
-              : t("Agent 的生图请求（如 Codex 的生图）经网关发给它，出错时自动换下一家。生图模型不出现在聊天的模型列表里。")}</small>
-          </div>
-          <span />
-          <AppSelect
-            className="gw-image-select"
-            disabled={busy !== null}
-            label={t("生图模型")}
-            menuWidth={300}
-            onChange={(next) => void run("image-model", "save_gateway_image_model", { model: next }, t("保存生图模型"), true)}
-            options={items}
-            value={value}
           />
         </div>
       </div>

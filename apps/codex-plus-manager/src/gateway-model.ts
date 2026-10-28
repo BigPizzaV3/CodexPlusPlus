@@ -43,8 +43,8 @@ export type GatewaySettings = {
   modelSuffix?: boolean;
   /** 模型收藏（管理器模型下拉里的星标），Codex 的选择器里也显示。 */
   favoriteModels?: string[];
-  /** 生图模型：空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */
-  imageModel?: string;
+  /** 各 Agent 的生图模型（键是 Agent id）：没有或空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */
+  imageModels?: Record<string, string>;
 };
 
 export type GatewayPoolEntry = {
@@ -62,6 +62,8 @@ export type GatewayPoolEntry = {
   price?: ProviderPrice | null;
   /** 按模型的价格（上游模型名 → 价格）；没填的模型用 `price`。 */
   modelPrices?: Record<string, ProviderPrice>;
+  /** 能画图的模型（不进聊天模型列表）；ChatGPT 账号是内置的一项。旧版后端没有。 */
+  imageModels?: string[];
   /** 按模型的模型资料（思考等级等）JSON，格式同直连模式的「模型配置」。 */
   modelMetadata?: string;
   /** 按模型的上下文窗口（上游模型名 → token）；没写的模型用 `contextWindow`。 */

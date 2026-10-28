@@ -8,7 +8,7 @@
 //! | `POST /gw/grok/v1/responses` | Grok | Responses，复用 Codex 代理的输出链路 |
 //! | `GET /gw/grok/v1/models` | Grok | 模型列表（OpenAI 格式） |
 //! | `POST /gw/codex/v1/responses` | Codex | Responses，同上（保留 ChatGPT 订阅后端的私有事件） |
-//! | `POST /gw/<agent>/v1/images/generations`、`/images/edits` | 任意 | 生图，发给「生图模型」（见 [`crate::gateway::images`]） |
+//! | `POST /gw/<agent>/v1/images/generations`、`/images/edits` | 任意 | 生图，发给这个 Agent 的「生图模型」（见 [`crate::gateway::images`]） |
 //!
 //! 身份靠路径，鉴权靠网关签发给该 Agent 的本地 token（`x-api-key` 或 `Authorization: Bearer`）。
 
@@ -209,11 +209,12 @@ async fn handle_images(
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    let targets = match crate::gateway::images::targets(gateway) {
+    let content_type = header_value_from_headers(headers, "content-type").unwrap_or_default();
+    let requested = crate::gateway::images::requested_model(body, &content_type);
+    let targets = match crate::gateway::images::targets(gateway, agent, requested.as_deref()) {
         Ok(targets) => targets,
         Err(message) => return write_error(stream, agent, 400, &message).await,
     };
-    let content_type = header_value_from_headers(headers, "content-type").unwrap_or_default();
     let user_agent = header_value_from_headers(headers, "user-agent");
     let count = targets.len();
     let mut last_error = String::new();

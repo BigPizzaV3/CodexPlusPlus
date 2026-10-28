@@ -417,6 +417,9 @@ function PoolRow({
   const [extrasOpen, setExtrasOpen] = useState<"price" | "proxy" | null>(null);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [windowsOpen, setWindowsOpen] = useState(false);
+  // 生图模型单独一行，「模型」里只列能聊天的。
+  const imageModels = entry.imageModels ?? [];
+  const chatModels = entry.models.filter((model) => !imageModels.some((image) => image.toLowerCase() === model.toLowerCase()));
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const reasoning = reasoningSummary(entry);
   const saveReasoning = async (modelMetadata: string) => {
@@ -490,11 +493,20 @@ function PoolRow({
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("模型")}</span>
             <div className="gw-detail-value gw-chip-row">
-              {entry.models.map((model) => <code className="gw-chip" key={model}>{`${entry.id}/${model}`}</code>)}
-              {entry.models.length === 0 ? <span className="gw-muted">{t("未配置模型")}</span> : null}
+              {chatModels.map((model) => <code className="gw-chip" key={model}>{`${entry.id}/${model}`}</code>)}
+              {chatModels.length === 0 ? <span className="gw-muted">{t("未配置模型")}</span> : null}
               <button className="gw-text-button" disabled={busy !== null} onClick={() => setModelsOpen(true)} type="button">{t("编辑")}</button>
             </div>
           </div>
+          {imageModels.length ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("生图模型")}</span>
+              <div className="gw-detail-value gw-chip-row">
+                {imageModels.map((model) => <code className="gw-chip" key={model}>{model}</code>)}
+                <span className="gw-muted">{entry.account === "chatgpt" ? t("ChatGPT 后端自己选生图模型；在「Agent 接入」里选用哪个") : t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}</span>
+              </div>
+            </div>
+          ) : null}
           <div className="gw-detail-row">
             <span className="gw-detail-label">{entry.account ? t("套餐") : "Key"}</span>
             <div className="gw-detail-value gw-chip-row">

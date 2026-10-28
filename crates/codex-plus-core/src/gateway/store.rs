@@ -455,8 +455,12 @@ pub struct GatewaySettings {
     /// 收藏的模型（管理器模型下拉里点的星标）：写给 Codex 的模型目录时标出来，Codex 的选择器里也显示星标。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub favorite_models: Vec<String>,
-    /// 生图模型：空串是自动（见 [`crate::gateway::images`]），`off` 是关闭，其余是 `<供应商 id>/<模型>`。
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// 各 Agent 的生图模型（键是 Agent id）：没有或空串是自动（见 [`crate::gateway::images`]），
+    /// `off` 是关闭，其余是 `<供应商 id>/<模型>`。不放在 [`AgentBinding`] 里：界面保存绑定时整份替换。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub image_models: BTreeMap<String, String>,
+    /// 旧版的全局生图模型，读的时候迁移给 Codex（见 [`read_store`]），之后不再写。
+    #[serde(default, skip_serializing)]
     pub image_model: String,
     /// 最后写这个文件的 Codex++ 版本。降级到旧版时旧版不会跑这里的代码，只留个记录方便排查。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -485,6 +489,7 @@ impl Default for GatewaySettings {
             model_suffix: true,
             auto_groups: BTreeMap::new(),
             favorite_models: Vec::new(),
+            image_models: BTreeMap::new(),
             image_model: String::new(),
             app_version: String::new(),
             extra: Map::new(),
@@ -497,6 +502,14 @@ impl GatewaySettings {
         self.providers
             .iter()
             .find(|provider| provider.relay.id == id)
+    }
+
+    /// 某个 Agent 的生图模型设置（空串是自动）。
+    pub fn image_model_for(&self, agent: &ToolId) -> &str {
+        self.image_models
+            .get(agent.as_str())
+            .map(String::as_str)
+            .unwrap_or_default()
     }
 
     pub fn group(&self, id: &str) -> Option<&GatewayGroup> {
@@ -634,6 +647,14 @@ fn read_store(path: &Path) -> anyhow::Result<GatewaySettings> {
     // 版本 2 的 `autoModels: false` 是那时「多家自动切换」的默认值；自动建组改成默认开以后统一迁移成开。
     if settings.version < 3 {
         settings.auto_models = true;
+    }
+    // 旧版只有一个全局生图模型，当时只有 Codex 会发生图请求：迁移成 Codex 的。
+    let legacy_image = std::mem::take(&mut settings.image_model);
+    if !legacy_image.trim().is_empty() {
+        settings
+            .image_models
+            .entry(ToolId::Codex.as_str().to_string())
+            .or_insert(legacy_image);
     }
     // 地址、默认模型、Key 落盘时存在 config / auth 文本里，读回来要像 settings.json 一样还原出来。
     for provider in &mut settings.providers {
@@ -814,6 +835,21 @@ pub fn token_matches(expected: &str, provided: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_global_image_model_moves_to_codex() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("gateway.json");
+        fs::write(&path, r#"{ "version": 3, "imageModel": "jo/gpt-image-2" }"#).unwrap();
+        let store = GatewayStore::at(path.clone());
+        let settings = store.load().unwrap();
+        assert_eq!(settings.image_model_for(&ToolId::Codex), "jo/gpt-image-2");
+        assert_eq!(settings.image_model_for(&ToolId::Grok), "");
+        store.save(&settings).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"imageModel\""), "旧字段不再写：{text}");
+        assert!(text.contains("\"imageModels\""), "{text}");
+    }
 
     #[test]
     fn missing_file_reads_as_all_disabled() {
