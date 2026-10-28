@@ -1373,8 +1373,8 @@ fn codex_catalog(ctx: &ApplyContext) -> Value {
             document
                 .get("model_catalog_json")
                 .and_then(|item| item.as_str())
+                .map(str::to_string)
         })
-        .map(str::to_string)
         .unwrap_or_else(|| panic!("网关供应商要写模型目录：{config}"));
     let pointer = std::path::PathBuf::from(pointer);
     let path = if pointer.is_absolute() {
