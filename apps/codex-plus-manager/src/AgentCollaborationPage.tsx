@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowRightLeft, Check, Copy, Loader2, Play, RefreshCw, Save, Square } from "lucide-react";
 import { PageHeader } from "./ManagementPages";
+import { AppSelect } from "./AppSelect";
 import "./AgentCollaborationPage.css";
 
 type Agent = { id: string; name: string; executable: string; enabled: boolean; model: string; reuseSavedAuth: boolean };
@@ -365,7 +366,7 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
           <span className="mg-badge">{snapshot?.config.enabled ? "已启用" : "未启用"}</span>
         </label>
         <div className="agent-collaboration-default">
-          <label className="mg-field" htmlFor="agent-collaboration-default"><span>默认子 Agent</span><select id="agent-collaboration-default" value={draft.defaultAgentId} disabled={!snapshot || busy === "save_config"} onChange={(event) => editConfig({ ...draft, defaultAgentId: event.target.value })}>{draft.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}{agent.enabled ? "" : "（未启用）"}</option>)}</select></label>
+          <div className="mg-field"><span>默认子 Agent</span><AppSelect ariaLabel="默认子 Agent" disabled={!snapshot || busy === "save_config"} id="agent-collaboration-default" onChange={(next) => editConfig({ ...draft, defaultAgentId: next })} options={draft.agents.map((agent) => ({ value: agent.id, label: `${agent.name}${agent.enabled ? "" : "（未启用）"}` }))} value={draft.defaultAgentId} /></div>
           <label className="mg-field" htmlFor="agent-collaboration-runtime"><span>单个任务运行上限（分钟）</span><input id="agent-collaboration-runtime" type="number" min={1} max={maxRuntimeMinutesLimit} step={1} value={runtimeText} disabled={!snapshot || busy === "save_config"} aria-invalid={parsedRuntimeMinutes(runtimeText) === null} onChange={(event) => editRuntimeText(event.target.value)} onBlur={() => { if (parsedRuntimeMinutes(runtimeText) === null) setRuntimeText(String(draft.maxRuntimeMinutes)); }} /></label>
           <p className="agent-collaboration-hint">说“交给默认子 Agent”时使用此选择；直接说“让 DeepSeek”或“让 Claude Code”时使用指定的子 Agent。子 Agent 任务超过运行上限（1–240 分钟，默认 10）会被终止。{draft.enabled && !draft.agents.some((agent) => agent.id === draft.defaultAgentId && agent.enabled) && " 所选默认子 Agent 尚未启用，默认分派不可用；仍可点名调用其他已启用的子 Agent。"}</p>
         </div>
@@ -425,9 +426,15 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
         {continuation && <div className="agent-collaboration-continuation"><div><strong>续聊 {agentName(continuation.agentId)} 的任务</strong><span>{continuation.prompt}</span><small>任务 {continuation.id} · 沿用原会话与工作目录</small></div><button type="button" className="mg-button" disabled={busy === "submit"} onClick={() => { setContinueTaskId(""); setPrompt(""); }}>返回新任务</button></div>}
         <form className="agent-collaboration-form" onSubmit={submitTask}>
           <div className="agent-collaboration-form-row">
-            <label className="mg-field" htmlFor="agent-collaboration-target"><span>执行 Agent</span><select id="agent-collaboration-target" value={targetId} disabled={Boolean(continuation) || busy === "submit" || !enabledAgents.length} onChange={(event) => setAgentId(event.target.value)}>
-              {continuation ? <option value={continuation.agentId}>{agentName(continuation.agentId)}</option> : enabledAgents.length ? enabledAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>) : <option value="">请先启用一个 CLI</option>}
-            </select></label>
+            <div className="mg-field"><span>执行 Agent</span><AppSelect
+              ariaLabel="执行 Agent"
+              disabled={Boolean(continuation) || busy === "submit" || !enabledAgents.length}
+              id="agent-collaboration-target"
+              onChange={(next) => setAgentId(next)}
+              options={continuation ? [{ value: continuation.agentId, label: agentName(continuation.agentId) }] : enabledAgents.map((agent) => ({ value: agent.id, label: agent.name }))}
+              placeholder="请先启用一个 CLI"
+              value={targetId}
+            /></div>
             <label className="mg-field" htmlFor="agent-collaboration-cwd"><span>工作目录</span><input id="agent-collaboration-cwd" value={targetCwd} disabled={Boolean(continuation) || busy === "submit"} placeholder="/absolute/path/to/project" spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => setCwd(event.target.value)} /></label>
           </div>
           <label className="mg-field" htmlFor="agent-collaboration-prompt"><span>{continuation ? "追加任务或问题" : "任务内容"}</span><textarea id="agent-collaboration-prompt" ref={promptRef} rows={4} value={prompt} disabled={busy === "submit"} placeholder={continuation ? "基于刚才的结果，继续…" : "描述目标、需要检查的文件，以及希望返回的结果…"} onChange={(event) => setPrompt(event.target.value)} /></label>

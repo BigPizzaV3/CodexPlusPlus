@@ -638,6 +638,10 @@ button {
   margin-top: 48px;
 }
 
+.showcase-personal:has(> figure:only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .showcase-grid figcaption,
 .showcase-personal figcaption {
   align-items: flex-start;

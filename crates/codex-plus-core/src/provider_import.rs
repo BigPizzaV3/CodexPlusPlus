@@ -362,7 +362,47 @@ fn relay_profile_from_request(
         anthropic_prompt_cache: true,
         anthropic_impersonate_claude_code: false,
         anthropic_thinking_mode: String::new(),
+        gateway_proxy: None,
     }
+}
+
+/// 网关「导入到供应商池」用：按地址、Key、协议拼出与导入链接同形的供应商
+/// （config.toml / auth.json 快照齐全，切到它时 Codex 也能直接用）。
+pub fn pool_relay_profile(
+    name: &str,
+    base_url: &str,
+    api_key: &str,
+    protocol: RelayProtocol,
+    default_model: &str,
+    model_list: &str,
+    existing_ids: &[String],
+) -> anyhow::Result<RelayProfile> {
+    let wire_api = match protocol {
+        RelayProtocol::Responses => "responses",
+        RelayProtocol::ChatCompletions => "chat",
+        RelayProtocol::AnthropicMessages => "anthropic",
+    };
+    let request = normalize_request(ProviderImportRequest {
+        name: name.to_string(),
+        base_url: base_url.to_string(),
+        api_key: api_key.to_string(),
+        wire_api: wire_api.to_string(),
+        relay_mode: default_relay_mode(),
+        config_contents: String::new(),
+        auth_contents: String::new(),
+    })?;
+    let mut profile = relay_profile_from_request(&request, existing_ids);
+    let default_model = default_model.trim();
+    if !default_model.is_empty() {
+        profile.config_contents = format!(
+            "model = \"{}\"\n{}",
+            toml_string(default_model),
+            profile.config_contents
+        );
+        profile.model = default_model.to_string();
+    }
+    profile.model_list = model_list.trim().to_string();
+    Ok(profile)
 }
 
 fn normalize_request(mut request: ProviderImportRequest) -> anyhow::Result<ProviderImportRequest> {

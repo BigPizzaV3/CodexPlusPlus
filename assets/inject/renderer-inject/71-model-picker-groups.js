@@ -39,6 +39,8 @@
   const codexPlusModelPickerNativeLabelClass = "codex-plus-model-group-native-label";
   /** 我们自己插入的模型标签类名。 */
   const codexPlusModelPickerOwnLabelClass = "codex-plus-model-group-own-label";
+  /** 在 Codex++ 里收藏过的模型，行尾的星标。 */
+  const codexPlusModelPickerFavoriteClass = "codex-plus-model-group-favorite";
   /** 行上的分组标记属性。 */
   const codexPlusModelPickerGroupAttr = "data-codex-plus-model-group";
   /** 分组标题上的分组 id 属性。 */
@@ -93,6 +95,7 @@
           collapseAll: "全部折叠",
           groupAria: (name, count, expanded, isDefault) => `${name}${isDefault ? "（默认供应商）" : ""}，${count} 个模型，${expanded ? "已展开" : "已折叠"}`,
           groupTitle: (name, count) => `${name} · ${count}`,
+          favorite: "已收藏（在 Codex++ 里收藏的模型）",
         }
       : {
           defaultBadge: "Default",
@@ -101,6 +104,7 @@
           collapseAll: "Collapse all",
           groupAria: (name, count, expanded, isDefault) => `${name}${isDefault ? " (default provider)" : ""}, ${count} models, ${expanded ? "expanded" : "collapsed"}`,
           groupTitle: (name, count) => `${name} · ${count}`,
+          favorite: "Favorite (starred in Codex++)",
         };
   }
 
@@ -389,7 +393,12 @@
       const groupId =
         typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
       if (!provider || !groupId) return;
-      const value = { provider, groupId };
+      // 在 Codex++ 里收藏过的模型（网关写的 `codex_plus_favorite`）：行尾画星标。
+      const value = { provider, groupId, favorite: entry.codex_plus_favorite === true };
+      // 原文键：网关关掉「模型名后带供应商」时，同名的几份只差末尾看不见的零宽字符，
+      // 宽松归一化会把它们抹掉，必须先按原文比对。
+      const rawKey = `raw\u0000${String(displayName).replace(/\s+/g, " ").trim()}`;
+      if (!map.has(rawKey)) map.set(rawKey, value);
       const fullKey = codexPlusModelPickerNormalizeLoose(displayName);
       if (fullKey && !map.has(fullKey)) map.set(fullKey, value);
       const split = codexPlusModelPickerSplitLabel(displayName);
@@ -470,19 +479,22 @@
       const pairKey = split.provider
         ? `${codexPlusModelPickerNormalizeLoose(split.name)}\u0000${codexPlusModelPickerNormalizeLoose(split.provider)}`
         : "";
-      const known = exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
-        || (pairKey ? exact.get(pairKey) : null)
+      const exactKnown = exact.get(`raw\u0000${identity.text}`)
+        || exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
+        || (pairKey ? exact.get(pairKey) : null);
+      const known = exactKnown
         || (!split.provider
           ? providers.get(codexPlusModelPickerNormalizeStrict(split.name))
             || providers.get(codexPlusModelPickerNormalize(split.name))
           : null);
       const groupId = known?.groupId
         || (split.provider ? `provider:${split.provider}` : defaultGroupId);
-      // 显示名按行文本：有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
-      const provider = split.provider || known?.provider || codexPlusModelPickerDefaultProviderName();
+      // 显示名：整行精确命中目录时用目录里的分组名（网关写的是打过码的完整账号名，后缀可能只是
+      // 供应商 id）；否则有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
+      const provider = exactKnown?.provider || split.provider || known?.provider || codexPlusModelPickerDefaultProviderName();
       const authoritativeGroupId = !!known?.groupId
         || (split.provider ? true : !!defaultGroupId);
-      rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId });
+      rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
     });
     return rows;
   }
@@ -680,7 +692,8 @@
     // 行本身带归属标记：补丁装完后第二次扫描能直接认出这一行，不再重新解析结构。
     entry.row.setAttribute("data-codex-plus-ext", codexPlusModelPickerGroupsExtMark);
     const isOurs = (node) => node.classList.contains(codexPlusModelPickerOwnLabelClass)
-      || node.classList.contains(codexPlusModelPickerNativeLabelClass);
+      || node.classList.contains(codexPlusModelPickerNativeLabelClass)
+      || node.classList.contains(codexPlusModelPickerFavoriteClass);
     const native = [...inner.children].find((node) => node.classList.contains(codexPlusModelPickerNativeLabelClass))
       // 第一次进来时装的是原生标签（单个 span）
       || [...inner.children].find((node) => !isOurs(node));
@@ -699,12 +712,27 @@
       inner.insertBefore(own, native || null);
     }
     if (own.textContent !== entry.name) own.textContent = entry.name;
+    // 收藏星标跟在模型名后面；取消收藏后下一轮扫描拿掉。
+    let star = [...inner.children].find((node) => node.classList.contains(codexPlusModelPickerFavoriteClass));
+    if (entry.favorite && !star) {
+      star = document.createElement("span");
+      star.className = codexPlusModelPickerFavoriteClass;
+      star.setAttribute("data-codex-plus-ext", codexPlusModelPickerGroupsExtMark);
+      star.setAttribute("role", "img");
+      star.setAttribute("aria-label", codexPlusModelPickerText().favorite);
+      star.title = codexPlusModelPickerText().favorite;
+      star.textContent = "★";
+      inner.insertBefore(star, own.nextSibling);
+    } else if (!entry.favorite && star) {
+      star.remove();
+    }
     entry.row.classList.add(codexPlusModelPickerItemClass);
   }
 
   function codexPlusModelPickerRestoreLabel(row) {
     const content = row.querySelector("[data-menu-row-content]") || row;
     content.querySelector(`.${codexPlusModelPickerOwnLabelClass}`)?.remove();
+    content.querySelector(`.${codexPlusModelPickerFavoriteClass}`)?.remove();
     const native = content.querySelector(`.${codexPlusModelPickerNativeLabelClass}`);
     if (native) {
       native.classList.remove(codexPlusModelPickerNativeLabelClass);
@@ -947,6 +975,7 @@
       [role="menuitemradio"].codex-plus-model-group-collapsed{display:none!important}
       .${codexPlusModelPickerNativeLabelClass}{display:none!important}
       .${codexPlusModelPickerOwnLabelClass}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .${codexPlusModelPickerFavoriteClass}{flex:none;margin-left:6px;color:#f5b94a;font-size:12px;line-height:1}
     `;
     document.head?.appendChild(style);
   }

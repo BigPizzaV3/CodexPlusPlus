@@ -40,7 +40,10 @@ pub const SERVER_ID: &str = "codex-plus-cu";
 /// 浏览器控制用的第二个 server 名。
 pub const BROWSER_SERVER_ID: &str = "codex-plus-browser";
 /// Codex `config.toml` 里的键名（TOML 里不能用连字符之外的字符，这里用下划线保持一致）。
+/// 只用于识别并移除旧版本留下的条目，不再写入。
 pub const CODEX_SERVER_ID: &str = "codex_plus_cu";
+const CODEX_NOT_INSTALLABLE: &str =
+    "Codex 自带 Computer Use，不接入 Codex++ 的：同时存在会出现两套电脑控制工具";
 
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_BACKUPS: usize = 5;
@@ -652,7 +655,7 @@ fn read_package_version(path: &Path) -> Option<String> {
 // 路径
 // ---------------------------------------------------------------------------
 
-fn claude_code_config_path() -> PathBuf {
+pub(crate) fn claude_code_config_path() -> PathBuf {
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
@@ -1169,22 +1172,18 @@ fn status_at(
             ),
             Err(error) => (false, "foreign", error.to_string()),
         },
-        // Codex 目标的条目指向 cua-repl；直通路径不依赖它，但写进去的条目要用它，
-        // 缺了就不该把坏路径写进别人的 config.toml。
-        Target::Codex if !std::path::Path::new(&runtime.cua_repl).is_file() => (
-            false,
-            "unsupported",
-            "当前 ChatGPT.app 不再提供 cua-repl，Codex 目标不可用（Claude 目标不受影响）".to_string(),
-        ),
+        // Codex 自带 Computer Use，不提供接入；这里只检测旧版本或命令行留下的残留，
+        // 残留会让 Codex 同时出现两套电脑控制工具。
         Target::Codex => match read_codex_entry(&config_paths[0], CODEX_SERVER_ID) {
-            Ok(None) => (false, "missing", "尚未接入".to_string()),
-            Ok(Some(entry)) if codex_entry_matches(&entry, runtime) => {
-                (true, "registered", "已接入".to_string())
-            }
-            Ok(Some(entry)) if codex_entry_looks_like_ours(&entry, runtime) => (
+            Ok(None) => (
+                false,
+                "unsupported",
+                "Codex 使用自带的 Computer Use，无需接入".to_string(),
+            ),
+            Ok(Some(entry)) if codex_entry_looks_like_ours(&entry) => (
                 true,
-                "needs_update",
-                "已接入，但运行时路径或版本已变化".to_string(),
+                "registered",
+                "Codex 配置里残留 Codex++ 的 Computer Use 条目，会与 Codex 自带的重复，建议移除".to_string(),
             ),
             Ok(Some(_)) => (
                 false,
@@ -1209,6 +1208,7 @@ fn status_at(
 // ---------------------------------------------------------------------------
 
 pub fn install(target: Target) -> anyhow::Result<InstallReceipt> {
+    ensure!(target != Target::Codex, "{CODEX_NOT_INSTALLABLE}");
     let runtime =
         locate_runtime()?.context("未找到 Codex 运行时（ChatGPT.app），无法接入 Computer Use")?;
     if let Some(message) = target.tool_home_missing() {
@@ -1237,13 +1237,7 @@ fn install_at(
             }
             receipt(target, changed, backup)
         }
-        Target::Codex => {
-            ensure!(
-                std::path::Path::new(&runtime.cua_repl).is_file(),
-                "当前 ChatGPT.app 不再提供 cua-repl，Codex 目标不可用（Claude 目标不受影响）"
-            );
-            install_codex_entry(&config_paths[0], runtime, target)
-        }
+        Target::Codex => bail!("{CODEX_NOT_INSTALLABLE}"),
         Target::Dsh => {
             let path = &config_paths[0];
             let before = read_text(path)?;
@@ -1376,58 +1370,6 @@ fn uninstall_json_entry(
     receipt(target, true, backup)
 }
 
-fn install_codex_entry(
-    path: &Path,
-    runtime: &RuntimeLocation,
-    target: Target,
-) -> anyhow::Result<InstallReceipt> {
-    use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
-    let before = read_text(path)?;
-    let mut document: DocumentMut = before
-        .as_deref()
-        .unwrap_or("")
-        .parse()
-        .with_context(|| format!("{} 不是合法 TOML，未修改", path.display()))?;
-    if document.get("mcp_servers").is_none() {
-        let mut servers = Table::new();
-        servers.set_implicit(true);
-        document.insert("mcp_servers", Item::Table(servers));
-    }
-    let servers = document
-        .get_mut("mcp_servers")
-        .and_then(Item::as_table_like_mut)
-        .with_context(|| format!("{} 的 mcp_servers 不是表，未修改", path.display()))?;
-    if let Some(existing) = servers.get(CODEX_SERVER_ID) {
-        ensure!(
-            codex_entry_looks_like_ours(existing, runtime),
-            "{} 里已有同名 {} 且不是本功能写入的，未覆盖",
-            path.display(),
-            CODEX_SERVER_ID
-        );
-        if codex_entry_matches(existing, runtime) {
-            return receipt(target, false, None);
-        }
-    }
-    let mut table = Table::new();
-    table.insert(
-        "command",
-        Item::Value(TomlValue::from(runtime.node.clone())),
-    );
-    let mut args = toml_edit::Array::new();
-    args.push(runtime.cua_repl.clone());
-    table.insert("args", Item::Value(TomlValue::Array(args)));
-    let mut env = Table::new();
-    for (key, value) in runtime.env() {
-        env.insert(&key, Item::Value(TomlValue::from(value)));
-    }
-    table.insert("env", Item::Table(env));
-    table.insert("enabled", Item::Value(TomlValue::from(true)));
-    servers.insert(CODEX_SERVER_ID, Item::Table(table));
-    let rendered = document.to_string();
-    let backup = write_with_backup(path, before.as_deref(), &rendered)?;
-    receipt(target, true, backup)
-}
-
 fn uninstall_codex_entry(path: &Path, target: Target) -> anyhow::Result<InstallReceipt> {
     use toml_edit::{DocumentMut, Item};
     let Some(before) = read_text(path)? else {
@@ -1436,6 +1378,18 @@ fn uninstall_codex_entry(path: &Path, target: Target) -> anyhow::Result<InstallR
     let mut document: DocumentMut = before
         .parse()
         .with_context(|| format!("{} 不是合法 TOML，未修改", path.display()))?;
+    if let Some(existing) = document
+        .get("mcp_servers")
+        .and_then(Item::as_table_like)
+        .and_then(|servers| servers.get(CODEX_SERVER_ID))
+    {
+        ensure!(
+            codex_entry_looks_like_ours(existing),
+            "{} 里的 {} 由其他工具写入，未改动",
+            path.display(),
+            CODEX_SERVER_ID
+        );
+    }
     let removed = document
         .get_mut("mcp_servers")
         .and_then(Item::as_table_like_mut)
@@ -1897,7 +1851,7 @@ fn open_private(path: &Path) -> anyhow::Result<File> {
         .with_context(|| format!("无法打开 {}", path.display()))
 }
 
-fn read_text(path: &Path) -> anyhow::Result<Option<String>> {
+pub(crate) fn read_text(path: &Path) -> anyhow::Result<Option<String>> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1910,7 +1864,7 @@ fn read_text(path: &Path) -> anyhow::Result<Option<String>> {
     Ok(Some(text))
 }
 
-fn parse_json_object(text: &str, path: &Path) -> anyhow::Result<Map<String, Value>> {
+pub(crate) fn parse_json_object(text: &str, path: &Path) -> anyhow::Result<Map<String, Value>> {
     if text.trim().is_empty() {
         return Ok(Map::new());
     }
@@ -1922,7 +1876,7 @@ fn parse_json_object(text: &str, path: &Path) -> anyhow::Result<Map<String, Valu
     }
 }
 
-fn write_with_backup(
+pub(crate) fn write_with_backup(
     path: &Path,
     before: Option<&str>,
     contents: &str,
@@ -2029,23 +1983,24 @@ fn looks_like_ours(entry: &Value, runtime: &RuntimeLocation) -> bool {
         .unwrap_or_default();
     // CU 与浏览器是两个条目，都算本功能写入的。
     if first_arg == "--codex-plus-cu-mcp" || first_arg == "--codex-plus-browser-mcp" {
-        // 同一份配置可能在 debug / release / 安装位置之间被复用：只认「是不是
-        // Codex++ 自己的二进制」，而不是某一条绝对路径，否则换个构建就会被判成他人条目。
-        if command == runtime.self_command() {
-            return true;
-        }
-        // bundle 里叫 CodexPlusPlus，cargo 产物叫 codex-plus-plus，两种都认。
-        return std::path::Path::new(command)
-            .file_name()
-            .map(|name| {
-                let lower = name.to_string_lossy().to_lowercase();
-                let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
-                stem.starts_with("codexplusplus") || stem.starts_with("codex-plus-plus")
-            })
-            .unwrap_or(false);
+        return command == runtime.self_command() || is_codex_plus_binary(command);
     }
     // 兼容早期直连 cua-repl 的写法：升级后仍能识别成自己的条目并改写。
     command == runtime.node && first_arg == runtime.cua_repl
+}
+
+/// 同一份配置可能在 debug / release / 安装位置之间被复用：只认「是不是
+/// Codex++ 自己的二进制」，而不是某一条绝对路径，否则换个构建就会被判成他人条目。
+/// bundle 里叫 CodexPlusPlus，cargo 产物叫 codex-plus-plus，两种都认。
+fn is_codex_plus_binary(command: &str) -> bool {
+    std::path::Path::new(command)
+        .file_name()
+        .map(|name| {
+            let lower = name.to_string_lossy().to_lowercase();
+            let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+            stem.starts_with("codexplusplus") || stem.starts_with("codex-plus-plus")
+        })
+        .unwrap_or(false)
 }
 
 fn read_codex_entry(path: &Path, server_id: &str) -> anyhow::Result<Option<toml_edit::Item>> {
@@ -2062,26 +2017,11 @@ fn read_codex_entry(path: &Path, server_id: &str) -> anyhow::Result<Option<toml_
         .cloned())
 }
 
-fn codex_entry_matches(entry: &toml_edit::Item, runtime: &RuntimeLocation) -> bool {
-    let Some(table) = entry.as_table_like() else {
-        return false;
-    };
-    if table.get("command").and_then(toml_edit::Item::as_str) != Some(runtime.node.as_str()) {
-        return false;
-    }
-    if table.get("enabled").and_then(toml_edit::Item::as_bool) != Some(true) {
-        return false;
-    }
-    let args_ok = table
-        .get("args")
-        .and_then(toml_edit::Item::as_array)
-        .and_then(|args| args.get(0))
-        .and_then(toml_edit::Value::as_str)
-        == Some(runtime.cua_repl.as_str());
-    args_ok
-}
-
-fn codex_entry_looks_like_ours(entry: &toml_edit::Item, runtime: &RuntimeLocation) -> bool {
+/// Codex 配置里的 `codex_plus_cu` 是不是 Codex++ 写入的残留：早期直连 cua-repl 的写法
+/// （`node …/cua-repl.mjs`），或指向 Codex++ 自己的代理。
+///
+/// 不依赖 `RuntimeLocation`：ChatGPT.app 升级或卸载后路径都会变，残留仍要能认出来并移除。
+fn codex_entry_looks_like_ours(entry: &toml_edit::Item) -> bool {
     let Some(table) = entry.as_table_like() else {
         return false;
     };
@@ -2089,7 +2029,20 @@ fn codex_entry_looks_like_ours(entry: &toml_edit::Item, runtime: &RuntimeLocatio
         .get("command")
         .and_then(toml_edit::Item::as_str)
         .unwrap_or_default();
-    command == runtime.node
+    let first_arg = table
+        .get("args")
+        .and_then(toml_edit::Item::as_array)
+        .and_then(|args| args.get(0))
+        .and_then(toml_edit::Value::as_str)
+        .unwrap_or_default();
+    if first_arg == "--codex-plus-cu-mcp" {
+        return is_codex_plus_binary(command)
+            || std::env::current_exe().is_ok_and(|exe| exe.to_string_lossy() == command);
+    }
+    let node = std::path::Path::new(command)
+        .file_name()
+        .is_some_and(|name| name == "node" || name == "node.exe");
+    node && first_arg.replace('\\', "/").contains("cua-repl/bin/cua-repl.mjs")
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,31 +2244,52 @@ mod tests {
     }
 
     #[test]
-    fn install_and_uninstall_codex_toml() {
+    fn codex_target_is_never_installed() {
+        let error = install(Target::Codex).unwrap_err();
+        assert!(error.to_string().contains("Codex 自带 Computer Use"));
+    }
+
+    #[test]
+    fn codex_leftovers_are_recognized_and_removed() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("config.toml");
-        fs::write(
-            &path,
-            "model = \"gpt-6\"\n\n[mcp_servers.other]\ncommand = \"keep\"\n",
-        )
-        .unwrap();
-        let runtime = sample_runtime(temp.path());
-        let first = install_codex_entry(&path, &runtime, Target::Codex).unwrap();
-        assert!(first.changed);
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("model = \"gpt-6\""));
-        assert!(text.contains("[mcp_servers.other]"));
-        assert!(text.contains("[mcp_servers.codex_plus_cu]"));
-        assert!(text.contains("enabled = true"));
+        // 两种残留：早期直连 cua-repl，以及指向 Codex++ 代理的写法。
+        for (command, arg) in [
+            (
+                "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node",
+                "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs",
+            ),
+            ("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus", "--codex-plus-cu-mcp"),
+        ] {
+            fs::write(
+                &path,
+                format!(
+                    "model = \"gpt-6\"\n\n[mcp_servers.other]\ncommand = \"keep\"\n\n[mcp_servers.codex_plus_cu]\ncommand = \"{command}\"\nargs = [\"{arg}\"]\nenabled = true\n"
+                ),
+            )
+            .unwrap();
+            let entry = read_codex_entry(&path, CODEX_SERVER_ID).unwrap().unwrap();
+            assert!(codex_entry_looks_like_ours(&entry), "{command}");
 
-        let second = install_codex_entry(&path, &runtime, Target::Codex).unwrap();
-        assert!(!second.changed, "重复安装不应该重写 TOML");
+            let removed = uninstall_codex_entry(&path, Target::Codex).unwrap();
+            assert!(removed.changed);
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("codex_plus_cu"));
+            assert!(text.contains("model = \"gpt-6\""));
+            assert!(text.contains("[mcp_servers.other]"));
+        }
+    }
 
-        let removed = uninstall_codex_entry(&path, Target::Codex).unwrap();
-        assert!(removed.changed);
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(!text.contains("codex_plus_cu"));
-        assert!(text.contains("[mcp_servers.other]"));
+    #[test]
+    fn codex_foreign_entry_is_left_alone() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let before = "[mcp_servers.codex_plus_cu]\ncommand = \"/usr/local/bin/someone-else\"\n";
+        fs::write(&path, before).unwrap();
+        let entry = read_codex_entry(&path, CODEX_SERVER_ID).unwrap().unwrap();
+        assert!(!codex_entry_looks_like_ours(&entry));
+        assert!(uninstall_codex_entry(&path, Target::Codex).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]

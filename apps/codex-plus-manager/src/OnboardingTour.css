@@ -1,0 +1,152 @@
+/* 首次使用引导。挂在 body 下（不在 .shell 里），主题类名在 <html> 上，颜色变量照常可用。 */
+.tour-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+}
+
+/* 目标高亮：一圈超大阴影压暗其余区域，目标本身保持原样，外加一道强调色描边。 */
+.tour-spotlight {
+  position: fixed;
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 2px hsl(var(--brand-accent)),
+    0 0 0 9999px rgb(0 0 0 / 0.58);
+  pointer-events: none;
+  transition: left 0.22s ease, top 0.22s ease, width 0.22s ease, height 0.22s ease;
+}
+
+.tour-dim {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.58);
+}
+
+.tour-card {
+  position: fixed;
+  width: 320px;
+  padding: 16px 16px 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.35);
+  transition: left 0.22s ease, top 0.22s ease;
+}
+
+.tour-card[data-centered="true"] {
+  width: 380px;
+}
+
+.tour-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+.tour-close:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+.tour-step {
+  color: hsl(var(--brand-accent));
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tour-card h3 {
+  margin: 4px 0 6px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.tour-card p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.tour-dots {
+  display: flex;
+  gap: 5px;
+  margin: 14px 0 12px;
+}
+
+.tour-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(var(--border));
+  transition: width 0.2s ease, background-color 0.2s ease;
+}
+
+.tour-dots i[data-active="true"] {
+  width: 16px;
+  border-radius: 3px;
+  background: hsl(var(--brand-accent));
+}
+
+.tour-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tour-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.tour-ghost {
+  border: 1px solid hsl(var(--border));
+  background: transparent;
+  color: hsl(var(--foreground));
+}
+
+.tour-ghost:hover {
+  background: hsl(var(--accent));
+}
+
+.tour-primary {
+  border: 0;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.tour-primary:hover {
+  filter: brightness(1.08);
+}
+
+.tour-actions button:focus-visible,
+.tour-close:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight,
+  .tour-card,
+  .tour-dots i {
+    transition: none;
+  }
+}

@@ -3,9 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, Download, KeyRound, LoaderCircle, PackageOpen, RefreshCw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
+import { AppSelect } from "./AppSelect";
 import { applyPluginInstallation, filterMarketPlugins, isPluginMarketSuccess, mergePluginMarketCatalog, pluginMarketPage, PluginMarketRequests, type MarketCatalogs, type MarketFilter, type MarketPlugin, type MarketResult, type MarketSource } from "./plugin-market-model";
 import "./PluginMarketScreen.css";
 
@@ -140,8 +141,8 @@ export function PluginMarketScreen() {
 
   return (
     <div className="plugin-market-screen">
-      <Card className="panel plugin-market-toolbar">
-        <CardContent>
+      {/* 工具栏不再套卡片：来源、搜索、筛选、刷新和数量在一行。 */}
+      <div className="plugin-market-toolbar">
           <div className="plugin-market-controls">
             <div aria-label={t("插件市场来源")} className="plugin-market-source" role="group">
               <Button aria-pressed={source === "public"} disabled={!!installing} onClick={() => selectSource("public")} title={t("收录已确认可公开分发的插件。")} variant={source === "public" ? "secondary" : "ghost"}>
@@ -155,16 +156,20 @@ export function PluginMarketScreen() {
               <Search aria-hidden="true" />
               <Input aria-label={t("搜索插件")} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索名称、作者、描述或标签")} ref={searchInput} type="search" value={query} />
             </label>
-            <label className="plugin-market-filter">
-              <span className="sr-only">{t("筛选插件")}</span>
-              <select onChange={(event) => setFilter(event.currentTarget.value as MarketFilter)} value={filter}>
-                <option value="all">{t("全部插件")}</option>
-                <option value="available">{t("可安装")}</option>
-                <option value="installed">{t("已安装")}</option>
-                <option value="updates">{t("有更新")}</option>
-                <option value="auth">{t("需服务授权")}</option>
-              </select>
-            </label>
+            <div className="plugin-market-filter">
+              <AppSelect
+                ariaLabel={t("筛选插件")}
+                onChange={(next) => setFilter(next)}
+                options={[
+                  { value: "all", label: t("全部插件") },
+                  { value: "available", label: t("可安装") },
+                  { value: "installed", label: t("已安装") },
+                  { value: "updates", label: t("有更新") },
+                  { value: "auth", label: t("需服务授权") },
+                ] as { value: MarketFilter; label: string }[]}
+                value={filter}
+              />
+            </div>
             <Button disabled={loading || !!installing} onClick={() => void loadCatalog(source, true)} variant="outline">
               <RefreshCw aria-hidden="true" className={loading ? "plugin-market-spinner" : ""} />
               {loading ? t("加载中…") : t("刷新索引")}
@@ -174,8 +179,7 @@ export function PluginMarketScreen() {
             {market ? query.trim() || filter !== "all" ? tf("{0} / {1} 个插件", [filtered.length, market.total]) : tf("{0} 个插件", [market.total]) : loading ? t("正在读取插件清单…") : t("尚未加载插件清单。")}
             {market?.cached ? <span title={t("使用本地索引缓存")}>{t("缓存")}</span> : null}
           </p>
-        </CardContent>
-      </Card>
+      </div>
 
       {error ? (
         <div className="plugin-market-feedback plugin-market-error" role="alert">
@@ -204,33 +208,30 @@ export function PluginMarketScreen() {
             const isInstalling = installing?.id === plugin.id;
             const title = plugin.displayName || plugin.name;
             return (
+              // 紧凑卡片：标题行带状态标签，说明最多两行，底部一行放版本、大小和操作。
               <Card className="panel plugin-market-card" key={plugin.id}>
-                <CardHeader>
-                  <div className="plugin-market-card-heading">
-                    <PackageOpen aria-hidden="true" className="plugin-market-package" />
-                    <div>
-                      <CardTitle>{title}</CardTitle>
-                    </div>
-                  </div>
-                  <CardDescription className="plugin-market-description">{plugin.description || t("暂无插件描述。")}</CardDescription>
-                </CardHeader>
-                <CardContent>
+                <div className="plugin-market-card-heading">
+                  <PackageOpen aria-hidden="true" className="plugin-market-package" />
+                  <CardTitle>{title}</CardTitle>
                   <div className="plugin-market-status">
                     {plugin.installed ? <Badge variant="secondary"><CheckCircle2 aria-hidden="true" />{t("已安装")}</Badge> : null}
                     {plugin.requiresAuth ? <Badge variant="outline"><KeyRound aria-hidden="true" />{t("需服务授权")}</Badge> : null}
                   </div>
+                </div>
+                <CardDescription className="plugin-market-description">{plugin.description || t("暂无插件描述。")}</CardDescription>
+                <div className="plugin-market-card-foot">
                   <div className="plugin-market-metadata">
                     <span>{plugin.version ? `v${plugin.version}` : t("版本未声明")}</span>
                     {plugin.bytes > 0 ? <span>{formatBytes(plugin.bytes)}</span> : null}
                   </div>
                   <div className="plugin-market-card-actions">
-                    <Button aria-label={tf("查看插件 {0} 的详情", [title])} onClick={(event) => { detailTrigger.current = event.currentTarget; setDetailPlugin(plugin); }} variant="ghost">{t("详情")}</Button>
-                    <Button aria-label={tf("安装插件 {0}", [title])} disabled={loading || !!installing || (plugin.installed && !plugin.updateAvailable)} onClick={() => void install(plugin)}>
+                    <Button aria-label={tf("查看插件 {0} 的详情", [title])} onClick={(event) => { detailTrigger.current = event.currentTarget; setDetailPlugin(plugin); }} size="sm" variant="ghost">{t("详情")}</Button>
+                    <Button aria-label={tf("安装插件 {0}", [title])} disabled={loading || !!installing || (plugin.installed && !plugin.updateAvailable)} onClick={() => void install(plugin)} size="sm">
                       {isInstalling ? <LoaderCircle aria-hidden="true" className="plugin-market-spinner" /> : plugin.installed && !plugin.updateAvailable ? <CheckCircle2 aria-hidden="true" /> : <Download aria-hidden="true" />}
                       {isInstalling ? t("安装中…") : plugin.updateAvailable ? t("更新插件") : plugin.installed ? t("已安装") : t("下载并安装")}
                     </Button>
                   </div>
-                </CardContent>
+                </div>
               </Card>
             );
           })}

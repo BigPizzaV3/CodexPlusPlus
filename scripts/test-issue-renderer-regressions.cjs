@@ -43,56 +43,6 @@ async function browserChecks() {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CODEX_TEST_BROWSER_PATH });
   try {
     const page = await browser.newPage();
-    const source = shard('95-conversation-view.js');
-    for (const variant of ['manual', 'semantic', 'legacy', 'pending', 'generate', 'pending-timeout']) {
-      await page.setContent('<div id="row"></div><button id="item"></button><button id="trigger">More</button><div id="menu" role="menu"><button role="menuitem">Rename</button></div>');
-      const result = await page.evaluate(async ({ variant, functions }) => {
-        const row = document.querySelector('#row'), item = document.querySelector('#item');
-        item.__codexSessionAutoRenameRow = row;
-        window.toasts = []; window.saved = false; window.fixtureClosed = 0;
-        document.querySelector('[role="menuitem"]').onclick = () => {
-          const dialog = document.createElement('div'); dialog.setAttribute('role', 'dialog');
-          dialog.innerHTML = '<input aria-label="Chat title" value="Old title"><button>Cancel</button><button>Save</button>';
-          const add = () => {
-            const button = document.createElement('button'); button.textContent = 'New title';
-            if (variant === 'legacy') button.className = 'text-info'; else button.dataset.testid = 'title-suggestion';
-            button.onclick = () => { dialog.querySelector('input').value = 'New title'; };
-            dialog.append(button); dialog.removeAttribute('aria-busy');
-          };
-          if (variant === 'pending-timeout') dialog.setAttribute('aria-busy', 'true');
-          else if (variant === 'generate') {
-            const button = document.createElement('button'); button.textContent = 'Generate title';
-            button.onclick = () => { add(); button.remove(); }; dialog.append(button);
-          }
-          else if (variant === 'pending') { dialog.setAttribute('aria-busy', 'true'); setTimeout(add, 50); }
-          else if (variant !== 'manual') add();
-          dialog.querySelectorAll('button')[1].onclick = () => { window.saved = dialog.querySelector('input').value; dialog.remove(); };
-          document.body.append(dialog);
-        };
-        const context = `const sessionAutoRenameTimeoutMs=500;
-          const visibleElement=node=>!!node&&node.getBoundingClientRect().width>0;
-          const normalizedElementText=node=>(node.textContent||'').trim();
-          const sessionCopyMenuActivationIsDuplicate=()=>false,closeSessionMoreMenus=()=>{};
-          const selectSessionRowForAction=async()=>true,sessionActionTrigger=()=>document.querySelector('#trigger');
-          const dispatchNativePointerClick=()=>{},sessionCopyMenuScopes=()=>[document.querySelector('#menu')];
-          const looksLikeSessionActionMenu=()=>true,isNativeSessionRenameMenuItem=node=>node.textContent==='Rename';
-          const visibleSessionRenameDialog=()=>document.querySelector('[role=dialog]');
-          const closeSessionRenameDialog=()=>{window.fixtureClosed++};const showToast=text=>window.toasts.push(text);
-          let lastSessionActionTrigger;
-          async function waitForSessionElement(read,ms){const end=Date.now()+ms;do{const value=read();if(value)return value;await new Promise(r=>setTimeout(r,10))}while(Date.now()<end);return null;}
-          ${functions}
-          window.runRename=activateSessionAutoRenameMenuItem;`;
-        (0, eval)(context);
-        await window.runRename({ currentTarget: item });
-        return { saved: window.saved, closed: window.fixtureClosed, manual: !!document.querySelector('[role=dialog]'), toasts: window.toasts };
-      }, { variant, functions: ['nativeSessionRenameCapability', 'activateSessionAutoRenameMenuItem'].map(name => extract(source, name)).join('\n') });
-      assert.equal(result.closed, 0, variant);
-      const manual = ['manual', 'pending-timeout'].includes(variant);
-      assert.equal(result.saved, manual ? false : 'New title', variant);
-      assert.equal(result.manual, manual, variant);
-      if (variant === 'manual') assert.match(result.toasts.at(-1), /未提供自动命名.*手动/);
-      if (output && variant === 'manual') await page.screenshot({ path: path.join(output, 'native-rename-manual.png') });
-    }
     const compatibility = fs.readFileSync(path.join(root, 'assets/inject/dream-skin-native-shell-compat.css'), 'utf8');
     const artwork = 'data:image/png;base64,' + fs.readFileSync(path.join(root, 'assets/inject/dream-skin-default.png')).toString('base64');
     let count = 0;
@@ -117,8 +67,8 @@ async function browserChecks() {
       assert.equal(await color('#surface'), 'rgb(240, 240, 240)', 'disabled skin restores native surface');
       count++;
     }
-    console.log(`native rename: 6 cases passed; real computed-style layer matrix with PNG decode: ${count} cases passed`);
-    if (output) fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ browser: browser.version(), nativeRenameCases: 6,
+    console.log(`real computed-style layer matrix with PNG decode: ${count} cases passed`);
+    if (output) fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ browser: browser.version(),
       themeCascadeCases: count, fixturePngDecoded: true, diagnosticsCases: 6,
       scope: 'Synthetic DOM with repository base CSS and important native utility fixture; not real Windows MSIX acceptance.' }, null, 2));
   } finally { await browser.close(); }

@@ -4,6 +4,8 @@
 // 固定使用 dist/local-build/Codex++.app：
 //   - 只替换 Contents/MacOS/CodexPlusPlus，保留 bundle 的 Info.plist / LSEnvironment / state，
 //     这样每次构建都复用同一个应用身份和测试配置，不会在 Finder / Launchpad 里多出一个 Codex++。
+//   - 图标源（src-tauri/icons/icon-macos.png）变了（按内容指纹判断），按打包脚本同样的方式重新生成 .icns，
+//     否则换了 logo 之后 Dock 里还是旧图标。只换这一个文件，不动 Info.plist 与 bundle 身份。
 //   - 旧的历史构建交给 scripts/prune-local-builds.mjs 移入废纸篓。
 //
 // 用法：
@@ -11,7 +13,8 @@
 //   node scripts/relaunch-local.mjs --skip-build    # 跳过构建，用现有 target/release 二进制重装并重启
 //   node scripts/relaunch-local.mjs --no-open       # 不自动启动（只替换 bundle）
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +27,41 @@ const builtBinary = path.join(root, "target", "release", "codex-plus-plus");
 const stagingDir = path.join(distDir, ".local-build-staging");
 const stagingBundle = path.join(stagingDir, "Codex++.app");
 const pruneScript = path.join(root, "scripts", "prune-local-builds.mjs");
+
+/**
+ * 图标源内容变了就重新生成 .icns（尺寸与 scripts/installer/macos/package-dmg.sh 一致）。返回是否更新了。
+ * 不能比较修改时间：每次构建都会整体复制 bundle，复制出来的 .icns 时间总是比图标源新。
+ * 所以在 Resources 里记一份图标源的 sha256，内容不同才重新生成。
+ */
+function refreshBundleIcon(target) {
+  const source = path.join(root, "apps", "codex-plus-manager", "src-tauri", "icons", "icon-macos.png");
+  if (!existsSync(source)) return false;
+  let iconName = "codex-plus-plus.icns";
+  try {
+    iconName = execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIconFile", path.join(target, "Contents", "Info.plist")], { encoding: "utf8" }).trim() || iconName;
+  } catch {
+    // Info.plist 没写图标名时用默认名
+  }
+  if (!iconName.endsWith(".icns")) iconName += ".icns";
+  const icns = path.join(target, "Contents", "Resources", iconName);
+  const marker = path.join(target, "Contents", "Resources", ".icon-source.sha256");
+  const digest = createHash("sha256").update(readFileSync(source)).digest("hex");
+  if (existsSync(icns) && existsSync(marker) && readFileSync(marker, "utf8").trim() === digest) return false;
+  const iconset = path.join(stagingDir, "codex-plus-plus.iconset");
+  mkdirSync(iconset, { recursive: true });
+  for (const [name, size] of [
+    ["icon_16x16", 16], ["icon_16x16@2x", 32], ["icon_32x32", 32], ["icon_32x32@2x", 64],
+    ["icon_128x128", 128], ["icon_128x128@2x", 256], ["icon_256x256", 256], ["icon_256x256@2x", 512],
+    ["icon_512x512", 512], ["icon_512x512@2x", 1024],
+  ]) {
+    execFileSync("sips", ["-z", String(size), String(size), source, "--out", path.join(iconset, `${name}.png`)], { stdio: "ignore" });
+  }
+  mkdirSync(path.dirname(icns), { recursive: true });
+  execFileSync("iconutil", ["-c", "icns", iconset, "-o", icns], { stdio: "inherit" });
+  writeFileSync(marker, `${digest}\n`);
+  console.log(`已更新应用图标：${path.relative(root, icns)}`);
+  return true;
+}
 
 function localBundleProcessPattern(bundle) {
   // pgrep/pkill 使用扩展正则；Codex++.app 的加号必须按字面量匹配。
@@ -71,6 +109,7 @@ mkdirSync(stagingDir, { recursive: true });
 cpSync(bundle, stagingBundle, { recursive: true, verbatimSymlinks: true });
 cpSync(builtBinary, path.join(stagingBundle, "Contents", "MacOS", "CodexPlusPlus"));
 chmodSync(path.join(stagingBundle, "Contents", "MacOS", "CodexPlusPlus"), 0o755);
+const iconUpdated = refreshBundleIcon(stagingBundle);
 // Developer ID 证书按 Team ID 记账，重建后 TCC 授权（屏幕录制等）不会因 cdhash 变化而失效。
 // ad-hoc（"-"）则每次都产生新 cdhash，必须在系统设置里重新授权。
 // 只在 /usr/bin/security 能找到证书时用 Developer ID，否则回退 ad-hoc。
@@ -149,6 +188,16 @@ renameSync(bundle, previousBundle);
 renameSync(stagingBundle, bundle);
 rmSync(previousBundle, { recursive: true, force: true });
 rmSync(stagingDir, { recursive: true, force: true });
+if (iconUpdated) {
+  // 换了图标：更新 bundle 时间戳并重新登记，Finder / Dock 才会丢掉缓存的旧图标。
+  const now = new Date();
+  utimesSync(bundle, now, now);
+  try {
+    execFileSync("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", ["-f", bundle], { stdio: "ignore" });
+  } catch {
+    // 登记失败不影响启动，最多 Dock 晚一点刷新
+  }
+}
 
 if (!noOpen) {
   console.log("4/4 启动");

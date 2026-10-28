@@ -13,6 +13,28 @@ use toml_edit::{DocumentMut, Item};
 
 use crate::tools::{ToolConfig, ToolId};
 
+type SettingsChangeListener = Box<dyn Fn() + Send + Sync>;
+
+/// 管理器之外（Codex 设置页经桥接 `/settings/set`）写入设置后的通知钩子。
+/// core 不依赖 Tauri：管理器启动时注册监听，再转成界面事件让主窗口重新读取。
+/// 管理器自己的保存不走这里，免得刷新冲掉它尚未保存的编辑。
+static EXTERNAL_SETTINGS_CHANGE_LISTENER: std::sync::Mutex<Option<SettingsChangeListener>> =
+    std::sync::Mutex::new(None);
+
+pub fn set_external_settings_change_listener(listener: impl Fn() + Send + Sync + 'static) {
+    if let Ok(mut slot) = EXTERNAL_SETTINGS_CHANGE_LISTENER.lock() {
+        *slot = Some(Box::new(listener));
+    }
+}
+
+pub fn notify_external_settings_change() {
+    if let Ok(slot) = EXTERNAL_SETTINGS_CHANGE_LISTENER.lock() {
+        if let Some(listener) = slot.as_ref() {
+            listener();
+        }
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -188,6 +210,11 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub anthropic_thinking_mode: String,
+    /// 网关供应商的独立代理（存在 gateway.json，载入时填上，不写进 settings.json）。
+    /// 为 Some 时发请求只用它（空串＝不单独走代理），不按 id 去查直连模式的代理表：
+    /// 网关与直连模式的供应商 id 各自独立，按 id 查会误用同名直连供应商的代理。
+    #[serde(skip)]
+    pub gateway_proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -355,6 +382,7 @@ impl Default for RelayProfile {
             anthropic_prompt_cache: true,
             anthropic_impersonate_claude_code: false,
             anthropic_thinking_mode: String::new(),
+            gateway_proxy: None,
         }
     }
 }
@@ -693,6 +721,175 @@ impl DictationSettings {
     }
 }
 
+/// Agent 桌宠目前支持的宿主；其余值保存时过滤掉。
+pub const AGENT_PET_SUPPORTED_AGENTS: &[&str] = &["codex"];
+/// 内置桌宠音效组；其余值回落到 `duck`。
+pub const AGENT_PET_SOUND_SETS: &[&str] = &["duck", "fx1"];
+pub const AGENT_PET_MIN_SIZE: u32 = 64;
+pub const AGENT_PET_MAX_SIZE: u32 = 240;
+const AGENT_PET_DEFAULT_SIZE: u32 = 112;
+const AGENT_PET_DEFAULT_VOLUME: f64 = 0.6;
+/// 已移除的旧用量挂件开关；只在迁移时读取，保存时不再写出。
+const LEGACY_PET_WIDGET_KEY: &str = "codexAppWhaleWidgetEnabled";
+/// 旧用量挂件（余额 / 价格 / 用量统计）留下的全部键，读写时一并清理。
+const LEGACY_PET_WIDGET_KEYS: [&str; 6] = [
+    LEGACY_PET_WIDGET_KEY,
+    "codexAppWhaleBalanceProtocol",
+    "codexAppWhaleBalancePath",
+    "codexAppWhaleBalanceField",
+    "codexAppWhaleBalanceCurrency",
+    "codexAppWhaleBalanceScale",
+];
+
+/// Agent 桌宠设置。反序列化是宽松的：任一字段类型不对只回落该字段默认值，
+/// 不能因为桌宠配置写坏就让整份 settings.json 解析失败。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPetSettings {
+    pub enabled: bool,
+    /// 在哪些 Agent 里显示桌宠；目前只认 `codex`。
+    pub agents: Vec<String>,
+    /// 内置图库 id，或 `custom`（此时使用 `custom_image_url`）。
+    pub image: String,
+    /// 自定义图片地址，只接受 https://。
+    pub custom_image_url: String,
+    pub size: u32,
+    pub sound_enabled: bool,
+    pub sound_set: String,
+    pub volume: f64,
+}
+
+impl Default for AgentPetSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            agents: vec!["codex".to_string()],
+            image: crate::agent_pet::DEFAULT_IMAGE_ID.to_string(),
+            custom_image_url: String::new(),
+            size: AGENT_PET_DEFAULT_SIZE,
+            sound_enabled: true,
+            sound_set: "duck".to_string(),
+            volume: AGENT_PET_DEFAULT_VOLUME,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AgentPetSettings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(Self::from_json_lenient(&value))
+    }
+}
+
+impl AgentPetSettings {
+    /// 逐字段读取，缺失或类型不对的字段用默认值；结果已归一化。
+    pub fn from_json_lenient(value: &Value) -> Self {
+        let mut settings = Self::default();
+        let Some(map) = value.as_object() else {
+            return settings;
+        };
+        if let Some(value) = map.get("enabled").and_then(Value::as_bool) {
+            settings.enabled = value;
+        }
+        if let Some(items) = map.get("agents").and_then(Value::as_array) {
+            settings.agents = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect();
+        }
+        if let Some(value) = map.get("image").and_then(Value::as_str) {
+            settings.image = value.to_string();
+        }
+        if let Some(value) = map.get("customImageUrl").and_then(Value::as_str) {
+            settings.custom_image_url = value.to_string();
+        }
+        if let Some(value) = map.get("size").and_then(Value::as_f64) {
+            settings.size = clamp_agent_pet_size(value);
+        }
+        if let Some(value) = map.get("soundEnabled").and_then(Value::as_bool) {
+            settings.sound_enabled = value;
+        }
+        if let Some(value) = map.get("soundSet").and_then(Value::as_str) {
+            settings.sound_set = value.to_string();
+        }
+        if let Some(value) = map.get("volume").and_then(Value::as_f64) {
+            settings.volume = value;
+        }
+        settings.normalize();
+        settings
+    }
+
+    pub fn normalize(&mut self) {
+        let mut agents: Vec<String> = Vec::new();
+        for agent in &self.agents {
+            let agent = agent.trim().to_ascii_lowercase();
+            if AGENT_PET_SUPPORTED_AGENTS.contains(&agent.as_str()) && !agents.contains(&agent) {
+                agents.push(agent);
+            }
+        }
+        self.agents = agents;
+        let image = self.image.trim();
+        self.image = if image == crate::agent_pet::CUSTOM_IMAGE_ID
+            || crate::agent_pet::is_builtin_image(image)
+        {
+            image.to_string()
+        } else {
+            crate::agent_pet::DEFAULT_IMAGE_ID.to_string()
+        };
+        self.custom_image_url = self.custom_image_url.trim().to_string();
+        self.size = self.size.clamp(AGENT_PET_MIN_SIZE, AGENT_PET_MAX_SIZE);
+        let sound_set = self.sound_set.trim();
+        self.sound_set = if AGENT_PET_SOUND_SETS.contains(&sound_set) {
+            sound_set.to_string()
+        } else {
+            "duck".to_string()
+        };
+        self.volume = if self.volume.is_finite() {
+            self.volume.clamp(0.0, 1.0)
+        } else {
+            AGENT_PET_DEFAULT_VOLUME
+        };
+    }
+
+    /// 是否在指定 Agent 里显示桌宠。
+    pub fn enabled_for(&self, agent: &str) -> bool {
+        self.enabled && self.agents.iter().any(|item| item == agent)
+    }
+}
+
+fn clamp_agent_pet_size(value: f64) -> u32 {
+    if !value.is_finite() {
+        return AGENT_PET_DEFAULT_SIZE;
+    }
+    value
+        .round()
+        .clamp(AGENT_PET_MIN_SIZE as f64, AGENT_PET_MAX_SIZE as f64) as u32
+}
+
+/// 旧版只有用量挂件开关：开着且还没有 `agentPet` 时，迁移成「桌宠已开启」。
+fn legacy_pet_widget_enabled(raw: &Map<String, Value>) -> bool {
+    !raw.contains_key("agentPet")
+        && raw.get(LEGACY_PET_WIDGET_KEY).and_then(Value::as_bool) == Some(true)
+}
+
+/// 把旧用量挂件开关迁移进原始设置对象，并删掉旧挂件的全部键。
+fn migrate_legacy_pet_widget(raw: &mut Map<String, Value>) {
+    if legacy_pet_widget_enabled(raw) {
+        let settings = AgentPetSettings {
+            enabled: true,
+            ..AgentPetSettings::default()
+        };
+        raw.insert(
+            "agentPet".to_string(),
+            serde_json::to_value(settings).unwrap_or_else(|_| Value::Object(Map::new())),
+        );
+    }
+    for key in LEGACY_PET_WIDGET_KEYS {
+        raw.remove(key);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
     /// 读取快照的版本，只用于条件保存，不写入 settings.json。
@@ -823,27 +1020,9 @@ pub struct BackendSettings {
     pub codex_app_capacity_auto_retry: bool,
     #[serde(rename = "codexAppTurnRewind", default)]
     pub codex_app_turn_rewind: bool,
-    #[serde(rename = "codexAppWhaleWidgetEnabled", default)]
-    pub codex_app_whale_widget_enabled: bool,
-    #[serde(
-        rename = "codexAppWhaleBalanceProtocol",
-        default = "default_whale_balance_protocol"
-    )]
-    pub codex_app_whale_balance_protocol: String,
-    #[serde(rename = "codexAppWhaleBalancePath", default)]
-    pub codex_app_whale_balance_path: String,
-    #[serde(rename = "codexAppWhaleBalanceField", default)]
-    pub codex_app_whale_balance_field: String,
-    #[serde(
-        rename = "codexAppWhaleBalanceCurrency",
-        default = "default_whale_balance_currency"
-    )]
-    pub codex_app_whale_balance_currency: String,
-    #[serde(
-        rename = "codexAppWhaleBalanceScale",
-        default = "default_whale_balance_scale"
-    )]
-    pub codex_app_whale_balance_scale: f64,
+    /// Agent 桌宠；旧的 `codexAppWhaleWidgetEnabled` 在读取时迁移到这里。
+    #[serde(rename = "agentPet", default)]
+    pub agent_pet: AgentPetSettings,
     #[serde(rename = "codexAppStepwiseEnabled", default)]
     pub codex_app_stepwise_enabled: bool,
     #[serde(
@@ -1103,12 +1282,7 @@ impl Default for BackendSettings {
             codex_app_activity_overlay_right: false,
             codex_app_capacity_auto_retry: false,
             codex_app_turn_rewind: false,
-            codex_app_whale_widget_enabled: false,
-            codex_app_whale_balance_protocol: default_whale_balance_protocol(),
-            codex_app_whale_balance_path: String::new(),
-            codex_app_whale_balance_field: String::new(),
-            codex_app_whale_balance_currency: default_whale_balance_currency(),
-            codex_app_whale_balance_scale: default_whale_balance_scale(),
+            agent_pet: AgentPetSettings::default(),
             codex_app_stepwise_enabled: false,
             codex_app_stepwise_generation_mode: default_stepwise_generation_mode(),
             codex_app_answer_outline_enabled: false,
@@ -1236,6 +1410,7 @@ impl BackendSettings {
                 anthropic_prompt_cache: true,
                 anthropic_impersonate_claude_code: false,
                 anthropic_thinking_mode: String::new(),
+                gateway_proxy: None,
             };
         }
 
@@ -1304,6 +1479,7 @@ impl BackendSettings {
             anthropic_prompt_cache: true,
             anthropic_impersonate_claude_code: false,
             anthropic_thinking_mode: String::new(),
+            gateway_proxy: None,
         }
     }
 
@@ -1583,18 +1759,6 @@ pub fn default_computer_use_approval() -> String {
 /// 自带完整使用说明与确认规则，并能用 paste 输入中文。离散工具需要用户主动切换。
 pub fn default_computer_use_mode() -> String {
     "js".to_string()
-}
-
-fn default_whale_balance_protocol() -> String {
-    "auto".to_string()
-}
-
-fn default_whale_balance_currency() -> String {
-    "USD".to_string()
-}
-
-fn default_whale_balance_scale() -> f64 {
-    1.0
 }
 
 pub fn default_relay_base_url() -> String {
@@ -1971,6 +2135,14 @@ impl SettingsStore {
             )
         })?;
         parsed.settings_revision = settings_revision(Some(contents.as_bytes()));
+        // 旧用量挂件开关迁移：只有文件里确实出现旧键时才多解析一遍。
+        if contents.contains(LEGACY_PET_WIDGET_KEY) {
+            if let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(&contents) {
+                if legacy_pet_widget_enabled(&raw) {
+                    parsed.agent_pet.enabled = true;
+                }
+            }
+        }
         if settings_normalize_depth() > 0 {
             // 外层已经在归一化了：这里再归一化就会递归回本函数。
             return Ok(parsed);
@@ -2115,6 +2287,8 @@ impl SettingsStore {
             .and_then(Value::as_array)
             .map(|items| items.len())
             .unwrap_or(0);
+        // 旧用量挂件开关迁移到 agentPet，并清掉旧挂件的全部键。
+        migrate_legacy_pet_widget(&mut raw);
         // 已移除的增强项不再接受更新；顺便清理旧版本留下的开关。
         for key in [
             "launchMode",
@@ -2150,6 +2324,11 @@ impl SettingsStore {
         raw.insert(
             "tools".to_string(),
             serde_json::to_value(&settings.tools).unwrap_or_else(|_| Value::Object(Map::new())),
+        );
+        raw.insert(
+            "agentPet".to_string(),
+            serde_json::to_value(&settings.agent_pet)
+                .unwrap_or_else(|_| Value::Object(Map::new())),
         );
         preserve_unknown_settings_fields(&mut raw, &original_raw)?;
         let new_profile_count = raw
@@ -2406,30 +2585,32 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppActivityOverlayRight");
     merge_bool_setting(target, source, "codexAppCapacityAutoRetry");
     merge_bool_setting(target, source, "codexAppTurnRewind");
-    merge_bool_setting(target, source, "codexAppWhaleWidgetEnabled");
-    if let Some(value @ ("auto" | "custom" | "off")) =
-        source.get("codexAppWhaleBalanceProtocol").and_then(Value::as_str)
-    {
-        target.insert(
-            "codexAppWhaleBalanceProtocol".to_string(),
-            Value::String(value.to_string()),
-        );
-    }
-    for key in [
-        "codexAppWhaleBalancePath",
-        "codexAppWhaleBalanceField",
-        "codexAppWhaleBalanceCurrency",
-    ] {
-        if let Some(value) = source.get(key).and_then(Value::as_str) {
-            target.insert(key.to_string(), Value::String(value.trim().to_string()));
+    if let Some(patch) = source.get("agentPet").and_then(Value::as_object) {
+        // 只合并补丁里出现的已知字段，再整体归一化写回。
+        let mut merged = target
+            .get("agentPet")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for key in [
+            "enabled",
+            "agents",
+            "image",
+            "customImageUrl",
+            "size",
+            "soundEnabled",
+            "soundSet",
+            "volume",
+        ] {
+            if let Some(value) = patch.get(key) {
+                merged.insert(key.to_string(), value.clone());
+            }
         }
-    }
-    if let Some(value) = source
-        .get("codexAppWhaleBalanceScale")
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite() && *value > 0.0)
-    {
-        target.insert("codexAppWhaleBalanceScale".to_string(), Value::from(value));
+        let settings = AgentPetSettings::from_json_lenient(&Value::Object(merged));
+        target.insert(
+            "agentPet".to_string(),
+            serde_json::to_value(settings).unwrap_or_else(|_| Value::Object(Map::new())),
+        );
     }
     merge_bool_setting(target, source, "codexAppStepwiseEnabled");
     if let Some(value) = source
@@ -2845,55 +3026,60 @@ fn validate_profile_updates(settings: &BackendSettings, raw: &Map<String, Value>
     Ok(())
 }
 
+/// [`RelayProfile`] 序列化出来的全部字段名（含 skip_serializing 的旧凭据/地址字段）。
+/// 保存时不在这里的字段才算「更新版本写的未知字段」、照原样补回；网关的 gateway.json 也用它。
+pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
+    "id",
+    "name",
+    "model",
+    "baseUrl",
+    "upstreamBaseUrl",
+    "apiKey",
+    "apiKeys",
+    "activeApiKeyId",
+    "protocol",
+    "relayMode",
+    "officialMixApiKey",
+    "noAuth",
+    "hideOfficialUsageAlert",
+    "testModel",
+    "configContents",
+    "authContents",
+    "useCommonConfig",
+    "contextWindow",
+    "autoCompactLimit",
+    "modelInsertMode",
+    "modelList",
+    "modelWindows",
+    "modelAutoCompact",
+    "modelMetadata",
+    "modelVlm",
+    "vlmApiKey",
+    "vlmModel",
+    "vlmBaseUrl",
+    "userAgent",
+    "sub2apiEnabled",
+    "sub2apiMultiplier",
+    "modelRoutes",
+    "customHeaders",
+    "standardOpenaiProtocol",
+    "webSearchHistoryCompat",
+    "localCompactionPromptAtEnd",
+    "trustUpstreamCatalogLite",
+    "strictResponsesReasoning",
+    "autoReviewModel",
+    "anthropicAuthHeader",
+    "anthropicMaxTokens",
+    "anthropicPromptCache",
+    "anthropicImpersonateClaudeCode",
+    "anthropicThinkingMode",
+];
+
 fn preserve_unknown_settings_fields(
     next: &mut Map<String, Value>,
     old: &Map<String, Value>,
 ) -> anyhow::Result<()> {
-    const KNOWN: &[&str] = &[
-        "id",
-        "name",
-        "model",
-        "baseUrl",
-        "upstreamBaseUrl",
-        "apiKey",
-        "apiKeys",
-        "activeApiKeyId",
-        "protocol",
-        "relayMode",
-        "officialMixApiKey",
-        "noAuth",
-        "hideOfficialUsageAlert",
-        "testModel",
-        "configContents",
-        "authContents",
-        "useCommonConfig",
-        "contextWindow",
-        "autoCompactLimit",
-        "modelInsertMode",
-        "modelList",
-        "modelWindows",
-        "modelAutoCompact",
-        "modelMetadata",
-        "modelVlm",
-        "vlmApiKey",
-        "vlmModel",
-        "vlmBaseUrl",
-        "userAgent",
-        "sub2apiEnabled",
-        "sub2apiMultiplier",
-        "modelRoutes",
-        "customHeaders",
-        "standardOpenaiProtocol",
-        "webSearchHistoryCompat",
-        "localCompactionPromptAtEnd",
-        "trustUpstreamCatalogLite",
-        "strictResponsesReasoning",
-        "anthropicAuthHeader",
-        "anthropicMaxTokens",
-        "anthropicPromptCache",
-        "anthropicImpersonateClaudeCode",
-        "anthropicThinkingMode",
-    ];
+    const KNOWN: &[&str] = RELAY_PROFILE_KNOWN_FIELDS;
     fn mark_profiles(value: &mut Value) {
         match value {
             Value::Object(object) => {
@@ -2987,7 +3173,10 @@ fn preserve_unknown_settings_fields(
         "codexAppCustomLayoutEnabled",
         "codexAppPluginAutoExpand",
         "computerUseGuardEnabled",
-    ] {
+    ]
+    .into_iter()
+    .chain(LEGACY_PET_WIDGET_KEYS)
+    {
         known[key] = Value::Null;
     }
     mark_profiles(&mut known);
@@ -2998,24 +3187,7 @@ fn preserve_unknown_settings_fields(
 }
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
     settings.dictation.normalize();
-    settings.codex_app_whale_balance_protocol =
-        match settings.codex_app_whale_balance_protocol.trim() {
-            "custom" => "custom",
-            "off" => "off",
-            _ => "auto",
-        }
-        .to_string();
-    settings.codex_app_whale_balance_path = settings.codex_app_whale_balance_path.trim().to_string();
-    settings.codex_app_whale_balance_field = settings.codex_app_whale_balance_field.trim().to_string();
-    settings.codex_app_whale_balance_currency = settings
-        .codex_app_whale_balance_currency
-        .trim()
-        .to_ascii_uppercase();
-    if !settings.codex_app_whale_balance_scale.is_finite()
-        || settings.codex_app_whale_balance_scale <= 0.0
-    {
-        settings.codex_app_whale_balance_scale = default_whale_balance_scale();
-    }
+    settings.agent_pet.normalize();
     settings.codex_app_typing_effect = normalize_typing_effect(&settings.codex_app_typing_effect);
     settings.ccs_db_path = settings.ccs_db_path.trim().to_string();
     settings.ccs_import_sources.retain(|id, _| settings.relay_profiles.iter().any(|profile| &profile.id == id));

@@ -429,6 +429,10 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
     if metadata.get("codex_plus_default").and_then(Value::as_bool) == Some(true) {
         ui["codex_plus_default"] = json!(true);
     }
+    // 网关写的收藏标记：选择器里在这一行后面画星标。同样只有显式 true 才转发。
+    if metadata.get("codex_plus_favorite").and_then(Value::as_bool) == Some(true) {
+        ui["codex_plus_favorite"] = json!(true);
+    }
     // 注入侧与原生目录使用同一份窗口信息。
     for (source, camel, snake) in [
         ("context_window", "contextWindow", "context_window"),

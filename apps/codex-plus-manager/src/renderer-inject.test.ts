@@ -24,7 +24,7 @@ describe("session more menu lifecycle", () => {
       const button = { expanded: "true", setAttribute: (_: string, value: string) => { button.expanded = value; } };
       const deleteButton = { dataset: { codexDeleteVersion: "7" } };
       const group = {
-        ...events(), isConnected: true, hasDelete: true, dataset: { codexActionGroupVersion: "7" },
+        ...events(), isConnected: true, hasDelete: true, dataset: { codexActionGroupVersion: "7", codexMoreMenuKey: "export" },
         __codexSessionMoreMenu: null as unknown,
         querySelector: (selector: string) => selector === ".more-button" ? button
           : selector === ".delete-button" && group.hasDelete ? deleteButton : null,
@@ -48,6 +48,7 @@ describe("session more menu lifecycle", () => {
     const api = new Function("document", "window", "codexPlusSettings", "codexPlusBackendSettings",
       "moreMenuClass", "moreButtonClass", "buttonClass", "actionGroupClass", "exportButtonClass",
       "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
+      "codexPlusRegistry", "codexPlusExtensionItems",
       `${source.split("  function tryAttachButton(row)")[0]}
        return { pruneSessionMoreMenus, pruneRemovedSessionActions, attachButton, closeSessionMoreMenus, installSessionMoreMenuAutoClose };`,
     )(
@@ -63,6 +64,7 @@ describe("session more menu lifecycle", () => {
       () => ({ sessionDelete: true, markdownExport: true }), { enhancementsEnabled: true },
       "more-menu", "more-button", "delete-button", "actions", "export-button", "7", "7",
       (row: { querySelectorAll: () => unknown[] }) => row.querySelectorAll()[0], () => ({}),
+      { rowActions: new Map() }, (registry: Map<string, unknown>) => [...registry.values()],
     );
     return {
       ...api, timers, menuQueries: () => menuQueries,
@@ -236,6 +238,212 @@ describe("session more menu lifecycle", () => {
   });
 });
 
+describe("session row action buttons", () => {
+  // 只够 attachButton 用的极简 DOM：支持复合简单选择器（tag / .class / [attr] / [attr="v"]）
+  // 和逗号并列，不支持后代组合符。innerHTML 只识别本模块会写入的两种结构。
+  class FakeElement {
+    tagName: string;
+    className = "";
+    attributes = new Map<string, string>();
+    children: FakeElement[] = [];
+    parentElement: FakeElement | null = null;
+    dataset: Record<string, string> = {};
+    listeners = new Map<string, unknown>();
+    hidden = false;
+    type = "";
+    text = "";
+    style = { setProperty: () => {} };
+    [key: string]: unknown;
+    constructor(tag: string) { this.tagName = tag.toUpperCase(); }
+    get isConnected(): boolean { return this.parentElement ? this.parentElement.isConnected : this.tagName === "BODY"; }
+    get textContent(): string { return this.text + this.children.map((child) => child.textContent).join(""); }
+    set textContent(value: string) { this.text = value; this.children = []; }
+    set innerHTML(html: string) {
+      this.children = [];
+      this.text = "";
+      const inner = html.match(/^<span class="codex-session-action-inner">(<svg[^>]*>)/);
+      if (inner) {
+        const span = this.appendChild(new FakeElement("span"));
+        span.className = "codex-session-action-inner";
+        const svg = span.appendChild(new FakeElement("svg"));
+        for (const [, name, value] of inner[1].matchAll(/([\w-]+)="([^"]*)"/g)) svg.setAttribute(name, value);
+        return;
+      }
+      this.text = html.replace(/<[^>]*>/g, "");
+    }
+    setAttribute(name: string, value: string) { this.attributes.set(name, String(value)); }
+    getAttribute(name: string) { return this.attributes.get(name) ?? null; }
+    hasAttribute(name: string) { return this.attributes.has(name); }
+    removeAttribute(name: string) { this.attributes.delete(name); }
+    appendChild(child: FakeElement) { child.parentElement = this; this.children.push(child); return child; }
+    remove() {
+      if (!this.parentElement) return;
+      this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+      this.parentElement = null;
+    }
+    replaceWith(next: FakeElement) {
+      const parent = this.parentElement;
+      if (!parent) return;
+      parent.children[parent.children.indexOf(this)] = next;
+      next.parentElement = parent;
+      this.parentElement = null;
+    }
+    cloneNode(): FakeElement { return this; }
+    addEventListener(name: string, callback: unknown) { this.listeners.set(name, callback); }
+    removeEventListener(name: string) { this.listeners.delete(name); }
+    matches(selector: string): boolean {
+      return selector.split(",").some((part) => {
+        const compound = part.trim();
+        const tag = compound.match(/^[a-z]+/i)?.[0];
+        if (tag && tag.toUpperCase() !== this.tagName) return false;
+        const classes = [...compound.matchAll(/\.([\w-]+)/g)].map((match) => match[1]);
+        const ownClasses = this.className.split(/\s+/);
+        if (!classes.every((name) => ownClasses.includes(name))) return false;
+        return [...compound.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)].every(([, name, value]) =>
+          value === undefined ? this.hasAttribute(name) : this.getAttribute(name) === value);
+      });
+    }
+    closest(selector: string): FakeElement | null {
+      for (let node: FakeElement | null = this; node; node = node.parentElement) if (node.matches(selector)) return node;
+      return null;
+    }
+    querySelectorAll(selector: string): FakeElement[] {
+      return this.children.flatMap((child) => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
+    }
+    querySelector(selector: string) { return this.querySelectorAll(selector)[0] ?? null; }
+  }
+
+  async function runtime(settings: { sessionDelete: boolean; markdownExport: boolean }) {
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/90-action-groups.js", import.meta.url), "utf8",
+    );
+    const body = new FakeElement("body");
+    const document = {
+      body,
+      createElement: (tag: string) => new FakeElement(tag),
+      querySelectorAll: (selector: string) => body.querySelectorAll(selector),
+    };
+    const registry = { rowActions: new Map<string, { id: string; label: string; order: number }>() };
+    const api = new Function("document", "window", "HTMLElement", "codexPlusSettings", "codexPlusBackendSettings",
+      "moreMenuClass", "moreButtonClass", "buttonClass", "actionGroupClass", "exportButtonClass", "actionButtonClass",
+      "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
+      "codexPlusRegistry", "codexPlusExtensionItems", "appendCodexPlusExtensionRowActions", "syncActionGroupLayout",
+      `${source.split("  function tryAttachButton(row)")[0]}
+       return { attachButton };`,
+    )(
+      document, { setTimeout: () => 0, clearTimeout: () => {}, requestAnimationFrame: () => 0 }, FakeElement,
+      () => settings, { enhancementsEnabled: true },
+      "more-menu", "more-button", "delete-button", "actions", "export-button", "action-button", "8", "8",
+      (row: FakeElement) => row.querySelector(".actions"), () => ({ session_id: "thread-1" }),
+      registry, (map: Map<string, { order: number }>) => [...map.values()].sort((a, b) => a.order - b.order),
+      (menu: FakeElement) => registry.rowActions.forEach((item) => {
+        const node = menu.appendChild(new FakeElement("button"));
+        node.text = item.label;
+      }),
+      () => {},
+    );
+    const row = body.appendChild(new FakeElement("div"));
+    return { ...api, body, row, registry };
+  }
+
+  it("only renders the more button when a menu item exists", async () => {
+    const deleteOnly = await runtime({ sessionDelete: true, markdownExport: false });
+    deleteOnly.attachButton(deleteOnly.row);
+    const group = deleteOnly.row.querySelector(".actions");
+    assert.ok(group, "the delete button still gets its group");
+    assert.ok(group.querySelector(".delete-button"));
+    assert.equal(group.querySelector(".more-button"), null, "no export and no extension action means no … button");
+    assert.equal(deleteOnly.body.querySelector(".more-menu"), null);
+
+    const nothing = await runtime({ sessionDelete: false, markdownExport: false });
+    nothing.attachButton(nothing.row);
+    assert.equal(nothing.row.querySelector(".actions"), null, "no delete and no menu item renders nothing");
+
+    const exportOnly = await runtime({ sessionDelete: false, markdownExport: true });
+    exportOnly.attachButton(exportOnly.row);
+    assert.ok(exportOnly.row.querySelector(".more-button"));
+    const menu = exportOnly.body.querySelector(".more-menu");
+    assert.deepEqual(menu?.children.map((item: { textContent: string }) => item.textContent), ["⇩导出"]);
+  });
+
+  it("adds and removes the more button as extension row actions register and dispose", async () => {
+    const api = await runtime({ sessionDelete: true, markdownExport: false });
+    api.attachButton(api.row);
+    assert.equal(api.row.querySelector(".more-button"), null);
+    api.registry.rowActions.set("script:rowAction:a", { id: "script:rowAction:a", label: "拓展操作", order: 1000 });
+    api.attachButton(api.row);
+    assert.ok(api.row.querySelector(".more-button"), "a registered row action brings the … button back");
+    assert.deepEqual(api.body.querySelector(".more-menu")?.children.map((item: { textContent: string }) => item.textContent), ["拓展操作"]);
+    api.registry.rowActions.clear();
+    api.attachButton(api.row);
+    assert.equal(api.row.querySelector(".more-button"), null, "disposing the last row action removes it again");
+    assert.equal(api.body.querySelector(".more-menu"), null, "its detached menu is disposed as well");
+    assert.ok(api.row.querySelector(".delete-button"));
+  });
+
+  it("dresses the delete button in the native pin/archive button classes and data attributes", async () => {
+    const api = await runtime({ sessionDelete: true, markdownExport: false });
+    const native = api.row.appendChild(new FakeElement("button"));
+    native.className = "_Button_abc pointer-events-auto";
+    native.setAttribute("aria-label", "归档聊天");
+    native.setAttribute("data-color", "secondary");
+    native.setAttribute("data-variant", "transparent");
+    native.setAttribute("data-size", "3xs");
+    native.setAttribute("data-uniform", "");
+    const inner = native.appendChild(new FakeElement("span"));
+    inner.className = "_ButtonInner_abc";
+    inner.appendChild(new FakeElement("svg")).setAttribute("viewBox", "0 0 16 16");
+    api.attachButton(api.row);
+
+    const button = api.row.querySelector(".delete-button")!;
+    assert.equal(button.className, "_Button_abc pointer-events-auto action-button delete-button");
+    assert.equal(button.getAttribute("data-codex-native-style"), "true");
+    for (const [name, value] of [["data-color", "secondary"], ["data-variant", "transparent"], ["data-size", "3xs"], ["data-uniform", ""]]) {
+      assert.equal(button.getAttribute(name), value, name);
+    }
+    assert.equal(button.querySelector(".codex-session-action-inner")?.className, "codex-session-action-inner _ButtonInner_abc");
+    const svg = button.querySelector("svg")!;
+    assert.equal(svg.getAttribute("data-codex-session-action-icon"), "stroke", "trash stays a line icon");
+    assert.equal(svg.getAttribute("stroke-width"), "1.05", "fill-based native icons keep the matched light weight");
+    assert.equal(button.closest("[data-codex-plus-ext]")?.getAttribute("data-codex-plus-ext"), "session-actions");
+  });
+
+  it("ignores the danger confirm button and converts a stroked native icon to the 16 grid", async () => {
+    const api = await runtime({ sessionDelete: true, markdownExport: false });
+    const confirm = api.row.appendChild(new FakeElement("button"));
+    confirm.className = "_Button_danger";
+    confirm.setAttribute("aria-label", "归档聊天");
+    confirm.setAttribute("data-color", "danger");
+    confirm.appendChild(new FakeElement("svg"));
+    const pin = api.row.appendChild(new FakeElement("button"));
+    pin.className = "_Button_pin";
+    pin.setAttribute("aria-label", "Pin chat");
+    const svg = pin.appendChild(new FakeElement("svg"));
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("stroke-width", "1.5");
+    api.attachButton(api.row);
+
+    const button = api.row.querySelector(".delete-button")!;
+    assert.equal(button.className, "_Button_pin action-button delete-button", "never borrows the danger confirm style");
+    assert.equal(button.querySelector("svg")?.getAttribute("stroke-width"), "1", "24-grid 1.5 maps to 16-grid 1");
+  });
+
+  it("keeps the fallback look aligned with native icon buttons instead of a red or filled hover", async () => {
+    const style = await readFile(
+      new URL("../../../assets/inject/renderer-inject/10-style.js", import.meta.url), "utf8",
+    );
+    const fallback = style.slice(style.indexOf(".${actionButtonClass}:not([data-codex-native-style]) {"));
+    assert.match(fallback, /width: var\(--control-size-4xs, 20px\);/);
+    assert.match(fallback, /border-radius: var\(--control-radius-sm, var\(--radius-sm, 6px\)\);/);
+    assert.match(fallback, /color: var\(--color-text-secondary-ghost,/);
+    assert.match(fallback, /width: var\(--control-icon-size-xs, 14px\);/);
+    // 悬停只提亮文字色、不铺底色，与原生 transparent 变体一致。
+    assert.match(style, /:not\(\[data-codex-native-style\]\)\[aria-expanded="true"\] \{\s*background: transparent;\s*color: var\(--color-text-secondary-ghost-hover,/);
+    assert.doesNotMatch(style, /--codex-session-action-hover-background|--codex-session-action-color/);
+    assert.doesNotMatch(style, /\.\$\{buttonClass\}:hover/);
+  });
+});
+
 it("keeps background-resume scan scheduling bounded and independent of retired features", async () => {
   const schedule = await readFile(
     new URL("../../../assets/inject/renderer-inject/98-scan-schedule.js", import.meta.url),
@@ -364,6 +572,70 @@ function installRendererStyle(renderer: string) {
   return appended;
 }
 
+const settingsCatalogUrl = new URL("../../../crates/codex-plus-core/assets/enhancement-settings.json", import.meta.url);
+
+/**
+ * 把注入页里按清单生成设置页的那段代码切出来执行：/settings/catalog 由 postJson 桩返回，
+ * 其余依赖（键映射、转义、行内输入框的取值）都取产物里的真实实现或固定值。
+ */
+async function settingsCatalogRuntime(
+  postJson: (path: string) => Promise<unknown>,
+  platform: { windows: boolean; mac: boolean } = { windows: false, mac: true },
+  backendSettings: Record<string, unknown> = { enhancementsEnabled: true },
+) {
+  const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+  const slice = (startMarker: string, endMarker: string) => {
+    const start = renderer.indexOf(startMarker);
+    const end = renderer.indexOf(endMarker, start);
+    assert.ok(start >= 0 && end > start, `missing ${startMarker}`);
+    return renderer.slice(start, end);
+  };
+  const diagnostics: Array<{ name: string; detail: unknown }> = [];
+  const runtime = new Function(
+    "postJson", "sendCodexPlusDiagnostic", "codexPlusIsWindowsPlatform", "codexPlusIsMacPlatform", "codexPlusBackendSettings",
+    `${slice("  const codexPlusBackendSettingMap = {", "  const codexPlusBackendMappedSettings")}
+${slice("  function escapeHtml(value) {", "\n  }\n")}
+  }
+  const capacityAutoRetryIntervalCeilingSeconds = 600;
+  const capacityAutoRetryMaxAttemptsCeiling = 200;
+  const conversationViewMinWidth = 320;
+  const conversationViewMaxAllowedWidth = 4000;
+  const capacityAutoRetryIntervalSeconds = () => 0;
+  const capacityAutoRetryMaxAttempts = () => 15;
+  const conversationViewWidth = () => 900;
+  let refreshes = 0;
+  function renderBackendStatus() {}
+  function refreshCodexPlusBackendToggles() {}
+${slice("  let codexPlusSettingsCatalog = null;", "  function refreshCodexPlusSettingsCatalogView()")}
+  function refreshCodexPlusSettingsCatalogView() { refreshes += 1; }
+  return {
+    load: loadCodexPlusSettingsCatalog,
+    sections: renderCodexPlusSettingsCatalogSections,
+    status: () => codexPlusSettingsCatalogStatus,
+    refreshes: () => refreshes,
+  };`,
+  )(postJson, (name: string, detail: unknown) => { diagnostics.push({ name, detail }); }, platform.windows, platform.mac, backendSettings) as {
+    load: () => Promise<unknown>;
+    sections: () => string;
+    status: () => { status: string; message: string };
+    refreshes: () => number;
+  };
+  return { ...runtime, diagnostics };
+}
+
+/** 从生成的 HTML 里读出分组与每行的标题、说明、绑定的设置 key。 */
+function parseSettingsSections(html: string) {
+  return Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g), ([, title, body]) => ({
+    title,
+    rows: Array.from(body.matchAll(/<div class="codex-plus-row"(?: data-codex-plus-setting-row="([^"]+)")?[^>]*>\s*<div><div class="codex-plus-row-title">([^<]*)<\/div><div class="codex-plus-row-description"[^>]*>([^<]*)<\/div><\/div>([\s\S]*?)(?=<div class="codex-plus-row"|$)/g), ([, key, rowTitle, description, control]) => ({
+      key: key ?? "",
+      title: rowTitle,
+      description,
+      control,
+    })),
+  }));
+}
+
 describe("renderer injection header compatibility", () => {
   it("does not supplement native plugin lists from retired snapshots and still refreshes after installation", async () => {
     const [navigation, plugin] = await Promise.all([
@@ -445,15 +717,24 @@ describe("renderer injection header compatibility", () => {
     }
     assert.doesNotMatch(renderer, /codexPlusBackendSettings\.launchMode|data-relay-unneeded|兼容增强|完整增强/);
     assert.doesNotMatch(renderer, /codexMenuLocalizationScopeSelector\(\)/);
-    assert.match(renderer, /data-codex-backend-setting="enhancementsEnabled"/);
-    assert.match(renderer, /data-codex-plus-setting="pluginMarketplaceUnlock"/);
+    const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
+    const page = await settingsCatalogRuntime(async () => catalog);
+    await page.load();
+    const html = page.sections();
+    assert.match(html, /data-codex-backend-setting="enhancementsEnabled"/);
+    assert.match(html, /data-codex-plus-setting="pluginMarketplaceUnlock"/);
   });
 
   it("shows the next-step suggestion feature with its Chinese name", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const generation = await readFile(new URL("../../../assets/inject/floating-panel/stepwise/generation.js", import.meta.url), "utf8");
-    assert.match(renderer, /悬浮球 · 下一步建议/);
+    // 标题来自设置项清单（与管理器同一份），注入脚本里不再写死。
+    const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
+    const stepwise = catalog.items.find((item: { key: string }) => item.key === "codexAppStepwiseEnabled");
+    assert.equal(stepwise.title, "下一步建议");
+    assert.ok(stepwise.surfaces.includes("codex"));
     assert.doesNotMatch(renderer, /悬浮球 · Stepwise/);
+    for (const item of catalog.items) assert.doesNotMatch(`${item.title}${item.description}`, /Stepwise/);
     assert.match(generation, /window\.prompt\("复制下一步建议提示词", prompt\)/);
     assert.doesNotMatch(generation, /Copy Stepwise prompt/);
     assert.match(renderer, /stepwise: "codexAppStepwiseEnabled"/);
@@ -470,42 +751,24 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /codexModelCatalog\?\.codex_model_provider/);
   });
 
-  it("adds the session copy shortcut through the native fork action", async () => {
+  it("keeps the retired in-place session copy and auto-rename actions out of every menu", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
-    assert.match(renderer, /原地复制会话 - Codex\+\+/);
-    assert.match(renderer, /createSessionMoreMenuItem\("原地复制会话 - Codex\+\+"/);
-    assert.match(renderer, /getAttribute\("aria-label"\)[\s\S]*聊天操作/);
-    assert.match(renderer, /从这里创建聊天分支/);
-    assert.match(renderer, /data-app-action-sidebar-thread-selected/);
-    assert.match(renderer, /sessionCopyMenuActivationTimeoutMs/);
-    assert.doesNotMatch(renderer, /\n\s*refreshSessionCopyMenuItems\(\);/);
+    // 会话行「…」菜单与 Codex 原生「聊天操作」菜单里都不能再出现这两项。
+    assert.doesNotMatch(renderer, /原地复制会话|自动重命名当前会话|已自动重命名/);
+    assert.doesNotMatch(renderer, /function (?:activateSessionCopyMenuItem|createSessionCopyMenuItem|refreshSessionCopyMenuItems|sessionCopyMenuRow|sessionCopyMenuScopes|activateSessionAutoRenameMenuItem|nativeSessionRenameCapability|isNativeSessionRenameMenuItem|visibleSessionRenameDialog|rememberSessionActionTrigger)\(/);
+    assert.doesNotMatch(renderer, /sessionCopyMenuItemClass|sessionCopyMenuItemVersion|sessionCopyMenuActivationTimeoutMs|sessionAutoRenameTimeoutMs|lastSessionActionTrigger/);
+    assert.doesNotMatch(renderer, /__codexSessionCopyRow|__codexSessionAutoRenameRow|codexSessionCopyMenu|codexSessionAutoRenameMenu/);
+    assert.doesNotMatch(renderer, /从这里创建聊天分支|Fork from here/);
+    // 旧版本同页注入时挂上的触发器监听要被摘掉，不能留下悬空回调。
+    assert.match(renderer, /document\.removeEventListener\("pointerdown", window\.__codexSessionActionTriggerHandler, true\);/);
+    assert.doesNotMatch(renderer, /document\.addEventListener\("(?:pointerdown|click)", window\.__codexSessionActionTriggerHandler/);
   });
 
   it("does not install a session sharing button after sharing is retired", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     assert.doesNotMatch(renderer, /\n\s*installSessionShareButton\(\);/);
     assert.doesNotMatch(renderer, /\n\s*installSessionShareImportListener\(\);/);
-  });
-
-  it("automatically renames a session through the native title suggestion", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-
-    assert.match(renderer, /自动重命名当前会话/);
-    assert.match(renderer, /activateSessionAutoRenameMenuItem/);
-    assert.match(renderer, /input\[aria-label="聊天标题"\], input\[aria-label="Chat title"\]/);
-    assert.match(renderer, /button\.classList\.contains\("text-info"\)/);
-    assert.match(renderer, /\^\(保存\|Save\)\$/);
-    assert.match(renderer, /Codex 未能生成新名称/);
-  });
-
-  it("accepts localized native rename labels introduced by newer Codex builds", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-
-    assert.match(renderer, /function isNativeSessionRenameMenuItem\(candidate\)/);
-    assert.match(renderer, /data-testid/);
-    assert.match(renderer, /自动重命名当前会话\|auto\.\?rename current session/);
-    assert.match(renderer, /\.find\(isNativeSessionRenameMenuItem\)/);
   });
 
   it("removes the legacy Codex++ top-bar entry", async () => {
@@ -806,23 +1069,24 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
 
   it("refreshes backend switches from enabled to disabled without losing their accessible state", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    const start = renderer.indexOf("  function refreshCodexPlusBackendToggles()");
+    const start = renderer.indexOf("  function syncCodexPlusBackendToggleButtons()");
     const end = renderer.indexOf("\n  let codexPlusUserScripts =", start);
     assert.ok(start >= 0 && end > start);
     const settings = { enhancementsEnabled: true };
     const attributes: Record<string, string> = {};
+    let attributeWrites = 0;
     const button = {
       dataset: {} as Record<string, string>,
       disabled: true,
       getAttribute: () => "enhancementsEnabled",
-      setAttribute: (name: string, value: string) => { attributes[name] = value; },
+      setAttribute: (name: string, value: string) => { attributes[name] = value; attributeWrites += 1; },
     };
     let menuRefreshes = 0;
-    const refresh = new Function("document", "codexPlusBackendSettings", "syncStepwisePanel", "runScanStep", "syncCodexPlusTypingEffects", "renderCodexPlusMenu", "scan",
+    const refresh = new Function("document", "codexPlusBackendSettings", "syncStepwisePanel", "runScanStep", "syncCodexPlusTypingEffects", "renderCodexPlusMenu", "scan", "syncCodexPlusSettingsCatalogDescriptions",
       `${renderer.slice(start, end)}\nreturn refreshCodexPlusBackendToggles;`,
     )(
       { querySelectorAll: () => [button] }, settings, () => {}, () => {}, () => {},
-      () => { menuRefreshes += 1; }, () => {},
+      () => { menuRefreshes += 1; }, () => {}, () => {},
     ) as () => void;
     refresh();
     assert.equal(button.dataset.enabled, "true");
@@ -833,6 +1097,10 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     assert.equal(attributes["aria-checked"], "false");
     assert.equal(button.disabled, true, "backend refresh preserves the control's existing disabled state");
     assert.equal(menuRefreshes, 2, "each backend refresh also synchronizes the other settings controls");
+    // 心跳每 5 秒同步一次：值没变就不写属性，避免无谓的 DOM 变更触发扫描。
+    const writes = attributeWrites;
+    refresh();
+    assert.equal(attributeWrites, writes);
   });
 
   it("groups the settings homepage into labelled cards and keeps hidden service controls hidden", async () => {
@@ -840,8 +1108,18 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     const homeStart = renderer.indexOf('data-codex-plus-panel="home"');
     const homeEnd = renderer.indexOf("${renderCodexPlusExtensionMenuRows()}", homeStart);
     assert.ok(homeStart >= 0 && homeEnd > homeStart);
-    const sections = Array.from(renderer.slice(homeStart, homeEnd).matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)">([\s\S]*?)<\/section>/g));
-    assert.deepEqual(sections.map((match) => match[1]), ["常规", "模型与服务", "对话与输入", "外观与布局", "工具与关于"]);
+    // 模板里只剩清单挂载点和固定的「工具与关于」；设置分组全部按清单生成。
+    const template = renderer.slice(homeStart, homeEnd);
+    assert.match(template, /\$\{renderCodexPlusSettingsCatalogSections\(\)\}\s*<section class="codex-plus-settings-section" aria-label="工具与关于" data-codex-plus-settings-tools="true">/);
+    const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
+    const page = await settingsCatalogRuntime(async () => catalog);
+    await page.load();
+    const html = page.sections() + template.slice(template.indexOf('<section class="codex-plus-settings-section" aria-label="工具与关于"'));
+    const sections = Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g));
+    const expectedGroups = catalog.groups
+      .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex")))
+      .map((group: { title: string }) => group.title);
+    assert.deepEqual(sections.map((match) => match[1]), [...expectedGroups, "工具与关于"]);
     for (const [, title, contents] of sections) {
       assert.ok(contents.includes(`<h2 class="codex-plus-settings-section-title">${title}</h2>`));
       assert.ok(contents.includes('class="codex-plus-settings-card"'));
@@ -913,7 +1191,10 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
 
   it("saves dropdown selections through the existing hidden select change contract", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    const selectMarkup = renderer.match(/<select[^>]*data-codex-plus-typing-effect="true"[^>]*>[\s\S]*?<\/select>/)?.[0];
+    const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
+    const page = await settingsCatalogRuntime(async () => catalog);
+    await page.load();
+    const selectMarkup = page.sections().match(/<select[^>]*data-codex-plus-typing-effect="true"[^>]*>[\s\S]*?<\/select>/)?.[0];
     assert.ok(selectMarkup, "the select data attribute remains available to existing change handling");
     assert.match(selectMarkup, /\bhidden\b/);
     assert.match(selectMarkup, /aria-hidden="true"/);
@@ -2831,5 +3112,149 @@ describe("renderer model reasoning efforts patch", () => {
       efforts.map((entry) => entry.reasoningEffort),
       ["low", "medium", "high", "xhigh", "max", "ultra"],
     );
+  });
+});
+
+describe("Codex++ 设置页按设置项清单生成", () => {
+  type CatalogItem = {
+    key: string; group: string; control: string; title: string; description: string; descriptionWhenEnhancementsOn?: string;
+    surfaces: string[]; platforms?: string[]; codexInputs?: Array<{ id: string; label: string; hint?: string }>;
+  };
+  type Catalog = { groups: Array<{ id: string; title: string; description?: string }>; items: CatalogItem[] };
+  const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
+  const readCatalog = async (): Promise<Catalog> => JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
+  const visibleOn = (platform: string) => (item: CatalogItem) => item.surfaces.includes("codex")
+    && (!item.platforms || item.platforms.includes(platform));
+
+  it("注入分片里不再写死任何设置项标题、说明或分组名", async () => {
+    const catalog = await readCatalog();
+    const settingsPage = await readFile(new URL("40-backend-settings.js", fragmentDir), "utf8");
+    for (const group of catalog.groups) {
+      assert.ok(!settingsPage.includes(`aria-label="${group.title}"`), `分组「${group.title}」不应写死在设置页模板里`);
+      assert.ok(!settingsPage.includes(`>${group.title}</h2>`), `分组「${group.title}」不应写死在设置页模板里`);
+    }
+    for (const item of catalog.items) {
+      assert.ok(!settingsPage.includes(item.title), `「${item.title}」的标题应来自清单`);
+      assert.ok(!settingsPage.includes(item.description), `「${item.title}」的说明应来自清单`);
+    }
+    // 说明文案足够长、足够独特：任何分片里出现都意味着又多了一份副本。
+    const manifest = JSON.parse(await readFile(new URL("manifest.json", fragmentDir), "utf8"));
+    for (const fragment of manifest.fragments as Array<{ name: string }>) {
+      const source = await readFile(new URL(fragment.name, fragmentDir), "utf8");
+      for (const item of catalog.items) assert.ok(!source.includes(item.description), `${fragment.name} 里有「${item.title}」说明的副本`);
+    }
+  });
+
+  it("每个在 Codex 显示的设置项生成一行，文案与绑定都取自清单", async () => {
+    const catalog = await readCatalog();
+    const page = await settingsCatalogRuntime(async (path) => {
+      assert.equal(path, "/settings/catalog");
+      return catalog;
+    });
+    await page.load();
+    assert.equal(page.status().status, "ok");
+    const html = page.sections();
+    const sections = parseSettingsSections(html);
+    const rows = sections.flatMap((section) => section.rows.filter((row) => row.key));
+    const expected = catalog.groups.flatMap((group) => catalog.items.filter((item) => item.group === group.id && visibleOn("macos")(item)));
+    assert.deepEqual(rows.map((row) => row.key), expected.map((item) => item.key));
+    for (const item of expected) {
+      const row = rows.find((candidate) => candidate.key === item.key)!;
+      const section = sections.find((candidate) => candidate.rows.includes(row))!;
+      assert.equal(section.title, catalog.groups.find((group) => group.id === item.group)!.title);
+      assert.equal(row.title, item.title);
+      assert.equal(row.description, item.descriptionWhenEnhancementsOn ?? item.description);
+      if (item.control === "bool") {
+        assert.ok(row.control.includes(`role="switch" aria-checked="false" aria-label="${item.title}"`), `${item.key} 开关缺少读屏标签`);
+        assert.match(row.control, /data-codex-plus-setting="[^"]+"|data-codex-backend-setting="[^"]+"/);
+      }
+      for (const input of item.codexInputs ?? []) {
+        assert.ok(row.control.includes(`aria-label="${input.label}"`), `${item.key} 缺少行内输入框 ${input.id}`);
+      }
+    }
+    // 第一组最前面固定是后端连接状态，它不是设置项。
+    assert.match(sections[0].rows[0].control, /data-codex-backend-status="true"/);
+    // 能映射到本页 key 的走 setCodexPlusSetting，其余直接写后端字段。
+    assert.match(html, /data-codex-plus-setting="stepwise"/);
+    assert.match(html, /data-codex-plus-setting="sessionShare"/);
+    assert.match(html, /data-codex-backend-setting="providerSyncEnabled"/);
+    assert.match(html, /data-codex-plus-capacity-retry-interval="true" min="0" max="600"/);
+    assert.match(html, /data-codex-plus-conversation-view-width="true" min="320" max="4000" step="10" type="number" value="900"/);
+    // 管理器专属项不出现在 Codex 设置页。
+    for (const item of catalog.items.filter((candidate) => !candidate.surfaces.includes("codex"))) {
+      assert.ok(!html.includes(item.title), `${item.key} 只在管理器显示`);
+    }
+  });
+
+  it("独立模式补丁的说明随增强总开关切换，与管理器一致", async () => {
+    const catalog = await readCatalog();
+    const switching = catalog.items.filter((item) => item.descriptionWhenEnhancementsOn && item.surfaces.includes("codex"));
+    assert.ok(switching.length > 0);
+    for (const enhancementsEnabled of [true, false]) {
+      const page = await settingsCatalogRuntime(async () => catalog, undefined, { enhancementsEnabled });
+      await page.load();
+      const rows = parseSettingsSections(page.sections()).flatMap((section) => section.rows);
+      for (const item of switching) {
+        const row = rows.find((candidate) => candidate.key === item.key)!;
+        assert.equal(row.description, enhancementsEnabled ? item.descriptionWhenEnhancementsOn : item.description, `${item.key} enhancements=${enhancementsEnabled}`);
+        assert.match(row.control + page.sections(), new RegExp(`data-codex-plus-setting-description="${item.key}"`));
+      }
+    }
+  });
+
+  it("按清单的平台限制过滤设置项", async () => {
+    const catalog = await readCatalog();
+    const limited = catalog.items.filter((item) => item.platforms && item.surfaces.includes("codex"));
+    assert.ok(limited.length > 0);
+    for (const [platform, flags] of [["windows", { windows: true, mac: false }], ["macos", { windows: false, mac: true }], ["linux", { windows: false, mac: false }]] as const) {
+      const page = await settingsCatalogRuntime(async () => catalog, flags);
+      await page.load();
+      const html = page.sections();
+      for (const item of limited) {
+        assert.equal(html.includes(`data-codex-plus-setting-row="${item.key}"`), item.platforms!.includes(platform), `${item.key} on ${platform}`);
+      }
+    }
+  });
+
+  it("读不到清单时给出原因和重试，不退回写死的副本", async () => {
+    const catalog = await readCatalog();
+    let response: unknown = { status: "failed", message: "Unknown bridge path" };
+    const page = await settingsCatalogRuntime(async () => response);
+    const loading = page.sections();
+    assert.match(loading, /data-codex-plus-settings-catalog-state="loading"/);
+    assert.match(loading, /data-codex-backend-status="true"/);
+    await page.load();
+    assert.equal(page.status().status, "failed");
+    const failed = page.sections();
+    assert.match(failed, /data-codex-plus-settings-catalog-state="failed" role="alert"/);
+    assert.match(failed, /Unknown bridge path/);
+    assert.match(failed, /data-codex-plus-settings-catalog-retry="true"/);
+    assert.match(failed, /data-codex-backend-status="true"/, "后端连接状态在失败时也要能看到");
+    for (const item of catalog.items) assert.ok(!failed.includes(item.title), "失败时不能显示任何兜底的设置副本");
+    assert.deepEqual(page.diagnostics.map((entry) => entry.name), ["settings_catalog_load_failed"]);
+    assert.ok(page.refreshes() >= 1);
+
+    response = { groups: "broken" };
+    await page.load();
+    assert.equal(page.status().status, "failed");
+    assert.match(page.sections(), /格式不正确/);
+
+    response = catalog;
+    await page.load();
+    assert.equal(page.status().status, "ok");
+    assert.match(page.sections(), /data-codex-plus-setting-row="enhancementsEnabled"/);
+
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    assert.match(renderer, /if \(target\?\.closest\("\[data-codex-plus-settings-catalog-retry\]"\)\) \{\s*void loadCodexPlusSettingsCatalog\(\);/);
+  });
+
+  it("清单路由只读且不开放给拓展", async () => {
+    const api = await readFile(new URL("91-extension-api.js", fragmentDir), "utf8");
+    const start = api.indexOf("const codexPlusExtensionRoutes = new Set([");
+    const whitelist = api.slice(start, api.indexOf("]);", start));
+    assert.ok(whitelist.length > 0);
+    assert.doesNotMatch(whitelist, /\/settings\/catalog/);
+    const settingsPage = await readFile(new URL("40-backend-settings.js", fragmentDir), "utf8");
+    assert.match(settingsPage, /postJson\("\/settings\/catalog", \{\}\)/);
   });
 });

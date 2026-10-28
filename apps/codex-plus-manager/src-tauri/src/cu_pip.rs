@@ -121,7 +121,10 @@ fn tick(app: &AppHandle, last_at: &mut u64, spool: &std::path::Path, spool_seen:
         *last_at = activity.at;
         match activity.event.as_str() {
             "act" if activity.kind == "browser" => with_state(|state| {
-                log("cu_pip.browser", json!({ "title": activity.title, "session": activity.session }));
+                log(
+                    "cu_pip.browser",
+                    json!({ "title": activity.title, "session": activity.session }),
+                );
                 if state.dismissed_session == Some(activity.session) || !enabled() {
                     return;
                 }
@@ -143,7 +146,10 @@ fn tick(app: &AppHandle, last_at: &mut u64, spool: &std::path::Path, spool_seen:
                 };
                 if pid > 0 {
                     with_state(|state| {
-                        log("cu_pip.activity", json!({ "pid": pid, "app": activity.app_name, "session": activity.session }));
+                        log(
+                            "cu_pip.activity",
+                            json!({ "pid": pid, "app": activity.app_name, "session": activity.session }),
+                        );
                         if state.dismissed_session == Some(activity.session) || !enabled() {
                             return;
                         }
@@ -167,9 +173,7 @@ fn tick(app: &AppHandle, last_at: &mut u64, spool: &std::path::Path, spool_seen:
     }
 
     let (pid, active, browser) = with_state(|state| {
-        let active = state
-            .last_act
-            .is_some_and(|at| at.elapsed() < IDLE);
+        let active = state.last_act.is_some_and(|at| at.elapsed() < IDLE);
         if !active {
             state.last_act = None;
         }
@@ -198,7 +202,9 @@ fn show_browser(app: &AppHandle) {
     };
     stop_preview();
     let path = cu_activity::frame_path();
-    let modified = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+    let modified = std::fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .ok();
     let (fresh, first, target) = with_state(|state| {
         let fresh = modified.is_some() && modified != state.frame_seen;
         let first = state.frame_seen.is_none();
@@ -249,7 +255,9 @@ fn pick_window(pid: i32) -> Option<(u32, String, String)> {
     let windows = window_capture::list_windows().ok()?;
     windows
         .into_iter()
-        .filter(|window| window.pid == pid && window.on_screen && window.width >= 120.0 && window.height >= 80.0)
+        .filter(|window| {
+            window.pid == pid && window.on_screen && window.width >= 120.0 && window.height >= 80.0
+        })
         .max_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)))
         .map(|window| (window.window_id, window.app_name, window.title))
 }
@@ -259,7 +267,10 @@ fn show(app: &AppHandle, pid: i32) {
     if need_capture {
         let Some((window_id, app_name, title)) = pick_window(pid) else {
             // 没有屏幕录制权限或窗口不在屏幕上：没有可显示的画面就不弹。
-            log("cu_pip.no_window", json!({ "pid": pid, "permitted": window_capture::has_permission() }));
+            log(
+                "cu_pip.no_window",
+                json!({ "pid": pid, "permitted": window_capture::has_permission() }),
+            );
             hide(app);
             return;
         };
@@ -287,12 +298,18 @@ fn show(app: &AppHandle, pid: i32) {
         let handle = match handle {
             Ok(handle) => handle,
             Err(error) => {
-                log("cu_pip.capture_failed", json!({ "pid": pid, "windowId": window_id, "error": error.to_string() }));
+                log(
+                    "cu_pip.capture_failed",
+                    json!({ "pid": pid, "windowId": window_id, "error": error.to_string() }),
+                );
                 hide(app);
                 return;
             }
         };
-        log("cu_pip.show", json!({ "pid": pid, "windowId": window_id, "app": app_name }));
+        log(
+            "cu_pip.show",
+            json!({ "pid": pid, "windowId": window_id, "app": app_name }),
+        );
         let target = json!({ "pid": pid, "appName": app_name, "title": title });
         with_state(|state| {
             state.window_id = Some(window_id);
@@ -359,7 +376,12 @@ fn ensure_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
         .accept_first_mouse(true)
         .visible(false)
         .build()
-        .inspect_err(|error| log("cu_pip.window_failed", json!({ "error": error.to_string() })))
+        .inspect_err(|error| {
+            log(
+                "cu_pip.window_failed",
+                json!({ "error": error.to_string() }),
+            )
+        })
         .ok()
 }
 
@@ -373,7 +395,9 @@ fn order_front(app: &AppHandle, window: &tauri::WebviewWindow) {
         let address = pointer as usize;
         let _ = app.run_on_main_thread(move || {
             // SAFETY: 指针来自 Tauri 的 `ns_window()`，窗口在本进程内一直存在（只隐藏不销毁）。
-            unsafe { cu_activity::show_floating_without_activation(address as *mut std::ffi::c_void) };
+            unsafe {
+                cu_activity::show_floating_without_activation(address as *mut std::ffi::c_void)
+            };
         });
     }
     #[cfg(not(target_os = "macos"))]
@@ -415,7 +439,10 @@ pub fn cu_pip_activate() -> bool {
                 .output()
                 .map(|output| String::from_utf8_lossy(&output.stdout).trim() == "true")
                 .unwrap_or(false);
-            log("cu_pip.focus_tab", json!({ "tab": tab, "focused": focused }));
+            log(
+                "cu_pip.focus_tab",
+                json!({ "tab": tab, "focused": focused }),
+            );
             if !focused && pid > 0 {
                 cu_activity::activate_pid(pid);
             }

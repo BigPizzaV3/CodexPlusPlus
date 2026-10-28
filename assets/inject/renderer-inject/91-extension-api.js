@@ -162,6 +162,9 @@
       sessionRows().forEach((row) => {
         const group = actionGroupFromRow(row);
         if (group) delete group.dataset.codexActionLayoutStable;
+        // 「…」按钮只在有菜单项时出现：拓展注册 / 注销会话行操作后立刻按新指纹
+        // 重建（或摘掉）这一行的按钮组，不用等下一次扫描。
+        tryAttachButton(row);
       });
     } catch {}
   }

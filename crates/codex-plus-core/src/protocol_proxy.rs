@@ -445,7 +445,7 @@ enum BufferedResponsesStream {
     },
 }
 
-fn estimated_tokens_from_chars(chars: usize) -> u64 {
+pub(crate) fn estimated_tokens_from_chars(chars: usize) -> u64 {
     ((chars as u64) + 3) / 4
 }
 
@@ -981,7 +981,7 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
 
-fn exec_retry_after_duration(
+pub(crate) fn exec_retry_after_duration(
     headers: &reqwest::header::HeaderMap,
     now: SystemTime,
 ) -> Option<Duration> {
@@ -1839,6 +1839,19 @@ pub struct UpstreamProxyResponse {
     pub response: Option<reqwest::Response>,
 }
 
+/// 网关模式：调用方已经选定唯一上游，代理只负责协议转换与发送。
+///
+/// 设置后跳过聚合绑定、模型路由、目录外模型映射与全局轮转选择器，
+/// 失败切换与 Key 冷却由网关自己的候选循环负责。
+#[derive(Debug, Clone)]
+pub struct ForcedRelay {
+    pub relay: crate::settings::RelayProfile,
+    /// 发往上游的模型名；`None` 时沿用请求体里的 model。
+    pub upstream_model: Option<String>,
+    /// 是否启用「请求避震」自动重试（参数仍读设置）。
+    pub auto_retry: bool,
+}
+
 /// 客户端会话头白名单；不接受鉴权或任意其他客户端请求头。
 #[derive(Clone, Copy, Default)]
 pub struct ProxySessionHeaders<'a> {
@@ -2596,7 +2609,7 @@ fn output_compaction_count(output: Option<&Value>) -> Option<usize> {
     Some(compactions.count())
 }
 
-async fn read_limited_upstream_body(
+pub(crate) async fn read_limited_upstream_body(
     response: &mut reqwest::Response,
     limit: usize,
 ) -> anyhow::Result<Vec<u8>> {
@@ -3188,6 +3201,7 @@ pub async fn open_responses_proxy_request_for_path_with_session_headers(
         beta_features,
         session_headers,
         None,
+        None,
     )
     .await
 }
@@ -3211,6 +3225,7 @@ pub async fn open_responses_proxy_request_for_path_with_session_headers_and_live
         beta_features,
         session_headers,
         live_request_id,
+        None,
     )
     .await
 }
@@ -3226,6 +3241,7 @@ pub async fn open_responses_proxy_request_with_settings(
         "/responses",
         None,
         ProxySessionHeaders::default(),
+        None,
         None,
     )
     .await
@@ -3243,6 +3259,7 @@ pub async fn open_responses_proxy_request_with_settings_for_path(
         request_path,
         None,
         ProxySessionHeaders::default(),
+        None,
         None,
     )
     .await
@@ -3279,6 +3296,33 @@ pub async fn open_responses_proxy_request_with_settings_for_path_and_session_hea
         beta_features,
         session_headers,
         None,
+        None,
+    )
+    .await
+}
+
+/// 网关入口：把一个 Responses 请求发往调用方选定的唯一上游。
+///
+/// 协议转换（Responses → Chat / Anthropic）、官方登录、exec 兼容等与普通代理路径
+/// 完全相同；不读当前供应商，也不推进 Codex 的全局轮转状态。
+pub async fn open_responses_proxy_request_for_relay(
+    body: &str,
+    settings: crate::settings::BackendSettings,
+    forced: ForcedRelay,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+    session_headers: ProxySessionHeaders<'_>,
+    live_request_id: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_with_settings_and_user_agent(
+        body,
+        settings,
+        original_user_agent,
+        request_path,
+        None,
+        session_headers,
+        live_request_id,
+        Some(forced),
     )
     .await
 }
@@ -3291,6 +3335,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     beta_features: Option<&str>,
     session_headers: ProxySessionHeaders<'_>,
     live_request_id: Option<&str>,
+    forced: Option<ForcedRelay>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
@@ -3307,7 +3352,11 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         .map(str::trim)
         .unwrap_or("")
         .to_string();
-    let aggregate_model = match crate::aggregate_catalog::resolve_active_model(&settings, &source_model) {
+    let aggregate_model = match if forced.is_some() {
+        Ok(None)
+    } else {
+        crate::aggregate_catalog::resolve_active_model(&settings, &source_model)
+    } {
         Ok(binding) => binding,
         Err(error) => {
             return Ok(UpstreamProxyResponse {
@@ -3335,7 +3384,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     if let Some(binding) = &aggregate_model {
         request_json["model"] = Value::String(binding.upstream_model.clone());
     }
-    let model_route = if aggregate_model.is_some() {
+    let model_route = if aggregate_model.is_some() || forced.is_some() {
         None
     } else {
         select_model_route(&settings, &source_model)?
@@ -3350,6 +3399,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     // `source_model` 保持原始值，轮转粘性与请求日志仍按用户视角的模型归因。
     if aggregate_model.is_none()
         && model_route.is_none()
+        && forced.is_none()
         && let Some(replacement) = unlisted_model_replacement(&settings, &source_model)
     {
         log_unlisted_model_mapping(&source_model, &replacement);
@@ -3360,7 +3410,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         conversation_id: conversation_id_from_responses_request(&request_json),
         model,
     };
-    let (relay, relays) = if let Some(binding) = &aggregate_model {
+    let (relay, relays) = if let Some(forced) = &forced {
+        (forced.relay.clone(), vec![forced.relay.clone()])
+    } else if let Some(binding) = &aggregate_model {
         (binding.relay.clone(), vec![binding.relay.clone()])
     } else if let Some(route) = &model_route {
         (route.relay.clone(), vec![route.relay.clone()])
@@ -3376,10 +3428,15 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         relays.first().map(|item| item.id.as_str()),
         Some(relay.id.as_str())
     );
-    let strict_aggregate_model = aggregate_model.is_some();
+    // 强制上游同样不推进全局轮转选择器：它不属于当前活动聚合。
+    let strict_aggregate_model = aggregate_model.is_some() || forced.is_some();
     let relay_count = relays.len();
     let mut exec_negotiation_used = false;
-    let mut auto_retry = ProxyAutoRetry::from_settings(&settings);
+    let mut auto_retry = if forced.as_ref().is_some_and(|forced| !forced.auto_retry) {
+        None
+    } else {
+        ProxyAutoRetry::from_settings(&settings)
+    };
     let mut request_attempt = 0_usize;
     let buffered_mode = settings.protocol_proxy_auto_retry_mode == "buffered";
     let commit_policy = StreamStartCommitPolicy::from_settings(&settings);
@@ -3438,10 +3495,13 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             None
         };
         let official_base = official_member.then(crate::official_login::official_base_url);
-        let model_override = aggregate_model
-            .as_ref()
-            .map(|binding| binding.upstream_model.clone())
-            .or_else(|| aggregate_upstream_model_override(&settings, &relay));
+        let model_override = match &forced {
+            Some(forced) => forced.upstream_model.clone(),
+            None => aggregate_model
+                .as_ref()
+                .map(|binding| binding.upstream_model.clone())
+                .or_else(|| aggregate_upstream_model_override(&settings, &relay)),
+        };
         let preserve_native_request = relay.protocol == RelayProtocol::Responses
             && (request_has_compaction_trigger(&request_json)
                 || is_responses_compact_proxy_path(request_path));
@@ -4507,10 +4567,10 @@ pub async fn open_models_proxy_request(
             "wireApi": UpstreamWireApi::Responses
         }),
     );
-    let request = crate::http_client::proxied_client_for_profile(&effective_user_agent(
+    let request = crate::http_client::proxied_client_for_relay(&effective_user_agent(
         &relay.user_agent,
         original_user_agent,
-    ), &relay.id)?
+    ), &relay)?
     .get(endpoint);
     let request = match &official_credential {
         Some(credential) => with_official_login_auth(request, &relay, credential),
@@ -4568,10 +4628,10 @@ pub async fn open_audio_transcriptions_proxy_request(
             "bodyBytes": body.len()
         }),
     );
-    let request = crate::http_client::proxied_client_for_profile(&effective_user_agent(
+    let request = crate::http_client::proxied_client_for_relay(&effective_user_agent(
         &relay.user_agent,
         original_user_agent,
-    ), &relay.id)?
+    ), &relay)?
     .post(endpoint)
     .header(reqwest::header::CONTENT_TYPE, content_type)
     .body(body.to_vec());
@@ -4673,6 +4733,34 @@ async fn open_image_proxy_request(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    open_image_request_with_relay(&relay, body, content_type, original_user_agent, endpoint_kind).await
+}
+
+/// 网关的生图入口：发给指定的上游（网关按「生图模型」选好，Key 也已换好）。
+/// `edits` 为 true 时走 `/images/edits`（multipart），否则 `/images/generations`。
+pub async fn open_gateway_image_request(
+    relay: &crate::settings::RelayProfile,
+    edits: bool,
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let endpoint_kind = if edits {
+        ImageProxyEndpoint::Edits
+    } else {
+        ImageProxyEndpoint::Generations
+    };
+    open_image_request_with_relay(relay, body, content_type, original_user_agent, endpoint_kind).await
+}
+
+async fn open_image_request_with_relay(
+    relay: &crate::settings::RelayProfile,
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+    endpoint_kind: ImageProxyEndpoint,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let relay = relay.clone();
     let content_type = normalize_image_content_type(content_type, endpoint_kind)?;
     // 官方登录成员：Codex CLI 的 imagegen 扩展会把图片请求发给当前 provider 的
     // base_url；聚合代理下该地址是本地协议代理，这里要像 /responses、/models 一样
@@ -4714,10 +4802,10 @@ async fn open_image_proxy_request(
             "endpointKind": endpoint_kind.name()
         }),
     );
-    let request = crate::http_client::proxied_client_for_profile(&effective_user_agent(
+    let request = crate::http_client::proxied_client_for_relay(&effective_user_agent(
         &relay.user_agent,
         original_user_agent,
-    ), &relay.id)?
+    ), &relay)?
     .post(endpoint)
     .header(reqwest::header::CONTENT_TYPE, content_type)
     .body(body.to_vec());
@@ -4797,9 +4885,9 @@ async fn open_official_image_proxy_request(
             "officialLogin": true
         }),
     );
-    let request = crate::http_client::proxied_client_for_profile(
+    let request = crate::http_client::proxied_client_for_relay(
         &effective_user_agent(&relay.user_agent, original_user_agent),
-        &relay.id,
+        &relay
     )?
     .post(endpoint)
     .header(reqwest::header::CONTENT_TYPE, content_type)
@@ -4877,10 +4965,10 @@ pub async fn open_chat_completions_proxy_request(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let request = crate::http_client::proxied_client_for_profile(&effective_user_agent(
+    let request = crate::http_client::proxied_client_for_relay(&effective_user_agent(
         &relay.user_agent,
         original_user_agent,
-    ), &relay.id)?
+    ), &relay)?
     .post(chat_completions_url(&relay.base_url))
     .header(reqwest::header::CONTENT_TYPE, "application/json")
     .json(&request_json);
@@ -5245,7 +5333,7 @@ fn build_responses_upstream_request(
         effective_user_agent(&relay.user_agent, original_user_agent)
     };
     let mut builder = upstream_request_builder(
-        crate::http_client::proxied_client_for_profile(&user_agent, &relay.id)?,
+        crate::http_client::proxied_client_for_relay(&user_agent, &relay)?,
         endpoint,
         relay,
         is_stream,
@@ -6576,7 +6664,7 @@ fn extract_chat_sse_error(value: &Value) -> (String, Option<String>) {
     (message, error_type)
 }
 
-fn http_status_line(status: u16) -> String {
+pub(crate) fn http_status_line(status: u16) -> String {
     match status {
         200 => "200 OK".to_string(),
         400 => "400 Bad Request".to_string(),
@@ -6606,7 +6694,7 @@ pub fn responses_error_from_upstream(status_code: u16, content_type: &str, body:
     json!({ "error": error })
 }
 
-fn upstream_error_parts(
+pub(crate) fn upstream_error_parts(
     status_code: u16,
     content_type: &str,
     body: &[u8],
@@ -11402,6 +11490,15 @@ pub(crate) struct ResponsesSseTransformer {
     /// 终态失败事件里的 code/message 摘要。只进请求日志与诊断日志，
     /// 不拼进 failure 原因（原因会随 SSE 回给客户端，不能泄露上游 payload）。
     failure_detail: Option<String>,
+    /// 下游不是 Codex（经网关接入的 Grok 等）：去掉 ChatGPT 订阅后端私有的事件，
+    /// 这些客户端按标准 Responses 事件解析，遇到不认识的类型会直接报错。
+    strip_backend_events: bool,
+}
+
+/// ChatGPT 订阅后端在回复前后附带的私有事件：`response.metadata`（安全缓冲等）、
+/// `codex.rate_limits` 等。只有 Codex 自己的客户端认得。
+fn is_backend_private_event(event_type: &str) -> bool {
+    event_type == "response.metadata" || event_type.starts_with("codex.")
 }
 
 /// 单个事件参与改写的最大缓冲字节数（4 MiB）。
@@ -11428,6 +11525,12 @@ impl ResponsesSseTransformer {
                 })
             });
         Self { apply_patch_declared_as_function, ..Self::default() }
+    }
+
+    /// 转发给非 Codex 客户端时去掉后端私有事件，见 `strip_backend_events`。
+    pub(crate) fn stripping_backend_events(mut self, strip: bool) -> Self {
+        self.strip_backend_events = strip;
+        self
     }
 
     /// Push upstream bytes; returns bytes ready to write to the client.
@@ -11555,7 +11658,10 @@ impl ResponsesSseTransformer {
             .map(str::to_string)
             .or(sse_event_name);
         let event_type = event_type_owned.as_deref().unwrap_or("");
-        
+        if self.strip_backend_events && is_backend_private_event(event_type) {
+            return Vec::new();
+        }
+
         self.observe_event_type(event_type);
         if event_type == "response.completed" {
             if let Some(usage) = crate::request_log::usage_from_response_json(&data_json) {
@@ -11779,6 +11885,22 @@ data: {"type":"response.compaction.delta","delta":"..."}
         let mut transformer = ResponsesSseTransformer::default();
         let result = transformer.push_bytes(compaction_event.as_bytes());
         assert_eq!(result, compaction_event.as_bytes());
+    }
+
+    #[test]
+    fn backend_private_events_are_stripped_only_for_foreign_clients() {
+        let stream = "event: codex.rate_limits\ndata: {\"type\":\"codex.rate_limits\"}\n\n\
+event: response.metadata\ndata: {\"type\":\"response.metadata\"}\n\n\
+event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n";
+        // Codex 自己认得这些事件：默认原样转发。
+        let mut codex = ResponsesSseTransformer::default();
+        assert_eq!(codex.push_bytes(stream.as_bytes()), stream.as_bytes());
+
+        let mut foreign = ResponsesSseTransformer::default().stripping_backend_events(true);
+        let out = String::from_utf8(foreign.push_bytes(stream.as_bytes())).unwrap();
+        assert!(!out.contains("codex.rate_limits"), "{out}");
+        assert!(!out.contains("response.metadata"), "{out}");
+        assert!(out.contains("response.output_text.delta"), "{out}");
     }
 
     #[test]

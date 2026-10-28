@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测、常量与图片覆盖层",
-      "lines": 1790
+      "lines": 1784
     },
     {
       "name": "01-registry.js",
@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2746
+      "lines": 2749
     },
     {
       "name": "20-menu.js",
@@ -32,8 +32,8 @@
     },
     {
       "name": "40-backend-settings.js",
-      "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1980
+      "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
+      "lines": 2087
     },
     {
       "name": "50-navigation.js",
@@ -63,12 +63,12 @@
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器按供应商分组折叠（聚合供应商场景）",
-      "lines": 1095
+      "lines": 1124
     },
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具；分享入口已撤出管理器扫描",
-      "lines": 774
+      "lines": 768
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -108,12 +108,12 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 955
+      "lines": 1062
     },
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 272
+      "lines": 275
     },
     {
       "name": "92-extension-host.js",
@@ -133,17 +133,12 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 964
+      "lines": 620
     },
     {
-      "name": "96-whale-compat.js",
-      "description": "Codex full whale host and bridge adapters",
-      "lines": 533
-    },
-    {
-      "name": "97-whale-widget.js",
-      "description": "Full whale engine opt-in lifecycle",
-      "lines": 64
+      "name": "97-agent-pet.js",
+      "description": "Agent 桌宠：可拖动角色、按压压扁回弹与按压音效",
+      "lines": 297
     },
     {
       "name": "98-scan-schedule.js",
@@ -158,7 +153,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 96
+      "lines": 95
     },
     {
       "name": "99-tail.js",

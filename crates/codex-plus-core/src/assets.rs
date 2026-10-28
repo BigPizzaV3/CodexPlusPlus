@@ -5,73 +5,46 @@ use std::path::Path;
 use crate::settings::BackendSettings;
 
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
-const WHALE_DEFAULT_IMAGE: &[u8] =
-    include_bytes!("../../../assets/inject/upstream/whale-widget/DSniang1.png");
-const WHALE_RUNTIME: &str =
-    include_str!("../../../assets/inject/upstream/whale-widget/full-widget-codex.js");
-const WHALE_MEDIA: &[(&str, &str, &[u8])] = &[
-    ("DSniang1.png", "image/png", WHALE_DEFAULT_IMAGE),
+/// Agent 桌宠的按压 / 松开音效，按音效组内嵌：(组名, 按压音, 松开音)。
+/// 音效随启动器本地内嵌，运行时不下载；桌宠图片则不内嵌，见 `agent_pet`。
+const AGENT_PET_SOUNDS: &[(&str, &[u8], &[u8])] = &[
     (
-        "Ya1.mp3",
-        "audio/mpeg",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/Ya1.mp3"),
+        "duck",
+        include_bytes!("../../../assets/inject/agent-pet/sounds/Ya1.mp3"),
+        include_bytes!("../../../assets/inject/agent-pet/sounds/Ya2.mp3"),
     ),
     (
-        "Ya2.mp3",
-        "audio/mpeg",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/Ya2.mp3"),
-    ),
-    (
-        "D1.mp3",
-        "audio/mpeg",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/D1.mp3"),
-    ),
-    (
-        "D2.mp3",
-        "audio/mpeg",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/D2.mp3"),
-    ),
-    (
-        "minecraft-exp-orb.wav",
-        "audio/wav",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/minecraft-exp-orb.wav"),
-    ),
-    (
-        "task-end-a.wav",
-        "audio/wav",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/task-end-a.wav"),
-    ),
-    (
-        "bubble-petpet.gif",
-        "image/gif",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/bubble-petpet.gif"),
-    ),
-    (
-        "bubble-money1.gif",
-        "image/gif",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/bubble-money1.gif"),
-    ),
-    (
-        "rua.gif",
-        "image/gif",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/rua.gif"),
+        "fx1",
+        include_bytes!("../../../assets/inject/agent-pet/sounds/D1.mp3"),
+        include_bytes!("../../../assets/inject/agent-pet/sounds/D2.mp3"),
     ),
 ];
 
-fn whale_assets_json() -> String {
-    let values: serde_json::Map<String, Value> = WHALE_MEDIA
+/// 全部音效组：`{ 组名: { press, release } }`，值为 data URI。管理器试听与 Codex 注入共用。
+pub fn agent_pet_sounds() -> Value {
+    let values: serde_json::Map<String, Value> = AGENT_PET_SOUNDS
         .iter()
-        .map(|(name, mime, bytes)| ((*name).to_string(), json!(image_data_uri(mime, bytes))))
+        .map(|(name, press, release)| {
+            (
+                (*name).to_string(),
+                json!({
+                    "press": image_data_uri("audio/mpeg", press),
+                    "release": image_data_uri("audio/mpeg", release),
+                }),
+            )
+        })
         .collect();
-    Value::Object(values).to_string()
+    Value::Object(values)
 }
 
-fn whale_runtime_script() -> String {
-    // 直接注入函数声明；完整引擎使用词法宿主，不要求 renderer 开放 unsafe-eval。
+fn agent_pet_sounds_json() -> String {
+    agent_pet_sounds().to_string()
+}
+
+fn agent_pet_sounds_script() -> String {
     format!(
-        "window.__CODEX_PLUS_WHALE_ASSETS__ = {};\nwindow.__CODEX_PLUS_WHALE_ENGINE__ = function(window,document,fetch,localStorage,setTimeout,clearTimeout,setInterval,clearInterval,requestAnimationFrame,cancelAnimationFrame,MutationObserver,ResizeObserver,AudioContext,webkitAudioContext,Image,Audio) {{\n{}\n}};\n",
-        whale_assets_json(),
-        WHALE_RUNTIME
+        "window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = {};",
+        agent_pet_sounds_json()
     )
 }
 
@@ -580,10 +553,8 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&hide_official_usage_alert)
             .expect("usage alert config should serialize"),
         format!(
-            "window.__CODEX_PLUS_WHALE_IMAGE__ = {};\n{}\n{}\n{}\n{}",
-            serde_json::to_string(&image_data_uri("image/png", WHALE_DEFAULT_IMAGE))
-                .expect("whale image should serialize"),
-            whale_runtime_script(),
+            "{}\n{}\n{}\n{}",
+            agent_pet_sounds_script(),
             include_str!("../../../assets/inject/composer-readiness.js"),
             format!(
                 "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});",
@@ -738,33 +709,34 @@ mod tests {
     }
 
     #[test]
-    fn whale_character_is_embedded_for_offline_and_live_enable() {
+    fn agent_pet_sounds_are_embedded_byte_for_byte() {
         let script = injection_script(57321);
-        let prefix = "window.__CODEX_PLUS_WHALE_IMAGE__ = ";
+        let prefix = "window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = ";
         let value = script.split_once(prefix).unwrap().1.lines().next().unwrap();
-        let uri: String = serde_json::from_str(value.trim_end_matches(';')).unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(uri.strip_prefix("data:image/png;base64,").unwrap())
-            .unwrap();
-        assert_eq!(bytes, WHALE_DEFAULT_IMAGE);
-        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
-    }
-
-    #[test]
-    fn whale_media_preserves_original_audio_and_animation_bytes() {
-        let values: Value = serde_json::from_str(&whale_assets_json()).unwrap();
-        assert_eq!(values.as_object().unwrap().len(), 10);
-        for (name, mime, expected) in WHALE_MEDIA {
-            let uri = values[*name].as_str().unwrap();
-            let prefix = format!("data:{mime};base64,");
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(uri.strip_prefix(&prefix).unwrap())
-                .unwrap();
-            assert_eq!(&decoded, expected);
+        let sounds: Value = serde_json::from_str(value.trim_end_matches(';')).unwrap();
+        assert_eq!(sounds.as_object().unwrap().len(), 2);
+        let decode = |uri: &Value| {
+            base64::engine::general_purpose::STANDARD
+                .decode(uri.as_str().unwrap().strip_prefix("data:audio/mpeg;base64,").unwrap())
+                .unwrap()
+        };
+        let expected: [(&str, &[u8], &[u8]); 2] = [
+            (
+                "duck",
+                include_bytes!("../../../assets/inject/agent-pet/sounds/Ya1.mp3"),
+                include_bytes!("../../../assets/inject/agent-pet/sounds/Ya2.mp3"),
+            ),
+            (
+                "fx1",
+                include_bytes!("../../../assets/inject/agent-pet/sounds/D1.mp3"),
+                include_bytes!("../../../assets/inject/agent-pet/sounds/D2.mp3"),
+            ),
+        ];
+        for (name, press, release) in expected {
+            assert!(!press.is_empty() && !release.is_empty());
+            assert_eq!(decode(&sounds[name]["press"]), press, "{name} press");
+            assert_eq!(decode(&sounds[name]["release"]), release, "{name} release");
         }
-        let script = whale_runtime_script();
-        assert!(script.contains("window.__CODEX_PLUS_WHALE_ENGINE__ = function("));
-        assert!(!script.contains("new Function("));
     }
 
     #[test]

@@ -132,7 +132,32 @@ fn injection_script_omits_stepwise_runtime_when_disabled() {
     let script = assets::injection_script_with_settings(57321, &settings);
 
     assert!(!script.contains("const API_KEY = \"__codexStepwisePanel\";"));
-    assert!(script.contains("data-codex-plus-setting=\"stepwise\""));
+    assert_codex_setting_row(&script, "codexAppStepwiseEnabled", "stepwise");
+}
+
+/// Codex 设置页的设置行按 /settings/catalog 清单生成：断言清单让该项在 Codex 显示，
+/// 并且注入脚本能把清单 key 映射回本页的设置 key（生成 data-codex-plus-setting）。
+fn assert_codex_setting_row(script: &str, backend_key: &str, local_key: &str) -> serde_json::Value {
+    let catalog = codex_plus_core::settings_catalog::enhancement_settings_catalog().unwrap();
+    let item = catalog["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["key"] == backend_key)
+        .cloned()
+        .unwrap_or_else(|| panic!("{backend_key} 不在设置项清单里"));
+    assert!(
+        item["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|surface| surface == "codex"),
+        "{backend_key} 应在 Codex 设置页显示"
+    );
+    assert!(script.contains(&format!("{local_key}: \"{backend_key}\"")));
+    assert!(script.contains(r#"data-codex-plus-setting="${escapeHtml(localKey)}""#));
+    assert!(script.contains(r#"postJson("/settings/catalog", {})"#));
+    item
 }
 
 #[test]
@@ -214,10 +239,14 @@ fn pet_real_mouse_settings_are_shown_on_windows_and_mac_in_injected_ui() {
 
     assert!(script.contains("codexPlusIsWindowsPlatform"));
     assert!(script.contains("codexPlusIsMacPlatform"));
-    assert!(script.contains("codexPlusSupportsPetRealMouseLook"));
     assert!(script.contains(r#"/\bWindows\b/i.test(navigator.userAgent || "")"#));
     assert!(script.contains(r#"/\bMacintosh\b/i.test(navigator.userAgent || "")"#));
-    assert!(script.contains("codexPlusSupportsPetRealMouseLook ? `<div"));
+    // 平台限制写在设置项清单里，注入页按当前平台过滤。
+    let item = assert_codex_setting_row(&script, "codexAppPetRealMouseLook", "petRealMouseLook");
+    assert_eq!(item["platforms"], json!(["windows", "macos"]));
+    assert!(script.contains(
+        r#"codexPlusIsWindowsPlatform ? "windows" : codexPlusIsMacPlatform ? "macos" : "linux""#
+    ));
     assert!(!script.contains("codexPlusIsWindowsPlatform ? `<div"));
 }
 
@@ -1105,8 +1134,12 @@ fn injection_script_uses_one_enhancement_behavior() {
 fn injection_script_menu_exposes_marketplace_plugin_switch_only() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("插件市场解锁"));
-    assert!(script.contains("data-codex-plus-setting=\"pluginMarketplaceUnlock\""));
+    let item = assert_codex_setting_row(
+        &script,
+        "codexAppPluginMarketplaceUnlock",
+        "pluginMarketplaceUnlock",
+    );
+    assert_eq!(item["title"], "插件市场解锁");
     assert!(!script.contains("特殊插件强制安装"));
     assert!(!script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
     assert!(!script.contains("forcePluginInstall"));
@@ -1125,7 +1158,7 @@ fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
     assert!(script.contains("stepwise: false"));
     assert!(script.contains("stepwise: \"codexAppStepwiseEnabled\""));
     assert!(script.contains("Stepwise"));
-    assert!(script.contains("data-codex-plus-setting=\"stepwise\""));
+    assert_codex_setting_row(&script, "codexAppStepwiseEnabled", "stepwise");
     assert!(script.contains("function syncStepwisePanel"));
     assert!(script.contains("window.__codexStepwisePanel?.syncSettings"));
     assert!(script.contains("if (key === \"stepwise\") syncStepwisePanel(value)"));
@@ -2751,7 +2784,9 @@ fn injection_script_exposes_conversation_view_width_control() {
     assert!(script.contains("conversationView: false"));
     assert!(script.contains("conversationView"));
     assert!(script.contains("conversationViewMaxWidth"));
-    assert!(script.contains("对话居中宽度"));
+    let item = assert_codex_setting_row(&script, "codexAppConversationView", "conversationView");
+    assert_eq!(item["title"], "对话居中宽度");
+    assert_eq!(item["codexInputs"][0]["id"], "conversationViewMaxWidth");
     assert!(script.contains("data-codex-plus-conversation-view-width"));
     assert!(script.contains("conversationViewWidth()"));
     assert!(script.contains("normalizeConversationViewWidth"));
@@ -2788,9 +2823,8 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("threadIdBadge: false"));
-    assert!(script.contains("threadIdBadge: \"codexAppThreadIdBadge\""));
-    assert!(script.contains("会话 ID 标识"));
-    assert!(script.contains("data-codex-plus-setting=\"threadIdBadge\""));
+    let item = assert_codex_setting_row(&script, "codexAppThreadIdBadge", "threadIdBadge");
+    assert_eq!(item["title"], "会话 ID 标识");
     assert!(script.contains("codex-thread-id-badge"));
     assert!(script.contains("data-codex-thread-id-badge-wrap=\"true\""));
     assert!(script.contains("let threadIdBadgeActive = false"));
@@ -2806,11 +2840,20 @@ fn injection_script_exposes_capacity_auto_retry_control() {
 
     // 开关接线：默认值 → 后端映射 → 中文标签 → 菜单 DOM → 设置面板输入框。
     assert!(script.contains("capacityAutoRetry: false"));
-    assert!(script.contains("capacityAutoRetry: \"codexAppCapacityAutoRetry\""));
-    assert!(script.contains("容量错误自动重试"));
-    assert!(script.contains("data-codex-plus-setting=\"capacityAutoRetry\""));
-    assert!(script.contains("data-codex-plus-capacity-retry-max-attempts=\"true\""));
-    assert!(script.contains("data-codex-plus-capacity-retry-interval=\"true\""));
+    let item = assert_codex_setting_row(&script, "codexAppCapacityAutoRetry", "capacityAutoRetry");
+    assert_eq!(item["title"], "容量错误自动重试");
+    let inputs: Vec<&str> = item["codexInputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|input| input["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        inputs,
+        ["capacityAutoRetryIntervalSeconds", "capacityAutoRetryMaxAttempts"]
+    );
+    assert!(script.contains(r#"attribute: "data-codex-plus-capacity-retry-max-attempts""#));
+    assert!(script.contains(r#"attribute: "data-codex-plus-capacity-retry-interval""#));
 
     // 运行逻辑：横幅识别只看语义结构（aside + 重试按钮），不绑 Codex 的 hash 类名。
     assert!(script.contains("function findCapacityAutoRetryBanner"));
@@ -2897,10 +2940,13 @@ fn injection_script_keeps_session_action_buttons_in_pr_style() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("actionButtonClass = \"codex-session-action-button\""));
+    // 优先套用同一行原生置顶 / 归档按钮的类名与 data-* 属性；兜底样式只在没套上时生效，
+    // 悬停只提亮文字色、不铺底色，也不再从原生静止态抄颜色变量。
+    assert!(script.contains("function syncNativeSessionActionStyle(row)"));
+    assert!(script.contains(".${actionButtonClass}:not([data-codex-native-style]) {"));
     assert!(script.contains("background: transparent;"));
-    assert!(
-        script.contains("background: var(--codex-session-action-hover-background, transparent);")
-    );
+    assert!(script.contains("var(--color-text-secondary-ghost-hover,"));
+    assert!(!script.contains("--codex-session-action-hover-background"));
     assert!(script.contains("cursor: default;"));
 }
 
@@ -3244,7 +3290,9 @@ fn injection_script_moves_export_and_project_move_into_more_menu() {
 
     assert!(script.contains("moreButtonClass = \"codex-session-more-button\""));
     assert!(script.contains("moreMenuClass = \"codex-session-more-menu\""));
-    assert!(script.contains("configureActionButton(moreButton, \"更多操作\", \"…\")"));
+    assert!(
+        script.contains("configureSvgActionButton(moreButton, \"更多操作\", ellipsisIconSvg())")
+    );
     assert!(script.contains("createSessionMoreMenuItem(\"导出\""));
     assert!(!script.contains("createSessionMoreMenuItem(\"移动\""));
     assert!(script.contains("group.appendChild(moreButton)"));
@@ -3415,7 +3463,7 @@ fn injection_script_retires_legacy_fast_controls_and_preserves_native_unlock() {
     ] {
         assert!(!script.contains(retired), "retired legacy Fast behavior: {retired}");
     }
-    assert!(script.contains("data-codex-plus-setting=\"nativeFastUnlock\""));
+    assert_codex_setting_row(&script, "codexAppNativeFastUnlock", "nativeFastUnlock");
     assert!(script.contains("__codexPlusNativeFastUnlock"));
     assert!(script.contains("codexAppNativeFastUnlock"));
     assert!(script.contains("serviceTiers"));

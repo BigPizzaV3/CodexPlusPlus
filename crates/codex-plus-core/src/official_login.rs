@@ -215,6 +215,35 @@ fn live_chatgpt_login_from(home: &Path) -> Option<OfficialLogin> {
     official_login_from_auth_value(&value)
 }
 
+/// 凭据里带这个标记的是网关自己登录的账号：token 存在 gateway.json，刷新也写回那里，
+/// 且不采纳 Codex 的 live 登录（两边是各自独立的登录，代际不能混用）。
+pub const GATEWAY_OWNED_MARKER: &str = "codex_plus_gateway";
+
+/// 网关的账号正借给 Codex 登录（Codex 接入网关、自己没登录时）：这期间 token 以 Codex 的
+/// auth.json 为准（Codex 自己会刷新），网关刷新后也同时写回 auth.json，两边始终是同一代。
+pub const LENT_TO_CODEX_MARKER: &str = "codex_plus_lent_to_codex";
+
+fn auth_flag(profile: &RelayProfile, key: &str) -> bool {
+    serde_json::from_str::<Value>(&profile.auth_contents)
+        .ok()
+        .and_then(|value| value.get(key).and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn gateway_owned(profile: &RelayProfile) -> bool {
+    auth_flag(profile, GATEWAY_OWNED_MARKER)
+}
+
+/// 网关自己登录的 ChatGPT 账号（不是从直连模式复制来的）。
+pub fn is_gateway_owned_login(profile: &RelayProfile) -> bool {
+    gateway_owned(profile) && member_uses_official_login_transport(profile)
+}
+
+/// 网关的这个账号是否正借给 Codex 登录。
+pub fn is_lent_to_codex(profile: &RelayProfile) -> bool {
+    gateway_owned(profile) && auth_flag(profile, LENT_TO_CODEX_MARKER)
+}
+
 /// 同一账号时优先使用 live 凭据：Codex 客户端每次使用都会刷新并轮换
 /// refresh token，live 代际比快照新。账号不一致或 live 缺少 refresh token
 /// 而快照有时，保留快照。
@@ -462,17 +491,39 @@ async fn resolve_official_credential_with(
             profile.name
         )
     })?;
-    let login = prefer_live_login(stored, live_chatgpt_login_from(codex_home));
+    let owned_by_gateway = gateway_owned(profile);
+    let lent_to_codex = is_lent_to_codex(profile);
+    // 借给 Codex 时与直连模式的官方账号一样，同一账号以 Codex 的 live 凭据为准。
+    let live = |home: &Path| {
+        if owned_by_gateway && !lent_to_codex {
+            None
+        } else {
+            live_chatgpt_login_from(home)
+        }
+    };
+    let login = prefer_live_login(stored, live(codex_home));
     if !force_refresh && !token_needs_refresh(&login.access_token) {
         return Ok(credential(login));
     }
 
     // 串行刷新：并发请求只发一次刷新，其余等锁后直接用新凭据。
     let _guard = refresh_lock().lock().await;
-    let stored = current_auth_contents(store, &profile.id)
+    let current = if owned_by_gateway {
+        crate::gateway::store::GatewayStore::default()
+            .load()
+            .ok()
+            .and_then(|gateway| {
+                gateway
+                    .provider(&profile.id)
+                    .map(|provider| provider.relay.auth_contents.clone())
+            })
+    } else {
+        current_auth_contents(store, &profile.id)
+    };
+    let stored = current
         .and_then(|contents| official_login_from_auth_contents(&contents))
         .unwrap_or(login);
-    let login = prefer_live_login(stored, live_chatgpt_login_from(codex_home));
+    let login = prefer_live_login(stored, live(codex_home));
     if !force_refresh && !token_needs_refresh(&login.access_token) {
         return Ok(credential(login));
     }
@@ -496,7 +547,7 @@ async fn resolve_official_credential_with(
         Ok(tokens) => tokens,
         Err(error) => {
             // live 里可能是更新一代的 refresh token：换它再试一次。
-            let live = live_chatgpt_login_from(codex_home).filter(|live| {
+            let live = live(codex_home).filter(|live| {
                 !live.refresh_token.is_empty() && live.refresh_token != login.refresh_token
             });
             match live {
@@ -522,13 +573,31 @@ async fn resolve_official_credential_with(
     } else {
         refreshed.account_id.clone()
     };
-    persist_refreshed_login(
-        store,
-        &profile.id,
-        &refreshed.access_token,
-        &refreshed.refresh_token,
-        &account_id,
-    );
+    if owned_by_gateway {
+        persist_gateway_login(
+            &crate::gateway::store::GatewayStore::default(),
+            &profile.id,
+            &refreshed.access_token,
+            &refreshed.refresh_token,
+            &account_id,
+        );
+        if lent_to_codex {
+            persist_live_login(
+                codex_home,
+                &refreshed.access_token,
+                &refreshed.refresh_token,
+                &account_id,
+            );
+        }
+    } else {
+        persist_refreshed_login(
+            store,
+            &profile.id,
+            &refreshed.access_token,
+            &refreshed.refresh_token,
+            &account_id,
+        );
+    }
     Ok(OfficialCredential {
         access_token: refreshed.access_token,
         account_id,
@@ -629,6 +698,80 @@ fn extract_error_code(text: &str) -> String {
 
 /// 把刷新后的 tokens 写回供应商快照的 authContents。写失败只记录日志：
 /// 当前请求仍用新 token，下一次请求会再刷新。
+/// 把 tokens 写进 auth.json 结构（保留其它字段）。
+fn auth_with_tokens(
+    auth_contents: &str,
+    access_token: &str,
+    refresh_token: &str,
+    account_id: &str,
+) -> anyhow::Result<String> {
+    let mut value: Value = serde_json::from_str(auth_contents)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({ "auth_mode": "chatgpt" }));
+    if !value.get("tokens").is_some_and(Value::is_object) {
+        value["tokens"] = serde_json::json!({});
+    }
+    value["tokens"]["access_token"] = serde_json::json!(access_token);
+    value["tokens"]["refresh_token"] = serde_json::json!(refresh_token);
+    if !account_id.trim().is_empty() {
+        value["tokens"]["account_id"] = serde_json::json!(account_id);
+    }
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
+/// 借给 Codex 的账号由网关刷新后，新一代 token 也写回 Codex 的 auth.json（只在仍是同一账号时）。
+fn persist_live_login(codex_home: &Path, access_token: &str, refresh_token: &str, account_id: &str) {
+    let path = codex_home.join("auth.json");
+    let result = (|| -> anyhow::Result<()> {
+        let contents = std::fs::read_to_string(&path)?;
+        if chatgpt_account_id_from_auth_contents(&contents) != account_id {
+            return Ok(());
+        }
+        let updated = auth_with_tokens(&contents, access_token, refresh_token, account_id)?;
+        crate::settings::atomic_write(&path, format!("{updated}\n").as_bytes())
+    })();
+    if let Err(error) = result {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "official_login.lent_refresh_persist_failed",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+    }
+}
+
+/// 网关自己登录的账号：刷新结果写回 gateway.json 里同 id 的供应商。
+pub(crate) fn persist_gateway_login(
+    store: &crate::gateway::store::GatewayStore,
+    provider_id: &str,
+    access_token: &str,
+    refresh_token: &str,
+    account_id: &str,
+) {
+    let result = (|| -> anyhow::Result<()> {
+        let mut gateway = store.load()?;
+        let Some(provider) = gateway
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == provider_id)
+        else {
+            return Ok(());
+        };
+        provider.relay.auth_contents = auth_with_tokens(
+            &provider.relay.auth_contents,
+            access_token,
+            refresh_token,
+            account_id,
+        )?;
+        store.save(&gateway)
+    })();
+    if let Err(error) = result {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "official_login.gateway_refresh_persist_failed",
+            serde_json::json!({ "providerId": provider_id, "error": error.to_string() }),
+        );
+    }
+}
+
 fn persist_refreshed_login(
     store: &SettingsStore,
     profile_id: &str,
@@ -648,19 +791,8 @@ fn persist_refreshed_login(
         if !is_official_login_profile(profile) {
             return Ok(());
         }
-        let mut value: Value = serde_json::from_str(&profile.auth_contents)
-            .ok()
-            .filter(Value::is_object)
-            .unwrap_or_else(|| serde_json::json!({ "auth_mode": "chatgpt" }));
-        if !value.get("tokens").is_some_and(Value::is_object) {
-            value["tokens"] = serde_json::json!({});
-        }
-        value["tokens"]["access_token"] = serde_json::json!(access_token);
-        value["tokens"]["refresh_token"] = serde_json::json!(refresh_token);
-        if !account_id.trim().is_empty() {
-            value["tokens"]["account_id"] = serde_json::json!(account_id);
-        }
-        profile.auth_contents = serde_json::to_string_pretty(&value)?;
+        profile.auth_contents =
+            auth_with_tokens(&profile.auth_contents, access_token, refresh_token, account_id)?;
         store.save(&settings)
     })();
     if let Err(error) = result {
