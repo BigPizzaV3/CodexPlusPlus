@@ -1645,7 +1645,7 @@
         if (record.rule) activeControls.add(node);
         else activeControls.delete(node);
       }
-      refreshPaintGeometry();
+      if (geometryDirty) refreshPaintGeometry();
       writeRules();
       geometryDirty = false;
     };
