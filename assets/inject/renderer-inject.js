@@ -1118,7 +1118,7 @@
         paintGeometryChanged ||= paintSurfaces.has(target);
         changed ||= !!(control || record);
       }
-      if (changed && !previewVisible) schedule(paintGeometryChanged);
+      if ((changed || paintGeometryChanged) && !previewVisible) schedule(paintGeometryChanged);
     });
     const removeControl = (node, control) => {
       control.filter?.remove();

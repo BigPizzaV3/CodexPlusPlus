@@ -760,21 +760,24 @@ check("sidebar animation, hover during scroll and edge overscroll", async page =
 check("sidebar width changes refresh paint geometry", async page => {
   await html(page, `
     #sidebar{width:180px;height:600px}
-    #main{position:absolute;left:180px;top:0;width:620px;height:600px}
+    #main{position:absolute;left:180px;top:0;right:0;height:600px}
     #header{position:sticky;top:0;z-index:30;height:80px;background:#303030}
-    #composer{position:absolute;left:20px;top:420px;width:580px;height:100px;background:#303030}
+    #composer{position:absolute;left:20px;top:420px;right:20px;height:100px}
+    #body{height:100%;background:#303030}
   `, `<aside id="sidebar" class="app-shell-left-panel"></aside>
     <main id="main"><header id="header" data-app-shell-header-layout="thread">Thread</header>
-    <div id="composer" class="_ComposerLayoutRoot_test"></div></main>`);
+    <div id="composer" class="_ComposerLayoutRoot_test" data-composer-utility-bar-variant="home">
+    <div id="body" class="_ComposerLayoutBody_test"></div></div></main>`);
   await configure(page, { dataUrl: assets.pattern, fitMode: "fill", opacity: .2 });
-  const paint = selector => page.$eval(selector, node => {
+  const paint = () => page.$eval("#body", node => {
     const style = getComputedStyle(node, "::after");
     return [style.backgroundSize, style.backgroundPosition, style.backgroundAttachment];
   });
-  assert.deepEqual(await paint("#composer"), ["1200px 600px", "-400px -420px", "scroll"]);
+  const detachHeader = () => page.$eval("#header", node => { node.remove(); });
+  await detachHeader();
+  assert.deepEqual(await paint(), ["1200px 600px", "-400px -420px", "scroll"]);
   await page.$eval("#sidebar", node => { node.style.width = "220px"; });
   await page.$eval("#main", node => { node.style.left = "220px"; });
-  await page.evaluate(() => window.resizeCallback([{ target: document.getElementById("composer") }]));
   await settle(page);
-  assert.deepEqual(await paint("#composer"), ["1200px 600px", "-440px -420px", "scroll"]);
+  assert.deepEqual(await paint(), ["1200px 600px", "-440px -420px", "scroll"]);
 });
