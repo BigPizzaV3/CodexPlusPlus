@@ -605,6 +605,7 @@
     const visibleControls = new Set();
     const activeControls = new Set();
     const paintedNodes = new Set();
+    const paintSurfaces = new Set();
     const viewers = new Set();
     const scopeKeys = new Map();
     const footers = new Map();
@@ -841,7 +842,17 @@
     const registerPaint = (node, paint = records.get(node).paint || nativeSurfacePaint(node)) => {
       const previous = records.get(node).paint;
       if (previous && previous.surface !== paint.surface) unmark(previous.surface, paintAttribute);
+      if (previous?.surface && previous.surface !== paint.surface) {
+        if (![...records.values()].some(record => record.paint?.surface === previous.surface)) {
+          paintSurfaces.delete(previous.surface);
+          resizeObserver.unobserve(previous.surface);
+        }
+      }
       records.get(node).paint = paint;
+      if (!paintSurfaces.has(paint.surface)) {
+        paintSurfaces.add(paint.surface);
+        resizeObserver.observe(paint.surface);
+      }
       const geometry = wallpaperGeometry(paint.surface);
       paint.geometryKey = geometry.key;
       if (node.matches(headerSelector)) {
@@ -1096,6 +1107,7 @@
     });
     const resizeObserver = new ResizeObserver(entries => {
       let changed = false;
+      let paintGeometryChanged = false;
       for (const { target } of entries) {
         for (const [footer, record] of footers)
           if (record.scroller === target && updateFooter(footer, record)) writeRules();
@@ -1103,9 +1115,10 @@
         if (control) control.box = null;
         const record = records.get(target);
         if (record) record.box = null;
+        paintGeometryChanged ||= paintSurfaces.has(target);
         changed ||= !!(control || record);
       }
-      if (changed && !previewVisible) schedule();
+      if (changed && !previewVisible) schedule(paintGeometryChanged);
     });
     const removeControl = (node, control) => {
       control.filter?.remove();
@@ -1126,6 +1139,11 @@
       record.paint?.filter?.remove();
       unmark(node, mediaAttribute);
       unmark(record.paint?.surface || node, paintAttribute);
+      if (record.paint?.surface && ![...records.values()].some(other => other !== record &&
+        other.paint?.surface === record.paint.surface)) {
+        paintSurfaces.delete(record.paint.surface);
+        resizeObserver.unobserve(record.paint.surface);
+      }
       if (!controls.has(node)) {
         intersectionObserver.unobserve(node);
         resizeObserver.unobserve(node);

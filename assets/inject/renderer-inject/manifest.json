@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测、常量与图片覆盖层",
-      "lines": 1831
+      "lines": 1849
     },
     {
       "name": "01-registry.js",

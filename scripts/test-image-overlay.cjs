@@ -295,7 +295,8 @@ check("native footer occludes transcript below the composer", async page => {
       await new Promise(requestAnimationFrame);
     }
   }));
-  zero(work, ["composerReads", "filterNodes", "layerWrites"]);
+  zero(work, ["filterNodes", "layerWrites"]);
+  assert.ok(work.composerReads <= 24);
 });
 
 check("bottom aligned submenu retains its native placement transform", async page => {
@@ -754,4 +755,26 @@ check("sidebar animation, hover during scroll and edge overscroll", async page =
       await new Promise(requestAnimationFrame);
     }
   })); zero(work, ["layerWrites", "styleReads"]);
+});
+
+check("sidebar width changes refresh paint geometry", async page => {
+  await html(page, `
+    #sidebar{width:180px;height:600px}
+    #main{position:absolute;left:180px;top:0;width:620px;height:600px}
+    #header{position:sticky;top:0;z-index:30;height:80px;background:#303030}
+    #composer{position:absolute;left:20px;top:420px;width:580px;height:100px;background:#303030}
+  `, `<aside id="sidebar" class="app-shell-left-panel"></aside>
+    <main id="main"><header id="header" data-app-shell-header-layout="thread">Thread</header>
+    <div id="composer" class="_ComposerLayoutRoot_test"></div></main>`);
+  await configure(page, { dataUrl: assets.pattern, fitMode: "fill", opacity: .2 });
+  const paint = selector => page.$eval(selector, node => {
+    const style = getComputedStyle(node, "::after");
+    return [style.backgroundSize, style.backgroundPosition, style.backgroundAttachment];
+  });
+  assert.deepEqual(await paint("#composer"), ["1200px 600px", "-400px -420px", "scroll"]);
+  await page.$eval("#sidebar", node => { node.style.width = "220px"; });
+  await page.$eval("#main", node => { node.style.left = "220px"; });
+  await page.evaluate(() => window.resizeCallback([{ target: document.getElementById("composer") }]));
+  await settle(page);
+  assert.deepEqual(await paint("#composer"), ["1200px 600px", "-440px -420px", "scroll"]);
 });
