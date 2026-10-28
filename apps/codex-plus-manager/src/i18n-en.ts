@@ -435,7 +435,7 @@ export const EN_PLAIN: Record<string, string> = {
   "让 Claude Code、Grok 经 Codex++ 本地网关使用统一的供应商池，支持多 Key 轮换与路由组": "Let Claude Code and Grok use a shared provider pool through the Codex++ local gateway, with multi-key rotation and route groups",
   "解锁 Bash 时间限制": "Unlock Bash timeout limits",
   "配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。": "Configure Claude Code Bash defaults and limits. Cowork also requires successful startup injection and a compatible module version. Failed adaptation keeps native Cowork limits and reports a warning without affecting other enhancements. Restart to apply.",
-  "两项可分别启停，单位均为秒。修改数字后离开输入框即保存；最大值低于默认值时会按默认值执行。": "Enable either override independently. Values are in seconds and are saved when the input loses focus. If the maximum is lower than the default, the default value is used.",
+  "两项可分别启停，单位均为秒。修改数字后离开输入框即保存。": "Enable either override independently. Values are in seconds and are saved when the input loses focus.",
   "修改默认等待时间": "Override default wait",
   "未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。": "Used without an explicit timeout / timeout_ms. Claude Code and local Cowork Bash default to 120 seconds.",
   "默认等待时间": "Default wait",

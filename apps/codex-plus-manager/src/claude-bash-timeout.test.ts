@@ -13,10 +13,10 @@ function launch(){return {MCP_TOOL_TIMEOUT:String(t.VA())}}
 globalThis.__codexPlusTimeoutFixture={make:Tm,launch};
 })();`;
 
-test("Cowork 超时独立覆盖，最大值不低于默认值且 watchdog 留出余量", () => {
+test("Cowork 默认值与最大值独立覆盖，watchdog 为两项留出余量", () => {
   assert.deepEqual(overrides(settings).limits(120000, 600000), { defaultMs: 120000, maxMs: 1800000 });
   assert.equal(overrides(settings).budget(180000, 120000, 600000), 1860000);
-  assert.deepEqual(overrides({ ...settings, maxEnabled: false, defaultSeconds: 900 }).limits(120000, 600000), { defaultMs: 900000, maxMs: 900000 });
+  assert.deepEqual(overrides({ ...settings, maxEnabled: false, defaultSeconds: 900 }).limits(120000, 600000), { defaultMs: 900000, maxMs: 600000 });
   assert.equal(overrides({ ...settings, maxEnabled: false }).budget(180000, 120000, 600000), 180000);
   assert.equal(overrides({ ...settings, maxEnabled: false, defaultSeconds: 900 }).budget(180000, 120000, 600000), 960000);
   assert.deepEqual(overrides({ ...settings, defaultEnabled: false }).limits(120000, 600000), { defaultMs: 120000, maxMs: 1800000 });
@@ -71,6 +71,16 @@ for (const wrapped of [false, true]) test(`启动期编译适配（${wrapped ? '
   elapsedMs = 1860000;
   assert.equal(tool.call({ timeout_ms: 1800000 }), 1000, "外层预算耗尽后仍保留原生最低等待值");
   elapsedMs = 0;
+  global.__codexPlusBashTimeout = overrides({ ...settings, maxSeconds: 3 });
+  const shortMaximum = make();
+  assert.equal(shortMaximum.schema.timeout_ms.maximum, 3000, "最大值不被 120 秒默认值抬高");
+  assert.equal(shortMaximum.schema.timeout_ms.parse(3000), 3000);
+  assert.throws(() => shortMaximum.schema.timeout_ms.parse(3001), /too_big/);
+  assert.equal(shortMaximum.call({ timeout_ms: 3000 }), 3000);
+  assert.equal(shortMaximum.call({}), 120000, "未显式传参时仍使用独立设置的默认值");
+  global.__codexPlusBashTimeout = overrides({ ...settings, maxSeconds: 3, defaultSeconds: 900 });
+  assert.equal(make().schema.timeout_ms.maximum, 3000);
+  assert.equal(make().call({}), 900000, "外层预算不能截短独立设置的默认值");
   global.__codexPlusBashTimeout = overrides({ ...settings, maxSeconds: 3, defaultSeconds: 1 });
   assert.equal(make().call({ timeout_ms: 3000 }), 3000);
   assert.equal(make().call({}), 1000);

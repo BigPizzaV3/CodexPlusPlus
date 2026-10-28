@@ -11,11 +11,10 @@ function overrides(settings) {
   const maxMs = milliseconds(settings.maxEnabled, settings.maxSeconds);
   return {
     limits(nativeDefault, nativeMax) {
-      const value = defaultMs ?? nativeDefault;
-      return { defaultMs: value, maxMs: Math.max(value, maxMs ?? nativeMax) };
+      return { defaultMs: defaultMs ?? nativeDefault, maxMs: maxMs ?? nativeMax };
     },
     budget(nativeBudget, nativeDefault, nativeMax) {
-      const target = maxMs === undefined ? defaultMs : this.limits(nativeDefault, nativeMax).maxMs;
+      const target = maxMs === undefined ? defaultMs : Math.max(defaultMs ?? nativeDefault, maxMs);
       return target === undefined ? nativeBudget : Math.max(nativeBudget, target + RESERVE_MS);
     },
   };

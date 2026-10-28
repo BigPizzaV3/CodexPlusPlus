@@ -15303,7 +15303,7 @@ function ClaudeLocalizationScreen() {
                     {t("Cowork Bash 时限增强未生效，其他增强不受影响：")}{s.bashTimeoutWarning}
                   </div>
                 ) : null}
-                <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存；最大值低于默认值时会按默认值执行。")}</p>
+                <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存。")}</p>
                 <label className="switch-row compact claude-bash-timeout-toggle">
                   <input
                     aria-label={t("修改默认等待时间")}
