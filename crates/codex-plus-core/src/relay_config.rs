@@ -1671,6 +1671,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
         || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
         || profile.relay_mode == RelayMode::Aggregate;
@@ -2517,9 +2518,10 @@ fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
     if contents.trim().is_empty() {
         Ok(DocumentMut::new())
     } else {
-        contents
-            .parse::<DocumentMut>()
-            .map_err(|error| anyhow::anyhow!("config.toml TOML 解析失败：{error}"))
+        // 解析错误不带原文（那一行可能是 Key），只报行列。
+        contents.parse::<DocumentMut>().map_err(|error| {
+            crate::gateway::restore::toml_syntax_error("config.toml", contents, error.span())
+        })
     }
 }
 
@@ -2925,6 +2927,80 @@ fn fill_missing_toml_item(target: &mut Item, source: &Item) {
     }
 }
 
+/// Codex 自身安装管理的 MCP 条目 id（#2583）。
+///
+/// 这些条目由 Codex 桌面端 / 内置插件按当前安装写入 config.toml，command、args、
+/// env 里带版本号或内容哈希目录（`WindowsApps\OpenAI.Codex_<ver>`、
+/// `runtimes\cua_node\<hash>`、`bin\<hash>\codex.exe`），Codex 更新后旧目录会被删掉。
+const CODEX_MANAGED_MCP_SERVER_IDS: &[&str] = &["node_repl", "cua_repl"];
+
+/// 路径是否落在 Codex 自身维护的安装目录里（随版本/哈希变化的那几处）。
+fn is_codex_managed_install_path(value: &str) -> bool {
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    // 桌面版在 %LOCALAPPDATA%\OpenAI\Codex 下维护的运行时与 CLI：runtimes\<名>\<哈希>、bin\<哈希>。
+    if normalized.contains("/openai/codex/runtimes/") || normalized.contains("/openai/codex/bin/") {
+        return true;
+    }
+    // Store 包目录：WindowsApps\OpenAI.Codex_<版本>_x64__<publisher>\...，包名识别复用 app_paths。
+    let segments: Vec<&str> = normalized.split('/').collect();
+    segments.windows(2).any(|pair| {
+        pair[0] == "windowsapps" && crate::app_paths::is_supported_windows_app_package_name(pair[1])
+    })
+}
+
+/// `notify` 是否是 Codex 写入的那份（任一参数指向 Codex 安装目录）。
+fn notify_points_to_codex_install(item: &Item) -> bool {
+    item.as_array().is_some_and(|array| {
+        array
+            .iter()
+            .filter_map(|value| value.as_str())
+            .any(is_codex_managed_install_path)
+    })
+}
+
+/// Codex 托管的条目以 live 为准（#2583）。
+///
+/// 快照（例如首次导入的「系统默认」）、模板与通用配置里的同名条目只是当时的副本，
+/// Codex 更新换了目录后仍指向已删除的路径；按「模板优先、live 补缺」的通用规则，
+/// 每次启动重写 config.toml 都会把旧路径写回，node_repl / cua_repl 报 os error 3。
+/// 这里只把 Codex 托管的 MCP 条目整条换成 live 版本；`notify` 仅在 live 或模板那份
+/// 指向 Codex 安装目录时才跟随 live。用户自己添加的 MCP 条目与 notify 维持原有优先级。
+fn prefer_live_codex_managed_entries(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
+    if let Some(live_servers) = live_doc.get("mcp_servers").and_then(Item::as_table_like) {
+        for id in CODEX_MANAGED_MCP_SERVER_IDS {
+            let Some(live_item) = live_servers.get(id) else {
+                continue;
+            };
+            // live 里这条本身残缺时不拿它覆盖，交给后面的补缺修复处理。
+            if !live_item
+                .as_table_like()
+                .is_some_and(mcp_server_entry_has_transport)
+            {
+                continue;
+            }
+            if target_doc
+                .get("mcp_servers")
+                .and_then(Item::as_table_like)
+                .is_none()
+            {
+                target_doc["mcp_servers"] = toml_edit::table();
+            }
+            if let Some(target_servers) = target_doc["mcp_servers"].as_table_like_mut() {
+                target_servers.insert(id, live_item.clone());
+            }
+        }
+    }
+    if let Some(live_notify) = live_doc.get("notify") {
+        let codex_managed = notify_points_to_codex_install(live_notify)
+            || target_doc
+                .get("notify")
+                .is_some_and(notify_points_to_codex_install);
+        if codex_managed {
+            target_doc["notify"] = live_notify.clone();
+        }
+    }
+}
+
 /// mcp_servers 的形状权威在 live。模板里可能留着被压平的残形（启动键缺失、
 /// env 键混进父表），这里在写盘前用 live 补齐缺键，并把与 env 子表重复的父表键移除。
 fn repair_mcp_servers_from_live(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
@@ -3005,6 +3081,9 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     // 消失（#2263）。整体合并会覆盖通用配置的新值，所以只补缺。
     // 同一个 server 在模板里可能是被压平的残形，这时只补整条不够，
     // 还要用 live 补齐条目内缺失的键，并清掉混进父表的 env 键。
+    // 例外：Codex 自身托管的条目（node_repl / cua_repl）与 notify 带版本化路径，
+    // 以 live 为准，避免旧快照把已删除的目录写回（#2583）。
+    prefer_live_codex_managed_entries(&mut target_doc, &live_doc);
     repair_mcp_servers_from_live(&mut target_doc, &live_doc);
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     preserve_missing_table_keys(&mut target_doc, &live_doc, "features");
@@ -5125,6 +5204,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
         || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
         || has_managed_proxy_config
@@ -5332,6 +5412,7 @@ fn complete_relay_profile_config_with_proxy_port(
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
         || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
     {

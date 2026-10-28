@@ -104,6 +104,11 @@ pub fn hide<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// 面板因失去焦点收起的时刻。Windows 上按下托盘图标先让面板失焦收起，松开时的点击事件再来切换，
+/// 会把刚收起的面板又打开；刚因失焦收起的这次点击就当作「收起」。
+static HIDDEN_BY_BLUR_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+const BLUR_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+
 fn toggle<R: Runtime>(app: &AppHandle<R>, anchor: PhysicalPosition<f64>) {
     let window = match app.get_webview_window(LABEL) {
         Some(window) => window,
@@ -114,6 +119,14 @@ fn toggle<R: Runtime>(app: &AppHandle<R>, anchor: PhysicalPosition<f64>) {
     };
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
+        return;
+    }
+    let just_hidden = HIDDEN_BY_BLUR_AT
+        .lock()
+        .ok()
+        .and_then(|mut at| at.take())
+        .is_some_and(|at| at.elapsed() < BLUR_CLICK_WINDOW);
+    if just_hidden {
         return;
     }
     place(&window, anchor);
@@ -140,6 +153,11 @@ fn create<R: Runtime>(app: &AppHandle<R>) -> Option<tauri::WebviewWindow<R>> {
     let handle = window.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
+            if handle.is_visible().unwrap_or(false)
+                && let Ok(mut at) = HIDDEN_BY_BLUR_AT.lock()
+            {
+                *at = Some(std::time::Instant::now());
+            }
             let _ = handle.hide();
         }
     });

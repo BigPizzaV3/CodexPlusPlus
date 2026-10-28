@@ -44,6 +44,14 @@ pub const BROWSER_SERVER_ID: &str = "codex-plus-browser";
 pub const CODEX_SERVER_ID: &str = "codex_plus_cu";
 const CODEX_NOT_INSTALLABLE: &str =
     "Codex 自带 Computer Use，不接入 Codex++ 的：同时存在会出现两套电脑控制工具";
+/// 非 macOS 平台的明确提示：运行时只随 macOS 版 ChatGPT.app 提供，别的平台不是「没装」而是「不支持」。
+pub const UNSUPPORTED_PLATFORM: &str =
+    "Computer Use 接入目前只支持 macOS，暂不支持 Windows：它依赖 macOS 版 ChatGPT.app 自带的 Computer Use 服务";
+
+/// 当前平台能否接入 Computer Use。
+pub fn platform_supported() -> bool {
+    cfg!(target_os = "macos")
+}
 
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_BACKUPS: usize = 5;
@@ -478,6 +486,8 @@ pub struct TargetStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusReport {
+    /// 非 macOS 为 false，前端据此显示「暂不支持」而不是「找不到 ChatGPT」。
+    pub platform_supported: bool,
     pub runtime_found: bool,
     /// Claude Desktop 运行中会重写自己的配置，这时改 `mcpServers` 容易在它退出时被覆盖。
     pub claude_desktop_running: bool,
@@ -971,6 +981,7 @@ pub fn remove_custom_target(id: &str) -> anyhow::Result<StatusReport> {
 
 pub fn install_custom(id: &str) -> anyhow::Result<InstallReceipt> {
     let target = custom_target(id)?;
+    ensure!(platform_supported(), "{UNSUPPORTED_PLATFORM}");
     let runtime =
         locate_runtime()?.context("未找到 Codex 运行时（ChatGPT.app），无法接入 Computer Use")?;
     let file = target.config_path();
@@ -1013,6 +1024,7 @@ pub fn status() -> anyhow::Result<StatusReport> {
         .map(|custom| custom_status(custom, runtime.as_ref()))
         .collect();
     Ok(StatusReport {
+        platform_supported: platform_supported(),
         runtime_found: runtime.is_some(),
         claude_desktop_running: claude_desktop_running(),
         app_path: runtime.as_ref().map(|item| item.app_path.clone()),
@@ -1021,7 +1033,11 @@ pub fn status() -> anyhow::Result<StatusReport> {
             .and_then(|item| item.package_version.clone()),
         service_path: runtime.as_ref().and_then(|item| item.service_path.clone()),
         config_hint: runtime.is_none().then(|| {
-            "未找到 ChatGPT.app：请先安装 Codex 桌面版，或把应用放进 /Applications".to_string()
+            if platform_supported() {
+                "未找到 ChatGPT.app：请先安装 Codex 桌面版，或把应用放进 /Applications".to_string()
+            } else {
+                UNSUPPORTED_PLATFORM.to_string()
+            }
         }),
         targets,
         custom_targets,
@@ -1209,6 +1225,7 @@ fn status_at(
 
 pub fn install(target: Target) -> anyhow::Result<InstallReceipt> {
     ensure!(target != Target::Codex, "{CODEX_NOT_INSTALLABLE}");
+    ensure!(platform_supported(), "{UNSUPPORTED_PLATFORM}");
     let runtime =
         locate_runtime()?.context("未找到 Codex 运行时（ChatGPT.app），无法接入 Computer Use")?;
     if let Some(message) = target.tool_home_missing() {
@@ -1424,6 +1441,9 @@ fn receipt(
 
 pub fn check() -> HealthReport {
     let started = Instant::now();
+    if !platform_supported() {
+        return unsupported_platform_report(elapsed_ms(started));
+    }
     let runtime = match locate_runtime() {
         Ok(Some(runtime)) => runtime,
         Ok(None) => {
@@ -1455,6 +1475,20 @@ pub fn check() -> HealthReport {
     HealthReport {
         duration_ms: elapsed_ms(started),
         ..outcome
+    }
+}
+
+/// 非 macOS 的自检结果：直接报「不支持」，不去找运行时，也不报成「未找到」。
+fn unsupported_platform_report(duration_ms: u64) -> HealthReport {
+    HealthReport {
+        ok: false,
+        target: "unknown".into(),
+        app_count: None,
+        browser_count: None,
+        sample_apps: vec![],
+        duration_ms,
+        failure_kind: Some("unsupported_platform".into()),
+        failure_detail: Some(UNSUPPORTED_PLATFORM.into()),
     }
 }
 
@@ -1865,6 +1899,8 @@ pub(crate) fn read_text(path: &Path) -> anyhow::Result<Option<String>> {
 }
 
 pub(crate) fn parse_json_object(text: &str, path: &Path) -> anyhow::Result<Map<String, Value>> {
+    // Windows 上的工具写出的 JSON 可能带 UTF-8 BOM（#2728），JSON 解析器不认，先去掉。
+    let text = text.trim_start_matches('\u{feff}');
     if text.trim().is_empty() {
         return Ok(Map::new());
     }
@@ -1907,6 +1943,10 @@ fn backup(path: &Path, contents: &str) -> anyhow::Result<PathBuf> {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "config".to_string());
     let backup_path = path.with_file_name(format!("{file_name}.codex-plus-backup-{stamp}"));
+    // 同一秒里连着保存两次：留第一份（改动前的原样）。直接覆盖写又不截断，会留下旧内容的尾巴。
+    if backup_path.exists() {
+        return Ok(backup_path);
+    }
     let mut file = open_private(&backup_path)?;
     file.write_all(contents.as_bytes())?;
     prune_backups(path);
@@ -2054,6 +2094,21 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[test]
+    fn non_macos_reports_unsupported_instead_of_missing_runtime() {
+        assert_eq!(platform_supported(), cfg!(target_os = "macos"));
+        let report = unsupported_platform_report(0);
+        assert!(!report.ok);
+        assert_eq!(report.failure_kind.as_deref(), Some("unsupported_platform"));
+        assert!(UNSUPPORTED_PLATFORM.contains("暂不支持 Windows"));
+        if !platform_supported() {
+            // 非 macOS：接入直接给出「不支持」，不再落到「未找到 ChatGPT.app」。
+            let error = install(Target::ClaudeCode).unwrap_err().to_string();
+            assert_eq!(error, UNSUPPORTED_PLATFORM);
+            assert_eq!(check().failure_kind.as_deref(), Some("unsupported_platform"));
+        }
+    }
+
     fn sample_runtime(root: &Path) -> RuntimeLocation {
         RuntimeLocation {
             app_path: "/Applications/ChatGPT.app".into(),
@@ -2068,6 +2123,12 @@ mod tests {
             app_version: Some("26.1016.61520".into()),
             package_version: Some("0.1.2".into()),
         }
+    }
+
+    #[test]
+    fn json_object_with_utf8_bom_parses() {
+        let map = parse_json_object("\u{feff}{\"mcpServers\":{}}", Path::new("claude_desktop_config.json")).unwrap();
+        assert!(map.contains_key("mcpServers"));
     }
 
     #[test]

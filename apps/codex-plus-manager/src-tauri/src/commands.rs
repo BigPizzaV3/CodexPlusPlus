@@ -6770,10 +6770,28 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn load_request_logs(limit: Option<usize>) -> CommandResult<Value> {
+pub fn load_request_logs(
+    limit: Option<usize>,
+    since_ms: Option<u64>,
+    agent: Option<String>,
+    relay_id: Option<String>,
+    model: Option<String>,
+) -> CommandResult<Value> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
-    match codex_plus_core::request_log::read_request_logs(limit) {
-        Ok(entries) => {
+    let present = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+    let filter = codex_plus_core::request_log::RequestLogFilter {
+        since_ms,
+        agent: present(agent),
+        relay_id: present(relay_id),
+        model: present(model),
+    };
+    match codex_plus_core::request_log::read_request_log_page(limit, &filter) {
+        Ok(page) => {
+            let entries = page.entries;
+            // 费用按供应商里现在填的价格估算，和用量统计一致。
+            let gateway = codex_plus_core::gateway::store::GatewayStore::default()
+                .load()
+                .unwrap_or_default();
             // 会话标题来自 Codex 本地会话库，只用于展示；查不到时前端退回短 id。
             let thread_ids: Vec<String> = entries
                 .iter()
@@ -6799,12 +6817,17 @@ pub fn load_request_logs(limit: Option<usize>) -> CommandResult<Value> {
                     {
                         object.insert("threadTitle".to_string(), json!(title));
                     }
+                    if let Some(cost) = codex_plus_core::gateway::usage::entry_cost(entry, &gateway)
+                        && let Some(object) = value.as_object_mut()
+                    {
+                        object.insert("cost".to_string(), json!(cost));
+                    }
                     value
                 })
                 .collect();
             ok(
                 &format!("已读取 {} 条请求日志。", entries.len()),
-                json!({ "entries": entries }),
+                json!({ "entries": entries, "more": page.more, "oldestMs": page.oldest_ms }),
             )
         }
         Err(error) => failed(

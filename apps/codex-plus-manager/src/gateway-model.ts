@@ -45,6 +45,8 @@ export type GatewaySettings = {
   favoriteModels?: string[];
   /** 各 Agent 的生图模型（键是 Agent id）：没有或空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */
   imageModels?: Record<string, string>;
+  /** 生图结果只给链接时原样转发、不下载成图片数据的 Agent（默认都转）。 */
+  imageKeepUrls?: string[];
 };
 
 export type GatewayPoolEntry = {
@@ -1099,6 +1101,8 @@ export type UsageCounts = {
   /** 记了耗时的请求的总耗时；旧版后端和旧数据没有。 */
   durationMs?: number;
   timedCalls?: number;
+  /** 其中成功的生图请求；旧版后端没有，没有时也不写（视为 0）。 */
+  images?: number;
 };
 export type UsageCost = { currency: string; amount: number };
 export type UsageDay = UsageCounts & { date: string };
@@ -1114,6 +1118,22 @@ export type UsageSummary = {
 };
 export type ProviderBalance = { providerId: string; provider: string; baseUrl: string; amount?: number | null; currency: string; error?: string | null };
 export type UsageRange = "today" | "7d" | "30d" | "all";
+
+/** 统计范围从哪一刻开始（本地时间当天零点往前推）；「全部」没有起点。 */
+export function usageRangeStart(range: UsageRange, now: Date = new Date()): number | undefined {
+  const days = range === "today" ? 1 : range === "7d" ? 7 : range === "30d" ? 30 : 0;
+  if (!days) return undefined;
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  start.setDate(start.getDate() - (days - 1));
+  return start.getTime();
+}
+
+/** 一条请求的费用：不到一分钱时多留几位，免得都显示成 0.00。 */
+export function formatRequestCost(cost: UsageCost): string {
+  if (cost.amount <= 0) return "—";
+  if (cost.amount >= 0.01) return formatMoney(cost.amount, cost.currency);
+  return `${currencySymbol(cost.currency)}${cost.amount.toPrecision(2)}`;
+}
 
 /** 23M / 2.2M / 158K / 940。 */
 export function formatTokens(value: number): string {

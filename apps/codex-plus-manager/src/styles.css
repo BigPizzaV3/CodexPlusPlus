@@ -190,6 +190,21 @@ body {
   height: 100vh;
   overflow: hidden;
   background: hsl(var(--shell-bg));
+  /* 桌面应用：界面文字默认不能选中，指针也不变成文字光标，和原生 App 一致。 */
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* 需要复制的内容仍可选：输入框、代码与日志、会话和请求详情抽屉里的正文。 */
+:is(input, textarea, [contenteditable="true"], pre, code, kbd, samp, .mg-drawer-body),
+:is(pre, .mg-drawer-body) * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+:is(input, textarea, [contenteditable="true"]) {
+  cursor: text;
 }
 
 .shell {
@@ -11034,11 +11049,11 @@ select {
 
 .request-log-row {
   display: grid;
-  grid-template-columns: 74px 44px 100px minmax(110px, 1.4fr) 74px 54px 54px 80px 54px;
+  grid-template-columns: 74px 44px 100px minmax(110px, 1.4fr) 74px 54px 54px 80px 60px 54px;
   gap: 8px;
   align-items: center;
   width: 100%;
-  min-width: 760px;
+  min-width: 828px;
   border: 0;
   padding: 8px 12px;
   color: inherit;
@@ -13674,4 +13689,105 @@ button.side-item:hover {
   max-width: none;
   margin-right: -20px;
   padding-right: 20px;
+}
+
+/* —— 网关主体区域的字号再收一档：名字 13px，副标题、状态、说明 12px ——
+   只改字号，颜色与尺寸不动；放在最后，正式版里压过组件 CSS 与上面的紧凑密度层。 */
+.shell .gw-pool-main strong,
+.shell .gw-agent-title strong,
+.shell .gw-balance-name strong {
+  font-size: 13px;
+}
+
+.shell .gw-pool-main small,
+.shell .gw-pool-status,
+.shell .gw-detail-label,
+.shell .gw-detail-value .gw-muted {
+  font-size: 12px;
+}
+
+.shell .gw-text-button,
+.shell .gw-danger-link,
+.shell .gw-models-tabs button,
+.shell .gw-range-tabs button,
+.shell .gw-provider-search-row .gw-primary-button,
+.shell .gw-models-toolbar .gw-primary-button {
+  font-size: 12.5px;
+}
+
+.shell .gw-setting-row strong,
+.shell .gw-empty strong {
+  font-size: 13px;
+}
+
+.shell .gw-usage-stat strong {
+  font-size: 22px;
+}
+
+/* 请求日志：生图请求的类型标记 */
+.shell .request-log-kind {
+  margin-right: 5px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: hsl(var(--brand-accent) / 0.14);
+  color: hsl(var(--brand-accent));
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+/* 「用量」页：统计 / 请求两个页签；统计表的行可点，点了看对应的请求。 */
+.shell .usage-tabs {
+  margin-bottom: 12px;
+}
+
+.shell .gw-usage-row-link {
+  cursor: pointer;
+}
+
+/* 请求页签：页签条按内容高度，日志面板占满剩下的高度。 */
+.shell .screen.request-log-screen {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.shell .screen.request-log-screen > .usage-tabs {
+  align-self: start;
+}
+
+/* 请求页签：从统计点进来的供应商 / 模型筛选（点 × 去掉）、失败请求的错误摘要、日志范围提示。 */
+.shell .request-log-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shell .request-log-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.5);
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.shell .request-log-chip:hover {
+  border-color: hsl(var(--primary) / 0.6);
+}
+
+.shell .request-log-error-cell {
+  grid-column: span 4;
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(0 72% 60%);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell .request-log-note {
+  margin: 0;
 }

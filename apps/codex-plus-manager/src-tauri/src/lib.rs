@@ -38,6 +38,11 @@ pub fn run_agent_collaboration_mcp(args: &[std::ffi::OsString]) -> anyhow::Resul
     agent_collaboration_commands::run_mcp(args)
 }
 
+/// 卸载清理：把走网关的 Agent 恢复成直连（见 [`gateway_commands::restore_for_uninstall`]）。
+pub fn restore_gateway_for_uninstall() {
+    gateway_commands::restore_for_uninstall();
+}
+
 /// Computer Use 诊断入口。只给命令行与排障使用，不经过 GUI，也不注册到路由。
 /// Computer Use 的 MCP 入口（stdio）。作为代理运行，直到客户端断开。
 pub fn run_computer_use_mcp() -> anyhow::Result<()> {
@@ -358,6 +363,7 @@ pub fn run() {
             gateway_commands::save_gateway_provider_metadata,
             gateway_commands::gateway_provider_reasoning,
             gateway_commands::save_gateway_image_model,
+            gateway_commands::save_gateway_image_inline,
             tray_panel::tray_panel_action,
             tray_panel::tray_panel_enabled,
             tray_panel::set_tray_panel_enabled,

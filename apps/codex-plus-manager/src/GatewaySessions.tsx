@@ -14,10 +14,24 @@ const memo: { sessions: AgentSessionView[] | null; agent: SessionAgent | "all" }
 
 type LocalSession = { id: string; title: string; cwd: string; updatedAtMs: number };
 
+/** Codex 的会话按页取（后端每页最多 100 条），最多取 CODEX_SESSION_LIMIT 条。 */
+const CODEX_SESSION_PAGE = 100;
+const CODEX_SESSION_LIMIT = 1000;
+
+async function loadCodexSessions(): Promise<LocalSession[]> {
+  const all: LocalSession[] = [];
+  for (let offset = 0; offset < CODEX_SESSION_LIMIT; offset += CODEX_SESSION_PAGE) {
+    const page = await invoke<{ sessions?: LocalSession[]; hasMore?: boolean }>("list_local_sessions", { request: { offset, limit: CODEX_SESSION_PAGE } });
+    all.push(...(page.sessions ?? []));
+    if (!page.hasMore || !(page.sessions ?? []).length) break;
+  }
+  return all;
+}
+
 async function loadAll(): Promise<{ sessions: AgentSessionView[]; errors: string[] }> {
   const errors: string[] = [];
-  const codex = invoke<{ status: string; message: string; sessions?: LocalSession[] }>("list_local_sessions", { request: { offset: 0, limit: 300 } })
-    .then((result) => (result.sessions ?? []).map((session): AgentSessionView => ({ agent: "codex", id: session.id, title: session.title, cwd: session.cwd, updatedAtMs: session.updatedAtMs })))
+  const codex = loadCodexSessions()
+    .then((sessions) => sessions.map((session): AgentSessionView => ({ agent: "codex", id: session.id, title: session.title, cwd: session.cwd, updatedAtMs: session.updatedAtMs })))
     .catch((error) => {
       errors.push(String(error));
       return [] as AgentSessionView[];
@@ -81,7 +95,8 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
       const result = session.agent === "codex"
         ? await invoke<{ status: string; message: string }>("delete_local_session", { request: { sessionId: session.id, title: session.title } })
         : await invoke<{ status: string; message: string }>("delete_agent_session", { agent: session.agent, id: session.id });
-      const done = result.status === "ok";
+      // Codex 的删除结果里还有一层自己的 status（server_deleted / local_deleted），摊平后会盖掉外层的 ok。
+      const done = sessionDeleteSucceeded(result.status);
       await notify(done ? t("会话已删除") : t("删除失败"), result.message, done ? "ok" : "failed");
       if (done) {
         const next = (memo.sessions ?? sessions ?? []).filter((item) => `${item.agent}:${item.id}` !== key);
@@ -166,4 +181,9 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
       </div>
     </>
   );
+}
+
+/** 删除会话是否成功：外层 ok，或 Codex 删除结果摊平后留下的 server_deleted / local_deleted。 */
+export function sessionDeleteSucceeded(status: string | undefined): boolean {
+  return status === "ok" || status === "server_deleted" || status === "local_deleted";
 }

@@ -7360,3 +7360,232 @@ fn provider_test_uses_the_profile_default_model() {
         codex_plus_core::settings::default_relay_test_model()
     );
 }
+
+// ---- #2583：Codex 托管的 MCP 条目与 notify 以 live 为准 ----
+
+/// 首次导入「系统默认」时存下的快照：node_repl / cua_repl / notify 指向 Codex 旧版本目录，
+/// 另带一条用户自己加的 MCP 条目。
+const ISSUE_2583_SNAPSHOT: &str = r#"model_provider = "custom"
+model = "gpt-5"
+notify = ['C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\78fb63cda1a9e2b2\bin\codex-computer-use.exe', 'turn-ended']
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example.com/v1"
+
+[mcp_servers.node_repl]
+command = 'C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\78fb63cda1a9e2b2\bin\node_repl.exe'
+args = []
+
+[mcp_servers.node_repl.env]
+NODE_REPL_NODE_PATH = 'C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\78fb63cda1a9e2b2\bin\node.exe'
+CODEX_CLI_PATH = 'C:\Users\u\AppData\Local\OpenAI\Codex\bin\896a0166b774037a\codex.exe'
+
+[mcp_servers.cua_repl]
+command = 'C:\Program Files\WindowsApps\OpenAI.Codex_26.1007.2314.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe'
+
+[mcp_servers.my_tool]
+command = "snapshot-tool"
+args = ["--from-snapshot"]
+"#;
+
+/// Codex 自动更新后 live config.toml：托管条目已换到新目录，用户条目被改成了别的值。
+const ISSUE_2583_LIVE: &str = r#"model_provider = "custom"
+model = "gpt-5"
+notify = ['C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\codex-computer-use.exe', 'turn-ended']
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example.com/v1"
+
+[mcp_servers.node_repl]
+command = 'C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe'
+args = []
+startup_timeout_sec = 120
+
+[mcp_servers.node_repl.env]
+NODE_REPL_NODE_PATH = 'C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node.exe'
+CODEX_CLI_PATH = 'C:\Users\u\AppData\Local\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe'
+
+[mcp_servers.cua_repl]
+command = 'C:\Program Files\WindowsApps\OpenAI.Codex_26.1013.3656.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe'
+
+[mcp_servers.my_tool]
+command = "live-tool"
+"#;
+
+fn issue_2583_seed_home(live: &str) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("config.toml"), live).unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-test"}"#,
+    )
+    .unwrap();
+    temp
+}
+
+fn issue_2583_profile(mode: RelayMode, snapshot: &str) -> RelayProfile {
+    RelayProfile {
+        id: "relay-2583".to_string(),
+        name: "系统默认".to_string(),
+        relay_mode: mode,
+        use_common_config: false,
+        base_url: "https://relay.example.com/v1".to_string(),
+        api_key: "sk-test".to_string(),
+        config_contents: snapshot.to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
+        ..RelayProfile::default()
+    }
+}
+
+fn issue_2583_assert_live_paths_win(config: &str) {
+    let value: toml::Value = config.parse().unwrap();
+    let servers = &value["mcp_servers"];
+    let node_repl = &servers["node_repl"];
+    assert_eq!(
+        node_repl["command"].as_str(),
+        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe"),
+        "node_repl 应取 live 的新路径：\n{config}"
+    );
+    assert_eq!(
+        node_repl["env"]["NODE_REPL_NODE_PATH"].as_str(),
+        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node.exe")
+    );
+    assert_eq!(
+        node_repl["env"]["CODEX_CLI_PATH"].as_str(),
+        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe")
+    );
+    assert_eq!(node_repl["startup_timeout_sec"].as_integer(), Some(120));
+    assert_eq!(
+        servers["cua_repl"]["command"].as_str(),
+        Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1013.3656.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe")
+    );
+    assert!(!config.contains("78fb63cda1a9e2b2"), "旧哈希目录不应写回：\n{config}");
+    assert!(!config.contains("896a0166b774037a"), "旧 CLI 目录不应写回：\n{config}");
+    assert!(!config.contains("26.1007.2314.0"), "旧版本目录不应写回：\n{config}");
+    let notify: Vec<&str> = value["notify"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    assert_eq!(
+        notify,
+        vec![
+            r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\codex-computer-use.exe",
+            "turn-ended",
+        ]
+    );
+    // 用户自己的 MCP 条目仍以快照为准，live 只补缺。
+    assert_eq!(servers["my_tool"]["command"].as_str(), Some("snapshot-tool"));
+    assert_eq!(
+        servers["my_tool"]["args"].as_array().unwrap()[0].as_str(),
+        Some("--from-snapshot")
+    );
+}
+
+#[test]
+fn apply_pure_api_profile_keeps_live_codex_managed_mcp_paths() {
+    let temp = issue_2583_seed_home(ISSUE_2583_LIVE);
+    let profile = issue_2583_profile(RelayMode::PureApi, ISSUE_2583_SNAPSHOT);
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    issue_2583_assert_live_paths_win(&config);
+}
+
+#[test]
+fn apply_official_profile_keeps_live_codex_managed_mcp_paths() {
+    let temp = issue_2583_seed_home(ISSUE_2583_LIVE);
+    let mut profile = issue_2583_profile(RelayMode::Official, ISSUE_2583_SNAPSHOT);
+    profile.api_key.clear();
+    profile.base_url.clear();
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let value: toml::Value = config.parse().unwrap();
+    let servers = &value["mcp_servers"];
+    assert_eq!(
+        servers["node_repl"]["command"].as_str(),
+        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe"),
+        "官方模式快照同样不能把旧路径写回：\n{config}"
+    );
+    assert_eq!(
+        servers["cua_repl"]["command"].as_str(),
+        Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1013.3656.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe")
+    );
+    assert!(!config.contains("78fb63cda1a9e2b2"), "{config}");
+    assert_eq!(servers["my_tool"]["command"].as_str(), Some("snapshot-tool"));
+}
+
+#[test]
+fn launcher_preservation_path_keeps_live_codex_managed_mcp_paths() {
+    // 启动器走 apply_relay_profile_with_preservation（保留非供应商设置打开时先补缺 notify）。
+    let temp = issue_2583_seed_home(ISSUE_2583_LIVE);
+    let profile = issue_2583_profile(RelayMode::PureApi, ISSUE_2583_SNAPSHOT);
+
+    codex_plus_core::relay_config::apply_relay_profile_with_preservation(
+        temp.path(),
+        &profile,
+        "",
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
+        true,
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    issue_2583_assert_live_paths_win(&config);
+}
+
+#[test]
+fn managed_mcp_from_common_config_also_yields_to_live() {
+    // 通用配置里存着旧的 node_repl 副本时，同样以 live 为准。
+    let temp = issue_2583_seed_home(ISSUE_2583_LIVE);
+    let mut profile = issue_2583_profile(
+        RelayMode::PureApi,
+        "model_provider = \"custom\"\nmodel = \"gpt-5\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nbase_url = \"https://relay.example.com/v1\"\n",
+    );
+    profile.use_common_config = true;
+    let common = r#"[mcp_servers.node_repl]
+command = 'C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\78fb63cda1a9e2b2\bin\node_repl.exe'
+args = []
+"#;
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, common).unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let value: toml::Value = config.parse().unwrap();
+    assert_eq!(
+        value["mcp_servers"]["node_repl"]["command"].as_str(),
+        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe"),
+        "{config}"
+    );
+    assert!(!config.contains("78fb63cda1a9e2b2"), "{config}");
+}
+
+#[test]
+fn user_notify_outside_codex_install_keeps_snapshot_priority() {
+    // notify 不指向 Codex 安装目录时是用户自己的设置，维持「快照优先」的原有行为。
+    let temp = issue_2583_seed_home(
+        "model_provider = \"custom\"\nnotify = [\"live-notify\"]\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nbase_url = \"https://relay.example.com/v1\"\n",
+    );
+    let profile = issue_2583_profile(
+        RelayMode::PureApi,
+        "model_provider = \"custom\"\nmodel = \"gpt-5\"\nnotify = [\"snapshot-notify\"]\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nbase_url = \"https://relay.example.com/v1\"\n",
+    );
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let value: toml::Value = config.parse().unwrap();
+    assert_eq!(
+        value["notify"].as_array().unwrap()[0].as_str(),
+        Some("snapshot-notify"),
+        "{config}"
+    );
+}

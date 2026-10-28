@@ -209,6 +209,7 @@ test("上下文窗口按模型在供应商池里填，Agent 页只留兜底的�
 test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思考等级，存的是和直连模式同格式的模型资料", () => {
   const agents = read("GatewayAgents.tsx");
   assert.match(agents, /"save_gateway_image_model", \{ agent, model: next \}/);
+  assert.match(agents, /"save_gateway_image_inline", \{ agent, enabled: event\.currentTarget\.checked \}/, "生图链接转数据可以按 Agent 关掉");
   assert.match(agents, /\{ value: "off", label: t\("关闭"\)/);
   assert.match(agents, /agent\.agent === "codex" \? <ImageModelRow/, "目前只有 Codex 会发生图请求");
   assert.doesNotMatch(read("GatewayPage.tsx"), /save_gateway_image_model/, "网关设置里不再有全局的生图模型");
@@ -218,3 +219,35 @@ test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思
   assert.match(dialog, /invoke<ReasoningResult>\("gateway_provider_reasoning", \{ id: entry\.id \}\)/);
   assert.match(read("GatewayProviders.tsx"), /"save_gateway_provider_metadata", \{ id: entry\.id, modelMetadata \}/);
 });
+
+test("用量与请求日志并成一页：两个页签各是一条路由，统计表点一行跳到请求并筛选", () => {
+  const app = read("App.tsx");
+  assert.match(app, /route === "gatewayUsage" \|\| route === "requestLog" \? <UsageTabs onChange=\{\(next\) => void navigate\(next\)\} value=\{route\} \/> : null/);
+  assert.match(app, /const selected = route === item\.id \|\| navAliasRoute\[route\] === item\.id;/, "在请求页签时侧栏「用量」也是选中");
+  assert.match(app, /useEffect\(\(\) => onOpenRequestLog\(\(focus\) => \{/);
+  assert.match(read("GatewayUsage.tsx"), /onClick=\{\(\) => openRequestLog\(split === "agent"/);
+  assert.match(read("GatewayUsage.tsx"), /\{ relayId: group\.key, relayLabel: maskAccountName\(group\.label\), range \}/, "按供应商 id 精确筛，时间段跟着统计页");
+  assert.match(read("GatewayUsage.tsx"), /\{ model: group\.key, range \}/);
+  assert.match(app, /invoke<RequestLogsResult>\("load_request_logs", filterRef\.current\)/, "时间段、供应商、模型在后端筛，先截 300 条再筛会漏");
+  assert.match(app, /entry\.statusCode \|\| \(entry\.success \? "OK" : "ERR"\)/);
+  assert.match(read("GatewayPage.tsx"), /<TopbarActions>\{tab === "usage" \? null : refreshButton\}<\/TopbarActions>/, "用量页签只留一个刷新");
+});
+
+test("启动落在网关「总览」，不落在上次那个 Agent 的概览", () => {
+  const app = read("App.tsx");
+  const body = app.slice(app.indexOf("function loadInitialRoute(): Route {"), app.indexOf("function initialTourOpen"));
+  assert.match(body, /return "hub";\r?\n\}/);
+  assert.doesNotMatch(body, /return "overview"/);
+});
+
+test("保存之后才回来的轮询结果作废；新手引导的 Esc 走 Esc 栈", () => {
+  const store = read("gateway-store.ts");
+  assert.match(store, /generation \+= 1;/, "推新数据时版本加一");
+  assert.match(store, /started !== generation/, "共享数据的轮询丢掉旧答复");
+  const page = read("GatewayPage.tsx");
+  assert.equal((page.match(/started === gatewayGeneration\(\)/g) ?? []).length, 2, "网关页的回前台刷新和路由页轮询都丢旧答复");
+  const tour = read("OnboardingTour.tsx");
+  assert.match(tour, /useEscapeLayer\(true, \(\) => onClose\(false\)\)/);
+  assert.doesNotMatch(tour, /event\.key === "Escape"/, "不再自己监听 Esc");
+});
+

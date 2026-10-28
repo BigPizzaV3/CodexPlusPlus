@@ -333,6 +333,15 @@ pub fn model_entry_window(
         .min()
 }
 
+/// 模型列表里一项实际会发给哪些（供应商, 上游模型）：模型组按成员展开（不推进轮换位置）。
+pub fn model_entry_members(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Vec<(RelayProfile, String)> {
+    expand_model(gateway, binding, model, 0, &mut Vec::new(), false)
+}
+
 /// 列表里有几家供应商提供这个模型（按模型名，不分大小写）。
 pub fn serving_count(relays: &[&RelayProfile], model: &str) -> usize {
     relays.iter().filter(|relay| serves(relay, model)).count()

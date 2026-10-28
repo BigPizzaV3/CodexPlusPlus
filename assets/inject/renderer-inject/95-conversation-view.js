@@ -212,12 +212,43 @@
     scheduleThreadScrollSync(true);
   }
 
+  // 当前供应商是模型聚合时，按成员判断是否等同于「官登混入 Key」（#2704）：
+  // 成员里既有官方登录、又至少有一个走 API Key 的成员，官方额度用完时仍能经 API 成员发送。
+  // 与后端 active_aggregate_relay_profile 一致：activeAggregateRelayId 为空时取当前供应商 id，
+  // 不一致则视为没有生效的聚合。
+  function officialUsageAggregateMembers(profile) {
+    if (String(profile?.relayMode || "") !== "aggregate") return null;
+    const activeId = String(profile.id || "");
+    const aggregateId = String(codexPlusBackendSettings.activeAggregateRelayId || "").trim() || activeId;
+    if (!aggregateId || aggregateId !== activeId) return null;
+    const aggregates = Array.isArray(codexPlusBackendSettings.aggregateRelayProfiles)
+      ? codexPlusBackendSettings.aggregateRelayProfiles
+      : [];
+    const aggregate = aggregates.find((item) => String(item?.id || "") === aggregateId);
+    if (!aggregate || !Array.isArray(aggregate.members)) return null;
+    const relays = Array.isArray(codexPlusBackendSettings.relayProfiles) ? codexPlusBackendSettings.relayProfiles : [];
+    return aggregate.members
+      .map((member) => relays.find((item) => String(item?.id || "") === String(member?.relayId || "")))
+      .filter((member) => member && String(member.relayMode || "") !== "aggregate");
+  }
+
+  function officialUsageAggregateMixed(profile) {
+    const members = officialUsageAggregateMembers(profile);
+    if (!members) return false;
+    const hasOfficialLogin = members.some((member) => String(member.relayMode || "") === "official");
+    // 官登混入 Key 的成员本身也带 API Key；其余非官方成员都走 API Key。
+    const hasApiKey = members.some((member) => String(member.relayMode || "") !== "official"
+      || member.officialMixApiKey === true);
+    return hasOfficialLogin && hasApiKey;
+  }
+
   function officialUsagePolicy() {
     // 新一代设置尚未返回时沿用最后一次真实配置，避免重新注入短暂恢复额度锁。
     if (!codexPlusBackendSettingsLoaded && officialUsageRuntime.lastPolicy) return officialUsageRuntime.lastPolicy;
     const profile = codexRemoteSessionActiveProfile();
-    const official = String(profile?.relayMode || "") === "official";
-    const mixed = official && profile?.officialMixApiKey === true;
+    const aggregateMixed = officialUsageAggregateMixed(profile);
+    const official = String(profile?.relayMode || "") === "official" || aggregateMixed;
+    const mixed = aggregateMixed || (official && profile?.officialMixApiKey === true);
     const policy = {
       official,
       hideAlerts: mixed,
@@ -267,7 +298,7 @@
     return changed ? next : null;
   }
 
-  // 低额度提示和发送锁都只看当前是不是官登混入 Key。纯官登不改这份用量。
+  // 低额度提示和发送锁都只看当前是不是官登混入 Key（含官登 + API 成员的模型聚合）。纯官登不改这份用量。
   // 桌面端发送按钮读 rate_limit.allowed；limit_reached 为 true 也会被当成已用完。
   // 混入时在查询发布前把 allowed 写成 true，并清掉 limit_reached。
   // 百分比、重置时间、账号、积分和消费上限不动。图片额度横幅单独留下。

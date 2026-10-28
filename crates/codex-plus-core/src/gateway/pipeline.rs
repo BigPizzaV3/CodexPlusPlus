@@ -77,6 +77,8 @@ pub struct GatewayRequest<'a> {
     pub live_request_id: Option<&'a str>,
     pub auto_retry: bool,
     pub is_stream: bool,
+    /// 发给上游的 Responses 路径：`/responses`，或旧版 Codex 远程压缩的 `/responses/compact`。
+    pub upstream_path: &'a str,
 }
 
 /// 依次尝试路由计划里的候选，并把路由过程记到路由动态里。
@@ -373,7 +375,7 @@ async fn attempt_pipeline(
         settings.clone(),
         forced,
         request.user_agent,
-        "/responses",
+        request.upstream_path,
         session_headers,
         request.live_request_id,
     )
@@ -583,7 +585,8 @@ fn log_attempt_failure(
         "gateway.upstream_failed",
         serde_json::json!({
             "relayId": candidate.relay.id,
-            "relayName": candidate.relay.name,
+            // 账号类供应商的名字里带邮箱，日志里只留打码后的。
+            "relayName": crate::gateway::accounts::mask_account_name(&candidate.relay.name),
             "keyId": candidate.key.key_id,
             "upstreamModel": candidate.upstream_model,
             "class": class.map(FailureClass::label),

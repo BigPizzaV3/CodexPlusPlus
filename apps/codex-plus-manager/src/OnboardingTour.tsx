@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { placeCard, TOUR_STEPS } from "./onboarding-model";
+import { useEscapeLayer } from "./use-escape-layer";
 import "./OnboardingTour.css";
 
 type Rect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
@@ -14,6 +15,7 @@ type Rect = { left: number; top: number; right: number; bottom: number; width: n
 const PAD = 6;
 
 export function OnboardingTour({ onClose }: { onClose: (finished: boolean) => void }) {
+  useEscapeLayer(true, () => onClose(false));
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
   const [cardPos, setCardPos] = useState<{ left: number; top: number } | null>(null);
@@ -56,9 +58,9 @@ export function OnboardingTour({ onClose }: { onClose: (finished: boolean) => vo
   }, [rect, index]);
 
   useEffect(() => {
+    // Esc 走 Esc 栈（下面的 useEscapeLayer），只关引导本身，不连带关掉下面的弹窗。
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose(false);
-      else if (event.key === "ArrowRight" || event.key === "Enter") {
+      if (event.key === "ArrowRight" || event.key === "Enter") {
         event.preventDefault();
         if (last) onClose(true);
         else setIndex((current) => current + 1);

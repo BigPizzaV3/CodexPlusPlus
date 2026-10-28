@@ -2624,14 +2624,40 @@
     ensure();
   }
 
+  /**
+   * 本轮皮肤刷新该做什么（纯函数，供测试切片）：
+   *   - "cleanup"：设置明确关闭或暂停皮肤；
+   *   - "install"：内置运行时按设置安装；
+   *   - "ensure"：外部运行时已在页面里，补主区域兼容标记并刷新；
+   *   - "idle"：外部运行时未安装、设置也还没读到，只做无副作用的刷新。
+   * 外部运行时由注入脚本按注入时的设置直接安装。重启 Codex 后首次 /backend/status
+   * 可能超时、页面还会被启动壳自救重载（#2680），这期间设置读不到，不能因此不补
+   * 主区域兼容标记，否则皮肤选择器对不上主区域，整页看起来没换肤。
+   */
+  function dreamSkinRefreshAction({ enabled, paused, backendLoaded, externalRuntime, runtimeInstalled }) {
+    if (externalRuntime) {
+      if (backendLoaded) return enabled && !paused ? "ensure" : "cleanup";
+      return runtimeInstalled ? "ensure" : "idle";
+    }
+    return enabled && !paused ? "install" : "cleanup";
+  }
+
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
-    if (settings.dreamSkinEnabled && !settings.dreamSkinPaused) ensureDreamSkinMainSurface();
+    const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
+    const action = dreamSkinRefreshAction({
+      enabled: !!settings.dreamSkinEnabled,
+      paused: !!settings.dreamSkinPaused,
+      backendLoaded: !!codexPlusBackendSettingsLoaded,
+      externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
+      runtimeInstalled: !!runtimeState,
+    });
+    if (action === "ensure" || action === "install") ensureDreamSkinMainSurface();
     if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
-      if (codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)) {
+      if (action === "cleanup") {
         cleanupDreamSkin();
       } else {
-        const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
+        const state = runtimeState;
         state?.ensure?.();
         ensureDreamSkinCompanion(
           window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,

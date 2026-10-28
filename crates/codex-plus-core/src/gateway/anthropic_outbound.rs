@@ -6,8 +6,12 @@
 //! Anthropic 的内容块必须一个接一个（start → delta… → stop），不能交错。Responses 里
 //! 多个工具调用可能交错输出参数，所以只有「当前打开」的块实时转发，其余先缓冲，
 //! 等该项完成时整块补发。
+//!
+//! 工具块一旦开始实时转发就不能被别的项打断：中途关掉会让参数 JSON 只发出一半，
+//! 完成时又得用同一个 id 再开一块，客户端下一轮会因为 tool_use id 重复被拒。所以工具块
+//! 打开期间，属于其它项的事件（文字、思考、别的工具）整条暂存，等这个工具块关闭后按原顺序重放。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::{Value, json};
 
@@ -25,8 +29,8 @@ struct OpenBlock {
     index: u32,
     kind: BlockKind,
     item_key: String,
-    /// 工具块是否已经发过参数增量。
-    emitted_arguments: bool,
+    /// 工具块已经发出去的参数（完成时只补发多出来的后缀）。
+    sent_arguments: String,
     /// 思考块当前所在的摘要段（换段时补两个换行）。
     summary_index: Option<u64>,
 }
@@ -54,6 +58,10 @@ pub struct ResponsesSseToAnthropicSse {
     pending_tools: HashMap<String, PendingTool>,
     /// 已经整块发出过的 item，防止重复。
     completed_items: Vec<String>,
+    /// 已经开过 tool_use 块的 item，同一个工具调用绝不再开第二块。
+    opened_tools: HashSet<String>,
+    /// 工具块实时转发期间暂存的其它项事件，工具块关闭后按原顺序重放。
+    deferred: VecDeque<Value>,
     emitted_tool_use: bool,
     usage: Option<crate::request_log::RequestUsage>,
     failure: Option<String>,
@@ -75,6 +83,8 @@ impl ResponsesSseToAnthropicSse {
             open: None,
             pending_tools: HashMap::new(),
             completed_items: Vec::new(),
+            opened_tools: HashSet::new(),
+            deferred: VecDeque::new(),
             emitted_tool_use: false,
             usage: None,
             failure: None,
@@ -102,11 +112,14 @@ impl ResponsesSseToAnthropicSse {
         data.extend_from_slice(bytes);
         let text = match std::str::from_utf8(&data) {
             Ok(text) => text.to_string(),
-            Err(error) => {
+            // 只有结尾那个字符还没收完（error_len 为 None）才留到下一块；中间夹着坏字节时按替换字符处理，
+            // 不然之后每一块都在第 0 个字节解码失败，整个流就卡住不再输出。
+            Err(error) if error.error_len().is_none() => {
                 let valid = error.valid_up_to();
                 self.utf8_remainder = data[valid..].to_vec();
                 String::from_utf8_lossy(&data[..valid]).to_string()
             }
+            Err(_) => String::from_utf8_lossy(&data).to_string(),
         };
         self.buffer.push_str(&text);
         let mut output = String::new();
@@ -165,7 +178,95 @@ impl ResponsesSseToAnthropicSse {
             .or(event_name)
             .unwrap_or_default();
         self.ensure_started(output);
-        match kind.as_str() {
+        if self.should_defer(&kind, &event) {
+            self.deferred.push_back(with_type(event, &kind));
+            return;
+        }
+        self.handle_event(&kind, event, output);
+        self.flush_deferred(output);
+    }
+
+    /// 当前有工具块在实时转发、而这条事件属于别的项时，先暂存，免得把工具块打断。
+    fn should_defer(&self, kind: &str, event: &Value) -> bool {
+        let Some(open_key) = self.open_tool_key() else {
+            return false;
+        };
+        matches!(
+            kind,
+            "response.output_text.delta"
+                | "response.refusal.delta"
+                | "response.reasoning_summary_text.delta"
+                | "response.reasoning_text.delta"
+                | "response.output_item.added"
+                | "response.function_call_arguments.delta"
+                | "response.output_item.done"
+        ) && item_key(event) != open_key
+    }
+
+    /// 当前正在实时转发的工具块的 item 键。
+    fn open_tool_key(&self) -> Option<String> {
+        self.open
+            .as_ref()
+            .filter(|open| open.kind == BlockKind::Tool)
+            .map(|open| open.item_key.clone())
+    }
+
+    /// 重放暂存的事件：有工具块打开时只取属于它的事件，直到它关闭；没有时按顺序取队首。
+    fn flush_deferred(&mut self, output: &mut String) {
+        while !self.finished {
+            let next = match self.open_tool_key() {
+                Some(key) => {
+                    let position = self
+                        .deferred
+                        .iter()
+                        .position(|event| item_key(event) == key);
+                    match position {
+                        Some(position) => self.deferred.remove(position),
+                        None => break,
+                    }
+                }
+                None => self.deferred.pop_front(),
+            };
+            let Some(event) = next else {
+                break;
+            };
+            let kind = event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            self.handle_event(&kind, event, output);
+        }
+    }
+
+    /// 流已结束：还开着的工具块用终止事件里的完整 output 收尾，再把暂存的事件全部重放。
+    fn drain_deferred(&mut self, response: &Value, output: &mut String) {
+        loop {
+            if let Some(key) = self.open_tool_key() {
+                let item = response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        items
+                            .iter()
+                            .enumerate()
+                            .find(|(index, item)| output_item_key(item, *index) == key)
+                    })
+                    .map(|(_, item)| item.clone());
+                match item {
+                    Some(item) => self.item_done(&key, &item, output),
+                    None => self.close_open(output),
+                }
+            }
+            if self.deferred.is_empty() {
+                break;
+            }
+            self.flush_deferred(output);
+        }
+    }
+
+    fn handle_event(&mut self, kind: &str, event: Value, output: &mut String) {
+        match kind {
             "response.output_text.delta" | "response.refusal.delta" => {
                 let delta = event
                     .get("delta")
@@ -232,7 +333,9 @@ impl ResponsesSseToAnthropicSse {
                         arguments: String::new(),
                     };
                     // 没有其它块在实时转发时立即开始这个工具块；否则先缓冲，完成时补发。
-                    if self.open.is_none() {
+                    if self.opened_tools.contains(&key) {
+                        // 重复的 added：这个工具已经开过块了。
+                    } else if self.open.is_none() {
                         self.start_tool_block(&key, &tool, output);
                     } else {
                         self.pending_tools.insert(key, tool);
@@ -252,7 +355,7 @@ impl ResponsesSseToAnthropicSse {
                     && open.kind == BlockKind::Tool
                     && open.item_key == key
                 {
-                    open.emitted_arguments = true;
+                    open.sent_arguments.push_str(delta);
                     let index = open.index;
                     push_event(
                         output,
@@ -263,6 +366,8 @@ impl ResponsesSseToAnthropicSse {
                             "delta": { "type": "input_json_delta", "partial_json": delta }
                         }),
                     );
+                } else if self.opened_tools.contains(&key) {
+                    // 这个工具块已经关闭，后到的增量无处可接，丢弃也不能再开第二块。
                 } else {
                     self.pending_tools
                         .entry(key)
@@ -278,14 +383,11 @@ impl ResponsesSseToAnthropicSse {
             }
             "response.completed" | "response.incomplete" => {
                 let response = event.get("response").cloned().unwrap_or(Value::Null);
+                self.drain_deferred(&response, output);
                 // 有的上游只在终止事件里给完整 output：补发还没见过的项。
                 if let Some(items) = response.get("output").and_then(Value::as_array) {
                     for (index, item) in items.iter().enumerate() {
-                        let key = item
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| format!("#{index}"));
+                        let key = output_item_key(item, index);
                         if !self.completed_items.contains(&key) && !self.has_seen(&key) {
                             self.item_done(&key, item, output);
                         }
@@ -412,7 +514,15 @@ impl ResponsesSseToAnthropicSse {
                     .is_some_and(|open| open.kind == BlockKind::Tool && open.item_key == key);
                 if is_open {
                     let open = self.open.as_ref().expect("open block");
-                    if !open.emitted_arguments && !arguments.is_empty() {
+                    // 实时转发过的工具只收尾：完整参数比已发出的多出一截时补发后缀。
+                    let remainder = if open.sent_arguments.is_empty() {
+                        arguments.as_str()
+                    } else {
+                        arguments
+                            .strip_prefix(open.sent_arguments.as_str())
+                            .unwrap_or_default()
+                    };
+                    if !remainder.is_empty() {
                         let index = open.index;
                         push_event(
                             output,
@@ -420,11 +530,14 @@ impl ResponsesSseToAnthropicSse {
                             json!({
                                 "type": "content_block_delta",
                                 "index": index,
-                                "delta": { "type": "input_json_delta", "partial_json": arguments }
+                                "delta": { "type": "input_json_delta", "partial_json": remainder }
                             }),
                         );
                     }
                     self.close_open(output);
+                } else if self.opened_tools.contains(key) {
+                    // 这个工具已经开过块（并已关闭），不能用同一个 id 再开一块。
+                    self.pending_tools.remove(key);
                 } else {
                     let mut tool = self.pending_tools.remove(key).unwrap_or_default();
                     if tool.call_id.is_empty() {
@@ -536,12 +649,13 @@ impl ResponsesSseToAnthropicSse {
             index,
             kind,
             item_key: key.to_string(),
-            emitted_arguments: false,
+            sent_arguments: String::new(),
             summary_index: None,
         });
     }
 
     fn start_tool_block(&mut self, key: &str, tool: &PendingTool, output: &mut String) {
+        self.opened_tools.insert(key.to_string());
         self.open_block(BlockKind::Tool, key, Some(tool), output);
     }
 
@@ -651,6 +765,24 @@ fn item_key(event: &Value) -> String {
                 .map(|index| format!("#{index}"))
         })
         .unwrap_or_default()
+}
+
+/// 终止事件 output 数组里第 `index` 项的标识，与流式事件的 item 键保持同一套规则。
+fn output_item_key(item: &Value, index: usize) -> String {
+    item.get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("#{index}"))
+}
+
+/// 暂存事件时把类型写进 data，重放时不用再依赖 SSE 的 event 行。
+fn with_type(mut event: Value, kind: &str) -> Value {
+    if event.get("type").and_then(Value::as_str).is_none()
+        && let Some(object) = event.as_object_mut()
+    {
+        object.insert("type".to_string(), json!(kind));
+    }
+    event
 }
 
 fn tool_call_id(item: &Value) -> String {
@@ -958,6 +1090,15 @@ mod tests {
     }
 
     #[test]
+    fn invalid_utf8_byte_does_not_stall_the_stream() {
+        let mut transformer = ResponsesSseToAnthropicSse::new("m", 0);
+        let first = transformer.push_bytes(b"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}\n\n\xff");
+        let second = transformer.push_bytes(b"\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hi\"}\n\n");
+        let text = String::from_utf8_lossy(&[first, second].concat()).to_string();
+        assert!(text.contains("hi"), "坏字节之后的事件照常输出：{text}");
+    }
+
+    #[test]
     fn full_stream_translates_to_ordered_anthropic_events() {
         let mut converter = ResponsesSseToAnthropicSse::new("claude-sonnet-5", 42);
         let mut output = converter.push_bytes(sample_stream().as_bytes());
@@ -1077,6 +1218,174 @@ mod tests {
                 "message_stop"
             ]
         );
+    }
+
+    /// 校验 Anthropic 事件序列合法（块按顺序 start → delta… → stop、索引递增、互不交错），
+    /// 返回每个块的（类型、tool_use id、拼接后的内容）。
+    fn collect_blocks(events: &[Value]) -> Vec<(String, String, String)> {
+        let mut blocks: Vec<(String, String, String)> = Vec::new();
+        let mut open: Option<u64> = None;
+        for event in events {
+            match event["type"].as_str().unwrap() {
+                "content_block_start" => {
+                    assert!(open.is_none(), "上一个块还没关就开了新块：{events:?}");
+                    let index = event["index"].as_u64().unwrap();
+                    assert_eq!(index, blocks.len() as u64, "块索引必须连续递增");
+                    let block = &event["content_block"];
+                    blocks.push((
+                        block["type"].as_str().unwrap().to_string(),
+                        block["id"].as_str().unwrap_or_default().to_string(),
+                        String::new(),
+                    ));
+                    open = Some(index);
+                }
+                "content_block_delta" => {
+                    assert_eq!(event["index"].as_u64(), open, "增量必须属于当前打开的块");
+                    let delta = &event["delta"];
+                    let piece = delta["partial_json"]
+                        .as_str()
+                        .or_else(|| delta["text"].as_str())
+                        .or_else(|| delta["thinking"].as_str())
+                        .unwrap_or_default();
+                    blocks.last_mut().unwrap().2.push_str(piece);
+                }
+                "content_block_stop" => {
+                    assert_eq!(event["index"].as_u64(), open, "stop 必须对应当前打开的块");
+                    open = None;
+                }
+                _ => {}
+            }
+        }
+        assert!(open.is_none(), "流结束时还有块没关");
+        blocks
+    }
+
+    fn assert_tool_blocks_valid(blocks: &[(String, String, String)]) {
+        let mut ids = HashSet::new();
+        for (kind, id, arguments) in blocks.iter().filter(|block| block.0 == "tool_use") {
+            assert!(ids.insert(id.clone()), "tool_use id 重复：{id}（{kind}）");
+            serde_json::from_str::<Value>(arguments)
+                .unwrap_or_else(|error| panic!("{id} 的参数不是完整 JSON：{arguments}（{error}）"));
+        }
+    }
+
+    #[test]
+    fn text_arriving_mid_tool_arguments_does_not_split_the_tool_block() {
+        let stream = sse(&[
+            json!({"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Bash"}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"command\":"}),
+            json!({"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","type":"message"}}),
+            json!({"type":"response.output_text.delta","item_id":"msg_1","delta":"顺便说一句"}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"\"ls -la\"}"}),
+            json!({"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"顺便说一句"}]}}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Bash","arguments":"{\"command\":\"ls -la\"}"}}),
+            json!({"type":"response.completed","response":{"status":"completed"}}),
+        ]);
+        let mut converter = ResponsesSseToAnthropicSse::new("m", 0);
+        let mut output = converter.push_bytes(stream.as_bytes());
+        output.extend(converter.finish());
+        let events = parse(&output);
+        let blocks = collect_blocks(&events);
+        assert_tool_blocks_valid(&blocks);
+        assert_eq!(
+            blocks,
+            vec![
+                (
+                    "tool_use".to_string(),
+                    "call_1".to_string(),
+                    "{\"command\":\"ls -la\"}".to_string()
+                ),
+                ("text".to_string(), String::new(), "顺便说一句".to_string()),
+            ]
+        );
+        assert!(!converter.has_failed());
+        assert_eq!(
+            events
+                .iter()
+                .find(|event| event["type"] == "message_delta")
+                .unwrap()["delta"]["stop_reason"],
+            "tool_use"
+        );
+    }
+
+    #[test]
+    fn interleaved_tool_deltas_with_out_of_order_done_yield_one_block_each() {
+        let stream = sse(&[
+            json!({"type":"response.output_item.added","output_index":0,"item":{"id":"fc_a","type":"function_call","call_id":"call_a","name":"Read"}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_a","delta":"{\"file\":"}),
+            json!({"type":"response.output_item.added","output_index":1,"item":{"id":"fc_b","type":"function_call","call_id":"call_b","name":"Grep"}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_b","delta":"{\"pattern\":"}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_a","delta":"\"a.rs\""}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_b","delta":"\"foo\"}"}),
+            json!({"type":"response.output_item.done","output_index":1,"item":{"id":"fc_b","type":"function_call","call_id":"call_b","name":"Grep","arguments":"{\"pattern\":\"foo\"}"}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_a","delta":"}"}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{"id":"fc_a","type":"function_call","call_id":"call_a","name":"Read","arguments":"{\"file\":\"a.rs\"}"}}),
+            json!({"type":"response.completed","response":{"status":"completed"}}),
+        ]);
+        let mut converter = ResponsesSseToAnthropicSse::new("m", 0);
+        let mut output = converter.push_bytes(stream.as_bytes());
+        output.extend(converter.finish());
+        let blocks = collect_blocks(&parse(&output));
+        assert_tool_blocks_valid(&blocks);
+        assert_eq!(
+            blocks,
+            vec![
+                (
+                    "tool_use".to_string(),
+                    "call_a".to_string(),
+                    "{\"file\":\"a.rs\"}".to_string()
+                ),
+                (
+                    "tool_use".to_string(),
+                    "call_b".to_string(),
+                    "{\"pattern\":\"foo\"}".to_string()
+                ),
+            ]
+        );
+        assert!(!converter.has_failed());
+    }
+
+    #[test]
+    fn streamed_tool_done_only_sends_missing_argument_suffix() {
+        let stream = sse(&[
+            json!({"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Bash"}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"command\":"}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Bash","arguments":"{\"command\":\"pwd\"}"}}),
+            json!({"type":"response.completed","response":{"status":"completed"}}),
+        ]);
+        let mut converter = ResponsesSseToAnthropicSse::new("m", 0);
+        let blocks = collect_blocks(&parse(&converter.push_bytes(stream.as_bytes())));
+        assert_tool_blocks_valid(&blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].2, "{\"command\":\"pwd\"}");
+    }
+
+    #[test]
+    fn completed_without_tool_done_finishes_open_tool_and_replays_deferred() {
+        let stream = sse(&[
+            json!({"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Bash"}}),
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"command\":"}),
+            json!({"type":"response.output_text.delta","item_id":"msg_1","delta":"稍等"}),
+            json!({"type":"response.completed","response":{"status":"completed","output":[
+                {"id":"fc_1","type":"function_call","call_id":"call_1","name":"Bash","arguments":"{\"command\":\"ls\"}"},
+                {"id":"msg_1","type":"message","content":[{"type":"output_text","text":"稍等"}]}
+            ]}}),
+        ]);
+        let mut converter = ResponsesSseToAnthropicSse::new("m", 0);
+        let blocks = collect_blocks(&parse(&converter.push_bytes(stream.as_bytes())));
+        assert_tool_blocks_valid(&blocks);
+        assert_eq!(
+            blocks,
+            vec![
+                (
+                    "tool_use".to_string(),
+                    "call_1".to_string(),
+                    "{\"command\":\"ls\"}".to_string()
+                ),
+                ("text".to_string(), String::new(), "稍等".to_string()),
+            ]
+        );
+        assert!(converter.is_finished());
     }
 
     #[test]

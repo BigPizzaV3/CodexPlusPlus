@@ -48,7 +48,7 @@ import { shortProviderName } from "./GatewayModelMatrix";
 import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
-import { publishGatewayPayload } from "./gateway-store";
+import { gatewayGeneration, publishGatewayPayload, subscribeGatewayPayload } from "./gateway-store";
 import "./GatewayPage.css";
 
 type Tab = "agents" | "sessions" | "providers" | "routing" | "usage" | "gateway";
@@ -105,6 +105,15 @@ export function GatewayPage({
   };
 
   const run: Run = makeRun(setBusy, accept, notify);
+  // 别处改了网关数据（如模型下拉里收藏）也同步过来，不然这里还拿着旧数据，下次保存会把新改的盖掉。
+  useEffect(
+    () =>
+      subscribeGatewayPayload((next) => {
+        memo.payload = next;
+        setPayload(next);
+      }),
+    [],
+  );
 
   const refresh = async (silent = true) => {
     setBusy("load");
@@ -130,9 +139,11 @@ export function GatewayPage({
   useEffect(() => {
     let cancelled = false;
     const onFocus = () => {
+      const started = gatewayGeneration();
       void invoke<GatewayResult>("load_gateway")
         .then((result) => {
-          if (!cancelled) accept(result);
+          // 读的过程中保存过：这份是旧的，不用。
+          if (!cancelled && started === gatewayGeneration()) accept(result);
         })
         .catch(() => undefined);
     };
@@ -149,9 +160,10 @@ export function GatewayPage({
     if (tab !== "routing") return;
     let cancelled = false;
     const timer = window.setInterval(() => {
+      const started = gatewayGeneration();
       void invoke<GatewayResult>("load_gateway")
         .then((result) => {
-          if (!cancelled) accept(result);
+          if (!cancelled && started === gatewayGeneration()) accept(result);
         })
         .catch(() => undefined);
     }, LIVE_REFRESH_MS);
@@ -186,7 +198,8 @@ export function GatewayPage({
       {/* 页面标题由外层框架显示，这里只放分段标签和刷新。 */}
       {controlledTab ? (
         // 由外层侧栏控制时不显示页内工具条，刷新按钮放进外壳顶栏。
-        <TopbarActions>{refreshButton}</TopbarActions>
+        // 用量页签有自己的刷新（读用量和余额），这里的只刷新网关状态，放在一起会让人以为刷新了用量。
+        <TopbarActions>{tab === "usage" ? null : refreshButton}</TopbarActions>
       ) : (
         <div className="gw-toolbar">
           <nav aria-label={t("本地网关")} className="gw-tabs" role="tablist">
@@ -773,7 +786,9 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
         <div className="gw-setting-row">
           <div>
             <strong>{t("退出 Codex++ 时恢复直连")}</strong>
-            <small>{t("网关只在 Codex++ 运行时可用。打开后退出时把 Agent 切回直连，下次启动再自动指回网关。")}</small>
+            <small>{restoreOnExit
+              ? t("网关只在 Codex++ 运行时可用。退出时把 Agent 切回直连，下次启动再自动指回网关。")
+              : t("Agent 一直指着网关：退出 Codex++ 后连不上，再打开就恢复。安装更新前照样会切回直连。")}</small>
           </div>
           <span />
           <Switch disabled={busy !== null} label={t("退出 Codex++ 时恢复直连")} on={restoreOnExit} onToggle={() => saveOptions(mode, !restoreOnExit)} />

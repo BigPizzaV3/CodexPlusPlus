@@ -33,6 +33,9 @@ fn main() {
     // 卸载器在删除主程序前调用：config.toml 仍指向本机代理时恢复官方配置（issue #406）。
     // 结果只写诊断日志，失败也以 0 退出，不能让卸载器卡住。
     if args.get(1).is_some_and(|arg| arg == "--codex-plus-uninstall-cleanup") {
+        // 先把走网关的 Agent（Codex / Claude Code / Grok）恢复成直连：卸载后网关不在了。
+        // 失败只记日志，万一 panic 也接住，不影响下面的清理。
+        let _ = std::panic::catch_unwind(codex_plus_manager_lib::restore_gateway_for_uninstall);
         let home = codex_plus_core::codex_home::default_codex_home_dir();
         let detail = match codex_plus_core::relay_config::clear_managed_proxy_config_for_uninstall(
             &home,

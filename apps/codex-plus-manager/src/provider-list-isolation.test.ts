@@ -25,15 +25,17 @@ test("provider page passes complete settings to mutations and filters only visib
   const parent=text.slice(text.indexOf("  const saveRelaySettings ="),text.indexOf("function multiLaunchSupported("));
   const list=parent.slice(parent.indexOf("<RelayProfileList"),parent.indexOf("/>",parent.indexOf("<RelayProfileList")));
   assert.match(list,/form=\{normalized\}/);assert.match(list,/visibleProfiles=\{visibleProfiles\}/);
-  assert.match(list,/onFormChange=\{saveRelaySettings\}/);
-  const form=fixture(),visible=form.relayProfiles.slice(0,3);let saved:any;
-  const tree=ctx.RelayProfileList({form,visibleProfiles:visible,onFormChange:(v:any)=>{saved=v}});
+  assert.match(list,/onFormChange=\{saveRelaySettings\}/);assert.match(list,/onReorder=\{reorderRelaySettings\}/);
+  const form=fixture(),visible=form.relayProfiles.slice(0,3);let saved:any;let savedViaFormChange=false;
+  const tree=ctx.RelayProfileList({form,visibleProfiles:visible,onFormChange:()=>{savedViaFormChange=true},onReorder:(v:any)=>{saved=v}});
   const sortable=tree.children[0],cards=sortable.children[0].children[0];
   assert.deepEqual([...sortable.props.items],["default","member","unused"]);
   for(const card of cards)assert.equal(card.props.form,form);
   tree.props.onDragEnd({active:{id:"unused"},over:{id:"default"}});
   assert.equal(saved.activeRelayId,"agg");assert.equal(saved.relayProfiles.length,4);
   assert.equal(saved.relayProfiles.find((p:any)=>p.id==="agg"),form.relayProfiles[3]);
+  // 拖拽排序只走 onReorder 的乐观更新路径，不再借道 onFormChange。
+  assert.equal(savedViaFormChange,false);
 });
 test("deleting an inactive direct profile preserves the hidden active aggregate and removes its references",()=>{
   const form=fixture();const next=ctx.removeRelayProfile(form,"unused");

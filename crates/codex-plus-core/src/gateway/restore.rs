@@ -122,8 +122,35 @@ pub fn toml_value(text: Option<&str>) -> anyhow::Result<Value> {
     if text.trim().is_empty() {
         return Ok(Value::Object(Map::new()));
     }
-    let value: toml::Value = toml::from_str(text).context("配置不是合法的 TOML")?;
+    let value: toml::Value =
+        toml::from_str(text).map_err(|error| toml_syntax_error("配置", text, error.span()))?;
     Ok(serde_json::to_value(value)?)
+}
+
+/// TOML 解析失败的错误：只报出错的行列，不带出错那一行的原文。
+///
+/// toml / toml_edit 的错误信息会把出错的那行原文带出来，那一行可能就是 Key、token；
+/// 这些错误会写进诊断日志，所以统一换成「第几行第几列」。`what` 是出错的文件（或「配置」）。
+pub fn toml_syntax_error(
+    what: &str,
+    text: &str,
+    span: Option<std::ops::Range<usize>>,
+) -> anyhow::Error {
+    let Some(span) = span else {
+        return anyhow::anyhow!("{what} 不是合法的 TOML");
+    };
+    let bytes = text.as_bytes();
+    let before = &bytes[..span.start.min(bytes.len())];
+    let line = before.iter().filter(|byte| **byte == b'\n').count() + 1;
+    let line_start = before
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let column = String::from_utf8_lossy(&before[line_start..])
+        .chars()
+        .count()
+        + 1;
+    anyhow::anyhow!("{what} 第 {line} 行第 {column} 列不是合法的 TOML")
 }
 
 /// JSON 文本 → JSON 值。空文本 / 不存在视作空对象。
@@ -201,9 +228,9 @@ pub fn restore_toml(
 }
 
 fn parse_toml(text: Option<&str>) -> anyhow::Result<toml_edit::DocumentMut> {
-    text.unwrap_or_default()
-        .parse::<toml_edit::DocumentMut>()
-        .context("配置不是合法的 TOML")
+    let text = text.unwrap_or_default();
+    text.parse::<toml_edit::DocumentMut>()
+        .map_err(|error| toml_syntax_error("配置", text, error.span()))
 }
 
 fn toml_item_at<'a>(item: &'a toml_edit::Item, path: &[String]) -> Option<&'a toml_edit::Item> {
@@ -401,6 +428,19 @@ mod tests {
             restore_toml(None, Some(after), &created.paths()).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn toml_errors_report_position_without_source_text() {
+        let text = "model = \"a\"\napi_key = \"sk-secret-123\n";
+        for error in [
+            toml_value(Some(text)).unwrap_err(),
+            restore_toml(Some(text), None, &[]).unwrap_err(),
+        ] {
+            let message = format!("{error:#}");
+            assert!(!message.contains("sk-secret"), "{message}");
+            assert!(message.contains("第 2 行"), "{message}");
+        }
     }
 
     #[test]

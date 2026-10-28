@@ -353,6 +353,7 @@ fn relay_profile_from_request(
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
         web_search_history_compat: false,
+        local_compaction_prompt_at_end: false,
         trust_upstream_catalog_lite: false,
         strict_responses_reasoning: false,
         auto_review_model: String::new(),

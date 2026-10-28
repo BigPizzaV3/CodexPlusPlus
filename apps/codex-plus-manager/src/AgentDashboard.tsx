@@ -174,7 +174,7 @@ export function AgentDashboard({
                       <strong title={session.title}>{session.title || t("未命名会话")}</strong>
                       <small title={session.cwd}>{shortPath(session.cwd) || "~"}</small>
                     </span>
-                    <time>{tf(time.text, time.args)}</time>
+                    <time>{time.args.length ? tf(time.text, time.args) : t(time.text)}</time>
                   </li>
                 );
               })}

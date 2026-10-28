@@ -570,6 +570,88 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
     assert_ne!(names[0], names[2]);
 }
 
+/// 模型组在 Codex 里能不能开 Fast（#2740）：每个成员都支持才开，有一个不支持就不开。
+#[test]
+fn codex_group_offers_fast_only_when_every_member_supports_it() {
+    let fixture = fixture(57397);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    for name in ["Relay A", "Relay B"] {
+        create_provider(
+            &ctx.gateway,
+            &ProviderInput {
+                name: name.into(),
+                base_url: format!("https://{}.test/v1", name.replace(' ', "-").to_lowercase()),
+                protocol: RelayProtocol::Responses,
+                keys: vec!["sk-relay".into()],
+                model: "gpt-x".into(),
+                model_list: "gpt-x".into(),
+                price: None,
+                model_prices: None,
+                proxy: None,
+            },
+            "",
+            None,
+        )
+        .unwrap();
+        set_provider_metadata(
+            &ctx.gateway,
+            &profile_id_of(ctx, name),
+            r#"{"gpt-x":{"codex_plus_fast_support":"supported"}}"#,
+        )
+        .unwrap();
+    }
+    let member = |model: &str| GroupMember {
+        model: model.into(),
+        weight: 1,
+    };
+    for (name, members) in [
+        ("Fasty", vec![member("gpt-x")]),
+        ("Mixed", vec![member("gpt-x"), member("deepseek-v4-pro")]),
+    ] {
+        save_group(
+            &ctx.gateway,
+            &GroupInput {
+                name: name.into(),
+                mode: GroupMode::InOrder,
+                members,
+                ..GroupInput::default()
+            },
+        )
+        .unwrap();
+    }
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let catalog = codex_catalog(ctx);
+    let entry = |slug: &str| {
+        catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == slug)
+            .cloned()
+            .unwrap_or_else(|| panic!("目录里没有 {slug}：{catalog}"))
+    };
+    let fast = |model: &Value| {
+        model["service_tiers"]
+            .as_array()
+            .is_some_and(|tiers| tiers.iter().any(|tier| tier["id"] == "priority"))
+    };
+    assert!(
+        fast(&entry("gpt-x")),
+        "单个模型声明了 Fast：{}",
+        entry("gpt-x")
+    );
+    let fasty = entry("group/fasty");
+    assert!(fast(&fasty), "成员都支持 Fast 的组也能开：{fasty}");
+    assert_eq!(fasty["display_name"], "Fasty");
+    let mixed = entry("group/mixed");
+    assert!(!fast(&mixed), "有成员不支持就不开：{mixed}");
+}
+
 fn profile_id_of(ctx: &ApplyContext, name: &str) -> String {
     ctx.gateway
         .load()

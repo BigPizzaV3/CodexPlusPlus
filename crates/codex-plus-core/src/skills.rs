@@ -243,7 +243,7 @@ impl SkillsManager {
         let metadata = std::fs::symlink_metadata(&link);
         if !enabled {
             return match metadata {
-                Ok(metadata) if metadata.file_type().is_symlink() => remove_link(&link),
+                Ok(metadata) if metadata.file_type().is_symlink() || is_managed_copy(&link) => remove_link(&link),
                 Ok(_) => anyhow::bail!("{} 是这个 Agent 自己的 Skill，不由 Codex++ 管理，未删除", link.display()),
                 Err(_) => Ok(()),
             };
@@ -767,7 +767,9 @@ impl SkillsManager {
         // 其它 Agent 里指向它的软链先摘掉，源目录移走后它们会变成断链。
         for (_, dir) in &self.agent_dirs {
             let link = dir.join(id);
-            if std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            if std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata.file_type().is_symlink())
+                || is_managed_copy(&link)
+            {
                 remove_link(&link)?;
             }
         }
@@ -1536,6 +1538,9 @@ pub async fn download_repo_zip(repo: &SkillRepo) -> anyhow::Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
+/// 复制回退时放进副本的标记：有它说明这份副本是 Codex++ 建的，停用时可以删。
+const MANAGED_COPY_MARKER: &str = ".codex-plus-managed";
+
 /// 软链优先，失败回退复制。Windows 上建目录软链要开发者模式或管理员权限，
 /// 拿不到就退化成复制——功能一样，只是更新时要重装。
 fn link_or_copy(source: &Path, link: &Path) -> anyhow::Result<()> {
@@ -1543,7 +1548,15 @@ fn link_or_copy(source: &Path, link: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
     copy_dir_all(source, link)
-        .with_context(|| format!("复制 skill 到 {} 失败（软链也没建成）", link.display()))
+        .with_context(|| format!("复制 skill 到 {} 失败（软链也没建成）", link.display()))?;
+    std::fs::write(link.join(MANAGED_COPY_MARKER), "")
+        .with_context(|| format!("标记 {} 失败", link.display()))
+}
+
+/// 复制回退建的副本（不是软链，但带标记）。
+fn is_managed_copy(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir())
+        && path.join(MANAGED_COPY_MARKER).is_file()
 }
 
 #[cfg(unix)]
@@ -1563,6 +1576,10 @@ fn copy_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
         std::fs::read_dir(source).with_context(|| format!("读取目录失败：{}", source.display()))?
     {
         let entry = entry?;
+        // 副本标记只属于那一份副本，不跟着复制（例如停用 Codex 的副本时复制回受控源）。
+        if entry.file_name() == MANAGED_COPY_MARKER {
+            continue;
+        }
         let from = entry.path();
         let to = destination.join(entry.file_name());
         if from.is_dir() {
@@ -1712,6 +1729,27 @@ mod tests {
         manager.set_enabled_for("claude", "alpha", false).unwrap();
         assert!(std::fs::symlink_metadata(&link).is_err());
         assert!(manager.source_dir.join("alpha/SKILL.md").is_file(), "停用不动源目录");
+    }
+
+    /// Windows 没有建软链的权限时退化成复制：带标记的副本停用时照样删掉，复制回受控源时不带标记。
+    #[test]
+    fn copied_fallback_can_be_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        write_skill(&temp.path().join("external/alpha"), "---\nname: Alpha\n---\n");
+        manager.import_from_directory("alpha", &temp.path().join("external/alpha")).unwrap();
+        let copy = temp.path().join("claude-skills/alpha");
+        copy_dir_all(&manager.source_dir.join("alpha"), &copy).unwrap();
+        std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+
+        manager.set_enabled_for("claude", "alpha", false).unwrap();
+        assert!(std::fs::symlink_metadata(&copy).is_err(), "副本被删掉");
+        assert!(manager.source_dir.join("alpha/SKILL.md").is_file(), "停用不动源目录");
+
+        let again = temp.path().join("copy-again");
+        std::fs::write(manager.source_dir.join("alpha").join(MANAGED_COPY_MARKER), "").unwrap();
+        copy_dir_all(&manager.source_dir.join("alpha"), &again).unwrap();
+        assert!(!again.join(MANAGED_COPY_MARKER).exists(), "标记不跟着复制");
     }
 
     #[test]

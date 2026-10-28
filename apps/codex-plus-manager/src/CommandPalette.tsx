@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { CornerDownLeft, Search } from "lucide-react";
 import { t } from "./i18n";
 import { filterCommands, type PaletteCommand } from "./command-palette-model";
+import { useEscapeLayer } from "./use-escape-layer";
 
 export type { PaletteCommand };
 
@@ -13,6 +14,8 @@ export function CommandPalette({ open, commands, onClose }: { open: boolean; com
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const results = useMemo(() => filterCommands(commands, query), [commands, query]);
+  // 登记进 Esc 栈：面板盖在弹窗上时，Esc 只关面板，不关下面的弹窗。
+  useEscapeLayer(open, onClose);
 
   useEffect(() => {
     if (!open) return;
@@ -42,7 +45,6 @@ export function CommandPalette({ open, commands, onClose }: { open: boolean; com
           <input
             onChange={(event) => { setQuery(event.currentTarget.value); setHighlight(0); }}
             onKeyDown={(event) => {
-              if (event.key === "Escape") { event.preventDefault(); onClose(); }
               if (event.key === "ArrowDown") { event.preventDefault(); setHighlight((value) => Math.min(results.length - 1, value + 1)); }
               if (event.key === "ArrowUp") { event.preventDefault(); setHighlight((value) => Math.max(0, value - 1)); }
               if (event.key === "Enter") { event.preventDefault(); choose(results[highlight]); }

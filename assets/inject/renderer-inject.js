@@ -4585,14 +4585,40 @@
     ensure();
   }
 
+  /**
+   * 本轮皮肤刷新该做什么（纯函数，供测试切片）：
+   *   - "cleanup"：设置明确关闭或暂停皮肤；
+   *   - "install"：内置运行时按设置安装；
+   *   - "ensure"：外部运行时已在页面里，补主区域兼容标记并刷新；
+   *   - "idle"：外部运行时未安装、设置也还没读到，只做无副作用的刷新。
+   * 外部运行时由注入脚本按注入时的设置直接安装。重启 Codex 后首次 /backend/status
+   * 可能超时、页面还会被启动壳自救重载（#2680），这期间设置读不到，不能因此不补
+   * 主区域兼容标记，否则皮肤选择器对不上主区域，整页看起来没换肤。
+   */
+  function dreamSkinRefreshAction({ enabled, paused, backendLoaded, externalRuntime, runtimeInstalled }) {
+    if (externalRuntime) {
+      if (backendLoaded) return enabled && !paused ? "ensure" : "cleanup";
+      return runtimeInstalled ? "ensure" : "idle";
+    }
+    return enabled && !paused ? "install" : "cleanup";
+  }
+
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
-    if (settings.dreamSkinEnabled && !settings.dreamSkinPaused) ensureDreamSkinMainSurface();
+    const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
+    const action = dreamSkinRefreshAction({
+      enabled: !!settings.dreamSkinEnabled,
+      paused: !!settings.dreamSkinPaused,
+      backendLoaded: !!codexPlusBackendSettingsLoaded,
+      externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
+      runtimeInstalled: !!runtimeState,
+    });
+    if (action === "ensure" || action === "install") ensureDreamSkinMainSurface();
     if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
-      if (codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)) {
+      if (action === "cleanup") {
         cleanupDreamSkin();
       } else {
-        const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
+        const state = runtimeState;
         state?.ensure?.();
         ensureDreamSkinCompanion(
           window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
@@ -6134,8 +6160,21 @@
     if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
     // 后端可用后预取设置项清单，首次打开设置页时不必再等一次请求。
     if (loaded && typeof loadCodexPlusSettingsCatalog === "function") void loadCodexPlusSettingsCatalog();
+    // 读到设置后立即补一次皮肤，不等下一轮 DOM 变更触发扫描（#2680）。
+    if (loaded && typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     return loaded;
+  }
+
+  /**
+   * 启动期读取后端设置的重试间隔；返回 -1 表示停止。
+   * 前 60 次每 250ms 一次（约 15 秒，覆盖常规启动）；之后按指数退避到 5 秒封顶再试 30 次，
+   * 重启 Codex 后首次桥接超时、页面被启动壳自救重载这类慢启动也能补上设置与皮肤（#2680）。
+   */
+  function backendSettingsStartupRetryDelay(attempt) {
+    if (attempt < 60) return 250;
+    if (attempt >= 90) return -1;
+    return Math.min(5000, 250 * 2 ** (attempt - 59));
   }
 
   function loadBackendSettingsForStartup(attempt = 0) {
@@ -6144,8 +6183,9 @@
         scan();
         return;
       }
-      if (attempt < 60) {
-        setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 250);
+      const delay = backendSettingsStartupRetryDelay(attempt);
+      if (delay >= 0) {
+        setTimeout(() => loadBackendSettingsForStartup(attempt + 1), delay);
       }
     });
   }
@@ -6162,6 +6202,8 @@
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
         if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+        // 启动期读取全部失败时，心跳是之后唯一的设置来源；读到就补一次皮肤（#2680）。
+        if (typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
         syncCodexPlusBackendToggleButtons();
@@ -19334,12 +19376,43 @@
     scheduleThreadScrollSync(true);
   }
 
+  // 当前供应商是模型聚合时，按成员判断是否等同于「官登混入 Key」（#2704）：
+  // 成员里既有官方登录、又至少有一个走 API Key 的成员，官方额度用完时仍能经 API 成员发送。
+  // 与后端 active_aggregate_relay_profile 一致：activeAggregateRelayId 为空时取当前供应商 id，
+  // 不一致则视为没有生效的聚合。
+  function officialUsageAggregateMembers(profile) {
+    if (String(profile?.relayMode || "") !== "aggregate") return null;
+    const activeId = String(profile.id || "");
+    const aggregateId = String(codexPlusBackendSettings.activeAggregateRelayId || "").trim() || activeId;
+    if (!aggregateId || aggregateId !== activeId) return null;
+    const aggregates = Array.isArray(codexPlusBackendSettings.aggregateRelayProfiles)
+      ? codexPlusBackendSettings.aggregateRelayProfiles
+      : [];
+    const aggregate = aggregates.find((item) => String(item?.id || "") === aggregateId);
+    if (!aggregate || !Array.isArray(aggregate.members)) return null;
+    const relays = Array.isArray(codexPlusBackendSettings.relayProfiles) ? codexPlusBackendSettings.relayProfiles : [];
+    return aggregate.members
+      .map((member) => relays.find((item) => String(item?.id || "") === String(member?.relayId || "")))
+      .filter((member) => member && String(member.relayMode || "") !== "aggregate");
+  }
+
+  function officialUsageAggregateMixed(profile) {
+    const members = officialUsageAggregateMembers(profile);
+    if (!members) return false;
+    const hasOfficialLogin = members.some((member) => String(member.relayMode || "") === "official");
+    // 官登混入 Key 的成员本身也带 API Key；其余非官方成员都走 API Key。
+    const hasApiKey = members.some((member) => String(member.relayMode || "") !== "official"
+      || member.officialMixApiKey === true);
+    return hasOfficialLogin && hasApiKey;
+  }
+
   function officialUsagePolicy() {
     // 新一代设置尚未返回时沿用最后一次真实配置，避免重新注入短暂恢复额度锁。
     if (!codexPlusBackendSettingsLoaded && officialUsageRuntime.lastPolicy) return officialUsageRuntime.lastPolicy;
     const profile = codexRemoteSessionActiveProfile();
-    const official = String(profile?.relayMode || "") === "official";
-    const mixed = official && profile?.officialMixApiKey === true;
+    const aggregateMixed = officialUsageAggregateMixed(profile);
+    const official = String(profile?.relayMode || "") === "official" || aggregateMixed;
+    const mixed = aggregateMixed || (official && profile?.officialMixApiKey === true);
     const policy = {
       official,
       hideAlerts: mixed,
@@ -19389,7 +19462,7 @@
     return changed ? next : null;
   }
 
-  // 低额度提示和发送锁都只看当前是不是官登混入 Key。纯官登不改这份用量。
+  // 低额度提示和发送锁都只看当前是不是官登混入 Key（含官登 + API 成员的模型聚合）。纯官登不改这份用量。
   // 桌面端发送按钮读 rate_limit.allowed；limit_reached 为 true 也会被当成已用完。
   // 混入时在查询发布前把 allowed 写成 true，并清掉 limit_reached。
   // 百分比、重置时间、账号、积分和消费上限不动。图片额度横幅单独留下。

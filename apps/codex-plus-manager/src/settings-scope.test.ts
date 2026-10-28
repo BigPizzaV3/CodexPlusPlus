@@ -65,6 +65,6 @@ test("Computer Use 放在侧栏「工具」组，不再出现在每个 Agent 的
 
 test("Agent 设置标题跟随当前 Agent，整体设置标题固定", () => {
   const entry = functionSource("App");
-  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : routeTitle\(route\)/);
+  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : routeTitle\(navAliasRoute\[route\] \?\? route\)/);
   assert.match(entry, /const activeToolName = toolEntries\.find/);
 });

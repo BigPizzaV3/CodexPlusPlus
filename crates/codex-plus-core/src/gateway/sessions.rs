@@ -254,14 +254,25 @@ pub fn open_in_terminal(cwd: &str, command: &str, scratch_dir: &Path) -> anyhow:
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = scratch_dir;
-        let inner = if cwd.is_empty() {
-            command.to_string()
-        } else {
-            format!("cd /d \"{cwd}\" && {command}")
-        };
+        // 命令写进 .cmd 再交给 cmd /k：直接当参数传时 Rust 会把路径里的引号转义成 \"，cmd 不认，
+        // cd 失败后 && 后面的恢复命令不会执行。cmd 边执行边读批处理文件，每次用新文件名，免得被下一次覆盖。
+        // 先切到 UTF-8 代码页，中文路径才不会乱码。
+        std::fs::create_dir_all(scratch_dir)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or_default();
+        let script = scratch_dir.join(format!("resume-session-{stamp}.cmd"));
+        let mut text = String::from("@echo off\r\nchcp 65001 >nul\r\n");
+        if !cwd.is_empty() {
+            text.push_str(&format!("cd /d \"{cwd}\" || exit /b 1\r\n"));
+        }
+        text.push_str(&command.replace('%', "%%"));
+        text.push_str("\r\n");
+        std::fs::write(&script, text)?;
         std::process::Command::new("cmd")
-            .args(["/c", "start", "", "cmd", "/k", &inner])
+            .args(["/c", "start", "", "cmd", "/k"])
+            .arg(&script)
             .spawn()
             .context("无法打开终端")?;
         Ok(())

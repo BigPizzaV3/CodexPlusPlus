@@ -38,6 +38,13 @@ pub struct UsageCounts {
     pub duration_ms: u64,
     #[serde(default)]
     pub timed_calls: u64,
+    /// 其中成功的生图请求（生图一般不返回 token，只能按次数看）。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub images: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl UsageCounts {
@@ -50,6 +57,7 @@ impl UsageCounts {
         self.reasoning_tokens += other.reasoning_tokens;
         self.duration_ms += other.duration_ms;
         self.timed_calls += other.timed_calls;
+        self.images += other.images;
     }
 }
 
@@ -253,6 +261,26 @@ fn add_group(
     }
 }
 
+/// 一条请求按供应商里填的价格估算的费用；没填价格或没有 token 时为空。
+pub fn entry_cost(entry: &RequestLogEntry, gateway: &GatewaySettings) -> Option<UsageCost> {
+    let usage = entry.usage.as_ref()?;
+    if usage.input_tokens == 0 && usage.output_tokens == 0 {
+        return None;
+    }
+    let price = gateway
+        .provider(&entry.relay_id)?
+        .price_for(entry.usage_model())?;
+    let counts = UsageCounts {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cached_tokens: usage.cached_tokens,
+        ..UsageCounts::default()
+    };
+    let mut costs = Vec::new();
+    add_cost(&mut costs, price, &counts);
+    costs.pop()
+}
+
 /// 按每百万 token 的价格估算费用：未命中缓存的输入、命中缓存的输入、输出分别计价。
 fn add_cost(costs: &mut Vec<UsageCost>, price: &ProviderPrice, counts: &UsageCounts) {
     let uncached = counts.input_tokens.saturating_sub(counts.cached_tokens) as f64;
@@ -337,8 +365,12 @@ pub fn shift_day(day: &str, delta: i64) -> String {
 }
 
 /// 请求结束时记一笔（从请求日志条目取数）。失败不影响请求本身。
+/// 在后台线程里记：请求结束时在本地服务的单线程运行时里调用，整份文件重写加 fsync 会卡住别的流。
 pub fn record_entry(entry: &RequestLogEntry) {
-    let _ = record_entry_in(&UsageStore::default(), entry);
+    let entry = entry.clone();
+    std::thread::spawn(move || {
+        let _ = record_entry_in(&UsageStore::default(), &entry);
+    });
 }
 
 pub fn record_entry_in(store: &UsageStore, entry: &RequestLogEntry) -> anyhow::Result<()> {
@@ -346,20 +378,11 @@ pub fn record_entry_in(store: &UsageStore, entry: &RequestLogEntry) -> anyhow::R
         return Ok(());
     }
     let usage = entry.usage.clone().unwrap_or_default();
-    let model = if entry.upstream_model.trim().is_empty() {
-        entry.model.trim()
-    } else {
-        entry.upstream_model.trim()
-    };
     let row = UsageRow {
-        agent: entry
-            .agent
-            .clone()
-            .filter(|agent| !agent.trim().is_empty())
-            .unwrap_or_else(|| "codex".to_string()),
+        agent: entry.agent_id().to_string(),
         provider_id: entry.relay_id.clone(),
         provider: entry.relay_name.clone(),
-        model: model.to_string(),
+        model: entry.usage_model().to_string(),
         counts: UsageCounts {
             calls: 1,
             errors: u64::from(!entry.success),
@@ -369,6 +392,7 @@ pub fn record_entry_in(store: &UsageStore, entry: &RequestLogEntry) -> anyhow::R
             reasoning_tokens: usage.reasoning_tokens,
             duration_ms: entry.duration_ms,
             timed_calls: u64::from(entry.duration_ms > 0),
+            images: u64::from(entry.success && entry.is_image()),
         },
         extra: Default::default(),
     };
@@ -453,6 +477,10 @@ mod tests {
         failed.success = false;
         failed.usage = None;
         record_entry_in(&store, &failed).unwrap();
+        let mut image = entry(None, "img", 0, 0, 0);
+        image.wire_api = "imageGenerations".to_string();
+        image.usage = None;
+        record_entry_in(&store, &image).unwrap();
 
         let day = local_day(1_790_000_000_000);
         let mut gateway = GatewaySettings::default();
@@ -481,8 +509,9 @@ mod tests {
         let summary = store.summary(&day, Some(7), &gateway).unwrap();
         assert_eq!(summary.days.len(), 7);
         assert_eq!(summary.days.last().unwrap().date, day);
-        assert_eq!(summary.totals.calls, 4);
+        assert_eq!(summary.totals.calls, 5);
         assert_eq!(summary.totals.errors, 1);
+        assert_eq!(summary.totals.images, 1, "成功的生图按次数记");
         assert_eq!(summary.totals.input_tokens, 2_000_010);
         assert_eq!(summary.totals.cached_tokens, 400_000);
         let agents = summary
@@ -490,7 +519,7 @@ mod tests {
             .iter()
             .map(|group| (group.key.as_str(), group.counts.calls))
             .collect::<Vec<_>>();
-        assert_eq!(agents, vec![("claude", 2), ("codex", 1), ("grok", 1)]);
+        assert_eq!(agents, vec![("claude", 2), ("codex", 2), ("grok", 1)]);
         // (2M - 0.4M) × 2 + 0.4M × 0.5 + 0.2M × 8 = 3.2 + 0.2 + 1.6 = 5.0 元
         assert_eq!(summary.costs.len(), 1);
         assert_eq!(summary.costs[0].currency, "CNY");
@@ -510,8 +539,17 @@ mod tests {
                 .costs
                 .is_empty()
         );
-        assert_eq!(summary.totals.timed_calls, 4);
-        assert_eq!(summary.totals.duration_ms, 4 * 1200);
+        assert_eq!(summary.totals.timed_calls, 5);
+        assert_eq!(summary.totals.duration_ms, 5 * 1200);
+
+        // 每条请求的费用按同样的价格算：1M 输入（无缓存）× 2 = 2 元。
+        let cost = entry_cost(&entry(Some("claude"), "ds", 1_000_000, 0, 0), &gateway).unwrap();
+        assert_eq!(cost.currency, "CNY");
+        assert!((cost.amount - 2.0).abs() < 1e-9);
+        assert!(
+            entry_cost(&entry(None, "codex-relay", 10, 5, 0), &gateway).is_none(),
+            "没填价格不算"
+        );
 
         let all = store.summary(&day, None, &gateway).unwrap();
         assert_eq!(all.days.len(), 1);

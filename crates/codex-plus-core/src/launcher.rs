@@ -1133,26 +1133,6 @@ fn active_relay_profile_is_official_mix(settings: &BackendSettings) -> bool {
     let profile = settings.active_relay_profile();
     profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
-#[cfg(windows)]
-fn apply_codexplusplus_taskbar_after_launch(process_id: u32) {
-    tokio::spawn(async move {
-        for attempt in 1..=30 {
-            if crate::windows_integration::apply_codexplusplus_taskbar_to_process_window(process_id) {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            if attempt == 30 {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.taskbar.apply_failed",
-                    serde_json::json!({ "process_id": process_id }),
-                );
-            }
-        }
-    });
-}
-
-#[cfg(not(windows))]
-fn apply_codexplusplus_taskbar_after_launch(_process_id: u32) {}
 
 pub trait IntoLaunchHooks {
     fn into_launch_hooks(self) -> Arc<dyn LaunchHooks>;
@@ -1424,11 +1404,50 @@ impl LaunchHooks for DefaultLaunchHooks {
                                         None
                                     }
                                 };
+                            // issue #2700：Codex 26.1021 起，带调试参数的 AUMID 激活会让
+                            // 进程立即退出、调试端口永不监听。这里短暂观察激活结果，确认
+                            // 秒退后改走包上下文 wrapper，而不是空等注入预算耗尽。
+                            let verdict = verify_packaged_activation(
+                                process_id,
+                                process.as_ref(),
+                                debug_port,
+                            )
+                            .await;
+                            if verdict
+                                == crate::packaged_launch::AumidActivationVerdict::FallbackToPackageContext
+                            {
+                                let _ = crate::diagnostic_log::append_diagnostic_log(
+                                    "launcher.packaged_activation_exited_early",
+                                    serde_json::json!({
+                                        "app_user_model_id": app_user_model_id,
+                                        "activation_pid": process_id,
+                                        "debug_port": debug_port,
+                                    }),
+                                );
+                                launch_packaged_main_in_package_context(
+                                    app_dir,
+                                    app_user_model_id,
+                                    debug_port,
+                                    &launch_extra_args,
+                                )
+                                .await?;
+                                *self.packaged_executable.lock().await = Some(executable);
+                                *self.packaged_activation_process.lock().await = None;
+                                *self.packaged_launch_identity.lock().await = None;
+                                // 包上下文里拉起的是 cmd.exe，拿不到应用进程 PID；
+                                // 退出等待按调试端口归属去发现实际进程。
+                                return Ok(CodexLaunch::PackagedActivation {
+                                    app_user_model_id: app_user_model_id.clone(),
+                                    arguments: arguments.clone(),
+                                    process_id: None,
+                                });
+                            }
                             *self.packaged_executable.lock().await = Some(executable);
                             *self.packaged_activation_process.lock().await = process;
                             *self.packaged_launch_identity.lock().await = None;
                         }
-                        apply_codexplusplus_taskbar_after_launch(process_id);
+                        // 不改写打包版 Codex 窗口的 AppUserModelID：保留包身份，任务栏才能
+                        // 解析官方图标并与原应用合并分组（#2499、#2668）。
                         return Ok(match activation {
                             CodexLaunch::PackagedActivation {
                                 app_user_model_id,
@@ -1927,6 +1946,22 @@ async fn handle_helper_connection(
         }),
     );
 
+    // 浏览器里的网页能对 127.0.0.1 发「简单请求」（不触发预检），读不到答复，但请求照样执行、照样计费。
+    // Agent 都不带 Origin；带了的模型 / 生图 / 转写请求一律拒绝，免得本地服务被网页拿去用池里的额度。
+    if method == "POST"
+        && is_billable_proxy_path(path)
+        && header_value_from_headers(&request_headers, "origin")
+            .is_some_and(|origin| !origin.trim().is_empty())
+    {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "status": "forbidden",
+            "message": "本地代理不接受来自网页的请求。"
+        }))?;
+        write_http_response(&mut stream, "403 Forbidden", "application/json; charset=utf-8", &body)
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     if crate::gateway::is_gateway_path(path) {
         return crate::gateway::server::handle(
             &mut stream,
@@ -2737,6 +2772,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
             request_log.set_agent(agent);
             crate::gateway::server::open_responses_for_agent(
                 agent,
+                path,
                 request_body,
                 request_user_agent,
                 session_headers,
@@ -2842,7 +2878,8 @@ pub(crate) async fn handle_protocol_proxy_connection(
             let mut transformer =
                 crate::protocol_proxy::ResponsesSseTransformer::for_request(request_json.as_ref())
                     .stripping_backend_events(foreign_client);
-            let out = transformer.push_bytes(&body);
+            let mut out = transformer.push_bytes(&body);
+            out.extend(transformer.flush_pending());
             stream.write_all(&out).await?;
             let usage = transformer.take_usage();
             let detail = transformer.take_failure_detail();
@@ -3438,6 +3475,16 @@ async fn handle_audio_transcriptions_proxy_connection(
     Ok(())
 }
 
+/// 会花上游额度的本地代理接口（模型、生图、转写；网关路径 `/gw/...` 也算）。
+fn is_billable_proxy_path(path: &str) -> bool {
+    crate::gateway::is_gateway_path(path)
+        || crate::protocol_proxy::is_responses_proxy_path(path)
+        || crate::protocol_proxy::is_chat_completions_proxy_path(path)
+        || crate::protocol_proxy::is_image_generations_proxy_path(path)
+        || crate::protocol_proxy::is_image_edits_proxy_path(path)
+        || crate::protocol_proxy::is_audio_transcriptions_proxy_path(path)
+}
+
 async fn handle_image_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &[u8],
@@ -3447,6 +3494,22 @@ async fn handle_image_proxy_connection(
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
+    // Codex 接在网关上（以 ChatGPT 身份经本地代理）：生图交给网关按 Codex 的生图模型处理。
+    if crate::gateway::apply::codex_hops_through_gateway() {
+        return crate::gateway::server::handle_codex_images_from_helper(
+            stream,
+            crate::gateway::server::ImageRequest {
+                edits: !crate::protocol_proxy::is_image_generations_proxy_path(path),
+                body: request_body,
+                content_type: request_content_type.unwrap_or_default(),
+                user_agent: request_user_agent,
+            },
+            method,
+            path,
+            remote_addr_text,
+        )
+        .await;
+    }
     let upstream = if crate::protocol_proxy::is_image_generations_proxy_path(path) {
         crate::protocol_proxy::open_image_generations_proxy_request(
             request_body,
@@ -3696,6 +3759,11 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
                     }
                 }
                 Err(error) => {
+                    // 断流时仍在暂存的消息原样补写，不丢事件。
+                    let pending = transformer.flush_pending();
+                    if !pending.is_empty() {
+                        stream.send(&pending).await?;
+                    }
                     let usage = transformer.take_usage();
                     let detail = transformer.take_failure_detail();
                     return Ok((
@@ -3706,6 +3774,10 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
                     ));
                 }
             }
+        }
+        let pending = transformer.flush_pending();
+        if !pending.is_empty() {
+            stream.send(&pending).await?;
         }
         let usage = transformer.take_usage();
         let detail = transformer.take_failure_detail();
@@ -4547,6 +4619,90 @@ async fn launch_packaged_multi_instance(
             }
         }
     }
+}
+
+/// 包上下文兜底启动后等待调试端口就绪的上限。超过即报错，不再进入 90 秒注入预算。
+#[cfg(windows)]
+const PACKAGED_CONTEXT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// AUMID 激活后的观察：直到调试端口就绪、确认激活进程秒退、或验证窗口耗尽（issue #2700）。
+///
+/// 判定逻辑在 `packaged_launch::AumidActivationWatch`（纯函数，有单测）；这里只负责采样。
+#[cfg(windows)]
+async fn verify_packaged_activation(
+    process_id: u32,
+    process: Option<&crate::windows_integration::TrackedWindowsProcess>,
+    debug_port: u16,
+) -> crate::packaged_launch::AumidActivationVerdict {
+    use crate::packaged_launch::{AumidActivationVerdict, AumidActivationWatch};
+    let mut watch = AumidActivationWatch::new(std::time::Instant::now());
+    loop {
+        let cdp_ready =
+            tokio::task::spawn_blocking(move || crate::cdp::endpoint_available(debug_port))
+                .await
+                .unwrap_or(false);
+        let process_alive = match process {
+            Some(process) => process.is_alive().ok(),
+            // 激活后进程秒退时 OpenProcess 往往已经失败，拿不到句柄；
+            // 退回按进程快照判断该 PID 是否还在。
+            None => tokio::task::spawn_blocking(move || {
+                crate::windows_integration::enumerate_processes()
+                    .iter()
+                    .any(|info| info.process_id == process_id)
+            })
+            .await
+            .ok(),
+        };
+        let verdict = watch.observe(std::time::Instant::now(), cdp_ready, process_alive);
+        if verdict != AumidActivationVerdict::Pending {
+            return verdict;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+/// 主实例的包上下文兜底启动（issue #2700）：AUMID 激活后进程秒退时，改用
+/// `Invoke-CommandInDesktopPackage` wrapper 带同一份参数拉起 exe，并等待调试端口就绪。
+///
+/// 任一步失败都直接返回 Err，让用户立即看到错误，而不是空等注入预算耗尽。
+#[cfg(windows)]
+async fn launch_packaged_main_in_package_context(
+    app_dir: &Path,
+    app_user_model_id: &str,
+    debug_port: u16,
+    extra_args: &[String],
+) -> anyhow::Result<()> {
+    let executable = crate::app_paths::build_codex_executable(app_dir);
+    let arguments = build_codex_arguments(debug_port, extra_args);
+    let wrapper_path = crate::packaged_launch::prepare_main_instance_wrapper(
+        &crate::paths::default_app_state_dir(),
+        &executable,
+        &arguments,
+    )?;
+    crate::packaged_launch::activate_in_package_context(app_user_model_id, &wrapper_path)
+        .await
+        .context("Codex 通过 AUMID 激活后立即退出，改用包上下文启动也失败")?;
+    let ready = tokio::task::spawn_blocking(move || {
+        crate::packaged_launch::wait_for_instance_ready(debug_port, PACKAGED_CONTEXT_READY_TIMEOUT)
+    })
+    .await
+    .unwrap_or(false);
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "launcher.packaged_context_main_launch",
+        serde_json::json!({
+            "app_user_model_id": app_user_model_id,
+            "wrapper_path": wrapper_path,
+            "debug_port": debug_port,
+            "ready": ready,
+        }),
+    );
+    if !ready {
+        anyhow::bail!(
+            "Codex 通过 AUMID 激活后立即退出，改用包上下文启动后 {} 秒内调试端口 {debug_port} 仍未就绪",
+            PACKAGED_CONTEXT_READY_TIMEOUT.as_secs()
+        );
+    }
+    Ok(())
 }
 
 /// 从启动参数里取出实例自己的 `--user-data-dir`（多开由管理器注入）。
@@ -5616,6 +5772,16 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn billable_paths_cover_model_image_and_gateway_endpoints() {
+        for path in ["/v1/responses", "/v1/chat/completions", "/v1/images/generations", "/v1/images/edits", "/v1/audio/transcriptions", "/gw/claude/v1/messages"] {
+            assert!(is_billable_proxy_path(path), "{path}");
+        }
+        for path in ["/dictation/status", "/v1/models", "/health"] {
+            assert!(!is_billable_proxy_path(path), "{path}");
+        }
+    }
 
     #[test]
     fn standalone_quota_unlock_is_opt_in_and_does_not_duplicate_full_enhancements() {

@@ -448,13 +448,14 @@ pub fn rotate_gateway_token(agent: String) -> CommandResult<Option<GatewayPayloa
     let result = (|| {
         let agent = parse_agent(&agent)?;
         let store = GatewayStore::default();
-        let mut gateway = store.load()?;
-        let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
-            anyhow::bail!("还没有配置网关绑定");
-        };
-        binding.token = new_client_token(&agent);
-        let binding = binding.clone();
-        store.save(&gateway)?;
+        // 带锁读改写：只换这个 Agent 的 token，不拿旧状态覆盖同时刷新写回的登录 token。
+        let (gateway, binding) = store.update(|gateway| {
+            let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
+                anyhow::bail!("还没有配置网关绑定");
+            };
+            binding.token = new_client_token(&agent);
+            Ok(binding.clone())
+        })?;
         if binding.enabled {
             return apply::enable_binding(&context(), &agent, binding);
         }
@@ -470,14 +471,14 @@ pub fn save_gateway_options(
     restore_on_exit: bool,
 ) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
-        let store = GatewayStore::default();
-        let mut gateway = store.load()?;
-        gateway.key_policy.mode = match key_rotation.as_str() {
-            "roundRobin" => KeyRotationMode::RoundRobin,
-            _ => KeyRotationMode::Sticky,
-        };
-        gateway.restore_on_exit = restore_on_exit;
-        store.save(&gateway)?;
+        let (gateway, ()) = GatewayStore::default().update(|gateway| {
+            gateway.key_policy.mode = match key_rotation.as_str() {
+                "roundRobin" => KeyRotationMode::RoundRobin,
+                _ => KeyRotationMode::Sticky,
+            };
+            gateway.restore_on_exit = restore_on_exit;
+            Ok(())
+        })?;
         Ok(gateway)
     })();
     respond("网关选项已保存。", "保存网关选项失败", result)
@@ -531,6 +532,24 @@ pub fn save_gateway_image_model(
         })
     });
     respond("生图模型已保存。", "保存生图模型失败", result)
+}
+
+/// 某个 Agent 的生图结果只给链接时，要不要下载下来补成图片数据（默认要）。
+#[tauri::command]
+pub fn save_gateway_image_inline(
+    agent: String,
+    enabled: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent).and_then(|agent| {
+        GatewayStore::default().update(|gateway| {
+            gateway.image_keep_urls.retain(|id| id != agent.as_str());
+            if !enabled {
+                gateway.image_keep_urls.push(agent.as_str().to_string());
+            }
+            Ok(())
+        })
+    });
+    respond("生图选项已保存。", "保存生图选项失败", result)
 }
 
 /// 供应商各模型内置的思考等级（编辑思考等级时当作没改过的显示值）。
@@ -1247,9 +1266,16 @@ pub async fn list_agent_sessions(agent: String) -> CommandResult<AgentSessions> 
     ok("会话已加载。", AgentSessions { sessions })
 }
 
+/// 删掉的会话移到了哪里。CommandResult 会把 payload 摊平，只能是结构体，不能是字符串。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedSession {
+    pub trash_path: Option<String>,
+}
+
 /// 删除 Claude Code / Grok 的一个本地会话：移进废纸篓，可以找回。Codex 的会话走 `delete_local_session`。
 #[tauri::command]
-pub fn delete_agent_session(agent: String, id: String) -> CommandResult<Option<String>> {
+pub fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedSession> {
     use codex_plus_core::gateway::sessions;
     let trash = sessions::default_trash_dir();
     let result = match agent.as_str() {
@@ -1268,9 +1294,11 @@ pub fn delete_agent_session(agent: String, id: String) -> CommandResult<Option<S
     match result {
         Ok(path) => ok(
             "会话已移到废纸篓，需要时可以从废纸篓找回。",
-            Some(path.display().to_string()),
+            DeletedSession {
+                trash_path: Some(path.display().to_string()),
+            },
         ),
-        Err(error) => failed(&format!("删除失败：{error:#}"), None),
+        Err(error) => failed(&format!("删除失败：{error:#}"), DeletedSession::default()),
     }
 }
 
@@ -1294,13 +1322,17 @@ pub fn resume_agent_session(
 }
 
 /// 用系统默认浏览器打开登录页。
+/// Windows 不能用 `cmd /c start`：授权地址里的 `&` 会被 cmd 当成命令分隔符，参数全丢。
 fn open_in_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/c", "start", "", url])
-        .spawn();
+    if let Err(error) = codex_plus_core::windows_open_url(url) {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "gateway.login_browser_failed",
+            serde_json::json!({ "error": format!("{error:#}") }),
+        );
+    }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
@@ -1332,6 +1364,15 @@ where
     T: Send + 'static,
     F: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
 {
+    // 先中止上一次、等它放掉回调端口，再开始新的：不然新登录绑端口时旧的监听可能还没释放。
+    let previous = login_slot().take();
+    if let Some((_, abort_previous)) = previous {
+        abort_previous();
+        let _ = tauri::async_runtime::spawn_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200))
+        })
+        .await;
+    }
     let handle = tauri::async_runtime::spawn(login);
     let id = LOGIN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     {
@@ -1435,18 +1476,24 @@ pub async fn login_gateway_chatgpt(
     let outcome = cancellable_login(async move {
         let account = accounts::chatgpt_login(open_in_browser).await?;
         let store = GatewayStore::default();
-        let mut gateway = store.load()?;
-        // 同一个账号已经登录过：只换 token。
-        if !account.account_id.is_empty()
-            && let Some(provider) = gateway.providers.iter_mut().find(|provider| {
-                codex_plus_core::official_login::chatgpt_account_id_from_auth_contents(
-                    &provider.relay.auth_contents,
-                ) == account.account_id
-            })
-        {
-            provider.relay.auth_contents = account.auth_contents.clone();
-            let name = provider.relay.name.clone();
-            store.save(&gateway)?;
+        // 同一个人的同一个账号已经登录过：只换 token。工作区成员共用账号 id，还要比用户；
+        // 带锁读改写，只动这一个供应商。
+        let (_, updated) = store.update(|gateway| {
+            Ok(gateway
+                .providers
+                .iter_mut()
+                .find(|provider| {
+                    accounts::same_chatgpt_login(
+                        &provider.relay.auth_contents,
+                        &account.auth_contents,
+                    )
+                })
+                .map(|provider| {
+                    provider.relay.auth_contents = account.auth_contents.clone();
+                    provider.relay.name.clone()
+                }))
+        })?;
+        if let Some(name) = updated {
             return Ok(format!("已更新「{name}」的登录。"));
         }
         let mut relay = accounts::chatgpt_relay(&account, &[]);
@@ -1490,19 +1537,26 @@ fn add_account_provider(
             .filter(|value| !value.is_empty())
     };
     let store = GatewayStore::default();
-    let mut gateway = store.load()?;
-    if let Some(id) = identity(&relay.auth_contents)
-        && let Some(provider) = gateway.providers.iter_mut().find(|provider| {
-            identity(&provider.relay.auth_contents).as_deref() == Some(id.as_str())
-        })
-    {
-        provider.relay.auth_contents = relay.auth_contents.clone();
-        if !relay.model_list.trim().is_empty() {
-            provider.relay.model_list = relay.model_list.clone();
+    // 同一个账号已存在：带锁读改写，只换这一个供应商的凭据（和模型列表）。
+    if let Some(id) = identity(&relay.auth_contents) {
+        let (_, updated) = store.update(|gateway| {
+            Ok(gateway
+                .providers
+                .iter_mut()
+                .find(|provider| {
+                    identity(&provider.relay.auth_contents).as_deref() == Some(id.as_str())
+                })
+                .map(|provider| {
+                    provider.relay.auth_contents = relay.auth_contents.clone();
+                    if !relay.model_list.trim().is_empty() {
+                        provider.relay.model_list = relay.model_list.clone();
+                    }
+                    provider.relay.name.clone()
+                }))
+        })?;
+        if let Some(name) = updated {
+            return Ok(format!("已更新「{name}」的登录。"));
         }
-        let name = provider.relay.name.clone();
-        store.save(&gateway)?;
-        return Ok(format!("已更新「{name}」的登录。"));
     }
     let name = relay.name.clone();
     let count = relay
@@ -1650,6 +1704,27 @@ pub fn restore_for_update() -> bool {
         }),
     );
     true
+}
+
+/// 卸载前（卸载器带 `--codex-plus-uninstall-cleanup` 调用）：同安装更新前，不管开关都把走网关的
+/// Agent 恢复成直连。卸载后网关不在了，不还原的话 Codex / Claude Code / Grok 会一直连一个没人监听的
+/// 本机地址。结果只写诊断日志，不报错，后面的卸载清理照常进行。
+pub fn restore_for_uninstall() {
+    let has_enabled = GatewayStore::default()
+        .load()
+        .is_ok_and(|gateway| gateway.any_enabled());
+    if !has_enabled {
+        return;
+    }
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let result = apply::restore_all_for_exit(&context(), &settings, true);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "uninstall.gateway_restore",
+        serde_json::json!({
+            "ok": result.is_ok(),
+            "message": result.as_ref().err().map(|error| format!("{error:#}")),
+        }),
+    );
 }
 
 /// 更新没装成、Codex++ 继续运行：把更新前恢复成直连的 Agent 重新接回网关。

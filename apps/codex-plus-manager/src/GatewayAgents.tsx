@@ -640,6 +640,7 @@ function imageOptionLabel(option: ImageOption): string {
 /** Agent 详情里的「生图模型」：这个 Agent 的生图请求经网关发给谁。 */
 function ImageModelRow({ agent, payload, busy, run }: { agent: string; payload: GatewayPayload | null; busy: string | null; run: Run }) {
   const value = payload?.gateway.imageModels?.[agent] ?? "";
+  const inlineUrls = !(payload?.gateway.imageKeepUrls ?? []).includes(agent);
   const options = payload?.imageOptions ?? [];
   const auto = payload?.imageAuto ?? null;
   const known = value === "" || value === "off" || options.some((option) => option.id === value);
@@ -667,6 +668,17 @@ function ImageModelRow({ agent, payload, busy, run }: { agent: string; payload: 
           value={value}
         />
         {value === "" && !auto ? <span className="gw-muted">{t("池里还没有能生图的模型：登录 ChatGPT 账号，或给供应商加上生图模型")}</span> : null}
+        {value !== "off" ? (
+          <label className="gw-inline-field gw-inline-check" title={t("上游只返回图片链接时，网关把图下载下来转成图片数据再交给 Agent（Codex 只认图片数据）。关掉后原样转发链接。")}>
+            <input
+              checked={inlineUrls}
+              disabled={busy !== null}
+              onChange={(event) => void run(`image-inline:${agent}`, "save_gateway_image_inline", { agent, enabled: event.currentTarget.checked }, t("保存生图选项"), true)}
+              type="checkbox"
+            />
+            <span>{t("图片链接转成图片数据")}</span>
+          </label>
+        ) : null}
       </div>
     </div>
   );

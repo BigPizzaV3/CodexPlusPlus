@@ -406,6 +406,19 @@ pub fn clear_current(ctx: &ClaudeContext) -> anyhow::Result<ClaudeProvidersPaylo
     Ok(payload(ctx, store, backup_path, 0))
 }
 
+/// 只清空当前指针，不动 settings.json。
+///
+/// 网关断开时 settings.json 已经被别的工具改走：它现在的样子是用户的新选择，不能再写回，
+/// 只把 Codex++ 自己记的「当前供应商」清掉。
+pub fn forget_current(ctx: &ClaudeContext) -> anyhow::Result<()> {
+    let mut store = read_store(&ctx.store_path)?;
+    if store.current_id.is_empty() {
+        return Ok(());
+    }
+    store.current_id.clear();
+    write_store(&ctx.store_path, &store)
+}
+
 /// 把 settings.json 现有的关键字段存成一个供应商，并把它设为当前供应商（live 本来就是它）。
 pub fn import_live(ctx: &ClaudeContext) -> anyhow::Result<ClaudeProvidersPayload> {
     let mut store = read_store(&ctx.store_path)?;

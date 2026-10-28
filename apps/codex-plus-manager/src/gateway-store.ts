@@ -5,12 +5,27 @@ import type { GatewayPayload, GatewayResult } from "./gateway-model";
 
 const shared: { payload: GatewayPayload | null } = { payload: null };
 const listeners = new Set<(payload: GatewayPayload) => void>();
+/** 每推一次新数据（保存的结果）加一。轮询发出后数据变过，答复就是旧的，丢掉不用，免得盖回刚保存的状态。 */
+let generation = 0;
+
+export function gatewayGeneration(): number {
+  return generation;
+}
 
 /** 命令返回了新的网关数据（如在总览里接入了 Agent、在网关页改了供应商）：立刻推给所有在用的组件，不等下次轮询。 */
 export function publishGatewayPayload(result: GatewayResult) {
   if (!result.gateway || !Array.isArray(result.pool)) return;
+  generation += 1;
   shared.payload = result as GatewayPayload;
   for (const listener of listeners) listener(shared.payload);
+}
+
+/** 订阅别处推来的新数据（不轮询）；返回取消订阅。 */
+export function subscribeGatewayPayload(listener: (payload: GatewayPayload) => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 export function useGatewayPayload(intervalMs: number): GatewayPayload | null {
@@ -23,14 +38,16 @@ export function useGatewayPayload(intervalMs: number): GatewayPayload | null {
   }, []);
   useEffect(() => {
     let cancelled = false;
-    const load = () =>
-      invoke<GatewayResult>("load_gateway")
+    const load = () => {
+      const started = generation;
+      return invoke<GatewayResult>("load_gateway")
         .then((result) => {
-          if (cancelled || !result.gateway || !Array.isArray(result.pool)) return;
+          if (cancelled || started !== generation || !result.gateway || !Array.isArray(result.pool)) return;
           shared.payload = result as GatewayPayload;
           setPayload(shared.payload);
         })
         .catch(() => undefined);
+    };
     void load();
     const timer = window.setInterval(load, intervalMs);
     return () => {

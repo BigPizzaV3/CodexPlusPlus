@@ -1001,6 +1001,34 @@ async fn gateway_end_to_end() {
         assert_eq!(body["model"], "flux-1-schnell");
         assert_eq!(body["prompt"], "a cat");
     }
+    // 生图也记进请求日志：类型、Agent、最后回答的那家、试了几家。
+    let mut image_entry = None;
+    for _ in 0..40 {
+        let log =
+            std::fs::read_to_string(state_dir.path().join("request-log.jsonl")).unwrap_or_default();
+        image_entry = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|entry| {
+                entry["wire_api"] == "imageGenerations" || entry["wireApi"] == "imageGenerations"
+            });
+        if image_entry.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let image_entry = image_entry.expect("生图请求要记进请求日志");
+    let field = |snake: &str, camel: &str| {
+        image_entry
+            .get(snake)
+            .or_else(|| image_entry.get(camel))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(field("agent", "agent"), "grok");
+    assert_eq!(field("relay_id", "relayId"), "painter");
+    assert_eq!(field("attempts", "attempts"), 2);
+    assert_eq!(field("success", "success"), true);
     // 关掉生图：直接报错，不发给上游。
     gateway.image_models.insert("grok".into(), "off".into());
     save(&gateway);
@@ -1016,6 +1044,52 @@ async fn gateway_end_to_end() {
     assert_eq!(response.status().as_u16(), 400);
     assert!(response.text().await.unwrap().contains("生图已关闭"));
     gateway.image_models.clear();
+
+    // Codex 以 ChatGPT 身份接入（8d 里 Codex 的供应商已是网关托管的那个）：它的生图请求打到本地代理的
+    // `/v1/images/generations`，也要按 Codex 的生图模型走网关，不能按直连转回本地代理自己。
+    let (codex_image_base, codex_image_seen) = mock_upstream(vec![(
+        200,
+        "application/json",
+        json!({ "data": [{ "b64_json": "BBBB" }] }).to_string(),
+    )])
+    .await;
+    gateway.providers = providers(vec![
+        relay(
+            "chatonly",
+            &grok_base,
+            "sk-grok",
+            RelayProtocol::ChatCompletions,
+            "glm-5.3",
+        ),
+        relay(
+            "painter",
+            &codex_image_base,
+            "sk-paint",
+            RelayProtocol::Responses,
+            "gpt-image-2",
+        ),
+    ]);
+    save(&gateway);
+    let response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/v1/images/generations"))
+        .bearer_auth("chatgpt-access-token")
+        .json(&json!({ "model": "gpt-image-2", "prompt": "a cat" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(response.text().await.unwrap().contains("BBBB"));
+    {
+        let seen = codex_image_seen.lock().unwrap();
+        let (head, body) = &seen[0];
+        assert!(head.starts_with("POST /v1/images/generations"), "{head}");
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer sk-paint"),
+            "{head}"
+        );
+        assert_eq!(body["model"], "gpt-image-2");
+    }
 
     // —— 9. 关闭绑定后返回 503，旧的 Codex 代理路径不受影响 ——
     gateway.bindings.get_mut("claude").unwrap().enabled = false;

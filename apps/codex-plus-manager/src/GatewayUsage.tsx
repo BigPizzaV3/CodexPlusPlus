@@ -26,6 +26,8 @@ import {
 } from "./gateway-model";
 import { AGENT_ICONS, Avatar, type Notify, type Run } from "./gateway-ui";
 import { successRate } from "./hub-overview-model";
+import { openRequestLog } from "./UsageTabs";
+import { TopbarActions } from "./TopbarActions";
 
 const memo: { range: UsageRange; summary: UsageSummary | null; balances: ProviderBalance[] | null } = { range: "30d", summary: null, balances: null };
 
@@ -104,10 +106,13 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
             </button>
           ))}
         </nav>
+      </div>
+      {/* 刷新放进外壳顶栏（网关页在用量页签不再放它自己的刷新），页面里不再重复一个。 */}
+      <TopbarActions>
         <button aria-label={t("刷新")} className="gw-icon-button gw-usage-refresh" onClick={() => { void load(range); void loadBalances(); }} title={t("刷新")} type="button">
           <RefreshCw className={`h-4 w-4 ${loadingBalances ? "animate-spin" : ""}`} />
         </button>
-      </div>
+      </TopbarActions>
 
       {balances && balances.length ? (
         <div className="gw-balance-grid">
@@ -151,6 +156,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
           <strong>{totals?.calls ?? 0}</strong>
           <small data-tone={totals?.errors ? "err" : undefined}>
             {rate === null ? t("还没有请求") : totals?.errors ? tf("成功率 {0}% · {1} 次出错", [(rate * 100).toFixed(1), totals.errors]) : t("全部成功")}
+            {totals?.images ? ` · ${tf("生图 {0} 次", [totals.images])}` : ""}
           </small>
         </div>
         <div className="gw-usage-stat">
@@ -177,13 +183,13 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
             className="gw-text-button"
             disabled={busy !== null}
             onClick={() => void (async () => {
-              if (await appConfirm(t("清空全部用量统计？请求日志不受影响。"), { title: t("清空用量"), confirmText: t("清空"), danger: true })) {
-                if (await run("usage:clear", "clear_gateway_usage", undefined, t("清空用量"))) void load(range);
+              if (await appConfirm(t("清空全部用量统计？请求日志不受影响。"), { title: t("清空统计"), confirmText: t("清空"), danger: true })) {
+                if (await run("usage:clear", "clear_gateway_usage", undefined, t("清空统计"))) void load(range);
               }
             })()}
             type="button"
           >
-            {t("清空")}
+            {t("清空统计")}
           </button>
         </div>
       </div>
@@ -206,7 +212,20 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
           const providerEntry = payload?.pool.find((entry) => entry.id === group.key);
           const name = split === "agent" ? agentName(group.key) : split === "model" ? prettyModelName(group.label) : maskAccountName(group.label);
           return (
-            <div className="gw-usage-row" key={group.key || "-"}>
+            <div
+              className="gw-usage-row gw-usage-row-link"
+              key={group.key || "-"}
+              // 点一行看这一项的每条请求：按 Agent、供应商 id 或模型名筛，时间段跟着这里选的。
+              onClick={() => openRequestLog(split === "agent"
+                ? { agent: group.key === "claude" || group.key === "grok" ? group.key : "codex", range }
+                : split === "provider"
+                  ? { relayId: group.key, relayLabel: maskAccountName(group.label), range }
+                  : { model: group.key, range })}
+              onKeyDown={(event) => { if (event.key === "Enter") (event.currentTarget as HTMLElement).click(); }}
+              role="button"
+              tabIndex={0}
+              title={t("查看这些请求")}
+            >
               <span className="gw-usage-name">
                 {split === "agent" ? (
                   AGENT_ICONS[group.key] ? <img alt="" className="gw-usage-agent" src={AGENT_ICONS[group.key]} /> : <Avatar name={group.label} size="sm" />

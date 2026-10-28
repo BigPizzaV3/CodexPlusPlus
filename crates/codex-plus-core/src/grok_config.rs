@@ -357,9 +357,14 @@ fn parse_document(contents: &str, path: &Path) -> anyhow::Result<DocumentMut> {
     if contents.trim().is_empty() {
         return Ok(DocumentMut::new());
     }
-    contents
-        .parse::<DocumentMut>()
-        .with_context(|| format!("无法解析 Grok 配置 {}", path.display()))
+    // 解析错误不带原文（那一行可能是 api_key），只报行列。
+    contents.parse::<DocumentMut>().map_err(|error| {
+        crate::gateway::restore::toml_syntax_error(
+            &format!("Grok 配置 {}", path.display()),
+            contents,
+            error.span(),
+        )
+    })
 }
 
 fn read_optional_bytes(path: &Path) -> anyhow::Result<Vec<u8>> {

@@ -16,3 +16,11 @@ test("Codex 里有残留条目时提示并只提供移除", () => {
   assert.ok(page.includes("mutateTarget(\"codex\", \"uninstall\")"));
   assert.ok(!page.includes("mutateTarget(\"codex\", \"install\")"));
 });
+
+test("非 macOS 平台显示「暂不支持」，不去探测运行时（#2718）", () => {
+  assert.match(page, /const computerUseSupported = enhancementPlatformFromUserAgent\(navigator\.userAgent\) === "macos";/);
+  assert.match(page, /return computerUseSupported \? <ComputerUseMacPage \/> : <ComputerUseUnsupported \/>;/);
+  const unsupported = page.slice(page.indexOf("function ComputerUseUnsupported"), page.indexOf("function ComputerUseMacPage"));
+  assert.ok(unsupported.includes("Computer Use 暂不支持 Windows"));
+  assert.ok(!unsupported.includes("invoke("), "不支持的平台不应调用后端探测");
+});

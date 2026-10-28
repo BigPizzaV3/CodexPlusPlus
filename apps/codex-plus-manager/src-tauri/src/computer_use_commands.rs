@@ -22,7 +22,9 @@ where
 pub async fn computer_use_status() -> CommandResult<Value> {
     match run_blocking(codex_plus_core::computer_use::status).await {
         Ok(report) => {
-            let message = if report.runtime_found {
+            let message = if !report.platform_supported {
+                codex_plus_core::computer_use::UNSUPPORTED_PLATFORM
+            } else if report.runtime_found {
                 "已找到 Codex 运行时。"
             } else {
                 "未找到 ChatGPT.app，Computer Use 暂时不可接入。"

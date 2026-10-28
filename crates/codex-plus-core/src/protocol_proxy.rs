@@ -15,6 +15,8 @@ use serde_json::{Map, Value, json};
 use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
+mod local_compaction;
+
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
 
 /// 工具调用上需要跨 turn 原样带回的供应商附带数据，按 `call_id` 索引。
@@ -1770,13 +1772,14 @@ fn chat_completion_to_response_with_context(
     if let Some(reasoning) = chat_reasoning_to_response_output_item(message, &response_id) {
         output.push(reasoning);
     }
-    if let Some(message) = chat_message_to_response_output_item(message, &response_id) {
+    let tool_items = chat_tool_calls_to_response_output_items(message, tool_context);
+    if let Some(mut message) = chat_message_to_response_output_item(message, &response_id) {
+        // 与流式转换一致：无工具调用的消息即本轮最终回答（issue #2659）。
+        message["phase"] =
+            json!(if tool_items.is_empty() { "final_answer" } else { "commentary" });
         output.push(message);
     }
-    output.extend(chat_tool_calls_to_response_output_items(
-        message,
-        tool_context,
-    ));
+    output.extend(tool_items);
 
     let invalid_web_search = output.iter().any(invalid_web_search_output_item);
     let mut response = json!({
@@ -3337,6 +3340,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
+    let local_compaction_request = !is_responses_compact_proxy_path(request_path)
+        && !request_has_compaction_trigger(&request_json)
+        && local_compaction::is_local_request(&request_json, COMPACTION_SUMMARY_INSTRUCTION);
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -3503,10 +3509,62 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let probe_native_compaction = request_has_compaction_trigger(&request_json)
             && relay.protocol == RelayProtocol::Responses
             && !is_responses_compact_proxy_path(request_path);
+        let mut logical_body = request_json.clone();
+        if relay.local_compaction_prompt_at_end_enabled()
+            && let Some(model) = model_override.as_deref().map(str::trim).filter(|model| !model.is_empty())
+        {
+            logical_body["model"] = json!(model);
+        }
+        let experimental_local_compaction =
+            local_compaction_request && relay.local_compaction_prompt_at_end_enabled();
+        let cache_key = relay.local_compaction_prompt_at_end_enabled()
+            .then(|| local_compaction::key(&relay, &logical_body, session_headers))
+            .flatten();
+        let cache_context = if !local_compaction_request {
+            cache_key.as_ref()
+                .and_then(|_| local_compaction::RequestContext::from_request(&logical_body))
+        } else {
+            None
+        };
+        let local_candidate = if experimental_local_compaction {
+            cache_key
+                .as_deref()
+                .and_then(|key| local_compaction::candidate(key, &logical_body))
+        } else {
+            None
+        };
+        if experimental_local_compaction {
+            let detail = if let Some(candidate) = &local_candidate {
+                json!({
+                    "relayId":relay.id, "action":"reuse_context",
+                    "contextFieldsMatch":candidate.context_fields_match,
+                    "historyPrefixMatches":candidate.history_prefix_matches
+                })
+            } else {
+                json!({
+                    "relayId":relay.id, "action":"original_request",
+                    "reason":if cache_key.is_some() {
+                        "no_request_context"
+                    } else {
+                        "missing_session_identity"
+                    }
+                })
+            };
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.local_compaction",
+                detail,
+            );
+        }
+        let local_exec_adapted = local_candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.exec_adapted);
+        if let Some(candidate) = local_candidate {
+            logical_body = candidate.body;
+        }
         let (mut endpoint, mut upstream_body, mut wire_api, compaction) =
             match upstream_request_parts(
                 &relay,
-                request_json.clone(),
+                logical_body,
                 request_path,
                 model_override.as_deref(),
                 preserve_native_request,
@@ -3530,6 +3588,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let legacy_native_compaction = relay.protocol == RelayProtocol::Responses
             && is_responses_compact_proxy_path(request_path);
         let is_compaction_request = compaction || probe_native_compaction || legacy_native_compaction;
+        if local_exec_adapted
+            && wire_api == UpstreamWireApi::Responses
+        {
+            // 声明与当前全部历史同时转换，不能对已转换的声明再拼入原始新工具结果。
+            upstream_body = crate::responses_exec::adapt_request(upstream_body)?;
+        }
         request_trace.relay_id = relay.id.clone();
         request_trace.relay_name = relay.name.clone();
         request_trace.wire_api = upstream_wire_api_label(wire_api).to_string();
@@ -3561,6 +3625,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
         let eligible = wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
+            && !experimental_local_compaction
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
         let mut key = None;
         let mut exec_adapted = false;
@@ -4112,6 +4177,14 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 continue 'request_attempts;
             }
         }
+        if (200..300).contains(&status_code)
+            && !local_compaction_request
+            && !is_compaction_request
+            && let Some(key) = cache_key
+        {
+            // buffered 模式会提前返回，也必须记录普通请求的逻辑上下文字段。
+            local_compaction::remember(key, cache_context, exec_adapted);
+        }
         // 200 的流式响应也可能带着 response.failed（官方 server_overloaded
         // 就是先回 200 再在流里失败）。在向 Codex 写出任何字节前先预读；
         // 若识别到容量失败就退避后重发同一次上游请求。
@@ -4120,6 +4193,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             && (200..300).contains(&status_code)
             && wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
+            && !experimental_local_compaction
             && !exec_adapted
             && auto_retry.is_some()
             && buffered_mode
@@ -4200,6 +4274,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             && (200..300).contains(&status_code)
             && wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
+            && !experimental_local_compaction
             && !exec_adapted
             && auto_retry.is_some()
         {
@@ -4427,7 +4502,7 @@ fn select_model_route(
     if target_relay_id == source.id {
         anyhow::bail!("模型路由不能指向当前供应商自身：{model}");
     }
-    let target = settings
+    let mut target = settings
         .relay_profiles
         .iter()
         .find(|profile| profile.id == target_relay_id)
@@ -4439,6 +4514,7 @@ fn select_model_route(
     if target.protocol != RelayProtocol::Responses {
         anyhow::bail!("模型路由目标必须使用 Responses API：{}", target.name);
     }
+    target.local_compaction_prompt_at_end |= source.local_compaction_prompt_at_end_enabled();
 
     let upstream_model = if route.target_model.trim().is_empty() {
         model.to_string()
@@ -6363,12 +6439,16 @@ impl ChatSseState {
             return;
         }
         let output_index = self.text.output_index.unwrap_or(0);
+        // 文本在整段流结束时才收尾，此时已知本响应有没有工具调用：没有工具调用时
+        // 它就是本轮最终回答，Codex 桌面端据此折叠前面的过程（issue #2659）。
+        let phase = if self.tools.is_empty() { "final_answer" } else { "commentary" };
         let item = json!({
             "id": self.text.item_id,
             "type": "message",
             "status": "completed",
             "role": "assistant",
-            "content": [{ "type": "output_text", "text": self.text.text, "annotations": [] }]
+            "content": [{ "type": "output_text", "text": self.text.text, "annotations": [] }],
+            "phase": phase
         });
         self.output_items.push((output_index, item.clone()));
         self.text.done = true;
@@ -11418,6 +11498,112 @@ pub(crate) struct ResponsesSseTransformer {
     /// 下游不是 Codex（经网关接入的 Grok 等）：去掉 ChatGPT 订阅后端私有的事件，
     /// 这些客户端按标准 Responses 事件解析，遇到不认识的类型会直接报错。
     strip_backend_events: bool,
+    /// 给缺 `phase` 的助手消息补阶段标记（issue #2659），见 [`MessagePhaseFill`]。
+    phase_fill: Option<MessagePhaseFill>,
+}
+
+/// 给第三方 Responses 上游缺失的助手消息 `phase` 补标记（issue #2659）。
+///
+/// Codex 桌面端只在本轮最后一条助手消息带 `phase: "final_answer"` 时，才把它之前的
+/// 推理、命令和过程性消息收进可折叠的「已处理 X 分钟」；官方模型会逐条给出
+/// `commentary` / `final_answer`，第三方模型通常不带这个字段，整轮过程就一直展开。
+///
+/// 一条消息是不是最终回答，要看同一个响应里它后面还有没有工具调用，所以缺 `phase`
+/// 的消息 `output_item.done` 先暂存，等下一个输出项开始（判为 `commentary`）或
+/// `response.completed`（本响应没有工具调用才判为 `final_answer`）时再补上并放行。
+/// 上游已带 `phase` 的消息（官方模型）不暂存、不改写；失败/中断时原样放行。
+#[derive(Default)]
+struct MessagePhaseFill {
+    /// 暂存的消息事件：原始 SSE 文本与解析后的 data JSON。
+    pending: Option<(String, Value)>,
+    /// 本响应里已经出现过需要客户端执行的工具调用（这一轮还会继续）。
+    saw_client_tool_call: bool,
+}
+
+/// 需要 Codex 执行后再发起下一次请求的输出项类型。
+fn is_client_tool_call_item_type(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "function_call" | "custom_tool_call" | "local_shell_call" | "tool_search_call"
+    )
+}
+
+/// 缺 `phase` 的助手消息完成事件。
+fn is_phaseless_assistant_message_done(event_type: &str, data: &Value) -> bool {
+    if event_type != "response.output_item.done" {
+        return false;
+    }
+    let Some(item) = data.get("item") else {
+        return false;
+    };
+    item.get("type").and_then(Value::as_str) == Some("message")
+        && item.get("role").and_then(Value::as_str) == Some("assistant")
+        && item.get("phase").is_none_or(Value::is_null)
+}
+
+impl MessagePhaseFill {
+    /// 观察一个事件；返回需要先于该事件写出的暂存消息字节，
+    /// 以及当前事件本身是否被暂存（被暂存时调用方不应再写出它）。
+    fn observe(&mut self, event_str: &str, event_type: &str, data: &Value) -> (Vec<u8>, bool) {
+        let item_type = data
+            .pointer("/item/type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let is_item_event = matches!(
+            event_type,
+            "response.output_item.added" | "response.output_item.done"
+        );
+        if is_item_event && is_client_tool_call_item_type(item_type) {
+            self.saw_client_tool_call = true;
+        }
+        if event_type == "response.created" {
+            // 新响应：阶段判断只看本响应的输出项。
+            self.saw_client_tool_call = false;
+        }
+        let mut out = Vec::new();
+        if self.pending.is_some() {
+            out = match event_type {
+                // 后面还有输出项：这条消息不是本轮最后一条。
+                "response.output_item.added" | "response.output_item.done" => {
+                    self.release(Some("commentary"))
+                }
+                "response.completed" => {
+                    let phase = if self.saw_client_tool_call {
+                        "commentary"
+                    } else {
+                        "final_answer"
+                    };
+                    self.release(Some(phase))
+                }
+                // 失败/中断：不猜阶段，原样放行。
+                "response.failed" | "response.incomplete" | "error" => self.release(None),
+                _ => Vec::new(),
+            };
+        }
+        if is_phaseless_assistant_message_done(event_type, data) {
+            out.extend(self.release(None));
+            self.pending = Some((event_str.to_string(), data.clone()));
+            return (out, true);
+        }
+        (out, false)
+    }
+
+    /// 放行暂存的消息；`phase` 为 `None` 时原样写出。
+    fn release(&mut self, phase: Option<&str>) -> Vec<u8> {
+        let Some((event_str, mut data)) = self.pending.take() else {
+            return Vec::new();
+        };
+        let Some(phase) = phase else {
+            return event_str.into_bytes();
+        };
+        if let Some(item) = data.get_mut("item").and_then(Value::as_object_mut) {
+            item.insert("phase".to_string(), json!(phase));
+        }
+        match serde_json::to_string(&data) {
+            Ok(new_data) => replace_sse_data_line(&event_str, &new_data).into_bytes(),
+            Err(_) => event_str.into_bytes(),
+        }
+    }
 }
 
 /// ChatGPT 订阅后端在回复前后附带的私有事件：`response.metadata`（安全缓冲等）、
@@ -11449,13 +11635,30 @@ impl ResponsesSseTransformer {
                                 == Some("apply_patch"))
                 })
             });
-        Self { apply_patch_declared_as_function, ..Self::default() }
+        Self {
+            apply_patch_declared_as_function,
+            phase_fill: Some(MessagePhaseFill::default()),
+            ..Self::default()
+        }
     }
 
     /// 转发给非 Codex 客户端时去掉后端私有事件，见 `strip_backend_events`。
+    /// 阶段标记只给 Codex 桌面端折叠用，非 Codex 客户端不补。
     pub(crate) fn stripping_backend_events(mut self, strip: bool) -> Self {
         self.strip_backend_events = strip;
+        if strip {
+            self.phase_fill = None;
+        }
         self
+    }
+
+    /// 上游结束时取出仍在暂存的消息事件（原样，不补阶段）。
+    /// 正常流会在 `response.completed` 时放行，这里只兜底断流的情况。
+    pub(crate) fn flush_pending(&mut self) -> Vec<u8> {
+        self.phase_fill
+            .as_mut()
+            .map(|fill| fill.release(None))
+            .unwrap_or_default()
     }
 
     /// Push upstream bytes; returns bytes ready to write to the client.
@@ -11494,7 +11697,12 @@ impl ResponsesSseTransformer {
                 }
             } else if self.buf.len() >= RESPONSES_SSE_MAX_EVENT_BYTES {
                 // 超大事件：识别类型后把已缓冲部分连同后续字节原样转发到事件边界。
-                self.passthrough_event = Some(sse_event_type_from_prefix(&self.buf));
+                let event_type = sse_event_type_from_prefix(&self.buf);
+                // 暂存的消息必须先于超大事件写出，按该事件类型决定阶段。
+                if let Some(fill) = self.phase_fill.as_mut() {
+                    out.extend(fill.observe("", &event_type, &Value::Null).0);
+                }
+                self.passthrough_event = Some(event_type);
                 out.append(&mut self.buf);
             }
         }
@@ -11587,9 +11795,33 @@ impl ResponsesSseTransformer {
             return Vec::new();
         }
 
+        // 缺 phase 的助手消息先暂存，到能判断阶段的事件时再补标记写出（issue #2659）。
+        let mut released = Vec::new();
+        if let Some(fill) = self.phase_fill.as_mut() {
+            let (bytes, held) = fill.observe(event_str, event_type, &data_json);
+            if held {
+                return bytes;
+            }
+            released = bytes;
+        }
+        let processed = self.process_parsed_event(event_bytes, event_str, event_type, &data_json);
+        if released.is_empty() {
+            return processed;
+        }
+        released.extend(processed);
+        released
+    }
+
+    fn process_parsed_event(
+        &mut self,
+        event_bytes: &[u8],
+        event_str: &str,
+        event_type: &str,
+        data_json: &Value,
+    ) -> Vec<u8> {
         self.observe_event_type(event_type);
         if event_type == "response.completed" {
-            if let Some(usage) = crate::request_log::usage_from_response_json(&data_json) {
+            if let Some(usage) = crate::request_log::usage_from_response_json(data_json) {
                 self.usage = Some(usage);
             }
         }
@@ -11600,7 +11832,7 @@ impl ResponsesSseTransformer {
                 self.failure_detail = Some(detail);
             }
             if stream_failure_is_retryable(code.as_deref(), message.as_deref())
-                && let Some(normalized) = normalized_overload_failure_event(&data_json)
+                && let Some(normalized) = normalized_overload_failure_event(data_json)
             {
                 return normalized.into_bytes();
             }
@@ -11799,6 +12031,108 @@ fn unwrap_apply_patch_arguments(args: &str) -> String {
 #[cfg(test)]
 mod responses_sse_transformer_tests {
     use super::*;
+
+    fn sse(data: Value) -> String {
+        format!("event: {}\ndata: {}\n\n", data["type"].as_str().unwrap(), data)
+    }
+
+    fn message_done(phase: Option<&str>) -> String {
+        let mut item = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{ "type": "output_text", "text": "好的", "annotations": [] }]
+        });
+        if let Some(phase) = phase {
+            item["phase"] = json!(phase);
+        }
+        sse(json!({ "type": "response.output_item.done", "output_index": 0, "item": item }))
+    }
+
+    /// 解析输出里每个 output_item.done 消息的 phase（按出现顺序）。
+    fn message_phases(out: &[u8]) -> Vec<Option<String>> {
+        String::from_utf8_lossy(out)
+            .split("\n\n")
+            .filter_map(|event| extract_sse_data(event))
+            .filter_map(|data| serde_json::from_str::<Value>(&data).ok())
+            .filter(|data| {
+                data["type"] == "response.output_item.done" && data["item"]["type"] == "message"
+            })
+            .map(|data| data["item"]["phase"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn phaseless_message_without_tool_call_becomes_final_answer() {
+        let mut t = ResponsesSseTransformer::for_request(None);
+        // 消息先暂存，等到 response.completed 才能判断它是最终回答。
+        assert!(t.push_bytes(message_done(None).as_bytes()).is_empty());
+        let completed = sse(json!({ "type": "response.completed", "response": {} }));
+        let out = t.push_bytes(completed.as_bytes());
+        assert_eq!(message_phases(&out), vec![Some("final_answer".to_string())]);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.ends_with(&completed), "消息必须先于 completed 写出: {text}");
+        assert!(t.finish().is_none());
+    }
+
+    #[test]
+    fn phaseless_message_before_tool_call_becomes_commentary() {
+        let mut t = ResponsesSseTransformer::for_request(None);
+        assert!(t.push_bytes(message_done(None).as_bytes()).is_empty());
+        let added = sse(json!({
+            "type": "response.output_item.added",
+            "output_index": 1,
+            "item": { "type": "function_call", "name": "shell", "call_id": "c1", "arguments": "" }
+        }));
+        let out = t.push_bytes(added.as_bytes());
+        assert_eq!(message_phases(&out), vec![Some("commentary".to_string())]);
+        assert!(String::from_utf8(out).unwrap().ends_with(&added));
+    }
+
+    #[test]
+    fn message_after_tool_call_in_same_response_stays_commentary() {
+        let mut t = ResponsesSseTransformer::for_request(None);
+        let call = sse(json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": { "type": "function_call", "name": "shell", "call_id": "c1", "arguments": "{}" }
+        }));
+        t.push_bytes(call.as_bytes());
+        assert!(t.push_bytes(message_done(None).as_bytes()).is_empty());
+        let out = t.push_bytes(sse(json!({ "type": "response.completed" })).as_bytes());
+        assert_eq!(message_phases(&out), vec![Some("commentary".to_string())]);
+    }
+
+    #[test]
+    fn upstream_phase_is_forwarded_untouched_without_delay() {
+        let mut t = ResponsesSseTransformer::for_request(None);
+        let event = message_done(Some("commentary"));
+        assert_eq!(t.push_bytes(event.as_bytes()), event.as_bytes());
+    }
+
+    #[test]
+    fn phase_fill_is_skipped_for_foreign_clients() {
+        let mut t = ResponsesSseTransformer::for_request(None).stripping_backend_events(true);
+        let event = message_done(None);
+        assert_eq!(t.push_bytes(event.as_bytes()), event.as_bytes());
+    }
+
+    #[test]
+    fn pending_message_is_released_unchanged_on_failure_or_eof() {
+        let mut t = ResponsesSseTransformer::for_request(None);
+        let event = message_done(None);
+        t.push_bytes(event.as_bytes());
+        let failed = sse(json!({ "type": "response.failed", "response": {} }));
+        let out = String::from_utf8(t.push_bytes(failed.as_bytes())).unwrap();
+        assert!(out.starts_with(&event), "{out}");
+        assert!(t.finish().is_some());
+
+        let mut t = ResponsesSseTransformer::for_request(None);
+        t.push_bytes(event.as_bytes());
+        assert_eq!(t.flush_pending(), event.as_bytes());
+        assert!(t.flush_pending().is_empty());
+    }
 
     #[test]
     fn test_context_compaction_event() {

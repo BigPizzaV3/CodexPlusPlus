@@ -17,6 +17,7 @@ use anyhow::{Context, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::gateway::drift::{self, Drift};
 use crate::gateway::restore::{self as stash, ChangedKey, FileStash, KeyPath};
 use crate::gateway::route::{self, binding_default_model};
 use crate::gateway::store::{
@@ -365,16 +366,46 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             let Some(group) = gateway.group(id) else {
                 continue;
             };
-            let entry = crate::model_suffix::collect_catalog_entries(
-                &model,
-                &Default::default(),
-                &Default::default(),
-                &model,
-            );
-            let template: Value =
-                serde_json::from_str(&crate::model_suffix::build_model_catalog_json(&entry, None))
+            // 组的推理档位取第一个成员的；Fast 要每个成员都支持才开（#2740）：
+            // 请求轮到不支持的那家会被拒。成员一个都对不上时退回按组名生成的通用条目。
+            let mut member_fields = Vec::new();
+            for (relay, upstream) in route::model_entry_members(gateway, binding, &model) {
+                let Some(index) = relays.iter().position(|candidate| candidate.id == relay.id)
+                else {
+                    continue;
+                };
+                if let Some(entry) =
+                    member_catalog_entry(&mut member_catalogs, &relays, index, &upstream)
+                {
+                    member_fields.push(catalog_ui_fields(&entry));
+                }
+            }
+            let mut fields = match member_fields.first() {
+                Some(first) => first.clone(),
+                None => {
+                    let entry = crate::model_suffix::collect_catalog_entries(
+                        &model,
+                        &Default::default(),
+                        &Default::default(),
+                        &model,
+                    );
+                    let template: Value = serde_json::from_str(
+                        &crate::model_suffix::build_model_catalog_json(&entry, None),
+                    )
                     .unwrap_or(Value::Null);
-            let mut fields = catalog_ui_fields(&template["models"][0]);
+                    catalog_ui_fields(&template["models"][0])
+                }
+            };
+            let has_tiers = |fields: &Map<String, Value>| {
+                fields
+                    .get("service_tiers")
+                    .and_then(Value::as_array)
+                    .is_some_and(|tiers| !tiers.is_empty())
+            };
+            if member_fields.is_empty() || !member_fields.iter().all(has_tiers) {
+                fields.insert("service_tiers".into(), json!([]));
+                fields.insert("additional_speed_tiers".into(), json!([]));
+            }
             fields.insert("display_name".into(), json!(group.name));
             fields.insert("description".into(), json!(format!("{model} · 模型组")));
             fields.insert("codex_plus_group".into(), json!("模型组"));
@@ -390,20 +421,11 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             continue;
         };
         let relay = relays[index];
-        let catalog = member_catalogs[index].get_or_insert_with(|| {
-            crate::aggregate_catalog::build_member_catalog(relay)
-                .ok()
-                .and_then(|payload| payload["models"].as_array().cloned())
-                .unwrap_or_default()
-        });
-        let Some(entry) = catalog.iter().find(|entry| {
-            entry["slug"]
-                .as_str()
-                .is_some_and(|slug| slug.eq_ignore_ascii_case(&upstream))
-        }) else {
+        let Some(entry) = member_catalog_entry(&mut member_catalogs, &relays, index, &upstream)
+        else {
             continue;
         };
-        let mut fields = catalog_ui_fields(entry);
+        let mut fields = catalog_ui_fields(&entry);
         // 没有元数据的模型，成员目录的显示名就是原始 ID：换成规范写法（gpt-6.1-sol → GPT-6.1-Sol）。
         let display = fields
             .get("display_name")
@@ -520,6 +542,29 @@ fn codex_group_suffix(relay: &RelayProfile, group: &str, relays: &[&RelayProfile
     } else {
         relay.id.clone()
     }
+}
+
+/// 池里第 `index` 家的成员目录里这个上游模型的条目（不分大小写）；每家的目录只生成一次。
+fn member_catalog_entry(
+    cache: &mut [Option<Vec<Value>>],
+    relays: &[&RelayProfile],
+    index: usize,
+    upstream: &str,
+) -> Option<Value> {
+    let catalog = cache[index].get_or_insert_with(|| {
+        crate::aggregate_catalog::build_member_catalog(relays[index])
+            .ok()
+            .and_then(|payload| payload["models"].as_array().cloned())
+            .unwrap_or_default()
+    });
+    catalog
+        .iter()
+        .find(|entry| {
+            entry["slug"]
+                .as_str()
+                .is_some_and(|slug| slug.eq_ignore_ascii_case(upstream))
+        })
+        .cloned()
 }
 
 /// 目录条目里选择器要用的字段；整条（含基础指令等大字段）不进设置文件。
@@ -686,69 +731,69 @@ fn lendable_login(gateway: &GatewaySettings) -> Option<&GatewayProvider> {
 /// 把网关的 ChatGPT 账号借给 Codex 登录：token 写进 Codex 的 auth.json（其余字段不动），
 /// 网关里标记「借出」——之后这个账号以 Codex 那份为准，网关刷新也写回那里，两边始终同一代。
 fn lend_login_to_codex(ctx: &ApplyContext, provider_id: &str) -> anyhow::Result<()> {
-    let mut gateway = ctx.gateway.load()?;
-    let Some(provider) = gateway
-        .providers
-        .iter_mut()
-        .find(|provider| provider.relay.id == provider_id)
-    else {
-        return Ok(());
-    };
-    let path = ctx.codex_home.join("auth.json");
-    let live = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
-    let merged = crate::official_login::auth_contents_with_member_login(
-        &live,
-        &provider.relay.auth_contents,
-        false,
-    )
-    .context("Codex 已经登录了别的 ChatGPT 账号，不能再借用网关的账号")?;
-    crate::settings::atomic_write(&path, merged.as_bytes())?;
-    let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
-    auth[crate::official_login::LENT_TO_CODEX_MARKER] = Value::Bool(true);
-    provider.relay.auth_contents = serde_json::to_string_pretty(&auth)?;
-    ctx.gateway.save(&gateway)?;
+    // 带锁读改写：借出用的是锁内读到的最新一代 token，也不会把同时刷新写回的 token 盖掉。
+    ctx.gateway.update(|gateway| {
+        let Some(provider) = gateway
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == provider_id)
+        else {
+            return Ok(());
+        };
+        let path = ctx.codex_home.join("auth.json");
+        let live = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+        let merged = crate::official_login::auth_contents_with_member_login(
+            &live,
+            &provider.relay.auth_contents,
+            false,
+        )
+        .context("Codex 已经登录了别的 ChatGPT 账号，不能再借用网关的账号")?;
+        crate::settings::atomic_write(&path, merged.as_bytes())?;
+        let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
+        auth[crate::official_login::LENT_TO_CODEX_MARKER] = Value::Bool(true);
+        provider.relay.auth_contents = serde_json::to_string_pretty(&auth)?;
+        Ok(())
+    })?;
     Ok(())
 }
 
 /// 收回借给 Codex 的账号：Codex 那份是最新一代，token 写回网关、去掉「借出」标记，
 /// 再从 Codex 的 auth.json 里拿掉这个登录（借之前 Codex 本来就没登录）。
 pub fn return_lent_login(store: &GatewayStore, codex_home: &std::path::Path) -> anyhow::Result<()> {
-    let mut gateway = store.load()?;
     let path = codex_home.join("auth.json");
     let live = std::fs::read_to_string(&path).unwrap_or_default();
     let live_login = crate::official_login::official_login_from_auth_contents(&live);
-    let mut changed = false;
-    let mut strip_live = false;
-    for provider in gateway
-        .providers
-        .iter_mut()
-        .filter(|provider| crate::official_login::is_lent_to_codex(&provider.relay))
-    {
-        let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
-        let account = auth
-            .pointer("/tokens/account_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if let Some(login) = live_login
-            .as_ref()
-            .filter(|login| !account.is_empty() && login.account_id == account)
+    // 带锁读改写：只动借出的那几个供应商，不拿旧状态覆盖同时写进来的改动（没有借出的就不写盘）。
+    let (_, strip_live) = store.update(|gateway| {
+        let mut strip_live = false;
+        for provider in gateway
+            .providers
+            .iter_mut()
+            .filter(|provider| crate::official_login::is_lent_to_codex(&provider.relay))
         {
-            auth["tokens"]["access_token"] = json!(login.access_token);
-            if !login.refresh_token.is_empty() {
-                auth["tokens"]["refresh_token"] = json!(login.refresh_token);
+            let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
+            let account = auth
+                .pointer("/tokens/account_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if let Some(login) = live_login
+                .as_ref()
+                .filter(|login| !account.is_empty() && login.account_id == account)
+            {
+                auth["tokens"]["access_token"] = json!(login.access_token);
+                if !login.refresh_token.is_empty() {
+                    auth["tokens"]["refresh_token"] = json!(login.refresh_token);
+                }
+                strip_live = true;
             }
-            strip_live = true;
+            if let Some(object) = auth.as_object_mut() {
+                object.remove(crate::official_login::LENT_TO_CODEX_MARKER);
+            }
+            provider.relay.auth_contents = serde_json::to_string_pretty(&auth)?;
         }
-        if let Some(object) = auth.as_object_mut() {
-            object.remove(crate::official_login::LENT_TO_CODEX_MARKER);
-        }
-        provider.relay.auth_contents = serde_json::to_string_pretty(&auth)?;
-        changed = true;
-    }
-    if changed {
-        store.save(&gateway)?;
-    }
+        Ok(strip_live)
+    })?;
     if strip_live && let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&live) {
         for key in ["tokens", "auth_mode", "last_refresh"] {
             object.remove(key);
@@ -1005,7 +1050,7 @@ pub fn enable_binding(
     agent: &ToolId,
     mut binding: AgentBinding,
 ) -> anyhow::Result<GatewaySettings> {
-    let mut gateway = ctx.gateway.load()?;
+    let gateway = ctx.gateway.load()?;
     ensure_routable(&gateway, &binding)?;
     let previous = gateway.binding(agent).cloned();
     binding.token = previous
@@ -1040,15 +1085,17 @@ pub fn enable_binding(
     };
     binding.enabled = true;
     binding.restore.applied_port = Some(ctx.port);
+    binding.restore.restored_endpoint = None;
     if let Some(snapshot) = write_agent_config(ctx, agent, &binding)?
         && binding.restore.claude_previous_provider_id.is_empty()
     {
         binding.restore.claude_previous_provider_id = snapshot;
     }
-    // 写配置时可能改过 gateway.json（借出账号等），以最新的为准再写绑定。
-    let mut gateway = ctx.gateway.load()?;
-    gateway.bindings.insert(agent.as_str().to_string(), binding);
-    ctx.gateway.save(&gateway)?;
+    // 写配置时可能改过 gateway.json（借出账号等），以最新的为准再写绑定（带锁，不盖掉同时刷新的 token）。
+    let (gateway, ()) = ctx.gateway.update(|gateway| {
+        gateway.bindings.insert(agent.as_str().to_string(), binding);
+        Ok(())
+    })?;
     Ok(gateway)
 }
 
@@ -1081,28 +1128,146 @@ pub fn disable_binding(
     };
     restore_agent(ctx, settings, agent, &binding)?;
     // 恢复时可能改过 gateway.json（收回借出的账号等），以最新的为准。
-    let mut gateway = ctx.gateway.load()?;
-    if let Some(binding) = gateway.bindings.get_mut(agent.as_str()) {
-        binding.enabled = false;
-        binding.restore = Default::default();
-    }
-    ctx.gateway.save(&gateway)?;
+    let (gateway, ()) = ctx.gateway.update(|gateway| {
+        if let Some(binding) = gateway.bindings.get_mut(agent.as_str()) {
+            binding.enabled = false;
+            binding.restore = Default::default();
+        }
+        Ok(())
+    })?;
     Ok(gateway)
 }
 
+/// 还原一个 Agent 的结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreOutcome {
+    /// 改回了接入前的样子（或本来就不用改）。
+    Restored,
+    /// 配置已经被别的工具改走：没写 Agent 的文件，只清掉了网关自己的记录，绑定该关掉。
+    TakenOver,
+}
+
 /// 把一个 Agent 的配置还原成接入网关前的样子。
+///
+/// Codex++ 的记录里它还接在网关上、配置却已经指向别处（用户用别的工具改过）时，写回存档
+/// 会盖掉用户的新选择：这时不写 Agent 的文件，只丢掉存档和网关自己的记录。
 fn restore_agent(
     ctx: &ApplyContext,
     settings: &BackendSettings,
     agent: &ToolId,
     binding: &AgentBinding,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RestoreOutcome> {
+    if let Some(found) = taken_over(ctx, agent) {
+        forget_gateway(ctx, agent, binding)?;
+        log_taken_over("gateway.restore_skipped_taken_over", agent, &found);
+        return Ok(RestoreOutcome::TakenOver);
+    }
     match agent {
         ToolId::Claude => restore_claude(ctx, binding),
         ToolId::Grok => restore_grok(ctx, settings),
         ToolId::Codex => restore_codex(ctx, binding),
         _ => Ok(()),
+    }?;
+    Ok(RestoreOutcome::Restored)
+}
+
+/// Codex++ 的记录里这个 Agent 还接在网关上（Codex：直连模式当前是托管供应商；Claude：当前是
+/// 网关供应商；Grok：接入时的存档还在，没还原过）。旧版接入、没有存档的 Grok 认不出，按没接算。
+fn recorded_on_gateway(ctx: &ApplyContext, agent: &ToolId) -> bool {
+    match agent {
+        ToolId::Grok => grok_stash_path(ctx).exists(),
+        ToolId::Codex | ToolId::Claude => agent_points_at_gateway(ctx, agent),
+        _ => false,
     }
+}
+
+/// 记录上接在网关、配置却已经指向别处：被别的工具接管了。
+fn taken_over(ctx: &ApplyContext, agent: &ToolId) -> Option<Drift> {
+    if !recorded_on_gateway(ctx, agent) {
+        return None;
+    }
+    drift::check(ctx, agent)
+}
+
+/// Agent 配置现在连的地址；还指向网关时为 None。
+fn live_endpoint(ctx: &ApplyContext, agent: &ToolId) -> Option<String> {
+    drift::check(ctx, agent).map(|found| found.endpoint)
+}
+
+/// 两个地址算同一个：相同，或都是 Codex++ 自己的本地代理（之间换过端口、启动时重写过也算）。
+fn same_endpoint(left: &str, right: &str) -> bool {
+    left.trim_end_matches('/') == right.trim_end_matches('/')
+        || (crate::protocol_proxy::is_managed_protocol_proxy_base_url(left)
+            && crate::protocol_proxy::is_managed_protocol_proxy_base_url(right))
+}
+
+/// 只记认得出的工具名，不记地址（地址里可能带凭据）。
+fn log_taken_over(event: &str, agent: &ToolId, found: &Drift) {
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        event,
+        serde_json::json!({ "agent": agent.as_str(), "by": found.by }),
+    );
+}
+
+/// Agent 已被别的工具接管时的断开：不写 Agent 的配置文件，只清掉网关自己的记录与存档。
+fn forget_gateway(
+    ctx: &ApplyContext,
+    agent: &ToolId,
+    binding: &AgentBinding,
+) -> anyhow::Result<()> {
+    match agent {
+        ToolId::Claude => {
+            if claude::current_provider_id(&ctx.claude)? == GATEWAY_PROVIDER_ID {
+                claude::forget_current(&ctx.claude)?;
+            }
+            if claude::load(&ctx.claude)?
+                .providers
+                .iter()
+                .any(|provider| provider.id == GATEWAY_PROVIDER_ID)
+            {
+                claude::delete_provider(&ctx.claude, GATEWAY_PROVIDER_ID)?;
+            }
+            stash::remove_stash(&claude_stash_path(ctx));
+        }
+        ToolId::Codex => {
+            // 借给 Codex 的账号照样收回：那是网关的登录，留在 Codex 里两边会抢着刷新 token。
+            if ctx.gateway.load().is_ok() {
+                return_lent_login(&ctx.gateway, &ctx.codex_home)?;
+            }
+            // 直连模式的记录改回开启前的供应商（不切换、不写 ~/.codex），删掉托管供应商。
+            let mut settings = ctx.settings.load()?;
+            if settings.active_relay_id == CODEX_GATEWAY_RELAY_ID {
+                let previous = binding.restore.codex_previous_relay_id.trim();
+                let known = |id: &str| {
+                    !id.is_empty()
+                        && id != CODEX_GATEWAY_RELAY_ID
+                        && (settings.relay_profiles.iter().any(|item| item.id == id)
+                            || settings
+                                .aggregate_relay_profiles
+                                .iter()
+                                .any(|item| item.id == id))
+                };
+                settings.active_relay_id = if known(previous) {
+                    previous.to_string()
+                } else {
+                    settings
+                        .relay_profiles
+                        .iter()
+                        .find(|profile| profile.id != CODEX_GATEWAY_RELAY_ID)
+                        .map(|profile| profile.id.clone())
+                        .unwrap_or_else(crate::settings::default_active_relay_id)
+                };
+            }
+            settings
+                .relay_profiles
+                .retain(|profile| profile.id != CODEX_GATEWAY_RELAY_ID);
+            ctx.settings.save(&settings)?;
+            stash::remove_stash(&codex_stash_path(ctx));
+        }
+        ToolId::Grok => stash::remove_stash(&grok_stash_path(ctx)),
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Agent 的配置现在还指向网关（不看 gateway.json 里的绑定）。
@@ -1129,6 +1294,9 @@ fn restore_claude(ctx: &ApplyContext, binding: &AgentBinding) -> anyhow::Result<
     let payload = claude::load(&ctx.claude)?;
     let stash_path = claude_stash_path(ctx);
     if payload.current_id == GATEWAY_PROVIDER_ID {
+        let live_path = ctx.claude.claude_home.join("settings.json");
+        // 切回之前的样子（还指向网关）：存档没记改了哪些键时据此兜底。
+        let on_gateway = stash::read_optional(&live_path)?;
         let previous = binding.restore.claude_previous_provider_id.trim();
         let can_switch_back = !previous.is_empty()
             && payload
@@ -1141,12 +1309,16 @@ fn restore_claude(ctx: &ApplyContext, binding: &AgentBinding) -> anyhow::Result<
             claude::clear_current(&ctx.claude)?;
         }
         if let Some(saved) = stash::load_stash::<FileStash>(&stash_path) {
-            let live_path = ctx.claude.claude_home.join("settings.json");
             let live = stash::read_optional(&live_path)?;
+            let changed = if saved.changed.is_empty() {
+                claude_fallback_changes(saved.before.as_deref(), on_gateway.as_deref())?
+            } else {
+                saved.changed.clone()
+            };
             let restored = stash::restore_json(
                 saved.before.as_deref(),
                 live.as_deref(),
-                &saved.changed,
+                &changed,
                 |_, _, _| false,
             )
             .context("还原 Claude Code 的 settings.json 失败")?;
@@ -1163,6 +1335,29 @@ fn restore_claude(ctx: &ApplyContext, binding: &AgentBinding) -> anyhow::Result<
         claude::delete_provider(&ctx.claude, GATEWAY_PROVIDER_ID)?;
     }
     Ok(())
+}
+
+/// 存档里没记改了哪些键（接入时存下原文后、记下改动前进程就退出了，或第二次写存档失败），
+/// 配置却指向网关：按切换供应商会动的关键字段兜底，与接入前不同的改回去。
+fn claude_fallback_changes(
+    before: Option<&str>,
+    on_gateway: Option<&str>,
+) -> anyhow::Result<Vec<ChangedKey>> {
+    let paths = stash::changed_paths(&stash::json_value(before)?, &stash::json_value(on_gateway)?);
+    Ok(paths
+        .into_iter()
+        .filter(|path| match path.as_slice() {
+            [env, key] if env == "env" => {
+                claude::is_floor_env(key) || claude::is_exclusive_env(key)
+            }
+            [key] => claude::is_floor_top(key),
+            _ => false,
+        })
+        .map(|path| ChangedKey {
+            path,
+            written: None,
+        })
+        .collect())
 }
 
 /// Codex 当前在用的直连供应商（不是托管的网关供应商时）。
@@ -1274,9 +1469,14 @@ fn restore_grok(ctx: &ApplyContext, settings: &BackendSettings) -> anyhow::Resul
     let stash_path = grok_stash_path(ctx);
     if let Some(saved) = stash::load_stash::<FileStash>(&stash_path) {
         if on_gateway {
-            let restored =
-                stash::restore_toml(saved.before.as_deref(), live.as_deref(), &saved.paths())
-                    .context("还原 Grok 的 config.toml 失败")?;
+            let paths = if saved.changed.is_empty() {
+                grok_fallback_paths(saved.before.as_deref(), live.as_deref())
+                    .context("还原 Grok 的 config.toml 失败")?
+            } else {
+                saved.paths()
+            };
+            let restored = stash::restore_toml(saved.before.as_deref(), live.as_deref(), &paths)
+                .context("还原 Grok 的 config.toml 失败")?;
             stash::write_or_remove(&live_path, restored.as_deref())
                 .context("写回 Grok 接入网关前的 config.toml 失败")?;
         }
@@ -1301,32 +1501,50 @@ fn restore_grok(ctx: &ApplyContext, settings: &BackendSettings) -> anyhow::Resul
     Ok(())
 }
 
+/// Grok 应用供应商时会写的顶层键：默认模型、模型列表地址、各模型的配置。
+const GROK_GATEWAY_KEYS: &[&str] = &["models", "endpoints", "model"];
+
+/// 存档里没记改了哪些键、配置却指向网关（同 [`claude_fallback_changes`]）：
+/// 按网关会写的键兜底，与接入前不同的改回去。
+fn grok_fallback_paths(before: Option<&str>, live: Option<&str>) -> anyhow::Result<Vec<KeyPath>> {
+    let paths = stash::changed_paths(&stash::toml_value(before)?, &stash::toml_value(live)?);
+    Ok(paths
+        .into_iter()
+        .filter(|path| {
+            path.first()
+                .is_some_and(|key| GROK_GATEWAY_KEYS.contains(&key.as_str()))
+        })
+        .collect())
+}
+
 /// 用户在 Claude 供应商列表里直接切到别的供应商：网关绑定随之失效，不再尝试恢复。
 pub fn note_claude_switched(store: &GatewayStore, target_id: &str) -> anyhow::Result<()> {
     if target_id == GATEWAY_PROVIDER_ID {
         return Ok(());
     }
-    let mut gateway = store.load()?;
-    if let Some(binding) = gateway.bindings.get_mut(ToolId::Claude.as_str())
-        && binding.enabled
-    {
-        binding.enabled = false;
-        binding.restore = Default::default();
-        store.save(&gateway)?;
-    }
+    store.update(|gateway| {
+        if let Some(binding) = gateway.bindings.get_mut(ToolId::Claude.as_str())
+            && binding.enabled
+        {
+            binding.enabled = false;
+            binding.restore = Default::default();
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
 /// 用户在 Grok 页直接应用了别的供应商：网关绑定随之失效。
 pub fn note_grok_switched(store: &GatewayStore) -> anyhow::Result<()> {
-    let mut gateway = store.load()?;
-    if let Some(binding) = gateway.bindings.get_mut(ToolId::Grok.as_str())
-        && binding.enabled
-    {
-        binding.enabled = false;
-        binding.restore = Default::default();
-        store.save(&gateway)?;
-    }
+    store.update(|gateway| {
+        if let Some(binding) = gateway.bindings.get_mut(ToolId::Grok.as_str())
+            && binding.enabled
+        {
+            binding.enabled = false;
+            binding.restore = Default::default();
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -1337,20 +1555,21 @@ pub fn note_codex_switched(
     target_id: &str,
     previous_id: &str,
 ) -> anyhow::Result<()> {
-    let mut gateway = store.load()?;
-    let Some(binding) = gateway.bindings.get_mut(ToolId::Codex.as_str()) else {
-        return Ok(());
-    };
-    let connected = target_id == CODEX_GATEWAY_RELAY_ID;
-    if binding.enabled == connected {
-        return Ok(());
-    }
-    binding.enabled = connected;
-    binding.restore = Default::default();
-    if connected && previous_id != CODEX_GATEWAY_RELAY_ID {
-        binding.restore.codex_previous_relay_id = previous_id.to_string();
-    }
-    store.save(&gateway)?;
+    store.update(|gateway| {
+        let Some(binding) = gateway.bindings.get_mut(ToolId::Codex.as_str()) else {
+            return Ok(());
+        };
+        let connected = target_id == CODEX_GATEWAY_RELAY_ID;
+        if binding.enabled == connected {
+            return Ok(());
+        }
+        binding.enabled = connected;
+        binding.restore = Default::default();
+        if connected && previous_id != CODEX_GATEWAY_RELAY_ID {
+            binding.restore.codex_previous_relay_id = previous_id.to_string();
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -1388,6 +1607,14 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID {
         return Ok(false);
     }
+    if let Some(found) = taken_over(ctx, &ToolId::Codex) {
+        log_taken_over(
+            "gateway.identity_sync_skipped_taken_over",
+            &ToolId::Codex,
+            &found,
+        );
+        return Ok(false);
+    }
     let keeps_login =
         settings.active_relay_session_provider() == crate::settings::RelaySessionProvider::Openai;
     let can_sign_in = codex_signed_in(&ctx.codex_home) || lendable_login(&gateway).is_some();
@@ -1399,9 +1626,11 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
 }
 
 /// 网关端口变了（例如 Windows 端口被占后换了新端口）：重写所有开着的 Agent 配置。
+/// 某个 Agent 失败时继续其它的，只记录成功项的端口，最后返回第一个错误。
 pub fn reapply_if_port_changed(ctx: &ApplyContext) -> anyhow::Result<usize> {
-    let mut gateway = ctx.gateway.load()?;
+    let gateway = ctx.gateway.load()?;
     let mut changed = 0;
+    let mut first_error = None;
     let agents = gateway
         .bindings
         .iter()
@@ -1409,23 +1638,35 @@ pub fn reapply_if_port_changed(ctx: &ApplyContext) -> anyhow::Result<usize> {
         .map(|(agent, _)| ToolId::parse(agent))
         .collect::<Vec<_>>();
     for agent in agents {
-        let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
+        // 已被别的工具接管的不改回来（漂移检查只看是不是网关地址，不看端口，换端口不算接管）。
+        if taken_over(ctx, &agent).is_some() {
+            continue;
+        }
+        let Some(binding) = gateway.bindings.get(agent.as_str()) else {
             continue;
         };
+        let mut binding = binding.clone();
         binding.restore.applied_port = Some(ctx.port);
-        let binding = binding.clone();
-        write_agent_config(ctx, &agent, &binding)?;
-        changed += 1;
-    }
-    if changed > 0 {
-        // 写配置时可能改过 gateway.json：只把端口记到最新的那份上。
-        let mut latest = ctx.gateway.load()?;
-        for (agent, binding) in &gateway.bindings {
-            if let Some(target) = latest.bindings.get_mut(agent) {
-                target.restore.applied_port = binding.restore.applied_port;
+        let result = write_agent_config(ctx, &agent, &binding).and_then(|_| {
+            // 写配置时可能改过 gateway.json：只更新本次成功项，不回写旧快照。
+            ctx.gateway.update(|latest| {
+                if let Some(target) = latest.bindings.get_mut(agent.as_str()) {
+                    target.restore.applied_port = Some(ctx.port);
+                }
+                Ok(())
+            })?;
+            Ok(())
+        });
+        match result {
+            Ok(()) => changed += 1,
+            Err(error) => {
+                first_error
+                    .get_or_insert(error.context(format!("重新接入 {} 失败", agent.as_str())));
             }
         }
-        ctx.gateway.save(&latest)?;
+    }
+    if let Some(error) = first_error {
+        return Err(error);
     }
     Ok(changed)
 }
@@ -1442,23 +1683,42 @@ pub fn restore_all_for_exit(
     if !force && !gateway.restore_on_exit {
         return Ok(());
     }
-    let mut restored = false;
+    let mut outcomes = Vec::new();
     let mut first_error = None;
     for (agent, binding) in &gateway.bindings {
         if !binding.enabled {
             continue;
         }
-        match restore_agent(ctx, settings, &ToolId::parse(agent), binding) {
-            Ok(()) => restored = true,
+        let tool = ToolId::parse(agent);
+        match restore_agent(ctx, settings, &tool, binding) {
+            Ok(outcome) => outcomes.push((agent.clone(), tool, outcome)),
             Err(error) => {
                 first_error.get_or_insert(error.context(format!("还原 {agent} 失败")));
             }
         }
     }
-    if restored {
-        let mut latest = ctx.gateway.load()?;
-        latest.restored_at_exit = true;
-        ctx.gateway.save(&latest)?;
+    if !outcomes.is_empty() {
+        // 带锁读改写：只动这几个绑定和标记，不盖掉同时写进来的 token。
+        ctx.gateway.update(|latest| {
+            for (agent, tool, outcome) in &outcomes {
+                let Some(binding) = latest.bindings.get_mut(agent) else {
+                    continue;
+                };
+                match outcome {
+                    // 记下还原后连的地址：下次启动前用户又改了的话就不再接回。
+                    RestoreOutcome::Restored => {
+                        binding.restore.restored_endpoint = live_endpoint(ctx, tool);
+                        latest.restored_at_exit = true;
+                    }
+                    // 已被别的工具接管：等于用户自己断开了，绑定关掉，下次启动不再接回。
+                    RestoreOutcome::TakenOver => {
+                        binding.enabled = false;
+                        binding.restore = Default::default();
+                    }
+                }
+            }
+            Ok(())
+        })?;
     }
     match first_error {
         Some(error) => Err(error),
@@ -1468,6 +1728,7 @@ pub fn restore_all_for_exit(
 
 /// 供应商池或路由组变化后重写开着的 Agent 配置：Grok 的模型列表、Claude 的默认模型随池更新。
 /// 不碰恢复现场；某个 Agent 写失败时继续写其它的，最后返回第一个错误。
+/// 已被别的工具接管的 Agent 不重写（界面提示漂移，由用户决定要不要重新接入）。
 pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
     let gateway = ctx.gateway.load()?;
     let mut count = 0;
@@ -1476,7 +1737,11 @@ pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
         if !binding.enabled {
             continue;
         }
-        match write_agent_config(ctx, &ToolId::parse(agent), binding) {
+        let agent = ToolId::parse(agent);
+        if taken_over(ctx, &agent).is_some() {
+            continue;
+        }
+        match write_agent_config(ctx, &agent, binding) {
             Ok(_) => count += 1,
             Err(error) => {
                 first_error.get_or_insert(error);
@@ -1490,45 +1755,89 @@ pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
 }
 
 /// 启动时把开着的绑定重新写进 Agent 配置（退出 / 更新前恢复过直连，或端口变了），并清掉「已恢复」标记。
+///
+/// 某个 Agent 写失败时继续写其它的，最后返回第一个错误；有失败时「已恢复」标记留着，下次启动再试。
+/// 不接回的：还原之后用户又用别的工具改过的（绑定关掉），以及接着网关时被别的工具接管的（界面提示漂移）。
 pub fn reapply_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
     let gateway = ctx.gateway.load()?;
     let mut count = 0;
+    let mut first_error = None;
     for (agent, binding) in &gateway.bindings {
         if !binding.enabled {
             continue;
         }
         let agent = ToolId::parse(agent);
-        let mut binding = binding.clone();
-        binding.restore.applied_port = Some(ctx.port);
-        // Claude 恢复过直连时，重新开启前的「上一个供应商」要重新记录。
-        if agent == ToolId::Claude {
-            let current = claude::current_provider_id(&ctx.claude)?;
-            if current != GATEWAY_PROVIDER_ID && !current.is_empty() {
-                binding.restore.claude_previous_provider_id = current;
+        match reapply_binding(ctx, &agent, binding, gateway.restored_at_exit) {
+            Ok(true) => count += 1,
+            Ok(false) => {}
+            Err(error) => {
+                first_error
+                    .get_or_insert(error.context(format!("重新接入 {} 失败", agent.as_str())));
             }
         }
-        if agent == ToolId::Codex {
-            let current = codex_active_relay_id(ctx)?;
-            if !current.is_empty() {
-                binding.restore.codex_previous_relay_id = current;
-            }
-        }
-        if let Some(snapshot) = write_agent_config(ctx, &agent, &binding)?
-            && binding.restore.claude_previous_provider_id.is_empty()
-        {
-            binding.restore.claude_previous_provider_id = snapshot;
-        }
-        let mut latest = ctx.gateway.load()?;
-        latest.bindings.insert(agent.as_str().to_string(), binding);
-        ctx.gateway.save(&latest)?;
-        count += 1;
     }
-    let mut latest = ctx.gateway.load()?;
-    if latest.restored_at_exit {
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    ctx.gateway.update(|latest| {
         latest.restored_at_exit = false;
-        ctx.gateway.save(&latest)?;
-    }
+        Ok(())
+    })?;
     Ok(count)
+}
+
+/// 把一个开着的绑定重新写进 Agent 配置；没写（被别的工具改过）时返回 false。
+fn reapply_binding(
+    ctx: &ApplyContext,
+    agent: &ToolId,
+    binding: &AgentBinding,
+    restored_at_exit: bool,
+) -> anyhow::Result<bool> {
+    // 退出 / 更新前还原过，之后用户又把 Agent 指向了别处：等于用户自己断开了，绑定关掉。
+    if restored_at_exit
+        && let Some(expected) = &binding.restore.restored_endpoint
+        && let Some(found) = drift::check(ctx, agent)
+        && !same_endpoint(&found.endpoint, expected)
+    {
+        ctx.gateway.update(|latest| {
+            if let Some(saved) = latest.bindings.get_mut(agent.as_str()) {
+                saved.enabled = false;
+                saved.restore = Default::default();
+            }
+            Ok(())
+        })?;
+        log_taken_over("gateway.reapply_skipped_taken_over", agent, &found);
+        return Ok(false);
+    }
+    if taken_over(ctx, agent).is_some() {
+        return Ok(false);
+    }
+    let mut binding = binding.clone();
+    binding.restore.applied_port = Some(ctx.port);
+    binding.restore.restored_endpoint = None;
+    // Claude 恢复过直连时，重新开启前的「上一个供应商」要重新记录。
+    if *agent == ToolId::Claude {
+        let current = claude::current_provider_id(&ctx.claude)?;
+        if current != GATEWAY_PROVIDER_ID && !current.is_empty() {
+            binding.restore.claude_previous_provider_id = current;
+        }
+    }
+    if *agent == ToolId::Codex {
+        let current = codex_active_relay_id(ctx)?;
+        if !current.is_empty() {
+            binding.restore.codex_previous_relay_id = current;
+        }
+    }
+    if let Some(snapshot) = write_agent_config(ctx, agent, &binding)?
+        && binding.restore.claude_previous_provider_id.is_empty()
+    {
+        binding.restore.claude_previous_provider_id = snapshot;
+    }
+    ctx.gateway.update(|latest| {
+        latest.bindings.insert(agent.as_str().to_string(), binding);
+        Ok(())
+    })?;
+    Ok(true)
 }
 
 /// 把一个 Claude 供应商复制成网关供应商（Anthropic 协议）。只读 Claude 的数据，不改它。

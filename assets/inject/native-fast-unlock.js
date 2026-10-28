@@ -95,6 +95,19 @@
           distinct: ["manager", "result"],
           replacement: (groups) => `(${groups.gate}||${allow(`${groups.manager}.getHostId()`, `${groups.result}.account?.type`)})`,
         },
+        {
+          // 26.1021 将 Copilot 判定收进 runtime，不再向默认队列传入 storage。
+          pattern: [
+            `function ${id}\\((?<manager>${id}),\\{runtime:(?<runtime>${id})\\},(?<before>${id}),${id}\\)\\{let (?<pending>${id})=null;`,
+            `return\\{async readServiceTier\\((?<model>${id})\\)\\{for\\(;\\k<pending>!=null;\\)await \\k<pending>\\.catch\\(\\(\\)=>void 0\\);`,
+            `return \\k<before>\\(\\),${id}\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,\\k<model>,async\\(\\)=>\\{`,
+            `if\\(\\k<manager>\\.getHostId\\(\\)===${local}&&await \\k<runtime>\\.isUsingCopilotInference\\(\\)\\)return!1;`,
+            `let (?<result>${id})=await \\k<manager>\\.getAccount\\(\\{priority:${critical}\\}\\);`,
+            `return (?<gate>\\k<result>\\.account\\?\\.type===${chatgpt}(?:\\|\\|\\k<result>\\.account\\?\\.type===${literal})*)\\}\\)\\},async writeServiceTier\\(`,
+          ].join(""),
+          distinct: ["manager", "result"],
+          replacement: (groups) => `(${groups.gate}||${allow(`${groups.manager}.getHostId()`, `${groups.result}.account?.type`)})`,
+        },
       ],
     },
     {

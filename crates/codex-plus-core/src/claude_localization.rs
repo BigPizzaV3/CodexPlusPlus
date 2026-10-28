@@ -867,7 +867,11 @@ fn read_config(path: &Path) -> Result<Value> {
     if !path.exists() {
         return Ok(json!({}));
     }
-    let value: Value = serde_json::from_slice(&fs::read(path)?)?;
+    // Windows 上 Claude 的 config.json 可能带 UTF-8 BOM（#2728），JSON 解析器不认，先去掉。
+    let bytes = fs::read(path)?;
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let value: Value = serde_json::from_slice(bytes)
+        .with_context(|| format!("{} 不是合法 JSON，未修改语言", path.display()))?;
     ensure!(value.is_object(), "Claude 配置格式异常，未修改语言");
     Ok(value)
 }
@@ -1052,6 +1056,18 @@ pub fn perform_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows 上 Claude 的 config.json 带 UTF-8 BOM 时也能读、能汉化（#2728）。
+    #[test]
+    fn config_with_utf8_bom_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        fs::write(&config, b"\xEF\xBB\xBF{\"locale\":\"ja-JP\",\"other\":1}").unwrap();
+        assert_eq!(read_config(&config).unwrap()["locale"], "ja-JP");
+        localize_configs(&[config.clone()], "zh-Hans").unwrap();
+        assert_eq!(read_config(&config).unwrap()["locale"], "zh-Hans");
+        assert_eq!(read_config(&config).unwrap()["other"], 1);
+    }
 
     #[test]
     fn claude_msix_namespace_discovery_and_classification_agree() {

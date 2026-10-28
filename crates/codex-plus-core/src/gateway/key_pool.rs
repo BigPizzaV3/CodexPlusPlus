@@ -22,6 +22,8 @@ const RATE_LIMIT_BASE_COOLDOWN: Duration = Duration::from_secs(30);
 const RATE_LIMIT_MAX_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 /// 额度耗尽且上游没说何时恢复时的冷却时长。
 const QUOTA_DEFAULT_COOLDOWN: Duration = Duration::from_secs(60 * 60);
+/// 官方登录的 401：凭据由 Codex 的登录维护、指纹不会变，不能永久停用，冷却一会儿再试。
+const OFFICIAL_AUTH_COOLDOWN: Duration = Duration::from_secs(60);
 /// 连续多少次 5xx/连接失败后熔断供应商，以及熔断时长。
 const BREAKER_THRESHOLD: u32 = 3;
 const BREAKER_OPEN: Duration = Duration::from_secs(60);
@@ -193,6 +195,16 @@ pub fn fingerprint(value: &str) -> u64 {
     hasher.finish()
 }
 
+/// 单 Key 供应商的指纹。账号类供应商（ChatGPT / Copilot / SuperGrok 登录）落盘时不存 `api_key`，
+/// token 在 `auth_contents` 里：一起算进去，刷新或重新登录后指纹变了，401 的停用才会解除。
+fn primary_fingerprint(relay: &RelayProfile) -> u64 {
+    if relay.auth_contents.trim().is_empty() {
+        fingerprint(&relay.api_key)
+    } else {
+        fingerprint(&format!("{}\n{}", relay.api_key.trim(), relay.auth_contents.trim()))
+    }
+}
+
 /// 供应商的全部 Key（还没按健康状态过滤）。
 ///
 /// 两个及以上命名 Key 时逐个展开；否则只有 `relay.api_key` 一个。官方登录成员不走 Key。
@@ -217,7 +229,7 @@ pub fn expand_keys(relay: &RelayProfile) -> Vec<KeyCandidate> {
             key: KeyRef {
                 relay_id: relay.id.clone(),
                 key_id: PRIMARY_KEY_ID.to_string(),
-                fingerprint: fingerprint(&relay.api_key),
+                fingerprint: primary_fingerprint(relay),
             },
             relay: relay.clone(),
         }];
@@ -355,6 +367,9 @@ pub fn record_failure(key: &KeyRef, class: &FailureClass, now: Instant) -> bool 
         FailureClass::QuotaExhausted { reset_after } => {
             entry.cooldown_until = Some(now + reset_after.unwrap_or(QUOTA_DEFAULT_COOLDOWN));
         }
+        FailureClass::AuthInvalid if key.key_id == OFFICIAL_KEY_ID => {
+            entry.cooldown_until = Some(now + OFFICIAL_AUTH_COOLDOWN);
+        }
         FailureClass::AuthInvalid => {
             entry.disabled_fingerprint = Some(key.fingerprint);
         }
@@ -380,6 +395,8 @@ pub fn record_success(key: &KeyRef, conversation: Option<&str>) {
     {
         entry.consecutive_rate_limits = 0;
         entry.cooldown_until = None;
+        // 能成功就说明凭据是好的（例如刚刷新过）。
+        entry.disabled_fingerprint = None;
     }
     if let Some(provider) = state.providers.get_mut(&key.relay_id) {
         provider.consecutive_errors = 0;
@@ -694,6 +711,24 @@ mod tests {
         relay.api_keys[0].api_key = "sk-a-new".to_string();
         let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, None, now);
         assert_eq!(keys.len(), 2);
+    }
+
+    /// 账号类供应商不存 `api_key`：401 后刷新或重新登录（auth_contents 变了）就恢复，成功一次也恢复。
+    #[test]
+    fn account_provider_recovers_after_token_changes() {
+        let mut relay = relay("kp-account", &[]);
+        relay.api_key = String::new();
+        relay.auth_contents = r#"{"access_token":"old"}"#.to_string();
+        let now = Instant::now();
+        let key = expand_keys(&relay)[0].key.clone();
+        record_failure(&key, &FailureClass::AuthInvalid, now);
+        assert!(order_keys(&relay, KeyRotationMode::Sticky, None, now).0.is_empty());
+        relay.auth_contents = r#"{"access_token":"new"}"#.to_string();
+        assert_eq!(order_keys(&relay, KeyRotationMode::Sticky, None, now).0.len(), 1);
+
+        relay.auth_contents = r#"{"access_token":"old"}"#.to_string();
+        record_success(&key, None);
+        assert_eq!(order_keys(&relay, KeyRotationMode::Sticky, None, now).0.len(), 1, "成功一次就解除");
     }
 
     #[test]

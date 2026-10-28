@@ -747,8 +747,8 @@ pub(crate) fn persist_gateway_login(
     refresh_token: &str,
     account_id: &str,
 ) {
-    let result = (|| -> anyhow::Result<()> {
-        let mut gateway = store.load()?;
+    // 带锁读改写：界面命令同时改 gateway.json 时不会拿旧状态整体覆盖，也不会被它覆盖。
+    let result = store.update(|gateway| {
         let Some(provider) = gateway
             .providers
             .iter_mut()
@@ -762,8 +762,8 @@ pub(crate) fn persist_gateway_login(
             refresh_token,
             account_id,
         )?;
-        store.save(&gateway)
-    })();
+        Ok(())
+    });
     if let Err(error) = result {
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "official_login.gateway_refresh_persist_failed",

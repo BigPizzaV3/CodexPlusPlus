@@ -117,6 +117,7 @@ pub fn windows_activate_process_window(process_id: u32) -> bool {
 }
 
 /// 设置 Codex++ 任务栏分组、名称和重启入口，保留 Codex 自己的图标。
+/// 启动器不再对打包版 Codex 调用：改写包应用的 AppUserModelID 会让任务栏丢失官方图标并单独分组（#2499、#2668）。
 #[cfg(windows)]
 pub fn windows_apply_codexplusplus_taskbar_to_process_window(process_id: u32) -> bool {
     windows_integration::apply_codexplusplus_taskbar_to_process_window(process_id)

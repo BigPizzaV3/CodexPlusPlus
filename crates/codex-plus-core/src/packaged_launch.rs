@@ -308,6 +308,153 @@ pub fn prepare_wrapper_script_with_port(
     })
 }
 
+/// 主实例包上下文 wrapper 的文件名（与多开的 [`WRAPPER_FILE_NAME`] 分开，互不覆盖）。
+pub const MAIN_WRAPPER_FILE_NAME: &str = "packaged-launch-main.cmd";
+
+/// 生成主实例的包上下文 wrapper 脚本（纯函数，可在 macOS 上单测）。
+///
+/// 用于 AUMID 激活失败后的兜底（issue #2700：Codex 26.1021 起，带调试参数的 AUMID
+/// 激活会让进程立即退出）。与多开 wrapper 的区别：
+/// - 不设置 `CODEX_HOME` / `CODEX_PLUS_STATE_DIR` / `CODEX_PLUS_MULTI_INSTANCE`，主实例沿用
+///   默认数据目录与实例身份；
+/// - 参数原样取自 AUMID 激活要用的那份（调试端口 + 用户附加参数），保证两条路径启动出的
+///   实例一致。
+pub fn build_main_instance_wrapper_script(
+    executable: &Path,
+    args: &[String],
+) -> anyhow::Result<String> {
+    let executable_literal = batch_path_literal(executable)?;
+    let executable_dir = executable
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(batch_path_literal)
+        .transpose()?;
+    let arguments = args
+        .iter()
+        .map(|arg| batch_argument_literal(arg))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let mut script = String::new();
+    script.push_str("@echo off\r\n");
+    script.push_str("setlocal\r\n");
+    if let Some(dir) = executable_dir {
+        // 与多开 wrapper 一致：尽力切到 exe 所在目录，失败时 cmd 继续执行下一行。
+        script.push_str(&format!("cd /d \"{dir}\"\r\n"));
+    }
+    let mut start_line = format!("start \"\" /b \"{executable_literal}\"");
+    for argument in &arguments {
+        start_line.push(' ');
+        start_line.push_str(argument);
+    }
+    script.push_str(&start_line);
+    script.push_str("\r\n");
+    script.push_str("endlocal\r\n");
+    Ok(script)
+}
+
+/// [`build_main_instance_wrapper_script`] + 写入 `<state_dir>/packaged-launch-main.cmd`。
+pub fn prepare_main_instance_wrapper(
+    state_dir: &Path,
+    executable: &Path,
+    args: &[String],
+) -> anyhow::Result<PathBuf> {
+    let script = build_main_instance_wrapper_script(executable, args)?;
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("创建状态目录失败：{}", state_dir.display()))?;
+    let path = state_dir.join(MAIN_WRAPPER_FILE_NAME);
+    std::fs::write(&path, script.as_bytes())
+        .with_context(|| format!("写入主实例包上下文 wrapper 失败：{}", path.display()))?;
+    Ok(path)
+}
+
+/// 单个命令行参数写进 `.cmd` 的字面量。
+///
+/// `%` 写成 `%%`；含空白或 cmd 元字符（`& | < > ^ ( )`）时整体加双引号，避免被 cmd 当成
+/// 管道/重定向。参数里的双引号与换行无法安全转义，直接拒绝。
+fn batch_argument_literal(arg: &str) -> anyhow::Result<String> {
+    if arg.contains('"') || arg.contains('\r') || arg.contains('\n') || arg.contains('\0') {
+        bail!("启动参数包含无法写进启动脚本的字符（引号或换行）：{arg}");
+    }
+    let escaped = arg.replace('%', "%%");
+    let needs_quotes = escaped.is_empty()
+        || escaped
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '&' | '|' | '<' | '>' | '^' | '(' | ')'));
+    Ok(if needs_quotes {
+        format!("\"{escaped}\"")
+    } else {
+        escaped
+    })
+}
+
+/// AUMID 激活后的验证窗口：窗口内既没开放调试端口、激活进程也一直活着，就不再判定，
+/// 交回原有注入流程（保持旧行为）。
+pub const AUMID_ACTIVATION_VERIFY_WINDOW: Duration = Duration::from_secs(15);
+
+/// 激活进程退出后，再给调试端口这么久的出现时间才判定激活失败：
+/// 防止「中转进程退出、真正进程稍后才监听」被误判。
+pub const AUMID_ACTIVATION_EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// AUMID 激活后单次观察的结论。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AumidActivationVerdict {
+    /// 调试端口已就绪，激活成功。
+    Ready,
+    /// 继续观察。
+    Pending,
+    /// 激活进程已退出且调试端口始终没出现：改用包上下文 wrapper 启动（issue #2700）。
+    FallbackToPackageContext,
+    /// 窗口耗尽但进程仍在（或无法判断）：不回退，交回原有注入流程，避免双开。
+    Inconclusive,
+}
+
+/// AUMID 激活结果的判定器（纯逻辑，时间由调用方注入，可在任意平台单测）。
+///
+/// `process_alive` 为 `None` 表示这一轮无法判断激活进程是否存活；无法判断时绝不回退，
+/// 只按窗口耗尽处理。
+#[derive(Debug, Clone)]
+pub struct AumidActivationWatch {
+    started_at: Instant,
+    exited_since: Option<Instant>,
+}
+
+impl AumidActivationWatch {
+    pub fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            exited_since: None,
+        }
+    }
+
+    pub fn observe(
+        &mut self,
+        now: Instant,
+        cdp_ready: bool,
+        process_alive: Option<bool>,
+    ) -> AumidActivationVerdict {
+        if cdp_ready {
+            return AumidActivationVerdict::Ready;
+        }
+        match process_alive {
+            Some(false) => {
+                let since = *self.exited_since.get_or_insert(now);
+                if now.saturating_duration_since(since) >= AUMID_ACTIVATION_EXIT_GRACE {
+                    return AumidActivationVerdict::FallbackToPackageContext;
+                }
+                // 已确认退出时不受总窗口限制，等退出宽限走完再给结论。
+                return AumidActivationVerdict::Pending;
+            }
+            Some(true) => self.exited_since = None,
+            None => {}
+        }
+        if now.saturating_duration_since(self.started_at) >= AUMID_ACTIVATION_VERIFY_WINDOW {
+            AumidActivationVerdict::Inconclusive
+        } else {
+            AumidActivationVerdict::Pending
+        }
+    }
+}
+
 /// 拼出在包上下文里执行 wrapper 的 PowerShell 脚本（纯函数，可在 macOS 上单测）。
 ///
 /// 形状是
@@ -1082,5 +1229,141 @@ mod tests {
         let pid = fallback_direct_launch(executable, &[], temp.path()).unwrap();
 
         assert!(pid > 0);
+    }
+
+    #[test]
+    fn main_instance_wrapper_starts_exe_with_debug_args_and_no_instance_env() {
+        let script = build_main_instance_wrapper_script(
+            Path::new(r"C:\Program Files\WindowsApps\OpenAI.Codex_1_x64__p\app\ChatGPT.exe"),
+            &[
+                "--remote-debugging-port=9229".to_string(),
+                "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
+                r"--user-data-dir=C:\Users\a b\100%\x&y".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert!(script.contains("\r\n"));
+        assert!(!script.contains("CODEX_PLUS_MULTI_INSTANCE"));
+        assert!(!script.contains("CODEX_HOME"));
+        assert!(!script.contains(STATE_DIR_ENV));
+        assert!(script.contains(
+            "start \"\" /b \"C:\\Program Files\\WindowsApps\\OpenAI.Codex_1_x64__p\\app\\ChatGPT.exe\" \
+             --remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229 \
+             \"--user-data-dir=C:\\Users\\a b\\100%%\\x&y\"\r\n"
+        ));
+    }
+
+    #[test]
+    fn main_instance_wrapper_rejects_quotes_in_arguments() {
+        let error = build_main_instance_wrapper_script(
+            Path::new(r"C:\app\ChatGPT.exe"),
+            &["--flag=\"x\" & calc".to_string()],
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("引号"));
+    }
+
+    #[test]
+    fn prepare_main_instance_wrapper_writes_separate_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = prepare_main_instance_wrapper(
+            temp.path(),
+            Path::new(r"C:\app\ChatGPT.exe"),
+            &["--remote-debugging-port=9229".to_string()],
+        )
+        .unwrap();
+        assert_eq!(path, temp.path().join(MAIN_WRAPPER_FILE_NAME));
+        assert_ne!(MAIN_WRAPPER_FILE_NAME, WRAPPER_FILE_NAME);
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("--remote-debugging-port=9229")
+        );
+    }
+
+    #[test]
+    fn aumid_watch_reports_ready_as_soon_as_cdp_is_available() {
+        let start = Instant::now();
+        let mut watch = AumidActivationWatch::new(start);
+        assert_eq!(
+            watch.observe(start, true, Some(false)),
+            AumidActivationVerdict::Ready
+        );
+    }
+
+    #[test]
+    fn aumid_watch_falls_back_after_activation_process_exits_without_cdp() {
+        // issue #2700：激活进程秒退、9229 不监听 → 退出宽限后改走包上下文。
+        let start = Instant::now();
+        let mut watch = AumidActivationWatch::new(start);
+        let exited = start + Duration::from_millis(500);
+        assert_eq!(
+            watch.observe(exited, false, Some(false)),
+            AumidActivationVerdict::Pending
+        );
+        assert_eq!(
+            watch.observe(exited + Duration::from_secs(1), false, Some(false)),
+            AumidActivationVerdict::Pending
+        );
+        assert_eq!(
+            watch.observe(exited + AUMID_ACTIVATION_EXIT_GRACE, false, Some(false)),
+            AumidActivationVerdict::FallbackToPackageContext
+        );
+    }
+
+    #[test]
+    fn aumid_watch_does_not_fall_back_when_cdp_appears_during_exit_grace() {
+        // 中转进程退出、真正进程稍后监听：不能误判为激活失败。
+        let start = Instant::now();
+        let mut watch = AumidActivationWatch::new(start);
+        assert_eq!(
+            watch.observe(start, false, Some(false)),
+            AumidActivationVerdict::Pending
+        );
+        assert_eq!(
+            watch.observe(start + Duration::from_secs(1), true, Some(false)),
+            AumidActivationVerdict::Ready
+        );
+    }
+
+    #[test]
+    fn aumid_watch_keeps_old_behavior_when_process_stays_alive() {
+        let start = Instant::now();
+        let mut watch = AumidActivationWatch::new(start);
+        assert_eq!(
+            watch.observe(start + Duration::from_secs(5), false, Some(true)),
+            AumidActivationVerdict::Pending
+        );
+        assert_eq!(
+            watch.observe(start + AUMID_ACTIVATION_VERIFY_WINDOW, false, Some(true)),
+            AumidActivationVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn aumid_watch_never_falls_back_when_liveness_is_unknown() {
+        let start = Instant::now();
+        let mut watch = AumidActivationWatch::new(start);
+        assert_eq!(
+            watch.observe(start + Duration::from_secs(1), false, None),
+            AumidActivationVerdict::Pending
+        );
+        assert_eq!(
+            watch.observe(start + AUMID_ACTIVATION_VERIFY_WINDOW, false, None),
+            AumidActivationVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn aumid_watch_resets_exit_grace_when_process_is_seen_alive_again() {
+        let start = Instant::now();
+        let mut watch = AumidActivationWatch::new(start);
+        watch.observe(start, false, Some(false));
+        watch.observe(start + Duration::from_secs(1), false, Some(true));
+        assert_eq!(
+            watch.observe(start + Duration::from_secs(3), false, Some(false)),
+            AumidActivationVerdict::Pending
+        );
     }
 }

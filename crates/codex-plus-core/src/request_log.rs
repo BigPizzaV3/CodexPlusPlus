@@ -139,6 +139,29 @@ impl RequestLogEntry {
         format!("{started_at_ms}-{sequence}")
     }
 
+    /// 发起请求的 Agent：没写的是 Codex 直连代理的旧记录。
+    pub fn agent_id(&self) -> &str {
+        self.agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|agent| !agent.is_empty())
+            .unwrap_or("codex")
+    }
+
+    /// 用量统计按哪个模型名记：上游实际用的优先，没有时用客户端请求的。
+    pub fn usage_model(&self) -> &str {
+        if self.upstream_model.trim().is_empty() {
+            self.model.trim()
+        } else {
+            self.upstream_model.trim()
+        }
+    }
+
+    /// 生图请求（生成或编辑）。
+    pub fn is_image(&self) -> bool {
+        self.wire_api.starts_with("image")
+    }
+
     pub fn finish(&mut self, finished_at_ms: u64) {
         self.timestamp_ms = finished_at_ms;
         self.duration_ms = finished_at_ms.saturating_sub(self.started_at_ms);
@@ -340,6 +363,94 @@ pub fn read_request_logs(limit: usize) -> std::io::Result<Vec<RequestLogEntry>> 
     Ok(entries)
 }
 
+/// 请求日志的筛选条件（从用量统计点进来时用）：空的不筛。
+#[derive(Clone, Debug, Default)]
+pub struct RequestLogFilter {
+    /// 只要这个时间之后开始的请求。
+    pub since_ms: Option<u64>,
+    pub agent: Option<String>,
+    pub relay_id: Option<String>,
+    /// 按用量统计的模型名（[`RequestLogEntry::usage_model`]）筛，忽略大小写。
+    pub model: Option<String>,
+}
+
+impl RequestLogFilter {
+    pub fn matches(&self, entry: &RequestLogEntry) -> bool {
+        let started = if entry.started_at_ms > 0 {
+            entry.started_at_ms
+        } else {
+            entry.timestamp_ms
+        };
+        self.since_ms.is_none_or(|since| started >= since)
+            && self.agent.as_deref().is_none_or(|agent| entry.agent_id() == agent)
+            && self.relay_id.as_deref().is_none_or(|relay| entry.relay_id == relay)
+            && self
+                .model
+                .as_deref()
+                .is_none_or(|model| entry.usage_model().eq_ignore_ascii_case(model.trim()))
+    }
+}
+
+/// 按条件读出的一页请求日志。
+#[derive(Clone, Debug, Default)]
+pub struct RequestLogPage {
+    /// 按开始时间倒序，最多 `limit` 条。
+    pub entries: Vec<RequestLogEntry>,
+    /// 符合条件的不止这些（更早的没返回）。
+    pub more: bool,
+    /// 日志文件里最早一条的开始时间：日志按大小滚动，更早的请求只留在用量统计里。
+    pub oldest_ms: Option<u64>,
+}
+
+/// 读取符合条件的最近 `limit` 条请求日志（含正在进行的请求）。
+pub fn read_request_log_page(limit: usize, filter: &RequestLogFilter) -> std::io::Result<RequestLogPage> {
+    let mut page = read_request_log_page_at(&request_log_path(), limit, filter)?;
+    page.entries
+        .extend(running_requests().into_iter().filter(|entry| filter.matches(entry)));
+    page.entries.sort_by_key(|entry| std::cmp::Reverse(entry.started_at_ms));
+    if page.entries.len() > limit {
+        page.entries.truncate(limit);
+        page.more = true;
+    }
+    Ok(page)
+}
+
+pub fn read_request_log_page_at(
+    path: &Path,
+    limit: usize,
+    filter: &RequestLogFilter,
+) -> std::io::Result<RequestLogPage> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(RequestLogPage::default()),
+        Err(error) => return Err(error),
+    };
+    let mut page = RequestLogPage::default();
+    let mut entries = VecDeque::with_capacity(limit.min(1024));
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<RequestLogEntry>(line) else {
+            continue;
+        };
+        if page.oldest_ms.is_none() {
+            page.oldest_ms = Some(entry.started_at_ms.max(1));
+        }
+        if !filter.matches(&entry) {
+            continue;
+        }
+        entries.push_back(entry);
+        if entries.len() > limit {
+            entries.pop_front();
+            page.more = true;
+        }
+    }
+    page.entries = entries.into_iter().rev().collect();
+    Ok(page)
+}
+
 pub fn read_request_logs_at(path: &Path, limit: usize) -> std::io::Result<Vec<RequestLogEntry>> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -468,6 +579,52 @@ mod tests {
             cache_hit_ratio: None,
             agent: None,
         }
+    }
+
+    #[test]
+    fn page_filters_by_time_agent_provider_and_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("request-log.jsonl");
+        let mut rows = Vec::new();
+        for (index, (agent, relay, model)) in [
+            (None, "relay-a", "gpt-6.1-sol"),
+            (Some("claude"), "relay-a", "kimi-k2"),
+            (Some("claude"), "relay-b", "Kimi-K2"),
+            (Some("grok"), "relay-b", "glm-4.6"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut row = entry(&format!("e{index}"));
+            row.started_at_ms = 1_000 * (index as u64 + 1);
+            row.agent = agent.map(str::to_string);
+            row.relay_id = relay.to_string();
+            row.upstream_model = model.to_string();
+            rows.push(row);
+        }
+        for row in &rows {
+            append_request_log_at(&path, row).unwrap();
+        }
+        let ids = |page: &RequestLogPage| page.entries.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>();
+
+        let all = read_request_log_page_at(&path, 10, &RequestLogFilter::default()).unwrap();
+        assert_eq!(ids(&all), vec!["e3", "e2", "e1", "e0"]);
+        assert!(!all.more);
+        assert_eq!(all.oldest_ms, Some(1_000));
+
+        let codex = RequestLogFilter { agent: Some("codex".to_string()), ..Default::default() };
+        assert_eq!(ids(&read_request_log_page_at(&path, 10, &codex).unwrap()), vec!["e0"], "没写 Agent 的算 Codex");
+
+        let kimi = RequestLogFilter { model: Some("kimi-k2".to_string()), ..Default::default() };
+        assert_eq!(ids(&read_request_log_page_at(&path, 10, &kimi).unwrap()), vec!["e2", "e1"], "模型名忽略大小写");
+
+        let relay = RequestLogFilter { relay_id: Some("relay-b".to_string()), since_ms: Some(3_500), ..Default::default() };
+        assert_eq!(ids(&read_request_log_page_at(&path, 10, &relay).unwrap()), vec!["e3"]);
+
+        let limited = read_request_log_page_at(&path, 2, &RequestLogFilter::default()).unwrap();
+        assert_eq!(ids(&limited), vec!["e3", "e2"]);
+        assert!(limited.more, "符合条件的不止这些");
+        assert_eq!(limited.oldest_ms, Some(1_000), "最早一条按整个文件算");
     }
 
     #[test]

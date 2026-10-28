@@ -121,9 +121,10 @@ import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
-import { SessionsView } from "./GatewaySessions";
-import { agentName, maskAccountName, type GatewayResult } from "./gateway-model";
+import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
+import { agentName, formatRequestCost, maskAccountName, usageRangeStart, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
+import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
 import { agentTabGroups, agentTarget } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
@@ -558,6 +559,7 @@ export type RelayProfile = {
   modelRoutes?: RelayModelRoute[];
   standardOpenaiProtocol: boolean;
   webSearchHistoryCompat: boolean;
+  localCompactionPromptAtEnd?: boolean;
   trustUpstreamCatalogLite?: boolean;
   strictResponsesReasoning?: boolean;
   /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
@@ -717,12 +719,18 @@ type RequestLogEntry = {
   streamOutcome?: string | null;
   usage?: RequestLogUsage | null;
   cacheHitRatio?: number | null;
+  /** 按供应商里填的价格估算的费用（后端读日志时补上；没填价格时没有）。 */
+  cost?: UsageCost | null;
 };
 
 type RequestLogsResult = {
   status: Status;
   message: string;
   entries: RequestLogEntry[];
+  /** 符合条件的不止返回的这些。 */
+  more?: boolean;
+  /** 日志文件里最早一条的开始时间（日志按大小滚动）。 */
+  oldestMs?: number | null;
 };
 
 type SettingsResult = CommandResult<{
@@ -1314,9 +1322,12 @@ const lastAgentRoute = new Map<string, Route>();
  */
 const globalNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
 /** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
-const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings"];
+// 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
+const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
 /** 侧栏「全局管理」分组：同时管理所有 Agent 的请求日志、会话、MCP 与 Skills。 */
-const managementNavigationRoutes: Route[] = ["requestLog", "sessions", "context", "skills"];
+const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "context", "skills"];
+/** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
+const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
 const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentPet", "agentCollaboration", "agentCache"];
 /** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
@@ -1538,6 +1549,7 @@ export function App() {
   const [sessionTab, setSessionTab] = useState<SessionTab>("all");
   /** 请求日志打开时的 Agent 过滤（从 Agent 概览跳过去时设置，用一次就清掉）。 */
   const [requestLogAgentFilter, setRequestLogAgentFilter] = useState<"all" | "codex" | "claude" | "grok">("all");
+  const [requestLogFocus, setRequestLogFocus] = useState<RequestLogFocus>({});
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
@@ -2417,7 +2429,7 @@ export function App() {
       showResultNotice(t("会话删除"), result);
       await refreshLocalSessions(true, localSessions?.offset ?? 0);
     }
-    return !!result && isSuccessStatus(result.status);
+    return !!result && sessionDeleteSucceeded(result.status);
   };
 
   const deleteLocalSessions = async (sessions: LocalSession[]) => {
@@ -2441,7 +2453,7 @@ export function App() {
     const failed: string[] = [];
     for (const session of uniqueSessions) {
       const result = await run(() => requestDeleteLocalSession(session));
-      if (result && isSuccessStatus(result.status)) {
+      if (result && sessionDeleteSucceeded(result.status)) {
         succeeded += 1;
       } else {
         failed.push(session.title || session.id);
@@ -2627,6 +2639,14 @@ export function App() {
       await refreshAutoTakeover(true);
     }
   };
+  // 用量统计里点一行：切到「请求」页签并按它（Agent / 供应商 / 模型）筛选。
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+  useEffect(() => onOpenRequestLog((focus) => {
+    setRequestLogAgentFilter(focus.agent ?? "all");
+    setRequestLogFocus(focus);
+    void navigateRef.current("requestLog");
+  }), []);
 
   const consumePendingManagerNavigation = async (): Promise<boolean> => {
     try {
@@ -4167,6 +4187,7 @@ export function App() {
       saveSettings,
       saveSettingsValue,
       autoSaveSettings,
+      previewSettingsForm: (next: BackendSettings) => setSettingsForm(normalizeSettings(next)),
       refreshSettings,
       resetSettings,
       exportSettings,
@@ -4369,7 +4390,7 @@ export function App() {
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
 
   const isGatewayPage = gatewayNavigationRoutes.includes(route);
-  const crumbGroup = isGatewayPage ? t("网关") : managementNavigationRoutes.includes(route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
+  const crumbGroup = isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
   // ⌘K：页面、各 Agent 的页面和常用操作。非当前 Agent 的页面会先切到那个 Agent。
   const paletteCommands: PaletteCommand[] = [];
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
@@ -4381,6 +4402,7 @@ export function App() {
   const pushCommand = (command: PaletteCommand | null) => { if (command) paletteCommands.push(command); };
   gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("网关"), () => void navigate(routeId), "gateway")));
   managementNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("全局管理"), () => void navigate(routeId))));
+  pushCommand(routeCommand("requestLog", t("全局管理"), () => void navigate("requestLog"), "usage requests"));
   for (const tool of toolEntries.filter((entry) => entry.switchable)) {
     agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
   }
@@ -4422,12 +4444,12 @@ export function App() {
             <div className="topbar-title">
               <span className="topbar-crumb">{crumbGroup}</span>
               <ChevronRight aria-hidden="true" className="topbar-crumb-sep" />
-              <h1>{route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : routeTitle(route)}</h1>
+              <h1>{route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : routeTitle(navAliasRoute[route] ?? route)}</h1>
             </div>
             <p>
               {route === "agentSettings"
                 ? tf("只作用于 {0}；界面主题、配置备份等整体设置在侧栏底部的齿轮里。", [activeToolName])
-                : routeSubtitle(route)}
+                : routeSubtitle(navAliasRoute[route] ?? route)}
             </p>
           </div>
           <div className="topbar-actions">
@@ -4496,8 +4518,13 @@ export function App() {
               actions={actions}
             />
           ) : null}
+          {route === "gatewayUsage" || route === "requestLog" ? <UsageTabs onChange={(next) => void navigate(next)} value={route} /> : null}
           {route === "requestLog" ? (
-            <RequestLogScreen initialAgent={requestLogAgentFilter} onConsumeInitialAgent={() => setRequestLogAgentFilter("all")} />
+            <RequestLogScreen
+              initialAgent={requestLogAgentFilter}
+              initialFocus={requestLogFocus}
+              onConsumeInitialAgent={() => { setRequestLogAgentFilter("all"); setRequestLogFocus({}); }}
+            />
           ) : null}
           {route === "claude" ? <ClaudeLocalizationScreen /> : null}
           {route === "sessions" ? <SessionAgentTabs onChange={setSessionTab} value={sessionTab} /> : null}
@@ -4937,6 +4964,8 @@ type Actions = {
   saveSettings: () => Promise<void>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
   autoSaveSettings: (settings: BackendSettings) => Promise<AutoSaveOutcome>;
+  /// 乐观写入表单（不落盘）：拖拽排序松手时先让列表立即重排，落位动画才连贯。
+  previewSettingsForm: (settings: BackendSettings) => void;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
   exportSettings: () => Promise<void>;
@@ -6087,16 +6116,44 @@ function requestLogAgent(entry: RequestLogEntry): string {
   return entry.agent || "codex";
 }
 
-function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { initialAgent?: "all" | "codex" | "claude" | "grok"; onConsumeInitialAgent?: () => void }) {
+/** 生图请求（网关记成 imageGenerations / imageEdits）：列表里标「生图」，运行中显示「生成中」而不是「流式中」。 */
+function isImageRequest(entry: { wireApi?: string }): boolean {
+  return (entry.wireApi ?? "").startsWith("image");
+}
+
+const REQUEST_LOG_LIMIT = 300;
+
+/** 失败请求在列表里直接显示的错误摘要：上游返回 JSON 时取里面的 message，否则取第一行。 */
+function requestLogErrorSummary(error: string): string {
+  const text = error.trim();
+  try {
+    const value = JSON.parse(text) as { error?: { message?: unknown } | string; message?: unknown };
+    const message = typeof value.error === "string" ? value.error : value.error?.message ?? value.message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  } catch {
+    // 不是 JSON，按原文处理。
+  }
+  return text.split("\n")[0] ?? text;
+}
+
+function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeInitialAgent }: { initialAgent?: "all" | "codex" | "claude" | "grok"; initialFocus?: RequestLogFocus; onConsumeInitialAgent?: () => void }) {
   const [entries, setEntries] = useState<RequestLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  // 时间段、供应商、模型在后端筛：日志只读最近 REQUEST_LOG_LIMIT 条，先截再筛会漏。
+  const [range, setRange] = useState<UsageRange>(initialFocus.range ?? "all");
+  const [relayFilter, setRelayFilter] = useState<{ id: string; label: string } | null>(
+    initialFocus.relayId ? { id: initialFocus.relayId, label: initialFocus.relayLabel || initialFocus.relayId } : null,
+  );
+  const [modelFilter, setModelFilter] = useState(initialFocus.model ?? "");
+  const [more, setMore] = useState(false);
+  const [oldestMs, setOldestMs] = useState<number | null>(null);
   const [filter, setFilter] = useState<"all" | "running" | "success" | "failed" | "retried">("all");
   const [sessionFilter, setSessionFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState<"all" | "codex" | "claude" | "grok">(initialAgent);
   // 初始过滤只用一次：之后从侧栏进来仍是「全部」。
-  useEffect(() => { if (initialAgent !== "all") onConsumeInitialAgent?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (initialAgent !== "all" || Object.keys(initialFocus).length) onConsumeInitialAgent?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -6109,12 +6166,28 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
     return () => window.clearInterval(timer);
   }, [hasRunning]);
 
+  const sinceMs = usageRangeStart(range);
+  const filterArgs = {
+    limit: REQUEST_LOG_LIMIT,
+    sinceMs: sinceMs ?? null,
+    agent: agentFilter === "all" ? null : agentFilter,
+    relayId: relayFilter?.id ?? null,
+    model: modelFilter || null,
+  };
+  // 自动刷新的定时器拿最新的筛选条件；序号保证只认最后一次读取。
+  const filterRef = useRef(filterArgs);
+  filterRef.current = filterArgs;
+  const latestLoad = useRef(0);
   const load = async (silent = false) => {
+    const id = ++latestLoad.current;
     if (!silent) setLoading(true);
     try {
-      const result = await invoke<RequestLogsResult>("load_request_logs", { limit: 300 });
+      const result = await invoke<RequestLogsResult>("load_request_logs", filterRef.current);
+      if (id !== latestLoad.current) return;
       if (result.status === "ok") {
         setEntries(result.entries ?? []);
+        setMore(Boolean(result.more));
+        setOldestMs(result.oldestMs ?? null);
         setError("");
       } else {
         setError(result.message || t("读取请求日志失败。"));
@@ -6128,7 +6201,8 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
 
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range, agentFilter, relayFilter?.id, modelFilter]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -6182,6 +6256,9 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
       setSessionFilter("all");
     }
   }, [sessionFilter, sessions]);
+
+  // 筛的时间段（或点进来的那一项）比日志里最早的一条还早：日志里看到的比统计少。
+  const partial = oldestMs !== null && (sinceMs ?? 0) < oldestMs && (range !== "all" || relayFilter !== null || modelFilter !== "");
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -6242,12 +6319,26 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
             value={agentFilter}
           />
           <AppSelect
+            ariaLabel={t("时间段")}
+            className="request-log-select"
+            menuWidth={140}
+            onChange={(next) => setRange(next)}
+            options={[
+              { value: "all", label: t("全部时间") },
+              { value: "today", label: t("今天") },
+              { value: "7d", label: t("近 7 天") },
+              { value: "30d", label: t("近 30 天") },
+            ] as AppSelectOption<UsageRange>[]}
+            size="sm"
+            value={range}
+          />
+          <AppSelect
             ariaLabel={t("状态筛选")}
             className="request-log-select"
             menuWidth={140}
             onChange={(next) => setFilter(next)}
             options={[
-              { value: "all", label: t("全部") },
+              { value: "all", label: t("全部状态") },
               { value: "running", label: t("进行中") },
               { value: "success", label: t("仅成功") },
               { value: "failed", label: t("仅失败") },
@@ -6289,9 +6380,26 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
           </Button>
           <Button disabled={clearing || entries.length === 0} variant="secondary" onClick={() => void clearLogs()}>
             <Trash2 className="h-4 w-4" />
-            {t("清空")}
+            {t("清空日志")}
           </Button>
         </div>
+
+        {relayFilter || modelFilter ? (
+          <div className="request-log-chips">
+            {relayFilter ? (
+              <button className="request-log-chip" onClick={() => setRelayFilter(null)} title={t("去掉这个筛选")} type="button">
+                {tf("供应商：{0}", [relayFilter.label])}
+                <X aria-hidden="true" className="h-3 w-3" />
+              </button>
+            ) : null}
+            {modelFilter ? (
+              <button className="request-log-chip" onClick={() => setModelFilter("")} title={t("去掉这个筛选")} type="button">
+                {tf("模型：{0}", [modelFilter])}
+                <X aria-hidden="true" className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         {error ? (
           <p className="field-hint request-log-error" role="alert">{error}</p>
@@ -6310,6 +6418,7 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
               <span>{t("输入")}</span>
               <span>{t("输出")}</span>
               <span>{t("缓存")}</span>
+              <span>{t("费用")}</span>
               <span>{t("耗时")}</span>
             </div>
             {filtered.map((entry) => (
@@ -6331,7 +6440,7 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
                       className={`request-log-status ${entry.success ? "ok" : "bad"}`}
                       title={entry.error ?? ""}
                     >
-                      {entry.statusCode || "ERR"}
+                      {entry.statusCode || (entry.success ? "OK" : "ERR")}
                       {!entry.success ? (
                         <small className="request-log-stream-failed">
                           {entry.stream ? t("流失败") : t("失败")}
@@ -6344,6 +6453,7 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
                     {maskAccountName(entry.relayName) || "-"}
                   </span>
                   <span className="request-log-ellipsis" title={entry.upstreamModel ? `${entry.model} → ${entry.upstreamModel}` : entry.model}>
+                    {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
                     {entry.model || "-"}
                     {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
                       <small> → {entry.upstreamModel}</small>
@@ -6355,38 +6465,46 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
                   >
                     {requestLogRetryLabel(entry)}
                   </span>
-                  <span className="request-log-muted" title={entry.state === "running" ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
-                    {entry.state === "running" ? t("流式中") : formatRequestLogTokens(entry.usage?.inputTokens)}
-                  </span>
-                  <span
-                    className="request-log-muted"
-                    title={entry.state === "running"
-                      ? t("按流式增量估算，完成后会更新为准确值")
-                      : ""}
-                  >
-                    {entry.state === "running"
-                      ? entry.estimatedOutputTokens
-                        ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
-                        : t("流式中")
-                      : formatRequestLogTokens(entry.usage?.outputTokens)}
-                  </span>
-                  <span>
-                    {entry.state === "running" ? (
-                      <span className="request-log-muted">{t("流式中")}</span>
-                    ) : entry.usage?.cachedTokens ? (
-                      <>
-                        {formatRequestLogTokens(entry.usage.cachedTokens)}
-                        <small>
-                          {" · "}
-                          {formatRequestLogCacheHitRatio(
-                            entry.usage.inputTokens,
-                            entry.usage.cachedTokens,
-                            entry.cacheHitRatio,
-                          )}
-                        </small>
-                      </>
-                    ) : "-"}
-                  </span>
+                  {entry.state !== "running" && !entry.success && entry.error ? (
+                    // 失败的请求没有 token 和费用：这几列直接显示错误原因。
+                    <span className="request-log-error-cell" title={entry.error}>{requestLogErrorSummary(entry.error)}</span>
+                  ) : (
+                    <>
+                      <span className="request-log-muted" title={entry.state === "running" ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
+                        {entry.state === "running" ? (isImageRequest(entry) ? t("生成中") : t("流式中")) : formatRequestLogTokens(entry.usage?.inputTokens)}
+                      </span>
+                      <span
+                        className="request-log-muted"
+                        title={entry.state === "running"
+                          ? t("按流式增量估算，完成后会更新为准确值")
+                          : ""}
+                      >
+                        {entry.state === "running"
+                          ? entry.estimatedOutputTokens
+                            ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
+                            : (isImageRequest(entry) ? t("生成中") : t("流式中"))
+                          : formatRequestLogTokens(entry.usage?.outputTokens)}
+                      </span>
+                      <span>
+                        {entry.state === "running" ? (
+                          <span className="request-log-muted">{(isImageRequest(entry) ? t("生成中") : t("流式中"))}</span>
+                        ) : entry.usage?.cachedTokens ? (
+                          <>
+                            {formatRequestLogTokens(entry.usage.cachedTokens)}
+                            <small>
+                              {" · "}
+                              {formatRequestLogCacheHitRatio(
+                                entry.usage.inputTokens,
+                                entry.usage.cachedTokens,
+                                entry.cacheHitRatio,
+                              )}
+                            </small>
+                          </>
+                        ) : "-"}
+                      </span>
+                      <span className="request-log-muted">{entry.cost ? formatRequestCost(entry.cost) : "-"}</span>
+                    </>
+                  )}
                   <span className="request-log-duration">
                     {formatRequestLogDuration(
                       entry.state === "running"
@@ -6454,6 +6572,12 @@ function RequestLogScreen({ initialAgent = "all", onConsumeInitialAgent }: { ini
               : t("还没有请求日志。在 Codex 或已接入网关的 Agent 里发起一次对话后即可看到。")}
           </div>
         )}
+        {more || partial ? (
+          <p className="field-hint request-log-note">
+            {more ? tf("只显示最近 {0} 条。", [REQUEST_LOG_LIMIT]) : ""}
+            {partial && oldestMs ? tf("请求日志按大小滚动，最早只到 {0}；更早的请求只计入统计。", [new Date(oldestMs).toLocaleString(getLanguage() === "en" ? "en-US" : "zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })]) : ""}
+          </p>
+        ) : null}
       </CardContent>
     </Panel>
   );
@@ -6732,6 +6856,30 @@ function RelayScreen({
   const isNewProfile = !!newProfileDraft;
   const saveRelaySettings = async (next: BackendSettings) => {
     return actions.saveSettingsValue(next, true);
+  };
+  // 拖拽排序专用保存：松手时乐观写入表单，卡片立即落位；等 save_settings 回读
+  // 会让卡片先弹回原位、保存完成后再整体跳一次。详情页保存与「配置切换」开关
+  // 仍走 saveRelaySettings，不参与乐观更新。
+  // 连续快速拖拽共用一条回滚基线：只有链尾那次失败才回滚，且基线随链中的成功
+  // 保存推进，早先的失败不会盖掉后续已落盘的结果。
+  const relayReorderSeqRef = useRef(0);
+  const relayReorderRollbackRef = useRef<BackendSettings | null>(null);
+  const reorderRelaySettings = async (next: BackendSettings) => {
+    const seq = ++relayReorderSeqRef.current;
+    if (seq === 1) relayReorderRollbackRef.current = form;
+    actions.previewSettingsForm(next);
+    const saved = await actions.saveSettingsValue(next, true);
+    if (seq === relayReorderSeqRef.current) {
+      if (!saved) {
+        const rollback = relayReorderRollbackRef.current;
+        if (rollback) actions.previewSettingsForm(rollback);
+      }
+      relayReorderSeqRef.current = 0;
+      relayReorderRollbackRef.current = null;
+    } else if (saved) {
+      relayReorderRollbackRef.current = saved;
+    }
+    return saved;
   };
   const createNewAggregateProfile = (mode: AggregateMode) => {
     const draft = aggregateProfileForMode(createAggregateRelayProfile(normalized), normalized, mode);
@@ -7093,6 +7241,7 @@ function RelayScreen({
                 visibleProfiles={visibleProfiles}
                 onEdit={(profileId) => void editRelayProfile(profileId)}
                 onFormChange={saveRelaySettings}
+                onReorder={reorderRelaySettings}
                 onSwitchProfile={switchRelayProfileFromList}
                 disabled={actions.relaySwitching}
                 actions={actions}
@@ -10330,6 +10479,7 @@ function RelayProfileList({
   form,
   visibleProfiles = form.relayProfiles,
   onFormChange,
+  onReorder,
   onEdit,
   onSwitchProfile,
   disabled = false,
@@ -10338,6 +10488,8 @@ function RelayProfileList({
   form: BackendSettings;
   visibleProfiles?: RelayProfile[];
   onFormChange: (value: BackendSettings) => void;
+  /// 拖拽排序落手专用：只走乐观更新路径；复制、删除等表单改动仍走 onFormChange。
+  onReorder: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
   onSwitchProfile: (id: string) => void;
   disabled?: boolean;
@@ -10355,7 +10507,7 @@ function RelayProfileList({
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const next = reorderRelayProfiles(form, String(active.id), String(over.id));
-    if (next !== form) onFormChange(next);
+    if (next !== form) onReorder(next);
   };
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -11107,6 +11259,7 @@ function RelayProfileEditor({
     profile.standardOpenaiProtocol,
     stabilizePromptPrefix,
     profile.webSearchHistoryCompat,
+    profile.localCompactionPromptAtEnd === true,
     profile.trustUpstreamCatalogLite === true,
     profile.strictResponsesReasoning === true,
   ].filter(Boolean).length;
@@ -12629,6 +12782,20 @@ function RelayProfileEditor({
                     <span>
                       <strong>{t("搜索历史压缩兼容（实验）")}</strong>
                       <small>response protection is unavailable</small>
+                    </span>
+                    <ToggleVisual />
+                  </label>
+                ) : null}
+                {showApiFields && profile.relayMode !== "aggregate" && profile.protocol !== "anthropicMessages" ? (
+                  <label className="switch-row compact relay-switch-row relay-field-local-compaction">
+                    <input
+                      checked={profile.localCompactionPromptAtEnd === true}
+                      onChange={(event) => updateDraft({ localCompactionPromptAtEnd: event.currentTarget.checked })}
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>{t("本地压缩缓存复用（实验）")}</strong>
+                      <small>{t("仅支持旧版直连供应商，暂不支持 2.0 网关。实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。缓存按 Key 隔离，切换或轮换 Key 可能降低命中率。未命中供应商缓存时，补回的工具声明会增加输入 token 开销；上游若忽略禁用工具调用要求，可能返回空摘要。默认关闭。")}</small>
                     </span>
                     <ToggleVisual />
                   </label>
@@ -14881,23 +15048,6 @@ function Toolbar({ children, className = "" }: { children: React.ReactNode; clas
   return <div className={`toolbar ${className}`.trim()}>{children}</div>;
 }
 
-type GrokProvidersResult = CommandResult<{
-  profiles: RelayProfile[];
-  activeRelayId: string;
-  live: {
-    grokHome: string;
-    configPath: string;
-    configExists: boolean;
-    cliPath: string | null;
-    cliInstalled: boolean;
-    revision: string;
-    defaultModel: string;
-    modelsBaseUrl: string;
-    models: Array<{ alias: string; model: string; baseUrl: string; contextWindow: number | null; apiKeyConfigured: boolean }>;
-  };
-  liveProfile: RelayProfile;
-}>;
-
 /**
  * Grok 分区的供应商管理。
  *
@@ -15016,7 +15166,7 @@ function AppSidebar({
     const item = routes.find((candidate) => candidate.id === routeId);
     if (!item) return null;
     const Icon = item.icon;
-    const selected = route === item.id;
+    const selected = route === item.id || navAliasRoute[route] === item.id;
     return (
       <button
         aria-current={selected ? "page" : undefined}
@@ -15334,7 +15484,7 @@ function routeSubtitle(route: Route) {
     gateway: t("选择哪些 Agent 经 Codex++ 网关接入，以及它们默认用哪个模型"),
     gatewayProviders: t("所有接入的 Agent 共用的供应商池，支持多 Key 轮换"),
     gatewayRouting: t("多家都有的模型怎么分、你建的组怎么走：路由方式、会话固定、出错换谁"),
-    gatewayUsage: t("按 Agent、供应商与模型统计调用、token、缓存与费用"),
+    gatewayUsage: t("调用统计与每条请求：按 Agent、供应商与模型汇总 token、缓存与费用"),
     gatewaySettings: t("监听地址、Key 轮换方式与退出时的恢复策略"),
     maintenance: t("入口检查与修复、开机启动与应用路径"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
@@ -16276,6 +16426,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
     webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
+    localCompactionPromptAtEnd: profile.localCompactionPromptAtEnd === true,
     trustUpstreamCatalogLite: profile.trustUpstreamCatalogLite === true,
     strictResponsesReasoning: profile.strictResponsesReasoning === true,
     anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
@@ -16549,14 +16700,18 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
 }
 
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "id" | "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "strictResponsesReasoning" | "modelMetadata">,
+  profile: Pick<RelayProfile, "id" | "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "localCompactionPromptAtEnd" | "strictResponsesReasoning" | "modelMetadata">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
   const searchHistoryCompat = profile.webSearchHistoryCompat === true
     && profile.protocol === "responses"
     && profile.relayMode !== "aggregate"
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
-  const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || requestCompatibilityEnabled(profile)
+  const localCompaction = profile.localCompactionPromptAtEnd === true
+    && (profile.protocol === "responses" || profile.protocol === "chatCompletions")
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+  const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile)
     ? PROTOCOL_PROXY_BASE_URL
     : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
@@ -16707,12 +16862,16 @@ function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "strictResponsesReasoning" in patch || "modelMetadata" in patch) {
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "modelMetadata" in patch) {
     const searchHistoryCompat = next.webSearchHistoryCompat === true
       && next.protocol === "responses"
       && next.relayMode !== "aggregate"
       && (next.relayMode !== "official" || next.officialMixApiKey);
-    const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || requestCompatibilityEnabled(next)
+    const localCompaction = next.localCompactionPromptAtEnd === true
+      && (next.protocol === "responses" || next.protocol === "chatCompletions")
+      && next.relayMode !== "aggregate"
+      && (next.relayMode !== "official" || next.officialMixApiKey);
+    const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next)
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -17770,8 +17929,9 @@ function loadInitialTheme(): Theme {
   return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
 }
 
+/** 启动落在网关「总览」：Agent 概览跟着上次点的 Agent 走，落在那里像是停在了某个 Agent 里。 */
 function loadInitialRoute(): Route {
-  if (typeof window === "undefined") return "overview";
+  if (typeof window === "undefined") return "hub";
   const params = new URLSearchParams(window.location.search);
   const previewRoute = params.get("previewRoute");
   if (previewRoute && routes.some((item) => item.id === previewRoute)) {
@@ -17780,7 +17940,7 @@ function loadInitialRoute(): Route {
   if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
     return "settings";
   }
-  return "overview";
+  return "hub";
 }
 
 /** 首次使用引导：没看过当前版本就自动打开；预览模式（?previewRoute=）不打开。 */

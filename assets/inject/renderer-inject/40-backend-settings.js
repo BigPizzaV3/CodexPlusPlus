@@ -12,8 +12,21 @@
     if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
     // 后端可用后预取设置项清单，首次打开设置页时不必再等一次请求。
     if (loaded && typeof loadCodexPlusSettingsCatalog === "function") void loadCodexPlusSettingsCatalog();
+    // 读到设置后立即补一次皮肤，不等下一轮 DOM 变更触发扫描（#2680）。
+    if (loaded && typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     return loaded;
+  }
+
+  /**
+   * 启动期读取后端设置的重试间隔；返回 -1 表示停止。
+   * 前 60 次每 250ms 一次（约 15 秒，覆盖常规启动）；之后按指数退避到 5 秒封顶再试 30 次，
+   * 重启 Codex 后首次桥接超时、页面被启动壳自救重载这类慢启动也能补上设置与皮肤（#2680）。
+   */
+  function backendSettingsStartupRetryDelay(attempt) {
+    if (attempt < 60) return 250;
+    if (attempt >= 90) return -1;
+    return Math.min(5000, 250 * 2 ** (attempt - 59));
   }
 
   function loadBackendSettingsForStartup(attempt = 0) {
@@ -22,8 +35,9 @@
         scan();
         return;
       }
-      if (attempt < 60) {
-        setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 250);
+      const delay = backendSettingsStartupRetryDelay(attempt);
+      if (delay >= 0) {
+        setTimeout(() => loadBackendSettingsForStartup(attempt + 1), delay);
       }
     });
   }
@@ -40,6 +54,8 @@
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
         if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+        // 启动期读取全部失败时，心跳是之后唯一的设置来源；读到就补一次皮肤（#2680）。
+        if (typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
         syncCodexPlusBackendToggleButtons();

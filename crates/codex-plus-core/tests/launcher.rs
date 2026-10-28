@@ -913,11 +913,12 @@ fn launcher_packaged_activation_can_preserve_process_id() {
 }
 
 #[test]
-fn launcher_keeps_taskbar_integration_without_overriding_codex_icons() {
+fn launcher_keeps_packaged_codex_taskbar_identity_and_icons() {
     let source = include_str!("../src/launcher.rs");
-    assert!(source.contains("apply_codexplusplus_taskbar_after_launch(process_id);"));
-    assert!(source.contains("windows_integration::apply_codexplusplus_taskbar_to_process_window(process_id)"));
+    // 打包版 Codex 必须保留包自身的 AppUserModelID，否则任务栏白图标且不与原应用合并（#2499、#2668）。
     for forbidden in [
+        "apply_codexplusplus_taskbar_after_launch",
+        "apply_codexplusplus_taskbar_to_process_window",
         "apply_codexplusplus_window_icon",
         "apply_native_codex_taskbar",
         "apply_codexplusplus_icon",
@@ -2060,6 +2061,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             auto_review_model: String::new(),

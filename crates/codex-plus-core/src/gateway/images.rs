@@ -256,6 +256,63 @@ fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .map(|index| index + from)
 }
 
+/// 生图返回里只给了链接（`url`）、没给图片数据（`b64_json`）的，把图下载下来补成 `b64_json`。
+/// Codex 只认 `b64_json`（缺了会报 missing field `b64_json`），而不少中转站默认返回链接。
+/// `data:` 链接直接取出里面的数据；下载失败的那张原样保留，交给 Agent 自己报错。
+pub async fn inline_image_urls(body: Vec<u8>, client: &reqwest::Client) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let Some(items) = value
+        .get_mut("data")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return body;
+    };
+    let mut changed = false;
+    for item in items.iter_mut() {
+        let has_data = item
+            .get("b64_json")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|data| !data.is_empty());
+        let Some(url) = item.get("url").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if has_data {
+            continue;
+        }
+        let data = if let Some(rest) = url.strip_prefix("data:") {
+            rest.split_once(";base64,")
+                .map(|(_, data)| data.to_string())
+        } else {
+            download_base64(client, url).await
+        };
+        if let Some(data) = data {
+            item["b64_json"] = serde_json::Value::String(data);
+            changed = true;
+        }
+    }
+    if !changed {
+        return body;
+    }
+    serde_json::to_vec(&value).unwrap_or(body)
+}
+
+async fn download_base64(client: &reqwest::Client, url: &str) -> Option<String> {
+    use base64::Engine;
+    let response = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let bytes = response.bytes().await.ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// 这个上游答复是否该换下一家再试：鉴权失败、限流、上游出错。
 pub fn should_try_next(status: u16) -> bool {
     matches!(status, 401 | 403 | 404 | 429) || status >= 500
@@ -414,6 +471,41 @@ mod tests {
             Some("gpt-image-2")
         );
         assert_eq!(requested_model(b"{}", "application/json"), None);
+    }
+
+    #[tokio::test]
+    async fn url_only_images_get_their_data_inlined() {
+        use base64::Engine;
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = server.accept().await.unwrap();
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nPNG!")
+                .await;
+        });
+        let body = serde_json::json!({ "data": [
+            { "url": format!("http://{address}/cat.png") },
+            { "url": "data:image/png;base64,QUJD" },
+            { "b64_json": "already", "url": "http://unused" }
+        ]});
+        let out =
+            inline_image_urls(serde_json::to_vec(&body).unwrap(), &reqwest::Client::new()).await;
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            value["data"][0]["b64_json"],
+            base64::engine::general_purpose::STANDARD.encode(b"PNG!")
+        );
+        assert_eq!(value["data"][1]["b64_json"], "QUJD");
+        assert_eq!(value["data"][2]["b64_json"], "already");
+        // 不是 JSON 的原样返回。
+        assert_eq!(
+            inline_image_urls(b"oops".to_vec(), &reqwest::Client::new()).await,
+            b"oops"
+        );
     }
 
     #[test]

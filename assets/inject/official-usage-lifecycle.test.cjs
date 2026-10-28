@@ -145,3 +145,57 @@ test("mixed mode also unlocks the per-model limit that blocks sending (#2646)",(
   api.setBackendSettings(settings(false));api.install();
   assert.equal(f.main.state.data.additional_rate_limits[0].rate_limit.allowed,false);
 });
+// 模型聚合：成员里有官方登录、又有 API Key 成员时，与官登混入 Key 一样解锁发送（#2704）。
+const aggregateSettings = (members, extra = {}) => ({
+  relayProfilesEnabled: true,
+  activeRelayId: "agg",
+  relayProfiles: [
+    { id: "agg", relayMode: "aggregate", officialMixApiKey: false },
+    { id: "login", relayMode: "official", officialMixApiKey: false },
+    { id: "mixed", relayMode: "official", officialMixApiKey: true },
+    { id: "api-a", relayMode: "pureApi", officialMixApiKey: false },
+    { id: "api-b", relayMode: "mixedApi", officialMixApiKey: false },
+  ],
+  aggregateRelayProfiles: [{ id: "agg", name: "聚合", members: members.map((relayId) => ({ relayId, weight: 1 })) }],
+  activeAggregateRelayId: "agg",
+  ...extra,
+});
+test("aggregate with an official login member and an API member unlocks sending (#2704)",()=>{
+  for(const members of [["login","api-a"],["api-b","login"],["mixed"],["login","mixed"]]) {
+    const f=fixture(),api=f.load();api.setBackendSettings(aggregateSettings(members));api.install();
+    f.main.setData(usage());
+    assert.equal(f.main.state.data.rate_limit.allowed,true,members.join("+"));
+    assert.equal(f.main.state.data.rate_limit.limit_reached,false,members.join("+"));
+    assert.equal(api.policyKey(),"official-hide");
+    assert.equal(f.image.state.data.rate_limit.allowed,false);
+  }
+});
+test("aggregate without both an official login and an API member keeps the quota lock",()=>{
+  const cases=[
+    aggregateSettings(["login"]),
+    aggregateSettings(["api-a","api-b"]),
+    aggregateSettings([]),
+    // activeAggregateRelayId 指向别的聚合时，与后端一致视为没有生效的聚合。
+    aggregateSettings(["login","api-a"],{activeAggregateRelayId:"other"}),
+    aggregateSettings(["login","api-a"],{aggregateRelayProfiles:[]}),
+    aggregateSettings(["login","api-a"],{relayProfilesEnabled:false}),
+  ];
+  for(const value of cases) {
+    const f=fixture(),api=f.load();api.setBackendSettings(value);api.install();
+    f.main.setData(usage());
+    assert.equal(f.main.state.data.rate_limit.allowed,false);
+    assert.equal(api.policyKey(),"off");
+  }
+});
+test("empty activeAggregateRelayId falls back to the active relay id",()=>{
+  const f=fixture(),api=f.load();api.setBackendSettings(aggregateSettings(["login","api-a"],{activeAggregateRelayId:""}));api.install();
+  f.main.setData(usage());
+  assert.equal(f.main.state.data.rate_limit.allowed,true);
+});
+test("switching from a mixed aggregate to a login-only aggregate restores the raw usage",()=>{
+  const f=fixture(),raw=f.main.state.data,api=f.load();
+  api.setBackendSettings(aggregateSettings(["login","api-a"]));api.install();
+  assert.equal(f.main.state.data.rate_limit.allowed,true);
+  api.setBackendSettings(aggregateSettings(["login"]));api.install();
+  assert.equal(f.main.state.data,raw);
+});

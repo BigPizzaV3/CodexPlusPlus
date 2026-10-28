@@ -160,6 +160,12 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub web_search_history_compat: bool,
+    #[serde(
+        rename = "localCompactionPromptAtEnd",
+        default,
+        skip_serializing_if = "is_false"
+    )]
+    pub local_compaction_prompt_at_end: bool,
     /// 只保留用户指定外部目录中的 Lite 声明，不为未知模型猜测能力。
     #[serde(default, skip_serializing_if = "is_false")]
     pub trust_upstream_catalog_lite: bool,
@@ -367,6 +373,7 @@ impl Default for RelayProfile {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             auto_review_model: String::new(),
@@ -399,6 +406,13 @@ impl RelayProfile {
     pub fn web_search_history_compat_enabled(&self) -> bool {
         self.web_search_history_compat
             && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    pub fn local_compaction_prompt_at_end_enabled(&self) -> bool {
+        self.local_compaction_prompt_at_end
+            && matches!(self.protocol, RelayProtocol::Responses | RelayProtocol::ChatCompletions)
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
     }
@@ -1390,6 +1404,7 @@ impl BackendSettings {
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
                 web_search_history_compat: false,
+                local_compaction_prompt_at_end: false,
                 trust_upstream_catalog_lite: false,
                 strict_responses_reasoning: false,
                 auto_review_model: String::new(),
@@ -1458,6 +1473,7 @@ impl BackendSettings {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             auto_review_model: String::new(),
@@ -1524,6 +1540,7 @@ impl BackendSettings {
             || self.active_relay_profile().uses_no_auth()
             || self.active_relay_profile().uses_independent_proxy()
             || self.active_relay_profile().web_search_history_compat_enabled()
+            || self.active_relay_profile().local_compaction_prompt_at_end_enabled()
             || self.active_relay_profile().request_compatibility_enabled()
             || self.active_relay_profile().rewrites_auto_review_model()
     }
@@ -3051,6 +3068,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "customHeaders",
     "standardOpenaiProtocol",
     "webSearchHistoryCompat",
+    "localCompactionPromptAtEnd",
     "trustUpstreamCatalogLite",
     "strictResponsesReasoning",
     "autoReviewModel",

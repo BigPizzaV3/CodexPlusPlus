@@ -927,9 +927,12 @@ fn injection_script_installs_dream_skin_from_backend_settings() {
     assert!(script.contains("--dream-skin-art"));
     assert!(script.contains("--dream-art"));
     assert!(script.contains("function refreshDreamSkin()"));
+    // 外部运行时：设置读到且明确关闭 / 暂停才清理；没读到时不清理（#2680）。
+    assert!(script.contains("function dreamSkinRefreshAction("));
     assert!(script.contains(
-        "codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)"
+        "if (backendLoaded) return enabled && !paused ? \"ensure\" : \"cleanup\";"
     ));
+    assert!(script.contains("if (action === \"cleanup\") {"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__"));
     assert!(!script.contains(

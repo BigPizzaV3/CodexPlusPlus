@@ -146,7 +146,9 @@ pub(crate) async fn handle(
             handle_claude_count_tokens(stream, &gateway, headers, body).await
         }
         (_, "GET", "/models") => handle_models(stream, &gateway, &agent).await,
-        (ToolId::Grok | ToolId::Codex, "POST", "/responses") => {
+        // 旧版 Codex 以 ChatGPT 身份接入时远程压缩发 `/responses/compact`，原路径一路带给上游。
+        (ToolId::Grok | ToolId::Codex, "POST", "/responses")
+        | (ToolId::Codex, "POST", "/responses/compact") => {
             let request_body = match decode_protocol_proxy_request_body(
                 body,
                 header_value_from_headers(headers, "content-encoding").as_deref(),
@@ -178,14 +180,19 @@ pub(crate) async fn handle(
             .await
         }
         (_, "POST", "/images/generations" | "/images/edits") => {
-            let edits = tail == "/images/edits";
+            let content_type =
+                header_value_from_headers(headers, "content-type").unwrap_or_default();
+            let user_agent = header_value_from_headers(headers, "user-agent");
             handle_images(
                 stream,
                 &gateway,
                 &agent,
-                edits,
-                headers,
-                body,
+                ImageRequest {
+                    edits: tail == "/images/edits",
+                    body,
+                    content_type: &content_type,
+                    user_agent: user_agent.as_deref(),
+                },
                 method,
                 path,
                 remote_addr_text,
@@ -196,26 +203,71 @@ pub(crate) async fn handle(
     }
 }
 
-/// 生图：按「生图模型」排出上游依次试，鉴权失败、限流、上游出错时换下一家；最后一家的答复原样返回。
-#[allow(clippy::too_many_arguments)]
-async fn handle_images(
+/// 一个生图请求：`/images/edits`（multipart）或 `/images/generations`（JSON）。
+pub(crate) struct ImageRequest<'a> {
+    pub edits: bool,
+    pub body: &'a [u8],
+    pub content_type: &'a str,
+    pub user_agent: Option<&'a str>,
+}
+
+/// Codex 以 ChatGPT 官方身份接入网关时，它的生图请求发到本地代理的 `/v1/images/...`
+/// （`openai_base_url`），不经过 `/gw/codex/...`。这时 Codex 的供应商是网关托管的那一个，
+/// 按直连模式转发会指回本地代理自己；改由网关按 Codex 的生图模型处理。
+pub(crate) async fn handle_codex_images_from_helper(
     stream: &mut tokio::net::TcpStream,
-    gateway: &GatewaySettings,
-    agent: &ToolId,
-    edits: bool,
-    headers: &str,
-    body: &[u8],
+    request: ImageRequest<'_>,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    let content_type = header_value_from_headers(headers, "content-type").unwrap_or_default();
-    let requested = crate::gateway::images::requested_model(body, &content_type);
+    let gateway = GatewayStore::default().load().unwrap_or_default();
+    handle_images(
+        stream,
+        &gateway,
+        &ToolId::Codex,
+        request,
+        method,
+        path,
+        remote_addr_text,
+    )
+    .await
+}
+
+/// 生图：按「生图模型」排出上游依次试，鉴权失败、限流、上游出错时换下一家；最后一家的答复原样返回。
+async fn handle_images(
+    stream: &mut tokio::net::TcpStream,
+    gateway: &GatewaySettings,
+    agent: &ToolId,
+    request: ImageRequest<'_>,
+    method: &str,
+    path: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
+    let ImageRequest {
+        edits,
+        body,
+        content_type,
+        user_agent,
+    } = request;
+    let requested = crate::gateway::images::requested_model(body, content_type);
+    // 每次生图记一条请求日志（用量也从这里汇总）：类型记成 imageGenerations / imageEdits。
+    let mut log = ProxyRequestLog::begin(method, path, None, None);
+    log.set_agent(agent);
+    log.entry.model = requested.clone().unwrap_or_default();
+    log.entry.wire_api = if edits {
+        "imageEdits"
+    } else {
+        "imageGenerations"
+    }
+    .to_string();
     let targets = match crate::gateway::images::targets(gateway, agent, requested.as_deref()) {
         Ok(targets) => targets,
-        Err(message) => return write_error(stream, agent, 400, &message).await,
+        Err(message) => {
+            log.record_error("400", message.clone());
+            return write_error(stream, agent, 400, &message).await;
+        }
     };
-    let user_agent = header_value_from_headers(headers, "user-agent");
     let count = targets.len();
     let mut last_error = String::new();
     for (index, target) in targets.into_iter().enumerate() {
@@ -239,15 +291,23 @@ async fn handle_images(
             }
         };
         let request = match &target.model {
-            Some(model) => crate::gateway::images::rewrite_model(body, &content_type, model),
+            Some(model) => crate::gateway::images::rewrite_model(body, content_type, model),
             None => body.to_vec(),
         };
+        log.entry.attempts += 1;
+        log.entry.relay_id = target.relay.id.clone();
+        log.entry.relay_name = target.relay.name.clone();
+        log.entry.upstream_model = target
+            .model
+            .clone()
+            .or_else(|| requested.clone())
+            .unwrap_or_default();
         let mut upstream = match crate::protocol_proxy::open_gateway_image_request(
             &relay,
             edits,
             &request,
-            &content_type,
-            user_agent.as_deref(),
+            content_type,
+            user_agent,
         )
         .await
         {
@@ -267,7 +327,29 @@ async fn handle_images(
         } else {
             upstream.content_type.clone()
         };
-        let answer = upstream.read_body().await?;
+        let mut answer = match upstream.read_body().await {
+            Ok(answer) => answer,
+            // 读答复时断了：和连不上一样，换下一家。
+            Err(error) => {
+                last_error = format!("{}：{error:#}", target.relay.name);
+                continue;
+            }
+        };
+        if upstream.is_success() && gateway.inline_image_urls_for(agent) {
+            // 只给了图片链接的，下载下来补成 b64_json（Codex 只认它）；走这家自己的代理。
+            if let Ok(client) =
+                crate::http_client::proxied_client_for_relay(&relay.user_agent, &relay)
+            {
+                answer = crate::gateway::images::inline_image_urls(answer, &client).await;
+            }
+        }
+        log.entry.status_code = upstream.status_code;
+        log.entry.success = upstream.is_success();
+        if upstream.is_success() {
+            log.record_usage_json(&answer);
+        } else {
+            log.entry.error = Some(String::from_utf8_lossy(&answer).chars().take(500).collect());
+        }
         write_http_response(stream, &status, &content_type, &answer).await?;
         log_helper_response(
             if upstream.is_success() {
@@ -283,12 +365,15 @@ async fn handle_images(
         stream.shutdown().await?;
         return Ok(());
     }
-    write_error(stream, agent, 502, &format!("生图失败：{last_error}")).await
+    let message = format!("生图失败：{last_error}");
+    log.record_error("502", message.clone());
+    write_error(stream, agent, 502, &message).await
 }
 
 /// Grok 等 Responses 客户端：按 Agent 绑定选上游，返回值交给 Codex 代理的输出链路。
 pub(crate) async fn open_responses_for_agent(
     agent: &ToolId,
+    request_path: &str,
     request_body: &str,
     user_agent: Option<&str>,
     session_headers: ProxySessionHeaders<'_>,
@@ -316,6 +401,11 @@ pub(crate) async fn open_responses_for_agent(
             live_request_id,
             auto_retry: true,
             is_stream: false,
+            upstream_path: if request_path.ends_with("/responses/compact") {
+                "/responses/compact"
+            } else {
+                "/responses"
+            },
         },
     )
     .await?;
@@ -498,6 +588,7 @@ async fn handle_claude_messages(
             // 「请求避震」对新旧两套同时生效（只在用户打开时起作用）。
             auto_retry: true,
             is_stream: wants_stream,
+            upstream_path: "/responses",
         },
     )
     .await;
@@ -544,7 +635,7 @@ async fn handle_claude_messages(
             Ok(())
         }
         GatewayUpstream::Native(response) => {
-            write_native(stream, &mut request_log, &trace, response).await
+            write_native(stream, &mut request_log, &trace, response, wants_stream).await
         }
         GatewayUpstream::Pipeline(mut response) => {
             request_log.record_trace(&trace, response.status_code, wants_stream);
@@ -566,9 +657,10 @@ async fn handle_claude_messages(
             let upstream_json = response.content_type.to_ascii_lowercase().contains("json");
             if wants_stream && upstream_json {
                 // 上游没理会 stream:true、回了整段 JSON：转成完整消息后再拆成事件流。
-                let body = response.read_body().await?;
-                let responses_json =
-                    non_stream_body_to_responses(response.wire_api, &body, Some(&responses_body))?;
+                let responses_json = match read_pipeline_json(&mut response, &responses_body).await {
+                    Ok(json) => json,
+                    Err(error) => return write_bad_upstream(stream, &mut request_log, &error).await,
+                };
                 request_log.record_usage_json(&serde_json::to_vec(&responses_json)?);
                 request_log.record_stream(None, None, None);
                 let message = responses_json_to_anthropic(&responses_json, &client_model);
@@ -617,9 +709,10 @@ async fn handle_claude_messages(
                 stream.shutdown().await?;
                 return Ok(());
             }
-            let body = response.read_body().await?;
-            let responses_json =
-                non_stream_body_to_responses(response.wire_api, &body, Some(&responses_body))?;
+            let responses_json = match read_pipeline_json(&mut response, &responses_body).await {
+                Ok(json) => json,
+                Err(error) => return write_bad_upstream(stream, &mut request_log, &error).await,
+            };
             request_log.record_usage_json(&serde_json::to_vec(&responses_json)?);
             request_log.record_stream(None, None, None);
             let message = responses_json_to_anthropic(&responses_json, &client_model);
@@ -628,6 +721,30 @@ async fn handle_claude_messages(
             Ok(())
         }
     }
+}
+
+/// 读完上游的整段答复并转成 Responses JSON。
+async fn read_pipeline_json(
+    response: &mut crate::protocol_proxy::UpstreamProxyResponse,
+    responses_body: &Value,
+) -> anyhow::Result<Value> {
+    let body = response.read_body().await?;
+    non_stream_body_to_responses(response.wire_api, &body, Some(responses_body))
+}
+
+/// 上游答了 200 但读不出来或不是预期的格式（例如一段 HTML）：给客户端回 502 和原因，
+/// 请求日志记成失败，而不是直接断开连接、日志里还是 200。
+async fn write_bad_upstream(
+    stream: &mut tokio::net::TcpStream,
+    request_log: &mut ProxyRequestLog,
+    error: &anyhow::Error,
+) -> anyhow::Result<()> {
+    let message = format!("上游答复无法解析：{error:#}");
+    request_log.record_error("502 Bad Gateway", message.clone());
+    let body = serde_json::to_vec(&anthropic_error_body(502, &message))?;
+    write_http_response(stream, "502 Bad Gateway", JSON, &body).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 fn is_client_rejection(error: &anyhow::Error) -> bool {
@@ -648,6 +765,7 @@ async fn write_native(
     request_log: &mut ProxyRequestLog,
     trace: &crate::request_log::RequestTrace,
     mut response: NativeAnthropicResponse,
+    wants_stream: bool,
 ) -> anyhow::Result<()> {
     request_log.record_trace(trace, response.status_code, response.is_stream);
     if let Some(body) = response.buffered_body.take() {
@@ -680,6 +798,16 @@ async fn write_native(
         let body = upstream.bytes().await?;
         request_log.record_usage_json(&body);
         request_log.record_stream(None, anthropic_usage(&body), None);
+        // 客户端要流式、上游没理会 stream:true 回了整段 JSON：拆成事件流再给，Claude Code 只认流。
+        if wants_stream
+            && let Ok(message) = serde_json::from_slice::<Value>(&body)
+            && message.get("type").and_then(Value::as_str) == Some("message")
+        {
+            write_stream_headers(stream).await?;
+            stream.write_all(&anthropic_message_to_sse(&message)).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
         write_http_response(stream, "200 OK", &response.content_type, &body).await?;
         stream.shutdown().await?;
         return Ok(());
@@ -743,6 +871,10 @@ struct AnthropicSseObserver {
 impl AnthropicSseObserver {
     fn push(&mut self, bytes: &[u8]) {
         self.buffer.push_str(&String::from_utf8_lossy(bytes));
+        // 有的上游用 CRLF 分隔事件；缓冲里只留着没切完的尾巴，统一换成 LF 再切。
+        if self.buffer.contains('\r') {
+            self.buffer = self.buffer.replace("\r\n", "\n");
+        }
         while let Some(index) = self.buffer.find("\n\n") {
             let block = self.buffer[..index].to_string();
             self.buffer.drain(..index + 2);

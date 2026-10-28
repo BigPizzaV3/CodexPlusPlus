@@ -11,6 +11,7 @@ import { HubTopology } from "./HubOverview";
 import { APP_LOGO_URL } from "./gateway-ui";
 import type { HubLink } from "./hub-overview-model";
 import { t, tf } from "./i18n";
+import { enhancementPlatformFromUserAgent } from "./enhancement-catalog";
 import "./ComputerUsePage.css";
 
 type CuTargetId = "claudeCode" | "claudeDesktop" | "codex" | "dsh" | "zcode" | "workBuddy";
@@ -38,7 +39,7 @@ type CuStatus = {
   customTargets?: CuCustomTarget[];
 };
 type CuMutation = { status: string; message: string; changed: boolean; backupPath?: string; targets?: Partial<CuTargets>; customTargets?: CuCustomTarget[] };
-type CuFailureKind = "runtime_missing" | "untrusted_parent" | "permission_required" | "client_unsupported" | "service_unavailable" | "error";
+type CuFailureKind = "unsupported_platform" | "runtime_missing" | "untrusted_parent" | "permission_required" | "client_unsupported" | "service_unavailable" | "error";
 type CuCheck = {
   status: string;
   message: string;
@@ -124,6 +125,7 @@ function stateLabel(state: CuTargetState): string {
 }
 function failureText(check: CuCheck): string {
   switch (check.failureKind) {
+    case "unsupported_platform": return t("Computer Use 暂不支持 Windows");
     case "runtime_missing": return t("没找到 ChatGPT.app，请先安装 Codex 桌面版");
     case "untrusted_parent": return t("Computer Use 拒绝了本次调用：ChatGPT.app 版本不兼容，请更新后再试");
     case "permission_required": return t("请在系统设置里给 ChatGPT 授予辅助功能/屏幕录制权限");
@@ -134,7 +136,30 @@ function failureText(check: CuCheck): string {
   }
 }
 
+/** Computer Use 依赖 macOS 版 ChatGPT.app 自带的运行时，其它平台暂无可接入的运行时（#2718）。 */
+const computerUseSupported = enhancementPlatformFromUserAgent(navigator.userAgent) === "macos";
+
 export function ComputerUsePage() {
+  return computerUseSupported ? <ComputerUseMacPage /> : <ComputerUseUnsupported />;
+}
+
+/** 非 macOS 平台只给出明确的「暂不支持」说明，不去探测运行时，避免误报「找不到 ChatGPT」。 */
+function ComputerUseUnsupported() {
+  return <div className="mg-page cu-page">
+    <PageHeader icon={<MonitorSmartphone size={20} strokeWidth={1.5} />} title="Computer Use" />
+    <div className="cu-content">
+      <div className="cu-runtime-missing" role="status" data-reason="unsupported-platform">
+        <AlertTriangle size={16} />
+        <div>
+          <strong>{t("Computer Use 暂不支持 Windows")}</strong>
+          <p>{t("Computer Use 接入目前只支持 macOS：它依赖 macOS 版 ChatGPT.app 自带的 Computer Use 服务，当前平台还没有可接入的运行时。")}</p>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
+function ComputerUseMacPage() {
   const [status, setStatus] = useState<CuStatus | null>(null);
   const [check, setCheck] = useState<CuCheck | null>(null);
   const [backups, setBackups] = useState<Record<string, string>>({});
