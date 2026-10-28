@@ -382,6 +382,59 @@ pub fn model_is_routable(gateway: &GatewaySettings, binding: &AgentBinding, mode
         || qualified_provider(gateway, binding, model).is_some()
 }
 
+/// Codex 起名请求的提示词开头：桌面版首次起名、桌面版定期重新起名、终端版起名。
+/// 这几段由 Codex 固定拼好，作为临时线程里唯一的用户消息发出。
+const CODEX_TITLE_PROMPT_PREFIXES: &[&str] = &[
+    "You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task",
+    "Keep the current chat title ",
+    "Generate a concise, single-line task title",
+];
+
+/// 是否是 Codex 自己发起的起名请求：最后一条用户消息以起名提示词开头。
+///
+/// 起名请求没有专门的模型名（首次起名用内置轻量模型，重新起名用会话当前模型），
+/// 只能按提示词认；只看最后一条用户消息的开头，用户正常对话里提到这些字不会误判。
+pub fn is_codex_title_request(request: &serde_json::Value) -> bool {
+    let Some(items) = request.get("input").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    let Some(message) = items.iter().rev().find(|item| {
+        item.get("role").and_then(serde_json::Value::as_str) == Some("user")
+            && item
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|kind| kind == "message")
+    }) else {
+        return false;
+    };
+    let text = match message.get("content") {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => return false,
+    };
+    let text = text.trim_start();
+    CODEX_TITLE_PROMPT_PREFIXES
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+}
+
+/// 起名模型：绑定指定了起名模型、且这是 Codex 的起名请求时，返回要改发的模型；
+/// 否则 None，请求照原来的模型路由。
+pub fn title_model_override(
+    gateway: &GatewaySettings,
+    agent: &ToolId,
+    request: &serde_json::Value,
+) -> Option<String> {
+    let binding = gateway.active_binding(agent)?;
+    let (title, _) = crate::model_suffix::parse_model_suffix(binding.title_model.trim());
+    let title = title.trim();
+    (!title.is_empty() && is_codex_title_request(request)).then(|| title.to_string())
+}
+
 /// 把客户端请求的模型名按绑定改写：认识的（绑定声明过的、池里能路由的）原样保留，
 /// 不认识的按「未知模型」策略改成默认模型或原样转发。
 pub fn effective_model(
@@ -393,6 +446,15 @@ pub fn effective_model(
     let requested = requested.trim();
     if requested.is_empty() {
         return default_model.to_string();
+    }
+    // 审批模型（#2703）：codex-auto-review 改发到绑定指定的模型，优先于目录匹配与未知模型策略
+    // （池里的 ChatGPT 账号可能把 codex-auto-review 列进模型表，那样会直接落到订阅额度上）。
+    if requested == crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL {
+        let (review, _) = crate::model_suffix::parse_model_suffix(binding.auto_review_model.trim());
+        let review = review.trim();
+        if !review.is_empty() {
+            return review.to_string();
+        }
     }
     let (requested_slug, _) = crate::model_suffix::parse_model_suffix(requested);
     let declared = binding.declared_models();
@@ -1030,6 +1092,106 @@ mod tests {
         // 关掉的供应商不参与；不认识的模型改写成默认模型。
         assert_eq!(routed(&gateway, "off-model")[0].1, "deepseek-v4-pro");
         assert_eq!(routed(&gateway, "claude-opus-5-5")[0].1, "deepseek-v4-pro");
+    }
+
+    /// #2703：绑定指定了审批模型时，codex-auto-review 改发到它；没指定时行为不变
+    /// （池里有家把 codex-auto-review 列进模型表就发给它，否则改写成主模型）。
+    #[test]
+    fn auto_review_requests_follow_binding_review_model() {
+        let mut gateway = gateway("deepseek-v4-pro");
+        gateway
+            .providers
+            .insert(0, provider("chatgpt", "gpt-5.5\ncodex-auto-review"));
+        assert_eq!(
+            routed(&gateway, "codex-auto-review"),
+            vec![pair("chatgpt", "codex-auto-review")]
+        );
+        gateway.providers.remove(0);
+        assert_eq!(
+            routed(&gateway, "codex-auto-review"),
+            vec![
+                pair("ds", "deepseek-v4-pro"),
+                pair("mirror", "deepseek-v4-pro")
+            ]
+        );
+
+        gateway
+            .providers
+            .insert(0, provider("chatgpt", "gpt-5.5\ncodex-auto-review"));
+        gateway.bindings.get_mut("claude").unwrap().auto_review_model =
+            " kimi/kimi-k3 ".to_string();
+        assert_eq!(
+            routed(&gateway, "codex-auto-review"),
+            vec![pair("kimi", "kimi-k3")]
+        );
+        // 模型组也可以：按组的成员展开。
+        gateway.bindings.get_mut("claude").unwrap().auto_review_model = "group/fast".to_string();
+        assert_eq!(
+            routed(&gateway, "codex-auto-review"),
+            vec![pair("ds", "deepseek-v4-flash"), pair("kimi", "kimi-k3")]
+        );
+        // 只影响审批请求，其它模型照旧。
+        assert_eq!(routed(&gateway, "gpt-5.5"), vec![pair("chatgpt", "gpt-5.5")]);
+    }
+
+    fn user_turn(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "model": "gpt-6-luna",
+            "input": [
+                { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": "Keep the current chat title in developer text" }] },
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": text }] }
+            ]
+        })
+    }
+
+    /// 起名请求只按最后一条用户消息的开头认：桌面版首次起名、重新起名、终端版起名都算，
+    /// 正常对话里提到这些字、或别的角色消息里出现都不算。
+    #[test]
+    fn codex_title_requests_are_recognized_by_prompt_prefix() {
+        assert!(is_codex_title_request(&user_turn(
+            "You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task that will be created from that prompt.\nPrompt: 修一下登录"
+        )));
+        assert!(is_codex_title_request(&user_turn(
+            "Keep the current chat title \"修登录\" if it still fits the conversation. If the focus has changed, write a more useful title."
+        )));
+        assert!(is_codex_title_request(&user_turn(
+            "  Generate a concise, single-line task title of at most 36 characters"
+        )));
+        // 字符串形式的 content 也认。
+        assert!(is_codex_title_request(&serde_json::json!({
+            "input": [{ "role": "user", "content": "Keep the current chat title \"x\" if it still fits." }]
+        })));
+
+        assert!(!is_codex_title_request(&user_turn("帮我看看 Keep the current chat title 这句是什么意思")));
+        assert!(!is_codex_title_request(&user_turn("修一下登录")));
+        // 起名提示词在更早的用户消息里、最后一条是正常提问：不算。
+        assert!(!is_codex_title_request(&serde_json::json!({
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Keep the current chat title \"x\"" }] },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "好的" }] },
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "继续" }] }
+            ]
+        })));
+        assert!(!is_codex_title_request(&serde_json::json!({ "input": "Keep the current chat title" })));
+    }
+
+    /// 绑定指定了起名模型时，起名请求改发到它；没指定、或不是起名请求时不改。
+    #[test]
+    fn title_requests_follow_binding_title_model() {
+        let mut gateway = gateway("deepseek-v4-pro");
+        let title = user_turn("Keep the current chat title \"x\" if it still fits the conversation.");
+        assert_eq!(title_model_override(&gateway, &ToolId::Claude, &title), None);
+
+        gateway.bindings.get_mut("claude").unwrap().title_model = " kimi/kimi-k3 ".to_string();
+        let model = title_model_override(&gateway, &ToolId::Claude, &title).unwrap();
+        assert_eq!(model, "kimi/kimi-k3");
+        assert_eq!(routed(&gateway, &model), vec![pair("kimi", "kimi-k3")]);
+        assert_eq!(
+            title_model_override(&gateway, &ToolId::Claude, &user_turn("修一下登录")),
+            None
+        );
+        // 没开网关的 Agent 不改。
+        assert_eq!(title_model_override(&gateway, &ToolId::Codex, &title), None);
     }
 
     #[test]

@@ -27,6 +27,8 @@ fn agent_pet_defaults_serialize_as_camel_case() {
             "size": 112,
             "soundEnabled": true,
             "soundSet": "duck",
+            "customSoundPress": "",
+            "customSoundRelease": "",
             "volume": 0.6,
         })
     );
@@ -47,14 +49,17 @@ fn agent_pet_round_trips_through_settings_store() {
         custom_image_url: "https://example.com/pet.webp".into(),
         size: 180,
         sound_enabled: false,
-        sound_set: "fx1".into(),
+        sound_set: "custom".into(),
+        custom_sound_press: "press-0123456789abcdef.mp3".into(),
+        custom_sound_release: "release-fedcba9876543210.wav".into(),
         volume: 0.25,
     };
     store.save(&settings).unwrap();
     let loaded = store.load().unwrap();
     assert_eq!(loaded.agent_pet, settings.agent_pet);
     assert_eq!(saved(&path)["agentPet"]["customImageUrl"], "https://example.com/pet.webp");
-    assert_eq!(saved(&path)["agentPet"]["soundSet"], "fx1");
+    assert_eq!(saved(&path)["agentPet"]["soundSet"], "custom");
+    assert_eq!(saved(&path)["agentPet"]["customSoundPress"], "press-0123456789abcdef.mp3");
 }
 
 #[test]
@@ -199,4 +204,29 @@ fn legacy_widget_switch_does_not_override_existing_agent_pet() {
     // 旧开关关着时不迁移。
     let (_temp, _path, store) = store_with(json!({"codexAppWhaleWidgetEnabled": false}));
     assert!(!store.load().unwrap().agent_pet.enabled);
+}
+
+#[test]
+fn agent_pet_custom_sound_files_must_match_import_names() {
+    let parsed: AgentPetSettings = serde_json::from_value(json!({
+        "soundSet": " custom ",
+        "customSoundPress": " press-0123456789abcdef.ogg ",
+        "customSoundRelease": "../release-0123456789abcdef.mp3",
+    }))
+    .unwrap();
+    assert_eq!(parsed.sound_set, "custom");
+    assert_eq!(parsed.custom_sound_press, "press-0123456789abcdef.ogg");
+    assert_eq!(parsed.custom_sound_release, "", "不符合导入命名的文件名一律清空");
+
+    for bad in [
+        "release-0123456789abcdef.mp3",
+        "press-0123456789ABCDEF.mp3",
+        "press-0123456789abcde.mp3",
+        "press-0123456789abcdef.exe",
+        "/etc/press-0123456789abcdef.mp3",
+    ] {
+        let parsed: AgentPetSettings =
+            serde_json::from_value(json!({"customSoundPress": bad})).unwrap();
+        assert_eq!(parsed.custom_sound_press, "", "{bad}");
+    }
 }

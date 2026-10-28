@@ -1,11 +1,11 @@
 /**
  * Agent 桌宠的试听播放器：与 Codex 里 97-agent-pet.js 同一套衔接规则——
  * 按下播放按压音；点按时松开音排到按压音结束前 40ms，按住超过按压音时长则松开时立即播放。
- * 音效由后端 `agent_pet_sounds` 以 data URI 提供，这里解码成 AudioBuffer 缓存。
+ * 音效由后端以 data URI 提供（内嵌组走 `agent_pet_sounds`，下载组 / 自定义组走 `agent_pet_sound`），
+ * 按音效键（见 `agentPetSoundKey`）解码成 AudioBuffer 缓存。
  */
-import type { AgentPetSoundSet } from "./agent-pet-settings";
-
-export type AgentPetSoundSources = Partial<Record<AgentPetSoundSet, { press?: string; release?: string }>>;
+export type AgentPetSoundSource = { press?: string; release?: string };
+export type AgentPetSoundSources = Partial<Record<string, AgentPetSoundSource>>;
 type Slot = "press" | "release";
 type Playing = { source: AudioBufferSourceNode; startAt: number; duration: number };
 
@@ -43,8 +43,20 @@ export class AgentPetSoundPlayer {
   }
 
   setSources(sources: AgentPetSoundSources) {
-    this.sources = sources;
+    this.sources = { ...this.sources, ...sources };
     this.buffers.clear();
+  }
+
+  /** 补一组音效（下载完成或导入了新文件）；只清掉这一组的解码缓存。 */
+  setSource(key: string, source: AgentPetSoundSource) {
+    this.sources = { ...this.sources, [key]: source };
+    this.buffers.delete(`${key}:press`);
+    this.buffers.delete(`${key}:release`);
+  }
+
+  has(key: string) {
+    const source = this.sources[key];
+    return Boolean(source?.press || source?.release);
   }
 
   private audio(): AudioContext | null {
@@ -55,7 +67,7 @@ export class AgentPetSoundPlayer {
     return this.context;
   }
 
-  private buffer(set: AgentPetSoundSet, slot: Slot): Promise<AudioBuffer | null> {
+  private buffer(set: string, slot: Slot): Promise<AudioBuffer | null> {
     const key = `${set}:${slot}`;
     const cached = this.buffers.get(key);
     if (cached) return cached;
@@ -68,12 +80,12 @@ export class AgentPetSoundPlayer {
   }
 
   /** 预解码一组音效，第一次按下也能立刻出声。 */
-  warm(set: AgentPetSoundSet) {
+  warm(set: string) {
     void this.buffer(set, "press");
     void this.buffer(set, "release");
   }
 
-  private async play(set: AgentPetSoundSet, slot: Slot, volume: number, delaySeconds = 0): Promise<Playing | null> {
+  private async play(set: string, slot: Slot, volume: number, delaySeconds = 0): Promise<Playing | null> {
     const buffer = await this.buffer(set, slot);
     const context = this.context;
     if (!buffer || !context || volume <= 0) return null;
@@ -92,14 +104,14 @@ export class AgentPetSoundPlayer {
     try { playing?.source.stop(); } catch { /* 已经播完 */ }
   }
 
-  async pressDown(set: AgentPetSoundSet, volume: number) {
+  async pressDown(set: string, volume: number) {
     this.stop(this.release);
     this.release = null;
     this.press = this.play(set, "press", volume);
     await this.press;
   }
 
-  async pressUp(set: AgentPetSoundSet, volume: number) {
+  async pressUp(set: string, volume: number) {
     // 按压音可能还在解码：等它起播后再按它的起止时间排松开音。
     const press = await this.press;
     this.press = null;
@@ -108,7 +120,7 @@ export class AgentPetSoundPlayer {
   }
 
   /** 试听按钮：模拟一次点按。 */
-  async preview(set: AgentPetSoundSet, volume: number) {
+  async preview(set: string, volume: number) {
     await this.pressDown(set, volume);
     await this.pressUp(set, volume);
   }

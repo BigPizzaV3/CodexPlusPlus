@@ -224,6 +224,8 @@ export function isTrayRoute(value: unknown): value is TrayRoute {
 
 export const TRAY_REQUEST_EVENT = "codex-plus-tray-request";
 export const TRAY_RESULT_EVENT = "codex-plus-tray-result";
+/** 主窗口注册好 TRAY_REQUEST_EVENT 监听后发出（后端据此判断重建的主窗口能否接收请求，#2677）。 */
+export const MAIN_WINDOW_READY_EVENT = "codex-plus-main-window-ready";
 
 /** 校验主窗口收到的请求，字段不对的一律丢掉。 */
 export function parseTrayRequest(value: unknown): TrayRequest | null {

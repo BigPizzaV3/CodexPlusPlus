@@ -1351,6 +1351,179 @@ pub async fn install_plugin(home: &Path, source: &str, id: &str) -> anyhow::Resu
     result
 }
 
+/// 判断市场名是否属于本插件市场的散列命名空间（`codex-plus-plugin-market-<12 位十六进制>`）。
+fn owned_market_name(name: &str) -> bool {
+    name.strip_prefix(MARKETPLACE_NAME)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|hash| hash.len() == 12 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// 只删除安装时创建的命名空间目录：必须是 `allowed_root` 的直接子目录、名称属于本市场，
+/// 且从 CODEX_HOME 起的每一层都不是符号链接，避免顺着链接删到市场之外。
+fn owned_directory_present(
+    home: &Path,
+    allowed_root: &Path,
+    target: &Path,
+) -> anyhow::Result<bool> {
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("插件目录名称无效")?;
+    if target.parent() != Some(allowed_root) || !owned_market_name(name) {
+        bail!("插件目录不在插件市场的安装位置内，拒绝删除");
+    }
+    let relative = target
+        .strip_prefix(home)
+        .context("插件目录超出 CODEX_HOME，拒绝删除")?;
+    let mut current = home.to_path_buf();
+    for component in relative.components() {
+        if !matches!(component, Component::Normal(_)) {
+            bail!("插件目录包含非法目录段，拒绝删除");
+        }
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => bail!("插件目录被文件或符号链接占用，拒绝删除"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error).context("无法检查插件目录"),
+        }
+    }
+    Ok(true)
+}
+
+fn remove_owned_directory(home: &Path, allowed_root: &Path, target: &Path) -> anyhow::Result<bool> {
+    if !owned_directory_present(home, allowed_root, target)? {
+        return Ok(false);
+    }
+    // remove_dir_all 不跟随目录内的符号链接，只删除链接本身。
+    fs::remove_dir_all(target).context("无法删除插件目录")?;
+    Ok(true)
+}
+
+/// 生成去掉该插件市场条目与插件启用条目后的配置；无改动时返回 None。
+fn config_without_plugin(
+    home: &Path,
+    source: Source,
+    id: &str,
+) -> anyhow::Result<(Option<Vec<u8>>, Option<String>)> {
+    let original = config_bytes(home)?;
+    let Some(bytes) = original.as_deref() else {
+        return Ok((None, None));
+    };
+    let contents = std::str::from_utf8(bytes).context("Codex 配置不是有效 UTF-8")?;
+    // 同安装：不透传解析错误里的配置片段。
+    let mut document = contents
+        .parse::<DocumentMut>()
+        .map_err(|_| anyhow::anyhow!("Codex 配置格式错误，请先修复 config.toml"))?;
+    let market_name = plugin_market_name(source, id);
+    let mut changed = false;
+    if let Some(marketplaces) = document
+        .get_mut("marketplaces")
+        .and_then(Item::as_table_like_mut)
+    {
+        // 市场名带 source:id 散列，只有本插件会用；仍核对 source 末段，防止误删同名的手写条目。
+        let owned = marketplaces.get(&market_name).is_some_and(|market| {
+            match market.get("source").and_then(Item::as_str) {
+                None => true,
+                Some(path) => {
+                    Path::new(path).file_name().and_then(|name| name.to_str())
+                        == Some(market_name.as_str())
+                }
+            }
+        });
+        if owned {
+            marketplaces.remove(&market_name);
+            changed = true;
+        }
+        if changed && marketplaces.is_empty() {
+            document.remove("marketplaces");
+        }
+    }
+    if let Some(plugins) = document
+        .get_mut("plugins")
+        .and_then(Item::as_table_like_mut)
+    {
+        let suffix = format!("@{market_name}");
+        let keys = plugins
+            .iter()
+            .map(|(key, _)| key.to_owned())
+            .filter(|key| key.ends_with(&suffix))
+            .collect::<Vec<_>>();
+        for key in &keys {
+            plugins.remove(key);
+        }
+        if !keys.is_empty() {
+            changed = true;
+            if plugins.is_empty() {
+                document.remove("plugins");
+            }
+        }
+    }
+    Ok((original, changed.then(|| document.to_string())))
+}
+
+/// 卸载与安装对称，只撤销安装写入的内容：
+/// `plugins/cache/<市场名>/`、`.tmp/codex-plus-plugin-market/markets/<市场名>/`、
+/// config.toml 中的 `[marketplaces.<市场名>]` 与 `[plugins."<插件>@<市场名>"]`、安装记录和状态文件。
+pub fn uninstall_plugin(home: &Path, source: &str, id: &str) -> anyhow::Result<Value> {
+    let source = Source::parse(source)?;
+    if !valid_id(id) {
+        bail!("插件 id 无效");
+    }
+    let home = prepare_home(home)?;
+    let _lock = acquire_lock(&home, "install.lock", "正在安装插件，请等待完成后再卸载")?;
+    let _config_lock = acquire_lock(
+        &home,
+        "config.lock",
+        "另一个窗口正在更新插件配置，请稍后重试",
+    )?;
+    let mut state = read_state(&home)?;
+    let market_name = plugin_market_name(source, id);
+    let cache_parent = home.join("plugins").join("cache");
+    let cache_root = cache_parent.join(&market_name);
+    let markets_parent = market_root(&home).join("markets");
+    let receipt_root = plugin_market_root(&home, source, id);
+    let (original_config, config) = config_without_plugin(&home, source, id)?;
+    let recorded = state.plugins.remove(&install_key(source, id)).is_some();
+    // 改动任何东西之前先校验两个目录，路径异常时整个卸载不生效。
+    let cache_present = owned_directory_present(&home, &cache_parent, &cache_root)?;
+    let receipt_present = owned_directory_present(&home, &markets_parent, &receipt_root)?;
+    if !recorded && config.is_none() && !cache_present && !receipt_present {
+        bail!("该插件未通过插件市场安装，无需卸载");
+    }
+    // 先撤销配置，Codex 不再加载该插件；配置被其他窗口改过时不删任何文件。
+    if let Some(config) = config {
+        if config_bytes(&home)?.as_deref() != original_config.as_deref() {
+            bail!("Codex 配置已被其他窗口更新，请重试卸载；未覆盖新的配置");
+        }
+        crate::settings::atomic_write(&home.join("config.toml"), config.as_bytes())
+            .context("无法移除插件配置")?;
+    }
+    remove_owned_directory(&home, &cache_parent, &cache_root)?;
+    remove_owned_directory(&home, &markets_parent, &receipt_root)?;
+    if recorded {
+        write_json(&state_path(&home), &state)?;
+    }
+    let status = status_path(&home, source, id);
+    check_regular_file(&status)?;
+    match fs::remove_file(&status) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("无法清除插件安装状态"),
+    }
+    let plugin = cached_index(&home, source).and_then(|index| {
+        index
+            .plugins
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| plugin_payload(&home, source, entry, &state))
+    });
+    Ok(json!({
+        "status": "ok", "message": "插件已卸载，重启 Codex 后生效。",
+        "source": source.id, "id": id, "plugin": plugin, "restartRequired": true,
+    }))
+}
+
 fn native_install_result() -> Value {
     json!({ "appsNeedingAuth": [], "authPolicy": "ON_USE" })
 }
@@ -2199,6 +2372,173 @@ exit 1
         );
         assert!(commit_install(&home, source, &plugin, None).is_ok());
         assert_eq!(read_state(&home).unwrap().plugins.len(), 1);
+    }
+
+    #[test]
+    fn uninstall_after_install_restores_files_config_and_records() {
+        // #2701：卸载要把安装写入的缓存、市场目录、配置条目与记录全部撤销，其他内容原样保留。
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        let original = "# Keep this comment\nmodel = \"original-model\"\n\n[model_providers.relay]\nbase_url = \"https://example.test/v1\"\n\n[marketplaces.user-market]\nsource_type = \"local\"\nsource = \"/somewhere/user-market\"\n\n[plugins.\"other@existing-market\"]\nenabled = false\n";
+        fs::write(home.join("config.toml"), original).unwrap();
+        let source = Source::parse("public").unwrap();
+        let plugin = entry();
+        fs::write(
+            index_path(&home, source),
+            serde_json::to_vec(&index(plugin.clone())).unwrap(),
+        )
+        .unwrap();
+        // 安装前已存在的其他插件缓存与市场目录不能被卸载波及。
+        let other_cache = home.join("plugins/cache/existing-market/other/1.0.0");
+        fs::create_dir_all(&other_cache).unwrap();
+        fs::write(other_cache.join("keep.txt"), "kept").unwrap();
+        let other_market = market_root(&home).join("markets/user-market");
+        fs::create_dir_all(&other_market).unwrap();
+        fs::write(other_market.join("keep.txt"), "kept").unwrap();
+
+        let download = home.join(".tmp/downloaded");
+        write_payload(&download, &plugin);
+        commit_install(&home, source, &plugin, Some(&download)).unwrap();
+        set_status(&home, source, &plugin.id, false, "complete", "done").unwrap();
+        let market_name = plugin_market_name(source, &plugin.id);
+        assert!(package_root(&home, source, &plugin).is_dir());
+        assert!(plugin_market_root(&home, source, &plugin.id).is_dir());
+        assert!(
+            fs::read_to_string(home.join("config.toml"))
+                .unwrap()
+                .contains(&market_name)
+        );
+
+        let payload = uninstall_plugin(&home, "public", &plugin.id).unwrap();
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["plugin"]["installed"], false);
+        assert_eq!(payload["plugin"]["installedVersion"], "");
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            original
+        );
+        assert!(!home.join("plugins/cache").join(&market_name).exists());
+        assert!(!plugin_market_root(&home, source, &plugin.id).exists());
+        assert!(read_state(&home).unwrap().plugins.is_empty());
+        assert!(!status_path(&home, source, &plugin.id).exists());
+        assert_eq!(
+            install_status(&home, "public", &plugin.id).unwrap()["stage"],
+            "failed"
+        );
+        assert!(other_cache.join("keep.txt").is_file());
+        assert!(other_market.join("keep.txt").is_file());
+        let listed = plugin_payload(&home, source, &plugin, &read_state(&home).unwrap());
+        assert_eq!(listed["installed"], false);
+        // 已卸载后再次卸载要明确报错，不碰任何文件。
+        assert!(uninstall_plugin(&home, "public", &plugin.id).is_err());
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            original
+        );
+        // 卸载后可以重新安装。
+        let download = home.join(".tmp/reinstall");
+        write_payload(&download, &plugin);
+        commit_install(&home, source, &plugin, Some(&download)).unwrap();
+        assert!(package_root(&home, source, &plugin).is_dir());
+    }
+
+    #[test]
+    fn uninstall_without_prior_config_drops_created_tables_and_keeps_other_variant() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        let source = Source::parse("public").unwrap();
+        let first = entry();
+        let mut second = first.clone();
+        second.id = "plugin_second".into();
+        second.tree = "c".repeat(40);
+        let first_download = home.join(".tmp/first");
+        let second_download = home.join(".tmp/second");
+        write_payload(&first_download, &first);
+        write_payload(&second_download, &second);
+        commit_install(&home, source, &first, Some(&first_download)).unwrap();
+        commit_install(&home, source, &second, Some(&second_download)).unwrap();
+
+        uninstall_plugin(&home, "public", &second.id).unwrap();
+        assert!(package_root(&home, source, &first).is_dir());
+        assert!(!package_root(&home, source, &second).exists());
+        let document = fs::read_to_string(home.join("config.toml"))
+            .unwrap()
+            .parse::<DocumentMut>()
+            .unwrap();
+        assert_eq!(document["marketplaces"].as_table().unwrap().len(), 1);
+        assert_eq!(document["plugins"].as_table().unwrap().len(), 1);
+        let first_key = format!("sample@{}", plugin_market_name(source, &first.id));
+        assert_eq!(
+            document["plugins"][&first_key]["enabled"].as_bool(),
+            Some(true)
+        );
+        let state = read_state(&home).unwrap();
+        assert_eq!(state.plugins.len(), 1);
+        assert!(state.plugins.contains_key(&install_key(source, &first.id)));
+
+        uninstall_plugin(&home, "public", &first.id).unwrap();
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(!config.contains("marketplaces"));
+        assert!(!config.contains("plugins"));
+        assert!(
+            fs::read_dir(home.join("plugins/cache"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn uninstall_refuses_unowned_paths_and_rejects_invalid_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        assert!(uninstall_plugin(&home, "public", "../../auth.json").is_err());
+        assert!(uninstall_plugin(&home, "elsewhere", "plugin_test").is_err());
+        assert!(uninstall_plugin(&home, "public", "plugin_test").is_err());
+        assert!(owned_market_name("codex-plus-plugin-market-0123456789ab"));
+        assert!(!owned_market_name("codex-plus-plugin-market"));
+        assert!(!owned_market_name(
+            "codex-plus-plugin-market-0123456789ab-extra"
+        ));
+        assert!(!owned_market_name("existing-market"));
+        let cache = home.join("plugins/cache");
+        let foreign = cache.join("existing-market");
+        fs::create_dir_all(&foreign).unwrap();
+        assert!(remove_owned_directory(&home, &cache, &foreign).is_err());
+        let nested = cache.join("codex-plus-plugin-market-0123456789ab");
+        assert!(remove_owned_directory(&home, &home, &nested).is_err());
+        assert!(foreign.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_does_not_follow_symlinked_plugin_directories() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path().join("home").as_path()).unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), "kept").unwrap();
+        let source = Source::parse("public").unwrap();
+        let plugin = entry();
+        let download = home.join(".tmp/downloaded");
+        write_payload(&download, &plugin);
+        commit_install(&home, source, &plugin, Some(&download)).unwrap();
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        // 安装后缓存目录被替换成指向外部的链接：卸载必须整体拒绝，不跟随删除，也不先改配置。
+        let cache_root = home
+            .join("plugins/cache")
+            .join(plugin_market_name(source, &plugin.id));
+        fs::rename(&cache_root, temp.path().join("moved")).unwrap();
+        symlink(&outside, &cache_root).unwrap();
+        assert!(uninstall_plugin(&home, "public", &plugin.id).is_err());
+        assert!(outside.join("keep.txt").is_file());
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            config
+        );
+        assert_eq!(read_state(&home).unwrap().plugins.len(), 1);
+        assert!(plugin_market_root(&home, source, &plugin.id).is_dir());
     }
 
     #[test]

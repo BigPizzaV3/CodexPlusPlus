@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
-import { agentPetSettingsIssue, defaultAgentPetSettings, normalizeAgentPetSettings } from "./agent-pet-settings.ts";
+import { agentPetSettingsIssue, agentPetSoundKey, defaultAgentPetSettings, normalizeAgentPetSettings } from "./agent-pet-settings.ts";
 import { agentPetReleaseDelay } from "./agent-pet-sound.ts";
 
 /**
@@ -18,14 +18,25 @@ test("设置默认关闭，只认 Codex，数值夹在范围内", () => {
   assert.deepEqual(normalizeAgentPetSettings(undefined), defaultAgentPetSettings());
   assert.equal(defaultAgentPetSettings().enabled, false);
   const normalized = normalizeAgentPetSettings({
-    enabled: true, agents: ["codex", "claude", "grok", "codex"], image: " fox ", size: 999, volume: 3, soundSet: "other",
+    enabled: true, agents: ["codex", "claude", "grok", "codex"], image: " fox ", size: 999, volume: 3, soundSet: " other ",
   });
   assert.deepEqual(normalized.agents, ["codex"]);
   assert.equal(normalized.image, "fox");
   assert.equal(normalized.size, 240);
   assert.equal(normalized.volume, 1);
-  assert.equal(normalized.soundSet, "duck");
+  // 音效组是否存在由后端校验（下载目录在后端），前端只去空白。
+  assert.equal(normalized.soundSet, "other");
+  assert.equal(normalizeAgentPetSettings({ soundSet: 3 }).soundSet, "duck");
   assert.equal(normalizeAgentPetSettings({ size: Number.NaN, volume: Number.NaN }).size, 112);
+});
+
+test("音效键：自定义音效带文件名，换了文件键就变", () => {
+  assert.equal(agentPetSoundKey(defaultAgentPetSettings()), "duck");
+  assert.equal(agentPetSoundKey({ soundSet: "nya", customSoundPress: "x", customSoundRelease: "" }), "nya");
+  assert.equal(
+    agentPetSoundKey({ soundSet: "custom", customSoundPress: "press-0123456789abcdef.mp3", customSoundRelease: "" }),
+    "custom:press-0123456789abcdef.mp3:",
+  );
 });
 
 test("旧版用量挂件开着的用户升级后桌宠保持开启，已有桌宠设置时以它为准", () => {
@@ -44,7 +55,7 @@ test("自定义图片只接受不带账号信息的 https 地址", () => {
 
 type Listener = (event: any) => void;
 
-function fixture(agentPet: Record<string, unknown> | null) {
+function fixture(agentPet: Record<string, unknown> | null, responses: Record<string, unknown> = {}) {
   class Element {
     tagName: string; children: Element[] = []; parentNode: Element | null = null; attrs: Record<string, string> = {};
     style: Record<string, string> = {}; listeners = new Map<string, Listener[]>(); alt = ""; draggable = true; src = "";
@@ -71,7 +82,7 @@ function fixture(agentPet: Record<string, unknown> | null) {
     codexPlusBackendSettingsLoaded: true,
     codexPlusBackendSettings: { agentPet },
     registerCodexPlusExtensionSelector: (selector: string) => selectors.push(selector),
-    postJson: async (path: string) => { requests.push(path); return { status: "ok", image: "data:image/png;base64,AAAA" }; },
+    postJson: async (path: string) => { requests.push(path); return responses[path] ?? { status: "ok", image: "data:image/png;base64,AAAA" }; },
     sendCodexPlusDiagnostic: async () => {},
     atob: (value: string) => Buffer.from(value, "base64").toString("binary"),
     Promise, JSON, Math, Number, Array, String, Map, Date, Uint8Array,
@@ -99,6 +110,57 @@ test("开启且选了 Codex 时挂载桌宠，节点都带拓展归属标记", a
   runInContext("syncCodexPlusAgentPet()", context);
   await flush();
   assert.equal(body.children.length, 1);
+  assert.deepEqual(requests, ["/agent-pet/image"]);
+});
+
+// 最小的假 AudioContext：解码直接成功，记录每次起播用的是哪段音频。
+function fakeAudio(window: Record<string, any>) {
+  const started: string[] = [];
+  window.AudioContext = class {
+    state = "running"; currentTime = 0; destination = {};
+    decodeAudioData(bytes: ArrayBuffer) { return Promise.resolve({ duration: 0.2, label: Buffer.from(bytes).toString() }); }
+    createGain() { return { gain: { value: 1 }, connect: (next: unknown) => next }; }
+    createBufferSource() {
+      const source: Record<string, any> = { connect: (next: unknown) => next, start() { started.push(source.buffer.label); }, stop() {} };
+      return source;
+    }
+    close() { return Promise.resolve(); }
+  };
+  return started;
+}
+
+test("下载 / 自定义音效经桥接取一次，按音效键缓存，换了文件才重新取", async () => {
+  const sound = (key: string) => ({ status: "ok", key, press: `data:audio/mpeg;base64,${Buffer.from(`${key}:press`).toString("base64")}` });
+  const settings = { ...defaultAgentPetSettings(), enabled: true, soundSet: "custom", customSoundPress: "press-0123456789abcdef.mp3" };
+  const responses: Record<string, unknown> = { "/agent-pet/sound": sound("custom:press-0123456789abcdef.mp3:") };
+  const { context, body, requests, window } = fixture(settings, responses);
+  const started = fakeAudio(window);
+  runInContext("syncCodexPlusAgentPet()", context);
+  await flush();
+  await flush();
+  runInContext("syncCodexPlusAgentPet()", context);
+  await flush();
+  assert.deepEqual(requests.filter((path) => path === "/agent-pet/sound"), ["/agent-pet/sound"]);
+  const root = body.children[0];
+  root.emit("pointerdown");
+  root.emit("pointerup");
+  assert.deepEqual(started, ["custom:press-0123456789abcdef.mp3::press"]);
+
+  responses["/agent-pet/sound"] = sound("custom:press-fedcba9876543210.mp3:");
+  runInContext("codexPlusBackendSettings = { agentPet: { ...codexPlusBackendSettings.agentPet, customSoundPress: \"press-fedcba9876543210.mp3\" } }; syncCodexPlusAgentPet()", context);
+  await flush();
+  await flush();
+  assert.equal(requests.filter((path) => path === "/agent-pet/sound").length, 2);
+  root.emit("pointerdown");
+  assert.equal(started.at(-1), "custom:press-fedcba9876543210.mp3::press");
+});
+
+test("内嵌音效组不走桥接", async () => {
+  const { context, requests, window } = fixture({ ...defaultAgentPetSettings(), enabled: true, soundSet: "fx1" });
+  window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = { fx1: { press: "data:audio/mpeg;base64,AAAA" } };
+  fakeAudio(window);
+  runInContext("syncCodexPlusAgentPet()", context);
+  await flush();
   assert.deepEqual(requests, ["/agent-pet/image"]);
 });
 
@@ -159,5 +221,8 @@ test("试听与 Codex 同一套衔接：点按时松开音排到按压音结束�
 test("管理器：音效由后端提供，预览按住会出声，并有试听按钮", () => {
   assert.match(page, /invoke<AgentPetSoundSources>\("agent_pet_sounds"\)/);
   assert.match(page, /<PetPreview [^>]*onPress=\{pressSound\} onRelease=\{releaseSound\}/);
-  assert.match(page, /player\.preview\(settings\.soundSet, settings\.volume\)/);
+  assert.match(page, /player\.preview\(soundKey, settings\.volume\)/);
+  assert.match(page, /invoke<SoundEntry\[\]>\("agent_pet_sound_catalog"\)/);
+  assert.match(page, /invoke<SoundResult>\("agent_pet_sound", \{/);
+  assert.match(page, /invoke<ImportResult>\("agent_pet_import_sound", \{ slot, data \}\)/);
 });

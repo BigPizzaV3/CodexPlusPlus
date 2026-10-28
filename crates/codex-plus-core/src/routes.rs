@@ -72,6 +72,11 @@ pub trait BridgeSettingsService: Send + Sync {
     fn agent_pet_cache_dir(&self) -> PathBuf {
         crate::agent_pet::default_cache_dir()
     }
+
+    /// Agent 桌宠自定义音效目录；测试可覆盖成临时目录。
+    fn agent_pet_custom_dir(&self) -> PathBuf {
+        crate::agent_pet::default_custom_dir()
+    }
 }
 
 #[async_trait]
@@ -398,6 +403,34 @@ pub async fn handle_bridge_request(
                         "status": "ok",
                         "image": image.data_uri,
                         "id": pet.image,
+                    })),
+                    Err(error) => Ok(json!({"status": "failed", "message": format!("{error:#}")})),
+                }
+            }
+            Ok(_) => Ok(json!({"status": "disabled"})),
+            Err(error) => Ok(json!({
+                "status": "failed",
+                "message": format!("无法读取 Agent 桌宠设置：{error}"),
+            })),
+        },
+        // 同上，仅内置桌宠使用。内嵌音效组渲染进程自带，这里只服务下载组和自定义组。
+        "/agent-pet/sound" => match ctx.settings.get_settings().await {
+            Ok(settings) if crate::agent_pet::enabled_for(&settings.agent_pet, "codex") => {
+                let pet = &settings.agent_pet;
+                match crate::agent_pet::load_sound(
+                    &pet.sound_set,
+                    &pet.custom_sound_press,
+                    &pet.custom_sound_release,
+                    &ctx.settings.agent_pet_cache_dir(),
+                    &ctx.settings.agent_pet_custom_dir(),
+                )
+                .await
+                {
+                    Ok(sound) => Ok(json!({
+                        "status": "ok",
+                        "key": sound.key,
+                        "press": sound.press,
+                        "release": sound.release,
                     })),
                     Err(error) => Ok(json!({"status": "failed", "message": format!("{error:#}")})),
                 }
@@ -866,6 +899,11 @@ fn settings_payload_value(
             "nativeFastLocalApiConfigured".to_string(),
             Value::Bool(native_fast.native_fast_local_api_configured),
         );
+        // 原生输入预测与 Fast 共用同一份本机自定义 API 判定，只读一次 config.toml。
+        object.insert(
+            "nativePredictionsLocalApiConfigured".to_string(),
+            Value::Bool(native_fast.native_fast_local_api_configured),
+        );
     }
     Ok(value)
 }
@@ -916,6 +954,7 @@ mod dictation_privacy_tests {
                 routes: Vec::new(),
                 default_relay_id: String::new(),
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };

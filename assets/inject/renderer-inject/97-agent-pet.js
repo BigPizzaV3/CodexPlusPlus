@@ -1,6 +1,7 @@
   // Agent 桌宠：Codex 窗口里一个可拖动的小角色，按下以底边为支点压扁、松开回弹，并播放按压 / 松开音。
   // 图片不随应用打包：经桥接 `/agent-pet/image` 由后端联网下载、缓存后以 data URI 返回。
-  // 音效随启动器内嵌（window.__CODEX_PLUS_AGENT_PET_SOUNDS__），直接从字节解码，不依赖 fetch(data:)。
+  // 内嵌的两组音效随启动器注入（window.__CODEX_PLUS_AGENT_PET_SOUNDS__）；下载音效组和用户导入的自定义音效
+  // 经桥接 `/agent-pet/sound` 取 data URI。一律直接从字节解码，不依赖 fetch(data:)。
   // 设置读后端的 `agentPet`，与「Codex 增强」总开关无关；目前只有 Codex 一个 Agent。
   window.__codexPlusAgentPetRuntime?.dispose?.();
   const codexPlusAgentPetPositionKey = "codexPlus.agentPet.position.v1";
@@ -18,6 +19,10 @@
     failureLogged: false,
     audio: null,
     buffers: new Map(),
+    soundKey: "",
+    soundRequest: 0,
+    soundRetryAt: 0,
+    soundFailureLogged: false,
     press: null,
     drag: null,
     cleanup: [],
@@ -36,7 +41,9 @@
       customImageUrl: typeof raw.customImageUrl === "string" ? raw.customImageUrl : "",
       size: Number.isFinite(size) ? Math.min(240, Math.max(64, size)) : 112,
       soundEnabled: raw.soundEnabled !== false,
-      soundSet: raw.soundSet === "fx1" ? "fx1" : "duck",
+      soundSet: typeof raw.soundSet === "string" && raw.soundSet ? raw.soundSet : "duck",
+      customSoundPress: typeof raw.customSoundPress === "string" ? raw.customSoundPress : "",
+      customSoundRelease: typeof raw.customSoundRelease === "string" ? raw.customSoundRelease : "",
       volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0.6,
     };
   }
@@ -93,25 +100,62 @@
     }
   }
 
-  // 预解码一组按压 / 松开音；起播走同步路径，手感才贴手。
-  function warmCodexPlusAgentPetSounds(soundSet) {
-    const context = codexPlusAgentPetAudioContext();
-    const sounds = window.__CODEX_PLUS_AGENT_PET_SOUNDS__?.[soundSet];
-    if (!context || !sounds) return;
+  // 与后端 `agent_pet::load_sound` 返回的 key 同一规则：自定义音效带文件名，换了文件就重新取。
+  function codexPlusAgentPetSoundKey(settings) {
+    return settings.soundSet === "custom"
+      ? `custom:${settings.customSoundPress}:${settings.customSoundRelease}`
+      : settings.soundSet;
+  }
+
+  function decodeCodexPlusAgentPetSounds(context, key, sounds) {
     for (const slot of ["press", "release"]) {
-      const key = `${soundSet}:${slot}`;
-      if (codexPlusAgentPet.buffers.has(key)) continue;
-      codexPlusAgentPet.buffers.set(key, null);
+      const bufferKey = `${key}:${slot}`;
+      if (codexPlusAgentPet.buffers.has(bufferKey) || !sounds?.[slot]) continue;
+      codexPlusAgentPet.buffers.set(bufferKey, null);
       void decodeCodexPlusAgentPetSound(context, sounds[slot]).then((buffer) => {
-        if (buffer) codexPlusAgentPet.buffers.set(key, buffer);
-        else codexPlusAgentPet.buffers.delete(key);
+        if (buffer) codexPlusAgentPet.buffers.set(bufferKey, buffer);
+        else codexPlusAgentPet.buffers.delete(bufferKey);
       });
     }
   }
 
+  // 下载 / 自定义音效：向后端要一次，失败 30 秒后再试。
+  function requestCodexPlusAgentPetSounds(context, key) {
+    if (codexPlusAgentPet.soundKey === key) return;
+    if (Date.now() < codexPlusAgentPet.soundRetryAt) return;
+    codexPlusAgentPet.soundKey = key;
+    const request = ++codexPlusAgentPet.soundRequest;
+    void Promise.resolve(postJson("/agent-pet/sound", {})).then((result) => {
+      if (request !== codexPlusAgentPet.soundRequest || codexPlusAgentPet.audio !== context) return;
+      if (result?.status !== "ok" || typeof result.key !== "string") {
+        throw new Error(result?.message || result?.status || "音效不可用");
+      }
+      codexPlusAgentPet.soundRetryAt = 0;
+      codexPlusAgentPet.soundFailureLogged = false;
+      decodeCodexPlusAgentPetSounds(context, result.key, result);
+    }).catch((error) => {
+      if (request !== codexPlusAgentPet.soundRequest) return;
+      codexPlusAgentPet.soundKey = "";
+      codexPlusAgentPet.soundRetryAt = Date.now() + 30000;
+      if (!codexPlusAgentPet.soundFailureLogged) {
+        codexPlusAgentPet.soundFailureLogged = true;
+        void sendCodexPlusDiagnostic("agent_pet_sound_failed", { message: String(error?.message || error) });
+      }
+    });
+  }
+
+  // 预解码一组按压 / 松开音；起播走同步路径，手感才贴手。
+  function warmCodexPlusAgentPetSounds(settings) {
+    const context = codexPlusAgentPetAudioContext();
+    if (!context) return;
+    const embedded = window.__CODEX_PLUS_AGENT_PET_SOUNDS__?.[settings.soundSet];
+    if (embedded) decodeCodexPlusAgentPetSounds(context, settings.soundSet, embedded);
+    else requestCodexPlusAgentPetSounds(context, codexPlusAgentPetSoundKey(settings));
+  }
+
   function playCodexPlusAgentPetSound(settings, slot, delaySeconds = 0) {
     const context = codexPlusAgentPet.audio;
-    const buffer = codexPlusAgentPet.buffers.get(`${settings.soundSet}:${slot}`);
+    const buffer = codexPlusAgentPet.buffers.get(`${codexPlusAgentPetSoundKey(settings)}:${slot}`);
     if (!context || !buffer || settings.volume <= 0) return null;
     try {
       if (context.state === "suspended") void context.resume();
@@ -139,7 +183,7 @@
     codexPlusAgentPet.press = { sound: null, release: null };
     if (!settings?.soundEnabled) return;
     // 首次按下才建音频上下文（需要用户手势），这次按压的音若还没解码好就静音，下一次就有了。
-    warmCodexPlusAgentPetSounds(settings.soundSet);
+    warmCodexPlusAgentPetSounds(settings);
     codexPlusAgentPet.press.sound = playCodexPlusAgentPetSound(settings, "press");
   }
 
@@ -241,6 +285,8 @@
     try { void codexPlusAgentPet.audio?.close(); } catch {}
     codexPlusAgentPet.audio = null;
     codexPlusAgentPet.buffers.clear();
+    codexPlusAgentPet.soundKey = "";
+    codexPlusAgentPet.soundRequest += 1;
   }
 
   function loadCodexPlusAgentPetImage(settings) {
@@ -285,7 +331,7 @@
     }
     applyCodexPlusAgentPetSize(settings);
     // 挂载后就预解码当前音效组（上下文此时可能是 suspended，按下时再 resume），第一次按压也有声音。
-    if (settings.soundEnabled) warmCodexPlusAgentPetSounds(settings.soundSet);
+    if (settings.soundEnabled) warmCodexPlusAgentPetSounds(settings);
     loadCodexPlusAgentPetImage(settings);
   }
 

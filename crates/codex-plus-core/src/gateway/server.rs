@@ -382,7 +382,11 @@ pub(crate) async fn open_responses_for_agent(
     let settings = SettingsStore::default().load().unwrap_or_default();
     let gateway = GatewayStore::default().load().unwrap_or_default();
     let request: Value = serde_json::from_str(request_body)?;
-    let model = request.get("model").and_then(Value::as_str).unwrap_or("");
+    // 起名模型：Codex 给会话起名的请求改发到绑定指定的模型，不落到订阅额度上。
+    let title_model = route::title_model_override(&gateway, agent, &request);
+    let model = title_model
+        .as_deref()
+        .unwrap_or_else(|| request.get("model").and_then(Value::as_str).unwrap_or(""));
     let conversation = session_headers.session_id.map(str::to_string).or_else(|| {
         request
             .get("prompt_cache_key")

@@ -379,6 +379,10 @@
   gap: 4px;
   margin: 0;
 }
+/* 卸载是破坏性操作，悬停时用危险色提示（#2701）。 */
+.shell .plugin-market-card-actions .plugin-market-uninstall:hover:not(:disabled) {
+  color: hsl(var(--destructive));
+}
 
 /* 插件筛选下拉（AppSelect） */
 .shell .plugin-market-filter .app-select { width: 150px; }

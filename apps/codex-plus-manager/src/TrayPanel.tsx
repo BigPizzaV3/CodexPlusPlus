@@ -266,6 +266,12 @@ export function TrayPanel() {
     void loadTab(tabRef.current);
   };
 
+  /**
+   * 轻量模式下主窗口关掉后已销毁（#2677）：发请求前让后端按需在后台重建主窗口，
+   * 并等它的前端注册好监听，否则请求没人接、只能等超时。失败也照常发，由超时兜底。
+   */
+  const prepareMainWindow = () => invoke<boolean>("main_window_prepare").catch(() => false);
+
   /** 把请求发给主窗口。同一时间只处理一个。 */
   const request = async (body: { kind: "launch" | "restart" | "stop" }, target?: string) => {
     if (pendingRef.current) return;
@@ -278,6 +284,7 @@ export function TrayPanel() {
       if (pendingRef.current?.id === id) finishPending(next, false, t("主窗口没有回应，请打开 Codex++ 查看。"));
     }, REQUEST_TIMEOUT_MS);
     try {
+      await prepareMainWindow();
       await emit(TRAY_REQUEST_EVENT, { ...body, id } satisfies TrayRequest);
     } catch (error) {
       finishPending(next, false, String(error));
@@ -287,6 +294,7 @@ export function TrayPanel() {
   /** 在主窗口打开某页：先让主窗口切页，再把它叫出来（面板随之收起）。 */
   const openRoute = async (route: TrayRoute) => {
     try {
+      await prepareMainWindow();
       await emit(TRAY_REQUEST_EVENT, { id: `nav-${Date.now().toString(36)}`, kind: "navigate", route } satisfies TrayRequest);
     } catch {
       // 切页失败也照样打开主窗口。

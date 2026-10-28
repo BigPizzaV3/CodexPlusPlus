@@ -61,6 +61,10 @@ const BROWSER_LOGIN_COMMANDS: Record<Exclude<AccountKind, "copilot">, string> = 
 /** 表单弹窗的用途：按预设新建、自定义新建、编辑已有供应商。 */
 type FormState = ProviderFormState;
 
+/** 详情里模型超过 MODEL_CHIP_COLLAPSE 个时先只列前 MODEL_CHIP_PREVIEW 个，其余点开再看。 */
+const MODEL_CHIP_PREVIEW = 12;
+const MODEL_CHIP_COLLAPSE = 16;
+
 /** 供应商池上次用的视图（切页再回来保持）。 */
 const providersViewMemo: { view: "list" | "models" } = { view: "list" };
 
@@ -420,6 +424,9 @@ function PoolRow({
   // 生图模型单独一行，「模型」里只列能聊天的。
   const imageModels = entry.imageModels ?? [];
   const chatModels = entry.models.filter((model) => !imageModels.some((image) => image.toLowerCase() === model.toLowerCase()));
+  const [allModels, setAllModels] = useState(false);
+  const modelsCollapsible = chatModels.length > MODEL_CHIP_COLLAPSE;
+  const shownModels = modelsCollapsible && !allModels ? chatModels.slice(0, MODEL_CHIP_PREVIEW) : chatModels;
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const reasoning = reasoningSummary(entry);
   const saveReasoning = async (modelMetadata: string) => {
@@ -493,8 +500,13 @@ function PoolRow({
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("模型")}</span>
             <div className="gw-detail-value gw-chip-row">
-              {chatModels.map((model) => <code className="gw-chip" key={model}>{`${entry.id}/${model}`}</code>)}
+              {shownModels.map((model) => <code className="gw-chip" key={model}>{`${entry.id}/${model}`}</code>)}
               {chatModels.length === 0 ? <span className="gw-muted">{t("未配置模型")}</span> : null}
+              {modelsCollapsible ? (
+                <button className="gw-text-button" onClick={() => setAllModels(!allModels)} type="button">
+                  {allModels ? t("收起") : tf("显示全部 {0} 个模型", [chatModels.length])}
+                </button>
+              ) : null}
               <button className="gw-text-button" disabled={busy !== null} onClick={() => setModelsOpen(true)} type="button">{t("编辑")}</button>
             </div>
           </div>

@@ -39,6 +39,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/manager/open-transient", json!({})),
         ("/backend/status", json!({})),
         ("/agent-pet/image", json!({})),
+        ("/agent-pet/sound", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
         (
@@ -197,6 +198,48 @@ async fn agent_pet_image_reports_invalid_custom_url() {
         result["message"].as_str().unwrap().contains("https://"),
         "{result}"
     );
+}
+
+#[tokio::test]
+async fn agent_pet_sound_serves_imported_custom_files() {
+    let service = Arc::new(FakeSettings::default());
+    let custom_dir = service.agent_pet_custom_dir();
+    let press = agent_pet::import_custom_sound("press", b"OggS\0\x02", &custom_dir).unwrap();
+    *service.settings.lock().unwrap() = BackendSettings {
+        agent_pet: AgentPetSettings {
+            enabled: true,
+            sound_set: "custom".into(),
+            custom_sound_press: press.clone(),
+            ..AgentPetSettings::default()
+        },
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        service,
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData),
+    );
+    let result = handle_bridge_request(ctx, "/agent-pet/sound", json!({})).await;
+    assert_eq!(result["status"], "ok", "{result}");
+    assert_eq!(result["key"], format!("custom:{press}:"));
+    assert!(result["press"].as_str().unwrap().starts_with("data:audio/ogg;base64,"));
+    assert!(result["release"].is_null());
+}
+
+#[tokio::test]
+async fn agent_pet_sound_is_disabled_until_enabled_and_reports_missing_files() {
+    let (ctx, _) = agent_pet_context(AgentPetSettings::default());
+    let result = handle_bridge_request(ctx, "/agent-pet/sound", json!({})).await;
+    assert_eq!(result, json!({"status": "disabled"}));
+
+    let (ctx, _) = agent_pet_context(AgentPetSettings {
+        enabled: true,
+        sound_set: "custom".into(),
+        ..AgentPetSettings::default()
+    });
+    let result = handle_bridge_request(ctx, "/agent-pet/sound", json!({})).await;
+    assert_eq!(result["status"], "failed");
+    assert!(result["message"].as_str().unwrap().contains("还没有选择"), "{result}");
 }
 
 #[tokio::test]
@@ -1295,6 +1338,9 @@ impl FakeSettings {
 impl BridgeSettingsService for FakeSettings {
     fn agent_pet_cache_dir(&self) -> std::path::PathBuf {
         self.agent_pet_cache.path().join("agent-pet-cache")
+    }
+    fn agent_pet_custom_dir(&self) -> std::path::PathBuf {
+        self.agent_pet_cache.path().join("agent-pet-custom")
     }
     async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
         Ok(self.settings.lock().unwrap().clone())

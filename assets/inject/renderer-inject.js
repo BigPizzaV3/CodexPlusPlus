@@ -3796,13 +3796,14 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
     pluginMarketplaceUnlock: "codexAppPluginMarketplaceUnlock",
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
+    sessionDeleteSkipConfirm: "codexAppSessionDeleteSkipConfirm",
     sideChatSave: "codexAppSideChatSave",
     markdownExport: "codexAppMarkdownExport",
     sessionShare: "codexAppSessionShare",
@@ -3845,6 +3846,7 @@
         pluginMarketplaceUnlock: false,
         modelWhitelistUnlock: false,
         sessionDelete: false,
+        sessionDeleteSkipConfirm: false,
         markdownExport: false,
         sessionShare: false,
         sideChatSave: false,
@@ -4747,6 +4749,7 @@
       button.disabled = waitsForBackend || button.dataset.relayUnneeded === "true";
     });
     refreshConversationViewControls();
+    if (typeof syncCodexAmbientSuggestionsToggles === "function") syncCodexAmbientSuggestionsToggles();
     document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
       select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
       select.disabled = !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.enhancementsEnabled === false;
@@ -5091,6 +5094,155 @@
       }
     }
     throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
+  }
+
+  // issue #686：Codex 设置页「主页建议」（旧名 Context-aware suggestions）只对 ChatGPT 订阅 /
+  // API Key 登录显示，中转模式下整行隐藏，用户关不掉，后台仍按这个设置持续生成建议、耗 token。
+  // 设置键是 `ambient-suggestions-enabled`（默认开启）：Codex 自己的开关、首页取建议、主进程的
+  // 后台刷新都按它门控。26.10 起 Codex 设置改由宿主服务读写：app-shared-* 导出一个活绑定，
+  // 指向 { settings, applicationState, ... } 宿主服务对象，Codex 的开关就是
+  // settings.write(key, value)，读取是 settings.readAll().values。导出名每次构建都会重排，
+  // 只能按形状找。找不到宿主服务（旧版）时退回 get-setting / set-setting 状态 API。
+  const codexAmbientSuggestionsSettingKey = "ambient-suggestions-enabled";
+  let codexAmbientSuggestionsState = { status: "idle", enabled: true, message: "" };
+  let codexAmbientSuggestionsLoadPromise = null;
+
+  function codexHostServicesFromModule(module) {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    for (const candidate of values) {
+      // 宿主服务对象本身是普通对象，成员才是 RPC stub（函数形态的 Proxy）：
+      // 只认 own key，不去探 stub 上的任意属性（stub 对任何属性都会返回一个可调用对象）。
+      if (!candidate || typeof candidate !== "object") continue;
+      try {
+        const own = (key) => Object.prototype.hasOwnProperty.call(candidate, key);
+        if (!own("settings") || !own("applicationState")) continue;
+        const settings = candidate.settings;
+        if (settings && typeof settings.write === "function" && typeof settings.readAll === "function") return candidate;
+      } catch {
+        // 26.908 起的 RPC stub 被检查时也可能抛错，跳过即可。
+      }
+    }
+    return null;
+  }
+
+  async function codexHostServices() {
+    const errors = [];
+    for (const assetPrefix of ["app-shared-", "app-initial-"]) {
+      try {
+        const module = await loadCodexAppModule(assetPrefix);
+        const host = codexHostServicesFromModule(module);
+        if (host) return host;
+        errors.push(`${assetPrefix}: host services unavailable`);
+      } catch (error) {
+        errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+      }
+    }
+    throw new Error(`Codex 宿主服务不可用 (${errors.join("; ")})`);
+  }
+
+  async function readCodexAppSetting(key) {
+    let hostError = null;
+    try {
+      const host = await codexHostServices();
+      const all = await host.settings.readAll();
+      return all?.values?.[key];
+    } catch (error) {
+      hostError = error;
+    }
+    try {
+      const response = await codexStateCall("get-setting", { params: { key } });
+      return response && Object.prototype.hasOwnProperty.call(response, "value") ? response.value : response;
+    } catch (error) {
+      throw hostError || error;
+    }
+  }
+
+  async function writeCodexAppSetting(key, value) {
+    let host = null;
+    try {
+      host = await codexHostServices();
+    } catch {
+      host = null;
+    }
+    if (host) {
+      await host.settings.write(key, value);
+      return;
+    }
+    await codexStateCall("set-setting", { params: { key, value } });
+  }
+
+  function codexAmbientSuggestionsDescription() {
+    const state = codexAmbientSuggestionsState;
+    if (state.status === "unavailable") {
+      return `当前 Codex 版本读不到这项设置${state.message ? `：${state.message}` : ""}。`;
+    }
+    return "Codex 首页会根据项目文件和已连接应用生成「下一步做什么」的建议，会在后台持续调用模型、消耗 token。中转模式下 Codex 设置页隐藏了这个开关，可以在这里关闭。";
+  }
+
+  /** 增强面板里的一行：直接读写 Codex 自己的设置，不经过 Codex++ 后端。 */
+  function renderCodexAmbientSuggestionsRow() {
+    const state = codexAmbientSuggestionsState;
+    const pending = state.status === "idle" || state.status === "loading" || state.status === "saving";
+    const title = "上下文感知建议（Context-aware suggestions）";
+    return `
+                <div class="codex-plus-row" data-codex-plus-setting-row="codexAppAmbientSuggestions">
+                  <div><div class="codex-plus-row-title">${escapeHtml(title)}</div><div class="codex-plus-row-description" data-codex-app-ambient-suggestions-description="true">${escapeHtml(codexAmbientSuggestionsDescription())}</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-app-ambient-suggestions="true" role="switch" aria-checked="${String(!!state.enabled)}" aria-label="${escapeHtml(title)}" data-enabled="${String(!!state.enabled)}" data-pending="${String(pending)}"${state.status === "unavailable" ? " disabled" : ""}><span></span></button>
+                </div>`;
+  }
+
+  /** 只把缓存的状态同步到已渲染的开关上，不发请求；renderCodexPlusMenu 每次都会调。 */
+  function syncCodexAmbientSuggestionsToggles() {
+    const state = codexAmbientSuggestionsState;
+    const pending = state.status === "idle" || state.status === "loading" || state.status === "saving";
+    document.querySelectorAll("[data-codex-app-ambient-suggestions]").forEach((button) => {
+      button.dataset.enabled = String(!!state.enabled);
+      button.setAttribute("aria-checked", button.dataset.enabled);
+      button.dataset.pending = String(pending);
+      button.disabled = state.status === "unavailable";
+    });
+    const description = codexAmbientSuggestionsDescription();
+    document.querySelectorAll("[data-codex-app-ambient-suggestions-description]").forEach((node) => {
+      if (node.textContent !== description) node.textContent = description;
+    });
+  }
+
+  /** 打开增强面板时读一次；读不到（宿主服务尚未就绪）时下次打开再试。 */
+  function loadCodexAmbientSuggestionsSetting() {
+    if (codexAmbientSuggestionsLoadPromise) return codexAmbientSuggestionsLoadPromise;
+    if (codexAmbientSuggestionsState.status === "saving") return Promise.resolve();
+    codexAmbientSuggestionsState = { ...codexAmbientSuggestionsState, status: "loading", message: "" };
+    syncCodexAmbientSuggestionsToggles();
+    codexAmbientSuggestionsLoadPromise = readCodexAppSetting(codexAmbientSuggestionsSettingKey)
+      .then((value) => {
+        // 未写过时 Codex 按默认值（开启）处理，只有明确的 false 才算关闭。
+        codexAmbientSuggestionsState = { status: "ready", enabled: value !== false, message: "" };
+      })
+      .catch((error) => {
+        codexAmbientSuggestionsState = { status: "unavailable", enabled: true, message: error?.message || String(error) };
+        sendCodexPlusDiagnostic("ambient_suggestions_setting_unavailable", { errorMessage: codexAmbientSuggestionsState.message });
+      })
+      .finally(() => {
+        codexAmbientSuggestionsLoadPromise = null;
+        syncCodexAmbientSuggestionsToggles();
+      });
+    return codexAmbientSuggestionsLoadPromise;
+  }
+
+  async function setCodexAmbientSuggestionsEnabled(enabled) {
+    const previous = codexAmbientSuggestionsState.enabled;
+    codexAmbientSuggestionsState = { status: "saving", enabled: !!enabled, message: "" };
+    syncCodexAmbientSuggestionsToggles();
+    try {
+      await writeCodexAppSetting(codexAmbientSuggestionsSettingKey, !!enabled);
+      codexAmbientSuggestionsState = { status: "ready", enabled: !!enabled, message: "" };
+      sendCodexPlusDiagnostic("ambient_suggestions_setting_saved", { enabled: !!enabled });
+    } catch (error) {
+      codexAmbientSuggestionsState = { status: "ready", enabled: previous, message: "" };
+      showToast(`上下文感知建议保存失败：${error?.message || String(error)}`, { type: "error" });
+    } finally {
+      syncCodexAmbientSuggestionsToggles();
+    }
   }
 
   function normalizeCodexServiceTierModelName(model) {
@@ -6071,6 +6223,12 @@
         codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
         nativeFastLocalApiConfigured: codexPlusBackendSettings.nativeFastLocalApiConfigured === true,
       });
+      // 原生输入预测只接收自己的开关和本机 API 布尔投影。
+      globalThis.window?.__codexPlusNativePredictions?.runtime?.update?.({
+        enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
+        codexAppNativePredictions: codexPlusBackendSettings.codexAppNativePredictions === true,
+        nativePredictionsLocalApiConfigured: codexPlusBackendSettings.nativePredictionsLocalApiConfigured === true,
+      });
     } catch (_) {
       return false;
     }
@@ -6231,6 +6389,11 @@
           enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
           codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
           nativeFastLocalApiConfigured: codexPlusBackendSettings.nativeFastLocalApiConfigured === true,
+        });
+        globalThis.window?.__codexPlusNativePredictions?.runtime?.update?.({
+          enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
+          codexAppNativePredictions: codexPlusBackendSettings.codexAppNativePredictions === true,
+          nativePredictionsLocalApiConfigured: codexPlusBackendSettings.nativePredictionsLocalApiConfigured === true,
         });
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
       }
@@ -7561,11 +7724,16 @@
                 </div>`;
       return renderCodexPlusSettingsSection("设置", renderCodexPlusBackendStatusRow() + state);
     }
+    // #686：「上下文感知建议」读写的是 Codex 自己的设置，不在后端清单里；放进 stepwise 组，
+    // 清单没有这一组时退到 chat 组，再不行放第一组，保证总能看到。
+    const ambientGroupId = ["stepwise", "chat"].find((id) => catalog.groups.some((group) => group.id === id))
+      || catalog.groups[0]?.id;
     return catalog.groups.map((group, index) => {
       const rows = catalog.items
         .filter((item) => item.group === group.id && codexPlusSettingsCatalogItemVisible(item))
         .map(renderCodexPlusSettingsCatalogRow)
         .filter(Boolean);
+      if (group.id === ambientGroupId) rows.push(renderCodexAmbientSuggestionsRow());
       if (index === 0) rows.unshift(renderCodexPlusBackendStatusRow());
       return rows.length ? renderCodexPlusSettingsSection(group.title, rows.join("")) : "";
     }).join("");
@@ -7589,6 +7757,7 @@
     if (!rendered) return;
     renderBackendStatus();
     refreshCodexPlusBackendToggles();
+    syncCodexAmbientSuggestionsToggles();
   }
 
   function openCodexPlusModal(options = {}) {
@@ -7865,6 +8034,12 @@
         overlay.querySelector(".codex-plus-extensions-back")?.focus({ preventScroll: true });
         return;
       }
+      const ambientToggle = target?.closest("[data-codex-app-ambient-suggestions]");
+      if (ambientToggle) {
+        if (ambientToggle.disabled || ambientToggle.dataset.pending === "true") return;
+        void setCodexAmbientSuggestionsEnabled(ambientToggle.dataset.enabled !== "true");
+        return;
+      }
       const toggle = target?.closest("[data-codex-plus-setting]");
       if (toggle) {
         if (toggle.disabled || toggle.dataset.pending === "true") return;
@@ -7922,6 +8097,8 @@
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
     loadUserScripts();
+    // 每次打开都重读一次：用户可能在 Codex 设置页（官方登录时可见）改过。
+    void loadCodexAmbientSuggestionsSetting();
     // 清单已缓存时上面的模板已经按清单渲染；否则读完后再替换“正在读取”占位。
     if (!codexPlusSettingsCatalog) void loadCodexPlusSettingsCatalog();
   }
@@ -13825,6 +14002,14 @@
   const deletedSessionRowIds = window.__codexPlusDeletedSessionRowIds instanceof Set
     ? window.__codexPlusDeletedSessionRowIds
     : (window.__codexPlusDeletedSessionRowIds = new Set());
+  // 扫描时由 JS 判定为已删会话的行打这个标记，样式表里统一隐藏（见 filterDeletedSessionRows）。
+  const deletedSessionRowMarker = "data-codex-plus-deleted-session-row";
+
+  /** 取 id 末尾的 thread uuid（兼容 `local:<uuid>`、`<host>:<uuid>` 等写法）；没有则返回空串。 */
+  function deletedSessionUuid(id) {
+    const match = String(id || "").trim().match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+    return match ? match[1].toLowerCase() : "";
+  }
 
   function renderDeletedSessionRowStyle() {
     let style = document.getElementById(deletedSessionRowStyleId);
@@ -13848,23 +14033,96 @@
       if (uuid) rules.add(`[data-app-action-sidebar-thread-id$="${CSS.escape(uuid)}"]{display:none !important}`);
       else rules.add(`[data-app-action-sidebar-thread-id="${CSS.escape(id)}"]{display:none !important}`);
     }
+    // 属性里看不出 uuid 的重建行（临时 client-new-thread id、只在 href / React props
+    // 里带 uuid 等）由扫描打标记后隐藏（#2671）。
+    rules.add(`[${deletedSessionRowMarker}="true"]{display:none !important}`);
     style.textContent = Array.from(rules).join("\n");
   }
 
-  function hideDeletedSessionRows(rawThreadId) {
-    if (!rawThreadId || isClientNewThreadId(rawThreadId)) return;
-    deletedSessionRowIds.add(rawThreadId);
-    renderDeletedSessionRowStyle();
+  /** 本次页面生命周期内已成功删除的会话 uuid 集合。 */
+  function deletedSessionUuids() {
+    const uuids = new Set();
+    for (const id of deletedSessionRowIds) {
+      const uuid = deletedSessionUuid(id);
+      if (uuid) uuids.add(uuid);
+    }
+    return uuids;
+  }
+
+  /**
+   * 侧栏重建时过滤已删会话（#2671）。
+   *
+   * 根因：本地删除走 Codex++ 后端直接删库/删文件，Codex 自己的会话列表缓存并不知道；
+   * 以前靠 refresh-recent-conversations-for-host 让 Codex 重读列表，新版 Codex 已没有
+   * 这个请求，于是折叠再展开项目分组时，Codex 按缓存把这条会话重新渲染出来。
+   * 样式表只能按行属性匹配，这里再用与删除按钮同一套 sessionRefFromRow 解析行身份
+   * （属性 / href / React props），凡是解析到已删 uuid 的行都打标记隐藏。
+   * 只在标记状态变化时写属性，React 复用节点给别的会话时会把标记摘掉；
+   * 标记属性不在扫描 observer 的 attributeFilter 里，不会引发自喂扫描。
+   */
+  function filterDeletedSessionRows() {
+    const uuids = deletedSessionUuids();
+    if (!uuids.size && !document.querySelector(`[${deletedSessionRowMarker}]`)) return;
+    for (const row of sessionRows()) {
+      const hidden = uuids.size > 0 && uuids.has(deletedSessionUuid(sessionRefFromRow(row).session_id));
+      if (hidden && row.getAttribute(deletedSessionRowMarker) !== "true") row.setAttribute(deletedSessionRowMarker, "true");
+      else if (!hidden && row.getAttribute(deletedSessionRowMarker) !== null) row.removeAttribute(deletedSessionRowMarker);
+    }
+  }
+
+  /**
+   * 记录一条已删除会话并刷新隐藏规则，返回实际新增的 id（供撤销时移除）。
+   * rawThreadId 是删除时行上的原始属性值（可能为空：行在请求期间被 React 换掉）；
+   * sessionId 是后端确认删除的规范 uuid，行不在了也照样记录。
+   */
+  function hideDeletedSessionRows(rawThreadId, sessionId = "") {
+    const added = [];
+    for (const id of [rawThreadId, sessionId]) {
+      if (!id || isClientNewThreadId(id) || deletedSessionRowIds.has(id)) continue;
+      deletedSessionRowIds.add(id);
+      added.push(id);
+    }
+    if (added.length) {
+      renderDeletedSessionRowStyle();
+      filterDeletedSessionRows();
+    }
+    return added;
   }
 
   function unhideDeletedSessionRows(rawThreadIds) {
     let changed = false;
     for (const id of rawThreadIds || []) changed = deletedSessionRowIds.delete(id) || changed;
-    if (changed) renderDeletedSessionRowStyle();
+    if (changed) {
+      renderDeletedSessionRowStyle();
+      filterDeletedSessionRows();
+    }
   }
 
   // 注入脚本重跑（页面未刷新）时按已记录的 id 恢复样式表；首次加载 Set 为空，不做任何事。
   if (deletedSessionRowIds.size) renderDeletedSessionRowStyle();
+
+  /**
+   * 从多个原生「新聊天」按钮里确定地挑一个（#2671）。
+   *
+   * 新版 Codex 侧栏和导航栏（navigation rail）各有一个新聊天按钮，二者都调用同一个
+   * onStartChat，点哪个效果相同；以前候选不唯一就放弃跳转，界面停在已删会话。
+   * 优先级：可见优先于不可见；同为可见/不可见时，侧栏列表里的优先于导航栏里的；
+   * 再相同则按 DOM 顺序取第一个，保证每次挑中的是同一个。
+   */
+  function pickNewChatButton(candidates) {
+    const rank = (candidate) => (visibleElement(candidate) ? 0 : 2)
+      + (candidate.closest("nav[data-app-navigation-rail]") ? 1 : 0);
+    let best = null;
+    let bestRank = Infinity;
+    for (const candidate of candidates) {
+      const candidateRank = rank(candidate);
+      if (candidateRank < bestRank) {
+        best = candidate;
+        bestRank = candidateRank;
+      }
+    }
+    return best;
+  }
 
   function removeDeletedRow(row, button, ref, requestContext) {
     // 删除响应期间，React 可能复用或替换 sidebar 行；不能删除其新身份的 DOM。
@@ -13877,24 +14135,34 @@
     let navigated = false;
     if (shouldLeave) {
       // 已审 native 的 New chat 按钮以 aria-label/newChatMessage 调用 onStartChat。
-      // 只走唯一可见的原生 sidebar 控件；不猜内部路由，也不强制 reload。
+      // 只点原生侧栏/导航栏控件；不猜内部路由，也不强制 reload。
       const newChatButtons = Array.from(document.querySelectorAll("aside.app-shell-left-panel button, nav[data-app-navigation-rail] button"))
         .filter((candidate) => !candidate.disabled && !isExtensionUiNode(candidate)
           && candidate.closest("aside.app-shell-left-panel, nav[data-app-navigation-rail]")
           && /^(新聊天|新对话|New chat|New thread)$/i.test((candidate.getAttribute("aria-label") || candidate.textContent || "").trim()));
-      // 先只用可见的候选；侧栏折叠或被隐藏时新聊天按钮不可见，再退回不判可见的
-      // 唯一候选——按钮还在 DOM 里，React 的 onClick 照样能触发（#2671）。
-      const visibleNewChat = newChatButtons.filter(visibleElement);
-      const navigation = visibleNewChat.length === 1 ? visibleNewChat : newChatButtons;
-      if (navigation.length === 1) {
-        navigation[0].click();
+      // 新版 Codex 侧栏和导航栏各有一个新聊天按钮，候选不唯一时按固定优先级挑一个；
+      // 侧栏折叠或被隐藏时按钮不可见，但仍在 DOM 里，React 的 onClick 照样能触发（#2671）。
+      const visibleCount = newChatButtons.filter(visibleElement).length;
+      const target = pickNewChatButton(newChatButtons);
+      if (target) {
+        target.click();
         navigated = true;
-        if (!visibleElement(navigation[0])) {
-          sendCodexPlusDiagnostic("delete_session_new_chat_fallback", {
-            candidateCount: newChatButtons.length,
-            visibleCount: visibleNewChat.length,
-          });
-        }
+      }
+      // 只记计数和挑选结果，不带会话 id / 标题。
+      if (!target) {
+        sendCodexPlusDiagnostic("delete_session_new_chat_missing", { candidateCount: 0, visibleCount: 0 });
+      } else if (newChatButtons.length > 1) {
+        sendCodexPlusDiagnostic("delete_session_new_chat_multiple", {
+          candidateCount: newChatButtons.length,
+          visibleCount,
+          chosenVisible: visibleElement(target),
+          chosenInNavigationRail: !!target.closest("nav[data-app-navigation-rail]"),
+        });
+      } else if (!visibleElement(target)) {
+        sendCodexPlusDiagnostic("delete_session_new_chat_fallback", {
+          candidateCount: newChatButtons.length,
+          visibleCount,
+        });
       }
     }
     // 原生导航也可能同步重建行，移除前再确认一次，保护被复用的节点。
@@ -13915,6 +14183,19 @@
     });
   }
 
+  /**
+   * 快速删除（#48）：设置「删除会话时不再确认」打开后，本机会话跳过确认弹窗。
+   * 本机删除有备份并可在提示里撤销；远端 / SSH 会话是永久删除、无法撤销，始终要确认。
+   */
+  function sessionDeleteSkipsConfirm(hostId) {
+    if (hostId !== "local") return false;
+    try {
+      return codexPlusSettings().sessionDeleteSkipConfirm === true;
+    } catch {
+      return false;
+    }
+  }
+
   function openDeleteConfirmForRow(row, button, ref, event) {
     event.preventDefault();
     event.stopPropagation();
@@ -13930,7 +14211,8 @@
       return;
     }
     ref = { session_id: ref.session_id, title: ref.title, host_id: ref.host_id };
-    return confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
+    const confirmation = sessionDeleteSkipsConfirm(ref.host_id) ? Promise.resolve(true) : confirmDelete(ref.title, ref.host_id);
+    return confirmation.then(async (confirmed) => {
       if (!confirmed) return;
       if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) {
         showToast("会话已变化，请重新选择后删除", null);
@@ -13953,11 +14235,12 @@
             ? row.getAttribute("data-app-action-sidebar-thread-id") || ""
             : "";
           navigationNotice = removeDeletedRow(row, button, ref, requestContext);
-          if (rawThreadId) {
-            hideDeletedSessionRows(rawThreadId);
-            hiddenRowIds = [rawThreadId];
-          }
-          await refreshRecentConversationsForHost();
+          // 后端已确认删除 ref.session_id：即便行在请求期间被 React 换掉、读不到原始 id，
+          // 也按规范 uuid 记下，侧栏重建出的同一会话照样隐藏（#2671）。
+          hiddenRowIds = hideDeletedSessionRows(rawThreadId, ref.session_id);
+          const refreshed = await refreshRecentConversationsForHost();
+          // 新版 Codex 已没有重读列表的请求，缓存里仍留着这条会话，只能靠上面的隐藏兜底。
+          if (!refreshed) sendCodexPlusDiagnostic("delete_session_list_refresh_unavailable", {});
         }
         showToast(navigationNotice || result.message || "删除成功", {
           undoToken: result.undo_token,
@@ -14520,7 +14803,7 @@
 
   installBootShellRecovery();
   /**
-   * 输入框下方用量状态栏：生成速度 / 缓存命中率 / 上下文占用。
+   * 输入框下方用量状态栏：输出吞吐 / 缓存命中率 / 上下文占用。
    *
    * 数据全部来自 Codex 自己写的 rollout 记录（`event_msg.token_count`），中文档口径
    * 与 Codex 一致：缓存命中 = cached_input_tokens / input_tokens，上下文占用 =
@@ -14567,11 +14850,37 @@
 
   const codexPlusUsageSvgNs = "http://www.w3.org/2000/svg";
 
+  /**
+   * 速度项只显示数字，名称和口径放在悬停提示里：这是含首 token 等待和工具执行的
+   * 吞吐，不是纯解码速度，不能再叫「生成速度」（issue #2636）。
+   */
   function codexPlusUsageText() {
     const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
     return language.startsWith("zh")
-      ? { speed: (value) => `${value} tok/s`, cache: (value) => `缓存命中 ${value}`, context: (value) => value, aria: "用量状态栏" }
-      : { speed: (value) => `${value} tok/s`, cache: (value) => `cache hit ${value}`, context: (value) => value, aria: "Usage status line" };
+      ? {
+        speed: (value) => `${value} tok/s`,
+        cache: (value) => `缓存命中 ${value}`,
+        context: (value) => value,
+        aria: "用量状态栏",
+        separator: "：",
+        comma: "，",
+        speedTitle: (value) => `输出吞吐 ${value} tok/s（本轮输出 token 合计 ÷ 对应耗时合计，含首 token 等待与工具执行，不是纯解码速度）`,
+        cacheTitle: (value) => `缓存命中 ${value}`,
+        contextTitle: (value) => `上下文占用 ${value}`,
+        windowTitle: (value) => `窗口 ${value}`,
+      }
+      : {
+        speed: (value) => `${value} tok/s`,
+        cache: (value) => `cache hit ${value}`,
+        context: (value) => value,
+        aria: "Usage status line",
+        separator: ": ",
+        comma: ", ",
+        speedTitle: (value) => `Output throughput ${value} tok/s (this turn's output tokens ÷ elapsed time, including time to first token and tool runs; not pure decode speed)`,
+        cacheTitle: (value) => `Cache hit ${value}`,
+        contextTitle: (value) => `Context used ${value}`,
+        windowTitle: (value) => `window ${value}`,
+      };
   }
 
   function codexPlusUsageInstallStyle() {
@@ -14768,17 +15077,30 @@
     return input > 0 ? codexPlusUsagePercent(cached, input) : null;
   }
 
+  /** 单个区间超过这个时长就当作长停顿（等审批、挂起、断线重连），不计入吞吐。 */
+  const codexPlusUsageMaxIntervalSeconds = 120;
+
   /**
-   * 生成速度（token/s）。
+   * 输出吞吐（token/s），issue #2636。
    *
-   * Codex 只在每次模型调用结束时写一条 token_count，事件间隔里同时包含生成和工具
-   * 执行时间，所以这是「吞吐」而不是纯生成速度，会比真实解码速度低。用同一轮内
-   * 相邻事件的累计输出差除以时间差得到区间速度，再取最近几个区间平均，避免单次
-   * 抖动。turn_output_tokens 是历史字段名，实际为会话累计输出，需用真实轮 id 切段。
+   * Codex 只在每次模型调用结束时写一条 token_count，拿不到首个 token 的时间，事件
+   * 间隔里同时包含首 token 等待、解码和工具执行，所以这里只能给「吞吐」，不能叫
+   * 生成速度 / 解码速度，界面上也按这个口径命名。
+   *
+   * 口径：本轮各区间的输出 token 求和 ÷ 对应时长求和。不能对各区间速率等权平均：
+   * 工具步骤输出少、耗时长，最终回答输出多、耗时短，等权平均会让几十 token 的工具
+   * 步骤和上千 token 的回答同样有分量（issue 的算例：10.46 / 14.11 / 109.83 等权得
+   * 44.8，按总量是 1781 / 54.293 ≈ 32.8）。
+   *
+   * 不合格的区间整段剔除（分子分母一起剔）：累计输出没增长（重复记录 / 非单调）、
+   * 间隔过短（同一批写入）、间隔过长（中间停了很久）。没有合格区间时返回 null，
+   * 界面显示 `--`。turn_output_tokens 是历史字段名，实际为会话累计输出，需用真实
+   * 轮 id 切段。
    */
   function codexPlusUsageRate(events) {
     const segment = codexPlusUsageLatestTurn(events);
-    const rates = [];
+    let tokens = 0;
+    let seconds = 0;
     for (let index = 1; index < segment.length; index += 1) {
       const previous = segment[index - 1];
       const current = segment[index];
@@ -14787,14 +15109,12 @@
       if (currentOutput <= previousOutput) continue;
       const startedAt = Date.parse(previous.t);
       const endedAt = Date.parse(current.t);
-      const seconds = (endedAt - startedAt) / 1000;
-      // 间隔过短说明是同一批写入，过长说明中间停了很久，都不适合当速度样本。
-      if (!(seconds >= 0.5) || seconds > 120) continue;
-      rates.push((currentOutput - previousOutput) / seconds);
+      const interval = (endedAt - startedAt) / 1000;
+      if (!(interval >= 0.5) || interval > codexPlusUsageMaxIntervalSeconds) continue;
+      tokens += currentOutput - previousOutput;
+      seconds += interval;
     }
-    if (!rates.length) return null;
-    const recent = rates.slice(-3);
-    return recent.reduce((total, rate) => total + rate, 0) / recent.length;
+    return seconds > 0 ? tokens / seconds : null;
   }
 
   function codexPlusUsageSnapshot(events) {
@@ -14836,12 +15156,12 @@
     }
     node.dataset.stale = String(stale);
     node.setAttribute("title", [
-      `生成速度 ${format(speed)} tok/s`,
-      `缓存命中 ${format(cache)}`,
-      `上下文占用 ${format(context)}`,
-      contextWindow > 0 ? `窗口 ${contextWindow}` : "",
+      text.speedTitle(format(speed)),
+      text.cacheTitle(format(cache)),
+      text.contextTitle(format(context)),
+      contextWindow > 0 ? text.windowTitle(contextWindow) : "",
     ].filter(Boolean).join(" · "));
-    node.setAttribute("aria-label", `${text.aria}：${text.speed(speed)}，${text.cache(cache)}，${context}`);
+    node.setAttribute("aria-label", `${text.aria}${text.separator}${[text.speedTitle(speed), text.cache(cache), context].join(text.comma)}`);
   }
 
   function codexPlusUsageSchedule(delay) {
@@ -19784,6 +20104,8 @@
     if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
     refreshDreamSkin();
     refreshThreadIdBadges();
+    // 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
+    runScanStep(filterDeletedSessionRows);
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
@@ -19815,7 +20137,8 @@
   }
   // Agent 桌宠：Codex 窗口里一个可拖动的小角色，按下以底边为支点压扁、松开回弹，并播放按压 / 松开音。
   // 图片不随应用打包：经桥接 `/agent-pet/image` 由后端联网下载、缓存后以 data URI 返回。
-  // 音效随启动器内嵌（window.__CODEX_PLUS_AGENT_PET_SOUNDS__），直接从字节解码，不依赖 fetch(data:)。
+  // 内嵌的两组音效随启动器注入（window.__CODEX_PLUS_AGENT_PET_SOUNDS__）；下载音效组和用户导入的自定义音效
+  // 经桥接 `/agent-pet/sound` 取 data URI。一律直接从字节解码，不依赖 fetch(data:)。
   // 设置读后端的 `agentPet`，与「Codex 增强」总开关无关；目前只有 Codex 一个 Agent。
   window.__codexPlusAgentPetRuntime?.dispose?.();
   const codexPlusAgentPetPositionKey = "codexPlus.agentPet.position.v1";
@@ -19833,6 +20156,10 @@
     failureLogged: false,
     audio: null,
     buffers: new Map(),
+    soundKey: "",
+    soundRequest: 0,
+    soundRetryAt: 0,
+    soundFailureLogged: false,
     press: null,
     drag: null,
     cleanup: [],
@@ -19851,7 +20178,9 @@
       customImageUrl: typeof raw.customImageUrl === "string" ? raw.customImageUrl : "",
       size: Number.isFinite(size) ? Math.min(240, Math.max(64, size)) : 112,
       soundEnabled: raw.soundEnabled !== false,
-      soundSet: raw.soundSet === "fx1" ? "fx1" : "duck",
+      soundSet: typeof raw.soundSet === "string" && raw.soundSet ? raw.soundSet : "duck",
+      customSoundPress: typeof raw.customSoundPress === "string" ? raw.customSoundPress : "",
+      customSoundRelease: typeof raw.customSoundRelease === "string" ? raw.customSoundRelease : "",
       volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0.6,
     };
   }
@@ -19908,25 +20237,62 @@
     }
   }
 
-  // 预解码一组按压 / 松开音；起播走同步路径，手感才贴手。
-  function warmCodexPlusAgentPetSounds(soundSet) {
-    const context = codexPlusAgentPetAudioContext();
-    const sounds = window.__CODEX_PLUS_AGENT_PET_SOUNDS__?.[soundSet];
-    if (!context || !sounds) return;
+  // 与后端 `agent_pet::load_sound` 返回的 key 同一规则：自定义音效带文件名，换了文件就重新取。
+  function codexPlusAgentPetSoundKey(settings) {
+    return settings.soundSet === "custom"
+      ? `custom:${settings.customSoundPress}:${settings.customSoundRelease}`
+      : settings.soundSet;
+  }
+
+  function decodeCodexPlusAgentPetSounds(context, key, sounds) {
     for (const slot of ["press", "release"]) {
-      const key = `${soundSet}:${slot}`;
-      if (codexPlusAgentPet.buffers.has(key)) continue;
-      codexPlusAgentPet.buffers.set(key, null);
+      const bufferKey = `${key}:${slot}`;
+      if (codexPlusAgentPet.buffers.has(bufferKey) || !sounds?.[slot]) continue;
+      codexPlusAgentPet.buffers.set(bufferKey, null);
       void decodeCodexPlusAgentPetSound(context, sounds[slot]).then((buffer) => {
-        if (buffer) codexPlusAgentPet.buffers.set(key, buffer);
-        else codexPlusAgentPet.buffers.delete(key);
+        if (buffer) codexPlusAgentPet.buffers.set(bufferKey, buffer);
+        else codexPlusAgentPet.buffers.delete(bufferKey);
       });
     }
   }
 
+  // 下载 / 自定义音效：向后端要一次，失败 30 秒后再试。
+  function requestCodexPlusAgentPetSounds(context, key) {
+    if (codexPlusAgentPet.soundKey === key) return;
+    if (Date.now() < codexPlusAgentPet.soundRetryAt) return;
+    codexPlusAgentPet.soundKey = key;
+    const request = ++codexPlusAgentPet.soundRequest;
+    void Promise.resolve(postJson("/agent-pet/sound", {})).then((result) => {
+      if (request !== codexPlusAgentPet.soundRequest || codexPlusAgentPet.audio !== context) return;
+      if (result?.status !== "ok" || typeof result.key !== "string") {
+        throw new Error(result?.message || result?.status || "音效不可用");
+      }
+      codexPlusAgentPet.soundRetryAt = 0;
+      codexPlusAgentPet.soundFailureLogged = false;
+      decodeCodexPlusAgentPetSounds(context, result.key, result);
+    }).catch((error) => {
+      if (request !== codexPlusAgentPet.soundRequest) return;
+      codexPlusAgentPet.soundKey = "";
+      codexPlusAgentPet.soundRetryAt = Date.now() + 30000;
+      if (!codexPlusAgentPet.soundFailureLogged) {
+        codexPlusAgentPet.soundFailureLogged = true;
+        void sendCodexPlusDiagnostic("agent_pet_sound_failed", { message: String(error?.message || error) });
+      }
+    });
+  }
+
+  // 预解码一组按压 / 松开音；起播走同步路径，手感才贴手。
+  function warmCodexPlusAgentPetSounds(settings) {
+    const context = codexPlusAgentPetAudioContext();
+    if (!context) return;
+    const embedded = window.__CODEX_PLUS_AGENT_PET_SOUNDS__?.[settings.soundSet];
+    if (embedded) decodeCodexPlusAgentPetSounds(context, settings.soundSet, embedded);
+    else requestCodexPlusAgentPetSounds(context, codexPlusAgentPetSoundKey(settings));
+  }
+
   function playCodexPlusAgentPetSound(settings, slot, delaySeconds = 0) {
     const context = codexPlusAgentPet.audio;
-    const buffer = codexPlusAgentPet.buffers.get(`${settings.soundSet}:${slot}`);
+    const buffer = codexPlusAgentPet.buffers.get(`${codexPlusAgentPetSoundKey(settings)}:${slot}`);
     if (!context || !buffer || settings.volume <= 0) return null;
     try {
       if (context.state === "suspended") void context.resume();
@@ -19954,7 +20320,7 @@
     codexPlusAgentPet.press = { sound: null, release: null };
     if (!settings?.soundEnabled) return;
     // 首次按下才建音频上下文（需要用户手势），这次按压的音若还没解码好就静音，下一次就有了。
-    warmCodexPlusAgentPetSounds(settings.soundSet);
+    warmCodexPlusAgentPetSounds(settings);
     codexPlusAgentPet.press.sound = playCodexPlusAgentPetSound(settings, "press");
   }
 
@@ -20056,6 +20422,8 @@
     try { void codexPlusAgentPet.audio?.close(); } catch {}
     codexPlusAgentPet.audio = null;
     codexPlusAgentPet.buffers.clear();
+    codexPlusAgentPet.soundKey = "";
+    codexPlusAgentPet.soundRequest += 1;
   }
 
   function loadCodexPlusAgentPetImage(settings) {
@@ -20100,7 +20468,7 @@
     }
     applyCodexPlusAgentPetSize(settings);
     // 挂载后就预解码当前音效组（上下文此时可能是 suspended，按下时再 resume），第一次按压也有声音。
-    if (settings.soundEnabled) warmCodexPlusAgentPetSounds(settings.soundSet);
+    if (settings.soundEnabled) warmCodexPlusAgentPetSounds(settings);
     loadCodexPlusAgentPetImage(settings);
   }
 

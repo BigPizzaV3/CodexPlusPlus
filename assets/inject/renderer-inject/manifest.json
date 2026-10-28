@@ -13,17 +13,17 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2777
+      "lines": 2779
     },
     {
       "name": "20-menu.js",
       "description": "Codex++ 菜单、后端设置加载、插件解锁策略与版本判定",
-      "lines": 449
+      "lines": 599
     },
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 894
+      "lines": 900
     },
     {
       "name": "31-config-read-deadline.js",
@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2103
+      "lines": 2122
     },
     {
       "name": "50-navigation.js",
@@ -68,7 +68,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具；分享入口已撤出管理器扫描",
-      "lines": 768
+      "lines": 874
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -82,8 +82,8 @@
     },
     {
       "name": "83-usage-statusline.js",
-      "description": "输入框下方用量状态栏：生成速度、缓存命中率与上下文占用",
-      "lines": 491
+      "description": "输入框下方用量状态栏：输出吞吐、缓存命中率与上下文占用",
+      "lines": 528
     },
     {
       "name": "84-proxy-request-status.js",
@@ -138,12 +138,12 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 651
+      "lines": 653
     },
     {
       "name": "97-agent-pet.js",
       "description": "Agent 桌宠：可拖动角色、按压压扁回弹与按压音效",
-      "lines": 297
+      "lines": 343
     },
     {
       "name": "98-scan-schedule.js",

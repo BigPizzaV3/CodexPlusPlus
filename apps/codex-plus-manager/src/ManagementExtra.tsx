@@ -1,6 +1,7 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, ArrowRight, BookOpen, ChevronDown, Copy, Edit3, ExternalLink, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { ArrowLeft, ArrowRight, BookOpen, ChevronDown, Copy, Edit3, ExternalLink, FolderOpen, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
@@ -37,9 +38,11 @@ function parseRepoInput(value: string, current: Repo): Repo | null {
   const parsed = parseSkillRepository(value);
   return parsed ? { ...parsed, enabled: current.enabled } : null;
 }
-function sourceLabel(skill: Skill) { if (skill.bundled) return t("内置"); if (skill.repoKey === "cc-switch") return "cc-switch"; return skill.repoKey ? skill.repoKey.split("@", 1)[0] : t("用户"); }
+/** 后端 `LOCAL_IMPORT_REPO_KEY`：从本地目录导入的 Skill（#511）。 */
+const LOCAL_IMPORT_REPO_KEY = "local";
+function sourceLabel(skill: Skill) { if (skill.bundled) return t("内置"); if (skill.repoKey === "cc-switch") return "cc-switch"; if (skill.repoKey === LOCAL_IMPORT_REPO_KEY) return t("本地导入"); return skill.repoKey ? skill.repoKey.split("@", 1)[0] : t("用户"); }
 function repoUrl(skill: Skill) {
-  if (!skill.repoKey || skill.repoKey === "cc-switch") return "";
+  if (!skill.repoKey || skill.repoKey === "cc-switch" || skill.repoKey === LOCAL_IMPORT_REPO_KEY) return "";
   const parts = skill.repoKey.split("@")[0].split("/");
   if (parts.length < 2) return "";
   return `https://github.com/${parts.join("/")}${skill.repoPath ? `/tree/${skill.repoKey.split("@")[1]?.split(":")[0] || "main"}/${skill.repoPath}` : ""}`;
@@ -270,6 +273,20 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       setBusy(false);
     }
   };
+  // 从本地目录导入（#511）：可以选单个 Skill 目录（含 SKILL.md），也可以选放了多个 Skill 的父目录。
+  const importLocalSkills = async () => {
+    let picked: string | string[] | null;
+    try {
+      picked = await openDialog({ directory: true, multiple: false, title: t("选择 Skill 目录（含 SKILL.md）或其父目录") });
+    } catch (error) {
+      await notify("Skills", String(error), "failed");
+      return;
+    }
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    if (!path) return;
+    // 导入的 Skill 是已安装状态，切到「已安装」才能看到。
+    if (await run("import_local_skills", { path })) setTab("installed");
+  };
   const deleteRepo = async (repo: Repo) => { await run("delete_skill_repo", { key: repoKey(repo) }); };
   const inspectRepo = async (repo: Repo) => {
     const result = await invoke<RepoInspection>("inspect_skill_repo", { repo });
@@ -362,6 +379,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   return <div className="mg-page mg-skills-page">
     <Header icon={<BookOpen size={20}/>} title="Skills" actions={<>
       <Button onClick={() => void load()} disabled={busy || loading}><RefreshCw size={16}/>{t("刷新目录")}</Button>
+      <Button onClick={() => void importLocalSkills()} disabled={busy}><FolderOpen size={16}/>{t("从本地目录导入")}</Button>
       <Button onClick={() => void run("import_ccs_skills", {})} disabled={busy}><BookOpen size={16}/>{t("从 cc-switch 导入")}</Button>
       <Button onClick={() => setRepoOpen(true)}><Link size={16}/>{t("管理仓库")}</Button>
     </>} />

@@ -1091,7 +1091,7 @@ fn read_rollout_usage_tail(rollout: &Path, limit: usize) -> anyhow::Result<Vec<V
         let start = len.saturating_sub(window);
         let mut events = Vec::new();
         read_rollout_usage_window(&file, start, limit, &mut events)?;
-        // 至少两条事件渲染侧才算得出生成速度。还要找到真实轮边界：
+        // 至少两条事件渲染侧才算得出输出吞吐。还要找到真实轮边界：
         // total_token_usage 是会话累计，不能靠输出计数回落判断换轮。
         let latest_turn_known = events
             .last()

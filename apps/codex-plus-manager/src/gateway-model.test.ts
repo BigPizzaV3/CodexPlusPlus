@@ -270,7 +270,11 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
     price: null,
     modelPrices: null,
     proxy: "",
+    stripImageGenerationTool: false,
   });
+  // #228：「移除托管生图工具」从池条目读回、原样提交。
+  assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripImageGenerationTool: true }).stripImageGenerationTool, true);
+  assert.equal(providerInput({ ...editing, stripImageGenerationTool: true }).stripImageGenerationTool, true);
   assert.equal(validateProviderDraft({ ...editing, proxy: "127.0.0.1:7890" }, true), "代理地址要写成 http://主机:端口（也支持 https:// 与 socks5://）");
   assert.equal(validateProviderDraft({ ...editing, proxy: "socks5://127.0.0.1:1080" }, true), null);
   assert.deepEqual(providerInput({ ...editing, priceInput: "2", priceCached: "0.5", priceOutput: "abc" }).price, { currency: "CNY", input: 2, cachedInput: 0.5, output: 0 });
@@ -388,4 +392,14 @@ test("赞助商单独一组放在「添加供应商」最前面，不再混在�
   assert.ok(relays.includes("openrouter") && relays.includes("siliconflow") && relays.includes("opencode-go"));
   const catalog = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
   assert.ok(catalog.indexOf('key: "sponsor"') < catalog.indexOf('key: "subscription"'));
+});
+
+test("起名模型随绑定草稿往返，空值和旧版后端缺字段都当成不指定", () => {
+  const legacy = { ...blankBinding(), enabled: true, model: "deepseek-v4-pro" };
+  assert.equal(draftFromBinding(legacy).titleModel, "");
+  const draft = { ...draftFromBinding(legacy), titleModel: " kimi/kimi-k3 " };
+  const binding = bindingFromDraft(draft, legacy);
+  assert.equal(binding.titleModel, "kimi/kimi-k3");
+  assert.equal(draftFromBinding(binding).titleModel, "kimi/kimi-k3");
+  assert.equal(bindingFromDraft({ ...draft, titleModel: "  " }, binding).titleModel, "");
 });

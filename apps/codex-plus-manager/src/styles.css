@@ -956,6 +956,27 @@ body {
   font-family: var(--font-sans);
 }
 
+/* SSH 远端 + 本机回环中转地址的转发提示（issue #1195） */
+.shell .ssh-remote-loopback-remote {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.shell .ssh-remote-loopback-remote code {
+  display: block;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--background) / 0.6);
+  color: hsl(var(--foreground));
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
 .relay-master-switch {
   margin-bottom: 10px;
 }
@@ -13545,6 +13566,9 @@ button.side-item:hover {
 /* 版本与更新 */
 .shell .app-settings-page .app-update-summary {
   padding: 12px 14px;
+}
+.shell .app-settings-page .app-update-preferences {
+  border-top: 1px solid hsl(var(--border) / 0.6);
 }
 .shell .app-settings-page .app-update-notes {
   margin: 0 14px 12px;

@@ -12,7 +12,8 @@ use codex_plus_core::protocol_proxy::{
     open_responses_proxy_request_with_settings,
     open_responses_proxy_request_with_settings_for_path,
     open_responses_proxy_request_with_settings_for_path_and_session_headers,
-    request_has_compaction_trigger, responses_compact_url, responses_error_from_upstream,
+    annotate_gateway_upstream_error, request_has_compaction_trigger, responses_compact_url,
+    responses_error_from_upstream, upstream_error_log_text,
     responses_to_chat_completions, responses_to_chat_completions_with_options,
     send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
     upstream_stream_header_timeout, wrap_non_stream_response_as_compaction,
@@ -3748,6 +3749,66 @@ fn upstream_chat_error_is_regularized_as_responses_error_envelope() {
     assert_eq!(text_error["error"]["code"], "502");
 }
 
+/// #2741：Gemini 的 OpenAI 兼容端点把错误包在单元素数组里，拆开后消息、类型、状态码都能取到；
+/// 顶层 `status` 字符串不当类型（只认 error 对象里的）。
+#[test]
+fn array_wrapped_google_error_is_unwrapped() {
+    let body = br#"[{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"store\": Cannot find field.","status":"INVALID_ARGUMENT"}}]"#;
+    let error = responses_error_from_upstream(400, "application/json; charset=UTF-8", body);
+    assert_eq!(
+        error["error"]["message"],
+        "Invalid JSON payload received. Unknown name \"store\": Cannot find field."
+    );
+    assert_eq!(error["error"]["type"], "INVALID_ARGUMENT");
+    assert_eq!(error["error"]["code"], "400");
+
+    let top_level = responses_error_from_upstream(
+        502,
+        "application/json",
+        br#"{"status":"failed","message":"relay down"}"#,
+    );
+    assert_eq!(top_level["error"]["message"], "relay down");
+    assert_eq!(top_level["error"]["type"], "upstream_error");
+}
+
+/// #2741：网关转给 Agent 的错误补上供应商、上游模型、协议和状态码；type / code 不动。
+/// 请求日志里带上状态码、类型和响应体原文。
+#[test]
+fn gateway_upstream_error_names_provider_model_and_status() {
+    let body = br#"{"error":{"message":"bad tool","type":"invalid_request_error","code":"unsupported_tool","details":[{"field":"tools[3].type"}]}}"#;
+    let mut error = responses_error_from_upstream(400, "application/json", body);
+    let trace = codex_plus_core::request_log::RequestTrace {
+        relay_id: "gem".to_string(),
+        relay_name: "Gemini 中转".to_string(),
+        upstream_model: "gemini-3-pro".to_string(),
+        wire_api: "Responses".to_string(),
+        ..Default::default()
+    };
+    let log = upstream_error_log_text(400, &error, body);
+    assert!(
+        log.starts_with("HTTP 400 · type=invalid_request_error · code=unsupported_tool：bad tool"),
+        "{log}"
+    );
+    assert!(log.contains("tools[3].type"), "日志里要有原文：{log}");
+
+    annotate_gateway_upstream_error(&mut error, 400, Some(&trace));
+    assert_eq!(
+        error["error"]["message"],
+        "bad tool（网关上游：Gemini 中转 · 模型 gemini-3-pro · Responses · HTTP 400）"
+    );
+    assert_eq!(error["error"]["type"], "invalid_request_error");
+    assert_eq!(error["error"]["code"], "unsupported_tool");
+
+    // 没有路由信息（网关自己拒绝的请求）时原样不动。
+    let mut own = responses_error_from_upstream(
+        429,
+        "application/json",
+        br#"{"error":{"message":"cooling"}}"#,
+    );
+    annotate_gateway_upstream_error(&mut own, 429, None);
+    assert_eq!(own["error"]["message"], "cooling");
+}
+
 #[test]
 fn chat_completion_response_converts_to_responses_response() {
     let converted = chat_completion_to_response(json!({
@@ -4760,6 +4821,7 @@ async fn aggregate_official_member_forwards_with_oauth_credentials() {
             routes: Vec::new(),
             default_relay_id: String::new(),
             sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     };
@@ -4832,6 +4894,7 @@ fn official_aggregate_test_settings(official_id: &str, aggregate_id: &str) -> Ba
             routes: Vec::new(),
             default_relay_id: String::new(),
             sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     }
@@ -5033,6 +5096,7 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
             routes: Vec::new(),
             default_relay_id: String::new(),
             sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     };
@@ -5504,6 +5568,81 @@ async fn aggregate_default_provider_forwards_unbound_model() {
     other_server.abort();
 }
 
+/// #2703：聚合指定了审批成员时，codex-auto-review 只发给它（不走默认成员 / 轮转），
+/// 模型取它的「自动审批模型」，没填时用它的默认模型。按模型聚合与轮转池两种模式都生效。
+#[tokio::test]
+async fn aggregate_auto_review_member_takes_review_requests() {
+    let review = r#"{"model":"codex-auto-review","input":"review","stream":false}"#;
+    for model_aggregation in [true, false] {
+        for configured_model in ["deepseek-v4-flash", ""] {
+            let default_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let default_addr = default_listener.local_addr().unwrap();
+            let review_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let review_addr = review_listener.local_addr().unwrap();
+            let default_server = tokio::spawn(respond_once(
+                default_listener,
+                "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n",
+            ));
+            let review_server = tokio::spawn(capture_json_request_once(review_listener));
+            let mut settings = aggregate_proxy_settings(
+                "auto-review-member",
+                format!("http://{default_addr}/v1"),
+                format!("http://{review_addr}/v1"),
+            );
+            settings.relay_profiles[1].model = "deepseek-v4-pro".to_string();
+            settings.relay_profiles[1].auto_review_model = configured_model.to_string();
+            let aggregate = &mut settings.aggregate_relay_profiles[0];
+            aggregate.model_aggregation_enabled = model_aggregation;
+            aggregate.strategy = AggregateRelayStrategy::Failover;
+            aggregate.default_relay_id = settings.relay_profiles[0].id.clone();
+            aggregate.auto_review_relay_id = settings.relay_profiles[1].id.clone();
+
+            let result = open_responses_proxy_request_with_settings(review, settings)
+                .await
+                .unwrap();
+            assert_eq!(result.status_code, 200, "aggregation={model_aggregation}");
+            let (_, body) = review_server.await.unwrap();
+            let expected = if configured_model.is_empty() {
+                "deepseek-v4-pro"
+            } else {
+                configured_model
+            };
+            assert_eq!(body["model"], expected, "aggregation={model_aggregation}");
+            default_server.abort();
+        }
+    }
+}
+
+/// #2703：审批成员已不是聚合成员时硬报错，不静默回落到默认成员（可能是官方登录）。
+#[tokio::test]
+async fn aggregate_auto_review_member_drift_does_not_fall_back() {
+    let default_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let default_addr = default_listener.local_addr().unwrap();
+    let default_server = tokio::spawn(capture_json_request_once(default_listener));
+    let mut settings = aggregate_proxy_settings(
+        "auto-review-drift",
+        format!("http://{default_addr}/v1"),
+        format!("http://{default_addr}/v1"),
+    );
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    settings.aggregate_relay_profiles[0].default_relay_id = settings.relay_profiles[0].id.clone();
+    settings.aggregate_relay_profiles[0].auto_review_relay_id = "ghost".to_string();
+    let review = r#"{"model":"codex-auto-review","input":"review","stream":false}"#;
+    let result = open_responses_proxy_request_with_settings(review, settings.clone())
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 400);
+
+    // 普通请求不受审批成员影响，照旧交给默认成员。
+    let normal = r#"{"model":"gpt-9.9-unknown","input":"hi","stream":false}"#;
+    let result = open_responses_proxy_request_with_settings(normal, settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, body) = default_server.await.unwrap();
+    assert_eq!(body["model"], "gpt-9.9-unknown");
+}
+
 #[tokio::test]
 async fn aggregate_live_settings_updates_preserve_selected_model_and_failover() {
     let _lock = settings_path_test_lock().lock().unwrap();
@@ -5838,6 +5977,7 @@ fn aggregate_proxy_settings(
             routes: Vec::new(),
             default_relay_id: String::new(),
             sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     }
@@ -8578,6 +8718,16 @@ async fn buffered_mode_retries_overload_and_returns_complete_stream() {
     assert_eq!(server.await.unwrap().len(), 2);
 }
 
+/// 阶段标记是进程级开关（设置「第三方模型回答完自动折叠过程」）：相关用例串行执行，用完复原。
+fn with_message_phase_fill<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    codex_plus_core::protocol_proxy::set_message_phase_fill(enabled);
+    let result = run();
+    codex_plus_core::protocol_proxy::set_message_phase_fill(false);
+    result
+}
+
 /// 取出 SSE 里助手消息 output_item.done 的 phase（按出现顺序）。
 fn assistant_message_done_phases(sse: &str) -> Vec<Value> {
     sse.split("\n\n")
@@ -8592,57 +8742,83 @@ fn assistant_message_done_phases(sse: &str) -> Vec<Value> {
 
 #[test]
 fn chat_sse_marks_text_without_tool_calls_as_final_answer() {
-    // issue #2659：Codex 桌面端靠 final_answer 折叠本轮过程，第三方上游不带该字段。
-    let sse = chat_sse_to_responses_sse(
-        r#"data: {"id":"chatcmpl_final","created":1,"model":"m","choices":[{"delta":{"content":"答案"},"finish_reason":"stop"}]}
+    with_message_phase_fill(true, || {
+        // issue #2659：Codex 桌面端靠 final_answer 折叠本轮过程，第三方上游不带该字段。
+        let sse = chat_sse_to_responses_sse(
+            r#"data: {"id":"chatcmpl_final","created":1,"model":"m","choices":[{"delta":{"content":"答案"},"finish_reason":"stop"}]}
 
 data: [DONE]
 
 "#,
-    );
-    assert_eq!(assistant_message_done_phases(&sse), vec![json!("final_answer")]);
-    let completed = sse
-        .split("\n\n")
-        .find(|event| event.starts_with("event: response.completed"))
-        .unwrap();
-    assert!(completed.contains("\"phase\":\"final_answer\""), "{completed}");
+        );
+        assert_eq!(assistant_message_done_phases(&sse), vec![json!("final_answer")]);
+        let completed = sse
+            .split("\n\n")
+            .find(|event| event.starts_with("event: response.completed"))
+            .unwrap();
+        assert!(completed.contains("\"phase\":\"final_answer\""), "{completed}");
+    });
 }
 
 #[test]
 fn chat_sse_marks_text_before_tool_calls_as_commentary() {
-    let sse = chat_sse_to_responses_sse(
-        r#"data: {"id":"chatcmpl_tool","created":1,"model":"m","choices":[{"delta":{"content":"先看看文件"}}]}
+    with_message_phase_fill(true, || {
+        let sse = chat_sse_to_responses_sse(
+            r#"data: {"id":"chatcmpl_tool","created":1,"model":"m","choices":[{"delta":{"content":"先看看文件"}}]}
 
 data: {"id":"chatcmpl_tool","created":1,"model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
 
 data: [DONE]
 
 "#,
-    );
-    assert_eq!(assistant_message_done_phases(&sse), vec![json!("commentary")]);
+        );
+        assert_eq!(assistant_message_done_phases(&sse), vec![json!("commentary")]);
+    });
 }
 
 #[test]
 fn chat_completion_marks_message_phase_by_tool_calls() {
-    let final_answer = chat_completion_to_response(json!({
-        "id": "chatcmpl_a",
-        "choices": [{ "message": { "role": "assistant", "content": "答案" }, "finish_reason": "stop" }]
-    }))
-    .unwrap();
-    assert_eq!(final_answer["output"][0]["phase"], "final_answer");
+    with_message_phase_fill(true, || {
+        let final_answer = chat_completion_to_response(json!({
+            "id": "chatcmpl_a",
+            "choices": [{ "message": { "role": "assistant", "content": "答案" }, "finish_reason": "stop" }]
+        }))
+        .unwrap();
+        assert_eq!(final_answer["output"][0]["phase"], "final_answer");
 
-    let commentary = chat_completion_to_response(json!({
-        "id": "chatcmpl_b",
-        "choices": [{
-            "message": {
-                "role": "assistant",
-                "content": "先看看文件",
-                "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "shell", "arguments": "{}" } }]
-            },
-            "finish_reason": "tool_calls"
-        }]
-    }))
-    .unwrap();
-    assert_eq!(commentary["output"][0]["phase"], "commentary");
-    assert_eq!(commentary["output"][1]["type"], "function_call");
+        let commentary = chat_completion_to_response(json!({
+            "id": "chatcmpl_b",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "先看看文件",
+                    "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "shell", "arguments": "{}" } }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(commentary["output"][0]["phase"], "commentary");
+        assert_eq!(commentary["output"][1]["type"], "function_call");
+    });
+}
+
+#[test]
+fn chat_conversion_leaves_phase_out_unless_enabled() {
+    with_message_phase_fill(false, || {
+        let sse = chat_sse_to_responses_sse(
+            r#"data: {"id":"chatcmpl_off","created":1,"model":"m","choices":[{"delta":{"content":"答案"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+        );
+        assert_eq!(assistant_message_done_phases(&sse), vec![Value::Null]);
+        let response = chat_completion_to_response(json!({
+            "id": "chatcmpl_off2",
+            "choices": [{ "message": { "role": "assistant", "content": "答案" }, "finish_reason": "stop" }]
+        }))
+        .unwrap();
+        assert!(response["output"][0].get("phase").is_none());
+    });
 }

@@ -93,6 +93,7 @@ fn aggregate_profile(sync: bool, default_member: &str) -> AggregateRelayProfile 
         routes: Vec::new(),
         default_relay_id: default_member.to_string(),
         sync_default_member_login: sync,
+        auto_review_relay_id: String::new(),
     }
 }
 

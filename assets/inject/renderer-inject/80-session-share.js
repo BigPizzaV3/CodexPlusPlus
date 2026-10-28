@@ -511,6 +511,14 @@
   const deletedSessionRowIds = window.__codexPlusDeletedSessionRowIds instanceof Set
     ? window.__codexPlusDeletedSessionRowIds
     : (window.__codexPlusDeletedSessionRowIds = new Set());
+  // 扫描时由 JS 判定为已删会话的行打这个标记，样式表里统一隐藏（见 filterDeletedSessionRows）。
+  const deletedSessionRowMarker = "data-codex-plus-deleted-session-row";
+
+  /** 取 id 末尾的 thread uuid（兼容 `local:<uuid>`、`<host>:<uuid>` 等写法）；没有则返回空串。 */
+  function deletedSessionUuid(id) {
+    const match = String(id || "").trim().match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+    return match ? match[1].toLowerCase() : "";
+  }
 
   function renderDeletedSessionRowStyle() {
     let style = document.getElementById(deletedSessionRowStyleId);
@@ -534,23 +542,96 @@
       if (uuid) rules.add(`[data-app-action-sidebar-thread-id$="${CSS.escape(uuid)}"]{display:none !important}`);
       else rules.add(`[data-app-action-sidebar-thread-id="${CSS.escape(id)}"]{display:none !important}`);
     }
+    // 属性里看不出 uuid 的重建行（临时 client-new-thread id、只在 href / React props
+    // 里带 uuid 等）由扫描打标记后隐藏（#2671）。
+    rules.add(`[${deletedSessionRowMarker}="true"]{display:none !important}`);
     style.textContent = Array.from(rules).join("\n");
   }
 
-  function hideDeletedSessionRows(rawThreadId) {
-    if (!rawThreadId || isClientNewThreadId(rawThreadId)) return;
-    deletedSessionRowIds.add(rawThreadId);
-    renderDeletedSessionRowStyle();
+  /** 本次页面生命周期内已成功删除的会话 uuid 集合。 */
+  function deletedSessionUuids() {
+    const uuids = new Set();
+    for (const id of deletedSessionRowIds) {
+      const uuid = deletedSessionUuid(id);
+      if (uuid) uuids.add(uuid);
+    }
+    return uuids;
+  }
+
+  /**
+   * 侧栏重建时过滤已删会话（#2671）。
+   *
+   * 根因：本地删除走 Codex++ 后端直接删库/删文件，Codex 自己的会话列表缓存并不知道；
+   * 以前靠 refresh-recent-conversations-for-host 让 Codex 重读列表，新版 Codex 已没有
+   * 这个请求，于是折叠再展开项目分组时，Codex 按缓存把这条会话重新渲染出来。
+   * 样式表只能按行属性匹配，这里再用与删除按钮同一套 sessionRefFromRow 解析行身份
+   * （属性 / href / React props），凡是解析到已删 uuid 的行都打标记隐藏。
+   * 只在标记状态变化时写属性，React 复用节点给别的会话时会把标记摘掉；
+   * 标记属性不在扫描 observer 的 attributeFilter 里，不会引发自喂扫描。
+   */
+  function filterDeletedSessionRows() {
+    const uuids = deletedSessionUuids();
+    if (!uuids.size && !document.querySelector(`[${deletedSessionRowMarker}]`)) return;
+    for (const row of sessionRows()) {
+      const hidden = uuids.size > 0 && uuids.has(deletedSessionUuid(sessionRefFromRow(row).session_id));
+      if (hidden && row.getAttribute(deletedSessionRowMarker) !== "true") row.setAttribute(deletedSessionRowMarker, "true");
+      else if (!hidden && row.getAttribute(deletedSessionRowMarker) !== null) row.removeAttribute(deletedSessionRowMarker);
+    }
+  }
+
+  /**
+   * 记录一条已删除会话并刷新隐藏规则，返回实际新增的 id（供撤销时移除）。
+   * rawThreadId 是删除时行上的原始属性值（可能为空：行在请求期间被 React 换掉）；
+   * sessionId 是后端确认删除的规范 uuid，行不在了也照样记录。
+   */
+  function hideDeletedSessionRows(rawThreadId, sessionId = "") {
+    const added = [];
+    for (const id of [rawThreadId, sessionId]) {
+      if (!id || isClientNewThreadId(id) || deletedSessionRowIds.has(id)) continue;
+      deletedSessionRowIds.add(id);
+      added.push(id);
+    }
+    if (added.length) {
+      renderDeletedSessionRowStyle();
+      filterDeletedSessionRows();
+    }
+    return added;
   }
 
   function unhideDeletedSessionRows(rawThreadIds) {
     let changed = false;
     for (const id of rawThreadIds || []) changed = deletedSessionRowIds.delete(id) || changed;
-    if (changed) renderDeletedSessionRowStyle();
+    if (changed) {
+      renderDeletedSessionRowStyle();
+      filterDeletedSessionRows();
+    }
   }
 
   // 注入脚本重跑（页面未刷新）时按已记录的 id 恢复样式表；首次加载 Set 为空，不做任何事。
   if (deletedSessionRowIds.size) renderDeletedSessionRowStyle();
+
+  /**
+   * 从多个原生「新聊天」按钮里确定地挑一个（#2671）。
+   *
+   * 新版 Codex 侧栏和导航栏（navigation rail）各有一个新聊天按钮，二者都调用同一个
+   * onStartChat，点哪个效果相同；以前候选不唯一就放弃跳转，界面停在已删会话。
+   * 优先级：可见优先于不可见；同为可见/不可见时，侧栏列表里的优先于导航栏里的；
+   * 再相同则按 DOM 顺序取第一个，保证每次挑中的是同一个。
+   */
+  function pickNewChatButton(candidates) {
+    const rank = (candidate) => (visibleElement(candidate) ? 0 : 2)
+      + (candidate.closest("nav[data-app-navigation-rail]") ? 1 : 0);
+    let best = null;
+    let bestRank = Infinity;
+    for (const candidate of candidates) {
+      const candidateRank = rank(candidate);
+      if (candidateRank < bestRank) {
+        best = candidate;
+        bestRank = candidateRank;
+      }
+    }
+    return best;
+  }
 
   function removeDeletedRow(row, button, ref, requestContext) {
     // 删除响应期间，React 可能复用或替换 sidebar 行；不能删除其新身份的 DOM。
@@ -563,24 +644,34 @@
     let navigated = false;
     if (shouldLeave) {
       // 已审 native 的 New chat 按钮以 aria-label/newChatMessage 调用 onStartChat。
-      // 只走唯一可见的原生 sidebar 控件；不猜内部路由，也不强制 reload。
+      // 只点原生侧栏/导航栏控件；不猜内部路由，也不强制 reload。
       const newChatButtons = Array.from(document.querySelectorAll("aside.app-shell-left-panel button, nav[data-app-navigation-rail] button"))
         .filter((candidate) => !candidate.disabled && !isExtensionUiNode(candidate)
           && candidate.closest("aside.app-shell-left-panel, nav[data-app-navigation-rail]")
           && /^(新聊天|新对话|New chat|New thread)$/i.test((candidate.getAttribute("aria-label") || candidate.textContent || "").trim()));
-      // 先只用可见的候选；侧栏折叠或被隐藏时新聊天按钮不可见，再退回不判可见的
-      // 唯一候选——按钮还在 DOM 里，React 的 onClick 照样能触发（#2671）。
-      const visibleNewChat = newChatButtons.filter(visibleElement);
-      const navigation = visibleNewChat.length === 1 ? visibleNewChat : newChatButtons;
-      if (navigation.length === 1) {
-        navigation[0].click();
+      // 新版 Codex 侧栏和导航栏各有一个新聊天按钮，候选不唯一时按固定优先级挑一个；
+      // 侧栏折叠或被隐藏时按钮不可见，但仍在 DOM 里，React 的 onClick 照样能触发（#2671）。
+      const visibleCount = newChatButtons.filter(visibleElement).length;
+      const target = pickNewChatButton(newChatButtons);
+      if (target) {
+        target.click();
         navigated = true;
-        if (!visibleElement(navigation[0])) {
-          sendCodexPlusDiagnostic("delete_session_new_chat_fallback", {
-            candidateCount: newChatButtons.length,
-            visibleCount: visibleNewChat.length,
-          });
-        }
+      }
+      // 只记计数和挑选结果，不带会话 id / 标题。
+      if (!target) {
+        sendCodexPlusDiagnostic("delete_session_new_chat_missing", { candidateCount: 0, visibleCount: 0 });
+      } else if (newChatButtons.length > 1) {
+        sendCodexPlusDiagnostic("delete_session_new_chat_multiple", {
+          candidateCount: newChatButtons.length,
+          visibleCount,
+          chosenVisible: visibleElement(target),
+          chosenInNavigationRail: !!target.closest("nav[data-app-navigation-rail]"),
+        });
+      } else if (!visibleElement(target)) {
+        sendCodexPlusDiagnostic("delete_session_new_chat_fallback", {
+          candidateCount: newChatButtons.length,
+          visibleCount,
+        });
       }
     }
     // 原生导航也可能同步重建行，移除前再确认一次，保护被复用的节点。
@@ -601,6 +692,19 @@
     });
   }
 
+  /**
+   * 快速删除（#48）：设置「删除会话时不再确认」打开后，本机会话跳过确认弹窗。
+   * 本机删除有备份并可在提示里撤销；远端 / SSH 会话是永久删除、无法撤销，始终要确认。
+   */
+  function sessionDeleteSkipsConfirm(hostId) {
+    if (hostId !== "local") return false;
+    try {
+      return codexPlusSettings().sessionDeleteSkipConfirm === true;
+    } catch {
+      return false;
+    }
+  }
+
   function openDeleteConfirmForRow(row, button, ref, event) {
     event.preventDefault();
     event.stopPropagation();
@@ -616,7 +720,8 @@
       return;
     }
     ref = { session_id: ref.session_id, title: ref.title, host_id: ref.host_id };
-    return confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
+    const confirmation = sessionDeleteSkipsConfirm(ref.host_id) ? Promise.resolve(true) : confirmDelete(ref.title, ref.host_id);
+    return confirmation.then(async (confirmed) => {
       if (!confirmed) return;
       if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) {
         showToast("会话已变化，请重新选择后删除", null);
@@ -639,11 +744,12 @@
             ? row.getAttribute("data-app-action-sidebar-thread-id") || ""
             : "";
           navigationNotice = removeDeletedRow(row, button, ref, requestContext);
-          if (rawThreadId) {
-            hideDeletedSessionRows(rawThreadId);
-            hiddenRowIds = [rawThreadId];
-          }
-          await refreshRecentConversationsForHost();
+          // 后端已确认删除 ref.session_id：即便行在请求期间被 React 换掉、读不到原始 id，
+          // 也按规范 uuid 记下，侧栏重建出的同一会话照样隐藏（#2671）。
+          hiddenRowIds = hideDeletedSessionRows(rawThreadId, ref.session_id);
+          const refreshed = await refreshRecentConversationsForHost();
+          // 新版 Codex 已没有重读列表的请求，缓存里仍留着这条会话，只能靠上面的隐藏兜底。
+          if (!refreshed) sendCodexPlusDiagnostic("delete_session_list_refresh_unavailable", {});
         }
         showToast(navigationNotice || result.message || "删除成功", {
           undoToken: result.undo_token,

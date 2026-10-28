@@ -19,7 +19,7 @@ import {
   TRAY_TABS,
 } from "./tray-panel-model.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));
@@ -189,6 +189,29 @@ test("「点击托盘图标弹出快捷面板」从网关设置移到整体设�
   assert.doesNotMatch(lib, /save_gateway_tray_panel/);
   const rust = read("../src-tauri/src/tray_panel.rs");
   assert.match(rust, /settings\.tray_panel = enabled/);
+});
+
+test("轻量模式（#2677）：面板发请求前先让后端按需重建主窗口，主窗口监听就绪后通知后端，开关在整体设置里", () => {
+  const panel = read("./TrayPanel.tsx");
+  const request = panel.slice(panel.indexOf("const request = async"), panel.indexOf("const action = "));
+  // 两处发请求（启动类操作、打开某页）都先等主窗口就绪再发。
+  assert.equal(request.match(/await prepareMainWindow\(\);\n\s+await emit\(TRAY_REQUEST_EVENT/g)?.length, 2);
+  assert.match(panel, /invoke<boolean>\("main_window_prepare"\)/);
+  const app = read("./App.tsx");
+  assert.match(app, /stopListening = unlisten;\n\s+\/\/.*\n\s+void emit\(MAIN_WINDOW_READY_EVENT\)/);
+  // 面板请求没做完时不释放主窗口。
+  assert.match(app, /if \(trayRequestsInFlight\.current === 0\) void invoke\("main_window_release_when_hidden"\)/);
+  const start = app.indexOf("function GlobalSettingsScreen(");
+  const globalSettings = app.slice(start, app.indexOf("\nfunction ", start + 10));
+  assert.match(globalSettings, /关闭窗口后释放界面内存/);
+  assert.match(app, /invoke<boolean>\("set_lightweight_mode_enabled"/);
+  const lib = read("../src-tauri/src/lib.rs");
+  assert.match(lib, /lightweight::main_window_prepare,/);
+  assert.match(lib, /lightweight::set_lightweight_mode_enabled,/);
+  const rust = read("../src-tauri/src/lightweight.rs");
+  assert.match(rust, /settings\.lightweight_on_close = enabled/);
+  assert.match(rust, /pub const MAIN_WINDOW_READY_EVENT: &str = "codex-plus-main-window-ready";/);
+  assert.match(read("./tray-panel-model.ts"), /export const MAIN_WINDOW_READY_EVENT = "codex-plus-main-window-ready";/);
 });
 
 test("托盘事件先按类型筛掉鼠标移动，开关读内存缓存而不是每次读 gateway.json", () => {

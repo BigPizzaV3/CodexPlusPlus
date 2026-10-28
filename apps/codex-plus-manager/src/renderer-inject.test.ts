@@ -606,6 +606,7 @@ ${slice("  function escapeHtml(value) {", "\n  }\n")}
   let refreshes = 0;
   function renderBackendStatus() {}
   function refreshCodexPlusBackendToggles() {}
+${slice("  const codexAmbientSuggestionsSettingKey =", "  /** 只把缓存的状态同步到已渲染的开关上")}
 ${slice("  let codexPlusSettingsCatalog = null;", "  function refreshCodexPlusSettingsCatalogView()")}
   function refreshCodexPlusSettingsCatalogView() { refreshes += 1; }
   return {
@@ -3155,9 +3156,19 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     assert.equal(page.status().status, "ok");
     const html = page.sections();
     const sections = parseSettingsSections(html);
-    const rows = sections.flatMap((section) => section.rows.filter((row) => row.key));
+    // #686：「上下文感知建议」直接读写 Codex 自己的设置，不在清单里，单独校验。
+    const ambientKey = "codexAppAmbientSuggestions";
+    const rows = sections.flatMap((section) => section.rows.filter((row) => row.key && row.key !== ambientKey));
     const expected = catalog.groups.flatMap((group) => catalog.items.filter((item) => item.group === group.id && visibleOn("macos")(item)));
     assert.deepEqual(rows.map((row) => row.key), expected.map((item) => item.key));
+    const ambientSection = sections.find((section) => section.rows.some((row) => row.key === ambientKey));
+    assert.equal(ambientSection?.title, catalog.groups.find((group) => group.id === "stepwise")!.title, "上下文感知建议应在 stepwise 组");
+    const ambientRow = ambientSection!.rows.find((row) => row.key === ambientKey)!;
+    assert.match(ambientRow.title, /Context-aware suggestions/);
+    assert.match(ambientRow.control, /data-codex-app-ambient-suggestions="true" role="switch"/);
+    // 读到 Codex 的设置之前开关处于等待态，不能被点。
+    assert.match(ambientRow.control, /data-pending="true"/);
+    assert.doesNotMatch(ambientRow.control, /data-codex-plus-setting=|data-codex-backend-setting=/);
     for (const item of expected) {
       const row = rows.find((candidate) => candidate.key === item.key)!;
       const section = sections.find((candidate) => candidate.rows.includes(row))!;
@@ -3256,5 +3267,120 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     assert.doesNotMatch(whitelist, /\/settings\/catalog/);
     const settingsPage = await readFile(new URL("40-backend-settings.js", fragmentDir), "utf8");
     assert.match(settingsPage, /postJson\("\/settings\/catalog", \{\}\)/);
+  });
+});
+
+describe("#686 上下文感知建议开关读写 Codex 自己的设置", () => {
+  type Host = { settings: { readAll: () => Promise<unknown>; write: (key: string, value: unknown) => Promise<unknown> }; applicationState: object };
+  async function runtime(modules: Record<string, Record<string, unknown> | Error>, stateCall?: (method: string, params: unknown) => Promise<unknown>) {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const start = renderer.indexOf("  const codexAmbientSuggestionsSettingKey =");
+    const end = renderer.indexOf("  function normalizeCodexServiceTierModelName", start);
+    assert.ok(start >= 0 && end > start, "找不到上下文感知建议实现");
+    const stateCalls: Array<{ method: string; params: unknown }> = [];
+    const toasts: string[] = [];
+    const buttons = [{ dataset: {} as Record<string, string>, disabled: false, attributes: {} as Record<string, string>, setAttribute(name: string, value: string) { this.attributes[name] = value; } }];
+    const document = { querySelectorAll: (selector: string) => selector === "[data-codex-app-ambient-suggestions]" ? buttons : [] };
+    const api = new Function(
+      "document", "loadCodexAppModule", "codexStateCall", "escapeHtml", "sendCodexPlusDiagnostic", "showToast",
+      `${renderer.slice(start, end)}
+return {
+  hostFromModule: codexHostServicesFromModule,
+  load: loadCodexAmbientSuggestionsSetting,
+  set: setCodexAmbientSuggestionsEnabled,
+  state: () => codexAmbientSuggestionsState,
+  row: renderCodexAmbientSuggestionsRow,
+};`,
+    )(
+      document,
+      async (prefix: string) => {
+        const module = modules[prefix];
+        if (!module) throw new Error(`未找到 Codex App asset: ${prefix}`);
+        if (module instanceof Error) throw module;
+        return module;
+      },
+      async (method: string, params: unknown) => {
+        stateCalls.push({ method, params });
+        if (!stateCall) throw new Error("Codex 状态 API 不可用");
+        return await stateCall(method, params);
+      },
+      (value: unknown) => String(value),
+      () => {},
+      (message: string) => { toasts.push(message); },
+    ) as {
+      hostFromModule: (module: unknown) => Host | null;
+      load: () => Promise<void>;
+      set: (enabled: boolean) => Promise<void>;
+      state: () => { status: string; enabled: boolean; message: string };
+      row: () => string;
+    };
+    return { api, stateCalls, toasts, buttons };
+  }
+
+  function hostWith(values: Record<string, unknown>) {
+    const writes: Array<[string, unknown]> = [];
+    const host: Host = {
+      applicationState: {},
+      settings: {
+        readAll: async () => ({ values: { ...values }, configuredValues: {} }),
+        write: async (key: string, value: unknown) => { writes.push([key, value]); values[key] = value; },
+      },
+    };
+    return { host, writes };
+  }
+
+  it("按形状在 app-shared 的导出里找宿主服务，不探函数形态的 RPC stub", async () => {
+    const { host } = hostWith({});
+    // 函数形态的 stub：任何属性都返回可调用对象，不能被误认。
+    const stub = new Proxy(function stub() {}, { get: () => () => undefined });
+    const { api } = await runtime({});
+    assert.equal(api.hostFromModule({ a: stub, b: { settings: host.settings }, c: host }), host);
+    assert.equal(api.hostFromModule({ a: stub, b: { applicationState: {} } }), null);
+  });
+
+  it("读写 ambient-suggestions-enabled，默认开启，只认明确的 false", async () => {
+    const { host, writes } = hostWith({});
+    const { api, buttons } = await runtime({ "app-shared-": { Qot: host } });
+    assert.match(api.row(), /data-pending="true"/);
+    await api.load();
+    assert.deepEqual(api.state(), { status: "ready", enabled: true, message: "" });
+    assert.equal(buttons[0].dataset.enabled, "true");
+    await api.set(false);
+    assert.deepEqual(writes, [["ambient-suggestions-enabled", false]]);
+    assert.equal(api.state().enabled, false);
+    assert.equal(buttons[0].attributes["aria-checked"], "false");
+    await api.load();
+    assert.equal(api.state().enabled, false);
+  });
+
+  it("写入失败回滚开关并提示；读不到设置时开关置灰", async () => {
+    const { host } = hostWith({ "ambient-suggestions-enabled": true });
+    host.settings.write = async () => { throw new Error("denied"); };
+    const failing = await runtime({ "app-shared-": { x: host } });
+    await failing.api.load();
+    await failing.api.set(false);
+    assert.equal(failing.api.state().enabled, true);
+    assert.equal(failing.toasts.length, 1);
+
+    const missing = await runtime({});
+    await missing.api.load();
+    assert.equal(missing.api.state().status, "unavailable");
+    assert.equal(missing.buttons[0].disabled, true);
+    assert.match(missing.api.row(), / disabled>/);
+  });
+
+  it("旧版没有宿主服务时退回 get-setting / set-setting", async () => {
+    const stored: Record<string, unknown> = { "ambient-suggestions-enabled": false };
+    const { api, stateCalls } = await runtime({}, async (method, params) => {
+      const { key, value } = (params as { params: { key: string; value?: unknown } }).params;
+      if (method === "get-setting") return { value: stored[key] };
+      stored[key] = value;
+      return {};
+    });
+    await api.load();
+    assert.equal(api.state().enabled, false);
+    await api.set(true);
+    assert.equal(stored["ambient-suggestions-enabled"], true);
+    assert.deepEqual(stateCalls.map((call) => call.method), ["get-setting", "set-setting"]);
   });
 });

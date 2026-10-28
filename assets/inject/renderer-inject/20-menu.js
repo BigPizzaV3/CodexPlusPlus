@@ -9,6 +9,7 @@
       button.disabled = waitsForBackend || button.dataset.relayUnneeded === "true";
     });
     refreshConversationViewControls();
+    if (typeof syncCodexAmbientSuggestionsToggles === "function") syncCodexAmbientSuggestionsToggles();
     document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
       select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
       select.disabled = !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.enhancementsEnabled === false;
@@ -353,6 +354,155 @@
       }
     }
     throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
+  }
+
+  // issue #686：Codex 设置页「主页建议」（旧名 Context-aware suggestions）只对 ChatGPT 订阅 /
+  // API Key 登录显示，中转模式下整行隐藏，用户关不掉，后台仍按这个设置持续生成建议、耗 token。
+  // 设置键是 `ambient-suggestions-enabled`（默认开启）：Codex 自己的开关、首页取建议、主进程的
+  // 后台刷新都按它门控。26.10 起 Codex 设置改由宿主服务读写：app-shared-* 导出一个活绑定，
+  // 指向 { settings, applicationState, ... } 宿主服务对象，Codex 的开关就是
+  // settings.write(key, value)，读取是 settings.readAll().values。导出名每次构建都会重排，
+  // 只能按形状找。找不到宿主服务（旧版）时退回 get-setting / set-setting 状态 API。
+  const codexAmbientSuggestionsSettingKey = "ambient-suggestions-enabled";
+  let codexAmbientSuggestionsState = { status: "idle", enabled: true, message: "" };
+  let codexAmbientSuggestionsLoadPromise = null;
+
+  function codexHostServicesFromModule(module) {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    for (const candidate of values) {
+      // 宿主服务对象本身是普通对象，成员才是 RPC stub（函数形态的 Proxy）：
+      // 只认 own key，不去探 stub 上的任意属性（stub 对任何属性都会返回一个可调用对象）。
+      if (!candidate || typeof candidate !== "object") continue;
+      try {
+        const own = (key) => Object.prototype.hasOwnProperty.call(candidate, key);
+        if (!own("settings") || !own("applicationState")) continue;
+        const settings = candidate.settings;
+        if (settings && typeof settings.write === "function" && typeof settings.readAll === "function") return candidate;
+      } catch {
+        // 26.908 起的 RPC stub 被检查时也可能抛错，跳过即可。
+      }
+    }
+    return null;
+  }
+
+  async function codexHostServices() {
+    const errors = [];
+    for (const assetPrefix of ["app-shared-", "app-initial-"]) {
+      try {
+        const module = await loadCodexAppModule(assetPrefix);
+        const host = codexHostServicesFromModule(module);
+        if (host) return host;
+        errors.push(`${assetPrefix}: host services unavailable`);
+      } catch (error) {
+        errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+      }
+    }
+    throw new Error(`Codex 宿主服务不可用 (${errors.join("; ")})`);
+  }
+
+  async function readCodexAppSetting(key) {
+    let hostError = null;
+    try {
+      const host = await codexHostServices();
+      const all = await host.settings.readAll();
+      return all?.values?.[key];
+    } catch (error) {
+      hostError = error;
+    }
+    try {
+      const response = await codexStateCall("get-setting", { params: { key } });
+      return response && Object.prototype.hasOwnProperty.call(response, "value") ? response.value : response;
+    } catch (error) {
+      throw hostError || error;
+    }
+  }
+
+  async function writeCodexAppSetting(key, value) {
+    let host = null;
+    try {
+      host = await codexHostServices();
+    } catch {
+      host = null;
+    }
+    if (host) {
+      await host.settings.write(key, value);
+      return;
+    }
+    await codexStateCall("set-setting", { params: { key, value } });
+  }
+
+  function codexAmbientSuggestionsDescription() {
+    const state = codexAmbientSuggestionsState;
+    if (state.status === "unavailable") {
+      return `当前 Codex 版本读不到这项设置${state.message ? `：${state.message}` : ""}。`;
+    }
+    return "Codex 首页会根据项目文件和已连接应用生成「下一步做什么」的建议，会在后台持续调用模型、消耗 token。中转模式下 Codex 设置页隐藏了这个开关，可以在这里关闭。";
+  }
+
+  /** 增强面板里的一行：直接读写 Codex 自己的设置，不经过 Codex++ 后端。 */
+  function renderCodexAmbientSuggestionsRow() {
+    const state = codexAmbientSuggestionsState;
+    const pending = state.status === "idle" || state.status === "loading" || state.status === "saving";
+    const title = "上下文感知建议（Context-aware suggestions）";
+    return `
+                <div class="codex-plus-row" data-codex-plus-setting-row="codexAppAmbientSuggestions">
+                  <div><div class="codex-plus-row-title">${escapeHtml(title)}</div><div class="codex-plus-row-description" data-codex-app-ambient-suggestions-description="true">${escapeHtml(codexAmbientSuggestionsDescription())}</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-app-ambient-suggestions="true" role="switch" aria-checked="${String(!!state.enabled)}" aria-label="${escapeHtml(title)}" data-enabled="${String(!!state.enabled)}" data-pending="${String(pending)}"${state.status === "unavailable" ? " disabled" : ""}><span></span></button>
+                </div>`;
+  }
+
+  /** 只把缓存的状态同步到已渲染的开关上，不发请求；renderCodexPlusMenu 每次都会调。 */
+  function syncCodexAmbientSuggestionsToggles() {
+    const state = codexAmbientSuggestionsState;
+    const pending = state.status === "idle" || state.status === "loading" || state.status === "saving";
+    document.querySelectorAll("[data-codex-app-ambient-suggestions]").forEach((button) => {
+      button.dataset.enabled = String(!!state.enabled);
+      button.setAttribute("aria-checked", button.dataset.enabled);
+      button.dataset.pending = String(pending);
+      button.disabled = state.status === "unavailable";
+    });
+    const description = codexAmbientSuggestionsDescription();
+    document.querySelectorAll("[data-codex-app-ambient-suggestions-description]").forEach((node) => {
+      if (node.textContent !== description) node.textContent = description;
+    });
+  }
+
+  /** 打开增强面板时读一次；读不到（宿主服务尚未就绪）时下次打开再试。 */
+  function loadCodexAmbientSuggestionsSetting() {
+    if (codexAmbientSuggestionsLoadPromise) return codexAmbientSuggestionsLoadPromise;
+    if (codexAmbientSuggestionsState.status === "saving") return Promise.resolve();
+    codexAmbientSuggestionsState = { ...codexAmbientSuggestionsState, status: "loading", message: "" };
+    syncCodexAmbientSuggestionsToggles();
+    codexAmbientSuggestionsLoadPromise = readCodexAppSetting(codexAmbientSuggestionsSettingKey)
+      .then((value) => {
+        // 未写过时 Codex 按默认值（开启）处理，只有明确的 false 才算关闭。
+        codexAmbientSuggestionsState = { status: "ready", enabled: value !== false, message: "" };
+      })
+      .catch((error) => {
+        codexAmbientSuggestionsState = { status: "unavailable", enabled: true, message: error?.message || String(error) };
+        sendCodexPlusDiagnostic("ambient_suggestions_setting_unavailable", { errorMessage: codexAmbientSuggestionsState.message });
+      })
+      .finally(() => {
+        codexAmbientSuggestionsLoadPromise = null;
+        syncCodexAmbientSuggestionsToggles();
+      });
+    return codexAmbientSuggestionsLoadPromise;
+  }
+
+  async function setCodexAmbientSuggestionsEnabled(enabled) {
+    const previous = codexAmbientSuggestionsState.enabled;
+    codexAmbientSuggestionsState = { status: "saving", enabled: !!enabled, message: "" };
+    syncCodexAmbientSuggestionsToggles();
+    try {
+      await writeCodexAppSetting(codexAmbientSuggestionsSettingKey, !!enabled);
+      codexAmbientSuggestionsState = { status: "ready", enabled: !!enabled, message: "" };
+      sendCodexPlusDiagnostic("ambient_suggestions_setting_saved", { enabled: !!enabled });
+    } catch (error) {
+      codexAmbientSuggestionsState = { status: "ready", enabled: previous, message: "" };
+      showToast(`上下文感知建议保存失败：${error?.message || String(error)}`, { type: "error" });
+    } finally {
+      syncCodexAmbientSuggestionsToggles();
+    }
   }
 
   function normalizeCodexServiceTierModelName(model) {

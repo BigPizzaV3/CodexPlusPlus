@@ -708,7 +708,7 @@ async fn run_app_server_client_capture(
     }
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket);
-    let probe_script = if settings.enhancements_enabled && settings.codex_app_native_fast_unlock {
+    let probe_script = if crate::native_predictions::native_modules_requested(&settings) {
         "window.__codexPlusNativeFastAssetPatchReady===true&&['armed','patched'].includes(window.__codexPlusNativeFastPatchState)&&window.__codexPlusNativeFastCompiled!=='v1'?null:JSON.stringify(window.__codexPlusAppServerClientCapture||null)"
     } else {
         app_server_client_capture_probe_script()
@@ -966,12 +966,12 @@ pub async fn install_bridge(
     let generation = next_bridge_generation(websocket_url);
     session = session.with_generation(generation.clone());
     let mut registered_script_ids = Vec::new();
-    let native_fast_requested = crate::settings::SettingsStore::default()
+    let native_modules_requested = crate::settings::SettingsStore::default()
         .load()
-        .is_ok_and(|settings| settings.enhancements_enabled && settings.codex_app_native_fast_unlock);
+        .is_ok_and(|settings| crate::native_predictions::native_modules_requested(&settings));
 
     let install_result: anyhow::Result<()> = async {
-        if native_fast_requested {
+        if native_modules_requested {
             session
                 .send_command(next_message_id(), "Page.enable", json!({}))
                 .await?;

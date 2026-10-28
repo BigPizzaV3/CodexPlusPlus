@@ -48,6 +48,7 @@ fn fixture(port: u16) -> Fixture {
             price: None,
             model_prices: None,
             proxy: None,
+            strip_image_generation_tool: None,
         },
         "preset:deepseek",
         None,

@@ -143,6 +143,7 @@ fn aggregate_model_catalog_pointer_is_absolute() {
             default_relay_id: member.id.clone(),
             routes: Vec::new(),
             sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     };
@@ -379,6 +380,7 @@ fn wsl_aggregate_catalog_pointer_stays_relative() {
             routes: Vec::new(),
             default_relay_id: String::new(),
             sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
         }],
         active_aggregate_relay_id: "agg".to_string(),
         ..BackendSettings::default()

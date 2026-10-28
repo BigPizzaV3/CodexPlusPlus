@@ -220,6 +220,47 @@
   cursor: not-allowed;
 }
 
+/* 下载音效组加进来后选项变多，允许换行；按钮里可能带加载图标。 */
+.shell .agent-pet-segmented {
+  flex-wrap: wrap;
+}
+
+.shell .agent-pet-segmented button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.shell .agent-pet-credit {
+  font-size: 0.76rem;
+}
+
+.shell .agent-pet-custom-sounds {
+  display: grid;
+  gap: 6px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  padding: 8px 10px;
+}
+
+.shell .agent-pet-custom-sound {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.82rem;
+}
+
+.shell .agent-pet-custom-sound-label {
+  color: hsl(var(--foreground));
+}
+
+.shell .agent-pet-custom-sounds > small {
+  font-size: 0.76rem;
+}
+
 .agent-pet-preview {
   position: sticky;
   top: 12px;

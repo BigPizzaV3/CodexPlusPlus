@@ -330,6 +330,17 @@ pub struct AgentBinding {
     pub claude_roles: ClaudeRoleModels,
     #[serde(default, deserialize_with = "lenient")]
     pub unknown_model: UnknownModelPolicy,
+    /// 审批模型（#2703，目前只有 Codex 用）：Codex「替我审批」固定请求 `codex-auto-review`，
+    /// 默认按「未知模型」策略改写成主模型；主模型是 ChatGPT 账号或含账号的模型组时会消耗订阅额度。
+    /// 填了就把审批请求改发到这个模型（`<供应商 id>/<模型>`、裸模型名或 `group/<组 id>`）。
+    /// 空串表示未设置，保持原有行为。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auto_review_model: String,
+    /// 起名模型（目前只有 Codex 用）：Codex 给会话起名 / 定期重新起名时另开临时线程，
+    /// 用它内置的轻量模型（如 gpt-6-luna）或会话当前模型，池里有 ChatGPT 账号时会落到订阅额度上。
+    /// 填了就把识别出的起名请求改发到这个模型（写法同审批模型）；空串表示不改，保持原有行为。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title_model: String,
     /// 写给 Agent 的上下文窗口（Claude Code 的 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
@@ -360,6 +371,8 @@ impl Default for AgentBinding {
             extra_models: Vec::new(),
             claude_roles: ClaudeRoleModels::default(),
             unknown_model: UnknownModelPolicy::default(),
+            auto_review_model: String::new(),
+            title_model: String::new(),
             context_window: None,
             claude_enable_effort: false,
             pool_exclude: Vec::new(),
@@ -445,6 +458,11 @@ pub struct GatewaySettings {
     /// 左键点托盘图标弹出快捷面板（默认开）；关掉时托盘保持原来的点击行为。
     #[serde(default = "enabled_by_default")]
     pub tray_panel: bool,
+    /// 关闭管理器主窗口时进入轻量模式：销毁主窗口（连同 WebView 渲染进程）释放内存，
+    /// 后端、网关、托盘照常运行，再打开时按原配置重建窗口（#2677）。
+    /// 默认关（opt-in）：关时是只隐藏窗口的旧行为。和 `tray_panel` 一样放在这里，由管理器的专用命令读写。
+    #[serde(default)]
+    pub lightweight_on_close: bool,
     /// 自动建组：多家都有的模型自动成一个组（Agent 选不带供应商的模型名时走它）。默认开；
     /// 旧文件（version < 3）里的 false 是当时的默认值，读的时候迁移成开，见 [`read_store`]。
     #[serde(default = "enabled_by_default")]
@@ -492,6 +510,7 @@ impl Default for GatewaySettings {
             providers: Vec::new(),
             groups: Vec::new(),
             tray_panel: true,
+            lightweight_on_close: false,
             auto_models: true,
             model_suffix: true,
             auto_groups: BTreeMap::new(),
@@ -873,6 +892,8 @@ mod tests {
         assert!(settings.tray_panel, "托盘快捷面板默认开");
         let old: GatewaySettings = serde_json::from_str("{}").unwrap();
         assert!(old.tray_panel, "旧文件没有这个字段时也是开");
+        assert!(!settings.lightweight_on_close, "关窗进入轻量模式默认关（opt-in）");
+        assert!(!old.lightweight_on_close, "旧文件没有这个字段时也是关");
         assert!(settings.active_binding(&ToolId::Claude).is_none());
     }
 
@@ -1003,6 +1024,7 @@ mod tests {
         // 改一点别的再保存。
         settings.groups[1].mode = GroupMode::Weighted;
         settings.tray_panel = false;
+        settings.lightweight_on_close = true;
         store.save(&settings).unwrap();
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&store.path).unwrap()).unwrap();
@@ -1024,6 +1046,7 @@ mod tests {
         assert_eq!(saved["groups"][0]["futureGroup"], 3);
         assert_eq!(saved["groups"][1]["mode"], "weighted", "改过的照新值写");
         assert_eq!(saved["trayPanel"], false);
+        assert_eq!(saved["lightweightOnClose"], true);
         // 再读一遍还是同样的内容。
         let again = store.load().unwrap();
         assert_eq!(again.groups[0].extra["futureGroup"], 3);

@@ -998,14 +998,14 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     // 复用后台服务也属于用户主动启动；已有资源补丁由原服务持有，
     // 这里只执行与完整启动相同的首次应用检查，不能重新创建 helper 或 watchdog。
     if settings.enhancements_enabled
-        && settings.codex_app_native_fast_unlock
+        && (settings.codex_app_native_fast_unlock || settings.codex_app_native_predictions)
         && let Ok(launch) = &launch_result
         && let Err(error) = hooks
-            .apply_native_fast_unlock_on_launch(launch.debug_port().unwrap_or(options.debug_port))
+            .apply_native_module_patches_on_launch(launch.debug_port().unwrap_or(options.debug_port))
             .await
     {
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "launcher.native_fast_unlock_failed",
+            "launcher.native_module_patch_failed",
             json!({"message": error.to_string(), "phase": "activate_existing"}),
         );
     }
@@ -1390,13 +1390,13 @@ impl LaunchHooks for LauncherHooks {
         self.core.inject(debug_port, helper_port).await
     }
 
-    async fn apply_native_fast_unlock_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
+    async fn apply_native_module_patches_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
         // 恢复后台服务只补回桥接，不刷新用户正在使用的页面。
         if self.attach_only {
             return Ok(());
         }
         self.core
-            .apply_native_fast_unlock_on_launch(debug_port)
+            .apply_native_module_patches_on_launch(debug_port)
             .await
     }
 
@@ -2677,7 +2677,7 @@ mod tests {
             .expect("next function after existing launcher activation");
         let body = &source[start..end];
         let launch = body.find("let launch_result = hooks").unwrap();
-        let patch = body.find(".apply_native_fast_unlock_on_launch(").unwrap();
+        let patch = body.find(".apply_native_module_patches_on_launch(").unwrap();
 
         assert!(
             launch < patch,
@@ -2686,9 +2686,10 @@ mod tests {
         let guard = &body[launch..patch];
         assert!(guard.contains("settings.enhancements_enabled"));
         assert!(guard.contains("settings.codex_app_native_fast_unlock"));
+        assert!(guard.contains("settings.codex_app_native_predictions"));
         assert!(guard.contains("let Ok(launch) = &launch_result"));
         assert!(body[patch..].contains("launch.debug_port().unwrap_or(options.debug_port)"));
-        assert!(body[patch..].contains("launcher.native_fast_unlock_failed"));
+        assert!(body[patch..].contains("launcher.native_module_patch_failed"));
         assert!(body[patch..].contains("launch_result.map(|_| ())"));
     }
 
@@ -2780,7 +2781,7 @@ mod tests {
     async fn launcher_hooks_forward_native_fast_instead_of_using_the_default_noop() {
         let hooks = LauncherHooks::default();
         // 没有 CDP 端点时核心实现会返回错误；trait 默认的空实现则错误地成功。
-        let result = hooks.apply_native_fast_unlock_on_launch(0).await;
+        let result = hooks.apply_native_module_patches_on_launch(0).await;
         assert!(
             result.is_err(),
             "native Fast hook must reach the core launcher"
@@ -2794,7 +2795,7 @@ mod tests {
             ..LauncherHooks::default()
         };
         // 后台恢复不访问 CDP，因此相同的不可用端点也应成功跳过。
-        hooks.apply_native_fast_unlock_on_launch(0).await.unwrap();
+        hooks.apply_native_module_patches_on_launch(0).await.unwrap();
     }
 
     #[tokio::test]

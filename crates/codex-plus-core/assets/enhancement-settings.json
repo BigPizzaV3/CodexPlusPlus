@@ -90,11 +90,35 @@
       "surfaces": ["manager", "codex"]
     },
     {
+      "key": "codexAppNativePredictions",
+      "group": "plugins",
+      "control": "bool",
+      "title": "原生输入预测（实验）",
+      "description": "实验功能，默认关闭。在 Codex 原生输入框显示下一句灰字预测，按 Tab 接受为可编辑草稿，不会自动发送。仅对使用 API Key / 自定义供应商的本机对话生效；每个回合结束都会用当前供应商额外请求一次，消耗该供应商额度。ChatGPT 登录与远程 / SSH / 云端对话保持原样。重新启动 Codex 后生效。",
+      "surfaces": ["manager"]
+    },
+    {
+      "key": "codexAppThirdPartyReasoningCollapse",
+      "group": "plugins",
+      "control": "bool",
+      "title": "第三方模型回答完自动折叠过程",
+      "description": "给第三方模型的回复补上「最终回答 / 过程」标记，回答完后像官方模型一样把推理和命令过程收起来。只对经过 Codex++ 本地代理或网关的请求生效；个别上游不接受这个标记时请关闭。",
+      "surfaces": ["manager"]
+    },
+    {
       "key": "codexAppSessionDelete",
       "group": "chat",
       "control": "bool",
       "title": "会话删除",
       "description": "在会话列表悬停显示删除按钮，并支持撤销。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppSessionDeleteSkipConfirm",
+      "group": "chat",
+      "control": "bool",
+      "title": "删除会话时不再确认",
+      "description": "开启后删除本机会话不再弹出确认框，删除后仍可在提示里撤销。远端 / SSH 会话无法撤销，仍会要求确认。",
       "surfaces": ["manager", "codex"]
     },
     {
@@ -219,7 +243,7 @@
       "group": "chat",
       "control": "bool",
       "title": "用量状态栏",
-      "description": "在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。",
+      "description": "在输入框下方显示输出吞吐、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。",
       "surfaces": ["manager", "codex"]
     },
     {

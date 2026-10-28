@@ -1893,6 +1893,7 @@ pub fn copy_claude_provider(provider: &ClaudeProvider) -> anyhow::Result<RelayPr
         price: None,
         model_prices: None,
         proxy: None,
+        strip_image_generation_tool: None,
     })?;
     if bearer {
         profile.anthropic_auth_header =
@@ -1946,6 +1947,7 @@ pub fn copy_grok_profile(
         price: None,
         model_prices: None,
         proxy: None,
+        strip_image_generation_tool: None,
     })?;
     if !windows.is_empty() {
         relay.model_windows = serde_json::to_string(&windows)?;
@@ -2266,6 +2268,9 @@ pub struct ProviderInput {
     /// 这个供应商单独走的 HTTP 代理；不传表示不改，空串表示不单独走代理。
     #[serde(default)]
     pub proxy: Option<String>,
+    /// 转发前移除托管生图工具（#228）；不传表示不改（编辑时保留原来的）。
+    #[serde(default)]
+    pub strip_image_generation_tool: Option<bool>,
 }
 
 /// 代理地址只接受 http / https / socks5，空串表示不单独走代理。
@@ -2313,6 +2318,7 @@ fn build_relay(input: &ProviderInput) -> anyhow::Result<RelayProfile> {
         &[],
     )?;
     relay.relay_mode = RelayMode::PureApi;
+    relay.strip_image_generation_tool = input.strip_image_generation_tool.unwrap_or(false);
     if keys.len() > 1 {
         relay.api_keys = keys
             .iter()
@@ -2484,6 +2490,10 @@ fn update_provider_in(
     relay.anthropic_auth_header = provider.relay.anthropic_auth_header.clone();
     // 按模型的思考等级等模型资料也保留（在供应商池详情里单独编辑）。
     relay.model_metadata = provider.relay.model_metadata.clone();
+    // 没传「移除托管生图工具」时沿用原来的选择。
+    if input.strip_image_generation_tool.is_none() {
+        relay.strip_image_generation_tool = provider.relay.strip_image_generation_tool;
+    }
     provider.relay = relay;
     provider.price = clean_price(input.price.clone());
     if let Some(prices) = &input.model_prices {
@@ -2883,6 +2893,7 @@ mod tests {
                 routes: Vec::new(),
                 default_relay_id: String::new(),
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };

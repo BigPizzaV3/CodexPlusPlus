@@ -1,5 +1,5 @@
   /**
-   * 输入框下方用量状态栏：生成速度 / 缓存命中率 / 上下文占用。
+   * 输入框下方用量状态栏：输出吞吐 / 缓存命中率 / 上下文占用。
    *
    * 数据全部来自 Codex 自己写的 rollout 记录（`event_msg.token_count`），中文档口径
    * 与 Codex 一致：缓存命中 = cached_input_tokens / input_tokens，上下文占用 =
@@ -46,11 +46,37 @@
 
   const codexPlusUsageSvgNs = "http://www.w3.org/2000/svg";
 
+  /**
+   * 速度项只显示数字，名称和口径放在悬停提示里：这是含首 token 等待和工具执行的
+   * 吞吐，不是纯解码速度，不能再叫「生成速度」（issue #2636）。
+   */
   function codexPlusUsageText() {
     const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
     return language.startsWith("zh")
-      ? { speed: (value) => `${value} tok/s`, cache: (value) => `缓存命中 ${value}`, context: (value) => value, aria: "用量状态栏" }
-      : { speed: (value) => `${value} tok/s`, cache: (value) => `cache hit ${value}`, context: (value) => value, aria: "Usage status line" };
+      ? {
+        speed: (value) => `${value} tok/s`,
+        cache: (value) => `缓存命中 ${value}`,
+        context: (value) => value,
+        aria: "用量状态栏",
+        separator: "：",
+        comma: "，",
+        speedTitle: (value) => `输出吞吐 ${value} tok/s（本轮输出 token 合计 ÷ 对应耗时合计，含首 token 等待与工具执行，不是纯解码速度）`,
+        cacheTitle: (value) => `缓存命中 ${value}`,
+        contextTitle: (value) => `上下文占用 ${value}`,
+        windowTitle: (value) => `窗口 ${value}`,
+      }
+      : {
+        speed: (value) => `${value} tok/s`,
+        cache: (value) => `cache hit ${value}`,
+        context: (value) => value,
+        aria: "Usage status line",
+        separator: ": ",
+        comma: ", ",
+        speedTitle: (value) => `Output throughput ${value} tok/s (this turn's output tokens ÷ elapsed time, including time to first token and tool runs; not pure decode speed)`,
+        cacheTitle: (value) => `Cache hit ${value}`,
+        contextTitle: (value) => `Context used ${value}`,
+        windowTitle: (value) => `window ${value}`,
+      };
   }
 
   function codexPlusUsageInstallStyle() {
@@ -247,17 +273,30 @@
     return input > 0 ? codexPlusUsagePercent(cached, input) : null;
   }
 
+  /** 单个区间超过这个时长就当作长停顿（等审批、挂起、断线重连），不计入吞吐。 */
+  const codexPlusUsageMaxIntervalSeconds = 120;
+
   /**
-   * 生成速度（token/s）。
+   * 输出吞吐（token/s），issue #2636。
    *
-   * Codex 只在每次模型调用结束时写一条 token_count，事件间隔里同时包含生成和工具
-   * 执行时间，所以这是「吞吐」而不是纯生成速度，会比真实解码速度低。用同一轮内
-   * 相邻事件的累计输出差除以时间差得到区间速度，再取最近几个区间平均，避免单次
-   * 抖动。turn_output_tokens 是历史字段名，实际为会话累计输出，需用真实轮 id 切段。
+   * Codex 只在每次模型调用结束时写一条 token_count，拿不到首个 token 的时间，事件
+   * 间隔里同时包含首 token 等待、解码和工具执行，所以这里只能给「吞吐」，不能叫
+   * 生成速度 / 解码速度，界面上也按这个口径命名。
+   *
+   * 口径：本轮各区间的输出 token 求和 ÷ 对应时长求和。不能对各区间速率等权平均：
+   * 工具步骤输出少、耗时长，最终回答输出多、耗时短，等权平均会让几十 token 的工具
+   * 步骤和上千 token 的回答同样有分量（issue 的算例：10.46 / 14.11 / 109.83 等权得
+   * 44.8，按总量是 1781 / 54.293 ≈ 32.8）。
+   *
+   * 不合格的区间整段剔除（分子分母一起剔）：累计输出没增长（重复记录 / 非单调）、
+   * 间隔过短（同一批写入）、间隔过长（中间停了很久）。没有合格区间时返回 null，
+   * 界面显示 `--`。turn_output_tokens 是历史字段名，实际为会话累计输出，需用真实
+   * 轮 id 切段。
    */
   function codexPlusUsageRate(events) {
     const segment = codexPlusUsageLatestTurn(events);
-    const rates = [];
+    let tokens = 0;
+    let seconds = 0;
     for (let index = 1; index < segment.length; index += 1) {
       const previous = segment[index - 1];
       const current = segment[index];
@@ -266,14 +305,12 @@
       if (currentOutput <= previousOutput) continue;
       const startedAt = Date.parse(previous.t);
       const endedAt = Date.parse(current.t);
-      const seconds = (endedAt - startedAt) / 1000;
-      // 间隔过短说明是同一批写入，过长说明中间停了很久，都不适合当速度样本。
-      if (!(seconds >= 0.5) || seconds > 120) continue;
-      rates.push((currentOutput - previousOutput) / seconds);
+      const interval = (endedAt - startedAt) / 1000;
+      if (!(interval >= 0.5) || interval > codexPlusUsageMaxIntervalSeconds) continue;
+      tokens += currentOutput - previousOutput;
+      seconds += interval;
     }
-    if (!rates.length) return null;
-    const recent = rates.slice(-3);
-    return recent.reduce((total, rate) => total + rate, 0) / recent.length;
+    return seconds > 0 ? tokens / seconds : null;
   }
 
   function codexPlusUsageSnapshot(events) {
@@ -315,12 +352,12 @@
     }
     node.dataset.stale = String(stale);
     node.setAttribute("title", [
-      `生成速度 ${format(speed)} tok/s`,
-      `缓存命中 ${format(cache)}`,
-      `上下文占用 ${format(context)}`,
-      contextWindow > 0 ? `窗口 ${contextWindow}` : "",
+      text.speedTitle(format(speed)),
+      text.cacheTitle(format(cache)),
+      text.contextTitle(format(context)),
+      contextWindow > 0 ? text.windowTitle(contextWindow) : "",
     ].filter(Boolean).join(" · "));
-    node.setAttribute("aria-label", `${text.aria}：${text.speed(speed)}，${text.cache(cache)}，${context}`);
+    node.setAttribute("aria-label", `${text.aria}${text.separator}${[text.speedTitle(speed), text.cache(cache), context].join(text.comma)}`);
   }
 
   function codexPlusUsageSchedule(delay) {

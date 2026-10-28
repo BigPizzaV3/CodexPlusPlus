@@ -52,6 +52,8 @@ pub struct GatewayPoolEntry {
     pub lent_to_codex: bool,
     /// 网关供应商单独走的 HTTP 代理（空串表示不单独走代理）。
     pub proxy: String,
+    /// 转发前移除托管生图工具（#228）。
+    pub strip_image_generation_tool: bool,
     /// 上次检查时上游有、列表里没有的模型（界面提示新模型）。
     pub upstream_new: Vec<String>,
     /// 上次检查时列表里有、上游已经没有的模型。
@@ -177,6 +179,7 @@ fn pool_entry(
         plan: codex_plus_core::gateway::accounts::account_plan(relay),
         lent_to_codex: codex_plus_core::official_login::is_lent_to_codex(relay),
         proxy: relay.gateway_proxy.clone().unwrap_or_default(),
+        strip_image_generation_tool: relay.strip_image_generation_tool,
         upstream_new: upstream.0,
         upstream_gone: upstream.1,
         quota: codex_plus_core::gateway::quota::get(&relay.id),
@@ -902,6 +905,7 @@ async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Re
         price: None,
         model_prices: None,
         proxy: None,
+        strip_image_generation_tool: None,
     };
     apply::create_provider(
         &GatewayStore::default(),

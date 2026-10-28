@@ -232,6 +232,7 @@ fn imported_aggregate_preserves_members_and_routes_after_switching_away_and_back
         }],
         default_relay_id: "first".into(),
         sync_default_member_login: true,
+        auto_review_relay_id: String::new(),
     };
     let settings = BackendSettings {
         relay_profiles_enabled: true,

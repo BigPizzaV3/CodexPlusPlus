@@ -23,7 +23,7 @@ pub(crate) fn runtime_settings(settings: &BackendSettings) -> RuntimeSettings {
     }
 }
 
-fn local_api_configured_from_home(home: &Path) -> bool {
+pub(crate) fn local_api_configured_from_home(home: &Path) -> bool {
     std::fs::read_to_string(home.join("config.toml"))
         .ok()
         .is_some_and(|contents| local_api_configured_from_config(&contents))

@@ -971,6 +971,8 @@ async fn fetch_official_login_model_ids(
 
 /// 官方目录条目：slug/id/name 均可作为模型 id；`visibility=hide` 与
 /// `visible_in_picker=false` 是官方内部预留位，不进入供应商模型列表。
+/// 例外是 `codex-auto-review`：留在列表里才能在网关里选它当审批模型；
+/// 写进 Codex 目录时仍标成隐藏（见 `aggregate_catalog::catalog_visibility`）。
 pub(crate) fn parse_official_model_ids(value: &Value) -> Vec<String> {
     let entries = value
         .get("data")
@@ -1002,6 +1004,8 @@ pub(crate) fn parse_official_model_ids(value: &Value) -> Vec<String> {
             }
             _ => (String::new(), false),
         };
+        let hidden =
+            hidden && !id.eq_ignore_ascii_case(crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL);
         if id.is_empty() || hidden || !seen.insert(id.clone()) {
             continue;
         }
@@ -1508,13 +1512,15 @@ mod model_fetch_tests {
                 {"slug": "gpt-reserve", "visibility": "hide"},
                 {"id": "gpt-6-sol"},
                 {"name": "gpt-6-luna", "visible_in_picker": false},
+                {"slug": "codex-auto-review", "visibility": "hide"},
                 "gpt-6.1-sol",
                 {"slug": "   "}
             ]
         });
+        // 审批模型虽然隐藏，也要留下，网关才能把它选作审批模型。
         assert_eq!(
             parse_official_model_ids(&value),
-            vec!["gpt-6.1-sol", "gpt-6-sol"]
+            vec!["gpt-6.1-sol", "gpt-6-sol", "codex-auto-review"]
         );
     }
 

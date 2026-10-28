@@ -92,6 +92,8 @@ const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-rea
 const API_QUOTA_GATE_SCRIPT: &str = include_str!("../../../assets/inject/api-quota-gate.js");
 const NATIVE_FAST_UNLOCK_SCRIPT: &str =
     include_str!("../../../assets/inject/native-fast-unlock.js");
+const NATIVE_PREDICTIONS_SCRIPT: &str =
+    include_str!("../../../assets/inject/native-predictions.js");
 const STEPWISE_SCRIPT: &str = concat!(
     "(() => {\n",
     include_str!("../../../assets/inject/floating-panel/runtime/state.js"),
@@ -375,6 +377,10 @@ pub fn native_fast_unlock_script() -> &'static str {
     NATIVE_FAST_UNLOCK_SCRIPT
 }
 
+pub fn native_predictions_script() -> &'static str {
+    NATIVE_PREDICTIONS_SCRIPT
+}
+
 const PET_V2_SPRITE_DETECTION_SCRIPT: &str = r#"
   const isV2Sprite = async (mascot) => {
     if (!mascot) return false;
@@ -521,8 +527,8 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
-    // Fast 的新文档脚本需要 Page.enable；DOM 增强必须等正常文档就绪，不能访问空的根节点。
-    let renderer_runtime = if settings.enhancements_enabled && settings.codex_app_native_fast_unlock {
+    // 原生模块补丁的新文档脚本需要 Page.enable；DOM 增强必须等正常文档就绪，不能访问空的根节点。
+    let renderer_runtime = if crate::native_predictions::native_modules_requested(settings) {
         renderer_after_document_ready(renderer_script())
     } else {
         renderer_script().to_string()
@@ -557,9 +563,11 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             agent_pet_sounds_script(),
             include_str!("../../../assets/inject/composer-readiness.js"),
             format!(
-                "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});",
+                "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});\n{}\nwindow.__codexPlusNativePredictions.runtime.update({});",
                 native_fast_unlock_script(),
                 json!(crate::native_fast::runtime_settings(settings)),
+                native_predictions_script(),
+                json!(crate::native_predictions::runtime_settings(settings)),
             ),
             renderer_runtime
         ),

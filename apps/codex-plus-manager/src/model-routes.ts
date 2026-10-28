@@ -16,6 +16,7 @@ export type RelayModelRouteProfile = {
   webSearchHistoryCompat?: boolean;
   localCompactionPromptAtEnd?: boolean;
   strictResponsesReasoning?: boolean;
+  stripImageGenerationTool?: boolean;
   modelMetadata?: string;
   modelRoutes?: RelayModelRoute[];
 };
@@ -108,6 +109,16 @@ export function localCompactionPromptAtEndEnabled(
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
 }
 
+/** #228：转发前移除托管生图工具，只对第三方 Responses 上游生效，且要走本地代理。 */
+export function stripImageGenerationToolEnabled(
+  profile: Pick<RelayModelRouteProfile, "protocol" | "relayMode" | "officialMixApiKey" | "stripImageGenerationTool">,
+): boolean {
+  return profile.stripImageGenerationTool === true
+    && profile.protocol === "responses"
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+}
+
 export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): boolean {
   if (settings.enhancementsEnabled) return true;
   const active = settings.relayProfiles.find((profile) => profile.id === settings.activeRelayId)
@@ -121,6 +132,7 @@ export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): b
     || webSearchHistoryCompatEnabled(active)
     || localCompactionPromptAtEndEnabled(active)
     || requestCompatibilityEnabled(active)
+    || stripImageGenerationToolEnabled(active)
     || normalizeRelayModelRoutes(active.modelRoutes).some(
       (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),
     );

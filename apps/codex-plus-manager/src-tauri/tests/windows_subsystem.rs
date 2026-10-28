@@ -64,11 +64,63 @@ fn manager_close_minimizes_to_tray_without_confirmation() {
     assert!(lib_rs.contains("let _ = close_event_window.hide();"));
     assert!(!lib_rs.contains("startup_is_transient()"));
     // 登录启动可以按已有设置隐藏窗口，手动打开仍保持可见。
-    assert!(lib_rs.contains(".visible(!start_minimized)"));
+    assert!(lib_rs.contains("build_main_window(app.handle(), url, !start_minimized)"));
+    assert!(lib_rs.contains(".visible(visible)"));
     assert!(lib_rs.contains("codex_plus_launcher::shutdown()"));
     assert!(!app_tsx.contains("CloseConfirmDialog"));
     assert!(app_tsx.contains("manager_exit_app"));
     assert!(app_tsx.contains("manager_hide_to_tray"));
+}
+
+// issue #2677：轻量模式。关窗先隐藏、稍后销毁主窗口释放 WebView；所有打开入口按原配置重建；
+// 最后一个窗口销毁触发的退出请求（不带退出码）不能把后台一起退掉。
+#[test]
+fn manager_lightweight_mode_destroys_and_rebuilds_the_main_window() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+    let lightweight_rs =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lightweight.rs"))
+            .expect("read manager lightweight.rs");
+    let tray_panel_rs =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tray_panel.rs"))
+            .expect("read manager tray_panel.rs");
+
+    // 关窗：照旧隐藏，再按开关排期销毁。
+    assert!(lib_rs.contains("lightweight::schedule_release(&close_event_app);"));
+    assert!(lightweight_rs.contains("if !enabled() {"));
+    assert!(lightweight_rs.contains("window.destroy()"));
+    // 销毁只针对仍隐藏的窗口，重新打开或获得焦点会取消。
+    assert!(lightweight_rs.contains("window.is_visible().unwrap_or(true)"));
+    assert!(lib_rs.contains("lightweight::cancel_pending_release();"));
+    // 打开入口统一走 show_main_window → ensure_main_window，窗口不在就按原配置重建。
+    assert!(lib_rs.contains("fn ensure_main_window"));
+    assert!(lib_rs.contains("build_main_window(app_handle, MAIN_WINDOW_URL, false)"));
+    assert_eq!(
+        lib_rs.matches("tauri::WebviewWindowBuilder::new(").count(),
+        1
+    );
+    assert!(!lib_rs.contains("get_webview_window(\"main\")"));
+    // 最后一个窗口销毁不等于退出。
+    assert!(lib_rs.contains("if code.is_none() && !APP_EXITING.load(Ordering::SeqCst) {"));
+    // 快捷面板的「打开」可能要建窗口，不能是同步命令（Windows 上会死锁）。
+    assert!(tray_panel_rs.contains("pub async fn tray_panel_action"));
+    assert!(lightweight_rs.contains("pub async fn main_window_prepare"));
+}
+
+#[test]
+fn macos_tray_panel_is_shown_with_rounded_corners() {
+    let panel_rs =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tray_panel.rs"))
+            .expect("read tray_panel.rs");
+
+    // 显示之后再裁圆角，阴影才会按圆角轮廓重算。
+    let shown = panel_rs.find("let _ = window.show();").expect("panel shows the window");
+    let rounded = panel_rs
+        .find("round_corners(app, &window);")
+        .expect("panel rounds its corners");
+    assert!(shown < rounded);
+    assert!(panel_rs.contains("codex_plus_core::macos_window::round_corners("));
+    assert!(panel_rs.contains("app.run_on_main_thread("));
 }
 
 #[test]

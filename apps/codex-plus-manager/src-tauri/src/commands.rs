@@ -558,6 +558,8 @@ pub struct ProviderDoctorPayload {
 #[serde(rename_all = "camelCase")]
 pub struct EnvConflictsPayload {
     pub conflicts: Vec<codex_plus_core::env_conflicts::EnvConflict>,
+    /// 本机回环中转地址遇上 Codex 的 SSH 远端连接时的转发提示（issue #1195）。
+    pub ssh_remote_loopback: Option<codex_plus_core::ssh_remote_loopback::SshRemoteLoopbackNotice>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -5777,6 +5779,24 @@ pub async fn install_plugin_market_item(source: String, id: String) -> Value {
 }
 
 #[tauri::command]
+pub async fn uninstall_plugin_market_item(source: String, id: String) -> Value {
+    // 只撤销插件市场安装时写入的目录与配置条目（#2701）；删目录放到阻塞线程，避免卡住界面。
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::plugin_market::uninstall_plugin(
+            &codex_plus_core::codex_home::default_codex_home_dir(),
+            &source,
+            &id,
+        )
+    })
+    .await
+    {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(error)) => json!({"status": "failed", "message": error.to_string()}),
+        Err(error) => json!({"status": "failed", "message": format!("插件卸载失败：{error}")}),
+    }
+}
+
+#[tauri::command]
 pub fn plugin_market_install_status(source: String, id: String) -> Value {
     match codex_plus_core::plugin_market::install_status(
         &codex_plus_core::codex_home::default_codex_home_dir(),
@@ -6079,6 +6099,58 @@ pub fn import_ccs_skills() -> CommandResult<SkillsPayload> {
         failed(
             &format!(
                 "已从 cc-switch 导入 {imported} 个 Skill，{} 个失败：{}",
+                errors.len(),
+                errors.join("；")
+            ),
+            payload,
+        )
+    }
+}
+
+/// 从用户选择的本地目录导入 Skills（#511）。选中的目录本身含 `SKILL.md` 时导入这一个；
+/// 否则把它当作一组 Skills 的父目录，导入其中含 `SKILL.md` 的子目录。导入是复制，默认停用。
+#[tauri::command]
+pub async fn import_local_skills(path: String) -> CommandResult<SkillsPayload> {
+    tauri::async_runtime::spawn_blocking(move || import_local_skills_blocking(&path))
+        .await
+        .unwrap_or_else(|error| {
+            failed(
+                &format!("本地导入 Skill 失败：{error}"),
+                current_skills_payload(&default_skills_manager()),
+            )
+        })
+}
+
+fn import_local_skills_blocking(path: &str) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let dir = std::path::PathBuf::from(path.trim());
+    let candidates = match codex_plus_core::skills::local_skill_import_candidates(&dir) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return failed(
+                &format!("本地导入 Skill 失败：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
+    };
+    let mut imported = 0usize;
+    let mut errors = Vec::new();
+    for (id, path) in candidates {
+        match manager.import_from_local_directory(&id, &path) {
+            Ok(_) => imported += 1,
+            Err(error) => errors.push(format!("{id}：{error}")),
+        }
+    }
+    let payload = current_skills_payload(&manager);
+    if errors.is_empty() {
+        ok(
+            &format!("已从本地导入 {imported} 个 Skill，默认停用，可在列表中勾选启用。"),
+            payload,
+        )
+    } else {
+        failed(
+            &format!(
+                "已从本地导入 {imported} 个 Skill，{} 个失败：{}",
                 errors.len(),
                 errors.join("；")
             ),
@@ -6557,6 +6629,26 @@ pub async fn repair_shortcuts() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
         .await
         .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
+}
+
+/// 更新提示里的「跳过此版本」（#1272）：只写 settings.json 的 `updateSkippedVersion` 一个键，
+/// 不经前端整份表单保存，避免把其他未保存的草稿一起写进去。返回最新设置供前端合并版本号。
+#[tauri::command]
+pub fn skip_update_version(version: String) -> CommandResult<SettingsPayload> {
+    let version = version.trim().to_string();
+    if version.is_empty() {
+        return failed("要跳过的版本号为空。", fallback_settings_payload());
+    }
+    match SettingsStore::default().update(json!({ "updateSkippedVersion": version })) {
+        Ok(_) => settings_payload(
+            &format!("已跳过 {version}，出现更新的版本时再提示。"),
+            "保存跳过版本后重新读取设置失败",
+        ),
+        Err(error) => failed(
+            &format!("保存跳过版本失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
 }
 
 #[tauri::command]
@@ -7271,15 +7363,24 @@ pub fn read_relay_files() -> CommandResult<RelayFilesPayload> {
 
 #[tauri::command]
 pub fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
-    let conflicts = codex_plus_core::env_conflicts::detect_env_conflicts_for_home(
-        &codex_plus_core::relay_config::default_codex_home_dir(),
-    );
+    let codex_home = codex_plus_core::relay_config::default_codex_home_dir();
+    let conflicts = codex_plus_core::env_conflicts::detect_env_conflicts_for_home(&codex_home);
+    // Codex++ 不往 SSH 远端写配置；远端 Codex 若沿用本机 127.0.0.1 中转地址会连到服务器自己，
+    // 这里只读检测并把 ssh -R 转发做法交给供应商页提示。
+    let ssh_remote_loopback =
+        codex_plus_core::ssh_remote_loopback::inspect_ssh_remote_loopback_for_home(&codex_home);
     let message = if conflicts.is_empty() {
         "未检测到会覆盖 Codex 供应商配置的 OPENAI 环境变量。"
     } else {
         "检测到可能覆盖 Codex 供应商配置的 OPENAI 环境变量。"
     };
-    ok(message, EnvConflictsPayload { conflicts })
+    ok(
+        message,
+        EnvConflictsPayload {
+            conflicts,
+            ssh_remote_loopback,
+        },
+    )
 }
 
 #[tauri::command]
@@ -10523,6 +10624,7 @@ base_url = "https://example.invalid/v1"
                 routes: Vec::new(),
                 default_relay_id: String::new(),
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };
@@ -10558,6 +10660,7 @@ base_url = "https://example.invalid/v1"
                 routes: Vec::new(),
                 default_relay_id: String::new(),
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };
@@ -10615,6 +10718,7 @@ base_url = "https://example.invalid/v1"
                 routes: Vec::new(),
                 default_relay_id: String::new(),
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };

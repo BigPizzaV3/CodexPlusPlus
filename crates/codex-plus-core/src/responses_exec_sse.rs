@@ -4,12 +4,12 @@
 //! JSON arguments have passed `decode_exec_input`.  In particular, argument
 //! deltas are never forwarded as executable custom-tool input.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::responses_exec::{adapt_response, decode_exec_input};
+use crate::responses_exec::{adapt_response_for, decode_exec_input, exec_tool_names};
 
 const MAX_CALL_ARGUMENTS: usize = 1024 * 1024;
 const MAX_PENDING_ARGUMENTS: usize = 4 * 1024 * 1024;
@@ -41,6 +41,8 @@ impl ExecCall {
 /// The adapter is request-scoped.  It does not execute programs or inspect
 /// unrelated tools.
 pub(crate) struct ExecSseAdapter {
+    /// 要还原成 custom_tool_call 的工具名；兼容重试只有 exec。
+    names: BTreeSet<String>,
     frame_buffer: Vec<u8>,
     calls: HashMap<String, ExecCall>,
     item_to_call: HashMap<String, String>,
@@ -67,7 +69,12 @@ impl Default for ExecSseAdapter {
 
 impl ExecSseAdapter {
     pub(crate) fn new() -> Self {
+        Self::for_names(exec_tool_names())
+    }
+
+    pub(crate) fn for_names(names: BTreeSet<String>) -> Self {
         Self {
+            names,
             frame_buffer: Vec::new(),
             calls: HashMap::new(),
             item_to_call: HashMap::new(),
@@ -298,8 +305,9 @@ impl ExecSseAdapter {
         let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
         let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
 
-        if item_type != "function_call" || name != "exec" {
-            if item_type == "custom_tool_call" && name == "exec" {
+        let adapted = self.names.contains(name);
+        if item_type != "function_call" || !adapted {
+            if item_type == "custom_tool_call" && adapted {
                 return Err(self.reject("unexpected native custom exec in adapted stream"));
             }
             let track_item = !item_id.is_empty()
@@ -417,8 +425,9 @@ impl ExecSseAdapter {
         let item = event.get("item").cloned().unwrap_or(Value::Null);
         let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
         let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
-        if item_type != "function_call" || name != "exec" {
-            if item_type == "custom_tool_call" && name == "exec" {
+        let adapted = self.names.contains(name);
+        if item_type != "function_call" || !adapted {
+            if item_type == "custom_tool_call" && adapted {
                 return Err(self.reject("unexpected native custom exec in adapted stream"));
             }
             self.emit_value(output, "response.output_item.done", event);
@@ -488,12 +497,18 @@ impl ExecSseAdapter {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let adapted_response =
-            adapt_response(event.get("response").cloned().unwrap_or(Value::Null))
-                .map_err(|_| self.reject("invalid terminal exec response"))?;
+        let adapted_response = adapt_response_for(
+            event.get("response").cloned().unwrap_or(Value::Null),
+            &self.names,
+        )
+        .map_err(|_| self.reject("invalid terminal exec response"))?;
         let mut final_calls = HashSet::new();
         for item in &response_output {
-            if item["type"] == "function_call" && item["name"] == "exec" {
+            if item["type"] == "function_call"
+                && item["name"]
+                    .as_str()
+                    .is_some_and(|name| self.names.contains(name))
+            {
                 let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
                     return Err(self.reject("terminal exec call has no call_id"));
                 };
@@ -513,8 +528,9 @@ impl ExecSseAdapter {
         for (index, item) in response_output.into_iter().enumerate() {
             let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
             let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
-            if item_type != "function_call" || name != "exec" {
-                if item_type == "custom_tool_call" && name == "exec" {
+            let adapted = self.names.contains(name);
+            if item_type != "function_call" || !adapted {
+                if item_type == "custom_tool_call" && adapted {
                     return Err(self.reject("unexpected native custom exec in adapted response"));
                 }
                 continue;
@@ -944,7 +960,6 @@ fn custom_exec_item(item: &Value, custom_id: &str, input: &str) -> Value {
     if let Some(object) = item.as_object_mut() {
         object.insert("type".to_string(), json!("custom_tool_call"));
         object.insert("id".to_string(), json!(custom_id));
-        object.insert("name".to_string(), json!("exec"));
         object.insert("input".to_string(), json!(input));
         object.remove("arguments");
         object.remove("_responses_exec_done_emitted");
@@ -1022,6 +1037,46 @@ mod tests {
                 }]
             }
         })
+    }
+
+    #[test]
+    fn named_custom_tools_are_restored_and_other_functions_pass_through() {
+        let mut adapter = ExecSseAdapter::for_names(BTreeSet::from(["apply_patch".to_string()]));
+        let patch = json!({"type": "function_call", "id": "fc_p", "call_id": "p",
+                           "name": "apply_patch", "arguments": ""});
+        let shell = json!({"type": "function_call", "id": "fc_s", "call_id": "s",
+                           "name": "shell", "arguments": "{}"});
+        let mut bytes = frame(
+            "response.output_item.added",
+            json!({"type": "response.output_item.added", "output_index": 0, "item": patch}),
+        );
+        bytes.extend(frame(
+            "response.output_item.added",
+            json!({"type": "response.output_item.added", "output_index": 1, "item": shell}),
+        ));
+        let mut done_patch = patch.clone();
+        done_patch["arguments"] = json!(r#"{"input":"*** Begin Patch"}"#);
+        bytes.extend(frame(
+            "response.completed",
+            json!({"type": "response.completed", "response": {
+                "status": "completed", "output": [done_patch, shell]
+            }}),
+        ));
+        let text = String::from_utf8(adapter.push_bytes(&bytes).unwrap()).unwrap();
+        let completed = text
+            .split("\n\n")
+            .find(|frame| frame.contains("response.completed"))
+            .and_then(|frame| frame.lines().find_map(|line| line.strip_prefix("data: ")))
+            .map(|data| serde_json::from_str::<Value>(data).unwrap())
+            .unwrap();
+        let output = completed["response"]["output"].as_array().unwrap();
+        assert_eq!(output[0]["type"], "custom_tool_call");
+        assert_eq!(output[0]["name"], "apply_patch");
+        assert_eq!(output[0]["input"], "*** Begin Patch");
+        assert_eq!(output[1]["type"], "function_call");
+        assert_eq!(output[1]["name"], "shell");
+        assert!(adapter.finish().unwrap().starts_with(b"data: [DONE]"));
+        assert!(adapter.succeeded());
     }
 
     #[test]

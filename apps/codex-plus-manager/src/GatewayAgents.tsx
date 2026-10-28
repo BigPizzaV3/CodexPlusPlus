@@ -374,6 +374,37 @@ function AgentDetail({
       ) : null}
       {/* 目前只有 Codex 自己会发生图请求；别的 Agent 有了生图工具再显示。 */}
       {agent.agent === "codex" ? <ImageModelRow agent={agent.agent} busy={busy} payload={payload} run={run} /> : null}
+      {/* Codex「替我审批」固定请求 codex-auto-review：默认改写成主模型，可单独指定，避免落到 ChatGPT 订阅额度上（#2703）。 */}
+      {/* Codex 给会话起名时另开临时线程（首次用内置轻量模型，重新起名用会话当前模型），默认照原模型路由，可单独指定。 */}
+      {agent.agent === "codex" ? (
+        <div className="gw-detail-row">
+          <span className="gw-detail-label">{t("起名模型")}</span>
+          <div className="gw-detail-value gw-chip-row" title={t("Codex 给会话起名、重新起名的请求发给这个模型；不指定时照 Codex 自己选的模型路由")}>
+            <TierPicker
+              emptyLabel={t("不单独指定")}
+              exclude={draft.poolExclude}
+              label={t("起名")}
+              onPick={(model) => onSave({ ...draft, titleModel: model })}
+              payload={payload}
+              value={draft.titleModel}
+            />
+          </div>
+        </div>
+      ) : null}
+      {agent.agent === "codex" ? (
+        <div className="gw-detail-row">
+          <span className="gw-detail-label">{t("审批模型")}</span>
+          <div className="gw-detail-value gw-chip-row" title={t("Codex「替我审批」的请求（codex-auto-review）发给这个模型；同默认模型时按「未知模型名」规则处理")}>
+            <TierPicker
+              exclude={draft.poolExclude}
+              label={t("审批")}
+              onPick={(model) => onSave({ ...draft, autoReviewModel: model })}
+              payload={payload}
+              value={draft.autoReviewModel}
+            />
+          </div>
+        </div>
+      ) : null}
       <div className="gw-detail-row">
         <span className="gw-detail-label">{t("其它")}</span>
         <div className="gw-detail-value gw-chip-row">
@@ -762,20 +793,24 @@ function TierPicker({
   payload,
   exclude,
   onPick,
+  emptyLabel,
 }: {
   label: string;
   value: string;
   payload: GatewayPayload | null;
   exclude: string[];
   onPick: (model: string) => void;
+  /** 没选时显示的文字；默认「同默认模型」。 */
+  emptyLabel?: string;
 }) {
+  const empty = emptyLabel ?? t("同默认模型");
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const display = value ? modelDisplay(payload, value, exclude) : null;
   const head = (
     <button className="gw-mp-action" data-active={!value} onClick={() => { setOpen(false); onPick(""); }} title={t("跟随这一行选的模型")} type="button">
       <span className="gw-tier-default">=</span>
-      {t("同默认模型")}
+      {empty}
       {!value ? <Check className="h-3.5 w-3.5" /> : null}
     </button>
   );
@@ -784,7 +819,7 @@ function TierPicker({
       <button aria-expanded={open} className="gw-tier-button" onClick={() => setOpen(!open)} ref={buttonRef} type="button">
         <em>{label}</em>
         {display ? <ModelViewGlyph view={display} /> : null}
-        <span>{display ? display.title : t("同默认模型")}</span>
+        <span>{display ? display.title : empty}</span>
         {display ? <AutoTag view={display} /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>

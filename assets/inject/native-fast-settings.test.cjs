@@ -24,7 +24,9 @@ async function runNativeFastSettingsTests() {
     refreshCodexPlusBackendToggles() {}, runScanStep() {}, installCodexPlusDictation() {},
   });
   vm.runInContext(fs.readFileSync(require.resolve("./native-fast-unlock.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./native-predictions.js"), "utf8"), context);
   const runtime = context.window.__codexPlusNativeFastUnlock.runtime;
+  const predictions = context.window.__codexPlusNativePredictions.runtime;
   vm.runInContext([
     extract("30-service-tier.js", "loadBackendSettingsState"),
     extract("40-backend-settings.js", "setBackendSetting"),
@@ -36,6 +38,24 @@ async function runNativeFastSettingsTests() {
     "codexAppNativeFastUnlock", "enhancementsEnabled", "nativeFastLocalApiConfigured",
   ]);
   assert.equal(JSON.stringify(context.window.__codexPlusSettings).includes("private backend fixture"), false);
+
+  // 原生输入预测：只接收自己的开关与本机 API 布尔投影，同样随心跳与保存刷新。
+  assert.equal(predictions.relax("local"), false, "预测开关默认关闭");
+  response.codexAppNativePredictions = true;
+  response.nativePredictionsLocalApiConfigured = true;
+  assert.equal(await context.loadBackendSettingsState(), true);
+  assert.equal(predictions.relax("local"), true);
+  assert.deepEqual(Object.keys(context.window.__codexPlusNativePredictionsState.settings).sort(), [
+    "codexAppNativePredictions", "enhancementsEnabled", "nativePredictionsLocalApiConfigured",
+  ]);
+  response.nativePredictionsLocalApiConfigured = false;
+  assert.equal(await context.loadBackendSettingsState(), true);
+  assert.equal(predictions.relax("local"), false, "心跳撤销预测的本机 API 投影");
+  response.nativePredictionsLocalApiConfigured = true;
+  await context.setBackendSetting("codexAppNativePredictions", false);
+  assert.equal(predictions.relax("local"), false, "保存关闭后立即停止放宽");
+  await context.setBackendSetting("codexAppNativePredictions", true);
+  assert.equal(predictions.relax("local"), true);
 
   response.nativeFastLocalApiConfigured = false;
   assert.equal(await context.loadBackendSettingsState(), true);

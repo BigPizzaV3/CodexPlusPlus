@@ -1774,9 +1774,11 @@ fn chat_completion_to_response_with_context(
     }
     let tool_items = chat_tool_calls_to_response_output_items(message, tool_context);
     if let Some(mut message) = chat_message_to_response_output_item(message, &response_id) {
-        // 与流式转换一致：无工具调用的消息即本轮最终回答（issue #2659）。
-        message["phase"] =
-            json!(if tool_items.is_empty() { "final_answer" } else { "commentary" });
+        // 与流式转换一致：无工具调用的消息即本轮最终回答（issue #2659，设置里打开才补）。
+        if message_phase_fill_enabled() {
+            message["phase"] =
+                json!(if tool_items.is_empty() { "final_answer" } else { "commentary" });
+        }
         output.push(message);
     }
     output.extend(tool_items);
@@ -1883,6 +1885,14 @@ struct ModelRouteSelection {
 impl UpstreamProxyResponse {
     pub fn status(&self) -> String {
         http_status_line(self.status_code)
+    }
+
+    /// 适配过的响应里要还原成 custom_tool_call 的工具名；没有记录时按 exec 兼容重试处理。
+    pub(crate) fn exec_tool_names(&self) -> BTreeSet<String> {
+        self.exec_outcome
+            .as_ref()
+            .map(|outcome| outcome.names().clone())
+            .unwrap_or_else(crate::responses_exec::exec_tool_names)
     }
 
     pub fn is_success(&self) -> bool {
@@ -3338,6 +3348,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     live_request_id: Option<&str>,
     forced: Option<ForcedRelay>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
+    set_message_phase_fill(settings.codex_app_third_party_reasoning_collapse);
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
     let local_compaction_request = !is_responses_compact_proxy_path(request_path)
@@ -3353,10 +3364,17 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         .map(str::trim)
         .unwrap_or("")
         .to_string();
+    // 聚合指定了审批成员（#2703）时，codex-auto-review 先按它解析，
+    // 不再交给默认成员 / 轮转（默认成员是官方登录时会消耗官方额度）。
     let aggregate_model = match if forced.is_some() {
         Ok(None)
     } else {
-        crate::aggregate_catalog::resolve_active_model(&settings, &source_model)
+        crate::aggregate_catalog::resolve_auto_review_member(&settings, &source_model).and_then(
+            |binding| match binding {
+                Some(binding) => Ok(Some(binding)),
+                None => crate::aggregate_catalog::resolve_active_model(&settings, &source_model),
+            },
+        )
     } {
         Ok(binding) => binding,
         Err(error) => {
@@ -3588,8 +3606,18 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let legacy_native_compaction = relay.protocol == RelayProtocol::Responses
             && is_responses_compact_proxy_path(request_path);
         let is_compaction_request = compaction || probe_native_compaction || legacy_native_compaction;
+        // xAI 的 Responses 接口不认 custom 工具类型，整个请求会被 422 拒掉：
+        // 声明和历史里的 custom 工具一律转成 function，响应再还原成 custom_tool_call。
+        let forced_custom_names = if wire_api == UpstreamWireApi::Responses
+            && upstream_rejects_custom_tools(&relay)
+        {
+            crate::responses_exec::custom_tool_names(&upstream_body)
+        } else {
+            BTreeSet::new()
+        };
         if local_exec_adapted
             && wire_api == UpstreamWireApi::Responses
+            && forced_custom_names.is_empty()
         {
             // 声明与当前全部历史同时转换，不能对已转换的声明再拼入原始新工具结果。
             upstream_body = crate::responses_exec::adapt_request(upstream_body)?;
@@ -3623,12 +3651,20 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             }),
         );
         let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
+        let forced_adapted = !forced_custom_names.is_empty();
+        let mut adapted_names = crate::responses_exec::exec_tool_names();
+        if forced_adapted {
+            upstream_body =
+                crate::responses_exec::adapt_request_for(upstream_body, &forced_custom_names)?;
+            adapted_names = forced_custom_names;
+        }
         let eligible = wire_api == UpstreamWireApi::Responses
+            && !forced_adapted
             && !is_compaction_request
             && !experimental_local_compaction
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
         let mut key = None;
-        let mut exec_adapted = false;
+        let mut exec_adapted = forced_adapted;
         let send = async {
             let builder = build_responses_upstream_request(
                 &relay, &endpoint, &upstream_body, wire_api, is_stream,
@@ -4397,13 +4433,24 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             request_trace: Some(request_trace),
             exec_adapted,
             exec_outcome: (exec_adapted && (200..300).contains(&status_code)).then(|| {
-                crate::responses_exec_transport::ExecOutcome::new(
-                    key.expect("adapted request has a cache identity"), &settings,
-                )
+                crate::responses_exec_transport::ExecOutcome::new(key, adapted_names, &settings)
             }),
             response: Some(upstream),
         });
     }
+}
+
+/// xAI 的 Responses 接口（api.x.ai 与 SuperGrok 订阅代理）只认 function 等内置工具类型，
+/// 不认 Codex 的 custom 工具（apply_patch / exec），带上就整包 422。
+fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool {
+    reqwest::Url::parse(relay.base_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| {
+            ["x.ai", "grok.com"]
+                .iter()
+                .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+        })
 }
 
 /// 目录外模型名 → 当前供应商默认模型的映射（#1183 / #1446 / #1457）。
@@ -5100,8 +5147,67 @@ fn project_strict_reasoning_history(body: &mut Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Responses 托管生图工具的类型名。
+const IMAGE_GENERATION_TOOL_TYPE: &str = "image_generation";
+
+fn is_image_generation_tool(tool: &Value) -> bool {
+    tool.get("type").and_then(Value::as_str) == Some(IMAGE_GENERATION_TOOL_TYPE)
+}
+
+/// 从 Responses 请求里移除托管生图工具：顶层 `tools`、以输入项形式交来的
+/// `additional_tools`，以及指向它的 `tool_choice`。工具删空时连 `tool_choice` 一起去掉，
+/// 免得 `required` 落在空工具表上。返回是否改动过请求。
+pub fn strip_image_generation_tool(body: &mut Value) -> bool {
+    let Some(object) = body.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    if let Some(Value::Array(items)) = object.get_mut("input") {
+        for item in items.iter_mut() {
+            if item.get("type").and_then(Value::as_str) == Some("additional_tools")
+                && let Some(Value::Array(tools)) = item.get_mut("tools")
+            {
+                let before = tools.len();
+                tools.retain(|tool| !is_image_generation_tool(tool));
+                changed |= tools.len() != before;
+            }
+        }
+    }
+    let mut tools_emptied = false;
+    if let Some(Value::Array(tools)) = object.get_mut("tools") {
+        let before = tools.len();
+        tools.retain(|tool| !is_image_generation_tool(tool));
+        if tools.len() != before {
+            changed = true;
+            tools_emptied = tools.is_empty();
+        }
+    }
+    if tools_emptied {
+        object.remove("tools");
+        object.remove("tool_choice");
+        return true;
+    }
+    match object.get_mut("tool_choice") {
+        // 指名要生图工具：工具已不在，退回默认的自动选择。
+        Some(choice) if is_image_generation_tool(choice) => {
+            object.remove("tool_choice");
+            changed = true;
+        }
+        // allowed_tools 白名单里的生图工具也一并去掉。
+        Some(choice) => {
+            if let Some(Value::Array(allowed)) = choice.get_mut("tools") {
+                let before = allowed.len();
+                allowed.retain(|tool| !is_image_generation_tool(tool));
+                changed |= allowed.len() != before;
+            }
+        }
+        None => {}
+    }
+    changed
+}
+
 /// Codex 自动审批（「替我审批」）请求使用的固定模型 slug。
-const CODEX_AUTO_REVIEW_MODEL: &str = "codex-auto-review";
+const CODEX_AUTO_REVIEW_MODEL: &str = crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL;
 
 /// codex-auto-review 的改写目标：供应商配置了审批模型（#1446）时返回它，否则 `None`。
 /// 目录外模型映射（#1183）也用它判断是否让路，两处共用同一条规则。
@@ -5159,6 +5265,14 @@ async fn upstream_request_parts(
     if reasoning_mode == "omit" { strip_reasoning_parameters(&mut request_json); }
     if relay.protocol == RelayProtocol::Responses && relay.strict_responses_reasoning && compatibility_enabled {
         project_strict_reasoning_history(&mut request_json)?;
+    }
+    // #228：Codex App 固定带托管生图工具，不支持生图的第三方 Responses 上游会整条拒绝；
+    // 供应商打开「移除托管生图工具」时在转发前去掉。直连代理与 2.0 网关都经过这里。
+    if relay.strips_image_generation_tool() && strip_image_generation_tool(&mut request_json) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.strip_image_generation_tool",
+            json!({ "relayId": relay.id }),
+        );
     }
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
@@ -5580,7 +5694,8 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
     if wire_api == UpstreamWireApi::Responses {
         let body = if upstream.exec_adapted {
             let (body, valid) = if is_stream {
-                let mut converter = crate::responses_exec_sse::ExecSseAdapter::new();
+                let mut converter =
+                    crate::responses_exec_sse::ExecSseAdapter::for_names(upstream.exec_tool_names());
                 let mut bytes = match converter.push_bytes(&upstream_body) {
                     Ok(bytes) => bytes,
                     Err(_) => converter.fail(),
@@ -5588,7 +5703,10 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
                 bytes.extend(converter.finish()?);
                 (bytes, converter.succeeded())
             } else {
-                crate::responses_exec_transport::adapted_json(&upstream_body)
+                crate::responses_exec_transport::adapted_json(
+                    &upstream_body,
+                    &upstream.exec_tool_names(),
+                )
             };
             if let Some(outcome) = upstream.exec_outcome.as_mut() {
                 outcome.finish(valid);
@@ -6441,15 +6559,17 @@ impl ChatSseState {
         let output_index = self.text.output_index.unwrap_or(0);
         // 文本在整段流结束时才收尾，此时已知本响应有没有工具调用：没有工具调用时
         // 它就是本轮最终回答，Codex 桌面端据此折叠前面的过程（issue #2659）。
-        let phase = if self.tools.is_empty() { "final_answer" } else { "commentary" };
-        let item = json!({
+        let mut item = json!({
             "id": self.text.item_id,
             "type": "message",
             "status": "completed",
             "role": "assistant",
-            "content": [{ "type": "output_text", "text": self.text.text, "annotations": [] }],
-            "phase": phase
+            "content": [{ "type": "output_text", "text": self.text.text, "annotations": [] }]
         });
+        if message_phase_fill_enabled() {
+            item["phase"] =
+                json!(if self.tools.is_empty() { "final_answer" } else { "commentary" });
+        }
         self.output_items.push((output_index, item.clone()));
         self.text.done = true;
         push_sse(
@@ -6684,6 +6804,72 @@ pub(crate) fn http_status_line(status: u16) -> String {
     }
 }
 
+/// 网关里的上游失败（#2741）：Codex 只显示错误消息，池里有好几家时看不出是哪一家、
+/// 哪个模型、什么状态码出的错。在消息末尾补上这些；`type` / `code` 不动——Codex 按它们
+/// 判断重试与提示文案。没有路由信息（请求没发到任何上游）时不改。
+pub fn annotate_gateway_upstream_error(
+    error: &mut Value,
+    status_code: u16,
+    trace: Option<&crate::request_log::RequestTrace>,
+) {
+    let Some(trace) = trace else {
+        return;
+    };
+    let relay = if trace.relay_name.trim().is_empty() {
+        trace.relay_id.trim()
+    } else {
+        trace.relay_name.trim()
+    };
+    if relay.is_empty() {
+        return;
+    }
+    let mut origin = format!("网关上游：{relay}");
+    if !trace.upstream_model.trim().is_empty() {
+        origin.push_str(&format!(" · 模型 {}", trace.upstream_model.trim()));
+    }
+    if !trace.wire_api.trim().is_empty() {
+        origin.push_str(&format!(" · {}", trace.wire_api.trim()));
+    }
+    origin.push_str(&format!(" · HTTP {status_code}"));
+    let Some(object) = error.get_mut("error").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let message = object
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let annotated = if message.is_empty() {
+        origin
+    } else {
+        format!("{message}（{origin}）")
+    };
+    object.insert("message".to_string(), Value::String(annotated));
+}
+
+/// 请求日志里记的上游错误：状态码、类型 / code、提取出的消息，外加响应体原文预览（#2741）。
+/// 提取出的消息可能只是一句概括（Google 系错误的 details、中转附带的说明都在别的字段里），
+/// 日志里留一份原文才能定位；只进本地请求日志，不发给客户端。
+pub fn upstream_error_log_text(status_code: u16, error: &Value, body: &[u8]) -> String {
+    let inner = error.get("error").unwrap_or(error);
+    let mut text = format!("HTTP {status_code}");
+    for key in ["type", "code"] {
+        if let Some(value) = inner.get(key).and_then(Value::as_str).filter(|value| !value.is_empty()) {
+            text.push_str(&format!(" · {key}={value}"));
+        }
+    }
+    let message = inner.get("message").and_then(Value::as_str).unwrap_or_default().trim();
+    if !message.is_empty() {
+        text.push_str(&format!("：{message}"));
+    }
+    let raw = truncate_error_preview(String::from_utf8_lossy(body).trim());
+    if !raw.is_empty() && !message.contains(raw.as_str()) {
+        text.push_str(&format!("\n上游原文：{raw}"));
+    }
+    text
+}
+
 pub fn responses_error_from_upstream(status_code: u16, content_type: &str, body: &[u8]) -> Value {
     let (message, error_type, code, param) = upstream_error_parts(status_code, content_type, body);
     let mut error = json!({
@@ -6706,6 +6892,15 @@ pub(crate) fn upstream_error_parts(
 ) -> (String, Option<String>, Option<String>, Option<String>) {
     if content_type.to_ascii_lowercase().contains("json") {
         if let Ok(value) = serde_json::from_slice::<Value>(body) {
+            // Gemini 的 OpenAI 兼容端点把错误包在单元素数组里：`[{"error":{...}}]`（#2741）。
+            // 不拆开时整段数组被当成消息、类型与状态码都丢了，看不出是哪种错误。
+            let value = match value {
+                Value::Array(mut items) if items.len() == 1 && items[0].is_object() => {
+                    items.remove(0)
+                }
+                other => other,
+            };
+            let wrapped = value.get("error").is_some_and(Value::is_object);
             let error = value.get("error").unwrap_or(&value);
             let message = error
                 .get("message")
@@ -6716,9 +6911,12 @@ pub(crate) fn upstream_error_parts(
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string)
                 .unwrap_or_else(|| truncate_error_preview(&value.to_string()));
+            // Google 系错误没有 type，用 `status`（如 INVALID_ARGUMENT）补上；
+            // 只认 `error` 对象里的，免得把顶层 `{"status":"failed"}` 这类包装误当类型。
             let error_type = error
                 .get("type")
                 .or_else(|| error.get("error_type"))
+                .or_else(|| wrapped.then(|| error.get("status")).flatten())
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
             let code = error.get("code").and_then(|value| {
@@ -10856,6 +11054,29 @@ mod relay_custom_header_tests {
     }
 
     #[test]
+    fn only_xai_upstreams_get_custom_tools_rewritten() {
+        let relay = |base_url: &str| crate::settings::RelayProfile {
+            base_url: base_url.to_string(),
+            ..Default::default()
+        };
+        for base_url in [
+            "https://cli-chat-proxy.grok.com/v1",
+            "https://api.x.ai/v1",
+            " https://API.X.AI/v1 ",
+        ] {
+            assert!(upstream_rejects_custom_tools(&relay(base_url)), "{base_url}");
+        }
+        for base_url in [
+            "https://api.openai.com/v1",
+            "https://notx.ai/v1",
+            "https://x.ai.example.com/v1",
+            "",
+        ] {
+            assert!(!upstream_rejects_custom_tools(&relay(base_url)), "{base_url}");
+        }
+    }
+
+    #[test]
     fn upstream_request_carries_custom_headers() {
         let request = build_upstream_request(&relay_with(vec![header("X-Tenant", "acme")]));
         assert_eq!(request.headers().get("x-tenant").unwrap(), "acme");
@@ -11072,6 +11293,7 @@ mod unlisted_model_mapping_tests {
             routes: Vec::new(),
             default_relay_id: String::new(),
             sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
         }];
         // 聚合有自己的按成员归因与「不做静默改派」策略，不在此映射。
         assert_eq!(unlisted_model_replacement(&settings, "gpt-5.4"), None);
@@ -11620,6 +11842,20 @@ fn is_backend_private_event(event_type: &str) -> bool {
 /// Codex 按断流重试，每次重新生图并重复计费。
 const RESPONSES_SSE_MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 
+/// 「第三方模型回答完自动折叠过程」（#2659）：每个代理请求开始时按设置更新。
+/// Chat 转换在很深的调用链里，逐层传参改动面太大，所以用进程级开关；
+/// 并发请求读到的都是同一份设置，先后覆盖没有影响。
+static MESSAGE_PHASE_FILL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_message_phase_fill(enabled: bool) {
+    MESSAGE_PHASE_FILL.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn message_phase_fill_enabled() -> bool {
+    MESSAGE_PHASE_FILL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl ResponsesSseTransformer {
     /// 按原始请求声明的工具形态创建：只有 freeform（custom）的 `apply_patch`
     /// 才需要把被模型包成 JSON 的输入解包回补丁文本。
@@ -11637,9 +11873,14 @@ impl ResponsesSseTransformer {
             });
         Self {
             apply_patch_declared_as_function,
-            phase_fill: Some(MessagePhaseFill::default()),
             ..Self::default()
         }
+    }
+
+    /// 是否给没带阶段标记的助手消息补 `phase`（设置「第三方模型回答完自动折叠过程」，默认关）。
+    pub(crate) fn filling_message_phase(mut self, enabled: bool) -> Self {
+        self.phase_fill = enabled.then(MessagePhaseFill::default);
+        self
     }
 
     /// 转发给非 Codex 客户端时去掉后端私有事件，见 `strip_backend_events`。
@@ -12065,7 +12306,7 @@ mod responses_sse_transformer_tests {
 
     #[test]
     fn phaseless_message_without_tool_call_becomes_final_answer() {
-        let mut t = ResponsesSseTransformer::for_request(None);
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
         // 消息先暂存，等到 response.completed 才能判断它是最终回答。
         assert!(t.push_bytes(message_done(None).as_bytes()).is_empty());
         let completed = sse(json!({ "type": "response.completed", "response": {} }));
@@ -12078,7 +12319,7 @@ mod responses_sse_transformer_tests {
 
     #[test]
     fn phaseless_message_before_tool_call_becomes_commentary() {
-        let mut t = ResponsesSseTransformer::for_request(None);
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
         assert!(t.push_bytes(message_done(None).as_bytes()).is_empty());
         let added = sse(json!({
             "type": "response.output_item.added",
@@ -12092,7 +12333,7 @@ mod responses_sse_transformer_tests {
 
     #[test]
     fn message_after_tool_call_in_same_response_stays_commentary() {
-        let mut t = ResponsesSseTransformer::for_request(None);
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
         let call = sse(json!({
             "type": "response.output_item.done",
             "output_index": 0,
@@ -12106,21 +12347,31 @@ mod responses_sse_transformer_tests {
 
     #[test]
     fn upstream_phase_is_forwarded_untouched_without_delay() {
-        let mut t = ResponsesSseTransformer::for_request(None);
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
         let event = message_done(Some("commentary"));
         assert_eq!(t.push_bytes(event.as_bytes()), event.as_bytes());
     }
 
     #[test]
+    fn phase_fill_is_off_unless_enabled() {
+        // 设置里没打开时原样转发：不暂存、不补 phase。
+        let mut t = ResponsesSseTransformer::for_request(None);
+        let out = t.push_bytes(message_done(None).as_bytes());
+        assert_eq!(message_phases(&out), vec![None]);
+    }
+
+    #[test]
     fn phase_fill_is_skipped_for_foreign_clients() {
-        let mut t = ResponsesSseTransformer::for_request(None).stripping_backend_events(true);
+        let mut t = ResponsesSseTransformer::for_request(None)
+            .filling_message_phase(true)
+            .stripping_backend_events(true);
         let event = message_done(None);
         assert_eq!(t.push_bytes(event.as_bytes()), event.as_bytes());
     }
 
     #[test]
     fn pending_message_is_released_unchanged_on_failure_or_eof() {
-        let mut t = ResponsesSseTransformer::for_request(None);
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
         let event = message_done(None);
         t.push_bytes(event.as_bytes());
         let failed = sse(json!({ "type": "response.failed", "response": {} }));
@@ -12128,7 +12379,7 @@ mod responses_sse_transformer_tests {
         assert!(out.starts_with(&event), "{out}");
         assert!(t.finish().is_some());
 
-        let mut t = ResponsesSseTransformer::for_request(None);
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
         t.push_bytes(event.as_bytes());
         assert_eq!(t.flush_pending(), event.as_bytes());
         assert!(t.flush_pending().is_empty());
@@ -12612,6 +12863,73 @@ mod parallel_tool_call_pairing_tests {
                 .await
                 .unwrap();
         assert_eq!(out["model"], "deepseek-v4-pro");
+    }
+
+    /// #228：开关关着时托管生图工具原样转发；打开后从 tools、additional_tools
+    /// 与 tool_choice 里去掉，其它工具不动。
+    #[tokio::test]
+    async fn image_generation_tool_is_stripped_only_when_enabled() {
+        let mut relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://relay.example.test/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        let body = || json!({
+            "model": "gpt-5.5",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "additional_tools", "tools": [{"type": "image_generation"}, {"type": "function", "name": "mcp_x"}]}
+            ],
+            "tools": [
+                {"type": "function", "name": "exec"},
+                {"type": "image_generation", "output_format": "png"},
+                {"type": "web_search"}
+            ],
+            "tool_choice": {"type": "image_generation"}
+        });
+        let run = |relay: crate::settings::RelayProfile, body: Value| async move {
+            upstream_request_parts(&relay, body, "/v1/responses", None, false, None, ProxySessionHeaders::default())
+                .await
+                .unwrap()
+                .1
+        };
+
+        let out = run(relay.clone(), body()).await;
+        assert!(out["tools"].as_array().unwrap().iter().any(is_image_generation_tool));
+        assert_eq!(out["tool_choice"]["type"], "image_generation");
+
+        relay.strip_image_generation_tool = true;
+        let out = run(relay.clone(), body()).await;
+        let tools: Vec<&str> = out["tools"].as_array().unwrap().iter()
+            .map(|tool| tool["type"].as_str().unwrap()).collect();
+        assert_eq!(tools, ["function", "web_search"]);
+        assert!(out.get("tool_choice").is_none(), "{out}");
+        let additional = out["input"].as_array().unwrap().iter()
+            .find(|item| item["type"] == "additional_tools").unwrap();
+        assert_eq!(additional["tools"], json!([{"type": "function", "name": "mcp_x"}]));
+
+        // 只剩生图工具：tools 与 tool_choice 一起去掉。
+        let only = json!({"model": "gpt-5.5", "input": "hi", "tools": [{"type": "image_generation"}], "tool_choice": "required"});
+        let out = run(relay.clone(), only).await;
+        assert!(out.get("tools").is_none() && out.get("tool_choice").is_none(), "{out}");
+
+        // Chat 上游不认这个开关（协议转换本来就不带托管工具），判定函数为假。
+        relay.protocol = RelayProtocol::ChatCompletions;
+        assert!(!relay.strips_image_generation_tool());
+    }
+
+    #[test]
+    fn strip_image_generation_tool_keeps_allowed_tools_choice_consistent() {
+        let mut body = json!({
+            "tools": [{"type": "function", "name": "exec"}, {"type": "image_generation"}],
+            "tool_choice": {"type": "allowed_tools", "mode": "auto", "tools": [{"type": "image_generation"}, {"type": "function", "name": "exec"}]}
+        });
+        assert!(strip_image_generation_tool(&mut body));
+        assert_eq!(body["tool_choice"]["tools"], json!([{"type": "function", "name": "exec"}]));
+        let mut untouched = json!({"tools": [{"type": "function", "name": "exec"}], "tool_choice": "auto"});
+        assert!(!strip_image_generation_tool(&mut untouched));
     }
 
     fn assert_pairing(body: &Value, expected: usize) {

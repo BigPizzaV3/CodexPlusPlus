@@ -232,6 +232,23 @@ export function ProviderFormDialog({
             <p className="pf-hint">{t("星标是默认模型；Agent 请求这些模型名时会路由到这个供应商。")}</p>
           </section>
 
+          {draft.protocol === "responses" ? (
+            <section className="pf-section">
+              <h4>{t("兼容")}</h4>
+              <label className="pf-switch">
+                <input
+                  checked={draft.stripImageGenerationTool === true}
+                  onChange={(event) => update({ stripImageGenerationTool: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("移除请求里的托管生图工具（image_generation）")}</strong>
+                  <small>{t("Codex 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发给这个供应商前从 tools 里去掉它（及指向它的 tool_choice）。默认关闭。")}</small>
+                </span>
+              </label>
+            </section>
+          ) : null}
+
         </div>
 
         {agentPicks ? <div className="pf-agents">{agentPicks}</div> : null}

@@ -9,6 +9,7 @@ mod cu_pip;
 mod gateway_commands;
 mod global_dictation;
 pub mod install;
+mod lightweight;
 mod provider_lookup_commands;
 mod runtime_health;
 mod tray_panel;
@@ -20,6 +21,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager, WindowEvent};
 
 pub(crate) const TRAY_ID: &str = "codex_plus_tray";
+/// 主窗口的标签。轻量模式下主窗口会被销毁、按需重建（#2677），统一按这个标签查找。
+pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
+/// 主窗口按需重建时加载的页面（启动时的 `?showUpdate=1` 只在首次启动用）。
+const MAIN_WINDOW_URL: &str = "/index.html";
 
 static APP_EXITING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
@@ -211,19 +216,10 @@ pub fn run() {
             let url = if show_update {
                 "/index.html?showUpdate=1"
             } else {
-                "/index.html"
+                MAIN_WINDOW_URL
             };
-            let mut main_window_builder =
-                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                    .title("Codex++")
-                    .visible(!start_minimized)
-                    .focused(!start_minimized)
-                    .inner_size(1180.0, 820.0)
-                    .min_inner_size(960.0, 720.0);
-            if let Some(icon) = app.default_window_icon().cloned() {
-                main_window_builder = main_window_builder.icon(icon)?;
-            }
-            let main_window = main_window_builder.build()?;
+            lightweight::install_ready_listener(app.handle());
+            build_main_window(app.handle(), url, !start_minimized)?;
             install_tray(app)?;
             gateway_commands::set_app_handle(app.handle().clone());
             codex_plus_core::settings::set_external_settings_change_listener(
@@ -245,7 +241,6 @@ pub fn run() {
             // Computer Use 操作后台应用时的悬浮预览（同 Codex 的画中画）。
             cu_pip::start(app.handle().clone());
             commands::start_weixin_connect_from_saved_settings();
-            register_main_window_events(main_window);
             commands::resume_existing_codex_background(
                 app.handle().clone(),
                 start_codex_at_login || start_codex_on_open,
@@ -320,6 +315,9 @@ pub fn run() {
             agent_pet_commands::agent_pet_catalog,
             agent_pet_commands::agent_pet_image,
             agent_pet_commands::agent_pet_sounds,
+            agent_pet_commands::agent_pet_sound_catalog,
+            agent_pet_commands::agent_pet_sound,
+            agent_pet_commands::agent_pet_import_sound,
             agent_launch_commands::open_agent_terminal,
             agent_mcp_commands::load_agent_mcp,
             agent_mcp_commands::save_agent_mcp,
@@ -368,6 +366,10 @@ pub fn run() {
             tray_panel::tray_panel_enabled,
             tray_panel::set_tray_panel_enabled,
             tray_panel::refresh_tray_mode,
+            lightweight::lightweight_mode_enabled,
+            lightweight::set_lightweight_mode_enabled,
+            lightweight::main_window_prepare,
+            lightweight::main_window_release_when_hidden,
             commands::weixin_connect_qr_start,
             commands::weixin_connect_qr_status,
             commands::weixin_connect_status,
@@ -420,6 +422,7 @@ pub fn run() {
             commands::refresh_script_market,
             commands::refresh_plugin_market,
             commands::install_plugin_market_item,
+            commands::uninstall_plugin_market_item,
             commands::plugin_market_install_status,
             commands::refresh_user_script_inventory,
             commands::reload_user_scripts,
@@ -431,6 +434,7 @@ pub fn run() {
             commands::refresh_skill_catalog,
             commands::list_installed_skills,
             commands::import_ccs_skills,
+            commands::import_local_skills,
             commands::install_skill,
             commands::update_skill,
             commands::set_skill_enabled,
@@ -444,6 +448,7 @@ pub fn run() {
             commands::open_external_url,
             commands::repair_shortcuts,
             commands::check_update,
+            commands::skip_update_version,
             commands::perform_update,
             commands::load_watcher_state,
             commands::set_watcher_enabled,
@@ -505,8 +510,13 @@ pub fn run() {
         .build(tauri::generate_context!());
     match app_result {
         Ok(app) => app.run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                if !SHUTDOWN_COMPLETE.load(Ordering::SeqCst) {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+                if code.is_none() && !APP_EXITING.load(Ordering::SeqCst) {
+                    // 不带退出码的退出请求来自「最后一个窗口被销毁」：轻量模式销毁主窗口后
+                    // 后端、网关和托盘要继续运行，这不是用户要退出（#2677）。
+                    // 真正的退出（托盘退出、app.exit）都会带退出码并先置 APP_EXITING。
+                    api.prevent_exit();
+                } else if !SHUTDOWN_COMPLETE.load(Ordering::SeqCst) {
                     api.prevent_exit();
                     if !SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) {
                         APP_EXITING.store(true, Ordering::SeqCst);
@@ -766,6 +776,59 @@ mod tray_tests {
     }
 }
 
+/// 按 tauri.conf.json 里 main 窗口的配置创建主窗口（标题、尺寸、最小尺寸、图标），并挂上窗口事件。
+/// 启动时和轻量模式下按需重建（#2677）都走这里，保证重建后的窗口与首次启动一致。
+fn build_main_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    url: &str,
+    visible: bool,
+) -> tauri::Result<tauri::WebviewWindow<R>> {
+    let mut main_window_builder = tauri::WebviewWindowBuilder::new(
+        app,
+        MAIN_WINDOW_LABEL,
+        tauri::WebviewUrl::App(url.into()),
+    )
+    .title("Codex++")
+    .visible(visible)
+    .focused(visible)
+    .inner_size(1180.0, 820.0)
+    .min_inner_size(960.0, 720.0);
+    if let Some(icon) = app.default_window_icon().cloned() {
+        main_window_builder = main_window_builder.icon(icon)?;
+    }
+    lightweight::mark_main_window_loading();
+    let main_window = main_window_builder.build()?;
+    register_main_window_events(main_window.clone());
+    Ok(main_window)
+}
+
+/// 取主窗口；轻量模式下已销毁时按原配置重建（保持隐藏，由调用方决定是否显示）。
+/// 返回窗口以及它是不是刚建的。必须在主线程调用。
+pub(crate) fn ensure_main_window<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+) -> Option<(tauri::WebviewWindow<R>, bool)> {
+    if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+        return Some((window, false));
+    }
+    match build_main_window(app_handle, MAIN_WINDOW_URL, false) {
+        Ok(window) => {
+            lightweight::restore_geometry(&window);
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.main_window_recreated",
+                serde_json::json!({}),
+            );
+            Some((window, true))
+        }
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.main_window_recreate_failed",
+                serde_json::json!({ "message": error.to_string() }),
+            );
+            None
+        }
+    }
+}
+
 fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     let event_window = window.clone();
     let close_event_window = event_window.clone();
@@ -774,11 +837,16 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
 
     event_window.on_window_event(move |event| match event {
         WindowEvent::Focused(true) => {
+            // 窗口被唤起（含外部实例直接 ShowWindow）：取消轻量模式尚未执行的销毁。
+            lightweight::cancel_pending_release();
             // 外部实例通过 Win32 ShowWindow 唤起时，Tao 的 VISIBLE 标记可能仍为 false。
             // 同步框架状态，否则后续 hide() 会被当作重复操作而跳过。
             #[cfg(windows)]
             let _ = focus_event_window.show();
             let _ = focus_event_window.emit(MANAGER_NAVIGATION_EVENT, ());
+        }
+        WindowEvent::Destroyed => {
+            lightweight::mark_main_window_loading();
         }
         WindowEvent::CloseRequested { api, .. } => {
             if APP_EXITING.load(Ordering::SeqCst) {
@@ -786,6 +854,7 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             }
 
             api.prevent_close();
+            lightweight::remember_geometry(&close_event_window);
             // Windows 上 Tao 的 VISIBLE 标记可能停在 false（窗口曾被 Win32 直接显示
             // 或隐藏），此时 hide() 会被框架当成重复操作跳过，窗口既不关闭也不隐藏
             // （issue #1542）。先强制同步为可见再隐藏，保证 hide() 真正执行。
@@ -793,6 +862,8 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             let _ = close_event_window.show();
             let _ = close_event_window.hide();
             set_manager_activation_policy(&close_event_app, false);
+            // 轻量模式：先隐藏，稍后销毁窗口释放 WebView 内存；关掉开关时只隐藏（#2677）。
+            lightweight::schedule_release(&close_event_app);
         }
         _ => {}
     });
@@ -807,8 +878,10 @@ fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 #[tauri::command]
 fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     let app_handle = window.app_handle();
+    lightweight::remember_geometry(&window);
     let _ = window.hide();
     set_manager_activation_policy(&app_handle, false);
+    lightweight::schedule_release(app_handle);
 }
 
 #[tauri::command]
@@ -827,7 +900,7 @@ fn update_tray_labels<R: tauri::Runtime>(
             }
         }
     }
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.set_title(&window_title);
     }
 }
@@ -843,13 +916,22 @@ pub(crate) fn request_app_exit<R: tauri::Runtime>(app_handle: &tauri::AppHandle<
     app_handle.exit(0);
 }
 
+/// 所有「打开主窗口」的入口（托盘、Dock、二次启动、导航请求、快捷面板）都走这里：
+/// 窗口在就显示并聚焦，轻量模式下已销毁就按原配置重建再显示（#2677）。必须在主线程调用。
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
-    if let Some(window) = app_handle.get_webview_window("main") {
-        set_manager_activation_policy(app_handle, true);
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+    lightweight::cancel_pending_release();
+    // 主窗口销毁后，Windows 上二次启动按进程找窗口时可能把隐藏的快捷面板翻出来，这里顺手收起。
+    tray_panel::hide(app_handle);
+    let Some((window, created)) = ensure_main_window(app_handle) else {
+        return;
+    };
+    set_manager_activation_policy(app_handle, true);
+    let _ = window.unminimize();
+    let _ = window.show();
+    if created && lightweight::was_maximized() {
+        let _ = window.maximize();
     }
+    let _ = window.set_focus();
 }
 
 #[cfg(target_os = "macos")]

@@ -3,31 +3,39 @@
  *
  * 图片不随应用打包：内置图库只保存 id，预览和 Codex 里显示的图片都由后端运行时联网下载、
  * 缓存在本机；也可以填一个 https 图片地址。目前只有 Codex 能显示桌宠。
+ * 音效同理：两组内嵌，其余音效组用到时才下载；也可以导入本地音频作为自定义按压 / 松开音。
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ImageOff, Link2, Loader2, PawPrint, RefreshCw, Volume2 } from "lucide-react";
+import { Check, FileAudio, ImageOff, Link2, Loader2, PawPrint, RefreshCw, Volume2, X } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { PageHeader } from "./ManagementPages";
 import {
   AGENT_PET_CUSTOM_IMAGE,
+  AGENT_PET_CUSTOM_SOUND,
+  AGENT_PET_EMBEDDED_SOUND_SETS,
   AGENT_PET_SIZE_MAX,
   AGENT_PET_SIZE_MIN,
   AGENT_PET_SUPPORTED_AGENTS,
   agentPetSettingsIssue,
+  agentPetSoundKey,
   isAgentPetImageUrl,
   type AgentPetAgent,
   type AgentPetSettings,
-  type AgentPetSoundSet,
+  type AgentPetSoundSlot,
 } from "./agent-pet-settings";
 import { AgentPetSoundPlayer, type AgentPetSoundSources } from "./agent-pet-sound";
-import { t } from "./i18n";
+import { t, tf } from "./i18n";
 import "./AgentPetPage.css";
 
-type CatalogEntry = { id: string; name: string };
+type CatalogEntry = { id: string; name: string; credit?: string };
 type ImageResult = { status: string; image?: string; message?: string };
 type PreviewState = { state: "loading" } | { state: "ok"; image: string } | { state: "failed"; message: string };
+type SoundEntry = { id: string; name: string; author: string; license: string; sourceUrl: string };
+type SoundResult = { status: string; key?: string; press?: string; release?: string; message?: string };
+type ImportResult = { status: string; file?: string; message?: string };
+type SoundState = { state: "loading" } | { state: "ok" } | { state: "failed"; message: string };
 
 const agentOptions: Array<{ id: AgentPetAgent; label: string }> = [
   { id: "codex", label: "Codex" },
@@ -38,6 +46,19 @@ const agentOptions: Array<{ id: AgentPetAgent; label: string }> = [
 const PREVIEW_CONCURRENCY = 4;
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** 与后端 `MAX_SOUND_BYTES` 一致，超过的文件在前端直接拦下，不必传过去。 */
+const SOUND_FILE_MAX_BYTES = 2 * 1024 * 1024;
+const embeddedSoundOptions: Array<[string, string]> = [["duck", "小黄鸭"], ["fx1", "音效 1"]];
+
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  // 分块拼接，避免大文件一次展开参数撑爆调用栈。
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
 
 async function loadImage(image: string, customImageUrl = ""): Promise<PreviewState> {
   try {
@@ -73,8 +94,92 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
     return () => { alive = false; player.dispose(); };
   }, [player]);
   const soundOn = settings.soundEnabled;
-  const pressSound = () => { if (soundOn) void player.pressDown(settings.soundSet, settings.volume); };
-  const releaseSound = () => { if (soundOn) void player.pressUp(settings.soundSet, settings.volume); };
+  const soundKey = agentPetSoundKey(settings);
+  const pressSound = () => { if (soundOn) void player.pressDown(soundKey, settings.volume); };
+  const releaseSound = () => { if (soundOn) void player.pressUp(soundKey, settings.volume); };
+
+  // 可下载音效目录与各组的下载状态；内嵌组不需要下载。
+  const [soundCatalog, setSoundCatalog] = useState<SoundEntry[]>([]);
+  const [soundStates, setSoundStates] = useState<Record<string, SoundState>>({});
+  const [importing, setImporting] = useState<AgentPetSoundSlot | null>(null);
+  const [importError, setImportError] = useState("");
+  const fileInputs = { press: useRef<HTMLInputElement>(null), release: useRef<HTMLInputElement>(null) };
+  useEffect(() => {
+    void invoke<SoundEntry[]>("agent_pet_sound_catalog").then(setSoundCatalog).catch(() => undefined);
+  }, []);
+
+  /** 取一组下载 / 自定义音效交给试听播放器；返回是否可用。 */
+  const loadSound = async (next: Pick<AgentPetSettings, "soundSet" | "customSoundPress" | "customSoundRelease">) => {
+    const key = agentPetSoundKey(next);
+    if (AGENT_PET_EMBEDDED_SOUND_SETS.includes(next.soundSet) || player.has(key)) return true;
+    setSoundStates((current) => ({ ...current, [next.soundSet]: { state: "loading" } }));
+    try {
+      const result = await invoke<SoundResult>("agent_pet_sound", {
+        soundSet: next.soundSet,
+        customSoundPress: next.customSoundPress,
+        customSoundRelease: next.customSoundRelease,
+      });
+      if (result.status !== "ok" || !result.key) throw new Error(result.message || t("音效下载失败"));
+      player.setSource(result.key, { press: result.press, release: result.release });
+      setSoundStates((current) => ({ ...current, [next.soundSet]: { state: "ok" } }));
+      return true;
+    } catch (error) {
+      setSoundStates((current) => ({ ...current, [next.soundSet]: { state: "failed", message: errorText(error) } }));
+      return false;
+    }
+  };
+  // 已保存的是下载组或自定义组：进入页面时取一次，预览按压也有声音。
+  useEffect(() => {
+    void loadSound(settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 下载组只有下载成功才切过去，避免 Codex 里的桌宠没声音。
+  const selectSound = async (soundSet: string) => {
+    const next = { ...settings, soundSet };
+    if (!(await loadSound(next))) return;
+    update({ soundSet });
+    void player.preview(agentPetSoundKey(next), settings.volume);
+  };
+
+  const importSound = async (slot: AgentPetSoundSlot, file: File | undefined) => {
+    if (!file) return;
+    setImportError("");
+    if (file.size > SOUND_FILE_MAX_BYTES) {
+      setImportError(t("音频文件超过 2 MB，请换一个短一点的文件。"));
+      return;
+    }
+    setImporting(slot);
+    try {
+      const data = bytesToBase64(await file.arrayBuffer());
+      const result = await invoke<ImportResult>("agent_pet_import_sound", { slot, data });
+      if (result.status !== "ok" || !result.file) throw new Error(result.message || t("导入失败"));
+      const next = {
+        ...settings,
+        soundSet: AGENT_PET_CUSTOM_SOUND,
+        [slot === "press" ? "customSoundPress" : "customSoundRelease"]: result.file,
+      };
+      if (await loadSound(next)) {
+        update(next);
+        void player.preview(agentPetSoundKey(next), settings.volume);
+      }
+    } catch (error) {
+      setImportError(errorText(error));
+    } finally {
+      setImporting(null);
+    }
+  };
+
+  const clearCustomSound = (slot: AgentPetSoundSlot) => {
+    const next = { ...settings, [slot === "press" ? "customSoundPress" : "customSoundRelease"]: "" };
+    // 两个都清空了就回到默认音效组。
+    if (!next.customSoundPress && !next.customSoundRelease && next.soundSet === AGENT_PET_CUSTOM_SOUND) next.soundSet = "duck";
+    update(next);
+    void loadSound(next);
+  };
+  const hasCustomSound = Boolean(settings.customSoundPress || settings.customSoundRelease);
+  const selectedSoundEntry = soundCatalog.find((entry) => entry.id === settings.soundSet);
+  const soundState = soundStates[settings.soundSet];
 
   const loadCatalog = async () => {
     setCatalogError("");
@@ -190,7 +295,7 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
             <div className="feature-group-head agent-pet-group-head">
               <div>
                 <strong>{t("形象")}</strong>
-                <small>{t("图片在用到时联网下载并缓存在本机，不随 Codex++ 打包。内置图库来自 Microsoft Fluent Emoji（MIT）。")}</small>
+                <small>{t("图片在用到时联网下载并缓存在本机，不随 Codex++ 打包。内置图库来自 Microsoft Fluent Emoji（MIT），二次元形象来自 Wikimedia Commons（CC0）。")}</small>
               </div>
               {failedIds.length ? (
                 <Button size="sm" variant="secondary" onClick={() => void fetchPreviews(failedIds)}>
@@ -213,7 +318,7 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
                       role="radio"
                       aria-checked={selected}
                       className={`agent-pet-tile ${selected ? "is-selected" : ""}`}
-                      title={preview?.state === "failed" ? preview.message : entry.name}
+                      title={preview?.state === "failed" ? preview.message : entry.credit ? `${entry.name} · ${entry.credit}` : entry.name}
                       onClick={() => update({ image: entry.id })}
                     >
                       <span className="agent-pet-tile-image">
@@ -278,29 +383,81 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
               <div className={`agent-pet-sound ${settings.soundEnabled ? "" : "is-off"}`}>
                 <div className="agent-pet-sound-row">
                 <div className="agent-pet-segmented" role="radiogroup" aria-label={t("音效")}>
-                  {([["duck", t("小黄鸭")], ["fx1", t("音效 1")]] as Array<[AgentPetSoundSet, string]>).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      role="radio"
-                      aria-checked={settings.soundSet === value}
-                      className={settings.soundSet === value ? "is-selected" : ""}
-                      disabled={!settings.soundEnabled}
-                      onClick={() => { update({ soundSet: value }); void player.preview(value, settings.volume); }}
-                    >
-                      {label}
-                    </button>
-                  ))}
+                  {[
+                    ...embeddedSoundOptions.map(([value, label]) => [value, t(label)] as [string, string]),
+                    ...soundCatalog.map((entry) => [entry.id, entry.name] as [string, string]),
+                  ].map(([value, label]) => {
+                    const state = soundStates[value];
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={settings.soundSet === value}
+                        className={settings.soundSet === value ? "is-selected" : ""}
+                        disabled={!settings.soundEnabled || state?.state === "loading"}
+                        title={state?.state === "failed" ? state.message : undefined}
+                        onClick={() => void selectSound(value)}
+                      >
+                        {state?.state === "loading" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                        {label}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={settings.soundSet === AGENT_PET_CUSTOM_SOUND}
+                    className={settings.soundSet === AGENT_PET_CUSTOM_SOUND ? "is-selected" : ""}
+                    disabled={!settings.soundEnabled || !hasCustomSound}
+                    title={hasCustomSound ? undefined : t("先在下面导入音频文件")}
+                    onClick={() => void selectSound(AGENT_PET_CUSTOM_SOUND)}
+                  >
+                    {t("自定义")}
+                  </button>
                 </div>
                 <Button
                   size="sm"
                   variant="secondary"
                   disabled={!settings.soundEnabled || settings.volume <= 0}
-                  onClick={() => void player.preview(settings.soundSet, settings.volume)}
+                  onClick={() => void player.preview(soundKey, settings.volume)}
                 >
                   <Volume2 className="h-4 w-4" />
                   {t("试听")}
                 </Button>
+                </div>
+                {selectedSoundEntry ? (
+                  <small className="agent-pet-muted agent-pet-credit" title={selectedSoundEntry.sourceUrl}>
+                    {tf("用到时下载并缓存在本机。来源：{0}（{1}）", [selectedSoundEntry.author, selectedSoundEntry.license])}
+                  </small>
+                ) : null}
+                {soundState?.state === "failed" ? <p className="agent-pet-error" role="alert">{soundState.message}</p> : null}
+                <div className="agent-pet-custom-sounds" aria-label={t("自定义音效")}>
+                  {([["press", t("按压音"), settings.customSoundPress], ["release", t("松开音"), settings.customSoundRelease]] as Array<[AgentPetSoundSlot, string, string]>).map(([slot, label, file]) => (
+                    <div key={slot} className="agent-pet-custom-sound">
+                      <FileAudio className="h-4 w-4" />
+                      <span className="agent-pet-custom-sound-label">{label}</span>
+                      <span className="agent-pet-muted agent-pet-custom-sound-file">{file ? t("已导入") : t("未设置")}</span>
+                      <input
+                        ref={fileInputs[slot]}
+                        type="file"
+                        accept="audio/mpeg,audio/ogg,audio/wav,audio/mp4,.mp3,.ogg,.wav,.m4a"
+                        hidden
+                        onChange={(event) => { const input = event.currentTarget; void importSound(slot, input.files?.[0]).finally(() => { input.value = ""; }); }}
+                      />
+                      <Button size="sm" variant="secondary" disabled={!settings.soundEnabled || importing !== null} onClick={() => fileInputs[slot].current?.click()}>
+                        {importing === slot ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                        {file ? t("更换") : t("选择文件")}
+                      </Button>
+                      {file ? (
+                        <Button size="sm" variant="ghost" aria-label={tf("清除{0}", [label])} disabled={!settings.soundEnabled} onClick={() => clearCustomSound(slot)}>
+                          <X className="h-4 w-4" />
+                        </Button>
+                      ) : null}
+                    </div>
+                  ))}
+                  <small className="agent-pet-muted">{t("导入本地 MP3 / OGG / WAV / M4A（2 MB 以内），复制到 Codex++ 状态目录，可只设其中一个。")}</small>
+                  {importError ? <p className="agent-pet-error" role="alert">{importError}</p> : null}
                 </div>
                 <label className="agent-pet-range">
                   <span>{t("音量")}</span>

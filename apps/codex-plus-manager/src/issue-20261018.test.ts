@@ -5,7 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import { parseModelMetadataMap, synchronizeModelMetadataLiteSupport } from "./model-metadata.ts";
 import { reasoningParameterMode, setModelReasoningParameterMode } from "./model-reasoning.ts";
-import { requestCompatibilityEnabled, settingsRequireLocalHelper } from "./model-routes.ts";
+import { requestCompatibilityEnabled, settingsRequireLocalHelper, stripImageGenerationToolEnabled } from "./model-routes.ts";
 
 test("reasoning modes retain level drafts, round trip and require the helper only when opted in", () => {
   const original = JSON.stringify({ model: { custom: "kept", supported_reasoning_levels: [{ effort: "high" }] }, other: { custom: true } });
@@ -20,6 +20,13 @@ test("reasoning modes retain level drafts, round trip and require the helper onl
   assert.equal(settingsRequireLocalHelper({ ...settings, relayProfiles: [{ ...profile, modelMetadata: omitted }] }), true);
   assert.equal(requestCompatibilityEnabled({ ...profile, strictResponsesReasoning: true }), true);
   assert.equal(requestCompatibilityEnabled({ ...profile, relayMode: "official", strictResponsesReasoning: true }), false);
+  // #228：移除托管生图工具只对第三方 Responses 生效，并要求本地代理。
+  const strip = { ...profile, modelMetadata: original, stripImageGenerationTool: true };
+  assert.equal(stripImageGenerationToolEnabled(strip), true);
+  assert.equal(settingsRequireLocalHelper({ ...settings, relayProfiles: [strip] }), true);
+  assert.equal(stripImageGenerationToolEnabled({ ...strip, protocol: "chatCompletions" }), false);
+  assert.equal(stripImageGenerationToolEnabled({ ...strip, relayMode: "official" }), false);
+  assert.equal(stripImageGenerationToolEnabled({ ...strip, relayMode: "official", officialMixApiKey: true }), true);
 });
 
 test("Lite controls edit one selected model and preserve the rest of an imported document", () => {

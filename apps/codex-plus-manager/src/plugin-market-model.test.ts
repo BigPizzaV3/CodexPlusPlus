@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { applyPluginInstallation, filterMarketPlugins, mergePluginMarketCatalog, pluginMarketPage, PluginMarketRequests, type MarketCatalogs, type MarketPlugin, type MarketResult } from "./plugin-market-model.ts";
 
@@ -158,4 +159,23 @@ test("a failed refresh finishes its request without changing already-installed c
   const fresh = catalog("public", [installed, plugin("new")]);
   assert.equal(mergePluginMarketCatalog(catalogs, "public", fresh).public, fresh);
   assert.notEqual(requests.beginInstall(), null);
+});
+
+test("uninstall result clears installed state only for the exact source and id (#2701)", () => {
+  const installed = plugin("shared", { installed: true, installedVersion: "1.0" });
+  const catalogs: MarketCatalogs = {
+    public: catalog("public", [installed, plugin("other", { installed: true, installedVersion: "1.0" })]),
+    full: catalog("full", [installed]),
+  };
+  const next = applyPluginInstallation(catalogs, "public", { ...installed, installed: false, installedVersion: "", updateAvailable: false });
+  assert.deepEqual(next.public?.plugins.map((item) => [item.id, item.installed, item.installedVersion]), [["shared", false, ""], ["other", true, "1.0"]]);
+  assert.equal(next.full?.plugins[0].installed, true);
+});
+
+test("manager plugin cards offer an in-app confirmed uninstall for installed plugins (#2701)", () => {
+  const source = readFileSync(new URL("./PluginMarketScreen.tsx", import.meta.url), "utf8");
+  assert.match(source, /invoke<InstallResult>\("uninstall_plugin_market_item"/);
+  assert.match(source, /await appConfirm\(/);
+  assert.doesNotMatch(source, /window\.confirm\(|[^.\w]confirm\(/);
+  assert.match(source, /plugin\.installed \? \(\s*<Button aria-label=\{tf\("卸载插件 \{0\}"/);
 });

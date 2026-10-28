@@ -84,6 +84,11 @@
           codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
           nativeFastLocalApiConfigured: codexPlusBackendSettings.nativeFastLocalApiConfigured === true,
         });
+        globalThis.window?.__codexPlusNativePredictions?.runtime?.update?.({
+          enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
+          codexAppNativePredictions: codexPlusBackendSettings.codexAppNativePredictions === true,
+          nativePredictionsLocalApiConfigured: codexPlusBackendSettings.nativePredictionsLocalApiConfigured === true,
+        });
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
       }
     } finally {
@@ -1413,11 +1418,16 @@
                 </div>`;
       return renderCodexPlusSettingsSection("设置", renderCodexPlusBackendStatusRow() + state);
     }
+    // #686：「上下文感知建议」读写的是 Codex 自己的设置，不在后端清单里；放进 stepwise 组，
+    // 清单没有这一组时退到 chat 组，再不行放第一组，保证总能看到。
+    const ambientGroupId = ["stepwise", "chat"].find((id) => catalog.groups.some((group) => group.id === id))
+      || catalog.groups[0]?.id;
     return catalog.groups.map((group, index) => {
       const rows = catalog.items
         .filter((item) => item.group === group.id && codexPlusSettingsCatalogItemVisible(item))
         .map(renderCodexPlusSettingsCatalogRow)
         .filter(Boolean);
+      if (group.id === ambientGroupId) rows.push(renderCodexAmbientSuggestionsRow());
       if (index === 0) rows.unshift(renderCodexPlusBackendStatusRow());
       return rows.length ? renderCodexPlusSettingsSection(group.title, rows.join("")) : "";
     }).join("");
@@ -1441,6 +1451,7 @@
     if (!rendered) return;
     renderBackendStatus();
     refreshCodexPlusBackendToggles();
+    syncCodexAmbientSuggestionsToggles();
   }
 
   function openCodexPlusModal(options = {}) {
@@ -1717,6 +1728,12 @@
         overlay.querySelector(".codex-plus-extensions-back")?.focus({ preventScroll: true });
         return;
       }
+      const ambientToggle = target?.closest("[data-codex-app-ambient-suggestions]");
+      if (ambientToggle) {
+        if (ambientToggle.disabled || ambientToggle.dataset.pending === "true") return;
+        void setCodexAmbientSuggestionsEnabled(ambientToggle.dataset.enabled !== "true");
+        return;
+      }
       const toggle = target?.closest("[data-codex-plus-setting]");
       if (toggle) {
         if (toggle.disabled || toggle.dataset.pending === "true") return;
@@ -1774,6 +1791,8 @@
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
     loadUserScripts();
+    // 每次打开都重读一次：用户可能在 Codex 设置页（官方登录时可见）改过。
+    void loadCodexAmbientSuggestionsSetting();
     // 清单已缓存时上面的模板已经按清单渲染；否则读完后再替换“正在读取”占位。
     if (!codexPlusSettingsCatalog) void loadCodexPlusSettingsCatalog();
   }

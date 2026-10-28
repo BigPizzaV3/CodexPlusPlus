@@ -4,7 +4,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { modelSlugFromRowName, suffixWindowString } from "./model-metadata.ts";
-import { independentProxyEnabled, setIndependentProxyConfigured, requestCompatibilityEnabled, normalizeRelayModelRoutes } from "./model-routes.ts";
+import { independentProxyEnabled, setIndependentProxyConfigured, requestCompatibilityEnabled, stripImageGenerationToolEnabled, normalizeRelayModelRoutes } from "./model-routes.ts";
 import { sessionProviderForProtocol } from "./relay-session.ts";
 import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members.ts";
 import { relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey } from "./provider-api-keys.ts";
@@ -40,7 +40,7 @@ const context = vm.createContext({
   exports: {},
   PROTOCOL_PROXY_BASE_URL: "http://127.0.0.1:57321/v1",
   CHAT_UPSTREAM_BASE_URL_KEY: "codex_plus_chat_base_url",
-  requestCompatibilityEnabled, independentProxyEnabled, normalizeRelayModelRoutes, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
+  requestCompatibilityEnabled, stripImageGenerationToolEnabled, independentProxyEnabled, normalizeRelayModelRoutes, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
   aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile,
   relayProfileWithUpdatedApiKey, resolveProviderName, tomlSectionStringValue,
 });

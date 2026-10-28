@@ -29,6 +29,7 @@ test("actual update check keeps About data, honors mute, and allows manual promp
   const updates: unknown[] = [];
   const prompts: unknown[] = [];
   const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
+  notifications.setPreferences({ autoCheck: true, skippedVersion: "" });
   const pending = { current: null };
   let response: any = release;
   const check = handler("checkUpdate", {
@@ -36,7 +37,7 @@ test("actual update check keeps About data, honors mute, and allows manual promp
     call: async () => { if (response instanceof Error) throw response; return response; },
     setUpdate: (value: unknown) => updates.push(value), setUpdatePrompt: (value: unknown) => prompts.push(value),
     updateNotifications: { current: notifications }, showNotice: (...args: unknown[]) => notices.push(args),
-    t: (value: string) => value, stringifyError: String,
+    t: (value: string) => value, stringifyError: String, ensureUpdatePreferences: async () => {},
   });
   await check(true);
   assert.deepEqual(prompts, [release]);
@@ -60,6 +61,7 @@ test("actual update check keeps About data, honors mute, and allows manual promp
 
 test("a manual check reuses an in-flight background request and overrides today's mute", async () => {
   const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
+  notifications.setPreferences({ autoCheck: true, skippedVersion: "" });
   notifications.muteToday();
   const prompts: unknown[] = [];
   let requests = 0;
@@ -69,7 +71,7 @@ test("a manual check reuses an in-flight background request and overrides today'
     updateCheckPending: { current: null }, updateInstallPending: { current: false },
     call: async () => { requests++; return response; }, setUpdate: () => {},
     setUpdatePrompt: (value: unknown) => prompts.push(value), updateNotifications: { current: notifications },
-    showNotice: () => {}, t: (value: string) => value, stringifyError: String,
+    showNotice: () => {}, t: (value: string) => value, stringifyError: String, ensureUpdatePreferences: async () => {},
   });
   const background = check(true);
   await check(false);
@@ -77,6 +79,44 @@ test("a manual check reuses an in-flight background request and overrides today'
   await background;
   assert.equal(requests, 1);
   assert.deepEqual(prompts, [release]);
+});
+
+test("background checks load saved preferences first, honor auto-check off and skipped versions, manual checks still prompt", async () => {
+  const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
+  const prompts: unknown[] = [];
+  const notices: unknown[] = [];
+  let requests = 0;
+  let loads = 0;
+  let saved = { autoCheck: false, skippedVersion: "" };
+  let response: any = release;
+  const check = handler("checkUpdate", {
+    updateCheckPending: { current: null }, updateInstallPending: { current: false },
+    call: async () => { requests++; return response; }, setUpdate: () => {},
+    setUpdatePrompt: (value: unknown) => prompts.push(value), updateNotifications: { current: notifications },
+    showNotice: (...args: unknown[]) => notices.push(args), t: (value: string) => value, stringifyError: String,
+    // 模拟启动时设置尚未加载：后台检查先读一次已保存的偏好。
+    ensureUpdatePreferences: async () => { loads++; notifications.setPreferences(saved); },
+  });
+  await check(true);
+  assert.equal(loads, 1);
+  assert.equal(requests, 0, "auto-check off skips the network request entirely");
+  await check(true);
+  assert.equal(loads, 1, "preferences are read once and then kept in sync by settings updates");
+  await check(false);
+  assert.equal(requests, 1, "manual checks ignore the auto-check switch");
+  assert.deepEqual(prompts, [release]);
+
+  saved = { autoCheck: true, skippedVersion: "v1.11.0" };
+  notifications.setPreferences(saved);
+  await check(true);
+  assert.equal(requests, 2);
+  assert.equal(prompts.length, 1, "a skipped version is not prompted again in the background");
+  assert.equal(notices.length, 0);
+  await check(false);
+  assert.equal(prompts.length, 2, "manual checks still show the skipped version");
+  response = { ...release, latestVersion: "v1.12.0" };
+  await check(true);
+  assert.equal(prompts.length, 3, "a newer release than the skipped one prompts again");
 });
 
 test("installing the prompted release prevents duplicate downloads and preserves retry data on failure", async () => {

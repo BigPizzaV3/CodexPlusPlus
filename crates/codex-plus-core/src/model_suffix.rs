@@ -660,7 +660,7 @@ pub fn build_model_catalog_json(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
 ) -> String {
-    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None, false)
+    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None, false, None)
 }
 
 /// 使用指定模板（或内置 bundled 模板）构建 catalog。
@@ -670,18 +670,24 @@ pub fn build_model_catalog_json_with_template(
     fallback_window: Option<u64>,
     template: Option<&Value>,
 ) -> String {
-    build_model_catalog_json_with_capabilities(entries, fallback_window, template, None, false)
+    build_model_catalog_json_with_capabilities(entries, fallback_window, template, None, false, None)
 }
 
 /// 使用显式 provider capability 构建 catalog。
 /// `use_responses_lite_override` 仅由明确知道 provider wire capability 的调用方传入；
 /// 通用 builder 默认保留模板中的原始 Lite 行为。
+/// `provider_multi_agent`（#2683）：供应商级 Multi-Agent 协议显式选择（"v1"/"v2"）。
+/// 优先于 Lite 场景的自动 v2 与内置模板的每模型默认（gpt-5.6-sol→v2 等）——
+/// 供应商的链路形状（能否承载 v2 加密载荷）对它名下所有模型一致成立；每模型
+/// 用户元数据（modelMetadata 的 multi_agent_version）在后续
+/// `apply_model_metadata_overrides` 里覆盖，保持「模型级 > 供应商级 > Auto」。
 pub(crate) fn build_model_catalog_json_with_capabilities(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
     template: Option<&Value>,
     use_responses_lite_override: Option<bool>,
     deepseek_metadata: bool,
+    provider_multi_agent: Option<&str>,
 ) -> String {
     let models: Vec<Value> = entries
         .iter()
@@ -734,10 +740,15 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
                 model["auto_compact_token_limit"] = Value::Null;
             }
             model["priority"] = json!(1000 + index);
-            model["visibility"] = json!("list");
+            model["visibility"] =
+                json!(crate::aggregate_catalog::catalog_visibility(&entry.slug));
             // Custom Responses relay catalogs must advertise the v2 multi-agent
             // contract so Codex exposes the sub-agent tools.
-            if use_responses_lite_override.is_some() {
+            // 供应商级显式选择（#2683）优先：链路能否承载 v2 加密载荷对整家供应商
+            // 一致成立，因此同时压过 Lite 场景的自动 v2 与内置模板的每模型默认。
+            if let Some(version) = provider_multi_agent {
+                model["multi_agent_version"] = json!(version);
+            } else if use_responses_lite_override.is_some() {
                 model["multi_agent_version"] = json!("v2");
             }
             if !deepseek_metadata {

@@ -634,3 +634,33 @@
 .gw-portal .pf-reasoning-levels[data-disabled="true"] {
   opacity: 0.45;
 }
+
+/* 兼容开关（#228）：弹窗挂在 body 上，规则带 .gw-portal 前缀 */
+.gw-portal .pf-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.gw-portal .pf-switch input {
+  flex: none;
+  margin-top: 2px;
+}
+
+.gw-portal .pf-switch span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gw-portal .pf-switch strong {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.gw-portal .pf-switch small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.5;
+}

@@ -1237,12 +1237,17 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
 }
 
 #[tokio::test]
-async fn native_fast_reload_runs_only_after_successful_opt_in_launch_injection() {
-    for (enhancements, native_fast, injection_ok) in [
-        (true, true, true),
-        (true, false, true),
-        (false, true, true),
-        (true, true, false),
+async fn native_module_reload_runs_only_after_successful_opt_in_launch_injection() {
+    // Fast 与输入预测共用一次启动重载；任一开启都要重载，两者都关时不碰页面。
+    for (enhancements, native_fast, native_predictions, injection_ok) in [
+        (true, true, false, true),
+        (true, false, false, true),
+        (false, true, false, true),
+        (true, true, false, false),
+        (true, false, true, true),
+        (false, false, true, true),
+        (true, true, true, true),
+        (true, false, true, false),
     ] {
         let temp = tempfile::tempdir().unwrap();
         let app_dir = temp.path().join("Codex.app");
@@ -1251,6 +1256,7 @@ async fn native_fast_reload_runs_only_after_successful_opt_in_launch_injection()
         let mut hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
             enhancements_enabled: enhancements,
             codex_app_native_fast_unlock: native_fast,
+            codex_app_native_predictions: native_predictions,
             relay_profiles_enabled: false,
             ..BackendSettings::default()
         });
@@ -1271,8 +1277,11 @@ async fn native_fast_reload_runs_only_after_successful_opt_in_launch_injection()
         .unwrap();
         handle.wait_for_codex_exit().await.unwrap();
         let events = events.lock().unwrap();
-        let reload = events.iter().position(|event| event == "native-fast:9229");
-        assert_eq!(reload.is_some(), enhancements && native_fast && injection_ok);
+        let reload = events.iter().position(|event| event == "native-modules:9229");
+        assert_eq!(
+            reload.is_some(),
+            enhancements && (native_fast || native_predictions) && injection_ok
+        );
         if let Some(reload) = reload {
             let injection = events
                 .iter()
@@ -1280,7 +1289,10 @@ async fn native_fast_reload_runs_only_after_successful_opt_in_launch_injection()
                 .unwrap();
             assert!(injection < reload);
             assert_eq!(
-                events.iter().filter(|event| *event == "native-fast:9229").count(),
+                events
+                    .iter()
+                    .filter(|event| *event == "native-modules:9229")
+                    .count(),
                 1
             );
         }
@@ -2064,7 +2076,9 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
+            strip_image_generation_tool: false,
             auto_review_model: String::new(),
+            multi_agent: String::new(),
             anthropic_auth_header: String::new(),
             anthropic_max_tokens: 0,
             anthropic_prompt_cache: true,
@@ -2967,8 +2981,8 @@ impl LaunchHooks for FakeHooks {
         self.inject_error.is_none()
     }
 
-    async fn apply_native_fast_unlock_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
-        self.event(format!("native-fast:{debug_port}"));
+    async fn apply_native_module_patches_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
+        self.event(format!("native-modules:{debug_port}"));
         Ok(())
     }
 

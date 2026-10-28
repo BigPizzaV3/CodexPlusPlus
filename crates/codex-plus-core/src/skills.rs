@@ -27,6 +27,8 @@ use sha2::{Digest, Sha256};
 
 const SKILL_MANIFEST_FILE: &str = "SKILL.md";
 const BUNDLED_SKILLS_DIR: &str = ".system";
+/// 从本地目录导入的 Skill 的来源标记（#511），前端按它显示「本地导入」分组。
+pub const LOCAL_IMPORT_REPO_KEY: &str = "local";
 /// 单个仓库 zip 的下载上限。skill 仓库都是纯文本，64 MiB 足够宽松了。
 const REPO_ZIP_DOWNLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
@@ -547,13 +549,41 @@ impl SkillsManager {
         skills
     }
 
-    /// 从外部 Skill 目录导入到 Codex++ 的受控源目录，并默认停用。
+    /// 从外部 Skill 目录导入到 Codex++ 的受控源目录，并默认停用。来源记为 cc-switch。
     pub fn import_from_directory(
         &self,
         id: &str,
         external_dir: &Path,
     ) -> anyhow::Result<SkillsState> {
+        self.import_directory_with_source(id, external_dir, "cc-switch")
+    }
+
+    /// 用户在管理器里选择的本地目录导入（#511）。与 cc-switch 导入同一套流程，来源记为本地导入。
+    pub fn import_from_local_directory(
+        &self,
+        id: &str,
+        external_dir: &Path,
+    ) -> anyhow::Result<SkillsState> {
+        self.import_directory_with_source(id, external_dir, LOCAL_IMPORT_REPO_KEY)
+    }
+
+    fn import_directory_with_source(
+        &self,
+        id: &str,
+        external_dir: &Path,
+        repo_key: &str,
+    ) -> anyhow::Result<SkillsState> {
         validate_skill_id(id)?;
+        if repo_key == LOCAL_IMPORT_REPO_KEY {
+            // Codex 的 skills 目录本来就会被扫描显示；从这里「导入」会把原目录挪进备份，反而让它从 Codex 消失。
+            if let Ok(external) = external_dir.canonicalize() {
+                for (root, label) in [(self.linked_dir(), "Codex 的 skills 目录"), (self.source_dir.clone(), "Codex++ 的 Skills 受控目录")] {
+                    if root.canonicalize().is_ok_and(|root| external.starts_with(root)) {
+                        anyhow::bail!("{} 已在{label}里，Codex++ 会直接识别，无需导入", external_dir.display());
+                    }
+                }
+            }
+        }
         let manifest = external_dir.join(SKILL_MANIFEST_FILE);
         if !manifest.is_file() {
             anyhow::bail!("{} 下没有 SKILL.md，不是有效的 Skill", external_dir.display());
@@ -569,7 +599,7 @@ impl SkillsManager {
         }
         let (name, description) = read_skill_manifest(&manifest, id);
         self.commit_staged_skill(&staging, InstalledSkill {
-            id: id.to_string(), name, description, repo_key: "cc-switch".to_string(),
+            id: id.to_string(), name, description, repo_key: repo_key.to_string(),
             repo_path: String::new(), content_hash: String::new(),
             installed_at: current_unix_timestamp_string(),
         }, false)
@@ -976,6 +1006,44 @@ fn validate_skill_id(id: &str) -> anyhow::Result<()> {
         anyhow::bail!("非法的 skill id：{id}");
     }
     Ok(())
+}
+
+/// 把用户选中的本地目录解析成待导入的 Skill 目录（#511）。
+///
+/// - 目录本身含 `SKILL.md`：它就是一个 Skill，id 取目录名；
+/// - 否则当作 Skills 集合目录，收直接子目录里含 `SKILL.md` 的（跳过隐藏目录）；
+/// - 两者都没有时报错，明确提示缺少 `SKILL.md`。
+pub fn local_skill_import_candidates(dir: &Path) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    if !dir.is_dir() {
+        anyhow::bail!("{} 不是可读取的目录", dir.display());
+    }
+    if dir.join(SKILL_MANIFEST_FILE).is_file() {
+        let id = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("无法从 {} 推断 Skill 名称", dir.display()))?;
+        return Ok(vec![(id, dir.to_path_buf())]);
+    }
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let path = entry.path();
+        let Some(id) = path.file_name().and_then(|name| name.to_str()).map(str::to_string) else {
+            continue;
+        };
+        if id.starts_with('.') || !path.is_dir() || !path.join(SKILL_MANIFEST_FILE).is_file() {
+            continue;
+        }
+        candidates.push((id, path));
+    }
+    if candidates.is_empty() {
+        anyhow::bail!(
+            "{} 下没有 SKILL.md，子目录里也没有，不是有效的 Skill 目录",
+            dir.display()
+        );
+    }
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(candidates)
 }
 
 /// GitHub trees API 的响应 → 该仓库里的 skill 清单。
@@ -1850,6 +1918,50 @@ mod tests {
         assert!(external.join("SKILL.md").is_file());
         manager.set_enabled("imported", true).unwrap();
         assert!(manager.local_inventory().iter().find(|skill| skill.id == "imported").unwrap().enabled);
+    }
+
+    #[test]
+    fn local_import_accepts_a_skill_or_a_folder_of_skills_and_explains_missing_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+
+        // 选中的目录本身就是一个 Skill。
+        let single = temp.path().join("picked/my-skill");
+        write_skill(&single, "---\nname: My Skill\ndescription: demo\n---\n");
+        let candidates = local_skill_import_candidates(&single).unwrap();
+        assert_eq!(candidates, vec![("my-skill".to_string(), single.clone())]);
+        manager.import_from_local_directory("my-skill", &single).unwrap();
+        let entries = manager.local_inventory();
+        let skill = entry(&entries, "my-skill");
+        assert!(skill.installed);
+        assert!(!skill.enabled, "本地导入与 cc-switch 导入一样默认停用");
+        assert_eq!(skill.repo_key, LOCAL_IMPORT_REPO_KEY);
+        assert_eq!(skill.name, "My Skill");
+        assert!(manager.source_dir().join("my-skill/SKILL.md").is_file());
+        assert!(single.join("SKILL.md").is_file(), "导入是复制，原目录保持不动");
+
+        // 选中的是一组 Skill 的父目录：只收含 SKILL.md 的子目录，跳过隐藏目录和普通文件夹。
+        let bundle = temp.path().join("bundle");
+        write_skill(&bundle.join("beta"), "---\nname: beta\n---\n");
+        write_skill(&bundle.join("alpha"), "---\nname: alpha\n---\n");
+        write_skill(&bundle.join(".hidden"), "---\nname: hidden\n---\n");
+        std::fs::create_dir_all(bundle.join("notes")).unwrap();
+        let ids: Vec<_> = local_skill_import_candidates(&bundle).unwrap().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec!["alpha".to_string(), "beta".to_string()]);
+
+        // 没有 SKILL.md 时给出明确提示。
+        let empty = temp.path().join("empty");
+        std::fs::create_dir_all(empty.join("notes")).unwrap();
+        let error = local_skill_import_candidates(&empty).unwrap_err().to_string();
+        assert!(error.contains("SKILL.md"), "{error}");
+        assert!(local_skill_import_candidates(&temp.path().join("missing")).is_err());
+
+        // Codex 自己的 skills 目录里的 Skill 已会被扫描显示，不允许再「导入」把原目录挪走。
+        let codex_local = manager.linked_dir().join("codex-local");
+        write_skill(&codex_local, "---\nname: codex-local\n---\n");
+        let error = manager.import_from_local_directory("codex-local", &codex_local).unwrap_err().to_string();
+        assert!(error.contains("无需导入"), "{error}");
+        assert!(codex_local.join("SKILL.md").is_file());
     }
 
     #[test]

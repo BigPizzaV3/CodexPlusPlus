@@ -1,4 +1,5 @@
-//! 原生 Fast 的模块补丁。仅修改本机应用资产，不暂停 JS，也不改写安装包。
+//! 原生模块补丁通道（原生 Fast、原生输入预测）。仅修改本机应用资产，不暂停 JS，也不改写安装包。
+//! 多个改写器可以修改同一个块；每个改写器由各自的设置开关控制，结构不符时只放弃该改写器。
 
 use super::{
     BridgeGeneration, CdpSession, bridge_generation_is_current, connect_cdp_websocket,
@@ -17,6 +18,16 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_millis(750);
 const SOURCE_LIMIT: usize = 24 * 1024 * 1024;
 const COMPILED_MARKER: &str = "\n;globalThis.__codexPlusNativeFastCompiled='v1';\n";
+const MODULES_LIMIT: usize = 48 * 1024 * 1024;
+/// 入口块：执行完成标记、启动重载探针都以它为准。
+const ENTRY_PREFIX: &str = "app-initial-";
+const FAST_PREFIXES: &[&str] = &[ENTRY_PREFIX];
+const PREDICTIONS_PREFIXES: &[&str] = &[
+    ENTRY_PREFIX,
+    "composer-content-",
+    "initialize-app-host-services-",
+    "general-settings-",
+];
 
 #[derive(Default)]
 struct InterceptorState {
@@ -24,12 +35,56 @@ struct InterceptorState {
     fetch_attempted: bool,
 }
 
-fn bootstrap_script(settings: crate::native_fast::RuntimeSettings) -> String {
+#[derive(Clone, Copy)]
+struct ModuleSettings {
+    fast: crate::native_fast::RuntimeSettings,
+    predictions: crate::native_predictions::RuntimeSettings,
+}
+
+impl ModuleSettings {
+    fn load(settings: &crate::settings::BackendSettings) -> Self {
+        Self {
+            fast: crate::native_fast::runtime_settings(settings),
+            predictions: crate::native_predictions::runtime_settings(settings),
+        }
+    }
+
+    /// 只拦截开启的改写器需要的块；仅开 Fast 时保持原来只拦截 app-initial。
+    fn prefixes(&self) -> Vec<&'static str> {
+        let mut prefixes = Vec::new();
+        let groups = [
+            (
+                self.fast.enhancements_enabled && self.fast.codex_app_native_fast_unlock,
+                FAST_PREFIXES,
+            ),
+            (
+                self.predictions.enhancements_enabled
+                    && self.predictions.codex_app_native_predictions,
+                PREDICTIONS_PREFIXES,
+            ),
+        ];
+        for (enabled, group) in groups {
+            if !enabled {
+                continue;
+            }
+            for prefix in group {
+                if !prefixes.contains(prefix) {
+                    prefixes.push(*prefix);
+                }
+            }
+        }
+        prefixes
+    }
+}
+
+fn bootstrap_script(settings: ModuleSettings) -> String {
     // 只发送功能开关和本机 API 身份投影，不能序列化含供应商凭据的后端 settings。
     format!(
-        "{}\n;window.__codexPlusNativeFastUnlock.runtime.update({});\nwindow.__codexPlusNativeFastPatchState='armed';\nwindow.__codexPlusNativeFastAssetPatchReady=true;",
+        "{}\n;window.__codexPlusNativeFastUnlock.runtime.update({});\n{}\n;window.__codexPlusNativePredictions.runtime.update({});\nwindow.__codexPlusNativeFastPatchState='armed';\nwindow.__codexPlusNativeFastAssetPatchReady=true;",
         crate::assets::native_fast_unlock_script(),
-        json!(settings)
+        json!(settings.fast),
+        crate::assets::native_predictions_script(),
+        json!(settings.predictions),
     )
 }
 
@@ -38,13 +93,15 @@ pub(super) async fn install(
     generation: BridgeGeneration,
 ) -> anyhow::Result<()> {
     let settings = crate::settings::SettingsStore::default().load()?;
-    if !settings.enhancements_enabled || !settings.codex_app_native_fast_unlock {
+    if !crate::native_predictions::native_modules_requested(&settings) {
         return Ok(());
     }
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket);
     let mut state = InterceptorState::default();
-    let bootstrap = bootstrap_script(crate::native_fast::runtime_settings(&settings));
+    let module_settings = ModuleSettings::load(&settings);
+    let prefixes = module_settings.prefixes();
+    let bootstrap = bootstrap_script(module_settings);
     let initialized = async {
         let location = evaluate(&mut session, "location.protocol").await?;
         if location
@@ -54,7 +111,7 @@ pub(super) async fn install(
         {
             initialize_module(&mut session, &mut state, &bootstrap, &generation).await
         } else {
-            initialize(&mut session, &mut state, &bootstrap).await
+            initialize(&mut session, &mut state, &bootstrap, &prefixes).await
         }
     }
     .await;
@@ -74,7 +131,7 @@ pub(super) async fn install(
     }
     diagnostic("bridge.native_fast_interceptor_ready", json!({}));
     tokio::spawn(async move {
-        let result = watch(&mut session, &generation).await;
+        let result = watch(&mut session, &generation, &prefixes).await;
         cleanup(&mut session, &generation, &state).await;
         if result.is_err() {
             // 不把 Runtime 异常或响应正文写入诊断。
@@ -109,54 +166,60 @@ async fn initialize_module(
     let current_bootstrap =
         bootstrap.replace("window.__codexPlusNativeFastAssetPatchReady=true;", "");
     evaluate(session, &current_bootstrap).await?;
-    let prepared = evaluate_with_timeout(session, r#"(async()=>{
-      if(location.protocol!=='app:'||location.host!=='-')return {ok:false};
-      const urls=new Set();
-      const entries=[...document.scripts].map(s=>s.src).filter(s=>{
-        try{const u=new URL(s);return u.origin===location.origin&&/^\/assets\/index-[\w-]+\.js$/.test(u.pathname)}catch{return false}
-      });
-      for(const entry of entries.slice(0,4)){
-        const response=await fetch(entry);if(!response.ok)continue;
-        const source=await response.text();if(source.length>24*1024*1024)return {ok:false};
-        for(const match of source.matchAll(/["'`]\.\/app-initial-([\w-]+)\.js["'`]/g)){
-          urls.add(new URL('./app-initial-'+match[1]+'.js',entry).href);
-        }
-      }
-      if(urls.size!==1)return {ok:false};
-      const url=[...urls][0],response=await fetch(url);if(!response.ok)return {ok:false};
-      const source=await response.text();if(source.length>24*1024*1024)return {ok:false};
-      const result=window.__codexPlusNativeFastUnlock.prepareModule(source,url);
-      return result.ok?{ok:true,url,patchedSource:result.patchedSource}:{ok:false};
-    })()"#, Duration::from_secs(20)).await?;
+    // 发现、改写与跨块完整性校验都在补丁脚本里完成；这里只校验地址与体积后登记新文档脚本。
+    let prepared = evaluate_with_timeout(
+        session,
+        "window.__codexPlusNativeFastUnlock.prepareDocumentModules().then(r=>({ok:r.ok===true,modules:r.ok===true?r.modules:[],diagnostics:r.diagnostics??null}))",
+        Duration::from_secs(30),
+    )
+    .await?;
     let value = prepared
         .pointer("/result/result/value")
-        .context("native Fast module preparation returned no value")?;
-    anyhow::ensure!(
-        value["ok"] == true,
-        "当前 Codex 资产不支持原生 Fast 模块补丁"
+        .context("native module preparation returned no value")?;
+    diagnostic(
+        "bridge.native_module_patch_prepared",
+        json!({
+            "ok": value["ok"] == true,
+            "reason": value.pointer("/diagnostics/reason").cloned().unwrap_or(Value::Null),
+            "rewriters": value.pointer("/diagnostics/rewriters").cloned().unwrap_or(Value::Null),
+        }),
     );
-    let url = value["url"]
-        .as_str()
-        .context("native Fast module URL is missing")?;
-    anyhow::ensure!(
-        is_local_asset(url),
-        "native Fast module must be a local asset"
-    );
-    let source = value["patchedSource"]
-        .as_str()
-        .context("native Fast module source is missing")?;
-    anyhow::ensure!(
-        source.len() <= SOURCE_LIMIT,
-        "native Fast module is too large"
-    );
+    anyhow::ensure!(value["ok"] == true, "当前 Codex 资产不支持原生模块补丁");
+    let modules = value["modules"]
+        .as_array()
+        .context("native module list is missing")?;
+    anyhow::ensure!(!modules.is_empty(), "native module list is empty");
+    let mut total = 0usize;
+    let mut has_entry = false;
+    for module in modules {
+        let url = module["url"]
+            .as_str()
+            .context("native module URL is missing")?;
+        anyhow::ensure!(
+            is_local_asset(url, PREDICTIONS_PREFIXES),
+            "native module must be a local asset"
+        );
+        has_entry |= is_local_asset(url, FAST_PREFIXES);
+        let source = module["patchedSource"]
+            .as_str()
+            .context("native module source is missing")?;
+        anyhow::ensure!(source.len() <= SOURCE_LIMIT, "native module is too large");
+        total += source.len();
+    }
+    anyhow::ensure!(has_entry, "native module entry is missing");
+    anyhow::ensure!(total <= MODULES_LIMIT, "native modules are too large");
     anyhow::ensure!(
         bridge_generation_is_current(generation),
         "native Fast generation expired"
     );
+    let rewriters = value
+        .pointer("/diagnostics/rewriters")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let script = format!(
-        "{bootstrap}\n;window.__codexPlusNativeFastUnlock.installModule({},{});",
-        json!(source),
-        json!(url)
+        "{bootstrap}\n;window.__codexPlusNativeFastUnlock.installModules({},{});",
+        Value::Array(modules.clone()),
+        json!({ "rewriters": rewriters })
     );
     let reply = command(
         session,
@@ -189,6 +252,7 @@ async fn initialize(
     session: &mut Session,
     state: &mut InterceptorState,
     bootstrap: &str,
+    prefixes: &[&str],
 ) -> anyhow::Result<()> {
     command(session, "Runtime.enable", json!({})).await?;
     // Page 域未 enable 时 Chromium 不保证执行 new-document 脚本。
@@ -212,16 +276,15 @@ async fn initialize(
     let current_bootstrap =
         bootstrap.replace("window.__codexPlusNativeFastAssetPatchReady=true;", "");
     evaluate(session, &current_bootstrap).await?;
+    let patterns: Vec<Value> = prefixes
+        .iter()
+        .map(
+            |prefix| json!({ "urlPattern": format!("*{prefix}*.js*"), "requestStage": "Response" }),
+        )
+        .collect();
+    anyhow::ensure!(!patterns.is_empty(), "no native module patch is enabled");
     state.fetch_attempted = true;
-    command(
-        session,
-        "Fetch.enable",
-        json!({ "patterns": [{
-            "urlPattern": "*app-initial-*.js*",
-            "requestStage": "Response"
-        }] }),
-    )
-    .await?;
+    command(session, "Fetch.enable", json!({ "patterns": patterns })).await?;
     evaluate(session, "window.__codexPlusNativeFastAssetPatchReady=true").await?;
     Ok(())
 }
@@ -253,7 +316,11 @@ async fn evaluate_with_timeout(
     Ok(reply)
 }
 
-async fn watch(session: &mut Session, generation: &BridgeGeneration) -> anyhow::Result<()> {
+async fn watch(
+    session: &mut Session,
+    generation: &BridgeGeneration,
+    prefixes: &[&str],
+) -> anyhow::Result<()> {
     loop {
         if !bridge_generation_is_current(generation) {
             return Ok(());
@@ -261,7 +328,7 @@ async fn watch(session: &mut Session, generation: &BridgeGeneration) -> anyhow::
         // read_socket_message 是唯一入队点，包括其它命令等待回包时收到的事件。
         // 不直接处理 next_message 的返回值，避免同一个 paused request 被消费两次。
         if let Some(request) = session.fetch_requests.pop_front() {
-            handle_paused(session, &request).await?;
+            handle_paused(session, &request, prefixes).await?;
             continue;
         }
         tokio::select! {
@@ -273,7 +340,7 @@ async fn watch(session: &mut Session, generation: &BridgeGeneration) -> anyhow::
     }
 }
 
-fn is_local_asset(url: &str) -> bool {
+fn is_local_asset(url: &str, prefixes: &[&str]) -> bool {
     let Ok(url) = reqwest::Url::parse(url) else {
         return false;
     };
@@ -289,9 +356,17 @@ fn is_local_asset(url: &str) -> bool {
     };
     local_origin
         && prefix.ends_with("/assets")
-        && filename.starts_with("app-initial-")
-        && filename.len() > "app-initial-.js".len()
-        && filename.ends_with(".js")
+        && prefixes.iter().any(|module| {
+            filename
+                .strip_prefix(module)
+                .and_then(|rest| rest.strip_suffix(".js"))
+                .is_some_and(|hash| {
+                    !hash.is_empty()
+                        && hash
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                })
+        })
 }
 
 fn javascript_response(params: &Value) -> bool {
@@ -340,7 +415,11 @@ fn fulfillment_headers(params: &Value) -> Vec<Value> {
         .collect()
 }
 
-async fn handle_paused(session: &mut Session, event: &Value) -> anyhow::Result<()> {
+async fn handle_paused(
+    session: &mut Session,
+    event: &Value,
+    prefixes: &[&str],
+) -> anyhow::Result<()> {
     let params = event
         .get("params")
         .context("native Fast response event has no params")?;
@@ -351,14 +430,18 @@ async fn handle_paused(session: &mut Session, event: &Value) -> anyhow::Result<(
         .pointer("/request/url")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if !is_local_asset(url) {
+    if !is_local_asset(url, prefixes) {
         return release_request(session, request_id).await;
     }
+    // 只有入口块的失败代表整个通道不可用；同前缀的其它懒加载块不含目标结构是正常情况。
+    let entry = is_local_asset(url, FAST_PREFIXES);
     if !javascript_response(params) {
-        publish_patch_state(session, "unsupported").await;
+        if entry {
+            publish_patch_state(session, "unsupported").await;
+        }
         return release_request(session, request_id).await;
     }
-    let patched = patch_response(session, request_id, url).await;
+    let patched = patch_response(session, request_id, url, entry).await;
     match patched {
         Ok(Some(source)) => {
             let mut fulfill = json!({
@@ -374,7 +457,9 @@ async fn handle_paused(session: &mut Session, event: &Value) -> anyhow::Result<(
                 .await
                 .is_ok()
             {
-                publish_patch_state(session, "patched").await;
+                if entry {
+                    publish_patch_state(session, "patched").await;
+                }
                 diagnostic(
                     "bridge.native_fast_asset_patched",
                     json!({ "version": "v1" }),
@@ -388,11 +473,13 @@ async fn handle_paused(session: &mut Session, event: &Value) -> anyhow::Result<(
             publish_patch_state(session, "failed").await;
         }
         Ok(None) => {
-            publish_patch_state(session, "unsupported").await;
-            diagnostic(
-                "bridge.native_fast_patch_skipped",
-                json!({ "reason": "unsupported_asset" }),
-            );
+            if entry {
+                publish_patch_state(session, "unsupported").await;
+                diagnostic(
+                    "bridge.native_fast_patch_skipped",
+                    json!({ "reason": "unsupported_asset" }),
+                );
+            }
         }
         Err(_) => {
             publish_patch_state(session, "failed").await;
@@ -415,6 +502,7 @@ async fn patch_response(
     session: &mut Session,
     request_id: &str,
     url: &str,
+    entry: bool,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let reply = command(
         session,
@@ -441,7 +529,7 @@ async fn patch_response(
     };
     anyhow::ensure!(source.len() <= SOURCE_LIMIT, "asset source is too large");
     let expression = format!(
-        "(async()=>{{const result=await window.__codexPlusNativeFastUnlock?.transform?.({},{});return result?.ok===true&&typeof result.patchedSource==='string'?{{ok:true,patchedSource:result.patchedSource}}:{{ok:false,diagnostics:result?.diagnostics??{{reason:'transformer-unavailable'}}}}}})()",
+        "(async()=>{{const result=await window.__codexPlusNativeFastUnlock?.transformModule?.({},{});return result?.ok===true&&typeof result.patchedSource==='string'?{{ok:true,patchedSource:result.patchedSource}}:{{ok:false,diagnostics:result?.diagnostics??{{reason:'transformer-unavailable'}}}}}})()",
         serde_json::to_string(&source)?,
         serde_json::to_string(url)?,
     );
@@ -465,7 +553,9 @@ async fn patch_response(
         .context("asset transformer did not return source")?;
     anyhow::ensure!(patched.len() <= SOURCE_LIMIT, "patched asset is too large");
     let mut patched = patched.as_bytes().to_vec();
-    patched.extend_from_slice(COMPILED_MARKER.as_bytes());
+    if entry {
+        patched.extend_from_slice(COMPILED_MARKER.as_bytes());
+    }
     Ok(Some(patched))
 }
 
@@ -540,6 +630,21 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
+    fn module_settings(fast: bool, local_api: bool, predictions: bool) -> ModuleSettings {
+        ModuleSettings {
+            fast: crate::native_fast::RuntimeSettings {
+                enhancements_enabled: true,
+                codex_app_native_fast_unlock: fast,
+                native_fast_local_api_configured: local_api,
+            },
+            predictions: crate::native_predictions::RuntimeSettings {
+                enhancements_enabled: true,
+                codex_app_native_predictions: predictions,
+                native_predictions_local_api_configured: local_api,
+            },
+        }
+    }
+
     #[tokio::test]
     async fn app_modules_register_preload_without_fetch_interception_or_csp_bypass() {
         for (prepared, superseded) in [(true, false), (false, false), (true, true)] {
@@ -561,13 +666,16 @@ mod tests {
                         "Runtime.enable" | "Page.enable" => json!({}),
                         "Runtime.evaluate" => {
                             let expression = request["params"]["expression"].as_str().unwrap();
-                            if expression.contains("prepareModule(source,url)") {
+                            if expression.contains("prepareDocumentModules()") {
                                 if superseded {
                                     release_bridge_generation(&server_generation);
                                 }
                                 json!({"result":{"value":if prepared {
-                                    json!({"ok":true,"url":"app://-/assets/app-initial-test.js","patchedSource":"patched-module"})
-                                } else {json!({"ok":false})}}})
+                                    json!({"ok":true,"modules":[
+                                        {"url":"app://-/assets/app-initial-test.js","patchedSource":"patched-module"},
+                                        {"url":"app://-/assets/composer-content-test.js","patchedSource":"patched-lazy"}
+                                    ],"diagnostics":{"reason":"modules-prepared","rewriters":{"fast":"patched","predictions":"patched"}}})
+                                } else {json!({"ok":false,"modules":[],"diagnostics":{"reason":"unsupported","rewriters":{"predictions":"composer-content:incomplete-structure"}}})}}})
                             } else {
                                 json!({"result":{"value":true}})
                             }
@@ -597,11 +705,7 @@ mod tests {
             let result = initialize_module(
                 &mut session,
                 &mut state,
-                &bootstrap_script(crate::native_fast::RuntimeSettings {
-                    enhancements_enabled: true,
-                    codex_app_native_fast_unlock: true,
-                    native_fast_local_api_configured: false,
-                }),
+                &bootstrap_script(module_settings(true, false, true)),
                 &generation,
             )
             .await;
@@ -617,10 +721,16 @@ mod tests {
             assert_eq!(registration.is_some(), prepared && !superseded);
             if let Some(registration) = registration {
                 let source = registration["params"]["source"].as_str().unwrap();
-                assert!(source.contains(
-                    "installModule(\"patched-module\",\"app://-/assets/app-initial-test.js\")"
-                ));
+                assert!(source.contains("installModules([{"));
+                assert!(source.contains("\"patchedSource\":\"patched-module\""));
+                assert!(source.contains("\"url\":\"app://-/assets/composer-content-test.js\""));
+                assert!(
+                    source.contains(
+                        "\"rewriters\":{\"fast\":\"patched\",\"predictions\":\"patched\"}"
+                    )
+                );
                 assert!(source.contains("\"codexAppNativeFastUnlock\":true"));
+                assert!(source.contains("\"codexAppNativePredictions\":true"));
             }
         }
     }
@@ -628,6 +738,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum Case {
         Patched,
+        LazyUnmatched,
         Unsupported,
         BodyError,
         Remote,
@@ -649,6 +760,15 @@ mod tests {
     }
 
     async fn run_case(case: Case) -> Vec<Value> {
+        run_case_with(case, module_settings(true, false, false)).await
+    }
+
+    async fn run_case_with(case: Case, settings: ModuleSettings) -> Vec<Value> {
+        let prefixes = settings.prefixes();
+        let expected_patterns: Vec<String> = prefixes
+            .iter()
+            .map(|prefix| format!("*{prefix}*.js*"))
+            .collect();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
@@ -673,6 +793,13 @@ mod tests {
                     }
                     "Fetch.enable" => {
                         assert_eq!(command["params"]["patterns"][0]["requestStage"], "Response");
+                        let patterns: Vec<&str> = command["params"]["patterns"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|pattern| pattern["urlPattern"].as_str().unwrap())
+                            .collect();
+                        assert_eq!(patterns, expected_patterns);
                         assert!(
                             command["params"]["patterns"][0]
                                 .get("resourceType")
@@ -680,6 +807,8 @@ mod tests {
                         );
                         let url = if matches!(case, Case::Remote) {
                             "https://example.com/assets/app-initial-a.js"
+                        } else if matches!(case, Case::LazyUnmatched) {
+                            "app://-/assets/general-settings-other.js"
                         } else {
                             "app://-/assets/app-initial-a.js"
                         };
@@ -720,11 +849,11 @@ mod tests {
                         if command["params"]["expression"]
                             .as_str()
                             .unwrap()
-                            .contains("?.transform?.(")
+                            .contains("?.transformModule?.(")
                         {
                             assert_eq!(command["params"]["awaitPromise"], true);
                             assert_eq!(command["params"]["returnByValue"], true);
-                            result = json!({ "result": { "value": if matches!(case, Case::Unsupported) { json!({ "ok": false }) } else { json!({ "ok": true, "patchedSource": "patched-source" }) } } });
+                            result = json!({ "result": { "value": if matches!(case, Case::Unsupported | Case::LazyUnmatched) { json!({ "ok": false }) } else { json!({ "ok": true, "patchedSource": "patched-source" }) } } });
                         }
                     }
                     "Fetch.fulfillRequest" => {
@@ -797,15 +926,12 @@ mod tests {
             initialize(
                 &mut session,
                 &mut state,
-                &bootstrap_script(crate::native_fast::RuntimeSettings {
-                    enhancements_enabled: true,
-                    codex_app_native_fast_unlock: true,
-                    native_fast_local_api_configured: false,
-                }),
+                &bootstrap_script(settings),
+                &prefixes,
             )
             .await
             .unwrap();
-            watch(&mut session, &generation).await.unwrap();
+            watch(&mut session, &generation, &prefixes).await.unwrap();
             cleanup(&mut session, &generation, &state).await;
         })
         .await
@@ -831,10 +957,43 @@ mod tests {
 
     #[test]
     fn asset_scope_is_local_and_bootstrap_contains_only_feature_settings() {
-        assert!(is_local_asset("app://-/assets/app-initial-a.js?x=1"));
         assert!(is_local_asset(
-            "file:///Applications/ChatGPT.app/Contents/Resources/assets/app-initial-a.js"
+            "app://-/assets/app-initial-a.js?x=1",
+            FAST_PREFIXES
         ));
+        assert!(is_local_asset(
+            "file:///Applications/ChatGPT.app/Contents/Resources/assets/app-initial-a.js",
+            FAST_PREFIXES
+        ));
+        for url in [
+            "app://-/assets/composer-content-a1.js",
+            "app://-/assets/initialize-app-host-services-b2.js",
+            "app://-/assets/general-settings-c3.js",
+        ] {
+            assert!(is_local_asset(url, PREDICTIONS_PREFIXES), "{url}");
+            assert!(!is_local_asset(url, FAST_PREFIXES), "{url}");
+        }
+        for url in [
+            "app://-/assets/composer-content-.js",
+            "app://-/assets/composer-content-a/b.js",
+            "https://example.com/assets/composer-content-a.js",
+            "app://-/assets/general-settings-a.css",
+        ] {
+            assert!(!is_local_asset(url, PREDICTIONS_PREFIXES), "{url}");
+        }
+        assert_eq!(
+            module_settings(true, false, false).prefixes(),
+            FAST_PREFIXES
+        );
+        assert_eq!(
+            module_settings(false, false, true).prefixes(),
+            PREDICTIONS_PREFIXES
+        );
+        assert_eq!(
+            module_settings(true, false, true).prefixes(),
+            PREDICTIONS_PREFIXES
+        );
+        assert!(module_settings(false, false, false).prefixes().is_empty());
         for url in [
             "https://example.com/assets/app-initial-a.js",
             "file://remote/assets/app-initial-a.js",
@@ -842,13 +1001,9 @@ mod tests {
             "app://-/assets/app-shared-a.js",
             "app://-/assets/app-initial-a.js.json",
         ] {
-            assert!(!is_local_asset(url), "{url}");
+            assert!(!is_local_asset(url, PREDICTIONS_PREFIXES), "{url}");
         }
-        let bootstrap = bootstrap_script(crate::native_fast::RuntimeSettings {
-            enhancements_enabled: true,
-            codex_app_native_fast_unlock: false,
-            native_fast_local_api_configured: true,
-        });
+        let bootstrap = bootstrap_script(module_settings(false, true, true));
         let (_, update) = bootstrap
             .rsplit_once("\n;window.__codexPlusNativeFastUnlock.runtime.update(")
             .unwrap();
@@ -860,6 +1015,18 @@ mod tests {
                 "codexAppNativeFastUnlock": false,
                 "enhancementsEnabled": true,
                 "nativeFastLocalApiConfigured": true,
+            })
+        );
+        let (_, update) = bootstrap
+            .rsplit_once("\n;window.__codexPlusNativePredictions.runtime.update(")
+            .unwrap();
+        let (settings, _) = update.split_once(");\n").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(settings).unwrap(),
+            json!({
+                "codexAppNativePredictions": true,
+                "enhancementsEnabled": true,
+                "nativePredictionsLocalApiConfigured": true,
             })
         );
         assert!(bootstrap.contains("__codexPlusNativeFastPatchState='armed'"));
@@ -880,6 +1047,33 @@ mod tests {
                 .as_str()
                 .is_some_and(|expression| {
                     expression == "window.__codexPlusNativeFastPatchState=\"patched\""
+                })
+        }));
+    }
+
+    #[tokio::test]
+    async fn predictions_intercept_lazy_chunks_and_unmatched_variants_are_released_quietly() {
+        let commands = run_case_with(Case::Patched, module_settings(false, false, true)).await;
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command["method"] == "Fetch.fulfillRequest")
+                .count(),
+            1
+        );
+        let commands =
+            run_case_with(Case::LazyUnmatched, module_settings(false, false, true)).await;
+        assert!(
+            commands
+                .iter()
+                .any(|command| command["method"] == "Fetch.continueResponse")
+        );
+        // 同前缀的其它懒加载块不含目标结构是正常情况，不能把整个通道标成 unsupported。
+        assert!(!commands.iter().any(|command| {
+            command["params"]["expression"]
+                .as_str()
+                .is_some_and(|expression| {
+                    expression.starts_with("window.__codexPlusNativeFastPatchState=")
                 })
         }));
     }
@@ -967,17 +1161,14 @@ mod tests {
         initialize(
             &mut interceptor,
             &mut state,
-            &bootstrap_script(crate::native_fast::RuntimeSettings {
-                enhancements_enabled: true,
-                codex_app_native_fast_unlock: true,
-                native_fast_local_api_configured: false,
-            }),
+            &bootstrap_script(module_settings(true, false, false)),
+            FAST_PREFIXES,
         )
         .await
         .unwrap();
         let watching_generation = generation.clone();
         let watcher = tokio::spawn(async move {
-            let result = watch(&mut interceptor, &watching_generation).await;
+            let result = watch(&mut interceptor, &watching_generation, FAST_PREFIXES).await;
             cleanup(&mut interceptor, &watching_generation, &state).await;
             result
         });

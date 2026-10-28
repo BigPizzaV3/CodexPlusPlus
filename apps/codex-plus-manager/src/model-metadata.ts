@@ -758,6 +758,37 @@ export function synchronizeModelMetadataLiteSupport(
   return parsed.ok ? { document, preview: parsed.value } : null;
 }
 
+export type ModelMultiAgentMode = "inherit" | "v1" | "v2" | "disabled";
+
+/** 每模型 multi_agent_version 声明：inherit=未写（跟随供应商级/Auto），其余为显式值。 */
+export function modelMultiAgentMode(metadata: ModelMetadata | null | undefined): ModelMultiAgentMode {
+  const value = metadata?.multi_agent_version;
+  return value === "v1" || value === "v2" || value === "disabled" ? value : "inherit";
+}
+
+/**
+ * 只改目标模型的 multi_agent_version 声明（#2683）。inherit 时从文档删除该键——
+ * 上游 schema 的枚举只有 disabled/v1/v2，不存在 "auto" 字面值，「不写」才是 Auto。
+ * 保存路径走 modelMetadata map（catalog 生成时 apply_model_metadata_overrides 应用，
+ * 该函数的排除清单不含本键），因此随供应商切换/重写持久保留。
+ */
+export function synchronizeModelMetadataMultiAgentVersion(
+  source: string, targetSlug: string, mode: ModelMultiAgentMode,
+): { document: string; preview: ImportedModelMetadata } | null {
+  let root: unknown;
+  try {
+    root = source.trim() ? JSON.parse(unwrapJsonCompatibleDocument(source))
+      : { models: [{ slug: modelSlugFromRowName(targetSlug) }] };
+  } catch { return null; }
+  const matches = documentCandidates(root)?.filter((entry) => slugMatchesIgnoreCase(entry.slug, targetSlug));
+  if (!matches || matches.length !== 1) return null;
+  if (mode === "inherit") delete matches[0].multi_agent_version;
+  else matches[0].multi_agent_version = mode;
+  const document = JSON.stringify(root, null, 2);
+  const parsed = parseModelMetadataDocument(document, targetSlug);
+  return parsed.ok ? { document, preview: parsed.value } : null;
+}
+
 // 强制管理字段顺序，避免保存后 context_window 跑到压缩字段之后。
 function reorderManagedModelFields(model: ModelMetadata): void {
   const ordered: ModelMetadata = {};
@@ -884,6 +915,12 @@ export function validateModelCapabilities(metadata: ModelMetadata): string | nul
         return "supported_reasoning_levels 的每一项都必须包含 effort 和 description 字符串。";
       }
     }
+  }
+  // 上游 MultiAgentVersion 枚举（openai/codex protocol.rs）只有 disabled/v1/v2；
+  // 不存在 "auto" 字面值——Auto 的表达是不写该键。
+  if (Object.hasOwn(metadata, "multi_agent_version")
+    && !["v1", "v2", "disabled"].includes(metadata.multi_agent_version as string)) {
+    return "multi_agent_version 只支持 v1、v2 或 disabled（留空/删除该键表示自动）。";
   }
   if (Object.hasOwn(metadata, "default_reasoning_level") && metadata.default_reasoning_level !== null
     && (typeof metadata.default_reasoning_level !== "string" || !metadata.default_reasoning_level.trim())) {

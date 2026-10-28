@@ -44,6 +44,33 @@ fn catalog_entries_strip_suffix_from_row_name_and_look_up_window() {
     assert_eq!(entries[0].suffix_window, Some(1_000_000));
 }
 
+#[test]
+fn catalog_hides_codex_auto_review_from_the_picker() {
+    // 审批模型只给「替我审批」用：留在目录里，但和官方目录一样标成 hide，Codex 选择器里选不到。
+    let entries = collect_catalog_entries(
+        "gpt-6.1-sol\ncodex-auto-review\nchatgpt/codex-auto-review",
+        &HashMap::new(),
+        &HashMap::new(),
+        "",
+    );
+    let catalog: serde_json::Value = serde_json::from_str(
+        &codex_plus_core::model_suffix::build_model_catalog_json(&entries, None),
+    )
+    .unwrap();
+    let visibility = |slug: &str| {
+        catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == slug)
+            .map(|model| model["visibility"].as_str().unwrap().to_string())
+            .expect("模型条目缺失")
+    };
+    assert_eq!(visibility("gpt-6.1-sol"), "list");
+    assert_eq!(visibility("codex-auto-review"), "hide");
+    assert_eq!(visibility("chatgpt/codex-auto-review"), "hide");
+}
+
 #[tokio::test]
 async fn model_catalog_fetches_models_from_codex_config_provider() {
     let temp = tempfile::tempdir().unwrap();

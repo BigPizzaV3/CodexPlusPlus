@@ -7,6 +7,7 @@ import {
   independentProxyEnabled,
   setIndependentProxyConfigured,
   requestCompatibilityEnabled,
+  stripImageGenerationToolEnabled,
   modelRouteSaveRequiresRestart,
   normalizeRelayModelRoutes,
   PROTOCOL_PROXY_BASE_URL,
@@ -60,7 +61,7 @@ test("experimental local compaction is per-provider and starts the helper only w
 
 test("checkbox draft and generated config route to proxy and restore the real upstream on disable", () => {
   const context = vm.createContext({
-    requestCompatibilityEnabled, independentProxyEnabled, PROTOCOL_PROXY_BASE_URL, localCompactionPromptAtEndEnabled, normalizeRelayModelRoutes,
+    requestCompatibilityEnabled, stripImageGenerationToolEnabled, independentProxyEnabled, PROTOCOL_PROXY_BASE_URL, localCompactionPromptAtEndEnabled, normalizeRelayModelRoutes,
     relaySessionProvider: () => "custom",
     sessionProviderForProtocol: (provider: string) => provider,
     isAggregateRelayProfile: () => false,

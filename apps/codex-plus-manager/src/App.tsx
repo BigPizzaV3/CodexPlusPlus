@@ -115,7 +115,7 @@ import { rebaseSettingsEdits } from "./settings-rebase";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { SectionLabel, Switch } from "./gateway-ui";
-import { parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
+import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
@@ -135,7 +135,7 @@ import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
 import { PluginMarketScreen } from "./PluginMarketScreen";
 import { ReleaseNotes } from "./ReleaseNotes";
-import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications } from "./update-notification";
+import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
 import { McpPage, PageHeader } from "./ManagementPages";
 import { SkillsPage } from "./ManagementExtra";
 import { ProjectSessionPage } from "./ProjectSessionPage";
@@ -178,9 +178,12 @@ import {
   normalizeTokenCountInput,
   modelMetadataKey,
   modelFastSupportMode,
+  modelMultiAgentMode,
   synchronizeModelMetadataLiteSupport,
   synchronizeModelMetadataFastSupport,
+  synchronizeModelMetadataMultiAgentVersion,
   type ModelFastSupportMode,
+  type ModelMultiAgentMode,
   parseModelMetadataDocument,
   parseModelMetadataMap,
   remapModelMetadataSlugs,
@@ -203,6 +206,7 @@ import {
   independentProxyEnabled,
   setIndependentProxyConfigured,
   requestCompatibilityEnabled,
+  stripImageGenerationToolEnabled,
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
   normalizeRelayModelRoutes,
@@ -396,6 +400,10 @@ type BackendSettings = {
   dictation: DictationSettings;
   providerSyncEnabled: boolean;
   threadModelFollowSwitchEnabled?: boolean;
+  /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
+  updateAutoCheck?: boolean;
+  /** 更新提示里「跳过此版本」记下的版本（#1272）。 */
+  updateSkippedVersion?: string;
   ccsDbPath: string;
   providerSyncSavedProviders: string[];
   providerSyncManualProviders: string[];
@@ -407,6 +415,7 @@ type BackendSettings = {
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
+  codexAppSessionDeleteSkipConfirm: boolean;
   codexAppSideChatSave: boolean;
   codexAppMarkdownExport: boolean;
   codexAppSessionShare: boolean;
@@ -421,6 +430,10 @@ type BackendSettings = {
   codexAppNativeMenuPlacement: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
   codexAppNativeFastUnlock: boolean;
+  /** 原生输入预测（实验）：自定义 API 的本机对话使用 Codex 自带的灰字预测与 Tab 接受，默认关。 */
+  codexAppNativePredictions: boolean;
+  /** 第三方模型回答完自动折叠过程（本地代理补阶段标记），默认关。 */
+  codexAppThirdPartyReasoningCollapse: boolean;
   /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
   codexAppDisableWorkView: boolean;
   codexAppPetRealMouseLook: boolean;
@@ -552,6 +565,8 @@ export type RelayProfile = {
   vlmBaseUrl: string;
   userAgent: string;
   autoReviewModel?: string;
+  /** Multi-Agent 子代理协议（#2683）：空串=自动，v1/v2=供应商级显式选择（目录每模型兜底）。 */
+  multiAgent?: string;
   customHeaders: { key: string; value: string }[];
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
@@ -562,6 +577,8 @@ export type RelayProfile = {
   localCompactionPromptAtEnd?: boolean;
   trustUpstreamCatalogLite?: boolean;
   strictResponsesReasoning?: boolean;
+  /** #228：转发前移除托管生图工具（image_generation），默认关闭。 */
+  stripImageGenerationTool?: boolean;
   /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
   anthropicAuthHeader?: string;
   /** Anthropic 的 `max_tokens` 兜底值，0/缺省表示用内置 8192；填了则优先于请求值。 */
@@ -595,6 +612,8 @@ type RelayAggregateConfig = {
   defaultRelayId?: string;
   /** 把默认成员的官方登录同步进 Codex（写 auth.json 的 tokens 段）。默认关。 */
   syncDefaultMemberLogin?: boolean;
+  /** 审批成员（#2703）：codex-auto-review 只发给它，模型取它的「自动审批模型」；空串表示未设置。 */
+  autoReviewRelayId?: string;
 };
 type AggregateRelayMember = {
   relayId: string;
@@ -611,6 +630,8 @@ type AggregateRelayProfile = {
   defaultRelayId?: string;
   /** 把默认成员的官方登录同步进 Codex（auth.json 的 tokens 段）。默认关。 */
   syncDefaultMemberLogin?: boolean;
+  /** 审批成员（#2703），空串表示未设置。 */
+  autoReviewRelayId?: string;
 };
 
 type RelayContextSelection = {
@@ -923,8 +944,16 @@ type EnvConflict = {
   valuePresent: boolean;
 };
 
+// 本机回环中转地址遇上 Codex 的 SSH 远端连接（issue #1195），后端只读检测。
+type SshRemoteLoopbackNoticeData = {
+  loopbackEndpoints: Array<{ key: string; url: string; port: number }>;
+  ports: number[];
+  remotes: Array<{ label: string; forwardCommand: string; sshConfigLines: string[] }>;
+};
+
 type EnvConflictsResult = CommandResult<{
   conflicts: EnvConflict[];
+  sshRemoteLoopback?: SshRemoteLoopbackNoticeData | null;
 }>;
 
 type RelayEnvironmentResult = CommandResult<{
@@ -1357,6 +1386,8 @@ const defaultSettings: BackendSettings = {
   dictation: defaultDictationSettings(),
   providerSyncEnabled: false,
   threadModelFollowSwitchEnabled: false,
+  updateAutoCheck: true,
+  updateSkippedVersion: "",
   ccsDbPath: "",
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
@@ -1368,6 +1399,7 @@ const defaultSettings: BackendSettings = {
   codexAppPluginMarketplaceUnlock: true,
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
+  codexAppSessionDeleteSkipConfirm: false,
   codexAppSideChatSave: false,
   codexAppMarkdownExport: true,
   codexAppSessionShare: true,
@@ -1382,6 +1414,8 @@ const defaultSettings: BackendSettings = {
   codexAppNativeMenuPlacement: true,
   codexAppNativeBrowserRequireIdentification: false,
   codexAppNativeFastUnlock: false,
+  codexAppNativePredictions: false,
+  codexAppThirdPartyReasoningCollapse: false,
   codexAppDisableWorkView: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,
@@ -1564,6 +1598,10 @@ export function App() {
   const updateNotifications = useRef(new UpdateNotifications());
   const updateCheckPending = useRef<{ manual: boolean } | null>(null);
   const updateInstallPending = useRef(false);
+  // 更新提醒偏好以已保存的设置为准；草稿里的开关等自动保存落盘后才生效。
+  useEffect(() => {
+    if (settings) updateNotifications.current.setPreferences(updatePreferencesFrom(settings.settings));
+  }, [settings]);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
     active: false,
     percent: 0,
@@ -1895,11 +1933,12 @@ export function App() {
     if (!(await appConfirm(tf("删除这些环境变量？\n\n{0}\n\n删除前会写入备份。", [uniqueNames.join("\n")]), { title: t("删除环境变量"), confirmText: t("删除"), danger: true }))) return;
     const result = await run(() => call<RemoveEnvConflictsResult>("remove_env_conflicts", { request: { names: uniqueNames } }));
     if (result) {
-      setEnvConflicts({
+      setEnvConflicts((current) => ({
         status: result.status,
         message: result.message,
         conflicts: result.remaining,
-      });
+        sshRemoteLoopback: current?.sshRemoteLoopback ?? null,
+      }));
       showNotice(t("环境变量清理"), result.message, result.status);
     }
   };
@@ -2917,7 +2956,22 @@ export function App() {
     }
   };
 
+  // 启动时的后台检查早于设置加载：先单独读一次更新偏好，避免漏掉「跳过此版本」和「关闭自动检查」。
+  const ensureUpdatePreferences = async () => {
+    try {
+      const result = await call<SettingsResult>("load_settings");
+      if (!updateNotifications.current.preferencesLoaded) updateNotifications.current.setPreferences(updatePreferencesFrom(result.settings));
+    } catch {
+      // 读不到设置时按默认（自动检查、不跳过）继续，不打扰用户。
+    }
+  };
+
   const checkUpdate = async (silent = false) => {
+    if (silent) {
+      if (!updateNotifications.current.preferencesLoaded) await ensureUpdatePreferences();
+      // 关闭「启动时自动检查更新」后，启动与定时的后台检查都不再联网；手动检查不受影响。
+      if (!updateNotifications.current.autoCheckEnabled()) return;
+    }
     if (updateInstallPending.current) return;
     if (updateCheckPending.current) {
       // 手动检查复用正在进行的后台请求，但仍按用户主动检查显示结果。
@@ -2945,6 +2999,25 @@ export function App() {
   const closeUpdatePrompt = () => {
     if (updatePrompt?.latestVersion) updateNotifications.current.dismiss(updatePrompt.latestVersion);
     setUpdatePrompt(null);
+  };
+
+  // 「跳过此版本」：本次会话立即生效，并只把这一个键写进 settings.json；
+  // 写完只合并该键和版本号，别处没保存的草稿保持不动。
+  const skipUpdateVersion = async (version: string) => {
+    updateNotifications.current.skipVersion(version);
+    setUpdatePrompt(null);
+    try {
+      const result = await call<SettingsResult>("skip_update_version", { version });
+      if (!isSuccessStatus(result.status)) {
+        showNotice(t("跳过此版本"), result.message, "failed");
+        return;
+      }
+      const fresh = normalizeSettings(result.settings);
+      setSettings(result);
+      setSettingsForm((current) => ({ ...current, updateSkippedVersion: fresh.updateSkippedVersion, revision: fresh.revision }));
+    } catch (error) {
+      showNotice(t("跳过此版本"), stringifyError(error), "failed");
+    }
   };
 
   const performUpdate = async (selectedUpdate = update) => {
@@ -3814,6 +3887,14 @@ export function App() {
     showNotice(title, result.message, result.status);
   };
 
+  // 正在处理的快捷面板请求数。轻量模式下主窗口可能是为请求在后台重建的，
+  // 请求没做完时不能释放窗口，否则结果回不去（#2677）。
+  const trayRequestsInFlight = useRef(0);
+  // 主窗口仍隐藏时按轻量模式释放（窗口可见、开关关掉时后端不做任何事）。
+  const releaseMainWindowWhenHidden = () => {
+    if (trayRequestsInFlight.current === 0) void invoke("main_window_release_when_hidden").catch(() => {});
+  };
+
   useEffect(() => {
     // 工具栏只依赖本地配置，不能排在广告等网络请求之后。
     // 切换语言会重载窗口，串行等待会让三个 Agent 图标长时间消失。
@@ -3838,6 +3919,8 @@ export function App() {
       await refreshProviderSyncTargets(true);
       await refreshPendingProviderImport(true);
       await refreshPendingDreamSkinCommunity();
+      // 登录启动或为快捷面板请求在后台重建时窗口是隐藏的：启动流程走完后按轻量模式释放（#2677）。
+      releaseMainWindowWhenHidden();
     })();
   }, []);
 
@@ -3902,15 +3985,23 @@ export function App() {
     void listen<unknown>(TRAY_REQUEST_EVENT, (event) => {
       const request = parseTrayRequest(event.payload);
       if (disposed || !request) return;
+      trayRequestsInFlight.current += 1;
       void trayRequestHandlerRef.current(request)
         .catch((error): TrayResult => ({ id: request.id, ok: false, message: stringifyError(error) }))
         .then((result) => emit(TRAY_RESULT_EVENT, result))
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          trayRequestsInFlight.current -= 1;
+          // 做完仍隐藏就再释放；要显示主窗口的情况（失败、打开某页）后端会取消这次释放。
+          releaseMainWindowWhenHidden();
+        });
     }).then((unlisten) => {
       if (disposed) {
         unlisten();
       } else {
         stopListening = unlisten;
+        // 告诉后端监听已就绪：轻量模式下快捷面板会等这个信号再把请求发过来（#2677）。
+        void emit(MAIN_WINDOW_READY_EVENT).catch(() => {});
       }
     });
     return () => {
@@ -4706,6 +4797,8 @@ export function App() {
                   })()}
                 />
                 <AboutScreen
+                  form={settingsForm}
+                  onFormChange={setSettingsForm}
                   overview={overview}
                   update={update}
                   updateInstallProgress={updateInstallProgress}
@@ -4723,6 +4816,9 @@ export function App() {
           update={updatePrompt}
           progress={updateInstallProgress}
           onClose={closeUpdatePrompt}
+          onSkipVersion={() => {
+            if (updatePrompt.latestVersion) void skipUpdateVersion(updatePrompt.latestVersion);
+          }}
           onMuteToday={() => {
             updateNotifications.current.muteToday();
             setUpdatePrompt(null);
@@ -7157,6 +7253,7 @@ function RelayScreen({
         <Panel className="relay-management-panel">
           <CardContent>
           <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
+          <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
           {!normalized.relayProfilesEnabled ? (
             <p className="relay-switch-off-note" role="status">
               {t("供应商配置切换已关闭：Codex++ 不会写入 Codex 的 config.toml / auth.json，供应商列表已隐藏。需要切换时打开右上角的「配置切换」。")}
@@ -7518,6 +7615,56 @@ function EnvConflictNotice({
         <Button onClick={() => void actions.refreshEnvConflicts(false)} size="sm" variant="secondary">
           <RefreshCw className="h-4 w-4" />
           {t("检测")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const SSH_REMOTE_LOOPBACK_DISMISS_KEY = "codex-plus-ssh-remote-loopback-dismissed";
+
+// Codex++ 不往 SSH 远端写配置；远端 Codex 若沿用本机 127.0.0.1 中转地址会连到服务器自己（issue #1195）。
+// 这里只提示 ssh -R 反向转发的做法。「知道了」按端口 + 远端记住，组合变了再提示。
+function SshRemoteLoopbackNotice({ notice }: { notice: SshRemoteLoopbackNoticeData | null }) {
+  const signature = notice
+    ? `${notice.ports.join(",")}|${notice.remotes.map((remote) => remote.label).join(",")}`
+    : "";
+  const [dismissed, setDismissed] = useState<string>(() => {
+    try { return window.localStorage.getItem(SSH_REMOTE_LOOPBACK_DISMISS_KEY) ?? ""; } catch { return ""; }
+  });
+  if (!notice || !notice.remotes.length || dismissed === signature) return null;
+  const dismiss = () => {
+    setDismissed(signature);
+    try { window.localStorage.setItem(SSH_REMOTE_LOOPBACK_DISMISS_KEY, signature); } catch { /* 存不了就只影响本次 */ }
+  };
+  return (
+    <div className="env-conflict-notice ssh-remote-loopback-notice" role="note">
+      <div className="env-conflict-icon">
+        <ShieldAlert className="h-4 w-4" />
+      </div>
+      <div className="env-conflict-body">
+        <strong>{t("SSH 远端连不上本机中转地址")}</strong>
+        <p>{t("当前中转地址是本机回环地址，在 SSH 服务器上它指向服务器自己。Codex++ 不会往远端写配置；如果远端 Codex 用的也是这个地址，连接时需要把端口反向转发回本机（本机 Codex++ 要保持运行），或在远端单独配置可访问的上游地址。")}</p>
+        <div className="env-conflict-tags">
+          {notice.loopbackEndpoints.map((endpoint) => (
+            <span key={endpoint.key}>
+              {endpoint.url}
+              <small>{endpoint.key}</small>
+            </span>
+          ))}
+        </div>
+        {notice.remotes.map((remote) => (
+          <div className="ssh-remote-loopback-remote" key={remote.label}>
+            <p>{tf("连接 {0} 时带上：", [remote.label])}</p>
+            <code>{remote.forwardCommand}</code>
+            <p>{t("或写进 ~/.ssh/config 对应 Host 下：")}</p>
+            <code>{remote.sshConfigLines.join("\n")}</code>
+          </div>
+        ))}
+      </div>
+      <div className="env-conflict-actions">
+        <Button onClick={dismiss} size="sm" variant="secondary">
+          {t("知道了")}
         </Button>
       </div>
     </div>
@@ -10092,7 +10239,11 @@ function AboutScreen({
   logs,
   diagnostics,
   actions,
+  form,
+  onFormChange,
 }: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
   overview: OverviewResult | null;
   update: UpdateResult | null;
   updateInstallProgress: TaskProgress;
@@ -10125,6 +10276,18 @@ function AboutScreen({
                   {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
                 </Button>
               ) : null}
+            </div>
+          </div>
+          {/* 改的是设置草稿，由同页 GlobalSettingsScreen 的自动保存落盘（#1272）。 */}
+          <div className="global-settings-list app-update-preferences">
+            <div className="global-setting-row">
+              <div className="global-setting-copy">
+                <strong>{t("启动时自动检查更新")}</strong>
+                <span>{t("打开 Codex++ 时及运行期间每隔几小时在后台检查新版本并提示。关闭后不再自动检查，仍可随时点「检查更新」。")}</span>
+              </div>
+              <div className="global-setting-actions">
+                <Switch label={t("启动时自动检查更新")} on={form.updateAutoCheck !== false} onToggle={() => onFormChange({ ...form, updateAutoCheck: form.updateAutoCheck === false })} />
+              </div>
             </div>
           </div>
           {update?.updateAvailable && update.releaseSummary ? (
@@ -10322,6 +10485,34 @@ function useTrayPanelSetting() {
   return { enabled, saving, error, toggle };
 }
 
+/// 关闭窗口时进入轻量模式（#2677）。值存在 gateway.json 的 `lightweightOnClose`，由后端命令读写，
+/// 后端同时更新内存缓存，下次关窗即生效。
+function useLightweightModeSetting() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<boolean>("lightweight_mode_enabled")
+      .then((value) => { if (!cancelled) setEnabled(value !== false); })
+      .catch(() => { if (!cancelled) setEnabled(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const toggle = async () => {
+    if (enabled === null || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      setEnabled(await invoke<boolean>("set_lightweight_mode_enabled", { enabled: !enabled }));
+    } catch (failure) {
+      setError(stringifyError(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return { enabled, saving, error, toggle };
+}
+
 /// 整体设置页（最左侧齿轮）。
 ///
 /// 只放与当前 Agent 无关的应用级选项，内容不随 Agent 切换而变。
@@ -10345,6 +10536,7 @@ function GlobalSettingsScreen({
 }) {
   const settingsPath = settings?.settings_path ?? "";
   const trayPanel = useTrayPanelSetting();
+  const lightweight = useLightweightModeSetting();
   // 每一项都是同一种行：左边标题 + 说明，右边操作。路径只在「配置文件路径」里出现一次。
   return (
     <div className="settings-page global-settings-page">
@@ -10368,6 +10560,15 @@ function GlobalSettingsScreen({
             </div>
             <div className="global-setting-actions">
               <Switch disabled={trayPanel.enabled === null || trayPanel.saving} label={t("点击托盘图标弹出快捷面板")} on={trayPanel.enabled ?? true} onToggle={() => void trayPanel.toggle()} />
+            </div>
+          </div>
+          <div className="global-setting-row">
+            <div className="global-setting-copy">
+              <strong>{t("关闭窗口后释放界面内存")}</strong>
+              <span>{lightweight.error || t("关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}</span>
+            </div>
+            <div className="global-setting-actions">
+              <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("关闭窗口后释放界面内存")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
             </div>
           </div>
           <div className="global-setting-row">
@@ -11262,6 +11463,7 @@ function RelayProfileEditor({
     profile.localCompactionPromptAtEnd === true,
     profile.trustUpstreamCatalogLite === true,
     profile.strictResponsesReasoning === true,
+    profile.stripImageGenerationTool === true,
   ].filter(Boolean).length;
   const [stabilizePromptPrefixBusy, setStabilizePromptPrefixBusy] = useState(false);
   const useCommonConfig = profile.useCommonConfig !== false;
@@ -12405,16 +12607,33 @@ function RelayProfileEditor({
                               />
                               <p className="field-hint">{t("按当前供应商逐模型声明。仅在上游支持 service_tier=priority 时选择支持；继承会清除自定义声明，取消不会保存修改。")}</p>
                             </Field>
-                            <Field label={t("Responses Lite 支持")}>
-                              <AppSelect value={metadataImportPreview?.metadata.use_responses_lite === true ? "supported" : metadataImportPreview?.metadata.use_responses_lite === false ? "unsupported" : "inherit"}
-                                options={[{ value: "inherit", label: t("继承模型默认能力") }, { value: "supported", label: t("明确支持 Lite") }, { value: "unsupported", label: t("标准 Responses") }]}
-                                onChange={(value) => {
-                                  const changed = synchronizeModelMetadataLiteSupport(metadataImportDocument, slug, value as "inherit" | "supported" | "unsupported");
-                                  if (!changed) { setMetadataImportError(t("请先修正当前模型的 JSON 配置。")); return; }
-                                  setMetadataImportDocument(changed.document); setMetadataImportPreview(changed.preview); setImportPrefillSource("existing"); setMetadataImportError("");
-                                }} />
-                              <p className="field-hint">{t("保存此模型后还需保存并使用供应商；只为已核实支持 Lite 的上游选择支持。")}</p>
-                            </Field>
+                            <div className="form-row">
+                              <Field label={t("Responses Lite 支持")}>
+                                <AppSelect value={metadataImportPreview?.metadata.use_responses_lite === true ? "supported" : metadataImportPreview?.metadata.use_responses_lite === false ? "unsupported" : "inherit"}
+                                  options={[{ value: "inherit", label: t("继承模型默认能力") }, { value: "supported", label: t("明确支持 Lite") }, { value: "unsupported", label: t("标准 Responses") }]}
+                                  onChange={(value) => {
+                                    const changed = synchronizeModelMetadataLiteSupport(metadataImportDocument, slug, value as "inherit" | "supported" | "unsupported");
+                                    if (!changed) { setMetadataImportError(t("请先修正当前模型的 JSON 配置。")); return; }
+                                    setMetadataImportDocument(changed.document); setMetadataImportPreview(changed.preview); setImportPrefillSource("existing"); setMetadataImportError("");
+                                  }} />
+                                <p className="field-hint">{t("只为已核实支持 Lite 的上游选择支持。")}</p>
+                              </Field>
+                              <Field label={t("Multi Agent 协议")}>
+                                <AppSelect value={modelMultiAgentMode(metadataImportPreview?.metadata)}
+                                  options={[
+                                    { value: "inherit", label: t("跟随供应商设置") },
+                                    { value: "v1", label: t("v1（经典）") },
+                                    { value: "v2", label: t("v2（新版）") },
+                                    { value: "disabled", label: t("关闭子代理") },
+                                  ]}
+                                  onChange={(value) => {
+                                    const changed = synchronizeModelMetadataMultiAgentVersion(metadataImportDocument, slug, value as ModelMultiAgentMode);
+                                    if (!changed) { setMetadataImportError(t("请先修正当前模型的 JSON 配置。")); return; }
+                                    setMetadataImportDocument(changed.document); setMetadataImportPreview(changed.preview); setImportPrefillSource("existing"); setMetadataImportError("");
+                                  }} />
+                                <p className="field-hint">{t("v2 需上游支持加密子代理载荷，转 Chat 协议的中转请选 v1；仅新会话生效。")}</p>
+                              </Field>
+                            </div>
                             <Textarea
                               autoFocus
                               value={metadataImportDocument}
@@ -12703,6 +12922,22 @@ function RelayProfileEditor({
               </Field>
             ) : null}
             {showApiFields ? (
+              <Field className="relay-field-multi-agent" label={t("Multi Agent 协议")}>
+                <AppSelect
+                  value={profile.multiAgent === "v1" || profile.multiAgent === "v2" ? profile.multiAgent : "auto"}
+                  options={[
+                    { value: "auto", label: t("自动（推荐）") },
+                    { value: "v1", label: t("v1（经典，转 Chat 中转适用）") },
+                    { value: "v2", label: t("v2（新版，需上游支持加密载荷）") },
+                  ]}
+                  onChange={(value) => updateDraft({ multiAgent: value === "v1" || value === "v2" ? value : "" })}
+                />
+                <p className="field-hint">
+                  {t("子代理协议的供应商级默认；模型元数据里的 multi_agent_version 声明优先于它。选 v1 会在使用该供应商期间压下 [features] multi_agent_v2，切走时自动还原。仅对直连供应商生效，Codex 经新版网关接入时由网关配置决定。仅新会话生效。")}
+                </p>
+              </Field>
+            ) : null}
+            {showApiFields ? (
               <Field className="relay-field-proxy" label={t("供应商独立代理")}>
                 <div className="relay-inline-field">
                   <Input
@@ -12808,6 +13043,10 @@ function RelayProfileEditor({
                   <label className="switch-row compact relay-switch-row">
                     <input type="checkbox" checked={profile.strictResponsesReasoning === true} onChange={(event) => updateDraft({ strictResponsesReasoning: event.currentTarget.checked })} />
                     <span><strong>{t("严格 Responses 推理历史兼容")}</strong><small>{t("仅当目标上游接受当前账号的加密历史时启用。混合推理只发送可识别的加密信封；占位或无效密文会明确报错。本地记录不变。")}</small></span><ToggleVisual />
+                  </label>
+                  <label className="switch-row compact relay-switch-row relay-field-strip-image-generation">
+                    <input type="checkbox" checked={profile.stripImageGenerationTool === true} onChange={(event) => updateDraft({ stripImageGenerationTool: event.currentTarget.checked })} />
+                    <span><strong>{t("移除请求里的托管生图工具（image_generation）")}</strong><small>{t("Codex App 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发前从 tools 里去掉它（及指向它的 tool_choice），请求改走本地代理；Codex 里将无法调用内置生图。默认关闭。")}</small></span><ToggleVisual />
                   </label>
                 </> : null}
                 </div>
@@ -13408,6 +13647,32 @@ function AggregateRelayProfileEditor({
               {t("当前默认成员不是官方登录账号，无法把登录同步到 Codex；只有「官方登录」类型的成员才有 ChatGPT 凭据。")}
             </span>
           )}
+        </div>
+      ) : null}
+      {routeTargetOptions.length ? (
+        <div className="aggregate-default-provider aggregate-auto-review">
+          <Field label={t("审批成员")}>
+            <AppSelect
+              label={t("审批成员")}
+              onChange={(value) => updateAggregate({ ...aggregate, autoReviewRelayId: value })}
+              options={[
+                { value: "", label: t("不单独指定"), hint: t("审批请求跟普通请求一样交给默认成员或轮转选中的成员") },
+                ...routeTargetOptions.map((option) => {
+                  const candidate = candidates.find((item) => item.id === option.value);
+                  const reviewModel = candidate?.autoReviewModel?.trim() || candidate?.model.trim() || "";
+                  return {
+                    value: option.value,
+                    label: option.label,
+                    hint: reviewModel ? tf("审批请求发给它，模型 {0}", [reviewModel]) : t("审批请求发给它"),
+                  };
+                }),
+              ]}
+              value={aggregate.autoReviewRelayId ?? ""}
+            />
+            <p className="field-hint">
+              {t("Codex「替我审批」的请求（codex-auto-review）只发给这个成员，模型取它的「自动审批模型」，没填用它的默认模型。默认成员是官方登录时，指定一个 API 成员可避免审批消耗官方额度。")}
+            </p>
+          </Field>
         </div>
       ) : null}
       {!modelMode ? <div className="aggregate-routes">
@@ -14254,10 +14519,11 @@ function DreamSkinUnsavedDialog({
   );
 }
 
-function UpdateDialog({ update, progress, onClose, onMuteToday, onUpdate, onOpenUrl }: {
+function UpdateDialog({ update, progress, onClose, onSkipVersion, onMuteToday, onUpdate, onOpenUrl }: {
   update: UpdateResult;
   progress: TaskProgress;
   onClose: () => void;
+  onSkipVersion: () => void;
   onMuteToday: () => void;
   onUpdate: () => void;
   onOpenUrl: (url: string) => void;
@@ -14291,6 +14557,7 @@ function UpdateDialog({ update, progress, onClose, onMuteToday, onUpdate, onOpen
         </Button>
         <Button variant="secondary" onClick={onClose}>{t("关闭提示")}</Button>
         <Button variant="ghost" onClick={onMuteToday}>{t("今日不再提示")}</Button>
+        <Button variant="ghost" onClick={onSkipVersion}>{t("跳过此版本")}</Button>
       </Toolbar>
     </dialog>
   );
@@ -16421,6 +16688,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
     autoReviewModel: profile.autoReviewModel?.trim() || "",
+    multiAgent: profile.multiAgent === "v1" || profile.multiAgent === "v2" ? profile.multiAgent : "",
     customHeaders: profile.customHeaders || [],
     sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
@@ -16429,6 +16697,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     localCompactionPromptAtEnd: profile.localCompactionPromptAtEnd === true,
     trustUpstreamCatalogLite: profile.trustUpstreamCatalogLite === true,
     strictResponsesReasoning: profile.strictResponsesReasoning === true,
+    stripImageGenerationTool: profile.stripImageGenerationTool === true,
     anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
     anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
     anthropicPromptCache: profile.anthropicPromptCache !== false,
@@ -16457,6 +16726,7 @@ function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: Aggregat
       routes: normalizeAggregateRoutes(aggregate.routes ?? []),
       defaultRelayId: aggregate.defaultRelayId ?? "",
       syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
+      autoReviewRelayId: aggregate.autoReviewRelayId ?? "",
     },
   };
 }
@@ -16700,7 +16970,7 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
 }
 
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "id" | "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "localCompactionPromptAtEnd" | "strictResponsesReasoning" | "modelMetadata">,
+  profile: Pick<RelayProfile, "id" | "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "localCompactionPromptAtEnd" | "strictResponsesReasoning" | "stripImageGenerationTool" | "modelMetadata">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
   const searchHistoryCompat = profile.webSearchHistoryCompat === true
@@ -16711,7 +16981,7 @@ function buildRelayConfigToml(
     && (profile.protocol === "responses" || profile.protocol === "chatCompletions")
     && profile.relayMode !== "aggregate"
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
-  const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile)
+  const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile) || stripImageGenerationToolEnabled(profile)
     ? PROTOCOL_PROXY_BASE_URL
     : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
@@ -16862,7 +17132,7 @@ function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "modelMetadata" in patch) {
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "stripImageGenerationTool" in patch || "modelMetadata" in patch) {
     const searchHistoryCompat = next.webSearchHistoryCompat === true
       && next.protocol === "responses"
       && next.relayMode !== "aggregate"
@@ -16871,7 +17141,7 @@ function applyRelayProfilePatchToFiles(
       && (next.protocol === "responses" || next.protocol === "chatCompletions")
       && next.relayMode !== "aggregate"
       && (next.relayMode !== "official" || next.officialMixApiKey);
-    const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next)
+    const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next) || stripImageGenerationToolEnabled(next)
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -17492,6 +17762,7 @@ function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): 
       })),
       defaultRelayId: aggregate.defaultRelayId ?? "",
       syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
+      autoReviewRelayId: aggregate.autoReviewRelayId ?? "",
     };
   });
 }
@@ -17838,6 +18109,11 @@ function normalizeAggregateConfig(
     aggregate?.defaultRelayId,
     new Set(members.map((member) => member.profileId)),
   );
+  // 审批成员同样必须是当前成员；成员被移出时清空为「未设置」（#2703）。
+  const autoReviewRelayId = normalizeAggregateDefaultRelayId(
+    aggregate?.autoReviewRelayId,
+    new Set(members.map((member) => member.profileId)),
+  );
   return {
     strategy: modelAggregationEnabled ? "failover" : strategy,
     modelAggregationEnabled,
@@ -17845,6 +18121,7 @@ function normalizeAggregateConfig(
     routes,
     defaultRelayId,
     syncDefaultMemberLogin: aggregate?.syncDefaultMemberLogin === true,
+    autoReviewRelayId,
   };
 }
 

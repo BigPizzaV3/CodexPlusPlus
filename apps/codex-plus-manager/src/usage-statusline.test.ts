@@ -2,8 +2,8 @@
 //
 // cdp_bridge.rs 只守「接线还在不在」，这里把分片里的纯计算函数抠出来放进沙箱真跑，
 // 验证三件在真机上不好复现的事：
-//   1. 生成速度按「同一轮内相邻事件差」算，按真实 turn_id 换轮，
-//      过短/过长的间隔不能当样本；
+//   1. 输出吞吐按「同一轮内相邻事件差」求和后相除（不能等权平均各区间速率，#2636），
+//      按真实 turn_id 换轮，过短/过长的间隔不能当样本；
 //   2. 缓存命中与上下文占用是 Codex 自己的口径（cached/input、total/context_window），
 //      窗口缺失时不能瞎算成 0%；
 //   3. 会话 id 只认 composer 上的实时标识，新会话草稿（client-new-thread）没有 rollout，
@@ -36,6 +36,7 @@ const sandboxSource = [
   declaration("codexPlusUsageStaleMs"),
   declaration("codexPlusUsagePercent"),
   declaration("codexPlusUsageLatestTurn"),
+  declaration("codexPlusUsageMaxIntervalSeconds"),
   declaration("codexPlusUsageRate"),
   declaration("codexPlusUsageTurnCache"),
   declaration("codexPlusUsageSnapshot"),
@@ -82,7 +83,7 @@ function event(secondsFromStart: number, turnOutputTokens: number, extra: Record
   };
 }
 
-test("生成速度按同一轮内相邻事件差计算，换轮时切段", () => {
+test("输出吞吐按同一轮内相邻事件差计算，换轮时切段", () => {
   const { codexPlusUsageRate } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
   const events = [
     event(0, 100),
@@ -94,6 +95,43 @@ test("生成速度按同一轮内相邻事件差计算，换轮时切段", () =>
   ];
   assert.equal(codexPlusUsageRate(events), 500 / 10);
   assert.equal(codexPlusUsageRate([event(0, 100)]), null, "只有一条事件时算不出速度");
+});
+
+test("输出吞吐按总输出 ÷ 总时长加权，不对各区间速率等权平均（#2636 算例）", () => {
+  const { codexPlusUsageRate } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
+  // issue 里的三个区间：前两段含工具调用，最后一段是大段回答。
+  const at = (ms: number) => new Date(Date.UTC(2026, 5, 2, 5, 0, 0) + ms).toISOString();
+  const events = [
+    { ...event(0, 1000), t: at(0) },
+    { ...event(0, 1221), t: at(21_132) },
+    { ...event(0, 1528), t: at(21_132 + 21_752) },
+    { ...event(0, 2781), t: at(21_132 + 21_752 + 11_409) },
+  ];
+  const rate = codexPlusUsageRate(events);
+  assert.ok(rate !== null);
+  // 旧实现：(10.46 + 14.11 + 109.83) / 3 ≈ 44.8。小输出的工具步骤和大段回答同权，口径错误。
+  assert.notEqual(Math.round(rate * 10) / 10, 44.8);
+  // 新口径：(221 + 307 + 1253) / (21.132 + 21.752 + 11.409) = 1781 / 54.293 ≈ 32.80。
+  assert.equal(Number(rate.toFixed(2)), Number((1781 / 54.293).toFixed(2)));
+
+  // 长停顿区间分子分母一起剔除，不能只丢掉速率而把 token 留在分子里。
+  const withPause = [
+    ...events,
+    { ...event(0, 3781), t: at(21_132 + 21_752 + 11_409 + 200_000) },
+  ];
+  assert.equal(Number(codexPlusUsageRate(withPause)!.toFixed(2)), Number((1781 / 54.293).toFixed(2)));
+
+  // 重复记录 / 累计输出回落的区间不算样本，也不能把后面的增量算重。
+  const withDuplicate = [
+    { ...event(0, 1000), t: at(0) },
+    { ...event(0, 1221), t: at(21_132) },
+    { ...event(0, 1221), t: at(22_000) },
+    { ...event(0, 1528), t: at(21_132 + 21_752) },
+  ];
+  assert.equal(
+    Number(codexPlusUsageRate(withDuplicate)!.toFixed(4)),
+    Number(((221 + 307) / (21.132 + (21_132 + 21_752 - 22_000) / 1000)).toFixed(4)),
+  );
 });
 
 test("过短与过长的间隔都不作为速度样本", () => {
@@ -239,7 +277,7 @@ function lifecycle() {
   const source = [
     ...["codexPlusUsageState", "codexPlusUsageStaleMs", "codexPlusUsageIdleIntervalMs",
       "codexPlusUsageActiveIntervalMs", "codexPlusUsageWarmupIntervalMs", "codexPlusUsageFailureLimit",
-      "codexPlusUsagePercent", "codexPlusUsageLatestTurn", "codexPlusUsageRate", "codexPlusUsageTurnCache", "codexPlusUsageSnapshot",
+      "codexPlusUsagePercent", "codexPlusUsageLatestTurn", "codexPlusUsageMaxIntervalSeconds", "codexPlusUsageRate", "codexPlusUsageTurnCache", "codexPlusUsageSnapshot",
       "codexPlusUsageHide", "codexPlusUsageShow", "codexPlusUsageSyncPlacement",
       "codexPlusUsageRemember", "codexPlusUsageRefresh", "codexPlusUsageTick"].map(declaration),
     "return { state: codexPlusUsageState, sync: codexPlusUsageSyncPlacement, tick: codexPlusUsageTick, remember: codexPlusUsageRemember };",

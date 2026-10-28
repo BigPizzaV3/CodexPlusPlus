@@ -956,10 +956,135 @@ base_url = "https://relay.example.test/v1"
     normalize_relay_profile_for_storage(&mut profile).unwrap();
 
     // name = "OpenAI" 会让 codex 误判官方身份启用 v2 远程压缩（issue #2217），
-    // 非官方会话身份必须改写为中性名。
-    assert!(profile.config_contents.contains(r#"name = "custom""#));
+    // 非官方会话身份必须改写为中性名（优先用供应商显示名，issue #192）。
+    assert!(profile.config_contents.contains(r#"name = "默认中转""#));
     assert!(!profile.config_contents.contains(r#"name = "OpenAI""#));
     let _ = temp;
+}
+
+/// 读 live config 里活动传输 provider 的 name（解析 TOML，校验转义后的真实值）。
+fn live_transport_provider_name(home: &std::path::Path) -> String {
+    let doc = std::fs::read_to_string(home.join("config.toml"))
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    let provider = doc["model_provider"].as_str().unwrap().to_string();
+    let provider = if provider == "openai" {
+        "custom".to_string()
+    } else {
+        provider
+    };
+    doc["model_providers"][provider.as_str()]["name"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn pure_api_profile_named(name: &str, config_contents: &str) -> RelayProfile {
+    RelayProfile {
+        id: "relay-a".to_string(),
+        name: name.to_string(),
+        model: "qwen3-coder".to_string(),
+        base_url: "https://relay.example/v1".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: config_contents.to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        ..RelayProfile::default()
+    }
+}
+
+/// issue #192：纯 API 模式下 provider name 跟供应商列表的显示名同步，
+/// 引号、反斜杠、换行等字符要经过 TOML 转义，不能写坏 config.toml。
+#[test]
+fn pure_api_provider_name_follows_profile_display_name_with_toml_escaping() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = pure_api_profile_named(
+        "  我的\"中转\" \\ A\nB  ",
+        "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\n",
+    );
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    assert_eq!(
+        live_transport_provider_name(temp.path()),
+        "我的\"中转\" \\ A B"
+    );
+}
+
+/// issue #192：自定义 provider id 的表名也会被显示名接管（name 原本等于表名）。
+#[test]
+fn pure_api_provider_name_replaces_generated_custom_provider_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = pure_api_profile_named(
+        "Max 中转",
+        "model_provider = \"max_ai\"\n\n[model_providers.max_ai]\nname = \"max_ai\"\nbase_url = \"https://relay.example/v1\"\n",
+    );
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("[model_providers.max_ai]"));
+    assert_eq!(live_transport_provider_name(temp.path()), "Max 中转");
+}
+
+/// 用户在配置里手写的 name 是自定义标签（issue #1886 / #2682），不被显示名覆盖。
+#[test]
+fn pure_api_provider_name_keeps_user_customized_label() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = pure_api_profile_named(
+        "列表里的名字",
+        "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"My relay\"\n",
+    );
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    assert_eq!(live_transport_provider_name(temp.path()), "My relay");
+}
+
+/// 显示名为空或是 OpenAI 的大小写 / 空白变体时不能写进 name（issue #2217），退回 provider id。
+#[test]
+fn pure_api_provider_name_falls_back_when_display_name_is_empty_or_openai() {
+    for display_name in [
+        "", "   ", "OpenAI", "openai", " OPENAI ", "Open AI", "open\tai",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = pure_api_profile_named(
+            display_name,
+            "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"OpenAI\"\n",
+        );
+
+        apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+        assert_eq!(
+            live_transport_provider_name(temp.path()),
+            "custom",
+            "display name {display_name:?}"
+        );
+    }
+}
+
+/// 回填 live config 不能把 Codex++ 写进去的显示名固化进快照，否则改名后不再同步（issue #192）。
+#[test]
+fn backfill_does_not_freeze_synced_display_name_so_rename_still_syncs() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = pure_api_profile_named(
+        "旧名字",
+        "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\n",
+    );
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+    assert_eq!(live_transport_provider_name(temp.path()), "旧名字");
+
+    let mut common = String::new();
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
+    assert!(!profile.config_contents.contains("旧名字"));
+    let mut simple = profile.clone();
+    backfill_relay_profile_from_home(temp.path(), &mut simple).unwrap();
+    assert!(!simple.config_contents.contains("旧名字"));
+
+    profile.name = "新名字".to_string();
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+    assert_eq!(live_transport_provider_name(temp.path()), "新名字");
 }
 
 /// issue #1097 问题 2：live config 的 `model =` 被污染成整段转义后的供应商配置时，
@@ -1325,7 +1450,7 @@ experimental_bearer_token = "sk-test-redacted"
 
     assert!(ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
     let updated = std::fs::read_to_string(&config_path).unwrap();
-    assert!(updated.contains(r#"name = "custom""#));
+    assert!(updated.contains(r#"name = "默认中转""#));
     assert!(!updated.contains(r#"name = "OpenAI""#));
     assert!(updated.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
     assert!(!ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
@@ -4511,7 +4636,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"model = "qwen3-coder""#));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
-    assert!(config.contains(r#"name = "custom""#));
+    assert!(config.contains(r#"name = "默认中转""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(!config.contains("requires_openai_auth"));
     assert!(config.contains(r#"base_url = "https://relay.example/v1""#));
@@ -4548,7 +4673,7 @@ requires_openai_auth = true
     assert!(config.contains("disable_response_storage = true"));
     assert!(config.contains(r#"model_provider = "max_ai""#));
     assert!(config.contains("[model_providers.max_ai]"));
-    assert!(config.contains(r#"name = "max_ai""#));
+    assert!(config.contains(r#"name = "默认中转""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
@@ -5070,7 +5195,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"model = "gpt-5.4""#));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
-    assert!(config.contains(r#"name = "custom""#));
+    assert!(config.contains(r#"name = "默认中转""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(!config.contains("requires_openai_auth"));
@@ -5384,6 +5509,509 @@ fn apply_relay_profile_preserves_live_multi_agent_features() {
     let parsed: toml::Value = toml::from_str(&config).unwrap();
     assert_eq!(parsed["features"]["multi_agent_v2"].as_bool(), Some(true));
     assert_eq!(parsed["features"]["memories"].as_bool(), Some(true));
+}
+
+/// #2683：供应商显式 v1 压过 Lite 场景的自动 v2 与内置模板默认，
+/// 且同步把 [features] multi_agent_v2 压为 false（闸门开启会单向覆盖 v1）。
+#[test]
+fn provider_multi_agent_v1_overrides_auto_v2_and_gates_features() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\n[features]\nmulti_agent_v2 = true\n",
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "relay-ma-v1".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v1".to_string(),
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        model_list: "deepseek-v4-flash\ngpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["features"]["multi_agent_v2"].as_bool(), Some(false));
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-ma-v1.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    for model in catalog["models"].as_array().unwrap() {
+        assert_eq!(
+            model["multi_agent_version"], "v1",
+            "供应商级 v1 应覆盖所有模型（含内置模板为 v2 的 gpt-5.6-sol）：{}",
+            model["slug"]
+        );
+    }
+}
+
+/// #2683：供应商显式 v2 为无内置声明的自定义模型统一写 v2；Auto 保持现有行为
+/// （自定义 Responses 目录在 Lite 能力显式时自动写 v2）。
+#[test]
+fn provider_multi_agent_v2_and_auto_write_expected_versions() {
+    let base_contents = r#"model = "vendor-model"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+    .to_string();
+
+    let v2 = RelayProfile {
+        id: "relay-ma-v2".to_string(),
+        model: "vendor-model".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v2".to_string(),
+        config_contents: base_contents.clone(),
+        model_list: "vendor-model".to_string(),
+        ..RelayProfile::default()
+    };
+    let temp = tempfile::tempdir().unwrap();
+    apply_relay_profile_files_to_home_with_context(temp.path(), &v2, "").unwrap();
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-ma-v2.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(catalog["models"][0]["multi_agent_version"], "v2");
+
+    let auto = RelayProfile {
+        id: "relay-ma-auto".to_string(),
+        multi_agent: String::new(),
+        ..v2
+    };
+    let temp = tempfile::tempdir().unwrap();
+    apply_relay_profile_files_to_home_with_context(temp.path(), &auto, "").unwrap();
+    // Auto 对最小形态保持既有「无后缀不落盘」契约：单模型无任何覆盖时不生成
+    // catalog（与显式 v1/v2 强制落盘形成对照），指针也不写。
+    assert!(
+        !temp.path().join("model-catalogs").join("relay-ma-auto.json").exists(),
+        "Auto 不应改变最小形态的落盘契约"
+    );
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(model_catalog_pointer(&config).is_none());
+}
+
+/// #2683：每模型 modelMetadata 的 multi_agent_version 优先于供应商级选择。
+#[test]
+fn per_model_metadata_multi_agent_beats_provider_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-ma-mix".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v1".to_string(),
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        model_list: "deepseek-v4-flash\nvendor-model".to_string(),
+        model_metadata: r#"{"vendor-model": {"multi_agent_version": "v2"}}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-ma-mix.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let models = catalog["models"].as_array().unwrap();
+    let vendor = models.iter().find(|m| m["slug"] == "vendor-model").unwrap();
+    let deepseek = models
+        .iter()
+        .find(|m| m["slug"] == "deepseek-v4-flash")
+        .unwrap();
+    assert_eq!(vendor["multi_agent_version"], "v2", "模型级声明优先");
+    assert_eq!(deepseek["multi_agent_version"], "v1", "未声明的落回供应商级");
+}
+
+/// #2683：内联表形态的 features（`features = { multi_agent_v2 = true }`）同样要被
+/// v1 选择压下——as_table_mut 不认内联表，曾经静默跳过写入。
+#[test]
+fn provider_multi_agent_v1_gates_inline_features_table() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\nfeatures = { multi_agent_v2 = true }\n",
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "relay-ma-inline".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v1".to_string(),
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed["features"]["multi_agent_v2"].as_bool(),
+        Some(false),
+        "内联表形态的闸门也要被压下"
+    );
+}
+
+/// #2683：用户手写外部 model_catalog_json 指针时，目录内容不动，但 v1 的闸门
+/// 联动仍要生效——否则外部目录里的 v1 声明同样会被全局闸门单向覆盖。
+#[test]
+fn provider_multi_agent_v1_gates_external_catalog_pointer() {
+    let temp = tempfile::tempdir().unwrap();
+    // 外部目录必须放在 model-catalogs/ 之外：该目录下的指针一律视为 Codex++
+    // 托管并接管，走不到「外部指针原样保留」分支。
+    std::fs::write(
+        temp.path().join("vendor-external.json"),
+        r#"{"models":[{"slug":"deepseek-v4-flash","multi_agent_version":"v1"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        format!(
+            "model = \"old\"\nmodel_catalog_json = {}\n[features]\nmulti_agent_v2 = true\n",
+            toml_path_literal(&temp.path().join("vendor-external.json"))
+        ),
+    )
+    .unwrap();
+    // Chat 协议：standard_responses 为 false，走「外部指针原样保留」分支。
+    let profile = RelayProfile {
+        id: "relay-ma-ext".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::ChatCompletions,
+        multi_agent: "v1".to_string(),
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "chat"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    // 外部指针原样保留……
+    assert_eq!(
+        model_catalog_pointer(&config).as_deref(),
+        Some(temp.path().join("vendor-external.json").to_str().unwrap())
+    );
+    // ……但闸门被压下。
+    assert_eq!(parsed["features"]["multi_agent_v2"].as_bool(), Some(false));
+    // 外部目录文件本身不被改写。
+    let catalog =
+        std::fs::read_to_string(temp.path().join("vendor-external.json")).unwrap();
+    let catalog: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+    assert_eq!(catalog["models"][0]["multi_agent_version"], "v1");
+}
+
+/// #2714 review：live 里用 `[features.multi_agent_v2]` 子表写法时，压闸只写
+/// `enabled = false`，表里其他设置原样带进新配置，不能整表替换成标量 false。
+#[test]
+fn provider_multi_agent_v1_gate_sub_table_keeps_other_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\n[features]\n[features.multi_agent_v2]\nenabled = true\nmax_sub_agents = 8\n",
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "relay-ma-sub".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v1".to_string(),
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    let gate = &parsed["features"]["multi_agent_v2"];
+    assert!(
+        gate.is_table(),
+        "子表写法要保留原形态，不能替换成标量 false：{gate:?}"
+    );
+    assert_eq!(gate["enabled"].as_bool(), Some(false));
+    assert_eq!(gate["max_sub_agents"].as_integer(), Some(8));
+    // 子表压闸后的语义与启用判定一致：显式 enabled=false 视为关闭。
+    assert!(!codex_plus_core::aggregate_catalog::multi_agent_v2_enabled(&config));
+}
+
+/// #2714 review：显式 v1 压下的闸门只在当前供应商生效期间维持，切走时还原用户
+/// 原来的开启状态——features 补回不能把压下的 false 一直带给后面的供应商。
+#[test]
+fn provider_multi_agent_v1_gate_restores_scalar_when_switching_away() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\n[features]\nmulti_agent_v2 = true\nmemories = true\n",
+    )
+    .unwrap();
+    let base_contents = r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+    .to_string();
+    let v1 = RelayProfile {
+        id: "relay-ma-a".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v1".to_string(),
+        config_contents: base_contents.clone(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &v1, "").unwrap();
+    let gated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let gated: toml::Value = toml::from_str(&gated).unwrap();
+    assert_eq!(gated["features"]["multi_agent_v2"].as_bool(), Some(false));
+    assert!(
+        temp.path().join("model-catalogs").join("multi-agent-gate.json").exists(),
+        "压闸期间应有原值存档"
+    );
+
+    // 切到一家没有显式选择的供应商：闸门还原用户原来的 true，存档清掉。
+    let plain = RelayProfile {
+        id: "relay-ma-b".to_string(),
+        model: "vendor-model".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: base_contents.replace("deepseek-v4-flash", "vendor-model"),
+        model_list: String::new(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &plain, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed["features"]["multi_agent_v2"].as_bool(),
+        Some(true),
+        "切走时要把闸门还原成用户原来的开启状态"
+    );
+    assert_eq!(parsed["features"]["memories"].as_bool(), Some(true));
+    assert!(
+        !temp.path().join("model-catalogs").join("multi-agent-gate.json").exists(),
+        "还原后存档应清掉"
+    );
+}
+
+/// #2714 review：用户原本没开 multi_agent_v2 时，切走后这个键应整个消失，
+/// 而不是留下压闸写入的 false。
+#[test]
+fn provider_multi_agent_v1_gate_removes_key_when_original_absent() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\n[features]\nmemories = true\n",
+    )
+    .unwrap();
+    let v1 = RelayProfile {
+        id: "relay-ma-absent".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v1".to_string(),
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &v1, "").unwrap();
+    let gated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let gated: toml::Value = toml::from_str(&gated).unwrap();
+    assert_eq!(gated["features"]["multi_agent_v2"].as_bool(), Some(false));
+
+    let plain = RelayProfile {
+        id: "relay-ma-plain".to_string(),
+        model: "vendor-model".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "vendor-model"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        model_list: String::new(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &plain, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert!(
+        parsed["features"].get("multi_agent_v2").is_none(),
+        "原值本就不存在时，切走后应整个拿掉压闸写入的键：{config}"
+    );
+    assert_eq!(parsed["features"]["memories"].as_bool(), Some(true));
+}
+
+/// #2714 review：子表写法的原值在切走时整表还原，表里除 enabled 之外的键不丢。
+#[test]
+fn provider_multi_agent_v1_gate_restores_sub_table_when_switching_away() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\n[features]\n[features.multi_agent_v2]\nenabled = true\nmax_sub_agents = 8\n",
+    )
+    .unwrap();
+    let base_contents = r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+    .to_string();
+    let v1 = RelayProfile {
+        id: "relay-ma-sub-a".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v1".to_string(),
+        config_contents: base_contents.clone(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &v1, "").unwrap();
+
+    let plain = RelayProfile {
+        id: "relay-ma-sub-b".to_string(),
+        model: "vendor-model".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: base_contents.replace("deepseek-v4-flash", "vendor-model"),
+        model_list: String::new(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &plain, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    let gate = &parsed["features"]["multi_agent_v2"];
+    assert!(gate.is_table(), "切走后应还原成原来的子表形态：{gate:?}");
+    assert_eq!(gate["enabled"].as_bool(), Some(true));
+    assert_eq!(gate["max_sub_agents"].as_integer(), Some(8));
+}
+
+/// #2714 review：闸门生效期间用户手动改过这个键的，切走时尊重用户的改动，
+/// 不按存档回写（live 与压下形态不一致即视为手动改过）。
+#[test]
+fn provider_multi_agent_v1_gate_respects_manual_edit_while_gated() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\n[features]\nmemories = true\n",
+    )
+    .unwrap();
+    let base_contents = r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+    .to_string();
+    let v1 = RelayProfile {
+        id: "relay-ma-edit-a".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        multi_agent: "v1".to_string(),
+        config_contents: base_contents.clone(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &v1, "").unwrap();
+
+    // 模拟用户在闸门生效期间手动开启。
+    let mut live = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    live = live.replace("multi_agent_v2 = false", "multi_agent_v2 = true");
+    std::fs::write(temp.path().join("config.toml"), live).unwrap();
+
+    let plain = RelayProfile {
+        id: "relay-ma-edit-b".to_string(),
+        model: "vendor-model".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: base_contents.replace("deepseek-v4-flash", "vendor-model"),
+        model_list: String::new(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &plain, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed["features"]["multi_agent_v2"].as_bool(),
+        Some(true),
+        "手动改过的值要保留，不能按存档回写或删键"
+    );
+    assert!(
+        !temp.path().join("model-catalogs").join("multi-agent-gate.json").exists(),
+        "存档这次也一并清掉"
+    );
 }
 
 #[test]
@@ -7073,9 +7701,9 @@ base_url = "https://responses.example.test/v1"
 
 #[test]
 fn official_mix_profile_keeps_user_feature_flags_in_live_config() {
-    // #1010：混入模式下 Codex 直连中转 base_url，Codex++ 无法在转发时剥掉生图工具；
-    // 中转不支持生图时，用户在供应商配置里写 `[features] image_generation = false`
-    // 是唯一规避手段，切换供应商时必须原样落到 live config.toml。
+    // #1010：混入模式下 Codex 直连中转 base_url，Codex++ 不经手请求、剥不掉生图工具
+    // （#228 起可打开「移除托管生图工具」改走本地代理）；用户在供应商配置里写的
+    // `[features] image_generation = false` 切换供应商时仍必须原样落到 live config.toml。
     let temp = tempfile::tempdir().unwrap();
     let mut profile = RelayProfile {
         id: "mix".to_string(),
@@ -7305,6 +7933,26 @@ fn auto_review_model_routes_responses_profile_through_local_proxy() {
     assert!(!direct.contains("127.0.0.1:57321"));
 
     profile.auto_review_model = "deepseek-v4-flash".to_string();
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
+        .unwrap();
+    let proxied = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(proxied.contains("127.0.0.1:57321"), "{proxied}");
+}
+
+/// issue #228：托管生图工具的剥离发生在本地协议代理里，打开「移除托管生图工具」的
+/// Responses 供应商必须改走本地代理；关闭时保持上游直连。
+#[test]
+fn strip_image_generation_tool_routes_responses_profile_through_local_proxy() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = responses_profile_with_model("gpt-5.6-sol");
+
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
+        .unwrap();
+    let direct = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(direct.contains("https://responses.example.test/v1"));
+    assert!(!direct.contains("127.0.0.1:57321"));
+
+    profile.strip_image_generation_tool = true;
     apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
         .unwrap();
     let proxied = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();

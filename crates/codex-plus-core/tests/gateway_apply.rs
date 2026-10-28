@@ -54,6 +54,7 @@ fn deepseek_input() -> ProviderInput {
         price: None,
         model_prices: None,
         proxy: None,
+        strip_image_generation_tool: None,
     }
 }
 
@@ -421,6 +422,7 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
             price: None,
             model_prices: None,
             proxy: None,
+            strip_image_generation_tool: None,
         },
         "",
         None,
@@ -589,6 +591,7 @@ fn codex_group_offers_fast_only_when_every_member_supports_it() {
                 price: None,
                 model_prices: None,
                 proxy: None,
+                strip_image_generation_tool: None,
             },
             "",
             None,
@@ -1333,6 +1336,7 @@ fn direct_aggregates_move_into_the_gateway_as_pool_providers_and_a_group() {
         }],
         default_relay_id: String::new(),
         sync_default_member_login: false,
+        auto_review_relay_id: String::new(),
     };
     let settings = BackendSettings {
         relay_profiles: vec![
@@ -1600,4 +1604,37 @@ fn reasoning_levels_are_edited_per_model_and_survive_provider_edits() {
         set_provider_metadata(&ctx.gateway, &id, "[1, 2]").is_err(),
         "不是对象要拒绝"
     );
+}
+
+/// #228：网关供应商的「移除托管生图工具」随新建写入，编辑时不传沿用原值，传了才改。
+#[test]
+fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GatewayStore::at(temp.path().join("gateway.json"));
+    let input = ProviderInput {
+        protocol: RelayProtocol::Responses,
+        strip_image_generation_tool: Some(true),
+        ..deepseek_input()
+    };
+    let (_, id) = create_provider(&store, &input, "", None).unwrap();
+    let relay = |store: &GatewayStore| {
+        store
+            .load()
+            .unwrap()
+            .providers
+            .into_iter()
+            .find(|provider| provider.relay.id == id)
+            .unwrap()
+            .relay
+    };
+    assert!(relay(&store).strip_image_generation_tool);
+    assert!(relay(&store).strips_image_generation_tool());
+
+    let keep = ProviderInput { strip_image_generation_tool: None, ..input.clone() };
+    update_provider(&store, &id, &keep).unwrap();
+    assert!(relay(&store).strip_image_generation_tool);
+
+    let off = ProviderInput { strip_image_generation_tool: Some(false), ..input };
+    update_provider(&store, &id, &off).unwrap();
+    assert!(!relay(&store).strip_image_generation_tool);
 }

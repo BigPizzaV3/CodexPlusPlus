@@ -20,6 +20,10 @@ export type AgentBinding = {
   extraModels: string[];
   claudeRoles: ClaudeRoleModels;
   unknownModel: UnknownModelPolicy;
+  /** 审批模型（#2703，Codex 用）：codex-auto-review 改发到这个模型；空或没有是不单独指定（旧版后端没有）。 */
+  autoReviewModel?: string;
+  /** 起名模型（Codex 用）：Codex 给会话起名的请求改发到这个模型；空或没有是不改（旧版后端没有）。 */
+  titleModel?: string;
   contextWindow?: number | null;
   claudeEnableEffort: boolean;
   /** 这个 Agent 不用的池内供应商（「挑选」里取消勾选的）。 */
@@ -74,6 +78,8 @@ export type GatewayPoolEntry = {
   contextWindow?: number | null;
   /** 网关供应商单独走的 HTTP 代理，空串表示不单独走代理。 */
   proxy?: string;
+  /** 转发前移除托管生图工具（image_generation，#228）。旧版后端没有。 */
+  stripImageGenerationTool?: boolean;
   /** 登录得到的账号：chatgpt / copilot / grok；普通供应商为空。 */
   account?: string;
   /** 订阅账号的套餐，如「ChatGPT Pro」「Copilot Pro+」。 */
@@ -227,6 +233,8 @@ export type BindingDraft = {
   haiku: string;
   subagent: string;
   unknownModel: UnknownModelPolicy;
+  autoReviewModel: string;
+  titleModel: string;
   contextWindow: string;
   claudeEnableEffort: boolean;
   poolExclude: string[];
@@ -256,6 +264,8 @@ export function draftFromBinding(binding: AgentBinding | undefined): BindingDraf
     haiku: source.claudeRoles.haiku,
     subagent: source.claudeRoles.subagent,
     unknownModel: source.unknownModel,
+    autoReviewModel: source.autoReviewModel ?? "",
+    titleModel: source.titleModel ?? "",
     contextWindow: source.contextWindow ? String(source.contextWindow) : "",
     claudeEnableEffort: source.claudeEnableEffort,
     poolExclude: [...(source.poolExclude ?? [])],
@@ -313,6 +323,8 @@ export function bindingFromDraft(draft: BindingDraft, previous: AgentBinding | u
       subagent: draft.subagent.trim(),
     },
     unknownModel: draft.unknownModel,
+    autoReviewModel: draft.autoReviewModel.trim(),
+    titleModel: draft.titleModel.trim(),
     contextWindow: window && Number.isFinite(window) ? window : null,
     claudeEnableEffort: draft.claudeEnableEffort,
     poolExclude: [...draft.poolExclude],
@@ -1019,9 +1031,11 @@ export type ProviderDraft = {
   proxy: string;
   /** 按模型的价格：新添加时按公开价格表自动查；不带表示不改。 */
   modelPrices?: Record<string, ProviderPrice> | null;
+  /** 转发前移除托管生图工具（image_generation）：不支持生图的 Responses 中转用（#228）。 */
+  stripImageGenerationTool?: boolean;
 };
 
-const NO_PRICE = { priceCurrency: "CNY", priceInput: "", priceCached: "", priceOutput: "", proxy: "" };
+const NO_PRICE = { priceCurrency: "CNY", priceInput: "", priceCached: "", priceOutput: "", proxy: "", stripImageGenerationTool: false };
 
 export function providerDraftFromPreset(preset: GatewayPreset | null): ProviderDraft {
   if (!preset) return { name: "", baseUrl: "", keys: "", protocol: "chatCompletions", model: "", modelList: "", ...NO_PRICE };
@@ -1050,6 +1064,7 @@ export function providerDraftFromEntry(entry: GatewayPoolEntry): ProviderDraft {
     priceCached: entry.price ? String(entry.price.cachedInput) : "",
     priceOutput: entry.price ? String(entry.price.output) : "",
     proxy: entry.proxy ?? "",
+    stripImageGenerationTool: entry.stripImageGenerationTool === true,
   };
 }
 
@@ -1065,6 +1080,7 @@ export function providerInput(draft: ProviderDraft) {
     price: priceFromDraft(draft),
     modelPrices: draft.modelPrices ?? null,
     proxy: draft.proxy.trim(),
+    stripImageGenerationTool: draft.stripImageGenerationTool === true,
   };
 }
 
