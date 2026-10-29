@@ -546,6 +546,7 @@ struct CatalogRepairThread {
 struct CatalogRepairObservedThread {
     thread: CatalogRepairThread,
     eligible: bool,
+    excluded_by_metadata: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -5801,28 +5802,32 @@ fn collect_catalog_repair_plan(
             // Native paginated migration can remove JSONL after storing history in SQLite.
             let history_available = history_mode == "paginated"
                 || catalog_rollout_path_exists(home, &thread.source_detail);
-            let eligible = archived == 0
-                && has_user_content == 1
-                && agent_role.trim().is_empty()
-                && !marked_non_user
-                && !source_is_exec
-                && !non_root
-                && history_available;
+            let excluded_by_metadata = archived != 0
+                || has_user_content != 1
+                || !agent_role.trim().is_empty()
+                || marked_non_user
+                || source_is_exec
+                || non_root;
+            let eligible = !excluded_by_metadata && history_available;
             let replace = observed_threads
                 .get(&thread.id)
                 .map(|current: &CatalogRepairObservedThread| {
-                    // Copies can share a timestamp; an ineligible observation wins the tie so
-                    // an archived or agent-owned thread cannot be resurrected by a stale copy.
+                    // Metadata exclusions win ties; missing legacy storage cannot veto
+                    // an equally recent copy with available history.
                     thread.source_updated_at > current.thread.source_updated_at
                         || (thread.source_updated_at == current.thread.source_updated_at
-                            && !eligible
-                            && current.eligible)
+                            && (excluded_by_metadata, eligible)
+                                > (current.excluded_by_metadata, current.eligible))
                 })
                 .unwrap_or(true);
             if replace {
                 observed_threads.insert(
                     thread.id.clone(),
-                    CatalogRepairObservedThread { thread, eligible },
+                    CatalogRepairObservedThread {
+                        thread,
+                        eligible,
+                        excluded_by_metadata,
+                    },
                 );
             }
         }

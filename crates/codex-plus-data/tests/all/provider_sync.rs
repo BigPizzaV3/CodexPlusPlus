@@ -2302,6 +2302,148 @@ fn provider_sync_catalog_preserves_paginated_threads_without_rollout_files() {
 }
 
 #[test]
+fn provider_sync_catalog_merges_equal_timestamp_storage_copies() {
+    for modern_first in [false, true] {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let sqlite_dir = home.join("sqlite");
+        fs::create_dir_all(&sqlite_dir).unwrap();
+        write_provider_config(&home, "custom");
+        let global = json!({"thread-project-assignments": {
+            "missing": {"projectId": "project", "projectKind": "local"}
+        }}).to_string();
+        fs::write(home.join(".codex-global-state.json"), &global).unwrap();
+        let ids = [
+            "retained", "missing", "archived-modern", "archived-legacy", "role", "child",
+            "exec", "ambient", "empty", "newer-legacy", "newer-modern", "legacy-only",
+        ];
+        let root = home.join("state_5.sqlite");
+        let old = sqlite_dir.join("state_5.sqlite");
+        let (modern, legacy) = if modern_first { (&old, &root) } else { (&root, &old) };
+        create_catalog_storage_copy_db(modern, true, &ids[..ids.len() - 1]);
+        create_catalog_storage_copy_db(legacy, false, &ids);
+        Connection::open(modern).unwrap().execute_batch(
+            "UPDATE threads SET archived = 1 WHERE id = 'archived-modern';
+             UPDATE threads SET updated_at_ms = 400000 WHERE id = 'newer-modern';",
+        ).unwrap();
+        Connection::open(legacy).unwrap().execute_batch(
+            "UPDATE threads SET archived = 1 WHERE id IN ('archived-legacy', 'newer-modern');
+             UPDATE threads SET agent_role = 'reviewer' WHERE id = 'role';
+             UPDATE threads SET source = 'subagent', thread_source = 'subagent' WHERE id = 'child';
+             UPDATE threads SET source = 'exec' WHERE id = 'exec';
+             UPDATE threads SET thread_source = 'ambient_suggestions' WHERE id = 'ambient';
+             UPDATE threads SET preview = '' WHERE id = 'empty';
+             UPDATE threads SET updated_at_ms = 400000 WHERE id = 'newer-legacy';",
+        ).unwrap();
+        let sources_before = [fs::read(&root).unwrap(), fs::read(&old).unwrap()];
+        let history = home.join("thread_history_1.sqlite");
+        Connection::open(&history).unwrap().execute_batch(
+            "CREATE TABLE thread_items (thread_id TEXT, item_json TEXT);
+             INSERT INTO thread_items VALUES ('missing', 'native history sentinel');",
+        ).unwrap();
+        let history_before = fs::read(&history).unwrap();
+        let catalogs = [sqlite_dir.join("codex-dev.db"), sqlite_dir.join("codex.db")];
+        let initial = ids.iter().filter(|id| !matches!(**id, "missing" | "newer-modern"))
+            .map(|id| (*id, "custom")).collect::<Vec<_>>();
+        for path in &catalogs {
+            create_local_thread_catalog_db(path, &initial);
+            Connection::open(path).unwrap().execute_batch(
+                "INSERT INTO local_thread_catalog_hosts VALUES ('remote', 'ssh');
+                 INSERT INTO local_thread_catalog SELECT 'remote', thread_id, display_title,
+                    source_created_at, source_updated_at, cwd, source_kind, source_detail,
+                    model_provider, git_branch, observation_sequence, missing_candidate, thread_source
+                 FROM local_thread_catalog WHERE thread_id = 'archived-modern';",
+            ).unwrap();
+        }
+
+        let first = run_provider_sync(Some(&home));
+        assert_eq!(first.status, ProviderSyncStatus::Synced, "{first:?}");
+        for path in &catalogs {
+            assert!(
+                catalog_rows_snapshot(path).contains(&("local".into(), "retained".into())),
+                "a legacy copy missing JSONL must not veto equal-timestamp paginated history"
+            );
+            assert_eq!(
+                catalog_rows_snapshot(path),
+                vec![
+                    ("local".into(), "missing".into()),
+                    ("local".into(), "newer-modern".into()),
+                    ("local".into(), "retained".into()),
+                    ("remote".into(), "archived-modern".into()),
+                ],
+                "metadata exclusions and newer observations must retain their priority"
+            );
+        }
+        assert_eq!(first.sqlite_catalog_rows_inserted, 4);
+        assert_eq!(first.sqlite_catalog_rows_removed, 18);
+        assert_eq!([fs::read(&root).unwrap(), fs::read(&old).unwrap()], sources_before);
+        assert_eq!(fs::read(&history).unwrap(), history_before);
+        assert_eq!(fs::read_to_string(home.join(".codex-global-state.json")).unwrap(), global);
+        assert!(!home.join("sessions").exists());
+
+        let second = run_provider_sync(Some(&home));
+        assert_eq!(second.status, ProviderSyncStatus::Synced, "{second:?}");
+        assert_eq!(second.sqlite_rows_updated, 0);
+        assert!(second.backup_dir.is_none());
+        assert_eq!([fs::read(&root).unwrap(), fs::read(&old).unwrap()], sources_before);
+        assert_eq!(fs::read(&history).unwrap(), history_before);
+    }
+}
+
+#[test]
+fn provider_sync_catalog_equal_timestamp_exclusions_are_order_independent() {
+    // Available history, missing legacy storage and an archived copy can be observed in any order.
+    for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let sqlite_dir = home.join("sqlite");
+        fs::create_dir_all(&sqlite_dir).unwrap();
+        write_provider_config(&home, "custom");
+        for (path, kind) in [
+            sqlite_dir.join("a.db"), sqlite_dir.join("b.db"), home.join("state_5.sqlite"),
+        ].iter().zip(order) {
+            create_catalog_storage_copy_db(path, kind == 0, &["shared"]);
+            if kind == 2 {
+                Connection::open(path).unwrap()
+                    .execute("UPDATE threads SET archived = 1", []).unwrap();
+            }
+        }
+        let catalog = sqlite_dir.join("codex-dev.db");
+        create_local_thread_catalog_db(&catalog, &[("shared", "custom")]);
+        let result = run_provider_sync(Some(&home));
+        assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+        assert_eq!(result.sqlite_catalog_rows_inserted, 0);
+        assert_eq!(result.sqlite_catalog_rows_removed, 1);
+        assert!(catalog_rows_snapshot(&catalog).is_empty(), "order={order:?}");
+    }
+}
+
+fn create_catalog_storage_copy_db(path: &Path, paginated: bool, ids: &[&str]) {
+    let db = Connection::open(path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT, agent_role TEXT,
+            preview TEXT, model TEXT, reasoning_effort TEXT, project_id TEXT
+        );",
+    ).unwrap();
+    for id in ids {
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'custom', 0, 1, 'E:/project', ?1, ?2, 'vscode', 100000,
+                300000, 'user', 'main', '', 'User', 'saved-model', 'high', 'saved-project'
+            )",
+            rusqlite::params![id, format!("sessions/{id}.jsonl")],
+        ).unwrap();
+    }
+    if paginated {
+        db.execute("ALTER TABLE threads ADD COLUMN history_mode TEXT DEFAULT 'paginated'", [])
+            .unwrap();
+    }
+}
+
+#[test]
 fn provider_sync_prunes_archived_and_ineligible_catalog_rows() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
