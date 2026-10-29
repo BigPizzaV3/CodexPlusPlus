@@ -431,7 +431,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "29";
+  const codexAppServerModelRequestPatchVersion = "30";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -5479,6 +5479,100 @@
       to: targetProvider,
     });
     return nextParams;
+  }
+
+  async function prepareCodexPureApiResume(method, params, hostId, refreshFailed = false, sendRequest) {
+    if (hostId !== "local") return params;
+    if ([params?.hostId, params?.host_id].some((host) => typeof host === "string" && host !== "local")) return params;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      if ([params.hostId, params.host_id].some((host) => typeof host === "string" && host !== "local")) return params;
+      const envelope = () => JSON.stringify([params.hostId, params.host_id, params.method]);
+      const before = envelope();
+      const inner = params.params;
+      const assertEnvelope = () => {
+        if (envelope() !== before || params.params !== inner) throw new Error("会话主机已变化，请重新打开会话");
+      };
+      const nested = await prepareCodexPureApiResume(String(params.method), params.params, hostId, refreshFailed,
+        sendRequest && ((nestedMethod, nestedParams, options) => {
+          assertEnvelope();
+          return sendRequest(method, { ...params, method: nestedMethod, params: nestedParams }, options);
+        }));
+      assertEnvelope();
+      return nested === params.params ? params : { ...params, params: nested };
+    }
+    if (method !== "thread/resume" || !params || typeof params !== "object" || Array.isArray(params)
+        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi"
+        || ["model", "modelProvider", "model_provider"].some((key) => Object.prototype.hasOwnProperty.call(params, key))) {
+      return params;
+    }
+    if (refreshFailed) throw new Error("无法确认当前供应商，请重新打开会话后再试");
+    if (Object.prototype.hasOwnProperty.call(params.config || {}, "model")) {
+      return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
+    }
+    const target = codexRemoteSessionTargetProvider();
+    if (!target || target === "openai") throw new Error("当前纯 API 供应商不可用");
+    const requestSignature = () => JSON.stringify([params.threadId,
+      ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
+      params.config]);
+    const requestBefore = requestSignature();
+    const signature = () => {
+      const profile = codexRemoteSessionActiveProfile();
+      return JSON.stringify([profile?.id, profile?.relayMode, profile?.configContents, codexRemoteSessionTargetProvider()]);
+    };
+    const before = signature();
+    const assertUnchanged = () => {
+      if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+      if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
+    };
+    const metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
+      { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+    assertUnchanged();
+    if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
+        || typeof metadata.model !== "string" || !metadata.model.trim()
+        || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
+        || (metadata.reasoningEffort !== null
+          && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
+      throw new Error("无法读取此会话保存的模型设置，未覆盖原有选择");
+    }
+    const config = { ...(params.config || {}) };
+    // null 表示原线程未指定档位，沿用原生默认语义；显式请求设置始终优先。
+    if (metadata.reasoningEffort !== null && !Object.prototype.hasOwnProperty.call(config, "model_reasoning_effort")) {
+      config.model_reasoning_effort = metadata.reasoningEffort;
+    }
+    if (sendRequest) {
+      // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
+      let timer;
+      let read;
+      try {
+        read = await Promise.race([
+          sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
+            { timeoutMs: codexAppServerPreparationTimeoutMs }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
+        ]);
+      } finally { clearTimeout(timer); }
+      assertUnchanged();
+      const status = read?.thread?.status?.type;
+      if (!["idle", "notLoaded", "active"].includes(status)) throw new Error("无法确认会话连接状态，请重新打开会话");
+      if (status !== "notLoaded" && read.thread.modelProvider !== target) {
+        throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+      }
+    }
+    const next = { ...params, model: metadata.model, modelProvider: target, config };
+    (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
+    return next;
+  }
+
+  function verifyCodexPureApiResumeResult(method, params, result, hostId) {
+    if (hostId !== "local") return;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      return verifyCodexPureApiResumeResult(String(params.method), params.params, result, hostId);
+    }
+    if (method !== "thread/resume" || !window.__codexPlusPureApiPreparedResumes?.has(params)) return;
+    if (result?.modelProvider !== params.modelProvider || result?.model !== params.model
+        || (Object.prototype.hasOwnProperty.call(params.config, "model_reasoning_effort")
+          && result?.reasoningEffort !== params.config.model_reasoning_effort)) {
+      throw new Error("会话未采用保存的模型和当前供应商，请重新启动 Codex 后重试");
+    }
   }
 
   function codexManagedSessionConnection() {
@@ -11985,8 +12079,9 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest);
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        providerParams, client.hostId, originalSendRequest);
+        resumeParams, client.hostId, originalSendRequest);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
@@ -11999,6 +12094,7 @@
       if (managedTurn) return managedTurn.result;
       const result = await sendAppServerRequestWithSideChat(client, method, nextParams,
         () => originalSendRequest(method, nextParams, options));
+      verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
@@ -12196,8 +12292,9 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest.bind(client));
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        providerParams, client.hostId, originalSendRequest.bind(client));
+        resumeParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -12210,6 +12307,7 @@
       if (managedTurn) return managedTurn.result;
       const result = await sendAppServerRequestWithSideChat(client, method, nextParams,
         () => originalSendRequest.call(client, method, nextParams, options));
+      verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model

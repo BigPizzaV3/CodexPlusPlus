@@ -16,6 +16,17 @@ use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
 
 #[tokio::test]
+async fn thread_resume_metadata_requires_an_explicit_local_host_before_reading_storage() {
+    for payload in [json!({"thread_id":"a"}), json!({"thread_id":"a","host_id":"remote"}),
+        json!({"thread_id":"a","host_id":"local","hostId":"remote"})] {
+        let ctx = test_context();
+        let result = handle_bridge_request(ctx, "/thread-resume-model-metadata", payload).await;
+        assert_eq!(result["status"], "failed");
+        assert!(result["message"].as_str().unwrap().contains("local-only"));
+    }
+}
+
+#[tokio::test]
 async fn bridge_routes_cover_all_current_paths() {
     let ctx = test_context();
 
