@@ -2285,6 +2285,7 @@ export const EN_PLAIN: Record<string, string> = {
   "刷新状态": "Refresh state",
   "本次已跳过自动接管，重启官方 App 后恢复。": "Auto-takeover is skipped for this instance; it resumes after you restart the official app.",
   "自动接管目前只支持 macOS。": "Auto-takeover is currently macOS only.",
+  "自动接管目前只支持 macOS 和 Linux。": "Auto takeover currently only supports macOS and Linux.",
   "仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。": "Only effective while Codex++ is running; the official app is restarted automatically when needed.",
   "仅在 Codex++ 正在运行时生效；建议同时开启上面的「开机打开 Codex++」。": "Only effective while Codex++ is running; keeping the login item above enabled is recommended.",
   "开启后，你自己启动官方 App 时 Codex++ 会自动接管。官方 App 已在运行且没有调试端口时，会先退出再带参数重开（可能中断正在进行的操作）。": "Once enabled, Codex++ takes over whenever you launch the official app yourself. If it is already running without a debug port, it is quit and relaunched with debug flags (this may interrupt work in progress).",

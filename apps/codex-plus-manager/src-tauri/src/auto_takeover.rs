@@ -112,7 +112,7 @@ fn inner() -> &'static Mutex<Inner> {
     INNER.get_or_init(|| {
         Mutex::new(Inner {
             state: "disabled",
-            platform_supported: cfg!(target_os = "macos"),
+            platform_supported: cfg!(any(target_os = "macos", target_os = "linux")),
             ..Inner::default()
         })
     })
@@ -422,7 +422,7 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
     // 此前这里单独用 `any(macos, windows)`，Windows 上守护线程确实会运行，
     // 而 UI 读到的 platform_supported 却是 false，用户勾选开关后表现为
     // 「反复拉起白色窗口、界面却显示不支持」（#2573）。
-    let platform_supported = cfg!(target_os = "macos");
+    let platform_supported = cfg!(any(target_os = "macos", target_os = "linux"));
     let enabled = is_enabled();
     let session_snapshot = codex_plus_launcher::session_snapshot();
     let latest = StatusStore::default().load_latest().ok().flatten();
@@ -794,7 +794,10 @@ mod tests {
     #[test]
     fn platform_support_matches_the_build_target() {
         let payload = payload();
-        assert_eq!(payload.platform_supported, cfg!(target_os = "macos"));
+        assert_eq!(
+            payload.platform_supported,
+            cfg!(any(target_os = "macos", target_os = "linux"))
+        );
     }
 
     #[test]

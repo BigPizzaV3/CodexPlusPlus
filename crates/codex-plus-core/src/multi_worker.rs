@@ -1,6 +1,4 @@
-#[cfg(any(windows, target_os = "macos", test))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +17,6 @@ pub struct CodexInstanceIdentity {
     pub executable: PathBuf,
 }
 
-#[cfg(any(windows, target_os = "macos", test))]
 pub(crate) fn codex_arguments_match(
     arguments: &[String],
     user_data_dir: &Path,
@@ -152,8 +149,28 @@ fn macos_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
     Ok(args)
 }
 
-#[cfg(target_os = "macos")]
-fn macos_birth_token(pid: u32) -> Option<u64> {
+#[cfg(target_os = "linux")]
+fn linux_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
+    let content = std::fs::read(format!("/proc/{pid}/cmdline"))?;
+    let args = content
+        .split(|&byte| byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).to_string())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!args.is_empty(), "进程参数为空");
+    Ok(args)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn unix_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
+    #[cfg(target_os = "macos")]
+    { macos_process_arguments(pid) }
+    #[cfg(target_os = "linux")]
+    { linux_process_arguments(pid) }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn unix_birth_token(pid: u32) -> Option<u64> {
     let crate::watcher::ProcessInstanceState::Running {
         birth_id: Some(birth),
         ..
@@ -166,7 +183,7 @@ fn macos_birth_token(pid: u32) -> Option<u64> {
     }))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub async fn capture_codex_instance_identity(
     instance_id: &str,
     generation: u64,
@@ -184,7 +201,7 @@ pub async fn capture_codex_instance_identity(
     anyhow::ensure!(candidates.len() == 1, "无法唯一确认多开进程");
     let process_id = candidates[0];
     let process_birth_id =
-        macos_birth_token(process_id).ok_or_else(|| anyhow::anyhow!("无法确认多开进程创建身份"))?;
+        unix_birth_token(process_id).ok_or_else(|| anyhow::anyhow!("无法确认多开进程创建身份"))?;
     let identity = CodexInstanceIdentity {
         instance_id: instance_id.into(),
         generation,
@@ -203,7 +220,7 @@ pub async fn capture_codex_instance_identity(
     Ok(identity)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub async fn codex_instance_identity_matches(
     identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
@@ -212,11 +229,11 @@ pub async fn codex_instance_identity_matches(
         || identity.browser_id.is_empty()
         || identity.debug_port == 0
         || identity.helper_port == 0
-        || macos_birth_token(identity.process_id) != Some(identity.process_birth_id)
+        || unix_birth_token(identity.process_id) != Some(identity.process_birth_id)
     {
         return Ok(false);
     }
-    let args = macos_process_arguments(identity.process_id)?;
+    let args = unix_process_arguments(identity.process_id)?;
     if !codex_arguments_match(&args, &identity.user_data_dir, identity.debug_port)
         || args
             .first()
@@ -228,11 +245,11 @@ pub async fn codex_instance_identity_matches(
     }
     Ok(
         codex_browser_id(identity.debug_port).await? == identity.browser_id
-            && macos_birth_token(identity.process_id) == Some(identity.process_birth_id),
+            && unix_birth_token(identity.process_id) == Some(identity.process_birth_id),
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub async fn terminate_verified_codex_instance(
     identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
@@ -253,7 +270,7 @@ pub async fn terminate_verified_codex_instance(
     Ok(true)
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub async fn capture_codex_instance_identity(
     _instance_id: &str,
     _generation: u64,
@@ -264,13 +281,13 @@ pub async fn capture_codex_instance_identity(
 ) -> anyhow::Result<CodexInstanceIdentity> {
     anyhow::bail!("当前系统无法安全确认多开进程身份")
 }
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub async fn codex_instance_identity_matches(
     _identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
     Ok(false)
 }
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub async fn terminate_verified_codex_instance(
     _identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {

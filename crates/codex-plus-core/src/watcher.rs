@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-#[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -275,10 +274,20 @@ pub fn watcher_is_installed() -> bool {
     {
         macos_launch_agent_path().is_some_and(|path| path.is_file())
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_autostart_path().is_some_and(|path| path.is_file())
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         false
     }
+}
+
+pub fn linux_autostart_path() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| {
+        dirs.config_dir().join("autostart").join("codex-plus-plus.desktop")
+    })
 }
 
 pub fn cdp_listening(port: u16) -> bool {
@@ -376,6 +385,14 @@ pub fn macos_launcher_process_names() -> [&'static str; 2] {
     [
         crate::install::SILENT_BINARY,
         crate::install::MACOS_SILENT_EXECUTABLE,
+    ]
+}
+
+pub fn linux_launcher_process_names() -> [&'static str; 3] {
+    [
+        "codex-plus-plus",
+        "codex-plus-launcher",
+        "codex-plus-manager",
     ]
 }
 
@@ -793,6 +810,265 @@ pub fn find_macos_codex_desktop_main_processes(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxDesktopProcess {
+    pub pid: u32,
+    pub lstart: String,
+    pub executable: String,
+}
+
+/// 判定参数列表中是否包含合法的 Chrome / Electron 调试端口参数。
+/// 仅接受：
+/// - `--remote-debugging-pipe`（当 expected_port 为 None 时）
+/// - `--remote-debugging-port=<port>`（port 为 1..=65535 的合法 u16，若指定 expected_port 则必须匹配）
+/// - `--remote-debugging-port` 与后继 token `<port>`（同上）
+pub fn has_linux_codex_debug_flag(tokens: &[String], expected_port: Option<u16>) -> bool {
+    let match_port = |val_str: &str| -> bool {
+        if let Ok(port) = val_str.parse::<u16>() {
+            if port > 0 {
+                if let Some(expected) = expected_port {
+                    return port == expected;
+                }
+                return true;
+            }
+        }
+        false
+    };
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        if token == "--remote-debugging-pipe" && expected_port.is_none() {
+            return true;
+        }
+        if let Some(port_str) = token.strip_prefix("--remote-debugging-port=") {
+            if match_port(port_str) {
+                return true;
+            }
+        } else if token == "--remote-debugging-port" {
+            if let Some(next_token) = tokens.get(i + 1) {
+                if match_port(next_token) {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 依据进程真实的 argv 列表、可执行文件实际符号链接路径（/proc/<pid>/exe）及预期的应用安装目录，
+/// 严格判定是否为 Linux 桌面端主进程。
+///
+/// 纯函数设计，不产生系统 I/O，无命令拼接或 shell escaping 隐患，便于单元测试完备覆盖。
+pub fn is_linux_codex_desktop_process(
+    argv: &[String],
+    exe_path: Option<&Path>,
+    expected_app_dir: Option<&Path>,
+    expected_port: Option<u16>,
+) -> bool {
+    if argv.is_empty() {
+        return false;
+    }
+
+    // 1. 过滤 Electron 子进程（如 --type=renderer, --type=gpu-process 等）
+    // 以及 Crashpad 崩溃收集进程、内置 CLI 和 Codex++ 自身
+    for token in argv {
+        if token.starts_with("--type=") {
+            return false;
+        }
+        if token.contains("crashpad_handler") {
+            return false;
+        }
+        if token.contains("/resources/codex") || token.contains("codex-cli") {
+            return false;
+        }
+        if token.contains("codex-plus-plus")
+            || token.contains("codex-plus-launcher")
+            || token.contains("codex-plus-manager")
+        {
+            return false;
+        }
+    }
+
+    // 2. 确定当前进程的可执行文件路径与文件名
+    let candidate_path = exe_path.unwrap_or_else(|| Path::new(&argv[0]));
+    let exe_str = candidate_path.to_string_lossy();
+
+    // 严禁将 node、python、npm 全局安装或 snap cli 误判
+    if exe_str.contains("/node_modules/")
+        || exe_str.starts_with("/snap/bin/")
+        || exe_str.ends_with("/node")
+        || exe_str == "node"
+        || exe_str.ends_with("/python")
+        || exe_str.ends_with("/python3")
+        || exe_str == "python"
+        || exe_str == "python3"
+    {
+        return false;
+    }
+
+    let file_name = candidate_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&argv[0]);
+
+    // 候选可执行文件名仅限官方支持的 ChatGPT 与 Codex 主程序
+    let is_candidate_name = matches!(
+        file_name,
+        "ChatGPT" | "chatgpt" | "Codex" | "codex" | "ChatGPT Dev" | "Codex Dev"
+    );
+
+    if !is_candidate_name {
+        return false;
+    }
+
+    // 3. 桌面应用路径判定（若提供了 expected_app_dir，则严格与 expected_app_dir / build_codex_executable 比对）
+    // 对于 AppImage：运行时 exe 指向挂载目录，比对由 expected_app_dir / resolve_codex_app_dir 覆盖
+    let is_resolved_app = if let Some(app_dir) = expected_app_dir {
+        let expected_exe = crate::app_paths::build_codex_executable(app_dir);
+        candidate_path == expected_exe || candidate_path.starts_with(app_dir)
+    } else {
+        false
+    };
+
+    // 白名单目录（不含 /usr/lib/codex/）
+    let is_install_dir = is_resolved_app
+        || exe_str.starts_with("/opt/chatgpt/")
+        || exe_str.starts_with("/opt/ChatGPT/")
+        || exe_str.starts_with("/opt/codex/")
+        || exe_str.starts_with("/opt/Codex/")
+        || exe_str.starts_with("/opt/chatgpt-dev/")
+        || exe_str.starts_with("/opt/codex-dev/")
+        || exe_str.starts_with("/usr/lib/chatgpt/")
+        || exe_str.starts_with("/app/bin/");
+
+    // 4. 调试端口参数匹配
+    let has_debug_flag = has_linux_codex_debug_flag(argv, expected_port);
+
+    if expected_port.is_some() {
+        has_debug_flag
+    } else {
+        is_install_dir || has_debug_flag
+    }
+}
+
+/// 解析 Linux `/proc/<pid>/stat` 中的进程启动时间（starttime，第 22 个字段，即系统启动后的时钟滴答数）。
+///
+/// 提取为纯函数以便在非 Linux 平台及单测中验证。
+/// 注意：第 2 个字段 comm 格式为 `(filename)`，内部可能包含空格或括号，
+/// 因此必须从最后一个 `)` 之后开始切分剩余字段。
+pub fn parse_linux_proc_stat_starttime(stat_content: &str) -> Option<String> {
+    let rparen_idx = stat_content.rfind(')')?;
+    let rest = stat_content.get(rparen_idx + 1..)?.trim_start();
+    // rest 的第 1 个字段是 state（原本第 3 字段），按空白切分后第 19 个字段（0-indexed）即为 starttime（原本第 22 字段）
+    let mut parts = rest.split_whitespace();
+    parts.nth(19).map(|s| s.to_string())
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub fn linux_process_starttime(pid: u32) -> Option<String> {
+    let stat_content = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_linux_proc_stat_starttime(&stat_content)
+}
+
+#[cfg(target_os = "linux")]
+fn current_uid() -> u32 {
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    unsafe { getuid() }
+}
+
+#[cfg(target_os = "linux")]
+pub fn find_linux_codex_desktop_main_processes(
+    debug_port: Option<u16>,
+) -> Vec<LinuxDesktopProcess> {
+    let uid = current_uid();
+    let expected_app_dir = crate::app_paths::resolve_codex_app_dir(None);
+    let mut processes = Vec::new();
+
+    let proc_dir = match std::fs::read_dir("/proc") {
+        Ok(dir) => dir,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in proc_dir.flatten() {
+        let file_name = entry.file_name();
+        let name_str = file_name.to_string_lossy();
+        let Ok(pid) = name_str.parse::<u32>() else {
+            continue;
+        };
+
+        // 1. 检查 UID：读取 /proc/<pid>/status 中的 Uid 行
+        let status_path = format!("/proc/{pid}/status");
+        let Ok(status_content) = std::fs::read_to_string(&status_path) else {
+            continue;
+        };
+        let mut proc_uid = None;
+        for line in status_content.lines() {
+            if let Some(rest) = line.strip_prefix("Uid:") {
+                if let Some(uid_str) = rest.split_whitespace().next() {
+                    proc_uid = uid_str.parse::<u32>().ok();
+                    break;
+                }
+            }
+        }
+        if proc_uid != Some(uid) {
+            continue;
+        }
+
+        // 2. 读取 /proc/<pid>/cmdline：读取失败或为空必须排除（绝不放行）
+        let cmdline_path = format!("/proc/{pid}/cmdline");
+        let Ok(bytes) = std::fs::read(&cmdline_path) else {
+            continue;
+        };
+        if bytes.is_empty() {
+            continue;
+        }
+        let argv: Vec<String> = bytes
+            .split(|&b| b == 0)
+            .filter(|slice| !slice.is_empty())
+            .map(|slice| String::from_utf8_lossy(slice).to_string())
+            .collect();
+        if argv.is_empty() {
+            continue;
+        }
+
+        // 3. 读取 /proc/<pid>/exe 符号链接
+        let exe_path = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+
+        // 4. 调用纯函数判定
+        if !is_linux_codex_desktop_process(
+            &argv,
+            exe_path.as_deref(),
+            expected_app_dir.as_deref(),
+            debug_port,
+        ) {
+            continue;
+        }
+
+        // 5. 进程启动时间标记：必须读取 /proc/<pid>/stat 的 starttime；读不到则直接跳过该进程（防止复核时格式不一致导致永远无法结束）
+        let Some(lstart) = linux_process_starttime(pid) else {
+            continue;
+        };
+
+        let executable = exe_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| argv[0].clone());
+
+        processes.push(LinuxDesktopProcess {
+            pid,
+            lstart,
+            executable,
+        });
+    }
+
+    processes.sort_by_key(|p| p.pid);
+    processes.dedup_by_key(|p| p.pid);
+    processes
+}
+
 #[cfg(test)]
 mod desktop_main_process_tests {
     use super::*;
@@ -986,7 +1262,17 @@ pub fn uninstall_watcher() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn uninstall_watcher() -> anyhow::Result<()> {
+    if let Some(desktop_path) = linux_autostart_path() {
+        if desktop_path.is_file() {
+            let _ = std::fs::remove_file(desktop_path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn uninstall_watcher() -> anyhow::Result<()> {
     Ok(())
 }
@@ -1076,12 +1362,25 @@ pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
     find_codex_processes()
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn find_codex_processes() -> Vec<u32> {
+    find_linux_codex_desktop_main_processes(None)
+        .into_iter()
+        .map(|process| process.pid)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
+    find_codex_processes()
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn find_codex_processes() -> Vec<u32> {
     Vec::new()
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
     Vec::new()
 }
@@ -1111,7 +1410,14 @@ pub fn stop_launcher_processes() {
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn stop_launcher_processes() {
+    for process_id in find_launcher_processes() {
+        let _ = terminate_linux_process(process_id);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn stop_launcher_processes() {}
 
 #[cfg(windows)]
@@ -1476,7 +1782,17 @@ pub fn stop_launcher_processes_and_wait() {
     );
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn stop_launcher_processes_and_wait() {
+    terminate_linux_processes_and_wait(
+        find_launcher_processes(),
+        find_launcher_processes,
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn stop_launcher_processes_and_wait() {}
 
 #[cfg(windows)]
@@ -1486,15 +1802,22 @@ pub fn stop_codex_processes() {
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
-pub fn stop_codex_processes() {}
-
 #[cfg(target_os = "macos")]
 pub fn stop_codex_processes() {
     for process_id in find_codex_processes() {
         let _ = terminate_macos_process(process_id);
     }
 }
+
+#[cfg(target_os = "linux")]
+pub fn stop_codex_processes() {
+    for process_id in find_codex_processes() {
+        let _ = terminate_linux_process(process_id);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+pub fn stop_codex_processes() {}
 
 #[cfg(windows)]
 pub fn stop_codex_processes_and_wait() {
@@ -1515,7 +1838,17 @@ pub fn stop_codex_processes_and_wait() {
     );
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn stop_codex_processes_and_wait() {
+    terminate_linux_processes_and_wait(
+        find_codex_processes(),
+        find_codex_processes,
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn stop_codex_processes_and_wait() {}
 
 #[cfg(target_os = "macos")]
@@ -1529,7 +1862,15 @@ pub fn find_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
     codex_instance_processes_for_debug_port(debug_port)
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn find_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
+    find_linux_codex_desktop_main_processes(Some(debug_port))
+        .into_iter()
+        .map(|process| process.pid)
+        .collect()
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn find_codex_processes_for_debug_port(_debug_port: u16) -> Vec<u32> {
     find_codex_processes()
 }
@@ -1661,7 +2002,17 @@ pub fn stop_codex_processes_for_debug_port_with_fallback(
     );
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn stop_codex_processes_for_debug_port_and_wait(debug_port: u16) {
+    terminate_linux_processes_and_wait(
+        find_codex_processes_for_debug_port(debug_port),
+        || find_codex_processes_for_debug_port(debug_port),
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn stop_codex_processes_for_debug_port_and_wait(_debug_port: u16) {
     stop_codex_processes_and_wait();
 }
@@ -1873,6 +2224,88 @@ fn find_launcher_processes() -> Vec<u32> {
     process_ids
 }
 
+#[cfg(target_os = "linux")]
+fn terminate_linux_process(process_id: u32) -> std::io::Result<()> {
+    Command::new("kill")
+        .arg("-15")
+        .arg(process_id.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_linux_processes_and_wait<F>(
+    process_ids: Vec<u32>,
+    mut find_processes: F,
+    timeout_ms: u64,
+    interval_ms: u64,
+) where
+    F: FnMut() -> Vec<u32>,
+{
+    if process_ids.is_empty() {
+        return;
+    }
+    for process_id in &process_ids {
+        let _ = terminate_linux_process(*process_id);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let remaining = process_ids_still_running(&process_ids, find_processes());
+        if remaining.is_empty() || std::time::Instant::now() >= deadline {
+            if !remaining.is_empty() {
+                for process_id in &remaining {
+                    #[cfg(target_os = "linux")]
+                    let _ = Command::new("kill")
+                        .arg("-9")
+                        .arg(process_id.to_string())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "watcher.stop_wait_timeout",
+                    serde_json::json!({
+                        "remaining_process_ids": remaining,
+                        "timeout_ms": timeout_ms,
+                        "platform": "linux"
+                    }),
+                );
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(interval_ms));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn find_launcher_processes() -> Vec<u32> {
+    let current_process_id = std::process::id();
+    let uid = current_uid();
+    let mut process_ids = linux_launcher_process_names()
+        .into_iter()
+        .flat_map(|process_name| {
+            std::process::Command::new("pgrep")
+                .args(["-u", &uid.to_string(), "-x", process_name])
+                .output()
+                .ok()
+                .into_iter()
+                .flat_map(|output| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .filter_map(|value| value.trim().parse::<u32>().ok())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|process_id| *process_id != current_process_id)
+        .collect::<Vec<_>>();
+    process_ids.sort_unstable();
+    process_ids.dedup();
+    process_ids
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn find_macos_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
     let Ok(output) = std::process::Command::new("ps")
@@ -2057,6 +2490,19 @@ fn create_startup_shortcut(launcher_path: &Path, arguments: &str) -> anyhow::Res
         icon: None,
         show_minimized: false,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_launcher(launcher_path: &Path, debug_port: u16) {
+    let command = build_spawn_launcher_command(&launcher_path.to_string_lossy(), debug_port);
+    if let Some((exe, args)) = command.split_first() {
+        let _ = Command::new(exe)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
 }
 
 #[cfg(windows)]

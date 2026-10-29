@@ -4,6 +4,8 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod macos;
 pub mod windows;
 
@@ -209,7 +211,12 @@ fn platform_install(options: &InstallOptions) -> anyhow::Result<()> {
         macos::install_app_bundles(options)
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::install_shortcuts(options)
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = options;
         anyhow::bail!("当前平台暂不支持安装 Codex++ 入口")
@@ -227,7 +234,12 @@ fn platform_uninstall(options: &InstallOptions) -> anyhow::Result<()> {
         macos::uninstall_app_bundles(options)
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::uninstall_shortcuts(options)
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = options;
         anyhow::bail!("当前平台暂不支持卸载 Codex++ 入口")
@@ -262,7 +274,15 @@ fn entrypoint_candidates(root: &Option<PathBuf>) -> Vec<PathBuf> {
     } else if cfg!(target_os = "macos") {
         vec![root.join(format!("{name}.app"))]
     } else {
-        vec![root.join(format!("{name}.desktop"))]
+        let mut list = vec![
+            root.join(format!("{name}.desktop")),
+            root.join("codex-plus-plus.desktop"),
+        ];
+        if let Some(base_dirs) = directories::BaseDirs::new() {
+            list.push(base_dirs.data_local_dir().join("applications/codex-plus-plus.desktop"));
+        }
+        list.push(PathBuf::from("/usr/share/applications/codex-plus-plus.desktop"));
+        list
     }
 }
 

@@ -10276,7 +10276,7 @@ function MaintenanceScreen({
               {autoTakeover?.lastTakeoverAtMs ? (
                 <p className="hint">{tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()])}</p>
               ) : null}
-              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS。")}</p>}
+              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS 和 Linux。")}</p>}
               <p className="hint">{t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}</p>
               <Toolbar>
                 <Button variant="secondary" onClick={() => void actions.takeOverNow()}>{t("立即接管")}</Button>

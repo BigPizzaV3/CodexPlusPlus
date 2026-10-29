@@ -5546,7 +5546,18 @@ fn launcher_owned_process_alive(launch: &CodexLaunch, debug_port: u16) -> bool {
     ) && !crate::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn launcher_owned_process_alive(launch: &CodexLaunch, debug_port: u16) -> bool {
+    matches!(
+        launch,
+        CodexLaunch::Process {
+            wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+            ..
+        }
+    ) && !crate::watcher::find_codex_processes_for_debug_port(debug_port).is_empty()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn launcher_owned_process_alive(_launch: &CodexLaunch, _debug_port: u16) -> bool {
     false
 }

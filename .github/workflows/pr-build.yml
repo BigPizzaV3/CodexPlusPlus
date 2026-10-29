@@ -198,3 +198,82 @@ jobs:
           name: codex-plus-plus-macos-universal-dmg
           path: dist/macos/*.dmg
           if-no-files-found: error
+
+  linux-deb:
+    name: Linux DEB (Ubuntu 24.04, amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl git pkg-config libssl-dev libsqlite3-dev \
+            libdbus-1-dev libglib2.0-dev libgtk-3-dev \
+            libayatana-appindicator3-dev libjavascriptcoregtk-4.1-dev \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev libz3-dev
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      - name: Frontend tests
+        working-directory: apps/codex-plus-manager
+        run: npm test
+
+      - name: Check native browser inspector bundle
+        run: node scripts/assemble-native-browser-inspector.mjs --check
+
+      - name: TypeScript check
+        working-directory: apps/codex-plus-manager
+        run: npm run check
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Build Linux application
+        run: cargo build --release -p codex-plus-manager
+      - name: Check default version outside repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp
+          "$GITHUB_WORKSPACE/scripts/installer/linux/build-deb.sh" --help
+          test -f "$GITHUB_WORKSPACE/apps/codex-plus-manager/package.json"
+      - name: Build DEB from outside repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp
+          bash "$GITHUB_WORKSPACE/scripts/installer/linux/build-deb.sh" --package-only
+      - name: Verify package and install
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb_file="$(find dist/linux -maxdepth 1 -name "*.deb" -print -quit)"
+          test -n "$deb_file"
+          test "$(dpkg-deb -f "$deb_file" Package)" = "codex-plus-plus"
+          test "$(dpkg-deb -f "$deb_file" Version)" = "$(node -p 'require("./apps/codex-plus-manager/package.json").version')"
+          dpkg-deb -c "$deb_file" | grep -F "./usr/bin/codex-plus-plus"
+          if dpkg-deb -c "$deb_file" | grep -Fq "./usr/bin/codex-plus-plus-manager"; then exit 1; fi
+          sudo apt-get install -y "./$deb_file"
+          test -x /usr/bin/codex-plus-plus
+          dpkg -V codex-plus-plus
+          ldd /usr/bin/codex-plus-plus | tee /tmp/codex-plus-plus-ldd.log
+          ! grep -q "not found" /tmp/codex-plus-plus-ldd.log
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-plus-plus-linux-amd64-deb
+          path: dist/linux/*.deb
+          if-no-files-found: error

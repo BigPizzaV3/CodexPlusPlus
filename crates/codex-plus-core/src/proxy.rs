@@ -189,7 +189,29 @@ fn macos_scutil_system_proxy() -> Option<String> {
     parse_macos_scutil_proxy(&String::from_utf8_lossy(&output.stdout))
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+fn platform_system_proxy() -> Option<String> {
+    for var in [
+        "https_proxy",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+        "http_proxy",
+        "HTTP_PROXY",
+    ] {
+        if let Ok(value) = std::env::var(var) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                if let Some(normalized) = normalize_proxy_url(trimmed) {
+                    return Some(normalized);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn platform_system_proxy() -> Option<String> {
     None
 }

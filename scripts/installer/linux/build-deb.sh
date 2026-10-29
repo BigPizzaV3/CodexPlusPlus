@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Codex++ Linux .deb 打包脚本
-# 用法: sudo bash scripts/installer/linux/build-deb.sh [VERSION]
+# Usage: bash scripts/installer/linux/build-deb.sh [--package-only|--frontend-only|--rust-only|--deps-only] [VERSION]
 #       或分步执行下面的各个函数
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,7 +11,38 @@ PROJECT_DIR="$REPO_DIR/apps/codex-plus-manager"
 BUILD_DIR="$REPO_DIR/.linux-build"
 DEB_DIR="$BUILD_DIR/deb"
 PACKAGE_NAME="codex-plus-plus"
-VERSION="${1:-1.3.0}"
+ACTION="all"
+VERSION=""
+for arg in "$@"; do
+    case "$arg" in
+        --package-only) ACTION="package" ;;
+        --frontend-only) ACTION="frontend" ;;
+        --rust-only) ACTION="rust" ;;
+        --deps-only) ACTION="deps" ;;
+        -h|--help)
+            echo "Usage: $0 [--package-only|--frontend-only|--rust-only|--deps-only] [VERSION]"
+            exit 0
+            ;;
+        --*) echo "error: unknown option $arg" >&2; exit 2 ;;
+        *)
+            if [ -n "$VERSION" ]; then echo "error: multiple VERSION arguments" >&2; exit 2; fi
+            VERSION="$arg"
+            ;;
+    esac
+done
+
+# Absolute path: works from any current directory, with no silent stale-version fallback.
+if [ -z "$VERSION" ]; then
+    if ! command -v node >/dev/null 2>&1; then
+        echo "error: Node.js is required to read the default package version; supply VERSION explicitly" >&2
+        exit 1
+    fi
+    VERSION="$(node -e 'const p = require(process.argv[1]); if (!p.version) process.exit(1); process.stdout.write(p.version)' "$PROJECT_DIR/package.json")"
+fi
+if ! dpkg --validate-version "$VERSION" >/dev/null 2>&1; then
+    echo "error: invalid Debian package version: $VERSION" >&2
+    exit 1
+fi
 ARCH="$(dpkg --print-architecture)"
 # Node / 包管理器：优先从环境变量取，其次探测 PATH。
 # 不要写死绝对路径——这里是给所有贡献者和 CI 用的，不是某台机器的构建脚本。
@@ -47,43 +78,30 @@ install_system_deps() {
 
 # ── 2. 安装 Rust toolchain（无需 sudo）───────────────────────
 install_rust() {
+    if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
     if command -v cargo &>/dev/null; then
         echo ">>> Rust 已安装: $(cargo --version)"
         return
     fi
     echo ">>> 安装 Rust toolchain (rustup)..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+    . "$HOME/.cargo/env"
     echo ">>> Rust 安装完成: $(cargo --version)"
 }
 
 # ── 3. 构建前端 ──────────────────────────────────────────────
 build_frontend() {
     echo ">>> 构建前端..."
-    cd "$PROJECT_DIR"
-    # vite 需要 node 在 PATH 上；允许通过 NODE_BIN 指定非 PATH 中的安装。
-    if [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ]; then
-        export PATH="$(dirname "$NODE_BIN"):$PATH"
-    fi
-    local PM="$PNPM_BIN"
-    if [ -z "$PM" ] || [ ! -x "$PM" ]; then
-        PM="$(command -v pnpm || true)"
-    fi
-    if [ -z "$PM" ]; then
-        echo "error: 找不到 pnpm。请安装（npm i -g pnpm）或用 PNPM_BIN=/path/to/pnpm 指定。" >&2
-        return 1
-    fi
-    export PATH="$(dirname "$PM"):$PATH"
-    "$PM" install
-    # Build vite directly (skip npm/pnpm wrapper issues)
-    node_modules/.bin/vite build
+    if [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ]; then export PATH="$(dirname "$NODE_BIN"):$PATH"; fi
+    if ! command -v npm >/dev/null 2>&1; then echo "error: npm is required (npm ci)" >&2; return 1; fi
+    ( cd "$PROJECT_DIR" && npm ci && npm run vite:build )
     echo ">>> 前端构建完成"
 }
-
 # ── 4. 构建 Rust 二进制 ──────────────────────────────────────
 build_rust() {
     echo ">>> 构建 Rust 二进制..."
     export PATH="$HOME/.cargo/bin:$PATH"
-    cargo build --release -p codex-plus-manager
+    ( cd "$REPO_DIR" && cargo build --release -p codex-plus-manager )
     echo ">>> Rust 构建完成"
 }
 
@@ -153,9 +171,8 @@ Section: misc
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: BigPizzaV3 <1727732@qq.com>
-Installed-Size: 70620
+Installed-Size: ${installed_size}
 Depends: libc6 (>= 2.34), libgcc-s1 (>= 4.2), libstdc++6 (>= 13), libdbus-1-3, libglib2.0-0t64, libgtk-3-0t64, libwebkit2gtk-4.1-0, libsoup-3.0-0, libjavascriptcoregtk-4.1-0, libssl3t64 (>= 3.0.0), libz3-4, libatspi2.0-0t64, libasound2t64
-
 Recommends: codex
 Description: Codex++ configures and launches OpenAI Codex / ChatGPT desktop apps.
  It provides provider switching, protocol conversion, session management and UI enhancements
@@ -198,18 +215,21 @@ EOF
 
 # ── 主流程 ─────────────────────────────────────────────────
 main() {
-    install_system_deps
-    install_rust
-    build_frontend
-    build_rust
-    package_deb
+    case "$ACTION" in
+        deps) install_system_deps; install_rust ;;
+        frontend) build_frontend ;;
+        rust) build_rust ;;
+        package) package_deb ;;
+        all) install_system_deps; install_rust; build_frontend; build_rust; package_deb ;;
+    esac
 
     echo ""
-    echo "=== 构建完成 ==="
-    local deb_name="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
-    echo "Deb 包路径: $REPO_DIR/dist/linux/$deb_name"
-    echo ""
-    echo "安装命令: sudo dpkg -i $REPO_DIR/dist/linux/$deb_name"
+    echo "=== 完成 ==="
+    if [ "$ACTION" = "package" ] || [ "$ACTION" = "all" ]; then
+        local deb_name="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
+        echo "Deb 包路径: $REPO_DIR/dist/linux/$deb_name"
+        echo "安装命令: sudo apt install $REPO_DIR/dist/linux/$deb_name"
+    fi
 }
 
 main "$@"
