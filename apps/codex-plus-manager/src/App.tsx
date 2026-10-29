@@ -15226,7 +15226,7 @@ function ClaudeLocalizationScreen() {
           ) : null}
           {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
           {bashTimeout?.enabled && s?.bashTimeoutWarning ? (
-            <div className="claude-l10n-warning" role="status">{t(s.bashTimeoutWarning)}</div>
+            <div className="claude-l10n-warning" role="status">{t("Bash时限解锁增强:")} {t(s.bashTimeoutWarning)}</div>
           ) : null}
           {progress ? (
             <div

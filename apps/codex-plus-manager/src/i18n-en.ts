@@ -444,6 +444,7 @@ export const EN_PLAIN: Record<string, string> = {
   "显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。": "Maximum explicit timeout / timeout_ms. The native parameter cap is 600 seconds; Cowork also has an outer wait budget.",
   "最大等待时间": "Maximum wait",
   "最大等待时间（秒）": "Maximum wait (seconds)",
+  "Bash时限解锁增强:": "Bash timeout unlock enhancement:",
   "已准备，暂未确认。将在增强版启动后自动确认。": "Prepared, awaiting confirmation. Confirmation will happen automatically after the enhanced app starts.",
   "其他主题正在安装，请等待完成后再安装此主题。": "Another theme is being installed. Wait for it to finish before installing this theme.",
   "网页一键换肤主题": "Theme from a website link",

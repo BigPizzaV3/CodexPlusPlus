@@ -257,7 +257,7 @@ test("Cowork 已准备但未确认加载时显示中性提示，检测后保持�
   const screen = harness({ status: pendingStatus, autoDetected: true });
   screen.render();
   let page = screen.render();
-  assert.match(text(page), /已准备，暂未确认。将在增强版启动后自动确认。/);
+  assert.match(text(page), /Bash时限解锁增强: 已准备，暂未确认。将在增强版启动后自动确认。/);
   assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
   assert.equal(screen.topbar()!.props.disabled, false);
   buttons(page).find((button) => text(button) === "检测 Claude")!.props.onClick();
@@ -265,7 +265,7 @@ test("Cowork 已准备但未确认加载时显示中性提示，检测后保持�
   screen.calls[0].resolve(pendingStatus);
   await tick();
   page = screen.render();
-  assert.match(text(page), /已准备，暂未确认。将在增强版启动后自动确认。/);
+  assert.match(text(page), /Bash时限解锁增强: 已准备，暂未确认。将在增强版启动后自动确认。/);
   assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
   assert.equal(screen.topbar()!.props.disabled, false);
 });
