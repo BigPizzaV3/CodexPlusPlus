@@ -5747,6 +5747,7 @@ fn collect_catalog_repair_plan(
         let git_branch = text_expr(&columns, "git_branch", "NULL");
         let thread_source = text_expr(&columns, "thread_source", "NULL");
         let archived = text_expr(&columns, "archived", "0");
+        let history_mode = text_expr(&columns, "history_mode", "'legacy'");
         // Current app-server listing uses preview; paginated histories can retain a zero
         // legacy user-event flag even when they contain real user messages.
         let has_user_content = if columns.contains("preview") {
@@ -5757,7 +5758,7 @@ fn collect_catalog_repair_plan(
         let agent_role = text_expr(&columns, "agent_role", "''");
         let subagent_filter = subagent_filter(&db, "threads.id")?;
         let sql = format!(
-            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_content}, {agent_role} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
+            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_content}, {agent_role}, {history_mode} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
         );
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
@@ -5779,10 +5780,11 @@ fn collect_catalog_repair_plan(
                 row.get::<_, i64>(9).unwrap_or_default(),
                 row.get::<_, i64>(10).unwrap_or(1),
                 row.get::<_, String>(11).unwrap_or_default(),
+                row.get::<_, String>(12).unwrap_or_default(),
             ))
         })?;
         for item in rows {
-            let (thread, archived, has_user_content, agent_role) = item?;
+            let (thread, archived, has_user_content, agent_role, history_mode) = item?;
             // issue #2199：删除墓碑一票否决。资格判定里没有「删除态」，只要 rollout
             // 文件还在（删除失败或被别的进程锁住等），被删的会话就会被重新插回 catalog。
             // 在收集阶段直接跳过，它既不进候选，也不会在下面的择优平局里胜出。
@@ -5796,14 +5798,16 @@ fn collect_catalog_repair_plan(
                 });
             let non_root = is_catalog_non_root_agent(&thread, &spawned_child_ids);
             let source_is_exec = thread.source_kind.trim().eq_ignore_ascii_case("exec");
-            let rollout_exists = catalog_rollout_path_exists(home, &thread.source_detail);
+            // Native paginated migration can remove JSONL after storing history in SQLite.
+            let history_available = history_mode == "paginated"
+                || catalog_rollout_path_exists(home, &thread.source_detail);
             let eligible = archived == 0
                 && has_user_content == 1
                 && agent_role.trim().is_empty()
                 && !marked_non_user
                 && !source_is_exec
                 && !non_root
-                && rollout_exists;
+                && history_available;
             let replace = observed_threads
                 .get(&thread.id)
                 .map(|current: &CatalogRepairObservedThread| {

@@ -2177,6 +2177,131 @@ fn provider_sync_catalog_uses_preview_on_modern_schema_without_rewriting_history
 }
 
 #[test]
+fn provider_sync_catalog_preserves_paginated_threads_without_rollout_files() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    write_provider_config(&home, "custom");
+    let global_state = json!({
+        "thread-project-assignments": {"missing": {"projectId":"project","projectKind":"local"}},
+        "projectless-thread-ids": ["projectless"]
+    })
+    .to_string();
+    fs::write(home.join(".codex-global-state.json"), &global_state).unwrap();
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT, agent_role TEXT,
+            preview TEXT, history_mode TEXT, model TEXT, reasoning_effort TEXT, project_id TEXT
+        );",
+    )
+    .unwrap();
+    for (id, mode, archived, preview, source, thread_source, role) in [
+        ("retained", Some("paginated"), 0, "User", "vscode", "user", ""),
+        ("missing", Some("paginated"), 0, "User", "vscode", "user", ""),
+        ("projectless", Some("paginated"), 0, "User", "cli", "user", ""),
+        ("legacy", Some("legacy"), 0, "User", "vscode", "user", ""),
+        ("unknown", Some("future"), 0, "User", "vscode", "user", ""),
+        ("null-mode", None, 0, "User", "vscode", "user", ""),
+        ("archived", Some("paginated"), 1, "User", "vscode", "user", ""),
+        ("empty", Some("paginated"), 0, "", "vscode", "user", ""),
+        ("child", Some("paginated"), 0, "User", "subagent", "subagent", ""),
+        ("role", Some("paginated"), 0, "User", "vscode", "user", "reviewer"),
+        ("ambient", Some("paginated"), 0, "User", "vscode", "ambient_suggestions", ""),
+        ("exec", Some("paginated"), 0, "User", "exec", "user", ""),
+        ("deleted", Some("paginated"), 0, "User", "vscode", "user", ""),
+    ] {
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'custom', ?2, 0, 'E:/project', ?1, ?3, ?4, 100000, 300000, ?5,
+                'main', ?6, ?7, ?8, 'saved-model', 'high', 'saved-project'
+            )",
+            rusqlite::params![
+                id, archived, format!("sessions/{id}.jsonl"), source, thread_source,
+                role, preview, mode
+            ],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let state_before = fs::read(&state_db).unwrap();
+    fs::create_dir_all(home.join("tmp")).unwrap();
+    fs::write(home.join("tmp/provider-sync-tombstones.json"), r#"["deleted"]"#).unwrap();
+    let catalogs = [sqlite_dir.join("codex-dev.db"), sqlite_dir.join("codex.db")];
+    for path in &catalogs {
+        create_local_thread_catalog_db(path, &[("retained", "custom")]);
+        let db = Connection::open(path).unwrap();
+        db.execute("INSERT INTO local_thread_catalog_hosts VALUES ('remote', 'ssh')", [])
+            .unwrap();
+        db.execute(
+            "INSERT INTO local_thread_catalog SELECT 'remote', 'archived', display_title,
+                source_created_at, source_updated_at, cwd, source_kind, source_detail,
+                model_provider, git_branch, observation_sequence, missing_candidate, thread_source
+             FROM local_thread_catalog WHERE thread_id = 'retained'",
+            [],
+        )
+        .unwrap();
+    }
+
+    // Native history may live entirely in SQLite after migration removes the old JSONL.
+    // The first repair must also work without opening or creating that history database.
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced, "{first:?}");
+    for path in &catalogs {
+        assert!(
+            catalog_rows_snapshot(path).contains(&("local".into(), "retained".into())),
+            "a paginated thread must not disappear when its old JSONL is gone"
+        );
+        assert_eq!(
+            catalog_rows_snapshot(path),
+            vec![
+                ("local".into(), "missing".into()),
+                ("local".into(), "projectless".into()),
+                ("local".into(), "retained".into()),
+                ("remote".into(), "archived".into()),
+            ]
+        );
+        let db = Connection::open(path).unwrap();
+        let restored: (String, String, String) = db.query_row(
+            "SELECT cwd, model_provider, thread_source FROM local_thread_catalog
+             WHERE host_id='local' AND thread_id='missing'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(restored, ("E:/project".into(), "custom".into(), "user".into()));
+    }
+    assert_eq!(first.sqlite_catalog_rows_inserted, 4);
+    assert_eq!(first.sqlite_catalog_rows_removed, 0);
+    assert_eq!(fs::read(&state_db).unwrap(), state_before);
+    assert!(!home.join("sessions").exists());
+    let history = home.join("thread_history_1.sqlite");
+    assert!(!history.exists());
+    let history_db = Connection::open(&history).unwrap();
+    history_db.execute_batch(
+        "CREATE TABLE thread_items (thread_id TEXT, item_json TEXT);
+         INSERT INTO thread_items VALUES ('missing', 'native history sentinel');",
+    ).unwrap();
+    drop(history_db);
+    let history_before = fs::read(&history).unwrap();
+    let history_mtime = fs::metadata(&history).unwrap().modified().unwrap();
+    let second = run_provider_sync(Some(&home));
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{second:?}");
+    assert_eq!(second.sqlite_rows_updated, 0);
+    assert!(second.backup_dir.is_none());
+    assert_eq!(fs::read(&state_db).unwrap(), state_before);
+    assert_eq!(fs::read(&history).unwrap(), history_before);
+    assert_eq!(fs::metadata(&history).unwrap().modified().unwrap(), history_mtime);
+    assert_eq!(
+        fs::read_to_string(home.join(".codex-global-state.json")).unwrap(),
+        global_state
+    );
+}
+
+#[test]
 fn provider_sync_prunes_archived_and_ineligible_catalog_rows() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
