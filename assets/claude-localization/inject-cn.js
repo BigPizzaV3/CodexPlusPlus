@@ -57,6 +57,7 @@ const VOICE_INPUT = String(argOf('--voice-input', process.env.CODEX_PLUS_CLAUDE_
  */
 const LOCALIZATION = String(argOf('--localization', process.env.CODEX_PLUS_CLAUDE_LOCALIZATION ?? '1')) !== '0';
 const BASH_TIMEOUT_JSON = process.env.CODEX_PLUS_CLAUDE_BASH_TIMEOUT || 'null';
+const BASH_TIMEOUT_REPORT = { file: process.env.CODEX_PLUS_CLAUDE_BASH_REPORT_FILE, launchId: process.env.CODEX_PLUS_CLAUDE_BASH_LAUNCH_ID };
 if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(LOCALE)) throw new Error('无效的语言代码');
 
 const EXEC = process.platform === 'win32'
@@ -254,7 +255,7 @@ async function evaluate(c, expression) {
     await evaluate(c, `(() => {
       try {
         globalThis.__claudeCnBashTimeout = JSON.parse(${JSON.stringify(BASH_TIMEOUT_JSON)});
-        require(${JSON.stringify(path.join(path.dirname(HOOK), 'bash-timeout.js'))}).beginTimeoutOverrides(globalThis.__claudeCnBashTimeout);
+        require(${JSON.stringify(path.join(path.dirname(HOOK), 'bash-timeout.js'))}).beginTimeoutOverrides(globalThis.__claudeCnBashTimeout, process.resourcesPath, ${JSON.stringify(BASH_TIMEOUT_REPORT)});
       } catch (error) {
         globalThis.__claudeCnBashTimeoutResult = { enabled: true, prepared: false, error: String(error.message || error) };
         globalThis.__claudeCnBashTimeoutReady = Promise.resolve(globalThis.__claudeCnBashTimeoutResult);

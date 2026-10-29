@@ -10536,7 +10536,7 @@ select {
   margin: 0; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.6;
 }
 .claude-l10n-feature-grid > .claude-bash-timeout-master { grid-column: 1 / -1; }
-.claude-bash-timeout-warning { color: hsl(var(--foreground)); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.claude-l10n-warning { padding: 10px 14px; border: 1px solid hsl(var(--status-warning) / 0.45); border-radius: 10px; background: hsl(var(--status-warning) / 0.08); color: hsl(var(--status-warning)); font-size: 13px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
 .claude-l10n-column .claude-bash-timeout-editor .switch-row {
   margin: 0; padding: 10px; background: hsl(var(--background) / 0.72);
 }

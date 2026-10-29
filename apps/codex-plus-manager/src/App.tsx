@@ -14903,6 +14903,7 @@ type ClaudeLocalizationStatus = {
   computerUseSupported: boolean;
   bashTimeout: ClaudeBashTimeoutSettings;
   bashTimeoutWarning?: string | null;
+  bashTimeoutPending?: boolean;
 };
 
 /**
@@ -14926,6 +14927,7 @@ function ClaudeLocalizationScreen() {
   const [progress, setProgress] = useState<{ percent: number; message: string } | null>(null);
   const mounted = useRef(true);
   const pending = useRef(false);
+  const statusGeneration = useRef(0);
   const [bashTimeoutDraft, setBashTimeoutDraft] = useState<ClaudeBashTimeoutSettings | null>(
     claudeLocalizationMemo.status?.status === "ok"
       ? claudeLocalizationMemo.status.bashTimeout
@@ -14970,6 +14972,7 @@ function ClaudeLocalizationScreen() {
   const refresh = async () => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy("detect"); setError(null);
     try { accept(await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_status")); }
     catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
@@ -15001,14 +15004,30 @@ function ClaudeLocalizationScreen() {
   const act = async (action: "prepare" | "launch" | "restore" | "check") => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy(action); setError(null);
+    const launching = action === "launch" || action === "restore";
+    const clearLaunchNotice = () => {
+      setStatus((current) => current?.status === "ok"
+        ? { ...current, bashTimeoutWarning: null, bashTimeoutPending: false } : current);
+    };
+    if (launching) {
+      const timeout = bashTimeoutDraft ?? (status?.status === "ok" ? status.bashTimeout : null);
+      const awaitingConfirmation = Boolean(timeout?.enabled && (timeout.defaultEnabled || timeout.maxEnabled));
+      setStatus((current) => current?.status === "ok" ? {
+        ...current,
+        bashTimeoutWarning: awaitingConfirmation ? "已准备，暂未确认。将在增强版启动后自动确认。" : null,
+        bashTimeoutPending: awaitingConfirmation,
+      } : current);
+    }
     if (action === "prepare") setProgress({ percent: 0, message: t("准备开始…") });
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      if (launching && result.status !== "ok") clearLaunchNotice();
       accept(result);
-    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    } catch (cause) { if (mounted.current) { if (launching) clearLaunchNotice(); setError(stringifyError(cause)); } }
     finally {
       pending.current = false;
       if (mounted.current) setBusy(null);
@@ -15018,6 +15037,7 @@ function ClaudeLocalizationScreen() {
   const toggleVoiceInput = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy("voiceInput"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -15036,6 +15056,7 @@ function ClaudeLocalizationScreen() {
   const toggleComputerUse = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy("computerUse"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -15056,6 +15077,7 @@ function ClaudeLocalizationScreen() {
     if (bashTimeoutSaving.current) return;
     let confirmed = status?.status === "ok" ? status.bashTimeout : null;
     pending.current = true;
+    statusGeneration.current++;
     bashTimeoutSaving.current = true;
     setBusy("bashTimeout"); setError(null);
     try {
@@ -15089,6 +15111,7 @@ function ClaudeLocalizationScreen() {
   const toggleLocalization = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy("localization"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -15106,6 +15129,34 @@ function ClaudeLocalizationScreen() {
   };
   const s = status;
   const bashTimeout = bashTimeoutDraft ?? s?.bashTimeout;
+  useEffect(() => {
+    if (!s?.bashTimeoutPending || !s.running || busy !== null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const generation = statusGeneration.current;
+    const poll = async () => {
+      try {
+        const result = await invoke<CommandResult<{ warning: string | null; pending: boolean }>>(
+          "claude_localization_bash_timeout_status",
+        );
+        if (cancelled || !mounted.current || pending.current || statusGeneration.current !== generation) return;
+        if (result.status === "ok") {
+          // 只同步提示，不覆盖正在编辑的秒数或其他设置草稿。
+          const update = { bashTimeoutWarning: result.warning, bashTimeoutPending: result.pending };
+          setStatus((current) => current?.status === "ok" ? { ...current, ...update } : current);
+          if (claudeLocalizationMemo.status?.status === "ok") {
+            claudeLocalizationMemo.status = { ...claudeLocalizationMemo.status, ...update };
+          }
+          if (!result.pending) return;
+        }
+      } catch { /* 临时读取失败保留提示，下一轮继续确认。 */ }
+      if (!cancelled && mounted.current && statusGeneration.current === generation) {
+        timer = setTimeout(() => void poll(), 1000);
+      }
+    };
+    timer = setTimeout(() => void poll(), 1000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [s?.bashTimeoutPending, s?.running, busy]);
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
   const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
@@ -15174,6 +15225,9 @@ function ClaudeLocalizationScreen() {
             <p className="claude-l10n-hint">{t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")}</p>
           ) : null}
           {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
+          {bashTimeout?.enabled && s?.bashTimeoutWarning ? (
+            <div className="claude-l10n-warning" role="status">{t(s.bashTimeoutWarning)}</div>
+          ) : null}
           {progress ? (
             <div
               aria-valuemax={100}
@@ -15298,11 +15352,6 @@ function ClaudeLocalizationScreen() {
             </label>
             {bashTimeout?.enabled ? (
               <div className="claude-bash-timeout-editor">
-                {s?.bashTimeoutWarning ? (
-                  <div className="claude-bash-timeout-warning" role="status">
-                    {t("Cowork Bash 时限增强提示：")}{t(s.bashTimeoutWarning)}
-                  </div>
-                ) : null}
                 <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存。")}</p>
                 <label className="switch-row compact claude-bash-timeout-toggle">
                   <input

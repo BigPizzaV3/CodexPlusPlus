@@ -58,14 +58,14 @@ function patchOnLoad(Module, filename, source, report) {
   Module._extensions['.js'] = handler;
 }
 
-async function installTimeoutOverrides(settings, resourcesPath = process.resourcesPath) {
+async function installTimeoutOverrides(settings, resourcesPath = process.resourcesPath, onState = () => {}) {
   if (!settings?.enabled || (!settings.defaultEnabled && !settings.maxEnabled)) return { enabled: false };
   if (globalThis[GLOBAL]) throw new Error('Bash 时间限制已经安装，请重启 Claude 后应用新设置');
   const fs = require('node:fs');
   const path = require('node:path');
   const root = path.join(resourcesPath, 'app.asar', '.vite', 'build');
   const candidates = fs.readdirSync(root).filter((name) => name.endsWith('.js')).map((name) => {
-    const file = path.join(root, name);
+    const file = fs.realpathSync(path.join(root, name));
     const source = fs.readFileSync(file, 'utf8');
     return source.includes("Run a shell command in the session's isolated Linux workspace.") ? { file, source } : null;
   }).filter(Boolean);
@@ -80,18 +80,30 @@ async function installTimeoutOverrides(settings, resourcesPath = process.resourc
   // 只适配尚未加载的目标；不热更新或重建已加载的会话管理器。
   if (!require.cache[candidate.file]) {
     globalThis[GLOBAL] = helper;
-    patchOnLoad(Module, candidate.file, patched, () => { result.loaded = true; });
+    patchOnLoad(Module, candidate.file, patched, () => { result.loaded = true; onState(result); });
     return result;
   }
   throw new Error('当前启动链路未能在 Cowork 模块加载前完成适配；该项保持原生时限');
 }
 
 // 本项失败转换为独立结果，不与汉化、语音的启动 Promise 聚合。
-function beginTimeoutOverrides(settings, resourcesPath = process.resourcesPath) {
-  const ready = installTimeoutOverrides(settings, resourcesPath).catch((error) => ({
+function beginTimeoutOverrides(settings, resourcesPath = process.resourcesPath, report = null) {
+  const publish = (result) => {
+    if (!report?.file || !report?.launchId) return;
+    try {
+      const fs = require('node:fs');
+      const temporary = report.file + '.' + process.pid + '.tmp';
+      fs.writeFileSync(temporary, JSON.stringify({ launchId: report.launchId, pid: process.pid, result }));
+      fs.renameSync(temporary, report.file);
+    } catch {
+      // 状态回报不可写不影响适配本身或其他增强，管理器保持待确认提示。
+    }
+  };
+  const ready = installTimeoutOverrides(settings, resourcesPath, publish).catch((error) => ({
     enabled: true, prepared: false, error: String(error?.message || error),
   })).then((result) => {
     globalThis.__claudeCnBashTimeoutResult = result;
+    publish(result);
     return result;
   });
   globalThis.__claudeCnBashTimeoutReady = ready;

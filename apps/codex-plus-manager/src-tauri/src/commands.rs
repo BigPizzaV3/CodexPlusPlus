@@ -83,6 +83,14 @@ pub async fn claude_localization_status() -> CommandResult<Value> {
 }
 
 #[tauri::command]
+pub async fn claude_localization_bash_timeout_status() -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(codex_plus_core::claude_localization::bash_timeout_status).await {
+        Ok(status) => ok("Claude Bash 加载状态已读取。", serde_json::to_value(status).unwrap_or_else(|_| json!({}))),
+        Err(error) => failed(&format!("Claude Bash 状态读取失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn claude_localization_action(
     app: tauri::AppHandle,
     action: String,

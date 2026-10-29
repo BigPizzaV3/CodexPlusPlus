@@ -19,14 +19,29 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
   const hooks: any[] = [];
   /** 页头槽位：createPortal 渲染进来的元素记在这里，用来断言「启动增强版」在右上角。 */
   const topbarSlot = { portal: null as unknown };
-  const cleanups: (() => void)[] = [];
+  const cleanups = new Map<number, () => void>();
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
   const calls: { command: string; args: unknown[]; resolve: (value: unknown) => void; reject: (cause: unknown) => void }[] = [];
   let cursor = 0;
   let changes = 0;
+  const effectHook = (effect: () => void | (() => void), deps?: unknown[]) => {
+    const index = cursor++;
+    const previous = hooks[index];
+    if (previous && deps && previous.deps && deps.length === previous.deps.length
+      && deps.every((value, i) => Object.is(value, previous.deps[i]))) return;
+    cleanups.get(index)?.();
+    cleanups.delete(index);
+    hooks[index] = { deps: deps?.slice() };
+    const cleanup = effect();
+    if (typeof cleanup === "function") cleanups.set(index, cleanup);
+  };
   const context = vm.createContext({
     React: { createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
     ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck"].map((name) => [name, name])),
     t: (text: string) => text,
+    setTimeout: (callback: () => void) => { const id = ++timerId; timers.set(id, callback); return id; },
+    clearTimeout: (id: number) => timers.delete(id),
     clampNumber: (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value))),
     claudeLocalizationMemo: memo,
     listen: () => Promise.resolve(() => {}),
@@ -50,14 +65,8 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
       if (!(index in hooks)) hooks[index] = { current: initial };
       return hooks[index];
     },
-    useEffect: (effect: () => (() => void)) => {
-      const index = cursor++;
-      if (!(index in hooks)) { hooks[index] = true; cleanups.push(effect()); }
-    },
-    useLayoutEffect: (effect: () => (() => void)) => {
-      const index = cursor++;
-      if (!(index in hooks)) { hooks[index] = true; cleanups.push(effect()); }
-    },
+    useEffect: effectHook,
+    useLayoutEffect: effectHook,
   });
   vm.runInContext(`${source}\nglobalThis.render = ClaudeLocalizationScreen;`, context);
   return {
@@ -65,7 +74,9 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
     render: () => { cursor = 0; return context.render() as Element; },
     /** 最近一次渲染时 portal 进页头的元素。 */
     topbar: () => topbarSlot.portal as Element | null,
-    unmount: () => cleanups.forEach((cleanup) => cleanup?.()),
+    unmount: () => cleanups.forEach((cleanup) => cleanup()),
+    timerCount: () => timers.size,
+    runTimer: () => { const first = timers.entries().next().value; assert.ok(first); timers.delete(first[0]); first[1](); },
     changes: () => changes,
   };
 }
@@ -230,7 +241,7 @@ test("Cowork 适配警告不覆盖启动成功状态，其他增强保持可用"
   screen.calls[0].resolve({ ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true }, bashTimeoutWarning: "不支持的 Cowork Bash 参数校验结构" });
   await tick();
   const page = screen.render();
-  assert.match(text(page), /Cowork Bash 时限增强提示/);
+  assert.ok(text(page).includes("不支持的 Cowork Bash 参数校验结构"));
   assert.match(text(page), /不支持的 Cowork Bash 参数校验结构/);
   assert.equal(screen.topbar()!.props.disabled, false);
   assert.equal(inputs(page).find((input) => String(input.props.onChange).includes("toggleLocalization"))!.props.disabled, false);
@@ -241,12 +252,12 @@ test("Cowork 已准备但未确认加载时显示中性提示，检测后保持�
   const pendingStatus = {
     ...ready,
     bashTimeout: { ...ready.bashTimeout, enabled: true },
-    bashTimeoutWarning: "已准备，尚未确认 Cowork 模块加载。",
+    bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。",
   };
   const screen = harness({ status: pendingStatus, autoDetected: true });
   screen.render();
   let page = screen.render();
-  assert.match(text(page), /已准备，尚未确认 Cowork 模块加载/);
+  assert.match(text(page), /已准备，暂未确认。将在增强版启动后自动确认。/);
   assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
   assert.equal(screen.topbar()!.props.disabled, false);
   buttons(page).find((button) => text(button) === "检测 Claude")!.props.onClick();
@@ -254,9 +265,74 @@ test("Cowork 已准备但未确认加载时显示中性提示，检测后保持�
   screen.calls[0].resolve(pendingStatus);
   await tick();
   page = screen.render();
-  assert.match(text(page), /已准备，尚未确认 Cowork 模块加载/);
+  assert.match(text(page), /已准备，暂未确认。将在增强版启动后自动确认。/);
   assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
   assert.equal(screen.topbar()!.props.disabled, false);
+});
+
+test("启动后自动确认并撤下顶部黄字提示，每次启动重新确认且不重置输入草稿", async () => {
+  const pendingStatus = { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
+    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" };
+  const screen = harness({ status: ready, autoDetected: true });
+  screen.render(); screen.render();
+  screen.topbar()!.props.onClick();
+  screen.calls[0].resolve(pendingStatus);
+  await tick();
+  let page = screen.render();
+  assert.match(text(page), /已准备，暂未确认/);
+  assert.ok(text(page).indexOf("已准备，暂未确认") < text(page).indexOf("重新制作增强版"));
+  assert.ok(JSON.stringify(page).indexOf("claude-l10n-warning") < JSON.stringify(page).indexOf("claude-l10n-actions"));
+  assert.equal(screen.timerCount(), 1);
+  inputs(page).find((input) => input.props["aria-label"] === "默认等待时间（秒）")!.props.onChange({ currentTarget: { value: "456" } });
+  screen.runTimer();
+  assert.equal(screen.calls[1].command, "claude_localization_bash_timeout_status");
+  screen.calls[1].resolve({ status: "ok", warning: null, pending: false });
+  await tick();
+  page = screen.render();
+  assert.doesNotMatch(text(page), /已准备，暂未确认/);
+  assert.equal(inputs(page).find((input) => input.props["aria-label"] === "默认等待时间（秒）")!.props.value, "456");
+  assert.equal(screen.timerCount(), 0);
+  screen.topbar()!.props.onClick();
+  screen.calls[2].resolve(pendingStatus);
+  await tick();
+  page = screen.render();
+  assert.match(text(page), /已准备，暂未确认/);
+  assert.equal(screen.timerCount(), 1);
+});
+
+test("重新启动时，上一次尚在返回的确认不能撤下本次启动提示", async () => {
+  const pendingStatus = { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
+    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" };
+  const screen = harness({ status: pendingStatus, autoDetected: true });
+  screen.render(); screen.render();
+  screen.runTimer();
+  screen.topbar()!.props.onClick();
+  assert.match(text(screen.render()), /已准备，暂未确认/, "启动过程中保留提示，不能提前撤下");
+  screen.calls[1].resolve(pendingStatus);
+  await tick(); screen.render();
+  screen.calls[0].resolve({ status: "ok", warning: null, pending: false });
+  await tick();
+  assert.match(text(screen.render()), /已准备，暂未确认/);
+  assert.equal(screen.timerCount(), 1);
+});
+
+test("确认读取失败会重试，离开页面后取消轮询且迟到结果不写状态", async () => {
+  const memo = { status: { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
+    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" }, autoDetected: true };
+  const screen = harness(memo);
+  screen.render(); screen.render();
+  screen.runTimer();
+  screen.calls[0].reject(new Error("temporary read error"));
+  await tick(); screen.render();
+  assert.equal(screen.timerCount(), 1);
+  screen.runTimer();
+  screen.unmount();
+  const changes = screen.changes();
+  screen.calls[1].resolve({ status: "ok", warning: null, pending: false });
+  await tick();
+  assert.equal(screen.changes(), changes);
+  assert.equal(screen.timerCount(), 0);
+  assert.equal(memo.status.bashTimeoutPending, true);
 });
 
 test("Bash 总开关保存失败后恢复已保存值，并允许重试", async () => {

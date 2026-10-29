@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { createRequire, Module } from "node:module";
 import test from "node:test";
 import vm from "node:vm";
+import { mkdtempSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-const { overrides, patchWorkspaceSource, patchOnLoad, installTimeoutOverrides } = createRequire(import.meta.url)("../../../assets/claude-localization/bash-timeout.js");
+const require = createRequire(import.meta.url);
+const { overrides, patchWorkspaceSource, patchOnLoad, installTimeoutOverrides, beginTimeoutOverrides } = require("../../../assets/claude-localization/bash-timeout.js");
 const settings = { enabled: true, defaultEnabled: true, defaultSeconds: 120, maxEnabled: true, maxSeconds: 1800 };
 const fixture = `(()=>{
 var im=120000,am=600000,om=2000;
@@ -107,4 +111,41 @@ test("延迟模块只在目标首次编译时适配，随后还原加载器，�
   assert.deepEqual(calls.pop(), ['patched', 'workspace.js']);
   assert.equal(loaded, 1);
   assert.equal(loader._extensions['.js'], original);
+});
+
+
+test("实际模块加载后原子回报本次启动的确认结果，回报失败不阻断适配", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "cpx-bash-confirm-"));
+  const archive = path.join(root, "app.asar");
+  const vite = path.join(archive, ".vite");
+  const build = path.join(vite, "build");
+  mkdirSync(build, { recursive: true });
+  const file = path.join(build, "workspace.js");
+  const receipt = path.join(root, "state.json");
+  const extensions = (Module as any)._extensions;
+  const original = extensions['.js'];
+  writeFileSync(file, fixture);
+  try {
+    await beginTimeoutOverrides(settings, root, { file: receipt, launchId: "current-launch" });
+    const prepared = JSON.parse(readFileSync(receipt, "utf8"));
+    assert.equal(prepared.launchId, "current-launch");
+    assert.equal(prepared.result.loaded, false);
+    require(file);
+    const confirmed = JSON.parse(readFileSync(receipt, "utf8"));
+    assert.equal(confirmed.pid, process.pid);
+    assert.equal(confirmed.result.loaded, true);
+    assert.equal((globalThis as any).__codexPlusTimeoutFixture.make().schema.timeout_ms.maximum, 1800000);
+    assert.equal(extensions['.js'], original);
+    delete require.cache[require.resolve(file)];
+    delete (globalThis as any).__codexPlusBashTimeout;
+    await beginTimeoutOverrides(settings, root, { file: path.join(root, "missing", "state.json"), launchId: "unwritable-report" });
+    require(file);
+    assert.equal((globalThis as any).__claudeCnBashTimeoutResult.loaded, true);
+  } finally {
+    extensions['.js'] = original;
+    delete require.cache[require.resolve(file)];
+    for (const key of ['__codexPlusBashTimeout', '__codexPlusTimeoutFixture', '__claudeCnBashTimeoutResult', '__claudeCnBashTimeoutReady']) delete (globalThis as any)[key];
+    unlinkSync(receipt); unlinkSync(file);
+    for (const dir of [build, vite, archive, root]) rmdirSync(dir);
+  }
 });

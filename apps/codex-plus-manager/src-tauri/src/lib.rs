@@ -279,6 +279,7 @@ pub fn run() {
             commands::load_global_dictation_hotkey,
             commands::set_global_dictation_hotkey,
             commands::claude_localization_status,
+            commands::claude_localization_bash_timeout_status,
             commands::claude_localization_action,
             commands::claude_localization_set_voice_input,
             commands::claude_localization_set_localization,

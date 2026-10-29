@@ -33,11 +33,12 @@ $localeEscaped = $Locale.Replace("'", "\\'")
 $timeoutJson = $(if ($env:CODEX_PLUS_CLAUDE_BASH_TIMEOUT) { $env:CODEX_PLUS_CLAUDE_BASH_TIMEOUT } else { 'null' }) | ConvertTo-Json -Compress
 $timeoutHelper = Join-Path (Split-Path $hook -Parent) 'bash-timeout.js'
 $timeoutHelperJson = $timeoutHelper | ConvertTo-Json -Compress
+$timeoutReportJson = @{ file = $env:CODEX_PLUS_CLAUDE_BASH_REPORT_FILE; launchId = $env:CODEX_PLUS_CLAUDE_BASH_LAUNCH_ID } | ConvertTo-Json -Compress
 $bootstrap = @"
 (() => {
   try {
     globalThis.__claudeCnBashTimeout = JSON.parse($timeoutJson);
-    require($timeoutHelperJson).beginTimeoutOverrides(globalThis.__claudeCnBashTimeout);
+    require($timeoutHelperJson).beginTimeoutOverrides(globalThis.__claudeCnBashTimeout, process.resourcesPath, $timeoutReportJson);
   } catch (error) {
     globalThis.__claudeCnBashTimeoutResult = { enabled: true, prepared: false, error: String(error.message || error) };
     globalThis.__claudeCnBashTimeoutReady = Promise.resolve(globalThis.__claudeCnBashTimeoutResult);

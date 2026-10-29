@@ -190,6 +190,7 @@ pub struct ClaudeLocalizationStatus {
     pub bash_timeout: crate::settings::ClaudeBashTimeoutSettings,
     /// 最近一次启动的 Cowork 适配提示，不改变其他增强的成功状态。
     pub bash_timeout_warning: Option<String>,
+    pub bash_timeout_pending: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -605,6 +606,7 @@ fn initial_status(source: &Path, copy: &Path) -> ClaudeLocalizationStatus {
         computer_use_supported: cfg!(target_os = "macos"),
         bash_timeout: bash_timeout_settings(),
         bash_timeout_warning: None,
+        bash_timeout_pending: false,
     }
 }
 
@@ -675,7 +677,9 @@ pub fn status() -> Result<ClaudeLocalizationStatus> {
         state.running = claude_running(deadline)?;
         let report = runtime_dir().join("operation.log");
         if state.prepared && report.is_file() {
-            state.bash_timeout_warning = bash_timeout_warning(&report, &state.bash_timeout);
+            let timeout = bash_timeout_status_at(&report, &state.bash_timeout);
+            state.bash_timeout_warning = timeout.warning;
+            state.bash_timeout_pending = timeout.pending;
         }
         state.node_available = find_runtime("node", deadline)?.is_some();
         // Windows 的准备脚本用 PowerShell，不需遍历或执行 Python 安装别名。
@@ -758,44 +762,53 @@ pub fn set_bash_timeout(
     status()
 }
 
-fn bash_timeout_warning(
+const BASH_PENDING_MESSAGE: &str = "已准备，暂未确认。将在增强版启动后自动确认。";
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeBashTimeoutStatus {
+    pub warning: Option<String>,
+    pub pending: bool,
+}
+
+/// 轮询只读状态文件，不重复探测 Claude、Node 或 PowerShell。
+pub fn bash_timeout_status() -> ClaudeBashTimeoutStatus {
+    bash_timeout_status_at(&runtime_dir().join("operation.log"), &bash_timeout_settings())
+}
+
+fn bash_timeout_status_at(
     report: &Path,
     settings: &crate::settings::ClaudeBashTimeoutSettings,
-) -> Option<String> {
+) -> ClaudeBashTimeoutStatus {
     if !settings.enabled || (!settings.default_enabled && !settings.max_enabled) {
-        return None;
+        return ClaudeBashTimeoutStatus::default();
     }
-    let result = fs::read_to_string(report).ok().and_then(|text| {
-        text.lines()
-            .rev()
-            .find_map(|line| line.strip_prefix("CODEX_PLUS_CLAUDE_BASH_RESULT="))
+    let text = fs::read_to_string(report).unwrap_or_default();
+    let logged_id = text.lines().find_map(|line| line.strip_prefix("CODEX_PLUS_CLAUDE_BASH_LAUNCH="));
+    let root = report.parent().unwrap_or_else(|| Path::new("."));
+    let launch = fs::read(root.join("bash-timeout-launch.json")).ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let launch_id = launch.as_ref().and_then(|value| value.get("launchId"))
+        .and_then(Value::as_str).or(logged_id)
+        .and_then(|value| uuid::Uuid::parse_str(value).ok());
+    let live = launch_id.and_then(|id| {
+        let value: Value = serde_json::from_slice(&fs::read(root.join(format!("bash-timeout-{id}.json"))).ok()?).ok()?;
+        (value.get("launchId")?.as_str()? == id.to_string()).then(|| value.get("result").cloned()).flatten()
+    });
+    let result = live.or_else(|| {
+        // 兼容旧启动器的快照；新启动的快照必须属于本次 launchId。
+        if launch_id.is_some_and(|id| logged_id != Some(id.to_string().as_str())) { return None; }
+        text.lines().rev().find_map(|line| line.strip_prefix("CODEX_PLUS_CLAUDE_BASH_RESULT="))
             .and_then(|json| serde_json::from_str::<Value>(json).ok())
     });
-    if let Some(error) = result
-        .as_ref()
-        .and_then(|value| value.get("error"))
-        .and_then(Value::as_str)
-    {
-        return Some(error.to_string());
+    if let Some(error) = result.as_ref().and_then(|value| value.get("error")).and_then(Value::as_str) {
+        return ClaudeBashTimeoutStatus { warning: Some(error.to_string()), pending: false };
     }
-    if result
-        .as_ref()
-        .and_then(|value| value.get("prepared"))
-        .and_then(Value::as_bool)
-        == Some(true)
-    {
-        return if result
-            .as_ref()
-            .and_then(|value| value.get("loaded"))
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            None
-        } else {
-            Some("已准备，尚未确认 Cowork 模块加载。".to_string())
-        };
+    if result.as_ref().is_some_and(|value| value.get("prepared").and_then(Value::as_bool) == Some(true)
+        && value.get("loaded").and_then(Value::as_bool) == Some(true)) {
+        return ClaudeBashTimeoutStatus::default();
     }
-    Some("未收到 Cowork Bash 适配结果，尚未确认该项生效。".to_string())
+    ClaudeBashTimeoutStatus { warning: Some(BASH_PENDING_MESSAGE.to_string()), pending: true }
 }
 
 pub fn set_localization(enabled: bool) -> Result<ClaudeLocalizationStatus> {
@@ -861,13 +874,18 @@ fn run_script(
 ) -> Result<()> {
     let root = runtime_dir();
     let log = root.join("operation.log");
-    let output = fs::File::create(&log)?;
+    let mut output = fs::File::create(&log)?;
     // 只隐藏脚本宿主，不给 Claude 本身加 WindowStyle Hidden，否则会破坏注入。
     let mut command = hidden_script_command(program);
     if cfg!(target_os = "windows") && script.ends_with(".ps1") {
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
     }
     if script.starts_with("inject-cn.") {
+        let launch_id = uuid::Uuid::new_v4().to_string();
+        fs::write(root.join("bash-timeout-launch.json"), serde_json::to_vec(&json!({ "launchId": launch_id }))?)?;
+        std::io::Write::write_all(&mut output, format!("CODEX_PLUS_CLAUDE_BASH_LAUNCH={launch_id}\n").as_bytes())?;
+        command.env("CODEX_PLUS_CLAUDE_BASH_LAUNCH_ID", &launch_id)
+            .env("CODEX_PLUS_CLAUDE_BASH_REPORT_FILE", root.join(format!("bash-timeout-{launch_id}.json")));
         let timeout = bash_timeout_settings();
         command.env(
             "CODEX_PLUS_CLAUDE_BASH_TIMEOUT",
@@ -1023,7 +1041,6 @@ pub fn perform_with_progress(
     let root = runtime_dir();
     install_assets(&root)?;
     let copy = copy_app(&source);
-    let mut timeout_warning = None;
     let message = match action {
         "prepare" => {
             ensure!(
@@ -1119,9 +1136,6 @@ pub fn perform_with_progress(
                 }
                 return Err(error);
             }
-            // operation.log 已由本次 run_script 截断，不会沿用上一轮的适配结果。
-            timeout_warning =
-                bash_timeout_warning(&root.join("operation.log"), &bash_timeout_settings());
             if action == "restore" {
                 "已还原保存的语言并启动副本。".to_string()
             } else if !localization {
@@ -1132,8 +1146,7 @@ pub fn perform_with_progress(
         }
         _ => unreachable!(),
     };
-    let mut state = status()?;
-    state.bash_timeout_warning = timeout_warning;
+    let state = status()?;
     Ok(ClaudeLocalizationResult {
         status: state,
         message,
@@ -1161,22 +1174,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let report = dir.path().join("operation.log");
         let mut settings = crate::settings::ClaudeBashTimeoutSettings::default();
-        assert!(bash_timeout_warning(&report, &settings).is_none());
+        assert!(bash_timeout_status_at(&report, &settings).warning.is_none());
         settings.enabled = true;
-        assert!(bash_timeout_warning(&report, &settings).unwrap().contains("尚未确认"));
+        assert!(bash_timeout_status_at(&report, &settings).warning.unwrap().contains("暂未确认"));
         fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":false,\"error\":\"unsupported workspace\"}\nlaunch complete").unwrap();
-        assert_eq!(bash_timeout_warning(&report, &settings).as_deref(), Some("unsupported workspace"));
+        assert_eq!(bash_timeout_status_at(&report, &settings).warning.as_deref(), Some("unsupported workspace"));
         fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":true,\"loaded\":false}\nlaunch complete").unwrap();
-        assert_eq!(bash_timeout_warning(&report, &settings).as_deref(), Some("已准备，尚未确认 Cowork 模块加载。"));
+        assert_eq!(bash_timeout_status_at(&report, &settings).warning.as_deref(), Some(BASH_PENDING_MESSAGE));
         fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":true}\nlaunch complete").unwrap();
-        assert_eq!(bash_timeout_warning(&report, &settings).as_deref(), Some("已准备，尚未确认 Cowork 模块加载。"));
+        assert_eq!(bash_timeout_status_at(&report, &settings).warning.as_deref(), Some(BASH_PENDING_MESSAGE));
         fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":true,\"loaded\":true}\nlaunch complete").unwrap();
-        assert!(bash_timeout_warning(&report, &settings).is_none());
+        assert!(bash_timeout_status_at(&report, &settings).warning.is_none());
         fs::write(&report, b"not json").unwrap();
-        assert!(bash_timeout_warning(&report, &settings).is_some());
+        assert!(bash_timeout_status_at(&report, &settings).warning.is_some());
         settings.default_enabled = false;
         settings.max_enabled = false;
-        assert!(bash_timeout_warning(&report, &settings).is_none());
+        assert!(bash_timeout_status_at(&report, &settings).warning.is_none());
+    }
+
+    #[test]
+    fn bash_confirmation_is_live_and_scoped_to_each_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("operation.log");
+        let marker = dir.path().join("bash-timeout-launch.json");
+        let settings = crate::settings::ClaudeBashTimeoutSettings { enabled: true, ..Default::default() };
+        let old = uuid::Uuid::new_v4();
+        let current = uuid::Uuid::new_v4();
+        fs::write(&marker, json!({ "launchId": current.to_string() }).to_string()).unwrap();
+        fs::write(&report, format!("CODEX_PLUS_CLAUDE_BASH_LAUNCH={old}\nCODEX_PLUS_CLAUDE_BASH_RESULT={{\"prepared\":true,\"loaded\":true}}\n")).unwrap();
+        assert!(bash_timeout_status_at(&report, &settings).pending, "上次成功不能替本次确认");
+        let receipt = dir.path().join(format!("bash-timeout-{current}.json"));
+        fs::write(&receipt, json!({ "launchId": current.to_string(), "result": { "prepared": true, "loaded": false } }).to_string()).unwrap();
+        assert!(bash_timeout_status_at(&report, &settings).pending);
+        fs::write(&receipt, json!({ "launchId": current.to_string(), "result": { "prepared": true, "loaded": true } }).to_string()).unwrap();
+        let confirmed = bash_timeout_status_at(&report, &settings);
+        assert!(!confirmed.pending && confirmed.warning.is_none());
+        fs::write(&report, "copy integrity check passed").unwrap();
+        assert!(bash_timeout_status_at(&report, &settings).warning.is_none(), "检查副本不能抹掉确认结果");
+        fs::write(&receipt, json!({ "launchId": old.to_string(), "result": { "prepared": true, "loaded": true } }).to_string()).unwrap();
+        assert!(bash_timeout_status_at(&report, &settings).pending, "错误启动标识不能取消提示");
+        fs::write(&receipt, b"partial json").unwrap();
+        assert!(bash_timeout_status_at(&report, &settings).pending);
+        fs::write(&receipt, json!({ "launchId": current.to_string(), "result": { "error": "unsupported workspace" } }).to_string()).unwrap();
+        let failed = bash_timeout_status_at(&report, &settings);
+        assert!(!failed.pending);
+        assert_eq!(failed.warning.as_deref(), Some("unsupported workspace"));
     }
 
     #[test]
@@ -1234,6 +1276,7 @@ mod tests {
             computer_use_supported: cfg!(target_os = "macos"),
             bash_timeout: Default::default(),
             bash_timeout_warning: None,
+        bash_timeout_pending: false,
         }
     }
 
