@@ -3345,7 +3345,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"30\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"31\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3390,6 +3390,7 @@ fn model_whitelist_never_claims_the_host_default_model() {
         format!(
             r#"
 const codexModelCatalog = {{
+  status: "ok",
   default_model: "supplier-default",
   model: "supplier-default",
   provider_name: "Supplier",
@@ -3399,7 +3400,8 @@ const codexPlusModelMetadata = () => null;
 const modelReasoningEfforts = () => [];
 const applyCodexPlusModelMetadata = () => false;
 const codexPlusModelNames = () => ["supplier-default", "extra-model"];
-const codexRemoteSessionActiveProfile = () => ({{ id: "custom", relayMode: "official" }});
+let relayMode = "official";
+const codexRemoteSessionActiveProfile = () => ({{ id: "custom", relayMode }});
 const codexPlusModelUnlockEnabled = () => true;
 const codexPlusBackendSettingsLoaded = true;
 const codexPlusModelCollectionSnapshots = new WeakMap();
@@ -3437,6 +3439,21 @@ const existingContainerDefault = {{
 patchModelContainer(existingContainerDefault);
 if (existingContainerDefault.defaultModel !== hostDefault) process.exit(9);
 if (existingContainerDefault.model !== hostModel) process.exit(10);
+
+relayMode = "pureApi";
+const savedDefault = {{ model: "outside-provider-list", defaultReasoningEffort: "xhigh" }};
+const pureApiHost = {{
+  models: [{{ model: "native-model", isDefault: true }}],
+  defaultModel: savedDefault,
+  default_model: "outside-provider-list",
+  model: hostModel,
+}};
+patchModelContainer(pureApiHost, "local");
+if (pureApiHost.defaultModel !== savedDefault) process.exit(11);
+if (pureApiHost.defaultModel.defaultReasoningEffort !== "xhigh") process.exit(12);
+if (pureApiHost.default_model !== "outside-provider-list") process.exit(13);
+if (pureApiHost.model !== hostModel) process.exit(14);
+if (!pureApiHost.models.some((item) => item.model === "supplier-default")) process.exit(15);
 "#
         ),
     )
@@ -3714,8 +3731,8 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
         cases["unfilteredModelScenarios"],
         json!([true, true, true, true, true])
     );
-    assert_eq!(cases["pureApiDefaultModel"], "relay-model");
-    assert_eq!(cases["pureApiStatsigDefault"], "relay-model");
+    assert_eq!(cases["pureApiDefaultModel"], "gpt-unavailable");
+    assert_eq!(cases["pureApiStatsigDefault"], "gpt-unavailable");
     assert_eq!(cases["modelsRestoredAfterModeChange"], true);
     assert_eq!(cases["modelsRestoredAfterReinjection"], true);
     assert_eq!(cases["modelsRestoredAfterCatalogFailure"], true);

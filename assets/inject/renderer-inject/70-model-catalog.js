@@ -275,11 +275,11 @@
     if (snapshot) snapshot.patched = [...collection];
   }
 
-  function patchModelDefaults(value, allowed) {
-    const policy = modelFilterPolicy(allowed);
+  function patchModelDefaults(value) {
     const previous = codexPlusModelDefaultSnapshots.get(value);
     let changed = false;
-    if (previous && previous.policy !== policy) {
+    // 目录只提供选项；宿主默认值和线程选择不能由当前供应商的首个模型接管。
+    if (previous) {
       for (const [key, state] of Object.entries(previous.fields)) {
         if (value[key] === state.patched && value[key] !== state.original) {
           value[key] = state.original;
@@ -288,22 +288,6 @@
       }
       codexPlusModelDefaultSnapshots.delete(value);
     }
-    if (!allowed) return changed;
-    const snapshot = codexPlusModelDefaultSnapshots.get(value) || { policy, fields: {} };
-    const fallback = [codexModelCatalog.model, codexModelCatalog.default_model, ...allowed]
-      .find((name) => typeof name === "string" && allowed.has(name));
-    for (const key of ["defaultModel", "default_model"]) {
-      const original = value[key];
-      const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
-      if (!name || allowed.has(name)) continue;
-      const patched = typeof original === "string" ? fallback : codexPlusModelDescriptor(fallback);
-      if (!snapshot.fields[key] || original !== snapshot.fields[key].patched) {
-        snapshot.fields[key] = { original, patched };
-      }
-      value[key] = patched;
-      changed = true;
-    }
-    codexPlusModelDefaultSnapshots.set(value, snapshot);
     return changed;
   }
 

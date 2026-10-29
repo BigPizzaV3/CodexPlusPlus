@@ -431,7 +431,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "30";
+  const codexAppServerModelRequestPatchVersion = "31";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -5501,15 +5501,18 @@
       return nested === params.params ? params : { ...params, params: nested };
     }
     if (method !== "thread/resume" || !params || typeof params !== "object" || Array.isArray(params)
-        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi"
-        || ["model", "modelProvider", "model_provider"].some((key) => Object.prototype.hasOwnProperty.call(params, key))) {
+        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi") {
       return params;
     }
+    const specified = (value) => typeof value === "string" && !!value.trim();
+    const target = codexRemoteSessionTargetProvider();
+    const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
+    // nullable 字段和仅指定供应商不是模型选择；补供应商时必须同时保留保存的模型设置。
+    if (specified(params.model) || (requestedProvider && requestedProvider !== "openai" && requestedProvider !== target)) return params;
     if (refreshFailed) throw new Error("无法确认当前供应商，请重新打开会话后再试");
-    if (Object.prototype.hasOwnProperty.call(params.config || {}, "model")) {
+    if (specified(params.config?.model)) {
       return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
     }
-    const target = codexRemoteSessionTargetProvider();
     if (!target || target === "openai") throw new Error("当前纯 API 供应商不可用");
     const requestSignature = () => JSON.stringify([params.threadId,
       ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
@@ -5535,9 +5538,11 @@
       throw new Error("无法读取此会话保存的模型设置，未覆盖原有选择");
     }
     const config = { ...(params.config || {}) };
+    delete config.model;
     // null 表示原线程未指定档位，沿用原生默认语义；显式请求设置始终优先。
-    if (metadata.reasoningEffort !== null && !Object.prototype.hasOwnProperty.call(config, "model_reasoning_effort")) {
-      config.model_reasoning_effort = metadata.reasoningEffort;
+    if (!specified(config.model_reasoning_effort)) {
+      delete config.model_reasoning_effort;
+      if (metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
     }
     if (sendRequest) {
       // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
@@ -5558,6 +5563,7 @@
       }
     }
     const next = { ...params, model: metadata.model, modelProvider: target, config };
+    delete next.model_provider;
     (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
     return next;
   }
@@ -11620,11 +11626,11 @@
     if (snapshot) snapshot.patched = [...collection];
   }
 
-  function patchModelDefaults(value, allowed) {
-    const policy = modelFilterPolicy(allowed);
+  function patchModelDefaults(value) {
     const previous = codexPlusModelDefaultSnapshots.get(value);
     let changed = false;
-    if (previous && previous.policy !== policy) {
+    // 目录只提供选项；宿主默认值和线程选择不能由当前供应商的首个模型接管。
+    if (previous) {
       for (const [key, state] of Object.entries(previous.fields)) {
         if (value[key] === state.patched && value[key] !== state.original) {
           value[key] = state.original;
@@ -11633,22 +11639,6 @@
       }
       codexPlusModelDefaultSnapshots.delete(value);
     }
-    if (!allowed) return changed;
-    const snapshot = codexPlusModelDefaultSnapshots.get(value) || { policy, fields: {} };
-    const fallback = [codexModelCatalog.model, codexModelCatalog.default_model, ...allowed]
-      .find((name) => typeof name === "string" && allowed.has(name));
-    for (const key of ["defaultModel", "default_model"]) {
-      const original = value[key];
-      const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
-      if (!name || allowed.has(name)) continue;
-      const patched = typeof original === "string" ? fallback : codexPlusModelDescriptor(fallback);
-      if (!snapshot.fields[key] || original !== snapshot.fields[key].patched) {
-        snapshot.fields[key] = { original, patched };
-      }
-      value[key] = patched;
-      changed = true;
-    }
-    codexPlusModelDefaultSnapshots.set(value, snapshot);
     return changed;
   }
 

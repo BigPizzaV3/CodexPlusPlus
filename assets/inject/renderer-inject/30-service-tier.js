@@ -136,15 +136,18 @@
       return nested === params.params ? params : { ...params, params: nested };
     }
     if (method !== "thread/resume" || !params || typeof params !== "object" || Array.isArray(params)
-        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi"
-        || ["model", "modelProvider", "model_provider"].some((key) => Object.prototype.hasOwnProperty.call(params, key))) {
+        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi") {
       return params;
     }
+    const specified = (value) => typeof value === "string" && !!value.trim();
+    const target = codexRemoteSessionTargetProvider();
+    const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
+    // nullable 字段和仅指定供应商不是模型选择；补供应商时必须同时保留保存的模型设置。
+    if (specified(params.model) || (requestedProvider && requestedProvider !== "openai" && requestedProvider !== target)) return params;
     if (refreshFailed) throw new Error("无法确认当前供应商，请重新打开会话后再试");
-    if (Object.prototype.hasOwnProperty.call(params.config || {}, "model")) {
+    if (specified(params.config?.model)) {
       return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
     }
-    const target = codexRemoteSessionTargetProvider();
     if (!target || target === "openai") throw new Error("当前纯 API 供应商不可用");
     const requestSignature = () => JSON.stringify([params.threadId,
       ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
@@ -170,9 +173,11 @@
       throw new Error("无法读取此会话保存的模型设置，未覆盖原有选择");
     }
     const config = { ...(params.config || {}) };
+    delete config.model;
     // null 表示原线程未指定档位，沿用原生默认语义；显式请求设置始终优先。
-    if (metadata.reasoningEffort !== null && !Object.prototype.hasOwnProperty.call(config, "model_reasoning_effort")) {
-      config.model_reasoning_effort = metadata.reasoningEffort;
+    if (!specified(config.model_reasoning_effort)) {
+      delete config.model_reasoning_effort;
+      if (metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
     }
     if (sendRequest) {
       // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
@@ -193,6 +198,7 @@
       }
     }
     const next = { ...params, model: metadata.model, modelProvider: target, config };
+    delete next.model_provider;
     (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
     return next;
   }

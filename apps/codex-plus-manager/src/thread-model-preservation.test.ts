@@ -130,15 +130,15 @@ describe("pure API persisted model snapshot", () => {
     assert.equal(Object.hasOwn(result.config, "model_reasoning_effort"), false);
   });
 
-  it("never probes remote hosts, official profiles or explicit model/provider requests", async () => {
+  it("never probes remote hosts, official profiles, explicit models or foreign providers", async () => {
     const api = snapshotRuntime(async () => { throw new Error("must not read"); });
     for (const host of ["remote", "", undefined]) {
       const params = { threadId: "a" };
       assert.equal(await api.prepare("thread/resume", params, host), params);
     }
     for (const params of [
-      { threadId: "a", model: "chosen" }, { threadId: "a", modelProvider: "openai" },
-      { threadId: "a", model_provider: "openai" },
+      { threadId: "a", model: "chosen" }, { threadId: "a", modelProvider: "foreign" },
+      { threadId: "a", model_provider: "foreign" },
       { hostId: "remote", method: "thread/resume", params: { threadId: "a" } },
     ]) {
       assert.equal(await api.prepare("method" in params ? "send-cli-request-for-host" : "thread/resume", params, "local"), params);
@@ -149,6 +149,38 @@ describe("pure API persisted model snapshot", () => {
     api.settings.relayProfiles[0].relayMode = "official";
     const params = { threadId: "a" };
     assert.equal(await api.prepare("thread/resume", params, "local"), params);
+    assert.equal(api.calls.length, 0);
+  });
+
+  it("restores persisted choices through provider-only and empty optional fields in the actual routing order", async () => {
+    for (const optional of [
+      { model: null }, { model: "" }, { model: " " }, { model: undefined },
+      { modelProvider: "openai" }, { model_provider: "openai" },
+      { modelProvider: "custom" }, { modelProvider: null }, { model_provider: "" },
+      { config: { model: null, model_reasoning_effort: null } },
+      { config: { model: "", model_reasoning_effort: "" } },
+    ] as Record<string, any>[]) {
+      const api = snapshotRuntime(async ({ thread_id }) =>
+        ({ status: "ok", threadId: thread_id, model: "gpt-6.1-terra", reasoningEffort: "xhigh" }));
+      const params: Record<string, any> = { threadId: "a", ...optional };
+      const routed = api.apply("thread/resume", params);
+      const result = await api.prepare("thread/resume", routed, "local");
+      assert.equal(api.calls.length, 1, JSON.stringify(optional));
+      assert.equal(result.model, "gpt-6.1-terra");
+      assert.equal(result.modelProvider, "custom");
+      assert.equal(result.config.model_reasoning_effort, "xhigh");
+      assert.equal(Object.hasOwn(result, "model_provider"), false);
+      assert.equal(Object.hasOwn(result.config, "model"), false);
+      assert.equal(Object.hasOwn(params, "config") ? params.config : undefined, optional.config);
+    }
+  });
+
+  it("leaves new-thread model fallback with native defaults", async () => {
+    const api = snapshotRuntime();
+    const params = api.apply("thread/start", {});
+    const prepared = await api.prepare("thread/start", params, "local");
+    assert.equal(prepared.modelProvider, "custom");
+    assert.equal(Object.hasOwn(prepared, "model"), false);
     assert.equal(api.calls.length, 0);
   });
 
@@ -260,7 +292,9 @@ describe("pure API persisted model snapshot", () => {
     const instance = catalog.slice(catalog.indexOf("  function patchAppServerModelRequestClient("), catalog.indexOf("  // issue #2177"));
     const prototype = catalog.slice(catalog.indexOf("    function installCodexAppServerClientPrototypePatch()"),
       catalog.indexOf("  const appServerModelRequestPatchMaxMisses"));
-    for (const mode of ["instance", "prototype", "envelope"]) {
+    for (const [mode, optional] of ["instance", "prototype", "envelope"].flatMap(mode =>
+      [{}, { model: null }, { modelProvider: "openai" },
+        { config: { model: null, model_reasoning_effort: null } }].map(optional => [mode, optional] as const))) {
       const calls: any[] = [];
       class Client {
         hostId = "local";
@@ -278,7 +312,7 @@ describe("pure API persisted model snapshot", () => {
       const client = new Client();
       const context = vm.createContext({
         window: { __codexPlusAppServerClientClass: Client, __codexSessionDeleteBridge: () => {} }, client,
-        codexAppServerModelRequestPatchVersion: "30",
+        codexAppServerModelRequestPatchVersion: "31",
         codexPlusBackendSettings: { relayProfilesEnabled: true, activeRelayId: "relay", providerSyncEnabled: false,
           relayProfiles: [{ id: "relay", relayMode: "pureApi", configContents: 'model_provider = "custom"' }] },
         codexModelCatalog: {}, codexPlusBackendSettingsLoaded: true,
@@ -297,7 +331,7 @@ describe("pure API persisted model snapshot", () => {
       });
       vm.runInContext(override + readSource + instance + prototype, context);
       vm.runInContext(mode === "prototype" ? "installCodexAppServerClientPrototypePatch()" : "patchAppServerModelRequestClient(client)", context);
-      const params = { threadId: "a" };
+      const params = { threadId: "a", ...optional };
       await client.sendRequest(mode === "envelope" ? "send-cli-request-for-host" : "thread/resume",
         mode === "envelope" ? { hostId: "local", method: "thread/resume", params } : params);
       const resumes = calls.filter(call => (mode === "envelope" ? call.params.method : call.method) === "thread/resume");
@@ -308,5 +342,40 @@ describe("pure API persisted model snapshot", () => {
       assert.equal(received.modelProvider, "custom");
       assert.equal(received.config.model_reasoning_effort, "ultra");
     }
+  });
+});
+
+describe("native default model ownership in pure API filtering", () => {
+  const catalog = readFileSync(new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8");
+  const descriptor = catalog.slice(catalog.indexOf("  function codexPlusModelDescriptor("),
+    catalog.indexOf("  function modelArrayLooksPatchable("));
+  const defaults = catalog.slice(catalog.indexOf("  function patchModelDefaults("),
+    catalog.indexOf("  // 只收窄当前纯 API"));
+  it("keeps existing host defaults even outside the current provider list", () => {
+    const snapshots = new WeakMap();
+    const patch = new Function("codexModelCatalog", "codexPlusModelDefaultSnapshots", "modelFilterPolicy",
+      "codexPlusModelMetadata", "modelReasoningEfforts", `${descriptor}\n${defaults}\nreturn patchModelDefaults;`)(
+      { model: "gpt-6.1-sol", default_model: "gpt-6.1-sol" }, snapshots, () => "pureApi:local",
+      () => null, () => []);
+    const original = { model: "gpt-6.1-terra", defaultReasoningEffort: "xhigh" };
+    const host: any = { defaultModel: original, default_model: "gpt-6.1-terra", model: "saved-choice" };
+    assert.equal(patch(host, new Set(["gpt-6.1-sol"])), false);
+    assert.equal(host.defaultModel, original);
+    assert.equal(host.default_model, "gpt-6.1-terra");
+    assert.equal(host.model, "saved-choice");
+    const missing = {};
+    patch(missing, new Set(["gpt-6.1-sol"]));
+    assert.deepEqual(missing, {});
+
+    const oldPatched = { model: "gpt-6.1-sol", defaultReasoningEffort: "medium" };
+    host.defaultModel = oldPatched;
+    snapshots.set(host, { policy: "old", fields: { defaultModel: { original, patched: oldPatched } } });
+    assert.equal(patch(host, new Set(["gpt-6.1-sol"])), true);
+    assert.equal(host.defaultModel, original);
+    host.defaultModel = { model: "new-user-choice" };
+    const userChoice = host.defaultModel;
+    snapshots.set(host, { policy: "old", fields: { defaultModel: { original, patched: oldPatched } } });
+    patch(host, new Set(["gpt-6.1-sol"]));
+    assert.equal(host.defaultModel, userChoice);
   });
 });
