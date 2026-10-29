@@ -15300,7 +15300,7 @@ function ClaudeLocalizationScreen() {
               <div className="claude-bash-timeout-editor">
                 {s?.bashTimeoutWarning ? (
                   <div className="claude-bash-timeout-warning" role="status">
-                    {t("Cowork Bash 时限增强未生效，其他增强不受影响：")}{s.bashTimeoutWarning}
+                    {t("Cowork Bash 时限增强提示：")}{t(s.bashTimeoutWarning)}
                   </div>
                 ) : null}
                 <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存。")}</p>

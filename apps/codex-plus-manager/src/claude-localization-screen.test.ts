@@ -230,11 +230,33 @@ test("Cowork 适配警告不覆盖启动成功状态，其他增强保持可用"
   screen.calls[0].resolve({ ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true }, bashTimeoutWarning: "不支持的 Cowork Bash 参数校验结构" });
   await tick();
   const page = screen.render();
-  assert.match(text(page), /Cowork Bash 时限增强未生效，其他增强不受影响/);
+  assert.match(text(page), /Cowork Bash 时限增强提示/);
   assert.match(text(page), /不支持的 Cowork Bash 参数校验结构/);
   assert.equal(screen.topbar()!.props.disabled, false);
   assert.equal(inputs(page).find((input) => String(input.props.onChange).includes("toggleLocalization"))!.props.disabled, false);
   assert.equal(inputs(page).find((input) => String(input.props.onChange).includes("toggleVoiceInput"))!.props.disabled, false);
+});
+
+test("Cowork 已准备但未确认加载时显示中性提示，检测后保持可见且不阻止启动", async () => {
+  const pendingStatus = {
+    ...ready,
+    bashTimeout: { ...ready.bashTimeout, enabled: true },
+    bashTimeoutWarning: "已准备，尚未确认 Cowork 模块加载。",
+  };
+  const screen = harness({ status: pendingStatus, autoDetected: true });
+  screen.render();
+  let page = screen.render();
+  assert.match(text(page), /已准备，尚未确认 Cowork 模块加载/);
+  assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
+  assert.equal(screen.topbar()!.props.disabled, false);
+  buttons(page).find((button) => text(button) === "检测 Claude")!.props.onClick();
+  assert.equal(screen.calls[0].command, "claude_localization_status");
+  screen.calls[0].resolve(pendingStatus);
+  await tick();
+  page = screen.render();
+  assert.match(text(page), /已准备，尚未确认 Cowork 模块加载/);
+  assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
+  assert.equal(screen.topbar()!.props.disabled, false);
 });
 
 test("Bash 总开关保存失败后恢复已保存值，并允许重试", async () => {

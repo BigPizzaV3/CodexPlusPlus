@@ -188,7 +188,7 @@ pub struct ClaudeLocalizationStatus {
     /// 打开开关只会存设置，界面据此禁用该开关（#2673）。
     pub computer_use_supported: bool,
     pub bash_timeout: crate::settings::ClaudeBashTimeoutSettings,
-    /// 仅本次启动的 Cowork 适配警告，不改变其他增强的成功状态。
+    /// 最近一次启动的 Cowork 适配提示，不改变其他增强的成功状态。
     pub bash_timeout_warning: Option<String>,
 }
 
@@ -673,6 +673,10 @@ pub fn status() -> Result<ClaudeLocalizationStatus> {
             .and_then(|config| read_config(config).ok())
             .and_then(|v| v.get("locale")?.as_str().map(str::to_string));
         state.running = claude_running(deadline)?;
+        let report = runtime_dir().join("operation.log");
+        if state.prepared && report.is_file() {
+            state.bash_timeout_warning = bash_timeout_warning(&report, &state.bash_timeout);
+        }
         state.node_available = find_runtime("node", deadline)?.is_some();
         // Windows 的准备脚本用 PowerShell，不需遍历或执行 Python 安装别名。
         state.python_available = if cfg!(windows) { false } else { find_runtime("python3", deadline)?.is_some() };
@@ -780,7 +784,16 @@ fn bash_timeout_warning(
         .and_then(Value::as_bool)
         == Some(true)
     {
-        return None;
+        return if result
+            .as_ref()
+            .and_then(|value| value.get("loaded"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            None
+        } else {
+            Some("已准备，尚未确认 Cowork 模块加载。".to_string())
+        };
     }
     Some("未收到 Cowork Bash 适配结果，尚未确认该项生效。".to_string())
 }
@@ -1154,6 +1167,10 @@ mod tests {
         fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":false,\"error\":\"unsupported workspace\"}\nlaunch complete").unwrap();
         assert_eq!(bash_timeout_warning(&report, &settings).as_deref(), Some("unsupported workspace"));
         fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":true,\"loaded\":false}\nlaunch complete").unwrap();
+        assert_eq!(bash_timeout_warning(&report, &settings).as_deref(), Some("已准备，尚未确认 Cowork 模块加载。"));
+        fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":true}\nlaunch complete").unwrap();
+        assert_eq!(bash_timeout_warning(&report, &settings).as_deref(), Some("已准备，尚未确认 Cowork 模块加载。"));
+        fs::write(&report, "CODEX_PLUS_CLAUDE_BASH_RESULT={\"prepared\":true,\"loaded\":true}\nlaunch complete").unwrap();
         assert!(bash_timeout_warning(&report, &settings).is_none());
         fs::write(&report, b"not json").unwrap();
         assert!(bash_timeout_warning(&report, &settings).is_some());
