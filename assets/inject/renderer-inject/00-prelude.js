@@ -466,7 +466,7 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 29 && cached.ready && cached.source === source);
+    const reuse = !!(config.enabled && source && cached?.version === 30 && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -519,13 +519,15 @@
     const browserPortalAttribute = "data-codex-plus-image-browser-portal";
     const popupMaterialAttribute = "data-codex-plus-image-popup-material";
     const popupBoundaryAttribute = "data-codex-plus-image-popup-boundary";
+    const popupPortalAttribute = "data-codex-plus-image-popup-portal";
+    const popupPortalSelector = ".fixed.inset-0.pointer-events-none.zoom-adjusted-viewport.contain-layout";
     const controlAttribute = "data-codex-plus-image-control";
     const paintAttribute = "data-codex-plus-image-paint";
     const topControlAttribute = "data-codex-plus-image-top-control";
     const footerAttribute = "data-codex-plus-image-footer-gutter";
     const footerSelector = "[data-thread-scroll-footer]";
     const topControlSelector = [
-      '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]',
+      '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]',
       "[data-radix-popper-content-wrapper]", '[data-slot="popover-content"]', "[popover]", composerOverlaySelector,
     ].join(", ");
     // Extensions keep their own layers; their full-page shell is the one wallpaper surface.
@@ -558,6 +560,7 @@
       [${mediaAttribute}="footer"] { z-index:${wallpaperLayer + 1}!important; }
       [${mediaAttribute}^="header"] { z-index:${wallpaperLayer + 1}!important; }
       [${mediaAttribute}="header-flow"] { position:relative!important; }
+      [${mediaAttribute}^="header"][class~="after:bg-linear-to-b"][class~="after:from-surface"][class~="after:to-transparent"]::after { background-image:none!important; }
       ${composerSelector} .top-full [data-composer-placement="home"].bg-background-composer-action-bar { background:none!important; }
       [${mediaAttribute}="page"], [${mediaAttribute}="composer"] { isolation:isolate!important; }
       [${mediaAttribute}="composer"]:not([${mediaAttribute}="footer"] *) { z-index:${wallpaperLayer + 1}!important; }
@@ -574,6 +577,7 @@
       }
       [${controlAttribute}] { z-index:${wallpaperLayer}!important; }
       [${topControlAttribute}] { z-index:${wallpaperLayer + 2}!important; }
+      [${popupPortalAttribute}] { z-index:${wallpaperLayer + 2}!important; }
       [${topControlAttribute}="flow"] { position:relative!important; }
     `;
     const ns = "http://www.w3.org/2000/svg";
@@ -865,13 +869,15 @@
       if (previous) removePopup(surface, previous);
       removeWithin(controls, boundary, removeControl);
       const paint = computed(surface);
-      const record = { boundary, owner: surface.closest(composerOverlaySelector) || boundary,
+      const record = { boundary, portal: boundary.closest(popupPortalSelector), owner: surface.closest(composerOverlaySelector) || boundary,
         id: ++nextControl, backgroundKey: popupBackgroundKey(surface),
         nativeBackground: paint.backgroundColor,
         className: surface.getAttribute("class"), rule: "" };
       // Only the background is translucent; native contents and positioning stay intact.
       record.rule = `[${popupMaterialAttribute}="${record.id}"]{background-color:color-mix(in srgb, ${paint.backgroundColor} ${(1 - opacity) * 100}%, transparent)!important;}`;
       popups.set(surface, record);
+      // Native tooltips share a fixed portal; lifting only its children cannot clear the composer.
+      if (record.portal) mark(record.portal, popupPortalAttribute, "");
       mark(boundary, popupBoundaryAttribute, "");
       mark(boundary, topControlAttribute, computed(boundary).position === "static" ? "flow" : "positioned");
       mark(surface, popupMaterialAttribute, String(record.id));
@@ -917,6 +923,8 @@
     const removePopup = (surface, record) => {
       popups.delete(surface);
       unmark(surface, popupMaterialAttribute);
+      if (record.portal && ![...popups.values()].some(other => other.portal === record.portal))
+        unmark(record.portal, popupPortalAttribute);
       if (![...popups.values()].some(other => other.boundary === record.boundary)) {
         unmark(record.boundary, popupBoundaryAttribute);
         unmark(record.boundary, topControlAttribute);
@@ -1730,7 +1738,7 @@
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
       }
-      resource = { version: 29, source, blobUrl, imageSource: blobUrl || source };
+      resource = { version: 30, source, blobUrl, imageSource: blobUrl || source };
       window.__codexPlusImageOverlayResource = resource;
       window.__codexPlusImageOverlayBlobUrl = blobUrl;
       image.onload = install;

@@ -119,7 +119,7 @@ function check(name, run, viewport = { width: 800, height: 600 }, pageOptions = 
       await run(page);
       assert.deepEqual(errors, []);
       await page.evaluate(() => window.__codexPlusImageOverlayCleanup?.());
-      assert.equal(await page.locator('[data-codex-plus-ext="image-overlay"],[data-codex-plus-image-native],[data-codex-plus-image-control],[data-codex-plus-image-scope],[data-codex-plus-image-paint],[data-codex-plus-image-popup-material],[data-codex-plus-image-top-control],[data-codex-plus-image-footer-gutter]').count(), 0);
+      assert.equal(await page.locator('[data-codex-plus-ext="image-overlay"],[data-codex-plus-image-native],[data-codex-plus-image-control],[data-codex-plus-image-scope],[data-codex-plus-image-paint],[data-codex-plus-image-popup-material],[data-codex-plus-image-top-control],[data-codex-plus-image-popup-portal],[data-codex-plus-image-footer-gutter]').count(), 0);
       assert.equal(await page.evaluate(() => window.resizeTargets.size), 0);
       assert.equal(await page.evaluate(() => window.intersectionTargets.size), 0);
       assert.ok(await page.evaluate(() => Element.prototype.animate === window.nativeAnimate &&
