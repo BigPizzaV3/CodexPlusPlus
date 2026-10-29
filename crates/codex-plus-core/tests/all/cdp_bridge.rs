@@ -3597,7 +3597,7 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
     assert_eq!(cases["currentStateApi"], true);
     assert_eq!(cases["appServerParamsUnchanged"], true);
     assert_eq!(cases["appServerProjectlessParamsUnchanged"], true);
-    assert_eq!(cases["appServerSentCount"], 7);
+    assert_eq!(cases["appServerSentCount"], 8);
     assert_eq!(cases["serviceTierClientPatched"], true);
     assert_eq!(cases["serviceTierClientSendTier"], "priority");
     assert_eq!(cases["serviceTierClientPrewarmTier"], "priority");
