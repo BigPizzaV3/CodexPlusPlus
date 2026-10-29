@@ -4,14 +4,14 @@ import { describe, it } from "node:test";
 
 const source = readFileSync(new URL(
   "../../../assets/inject/renderer-inject/30-service-tier.js", import.meta.url), "utf8");
-const override = source.slice(source.indexOf("  function codexRemoteSessionProviderRequestMethod("),
-  source.indexOf("  function codexManagedSessionConnection("));
+const override = source.slice(0, source.indexOf("  function codexManagedSessionConnection("));
 
-function runtime(mode = "pureApi") {
-  return new Function("codexRemoteSessionProviderOverrideEnabled", "codexRemoteSessionActiveProfile",
-    "codexRemoteSessionTargetProvider", "sendCodexPlusDiagnostic",
+function runtime(mode = "pureApi", providerSyncEnabled = false) {
+  return new Function("codexPlusBackendSettings", "codexModelCatalog", "sendCodexPlusDiagnostic",
     `${override}\nreturn applyCodexRemoteSessionProviderOverride;`)(
-    () => true, () => ({ relayMode: mode }), () => "custom", () => {});
+    { relayProfilesEnabled: true, activeRelayId: "relay", providerSyncEnabled,
+      relayProfiles: [{ id: "relay", relayMode: mode, configContents: 'model_provider = "custom"' }] },
+    {}, () => {});
 }
 
 describe("thread model restoration ownership", () => {
@@ -34,15 +34,40 @@ describe("thread model restoration ownership", () => {
     }
   });
 
-  it("preserves explicit provider spelling, null models and caller reasoning", () => {
+  it("preserves field-free and foreign-provider resumes", () => {
     const apply = runtime();
     for (const params of [
-      { threadId: "thread", model_provider: "openai" },
-      { threadId: "thread", modelProvider: "openai", model: null },
       { threadId: "thread", reasoningEffort: "high" },
       { threadId: "thread", model: "chosen", modelProvider: "other", reasoningEffort: "ultra" },
     ]) {
       assert.equal(apply("thread/resume", params), params);
+    }
+  });
+
+  it("rewrites explicit openai providers with supplier sync enabled or disabled", () => {
+    for (const sync of [false, true]) {
+      const apply = runtime("pureApi", sync);
+      for (const key of ["modelProvider", "model_provider"]) {
+        const params = { threadId: "old-openai", [key]: "openai" };
+        const snapshot = { ...params };
+        const patched = apply("thread/resume", params);
+        assert.equal(patched.modelProvider, "custom");
+        assert.equal(Object.hasOwn(patched, "model_provider"), false);
+        assert.equal(Object.hasOwn(patched, "model"), false);
+        assert.deepEqual(params, snapshot);
+      }
+    }
+  });
+
+  it("treats model and provider fields by presence, including null and empty values", () => {
+    const apply = runtime();
+    for (const params of [
+      { threadId: "thread", model: null },
+      { threadId: "thread", model: "" },
+      { threadId: "thread", modelProvider: null },
+      { threadId: "thread", model_provider: "" },
+    ]) {
+      assert.equal(apply("thread/resume", params).modelProvider, "custom");
     }
   });
 

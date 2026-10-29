@@ -90,11 +90,12 @@
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
     const profile = codexRemoteSessionActiveProfile();
     const pureApi = String(profile?.relayMode || "") === "pureApi";
-    // 仅有 threadId 的恢复必须让原生读取保存的模型和推理设置；注入 provider 会跳过它们。
-    if (requestMethod === "thread/resume" && (!pureApi || !params.model)) return params;
-    if (requestMethod === "turn/start" && !pureApi) return params;
     const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
       || Object.prototype.hasOwnProperty.call(params, "model_provider");
+    const hasModel = Object.prototype.hasOwnProperty.call(params, "model");
+    // 仅无模型/provider 字段的恢复交给原生；显式 provider 仍需沿用供应商路由。
+    if (requestMethod === "thread/resume" && (!pureApi || (!hasModel && !hasModelProvider))) return params;
+    if (requestMethod === "turn/start" && !pureApi) return params;
     if (requestMethod === "turn/start" && !hasModelProvider) return params;
     const targetProvider = codexRemoteSessionTargetProvider();
     if (!targetProvider || targetProvider === "openai") return params;

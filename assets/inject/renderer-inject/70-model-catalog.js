@@ -275,11 +275,11 @@
     if (snapshot) snapshot.patched = [...collection];
   }
 
-  function patchModelDefaults(value) {
+  function patchModelDefaults(value, allowed) {
+    const policy = modelFilterPolicy(allowed);
     const previous = codexPlusModelDefaultSnapshots.get(value);
     let changed = false;
-    // 只撤销旧注入留下的默认值替换；宿主随后选择的值保持不动。
-    if (previous) {
+    if (previous && previous.policy !== policy) {
       for (const [key, state] of Object.entries(previous.fields)) {
         if (value[key] === state.patched && value[key] !== state.original) {
           value[key] = state.original;
@@ -288,6 +288,22 @@
       }
       codexPlusModelDefaultSnapshots.delete(value);
     }
+    if (!allowed) return changed;
+    const snapshot = codexPlusModelDefaultSnapshots.get(value) || { policy, fields: {} };
+    const fallback = [codexModelCatalog.model, codexModelCatalog.default_model, ...allowed]
+      .find((name) => typeof name === "string" && allowed.has(name));
+    for (const key of ["defaultModel", "default_model"]) {
+      const original = value[key];
+      const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
+      if (!name || allowed.has(name)) continue;
+      const patched = typeof original === "string" ? fallback : codexPlusModelDescriptor(fallback);
+      if (!snapshot.fields[key] || original !== snapshot.fields[key].patched) {
+        snapshot.fields[key] = { original, patched };
+      }
+      value[key] = patched;
+      changed = true;
+    }
+    codexPlusModelDefaultSnapshots.set(value, snapshot);
     return changed;
   }
 
@@ -412,7 +428,7 @@
       value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
       if (value.hidden_models.length !== before) changed = true;
     }
-    if (patchModelDefaults(value)) changed = true;
+    if (patchModelDefaults(value, allowed)) changed = true;
     return changed;
   }
 
@@ -478,7 +494,7 @@
     if (defaultSnapshot) codexPlusModelDefaultSnapshots.set(nextValue, { ...defaultSnapshot, fields: { ...defaultSnapshot.fields } });
     hostId = modelResponseHostId(hostId, value);
     const listChanged = patchModelNameArray(availableModels, hostId);
-    const defaultsChanged = patchModelDefaults(nextValue);
+    const defaultsChanged = patchModelDefaults(nextValue, codexPureApiAllowedModelSet(hostId));
     if (!listChanged && !defaultsChanged) return config;
     try {
       config.value = nextValue;
