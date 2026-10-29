@@ -92,7 +92,7 @@ def main() -> int:
         json.dump({"models": asset_models}, f, ensure_ascii=False, indent=2)
         f.write("\n")
     print(f"已写入 {ASSET_PATH}（现 {len(asset_models)} 条）。")
-    print("请运行 cargo test -p codex-plus-core --test model_suffix --test relay_config 验证后提交。")
+    print("请运行 cargo test -p codex-plus-core --test all -- model_suffix:: relay_config:: 验证后提交。")
     return 0
 
 

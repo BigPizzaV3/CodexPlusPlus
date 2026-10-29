@@ -159,6 +159,7 @@
   margin-left: auto;
 }
 
+/* 能点的文字比旁边灰色的说明文字稍亮一点，好区分；悬停变成正文色。 */
 .gw-text-button {
   display: inline-flex;
   align-items: center;
@@ -166,7 +167,7 @@
   padding: 0;
   border: 0;
   background: none;
-  color: var(--gw-mute);
+  color: color-mix(in srgb, var(--gw-mute) 60%, var(--gw-ink));
   font: inherit;
   font-size: 13px;
   white-space: nowrap;

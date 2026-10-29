@@ -1365,6 +1365,7 @@ export const EN_PLAIN: Record<string, string> = {
   "Agent 请求这些模型名时会路由到这个供应商": "Agent requests for these model names are routed to this provider",
   "用已保存的 Key 或登录重新获取": "Fetch again with the saved key or login",
   "从上游刷新": "Refresh from upstream",
+  "用已保存的 Key 或登录重新获取，新增的模型直接加进列表": "Fetch again with the saved key or login; new models are added to the list",
   "加入列表": "Add to list",
   "全部加入": "Add all",
   "全部移除": "Remove all",

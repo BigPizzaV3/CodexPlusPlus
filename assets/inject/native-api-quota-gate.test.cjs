@@ -82,6 +82,8 @@ function runNativeQuotaTests(createGate) {
   equal(main.state.data.rate_limit.allowed, false, "disabled relay must not unlock new publication");
   runtime.update({ ...mixed, relayProfiles: [{ ...mixed.relayProfiles[0], relayMode: "pureApi" }] });
   equal(main.state.data.rate_limit.allowed, false, "pure API must not use official-mix bypass");
+  runtime.update({ ...mixed, activeRelayId: "codex-plus-gateway", relayProfiles: [{ id: "codex-plus-gateway", relayMode: "pureApi", officialMixApiKey: false }] });
+  equal(main.state.data.rate_limit.allowed, true, "gateway profile must unlock send");
   runtime.update(mixed);
   main.setData({ usage: updated, envelope: "preserve" });
   equal(main.state.data.usage.rate_limit.allowed, true, "wrapped usage response must unlock");

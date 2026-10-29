@@ -1360,6 +1360,25 @@
       }
       .codex-plus-settings .codex-plus-row > :not(:first-child) { max-width: 48%; }
       .codex-plus-settings .codex-plus-row-title { font-weight: 500; line-height: 20px; }
+      /* 设置项标题旁的小标签：实验 / 需重启，与管理器增强页一致。 */
+      .codex-plus-settings .codex-plus-feature-tag {
+        display: inline-flex;
+        align-items: center;
+        margin-left: 6px;
+        padding: 0 5px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 4px;
+        color: var(--codex-plus-text-secondary);
+        font-size: 10.5px;
+        font-style: normal;
+        font-weight: 500;
+        line-height: 16px;
+        vertical-align: 1px;
+      }
+      .codex-plus-settings .codex-plus-feature-tag[data-tone="experimental"] {
+        border-color: color-mix(in srgb, var(--codex-plus-warning) 40%, transparent);
+        color: var(--codex-plus-warning);
+      }
       .codex-plus-settings .codex-plus-row-description,
       .codex-plus-settings .codex-plus-about {
         margin-top: 2px;

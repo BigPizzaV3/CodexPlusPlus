@@ -1,10 +1,32 @@
 (() => {
-  // 本机官登只要勾了混入 Key，就解除官方订阅额度的发送锁。不看上游地址。
+  // 本机官登只要勾了混入 Key，或接入了网关、或当前聚合里既有官登又有 API 成员，就解除官方订阅额度的发送锁。不看上游地址。
   function permitsExternalApi(settings, hostId) {
     if (hostId !== "local" || settings?.relayProfilesEnabled !== true) return false;
     if (!Array.isArray(settings.relayProfiles)) return false;
     const profile = settings.relayProfiles.find((item) => item?.id === settings.activeRelayId);
-    return !!profile && profile.relayMode === "official" && profile.officialMixApiKey === true;
+    if (!profile) return false;
+    if (profile.id === "codex-plus-gateway") return true;
+    if (profile.relayMode === "aggregate") return aggregateMixed(settings, profile);
+    return profile.relayMode === "official" && profile.officialMixApiKey === true;
+  }
+
+  // 与增强模式（95-conversation-view 的 officialUsageAggregateMixed）同一标准：
+  // 当前生效的聚合里同时有官方登录成员和走 API Key 的成员才放行；读不到成员时不放行。
+  function aggregateMixed(settings, profile) {
+    const activeId = String(profile.id || "");
+    const aggregateId = String(settings.activeAggregateRelayId || "").trim() || activeId;
+    if (!aggregateId || aggregateId !== activeId) return false;
+    const aggregates = Array.isArray(settings.aggregateRelayProfiles) ? settings.aggregateRelayProfiles : [];
+    const aggregate = aggregates.find((item) => String(item?.id || "") === aggregateId);
+    if (!aggregate || !Array.isArray(aggregate.members)) return false;
+    const members = aggregate.members
+      .map((member) => settings.relayProfiles.find((item) => String(item?.id || "") === String(member?.relayId || "")))
+      .filter((member) => member && String(member.relayMode || "") !== "aggregate");
+    const hasOfficialLogin = members.some((member) => String(member.relayMode || "") === "official");
+    // 官登混入 Key 的成员本身也带 API Key；其余非官方成员都走 API Key。
+    const hasApiKey = members.some((member) => String(member.relayMode || "") !== "official"
+      || member.officialMixApiKey === true);
+    return hasOfficialLogin && hasApiKey;
   }
 
   function locate(text, url) {

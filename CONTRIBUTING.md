@@ -26,6 +26,9 @@ Thank you for your interest in contributing to CodexPlusPlus!
    ```bash
    cargo test
    ```
+   Integration tests of `codex-plus-core` and `codex-plus-data` are compiled into a single
+   test binary under `tests/all/` (one `mod` per file in `main.rs`). Add new test files there,
+   and run one file with e.g. `cargo test -p codex-plus-core --test all relay_config::`.
 
 ## Project Structure
 

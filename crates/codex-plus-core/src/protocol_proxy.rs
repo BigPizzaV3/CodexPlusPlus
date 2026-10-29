@@ -1887,12 +1887,12 @@ impl UpstreamProxyResponse {
         http_status_line(self.status_code)
     }
 
-    /// 适配过的响应里要还原成 custom_tool_call 的工具名；没有记录时按 exec 兼容重试处理。
-    pub(crate) fn exec_tool_names(&self) -> BTreeSet<String> {
+    /// 适配过的响应要按哪些工具改写还原；没有记录时按 exec 兼容重试处理。
+    pub(crate) fn tool_adaptation(&self) -> crate::responses_exec::ToolAdaptation {
         self.exec_outcome
             .as_ref()
-            .map(|outcome| outcome.names().clone())
-            .unwrap_or_else(crate::responses_exec::exec_tool_names)
+            .map(|outcome| outcome.adaptation().clone())
+            .unwrap_or_else(crate::responses_exec::ToolAdaptation::exec)
     }
 
     pub fn is_success(&self) -> bool {
@@ -3606,18 +3606,24 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let legacy_native_compaction = relay.protocol == RelayProtocol::Responses
             && is_responses_compact_proxy_path(request_path);
         let is_compaction_request = compaction || probe_native_compaction || legacy_native_compaction;
-        // xAI 的 Responses 接口不认 custom 工具类型，整个请求会被 422 拒掉：
-        // 声明和历史里的 custom 工具一律转成 function，响应再还原成 custom_tool_call。
-        let forced_custom_names = if wire_api == UpstreamWireApi::Responses
-            && upstream_rejects_custom_tools(&relay)
-        {
-            crate::responses_exec::custom_tool_names(&upstream_body)
+        // xAI 的 Responses 接口不认 Codex 的 custom / namespace / 客户端 tool_search 等，
+        // 带上就整包拒绝：发出前整理请求，响应再按记录还原（见 xai_responses）。
+        let xai_upstream =
+            wire_api == UpstreamWireApi::Responses && upstream_rejects_custom_tools(&relay);
+        let mut forced_adaptation = crate::responses_exec::ToolAdaptation::default();
+        if xai_upstream {
+            let (shaped, adaptation) = crate::xai_responses::shape_request(upstream_body)?;
+            upstream_body = shaped;
+            forced_adaptation = adaptation;
+        }
+        let relay = if xai_upstream {
+            crate::xai_responses::with_conversation_header(relay, &upstream_body)
         } else {
-            BTreeSet::new()
+            relay
         };
         if local_exec_adapted
             && wire_api == UpstreamWireApi::Responses
-            && forced_custom_names.is_empty()
+            && !xai_upstream
         {
             // 声明与当前全部历史同时转换，不能对已转换的声明再拼入原始新工具结果。
             upstream_body = crate::responses_exec::adapt_request(upstream_body)?;
@@ -3651,15 +3657,14 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             }),
         );
         let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
-        let forced_adapted = !forced_custom_names.is_empty();
-        let mut adapted_names = crate::responses_exec::exec_tool_names();
-        if forced_adapted {
-            upstream_body =
-                crate::responses_exec::adapt_request_for(upstream_body, &forced_custom_names)?;
-            adapted_names = forced_custom_names;
-        }
+        let forced_adapted = !forced_adaptation.is_empty();
+        let adapted_tools = if forced_adapted {
+            forced_adaptation
+        } else {
+            crate::responses_exec::ToolAdaptation::exec()
+        };
         let eligible = wire_api == UpstreamWireApi::Responses
-            && !forced_adapted
+            && !xai_upstream
             && !is_compaction_request
             && !experimental_local_compaction
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
@@ -4433,7 +4438,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             request_trace: Some(request_trace),
             exec_adapted,
             exec_outcome: (exec_adapted && (200..300).contains(&status_code)).then(|| {
-                crate::responses_exec_transport::ExecOutcome::new(key, adapted_names, &settings)
+                crate::responses_exec_transport::ExecOutcome::new(key, adapted_tools, &settings)
             }),
             response: Some(upstream),
         });
@@ -4441,7 +4446,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 }
 
 /// xAI 的 Responses 接口（api.x.ai 与 SuperGrok 订阅代理）只认 function 等内置工具类型，
-/// 不认 Codex 的 custom 工具（apply_patch / exec），带上就整包 422。
+/// 不认 Codex 的 custom 工具、namespace、客户端执行的 tool_search 等，请求要先整理。
 fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool {
     reqwest::Url::parse(relay.base_url.trim())
         .ok()
@@ -5695,7 +5700,7 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
         let body = if upstream.exec_adapted {
             let (body, valid) = if is_stream {
                 let mut converter =
-                    crate::responses_exec_sse::ExecSseAdapter::for_names(upstream.exec_tool_names());
+                    crate::responses_exec_sse::ExecSseAdapter::for_adaptation(upstream.tool_adaptation());
                 let mut bytes = match converter.push_bytes(&upstream_body) {
                     Ok(bytes) => bytes,
                     Err(_) => converter.fail(),
@@ -5705,7 +5710,7 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             } else {
                 crate::responses_exec_transport::adapted_json(
                     &upstream_body,
-                    &upstream.exec_tool_names(),
+                    &upstream.tool_adaptation(),
                 )
             };
             if let Some(outcome) = upstream.exec_outcome.as_mut() {
@@ -9032,7 +9037,7 @@ fn dedup_chat_tools_by_name(tools: &mut Vec<Value>) {
     });
 }
 
-fn combine_namespace_description(namespace_description: &str, child_description: &str) -> String {
+pub(crate) fn combine_namespace_description(namespace_description: &str, child_description: &str) -> String {
     let namespace_description = namespace_description.trim();
     let child_description = child_description.trim();
     match (
@@ -9046,7 +9051,7 @@ fn combine_namespace_description(namespace_description: &str, child_description:
     }
 }
 
-fn flatten_namespace_tool_name(namespace: &str, name: &str) -> String {
+pub(crate) fn flatten_namespace_tool_name(namespace: &str, name: &str) -> String {
     if namespace.is_empty() {
         return name.to_string();
     }
@@ -11852,8 +11857,30 @@ pub fn set_message_phase_fill(enabled: bool) {
     MESSAGE_PHASE_FILL.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
+thread_local! {
+    /// 测试用的线程级覆盖：任何代理请求都会按设置重写进程级开关，
+    /// 并发跑的转换用例只认自己线程上的值，才不会被别的用例改掉。
+    static MESSAGE_PHASE_FILL_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// 测试用：在当前线程内固定阶段标记开关执行 `run`，结束后复原。
+#[doc(hidden)]
+pub fn with_message_phase_fill_for_tests<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MESSAGE_PHASE_FILL_OVERRIDE.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(MESSAGE_PHASE_FILL_OVERRIDE.with(|cell| cell.replace(Some(enabled))));
+    run()
+}
+
 pub fn message_phase_fill_enabled() -> bool {
-    MESSAGE_PHASE_FILL.load(std::sync::atomic::Ordering::Relaxed)
+    MESSAGE_PHASE_FILL_OVERRIDE
+        .with(|cell| cell.get())
+        .unwrap_or_else(|| MESSAGE_PHASE_FILL.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 impl ResponsesSseTransformer {

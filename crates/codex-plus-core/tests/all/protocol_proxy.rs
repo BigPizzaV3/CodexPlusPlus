@@ -1,0 +1,8819 @@
+use codex_plus_core::protocol_proxy::{
+    ChatSseToResponsesConverter, CompactionSseConverter, ProxySessionHeaders,
+    audio_transcriptions_url, chat_completion_to_response,
+    chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
+    chat_sse_to_responses_sse_with_request, ensure_web_search_tool_for_history,
+    image_edits_url, image_generations_url,
+    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_image_edits_proxy_path,
+    is_image_generations_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
+    is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
+    open_chat_completions_proxy_request, open_image_edits_proxy_request,
+    open_image_generations_proxy_request, open_models_proxy_request, open_responses_proxy_request,
+    open_responses_proxy_request_with_settings,
+    open_responses_proxy_request_with_settings_for_path,
+    open_responses_proxy_request_with_settings_for_path_and_session_headers,
+    annotate_gateway_upstream_error, request_has_compaction_trigger, responses_compact_url,
+    responses_error_from_upstream, upstream_error_log_text,
+    responses_to_chat_completions, responses_to_chat_completions_with_options,
+    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
+    upstream_stream_header_timeout, wrap_non_stream_response_as_compaction,
+};
+use codex_plus_core::relay_config::test_relay_profile;
+use codex_plus_core::settings::{
+    AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
+    RelayMode, RelayModelRoute, RelayProfile, RelayProtocol, RelaySessionProvider,
+};
+use serde_json::{Value, json};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+fn contains_problematic_local_ref_siblings(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(contains_problematic_local_ref_siblings),
+        Value::Object(object) => {
+            let has_local_ref_siblings = object.len() > 1
+                && object
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reference| reference.starts_with("#/$defs/"));
+            has_local_ref_siblings || object.values().any(contains_problematic_local_ref_siblings)
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn compaction_trigger_detection() {
+    let with_trigger = json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "x" }] },
+            { "type": "compaction_trigger" }
+        ]
+    });
+    assert!(request_has_compaction_trigger(&with_trigger));
+
+    let without_trigger = json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "x" }] }
+        ]
+    });
+    assert!(!request_has_compaction_trigger(&without_trigger));
+
+    let string_input = json!({ "model": "m", "input": "hi" });
+    assert!(!request_has_compaction_trigger(&string_input));
+}
+
+#[test]
+fn web_search_history_restores_declaration_without_changing_history_or_function_tools() {
+    let mut request = json!({
+        "input": [{"type": "web_search_call", "id": "ws_test", "status": "completed",
+            "action": {"type": "search", "query": "example"}}],
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        "tool_choice": "auto"
+    });
+    let original = request.clone();
+    assert!(ensure_web_search_tool_for_history(&mut request));
+    assert_eq!(request["input"], original["input"]);
+    assert_eq!(request["tools"][0], original["tools"][0]);
+    assert_eq!(request["tool_choice"], original["tool_choice"]);
+    assert_eq!(
+        request["tools"][1],
+        json!({"type": "web_search", "external_web_access": false})
+    );
+    let repaired = request.clone();
+    assert!(!ensure_web_search_tool_for_history(&mut request));
+    assert_eq!(request, repaired, "repair must be idempotent");
+}
+
+#[test]
+fn web_search_history_keeps_existing_declarations_including_additional_tools() {
+    for declaration in [
+        "web_search",
+        "web_search_preview",
+        "web_search_preview_2025_03_11",
+    ] {
+        for additional in [false, true] {
+            let tools = json!([{"type": declaration, "search_context_size": "low"}]);
+            let mut request = json!({
+                "input": [{"type": "web_search_call", "id": "ws_test"}],
+                "tools": if additional { json!([]) } else { tools.clone() }
+            });
+            if additional {
+                request["input"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"type": "additional_tools", "role": "developer", "tools": tools}));
+            }
+            let original = request.clone();
+            assert!(!ensure_web_search_tool_for_history(&mut request));
+            assert_eq!(request, original);
+        }
+    }
+}
+
+#[test]
+fn web_search_history_preserves_no_tool_semantics_and_explicit_tool_choices() {
+    for tools in [None, Some(Value::Null), Some(json!([]))] {
+        for choice in [
+            None,
+            Some(Value::Null),
+            Some(json!("auto")),
+            Some(json!("none")),
+            Some(json!("required")),
+            Some(json!({"type": "function", "name": "lookup"})),
+        ] {
+            let mut request = json!({"input": [{"type": "web_search_call"}]});
+            if let Some(tools) = &tools {
+                request["tools"] = tools.clone();
+            }
+            if let Some(choice) = &choice {
+                request["tool_choice"] = choice.clone();
+            }
+            assert!(ensure_web_search_tool_for_history(&mut request));
+            let expected = match choice {
+                None | Some(Value::Null) => json!("none"),
+                Some(Value::String(ref value)) if value == "auto" || value == "none" => {
+                    json!("none")
+                }
+                Some(value) => value,
+            };
+            assert_eq!(request["tool_choice"], expected);
+            assert_eq!(
+                request["tools"],
+                json!([{"type": "web_search", "external_web_access": false}])
+            );
+        }
+    }
+    let mut request = json!({
+        "input": [{"type": "web_search_call"},
+            {"type": "additional_tools", "tools": [{"type": "function", "name": "lookup"}]}]
+    });
+    assert!(ensure_web_search_tool_for_history(&mut request));
+    assert!(
+        request.get("tool_choice").is_none(),
+        "existing additional tools remain callable"
+    );
+}
+
+#[test]
+fn web_search_history_leaves_unrelated_and_malformed_requests_unchanged() {
+    for mut request in [
+        json!({"input": "hello"}),
+        json!({"input": [{"type": "message", "role": "user", "content": "hello"}]}),
+        json!({"input": [{"type": "web_search_call"}], "tools": {}}),
+        json!({"input": [{"type": "web_search_call"}], "tools": "invalid"}),
+        json!({"input": [null, 7, "web_search_call", {"content": "web_search_call"}]}),
+    ] {
+        let original = request.clone();
+        assert!(!ensure_web_search_tool_for_history(&mut request));
+        assert_eq!(request, original);
+    }
+}
+
+#[tokio::test]
+async fn web_search_history_proxy_declares_only_for_standard_responses() {
+    for (protocol, path, trigger, enabled, repair) in [
+        (RelayProtocol::Responses, "/v1/responses", false, true, true),
+        (RelayProtocol::Responses, "/v1/responses", false, false, false),
+        (RelayProtocol::Responses, "/v1/responses", true, true, true),
+        (RelayProtocol::Responses, "/v1/responses/compact", false, true, false),
+        (RelayProtocol::ChatCompletions, "/v1/responses", false, true, false),
+    ] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let response_body = if trigger || is_responses_compact_proxy_path(path) {
+            json!({
+                "id": "resp_native_compaction",
+                "object": "response",
+                "output": [{"type": "compaction", "id": "cmp_test", "encrypted_content": "opaque"}]
+            })
+        } else {
+            json!({"id": "resp_model_route", "object": "response"})
+        };
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            response_body.to_string(),
+        ));
+        let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
+        settings.relay_profiles[1].protocol = protocol;
+        settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
+        settings.relay_profiles[1].web_search_history_compat = enabled;
+        settings.relay_profiles[0].web_search_history_compat = !enabled;
+        if protocol == RelayProtocol::ChatCompletions {
+            // Model routing intentionally accepts only Responses targets.
+            settings.relay_profiles[0].model_routes.clear();
+            settings.active_relay_id = settings.relay_profiles[1].id.clone();
+        }
+        let mut request = json!({
+            "model": "gpt-5.6-luna",
+            "stream": false,
+            "tools": [],
+            "input": [
+                {"type": "message", "role": "user", "content": "summarize"},
+                {"type": "web_search_call", "id": "ws_test", "status": "completed"}
+            ]
+        });
+        if trigger {
+            request["input"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"type": "compaction_trigger", "future": "preserve"}));
+        }
+        let result = open_responses_proxy_request_with_settings_for_path(
+            &request.to_string(),
+            settings,
+            path,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status_code, 200);
+        let (headers, sent) = server.await.unwrap();
+        if repair {
+            let mut expected = request;
+            expected["tools"] = json!([{"type": "web_search", "external_web_access": false}]);
+            expected["tool_choice"] = json!("none");
+            assert_eq!(sent, expected, "history and native compaction must survive");
+            assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+            assert!(!result.compaction);
+        } else if protocol == RelayProtocol::Responses {
+            assert_eq!(
+                sent, request,
+                "disabled providers and legacy compact remain unchanged"
+            );
+            assert!(headers.starts_with(&format!("POST {path} HTTP/1.1")));
+        } else {
+            let expected = responses_to_chat_completions_with_options(request, false).unwrap();
+            assert_eq!(sent, expected, "Chat conversion must remain unchanged");
+            assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn web_search_history_streaming_compaction_preserves_native_state() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let item = json!({"type": "compaction", "id": "cmp_test", "encrypted_content": "opaque"});
+    let response = format!(
+        "data: {}\n\ndata: {}\n\n",
+        json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+        json!({"type": "response.completed", "response": {"id": "resp_test", "output": [item]}})
+    );
+    let server = tokio::spawn(capture_request_with_response(
+        listener,
+        "text/event-stream",
+        response.clone(),
+    ));
+    let request = json!({
+        "model": "gpt-5.6-luna", "stream": true, "store": false,
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        "tool_choice": "auto",
+        "input": [
+            {"type": "compaction", "id": "cmp_prior", "encrypted_content": "prior-state"},
+            {"type": "web_search_call", "id": "ws_test", "status": "completed",
+                "action": {"type": "search", "query": "example"}},
+            {"type": "compaction_trigger", "future": "preserve"}
+        ]
+    });
+    let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
+    settings.relay_profiles[1].web_search_history_compat = true;
+    settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
+    let mut result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert!(!result.compaction);
+    assert_eq!(result.read_body().await.unwrap(), response.as_bytes().to_vec());
+    let (_, sent) = server.await.unwrap();
+    let mut expected = request;
+    expected["tools"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "web_search", "external_web_access": false}));
+    assert_eq!(sent, expected);
+}
+
+#[tokio::test]
+async fn web_search_history_uses_each_fallback_providers_own_opt_in() {
+    for enabled in [false, true] {
+        let first = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let second = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let mut settings = aggregate_proxy_settings(
+            if enabled {
+                "web-history-on"
+            } else {
+                "web-history-off"
+            },
+            format!("http://{}/v1", first.local_addr().unwrap()),
+            format!("http://{}/v1", second.local_addr().unwrap()),
+        );
+        settings.relay_profiles[0].web_search_history_compat = !enabled;
+        settings.relay_profiles[1].web_search_history_compat = enabled;
+        settings.relay_profiles[0].relay_mode = RelayMode::PureApi;
+        settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
+        let first_server = tokio::spawn(respond_once(
+            first,
+            "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n",
+        ));
+        let second_server = tokio::spawn(capture_json_request_once(second));
+        let request = json!({
+            "model": "gpt-5.6-luna", "stream": false,
+            "input": [{"type": "web_search_call", "id": "ws_test"}],
+            "tools": []
+        });
+        let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+            .await
+            .unwrap();
+        assert_eq!(result.status_code, 200);
+        first_server.await.unwrap();
+        let (_, sent) = second_server.await.unwrap();
+        let mut expected = request;
+        if enabled {
+            expected["tools"] = json!([{"type": "web_search", "external_web_access": false}]);
+            expected["tool_choice"] = json!("none");
+        }
+        assert_eq!(
+            sent, expected,
+            "the first provider must not contaminate fallback requests"
+        );
+    }
+}
+
+#[test]
+fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "message", "role": "user",
+              "content": [{ "type": "input_text", "text": "latest question" }] },
+            local_compaction_item("PRIOR_SUMMARY")
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let replayed = messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("PRIOR_SUMMARY"))
+        })
+        .expect("compaction item 应展开为摘要 user 消息");
+    assert_eq!(replayed["role"], "user");
+}
+
+#[test]
+fn chat_conversion_forwards_plaintext_encrypted_agent_content_in_order() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "agent_message", "id": "amsg_real_shape",
+              "author": "/root/orchestrator", "recipient": "/root/worker",
+              "content": [
+                  { "type": "input_text",
+                    "text": "Message Type: NEW_TASK Task name: /root/worker Payload:" },
+                  { "type": "encrypted_content",
+                    "encrypted_content": "收到任务：请核对改动并把结论整理成三段发回。" }
+              ] }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let forwarded = messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("收到任务"))
+        })
+        .expect("agent_message 内的明文 encrypted_content 片段应透传为文本");
+    assert_eq!(forwarded["role"], "user");
+    let content = forwarded["content"].as_str().unwrap();
+    let header_pos = content.find("Payload:").expect("头部文本应保留");
+    let payload_pos = content.find("收到任务").unwrap();
+    assert!(
+        payload_pos > header_pos,
+        "片段顺序必须保持 header 在前、payload 在后"
+    );
+}
+
+#[test]
+fn chat_conversion_rejects_plaintext_encrypted_content_outside_agent_message() {
+    let error = responses_to_chat_completions(json!({
+        "model": "custom-model",
+        "input": [{"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "Payload:"},
+            {"type": "encrypted_content", "text": "private-agent-payload"}
+        ]}]
+    }))
+    .expect_err("普通 message 里的 encrypted_content 必须 fail closed");
+    let diagnostic = format!("{error:#}");
+    assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
+    assert!(!diagnostic.contains("private-agent-payload"));
+}
+
+#[test]
+fn chat_conversion_rejects_agent_message_without_confirmed_payload_header() {
+    let error = responses_to_chat_completions(json!({
+        "model": "custom-model",
+        "input": [{"type": "agent_message", "content": [
+            {"type": "encrypted_content", "encrypted_content": "private-agent-payload"}
+        ]}]
+    }))
+    .expect_err("缺少 Payload: 头部的 agent_message 不得透传 encrypted_content");
+    let diagnostic = format!("{error:#}");
+    assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
+    assert!(!diagnostic.contains("private-agent-payload"));
+}
+
+#[test]
+fn chat_conversion_rejects_url_safe_base64_agent_payload_as_opaque() {
+    // 合法的 base64url 密文：含 `_`，解码后可打印 ASCII 占比明显低于阈值。
+    // 字母表归一化写错时这里会退化成「解码失败 → 当明文转发」，上游收到无意义载荷。
+    let opaque = "BU6X4ClyuwRNlt8ocboDTJXeJ3C5AkuU3SZvuAFKk9wlbrcASZLbJG22_0iR2iNs";
+    let error = responses_to_chat_completions(json!({
+        "model": "custom-model",
+        "input": [{"type": "agent_message", "content": [
+            {"type": "input_text", "text": "Message Type: NEW_TASK Payload:"},
+            {"type": "encrypted_content", "encrypted_content": opaque}
+        ]}]
+    }))
+    .expect_err("base64url 密文不得按明文转发给 Chat 上游");
+    let diagnostic = format!("{error:#}");
+    assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
+    assert!(!diagnostic.contains(opaque));
+}
+
+#[test]
+fn chat_conversion_rejects_object_shaped_encrypted_content() {
+    let error = responses_to_chat_completions(json!({
+        "model": "x",
+        "input": [{"type": "message", "role": "user", "content": {
+            "type": "encrypted_content", "encrypted_content": "private-agent-payload"
+        }}]
+    }))
+    .expect_err("content 为对象形态时同样必须拒绝 encrypted_content");
+    let diagnostic = format!("{error:#}");
+    assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
+    assert!(!diagnostic.contains("private-agent-payload"));
+}
+
+#[test]
+fn chat_conversion_rejects_opaque_encrypted_agent_content_without_echoing_payload() {
+    let opaque = "mMn9x0Kc2QvZ7LtR4bYwJpE1sH6dGfUgA0TiOeNkVXqBcD9ylZsKmWrT3uPh";
+    for input in [
+        json!([{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"Payload:"},
+            {"type":"encrypted_content","text":opaque}
+        ]}]),
+        json!([{"type":"encrypted_content","encrypted_content":opaque}]),
+        json!([{"type":"agent_message","content":[
+            {"type":"encrypted_content","encrypted_content":opaque}
+        ]}]),
+        json!([{"type":"agent_message","content":[
+            {"type":"input_text","text":"Payload:"},
+            {"type":"encrypted_content","encrypted_content":opaque}
+        ]}]),
+        json!({"type":"encrypted_content","encrypted_content":opaque}),
+        json!([{"type":"message","role":"user","content":[{"type":"encrypted_content"}]}]),
+    ] {
+        for standard in [false, true] {
+            let error = responses_to_chat_completions_with_options(
+                json!({"model":"custom-model","input":input}),
+                standard,
+            )
+            .expect_err("opaque encrypted agent 内容必须明确拒绝，不能静默丢弃或当作文本转发");
+            let diagnostic = format!("{error:#}");
+            assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
+            assert!(!diagnostic.contains(opaque));
+        }
+    }
+}
+
+#[test]
+fn chat_conversion_keeps_plaintext_and_existing_reasoning_compaction_contracts() {
+    let converted = responses_to_chat_completions(json!({
+        "model":"custom-model",
+        "input":[
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"visible-summary"}],
+             "encrypted_content":"opaque-reasoning"},
+            {"type":"message","role":"user","content":[
+                {"type":"input_text","text":"Payload:"},
+                {"type":"input_text","text":"plaintext-task"}
+            ]},
+            local_compaction_item("local-summary"),
+            {"type":"function_call_output","call_id":"orphan",
+             "output":{"type":"encrypted_content","text":"tool-output-text"}}
+        ]
+    }))
+    .unwrap();
+    let messages = converted["messages"].to_string();
+    assert!(messages.contains("plaintext-task"));
+    assert!(messages.contains("visible-summary"));
+    assert!(messages.contains("local-summary"));
+    assert!(messages.contains("tool-output-text"));
+    assert!(!messages.contains("opaque-reasoning"));
+}
+
+#[tokio::test]
+async fn encrypted_agent_content_is_rejected_before_contacting_chat_upstream() {
+    for body in [
+        json!({"model":"custom-model","stream":false,"input":[
+            {"type":"encrypted_content","encrypted_content":"mMn9x0Kc2QvZ7LtR4bYwJpE1sH6dGfUgA0TiOeNkVXqBcD9ylZsKmWrT3uPh"}
+        ]}),
+        json!({"model":"x","stream":false,"input":[
+            {"type":"message","role":"user","content":{
+                "type":"encrypted_content","encrypted_content":"private-agent-payload"}}
+        ]}),
+    ] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let upstream = tokio::spawn(async move {
+            tokio::select! {
+                request = capture_json_request_once(listener) => Some(request),
+                _ = stopped => None,
+            }
+        });
+        let settings = session_header_settings(
+            RelayProtocol::ChatCompletions,
+            format!("http://{address}/v1"),
+        );
+        let result = open_responses_proxy_request_with_settings(&body.to_string(), settings).await;
+        let _ = stop.send(());
+        let request = upstream.await.unwrap();
+        assert!(result.is_err(), "必须在发送上游请求前拒绝不支持的加密内容");
+        assert!(request.is_none(), "不得向 Chat 上游发送删掉 payload 的请求");
+    }
+}
+
+#[tokio::test]
+async fn responses_upstream_preserves_encrypted_agent_content() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(capture_json_request_once(listener));
+    let request = json!({"model":"custom-model","stream":false,"input":[
+        {"type":"agent_message","sender_agent_id":"sender","recipient_agent_id":"recipient",
+         "content":[{"type":"encrypted_content","encrypted_content":"opaque-agent-payload"}]},
+        {"type":"encrypted_content","encrypted_content":"standalone-opaque-agent-payload"}
+    ]});
+    let settings =
+        session_header_settings(RelayProtocol::Responses, format!("http://{address}/v1"));
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, sent) = upstream.await.unwrap();
+    assert_eq!(sent, request);
+}
+
+#[test]
+fn compaction_stream_emits_one_done_item_before_completed() {
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_summary_text("Preserve this summary.");
+    converter.push_upstream_bytes(b"data: {\"type\":\"response.completed\"}\n\n");
+    let events = compaction_sse_events(&converter.finish());
+    let mut items = Vec::new();
+    let mut completed = None;
+    for event in &events {
+        match event["type"].as_str() {
+            Some("response.output_item.done") => items.push(event["item"].clone()),
+            Some("response.completed") => {
+                completed = Some(&event["response"]);
+                break;
+            }
+            _ => {}
+        }
+    }
+    // Match Codex compact v2: collect done events, not completed.response.output.
+    assert_eq!(
+        items.len(),
+        1,
+        "compact v2 must receive one output-item event"
+    );
+    assert_eq!(items[0]["type"], "compaction");
+    assert_local_compaction_summary(&items[0], "Preserve this summary.");
+    assert!(
+        items[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("cmp_")),
+        "compaction item id must use the cmp_ prefix: {}",
+        items[0]["id"]
+    );
+    assert_eq!(completed.unwrap()["output"], json!(items));
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "response.created",
+            "response.output_item.added",
+            "response.output_item.done",
+            "response.completed"
+        ]
+    );
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence_number"], index);
+    }
+}
+
+fn compaction_sse_events(payload: &[u8]) -> Vec<Value> {
+    std::str::from_utf8(payload)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect()
+}
+
+fn local_compaction_item(summary: &str) -> Value {
+    let mut converter = CompactionSseConverter::new("model");
+    converter.push_summary_text(summary);
+    converter.push_upstream_bytes(b"data: {\"type\":\"response.completed\"}\n\n");
+    compaction_sse_events(&converter.finish())
+        .into_iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap()["item"]
+        .clone()
+}
+
+fn assert_local_compaction_summary(item: &Value, summary: &str) {
+    let replay = responses_to_chat_completions(json!({"input": [item]})).unwrap();
+    let text = replay["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        text.ends_with(summary),
+        "summary must survive replay: {text}"
+    );
+}
+
+#[test]
+fn chat_conversion_rejects_unmarked_or_invalid_compaction_history() {
+    for content in [
+        "OPAQUE_NATIVE",
+        "unmarked legacy summary",
+        "codexplusplus:summary:v1:not-json",
+        "codexplusplus:summary:v1:{}",
+        "codexplusplus:summary:v1:\"\"",
+        "codexplusplus:summary:v2:\"future-format\"",
+    ] {
+        for input in [
+            json!({"type": "compaction", "encrypted_content": content}),
+            json!([{"type": "compaction", "encrypted_content": content}]),
+        ] {
+            assert!(responses_to_chat_completions(json!({"input": input})).is_err());
+        }
+    }
+}
+
+#[test]
+fn wrap_non_stream_response_produces_single_compaction_item() {
+    let upstream = json!({
+        "id": "resp_up",
+        "object": "response",
+        "status": "completed",
+        "output": [
+            { "type": "reasoning", "summary": [] },
+            { "type": "message", "role": "assistant",
+              "content": [{ "type": "output_text", "text": "SUMMARYfromRESPONSES" }] }
+        ]
+    })
+    .to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("event: response.completed"));
+    assert!(text.contains("\"type\":\"compaction\""));
+    assert!(text.contains("SUMMARYfromRESPONSES"));
+    assert!(text.contains("data: [DONE]"));
+    assert_eq!(
+        compaction_sse_events(text.as_bytes())
+            .iter()
+            .filter(|event| event["type"] == "response.output_item.done")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn wrap_non_stream_chat_response_produces_single_compaction_item() {
+    let upstream = json!({
+        "choices": [
+            { "message": { "role": "assistant", "content": "SUMMARYfromCHAT" }, "finish_reason": "stop" }
+        ]
+    })
+    .to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("SUMMARYfromCHAT"));
+    assert_eq!(
+        compaction_sse_events(text.as_bytes())
+            .iter()
+            .filter(|event| event["type"] == "response.output_item.done")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn wrap_empty_upstream_yields_failed_compaction_response() {
+    let upstream = json!({ "choices": [] }).to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("\"status\":\"failed\""));
+    assert!(text.contains("compaction_empty_summary") || text.contains("空摘要"));
+    let events = compaction_sse_events(text.as_bytes());
+    assert_eq!(events.last().unwrap()["type"], "response.failed");
+    assert!(
+        events
+            .iter()
+            .all(|event| event["type"] != "response.output_item.done"
+                && event["type"] != "response.completed")
+    );
+}
+
+#[test]
+fn compaction_converter_extracts_output_text_deltas_and_ignores_reasoning() {
+    let sse = "event: response.reasoning_text.delta\ndata: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking...\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"He\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"llo\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_upstream_bytes(sse.as_bytes());
+    assert_eq!(converter.summary_text(), "Hello");
+
+    let mut silent = CompactionSseConverter::new("deepseek");
+    silent.push_upstream_bytes(b"not sse");
+    assert_eq!(silent.summary_text(), "");
+}
+
+#[test]
+fn compaction_converter_accepts_data_only_responses_events() {
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(
+        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Summary\"}\n\n",
+    );
+    assert_eq!(converter.summary_text(), "Summary");
+    converter.push_upstream_bytes(b"data: {\"type\":\"response.completed\"}\n\n");
+    let events = compaction_sse_events(&converter.finish());
+    let item = &events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap()["item"];
+    assert_local_compaction_summary(item, "Summary");
+}
+
+#[test]
+fn compaction_converter_accepts_complete_text_from_done_events() {
+    let upstream = concat!(
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"Summary from done\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Summary from item\"}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Summary from completed\"}]}]}}\n\n",
+    );
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(upstream.as_bytes());
+    let events = compaction_sse_events(&converter.finish());
+    let compaction = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_local_compaction_summary(&compaction["item"], "Summary from completed");
+}
+
+#[test]
+fn summary_converter_does_not_relabel_native_compaction_as_local_text() {
+    let upstream = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque-summary\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+    );
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(upstream.as_bytes());
+    let events = compaction_sse_events(&converter.finish());
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "response.failed")
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["type"] == "response.output_item.done")
+    );
+    let wrapped = wrap_non_stream_response_as_compaction(
+        br#"{"output":[{"type":"compaction","encrypted_content":"opaque-summary"}]}"#,
+        "model",
+    )
+    .unwrap();
+    assert!(
+        compaction_sse_events(&wrapped)
+            .iter()
+            .any(|event| event["type"] == "response.failed")
+    );
+}
+
+#[test]
+fn compaction_converter_accepts_complete_chat_message_without_delta() {
+    let upstream = b"data: {\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Chat summary\"},\"finish_reason\":\"stop\"}]}\n\n";
+    let mut converter = CompactionSseConverter::new("custom-model").with_chat_upstream();
+    converter.push_upstream_bytes(upstream);
+    let events = compaction_sse_events(&converter.finish());
+    let compaction = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_local_compaction_summary(&compaction["item"], "Chat summary");
+}
+
+#[test]
+fn compaction_converter_never_completes_a_failed_partial_summary() {
+    for upstream_error in [
+        json!({"type":"response.failed","response":{"error":{"code":"upstream_failed","message":"Upstream failed"}}}),
+        json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}),
+        json!({"error":{"code":"upstream_failed","message":"Upstream failed"}}),
+    ] {
+        let mut converter = CompactionSseConverter::new("custom-model");
+        converter.push_summary_text("Partial summary must not become a checkpoint.");
+        converter.push_upstream_bytes(format!("data: {upstream_error}\n\n").as_bytes());
+        let events = compaction_sse_events(&converter.finish());
+        let failed = events.last().unwrap();
+        assert_eq!(failed["type"], "response.failed");
+        assert_eq!(failed["response"]["output"], json!([]));
+        assert!(
+            events
+                .iter()
+                .all(|event| event["type"] != "response.output_item.done"
+                    && event["type"] != "response.completed")
+        );
+    }
+}
+
+#[test]
+fn compaction_converter_buffers_sse_events_across_chunks() {
+    // 同一 SSE 事件被 TCP 拆成两个 chunk，中间还断了 UTF-8 字符边界（中文摘要）。
+    let full = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"摘要\"}\n\n";
+    let (first, second) = full.split_at(full.len() - 10);
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_upstream_bytes(first.as_bytes());
+    assert_eq!(converter.summary_text(), "", "残缺事件不应提前产出增量");
+    converter.push_upstream_bytes(second.as_bytes());
+    assert_eq!(converter.summary_text(), "摘要");
+}
+
+#[test]
+fn compaction_converter_strips_leading_think_block_from_chat_stream() {
+    // DeepSeek 类 thinking 模型把推理塞在 delta.content 的 <think> 块里。
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"<think>step by step\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" reasoning...\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"</think>\\n真实摘要内容\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    let mut converter = CompactionSseConverter::new("deepseek").with_chat_upstream();
+    converter.push_upstream_bytes(sse.as_bytes());
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("真实摘要内容"));
+    assert!(!payload.contains("step by step"));
+    assert!(!payload.contains("reasoning..."));
+}
+
+#[test]
+fn compaction_converter_strips_think_block_from_direct_text() {
+    // 非流式路径直接 push 文本，think 剥离同样在 finish 生效。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>internal reasoning</think>\nSUMMARY_BODY");
+    converter.push_upstream_bytes(b"data: {\"type\":\"response.completed\"}\n\n");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("SUMMARY_BODY"));
+    assert!(!payload.contains("internal reasoning"));
+}
+
+#[test]
+fn compaction_converter_unclosed_think_block_drops_reasoning_fragment() {
+    // 上游截断导致 think 块未闭合：宁可丢掉残片也不要污染摘要。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>half written reasoning");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(!payload.contains("half written reasoning"));
+    // 剥完 think 后没有答案，按失败返回而非空 compaction item。
+    assert!(payload.contains("\"status\":\"failed\""));
+}
+
+#[test]
+fn compaction_converter_pure_think_block_yields_failed_response() {
+    // 闭合的纯 think 块（无答案文本）：原文非空能通过调用方预检，
+    // 剥完 think 后为空，finish 必须兜底转 failed，
+    // 杜绝 `completed + 空 encrypted_content` 的空 checkpoint。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>internal reasoning</think>");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(!payload.contains("internal reasoning"));
+    assert!(payload.contains("\"status\":\"failed\""));
+    assert!(payload.contains("空摘要"));
+    assert!(!payload.contains("\"status\":\"completed\""));
+}
+
+#[test]
+fn compaction_converter_stream_error_yields_failed_response() {
+    // 上游流中断：failed 状态优先于空摘要兜底。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("some partial summary");
+    converter.fail("Stream error: broken pipe".to_string(), None);
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("\"status\":\"failed\""));
+    assert!(payload.contains("Stream error: broken pipe"));
+    assert!(!payload.contains("event: response.completed"));
+    assert!(!payload.contains("\"type\":\"compaction\""));
+    assert!(!payload.contains("\"status\":\"completed\""));
+}
+
+#[tokio::test]
+async fn chat_compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // 单次 read() 只保证拿到「一部分」字节：头与 body 分在不同 TCP 段到达时
+        // 只会读到头部（实测读到 187 字节 = 仅有头部），断言就看不到请求体。
+        // 本测试注入的摘要指令约 425 字符、body 约 700 字节，使这个竞态从偶发
+        // 变成常态（修复前连跑 12 次失败 10 次）。按 Content-Length 读满整个请求。
+        let mut raw = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&raw);
+            let Some(header_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = text
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            if raw.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&raw).to_string();
+        let body = json!({
+            "id": "resp_up",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                { "type": "message", "role": "assistant",
+                  "content": [{ "type": "output_text", "text": "COMPACTED_SUMMARY_TEXT" }] }
+            ]
+        });
+        let body_text = serde_json::to_string(&body).unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+            body_text.len(),
+            body_text
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+    let settings = BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+
+    let request_body = json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "input": [
+            { "type": "message", "role": "user",
+              "content": [{ "type": "input_text", "text": "long history" }] },
+            { "type": "compaction_trigger" }
+        ]
+    });
+    let result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request_body).unwrap(),
+        settings,
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+
+    // 上游端点保持普通 /v1/responses，请求体剥离了 trigger 并注入了摘要指令。
+    assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1"));
+    assert!(request.contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(!request.contains("compaction_trigger"));
+
+    // 标记为压缩请求，交给响应包装层重组。
+    assert!(result.compaction);
+    assert_eq!(result.status_code, 200);
+}
+
+/// #2031：GLM 系上游只接受纯 base64，不认 `data:image/...;base64,` 前缀。
+#[test]
+fn glm_image_urls_are_stripped_to_bare_base64() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "glm-5.3-flash",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "看图" },
+                    { "type": "input_image", "image_url": "data:image/png;base64,QUJD" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let url = converted["messages"][0]["content"][1]["image_url"]["url"]
+        .as_str()
+        .expect("image part survives");
+    assert_eq!(url, "QUJD");
+}
+
+/// 标准 data URL 上游（OpenAI 等）不能被这层改写波及。
+#[test]
+fn non_glm_image_urls_keep_data_url_prefix() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "data:image/png;base64,QUJD" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let url = converted["messages"][0]["content"][0]["image_url"]["url"]
+        .as_str()
+        .expect("image part survives");
+    assert_eq!(url, "data:image/png;base64,QUJD");
+}
+
+/// 远端 https 图片既没有前缀可剥，也不该被改动。
+#[test]
+fn remote_image_urls_are_untouched_for_glm() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "glm-5.3-flash",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "https://example.com/a.png" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let url = converted["messages"][0]["content"][0]["image_url"]["url"]
+        .as_str()
+        .expect("image part survives");
+    assert_eq!(url, "https://example.com/a.png");
+}
+
+fn remote_compaction_settings(base_url: &str, protocol: RelayProtocol) -> BackendSettings {
+    BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            protocol,
+            base_url: base_url.to_string(),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+async fn write_remote_compaction_response(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    body: &str,
+) {
+    write_remote_compaction_typed_response(stream, status, "application/json", body).await;
+}
+
+async fn write_remote_compaction_typed_response(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\ncontent-length: {}\r\ncontent-type: {content_type}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_falls_back_when_trigger_is_rejected() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = if index == 0 {
+                listener.accept().await.unwrap()
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                    .await
+                    .expect("fallback request should arrive")
+                    .unwrap()
+            };
+            requests.push(
+                String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string(),
+            );
+            if index == 0 {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    r#"{"error":{"message":"unsupported compaction_trigger item"}}"#,
+                )
+                .await;
+            } else {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"COMPAT_SUMMARY"}]}]}"#,
+                )
+                .await;
+            }
+        }
+        requests
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [
+                { "type": "compaction_trigger" },
+                { "type": "message", "role": "user", "content": "history" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[0].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(!requests[1].contains("compaction_trigger"));
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert_eq!(result.status_code, 200);
+    assert!(result.compaction);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("COMPAT_SUMMARY")
+    );
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_empty_output_falls_back_to_summary() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = if index == 0 {
+                listener.accept().await.unwrap()
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                    .await
+                    .expect("fallback request should arrive")
+                    .unwrap()
+            };
+            requests.push(
+                String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string(),
+            );
+            let body = if index == 0 {
+                r#"{"id":"resp_empty","status":"completed","output":[]}"#
+            } else {
+                r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"FALLBACK_SUMMARY"}]}]}"#
+            };
+            write_remote_compaction_response(&mut stream, "200 OK", body).await;
+        }
+        requests
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [
+                { "type": "message", "role": "user", "content": "history" },
+                { "type": "compaction_trigger" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[0].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert_eq!(result.status_code, 200);
+    assert!(result.compaction);
+    assert!(!result.native_compaction_passthrough);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("FALLBACK_SUMMARY")
+    );
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_auth_error_is_not_retried_as_summary() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_response(
+            &mut stream,
+            "401 Unauthorized",
+            r#"{"error":{"message":"invalid API key"}}"#,
+        )
+        .await;
+        let second = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, second.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert_eq!(result.status_code, 401);
+    assert!(!result.native_compaction_passthrough);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("invalid API key")
+    );
+}
+
+#[tokio::test]
+async fn native_compaction_errors_are_forwarded_without_summary_retry() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    for status in [429, 503] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .insert_header("Retry-After", "60")
+                    .set_body_json(json!({"error": {"message": "capacity exceeded"}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let config = remote_compaction_settings(&server.uri(), RelayProtocol::Responses);
+        let mut response = open_responses_proxy_request_with_settings(
+            &json!({"model": "model", "stream": true, "input": [{"type": "compaction_trigger"}]})
+                .to_string(),
+            config,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status_code, status);
+        assert!(
+            String::from_utf8(response.read_body().await.unwrap())
+                .unwrap()
+                .contains("capacity exceeded")
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(String::from_utf8_lossy(&requests[0].body).contains("compaction_trigger"));
+    }
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_stream_failure_is_forwarded_without_summary_retry() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let failure = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",",
+        "\"status\":\"failed\",\"error\":{\"message\":\"upstream capacity exceeded\"}}}\n\n"
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_typed_response(&mut stream, "200 OK", "text/event-stream", failure)
+            .await;
+        let second = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, second.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert!(result.native_compaction_passthrough);
+    assert_eq!(
+        result.read_body().await.unwrap(),
+        failure.as_bytes().to_vec()
+    );
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_truncated_stream_is_not_retried() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let partial = concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_typed_response(&mut stream, "200 OK", "text/event-stream", partial)
+            .await;
+        let second = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, second.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert!(result.native_compaction_passthrough);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("response.failed"));
+    assert!(body.contains("stream closed before response.completed"));
+    assert!(!body.contains("CONTEXT CHECKPOINT COMPACTION"));
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_json_native_item_becomes_full_sse() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_response(
+            &mut stream,
+            "200 OK",
+            r#"{"id":"resp_native","status":"completed","output":[{"id":"cmp_native","type":"compaction","encrypted_content":"OPAQUE_JSON"}]}"#,
+        )
+        .await;
+        let second = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, second.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert!(result.native_compaction_passthrough);
+    assert!(result.is_stream);
+    let events = compaction_sse_events(&result.read_body().await.unwrap());
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "response.created",
+            "response.output_item.added",
+            "response.output_item.done",
+            "response.completed"
+        ]
+    );
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence_number"], index);
+    }
+    assert_eq!(events[2]["item"]["encrypted_content"], "OPAQUE_JSON");
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_sse_rejects_empty_encrypted_content() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = if index == 0 {
+                listener.accept().await.unwrap()
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                    .await
+                    .expect("fallback request should arrive")
+                    .unwrap()
+            };
+            requests.push(
+                String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string(),
+            );
+            if index == 0 {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"event: response.output_item.done
+
+data: {"type":"response.output_item.done","item":{"id":"cmp_empty","type":"compaction","encrypted_content":""}}
+
+event: response.completed
+
+data: {"type":"response.completed","response":{"id":"resp_empty","status":"completed"}}
+
+"#,
+                )
+                .await;
+            } else {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"COMPAT_SUMMARY"}]}]}"#,
+                )
+                .await;
+            }
+        }
+        requests
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[1].contains("compaction_trigger"));
+    assert!(result.compaction);
+    assert!(!result.native_compaction_passthrough);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("COMPAT_SUMMARY")
+    );
+}
+
+#[tokio::test]
+async fn native_compaction_history_returns_responses_error_without_fallback() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_response(
+            &mut stream,
+            "400 Bad Request",
+            r#"{"error":{"message":"unsupported compaction_trigger item"}}"#,
+        )
+        .await;
+        let fallback = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, fallback.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [
+                { "type": "compaction", "encrypted_content": "OPAQUE_NATIVE" },
+                { "type": "compaction_trigger" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .expect("native history incompatibility is a Responses error, not a proxy failure");
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("OPAQUE_NATIVE"));
+    assert!(!retried);
+    assert_eq!(result.status_code, 400);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("native_compaction_unsupported"));
+    assert!(body.contains("compaction_incompatible"));
+}
+
+#[tokio::test]
+async fn native_compaction_history_on_chat_upstream_returns_responses_error() {
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": false,
+            "input": [
+                { "type": "compaction", "encrypted_content": "OPAQUE_NATIVE" },
+                { "type": "compaction_trigger" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings("http://127.0.0.1:9/v1", RelayProtocol::ChatCompletions),
+    )
+    .await
+    .expect("chat conversion refusal is a Responses error, not a proxy failure");
+
+    assert_eq!(result.status_code, 400);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("native_compaction_unsupported"));
+    assert!(body.contains("compaction_incompatible"));
+}
+
+#[test]
+fn responses_request_converts_to_chat_completions() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "instructions": "You are helpful.",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "hello" }
+                ]
+            }
+        ],
+        "max_output_tokens": 512,
+        "temperature": 0.2,
+        "stream": true,
+        "tools": [
+            {
+                "type": "function",
+                "name": "lookup",
+                "description": "Lookup data",
+                "parameters": { "type": "object" }
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted,
+        json!({
+            "model": "gpt-5-mini",
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "hello" }
+            ],
+            "max_tokens": 512,
+            "temperature": 0.2,
+            "stream": true,
+            "stream_options": { "include_usage": true },
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "description": "Lookup data",
+                        "parameters": { "type": "object", "properties": {}, "required": [] }
+                    }
+                }
+            ]
+        })
+    );
+}
+
+#[test]
+fn responses_request_matches_ccs_reasoning_and_tool_choice_edges() {
+    let non_reasoning = responses_to_chat_completions(json!({
+        "model": "gpt-4o",
+        "reasoning": { "effort": "high" },
+        "tool_choice": { "type": "required" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert!(non_reasoning.get("reasoning_effort").is_none());
+    assert!(non_reasoning.get("tool_choice").is_none());
+
+    let reasoning = responses_to_chat_completions(json!({
+        "model": "gpt-5.4",
+        "reasoning": { "effort": "high" },
+        "tool_choice": { "type": "function", "name": "lookup" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(reasoning["reasoning_effort"], "high");
+    assert!(reasoning.get("tool_choice").is_none());
+
+    let minimal = responses_to_chat_completions(json!({
+        "model": "gpt-5.4",
+        "reasoning": { "effort": "minimal" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(minimal["reasoning_effort"], "minimal");
+}
+
+#[test]
+fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
+    for path in [
+        "/responses",
+        "/v1/responses",
+        "/v1/v1/responses",
+        "/codex/v1/responses",
+        "/responses/compact",
+        "/v1/responses/compact",
+        "/v1/v1/responses/compact",
+        "/codex/v1/responses/compact",
+    ] {
+        assert!(is_responses_proxy_path(path), "{path}");
+    }
+    assert!(is_responses_compact_proxy_path("/v1/responses/compact"));
+    assert!(!is_responses_compact_proxy_path("/v1/responses"));
+
+    for path in [
+        "/chat/completions",
+        "/v1/chat/completions",
+        "/v1/v1/chat/completions",
+        "/codex/v1/chat/completions",
+    ] {
+        assert!(is_chat_completions_proxy_path(path), "{path}");
+    }
+
+    for path in ["/models", "/v1/models", "/v1/v1/models", "/codex/v1/models"] {
+        assert!(is_models_proxy_path(path), "{path}");
+    }
+
+    for path in [
+        "/audio/transcriptions",
+        "/v1/audio/transcriptions",
+        "/v1/v1/audio/transcriptions",
+        "/codex/v1/audio/transcriptions",
+    ] {
+        assert!(is_audio_transcriptions_proxy_path(path), "{path}");
+    }
+
+    for path in [
+        "/images/generations",
+        "/v1/images/generations",
+        "/v1/v1/images/generations",
+        "/codex/v1/images/generations",
+    ] {
+        assert!(is_image_generations_proxy_path(path), "{path}");
+    }
+    for path in [
+        "/images/edits",
+        "/v1/images/edits",
+        "/v1/v1/images/edits",
+        "/codex/v1/images/edits",
+    ] {
+        assert!(is_image_edits_proxy_path(path), "{path}");
+    }
+    assert!(!is_image_generations_proxy_path("/images/unknown"));
+    assert!(!is_image_edits_proxy_path("/images/generation"));
+}
+
+#[test]
+fn responses_compact_url_preserves_compact_endpoint() {
+    assert_eq!(
+        responses_compact_url("https://api.example.test/v1"),
+        "https://api.example.test/v1/responses/compact"
+    );
+    assert_eq!(
+        responses_compact_url("https://api.example.test/v1/responses"),
+        "https://api.example.test/v1/responses/compact"
+    );
+    assert_eq!(
+        responses_compact_url("https://api.example.test/v1/responses/compact"),
+        "https://api.example.test/v1/responses/compact"
+    );
+}
+
+#[tokio::test]
+async fn responses_compact_request_keeps_compact_path_upstream() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_response(&mut stream, "200 OK",
+            r#"{"id":"resp_1","object":"response.compaction","output":[{"type":"compaction","encrypted_content":"opaque-fixture"}]}"#).await;
+        request
+    });
+    let settings = BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+
+    let result = open_responses_proxy_request_with_settings_for_path(
+        r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
+        settings,
+        "/v1/responses/compact",
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert!(request.starts_with("POST /v1/responses/compact HTTP/1.1"));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-compact")
+    );
+}
+
+#[test]
+fn responses_request_applies_ccswitch_reasoning_dialects() {
+    let deepseek = responses_to_chat_completions(json!({
+        "model": "deepseek-reasoner",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(deepseek["reasoning_effort"], "max");
+
+    let openrouter = responses_to_chat_completions(json!({
+        "model": "openrouter/deepseek/deepseek-r1",
+        "reasoning": { "effort": "max" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(openrouter["reasoning"]["effort"], "xhigh");
+    assert!(openrouter.get("reasoning_effort").is_none());
+
+    let openrouter_off = responses_to_chat_completions(json!({
+        "model": "openrouter/deepseek/deepseek-r1",
+        "reasoning": { "effort": "none" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(openrouter_off["reasoning"]["effort"], "none");
+
+    let kimi = responses_to_chat_completions(json!({
+        "model": "kimi-k2-thinking",
+        "reasoning": { "effort": "high" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(kimi["thinking"]["type"], "enabled");
+    assert!(kimi.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
+    // 官方映射 (kimi.com/code/docs): K3 接受 reasoning_effort low/high/max,
+    // Codex 档位 minimal/low→low, medium/high→high, xhigh/max→max。
+    for (effort, expected) in [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+    ] {
+        let converted = responses_to_chat_completions(json!({
+            "model": "k3-256k",
+            "reasoning": { "effort": effort },
+            "input": "hi"
+        }))
+        .unwrap();
+        assert_eq!(converted["thinking"]["type"], "adaptive", "{effort}");
+        assert_eq!(converted["reasoning_effort"], expected, "{effort}");
+    }
+
+    let kimi_k3 = responses_to_chat_completions(json!({
+        "model": "kimi-k3",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(kimi_k3["thinking"]["type"], "adaptive");
+    assert_eq!(kimi_k3["reasoning_effort"], "max");
+
+    let k2_coding = responses_to_chat_completions(json!({
+        "model": "kimi-for-coding",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(k2_coding["reasoning_effort"], "max");
+
+    // effort none → thinking disabled (官方: K3 关思考会被路由到 K2.6, 保持现状)
+    let off = responses_to_chat_completions(json!({
+        "model": "k3-256k",
+        "reasoning": { "effort": "none" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(off["thinking"]["type"], "disabled");
+    assert!(off.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn kimi_k3_standard_protocol_avoids_adaptive_and_preserves_opt_in_vendor_behavior() {
+    for model in ["kimi-k3", "k3-256k"] {
+        let request = json!({"model":model,"reasoning":{"effort":"xhigh"},"input":"hello"});
+        let standard = responses_to_chat_completions_with_options(request.clone(), true).unwrap();
+        assert!(standard.get("thinking").is_none());
+        assert!(standard.get("reasoning_effort").is_none());
+        let vendor = responses_to_chat_completions_with_options(request, false).unwrap();
+        assert_eq!(vendor["thinking"]["type"], "adaptive");
+        assert_eq!(vendor["reasoning_effort"], "max");
+        assert_eq!(standard["messages"], vendor["messages"]);
+    }
+}
+
+#[test]
+fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
+    // standard=true 时强制走默认风格：厂商方言字段（reasoning_split / thinking /
+    // enable_thinking / openrouter reasoning）一律不注入，而标准 reasoning_effort 仍按
+    // 模型能力正常注入。面向 NVIDIA 等只认标准 OpenAI 协议、却拒绝 MiniMax 私有
+    // reasoning_split 参数的第三方网关。
+    let minimax = responses_to_chat_completions_with_options(
+        json!({
+            "model": "MiniMax-M2.7",
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert!(minimax.get("reasoning_split").is_none());
+    assert!(minimax.get("thinking").is_none());
+    assert!(minimax.get("enable_thinking").is_none());
+    assert!(minimax.get("reasoning_effort").is_none());
+
+    let glm = responses_to_chat_completions_with_options(
+        json!({
+            "model": "glm-4.6",
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert!(glm.get("thinking").is_none());
+    assert!(glm.get("reasoning_effort").is_none());
+
+    let qwen = responses_to_chat_completions_with_options(
+        json!({
+            "model": "qwen3-235b-a22b",
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert!(qwen.get("enable_thinking").is_none());
+    assert!(qwen.get("reasoning_effort").is_none());
+
+    let openrouter = responses_to_chat_completions_with_options(
+        json!({
+            "model": "openrouter/deepseek/deepseek-r1",
+            "reasoning": { "effort": "max" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert!(openrouter.get("reasoning").is_none());
+    assert!(openrouter.get("reasoning_effort").is_none());
+
+    // 标准协议下，支持推理强度控制的模型仍保留 reasoning_effort。
+    let deepseek = responses_to_chat_completions_with_options(
+        json!({
+            "model": "deepseek-reasoner",
+            "reasoning": { "effort": "xhigh" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert_eq!(deepseek["reasoning_effort"], "xhigh");
+    assert!(deepseek.get("reasoning_split").is_none());
+
+    let gpt5 = responses_to_chat_completions_with_options(
+        json!({
+            "model": "gpt-5.4",
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert_eq!(gpt5["reasoning_effort"], "high");
+
+    // 回归守护：默认路径仍照常注入方言字段。
+    let minimax_default = responses_to_chat_completions(json!({
+        "model": "MiniMax-M2.7",
+        "reasoning": { "effort": "high" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(minimax_default["reasoning_split"], true);
+}
+
+#[test]
+fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-chat",
+        "input": [
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [
+                    { "type": "input_text", "text": "developer instructions" }
+                ]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "hello" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "system");
+    assert_eq!(
+        converted["messages"][0]["content"],
+        "developer instructions"
+    );
+    assert_eq!(converted["messages"][1]["role"], "user");
+    assert!(
+        !serde_json::to_string(&converted)
+            .unwrap()
+            .contains("\"developer\"")
+    );
+}
+
+#[test]
+fn responses_request_skips_additional_tools_without_content() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-chat",
+        "instructions": "You are helpful.",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    { "type": "custom", "name": "exec", "description": "Run a command" }
+                ]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"],
+        json!([
+            { "role": "system", "content": "You are helpful." },
+            { "role": "user", "content": "hello" }
+        ])
+    );
+    assert!(
+        converted["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| !message["content"].is_null())
+    );
+}
+
+#[test]
+fn responses_request_collapses_system_messages_to_head_for_strict_chat_upstreams() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "root system",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            },
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": "late developer" }]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "ok" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "system");
+    assert_eq!(
+        converted["messages"][0]["content"],
+        "root system\n\nlate developer"
+    );
+    let system_count = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .count();
+    assert_eq!(system_count, 1);
+    assert_eq!(converted["messages"][1]["role"], "user");
+    assert_eq!(converted["messages"][2]["role"], "assistant");
+}
+
+#[test]
+fn responses_request_maps_latest_reminder_to_user_like_ccswitch() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "message",
+                "role": "latest_reminder",
+                "content": [
+                    { "type": "input_text", "text": "remember this" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "user");
+    assert_eq!(converted["messages"][0]["content"], "remember this");
+}
+
+#[test]
+fn responses_request_preserves_reasoning_content_for_thinking_followup() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-reasoner",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "use the tool" }]
+            },
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [{ "type": "summary_text", "text": "Need to inspect files." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "shell",
+                "arguments": "{\"cmd\":\"rg foo\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "result"
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][1]["role"], "assistant");
+    assert_eq!(
+        converted["messages"][1]["reasoning_content"],
+        "Need to inspect files."
+    );
+    assert_eq!(converted["messages"][1]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(converted["messages"][2]["role"], "tool");
+}
+
+// #1860 错误 1：孤立的 function_call（后面没有 function_call_output）不能变成
+// assistant.tool_calls，否则 DeepSeek 报 "must be followed by tool messages"。
+#[test]
+fn responses_request_drops_orphaned_function_call_without_output() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "max_output_tokens": 8,
+        "input": [
+            { "role": "user", "content": "ping" },
+            { "role": "assistant", "content": [{ "type": "output_text", "text": "ok" }] },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            },
+            { "role": "user", "content": "ping" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    for (index, message) in messages.iter().enumerate() {
+        let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        // 每个 tool_call 后面都必须紧跟对应的 tool 消息
+        for (offset, tool_call) in tool_calls.iter().enumerate() {
+            let id = tool_call["id"].as_str().unwrap();
+            let follower = messages.get(index + 1 + offset);
+            assert_eq!(
+                follower
+                    .and_then(|m| m.get("role"))
+                    .and_then(|r| r.as_str()),
+                Some("tool"),
+                "tool_call {id} 后面没有 tool 消息：{converted:#}"
+            );
+            assert_eq!(
+                follower
+                    .and_then(|m| m.get("tool_call_id"))
+                    .and_then(|r| r.as_str()),
+                Some(id),
+                "tool_call {id} 没有匹配的 tool_call_id：{converted:#}"
+            );
+        }
+    }
+}
+
+// #1860 错误 2：thinking 模式下带 tool_calls 的 assistant 消息必须回传 reasoning_content。
+#[test]
+fn responses_request_attaches_reasoning_content_to_tool_call_message() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "max_output_tokens": 8,
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            },
+            { "type": "function_call_output", "call_id": "call_t1", "output": "hi" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_call_message = messages
+        .iter()
+        .find(|m| m.get("tool_calls").is_some())
+        .unwrap_or_else(|| panic!("没有 tool_calls 消息：{converted:#}"));
+    let has_content = tool_call_message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| !c.is_empty());
+    let has_reasoning = tool_call_message
+        .get("reasoning_content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| !c.is_empty());
+    assert!(
+        has_content || has_reasoning,
+        "带 tool_calls 且 content 为空的 assistant 消息必须有 reasoning_content：{converted:#}"
+    );
+}
+
+// 历史尾部的 tool_call 是「output 还没回来」的正常形态，必须保留。
+#[test]
+fn responses_request_keeps_trailing_unanswered_tool_call() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_tail",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let last = converted["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["tool_calls"][0]["id"], "call_tail");
+}
+
+// 部分应答：只摘掉没被应答的那个，已应答的保留。
+#[test]
+fn responses_request_strips_only_unanswered_parallel_tool_calls() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_ok",
+                "name": "answered_tool",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_lost",
+                "name": "abandoned_tool",
+                "arguments": "{}"
+            },
+            { "type": "function_call_output", "call_id": "call_ok", "output": "done" },
+            { "role": "user", "content": "continue" }
+        ]
+    }))
+    .unwrap();
+
+    let assistant = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message.get("tool_calls").is_some())
+        .unwrap();
+    let calls = assistant["tool_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 1, "只应保留被应答的 tool_call：{converted:#}");
+    assert_eq!(calls[0]["id"], "call_ok");
+    // 被摘掉的调用降级成文本保留，不静默丢失
+    let content = assistant["content"].as_str().unwrap();
+    assert!(
+        content.contains("call_lost") && content.contains("abandoned_tool"),
+        "被摘掉的调用应降级为文本：{content}"
+    );
+}
+
+// 已有真实 reasoning 时不能被占位文本覆盖。
+#[test]
+fn responses_request_keeps_real_reasoning_content_over_placeholder() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "reasoning",
+                "summary": [{ "type": "summary_text", "text": "Need to run echo." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{}"
+            },
+            { "type": "function_call_output", "call_id": "call_t1", "output": "hi" }
+        ]
+    }))
+    .unwrap();
+
+    let assistant = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message.get("tool_calls").is_some())
+        .unwrap();
+    assert_eq!(assistant["reasoning_content"], "Need to run echo.");
+}
+
+#[test]
+fn responses_request_merges_reasoning_text_and_tool_calls_like_ccx() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-pro",
+        "input": [
+            {
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{ "type": "summary_text", "text": "I need to run go vet." }]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "Let me run go vet." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_001",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"go vet ./...\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_001",
+                "output": "no issues found"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "run tests now" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "assistant");
+    assert_eq!(converted["messages"][0]["content"], "Let me run go vet.");
+    assert_eq!(
+        converted["messages"][0]["reasoning_content"],
+        "I need to run go vet."
+    );
+    assert_eq!(converted["messages"][0]["tool_calls"][0]["id"], "call_001");
+    assert_eq!(converted["messages"][1]["role"], "tool");
+    assert_eq!(converted["messages"][1]["tool_call_id"], "call_001");
+    assert_eq!(converted["messages"][2]["role"], "user");
+}
+
+#[test]
+fn responses_request_keeps_reasoning_when_text_message_precedes_tool_call() {
+    // issue #2210：reasoning → 不带 tool_calls 的 assistant 文本消息 → function_call。
+    // 文本消息先把 pending_reasoning 消费掉，随后的 function_call 走
+    // flush_tool_calls 的 merge 分支（最后一条已是 assistant），旧实现在那里
+    // 提前 return，把这条 reasoning 静默丢弃。
+    // 注意与 responses_request_merges_reasoning_text_and_tool_calls_like_ccx 的区别：
+    // 那个用例里 reasoning 直接跟在 assistant 之后，走的是新建 assistant 分支。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-pro",
+        "input": [
+            {
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{ "type": "summary_text", "text": "先看仓库状态。" }]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "我先检查一下。" }]
+            },
+            {
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{ "type": "summary_text", "text": "需要跑 git status。" }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_009",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_009",
+                "output": "clean"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let assistant = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message.get("tool_calls").is_some())
+        .expect("应存在带 tool_calls 的 assistant 消息");
+
+    assert_eq!(assistant["content"], "我先检查一下。");
+    assert_eq!(assistant["tool_calls"][0]["id"], "call_009");
+    // 两段 reasoning 归并到同一条 assistant 上（先来的已由文本消息附着，
+    // 后来的由 merge 分支追加）。关键是**一点都不能丢**。
+    let reasoning = assistant["reasoning_content"].as_str().unwrap_or("");
+    assert!(
+        reasoning.contains("先看仓库状态。"),
+        "文本消息阶段的 reasoning 不能丢：{reasoning:?}"
+    );
+    assert!(
+        reasoning.contains("需要跑 git status。"),
+        "merge 分支必须消费 pending_reasoning，不能静默丢弃：{reasoning:?}"
+    );
+}
+
+#[test]
+fn responses_request_relocates_developer_notice_between_tool_outputs() {
+    // issue #2275 / #2257：<image_resize_notice> 这类提示以 developer（映射成 system）
+    // 形式插在两条 tool 结果之间。配对判定用 take_while 只数连续 tool 消息，
+    // 数到夹心就停，于是第二个 tool_call 被判 orphaned 从 tool_calls 摘掉，
+    // 而它的 tool 消息还在原位 → 上游 400「No tool output found for tool call」。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-pro",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_a",
+                "name": "view_image",
+                "arguments": "{\"path\":\"a.png\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_b",
+                "name": "view_image",
+                "arguments": "{\"path\":\"b.png\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_a",
+                "output": "a ok"
+            },
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": "<image_resize_notice>a.png resized</image_resize_notice>" }]
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_b",
+                "output": "b ok"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "继续" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+
+    // 每个 tool 消息都必须能找到恰好一条含该 tool_call_id 的 assistant.tool_calls。
+    let mut declared: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for message in messages {
+        if let Some(tool_calls) = message.get("tool_calls").and_then(|value| value.as_array()) {
+            for tool_call in tool_calls {
+                declared.insert(tool_call["id"].as_str().unwrap().to_string());
+            }
+        }
+    }
+    assert!(declared.contains("call_a"), "call_a 不应被判 orphaned");
+    assert!(
+        declared.contains("call_b"),
+        "call_b 不应被判 orphaned（夹心消息必须被搬走）"
+    );
+
+    for (position, message) in messages.iter().enumerate() {
+        if message.get("role").and_then(|value| value.as_str()) != Some("tool") {
+            continue;
+        }
+        let id = message["tool_call_id"].as_str().unwrap();
+        assert!(
+            declared.contains(id),
+            "第 {position} 条 tool 消息（{id}）没有前置 tool_calls"
+        );
+        // 相邻前一条不能是 developer 通知（说明夹心已被搬走）。
+        if position > 0 {
+            let previous = messages[position - 1]["content"].as_str().unwrap_or("");
+            assert!(
+                !previous.contains("image_resize_notice"),
+                "夹心通知仍插在 tool 结果之间"
+            );
+        }
+    }
+
+    // 至少有一条 tool 消息承载了 b 的结果，且内容没丢。
+    assert!(
+        messages.iter().any(|message| {
+            message.get("tool_call_id").and_then(|value| value.as_str()) == Some("call_b")
+        }),
+        "call_b 的结果不能丢失"
+    );
+}
+
+#[test]
+fn responses_request_normalizes_empty_assistant_messages_for_chat_upstream() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-chat",
+        "input": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": null
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": []
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "assistant");
+    assert_eq!(converted["messages"][0]["content"], "");
+    assert_eq!(converted["messages"][1]["role"], "assistant");
+    assert_eq!(converted["messages"][1]["content"], "");
+}
+
+#[test]
+fn responses_request_drops_tool_controls_when_no_chat_tools_survive() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            { "type": "unknown_builtin", "name": "unsupported" }
+        ],
+        "tool_choice": { "type": "required" },
+        "parallel_tool_calls": true
+    }))
+    .unwrap();
+
+    assert!(converted.get("tools").is_none());
+    assert!(converted.get("tool_choice").is_none());
+    assert!(converted.get("parallel_tool_calls").is_none());
+}
+
+#[test]
+fn responses_request_to_chat_inlines_ref_siblings_in_tool_defs() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "automation_update",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "targetThreadId": {
+                        "$ref": "#/$defs/__schema20"
+                    }
+                },
+                "$defs": {
+                    "__schema2": {
+                        "type": "string"
+                    },
+                    "__schema20": {
+                        "$ref": "#/$defs/__schema2",
+                        "type": "string",
+                        "format": "uuid",
+                        "minLength": 1
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let parameters = &converted["tools"][0]["function"]["parameters"];
+    let schema20 = &parameters["$defs"]["__schema20"];
+    assert!(schema20.get("$ref").is_none());
+    assert_eq!(schema20["type"], "string");
+    assert_eq!(schema20["format"], "uuid");
+    assert_eq!(schema20["minLength"], 1);
+    assert!(!contains_problematic_local_ref_siblings(parameters));
+    assert_eq!(
+        parameters["properties"]["targetThreadId"]["$ref"],
+        "#/$defs/__schema20"
+    );
+}
+
+#[test]
+fn responses_request_flattens_top_level_one_of_in_tool_parameters() {
+    // issue #2367：zod-to-json-schema 会生成顶层 oneOf 的 schema，
+    // Anthropic（Claude）上游直接拒绝、整轮 400、模型完全不可用。
+    // 转换后顶层不得再有组合器，且各分支贡献的字段要出现在 properties 里。
+    let converted = responses_to_chat_completions(json!({
+        "model": "claude-sonnet",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "automation_update",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "oneOf": [
+                    { "$ref": "#/$defs/__schema0" },
+                    { "$ref": "#/$defs/__schema1" }
+                ],
+                "$defs": {
+                    "__schema0": {
+                        "type": "object",
+                        "properties": {
+                            "mode": { "type": "string" },
+                            "targetThreadId": { "type": "string" }
+                        },
+                        "required": ["mode", "targetThreadId"]
+                    },
+                    "__schema1": {
+                        "type": "object",
+                        "properties": {
+                            "mode": { "type": "string" },
+                            "note": { "type": "string" }
+                        },
+                        "required": ["mode"]
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let parameters = &converted["tools"][0]["function"]["parameters"];
+    assert!(
+        parameters.get("oneOf").is_none(),
+        "顶层 oneOf 必须被摊平：{parameters}"
+    );
+    assert!(parameters.get("anyOf").is_none());
+    assert!(parameters.get("allOf").is_none());
+    assert_eq!(parameters["type"], "object");
+
+    let properties = parameters["properties"].as_object().unwrap();
+    assert!(properties.contains_key("mode"), "分支共有的字段应并入");
+    assert!(
+        properties.contains_key("targetThreadId"),
+        "分支独有字段应并入"
+    );
+    assert!(
+        properties.contains_key("note"),
+        "第二个分支的独有字段应并入"
+    );
+
+    // required 取交集：只有 mode 是所有分支都要求的。
+    let required: Vec<&str> = parameters["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    assert_eq!(required, vec!["mode"]);
+}
+
+#[test]
+fn responses_request_degrades_unmergeable_top_level_combinator_without_losing_tool() {
+    // 分支不是对象（此处是字符串）时无法摊平，但**不能丢掉工具**——
+    // 降级成带说明的私有字段，schema 仍合法。
+    let converted = responses_to_chat_completions(json!({
+        "model": "claude-sonnet",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "transfer_voice_call",
+            "parameters": {
+                "type": "object",
+                "anyOf": [
+                    { "type": "string", "description": "转人工" },
+                    { "type": "string", "description": "转语音信箱" }
+                ]
+            }
+        }]
+    }))
+    .unwrap();
+
+    let tools = converted["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1, "工具不得因无法摊平而消失");
+    let parameters = &tools[0]["function"]["parameters"];
+    assert!(parameters.get("anyOf").is_none(), "顶层组合器仍须剥掉");
+    assert_eq!(parameters["type"], "object");
+    let fallback = &parameters["x-merged-combinator"];
+    assert_eq!(fallback["kind"], "anyOf");
+    assert_eq!(fallback["branches"].as_array().unwrap().len(), 2);
+    assert!(
+        fallback["description"].as_str().unwrap().contains("转人工"),
+        "分支说明应被保留"
+    );
+}
+
+#[test]
+fn invalid_defs_container_does_not_panic() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id",
+                        "description": "foo"
+                    }
+                },
+                "$defs": "invalid"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/id",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn non_object_local_ref_target_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id",
+                        "description": "foo"
+                    }
+                },
+                "$defs": {
+                    "id": "invalid"
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/id",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn nested_ref_is_normalized_through_properties_and_items() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/foo",
+                            "description": "nested"
+                        }
+                    }
+                },
+                "$defs": {
+                    "foo": {
+                        "type": "string"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let nested = &converted["tools"][0]["function"]["parameters"]["properties"]["items"]["items"];
+    assert!(nested.get("$ref").is_none());
+    assert_eq!(nested["type"], "string");
+    assert_eq!(nested["description"], "nested");
+}
+
+#[test]
+fn cyclic_ref_alias_does_not_recurse_forever() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cycle": {
+                        "$ref": "#/$defs/a",
+                        "description": "cycle"
+                    }
+                },
+                "$defs": {
+                    "a": {
+                        "$ref": "#/$defs/b"
+                    },
+                    "b": {
+                        "$ref": "#/$defs/a"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let cycle = &converted["tools"][0]["function"]["parameters"]["properties"]["cycle"];
+    assert_eq!(cycle["$ref"], "#/$defs/a");
+    assert_eq!(cycle["description"], "cycle");
+}
+
+#[test]
+fn external_ref_is_not_inlined() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "https://example.com/schema.json",
+                        "description": "foo"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "https://example.com/schema.json",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn unknown_local_ref_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/not_exists",
+                        "description": "foo"
+                    }
+                },
+                "$defs": {}
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/not_exists",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn bare_top_level_ref_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "$ref": "#/$defs/lookup"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"],
+        json!({ "$ref": "#/$defs/lookup" })
+    );
+}
+
+#[test]
+fn bare_local_ref_without_siblings_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id"
+                    }
+                },
+                "$defs": {
+                    "id": {
+                        "type": "string"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({ "$ref": "#/$defs/id" })
+    );
+}
+
+#[test]
+fn responses_request_to_chat_resolves_ref_alias_before_merging_siblings() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/alias",
+                        "format": "uuid"
+                    }
+                },
+                "$defs": {
+                    "concrete": {
+                        "type": "string",
+                        "format": "hostname"
+                    },
+                    "alias": {
+                        "$ref": "#/$defs/concrete"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let parameters = &converted["tools"][0]["function"]["parameters"];
+    let id = &parameters["properties"]["id"];
+    assert!(id.get("$ref").is_none());
+    assert_eq!(id["type"], "string");
+    assert_eq!(id["format"], "uuid");
+    assert_eq!(parameters["$defs"]["alias"]["$ref"], "#/$defs/concrete");
+}
+
+#[test]
+fn responses_request_normalizes_function_tool_parameters() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "function",
+                "name": "lookup",
+                "parameters": {}
+            }
+        ]
+    }))
+    .unwrap();
+
+    let params = &converted["tools"][0]["function"]["parameters"];
+    assert_eq!(params["type"], "object");
+    assert_eq!(params["properties"], json!({}));
+    assert_eq!(params["required"], json!([]));
+}
+
+#[test]
+fn chat_tool_parameters_with_null_type_get_object_defaults() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "function",
+                "name": "automation_update",
+                "parameters": {
+                    "type": null,
+                    "properties": {
+                        "id": { "type": "string" }
+                    },
+                    "required": ["id"]
+                }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let params = &converted["tools"][0]["function"]["parameters"];
+    assert_eq!(params["type"], "object");
+    assert_eq!(params["properties"]["id"], json!({ "type": "string" }));
+    assert_eq!(params["required"], json!(["id"]));
+}
+
+#[test]
+fn chat_tool_normalization_strips_nested_null_types() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "function",
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": null,
+                            "description": "display name"
+                        }
+                    }
+                }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let name = &converted["tools"][0]["function"]["parameters"]["properties"]["name"];
+    assert!(name.get("type").is_none());
+    assert_eq!(name["description"], "display name");
+}
+
+#[test]
+fn namespace_tool_null_type_parameters_normalized() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "mcp__codex_app__",
+                "description": "Codex app",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "automation_update",
+                        "description": "Update automation",
+                        "parameters": {
+                            "type": null,
+                            "properties": {
+                                "targetThreadId": { "type": "string" }
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let tool = &converted["tools"][0]["function"];
+    assert_eq!(tool["name"], "mcp__codex_app__automation_update");
+    assert_eq!(tool["parameters"]["type"], "object");
+    assert_eq!(
+        tool["parameters"]["properties"]["targetThreadId"],
+        json!({ "type": "string" })
+    );
+}
+
+/// 模拟严格供应商（deepseek 风格）：对请求里每个工具参数 schema 做校验，
+/// 发现 `type: null` 或缺失 required 字段时返回 400（对应 issue #2247 的拒绝行为），
+/// 合法则回 200。返回捕获到的上游请求体，供断言实际收到的 schema 形状。
+async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u16, Value)> {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            assert!(read > 0, "request closed before body completed");
+            buffer.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&buffer);
+            let Some(header_end) = text
+                .as_bytes()
+                .windows(4)
+                .position(|window| window == *b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buffer[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if buffer.len() >= header_end + 4 + content_length {
+                let body: Value = serde_json::from_slice(&buffer[header_end + 4..]).unwrap();
+                let rejected = body["tools"].as_array().is_some_and(|tools| {
+                    tools.iter().any(|tool| {
+                        let has_null_type = serde_json::to_string(&tool).is_ok_and(|text| {
+                            text.replace("\\u0000", "").contains("\"type\":null")
+                        });
+                        has_null_type
+                    })
+                });
+                let (status, payload) = if rejected {
+                    (
+                        "HTTP/1.1 400 Bad Request\r\n",
+                        r#"{"error":{"message":"Invalid schema for function 'codex_app::automation_update': schema must be a JSON Schema of 'type: \"object\"', got 'type: null'.","type":"invalid_request_error"}}"#,
+                    )
+                } else {
+                    (
+                        "HTTP/1.1 200 OK\r\n",
+                        r#"{"id":"chat_ok","object":"chat.completion","model":"deepseek-chat","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                    )
+                };
+                let response = format!(
+                    "{status}content-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                let _ = stream.write_all(response.as_bytes()).await.unwrap();
+                return body;
+            }
+        }
+    });
+
+    let mut settings = BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "strict".to_string(),
+            name: "strict".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-strict".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "strict".to_string(),
+        ..BackendSettings::default()
+    };
+    settings.relay_profiles[0].no_auth = false;
+
+    let request = json!({
+        "model": "deepseek-chat",
+        "input": "hi",
+        "stream": false,
+        "tools": tools
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request).unwrap(),
+        settings,
+    )
+    .await
+    .expect("修复后：代理请求应成功完成（状态 200）");
+    let status_code = result.status_code;
+    let upstream_body = server.await.unwrap();
+    let response_body: Value = serde_json::from_slice(&result.read_body().await.unwrap()).unwrap();
+    Ok((upstream_body, status_code, response_body))
+}
+
+#[tokio::test]
+async fn strict_provider_rejects_null_type_before_fix_and_accepts_normalized_schema() {
+    let tools = json!([
+        {
+            "type": "namespace",
+            "name": "mcp__codex_app__",
+            "description": "Codex app",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "automation_update",
+                    "description": "Update automation",
+                    "parameters": {
+                        "type": null,
+                        "properties": {
+                            "targetThreadId": { "type": "string" }
+                        }
+                    }
+                }
+            ]
+        }
+    ]);
+
+    let (upstream_body, status_code, upstream_response) = strict_provider_accepts(tools.clone())
+        .await
+        .expect("修复后：严格供应商应接受规整后的请求");
+
+    // 供应商实际收到的 schema 已被规整为合法形状。
+    let parameters = &upstream_body["tools"][0]["function"]["parameters"];
+    assert_eq!(parameters["type"], "object");
+    assert_eq!(
+        parameters["properties"]["targetThreadId"],
+        json!({ "type": "string" })
+    );
+    assert_eq!(status_code, 200);
+
+    // 闭环最后一环：代理把 chat 响应回转为 Responses 形状
+    // （与生产路径 handle_responses_proxy_request 调用的是同一函数）。
+    let response_json = chat_completion_to_response_with_request(
+        upstream_response,
+        &json!({
+            "model": "deepseek-chat",
+            "input": "hi",
+            "tools": tools
+        }),
+    )
+    .unwrap();
+    assert_eq!(response_json["object"], "response");
+    assert_eq!(response_json["status"], "completed");
+    assert_eq!(response_json["output"][0]["content"][0]["text"], "done");
+
+    // 负向对照：把带 type:null 的工具直接转成 chat 形状（修复前的行为），
+    // 确认上面的校验器确实会拒绝——证明闭环真的卡在 schema 上而非其他环节。
+    let raw_with_null = json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "codex_app::automation_update",
+                "parameters": {
+                    "type": null,
+                    "properties": {
+                        "targetThreadId": { "type": "string" }
+                    }
+                }
+            }
+        }
+    ]);
+    assert!(
+        serde_json::to_string(&raw_with_null)
+            .unwrap()
+            .contains("\"type\":null")
+    );
+}
+
+#[test]
+fn responses_request_maps_codex_custom_and_namespace_tools_to_chat_functions() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "custom",
+                "name": "exec",
+                "description": "Run a command"
+            },
+            {
+                "type": "namespace",
+                "name": "mcp__vscode_mcp__",
+                "description": "VS Code MCP",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "open_file",
+                        "description": "Open a file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string" }
+                            },
+                            "required": ["path"]
+                        }
+                    }
+                ]
+            },
+            {
+                "type": "web_search"
+            }
+        ],
+        "tool_choice": {
+            "type": "function",
+            "namespace": "mcp__vscode_mcp__",
+            "name": "open_file"
+        },
+        "parallel_tool_calls": true
+    }))
+    .unwrap();
+
+    let names: Vec<_> = converted["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"exec"));
+    assert!(names.contains(&"mcp__vscode_mcp__open_file"));
+    assert!(!names.contains(&"web_search"));
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["input"]["type"],
+        "string"
+    );
+    assert_eq!(converted["parallel_tool_calls"], true);
+    assert_eq!(
+        converted["tool_choice"]["function"]["name"],
+        "mcp__vscode_mcp__open_file"
+    );
+}
+
+#[test]
+fn responses_request_stream_includes_usage_and_raw_apply_patch_tool() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "stream": true,
+        "tools": [
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Patch files"
+            }
+        ],
+        "tool_choice": { "type": "custom", "name": "apply_patch" }
+    }))
+    .unwrap();
+
+    assert_eq!(converted["stream_options"]["include_usage"], true);
+    let names: Vec<_> = converted["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["apply_patch"]);
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["input"]["type"],
+        "string"
+    );
+    assert!(
+        converted["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Original tool definition:")
+    );
+    assert_eq!(converted["tool_choice"]["function"]["name"], "apply_patch");
+}
+
+#[test]
+fn responses_input_replays_custom_and_legacy_tool_history() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_custom",
+                "name": "exec",
+                "input": "ls -la"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_custom",
+                "output": "ok"
+            },
+            {
+                "type": "tool_call",
+                "tool_use": {
+                    "id": "call_legacy",
+                    "name": "lookup",
+                    "input": { "query": "rust" }
+                }
+            },
+            {
+                "type": "tool_result",
+                "content": {
+                    "tool_use_id": "call_legacy",
+                    "content": { "result": "found" }
+                }
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "assistant");
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["id"],
+        "call_custom"
+    );
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["name"],
+        "exec"
+    );
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["arguments"],
+        "{\"input\":\"ls -la\"}"
+    );
+    assert_eq!(converted["messages"][1]["role"], "tool");
+    assert_eq!(converted["messages"][1]["content"], "ok");
+    assert_eq!(
+        converted["messages"][2]["tool_calls"][0]["id"],
+        "call_legacy"
+    );
+    assert_eq!(
+        converted["messages"][3]["content"],
+        "{\"result\":\"found\"}"
+    );
+}
+
+#[test]
+fn responses_input_flattens_namespace_function_history_and_skips_invalid_tool_items() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_ns",
+                "namespace": "mcp__vscode_mcp__",
+                "name": "execute_command",
+                "arguments": "{\"command\":\"save\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_ns",
+                "output": "saved"
+            },
+            {
+                "type": "function_call",
+                "call_id": "missing_name",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call_output",
+                "output": "orphan"
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["name"],
+        "mcp__vscode_mcp__execute_command"
+    );
+    assert_eq!(converted["messages"][1]["tool_call_id"], "call_ns");
+    assert_eq!(converted["messages"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn responses_input_sanitizes_invalid_function_call_arguments_history() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "bad_object",
+                "name": "broken_args",
+                "arguments": "{foo: \"bar\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "plain_text",
+                "name": "plain_args",
+                "arguments": "raw text with \"quotes\" and \\slashes"
+            },
+            {
+                "type": "function_call",
+                "call_id": "array_args",
+                "name": "array_args",
+                "arguments": "[1,2,3]"
+            },
+            {
+                "type": "tool_call",
+                "tool_use": {
+                    "id": "object_args",
+                    "name": "object_args",
+                    "input": { "ok": true }
+                }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let calls = converted["messages"][0]["tool_calls"].as_array().unwrap();
+    for call in calls {
+        let arguments = call["function"]["arguments"].as_str().unwrap();
+        serde_json::from_str::<serde_json::Value>(arguments)
+            .expect("chat tool call arguments must always be valid JSON");
+    }
+    assert_eq!(
+        calls[0]["function"]["arguments"],
+        "{\"input\":\"{foo: \\\"bar\\\"}\"}"
+    );
+    assert_eq!(
+        calls[1]["function"]["arguments"],
+        "{\"input\":\"raw text with \\\"quotes\\\" and \\\\slashes\"}"
+    );
+    assert_eq!(calls[2]["function"]["arguments"], "{\"input\":[1,2,3]}");
+    assert_eq!(calls[3]["function"]["arguments"], "{\"ok\":true}");
+}
+
+#[test]
+fn responses_input_downgrades_orphan_tool_outputs_to_user_messages() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "reasoning",
+                "summary": [{ "type": "summary_text", "text": "I need the previous tool result." }]
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "missing_call",
+                "output": "tool output without a matching call"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "missing_custom",
+                "output": "custom output without a matching call"
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "assistant");
+    assert!(converted["messages"][0].get("tool_calls").is_none());
+    assert_eq!(converted["messages"][1]["role"], "user");
+    assert_eq!(
+        converted["messages"][1]["content"],
+        "Function call output (missing_call): tool output without a matching call"
+    );
+    assert_eq!(converted["messages"][2]["role"], "user");
+    assert_eq!(
+        converted["messages"][2]["content"],
+        "Function call output (missing_custom): custom output without a matching call"
+    );
+}
+
+#[test]
+fn responses_input_replays_apply_patch_custom_history_as_proxy_tool() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_patch",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** Add File: docs/test.md\n+# Test\n*** End Patch"
+            }
+        ],
+        "tools": [{ "type": "custom", "name": "apply_patch" }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["name"],
+        "apply_patch"
+    );
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["arguments"],
+        "{\"input\":\"*** Begin Patch\\n*** Add File: docs/test.md\\n+# Test\\n*** End Patch\"}"
+    );
+}
+
+#[test]
+fn responses_input_migrates_legacy_apply_patch_proxy_history() {
+    for legacy_name in [
+        "apply_patch_add_file",
+        "apply_patch_delete_file",
+        "apply_patch_update_file",
+        "apply_patch_replace_file",
+        "apply_patch_batch",
+    ] {
+        let raw_patch = "*** Begin Patch\n*** Add File: docs/test.md\n+# Test\n*** End Patch";
+        let converted = responses_to_chat_completions(json!({
+            "model": "gpt-5-mini",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_legacy_patch",
+                    "name": legacy_name,
+                    "input": raw_patch
+                }
+            ],
+            "tools": [{ "type": "custom", "name": "apply_patch" }]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            converted["messages"][0]["tool_calls"][0]["function"]["name"],
+            "apply_patch"
+        );
+        let arguments = converted["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        let arguments: Value = serde_json::from_str(arguments).unwrap();
+        assert_eq!(arguments["input"], raw_patch);
+    }
+}
+
+#[test]
+fn responses_input_replays_same_path_delete_add_patch_as_apply_patch() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_patch",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** Delete File: docs/test.md\n*** Add File: docs/test.md\n+hello\n*** End Patch"
+            }
+        ],
+        "tools": [{ "type": "custom", "name": "apply_patch" }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["name"],
+        "apply_patch"
+    );
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["arguments"],
+        "{\"input\":\"*** Begin Patch\\n*** Delete File: docs/test.md\\n*** Add File: docs/test.md\\n+hello\\n*** End Patch\"}"
+    );
+}
+
+#[test]
+fn upstream_chat_error_is_regularized_as_responses_error_envelope() {
+    let json_error = responses_error_from_upstream(
+        400,
+        "application/json",
+        br#"{"error":{"message":"bad request","type":"invalid_request_error","code":"bad_model","param":"model"}}"#,
+    );
+    assert_eq!(json_error["error"]["message"], "bad request");
+    assert_eq!(json_error["error"]["type"], "invalid_request_error");
+    assert_eq!(json_error["error"]["code"], "bad_model");
+    assert_eq!(json_error["error"]["param"], "model");
+
+    let text_error = responses_error_from_upstream(502, "text/html", b"<html>bad gateway</html>");
+    assert_eq!(text_error["error"]["message"], "<html>bad gateway</html>");
+    assert_eq!(text_error["error"]["type"], "upstream_error");
+    assert_eq!(text_error["error"]["code"], "502");
+}
+
+/// #2741：Gemini 的 OpenAI 兼容端点把错误包在单元素数组里，拆开后消息、类型、状态码都能取到；
+/// 顶层 `status` 字符串不当类型（只认 error 对象里的）。
+#[test]
+fn array_wrapped_google_error_is_unwrapped() {
+    let body = br#"[{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"store\": Cannot find field.","status":"INVALID_ARGUMENT"}}]"#;
+    let error = responses_error_from_upstream(400, "application/json; charset=UTF-8", body);
+    assert_eq!(
+        error["error"]["message"],
+        "Invalid JSON payload received. Unknown name \"store\": Cannot find field."
+    );
+    assert_eq!(error["error"]["type"], "INVALID_ARGUMENT");
+    assert_eq!(error["error"]["code"], "400");
+
+    let top_level = responses_error_from_upstream(
+        502,
+        "application/json",
+        br#"{"status":"failed","message":"relay down"}"#,
+    );
+    assert_eq!(top_level["error"]["message"], "relay down");
+    assert_eq!(top_level["error"]["type"], "upstream_error");
+}
+
+/// #2741：网关转给 Agent 的错误补上供应商、上游模型、协议和状态码；type / code 不动。
+/// 请求日志里带上状态码、类型和响应体原文。
+#[test]
+fn gateway_upstream_error_names_provider_model_and_status() {
+    let body = br#"{"error":{"message":"bad tool","type":"invalid_request_error","code":"unsupported_tool","details":[{"field":"tools[3].type"}]}}"#;
+    let mut error = responses_error_from_upstream(400, "application/json", body);
+    let trace = codex_plus_core::request_log::RequestTrace {
+        relay_id: "gem".to_string(),
+        relay_name: "Gemini 中转".to_string(),
+        upstream_model: "gemini-3-pro".to_string(),
+        wire_api: "Responses".to_string(),
+        ..Default::default()
+    };
+    let log = upstream_error_log_text(400, &error, body);
+    assert!(
+        log.starts_with("HTTP 400 · type=invalid_request_error · code=unsupported_tool：bad tool"),
+        "{log}"
+    );
+    assert!(log.contains("tools[3].type"), "日志里要有原文：{log}");
+
+    annotate_gateway_upstream_error(&mut error, 400, Some(&trace));
+    assert_eq!(
+        error["error"]["message"],
+        "bad tool（网关上游：Gemini 中转 · 模型 gemini-3-pro · Responses · HTTP 400）"
+    );
+    assert_eq!(error["error"]["type"], "invalid_request_error");
+    assert_eq!(error["error"]["code"], "unsupported_tool");
+
+    // 没有路由信息（网关自己拒绝的请求）时原样不动。
+    let mut own = responses_error_from_upstream(
+        429,
+        "application/json",
+        br#"{"error":{"message":"cooling"}}"#,
+    );
+    annotate_gateway_upstream_error(&mut own, 429, None);
+    assert_eq!(own["error"]["message"], "cooling");
+}
+
+#[test]
+fn chat_completion_response_converts_to_responses_response() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_123",
+        "created": 1710000000,
+        "model": "gpt-5-mini",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "hi there"
+                }
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(converted["object"], "response");
+    assert_eq!(converted["status"], "completed");
+    assert_eq!(converted["model"], "gpt-5-mini");
+    assert_eq!(converted["usage"]["input_tokens"], 10);
+    assert_eq!(converted["usage"]["output_tokens"], 5);
+    assert_eq!(converted["output"][0]["type"], "message");
+    assert_eq!(converted["output"][0]["content"][0]["text"], "hi there");
+}
+
+#[test]
+fn chat_completion_response_maps_reasoning_tool_calls_and_usage_details() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_1",
+        "created": 123,
+        "model": "gpt-5.4",
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "reasoning_content": "I should check first.",
+                "content": "Let me check.",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "{\"city\":\"Tokyo\"}"
+                    }
+                }]
+            }
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": { "cached_tokens": 3 },
+            "completion_tokens_details": { "reasoning_tokens": 2 }
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(converted["output"][0]["type"], "reasoning");
+    assert_eq!(
+        converted["output"][0]["summary"][0]["text"],
+        "I should check first."
+    );
+    assert_eq!(
+        converted["output"][0]["reasoning_content"],
+        "I should check first."
+    );
+    assert_eq!(converted["output"][1]["type"], "message");
+    assert_eq!(converted["output"][2]["type"], "function_call");
+    assert_eq!(converted["output"][2]["call_id"], "call_1");
+    assert_eq!(
+        converted["usage"]["input_tokens_details"]["cached_tokens"],
+        3
+    );
+    assert_eq!(
+        converted["usage"]["output_tokens_details"]["reasoning_tokens"],
+        2
+    );
+}
+
+/// #332 / #1012：Gemini 3 系要求 functionCall 回传 thought_signature，否则整轮 400。
+/// 签名由上游产生、本仓不理解其语义，因此原样透传 `extra_content`：
+/// 上游返回时记住（按 call_id），下一轮构造请求时挂回对应的 tool_call。
+#[test]
+fn gemini_thought_signature_is_carried_back_across_turns() {
+    // 第一轮：上游在 tool_call 上带了 extra_content
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_sig",
+        "created": 123,
+        "model": "gemini-3.5-flash",
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_sig",
+                    "type": "function",
+                    "function": { "name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}" },
+                    "extra_content": { "google": { "thought_signature": "SIG-ABC" } }
+                }]
+            }
+        }]
+    }))
+    .unwrap();
+
+    let call_id = converted["output"][0]["call_id"]
+        .as_str()
+        .expect("tool call survives")
+        .to_string();
+
+    // 第二轮：客户端把这个 function_call 作为历史带回来
+    let replayed = responses_to_chat_completions(json!({
+        "model": "gemini-3.5-flash",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "天气" }] },
+            {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Tokyo\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": "sunny"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let tool_call = replayed["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|message| message.get("tool_calls").and_then(Value::as_array))
+        .and_then(|calls| calls.first())
+        .expect("tool call replayed into chat history");
+    assert_eq!(
+        tool_call["extra_content"]["google"]["thought_signature"], "SIG-ABC",
+        "签名字段必须原样回到下一轮请求"
+    );
+}
+
+/// 无 extra_content 时不得凭空造字段（其它供应商不受影响）。
+#[test]
+fn tool_call_without_extra_content_replays_without_the_field() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_plain",
+        "created": 123,
+        "model": "gpt-5.4",
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_plain",
+                    "type": "function",
+                    "function": { "name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}" }
+                }]
+            }
+        }]
+    }))
+    .unwrap();
+
+    let call_id = converted["output"][0]["call_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let replayed = responses_to_chat_completions(json!({
+        "model": "gpt-5.4",
+        "input": [
+            { "type": "function_call", "call_id": call_id, "name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}" },
+            { "type": "function_call_output", "call_id": call_id, "output": "sunny" }
+        ]
+    }))
+    .unwrap();
+
+    let tool_call = replayed["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|message| message.get("tool_calls").and_then(Value::as_array))
+        .and_then(|calls| calls.first())
+        .expect("tool call replayed");
+    assert!(
+        tool_call.get("extra_content").is_none(),
+        "没有附带数据时不应凭空造 extra_content"
+    );
+}
+
+#[test]
+fn chat_completion_response_defaults_missing_reasoning_tokens_to_zero() {
+    // Kimi 等上游在一次响应无 reasoning 时会省略 completion_tokens_details
+    // 里的 reasoning_tokens; Codex 将该字段当必填解析, 缺省会报
+    // "missing field `reasoning_tokens`" 并把整轮判为断流。
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_no_reasoning",
+        "created": 123,
+        "model": "k3-256k",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": { "role": "assistant", "content": "done" }
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "completion_tokens_details": {}
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        converted["usage"]["output_tokens_details"]["reasoning_tokens"],
+        0
+    );
+}
+
+#[test]
+fn chat_sse_defaults_missing_reasoning_tokens_to_zero() {
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_kimi","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"completion_tokens_details":{}}}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"reasoning_tokens\":0"));
+}
+
+#[test]
+fn chat_sse_without_usage_details_still_emits_reasoning_tokens() {
+    // 上游连 completion_tokens_details 都没有时也要补上, Codex 才能解析。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_plain","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"output_tokens_details\":{\"reasoning_tokens\":0}"));
+}
+
+#[test]
+fn chat_sse_without_any_usage_still_emits_reasoning_tokens() {
+    // 上游全程未发 usage chunk → default usage 兜底同样带齐结构。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_nousg","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"reasoning_tokens\":0"));
+}
+
+#[test]
+fn chat_completion_response_extracts_reasoning_details_like_ccswitch() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_reasoning_details",
+        "created": 123,
+        "model": "MiniMax-M2.7",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "reasoning_details": [
+                    { "summary": "Step one." },
+                    { "parts": [{ "text": "Step two." }] }
+                ],
+                "content": "final"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["output"][0]["type"], "reasoning");
+    assert_eq!(
+        converted["output"][0]["summary"][0]["text"],
+        "Step one.\n\nStep two."
+    );
+    assert_eq!(converted["output"][1]["content"][0]["text"], "final");
+}
+
+#[test]
+fn chat_completion_response_accepts_responses_style_usage_fields() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_usage",
+        "created": 123,
+        "model": "gpt-5.4",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "content": "ok"
+            }
+        }],
+        "usage": {
+            "input_tokens": 7,
+            "output_tokens": 3,
+            "input_tokens_details": { "cached_tokens": 2 },
+            "cache_read_input_tokens": 1,
+            "cache_creation_input_tokens": 4
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(converted["usage"]["input_tokens"], 7);
+    assert_eq!(converted["usage"]["output_tokens"], 3);
+    assert_eq!(converted["usage"]["total_tokens"], 15);
+    assert!(converted["usage"].get("input_tokens_details").is_none());
+    assert_eq!(converted["usage"]["cache_read_input_tokens"], 1);
+    assert_eq!(converted["usage"]["cache_creation_input_tokens"], 4);
+}
+
+#[test]
+fn chat_completion_response_maps_custom_and_namespace_calls_with_request_context() {
+    let request = json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            { "type": "custom", "name": "exec" },
+            {
+                "type": "namespace",
+                "name": "mcp__vscode_mcp__",
+                "tools": [
+                    { "type": "function", "name": "open_file", "parameters": {} }
+                ]
+            }
+        ]
+    });
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_tools",
+            "created": 123,
+            "model": "gpt-5-mini",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_custom",
+                            "type": "function",
+                            "function": {
+                                "name": "exec",
+                                "arguments": "{\"input\":\"ls -la\"}"
+                            }
+                        },
+                        {
+                            "id": "call_ns",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__vscode_mcp__open_file",
+                                "arguments": "{\"path\":\"src/main.rs\"}"
+                            }
+                        }
+                    ]
+                }
+            }]
+        }),
+        &request,
+    )
+    .unwrap();
+
+    assert_eq!(converted["output"][0]["type"], "custom_tool_call");
+    assert_eq!(converted["output"][0]["name"], "exec");
+    assert_eq!(converted["output"][0]["input"], "ls -la");
+    assert_eq!(converted["output"][1]["type"], "function_call");
+    assert_eq!(converted["output"][1]["name"], "open_file");
+    assert_eq!(converted["output"][1]["namespace"], "mcp__vscode_mcp__");
+}
+
+#[test]
+fn chat_completion_response_reconstructs_apply_patch_proxy_call() {
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_patch",
+            "created": 123,
+            "model": "gpt-5-mini",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_patch",
+                        "type": "function",
+                        "function": {
+                            "name": "apply_patch",
+                            "arguments": "{\"input\":\"*** Begin Patch\\n*** Add File: README.md\\n+hello\\n*** End Patch\"}"
+                        }
+                    }]
+                }
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{ "type": "custom", "name": "apply_patch" }]
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(converted["output"][0]["type"], "custom_tool_call");
+    assert_eq!(converted["output"][0]["name"], "apply_patch");
+    assert_eq!(
+        converted["output"][0]["input"],
+        "*** Begin Patch\n*** Add File: README.md\n+hello\n*** End Patch"
+    );
+}
+
+#[test]
+fn chat_completion_response_remaps_string_apply_patch_tool() {
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_patch_string_tool",
+            "created": 123,
+            "model": "gpt-5-mini",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_patch",
+                        "type": "function",
+                        "function": {
+                            "name": "apply_patch",
+                            "arguments": "{\"input\":\"*** Begin Patch\\n*** Add File: docs/test.md\\n+# Test\\n*** End Patch\"}"
+                        }
+                    }]
+                }
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": ["apply_patch"]
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(converted["output"][0]["type"], "custom_tool_call");
+    assert_eq!(converted["output"][0]["name"], "apply_patch");
+    assert_eq!(
+        converted["output"][0]["input"],
+        "*** Begin Patch\n*** Add File: docs/test.md\n+# Test\n*** End Patch"
+    );
+}
+
+#[test]
+fn chat_completion_response_maps_gemini_and_claude_cache_usage_like_ccx() {
+    let gemini = chat_completion_to_response(json!({
+        "id": "chatcmpl_gemini_usage",
+        "created": 123,
+        "model": "gemini-proxy",
+        "choices": [{ "finish_reason": "stop", "message": { "role": "assistant", "content": "ok" } }],
+        "usage": {
+            "promptTokenCount": 20,
+            "cachedContentTokenCount": 5,
+            "candidatesTokenCount": 7
+        }
+    }))
+    .unwrap();
+    assert_eq!(gemini["usage"]["input_tokens"], 15);
+    assert_eq!(gemini["usage"]["output_tokens"], 7);
+    assert_eq!(gemini["usage"]["total_tokens"], 27);
+    assert_eq!(gemini["usage"]["input_tokens_details"]["cached_tokens"], 5);
+
+    let claude = chat_completion_to_response(json!({
+        "id": "chatcmpl_claude_usage",
+        "created": 123,
+        "model": "claude-proxy",
+        "choices": [{ "finish_reason": "stop", "message": { "role": "assistant", "content": "ok" } }],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "cache_read_input_tokens": 2,
+            "cache_creation_5m_input_tokens": 4,
+            "cache_creation_1h_input_tokens": 6
+        }
+    }))
+    .unwrap();
+    assert_eq!(claude["usage"]["input_tokens"], 10);
+    assert_eq!(claude["usage"]["total_tokens"], 25);
+    assert_eq!(claude["usage"]["cache_read_input_tokens"], 2);
+    assert_eq!(claude["usage"]["cache_creation_5m_input_tokens"], 4);
+    assert_eq!(claude["usage"]["cache_creation_1h_input_tokens"], 6);
+    assert_eq!(claude["usage"]["cache_ttl"], "mixed");
+    assert!(claude["usage"].get("input_tokens_details").is_none());
+}
+
+#[test]
+fn chat_completion_response_splits_inline_think_block() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_think",
+        "created": 123,
+        "model": "MiniMax-M2.7",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "content": "<think>\nNeed context.\n</think>\n\npong"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["output"][0]["type"], "reasoning");
+    assert_eq!(
+        converted["output"][0]["summary"][0]["text"],
+        "Need context."
+    );
+    assert_eq!(converted["output"][1]["type"], "message");
+    assert_eq!(converted["output"][1]["content"][0]["text"], "pong");
+}
+
+#[test]
+fn chat_sse_converts_to_responses_sse_events() {
+    let converted = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_1","created":1710000000,"model":"gpt-5-mini","choices":[{"delta":{"content":"hel"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_1","created":1710000000,"model":"gpt-5-mini","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+
+data: [DONE]
+
+"#,
+    );
+
+    assert!(converted.contains("event: response.created"));
+    assert!(converted.contains("event: response.output_text.delta"));
+    assert!(converted.contains("\"delta\":\"hel\""));
+    assert!(converted.contains("\"text\":\"hello\""));
+    assert!(converted.contains("\"input_tokens\":3"));
+    assert!(converted.contains("event: response.completed"));
+    assert!(converted.contains("data: [DONE]"));
+}
+
+#[test]
+fn chat_sse_converts_reasoning_inline_think_tools_and_errors_like_ccs() {
+    let reasoning = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_reason","created":123,"model":"deepseek-reasoner","choices":[{"delta":{"reasoning_content":"Need context. "}}]}
+
+data: {"id":"chatcmpl_reason","created":123,"model":"deepseek-reasoner","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"completion_tokens_details":{"reasoning_tokens":3}}}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(reasoning.contains("event: response.in_progress"));
+    assert!(reasoning.contains("event: response.reasoning_summary_part.added"));
+    assert!(reasoning.contains("event: response.reasoning_summary_text.delta"));
+    assert!(reasoning.contains("event: response.reasoning_summary_text.done"));
+    assert!(reasoning.contains("\"reasoning_content\":\"Need context. \""));
+    assert!(reasoning.contains("\"type\":\"reasoning\""));
+    assert!(reasoning.contains("\"text\":\"Done\""));
+    assert!(reasoning.contains("\"reasoning_tokens\":3"));
+
+    let inline_think = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_minimax","created":123,"model":"MiniMax-M2.7","choices":[{"delta":{"content":"<think>\nNeed"}}]}
+
+data: {"id":"chatcmpl_minimax","created":123,"model":"MiniMax-M2.7","choices":[{"delta":{"content":" context.</think>\n\npong"},"finish_reason":"stop"}]}
+
+"#,
+    );
+    assert!(inline_think.contains("Need context."));
+    assert!(inline_think.contains("\"text\":\"pong\""));
+    assert!(!inline_think.contains("<think>"));
+    assert!(!inline_think.contains("</think>"));
+
+    let tool = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_tool","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather"}}]}}]}
+
+data: {"id":"chatcmpl_tool","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"Tokyo\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(tool.contains("event: response.function_call_arguments.delta"));
+    assert!(tool.contains("event: response.function_call_arguments.done"));
+    assert!(tool.contains("\"type\":\"function_call\""));
+    assert!(tool.contains("\"call_id\":\"call_1\""));
+
+    let error = chat_sse_to_responses_sse(
+        r#"event: error
+data: {"error":{"message":"bad request","type":"invalid_request_error"}}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(error.contains("event: response.failed"));
+    assert!(error.contains("bad request"));
+    assert!(error.contains("invalid_request_error"));
+    assert!(!error.contains("event: response.completed"));
+}
+
+#[test]
+fn chat_sse_maps_custom_tool_call_with_request_context() {
+    let converted = chat_sse_to_responses_sse_with_request(
+        r#"data: {"id":"chatcmpl_custom","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_custom","type":"function","function":{"name":"exec"}}]}}]}
+
+data: {"id":"chatcmpl_custom","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"input\":"}}]}}]}
+
+data: {"id":"chatcmpl_custom","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls -la\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        &json!({
+            "model": "gpt-5.4",
+            "tools": [{ "type": "custom", "name": "exec" }]
+        }),
+    );
+
+    assert!(converted.contains("response.custom_tool_call_input.delta"));
+    assert_eq!(
+        converted
+            .matches("event: response.custom_tool_call_input.delta")
+            .count(),
+        1
+    );
+    assert!(converted.contains("\"type\":\"custom_tool_call\""));
+    assert!(converted.contains("\"id\":\"ctc_call_custom\""));
+    assert!(converted.contains("\"item_id\":\"ctc_call_custom\""));
+    assert!(!converted.contains("\"id\":\"fc_call_custom\""));
+    assert!(!converted.contains("\"item_id\":\"fc_call_custom\""));
+    assert!(converted.contains("\"name\":\"exec\""));
+    assert!(converted.contains("\"input\":\"ls -la\""));
+    assert!(converted.contains("data: [DONE]"));
+}
+
+#[test]
+fn chat_sse_waits_for_custom_tool_name_before_assigning_item_id() {
+    let converted = chat_sse_to_responses_sse_with_request(
+        r#"data: {"id":"chatcmpl_custom_split","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_custom_split","type":"function"}]}}]}
+
+data: {"id":"chatcmpl_custom_split","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"exec","arguments":"{\"input\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        &json!({
+            "model": "gpt-5.4",
+            "tools": [{ "type": "custom", "name": "exec" }]
+        }),
+    );
+
+    assert!(converted.contains("\"type\":\"custom_tool_call\""));
+    assert!(converted.contains("\"id\":\"ctc_call_custom_split\""));
+    assert!(converted.contains("\"item_id\":\"ctc_call_custom_split\""));
+    assert!(!converted.contains("fc_call_custom_split"));
+    assert!(converted.contains("\"input\":\"pwd\""));
+}
+
+#[test]
+fn chat_sse_converter_handles_partial_chunks_and_utf8_boundaries() {
+    let sse = "data: {\"id\":\"chatcmpl_utf8\",\"created\":123,\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":\"stop\"}]}\r\n\r\n";
+    let bytes = sse.as_bytes();
+    let split = bytes
+        .windows("好".len())
+        .position(|window| window == "好".as_bytes())
+        .unwrap()
+        + 1;
+
+    let mut converter = ChatSseToResponsesConverter::default();
+    let mut output = converter.push_bytes(&bytes[..split]);
+    output.extend(converter.push_bytes(&bytes[split..]));
+    output.extend(converter.finish());
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("\"delta\":\"你好\""));
+    assert!(output.contains("event: response.completed"));
+}
+
+#[test]
+fn chat_completions_url_normalizes_common_base_urls() {
+    assert_eq!(
+        chat_completions_url("https://api.example.test"),
+        "https://api.example.test/v1/chat/completions"
+    );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/v1"),
+        "https://api.example.test/v1/chat/completions"
+    );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/openai"),
+        "https://api.example.test/openai/chat/completions"
+    );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/v1/chat/completions"),
+        "https://api.example.test/v1/chat/completions"
+    );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/v2"),
+        "https://api.example.test/v2/chat/completions"
+    );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/v1beta"),
+        "https://api.example.test/v1beta/chat/completions"
+    );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/openai#"),
+        "https://api.example.test/openai/chat/completions"
+    );
+}
+
+#[test]
+fn audio_transcriptions_url_normalizes_common_base_urls() {
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test"),
+        "https://api.example.test/v1/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test/v1"),
+        "https://api.example.test/v1/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test/openai"),
+        "https://api.example.test/openai/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test/v1/audio/transcriptions"),
+        "https://api.example.test/v1/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test/openai#"),
+        "https://api.example.test/openai/audio/transcriptions"
+    );
+}
+
+#[test]
+fn image_urls_normalize_common_base_urls() {
+    for base in [
+        "https://api.example.test",
+        "https://api.example.test/",
+        "https://api.example.test/v1",
+        "https://api.example.test/v1/",
+    ] {
+        assert_eq!(
+            image_generations_url(base),
+            "https://api.example.test/v1/images/generations"
+        );
+        assert_eq!(
+            image_edits_url(base),
+            "https://api.example.test/v1/images/edits"
+        );
+    }
+    assert_eq!(
+        image_generations_url("https://api.example.test/v1/images/generations"),
+        "https://api.example.test/v1/images/generations"
+    );
+    assert_eq!(
+        image_edits_url("https://api.example.test/v1/images/edits"),
+        "https://api.example.test/v1/images/edits"
+    );
+    assert_eq!(
+        image_generations_url("https://api.example.test/openai"),
+        "https://api.example.test/openai/images/generations"
+    );
+    assert_eq!(
+        image_generations_url("https://api.example.test/v1/v1"),
+        "https://api.example.test/v1/images/generations"
+    );
+}
+
+#[test]
+fn models_url_normalizes_common_base_urls() {
+    assert_eq!(
+        models_url("https://api.example.test"),
+        "https://api.example.test/v1/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/v1"),
+        "https://api.example.test/v1/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/v1/chat/completions"),
+        "https://api.example.test/v1/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/models"),
+        "https://api.example.test/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/v2"),
+        "https://api.example.test/v2/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/v1beta"),
+        "https://api.example.test/v1beta/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/openai#"),
+        "https://api.example.test/openai/models"
+    );
+}
+
+#[test]
+fn models_proxy_path_matches_v1_models() {
+    assert!(is_models_proxy_path("/models"));
+    assert!(is_models_proxy_path("/v1/models"));
+    assert!(is_models_proxy_path("/v1/models?limit=10"));
+    assert!(!is_models_proxy_path("/v1/responses"));
+}
+
+#[test]
+fn upstream_header_timeout_is_bounded_for_hung_providers() {
+    assert!(upstream_header_timeout() >= Duration::from_secs(30));
+    assert!(upstream_header_timeout() <= Duration::from_secs(60));
+    assert!(upstream_stream_header_timeout() >= Duration::from_secs(120));
+}
+
+#[tokio::test]
+async fn upstream_request_returns_when_provider_accepts_but_never_sends_headers() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let Ok((_stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    });
+
+    let started = Instant::now();
+    let result = send_upstream_request_with_header_timeout(
+        upstream_http_client()
+            .unwrap()
+            .get(format!("http://{addr}/v1/models")),
+        Duration::from_millis(100),
+    )
+    .await;
+
+    assert!(result.is_err());
+    // 断言意图：客户端在 header 超时（100ms）后放弃等待，而不是傻等上游那 2 秒。
+    // 上限取 1.5s：既与「傻等 2 秒」有明确区分，又给满负载下的调度抖动留出余量。
+    // 原先写 1s，跑全量测试（几十个 target 并发）时会间歇性越界。
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    server.abort();
+}
+
+/// 系统代理/链路抖动经常表现为 TLS 握手阶段被对端断开
+/// （`client error (Connect): tls handshake eof`）。这类失败发生在请求送达
+/// 上游之前，必须在本地重试，不能把瞬时故障直接暴露成 502。
+#[tokio::test]
+async fn upstream_connect_failures_are_retried_before_reporting_502() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = accepted.clone();
+    let server = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            counter.fetch_add(1, Ordering::SeqCst);
+            // 握手阶段直接断开，复现 tls handshake eof。
+            drop(stream);
+        }
+    });
+
+    let started = Instant::now();
+    let error = send_upstream_request_with_header_timeout(
+        upstream_http_client()
+            .unwrap()
+            .post(format!("https://{addr}/v1/responses"))
+            .json(&json!({"model": "m", "input": "hi"})),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("上游请求失败"), "{text}");
+    assert!(
+        accepted.load(Ordering::SeqCst) >= 3,
+        "expected initial attempt plus 2 connect retries"
+    );
+    // 两次退避合计 550ms，证明不是一次失败就立刻返回。
+    assert!(started.elapsed() >= Duration::from_millis(500));
+    server.abort();
+}
+
+#[tokio::test]
+async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
+    let _lock = settings_path_test_lock();
+    let first = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let first_addr = first.local_addr().unwrap();
+    let second = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let second_addr = second.local_addr().unwrap();
+    let first_server = tokio::spawn(capture_request_and_respond_once(
+        first,
+        "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 11\r\ncontent-type: application/json\r\n\r\n{\"error\":1}",
+    ));
+    let second_server = tokio::spawn(capture_request_and_respond_once(
+        second,
+        "HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+    ));
+    let mut settings = aggregate_proxy_settings(
+        "failover",
+        format!("http://{first_addr}/v1"),
+        format!("http://{second_addr}/v1"),
+    );
+    for relay in settings.relay_profiles.iter_mut().take(2) {
+        relay.relay_mode = RelayMode::PureApi;
+        relay.no_auth = true;
+        relay.api_key.clear();
+    }
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    let body = result.read_body().await.unwrap();
+
+    assert_eq!(
+        result.status_code,
+        200,
+        "unexpected mock response: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(body.as_slice(), br#"{"id":"resp_1","object":"response"}"#);
+    let first_request = first_server.await.unwrap();
+    let second_request = second_server.await.unwrap();
+    assert!(
+        !first_request
+            .to_ascii_lowercase()
+            .contains("authorization:")
+    );
+    assert!(
+        !second_request
+            .to_ascii_lowercase()
+            .contains("authorization:")
+    );
+}
+
+/// 官方登录成员：聚合代理用该账号 OAuth 凭据把请求转发到 chatgpt.com 后端，
+/// 带 OAuth Bearer 与 `chatgpt-account-id`，不能带供应商 API Key。
+#[tokio::test]
+async fn aggregate_official_member_forwards_with_oauth_credentials() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_json_request_once(listener));
+    let _env_guard = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{address}/backend-api/codex"),
+    );
+
+    let official_id = "proxy-official-login".to_string();
+    let aggregate_id = "proxy-official-agg".to_string();
+    let settings = BackendSettings {
+        relay_profiles: vec![
+            RelayProfile {
+                id: official_id.clone(),
+                name: "官方登录".to_string(),
+                relay_mode: RelayMode::Official,
+                auth_contents: json!({
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "official-access",
+                        "refresh_token": "official-refresh",
+                        "account_id": "acct-official"
+                    }
+                })
+                .to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: aggregate_id.clone(),
+                name: "aggregate".to_string(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        active_relay_id: aggregate_id.clone(),
+        active_aggregate_relay_id: aggregate_id.clone(),
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: aggregate_id,
+            name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: official_id,
+                weight: 1,
+            }],
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
+        }],
+        ..BackendSettings::default()
+    };
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-sol","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status_code, 200);
+
+    let (headers, body) = server.await.unwrap();
+    let headers_lower = headers.to_ascii_lowercase();
+    assert!(
+        headers.starts_with("POST /backend-api/codex/responses HTTP/1.1"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("authorization: bearer official-access"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("chatgpt-account-id: acct-official"),
+        "{headers}"
+    );
+    assert!(headers_lower.contains("originator: codex_cli_rs"), "{headers}");
+    assert!(!headers_lower.contains("sk-"), "{headers}");
+    assert_eq!(body["model"], "gpt-5.6-sol");
+}
+
+/// 官方登录成员 + 单成员聚合外壳，用于验证官方登录通道的请求重写。
+fn official_aggregate_test_settings(official_id: &str, aggregate_id: &str) -> BackendSettings {
+    BackendSettings {
+        relay_profiles: vec![
+            RelayProfile {
+                id: official_id.to_string(),
+                name: "官方登录".to_string(),
+                relay_mode: RelayMode::Official,
+                auth_contents: json!({
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "official-access",
+                        "refresh_token": "official-refresh",
+                        "account_id": "acct-official"
+                    }
+                })
+                .to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: aggregate_id.to_string(),
+                name: "aggregate".to_string(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        active_relay_id: aggregate_id.to_string(),
+        active_aggregate_relay_id: aggregate_id.to_string(),
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: aggregate_id.to_string(),
+            name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: official_id.to_string(),
+                weight: 1,
+            }],
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+/// 官方登录上游要求：回放 web_search_call 历史时必须声明 web_search 工具，
+/// 否则流式返回 `response protection is unavailable`。Codex 的本地压缩请求
+/// `tools` 为空，必须由代理补齐声明（且不能改写历史）。
+#[tokio::test]
+async fn aggregate_official_member_declares_web_search_for_tool_less_history() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    // 隔离真实 ~/.codex/auth.json，避免 live 登录快照影响凭据解析。
+    let _codex_home = EnvVarGuard::set(
+        "CODEX_HOME",
+        temp.path().to_str().unwrap(),
+    );
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_json_request_once(listener));
+    let _env_guard = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{address}/backend-api/codex"),
+    );
+
+    let request = json!({
+        "model": "gpt-6.1-sol",
+        "stream": false,
+        "tools": [],
+        "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {"type": "web_search_call", "id": "ws_test", "status": "completed",
+                "action": {"type": "search", "query": "example"}},
+            {"type": "message", "role": "user", "content": [{"type": "input_text",
+                "text": "You are performing a CONTEXT CHECKPOINT COMPACTION."}]}
+        ]
+    });
+    let settings = official_aggregate_test_settings("proxy-official-web", "proxy-official-web-agg");
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+
+    let (headers, sent) = server.await.unwrap();
+    assert!(
+        headers.starts_with("POST /backend-api/codex/responses HTTP/1.1"),
+        "{headers}"
+    );
+    let mut expected = request;
+    expected["tools"] = json!([{"type": "web_search", "external_web_access": false}]);
+    expected["tool_choice"] = json!("none");
+    assert_eq!(sent, expected, "只补搜索声明，历史内容必须原样保留");
+}
+
+/// 官方登录通道只修「没有声明任何工具」的请求；带工具的普通轮次保持原样。
+#[tokio::test]
+async fn aggregate_official_member_leaves_tool_declaring_requests_unchanged() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _codex_home = EnvVarGuard::set(
+        "CODEX_HOME",
+        temp.path().to_str().unwrap(),
+    );
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_json_request_once(listener));
+    let _env_guard = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{address}/backend-api/codex"),
+    );
+
+    let request = json!({
+        "model": "gpt-6.1-sol",
+        "stream": false,
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        "tool_choice": "auto",
+        "input": [
+            {"type": "web_search_call", "id": "ws_test", "status": "completed",
+                "action": {"type": "search", "query": "example"}},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+        ]
+    });
+    let settings =
+        official_aggregate_test_settings("proxy-official-tools", "proxy-official-tools-agg");
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+
+    let (_, sent) = server.await.unwrap();
+    assert_eq!(sent, request, "带工具的请求不应被改写");
+}
+
+/// 官方登录 token 被提前撤销：第一次 401 后强制刷新一次并原样重试，
+/// 第二次请求带刷新后的 Bearer；refresh 请求带轮换前的 refresh token。
+#[tokio::test]
+async fn aggregate_official_member_refreshes_and_retries_after_401() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+
+    let upstream = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    let upstream_server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        let (mut first, _) = upstream.accept().await.unwrap();
+        requests.push(read_http_request(&mut first).await);
+        first
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 2\r\ncontent-type: application/json\r\n\r\n{}",
+            )
+            .await
+            .unwrap();
+        drop(first);
+        let (mut second, _) = upstream.accept().await.unwrap();
+        requests.push(read_http_request(&mut second).await);
+        second
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+            )
+            .await
+            .unwrap();
+        requests
+    });
+    let token = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let token_addr = token.local_addr().unwrap();
+    let token_server = tokio::spawn(async move {
+        let (mut stream, _) = token.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        let body = r#"{"access_token":"refreshed-access","refresh_token":"refreshed-refresh"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+
+    let _base_env = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{upstream_addr}/backend-api/codex"),
+    );
+    let _token_env = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_TOKEN_URL",
+        &format!("http://{token_addr}/oauth/token"),
+    );
+
+    let official_id = "proxy-official-401".to_string();
+    let aggregate_id = "proxy-official-401-agg".to_string();
+    let settings = BackendSettings {
+        relay_profiles: vec![
+            RelayProfile {
+                id: official_id.clone(),
+                name: "官方登录".to_string(),
+                relay_mode: RelayMode::Official,
+                auth_contents: json!({
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "official-access",
+                        "refresh_token": "official-refresh",
+                        "account_id": "acct-official"
+                    }
+                })
+                .to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: aggregate_id.clone(),
+                name: "aggregate".to_string(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        active_relay_id: aggregate_id.clone(),
+        active_aggregate_relay_id: aggregate_id.clone(),
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: aggregate_id,
+            name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: official_id,
+                weight: 1,
+            }],
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
+        }],
+        ..BackendSettings::default()
+    };
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-sol","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status_code, 200);
+
+    let requests = upstream_server.await.unwrap();
+    assert!(
+        requests[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer official-access"),
+        "{}",
+        requests[0]
+    );
+    assert!(
+        requests[1]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer refreshed-access"),
+        "{}",
+        requests[1]
+    );
+    let token_request = token_server.await.unwrap();
+    assert!(
+        token_request.contains("grant_type=refresh_token"),
+        "{token_request}"
+    );
+    assert!(
+        token_request.contains("refresh_token=official-refresh"),
+        "{token_request}"
+    );
+}
+
+#[tokio::test]
+async fn model_route_uses_target_responses_provider_without_mutating_request() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "instructions": "Use the available tools when needed.",
+        "input": [{ "role": "user", "content": "inspect the workspace" }],
+        "stream": false,
+        "reasoning": { "effort": "high", "summary": "auto" },
+        "service_tier": "priority",
+        "truncation": "disabled",
+        "parallel_tool_calls": true,
+        "tool_choice": "auto",
+        "tools": [{
+            "type": "function",
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }
+        }],
+        "metadata": { "route_test": true }
+    });
+    let settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (headers, upstream_body) = target_server.await.unwrap();
+
+    assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-target")
+    );
+    assert_eq!(upstream_body, request);
+}
+
+#[tokio::test]
+async fn model_route_supports_no_auth_target_without_authorization_header() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": "hello",
+        "stream": false
+    });
+    let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+    settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
+    settings.relay_profiles[1].no_auth = true;
+    settings.relay_profiles[1].api_key.clear();
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    let (headers, upstream_body) = target_server.await.unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+    assert_eq!(upstream_body, request);
+}
+
+#[tokio::test]
+async fn model_route_can_rewrite_only_the_target_model_name() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": "hello",
+        "stream": false,
+        "tools": [{ "type": "function", "name": "lookup", "parameters": { "type": "object" } }],
+        "truncation": "disabled"
+    });
+    let settings = model_route_settings(
+        "gpt-5.6-luna",
+        "provider-luna-v2",
+        format!("http://{target_addr}/v1"),
+    );
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, upstream_body) = target_server.await.unwrap();
+
+    let mut expected = request;
+    expected["model"] = json!("provider-luna-v2");
+    assert_eq!(upstream_body, expected);
+}
+
+#[tokio::test]
+async fn responses_proxy_normalizes_legacy_custom_tool_item_ids_only() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "id": "fc_legacy_custom_item",
+                "call_id": "call_legacy_custom",
+                "name": "exec",
+                "input": "pwd"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": "continue"
+            }
+        ],
+        "stream": false
+    });
+    let settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, upstream_body) = target_server.await.unwrap();
+
+    assert_eq!(upstream_body["input"][0]["id"], "ctc_legacy_custom_item");
+    assert_eq!(upstream_body["input"][0]["call_id"], "call_legacy_custom");
+    assert_eq!(upstream_body["input"][1]["type"], "message");
+}
+
+#[tokio::test]
+async fn model_route_preserves_responses_compact_endpoint() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_request_with_response(target, "application/json",
+        json!({"id":"compact","object":"response.compaction","output":[{"type":"compaction","encrypted_content":"opaque-fixture"}]}).to_string()));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": [{ "role": "user", "content": "compact this conversation" }],
+        "stream": false
+    });
+    let settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+
+    let result = open_responses_proxy_request_with_settings_for_path(
+        &request.to_string(),
+        settings,
+        "/v1/responses/compact",
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (headers, upstream_body) = target_server.await.unwrap();
+
+    assert!(headers.starts_with("POST /v1/responses/compact HTTP/1.1"));
+    assert_eq!(upstream_body, request);
+    assert!(!result.compaction);
+}
+
+#[tokio::test]
+async fn model_route_uses_exact_match_and_keeps_other_models_on_source_provider() {
+    let source = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let source_addr = source.local_addr().unwrap();
+    let source_server = tokio::spawn(capture_json_request_once(source));
+    let request = json!({
+        "model": "gpt-5.6-luna-preview",
+        "input": "hello",
+        "stream": false,
+        "tools": [{ "type": "function", "name": "lookup", "parameters": { "type": "object" } }]
+    });
+    let mut settings =
+        model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
+    settings.relay_profiles[0].base_url = format!("http://{source_addr}/v1");
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (headers, upstream_body) = source_server.await.unwrap();
+
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-source")
+    );
+    assert_eq!(upstream_body, request);
+}
+
+#[tokio::test]
+async fn model_route_rejects_missing_or_non_responses_targets() {
+    let mut missing = model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
+    missing.relay_profiles.pop();
+    let error = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi"}"#,
+        missing,
+    )
+    .await
+    .err()
+    .expect("missing target should fail");
+    assert!(error.to_string().contains("模型路由目标供应商不存在"));
+
+    let mut chat = model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
+    chat.relay_profiles[1].protocol = RelayProtocol::ChatCompletions;
+    let error = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi"}"#,
+        chat,
+    )
+    .await
+    .err()
+    .expect("chat target should fail");
+    assert!(error.to_string().contains("必须使用 Responses API"));
+}
+
+#[tokio::test]
+async fn aggregate_stream_request_sends_sse_accept_header() {
+    let _lock = settings_path_test_lock();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let fallback = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let fallback_addr = fallback.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = [0; 4096];
+        let read = stream.read(&mut buffer).await.unwrap();
+        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 14\r\ncontent-type: text/event-stream\r\n\r\ndata: [DONE]\n\n",
+            )
+            .await
+            .unwrap();
+        request
+    });
+    let fallback_server = tokio::spawn(respond_once(
+        fallback,
+        "HTTP/1.1 200 OK\r\ncontent-length: 14\r\ncontent-type: text/event-stream\r\n\r\ndata: [DONE]\n\n",
+    ));
+    let settings = aggregate_proxy_settings(
+        "stream",
+        format!("http://{addr}/v1"),
+        format!("http://{fallback_addr}/v1"),
+    );
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5-mini","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert!(result.is_stream);
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("accept: text/event-stream")
+    );
+    fallback_server.abort();
+}
+
+#[tokio::test]
+async fn aggregate_proxy_rewrites_requested_model_to_selected_member_default_model() {
+    let _lock = settings_path_test_lock();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let fallback = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let fallback_addr = fallback.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let request = String::from_utf8_lossy(&buffer);
+            let Some((headers, body)) = request.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if body.as_bytes().len() >= content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&buffer).to_string();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+            )
+            .await
+            .unwrap();
+        request
+    });
+    let fallback_server = tokio::spawn(respond_once(
+        fallback,
+        "HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_2\",\"object\":\"response\"}",
+    ));
+    let mut settings = aggregate_proxy_settings(
+        "rewrite-model",
+        format!("http://{addr}/v1"),
+        format!("http://{fallback_addr}/v1"),
+    );
+    settings.relay_profiles[0].model = "deepseek-v4-pro".to_string();
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.4","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+    let (_, body) = request.split_once("\r\n\r\n").unwrap();
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert_eq!(body["model"], "deepseek-v4-pro");
+    fallback_server.abort();
+}
+
+#[tokio::test]
+async fn aggregate_prefixed_model_binds_member_and_preserves_upstream_model() {
+    let first = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let first_addr = first.local_addr().unwrap();
+    let second = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let second_addr = second.local_addr().unwrap();
+    let first_server = tokio::spawn(capture_json_request_once(first));
+    let second_server = tokio::spawn(respond_once(
+        second,
+        "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n",
+    ));
+    let mut settings = aggregate_proxy_settings(
+        "prefixed-model",
+        format!("http://{first_addr}/v1"),
+        format!("http://{second_addr}/v1"),
+    );
+    for relay in settings.relay_profiles.iter_mut().take(2) {
+        relay.relay_mode = RelayMode::PureApi;
+        relay.no_auth = true;
+        relay.api_key.clear();
+    }
+    let first_id = settings.relay_profiles[0].id.clone();
+    settings.relay_profiles[0].model = "deepseek-v4-pro".to_string();
+    settings.relay_profiles[0].model_list = "deepseek-v4-pro".to_string();
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+
+    let request = format!(
+        r#"{{"model":"cpx-{first_id}/deepseek-v4-pro","input":"hi","stream":false}}"#
+    );
+    let mut result = open_responses_proxy_request_with_settings(&request, settings)
+        .await
+        .unwrap();
+    let (_, body) = first_server.await.unwrap();
+    assert_eq!(result.status_code, 200);
+    assert_eq!(body["model"], "deepseek-v4-pro");
+    let response: Value = serde_json::from_slice(&result.read_body().await.unwrap()).unwrap();
+    assert_eq!(response["id"], "resp_model_route");
+    second_server.abort();
+}
+
+/// 模型聚合 + 默认供应商：解析不到成员的普通模型名固定发往默认成员，
+/// 上游模型名去掉 `<前缀>/` 与窗口后缀；未设置默认时保持原有 400。
+#[tokio::test]
+async fn aggregate_default_provider_forwards_unbound_model() {
+    let default_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let default_addr = default_listener.local_addr().unwrap();
+    let other_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let other_addr = other_listener.local_addr().unwrap();
+    let default_server = tokio::spawn(capture_json_request_once(default_listener));
+    let other_server = tokio::spawn(respond_once(
+        other_listener,
+        "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n",
+    ));
+    let request = r#"{"model":"ccs-legacy/gpt-9.9-unknown[1M]","input":"hi","stream":false}"#;
+    let base = aggregate_proxy_settings(
+        "default-provider",
+        format!("http://{other_addr}/v1"),
+        format!("http://{default_addr}/v1"),
+    );
+
+    let mut without_default = base.clone();
+    without_default.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    let result =
+        open_responses_proxy_request_with_settings(request, without_default).await.unwrap();
+    assert_eq!(result.status_code, 400, "未设置默认供应商时仍是 400");
+
+    let mut settings = base;
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    settings.aggregate_relay_profiles[0].default_relay_id = settings.relay_profiles[1].id.clone();
+    let result = open_responses_proxy_request_with_settings(request, settings).await.unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, body) = default_server.await.unwrap();
+    assert_eq!(
+        body["model"], "ccs-legacy/gpt-9.9-unknown[1M]",
+        "默认供应商原样转发请求里的 model id（不做去前缀/去后缀的静默改名）"
+    );
+    other_server.abort();
+}
+
+/// #2703：聚合指定了审批成员时，codex-auto-review 只发给它（不走默认成员 / 轮转），
+/// 模型取它的「自动审批模型」，没填时用它的默认模型。按模型聚合与轮转池两种模式都生效。
+#[tokio::test]
+async fn aggregate_auto_review_member_takes_review_requests() {
+    let review = r#"{"model":"codex-auto-review","input":"review","stream":false}"#;
+    for model_aggregation in [true, false] {
+        for configured_model in ["deepseek-v4-flash", ""] {
+            let default_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let default_addr = default_listener.local_addr().unwrap();
+            let review_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let review_addr = review_listener.local_addr().unwrap();
+            let default_server = tokio::spawn(respond_once(
+                default_listener,
+                "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n",
+            ));
+            let review_server = tokio::spawn(capture_json_request_once(review_listener));
+            let mut settings = aggregate_proxy_settings(
+                "auto-review-member",
+                format!("http://{default_addr}/v1"),
+                format!("http://{review_addr}/v1"),
+            );
+            settings.relay_profiles[1].model = "deepseek-v4-pro".to_string();
+            settings.relay_profiles[1].auto_review_model = configured_model.to_string();
+            let aggregate = &mut settings.aggregate_relay_profiles[0];
+            aggregate.model_aggregation_enabled = model_aggregation;
+            aggregate.strategy = AggregateRelayStrategy::Failover;
+            aggregate.default_relay_id = settings.relay_profiles[0].id.clone();
+            aggregate.auto_review_relay_id = settings.relay_profiles[1].id.clone();
+
+            let result = open_responses_proxy_request_with_settings(review, settings)
+                .await
+                .unwrap();
+            assert_eq!(result.status_code, 200, "aggregation={model_aggregation}");
+            let (_, body) = review_server.await.unwrap();
+            let expected = if configured_model.is_empty() {
+                "deepseek-v4-pro"
+            } else {
+                configured_model
+            };
+            assert_eq!(body["model"], expected, "aggregation={model_aggregation}");
+            default_server.abort();
+        }
+    }
+}
+
+/// #2703：审批成员已不是聚合成员时硬报错，不静默回落到默认成员（可能是官方登录）。
+#[tokio::test]
+async fn aggregate_auto_review_member_drift_does_not_fall_back() {
+    let default_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let default_addr = default_listener.local_addr().unwrap();
+    let default_server = tokio::spawn(capture_json_request_once(default_listener));
+    let mut settings = aggregate_proxy_settings(
+        "auto-review-drift",
+        format!("http://{default_addr}/v1"),
+        format!("http://{default_addr}/v1"),
+    );
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    settings.aggregate_relay_profiles[0].default_relay_id = settings.relay_profiles[0].id.clone();
+    settings.aggregate_relay_profiles[0].auto_review_relay_id = "ghost".to_string();
+    let review = r#"{"model":"codex-auto-review","input":"review","stream":false}"#;
+    let result = open_responses_proxy_request_with_settings(review, settings.clone())
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 400);
+
+    // 普通请求不受审批成员影响，照旧交给默认成员。
+    let normal = r#"{"model":"gpt-9.9-unknown","input":"hi","stream":false}"#;
+    let result = open_responses_proxy_request_with_settings(normal, settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, body) = default_server.await.unwrap();
+    assert_eq!(body["model"], "gpt-9.9-unknown");
+}
+
+#[tokio::test]
+async fn aggregate_live_settings_updates_preserve_selected_model_and_failover() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let _guard = SettingsPathGuard::set(settings_path.clone());
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut servers = Vec::new();
+    let mut urls = Vec::new();
+    let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hold_next = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    for name in ["a", "b", "c"] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        urls.push(format!("http://{}/v1", listener.local_addr().unwrap()));
+        let events = events.clone();
+        let failing = failing.clone();
+        let hold_next = hold_next.clone();
+        let release = release.clone();
+        servers.push(tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+                let body: Value = serde_json::from_str(body).unwrap();
+                let authorization = headers.lines().find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("authorization").then(|| value.trim().to_string())
+                });
+                events.send((name, body["model"].as_str().unwrap().to_string(), authorization)).unwrap();
+                if name == "b" && hold_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    release.notified().await;
+                }
+                let response = if name == "c" && failing.load(std::sync::atomic::Ordering::SeqCst) {
+                    "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 2\r\nconnection: close\r\ncontent-type: application/json\r\n\r\n{}"
+                } else {
+                    "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\ncontent-type: application/json\r\n\r\n{}"
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }));
+    }
+    let mut settings = aggregate_proxy_settings("live-settings", urls[0].clone(), urls[1].clone());
+    for (index, relay) in settings.relay_profiles.iter_mut().take(2).enumerate() {
+        relay.relay_mode = RelayMode::MixedApi;
+        relay.model = format!("model-{index}");
+        relay.model_list = relay.model.clone();
+    }
+    settings.aggregate_relay_profiles[0].strategy = AggregateRelayStrategy::Failover;
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    let first_id = settings.relay_profiles[0].id.clone();
+    let second_id = settings.relay_profiles[1].id.clone();
+    settings.aggregate_relay_profiles[0].default_relay_id = first_id.clone();
+
+    // 每次均走实际文件读取入口，保持同一代理运行时、同一会话标识。
+    fn persist(path: &Path, settings: &BackendSettings) {
+        let mut stored = settings.clone();
+        for relay in stored.relay_profiles.iter_mut().take(2) {
+            // model / URL / Key 扁平字段不参与序列化；使用真实存储快照格式。
+            relay.config_contents = format!(
+                "model = {:?}\nmodel_provider = \"custom\"\n[model_providers.custom]\nname = \"mock\"\nbase_url = {:?}\nwire_api = \"responses\"\n",
+                relay.model, relay.base_url,
+            );
+            relay.auth_contents = json!({"OPENAI_API_KEY": relay.api_key}).to_string();
+        }
+        std::fs::write(path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    }
+    async fn request(path: &Path, settings: &BackendSettings, model: &str) -> u16 {
+        persist(path, settings);
+        let body = json!({"model": model, "input": "hi", "stream": false,
+            "conversation_id": "same-live-session"}).to_string();
+        let mut response = open_responses_proxy_request(&body, None).await.unwrap();
+        let status = response.status_code;
+        let body = response.read_body().await.unwrap();
+        if status != 200 {
+            eprintln!("mock request status {status}: {}", String::from_utf8_lossy(&body));
+        }
+        status
+    }
+    macro_rules! expect {
+        ($model:expr, $target:expr, $upstream_model:expr, $key:expr) => {{
+            assert_eq!(request(&settings_path, &settings, $model).await, 200);
+            let event = tokio::time::timeout(Duration::from_secs(2), received.recv())
+                .await.unwrap().unwrap();
+            assert_eq!(event, ($target, $upstream_model.to_string(), Some($key.to_string())));
+            assert!(received.try_recv().is_err(), "不能产生额外上游请求");
+        }};
+    }
+    let first_model = format!("cpx-{first_id}/model-0");
+    let second_model = format!("cpx-{second_id}/model-1");
+    expect!(&first_model, "a", "model-0", "Bearer sk-first");
+    // 只改成员 URL / Key，下次请求即采用新值。
+    settings.relay_profiles[0].base_url = urls[2].clone();
+    settings.relay_profiles[0].api_key = "synthetic-new-key".to_string();
+    expect!(&first_model, "c", "model-0", "Bearer synthetic-new-key");
+    // 重设默认成员不改派已经明确选择的成员模型。
+    settings.aggregate_relay_profiles[0].default_relay_id = second_id.clone();
+    expect!(&first_model, "c", "model-0", "Bearer synthetic-new-key");
+    expect!("model-1", "b", "model-1", "Bearer sk-second");
+    // 重设成员默认模型不覆盖本次显式选择。
+    settings.relay_profiles[0].model = "new-default".to_string();
+    settings.relay_profiles[0].model_list = "model-0,new-default".to_string();
+    expect!(&first_model, "c", "model-0", "Bearer synthetic-new-key");
+    // 移除成员只使其模型失效；不能静默改派给默认成员。
+    settings.aggregate_relay_profiles[0].members.remove(0);
+    assert_eq!(request(&settings_path, &settings, &first_model).await, 400);
+    assert!(received.try_recv().is_err());
+    expect!(&second_model, "b", "model-1", "Bearer sk-second");
+    settings.aggregate_relay_profiles[0].members.insert(0, AggregateRelayMember {
+        relay_id: first_id, weight: 1,
+    });
+    expect!(&first_model, "c", "model-0", "Bearer synthetic-new-key");
+
+    // 关闭按模型聚合后，故障转移遵循成员默认模型，并按新成员列表即时生效。
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = false;
+    failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(request(&settings_path, &settings, "client-model").await, 200);
+    assert_eq!(received.recv().await.unwrap(),
+        ("c", "new-default".to_string(), Some("Bearer synthetic-new-key".to_string())));
+    assert_eq!(received.recv().await.unwrap(),
+        ("b", "model-1".to_string(), Some("Bearer sk-second".to_string())));
+    assert!(received.try_recv().is_err());
+    settings.aggregate_relay_profiles[0].members.remove(0);
+    expect!("client-model", "b", "model-1", "Bearer sk-second");
+    // 保存设置不能中断已经发出的请求；新地址 / Key 从下一次请求起生效。
+    hold_next.store(true, std::sync::atomic::Ordering::SeqCst);
+    let old_settings = settings.clone();
+    let old_path = settings_path.clone();
+    let in_flight = tokio::spawn(async move { request(&old_path, &old_settings, "client-model").await });
+    let event = tokio::time::timeout(Duration::from_secs(2), received.recv()).await.unwrap().unwrap();
+    assert_eq!(event, ("b", "model-1".to_string(), Some("Bearer sk-second".to_string())));
+    settings.relay_profiles[1].base_url = urls[0].clone();
+    settings.relay_profiles[1].api_key = "synthetic-next-key".to_string();
+    settings.relay_profiles[1].model = "next-default-model".to_string();
+    persist(&settings_path, &settings);
+    release.notify_one();
+    assert_eq!(in_flight.await.unwrap(), 200);
+    expect!("client-model", "a", "next-default-model", "Bearer synthetic-next-key");
+    for server in servers {
+        server.abort();
+    }
+}
+
+async fn respond_once(listener: tokio::net::TcpListener, response: &'static str) {
+    let (mut stream, _) = listener.accept().await.unwrap();
+    let mut buffer = [0; 1024];
+    let _ = stream.read(&mut buffer).await.unwrap();
+    stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+async fn capture_request_and_respond_once(
+    listener: tokio::net::TcpListener,
+    response: &'static str,
+) -> String {
+    let (mut stream, _) = listener.accept().await.unwrap();
+    let mut buffer = [0; 4096];
+    let read = stream.read(&mut buffer).await.unwrap();
+    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+    stream.write_all(response.as_bytes()).await.unwrap();
+    request
+}
+
+/// 从已接受的连接读完整请求（头 + content-length 指定的 body）。
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+    let mut buffer = Vec::new();
+    let mut chunk = [0; 4096];
+    let (header_end, content_length) = loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before headers completed");
+        buffer.extend_from_slice(&chunk[..read]);
+        let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&buffer[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        break (header_end + 4, content_length);
+    };
+    while buffer.len() < header_end + content_length {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before body completed");
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+    String::from_utf8_lossy(&buffer).to_string()
+}
+
+async fn capture_json_request_once(
+    listener: tokio::net::TcpListener,
+) -> (String, serde_json::Value) {
+    capture_request_with_response(
+        listener,
+        "application/json",
+        r#"{"id":"resp_model_route","object":"response"}"#.to_string(),
+    )
+    .await
+}
+
+async fn capture_request_with_response(
+    listener: tokio::net::TcpListener,
+    content_type: &str,
+    response_body: String,
+) -> (String, serde_json::Value) {
+    let (mut stream, _) = listener.accept().await.unwrap();
+    let mut buffer = Vec::new();
+    let mut chunk = [0; 4096];
+    let (header_end, content_length) = loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before headers completed");
+        buffer.extend_from_slice(&chunk[..read]);
+        let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&buffer[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        break (header_end + 4, content_length);
+    };
+    while buffer.len() < header_end + content_length {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before body completed");
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+    let headers = String::from_utf8_lossy(&buffer[..header_end - 4]).to_string();
+    let body = serde_json::from_slice(&buffer[header_end..header_end + content_length]).unwrap();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: {content_type}\r\n\r\n{}",
+        response_body.len(),
+        response_body
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+    (headers, body)
+}
+
+fn model_route_settings(
+    source_model: &str,
+    target_model: &str,
+    target_base_url: String,
+) -> BackendSettings {
+    BackendSettings {
+        active_relay_id: "source".to_string(),
+        relay_profiles: vec![
+            RelayProfile {
+                id: "source".to_string(),
+                name: "source".to_string(),
+                base_url: "http://127.0.0.1:9/v1".to_string(),
+                api_key: "sk-source".to_string(),
+                model_routes: vec![RelayModelRoute {
+                    model: source_model.to_string(),
+                    target_relay_id: "target".to_string(),
+                    target_model: target_model.to_string(),
+                }],
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: "target".to_string(),
+                name: "target".to_string(),
+                base_url: target_base_url,
+                api_key: "sk-target".to_string(),
+                protocol: RelayProtocol::Responses,
+                ..RelayProfile::default()
+            },
+        ],
+        ..BackendSettings::default()
+    }
+}
+
+fn aggregate_proxy_settings(
+    id_suffix: &str,
+    first_base_url: String,
+    second_base_url: String,
+) -> BackendSettings {
+    let first_id = format!("proxy-{id_suffix}-a");
+    let second_id = format!("proxy-{id_suffix}-b");
+    let aggregate_id = format!("proxy-{id_suffix}-agg");
+    BackendSettings {
+        relay_profiles: vec![
+            RelayProfile {
+                id: first_id.clone(),
+                name: "first".to_string(),
+                base_url: first_base_url,
+                api_key: "sk-first".to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: second_id.clone(),
+                name: "second".to_string(),
+                base_url: second_base_url,
+                api_key: "sk-second".to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: aggregate_id.clone(),
+                name: "aggregate".to_string(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        active_relay_id: aggregate_id.clone(),
+        active_aggregate_relay_id: aggregate_id.clone(),
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: aggregate_id,
+            name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
+            strategy: AggregateRelayStrategy::RequestRoundRobin,
+            members: vec![
+                AggregateRelayMember {
+                    relay_id: first_id,
+                    weight: 1,
+                },
+                AggregateRelayMember {
+                    relay_id: second_id,
+                    weight: 1,
+                },
+            ],
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+#[tokio::test]
+async fn aggregate_request_build_error_still_fails_over_with_and_without_exec() {
+    let _lock = settings_path_test_lock();
+    for with_exec in [false, true] {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "status": "completed", "output": []
+            })))
+            .mount(&server)
+            .await;
+        let settings = aggregate_proxy_settings(
+            &format!("build-error-{with_exec}"),
+            "not-a-url".to_string(),
+            format!("{}/v1", server.uri()),
+        );
+        let mut request = json!({"model": "native-model", "stream": false, "input": "hello"});
+        if with_exec {
+            request["tools"] = json!([{"type": "custom", "name": "exec"}]);
+        }
+        let upstream = open_responses_proxy_request_with_settings_for_path(
+            &request.to_string(),
+            settings,
+            "/v1/responses",
+        )
+        .await
+        .expect("request build errors must participate in ordinary failover");
+        assert_eq!(upstream.status_code, 200);
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(
+            received[0].body_json::<Value>().unwrap()["tools"],
+            request["tools"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn audio_transcriptions_proxy_forwards_multipart_body() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let request = String::from_utf8_lossy(&buffer);
+            let Some((headers, body)) = request.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if body.as_bytes().len() >= content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&buffer).to_string();
+        let body = r#"{"text":"ok"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+    write_chat_relay_settings(temp.path(), &format!("http://{addr}/v1"), "");
+    let boundary = "codex-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-4o-mini-transcribe\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nabc\r\n--{boundary}--\r\n"
+    );
+
+    let upstream = open_audio_transcriptions_proxy_request(
+        body.as_bytes(),
+        &format!("multipart/form-data; boundary={boundary}"),
+        Some("Original-Codex-UA/1.0"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    let request = server.await.unwrap();
+    assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
+    assert!(
+        request.contains("content-type: multipart/form-data; boundary=codex-boundary")
+            || request.contains("Content-Type: multipart/form-data; boundary=codex-boundary")
+    );
+    assert!(request.contains("gpt-4o-mini-transcribe"));
+    assert!(request.contains("abc"));
+}
+
+#[tokio::test]
+async fn image_generations_proxy_forwards_json_and_upstream_error() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_async_http_request(&mut stream).await;
+        let body = br#"{"error":{"message":"rate limited"}}"#;
+        let response = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        request
+    });
+    write_image_relay_settings(temp.path(), &format!("http://{addr}/v1"));
+    let body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
+    let mut upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 429);
+    assert_eq!(upstream.content_type, "application/problem+json");
+    assert_eq!(
+        upstream.read_body().await.unwrap(),
+        br#"{"error":{"message":"rate limited"}}"#.to_vec()
+    );
+    let request = server.await.unwrap();
+    let header_end = find_http_header_end(&request).unwrap();
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    assert!(headers.starts_with("POST /v1/images/generations HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("content-type: application/json")
+    );
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer ")
+    );
+    assert_eq!(&request[header_end + 4..], body);
+}
+
+#[tokio::test]
+async fn image_edits_proxy_preserves_multipart_body_and_content_type() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_async_http_request(&mut stream).await;
+        let body = br#"{"error":{"message":"invalid image"}}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        request
+    });
+    write_image_relay_settings(temp.path(), &format!("http://{addr}/v1/"));
+    let boundary = "codex-image-boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nmake it blue\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\nContent-Type: image/png\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x00, 0xff]);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+    let upstream = open_image_edits_proxy_request(&body, &content_type, None)
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 400);
+    let request = server.await.unwrap();
+    let header_end = find_http_header_end(&request).unwrap();
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    assert!(headers.starts_with("POST /v1/images/edits HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("content-type: multipart/form-data; boundary=codex-image-boundary")
+    );
+    assert_eq!(&request[header_end + 4..], body.as_slice());
+}
+
+/// 官方登录成员的生图请求：Codex CLI 的 imagegen 扩展按 provider base_url 拼
+/// `images/generations`；聚合代理要像 /responses、/models 一样用 OAuth 凭据
+/// 转发到 chatgpt.com 后端，不能因为成员是官方登录就直接拒绝。
+#[tokio::test]
+async fn image_generations_for_official_login_member_uses_oauth_backend() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _codex_home = EnvVarGuard::set("CODEX_HOME", temp.path().to_str().unwrap());
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_request_with_response(
+        listener,
+        "application/json",
+        r#"{"created":1,"data":[{"b64_json":"AAAA"}]}"#.to_string(),
+    ));
+    let _env_guard = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{address}/backend-api/codex"),
+    );
+    write_official_image_relay_settings(temp.path());
+
+    let body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
+    let mut upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(
+        upstream.read_body().await.unwrap(),
+        br#"{"created":1,"data":[{"b64_json":"AAAA"}]}"#.to_vec()
+    );
+
+    let (headers, sent) = server.await.unwrap();
+    let headers_lower = headers.to_ascii_lowercase();
+    assert!(
+        headers.starts_with("POST /backend-api/codex/images/generations HTTP/1.1"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("authorization: bearer official-access"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("chatgpt-account-id: acct-official"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("originator: codex_cli_rs"),
+        "{headers}"
+    );
+    assert_eq!(
+        sent,
+        json!({"model":"gpt-image-2","prompt":"draw a square"})
+    );
+}
+
+/// 编辑接口走同一条官方登录通道，路径是 `images/edits`，请求体原样透传。
+#[tokio::test]
+async fn image_edits_for_official_login_member_uses_oauth_backend() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _codex_home = EnvVarGuard::set("CODEX_HOME", temp.path().to_str().unwrap());
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_request_with_response(
+        listener,
+        "application/json",
+        r#"{"created":2,"data":[{"b64_json":"BBBB"}]}"#.to_string(),
+    ));
+    let _env_guard = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{address}/backend-api/codex"),
+    );
+    write_official_image_relay_settings(temp.path());
+
+    let body = br#"{"images":[{"image_url":"data:image/png;base64,AAAA"}],"model":"gpt-image-2","prompt":"make it blue"}"#;
+    let mut upstream = open_image_edits_proxy_request(body, "application/json", None)
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(
+        upstream.read_body().await.unwrap(),
+        br#"{"created":2,"data":[{"b64_json":"BBBB"}]}"#.to_vec()
+    );
+
+    let (headers, sent) = server.await.unwrap();
+    let headers_lower = headers.to_ascii_lowercase();
+    assert!(
+        headers.starts_with("POST /backend-api/codex/images/edits HTTP/1.1"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("authorization: bearer official-access"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("chatgpt-account-id: acct-official"),
+        "{headers}"
+    );
+    assert_eq!(
+        sent,
+        json!({
+            "images":[{"image_url":"data:image/png;base64,AAAA"}],
+            "model":"gpt-image-2",
+            "prompt":"make it blue"
+        })
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_proxy_uses_configured_user_agent() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_chat_relay_settings(temp.path(), &server.base_url, "Configured-Codex-UA/1.0");
+
+    let upstream = open_chat_completions_proxy_request(
+        r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+        Some("Original-Codex-UA/1.0"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    assert_eq!(request.user_agent, "Configured-Codex-UA/1.0");
+}
+
+#[tokio::test]
+async fn chat_completions_proxy_passes_through_original_user_agent_when_unconfigured() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_chat_relay_settings(temp.path(), &server.base_url, "");
+
+    let upstream = open_chat_completions_proxy_request(
+        r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+        Some("Original-Codex-UA/1.0"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+#[tokio::test]
+async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_chat_relay_settings(temp.path(), &server.base_url, "");
+
+    let upstream = open_responses_proxy_request(
+        r#"{"model":"gpt-5.5","input":"hello","stream":false}"#,
+        Some("Original-Codex-UA/1.0"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+fn captured_header_values<'a>(headers: &'a str, expected_name: &str) -> Vec<&'a str> {
+    headers
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case(expected_name)
+                .then(|| value.trim())
+        })
+        .collect()
+}
+
+fn session_header_settings(protocol: RelayProtocol, base_url: String) -> BackendSettings {
+    BackendSettings {
+        relay_profiles_enabled: true,
+        active_relay_id: "session-headers".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "session-headers".to_string(),
+            base_url,
+            api_key: "sk-upstream".to_string(),
+            protocol,
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+#[tokio::test]
+async fn responses_proxy_preserves_session_headers_through_both_protocols() {
+    for protocol in [RelayProtocol::Responses, RelayProtocol::ChatCompletions] {
+        // 连续两次请求携带不同的客户端会话，不能混成供应商级固定值。
+        for (session_id, thread_id, opencode_session) in [
+            ("session-a", "thread-a", "opencode-a"),
+            ("session-b", "thread-b", "opencode-b"),
+        ] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(capture_request_with_response(
+                listener,
+                "application/json",
+                "{}".to_string(),
+            ));
+            let settings = session_header_settings(protocol, format!("http://{address}/v1"));
+            let result = open_responses_proxy_request_with_settings_for_path_and_session_headers(
+                r#"{"model":"session-probe","input":"hello","stream":false}"#,
+                settings,
+                "/v1/responses",
+                Some("remote_compaction_v2"),
+                ProxySessionHeaders {
+                    session_id: Some(session_id),
+                    thread_id: Some(thread_id),
+                    opencode_session: Some(opencode_session),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.status_code, 200);
+            let (headers, _) = server.await.unwrap();
+            let endpoint = if protocol == RelayProtocol::Responses {
+                "/v1/responses"
+            } else {
+                "/v1/chat/completions"
+            };
+            assert!(headers.starts_with(&format!("POST {endpoint} HTTP/1.1")));
+            assert_eq!(
+                captured_header_values(&headers, "session-id"),
+                vec![session_id]
+            );
+            assert_eq!(
+                captured_header_values(&headers, "thread-id"),
+                vec![thread_id]
+            );
+            assert_eq!(
+                captured_header_values(&headers, "x-opencode-session"),
+                vec![opencode_session]
+            );
+            assert_eq!(
+                captured_header_values(&headers, "authorization"),
+                vec!["Bearer sk-upstream"]
+            );
+            assert_eq!(
+                captured_header_values(&headers, "x-codex-beta-features"),
+                if protocol == RelayProtocol::Responses {
+                    vec!["remote_compaction_v2"]
+                } else {
+                    vec![]
+                },
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn responses_proxy_session_headers_keep_custom_headers_authoritative() {
+    for protocol in [RelayProtocol::Responses, RelayProtocol::ChatCompletions] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            "{}".to_string(),
+        ));
+        let mut settings = session_header_settings(protocol, format!("http://{address}/v1"));
+        let relay = &mut settings.relay_profiles[0];
+        relay.custom_headers = vec![
+            codex_plus_core::settings::RelayHeaderKeyValue {
+                key: "Session-ID".to_string(),
+                value: "configured-session".to_string(),
+            },
+            codex_plus_core::settings::RelayHeaderKeyValue {
+                key: "THREAD-id".to_string(),
+                value: "configured-thread".to_string(),
+            },
+            codex_plus_core::settings::RelayHeaderKeyValue {
+                key: "X-OpenCode-Session".to_string(),
+                value: String::new(),
+            },
+        ];
+        let result = open_responses_proxy_request_with_settings_for_path_and_session_headers(
+            r#"{"model":"session-probe","input":"hello","stream":false}"#,
+            settings,
+            "/v1/responses",
+            None,
+            ProxySessionHeaders {
+                session_id: Some("client-session"),
+                thread_id: Some("client-thread"),
+                opencode_session: Some("client-opencode"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status_code, 200);
+        let (headers, _) = server.await.unwrap();
+        assert_eq!(
+            captured_header_values(&headers, "session-id"),
+            vec!["configured-session"]
+        );
+        assert_eq!(
+            captured_header_values(&headers, "thread-id"),
+            vec!["configured-thread"]
+        );
+        assert_eq!(
+            captured_header_values(&headers, "x-opencode-session"),
+            vec![""]
+        );
+        assert!(!headers.contains("client-"));
+    }
+}
+
+#[tokio::test]
+async fn responses_proxy_omits_empty_or_invalid_session_headers_and_keeps_legacy_api() {
+    for legacy_api in [false, true] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            "{}".to_string(),
+        ));
+        let settings =
+            session_header_settings(RelayProtocol::Responses, format!("http://{address}/v1"));
+        let body = r#"{"model":"session-probe","input":"hello","stream":false}"#;
+        let result = if legacy_api {
+            open_responses_proxy_request_with_settings_for_path(body, settings, "/v1/responses")
+                .await
+        } else {
+            open_responses_proxy_request_with_settings_for_path_and_session_headers(
+                body,
+                settings,
+                "/v1/responses",
+                None,
+                ProxySessionHeaders {
+                    session_id: Some("   "),
+                    thread_id: Some("invalid\r\nx-injected: value"),
+                    opencode_session: None,
+                },
+            )
+            .await
+        }
+        .unwrap();
+        assert_eq!(result.status_code, 200);
+        let (headers, _) = server.await.unwrap();
+        for name in [
+            "session-id",
+            "thread-id",
+            "x-opencode-session",
+            "x-injected",
+        ] {
+            assert!(
+                captured_header_values(&headers, name).is_empty(),
+                "unexpected header: {name}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_chat_relay_settings(temp.path(), &server.base_url, "");
+
+    let upstream = open_models_proxy_request(Some("Original-Codex-UA/1.0"))
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+#[tokio::test]
+async fn no_auth_proxy_endpoints_omit_authorization_header() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+
+    let server = spawn_chat_server();
+    write_no_auth_relay_settings(temp.path(), &server.base_url, "responses");
+    let upstream = open_responses_proxy_request(
+        r#"{"model":"gpt-5.5","input":"hello","stream":false}"#,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(server.finish().authorization, None);
+
+    let server = spawn_chat_server();
+    write_no_auth_relay_settings(temp.path(), &server.base_url, "chatCompletions");
+    let upstream = open_chat_completions_proxy_request(
+        r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(server.finish().authorization, None);
+
+    let server = spawn_chat_server();
+    write_no_auth_relay_settings(temp.path(), &server.base_url, "responses");
+    let upstream = open_models_proxy_request(None).await.unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(server.finish().authorization, None);
+
+    let server = spawn_chat_server();
+    write_no_auth_relay_settings(temp.path(), &server.base_url, "responses");
+    let upstream = open_audio_transcriptions_proxy_request(b"audio", "audio/wav", None)
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(server.finish().authorization, None);
+}
+
+#[tokio::test]
+async fn no_auth_profile_test_omits_authorization_header() {
+    let server = spawn_chat_server();
+    let profile = RelayProfile {
+        base_url: server.base_url.clone(),
+        upstream_base_url: server.base_url.clone(),
+        relay_mode: RelayMode::PureApi,
+        no_auth: true,
+        api_key: String::new(),
+        ..RelayProfile::default()
+    };
+
+    let result = test_relay_profile(&profile, "gpt-5.5").await.unwrap();
+
+    assert_eq!(result.http_status, 200);
+    assert_eq!(server.finish().authorization, None);
+}
+
+fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &str) {
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "chat",
+            "name": "Chat",
+            "baseUrl": base_url,
+            "upstreamBaseUrl": base_url,
+            "apiKey": "sk-test",
+            "protocol": "chatCompletions",
+            "relayMode": "mixedApi",
+            "userAgent": user_agent
+        }],
+        "activeRelayId": "chat"
+    });
+    std::fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
+fn write_image_relay_settings(settings_dir: &Path, upstream_base_url: &str) {
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "images",
+            "name": "Images",
+            "baseUrl": upstream_base_url,
+            "upstreamBaseUrl": upstream_base_url,
+            "apiKey": "sk-test",
+            "protocol": "responses",
+            "relayMode": "mixedApi"
+        }],
+        "activeRelayId": "images"
+    });
+    std::fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
+fn write_official_image_relay_settings(settings_dir: &Path) {
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "official-image",
+            "name": "官方登录",
+            "relayMode": "official",
+            "protocol": "responses",
+            "authContents": json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "official-access",
+                    "refresh_token": "official-refresh",
+                    "account_id": "acct-official"
+                }
+            }).to_string()
+        }],
+        "activeRelayId": "official-image"
+    });
+    std::fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
+fn write_no_auth_relay_settings(settings_dir: &Path, base_url: &str, protocol: &str) {
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "no-auth",
+            "name": "No Auth",
+            "baseUrl": base_url,
+            "upstreamBaseUrl": base_url,
+            "apiKey": "",
+            "protocol": protocol,
+            "relayMode": "pureApi",
+            "noAuth": true
+        }],
+        "activeRelayId": "no-auth"
+    });
+    std::fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
+struct SettingsPathGuard {
+    previous: Option<PathBuf>,
+}
+
+/// 官方登录相关地址的测试覆盖（生产默认 chatgpt.com / auth.openai.com）。
+/// 这些环境变量只影响官方登录成员，测试内串行使用。
+struct EnvVarGuard {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(name);
+        unsafe {
+            std::env::set_var(name, value);
+        }
+        Self { name, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+}
+
+/// 设置路径覆盖是进程级状态，与其它测试模块共用同一把锁。
+fn settings_path_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::common::global_state_lock()
+}
+
+impl SettingsPathGuard {
+    fn set(path: PathBuf) -> Self {
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(path));
+        Self { previous }
+    }
+}
+
+impl Drop for SettingsPathGuard {
+    fn drop(&mut self) {
+        codex_plus_core::paths::set_settings_path_for_tests(self.previous.take());
+    }
+}
+
+fn find_http_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+async fn read_async_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut expected_len = None;
+    loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert!(read > 0, "upstream request ended before body completed");
+        request.extend_from_slice(&buffer[..read]);
+        if expected_len.is_none()
+            && let Some(header_end) = find_http_header_end(&request)
+        {
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            expected_len = Some(header_end + 4 + content_length);
+        }
+        if expected_len.is_some_and(|length| request.len() >= length) {
+            break;
+        }
+    }
+    request
+}
+
+struct ChatServer {
+    base_url: String,
+    handle: thread::JoinHandle<ChatRequest>,
+}
+
+impl ChatServer {
+    fn finish(self) -> ChatRequest {
+        self.handle.join().unwrap()
+    }
+}
+
+struct ChatRequest {
+    user_agent: String,
+    authorization: Option<String>,
+}
+
+fn spawn_chat_server() -> ChatServer {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}/v1");
+    listener.set_nonblocking(true).unwrap();
+    let handle = thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(5),
+                        "test upstream did not receive a request"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to accept test request: {error}"),
+            }
+        };
+        let mut buffer = [0u8; 4096];
+        let bytes = loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Ok(bytes) => break bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to read test request: {error}"),
+            }
+        };
+        let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+        let user_agent = request
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("user-agent")
+                        .then(|| value.trim().to_string())
+                })
+            })
+            .unwrap_or_default();
+        let authorization = request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim().to_string())
+            })
+        });
+        let body = r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        ChatRequest {
+            user_agent,
+            authorization,
+        }
+    });
+    ChatServer { base_url, handle }
+}
+
+// ── tool 输出中的图片（issue #1996）────────────────────────────────────
+//
+// `view_image` 的结果以 `function_call_output.output[].input_image` 回来。这个数组
+// 曾被整体 JSON 序列化成 tool 消息的字符串 content，于是 base64 被当普通文本送进上游
+// tokenizer —— 一张 2MB 的 PNG 膨胀到约 200 万 token 并撑爆上下文窗口。
+
+const TEST_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+
+/// 收集 JSON 里所有**不在** `image_url` 子树下的字符串，即会被上游当文本 tokenize 的部分。
+fn tokenizable_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "image_url" {
+                    continue;
+                }
+                tokenizable_strings(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                tokenizable_strings(item, out);
+            }
+        }
+        serde_json::Value::String(text) => out.push(text.clone()),
+        _ => {}
+    }
+}
+
+fn assert_no_base64_in_text(converted: &serde_json::Value) {
+    let mut strings = Vec::new();
+    tokenizable_strings(converted, &mut strings);
+    for text in strings {
+        assert!(
+            !text.contains("data:image/"),
+            "base64 图片泄漏进文本字段: {text}"
+        );
+    }
+}
+
+fn image_tool_call_input(output: serde_json::Value) -> serde_json::Value {
+    json!({
+        "model": "deepseek-v4-flash-vision-exp",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "look at this" }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "view_image",
+                "arguments": "{\"path\":\"shot.png\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": output
+            }
+        ]
+    })
+}
+
+#[test]
+fn tool_output_image_becomes_image_url_part_not_text() {
+    let converted = responses_to_chat_completions(image_tool_call_input(json!([
+        { "type": "input_image", "image_url": TEST_PNG_DATA_URL }
+    ])))
+    .unwrap();
+
+    // tool 消息降级成字符串占位符——多数上游不接受 tool 消息带 multi-part 图片。
+    let tool = &converted["messages"][2];
+    assert_eq!(tool["role"], "tool");
+    assert_eq!(tool["tool_call_id"], "call_1");
+    assert_eq!(tool["content"], "[image]");
+
+    // 图片改由紧随其后的 user 消息承载，且是结构化的 image_url。
+    let carrier = &converted["messages"][3];
+    assert_eq!(carrier["role"], "user");
+    assert_eq!(carrier["content"][1]["type"], "image_url");
+    assert_eq!(carrier["content"][1]["image_url"]["url"], TEST_PNG_DATA_URL);
+
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn tool_output_image_accepts_object_shaped_image_url() {
+    let converted = responses_to_chat_completions(image_tool_call_input(json!([
+        { "type": "input_image", "image_url": { "url": TEST_PNG_DATA_URL, "detail": "high" } }
+    ])))
+    .unwrap();
+
+    let image = &converted["messages"][3]["content"][1];
+    assert_eq!(image["type"], "image_url");
+    assert_eq!(image["image_url"]["url"], TEST_PNG_DATA_URL);
+    assert_eq!(image["image_url"]["detail"], "high");
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn tool_output_mixed_text_and_image_keeps_both() {
+    let converted = responses_to_chat_completions(image_tool_call_input(json!([
+        { "type": "output_text", "text": "screenshot captured" },
+        { "type": "input_image", "image_url": TEST_PNG_DATA_URL }
+    ])))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"][2]["content"],
+        "screenshot captured\n[image]"
+    );
+    assert_eq!(
+        converted["messages"][3]["content"][1]["image_url"]["url"],
+        TEST_PNG_DATA_URL
+    );
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn tool_output_without_image_keeps_previous_string_shape() {
+    // 回归护栏：无图路径必须与修复前逐字节一致。
+    let plain = responses_to_chat_completions(image_tool_call_input(json!("result"))).unwrap();
+    assert_eq!(plain["messages"][2]["content"], "result");
+    assert_eq!(plain["messages"].as_array().unwrap().len(), 3);
+
+    let structured = responses_to_chat_completions(image_tool_call_input(
+        json!([{ "type": "output_text", "text": "hi" }]),
+    ))
+    .unwrap();
+    assert_eq!(
+        structured["messages"][2]["content"],
+        "[{\"text\":\"hi\",\"type\":\"output_text\"}]"
+    );
+    assert_eq!(structured["messages"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn tool_output_images_do_not_break_tool_call_pairing() {
+    // 两个并行 tool call 各返回一张图。图片消息若插在两条 tool 消息之间，
+    // enforce_tool_call_pairing 的 take_while(role=="tool") 会漏掉第二条，
+    // 导致 call_2 被误判成 orphaned 而摘掉。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash-vision-exp",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "compare these" }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "view_image",
+                "arguments": "{\"path\":\"a.png\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "view_image",
+                "arguments": "{\"path\":\"b.png\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [{ "type": "input_image", "image_url": TEST_PNG_DATA_URL }]
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_2",
+                "output": [{ "type": "input_image", "image_url": TEST_PNG_DATA_URL }]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "well?" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+
+    // 两个 tool_call 都保住了，没有被当成 orphaned 摘掉。
+    let tool_calls = messages[1]["tool_calls"].as_array().unwrap();
+    assert_eq!(tool_calls.len(), 2);
+    assert_eq!(tool_calls[0]["id"], "call_1");
+    assert_eq!(tool_calls[1]["id"], "call_2");
+
+    // 两条 tool 消息紧邻，中间没有被图片消息割开。
+    assert_eq!(messages[2]["role"], "tool");
+    assert_eq!(messages[2]["tool_call_id"], "call_1");
+    assert_eq!(messages[3]["role"], "tool");
+    assert_eq!(messages[3]["tool_call_id"], "call_2");
+
+    // 两张图汇总到连续 tool 区之后的一条 user 消息里。
+    assert_eq!(messages[4]["role"], "user");
+    let parts = messages[4]["content"].as_array().unwrap();
+    let images = parts
+        .iter()
+        .filter(|part| part["type"] == "image_url")
+        .count();
+    assert_eq!(images, 2);
+
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn orphan_tool_output_image_stays_inline_in_user_message() {
+    // 没有配对 function_call 的 output 会降级成 user 消息；它本就是 user 角色，
+    // 图片可以直接内联，不必再搬一次。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash-vision-exp",
+        "input": [
+            {
+                "type": "function_call_output",
+                "call_id": "call_orphan",
+                "output": [{ "type": "input_image", "image_url": TEST_PNG_DATA_URL }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let message = &converted["messages"][0];
+    assert_eq!(message["role"], "user");
+    assert!(
+        message["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("call_orphan")
+    );
+    assert_eq!(message["content"][1]["type"], "image_url");
+    assert_eq!(message["content"][1]["image_url"]["url"], TEST_PNG_DATA_URL);
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn custom_tool_call_output_image_is_also_converted() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash-vision-exp",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_1",
+                "name": "snap",
+                "input": "{}"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_1",
+                "output": [{ "type": "input_image", "image_url": TEST_PNG_DATA_URL }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][1]["role"], "tool");
+    assert_eq!(converted["messages"][1]["content"], "[image]");
+    assert_eq!(
+        converted["messages"][2]["content"][1]["image_url"]["url"],
+        TEST_PNG_DATA_URL
+    );
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn empty_image_url_is_dropped_rather_than_forwarded() {
+    let converted = responses_to_chat_completions(image_tool_call_input(json!([
+        { "type": "input_image", "image_url": "" }
+    ])))
+    .unwrap();
+
+    // 空 url 不值得转发，也不该留下空的 image_url part。
+    let messages = converted["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[2]["role"], "tool");
+}
+
+/// Codex 的 Responses 协议按 item 的 `type` 校验 `id` 前缀，不匹配就用
+/// `[ApiIdParam] [input[N].id] [invalid_id_prefix]` 拒掉整份请求。
+/// 这些前缀取自真实 rollout（`~/.codex/sessions/**/rollout-*.jsonl`）。
+#[test]
+fn responses_request_item_ids_always_match_their_type_prefix() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5.6-sol",
+        "input": [
+            // 故意给出各种错误前缀：历史会话里真实出现过的几种
+            { "type": "message", "id": "resp_019fbda4-558a_msg", "role": "user", "content": "hi" },
+            { "type": "reasoning", "id": "06b2506d2a33704f5737670841d1a928_rs", "summary": [] },
+            { "type": "function_call", "id": "item_c270d5511c7129adc7475632", "call_id": "call_a", "name": "wait", "arguments": "{}" },
+            { "type": "function_call_output", "id": "fc_call_a", "call_id": "call_a", "output": "ok" },
+            { "type": "custom_tool_call", "id": "fc_call_b", "call_id": "call_b", "name": "exec", "input": "{}" }
+        ]
+    }))
+    .unwrap();
+
+    // Chat Completions 转换会丢掉 id，所以这里只能验证转换没有因此崩掉；
+    // 前缀归一的真正断言在下面的 Responses 直连用例里。
+    assert!(converted["messages"].is_array());
+}
+
+/// 前缀归一是 Responses 出站路径的职责，直接用内部函数验证，
+/// 因为 `upstream_request_parts` 需要真实网络。
+#[test]
+fn responses_item_id_normalization_repairs_legacy_prefixes() {
+    use codex_plus_core::protocol_proxy::normalize_responses_item_ids_for_test;
+
+    let mut body = json!({
+        "model": "gpt-5.6-sol",
+        "input": [
+            { "type": "message", "id": "resp_019fbda4-558a_msg", "role": "user", "content": "hi" },
+            { "type": "message", "id": "msg_01a03855-357e-7b40-a", "role": "assistant", "content": "ok" },
+            { "type": "reasoning", "id": "06b2506d2a33704f5737670841d1a928_rs", "summary": [] },
+            { "type": "reasoning", "id": "rs_0ded2efd183d1065", "summary": [] },
+            { "type": "compaction", "id": "cp_resp_compact_1790246125219", "encrypted_content": "summary" },
+            { "type": "compaction", "id": "cmp_01a03855-357e-7b40-a", "encrypted_content": "summary" },
+            { "type": "function_call", "id": "item_c270d5511c7129adc7475632", "call_id": "call_a", "name": "wait", "arguments": "{}" },
+            { "type": "function_call_output", "id": "fc_call_a", "call_id": "call_a", "output": "ok" },
+            { "type": "custom_tool_call", "id": "fc_call_b", "call_id": "call_b", "name": "exec", "input": "{}" },
+            { "type": "custom_tool_call_output", "id": "ctc_call_b", "call_id": "call_b", "output": "ok" },
+            { "type": "agent_message", "id": "whatever_external", "content": "x" }
+        ]
+    });
+    normalize_responses_item_ids_for_test(&mut body);
+
+    let ids: Vec<&str> = body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(ids[0], "msg_019fbda4-558a_msg");
+    assert_eq!(ids[1], "msg_01a03855-357e-7b40-a", "已正确的前缀不该被改动");
+    assert_eq!(ids[2], "rs_06b2506d2a33704f5737670841d1a928_rs");
+    assert_eq!(ids[3], "rs_0ded2efd183d1065");
+    assert_eq!(
+        ids[4], "cmp_resp_compact_1790246125219",
+        "旧 cp_ 压缩项必须修复为 cmp_"
+    );
+    assert_eq!(ids[5], "cmp_01a03855-357e-7b40-a");
+    assert_eq!(ids[6], "fc_c270d5511c7129adc7475632");
+    assert_eq!(ids[7], "fco_call_a", "fco 不能被剥成 fc_");
+    assert_eq!(
+        ids[8], "ctc_call_b",
+        "fc_ 要剥掉再换成 ctc_，不能叠成 fc_ctc_"
+    );
+    assert_eq!(ids[9], "ctco_call_b");
+    assert_eq!(ids[10], "whatever_external", "未知类型必须原样通过");
+}
+
+/// id 恰好等于某个前缀时，剥完是空串，应退回 call_id 而不是产出裸前缀。
+#[test]
+fn responses_item_id_normalization_falls_back_to_call_id() {
+    use codex_plus_core::protocol_proxy::normalize_responses_item_ids_for_test;
+
+    let mut body = json!({
+        "model": "gpt-5.6-sol",
+        "input": [
+            { "type": "function_call", "id": "fc_", "call_id": "call_a", "name": "wait", "arguments": "{}" }
+        ]
+    });
+    normalize_responses_item_ids_for_test(&mut body);
+    assert_eq!(body["input"][0]["id"], "fc_call_a");
+}
+
+/// #1431 / #1781：流式转换曾把 message item 命名为 `{response_id}_msg`，
+/// 而 response_id 以 `resp_` 开头，于是产出 `resp_xxx_msg`。
+/// 这个 id 会写进 rollout，切回官方 provider 后重放时被拒（invalid_id_prefix）。
+#[test]
+fn streamed_message_item_id_uses_msg_prefix() {
+    let converted = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_abc","model":"gpt-5.4","choices":[{"delta":{"content":"hi"}}]}
+
+data: {"id":"chatcmpl_abc","model":"gpt-5.4","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+    );
+
+    assert!(
+        !converted.contains("_msg\""),
+        "message item id 不能再以 _msg 结尾：{converted}"
+    );
+    for line in converted.lines() {
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if let Some(item) = event.get("item")
+            && item.get("type").and_then(Value::as_str) == Some("message")
+            && let Some(id) = item.get("id").and_then(Value::as_str)
+        {
+            assert!(
+                id.starts_with("msg_"),
+                "message item id 必须是 msg_ 前缀，实际 {id}"
+            );
+        }
+    }
+}
+
+/// 非流式路径（chat completions → responses）同样不能产出 `resp_*_msg`。
+#[test]
+fn converted_message_item_id_uses_msg_prefix() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_abc",
+        "model": "gpt-5.4",
+        "choices": [{ "message": { "role": "assistant", "content": "hi" } }]
+    }))
+    .unwrap();
+
+    let id = converted["output"][0]["id"].as_str().unwrap();
+    assert!(
+        id.starts_with("msg_"),
+        "message item id 必须是 msg_ 前缀，实际 {id}"
+    );
+    assert!(!id.ends_with("_msg"), "不能是 resp_*_msg 形态，实际 {id}");
+}
+
+/// #2263：Codex 发出的 `type: "tool_search"` 工具必须透传为 chat 的 function 工具，
+/// 不能落入 `_ => {}` 被静默丢弃，否则模型永远检索不到 mcp__* 工具。
+#[test]
+fn responses_request_passes_tool_search_through_to_chat_tools() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "number" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            { "type": "function", "name": "exec_command", "parameters": { "type": "object" } }
+        ]
+    }))
+    .unwrap();
+
+    let tools = converted["tools"].as_array().unwrap();
+    let tool_search = tools
+        .iter()
+        .find(|tool| tool["function"]["name"] == "tool_search")
+        .expect("tool_search 必须出现在转换后的 tools 里");
+    assert_eq!(tool_search["type"], "function");
+    assert_eq!(tool_search["function"]["name"], "tool_search");
+    assert_eq!(
+        tool_search["function"]["description"],
+        "Search exposed tools"
+    );
+    assert_eq!(
+        tool_search["function"]["parameters"]["properties"]["query"]["type"],
+        "string"
+    );
+    assert_eq!(
+        tool_search["function"]["parameters"]["required"][0],
+        "query"
+    );
+    // 其它工具不受影响
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "exec_command")
+    );
+}
+
+/// #2263：模型调用回 tool_search 时必须还原成 `tool_search_call` item，
+/// 官方客户端的 handler 只接受这个类型（function_call 形态会被拒绝）。
+#[test]
+fn chat_response_restores_tool_search_call_item() {
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_search",
+            "model": "gpt-5-mini",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_search_1",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search",
+                            "arguments": "{\"query\":\"calendar create\",\"limit\":1}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    )
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_call")
+        .expect("必须还原成 tool_search_call item");
+    assert_eq!(item["call_id"], "call_search_1");
+    assert_eq!(item["execution"], "client");
+    assert_eq!(item["arguments"]["query"], "calendar create");
+    assert_eq!(item["arguments"]["limit"], 1);
+    assert!(
+        item["id"].as_str().unwrap().starts_with("tsc_"),
+        "tool_search_call 的 item id 必须是 tsc_ 前缀，实际 {:?}",
+        item["id"]
+    );
+}
+
+/// #2263：流式路径同样要还原成 tool_search_call，且 id 前缀为 tsc_。
+#[test]
+fn chat_sse_restores_tool_search_call_item() {
+    let converted = chat_sse_to_responses_sse_with_request(
+        r#"data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_ts","type":"function","function":{"name":"tool_search"}}]}}]}
+
+data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":"}}]}}]}
+
+data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"calendar\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    );
+
+    assert!(converted.contains("\"type\":\"tool_search_call\""));
+    assert!(converted.contains("\"id\":\"tsc_call_ts\""));
+    assert!(converted.contains("\"item_id\":\"tsc_call_ts\""));
+    assert!(converted.contains("response.function_call_arguments.delta"));
+    assert!(converted.contains("response.function_call_arguments.done"));
+    assert!(converted.contains("\"execution\":\"client\""));
+    // 不应把 tool_search 当成 custom/apply_patch 代理
+    assert!(!converted.contains("custom_tool_call_input.delta"));
+}
+
+/// #2263：历史回放时 tool_search_call / tool_search_output 要映射成
+/// chat 的 assistant tool_call + role:tool 消息，保持调用配对完整。
+#[test]
+fn responses_input_maps_tool_search_history_items() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "find calendar tools" }] },
+            {
+                "type": "tool_search_call",
+                "call_id": "search-1",
+                "execution": "client",
+                "arguments": { "query": "calendar create", "limit": 1 }
+            },
+            {
+                "type": "tool_search_output",
+                "call_id": "search-1",
+                "status": "completed",
+                "execution": "client",
+                "tools": [
+                    { "name": "mcp__calendar__create_event", "description": "Create event" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_call_msg = messages
+        .iter()
+        .find(|m| m.get("tool_calls").is_some())
+        .expect("必须有 assistant 的 tool_call 消息");
+    let tool_call = &tool_call_msg["tool_calls"][0];
+    assert_eq!(tool_call["function"]["name"], "tool_search");
+    let args: Value = serde_json::from_str(tool_call["function"]["arguments"].as_str().unwrap())
+        .expect("arguments 必须是合法 JSON 字符串");
+    assert_eq!(args["query"], "calendar create");
+
+    let tool_msg = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("必须有 role:tool 的检索结果消息");
+    assert_eq!(tool_msg["tool_call_id"], "search-1");
+    let content = tool_msg["content"].as_str().unwrap();
+    assert!(content.contains("mcp__calendar__create_event"));
+}
+
+/// #2263 附带问题：重写 config.toml 时必须保留 live 配置里的 mcp_servers 段。
+#[test]
+fn preserve_live_app_settings_keeps_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[mcp_signals.marker]
+key = "value"
+"#,
+    )
+    .unwrap();
+
+    let preserved = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        home,
+        "[profile]\nname = \"x\"\n",
+    )
+    .unwrap();
+
+    assert!(
+        preserved.contains("[mcp_servers.context7]"),
+        "mcp_servers 段必须保留，实际：{preserved}"
+    );
+    assert!(preserved.contains("https://mcp.context7.com/mcp"));
+}
+
+/// #2263：tool_search_output 先于对应 call 出现（压缩/截断后的回放常见）
+/// 时走孤儿输出路径，不能 panic 也不能丢内容。
+#[test]
+fn responses_input_handles_orphan_tool_search_output() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] },
+            {
+                "type": "tool_search_output",
+                "call_id": "search-orphan",
+                "status": "completed",
+                "execution": "client",
+                "tools": [
+                    { "name": "mcp__calendar__list", "description": "List events" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let orphan = messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .find(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("search-orphan"))
+        })
+        .expect("孤儿输出必须降级为 user 消息");
+    let content = orphan["content"].as_str().unwrap();
+    assert!(
+        content.contains("search-orphan"),
+        "孤儿输出消息必须携带 call_id，实际：{content}"
+    );
+    assert!(content.contains("mcp__calendar__list"));
+}
+
+/// #2263：模型吐出畸形 arguments JSON 时，tool_search_call 还原必须兜底成
+/// 空对象而不是产出非法 item 或 panic。
+#[test]
+fn chat_response_tool_search_call_tolerates_malformed_arguments() {
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_ts_bad",
+            "model": "gpt-5-mini",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_ts_bad",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search",
+                            "arguments": "{\"query\": truncated"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    )
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_call")
+        .expect("畸形 arguments 也必须还原成 tool_search_call");
+    // arguments 走 chat 侧参数归一：解析失败包装成 {"input": 原文} 保真传递，
+    // 客户端反序列化失败会按检索空结果处理，不会产出非法 item。
+    let arguments = item["arguments"].as_object().expect("arguments 必须是对象");
+    assert!(
+        arguments.contains_key("input"),
+        "解析失败的 arguments 必须走 {{\"input\": ...}} 包装兜底，实际 {:?}",
+        item["arguments"]
+    );
+    assert_eq!(item["call_id"], "call_ts_bad");
+    assert_eq!(item["execution"], "client");
+}
+
+/// #2263：tool_search_call 缺 call_id 时回退用 id 字段；两者皆空则整个
+/// item 被丢弃（与 function_call 分支的防御行为一致）。
+#[test]
+fn responses_input_tool_search_call_falls_back_to_id_and_drops_empty() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "tool_search_call",
+                "id": "tsc_fallback",
+                "execution": "client",
+                "arguments": { "query": "calendar" }
+            },
+            {
+                "type": "tool_search_output",
+                "call_id": "tsc_fallback",
+                "status": "completed",
+                "execution": "client",
+                "tools": []
+            },
+            {
+                "type": "tool_search_call",
+                "execution": "client",
+                "arguments": { "query": "no id at all" }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_calls: Vec<Value> = messages
+        .iter()
+        .filter_map(|m| m.get("tool_calls").and_then(Value::as_array))
+        .flatten()
+        .cloned()
+        .collect();
+    assert_eq!(
+        tool_calls.len(),
+        1,
+        "只允许一条有效 tool_search 调用，实际 {tool_calls:?}"
+    );
+    assert_eq!(tool_calls[0]["id"], "tsc_fallback");
+    assert_eq!(tool_calls[0]["function"]["name"], "tool_search");
+}
+
+/// #2263：上游模型在未声明 tool_search 工具时越权调用它，退化为普通
+/// function_call item 转发给客户端——这是选定的默认行为，测试钉住防漂移。
+#[test]
+fn chat_response_keeps_undeclared_tool_search_as_plain_function_call() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_undeclared",
+        "model": "gpt-5-mini",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_undeclared",
+                    "type": "function",
+                    "function": {
+                        "name": "tool_search",
+                        "arguments": "{\"query\":\"x\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .expect("未声明的 tool_search 调用按普通 function_call 转发");
+    assert_eq!(item["name"], "tool_search");
+    assert_eq!(item["call_id"], "call_undeclared");
+}
+
+/// #2263 附带问题负例：live 配置里本来就没有 mcp_servers 时，重写
+/// 不能凭空注入空段。
+#[test]
+fn preserve_live_app_settings_does_not_invent_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(home.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+
+    let preserved = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        home,
+        "[profile]\nname = \"x\"\n",
+    )
+    .unwrap();
+
+    assert!(
+        !preserved.contains("mcp_servers"),
+        "live 无 mcp_servers 时不得注入该段，实际：{preserved}"
+    );
+}
+
+#[tokio::test]
+async fn native_compaction_preserves_protocol_and_opaque_state() {
+    use codex_plus_core::protocol_proxy::open_responses_proxy_request_with_settings_for_path_and_beta;
+    let item = json!({"id":"cmp_native", "type":"compaction", "encrypted_content":"opaque-native-state", "future":{"kept":true}});
+    for streaming in [false, true] {
+        for replay in [false, true] {
+            for beta in [None, Some("remote_compaction_v2,another_feature")] {
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .unwrap();
+                let address = listener.local_addr().unwrap();
+                let final_response = json!({"id":"resp_native", "object":"response", "status":"completed", "output":[item.clone()]});
+                let response_body = if streaming {
+                    format!(
+                        "data: {}\n\ndata: {}\n\n",
+                        json!({"type":"response.output_item.done","output_index":0,"item":item.clone()}),
+                        json!({"type":"response.completed","response":final_response})
+                    )
+                } else {
+                    final_response.to_string()
+                };
+                let expected_response = response_body.clone();
+                let server = tokio::spawn(capture_request_with_response(
+                    listener,
+                    if streaming {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                    response_body,
+                ));
+                let request = json!({
+                    "model":"gpt-5.6-luna", "stream":streaming, "store":false,
+                    "prompt_cache_key":"native-cache", "reasoning":{"effort":"max","context":"all_turns"},
+                    "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+                    "input":if replay {json!([item.clone(),{"type":"message","role":"user","content":"continue"}])} else {json!([{"type":"message","role":"user","content":"history"},{"type":"compaction_trigger","future":"keep"}])}
+                });
+                let settings =
+                    model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
+                let mut result = open_responses_proxy_request_with_settings_for_path_and_beta(
+                    &request.to_string(),
+                    settings,
+                    "/v1/responses",
+                    beta,
+                )
+                .await
+                .unwrap();
+                assert!(
+                    !result.compaction,
+                    "native Responses must not enter the synthetic wrapper"
+                );
+                assert_eq!(
+                    String::from_utf8(result.read_body().await.unwrap()).unwrap(),
+                    expected_response
+                );
+                let (headers, sent) = server.await.unwrap();
+                assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+                assert_eq!(
+                    sent, request,
+                    "trigger, opaque state, and request fields must survive"
+                );
+                let header = headers.lines().find(|line| {
+                    line.to_ascii_lowercase()
+                        .starts_with("x-codex-beta-features:")
+                });
+                assert_eq!(
+                    header.map(|line| line.split_once(':').unwrap().1.trim()),
+                    beta
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 协议代理自动重试：上游瞬时失败在本地代理内部消化，不把失败交给 Codex。
+// ---------------------------------------------------------------------------
+
+/// 单供应商直连设置：非聚合路径下 relays 只有一个候选，重试只会打同一个上游。
+fn single_relay_proxy_settings(base_url: &str) -> BackendSettings {
+    let relay_id = format!(
+        "auto-retry-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    BackendSettings {
+        active_relay_id: relay_id.clone(),
+        relay_profiles: vec![RelayProfile {
+            id: relay_id,
+            name: "auto retry relay".to_string(),
+            protocol: RelayProtocol::Responses,
+            base_url: base_url.to_string(),
+            api_key: "sk-auto-retry".to_string(),
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+fn proxy_http_response(status: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+async fn serve_scripted_responses(
+    listener: tokio::net::TcpListener,
+    responses: Vec<String>,
+) -> Vec<String> {
+    let mut requests = Vec::new();
+    for response in responses {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        requests.push(read_http_request(&mut stream).await);
+        stream.write_all(response.as_bytes()).await.unwrap();
+    }
+    requests
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_does_not_retry_http_status_errors() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    // 即便 body 文案写得像容量错误，默认（未勾选任何状态码）HTTP 非 2xx 也不重试：
+    // 只重试 200 流内 response.failed 的 server_overloaded。
+    let responses = vec![proxy_http_response(
+        "429 Too Many Requests",
+        r#"{"error":{"message":"Selected model is at capacity. Please try a different model."}}"#,
+    )];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 429, "非容量流错误应原样返回");
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 1);
+    assert_eq!(trace.auto_retries, 0);
+    assert!(result.read_body().await.unwrap().windows(8).any(|w| w == b"capacity"));
+    assert_eq!(server.await.unwrap().len(), 1, "429 不应触发自动重试");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_does_not_retry_http_5xx_errors() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![proxy_http_response(
+        "503 Service Unavailable",
+        r#"{"error":{"message":"upstream unavailable"}}"#,
+    )];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 503);
+    assert_eq!(server.await.unwrap().len(), 1, "5xx 不应触发自动重试");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_can_be_disabled() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![proxy_http_response(
+        "429 Too Many Requests",
+        r#"{"error":{"message":"rate limited"}}"#,
+    )];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry = false;
+    settings.protocol_proxy_auto_retry_max_attempts = 5;
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 429);
+    assert_eq!(server.await.unwrap().len(), 1, "关闭后不得自动重试");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_does_not_retry_client_errors() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![proxy_http_response(
+        "400 Bad Request",
+        r#"{"error":{"message":"invalid request"}}"#,
+    )];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 400);
+    assert_eq!(server.await.unwrap().len(), 1, "400 不应触发自动重试");
+}
+
+// ---------------------------------------------------------------------------
+// 用户勾选的 HTTP 状态码（issue #2653）：默认空列表不重试，勾选后由代理退避重发。
+// ---------------------------------------------------------------------------
+
+fn proxy_http_response_with_retry_after(status: &str, retry_after: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nretry-after: {retry_after}\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_retries_opted_in_status_and_honors_retry_after() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![
+        proxy_http_response_with_retry_after(
+            "429 Too Many Requests",
+            "1",
+            r#"{"error":{"message":"rate limited","code":"rate_limit_exceeded"}}"#,
+        ),
+        proxy_sse_response(&success_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    settings.protocol_proxy_auto_retry_status_codes = vec![429];
+
+    let started = Instant::now();
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 200);
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    assert_eq!(trace.retry_reasons, vec!["upstream_http_status:429".to_string()]);
+    assert_eq!(trace.attempt_details.len(), 1);
+    let detail = &trace.attempt_details[0];
+    assert_eq!(detail.attempt, 1);
+    assert_eq!(detail.code.as_deref(), Some("rate_limit_exceeded"));
+    assert_eq!(detail.message.as_deref(), Some("rate limited"));
+    // Retry-After: 1 优先于 0 秒的设置间隔（地板 250ms）。
+    assert_eq!(detail.delay_ms, Some(1000));
+    assert!(started.elapsed() >= Duration::from_millis(900));
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert!(!body.contains("rate limited"), "重试成功后不能把 429 交给 Codex");
+    assert_eq!(server.await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_skips_status_codes_not_opted_in() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![proxy_http_response(
+        "503 Service Unavailable",
+        r#"{"error":{"message":"upstream unavailable"}}"#,
+    )];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+    settings.protocol_proxy_auto_retry_status_codes = vec![429];
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 503);
+    assert_eq!(server.await.unwrap().len(), 1, "未勾选的状态码不应重试");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_returns_last_status_body_when_budget_is_exhausted() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![
+        proxy_http_response("429 Too Many Requests", r#"{"error":{"message":"first"}}"#),
+        proxy_http_response("429 Too Many Requests", r#"{"error":{"message":"still limited"}}"#),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 1;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    settings.protocol_proxy_auto_retry_status_codes = vec![429, 503];
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 429);
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    // 预算用尽时最后一次的错误体必须完整交给 Codex，不能因预读而丢失。
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("still limited"), "{body}");
+    assert_eq!(server.await.unwrap().len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// 200 流内 response.failed（官方 server_overloaded/capacity）也要先由代理重试。
+// ---------------------------------------------------------------------------
+
+fn proxy_sse_response(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: text/event-stream\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn capacity_failed_stream() -> String {
+    concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_capacity\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.in_progress\n",
+        "data: {\"type\":\"response.in_progress\"}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_capacity\",\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity. Please try a different model.\"}}}\n\n",
+    )
+    .to_string()
+}
+
+fn success_stream() -> String {
+    concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ok\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"}}\n\n",
+    )
+    .to_string()
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_recovers_from_capacity_error_inside_200_stream() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![
+        proxy_sse_response(&capacity_failed_stream()),
+        proxy_sse_response(&success_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+
+    let started = Instant::now();
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert!(result.is_stream);
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    assert_eq!(
+        trace.retry_reasons,
+        vec!["upstream_stream_failed:server_overloaded".to_string()]
+    );
+    // 重试明细：第 1 次尝试因 server_overloaded 失败，记录根因与退避。
+    assert_eq!(trace.attempt_details.len(), 1);
+    let detail = &trace.attempt_details[0];
+    assert_eq!(detail.attempt, 1);
+    assert_eq!(detail.code.as_deref(), Some("server_overloaded"));
+    assert!(detail.delay_ms.is_some_and(|delay| delay >= 250));
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert!(
+        !body.contains("server_overloaded"),
+        "容量失败不能在已经重试成功的情况下泄露给 Codex"
+    );
+    assert_eq!(server.await.unwrap().len(), 2, "应在 200 流内失败后重发一次");
+    assert!(
+        started.elapsed() >= Duration::from_millis(200),
+        "流内重试也要有最小退避"
+    );
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_does_not_retry_after_commit_with_zero_delay() {
+    // 首字提交延迟显式设为 0：正文一出现就提交，回到旧行为，之后的过载只能
+    // 交给 Codex 原生重试，代理不得再重放流。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let failed_after_output = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_partial\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity.\"}}}\n\n",
+    );
+    let responses = vec![proxy_sse_response(failed_after_output)];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+    settings.protocol_proxy_auto_retry_commit_delay_ms = 0;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("partial"));
+    assert!(body.contains("server_overloaded"));
+    assert_eq!(server.await.unwrap().len(), 1, "已经写出输出后不能再重放流");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_recovers_from_overload_during_tool_arguments() {
+    // 工具调用参数阶段不可见，整项缓冲到 output_item.done 才提交；中途过载
+    // 可以整体丢弃重发，Codex 不会看到被丢弃的 partial 参数。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let overloaded_tool_arguments = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tool\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"name\":\"shell\",\"arguments\":\"\"}}\n\n",
+        "event: response.function_call_arguments.delta\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"command\\\":\"}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}\n\n",
+    );
+    let responses = vec![
+        proxy_sse_response(overloaded_tool_arguments),
+        proxy_sse_response(&success_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 2;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    // 显式 0 宽限：证明工具调用参数阶段不依赖首字提交延迟也会被整项缓冲。
+    settings.protocol_proxy_auto_retry_commit_delay_ms = 0;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert!(
+        !body.contains("server_is_overloaded"),
+        "工具参数阶段的过载不应泄露给 Codex"
+    );
+    assert_eq!(server.await.unwrap().len(), 2, "工具参数中途过载应整轮重发");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_recovers_from_overload_within_first_output_grace() {
+    // 首段正文已经输出，但仍处在「首字提交延迟」窗口内：代理还能丢弃重试。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let overloaded_after_first_text = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_grace\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n",
+        "event: response.content_part.added\n",
+        "data: {\"type\":\"response.content_part.added\",\"part\":{\"type\":\"output_text\",\"text\":\"\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity.\"}}}\n\n",
+    );
+    let responses = vec![
+        proxy_sse_response(overloaded_after_first_text),
+        proxy_sse_response(&success_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 2;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    // 宽限设得足够长，证明重试发生在宽限内、且不依赖窗口到期。
+    settings.protocol_proxy_auto_retry_commit_delay_ms = 5_000;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert!(
+        !body.contains("partial"),
+        "被丢弃的首段正文不应泄露给 Codex"
+    );
+    assert!(!body.contains("server_overloaded"));
+    assert_eq!(server.await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_does_not_retry_after_commit_delay_elapsed() {
+    // 首段正文出现后，上游沉默超过提交延迟：代理在宽限到期时提交，
+    // 之后的过载只能交给 Codex 原生重试。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let first_part = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_late\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n",
+        "event: response.content_part.added\n",
+        "data: {\"type\":\"response.content_part.added\",\"part\":{\"type\":\"output_text\",\"text\":\"\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+    );
+    let second_part = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity.\"}}}\n\n",
+    );
+    let total_len = first_part.len() + second_part.len();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {total_len}\r\ncontent-type: text/event-stream\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        stream.write_all(first_part.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+        // 比提交延迟（100ms）更晚才发过载事件。
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        stream.write_all(second_part.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+        vec![request]
+    });
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 2;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    settings.protocol_proxy_auto_retry_commit_delay_ms = 100;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 1, "提交之后不应再重试");
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("partial"));
+    assert!(body.contains("server_overloaded"), "{body}");
+    assert_eq!(server.await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_short_reply_commits_on_completion_without_full_grace_wait() {
+    // 短回复在 response.completed 到达时立即提交，不白等满首字提交延迟。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![proxy_sse_response(&success_stream())];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 2;
+    // 宽限放大到 20 秒：如果实现傻等窗口，下面的断言会因超时而失败。
+    settings.protocol_proxy_auto_retry_commit_delay_ms = 20_000;
+
+    let started = Instant::now();
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert_eq!(server.await.unwrap().len(), 1);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "response.completed 应立即提交，不应等满 20 秒宽限"
+    );
+}
+
+#[tokio::test]
+async fn legacy_streaming_mode_keeps_old_immediate_commit() {
+    // 旧「流式避震」行为保留为独立模式：工具调用参数一开始输出就提交，
+    // 之后的过载交给 Codex，代理不再重试。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let overloaded_tool_arguments = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_legacy\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"name\":\"shell\",\"arguments\":\"\"}}\n\n",
+        "event: response.function_call_arguments.delta\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"command\\\":\"}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}\n\n",
+    );
+    let responses = vec![proxy_sse_response(overloaded_tool_arguments)];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 2;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    settings.protocol_proxy_auto_retry_mode = "streaming-legacy".to_string();
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 1, "旧模式不应再重放已经开始输出的流");
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("server_is_overloaded"), "{body}");
+    assert_eq!(server.await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn failed_after_visible_output_keeps_first_token_timing() {
+    // 首段正文已缓冲但未提交时遇到不可重试的终态失败：不重试、把前缀交回
+    // Codex，同时保留真实的首字时间（不能记成提交时刻）。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let visible_then_permanent_failure = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bad_after_text\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"invalid_request_error\",\"message\":\"bad input\"}}}\n\n",
+    );
+    let responses = vec![proxy_sse_response(visible_then_permanent_failure)];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 1);
+    assert!(
+        trace.first_output_at_ms.is_some(),
+        "可见输出之后失败也要保留首字时间"
+    );
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("partial"));
+    assert!(body.contains("invalid_request_error"), "{body}");
+    assert_eq!(server.await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn retry_budget_exhausted_commits_without_waiting_grace() {
+    // 第一次尝试失败并重试后预算用尽：第二次尝试不再为首字白等宽限窗口。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let first_part = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_budget\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+    );
+    // content-length 故意大于实际发送的字节，且连接保持 12 秒不结束：
+    // 宽限若生效，预读必须等满窗口；预算耗尽退回旧时机则会立即提交。
+    let declared_len = first_part.len() + 128;
+    let first_attempt_failure = capacity_failed_stream();
+    let server = tokio::spawn(async move {
+        // 第一次尝试：首字前过载，触发一次代理重试。
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        stream
+            .write_all(proxy_sse_response(&first_attempt_failure).as_bytes())
+            .await
+            .unwrap();
+        // 第二次尝试：写出首段正文后挂住连接。
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {declared_len}\r\ncontent-type: text/event-stream\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        stream.write_all(first_part.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(12)).await;
+    });
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 1;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+    // 宽限远大于测试阈值：预算耗尽后如果不退回旧提交时机，这里会等满窗口。
+    settings.protocol_proxy_auto_retry_commit_delay_ms = 20_000;
+
+    let started = Instant::now();
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "重试预算耗尽后不应再等首字宽限窗口"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_does_not_retry_non_capacity_stream_failures() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let permanent_failure = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bad\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"invalid_request_error\",\"message\":\"bad input\"}}}\n\n",
+    );
+    let responses = vec![proxy_sse_response(permanent_failure)];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 3;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("invalid_request_error"));
+    assert_eq!(server.await.unwrap().len(), 1, "非容量类流内失败不得重试");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_can_be_disabled_for_stream_failures() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![proxy_sse_response(&capacity_failed_stream())];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry = false;
+    settings.protocol_proxy_auto_retry_max_attempts = 5;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("server_overloaded"));
+    assert_eq!(server.await.unwrap().len(), 1, "关闭后不得重试流内失败");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_recovers_from_server_is_overloaded_error_event() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let overloaded = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_overloaded\",\"status\":\"in_progress\"}}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}\n\n",
+    );
+    let responses = vec![
+        proxy_sse_response(overloaded),
+        proxy_sse_response(&success_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 2;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+
+    let started = Instant::now();
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 200);
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert!(!body.contains("server_is_overloaded"), "重试成功后不应泄露失败事件");
+    assert_eq!(server.await.unwrap().len(), 2);
+    assert!(started.elapsed() >= Duration::from_millis(200));
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_stream_stops_after_configured_attempts() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![
+        proxy_sse_response(&capacity_failed_stream()),
+        proxy_sse_response(&capacity_failed_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 1;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 200);
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("server_overloaded"), "预算用尽后应把失败流交给 Codex");
+    assert_eq!(server.await.unwrap().len(), 2, "max attempts=1 表示只额外重试一次");
+}
+
+#[tokio::test]
+async fn proxy_auto_retry_recovers_from_overload_during_reasoning() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let overloaded_during_reasoning = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_reasoning\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking...\"}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}\n\n",
+    );
+    let responses = vec![
+        proxy_sse_response(overloaded_during_reasoning),
+        proxy_sse_response(&success_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_max_attempts = 2;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+
+    let started = Instant::now();
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    assert_eq!(
+        trace.retry_reasons,
+        vec!["upstream_stream_failed:server_is_overloaded".to_string()]
+    );
+    assert_eq!(trace.attempt_details.len(), 1);
+    assert_eq!(trace.attempt_details[0].attempt, 1);
+    assert_eq!(
+        trace.attempt_details[0].code.as_deref(),
+        Some("server_is_overloaded")
+    );
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert!(!body.contains("server_is_overloaded"), "推理阶段失败不应泄露给 Codex");
+    assert_eq!(server.await.unwrap().len(), 2);
+    assert!(started.elapsed() >= Duration::from_millis(200));
+}
+
+#[tokio::test]
+async fn buffered_mode_retries_overload_and_returns_complete_stream() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let responses = vec![
+        proxy_sse_response(&capacity_failed_stream()),
+        proxy_sse_response(&success_stream()),
+    ];
+    let server = tokio::spawn(serve_scripted_responses(listener, responses));
+
+    let mut settings = single_relay_proxy_settings(&format!("http://{address}/v1"));
+    settings.protocol_proxy_auto_retry_mode = "buffered".to_string();
+    settings.protocol_proxy_auto_retry_max_attempts = 2;
+    settings.protocol_proxy_auto_retry_interval_seconds = 0;
+
+    let mut result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert!(result.is_stream);
+    assert!(result.buffered_body.is_some(), "buffered 模式应整段收齐后再返回");
+    let trace = result.request_trace.clone().expect("请求日志 trace");
+    assert_eq!(trace.attempts, 2);
+    assert_eq!(trace.auto_retries, 1);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("resp_ok"));
+    assert!(!body.contains("server_overloaded"));
+    assert_eq!(server.await.unwrap().len(), 2);
+}
+
+/// 阶段标记是进程级开关（设置「第三方模型回答完自动折叠过程」），代理请求开始时会按设置
+/// 重写它；转换用例改用线程级覆盖，不受同进程里并发的代理用例影响。
+fn with_message_phase_fill<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
+    codex_plus_core::protocol_proxy::with_message_phase_fill_for_tests(enabled, run)
+}
+
+/// 取出 SSE 里助手消息 output_item.done 的 phase（按出现顺序）。
+fn assistant_message_done_phases(sse: &str) -> Vec<Value> {
+    sse.split("\n\n")
+        .filter_map(|event| event.lines().find_map(|line| line.strip_prefix("data: ")))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .filter(|data| {
+            data["type"] == "response.output_item.done" && data["item"]["type"] == "message"
+        })
+        .map(|data| data["item"]["phase"].clone())
+        .collect()
+}
+
+#[test]
+fn chat_sse_marks_text_without_tool_calls_as_final_answer() {
+    with_message_phase_fill(true, || {
+        // issue #2659：Codex 桌面端靠 final_answer 折叠本轮过程，第三方上游不带该字段。
+        let sse = chat_sse_to_responses_sse(
+            r#"data: {"id":"chatcmpl_final","created":1,"model":"m","choices":[{"delta":{"content":"答案"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+        );
+        assert_eq!(assistant_message_done_phases(&sse), vec![json!("final_answer")]);
+        let completed = sse
+            .split("\n\n")
+            .find(|event| event.starts_with("event: response.completed"))
+            .unwrap();
+        assert!(completed.contains("\"phase\":\"final_answer\""), "{completed}");
+    });
+}
+
+#[test]
+fn chat_sse_marks_text_before_tool_calls_as_commentary() {
+    with_message_phase_fill(true, || {
+        let sse = chat_sse_to_responses_sse(
+            r#"data: {"id":"chatcmpl_tool","created":1,"model":"m","choices":[{"delta":{"content":"先看看文件"}}]}
+
+data: {"id":"chatcmpl_tool","created":1,"model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        );
+        assert_eq!(assistant_message_done_phases(&sse), vec![json!("commentary")]);
+    });
+}
+
+#[test]
+fn chat_completion_marks_message_phase_by_tool_calls() {
+    with_message_phase_fill(true, || {
+        let final_answer = chat_completion_to_response(json!({
+            "id": "chatcmpl_a",
+            "choices": [{ "message": { "role": "assistant", "content": "答案" }, "finish_reason": "stop" }]
+        }))
+        .unwrap();
+        assert_eq!(final_answer["output"][0]["phase"], "final_answer");
+
+        let commentary = chat_completion_to_response(json!({
+            "id": "chatcmpl_b",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "先看看文件",
+                    "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "shell", "arguments": "{}" } }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(commentary["output"][0]["phase"], "commentary");
+        assert_eq!(commentary["output"][1]["type"], "function_call");
+    });
+}
+
+#[test]
+fn chat_conversion_leaves_phase_out_unless_enabled() {
+    with_message_phase_fill(false, || {
+        let sse = chat_sse_to_responses_sse(
+            r#"data: {"id":"chatcmpl_off","created":1,"model":"m","choices":[{"delta":{"content":"答案"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+        );
+        assert_eq!(assistant_message_done_phases(&sse), vec![Value::Null]);
+        let response = chat_completion_to_response(json!({
+            "id": "chatcmpl_off2",
+            "choices": [{ "message": { "role": "assistant", "content": "答案" }, "finish_reason": "stop" }]
+        }))
+        .unwrap();
+        assert!(response["output"][0].get("phase").is_none());
+    });
+}

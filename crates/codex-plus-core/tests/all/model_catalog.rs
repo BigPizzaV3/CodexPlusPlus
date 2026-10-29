@@ -1,0 +1,739 @@
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::Path;
+use std::thread;
+
+use codex_plus_core::model_catalog::{
+    read_codex_model_catalog, read_codex_model_catalog_from_home,
+};
+use codex_plus_core::model_suffix::collect_catalog_entries;
+use codex_plus_core::settings::{
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+};
+use serde_json::json;
+
+#[test]
+fn catalog_entries_apply_manual_windows_case_insensitively() {
+    // 上游 /models 返回的 id 与本地保存的 key 常只差大小写；精确查表会让用户
+    // 配好的窗口整条落空，最后露出上游/Codex 默认的窗口。
+    let windows = HashMap::from([("DeepSeek-Flash".to_string(), "1m".to_string())]);
+    let compacts = HashMap::from([("DeepSeek-Flash".to_string(), "50%".to_string())]);
+    let entries = collect_catalog_entries("deepseek-flash\nglm-5.3", &windows, &compacts, "");
+    let deepseek = entries
+        .iter()
+        .find(|entry| entry.slug == "deepseek-flash")
+        .expect("模型条目缺失");
+    assert_eq!(deepseek.suffix_window, Some(1_000_000));
+    assert_eq!(deepseek.auto_compact_percent, Some(50_000_000));
+    // 没有配置窗口的模型不该被牵连。
+    let glm = entries
+        .iter()
+        .find(|entry| entry.slug == "glm-5.3")
+        .expect("模型条目缺失");
+    assert_eq!(glm.suffix_window, None);
+}
+
+#[test]
+fn catalog_entries_strip_suffix_from_row_name_and_look_up_window() {
+    // 行名带 [1M] 后缀时窗口来自后缀本身；没有后缀时来自 model_windows。
+    let entries =
+        collect_catalog_entries("deepseek-v4-pro[1M]", &HashMap::new(), &HashMap::new(), "");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].slug, "deepseek-v4-pro");
+    assert_eq!(entries[0].suffix_window, Some(1_000_000));
+}
+
+#[test]
+fn catalog_hides_codex_auto_review_from_the_picker() {
+    // 审批模型只给「替我审批」用：留在目录里，但和官方目录一样标成 hide，Codex 选择器里选不到。
+    let entries = collect_catalog_entries(
+        "gpt-6.1-sol\ncodex-auto-review\nchatgpt/codex-auto-review",
+        &HashMap::new(),
+        &HashMap::new(),
+        "",
+    );
+    let catalog: serde_json::Value = serde_json::from_str(
+        &codex_plus_core::model_suffix::build_model_catalog_json(&entries, None),
+    )
+    .unwrap();
+    let visibility = |slug: &str| {
+        catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == slug)
+            .map(|model| model["visibility"].as_str().unwrap().to_string())
+            .expect("模型条目缺失")
+    };
+    assert_eq!(visibility("gpt-6.1-sol"), "list");
+    assert_eq!(visibility("codex-auto-review"), "hide");
+    assert_eq!(visibility("chatgpt/codex-auto-review"), "hide");
+}
+
+#[tokio::test]
+async fn model_catalog_fetches_models_from_codex_config_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "qwen3-coder"},
+            {"id": "deepseek-coder"}
+        ]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "qwen3-coder"
+model_provider = "relay"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["model_provider"], "relay");
+    assert_eq!(result["provider_name"], "Relay");
+    assert_eq!(result["default_model"], "qwen3-coder");
+    assert_eq!(result["models"], json!(["qwen3-coder", "deepseek-coder"]));
+    assert_eq!(
+        result["sources"][0]["endpoint"],
+        format!("{}/v1/models", server.base_url)
+    );
+    assert_eq!(
+        result["responses_api"],
+        json!({
+            "status": "unknown",
+            "endpoint": "",
+            "message": ""
+        })
+    );
+    assert_eq!(result["sources"][0]["responses_api"]["status"], "unknown");
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/v1/models");
+    assert_eq!(requests[0].authorization, "Bearer relay-key");
+}
+
+#[tokio::test]
+async fn model_catalog_appends_models_to_versioned_base_url() {
+    // Volcano Engine ARK (and other providers) expose a versioned base URL such
+    // as `.../api/coding/v3`. The model list must be fetched from
+    // `<base>/models`, not `<base>/v1/models` (which 404s). Regression for #1349.
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "doubao-seed-code-preview"}
+        ]
+    }));
+    let versioned_base = format!("{}/api/coding/v3", server.base_url);
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "doubao-seed-code-preview"
+model_provider = "ark"
+
+[model_providers.ark]
+name = "ARK"
+base_url = "{versioned_base}"
+experimental_bearer_token = "ark-key"
+"#
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["models"], json!(["doubao-seed-code-preview"]));
+    assert_eq!(
+        result["sources"][0]["endpoint"],
+        format!("{versioned_base}/models")
+    );
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/api/coding/v3/models");
+    assert_eq!(requests[0].authorization, "Bearer ark-key");
+}
+
+#[tokio::test]
+async fn model_catalog_reports_effective_service_tier_from_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "qwen3-coder"}
+        ]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "qwen3-coder"
+model_provider = "relay"
+service_tier = "fast"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["service_tier"], "fast");
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_service_tier_is_null_when_config_does_not_set_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "qwen3-coder"}
+        ]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "qwen3-coder"
+model_provider = "relay"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["service_tier"], serde_json::Value::Null);
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_uses_active_relay_profile_model_list_and_actual_provider() {
+    // 设置路径覆盖是进程级状态，与其它测试模块串行。
+    let _state = crate::common::global_state_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let previous_codex_home = std::env::var_os("CODEX_HOME");
+    let previous_settings_path =
+        codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+    unsafe {
+        std::env::set_var("CODEX_HOME", &codex_home);
+    }
+
+    let (result, live_fallback_result) = async {
+        write_config(
+            &codex_home,
+            "model = \"qwen3-coder\"\nmodel_provider = \"live_vendor\"\n",
+        );
+        let store = SettingsStore::new(settings_path);
+        let mut settings = BackendSettings {
+            active_relay_id: "relay-a".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "relay-a".to_string(),
+                name: "Relay A".to_string(),
+                model: "qwen3-coder".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                protocol: RelayProtocol::Responses,
+                relay_mode: RelayMode::MixedApi,
+                model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible\ngpt-5.6-sol"
+                    .to_string(),
+                config_contents: "model = \"qwen3-coder\"\nmodel_provider = \"vendor_alpha\"\n"
+                    .to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        store.save(&settings).unwrap();
+        let result = read_codex_model_catalog().await;
+
+        settings = store.load().unwrap();
+        settings.relay_profiles[0].relay_mode = RelayMode::Official;
+        settings.relay_profiles[0].official_mix_api_key = false;
+        settings.relay_profiles[0].config_contents = "model = \"qwen3-coder\"\n".to_string();
+        store.save(&settings).unwrap();
+        let live_fallback_result = read_codex_model_catalog().await;
+        (result, live_fallback_result)
+    }
+    .await;
+
+    match previous_codex_home {
+        Some(value) => unsafe {
+            std::env::set_var("CODEX_HOME", value);
+        },
+        None => unsafe {
+            std::env::remove_var("CODEX_HOME");
+        },
+    }
+    codex_plus_core::paths::set_settings_path_for_tests(previous_settings_path);
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["model_provider"], "relay-a");
+    assert_eq!(result["codex_model_provider"], "vendor_alpha");
+    assert_eq!(live_fallback_result["codex_model_provider"], "live_vendor");
+    assert_eq!(result["provider_name"], "Relay A");
+    assert_eq!(result["default_model"], "qwen3-coder");
+    assert_eq!(
+        result["models"],
+        json!([
+            "qwen3-coder",
+            "deepseek-coder",
+            "claude-compatible",
+            "gpt-5.6-sol"
+        ])
+    );
+    assert_eq!(
+        result["modelMetadata"]["gpt-5.6-sol"]["defaultReasoningEffort"],
+        "low"
+    );
+    assert_eq!(
+        result["modelMetadata"]["gpt-5.6-sol"]["supportedReasoningEfforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["reasoningEffort"].as_str())
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+    );
+    assert_eq!(result["sources"][0]["type"], "relay_profile_model_list");
+}
+
+#[tokio::test]
+async fn model_catalog_uses_single_provider_when_root_model_provider_is_absent() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "models": ["moonshot-v1", "mimo-v2.5-pro"]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+[model_providers.only]
+name = "Only Provider"
+base_url = "{}/v1"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["model_provider"], "only");
+    assert_eq!(result["models"], json!(["moonshot-v1", "mimo-v2.5-pro"]));
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/v1/models");
+    assert_eq!(result["responses_api"]["status"], "unknown");
+}
+
+#[tokio::test]
+async fn model_catalog_merges_models_from_config_model_catalog_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "qwen3-coder"}
+        ]
+    }));
+    let catalog_path = temp.path().join("custom-models.json");
+    std::fs::write(
+        &catalog_path,
+        json!({
+            "models": [
+                {
+                    "slug": "gpt-5.6-sol",
+                    "display_name": "GPT-5.6-Sol",
+                    "visibility": "list",
+                    "supported_in_api": true
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+ model = "gpt-5.6-sol"
+model_provider = "relay"
+model_catalog_json = "{}"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            catalog_path.display().to_string().replace('\\', "\\\\"),
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["default_model"], "gpt-5.6-sol");
+    assert_eq!(result["models"], json!(["qwen3-coder", "gpt-5.6-sol"]));
+    assert_eq!(
+        result["modelMetadata"]["gpt-5.6-sol"]["supportedReasoningEfforts"][5]["reasoningEffort"],
+        "ultra"
+    );
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_reads_single_quoted_config_model_catalog_json_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog_path = temp.path().join("literal-path-models.json");
+    std::fs::write(
+        &catalog_path,
+        json!({
+            "models": [
+                {
+                    "slug": "gpt-5.6",
+                    "visibility": "list",
+                    "supported_in_api": true
+                },
+                {
+                    "slug": "hidden-test-model",
+                    "visibility": "hidden",
+                    "supported_in_api": true
+                },
+                {
+                    "slug": "chatgpt-only-test-model",
+                    "visibility": "list",
+                    "supported_in_api": false
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "gpt-5.6"
+model_catalog_json = '{}'
+"#,
+            catalog_path.display()
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["default_model"], "gpt-5.6");
+    assert_eq!(result["models"], json!(["gpt-5.6"]));
+    assert_eq!(result["sources"][0]["status"], "ok");
+    assert_eq!(result["sources"][0]["models"], 1);
+}
+
+#[tokio::test]
+async fn model_catalog_leaves_responses_api_unknown_without_probe() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "legacy-model"}
+        ]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "legacy-model"
+
+[model_providers.legacy]
+name = "Legacy"
+base_url = "{}"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["responses_api"]["status"], "unknown");
+    assert_eq!(result["responses_api"]["endpoint"], "");
+    assert_eq!(result["sources"][0]["responses_api"]["status"], "unknown");
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/v1/models");
+}
+
+#[tokio::test]
+async fn model_catalog_surfaces_business_error_from_http_200_envelope() {
+    // 智谱 Codex 专属端点（/api/v1）在 key 缺失或无效时返回 HTTP 200 + 业务错误信封，
+    // 之前只认状态码，会被解析成“0 个模型”，真因完全不可见（#2190）。
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server_with_response(
+        200,
+        json!({"code": 401, "msg": "令牌已过期或验证不正确", "success": false}).to_string(),
+    );
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "glm-5.3"
+model_provider = "ZAI"
+
+[model_providers.ZAI]
+name = "ZAI"
+base_url = "{}"
+experimental_bearer_token = "bad-key"
+wire_api = "responses"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["sources"][0]["status"], "failed");
+    assert_eq!(result["sources"][0]["message"], "令牌已过期或验证不正确");
+    assert_eq!(result["models"], json!([]));
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_appends_upstream_reason_to_http_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server_with_response(
+        401,
+        json!({
+            "error": {
+                "message": "Incorrect API key provided",
+                "type": "incorrect_api_key_error"
+            }
+        })
+        .to_string(),
+    );
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "qwen3-coder"
+model_provider = "relay"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["sources"][0]["status"], "failed");
+    let message = result["sources"][0]["message"].as_str().unwrap();
+    assert!(message.starts_with("HTTP 401"), "{message}");
+    assert!(message.contains("Incorrect API key provided"), "{message}");
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_parses_gemini_style_model_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "models": [
+            {"name": "models/gemini-2.5-pro"},
+            {"name": "models/gemini-2.5-flash"}
+        ]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model_provider = "gemini"
+
+[model_providers.gemini]
+name = "Gemini"
+base_url = "{}"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(
+        result["models"],
+        json!(["gemini-2.5-pro", "gemini-2.5-flash"])
+    );
+    server.finish();
+}
+
+fn write_config(home: &Path, contents: &str) {
+    std::fs::write(home.join("config.toml"), contents.trim_start()).unwrap();
+}
+
+struct ModelsServer {
+    base_url: String,
+    handle: thread::JoinHandle<Vec<ModelsRequest>>,
+}
+
+impl ModelsServer {
+    fn finish(self) -> Vec<ModelsRequest> {
+        self.handle.join().unwrap()
+    }
+}
+
+struct ModelsRequest {
+    path: String,
+    authorization: String,
+}
+
+fn spawn_models_server(payload: serde_json::Value) -> ModelsServer {
+    spawn_models_server_with_response(200, payload.to_string())
+}
+
+fn spawn_models_server_with_response(status: u16, body: String) -> ModelsServer {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}");
+    listener
+        .set_nonblocking(true)
+        .expect("listener should switch to nonblocking mode");
+    let models_body = body;
+    let handle = thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let mut requests = Vec::new();
+        // 接受窗口留足时间：并行跑测试或机器负载高时，客户端连接可能晚到，
+        // 2 秒窗口会造成「connection refused」偶发失败（CI/本地实测）。
+        while requests.is_empty() && started.elapsed() < std::time::Duration::from_secs(30) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            };
+            let mut buffer = [0u8; 4096];
+            let mut read = 0;
+            let read_started = std::time::Instant::now();
+            while read == 0 && read_started.elapsed() < std::time::Duration::from_secs(10) {
+                match stream.read(&mut buffer) {
+                    Ok(0) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Ok(bytes) => read = bytes,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("failed to read test request: {error}"),
+                }
+            }
+            if read == 0 {
+                continue;
+            }
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let request_path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or_default()
+                .to_string();
+            let authorization = request
+                .lines()
+                .find_map(|line| line.strip_prefix("authorization: "))
+                .unwrap_or_default()
+                .to_string();
+            let response = format!(
+                "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                http_reason(status),
+                models_body.len(),
+                models_body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            requests.push(ModelsRequest {
+                path: request_path,
+                authorization,
+            });
+        }
+        requests
+    });
+    ModelsServer { base_url, handle }
+}
+
+fn http_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "Error",
+    }
+}

@@ -247,8 +247,9 @@
     if (!codexPlusBackendSettingsLoaded && officialUsageRuntime.lastPolicy) return officialUsageRuntime.lastPolicy;
     const profile = codexRemoteSessionActiveProfile();
     const aggregateMixed = officialUsageAggregateMixed(profile);
-    const official = String(profile?.relayMode || "") === "official" || aggregateMixed;
-    const mixed = aggregateMixed || (official && profile?.officialMixApiKey === true);
+    const gateway = String(profile?.id || "") === "codex-plus-gateway";
+    const official = String(profile?.relayMode || "") === "official" || aggregateMixed || gateway;
+    const mixed = aggregateMixed || gateway || (official && profile?.officialMixApiKey === true);
     const policy = {
       official,
       hideAlerts: mixed,

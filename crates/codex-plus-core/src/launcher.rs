@@ -2998,7 +2998,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
             && upstream.exec_adapted
         {
             let mut converter =
-                crate::responses_exec_sse::ExecSseAdapter::for_names(upstream.exec_tool_names());
+                crate::responses_exec_sse::ExecSseAdapter::for_adaptation(upstream.tool_adaptation());
             let mut bytes_stream = upstream.take_response()?.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
                 let converted = match chunk {
@@ -3117,7 +3117,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
         let body = if upstream.exec_adapted {
             let (body, valid) = crate::responses_exec_transport::adapted_json(
                 &upstream_body,
-                &upstream.exec_tool_names(),
+                &upstream.tool_adaptation(),
             );
             write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
             if let Some(outcome) = upstream.exec_outcome.as_mut() {

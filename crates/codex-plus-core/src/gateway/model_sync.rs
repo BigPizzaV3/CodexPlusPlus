@@ -128,6 +128,50 @@ pub async fn check_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Mo
     result
 }
 
+/// 把上游新增的模型追加到列表末尾：已有的不删，默认模型不变；上游已没有的只留作提示，
+/// 由用户在「编辑」里决定删不删。
+pub fn append_upstream_models(
+    store: &GatewayStore,
+    id: &str,
+    diff: &ModelDiff,
+) -> anyhow::Result<GatewaySettings> {
+    let (gateway, ()) = store.update(|gateway| {
+        let Some(provider) = gateway
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == id)
+        else {
+            bail!("供应商不存在：{id}");
+        };
+        let mut list = crate::gateway::route::relay_models(&provider.relay);
+        for model in &diff.added {
+            if !list.iter().any(|item| item.eq_ignore_ascii_case(model)) {
+                list.push(model.clone());
+            }
+        }
+        provider.relay.model_list = list.join("\n");
+        provider.upstream_new.clear();
+        provider.upstream_gone = diff
+            .removed
+            .iter()
+            .filter(|model| list.iter().any(|item| item.eq_ignore_ascii_case(model)))
+            .cloned()
+            .collect();
+        Ok(())
+    })?;
+    Ok(gateway)
+}
+
+/// 「从上游获取」：拉上游模型，新增的直接追加进列表（见 [`append_upstream_models`]）。
+pub async fn fetch_provider_models(
+    store: &GatewayStore,
+    id: &str,
+) -> anyhow::Result<(GatewaySettings, ModelDiff)> {
+    let diff = check_provider(store, id).await?;
+    let gateway = append_upstream_models(store, id, &diff)?;
+    Ok((gateway, diff))
+}
+
 /// 检查所有打开的、超过 `max_age` 没检查过的供应商。单个失败不影响其它。返回检查了几个。
 pub async fn check_due(store: &GatewayStore, max_age: Duration) -> usize {
     let Ok(gateway) = store.load() else {
@@ -377,6 +421,49 @@ mod tests {
 
         let saved = set_provider_models(&store, "p", &["c".into(), "d".into()], Some("d")).unwrap();
         assert_eq!(saved.provider("p").unwrap().relay.model, "d");
+    }
+
+    #[test]
+    fn appending_upstream_models_keeps_existing_and_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        let mut gateway = GatewaySettings::default();
+        gateway.providers.push(GatewayProvider {
+            enabled: true,
+            source: String::new(),
+            price: None,
+            model_prices: Default::default(),
+            model_windows: Default::default(),
+            context_window: None,
+            proxy: String::new(),
+            upstream_new: vec!["c".into()],
+            upstream_gone: Vec::new(),
+            models_checked_at_ms: 1,
+            relay: RelayProfile {
+                id: "p".into(),
+                // 默认模型存在配置快照里（`model` 字段不落盘）。
+                config_contents: "model = \"b\"\n".into(),
+                model_list: "a\nb\nold".into(),
+                ..RelayProfile::default()
+            },
+            extra: Default::default(),
+        });
+        store.save(&gateway).unwrap();
+
+        let diff = diff_models(
+            &["b".into(), "a".into(), "old".into()],
+            &["A".into(), "b".into(), "codex-auto-review".into()],
+        );
+        let saved = append_upstream_models(&store, "p", &diff).unwrap();
+        let provider = saved.provider("p").unwrap();
+        // 已有的（含上游已没有的 old）都留着，新增的追加在后面，默认模型不变。
+        assert_eq!(provider.relay.model_list, "b\na\nold\ncodex-auto-review");
+        assert_eq!(
+            crate::relay_config::relay_profile_model(&provider.relay),
+            "b"
+        );
+        assert!(provider.upstream_new.is_empty());
+        assert_eq!(provider.upstream_gone, vec!["old"]);
     }
 
     #[test]

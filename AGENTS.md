@@ -60,7 +60,13 @@
 
 ## 测试约定
 
-- 沿用现有 `#[test]` + tempfile 风格（见 `crates/codex-plus-core/tests/relay_config.rs`）
+- 沿用现有 `#[test]` + tempfile 风格（见 `crates/codex-plus-core/tests/all/relay_config.rs`）
+- core / data 的集成测试合并为一个测试程序 `tests/all/`（每个文件是 `main.rs` 里的一个 `mod`），
+  新测试文件放进 `tests/all/` 并在 `main.rs` 登记，不要再在 `tests/` 下直接加文件（每个都会多链接一次整个 core）。
+  只跑某个文件：`cargo test -p codex-plus-core --test all relay_config::`
+- 合并后各文件的用例在同一进程并行：改进程级状态（设置路径覆盖、诊断日志路径、环境变量）的用例
+  必须先拿 `common::global_state_lock()`；需要独占进程的（改 `CODEX_PLUS_STATE_DIR`、常驻 helper 单例）
+  才单独留在 `tests/` 下
 - 断言读 config.toml 文本，如 `assert!(config.contains("model_catalog_json"))`
 - 改行为要同步改/加对应测试
 

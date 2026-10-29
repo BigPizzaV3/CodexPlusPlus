@@ -3321,6 +3321,25 @@
       }
       .codex-plus-settings .codex-plus-row > :not(:first-child) { max-width: 48%; }
       .codex-plus-settings .codex-plus-row-title { font-weight: 500; line-height: 20px; }
+      /* 设置项标题旁的小标签：实验 / 需重启，与管理器增强页一致。 */
+      .codex-plus-settings .codex-plus-feature-tag {
+        display: inline-flex;
+        align-items: center;
+        margin-left: 6px;
+        padding: 0 5px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 4px;
+        color: var(--codex-plus-text-secondary);
+        font-size: 10.5px;
+        font-style: normal;
+        font-weight: 500;
+        line-height: 16px;
+        vertical-align: 1px;
+      }
+      .codex-plus-settings .codex-plus-feature-tag[data-tone="experimental"] {
+        border-color: color-mix(in srgb, var(--codex-plus-warning) 40%, transparent);
+        color: var(--codex-plus-warning);
+      }
       .codex-plus-settings .codex-plus-row-description,
       .codex-plus-settings .codex-plus-about {
         margin-top: 2px;
@@ -7682,6 +7701,19 @@
     });
   }
 
+  // 与管理器增强页一致：「（实验）」从标题里拿出来做成小标签；说明里写了要重启 Codex 的，标题旁加「需重启」。
+  const codexPlusExperimentalTitle = /\s*(?:（实验性?）|\(experimental\))$/i;
+  const codexPlusRestartHint = /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i;
+
+  function renderCodexPlusSettingsCatalogTitle(item, description) {
+    const experimental = codexPlusExperimentalTitle.test(item.title);
+    const tags = [
+      experimental ? '<em class="codex-plus-feature-tag" data-tone="experimental">实验</em>' : "",
+      codexPlusRestartHint.test(description) ? '<em class="codex-plus-feature-tag">需重启</em>' : "",
+    ].join("");
+    return escapeHtml(experimental ? item.title.replace(codexPlusExperimentalTitle, "") : item.title) + tags;
+  }
+
   function renderCodexPlusSettingsCatalogRow(item) {
     const title = escapeHtml(item.title);
     let control = "";
@@ -7697,11 +7729,12 @@
     // 不认识的控件类型宁可不显示，也不显示一个点了不生效的行。
     if (!control) return "";
     // 独立模式补丁在增强开启时换一句说明，与管理器一致；切换由 syncCodexPlusSettingsCatalogDescriptions 完成。
-    const description = escapeHtml(codexPlusSettingsCatalogDescription(item));
+    const rawDescription = codexPlusSettingsCatalogDescription(item);
+    const description = escapeHtml(rawDescription);
     const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
     return `
                 <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}">
-                  <div><div class="codex-plus-row-title">${title}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div></div>
+                  <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div></div>
                   ${control}
                 </div>`;
   }
@@ -19731,8 +19764,9 @@
     if (!codexPlusBackendSettingsLoaded && officialUsageRuntime.lastPolicy) return officialUsageRuntime.lastPolicy;
     const profile = codexRemoteSessionActiveProfile();
     const aggregateMixed = officialUsageAggregateMixed(profile);
-    const official = String(profile?.relayMode || "") === "official" || aggregateMixed;
-    const mixed = aggregateMixed || (official && profile?.officialMixApiKey === true);
+    const gateway = String(profile?.id || "") === "codex-plus-gateway";
+    const official = String(profile?.relayMode || "") === "official" || aggregateMixed || gateway;
+    const mixed = aggregateMixed || gateway || (official && profile?.officialMixApiKey === true);
     const policy = {
       official,
       hideAlerts: mixed,

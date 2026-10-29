@@ -49,7 +49,7 @@ node scripts/assemble-renderer-inject.mjs --check
 显式联网测试在临时 Codex home 中安装两个样本，不修改用户的 Codex 配置，也不调用原生授权流程：
 
 ```sh
-cargo test -p codex-plus-core --test plugin_market_live -- --ignored --nocapture
+cargo test -p codex-plus-core --test all plugin_market_live:: -- --ignored --nocapture
 ```
 
 2026-10-08 验证：公开和完整索引读取成功，分别安装 Google Drive 和 Life Sciences Databases；原生 `skills/list` 加载 49 个 Skills、0 个错误。原生客户端、两类消息协议、超时恢复、远程主机隔离和插件身份去重复均有行为测试。当前运行的旧版本需要重新构建管理工具和启动器后重启，才能加载新增后端和注入代码。

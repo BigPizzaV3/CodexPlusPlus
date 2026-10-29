@@ -120,12 +120,12 @@ losing buffered bytes. No frontend assets or supplier configuration are changed.
 Run from the repository root:
 
 ```powershell
-cargo test --offline --locked -p codex-plus-core --test protocol_proxy
-cargo test --offline --locked -p codex-plus-core --test responses_exec_compatibility
-cargo test --offline --locked -p codex-plus-core --test responses_catalog_identity --test relay_config
+cargo test --offline --locked -p codex-plus-core --test all protocol_proxy::
+cargo test --offline --locked -p codex-plus-core --test all responses_exec_compatibility::
+cargo test --offline --locked -p codex-plus-core --test all -- responses_catalog_identity:: relay_config::
 cargo test --offline --locked -p codex-plus-core
 cargo check --offline --locked -p codex-plus-core
-rustfmt --edition 2024 --check --config skip_children=true crates/codex-plus-core/src/responses_exec.rs crates/codex-plus-core/src/responses_exec_sse.rs crates/codex-plus-core/src/responses_exec_transport.rs crates/codex-plus-core/src/protocol_proxy.rs crates/codex-plus-core/src/launcher.rs crates/codex-plus-core/tests/responses_exec_compatibility.rs
+rustfmt --edition 2024 --check --config skip_children=true crates/codex-plus-core/src/responses_exec.rs crates/codex-plus-core/src/responses_exec_sse.rs crates/codex-plus-core/src/responses_exec_transport.rs crates/codex-plus-core/src/protocol_proxy.rs crates/codex-plus-core/src/launcher.rs crates/codex-plus-core/tests/all/responses_exec_compatibility.rs
 git diff --check
 ```
 
@@ -138,9 +138,9 @@ git diff --check
 - `crates/codex-plus-core/src/protocol_proxy.rs`: request negotiation before
   failure accounting, routing-aware context, and whole-body response handling.
 - `crates/codex-plus-core/src/launcher.rs`: actual served JSON and SSE paths.
-- `crates/codex-plus-core/tests/responses_exec_compatibility.rs`: local upstream
+- `crates/codex-plus-core/tests/all/responses_exec_compatibility.rs`: local upstream
   negotiation, history replay, model-switching, and bypass integration tests.
-- `crates/codex-plus-core/tests/protocol_proxy.rs`: existing proxy regressions
+- `crates/codex-plus-core/tests/all/protocol_proxy.rs`: existing proxy regressions
   and request-build failover tests; internal unit tests cover strict parsing
   and event assembly.
 - This document: acceptance contract and scope exclusions.

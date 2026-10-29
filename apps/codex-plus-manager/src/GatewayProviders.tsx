@@ -441,8 +441,8 @@ function PoolRow({
     if (await run(`models:${entry.id}`, "save_gateway_provider_models", { id: entry.id, models, defaultModel }, t("保存模型列表"))) setModelsOpen(false);
   };
   const price = priceSummary(entry);
-  // ChatGPT 订阅账号和 Copilot 能查额度（ChatGPT API 账号按量计费，没有额度窗口）。
-  const quotaSupported = entry.account === "chatgpt" || entry.account === "copilot";
+  // ChatGPT 订阅账号、Copilot 和 SuperGrok 能查额度（ChatGPT API 账号按量计费，没有额度窗口）。
+  const quotaSupported = entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok";
   const saveExtras = async (nextPrice: ProviderPrice | null, modelPrices: Record<string, ProviderPrice> | null, proxy: string) => {
     const title = extrasOpen === "proxy" ? t("保存代理") : t("保存价格");
     if (await run(`extras:${entry.id}`, "save_gateway_provider_extras", { id: entry.id, price: nextPrice, modelPrices, proxy }, title)) setExtrasOpen(null);
@@ -508,6 +508,17 @@ function PoolRow({
                 </button>
               ) : null}
               <button className="gw-text-button" disabled={busy !== null} onClick={() => setModelsOpen(true)} type="button">{t("编辑")}</button>
+              {/* 一键拉上游：新增的直接加进列表，已有的不删；要删下架的进「编辑」。 */}
+              <button
+                className="gw-text-button gw-sync-button"
+                disabled={busy !== null}
+                onClick={() => void run(`fetch-models:${entry.id}`, "fetch_gateway_provider_models", { id: entry.id }, t("从上游获取"))}
+                title={t("用已保存的 Key 或登录重新获取，新增的模型直接加进列表")}
+                type="button"
+              >
+                <RefreshCw className={busy === `fetch-models:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+                {t("从上游获取")}
+              </button>
             </div>
           </div>
           {imageModels.length ? (

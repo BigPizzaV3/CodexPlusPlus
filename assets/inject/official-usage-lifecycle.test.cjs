@@ -199,3 +199,16 @@ test("switching from a mixed aggregate to a login-only aggregate restores the ra
   api.setBackendSettings(aggregateSettings(["login"]));api.install();
   assert.equal(f.main.state.data,raw);
 });
+test("codex-plus-gateway profile unlocks sending in official usage policy",()=>{
+  const f=fixture(),api=f.load();
+  api.setBackendSettings({
+    relayProfilesEnabled: true,
+    activeRelayId: "codex-plus-gateway",
+    relayProfiles: [{ id: "codex-plus-gateway", relayMode: "pureApi", officialMixApiKey: false }],
+  });
+  api.install();
+  f.main.setData(usage());
+  assert.equal(f.main.state.data.rate_limit.allowed,true);
+  assert.equal(f.main.state.data.rate_limit.limit_reached,false);
+  assert.equal(api.policyKey(),"official-hide");
+});

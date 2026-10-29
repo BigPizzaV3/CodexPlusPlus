@@ -1376,6 +1376,19 @@
     });
   }
 
+  // 与管理器增强页一致：「（实验）」从标题里拿出来做成小标签；说明里写了要重启 Codex 的，标题旁加「需重启」。
+  const codexPlusExperimentalTitle = /\s*(?:（实验性?）|\(experimental\))$/i;
+  const codexPlusRestartHint = /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i;
+
+  function renderCodexPlusSettingsCatalogTitle(item, description) {
+    const experimental = codexPlusExperimentalTitle.test(item.title);
+    const tags = [
+      experimental ? '<em class="codex-plus-feature-tag" data-tone="experimental">实验</em>' : "",
+      codexPlusRestartHint.test(description) ? '<em class="codex-plus-feature-tag">需重启</em>' : "",
+    ].join("");
+    return escapeHtml(experimental ? item.title.replace(codexPlusExperimentalTitle, "") : item.title) + tags;
+  }
+
   function renderCodexPlusSettingsCatalogRow(item) {
     const title = escapeHtml(item.title);
     let control = "";
@@ -1391,11 +1404,12 @@
     // 不认识的控件类型宁可不显示，也不显示一个点了不生效的行。
     if (!control) return "";
     // 独立模式补丁在增强开启时换一句说明，与管理器一致；切换由 syncCodexPlusSettingsCatalogDescriptions 完成。
-    const description = escapeHtml(codexPlusSettingsCatalogDescription(item));
+    const rawDescription = codexPlusSettingsCatalogDescription(item);
+    const description = escapeHtml(rawDescription);
     const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
     return `
                 <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}">
-                  <div><div class="codex-plus-row-title">${title}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div></div>
+                  <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div></div>
                   ${control}
                 </div>`;
   }

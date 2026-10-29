@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/BigPizzaV3/CodexPlusPlus"
@@ -39,3 +39,12 @@ uuid = { version = "1", features = ["v4"] }
 winresource = "0.1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.13"
+
+# 开发/测试构建只保留行号表：panic 回溯仍带文件行号，调试信息体积和链接时间大幅下降。
+# 依赖不带调试信息。test profile 继承 dev；release 不受影响。
+# 需要单步调试变量时，本地临时改回 `debug = true` 即可。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

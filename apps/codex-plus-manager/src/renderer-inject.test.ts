@@ -628,9 +628,11 @@ ${slice("  let codexPlusSettingsCatalog = null;", "  function refreshCodexPlusSe
 function parseSettingsSections(html: string) {
   return Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g), ([, title, body]) => ({
     title,
-    rows: Array.from(body.matchAll(/<div class="codex-plus-row"(?: data-codex-plus-setting-row="([^"]+)")?[^>]*>\s*<div><div class="codex-plus-row-title">([^<]*)<\/div><div class="codex-plus-row-description"[^>]*>([^<]*)<\/div><\/div>([\s\S]*?)(?=<div class="codex-plus-row"|$)/g), ([, key, rowTitle, description, control]) => ({
+    rows: Array.from(body.matchAll(/<div class="codex-plus-row"(?: data-codex-plus-setting-row="([^"]+)")?[^>]*>\s*<div><div class="codex-plus-row-title">([\s\S]*?)<\/div><div class="codex-plus-row-description"[^>]*>([^<]*)<\/div><\/div>([\s\S]*?)(?=<div class="codex-plus-row"|$)/g), ([, key, rowTitle, description, control]) => ({
       key: key ?? "",
-      title: rowTitle,
+      // 标题后面可能跟着「实验」「需重启」小标签，拆开分别校验。
+      title: rowTitle.replace(/<em class="codex-plus-feature-tag"[^>]*>[^<]*<\/em>/g, ""),
+      tags: Array.from(rowTitle.matchAll(/<em class="codex-plus-feature-tag"[^>]*>([^<]*)<\/em>/g), ([, tag]) => tag),
       description,
       control,
     })),
@@ -3173,7 +3175,11 @@ describe("Codex++ 设置页按设置项清单生成", () => {
       const row = rows.find((candidate) => candidate.key === item.key)!;
       const section = sections.find((candidate) => candidate.rows.includes(row))!;
       assert.equal(section.title, catalog.groups.find((group) => group.id === item.group)!.title);
-      assert.equal(row.title, item.title);
+      // 与管理器一致：「（实验）」改成小标签，说明里要求重启的加「需重启」。
+      const experimental = /\s*(?:（实验性?）|\(experimental\))$/i;
+      const needsRestart = /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i.test(item.descriptionWhenEnhancementsOn ?? item.description);
+      assert.equal(row.title, item.title.replace(experimental, ""));
+      assert.deepEqual(row.tags, [...(experimental.test(item.title) ? ["实验"] : []), ...(needsRestart ? ["需重启"] : [])], `${item.key} 标签`);
       assert.equal(row.description, item.descriptionWhenEnhancementsOn ?? item.description);
       if (item.control === "bool") {
         assert.ok(row.control.includes(`role="switch" aria-checked="false" aria-label="${item.title}"`), `${item.key} 开关缺少读屏标签`);

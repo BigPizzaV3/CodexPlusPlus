@@ -14,5 +14,5 @@
 回归仅使用临时目录，不修改正在使用的 Codex 配置：
 
 ```sh
-cargo test -p codex-plus-core --test local_config_provider
+cargo test -p codex-plus-core --test all local_config_provider::
 ```

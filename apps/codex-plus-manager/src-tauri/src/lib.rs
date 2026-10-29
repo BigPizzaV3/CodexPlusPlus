@@ -335,6 +335,7 @@ pub fn run() {
             gateway_commands::update_gateway_provider,
             gateway_commands::delete_gateway_provider,
             gateway_commands::check_gateway_provider_models,
+            gateway_commands::fetch_gateway_provider_models,
             gateway_commands::save_gateway_provider_models,
             gateway_commands::refresh_gateway_quota,
             gateway_commands::sync_gateway_provider_prices,

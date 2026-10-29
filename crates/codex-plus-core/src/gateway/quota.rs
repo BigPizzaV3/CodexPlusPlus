@@ -1,7 +1,9 @@
-//! 订阅账号的额度：ChatGPT 账号的 5 小时 / 每周用量百分比，Copilot 的本月高级请求。
+//! 订阅账号的额度：ChatGPT 账号的 5 小时 / 每周用量百分比，Copilot 的本月高级请求，
+//! SuperGrok 的本周期额度。
 //!
 //! 两个来源：ChatGPT 后端每次响应都带的 `x-codex-*` 响应头，以及后台定期查询额度接口
-//! （ChatGPT `wham/usage`、Copilot `copilot_internal/user`）。只存在内存，重启后重新查。
+//! （ChatGPT `wham/usage`、Copilot `copilot_internal/user`、SuperGrok `billing`）。
+//! 只存在内存，重启后重新查。
 //! 模型组「额度优先」按剩余额度排先后，供应商池在账号行上显示。
 
 use std::collections::HashMap;
@@ -190,6 +192,90 @@ pub fn parse_copilot_user(value: &Value, now_ms: u64) -> Option<ProviderQuota> {
     })
 }
 
+/// SuperGrok 订阅代理 `billing?format=credits` 的返回：`config.creditUsagePercent` 是本周期已用百分比，
+/// 周期看 `config.currentPeriod`（SuperGrok 是每周），没有时按账单周期（`billingPeriodEnd`）。
+/// 按量付费（`onDemandUsed` / `onDemandCap`）不是时间窗口，不计入。
+pub fn parse_grok_billing(value: &Value, now_ms: u64) -> Option<ProviderQuota> {
+    let config = value.get("config")?.as_object()?;
+    let used = config
+        .get("creditUsagePercent")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let (window_minutes, end) = match config
+        .get("currentPeriod")
+        .filter(|period| period.is_object())
+    {
+        Some(period) => {
+            let kind = period
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim_start_matches("USAGE_PERIOD_TYPE_");
+            let minutes = match kind {
+                "DAILY" => Some(24 * 60),
+                "WEEKLY" => Some(7 * 24 * 60),
+                _ => None,
+            };
+            (minutes, period.get("end"))
+        }
+        None => (None, config.get("billingPeriodEnd")),
+    };
+    Some(ProviderQuota {
+        windows: vec![QuotaWindow {
+            window_minutes,
+            used_percent: used.clamp(0.0, 100.0),
+            resets_at_ms: end.and_then(Value::as_str).and_then(parse_rfc3339_ms),
+        }],
+        updated_at_ms: now_ms,
+    })
+}
+
+/// RFC 3339 时间（`2026-10-12T02:17:59.504011+00:00`、`…Z`）→ 毫秒时间戳。
+fn parse_rfc3339_ms(text: &str) -> Option<u64> {
+    let day_ms = i64::try_from(parse_reset_date(text)?).ok()?;
+    let time = text.get(10..)?.strip_prefix(['T', 't', ' '])?;
+    let number = |range: std::ops::Range<usize>| -> Option<i64> {
+        let digits = time.get(range)?;
+        digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| digits.parse().ok())
+            .flatten()
+    };
+    let (hour, minute, second) = (number(0..2)?, number(3..5)?, number(6..8)?);
+    if time.get(2..3)? != ":" || time.get(5..6)? != ":" || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let mut rest = time.get(8..)?;
+    let mut millis = 0;
+    if let Some(fraction) = rest.strip_prefix('.') {
+        let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        millis = format!("{:0<3}", &fraction[..digits.min(3)]).parse().ok()?;
+        rest = &fraction[digits..];
+    }
+    let offset_minutes = match rest {
+        "Z" | "z" => 0,
+        _ => {
+            let sign = match rest.get(..1)? {
+                "+" => 1,
+                "-" => -1,
+                _ => return None,
+            };
+            let (hours, minutes) = rest.get(1..)?.split_once(':')?;
+            if hours.len() != 2 || minutes.len() != 2 {
+                return None;
+            }
+            sign * (hours.parse::<i64>().ok()? * 60 + minutes.parse::<i64>().ok()?)
+        }
+    };
+    let ms =
+        day_ms + ((hour * 60 + minute) * 60 + second) * 1000 + millis - offset_minutes * 60_000;
+    u64::try_from(ms).ok()
+}
+
 /// `2026-11-01`（或以它开头的时间）→ 当天 0 点（UTC）的毫秒时间戳。
 fn parse_reset_date(text: &str) -> Option<u64> {
     let date = text.get(..10)?;
@@ -210,10 +296,13 @@ fn parse_reset_date(text: &str) -> Option<u64> {
     u64::try_from(days * 86_400_000).ok()
 }
 
-/// 这个供应商有没有额度可查：ChatGPT 订阅账号或 Copilot 账号。
+/// 这个供应商有没有额度可查：ChatGPT 订阅账号、Copilot 账号或 SuperGrok 账号。
 pub fn supports(relay: &RelayProfile) -> bool {
     crate::official_login::member_uses_official_login_transport(relay)
-        || crate::gateway::accounts::relay_account_kind(relay).as_deref() == Some("copilot")
+        || matches!(
+            crate::gateway::accounts::relay_account_kind(relay).as_deref(),
+            Some("copilot" | "grok")
+        )
 }
 
 /// 查一次额度并记下来。不支持的供应商返回 Ok(None)。
@@ -238,6 +327,11 @@ pub async fn refresh(relay: &RelayProfile) -> anyhow::Result<Option<ProviderQuot
     } else if crate::gateway::accounts::relay_account_kind(relay).as_deref() == Some("copilot") {
         let value = crate::gateway::accounts::copilot_user(relay).await?;
         parse_copilot_user(&value, now)
+    } else if crate::gateway::accounts::relay_account_kind(relay).as_deref() == Some("grok") {
+        // 先过 prepare：access token 快过期时换新，请求头同步到当前版本。
+        let prepared = crate::gateway::accounts::prepare_relay(relay).await?;
+        let value = crate::gateway::accounts::grok_billing(&prepared).await?;
+        parse_grok_billing(&value, now)
     } else {
         return Ok(None);
     };
@@ -274,6 +368,65 @@ pub async fn watch(store: GatewayStore) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn reads_grok_billing() {
+        let midnight = parse_reset_date("2026-10-12").unwrap();
+        let weekly = parse_grok_billing(
+            &json!({"config": {
+                "creditUsagePercent": 37.5,
+                "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": "2026-10-12T02:17:59.504011+00:00"},
+                "billingPeriodEnd": "2026-11-01T00:00:00Z",
+                "onDemandCap": {"val": 10}, "onDemandUsed": {"val": 5}
+            }}),
+            7,
+        )
+        .unwrap();
+        assert_eq!(
+            weekly,
+            ProviderQuota {
+                windows: vec![QuotaWindow {
+                    window_minutes: Some(10080),
+                    used_percent: 37.5,
+                    resets_at_ms: Some(midnight + (2 * 3600 + 17 * 60 + 59) * 1000 + 504),
+                }],
+                updated_at_ms: 7,
+            },
+            "按量付费不算时间窗口"
+        );
+
+        let billing_period = parse_grok_billing(
+            &json!({"config": {"creditUsagePercent": 120, "billingPeriodEnd": "2026-10-05T08:00:00+08:00"}}),
+            0,
+        )
+        .unwrap();
+        assert_eq!(billing_period.windows[0].window_minutes, None);
+        assert_eq!(billing_period.windows[0].used_percent, 100.0);
+        assert_eq!(
+            billing_period.windows[0].resets_at_ms,
+            parse_reset_date("2026-10-05"),
+            "带时区偏移的时间换成 UTC"
+        );
+
+        let daily = parse_grok_billing(
+            &json!({"config": {"currentPeriod": {"type": "USAGE_PERIOD_TYPE_DAILY", "end": "bad"}}}),
+            0,
+        )
+        .unwrap();
+        assert_eq!(daily.windows[0].window_minutes, Some(1440));
+        assert_eq!(daily.windows[0].used_percent, 0.0);
+        assert_eq!(daily.windows[0].resets_at_ms, None);
+
+        assert!(parse_grok_billing(&json!({"error": "unauthorized"}), 0).is_none());
+        for bad in [
+            "2026-10-12",
+            "2026-10-12T25:00:00Z",
+            "2026-10-12T02:17:59",
+            "2026-10-12T02:17:59.Z",
+        ] {
+            assert_eq!(parse_rfc3339_ms(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn reads_codex_headers() {

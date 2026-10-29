@@ -20,6 +20,30 @@ for (const upstreamBaseUrl of [
 for (const patch of [
   {officialMixApiKey:false}, {relayMode:"pureApi"},
 ]) assert.equal(permitsExternalApi({...settings,relayProfiles:[{...profile,...patch}]}, "local"), false);
+// 聚合：和增强模式同一标准，当前聚合里既有官登又有 API 成员才放行（#2743）。
+{
+  const login = { id: "login", relayMode: "official", officialMixApiKey: false };
+  const api = { id: "api", relayMode: "pureApi", officialMixApiKey: false };
+  const aggregate = { id: "agg", relayMode: "aggregate", officialMixApiKey: false };
+  const withMembers = (members, extra = {}) => ({
+    relayProfilesEnabled: true,
+    activeRelayId: "agg",
+    relayProfiles: [aggregate, login, api, { id: "login2", relayMode: "official", officialMixApiKey: false }],
+    aggregateRelayProfiles: [{ id: "agg", members: members.map((relayId) => ({ relayId })) }],
+    ...extra,
+  });
+  assert.equal(permitsExternalApi(withMembers(["login", "api"]), "local"), true, "官登 + API 成员放行");
+  assert.equal(permitsExternalApi(withMembers(["login", "login2"]), "local"), false, "只有官登成员不放行");
+  assert.equal(permitsExternalApi(withMembers(["api"]), "local"), false, "只有 API 成员不放行");
+  assert.equal(permitsExternalApi(withMembers(["login", "api"], { aggregateRelayProfiles: [] }), "local"), false, "读不到成员不放行");
+  assert.equal(permitsExternalApi(withMembers(["login", "api"], { activeAggregateRelayId: "other" }), "local"), false, "生效的不是这个聚合");
+  assert.equal(permitsExternalApi(withMembers(["login", "api"]), "remote"), false);
+  assert.equal(
+    permitsExternalApi({ relayProfilesEnabled: true, activeRelayId: "codex-plus-gateway", relayProfiles: [{ id: "codex-plus-gateway", relayMode: "pureApi" }] }, "local"),
+    true,
+    "网关放行",
+  );
+}
 console.log("external relay official-mix policy passed");
 
 const fixture = [

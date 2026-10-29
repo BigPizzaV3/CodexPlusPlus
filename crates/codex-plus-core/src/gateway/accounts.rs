@@ -898,9 +898,23 @@ async fn fetch_grok_stable_version() -> Option<String> {
     None
 }
 
+/// 与官方 CLI 一致的 User-Agent：`grok-shell/<版本> (<系统>; <架构>)`。
+fn grok_user_agent() -> String {
+    let arch = match std::env::consts::ARCH {
+        "x86" => "386",
+        other => other,
+    };
+    format!(
+        "grok-shell/{} ({}; {arch})",
+        grok_client_version(),
+        std::env::consts::OS
+    )
+}
+
 /// 登录时这些头已存进供应商配置，版本号升级后老账号仍带旧值。
 /// 每次请求前用当前值覆盖同名头，用户自加的其他头保留。
 fn sync_grok_proxy_headers(relay: &mut RelayProfile) {
+    relay.user_agent = grok_user_agent();
     let current = grok_proxy_headers();
     relay.custom_headers.retain(|header| {
         !current
@@ -1037,6 +1051,26 @@ pub async fn grok_login(open_browser: impl FnOnce(&str)) -> anyhow::Result<GrokT
     ])
     .await?;
     parse_grok_tokens(&value, "")
+}
+
+/// SuperGrok 订阅的额度（Grok CLI 的 `/usage` 读的同一个接口）。`relay` 要先经过 `prepare_relay`。
+pub async fn grok_billing(relay: &RelayProfile) -> anyhow::Result<Value> {
+    let mut request = http_client()?
+        .get(format!("{GROK_PROXY_BASE}/billing?format=credits"))
+        .bearer_auth(&relay.api_key)
+        .header(reqwest::header::USER_AGENT, grok_user_agent())
+        .header(reqwest::header::ACCEPT, "application/json");
+    for (key, value) in grok_proxy_headers() {
+        request = request.header(key, value);
+    }
+    let response = request.send().await.context("连不上 SuperGrok")?;
+    if !response.status().is_success() {
+        bail!(
+            "查询 SuperGrok 额度失败：HTTP {}",
+            response.status().as_u16()
+        );
+    }
+    Ok(response.json().await?)
 }
 
 /// SuperGrok 账号可用的模型；读不到时用常见的几个。
@@ -2373,6 +2407,11 @@ mod tests {
             .map(|header| header.value.as_str())
             .collect();
         assert_eq!(versions, vec![grok_client_version()]);
+        assert!(
+            ready
+                .user_agent
+                .starts_with(&format!("grok-shell/{} (", grok_client_version()))
+        );
         assert!(
             ready
                 .custom_headers

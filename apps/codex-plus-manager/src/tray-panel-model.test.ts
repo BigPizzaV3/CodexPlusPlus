@@ -195,10 +195,10 @@ test("轻量模式（#2677）：面板发请求前先让后端按需重建主窗
   const panel = read("./TrayPanel.tsx");
   const request = panel.slice(panel.indexOf("const request = async"), panel.indexOf("const action = "));
   // 两处发请求（启动类操作、打开某页）都先等主窗口就绪再发。
-  assert.equal(request.match(/await prepareMainWindow\(\);\n\s+await emit\(TRAY_REQUEST_EVENT/g)?.length, 2);
+  assert.equal(request.match(/await prepareMainWindow\(\);\r?\n\s+await emit\(TRAY_REQUEST_EVENT/g)?.length, 2);
   assert.match(panel, /invoke<boolean>\("main_window_prepare"\)/);
   const app = read("./App.tsx");
-  assert.match(app, /stopListening = unlisten;\n\s+\/\/.*\n\s+void emit\(MAIN_WINDOW_READY_EVENT\)/);
+  assert.match(app, /stopListening = unlisten;\r?\n\s+\/\/.*\r?\n\s+void emit\(MAIN_WINDOW_READY_EVENT\)/);
   // 面板请求没做完时不释放主窗口。
   assert.match(app, /if \(trayRequestsInFlight\.current === 0\) void invoke\("main_window_release_when_hidden"\)/);
   const start = app.indexOf("function GlobalSettingsScreen(");
