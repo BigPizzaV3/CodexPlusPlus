@@ -3900,6 +3900,37 @@ describe("拓展运行时内核", () => {
     assert.ok(Object.isFrozen(query));
   });
 
+  it("sessionQuery.project 折叠事件；observeSession 从末尾开始增量推送，撤销后停止", async () => {
+    const k = await kernel();
+    const log = [{ type: "user/message", seq: 0, data: { text: "a" } }, { type: "assistant/message", seq: 1, data: { text: "bb" } }];
+    const calls: string[] = [];
+    (k.window as any).__codexSessionDeleteBridge = (_path: string, payload: any) => {
+      calls.push(payload.method);
+      if (payload.method === "readSession") return Promise.resolve({ status: "ok", result: { session: {}, events: log } });
+      if (payload.method === "listEvents") return Promise.resolve({ status: "ok", result: [log.at(-1)] });
+      if (payload.method === "readEventsSince") return Promise.resolve({ status: "ok", result: log.filter((event) => event.seq >= payload.params.seq) });
+      return Promise.resolve({ status: "ok", result: null });
+    };
+    k.installBuiltins();
+    const query: any = k.services.get("sessionQuery")!.value;
+    const total = await query.project("t-1", { init: () => ({ chars: 0 }), apply: (state: any, event: any) => ({ chars: state.chars + event.data.text.length }) });
+    assert.deepEqual(total, { chars: 3 });
+    await assert.rejects(query.project("t-1", {}), /apply/);
+
+    const seen: number[] = [];
+    const stop = query.observeSession("t-1", (event: any) => seen.push(event.seq), { intervalMs: 500 });
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+    await flush();
+    assert.deepEqual(seen, [], "默认从末尾开始，不回放历史");
+    log.push({ type: "user/message", seq: 2, data: { text: "ccc" } });
+    await new Promise((resolve) => setTimeout(resolve, 560));
+    assert.deepEqual(seen, [2], "新事件增量推送");
+    stop();
+    log.push({ type: "assistant/message", seq: 3, data: { text: "d" } });
+    await new Promise((resolve) => setTimeout(resolve, 560));
+    assert.deepEqual(seen, [2], "撤销后不再推送");
+  });
+
   it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {
     const k = await kernel({ manifest: { id: "greeter", locales: { en: { meta: { title: "Greeter" }, hi: "Hello {name}" }, fr: { hi: "Bonjour {name}" } } } });
     const ctx = k.create(() => {});

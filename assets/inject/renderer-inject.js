@@ -18814,16 +18814,63 @@
       });
     };
     const withId = (method) => (id, options) => invoke(method, { id, options: options ?? {} });
+    const readSession = (id) => invoke("readSession", { id });
+    const readEventsSince = (query) => invoke("readEventsSince", query ?? {});
     return Object.freeze({
       listSessions: (options) => invoke("listSessions", options ?? {}),
       filterSessions: (filters) => invoke("filterSessions", filters ?? {}),
-      readSession: (id) => invoke("readSession", { id }),
+      readSession,
       readTitle: (id) => invoke("readTitle", { id }),
       listEvents: withId("listEvents"),
       filterEvents: withId("filterEvents"),
       readEvent: (query) => invoke("readEvent", query ?? {}),
+      readEventsSince,
       searchSessions: (query) => invoke("searchSessions", query ?? {}),
       searchEvents: (query) => invoke("searchEvents", query ?? {}),
+      /** 把会话事件日志折叠成状态：apply(state, event) 返回新状态（返回 undefined 视为不变）。 */
+      async project(id, { init, apply } = {}) {
+        if (typeof apply !== "function") throw new Error("project 需要 apply(state, event)");
+        const { events } = await readSession(id);
+        let state = typeof init === "function" ? init() : init;
+        for (const event of events) {
+          const next = apply(state, event);
+          if (next !== undefined) state = next;
+        }
+        return state;
+      },
+      /**
+       * 订阅会话的新事件：按 intervalMs（默认 2 秒）增量读取，handler(event) 逐条收到。
+       * 默认从当前末尾开始（不回放历史），fromSeq 指定起点。返回撤销函数。
+       */
+      observeSession(id, handler, options = {}) {
+        if (typeof handler !== "function") throw new Error("observeSession 需要 handler(event)");
+        let stopped = false;
+        let next = Number.isFinite(options.fromSeq) ? Number(options.fromSeq) : null;
+        let timer = null;
+        const interval = Math.max(500, Number(options.intervalMs) || 2000);
+        const tick = async () => {
+          if (stopped) return;
+          try {
+            if (next === null) {
+              const tail = await invoke("listEvents", { id, options: { fromEnd: true, limit: 1 } });
+              next = tail.length ? tail[0].seq + 1 : 0;
+            } else {
+              const events = await readEventsSince({ sessionId: id, seq: next, limit: 200 });
+              for (const event of events) {
+                if (stopped) return;
+                next = event.seq + 1;
+                try { handler(event); } catch {}
+              }
+            }
+          } catch {}
+          if (!stopped) timer = setTimeout(tick, interval);
+        };
+        void tick();
+        return () => {
+          stopped = true;
+          clearTimeout(timer);
+        };
+      },
     });
   }
 

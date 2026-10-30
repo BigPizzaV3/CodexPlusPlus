@@ -106,3 +106,24 @@ fn session_events_follow_the_event_log_shape() {
     assert_eq!(hits["items"][0]["sessionId"], "t-a");
     assert_eq!(hits["items"][0]["event"]["seq"], 7);
 }
+
+#[test]
+fn cached_events_refresh_when_the_rollout_grows() {
+    let _guard = crate::common::global_state_lock();
+    let home = home_with_threads();
+    let home = home.path();
+    let before = call(home, "readEventsSince", &json!({"sessionId": "t-a", "seq": 6})).unwrap();
+    assert_eq!(before.as_array().unwrap().len(), 2, "seq 6、7");
+    // 往 rollout 追加一条助手消息：缓存按修改时间与大小失效，增量读取能拿到新事件。
+    let rollout = home.join("rollout-a.jsonl");
+    let mut content = std::fs::read_to_string(&rollout).unwrap();
+    content.push_str(&json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "m2", "content": [{"type": "output_text", "text": "改好了"}]}}).to_string());
+    content.push('\n');
+    std::fs::write(&rollout, content).unwrap();
+    let after = call(home, "readEventsSince", &json!({"sessionId": "t-a", "seq": 8})).unwrap();
+    assert_eq!(after[0]["type"], "assistant/message");
+    assert_eq!(after[0]["data"]["text"], "改好了");
+    assert_eq!(after[0]["seq"], 8);
+    let all = call(home, "searchEvents", &json!({"query": "改好"})).unwrap();
+    assert_eq!(all["items"][0]["event"]["seq"], 8, "全量搜索看到新内容");
+}

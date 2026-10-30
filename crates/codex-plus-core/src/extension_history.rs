@@ -252,10 +252,42 @@ fn rollout_events(path: &Path) -> anyhow::Result<Vec<Value>> {
     Ok(events)
 }
 
+/// 解析结果缓存：rollout 路径 → (修改时间, 大小, 事件)。文件没变就不重新解析；
+/// 订阅会话（每隔几秒增量读）和全量搜索都靠它。条目上限防止长期占用过多内存。
+const EVENT_CACHE_LIMIT: usize = 64;
+type CachedEvents = (std::time::SystemTime, u64, std::sync::Arc<Vec<Value>>);
+static EVENT_CACHE: std::sync::LazyLock<std::sync::Mutex<(std::collections::HashMap<PathBuf, CachedEvents>, std::collections::VecDeque<PathBuf>)>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn cached_rollout_events(path: &Path) -> anyhow::Result<std::sync::Arc<Vec<Value>>> {
+    let meta = std::fs::metadata(path).with_context(|| format!("无法读取 rollout {}", path.display()))?;
+    let stamp = (meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len());
+    {
+        let cache = EVENT_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((modified, len, events)) = cache.0.get(path) {
+            if (*modified, *len) == stamp {
+                return Ok(events.clone());
+            }
+        }
+    }
+    let events = std::sync::Arc::new(rollout_events(path)?);
+    let mut cache = EVENT_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (map, order) = &mut *cache;
+    if map.insert(path.to_path_buf(), (stamp.0, stamp.1, events.clone())).is_none() {
+        order.push_back(path.to_path_buf());
+    }
+    while order.len() > EVENT_CACHE_LIMIT {
+        if let Some(oldest) = order.pop_front() {
+            map.remove(&oldest);
+        }
+    }
+    Ok(events)
+}
+
 fn session_events(home: &Path, id: &str) -> anyhow::Result<(Value, Vec<Value>)> {
     let (session, rollout) = find_thread(home, id)?;
     let rollout = rollout.with_context(|| format!("会话 {id} 没有 rollout 文件"))?;
-    Ok((session, rollout_events(&rollout)?))
+    Ok((session, cached_rollout_events(&rollout)?.as_ref().clone()))
 }
 
 /// 事件里可供文本检索的内容。
@@ -315,6 +347,7 @@ fn lowercase_contains(haystack: &str, needle: &str) -> bool {
 /// - `listEvents(id, { types?, offset?, limit?, fromEnd? })` → 轻量事件数组
 /// - `filterEvents(id, { types?, text?, limit? })` → 事件数组
 /// - `readEvent({ sessionId, seq, before?, after? })` → 以 seq 为中心的事件窗口
+/// - `readEventsSince({ sessionId, seq, limit? })` → seq 及之后的完整事件（订阅会话用）
 /// - `searchSessions({ query, limit?, cursor? })` → `{ items, nextCursor }`
 /// - `searchEvents({ query, sessionId?, types?, limit?, cursor? })` → `{ items: [{ sessionId, event }], nextCursor }`
 pub fn call(home: &Path, method: &str, params: &Value) -> anyhow::Result<Value> {
@@ -381,6 +414,12 @@ pub fn call(home: &Path, method: &str, params: &Value) -> anyhow::Result<Value> 
                     .collect(),
             )
         }
+        "readEventsSince" => {
+            let (_, events) = session_events(home, &id_param()?)?;
+            let seq = options.get("seq").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let limit = options.get("limit").and_then(Value::as_u64).unwrap_or(MAX_PAGE as u64).min(MAX_PAGE as u64) as usize;
+            Value::Array(events.into_iter().skip(seq).take(limit).collect())
+        }
         "readEvent" => {
             let (_, events) = session_events(home, &id_param()?)?;
             let seq = options.get("seq").and_then(Value::as_u64).context("缺少 seq")? as usize;
@@ -405,15 +444,10 @@ pub fn call(home: &Path, method: &str, params: &Value) -> anyhow::Result<Value> 
             let query = options.get("query").and_then(Value::as_str).filter(|text| !text.is_empty()).context("缺少 query")?;
             let types = type_filter(&options);
             let (offset, limit) = page(&options, 20);
-            // 不给 sessionId 时只扫最近 100 个会话的 rollout，避免一次读遍几百个大文件。
+            // 不给 sessionId 时按新到旧扫全部会话（archived: true 时扫归档的），找够一页就停；解析结果有缓存。
             let sessions = match options.get("sessionId").and_then(Value::as_str) {
                 Some(id) => vec![id.to_string()],
-                None => list_sessions(home, &json!({ "limit": 100 }))?["sessions"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|session| session["id"].as_str().map(str::to_string))
-                    .collect(),
+                None => all_session_ids(home, options.get("archived").and_then(Value::as_bool).unwrap_or(false))?
             };
             let mut matches = Vec::new();
             for id in sessions {
@@ -434,6 +468,21 @@ pub fn call(home: &Path, method: &str, params: &Value) -> anyhow::Result<Value> 
         }
         other => anyhow::bail!("会话查询没有方法 {other}"),
     })
+}
+
+/// 全部会话 id（新到旧），不受单页上限限制。
+fn all_session_ids(home: &Path, archived: bool) -> anyhow::Result<Vec<String>> {
+    let (connection, columns) = thread_db(home)?;
+    let has = |column: &str| columns.iter().any(|existing| existing == column);
+    let filter = if has("archived") {
+        if archived { " WHERE archived != 0" } else { " WHERE (archived = 0 OR archived IS NULL)" }
+    } else {
+        ""
+    };
+    let order = if has("updated_at") { " ORDER BY updated_at DESC" } else { "" };
+    let mut statement = connection.prepare(&format!("SELECT id FROM threads{filter}{order}"))?;
+    let ids = statement.query_map([], |row| row.get::<_, String>(0))?.filter_map(Result::ok).collect();
+    Ok(ids)
 }
 
 /// 桥接路由 `/extensions/history`：`{ method, params }`。

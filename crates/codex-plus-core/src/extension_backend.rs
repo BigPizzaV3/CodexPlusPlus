@@ -45,14 +45,51 @@ const host = (service, method, params) => new Promise((resolve, reject) => {
   write({ host: id, service, method, params: params ?? null });
 });
 const withId = (method) => (id, options) => host("sessionQuery", method, { id, options: options ?? {} });
+const readSession = (id) => host("sessionQuery", "readSession", { id });
+const readEventsSince = (query) => host("sessionQuery", "readEventsSince", query ?? {});
+// 把会话事件日志折叠成状态；apply(state, event) 返回 undefined 视为不变。
+const project = async (id, { init, apply } = {}) => {
+  if (typeof apply !== "function") throw new Error("project 需要 apply(state, event)");
+  const { events } = await readSession(id);
+  let state = typeof init === "function" ? init() : init;
+  for (const event of events) { const next = apply(state, event); if (next !== undefined) state = next; }
+  return state;
+};
 const sessionQuery = Object.freeze({
   listSessions: (options) => host("sessionQuery", "listSessions", options ?? {}),
   filterSessions: (filters) => host("sessionQuery", "filterSessions", filters ?? {}),
-  readSession: (id) => host("sessionQuery", "readSession", { id }),
+  readSession,
   readTitle: (id) => host("sessionQuery", "readTitle", { id }),
   listEvents: withId("listEvents"),
   filterEvents: withId("filterEvents"),
   readEvent: (query) => host("sessionQuery", "readEvent", query ?? {}),
+  readEventsSince,
+  project,
+  // 订阅会话新事件（默认从当前末尾开始，每 intervalMs 增量读一次），返回撤销函数。
+  observeSession(id, handler, options = {}) {
+    let stopped = false;
+    let next = Number.isFinite(options.fromSeq) ? Number(options.fromSeq) : null;
+    let timer = null;
+    const interval = Math.max(500, Number(options.intervalMs) || 2000);
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        if (next === null) {
+          const tail = await host("sessionQuery", "listEvents", { id, options: { fromEnd: true, limit: 1 } });
+          next = tail.length ? tail[0].seq + 1 : 0;
+        } else {
+          for (const event of await readEventsSince({ sessionId: id, seq: next, limit: 200 })) {
+            if (stopped) return;
+            next = event.seq + 1;
+            try { handler(event); } catch {}
+          }
+        }
+      } catch {}
+      if (!stopped) timer = setTimeout(tick, interval);
+    };
+    void tick();
+    return () => { stopped = true; clearTimeout(timer); };
+  },
   searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
   searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
 });

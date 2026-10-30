@@ -616,15 +616,27 @@ const host = (service, method, params) => new Promise((resolve, reject) => {
   write({ host: id, service, method, params: params ?? null });
 });
 const withId = (method) => (id, options) => host("sessionQuery", method, { id, options: options ?? {} });
+const readSession = (id) => host("sessionQuery", "readSession", { id });
+const readEventsSince = (query) => host("sessionQuery", "readEventsSince", query ?? {});
+// 把会话事件日志折叠成状态；apply(state, event) 返回 undefined 视为不变。
+const project = async (id, { init, apply } = {}) => {
+  if (typeof apply !== "function") throw new Error("project 需要 apply(state, event)");
+  const { events } = await readSession(id);
+  let state = typeof init === "function" ? init() : init;
+  for (const event of events) { const next = apply(state, event); if (next !== undefined) state = next; }
+  return state;
+};
 // 只读会话查询，和页面、后台里的 sessionQuery 同一套方法。
 const sessionQuery = Object.freeze({
   listSessions: (options) => host("sessionQuery", "listSessions", options ?? {}),
   filterSessions: (filters) => host("sessionQuery", "filterSessions", filters ?? {}),
-  readSession: (id) => host("sessionQuery", "readSession", { id }),
+  readSession,
   readTitle: (id) => host("sessionQuery", "readTitle", { id }),
   listEvents: withId("listEvents"),
   filterEvents: withId("filterEvents"),
   readEvent: (query) => host("sessionQuery", "readEvent", query ?? {}),
+  readEventsSince,
+  project,
   searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
   searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
 });
