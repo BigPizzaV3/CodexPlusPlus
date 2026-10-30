@@ -3,7 +3,7 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
-import { Check, ChevronDown, ChevronRight, ChevronUp, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import {
   agentModels,
@@ -286,6 +286,15 @@ function AgentDetail({
   const isClaude = agent.agent === "claude";
   const [selecting, setSelecting] = useState(false);
   const [windowText, setWindowText] = useState(draft.contextWindow);
+  // 通用 Agent 有的只能在自己界面里填 Key（如 Zed 存在钥匙串里）：给出地址和本 Agent 的网关 token 一键复制。
+  const [copied, setCopied] = useState<"url" | "token" | null>(null);
+  const token = payload?.gateway.bindings[agent.agent as GatewayAgentId]?.token ?? "";
+  const copy = (kind: "url" | "token", text: string) => {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(kind);
+      window.setTimeout(() => setCopied((current) => (current === kind ? null : current)), 1500);
+    }).catch(() => undefined);
+  };
   const selectRef = useRef<HTMLButtonElement>(null);
   useEffect(() => setWindowText(draft.contextWindow), [draft.contextWindow]);
   const providers = (payload?.pool ?? []).filter(providerEnabled);
@@ -314,6 +323,20 @@ function AgentDetail({
           <span className="gw-detail-label">{tf("在 {0} 里", [agent.name])}</span>
           <div className="gw-detail-value">
             <span>{t(agent.hint)}</span>
+            {agent.enabled ? (
+              <>
+                <button className="gw-text-button" onClick={() => copy("url", `${agent.baseUrl}/v1`)} type="button">
+                  {copied === "url" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {t("复制地址")}
+                </button>
+                {token ? (
+                  <button className="gw-text-button" onClick={() => copy("token", token)} type="button">
+                    {copied === "token" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {t("复制 token")}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
           </div>
         </div>
       ) : null}
