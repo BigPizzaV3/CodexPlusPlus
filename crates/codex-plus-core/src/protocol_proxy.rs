@@ -3481,7 +3481,49 @@ pub async fn open_responses_proxy_request_for_relay(
     .await
 }
 
+/// 拓展的失败重试（gateway.error）最多让同一个请求重发几次。
+const EXTENSION_RETRY_LIMIT: usize = 3;
+
+#[allow(clippy::too_many_arguments)]
 async fn open_responses_proxy_request_with_settings_and_user_agent(
+    body: &str,
+    settings: crate::settings::BackendSettings,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+    beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
+    live_request_id: Option<&str>,
+    forced: Option<ForcedRelay>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let mut attempt = 0;
+    loop {
+        let mut response = open_responses_proxy_request_once(
+            body,
+            settings.clone(),
+            original_user_agent,
+            request_path,
+            beta_features,
+            session_headers,
+            live_request_id,
+            forced.clone(),
+        )
+        .await?;
+        if response.is_success() || attempt >= EXTENSION_RETRY_LIMIT {
+            return Ok(response);
+        }
+        // 拓展说要重试就按它给的间隔重发；没有拓展声明 gateway.error 时直接返回，零开销。
+        match crate::extension_gateway::decide_retry(&mut response, request_path, attempt).await {
+            Some(delay) => {
+                attempt += 1;
+                tokio::time::sleep(delay).await;
+            }
+            None => return Ok(response),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn open_responses_proxy_request_once(
     body: &str,
     settings: crate::settings::BackendSettings,
     original_user_agent: Option<&str>,

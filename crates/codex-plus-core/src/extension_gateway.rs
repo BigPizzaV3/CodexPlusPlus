@@ -291,6 +291,139 @@ fn items_len(input: &Value) -> usize {
     input["items"].as_array().map(Vec::len).unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------------------------
+// 请求失败重试（gateway.error）：上游返回错误状态时，把 { status, body, path, attempt } 交给拓展，
+// 返回 { retry: true, delayMs } 或 { kind: "retry", delayMs } 即重发（最多 3 次，间隔最多 10 秒）。
+// ---------------------------------------------------------------------------------------------
+
+const ERROR_RUNNER: &str = r#"
+import { pathToFileURL } from "node:url";
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+const errors = [];
+let decision = null;
+for (const item of input.middlewares) {
+  let timer;
+  try {
+    const module = await import(pathToFileURL(item.script).href);
+    const fn = typeof module.default === "function" ? module.default : module.error;
+    if (typeof fn !== "function") throw new Error(`${item.script} 没有默认导出函数`);
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${item.timeoutMs / 1000} 秒）`)), item.timeoutMs); });
+    const result = await Promise.race([Promise.resolve(fn(structuredClone(input.error), { path: input.error.path, extension: item.id, config: item.config ?? {} })), timeout]);
+    if (result && (result.retry === true || result.kind === "retry")) { decision = { id: item.id, delayMs: Number(result.delayMs) || 0 }; break; }
+  } catch (error) {
+    errors.push({ id: item.id, error: String(error?.stack || error?.message || error) });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+process.stdout.write(JSON.stringify({ decision, errors }));
+"#;
+
+static ERROR_CACHE: std::sync::Mutex<Option<(std::time::Instant, MiddlewareList)>> = std::sync::Mutex::new(None);
+/// 交给拓展的错误响应体最多多少字节。
+const ERROR_BODY_LIMIT: usize = 64 * 1024;
+/// 拓展要求的重试间隔上限。
+const RETRY_DELAY_LIMIT: Duration = Duration::from_secs(10);
+
+fn cached_error_middlewares() -> MiddlewareList {
+    let mut cache = ERROR_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, list)) = cache.as_ref() {
+        if at.elapsed() < MIDDLEWARE_CACHE_TTL {
+            return list.clone();
+        }
+    }
+    let list = crate::user_scripts::default_user_script_manager()
+        .enabled_gateway_error_middlewares()
+        .unwrap_or_default();
+    *cache = Some((std::time::Instant::now(), list.clone()));
+    list
+}
+
+/// 上游返回错误时问拓展要不要重试；要就返回等待间隔。读过的响应体会放回 `buffered_body`，
+/// 不重试时调用方照常拿到原错误。
+pub async fn decide_retry(
+    response: &mut crate::protocol_proxy::UpstreamProxyResponse,
+    request_path: &str,
+    attempt: usize,
+) -> Option<Duration> {
+    if already_applied() {
+        return None;
+    }
+    let middlewares = cached_error_middlewares();
+    decide_retry_with(&middlewares, response, request_path, attempt).await
+}
+
+pub async fn decide_retry_with(
+    middlewares: &[(String, ExtensionGatewayMiddleware)],
+    response: &mut crate::protocol_proxy::UpstreamProxyResponse,
+    request_path: &str,
+    attempt: usize,
+) -> Option<Duration> {
+    if middlewares.is_empty() {
+        return None;
+    }
+    let body = match response.read_body().await {
+        Ok(body) => body,
+        Err(_) => return None,
+    };
+    response.buffered_body = Some(body.clone());
+    decide_retry_for(middlewares, response.status_code, &body, request_path, attempt).await
+}
+
+/// 按状态码与响应体问拓展要不要重试。
+pub async fn decide_retry_for(
+    middlewares: &[(String, ExtensionGatewayMiddleware)],
+    status: u16,
+    body: &[u8],
+    request_path: &str,
+    attempt: usize,
+) -> Option<Duration> {
+    if middlewares.is_empty() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&body[..body.len().min(ERROR_BODY_LIMIT)]).to_string();
+    let error = json!({
+        "status": status,
+        "body": text,
+        "json": serde_json::from_slice::<Value>(body).unwrap_or(Value::Null),
+        "path": request_path,
+        "attempt": attempt,
+    });
+    let node = crate::extension_node::require_node().ok()?;
+    let input = json!({
+        "error": error,
+        "middlewares": middlewares.iter().map(|(id, item)| json!({
+            "id": id, "script": item.script, "timeoutMs": item.timeout_secs * 1000, "config": item.config,
+        })).collect::<Vec<_>>(),
+    });
+    let limit = Duration::from_secs(middlewares.iter().map(|(_, item)| item.timeout_secs).sum::<u64>() + 2).min(CHAIN_LIMIT);
+    match crate::extension_node::run_runner(&node, ERROR_RUNNER, &input, limit).await {
+        Ok(reply) => {
+            for failure in reply["errors"].as_array().into_iter().flatten() {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "extension_gateway.error_middleware_failed",
+                    json!({ "extension": failure.get("id"), "error": failure.get("error") }),
+                );
+            }
+            let decision = reply.get("decision").filter(|decision| decision.is_object())?;
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "extension_gateway.retry",
+                json!({ "extension": decision.get("id"), "status": status, "attempt": attempt }),
+            );
+            Some(Duration::from_millis(decision["delayMs"].as_u64().unwrap_or(0)).min(RETRY_DELAY_LIMIT))
+        }
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "extension_gateway.error_chain_failed",
+                json!({ "error": format!("{error:#}") }),
+            );
+            None
+        }
+    }
+}
+
 async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str) {
     match run_chain(middlewares, request, request_path).await {
         Ok(result) => {

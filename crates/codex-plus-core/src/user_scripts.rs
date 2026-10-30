@@ -413,6 +413,11 @@ impl UserScriptManager {
         self.enabled_gateway_list(|package| &package.gateway_request)
     }
 
+    /// 启用中、清单无误的拓展包声明的失败重试中间件（gateway.error），附带拓展 id。
+    pub fn enabled_gateway_error_middlewares(&self) -> anyhow::Result<Vec<(String, ExtensionGatewayMiddleware)>> {
+        self.enabled_gateway_list(|package| &package.gateway_error)
+    }
+
     /// 启用中、清单无误的拓展包声明的工具结果改写（toolPipeline.postExecute），附带拓展 id。
     pub fn enabled_tool_post_execute(&self) -> anyhow::Result<Vec<(String, ExtensionHook)>> {
         let config = self.load_config();
@@ -922,6 +927,8 @@ struct ExtensionPackage {
     gateway_response: Vec<ExtensionGatewayMiddleware>,
     /// 工具结果改写（codexpp.json 的 `toolPipeline.postExecute`），由网关请求侧执行。
     tool_post_execute: Vec<ExtensionHook>,
+    /// 请求失败时决定是否重试（codexpp.json 的 `gateway.error`）。
+    gateway_error: Vec<ExtensionGatewayMiddleware>,
     tools: Vec<ExtensionTool>,
     config_schema: Vec<ExtensionConfigField>,
     /// 常驻后台脚本（codexpp.json 的 `backend.script`）。
@@ -1088,6 +1095,7 @@ impl ExtensionPackage {
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
             "gatewayRequest": self.gateway_request.len(),
             "gatewayResponse": self.gateway_response.len(),
+            "gatewayError": self.gateway_error.len(),
             "toolPipeline": {
                 "preExecute": self.hooks.iter().filter(|hook| hook.adapter.as_deref() == Some("preExecute")).count(),
                 "execute": self.hooks.iter().filter(|hook| hook.adapter.as_deref() == Some("execute")).count(),
@@ -1312,6 +1320,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         gateway_request: Vec::new(),
         gateway_response: Vec::new(),
         tool_post_execute: Vec::new(),
+        gateway_error: Vec::new(),
         tools: Vec::new(),
         config_schema: Vec::new(),
         backend: None,
@@ -1399,7 +1408,7 @@ fn parse_extension_manifest(
     let (tool_hooks, tool_post_execute) = parse_tool_pipeline(&root, raw.get("toolPipeline"))?;
     package.hooks.extend(tool_hooks);
     package.tool_post_execute = tool_post_execute;
-    (package.gateway_request, package.gateway_response) = parse_gateway_middlewares(&root, raw.get("gateway"))?;
+    (package.gateway_request, package.gateway_response, package.gateway_error) = parse_gateway_middlewares(&root, raw.get("gateway"))?;
     package.tools = parse_extension_tools(&root, &package.id, raw.get("tools"))?;
     package.config_schema = parse_extension_config_schema(raw.get("config"))?;
     package.backend = match raw.get("backend") {
@@ -1588,17 +1597,20 @@ fn parse_tool_pipeline(
     Ok((pre, post))
 }
 
-/// 解析 `gateway`：`{ request: [...], response: [...] }`，两种中间件写法相同（script + timeout）。
+/// 网关中间件三类：请求改写、响应流改写、请求失败时决定是否重试。
+type GatewayMiddlewareLists = (Vec<ExtensionGatewayMiddleware>, Vec<ExtensionGatewayMiddleware>, Vec<ExtensionGatewayMiddleware>);
+
+/// 解析 `gateway`：`{ request: [...], response: [...], error: [...] }`，写法相同（script + timeout）。
 fn parse_gateway_middlewares(
     root: &std::path::Path,
     value: Option<&Value>,
-) -> anyhow::Result<(Vec<ExtensionGatewayMiddleware>, Vec<ExtensionGatewayMiddleware>)> {
+) -> anyhow::Result<GatewayMiddlewareLists> {
     let Some(value) = value else {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     };
-    let map = value.as_object().context("gateway 必须是对象：{ \"request\": [...], \"response\": [...] }")?;
-    if let Some(key) = map.keys().find(|key| key.as_str() != "request" && key.as_str() != "response") {
-        anyhow::bail!("gateway 只支持 request（请求中间件）与 response（响应流中间件），不认识 {key}");
+    let map = value.as_object().context("gateway 必须是对象：{ \"request\": [...], \"response\": [...], \"error\": [...] }")?;
+    if let Some(key) = map.keys().find(|key| !["request", "response", "error"].contains(&key.as_str())) {
+        anyhow::bail!("gateway 只支持 request（请求中间件）、response（响应流中间件）与 error（失败重试），不认识 {key}");
     }
     let parse = |kind: &str| -> anyhow::Result<Vec<ExtensionGatewayMiddleware>> {
         let Some(list) = map.get(kind) else {
@@ -1630,7 +1642,7 @@ fn parse_gateway_middlewares(
             })
             .collect()
     };
-    Ok((parse("request")?, parse("response")?))
+    Ok((parse("request")?, parse("response")?, parse("error")?))
 }
 
 /// 解析 `config`：`{ "minutes": { "type": "number", "title": "时长", "default": 25 } }`。

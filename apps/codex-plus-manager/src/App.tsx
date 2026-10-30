@@ -703,7 +703,7 @@ type UserScriptInventory = {
     package?: {
       id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
       configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>; backend?: boolean;
-      gatewayRequest?: number; gatewayResponse?: number;
+      gatewayRequest?: number; gatewayResponse?: number; gatewayError?: number;
       toolPipeline?: { preExecute?: number; execute?: number; postExecute?: number }; skippedAssets?: string[];
       locales?: Record<string, { title?: string | null; description?: string | null }>;
     } | null;
@@ -16302,10 +16302,11 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
               script.package.toolPipeline.postExecute ? t("改结果") : "",
             ].filter(Boolean).join("、")])}</small>
           : null}
-        {script.package?.gatewayRequest || script.package?.gatewayResponse
+        {script.package?.gatewayRequest || script.package?.gatewayResponse || script.package?.gatewayError
           ? <small className="user-script-hooks">{tf("网关中间件：{0}", [[
               script.package.gatewayRequest ? t("请求") : "",
               script.package.gatewayResponse ? t("响应流") : "",
+              script.package.gatewayError ? t("失败重试") : "",
             ].filter(Boolean).join("、")])}</small>
           : null}
       </div>
