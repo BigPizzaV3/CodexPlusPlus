@@ -118,7 +118,23 @@ codexPlus.plugin((ctx) => {
 | P4 | 脚本市场与插件市场合并；安装时校验 `engines`，展示权限 | 市场能装包插件 |
 | 持续 | 把内置功能（宠物、听写、轮次回退、用量状态栏）逐个拆成内置插件 | API 足够表达内置功能 |
 
-## 六、风险
+## 六、对话造插件
+
+用户在 Codex 对话里描述需求，agent 直接写出插件包并热重载，读回加载状态与报错后继续迭代。
+
+- **为什么走 MCP**：Codex 的沙箱通常不能写工作区以外的目录，也连不上本机调试端口。MCP 服务由 Codex 拉起、
+  在沙箱外运行，写入还会经过 Codex 的工具审批。
+- **服务**：`codex_plus_plugins`，即 Codex++ 主程序 `--codex-plus-plugin-mcp --state-dir <状态目录>`
+  （`crates/codex-plus-core/src/plugin_creator.rs`）。工具：guide / list / read / write / set_enabled / reload，
+  没有删除。
+- **接入**：与协作 MCP 共用 `crates/codex-plus-core/src/managed_mcp.rs`：先写 Codex++ 托管上下文（切换供应商不丢），
+  再原子写 Codex live 配置，冲突不覆盖、失败只回滚本条。管理器「本地拓展」页的「对话造插件」一栏触发。
+- **热重载安全**：重载前读一次页面运行状态，有不支持页内重载的旧脚本就不自动执行（否则会整页刷新、打断对话），
+  交给用户在管理器手动点。重载后等 0.8 秒再读一次状态，捕捉插件异步阶段报的错。
+- **写入约束**：只写 user 目录、包内相对路径、拒绝软链逃逸、同名目录必须是同 id 的插件包、单文件 256 KiB / 总量 1 MiB；
+  清单由工具生成，`engines.codexpp` 固定为当前版本。
+
+## 七、风险
 
 - **Codex 升级**：DOM 与协议随版本变。插件只依赖我们承诺的 slot / 事件契约，由 Codex++ 适配层吸收变化，
   契约测试守住。

@@ -22,9 +22,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::managed_mcp::{self, ManagedMcp};
-use crate::settings::SettingsStore;
 
-pub use crate::managed_mcp::{InstallReceipt, RegistrationStatus};
+pub use crate::managed_mcp::RegistrationStatus;
 
 pub const SERVER_ID: &str = "codex_plus_dsh";
 pub const MCP_FLAG: &str = "--codex-plus-dsh-mcp";
@@ -65,11 +64,8 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_SOURCE_LEN: usize = 512;
 const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
 /// 宿主自己提供的 peer 包；只依赖它们时不需要跑 npm install。
-const HOST_PROVIDED_PACKAGES: &[&str] = &[
-    "@deepseek-ai/cordis",
-    "@deepseek-ai/dsh-tools",
-    "@deepseek-ai/schemastery",
-];
+/// schemastery 按 dsh 约定是普通运行时依赖，声明了就装真包，替身只兜底没装的情况。
+const HOST_PROVIDED_PACKAGES: &[&str] = &["@deepseek-ai/cordis", "@deepseek-ai/dsh-tools"];
 
 /// 插件来源。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -751,6 +747,11 @@ fn npm_command(toolchain: &Toolchain, directory: &Path) -> anyhow::Result<Comman
         .env("npm_config_update_notifier", "false")
         .env("npm_config_fund", "false")
         .env("npm_config_audit", "false");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
     Ok(command)
 }
 
@@ -789,6 +790,11 @@ fn fetch_npm(spec: &str, toolchain: &Toolchain, staging: &Path) -> anyhow::Resul
     std::fs::create_dir_all(&extract)?;
     let mut tar = Command::new(if cfg!(windows) { "tar.exe" } else { "tar" });
     tar.arg("-xzf").arg(&tarball).arg("-C").arg(&extract);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        tar.creation_flags(crate::windows_create_no_window());
+    }
     run_with_timeout(tar, FETCH_TIMEOUT, "解包 npm tarball")?;
     let package = extract.join("package");
     if !package.join("package.json").is_file() {
@@ -817,6 +823,11 @@ fn fetch_git(
         .arg("clone")
         .arg("--depth")
         .arg("1");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
     if let Some(reference) = reference {
         command.arg("--branch").arg(reference);
     }
@@ -922,6 +933,11 @@ fn inspect_package(
         .arg("inspect")
         .arg(root)
         .arg(&options);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
     let result = run_with_timeout(command, INSPECT_TIMEOUT, "分析插件");
     let _ = std::fs::remove_file(&options);
     let output = result?;
@@ -1014,63 +1030,6 @@ pub fn status(home: &Path, executable: &Path, state_dir: &Path) -> anyhow::Resul
     managed_mcp::status(&SPEC, home, executable, state_dir)
 }
 
-/// 接入 Codex：托管上下文与 live config 一起更新；live 写入失败时只回滚本次上下文字段。
-pub fn connect_codex(
-    settings_store: &SettingsStore,
-    home: &Path,
-    executable: &Path,
-    state_dir: &Path,
-) -> anyhow::Result<RegistrationStatus> {
-    let registration = status(home, executable, state_dir)?;
-    if registration.status == "conflict" {
-        bail!("同名 {SERVER_ID} 属于其他 MCP 配置，未覆盖");
-    }
-    let settings = settings_store
-        .load()
-        .context("无法读取 Codex++ 托管配置，未接入")?;
-    let before = settings.relay_context_config_contents.clone();
-    let updated = managed_mcp::upsert_managed_context(&SPEC, &before, executable, state_dir)?;
-    let changed = updated != before;
-    let mut committed = updated.clone();
-    if changed {
-        committed = settings_store
-            .update(context_patch(&settings, &updated)?)
-            .context("无法保存托管 MCP 配置")?
-            .relay_context_config_contents;
-    }
-    match managed_mcp::install(&SPEC, home, executable, state_dir) {
-        Ok(receipt) => Ok(receipt.status),
-        Err(error) => {
-            if changed {
-                let rollback = (|| -> anyhow::Result<()> {
-                    let latest = settings_store.load()?;
-                    if latest.relay_context_config_contents != committed {
-                        bail!("托管 MCP 已被其他操作修改，未覆盖新数据");
-                    }
-                    settings_store
-                        .update(context_patch(&latest, &before)?)
-                        .map(|_| ())
-                })();
-                if rollback.is_err() {
-                    bail!("接入 Codex 失败：{error}；托管配置未能恢复，请刷新 MCP 设置后检查");
-                }
-            }
-            Err(error).context("dsh 插件 MCP 接入失败，托管配置已保持原状")
-        }
-    }
-}
-
-fn context_patch(settings: &crate::settings::BackendSettings, contents: &str) -> anyhow::Result<Value> {
-    let mut patch = json!({ "relayContextConfigContents": contents });
-    if let Some(revision) = serde_json::to_value(settings)?
-        .get("revision")
-        .filter(|value| value.is_string())
-    {
-        patch["revision"] = revision.clone();
-    }
-    Ok(patch)
-}
-
 /// `--codex-plus-dsh-mcp --state-dir <dir>`：写出宿主、定位 Node，以继承的 stdio 运行 MCP 服务。
 pub fn run_mcp(args: &[OsString]) -> anyhow::Result<i32> {
     let state_dir = match args {
@@ -1084,14 +1043,20 @@ pub fn run_mcp(args: &[OsString]) -> anyhow::Result<i32> {
     let plugins = DshPlugins::new(&state_dir);
     let host = plugins.ensure_host()?;
     let node = locate_node().context("没有找到 Node 运行时，dsh 插件 MCP 无法启动")?;
-    let status = Command::new(node)
+    let mut command = Command::new(node);
+    command
         .arg(host)
         .arg("serve")
         .arg(plugins.registry_path())
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .context("无法启动 dsh 插件宿主")?;
+        .stderr(Stdio::inherit());
+    // stdio 已接到 Codex 的管道上，不需要控制台窗口。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    let status = command.status().context("无法启动 dsh 插件宿主")?;
     Ok(status.code().unwrap_or(1))
 }

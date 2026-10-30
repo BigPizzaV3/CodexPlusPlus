@@ -9456,7 +9456,7 @@ fn market_script_payload(script: &MarketScript, installed: &BTreeMap<String, Str
     })
 }
 
-fn default_user_script_manager() -> UserScriptManager {
+pub(crate) fn default_user_script_manager() -> UserScriptManager {
     let config_dir = user_scripts_config_dir();
     UserScriptManager::new(
         builtin_user_scripts_dir(),

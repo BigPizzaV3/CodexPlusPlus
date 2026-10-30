@@ -89,6 +89,7 @@ mod official_usage_lifecycle;
 mod paste_fix_settings;
 mod plugin_install_persistence;
 mod plugin_market_live;
+mod plugin_creator;
 mod plugin_navigation;
 mod protocol_proxy;
 mod protocol_safety;

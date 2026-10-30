@@ -82,9 +82,14 @@ fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
             }
         }
         "connect_codex" => {
-            let status =
-                dsh_plugins::connect_codex(&SettingsStore::default(), &home, &executable, &state_dir)?;
-            message = status.message;
+            crate::agent_collaboration_commands::connect_codex(
+                &dsh_plugins::SPEC,
+                &SettingsStore::default(),
+                &home,
+                &executable,
+                &state_dir,
+            )?;
+            message = dsh_plugins::status(&home, &executable, &state_dir)?.message;
         }
         _ => bail!("不支持的 dsh 插件操作：{action}"),
     }

@@ -301,6 +301,141 @@ impl UserScriptManager {
         Ok(config)
     }
 
+    /// 用户脚本目录（插件包就放在它下面）。
+    pub fn user_dir(&self) -> &std::path::Path {
+        &self.user_dir
+    }
+
+    /// 写入（或覆盖）一个用户插件包：`user_dir/<id>/` 下的文件加生成的 `codexpp.json`。
+    ///
+    /// 供「对话造插件」使用，所以校验从严：只能写 user 目录、只能写包内相对路径、
+    /// 同名目录必须是同 id 的插件包（不会接管别的目录）、单文件与总量有上限。
+    /// 清单最后写，写入中途失败时旧清单仍在。不删除包里已有的其他文件。
+    /// 返回脚本 key 与清单校验结果（`error` 非空表示包写好了但不会被加载）。
+    pub fn write_plugin_package(&self, write: &PluginWrite) -> anyhow::Result<Value> {
+        validate_plugin_id(&write.id)?;
+        if write.files.is_empty() || write.files.len() > PLUGIN_WRITE_MAX_FILES {
+            anyhow::bail!("files 需要 1~{PLUGIN_WRITE_MAX_FILES} 个文件");
+        }
+        let mut total = 0usize;
+        for (path, content) in &write.files {
+            validate_package_relative_path(path)?;
+            if path.eq_ignore_ascii_case(PLUGIN_MANIFEST_FILE) {
+                anyhow::bail!("{PLUGIN_MANIFEST_FILE} 由清单参数生成，不能直接写");
+            }
+            if content.len() > PLUGIN_WRITE_MAX_FILE_BYTES {
+                anyhow::bail!("{path} 超过单文件上限 {} KiB", PLUGIN_WRITE_MAX_FILE_BYTES / 1024);
+            }
+            total += content.len();
+        }
+        if total > PLUGIN_WRITE_MAX_TOTAL_BYTES {
+            anyhow::bail!("文件总量超过 {} KiB", PLUGIN_WRITE_MAX_TOTAL_BYTES / 1024);
+        }
+        let renderer = if write.renderer.is_empty() {
+            vec!["renderer.js".to_string()]
+        } else {
+            write.renderer.clone()
+        };
+        fs::create_dir_all(&self.user_dir).with_context(|| {
+            format!("failed to create user scripts directory {}", self.user_dir.display())
+        })?;
+        let root = self
+            .user_dir
+            .canonicalize()
+            .context("无法解析用户脚本目录")?;
+        let directory = root.join(&write.id);
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                anyhow::bail!("{} 已存在且不是普通目录，未写入", directory.display());
+            }
+            Ok(_) => {
+                let manifest = directory.join(PLUGIN_MANIFEST_FILE);
+                let existing_id = fs::read_to_string(&manifest)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                    .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_owned));
+                if existing_id.as_deref() != Some(write.id.as_str()) {
+                    anyhow::bail!(
+                        "{} 已存在但不是 id 为 {} 的插件包，未覆盖",
+                        directory.display(),
+                        write.id
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&directory)
+                    .with_context(|| format!("无法创建插件目录 {}", directory.display()))?;
+            }
+            Err(error) => return Err(error).context("无法检查插件目录"),
+        }
+        for (path, content) in &write.files {
+            let target = directory.join(path);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("无法创建目录 {}", parent.display()))?;
+                // 中间目录可能是指向包外的软链：落盘前确认真实位置仍在包内。
+                let parent = parent.canonicalize().context("无法解析插件子目录")?;
+                if !parent.starts_with(&directory) {
+                    anyhow::bail!("{path} 指向插件包以外，未写入");
+                }
+            }
+            if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+                anyhow::bail!("{path} 是符号链接，未写入");
+            }
+            crate::settings::atomic_write(&target, content.as_bytes())
+                .with_context(|| format!("无法写入 {path}"))?;
+        }
+        let manifest = json!({
+            "id": write.id,
+            "name": write.name,
+            "version": if write.version.trim().is_empty() { "0.1.0" } else { write.version.trim() },
+            "description": write.description,
+            "engines": { "codexpp": EXTENSION_API_VERSION },
+            "renderer": renderer,
+            "permissions": { "routes": write.routes },
+        });
+        crate::settings::atomic_write(
+            &directory.join(PLUGIN_MANIFEST_FILE),
+            serde_json::to_string_pretty(&manifest)?.as_bytes(),
+        )
+        .context("无法写入插件清单")?;
+        let package = load_plugin_package(&directory);
+        Ok(json!({
+            "key": plugin_package_key(&write.id),
+            "directory": directory.to_string_lossy(),
+            "manifestError": package.error,
+        }))
+    }
+
+    /// 读回一个用户插件包的清单与文本文件，供对话里修改已有插件。
+    pub fn read_plugin_package(&self, id: &str) -> anyhow::Result<Value> {
+        validate_plugin_id(id)?;
+        let directory = self.user_dir.join(id);
+        let manifest_path = directory.join(PLUGIN_MANIFEST_FILE);
+        if fs::symlink_metadata(&directory).map(|metadata| !metadata.is_dir()).unwrap_or(true)
+            || !manifest_path.is_file()
+        {
+            anyhow::bail!("没有 id 为 {id} 的用户插件包");
+        }
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(&manifest_path)?)
+            .unwrap_or(Value::Null);
+        let mut files = Vec::new();
+        let mut total = 0usize;
+        collect_package_files(&directory, &directory, 0, &mut files, &mut total);
+        Ok(json!({
+            "key": plugin_package_key(id),
+            "directory": directory.to_string_lossy(),
+            "manifest": manifest,
+            "files": files,
+        }))
+    }
+
+    /// 用户插件包是否存在（带清单的目录）。
+    pub fn has_plugin_package(&self, id: &str) -> bool {
+        validate_plugin_id(id).is_ok()
+            && self.user_dir.join(id).join(PLUGIN_MANIFEST_FILE).is_file()
+    }
+
     pub fn inventory(&self) -> anyhow::Result<Value> {
         self.inventory_with_runtime_status(None)
     }
@@ -558,6 +693,95 @@ impl PluginPackage {
             "engines": { "codexpp": self.engine },
             "permissions": { "routes": self.routes },
         })
+    }
+}
+
+/// 对话写入插件包的参数。`files` 的键是包内相对路径。
+#[derive(Debug, Clone, Default)]
+pub struct PluginWrite {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub routes: Vec<String>,
+    pub renderer: Vec<String>,
+    pub files: BTreeMap<String, String>,
+}
+
+const PLUGIN_WRITE_MAX_FILES: usize = 32;
+const PLUGIN_WRITE_MAX_FILE_BYTES: usize = 256 * 1024;
+const PLUGIN_WRITE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
+/// 读回插件包时的上限：只读文本、跳过大文件，避免把整个目录塞进对话。
+const PLUGIN_READ_MAX_TOTAL_BYTES: usize = 512 * 1024;
+
+/// 插件包对应的脚本 key。
+pub fn plugin_package_key(id: &str) -> String {
+    format!("user:{id}")
+}
+
+pub fn validate_plugin_id(id: &str) -> anyhow::Result<()> {
+    if id.is_empty()
+        || id.len() > 64
+        || id.ends_with(".js")
+        || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        anyhow::bail!("插件 id 只能包含字母、数字、- 和 _，最长 64 个字符");
+    }
+    Ok(())
+}
+
+fn validate_package_relative_path(path: &str) -> anyhow::Result<()> {
+    let relative = std::path::Path::new(path);
+    if path.trim().is_empty()
+        || path.contains('\\')
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("文件路径 {path} 必须是包内的相对路径");
+    }
+    Ok(())
+}
+
+fn collect_package_files(
+    root: &std::path::Path,
+    directory: &std::path::Path,
+    depth: usize,
+    files: &mut Vec<Value>,
+    total: &mut usize,
+) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut paths = entries.filter_map(Result::ok).map(|entry| entry.path()).collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let relative = path
+            .strip_prefix(root)
+            .map(|value| value.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if metadata.file_type().is_symlink() || relative == PLUGIN_MANIFEST_FILE {
+            continue;
+        }
+        if metadata.is_dir() {
+            if depth < 4 {
+                collect_package_files(root, &path, depth + 1, files, total);
+            }
+            continue;
+        }
+        let size = metadata.len() as usize;
+        let content = (size <= PLUGIN_WRITE_MAX_FILE_BYTES
+            && *total + size <= PLUGIN_READ_MAX_TOTAL_BYTES)
+            .then(|| fs::read_to_string(&path).ok())
+            .flatten();
+        if let Some(content) = &content {
+            *total += content.len();
+        }
+        files.push(json!({ "path": relative, "size": size, "content": content }));
     }
 }
 

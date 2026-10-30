@@ -74,6 +74,13 @@ fn main() {
             }
         }
     }
+    if args.get(1).is_some_and(|arg| arg == "--codex-plus-plugin-mcp") {
+        if let Err(error) = codex_plus_manager_lib::run_plugin_creator_mcp(&args[2..]) {
+            eprintln!("插件创作 MCP 启动失败：{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(options_path) = args
         .windows(2)
         .find(|window| window[0] == "--codex-plus-multi-worker")

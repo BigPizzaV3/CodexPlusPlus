@@ -1,4 +1,5 @@
 mod agent_collaboration_commands;
+mod plugin_creator_commands;
 mod agent_launch_commands;
 mod agent_mcp_commands;
 mod agent_pet_commands;
@@ -62,6 +63,11 @@ fn record_shutdown_entry(event: &'static str, detail: serde_json::Value) {
 
 pub fn run_agent_collaboration_mcp(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
     agent_collaboration_commands::run_mcp(args)
+}
+
+/// 「对话造插件」MCP：由 Codex 以 `--codex-plus-plugin-mcp` 拉起的 stdio 进程。
+pub fn run_plugin_creator_mcp(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
+    plugin_creator_commands::run_mcp(args)
 }
 
 /// 卸载清理：把走网关的 Agent 恢复成直连（见 [`gateway_commands::restore_for_uninstall`]）。
@@ -288,6 +294,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_collaboration_commands::agent_collaboration_request,
             dsh_plugin_commands::dsh_plugins_request,
+            plugin_creator_commands::plugin_creator_request,
             commands::backend_version,
             commands::startup_options,
             commands::consume_pending_manager_navigation,

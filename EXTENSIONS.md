@@ -19,6 +19,7 @@ window.codexPlus
 - [脚本放在哪、怎么生效](#脚本放在哪怎么生效)
 - [生命周期契约（最重要的一节）](#生命周期契约最重要的一节)
 - [插件：codexPlus.plugin 与插件包](#插件codexplusplugin-与插件包)
+- [在 Codex 对话里造插件](#在-codex-对话里造插件)
 - [API 参考](#api-参考)
 - [后端调用与路由白名单](#后端调用与路由白名单)
 - [类名与属性契约](#类名与属性契约)
@@ -194,6 +195,28 @@ user_scripts/
 清单不合法（JSON 错误、入口越出包目录、版本不兼容等）时包不注入，管理页显示「加载失败」和原因。
 未知字段会被忽略，后续版本会在清单里增加更多能力面。插件包是文件夹，管理页不提供删除按钮，请在目录里手动移除。
 整体设计见 [docs/plans/2026-10-30-codexpp-plugin-system-design.md](docs/plans/2026-10-30-codexpp-plugin-system-design.md)。
+
+### 在 Codex 对话里造插件
+
+不想自己写代码时，可以让 Codex 帮你写：在管理器「本地拓展」页点「接入 Codex」，然后新开一个 Codex 对话，
+直接说需求，例如「帮我做个插件：图标栏加一个番茄钟」。
+
+接入后 Codex 多了一个本机 MCP 服务 `codex_plus_plugins`（由 Codex++ 主程序以 `--codex-plus-plugin-mcp` 运行），提供：
+
+| 工具 | 作用 |
+| --- | --- |
+| `codexpp_plugin_guide` | 创作指南（`assets/plugin-creator/guide.md`）、API 版本与可用路由 |
+| `codexpp_plugin_list` / `codexpp_plugin_read` | 列出插件与加载状态、读回某个插件的源码 |
+| `codexpp_plugin_write` | 写入 `user_scripts/<id>/`（清单由参数生成），立刻热重载并返回加载状态与报错 |
+| `codexpp_plugin_set_enabled` / `codexpp_plugin_reload` | 启停、手动热重载 |
+
+边界：
+
+- 只写用户目录下的插件包，同名目录必须是同 id 的插件包才会覆盖；路径只能在包内，单文件 256 KiB、总量 1 MiB。
+- 不提供删除，不要的插件由 agent 停用，文件由你手动删除。
+- 只做页内热重载。已加载的旧脚本里有没登记清理函数的，热重载会刷新整个 Codex 页面、可能打断当前对话，
+  这时工具不自动重载，会让你在管理器里手动点「热重载」。
+- 写入属于 MCP 工具调用，是否每次确认由 Codex 自己的工具审批设置决定。
 
 ---
 
