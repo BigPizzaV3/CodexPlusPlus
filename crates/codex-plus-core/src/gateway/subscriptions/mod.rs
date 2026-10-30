@@ -1,6 +1,6 @@
-//! 私有接口订阅：Gemini Code Assist、Antigravity。
+//! 私有接口订阅：Cursor、Kiro、Zed、Command Code、Devin、Factory、Gemini Code Assist、Antigravity。
 //!
-//! 这些订阅的接口与 OpenAI / Anthropic 都不同（Google Code Assist），不适合塞进 `protocol_proxy`。
+//! 这些订阅的接口各不相同（protobuf、AWS 事件流、Code Assist、各家自己的 JSON），不适合塞进 `protocol_proxy`。
 //! 做法是把每家包成一个「本地上游」：
 //!
 //! ```text
@@ -16,13 +16,21 @@
 //! 这些都是冒用官方客户端身份调用未公开的接口，可能随时失效，也有账号被限制的风险（界面上会提示）。
 
 pub mod antigravity;
+pub mod b_shared;
 pub mod catalog;
 pub mod chat;
 pub mod code_assist;
+pub mod commandcode;
+pub mod cursor;
+pub mod devin;
+pub mod editor_kit;
+pub mod factory;
 pub mod gemini;
 pub mod google;
+pub mod kiro;
 pub mod oauth;
 pub mod server;
+pub mod zed;
 
 use std::pin::Pin;
 use std::sync::OnceLock;

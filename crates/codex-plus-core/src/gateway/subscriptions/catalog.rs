@@ -1,10 +1,20 @@
-//! 内置的订阅：Google 系的 Gemini Code Assist、Antigravity。
+//! 内置的订阅：海外的编码套餐（Cursor、Kiro、Zed、Command Code、Devin、Factory）与 Google 系
+//! （Gemini Code Assist、Antigravity）。
 //!
-//! 只内置直连官方公开登录的这两家；其它要冒充各家客户端调用私有接口的订阅（Cursor、Kiro、Qoder 等）
-//! 违反厂商条款的风险大，不内置。
+//! 国内厂商的编码套餐（Qoder、WorkBuddy、ZCode、Xiaomi MiMo 等）不内置。
 
 use crate::gateway::subscriptions::Subscription;
 use crate::gateway::subscriptions::antigravity::Antigravity;
 use crate::gateway::subscriptions::gemini::Gemini;
+use crate::gateway::subscriptions::{commandcode, cursor, devin, factory, kiro, zed};
 
-pub static ITEMS: &[&dyn Subscription] = &[&Gemini, &Antigravity];
+pub static ITEMS: &[&dyn Subscription] = &[
+    &cursor::CURSOR,
+    &kiro::KIRO,
+    &zed::ZED,
+    &commandcode::COMMAND_CODE,
+    &devin::DEVIN,
+    &factory::FACTORY,
+    &Gemini,
+    &Antigravity,
+];
