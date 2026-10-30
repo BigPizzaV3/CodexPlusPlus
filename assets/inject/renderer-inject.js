@@ -2492,6 +2492,21 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
+      /* 图标栏按钮提示的兜底外观：找不到原生提示样式类时使用，数值量自原生提示。 */
+      .codex-plus-rail-tooltip-fallback {
+        max-width: 320px;
+        padding: 5px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 20px;
+        background: rgb(45, 45, 45);
+        box-shadow: rgba(15, 23, 42, 0.2) 0 8px 18px 0;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 430;
+        line-height: 18px;
+        letter-spacing: -0.15px;
+        white-space: nowrap;
+      }
       /*
        * 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。
        * 新版 Codex 还把弹出层挂在一个 z-60 的固定视口容器里（zoom-adjusted-viewport），
@@ -8384,7 +8399,9 @@
     button.removeAttribute("data-selected");
     button.removeAttribute("aria-current");
     button.setAttribute("aria-label", label);
-    button.setAttribute("title", label);
+    // 不用 title：那会弹出系统自带的提示框，样式和位置都和原生按钮不一样。
+    button.removeAttribute("title");
+    attachCodexPlusRailTooltip(button, label);
     button.textContent = "";
     // 原生 rail 按钮是纯图标，没有文字标签，所以只放图标 + 状态点。
     button.innerHTML = `<span class="codex-plus-rail-icon" aria-hidden="true">${iconMarkup}</span>`
@@ -8398,6 +8415,124 @@
     }, true);
     wrapper.appendChild(button);
     return wrapper;
+  }
+
+  /**
+   * 图标栏按钮的悬浮提示，外观与行为对齐原生按钮。
+   *
+   * 原生按钮的提示由 React（Radix Tooltip）渲染，我们复制出来的按钮接不上它，
+   * 所以自己画：直接复用原生提示的样式类（深浅主题、版本更新都跟着走），找不到时
+   * 用量出来的数值兜底。位置与时机照原生：按钮右侧 2px、垂直居中；悬停约 150ms
+   * 出现，在相邻按钮间移动时（300ms 内）立即出现；按下、移出、失焦即消失。
+   */
+  const codexPlusRailTooltipDelayMs = 150;
+  const codexPlusRailTooltipSkipDelayMs = 300;
+  const codexPlusRailTooltipSideOffset = 2;
+  let codexPlusRailTooltipTimer = null;
+  let codexPlusRailTooltipHiddenAt = 0;
+  let codexPlusRailTooltipOwner = null;
+  let codexPlusNativeTooltipClassCache;
+
+  /**
+   * 原生提示的样式类名带构建哈希（如 _Tooltip_11i4f_2），每个版本都可能变，只能运行时找。
+   * 它独有一条 `[data-side="bottom"][data-default-side-offset="true"]` 变体，用来和
+   * 其它同名前缀的组件区分开。规则可能嵌在 @layer / @supports 里，要递归找。
+   */
+  function codexPlusNativeTooltipClass(sheets = document.styleSheets) {
+    if (codexPlusNativeTooltipClassCache !== undefined) return codexPlusNativeTooltipClassCache;
+    const signature = /^\.(_Tooltip_[\w-]+)\[data-side="bottom"\]\[data-default-side-offset="true"\]$/;
+    let found = "";
+    const walk = (rules) => {
+      for (const rule of rules || []) {
+        if (found) return;
+        const match = signature.exec(rule.selectorText || "");
+        if (match) found = match[1];
+        else if (rule.cssRules) walk(rule.cssRules);
+      }
+    };
+    for (const sheet of sheets || []) {
+      try {
+        walk(sheet.cssRules);
+      } catch {}
+      if (found) break;
+    }
+    // 只缓存找到的结果：样式表可能晚于第一次悬停才加载完。
+    if (found) codexPlusNativeTooltipClassCache = found;
+    return found;
+  }
+
+  function hideCodexPlusRailTooltip() {
+    clearTimeout(codexPlusRailTooltipTimer);
+    codexPlusRailTooltipTimer = null;
+    const node = document.getElementById("codex-plus-rail-tooltip");
+    if (node) {
+      node.remove();
+      codexPlusRailTooltipHiddenAt = Date.now();
+    }
+    codexPlusRailTooltipOwner = null;
+  }
+
+  function showCodexPlusRailTooltip(button, label) {
+    if (!button.isConnected || codexPlusRailTooltipOwner !== button) return;
+    document.getElementById("codex-plus-rail-tooltip")?.remove();
+    const nativeClass = codexPlusNativeTooltipClass();
+    const zoom = codexPlusWindowZoom();
+    const wrapper = document.createElement("div");
+    wrapper.id = "codex-plus-rail-tooltip";
+    markCodexPlusExtensionNode(wrapper, "builtin-rail-tooltip");
+    // 挂在 body 下、不在 Codex 的缩放容器里，所以自己套上界面缩放，坐标相应除回去。
+    wrapper.style.cssText = `position:fixed;left:0;top:0;z-index:2147483645;pointer-events:none;zoom:${zoom};`;
+    const tip = document.createElement("div");
+    tip.setAttribute("role", "tooltip");
+    tip.className = nativeClass || "codex-plus-rail-tooltip-fallback";
+    Object.assign(tip.dataset, { side: "right", align: "center", state: "delayed-open", gutterSize: "md", defaultSideOffset: "true", clickable: "false" });
+    tip.textContent = label;
+    wrapper.appendChild(tip);
+    document.body.appendChild(wrapper);
+    const anchor = button.getBoundingClientRect();
+    const box = tip.getBoundingClientRect();
+    const left = (anchor.right + codexPlusRailTooltipSideOffset) / zoom;
+    const top = (anchor.top + (anchor.height - box.height) / 2) / zoom;
+    wrapper.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+    button.setAttribute("aria-describedby", wrapper.id);
+  }
+
+  /**
+   * 窗口失焦、滚动时收起提示。按钮所在的 rail 被 Codex 重建时不会再收到 pointerleave，
+   * 这两个全局时机兜底。同页重复注入时先摘掉旧监听。
+   */
+  function installCodexPlusRailTooltipDismiss() {
+    if (window.__codexPlusRailTooltipDismiss === hideCodexPlusRailTooltip) return;
+    window.removeEventListener("blur", window.__codexPlusRailTooltipDismiss);
+    document.removeEventListener("scroll", window.__codexPlusRailTooltipDismiss, true);
+    window.__codexPlusRailTooltipDismiss = hideCodexPlusRailTooltip;
+    window.addEventListener("blur", hideCodexPlusRailTooltip);
+    document.addEventListener("scroll", hideCodexPlusRailTooltip, true);
+  }
+
+  function attachCodexPlusRailTooltip(button, label) {
+    installCodexPlusRailTooltipDismiss();
+    const open = () => {
+      clearTimeout(codexPlusRailTooltipTimer);
+      codexPlusRailTooltipOwner = button;
+      const instant = Date.now() - codexPlusRailTooltipHiddenAt < codexPlusRailTooltipSkipDelayMs
+        || !!document.getElementById("codex-plus-rail-tooltip");
+      if (instant) showCodexPlusRailTooltip(button, label);
+      else codexPlusRailTooltipTimer = setTimeout(() => showCodexPlusRailTooltip(button, label), codexPlusRailTooltipDelayMs);
+    };
+    const close = () => {
+      if (codexPlusRailTooltipOwner !== button) return;
+      button.removeAttribute("aria-describedby");
+      hideCodexPlusRailTooltip();
+    };
+    button.addEventListener("pointerenter", open);
+    button.addEventListener("pointerleave", close);
+    button.addEventListener("focus", () => {
+      if (button.matches?.(":focus-visible")) open();
+    });
+    button.addEventListener("blur", close);
+    // 按下就收起，和原生一致；点击后页面切换，提示不该留在原处。
+    button.addEventListener("pointerdown", close);
   }
 
   /**

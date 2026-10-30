@@ -3634,3 +3634,46 @@ describe("功能页与原生弹出层的层级", () => {
     assert.ok(page > 0 && lifted > page, "提升后的弹出层必须高于功能页");
   });
 });
+
+describe("图标栏按钮的悬浮提示", () => {
+  async function source() {
+    return readFile(new URL("../../../assets/inject/renderer-inject/40-backend-settings.js", import.meta.url), "utf8");
+  }
+  async function finder() {
+    const text = await source();
+    const start = text.indexOf("  let codexPlusNativeTooltipClassCache;");
+    const end = text.indexOf("  function hideCodexPlusRailTooltip()");
+    assert.ok(start >= 0 && end > start, "找不到原生提示样式类的查找函数");
+    return new Function("document", `${text.slice(start, end)}\nreturn codexPlusNativeTooltipClass;`)({ styleSheets: [] }) as (sheets: unknown[]) => string;
+  }
+
+  it("按独有的变体规则找出原生提示样式类，规则嵌在分组里也能找到", async () => {
+    const find = await finder();
+    const sheets = [
+      { get cssRules(): never { throw new Error("跨域样式表不可读"); } },
+      { cssRules: [{ selectorText: "._Tooltip_453y_1" }, { cssRules: [
+        { selectorText: "._Tooltip_11i4f_2" },
+        { selectorText: '._Tooltip_11i4f_2[data-side="bottom"][data-default-side-offset="true"]' },
+      ] }] },
+    ];
+    assert.equal(find(sheets), "_Tooltip_11i4f_2");
+  });
+
+  it("找不到时返回空串（走兜底样式），且不缓存失败结果", async () => {
+    const find = await finder();
+    assert.equal(find([{ cssRules: [{ selectorText: "._Tooltip_453y_1" }] }]), "");
+    assert.equal(find([{ cssRules: [{ selectorText: '._Tooltip_ab_9[data-side="bottom"][data-default-side-offset="true"]' }] }]), "_Tooltip_ab_9");
+    // 找到后缓存，之后样式表变化不再重扫。
+    assert.equal(find([]), "_Tooltip_ab_9");
+  });
+
+  it("按钮不用 title（会弹系统提示），改挂自绘提示；兜底样式与提升层级齐全", async () => {
+    const text = await source();
+    const create = text.slice(text.indexOf("  function createCodexPlusRailButton("), text.indexOf("  const codexPlusRailTooltipDelayMs"));
+    assert.doesNotMatch(create, /setAttribute\("title"/);
+    assert.match(create, /button\.removeAttribute\("title"\);\s*attachCodexPlusRailTooltip\(button, label\);/);
+    assert.match(text, /markCodexPlusExtensionNode\(wrapper, "builtin-rail-tooltip"\)/, "提示节点必须带拓展标记，否则触发扫描自喂循环");
+    const style = await readFile(new URL("../../../assets/inject/renderer-inject/10-style.js", import.meta.url), "utf8");
+    assert.match(style, /\.codex-plus-rail-tooltip-fallback \{/);
+  });
+});

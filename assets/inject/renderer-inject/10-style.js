@@ -524,6 +524,21 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
+      /* 图标栏按钮提示的兜底外观：找不到原生提示样式类时使用，数值量自原生提示。 */
+      .codex-plus-rail-tooltip-fallback {
+        max-width: 320px;
+        padding: 5px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 20px;
+        background: rgb(45, 45, 45);
+        box-shadow: rgba(15, 23, 42, 0.2) 0 8px 18px 0;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 430;
+        line-height: 18px;
+        letter-spacing: -0.15px;
+        white-space: nowrap;
+      }
       /*
        * 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。
        * 新版 Codex 还把弹出层挂在一个 z-60 的固定视口容器里（zoom-adjusted-viewport），

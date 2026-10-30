@@ -81,6 +81,7 @@ function fixture(layout = "sidebar") {
     openCodexPlusPage() {}, openCodexPlusExtensions() {}, openCodexPlusSponsor() {},
     // 拓展的图标栏入口随内置入口一起补画，这里只记次数。
     refreshCodexPlusRailNavigation: () => { railRefreshes += 1; },
+    attachCodexPlusRailTooltip() {},
     markCodexPlusExtensionNode: (node, owner) => node.setAttribute("data-codex-plus-ext", owner),
     isExtensionUiNode: extension,
     visibleElement: node => node.isConnected && node.visible,
