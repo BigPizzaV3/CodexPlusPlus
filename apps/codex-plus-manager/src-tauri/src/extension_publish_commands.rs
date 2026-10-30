@@ -4,18 +4,22 @@ use anyhow::Context;
 use codex_plus_core::extension_publish::{self, PublishOptions, Publisher};
 use codex_plus_core::user_scripts::default_user_scripts_config_dir;
 use serde_json::{Value, json};
+use tauri::Emitter as _;
+
+/// 发布进度事件：每一步开始、结束各发一次，载荷是 `StepEvent`。
+const PUBLISH_PROGRESS_EVENT: &str = "extension-publish-progress";
 
 #[tauri::command]
-pub async fn extension_publish_request(action: String, payload: Option<Value>) -> Result<Value, String> {
+pub async fn extension_publish_request(app: tauri::AppHandle, action: String, payload: Option<Value>) -> Result<Value, String> {
     let payload = payload.unwrap_or(Value::Null);
     // gh / git 都是阻塞的外部命令，放到阻塞线程里跑。
-    tauri::async_runtime::spawn_blocking(move || handle(&action, &payload))
+    tauri::async_runtime::spawn_blocking(move || handle(&app, &action, &payload))
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| format!("{error:#}"))
 }
 
-fn handle(action: &str, payload: &Value) -> anyhow::Result<Value> {
+fn handle(app: &tauri::AppHandle, action: &str, payload: &Value) -> anyhow::Result<Value> {
     let manager = crate::commands::default_user_script_manager();
     let config_dir = default_user_scripts_config_dir();
     let id = payload.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).context("缺少拓展 id")?;
@@ -33,7 +37,9 @@ fn handle(action: &str, payload: &Value) -> anyhow::Result<Value> {
                 license: payload.get("license").and_then(Value::as_str).filter(|license| !license.is_empty() && *license != "none").map(str::to_string),
                 generate_readme: payload.get("generateReadme").and_then(Value::as_bool).unwrap_or(true),
             };
-            Ok(publisher.publish(&manager, id, &options))
+            Ok(publisher.publish_with_progress(&manager, id, &options, &|event| {
+                let _ = app.emit(PUBLISH_PROGRESS_EVENT, event);
+            }))
         }
         other => anyhow::bail!("未知操作 {other}"),
     }

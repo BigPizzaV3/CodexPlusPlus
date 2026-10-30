@@ -55,4 +55,6 @@
 .shell .extension-publish-steps li { display:flex; gap:8px; font-size:12px; }
 .shell .extension-publish-steps li[data-ok=true] svg { color:hsl(var(--status-success, 142 60% 36%)); flex:none; }
 .shell .extension-publish-steps li[data-ok=false] svg { color:hsl(var(--status-error, 0 72% 51%)); flex:none; }
+.shell .extension-publish-steps li[data-state=running] { color:hsl(var(--muted-foreground)); }
+.shell .extension-publish-steps li[data-state=running] svg { flex:none; }
 .shell .extension-publish-steps pre { margin:2px 0 0; font-size:11px; white-space:pre-wrap; overflow-wrap:anywhere; color:hsl(var(--muted-foreground)); max-height:96px; overflow:auto; }

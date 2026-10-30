@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { CheckCircle2, ExternalLink, Loader2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +24,9 @@ type Report = {
   gh: { ready: boolean; account?: string; message?: string };
 };
 type Step = { step: string; ok: boolean; output: string };
+// 后端每步开始发 running、结束发 ok / error（extension_publish_commands.rs 的 PUBLISH_PROGRESS_EVENT）。
+type StepEvent = { index: number; step: string; state: "running" | "ok" | "error"; output: string };
+type LiveStep = { step: string; state: StepEvent["state"]; output: string };
 type PublishResult = { ok: boolean; repo?: string; url?: string; version?: string; error?: string; steps: Step[] };
 type License = "mit" | "apache-2.0" | "none";
 
@@ -42,6 +46,7 @@ export function ExtensionPublishDialog({ id, onClose, onOpenUrl }: { id: string;
   const [repoName, setRepoName] = useState("");
   const [license, setLicense] = useState<License>("mit");
   const [result, setResult] = useState<PublishResult | null>(null);
+  const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
 
   const load = async (action: "check" | "bump", part?: "patch" | "minor") => {
     setBusy(true);
@@ -67,15 +72,26 @@ export function ExtensionPublishDialog({ id, onClose, onOpenUrl }: { id: string;
     setBusy(true);
     setError("");
     setResult(null);
+    setLiveSteps([]);
+    const unlisten = await listen<StepEvent>("extension-publish-progress", ({ payload }) => {
+      setLiveSteps((current) => {
+        const next = [...current];
+        next[payload.index] = { step: payload.step, state: payload.state, output: payload.output };
+        return next;
+      });
+    });
     try {
       setResult(await request<PublishResult>("publish", { id, repoName, license: report?.hasLicense ? "none" : license, generateReadme: true }));
     } catch (failure) {
       setError(errorText(failure));
     } finally {
+      unlisten();
       setBusy(false);
     }
   };
 
+  // 发布中显示推送来的进度；结束后以返回结果为准（事件丢了也不影响最终显示）。
+  const steps: LiveStep[] = result ? result.steps.map((item) => ({ step: item.step, state: item.ok ? "ok" : "error", output: item.output })) : liveSteps;
   const versionTaken = result?.error?.includes("已经有 v") ?? false;
   const canPublish = !!report && report.errors.length === 0 && report.gh.ready && !busy && !result?.ok;
   return (
@@ -137,11 +153,11 @@ export function ExtensionPublishDialog({ id, onClose, onOpenUrl }: { id: string;
               </div>
             </>
           )}
-          {result ? (
+          {steps.length ? (
             <ol className="extension-publish-steps">
-              {result.steps.map((item, index) => (
-                <li data-ok={item.ok} key={index}>
-                  {item.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+              {steps.map((item, index) => (
+                <li data-ok={item.state === "running" ? undefined : item.state === "ok"} data-state={item.state} key={index}>
+                  {item.state === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : item.state === "ok" ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
                   <div>
                     <strong>{item.step}</strong>
                     {item.output ? <pre>{item.output}</pre> : null}

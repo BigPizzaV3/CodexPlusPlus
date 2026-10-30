@@ -365,6 +365,37 @@ pub struct Step {
     pub output: String,
 }
 
+/// 发布进度：每一步开始时发一次 `running`，结束时发一次 `ok` / `error`，界面据此逐步刷新。
+#[derive(Debug, Clone, Serialize)]
+pub struct StepEvent {
+    pub index: usize,
+    pub step: String,
+    pub state: &'static str,
+    pub output: String,
+}
+
+/// 记录各步结果，同时把进度推给回调。
+struct StepLog<'a> {
+    steps: Vec<Step>,
+    on_progress: &'a dyn Fn(&StepEvent),
+}
+
+impl StepLog<'_> {
+    /// 跑一步并记下结果，原样返回：失败时调用方用 `?` 停下。
+    fn run(&mut self, name: &str, action: impl FnOnce() -> anyhow::Result<String>) -> anyhow::Result<String> {
+        let index = self.steps.len();
+        (self.on_progress)(&StepEvent { index, step: name.into(), state: "running", output: String::new() });
+        let result = action();
+        let (ok, output) = match &result {
+            Ok(text) => (true, text.clone()),
+            Err(error) => (false, format!("{error:#}")),
+        };
+        (self.on_progress)(&StepEvent { index, step: name.into(), state: if ok { "ok" } else { "error" }, output: output.clone() });
+        self.steps.push(Step { step: name.into(), ok, output });
+        result
+    }
+}
+
 impl Publisher {
     pub fn new(config_dir: impl Into<PathBuf>) -> anyhow::Result<Self> {
         Ok(Self {
@@ -421,8 +452,14 @@ impl Publisher {
 
     /// 发布。返回每一步的结果；失败时停在那一步。
     pub fn publish(&self, manager: &UserScriptManager, id: &str, options: &PublishOptions) -> Value {
-        let mut steps: Vec<Step> = Vec::new();
-        let result = self.publish_steps(manager, id, options, &mut steps);
+        self.publish_with_progress(manager, id, options, &|_| {})
+    }
+
+    /// 同 [`Self::publish`]，每一步开始、结束时调用 `on_progress`。
+    pub fn publish_with_progress(&self, manager: &UserScriptManager, id: &str, options: &PublishOptions, on_progress: &dyn Fn(&StepEvent)) -> Value {
+        let mut log = StepLog { steps: Vec::new(), on_progress };
+        let result = self.publish_steps(manager, id, options, &mut log);
+        let steps = log.steps;
         match result {
             Ok((repo, version)) => json!({
                 "ok": true, "repo": repo, "version": version,
@@ -438,32 +475,43 @@ impl Publisher {
         manager: &UserScriptManager,
         id: &str,
         options: &PublishOptions,
-        steps: &mut Vec<Step>,
+        steps: &mut StepLog,
     ) -> anyhow::Result<(String, String)> {
         let report = check(manager, &self.config_dir, id)?;
-        if !report.errors.is_empty() {
-            step(steps, "发布前检查", Err(anyhow::anyhow!("{}", report.errors.join("；"))))?;
-        }
-        step(steps, "发布前检查", Ok(format!("{} 个文件，{} 字节", report.files, report.bytes)))?;
+        steps.run("发布前检查", || {
+            if !report.errors.is_empty() {
+                bail!("{}", report.errors.join("；"));
+            }
+            Ok(format!("{} 个文件，{} 字节", report.files, report.bytes))
+        })?;
         let (dir, mut manifest) = package_dir(manager, id)?;
         let version = report.version.clone();
         let tag = format!("v{version}");
-        let owner = step(steps, "确认 GitHub 账号", self.account())?;
+        let owner = steps.run("确认 GitHub 账号", || self.account())?;
         let name = if options.repo_name.trim().is_empty() { report.suggested_repo_name.clone() } else { options.repo_name.trim().to_string() };
         if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')) {
             bail!("仓库名只能包含字母、数字、- _ .");
         }
         let repo = format!("{owner}/{name}");
         std::fs::create_dir_all(&self.config_dir)?;
-        let identity = self
-            .git(&["config", "--get", "user.name"], &self.config_dir)
-            .and_then(|_| self.git(&["config", "--get", "user.email"], &self.config_dir));
-        step(steps, "确认 git 身份", identity.map(|_| "已配置 user.name / user.email".into()).context("git 没有配置提交身份：在终端运行 git config --global user.name \"你的名字\" 和 git config --global user.email \"你的邮箱\""))?;
+        steps.run("确认 git 身份", || {
+            self.git(&["config", "--get", "user.name"], &self.config_dir)
+                .and_then(|_| self.git(&["config", "--get", "user.email"], &self.config_dir))
+                .map(|_| "已配置 user.name / user.email".into())
+                .context("git 没有配置提交身份：在终端运行 git config --global user.name \"你的名字\" 和 git config --global user.email \"你的邮箱\"")
+        })?;
 
-        let exists = self.gh(&["repo", "view", &repo, "--json", "name"]).is_ok();
-        if exists && self.gh(&["api", &format!("repos/{repo}/git/ref/tags/{tag}")]).is_ok() {
-            step(steps, "检查版本", Err(anyhow::anyhow!("{repo} 已经有 {tag}，先把版本号 +1 再发布")))?;
-        }
+        let mut exists = false;
+        steps.run("检查仓库与版本", || {
+            exists = self.gh(&["repo", "view", &repo, "--json", "name"]).is_ok();
+            if !exists {
+                return Ok(format!("{repo} 还不存在，将新建"));
+            }
+            if self.gh(&["api", &format!("repos/{repo}/git/ref/tags/{tag}")]).is_ok() {
+                bail!("{repo} 已经有 {tag}，先把版本号 +1 再发布");
+            }
+            Ok(format!("{repo} 已存在，发布 {tag}"))
+        })?;
         let work_root = self.config_dir.join(PUBLISH_DIR);
         std::fs::create_dir_all(&work_root)?;
         let work = work_root.join(id);
@@ -473,11 +521,11 @@ impl Publisher {
         let remote = self.remote_template.replace("{repo}", &repo);
         let work_text = work.to_string_lossy().to_string();
         if exists {
-            step(steps, "取回仓库", self.git(&["clone", &remote, &work_text], &work_root))?;
+            steps.run("取回仓库", || self.git(&["clone", &remote, &work_text], &work_root))?;
         } else {
             let description = report.description.clone();
-            step(steps, "创建仓库", self.gh(&["repo", "create", &repo, "--public", "--description", &description]))?;
-            step(steps, "初始化工作副本", self.git(&["init", "-b", "main", &work_text], &work_root).and_then(|_| self.git(&["remote", "add", "origin", &remote], &work)))?;
+            steps.run("创建仓库", || self.gh(&["repo", "create", &repo, "--public", "--description", &description]))?;
+            steps.run("初始化工作副本", || self.git(&["init", "-b", "main", &work_text], &work_root).and_then(|_| self.git(&["remote", "add", "origin", &remote], &work)))?;
         }
 
         // 用拓展包当前文件整体替换工作副本（保留 .git）。
@@ -522,11 +570,12 @@ impl Publisher {
                 "apache-2.0" | "Apache-2.0" => "apache-2.0",
                 other => bail!("不支持的许可证 {other}"),
             };
-            let body = step(steps, "取许可证文本", self.gh(&["api", &format!("licenses/{key}"), "--jq", ".body"]))?;
-            // 发布框里只显示许可证名，不刷整段正文。
-            if let Some(last) = steps.last_mut() {
-                last.output = body.lines().next().unwrap_or(key).to_string();
-            }
+            let mut body = String::new();
+            steps.run("取许可证文本", || {
+                body = self.gh(&["api", &format!("licenses/{key}"), "--jq", ".body"])?;
+                // 发布框里只显示许可证名，不刷整段正文。
+                Ok(body.lines().next().unwrap_or(key).to_string())
+            })?;
             let year = 1970 + std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_secs()).unwrap_or(0) / 31_557_600;
             let author = manifest.get("author").and_then(Value::as_str).filter(|author| !author.is_empty()).unwrap_or(&owner).to_string();
             let body = body.replace("[year]", &year.to_string()).replace("[fullname]", &author);
@@ -534,39 +583,27 @@ impl Publisher {
             std::fs::write(dir.join("LICENSE"), &body)?;
             extras.push("添加 LICENSE");
         }
-        step(steps, "整理文件", Ok(format!("{} 个文件{}", files.len(), if extras.is_empty() { String::new() } else { format!("，{}", extras.join("、")) })))?;
+        steps.run("整理文件", || Ok(format!("{} 个文件{}", files.len(), if extras.is_empty() { String::new() } else { format!("，{}", extras.join("、")) })))?;
 
         let message = format!("release {tag}");
-        step(steps, "提交", self.git(&["add", "-A"], &work).and_then(|_| self.git(&["commit", "--allow-empty", "-m", &message], &work)))?;
-        step(steps, "打标签", self.git(&["tag", "-a", &tag, "-m", &tag], &work))?;
+        steps.run("提交", || self.git(&["add", "-A"], &work).and_then(|_| self.git(&["commit", "--allow-empty", "-m", &message], &work)))?;
+        steps.run("打标签", || self.git(&["tag", "-a", &tag, "-m", &tag], &work))?;
         let helper = format!("credential.helper=!'{}' auth git-credential", self.gh.display());
         let tag_ref = format!("refs/tags/{tag}");
-        step(steps, "推送", self.git(&["-c", "credential.helper=", "-c", &helper, "push", "origin", "HEAD", &tag_ref], &work))?;
+        steps.run("推送", || self.git(&["-c", "credential.helper=", "-c", &helper, "push", "origin", "HEAD", &tag_ref], &work))?;
 
         let archive = work_root.join(crate::extension_discovery::asset_name(id, &tag));
-        build_archive(&work, &archive).context("打包失败")?;
         let archive_text = archive.to_string_lossy().to_string();
-        step(steps, "创建 release", self.gh(&["release", "create", &tag, &archive_text, "--repo", &repo, "--title", &tag, "--generate-notes"]))?;
-        step(steps, "添加 topic", self.gh(&["repo", "edit", &repo, "--add-topic", crate::extension_discovery::TOPIC]))?;
+        steps.run("创建 release", || {
+            build_archive(&work, &archive).context("打包失败")?;
+            self.gh(&["release", "create", &tag, &archive_text, "--repo", &repo, "--title", &tag, "--generate-notes"])
+        })?;
+        steps.run("添加 topic", || self.gh(&["repo", "edit", &repo, "--add-topic", crate::extension_discovery::TOPIC]))?;
 
         let mut state = load_publish_state(&self.config_dir);
         state.insert(id.to_string(), json!({ "repo": repo, "version": version, "publishedAt": now_secs() }));
         crate::settings::atomic_write(&self.config_dir.join(PUBLISH_STATE), serde_json::to_string_pretty(&state)?.as_bytes())?;
         Ok((repo, version))
-    }
-}
-
-/// 记下一步的结果并原样返回：失败时调用方用 `?` 停下。
-fn step(steps: &mut Vec<Step>, name: &str, output: anyhow::Result<String>) -> anyhow::Result<String> {
-    match output {
-        Ok(text) => {
-            steps.push(Step { step: name.into(), ok: true, output: text.clone() });
-            Ok(text)
-        }
-        Err(error) => {
-            steps.push(Step { step: name.into(), ok: false, output: format!("{error:#}") });
-            Err(error)
-        }
     }
 }
 

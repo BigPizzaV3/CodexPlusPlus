@@ -171,10 +171,18 @@ fn publishes_end_to_end_against_a_local_remote() {
     assert_eq!(again["ok"], false);
     assert!(again["error"].as_str().unwrap().contains("已经有 v1.0.0"), "{again:#}");
 
-    // 升版本后再发：走「取回仓库」，不再新建。
+    // 升版本后再发：走「取回仓库」，不再新建；进度逐步推送，每步先 running 再 ok。
     bump_version(&manager, "word-count", "patch").unwrap();
-    let second = publisher.publish(&manager, "word-count", &options);
+    let events = std::cell::RefCell::new(Vec::new());
+    let second = publisher.publish_with_progress(&manager, "word-count", &options, &|event| events.borrow_mut().push((event.index, event.step.clone(), event.state)));
     assert_eq!(second["ok"], true, "{second:#}");
+    let events = events.into_inner();
+    let returned = second["steps"].as_array().unwrap();
+    assert_eq!(events.len(), returned.len() * 2, "{events:?}");
+    for (index, step) in returned.iter().enumerate() {
+        assert_eq!(events[index * 2], (index, step["step"].as_str().unwrap().to_string(), "running"));
+        assert_eq!(events[index * 2 + 1], (index, step["step"].as_str().unwrap().to_string(), "ok"));
+    }
     let steps = second["steps"].as_array().unwrap().iter().map(|step| step["step"].as_str().unwrap()).collect::<Vec<_>>();
     assert!(steps.contains(&"取回仓库") && !steps.contains(&"创建仓库"), "{steps:?}");
     assert!(show("v1.0.1:codexpp.json").contains("\"version\": \"1.0.1\""));
