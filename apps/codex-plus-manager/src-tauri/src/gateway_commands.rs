@@ -127,6 +127,8 @@ pub struct GatewayPayload {
     pub speeds: Vec<codex_plus_core::gateway::speed::SpeedView>,
     /// 可复制进网关的直连模式供应商。
     pub codex_providers: Vec<GatewayPoolEntry>,
+    /// 能在网关里登录的私有接口订阅（Cursor、Kiro 等）。
+    pub subscriptions: Vec<codex_plus_core::gateway::subscriptions::SubscriptionView>,
     pub claude_providers: Vec<GatewaySourceEntry>,
     pub grok_profiles: Vec<GatewaySourceEntry>,
     /// OpenCode 自己保存的 OpenCode Go / Zen Key（不含 Key 本身）。
@@ -362,6 +364,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         activity: activity::snapshot(),
         speeds: codex_plus_core::gateway::speed::snapshot(),
         codex_providers,
+        subscriptions: codex_plus_core::gateway::subscriptions::views(),
         claude_providers,
         grok_profiles,
         opencode_keys: codex_plus_core::gateway::opencode::load_stored_keys()
@@ -1972,6 +1975,69 @@ pub async fn login_gateway_chatgpt_api(
             accounts::chatgpt_api_relay(&account, &models),
             "chatgpt-api",
             "subject",
+            skip_agents.as_deref(),
+        )
+    })
+    .await;
+    login_response(outcome)
+}
+
+/// 私有接口订阅（Cursor、Kiro 等）登录第一步：按选的方式开始登录。要打开的网址在这里打开，
+/// 设备码、说明和完成登录要用的状态返回给界面，界面接着调 [`finish_gateway_subscription_login`]。
+#[tauri::command]
+pub async fn start_gateway_subscription_login(
+    kind: String,
+    method: codex_plus_core::gateway::subscriptions::LoginMethod,
+    input: Option<String>,
+) -> CommandResult<Option<codex_plus_core::gateway::subscriptions::LoginStart>> {
+    use codex_plus_core::gateway::subscriptions;
+    let Some(item) = subscriptions::get(&kind) else {
+        return failed(&format!("不认识的订阅 {kind}"), None);
+    };
+    let result = async {
+        let http = codex_plus_core::http_client::proxied_client("")?;
+        item.begin_login(&http, method, input.as_deref().unwrap_or_default())
+            .await
+    }
+    .await;
+    match result {
+        Ok(start) => {
+            if let Some(url) = &start.open_url {
+                open_in_browser(url);
+            }
+            let message = if start.message.is_empty() {
+                "请在浏览器里完成登录。".to_string()
+            } else {
+                start.message.clone()
+            };
+            ok(&message, Some(start))
+        }
+        Err(error) => failed(&format!("登录失败：{error:#}"), None),
+    }
+}
+
+/// 私有接口订阅登录第二步：等用户完成登录（或校验粘贴 / 导入的凭据），读模型，加进网关池。
+/// 同一个账号已在池里时只换凭据。
+#[tauri::command]
+pub async fn finish_gateway_subscription_login(
+    kind: String,
+    start: codex_plus_core::gateway::subscriptions::LoginStart,
+    skip_agents: Option<Vec<String>>,
+) -> CommandResult<Option<GatewayPayload>> {
+    use codex_plus_core::gateway::subscriptions;
+    let outcome = cancellable_login(async move {
+        let item = subscriptions::get(&kind)
+            .ok_or_else(|| anyhow::anyhow!("不认识的订阅 {kind}"))?;
+        let http = codex_plus_core::http_client::proxied_client("")?;
+        let done = item.finish_login(&http, &start).await?;
+        let models = item
+            .models(&http, &done.credentials)
+            .await
+            .unwrap_or_default();
+        add_account_provider(
+            subscriptions::relay_for(item, &done, &models),
+            &format!("{}{}", subscriptions::KIND_PREFIX, item.id()),
+            "account",
             skip_agents.as_deref(),
         )
     })

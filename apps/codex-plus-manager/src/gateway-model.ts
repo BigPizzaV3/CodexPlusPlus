@@ -141,6 +141,12 @@ export type QuotaWindow = { windowMinutes: number | null; usedPercent: number; r
 export type ProviderQuota = { windows: QuotaWindow[]; updatedAtMs: number };
 export type SpeedView = { relayId: string; model: string; ms: number; samples: number };
 
+/** 私有接口订阅的登录方式。 */
+export type SubscriptionLoginMethod = "browser" | "deviceCode" | "importLocal" | "paste";
+export type SubscriptionView = { id: string; name: string; methods: SubscriptionLoginMethod[]; note: string };
+/** 开始登录的结果：要打开的网址、验证码、说明，以及原样传回去的状态。 */
+export type SubscriptionLoginStart = { openUrl?: string; userCode?: string; message: string; state: unknown };
+
 export type GatewayAgentView = {
   agent: GatewayAgentId;
   name: string;
@@ -222,6 +228,8 @@ export type GatewayPayload = {
   speeds?: SpeedView[];
   /** 可复制进网关的直连模式供应商。 */
   codexProviders: GatewayPoolEntry[];
+  /** 能在网关里登录的私有接口订阅（Cursor、Kiro 等）；旧版后端没有。 */
+  subscriptions?: SubscriptionView[];
   claudeProviders: Array<{ id: string; name: string }>;
   grokProfiles: Array<{ id: string; name: string }>;
   /** OpenCode 里保存的 OpenCode Go / Zen Key。 */

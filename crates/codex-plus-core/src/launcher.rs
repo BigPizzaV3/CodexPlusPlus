@@ -2112,6 +2112,16 @@ pub(crate) async fn handle_helper_connection_on(
         stream.shutdown().await?;
         return Ok(());
     }
+    if crate::gateway::subscriptions::server::is_subscription_path(path) {
+        return crate::gateway::subscriptions::server::handle(
+            &mut stream,
+            method,
+            path,
+            &request_headers,
+            &request.body,
+        )
+        .await;
+    }
     if crate::gateway::is_gateway_path(path) {
         return crate::gateway::server::handle(
             &mut stream,

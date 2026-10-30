@@ -3972,3 +3972,16 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   flex: none;
   width: 320px;
 }
+
+/* 订阅登录弹窗里粘贴 token / Cookie 的输入框 */
+.gw-textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 8px 10px;
+  border: 1px solid var(--gw-border, rgba(127, 127, 127, 0.3));
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+}

@@ -38,6 +38,9 @@ import {
   keyLabel,
   type ImportCandidate,
   type ImportSource,
+  type SubscriptionLoginMethod,
+  type SubscriptionLoginStart,
+  type SubscriptionView,
 } from "./gateway-model";
 import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaBadge, QuotaWindows, Switch, type Notify, type Run } from "./gateway-ui";
 import { ProviderFormDialog, type ProviderFormState } from "./ProviderFormDialog";
@@ -53,13 +56,30 @@ import { ModelMatrix } from "./GatewayModelMatrix";
 import { useEscapeLayer } from "./use-escape-layer";
 
 /** 能在网关里直接登录的订阅。 */
-type AccountKind = "chatgpt" | "chatgpt-api" | "copilot" | "grok";
-type DeviceCode = { deviceCode: string; userCode: string; verificationUri: string; interval: number; expiresIn: number };
+type AccountKind = "chatgpt" | "chatgpt-api" | "copilot" | "grok" | `sub:${string}`;
+type DeviceCode = { deviceCode: string; userCode: string; verificationUri: string; interval: number; expiresIn: number; title?: string; hint?: string };
 
-const ACCOUNT_LABELS: Record<AccountKind, string> = { chatgpt: "ChatGPT", "chatgpt-api": "ChatGPT API", copilot: "GitHub Copilot", grok: "SuperGrok" };
+const ACCOUNT_LABELS: Record<string, string> = { chatgpt: "ChatGPT", "chatgpt-api": "ChatGPT API", copilot: "GitHub Copilot", grok: "SuperGrok" };
+
+/** 私有接口订阅（`sub:<id>`）的信息；内置的四种为 null。 */
+function subscriptionOf(payload: GatewayPayload | null, kind: AccountKind): SubscriptionView | null {
+  if (!kind.startsWith("sub:")) return null;
+  return payload?.subscriptions?.find((item) => item.id === kind.slice(4)) ?? null;
+}
+
+function accountLabel(payload: GatewayPayload | null, kind: AccountKind): string {
+  return ACCOUNT_LABELS[kind] ?? subscriptionOf(payload, kind)?.name ?? kind;
+}
+
+const LOGIN_METHOD_LABELS: Record<SubscriptionLoginMethod, string> = {
+  browser: "浏览器登录",
+  deviceCode: "验证码登录",
+  importLocal: "导入本机客户端的登录",
+  paste: "粘贴凭据",
+};
 
 /** 浏览器登录的订阅各自的命令。 */
-const BROWSER_LOGIN_COMMANDS: Record<Exclude<AccountKind, "copilot">, string> = {
+const BROWSER_LOGIN_COMMANDS: Record<"chatgpt" | "chatgpt-api" | "grok", string> = {
   chatgpt: "login_gateway_chatgpt",
   "chatgpt-api": "login_gateway_chatgpt_api",
   grok: "login_gateway_grok",
@@ -164,7 +184,7 @@ export function ProvidersView({
     window.addEventListener("pointercancel", finish);
   };
 
-  const { login, pending: loginPending, dialog: loginDialog } = useAccountLogin(run, notify);
+  const { login, pending: loginPending, dialog: loginDialog } = useAccountLogin(payload, run, notify);
   // 编辑弹窗里打开的上下文窗口弹窗：按编辑中的模型列表列出（null 表示没打开）。
   const [formWindows, setFormWindows] = useState<string[] | null>(null);
   // 编辑中的供应商取最新数据（窗口刚保存过，弹窗里要显示新的）。
@@ -290,23 +310,71 @@ export function ProvidersView({
  * 只用自己的 `pending`。关掉 Copilot 验证码弹窗、按 Esc 或点「取消登录」都会让后端中止这次登录
  * （释放回调端口、停止轮询）；开始新的登录时后端也会中止上一次。
  */
-function useAccountLogin(run: Run, notify: Notify) {
+function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notify) {
   const [pending, setPending] = useState<AccountKind | null>(null);
   const [deviceCode, setDeviceCode] = useState<DeviceCode | null>(null);
+  // 私有接口订阅：先选登录方式（或粘贴凭据），确认后才开始。
+  const [choosing, setChoosing] = useState<{ item: SubscriptionView; skip?: GatewayAgentId[] } | null>(null);
   // 当前这次登录的序号：取消或开始新的登录后，旧登录的收尾不再改界面。
   const attempt = useRef(0);
   const cancel = () => {
     attempt.current += 1;
     setPending(null);
     setDeviceCode(null);
+    setChoosing(null);
     void invoke("cancel_gateway_login").catch(() => undefined);
+  };
+  /** 私有接口订阅的登录：开始 → （验证码弹窗 / 浏览器）→ 等完成后加进池里。 */
+  const loginSubscription = async (item: SubscriptionView, method: SubscriptionLoginMethod, input: string, skip?: GatewayAgentId[]) => {
+    const kind: AccountKind = `sub:${item.id}`;
+    const id = ++attempt.current;
+    const current = () => attempt.current === id;
+    const title = tf("登录 {0}", [item.name]);
+    setChoosing(null);
+    setPending(kind);
+    setDeviceCode(null);
+    try {
+      let start: SubscriptionLoginStart;
+      try {
+        const result = await invoke<{ status: string; message: string; payload?: SubscriptionLoginStart | null }>("start_gateway_subscription_login", { kind: item.id, method, input });
+        if (result.status !== "ok" || !result.payload) {
+          await notify(tf("{0}失败", [title]), result.message, "failed");
+          return;
+        }
+        start = result.payload;
+      } catch (error) {
+        await notify(t("调用失败"), String(error), "failed");
+        return;
+      }
+      if (!current()) return;
+      if (start.userCode) {
+        setDeviceCode({ deviceCode: "", userCode: start.userCode, verificationUri: start.openUrl ?? "", interval: 5, expiresIn: 300, title, hint: start.message });
+      } else if (start.openUrl) {
+        void notify(title, start.message || t("已在浏览器打开登录页，登录完成后回到这里。5 分钟内有效。"), "info");
+      }
+      await run(`login:${kind}`, "finish_gateway_subscription_login", { kind: item.id, start, skipAgents: skip }, title, false, { background: true });
+    } finally {
+      if (current()) {
+        setPending(null);
+        setDeviceCode(null);
+      }
+    }
   };
   /** 登录订阅账号：ChatGPT / ChatGPT API / SuperGrok 走浏览器登录；Copilot 先显示验证码，再等你在 GitHub 上授权。
    * `skip` 是新添加时取消勾选的 Agent；重新登录已有账号时不传。 */
   const login = async (kind: AccountKind, skip?: GatewayAgentId[]) => {
+    const subscription = subscriptionOf(payload, kind);
+    if (kind.startsWith("sub:")) {
+      if (!subscription) {
+        await notify(t("登录失败"), t("当前版本不支持这个订阅"), "failed");
+        return;
+      }
+      setChoosing({ item: subscription, skip });
+      return;
+    }
     const id = ++attempt.current;
     const current = () => attempt.current === id;
-    const title = tf("登录 {0}", [ACCOUNT_LABELS[kind]]);
+    const title = tf("登录 {0}", [accountLabel(payload, kind)]);
     setPending(kind);
     setDeviceCode(null);
     try {
@@ -330,7 +398,7 @@ function useAccountLogin(run: Run, notify: Notify) {
         return;
       }
       void notify(title, t("已在浏览器打开登录页，登录完成后回到这里。5 分钟内有效。"), "info");
-      await run(`login:${kind}`, BROWSER_LOGIN_COMMANDS[kind], skip ? { skipAgents: skip } : undefined, title, false, { background: true });
+      await run(`login:${kind}`, BROWSER_LOGIN_COMMANDS[kind as keyof typeof BROWSER_LOGIN_COMMANDS], skip ? { skipAgents: skip } : undefined, title, false, { background: true });
     } finally {
       if (current()) {
         setPending(null);
@@ -339,10 +407,16 @@ function useAccountLogin(run: Run, notify: Notify) {
     }
   };
 
-  const dialog = deviceCode ? (
+  const dialog = choosing ? (
+    <SubscriptionLoginDialog
+      item={choosing.item}
+      onCancel={() => setChoosing(null)}
+      onStart={(method, input) => void loginSubscription(choosing.item, method, input, choosing.skip)}
+    />
+  ) : deviceCode ? (
     <DeviceCodeDialog code={deviceCode} notify={notify} onCancel={cancel} />
   ) : pending ? (
-    <LoginPendingBar label={ACCOUNT_LABELS[pending]} onCancel={cancel} />
+    <LoginPendingBar label={accountLabel(payload, pending)} onCancel={cancel} />
   ) : null;
   return { login, pending, dialog };
 }
@@ -372,7 +446,7 @@ export function ProviderAdder({
   const [importOnly, setImportOnly] = useState(startWith === "import");
   const [form, setForm] = useState<FormState | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
-  const { login, dialog } = useAccountLogin(run, notify);
+  const { login, dialog } = useAccountLogin(payload, run, notify);
   const agentPicks = <AgentPicks onChange={setPicked} payload={payload} picked={picked} />;
   const submit = async (draft: ProviderDraft) => {
     if (!form || form.mode === "edit") return;
@@ -854,6 +928,7 @@ function ProviderCatalog({
       { kind: "chatgpt-api", name: "ChatGPT API", icon: "openai" },
       { kind: "copilot", name: "GitHub Copilot", icon: "githubcopilot" },
       { kind: "grok", name: "SuperGrok", icon: "grok" },
+      ...(payload?.subscriptions ?? []).map((item) => ({ kind: `sub:${item.id}` as AccountKind, name: item.name, icon: item.id })),
     ] as Array<{ kind: AccountKind; name: string; icon: string }>
   )
     .filter((item) => hit(item.name, t("订阅")))
@@ -1079,7 +1154,7 @@ function DeviceCodeDialog({ code, notify, onCancel }: { code: DeviceCode; notify
     <div className="gw-modal-backdrop gw-portal">
       <div className="gw-modal gw-device-modal">
         <header>
-          <strong>{t("登录 GitHub Copilot")}</strong>
+          <strong>{code.title ?? t("登录 GitHub Copilot")}</strong>
           <button aria-label={t("取消登录")} className="gw-icon-button" onClick={onCancel} title={t("取消登录")} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body">
@@ -1088,11 +1163,60 @@ function DeviceCodeDialog({ code, notify, onCancel }: { code: DeviceCode; notify
             <span>{code.userCode}</span>
             <Copy className="h-4 w-4" />
           </button>
-          <p className="gw-muted">{tf("验证码 {0} 分钟内有效。需要这个 GitHub 账号有 Copilot 订阅。", [Math.round(code.expiresIn / 60)])}</p>
+          <p className="gw-muted">{code.hint ?? tf("验证码 {0} 分钟内有效。需要这个 GitHub 账号有 Copilot 订阅。", [Math.round(code.expiresIn / 60)])}</p>
         </div>
         <footer>
           <span className="gw-error" />
           <button className="gw-soft-button" onClick={onCancel} type="button">{t("取消登录")}</button>
+        </footer>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** 私有接口订阅登录前的弹窗：选登录方式，粘贴凭据时填内容；附带订阅的说明与风险提示。 */
+function SubscriptionLoginDialog({
+  item,
+  onCancel,
+  onStart,
+}: {
+  item: SubscriptionView;
+  onCancel: () => void;
+  onStart: (method: SubscriptionLoginMethod, input: string) => void;
+}) {
+  useEscapeLayer(true, onCancel);
+  const [method, setMethod] = useState<SubscriptionLoginMethod>(item.methods[0] ?? "browser");
+  const [input, setInput] = useState("");
+  const ready = method !== "paste" || input.trim().length > 0;
+  return createPortal(
+    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <div className="gw-modal gw-device-modal" role="dialog" aria-label={tf("登录 {0}", [item.name])}>
+        <header>
+          <strong>{tf("登录 {0}", [item.name])}</strong>
+          <button aria-label={t("关闭")} className="gw-icon-button" onClick={onCancel} type="button"><X className="h-4 w-4" /></button>
+        </header>
+        <div className="gw-modal-body">
+          {item.note ? <p className="gw-muted">{t(item.note)}</p> : null}
+          <p className="gw-muted">{t("通过模拟官方客户端调用未公开的接口，可能随时失效，也有账号被限制的风险。")}</p>
+          {item.methods.length > 1 ? (
+            <div className="gw-chip-row" role="radiogroup">
+              {item.methods.map((value) => (
+                <label className="gw-inline-field gw-inline-check" key={value}>
+                  <input checked={method === value} name="sub-login-method" onChange={() => setMethod(value)} type="radio" />
+                  <span>{t(LOGIN_METHOD_LABELS[value])}</span>
+                </label>
+              ))}
+            </div>
+          ) : null}
+          {method === "paste" ? (
+            <textarea autoFocus className="gw-textarea" onChange={(event) => setInput(event.currentTarget.value)} placeholder={t("粘贴 token、Cookie 或导出的登录文件内容")} rows={4} value={input} />
+          ) : null}
+        </div>
+        <footer>
+          <span className="gw-error" />
+          <button className="gw-soft-button" onClick={onCancel} type="button">{t("取消")}</button>
+          <button className="gw-primary-button" disabled={!ready} onClick={() => onStart(method, input.trim())} type="button">{t("开始登录")}</button>
         </footer>
       </div>
     </div>,
