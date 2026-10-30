@@ -19,6 +19,7 @@ pub mod codex_local_storage;
 pub mod codex_sqlite;
 pub mod browser_use;
 pub mod computer_use;
+pub mod dsh_plugins;
 pub mod window_capture;
 pub mod computer_use_approval;
 pub mod computer_use_js;

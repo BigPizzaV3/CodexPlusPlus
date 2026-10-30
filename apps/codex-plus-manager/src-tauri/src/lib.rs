@@ -7,6 +7,7 @@ mod auto_takeover;
 pub mod commands;
 mod computer_use_commands;
 mod cu_pip;
+mod dsh_plugin_commands;
 mod gateway_commands;
 mod global_dictation;
 pub mod install;
@@ -292,6 +293,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             agent_collaboration_commands::agent_collaboration_request,
+            dsh_plugin_commands::dsh_plugins_request,
             plugin_creator_commands::plugin_creator_request,
             commands::backend_version,
             commands::startup_options,

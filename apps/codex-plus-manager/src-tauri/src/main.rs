@@ -62,6 +62,18 @@ fn main() {
         }
         return;
     }
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == codex_plus_core::dsh_plugins::MCP_FLAG)
+    {
+        match codex_plus_core::dsh_plugins::run_mcp(&args[2..]) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("dsh 插件 MCP 启动失败：{error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.get(1).is_some_and(|arg| arg == "--codex-plus-plugin-mcp") {
         if let Err(error) = codex_plus_manager_lib::run_plugin_creator_mcp(&args[2..]) {
             eprintln!("插件创作 MCP 启动失败：{error:#}");

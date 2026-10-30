@@ -114,6 +114,7 @@ import { AgentCachePanel } from "./agent-cache";
 import { rebaseSettingsEdits } from "./settings-rebase";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
+import { DshPluginsPanel } from "./DshPluginsPanel";
 import { SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
@@ -9612,7 +9613,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   const [marketSearch, setMarketSearch] = useState("");
   const [marketView, setMarketView] = useState<"grid" | "list">("grid");
   // 市场脚本 / 本地脚本放在同一块里切换，不再上下堆三张卡片。
-  const [pane, setPane] = useState<"market" | "local">("market");
+  const [pane, setPane] = useState<"market" | "local" | "dsh">("market");
   const filteredMarketScripts = useMemo(() => {
     const query = marketSearch.trim().toLocaleLowerCase();
     if (!query) return marketScripts;
@@ -9705,6 +9706,9 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           <button aria-selected={pane === "local"} data-active={pane === "local"} onClick={() => setPane("local")} role="tab" type="button">
             {t("本地脚本")}<span>{scripts.length}</span>
           </button>
+          <button aria-selected={pane === "dsh"} data-active={pane === "dsh"} onClick={() => setPane("dsh")} role="tab" type="button">
+            {t("dsh 插件")}
+          </button>
         </div>
         {pane === "market" ? <>
           <div className="script-market-search">
@@ -9743,7 +9747,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
               {t("列表")}
             </Button>
           </div>
-        </> : <span className="user-scripts-summary">{t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")}</span>}
+        </> : pane === "local" ? <span className="user-scripts-summary">{t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")}</span> : null}
       </div>
       {pane === "market" ? (
         marketScripts.length ? (
@@ -9765,6 +9769,8 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         ) : (
           <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新市场加载远程脚本。")}</div>
         )
+      ) : pane === "dsh" ? (
+        <DshPluginsPanel />
       ) : (
         <Panel>
           <div className="table">

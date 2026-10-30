@@ -6679,7 +6679,7 @@ fn current_skills_payload(manager: &codex_plus_core::skills::SkillsManager) -> S
     skills_payload(manager, &all_cached_repo_skills(), Vec::new())
 }
 
-fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
+pub(crate) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
     codex_plus_core::skills::SkillsManager::new(
         codex_plus_core::paths::default_skills_source_dir(),
         codex_plus_core::paths::default_skill_backups_dir(),
