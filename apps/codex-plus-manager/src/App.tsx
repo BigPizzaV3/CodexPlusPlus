@@ -703,7 +703,8 @@ type UserScriptInventory = {
     package?: {
       id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
       configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>; backend?: boolean;
-      gatewayRequest?: number; gatewayResponse?: number; skippedAssets?: string[];
+      gatewayRequest?: number; gatewayResponse?: number;
+      toolPipeline?: { preExecute?: number; execute?: number; postExecute?: number }; skippedAssets?: string[];
       locales?: Record<string, { title?: string | null; description?: string | null }>;
     } | null;
     enabled: boolean;
@@ -16293,6 +16294,13 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         {script.package?.backend ? <small className="user-script-hooks">{t("常驻后台")}</small> : null}
         {script.package?.skippedAssets?.length
           ? <small className="user-script-hooks" data-tone="warn" title={script.package.skippedAssets.join("\n")}>{tf("资源超出大小上限未加载：{0}", [script.package.skippedAssets.join("、")])}</small>
+          : null}
+        {script.package?.toolPipeline && (script.package.toolPipeline.preExecute || script.package.toolPipeline.execute || script.package.toolPipeline.postExecute)
+          ? <small className="user-script-hooks">{tf("工具管道：{0}", [[
+              script.package.toolPipeline.preExecute ? t("改参数") : "",
+              script.package.toolPipeline.execute ? t("代为执行") : "",
+              script.package.toolPipeline.postExecute ? t("改结果") : "",
+            ].filter(Boolean).join("、")])}</small>
           : null}
         {script.package?.gatewayRequest || script.package?.gatewayResponse
           ? <small className="user-script-hooks">{tf("网关中间件：{0}", [[

@@ -87,6 +87,8 @@ pub async fn apply_request(request: &mut Value, request_path: &str) {
     if already_applied() {
         return;
     }
+    let manager = crate::user_scripts::default_user_script_manager();
+    apply_tool_pipeline(&manager, &cached_post_execute(), request).await;
     let middlewares = cached_middlewares();
     if middlewares.is_empty() {
         return;
@@ -95,11 +97,198 @@ pub async fn apply_request(request: &mut Value, request_path: &str) {
 }
 
 pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value, request_path: &str) {
+    let post_execute = manager.enabled_tool_post_execute().unwrap_or_default();
+    apply_tool_pipeline(manager, &post_execute, request).await;
     let middlewares = match manager.enabled_gateway_middlewares() {
         Ok(middlewares) if !middlewares.is_empty() => middlewares,
         _ => return,
     };
     apply_middlewares(&middlewares, request, request_path).await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// 工具管道的网关侧：
+// - 代为执行（toolPipeline.execute）的工具调用在 Codex 里以「拒绝 + 结果 + [[codexpp-exec:令牌]]」结束，
+//   这里按令牌把整条工具输出换成纯结果；
+// - 结果改写（toolPipeline.postExecute）：把请求里的工具输出交给拓展改写，模型看到的是改写后的结果。
+//   每次请求都带着整段历史，所以按「拓展 + 脚本 + 调用 + 输出」缓存，同一条输出只改写一次。
+// ---------------------------------------------------------------------------------------------
+
+const POST_EXECUTE_RUNNER: &str = r#"
+import { pathToFileURL } from "node:url";
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+const results = {};
+const errors = [];
+for (const item of input.items) {
+  let value = item.output;
+  let changed = false;
+  for (const handler of input.handlers) {
+    if (handler.matcher && handler.matcher !== "*") {
+      let re;
+      try { re = new RegExp(handler.matcher); } catch (error) { errors.push({ id: handler.id, error: `matcher 不是合法正则：${error.message}` }); continue; }
+      if (!re.test(item.name)) continue;
+    }
+    let timer;
+    try {
+      const module = await import(pathToFileURL(handler.script).href);
+      const fn = typeof module.default === "function" ? module.default : module.postExecute;
+      if (typeof fn !== "function") throw new Error(`${handler.script} 没有默认导出函数`);
+      const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${handler.timeoutMs / 1000} 秒）`)), handler.timeoutMs); });
+      const next = await Promise.race([Promise.resolve(fn(structuredClone(value), { name: item.name, input: item.input, callId: item.callId, extension: handler.id, config: handler.config ?? {} })), timeout]);
+      if (next !== undefined && next !== null) { value = next; changed = true; }
+    } catch (error) {
+      errors.push({ id: handler.id, error: String(error?.stack || error?.message || error) });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  results[item.key] = changed ? value : null;
+}
+process.stdout.write(JSON.stringify({ results, errors }));
+"#;
+
+static POST_EXECUTE_CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<(String, crate::user_scripts::ExtensionHook)>)>> = std::sync::Mutex::new(None);
+/// 改写结果缓存：键 → 改写后的输出（None 表示不改）。条目上限防止无限增长。
+static POST_EXECUTE_RESULTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Option<Value>>>> =
+    std::sync::LazyLock::new(Default::default);
+const POST_EXECUTE_RESULT_LIMIT: usize = 4096;
+
+fn cached_post_execute() -> Vec<(String, crate::user_scripts::ExtensionHook)> {
+    let mut cache = POST_EXECUTE_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, list)) = cache.as_ref() {
+        if at.elapsed() < MIDDLEWARE_CACHE_TTL {
+            return list.clone();
+        }
+    }
+    let list = crate::user_scripts::default_user_script_manager()
+        .enabled_tool_post_execute()
+        .unwrap_or_default();
+    *cache = Some((std::time::Instant::now(), list.clone()));
+    list
+}
+
+fn is_tool_output(item: &Value) -> bool {
+    matches!(item.get("type").and_then(Value::as_str), Some("function_call_output" | "custom_tool_call_output"))
+}
+
+/// 工具输出里的代执行令牌（输出可能是字符串，也可能是内容块数组）。
+fn exec_token(output: &Value) -> Option<String> {
+    let text = match output {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    let start = text.find("[[codexpp-exec:")? + "[[codexpp-exec:".len();
+    let end = text[start..].find("]]")? + start;
+    Some(text[start..end].to_string())
+}
+
+async fn apply_tool_pipeline(
+    manager: &UserScriptManager,
+    post_execute: &[(String, crate::user_scripts::ExtensionHook)],
+    request: &mut Value,
+) {
+    let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) else {
+        return;
+    };
+    // 代执行结果换回。
+    for item in input.iter_mut().filter(|item| is_tool_output(item)) {
+        if let Some(token) = item.get("output").and_then(exec_token) {
+            if let Some(output) = crate::extension_hooks::load_tool_execution(manager, &token) {
+                item["output"] = Value::String(output);
+            }
+        }
+    }
+    if post_execute.is_empty() {
+        return;
+    }
+    // 结果改写：调用 id → (工具名, 参数)。
+    let calls = input
+        .iter()
+        .filter(|item| matches!(item.get("type").and_then(Value::as_str), Some("function_call" | "custom_tool_call")))
+        .filter_map(|item| {
+            let call_id = item.get("call_id")?.as_str()?.to_string();
+            let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let arguments = item.get("arguments").or_else(|| item.get("input")).cloned().unwrap_or(Value::Null);
+            Some((call_id, (name, arguments)))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let signature = post_execute
+        .iter()
+        .map(|(id, hook)| format!("{id}:{}:{}:{}", hook.script.display(), hook.matcher, hook.config))
+        .collect::<Vec<_>>()
+        .join("|");
+    let key_of = |call_id: &str, output: &Value| {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        signature.hash(&mut hasher);
+        call_id.hash(&mut hasher);
+        output.to_string().hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    };
+    let mut pending = Vec::new();
+    for item in input.iter().filter(|item| is_tool_output(item)) {
+        let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or_default();
+        let output = item.get("output").cloned().unwrap_or(Value::Null);
+        let key = key_of(call_id, &output);
+        let known = POST_EXECUTE_RESULTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains_key(&key);
+        if !known {
+            let (name, arguments) = calls.get(call_id).cloned().unwrap_or_default();
+            pending.push(json!({ "key": key, "callId": call_id, "name": name, "input": arguments, "output": output }));
+        }
+    }
+    if !pending.is_empty() {
+        match run_post_execute(post_execute, pending).await {
+            Ok(reply) => {
+                for error in reply["errors"].as_array().into_iter().flatten() {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "extension_gateway.post_execute_failed",
+                        json!({ "extension": error.get("id"), "error": error.get("error") }),
+                    );
+                }
+                let mut cache = POST_EXECUTE_RESULTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if cache.len() > POST_EXECUTE_RESULT_LIMIT {
+                    cache.clear();
+                }
+                for (key, value) in reply["results"].as_object().into_iter().flatten() {
+                    cache.insert(key.clone(), (!value.is_null()).then(|| value.clone()));
+                }
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "extension_gateway.post_execute_failed",
+                    json!({ "error": format!("{error:#}") }),
+                );
+                return;
+            }
+        }
+    }
+    let cache = POST_EXECUTE_RESULTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    for item in input.iter_mut().filter(|item| is_tool_output(item)) {
+        let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let output = item.get("output").cloned().unwrap_or(Value::Null);
+        if let Some(Some(next)) = cache.get(&key_of(&call_id, &output)) {
+            item["output"] = next.clone();
+        }
+    }
+}
+
+async fn run_post_execute(handlers: &[(String, crate::user_scripts::ExtensionHook)], items: Vec<Value>) -> anyhow::Result<Value> {
+    let node = crate::extension_node::require_node()?;
+    let input = json!({
+        "items": items,
+        "handlers": handlers.iter().map(|(id, hook)| json!({
+            "id": id, "script": hook.script, "matcher": hook.matcher,
+            "timeoutMs": hook.timeout_secs * 1000, "config": hook.config,
+        })).collect::<Vec<_>>(),
+    });
+    let total = handlers.iter().map(|(_, hook)| hook.timeout_secs).sum::<u64>() * (items_len(&input) as u64).max(1) + 2;
+    crate::extension_node::run_runner(&node, POST_EXECUTE_RUNNER, &input, Duration::from_secs(total).min(CHAIN_LIMIT)).await
+}
+
+fn items_len(input: &Value) -> usize {
+    input["items"].as_array().map(Vec::len).unwrap_or(0)
 }
 
 async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str) {

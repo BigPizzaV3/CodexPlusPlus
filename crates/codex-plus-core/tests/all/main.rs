@@ -95,6 +95,7 @@ mod extension_backend;
 mod extension_gateway;
 mod extension_history;
 mod extension_semver;
+mod extension_tool_pipeline;
 mod extension_hooks;
 mod plugin_navigation;
 mod protocol_proxy;

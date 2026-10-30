@@ -44,7 +44,20 @@ const results = await Promise.all(input.hooks.map(async (hook) => {
     const fn = typeof module.default === "function" ? module.default : module[input.event];
     if (typeof fn !== "function") return { id: hook.id, error: `${hook.script} 没有默认导出函数` };
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${hook.timeoutMs / 1000} 秒）`)), hook.timeoutMs); });
-    const output = await Promise.race([Promise.resolve(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {} })), timeout]);
+    const race = (value) => Promise.race([Promise.resolve(value), timeout]);
+    if (hook.adapter === "preExecute" || hook.adapter === "execute") {
+      // 工具管道：参数是工具输入，上下文带工具名、调用 id 与完整负载。
+      const payload = structuredClone(input.payload);
+      const context = { event: input.event, extension: hook.id, config: hook.config ?? {}, name: payload?.tool_name ?? "", callId: payload?.tool_use_id ?? null, cwd: payload?.cwd ?? null, payload };
+      const result = await race(fn(payload?.tool_input ?? null, context));
+      if (result === undefined || result === null) return { id: hook.id, output: null };
+      if (hook.adapter === "execute") return { id: hook.id, executed: typeof result === "string" ? result : JSON.stringify(result) };
+      if (typeof result === "object" && !Array.isArray(result) && Object.keys(result).length === 1 && "deny" in result) {
+        return { id: hook.id, output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: String(result.deny) } } };
+      }
+      return { id: hook.id, output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: result } } };
+    }
+    const output = await race(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {} }));
     return { id: hook.id, output: output ?? null };
   } catch (error) {
     return { id: hook.id, error: String(error?.stack || error?.message || error) };
@@ -95,6 +108,7 @@ pub async fn dispatch(
             "matcher": hook.matcher,
             "timeoutMs": hook.timeout_secs * 1000,
             "config": hook.config,
+            "adapter": hook.adapter,
         })).collect::<Vec<_>>(),
     });
     let longest = hooks.iter().map(|(_, hook)| hook.timeout_secs).max().unwrap_or(30);
@@ -108,13 +122,61 @@ pub async fn dispatch(
             );
         }
     }
-    let outputs = results
+    let mut outputs = results
         .iter()
         .filter_map(|item| item.get("output").filter(|output| output.is_object()).cloned().map(|output| (item.get("id").and_then(Value::as_str).unwrap_or("").to_string(), output)))
         .collect::<Vec<_>>();
+    // 代为执行：结果存成带令牌的文件，原工具调用以「拒绝 + 结果 + 令牌标记」结束。经 Codex++ 代理时，
+    // 下一次请求里网关按令牌把这条工具输出换成纯结果；不经代理时模型也能从拒绝理由里读到结果。
+    for item in &results {
+        if let Some(text) = item.get("executed").and_then(Value::as_str) {
+            let id = item.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let token = store_tool_execution(manager, &id, &payload, text)?;
+            let reason = format!("（Codex++ 拓展 {id} 已代为执行该工具调用，以下是执行结果）\n{text}\n{}", tool_exec_marker(&token));
+            outputs.push((id, json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason } })));
+        }
+    }
     Ok(merge_outputs(event, &outputs))
 }
 
+
+/// 代执行结果在工具输出里的标记：`[[codexpp-exec:令牌]]`。
+pub fn tool_exec_marker(token: &str) -> String {
+    format!("[[codexpp-exec:{token}]]")
+}
+
+/// 存一份代执行结果，返回令牌。顺带清掉 30 天前的旧结果。
+fn store_tool_execution(manager: &UserScriptManager, extension: &str, payload: &Value, text: &str) -> anyhow::Result<String> {
+    let dir = manager.tool_exec_dir();
+    std::fs::create_dir_all(&dir)?;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_nanos()).unwrap_or_default();
+    let token = format!("{nanos:x}{:x}", std::process::id());
+    let record = json!({
+        "extension": extension,
+        "tool": payload.get("tool_name"),
+        "callId": payload.get("tool_use_id"),
+        "output": text,
+    });
+    std::fs::write(dir.join(format!("{token}.json")), record.to_string())?;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let cutoff = std::time::SystemTime::now() - Duration::from_secs(30 * 24 * 3600);
+        for entry in entries.flatten() {
+            if entry.metadata().and_then(|meta| meta.modified()).is_ok_and(|modified| modified < cutoff) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(token)
+}
+
+/// 按令牌取回代执行结果。
+pub fn load_tool_execution(manager: &UserScriptManager, token: &str) -> Option<String> {
+    if token.is_empty() || !token.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    let text = std::fs::read_to_string(manager.tool_exec_dir().join(format!("{token}.json"))).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?.get("output")?.as_str().map(str::to_string)
+}
 
 /// 按 Codex 钩子协议合并多个拓展的输出。规则（与同一事件多条钩子的语义一致）：
 /// - `permissionDecision`：任一 deny 即 deny；否则任一 allow 即 allow（只采用第一个 `updatedInput`）

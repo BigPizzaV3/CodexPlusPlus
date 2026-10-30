@@ -413,6 +413,39 @@ impl UserScriptManager {
         self.enabled_gateway_list(|package| &package.gateway_request)
     }
 
+    /// 启用中、清单无误的拓展包声明的工具结果改写（toolPipeline.postExecute），附带拓展 id。
+    pub fn enabled_tool_post_execute(&self) -> anyhow::Result<Vec<(String, ExtensionHook)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none())
+            .flat_map(|package| {
+                let id = package.id.clone();
+                let config = package.config.clone();
+                package.tool_post_execute.into_iter().map(move |mut hook| {
+                    hook.config = config.clone();
+                    (id.clone(), hook)
+                })
+            })
+            .collect())
+    }
+
+    /// 拓展的工具代执行结果存放目录（钩子进程写、网关读）。
+    pub fn tool_exec_dir(&self) -> PathBuf {
+        self.user_dir
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| self.user_dir.clone())
+            .join("extension-data")
+            .join(".tool-exec")
+    }
+
     /// 启用中、清单无误的拓展包声明的网关响应流中间件，附带拓展 id，按拓展 key 顺序。
     pub fn enabled_gateway_response_middlewares(&self) -> anyhow::Result<Vec<(String, ExtensionGatewayMiddleware)>> {
         self.enabled_gateway_list(|package| &package.gateway_response)
@@ -506,7 +539,7 @@ impl UserScriptManager {
         let renderer = if !write.renderer.is_empty() {
             write.renderer.clone()
         } else if write.files.contains_key("renderer.js")
-            || (write.hooks.is_none() && write.gateway.is_none() && write.tools.is_none() && write.backend.is_none())
+            || (write.hooks.is_none() && write.gateway.is_none() && write.tools.is_none() && write.backend.is_none() && write.tool_pipeline.is_none())
         {
             vec!["renderer.js".to_string()]
         } else {
@@ -600,6 +633,9 @@ impl UserScriptManager {
         }
         if let Some(backend) = &write.backend {
             manifest["backend"] = backend.clone();
+        }
+        if let Some(pipeline) = &write.tool_pipeline {
+            manifest["toolPipeline"] = pipeline.clone();
         }
         crate::settings::atomic_write(
             &directory.join(EXTENSION_MANIFEST_FILE),
@@ -884,6 +920,8 @@ struct ExtensionPackage {
     gateway_request: Vec<ExtensionGatewayMiddleware>,
     /// 网关响应流中间件（codexpp.json 的 `gateway.response`）。
     gateway_response: Vec<ExtensionGatewayMiddleware>,
+    /// 工具结果改写（codexpp.json 的 `toolPipeline.postExecute`），由网关请求侧执行。
+    tool_post_execute: Vec<ExtensionHook>,
     tools: Vec<ExtensionTool>,
     config_schema: Vec<ExtensionConfigField>,
     /// 常驻后台脚本（codexpp.json 的 `backend.script`）。
@@ -1019,6 +1057,8 @@ pub struct ExtensionHook {
     pub timeout_secs: u64,
     /// 所属拓展的生效配置，作为 context.config 交给脚本。
     pub config: Value,
+    /// 工具管道适配：`preExecute`（改参数 / 拦截）或 `execute`（代为执行）；None 是普通 Codex 钩子。
+    pub adapter: Option<String>,
 }
 
 /// 拓展可以挂的 Codex 钩子事件。SessionEnd / Interrupt 的超时只有 1~3 秒，起 Node 来不及，不开放。
@@ -1048,6 +1088,11 @@ impl ExtensionPackage {
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
             "gatewayRequest": self.gateway_request.len(),
             "gatewayResponse": self.gateway_response.len(),
+            "toolPipeline": {
+                "preExecute": self.hooks.iter().filter(|hook| hook.adapter.as_deref() == Some("preExecute")).count(),
+                "execute": self.hooks.iter().filter(|hook| hook.adapter.as_deref() == Some("execute")).count(),
+                "postExecute": self.tool_post_execute.len(),
+            },
             "tools": self.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
             "configSchema": self.config_schema,
             "backend": self.backend.is_some(),
@@ -1097,6 +1142,8 @@ pub struct ExtensionWrite {
     pub config: Option<Value>,
     /// 原样写进清单的 `backend`，加载时校验。
     pub backend: Option<Value>,
+    /// 原样写进清单的 `toolPipeline`，加载时校验。
+    pub tool_pipeline: Option<Value>,
     pub files: BTreeMap<String, String>,
     /// 二进制资源：包内路径 → 本机源文件，按字节复制（图片、音频、字体）。
     pub assets: BTreeMap<String, PathBuf>,
@@ -1264,6 +1311,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         hooks: Vec::new(),
         gateway_request: Vec::new(),
         gateway_response: Vec::new(),
+        tool_post_execute: Vec::new(),
         tools: Vec::new(),
         config_schema: Vec::new(),
         backend: None,
@@ -1336,8 +1384,9 @@ fn parse_extension_manifest(
     let gateway_declared = raw.get("gateway").is_some();
     let tools_declared = raw.get("tools").is_some_and(|tools| tools.as_array().is_some_and(|list| !list.is_empty()));
     let backend_declared = raw.get("backend").is_some();
-    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools 或 backend");
+    let pipeline_declared = raw.get("toolPipeline").is_some();
+    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline 或 backend");
     }
     let root = directory
         .canonicalize()
@@ -1347,6 +1396,9 @@ fn parse_extension_manifest(
         .map(|entry| resolve_package_entry(&root, entry))
         .collect::<anyhow::Result<Vec<_>>>()?;
     package.hooks = parse_extension_hooks(&root, raw.get("hooks"))?;
+    let (tool_hooks, tool_post_execute) = parse_tool_pipeline(&root, raw.get("toolPipeline"))?;
+    package.hooks.extend(tool_hooks);
+    package.tool_post_execute = tool_post_execute;
     (package.gateway_request, package.gateway_response) = parse_gateway_middlewares(&root, raw.get("gateway"))?;
     package.tools = parse_extension_tools(&root, &package.id, raw.get("tools"))?;
     package.config_schema = parse_extension_config_schema(raw.get("config"))?;
@@ -1470,13 +1522,72 @@ fn parse_extension_hooks(
                 script: resolve_package_entry(root, script)?,
                 timeout_secs,
                 config: Value::Null,
+                adapter: None,
             });
         }
     }
     Ok(hooks)
 }
 
-/// 解析 `gateway`：`{ "request": [{ "script": "gateway/request.mjs", "timeout": 5 }] }`。
+/// 解析 `toolPipeline`：`{ preExecute: [...], execute: [...], postExecute: [...] }`，每项
+/// `{ matcher, script, timeout }`。preExecute / execute 落到 Codex 的 PreToolUse 钩子（matcher 匹配
+/// 钩子里的工具名）；postExecute 由网关在下一次请求里改写工具结果（matcher 匹配模型侧的工具名）。
+fn parse_tool_pipeline(
+    root: &std::path::Path,
+    value: Option<&Value>,
+) -> anyhow::Result<(Vec<ExtensionHook>, Vec<ExtensionHook>)> {
+    let Some(value) = value else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let map = value
+        .as_object()
+        .context("toolPipeline 必须是对象：{ \"preExecute\": [...], \"execute\": [...], \"postExecute\": [...] }")?;
+    if let Some(key) = map.keys().find(|key| !["preExecute", "execute", "postExecute"].contains(&key.as_str())) {
+        anyhow::bail!("toolPipeline 只支持 preExecute、execute、postExecute，不认识 {key}");
+    }
+    let parse = |stage: &str, default_timeout: u64, max_timeout: u64| -> anyhow::Result<Vec<ExtensionHook>> {
+        let Some(list) = map.get(stage) else {
+            return Ok(Vec::new());
+        };
+        list.as_array()
+            .with_context(|| format!("toolPipeline.{stage} 必须是数组"))?
+            .iter()
+            .map(|item| {
+                let item = item.as_object().with_context(|| format!("toolPipeline.{stage} 的每一项必须是对象"))?;
+                let script = item
+                    .get("script")
+                    .and_then(Value::as_str)
+                    .with_context(|| format!("toolPipeline.{stage} 缺少 script"))?;
+                let matcher = match item.get("matcher") {
+                    None => String::new(),
+                    Some(Value::String(matcher)) => matcher.clone(),
+                    Some(_) => anyhow::bail!("toolPipeline.{stage} 的 matcher 必须是字符串"),
+                };
+                let timeout_secs = match item.get("timeout") {
+                    None => default_timeout,
+                    Some(value) => value
+                        .as_u64()
+                        .filter(|seconds| (1..=max_timeout).contains(seconds))
+                        .with_context(|| format!("toolPipeline.{stage} 的 timeout 必须是 1~{max_timeout} 秒"))?,
+                };
+                Ok(ExtensionHook {
+                    event: if stage == "postExecute" { "postExecute".to_string() } else { "PreToolUse".to_string() },
+                    matcher,
+                    script: resolve_package_entry(root, script)?,
+                    timeout_secs,
+                    config: Value::Null,
+                    adapter: Some(stage.to_string()),
+                })
+            })
+            .collect()
+    };
+    let mut pre = parse("preExecute", 30, EXTENSION_HOOK_MAX_TIMEOUT_SECS)?;
+    pre.extend(parse("execute", 60, EXTENSION_HOOK_MAX_TIMEOUT_SECS)?);
+    // 结果改写挡在每次模型请求前面，和网关中间件一样要快。
+    let post = parse("postExecute", 5, EXTENSION_GATEWAY_MAX_TIMEOUT_SECS)?;
+    Ok((pre, post))
+}
+
 /// 解析 `gateway`：`{ request: [...], response: [...] }`，两种中间件写法相同（script + timeout）。
 fn parse_gateway_middlewares(
     root: &std::path::Path,
