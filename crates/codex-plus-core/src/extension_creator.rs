@@ -239,7 +239,8 @@ fn tool_definitions() -> Value {
                     "description": {"type": "string", "description": "一句话说明拓展做什么"},
                     "version": {"type": "string", "description": "版本号，默认 0.1.0"},
                     "routes": {"type": "array", "items": {"type": "string"}, "description": "拓展需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
-                    "renderer": {"type": "array", "items": {"type": "string"}, "description": "按顺序执行的入口文件，默认 [\"renderer.js\"]"},
+                    "renderer": {"type": "array", "items": {"type": "string"}, "description": "按顺序执行的页面入口文件；省略时若 files 里有 renderer.js 就用它，只声明 hooks 的拓展可以没有页面入口"},
+                    "hooks": {"type": "object", "description": "Codex 钩子声明，例如 {\"PreToolUse\": [{\"matcher\": \"^Bash$\", \"script\": \"hooks/guard.mjs\", \"timeout\": 30}]}；写法见指南「Codex 钩子」"},
                     "files": {
                         "type": "array",
                         "description": "要写入的文件（包内相对路径 + 完整内容），不要包含 codexpp.json",
@@ -289,6 +290,8 @@ struct WriteArguments {
     routes: Vec<String>,
     #[serde(default)]
     renderer: Vec<String>,
+    #[serde(default)]
+    hooks: Option<Value>,
     files: Vec<WriteFile>,
 }
 
@@ -374,6 +377,7 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 description: arguments.description,
                 routes: arguments.routes,
                 renderer: arguments.renderer,
+                hooks: arguments.hooks,
                 files,
             })?;
             let key = user_scripts::extension_package_key(&arguments.id);
@@ -420,7 +424,12 @@ async fn reload_and_report(creator: &ExtensionCreator, key: &str) -> anyhow::Res
     let target = (!key.is_empty())
         .then(|| summarize_items(&inventory, Some(key)).into_iter().next())
         .flatten();
-    Ok(json!({ "reload": reload, "extension": target, "items": items }))
+    // 拓展声明的 Codex 钩子：让 Codex 配置里的分发条目与之一致。新增条目时提醒用户去信任。
+    let mut hooks = crate::extension_hooks::sync_default(&creator.manager);
+    if hooks["added"].as_array().is_some_and(|added| !added.is_empty()) {
+        hooks["note"] = json!("Codex 配置里新增了 Codex++ 拓展钩子的分发条目：Codex 会在用户信任后才运行它们（每个事件信任一次），请提醒用户在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」，并新开对话生效。");
+    }
+    Ok(json!({ "reload": reload, "extension": target, "items": items, "hooks": hooks }))
 }
 
 /// 只有页内重载才自动执行。某个已加载脚本没登记清理函数时，重载会整页刷新 Codex，

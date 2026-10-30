@@ -1,0 +1,521 @@
+//! 拓展的 Codex 钩子：拓展包在 `codexpp.json` 里声明 `hooks`，由 Codex++ 统一分发。
+//!
+//! Codex 的钩子要用户逐条信任（按条目哈希记录），新增或改动的钩子在信任前不会运行。所以
+//! Codex++ 只往 `~/.codex/config.toml` 写**固定不变**的分发条目：每个用到的事件一条，命令是
+//! `CodexPlusPlus --codex-plus-hook <事件>`，超时固定 120 秒。用户在 Codex 里信任一次后，
+//! 拓展增删改都不必重新信任；哪些拓展在跑由 Codex++ 的拓展开关决定。
+//!
+//! 分发时只起一个 Node 进程：它按各拓展的 matcher 过滤、并发调用命中的钩子脚本（各自超时），
+//! 把结果交回这里，按 Codex 的协议合并成一个输出。任何拓展出错都只记日志，不挡 Codex。
+
+use std::path::Path;
+use std::time::Duration;
+
+use anyhow::Context;
+use serde_json::{Map, Value, json};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
+
+use crate::user_scripts::{EXTENSION_HOOK_EVENTS, ExtensionHook, UserScriptManager};
+
+/// 写进 Codex 配置的分发命令参数；也是识别「本工具条目」的标记。
+pub const HOOK_FLAG: &str = "--codex-plus-hook";
+/// 分发条目的超时（秒）。固定值，避免拓展超时变化改动条目哈希、逼用户重新信任。
+const DISPATCH_TIMEOUT_SECS: u64 = 120;
+const STATUS_MESSAGE: &str = "Codex++ 拓展钩子";
+const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Node 侧运行器：stdin 读 `{ event, subject, payload, hooks: [{ id, script, matcher, timeoutMs }] }`，
+/// 按 matcher 过滤后并发 import 并调用默认导出，stdout 输出 `[{ id, output? , error?, skipped? }]`。
+const RUNNER: &str = r#"
+import { pathToFileURL } from "node:url";
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+const results = await Promise.all(input.hooks.map(async (hook) => {
+  const matcher = hook.matcher || "";
+  if (matcher && matcher !== "*" && input.subject !== null) {
+    let re;
+    try { re = new RegExp(matcher); } catch (error) { return { id: hook.id, error: `matcher 不是合法正则：${error.message}` }; }
+    if (!re.test(String(input.subject ?? ""))) return { id: hook.id, skipped: true };
+  }
+  let timer;
+  try {
+    const module = await import(pathToFileURL(hook.script).href);
+    const fn = typeof module.default === "function" ? module.default : module[input.event];
+    if (typeof fn !== "function") return { id: hook.id, error: `${hook.script} 没有默认导出函数` };
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${hook.timeoutMs / 1000} 秒）`)), hook.timeoutMs); });
+    const output = await Promise.race([Promise.resolve(fn(structuredClone(input.payload), { event: input.event, extension: hook.id })), timeout]);
+    return { id: hook.id, output: output ?? null };
+  } catch (error) {
+    return { id: hook.id, error: String(error?.stack || error?.message || error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}));
+process.stdout.write(JSON.stringify(results));
+"#;
+
+/// Codex 按事件用哪个字段做 matcher（见 Codex Hooks 文档）；其余事件忽略 matcher。
+fn matcher_subject(event: &str, payload: &Value) -> Value {
+    let field = match event {
+        "PreToolUse" | "PostToolUse" | "PermissionRequest" => "tool_name",
+        "SessionStart" => "source",
+        "PreCompact" | "PostCompact" => "trigger",
+        "SubagentStart" | "SubagentStop" => "agent_type",
+        _ => return Value::Null,
+    };
+    payload.get(field).cloned().unwrap_or(Value::String(String::new()))
+}
+
+/// 分发一次钩子事件，返回要写到 stdout 的 Codex 钩子输出（空对象表示无意见、放行）。
+pub async fn dispatch(
+    manager: &UserScriptManager,
+    event: &str,
+    payload: Value,
+) -> anyhow::Result<Value> {
+    if !EXTENSION_HOOK_EVENTS.contains(&event) {
+        anyhow::bail!("不支持的钩子事件 {event}");
+    }
+    let hooks: Vec<(String, ExtensionHook)> = manager
+        .enabled_extension_hooks()?
+        .into_iter()
+        .filter(|(_, hook)| hook.event == event)
+        .collect();
+    if hooks.is_empty() {
+        return Ok(json!({}));
+    }
+    let node = crate::dsh_plugins::locate_node().context(
+        "没有找到 Node 运行时，拓展钩子未运行：请安装 Codex App（自带 Node）或 Node.js，也可用 CODEX_PLUS_NODE 指定",
+    )?;
+    let input = json!({
+        "event": event,
+        "subject": matcher_subject(event, &payload),
+        "payload": payload,
+        "hooks": hooks.iter().map(|(id, hook)| json!({
+            "id": id,
+            "script": hook.script,
+            "matcher": hook.matcher,
+            "timeoutMs": hook.timeout_secs * 1000,
+        })).collect::<Vec<_>>(),
+    });
+    let longest = hooks.iter().map(|(_, hook)| hook.timeout_secs).max().unwrap_or(30);
+    let results = run_node(&node, &input, Duration::from_secs(longest + 5)).await?;
+    for item in &results {
+        if let Some(error) = item.get("error").and_then(Value::as_str) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "extension_hooks.hook_failed",
+                json!({ "event": event, "extension": item.get("id"), "error": error }),
+            );
+        }
+    }
+    let outputs = results
+        .iter()
+        .filter_map(|item| item.get("output").filter(|output| output.is_object()).cloned().map(|output| (item.get("id").and_then(Value::as_str).unwrap_or("").to_string(), output)))
+        .collect::<Vec<_>>();
+    Ok(merge_outputs(event, &outputs))
+}
+
+async fn run_node(node: &Path, input: &Value, limit: Duration) -> anyhow::Result<Vec<Value>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut command = tokio::process::Command::new(node);
+    command
+        .args(["--input-type=module", "-e", RUNNER])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    // Windows 上不能闪出黑色终端窗口。
+    #[cfg(windows)]
+    command.creation_flags(crate::windows_create_no_window());
+    let mut child = command.spawn().context("无法启动 Node 运行拓展钩子")?;
+    let mut stdin = child.stdin.take().context("Node 进程没有 stdin")?;
+    stdin.write_all(input.to_string().as_bytes()).await?;
+    drop(stdin);
+    let mut stdout = child.stdout.take().context("Node 进程没有 stdout")?;
+    let read = async {
+        let mut buffer = Vec::new();
+        stdout.read_to_end(&mut buffer).await?;
+        child.wait().await?;
+        anyhow::Ok(buffer)
+    };
+    let buffer = tokio::time::timeout(limit, read)
+        .await
+        .context("拓展钩子整体超时")??;
+    let results: Value = serde_json::from_slice(&buffer).context("拓展钩子运行器输出不是 JSON")?;
+    Ok(results.as_array().cloned().unwrap_or_default())
+}
+
+/// 按 Codex 钩子协议合并多个拓展的输出。规则（与同一事件多条钩子的语义一致）：
+/// - `permissionDecision`：任一 deny 即 deny；否则任一 allow 即 allow（只采用第一个 `updatedInput`）
+/// - 旧式顶层 `decision: "block"`：任一即 block
+/// - `continue: false`：任一即停止，`stopReason` 取第一个
+/// - `additionalContext`、`systemMessage`、各类原因：按拓展顺序拼接并标注来源
+/// - `PermissionRequest` 的 `decision.behavior`：deny 优先于 allow
+pub fn merge_outputs(event: &str, outputs: &[(String, Value)]) -> Value {
+    let mut merged = Map::new();
+    let mut specific = Map::new();
+    let mut deny_reasons = Vec::new();
+    let mut allow: Option<(String, Value)> = None;
+    let mut block_reasons = Vec::new();
+    let mut contexts = Vec::new();
+    let mut messages = Vec::new();
+    let mut request_deny = Vec::new();
+    let mut request_allow = false;
+    for (id, output) in outputs {
+        let hook_specific = output.get("hookSpecificOutput").and_then(Value::as_object);
+        let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_owned);
+        match hook_specific.and_then(|value| value.get("permissionDecision")).and_then(Value::as_str) {
+            Some("deny") => deny_reasons.push(format!(
+                "[{id}] {}",
+                text(hook_specific.and_then(|value| value.get("permissionDecisionReason"))).unwrap_or_default()
+            )),
+            Some("allow") if allow.is_none() => allow = Some((id.clone(), Value::Object(hook_specific.cloned().unwrap_or_default()))),
+            _ => {}
+        }
+        if let Some(context) = text(hook_specific.and_then(|value| value.get("additionalContext"))) {
+            contexts.push(context);
+        }
+        if let Some(decision) = hook_specific.and_then(|value| value.get("decision")).and_then(Value::as_object) {
+            match decision.get("behavior").and_then(Value::as_str) {
+                Some("deny") => request_deny.push(format!("[{id}] {}", text(decision.get("message")).unwrap_or_default())),
+                Some("allow") => request_allow = true,
+                _ => {}
+            }
+        }
+        if output.get("decision").and_then(Value::as_str) == Some("block") {
+            block_reasons.push(format!("[{id}] {}", text(output.get("reason")).unwrap_or_default()));
+        }
+        if output.get("continue").and_then(Value::as_bool) == Some(false) && !merged.contains_key("continue") {
+            merged.insert("continue".into(), Value::Bool(false));
+            if let Some(reason) = output.get("stopReason") {
+                merged.insert("stopReason".into(), reason.clone());
+            }
+        }
+        if let Some(message) = text(output.get("systemMessage")) {
+            messages.push(format!("[{id}] {message}"));
+        }
+    }
+    if !deny_reasons.is_empty() {
+        specific.insert("permissionDecision".into(), json!("deny"));
+        specific.insert("permissionDecisionReason".into(), json!(deny_reasons.join("\n")));
+    } else if let Some((_, decision)) = allow {
+        specific.insert("permissionDecision".into(), json!("allow"));
+        for key in ["permissionDecisionReason", "updatedInput"] {
+            if let Some(value) = decision.get(key) {
+                specific.insert(key.into(), value.clone());
+            }
+        }
+    }
+    if !request_deny.is_empty() {
+        specific.insert("decision".into(), json!({ "behavior": "deny", "message": request_deny.join("\n") }));
+    } else if request_allow {
+        specific.insert("decision".into(), json!({ "behavior": "allow" }));
+    }
+    if !contexts.is_empty() {
+        specific.insert("additionalContext".into(), json!(contexts.join("\n\n")));
+    }
+    if !specific.is_empty() {
+        specific.insert("hookEventName".into(), json!(event));
+        merged.insert("hookSpecificOutput".into(), Value::Object(specific));
+    }
+    if !block_reasons.is_empty() {
+        merged.insert("decision".into(), json!("block"));
+        merged.insert("reason".into(), json!(block_reasons.join("\n")));
+    }
+    if !messages.is_empty() {
+        merged.insert("systemMessage".into(), json!(messages.join("\n")));
+    }
+    Value::Object(merged)
+}
+
+/// 配置里已有本工具分发条目的事件。
+fn owned_events(contents: &str) -> Vec<String> {
+    let Ok(document) = contents.parse::<DocumentMut>() else {
+        return Vec::new();
+    };
+    let Some(hooks) = document.get("hooks").and_then(Item::as_table_like) else {
+        return Vec::new();
+    };
+    EXTENSION_HOOK_EVENTS
+        .iter()
+        .filter(|event| {
+            hooks
+                .get(event)
+                .and_then(Item::as_array_of_tables)
+                .is_some_and(|groups| groups.iter().any(is_owned_group))
+        })
+        .map(|event| event.to_string())
+        .collect()
+}
+
+/// 本工具写的分发命令。路径按 shell 规则加引号（Codex 经 shell 执行钩子命令）。
+fn dispatch_command(executable: &Path, event: &str) -> anyhow::Result<String> {
+    let path = executable.to_str().context("Codex++ 程序路径不是有效 UTF-8")?;
+    if path.chars().any(char::is_control) {
+        anyhow::bail!("Codex++ 程序路径包含控制字符");
+    }
+    let quoted = if cfg!(windows) {
+        format!("\"{path}\"")
+    } else {
+        format!("'{}'", path.replace('\'', r"'\''"))
+    };
+    Ok(format!("{quoted} {HOOK_FLAG} {event}"))
+}
+
+fn is_owned_group(group: &Table) -> bool {
+    group
+        .get("hooks")
+        .and_then(Item::as_array_of_tables)
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(Item::as_str)
+                    .is_some_and(|command| command.contains(HOOK_FLAG))
+            })
+        })
+}
+
+/// 纯转换：让 config.toml 里本工具的分发条目与 `events` 一致。别的钩子原样保留。
+pub fn sync_config_text(contents: &str, executable: &Path, events: &[&str]) -> anyhow::Result<String> {
+    let mut document = contents
+        .parse::<DocumentMut>()
+        .map_err(|_| anyhow::anyhow!("Codex 配置不是有效 TOML，未修改"))?;
+    if document.get("hooks").is_none() {
+        if events.is_empty() {
+            return Ok(contents.to_string());
+        }
+        let mut hooks = Table::new();
+        hooks.set_implicit(true);
+        document.insert("hooks", Item::Table(hooks));
+    }
+    let hooks = document
+        .get_mut("hooks")
+        .and_then(Item::as_table_like_mut)
+        .context("hooks 必须是 TOML 表，未修改配置")?;
+    for event in EXTENSION_HOOK_EVENTS {
+        let wanted = events.contains(event);
+        let existing = hooks.get(event).and_then(Item::as_array_of_tables).cloned();
+        let mut groups = ArrayOfTables::new();
+        let mut already = false;
+        if let Some(existing) = existing {
+            for group in existing.iter() {
+                if is_owned_group(group) {
+                    // 已有且一字不差就保留原样（哈希不变，免得用户重新信任）。
+                    let command = group
+                        .get("hooks")
+                        .and_then(Item::as_array_of_tables)
+                        .and_then(|hooks| hooks.get(0))
+                        .and_then(|hook| hook.get("command"))
+                        .and_then(Item::as_str)
+                        .map(str::to_owned);
+                    if wanted && !already && command == Some(dispatch_command(executable, event)?) {
+                        groups.push(group.clone());
+                        already = true;
+                    }
+                    continue;
+                }
+                groups.push(group.clone());
+            }
+        }
+        if wanted && !already {
+            let mut hook = Table::new();
+            hook.insert("type", toml_edit::value("command"));
+            hook.insert("command", toml_edit::value(dispatch_command(executable, event)?));
+            hook.insert("timeout", toml_edit::value(DISPATCH_TIMEOUT_SECS as i64));
+            hook.insert("statusMessage", toml_edit::value(STATUS_MESSAGE));
+            let mut inner = ArrayOfTables::new();
+            inner.push(hook);
+            let mut group = Table::new();
+            group.insert("hooks", Item::ArrayOfTables(inner));
+            groups.push(group);
+        }
+        if groups.is_empty() {
+            hooks.remove(event);
+        } else {
+            hooks.insert(event, Item::ArrayOfTables(groups));
+        }
+    }
+    Ok(document.to_string())
+}
+
+/// 按启用中的拓展同步 Codex 配置。返回本工具管理的事件，以及这次是否改了文件
+/// （改了就意味着有新条目，用户需要在 Codex 里信任一次）。
+pub fn sync_codex_config(
+    home: &Path,
+    executable: &Path,
+    manager: &UserScriptManager,
+) -> anyhow::Result<Value> {
+    let hooks = manager.enabled_extension_hooks()?;
+    let mut events = hooks.iter().map(|(_, hook)| hook.event.as_str()).collect::<Vec<_>>();
+    events.sort();
+    events.dedup();
+    let path = home.join("config.toml");
+    let before = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).context("无法读取 Codex 配置"),
+    };
+    if before.len() > MAX_PAYLOAD_BYTES {
+        anyhow::bail!("Codex 配置超过 4 MiB，未修改");
+    }
+    let updated = sync_config_text(&before, executable, &events)?;
+    let changed = updated != before;
+    let previous = owned_events(&before);
+    // 新增的事件需要用户在 Codex 里信任；移除不需要。
+    let added = events
+        .iter()
+        .filter(|event| !previous.iter().any(|known| known == *event))
+        .copied()
+        .collect::<Vec<_>>();
+    if changed {
+        // 其他程序可能同时在改；读到写之间变了就放弃，下次同步再来。
+        if std::fs::read_to_string(&path).unwrap_or_default() != before {
+            anyhow::bail!("Codex 配置在同步期间被修改，未覆盖");
+        }
+        crate::settings::atomic_write(&path, updated.as_bytes()).context("无法写入 Codex 配置")?;
+    }
+    Ok(json!({ "events": events, "added": added, "changed": changed, "configPath": path.to_string_lossy() }))
+}
+
+/// 用默认位置同步（Codex home、当前程序）。给拓展增删启停之后调用，失败只记日志。
+pub fn sync_default(manager: &UserScriptManager) -> Value {
+    let result = std::env::current_exe()
+        .context("无法定位 Codex++ 程序")
+        .and_then(|executable| {
+            sync_codex_config(&crate::codex_home::default_codex_home_dir(), &executable, manager)
+        });
+    match result {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "extension_hooks.sync_failed",
+                json!({ "error": format!("{error:#}") }),
+            );
+            json!({ "error": format!("{error:#}") })
+        }
+    }
+}
+
+/// `CodexPlusPlus --codex-plus-hook <事件>` 的入口：stdin 读事件负载，stdout 写合并后的输出。
+/// 任何内部错误都以「无意见」退出 0，并把原因写到 stderr，绝不因为 Codex++ 自身问题挡住 Codex。
+pub async fn run_cli(manager: &UserScriptManager, event: &str) -> i32 {
+    use std::io::Read;
+    let mut raw = Vec::new();
+    let read = std::io::stdin().take(MAX_PAYLOAD_BYTES as u64 + 1).read_to_end(&mut raw);
+    let payload = match read {
+        Ok(_) if raw.len() <= MAX_PAYLOAD_BYTES => serde_json::from_slice::<Value>(&raw).unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+    match dispatch(manager, event, payload).await {
+        Ok(output) => {
+            if output.as_object().is_some_and(|map| !map.is_empty()) {
+                println!("{output}");
+            }
+            0
+        }
+        Err(error) => {
+            eprintln!("Codex++ 拓展钩子未运行：{error:#}");
+            0
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deny_wins_and_reasons_are_attributed() {
+        let merged = merge_outputs(
+            "PreToolUse",
+            &[
+                ("a".into(), json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": {"command": "ls"}}})),
+                ("b".into(), json!({"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "危险命令"}, "systemMessage": "已拦截"})),
+            ],
+        );
+        assert_eq!(merged["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(merged["hookSpecificOutput"]["permissionDecisionReason"], "[b] 危险命令");
+        assert_eq!(merged["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert!(merged["hookSpecificOutput"].get("updatedInput").is_none(), "deny 时不带改写参数");
+        assert_eq!(merged["systemMessage"], "[b] 已拦截");
+    }
+
+    #[test]
+    fn allow_keeps_first_updated_input_and_contexts_concatenate() {
+        let merged = merge_outputs(
+            "PreToolUse",
+            &[
+                ("a".into(), json!({"hookSpecificOutput": {"permissionDecision": "allow", "updatedInput": {"command": "ls -la"}, "additionalContext": "甲"}})),
+                ("b".into(), json!({"hookSpecificOutput": {"permissionDecision": "allow", "updatedInput": {"command": "pwd"}, "additionalContext": "乙"}})),
+            ],
+        );
+        assert_eq!(merged["hookSpecificOutput"]["permissionDecision"], "allow");
+        assert_eq!(merged["hookSpecificOutput"]["updatedInput"]["command"], "ls -la");
+        assert_eq!(merged["hookSpecificOutput"]["additionalContext"], "甲\n\n乙");
+    }
+
+    #[test]
+    fn block_continue_and_permission_request_merge() {
+        let merged = merge_outputs(
+            "Stop",
+            &[
+                ("a".into(), json!({"continue": false, "stopReason": "够了"})),
+                ("b".into(), json!({"decision": "block", "reason": "还没跑测试"})),
+            ],
+        );
+        assert_eq!(merged["continue"], false);
+        assert_eq!(merged["stopReason"], "够了");
+        assert_eq!(merged["decision"], "block");
+        assert_eq!(merged["reason"], "[b] 还没跑测试");
+        let request = merge_outputs(
+            "PermissionRequest",
+            &[
+                ("a".into(), json!({"hookSpecificOutput": {"decision": {"behavior": "allow"}}})),
+                ("b".into(), json!({"hookSpecificOutput": {"decision": {"behavior": "deny", "message": "不行"}}})),
+            ],
+        );
+        assert_eq!(request["hookSpecificOutput"]["decision"]["behavior"], "deny");
+        assert_eq!(merge_outputs("PreToolUse", &[]), json!({}));
+    }
+
+    #[test]
+    fn sync_adds_removes_and_preserves_foreign_hooks_stably() {
+        let exe = Path::new("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus");
+        let original = r#"model = "x"
+
+# 用户自己的钩子
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "python3 guard.py"
+"#;
+        let added = sync_config_text(original, exe, &["PreToolUse", "Stop"]).unwrap();
+        let document: DocumentMut = added.parse().unwrap();
+        let pre = document["hooks"]["PreToolUse"].as_array_of_tables().unwrap();
+        assert_eq!(pre.len(), 2, "用户的钩子保留，再加一条分发条目");
+        assert_eq!(pre.get(0).unwrap()["hooks"].as_array_of_tables().unwrap().get(0).unwrap()["command"].as_str(), Some("python3 guard.py"));
+        let ours = pre.get(1).unwrap()["hooks"].as_array_of_tables().unwrap().get(0).unwrap();
+        assert_eq!(ours["command"].as_str(), Some("'/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus' --codex-plus-hook PreToolUse"));
+        assert_eq!(ours["timeout"].as_integer(), Some(120));
+        assert!(pre.get(1).unwrap().get("matcher").is_none(), "分发条目匹配全部，由拓展自己的 matcher 过滤");
+        assert!(document["hooks"]["Stop"].as_array_of_tables().is_some());
+        assert!(added.contains("# 用户自己的钩子"));
+        // 再同步一次不变（条目哈希稳定，免得用户重新信任）。
+        assert_eq!(sync_config_text(&added, exe, &["PreToolUse", "Stop"]).unwrap(), added);
+        // 不再需要时只移除本工具的条目。
+        let removed = sync_config_text(&added, exe, &[]).unwrap();
+        let document: DocumentMut = removed.parse().unwrap();
+        assert_eq!(document["hooks"]["PreToolUse"].as_array_of_tables().unwrap().len(), 1);
+        assert!(document["hooks"].get("Stop").is_none());
+        // 没有钩子也没有需要时不动文件。
+        assert_eq!(sync_config_text("model = \"x\"\n", exe, &[]).unwrap(), "model = \"x\"\n");
+    }
+
+    #[test]
+    fn command_quotes_paths_with_spaces_and_quotes() {
+        let command = dispatch_command(Path::new("/Users/a b/it's/CodexPlusPlus"), "Stop").unwrap();
+        assert_eq!(command, r"'/Users/a b/it'\''s/CodexPlusPlus' --codex-plus-hook Stop");
+    }
+}

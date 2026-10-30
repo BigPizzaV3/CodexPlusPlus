@@ -301,6 +301,25 @@ impl UserScriptManager {
         Ok(config)
     }
 
+    /// 启用中、清单无误的拓展包声明的 Codex 钩子，附带拓展 id。全局关闭时为空。
+    pub fn enabled_extension_hooks(&self) -> anyhow::Result<Vec<(String, ExtensionHook)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none())
+            .flat_map(|package| {
+                let id = package.id.clone();
+                package.hooks.into_iter().map(move |hook| (id.clone(), hook))
+            })
+            .collect())
+    }
+
     /// 用户脚本目录（拓展包就放在它下面）。
     pub fn user_dir(&self) -> &std::path::Path {
         &self.user_dir
@@ -331,10 +350,13 @@ impl UserScriptManager {
         if total > EXTENSION_WRITE_MAX_TOTAL_BYTES {
             anyhow::bail!("文件总量超过 {} KiB", EXTENSION_WRITE_MAX_TOTAL_BYTES / 1024);
         }
-        let renderer = if write.renderer.is_empty() {
+        // 没指定页面入口时：有 renderer.js 就用它；只声明 hooks 的拓展可以没有页面入口。
+        let renderer = if !write.renderer.is_empty() {
+            write.renderer.clone()
+        } else if write.files.contains_key("renderer.js") || write.hooks.is_none() {
             vec!["renderer.js".to_string()]
         } else {
-            write.renderer.clone()
+            Vec::new()
         };
         fs::create_dir_all(&self.user_dir).with_context(|| {
             format!("failed to create user scripts directory {}", self.user_dir.display())
@@ -394,6 +416,10 @@ impl UserScriptManager {
             "renderer": renderer,
             "permissions": { "routes": write.routes },
         });
+        let mut manifest = manifest;
+        if let Some(hooks) = &write.hooks {
+            manifest["hooks"] = hooks.clone();
+        }
         crate::settings::atomic_write(
             &directory.join(EXTENSION_MANIFEST_FILE),
             serde_json::to_string_pretty(&manifest)?.as_bytes(),
@@ -669,8 +695,36 @@ struct ExtensionPackage {
     engine: u64,
     routes: Vec<String>,
     renderer: Vec<PathBuf>,
+    hooks: Vec<ExtensionHook>,
     error: Option<String>,
 }
+
+/// 拓展声明的一条 Codex 钩子（codexpp.json 的 `hooks.<事件>[]`）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExtensionHook {
+    pub event: String,
+    /// 正则，按 Codex 的规则匹配（工具名、SessionStart 的 source 等）；空或 `*` 表示全部。
+    pub matcher: String,
+    /// 包内脚本的绝对路径：默认导出 `async (payload, context) => output`。
+    pub script: PathBuf,
+    pub timeout_secs: u64,
+}
+
+/// 拓展可以挂的 Codex 钩子事件。SessionEnd / Interrupt 的超时只有 1~3 秒，起 Node 来不及，不开放。
+pub const EXTENSION_HOOK_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+];
+/// 单个拓展钩子的超时上限（秒）。写进 Codex 配置的分发命令固定用 120 秒，要留出余量。
+pub const EXTENSION_HOOK_MAX_TIMEOUT_SECS: u64 = 100;
 
 impl ExtensionPackage {
     fn summary(&self) -> Value {
@@ -680,6 +734,7 @@ impl ExtensionPackage {
             "description": self.description,
             "engine": self.engine,
             "routes": self.routes,
+            "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
         })
     }
 
@@ -705,6 +760,8 @@ pub struct ExtensionWrite {
     pub description: String,
     pub routes: Vec<String>,
     pub renderer: Vec<String>,
+    /// 原样写进清单的 `hooks`，加载时校验。
+    pub hooks: Option<Value>,
     pub files: BTreeMap<String, String>,
 }
 
@@ -794,6 +851,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         engine: EXTENSION_API_VERSION,
         routes: Vec::new(),
         renderer: Vec::new(),
+        hooks: Vec::new(),
         error: None,
     };
     if let Err(error) = parse_extension_manifest(directory, &mut package) {
@@ -849,8 +907,9 @@ fn parse_extension_manifest(
             .context("renderer 只能是字符串或字符串数组")?,
         Some(_) => anyhow::bail!("renderer 只能是字符串或字符串数组"),
     };
-    if entries.is_empty() {
-        anyhow::bail!("清单没有声明 renderer 入口");
+    let hooks_declared = raw.get("hooks").is_some_and(|hooks| hooks.as_object().is_some_and(|map| !map.is_empty()));
+    if entries.is_empty() && !hooks_declared {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks");
     }
     let root = directory
         .canonicalize()
@@ -859,6 +918,7 @@ fn parse_extension_manifest(
         .iter()
         .map(|entry| resolve_package_entry(&root, entry))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    package.hooks = parse_extension_hooks(&root, raw.get("hooks"))?;
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if package.engine > EXTENSION_API_VERSION {
         anyhow::bail!(
@@ -868,6 +928,59 @@ fn parse_extension_manifest(
         );
     }
     Ok(())
+}
+
+/// 解析 `hooks`：`{ "PreToolUse": [{ "matcher": "^Bash$", "script": "hooks/guard.mjs", "timeout": 30 }] }`。
+fn parse_extension_hooks(
+    root: &std::path::Path,
+    value: Option<&Value>,
+) -> anyhow::Result<Vec<ExtensionHook>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let map = value.as_object().context("hooks 必须是对象：{ 事件名: [钩子...] }")?;
+    let mut hooks = Vec::new();
+    for (event, list) in map {
+        if !EXTENSION_HOOK_EVENTS.contains(&event.as_str()) {
+            anyhow::bail!(
+                "hooks 不支持事件 {event}，可用：{}",
+                EXTENSION_HOOK_EVENTS.join("、")
+            );
+        }
+        let items = list
+            .as_array()
+            .with_context(|| format!("hooks.{event} 必须是数组"))?;
+        for item in items {
+            let item = item
+                .as_object()
+                .with_context(|| format!("hooks.{event} 的每一项必须是对象"))?;
+            let script = item
+                .get("script")
+                .and_then(Value::as_str)
+                .with_context(|| format!("hooks.{event} 缺少 script"))?;
+            let matcher = match item.get("matcher") {
+                None => String::new(),
+                Some(Value::String(matcher)) => matcher.clone(),
+                Some(_) => anyhow::bail!("hooks.{event} 的 matcher 必须是字符串"),
+            };
+            let timeout_secs = match item.get("timeout") {
+                None => 30,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|seconds| (1..=EXTENSION_HOOK_MAX_TIMEOUT_SECS).contains(seconds))
+                    .with_context(|| {
+                        format!("hooks.{event} 的 timeout 必须是 1~{EXTENSION_HOOK_MAX_TIMEOUT_SECS} 秒")
+                    })?,
+            };
+            hooks.push(ExtensionHook {
+                event: event.clone(),
+                matcher,
+                script: resolve_package_entry(root, script)?,
+                timeout_secs,
+            });
+        }
+    }
+    Ok(hooks)
 }
 
 /// 入口只能指向包内的文件：拒绝绝对路径、`..`，以及经软链逃出包目录的路径。

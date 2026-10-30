@@ -88,6 +88,30 @@ codexPlus.extension((ctx) => {
 });
 ```
 
+## Codex 钩子（拦截工具调用、给提示词补上下文）
+
+页面拓展管不到 Codex 的 agent 循环；要在**工具执行前后、用户提交提示词时、本轮结束前**插手，用钩子。
+在 `codexpp_extension_write` 的 `hooks` 参数里声明，脚本放在 `files` 里：
+
+```json
+{ "PreToolUse": [{ "matcher": "^Bash$", "script": "hooks/guard.mjs", "timeout": 30 }] }
+```
+
+- 可用事件：`SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、
+  `PostCompact`、`SubagentStart`、`SubagentStop`、`Stop`。`matcher` 是正则，按工具名（PreToolUse / PostToolUse /
+  PermissionRequest）、`source`（SessionStart）等匹配，省略表示全部。`timeout` 1~100 秒，默认 30。
+- 脚本是 Node ESM 模块，默认导出 `(payload, { event, extension }) => 输出`，可以是 async。`payload` 是 Codex 传来的
+  原样数据（`tool_name`、`tool_input`、`prompt`、`cwd` 等，下划线命名）。返回 `null` 表示没意见。
+- 输出用 Codex 的钩子格式：
+  - 拦截工具：`{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "原因" } }`
+  - 改写工具参数：`permissionDecision: "allow"` 加 `updatedInput`（Bash 必须带字符串 `command`）
+  - 给模型补上下文：`hookSpecificOutput.additionalContext: "…"`（UserPromptSubmit、SessionStart、PostToolUse 等）
+  - 让本轮别停：Stop 事件返回 `{ decision: "block", reason: "还要做什么" }`
+- 多个拓展的结果由 Codex++ 合并：任一拒绝即拒绝，上下文按拓展顺序拼接。
+- 首次用到某个事件时，Codex++ 会往 Codex 配置写一条「Codex++ 拓展钩子」分发条目，**用户要在 Codex 的 Hooks
+  设置里信任它一次**（写入结果的 `hooks.note` 会提示），之后新开对话生效。务必把这一步告诉用户。
+- 钩子脚本在用户电脑上以用户权限运行，只做用户要求的事。
+
 ## 必须遵守
 
 - **自己插入到 Codex 页面里的节点必须带 `data-codex-plus-ext` 属性**（值写拓展 id），否则会触发 Codex++ 的

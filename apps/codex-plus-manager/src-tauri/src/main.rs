@@ -74,6 +74,11 @@ fn main() {
             }
         }
     }
+    // Codex 钩子分发：拓展在 codexpp.json 里声明的 hooks 都经这一条命令运行，stdout 写合并后的决定。
+    if args.get(1).is_some_and(|arg| arg == codex_plus_core::extension_hooks::HOOK_FLAG) {
+        let event = args.get(2).and_then(|arg| arg.to_str()).unwrap_or_default().to_string();
+        std::process::exit(codex_plus_manager_lib::run_extension_hook(&event));
+    }
     // 旧参数 --codex-plus-plugin-mcp 是改名前接入写下的，重新接入前仍要能启动。
     if args.get(1).is_some_and(|arg| {
         arg == codex_plus_core::extension_creator::MCP_FLAG

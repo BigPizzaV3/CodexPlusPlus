@@ -13522,6 +13522,9 @@ button.side-item:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.shell .user-script-row .user-script-name .user-script-hooks {
+  color: hsl(var(--primary));
+}
 /* 本地脚本状态列：开关 + 加载状态标记 */
 .shell .user-script-row .user-script-state {
   display: flex;

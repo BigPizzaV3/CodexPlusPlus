@@ -90,6 +90,7 @@ mod paste_fix_settings;
 mod plugin_install_persistence;
 mod plugin_market_live;
 mod extension_creator;
+mod extension_hooks;
 mod plugin_navigation;
 mod protocol_proxy;
 mod protocol_safety;

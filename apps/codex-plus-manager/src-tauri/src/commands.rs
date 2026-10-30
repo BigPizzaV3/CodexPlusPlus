@@ -6048,6 +6048,8 @@ pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
         .and_then(|status| status.debug_port)
         .unwrap_or_else(default_debug_port);
     let manager = default_user_script_manager();
+    // 手动改过拓展文件后热重载：顺带让 Codex 钩子条目与拓展声明一致。
+    codex_plus_core::extension_hooks::sync_default(&manager);
     match codex_plus_core::user_scripts::reload_live_scripts(debug_port, &manager).await {
         Ok(user_scripts) => {
             let page_reload = user_scripts["reload_mode"] == "page";
@@ -6127,7 +6129,10 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 #[tauri::command]
 pub fn set_user_scripts_enabled(enabled: bool) -> CommandResult<SettingsPayload> {
     let manager = default_user_script_manager();
-    match manager.set_global_enabled(enabled) {
+    let result = manager.set_global_enabled(enabled);
+    // 拓展声明的 Codex 钩子跟着拓展开关走：同步 Codex 配置里的分发条目（失败只记日志）。
+    codex_plus_core::extension_hooks::sync_default(&manager);
+    match result {
         Ok(_) => settings_payload(
             if enabled {
                 "本地拓展整体已开启。"
@@ -6169,7 +6174,9 @@ pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<Sett
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
-    match manager.set_script_enabled(trimmed, enabled) {
+    let result = manager.set_script_enabled(trimmed, enabled);
+    codex_plus_core::extension_hooks::sync_default(&manager);
+    match result {
         Ok(_) => settings_payload(
             if enabled {
                 "脚本已启用。"
@@ -6192,7 +6199,9 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
-    match manager.delete_user_script(trimmed) {
+    let result = manager.delete_user_script(trimmed);
+    codex_plus_core::extension_hooks::sync_default(&manager);
+    match result {
         Ok(_) => settings_payload("脚本已删除。", "脚本删除失败"),
         Err(error) => failed(
             &format!("脚本删除失败：{error}"),

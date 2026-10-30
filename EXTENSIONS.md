@@ -187,6 +187,40 @@ codexPlus.extension((ctx) => {
   只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
 - 两者都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
 
+### Codex 钩子
+
+拓展包可以在清单里声明 Codex 钩子，在工具执行前后、提交提示词时、本轮结束前插手 Codex 的 agent 循环：
+
+```json
+{
+  "id": "rm-guard",
+  "name": "危险命令拦截",
+  "hooks": {
+    "PreToolUse": [{ "matcher": "^Bash$", "script": "hooks/guard.mjs", "timeout": 30 }]
+  }
+}
+```
+
+```js
+// hooks/guard.mjs：默认导出 (payload, { event, extension }) => Codex 钩子输出 | null
+export default (payload) => /rm\s+-rf\s+\//.test(payload.tool_input?.command ?? "")
+  ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "禁止 rm -rf /" } }
+  : null;
+```
+
+- 可用事件：`SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、
+  `PostCompact`、`SubagentStart`、`SubagentStop`、`Stop`（`SessionEnd` / `Interrupt` 超时只有 1~3 秒，不开放）。
+- `payload` 与输出都按 Codex 钩子协议；多个拓展的输出由 Codex++ 合并：任一 `deny` 即拒绝、`allow` 只采用第一个
+  `updatedInput`、`decision: "block"` 与 `continue: false` 任一即生效、`additionalContext` 与 `systemMessage` 按拓展顺序拼接。
+- 运行方式：Codex++ 只往 `~/.codex/config.toml` 写**固定的分发条目**（每个用到的事件一条，命令
+  `CodexPlusPlus --codex-plus-hook <事件>`，超时 120 秒，状态文字「Codex++ 拓展钩子」）。Codex 要求钩子经用户
+  信任后才运行，所以第一次用到某个事件时，需要在 Codex 的 Hooks 设置里信任这条条目一次；之后拓展增删、启停都不用
+  重新信任，由 Codex++ 的拓展开关决定哪些钩子在跑。拓展启停、删除、热重载以及对话造拓展写入后都会自动同步条目，
+  没有拓展再用到的事件会移除。
+- 每次触发只起一个 Node 进程（优先用 Codex App 自带的 Node，或 `CODEX_PLUS_NODE` 指定），按 `matcher` 过滤后并发
+  运行命中的脚本；单个脚本出错或超时只记诊断日志，不影响其它拓展，也不挡 Codex。
+- 钩子脚本以你的用户权限运行、没有沙箱。信任分发条目即信任了 Codex++ 拓展开关里启用的全部钩子。
+
 ### 拓展包
 
 一个拓展可以是一个目录：放在 `user_scripts/` 下，根部有 `codexpp.json`。
@@ -215,7 +249,8 @@ user_scripts/
 | `id` | 必填，只能包含字母、数字、`-`、`_` |
 | `name` / `version` / `description` | 管理页展示用 |
 | `engines.codexpp` | 需要的 `apiVersion`，高于当前 Codex++ 时不加载并在管理页显示原因 |
-| `renderer` | 字符串或数组，必须是包内相对路径；按顺序拼进同一个作用域执行 |
+| `renderer` | 字符串或数组，必须是包内相对路径；按顺序拼进同一个作用域执行。只声明 `hooks` 的拓展可以省略 |
+| `hooks` | Codex 钩子声明，见上文「Codex 钩子」 |
 | `permissions.routes` | `ctx.call` 能调的路由，需在[路由白名单](#后端调用与路由白名单)内。这是声明约束而不是安全边界 |
 
 清单不合法（JSON 错误、入口越出包目录、版本不兼容等）时包不注入，管理页显示「加载失败」和原因。

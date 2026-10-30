@@ -689,7 +689,7 @@ type UserScriptInventory = {
     name: string;
     source: string;
     kind?: "script" | "package";
-    package?: { id: string; version: string; description: string; engine: number; routes: string[] } | null;
+    package?: { id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[] } | null;
     enabled: boolean;
     status: string;
     error: string;
@@ -16212,6 +16212,7 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
       <div className="user-script-name">
         <strong>{script.name}</strong>
         {script.package?.description ? <small title={script.package.description}>{script.package.description}</small> : null}
+        {script.package?.hookEvents?.length ? <small className="user-script-hooks">{tf("Codex 钩子：{0}", [script.package.hookEvents.join("、")])}</small> : null}
       </div>
       <span>{source}</span>
       <div className="user-script-state">

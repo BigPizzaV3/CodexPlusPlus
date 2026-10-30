@@ -65,6 +65,12 @@ pub fn run_agent_collaboration_mcp(args: &[std::ffi::OsString]) -> anyhow::Resul
     agent_collaboration_commands::run_mcp(args)
 }
 
+/// Codex 钩子分发：`--codex-plus-hook <事件>`，由 Codex 在对应时机经 shell 调用。
+pub fn run_extension_hook(event: &str) -> i32 {
+    let manager = commands::default_user_script_manager();
+    tauri::async_runtime::block_on(codex_plus_core::extension_hooks::run_cli(&manager, event))
+}
+
 /// 「对话造拓展」MCP：由 Codex 以 `--codex-plus-extension-mcp` 拉起的 stdio 进程。
 pub fn run_extension_creator_mcp(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
     extension_creator_commands::run_mcp(args)
