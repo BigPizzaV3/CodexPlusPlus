@@ -674,10 +674,36 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       return ok({ platform: null, rate: null, usage: null, detail: "演示模式" }) as T;
     }
     case "set_extension_config": return settingsResult() as T;
+    case "reload_user_scripts": return settingsResult() as T;
     case "extension_creator_request": return {
       status: args.action === "connect" ? "connected" : "not_connected",
       message: "", configPath: "~/.codex/config.toml", extensionsDirectory: "~/.config/Codex++/user_scripts",
     } as T;
+    // 社区拓展演示数据：一个带钩子与后台的、一个只有页面脚本且已安装的、一个需要新版 Codex++ 的。
+    case "extension_community_request": {
+      const perms = (extra: Record<string, unknown> = {}) => ({ backend: null, hooks: [], gatewayRequest: 0, gatewayResponse: 0, tools: [], routes: [], renderer: ["main.js"], ...extra });
+      const entry = (repo: string, extra: Record<string, unknown>) => ({
+        repo, url: `https://github.com/${repo}`, owner: repo.split("/")[0], ownerAvatar: "", description: "", stars: 0, license: "MIT",
+        pushedAt: "2026-10-28T09:00:00Z", id: repo.split("/")[1], name: repo.split("/")[1], version: "1.0.0", author: "", homepage: "",
+        icon: "", keywords: [], engine: 1, compatible: true, permissions: perms(), installed: null, ...extra,
+      });
+      if (args.action === "prepare") return {
+        token: "demo", repo: args.payload?.repo, id: "word-guard", name: L("命令守卫", "Command guard"), version: "1.2.0", tag: "v1.2.0",
+        sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", fromDefaultBranch: false, fromAsset: true,
+        permissions: perms({ backend: "backend/main.mjs", hooks: [{ event: "PreToolUse", matcher: "^Bash$" }], gatewayRequest: 1, tools: ["guard_status"], routes: ["/settings/get"] }),
+        conflict: null,
+      } as T;
+      if (args.action === "install") return { hooks: true, hooksAdded: true } as T;
+      if (args.action === "discard") return {} as T;
+      return {
+        enabled: true, fetchedAt: Math.floor(Date.now() / 1000) - 180, stale: false, problems: [], message: "",
+        entries: [
+          entry("alice/word-guard", { name: L("命令守卫", "Command guard"), stars: 128, version: "1.3.0", description: L("拦下危险的 shell 命令，并在后台记录审计日志。", "Blocks dangerous shell commands and keeps an audit log."), permissions: perms({ backend: "backend/main.mjs", hooks: [{ event: "PreToolUse", matcher: "^Bash$" }], gatewayRequest: 1, tools: ["guard_status"] }) }),
+          entry("bob/word-count", { name: L("字数统计", "Word count"), stars: 37, description: L("在输入框旁显示字数。", "Shows a word count next to the composer."), installed: { version: "1.0.0", tag: "v1.0.0", sha: "1111111", fromDefaultBranch: false } }),
+          entry("carol/future-panel", { name: L("实验面板", "Experimental panel"), stars: 5, engine: 2, compatible: false, description: L("需要下一版拓展 API。", "Needs the next extension API.") }),
+        ],
+      } as T;
+    }
     // dsh 插件演示数据：一个按教程写的组合包（工具 + skill + MCP 行 + 不兼容行）。
     case "dsh_plugins_request": return {
       message: "",

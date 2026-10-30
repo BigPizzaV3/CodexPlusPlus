@@ -32,6 +32,7 @@ mod codex_sqlite;
 mod composer_readiness;
 mod diagnostic_log;
 mod dsh_plugins;
+mod extension_discovery;
 mod dream_skin;
 mod dream_skin_library;
 mod dream_skin_market;

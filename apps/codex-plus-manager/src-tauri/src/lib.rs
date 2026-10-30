@@ -8,6 +8,7 @@ pub mod commands;
 mod computer_use_commands;
 mod cu_pip;
 mod dsh_plugin_commands;
+mod extension_community_commands;
 mod gateway_commands;
 mod global_dictation;
 pub mod install;
@@ -305,6 +306,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_collaboration_commands::agent_collaboration_request,
             dsh_plugin_commands::dsh_plugins_request,
+            extension_community_commands::extension_community_request,
             extension_creator_commands::extension_creator_request,
             commands::backend_version,
             commands::startup_options,

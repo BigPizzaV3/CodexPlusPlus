@@ -1,7 +1,7 @@
 # 拓展包的发布与收录设计
 
 日期：2026-10-30
-状态：设计，未实施
+状态：D1 已实施（社区栏收录与安装），D2~D4 为规划
 相关：`2026-10-30-codexpp-extension-system-design.md`（拓展体系，本文是其中 P4「拓展市场支持拓展包」的展开）、
 `crates/codex-plus-core/src/script_market.rs`（现有拓展市场）、`crates/codex-plus-core/src/user_scripts.rs`（拓展包加载）
 
@@ -107,7 +107,7 @@ GitHub 未登录时搜索 API 每分钟 10 次、普通 API 每小时 60 次，�
 列表阶段就隐藏：
 
 - `codexpp.json` 缺 `id` / `version`，或 `id` 不合规则；
-- `engines.codexpp` 高于本机 `EXTENSION_API_VERSION`（详情里仍可查到，显示「需要更新 Codex++」）；
+- `engines.codexpp` 高于本机 `EXTENSION_API_VERSION` 的不隐藏，排到最后并显示「需要更新 Codex++」，不能安装；
 - 在精选清单的 `blocked` 列表里（见第九节）。
 
 ## 七、安装与更新
@@ -116,16 +116,17 @@ GitHub 未登录时搜索 API 每分钟 10 次、普通 API 每小时 60 次，�
 
 1. 解析目标版本：有 release 取最新 release 的 tag，否则取 semver 最大的 `v*` tag，都没有才退回默认分支（界面提示「作者未发布版本，装的是最新提交」）。
 2. 把 tag 解析为提交 SHA，作者之后强推或移动 tag 不会影响已装版本。下载来源：
-   - release 带有发布流程上传的包文件 `<id>-v<version>.tar.gz` 时，下载这个文件，并用 GitHub 给出的 `digest`（sha256）校验。
+   - release 带有发布流程上传的包文件 `<id>-v<version>.zip` 时，下载这个文件，并用 GitHub 给出的 `digest`（sha256）校验。
      这样下载会计入该文件的 `download_count`，是下载量的来源（第十一节）；
-   - 否则按 SHA 下载 `codeload.github.com/<owner>/<repo>/tar.gz/<sha>`，这种安装不计下载量。
+   - 否则按 SHA 下载 `codeload.github.com/<owner>/<repo>/zip/<sha>`，这种安装不计下载量。
 3. 在临时目录解包并校验：
    - 拒绝软链、硬链、绝对路径和 `..`；
    - 解包后总量不超过 10 MiB、文件不超过 2000 个；
    - `codexpp.json` 能被现有加载器解析，且 `id` 与列表里看到的一致。
 4. **展示权限并等用户确认**（见第八节）。
-5. 原子替换到 `user_scripts/<id>/`；原目录如存在，先移到备份目录。来源记进 `user_scripts.json`：
-   `{ source: "github", repo, tag, sha, installedAt }`。
+5. 原子替换到 `user_scripts/<id>/`；原目录如存在，先移到备份目录 `extension_backups/`。来源记进单独的
+   `extension_community.json`（`installs.<id> = { repo, version, tag, sha, fromDefaultBranch, fromAsset, installedAt }`），
+   不改 `user_scripts.json` 的结构：它只认得自己的字段，多写的键会在下次保存时丢掉。
 6. 默认**不启用**，用户在确认框里勾选「安装后启用」才启用；涉及 `hooks` 时同步钩子分发条目，并提示到 Codex 里信任一次。
 
 ### 7.2 更新
@@ -188,7 +189,7 @@ GitHub 未登录时搜索 API 每分钟 10 次、普通 API 每小时 60 次，�
 3. 提交 `release v<version>`，打 tag `v<version>`。
 4. 推送提交与 tag。推送时只在这一条命令上临时指定凭据助手：
    `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin HEAD --follow-tags`。
-5. 把要发布的文件打成 `<id>-v<version>.tar.gz`（顶层即包根目录），`gh release create v<version> <包文件> --generate-notes`。
+5. 把要发布的文件打成 `<id>-v<version>.zip`（顶层即包根目录），`gh release create v<version> <包文件> --generate-notes`。
    用户从这个文件安装，下载才会被计数。
 6. `gh repo edit <owner>/<name> --add-topic codexpp-extension`（已有则无副作用）。
 7. 把 `repo` 记进 `user_scripts.json` 里这个拓展的发布信息，供下次「发布新版本」使用。
@@ -284,29 +285,45 @@ GitHub 未登录时搜索 API 每分钟 10 次、普通 API 每小时 60 次，�
 
 1. 仓库根目录放拓展包（`codexpp.json` 及其文件），推到公开仓库；
 2. 仓库设置 → Topics 加 `codexpp-extension`；
-3. 发布版本：打 `v<version>` tag 并建 release，把包根目录打成 `<id>-v<version>.tar.gz` 上传到 release
+3. 发布版本：打 `v<version>` tag 并建 release，把包根目录打成 `<id>-v<version>.zip` 上传到 release
    （不建 release 也能被收录，但用户装的是默认分支最新提交；不上传包文件就不计下载量）。
 
 ## 十三、分阶段
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| D1 | 社区栏收录与安装：搜索、缓存、过滤，按 tag→SHA 下载、校验、权限确认、来源记录 | 给一个测试仓库加 topic，10 分钟内出现在社区栏，能装上并锁定到 tag 对应的提交 |
+| D1 ✅ | 社区栏收录与安装：搜索、缓存、过滤，按 tag→SHA 下载、校验、权限确认、来源记录 | 给一个测试仓库加 topic，10 分钟内出现在社区栏，能装上并锁定到 tag 对应的提交 |
 | D2 | 更新检查与权限变化确认；精选清单支持 `kind: "package"` 与 `blocked` | 发新 tag 后卡片提示更新，新增钩子时更新需要再次确认 |
 | D3 | 一键发布：检查、生成 README、建仓库、推送、tag、带包文件的 release、topic | 从本地拓展点一下，新仓库带 topic 与 release，换一台机器能在社区栏装上 |
 | D4 | 统计：市场仓库汇总工作流、`community.json`、下载量快照、热度与等级；管理器排序、徽章、评分与点星 | 装一次后下次汇总下载量 +1；在讨论帖点 👍 后好评率更新；按热度排序与公式一致 |
 | 后续 | 一个仓库多个拓展包；「申请精选」一键提 PR | — |
 
-## 十四、测试
+## 十四、D1 实施记录
+
+- 代码：`crates/codex-plus-core/src/extension_discovery.rs`（搜索、缓存、版本解析、下载、解包、安装），
+  管理器 `src-tauri/src/extension_community_commands.rs`（`extension_community_request`：list / prepare / install / discard / setEnabled）、
+  `src/CommunityExtensionsPanel.tsx`（「拓展 → 社区拓展」分栏）。
+- 与上文的出入：
+  - 包文件用 `.zip`，不用 `.tar.gz`：解包复用现有的 `zip` 依赖，不新增 tar / gzip 依赖。
+  - 汇总文件 `community.json` 属于 D4，D1 只有实时搜索这一路。
+  - 列表里的图标只认 GitHub 上的地址（仓库相对路径或 `*.githubusercontent.com`），作者填的其它外链不显示，
+    免得每个打开市场的人都去访问作者指定的主机。
+  - 鉴权只读 `GITHUB_TOKEN` / `GH_TOKEN`，没有接 `gh auth token`。
+  - 校验暂存包时直接用拓展加载器扫描暂存目录（临时的 `UserScriptManager`），和正式加载走同一套清单解析。
+- 测试：`tests/all/extension_discovery.rs`，wiremock 模拟 GitHub API / raw / codeload / release 附件，
+  覆盖缓存与失败退回、release 附件摘要校验、tag 与默认分支回退、本地同 id 冲突与备份、软链 / id 不符 / 缺清单的拒绝；
+  另有一条默认跳过的联网用例核对真实接口。
+
+## 十五、测试
 
 - **纯函数**：搜索结果解析、过滤、版本选择（release / tag / 默认分支）、密钥扫描规则、权限差异计算，按现有 `#[test]` 风格放 `tests/all/`。
 - **网络**：GitHub API、raw 与 codeload 的基地址可经环境变量改到本地 HTTP 夹具，测试不访问外网。
-- **安装**：用夹具 tar.gz 覆盖软链、`..` 路径、超限、`id` 不一致、`engines` 过高等拒绝路径。
+- **安装**：用夹具 zip 覆盖软链、`..` 路径、超限、`id` 不一致、`engines` 过高等拒绝路径。
 - **统计**：热度、等级、周下载量（快照差）的计算放进工作流脚本的单元测试，用固定的 API 响应夹具；
   客户端只测 `community.json` 的解析、排序和缺数据时的展示。
 - **发布**：`gh` 路径可经环境变量替换为测试脚本，记录收到的参数；git 操作对一个本地裸仓库执行，校验提交内容、tag 与推送结果。
 
-## 十五、不做
+## 十六、不做
 
 - 不托管任何服务器或镜像：列表和统计只来自 GitHub、精选清单和市场仓库工作流生成的汇总文件。
 - 不做 1~5 星评分：需要记录评分人，没有服务器做不到，用讨论帖的 👍 / 👎 代替。

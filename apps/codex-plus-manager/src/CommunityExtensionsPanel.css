@@ -1,0 +1,42 @@
+/* 「拓展 → 社区拓展」分栏。规则带 .shell 前缀，保证正式版里不被 styles.css 的通用规则盖掉。 */
+.shell .community-ext { display:flex; flex-direction:column; gap:12px; }
+.shell .community-ext-intro { display:flex; flex-direction:column; gap:6px; padding:14px 16px; border:1px solid hsl(var(--status-warning) / .45); border-radius:10px; background:hsl(var(--card)); }
+.shell .community-ext-intro-head { display:flex; align-items:center; gap:8px; font-size:13px; color:hsl(var(--status-warning)); }
+.shell .community-ext-intro-head strong { flex:1; min-width:0; }
+.shell .community-ext-intro p { margin:0; font-size:12px; line-height:1.6; color:hsl(var(--muted-foreground)); }
+.shell .community-ext-switch { display:inline-flex; align-items:center; gap:8px; font-size:12px; color:hsl(var(--foreground)); }
+.shell .community-ext-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.shell .community-ext-toolbar .script-market-search { flex:1; min-width:180px; }
+.shell .community-ext-sort { display:inline-flex; gap:2px; }
+.shell .community-ext-notice { padding:8px 12px; border-radius:8px; font-size:12px; line-height:1.5; border:1px solid hsl(var(--border)); background:hsl(var(--muted)); white-space:pre-wrap; overflow-wrap:anywhere; }
+.shell .community-ext-notice.is-error { background:transparent; color:hsl(var(--status-error, 0 72% 51%)); border-color:hsl(var(--status-error, 0 72% 51%) / .4); }
+.shell .community-ext-meta { font-size:12px; color:hsl(var(--muted-foreground)); }
+.shell .community-ext-list { display:flex; flex-direction:column; gap:10px; }
+.shell .community-ext-card { display:flex; flex-direction:column; gap:8px; padding:14px 16px; border:1px solid hsl(var(--border)); border-radius:10px; background:hsl(var(--card)); }
+.shell .community-ext-card[data-compatible=false] { opacity:.65; }
+.shell .community-ext-card > header { display:flex; align-items:center; gap:10px; }
+.shell .community-ext-icon { width:28px; height:28px; flex:none; border-radius:7px; object-fit:cover; background:hsl(var(--muted)); }
+.shell .community-ext-title { flex:1; min-width:0; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.shell .community-ext-title strong { font-size:14px; }
+.shell .community-ext-badge { display:inline-flex; padding:1px 7px; border-radius:999px; font-size:11px; background:hsl(var(--muted)); color:hsl(var(--foreground)); white-space:nowrap; }
+.shell .community-ext-badge.is-unreviewed { background:transparent; border:1px solid hsl(var(--status-warning) / .5); color:hsl(var(--status-warning)); }
+.shell .community-ext-actions { display:flex; align-items:center; gap:8px; }
+.shell .community-ext-installed { font-size:12px; color:hsl(var(--status-success, 142 60% 36%)); white-space:nowrap; }
+.shell .community-ext-description { margin:0; font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); }
+.shell .community-ext-facts { display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:11px; color:hsl(var(--muted-foreground)); }
+.shell .community-ext-facts > span { display:inline-flex; align-items:center; gap:3px; }
+.shell .community-ext-repo { display:inline-flex; align-items:center; gap:4px; padding:0; border:0; background:transparent; font:inherit; font-family:var(--font-mono, monospace); color:hsl(var(--foreground)); cursor:pointer; }
+.shell .community-ext-repo:hover { text-decoration:underline; }
+.shell .community-ext-warning { color:hsl(var(--status-warning)); }
+.shell .community-ext-dialog { max-width:560px; }
+.shell .community-ext-dialog .confirm-modal-body { display:flex; flex-direction:column; gap:10px; }
+.shell .community-ext-dialog-warning { margin:0; padding:8px 10px; border-radius:8px; font-size:12px; line-height:1.5; color:hsl(var(--status-warning)); border:1px solid hsl(var(--status-warning) / .45); }
+.shell .community-ext-dialog-version { display:flex; flex-direction:column; gap:2px; font-size:12px; }
+.shell .community-ext-dialog-version span { color:hsl(var(--muted-foreground)); }
+.shell .community-ext-dialog-section { margin:0; font-size:12px; color:hsl(var(--muted-foreground)); }
+.shell .community-ext-permissions { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:4px; max-height:220px; overflow:auto; }
+.shell .community-ext-permissions li { position:relative; padding-left:14px; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.shell .community-ext-permissions li::before { content:""; position:absolute; left:2px; top:7px; width:6px; height:6px; border-radius:50%; background:hsl(var(--muted-foreground)); }
+.shell .community-ext-permissions li[data-risk=high]::before { background:hsl(var(--status-error, 0 72% 51%)); }
+.shell .community-ext-permissions li[data-risk=medium]::before { background:hsl(var(--status-warning)); }
+.shell .community-ext-dialog-enable { display:inline-flex; align-items:center; gap:8px; font-size:12px; }
