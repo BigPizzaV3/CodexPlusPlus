@@ -1,30 +1,17 @@
 /* ============================================================
    Codex++ 官网 · 使用教程页
-   沿用 style.css 的色板与顶栏 / 页脚，只补文档排版
+   沿用 site.css 的色板与顶栏 / 页脚，只补文档排版
    ============================================================ */
-
-body.guide-page::after { display: none; }
-
-.site-nav.solid {
-  background: rgba(6, 8, 13, 0.82);
-  backdrop-filter: blur(16px) saturate(1.4);
-  border-bottom-color: var(--line-soft);
-}
-.nav-links a.active { color: var(--txt-0); }
-.nav-links a.active::after { transform: scaleX(1); }
 
 /* ============ 页头 ============ */
 
 .g-hero {
   position: relative;
-  padding: 136px 24px 64px;
+  padding: 72px 24px 64px;
   text-align: center;
   overflow: hidden;
   border-bottom: 1px solid var(--line-soft);
-  background:
-    radial-gradient(60% 80% at 50% 0%, rgba(109, 139, 255, 0.18), transparent 70%),
-    radial-gradient(40% 60% at 85% 20%, rgba(156, 134, 255, 0.10), transparent 70%),
-    var(--bg-0);
+  background: radial-gradient(60% 80% at 50% 0%, var(--brand-soft), transparent 70%), var(--bg-0);
 }
 .g-hero .eyebrow { justify-content: center; }
 .g-hero h1 {
@@ -33,13 +20,7 @@ body.guide-page::after { display: none; }
   line-height: 1.2;
   margin: 18px 0 14px;
 }
-.g-hero h1 em {
-  font-style: normal;
-  background: linear-gradient(100deg, var(--indigo), var(--violet) 55%, var(--cyan));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
+.g-hero h1 em { font-style: normal; color: var(--brand); }
 .g-hero-sub { color: var(--txt-2); font-size: 15.5px; max-width: 640px; margin: 0 auto; }
 
 .g-quick {
@@ -58,7 +39,7 @@ body.guide-page::after { display: none; }
   background: var(--panel);
   transition: border-color 0.25s, transform 0.35s var(--ease-out);
 }
-.g-quick a:hover { border-color: rgba(148, 163, 255, 0.42); transform: translateY(-3px); }
+.g-quick a:hover { border-color: var(--brand); transform: translateY(-3px); }
 .g-quick .no { font-family: var(--mono); font-size: 12px; color: var(--indigo); }
 .g-quick b { display: block; font-size: 15px; margin: 6px 0 4px; }
 .g-quick span:last-child { display: block; font-size: 13px; color: var(--txt-2); line-height: 1.6; }
@@ -77,8 +58,8 @@ body.guide-page::after { display: none; }
 
 .g-toc {
   position: sticky;
-  top: 88px;
-  max-height: calc(100vh - 108px);
+  top: calc(var(--nav-h) + 24px);
+  max-height: calc(100vh - var(--nav-h) - 44px);
   overflow-y: auto;
   padding-right: 6px;
   font-size: 13.5px;
@@ -108,7 +89,7 @@ body.guide-page::after { display: none; }
 .g-toc .toc-group {
   padding: 14px 0 4px 14px;
   font-size: 11.5px;
-  color: #5d6688;
+  color: var(--txt-2);
   letter-spacing: 0.08em;
 }
 .g-toc .toc-group:first-child { padding-top: 2px; }
@@ -116,7 +97,7 @@ body.guide-page::after { display: none; }
 /* ============ 正文 ============ */
 
 .g-doc { max-width: 800px; min-width: 0; }
-.g-doc section { scroll-margin-top: 88px; padding-bottom: 56px; }
+.g-doc section { scroll-margin-top: calc(var(--nav-h) + 24px); padding-bottom: 56px; }
 .g-doc section + section { border-top: 1px solid var(--line-soft); padding-top: 52px; }
 
 .g-doc .kicker {
@@ -135,13 +116,13 @@ body.guide-page::after { display: none; }
   font-size: 18px;
   font-weight: 700;
   margin: 32px 0 10px;
-  scroll-margin-top: 88px;
+  scroll-margin-top: calc(var(--nav-h) + 24px);
 }
 .g-doc p, .g-doc li { color: var(--txt-1); font-size: 15px; line-height: 1.85; }
 .g-doc p + p { margin-top: 12px; }
 .g-doc b, .g-doc strong { color: var(--txt-0); font-weight: 700; }
-.g-doc a:not(.btn) { color: var(--indigo); border-bottom: 1px solid rgba(109, 139, 255, 0.35); }
-.g-doc a:not(.btn):hover { color: #93a8ff; border-bottom-color: currentColor; }
+.g-doc a:not(.btn) { color: var(--indigo); border-bottom: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); }
+.g-doc a:not(.btn):hover { color: var(--brand); border-bottom-color: currentColor; }
 
 .g-doc ul { margin: 10px 0 0 1.2em; }
 .g-doc ul li + li { margin-top: 4px; }
@@ -150,9 +131,9 @@ body.guide-page::after { display: none; }
 .g-doc code {
   font-family: var(--mono);
   font-size: 0.86em;
-  color: var(--amber);
-  background: rgba(232, 184, 109, 0.08);
-  border: 1px solid rgba(232, 184, 109, 0.14);
+  color: var(--indigo);
+  background: var(--brand-soft);
+  border: 1px solid color-mix(in srgb, var(--brand) 18%, transparent);
   border-radius: 5px;
   padding: 1px 6px;
   overflow-wrap: anywhere;
@@ -166,7 +147,7 @@ body.guide-page::after { display: none; }
   overflow-x: auto;
 }
 .g-doc pre code { background: none; border: 0; padding: 0; color: var(--txt-1); font-size: 13.5px; line-height: 1.8; }
-.g-doc pre .c { color: #5d6688; }
+.g-doc pre .c { color: var(--txt-2); }
 .g-doc pre .h { color: var(--cyan); }
 
 kbd {
@@ -185,7 +166,7 @@ kbd {
   display: inline-block;
   font-size: 0.92em;
   color: var(--txt-0);
-  background: rgba(148, 163, 255, 0.09);
+  background: var(--bg-2);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0 7px;
@@ -211,9 +192,8 @@ kbd {
   font-family: var(--mono);
   font-size: 13px;
   font-weight: 600;
-  color: #fff;
-  background: linear-gradient(120deg, #5d7bff, #8b6bff);
-  box-shadow: 0 4px 16px rgba(104, 116, 255, 0.35);
+  color: var(--on-brand);
+  background: var(--brand);
 }
 .g-steps > li:not(:last-child)::after {
   content: "";
@@ -229,9 +209,9 @@ kbd {
   margin: 18px 0 0;
   padding: 14px 16px 14px 44px;
   position: relative;
-  border: 1px solid rgba(109, 139, 255, 0.24);
+  border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent);
   border-radius: 10px;
-  background: rgba(109, 139, 255, 0.07);
+  background: var(--brand-soft);
 }
 .g-note::before {
   content: "i";
@@ -242,12 +222,12 @@ kbd {
   place-items: center;
   border-radius: 50%;
   font: 700 12px/1 var(--mono);
-  color: var(--bg-0);
-  background: var(--indigo);
+  color: var(--on-brand);
+  background: var(--brand);
 }
-.g-note.warn { border-color: rgba(232, 184, 109, 0.28); background: rgba(232, 184, 109, 0.07); }
+.g-note.warn { border-color: color-mix(in srgb, var(--warn) 30%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .g-note.warn::before { content: "!"; background: var(--amber); }
-.g-note.ok { border-color: rgba(102, 200, 160, 0.28); background: rgba(102, 200, 160, 0.07); }
+.g-note.ok { border-color: color-mix(in srgb, var(--ok) 30%, transparent); background: color-mix(in srgb, var(--ok) 8%, transparent); }
 .g-note.ok::before { content: "✓"; background: var(--green); }
 .g-note p, .g-note li { font-size: 14px; }
 
@@ -268,10 +248,10 @@ kbd {
   border-radius: 12px;
   overflow: hidden;
   background: var(--bg-1);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow);
   transition: border-color 0.25s;
 }
-.g-shot a:hover { border-color: rgba(148, 163, 255, 0.4); }
+.g-shot a:hover { border-color: var(--brand); }
 .g-shot img { width: 100%; height: auto; }
 .g-shot figcaption { margin-top: 10px; color: var(--txt-2); font-size: 13px; text-align: center; }
 
@@ -290,7 +270,7 @@ kbd {
   padding: 1px 8px;
   border-radius: 99px;
   color: var(--indigo);
-  border: 1px solid rgba(109, 139, 255, 0.35);
+  border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
 }
 .g-card h4 { font-size: 16px; margin: 8px 0 6px; }
 .g-card p { font-size: 13.5px; line-height: 1.75; color: var(--txt-2); }
@@ -329,7 +309,7 @@ kbd {
 }
 
 @media (max-width: 640px) {
-  .g-hero { padding: 112px 16px 48px; }
+  .g-hero { padding: 56px 16px 48px; }
   .g-quick { grid-template-columns: 1fr; }
   .g-layout { padding-left: 16px; padding-right: 16px; }
   .g-cards { grid-template-columns: 1fr; }
