@@ -290,6 +290,12 @@
 
     var EN = document.documentElement.lang === "en";
     var MODES = EN ? {
+      gateway: {
+        title: "Gateway",
+        desc: "One local gateway serves Codex, Claude Code, and Grok from a shared provider pool. Requests are routed by model name, keys rotate and cool down, and errors move on to the next provider. Subscriptions such as ChatGPT, GitHub Copilot, and SuperGrok can be signed in to the pool.",
+        points: ["One provider pool for every agent", "Route by model name, provider, or group", "Multi-key rotation, cooldown, and circuit breaking", "Usage and cost per agent, provider, and model"],
+        nodes: ["Agents", "Codex++", "Provider pool"]
+      },
       official: {
         title: "Official sign-in",
         desc: "Use your ChatGPT / Codex account. Requests go through the official channel with the full official experience and plugin entry.",
@@ -315,6 +321,12 @@
         nodes: ["You", "Codex", "Codex++", "Provider A / B / C"]
       }
     } : {
+      gateway: {
+        title: "网关",
+        desc: "本地网关同时服务 Codex、Claude Code 与 Grok，所有接入的 Agent 共用一份供应商池：按模型名选供应商，Key 轮换与冷却，出错自动换下一家；ChatGPT、GitHub Copilot、SuperGrok 订阅也能登录进池。",
+        points: ["一份供应商池，所有 Agent 共用", "按模型名、供应商或模型组路由", "多 Key 轮换、冷却与熔断", "按 Agent、供应商、模型统计用量与费用"],
+        nodes: ["Agent", "Codex++", "供应商池"]
+      },
       official: {
         title: "官方登录",
         desc: "使用 ChatGPT / Codex 官方账号登录，模型请求走官方通道，保持官方应用的完整体验与插件入口。",

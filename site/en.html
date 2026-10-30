@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Codex++ — Make your AI coding agents nicer to use</title>
-<meta name="description" content="Codex++ is a unified manager for AI coding agents: built around the Codex desktop app, it also manages providers and enhancements for Claude Code, Claude Desktop, and Grok, and shares Computer Use across agents.">
+<meta name="description" content="Codex++ is a unified manager for AI coding agents: a local gateway lets Codex, Claude Code, and Grok share one provider pool, routed by model name with automatic failover, plus Codex and Claude Desktop enhancements, session management, and Computer Use shared across agents.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Codex++">
 <meta property="og:locale" content="en_US">
 <meta property="og:title" content="Codex++ — Better AI coding agents">
-<meta property="og:description" content="Codex++ is a unified manager for AI coding agents: built around the Codex desktop app, it also manages providers and enhancements for Claude Code, Claude Desktop, and Grok, and shares Computer Use across agents.">
+<meta property="og:description" content="Codex++ is a unified manager for AI coding agents: a local gateway lets Codex, Claude Code, and Grok share one provider pool, routed by model name with automatic failover, plus Codex and Claude Desktop enhancements, session management, and Computer Use shared across agents.">
 <meta property="og:url" content="https://codexpp.cc/en.html">
 <meta property="og:image" content="https://codexpp.cc/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -30,7 +30,7 @@
     <nav class="nav-links">
       <a href="#features" data-nav>Features</a>
       <a href="#showcase" data-nav>Showcase</a>
-      <a href="#modes" data-nav>Codex providers</a>
+      <a href="#modes" data-nav>Providers</a>
       <a href="#steps" data-nav>Get started</a>
       <a href="#community" data-nav>Community</a>
       <a href="#download" data-nav>Download</a>
@@ -65,7 +65,7 @@
       <span class="line"><span class="w">Better</span></span>
       <span class="line"><span class="w grad">agents</span><span class="w plus">++</span></span>
     </h1>
-    <p class="hero-sub reveal">Providers, enhancements, and Computer Use for Codex, Claude Code, Claude Desktop, and Grok — in one manager.<br>No official app files modified; double-click and go.</p>
+    <p class="hero-sub reveal">A built-in local gateway lets Codex, Claude Code, and Grok share one provider pool, routed by model name with automatic failover.<br>Enhancements, sessions, and Computer Use live here too — no official app files modified.</p>
     <div class="hero-agents reveal" aria-label="Works with">
       <span class="hero-agents-label">Works with</span>
       <ul><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/chatgpt.svg);mask-image:url(assets/agents/chatgpt.svg)" aria-hidden="true"></span>Codex</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude Code</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude Desktop</li><li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/grok.svg);mask-image:url(assets/agents/grok.svg)" aria-hidden="true"></span>Grok</li><li class="more">DeepSeek Harness and more</li></ul>
@@ -89,7 +89,7 @@
     </div>
     <div class="hero-manager" id="manager-live">
       <div class="hero-manager-window">
-        <iframe title="Codex++ manager live frontend demo" src="manager-preview/?previewRoute=overview&amp;lang=en&amp;v=20261025" loading="eager"></iframe>
+        <iframe title="Codex++ manager live frontend demo" src="manager-preview/?previewRoute=hub&amp;lang=en&amp;v=20261030" loading="eager"></iframe>
       </div>
     </div>
   </div>
@@ -103,88 +103,88 @@
   <div class="section-head">
     <p class="eyebrow">FEATURES · THE MATRIX</p>
     <h2>One manager, <em>top to bottom</em></h2>
-    <p class="section-sub">Built around Codex, now covering Claude Code, Claude Desktop, and Grok. Every enhancement has its own switch; with the master switch off, provider and launch management keep working.</p>
+    <p class="section-sub">Since 2.0, a built-in local gateway connects any agent to any provider through Codex++. Every enhancement has its own switch; with the master switch off, provider and launch management keep working.</p>
   </div>
   <div class="feature-grid">
     <article class="fcard tilt">
-      <span class="fcard-no mono">01</span>
-      <h3>Switch providers freely</h3>
-      <p>Official login, official + API, pure API, failover, and model aggregation.</p>
+      <span class="fcard-no mono">01</span><span class="fcard-new">NEW</span>
+      <h3>Local gateway</h3>
+      <p>One provider pool shared by Codex, Claude Code, and Grok, routed by model name.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">02</span><span class="fcard-new">NEW</span>
+      <h3>Routing and groups</h3>
+      <p>In order, rotate, weighted, quota first, or speed first — failing over on errors.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">03</span><span class="fcard-new">NEW</span>
+      <h3>Keys and subscriptions</h3>
+      <p>Multi-key rotation and cooldown; sign in to ChatGPT, Copilot, and SuperGrok.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">04</span><span class="fcard-new">NEW</span>
+      <h3>Usage and request log</h3>
+      <p>Cost, tokens, and cache hits by agent, provider, and model.</p>
     </article>
     <article class="fcard tilt" id="computer-use-feature">
-      <span class="fcard-no mono">02</span><span class="fcard-new">NEW</span>
+      <span class="fcard-no mono">05</span>
       <h3>Share Computer Use</h3>
       <p>Lend Codex's desktop and browser control to other agents.</p>
     </article>
     <article class="fcard tilt">
-      <span class="fcard-no mono">03</span><span class="fcard-new">NEW</span>
-      <h3>Beyond Codex</h3>
-      <p>Claude Code providers, an enhanced Claude.app, and the Grok CLI.</p>
-    </article>
-    <article class="fcard tilt">
-      <span class="fcard-no mono">04</span><span class="fcard-new">NEW</span>
-      <h3>Request log</h3>
-      <p>Status, retries, and token usage for every request.</p>
-    </article>
-    <article class="fcard tilt">
-      <span class="fcard-no mono">05</span>
-      <h3>Request shock absorption</h3>
-      <p>Back off and retry upstream overloads at the proxy.</p>
-    </article>
-    <article class="fcard tilt">
       <span class="fcard-no mono">06</span>
+      <h3>Direct mode still here</h3>
+      <p>Official login, official + API, pure API, failover, and model aggregation.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">07</span>
       <h3>Every model, its own space</h3>
-      <p>Per-model context windows and auto-compact limits.</p>
+      <p>Per-model context windows, prices, and reasoning levels.</p>
     </article>
     <article class="fcard tilt" id="agent-feature">
-      <span class="fcard-no mono">07</span>
-      <h3>Delegate in a sentence</h3>
-      <p>Delegate to DeepSeek or Claude Code from a Codex chat.</p>
-    </article>
-    <article class="fcard tilt">
       <span class="fcard-no mono">08</span>
-      <h3>Simpler session management</h3>
-      <p>Scan, delete and undo, bulk-manage, export, and rewind turns.</p>
+      <h3>Delegate in a sentence</h3>
+      <p>Delegate to DeepSeek or Claude Code from a Codex chat, queued or concurrent.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">09</span>
+      <h3>Simpler session management</h3>
+      <p>Codex, Claude Code, and Grok sessions together; undoable deletes and turn rewind.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">10</span>
       <h3>Many Codex, one machine</h3>
       <p>One isolated Codex instance per provider.</p>
     </article>
     <article class="fcard tilt" id="native-fast-feature">
-      <span class="fcard-no mono">10</span>
+      <span class="fcard-no mono">11</span>
       <h3>Native Fast with an API key</h3>
       <p>Native Standard / ⚡ Fast controls with a pure API key.</p>
     </article>
     <article class="fcard tilt">
-      <span class="fcard-no mono">11</span>
-      <h3>Usage status line</h3>
-      <p>Speed, cache hits, and context usage under the composer.</p>
-    </article>
-    <article class="fcard tilt">
       <span class="fcard-no mono">12</span>
       <h3>Smoother writing and reading</h3>
-      <p>Dictation, paste fix, next-step suggestions, and typing effects.</p>
+      <p>Dictation, composer predictions, paste fix, next-step suggestions, and typing effects.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">13</span>
-      <h3>Extend your workspace</h3>
-      <p>Community scripts plus MCP, Skill, and Codex plugin management.</p>
+      <h3>Enhanced Claude Desktop</h3>
+      <p>Chinese UI, dictation, and Computer Use; the official app stays untouched.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">14</span>
-      <h3>WeChat connect</h3>
-      <p>Scan to connect local Codex and dispatch work on the go.</p>
+      <h3>Extend your workspace</h3>
+      <p>Community scripts and the plugin market; MCP and Skills per agent.</p>
     </article>
     <article class="fcard tilt">
-      <span class="fcard-no mono">15</span><span class="fcard-new">NEW</span>
-      <h3>AI agent cache cleanup</h3>
-      <p>Scan and clear Codex, Claude, and Codex++ caches.</p>
+      <span class="fcard-no mono">15</span>
+      <h3>Tray quick panel</h3>
+      <p>Switch models and check usage and recent requests from the tray icon.</p>
     </article>
     <article class="fcard tilt">
       <span class="fcard-no mono">16</span>
-      <h3>Agent pet</h3>
-      <p>A clickable desktop pet that squishes with a sound, in your own style.</p>
+      <h3>Pet, skins, and cleanup</h3>
+      <p>An agent pet, community themes, and Codex / Claude cache cleanup.</p>
     </article>
   </div>
 </section>
@@ -198,24 +198,36 @@
     </div>
     <div class="showcase-track" id="showcaseTrack">
       <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/manager-computer-use.png" target="_blank" rel="noopener"><img src="assets/manager-computer-use.png" alt="Computer Use: AI clients reach ChatGPT.app's native Computer Use and the Chrome extension through Codex++ MCP servers" loading="lazy"></a>
+        <a class="shot-frame shot-preview" href="assets/gateway-hub-en.webp" target="_blank" rel="noopener"><img src="assets/gateway-hub-en.webp" alt="Gateway overview: Codex and Claude Code reach the provider pool through Codex++, with today's calls and rate limits per provider" loading="lazy"></a>
+        <figcaption><b>Gateway overview</b><span>Who is using it, which provider answers, and whether it is healthy.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/gateway-providers-en.webp" target="_blank" rel="noopener"><img src="assets/gateway-providers-en.webp" alt="Provider pool: ChatGPT subscription, DeepSeek, Kimi, Zhipu GLM, and two relays with quota, multiplier, balance, and rate-limit recovery" loading="lazy"></a>
+        <figcaption><b>Provider pool</b><span>Add once, use from every agent; quota for subscriptions, balance for relays.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/gateway-routing-en.webp" target="_blank" rel="noopener"><img src="assets/gateway-routing-en.webp" alt="Routing: a Main coding group in order and a Budget rotation group, with automatic groups below" loading="lazy"></a>
+        <figcaption><b>Routing and groups</b><span>In order, rotate, quota first… and fail over in order on errors.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/usage-stats-en.webp" target="_blank" rel="noopener"><img src="assets/usage-stats-en.webp" alt="Usage statistics: estimated cost, tokens, cache hit rate, calls, and a daily bar chart" loading="lazy"></a>
+        <figcaption><b>Usage statistics</b><span>Cost, tokens, and cache hits by agent, provider, and model.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/usage-requests-en.webp" target="_blank" rel="noopener"><img src="assets/usage-requests-en.webp" alt="Request log: an in-flight request, an automatic retry, a 429 that moved to the next provider, and tokens and cost" loading="lazy"></a>
+        <figcaption><b>Request log</b><span>Status, retries, time to first token, tokens, and cost per request.</span></figcaption>
+      </figure>
+      <figure class="shot">
+        <a class="shot-frame shot-preview" href="assets/computer-use.webp" target="_blank" rel="noopener"><img src="assets/computer-use.webp" alt="Computer Use: Claude Code and DeepSeek Harness connected, reaching ChatGPT.app's native Computer Use and the Chrome extension through Codex++ MCP servers" loading="lazy"></a>
         <figcaption><b>Share Computer Use</b><span>Click Connect and other agents can drive your desktop and browser.</span></figcaption>
       </figure>
       <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/manager-overview.png" target="_blank" rel="noopener"><img src="assets/manager-overview.png" alt="Overview: current provider, 24-hour request stats, and health checks" loading="lazy"></a>
-        <figcaption><b>Overview</b><span>Current provider, recent requests, and health checks at a glance.</span></figcaption>
+        <a class="shot-frame shot-preview" href="assets/codex-enhance-en.webp" target="_blank" rel="noopener"><img src="assets/codex-enhance-en.webp" alt="Codex enhancements: plugin marketplace unlock, model whitelist, native Fast, composer predictions, and session deletion switches" loading="lazy"></a>
+        <figcaption><b>Codex enhancements</b><span>Each enhancement has its own switch, grouped by category.</span></figcaption>
       </figure>
       <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/manager-request-log.png" target="_blank" rel="noopener"><img src="assets/manager-request-log.png" alt="Request log: in-flight requests, automatic retries, time to first token, and token usage" loading="lazy"></a>
-        <figcaption><b>Request log</b><span>Status, retries, time to first token, and tokens, live.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/manager-claude-providers.png?v=2" target="_blank" rel="noopener"><img src="assets/manager-claude-providers.png?v=2" alt="Claude Code provider list" loading="lazy"></a>
-        <figcaption><b>Claude Code providers</b><span>Claude Code providers with one-click switching.</span></figcaption>
-      </figure>
-      <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/manager-claude-enhance.png" target="_blank" rel="noopener"><img src="assets/manager-claude-enhance.png" alt="Claude enhancements: localization, dictation, and Computer Use" loading="lazy"></a>
-        <figcaption><b>Claude enhancements</b><span>Chinese UI, dictation, and Computer Use; the official app stays untouched.</span></figcaption>
+        <a class="shot-frame shot-preview" href="assets/claude-enhance.webp" target="_blank" rel="noopener"><img src="assets/claude-enhance.webp" alt="Claude enhancements: the managed copy is ready, with switches for localization, dictation, and Computer Use" loading="lazy"></a>
+        <figcaption><b>Enhanced Claude Desktop</b><span>Chinese UI, dictation, and Computer Use; the official app stays untouched.</span></figcaption>
       </figure>
       <figure class="shot shot-agent" id="agent-collaboration">
         <a class="shot-frame shot-preview" href="assets/agent-collaboration.png" target="_blank" rel="noopener" aria-label="Open the full-size sub-agent collaboration screenshot">
@@ -224,7 +236,7 @@
         <figcaption><b>Sub-agents, in action</b><span>Codex delegates to DeepSeek via dsh and returns the result in the same chat. Click to view full size.</span></figcaption>
       </figure>
       <figure class="shot">
-        <a class="shot-frame shot-preview" href="assets/codex-multi-launch.png" target="_blank" rel="noopener"><img src="assets/codex-multi-launch.png" alt="Codex multi-launch: running DeepSeek and Zhipu GLM instances" loading="lazy"></a>
+        <a class="shot-frame shot-preview" href="assets/codex-multi-launch-en.webp" target="_blank" rel="noopener"><img src="assets/codex-multi-launch-en.webp" alt="Codex multi-launch: the main Codex and two provider instances running" loading="lazy"></a>
         <figcaption><b>Multi-launch</b><span>One isolated instance per provider identity, no cross-talk.</span></figcaption>
       </figure>
       <figure class="shot">
@@ -237,7 +249,7 @@
       </figure>
       <figure class="shot">
         <a class="shot-frame shot-preview" href="assets/usage-statusline.png" target="_blank" rel="noopener"><img src="assets/usage-statusline.png" alt="Usage status line: 51 tok/s, 99.9% cache hits, 19% context" loading="lazy"></a>
-        <figcaption><b>Usage status line</b><span>51 tok/s · 99.9% cache hits · 19% context, right under the composer.</span></figcaption>
+        <figcaption><b>Usage status line</b><span>Output throughput, cache hits, and context usage, right under the composer.</span></figcaption>
       </figure>
       <figure class="shot">
         <a class="shot-frame shot-preview" href="assets/typing-effects.png" target="_blank" rel="noopener"><img src="assets/typing-effects.png" alt="Rainbow particle typing effects in the Codex composer" loading="lazy"></a>
@@ -249,39 +261,41 @@
 
 <section class="modes" id="modes">
   <div class="section-head">
-    <p class="eyebrow">CODEX PROVIDERS</p>
-    <h2>Codex providers, <em>your call</em></h2>
-    <p class="section-sub">Four ways in, each configured independently and switched in one click — plus a context window per model.</p>
+    <p class="eyebrow">PROVIDERS · GATEWAY AND DIRECT</p>
+    <h2>Providers, <em>your call</em></h2>
+    <p class="section-sub">The gateway gives every agent one shared provider pool; Codex's original direct modes still work, and you can switch at any time.</p>
   </div>
   <div class="seg" role="tablist" aria-label="Provider modes">
     <span class="seg-pill" aria-hidden="true"></span>
-    <button class="seg-btn active" role="tab" aria-selected="true" data-mode="official">Official</button>
+    <button class="seg-btn active" role="tab" aria-selected="true" data-mode="gateway">Gateway</button>
+    <button class="seg-btn" role="tab" aria-selected="false" data-mode="official">Official</button>
     <button class="seg-btn" role="tab" aria-selected="false" data-mode="hybrid">Official + API</button>
     <button class="seg-btn" role="tab" aria-selected="false" data-mode="api">API only</button>
     <button class="seg-btn" role="tab" aria-selected="false" data-mode="agg">Aggregate</button>
   </div>
   <div class="mode-panel tilt" id="modePanel">
     <div class="mode-copy">
-      <h3 id="modeTitle">Official sign-in</h3>
-      <p id="modeDesc">Use your ChatGPT / Codex account. Requests go through the official channel with the full official experience and plugin entry.</p>
+      <h3 id="modeTitle">Gateway</h3>
+      <p id="modeDesc">One local gateway serves Codex, Claude Code, and Grok from a shared provider pool. Requests are routed by model name, keys rotate and cool down, and errors move on to the next provider. Subscriptions such as ChatGPT, GitHub Copilot, and SuperGrok can be signed in to the pool.</p>
       <ul class="mode-points" id="modePoints">
-        <li>Sign in with your ChatGPT / Codex account</li>
-        <li>Official quota and plugin marketplace</li>
-        <li>Zero config, works out of the box</li>
+        <li>One provider pool for every agent</li>
+        <li>Route by model name, provider, or group</li>
+        <li>Multi-key rotation, cooldown, and circuit breaking</li>
+        <li>Usage and cost per agent, provider, and model</li>
       </ul>
     </div>
     <div class="mode-route mono" id="modeRoute" aria-label="Request flow">
-      <span class="route-node route-you">You</span>
+      <span class="route-node route-you">Agents</span>
       <span class="route-link"></span>
-      <span class="route-node">Codex</span>
+      <span class="route-node">Codex++</span>
       <span class="route-link"></span>
-      <span class="route-node route-hot">OpenAI</span>
+      <span class="route-node route-hot">Provider pool</span>
     </div>
   </div>
   <div class="modes-context">
     <div class="modes-context-head">
       <h3>One suffix, a million tokens</h3>
-      <p>Write a window suffix in the model list and Codex++ generates a dedicated <span class="mono">model_catalog_json</span> so Codex uses the right window per model. Models without a suffix keep provider-level settings.</p>
+      <p>In the gateway, set windows per model in the provider details (one click fills them from public data). In direct mode, write a window suffix in the model list and Codex++ generates a dedicated <span class="mono">model_catalog_json</span> so Codex uses the right window per model. Models without a suffix keep provider-level settings.</p>
     </div>
     <div class="context-cols">
       <div class="term tilt" id="term">
@@ -329,23 +343,23 @@
   <div class="steps-track">
     <article class="step tilt">
       <span class="step-no mono">01</span>
-      <h3>Grab the installer</h3>
-      <p>From GitHub Releases: Windows picks <span class="mono">*-windows-x64-setup.exe</span>, macOS (Apple Silicon / Intel) picks <span class="mono">*-macos-universal.dmg</span> — drag it into Applications.</p>
+      <h3>Install and add providers</h3>
+      <p>From GitHub Releases: Windows picks <span class="mono">*-windows-x64-setup.exe</span>, macOS picks <span class="mono">*-macos-universal.dmg</span>. In the Provider pool, paste an API key, sign in to a subscription, or import from direct mode.</p>
     </article>
     <span class="step-arrow" aria-hidden="true">→</span>
     <article class="step tilt">
       <span class="step-no mono">02</span>
-      <h3>Open Codex++ and configure</h3>
-      <p>Double-click always opens the manager: confirm the official app path, pick a provider mode, toggle enhancements, save. API keys stay on your machine.</p>
+      <h3>Connect your agents</h3>
+      <p>Under Agent access, switch on Codex, Claude Code, or Grok and pick a default model. Config files are backed up first, and disconnecting restores only what the gateway changed.</p>
     </article>
     <span class="step-arrow" aria-hidden="true">→</span>
     <article class="step tilt">
       <span class="step-no mono">03</span>
-      <h3>Launch Codex from the manager</h3>
-      <p>Hit "Launch" to load your saved provider and enhancement config into the official app. Injection-based settings apply after a Codex restart.</p>
+      <h3>Launch Codex</h3>
+      <p>Click "Launch Codex" or the ▶ next to Codex in the sidebar to inject enhancements; Claude Code and Grok keep working in your terminal. Injection-based settings apply after a Codex restart.</p>
     </article>
   </div>
-  <p class="steps-note">Every enhancement can be toggled individually; with the master switch off, provider and launch management keep working.</p>
+  <p class="steps-note">Prefer not to use the gateway? Direct mode still works: pick a provider under Codex → Provider configuration (legacy) and launch. Every enhancement can be toggled individually.</p>
 </section>
 
 <section class="whatsnew" id="whatsnew">
@@ -367,15 +381,19 @@
   <div class="faq-list">
     <details class="faq-item">
       <summary>Why is there no Codex++ menu after launch?<span class="faq-x" aria-hidden="true"></span></summary>
-      <div class="faq-a"><p>Make sure you launched the official app from the <b>Codex++</b> manager with the "Launch" button. Check the app path, launch status and diagnostic logs in the manager's Maintenance and About pages.</p></div>
+      <div class="faq-a"><p>Make sure you launched the official app from the <b>Codex++</b> manager with the "Launch Codex" button. Check the app path, launch status and diagnostic logs under Codex → Settings (maintenance is at the bottom) and the About page. On macOS you can also turn on "Auto-takeover of the official app" so Codex++ takes over when you open the official app yourself.</p></div>
     </details>
     <details class="faq-item">
       <summary>Why do requests fail after switching providers?<span class="faq-x" aria-hidden="true"></span></summary>
-      <div class="faq-a"><p>Run a model test or Provider Doctor in the provider details first: verify protocol, Base URL, key and model. API-only and official+API modes store credentials differently — don't hand-copy <span class="mono">auth.json</span> between them.</p></div>
+      <div class="faq-a"><p>In gateway mode, click "Test" in the provider details to see the status code, time to first token, and the upstream error text; failed requests under Usage → Requests show their reason too. In direct mode, run a model test or Provider Doctor in the provider details. API-only and official+API modes store credentials differently — don't hand-copy <span class="mono">auth.json</span> between them.</p></div>
+    </details>
+    <details class="faq-item">
+      <summary>Why can't my agents connect after I quit Codex++?<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>Agents connected to the gateway keep pointing at the local gateway, which only runs while Codex++ is open; reopening Codex++ restores them. To fall back to direct connections on exit, turn on "Restore direct connections when Codex++ exits" in Gateway settings (off by default). Codex++ always switches back to direct mode before installing an update.</p></div>
     </details>
     <details class="faq-item" id="faq-native-fast">
       <summary>Why is the native Fast switch still missing?<span class="faq-x" aria-hidden="true"></span></summary>
-      <div class="faq-a"><p>Confirm that you saved and restarted Codex through Codex++. In your provider's model settings, set “Fast (priority) support”, then save both the model and provider before restarting. Only declare support that your provider actually offers; unlocking the client control does not change service limits or billing.</p></div>
+      <div class="faq-a"><p>Confirm that you saved and restarted Codex through Codex++. In direct mode, open the model's settings under Codex → Provider configuration (legacy), set “Fast (priority) support”, then save both the model and provider before restarting. In gateway mode, a model group supports Fast when every member does. Only declare support that your provider actually offers; unlocking the client control does not change service limits or billing.</p></div>
     </details>
     <details class="faq-item" id="faq-computer-use">
       <summary>Computer Use tools don't show up in my client<span class="faq-x" aria-hidden="true"></span></summary>
@@ -450,7 +468,7 @@
         <i>Download →</i>
       </a>
     </div>
-    <p class="cta-note">Works with the official Codex, Claude, and Grok clients. Open Codex++, configure a provider, and hit "Launch" in the manager.</p>
+    <p class="cta-note">Works with the official Codex, Claude, and Grok clients. Open Codex++, add providers, connect your agents, and hit "Launch Codex" in the manager.</p>
   </div>
 </section>
 
@@ -482,6 +500,6 @@
 <script src="assets/gsap.min.js"></script>
 <script src="assets/ScrollTrigger.min.js"></script>
 <script src="js/nebula.js"></script>
-<script src="js/main.js?v=20261025-agents-1"></script>
+<script src="js/main.js?v=20261030-gateway-1"></script>
 </body>
 </html>

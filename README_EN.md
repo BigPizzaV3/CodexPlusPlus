@@ -16,7 +16,14 @@
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ is a unified manager for AI coding agents. It started with the OpenAI Codex / ChatGPT desktop app — provider switching, protocol conversion, session management, and UI enhancements — and now also manages Claude Code, Claude Desktop, and the Grok CLI, with Computer Use sharing and sub-agent collaboration across agents. Double-click to open its window and launch each app from there. It never modifies any official app's installation files.
+Codex++ is a unified manager for AI coding agents. Since 2.0 it ships a local gateway: Codex, Claude Code, and the Grok CLI share one provider pool, requests are routed by model name, and traffic moves to the next provider automatically when a key cools down or a provider trips. ChatGPT, GitHub Copilot, and SuperGrok subscriptions can be signed in to the pool as well. The original direct mode (official login, official login + API, pure API, aggregate providers) is fully preserved, and you can switch between the two at any time.
+
+It also provides session management, Codex UI enhancements, an enhanced Claude Desktop copy, Computer Use sharing across agents, and sub-agent collaboration. Double-click to open its window and launch each app from there. It never modifies any official app's installation files.
+
+<p align="center">
+  <img src="docs/images/readme-preview/gateway-hub-en.webp" alt="Gateway overview: Codex and Claude Code reach the provider pool through Codex++, with today's calls, cooling keys, and rate limits per provider" width="100%">
+  <br><sub>Any agent, any provider through Codex++: who is using it, which provider answers, and whether it is healthy, on one screen.</sub>
+</p>
 
 ## Quick Start
 
@@ -25,7 +32,13 @@ Download the latest installer from [GitHub Releases](https://github.com/BigPizza
 - Windows: `CodexPlusPlus-*-windows-x64-setup.exe`
 - macOS Intel and Apple Silicon: `CodexPlusPlus-*-macos-universal.dmg`
 
-After installation, one `Codex++` entry is available. Double-click it to open the window, verify the detected official app path, configure a provider and optional enhancements, then click **Launch** to start the official app with your saved configuration.
+After installation, one `Codex++` entry is available. Double-click it to open the window, then:
+
+1. **Add providers** — open **Gateway → Provider pool** and click **Add provider**: paste an API key, sign in to a ChatGPT / GitHub Copilot / SuperGrok subscription, or import several providers at once from direct mode or OpenCode. Model lists and prices are filled in automatically.
+2. **Connect agents** — open **Gateway → Agent access**, turn on the agents you use, and pick each one's default model. Claude Code and Grok keep working in your terminal as usual.
+3. **Launch Codex** — click **Launch Codex** on the Codex page or the ▶ next to Codex in the sidebar. Settings that rely on injection (most enhancements, Fast unlock) take effect after restarting Codex from Codex++.
+
+Prefer not to use the gateway? Direct mode still works: pick a provider under **Codex → Provider configuration (legacy)** and launch. See the full [guide](https://codexpp.cc/guide.html) on the website.
 
 The Windows installer creates Desktop and Start Menu shortcuts. On macOS, drag `Codex++.app` from the DMG into Applications.
 
@@ -43,72 +56,91 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 
 | Agent | What Codex++ does |
 | --- | --- |
-| **Codex desktop** | Provider switching and protocol conversion, request shock absorption, session management, UI enhancements, multi-launch, extensions, and the Agent pet |
-| **Claude Code** | One-click provider switching; Computer Use connection |
+| **Codex desktop** | Providers through the gateway or direct mode, protocol conversion, request shock absorption, session management, UI enhancements, multi-launch, extensions, and the Agent pet |
+| **Claude Code** | Providers of any protocol through the gateway (Anthropic requests are converted to Chat / Responses); Computer Use connection |
 | **Claude Desktop** | Enhanced copy (Chinese UI, dictation, Computer Use); Computer Use connection |
-| **Grok CLI** | Model and API endpoint configuration |
+| **Grok CLI** | The shared provider pool through the gateway, including SuperGrok subscriptions |
 | **DeepSeek Harness and more** | Computer Use connection; callable as a sub-agent from Codex chats |
 
 | Area | Capabilities |
 | --- | --- |
-| Provider configuration | Official login, official login plus API, pure API, and aggregate providers (Failover / Model aggregation); Responses / Chat Completions; model tests, model discovery, Provider Doctor, third-party and deep-link imports; optional auto-review model per provider |
-| Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, model metadata import (models.json), and per-provider MCP, Skill, and Plugin selection |
-| Computer Use sharing · new | Expose the Computer Use and Chrome browser control built into the Codex desktop app (ChatGPT.app) over MCP to Claude Code, Claude Desktop, Codex CLI, DeepSeek Harness, ZCode, and WorkBuddy, with a selectable approval policy (macOS) |
-| Beyond Codex · new | Claude Code provider switching with imports from other tools; an enhanced Claude.app copy with Chinese UI, composer dictation, and Computer Use; Grok CLI model and endpoint management |
-| Request shock absorption and request log | Back off and retry upstream overload errors at the proxy, optionally by HTTP status code; streaming or fully buffered mode; the always-on local proxy keeps running after Codex quits. The request log shows in-flight requests, time to first token, retry reasons, and token usage, filterable by conversation |
-| Session management | Local session scanning, bulk deletion, Markdown export, token usage history, project move, thread IDs, opt-in [turn rewind](docs/turn-rewind.md), and side chats saved as ordinary conversations |
+| Gateway · new | One local gateway for Codex, Claude Code, and Grok with a shared provider pool; routing by bare model name, `<provider>/<model>`, or `group/<id>`; models offered by several providers form automatic groups |
+| Routing and keys · new | Groups run in order, rotate, by weight, quota first, speed first, or manually, with optional conversation stickiness; multiple keys per provider with 429 cooldown, quota cooldown, 401 disable, and 5xx circuit breaking; optional per-key RPM and concurrency limits |
+| Subscriptions and relays · new | Sign in to ChatGPT, ChatGPT API, GitHub Copilot, and SuperGrok inside the gateway and see remaining quota; sub2api / new-api relays are detected with their multiplier and balance |
+| Usage and request log · new | Daily cost, tokens, cache hits, and calls broken down by agent, provider, or model; every request with status, retries, time to first token, tokens, cache, estimated cost, and the failure reason |
+| Direct mode | Official login, official login plus API, pure API, and aggregate providers (Failover / Model aggregation); Responses / Chat Completions; model tests, Provider Doctor, third-party and deep-link imports |
+| Models and context | Per-model context windows, prices, and reasoning levels; `model_catalog_json`; per-provider proxies; image generation models per agent |
+| Computer Use sharing | Expose the Computer Use and Chrome browser control built into the Codex desktop app (ChatGPT.app) over MCP to Claude Code, Claude Desktop, Codex CLI, DeepSeek Harness, ZCode, and WorkBuddy, with a selectable approval policy (macOS) |
+| Claude Desktop | An enhanced Claude.app copy with Chinese UI, composer dictation, and Computer Use; the official app stays untouched |
+| Session management | Codex, Claude Code, and Grok sessions in one list; bulk deletion with undo, Markdown export, project move, thread IDs, opt-in [turn rewind](docs/turn-rewind.md), and side chats saved as ordinary conversations |
 | Codex multi-launch | Start an isolated Codex instance per provider identity, each with its own config, sessions, and user data directory; restart or stop each one individually |
-| Sub-agent collaboration | Delegate in natural language from a Codex chat to Codex CLI, DeepSeek Harness (dsh), or Claude Code and receive results in the same chat |
-| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, dictation with a global hotkey, conversation width and scroll restore, native Fast unlock, Goals, next-step suggestions, skins, and image overlays |
-| Usage status line | Live generation speed, cache hit rate, and context usage below the composer, read from local Codex session records |
-| WeChat connection | QR login connects personal WeChat to local Codex sessions; each contact maps to a separate session, with an allowed-user list |
-| Maintenance | User scripts, AI agent cache cleanup (Codex, Claude, Codex++), app detection, shortcuts, launch at login, settings export / import, logs, diagnostics, and Release updates |
+| Sub-agent collaboration | Delegate in natural language from a Codex chat to Codex CLI, DeepSeek Harness (dsh), or Claude Code and receive results in the same chat; tasks for a busy agent run concurrently up to a limit, then queue |
+| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, dictation with a global hotkey, native composer predictions, conversation width and scroll restore, native Fast unlock, Goals, next-step suggestions, skins, and image overlays |
+| Usage status line | Output throughput, cache hit rate, and context usage below the composer, read from local Codex session records |
+| Tray panel and WeChat | A tray quick panel to switch models and check usage and recent requests; QR login connects personal WeChat to local Codex sessions |
+| Maintenance | MCP and Skills per agent, user scripts, AI agent cache cleanup (Codex, Claude, Codex++), app detection, launch at login, settings export / import, logs, diagnostics, and Release updates |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
 ## Screenshots
 
-**Overview** — current provider, last 24 hours of requests, and health checks.
+**Provider pool** — add a provider once and every connected agent can use it; subscriptions show remaining quota, relays show their multiplier and balance.
 
 <p align="center">
-  <img src="docs/images/readme-preview/manager-overview.png" alt="Overview: current provider, 24-hour request stats, and health checks" width="100%">
+  <img src="docs/images/readme-preview/gateway-providers-en.webp" alt="Provider pool: ChatGPT subscription, DeepSeek, Kimi, Zhipu GLM, and two relays with quota, multiplier, balance, and rate-limit recovery time" width="100%">
+</p>
+
+**Routing** — groups decide which provider goes first, whether a conversation sticks to one, and who takes over on errors. Models offered by several providers are grouped automatically.
+
+<p align="center">
+  <img src="docs/images/readme-preview/gateway-routing-en.webp" alt="Routing: a Main coding group in order and a Budget rotation group, each member with quota, last use, and time to first token; automatic groups below" width="100%">
+</p>
+
+**Agent access** — flip a switch to connect an agent and choose its default model. Agent config files are backed up first, and disconnecting restores only what the gateway changed.
+
+<p align="center">
+  <img src="docs/images/readme-preview/gateway-agents-en.webp" alt="Agent access: Codex and Claude Code connected to the gateway, Grok not connected" width="100%">
+</p>
+
+**Usage and request log**
+
+<p align="center">
+  <img src="docs/images/readme-preview/usage-stats-en.webp" alt="Usage statistics: estimated cost, tokens, cache hit rate, calls, a daily stacked bar chart, and a per-provider breakdown" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/images/readme-preview/usage-requests-en.webp" alt="Request log: an in-flight request, an automatic retry, a 429 that moved to the next provider, and input, output, cached tokens, and cost" width="100%">
 </p>
 
 **Computer Use sharing** — click Connect (「接入」) next to a client and restart it; tools appear as `mcp__codex-plus-cu__*` and `mcp__codex-plus-browser__*` (macOS).
 
 <p align="center">
-  <img src="docs/images/readme-preview/manager-computer-use.png" alt="Computer Use: AI clients reach ChatGPT.app's native Computer Use and the Chrome extension through Codex++ MCP servers" width="100%">
+  <img src="docs/images/readme-preview/computer-use.webp" alt="Computer Use: Claude Code and DeepSeek Harness connected, reaching ChatGPT.app's native Computer Use and the Chrome extension through Codex++ MCP servers" width="100%">
 </p>
 
-**Request log and automatic retries**
-
-<p align="center">
-  <img src="docs/images/readme-preview/manager-request-log.png" alt="Request log: in-flight requests, automatic retries, time to first token, and input, output, and cached tokens" width="100%">
-</p>
-
-**Claude Code, Claude enhancements, Grok, and AI agent cache cleanup**
+**Codex enhancements, the enhanced Claude copy, sessions, and AI agent cache cleanup**
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/readme-preview/manager-claude-providers.png" alt="Claude Code providers" width="100%"></td>
-    <td width="50%"><img src="docs/images/readme-preview/manager-claude-enhance.png" alt="Claude enhancements: localization, dictation, and Computer Use" width="100%"></td>
+    <td width="50%"><img src="docs/images/readme-preview/codex-enhance-en.webp" alt="Codex enhancements: plugin marketplace unlock, model whitelist, native Fast, composer predictions, and session deletion switches" width="100%"></td>
+    <td width="50%"><img src="docs/images/readme-preview/claude-enhance.webp" alt="Claude enhancements: the managed copy is ready, with switches for localization, dictation, and Computer Use" width="100%"></td>
   </tr>
   <tr>
-    <td><img src="docs/images/readme-preview/manager-grok.png" alt="Grok configuration" width="100%"></td>
-    <td><img src="docs/images/readme-preview/manager-agent-cache.png" alt="AI agent cache cleanup for Codex, Claude, and Codex++" width="100%"></td>
+    <td><img src="docs/images/readme-preview/sessions-en.webp" alt="Sessions: local Codex, Claude Code, and Grok sessions in one list" width="100%"></td>
+    <td><img src="docs/images/readme-preview/agent-cache-en.webp" alt="AI agent cache cleanup for Codex, Claude, and Codex++" width="100%"></td>
   </tr>
 </table>
 
 **Usage status line**
 
 <p align="center">
-  <img src="docs/images/usage-statusline.png" alt="Usage status line below the composer: 51 tok/s, cache hit 99.9%, context usage 19%" width="100%">
+  <img src="docs/images/usage-statusline.png" alt="Usage status line below the composer: output throughput, cache hit rate, and context usage" width="100%">
 </p>
 
 **Codex multi-launch**
 
 <p align="center">
-  <img src="docs/images/codex-multi-launch.png" alt="Codex multi-launch: running DeepSeek and Zhipu GLM instances with restart and stop actions" width="100%">
+  <img src="docs/images/readme-preview/codex-multi-launch-en.webp" alt="Codex multi-launch: the main Codex and two provider instances running, each with restart and stop actions" width="100%">
 </p>
 
 **Sub-agent collaboration** — say “Have DeepSeek implement this feature” in a Codex chat; see the [guide](docs/agent-collaboration.md).
@@ -117,11 +149,21 @@ Every UI enhancement is independently configurable. Disabling the global enhance
   <img src="docs/images/agent-collaboration.png" alt="Verified DeepSeek example: ask what 1+1 equals and receive 2 through the Codex Plus Collaboration integration" width="100%">
 </p>
 
-**Agent pet:** an optional clickable desktop pet for Codex that squishes with a sound effect when clicked. Pick an image from the built-in gallery (Fluent Emoji, fetched at runtime) or use your own https image URL. Turn it on from the manager's “Agent pet” page; see the [Agent pet guide](docs/agent-pet.md).
+**Agent pet:** an optional clickable desktop pet for Codex that squishes with a sound effect when clicked. Pick an image from the built-in gallery (Fluent Emoji, fetched at runtime) or use your own https image URL, and import your own sounds. Turn it on from the manager's “Agent pet” page; see the [Agent pet guide](docs/agent-pet.md).
 
-## Codex Provider Modes
+## Gateway and Direct Modes
 
-Official login, mixed API, and pure API are stored and switched separately:
+**Gateway mode (recommended)** serves Codex, Claude Code, and Grok from one provider pool. It is available while Codex++ is running. Model names in the gateway come in three forms:
+
+| Form | Goes to |
+| --- | --- |
+| `deepseek-v4-pro` | Any provider in the pool that offers it; when several do, they form an automatic group and fail over in order |
+| `deepseek/deepseek-v4-pro` | Only that provider |
+| `group/coding` | A group you created, using the group's routing mode |
+
+Context windows are set per model in the provider details (one click fills them from public model data); a request longer than a provider's window is tried there last. To fall back to direct connections after quitting Codex++, turn on **Restore direct connections when Codex++ exits** in **Gateway settings** (off by default). Codex++ always switches back to direct mode before installing an update.
+
+**Direct mode** keeps the original Codex provider setup. Official login, mixed API, and pure API are stored and switched separately:
 
 | Mode | Purpose | Authentication boundary |
 | --- | --- | --- |
@@ -159,8 +201,8 @@ Settings that depend on renderer injection generally require saving and restarti
 
 **Force unlock native Fast** gives pure API-key setups access to Codex's native **Standard / ⚡ Fast** controls for supported models, using the existing model and reasoning-effort menus.
 
-1. Open **Codex enhancements → Common enhancements** and enable both the enhancement master switch and **Force unlock native Fast** (disabled by default).
-2. Make sure the model declares a Fast service tier. To configure it manually, open that model's settings in **Provider configuration**, set **Fast (priority) support**, and save the model and provider.
+1. Open **Codex → Enhance → Common enhancements** and enable both the enhancement master switch and **Force unlock native Fast** (disabled by default).
+2. Make sure the model declares a Fast service tier. In direct mode, open that model's settings in **Codex → Provider configuration (legacy)**, set **Fast (priority) support**, and save the model and provider. In gateway mode, a model group supports Fast when every member does.
 3. Save the enhancement settings and restart Codex from Codex++. Open the model or reasoning-effort menu and select **⚡ Fast**, or select **Standard** to switch back.
 
 Availability, speed improvements, and pricing depend on the provider. Enabling this feature does not automatically speed up every model. Disable the option and restart Codex to restore its original authentication checks.
@@ -185,11 +227,15 @@ The About page can check and start updates. Older macOS two-app versions require
 
 ### The Codex++ menu does not appear
 
-Open `Codex++` and click **Launch** to start the official app. Check the detected app path, launch status, and diagnostic logs in the Maintenance and About pages.
+Open `Codex++` and click **Launch Codex** to start the official app. Check the detected app path, launch status, and diagnostic logs under **Codex → Settings** (maintenance is at the bottom) and the About page. On macOS you can also turn on **Auto-takeover of the official app** in **Codex → Settings** so Codex++ takes over when you open the official app yourself.
 
 ### Requests fail after switching providers
 
-Run the model test or Provider Doctor from the provider detail page. Verify that the protocol, Base URL, key, and test model match. Pure API and official-login-plus-API use different authentication locations; do not manually copy `auth.json` between them.
+In gateway mode, click **Test** in the provider details: it sends a short request with the model (and key) you pick and shows the status code, time to first token, and the upstream error text. Failed requests under **Usage → Requests** show their reason as well. In direct mode, run the model test or Provider Doctor from the provider detail page. Verify that the protocol, Base URL, key, and test model match. Pure API and official-login-plus-API use different authentication locations; do not manually copy `auth.json` between them.
+
+### Agents cannot connect after I quit Codex++
+
+Agents connected to the gateway keep pointing at the local gateway, which only runs while Codex++ is open; reopening Codex++ restores them. To fall back to direct connections on exit, turn on **Restore direct connections when Codex++ exits** in **Gateway settings**.
 
 ### Does it support Intel Macs?
 
