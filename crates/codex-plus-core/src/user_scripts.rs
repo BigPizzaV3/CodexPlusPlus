@@ -1675,7 +1675,7 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
   window.__codexPlusUserScripts = window.__codexPlusUserScripts || {{ scripts: {{}} }};
   const key = {key};
   window.__codexPlusUserScripts.currentKey = key;
-  window.__codexPlusUserScripts.scripts[key] = {{ key, name: {name}, source: {source_name}, manifest: {manifest}, status: "loading", error: "", loadedAt: new Date().toISOString() }};
+  window.__codexPlusUserScripts.scripts[key] = {{ key, name: {name}, source: {source_name}, manifest: {manifest}, status: "loading", error: "", loadedAt: new Date().toISOString() }};{headless}
   try {{
 {source}
     window.__codexPlusUserScripts.scripts[key].status = "loaded";
@@ -1696,7 +1696,14 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
             .as_ref()
             .map(ExtensionPackage::renderer_manifest)
             .unwrap_or(Value::Null),
-        source = source
+        source = source,
+        // 没有页面入口的拓展包（只有钩子、工具、网关或后台）在页面上没有要撤销的东西：登记一个空清理函数，
+        // 否则热重载会把它当成「没登记清理的旧脚本」而退回整页刷新。
+        headless = if script.package.as_ref().is_some_and(|package| package.renderer.is_empty()) {
+            "\n  window.__codexPlusUserScripts.scripts[key].headless = true;\n  window.__codexPlusUserScripts.scripts[key].cleanups = [() => {}];"
+        } else {
+            ""
+        }
     )
 }
 

@@ -430,3 +430,26 @@ async fn write_accepts_lenient_shapes_and_copies_binary_assets() {
     }
     assert!(!temp.path().join("user/bad-asset").exists(), "校验失败时什么都不写");
 }
+
+#[test]
+fn headless_packages_do_not_block_hot_reload() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let dir = temp.path().join("user/hooks-only");
+    fs::create_dir_all(dir.join("hooks")).unwrap();
+    fs::write(dir.join("hooks/guard.mjs"), "export default () => null;").unwrap();
+    fs::write(dir.join("codexpp.json"), json!({"id": "hooks-only", "name": "只有钩子", "hooks": {"PreToolUse": [{"script": "hooks/guard.mjs"}]}}).to_string()).unwrap();
+    let page = temp.path().join("user/with-page");
+    fs::create_dir_all(&page).unwrap();
+    fs::write(page.join("main.js"), "codexPlus.extension(() => {});").unwrap();
+    fs::write(page.join("codexpp.json"), json!({"id": "with-page", "name": "有页面", "renderer": "main.js"}).to_string()).unwrap();
+
+    let bundle = creator.manager.build_initial_bundle().unwrap();
+    let section = |key: &str| {
+        let start = bundle.find(&format!("const key = \"{key}\"")).unwrap();
+        bundle[start..].split("const key = ").nth(1).map(str::to_string).unwrap_or_default()
+    };
+    assert!(section("user:hooks-only").contains(".headless = true") && section("user:hooks-only").contains(".cleanups = [() => {}]"),
+        "没有页面入口的包登记空清理函数，热重载不必整页刷新");
+    assert!(!section("user:with-page").contains(".headless = true"), "有页面入口的包靠 codexPlus.extension 自己登记清理");
+}
