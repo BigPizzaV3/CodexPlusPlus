@@ -624,12 +624,33 @@ impl Default for GatewayStore {
 impl GatewaySettings {
     /// 并入拓展声明的模型供应商（不落盘）：来源记为 `extension:<拓展 id>`，与已有供应商同 id 时以已有的为准。
     /// 只在构建 Agent 的模型资料与网关路由这些只读的地方调用，不要在读-改-写里用，免得写进 gateway.json。
+    ///
+    /// 网关每个请求都会走到这里：拓展目录的扫描结果缓存 3 秒，拓展启停、改配置后很快生效。
     pub fn with_extension_providers(self) -> Self {
-        self.with_extension_providers_from(&crate::user_scripts::default_user_script_manager())
+        type Cached = (std::time::Instant, Vec<(String, crate::user_scripts::ExtensionProvider)>);
+        static CACHE: std::sync::Mutex<Option<Cached>> = std::sync::Mutex::new(None);
+        let providers = {
+            let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match cache.as_ref() {
+                Some((at, list)) if at.elapsed() < std::time::Duration::from_secs(3) => list.clone(),
+                _ => {
+                    let list = crate::user_scripts::default_user_script_manager()
+                        .enabled_extension_providers()
+                        .unwrap_or_default();
+                    *cache = Some((std::time::Instant::now(), list.clone()));
+                    list
+                }
+            }
+        };
+        self.merge_extension_providers(providers)
     }
 
-    pub fn with_extension_providers_from(mut self, manager: &crate::user_scripts::UserScriptManager) -> Self {
+    pub fn with_extension_providers_from(self, manager: &crate::user_scripts::UserScriptManager) -> Self {
         let providers = manager.enabled_extension_providers().unwrap_or_default();
+        self.merge_extension_providers(providers)
+    }
+
+    fn merge_extension_providers(mut self, providers: Vec<(String, crate::user_scripts::ExtensionProvider)>) -> Self {
         for (extension, provider) in providers {
             if self.providers.iter().any(|existing| existing.relay.id == provider.id) {
                 continue;

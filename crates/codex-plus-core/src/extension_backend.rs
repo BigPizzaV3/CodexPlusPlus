@@ -380,6 +380,65 @@ pub async fn route_service_call(payload: &Value) -> anyhow::Result<Value> {
     Ok(json!({ "status": "ok", "result": result }))
 }
 
+/// 正在启动中的后台：key → 启动完成的通知。启动（最多 15 秒等就绪）不占全局锁，
+/// 否则一个后台在启动时调用别的后台服务会和全局锁互相等待。
+static STARTING: std::sync::LazyLock<Mutex<HashMap<String, Arc<Notify>>>> = std::sync::LazyLock::new(Default::default);
+
+/// 确保 key 的后台在跑且与当前清单一致：过期的换掉，没起的由第一个调用方启动，其余调用方等它（最多 15 秒）。
+async fn ensure_started(
+    manager: &UserScriptManager,
+    key: &str,
+    declared: (String, PathBuf, Value),
+    wanted: &str,
+) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        {
+            let mut backends = BACKENDS.lock().await;
+            match backends.get(key) {
+                Some(backend) if backend.fingerprint == wanted => return Ok(()),
+                Some(_) => {
+                    backends.remove(key);
+                }
+                None => {}
+            }
+        }
+        let (notify, starter) = {
+            let mut starting = STARTING.lock().await;
+            match starting.get(key) {
+                Some(notify) => (notify.clone(), false),
+                None => {
+                    let notify = Arc::new(Notify::new());
+                    starting.insert(key.to_string(), notify.clone());
+                    (notify, true)
+                }
+            }
+        };
+        if starter {
+            let outcome = match spawn(manager, declared).await {
+                Ok(backend) => {
+                    BACKENDS.lock().await.insert(key.to_string(), backend);
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            };
+            STARTING.lock().await.remove(key);
+            notify.notify_waiters();
+            return outcome;
+        }
+        // 别人正在启动：等它结束后再看一次（结束得早于开始等待时，下一轮直接看到结果）。
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !STARTING.lock().await.contains_key(key) {
+            continue;
+        }
+        if tokio::time::timeout_at(deadline, notified).await.is_err() {
+            anyhow::bail!("拓展后台启动超时");
+        }
+    }
+}
+
 /// 调用一个拓展后台的方法；后台没起就先起。后台退出过、或拓展改过的会被重新拉起，
 /// 拓展已停用的会被停掉。`instance` 是发起调用的页面实例标识（可省略）。
 pub async fn call(
@@ -393,23 +452,21 @@ pub async fn call(
     if method.is_empty() || method.len() > 128 {
         anyhow::bail!("方法名无效");
     }
+    // 扫描拓展目录在锁外做；拓展已停用就停掉还在跑的后台。
+    let declared = match manager.enabled_extension_backend(key) {
+        Ok(declared) => declared,
+        Err(error) => {
+            BACKENDS.lock().await.remove(key);
+            return Err(error);
+        }
+    };
+    let wanted = fingerprint(&declared.1, &declared.2);
+    ensure_started(manager, key, declared, &wanted).await?;
     let receiver = {
         let mut backends = BACKENDS.lock().await;
-        let declared = match manager.enabled_extension_backend(key) {
-            Ok(declared) => declared,
-            Err(error) => {
-                backends.remove(key);
-                return Err(error);
-            }
+        let Some(backend) = backends.get_mut(key) else {
+            anyhow::bail!("拓展后台已退出，请重试");
         };
-        if backends.get(key).is_some_and(|backend| backend.fingerprint != fingerprint(&declared.1, &declared.2)) {
-            backends.remove(key);
-        }
-        if !backends.contains_key(key) {
-            let backend = spawn(manager, declared).await?;
-            backends.insert(key.to_string(), backend);
-        }
-        let backend = backends.get_mut(key).expect("刚插入");
         if let Some(instance) = instance {
             backend.instance = Some(instance.to_string());
         }

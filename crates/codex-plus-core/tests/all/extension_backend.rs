@@ -204,3 +204,30 @@ async fn backends_and_tools_call_services_provided_by_other_backends() {
     stop(&consumer_key, None).await;
     stop(&format!("user:{provider}"), None).await;
 }
+
+#[tokio::test]
+async fn a_backend_can_call_another_backends_service_while_starting() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let suffix = std::process::id();
+    let provider = format!("init-provider-{suffix}");
+    let consumer = format!("init-consumer-{suffix}");
+    write_package(&temp, &provider, json!({"backend": {"script": "backend/main.mjs", "provides": [format!("greeter{suffix}")]}}), &[(
+        "backend/main.mjs",
+        &format!(r#"export default ({{ provide }}) => {{ provide("greeter{suffix}", {{ hello: (name) => "你好 " + name }}); return {{}}; }};"#),
+    )]);
+    // 使用方在默认导出里就等着调用提供方的服务：启动期间不能和全局锁互相等待。
+    write_package(&temp, &consumer, json!({"backend": {"script": "backend/main.mjs"}}), &[(
+        "backend/main.mjs",
+        &format!(r#"export default async ({{ service }}) => {{ const greeting = await service("greeter{suffix}").hello("拓展"); return {{ greeting: () => greeting }}; }};"#),
+    )]);
+    let started = std::time::Instant::now();
+    let greeting = call(&manager, &format!("user:{consumer}"), "greeting", json!(null), Duration::from_secs(20), None).await.unwrap();
+    assert_eq!(greeting, "你好 拓展");
+    assert!(started.elapsed() < Duration::from_secs(10), "不应等到启动超时：{:?}", started.elapsed());
+    stop(&format!("user:{consumer}"), None).await;
+    stop(&format!("user:{provider}"), None).await;
+}
