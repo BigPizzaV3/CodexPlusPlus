@@ -11,6 +11,7 @@ import { t, tf } from "./i18n";
 import { ProviderBalancePoolBadge, RelayBillingPoolBadge, RelayBillingPoolLabel, RelayBillingRetry, useProviderBalance, useRelayBillingProbe } from "./RelayBillingLine";
 import { relayBillingGatewayCacheKey, type RelayBillingProbe } from "./relay-billing";
 import {
+  glanceAgents,
   defaultProviderAgents,
   failureLabel,
   formatRemaining,
