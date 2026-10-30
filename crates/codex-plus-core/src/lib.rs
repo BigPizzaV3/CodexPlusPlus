@@ -104,6 +104,7 @@ pub mod extension_gateway;
 pub mod extension_history;
 pub mod extension_hooks;
 pub mod extension_node;
+pub mod extension_semver;
 pub mod user_scripts;
 pub mod version;
 pub mod vision;

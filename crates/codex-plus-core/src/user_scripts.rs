@@ -1302,10 +1302,16 @@ fn parse_extension_manifest(
     {
         anyhow::bail!("清单的 id 必填，且只能包含字母、数字、- 和 _");
     }
-    if let Some(engine) = raw.get("engines").and_then(|engines| engines.get("codexpp")) {
-        package.engine = engine
-            .as_u64()
-            .context("engines.codexpp 必须是正整数（拓展 API 版本）")?;
+    // engines.codexpp：整数是拓展 API 版本；字符串是对 Codex++ 版本的 semver 范围（如 "^2.1"、">=2.1.0 <3"）。
+    let mut engine_range = None;
+    match raw.get("engines").and_then(|engines| engines.get("codexpp")) {
+        None => {}
+        Some(Value::String(range)) => engine_range = Some(range.clone()),
+        Some(engine) => {
+            package.engine = engine
+                .as_u64()
+                .context("engines.codexpp 必须是正整数（拓展 API 版本）或 semver 范围字符串（如 \"^2.1\"）")?;
+        }
     }
     package.routes = match raw.get("permissions").and_then(|value| value.get("routes")) {
         None => Vec::new(),
@@ -1355,6 +1361,14 @@ fn parse_extension_manifest(
     package.locales = load_extension_locales(&root)?;
     (package.assets, package.skipped_assets) = load_extension_assets(&root);
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
+    if let Some(range) = engine_range {
+        let current = crate::extension_semver::codexpp_version();
+        let ok = crate::extension_semver::satisfies(current, &range)
+            .with_context(|| format!("engines.codexpp 的版本范围写法不对：{range}"))?;
+        if !ok {
+            anyhow::bail!("需要 Codex++ {range}，当前是 {current}，请升级 Codex++ 或换用兼容的拓展版本");
+        }
+    }
     if package.engine > EXTENSION_API_VERSION {
         anyhow::bail!(
             "需要拓展 API v{}，当前 Codex++ 提供 v{}，请升级 Codex++",
