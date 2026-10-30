@@ -2492,7 +2492,12 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      /* 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。 */
+      /*
+       * 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。
+       * 新版 Codex 还把弹出层挂在一个 z-60 的固定视口容器里（zoom-adjusted-viewport），
+       * 只提升里面的节点逃不出这个堆叠上下文，所以直接父容器也一起提升。
+       */
+      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [data-radix-popper-content-wrapper]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="tooltip"]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="menu"]:not(.${codexPlusPageClass} *),

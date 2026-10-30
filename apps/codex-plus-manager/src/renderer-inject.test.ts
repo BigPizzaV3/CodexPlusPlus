@@ -3621,3 +3621,14 @@ describe("插件运行时内核", () => {
     assert.ok(renderer.indexOf("function codexPlusCreatePlugin(") < renderer.indexOf("window.codexPlus = buildCodexPlusExtensionApi();"));
   });
 });
+
+describe("功能页与原生弹出层的层级", () => {
+  it("页面打开时连同弹出层的直接父容器一起提升，原生 tooltip 不被页面盖住", async () => {
+    const style = await readFile(new URL("../../../assets/inject/renderer-inject/10-style.js", import.meta.url), "utf8");
+    // 新版 Codex 把 tooltip 挂在 z-60 的固定视口容器里，只提升子节点逃不出该堆叠上下文（实测复现过）。
+    assert.match(style, /html\[data-codex-plus-page-open\] div:has\(> \[data-radix-popper-content-wrapper\], > \[role="tooltip"\], > \[role="menu"\]\):not\(\.\$\{codexPlusPageClass\} \*\),/);
+    const page = Number(/z-index: (\d+);\s*display: block;\s*background: var\(--codex-plus-bg-primary/.exec(style)?.[1]);
+    const lifted = Number(/\.app-header-tint \{\s*z-index: (\d+) !important;/.exec(style)?.[1]);
+    assert.ok(page > 0 && lifted > page, "提升后的弹出层必须高于功能页");
+  });
+});
