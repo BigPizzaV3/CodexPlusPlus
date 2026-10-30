@@ -190,6 +190,8 @@ img.src = ctx.asset("assets/pet.png");   // data URL，页面里直接可用
   `timeout` 1~10 秒，默认 5。多个拓展按顺序串联。
 - 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过这里，要告诉用户。
 - 它挡在每一次模型请求前面：保持快、只做用户要求的事、不要外发请求内容。出错或超时会保留原请求。
+- 每走一步都会经过：第二个参数的 `step.index` 是本轮第几步（工具调用之后加一），`step.userText` 是本轮用户输入。
+  返回 `{ reject: "原因" }` 可以不发这一步（例如限制一轮最多 20 步）。
 
 ## 请求失败时重试（gateway.error）
 
@@ -269,6 +271,17 @@ export default async function* (context, next) {
 - 事件：`{ type, seq, time, data }`，`type` 为 `turn/start`、`user/message`、`assistant/message`、`assistant/reasoning`、
   `tool/call`、`tool/result`；`data` 里有 `turn`、`text` / `name` / `input` / `output` 等。
 - 当前页面所在会话的 id：消息插槽回调里的 `message.conversationId`。钩子脚本的第二个参数里也有 `sessionQuery`。
+
+## 写会话（分叉、追加条目、让 agent 跑一轮）
+
+`inject: ["sessions"]` 后（后台、工具、钩子的上下文里也有 `sessions`）：`fork(id)` 分叉、`append(id, "文字" | [{ role, text }])`
+追加条目、`startTurn(id, "文字")` 发起一轮（会真的调用模型，只在用户要求时用）、`interrupt(id, turnId)`、`list()`。
+
+## 提供模型供应商
+
+在 `codexpp_extension_write` 的 `providers` 参数里声明 `[{ id, name, protocol: "responses" | "chat" | "anthropic", baseUrl,
+apiKey: { "config": "apiKey" }, models: [...] }]`，同时在 `config` 里声明 `apiKey`（string、secret）。并入 Codex++ 网关后，
+模型名是 `<id>/<模型>`，要在网关模式下使用。Key 让用户在拓展设置里填，不要写进代码。
 
 ## 拓展之间共享能力（服务）
 

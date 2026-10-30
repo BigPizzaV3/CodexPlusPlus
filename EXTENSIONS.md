@@ -386,7 +386,10 @@ export default (body) => ({ ...body, instructions: `${body.instructions ?? ""}\n
 ```
 
 - `body` 是 OpenAI Responses 请求体的副本；返回新对象即替换，返回 `null` 不改。多个拓展按拓展 key 顺序串联，
-  前一个的输出是后一个的输入。`timeout` 1~10 秒（默认 5），整条链最多 15 秒。
+  前一个的输出是后一个的输入。
+- 按步触发：agent 每走一步（每次工具调用之后）都会向模型发一次请求，都经过这里。第二个参数里的 `step` 是
+  `{ index, toolResults, userText, firstStep }`（本轮第几步、已有几个工具结果、本轮用户输入、是否第一步）。
+  返回 `{ reject: "原因" }` 即不发这一步，Codex 收到带原因的错误，后面的中间件不再跑（对应 dsh `agent/pre-step` 的 reject）。`timeout` 1~10 秒（默认 5），整条链最多 15 秒。
 - 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过 Codex++，不受影响。
 - 只有存在启用中的网关中间件时才会为每个请求起一个 Node 进程；任何中间件出错或超时都会保留原请求并记诊断日志。
 - 中间件能看到完整的请求内容（含对话），以你的用户权限运行。只启用你信任的拓展。
@@ -499,6 +502,55 @@ codexPlus.extension({ inject: ["sessionQuery"], async apply(ctx) {
   `assistant/reasoning`（只有摘要）、`tool/call`（`name`、`callId`、`input`）、`tool/result`（`callId`、`output`）。
   Codex 注入的环境上下文、开发者消息、加密推理不返回；单条文本超过 2 万字截断。
 - 全程只读：数据库只读打开，rollout 文件只读。
+
+### 会话写入（分叉、追加、发起一轮）
+
+内置服务 `sessions` 经 Codex 自己的 app-server 连接写会话，对应 dsh 的 `session.append` / `fork`：
+
+```js
+codexPlus.extension({ inject: ["sessions", "sessionQuery"], async apply(ctx) {
+  const [latest] = await ctx.sessionQuery.listSessions({ limit: 1 });
+  const copy = await ctx.sessions.fork(latest.id);                        // 分叉出一个新会话
+  await ctx.sessions.append(copy.id, "（补充背景：本项目使用 pnpm）");       // 追加一条用户消息
+  await ctx.sessions.append(copy.id, [{ role: "assistant", text: "收到" }]);
+  const turn = await ctx.sessions.startTurn(copy.id, "请总结一下上面的对话"); // 让 agent 跑一轮
+  // await ctx.sessions.interrupt(copy.id, turn.id);
+} });
+```
+
+| 方法 | 说明 |
+| --- | --- |
+| `list({ limit?, cursor?, archived? })` | Codex 的会话列表（`thread/list` 的原样结果） |
+| `fork(id, options?)` | 分叉，返回新会话（含 `id`、`forkedFromId`） |
+| `append(id, items)` | 追加条目：字符串当作用户消息，`{ role, text }` 按角色转成消息，带 `type` 的对象按 Responses 条目原样写入 |
+| `startTurn(id, input, options?)` | 以 `input`（文字或 `[{ type: "text", text }]`）发起一轮，返回 `{ id, status, … }` |
+| `interrupt(id, turnId)` | 中断一轮 |
+
+- 只开放上面几个方法（没有删除）。页面里 `inject: ["sessions"]`；常驻后台、模型工具、钩子的上下文里也有 `sessions`，
+  由 Codex++ 在 Codex 页面里执行，所以 Codex 需要开着。
+- `startTurn` 会真的让模型回复（消耗额度），只在用户要求时用。读会话用 `sessionQuery`。
+
+### 模型供应商
+
+拓展可以声明模型供应商，并入 Codex++ 网关的供应商池（网关模式下 Codex 的模型列表里出现 `<id>/<模型>`）：
+
+```json
+{
+  "id": "my-relay",
+  "config": { "apiKey": { "type": "string", "title": "API Key", "secret": true } },
+  "providers": [{
+    "id": "myrelay", "name": "我的中转", "protocol": "chat",
+    "baseUrl": "https://relay.example.com/v1", "apiKey": { "config": "apiKey" },
+    "models": ["gpt-x", "gpt-y"]
+  }]
+}
+```
+
+- `protocol`：`responses`（默认）/ `chat` / `anthropic`。`apiKey` 写字面值，或 `{ "config": "键" }` 引用拓展的 string 配置项
+  （用户在拓展设置里填，Key 不写进代码）。`models` 至少一个；每个拓展最多 8 个供应商。
+- 只在构建 Agent 模型资料与网关路由时并入，不写进 `gateway.json`；与用户已有的同 id 供应商以用户的为准。拓展停用即消失。
+- 要用代码实现一个供应商（相当于 dsh 写 provider 适配器）：在常驻后台里起一个本机 HTTP 服务实现 Chat / Responses 接口，
+  `baseUrl` 指向 `http://127.0.0.1:<端口>`。
 
 ### 拓展间服务
 

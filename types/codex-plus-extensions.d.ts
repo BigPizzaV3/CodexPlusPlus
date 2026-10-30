@@ -379,6 +379,15 @@ interface CodexPlusSessionQuery {
   observeSession(id: string, handler: (event: CodexPlusSessionEvent) => void, options?: { intervalMs?: number; fromSeq?: number }): CodexPlusDispose;
 }
 
+/** 内置的会话写入服务（inject: ["sessions"]）。 */
+interface CodexPlusSessions {
+  list(options?: { limit?: number; cursor?: string; archived?: boolean }): Promise<{ data: unknown[]; nextCursor?: string | null }>;
+  fork(id: string, options?: Record<string, unknown>): Promise<{ id: string; forkedFromId: string | null; [key: string]: unknown }>;
+  append(id: string, items: string | { role?: "user" | "assistant" | "developer"; text: string } | Array<string | { role?: string; text: string } | Record<string, unknown>>): Promise<{ appended: number }>;
+  startTurn(id: string, input: string | Array<{ type: "text"; text: string }>, options?: Record<string, unknown>): Promise<{ id: string; status: string; [key: string]: unknown }>;
+  interrupt(id: string, turnId: string): Promise<unknown>;
+}
+
 /** 多语言。查找顺序：当前语言 → 主语言 → en，先在命名空间、再在 common，最后返回 key。 */
 interface CodexPlusLocale {
   /** 当前语言（Codex 页面的 lang，如 zh-CN）。 */
@@ -416,6 +425,8 @@ interface CodexPlusExtensionContext {
   readonly locale: CodexPlusLocale;
   /** inject 了 sessionQuery 时可用。其它 inject 的服务同样以服务名挂在 ctx 上。 */
   readonly sessionQuery?: CodexPlusSessionQuery;
+  /** inject 了 sessions 时可用：分叉、追加条目、发起 / 中断一轮。 */
+  readonly sessions?: CodexPlusSessions;
   /** 所属生命周期句柄（仅声明了 inject 的拓展）。 */
   readonly fiber?: CodexPlusExtensionFiber;
 
