@@ -602,14 +602,27 @@ pub fn codex_process_generation_exited(
     pid: u32,
     expected_birth: Option<u64>,
 ) -> anyhow::Result<bool> {
-    if pid == 0 || pid == std::process::id() || expected_birth == Some(0) {
+    process_generation_exited_with(
+        pid,
+        expected_birth,
+        crate::windows_integration::process_lifetime,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn process_generation_exited_with(
+    pid: u32,
+    expected_birth: Option<u64>,
+    query: impl FnOnce(u32) -> anyhow::Result<Option<(u64, bool)>>,
+) -> anyhow::Result<bool> {
+    if pid == 0 || expected_birth == Some(0) {
         return Ok(false);
     }
-    let Some(process) = crate::windows_integration::VerifiedStopProcess::capture(pid, false)?
-    else {
+    let Some((birth, exited)) = query(pid)? else {
         return Ok(true);
     };
-    Ok(expected_birth.is_some_and(|birth| birth != process.birth_id) || !process.is_alive()?)
+    anyhow::ensure!(birth != 0, "无法确认进程创建身份");
+    Ok(exited || expected_birth.is_some_and(|expected| expected != birth))
 }
 
 #[cfg(target_os = "macos")]
@@ -638,7 +651,7 @@ pub fn codex_user_data_is_absent(
     debug_port: u16,
     helper_port: u16,
 ) -> anyhow::Result<bool> {
-    use crate::windows_integration::{VerifiedStopProcess, bounded_process_snapshot};
+    use crate::windows_integration::bounded_process_snapshot;
     anyhow::ensure!(
         debug_port != 0 && helper_port != 0 && debug_port != helper_port,
         "实例端口无效"
@@ -656,27 +669,77 @@ pub fn codex_user_data_is_absent(
         if !entry.exe_file.eq_ignore_ascii_case(&name.to_string_lossy()) {
             continue;
         }
-        let Some(process) = VerifiedStopProcess::capture(entry.process_id, false)? else {
-            continue;
-        };
-        if !process.is_alive()? {
-            continue;
-        }
-        let image = process.image()?.canonicalize()?;
-        if image
-            .to_string_lossy()
-            .eq_ignore_ascii_case(&executable.to_string_lossy())
-            && arguments_use_user_data(&process.arguments()?, &user_data_dir)?
-        {
+        if windows_process_uses_user_data(entry.process_id, &executable, &user_data_dir)? {
             return Ok(false);
         }
     }
-    for port in [debug_port, helper_port] {
-        if !crate::windows_integration::loopback_listener_process_ids(port)?.is_empty() {
-            return Ok(false);
-        }
+    loopback_ports_are_free_with(
+        debug_port,
+        helper_port,
+        |host, port| std::net::TcpListener::bind((host, port)),
+        |port| {
+            let owners = crate::windows_integration::loopback_listener_process_ids(port)?;
+            anyhow::ensure!(!owners.is_empty(), "占用端口的进程归属尚未确认");
+            for pid in &owners {
+                if windows_process_uses_user_data(*pid, &executable, &user_data_dir)? {
+                    return Ok(false);
+                }
+            }
+            anyhow::ensure!(
+                crate::windows_integration::loopback_listener_process_ids(port)? == owners,
+                "端口归属在核验期间改变"
+            );
+            Ok(true)
+        },
+    )
+}
+
+#[cfg(any(windows, target_os = "macos", test))]
+fn process_read_or_exited<T>(
+    read: anyhow::Result<T>,
+    exited: impl FnOnce() -> anyhow::Result<bool>,
+) -> anyhow::Result<Option<T>> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(_) if matches!(exited(), Ok(true)) => Ok(None),
+        Err(error) => Err(std::io::Error::other(error).into()),
     }
-    loopback_ports_are_free(debug_port, helper_port)
+}
+
+#[cfg(windows)]
+fn windows_process_uses_user_data(
+    pid: u32,
+    executable: &Path,
+    user_data: &Path,
+) -> anyhow::Result<bool> {
+    use crate::windows_integration::{VerifiedStopProcess, process_lifetime};
+    let captured = process_read_or_exited(VerifiedStopProcess::capture(pid, false), || {
+        Ok(process_lifetime(pid)?.is_none_or(|(_, exited)| exited))
+    })?;
+    let Some(Some(process)) = captured else {
+        return Ok(false);
+    };
+    if !process.is_alive()? {
+        return Ok(false);
+    }
+    let Some(image) = process_read_or_exited(
+        process.image().and_then(|image| Ok(image.canonicalize()?)),
+        || Ok(!process.is_alive()?),
+    )?
+    else {
+        return Ok(false);
+    };
+    if !image
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&executable.to_string_lossy())
+    {
+        return Ok(false);
+    }
+    let Some(arguments) = process_read_or_exited(process.arguments(), || Ok(!process.is_alive()?))?
+    else {
+        return Ok(false);
+    };
+    arguments_user_data_matches(&arguments, user_data)
 }
 
 #[cfg(target_os = "macos")]
@@ -734,27 +797,46 @@ pub fn codex_user_data_is_absent(
     loopback_ports_are_free(debug_port, helper_port)
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn loopback_ports_are_free(debug_port: u16, helper_port: u16) -> anyhow::Result<bool> {
+    loopback_ports_are_free_with(
+        debug_port,
+        helper_port,
+        |host, port| std::net::TcpListener::bind((host, port)),
+        |_| Ok(false),
+    )
+}
+
+#[cfg(any(windows, target_os = "macos", test))]
+fn loopback_ports_are_free_with<T>(
+    debug_port: u16,
+    helper_port: u16,
+    mut bind: impl FnMut(&str, u16) -> std::io::Result<T>,
+    mut owners_are_unrelated: impl FnMut(u16) -> anyhow::Result<bool>,
+) -> anyhow::Result<bool> {
     anyhow::ensure!(
         debug_port != 0 && helper_port != 0 && debug_port != helper_port,
         "实例端口无效"
     );
     let mut reservations = Vec::new();
     for port in [debug_port, helper_port] {
+        let mut occupied = false;
         for host in ["127.0.0.1", "::1"] {
-            let Ok(listener) = std::net::TcpListener::bind((host, port)) else {
-                return Ok(false);
-            };
-            reservations.push(listener);
+            match bind(host, port) {
+                Ok(listener) => reservations.push(listener),
+                Err(error)
+                    if host == "::1"
+                        && (error.kind() == std::io::ErrorKind::AddrNotAvailable
+                            || matches!(error.raw_os_error(), Some(47 | 49 | 10047 | 10049))) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => occupied = true,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if occupied && !owners_are_unrelated(port)? {
+            return Ok(false);
         }
     }
     Ok(true)
-}
-
-#[cfg(windows)]
-fn arguments_use_user_data(arguments: &[String], expected: &Path) -> anyhow::Result<bool> {
-    arguments_user_data_matches(arguments, expected)
 }
 
 #[cfg(any(windows, target_os = "macos", test))]
@@ -840,6 +922,105 @@ pub fn terminate_verified_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_queries_keep_permission_failures_uncertain_and_compare_current_pid() {
+        let pid = std::process::id();
+        assert!(!process_generation_exited_with(pid, Some(41), |_| Ok(Some((41, false)))).unwrap());
+        assert!(process_generation_exited_with(pid, Some(40), |_| Ok(Some((41, false)))).unwrap());
+        assert!(process_generation_exited_with(pid, Some(41), |_| Ok(None)).unwrap());
+        assert!(process_generation_exited_with(pid, Some(41), |_| Ok(Some((41, true)))).unwrap());
+        assert!(!process_generation_exited_with(pid, None, |_| Ok(Some((41, false)))).unwrap());
+        assert!(
+            process_generation_exited_with(pid, Some(41), |_| {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+            })
+            .is_err()
+        );
+        assert!(process_generation_exited_with(pid, Some(41), |_| Ok(Some((0, false)))).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn limited_query_checks_current_process_birth_without_vm_read() {
+        let pid = std::process::id();
+        let birth = crate::windows_integration::process_birth_id(pid).unwrap();
+        assert!(!codex_process_generation_exited(pid, Some(birth)).unwrap());
+        assert!(codex_process_generation_exited(pid, Some(birth + 1)).unwrap());
+        assert!(codex_process_generation_exited(u32::MAX, Some(birth)).unwrap());
+        assert!(!codex_process_generation_exited(0, Some(birth)).unwrap());
+    }
+
+    #[test]
+    fn failed_process_reads_require_independent_exit_confirmation() {
+        for stage in ["capture", "image", "arguments"] {
+            let read = || Err::<(), _>(anyhow::anyhow!("{stage} failed"));
+            assert!(
+                process_read_or_exited(read(), || Ok(true))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(process_read_or_exited(read(), || Ok(false)).is_err());
+            assert!(process_read_or_exited(read(), || anyhow::bail!("unknown")).is_err());
+            assert_eq!(
+                process_read_or_exited(Ok(41), || panic!("successful read")).unwrap(),
+                Some(41)
+            );
+        }
+    }
+
+    #[test]
+    fn absence_ports_tolerate_only_unavailable_ipv6_and_verified_neighbors() {
+        use std::io::{Error, ErrorKind};
+        for code in [47, 49, 10047, 10049] {
+            assert!(
+                loopback_ports_are_free_with(
+                    9341,
+                    9342,
+                    |host, _| {
+                        if host == "::1" {
+                            Err(Error::from_raw_os_error(code))
+                        } else {
+                            Ok(())
+                        }
+                    },
+                    |_| panic!("no occupied ports")
+                )
+                .unwrap()
+            );
+        }
+        for unrelated in [false, true] {
+            assert_eq!(
+                loopback_ports_are_free_with(
+                    9341,
+                    9342,
+                    |_, _| { Err::<(), _>(Error::from(ErrorKind::AddrInUse)) },
+                    |_| Ok(unrelated)
+                )
+                .unwrap(),
+                unrelated
+            );
+        }
+        assert!(
+            loopback_ports_are_free_with(
+                9341,
+                9342,
+                |_, _| { Err::<(), _>(Error::from(ErrorKind::PermissionDenied)) },
+                |_| Ok(true)
+            )
+            .is_err()
+        );
+        assert!(
+            loopback_ports_are_free_with(
+                9341,
+                9342,
+                |_, _| { Err::<(), _>(Error::from(ErrorKind::AddrInUse)) },
+                |_| Err(Error::from(ErrorKind::PermissionDenied).into())
+            )
+            .is_err()
+        );
+        assert!(loopback_ports_are_free_with(0, 9342, |_, _| Ok(()), |_| Ok(true)).is_err());
+    }
 
     #[test]
     fn lifecycle_lock_serializes_generation_and_receipt_writers() {

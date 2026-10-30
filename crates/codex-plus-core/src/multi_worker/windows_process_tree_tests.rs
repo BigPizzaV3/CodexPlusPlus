@@ -554,7 +554,7 @@ async fn already_exited_root_is_a_successful_stop_without_adopting_other_process
 }
 
 #[tokio::test]
-async fn stopped_receipt_scope_excludes_neighbors_but_rejects_replacement_and_busy_ports() {
+async fn stopped_receipt_scope_preserves_neighbor_ports_but_rejects_same_data_replacement() {
     let _fixture_lock = FIXTURE_LOCK.lock().await;
     use crate::multi_worker::{codex_process_generation_exited, codex_user_data_is_absent};
     let port = unused_port();
@@ -595,10 +595,10 @@ async fn stopped_receipt_scope_excludes_neighbors_but_rejects_replacement_and_bu
     assert!(fixtures.process("independent").is_alive().unwrap());
     assert!(absent());
     let debug = std::net::TcpListener::bind(("127.0.0.1", identity.debug_port)).unwrap();
-    assert!(!absent());
+    assert!(absent());
     drop(debug);
     let helper = std::net::TcpListener::bind(("::1", identity.helper_port)).unwrap();
-    assert!(!absent());
+    assert!(absent());
     drop(helper);
     assert!(absent());
     struct Replacement(std::process::Child);

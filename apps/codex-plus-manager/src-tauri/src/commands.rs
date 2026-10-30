@@ -2459,16 +2459,41 @@ fn wait_for_multi_instance_absence(
     instance: &CodexMultiInstance,
     absent: impl Fn(&CodexMultiInstance) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    wait_for_multi_instance_absence_with_timeout(
+        instance,
+        absent,
+        std::time::Duration::from_secs(10),
+    )
+}
+
+fn wait_for_multi_instance_absence_with_timeout(
+    instance: &CodexMultiInstance,
+    absent: impl Fn(&CodexMultiInstance) -> anyhow::Result<bool>,
+    timeout: std::time::Duration,
+) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last_error = None;
     loop {
-        if absent(instance)? && absent(instance)? {
-            return Ok(());
+        match absent(instance).and_then(|first| Ok(first && absent(instance)?)) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error)
+                if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                    !matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData
+                    )
+                }) =>
+            {
+                last_error = Some(error)
+            }
+            Err(error) => return Err(error),
         }
-        anyhow::ensure!(
-            std::time::Instant::now() < deadline,
-            "实例进程或端口尚未完全释放"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err(last_error.unwrap_or_else(|| anyhow::anyhow!("实例进程或端口尚未完全释放")));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100).min(deadline - now));
     }
 }
 
@@ -13135,6 +13160,64 @@ model_reasoning_effort = "high"
         assert_eq!(running.launch_result.unwrap().status, "ready");
         instance.status = "stopped".into();
         assert!(!multi_instance_is_starting(&instance));
+    }
+
+    #[test]
+    fn multi_instance_absence_wait_retries_reads_but_not_identity_conflicts() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let temp = tempfile::tempdir().unwrap();
+        let instance = ready_multi_instance_fixture(temp.path());
+        let calls = Cell::new(0);
+        wait_for_multi_instance_absence_with_timeout(
+            &instance,
+            |_| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
+                }
+                Ok(true)
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 3);
+        let calls = Cell::new(0);
+        let error = wait_for_multi_instance_absence_with_timeout(
+            &instance,
+            |_| {
+                calls.set(calls.get() + 1);
+                Err(std::io::Error::other("last read failure").into())
+            },
+            Duration::from_millis(10),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("last read failure"));
+        assert!(calls.get() >= 2);
+        let calls = Cell::new(0);
+        assert!(
+            wait_for_multi_instance_absence_with_timeout(
+                &instance,
+                |_| {
+                    calls.set(calls.get() + 1);
+                    anyhow::bail!("identity conflict")
+                },
+                Duration::from_secs(1)
+            )
+            .is_err()
+        );
+        assert_eq!(calls.get(), 1);
+        let calls = Cell::new(0);
+        wait_for_multi_instance_absence_with_timeout(
+            &instance,
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(calls.get() > 1)
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 3);
     }
 
     #[test]

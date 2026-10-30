@@ -414,6 +414,33 @@ pub fn process_birth_id(process_id: u32) -> Option<u64> {
 }
 
 #[cfg(windows)]
+pub(crate) fn process_lifetime(process_id: u32) -> anyhow::Result<Option<(u64, bool)>> {
+    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+    {
+        Ok(handle) => handle,
+        Err(error) if error.code().0 as u32 == 0x80070057 => return Ok(None),
+        Err(error) => {
+            return Err(std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+                .context("无法查询进程创建身份");
+        }
+    };
+    let _guard = HandleGuard(handle);
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) }
+        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+        .context("无法读取进程创建身份")?;
+    let birth = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+    anyhow::ensure!(birth != 0, "进程创建身份无效");
+    Ok(Some((
+        birth,
+        exit.dwHighDateTime != 0 || exit.dwLowDateTime != 0,
+    )))
+}
+
+#[cfg(windows)]
 fn process_birth_id_from_handle(handle: HANDLE) -> Option<u64> {
     let mut creation_time = FILETIME::default();
     let mut exit_time = FILETIME::default();
@@ -594,7 +621,7 @@ impl VerifiedStopProcess {
     pub fn capture(process_id: u32, terminate: bool) -> anyhow::Result<Option<Self>> {
         use std::os::windows::io::FromRawHandle;
         anyhow::ensure!(
-            process_id != 0 && process_id != std::process::id(),
+            process_id != 0 && (!terminate || process_id != std::process::id()),
             "拒绝捕获无效进程或当前 worker"
         );
         let rights = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_VM_READ;
@@ -1035,22 +1062,21 @@ fn tcp_listener_table(family: u32) -> anyhow::Result<Vec<u8>> {
 #[cfg(windows)]
 pub(crate) fn loopback_listener_process_ids(port: u16) -> anyhow::Result<Vec<u32>> {
     let mut ids = Vec::new();
-    let mut errors = Vec::new();
     for (family, ipv6) in [(2, false), (23, true)] {
         match tcp_listener_table(family)
             .and_then(|bytes| parse_listener_process_ids(&bytes, ipv6, port))
         {
             Ok(found) => ids.extend(found),
-            Err(error) => errors.push(format!("{error:#}")),
+            Err(error)
+                if ipv6
+                    && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                        matches!(error.raw_os_error(), Some(50 | 10047 | 10049))
+                    }) => {}
+            Err(error) => return Err(error),
         }
     }
     ids.sort_unstable();
     ids.dedup();
-    anyhow::ensure!(
-        !ids.is_empty() || errors.is_empty(),
-        "{}",
-        errors.join("; ")
-    );
     Ok(ids)
 }
 
