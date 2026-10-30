@@ -412,3 +412,32 @@ async fn live_github_search_and_version_resolution() {
     assert_eq!(resolved.sha.len(), 40);
     assert!(resolved.tag.is_some() || resolved.from_default_branch);
 }
+
+/// 联网装一次测试仓库 BigPizzaV3/codexpp-community-hello（release v0.1.0 带附件）：
+/// `cargo test -p codex-plus-core --test all extension_discovery::live_install -- --ignored --nocapture`
+#[tokio::test]
+#[ignore]
+async fn live_install_from_real_github() {
+    let root = tempdir().unwrap();
+    let store = CommunityStore::new(root.path());
+    let manager = manager(root.path());
+    let endpoints = Endpoints::github();
+    let listed = store.list(&endpoints, &manager, true).await;
+    eprintln!("列表：{}", serde_json::to_string_pretty(&listed["entries"]).unwrap());
+    let repo = "BigPizzaV3/codexpp-community-hello";
+    assert!(listed["entries"].as_array().unwrap().iter().any(|entry| entry["repo"] == repo), "{listed}");
+    let prepared = store.prepare(&endpoints, &manager, repo).await.unwrap();
+    eprintln!("准备：{prepared:#}");
+    assert_eq!(prepared["tag"], "v0.1.0");
+    assert_eq!(prepared["fromAsset"], true);
+    assert_eq!(prepared["permissions"]["hooks"][0]["event"], "PreToolUse");
+    let installed = store.install(&manager, prepared["token"].as_str().unwrap(), false, false).unwrap();
+    eprintln!("安装：{installed:#}");
+    assert!(root.path().join("user_scripts/community-hello/renderer.js").is_file());
+    let inventory = manager.inventory().unwrap();
+    let item = inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == "user:community-hello").unwrap().clone();
+    eprintln!("加载器：{item:#}");
+    assert_eq!(item["status"], "disabled");
+    let listed = store.list(&endpoints, &manager, false).await;
+    assert_eq!(listed["entries"][0]["installed"]["tag"], "v0.1.0");
+}
