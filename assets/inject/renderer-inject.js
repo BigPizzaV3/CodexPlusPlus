@@ -12279,8 +12279,12 @@
   const codexAppServerClientBundleHints = ["app-shared-", "app-initial-", "app-main-", "chatg"];
   const codexAppServerClientAssetFetchLimit = 24;
 
+  // 已经拉过全文、确认不含类定义的资产。重试时只看新出现的候选，
+  // 不会因为多试几轮就把同一批大文件反复 fetch（#1960 / #2330 的教训）。
+  const codexAppServerClientCheckedUrls = new Set();
+
   function codexAppServerClientAssetCandidateUrls() {
-    const urls = codexAppAssetCandidateUrls();
+    const urls = codexAppAssetCandidateUrls().filter((url) => !codexAppServerClientCheckedUrls.has(url));
     const rank = (url) => {
       const name = (url.split("/").pop() || "").toLowerCase();
       const hint = codexAppServerClientBundleHints.findIndex((part) => name.includes(part));
@@ -12301,7 +12305,7 @@
     // 先走廉价的 asset loader（有 30s 失败冷却与重试上限），脚本里已经内联了
     // asset 名时能直接命中，省掉整轮 fetch；不可用就退回到全量文本匹配。
     const hinted = resolveCodexAppServerClientHintedUrl();
-    const ordered = hinted
+    const ordered = hinted && !codexAppServerClientCheckedUrls.has(hinted)
       ? [hinted, ...urls.filter((url) => url !== hinted)]
       : urls;
     for (const url of ordered) {
@@ -12310,8 +12314,9 @@
         if (!text) continue;
         const location = locateCodexAppServerClientBreakpoint(text);
         if (location) return { urls, hit: { url, location } };
+        codexAppServerClientCheckedUrls.add(url);
       } catch {
-        // 单个 asset 拉取失败不影响其余候选，继续下一个。
+        // 单个 asset 拉取失败不影响其余候选，继续下一个；没记成已检查，下一轮还会再试。
       }
     }
     return { urls, hit: null };
@@ -12327,19 +12332,37 @@
     return "";
   }
 
-    let codexAppServerClientCaptureStarted = false;
+  // 定位常常跑在类所在的资产「可见」之前：Codex 26.10xx 由 app-main 静态 import app-initial，
+  // 开了 Fast 时 import map 又把它指向 Blob，资源记录里没有原 URL（缓冲区 250 条也早就满了），
+  // 要等 Fast 模块执行完置上 __codexPlusNativeFastCompiled 才能拿到。之前首轮只看到 5 个候选、
+  // 报 anchor_missing 后本页再也不试，launcher 等不到坐标就放弃捕获，依赖原型补丁的功能全部失效。
+  // 所以未命中时按退避重试；总时长控制在 launcher 90s 的坐标等待窗口之内。
+  const codexAppServerClientCaptureRetryDelaysMs = [1000, 2000, 4000, 8000, 15000, 15000, 15000];
+  let codexAppServerClientCaptureStarted = false;
+  let codexAppServerClientCaptureAttempts = 0;
   async function installCodexAppServerClientCapture() {
     if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture) return;
     codexAppServerClientCaptureStarted = true;
+    codexAppServerClientCaptureAttempts += 1;
     try {
       if (typeof fetch !== "function") return;
       const { urls, hit } = await locateCodexAppServerClientInAssets();
       if (!hit) {
+        const retryDelay = codexAppServerClientCaptureRetryDelaysMs[codexAppServerClientCaptureAttempts - 1];
+        if (retryDelay !== undefined) {
+          window.setTimeout(() => {
+            codexAppServerClientCaptureStarted = false;
+            void installCodexAppServerClientCapture().catch(() => {});
+          }, retryDelay);
+          return;
+        }
         // 区分「一个候选资产都没有」和「有资产但没有类定义」：
         // 前者是页面还没加载完，后者才是 Codex 真的改了产物形状。
         sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
-          reason: urls.length === 0 ? "asset_url_missing" : "anchor_missing",
+          reason: urls.length === 0 && codexAppServerClientCheckedUrls.size === 0 ? "asset_url_missing" : "anchor_missing",
           candidateCount: urls.length,
+          checkedCount: codexAppServerClientCheckedUrls.size,
+          attempts: codexAppServerClientCaptureAttempts,
         });
         return;
       }
@@ -12349,6 +12372,7 @@
         lineNumber: hit.location.lineNumber,
         columnNumber: hit.location.columnNumber,
         asset: (hit.url.split("/").pop() || "").split("?")[0],
+        attempts: codexAppServerClientCaptureAttempts,
       });
     } catch (error) {
       codexAppServerClientCaptureStarted = false;
