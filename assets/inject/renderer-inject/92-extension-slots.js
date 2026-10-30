@@ -401,8 +401,14 @@
         return visible("[data-codex-composer-root]").map((node) => ({ parent: node.parentElement, place: node }));
       case "thread.top":
       case "thread.bottom":
+        // 对话内容层的末尾是一个给输入框让位的粘底空白层；底部插槽放在它前面，紧跟最后一条消息。
         return visible(".thread-scroll-container").map((scroll) => scroll.firstElementChild).filter(Boolean)
-          .map((content) => ({ parent: content, place: slot === "thread.top" ? "start" : "end" }));
+          .map((content) => ({
+            parent: content,
+            place: slot === "thread.top"
+              ? "start"
+              : [...content.children].find((child) => child.classList.contains("sticky") && !isExtensionUiNode(child)) || "end",
+          }));
       case "sidebar.top":
       case "sidebar.bottom":
         return visible("[data-app-action-sidebar-scroll]")

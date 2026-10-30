@@ -118,7 +118,7 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 352
+      "lines": 368
     },
     {
       "name": "91-extension-runtime.js",
@@ -138,7 +138,7 @@
     {
       "name": "92-extension-slots.js",
       "description": "拓展消息插槽（操作按钮、装饰）与右侧面板",
-      "lines": 521
+      "lines": 527
     },
     {
       "name": "93-dictation.js",

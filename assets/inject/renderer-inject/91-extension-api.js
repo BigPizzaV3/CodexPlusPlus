@@ -127,6 +127,22 @@
    * 所以逐项 try/catch，任何一个不存在或抛错都不影响其余。
    */
   function codexPlusRefreshExtensionHosts() {
+    codexPlusRefreshExtensionHostsNow();
+    scheduleCodexPlusExtensionHostsCatchUp();
+  }
+
+  /**
+   * 页面刚加载时拓展往往先于 Codex 的界面注册：注册那一刻输入框、侧栏、顶栏还没渲染，立即刷新没有地方挂。
+   * 首页静止时扫描也不会再跑，所以注册 / 撤销后再在 0.5、2、5 秒各补刷一次。连续注册共用同一组定时器；
+   * 各刷新按指纹幂等，界面没变时不动 DOM。
+   */
+  let codexPlusExtensionHostsCatchUpTimers = [];
+  function scheduleCodexPlusExtensionHostsCatchUp() {
+    for (const timer of codexPlusExtensionHostsCatchUpTimers) clearTimeout(timer);
+    codexPlusExtensionHostsCatchUpTimers = [500, 2000, 5000].map((delay) => setTimeout(codexPlusRefreshExtensionHostsNow, delay));
+  }
+
+  function codexPlusRefreshExtensionHostsNow() {
     for (const refresh of [
       refreshCodexPlusPageNav,
       refreshCodexPlusRailNavigation,
