@@ -1725,6 +1725,17 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         codex_plus_core::routes::evaluate_extension_cdp(debug_port, &payload).await
     }
 
+    async fn request_app_server_client_capture(&self) -> anyhow::Result<Value> {
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        let started = codex_plus_core::bridge::request_app_server_client_capture(&websocket_url);
+        Ok(serde_json::json!({ "status": "ok", "started": started }))
+    }
+
     async fn script_market_list(&self) -> anyhow::Result<Value> {
         codex_plus_core::script_market::list_market_scripts(&self.user_scripts).await
     }

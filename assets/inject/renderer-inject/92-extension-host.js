@@ -234,6 +234,92 @@
   }
 
   /**
+   * 输入区按钮插槽：拓展用 registerComposerAction 注册的按钮，插在输入区 footer 里。
+   *
+   * footer 的选择沿用听写入口那套打分（同一输入框只挂一份、优先包含输入框和发送按钮的
+   * footer），Codex 改结构时两边一起修。按注册表指纹决定是否重建，避免每轮扫描都改 DOM。
+   */
+  function codexPlusComposerActionHosts() {
+    const hosts = new Map();
+    document.querySelectorAll(".composer-footer, [data-composer-footer-responsive]").forEach((footer) => {
+      if (!visibleElement(footer) || isExtensionUiNode(footer)) return;
+      const scope = codexPlusDictationScope(footer);
+      const editor = scope && codexPlusDictationEditor(scope);
+      if (!editor) return;
+      const score = codexPlusDictationFooterScore(footer, editor);
+      const current = hosts.get(editor);
+      if (!current || score >= current.score) hosts.set(editor, { footer, editor, score });
+    });
+    return [...hosts.values()];
+  }
+
+  /** 把文字插入输入框：先聚焦，再走浏览器的 insertText，让编辑器自己处理撤销栈与状态。 */
+  function codexPlusInsertComposerText(editor, text) {
+    if (!editor || typeof text !== "string" || !text) return false;
+    editor.focus();
+    return document.execCommand("insertText", false, text);
+  }
+
+  function refreshCodexPlusComposerActions() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.composerActions);
+    const hosts = items.length ? codexPlusComposerActionHosts() : [];
+    const hostFooters = new Set(hosts.map((host) => host.footer));
+    document.querySelectorAll("[data-codex-plus-composer-actions]").forEach((node) => {
+      if (!hostFooters.has(node.parentElement)) node.remove();
+    });
+    if (!items.length) return;
+    if (!document.getElementById("codex-plus-composer-actions-style")) {
+      const style = document.createElement("style");
+      style.id = "codex-plus-composer-actions-style";
+      markCodexPlusExtensionNode(style, "builtin-composer-actions");
+      style.textContent = `[data-codex-plus-composer-actions]{display:inline-flex;align-items:center;gap:2px;margin-inline:2px}
+        .codex-plus-composer-action{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--color-token-text-primary,currentColor);opacity:.9;cursor:pointer;font-size:15px;line-height:1}
+        .codex-plus-composer-action:hover{background:color-mix(in srgb,currentColor 12%,transparent);opacity:1}
+        .codex-plus-composer-action:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+        .codex-plus-composer-action svg{width:16px;height:16px}`;
+      document.head.append(style);
+    }
+    const renderKey = items.map((item) => `${item.id}|${item.label || ""}|${item.icon || ""}`).join("\n");
+    for (const { footer, editor } of hosts) {
+      let root = [...footer.children].find((node) => node.hasAttribute?.("data-codex-plus-composer-actions"));
+      if (!root) {
+        root = document.createElement("div");
+        root.setAttribute("data-codex-plus-composer-actions", "");
+        markCodexPlusExtensionNode(root, "builtin-composer-actions");
+        // 放在听写入口前面；没有听写入口就追加在末尾。
+        const dictation = [...footer.children].find((node) => node.hasAttribute?.("data-dictation-controls"));
+        footer.insertBefore(root, dictation || null);
+      }
+      root.__codexPlusComposerEditor = editor;
+      if (root.dataset.renderKey === renderKey) continue;
+      root.dataset.renderKey = renderKey;
+      root.textContent = "";
+      for (const item of items) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "codex-plus-composer-action";
+        button.setAttribute("aria-label", item.label || item.id);
+        markCodexPlusExtensionNode(button, item.scriptKey);
+        button.innerHTML = codexPlusExtensionIconMarkup(item);
+        attachCodexPlusRailTooltip(button, item.label || item.id, "top");
+        // 按下时不抢走输入框焦点，否则插入文字会落在别处。
+        button.addEventListener("pointerdown", (event) => event.preventDefault());
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const target = root.__codexPlusComposerEditor;
+          runCodexPlusExtensionCallback(item.scriptKey, "composerAction.onActivate", () => item.onActivate?.({
+            editor: target,
+            insertText: (text) => codexPlusInsertComposerText(target, text),
+            close: () => hideCodexPlusRailTooltip(),
+          }));
+        });
+        root.appendChild(button);
+      }
+    }
+  }
+
+  /**
    * 拓展注册的菜单项。
    *
    * 接入方式是「在 home 面板末尾追加一块」而不是把内置的一百多行模板拆成数组——

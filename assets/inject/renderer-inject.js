@@ -1811,6 +1811,7 @@
     navEntries: new Map(),
     pages: new Map(),
     menuItems: new Map(),
+    composerActions: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
@@ -5385,7 +5386,12 @@
   }
   // 服务等级由 Codex 原生控件决定；此兼容入口仅负责供应商适配。
   function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
-    return applyCodexRemoteSessionProviderOverride(method, params);
+    // 所有发往 app-server 的请求都经过这里：先做 Codex++ 自己的改写，再交给拓展的 codex/request 中间件。
+    // typeof 守卫：测试会单独执行本分片，那时拓展内核不在作用域里。
+    const patched = applyCodexRemoteSessionProviderOverride(method, params);
+    return typeof codexPlusApplyExtensionRequestMiddleware === "function"
+      ? codexPlusApplyExtensionRequestMiddleware(method, patched)
+      : patched;
   }
 
   function codexRemoteSessionActiveProfile() {
@@ -5997,6 +6003,8 @@
 
   function installCodexRemoteSessionDispatcherSubscription(dispatcher, assetPrefix = "") {
     if (!dispatcher || typeof dispatcher.subscribe !== "function") return false;
+    // 拓展的会话事件也挂在同一个分发器上（幂等，分发器不变时不重复订阅）。
+    if (typeof installCodexExtensionEventBridge === "function") installCodexExtensionEventBridge(dispatcher);
     if (window.__codexPlusRemoteSessionRecoveryDispatcher === dispatcher
         && window.__codexPlusRemoteSessionRecoveryDispatcherVersion === codexRemoteSessionRecoveryVersion) {
       return true;
@@ -8428,6 +8436,7 @@
   const codexPlusRailTooltipDelayMs = 150;
   const codexPlusRailTooltipSkipDelayMs = 300;
   const codexPlusRailTooltipSideOffset = 2;
+  const codexPlusComposerTooltipSideOffset = 6;
   let codexPlusRailTooltipTimer = null;
   let codexPlusRailTooltipHiddenAt = 0;
   let codexPlusRailTooltipOwner = null;
@@ -8472,7 +8481,7 @@
     codexPlusRailTooltipOwner = null;
   }
 
-  function showCodexPlusRailTooltip(button, label) {
+  function showCodexPlusRailTooltip(button, label, side = "right") {
     if (!button.isConnected || codexPlusRailTooltipOwner !== button) return;
     document.getElementById("codex-plus-rail-tooltip")?.remove();
     const nativeClass = codexPlusNativeTooltipClass();
@@ -8485,14 +8494,19 @@
     const tip = document.createElement("div");
     tip.setAttribute("role", "tooltip");
     tip.className = nativeClass || "codex-plus-rail-tooltip-fallback";
-    Object.assign(tip.dataset, { side: "right", align: "center", state: "delayed-open", gutterSize: "md", defaultSideOffset: "true", clickable: "false" });
+    Object.assign(tip.dataset, { side, align: "center", state: "delayed-open", gutterSize: "md", defaultSideOffset: "true", clickable: "false" });
     tip.textContent = label;
     wrapper.appendChild(tip);
     document.body.appendChild(wrapper);
     const anchor = button.getBoundingClientRect();
     const box = tip.getBoundingClientRect();
-    const left = (anchor.right + codexPlusRailTooltipSideOffset) / zoom;
-    const top = (anchor.top + (anchor.height - box.height) / 2) / zoom;
+    // 图标栏的提示在右侧，输入区按钮的提示在上方（与原生对应位置的按钮一致）。
+    const left = side === "top"
+      ? (anchor.left + (anchor.width - box.width) / 2) / zoom
+      : (anchor.right + codexPlusRailTooltipSideOffset) / zoom;
+    const top = side === "top"
+      ? (anchor.top - box.height - codexPlusComposerTooltipSideOffset) / zoom
+      : (anchor.top + (anchor.height - box.height) / 2) / zoom;
     wrapper.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
     button.setAttribute("aria-describedby", wrapper.id);
   }
@@ -8510,15 +8524,15 @@
     document.addEventListener("scroll", hideCodexPlusRailTooltip, true);
   }
 
-  function attachCodexPlusRailTooltip(button, label) {
+  function attachCodexPlusRailTooltip(button, label, side = "right") {
     installCodexPlusRailTooltipDismiss();
     const open = () => {
       clearTimeout(codexPlusRailTooltipTimer);
       codexPlusRailTooltipOwner = button;
       const instant = Date.now() - codexPlusRailTooltipHiddenAt < codexPlusRailTooltipSkipDelayMs
         || !!document.getElementById("codex-plus-rail-tooltip");
-      if (instant) showCodexPlusRailTooltip(button, label);
-      else codexPlusRailTooltipTimer = setTimeout(() => showCodexPlusRailTooltip(button, label), codexPlusRailTooltipDelayMs);
+      if (instant) showCodexPlusRailTooltip(button, label, side);
+      else codexPlusRailTooltipTimer = setTimeout(() => showCodexPlusRailTooltip(button, label, side), codexPlusRailTooltipDelayMs);
     };
     const close = () => {
       if (codexPlusRailTooltipOwner !== button) return;
@@ -12350,7 +12364,8 @@
     const wanted = codexPlusModelUnlockEnabled()
       || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-      || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave;
+      || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
+      || (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware());
     if (!wanted) return false;
     const klass = window.__codexPlusAppServerClientClass;
     if (!klass || typeof klass !== "function" || !klass.prototype) return false;
@@ -12400,8 +12415,12 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      // 拓展的 codex/request 中间件：在 Codex++ 自己的改写之后、真正发出之前。
+      const extensionParams = typeof codexPlusApplyExtensionRequestMiddlewareAsync === "function"
+        ? await codexPlusApplyExtensionRequestMiddlewareAsync(requestMethod, providerParams)
+        : providerParams;
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        providerParams, client.hostId, originalSendRequest.bind(client));
+        extensionParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -12542,12 +12561,20 @@
   }
 
   function ensureCodexModelWhitelistInstalls() {
+    const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
+      && codexPlusExtensionWantsRequestMiddleware();
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-          || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave) {
+          || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
+          || extensionWantsRequests) {
       installAppServerModelRequestPatch();
       void installCodexAppServerClientCapture().catch(() => {});
+    }
+    // 启动器平时只在模型解锁 / 会话删除开启时捕获客户端类；只有拓展需要时，请它按需补开（每页一次）。
+    if (extensionWantsRequests && !window.__codexPlusAppServerClientClass && !window.__codexPlusExtensionRequestCaptureAsked) {
+      window.__codexPlusExtensionRequestCaptureAsked = true;
+      void postJson("/extensions/request-capture", {}).catch(() => {});
     }
     void installDictationSupportPatch();
     if (!codexPlusModelUnlockEnabled()) return;
@@ -18467,6 +18494,7 @@
     for (const refresh of [
       refreshCodexPlusPageNav,
       refreshCodexPlusRailNavigation,
+      refreshCodexPlusComposerActions,
       refreshExtensionSessionRows,
       refreshCodexPlusExtensionMenu,
     ]) {
@@ -18575,6 +18603,14 @@
 
       /** 调用后端白名单路由，失败时 reject。 */
       call: codexPlusExtensionCall,
+
+      /**
+       * 在输入区（发送按钮所在那一行）加一个图标按钮。
+       * onActivate({ editor, insertText, close }) 中 insertText(text) 把文字插入当前输入框。
+       */
+      registerComposerAction(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, options);
+      },
 
       /** 在会话行「更多操作」里加一项。 */
       registerRowAction(definition, options = {}) {
@@ -18712,6 +18748,107 @@
   }
 
   /**
+   * Codex 会话事件：把 app-server 推给页面的通知转成拓展事件 `codex/<method>`。
+   *
+   * 复用 30-service-tier 找到的通知分发器（dispatcher.subscribe），只订阅一组固定的通知；
+   * 没有拓展监听时 emit 只是一次 Map 查找。分发器换了（Codex 重建客户端）就重新订阅。
+   */
+  function installCodexExtensionEventBridge(dispatcher) {
+    if (!dispatcher || typeof dispatcher.subscribe !== "function") return false;
+    // 列表放在函数里：本函数可能在内核分片的常量初始化之前被调用（测试单独执行前面的分片），
+    // 顶层 const 会落进暂时性死区。
+    const events = [
+      "thread/started",
+      "turn/started",
+      "turn/completed",
+      "item/started",
+      "item/completed",
+      "item/agentMessage/delta",
+      "error",
+    ];
+    try {
+      const current = window.__codexPlusExtensionEventBridge;
+      if (current?.dispatcher === dispatcher) return true;
+      try {
+        current?.unsubscribe?.();
+      } catch {}
+      const unsubscribers = events.map((method) => {
+        try {
+          return dispatcher.subscribe(method, (params) => {
+            // 转发失败（例如内核尚未初始化）不能影响 Codex 自己的通知处理。
+            try {
+              codexPlusEmitExtensionEvent(`codex/${method}`, [params, { method }]);
+            } catch {}
+          });
+        } catch {
+          return null;
+        }
+      });
+      window.__codexPlusExtensionEventBridge = {
+        dispatcher,
+        unsubscribe: () => unsubscribers.forEach((unsubscribe) => {
+          try {
+            if (typeof unsubscribe === "function") unsubscribe();
+          } catch {}
+        }),
+      };
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 发往 Codex app-server 的请求中间件：`codex/request` 链，值为 `{ method, params }`。
+   *
+   * 两个接入点：新版 Codex 的请求走 app-server 客户端 sendRequest（异步，见
+   * codexPlusApplyExtensionRequestMiddlewareAsync）；旧的消息分发路径走这里，是同步的，
+   * 中间件返回 Promise 时视为出错并原样放行。没有中间件时原样返回同一个对象，
+   * 调用方靠对象身份判断「是否改过」。method 不允许改。
+   */
+  function codexPlusApplyExtensionRequestMiddleware(method, params) {
+    try {
+      if (!codexPlusExtensionInterceptors.has("codex/request")) return params;
+      const result = codexPlusRunWaterfall("codex/request", { method, params });
+      if (codexPlusIsThenable(result)) {
+        Promise.resolve(result).catch(() => {});
+        codexPlusMarkExtensionFailure("", "codex/request 中间件必须同步返回，本次请求已原样发出");
+        return params;
+      }
+      return result && typeof result === "object" && result.params !== undefined ? result.params : params;
+    } catch {
+      // 页面早期（内核尚未初始化）或中间件整体失败时，绝不能挡住 Codex 自己的请求。
+      return params;
+    }
+  }
+
+  /** 有拓展挂了 codex/request 中间件：需要 app-server 客户端补丁（以及它依赖的类捕获）。 */
+  function codexPlusExtensionWantsRequestMiddleware() {
+    try {
+      return codexPlusExtensionInterceptors.has("codex/request");
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 异步版：app-server 客户端的 sendRequest 本身是异步的，这里允许中间件返回 Promise。
+   * 出错或超时（5 秒）一律原样放行，绝不能让 Codex 自己的请求卡住。
+   */
+  async function codexPlusApplyExtensionRequestMiddlewareAsync(method, params) {
+    if (!codexPlusExtensionWantsRequestMiddleware()) return params;
+    try {
+      const result = await Promise.race([
+        Promise.resolve(codexPlusRunWaterfall("codex/request", { method, params })),
+        new Promise((resolve) => setTimeout(() => resolve(null), 5000)),
+      ]);
+      return result && typeof result === "object" && result.params !== undefined ? result.params : params;
+    } catch {
+      return params;
+    }
+  }
+
+  /**
    * 创建一个拓展实例并执行 apply(ctx)。
    *
    * definition 可以是 apply 函数本身，也可以是 { id, apply }。apply 同步抛错时
@@ -18754,6 +18891,32 @@
     };
 
     const registerOptions = (itemOptions) => ({ ...(itemOptions || {}), scriptKey });
+    // 按拓展隔离的本地存储：键名自动带拓展 id 前缀，值按 JSON 存取。
+    const storagePrefix = `codexpp:ext:${extensionId}:`;
+    const storage = {
+      get(key, fallback = null) {
+        try {
+          const raw = localStorage.getItem(storagePrefix + key);
+          return raw === null ? fallback : JSON.parse(raw);
+        } catch {
+          return fallback;
+        }
+      },
+      set(key, value) {
+        localStorage.setItem(storagePrefix + key, JSON.stringify(value));
+      },
+      remove(key) {
+        localStorage.removeItem(storagePrefix + key);
+      },
+      keys() {
+        const out = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (key?.startsWith(storagePrefix)) out.push(key.slice(storagePrefix.length));
+        }
+        return out;
+      },
+    };
     const info = { id: extensionId, scriptKey };
 
     const ctx = {
@@ -18763,6 +18926,7 @@
       get disposed() {
         return disposed;
       },
+      storage,
 
       /** 立即执行 fn；它返回的函数在卸载时调用。 */
       effect(fn) {
@@ -18781,6 +18945,9 @@
       },
       registerPage(definition, itemOptions) {
         return track(codexPlusRegisterExtensionPage(definition, registerOptions(itemOptions)));
+      },
+      registerComposerAction(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, registerOptions(itemOptions)));
       },
 
       on(event, handler) {
@@ -19129,6 +19296,92 @@
       cursor = wrapper;
     });
     return true;
+  }
+
+  /**
+   * 输入区按钮插槽：拓展用 registerComposerAction 注册的按钮，插在输入区 footer 里。
+   *
+   * footer 的选择沿用听写入口那套打分（同一输入框只挂一份、优先包含输入框和发送按钮的
+   * footer），Codex 改结构时两边一起修。按注册表指纹决定是否重建，避免每轮扫描都改 DOM。
+   */
+  function codexPlusComposerActionHosts() {
+    const hosts = new Map();
+    document.querySelectorAll(".composer-footer, [data-composer-footer-responsive]").forEach((footer) => {
+      if (!visibleElement(footer) || isExtensionUiNode(footer)) return;
+      const scope = codexPlusDictationScope(footer);
+      const editor = scope && codexPlusDictationEditor(scope);
+      if (!editor) return;
+      const score = codexPlusDictationFooterScore(footer, editor);
+      const current = hosts.get(editor);
+      if (!current || score >= current.score) hosts.set(editor, { footer, editor, score });
+    });
+    return [...hosts.values()];
+  }
+
+  /** 把文字插入输入框：先聚焦，再走浏览器的 insertText，让编辑器自己处理撤销栈与状态。 */
+  function codexPlusInsertComposerText(editor, text) {
+    if (!editor || typeof text !== "string" || !text) return false;
+    editor.focus();
+    return document.execCommand("insertText", false, text);
+  }
+
+  function refreshCodexPlusComposerActions() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.composerActions);
+    const hosts = items.length ? codexPlusComposerActionHosts() : [];
+    const hostFooters = new Set(hosts.map((host) => host.footer));
+    document.querySelectorAll("[data-codex-plus-composer-actions]").forEach((node) => {
+      if (!hostFooters.has(node.parentElement)) node.remove();
+    });
+    if (!items.length) return;
+    if (!document.getElementById("codex-plus-composer-actions-style")) {
+      const style = document.createElement("style");
+      style.id = "codex-plus-composer-actions-style";
+      markCodexPlusExtensionNode(style, "builtin-composer-actions");
+      style.textContent = `[data-codex-plus-composer-actions]{display:inline-flex;align-items:center;gap:2px;margin-inline:2px}
+        .codex-plus-composer-action{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--color-token-text-primary,currentColor);opacity:.9;cursor:pointer;font-size:15px;line-height:1}
+        .codex-plus-composer-action:hover{background:color-mix(in srgb,currentColor 12%,transparent);opacity:1}
+        .codex-plus-composer-action:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+        .codex-plus-composer-action svg{width:16px;height:16px}`;
+      document.head.append(style);
+    }
+    const renderKey = items.map((item) => `${item.id}|${item.label || ""}|${item.icon || ""}`).join("\n");
+    for (const { footer, editor } of hosts) {
+      let root = [...footer.children].find((node) => node.hasAttribute?.("data-codex-plus-composer-actions"));
+      if (!root) {
+        root = document.createElement("div");
+        root.setAttribute("data-codex-plus-composer-actions", "");
+        markCodexPlusExtensionNode(root, "builtin-composer-actions");
+        // 放在听写入口前面；没有听写入口就追加在末尾。
+        const dictation = [...footer.children].find((node) => node.hasAttribute?.("data-dictation-controls"));
+        footer.insertBefore(root, dictation || null);
+      }
+      root.__codexPlusComposerEditor = editor;
+      if (root.dataset.renderKey === renderKey) continue;
+      root.dataset.renderKey = renderKey;
+      root.textContent = "";
+      for (const item of items) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "codex-plus-composer-action";
+        button.setAttribute("aria-label", item.label || item.id);
+        markCodexPlusExtensionNode(button, item.scriptKey);
+        button.innerHTML = codexPlusExtensionIconMarkup(item);
+        attachCodexPlusRailTooltip(button, item.label || item.id, "top");
+        // 按下时不抢走输入框焦点，否则插入文字会落在别处。
+        button.addEventListener("pointerdown", (event) => event.preventDefault());
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const target = root.__codexPlusComposerEditor;
+          runCodexPlusExtensionCallback(item.scriptKey, "composerAction.onActivate", () => item.onActivate?.({
+            editor: target,
+            insertText: (text) => codexPlusInsertComposerText(target, text),
+            close: () => hideCodexPlusRailTooltip(),
+          }));
+        });
+        root.appendChild(button);
+      }
+    }
   }
 
   /**
@@ -20422,6 +20675,8 @@
     }
     // 拓展注册的图标栏入口也在这里补（见 installCodexPlusNavigationEntries）。
     installCodexPlusNavigationEntries();
+    // 输入区 footer 会随会话切换、首页与对话页切换而重建，拓展的输入区按钮每轮补一次（按指纹幂等）。
+    refreshCodexPlusComposerActions();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();

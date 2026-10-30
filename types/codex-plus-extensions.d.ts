@@ -120,6 +120,12 @@ interface CodexPlusExtensionApi {
     options?: CodexPlusCallOptions,
   ): Promise<T>;
 
+  /** 在输入区（发送按钮那一行）加一个图标按钮。 */
+  registerComposerAction(
+    definition: CodexPlusComposerActionDefinition,
+    options?: CodexPlusRegisterOptions,
+  ): CodexPlusDispose;
+
   /** 在会话行「更多操作」里加一项。 */
   registerRowAction(
     definition: CodexPlusRowActionDefinition,
@@ -155,6 +161,47 @@ interface CodexPlusExtensionApi {
   fail(error: unknown): void;
 }
 
+interface CodexPlusComposerActionDefinition {
+  label: string;
+  /** 单个字形或 SVG 字符串。 */
+  icon?: string;
+  onActivate(context: {
+    /** 当前输入框（contenteditable）。 */
+    editor: HTMLElement | null;
+    /** 把文字插入当前输入框光标处。 */
+    insertText(text: string): boolean;
+    close(): void;
+  }): void;
+}
+
+/** 按拓展 id 隔离的本地存储，值按 JSON 存取。 */
+interface CodexPlusExtensionStorage {
+  get<T = unknown>(key: string, fallback?: T): T;
+  set(key: string, value: unknown): void;
+  remove(key: string): void;
+  keys(): string[];
+}
+
+/**
+ * Codex 会话事件：`ctx.on("codex/<method>", (params, { method }) => …)`。
+ * 已转发的 method：thread/started、turn/started、turn/completed、item/started、item/completed、
+ * item/agentMessage/delta、error。params 是 Codex app-server 通知的原样参数。
+ */
+type CodexPlusCodexEvent =
+  | "codex/thread/started"
+  | "codex/turn/started"
+  | "codex/turn/completed"
+  | "codex/item/started"
+  | "codex/item/completed"
+  | "codex/item/agentMessage/delta"
+  | "codex/error";
+
+/** `ctx.intercept("codex/request", …)` 的值：发往 Codex app-server 的请求。只能改 params，必须同步返回。 */
+interface CodexPlusCodexRequest {
+  method: string;
+  params: any;
+}
+
 /** `codexpp.json` 中下发给页面的字段。 */
 interface CodexPlusExtensionManifest {
   id: string;
@@ -178,6 +225,7 @@ interface CodexPlusExtensionContext {
   readonly scriptKey: string;
   readonly manifest: CodexPlusExtensionManifest | null;
   readonly disposed: boolean;
+  readonly storage: CodexPlusExtensionStorage;
 
   /** 立即执行 fn；它返回的函数在卸载时调用。返回值可提前撤销。 */
   effect(fn: () => void | (() => void)): CodexPlusDispose;
@@ -187,8 +235,9 @@ interface CodexPlusExtensionContext {
   /** 定义形态同 codexPlus.registerMenuItem：开关给 onChange，按钮给 onActivate。 */
   registerMenuItem(definition: Record<string, unknown>, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerPage(definition: CodexPlusPageDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerComposerAction(definition: CodexPlusComposerActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
 
-  /** 拓展间事件。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
+  /** 拓展间事件；`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;
   emit(event: string, ...args: unknown[]): void;
 

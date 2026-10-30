@@ -199,6 +199,8 @@
     }
     // 拓展注册的图标栏入口也在这里补（见 installCodexPlusNavigationEntries）。
     installCodexPlusNavigationEntries();
+    // 输入区 footer 会随会话切换、首页与对话页切换而重建，拓展的输入区按钮每轮补一次（按指纹幂等）。
+    refreshCodexPlusComposerActions();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();

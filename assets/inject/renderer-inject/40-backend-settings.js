@@ -2076,6 +2076,7 @@
   const codexPlusRailTooltipDelayMs = 150;
   const codexPlusRailTooltipSkipDelayMs = 300;
   const codexPlusRailTooltipSideOffset = 2;
+  const codexPlusComposerTooltipSideOffset = 6;
   let codexPlusRailTooltipTimer = null;
   let codexPlusRailTooltipHiddenAt = 0;
   let codexPlusRailTooltipOwner = null;
@@ -2120,7 +2121,7 @@
     codexPlusRailTooltipOwner = null;
   }
 
-  function showCodexPlusRailTooltip(button, label) {
+  function showCodexPlusRailTooltip(button, label, side = "right") {
     if (!button.isConnected || codexPlusRailTooltipOwner !== button) return;
     document.getElementById("codex-plus-rail-tooltip")?.remove();
     const nativeClass = codexPlusNativeTooltipClass();
@@ -2133,14 +2134,19 @@
     const tip = document.createElement("div");
     tip.setAttribute("role", "tooltip");
     tip.className = nativeClass || "codex-plus-rail-tooltip-fallback";
-    Object.assign(tip.dataset, { side: "right", align: "center", state: "delayed-open", gutterSize: "md", defaultSideOffset: "true", clickable: "false" });
+    Object.assign(tip.dataset, { side, align: "center", state: "delayed-open", gutterSize: "md", defaultSideOffset: "true", clickable: "false" });
     tip.textContent = label;
     wrapper.appendChild(tip);
     document.body.appendChild(wrapper);
     const anchor = button.getBoundingClientRect();
     const box = tip.getBoundingClientRect();
-    const left = (anchor.right + codexPlusRailTooltipSideOffset) / zoom;
-    const top = (anchor.top + (anchor.height - box.height) / 2) / zoom;
+    // 图标栏的提示在右侧，输入区按钮的提示在上方（与原生对应位置的按钮一致）。
+    const left = side === "top"
+      ? (anchor.left + (anchor.width - box.width) / 2) / zoom
+      : (anchor.right + codexPlusRailTooltipSideOffset) / zoom;
+    const top = side === "top"
+      ? (anchor.top - box.height - codexPlusComposerTooltipSideOffset) / zoom
+      : (anchor.top + (anchor.height - box.height) / 2) / zoom;
     wrapper.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
     button.setAttribute("aria-describedby", wrapper.id);
   }
@@ -2158,15 +2164,15 @@
     document.addEventListener("scroll", hideCodexPlusRailTooltip, true);
   }
 
-  function attachCodexPlusRailTooltip(button, label) {
+  function attachCodexPlusRailTooltip(button, label, side = "right") {
     installCodexPlusRailTooltipDismiss();
     const open = () => {
       clearTimeout(codexPlusRailTooltipTimer);
       codexPlusRailTooltipOwner = button;
       const instant = Date.now() - codexPlusRailTooltipHiddenAt < codexPlusRailTooltipSkipDelayMs
         || !!document.getElementById("codex-plus-rail-tooltip");
-      if (instant) showCodexPlusRailTooltip(button, label);
-      else codexPlusRailTooltipTimer = setTimeout(() => showCodexPlusRailTooltip(button, label), codexPlusRailTooltipDelayMs);
+      if (instant) showCodexPlusRailTooltip(button, label, side);
+      else codexPlusRailTooltipTimer = setTimeout(() => showCodexPlusRailTooltip(button, label, side), codexPlusRailTooltipDelayMs);
     };
     const close = () => {
       if (codexPlusRailTooltipOwner !== button) return;

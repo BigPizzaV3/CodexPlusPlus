@@ -3428,10 +3428,18 @@ describe("拓展运行时内核", () => {
       registered.push(item);
       return () => { item.disposed = true; };
     };
+    const store = new Map<string, string>();
+    const localStorage = {
+      get length() { return store.size; },
+      key: (index: number) => [...store.keys()][index] ?? null,
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, String(value)); },
+      removeItem: (key: string) => { store.delete(key); },
+    };
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
-      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegistry", "codexPlusExtensionCall", "showToast",
-      `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances };`,
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
+      `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware };`,
     )(
       window,
       (key: string, label: string, callback: () => unknown) => {
@@ -3446,11 +3454,13 @@ describe("拓展运行时内核", () => {
       (itemOptions?: { scriptKey?: string }) => itemOptions?.scriptKey || window.__codexPlusUserScripts.currentKey || "",
       (kind: string, _registry: unknown, _definition: unknown, itemOptions: { scriptKey: string }) => register(kind, itemOptions),
       (_definition: unknown, itemOptions: { scriptKey: string }) => register("page", itemOptions),
-      { rowActions: new Map(), navEntries: new Map(), menuItems: new Map() },
+      { rowActions: new Map(), navEntries: new Map(), menuItems: new Map(), composerActions: new Map() },
       (route: string) => { calls.push(route); return Promise.resolve({ status: "ok" }); },
       (message: string) => toasts.push(message),
-    ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown> };
-    return { ...api, window, cleanups, failures, registered, calls, toasts, timers };
+      localStorage,
+    ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown>;
+      bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any };
+    return { ...api, window, cleanups, failures, registered, calls, toasts, timers, store };
   }
 
   it("卸载时按注册逆序撤销全部副作用，归属绑定到当前脚本", async () => {
@@ -3599,6 +3609,58 @@ describe("拓展运行时内核", () => {
     assert.equal(ctx.disposed, true);
     assert.equal(k.registered[1].disposed, true);
     assert.match(k.failures.at(-1)!.message, /异步初始化失败/);
+  });
+
+  it("codex/request 中间件：没挂时原样返回同一对象；能改 params；异步或抛错时放行", async () => {
+    const k = await kernel();
+    const params = { input: [{ type: "text", text: "你好" }] };
+    assert.equal(k.requestMiddleware("turn/start", params), params, "没有中间件时必须是同一个对象");
+    const ctx = k.create((ctx: any) => ctx.intercept("codex/request", (value: any, next: (v: any) => any) =>
+      next(value.method === "turn/start" ? { ...value, method: "evil", params: { ...value.params, prefixed: true } } : value)));
+    const changed = k.requestMiddleware("turn/start", params);
+    assert.notEqual(changed, params);
+    assert.equal(changed.prefixed, true);
+    assert.equal(k.requestMiddleware("thread/start", params), params, "其它请求不受影响");
+    ctx.dispose();
+    k.create((ctx: any) => ctx.intercept("codex/request", async (value: any) => value));
+    assert.equal(k.requestMiddleware("turn/start", params), params, "异步中间件被放行");
+    assert.equal(k.requestMiddleware("x", undefined), undefined);
+  });
+
+  it("会话事件桥：订阅固定通知并转成 codex/<method>，换分发器时退订旧的", async () => {
+    const k = await kernel();
+    const makeDispatcher = () => {
+      const handlers = new Map<string, (params: unknown) => void>();
+      let unsubscribed = 0;
+      return { handlers, unsubscribed: () => unsubscribed,
+        subscribe: (method: string, handler: (params: unknown) => void) => { handlers.set(method, handler); return () => { unsubscribed++; }; } };
+    };
+    const first = makeDispatcher();
+    assert.equal(k.bridge(first), true);
+    assert.equal(k.bridge(first), true, "同一个分发器幂等");
+    assert.ok(first.handlers.has("turn/completed") && first.handlers.has("item/completed"));
+    const seen: unknown[] = [];
+    k.create((ctx: any) => ctx.on("codex/turn/completed", (params: unknown, meta: unknown) => seen.push([params, meta])));
+    first.handlers.get("turn/completed")!({ turn: { status: "completed" } });
+    assert.deepEqual(seen, [[{ turn: { status: "completed" } }, { method: "turn/completed" }]]);
+    const second = makeDispatcher();
+    k.bridge(second);
+    assert.equal(first.unsubscribed(), first.handlers.size, "旧分发器的订阅全部退掉");
+    assert.equal(k.bridge(null), false);
+  });
+
+  it("ctx.storage 按拓展 id 隔离，值按 JSON 存取", async () => {
+    const k = await kernel({ manifest: { id: "pkg-a" } });
+    const ctx = k.create(() => {});
+    ctx.storage.set("count", 3);
+    ctx.storage.set("list", [1, 2]);
+    assert.equal(ctx.storage.get("count"), 3);
+    assert.deepEqual(ctx.storage.get("list"), [1, 2]);
+    assert.equal(ctx.storage.get("missing", "fallback"), "fallback");
+    assert.deepEqual([...k.store.keys()], ["codexpp:ext:pkg-a:count", "codexpp:ext:pkg-a:list"]);
+    assert.deepEqual(ctx.storage.keys().sort(), ["count", "list"]);
+    ctx.storage.remove("count");
+    assert.equal(ctx.storage.get("count"), null);
   });
 
   it("一次性定时器触发后自行注销，不留在撤销列表里", async () => {

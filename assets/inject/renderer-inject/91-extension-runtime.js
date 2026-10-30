@@ -83,6 +83,107 @@
   }
 
   /**
+   * Codex 会话事件：把 app-server 推给页面的通知转成拓展事件 `codex/<method>`。
+   *
+   * 复用 30-service-tier 找到的通知分发器（dispatcher.subscribe），只订阅一组固定的通知；
+   * 没有拓展监听时 emit 只是一次 Map 查找。分发器换了（Codex 重建客户端）就重新订阅。
+   */
+  function installCodexExtensionEventBridge(dispatcher) {
+    if (!dispatcher || typeof dispatcher.subscribe !== "function") return false;
+    // 列表放在函数里：本函数可能在内核分片的常量初始化之前被调用（测试单独执行前面的分片），
+    // 顶层 const 会落进暂时性死区。
+    const events = [
+      "thread/started",
+      "turn/started",
+      "turn/completed",
+      "item/started",
+      "item/completed",
+      "item/agentMessage/delta",
+      "error",
+    ];
+    try {
+      const current = window.__codexPlusExtensionEventBridge;
+      if (current?.dispatcher === dispatcher) return true;
+      try {
+        current?.unsubscribe?.();
+      } catch {}
+      const unsubscribers = events.map((method) => {
+        try {
+          return dispatcher.subscribe(method, (params) => {
+            // 转发失败（例如内核尚未初始化）不能影响 Codex 自己的通知处理。
+            try {
+              codexPlusEmitExtensionEvent(`codex/${method}`, [params, { method }]);
+            } catch {}
+          });
+        } catch {
+          return null;
+        }
+      });
+      window.__codexPlusExtensionEventBridge = {
+        dispatcher,
+        unsubscribe: () => unsubscribers.forEach((unsubscribe) => {
+          try {
+            if (typeof unsubscribe === "function") unsubscribe();
+          } catch {}
+        }),
+      };
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 发往 Codex app-server 的请求中间件：`codex/request` 链，值为 `{ method, params }`。
+   *
+   * 两个接入点：新版 Codex 的请求走 app-server 客户端 sendRequest（异步，见
+   * codexPlusApplyExtensionRequestMiddlewareAsync）；旧的消息分发路径走这里，是同步的，
+   * 中间件返回 Promise 时视为出错并原样放行。没有中间件时原样返回同一个对象，
+   * 调用方靠对象身份判断「是否改过」。method 不允许改。
+   */
+  function codexPlusApplyExtensionRequestMiddleware(method, params) {
+    try {
+      if (!codexPlusExtensionInterceptors.has("codex/request")) return params;
+      const result = codexPlusRunWaterfall("codex/request", { method, params });
+      if (codexPlusIsThenable(result)) {
+        Promise.resolve(result).catch(() => {});
+        codexPlusMarkExtensionFailure("", "codex/request 中间件必须同步返回，本次请求已原样发出");
+        return params;
+      }
+      return result && typeof result === "object" && result.params !== undefined ? result.params : params;
+    } catch {
+      // 页面早期（内核尚未初始化）或中间件整体失败时，绝不能挡住 Codex 自己的请求。
+      return params;
+    }
+  }
+
+  /** 有拓展挂了 codex/request 中间件：需要 app-server 客户端补丁（以及它依赖的类捕获）。 */
+  function codexPlusExtensionWantsRequestMiddleware() {
+    try {
+      return codexPlusExtensionInterceptors.has("codex/request");
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 异步版：app-server 客户端的 sendRequest 本身是异步的，这里允许中间件返回 Promise。
+   * 出错或超时（5 秒）一律原样放行，绝不能让 Codex 自己的请求卡住。
+   */
+  async function codexPlusApplyExtensionRequestMiddlewareAsync(method, params) {
+    if (!codexPlusExtensionWantsRequestMiddleware()) return params;
+    try {
+      const result = await Promise.race([
+        Promise.resolve(codexPlusRunWaterfall("codex/request", { method, params })),
+        new Promise((resolve) => setTimeout(() => resolve(null), 5000)),
+      ]);
+      return result && typeof result === "object" && result.params !== undefined ? result.params : params;
+    } catch {
+      return params;
+    }
+  }
+
+  /**
    * 创建一个拓展实例并执行 apply(ctx)。
    *
    * definition 可以是 apply 函数本身，也可以是 { id, apply }。apply 同步抛错时
@@ -125,6 +226,32 @@
     };
 
     const registerOptions = (itemOptions) => ({ ...(itemOptions || {}), scriptKey });
+    // 按拓展隔离的本地存储：键名自动带拓展 id 前缀，值按 JSON 存取。
+    const storagePrefix = `codexpp:ext:${extensionId}:`;
+    const storage = {
+      get(key, fallback = null) {
+        try {
+          const raw = localStorage.getItem(storagePrefix + key);
+          return raw === null ? fallback : JSON.parse(raw);
+        } catch {
+          return fallback;
+        }
+      },
+      set(key, value) {
+        localStorage.setItem(storagePrefix + key, JSON.stringify(value));
+      },
+      remove(key) {
+        localStorage.removeItem(storagePrefix + key);
+      },
+      keys() {
+        const out = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (key?.startsWith(storagePrefix)) out.push(key.slice(storagePrefix.length));
+        }
+        return out;
+      },
+    };
     const info = { id: extensionId, scriptKey };
 
     const ctx = {
@@ -134,6 +261,7 @@
       get disposed() {
         return disposed;
       },
+      storage,
 
       /** 立即执行 fn；它返回的函数在卸载时调用。 */
       effect(fn) {
@@ -152,6 +280,9 @@
       },
       registerPage(definition, itemOptions) {
         return track(codexPlusRegisterExtensionPage(definition, registerOptions(itemOptions)));
+      },
+      registerComposerAction(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, registerOptions(itemOptions)));
       },
 
       on(event, handler) {

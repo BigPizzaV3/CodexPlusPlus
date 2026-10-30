@@ -130,6 +130,7 @@
     for (const refresh of [
       refreshCodexPlusPageNav,
       refreshCodexPlusRailNavigation,
+      refreshCodexPlusComposerActions,
       refreshExtensionSessionRows,
       refreshCodexPlusExtensionMenu,
     ]) {
@@ -238,6 +239,14 @@
 
       /** 调用后端白名单路由，失败时 reject。 */
       call: codexPlusExtensionCall,
+
+      /**
+       * 在输入区（发送按钮所在那一行）加一个图标按钮。
+       * onActivate({ editor, insertText, close }) 中 insertText(text) 把文字插入当前输入框。
+       */
+      registerComposerAction(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, options);
+      },
 
       /** 在会话行「更多操作」里加一项。 */
       registerRowAction(definition, options = {}) {

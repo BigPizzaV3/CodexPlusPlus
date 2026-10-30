@@ -897,7 +897,8 @@
     const wanted = codexPlusModelUnlockEnabled()
       || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-      || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave;
+      || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
+      || (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware());
     if (!wanted) return false;
     const klass = window.__codexPlusAppServerClientClass;
     if (!klass || typeof klass !== "function" || !klass.prototype) return false;
@@ -947,8 +948,12 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      // 拓展的 codex/request 中间件：在 Codex++ 自己的改写之后、真正发出之前。
+      const extensionParams = typeof codexPlusApplyExtensionRequestMiddlewareAsync === "function"
+        ? await codexPlusApplyExtensionRequestMiddlewareAsync(requestMethod, providerParams)
+        : providerParams;
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        providerParams, client.hostId, originalSendRequest.bind(client));
+        extensionParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -1089,12 +1094,20 @@
   }
 
   function ensureCodexModelWhitelistInstalls() {
+    const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
+      && codexPlusExtensionWantsRequestMiddleware();
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-          || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave) {
+          || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
+          || extensionWantsRequests) {
       installAppServerModelRequestPatch();
       void installCodexAppServerClientCapture().catch(() => {});
+    }
+    // 启动器平时只在模型解锁 / 会话删除开启时捕获客户端类；只有拓展需要时，请它按需补开（每页一次）。
+    if (extensionWantsRequests && !window.__codexPlusAppServerClientClass && !window.__codexPlusExtensionRequestCaptureAsked) {
+      window.__codexPlusExtensionRequestCaptureAsked = true;
+      void postJson("/extensions/request-capture", {}).catch(() => {});
     }
     void installDictationSupportPatch();
     if (!codexPlusModelUnlockEnabled()) return;

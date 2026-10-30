@@ -160,7 +160,32 @@ codexPlus.extension((ctx) => {
 | `setTimeout / setInterval` | 自动清理的定时器 |
 | `call(route, payload, options)` | 拓展包只能调清单里声明的路由；单文件脚本沿用全局白名单 |
 | `toast / fail / dispose` | 提示、上报失败、主动卸载 |
+| `registerComposerAction(def)` | 输入区（发送按钮那一行）的图标按钮，`onActivate({ editor, insertText, close })` |
+| `storage.get / set / remove / keys` | 按拓展 id 隔离的本地存储，值按 JSON 存取 |
 | `id / scriptKey / manifest / disposed` | 只读信息 |
+
+### Codex 会话事件与请求中间件
+
+拓展可以订阅 Codex app-server 推给页面的通知，也可以改写页面发往 app-server 的请求：
+
+```js
+codexPlus.extension((ctx) => {
+  // 轮次结束时提示一下
+  ctx.on("codex/turn/completed", (params) => ctx.toast(`本轮结束：${params?.turn?.status ?? ""}`));
+  // 每次发起轮次时，在用户输入前加一段固定说明
+  ctx.intercept("codex/request", (value, next) => {
+    if (value.method !== "turn/start" || !Array.isArray(value.params?.input)) return next(value);
+    const input = [{ type: "text", text: "（请用中文回答）" }, ...value.params.input];
+    return next({ ...value, params: { ...value.params, input } });
+  });
+});
+```
+
+- 已转发的事件：`codex/thread/started`、`codex/turn/started`、`codex/turn/completed`、`codex/item/started`、
+  `codex/item/completed`、`codex/item/agentMessage/delta`、`codex/error`；处理器参数是通知的原样 `params` 和 `{ method }`。
+- `codex/request` 的值是 `{ method, params }`。这条路径是同步的：中间件必须同步返回，返回 Promise 视为出错并原样放行；
+  只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
+- 两者都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
 
 ### 拓展包
 
