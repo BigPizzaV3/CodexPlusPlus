@@ -62,8 +62,31 @@ fn cached_middlewares() -> MiddlewareList {
     list
 }
 
+/// Codex++ 自己的启动器把请求转给本机网关时带上的请求头：说明拓展中间件已在外层跑过。
+pub const EXTENSIONS_APPLIED_HEADER: &str = "x-codex-plus-extensions";
+
+tokio::task_local! {
+    /// 当前请求的拓展中间件已在上一跳（启动器）跑过：本层的请求、响应中间件都跳过，避免同一条流改写两遍。
+    pub static EXTENSIONS_ALREADY_APPLIED: bool;
+}
+
+fn already_applied() -> bool {
+    EXTENSIONS_ALREADY_APPLIED.try_with(|applied| *applied).unwrap_or(false)
+}
+
+/// 原始请求头里是否带了「已跑过拓展中间件」的标记。
+pub fn headers_mark_applied(raw_headers: &str) -> bool {
+    raw_headers.lines().skip(1).any(|line| {
+        line.split_once(':')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(EXTENSIONS_APPLIED_HEADER))
+    })
+}
+
 /// 用默认的用户脚本位置改写请求。没有中间件、或任何环节失败时不改 `request`。
 pub async fn apply_request(request: &mut Value, request_path: &str) {
+    if already_applied() {
+        return;
+    }
     let middlewares = cached_middlewares();
     if middlewares.is_empty() {
         return;
@@ -432,6 +455,9 @@ pub struct ResponseFilter {
 
 impl ResponseFilter {
     pub async fn start(request_path: &str, request: Option<&Value>) -> Option<Self> {
+        if already_applied() {
+            return None;
+        }
         let middlewares = cached_response_middlewares();
         if middlewares.is_empty() {
             return None;

@@ -5861,6 +5861,11 @@ fn build_responses_upstream_request(
         official_credential,
     );
     builder = with_client_session_headers(builder, relay, session_headers);
+    // 转给 Codex++ 自己的本机网关时打上标记：这一层已经跑过拓展的网关中间件，网关那层不再跑一遍。
+    // 只发往本机回环地址，外部中转站看不到这个头。
+    if is_local_protocol_proxy_base_url(endpoint) {
+        builder = builder.header(crate::extension_gateway::EXTENSIONS_APPLIED_HEADER, "1");
+    }
     if relay.protocol == crate::settings::RelayProtocol::AnthropicMessages {
         // 1M 上下文 / Claude Code 身份都靠 anthropic-beta 表达；用户显式配了该头就不插手。
         let has_custom_beta = relay

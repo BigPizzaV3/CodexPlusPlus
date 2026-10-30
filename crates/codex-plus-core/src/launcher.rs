@@ -2123,16 +2123,22 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     if crate::gateway::is_gateway_path(path) {
+        // 本机启动器转来的请求已经跑过拓展的网关中间件：网关这一层不再跑（见 EXTENSIONS_APPLIED_HEADER）。
+        let applied = crate::extension_gateway::headers_mark_applied(&request_headers);
         // 带上查询串：Gemini 客户端把 Key 放在 `?key=` 里；网关取出后自己去掉，不进日志。
-        return crate::gateway::server::handle(
-            &mut stream,
-            method,
-            raw_path,
-            &request_headers,
-            &request.body,
-            remote_addr_text,
-        )
-        .await;
+        return crate::extension_gateway::EXTENSIONS_ALREADY_APPLIED
+            .scope(
+                applied,
+                crate::gateway::server::handle(
+                    &mut stream,
+                    method,
+                    raw_path,
+                    &request_headers,
+                    &request.body,
+                    remote_addr_text,
+                ),
+            )
+            .await;
     }
     if matches!(path, "/dictation/transcribe" | "/dictation/status") {
         return handle_dictation_connection(

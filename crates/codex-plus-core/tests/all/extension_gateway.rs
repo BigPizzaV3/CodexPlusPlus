@@ -177,3 +177,21 @@ export default async function* (context, next) {
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert_eq!(parse_sse(raw.as_bytes()), ["response.created:", "response.output_text.delta:a", "response.completed:"]);
 }
+
+#[tokio::test]
+async fn middlewares_run_once_when_the_launcher_forwards_to_the_local_gateway() {
+    use codex_plus_core::extension_gateway::{EXTENSIONS_ALREADY_APPLIED, EXTENSIONS_APPLIED_HEADER, ResponseFilter, apply_request, headers_mark_applied};
+    // 启动器转给本机网关时带的标记头，大小写不敏感；请求行本身不算。
+    assert!(headers_mark_applied(&format!("POST /gw/codex/v1/responses HTTP/1.1\r\nHost: x\r\n{}: 1\r\n", EXTENSIONS_APPLIED_HEADER.to_uppercase())));
+    assert!(!headers_mark_applied("POST /gw/codex/v1/responses HTTP/1.1\r\nHost: x\r\n"));
+    assert!(!headers_mark_applied(&format!("GET /{EXTENSIONS_APPLIED_HEADER}: HTTP/1.1\r\n")));
+    // 标记过的请求：网关这一层的请求、响应中间件都不跑（不读拓展目录，原样返回）。
+    EXTENSIONS_ALREADY_APPLIED
+        .scope(true, async {
+            let mut request = json!({"instructions": "原始"});
+            apply_request(&mut request, "/v1/responses").await;
+            assert_eq!(request, json!({"instructions": "原始"}));
+            assert!(ResponseFilter::start("/v1/responses", None).await.is_none());
+        })
+        .await;
+}
