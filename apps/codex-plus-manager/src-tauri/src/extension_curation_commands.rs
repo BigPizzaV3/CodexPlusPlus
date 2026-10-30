@@ -52,7 +52,8 @@ async fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
             let result = async {
                 let (dir, meta) = store.staged(&token)?;
                 let manifest = extension_curation::staged_manifest(&dir)?;
-                let entry = extension_curation::curated_entry(&meta, &manifest, store.cached_entry(&repo).as_ref(), &extension_curation::now_iso())?;
+                let entry = extension_curation::curated_entry(&meta, &manifest, store.cached_entry(&repo).as_ref(), &extension_curation::now_iso(), false)?;
+                prepared["canBeOfficial"] = json!(extension_curation::can_be_official(&repo));
                 prepared["inspection"] = extension_curation::inspect_staged(&dir);
                 prepared["entry"] = serde_json::to_value(&entry)?;
                 let current = script_market::cached_market_manifest(false)
@@ -60,7 +61,7 @@ async fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
                     .ok()
                     .and_then(|market| market.packages.into_iter().find(|package| package.repo.eq_ignore_ascii_case(&repo)));
                 prepared["current"] = match &current {
-                    Some(package) => json!({ "tag": package.tag, "sha": package.sha, "version": package.version }),
+                    Some(package) => json!({ "tag": package.tag, "sha": package.sha, "version": package.version, "official": package.is_official() }),
                     None => Value::Null,
                 };
                 if let Some(base) = current.map(|package| package.sha).filter(|sha| !sha.eq_ignore_ascii_case(&entry.sha)) {
@@ -83,7 +84,9 @@ async fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
             let (dir, meta) = store.staged(&token)?;
             let manifest = extension_curation::staged_manifest(&dir)?;
             let repo = meta.get("repo").and_then(Value::as_str).context("暂存元数据缺少 repo")?.to_string();
-            let entry = extension_curation::curated_entry(&meta, &manifest, store.cached_entry(&repo).as_ref(), &extension_curation::now_iso())?;
+            // 「官方」由维护者在审核框里勾选；仓库不属于官方账号时 curated_entry 会忽略它。
+            let official = payload.get("official").and_then(Value::as_bool).unwrap_or(false);
+            let entry = extension_curation::curated_entry(&meta, &manifest, store.cached_entry(&repo).as_ref(), &extension_curation::now_iso(), official)?;
             let mut result = blocking(move |curator| curator.publish_entry(&entry, &extension_curation::now_iso())).await?;
             // 写进去的清单立刻生效，不等 CDN。
             if let Some(index) = result.get("index").and_then(Value::as_str) {

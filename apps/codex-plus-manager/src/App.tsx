@@ -116,7 +116,7 @@ import { rebaseSettingsEdits } from "./settings-rebase";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { DshPluginsPanel } from "./DshPluginsPanel";
-import { CommunityExtensionsPanel } from "./CommunityExtensionsPanel";
+import { CommunityExtensionsPanel, type CommunitySort } from "./CommunityExtensionsPanel";
 import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
 import { ExtensionPublishDialog } from "./ExtensionPublishDialog";
 import { SectionLabel, Switch } from "./gateway-ui";
@@ -9665,6 +9665,8 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   const marketPackages = market?.market.packages ?? [];
   const [marketSearch, setMarketSearch] = useState("");
   const [marketView, setMarketView] = useState<"grid" | "list">("grid");
+  const [communitySearch, setCommunitySearch] = useState("");
+  const [communitySort, setCommunitySort] = useState<CommunitySort>("stars");
   // 市场脚本 / 本地脚本放在同一块里切换，不再上下堆三张卡片。
   const [pane, setPane] = useState<"market" | "community" | "local" | "dsh">("market");
   const filteredMarketScripts = useMemo(() => {
@@ -9705,6 +9707,19 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
     return map;
   }, [scripts]);
   const localEnabled = inventory?.enabled !== false;
+  // 精选与社区栏共用的排版切换。
+  const viewToggle = (
+    <div className="script-market-view-toggle" role="group" aria-label={t("拓展排版")}>
+      <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
+        <LayoutGrid className="h-4 w-4" />
+        {t("板块")}
+      </Button>
+      <Button aria-pressed={marketView === "list"} onClick={() => setMarketView("list")} size="sm" variant={marketView === "list" ? "secondary" : "ghost"}>
+        <List className="h-4 w-4" />
+        {t("列表")}
+      </Button>
+    </div>
+  );
   return (
     <div className="tp-page user-scripts-page">
       <TopbarActions>
@@ -9794,49 +9809,59 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
             title={t("拓展市场排序")}
             value={marketSort}
           />
-          <div className="script-market-view-toggle" role="group" aria-label={t("拓展排版")}>
-            <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
-              <LayoutGrid className="h-4 w-4" />
-              {t("板块")}
-            </Button>
-            <Button aria-pressed={marketView === "list"} onClick={() => setMarketView("list")} size="sm" variant={marketView === "list" ? "secondary" : "ghost"}>
-              <List className="h-4 w-4" />
-              {t("列表")}
-            </Button>
+          {viewToggle}
+        </> : pane === "community" ? <>
+          {/* 和精选栏同一套搜索 / 排序 / 排版控件。 */}
+          <div className="script-market-search">
+            <Search className="h-4 w-4" />
+            <Input
+              aria-label={t("搜索社区拓展")}
+              onChange={(event) => setCommunitySearch(event.currentTarget.value)}
+              placeholder={t("搜索名称、仓库、作者或描述")}
+              value={communitySearch}
+            />
           </div>
+          <AppSelect
+            ariaLabel={t("社区拓展排序")}
+            className="script-market-sort"
+            onChange={(value) => setCommunitySort(value)}
+            options={[
+              { value: "stars", label: t("星数") },
+              { value: "updated", label: t("最近更新") },
+              { value: "name", label: t("名称") },
+            ]}
+            size="sm"
+            title={t("社区拓展排序")}
+            value={communitySort}
+          />
+          {viewToggle}
         </> : pane === "local" ? <span className="user-scripts-summary">{t("内置、手动安装、市场安装和对话生成的拓展；可在这里启停，单文件脚本可删除")}</span> : null}
       </div>
       {pane === "market" ? (
         <>
         <CuratedPackagesSection
           blockedInstalled={market?.market.blockedInstalled ?? []}
+          emptyText={market?.status === "failed" ? market.message : t("点击刷新加载拓展市场。")}
+          hasScripts={marketScripts.length > 0}
           onInstalled={async () => { await actions.reloadUserScripts(); await actions.refreshScriptMarket(); }}
           onOpenUrl={(url) => void actions.openExternalUrl(url)}
           packages={marketPackages}
           search={marketSearch}
-        />
-        {marketScripts.length ? (
-          filteredMarketScripts.length ? (
-            <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
-              {sortedMarketScripts.map((script) => (
-                <MarketScriptCard
-                  actions={actions}
-                  installedKey={installedKeyByMarketId.get(script.id)}
-                  key={script.id}
-                  script={script}
-                  view={marketView}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="empty">{t("没有匹配的拓展。")}</div>
-          )
-        ) : marketPackages.length ? null : (
-          <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新加载拓展市场。")}</div>
-        )}
+          view={marketView}
+        >
+          {sortedMarketScripts.map((script) => (
+            <MarketScriptCard
+              actions={actions}
+              installedKey={installedKeyByMarketId.get(script.id)}
+              key={script.id}
+              script={script}
+              view={marketView}
+            />
+          ))}
+        </CuratedPackagesSection>
         </>
       ) : pane === "community" ? (
-        <CommunityExtensionsPanel onCurated={actions.refreshScriptMarket} onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+        <CommunityExtensionsPanel onCurated={actions.refreshScriptMarket} search={communitySearch} sort={communitySort} view={marketView} onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
       ) : pane === "dsh" ? (
         <DshPluginsPanel />
       ) : (

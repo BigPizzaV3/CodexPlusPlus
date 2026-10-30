@@ -12,7 +12,9 @@ type DiffFile = { filename: string; status: string; additions: number; deletions
 type Review = Prepared & {
   inspection: { files: { path: string; bytes: number }[]; bytes: number; secrets: { file: string; line: number; kind: string }[]; problems: string[] };
   entry: { name: string; description: string; author: string; official: boolean };
-  current: { tag: string | null; sha: string; version: string } | null;
+  current: { tag: string | null; sha: string; version: string; official: boolean } | null;
+  /** 仓库属于官方账号，可以勾「标为官方」。 */
+  canBeOfficial: boolean;
   diff?: { commits: number; url: string | null; files: DiffFile[] };
 };
 
@@ -42,6 +44,8 @@ export function CurationReviewDialog({ repo, onClose, onApproved, onOpenUrl }: {
   const [review, setReview] = useState<Review | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
+  // 审核通过只算精选；官方要明确勾选。更新时沿用当前的标记。
+  const [official, setOfficial] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -49,7 +53,10 @@ export function CurationReviewDialog({ repo, onClose, onApproved, onOpenUrl }: {
     curationRequest<Review>("review", { repo })
       .then((value) => {
         token = value.token;
-        if (alive) setReview(value);
+        if (alive) {
+          setReview(value);
+          setOfficial(value.canBeOfficial && !!value.current?.official);
+        }
         else void curationRequest("discard", { token }).catch(() => undefined);
       })
       .catch((failure) => { if (alive) setError(errorText(failure)); })
@@ -69,9 +76,15 @@ export function CurationReviewDialog({ repo, onClose, onApproved, onOpenUrl }: {
     setBusy(true);
     setError("");
     try {
-      const result = await curationRequest<{ commitUrl: string; replaced: boolean }>("approve", { token: review.token });
+      const result = await curationRequest<{ commitUrl: string; replaced: boolean }>("approve", { token: review.token, official: official && review.canBeOfficial });
       const version = review.tag ?? review.version;
-      onApproved(result.replaced ? tf("{0} 已更新到 {1}，用户那边会看到「更新」。", [review.name, version]) : tf("{0} {1} 已收录进精选。", [review.name, version]));
+      onApproved(
+        unchanged
+          ? official ? tf("{0} 已标为官方。", [review.name]) : tf("{0} 已取消官方标记，按精选显示。", [review.name])
+          : result.replaced
+          ? tf("{0} 已更新到 {1}，用户那边会看到「更新」。", [review.name, version])
+          : tf("{0} {1} 已收录进精选。", [review.name, version]),
+      );
     } catch (failure) {
       setError(errorText(failure));
       setBusy(false);
@@ -81,6 +94,8 @@ export function CurationReviewDialog({ repo, onClose, onApproved, onOpenUrl }: {
   const lines = review ? permissionLines(review.permissions) : [];
   const isUpdate = !!review?.current;
   const unchanged = !!review?.current && review.current.sha.toLowerCase() === review.sha.toLowerCase();
+  // 版本没变时，只有改了官方标记才有东西可提交。
+  const flagChanged = !!review?.current && review.canBeOfficial && official !== review.current.official;
   const blocked = !!review && (review.inspection.secrets.length > 0 || review.inspection.problems.length > 0);
   return (
     <div aria-modal="true" className="modal-backdrop app-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) close(); }} role="dialog">
@@ -107,7 +122,12 @@ export function CurationReviewDialog({ repo, onClose, onApproved, onOpenUrl }: {
                 </span>
                 {review.current ? <span>{tf("精选里当前锁定 {0}（{1}）", [review.current.tag ?? review.current.version, review.current.sha.slice(0, 7)])}</span> : null}
               </div>
-              {review.entry.official ? <p className="community-ext-dialog-trusted">{t("官方账号的仓库，收录后显示「官方」徽章。")}</p> : null}
+              {review.canBeOfficial ? (
+                <label className="community-ext-dialog-enable" title={t("只给 Codex++ 自己维护的拓展用；审核通过的第三方拓展显示为「精选」")}>
+                  <input checked={official} disabled={busy} onChange={(event) => setOfficial(event.currentTarget.checked)} type="checkbox" />
+                  {t("标为官方拓展（Codex++ 自己维护的）")}
+                </label>
+              ) : null}
               <button className="community-ext-repo" onClick={() => onOpenUrl(`https://github.com/${review.repo}/tree/${review.sha}`)} type="button">
                 <ExternalLink className="h-3 w-3" />{t("在 GitHub 上看这个提交的代码")}
               </button>
@@ -156,9 +176,9 @@ export function CurationReviewDialog({ repo, onClose, onApproved, onOpenUrl }: {
         <div className="app-dialog-actions">
           <Button disabled={busy && !!review} onClick={close} variant="secondary">{t("取消")}</Button>
           {review ? (
-            <Button disabled={busy || blocked || unchanged} onClick={() => void approve()} title={blocked ? t("先请作者处理疑似密钥或软链再收录") : undefined}>
+            <Button disabled={busy || blocked || (unchanged && !flagChanged)} onClick={() => void approve()} title={blocked ? t("先请作者处理疑似密钥或软链再收录") : undefined}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              {isUpdate ? tf("更新到 {0}", [review.tag ?? review.version]) : t("通过，加入精选")}
+              {unchanged ? (official ? t("标为官方") : t("取消官方标记")) : isUpdate ? tf("更新到 {0}", [review.tag ?? review.version]) : t("通过，加入精选")}
             </Button>
           ) : null}
         </div>

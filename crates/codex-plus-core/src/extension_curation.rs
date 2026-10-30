@@ -62,8 +62,15 @@ fn package_kind() -> String {
     "package".into()
 }
 
+/// 仓库能不能标「官方」：所有者在 [`OFFICIAL_OWNERS`] 里。
+pub fn can_be_official(repo: &str) -> bool {
+    let owner = repo.split('/').next().unwrap_or_default();
+    OFFICIAL_OWNERS.iter().any(|official| official.eq_ignore_ascii_case(owner))
+}
+
 /// 由暂存元数据、包清单和社区缓存条目拼出精选条目。名称、描述、图标优先用社区条目（图标已是完整地址）。
-pub fn curated_entry(meta: &Value, manifest: &Value, community: Option<&CommunityEntry>, today: &str) -> anyhow::Result<CuratedEntry> {
+/// 审核通过只算「精选」；`official` 要维护者明确勾选，且仓库属于官方账号才生效。
+pub fn curated_entry(meta: &Value, manifest: &Value, community: Option<&CommunityEntry>, today: &str, official: bool) -> anyhow::Result<CuratedEntry> {
     let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()).map(str::to_string);
     let repo = text(meta, "repo").context("暂存元数据缺少 repo")?;
     let id = text(meta, "id").context("暂存元数据缺少 id")?;
@@ -89,7 +96,7 @@ pub fn curated_entry(meta: &Value, manifest: &Value, community: Option<&Communit
         icon: community.map(|entry| entry.icon.clone()).unwrap_or_default(),
         updated_at: today.to_string(),
         tag: text(meta, "tag"),
-        official: OFFICIAL_OWNERS.iter().any(|official| official.eq_ignore_ascii_case(owner)),
+        official: official && can_be_official(&repo),
         id,
         repo,
         sha,

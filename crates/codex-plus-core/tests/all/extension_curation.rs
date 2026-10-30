@@ -1,5 +1,5 @@
 //! 精选维护：拼条目、只改 packages 段地写清单、差异截断，以及用假 gh 跑通的读写市场仓库。
-use codex_plus_core::extension_curation::{CuratedEntry, Curator, curated_entry, trim_compare, upsert_package, utc_iso};
+use codex_plus_core::extension_curation::{CuratedEntry, Curator, can_be_official, curated_entry, trim_compare, upsert_package, utc_iso};
 use codex_plus_core::extension_discovery::CommunityEntry;
 use codex_plus_core::extension_publish::Publisher;
 use codex_plus_core::script_market::parse_market_manifest;
@@ -28,7 +28,7 @@ const INDEX: &str = r#"{
 
 fn entry(repo: &str, id: &str, sha: &str) -> CuratedEntry {
     let meta = json!({ "repo": repo, "id": id, "version": "1.0.0", "tag": "v1.0.0", "sha": sha });
-    curated_entry(&meta, &json!({ "name": "字数统计", "description": "统计字数", "keywords": ["text"] }), None, "2026-10-30T00:00:00.000Z").unwrap()
+    curated_entry(&meta, &json!({ "name": "字数统计", "description": "统计字数", "keywords": ["text"] }), None, "2026-10-30T00:00:00.000Z", false).unwrap()
 }
 
 #[test]
@@ -55,8 +55,11 @@ fn builds_entries_from_staged_meta() {
         permissions: Value::Null,
     };
     let meta = json!({ "repo": "BigPizzaV3/codexpp-word-count", "id": "word-count", "version": "1.0.0", "tag": "v1.0.0", "sha": SHA_B });
-    let official = curated_entry(&meta, &json!({ "name": "字数统计" }), Some(&community), "2026-10-30T00:00:00.000Z").unwrap();
-    assert!(official.official, "官方账号的仓库自动标官方");
+    // 审核通过只算精选：官方账号的仓库也要明确勾选才标官方。
+    let curated = curated_entry(&meta, &json!({ "name": "字数统计" }), Some(&community), "2026-10-30T00:00:00.000Z", false).unwrap();
+    assert!(!curated.official);
+    let official = curated_entry(&meta, &json!({ "name": "字数统计" }), Some(&community), "2026-10-30T00:00:00.000Z", true).unwrap();
+    assert!(official.official && can_be_official("bigpizzav3/x"));
     assert_eq!(official.sha, SHA_B.to_lowercase());
     assert_eq!(official.name, "字数统计", "清单优先");
     assert_eq!(official.description, "仓库描述", "清单没写时用社区条目");
@@ -64,12 +67,12 @@ fn builds_entries_from_staged_meta() {
     assert_eq!(official.author, "BigPizzaV3");
     assert_eq!(official.homepage, "https://github.com/BigPizzaV3/codexpp-word-count");
 
-    let other = entry("alice/codexpp-word-count", "word-count", SHA_A);
-    assert!(!other.official);
+    let other = curated_entry(&json!({ "repo": "alice/codexpp-word-count", "id": "word-count", "sha": SHA_A }), &json!({ "keywords": ["text"] }), None, "", true).unwrap();
+    assert!(!other.official, "非官方账号勾了也不算");
     assert_eq!(other.tags, ["text"]);
 
     let bad = json!({ "repo": "alice/x", "id": "x", "sha": "123" });
-    assert!(curated_entry(&bad, &json!({}), None, "").is_err());
+    assert!(curated_entry(&bad, &json!({}), None, "", false).is_err());
 }
 
 #[test]
@@ -264,9 +267,9 @@ async fn live_reviews_a_real_repository_without_writing() {
     let prepared = store.prepare(&endpoints, &manager, repo).await.unwrap();
     let (dir, meta) = store.staged(prepared["token"].as_str().unwrap()).unwrap();
     let inspection = inspect_staged(&dir);
-    let entry = curated_entry(&meta, &staged_manifest(&dir).unwrap(), store.cached_entry(repo).as_ref(), "2026-10-30T00:00:00.000Z").unwrap();
+    let entry = curated_entry(&meta, &staged_manifest(&dir).unwrap(), store.cached_entry(repo).as_ref(), "2026-10-30T00:00:00.000Z", false).unwrap();
     eprintln!("暂存：{meta}\n检查：{inspection}\n条目：{}", serde_json::to_string_pretty(&entry).unwrap());
-    assert!(entry.official && entry.sha.len() == 40);
+    assert!(!entry.official && entry.sha.len() == 40);
     assert!(inspection["files"].as_array().unwrap().iter().any(|file| file["path"] == "codexpp.json"));
     let history = curator.publisher.clone();
     let first_commit = std::process::Command::new(&history.gh).args(["api", &format!("repos/{repo}/commits?per_page=5"), "--jq", ".[-1].sha"]).output().unwrap();

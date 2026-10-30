@@ -75,3 +75,13 @@
 .shell .curation-diff pre span[data-kind=hunk] { color:hsl(var(--muted-foreground)); }
 .shell .curation-files ul { margin:4px 0 2px; padding:0; list-style:none; display:flex; flex-direction:column; gap:2px; max-height:200px; overflow:auto; }
 .shell .curation-files li { display:flex; justify-content:space-between; gap:8px; color:hsl(var(--muted-foreground)); }
+/* 统一卡片（ExtensionCard）：名字后跟徽标，徽标里的图标与文字居中对齐 */
+.shell .ext-card-name { display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:wrap; }
+.shell .ext-card-name strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.shell .script-market-card[data-view="list"] .ext-card-name { flex-wrap:nowrap; }
+.shell .community-ext-badge { align-items:center; gap:3px; line-height:16px; }
+.shell .community-ext-badge svg { width:12px; height:12px; flex:none; }
+.shell .ext-card[data-channel=official] { border-color:hsl(var(--primary) / .35); }
+.shell .ext-card[data-dimmed] { opacity:.65; }
+.shell .community-ext-meta { display:flex; align-items:center; gap:8px; }
+.shell .community-ext-meta > button { margin-left:auto; }
