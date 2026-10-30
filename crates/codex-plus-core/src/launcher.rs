@@ -2123,10 +2123,11 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     if crate::gateway::is_gateway_path(path) {
+        // 带上查询串：Gemini 客户端把 Key 放在 `?key=` 里；网关取出后自己去掉，不进日志。
         return crate::gateway::server::handle(
             &mut stream,
             method,
-            path,
+            raw_path,
             &request_headers,
             &request.body,
             remote_addr_text,

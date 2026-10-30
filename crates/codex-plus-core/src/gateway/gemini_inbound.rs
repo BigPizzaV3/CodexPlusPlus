@@ -29,12 +29,15 @@ pub enum GeminiAction {
 pub fn parse_gemini_path(tail: &str) -> Option<(String, GeminiAction)> {
     let path = tail.split(['?', '#']).next().unwrap_or_default();
     let path = path.trim_end_matches('/');
-    let rest = match path.rfind("/models/") {
+    // 网关的模型名本身带 `/`（`<供应商>/<模型>`、`group/<组>`），取第一个 `/models/` 之后的全部；
+    // 客户端可能把 `/` 编码成 `%2F`。
+    let rest = match path.find("/models/") {
         Some(index) => &path[index + "/models/".len()..],
         None => path.strip_prefix("models/")?,
     };
     let (model, action) = rest.rsplit_once(':')?;
-    if model.is_empty() || model.contains('/') {
+    let model = model.replace("%2F", "/").replace("%2f", "/");
+    if model.is_empty() {
         return None;
     }
     let action = match action {
@@ -602,6 +605,17 @@ mod tests {
         assert_eq!(
             parse_gemini_path("models/x:generateContent"),
             Some(("x".to_string(), GeminiAction::Generate))
+        );
+        assert_eq!(
+            parse_gemini_path("/v1beta/models/deepseek/deepseek-v4-pro:streamGenerateContent"),
+            Some((
+                "deepseek/deepseek-v4-pro".to_string(),
+                GeminiAction::StreamGenerate
+            ))
+        );
+        assert_eq!(
+            parse_gemini_path("/v1beta/models/group%2Fdaily:generateContent"),
+            Some(("group/daily".to_string(), GeminiAction::Generate))
         );
         assert_eq!(parse_gemini_path("/v1beta/models/x:embedContent"), None);
         assert_eq!(parse_gemini_path("/v1beta/models/x"), None);
