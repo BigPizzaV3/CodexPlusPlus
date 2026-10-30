@@ -174,6 +174,29 @@ codexPlus.extension((ctx) => {
 | `config` | 生效配置的只读快照（清单 `config` 声明，见「拓展配置」） |
 | `id / scriptKey / manifest / disposed` | 只读信息 |
 
+### 界面插槽
+
+```js
+codexPlus.extension((ctx) => {
+  ctx.registerSlot({ slot: "composer.above", render: ({ container }) => {
+    container.textContent = "提示：今天的额度还剩 80%";
+  } });
+  const clock = ctx.registerSlot({ slot: "titlebar", render: ({ container }) => {
+    const button = document.createElement("button");
+    button.textContent = new Date().toLocaleTimeString();
+    container.appendChild(button);
+    return () => button.remove(); // 撤下或重画前调用
+  } });
+  ctx.setInterval(() => clock.refresh(), 60_000);
+});
+```
+
+- 位置：`composer.above`（输入框上方）、`thread.top` / `thread.bottom`（对话区顶部 / 底部）、`sidebar.top` / `sidebar.bottom`
+  （左侧栏列表顶部 / 底部）、`titlebar`（标题栏右侧按钮组）。未知位置会报错。
+- `render({ container, slot })` 在容器新建时调用；Codex 重建 DOM（切换会话、侧栏刷新）后会重新调用，不要缓存节点。
+  返回的函数在该项被撤下或重画前调用。`container` 留空则不占位。返回的句柄带 `refresh()` 强制重画。
+- 同一位置多个拓展按 `order` 排列（越小越靠前）。拓展卸载、热重载时自动撤下。
+
 ### 消息插槽与侧边面板
 
 ```js

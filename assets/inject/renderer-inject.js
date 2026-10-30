@@ -1816,6 +1816,7 @@
     messageActions: new Map(),
     messageDecorations: new Map(),
     sidePanels: new Map(),
+    slots: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
@@ -18542,6 +18543,7 @@
       refreshCodexPlusComposerActions,
       refreshCodexPlusMessageSlots,
       refreshCodexPlusSidePanels,
+      refreshCodexPlusUiSlots,
       refreshExtensionSessionRows,
       refreshCodexPlusExtensionMenu,
     ]) {
@@ -18696,6 +18698,15 @@
        */
       registerSidePanel(definition, options = {}) {
         return codexPlusRegisterExtensionSidePanel(definition, options);
+      },
+
+      /**
+       * 往 Codex 界面的固定位置放内容：slot 为 composer.above、thread.top、thread.bottom、sidebar.top、
+       * sidebar.bottom、titlebar。render({ container, slot }) 在容器新建时调用（Codex 重建 DOM 后会再调），
+       * 可返回清理函数。返回的撤销函数上带 refresh() 强制重画。
+       */
+      registerSlot(definition, options = {}) {
+        return codexPlusRegisterExtensionSlot(definition, options);
       },
 
       /** 在会话行「更多操作」里加一项。 */
@@ -19511,6 +19522,12 @@
       },
       registerMessageDecoration(definition, itemOptions) {
         return track(codexPlusRegisterExtensionItem("messageDecoration", codexPlusRegistry.messageDecorations, definition, registerOptions(itemOptions)));
+      },
+      registerSlot(definition, itemOptions) {
+        const slot = codexPlusRegisterExtensionSlot(definition, registerOptions(itemOptions));
+        const handle = track(slot);
+        handle.refresh = slot.refresh;
+        return handle;
       },
       registerSidePanel(definition, itemOptions) {
         const panel = codexPlusRegisterExtensionSidePanel(definition, registerOptions(itemOptions));
@@ -20796,7 +20813,15 @@
       .codex-plus-side-panel-close:hover{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 10%,transparent))}
       .codex-plus-side-panel-body{flex:1;min-height:0;overflow:auto;padding:12px 14px}
       .codex-plus-side-panel-toggle .codex-plus-ext-icon,.codex-plus-side-panel-toggle svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
-      .codex-plus-side-panel-toggle[aria-pressed="true"]{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 12%,transparent))}`;
+      .codex-plus-side-panel-toggle[aria-pressed="true"]{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 12%,transparent))}
+      .codex-plus-ui-slot{display:flex;flex-direction:column;gap:6px;min-width:0}
+      .codex-plus-ui-slot:not(:has(.codex-plus-ui-slot-item:not(:empty))){display:none}
+      .codex-plus-ui-slot-item:empty{display:none}
+      [data-codex-plus-ui-slot="composer.above"]{margin:0 0 8px}
+      [data-codex-plus-ui-slot="thread.top"],[data-codex-plus-ui-slot="thread.bottom"]{width:min(100%,var(--thread-content-max-width,768px));margin:12px auto;padding:0 16px;box-sizing:border-box}
+      [data-codex-plus-ui-slot="sidebar.top"],[data-codex-plus-ui-slot="sidebar.bottom"]{padding:6px 8px}
+      [data-codex-plus-ui-slot="titlebar"]{display:contents}
+      [data-codex-plus-ui-slot="titlebar"] .codex-plus-ui-slot-item{display:contents}`;
     document.head.append(style);
   }
 
@@ -21000,6 +21025,144 @@
     handle.open = () => openCodexPlusSidePanel(id);
     handle.close = () => (codexPlusOpenSidePanelState?.id === id ? closeCodexPlusSidePanel() : false);
     handle.toggle = () => toggleCodexPlusSidePanel(id);
+    return handle;
+  }
+
+  /**
+   * 通用界面插槽：拓展用 registerSlot({ slot, render }) 往 Codex 界面的固定位置放自己的内容。
+   *
+   * 位置：composer.above（输入框上方）、thread.top / thread.bottom（对话区顶部 / 底部）、
+   * sidebar.top / sidebar.bottom（左侧栏列表顶部 / 底部）、titlebar（标题栏右侧按钮组）。
+   * 每个位置一个带拓展标记的宿主节点，里面每个注册项一个容器；容器新建时调用 render（DOM 会随 Codex 重建，
+   * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
+   */
+  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar"];
+  const codexPlusUiSlotVersions = new Map();
+
+  function codexPlusUiSlotAnchors(slot) {
+    const visible = (selector) => [...document.querySelectorAll(selector)].filter((node) => visibleElement(node) && !isExtensionUiNode(node));
+    switch (slot) {
+      // place：start（最前）、end（最后），或一个兄弟节点（放在它前面）。
+      case "composer.above":
+        return visible("[data-codex-composer-root]").map((node) => ({ parent: node.parentElement, place: node }));
+      case "thread.top":
+      case "thread.bottom":
+        return visible(".thread-scroll-container").map((scroll) => scroll.firstElementChild).filter(Boolean)
+          .map((content) => ({ parent: content, place: slot === "thread.top" ? "start" : "end" }));
+      case "sidebar.top":
+      case "sidebar.bottom":
+        return visible("[data-app-action-sidebar-scroll]")
+          .map((list) => ({ parent: list, place: slot === "sidebar.top" ? "start" : "end" }));
+      case "titlebar": {
+        const toolbar = codexPlusSidePanelToolbar();
+        if (!toolbar) return [];
+        return [{ parent: toolbar.host, place: toolbar.before && toolbar.before.parentElement === toolbar.host ? toolbar.before : "end" }];
+      }
+      default:
+        return [];
+    }
+  }
+
+  function codexPlusRunSlotCleanup(node) {
+    const cleanup = node.__codexPlusSlotCleanup;
+    node.__codexPlusSlotCleanup = null;
+    if (typeof cleanup === "function") runCodexPlusExtensionCallback(node.dataset.scriptKey || "", "slot.cleanup", cleanup);
+  }
+
+  let codexPlusUiSlotsRendered = false;
+
+  function refreshCodexPlusUiSlots() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.slots);
+    if (!items.length) {
+      if (codexPlusUiSlotsRendered) {
+        document.querySelectorAll("[data-codex-plus-ui-slot]").forEach((host) => {
+          host.querySelectorAll("[data-codex-plus-slot-item]").forEach(codexPlusRunSlotCleanup);
+          host.remove();
+        });
+        codexPlusUiSlotsRendered = false;
+      }
+      return;
+    }
+    codexPlusUiSlotsRendered = true;
+    installCodexPlusSlotStyle();
+    for (const slot of codexPlusUiSlotNames) {
+      const slotItems = items.filter((item) => item.slot === slot);
+      const anchors = slotItems.length ? codexPlusUiSlotAnchors(slot) : [];
+      const parents = new Set(anchors.map((anchor) => anchor.parent));
+      document.querySelectorAll(`[data-codex-plus-ui-slot="${slot}"]`).forEach((host) => {
+        if (parents.has(host.parentElement)) return;
+        host.querySelectorAll("[data-codex-plus-slot-item]").forEach(codexPlusRunSlotCleanup);
+        host.remove();
+      });
+      for (const { parent, place } of anchors) {
+        if (!parent) continue;
+        let host = [...parent.children].find((node) => node.getAttribute?.("data-codex-plus-ui-slot") === slot);
+        if (!host) {
+          host = document.createElement("div");
+          host.className = "codex-plus-ui-slot";
+          host.setAttribute("data-codex-plus-ui-slot", slot);
+          markCodexPlusExtensionNode(host, "builtin-ui-slots");
+        }
+        // 位置不对（Codex 重排了兄弟节点）时挪回去；位置已对时不动 DOM。
+        if (place === "start") {
+          if (parent.firstChild !== host) parent.insertBefore(host, parent.firstChild);
+        } else if (place === "end" || !place || place.parentElement !== parent) {
+          if (parent.lastChild !== host) parent.appendChild(host);
+        } else if (host.nextSibling !== place) {
+          parent.insertBefore(host, place);
+        }
+        const wanted = new Set(slotItems.map((item) => item.id));
+        for (const child of [...host.children]) {
+          if (!wanted.has(child.dataset.slotItemId)) {
+            codexPlusRunSlotCleanup(child);
+            child.remove();
+          }
+        }
+        for (const item of slotItems) {
+          const version = String(codexPlusUiSlotVersions.get(item.id) || 0);
+          let container = [...host.children].find((child) => child.dataset.slotItemId === item.id);
+          if (container && container.dataset.slotVersion === version) {
+            if (host.lastElementChild !== container) host.appendChild(container);
+            continue;
+          }
+          if (container) {
+            codexPlusRunSlotCleanup(container);
+            container.textContent = "";
+          } else {
+            container = document.createElement("div");
+            container.className = "codex-plus-ui-slot-item";
+            container.setAttribute("data-codex-plus-slot-item", "");
+            container.dataset.slotItemId = item.id;
+            container.dataset.scriptKey = item.scriptKey;
+            markCodexPlusExtensionNode(container, item.scriptKey);
+          }
+          container.dataset.slotVersion = version;
+          host.appendChild(container);
+          const result = runCodexPlusExtensionCallback(item.scriptKey, "slot.render", () => item.render({ container, slot }));
+          if (result.ok && typeof result.value === "function") container.__codexPlusSlotCleanup = result.value;
+        }
+      }
+    }
+  }
+
+  /** 注册界面插槽；返回的撤销函数上带 refresh()，强制所有位置重画该项。 */
+  function codexPlusRegisterExtensionSlot(definition, options = {}) {
+    if (!codexPlusUiSlotNames.includes(definition?.slot)) {
+      throw new Error(`未知的插槽位置 ${definition?.slot}，可用：${codexPlusUiSlotNames.join("、")}`);
+    }
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = `${scriptKey}:slot:${options.id || codexPlusExtensionIdSeed()}`;
+    const dispose = registerCodexPlusExtension("slot", codexPlusRegistry.slots, id, definition, scriptKey);
+    codexPlusRefreshExtensionHosts();
+    const handle = () => {
+      dispose();
+      codexPlusUiSlotVersions.delete(id);
+      codexPlusRefreshExtensionHosts();
+    };
+    handle.refresh = () => {
+      codexPlusUiSlotVersions.set(id, (codexPlusUiSlotVersions.get(id) || 0) + 1);
+      refreshCodexPlusUiSlots();
+    };
     return handle;
   }
   // API Key 听写使用独立的 ASR 服务。新版原生 capability / app-host RPC 是只读的，
@@ -22211,6 +22374,7 @@
     // 消息插槽与侧边面板：消息、顶栏都会重建，按指纹幂等补齐；对话内容变化由插槽自己的观察器跟。
     refreshCodexPlusMessageSlots();
     refreshCodexPlusSidePanels();
+    refreshCodexPlusUiSlots();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();

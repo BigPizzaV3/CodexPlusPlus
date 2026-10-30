@@ -761,6 +761,12 @@
       registerMessageDecoration(definition, itemOptions) {
         return track(codexPlusRegisterExtensionItem("messageDecoration", codexPlusRegistry.messageDecorations, definition, registerOptions(itemOptions)));
       },
+      registerSlot(definition, itemOptions) {
+        const slot = codexPlusRegisterExtensionSlot(definition, registerOptions(itemOptions));
+        const handle = track(slot);
+        handle.refresh = slot.refresh;
+        return handle;
+      },
       registerSidePanel(definition, itemOptions) {
         const panel = codexPlusRegisterExtensionSidePanel(definition, registerOptions(itemOptions));
         const handle = track(panel);

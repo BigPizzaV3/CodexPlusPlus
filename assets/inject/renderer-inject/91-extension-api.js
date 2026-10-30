@@ -133,6 +133,7 @@
       refreshCodexPlusComposerActions,
       refreshCodexPlusMessageSlots,
       refreshCodexPlusSidePanels,
+      refreshCodexPlusUiSlots,
       refreshExtensionSessionRows,
       refreshCodexPlusExtensionMenu,
     ]) {
@@ -287,6 +288,15 @@
        */
       registerSidePanel(definition, options = {}) {
         return codexPlusRegisterExtensionSidePanel(definition, options);
+      },
+
+      /**
+       * 往 Codex 界面的固定位置放内容：slot 为 composer.above、thread.top、thread.bottom、sidebar.top、
+       * sidebar.bottom、titlebar。render({ container, slot }) 在容器新建时调用（Codex 重建 DOM 后会再调），
+       * 可返回清理函数。返回的撤销函数上带 refresh() 强制重画。
+       */
+      registerSlot(definition, options = {}) {
+        return codexPlusRegisterExtensionSlot(definition, options);
       },
 
       /** 在会话行「更多操作」里加一项。 */

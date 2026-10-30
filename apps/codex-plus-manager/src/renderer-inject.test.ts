@@ -3535,7 +3535,7 @@ describe("拓展运行时内核", () => {
     };
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
-      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
       `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices };`,
     )(
       window,
@@ -3556,6 +3556,11 @@ describe("拓展运行时内核", () => {
         dispose.open = () => { calls.push("sidePanel.open"); return true; };
         dispose.close = () => { calls.push("sidePanel.close"); return true; };
         dispose.toggle = () => true;
+        return dispose;
+      },
+      (_definition: unknown, itemOptions: { scriptKey: string }) => {
+        const dispose = register("slot", itemOptions) as (() => void) & { refresh?: () => void };
+        dispose.refresh = () => { calls.push("slot.refresh"); };
         return dispose;
       },
       { rowActions: new Map(), navEntries: new Map(), menuItems: new Map(), composerActions: new Map() },
@@ -3818,6 +3823,22 @@ describe("拓展运行时内核", () => {
     assert.deepEqual(k.calls, ["sidePanel.open", "sidePanel.close"]);
     ctx.dispose();
     assert.ok(k.registered.every((item) => item.disposed), "卸载时三项都撤销");
+  });
+
+  it("ctx.registerSlot 随实例卸载撤销，句柄带 refresh；未知位置报错", async () => {
+    const k = await kernel();
+    let slot: any;
+    const ctx = k.create((ctx: any) => { slot = ctx.registerSlot({ slot: "composer.above", render() {} }); });
+    assert.equal(k.registered.at(-1)?.kind, "slot");
+    slot.refresh();
+    assert.deepEqual(k.calls, ["slot.refresh"]);
+    ctx.dispose();
+    assert.equal(k.registered.at(-1)?.disposed, true);
+    const source = await readFile(new URL("../../../assets/inject/renderer-inject/92-extension-slots.js", import.meta.url), "utf8");
+    assert.match(source, /未知的插槽位置/);
+    for (const name of ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar"]) {
+      assert.ok(source.includes(`"${name}"`), name);
+    }
   });
 
   it("插槽节点都带拓展标记，消息观察器排除自己的写入，扫描每轮补齐插槽", async () => {

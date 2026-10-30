@@ -140,6 +140,8 @@ interface CodexPlusExtensionApi {
 
   /** 注册右侧面板：顶栏右侧出现开关，打开时主区域让出面板宽度。 */
   registerSidePanel(definition: CodexPlusSidePanelDefinition, options?: CodexPlusRegisterOptions): CodexPlusSidePanelHandle;
+  /** 往 Codex 界面的固定位置放内容（输入框上方、对话区顶部 / 底部、侧栏顶部 / 底部、标题栏）。 */
+  registerSlot(definition: CodexPlusSlotDefinition, options?: CodexPlusRegisterOptions): CodexPlusSlotHandle;
 
   /** 在会话行「更多操作」里加一项。 */
   registerRowAction(
@@ -245,6 +247,19 @@ interface CodexPlusSidePanelDefinition {
   /** 每次打开都调用；可返回清理函数，关闭时调用。 */
   render(context: { container: HTMLElement; close(): void }): void | (() => void);
 }
+
+type CodexPlusSlotName = "composer.above" | "thread.top" | "thread.bottom" | "sidebar.top" | "sidebar.bottom" | "titlebar";
+
+interface CodexPlusSlotDefinition {
+  slot: CodexPlusSlotName;
+  /** 越小越靠前。 */
+  order?: number;
+  /** 容器新建时调用（Codex 重建 DOM 后会再调）；可返回清理函数。容器留空则不占位。 */
+  render(context: { container: HTMLElement; slot: CodexPlusSlotName }): void | (() => void);
+}
+
+/** 撤销函数，另带 refresh()：强制所有位置重画该项。 */
+type CodexPlusSlotHandle = CodexPlusDispose & { refresh(): void };
 
 /** 撤销函数，另带开合控制。同一时间只开一个面板。 */
 type CodexPlusSidePanelHandle = CodexPlusDispose & {
@@ -424,6 +439,8 @@ interface CodexPlusExtensionContext {
   registerMessageAction(definition: CodexPlusMessageActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerMessageDecoration(definition: CodexPlusMessageDecorationDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerSidePanel(definition: CodexPlusSidePanelDefinition, options?: CodexPlusRegisterOptions): CodexPlusSidePanelHandle;
+  /** 往 Codex 界面的固定位置放内容（输入框上方、对话区顶部 / 底部、侧栏顶部 / 底部、标题栏）。 */
+  registerSlot(definition: CodexPlusSlotDefinition, options?: CodexPlusRegisterOptions): CodexPlusSlotHandle;
 
   /** 拓展间事件；`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;

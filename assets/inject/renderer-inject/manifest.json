@@ -8,7 +8,7 @@
     {
       "name": "01-registry.js",
       "description": "拓展注册中心、扩展选择器登记与失败上报",
-      "lines": 182
+      "lines": 183
     },
     {
       "name": "10-style.js",
@@ -118,12 +118,12 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 342
+      "lines": 352
     },
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 893
+      "lines": 899
     },
     {
       "name": "91-extension-rpc.js",
@@ -138,7 +138,7 @@
     {
       "name": "92-extension-slots.js",
       "description": "拓展消息插槽（操作按钮、装饰）与右侧面板",
-      "lines": 375
+      "lines": 521
     },
     {
       "name": "93-dictation.js",
@@ -153,7 +153,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 657
+      "lines": 658
     },
     {
       "name": "97-agent-pet.js",

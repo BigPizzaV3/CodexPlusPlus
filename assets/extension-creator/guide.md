@@ -41,6 +41,7 @@ codexPlus.extension((ctx) => {
 | `ctx.registerComposerAction({ label, icon, onActivate })` | 输入区（发送按钮那一行）的图标按钮，`onActivate({ editor, insertText, close })`，`insertText(text)` 往输入框插字。比自己往输入区塞节点稳，Codex 改结构由 Codex++ 适配 |
 | `ctx.registerMessageAction({ label, icon, roles, visible(message), onActivate({ message }) })` | 每条对话消息操作行（复制、编辑按钮旁）的图标按钮。`message = { role, id, turnId, conversationId, text, element }`，`roles` 取 `"user"` / `"assistant"` |
 | `ctx.registerMessageDecoration({ roles, render({ message, container }) })` | 消息正文下方的一块内容，往 `container` 里画；流式输出时会清空重画。要给消息加标记、摘要、翻译用这个，不要自己往消息里塞节点 |
+| `ctx.registerSlot({ slot, render({ container }) })` | 往固定位置放内容：`composer.above`（输入框上方）、`thread.top` / `thread.bottom`、`sidebar.top` / `sidebar.bottom`、`titlebar`（标题栏右侧）。Codex 重建 DOM 后会重新调 render；返回的句柄带 `refresh()` |
 | `ctx.registerSidePanel({ title, icon, width, render({ container, close }) })` | 右侧面板，顶栏右侧有开关，打开时主区域自动让出宽度；返回值带 `open()` / `close()`，可配合斜杠命令打开 |
 | `ctx.registerCommand({ name, description, run(args, { editor, insertText, setText, toast }) })` | 斜杠命令：用户在输入框输入 `/name 参数` 回车时调用，输入框随后清空；输入 `/` 时有提示、Tab 补全。只拦截已注册的拓展命令，Codex 自己的命令不受影响 |
 | `ctx.on("codex/turn/completed", (params) => …)` | Codex 会话事件：`codex/thread/started`、`codex/turn/started`、`codex/turn/completed`、`codex/item/started`、`codex/item/completed`、`codex/item/agentMessage/delta`、`codex/error`，params 是 Codex 通知原样参数 |

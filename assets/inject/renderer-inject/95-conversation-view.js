@@ -204,6 +204,7 @@
     // 消息插槽与侧边面板：消息、顶栏都会重建，按指纹幂等补齐；对话内容变化由插槽自己的观察器跟。
     refreshCodexPlusMessageSlots();
     refreshCodexPlusSidePanels();
+    refreshCodexPlusUiSlots();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
