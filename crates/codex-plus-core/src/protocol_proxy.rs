@@ -3493,6 +3493,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     set_message_phase_fill(settings.codex_app_third_party_reasoning_collapse);
     let mut request_json: Value = serde_json::from_str(body)?;
+    // 拓展的网关请求中间件：在 Codex++ 自己的转换之前改写原始 Responses 请求。没有拓展声明时零开销。
+    crate::extension_gateway::apply_request(&mut request_json, request_path).await;
     expand_local_compaction_history(&mut request_json);
     let local_compaction_request = !is_responses_compact_proxy_path(request_path)
         && !request_has_compaction_trigger(&request_json)

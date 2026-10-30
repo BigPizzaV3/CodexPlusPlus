@@ -221,6 +221,25 @@ export default (payload) => /rm\s+-rf\s+\//.test(payload.tool_input?.command ?? 
   运行命中的脚本；单个脚本出错或超时只记诊断日志，不影响其它拓展，也不挡 Codex。
 - 钩子脚本以你的用户权限运行、没有沙箱。信任分发条目即信任了 Codex++ 拓展开关里启用的全部钩子。
 
+### 网关请求中间件
+
+拓展包可以在 Codex 的模型请求发往上游前改写它：
+
+```json
+{ "id": "zh-reply", "name": "中文回复", "gateway": { "request": [{ "script": "gateway/request.mjs", "timeout": 5 }] } }
+```
+
+```js
+// gateway/request.mjs：默认导出 (body, { path, extension }) => 新 body | null
+export default (body) => ({ ...body, instructions: `${body.instructions ?? ""}\n\n请始终用简体中文回答。` });
+```
+
+- `body` 是 OpenAI Responses 请求体的副本；返回新对象即替换，返回 `null` 不改。多个拓展按拓展 key 顺序串联，
+  前一个的输出是后一个的输入。`timeout` 1~10 秒（默认 5），整条链最多 15 秒。
+- 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过 Codex++，不受影响。
+- 只有存在启用中的网关中间件时才会为每个请求起一个 Node 进程；任何中间件出错或超时都会保留原请求并记诊断日志。
+- 中间件能看到完整的请求内容（含对话），以你的用户权限运行。只启用你信任的拓展。
+
 ### 拓展包
 
 一个拓展可以是一个目录：放在 `user_scripts/` 下，根部有 `codexpp.json`。
@@ -251,6 +270,7 @@ user_scripts/
 | `engines.codexpp` | 需要的 `apiVersion`，高于当前 Codex++ 时不加载并在管理页显示原因 |
 | `renderer` | 字符串或数组，必须是包内相对路径；按顺序拼进同一个作用域执行。只声明 `hooks` 的拓展可以省略 |
 | `hooks` | Codex 钩子声明，见上文「Codex 钩子」 |
+| `gateway` | 网关请求中间件声明，见上文「网关请求中间件」 |
 | `permissions.routes` | `ctx.call` 能调的路由，需在[路由白名单](#后端调用与路由白名单)内。这是声明约束而不是安全边界 |
 
 清单不合法（JSON 错误、入口越出包目录、版本不兼容等）时包不注入，管理页显示「加载失败」和原因。

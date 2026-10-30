@@ -112,6 +112,21 @@ codexPlus.extension((ctx) => {
   设置里信任它一次**（写入结果的 `hooks.note` 会提示），之后新开对话生效。务必把这一步告诉用户。
 - 钩子脚本在用户电脑上以用户权限运行，只做用户要求的事。
 
+## 网关请求中间件（改写发给模型的请求）
+
+要在**每次请求模型前**改请求体（往 `instructions` 追加要求、过滤或改写 `input`、调 `reasoning`），在
+`codexpp_extension_write` 的 `gateway` 参数里声明：
+
+```json
+{ "request": [{ "script": "gateway/request.mjs", "timeout": 5 }] }
+```
+
+- 脚本默认导出 `(body, { path, extension }) => 新 body | null`，可以 async。`body` 是 OpenAI Responses 请求体
+  （`model`、`instructions`、`input`、`tools`、`reasoning` 等）的副本，返回新对象即替换，返回 `null` 不改。
+  `timeout` 1~10 秒，默认 5。多个拓展按顺序串联。
+- 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过这里，要告诉用户。
+- 它挡在每一次模型请求前面：保持快、只做用户要求的事、不要外发请求内容。出错或超时会保留原请求。
+
 ## 必须遵守
 
 - **自己插入到 Codex 页面里的节点必须带 `data-codex-plus-ext` 属性**（值写拓展 id），否则会触发 Codex++ 的

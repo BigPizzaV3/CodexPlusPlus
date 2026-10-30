@@ -320,6 +320,25 @@ impl UserScriptManager {
             .collect())
     }
 
+    /// 启用中、清单无误的拓展包声明的网关请求中间件，按拓展 key 排序（即执行顺序）。
+    pub fn enabled_gateway_middlewares(&self) -> anyhow::Result<Vec<(String, ExtensionGatewayMiddleware)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none())
+            .flat_map(|package| {
+                let id = package.id.clone();
+                package.gateway_request.into_iter().map(move |item| (id.clone(), item))
+            })
+            .collect())
+    }
+
     /// 用户脚本目录（拓展包就放在它下面）。
     pub fn user_dir(&self) -> &std::path::Path {
         &self.user_dir
@@ -353,7 +372,7 @@ impl UserScriptManager {
         // 没指定页面入口时：有 renderer.js 就用它；只声明 hooks 的拓展可以没有页面入口。
         let renderer = if !write.renderer.is_empty() {
             write.renderer.clone()
-        } else if write.files.contains_key("renderer.js") || write.hooks.is_none() {
+        } else if write.files.contains_key("renderer.js") || (write.hooks.is_none() && write.gateway.is_none()) {
             vec!["renderer.js".to_string()]
         } else {
             Vec::new()
@@ -419,6 +438,9 @@ impl UserScriptManager {
         let mut manifest = manifest;
         if let Some(hooks) = &write.hooks {
             manifest["hooks"] = hooks.clone();
+        }
+        if let Some(gateway) = &write.gateway {
+            manifest["gateway"] = gateway.clone();
         }
         crate::settings::atomic_write(
             &directory.join(EXTENSION_MANIFEST_FILE),
@@ -696,7 +718,39 @@ struct ExtensionPackage {
     routes: Vec<String>,
     renderer: Vec<PathBuf>,
     hooks: Vec<ExtensionHook>,
+    gateway_request: Vec<ExtensionGatewayMiddleware>,
     error: Option<String>,
+}
+
+/// 拓展声明的一条网关请求中间件（codexpp.json 的 `gateway.request[]`）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExtensionGatewayMiddleware {
+    /// 包内脚本的绝对路径：默认导出 `async (body, context) => 新 body | null`。
+    pub script: PathBuf,
+    pub timeout_secs: u64,
+}
+
+/// 网关请求中间件的超时上限（秒）：它挡在每一次模型请求前面，不能太久。
+pub const EXTENSION_GATEWAY_MAX_TIMEOUT_SECS: u64 = 10;
+
+/// 与管理器一致的默认用户脚本位置：内置目录在程序旁，用户目录在配置目录下。
+/// 给不经过管理器的进程（本地代理、钩子分发）用。
+pub fn default_user_script_manager() -> UserScriptManager {
+    let config_dir = if cfg!(windows) && std::env::var_os("APPDATA").is_some() {
+        PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("Codex++")
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
+            .unwrap_or_else(|| PathBuf::from(".config"))
+            .join("Codex++")
+    };
+    let builtin_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .map(|path| path.join("user_scripts"))
+        .unwrap_or_else(|| PathBuf::from("user_scripts"));
+    UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
 }
 
 /// 拓展声明的一条 Codex 钩子（codexpp.json 的 `hooks.<事件>[]`）。
@@ -735,6 +789,7 @@ impl ExtensionPackage {
             "engine": self.engine,
             "routes": self.routes,
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
+            "gatewayRequest": self.gateway_request.len(),
         })
     }
 
@@ -762,6 +817,8 @@ pub struct ExtensionWrite {
     pub renderer: Vec<String>,
     /// 原样写进清单的 `hooks`，加载时校验。
     pub hooks: Option<Value>,
+    /// 原样写进清单的 `gateway`，加载时校验。
+    pub gateway: Option<Value>,
     pub files: BTreeMap<String, String>,
 }
 
@@ -852,6 +909,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         routes: Vec::new(),
         renderer: Vec::new(),
         hooks: Vec::new(),
+        gateway_request: Vec::new(),
         error: None,
     };
     if let Err(error) = parse_extension_manifest(directory, &mut package) {
@@ -908,8 +966,9 @@ fn parse_extension_manifest(
         Some(_) => anyhow::bail!("renderer 只能是字符串或字符串数组"),
     };
     let hooks_declared = raw.get("hooks").is_some_and(|hooks| hooks.as_object().is_some_and(|map| !map.is_empty()));
-    if entries.is_empty() && !hooks_declared {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks");
+    let gateway_declared = raw.get("gateway").is_some();
+    if entries.is_empty() && !hooks_declared && !gateway_declared {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks 或 gateway");
     }
     let root = directory
         .canonicalize()
@@ -919,6 +978,7 @@ fn parse_extension_manifest(
         .map(|entry| resolve_package_entry(&root, entry))
         .collect::<anyhow::Result<Vec<_>>>()?;
     package.hooks = parse_extension_hooks(&root, raw.get("hooks"))?;
+    package.gateway_request = parse_gateway_middlewares(&root, raw.get("gateway"))?;
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if package.engine > EXTENSION_API_VERSION {
         anyhow::bail!(
@@ -981,6 +1041,47 @@ fn parse_extension_hooks(
         }
     }
     Ok(hooks)
+}
+
+/// 解析 `gateway`：`{ "request": [{ "script": "gateway/request.mjs", "timeout": 5 }] }`。
+fn parse_gateway_middlewares(
+    root: &std::path::Path,
+    value: Option<&Value>,
+) -> anyhow::Result<Vec<ExtensionGatewayMiddleware>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let map = value.as_object().context("gateway 必须是对象：{ \"request\": [中间件...] }")?;
+    if let Some(key) = map.keys().find(|key| key.as_str() != "request") {
+        anyhow::bail!("gateway 只支持 request（请求中间件），不认识 {key}");
+    }
+    let Some(list) = map.get("request") else {
+        return Ok(Vec::new());
+    };
+    let items = list.as_array().context("gateway.request 必须是数组")?;
+    items
+        .iter()
+        .map(|item| {
+            let item = item.as_object().context("gateway.request 的每一项必须是对象")?;
+            let script = item
+                .get("script")
+                .and_then(Value::as_str)
+                .context("gateway.request 缺少 script")?;
+            let timeout_secs = match item.get("timeout") {
+                None => 5,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|seconds| (1..=EXTENSION_GATEWAY_MAX_TIMEOUT_SECS).contains(seconds))
+                    .with_context(|| {
+                        format!("gateway.request 的 timeout 必须是 1~{EXTENSION_GATEWAY_MAX_TIMEOUT_SECS} 秒")
+                    })?,
+            };
+            Ok(ExtensionGatewayMiddleware {
+                script: resolve_package_entry(root, script)?,
+                timeout_secs,
+            })
+        })
+        .collect()
 }
 
 /// 入口只能指向包内的文件：拒绝绝对路径、`..`，以及经软链逃出包目录的路径。

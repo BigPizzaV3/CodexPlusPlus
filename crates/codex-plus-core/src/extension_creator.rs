@@ -241,6 +241,7 @@ fn tool_definitions() -> Value {
                     "routes": {"type": "array", "items": {"type": "string"}, "description": "拓展需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
                     "renderer": {"type": "array", "items": {"type": "string"}, "description": "按顺序执行的页面入口文件；省略时若 files 里有 renderer.js 就用它，只声明 hooks 的拓展可以没有页面入口"},
                     "hooks": {"type": "object", "description": "Codex 钩子声明，例如 {\"PreToolUse\": [{\"matcher\": \"^Bash$\", \"script\": \"hooks/guard.mjs\", \"timeout\": 30}]}；写法见指南「Codex 钩子」"},
+                    "gateway": {"type": "object", "description": "网关请求中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\", \"timeout\": 5}]}；写法见指南「网关请求中间件」"},
                     "files": {
                         "type": "array",
                         "description": "要写入的文件（包内相对路径 + 完整内容），不要包含 codexpp.json",
@@ -292,6 +293,8 @@ struct WriteArguments {
     renderer: Vec<String>,
     #[serde(default)]
     hooks: Option<Value>,
+    #[serde(default)]
+    gateway: Option<Value>,
     files: Vec<WriteFile>,
 }
 
@@ -378,6 +381,7 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 routes: arguments.routes,
                 renderer: arguments.renderer,
                 hooks: arguments.hooks,
+                gateway: arguments.gateway,
                 files,
             })?;
             let key = user_scripts::extension_package_key(&arguments.id);
