@@ -7892,7 +7892,7 @@
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
             <div class="codex-plus-discovery codex-plus-extensions-page">
               <div class="codex-plus-discovery-header">
-                <div><h1 class="codex-plus-discovery-title">拓展</h1><p class="codex-plus-discovery-description">为 Codex 添加更多增强功能。</p></div>
+                <div><h1 class="codex-plus-discovery-title">拓展</h1><p class="codex-plus-discovery-description"><strong>万物皆拓展</strong>：界面、命令、模型工具、钩子、网关与后台都能由拓展接管，在对话里说一句就能造一个。</p></div>
                 <div class="codex-plus-discovery-toolbar">
                   <label class="codex-plus-discovery-search">${codexPlusDiscoveryIcons.search}<input type="search" data-codex-extensions-search="true" aria-label="搜索拓展" placeholder="搜索拓展" value="${escapeHtml(codexPlusExtensionsQuery)}" spellcheck="false" /></label>
                   <button type="button" class="codex-plus-discovery-icon-button" data-codex-market-refresh="true" title="刷新拓展" aria-label="刷新拓展">${codexPlusDiscoveryIcons.refresh}</button>
@@ -18626,6 +18626,11 @@
       /** 早期名称。已有拓展（包括对话里生成的）在用，保留为别名。 */
       plugin: codexPlusCreateExtension,
 
+      /** 当前已提供的服务：[{ name, owner }]。取值请在拓展里 inject 或 ctx.get。 */
+      services() {
+        return [...codexPlusServices.entries()].map(([name, entry]) => ({ name, owner: entry.owner }));
+      },
+
       /** 显示提示。type: info | success | warn | error */
       toast(message, options) {
         return runCodexPlusExtensionCallback(
@@ -18757,6 +18762,178 @@
   let codexPlusExtensionInterceptorSeq = 0;
   /** 存活的拓展实例，供诊断查看。 */
   const codexPlusExtensionInstances = new Set();
+
+  /**
+   * 拓展间服务。名字是一个扁平命名空间：ctx.provide(name, value) 提供，声明了 inject 的拓展
+   * 在依赖齐全时才应用；提供者卸载或被替换时，依赖方先卸载、回到挂起，提供者回来后自动
+   * 重新应用。内置服务（如 sessionQuery）由 Codex++ 提供，归属为 "builtin"。
+   */
+  const codexPlusServices = new Map();
+  let codexPlusServiceSeq = 0;
+  /** 等待依赖或依赖服务的拓展（生命周期句柄），服务变化时逐个复查。 */
+  const codexPlusServiceFibers = new Set();
+  const codexPlusServiceNamePattern = /^[A-Za-z][\w.-]{0,63}$/;
+
+  function codexPlusNormalizeInject(inject) {
+    if (!inject) return [];
+    const names = Array.isArray(inject) ? inject : typeof inject === "object" ? Object.keys(inject) : [inject];
+    return [...new Set(names.map(String).filter((name) => codexPlusServiceNamePattern.test(name)))];
+  }
+
+  function codexPlusServiceChanged() {
+    for (const fiber of [...codexPlusServiceFibers]) {
+      try {
+        fiber.check();
+      } catch {}
+    }
+  }
+
+  function codexPlusProvideService(name, value, owner) {
+    if (!codexPlusServiceNamePattern.test(String(name))) throw new Error(`服务名不合法：${name}`);
+    const existing = codexPlusServices.get(name);
+    if (existing) throw new Error(`服务 ${name} 已由 ${existing.owner || "其它拓展"} 提供`);
+    const entry = { value, owner, token: ++codexPlusServiceSeq };
+    codexPlusServices.set(name, entry);
+    codexPlusServiceChanged();
+    return () => {
+      if (codexPlusServices.get(name) !== entry) return;
+      codexPlusServices.delete(name);
+      codexPlusServiceChanged();
+    };
+  }
+
+  /** 内置的只读会话查询服务：方法名与参数对齐会话查询接口，经桥接转到 Codex++。 */
+  function codexPlusSessionQueryService() {
+    const invoke = (method, params) => {
+      const bridge = window.__codexSessionDeleteBridge;
+      if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
+      return Promise.resolve(bridge("/extensions/history", { method, params: params ?? null })).then((result) => {
+        if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${method} 调用失败`);
+        return result?.result;
+      });
+    };
+    const withId = (method) => (id, options) => invoke(method, { id, options: options ?? {} });
+    return Object.freeze({
+      listSessions: (options) => invoke("listSessions", options ?? {}),
+      filterSessions: (filters) => invoke("filterSessions", filters ?? {}),
+      readSession: (id) => invoke("readSession", { id }),
+      readTitle: (id) => invoke("readTitle", { id }),
+      listEvents: withId("listEvents"),
+      filterEvents: withId("filterEvents"),
+      readEvent: (query) => invoke("readEvent", query ?? {}),
+      searchSessions: (query) => invoke("searchSessions", query ?? {}),
+      searchEvents: (query) => invoke("searchEvents", query ?? {}),
+    });
+  }
+
+  function installCodexPlusBuiltinServices() {
+    if (!codexPlusServices.has("sessionQuery")) codexPlusProvideService("sessionQuery", codexPlusSessionQueryService(), "builtin");
+    // 全局的多语言服务：写成 inject: ["locale"] 的拓展也能用（ctx.locale 是按实例自动撤销的同一套接口）。
+    if (!codexPlusServices.has("locale")) {
+      codexPlusProvideService("locale", Object.freeze({
+        get current() {
+          return codexPlusCurrentLocale();
+        },
+        register(ns, langOrDicts, dict) {
+          if (typeof langOrDicts === "string") return codexPlusRegisterLocale(String(ns), langOrDicts, dict);
+          const disposers = Object.entries(langOrDicts || {}).map(([lang, value]) => codexPlusRegisterLocale(String(ns), lang, value));
+          return () => disposers.forEach((dispose) => dispose());
+        },
+        bind: (ns) => (key, params) => codexPlusTranslate(String(ns), key, params),
+        resolve: codexPlusResolveText,
+      }), "builtin");
+    }
+    installCodexPlusLocaleWatcher();
+  }
+
+  /**
+   * 多语言：词条按命名空间登记（同一命名空间可多次登记，后登记的优先）。查找顺序：当前语言 →
+   * 主语言（zh-CN → zh）→ en，先在指定命名空间，再在 common；都没有就返回 key 本身。
+   * 占位符写成 {name}。拓展包 locale/<语言>.json 自动登记到「拓展 id」命名空间。
+   */
+  const codexPlusLocaleEntries = new Map();
+  const codexPlusFallbackLocale = "en";
+
+  function codexPlusCurrentLocale() {
+    const raw = (typeof document !== "undefined" && document.documentElement?.lang) || globalThis.navigator?.language || codexPlusFallbackLocale;
+    return String(raw).trim() || codexPlusFallbackLocale;
+  }
+
+  function codexPlusLocaleChain(locale = codexPlusCurrentLocale()) {
+    const exact = String(locale);
+    const primary = exact.split(/[-_]/)[0].toLowerCase();
+    return [...new Set([exact, exact.toLowerCase(), primary, codexPlusFallbackLocale])];
+  }
+
+  function codexPlusRegisterLocale(ns, lang, dict) {
+    if (!dict || typeof dict !== "object") throw new Error(`词条必须是对象：${ns}/${lang}`);
+    const entry = { lang: String(lang), dict };
+    if (!codexPlusLocaleEntries.has(ns)) codexPlusLocaleEntries.set(ns, []);
+    codexPlusLocaleEntries.get(ns).unshift(entry);
+    return () => {
+      const list = codexPlusLocaleEntries.get(ns) || [];
+      const index = list.indexOf(entry);
+      if (index >= 0) list.splice(index, 1);
+      if (!list.length) codexPlusLocaleEntries.delete(ns);
+    };
+  }
+
+  function codexPlusLocaleLookup(dict, key) {
+    if (typeof dict[key] === "string") return dict[key];
+    let node = dict;
+    for (const part of String(key).split(".")) {
+      if (!node || typeof node !== "object") return undefined;
+      node = node[part];
+    }
+    return typeof node === "string" ? node : undefined;
+  }
+
+  function codexPlusTranslate(ns, key, params) {
+    const chain = codexPlusLocaleChain();
+    let text;
+    for (const space of [ns, "common"]) {
+      const list = codexPlusLocaleEntries.get(space);
+      if (!list) continue;
+      for (const lang of chain) {
+        for (const entry of list) {
+          if (entry.lang.toLowerCase() !== lang.toLowerCase()) continue;
+          text = codexPlusLocaleLookup(entry.dict, key);
+          if (text !== undefined) break;
+        }
+        if (text !== undefined) break;
+      }
+      if (text !== undefined) break;
+    }
+    if (text === undefined) text = String(key);
+    if (!params || typeof params !== "object") return text;
+    return text.replace(/\{(\w+)\}/g, (match, name) => (params[name] === undefined ? match : String(params[name])));
+  }
+
+  /** 解析 { en, zh, ... } 形式的多语言文本；本身是字符串就原样返回。 */
+  function codexPlusResolveText(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value !== "object") return String(value);
+    for (const lang of codexPlusLocaleChain()) {
+      const hit = Object.keys(value).find((key) => key.toLowerCase() === lang.toLowerCase());
+      if (hit && typeof value[hit] === "string") return value[hit];
+    }
+    const first = Object.values(value).find((item) => typeof item === "string");
+    return first ?? "";
+  }
+
+  /** 页面语言变化时广播 locale/change（参数 { locale }）。 */
+  let codexPlusLocaleWatcherInstalled = false;
+  function installCodexPlusLocaleWatcher() {
+    if (codexPlusLocaleWatcherInstalled || typeof MutationObserver !== "function" || !document?.documentElement) return;
+    codexPlusLocaleWatcherInstalled = true;
+    let last = codexPlusCurrentLocale();
+    new MutationObserver(() => {
+      const next = codexPlusCurrentLocale();
+      if (next === last) return;
+      last = next;
+      codexPlusEmitExtensionEvent("locale/change", [{ locale: next }]);
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
+  }
 
   /** 拓展包的清单（Rust 侧写进脚本状态记录）；单文件脚本没有清单。 */
   function codexPlusExtensionManifest(scriptKey) {
@@ -18934,6 +19111,87 @@
     const extensionId = String(
       (typeof definition === "object" && definition?.id) || options.id || manifest?.id || scriptKey || "anonymous",
     );
+    const inject = codexPlusNormalizeInject((typeof definition === "object" && definition?.inject) || options.inject);
+    const runtime = window.__codexPlusUserScripts;
+    const reloadable = !!scriptKey && runtime?.currentKey === scriptKey && typeof runtime.registerCleanup === "function";
+    if (!inject.length) {
+      const ctx = codexPlusInstantiateExtension({ apply, scriptKey, manifest, extensionId, inject });
+      if (reloadable) runtime.registerCleanup(() => ctx.dispose());
+      return ctx;
+    }
+    const fiber = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject });
+    if (reloadable) runtime.registerCleanup(() => fiber.dispose());
+    return fiber;
+  }
+
+  /**
+   * 声明了 inject 的拓展：依赖齐全才创建实例；依赖消失或换了提供者就卸载实例、回到挂起，
+   * 提供者回来再重新应用。返回的句柄可以随时 dispose。
+   */
+  function codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject }) {
+    let tokens = "";
+    // apply 里提供服务会触发全体复查，又回到这个句柄：正在检查时只记下「需要再查一次」。
+    let checking = false;
+    let recheck = false;
+    const fiber = {
+      id: extensionId,
+      scriptKey,
+      inject: [...inject],
+      state: "pending",
+      ctx: null,
+      check() {
+        if (fiber.state === "disposed") return;
+        if (checking) {
+          recheck = true;
+          return;
+        }
+        checking = true;
+        try {
+          fiber.update();
+        } finally {
+          checking = false;
+        }
+        if (recheck) {
+          recheck = false;
+          fiber.check();
+        }
+      },
+      update() {
+        const ready = inject.every((name) => codexPlusServices.has(name));
+        const current = inject.map((name) => codexPlusServices.get(name)?.token ?? "").join("|");
+        if (fiber.ctx && (!ready || current !== tokens)) {
+          const ctx = fiber.ctx;
+          fiber.ctx = null;
+          fiber.state = "pending";
+          ctx.dispose();
+        }
+        if (!fiber.ctx && ready && fiber.state !== "disposed") {
+          tokens = current;
+          fiber.state = "active";
+          try {
+            fiber.ctx = codexPlusInstantiateExtension({ apply, scriptKey, manifest, extensionId, inject, fiber });
+          } catch (error) {
+            fiber.state = "failed";
+            codexPlusMarkExtensionFailure(scriptKey, `${extensionId}: ${String(error?.stack || error?.message || error)}`);
+          }
+        }
+      },
+      dispose() {
+        if (fiber.state === "disposed") return;
+        fiber.state = "disposed";
+        codexPlusServiceFibers.delete(fiber);
+        const ctx = fiber.ctx;
+        fiber.ctx = null;
+        ctx?.dispose();
+      },
+    };
+    codexPlusServiceFibers.add(fiber);
+    fiber.check();
+    return fiber;
+  }
+
+  /** 创建并应用一个拓展实例。inject 里的服务挂到 ctx 上；fiber 是它所属的生命周期句柄（可无）。 */
+  function codexPlusInstantiateExtension({ apply, scriptKey, manifest, extensionId, inject = [], fiber = null }) {
     const disposers = [];
     let disposed = false;
 
@@ -18986,6 +19244,30 @@
       },
     };
     const info = { id: extensionId, scriptKey };
+    const locale = Object.freeze({
+      /** 当前语言 id（取 Codex 页面的 lang，如 zh-CN）。 */
+      get current() {
+        return codexPlusCurrentLocale();
+      },
+      /** register(ns, { zh: {...}, en: {...} }) 或 register(ns, "zh", {...})；随实例卸载撤销。 */
+      register(ns, langOrDicts, dict) {
+        const space = String(ns || extensionId);
+        if (typeof langOrDicts === "string") return track(codexPlusRegisterLocale(space, langOrDicts, dict));
+        const disposers = Object.entries(langOrDicts || {}).map(([lang, value]) => codexPlusRegisterLocale(space, lang, value));
+        return track(() => disposers.forEach((dispose) => dispose()));
+      },
+      /** 绑定命名空间，返回 t(key, params)。 */
+      bind(ns) {
+        const space = String(ns || extensionId);
+        return (key, params) => codexPlusTranslate(space, key, params);
+      },
+      /** 在本拓展的命名空间里翻译（包内 locale/*.json 已自动登记在这里）。 */
+      t(key, params) {
+        return codexPlusTranslate(extensionId, key, params);
+      },
+      /** 解析 { en, zh, ... } 形式的多语言文本。 */
+      resolve: codexPlusResolveText,
+    });
 
     // 生效配置（清单 config 默认值叠加用户在管理器 / 对话里设置的值）。改配置会热重载拓展，这里是只读快照。
     const config = Object.freeze({ ...(manifest?.config && typeof manifest.config === "object" ? manifest.config : {}) });
@@ -19068,6 +19350,24 @@
         return disposed;
       },
       storage,
+
+      locale,
+
+      /** 提供一个服务（扁平命名空间，重名抛错）；随实例卸载撤销，依赖它的拓展随之卸载。 */
+      provide(name, value) {
+        return track(codexPlusProvideService(String(name), value, scriptKey || extensionId));
+      },
+      /** 取一个服务，不存在时返回 undefined（可选依赖用这个；必需依赖请在 inject 里声明）。 */
+      get(name) {
+        return codexPlusServices.get(String(name))?.value;
+      },
+      /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
+      inject(deps, apply) {
+        if (typeof apply !== "function") throw new Error("inject 需要 apply(ctx) 函数");
+        const child = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject: codexPlusNormalizeInject(deps) });
+        track(() => child.dispose());
+        return child;
+      },
 
       /** 立即执行 fn；它返回的函数在卸载时调用。 */
       effect(fn) {
@@ -19199,11 +19499,19 @@
       },
     };
 
-    codexPlusExtensionInstances.add(ctx);
-    const runtime = window.__codexPlusUserScripts;
-    if (scriptKey && runtime?.currentKey === scriptKey && typeof runtime.registerCleanup === "function") {
-      runtime.registerCleanup(() => ctx.dispose());
+    // 拓展包自带的 locale/<语言>.json 登记到本拓展的命名空间。
+    if (manifest?.locales && typeof manifest.locales === "object") {
+      for (const [lang, dict] of Object.entries(manifest.locales)) {
+        if (dict && typeof dict === "object") track(codexPlusRegisterLocale(extensionId, lang, dict));
+      }
     }
+    // 声明过的服务挂到 ctx 上（读的是当前提供者的值；换了提供者时整个实例会被重建）。
+    for (const name of inject) {
+      if (Object.prototype.hasOwnProperty.call(ctx, name)) continue;
+      Object.defineProperty(ctx, name, { enumerable: true, get: () => codexPlusServices.get(name)?.value });
+    }
+    if (fiber) Object.defineProperty(ctx, "fiber", { value: fiber });
+    codexPlusExtensionInstances.add(ctx);
 
     let result;
     try {
@@ -22482,6 +22790,7 @@
   // 对外接口层在此刻挂载：此时所有分片都已执行完毕，闭包里的函数全部就绪。
   // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
+  installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
 })();
 

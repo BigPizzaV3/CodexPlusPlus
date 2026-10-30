@@ -702,6 +702,8 @@ type UserScriptInventory = {
     package?: {
       id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
       configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>; backend?: boolean;
+      gatewayRequest?: number; gatewayResponse?: number;
+      locales?: Record<string, { title?: string | null; description?: string | null }>;
     } | null;
     enabled: boolean;
     status: string;
@@ -9704,6 +9706,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           {t("刷新")}
         </Button>
       </TopbarActions>
+      <ExtensionsHero />
       {/* 状态条：两个整体开关 + 一行摘要，代替原来四行「键：值」的统计卡。 */}
       <div className="user-scripts-strip">
         <label className="relay-bare-switch user-scripts-switch" title={t("整体开关不改变单个拓展的启停设置")}>
@@ -16177,6 +16180,27 @@ type ExtensionCreatorStatus = {
 };
 
 /// 「对话造拓展」：把拓展创作 MCP 接入 Codex 后，用户在 Codex 对话里描述需求，agent 直接写出拓展并热重载。
+/// 拓展页顶部的理念横幅：Codex++ 的增强能力都以拓展的形式开放，标签列出拓展能改到的地方。
+const extensionCapabilities = [
+  "界面与页面", "斜杠命令", "消息与面板", "模型工具", "Codex 钩子", "网关中间件", "常驻后台", "会话历史", "拓展间服务", "多语言",
+] as const;
+
+function ExtensionsHero() {
+  return (
+    <section className="extensions-hero" aria-label={t("万物皆拓展")}>
+      <div className="extensions-hero-text">
+        <h2 className="extensions-hero-title">{t("万物皆拓展")}</h2>
+        <p className="extensions-hero-lead">
+          {t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")}
+        </p>
+      </div>
+      <ul className="extensions-hero-capabilities">
+        {extensionCapabilities.map((label) => <li key={label}>{t(label)}</li>)}
+      </ul>
+    </section>
+  );
+}
+
 function ExtensionCreatorCard() {
   const [state, setState] = useState<ExtensionCreatorStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -16218,6 +16242,21 @@ function ExtensionCreatorCard() {
   );
 }
 
+/// 拓展包 locale/<语言>.json 里的本地化名称与描述：先找当前界面语言，再找 en，最后用清单原值。
+function localizedPackageText(
+  locales: Record<string, { title?: string | null; description?: string | null }> | undefined,
+  field: "title" | "description",
+  fallback: string,
+): string {
+  if (!locales) return fallback;
+  for (const lang of [getLanguage(), "en"]) {
+    const hit = Object.keys(locales).find((key) => key.toLowerCase() === lang || key.toLowerCase().startsWith(`${lang}-`));
+    const value = hit ? locales[hit]?.[field] : null;
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return fallback;
+}
+
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
 /// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
 /// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
@@ -16235,15 +16274,23 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
   const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
   const configSchema = script.package?.configSchema ?? [];
   const [configOpen, setConfigOpen] = useState(false);
+  const displayName = localizedPackageText(script.package?.locales, "title", script.name);
+  const displayDescription = localizedPackageText(script.package?.locales, "description", script.package?.description ?? "");
   return (
     <>
     <div className="table-row user-script-row">
       <div className="user-script-name">
-        <strong>{script.name}</strong>
-        {script.package?.description ? <small title={script.package.description}>{script.package.description}</small> : null}
+        <strong>{displayName}</strong>
+        {displayDescription ? <small title={displayDescription}>{displayDescription}</small> : null}
         {script.package?.hookEvents?.length ? <small className="user-script-hooks">{tf("Codex 钩子：{0}", [script.package.hookEvents.join("、")])}</small> : null}
         {script.package?.tools?.length ? <small className="user-script-hooks">{tf("模型工具：{0}", [script.package.tools.join("、")])}</small> : null}
         {script.package?.backend ? <small className="user-script-hooks">{t("常驻后台")}</small> : null}
+        {script.package?.gatewayRequest || script.package?.gatewayResponse
+          ? <small className="user-script-hooks">{tf("网关中间件：{0}", [[
+              script.package.gatewayRequest ? t("请求") : "",
+              script.package.gatewayResponse ? t("响应流") : "",
+            ].filter(Boolean).join("、")])}</small>
+          : null}
       </div>
       <span>{source}</span>
       <div className="user-script-state">
@@ -16437,7 +16484,7 @@ function routeSubtitle(route: Route) {
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("管理常用功能、语音输入与下一步建议。"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
-    userScripts: t("内置、市场和自己做的拓展"),
+    userScripts: t("万物皆拓展：内置、市场和自己做的拓展"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("来自 Codex++ 广告源的推荐，点卡片在浏览器里打开"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),

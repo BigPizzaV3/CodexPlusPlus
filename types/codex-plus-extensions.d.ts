@@ -92,8 +92,11 @@ interface CodexPlusExtensionApi {
    */
   extension(
     definition: ((ctx: CodexPlusExtensionContext) => void | Promise<void>) | CodexPlusExtensionDefinition,
-    options?: { id?: string; scriptKey?: string },
-  ): CodexPlusExtensionContext;
+    options?: { id?: string; scriptKey?: string; inject?: string[] },
+  ): CodexPlusExtensionContext | CodexPlusExtensionFiber;
+
+  /** 当前已提供的服务与提供方。取值请在拓展里 inject 或 ctx.get。 */
+  services(): Array<{ name: string; owner: string }>;
 
   /** @deprecated 早期名称，等同于 {@link CodexPlusExtensionApi.extension}。 */
   plugin: CodexPlusExtensionApi["extension"];
@@ -287,11 +290,83 @@ interface CodexPlusExtensionManifest {
   engines: { codexpp: number };
   permissions: { routes: string[] };
   config: Record<string, unknown>;
+  /** 包内 locale/<语言>.json 的内容。 */
+  locales?: Record<string, Record<string, unknown>>;
 }
 
 interface CodexPlusExtensionDefinition {
   id?: string;
+  /** 依赖的服务名。声明后 extension() 返回生命周期句柄：依赖齐全才应用，提供方消失时卸载、回来时重新应用。 */
+  inject?: string[];
   apply(ctx: CodexPlusExtensionContext): void | Promise<void>;
+}
+
+/** 声明了 inject 的拓展的生命周期句柄。 */
+interface CodexPlusExtensionFiber {
+  readonly id: string;
+  readonly scriptKey: string;
+  readonly inject: string[];
+  readonly state: "pending" | "active" | "failed" | "disposed";
+  /** 当前实例；挂起时为 null。 */
+  readonly ctx: CodexPlusExtensionContext | null;
+  dispose(): void;
+}
+
+/** 会话查询返回的会话。 */
+interface CodexPlusSession {
+  id: string;
+  title: string;
+  cwd: string;
+  model: string;
+  createdAt: number | null;
+  updatedAt: number | null;
+  archived: boolean;
+  /** 首条用户消息的前 200 字。 */
+  preview: string;
+  gitBranch: string;
+}
+
+/** 会话事件日志里的一条。 */
+interface CodexPlusSessionEvent {
+  type: "turn/start" | "user/message" | "assistant/message" | "assistant/reasoning" | "tool/call" | "tool/result";
+  seq: number;
+  time: string;
+  data: {
+    turn: string;
+    id?: string;
+    text?: string;
+    phase?: string | null;
+    name?: string;
+    callId?: string;
+    input?: string;
+    output?: string;
+  };
+}
+
+/** 内置的只读会话查询服务（inject: ["sessionQuery"]；后台与模型工具的上下文里也有）。 */
+interface CodexPlusSessionQuery {
+  listSessions(options?: { archived?: boolean; limit?: number; offset?: number }): Promise<CodexPlusSession[]>;
+  filterSessions(filters: { id?: string; cwd?: string; archived?: boolean; createdAfter?: number; createdBefore?: number; limit?: number }): Promise<CodexPlusSession[]>;
+  readSession(id: string): Promise<{ session: CodexPlusSession; events: CodexPlusSessionEvent[] }>;
+  readTitle(id: string): Promise<string>;
+  listEvents(id: string, options?: { types?: string[]; offset?: number; limit?: number; fromEnd?: boolean }): Promise<CodexPlusSessionEvent[]>;
+  filterEvents(id: string, filters?: { types?: string[]; text?: string; limit?: number }): Promise<CodexPlusSessionEvent[]>;
+  readEvent(query: { sessionId: string; seq: number; before?: number; after?: number }): Promise<CodexPlusSessionEvent[]>;
+  searchSessions(query: { query: string; archived?: boolean; limit?: number; cursor?: string | null }): Promise<{ items: CodexPlusSession[]; nextCursor: string | null }>;
+  searchEvents(query: { query: string; sessionId?: string; types?: string[]; limit?: number; cursor?: string | null }): Promise<{ items: Array<{ sessionId: string; event: CodexPlusSessionEvent }>; nextCursor: string | null }>;
+}
+
+/** 多语言。查找顺序：当前语言 → 主语言 → en，先在命名空间、再在 common，最后返回 key。 */
+interface CodexPlusLocale {
+  /** 当前语言（Codex 页面的 lang，如 zh-CN）。 */
+  readonly current: string;
+  register(ns: string, dicts: Record<string, Record<string, unknown>>): CodexPlusDispose;
+  register(ns: string, lang: string, dict: Record<string, unknown>): CodexPlusDispose;
+  bind(ns: string): (key: string, params?: Record<string, unknown>) => string;
+  /** 在本拓展的命名空间翻译（包内 locale/*.json 自动登记在这里）。 */
+  t(key: string, params?: Record<string, unknown>): string;
+  /** 解析 { en, zh, ... } 形式的多语言文本。 */
+  resolve(text: string | Record<string, string>): string;
 }
 
 /** waterfall 中间件：调 next(v) 交给下一个，不调即短路。 */
@@ -312,6 +387,19 @@ interface CodexPlusExtensionContext {
   };
   /** 生效配置：清单 `config` 的默认值叠加用户设置的值。只读；改配置会热重载拓展。 */
   readonly config: Readonly<Record<string, unknown>>;
+  /** 多语言（随实例卸载自动撤销登记）。 */
+  readonly locale: CodexPlusLocale;
+  /** inject 了 sessionQuery 时可用。其它 inject 的服务同样以服务名挂在 ctx 上。 */
+  readonly sessionQuery?: CodexPlusSessionQuery;
+  /** 所属生命周期句柄（仅声明了 inject 的拓展）。 */
+  readonly fiber?: CodexPlusExtensionFiber;
+
+  /** 提供服务：服务名全局唯一，重名抛错；随实例卸载撤销，依赖它的拓展随之卸载。 */
+  provide(name: string, value: unknown): CodexPlusDispose;
+  /** 取服务，不存在时为 undefined（可选依赖）。 */
+  get<T = unknown>(name: string): T | undefined;
+  /** 子作用域：deps 齐全时以子 ctx 调用 apply；服务消失时卸载、回来时重新应用。 */
+  inject(deps: string[], apply: (ctx: CodexPlusExtensionContext) => void | Promise<void>): CodexPlusExtensionFiber;
 
   /** 立即执行 fn；它返回的函数在卸载时调用。返回值可提前撤销。 */
   effect(fn: () => void | (() => void)): CodexPlusDispose;

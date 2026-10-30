@@ -160,13 +160,82 @@ codexPlus.extension((ctx) => {
 - 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过这里，要告诉用户。
 - 它挡在每一次模型请求前面：保持快、只做用户要求的事、不要外发请求内容。出错或超时会保留原请求。
 
+## 网关响应流中间件（改写模型的回复）
+
+要在模型的回复**流回 Codex 的途中**改写（替换敏感词、给回复加尾注、拦掉某类事件），在 `gateway` 参数里声明
+`response`：
+
+```json
+{ "response": [{ "script": "gateway/response.mjs", "timeout": 5 }] }
+```
+
+```js
+// gateway/response.mjs：默认导出 (context, next) => 异步可迭代对象
+export default async function* (context, next) {
+  for await (const event of next()) {
+    if (event.type === "response.output_text.delta") yield { ...event, delta: event.delta.replaceAll("机密", "**") };
+    else yield event;
+  }
+}
+```
+
+- `next()` 给出上游的事件流（Codex 实际收到的 Responses SSE 事件，带 `type`：`response.created`、
+  `response.output_text.delta`、`response.output_item.done`、`response.completed` 等）；返回的流就是交给 Codex 的。
+  可以改写、丢弃、插入事件，也可以不调用 `next()` 自己给出整条流；`next()` 只能调用一次。
+- 改了文字增量（`delta`）时，`response.output_item.done` / `response.completed` 里带的完整文本要一并改，
+  否则 Codex 最终显示的仍是原文。
+- `context` 带 `path`、`extension`、`config` 和请求摘要 `request`（`model`、`instructions`、`tools` 工具名、
+  `lastUserText` 用户最后一句话等）。
+- 多个拓展按顺序嵌套，先声明的在最外层。出错或超时（`timeout` 1~10 秒，按单个事件计）时，这次回复剩下的部分
+  原样放行。和请求中间件一样，只对经 Codex++ 本地代理 / 网关的请求生效。
+
+## 读会话历史（只读）
+
+页面、常驻后台、模型工具都能只读查询 Codex 的会话：
+
+- 页面：`codexPlus.extension({ inject: ["sessionQuery"], apply(ctx) { ctx.sessionQuery.listSessions() } })`
+- 后台：默认导出的参数里有 `sessionQuery`；工具：第二个参数里有 `sessionQuery`
+
+方法（都返回 Promise）：`listSessions({ archived, limit, offset })`、`filterSessions({ id, cwd, createdAfter, createdBefore })`、
+`readSession(id)` → `{ session, events }`、`readTitle(id)`、`listEvents(id, { types, offset, limit, fromEnd })`、
+`filterEvents(id, { types, text })`、`readEvent({ sessionId, seq, before, after })`、
+`searchSessions({ query, limit, cursor })` → `{ items, nextCursor }`、`searchEvents({ query, sessionId, types, limit, cursor })`。
+
+- 会话：`{ id, title, cwd, model, createdAt, updatedAt, archived, preview, gitBranch }`。
+- 事件：`{ type, seq, time, data }`，`type` 为 `turn/start`、`user/message`、`assistant/message`、`assistant/reasoning`、
+  `tool/call`、`tool/result`；`data` 里有 `turn`、`text` / `name` / `input` / `output` 等。
+- 当前页面所在会话的 id：消息插槽回调里的 `message.conversationId`。
+
+## 拓展之间共享能力（服务）
+
+一个拓展用 `ctx.provide("名字", 对象)` 提供服务，别的拓展声明 `inject` 后使用：
+
+```js
+// 提供方
+codexPlus.extension((ctx) => { ctx.provide("wordCounter", { count: (text) => text.length }); });
+// 使用方：依赖齐全才应用；提供方卸载时跟着卸载，回来后自动重新应用
+codexPlus.extension({ inject: ["wordCounter"], apply(ctx) { ctx.toast(String(ctx.wordCounter.count("你好"))); } });
+```
+
+- 服务名是全局扁平的，重名会报错；可选依赖用 `ctx.get("名字")`（不存在时为 undefined）。
+- `ctx.inject(["名字"], (sub) => { ... })` 开一个子作用域，只让依赖那个服务的部分挂起。
+- 内置服务：`sessionQuery`（只读会话查询）、`locale`（多语言）。
+
+## 多语言
+
+- 包内放 `locale/en.json`、`locale/zh.json`……：`{ "meta": { "title": "名称", "description": "描述" }, "hi": "你好 {name}" }`。
+  管理器按界面语言显示 `meta` 里的名称与描述；其余键是拓展自己的词条。
+- 页面里 `ctx.locale.t("hi", { name })` 按当前语言取词，回退顺序：当前语言 → 主语言 → en → key 本身。
+  也可以 `ctx.locale.register("命名空间", { zh: {...}, en: {...} })` 再 `ctx.locale.bind("命名空间")`。
+- `ctx.locale.current` 是当前语言（Codex 页面的语言），切换时会收到 `ctx.on("locale/change", ...)`。
+
 ## 常驻后台（页面调本地能力、保持状态、推事件）
 
 页面脚本跑在 Codex 页面里，不能读写本地文件、起进程、长时间计时。要这些能力就声明一个常驻后台，
 在 `codexpp_extension_write` 的 `backend` 参数里写 `{ "script": "backend/main.mjs" }`，脚本放在 `files` 里：
 
 ```js
-// backend/main.mjs：默认导出 (ctx) => 方法表，可以 async；ctx = { extension, config, dataDir, emit, log }
+// backend/main.mjs：默认导出 (ctx) => 方法表，可以 async；ctx = { extension, config, dataDir, emit, log, sessionQuery }
 import fs from "node:fs";
 export default ({ emit }) => {
   let count = 0;

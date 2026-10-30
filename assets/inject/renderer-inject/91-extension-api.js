@@ -230,6 +230,11 @@
       /** 早期名称。已有拓展（包括对话里生成的）在用，保留为别名。 */
       plugin: codexPlusCreateExtension,
 
+      /** 当前已提供的服务：[{ name, owner }]。取值请在拓展里 inject 或 ctx.get。 */
+      services() {
+        return [...codexPlusServices.entries()].map(([name, entry]) => ({ name, owner: entry.owner }));
+      },
+
       /** 显示提示。type: info | success | warn | error */
       toast(message, options) {
         return runCodexPlusExtensionCallback(

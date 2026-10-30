@@ -22,7 +22,7 @@ fn write_package(temp: &tempfile::TempDir, id: &str, gateway: serde_json::Value,
 fn gateway_declarations_are_validated() {
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(&temp);
-    write_package(&temp, "bad-kind", json!({"response": []}), &[]);
+    write_package(&temp, "bad-kind", json!({"stream": []}), &[]);
     write_package(&temp, "bad-timeout", json!({"request": [{"script": "gateway/a.mjs", "timeout": 60}]}), &[("gateway/a.mjs", "export default () => null")]);
     write_package(&temp, "ok", json!({"request": [{"script": "gateway/a.mjs"}]}), &[("gateway/a.mjs", "export default () => null")]);
     let inventory = manager.inventory().unwrap();
@@ -59,4 +59,121 @@ async fn request_middlewares_chain_in_order_and_failures_keep_the_request() {
     let mut untouched = json!({"instructions": "原始"});
     apply_request_with(&manager, &mut untouched, "/v1/responses").await;
     assert_eq!(untouched["instructions"], "原始");
+}
+
+fn sse(events: &[serde_json::Value]) -> Vec<u8> {
+    events
+        .iter()
+        .map(|event| format!("event: {}\ndata: {}\n\n", event["type"].as_str().unwrap(), event))
+        .collect::<String>()
+        .into_bytes()
+}
+
+fn parse_sse(bytes: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(bytes)
+        .split("\n\n")
+        .filter(|block| !block.trim().is_empty())
+        .map(|block| {
+            let data = block.lines().find_map(|line| line.strip_prefix("data: ")).unwrap_or(block);
+            match serde_json::from_str::<serde_json::Value>(data) {
+                Ok(event) => format!("{}:{}", event["type"].as_str().unwrap_or(""), event["delta"].as_str().or(event["text"].as_str()).unwrap_or("")),
+                Err(_) => block.to_string(),
+            }
+        })
+        .collect()
+}
+
+async fn run_filter(manager: &UserScriptManager, chunks: &[&[u8]]) -> Vec<u8> {
+    let middlewares = manager.enabled_gateway_response_middlewares().unwrap();
+    let request = json!({"model": "gpt", "input": [{"role": "user", "content": [{"type": "input_text", "text": "最后一句"}]}]});
+    let mut filter = codex_plus_core::extension_gateway::ResponseFilter::start_with(&middlewares, "/v1/responses", Some(&request))
+        .await
+        .expect("有中间件时应建立会话");
+    let mut out = Vec::new();
+    for chunk in chunks {
+        out.extend(filter.push(chunk).await);
+    }
+    out.extend(filter.finish().await);
+    out
+}
+
+#[tokio::test]
+async fn response_middlewares_wrap_the_stream_in_order() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    // a 在外层：把文字增量转大写（也作用于 b 插入的事件）。
+    write_package(&temp, "a-upper", json!({"response": [{"script": "gateway/a.mjs"}]}), &[("gateway/a.mjs", r#"
+export default (context, next) => (async function* () {
+  for await (const event of next()) {
+    if (event.type === "response.output_text.delta") yield { ...event, delta: event.delta.toUpperCase() };
+    else if (event.type === "x.note") yield { ...event, text: event.text.toUpperCase() };
+    else yield event;
+  }
+})();"#)]);
+    // b 在内层：完成前插入一条带用户最后一句话的事件，流尾再追加一条。
+    write_package(&temp, "b-insert", json!({"response": [{"script": "gateway/b.mjs"}]}), &[("gateway/b.mjs", r#"
+export default async function* (context, next) {
+  for await (const event of next()) {
+    if (event.type === "response.completed") yield { type: "x.note", text: `${context.extension}:${context.request.lastUserText}` };
+    yield event;
+  }
+  yield { type: "x.tail", text: context.path };
+}"#)]);
+    let head = sse(&[json!({"type": "response.created"}), json!({"type": "response.output_text.delta", "delta": "hello"})]);
+    let tail = sse(&[json!({"type": "response.completed"})]);
+    // 第二个事件被切成两半送来；心跳注释夹在事件边界上。
+    let (first, second) = head.split_at(head.len() - 10);
+    let ping = b": ping\n\n".to_vec();
+    let output = parse_sse(&run_filter(&manager, &[first, second, &ping, &tail]).await);
+    assert_eq!(output, [
+        "response.created:",
+        "response.output_text.delta:HELLO",
+        ": ping",
+        "x.note:B-INSERT:最后一句",
+        "response.completed:",
+        "x.tail:/v1/responses",
+    ], "按 key 嵌套（先声明的在外层），跨块切分的事件也能拼回；注释块原样放行");
+}
+
+#[tokio::test]
+async fn response_middleware_failures_pass_the_rest_through() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "broken", json!({"response": [{"script": "gateway/r.mjs", "timeout": 1}]}), &[("gateway/r.mjs", r#"
+export default async function* (context, next) {
+  let count = 0;
+  for await (const event of next()) {
+    count += 1;
+    if (count === 2) throw new Error("坏中间件");
+    yield { ...event, seen: true };
+  }
+}"#)]);
+    let source = sse(&[
+        json!({"type": "response.created"}),
+        json!({"type": "response.output_text.delta", "delta": "a"}),
+        json!({"type": "response.completed"}),
+    ]);
+    let raw = String::from_utf8(run_filter(&manager, &[&source]).await).unwrap();
+    assert!(raw.contains("\"seen\":true"), "出错前的事件经过了中间件：{raw}");
+    assert!(raw.contains("response.output_text.delta") && raw.contains("response.completed"), "出错后的事件原样放行：{raw}");
+
+    // 超时：中间件卡住不交回事件，超时后原样放行，不挡住回复。
+    manager.set_script_enabled("user:broken", false).unwrap();
+    write_package(&temp, "stuck", json!({"response": [{"script": "gateway/s.mjs", "timeout": 1}]}), &[("gateway/s.mjs", r#"
+export default async function* (context, next) {
+  for await (const event of next()) {
+    await new Promise(() => {});
+    yield event;
+  }
+}"#)]);
+    let started = std::time::Instant::now();
+    let raw = String::from_utf8(run_filter(&manager, &[&source]).await).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(parse_sse(raw.as_bytes()), ["response.created:", "response.output_text.delta:a", "response.completed:"]);
 }

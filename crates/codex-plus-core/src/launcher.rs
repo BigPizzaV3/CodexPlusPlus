@@ -3180,6 +3180,9 @@ pub(crate) async fn handle_protocol_proxy_connection(
             let mut phase = (crate::protocol_proxy::message_phase_fill_enabled() && !foreign_client)
                 .then(crate::protocol_proxy::ResponsesSseTransformer::phase_fill_only);
             let mut bytes_stream = upstream.take_response()?.bytes_stream();
+            // exec 兼容链路同样过拓展的网关响应流中间件。
+            let mut extension_filter =
+                crate::extension_gateway::ResponseFilter::start(path, request_json.as_ref()).await;
             while let Some(chunk) = bytes_stream.next().await {
                 let converted = match chunk {
                     Ok(bytes) => match converter.push_bytes(&bytes) {
@@ -3192,6 +3195,10 @@ pub(crate) async fn handle_protocol_proxy_connection(
                     Some(phase) => phase.push_bytes(&converted),
                     None => converted,
                 };
+                let converted = match extension_filter.as_mut() {
+                    Some(filter) => filter.push(&converted).await,
+                    None => converted,
+                };
                 stream.write_all(&converted).await?;
                 if converter.is_complete() {
                     break;
@@ -3201,6 +3208,10 @@ pub(crate) async fn handle_protocol_proxy_connection(
             if let Some(phase) = phase.as_mut() {
                 tail = phase.push_bytes(&tail);
                 tail.extend(phase.flush_pending());
+            }
+            if let Some(filter) = extension_filter.as_mut() {
+                tail = filter.push(&tail).await;
+                tail.extend(filter.finish().await);
             }
             stream.write_all(&tail).await?;
             let exec_succeeded = converter.succeeded();
@@ -3212,9 +3223,11 @@ pub(crate) async fn handle_protocol_proxy_connection(
             return Ok(());
         }
         let stream_prefix = std::mem::take(&mut upstream.stream_prefix);
+        // 拓展的网关响应流中间件：在 Codex++ 自己的转换之后、写给 Codex 之前改写事件。
+        let mut sink = ExtensionResponseSink::new(stream, path, request_json.as_ref()).await;
         let (failure, usage, failure_detail, first_output_at_ms) =
             forward_protocol_proxy_stream_for_client(
-                stream,
+                &mut sink,
                 &stream_prefix,
                 upstream.take_response()?,
                 upstream.wire_api,
@@ -3223,6 +3236,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 foreign_client,
             )
             .await?;
+        sink.finish().await?;
         if let Some(first_output_at_ms) = first_output_at_ms {
             request_log.mark_first_token_at(first_output_at_ms);
         }
@@ -3968,6 +3982,45 @@ pub(crate) trait SseSink {
 impl SseSink for tokio::net::TcpStream {
     async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         self.write_all(bytes).await
+    }
+}
+
+/// 在任意 SseSink 外面套上拓展的网关响应流中间件；没有中间件时直通。
+pub(crate) struct ExtensionResponseSink<'a, S> {
+    pub(crate) inner: &'a mut S,
+    filter: Option<crate::extension_gateway::ResponseFilter>,
+}
+
+impl<'a, S: SseSink> ExtensionResponseSink<'a, S> {
+    pub(crate) async fn new(inner: &'a mut S, request_path: &str, request: Option<&Value>) -> Self {
+        let filter = crate::extension_gateway::ResponseFilter::start(request_path, request).await;
+        Self { inner, filter }
+    }
+
+    /// 上游结束后调用：交出残余字节与中间件在流尾追加的事件。
+    pub(crate) async fn finish(&mut self) -> std::io::Result<()> {
+        if let Some(filter) = self.filter.as_mut() {
+            let tail = filter.finish().await;
+            if !tail.is_empty() {
+                self.inner.send(&tail).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<S: SseSink> SseSink for ExtensionResponseSink<'_, S> {
+    async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self.filter.as_mut() {
+            Some(filter) => {
+                let out = filter.push(bytes).await;
+                if out.is_empty() {
+                    return Ok(());
+                }
+                self.inner.send(&out).await
+            }
+            None => self.inner.send(bytes).await,
+        }
     }
 }
 

@@ -165,6 +165,8 @@ codexPlus.extension((ctx) => {
 | `registerMessageAction({ label, icon, roles, visible, onActivate })` | 每条对话消息操作行（复制、编辑旁）的图标按钮，`onActivate({ message, close })`；`message` 见下 |
 | `registerMessageDecoration({ roles, visible, render })` | 消息正文下方的一块内容：`render({ message, container })`，消息文字变化（流式输出）时清空重画，留空不占位 |
 | `registerSidePanel({ title, icon, width, render })` | 右侧面板：顶栏右侧出现开关，打开时主区域让出宽度；`render({ container, close })` 每次打开调用，可返回清理函数；返回值带 `open() / close() / toggle()` |
+| `provide(name, value) / get(name) / inject(deps, apply)` | 拓展间服务，见「拓展间服务」 |
+| `locale.t / register / bind / resolve / current` | 多语言，见「多语言」 |
 | `storage.get / set / remove / keys` | 按拓展 id 隔离的本地存储，值按 JSON 存取 |
 | `config` | 生效配置的只读快照（清单 `config` 声明，见「拓展配置」） |
 | `id / scriptKey / manifest / disposed` | 只读信息 |
@@ -320,6 +322,108 @@ export default (body) => ({ ...body, instructions: `${body.instructions ?? ""}\n
 - 只有存在启用中的网关中间件时才会为每个请求起一个 Node 进程；任何中间件出错或超时都会保留原请求并记诊断日志。
 - 中间件能看到完整的请求内容（含对话），以你的用户权限运行。只启用你信任的拓展。
 
+### 网关响应流中间件
+
+拓展包可以改写模型回复流回 Codex 的事件，写法是「包住整条流」的中间件：
+
+```json
+{ "id": "redactor", "name": "回复脱敏", "gateway": { "response": [{ "script": "gateway/response.mjs", "timeout": 5 }] } }
+```
+
+```js
+// gateway/response.mjs：默认导出 (context, next) => 异步可迭代对象
+export default async function* (context, next) {
+  for await (const event of next()) {
+    if (event.type === "response.output_text.delta") yield { ...event, delta: event.delta.replaceAll("secret", "***") };
+    else yield event;
+  }
+}
+```
+
+- 事件是 Codex 实际收到的 Responses SSE 事件对象（带 `type`）。可以改写、丢弃、插入事件，也可以不调用
+  `next()` 自己给出整条流；`next()` 只能调用一次。改了文字增量时，`response.output_item.done` /
+  `response.completed` 里的完整文本要一并改。
+- `context`：`{ path, extension, config, request }`，`request` 是请求摘要（`model`、`instructions`、`reasoning`、
+  `tools` 工具名、`inputItems`、`lastUserText`），不含完整对话。
+- 多个拓展按拓展 key 顺序嵌套，先声明的在最外层。所有响应中间件跑在一个常驻 Node 工作进程里，每个事件一次往返。
+- 任一中间件出错、超时（`timeout` 1~10 秒，按单个事件计）或工作进程退出，这次回复剩下的部分原样放行。
+- 只对经 Codex++ 本地代理 / 网关的流式回复生效；官方直连、远程压缩回复不经过这里。
+
+### 会话历史（只读）
+
+内置服务 `sessionQuery` 只读查询 Codex 的会话，页面、常驻后台、模型工具三处都能用：
+
+```js
+codexPlus.extension({ inject: ["sessionQuery"], async apply(ctx) {
+  const [latest] = await ctx.sessionQuery.listSessions({ limit: 1 });
+  const turns = await ctx.sessionQuery.listEvents(latest.id, { types: ["user/message"], fromEnd: true, limit: 5 });
+  const page = await ctx.sessionQuery.searchSessions({ query: "bug", limit: 20 }); // page.nextCursor
+} });
+// 常驻后台：export default ({ sessionQuery }) => ({ ... })；模型工具：export default (args, { sessionQuery }) => ...
+```
+
+| 方法 | 返回 |
+| --- | --- |
+| `listSessions({ archived?, limit?, offset? })` | 会话数组，新到旧 |
+| `filterSessions({ id?, cwd?, archived?, createdAfter?, createdBefore?, limit? })` | 会话数组 |
+| `readSession(id)` | `{ session, events }` 完整事件日志 |
+| `readTitle(id)` | 标题 |
+| `listEvents(id, { types?, offset?, limit?, fromEnd? })` | 轻量事件（长文本截到 200 字） |
+| `filterEvents(id, { types?, text?, limit? })` | 匹配的事件（文本不分大小写） |
+| `readEvent({ sessionId, seq, before?, after? })` | 以 seq 为中心的事件窗口 |
+| `searchSessions({ query, limit?, cursor? })` | `{ items, nextCursor }`，按标题、首条消息、目录匹配 |
+| `searchEvents({ query, sessionId?, types?, limit?, cursor? })` | `{ items: [{ sessionId, event }], nextCursor }`；不给 sessionId 时只搜最近 100 个会话 |
+
+- 会话：`{ id, title, cwd, model, createdAt, updatedAt, archived, preview, gitBranch }`。
+- 事件：`{ type, seq, time, data }`。`type` 有 `turn/start`、`user/message`、`assistant/message`（`data.phase`）、
+  `assistant/reasoning`（只有摘要）、`tool/call`（`name`、`callId`、`input`）、`tool/result`（`callId`、`output`）。
+  Codex 注入的环境上下文、开发者消息、加密推理不返回；单条文本超过 2 万字截断。
+- 全程只读：数据库只读打开，rollout 文件只读。
+
+### 拓展间服务
+
+```js
+// 提供方
+codexPlus.extension((ctx) => {
+  ctx.provide("metrics", { record: (name) => console.log("metric", name) });
+});
+// 使用方：声明 inject，依赖齐全才应用
+codexPlus.extension({ inject: ["metrics"], apply(ctx) { ctx.metrics.record("opened"); } });
+```
+
+- `ctx.provide(name, value)`：服务名是全局扁平的命名空间，重名抛错；随提供方卸载撤销。
+- `inject`：写在 `codexPlus.extension({ inject, apply })` 里（或第二个参数 `{ inject }`）。依赖没到时挂起、不报错；
+  提供方卸载或被替换时依赖方先卸载、回到挂起，提供方回来后自动重新应用。此时 `codexPlus.extension` 返回的是
+  生命周期句柄 `{ id, state, ctx, dispose() }`，`state` 为 `pending` / `active` / `failed` / `disposed`。
+- 可选依赖：不写进 `inject`，用到时 `ctx.get(name)`（不存在为 `undefined`）。
+- `ctx.inject(deps, apply)`：子作用域，只让依赖某服务的那部分挂起 / 重建。
+- 内置服务：`sessionQuery`、`locale`。`codexPlus.services()` 列出当前已提供的服务与提供方。
+
+### 多语言
+
+```
+my-ext/
+├── codexpp.json
+├── locale/en.json   { "meta": { "title": "Word Count", "description": "..." }, "count": "{n} words" }
+└── locale/zh.json   { "meta": { "title": "字数统计", "description": "..." }, "count": "{n} 字" }
+```
+
+```js
+codexPlus.extension((ctx) => {
+  ctx.toast(ctx.locale.t("count", { n: 42 }));               // 包内词条，自动登记在拓展 id 命名空间
+  ctx.locale.register("menu", { zh: { open: "打开" }, en: { open: "Open" } });
+  const t = ctx.locale.bind("menu");
+  ctx.on("locale/change", ({ locale }) => ctx.toast(`${locale}: ${t("open")}`));
+});
+```
+
+- 语言文件名就是语言 id（`en`、`zh`、`zh-TW`），每个最大 256 KiB；`meta.title` / `meta.description` 是本地化的
+  名称与描述，管理器按界面语言显示，缺了就用清单里的 `name` / `description`。
+- 查找顺序：当前语言（如 `zh-CN`）→ 主语言（`zh`）→ `en`，先在指定命名空间、再在 `common`，都没有返回 key；
+  占位符写 `{name}`，键可以用点号取嵌套词条（`meta.title`）。
+- `ctx.locale.current` 是 Codex 页面的语言；`ctx.locale.resolve({ en, zh })` 解析多语言文本对象。
+- 也可以 `inject: ["locale"]` 用全局的 `locale` 服务（`register` 返回撤销函数，需要自己撤销）。
+
 ### 常驻后台
 
 页面脚本拿不到本地文件、进程和长时间运行的计时器。拓展包可以声明一个常驻后台，由页面经 `ctx.backend` 调用：
@@ -329,7 +433,7 @@ export default (body) => ({ ...body, instructions: `${body.instructions ?? ""}\n
 ```
 
 ```js
-// backend/main.mjs：默认导出 (ctx) => 方法表；ctx = { extension, config, dataDir, emit, log }
+// backend/main.mjs：默认导出 (ctx) => 方法表；ctx = { extension, config, dataDir, emit, log, sessionQuery }
 import fs from "node:fs";
 export default ({ emit }) => ({
   read: () => (fs.existsSync("note.txt") ? fs.readFileSync("note.txt", "utf8") : ""),

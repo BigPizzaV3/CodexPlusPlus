@@ -100,6 +100,7 @@ pub mod update;
 pub mod extension_backend;
 pub mod extension_creator;
 pub mod extension_gateway;
+pub mod extension_history;
 pub mod extension_hooks;
 pub mod extension_node;
 pub mod user_scripts;

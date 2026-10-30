@@ -410,6 +410,18 @@ impl UserScriptManager {
 
     /// 启用中、清单无误的拓展包声明的网关请求中间件，按拓展 key 排序（即执行顺序）。
     pub fn enabled_gateway_middlewares(&self) -> anyhow::Result<Vec<(String, ExtensionGatewayMiddleware)>> {
+        self.enabled_gateway_list(|package| &package.gateway_request)
+    }
+
+    /// 启用中、清单无误的拓展包声明的网关响应流中间件，附带拓展 id，按拓展 key 顺序。
+    pub fn enabled_gateway_response_middlewares(&self) -> anyhow::Result<Vec<(String, ExtensionGatewayMiddleware)>> {
+        self.enabled_gateway_list(|package| &package.gateway_response)
+    }
+
+    fn enabled_gateway_list(
+        &self,
+        pick: impl Fn(&ExtensionPackage) -> &Vec<ExtensionGatewayMiddleware>,
+    ) -> anyhow::Result<Vec<(String, ExtensionGatewayMiddleware)>> {
         let config = self.load_config();
         if !config.enabled {
             return Ok(Vec::new());
@@ -423,7 +435,7 @@ impl UserScriptManager {
             .flat_map(|package| {
                 let id = package.id.clone();
                 let config = package.config.clone();
-                package.gateway_request.into_iter().map(move |mut item| {
+                pick(&package).clone().into_iter().map(move |mut item| {
                     item.config = config.clone();
                     (id.clone(), item)
                 })
@@ -826,10 +838,14 @@ struct ExtensionPackage {
     renderer: Vec<PathBuf>,
     hooks: Vec<ExtensionHook>,
     gateway_request: Vec<ExtensionGatewayMiddleware>,
+    /// 网关响应流中间件（codexpp.json 的 `gateway.response`）。
+    gateway_response: Vec<ExtensionGatewayMiddleware>,
     tools: Vec<ExtensionTool>,
     config_schema: Vec<ExtensionConfigField>,
     /// 常驻后台脚本（codexpp.json 的 `backend.script`）。
     backend: Option<PathBuf>,
+    /// 包内 `locale/<语言>.json`：语言 id → 词条（`meta.title` / `meta.description` 是本地化的名称与描述）。
+    locales: std::collections::BTreeMap<String, Value>,
     /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
     config: Value,
     error: Option<String>,
@@ -983,10 +999,16 @@ impl ExtensionPackage {
             "routes": self.routes,
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
             "gatewayRequest": self.gateway_request.len(),
+            "gatewayResponse": self.gateway_response.len(),
             "tools": self.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
             "configSchema": self.config_schema,
             "backend": self.backend.is_some(),
             "config": self.config,
+            // 只给名称与描述的本地化版本，词条本身留给页面运行时。
+            "locales": self.locales.iter().map(|(lang, messages)| (lang.clone(), json!({
+                "title": messages.pointer("/meta/title").cloned().unwrap_or(Value::Null),
+                "description": messages.pointer("/meta/description").cloned().unwrap_or(Value::Null),
+            }))).collect::<serde_json::Map<_, _>>(),
         })
     }
 
@@ -1000,6 +1022,7 @@ impl ExtensionPackage {
             "engines": { "codexpp": self.engine },
             "permissions": { "routes": self.routes },
             "config": self.config,
+            "locales": self.locales,
         })
     }
 }
@@ -1114,9 +1137,11 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         renderer: Vec::new(),
         hooks: Vec::new(),
         gateway_request: Vec::new(),
+        gateway_response: Vec::new(),
         tools: Vec::new(),
         config_schema: Vec::new(),
         backend: None,
+        locales: Default::default(),
         config: json!({}),
         error: None,
     };
@@ -1188,7 +1213,7 @@ fn parse_extension_manifest(
         .map(|entry| resolve_package_entry(&root, entry))
         .collect::<anyhow::Result<Vec<_>>>()?;
     package.hooks = parse_extension_hooks(&root, raw.get("hooks"))?;
-    package.gateway_request = parse_gateway_middlewares(&root, raw.get("gateway"))?;
+    (package.gateway_request, package.gateway_response) = parse_gateway_middlewares(&root, raw.get("gateway"))?;
     package.tools = parse_extension_tools(&root, &package.id, raw.get("tools"))?;
     package.config_schema = parse_extension_config_schema(raw.get("config"))?;
     package.backend = match raw.get("backend") {
@@ -1199,6 +1224,7 @@ fn parse_extension_manifest(
         )?),
         Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
     };
+    package.locales = load_extension_locales(&root)?;
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if package.engine > EXTENSION_API_VERSION {
         anyhow::bail!(
@@ -1208,6 +1234,49 @@ fn parse_extension_manifest(
         );
     }
     Ok(())
+}
+
+/// 单个语言文件的大小上限。
+const EXTENSION_LOCALE_MAX_BYTES: u64 = 256 * 1024;
+
+/// 读包内 `locale/*.json`。文件名就是语言 id（如 `en`、`zh`、`zh-TW`），内容是 JSON 对象；
+/// `meta.title` / `meta.description` 是本地化的名称与描述，其余键是拓展自己的词条。
+fn load_extension_locales(root: &std::path::Path) -> anyhow::Result<std::collections::BTreeMap<String, Value>> {
+    let mut locales = std::collections::BTreeMap::new();
+    let directory = root.join("locale");
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return Ok(locales);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let lang = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_string();
+        let valid = !lang.is_empty()
+            && lang.split('-').enumerate().all(|(index, part)| {
+                (if index == 0 { (2..=3).contains(&part.len()) } else { (2..=8).contains(&part.len()) })
+                    && part.chars().all(|ch| ch.is_ascii_alphanumeric())
+            });
+        if !valid {
+            anyhow::bail!("locale/{lang}.json 的文件名不是合法的语言 id（如 en、zh、zh-TW）");
+        }
+        // 必须在包内：拒绝指向包外的软链。
+        let resolved = path.canonicalize().with_context(|| format!("无法读取 locale/{lang}.json"))?;
+        if !resolved.starts_with(root) {
+            anyhow::bail!("locale/{lang}.json 指向包外");
+        }
+        if fs::metadata(&resolved).map(|meta| meta.len()).unwrap_or(0) > EXTENSION_LOCALE_MAX_BYTES {
+            anyhow::bail!("locale/{lang}.json 超过 256 KiB");
+        }
+        let value: Value = serde_json::from_str(&fs::read_to_string(&resolved)?)
+            .with_context(|| format!("locale/{lang}.json 不是合法的 JSON"))?;
+        if !value.is_object() {
+            anyhow::bail!("locale/{lang}.json 顶层必须是对象");
+        }
+        locales.insert(lang, value);
+    }
+    Ok(locales)
 }
 
 /// 解析 `hooks`：`{ "PreToolUse": [{ "matcher": "^Bash$", "script": "hooks/guard.mjs", "timeout": 30 }] }`。
@@ -1265,45 +1334,49 @@ fn parse_extension_hooks(
 }
 
 /// 解析 `gateway`：`{ "request": [{ "script": "gateway/request.mjs", "timeout": 5 }] }`。
+/// 解析 `gateway`：`{ request: [...], response: [...] }`，两种中间件写法相同（script + timeout）。
 fn parse_gateway_middlewares(
     root: &std::path::Path,
     value: Option<&Value>,
-) -> anyhow::Result<Vec<ExtensionGatewayMiddleware>> {
+) -> anyhow::Result<(Vec<ExtensionGatewayMiddleware>, Vec<ExtensionGatewayMiddleware>)> {
     let Some(value) = value else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
-    let map = value.as_object().context("gateway 必须是对象：{ \"request\": [中间件...] }")?;
-    if let Some(key) = map.keys().find(|key| key.as_str() != "request") {
-        anyhow::bail!("gateway 只支持 request（请求中间件），不认识 {key}");
+    let map = value.as_object().context("gateway 必须是对象：{ \"request\": [...], \"response\": [...] }")?;
+    if let Some(key) = map.keys().find(|key| key.as_str() != "request" && key.as_str() != "response") {
+        anyhow::bail!("gateway 只支持 request（请求中间件）与 response（响应流中间件），不认识 {key}");
     }
-    let Some(list) = map.get("request") else {
-        return Ok(Vec::new());
-    };
-    let items = list.as_array().context("gateway.request 必须是数组")?;
-    items
-        .iter()
-        .map(|item| {
-            let item = item.as_object().context("gateway.request 的每一项必须是对象")?;
-            let script = item
-                .get("script")
-                .and_then(Value::as_str)
-                .context("gateway.request 缺少 script")?;
-            let timeout_secs = match item.get("timeout") {
-                None => 5,
-                Some(value) => value
-                    .as_u64()
-                    .filter(|seconds| (1..=EXTENSION_GATEWAY_MAX_TIMEOUT_SECS).contains(seconds))
-                    .with_context(|| {
-                        format!("gateway.request 的 timeout 必须是 1~{EXTENSION_GATEWAY_MAX_TIMEOUT_SECS} 秒")
-                    })?,
-            };
-            Ok(ExtensionGatewayMiddleware {
-                script: resolve_package_entry(root, script)?,
-                timeout_secs,
-                config: Value::Null,
+    let parse = |kind: &str| -> anyhow::Result<Vec<ExtensionGatewayMiddleware>> {
+        let Some(list) = map.get(kind) else {
+            return Ok(Vec::new());
+        };
+        let items = list.as_array().with_context(|| format!("gateway.{kind} 必须是数组"))?;
+        items
+            .iter()
+            .map(|item| {
+                let item = item.as_object().with_context(|| format!("gateway.{kind} 的每一项必须是对象"))?;
+                let script = item
+                    .get("script")
+                    .and_then(Value::as_str)
+                    .with_context(|| format!("gateway.{kind} 缺少 script"))?;
+                let timeout_secs = match item.get("timeout") {
+                    None => 5,
+                    Some(value) => value
+                        .as_u64()
+                        .filter(|seconds| (1..=EXTENSION_GATEWAY_MAX_TIMEOUT_SECS).contains(seconds))
+                        .with_context(|| {
+                            format!("gateway.{kind} 的 timeout 必须是 1~{EXTENSION_GATEWAY_MAX_TIMEOUT_SECS} 秒")
+                        })?,
+                };
+                Ok(ExtensionGatewayMiddleware {
+                    script: resolve_package_entry(root, script)?,
+                    timeout_secs,
+                    config: Value::Null,
+                })
             })
-        })
-        .collect()
+            .collect()
+    };
+    Ok((parse("request")?, parse("response")?))
 }
 
 /// 解析 `config`：`{ "minutes": { "type": "number", "title": "时长", "default": 25 } }`。

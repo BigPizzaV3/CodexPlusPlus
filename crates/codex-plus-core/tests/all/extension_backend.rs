@@ -136,3 +136,27 @@ async fn backend_startup_failures_are_reported() {
     let error = call(&manager, &format!("user:{id}"), "x", json!(null), Duration::from_secs(10), None).await.unwrap_err();
     assert!(error.to_string().contains("启动就坏"), "{error}");
 }
+
+#[tokio::test]
+async fn backend_can_query_sessions_through_the_host() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let id = format!("backend-host-{}", std::process::id());
+    write_package(&temp, &id, json!({"backend": {"script": "backend/main.mjs"}}), &[(
+        "backend/main.mjs",
+        r#"export default ({ sessionQuery }) => ({
+  async title(id) { return await sessionQuery.readTitle(id).then((value) => "OK:" + value, (error) => "ERR:" + error.message); },
+  async bad() { return await sessionQuery.deleteSession?.("x") ?? "没有写方法"; },
+});"#,
+    )]);
+    let key = format!("user:{id}");
+    // 宿主调用的错误原样回到后台（不存在的会话，或本机没有 Codex 数据库）。
+    let reply = call(&manager, &key, "title", json!("no-such-session-0000"), Duration::from_secs(10), None).await.unwrap();
+    let reply = reply.as_str().unwrap();
+    assert!(reply.starts_with("ERR:") && (reply.contains("没有找到会话") || reply.contains("会话数据库")), "{reply}");
+    assert_eq!(call(&manager, &key, "bad", json!(null), Duration::from_secs(10), None).await.unwrap(), "没有写方法", "只读：没有写方法");
+    stop(&key, None).await;
+}

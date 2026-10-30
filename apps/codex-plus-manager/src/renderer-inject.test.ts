@@ -3536,7 +3536,7 @@ describe("拓展运行时内核", () => {
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
       "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
-      `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware };`,
+      `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices };`,
     )(
       window,
       (key: string, label: string, callback: () => unknown) => {
@@ -3563,7 +3563,8 @@ describe("拓展运行时内核", () => {
       (message: string) => toasts.push(message),
       localStorage,
     ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown>;
-      bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any };
+      bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any;
+      services: Map<string, { value: unknown; owner: string }>; installBuiltins: () => void };
     return { ...api, window, cleanups, failures, registered, calls, toasts, timers, store };
   }
 
@@ -3828,6 +3829,111 @@ describe("拓展运行时内核", () => {
     assert.match(slots, /function codexPlusMutationIsOurs/);
     assert.match(slots, /if \(mutations\.some\(\(mutation\) => !codexPlusMutationIsOurs\(mutation\)\)\)/);
     assert.match(scan, /refreshCodexPlusMessageSlots\(\);\n\s+refreshCodexPlusSidePanels\(\);/);
+  });
+
+  it("服务：inject 的拓展等依赖齐全才应用，提供者卸载即卸载、换提供者后重新应用", async () => {
+    const k = await kernel();
+    const seen: string[] = [];
+    const consumer = k.create({
+      inject: ["metrics"],
+      apply(ctx: any) {
+        seen.push(`apply:${ctx.metrics.name}`);
+        ctx.effect(() => () => seen.push("dispose"));
+      },
+    });
+    assert.equal(consumer.state, "pending", "依赖没到时挂起，不报错");
+    assert.deepEqual(seen, []);
+    const first = k.create((ctx: any) => { ctx.provide("metrics", { name: "一号" }); });
+    assert.equal(consumer.state, "active");
+    assert.deepEqual(seen, ["apply:一号"]);
+    assert.equal(k.services.get("metrics")?.owner, "user:demo");
+    assert.throws(() => k.create((ctx: any) => ctx.provide("metrics", {})), /已由 user:demo 提供/);
+    first.dispose();
+    assert.equal(consumer.state, "pending");
+    assert.deepEqual(seen, ["apply:一号", "dispose"], "提供者卸载，依赖方随之卸载");
+    k.create((ctx: any) => { ctx.provide("metrics", { name: "二号" }); });
+    assert.deepEqual(seen, ["apply:一号", "dispose", "apply:二号"], "提供者回来后自动重新应用");
+    consumer.dispose();
+    assert.equal(consumer.state, "disposed");
+    assert.deepEqual(seen.at(-1), "dispose");
+  });
+
+  it("服务：ctx.get 做可选依赖，ctx.inject 开子作用域，apply 里提供服务不会重复应用", async () => {
+    const k = await kernel();
+    let child = 0;
+    const ctx = k.create((ctx: any) => {
+      assert.equal(ctx.get("cache"), undefined, "可选依赖不存在时为 undefined");
+      ctx.inject(["cache"], (sub: any) => { child += 1; assert.equal(sub.cache.size, 0); });
+    });
+    assert.equal(child, 0);
+    // 依赖方自己在 apply 里提供另一个服务：触发复查也只应用一次。
+    let applied = 0;
+    k.create({ inject: ["cache"], apply(sub: any) { applied += 1; sub.provide("derived", 1); } });
+    k.create((provider: any) => provider.provide("cache", new Map()));
+    assert.equal(child, 1);
+    assert.equal(applied, 1, "重入时不重复应用");
+    assert.equal(ctx.get("derived"), 1);
+    assert.throws(() => ctx.provide("bad name", 1), /服务名不合法/);
+  });
+
+  it("内置 sessionQuery 服务：方法名对齐会话查询，参数经桥接转给 /extensions/history", async () => {
+    const k = await kernel();
+    const requests: Array<[string, any]> = [];
+    (k.window as any).__codexSessionDeleteBridge = (path: string, payload: any) => {
+      requests.push([path, payload]);
+      return Promise.resolve(payload.method === "readTitle" ? { status: "failed", message: "没有找到会话" } : { status: "ok", result: [payload.method] });
+    };
+    k.installBuiltins();
+    assert.equal(k.services.get("sessionQuery")?.owner, "builtin");
+    let query: any;
+    k.create({ inject: ["sessionQuery"], apply(ctx: any) { query = ctx.sessionQuery; } });
+    assert.deepEqual(await query.listSessions({ limit: 5 }), ["listSessions"]);
+    await query.listEvents("t-1", { types: ["user/message"] });
+    await query.searchSessions({ query: "bug" });
+    await assert.rejects(query.readTitle("x"), /没有找到会话/);
+    assert.deepEqual(requests.map(([path, payload]) => [path, payload.method, payload.params]), [
+      ["/extensions/history", "listSessions", { limit: 5 }],
+      ["/extensions/history", "listEvents", { id: "t-1", options: { types: ["user/message"] } }],
+      ["/extensions/history", "searchSessions", { query: "bug" }],
+      ["/extensions/history", "readTitle", { id: "x" }],
+    ]);
+    assert.ok(Object.isFrozen(query));
+  });
+
+  it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {
+    const k = await kernel({ manifest: { id: "greeter", locales: { en: { meta: { title: "Greeter" }, hi: "Hello {name}" }, fr: { hi: "Bonjour {name}" } } } });
+    const ctx = k.create(() => {});
+    // 测试环境的语言是 Node 的 navigator.language（en-US）：zh 词条不会被选中。
+    assert.match(ctx.locale.current, /^en/);
+    assert.equal(ctx.locale.t("hi", { name: "Ada" }), "Hello Ada", "包内 locale 登记在拓展 id 命名空间");
+    assert.equal(ctx.locale.t("meta.title"), "Greeter", "点号路径取嵌套词条");
+    const dispose = ctx.locale.register("menu", { zh: { open: "打开" }, en: { open: "Open {what}", nested: { deep: "Deep" } } });
+    const t = ctx.locale.bind("menu");
+    assert.equal(t("open", { what: "file" }), "Open file");
+    assert.equal(t("open"), "Open {what}", "缺参数时保留占位符");
+    assert.equal(t("nested.deep"), "Deep");
+    assert.equal(t("missing.key"), "missing.key", "都没有就返回 key");
+    ctx.locale.register("common", "en", { cancel: "Cancel" });
+    assert.equal(t("cancel"), "Cancel", "回退到 common 命名空间");
+    dispose();
+    assert.equal(t("open"), "open", "撤销登记后词条消失");
+    assert.equal(ctx.locale.resolve({ zh: "你好", en: "Hello" }), "Hello");
+    assert.equal(ctx.locale.resolve("原样"), "原样");
+    ctx.dispose();
+    assert.equal(k.create(() => {}).locale.t("hi"), "Hello {name}", "新实例重新登记包内词条");
+  });
+
+  it("内置 locale 服务：写成 inject: [\"locale\"] 的拓展也能用", async () => {
+    const k = await kernel();
+    k.installBuiltins();
+    let t: any;
+    const fiber = k.create({ inject: ["locale"], apply(ctx: any) {
+      ctx.locale.register("demo", { en: { ok: "OK" }, zh: { ok: "好" } });
+      t = ctx.locale.bind("demo");
+    } });
+    assert.equal(fiber.state, "active");
+    assert.equal(t("ok"), "OK");
+    assert.equal(k.services.get("locale")?.owner, "builtin");
   });
 
   it("一次性定时器触发后自行注销，不留在撤销列表里", async () => {

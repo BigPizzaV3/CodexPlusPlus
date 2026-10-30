@@ -36,9 +36,35 @@ const write = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const lines = readline.createInterface({ input: process.stdin });
 let methods = null;
 let ready = null;
+// 向 Codex++ 发起宿主调用（例如只读会话查询），回复按 hostReply 对应。
+const hostPending = new Map();
+let hostSeq = 0;
+const host = (service, method, params) => new Promise((resolve, reject) => {
+  const id = ++hostSeq;
+  hostPending.set(id, { resolve, reject });
+  write({ host: id, service, method, params: params ?? null });
+});
+const withId = (method) => (id, options) => host("sessionQuery", method, { id, options: options ?? {} });
+const sessionQuery = Object.freeze({
+  listSessions: (options) => host("sessionQuery", "listSessions", options ?? {}),
+  filterSessions: (filters) => host("sessionQuery", "filterSessions", filters ?? {}),
+  readSession: (id) => host("sessionQuery", "readSession", { id }),
+  readTitle: (id) => host("sessionQuery", "readTitle", { id }),
+  listEvents: withId("listEvents"),
+  filterEvents: withId("filterEvents"),
+  readEvent: (query) => host("sessionQuery", "readEvent", query ?? {}),
+  searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
+  searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
+});
 lines.on("line", async (line) => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
+  if (message.hostReply !== undefined) {
+    const waiter = hostPending.get(message.hostReply);
+    hostPending.delete(message.hostReply);
+    if (message.error !== undefined) waiter?.reject(new Error(message.error)); else waiter?.resolve(message.result);
+    return;
+  }
   if (!ready) {
     ready = (async () => {
       try {
@@ -50,6 +76,7 @@ lines.on("line", async (line) => {
           config: message.config ?? {},
           dataDir: message.dataDir,
           emit: (event, payload) => write({ event: String(event), payload: payload ?? null }),
+          sessionQuery,
           log: (...args) => process.stderr.write(args.map(String).join(" ") + "\n"),
         });
         write({ ready: true, methods: Object.keys(methods ?? {}).filter((name) => typeof methods[name] === "function") });
@@ -75,7 +102,8 @@ lines.on("close", () => process.exit(0));
 "#;
 
 struct Backend {
-    stdin: tokio::process::ChildStdin,
+    /// 与读取任务共享：宿主调用的回复也从这里写回后台。
+    stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
     events: Arc<Mutex<VecDeque<(u64, Value)>>>,
     notify: Arc<Notify>,
@@ -113,7 +141,7 @@ fn fingerprint(script: &std::path::Path, config: &Value) -> String {
     format!("{}|{modified}|{config}", script.display())
 }
 
-async fn spawn(manager: &UserScriptManager, key: &str, (extension, script, config): (String, PathBuf, Value)) -> anyhow::Result<Backend> {
+async fn spawn(manager: &UserScriptManager, (extension, script, config): (String, PathBuf, Value)) -> anyhow::Result<Backend> {
     let fingerprint = fingerprint(&script, &config);
     let node = crate::extension_node::require_node()?;
     let data = data_dir(manager, &extension);
@@ -130,11 +158,14 @@ async fn spawn(manager: &UserScriptManager, key: &str, (extension, script, confi
     #[cfg(windows)]
     command.creation_flags(crate::windows_create_no_window());
     let mut child = command.spawn().context("无法启动拓展后台")?;
-    let mut stdin = child.stdin.take().context("拓展后台没有 stdin")?;
+    let stdin = Arc::new(Mutex::new(child.stdin.take().context("拓展后台没有 stdin")?));
     let stdout = child.stdout.take().context("拓展后台没有 stdout")?;
     let init = json!({ "script": script, "extension": extension, "config": config, "dataDir": data });
-    stdin.write_all(format!("{init}\n").as_bytes()).await?;
-    stdin.flush().await?;
+    {
+        let mut writer = stdin.lock().await;
+        writer.write_all(format!("{init}\n").as_bytes()).await?;
+        writer.flush().await?;
+    }
 
     let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>> = Arc::default();
     let events: Arc<Mutex<VecDeque<(u64, Value)>>> = Arc::default();
@@ -144,6 +175,7 @@ async fn spawn(manager: &UserScriptManager, key: &str, (extension, script, confi
         let pending = pending.clone();
         let events = events.clone();
         let notify = notify.clone();
+        let host_stdin = stdin.clone();
         let mut ready_tx = Some(ready_tx);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -151,7 +183,19 @@ async fn spawn(manager: &UserScriptManager, key: &str, (extension, script, confi
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                if let Some(id) = message.get("id").and_then(Value::as_u64) {
+                if let Some(host_id) = message.get("host").and_then(Value::as_u64) {
+                    // 宿主调用另起任务处理，不挡住后台的其它输出。
+                    let host_stdin = host_stdin.clone();
+                    tokio::spawn(async move {
+                        let reply = match host_call(&message).await {
+                            Ok(result) => json!({ "hostReply": host_id, "result": result }),
+                            Err(error) => json!({ "hostReply": host_id, "error": format!("{error:#}") }),
+                        };
+                        let mut writer = host_stdin.lock().await;
+                        let _ = writer.write_all(format!("{reply}\n").as_bytes()).await;
+                        let _ = writer.flush().await;
+                    });
+                } else if let Some(id) = message.get("id").and_then(Value::as_u64) {
                     if let Some(sender) = pending.lock().await.remove(&id) {
                         let outcome = match message.get("error").and_then(Value::as_str) {
                             Some(error) => Err(error.to_string()),
@@ -193,6 +237,20 @@ async fn spawn(manager: &UserScriptManager, key: &str, (extension, script, confi
     Ok(Backend { stdin, pending, events, notify, next_id: 1, fingerprint, instance: None, _child: child })
 }
 
+/// 后台发起的宿主调用。目前只开放只读会话查询（sessionQuery）。
+pub(crate) async fn host_call(message: &Value) -> anyhow::Result<Value> {
+    let service = message.get("service").and_then(Value::as_str).unwrap_or_default();
+    let method = message.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
+    let params = message.get("params").cloned().unwrap_or(Value::Null);
+    match service {
+        "sessionQuery" => {
+            let home = crate::codex_sqlite::default_codex_home_dir();
+            tokio::task::spawn_blocking(move || crate::extension_history::call(&home, &method, &params)).await?
+        }
+        other => anyhow::bail!("后台不能调用服务 {other}"),
+    }
+}
+
 /// 调用一个拓展后台的方法；后台没起就先起。后台退出过、或拓展改过的会被重新拉起，
 /// 拓展已停用的会被停掉。`instance` 是发起调用的页面实例标识（可省略）。
 pub async fn call(
@@ -219,7 +277,7 @@ pub async fn call(
             backends.remove(key);
         }
         if !backends.contains_key(key) {
-            let backend = spawn(manager, key, declared).await?;
+            let backend = spawn(manager, declared).await?;
             backends.insert(key.to_string(), backend);
         }
         let backend = backends.get_mut(key).expect("刚插入");
@@ -231,9 +289,11 @@ pub async fn call(
         let (sender, receiver) = oneshot::channel();
         backend.pending.lock().await.insert(id, sender);
         let request = json!({ "id": id, "method": method, "params": params });
-        if backend.stdin.write_all(format!("{request}\n").as_bytes()).await.is_err()
-            || backend.stdin.flush().await.is_err()
-        {
+        let written = {
+            let mut writer = backend.stdin.lock().await;
+            writer.write_all(format!("{request}\n").as_bytes()).await.is_ok() && writer.flush().await.is_ok()
+        };
+        if !written {
             // 进程已经没了：移除，下次调用重新拉起。
             backends.remove(key);
             anyhow::bail!("拓展后台已退出，请重试");
