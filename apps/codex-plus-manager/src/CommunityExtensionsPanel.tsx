@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Download, ExternalLink, Loader2, RefreshCw, Search, ShieldAlert, Star } from "lucide-react";
+import { Download, ExternalLink, Loader2, RefreshCw, Search, ShieldAlert, ShieldCheck, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "./gateway-ui";
 import { t, tf } from "./i18n";
+import { CurationReviewDialog, useCurationStatus } from "./ExtensionCuration";
 import "./CommunityExtensionsPanel.css";
 
 // 与 crates/codex-plus-core/src/extension_discovery.rs 对应。
@@ -77,7 +78,7 @@ export function errorText(error: unknown): string {
 }
 
 /** 按风险从高到低列出声明的能力；空数组表示只是页面脚本以外什么也没有。 */
-function permissionLines(permissions: Permissions): { risk: "high" | "medium" | "low"; text: string }[] {
+export function permissionLines(permissions: Permissions): { risk: "high" | "medium" | "low"; text: string }[] {
   const lines: { risk: "high" | "medium" | "low"; text: string }[] = [];
   if (permissions.backend) lines.push({ risk: "high", text: tf("常驻后台进程 {0}：可读写本机文件、访问网络", [permissions.backend]) });
   for (const hook of permissions.hooks) {
@@ -108,7 +109,7 @@ function minutesAgo(seconds: number): number {
   return Math.max(0, Math.floor((Date.now() / 1000 - seconds) / 60));
 }
 
-export function CommunityExtensionsPanel({ onInstalled, onOpenUrl }: { onInstalled: () => Promise<void>; onOpenUrl: (url: string) => void }) {
+export function CommunityExtensionsPanel({ onInstalled, onCurated, onOpenUrl }: { onInstalled: () => Promise<void>; onCurated?: () => Promise<void>; onOpenUrl: (url: string) => void }) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -117,6 +118,9 @@ export function CommunityExtensionsPanel({ onInstalled, onOpenUrl }: { onInstall
   const [sort, setSort] = useState<Sort>("stars");
   const [preparing, setPreparing] = useState("");
   const [prepared, setPrepared] = useState<Prepared | null>(null);
+  // 维护者（gh 账号对市场仓库有写权限）才有「审核」入口。
+  const curation = useCurationStatus();
+  const [reviewing, setReviewing] = useState("");
 
   const load = useCallback(async (force: boolean) => {
     setLoading(true);
@@ -251,6 +255,11 @@ export function CommunityExtensionsPanel({ onInstalled, onOpenUrl }: { onInstall
                     {entry.warnings?.length ? <span className="community-ext-badge is-suspicious">{t("可疑")}</span> : null}
                   </div>
                   <div className="community-ext-actions">
+                    {curation?.maintainer ? (
+                      <Button disabled={reviewing !== ""} onClick={() => setReviewing(entry.repo)} size="sm" title={t("审核这个拓展的最新版本，通过后收录进精选")} variant="ghost">
+                        <ShieldCheck className="h-4 w-4" />{t("审核")}
+                      </Button>
+                    ) : null}
                     {entry.installed?.channel === "local" ? (
                       // 从 GitHub 重装会覆盖本机源码，这里不给按钮。
                       <span className="community-ext-installed" title={t("你在本机编写并发布的拓展，在「本地拓展」里管理")}>{tf("本机源码 {0}", [entry.installed.version])}</span>
@@ -288,6 +297,20 @@ export function CommunityExtensionsPanel({ onInstalled, onOpenUrl }: { onInstall
         <div className="empty">{t("社区拓展已关闭，不会访问 GitHub。")}</div>
       )}
       {prepared ? <InstallDialog onCancel={cancel} onInstall={(enable) => void install(enable)} prepared={prepared} /> : null}
+      {reviewing ? (
+        <CurationReviewDialog
+          onApproved={(message) => {
+            setReviewing("");
+            setNotice(message);
+            // 收录后它会从社区栏移到精选栏。
+            void load(false);
+            void onCurated?.();
+          }}
+          onClose={() => setReviewing("")}
+          onOpenUrl={onOpenUrl}
+          repo={reviewing}
+        />
+      ) : null}
     </div>
   );
 }

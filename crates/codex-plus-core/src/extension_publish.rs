@@ -75,7 +75,7 @@ fn is_semver(version: &str) -> bool {
 }
 
 /// 包内文件（相对路径、大小），不跟随软链；遇到软链记一条错误。
-fn package_files(dir: &Path, errors: &mut Vec<String>) -> Vec<(String, u64)> {
+pub fn package_files(dir: &Path, errors: &mut Vec<String>) -> Vec<(String, u64)> {
     let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
@@ -106,8 +106,8 @@ fn package_files(dir: &Path, errors: &mut Vec<String>) -> Vec<(String, u64)> {
     files
 }
 
-/// 文件名与内容的密钥扫描。
-fn scan_secrets(dir: &Path, files: &[(String, u64)]) -> Vec<SecretHit> {
+/// 文件名与内容的密钥扫描。精选审核也用它扫待审的包。
+pub fn scan_secrets(dir: &Path, files: &[(String, u64)]) -> Vec<SecretHit> {
     let mut hits = Vec::new();
     for (file, size) in files {
         let name = file.rsplit('/').next().unwrap_or(file).to_lowercase();
@@ -432,7 +432,7 @@ impl Publisher {
         Ok(if stdout.is_empty() { stderr } else { stdout })
     }
 
-    fn gh(&self, args: &[&str]) -> anyhow::Result<String> {
+    pub(crate) fn gh(&self, args: &[&str]) -> anyhow::Result<String> {
         self.run(&self.gh, args, None)
     }
 

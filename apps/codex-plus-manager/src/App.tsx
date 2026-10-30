@@ -9836,7 +9836,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         )}
         </>
       ) : pane === "community" ? (
-        <CommunityExtensionsPanel onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+        <CommunityExtensionsPanel onCurated={actions.refreshScriptMarket} onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
       ) : pane === "dsh" ? (
         <DshPluginsPanel />
       ) : (

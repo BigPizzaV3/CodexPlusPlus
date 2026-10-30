@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { BadgeCheck, Download, ExternalLink, Loader2, ShieldAlert } from "lucide-react";
+import { useEffect, useState } from "react";
+import { BadgeCheck, Download, ExternalLink, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InstallDialog, errorText, request, type Prepared } from "./CommunityExtensionsPanel";
+import { CurationReviewDialog, curationRequest, useCurationStatus, type CuratedUpdate } from "./ExtensionCuration";
 import { t, tf } from "./i18n";
 
 // 与 crates/codex-plus-core/src/script_market.rs 的 market_packages_payload 对应。
@@ -52,6 +53,19 @@ export function CuratedPackagesSection({
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // 维护者：查一次精选拓展的作者有没有发新版本，有就给「审核更新」。
+  const curation = useCurationStatus();
+  const [updates, setUpdates] = useState<Record<string, CuratedUpdate>>({});
+  const [reviewing, setReviewing] = useState("");
+  const packageKey = packages.map((item) => `${item.repo}@${item.sha}`).join(",");
+  useEffect(() => {
+    if (!curation?.maintainer || !packageKey) return;
+    let alive = true;
+    curationRequest<{ updates: CuratedUpdate[] }>("updates")
+      .then((result) => { if (alive) setUpdates(Object.fromEntries(result.updates.map((item) => [item.repo.toLowerCase(), item]))); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [curation?.maintainer, packageKey]);
   const query = search.trim().toLocaleLowerCase();
   const visible = packages.filter((item) =>
     !query || [item.name, item.id, item.repo, item.description, item.author, ...item.tags].join(" ").toLocaleLowerCase().includes(query),
@@ -126,6 +140,12 @@ export function CuratedPackagesSection({
                   )}
                 </div>
                 <div className="community-ext-actions">
+                  {updates[item.repo.toLowerCase()] ? (
+                    <Button disabled={reviewing !== ""} onClick={() => setReviewing(item.repo)} size="sm" title={t("作者发了新版本，审核后再更新精选里锁定的提交")} variant="secondary">
+                      <ShieldCheck className="h-4 w-4" />
+                      {tf("审核更新 {0}", [updates[item.repo.toLowerCase()].latestTag ?? updates[item.repo.toLowerCase()].latestSha.slice(0, 7)])}
+                    </Button>
+                  ) : null}
                   {item.localSource ? (
                     <span className="community-ext-installed" title={t("你在本机编写并发布的拓展，在「本地拓展」里管理")}>{tf("本机源码 {0}", [item.installedVersion])}</span>
                   ) : (
@@ -157,6 +177,19 @@ export function CuratedPackagesSection({
         <div className="empty">{t("没有匹配的拓展包。")}</div>
       ) : null}
       {prepared ? <InstallDialog onCancel={cancel} onInstall={(enable) => void install(enable)} prepared={prepared} /> : null}
+      {reviewing ? (
+        <CurationReviewDialog
+          onApproved={(message) => {
+            setReviewing("");
+            setNotice(message);
+            setUpdates((current) => Object.fromEntries(Object.entries(current).filter(([repo]) => repo !== reviewing.toLowerCase())));
+            void onInstalled();
+          }}
+          onClose={() => setReviewing("")}
+          onOpenUrl={onOpenUrl}
+          repo={reviewing}
+        />
+      ) : null}
     </section>
   );
 }

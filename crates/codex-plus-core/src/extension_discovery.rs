@@ -72,6 +72,14 @@ impl Endpoints {
         }
     }
 
+    /// 换一个 API 令牌（维护者用本机 gh 的令牌，限额高），只发往 `api`。
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        if token.is_some() {
+            self.token = token;
+        }
+        self
+    }
+
     fn client(&self) -> anyhow::Result<reqwest::Client> {
         let agent = format!("Codex++/{}", crate::version::VERSION);
         if self.api.starts_with("https://") {
@@ -803,6 +811,22 @@ impl CommunityStore {
     }
 
     /// 用户取消安装：清掉暂存。
+    /// prepare 暂存的包：包目录与暂存元数据（repo / id / version / tag / sha）。精选审核在暂存的包上检查。
+    pub fn staged(&self, token: &str) -> anyhow::Result<(PathBuf, Value)> {
+        if token.is_empty() || !token.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+            bail!("暂存令牌无效");
+        }
+        let staging = self.staging_dir().join(token);
+        let meta: Value = serde_json::from_slice(&std::fs::read(staging.join(STAGING_META)).context("暂存的包已过期，请重新审核")?)?;
+        let id = meta.get("id").and_then(Value::as_str).context("暂存元数据缺少 id")?;
+        Ok((staging.join("user").join(id), meta))
+    }
+
+    /// 社区缓存里的条目（仓库信息与默认分支清单）。
+    pub fn cached_entry(&self, repo: &str) -> Option<CommunityEntry> {
+        self.load_cache()?.entries.into_iter().find(|entry| entry.repo.eq_ignore_ascii_case(repo))
+    }
+
     pub fn discard(&self, token: &str) {
         if !token.is_empty() && token.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
             let _ = std::fs::remove_dir_all(self.staging_dir().join(token));
@@ -988,6 +1012,13 @@ fn parse_version_tag(name: &str) -> Option<TagVersion> {
 }
 
 /// 要装的版本：最新 release → 最新 `v*` tag → 默认分支，都解析成提交 SHA。
+/// 仓库当前的最新版本（release → tag → 默认分支）。精选维护者检查新版本用。
+pub async fn latest_version(endpoints: &Endpoints, repo: &str, id: &str, default_branch: &str) -> anyhow::Result<ResolvedVersion> {
+    validate_repo(repo)?;
+    let client = endpoints.client()?;
+    resolve_version(&client, endpoints, repo, id, default_branch).await
+}
+
 pub async fn resolve_version(
     client: &reqwest::Client,
     endpoints: &Endpoints,

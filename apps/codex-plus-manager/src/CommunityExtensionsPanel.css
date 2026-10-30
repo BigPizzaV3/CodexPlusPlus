@@ -58,3 +58,20 @@
 .shell .extension-publish-steps li[data-state=running] { color:hsl(var(--muted-foreground)); }
 .shell .extension-publish-steps li[data-state=running] svg { flex:none; }
 .shell .extension-publish-steps pre { margin:2px 0 0; font-size:11px; white-space:pre-wrap; overflow-wrap:anywhere; color:hsl(var(--muted-foreground)); max-height:96px; overflow:auto; }
+/* 精选维护：审核框里的差异与文件列表 */
+.shell .curation-dialog { max-width:720px; }
+.shell .curation-dialog .confirm-modal-body { max-height:min(70vh, 640px); overflow:auto; }
+.shell .curation-diff { display:flex; flex-direction:column; gap:4px; font-size:12px; }
+.shell .curation-diff-head { display:flex; align-items:center; justify-content:space-between; gap:8px; color:hsl(var(--muted-foreground)); }
+.shell .curation-diff details, .shell .curation-files { border:1px solid hsl(var(--border)); border-radius:6px; padding:4px 8px; font-size:12px; }
+.shell .curation-diff summary, .shell .curation-files summary { display:flex; align-items:center; justify-content:space-between; gap:8px; cursor:pointer; padding:2px 0; }
+.shell .curation-diff summary code { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.shell .curation-diff-stat { flex:none; font-family:var(--font-mono, monospace); }
+.shell .curation-diff-stat em { font-style:normal; color:hsl(var(--status-success, 142 60% 36%)); }
+.shell .curation-diff-stat i { font-style:normal; color:hsl(var(--status-error, 0 72% 51%)); }
+.shell .curation-diff pre { margin:4px 0 2px; max-height:280px; overflow:auto; font-size:11px; line-height:1.45; white-space:pre; }
+.shell .curation-diff pre span[data-kind=add] { color:hsl(var(--status-success, 142 60% 36%)); background:hsl(var(--status-success, 142 60% 36%) / .08); }
+.shell .curation-diff pre span[data-kind=del] { color:hsl(var(--status-error, 0 72% 51%)); background:hsl(var(--status-error, 0 72% 51%) / .08); }
+.shell .curation-diff pre span[data-kind=hunk] { color:hsl(var(--muted-foreground)); }
+.shell .curation-files ul { margin:4px 0 2px; padding:0; list-style:none; display:flex; flex-direction:column; gap:2px; max-height:200px; overflow:auto; }
+.shell .curation-files li { display:flex; justify-content:space-between; gap:8px; color:hsl(var(--muted-foreground)); }

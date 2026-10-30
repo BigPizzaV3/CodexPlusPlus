@@ -340,8 +340,24 @@ fn parse_market_package(raw: &Value) -> Option<MarketPackage> {
 static MANIFEST_CACHE: std::sync::Mutex<Option<(std::time::Instant, ScriptMarketManifest)>> = std::sync::Mutex::new(None);
 const MANIFEST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// 维护者刚写进市场仓库的清单。raw.githubusercontent 有几分钟 CDN 缓存，这段时间内以它为准，
+/// 免得刚收录的拓展在刷新后又消失。
+static PUBLISHED_MANIFEST: std::sync::Mutex<Option<(std::time::Instant, ScriptMarketManifest)>> = std::sync::Mutex::new(None);
+const PUBLISHED_MANIFEST_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 记下刚写进市场仓库的清单（精选收录 / 更新后调用）。
+pub fn remember_published_manifest(manifest: ScriptMarketManifest) {
+    *MANIFEST_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((std::time::Instant::now(), manifest.clone()));
+    *PUBLISHED_MANIFEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((std::time::Instant::now(), manifest));
+}
+
 /// 带缓存地取清单。`force` 时跳过缓存；拉取失败且有旧清单时返回旧清单。
 pub async fn cached_market_manifest(force: bool) -> anyhow::Result<ScriptMarketManifest> {
+    if let Some((at, manifest)) = PUBLISHED_MANIFEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
+        if at.elapsed() < PUBLISHED_MANIFEST_TTL {
+            return Ok(manifest.clone());
+        }
+    }
     if !force {
         if let Some((at, manifest)) = MANIFEST_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
             if at.elapsed() < MANIFEST_CACHE_TTL {
