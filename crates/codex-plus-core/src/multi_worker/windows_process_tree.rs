@@ -13,7 +13,7 @@ enum Role {
     AppServer,
 }
 
-fn same_resolved_path(actual: &Path, expected: &Path) -> bool {
+pub(super) fn same_resolved_path(actual: &Path, expected: &Path) -> bool {
     let normalize = |path: &Path| {
         path.to_string_lossy()
             .trim_start_matches(r"\\?\")
