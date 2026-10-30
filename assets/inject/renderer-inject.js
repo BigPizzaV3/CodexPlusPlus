@@ -431,7 +431,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "27";
+  const codexAppServerModelRequestPatchVersion = "28";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -12448,12 +12448,10 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      // 拓展的 codex/request 中间件：在 Codex++ 自己的改写之后、真正发出之前。
-      const extensionParams = typeof codexPlusApplyExtensionRequestMiddlewareAsync === "function"
-        ? await codexPlusApplyExtensionRequestMiddlewareAsync(requestMethod, providerParams)
-        : providerParams;
+      // 拓展的 codex/request 中间件不在这里跑：新版 Codex 的部分请求（如 turn/start）绕过 sendRequest，
+      // 直接 enqueueRequest → createRequest，所以统一挂在下面的 createRequest 上，每个请求只经过一次。
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        extensionParams, client.hostId, originalSendRequest.bind(client));
+        providerParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -12476,6 +12474,20 @@
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client));
     };
+    // 所有请求最终都经 createRequest(method, params, options) 组装：拓展的 codex/request 中间件挂在这里。
+    // createRequest 是同步的，与 codex/request 的契约一致（中间件同步返回，返回 Promise 视为出错并放行）。
+    if (typeof proto.createRequest === "function") {
+      const originalCreateRequest = proto.__codexPlusOriginalCreateRequest || proto.createRequest;
+      proto.__codexPlusOriginalCreateRequest = originalCreateRequest;
+      proto.createRequest = function codexPlusPatchedCreateRequest(method, params, ...rest) {
+        let nextParams = params;
+        if (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware()
+            && typeof codexPlusApplyExtensionRequestMiddleware === "function") {
+          nextParams = codexPlusApplyExtensionRequestMiddleware(String(method || ""), params);
+        }
+        return originalCreateRequest.call(this, method, nextParams, ...rest);
+      };
+    }
     if (typeof proto.prewarmThreadStart === "function") {
       const originalPrewarmThreadStart = proto.__codexPlusServiceTierOriginalPrewarmThreadStart
         || proto.prewarmThreadStart;

@@ -3955,6 +3955,17 @@ describe("拓展运行时内核", () => {
     assert.equal(fiber.state, "pending", "提供方撤掉，依赖方回到挂起");
   });
 
+  it("codex/request 中间件挂在 createRequest 上：turn/start 绕过 sendRequest 也经过，且每个请求只跑一次", async () => {
+    const source = await readFile(new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8");
+    const patch = source.match(/proto\.createRequest = function codexPlusPatchedCreateRequest\(method, params, \.\.\.rest\) \{[\s\S]*?\n      \};/);
+    assert.ok(patch, "createRequest 补丁不在");
+    assert.match(patch![0], /codexPlusApplyExtensionRequestMiddleware\(String\(method \|\| ""\), params\)/);
+    assert.match(patch![0], /originalCreateRequest\.call\(this, method, nextParams, \.\.\.rest\)/);
+    const send = source.match(/proto\.sendRequest = async function codexPlusModelPatchedSendRequest[\s\S]*?\n    \};/);
+    assert.ok(send);
+    assert.doesNotMatch(send![0], /codexPlusApplyExtensionRequestMiddleware/, "sendRequest 里不能再跑一次");
+  });
+
   it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {
     const k = await kernel({ manifest: { id: "greeter", locales: { en: { meta: { title: "Greeter" }, hi: "Hello {name}" }, fr: { hi: "Bonjour {name}" } } } });
     const ctx = k.create(() => {});
