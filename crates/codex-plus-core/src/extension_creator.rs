@@ -610,50 +610,13 @@ fn extension_tool_definitions(manager: &UserScriptManager) -> Vec<Value> {
 const TOOL_RUNNER: &str = r#"
 import { pathToFileURL } from "node:url";
 import readline from "node:readline";
-const write = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const lines = readline.createInterface({ input: process.stdin });
-const hostPending = new Map();
-let hostSeq = 0;
-const host = (service, method, params) => new Promise((resolve, reject) => {
-  const id = ++hostSeq;
-  hostPending.set(id, { resolve, reject });
-  write({ host: id, service, method, params: params ?? null });
-});
-const withId = (method) => (id, options) => host("sessionQuery", method, { id, options: options ?? {} });
-const readSession = (id) => host("sessionQuery", "readSession", { id });
-const readEventsSince = (query) => host("sessionQuery", "readEventsSince", query ?? {});
-// 把会话事件日志折叠成状态；apply(state, event) 返回 undefined 视为不变。
-const project = async (id, { init, apply } = {}) => {
-  if (typeof apply !== "function") throw new Error("project 需要 apply(state, event)");
-  const { events } = await readSession(id);
-  let state = typeof init === "function" ? init() : init;
-  for (const event of events) { const next = apply(state, event); if (next !== undefined) state = next; }
-  return state;
-};
-// 只读会话查询，和页面、后台里的 sessionQuery 同一套方法。
-const sessionQuery = Object.freeze({
-  listSessions: (options) => host("sessionQuery", "listSessions", options ?? {}),
-  filterSessions: (filters) => host("sessionQuery", "filterSessions", filters ?? {}),
-  readSession,
-  readTitle: (id) => host("sessionQuery", "readTitle", { id }),
-  listEvents: withId("listEvents"),
-  filterEvents: withId("filterEvents"),
-  readEvent: (query) => host("sessionQuery", "readEvent", query ?? {}),
-  readEventsSince,
-  project,
-  searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
-  searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
-});
+/*HOST_CLIENT*/
 let input = null;
 lines.on("line", async (line) => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
-  if (message.hostReply !== undefined) {
-    const waiter = hostPending.get(message.hostReply);
-    hostPending.delete(message.hostReply);
-    if (message.error !== undefined) waiter?.reject(new Error(message.error)); else waiter?.resolve(message.result);
-    return;
-  }
+  if (handleHostReply(message)) return;
   if (input) return;
   input = message;
   let timer;
@@ -662,7 +625,7 @@ lines.on("line", async (line) => {
     const fn = typeof module.default === "function" ? module.default : module[input.tool];
     if (typeof fn !== "function") throw new Error(`${input.script} 没有默认导出函数`);
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${input.timeoutMs / 1000} 秒）`)), input.timeoutMs); });
-    const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {}, sessionQuery })), timeout]);
+    const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {}, sessionQuery, service })), timeout]);
     write({ final: { result: result === undefined ? null : result } });
   } catch (error) {
     write({ final: { error: String(error?.stack || error?.message || error) } });
@@ -693,9 +656,10 @@ async fn call_extension_tool(creator: &ExtensionCreator, name: &str, arguments: 
     });
     let output = crate::extension_node::run_runner_with_host(
         &node,
-        TOOL_RUNNER,
+        &crate::extension_node::with_host_client(TOOL_RUNNER),
         &input,
         Duration::from_secs(tool.timeout_secs + 5),
+        &creator.manager,
     )
     .await?;
     if let Some(error) = output.get("error").and_then(Value::as_str) {

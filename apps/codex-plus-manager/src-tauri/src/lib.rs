@@ -69,6 +69,10 @@ pub fn run_agent_collaboration_mcp(args: &[std::ffi::OsString]) -> anyhow::Resul
 /// Codex 钩子分发：`--codex-plus-hook <事件>`，由 Codex 在对应时机经 shell 调用。
 pub fn run_extension_hook(event: &str) -> i32 {
     let manager = commands::default_user_script_manager();
+    // 钩子进程不托管后台：服务调用经 Codex 页面桥接转发（钩子不继承管理器环境，按默认状态目录找端口）。
+    codex_plus_core::extension_backend::set_remote_bridge_ports(extension_creator_commands::debug_ports(
+        &codex_plus_core::paths::default_app_state_dir(),
+    ));
     tauri::async_runtime::block_on(codex_plus_core::extension_hooks::run_cli(&manager, event))
 }
 

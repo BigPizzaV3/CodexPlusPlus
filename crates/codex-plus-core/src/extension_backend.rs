@@ -32,76 +32,15 @@ pub const MAX_EVENT_WAIT: Duration = Duration::from_secs(20);
 const RUNNER: &str = r#"
 import { pathToFileURL } from "node:url";
 import readline from "node:readline";
-const write = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const lines = readline.createInterface({ input: process.stdin });
 let methods = null;
 let ready = null;
-// 向 Codex++ 发起宿主调用（例如只读会话查询），回复按 hostReply 对应。
-const hostPending = new Map();
-let hostSeq = 0;
-const host = (service, method, params) => new Promise((resolve, reject) => {
-  const id = ++hostSeq;
-  hostPending.set(id, { resolve, reject });
-  write({ host: id, service, method, params: params ?? null });
-});
-const withId = (method) => (id, options) => host("sessionQuery", method, { id, options: options ?? {} });
-const readSession = (id) => host("sessionQuery", "readSession", { id });
-const readEventsSince = (query) => host("sessionQuery", "readEventsSince", query ?? {});
-// 把会话事件日志折叠成状态；apply(state, event) 返回 undefined 视为不变。
-const project = async (id, { init, apply } = {}) => {
-  if (typeof apply !== "function") throw new Error("project 需要 apply(state, event)");
-  const { events } = await readSession(id);
-  let state = typeof init === "function" ? init() : init;
-  for (const event of events) { const next = apply(state, event); if (next !== undefined) state = next; }
-  return state;
-};
-const sessionQuery = Object.freeze({
-  listSessions: (options) => host("sessionQuery", "listSessions", options ?? {}),
-  filterSessions: (filters) => host("sessionQuery", "filterSessions", filters ?? {}),
-  readSession,
-  readTitle: (id) => host("sessionQuery", "readTitle", { id }),
-  listEvents: withId("listEvents"),
-  filterEvents: withId("filterEvents"),
-  readEvent: (query) => host("sessionQuery", "readEvent", query ?? {}),
-  readEventsSince,
-  project,
-  // 订阅会话新事件（默认从当前末尾开始，每 intervalMs 增量读一次），返回撤销函数。
-  observeSession(id, handler, options = {}) {
-    let stopped = false;
-    let next = Number.isFinite(options.fromSeq) ? Number(options.fromSeq) : null;
-    let timer = null;
-    const interval = Math.max(500, Number(options.intervalMs) || 2000);
-    const tick = async () => {
-      if (stopped) return;
-      try {
-        if (next === null) {
-          const tail = await host("sessionQuery", "listEvents", { id, options: { fromEnd: true, limit: 1 } });
-          next = tail.length ? tail[0].seq + 1 : 0;
-        } else {
-          for (const event of await readEventsSince({ sessionId: id, seq: next, limit: 200 })) {
-            if (stopped) return;
-            next = event.seq + 1;
-            try { handler(event); } catch {}
-          }
-        }
-      } catch {}
-      if (!stopped) timer = setTimeout(tick, interval);
-    };
-    void tick();
-    return () => { stopped = true; clearTimeout(timer); };
-  },
-  searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
-  searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
-});
+const provided = new Map();
+/*HOST_CLIENT*/
 lines.on("line", async (line) => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
-  if (message.hostReply !== undefined) {
-    const waiter = hostPending.get(message.hostReply);
-    hostPending.delete(message.hostReply);
-    if (message.error !== undefined) waiter?.reject(new Error(message.error)); else waiter?.resolve(message.result);
-    return;
-  }
+  if (handleHostReply(message)) return;
   if (!ready) {
     ready = (async () => {
       try {
@@ -114,6 +53,10 @@ lines.on("line", async (line) => {
           dataDir: message.dataDir,
           emit: (event, payload) => write({ event: String(event), payload: payload ?? null }),
           sessionQuery,
+          // 提供服务：名字要在 codexpp.json 的 backend.provides 里声明，别处才找得到。
+          provide: (name, impl) => { provided.set(String(name), impl); },
+          // 调用任一拓展后台提供的服务（包括自己的）：service("名字").方法(...参数)。
+          service,
           log: (...args) => process.stderr.write(args.map(String).join(" ") + "\n"),
         });
         write({ ready: true, methods: Object.keys(methods ?? {}).filter((name) => typeof methods[name] === "function") });
@@ -127,6 +70,16 @@ lines.on("line", async (line) => {
   await ready;
   const { id, method, params } = message;
   try {
+    // 别处按服务名调来的方法：{ name, method, args }，分派到 ctx.provide 登记的实现。
+    if (method === "__service") {
+      const impl = provided.get(params?.name);
+      if (!impl) throw new Error(`后台没有提供服务 ${params?.name}（请在默认导出里调用 ctx.provide）`);
+      const target = impl[params?.method];
+      if (typeof target !== "function") throw new Error(`服务 ${params?.name} 没有方法 ${params?.method}`);
+      const result = await target.apply(impl, Array.isArray(params?.args) ? params.args : []);
+      write({ id, result: result === undefined ? null : result });
+      return;
+    }
     const fn = methods?.[method];
     if (typeof fn !== "function") throw new Error(`后台没有方法 ${method}`);
     const result = await fn(params ?? null);
@@ -185,7 +138,7 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
     std::fs::create_dir_all(&data).with_context(|| format!("无法创建拓展数据目录 {}", data.display()))?;
     let mut command = tokio::process::Command::new(node);
     command
-        .args(["--input-type=module", "-e", RUNNER])
+        .args(["--input-type=module", "-e", &crate::extension_node::with_host_client(RUNNER)])
         .current_dir(&data)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -213,6 +166,8 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
         let events = events.clone();
         let notify = notify.clone();
         let host_stdin = stdin.clone();
+        // 后台的宿主调用（例如调用别的后台服务）沿用启动它的那个拓展目录。
+        let host_manager = manager.clone();
         let mut ready_tx = Some(ready_tx);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -223,8 +178,9 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
                 if let Some(host_id) = message.get("host").and_then(Value::as_u64) {
                     // 宿主调用另起任务处理，不挡住后台的其它输出。
                     let host_stdin = host_stdin.clone();
+                    let host_manager = host_manager.clone();
                     tokio::spawn(async move {
-                        let reply = match host_call(&message).await {
+                        let reply = match host_call(&message, &host_manager).await {
                             Ok(result) => json!({ "hostReply": host_id, "result": result }),
                             Err(error) => json!({ "hostReply": host_id, "error": format!("{error:#}") }),
                         };
@@ -274,18 +230,99 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
     Ok(Backend { stdin, pending, events, notify, next_id: 1, fingerprint, instance: None, _child: child })
 }
 
-/// 后台发起的宿主调用。目前只开放只读会话查询（sessionQuery）。
-pub(crate) async fn host_call(message: &Value) -> anyhow::Result<Value> {
-    let service = message.get("service").and_then(Value::as_str).unwrap_or_default();
+/// 后台、模型工具发起的宿主调用：只读会话查询（sessionQuery），以及按名字调用后台服务（services.call）。
+///
+/// 返回装箱的 Send future：服务调用会经 `call` 再回到这里（后台调用后台），递归的 async 需要显式装箱。
+pub(crate) fn host_call<'a>(
+    message: &'a Value,
+    manager: &'a UserScriptManager,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send + 'a>> {
+    Box::pin(host_call_inner(message, manager))
+}
+
+async fn host_call_inner(message: &Value, manager: &UserScriptManager) -> anyhow::Result<Value> {
+    let service = message.get("service").and_then(Value::as_str).unwrap_or_default().to_string();
     let method = message.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
-    match service {
-        "sessionQuery" => {
+    match (service.as_str(), method.as_str()) {
+        ("sessionQuery", _) => {
             let home = crate::codex_sqlite::default_codex_home_dir();
             tokio::task::spawn_blocking(move || crate::extension_history::call(&home, &method, &params)).await?
         }
-        other => anyhow::bail!("后台不能调用服务 {other}"),
+        ("services", "call") => {
+            // 后台都托管在处理桥接的那个进程里。本进程不是它（拓展 MCP、钩子进程）时经 Codex 页面的桥接转过去，
+            // 否则同一个后台会在两个进程里各起一份，状态对不上。
+            if let Some(ports) = REMOTE_BRIDGE_PORTS.get() {
+                let result = remote_bridge_call(ports, "/extensions/services/call", &params).await?;
+                return Ok(result.get("result").cloned().unwrap_or(Value::Null));
+            }
+            call_service(manager, &params).await
+        }
+        _ => anyhow::bail!("不能调用 {service}.{method}"),
     }
+}
+
+/// 不托管后台的进程（拓展 MCP、钩子）设置：服务调用经这些 CDP 调试端口上的 Codex 页面桥接转发。
+static REMOTE_BRIDGE_PORTS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+
+pub fn set_remote_bridge_ports(ports: Vec<u16>) {
+    let _ = REMOTE_BRIDGE_PORTS.set(ports);
+}
+
+/// 在 Codex 页面里调用桥接路由，返回路由结果（失败时报错）。
+async fn remote_bridge_call(ports: &[u16], path: &str, payload: &Value) -> anyhow::Result<Value> {
+    let mut websocket = None;
+    for port in ports {
+        let Ok(targets) = crate::cdp::list_targets(*port).await else {
+            continue;
+        };
+        if let Some(url) = crate::cdp::pick_injectable_codex_page_target(&targets).ok().and_then(|target| target.web_socket_debugger_url) {
+            websocket = Some(url);
+            break;
+        }
+    }
+    let websocket = websocket.context("没有找到已连接的 Codex 页面，无法调用拓展服务")?;
+    let expression = format!(
+        "(async () => JSON.stringify(await window.__codexSessionDeleteBridge({}, {})))()",
+        json!(path),
+        payload
+    );
+    let response = crate::bridge::evaluate_script_with_await_promise(&websocket, &expression, true).await?;
+    if let Some(exception) = response.pointer("/result/exceptionDetails") {
+        anyhow::bail!("页面桥接出错：{}", exception.get("text").and_then(Value::as_str).unwrap_or("未知错误"));
+    }
+    let text = response.pointer("/result/result/value").and_then(Value::as_str).context("页面桥接没有返回结果")?;
+    let result: Value = serde_json::from_str(text)?;
+    if result.get("status").and_then(Value::as_str) == Some("failed") || result.get("error").is_some() {
+        anyhow::bail!("{}", result.get("message").or_else(|| result.get("error")).and_then(Value::as_str).unwrap_or("服务调用失败"));
+    }
+    Ok(result)
+}
+
+/// 按服务名调用提供它的后台：`{ name, method, args, timeoutMs? }`。后台没起就先起。
+pub async fn call_service(manager: &UserScriptManager, params: &Value) -> anyhow::Result<Value> {
+    let name = params.get("name").and_then(Value::as_str).context("缺少服务名")?;
+    let method = params.get("method").and_then(Value::as_str).filter(|method| !method.is_empty()).context("缺少服务方法名")?;
+    let (_, key) = manager
+        .enabled_backend_services()?
+        .into_iter()
+        .find(|(service, _)| service == name)
+        .with_context(|| format!("没有拓展提供服务 {name}（需要在 codexpp.json 的 backend.provides 里声明）"))?;
+    let timeout = params
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_CALL_TIMEOUT)
+        .min(Duration::from_secs(24));
+    let args = params.get("args").cloned().filter(Value::is_array).unwrap_or_else(|| json!([]));
+    call(manager, &key, "__service", json!({ "name": name, "method": method, "args": args }), timeout, None).await
+}
+
+/// 桥接路由 `/extensions/services/call`：`{ name, method, args, timeoutMs? }`。
+pub async fn route_service_call(payload: &Value) -> anyhow::Result<Value> {
+    let manager = crate::user_scripts::default_user_script_manager();
+    let result = call_service(&manager, payload).await?;
+    Ok(json!({ "status": "ok", "result": result }))
 }
 
 /// 调用一个拓展后台的方法；后台没起就先起。后台退出过、或拓展改过的会被重新拉起，

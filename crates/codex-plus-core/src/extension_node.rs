@@ -37,10 +37,98 @@ pub async fn run_runner(node: &Path, runner: &str, input: &Value, limit: Duratio
     serde_json::from_slice(&buffer).context("拓展脚本运行器输出不是 JSON")
 }
 
+/// 运行器里的宿主调用客户端：`write`、`host(service, method, params)`、只读会话查询 `sessionQuery`、
+/// 按名字调用后台服务的 `service(name)`、以及处理回复的 `handleHostReply(message)`。运行器在 import
+/// 之后放一行 `/*HOST_CLIENT*/`，由 [`with_host_client`] 替换成这段代码。
+pub const HOST_CLIENT_JS: &str = r#"
+const write = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+// 向 Codex++ 发起宿主调用（例如只读会话查询），回复按 hostReply 对应。
+const hostPending = new Map();
+let hostSeq = 0;
+const host = (service, method, params) => new Promise((resolve, reject) => {
+  const id = ++hostSeq;
+  hostPending.set(id, { resolve, reject });
+  write({ host: id, service, method, params: params ?? null });
+});
+// 调用任一拓展后台提供的服务：service("名字").方法(...参数)。
+const service = (name) => new Proxy({}, {
+  get: (_, method) => (typeof method !== "string" || method === "then") ? undefined
+    : (...args) => host("services", "call", { name: String(name), method, args }),
+});
+const withId = (method) => (id, options) => host("sessionQuery", method, { id, options: options ?? {} });
+const readSession = (id) => host("sessionQuery", "readSession", { id });
+const readEventsSince = (query) => host("sessionQuery", "readEventsSince", query ?? {});
+// 把会话事件日志折叠成状态；apply(state, event) 返回 undefined 视为不变。
+const project = async (id, { init, apply } = {}) => {
+  if (typeof apply !== "function") throw new Error("project 需要 apply(state, event)");
+  const { events } = await readSession(id);
+  let state = typeof init === "function" ? init() : init;
+  for (const event of events) { const next = apply(state, event); if (next !== undefined) state = next; }
+  return state;
+};
+const sessionQuery = Object.freeze({
+  listSessions: (options) => host("sessionQuery", "listSessions", options ?? {}),
+  filterSessions: (filters) => host("sessionQuery", "filterSessions", filters ?? {}),
+  readSession,
+  readTitle: (id) => host("sessionQuery", "readTitle", { id }),
+  listEvents: withId("listEvents"),
+  filterEvents: withId("filterEvents"),
+  readEvent: (query) => host("sessionQuery", "readEvent", query ?? {}),
+  readEventsSince,
+  project,
+  // 订阅会话新事件（默认从当前末尾开始，每 intervalMs 增量读一次），返回撤销函数。
+  observeSession(id, handler, options = {}) {
+    let stopped = false;
+    let next = Number.isFinite(options.fromSeq) ? Number(options.fromSeq) : null;
+    let timer = null;
+    const interval = Math.max(500, Number(options.intervalMs) || 2000);
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        if (next === null) {
+          const tail = await host("sessionQuery", "listEvents", { id, options: { fromEnd: true, limit: 1 } });
+          next = tail.length ? tail[0].seq + 1 : 0;
+        } else {
+          for (const event of await readEventsSince({ sessionId: id, seq: next, limit: 200 })) {
+            if (stopped) return;
+            next = event.seq + 1;
+            try { handler(event); } catch {}
+          }
+        }
+      } catch {}
+      if (!stopped) timer = setTimeout(tick, interval);
+    };
+    void tick();
+    return () => { stopped = true; clearTimeout(timer); };
+  },
+  searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
+  searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
+});
+// 宿主调用的回复：处理了就返回 true。
+const handleHostReply = (message) => {
+  if (message?.hostReply === undefined) return false;
+  const waiter = hostPending.get(message.hostReply);
+  hostPending.delete(message.hostReply);
+  if (message.error !== undefined) waiter?.reject(new Error(message.error)); else waiter?.resolve(message.result);
+  return true;
+};
+"#;
+
+/// 把运行器里的 `/*HOST_CLIENT*/` 换成宿主调用客户端。
+pub fn with_host_client(runner: &str) -> String {
+    runner.replace("/*HOST_CLIENT*/", HOST_CLIENT_JS)
+}
+
 /// 带宿主调用的运行方式：stdin 第一行写 `input` 且保持打开；运行器中途可以写
 /// `{ host, service, method, params }` 请求 Codex++（目前是只读会话查询），回复以
 /// `{ hostReply, result | error }` 写回 stdin；最后一行 `{ final: 结果 }` 即运行结果。
-pub async fn run_runner_with_host(node: &Path, runner: &str, input: &Value, limit: Duration) -> anyhow::Result<Value> {
+pub async fn run_runner_with_host(
+    node: &Path,
+    runner: &str,
+    input: &Value,
+    limit: Duration,
+    manager: &crate::user_scripts::UserScriptManager,
+) -> anyhow::Result<Value> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let mut command = tokio::process::Command::new(node);
     command
@@ -63,7 +151,7 @@ pub async fn run_runner_with_host(node: &Path, runner: &str, input: &Value, limi
                 continue;
             };
             if let Some(id) = message.get("host").and_then(Value::as_u64) {
-                let reply = match crate::extension_backend::host_call(&message).await {
+                let reply = match crate::extension_backend::host_call(&message, manager).await {
                     Ok(result) => serde_json::json!({ "hostReply": id, "result": result }),
                     Err(error) => serde_json::json!({ "hostReply": id, "error": format!("{error:#}") }),
                 };

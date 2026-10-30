@@ -72,7 +72,7 @@ fn state_dir_from_args(args: &[OsString]) -> anyhow::Result<PathBuf> {
 
 /// Codex 页面的调试端口：MCP 进程由 Codex 拉起，不继承管理器的环境变量，所以按接入时固化的
 /// 状态目录读实例记录，再补常规安装的记录与默认端口。实际操作前仍会核对页面身份。
-fn debug_ports(state_dir: &Path) -> Vec<u16> {
+pub(crate) fn debug_ports(state_dir: &Path) -> Vec<u16> {
     let mut ports = Vec::new();
     let mut push = |port: Option<u16>| {
         if let Some(port) = port.filter(|port| *port > 0) {
@@ -98,9 +98,12 @@ fn debug_ports(state_dir: &Path) -> Vec<u16> {
 
 pub fn run_mcp(args: &[OsString]) -> anyhow::Result<()> {
     let state_dir = state_dir_from_args(args)?;
+    let ports = debug_ports(&state_dir);
+    // 拓展工具调用后台服务时，经这些端口上的 Codex 页面桥接转给托管后台的进程。
+    codex_plus_core::extension_backend::set_remote_bridge_ports(ports.clone());
     let creator = ExtensionCreator {
         manager: crate::commands::default_user_script_manager(),
-        debug_ports: debug_ports(&state_dir),
+        debug_ports: ports,
     };
     tauri::async_runtime::block_on(extension_creator::serve(creator))
 }

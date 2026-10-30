@@ -3931,6 +3931,30 @@ describe("拓展运行时内核", () => {
     assert.deepEqual(seen, [2], "撤销后不再推送");
   });
 
+  it("后台服务：注入包下发的清单登记成页面服务，方法经桥接调用，清单变化时增删", async () => {
+    const k = await kernel();
+    const requests: any[] = [];
+    (k.window as any).__codexSessionDeleteBridge = (path: string, payload: any) => {
+      requests.push([path, payload]);
+      return Promise.resolve(payload.method === "fail" ? { status: "failed", message: "后台报错" } : { status: "ok", result: payload.args.length });
+    };
+    (k.window as any).__codexPlusBackendServices = [{ name: "metrics", key: "user:stats" }, { name: "bad name", key: "user:x" }];
+    k.installBuiltins();
+    assert.equal(k.services.get("metrics")?.owner, "backend:user:stats");
+    assert.equal(k.services.has("bad name"), false);
+    let metrics: any;
+    const fiber = k.create({ inject: ["metrics"], apply(ctx: any) { metrics = ctx.metrics; } });
+    assert.equal(fiber.state, "active");
+    assert.equal(await metrics.record("a", 1), 2);
+    assert.deepEqual(requests[0], ["/extensions/services/call", { name: "metrics", method: "record", args: ["a", 1] }]);
+    await assert.rejects(metrics.fail(), /后台报错/);
+    assert.equal(metrics.then, undefined, "代理不是 thenable，可以直接 await 拿到");
+    (k.window as any).__codexPlusBackendServices = [];
+    (k.window as any).__codexPlusSyncBackendServices();
+    assert.equal(k.services.has("metrics"), false);
+    assert.equal(fiber.state, "pending", "提供方撤掉，依赖方回到挂起");
+  });
+
   it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {
     const k = await kernel({ manifest: { id: "greeter", locales: { en: { meta: { title: "Greeter" }, hi: "Hello {name}" }, fr: { hi: "Bonjour {name}" } } } });
     const ctx = k.create(() => {});

@@ -160,3 +160,47 @@ async fn backend_can_query_sessions_through_the_host() {
     assert_eq!(call(&manager, &key, "bad", json!(null), Duration::from_secs(10), None).await.unwrap(), "没有写方法", "只读：没有写方法");
     stop(&key, None).await;
 }
+
+#[tokio::test]
+async fn backends_and_tools_call_services_provided_by_other_backends() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let suffix = std::process::id();
+    let provider = format!("svc-provider-{suffix}");
+    let consumer = format!("svc-consumer-{suffix}");
+    write_package(&temp, &provider, json!({"backend": {"script": "backend/main.mjs", "provides": ["counter"]}}), &[(
+        "backend/main.mjs",
+        r#"export default ({ provide }) => {
+  let total = 0;
+  provide("counter", { add(n) { total += n; return total; }, boom() { throw new Error("计数器坏了"); } });
+  return { total: () => total };
+};"#,
+    )]);
+    write_package(&temp, &consumer, json!({"backend": {"script": "backend/main.mjs"}}), &[(
+        "backend/main.mjs",
+        r#"export default ({ service }) => ({
+  async bump(n) { return await service("counter").add(n); },
+  async broken() { return await service("counter").boom().catch((error) => "ERR:" + error.message); },
+  async missing() { return await service("nobody").x().catch((error) => "ERR:" + error.message); },
+});"#,
+    )]);
+    let inventory = manager.inventory().unwrap();
+    let provider_summary = inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == format!("user:{provider}")).unwrap().clone();
+    assert_eq!(provider_summary["package"]["services"], json!(["counter"]));
+    assert_eq!(manager.enabled_backend_services().unwrap(), vec![("counter".to_string(), format!("user:{provider}"))]);
+    // 使用方后台经宿主调用提供方后台：提供方按需拉起，状态在提供方里累加。
+    let consumer_key = format!("user:{consumer}");
+    assert_eq!(call(&manager, &consumer_key, "bump", json!(2), Duration::from_secs(10), None).await.unwrap(), 2);
+    assert_eq!(call(&manager, &consumer_key, "bump", json!(3), Duration::from_secs(10), None).await.unwrap(), 5);
+    assert_eq!(call(&manager, &format!("user:{provider}"), "total", json!(null), Duration::from_secs(10), None).await.unwrap(), 5, "同一个提供方实例");
+    assert!(call(&manager, &consumer_key, "broken", json!(null), Duration::from_secs(10), None).await.unwrap().as_str().unwrap().contains("计数器坏了"));
+    assert!(call(&manager, &consumer_key, "missing", json!(null), Duration::from_secs(10), None).await.unwrap().as_str().unwrap().contains("没有拓展提供服务 nobody"));
+    // 页面经桥接路由调用同一个服务。
+    let direct = codex_plus_core::extension_backend::call_service(&manager, &json!({"name": "counter", "method": "add", "args": [10]})).await.unwrap();
+    assert_eq!(direct, 15);
+    stop(&consumer_key, None).await;
+    stop(&format!("user:{provider}"), None).await;
+}

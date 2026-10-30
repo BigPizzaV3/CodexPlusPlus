@@ -28,10 +28,21 @@ const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 /// 按 matcher 过滤后并发 import 并调用默认导出，stdout 输出 `[{ id, output? , error?, skipped? }]`。
 const RUNNER: &str = r#"
 import { pathToFileURL } from "node:url";
-const chunks = [];
-for await (const chunk of process.stdin) chunks.push(chunk);
-const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-const results = await Promise.all(input.hooks.map(async (hook) => {
+import readline from "node:readline";
+const lines = readline.createInterface({ input: process.stdin });
+/*HOST_CLIENT*/
+let started = false;
+lines.on("line", async (line) => {
+  let message;
+  try { message = JSON.parse(line); } catch { return; }
+  if (handleHostReply(message)) return;
+  if (started) return;
+  started = true;
+  const results = await runHooks(message);
+  write({ final: results });
+  process.exit(0);
+});
+const runHooks = (input) => Promise.all(input.hooks.map(async (hook) => {
   const matcher = hook.matcher || "";
   if (matcher && matcher !== "*" && input.subject !== null) {
     let re;
@@ -48,7 +59,7 @@ const results = await Promise.all(input.hooks.map(async (hook) => {
     if (hook.adapter === "preExecute" || hook.adapter === "execute") {
       // 工具管道：参数是工具输入，上下文带工具名、调用 id 与完整负载。
       const payload = structuredClone(input.payload);
-      const context = { event: input.event, extension: hook.id, config: hook.config ?? {}, name: payload?.tool_name ?? "", callId: payload?.tool_use_id ?? null, cwd: payload?.cwd ?? null, payload };
+      const context = { event: input.event, extension: hook.id, config: hook.config ?? {}, name: payload?.tool_name ?? "", callId: payload?.tool_use_id ?? null, cwd: payload?.cwd ?? null, payload, sessionQuery, service };
       const result = await race(fn(payload?.tool_input ?? null, context));
       if (result === undefined || result === null) return { id: hook.id, output: null };
       if (hook.adapter === "execute") return { id: hook.id, executed: typeof result === "string" ? result : JSON.stringify(result) };
@@ -57,7 +68,7 @@ const results = await Promise.all(input.hooks.map(async (hook) => {
       }
       return { id: hook.id, output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: result } } };
     }
-    const output = await race(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {} }));
+    const output = await race(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {}, sessionQuery, service }));
     return { id: hook.id, output: output ?? null };
   } catch (error) {
     return { id: hook.id, error: String(error?.stack || error?.message || error) };
@@ -65,7 +76,6 @@ const results = await Promise.all(input.hooks.map(async (hook) => {
     clearTimeout(timer);
   }
 }));
-process.stdout.write(JSON.stringify(results));
 "#;
 
 /// Codex 按事件用哪个字段做 matcher（见 Codex Hooks 文档）；其余事件忽略 matcher。
@@ -112,7 +122,8 @@ pub async fn dispatch(
         })).collect::<Vec<_>>(),
     });
     let longest = hooks.iter().map(|(_, hook)| hook.timeout_secs).max().unwrap_or(30);
-    let results = crate::extension_node::run_runner(&node, RUNNER, &input, Duration::from_secs(longest + 5)).await?;
+    let runner = crate::extension_node::with_host_client(RUNNER);
+    let results = crate::extension_node::run_runner_with_host(&node, &runner, &input, Duration::from_secs(longest + 5), manager).await?;
     let results = results.as_array().cloned().unwrap_or_default();
     for item in &results {
         if let Some(error) = item.get("error").and_then(Value::as_str) {

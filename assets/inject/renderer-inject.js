@@ -18892,6 +18892,49 @@
       }), "builtin");
     }
     installCodexPlusLocaleWatcher();
+    window.__codexPlusSyncBackendServices = syncCodexPlusBackendServices;
+    syncCodexPlusBackendServices();
+  }
+
+  /**
+   * 拓展后台声明的服务（codexpp.json 的 backend.provides）：登记成页面服务，值是一个代理，
+   * 调用任意方法都经桥接转给提供方后台（没起就先起）。清单随注入包下发，热重载时增删。
+   * 页面里已有同名服务时以页面的为准。
+   */
+  const codexPlusBackendServiceEntries = new Map();
+
+  function codexPlusBackendServiceProxy(name) {
+    return new Proxy({}, {
+      get: (_, method) => (typeof method !== "string" || method === "then") ? undefined : (...args) => {
+        const bridge = window.__codexSessionDeleteBridge;
+        if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
+        return Promise.resolve(bridge("/extensions/services/call", { name, method, args })).then((result) => {
+          if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${name}.${method} 调用失败`);
+          return result?.result;
+        });
+      },
+    });
+  }
+
+  function syncCodexPlusBackendServices() {
+    const list = Array.isArray(window.__codexPlusBackendServices) ? window.__codexPlusBackendServices : [];
+    const wanted = new Map(
+      list
+        .filter((item) => item && codexPlusServiceNamePattern.test(String(item.name)))
+        .map((item) => [String(item.name), String(item.key || "")]),
+    );
+    for (const [name, entry] of [...codexPlusBackendServiceEntries]) {
+      if (wanted.get(name) === entry.key) continue;
+      codexPlusBackendServiceEntries.delete(name);
+      entry.dispose();
+    }
+    for (const [name, key] of wanted) {
+      if (codexPlusBackendServiceEntries.has(name) || codexPlusServices.has(name)) continue;
+      try {
+        const dispose = codexPlusProvideService(name, codexPlusBackendServiceProxy(name), `backend:${key}`);
+        codexPlusBackendServiceEntries.set(name, { key, dispose });
+      } catch {}
+    }
   }
 
   /**

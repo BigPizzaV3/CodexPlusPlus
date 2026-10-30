@@ -340,6 +340,7 @@ pub async fn handle_bridge_request(
         "/extensions/backend/call" => crate::extension_backend::route_call(&payload).await,
         "/extensions/backend/events" => crate::extension_backend::route_events(&payload).await,
         "/extensions/backend/stop" => crate::extension_backend::route_stop(&payload).await,
+        "/extensions/services/call" => crate::extension_backend::route_service_call(&payload).await,
         "/extensions/history" => {
             let payload = payload.clone();
             tokio::task::spawn_blocking(move || crate::extension_history::route(&payload))

@@ -413,6 +413,29 @@ impl UserScriptManager {
         self.enabled_gateway_list(|package| &package.gateway_request)
     }
 
+    /// 启用中的后台服务：服务名 → 提供它的拓展 key。同名时先扫描到的（按 key 顺序）生效。
+    pub fn enabled_backend_services(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        let mut services: Vec<(String, String)> = Vec::new();
+        for script in self.scan_script_files(&config)? {
+            if !script.enabled {
+                continue;
+            }
+            let Some(package) = script.package.filter(|package| package.error.is_none() && package.backend.is_some()) else {
+                continue;
+            };
+            for name in package.backend_provides {
+                if !services.iter().any(|(existing, _)| *existing == name) {
+                    services.push((name, script.key.clone()));
+                }
+            }
+        }
+        Ok(services)
+    }
+
     /// 启用中、清单无误的拓展包声明的失败重试中间件（gateway.error），附带拓展 id。
     pub fn enabled_gateway_error_middlewares(&self) -> anyhow::Result<Vec<(String, ExtensionGatewayMiddleware)>> {
         self.enabled_gateway_list(|package| &package.gateway_error)
@@ -713,6 +736,17 @@ impl UserScriptManager {
             return Ok(String::new());
         }
         let mut blocks = vec![RUNTIME_SCRIPT.to_string()];
+        // 后台服务清单先交给页面：页面把它们登记成可 inject 的服务（调用经桥接转到提供方后台）。
+        let services = self
+            .enabled_backend_services()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, key)| json!({ "name": name, "key": key }))
+            .collect::<Vec<_>>();
+        blocks.push(format!(
+            "window.__codexPlusBackendServices = {}; try {{ window.__codexPlusSyncBackendServices?.(); }} catch {{}}",
+            Value::Array(services)
+        ));
         for script in self.scan_script_files(&config)? {
             if !script.enabled {
                 continue;
@@ -933,6 +967,8 @@ struct ExtensionPackage {
     config_schema: Vec<ExtensionConfigField>,
     /// 常驻后台脚本（codexpp.json 的 `backend.script`）。
     backend: Option<PathBuf>,
+    /// 后台对外提供的服务名（codexpp.json 的 `backend.provides`）。
+    backend_provides: Vec<String>,
     /// 包内 `locale/<语言>.json`：语言 id → 词条（`meta.title` / `meta.description` 是本地化的名称与描述）。
     locales: std::collections::BTreeMap<String, Value>,
     /// 包内 `assets/` 的资源：包内路径 → data URL，交给页面的 `ctx.asset(path)`。
@@ -1104,6 +1140,7 @@ impl ExtensionPackage {
             "tools": self.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
             "configSchema": self.config_schema,
             "backend": self.backend.is_some(),
+            "services": self.backend_provides,
             "config": self.config,
             "assets": self.assets.keys().collect::<Vec<_>>(),
             "skippedAssets": self.skipped_assets,
@@ -1321,6 +1358,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         gateway_response: Vec::new(),
         tool_post_execute: Vec::new(),
         gateway_error: Vec::new(),
+        backend_provides: Vec::new(),
         tools: Vec::new(),
         config_schema: Vec::new(),
         backend: None,
@@ -1413,10 +1451,30 @@ fn parse_extension_manifest(
     package.config_schema = parse_extension_config_schema(raw.get("config"))?;
     package.backend = match raw.get("backend") {
         None => None,
-        Some(Value::Object(backend)) => Some(resolve_package_entry(
-            &root,
-            backend.get("script").and_then(Value::as_str).context("backend 缺少 script")?,
-        )?),
+        Some(Value::Object(backend)) => {
+            // provides：这个后台对外提供的服务名，页面、其它后台、模型工具都能按名字调用。
+            package.backend_provides = match backend.get("provides") {
+                None => Vec::new(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|item| {
+                        let name = item.as_str().context("backend.provides 只能是字符串数组")?;
+                        let valid = name.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic())
+                            && name.len() <= 64
+                            && name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'));
+                        if !valid {
+                            anyhow::bail!("服务名不合法：{name}（字母开头，只含字母、数字、_ . -）");
+                        }
+                        Ok(name.to_string())
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+                Some(_) => anyhow::bail!("backend.provides 只能是字符串数组"),
+            };
+            Some(resolve_package_entry(
+                &root,
+                backend.get("script").and_then(Value::as_str).context("backend 缺少 script")?,
+            )?)
+        }
         Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
     };
     package.locales = load_extension_locales(&root)?;
