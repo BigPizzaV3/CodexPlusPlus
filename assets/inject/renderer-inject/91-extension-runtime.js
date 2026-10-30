@@ -284,6 +284,9 @@
       registerPage(definition, itemOptions) {
         return track(codexPlusRegisterExtensionPage(definition, registerOptions(itemOptions)));
       },
+      registerCommand(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionCommand(definition, registerOptions(itemOptions)));
+      },
       registerComposerAction(definition, itemOptions) {
         return track(codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, registerOptions(itemOptions)));
       },

@@ -320,6 +320,151 @@
   }
 
   /**
+   * 斜杠命令：拓展用 registerCommand 注册，在 Codex 输入框里「/name 参数」回车触发。
+   *
+   * 键盘监听挂在 document 的捕获阶段，先于输入框自己的处理；只拦截「整段输入恰好是一条已注册
+   * 拓展命令」的回车，其它输入（包括 Codex 自己的斜杠命令）原样放行。命令名按注册表查，
+   * 同名时先注册的生效。提示浮层带拓展标记，不触发扫描自喂。
+   */
+  const codexPlusCommandPattern = /^\/([A-Za-z0-9][\w-]*)(?:\s+([\s\S]*))?$/;
+
+  function codexPlusRegisterExtensionCommand(definition, options = {}) {
+    const name = String(definition?.name || "").trim();
+    if (!/^[A-Za-z0-9][\w-]{0,31}$/.test(name)) throw new Error("命令名只能是字母、数字、_、-，最长 32 个字符");
+    if (typeof definition?.run !== "function") throw new Error(`命令 /${name} 必须提供 run(args, context)`);
+    const dispose = codexPlusRegisterExtensionItem("command", codexPlusRegistry.commands, { ...definition, name }, { ...options, id: options.id || `cmd-${name}` });
+    installCodexPlusCommandHandlers();
+    return dispose;
+  }
+
+  function codexPlusFindExtensionCommand(name) {
+    return codexPlusExtensionItems(codexPlusRegistry.commands).find((item) => item.name === name) || null;
+  }
+
+  function codexPlusComposerEditorFrom(target) {
+    const editor = target?.closest?.("[data-codex-composer], .ProseMirror, [contenteditable=true]");
+    return editor && !isExtensionUiNode(editor) ? editor : null;
+  }
+
+  function codexPlusClearComposer(editor) {
+    editor.focus();
+    document.execCommand("selectAll");
+    document.execCommand("delete");
+  }
+
+  function hideCodexPlusCommandHints() {
+    document.getElementById("codex-plus-command-hints")?.remove();
+  }
+
+  /** 输入「/前缀」时在输入框上方列出匹配的拓展命令。 */
+  function showCodexPlusCommandHints(editor, prefix) {
+    const matches = codexPlusExtensionItems(codexPlusRegistry.commands)
+      .filter((item) => item.name.startsWith(prefix))
+      .slice(0, 8);
+    if (!matches.length) {
+      hideCodexPlusCommandHints();
+      return;
+    }
+    let panel = document.getElementById("codex-plus-command-hints");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "codex-plus-command-hints";
+      panel.setAttribute("role", "listbox");
+      markCodexPlusExtensionNode(panel, "builtin-commands");
+      document.body.appendChild(panel);
+    }
+    panel.textContent = "";
+    for (const item of matches) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "codex-plus-command-hint";
+      row.setAttribute("role", "option");
+      row.innerHTML = `<strong>/${escapeHtml(item.name)}</strong><span>${escapeHtml(item.description || "")}</span>`;
+      row.addEventListener("pointerdown", (event) => event.preventDefault());
+      row.addEventListener("click", () => {
+        codexPlusClearComposer(editor);
+        document.execCommand("insertText", false, `/${item.name} `);
+        hideCodexPlusCommandHints();
+      });
+      panel.appendChild(row);
+    }
+    const rect = editor.getBoundingClientRect();
+    panel.style.left = `${Math.round(rect.left)}px`;
+    panel.style.bottom = `${Math.round(window.innerHeight - rect.top + 8)}px`;
+    panel.style.minWidth = `${Math.round(Math.min(rect.width, 420))}px`;
+  }
+
+  function installCodexPlusCommandHandlers() {
+    if (window.__codexPlusCommandHandlersInstalled) return;
+    window.__codexPlusCommandHandlersInstalled = true;
+    if (!document.getElementById("codex-plus-command-hints-style")) {
+      const style = document.createElement("style");
+      style.id = "codex-plus-command-hints-style";
+      markCodexPlusExtensionNode(style, "builtin-commands");
+      style.textContent = `#codex-plus-command-hints{position:fixed;z-index:2147483645;display:flex;flex-direction:column;gap:2px;padding:6px;border-radius:12px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);background:var(--color-token-main-surface-primary,var(--codex-plus-bg-elevated,#262626));color:var(--color-token-text-primary,var(--codex-plus-text,#eee));box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:13px}
+        .codex-plus-command-hint{display:flex;gap:10px;align-items:baseline;padding:6px 10px;border:0;border-radius:8px;background:transparent;color:inherit;text-align:left;cursor:pointer}
+        .codex-plus-command-hint:hover,.codex-plus-command-hint:focus-visible{background:color-mix(in srgb,currentColor 10%,transparent)}
+        .codex-plus-command-hint span{opacity:.65}`;
+      document.head.append(style);
+    }
+    const onKeyDown = (event) => {
+      if (event.isComposing) return;
+      const editor = codexPlusComposerEditorFrom(event.target);
+      if (!editor) return;
+      const text = (editor.innerText || "").trim();
+      if (event.key === "Escape") {
+        hideCodexPlusCommandHints();
+        return;
+      }
+      if (event.key === "Tab" && document.getElementById("codex-plus-command-hints") && /^\/[\w-]*$/.test(text)) {
+        const first = codexPlusExtensionItems(codexPlusRegistry.commands).find((item) => item.name.startsWith(text.slice(1)));
+        if (!first) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        codexPlusClearComposer(editor);
+        document.execCommand("insertText", false, `/${first.name} `);
+        hideCodexPlusCommandHints();
+        return;
+      }
+      if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+      const match = codexPlusCommandPattern.exec(text);
+      const command = match && codexPlusFindExtensionCommand(match[1]);
+      if (!command) return;
+      // 是拓展命令：不让 Codex 把它当消息发出去。
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      hideCodexPlusCommandHints();
+      codexPlusClearComposer(editor);
+      const result = runCodexPlusExtensionCallback(command.scriptKey, `command./${command.name}`, () => command.run(match[2] || "", {
+        editor,
+        insertText: (value) => codexPlusInsertComposerText(editor, value),
+        setText: (value) => {
+          codexPlusClearComposer(editor);
+          return codexPlusInsertComposerText(editor, value);
+        },
+        toast: (message, toastOptions) => showToast(String(message ?? ""), toastOptions || {}),
+      }));
+      if (result.ok && result.value && typeof result.value.then === "function") {
+        result.value.catch((error) => codexPlusMarkExtensionFailure(command.scriptKey, `command./${command.name}: ${String(error?.stack || error?.message || error)}`));
+      }
+    };
+    const onInput = (event) => {
+      const editor = codexPlusComposerEditorFrom(event.target);
+      if (!editor) return;
+      const text = (editor.innerText || "").trim();
+      const prefix = /^\/([\w-]*)$/.exec(text);
+      if (prefix && codexPlusRegistry.commands.size) showCodexPlusCommandHints(editor, prefix[1]);
+      else hideCodexPlusCommandHints();
+    };
+    document.removeEventListener("keydown", window.__codexPlusCommandKeyHandler, true);
+    document.removeEventListener("input", window.__codexPlusCommandInputHandler, true);
+    window.__codexPlusCommandKeyHandler = onKeyDown;
+    window.__codexPlusCommandInputHandler = onInput;
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("input", onInput, true);
+  }
+
+  /**
    * 拓展注册的菜单项。
    *
    * 接入方式是「在 home 面板末尾追加一块」而不是把内置的一百多行模板拆成数组——
