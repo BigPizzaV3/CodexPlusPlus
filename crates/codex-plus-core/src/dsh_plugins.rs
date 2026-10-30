@@ -1197,6 +1197,9 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         renderer: Vec::new(),
         hooks: (!hooks.is_empty()).then(|| Value::Object(hooks)),
         gateway,
+        // 工具仍走 dsh 插件自己的 MCP（codex_plus_dsh），不重复声明成拓展工具。
+        tools: None,
+        config: None,
         files,
     })
 }
