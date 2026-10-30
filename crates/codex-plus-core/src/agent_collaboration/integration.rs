@@ -17,6 +17,7 @@ pub const SPEC: ManagedMcp = ManagedMcp {
     comment: "Managed by Codex++: agent collaboration MCP",
     lock_file: ".codex-plus-agent-mcp.lock",
     backup_dir: ".codex-plus-agent-mcp-backups",
+    legacy: &[],
 };
 
 /// 只读检查本条 MCP；存在配置不代表已启动的 Codex 会话已经重新加载工具。

@@ -219,11 +219,13 @@
       // 用 getter 而不是快照：脚本初始化结束后再读也能拿到自己的 key。
       get script() {
         const key = codexPlusCurrentExtensionScriptKey();
-        return { key, manifest: codexPlusPluginManifest(key) };
+        return { key, manifest: codexPlusExtensionManifest(key) };
       },
 
-      /** 创建一个插件实例：ctx 上的注册都随实例卸载自动撤销，见 91-plugin-runtime.js。 */
-      plugin: codexPlusCreatePlugin,
+      /** 创建一个拓展实例：ctx 上的注册都随实例卸载自动撤销，见 91-extension-runtime.js。 */
+      extension: codexPlusCreateExtension,
+      /** 早期名称。已有拓展（包括对话里生成的）在用，保留为别名。 */
+      plugin: codexPlusCreateExtension,
 
       /** 显示提示。type: info | success | warn | error */
       toast(message, options) {

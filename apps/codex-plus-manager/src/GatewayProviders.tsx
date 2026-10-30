@@ -861,7 +861,8 @@ function EditIcon({ label, disabled, onClick }: { label: string; disabled: boole
 
 /** 添加时给哪些 Agent 用：一排可切换的 Agent，默认按各自的「添加供应商时自动加入」。 */
 function AgentPicks({ payload, picked, onChange }: { payload: GatewayPayload | null; picked: GatewayAgentId[]; onChange: (next: GatewayAgentId[]) => void }) {
-  const agents = payload?.agents ?? [];
+  // 只列内置的三个和已接入的通用 Agent；装了但没接入的不在这里出现。
+  const agents = glanceAgents(payload?.agents);
   if (!agents.length) return null;
   return (
     <div className="gw-agent-picks">

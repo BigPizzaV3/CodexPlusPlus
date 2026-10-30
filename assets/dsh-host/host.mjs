@@ -614,7 +614,7 @@ class Host {
     report.engines = pkg.engines?.dsh
     report.client = Boolean(pkg.dsh?.client)
     if (report.client) {
-      report.diagnostics.push('包含 dsh 前端 slot 插件（dsh.client）：它向 dsh Web 客户端的 React slot 注册组件，Codex 页面结构不同，需要改写成 Codex++ 插件包')
+      report.diagnostics.push('包含 dsh 前端 slot 插件（dsh.client）：它向 dsh Web 客户端的 React slot 注册组件，Codex 页面结构不同，需要改写成 Codex++ 拓展包')
     }
     let rows
     if (pkg.dsh?.bundle?.patch) {

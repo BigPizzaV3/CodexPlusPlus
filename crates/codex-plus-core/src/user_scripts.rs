@@ -13,11 +13,11 @@ pub const BOOTSTRAP_SCRIPT: &str = include_str!("../../../assets/inject/user-scr
 const RUNTIME_SCRIPT: &str = include_str!("../../../assets/inject/user-scripts-runtime.js");
 
 /// 拓展 API 契约版本，必须与 `91-extension-api.js` 的 `codexPlusExtensionApiVersion` 一致。
-/// 插件包在 `codexpp.json` 的 `engines.codexpp` 里声明需要的版本，高于此值的不加载。
+/// 拓展包在 `codexpp.json` 的 `engines.codexpp` 里声明需要的版本，高于此值的不加载。
 pub const EXTENSION_API_VERSION: u64 = 1;
 
-/// 插件包的清单文件名。目录里有它，目录才被当成插件包。
-pub const PLUGIN_MANIFEST_FILE: &str = "codexpp.json";
+/// 拓展包的清单文件名。目录里有它，目录才被当成拓展包。
+pub const EXTENSION_MANIFEST_FILE: &str = "codexpp.json";
 
 /// 一次性连接当前 Codex 页面；不增加轮询，也不接管 launcher 的桥接连接。
 pub async fn reload_live_scripts(
@@ -240,9 +240,9 @@ impl UserScriptManager {
             anyhow::bail!("invalid user script key");
         }
         let path = self.user_dir.join(file_name);
-        // 插件包是目录。删除只做单文件，目录交给用户在文件夹里自己处理。
+        // 拓展包是目录。删除只做单文件，目录交给用户在文件夹里自己处理。
         if path.is_dir() {
-            anyhow::bail!("插件包是一个文件夹，请在用户脚本目录中手动移除：{}", path.display());
+            anyhow::bail!("拓展包是一个文件夹，请在用户脚本目录中手动移除：{}", path.display());
         }
         let canonical_user_dir = self
             .user_dir
@@ -301,35 +301,35 @@ impl UserScriptManager {
         Ok(config)
     }
 
-    /// 用户脚本目录（插件包就放在它下面）。
+    /// 用户脚本目录（拓展包就放在它下面）。
     pub fn user_dir(&self) -> &std::path::Path {
         &self.user_dir
     }
 
-    /// 写入（或覆盖）一个用户插件包：`user_dir/<id>/` 下的文件加生成的 `codexpp.json`。
+    /// 写入（或覆盖）一个用户拓展包：`user_dir/<id>/` 下的文件加生成的 `codexpp.json`。
     ///
-    /// 供「对话造插件」使用，所以校验从严：只能写 user 目录、只能写包内相对路径、
-    /// 同名目录必须是同 id 的插件包（不会接管别的目录）、单文件与总量有上限。
+    /// 供「对话造拓展」使用，所以校验从严：只能写 user 目录、只能写包内相对路径、
+    /// 同名目录必须是同 id 的拓展包（不会接管别的目录）、单文件与总量有上限。
     /// 清单最后写，写入中途失败时旧清单仍在。不删除包里已有的其他文件。
     /// 返回脚本 key 与清单校验结果（`error` 非空表示包写好了但不会被加载）。
-    pub fn write_plugin_package(&self, write: &PluginWrite) -> anyhow::Result<Value> {
-        validate_plugin_id(&write.id)?;
-        if write.files.is_empty() || write.files.len() > PLUGIN_WRITE_MAX_FILES {
-            anyhow::bail!("files 需要 1~{PLUGIN_WRITE_MAX_FILES} 个文件");
+    pub fn write_extension_package(&self, write: &ExtensionWrite) -> anyhow::Result<Value> {
+        validate_extension_id(&write.id)?;
+        if write.files.is_empty() || write.files.len() > EXTENSION_WRITE_MAX_FILES {
+            anyhow::bail!("files 需要 1~{EXTENSION_WRITE_MAX_FILES} 个文件");
         }
         let mut total = 0usize;
         for (path, content) in &write.files {
             validate_package_relative_path(path)?;
-            if path.eq_ignore_ascii_case(PLUGIN_MANIFEST_FILE) {
-                anyhow::bail!("{PLUGIN_MANIFEST_FILE} 由清单参数生成，不能直接写");
+            if path.eq_ignore_ascii_case(EXTENSION_MANIFEST_FILE) {
+                anyhow::bail!("{EXTENSION_MANIFEST_FILE} 由清单参数生成，不能直接写");
             }
-            if content.len() > PLUGIN_WRITE_MAX_FILE_BYTES {
-                anyhow::bail!("{path} 超过单文件上限 {} KiB", PLUGIN_WRITE_MAX_FILE_BYTES / 1024);
+            if content.len() > EXTENSION_WRITE_MAX_FILE_BYTES {
+                anyhow::bail!("{path} 超过单文件上限 {} KiB", EXTENSION_WRITE_MAX_FILE_BYTES / 1024);
             }
             total += content.len();
         }
-        if total > PLUGIN_WRITE_MAX_TOTAL_BYTES {
-            anyhow::bail!("文件总量超过 {} KiB", PLUGIN_WRITE_MAX_TOTAL_BYTES / 1024);
+        if total > EXTENSION_WRITE_MAX_TOTAL_BYTES {
+            anyhow::bail!("文件总量超过 {} KiB", EXTENSION_WRITE_MAX_TOTAL_BYTES / 1024);
         }
         let renderer = if write.renderer.is_empty() {
             vec!["renderer.js".to_string()]
@@ -349,14 +349,14 @@ impl UserScriptManager {
                 anyhow::bail!("{} 已存在且不是普通目录，未写入", directory.display());
             }
             Ok(_) => {
-                let manifest = directory.join(PLUGIN_MANIFEST_FILE);
+                let manifest = directory.join(EXTENSION_MANIFEST_FILE);
                 let existing_id = fs::read_to_string(&manifest)
                     .ok()
                     .and_then(|text| serde_json::from_str::<Value>(&text).ok())
                     .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_owned));
                 if existing_id.as_deref() != Some(write.id.as_str()) {
                     anyhow::bail!(
-                        "{} 已存在但不是 id 为 {} 的插件包，未覆盖",
+                        "{} 已存在但不是 id 为 {} 的拓展包，未覆盖",
                         directory.display(),
                         write.id
                     );
@@ -364,9 +364,9 @@ impl UserScriptManager {
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 fs::create_dir(&directory)
-                    .with_context(|| format!("无法创建插件目录 {}", directory.display()))?;
+                    .with_context(|| format!("无法创建拓展目录 {}", directory.display()))?;
             }
-            Err(error) => return Err(error).context("无法检查插件目录"),
+            Err(error) => return Err(error).context("无法检查拓展目录"),
         }
         for (path, content) in &write.files {
             let target = directory.join(path);
@@ -374,9 +374,9 @@ impl UserScriptManager {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("无法创建目录 {}", parent.display()))?;
                 // 中间目录可能是指向包外的软链：落盘前确认真实位置仍在包内。
-                let parent = parent.canonicalize().context("无法解析插件子目录")?;
+                let parent = parent.canonicalize().context("无法解析拓展子目录")?;
                 if !parent.starts_with(&directory) {
-                    anyhow::bail!("{path} 指向插件包以外，未写入");
+                    anyhow::bail!("{path} 指向拓展包以外，未写入");
                 }
             }
             if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
@@ -395,27 +395,27 @@ impl UserScriptManager {
             "permissions": { "routes": write.routes },
         });
         crate::settings::atomic_write(
-            &directory.join(PLUGIN_MANIFEST_FILE),
+            &directory.join(EXTENSION_MANIFEST_FILE),
             serde_json::to_string_pretty(&manifest)?.as_bytes(),
         )
-        .context("无法写入插件清单")?;
-        let package = load_plugin_package(&directory);
+        .context("无法写入拓展清单")?;
+        let package = load_extension_package(&directory);
         Ok(json!({
-            "key": plugin_package_key(&write.id),
+            "key": extension_package_key(&write.id),
             "directory": directory.to_string_lossy(),
             "manifestError": package.error,
         }))
     }
 
-    /// 读回一个用户插件包的清单与文本文件，供对话里修改已有插件。
-    pub fn read_plugin_package(&self, id: &str) -> anyhow::Result<Value> {
-        validate_plugin_id(id)?;
+    /// 读回一个用户拓展包的清单与文本文件，供对话里修改已有拓展。
+    pub fn read_extension_package(&self, id: &str) -> anyhow::Result<Value> {
+        validate_extension_id(id)?;
         let directory = self.user_dir.join(id);
-        let manifest_path = directory.join(PLUGIN_MANIFEST_FILE);
+        let manifest_path = directory.join(EXTENSION_MANIFEST_FILE);
         if fs::symlink_metadata(&directory).map(|metadata| !metadata.is_dir()).unwrap_or(true)
             || !manifest_path.is_file()
         {
-            anyhow::bail!("没有 id 为 {id} 的用户插件包");
+            anyhow::bail!("没有 id 为 {id} 的用户拓展包");
         }
         let manifest: Value = serde_json::from_str(&fs::read_to_string(&manifest_path)?)
             .unwrap_or(Value::Null);
@@ -423,17 +423,17 @@ impl UserScriptManager {
         let mut total = 0usize;
         collect_package_files(&directory, &directory, 0, &mut files, &mut total);
         Ok(json!({
-            "key": plugin_package_key(id),
+            "key": extension_package_key(id),
             "directory": directory.to_string_lossy(),
             "manifest": manifest,
             "files": files,
         }))
     }
 
-    /// 用户插件包是否存在（带清单的目录）。
-    pub fn has_plugin_package(&self, id: &str) -> bool {
-        validate_plugin_id(id).is_ok()
-            && self.user_dir.join(id).join(PLUGIN_MANIFEST_FILE).is_file()
+    /// 用户拓展包是否存在（带清单的目录）。
+    pub fn has_extension_package(&self, id: &str) -> bool {
+        validate_extension_id(id).is_ok()
+            && self.user_dir.join(id).join(EXTENSION_MANIFEST_FILE).is_file()
     }
 
     pub fn inventory(&self) -> anyhow::Result<Value> {
@@ -566,7 +566,7 @@ impl UserScriptManager {
                     "name": script.name,
                     "source": script.source,
                     "kind": if script.package.is_some() { "package" } else { "script" },
-                    "plugin": script.package.as_ref().map(|package| package.summary()),
+                    "package": script.package.as_ref().map(|package| package.summary()),
                     "enabled": script.enabled,
                     "status": status,
                     "error": error,
@@ -603,7 +603,7 @@ impl UserScriptManager {
         let Ok(entries) = fs::read_dir(directory) else {
             return Ok(());
         };
-        // 单文件脚本是 `*.js`；插件包是带 codexpp.json 的子目录。目录名以 .js 结尾的
+        // 单文件脚本是 `*.js`；拓展包是带 codexpp.json 的子目录。目录名以 .js 结尾的
         // 不当包处理，免得和同名脚本文件抢同一个 key。
         let mut paths = entries
             .filter_map(Result::ok)
@@ -611,7 +611,7 @@ impl UserScriptManager {
             .filter(|path| {
                 let is_js = path.extension().and_then(|value| value.to_str()) == Some("js");
                 if path.is_dir() {
-                    !is_js && path.join(PLUGIN_MANIFEST_FILE).is_file()
+                    !is_js && path.join(EXTENSION_MANIFEST_FILE).is_file()
                 } else {
                     is_js
                 }
@@ -629,7 +629,7 @@ impl UserScriptManager {
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_default();
             let key = format!("{source}:{name}");
-            let package = path.is_dir().then(|| load_plugin_package(&path));
+            let package = path.is_dir().then(|| load_extension_package(&path));
             scripts.push(UserScriptFile {
                 enabled: config.scripts.get(&key).copied().unwrap_or(true),
                 key,
@@ -653,15 +653,15 @@ struct UserScriptFile {
     source: String,
     path: PathBuf,
     enabled: bool,
-    package: Option<PluginPackage>,
+    package: Option<ExtensionPackage>,
 }
 
-/// 一个插件包：目录 + `codexpp.json`。
+/// 一个拓展包：目录 + `codexpp.json`。
 ///
 /// 清单有问题时仍然返回包（`error` 非空），让它出现在管理页上并显示原因，
 /// 而不是悄无声息地消失。
 #[derive(Debug)]
-struct PluginPackage {
+struct ExtensionPackage {
     id: String,
     name: Option<String>,
     version: String,
@@ -672,7 +672,7 @@ struct PluginPackage {
     error: Option<String>,
 }
 
-impl PluginPackage {
+impl ExtensionPackage {
     fn summary(&self) -> Value {
         json!({
             "id": self.id,
@@ -696,9 +696,9 @@ impl PluginPackage {
     }
 }
 
-/// 对话写入插件包的参数。`files` 的键是包内相对路径。
+/// 对话写入拓展包的参数。`files` 的键是包内相对路径。
 #[derive(Debug, Clone, Default)]
-pub struct PluginWrite {
+pub struct ExtensionWrite {
     pub id: String,
     pub name: String,
     pub version: String,
@@ -708,24 +708,24 @@ pub struct PluginWrite {
     pub files: BTreeMap<String, String>,
 }
 
-const PLUGIN_WRITE_MAX_FILES: usize = 32;
-const PLUGIN_WRITE_MAX_FILE_BYTES: usize = 256 * 1024;
-const PLUGIN_WRITE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
-/// 读回插件包时的上限：只读文本、跳过大文件，避免把整个目录塞进对话。
-const PLUGIN_READ_MAX_TOTAL_BYTES: usize = 512 * 1024;
+const EXTENSION_WRITE_MAX_FILES: usize = 32;
+const EXTENSION_WRITE_MAX_FILE_BYTES: usize = 256 * 1024;
+const EXTENSION_WRITE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
+/// 读回拓展包时的上限：只读文本、跳过大文件，避免把整个目录塞进对话。
+const EXTENSION_READ_MAX_TOTAL_BYTES: usize = 512 * 1024;
 
-/// 插件包对应的脚本 key。
-pub fn plugin_package_key(id: &str) -> String {
+/// 拓展包对应的脚本 key。
+pub fn extension_package_key(id: &str) -> String {
     format!("user:{id}")
 }
 
-pub fn validate_plugin_id(id: &str) -> anyhow::Result<()> {
+pub fn validate_extension_id(id: &str) -> anyhow::Result<()> {
     if id.is_empty()
         || id.len() > 64
         || id.ends_with(".js")
         || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
     {
-        anyhow::bail!("插件 id 只能包含字母、数字、- 和 _，最长 64 个字符");
+        anyhow::bail!("拓展 id 只能包含字母、数字、- 和 _，最长 64 个字符");
     }
     Ok(())
 }
@@ -764,7 +764,7 @@ fn collect_package_files(
             .strip_prefix(root)
             .map(|value| value.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
-        if metadata.file_type().is_symlink() || relative == PLUGIN_MANIFEST_FILE {
+        if metadata.file_type().is_symlink() || relative == EXTENSION_MANIFEST_FILE {
             continue;
         }
         if metadata.is_dir() {
@@ -774,8 +774,8 @@ fn collect_package_files(
             continue;
         }
         let size = metadata.len() as usize;
-        let content = (size <= PLUGIN_WRITE_MAX_FILE_BYTES
-            && *total + size <= PLUGIN_READ_MAX_TOTAL_BYTES)
+        let content = (size <= EXTENSION_WRITE_MAX_FILE_BYTES
+            && *total + size <= EXTENSION_READ_MAX_TOTAL_BYTES)
             .then(|| fs::read_to_string(&path).ok())
             .flatten();
         if let Some(content) = &content {
@@ -785,8 +785,8 @@ fn collect_package_files(
     }
 }
 
-fn load_plugin_package(directory: &std::path::Path) -> PluginPackage {
-    let mut package = PluginPackage {
+fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
+    let mut package = ExtensionPackage {
         id: String::new(),
         name: None,
         version: String::new(),
@@ -796,22 +796,22 @@ fn load_plugin_package(directory: &std::path::Path) -> PluginPackage {
         renderer: Vec::new(),
         error: None,
     };
-    if let Err(error) = parse_plugin_manifest(directory, &mut package) {
+    if let Err(error) = parse_extension_manifest(directory, &mut package) {
         package.error = Some(error.to_string());
     }
     package
 }
 
-fn parse_plugin_manifest(
+fn parse_extension_manifest(
     directory: &std::path::Path,
-    package: &mut PluginPackage,
+    package: &mut ExtensionPackage,
 ) -> anyhow::Result<()> {
-    let text = fs::read_to_string(directory.join(PLUGIN_MANIFEST_FILE))
-        .with_context(|| format!("读取 {PLUGIN_MANIFEST_FILE} 失败"))?;
+    let text = fs::read_to_string(directory.join(EXTENSION_MANIFEST_FILE))
+        .with_context(|| format!("读取 {EXTENSION_MANIFEST_FILE} 失败"))?;
     let Value::Object(raw) = serde_json::from_str::<Value>(&text)
-        .with_context(|| format!("{PLUGIN_MANIFEST_FILE} 不是合法的 JSON"))?
+        .with_context(|| format!("{EXTENSION_MANIFEST_FILE} 不是合法的 JSON"))?
     else {
-        anyhow::bail!("{PLUGIN_MANIFEST_FILE} 顶层必须是对象");
+        anyhow::bail!("{EXTENSION_MANIFEST_FILE} 顶层必须是对象");
     };
     package.name = string_field(&raw, "name");
     package.version = string_field(&raw, "version").unwrap_or_default();
@@ -854,7 +854,7 @@ fn parse_plugin_manifest(
     }
     let root = directory
         .canonicalize()
-        .with_context(|| format!("无法解析插件目录 {}", directory.display()))?;
+        .with_context(|| format!("无法解析拓展目录 {}", directory.display()))?;
     package.renderer = entries
         .iter()
         .map(|entry| resolve_package_entry(&root, entry))
@@ -892,7 +892,7 @@ fn resolve_package_entry(root: &std::path::Path, entry: &str) -> anyhow::Result<
 }
 
 /// 包的各个入口按清单顺序拼进同一个作用域，相当于一次简单打包。
-fn package_source(package: &PluginPackage) -> String {
+fn package_source(package: &ExtensionPackage) -> String {
     package
         .renderer
         .iter()
@@ -932,7 +932,7 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
         manifest = script
             .package
             .as_ref()
-            .map(PluginPackage::renderer_manifest)
+            .map(ExtensionPackage::renderer_manifest)
             .unwrap_or(Value::Null),
         source = source
     )

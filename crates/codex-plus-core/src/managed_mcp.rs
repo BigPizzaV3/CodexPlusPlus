@@ -30,6 +30,9 @@ pub struct ManagedMcp {
     pub lock_file: &'static str,
     /// Codex home 下的备份目录名。
     pub backup_dir: &'static str,
+    /// 本服务改名前用过的 `(条目 id, 启动标志)`。接入时把仍归本工具所有的旧条目移除，
+    /// 免得 Codex 里同时挂着新旧两份；归属不符的同名条目不动。
+    pub legacy: &'static [(&'static str, &'static str)],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +145,19 @@ pub fn upsert_managed_context(
         .get_mut("mcp_servers")
         .and_then(Item::as_table_like_mut)
         .context("mcp_servers 必须是 TOML 表，未修改配置")?;
+    for (legacy_id, legacy_flag) in spec.legacy {
+        let owned = servers
+            .get(legacy_id)
+            .and_then(Item::as_table_like)
+            .and_then(|server| server.get("args"))
+            .and_then(Item::as_array)
+            .and_then(|args| args.get(0))
+            .and_then(Value::as_str)
+            == Some(*legacy_flag);
+        if owned {
+            servers.remove(legacy_id);
+        }
+    }
     let new_entry = servers.get(spec.server_id).is_none();
     if new_entry {
         let mut server = Table::new();

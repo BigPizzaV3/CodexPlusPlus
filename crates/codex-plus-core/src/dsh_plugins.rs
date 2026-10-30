@@ -35,6 +35,7 @@ pub const SPEC: ManagedMcp = ManagedMcp {
     comment: "Managed by Codex++: dsh plugins MCP",
     lock_file: ".codex-plus-dsh-mcp.lock",
     backup_dir: ".codex-plus-dsh-mcp-backups",
+    legacy: &[],
 };
 
 /// 兼容宿主的文件，随程序内嵌，运行前写到状态目录（内容不变不重写）。

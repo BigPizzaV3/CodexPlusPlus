@@ -1,4 +1,4 @@
-//! 「对话造插件」的管理器入口：把插件创作 MCP 接入 Codex，以及 MCP 进程本身。
+//! 「对话造拓展」的管理器入口：把拓展创作 MCP 接入 Codex，以及 MCP 进程本身。
 //!
 //! 接入流程与协作 MCP 共用 [`crate::agent_collaboration_commands::connect_codex`]：
 //! 先写 Codex++ 托管上下文（切换供应商时不会丢），再原子写 Codex live 配置，失败只回滚本条。
@@ -8,26 +8,26 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use codex_plus_core::managed_mcp;
-use codex_plus_core::plugin_creator::{self, PluginCreator};
+use codex_plus_core::extension_creator::{self, ExtensionCreator};
 use codex_plus_core::settings::SettingsStore;
 use serde_json::{Value, json};
 
 #[tauri::command]
-pub async fn plugin_creator_request(action: String) -> Result<Value, String> {
+pub async fn extension_creator_request(action: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Value> {
-        let executable = std::env::current_exe().context("无法定位插件创作 MCP 程序")?;
+        let executable = std::env::current_exe().context("无法定位拓展创作 MCP 程序")?;
         let home = codex_plus_core::codex_home::default_codex_home_dir();
         let state_dir = codex_plus_core::paths::default_app_state_dir();
         match action.as_str() {
             "status" => {}
             "connect" => crate::agent_collaboration_commands::connect_codex(
-                &plugin_creator::SPEC,
+                &extension_creator::SPEC,
                 &SettingsStore::default(),
                 &home,
                 &executable,
                 &state_dir,
             )?,
-            _ => bail!("不支持的插件创作操作"),
+            _ => bail!("不支持的拓展创作操作"),
         }
         Ok(registration_view(&home, &executable, &state_dir))
     })
@@ -37,21 +37,21 @@ pub async fn plugin_creator_request(action: String) -> Result<Value, String> {
 }
 
 fn registration_view(home: &Path, executable: &Path, state_dir: &Path) -> Value {
-    let plugins_directory = crate::commands::default_user_script_manager()
+    let extensions_directory = crate::commands::default_user_script_manager()
         .user_dir()
         .to_string_lossy()
         .into_owned();
-    match managed_mcp::status(&plugin_creator::SPEC, home, executable, state_dir) {
+    match managed_mcp::status(&extension_creator::SPEC, home, executable, state_dir) {
         Ok(registration) => json!({
             "status": if registration.registered { "connected" } else if registration.status == "conflict" { "conflict" } else { "not_connected" },
             "message": registration.message,
             "configPath": registration.config_path,
-            "pluginsDirectory": plugins_directory,
+            "extensionsDirectory": extensions_directory,
         }),
         Err(error) => json!({
             "status": "not_connected",
             "message": error.to_string(),
-            "pluginsDirectory": plugins_directory,
+            "extensionsDirectory": extensions_directory,
         }),
     }
 }
@@ -66,7 +66,7 @@ fn state_dir_from_args(args: &[OsString]) -> anyhow::Result<PathBuf> {
             }
             Ok(directory)
         }
-        _ => bail!("插件创作 MCP 仅接受可选的 --state-dir <绝对目录>"),
+        _ => bail!("拓展创作 MCP 仅接受可选的 --state-dir <绝对目录>"),
     }
 }
 
@@ -98,11 +98,11 @@ fn debug_ports(state_dir: &Path) -> Vec<u16> {
 
 pub fn run_mcp(args: &[OsString]) -> anyhow::Result<()> {
     let state_dir = state_dir_from_args(args)?;
-    let creator = PluginCreator {
+    let creator = ExtensionCreator {
         manager: crate::commands::default_user_script_manager(),
         debug_ports: debug_ports(&state_dir),
     };
-    tauri::async_runtime::block_on(plugin_creator::serve(creator))
+    tauri::async_runtime::block_on(extension_creator::serve(creator))
 }
 
 #[cfg(test)]
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_creator_coexists_with_collaboration_in_managed_context() {
+    fn extension_creator_coexists_with_collaboration_in_managed_context() {
         let dir = tempfile::tempdir().unwrap();
         let executable = std::env::current_exe().unwrap();
         let state_dir = dir.path().join("state");
@@ -132,7 +132,7 @@ mod tests {
         )
         .unwrap();
         let both = managed_mcp::upsert_managed_context(
-            &plugin_creator::SPEC,
+            &extension_creator::SPEC,
             &with_collaboration,
             &executable,
             &state_dir,
@@ -146,14 +146,27 @@ mod tests {
             Some("--codex-plus-agent-mcp")
         );
         assert_eq!(
-            servers[plugin_creator::SERVER_ID]["args"][0].as_str(),
-            Some(plugin_creator::MCP_FLAG)
+            servers[extension_creator::SERVER_ID]["args"][0].as_str(),
+            Some(extension_creator::MCP_FLAG)
         );
-        assert_eq!(servers[plugin_creator::SERVER_ID]["enabled"].as_bool(), Some(true));
+        assert_eq!(servers[extension_creator::SERVER_ID]["enabled"].as_bool(), Some(true));
+        // 改名前接入的旧条目（归本工具所有）在重新接入时被替换；别人的同名旧条目不动。
+        let legacy = format!(
+            "[mcp_servers.{id}]\ncommand = 'x'\nargs = ['{flag}', '--state-dir', '/s']\n",
+            id = extension_creator::LEGACY_SERVER_ID,
+            flag = extension_creator::LEGACY_MCP_FLAG,
+        );
+        let migrated = managed_mcp::upsert_managed_context(&extension_creator::SPEC, &legacy, &executable, &state_dir).unwrap();
+        let migrated: toml_edit::DocumentMut = migrated.parse().unwrap();
+        assert!(migrated["mcp_servers"].get(extension_creator::LEGACY_SERVER_ID).is_none());
+        assert!(migrated["mcp_servers"].get(extension_creator::SERVER_ID).is_some());
+        let foreign_legacy = format!("[mcp_servers.{}]\ncommand = 'other'\nargs = ['--x']\n", extension_creator::LEGACY_SERVER_ID);
+        let kept = managed_mcp::upsert_managed_context(&extension_creator::SPEC, &foreign_legacy, &executable, &state_dir).unwrap();
+        assert!(kept.contains("command = 'other'"));
         // 同名条目被别的程序占用时不接管。
-        let foreign = format!("[mcp_servers.{}]\ncommand = 'other'\nargs = ['--x']\n", plugin_creator::SERVER_ID);
+        let foreign = format!("[mcp_servers.{}]\ncommand = 'other'\nargs = ['--x']\n", extension_creator::SERVER_ID);
         assert!(
-            managed_mcp::upsert_managed_context(&plugin_creator::SPEC, &foreign, &executable, &state_dir)
+            managed_mcp::upsert_managed_context(&extension_creator::SPEC, &foreign, &executable, &state_dir)
                 .is_err()
         );
     }

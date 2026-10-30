@@ -542,7 +542,15 @@ const demoClaudeEnhance = {
   bashTimeout: { enabled: false, defaultEnabled: false, defaultSeconds: 120, maxEnabled: false, maxSeconds: 600 },
 };
 
-const settingsResult = () => ok({ revision: "web-preview", settings: demoSettings, settings_path: "演示模式", user_scripts: { enabled: true, skip_next_start: false, scripts: [] } });
+// 本地拓展演示数据：一个单文件脚本、一个已加载的拓展包、一个清单有误的拓展包。
+const demoUserScripts = { enabled: true, skip_next_start: false, scripts: [
+  { key: "user:copy-title.js", name: "copy-title.js", source: "user", kind: "script", package: null, enabled: true, status: "loaded", error: "" },
+  { key: "user:pomodoro_timer", name: "番茄钟", source: "user", kind: "package", enabled: true, status: "loaded", error: "",
+    package: { id: "pomodoro_timer", version: "0.1.0", description: "在左侧图标栏提供可持久化的 25 分钟番茄钟", engine: 1, routes: [] } },
+  { key: "user:future-ext", name: "未来拓展", source: "user", kind: "package", enabled: true, status: "failed",
+    error: "需要拓展 API v2，当前 Codex++ 提供 v1，请升级 Codex++", package: { id: "future-ext", version: "1.0.0", description: "", engine: 2, routes: [] } },
+] };
+const settingsResult = () => ok({ revision: "web-preview", settings: demoSettings, settings_path: "演示模式", user_scripts: demoUserScripts });
 
 export async function invoke<T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   switch (command) {
@@ -658,6 +666,10 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       }) as T;
       return ok({ platform: null, rate: null, usage: null, detail: "演示模式" }) as T;
     }
+    case "extension_creator_request": return {
+      status: args.action === "connect" ? "connected" : "not_connected",
+      message: "", configPath: "~/.codex/config.toml", extensionsDirectory: "~/.config/Codex++/user_scripts",
+    } as T;
     // dsh 插件演示数据：一个按教程写的组合包（工具 + skill + MCP 行 + 不兼容行）。
     case "dsh_plugins_request": return {
       message: "",

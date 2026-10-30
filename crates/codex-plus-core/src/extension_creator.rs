@@ -1,10 +1,10 @@
-//! 「对话造插件」：给 Codex 用的本机 stdio MCP 服务。
+//! 「对话造拓展」：给 Codex 用的本机 stdio MCP 服务。
 //!
-//! 用户在 Codex 对话里描述想要的功能，agent 通过这里的工具写出 Codex++ 插件包、立刻热重载、
+//! 用户在 Codex 对话里描述想要的功能，agent 通过这里的工具写出 Codex++ 拓展包、立刻热重载、
 //! 读回加载状态与报错再迭代。走 MCP 而不是让 agent 自己写文件、跑命令，是因为 Codex 的沙箱通常
 //! 不能写工作区以外的目录，也连不上本机调试端口；MCP 服务在沙箱外运行，写入还会经过 Codex 的工具审批。
 //!
-//! 只管理 user 目录下的插件包（`user_scripts/<id>/`），不删除文件，不碰单文件脚本与内置脚本。
+//! 只管理 user 目录下的拓展包（`user_scripts/<id>/`），不删除文件，不碰单文件脚本与内置脚本。
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read, Write};
@@ -15,38 +15,42 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::managed_mcp::ManagedMcp;
-use crate::user_scripts::{self, PluginWrite, UserScriptManager};
+use crate::user_scripts::{self, ExtensionWrite, UserScriptManager};
 
-pub const SERVER_ID: &str = "codex_plus_plugins";
-pub const MCP_FLAG: &str = "--codex-plus-plugin-mcp";
+pub const SERVER_ID: &str = "codex_plus_extensions";
+pub const MCP_FLAG: &str = "--codex-plus-extension-mcp";
+/// 早期接入时写下的条目与启动参数。重新接入时替换掉本工具的旧条目，主程序也继续认旧参数。
+pub const LEGACY_SERVER_ID: &str = "codex_plus_plugins";
+pub const LEGACY_MCP_FLAG: &str = "--codex-plus-plugin-mcp";
 
 pub const SPEC: ManagedMcp = ManagedMcp {
     server_id: SERVER_ID,
     flag: MCP_FLAG,
-    label: "插件创作 MCP",
-    comment: "Managed by Codex++: plugin creator MCP",
-    lock_file: ".codex-plus-plugin-mcp.lock",
-    backup_dir: ".codex-plus-plugin-mcp-backups",
+    label: "拓展创作 MCP",
+    comment: "Managed by Codex++: extension creator MCP",
+    lock_file: ".codex-plus-extension-mcp.lock",
+    backup_dir: ".codex-plus-extension-mcp-backups",
+    legacy: &[(LEGACY_SERVER_ID, LEGACY_MCP_FLAG)],
 };
 
 /// 写入请求里带着完整的文件内容，上限比单文件上限宽一些。
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
-/// 热重载后再等一会儿读一次运行状态，捕捉插件异步阶段报的错。
+/// 热重载后再等一会儿读一次运行状态，捕捉拓展异步阶段报的错。
 const SETTLE_DELAY: Duration = Duration::from_millis(800);
 
-const GUIDE: &str = include_str!("../../../assets/plugin-creator/guide.md");
+const GUIDE: &str = include_str!("../../../assets/extension-creator/guide.md");
 const EXTENSION_API_SOURCE: &str =
     include_str!("../../../assets/inject/renderer-inject/91-extension-api.js");
 
-const INSTRUCTIONS: &str = "用户想给 Codex 加功能、改界面、做个小工具或「做个插件」时，用这些工具在对话里直接做出 Codex++ 插件：先调用 codexpp_plugin_guide 读创作指南（只需一次），再用 codexpp_plugin_write 写入，根据返回的加载状态和报错迭代到能用为止，最后告诉用户在哪里使用。改已有插件前先 codexpp_plugin_read。插件在用户自己的 Codex 页面里运行，写入前确认需求，不要做用户没要求的事。";
+const INSTRUCTIONS: &str = "用户想给 Codex 加功能、改界面、做个小工具，或说「做个插件 / 做个拓展」时，用这些工具在对话里直接做出 Codex++ 拓展（注意：这不是 Codex 自带的插件，Codex 插件是 skills/MCP 包，不归这里管）：先调用 codexpp_extension_guide 读创作指南（只需一次），再用 codexpp_extension_write 写入，根据返回的加载状态和报错迭代到能用为止，最后告诉用户在哪里使用。改已有拓展前先 codexpp_extension_read。拓展在用户自己的 Codex 页面里运行，写入前确认需求，不要做用户没要求的事。跟用户交流时称它为「拓展」。";
 
-/// 服务依赖：插件目录与 Codex 页面调试端口。端口为空时只写文件、不热重载。
-pub struct PluginCreator {
+/// 服务依赖：拓展目录与 Codex 页面调试端口。端口为空时只写文件、不热重载。
+pub struct ExtensionCreator {
     pub manager: UserScriptManager,
     pub debug_ports: Vec<u16>,
 }
 
-pub async fn serve(creator: PluginCreator) -> anyhow::Result<()> {
+pub async fn serve(creator: ExtensionCreator) -> anyhow::Result<()> {
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Option<Vec<u8>>>(4);
     // 读 stdin 是阻塞的，放到独立线程；超长行用 None 表示，由主循环回错误。
     std::thread::spawn(move || {
@@ -101,7 +105,7 @@ fn read_bounded_line(reader: &mut impl BufRead) -> std::io::Result<Option<Option
     Ok(Some(Some(line)))
 }
 
-pub async fn handle_request(creator: &PluginCreator, request: Value) -> Option<Value> {
+pub async fn handle_request(creator: &ExtensionCreator, request: Value) -> Option<Value> {
     let Some(object) = request.as_object() else {
         return Some(rpc_error(Value::Null, -32600, "请求必须是 JSON-RPC 对象"));
     };
@@ -126,7 +130,7 @@ pub async fn handle_request(creator: &PluginCreator, request: Value) -> Option<V
                 "2025-06-18"
             };
             json!({"protocolVersion": version, "capabilities": {"tools": {"listChanged": false}},
-                "serverInfo": {"name": "codex-plus-plugin-creator", "version": env!("CARGO_PKG_VERSION")},
+                "serverInfo": {"name": "codex-plus-extension-creator", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS})
         }
         "ping" => json!({}),
@@ -163,39 +167,39 @@ fn tool_definitions() -> Value {
     let writes = json!({"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false});
     json!([
         {
-            "name": "codexpp_plugin_guide",
-            "description": "读取 Codex++ 插件创作指南：插件能做什么、ctx API、必须遵守的约定、示例，以及可用的后端路由。写插件前先调用一次。",
+            "name": "codexpp_extension_guide",
+            "description": "读取 Codex++ 拓展创作指南：拓展能做什么、ctx API、必须遵守的约定、示例，以及可用的后端路由。写拓展前先调用一次。",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             "annotations": read_only,
         },
         {
-            "name": "codexpp_plugin_list",
-            "description": "列出用户已有的 Codex++ 插件与脚本，含启用状态、加载状态和报错。",
+            "name": "codexpp_extension_list",
+            "description": "列出用户已有的 Codex++ 拓展与脚本，含启用状态、加载状态和报错。",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             "annotations": read_only,
         },
         {
-            "name": "codexpp_plugin_read",
-            "description": "读回一个插件包的清单与源码，修改已有插件前使用。",
+            "name": "codexpp_extension_read",
+            "description": "读回一个拓展包的清单与源码，修改已有拓展前使用。",
             "inputSchema": {
                 "type": "object",
-                "properties": {"id": {"type": "string", "description": "插件 id"}},
+                "properties": {"id": {"type": "string", "description": "拓展 id"}},
                 "required": ["id"],
                 "additionalProperties": false,
             },
             "annotations": read_only,
         },
         {
-            "name": "codexpp_plugin_write",
-            "description": "创建或覆盖一个 Codex++ 插件包并立刻热重载，返回加载状态与报错。codexpp.json 由本工具根据参数生成；同一 id 重复写入即覆盖，用于迭代修改。",
+            "name": "codexpp_extension_write",
+            "description": "创建或覆盖一个 Codex++ 拓展包并立刻热重载，返回加载状态与报错。codexpp.json 由本工具根据参数生成；同一 id 重复写入即覆盖，用于迭代修改。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "插件 id：字母、数字、- 和 _，最长 64"},
+                    "id": {"type": "string", "description": "拓展 id：字母、数字、- 和 _，最长 64"},
                     "name": {"type": "string", "description": "给用户看的名字"},
-                    "description": {"type": "string", "description": "一句话说明插件做什么"},
+                    "description": {"type": "string", "description": "一句话说明拓展做什么"},
                     "version": {"type": "string", "description": "版本号，默认 0.1.0"},
-                    "routes": {"type": "array", "items": {"type": "string"}, "description": "插件需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
+                    "routes": {"type": "array", "items": {"type": "string"}, "description": "拓展需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
                     "renderer": {"type": "array", "items": {"type": "string"}, "description": "按顺序执行的入口文件，默认 [\"renderer.js\"]"},
                     "files": {
                         "type": "array",
@@ -214,8 +218,8 @@ fn tool_definitions() -> Value {
             "annotations": writes,
         },
         {
-            "name": "codexpp_plugin_set_enabled",
-            "description": "启用或停用一个插件包并热重载。用户不想要某个插件时用它停用（本工具不删除文件）。",
+            "name": "codexpp_extension_set_enabled",
+            "description": "启用或停用一个拓展包并热重载。用户不想要某个拓展时用它停用（本工具不删除文件）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {"id": {"type": "string"}, "enabled": {"type": "boolean"}},
@@ -225,8 +229,8 @@ fn tool_definitions() -> Value {
             "annotations": writes,
         },
         {
-            "name": "codexpp_plugin_reload",
-            "description": "热重载所有插件并返回加载状态，用于用户手动改过文件之后。",
+            "name": "codexpp_extension_reload",
+            "description": "热重载所有拓展并返回加载状态，用于用户手动改过文件之后。",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             "annotations": writes,
         },
@@ -269,38 +273,38 @@ struct EnabledArguments {
     enabled: bool,
 }
 
-async fn call_tool(creator: &PluginCreator, name: &str, arguments: Value) -> anyhow::Result<Value> {
+async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> anyhow::Result<Value> {
     match name {
-        "codexpp_plugin_guide" => Ok(json!({
+        "codexpp_extension_guide" => Ok(json!({
             "guide": GUIDE,
             "apiVersion": user_scripts::EXTENSION_API_VERSION,
             "availableRoutes": extension_routes(),
-            "pluginsDirectory": creator.manager.user_dir().to_string_lossy(),
+            "extensionsDirectory": creator.manager.user_dir().to_string_lossy(),
         })),
-        "codexpp_plugin_list" => {
+        "codexpp_extension_list" => {
             let live = live_status(&creator.debug_ports).await.map(|(_, status)| status);
             let inventory = creator.manager.inventory_with_runtime_status(live.as_ref())?;
             Ok(json!({
-                "pluginsDirectory": creator.manager.user_dir().to_string_lossy(),
+                "extensionsDirectory": creator.manager.user_dir().to_string_lossy(),
                 "codexConnected": live.is_some(),
                 "items": summarize_items(&inventory, None),
             }))
         }
-        "codexpp_plugin_read" => {
+        "codexpp_extension_read" => {
             let arguments: IdArguments =
-                serde_json::from_value(arguments).context("codexpp_plugin_read 参数无效")?;
-            creator.manager.read_plugin_package(&arguments.id)
+                serde_json::from_value(arguments).context("codexpp_extension_read 参数无效")?;
+            creator.manager.read_extension_package(&arguments.id)
         }
-        "codexpp_plugin_write" => {
+        "codexpp_extension_write" => {
             let arguments: WriteArguments =
-                serde_json::from_value(arguments).context("codexpp_plugin_write 参数无效")?;
+                serde_json::from_value(arguments).context("codexpp_extension_write 参数无效")?;
             let mut files = BTreeMap::new();
             for file in arguments.files {
                 if files.insert(file.path.clone(), file.content).is_some() {
                     anyhow::bail!("文件 {} 重复出现", file.path);
                 }
             }
-            let written = creator.manager.write_plugin_package(&PluginWrite {
+            let written = creator.manager.write_extension_package(&ExtensionWrite {
                 id: arguments.id.clone(),
                 name: arguments.name,
                 version: arguments.version,
@@ -309,28 +313,28 @@ async fn call_tool(creator: &PluginCreator, name: &str, arguments: Value) -> any
                 renderer: arguments.renderer,
                 files,
             })?;
-            let key = user_scripts::plugin_package_key(&arguments.id);
+            let key = user_scripts::extension_package_key(&arguments.id);
             let mut result = reload_and_report(creator, &key).await?;
             result["written"] = written;
             Ok(result)
         }
-        "codexpp_plugin_set_enabled" => {
+        "codexpp_extension_set_enabled" => {
             let arguments: EnabledArguments =
-                serde_json::from_value(arguments).context("codexpp_plugin_set_enabled 参数无效")?;
-            if !creator.manager.has_plugin_package(&arguments.id) {
-                anyhow::bail!("没有 id 为 {} 的用户插件包", arguments.id);
+                serde_json::from_value(arguments).context("codexpp_extension_set_enabled 参数无效")?;
+            if !creator.manager.has_extension_package(&arguments.id) {
+                anyhow::bail!("没有 id 为 {} 的用户拓展包", arguments.id);
             }
-            let key = user_scripts::plugin_package_key(&arguments.id);
+            let key = user_scripts::extension_package_key(&arguments.id);
             creator.manager.set_script_enabled(&key, arguments.enabled)?;
             reload_and_report(creator, &key).await
         }
-        "codexpp_plugin_reload" => reload_and_report(creator, "").await,
+        "codexpp_extension_reload" => reload_and_report(creator, "").await,
         _ => anyhow::bail!("未知工具 {name}"),
     }
 }
 
 /// 热重载并汇报。目标 key 非空时把它的状态单独提出来，方便 agent 判断要不要继续修。
-async fn reload_and_report(creator: &PluginCreator, key: &str) -> anyhow::Result<Value> {
+async fn reload_and_report(creator: &ExtensionCreator, key: &str) -> anyhow::Result<Value> {
     let reload = reload(creator).await;
     let mut live = None;
     if reload["reloaded"] == true {
@@ -342,13 +346,13 @@ async fn reload_and_report(creator: &PluginCreator, key: &str) -> anyhow::Result
     let target = (!key.is_empty())
         .then(|| summarize_items(&inventory, Some(key)).into_iter().next())
         .flatten();
-    Ok(json!({ "reload": reload, "plugin": target, "items": items }))
+    Ok(json!({ "reload": reload, "extension": target, "items": items }))
 }
 
 /// 只有页内重载才自动执行。某个已加载脚本没登记清理函数时，重载会整页刷新 Codex，
 /// 可能打断用户正在进行的对话，这种情况交给用户在管理器里手动点。
-async fn reload(creator: &PluginCreator) -> Value {
-    let mut last_error = String::from("没有找到已连接的 Codex 页面；插件文件已写好，Codex 下次启动或在 Codex++ 管理器点「热重载」后生效");
+async fn reload(creator: &ExtensionCreator) -> Value {
+    let mut last_error = String::from("没有找到已连接的 Codex 页面；拓展文件已写好，Codex 下次启动或在 Codex++ 管理器点「热重载」后生效");
     for port in &creator.debug_ports {
         let Ok(status) = user_scripts::live_runtime_status(*port).await else {
             continue;
@@ -371,7 +375,7 @@ async fn reload(creator: &PluginCreator) -> Value {
         if !blockers.is_empty() {
             return json!({
                 "reloaded": false,
-                "reason": "有旧脚本不支持页内热重载，自动重载会刷新整个 Codex 页面、可能打断当前对话，所以没有自动执行。插件文件已写好，请让用户在 Codex++ 管理器的「本地拓展」里点「热重载」。",
+                "reason": "有旧脚本不支持页内热重载，自动重载会刷新整个 Codex 页面、可能打断当前对话，所以没有自动执行。拓展文件已写好，请让用户在 Codex++ 管理器的「本地拓展」里点「热重载」。",
                 "blockingScripts": blockers,
             });
         }
@@ -411,7 +415,7 @@ fn summarize_items(inventory: &Value, only: Option<&str>) -> Vec<Value> {
                         "enabled": item["enabled"],
                         "status": item["status"],
                         "error": item["error"],
-                        "plugin": item["plugin"],
+                        "package": item["package"],
                     })
                 })
                 .collect()

@@ -1,7 +1,7 @@
 # 导入 dsh 插件（deepseek-harness）设计
 
 日期：2026-10-30
-关联：`docs/plans/2026-10-30-codexpp-plugin-system-design.md`（Codex++ 插件体系的五个拦截层）
+关联：`docs/plans/2026-10-30-codexpp-extension-system-design.md`（Codex++ 拓展体系的五个拦截层）
 
 ## 1. 目标
 
@@ -48,7 +48,7 @@ dsh 的 agent 循环、会话存储、LLM 服务都不在 Codex App 里，所以
 | `cordis:group` 行 | patch 行 | 展开子行逐一判定 | 按子行 |
 | 依赖 agent 循环 / 会话 / LLM / 子 agent / 工作流 / shell / 工作目录服务的插件（`agents`、`sessions`、`sessionProjections`、`llm`、`subagents`、`workflowEngine`、`shell`、`workingDirectory`、`skills` 以外的服务…） | `inject` 必需项含不支持的服务 | 无 | **不兼容**：Codex App 的 agent 循环、会话存储与模型调用不在 Codex++ 手里，不加载并列出缺的服务 |
 | `Service` 子类插件 | 默认导出为 class | 无 | **不兼容**：它们是给别的插件提供服务的，Codex 里没有消费者 |
-| 前端 slot 插件（`dsh.client`） | `package.json` 有 `dsh.client` | 理论上落在 renderer 层（`codexPlus.plugin`），但 slot、store、React 组件树都不同 | **不兼容（需移植）**：给出说明，建议改写为 Codex++ 插件包 |
+| 前端 slot 插件（`dsh.client`） | `package.json` 有 `dsh.client` | 理论上落在 renderer 层（`codexPlus.extension`），但 slot、store、React 组件树都不同 | **不兼容（需移植）**：给出说明，建议改写为 Codex++ 拓展包 |
 | bundle patch 里的 `!!js` 表达式、overlay、`remove`/`update` 操作 | YAML 标签 / 操作名 | — | **不支持**：只读取 `insert` 行；表达式值按字符串忽略，并在诊断里提示 |
 | 引用 dsh 官方内置模块的行（`@deepseek-ai/dsh-*`，未随包安装） | 解析不到模块 | — | **不兼容**：多为 Codex 已自带的能力或依赖 agent 循环 |
 
@@ -124,4 +124,4 @@ Codex App ──stdio MCP──▶ Codex++ 可执行文件 --codex-plus-dsh-mcp 
 1. 插件市场索引浏览（格式 1）；
 2. 按插件 `Config` schema 生成表单（目前是 JSON 文本框）；
 3. `systemPrompt` 片段改为 Codex 原生 developer instructions 注入（经模型网关层）；
-4. 前端 slot 插件的移植指引 / 半自动改写为 Codex++ 插件包。
+4. 前端 slot 插件的移植指引 / 半自动改写为 Codex++ 拓展包。

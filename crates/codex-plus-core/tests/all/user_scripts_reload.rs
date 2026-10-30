@@ -194,7 +194,7 @@ fn write_package(root: &std::path::Path, dir: &str, manifest: serde_json::Value)
 }
 
 #[test]
-fn plugin_packages_are_scanned_bundled_and_exposed_with_manifest() {
+fn extension_packages_are_scanned_bundled_and_exposed_with_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let user = temp.path().join("user");
     fs::create_dir_all(&user).unwrap();
@@ -203,7 +203,7 @@ fn plugin_packages_are_scanned_bundled_and_exposed_with_manifest() {
         &user,
         "hello",
         json!({
-            "id": "hello", "name": "Hello 插件", "version": "0.2.0", "description": "示例",
+            "id": "hello", "name": "Hello 拓展", "version": "0.2.0", "description": "示例",
             "engines": {"codexpp": 1},
             "renderer": ["a.js", "lib/b.js"],
             "permissions": {"routes": ["/diagnostics/log"]},
@@ -213,7 +213,7 @@ fn plugin_packages_are_scanned_bundled_and_exposed_with_manifest() {
     fs::write(user.join("hello/a.js"), "window.order = ['a'];").unwrap();
     fs::create_dir_all(user.join("hello/lib")).unwrap();
     fs::write(user.join("hello/lib/b.js"), "window.order.push('b');").unwrap();
-    // 没有清单的目录不是插件包。
+    // 没有清单的目录不是拓展包。
     fs::create_dir_all(user.join("notes")).unwrap();
     fs::write(user.join("notes/readme.js"), "window.notes = true;").unwrap();
     let manager = UserScriptManager::new(
@@ -227,16 +227,16 @@ fn plugin_packages_are_scanned_bundled_and_exposed_with_manifest() {
     assert_eq!(scripts.len(), 2);
     let package = scripts.iter().find(|item| item["key"] == "user:hello").unwrap();
     assert_eq!(package["kind"], "package");
-    assert_eq!(package["name"], "Hello 插件");
+    assert_eq!(package["name"], "Hello 拓展");
     assert_eq!(package["status"], "not_loaded");
-    assert_eq!(package["plugin"]["id"], "hello");
-    assert_eq!(package["plugin"]["version"], "0.2.0");
-    assert_eq!(package["plugin"]["routes"], json!(["/diagnostics/log"]));
-    // 市场版本号只给市场脚本用，包的版本走 plugin.version，避免误判「可更新」。
+    assert_eq!(package["package"]["id"], "hello");
+    assert_eq!(package["package"]["version"], "0.2.0");
+    assert_eq!(package["package"]["routes"], json!(["/diagnostics/log"]));
+    // 市场版本号只给市场脚本用，包的版本走 package.version，避免误判「可更新」。
     assert_eq!(package["version"], "");
     let plain = scripts.iter().find(|item| item["key"] == "user:plain.js").unwrap();
     assert_eq!(plain["kind"], "script");
-    assert!(plain["plugin"].is_null());
+    assert!(plain["package"].is_null());
 
     let bundle = manager.build_initial_bundle().unwrap();
     assert!(!bundle.contains("window.notes"));
@@ -275,12 +275,12 @@ assert.equal(status.scripts['user:plain.js'].manifest, null);
     // 包是目录，删除接口只删单文件，拒绝并保留目录。
     manager.set_script_enabled("user:hello", true).unwrap();
     let error = manager.delete_user_script("user:hello").unwrap_err();
-    assert!(error.to_string().contains("插件包"));
+    assert!(error.to_string().contains("拓展包"));
     assert!(user.join("hello/codexpp.json").exists());
 }
 
 #[test]
-fn invalid_or_incompatible_plugin_packages_report_failure_and_are_not_injected() {
+fn invalid_or_incompatible_extension_packages_report_failure_and_are_not_injected() {
     let temp = tempfile::tempdir().unwrap();
     let user = temp.path().join("user");
     let outside = temp.path().join("outside.js");

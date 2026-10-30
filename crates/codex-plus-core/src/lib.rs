@@ -97,7 +97,7 @@ pub mod newapi;
 pub mod sub2api;
 pub mod tools;
 pub mod update;
-pub mod plugin_creator;
+pub mod extension_creator;
 pub mod user_scripts;
 pub mod version;
 pub mod vision;

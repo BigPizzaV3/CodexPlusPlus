@@ -3394,15 +3394,15 @@ return {
 });
 
 /**
- * 插件运行时内核（91-plugin-runtime.js）。
+ * 插件运行时内核（91-extension-runtime.js）。
  *
  * 内核承诺「ctx 上的注册随实例卸载自动撤销」，这是热重载不残留旧实例的前提；
  * waterfall 的短路、出错跳过语义是宿主后续挂协议中间件的基础，都要守住。
  */
-describe("插件运行时内核", () => {
+describe("拓展运行时内核", () => {
   async function kernel(options: { scriptKey?: string; manifest?: unknown; initializing?: boolean } = {}) {
     const source = await readFile(
-      new URL("../../../assets/inject/renderer-inject/91-plugin-runtime.js", import.meta.url), "utf8",
+      new URL("../../../assets/inject/renderer-inject/91-extension-runtime.js", import.meta.url), "utf8",
     );
     const scriptKey = options.scriptKey ?? "user:demo";
     const cleanups: Array<() => void> = [];
@@ -3431,7 +3431,7 @@ describe("插件运行时内核", () => {
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
       "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegistry", "codexPlusExtensionCall", "showToast",
-      `${source}\nreturn { create: codexPlusCreatePlugin, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitPluginEvent, instances: codexPlusPluginInstances };`,
+      `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances };`,
     )(
       window,
       (key: string, label: string, callback: () => unknown) => {
@@ -3516,8 +3516,8 @@ describe("插件运行时内核", () => {
     const seen: string[] = [];
     const lifecycle: string[] = [];
     k.create((ctx: any) => {
-      ctx.on("plugin/apply", (info: { id: string }) => lifecycle.push(`apply:${info.id}`));
-      ctx.on("plugin/dispose", (info: { id: string }) => lifecycle.push(`dispose:${info.id}`));
+      ctx.on("extension/apply", (info: { id: string }) => lifecycle.push(`apply:${info.id}`));
+      ctx.on("extension/dispose", (info: { id: string }) => lifecycle.push(`dispose:${info.id}`));
     }, { id: "observer" });
     const emitter = k.create((ctx: any) => {
       ctx.on("ping", () => { throw new Error("坏处理器"); });
@@ -3529,7 +3529,7 @@ describe("插件运行时内核", () => {
     emitter.dispose();
     k.emit("ping", ["2"]);
     assert.deepEqual(seen, ["1"]);
-    // apply 事件在 apply 返回后广播，插件自己也能收到。
+    // apply 事件在 apply 返回后广播，拓展自己也能收到。
     assert.deepEqual(lifecycle, ["apply:observer", "apply:emitter", "dispose:emitter"]);
   });
 
@@ -3569,7 +3569,7 @@ describe("插件运行时内核", () => {
     assert.match(k.failures[0].message, /异步出错/);
   });
 
-  it("包插件只能调清单声明的路由，单文件脚本沿用全局白名单", async () => {
+  it("拓展包只能调清单声明的路由，单文件脚本沿用全局白名单", async () => {
     const k = await kernel({ manifest: { id: "pkg", permissions: { routes: ["/diagnostics/log"] } } });
     const ctx = k.create(() => {});
     assert.equal(ctx.id, "pkg");
@@ -3613,12 +3613,14 @@ describe("插件运行时内核", () => {
     assert.equal(fired, 1);
   });
 
-  it("对外接口挂出 plugin 入口并把清单放进 script", async () => {
+  it("对外接口挂出 extension 入口并把清单放进 script", async () => {
     const api = await readFile(new URL("../../../assets/inject/renderer-inject/91-extension-api.js", import.meta.url), "utf8");
-    assert.match(api, /plugin: codexPlusCreatePlugin,/);
-    assert.match(api, /return \{ key, manifest: codexPlusPluginManifest\(key\) \};/);
+    assert.match(api, /extension: codexPlusCreateExtension,/);
+    // 早期名称保留为别名，已有拓展不受影响。
+    assert.match(api, /plugin: codexPlusCreateExtension,/);
+    assert.match(api, /return \{ key, manifest: codexPlusExtensionManifest\(key\) \};/);
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    assert.ok(renderer.indexOf("function codexPlusCreatePlugin(") < renderer.indexOf("window.codexPlus = buildCodexPlusExtensionApi();"));
+    assert.ok(renderer.indexOf("function codexPlusCreateExtension(") < renderer.indexOf("window.codexPlus = buildCodexPlusExtensionApi();"));
   });
 });
 

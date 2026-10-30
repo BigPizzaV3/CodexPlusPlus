@@ -18,8 +18,8 @@ window.codexPlus
 - [快速上手](#快速上手)
 - [脚本放在哪、怎么生效](#脚本放在哪怎么生效)
 - [生命周期契约（最重要的一节）](#生命周期契约最重要的一节)
-- [插件：codexPlus.plugin 与插件包](#插件codexplusplugin-与插件包)
-- [在 Codex 对话里造插件](#在-codex-对话里造插件)
+- [拓展实例与拓展包：codexPlus.extension](#拓展实例与拓展包codexplusextension)
+- [在 Codex 对话里造拓展](#在-codex-对话里造拓展)
 - [API 参考](#api-参考)
 - [后端调用与路由白名单](#后端调用与路由白名单)
 - [类名与属性契约](#类名与属性契约)
@@ -78,11 +78,11 @@ window.codexPlus.registerMenuItem({
 | macOS / Linux | `~/.config/Codex++/user_scripts/` |
 | Windows | `%APPDATA%\Codex++\user_scripts\` |
 
-- 加载 `.js` 文件和带 `codexpp.json` 的子目录（插件包，见下文），按名称小写排序执行
-- 每个脚本 / 插件包在独立 IIFE 里运行，互不污染
+- 加载 `.js` 文件和带 `codexpp.json` 的子目录（拓展包，见下文），按名称小写排序执行
+- 每个脚本 / 拓展包在独立 IIFE 里运行，互不污染
 - 改完脚本后在管理页点「热重载拓展」即可生效，无需重启 Codex
 
-脚本标识（`codexPlus.script.key`）形如 `user:my-script.js`，由来源目录与文件名拼成；插件包是 `user:<目录名>`。
+脚本标识（`codexPlus.script.key`）形如 `user:my-script.js`，由来源目录与文件名拼成；拓展包是 `user:<目录名>`。
 
 ---
 
@@ -125,13 +125,14 @@ window.codexPlus.onCleanup(() => clearInterval(timer));
 
 ---
 
-## 插件：codexPlus.plugin 与插件包
+## 拓展实例与拓展包：codexPlus.extension
 
-新写的拓展推荐用 `codexPlus.plugin`。它创建一个插件实例 `ctx`，**ctx 上的每次注册都随实例卸载按逆序自动撤销**，
+新写的拓展推荐用 `codexPlus.extension`。它创建一个拓展实例 `ctx`，**ctx 上的每次注册都随实例卸载按逆序自动撤销**，
 不需要自己维护 dispose 列表，热重载时也不会残留旧实例。
+早期版本叫 `codexPlus.plugin`，仍然可用，等同于 `codexPlus.extension`。
 
 ```js
-codexPlus.plugin((ctx) => {
+codexPlus.extension((ctx) => {
   ctx.registerPage({ title: "时钟", render: ({ container }) => { container.textContent = new Date().toLocaleTimeString(); } });
   ctx.setInterval(() => ctx.emit("clock/tick", Date.now()), 1000); // 卸载时自动清理
   ctx.listen(window, "focus", () => ctx.toast("欢迎回来"));        // 卸载时自动 removeEventListener
@@ -153,17 +154,17 @@ codexPlus.plugin((ctx) => {
 | --- | --- |
 | `effect(fn)` | 立即执行 `fn`，它返回的函数在卸载时调用；返回值可提前撤销 |
 | `registerRowAction / registerNavEntry / registerMenuItem / registerPage` | 同 `codexPlus.register*`，归属与撤销自动处理 |
-| `on(event, handler)` / `emit(event, ...args)` | 插件间事件。内核广播 `plugin/apply`、`plugin/dispose`（参数 `{ id, scriptKey }`） |
+| `on(event, handler)` / `emit(event, ...args)` | 拓展间事件。内核广播 `extension/apply`、`extension/dispose`（参数 `{ id, scriptKey }`） |
 | `intercept(name, handler, { order })` / `waterfall(name, value)` | 中间件链：`handler(value, next)` 调 `next(v)` 交给下一个，不调即短路；出错的中间件被跳过；没有中间件时原样返回 |
 | `listen(target, type, handler, options)` | 自动撤销的 `addEventListener` |
 | `setTimeout / setInterval` | 自动清理的定时器 |
-| `call(route, payload, options)` | 插件包只能调清单里声明的路由；单文件脚本沿用全局白名单 |
+| `call(route, payload, options)` | 拓展包只能调清单里声明的路由；单文件脚本沿用全局白名单 |
 | `toast / fail / dispose` | 提示、上报失败、主动卸载 |
 | `id / scriptKey / manifest / disposed` | 只读信息 |
 
-### 插件包
+### 拓展包
 
-一个插件可以是一个目录：放在 `user_scripts/` 下，根部有 `codexpp.json`。
+一个拓展可以是一个目录：放在 `user_scripts/` 下，根部有 `codexpp.json`。
 
 ```
 user_scripts/
@@ -193,27 +194,27 @@ user_scripts/
 | `permissions.routes` | `ctx.call` 能调的路由，需在[路由白名单](#后端调用与路由白名单)内。这是声明约束而不是安全边界 |
 
 清单不合法（JSON 错误、入口越出包目录、版本不兼容等）时包不注入，管理页显示「加载失败」和原因。
-未知字段会被忽略，后续版本会在清单里增加更多能力面。插件包是文件夹，管理页不提供删除按钮，请在目录里手动移除。
-整体设计见 [docs/plans/2026-10-30-codexpp-plugin-system-design.md](docs/plans/2026-10-30-codexpp-plugin-system-design.md)。
+未知字段会被忽略，后续版本会在清单里增加更多能力面。拓展包是文件夹，管理页不提供删除按钮，请在目录里手动移除。
+整体设计见 [docs/plans/2026-10-30-codexpp-extension-system-design.md](docs/plans/2026-10-30-codexpp-extension-system-design.md)。
 
-### 在 Codex 对话里造插件
+### 在 Codex 对话里造拓展
 
-不想自己写代码时，可以让 Codex 帮你写：在管理器「本地拓展」页点「接入 Codex」，然后新开一个 Codex 对话，
-直接说需求，例如「帮我做个插件：图标栏加一个番茄钟」。
+不想自己写代码时，可以让 Codex 帮你写：在管理器「拓展」页的「对话造拓展」一栏点「接入 Codex」，然后新开一个 Codex 对话，
+直接说需求，例如「帮我做个拓展：图标栏加一个番茄钟」。说「插件」也行，agent 知道这里指的是 Codex++ 拓展。
 
-接入后 Codex 多了一个本机 MCP 服务 `codex_plus_plugins`（由 Codex++ 主程序以 `--codex-plus-plugin-mcp` 运行），提供：
+接入后 Codex 多了一个本机 MCP 服务 `codex_plus_extensions`（由 Codex++ 主程序以 `--codex-plus-extension-mcp` 运行），提供：
 
 | 工具 | 作用 |
 | --- | --- |
-| `codexpp_plugin_guide` | 创作指南（`assets/plugin-creator/guide.md`）、API 版本与可用路由 |
-| `codexpp_plugin_list` / `codexpp_plugin_read` | 列出插件与加载状态、读回某个插件的源码 |
-| `codexpp_plugin_write` | 写入 `user_scripts/<id>/`（清单由参数生成），立刻热重载并返回加载状态与报错 |
-| `codexpp_plugin_set_enabled` / `codexpp_plugin_reload` | 启停、手动热重载 |
+| `codexpp_extension_guide` | 创作指南（`assets/extension-creator/guide.md`）、API 版本与可用路由 |
+| `codexpp_extension_list` / `codexpp_extension_read` | 列出拓展与加载状态、读回某个拓展的源码 |
+| `codexpp_extension_write` | 写入 `user_scripts/<id>/`（清单由参数生成），立刻热重载并返回加载状态与报错 |
+| `codexpp_extension_set_enabled` / `codexpp_extension_reload` | 启停、手动热重载 |
 
 边界：
 
-- 只写用户目录下的插件包，同名目录必须是同 id 的插件包才会覆盖；路径只能在包内，单文件 256 KiB、总量 1 MiB。
-- 不提供删除，不要的插件由 agent 停用，文件由你手动删除。
+- 只写用户目录下的拓展包，同名目录必须是同 id 的拓展包才会覆盖；路径只能在包内，单文件 256 KiB、总量 1 MiB。
+- 不提供删除，不要的拓展由 agent 停用，文件由你手动删除。
 - 只做页内热重载。已加载的旧脚本里有没登记清理函数的，热重载会刷新整个 Codex 页面、可能打断当前对话，
   这时工具不自动重载，会让你在管理器里手动点「热重载」。
 - 写入属于 MCP 工具调用，是否每次确认由 Codex 自己的工具审批设置决定。
@@ -235,7 +236,7 @@ if (window.codexPlus.apiVersion < 1) {
 
 ### `codexPlus.script`
 
-`{ key: string, manifest }`，当前脚本的标识与清单（插件包才有，单文件脚本为 `null`）。用于诊断与日志。是 getter，脚本初始化结束后再读也能拿到。
+`{ key: string, manifest }`，当前脚本的标识与清单（拓展包才有，单文件脚本为 `null`）。用于诊断与日志。是 getter，脚本初始化结束后再读也能拿到。
 
 ### `codexPlus.toast(message, options?)`
 

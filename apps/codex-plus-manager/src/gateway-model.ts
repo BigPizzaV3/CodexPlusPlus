@@ -309,14 +309,14 @@ export function draftFromBinding(binding: AgentBinding | undefined): BindingDraf
 
 /** 添加供应商时默认勾选的 Agent：没关掉「添加供应商时自动加入」的。 */
 export function defaultProviderAgents(payload: GatewayPayload | null): GatewayAgentId[] {
-  return (payload?.agents ?? [])
+  return glanceAgents(payload?.agents)
     .map((agent) => agent.agent)
     .filter((agent) => payload?.gateway.bindings[agent]?.autoJoinProviders !== false);
 }
 
-/** 添加命令带上的 `skipAgents`：没勾选的 Agent。 */
+/** 添加命令带上的 `skipAgents`：列出来但没勾选的 Agent。没列出来的（装了没接入的）不跳过，以后接入时照常能用。 */
 export function skippedAgents(payload: GatewayPayload | null, picked: GatewayAgentId[]): GatewayAgentId[] {
-  return (payload?.agents ?? []).map((agent) => agent.agent).filter((agent) => !picked.includes(agent));
+  return glanceAgents(payload?.agents).map((agent) => agent.agent).filter((agent) => !picked.includes(agent));
 }
 
 /** 窗口支持纯数字和 `200k` / `1M` 写法。无效时返回 NaN。 */

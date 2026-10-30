@@ -689,7 +689,7 @@ type UserScriptInventory = {
     name: string;
     source: string;
     kind?: "script" | "package";
-    plugin?: { id: string; version: string; description: string; engine: number; routes: string[] } | null;
+    package?: { id: string; version: string; description: string; engine: number; routes: string[] } | null;
     enabled: boolean;
     status: string;
     error: string;
@@ -1322,7 +1322,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "weixin", get label() { return t("微信连接"); }, icon: ScanLine, tool: "codex" },
   { id: "enhance", get label() { return t("增强"); }, icon: Hammer, tool: "codex" },
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
-  { id: "userScripts", get label() { return t("脚本"); }, icon: FileCode2, tool: "codex" },
+  { id: "userScripts", get label() { return t("拓展"); }, icon: FileCode2, tool: "codex" },
   { id: "pluginMarket", get label() { return t("插件市场"); }, icon: Store, tool: "codex" },
   { id: "recommendations", get label() { return t("推荐内容"); }, icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
@@ -1846,7 +1846,7 @@ export function App() {
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("脚本"), result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("拓展"), result, { silentSuccess: true });
     }
   };
 
@@ -1864,7 +1864,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
+      showResultNotice(t("本地拓展"), result);
     }
   };
 
@@ -1873,7 +1873,7 @@ export function App() {
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      showResultNotice(t("脚本"), result);
+      showResultNotice(t("拓展"), result);
     }
   };
 
@@ -1882,7 +1882,7 @@ export function App() {
     if (!result) return;
     setSettings(result);
     setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-    showResultNotice(t("本地脚本"), result);
+    showResultNotice(t("本地拓展"), result);
     if (isSuccessStatus(result.status)) await reloadUserScripts();
   };
 
@@ -1891,7 +1891,7 @@ export function App() {
     if (!result) return;
     setSettings(result);
     setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-    showResultNotice(t("本地脚本"), result);
+    showResultNotice(t("本地拓展"), result);
   };
 
   const setUserScriptEnabled = async (key: string, enabled: boolean) => {
@@ -1899,7 +1899,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
+      showResultNotice(t("本地拓展"), result);
       await refreshUserScriptInventory();
     }
   };
@@ -1912,7 +1912,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
+      showResultNotice(t("本地拓展"), result);
       await refreshUserScriptInventory();
     }
   };
@@ -9659,9 +9659,9 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           <ExternalLink />
           {t("投稿")}
         </Button>
-        <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地脚本及开关；旧脚本可能需要刷新 Codex 页面")}>
+        <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")}>
           <RefreshCw className={reloading ? "animate-spin" : ""} />
-          {t("热重载脚本")}
+          {t("热重载拓展")}
         </Button>
         <Button onClick={() => void (async () => { await actions.refreshScriptMarket(); await actions.refreshCurrent(); })()} size="sm" variant="secondary">
           <RefreshCw />
@@ -9670,41 +9670,41 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
       </TopbarActions>
       {/* 状态条：两个整体开关 + 一行摘要，代替原来四行「键：值」的统计卡。 */}
       <div className="user-scripts-strip">
-        <label className="relay-bare-switch user-scripts-switch" title={t("整体开关不改变单个脚本的启停设置")}>
+        <label className="relay-bare-switch user-scripts-switch" title={t("整体开关不改变单个拓展的启停设置")}>
           <input
-            aria-label={t("启用本地脚本")}
+            aria-label={t("启用本地拓展")}
             checked={localEnabled}
             disabled={!inventory}
             onChange={() => void actions.setUserScriptsEnabled(!localEnabled)}
             type="checkbox"
           />
           <ToggleVisual />
-          <span>{t("启用本地脚本")}</span>
+          <span>{t("启用本地拓展")}</span>
         </label>
-        <label className="relay-bare-switch user-scripts-switch" title={t("脚本导致黑屏或卡死时，下一次启动先跳过脚本；脚本启停设置不会改变")}>
+        <label className="relay-bare-switch user-scripts-switch" title={t("拓展导致黑屏或卡死时，下一次启动先跳过拓展；各拓展的启停设置不会改变")}>
           <input
-            aria-label={t("下次启动跳过脚本")}
+            aria-label={t("下次启动跳过拓展")}
             checked={Boolean(inventory?.skip_next_start)}
             disabled={!inventory}
             onChange={() => void actions.setUserScriptsSkipNextStart(!inventory?.skip_next_start)}
             type="checkbox"
           />
           <ToggleVisual />
-          <span>{t("下次启动跳过脚本")}</span>
+          <span>{t("下次启动跳过拓展")}</span>
         </label>
         <span className="user-scripts-summary">
-          {tf("{0} 个市场脚本，已安装 {1} 个", [marketScripts.length, installedCount])}
+          {tf("拓展市场 {0} 个，已安装 {1} 个", [marketScripts.length, installedCount])}
           {market?.market.updatedAt ? ` · ${tf("清单更新于 {0}", [formatMarketUpdatedAt(market.market.updatedAt)])}` : market ? ` · ${market.market.message}` : ` · ${t("尚未刷新")}`}
         </span>
       </div>
-      <PluginCreatorStrip />
+      <ExtensionCreatorCard />
       <div className="script-market-toolbar">
-        <div className="mg-segmented user-scripts-panes" role="tablist" aria-label={t("脚本")}>
+        <div className="mg-segmented user-scripts-panes" role="tablist" aria-label={t("拓展")}>
           <button aria-selected={pane === "market"} data-active={pane === "market"} onClick={() => setPane("market")} role="tab" type="button">
-            {t("市场脚本")}<span>{marketScripts.length}</span>
+            {t("拓展市场")}<span>{marketScripts.length}</span>
           </button>
           <button aria-selected={pane === "local"} data-active={pane === "local"} onClick={() => setPane("local")} role="tab" type="button">
-            {t("本地脚本")}<span>{scripts.length}</span>
+            {t("本地拓展")}<span>{scripts.length}</span>
           </button>
           <button aria-selected={pane === "dsh"} data-active={pane === "dsh"} onClick={() => setPane("dsh")} role="tab" type="button">
             {t("dsh 插件")}
@@ -9714,14 +9714,14 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           <div className="script-market-search">
             <Search className="h-4 w-4" />
             <Input
-              aria-label={t("搜索市场脚本")}
+              aria-label={t("搜索拓展市场")}
               onChange={(event) => setMarketSearch(event.currentTarget.value)}
               placeholder={t("搜索名称、作者、描述或标签")}
               value={marketSearch}
             />
           </div>
           <AppSelect
-            ariaLabel={t("市场脚本排序")}
+            ariaLabel={t("拓展市场排序")}
             className="script-market-sort"
             onChange={(value) => setMarketSortChoice(value)}
             options={[
@@ -9729,15 +9729,15 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
               {
                 value: "updated",
                 label: t("最近更新"),
-                title: hasMarketUpdateTimes ? undefined : t("市场清单暂未提供脚本更新时间"),
+                title: hasMarketUpdateTimes ? undefined : t("市场清单暂未提供更新时间"),
               },
               { value: "name", label: t("名称") },
             ]}
             size="sm"
-            title={t("市场脚本排序")}
+            title={t("拓展市场排序")}
             value={marketSort}
           />
-          <div className="script-market-view-toggle" role="group" aria-label={t("脚本排版")}>
+          <div className="script-market-view-toggle" role="group" aria-label={t("拓展排版")}>
             <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
               <LayoutGrid className="h-4 w-4" />
               {t("板块")}
@@ -9747,7 +9747,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
               {t("列表")}
             </Button>
           </div>
-        </> : pane === "local" ? <span className="user-scripts-summary">{t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")}</span> : null}
+        </> : pane === "local" ? <span className="user-scripts-summary">{t("内置、手动安装、市场安装和对话生成的拓展；可在这里启停，单文件脚本可删除")}</span> : null}
       </div>
       {pane === "market" ? (
         marketScripts.length ? (
@@ -9764,17 +9764,17 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
               ))}
             </div>
           ) : (
-            <div className="empty">{t("没有匹配的市场脚本。")}</div>
+            <div className="empty">{t("没有匹配的拓展。")}</div>
           )
         ) : (
-          <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新市场加载远程脚本。")}</div>
+          <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新加载拓展市场。")}</div>
         )
       ) : pane === "dsh" ? (
         <DshPluginsPanel />
       ) : (
         <Panel>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
+            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
           </div>
         </Panel>
       )}
@@ -16119,37 +16119,37 @@ function Metric({ label, value }: { label: string; value: string }) {
 function localScriptStateLabel(state: LocalScriptState): { label: string; hint: string } {
   switch (state) {
     case "off":
-      return { label: t("已关闭"), hint: t("该脚本已关闭，不会注入 Codex") };
+      return { label: t("已关闭"), hint: t("该拓展已关闭，不会注入 Codex") };
     case "globalOff":
-      return { label: t("整体已关闭"), hint: t("脚本开着，但「启用本地脚本」整体开关关着，暂不注入") };
+      return { label: t("整体已关闭"), hint: t("拓展开着，但「启用本地拓展」整体开关关着，暂不注入") };
     case "loaded":
       return { label: t("已加载"), hint: t("已在 Codex 里运行") };
     case "loading":
       return { label: t("加载中"), hint: t("正在 Codex 里加载") };
     case "failed":
-      return { label: t("加载失败"), hint: t("脚本在 Codex 里运行出错") };
+      return { label: t("加载失败"), hint: t("拓展在 Codex 里运行出错") };
     case "notLoaded":
-      return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载脚本") };
+      return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载拓展") };
   }
 }
 
-type PluginCreatorStatus = {
+type ExtensionCreatorStatus = {
   status: "connected" | "not_connected" | "conflict";
   message: string;
   configPath?: string;
-  pluginsDirectory?: string;
+  extensionsDirectory?: string;
 };
 
-/// 「对话造插件」：把插件创作 MCP 接入 Codex 后，用户在 Codex 对话里描述需求，agent 直接写出插件并热重载。
-function PluginCreatorStrip() {
-  const [state, setState] = useState<PluginCreatorStatus | null>(null);
+/// 「对话造拓展」：把拓展创作 MCP 接入 Codex 后，用户在 Codex 对话里描述需求，agent 直接写出拓展并热重载。
+function ExtensionCreatorCard() {
+  const [state, setState] = useState<ExtensionCreatorStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const request = async (action: "status" | "connect") => {
     setBusy(true);
     setError("");
     try {
-      setState(await invoke<PluginCreatorStatus>("plugin_creator_request", { action }));
+      setState(await invoke<ExtensionCreatorStatus>("extension_creator_request", { action }));
     } catch (failure) {
       setError(String(failure));
     } finally {
@@ -16161,16 +16161,20 @@ function PluginCreatorStrip() {
   }, []);
   const connected = state?.status === "connected";
   const hint = error || (connected
-    ? t("已接入。新开一个 Codex 对话，说「帮我做个插件：…」即可")
-    : state?.status === "conflict" ? state.message : t("接入后可在 Codex 对话里描述需求，由 agent 直接写出插件并热重载"));
+    ? t("新开一个 Codex 对话，说「帮我做个拓展：…」即可")
+    : state?.status === "conflict" ? state.message : t("在 Codex 对话里描述需求，agent 直接写出拓展并热重载"));
   return (
-    <div className="user-scripts-strip plugin-creator-strip" data-status={state?.status ?? "loading"}>
-      <span className="plugin-creator-title">{t("对话造插件")}</span>
-      <span className="user-scripts-summary plugin-creator-hint" title={state?.pluginsDirectory}>{hint}</span>
-      {connected ? (
-        <UiBadge variant="secondary">{t("已接入 Codex")}</UiBadge>
-      ) : (
-        <Button disabled={busy || !state || state.status === "conflict"} onClick={() => void request("connect")} size="sm" variant="secondary">
+    <div className="extension-creator-card" data-status={state?.status ?? "loading"} data-error={error ? "true" : undefined}>
+      <span className="extension-creator-icon" aria-hidden="true"><Sparkles /></span>
+      <div className="extension-creator-text">
+        <div className="extension-creator-title">
+          {t("对话造拓展")}
+          {connected ? <span className="extension-creator-badge">{t("已接入 Codex")}</span> : null}
+        </div>
+        <div className="extension-creator-hint" title={state?.extensionsDirectory}>{hint}</div>
+      </div>
+      {connected ? null : (
+        <Button disabled={busy || !state || state.status === "conflict"} onClick={() => void request("connect")} size="sm">
           {busy ? t("接入中…") : t("接入 Codex")}
         </Button>
       )}
@@ -16186,19 +16190,22 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
   const source = script.market_id
     ? tf("市场 · {0}", [script.version || t("未知版本")])
     : isPackage
-      ? tf("插件包 · {0}", [script.plugin?.version || t("未知版本")])
+      ? tf("拓展包 · {0}", [script.package?.version || t("未知版本")])
       : script.source === "builtin" ? t("内置") : t("用户");
-  // 插件包是文件夹，后端只删单文件，这里不给删除按钮。
+  // 拓展包是文件夹，后端只删单文件，这里不给删除按钮。
   const canDelete = script.source === "user" && !isPackage;
   const state = localScriptState(script, globalEnabled);
   const { label, hint } = localScriptStateLabel(state);
   const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
   return (
     <div className="table-row user-script-row">
-      <span title={script.plugin?.description || undefined}>{script.name}</span>
+      <div className="user-script-name">
+        <strong>{script.name}</strong>
+        {script.package?.description ? <small title={script.package.description}>{script.package.description}</small> : null}
+      </div>
       <span>{source}</span>
       <div className="user-script-state">
-        <label className="relay-bare-switch" title={script.enabled ? t("关闭该脚本") : t("启用该脚本")}>
+        <label className="relay-bare-switch" title={script.enabled ? t("关闭该拓展") : t("启用该拓展")}>
           <input
             aria-label={tf("启用 {0}", [script.name])}
             checked={script.enabled}
@@ -16309,7 +16316,7 @@ function routeSubtitle(route: Route) {
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("管理常用功能、语音输入与下一步建议。"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
-    userScripts: t("内置和用户自定义脚本清单"),
+    userScripts: t("内置、市场和自己做的拓展"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("来自 Codex++ 广告源的推荐，点卡片在浏览器里打开"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),

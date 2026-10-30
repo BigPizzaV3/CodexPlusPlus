@@ -1,4 +1,4 @@
-# Codex++ 插件体系设计
+# Codex++ 拓展体系设计
 
 日期：2026-10-30
 状态：P0 实施中，P1~P4 为规划
@@ -6,9 +6,16 @@
 
 ---
 
+## 命名
+
+- **拓展**：Codex++ 自己注入 Codex 页面的能力，包括单文件脚本拓展与带 `codexpp.json` 的拓展包，
+  接口是 `codexPlus.extension(ctx => …)`（早期名 `codexPlus.plugin` 保留为别名）。
+- **插件**：只指 Codex 自带的插件（skills / MCP / apps 包），Codex++「插件市场」安装的就是这种。
+- **dsh 插件**：dsh 自己的插件，导入后按层落到 Codex++，见 `2026-10-30-dsh-plugin-import-design.md`。
+
 ## 一、目标
 
-让 Codex App 变成「能力都可以由插件贡献」的形态：一个插件包可以同时改界面、拦截协议、改模型请求、
+让 Codex App 变成「能力都可以由拓展贡献」的形态：一个拓展包可以同时改界面、拦截协议、改模型请求、
 挂 Codex 原生 hooks / MCP / skills，并且能干净地启用、停用和热重载。
 
 参照对象是一个采用「万物皆插件」架构的 agent harness：它的 agent 循环、工具、会话存储、模型适配、UI
@@ -21,8 +28,8 @@
 
 ## 二、约束：我们不拥有内核
 
-Codex 的 agent 循环在 Rust app-server 里，渲染进程是闭源打包的 Electron 页面。我们做不到「内核也是插件」，
-只能在 Codex++ 能控制的层面上提供插件挂载点。好在这些层面已经覆盖了参照对象的大部分能力缝：
+Codex 的 agent 循环在 Rust app-server 里，渲染进程是闭源打包的 Electron 页面。我们做不到「内核也是拓展」，
+只能在 Codex++ 能控制的层面上提供拓展挂载点。好在这些层面已经覆盖了参照对象的大部分能力缝：
 
 | 层 | Codex++ 现状 | 对应能力缝 |
 | --- | --- | --- |
@@ -34,9 +41,9 @@ Codex 的 agent 循环在 Rust app-server 里，渲染进程是闭源打包的 E
 
 明确不做：替换 agent 循环、替换会话存储（Codex 自己写 rollout）、把执行环境整体迁到远端。
 
-## 三、插件包
+## 三、拓展包
 
-一个插件是 `user_scripts/` 下的一个目录，根部放 `codexpp.json`：
+一个拓展是 `user_scripts/` 下的一个目录，根部放 `codexpp.json`：
 
 ```
 user_scripts/
@@ -50,7 +57,7 @@ user_scripts/
   "id": "hello",
   "name": "Hello",
   "version": "0.1.0",
-  "description": "示例插件",
+  "description": "示例拓展",
   "engines": { "codexpp": 1 },
   "renderer": ["renderer.js"],
   "permissions": { "routes": ["/diagnostics/log"] }
@@ -59,85 +66,85 @@ user_scripts/
 
 | 字段 | 说明 |
 | --- | --- |
-| `id` | 必填，`[A-Za-z0-9_-]`，与目录名无关；用于诊断与插件间引用 |
+| `id` | 必填，`[A-Za-z0-9_-]`，与目录名无关；用于诊断与拓展间引用 |
 | `name` / `version` / `description` | 展示用 |
 | `engines.codexpp` | 需要的拓展 API 版本（整数）。宿主版本低于它时不加载，在管理页显示原因 |
 | `renderer` | 字符串或数组，按顺序拼进同一个 IIFE 执行。路径只能指向包内文件 |
-| `permissions.routes` | 插件通过 `ctx.call` 能调的后端路由，必须是全局白名单的子集 |
+| `permissions.routes` | 拓展通过 `ctx.call` 能调的后端路由，必须是全局白名单的子集 |
 
 单文件 `.js` 脚本继续支持，行为不变。P1 起清单会再增加 `protocol` / `gateway` / `hooks` / `mcp` /
 `skills` / `configSchema` 等面，未知字段在 P0 一律忽略，保证前向兼容。
 
 ## 四、运行时内核（renderer）
 
-入口 `codexPlus.plugin(definition)`，`definition` 是 `apply(ctx)` 函数，或 `{ id, apply }`：
+入口 `codexPlus.extension(definition)`，`definition` 是 `apply(ctx)` 函数，或 `{ id, apply }`：
 
 ```js
-codexPlus.plugin((ctx) => {
+codexPlus.extension((ctx) => {
   ctx.registerPage({ title: "Hello", render: ({ container }) => { container.textContent = "hi"; } });
   ctx.setInterval(tick, 1000);
   ctx.listen(window, "focus", onFocus);
-  ctx.on("other-plugin/ready", onReady);
+  ctx.on("other-extension/ready", onReady);
   ctx.intercept("hello/greeting", (value, next) => next(value + "!"));
 });
 ```
 
-`ctx` 上的每个注册都绑定到这个插件实例的寿命上：
+`ctx` 上的每个注册都绑定到这个拓展实例的寿命上：
 
 | 能力 | 说明 |
 | --- | --- |
 | `ctx.effect(fn)` | 立即执行 `fn`，它返回的函数在卸载时调用；返回提前撤销用的函数 |
 | `ctx.registerRowAction / NavEntry / MenuItem / Page` | 同 `codexPlus.register*`，归属自动绑定，卸载时自动注销 |
-| `ctx.on(event, handler)` / `ctx.emit(event, ...args)` | 插件间事件总线，监听随卸载撤销 |
+| `ctx.on(event, handler)` / `ctx.emit(event, ...args)` | 拓展间事件总线，监听随卸载撤销 |
 | `ctx.intercept(name, handler, { order })` / `ctx.waterfall(name, value)` | 中间件链。`handler(value, next)` 调 `next(v)` 交给下一个，不调即短路；没有任何中间件时原样返回 |
 | `ctx.listen(target, type, handler, options)` | `addEventListener` 的自动撤销版 |
 | `ctx.setTimeout / setInterval` | 定时器自动清理 |
-| `ctx.call(route, payload)` | 包插件只能调清单 `permissions.routes` 里声明的路由 |
+| `ctx.call(route, payload)` | 拓展包只能调清单 `permissions.routes` 里声明的路由 |
 | `ctx.toast / fail` | 同 `codexPlus` 上的同名方法，归属自动绑定 |
 | `ctx.dispose()` / `ctx.disposed` | 主动卸载 / 是否已卸载 |
 
-卸载顺序：所有副作用按注册的逆序撤销，单个撤销抛错只记进该插件的失败通道，不影响其余撤销。
+卸载顺序：所有副作用按注册的逆序撤销，单个撤销抛错只记进该拓展的失败通道，不影响其余撤销。
 
-**与热重载的衔接**：插件在脚本同步初始化期间创建时，内核自动向用户脚本运行时登记一个清理函数
-（`registerCleanup`），重载时整体卸载。只用 `codexPlus.plugin` 写的脚本因此天然支持页内热重载，
+**与热重载的衔接**：拓展在脚本同步初始化期间创建时，内核自动向用户脚本运行时登记一个清理函数
+（`registerCleanup`），重载时整体卸载。只用 `codexPlus.extension` 写的脚本因此天然支持页内热重载，
 不再因「没登记清理」而触发整页刷新。
 
 **错误隔离**：`apply`、事件处理器、中间件都经 `runCodexPlusExtensionCallback` 包一层，抛错记进该脚本
 的状态通道。中间件抛错时跳过它，把原值交给下一个。
 
-不做的事：依赖注入（P0 插件之间只有事件与 waterfall 两种耦合）、配置 schema 与设置表单（P1）。
+不做的事：依赖注入（P0 拓展之间只有事件与 waterfall 两种耦合）、配置 schema 与设置表单（P1）。
 
 ## 五、分阶段
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| **P0** | 内核（ctx / effect / 事件 / waterfall / 自动清理）；`codexpp.json` 包加载、版本校验、路由权限；管理页显示包信息 | 一个包插件能注册页面、热重载不刷新页面、越权路由被拒 |
-| P1 | 协议层类型化事件（turn 开始 / 结束、item 完成、thread 切换）与中间件；扩充 UI slot（输入框附近、消息节点装饰、右侧面板、设置项）；`configSchema` 自动生成设置表单 | 用插件实现一个「轮次结束提示」不依赖 Codex DOM |
-| P2 | Codex hooks 代理：Codex++ 作为统一 hook 命令写入 config，按事件分发给插件声明的 hook；聚合 MCP：插件声明工具，由 Codex++ 的 MCP 服务暴露给 Codex | 插件可阻塞危险命令、注册一个工具被模型调用 |
-| P3 | 网关中间件：请求 / 响应走子进程 JSON 协议（与 Codex hooks 同一套 stdin/stdout 约定），不嵌入 JS 引擎 | 插件可往系统提示词追加段落 |
-| P4 | 脚本市场与插件市场合并；安装时校验 `engines`，展示权限 | 市场能装包插件 |
-| 持续 | 把内置功能（宠物、听写、轮次回退、用量状态栏）逐个拆成内置插件 | API 足够表达内置功能 |
+| **P0** | 内核（ctx / effect / 事件 / waterfall / 自动清理）；`codexpp.json` 包加载、版本校验、路由权限；管理页显示包信息 | 一个拓展包能注册页面、热重载不刷新页面、越权路由被拒 |
+| P1 | 协议层类型化事件（turn 开始 / 结束、item 完成、thread 切换）与中间件；扩充 UI slot（输入框附近、消息节点装饰、右侧面板、设置项）；`configSchema` 自动生成设置表单 | 用拓展实现一个「轮次结束提示」不依赖 Codex DOM |
+| P2 | Codex hooks 代理：Codex++ 作为统一 hook 命令写入 config，按事件分发给拓展声明的 hook；聚合 MCP：拓展声明工具，由 Codex++ 的 MCP 服务暴露给 Codex | 拓展可阻塞危险命令、注册一个工具被模型调用 |
+| P3 | 网关中间件：请求 / 响应走子进程 JSON 协议（与 Codex hooks 同一套 stdin/stdout 约定），不嵌入 JS 引擎 | 拓展可往系统提示词追加段落 |
+| P4 | 拓展市场支持拓展包；安装时校验 `engines`，展示权限 | 市场能装拓展包 |
+| 持续 | 把内置功能（宠物、听写、轮次回退、用量状态栏）逐个拆成内置拓展 | API 足够表达内置功能 |
 
-## 六、对话造插件
+## 六、对话造拓展
 
-用户在 Codex 对话里描述需求，agent 直接写出插件包并热重载，读回加载状态与报错后继续迭代。
+用户在 Codex 对话里描述需求，agent 直接写出拓展包并热重载，读回加载状态与报错后继续迭代。
 
 - **为什么走 MCP**：Codex 的沙箱通常不能写工作区以外的目录，也连不上本机调试端口。MCP 服务由 Codex 拉起、
   在沙箱外运行，写入还会经过 Codex 的工具审批。
-- **服务**：`codex_plus_plugins`，即 Codex++ 主程序 `--codex-plus-plugin-mcp --state-dir <状态目录>`
-  （`crates/codex-plus-core/src/plugin_creator.rs`）。工具：guide / list / read / write / set_enabled / reload，
+- **服务**：`codex_plus_extensions`，即 Codex++ 主程序 `--codex-plus-extension-mcp --state-dir <状态目录>`
+  （`crates/codex-plus-core/src/extension_creator.rs`）。工具：guide / list / read / write / set_enabled / reload，
   没有删除。
 - **接入**：与协作 MCP 共用 `crates/codex-plus-core/src/managed_mcp.rs`：先写 Codex++ 托管上下文（切换供应商不丢），
-  再原子写 Codex live 配置，冲突不覆盖、失败只回滚本条。管理器「本地拓展」页的「对话造插件」一栏触发。
+  再原子写 Codex live 配置，冲突不覆盖、失败只回滚本条。管理器「拓展」页的「对话造拓展」一栏触发。
 - **热重载安全**：重载前读一次页面运行状态，有不支持页内重载的旧脚本就不自动执行（否则会整页刷新、打断对话），
-  交给用户在管理器手动点。重载后等 0.8 秒再读一次状态，捕捉插件异步阶段报的错。
-- **写入约束**：只写 user 目录、包内相对路径、拒绝软链逃逸、同名目录必须是同 id 的插件包、单文件 256 KiB / 总量 1 MiB；
+  交给用户在管理器手动点。重载后等 0.8 秒再读一次状态，捕捉拓展异步阶段报的错。
+- **写入约束**：只写 user 目录、包内相对路径、拒绝软链逃逸、同名目录必须是同 id 的拓展包、单文件 256 KiB / 总量 1 MiB；
   清单由工具生成，`engines.codexpp` 固定为当前版本。
 
 ## 七、风险
 
-- **Codex 升级**：DOM 与协议随版本变。插件只依赖我们承诺的 slot / 事件契约，由 Codex++ 适配层吸收变化，
+- **Codex 升级**：DOM 与协议随版本变。拓展只依赖我们承诺的 slot / 事件契约，由 Codex++ 适配层吸收变化，
   契约测试守住。
-- **安全**：插件与 Codex 页面同权，P3 起还会跑子进程。不做沙箱（参照对象同样不做），靠权限声明、
+- **安全**：拓展与 Codex 页面同权，P3 起还会跑子进程。不做沙箱（参照对象同样不做），靠权限声明、
   管理页展示与市场审核。
 - **扫描性能**：拓展插入的节点必须带 `data-codex-plus-ext`，内核的 `register*` 已经自动处理（issue #1960）。

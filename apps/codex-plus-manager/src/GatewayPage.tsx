@@ -745,7 +745,7 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
           <code>{`http://127.0.0.1:${payload.port}`}</code>
           <span className="gw-pill" data-tone={payload.helperRunning ? "ok" : "warning"}>{payload.helperRunning ? t("运行中") : t("未运行")}</span>
         </div>
-        {payload.agents.map((agent) => {
+        {glanceAgents(payload.agents).map((agent) => {
           const binding = payload.gateway.bindings[agent.agent];
           return (
             <div className="gw-setting-row" key={agent.agent}>

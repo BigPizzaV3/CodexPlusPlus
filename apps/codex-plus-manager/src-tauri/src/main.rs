@@ -74,9 +74,13 @@ fn main() {
             }
         }
     }
-    if args.get(1).is_some_and(|arg| arg == "--codex-plus-plugin-mcp") {
-        if let Err(error) = codex_plus_manager_lib::run_plugin_creator_mcp(&args[2..]) {
-            eprintln!("插件创作 MCP 启动失败：{error:#}");
+    // 旧参数 --codex-plus-plugin-mcp 是改名前接入写下的，重新接入前仍要能启动。
+    if args.get(1).is_some_and(|arg| {
+        arg == codex_plus_core::extension_creator::MCP_FLAG
+            || arg == codex_plus_core::extension_creator::LEGACY_MCP_FLAG
+    }) {
+        if let Err(error) = codex_plus_manager_lib::run_extension_creator_mcp(&args[2..]) {
+            eprintln!("拓展创作 MCP 启动失败：{error:#}");
             std::process::exit(1);
         }
         return;
