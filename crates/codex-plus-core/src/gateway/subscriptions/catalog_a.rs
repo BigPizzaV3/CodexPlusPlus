@@ -2,4 +2,9 @@
 
 use crate::gateway::subscriptions::Subscription;
 
-pub static ITEMS: &[&dyn Subscription] = &[];
+pub static ITEMS: &[&dyn Subscription] = &[
+    &super::cursor::CURSOR,
+    &super::kiro::KIRO,
+    &super::zed::ZED,
+    &super::commandcode::COMMAND_CODE,
+];

@@ -19,8 +19,13 @@ pub mod catalog_a;
 pub mod catalog_b;
 pub mod catalog_c;
 pub mod chat;
+pub mod commandcode;
+pub mod cursor;
+pub mod editor_kit;
+pub mod kiro;
 pub mod oauth;
 pub mod server;
+pub mod zed;
 
 use std::pin::Pin;
 use std::sync::OnceLock;
