@@ -131,6 +131,8 @@
       refreshCodexPlusPageNav,
       refreshCodexPlusRailNavigation,
       refreshCodexPlusComposerActions,
+      refreshCodexPlusMessageSlots,
+      refreshCodexPlusSidePanels,
       refreshExtensionSessionRows,
       refreshCodexPlusExtensionMenu,
     ]) {
@@ -254,6 +256,32 @@
        */
       registerComposerAction(definition, options = {}) {
         return codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, options);
+      },
+
+      /**
+       * 在每条对话消息的操作行（复制、编辑按钮旁）加一个图标按钮。
+       * roles 限定 "user" / "assistant"；visible(message) 返回 false 时这条消息不显示；
+       * onActivate({ message, close }) 里 message = { role, id, turnId, conversationId, text, element }。
+       */
+      registerMessageAction(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("messageAction", codexPlusRegistry.messageActions, definition, options);
+      },
+
+      /**
+       * 在每条对话消息的正文下方挂一块内容：render({ message, container }) 往 container 里画。
+       * 消息文字变化（流式输出）时会清空 container 重新调用；container 留空则不占位。
+       */
+      registerMessageDecoration(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("messageDecoration", codexPlusRegistry.messageDecorations, definition, options);
+      },
+
+      /**
+       * 注册右侧面板：顶栏右侧出现一个开关按钮，打开时 Codex 主区域往左让出面板宽度。
+       * render({ container, close }) 每次打开都调用，可返回清理函数（关闭时调用）。
+       * 返回的撤销函数上带 open() / close() / toggle()。
+       */
+      registerSidePanel(definition, options = {}) {
+        return codexPlusRegisterExtensionSidePanel(definition, options);
       },
 
       /** 在会话行「更多操作」里加一项。 */

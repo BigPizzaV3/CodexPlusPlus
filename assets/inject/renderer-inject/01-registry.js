@@ -22,6 +22,9 @@
     menuItems: new Map(),
     composerActions: new Map(),
     commands: new Map(),
+    messageActions: new Map(),
+    messageDecorations: new Map(),
+    sidePanels: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */

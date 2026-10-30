@@ -2140,13 +2140,17 @@
     document.body.appendChild(wrapper);
     const anchor = button.getBoundingClientRect();
     const box = tip.getBoundingClientRect();
-    // 图标栏的提示在右侧，输入区按钮的提示在上方（与原生对应位置的按钮一致）。
-    const left = side === "top"
-      ? (anchor.left + (anchor.width - box.width) / 2) / zoom
+    // 图标栏的提示在右侧，输入区按钮的提示在上方，标题栏与消息操作行的在下方（与原生对应位置的按钮一致）。
+    // 上下方向的提示按窗口宽度收进来：贴着窗口右边的按钮不能把提示挤出窗外。
+    const vertical = side === "top" || side === "bottom";
+    const left = vertical
+      ? Math.min(Math.max(4, anchor.left + (anchor.width - box.width) / 2), window.innerWidth - box.width - 4) / zoom
       : (anchor.right + codexPlusRailTooltipSideOffset) / zoom;
     const top = side === "top"
       ? (anchor.top - box.height - codexPlusComposerTooltipSideOffset) / zoom
-      : (anchor.top + (anchor.height - box.height) / 2) / zoom;
+      : side === "bottom"
+        ? (anchor.bottom + codexPlusComposerTooltipSideOffset) / zoom
+        : (anchor.top + (anchor.height - box.height) / 2) / zoom;
     wrapper.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
     button.setAttribute("aria-describedby", wrapper.id);
   }

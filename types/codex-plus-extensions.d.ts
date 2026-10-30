@@ -129,6 +129,15 @@ interface CodexPlusExtensionApi {
   /** 注册斜杠命令：输入框里「/name 参数」回车时调用。 */
   registerCommand(definition: CodexPlusCommandDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
 
+  /** 在每条对话消息的操作行（复制、编辑按钮旁）加一个图标按钮。 */
+  registerMessageAction(definition: CodexPlusMessageActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+
+  /** 在每条对话消息的正文下方挂一块内容。 */
+  registerMessageDecoration(definition: CodexPlusMessageDecorationDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+
+  /** 注册右侧面板：顶栏右侧出现开关，打开时主区域让出面板宽度。 */
+  registerSidePanel(definition: CodexPlusSidePanelDefinition, options?: CodexPlusRegisterOptions): CodexPlusSidePanelHandle;
+
   /** 在会话行「更多操作」里加一项。 */
   registerRowAction(
     definition: CodexPlusRowActionDefinition,
@@ -189,6 +198,57 @@ interface CodexPlusComposerActionDefinition {
     close(): void;
   }): void;
 }
+
+/** 交给消息插槽的消息信息。每次回调现取，不要缓存。 */
+interface CodexPlusMessage {
+  role: "user" | "assistant";
+  /** 助手消息是 Codex 的消息 id（msg_…），用户消息是所在轮次的单元 key。 */
+  id: string;
+  /** 所在轮次 id。 */
+  turnId: string;
+  /** 所在会话 id；取不到时为空串。 */
+  conversationId: string;
+  /** 消息正文的纯文本（流式输出时是当前已输出的部分）。 */
+  text: string;
+  /** 消息节点。只读用，节点随虚拟化滚动被 Codex 重建，不要缓存或改它的结构。 */
+  element: HTMLElement;
+}
+
+interface CodexPlusMessageActionDefinition {
+  label: string;
+  /** 单个字形或 SVG 字符串。 */
+  icon?: string;
+  /** 只在这些角色的消息上出现，省略表示全部。 */
+  roles?: Array<"user" | "assistant"> | "user" | "assistant";
+  /** 返回 false 时这条消息不显示按钮。 */
+  visible?(message: CodexPlusMessage): boolean;
+  onActivate(context: { message: CodexPlusMessage; close(): void }): void;
+}
+
+interface CodexPlusMessageDecorationDefinition {
+  roles?: Array<"user" | "assistant"> | "user" | "assistant";
+  /** 返回 false 时这条消息不挂装饰。 */
+  visible?(message: CodexPlusMessage): boolean;
+  /** 往 container 里画；消息文字变化（流式输出）时清空 container 重新调用。留空则不占位。 */
+  render(context: { message: CodexPlusMessage; container: HTMLElement }): void;
+}
+
+interface CodexPlusSidePanelDefinition {
+  title: string;
+  /** 顶栏开关的图标：单个字形或 SVG 字符串。 */
+  icon?: string;
+  /** 面板宽度，240~720，默认 360。 */
+  width?: number;
+  /** 每次打开都调用；可返回清理函数，关闭时调用。 */
+  render(context: { container: HTMLElement; close(): void }): void | (() => void);
+}
+
+/** 撤销函数，另带开合控制。同一时间只开一个面板。 */
+type CodexPlusSidePanelHandle = CodexPlusDispose & {
+  open(): boolean;
+  close(): boolean;
+  toggle(): boolean;
+};
 
 /** 按拓展 id 隔离的本地存储，值按 JSON 存取。 */
 interface CodexPlusExtensionStorage {
@@ -263,6 +323,9 @@ interface CodexPlusExtensionContext {
   registerPage(definition: CodexPlusPageDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerComposerAction(definition: CodexPlusComposerActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerCommand(definition: CodexPlusCommandDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerMessageAction(definition: CodexPlusMessageActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerMessageDecoration(definition: CodexPlusMessageDecorationDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerSidePanel(definition: CodexPlusSidePanelDefinition, options?: CodexPlusRegisterOptions): CodexPlusSidePanelHandle;
 
   /** 拓展间事件；`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;

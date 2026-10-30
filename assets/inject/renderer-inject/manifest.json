@@ -8,7 +8,7 @@
     {
       "name": "01-registry.js",
       "description": "拓展注册中心、扩展选择器登记与失败上报",
-      "lines": 179
+      "lines": 182
     },
     {
       "name": "10-style.js",
@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2262
+      "lines": 2266
     },
     {
       "name": "50-navigation.js",
@@ -118,17 +118,22 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 309
+      "lines": 337
     },
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 476
+      "lines": 490
     },
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
       "lines": 553
+    },
+    {
+      "name": "92-extension-slots.js",
+      "description": "拓展消息插槽（操作按钮、装饰）与右侧面板",
+      "lines": 375
     },
     {
       "name": "93-dictation.js",
@@ -143,7 +148,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 654
+      "lines": 657
     },
     {
       "name": "97-agent-pet.js",

@@ -1,0 +1,375 @@
+  /**
+   * 消息插槽与侧边面板。
+   *
+   * 拓展用 registerMessageAction 往每条对话消息的操作行里加按钮，用 registerMessageDecoration
+   * 在消息正文下方挂一块自己的内容，用 registerSidePanel 在顶栏加一个开关、在右侧开一个抽屉。
+   *
+   * 消息节点由 Codex 虚拟化渲染、随滚动与流式输出反复重建，所以这里不缓存任何消息 DOM：每次
+   * 刷新都按选择器重新找消息，缺了就补。普通扫描刻意不理会对话内容的变化（流式输出时会扫爆），
+   * 所以只在有消息插槽注册时，单独给对话滚动区挂一个去抖观察器；注册项清空时摘掉。
+   */
+  const codexPlusMessageSlotAttribute = "data-codex-plus-message-slot";
+  const codexPlusMessageSlotRefreshDelayMs = 300;
+
+  /** 当前页面上的对话消息：助手消息是带标注目标的消息组，用户消息是带锚点的消息单元。 */
+  function codexPlusMessageNodes() {
+    const result = [];
+    document.querySelectorAll("[data-response-annotation-target]").forEach((node) => {
+      if (isExtensionUiNode(node) || !node.querySelector(':scope > [data-conversation-role="assistant"]')) return;
+      result.push({ role: "assistant", node });
+    });
+    document.querySelectorAll("[data-local-conversation-user-anchor]").forEach((node) => {
+      if (!isExtensionUiNode(node)) result.push({ role: "user", node });
+    });
+    return result;
+  }
+
+  /** 交给拓展的消息信息。每次现取，不要缓存：同一条消息的文字在流式输出时会变。 */
+  function codexPlusMessageInfo(role, node) {
+    const unitKey = (node.closest("[data-content-search-unit-key]") || node).getAttribute("data-content-search-unit-key") || "";
+    const body = role === "assistant"
+      ? node.querySelector('[data-markdown-text-style="assistant-message"]') || node.querySelector('[class*="MarkdownRoot"]')
+      : node.querySelector("[data-user-message-bubble]");
+    const conversationId = node.getAttribute("data-response-annotation-conversation")
+      || node.closest(".thread-scroll-container")?.querySelector("[data-response-annotation-conversation]")?.getAttribute("data-response-annotation-conversation")
+      || "";
+    return {
+      role,
+      id: (role === "assistant" && node.getAttribute("data-response-annotation-target")) || unitKey,
+      turnId: unitKey.split(":")[0] || "",
+      conversationId,
+      text: String(body?.textContent || "").trim(),
+      element: node,
+    };
+  }
+
+  /** 一条消息上插槽的挂载位置：操作按钮进原生操作行，装饰放在正文与操作行之间。 */
+  function codexPlusMessageSlotHosts(role, node) {
+    if (role === "assistant") {
+      const actionRow = node.querySelector(":scope > .turn-action-controls");
+      return { decorationParent: node, decorationBefore: actionRow, actionParent: actionRow?.firstElementChild || null };
+    }
+    const group = node.querySelector('[class*="group/user-message"]');
+    const bubble = group?.querySelector(":scope > [data-user-message-bubble]");
+    const actionRow = group?.querySelector(":scope > .flex-row-reverse");
+    return {
+      decorationParent: group || null,
+      decorationBefore: bubble?.nextElementSibling || null,
+      actionParent: actionRow?.querySelector(":scope > .isolate") || actionRow || null,
+    };
+  }
+
+  function codexPlusMessageItemApplies(item, info) {
+    const roles = typeof item.roles === "string" ? [item.roles] : item.roles;
+    if (Array.isArray(roles) && roles.length && !roles.includes(info.role)) return false;
+    if (typeof item.visible !== "function") return true;
+    const result = runCodexPlusExtensionCallback(item.scriptKey, "message.visible", () => item.visible(info));
+    return result.ok && result.value !== false;
+  }
+
+  function codexPlusMessageSlotChild(parent, slot) {
+    return [...parent.children].find((child) => child.getAttribute?.(codexPlusMessageSlotAttribute) === slot) || null;
+  }
+
+  function codexPlusRenderMessageActions(parent, role, items, info) {
+    let root = codexPlusMessageSlotChild(parent, "actions");
+    const visible = items.filter((item) => codexPlusMessageItemApplies(item, info));
+    if (!visible.length) {
+      root?.remove();
+      return;
+    }
+    const renderKey = visible.map((item) => `${item.id}|${item.label || ""}|${item.icon || ""}`).join("\n");
+    if (root?.dataset.renderKey === renderKey) return;
+    if (!root) {
+      root = document.createElement("span");
+      root.setAttribute(codexPlusMessageSlotAttribute, "actions");
+      markCodexPlusExtensionNode(root, "builtin-message-slots");
+      parent.appendChild(root);
+    }
+    root.dataset.renderKey = renderKey;
+    root.textContent = "";
+    // 借原生按钮的类名，悬停、尺寸、显隐都和复制 / 编辑按钮一致。
+    const nativeClass = parent.querySelector(`button:not([${codexPlusExtensionConstants.extensionAttribute}])`)?.className || "";
+    for (const item of visible) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `${nativeClass} codex-plus-message-action`.trim();
+      button.setAttribute("aria-label", item.label || item.id);
+      markCodexPlusExtensionNode(button, item.scriptKey);
+      button.innerHTML = codexPlusExtensionIconMarkup(item);
+      attachCodexPlusRailTooltip(button, item.label || item.id, "bottom");
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const node = button.closest(role === "assistant" ? "[data-response-annotation-target]" : "[data-local-conversation-user-anchor]");
+        if (!node) return;
+        runCodexPlusExtensionCallback(item.scriptKey, "messageAction.onActivate", () => item.onActivate?.({
+          message: codexPlusMessageInfo(role, node),
+          close: () => hideCodexPlusRailTooltip(),
+        }));
+      });
+      root.appendChild(button);
+    }
+  }
+
+  function codexPlusRenderMessageDecorations(hosts, role, items, info) {
+    const parent = hosts.decorationParent;
+    if (!parent) return;
+    let root = codexPlusMessageSlotChild(parent, "decorations");
+    const applicable = items.filter((item) => codexPlusMessageItemApplies(item, info));
+    if (!applicable.length) {
+      root?.remove();
+      return;
+    }
+    // 文字变了（流式输出、编辑后重发）才重画；只比长度和结尾，避免每轮都拼整段字符串。
+    const renderKey = `${applicable.map((item) => item.id).join("\n")}|${info.id}|${info.text.length}|${info.text.slice(-32)}`;
+    if (!root) {
+      root = document.createElement("div");
+      root.className = "codex-plus-message-decorations";
+      root.dataset.role = role;
+      root.setAttribute(codexPlusMessageSlotAttribute, "decorations");
+      markCodexPlusExtensionNode(root, "builtin-message-slots");
+    }
+    // React 重排后操作行可能跑到装饰前面：每次都校正位置（位置已对时不动 DOM）。
+    const before = hosts.decorationBefore && hosts.decorationBefore !== root && hosts.decorationBefore.parentElement === parent
+      ? hosts.decorationBefore
+      : null;
+    if (root.parentElement !== parent || (before ? root.nextElementSibling !== before : parent.lastElementChild !== root)) {
+      parent.insertBefore(root, before);
+    }
+    if (root.dataset.renderKey === renderKey) return;
+    root.dataset.renderKey = renderKey;
+    root.textContent = "";
+    for (const item of applicable) {
+      const container = document.createElement("div");
+      container.className = "codex-plus-message-decoration";
+      markCodexPlusExtensionNode(container, item.scriptKey);
+      root.appendChild(container);
+      runCodexPlusExtensionCallback(item.scriptKey, "messageDecoration.render", () => item.render({ message: info, container }));
+    }
+  }
+
+  function installCodexPlusSlotStyle() {
+    if (document.getElementById("codex-plus-slot-style")) return;
+    const style = document.createElement("style");
+    style.id = "codex-plus-slot-style";
+    markCodexPlusExtensionNode(style, "builtin-message-slots");
+    style.textContent = `[data-codex-plus-message-slot="actions"]{display:contents}
+      .codex-plus-message-action .codex-plus-ext-icon,.codex-plus-message-action svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
+      .codex-plus-message-decorations{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-width:0}
+      .codex-plus-message-decorations[data-role="user"]{align-self:flex-end;align-items:flex-end;max-width:var(--user-chat-width,100%)}
+      .codex-plus-message-decoration:empty,.codex-plus-message-decorations:has(> .codex-plus-message-decoration:empty:only-child){display:none}
+      html[data-codex-plus-side-panel-open] main[data-app-shell-main-surface]{margin-right:var(--codex-plus-side-panel-width,360px)!important}
+      .codex-plus-side-panel{position:fixed;right:0;bottom:0;top:var(--codex-plus-side-panel-top,44px);width:var(--codex-plus-side-panel-width,360px);z-index:40;display:flex;flex-direction:column;min-height:0;background:var(--color-token-main-surface-primary,var(--color-token-bg-primary,Canvas));color:var(--color-token-text-primary,CanvasText);border-left:1px solid var(--color-token-border-light,color-mix(in srgb,currentColor 12%,transparent))}
+      .codex-plus-side-panel-header{display:flex;align-items:center;gap:8px;height:40px;padding:0 8px 0 14px;flex:none;border-bottom:1px solid var(--color-token-border-light,color-mix(in srgb,currentColor 10%,transparent))}
+      .codex-plus-side-panel-title{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .codex-plus-side-panel-close{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0;border-radius:8px;background:transparent;color:var(--color-token-text-secondary,currentColor);cursor:pointer}
+      .codex-plus-side-panel-close:hover{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 10%,transparent))}
+      .codex-plus-side-panel-body{flex:1;min-height:0;overflow:auto;padding:12px 14px}
+      .codex-plus-side-panel-toggle .codex-plus-ext-icon,.codex-plus-side-panel-toggle svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
+      .codex-plus-side-panel-toggle[aria-pressed="true"]{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 12%,transparent))}`;
+    document.head.append(style);
+  }
+
+  let codexPlusMessageSlotsRendered = false;
+  let codexPlusMessageObserver = null;
+  let codexPlusMessageObserverTargets = [];
+  let codexPlusMessageRefreshTimer = 0;
+
+  function scheduleCodexPlusMessageSlotsRefresh() {
+    if (codexPlusMessageRefreshTimer) return;
+    codexPlusMessageRefreshTimer = setTimeout(() => {
+      codexPlusMessageRefreshTimer = 0;
+      refreshCodexPlusMessageSlots();
+    }, codexPlusMessageSlotRefreshDelayMs);
+  }
+
+  /** 只是我们自己的节点在变就不理，否则「写入 → 观察到 → 再写入」会自喂（issue #1960）。 */
+  function codexPlusMutationIsOurs(mutation) {
+    const own = (node) => isCodexPlusExtensionNode(node?.nodeType === 1 ? node : node?.parentElement);
+    if (own(mutation.target)) return true;
+    const changed = [...mutation.addedNodes, ...mutation.removedNodes];
+    return changed.length > 0 && changed.every((node) => node.nodeType === 1 && isCodexPlusExtensionNode(node));
+  }
+
+  /** Codex 的多个标签页各有一个对话滚动区（非当前的隐藏着），全部观察：切标签时不漏。 */
+  function syncCodexPlusMessageObserver(active) {
+    const targets = active ? [...document.querySelectorAll(".thread-scroll-container")] : [];
+    if (targets.length === codexPlusMessageObserverTargets.length && targets.every((node, index) => node === codexPlusMessageObserverTargets[index])) return;
+    codexPlusMessageObserver?.disconnect();
+    codexPlusMessageObserverTargets = targets;
+    if (!targets.length) return;
+    codexPlusMessageObserver ||= new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => !codexPlusMutationIsOurs(mutation))) scheduleCodexPlusMessageSlotsRefresh();
+    });
+    for (const target of targets) codexPlusMessageObserver.observe(target, { childList: true, subtree: true, characterData: true });
+  }
+
+  function refreshCodexPlusMessageSlots() {
+    const actions = codexPlusExtensionItems(codexPlusRegistry.messageActions);
+    const decorations = codexPlusExtensionItems(codexPlusRegistry.messageDecorations);
+    const active = actions.length > 0 || decorations.length > 0;
+    syncCodexPlusMessageObserver(active);
+    if (!active) {
+      if (codexPlusMessageSlotsRendered) {
+        document.querySelectorAll(`[${codexPlusMessageSlotAttribute}]`).forEach((node) => node.remove());
+        codexPlusMessageSlotsRendered = false;
+      }
+      return;
+    }
+    installCodexPlusSlotStyle();
+    codexPlusMessageSlotsRendered = true;
+    for (const { role, node } of codexPlusMessageNodes()) {
+      const info = codexPlusMessageInfo(role, node);
+      const hosts = codexPlusMessageSlotHosts(role, node);
+      if (hosts.actionParent) codexPlusRenderMessageActions(hosts.actionParent, role, actions, info);
+      codexPlusRenderMessageDecorations(hosts, role, decorations, info);
+    }
+  }
+
+  /**
+   * 侧边面板：同一时间只开一个。面板挂在 body 上（不进 React 管的树），打开时给 html 打标记，
+   * 由样式把 Codex 主区域往左让出面板宽度。开关按钮放在标题栏右上角「新建标签页」按钮前面
+   * （首页和会话页都有）；找不到时退到会话顶栏右侧按钮组的最前面。
+   */
+  let codexPlusOpenSidePanelState = null;
+
+  function codexPlusSidePanelToolbar() {
+    const layoutToggle = [...document.querySelectorAll("button[data-app-shell-workspace-layout-toggle]")].find((node) => visibleElement(node));
+    const wrapper = layoutToggle?.parentElement;
+    if (wrapper?.parentElement) return { host: wrapper.parentElement, before: wrapper, sample: layoutToggle };
+    const cluster = [...document.querySelectorAll("[data-app-shell-header-toolbar] > .ms-auto")].find((node) => visibleElement(node));
+    if (!cluster) return null;
+    return { host: cluster, before: cluster.firstChild, sample: cluster.querySelector(`button:not([${codexPlusExtensionConstants.extensionAttribute}])`) };
+  }
+
+  function codexPlusSidePanelWidth(definition) {
+    const width = Number(definition?.width);
+    return Number.isFinite(width) ? Math.min(720, Math.max(240, Math.round(width))) : 360;
+  }
+
+  /** 面板从主区域顶边开始，不盖住顶栏（开关按钮就在顶栏里）。隐藏标签页的 main 尺寸为 0，跳过。 */
+  function syncCodexPlusSidePanelTop() {
+    const main = [...document.querySelectorAll("main[data-app-shell-main-surface]")].find((node) => node.getBoundingClientRect().width > 0);
+    const toolbar = document.querySelector("[data-app-shell-header-toolbar]");
+    const top = main
+      ? Math.max(0, Math.round(main.getBoundingClientRect().top))
+      : toolbar ? Math.round(toolbar.getBoundingClientRect().bottom) : 44;
+    document.documentElement.style.setProperty("--codex-plus-side-panel-top", `${top}px`);
+  }
+
+  function closeCodexPlusSidePanel() {
+    const state = codexPlusOpenSidePanelState;
+    if (!state) return false;
+    codexPlusOpenSidePanelState = null;
+    if (typeof state.cleanup === "function") {
+      runCodexPlusExtensionCallback(state.scriptKey, "sidePanel.cleanup", state.cleanup);
+    }
+    state.panel.remove();
+    delete document.documentElement.dataset.codexPlusSidePanelOpen;
+    document.documentElement.style.removeProperty("--codex-plus-side-panel-width");
+    refreshCodexPlusSidePanels();
+    return true;
+  }
+
+  function openCodexPlusSidePanel(id) {
+    const definition = codexPlusRegistry.sidePanels.get(id);
+    if (!definition) return false;
+    if (codexPlusOpenSidePanelState?.id === id) return true;
+    closeCodexPlusSidePanel();
+    installCodexPlusSlotStyle();
+    const title = String(definition.title || definition.label || id);
+    const panel = document.createElement("aside");
+    panel.className = "codex-plus-side-panel";
+    panel.dataset.codexPlusSidePanel = id;
+    panel.setAttribute("role", "complementary");
+    panel.setAttribute("aria-label", title);
+    markCodexPlusExtensionNode(panel, definition.scriptKey);
+    panel.innerHTML = `<div class="codex-plus-side-panel-header"><span class="codex-plus-side-panel-title">${escapeHtml(title)}</span><button type="button" class="codex-plus-side-panel-close" aria-label="关闭"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="codex-plus-side-panel-body"></div>`;
+    panel.querySelector(".codex-plus-side-panel-close").addEventListener("click", () => closeCodexPlusSidePanel());
+    document.documentElement.style.setProperty("--codex-plus-side-panel-width", `${codexPlusSidePanelWidth(definition)}px`);
+    document.documentElement.dataset.codexPlusSidePanelOpen = "true";
+    syncCodexPlusSidePanelTop();
+    document.body.appendChild(panel);
+    const state = { id, scriptKey: definition.scriptKey, panel, cleanup: null };
+    codexPlusOpenSidePanelState = state;
+    const container = panel.querySelector(".codex-plus-side-panel-body");
+    const result = runCodexPlusExtensionCallback(definition.scriptKey, "sidePanel.render", () => definition.render({
+      container,
+      close: () => {
+        if (codexPlusOpenSidePanelState === state) closeCodexPlusSidePanel();
+      },
+    }));
+    if (result.ok && typeof result.value === "function") state.cleanup = result.value;
+    refreshCodexPlusSidePanels();
+    return true;
+  }
+
+  function toggleCodexPlusSidePanel(id) {
+    return codexPlusOpenSidePanelState?.id === id ? closeCodexPlusSidePanel() : openCodexPlusSidePanel(id);
+  }
+
+  function refreshCodexPlusSidePanels() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.sidePanels);
+    const openId = codexPlusOpenSidePanelState?.id || "";
+    // 面板的注册被撤销（拓展卸载、热重载）时一并关掉。
+    if (openId && !codexPlusRegistry.sidePanels.has(openId)) {
+      closeCodexPlusSidePanel();
+      return;
+    }
+    // 面板被别的代码摘掉了（例如 body 被整体重建）：重新挂回去，内容仍是拓展上次画的。
+    if (openId && !codexPlusOpenSidePanelState.panel.isConnected) document.body.appendChild(codexPlusOpenSidePanelState.panel);
+    if (openId) syncCodexPlusSidePanelTop();
+    const toolbar = items.length ? codexPlusSidePanelToolbar() : null;
+    document.querySelectorAll("[data-codex-plus-side-panel-toggles]").forEach((node) => {
+      if (node.parentElement !== toolbar?.host) node.remove();
+    });
+    if (!toolbar) return;
+    installCodexPlusSlotStyle();
+    let root = [...toolbar.host.children].find((node) => node.hasAttribute?.("data-codex-plus-side-panel-toggles"));
+    if (!root) {
+      root = document.createElement("div");
+      root.style.display = "contents";
+      root.setAttribute("data-codex-plus-side-panel-toggles", "");
+      markCodexPlusExtensionNode(root, "builtin-side-panels");
+      toolbar.host.insertBefore(root, toolbar.before && toolbar.before.parentElement === toolbar.host ? toolbar.before : null);
+    }
+    const renderKey = `${openId}\n${items.map((item) => `${item.id}|${item.title || ""}|${item.icon || ""}`).join("\n")}`;
+    if (root.dataset.renderKey === renderKey) return;
+    root.dataset.renderKey = renderKey;
+    root.textContent = "";
+    const nativeClass = toolbar.sample?.className || "";
+    for (const item of items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `${nativeClass} codex-plus-side-panel-toggle`.trim();
+      const label = String(item.title || item.label || item.id);
+      button.setAttribute("aria-label", label);
+      button.setAttribute("aria-pressed", item.id === openId ? "true" : "false");
+      markCodexPlusExtensionNode(button, item.scriptKey);
+      button.innerHTML = codexPlusExtensionIconMarkup(item);
+      attachCodexPlusRailTooltip(button, label, "bottom");
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        hideCodexPlusRailTooltip();
+        toggleCodexPlusSidePanel(item.id);
+      });
+      root.appendChild(button);
+    }
+  }
+
+  /** 注册侧边面板；返回的撤销函数上带 open / close，拓展可以自己控制开合。 */
+  function codexPlusRegisterExtensionSidePanel(definition, options = {}) {
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = `${scriptKey}:sidePanel:${options.id || codexPlusExtensionIdSeed()}`;
+    const dispose = registerCodexPlusExtension("sidePanel", codexPlusRegistry.sidePanels, id, definition, scriptKey);
+    codexPlusRefreshExtensionHosts();
+    const handle = () => {
+      dispose();
+      codexPlusRefreshExtensionHosts();
+    };
+    handle.open = () => openCodexPlusSidePanel(id);
+    handle.close = () => (codexPlusOpenSidePanelState?.id === id ? closeCodexPlusSidePanel() : false);
+    handle.toggle = () => toggleCodexPlusSidePanel(id);
+    return handle;
+  }

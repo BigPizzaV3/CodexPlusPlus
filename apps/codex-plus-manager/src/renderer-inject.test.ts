@@ -3535,7 +3535,7 @@ describe("拓展运行时内核", () => {
     };
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
-      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
       `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware };`,
     )(
       window,
@@ -3551,6 +3551,13 @@ describe("拓展运行时内核", () => {
       (itemOptions?: { scriptKey?: string }) => itemOptions?.scriptKey || window.__codexPlusUserScripts.currentKey || "",
       (kind: string, _registry: unknown, _definition: unknown, itemOptions: { scriptKey: string }) => register(kind, itemOptions),
       (_definition: unknown, itemOptions: { scriptKey: string }) => register("page", itemOptions),
+      (_definition: unknown, itemOptions: { scriptKey: string }) => {
+        const dispose = register("sidePanel", itemOptions) as (() => void) & { open?: () => boolean; close?: () => boolean; toggle?: () => boolean };
+        dispose.open = () => { calls.push("sidePanel.open"); return true; };
+        dispose.close = () => { calls.push("sidePanel.close"); return true; };
+        dispose.toggle = () => true;
+        return dispose;
+      },
       { rowActions: new Map(), navEntries: new Map(), menuItems: new Map(), composerActions: new Map() },
       (route: string) => { calls.push(route); return Promise.resolve({ status: "ok" }); },
       (message: string) => toasts.push(message),
@@ -3793,6 +3800,34 @@ describe("拓展运行时内核", () => {
     for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
     assert.equal(requests.filter(([path]) => path === "/extensions/backend/events").length, 2, "卸载后不再轮询");
     assert.deepEqual(requests.filter(([path]) => path === "/extensions/backend/stop"), [["/extensions/backend/stop", { key: "user:pkg-b", instance }]], "用过后台的实例卸载时通知停止");
+  });
+
+  it("消息按钮、消息装饰、侧边面板随实例卸载撤销；面板句柄带 open / close", async () => {
+    const k = await kernel();
+    let panel: any;
+    const ctx = k.create((ctx: any) => {
+      ctx.registerMessageAction({ label: "朗读", onActivate() {} });
+      ctx.registerMessageDecoration({ roles: ["assistant"], render() {} });
+      panel = ctx.registerSidePanel({ title: "笔记", render() {} });
+    });
+    assert.deepEqual(k.registered.map((item) => item.kind), ["messageAction", "messageDecoration", "sidePanel"]);
+    assert.ok(k.registered.every((item) => item.scriptKey === "user:demo"));
+    assert.equal(panel.open(), true);
+    assert.equal(panel.close(), true);
+    assert.deepEqual(k.calls, ["sidePanel.open", "sidePanel.close"]);
+    ctx.dispose();
+    assert.ok(k.registered.every((item) => item.disposed), "卸载时三项都撤销");
+  });
+
+  it("插槽节点都带拓展标记，消息观察器排除自己的写入，扫描每轮补齐插槽", async () => {
+    const slots = await readFile(new URL("../../../assets/inject/renderer-inject/92-extension-slots.js", import.meta.url), "utf8");
+    const scan = await readFile(new URL("../../../assets/inject/renderer-inject/95-conversation-view.js", import.meta.url), "utf8");
+    for (const created of slots.matchAll(/const (\w+) = document\.createElement\("(?:span|div|button|aside|style)"\);/g)) {
+      assert.match(slots, new RegExp(`markCodexPlusExtensionNode\\(${created[1]},`), `${created[1]} 没有拓展标记，会触发扫描自喂`);
+    }
+    assert.match(slots, /function codexPlusMutationIsOurs/);
+    assert.match(slots, /if \(mutations\.some\(\(mutation\) => !codexPlusMutationIsOurs\(mutation\)\)\)/);
+    assert.match(scan, /refreshCodexPlusMessageSlots\(\);\n\s+refreshCodexPlusSidePanels\(\);/);
   });
 
   it("一次性定时器触发后自行注销，不留在撤销列表里", async () => {

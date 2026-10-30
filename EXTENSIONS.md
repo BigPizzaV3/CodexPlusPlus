@@ -162,9 +162,36 @@ codexPlus.extension((ctx) => {
 | `toast / fail / dispose` | 提示、上报失败、主动卸载 |
 | `registerComposerAction(def)` | 输入区（发送按钮那一行）的图标按钮，`onActivate({ editor, insertText, close })` |
 | `registerCommand({ name, description, run })` | 斜杠命令：输入框里 `/name 参数` 回车时调用 `run(args, { editor, insertText, setText, toast })`，输入框随后清空；输入 `/` 时在输入框上方提示匹配的拓展命令，Tab 补全。只拦截已注册的拓展命令，同名时先注册的生效 |
+| `registerMessageAction({ label, icon, roles, visible, onActivate })` | 每条对话消息操作行（复制、编辑旁）的图标按钮，`onActivate({ message, close })`；`message` 见下 |
+| `registerMessageDecoration({ roles, visible, render })` | 消息正文下方的一块内容：`render({ message, container })`，消息文字变化（流式输出）时清空重画，留空不占位 |
+| `registerSidePanel({ title, icon, width, render })` | 右侧面板：顶栏右侧出现开关，打开时主区域让出宽度；`render({ container, close })` 每次打开调用，可返回清理函数；返回值带 `open() / close() / toggle()` |
 | `storage.get / set / remove / keys` | 按拓展 id 隔离的本地存储，值按 JSON 存取 |
 | `config` | 生效配置的只读快照（清单 `config` 声明，见「拓展配置」） |
 | `id / scriptKey / manifest / disposed` | 只读信息 |
+
+### 消息插槽与侧边面板
+
+```js
+codexPlus.extension((ctx) => {
+  // 助手消息上加「统计字数」按钮，并在正文下方显示字数
+  ctx.registerMessageAction({ label: "统计字数", icon: "#", roles: ["assistant"],
+    onActivate: ({ message }) => ctx.toast(`${message.text.length} 字`) });
+  ctx.registerMessageDecoration({ roles: ["assistant"], render: ({ message, container }) => {
+    if (message.text.length > 2000) container.textContent = `长回复：${message.text.length} 字`;
+  } });
+  // 右侧面板
+  const panel = ctx.registerSidePanel({ title: "便签", icon: "✎", render: ({ container }) => {
+    container.textContent = ctx.storage.get("note", "（空）");
+  } });
+  ctx.registerCommand({ name: "note", description: "打开便签", run: () => panel.open() });
+});
+```
+
+- `message` 是 `{ role, id, turnId, conversationId, text, element }`：`role` 为 `user` / `assistant`；`text` 是正文纯文本，
+  流式输出时是已输出的部分；`element` 只读用。消息节点会随滚动被 Codex 重建，Codex++ 负责每次补上按钮和装饰，
+  拓展不要缓存这些节点。
+- 只有存在消息插槽注册时，Codex++ 才观察对话区的变化（去抖 300ms）；没有注册时零开销。
+- 侧边面板同一时间只开一个，挂在 Codex 的 React 树外面；拓展卸载、热重载时自动关闭。
 
 ### Codex 会话事件与请求中间件
 

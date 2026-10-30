@@ -360,6 +360,20 @@
       registerComposerAction(definition, itemOptions) {
         return track(codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, registerOptions(itemOptions)));
       },
+      registerMessageAction(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("messageAction", codexPlusRegistry.messageActions, definition, registerOptions(itemOptions)));
+      },
+      registerMessageDecoration(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("messageDecoration", codexPlusRegistry.messageDecorations, definition, registerOptions(itemOptions)));
+      },
+      registerSidePanel(definition, itemOptions) {
+        const panel = codexPlusRegisterExtensionSidePanel(definition, registerOptions(itemOptions));
+        const handle = track(panel);
+        handle.open = panel.open;
+        handle.close = panel.close;
+        handle.toggle = panel.toggle;
+        return handle;
+      },
 
       on(event, handler) {
         if (typeof event !== "string" || !event) throw new Error("事件名不能为空");
