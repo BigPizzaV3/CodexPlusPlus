@@ -16355,13 +16355,13 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         <span className="user-script-state-label" data-state={state} title={stateHint}>{label}</span>
       </div>
       <div className="script-row-actions">
-        {configSchema.length ? (
-          <Button aria-expanded={configOpen} aria-label={t("设置")} className="user-script-icon-action" data-active={configOpen || undefined} onClick={() => setConfigOpen((open) => !open)} size="icon" title={t("设置")} variant="ghost">
-            <Settings className="h-4 w-4" />
-          </Button>
-        ) : null}
-        {canPublish || canDelete ? (
+        {configSchema.length || canPublish || canDelete ? (
           <Menu label={tf("{0} 的更多操作", [displayName])}>
+            {configSchema.length ? (
+              <MenuItem onClick={() => setConfigOpen((open) => !open)}>
+                <span className="user-script-menu-item"><Settings className="h-4 w-4" />{configOpen ? t("收起设置") : t("设置")}</span>
+              </MenuItem>
+            ) : null}
             {canPublish ? (
               <MenuItem onClick={() => setPublishOpen(true)}>
                 <span className="user-script-menu-item"><Upload className="h-4 w-4" />{t("发布到 GitHub")}</span>

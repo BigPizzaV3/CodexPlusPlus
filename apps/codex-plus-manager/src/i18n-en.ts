@@ -3170,6 +3170,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "常驻后台": "Background process",
   "发布新版本": "Publish new version",
   "发布到 GitHub": "Publish to GitHub",
+  "收起设置": "Hide settings",
+  "{0} 的更多操作": "More actions for {0}",
   "{0} 个文件，{1} KB": "{0} files, {1} KB",
   "将以 GitHub 账号 {0} 发布为公开仓库，打上 codexpp-extension 标签，其他 Codex++ 用户能在「社区拓展」里看到并安装。": "Will be published as a public repository under the GitHub account {0}, tagged codexpp-extension, so other Codex++ users can find and install it under Community extensions.",
   "还不能发布：{0}": "Cannot publish yet: {0}",
