@@ -320,7 +320,7 @@ fn unix_birth_token(pid: u32) -> Option<u64> {
     Some(unix_birth_hash(&birth))
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn unix_birth_hash(birth: &str) -> u64 {
     birth.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
         (hash ^ byte as u64).wrapping_mul(0x100000001b3)
@@ -609,7 +609,7 @@ pub fn codex_process_generation_exited(
     )
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn process_generation_exited_with(
     pid: u32,
     expected_birth: Option<u64>,
@@ -621,8 +621,11 @@ fn process_generation_exited_with(
     let Some((birth, exited)) = query(pid)? else {
         return Ok(true);
     };
+    if exited {
+        return Ok(true);
+    }
     anyhow::ensure!(birth != 0, "无法确认进程创建身份");
-    Ok(exited || expected_birth.is_some_and(|expected| expected != birth))
+    Ok(expected_birth.is_some_and(|expected| expected != birth))
 }
 
 #[cfg(target_os = "macos")]
@@ -630,18 +633,78 @@ pub fn codex_process_generation_exited(
     pid: u32,
     expected_birth: Option<u64>,
 ) -> anyhow::Result<bool> {
-    use crate::watcher::{ProcessInstanceState, inspect_process_instance};
-    if pid == 0 || expected_birth == Some(0) {
-        return Ok(false);
+    process_generation_exited_with(pid, expected_birth, |pid| {
+        let output = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "stat=", "-o", "lstart="])
+            .env("LC_ALL", "C")
+            .output()?;
+        if output.status.code() == Some(1) && output.stdout.is_empty() {
+            return Ok(None);
+        }
+        if !output.status.success() {
+            return Err(std::io::Error::other("无法读取进程创建身份").into());
+        }
+        Ok(Some(parse_macos_process_lifetime(&output.stdout)?))
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_process_lifetime(bytes: &[u8]) -> std::io::Result<(u64, bool)> {
+    let invalid = || std::io::Error::other("无法读取进程状态或创建身份");
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid())?.trim();
+    let (state, birth) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    if state.starts_with('Z') {
+        return Ok((0, true));
     }
-    match inspect_process_instance(pid) {
-        ProcessInstanceState::NotRunning => Ok(true),
-        ProcessInstanceState::Running {
-            birth_id: Some(birth),
-            ..
-        } => Ok(expected_birth.is_some_and(|expected| expected != unix_birth_hash(&birth))),
-        _ => anyhow::bail!("无法确认进程是否已退出"),
+    let birth = birth.trim();
+    if state.is_empty() || birth.split_whitespace().count() != 5 {
+        return Err(invalid());
     }
+    Ok((unix_birth_hash(birth), false))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_process_lifetime(stat: &str) -> std::io::Result<(u64, bool)> {
+    let invalid = || std::io::Error::other("无法读取 /proc 进程创建身份");
+    let state = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next())
+        .ok_or_else(invalid)?;
+    let birth = crate::watcher::parse_linux_proc_stat_starttime(stat).ok_or_else(invalid)?;
+    if birth.parse::<u64>().is_err() || state.len() != 1 {
+        return Err(invalid());
+    }
+    Ok((unix_birth_hash(&birth), matches!(state, "Z" | "X")))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_lifetime(pid: u32) -> anyhow::Result<Option<(u64, bool)>> {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => Ok(Some(parse_linux_process_lifetime(&stat)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn codex_process_generation_exited(pid: u32, expected_birth: Option<u64>) -> anyhow::Result<bool> {
+    process_generation_exited_with(pid, expected_birth, |pid| {
+        let Some(snapshot) = linux_process_lifetime(pid)? else {
+            return Ok(None);
+        };
+        if snapshot.1 {
+            return Ok(Some(snapshot));
+        }
+        // 保留已发布的 Unix 出生标记；/proc starttime 复核包围 ps 读取，避免读取期间换代。
+        let birth = unix_birth_token(pid);
+        let current = linux_process_lifetime(pid)?;
+        if current.is_none_or(|(_, exited)| exited) {
+            return Ok(current);
+        }
+        if current != Some(snapshot) {
+            return Err(std::io::Error::other("读取进程身份期间发生换代").into());
+        }
+        let birth = birth.ok_or_else(|| std::io::Error::other("无法确认进程创建身份"))?;
+        Ok(Some((birth, false)))
+    })
 }
 
 #[cfg(windows)]
@@ -696,7 +759,7 @@ pub fn codex_user_data_is_absent(
     )
 }
 
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn process_read_or_exited<T>(
     read: anyhow::Result<T>,
     exited: impl FnOnce() -> anyhow::Result<bool>,
@@ -708,7 +771,7 @@ fn process_read_or_exited<T>(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", test))]
 fn scan_image_path_with(
     path: &Path,
     resolve: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
@@ -791,7 +854,8 @@ pub fn codex_user_data_is_absent(
         executable.is_absolute() && user_data_dir.is_absolute(),
         "多开路径必须是绝对路径"
     );
-    let executable = executable.canonicalize()?;
+    let executable = scan_image_path_with(executable, |path| path.canonicalize())?
+        .unwrap_or_else(|| executable.to_path_buf());
     let user_data_dir = user_data_dir.canonicalize()?;
     let snapshot = macos_process_snapshot()?;
     if !macos_snapshot_user_data_is_absent_with(
@@ -837,7 +901,7 @@ pub fn codex_user_data_is_absent(
 #[cfg(target_os = "macos")]
 fn macos_process_snapshot() -> anyhow::Result<std::collections::BTreeMap<u32, PathBuf>> {
     let output = std::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,comm="])
+        .args(["-axww", "-o", "pid=,stat=,comm="])
         .output()?;
     if !output.status.success() {
         return Err(std::io::Error::other("无法读取进程快照").into());
@@ -860,12 +924,17 @@ fn parse_macos_process_snapshot(
     );
     let mut processes = std::collections::BTreeMap::new();
     for line in snapshot.lines() {
-        let (pid, image) = line
+        let (pid, rest) = line
             .trim()
             .split_once(char::is_whitespace)
             .ok_or_else(|| anyhow::anyhow!("进程快照缺少映像"))?;
         let pid = pid.parse::<u32>()?;
+        let (state, image) = rest.trim().split_once(char::is_whitespace)
+            .ok_or_else(|| anyhow::anyhow!("进程快照缺少状态或映像"))?;
         anyhow::ensure!(!image.trim().is_empty(), "进程快照缺少映像");
+        if state.starts_with('Z') {
+            continue;
+        }
         anyhow::ensure!(
             processes.insert(pid, PathBuf::from(image.trim())).is_none(),
             "进程快照含重复 PID"
@@ -951,7 +1020,49 @@ fn parse_macos_listener_process_ids(bytes: &[u8]) -> anyhow::Result<Vec<u32>> {
     Ok(ids)
 }
 
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(target_os = "linux")]
+pub fn codex_user_data_is_absent(
+    executable: &Path,
+    user_data_dir: &Path,
+    debug_port: u16,
+    helper_port: u16,
+) -> anyhow::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    anyhow::ensure!(executable.is_absolute() && user_data_dir.is_absolute(), "多开路径必须是绝对路径");
+    let user_data = user_data_dir.canonicalize()?;
+    let uid = std::fs::metadata("/proc/self")?.uid();
+    // 同用户的任意安装版本都不能继续使用该目录；僵尸已不持有目录或监听端口。
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.uid() != uid {
+            continue;
+        }
+        let Some((birth, false)) = linux_process_lifetime(pid)? else {
+            continue;
+        };
+        let arguments = process_read_or_exited(linux_process_arguments(pid), || {
+            Ok(linux_process_lifetime(pid)?.is_none_or(|current| current.1 || current.0 != birth))
+        })?;
+        if let Some(arguments) = arguments
+            && arguments_user_data_matches(&arguments, &user_data)?
+        {
+            return Ok(false);
+        }
+    }
+    // 无法确认占用者时保留 unknown，不因端口可达而停止其他实例。
+    loopback_ports_are_free_with(debug_port, helper_port,
+        |host, port| std::net::TcpListener::bind((host, port)), |_| Ok(false))
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn loopback_ports_are_free_with<T>(
     debug_port: u16,
     helper_port: u16,
@@ -971,7 +1082,7 @@ fn loopback_ports_are_free_with<T>(
                 Err(error)
                     if host == "::1"
                         && (error.kind() == std::io::ErrorKind::AddrNotAvailable
-                            || matches!(error.raw_os_error(), Some(47 | 49 | 10047 | 10049))) => {}
+                            || matches!(error.raw_os_error(), Some(47 | 49 | 97 | 10047 | 10049))) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => occupied = true,
                 Err(error) => return Err(error.into()),
             }
@@ -983,7 +1094,7 @@ fn loopback_ports_are_free_with<T>(
     Ok(true)
 }
 
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn arguments_user_data_matches(arguments: &[String], expected: &Path) -> anyhow::Result<bool> {
     let mut paths = Vec::new();
     let mut tokens = arguments.iter().skip(1);
@@ -1037,17 +1148,17 @@ pub(crate) fn worker_image_matches(image: &Path, arguments: &[String]) -> bool {
     }
 }
 
-/// 直接从仍由父进程持有的 Child 句柄读取创建身份，避免按 PID 重新打开另一进程。
+/// Child 尚未回收，PID 不会被复用；Windows 直接读取持有的句柄。
 pub fn worker_birth_id(child: &std::process::Child) -> Option<u64> {
     #[cfg(windows)]
     {
         crate::windows_integration::child_process_birth_id(child)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         unix_birth_token(child.id())
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = child;
         None
@@ -1135,10 +1246,59 @@ mod tests {
     }
 
     #[test]
+    fn unix_generation_queries_accept_zombies_and_retry_missing_birth() {
+        let birth = "Fri Oct 30 19:18:27 2026";
+        let live = parse_macos_process_lifetime(format!(" S+ {birth}\n").as_bytes()).unwrap();
+        assert_eq!(live, (unix_birth_hash(birth), false));
+        assert!(!process_generation_exited_with(42, Some(live.0), |_| Ok(Some(live))).unwrap());
+        assert!(process_generation_exited_with(42, Some(live.0 + 1), |_| Ok(Some(live))).unwrap());
+        for state in ["Z", "Z+", "Z  Fri Oct 30 19:18:27 2026"] {
+            let lifetime = parse_macos_process_lifetime(state.as_bytes()).unwrap();
+            assert!(process_generation_exited_with(42, Some(live.0), |_| Ok(Some(lifetime))).unwrap());
+        }
+        for missing in ["", "S", "S Fri Oct 30", "S\n"] {
+            let error = process_generation_exited_with(42, Some(live.0), |_| {
+                Ok(Some(parse_macos_process_lifetime(missing.as_bytes())?))
+            }).unwrap_err();
+            assert!(error.is::<std::io::Error>());
+        }
+    }
+
+    #[test]
+    fn linux_proc_snapshot_checks_starttime_and_handles_spaced_parentheses_and_zombies() {
+        let stat = |state, birth| format!("42 (Codex (test) worker) {state} {}{birth} 0 0\n", "0 ".repeat(18));
+        let live = parse_linux_process_lifetime(&stat("S", "12345")).unwrap();
+        assert_eq!(live, (unix_birth_hash("12345"), false));
+        for state in ["Z", "X"] {
+            let lifetime = parse_linux_process_lifetime(&stat(state, "12345")).unwrap();
+            assert!(process_generation_exited_with(42, Some(live.0), |_| Ok(Some(lifetime))).unwrap());
+        }
+        let reused = parse_linux_process_lifetime(&stat("R", "12346")).unwrap();
+        assert!(process_generation_exited_with(42, Some(live.0), |_| Ok(Some(reused))).unwrap());
+        assert!(!process_generation_exited_with(42, None, |_| Ok(Some(live))).unwrap());
+        for invalid in ["42 (missing) S", "invalid", &stat("S", "not-a-time")] {
+            assert!(parse_linux_process_lifetime(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn unix_scan_image_fallback_requires_absolute_path_and_known_resolution_errors() {
+        use std::io::{Error, ErrorKind};
+        let temp = tempfile::tempdir().unwrap();
+        let removed = temp.path().join("removed-app/Contents/MacOS/Codex");
+        assert!(scan_image_path_with(&removed, |path| path.canonicalize()).unwrap().is_none());
+        assert!(scan_image_path_with(&removed, |_| Err(ErrorKind::PermissionDenied.into())).unwrap().is_none());
+        assert!(scan_image_path_with(&removed, |_| Err(ErrorKind::InvalidData.into())).is_err());
+        assert!(scan_image_path_with(Path::new("relative-app"), |_| Ok(removed.clone())).is_err());
+        assert!(scan_image_path_with(&removed, |_| Err(Error::from(ErrorKind::Interrupted))).is_err());
+    }
+
+    #[test]
     fn macos_snapshot_preserves_spaced_images_and_rejects_incomplete_output() {
-        let snapshot = parse_macos_process_snapshot(b" 42 /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n 43 /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n").unwrap();
+        let snapshot = parse_macos_process_snapshot(b" 42 S /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n 43 S+ /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n 44 Z /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n").unwrap();
         let executable = Path::new("/Applications/Codex Dev.app/Contents/MacOS/Codex Dev");
         assert_eq!(snapshot.get(&42).unwrap(), executable);
+        assert!(!snapshot.contains_key(&44));
         assert!(macos_image_is_candidate(
             snapshot.get(&43).unwrap(),
             executable
@@ -1149,13 +1309,13 @@ mod tests {
             &b"42"[..],
             &b"42 image"[..],
             &b"42 \n"[..],
-            &b"42 image\n42 other\n"[..],
-            &b"not-pid image\n"[..],
+            &b"42 S image\n42 S other\n"[..],
+            &b"not-pid S image\n"[..],
         ] {
             assert!(parse_macos_process_snapshot(invalid).is_err());
         }
         assert!(parse_macos_process_snapshot(&vec![b'x'; 8 * 1024 * 1024 + 1]).is_err());
-        assert!(parse_macos_process_snapshot("42 image\n".repeat(32769).as_bytes()).is_err());
+        assert!(parse_macos_process_snapshot("42 S image\n".repeat(32769).as_bytes()).is_err());
         assert_eq!(
             parse_macos_listener_process_ids(b"42\n43\n42\n").unwrap(),
             vec![42, 43]
@@ -1185,7 +1345,7 @@ mod tests {
             (1..=100)
                 .map(|pid| {
                     format!(
-                        "{pid} /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n"
+                        "{pid} S /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n"
                     )
                 })
                 .collect::<String>()

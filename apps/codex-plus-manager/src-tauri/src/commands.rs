@@ -1460,6 +1460,8 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
     };
     let pid = child.id();
     let worker_birth_id = codex_plus_core::multi_worker::worker_birth_id(&child);
+    // 后台回收直接子进程，自然退出和崩溃都不会留下僵尸；不阻塞启动或停止 worker。
+    let _ = reap_multi_worker(child);
     let instance = CodexMultiInstance {
         instance_id: instance_id.clone(),
         generation,
@@ -1489,8 +1491,6 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
             json!({ "instanceId": instance_id }),
         );
     }
-    // Child drop 不会终止 Unix 子进程；Codex Desktop 自己持有生命周期。
-    drop(child);
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.multi_instance_started",
         json!({
@@ -1685,12 +1685,12 @@ fn stop_multi_instance_lifecycle(root: &Path, instance: &CodexMultiInstance) -> 
                 multi_manifest_identity_matches(instance, identity),
                 "实例身份不一致"
             );
-            #[cfg(any(windows, target_os = "macos"))]
+            #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
             let exited = codex_plus_core::multi_worker::codex_process_generation_exited(
                 identity.process_id,
                 Some(identity.process_birth_id),
             )?;
-            #[cfg(not(any(windows, target_os = "macos")))]
+            #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
             let exited = false;
             if !exited {
                 anyhow::ensure!(
@@ -1947,7 +1947,7 @@ fn multi_instance_stopped_receipt_matches(
 }
 
 fn stale_multi_instance_is_absent(instance: &CodexMultiInstance) -> anyhow::Result<bool> {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
         if let Some(pid) = instance.pid
             && !codex_plus_core::multi_worker::codex_process_generation_exited(
@@ -1959,7 +1959,7 @@ fn stale_multi_instance_is_absent(instance: &CodexMultiInstance) -> anyhow::Resu
         }
         multi_instance_resources_are_absent(instance)
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = instance;
         Ok(false)
@@ -1967,7 +1967,7 @@ fn stale_multi_instance_is_absent(instance: &CodexMultiInstance) -> anyhow::Resu
 }
 
 fn multi_instance_resources_are_absent(instance: &CodexMultiInstance) -> anyhow::Result<bool> {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
         use codex_plus_core::multi_worker::{
             codex_process_generation_exited, codex_user_data_is_absent,
@@ -2004,7 +2004,7 @@ fn multi_instance_resources_are_absent(instance: &CodexMultiInstance) -> anyhow:
             instance.helper_port,
         )
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = instance;
         Ok(false)
@@ -2035,7 +2035,7 @@ fn multi_instance_is_starting(instance: &CodexMultiInstance) -> bool {
     {
         return false;
     }
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     if let Some(pid) = instance.pid {
         return matches!(
             codex_plus_core::multi_worker::codex_process_generation_exited(
@@ -2079,7 +2079,7 @@ fn multi_instance_snapshot_status(instance: &CodexMultiInstance, running: bool) 
         {
             return "unknown";
         }
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         if !codex_plus_core::multi_worker::codex_process_generation_exited(
             identity.process_id,
             Some(identity.process_birth_id),
@@ -2114,6 +2114,12 @@ fn multi_instance_status(running: bool, result: Option<&CodexMultiLaunchResult>)
         Some("failed") => "failed",
         _ => "stopped",
     }
+}
+
+fn reap_multi_worker(
+    mut child: std::process::Child,
+) -> std::thread::JoinHandle<std::io::Result<std::process::ExitStatus>> {
+    std::thread::spawn(move || child.wait())
 }
 
 fn terminate_multi_worker(
@@ -13858,6 +13864,28 @@ model_reasoning_effort = "high"
         assert!(instance.launch_result.is_none());
         assert!(instance.worker_birth_id.is_none());
         assert_eq!(instance.debug_port, 9456);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn multi_worker_reaper_observes_normal_and_failed_child_exit() {
+        use std::os::windows::process::CommandExt;
+        for code in [0, 7] {
+            let child = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", &format!("exit {code}")])
+                .creation_flags(codex_plus_core::windows_create_no_window())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            let birth = codex_plus_core::multi_worker::worker_birth_id(&child);
+            let status = reap_multi_worker(child).join().unwrap().unwrap();
+            assert_eq!(status.code(), Some(code));
+            assert!(birth.is_some());
+            assert!(codex_plus_core::multi_worker::codex_process_generation_exited(pid, birth).unwrap());
+        }
     }
 
     #[cfg(unix)]
