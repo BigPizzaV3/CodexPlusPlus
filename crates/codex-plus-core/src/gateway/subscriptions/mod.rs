@@ -15,10 +15,14 @@
 //! 新增订阅：实现 [`Subscription`]，登记到某个 `catalog_*.rs` 的 `ITEMS`。
 //! 这些都是冒用官方客户端身份调用未公开的接口，可能随时失效，也有账号被限制的风险（界面上会提示）。
 
+pub mod antigravity;
 pub mod catalog_a;
 pub mod catalog_b;
 pub mod catalog_c;
 pub mod chat;
+pub mod code_assist;
+pub mod gemini;
+pub mod google;
 pub mod oauth;
 pub mod server;
 
