@@ -1,5 +1,6 @@
 /** 网关总览（Agent → Codex++ → 供应商池）的纯数据整理，页面只负责画。 */
 import {
+  glanceAgents,
   maskAccountName,
   memberStatus,
   modelDisplay,
@@ -54,7 +55,7 @@ export function hubAgents(payload: GatewayPayload | null, codex: CodexSummary): 
   const nodes: HubAgentNode[] = codexViaGateway
     ? []
     : [{ id: "codex", name: "Codex", enabled: false, direct: true, detail: maskAccountName(codex.providerName ?? ""), requests: 0, live: false }];
-  for (const agent of payload?.agents ?? []) {
+  for (const agent of glanceAgents(payload?.agents)) {
     if (agent.agent === "codex" && !codexViaGateway) continue;
     const binding = payload?.gateway.bindings[agent.agent];
     const stats = activity.find((item) => item.agent === agent.agent);

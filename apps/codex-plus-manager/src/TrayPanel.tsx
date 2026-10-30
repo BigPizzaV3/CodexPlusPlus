@@ -34,6 +34,7 @@ import {
 import { t, tf } from "./i18n";
 import { ModelList, Floating } from "./GatewayAgents";
 import {
+  glanceAgents,
   agentModels,
   agentName,
   bindingFromDraft,
@@ -726,7 +727,7 @@ function GatewayTab({
 
       <Section title={t("各 Agent 用的模型")}>
         <div className="tp-card tp-list">
-          {(payload?.agents ?? []).map((agent) => (
+          {glanceAgents(payload?.agents).map((agent) => (
             <PanelAgentRow agent={agent} key={agent.agent} onRun={run} payload={payload} />
           ))}
         </div>

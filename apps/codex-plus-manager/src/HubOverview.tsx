@@ -15,7 +15,7 @@ import {
   type UsageSummary,
 } from "./gateway-model";
 import { hubAgents, hubFeed, hubLinks, hubPoolState, hubProviders, hubTotals, successRate, type CodexSummary, type HubFeedItem, type HubLink } from "./hub-overview-model";
-import { AGENT_ICONS, APP_LOGO_URL, Avatar, KeyCount, MemberStatusLabel, makeRun, type Notify, type Run } from "./gateway-ui";
+import { AGENT_ICONS, APP_LOGO_URL, Avatar, KeyCount, MemberStatusLabel, agentIconIsColor, makeRun, type Notify, type Run } from "./gateway-ui";
 import { publishGatewayPayload, useGatewayPayload } from "./gateway-store";
 import { AgentConnectDialog } from "./GatewayAgents";
 import { ProviderAdder } from "./GatewayProviders";
@@ -50,6 +50,9 @@ function useTodayUsage(): UsageSummary | null {
 /** 单色品牌图标用 mask 着色，深浅主题下都跟随文字颜色。 */
 export function AgentGlyph({ agent, className = "" }: { agent: string; className?: string }) {
   const url = AGENT_ICONS[agent];
+  if (url && agentIconIsColor(agent)) return <img alt="" className={`hub-agent-glyph hub-agent-glyph-plain ${className}`} src={url} />;
+  // 没有打包图标的通用 Agent：名字首字母，不画空的遮罩方块。
+  if (!url) return <i aria-hidden="true" className={`hub-agent-glyph hub-agent-glyph-plain gw-agent-letter ${className}`}>{(agentName(agent).trim()[0] ?? "?").toUpperCase()}</i>;
   return <i aria-hidden="true" className={`hub-agent-glyph ${className}`} style={url ? ({ "--hub-icon": `url("${url}")` } as CSSProperties) : undefined} />;
 }
 

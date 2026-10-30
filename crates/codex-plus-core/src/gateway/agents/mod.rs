@@ -135,6 +135,33 @@ pub fn is_generic(agent: &crate::tools::ToolId) -> bool {
     matches!(agent, crate::tools::ToolId::Unknown(id) if spec(id).is_some())
 }
 
+/// 本机真的装了（或配置过）这个 Agent：规格自己的探测通过，并且有它的命令、它的配置文件，
+/// 或者配置所在的目录是 Agent 自己建的——目录里只剩 `logs`、`cache` 这类运行时残留（卸载后留下的）
+/// 或别的工具顺手建的 `skills` 时不算。
+pub fn installed(spec: &AgentSpec, env: &AgentEnv) -> bool {
+    if !(spec.detect)(env) {
+        return false;
+    }
+    if env.has_binary(spec.binary) {
+        return true;
+    }
+    let config = (spec.config_path)(env);
+    config.is_file() || config.parent().is_some_and(agent_dir)
+}
+
+/// 目录里有 Agent 自己写的东西（不只是残留目录、`skills` 和 `.DS_Store`）。
+pub fn agent_dir(path: &std::path::Path) -> bool {
+    const LEFTOVER: &[&str] = &["logs", "log", "debug", "diagnostics", "cache"];
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        name != "skills" && name != ".ds_store" && !(is_dir && LEFTOVER.contains(&name.as_str()))
+    })
+}
+
 /// 常用的探测：用户目录下某个路径存在。
 pub fn home_exists(env: &AgentEnv, relative: &str) -> bool {
     env.home_path(relative).exists()
@@ -143,6 +170,19 @@ pub fn home_exists(env: &AgentEnv, relative: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leftover_only_folder_is_not_an_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".agent");
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::create_dir_all(dir.join("diagnostics")).unwrap();
+        std::fs::create_dir_all(dir.join("skills")).unwrap();
+        assert!(!agent_dir(&dir));
+        std::fs::write(dir.join("settings.json"), "{}").unwrap();
+        assert!(agent_dir(&dir));
+        assert!(!agent_dir(&temp.path().join("missing")));
+    }
 
     #[test]
     fn ids_are_unique_and_path_safe() {
@@ -164,3 +204,4 @@ mod tests {
         }
     }
 }
+

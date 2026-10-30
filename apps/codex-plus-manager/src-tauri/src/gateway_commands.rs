@@ -150,7 +150,8 @@ fn listed_agents(gateway: &GatewaySettings) -> Vec<ToolId> {
     let env = codex_plus_core::gateway::agents::AgentEnv::current();
     let mut agents = GATEWAY_AGENTS.to_vec();
     for spec in codex_plus_core::gateway::agents::all() {
-        if gateway.bindings.contains_key(spec.id) || (spec.detect)(&env) {
+        let connected = gateway.bindings.get(spec.id).is_some_and(|binding| binding.enabled);
+        if connected || codex_plus_core::gateway::agents::installed(spec, &env) {
             agents.push(ToolId::Unknown(spec.id.to_string()));
         }
     }

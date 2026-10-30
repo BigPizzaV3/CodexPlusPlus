@@ -66,6 +66,47 @@ export const AGENT_ICONS: Record<string, string> = {
   codexApp: new URL("./assets/agents/codex.svg", import.meta.url).href,
 };
 
+/** 通用 Agent → 打包的品牌图标（assets/providers，来源见该目录的 LICENSE.txt）；没有的用名字首字母。 */
+const AGENT_BRANDS: Record<string, string> = {
+  opencode: "opencode",
+  openchamber: "opencode",
+  "mimo-code": "xiaomimimo",
+  "deveco-code": "huawei-color",
+  stepcode: "stepfun-color",
+  goose: "goose",
+  "copilot-cli": "githubcopilot",
+  "copilot-jetbrains": "githubcopilot",
+  dsh: "deepseek-color",
+  "command-code": "commandcode",
+  hermes: "hermesagent",
+  "kimi-code": "kimi-color",
+  "qwen-code": "qwen-color",
+  "minimax-code": "minimax-color",
+  cline: "cline",
+  qoder: "qoder-color",
+  "qoder-cn": "qoder-color",
+  "grok-app": "grok",
+  zcode: "zai",
+  workbuddy: "workbuddy-color",
+  "workbuddy-ai": "workbuddy-color",
+  codebuddy: "codebuddy-color",
+  openclaw: "openclaw-color",
+  "claude-desktop": "claude-color",
+  "gemini-cli": "geminicli-color",
+  zed: "zed",
+  vscodium: "vscodium",
+  "jetbrains-air": "jetbrains",
+  raycast: "raycast",
+};
+for (const [agent, key] of Object.entries(AGENT_BRANDS)) {
+  if (!AGENT_ICONS[agent] && BRAND_ICON_URLS[key]) AGENT_ICONS[agent] = BRAND_ICON_URLS[key];
+}
+
+/** 彩色图标原样显示；单色图标用遮罩跟随文字颜色。 */
+export function agentIconIsColor(agent: string): boolean {
+  return Boolean(AGENT_BRANDS[agent]?.endsWith("-color"));
+}
+
 /**
  * 网关里 Agent 的图标。Codex 用 Codex 应用自己的彩色图标；Claude Code、Grok 只有黑色单色图，
  * 直接当 <img> 在深色主题里看不见，所以用遮罩按当前文字颜色绘制，跟随主题。
@@ -73,6 +114,7 @@ export const AGENT_ICONS: Record<string, string> = {
 export function AgentIcon({ agent, className = "" }: { agent: string; className?: string }) {
   if (agent === "codex") return <img alt="" className={className} src={AGENT_ICONS.codexApp} />;
   const url = AGENT_ICONS[agent];
+  if (url && agentIconIsColor(agent)) return <img alt="" className={className} src={url} />;
   // 通用 Agent 没有打包图标：用名字首字母。
   if (!url) return <i aria-hidden="true" className={`${className} gw-agent-letter`.trim()}>{(agentName(agent).trim()[0] ?? "?").toUpperCase()}</i>;
   return <i aria-hidden="true" className={`${className} gw-agent-mono`.trim()} style={url ? ({ "--gw-agent-icon": `url("${url}")` } as CSSProperties) : undefined} />;

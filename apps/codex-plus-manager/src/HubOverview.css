@@ -172,6 +172,19 @@
   mask: var(--hub-icon) center / contain no-repeat;
 }
 
+/* 彩色图标（<img>）与首字母：沿用各处 .hub-agent-glyph 的尺寸，不要遮罩和底色。 */
+.hub-agent-glyph.hub-agent-glyph-plain {
+  background: none;
+  -webkit-mask: none;
+  mask: none;
+  object-fit: contain;
+}
+
+.hub-agent-glyph.gw-agent-letter {
+  display: inline-grid;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
 .hub-node-text {
   flex: 1;
   min-width: 0;

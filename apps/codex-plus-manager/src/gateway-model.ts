@@ -521,6 +521,15 @@ export const GATEWAY_CLAUDE_PROVIDER_ID = "codex-plus-gateway";
 
 export const GATEWAY_AGENT_NAMES: Record<string, string> = { claude: "Claude Code", grok: "Grok", codex: "Codex" };
 
+/** 内置的三个 Agent：总览、托盘里总是列出。 */
+export const BUILTIN_GATEWAY_AGENTS = ["codex", "claude", "grok"];
+
+/** 总览、托盘这类一屏看全的地方：内置的三个，加上已经接入网关的通用 Agent；
+ * 本机装了但没接入的只在「Agent 接入」页里列出。 */
+export function glanceAgents<T extends { agent: string; enabled: boolean }>(agents: T[] | undefined): T[] {
+  return (agents ?? []).filter((agent) => agent.enabled || BUILTIN_GATEWAY_AGENTS.includes(agent.agent));
+}
+
 export function agentName(agent: string): string {
   return GATEWAY_AGENT_NAMES[agent] ?? agent;
 }
