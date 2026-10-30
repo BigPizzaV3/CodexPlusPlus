@@ -42,7 +42,7 @@ pub fn split_gateway_path(path: &str) -> Option<(ToolId, String)> {
     let rest = path.strip_prefix("/gw/")?;
     let (agent, tail) = rest.split_once('/').unwrap_or((rest, ""));
     let agent = ToolId::parse(agent);
-    if matches!(agent, ToolId::Unknown(_)) {
+    if matches!(agent, ToolId::Unknown(_)) && !crate::gateway::agents::is_generic(&agent) {
         return None;
     }
     let tail = format!("/{tail}");
@@ -131,10 +131,11 @@ pub(crate) async fn handle(
         .await;
     }
     match (&agent, method, tail.as_str()) {
-        (ToolId::Claude, "POST", "/messages") => {
+        (ToolId::Claude | ToolId::Unknown(_), "POST", "/messages") => {
             handle_claude_messages(
                 stream,
                 &gateway,
+                agent.clone(),
                 method,
                 path,
                 headers,
@@ -143,12 +144,12 @@ pub(crate) async fn handle(
             )
             .await
         }
-        (ToolId::Claude, "POST", "/messages/count_tokens") => {
+        (ToolId::Claude | ToolId::Unknown(_), "POST", "/messages/count_tokens") => {
             handle_claude_count_tokens(stream, &gateway, headers, body).await
         }
         (_, "GET", "/models") => handle_models(stream, &gateway, &agent).await,
         // 旧版 Codex 以 ChatGPT 身份接入时远程压缩发 `/responses/compact`，原路径一路带给上游。
-        (ToolId::Grok | ToolId::Codex, "POST", "/responses")
+        (ToolId::Grok | ToolId::Codex | ToolId::Unknown(_), "POST", "/responses")
         | (ToolId::Codex, "POST", "/responses/compact") => {
             let request_body = match decode_protocol_proxy_request_body(
                 body,
@@ -534,16 +535,17 @@ async fn write_with_retry_after(
     Ok(())
 }
 
+/// Anthropic Messages 入口：Claude Code，以及用 Anthropic 协议接入的通用 Agent。
 async fn handle_claude_messages(
     stream: &mut tokio::net::TcpStream,
     gateway: &GatewaySettings,
+    agent: ToolId,
     method: &str,
     path: &str,
     headers: &str,
     body: &[u8],
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    let agent = ToolId::Claude;
     let request_text = match decode_protocol_proxy_request_body(
         body,
         header_value_from_headers(headers, "content-encoding").as_deref(),
@@ -1038,6 +1040,22 @@ async fn handle_models(
                 "id": model,
                 "display_name": model,
                 "created_at": "2026-01-01T00:00:00Z"
+            })).collect::<Vec<_>>(),
+            "has_more": false,
+            "first_id": models.first(),
+            "last_id": models.last()
+        }),
+        // 通用 Agent 不知道用哪种协议来问：一份同时符合 OpenAI 与 Anthropic 格式的列表。
+        ToolId::Unknown(_) => json!({
+            "object": "list",
+            "data": models.iter().map(|model| json!({
+                "id": model,
+                "object": "model",
+                "type": "model",
+                "display_name": model,
+                "created": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "owned_by": "codex-plus"
             })).collect::<Vec<_>>(),
             "has_more": false,
             "first_id": models.first(),

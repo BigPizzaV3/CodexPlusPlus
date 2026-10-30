@@ -17,6 +17,7 @@ use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::gateway::agents;
 use crate::gateway::drift::{self, Drift};
 use crate::gateway::key_pool;
 use crate::gateway::restore::{self as stash, ChangedKey, FileStash, KeyPath};
@@ -43,6 +44,8 @@ pub struct ApplyContext {
     pub settings: SettingsStore,
     pub backup_root: PathBuf,
     pub port: u16,
+    /// 通用 Agent（[`crate::gateway::agents`]）找配置文件用的用户目录与环境变量。
+    pub agent_env: crate::gateway::agents::AgentEnv,
 }
 
 /// Codex 直连模式供应商列表里托管的网关供应商 id。
@@ -65,6 +68,7 @@ impl ApplyContext {
             settings: SettingsStore::default(),
             backup_root: crate::paths::default_app_state_dir().join("backups"),
             port,
+            agent_env: crate::gateway::agents::AgentEnv::current(),
         }
     }
 }
@@ -284,7 +288,10 @@ fn write_agent_config(
             }
         }
         ToolId::Codex => write_codex(ctx, &gateway, binding)?,
-        other => bail!("{} 不支持网关模式", other.as_str()),
+        other => match agents::spec(other.as_str()) {
+            Some(spec) => agents::connect::write(ctx, spec, &gateway, binding)?,
+            None => bail!("{} 不支持网关模式", other.as_str()),
+        },
     }
     Ok(None)
 }
@@ -1355,7 +1362,10 @@ fn restore_agent(
         ToolId::Claude => restore_claude(ctx, binding),
         ToolId::Grok => restore_grok(ctx, settings),
         ToolId::Codex => restore_codex(ctx, binding),
-        _ => Ok(()),
+        other => match agents::spec(other.as_str()) {
+            Some(spec) => agents::connect::restore(ctx, spec),
+            None => Ok(()),
+        },
     }?;
     Ok(RestoreOutcome::Restored)
 }
@@ -1366,7 +1376,7 @@ fn recorded_on_gateway(ctx: &ApplyContext, agent: &ToolId) -> bool {
     match agent {
         ToolId::Grok => grok_stash_path(ctx).exists(),
         ToolId::Codex | ToolId::Claude => agent_points_at_gateway(ctx, agent),
-        _ => false,
+        other => agents::spec(other.as_str()).is_some_and(|spec| agents::connect::recorded(ctx, spec)),
     }
 }
 
@@ -1454,7 +1464,11 @@ fn forget_gateway(
             stash::remove_stash(&codex_stash_path(ctx));
         }
         ToolId::Grok => stash::remove_stash(&grok_stash_path(ctx)),
-        _ => {}
+        other => {
+            if let Some(spec) = agents::spec(other.as_str()) {
+                agents::connect::forget(ctx, spec);
+            }
+        }
     }
     Ok(())
 }
@@ -1472,7 +1486,8 @@ fn agent_points_at_gateway(ctx: &ApplyContext, agent: &ToolId) -> bool {
             .ok()
             .flatten()
             .is_some_and(|text| grok_points_at_gateway(&text)),
-        _ => false,
+        other => agents::spec(other.as_str())
+            .is_some_and(|spec| agents::connect::points_at_gateway(ctx, spec)),
     }
 }
 

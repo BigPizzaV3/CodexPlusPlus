@@ -309,6 +309,14 @@ function AgentDetail({
           </div>
         </div>
       ) : null}
+      {agent.hint ? (
+        <div className="gw-detail-row">
+          <span className="gw-detail-label">{tf("在 {0} 里", [agent.name])}</span>
+          <div className="gw-detail-value">
+            <span>{t(agent.hint)}</span>
+          </div>
+        </div>
+      ) : null}
       <div className="gw-detail-row">
         <span className="gw-detail-label">{t("用哪些供应商")}</span>
         <div className="gw-detail-value gw-chip-row">

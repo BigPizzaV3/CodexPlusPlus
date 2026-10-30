@@ -1,7 +1,7 @@
 /** 侧栏状态卡、总览页、网关页共用的网关数据：各自按自己的间隔静默刷新，失败时保留上一次的值。 */
 import { createContext, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { GatewayPayload, GatewayResult } from "./gateway-model";
+import { rememberAgentNames, type GatewayPayload, type GatewayResult } from "./gateway-model";
 
 const shared: { payload: GatewayPayload | null } = { payload: null };
 const listeners = new Set<(payload: GatewayPayload) => void>();
@@ -17,6 +17,7 @@ export function publishGatewayPayload(result: GatewayResult) {
   if (!result.gateway || !Array.isArray(result.pool)) return;
   generation += 1;
   shared.payload = result as GatewayPayload;
+  rememberAgentNames(shared.payload.agents);
   for (const listener of listeners) listener(shared.payload);
 }
 
@@ -44,6 +45,7 @@ export function useGatewayPayload(intervalMs: number): GatewayPayload | null {
         .then((result) => {
           if (cancelled || started !== generation || !result.gateway || !Array.isArray(result.pool)) return;
           shared.payload = result as GatewayPayload;
+          rememberAgentNames(shared.payload.agents);
           setPayload(shared.payload);
         })
         .catch(() => undefined);

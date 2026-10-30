@@ -81,6 +81,8 @@ pub struct GatewayAgentView {
     pub version: Option<String>,
     /// 开启网关时改写的配置文件，界面上展示给用户。
     pub config_path: String,
+    /// 通用 Agent：在 Agent 里怎么切模型、接入后要不要重启等提示。
+    pub hint: String,
     pub enabled: bool,
     pub base_url: String,
     pub default_model: String,
@@ -141,6 +143,18 @@ pub struct GatewayPayload {
 
 const GATEWAY_AGENTS: &[ToolId] = &[ToolId::Codex, ToolId::Claude, ToolId::Grok];
 
+/// 界面上列出的 Agent：三个内置的，加上本机装了（或已经接入过）的通用 Agent。
+fn listed_agents(gateway: &GatewaySettings) -> Vec<ToolId> {
+    let env = codex_plus_core::gateway::agents::AgentEnv::current();
+    let mut agents = GATEWAY_AGENTS.to_vec();
+    for spec in codex_plus_core::gateway::agents::all() {
+        if gateway.bindings.contains_key(spec.id) || (spec.detect)(&env) {
+            agents.push(ToolId::Unknown(spec.id.to_string()));
+        }
+    }
+    agents
+}
+
 fn port() -> u16 {
     codex_plus_core::resident_helper::resident_helper_port()
         .unwrap_or_else(codex_plus_core::protocol_proxy::protocol_proxy_port)
@@ -152,7 +166,7 @@ fn context() -> ApplyContext {
 
 fn parse_agent(agent: &str) -> anyhow::Result<ToolId> {
     let agent = ToolId::parse(agent);
-    if !GATEWAY_AGENTS.contains(&agent) {
+    if !GATEWAY_AGENTS.contains(&agent) && !codex_plus_core::gateway::agents::is_generic(&agent) {
         anyhow::bail!("{} 不支持网关模式", agent.as_str());
     }
     Ok(agent)
@@ -263,7 +277,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         })
         .collect();
     let drift_ctx = ApplyContext::default_paths(port);
-    let agents = GATEWAY_AGENTS
+    let agents = listed_agents(&gateway)
         .iter()
         .map(|agent| {
             let binding = gateway.binding(agent);
@@ -271,7 +285,10 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 agent: agent.as_str().to_string(),
                 name: codex_plus_core::tools::tool_display_name(agent).to_string(),
                 version: agent_version(agent),
-                config_path: agent_config_path(agent).to_string(),
+                config_path: agent_config_path(agent),
+                hint: codex_plus_core::gateway::agents::spec(agent.as_str())
+                    .map(|spec| spec.hint.to_string())
+                    .unwrap_or_default(),
                 enabled: binding.is_some_and(|binding| binding.enabled),
                 base_url: apply::gateway_base_url(port, agent),
                 default_model: binding
@@ -1313,12 +1330,11 @@ pub fn delete_gateway_group(id: String) -> CommandResult<Option<GatewayPayload>>
 pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let relative = agent_config_path(&agent).trim_start_matches("~/");
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("找不到用户目录"))?;
-        let path = home.join(relative);
+        let env = codex_plus_core::gateway::agents::AgentEnv::current();
+        let path = match codex_plus_core::gateway::agents::spec(agent.as_str()) {
+            Some(spec) => (spec.config_path)(&env),
+            None => env.expand(&agent_config_path(&agent)),
+        };
         if !path.exists() {
             anyhow::bail!("{} 还不存在", path.display());
         }
@@ -1341,11 +1357,17 @@ pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<Gatewa
     respond("已在文件管理器中显示。", "打开失败", result)
 }
 
-fn agent_config_path(agent: &ToolId) -> &'static str {
+fn agent_config_path(agent: &ToolId) -> String {
     match agent {
-        ToolId::Claude => "~/.claude/settings.json",
-        ToolId::Grok => "~/.grok/config.toml",
-        _ => "",
+        ToolId::Claude => "~/.claude/settings.json".to_string(),
+        ToolId::Grok => "~/.grok/config.toml".to_string(),
+        other => match codex_plus_core::gateway::agents::spec(other.as_str()) {
+            Some(spec) => {
+                let env = codex_plus_core::gateway::agents::AgentEnv::current();
+                env.display(&(spec.config_path)(&env))
+            }
+            None => String::new(),
+        },
     }
 }
 
@@ -1358,7 +1380,12 @@ fn agent_version(agent: &ToolId) -> Option<String> {
     let versions = VERSIONS.get_or_init(Mutex::default);
     PROBE.call_once(|| {
         std::thread::spawn(|| {
-            for (agent, binary) in [("claude", "claude"), ("grok", "grok")] {
+            let env = codex_plus_core::gateway::agents::AgentEnv::current();
+            let generic = codex_plus_core::gateway::agents::all()
+                .iter()
+                .filter(|spec| !spec.binary.is_empty() && env.has_binary(spec.binary))
+                .map(|spec| (spec.id, spec.binary));
+            for (agent, binary) in [("claude", "claude"), ("grok", "grok")].into_iter().chain(generic) {
                 if let Some(version) = probe_cli_version(binary) {
                     let mut guard = VERSIONS
                         .get_or_init(Mutex::default)

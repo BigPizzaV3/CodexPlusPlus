@@ -5,7 +5,8 @@
  */
 import { PRESETS } from "./presets.ts";
 
-export type GatewayAgentId = "codex" | "claude" | "grok";
+/** 内置三个之外，通用 Agent 的 id 由后端的规格表决定（如 "opencode"）。 */
+export type GatewayAgentId = "codex" | "claude" | "grok" | (string & {});
 export type UnknownModelPolicy = "mapToDefault" | "passthrough";
 export type KeyRotationMode = "sticky" | "roundRobin";
 export type GroupMode = "inOrder" | "rotate" | "weighted" | "usage" | "fast" | "manual";
@@ -147,6 +148,8 @@ export type GatewayAgentView = {
   version?: string | null;
   /** 网关改写的配置文件。 */
   configPath?: string;
+  /** 通用 Agent：在 Agent 里怎么切模型、接入后要不要重启等提示。 */
+  hint?: string;
   enabled: boolean;
   baseUrl: string;
   defaultModel: string;
@@ -512,6 +515,13 @@ export const GATEWAY_AGENT_NAMES: Record<string, string> = { claude: "Claude Cod
 
 export function agentName(agent: string): string {
   return GATEWAY_AGENT_NAMES[agent] ?? agent;
+}
+
+/** 记下后端给的 Agent 名字（通用 Agent 的名字只在网关数据里有），会话、用量等页面按 id 取名时用。 */
+export function rememberAgentNames(agents: Array<{ agent: string; name: string }> | undefined) {
+  for (const item of agents ?? []) {
+    if (item.name && !GATEWAY_AGENT_NAMES[item.agent]) GATEWAY_AGENT_NAMES[item.agent] = item.name;
+  }
 }
 
 export type PickerItem = {

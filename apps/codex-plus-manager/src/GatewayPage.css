@@ -1939,6 +1939,19 @@ span.gw-avatar[data-size] {
   mask: var(--gw-agent-icon) center / contain no-repeat;
 }
 
+/* 通用 Agent 没有打包图标：圆角方块里放名字首字母，大小跟着图标位的宽高。 */
+.gw-agent-letter {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-size: 0.68em;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1;
+}
+
 .gw-node-agent .gw-node-agent-icon {
   width: 20px;
   height: 20px;
