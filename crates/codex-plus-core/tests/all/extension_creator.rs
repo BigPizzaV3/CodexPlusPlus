@@ -453,3 +453,56 @@ fn headless_packages_do_not_block_hot_reload() {
         "没有页面入口的包登记空清理函数，热重载不必整页刷新");
     assert!(!section("user:with-page").contains(".headless = true"), "有页面入口的包靠 codexPlus.extension 自己登记清理");
 }
+
+#[test]
+fn config_schema_supports_text_ranges_arrays_objects_and_i18n() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let package = |id: &str, config: Value| {
+        let dir = temp.path().join("user").join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("codexpp.json"), json!({"id": id, "name": id, "renderer": "main.js", "config": config}).to_string()).unwrap();
+        fs::write(dir.join("main.js"), "").unwrap();
+    };
+    package("rich", json!({
+        "prompt": {"type": "text", "title": {"zh": "提示词", "en": "Prompt"}, "default": "第一行\n第二行"},
+        "minutes": {"type": "number", "min": 5, "max": 120},
+        "words": {"type": "array", "items": {"type": "string"}, "default": ["机密"]},
+        "levels": {"type": "array", "items": {"type": "select", "options": ["low", "high"]}},
+        "proxy": {"type": "object", "properties": {
+            "host": {"type": "string", "default": "127.0.0.1"},
+            "port": {"type": "number", "default": 7890},
+            "auth": {"type": "object", "properties": {"user": {"type": "string"}}}
+        }, "default": {"port": 1080}}
+    }));
+    package("too-deep", json!({"a": {"type": "object", "properties": {"b": {"type": "object", "properties": {"c": {"type": "object", "properties": {"d": {"type": "string"}}}}}}}}));
+    package("nested-array", json!({"a": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}}));
+    package("bad-title", json!({"a": {"type": "string", "title": 3}}));
+    let inventory = creator.manager.inventory().unwrap();
+    let find = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).unwrap().clone();
+    let rich = find("user:rich");
+    assert_eq!(rich["error"], "");
+    assert_eq!(rich["package"]["config"], json!({
+        "prompt": "第一行\n第二行",
+        "minutes": 5.0,
+        "words": ["机密"],
+        "levels": [],
+        "proxy": {"host": "127.0.0.1", "port": 1080, "auth": {"user": ""}},
+    }), "对象默认值由子字段默认值组成，清单 default 覆盖其中的键；数字默认取 min");
+    let schema = rich["package"]["configSchema"].as_array().unwrap();
+    assert_eq!(schema.iter().find(|field| field["key"] == "prompt").unwrap()["title"], json!({"zh": "提示词", "en": "Prompt"}));
+    assert!(find("user:too-deep")["error"].as_str().unwrap().contains("嵌套过深"));
+    assert!(find("user:nested-array")["error"].as_str().unwrap().contains("只能是简单类型"));
+    assert!(find("user:bad-title")["error"].as_str().unwrap().contains("title 必须是字符串"));
+
+    // 保存：对象只给部分键，其余取默认；超出范围、未声明的键、数组元素类型不符都拒绝。
+    let values = |value: Value| value.as_object().unwrap().clone();
+    let saved = creator.manager.set_extension_config("user:rich", &values(json!({
+        "minutes": 30, "levels": ["high", "low"], "proxy": {"host": "10.0.0.1", "auth": {"user": "me"}},
+    }))).unwrap();
+    assert_eq!(saved["proxy"], json!({"host": "10.0.0.1", "port": 7890, "auth": {"user": "me"}}));
+    assert_eq!(saved["levels"], json!(["high", "low"]));
+    for bad in [json!({"minutes": 500}), json!({"proxy": {"hostname": "x"}}), json!({"levels": ["mid"]}), json!({"words": [1]})] {
+        assert!(creator.manager.set_extension_config("user:rich", &values(bad.clone())).is_err(), "{bad}");
+    }
+}

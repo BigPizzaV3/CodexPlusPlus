@@ -13600,6 +13600,53 @@ button.side-item:hover {
   justify-content: flex-end;
   gap: 8px;
 }
+/* 对象型配置：一组带标题的子字段 */
+.shell .extension-config-group {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  min-width: 0;
+}
+.shell .extension-config-group > legend {
+  padding: 0 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.shell .extension-config-group > small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+.shell .extension-config-textarea {
+  width: 100%;
+  min-height: 72px;
+  padding: 6px 8px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 6px;
+  background: hsl(var(--background));
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.shell .extension-config-array {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  min-width: 0;
+}
+.shell .extension-config-array-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.shell .extension-config-array-item > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 /* 本地脚本状态列：开关 + 加载状态标记 */
 .shell .user-script-row .user-script-state {
   display: flex;

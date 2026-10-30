@@ -682,14 +682,19 @@ const emptyContextSelection = (): RelayContextSelection => ({
   plugins: [],
 });
 
+type LocalizedText = string | Record<string, string>;
 type ExtensionConfigField = {
   key: string;
-  type: "string" | "number" | "boolean" | "select";
-  title: string;
-  description: string;
+  type: "string" | "text" | "number" | "boolean" | "select" | "array" | "object";
+  title: LocalizedText;
+  description: LocalizedText;
   default: unknown;
   options: Array<{ value: unknown; label: string }>;
   secret: boolean;
+  min?: number;
+  max?: number;
+  items?: ExtensionConfigField;
+  properties?: ExtensionConfigField[];
 };
 
 type UserScriptInventory = {
@@ -16354,6 +16359,17 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
 }
 
 /// 按拓展清单的 config schema 生成的设置表单。值类型严格按 schema：数字框转成数字、开关是布尔、下拉取选项原值。
+/// 清单里的多语言文本：先找当前界面语言，再找 en，最后取第一个。
+function localizedText(text: LocalizedText | undefined): string {
+  if (!text) return "";
+  if (typeof text === "string") return text;
+  for (const lang of [getLanguage(), "en"]) {
+    const hit = Object.keys(text).find((key) => key.toLowerCase() === lang || key.toLowerCase().startsWith(`${lang}-`));
+    if (hit) return text[hit];
+  }
+  return Object.values(text)[0] ?? "";
+}
+
 function ExtensionConfigForm({ fields, values, onSave, onCancel }: {
   fields: ExtensionConfigField[];
   values: Record<string, unknown>;
@@ -16362,7 +16378,6 @@ function ExtensionConfigForm({ fields, values, onSave, onCancel }: {
 }) {
   const [draft, setDraft] = useState<Record<string, unknown>>(() => ({ ...values }));
   const [saving, setSaving] = useState(false);
-  const set = (key: string, value: unknown) => setDraft((current) => ({ ...current, [key]: value }));
   return (
     <form
       className="extension-config-form"
@@ -16372,46 +16387,133 @@ function ExtensionConfigForm({ fields, values, onSave, onCancel }: {
         void onSave(draft).finally(() => setSaving(false));
       }}
     >
-      {fields.map((field) => {
-        const id = `extension-config-${field.key}`;
-        const value = draft[field.key] ?? field.default;
-        return (
-          <div className="extension-config-field" key={field.key}>
-            <label htmlFor={id}>{field.title}</label>
-            {field.type === "boolean" ? (
-              <label className="relay-bare-switch">
-                <input checked={value === true} id={id} onChange={() => set(field.key, value !== true)} type="checkbox" />
-                <ToggleVisual />
-              </label>
-            ) : field.type === "select" ? (
-              <AppSelect
-                ariaLabel={field.title}
-                id={id}
-                onChange={(index) => set(field.key, field.options[Number(index)]?.value)}
-                options={field.options.map((option, index) => ({ value: String(index), label: option.label }))}
-                size="sm"
-                value={String(Math.max(0, field.options.findIndex((option) => option.value === value)))}
-              />
-            ) : (
-              <Input
-                id={id}
-                onChange={(event) => {
-                  const raw = event.currentTarget.value;
-                  set(field.key, field.type === "number" ? (raw.trim() === "" || Number.isNaN(Number(raw)) ? raw : Number(raw)) : raw);
-                }}
-                type={field.type === "number" ? "number" : field.secret ? "password" : "text"}
-                value={String(value ?? "")}
-              />
-            )}
-            {field.description ? <small>{field.description}</small> : null}
-          </div>
-        );
-      })}
+      {fields.map((field) => (
+        <ExtensionConfigFieldRow
+          field={field}
+          idPrefix="extension-config"
+          key={field.key}
+          onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))}
+          value={draft[field.key] ?? field.default}
+        />
+      ))}
       <div className="extension-config-actions">
         <Button disabled={saving} onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
         <Button disabled={saving} size="sm" type="submit">{saving ? t("保存中…") : t("保存并热重载")}</Button>
       </div>
     </form>
+  );
+}
+
+/// 一个配置字段：标题 + 编辑器 + 说明。对象字段递归展开成一组子字段。
+function ExtensionConfigFieldRow({ field, value, onChange, idPrefix }: {
+  field: ExtensionConfigField;
+  value: unknown;
+  onChange: (value: unknown) => void;
+  idPrefix: string;
+}) {
+  const id = `${idPrefix}-${field.key}`;
+  const title = localizedText(field.title) || field.key;
+  const description = localizedText(field.description);
+  if (field.type === "object") {
+    const object = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+    return (
+      <fieldset className="extension-config-group">
+        <legend>{title}</legend>
+        {description ? <small>{description}</small> : null}
+        {(field.properties ?? []).map((child) => (
+          <ExtensionConfigFieldRow
+            field={child}
+            idPrefix={id}
+            key={child.key}
+            onChange={(next) => onChange({ ...object, [child.key]: next })}
+            value={object[child.key] ?? child.default}
+          />
+        ))}
+      </fieldset>
+    );
+  }
+  return (
+    <div className="extension-config-field">
+      <label htmlFor={id}>{title}</label>
+      <ExtensionConfigEditor field={field} id={id} onChange={onChange} value={value} />
+      {description ? <small>{description}</small> : null}
+    </div>
+  );
+}
+
+/// 单个值的编辑器；数组逐项编辑，可增删。
+function ExtensionConfigEditor({ field, value, onChange, id }: {
+  field: ExtensionConfigField;
+  value: unknown;
+  onChange: (value: unknown) => void;
+  id: string;
+}) {
+  const title = localizedText(field.title) || field.key;
+  if (field.type === "boolean") {
+    return (
+      <label className="relay-bare-switch">
+        <input checked={value === true} id={id} onChange={() => onChange(value !== true)} type="checkbox" />
+        <ToggleVisual />
+      </label>
+    );
+  }
+  if (field.type === "select") {
+    return (
+      <AppSelect
+        ariaLabel={title}
+        id={id}
+        onChange={(index) => onChange(field.options[Number(index)]?.value)}
+        options={field.options.map((option, index) => ({ value: String(index), label: option.label }))}
+        size="sm"
+        value={String(Math.max(0, field.options.findIndex((option) => option.value === value)))}
+      />
+    );
+  }
+  if (field.type === "text") {
+    return (
+      <textarea
+        className="extension-config-textarea"
+        id={id}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        rows={4}
+        value={String(value ?? "")}
+      />
+    );
+  }
+  if (field.type === "array" && field.items) {
+    const items = Array.isArray(value) ? value : [];
+    const item = field.items;
+    return (
+      <div className="extension-config-array" id={id}>
+        {items.map((entry, index) => (
+          <div className="extension-config-array-item" key={index}>
+            <ExtensionConfigEditor
+              field={item}
+              id={`${id}-${index}`}
+              onChange={(next) => onChange(items.map((current, position) => (position === index ? next : current)))}
+              value={entry}
+            />
+            <Button aria-label={tf("删除第 {0} 项", [index + 1])} onClick={() => onChange(items.filter((_, position) => position !== index))} size="sm" type="button" variant="ghost">
+              {t("删除")}
+            </Button>
+          </div>
+        ))}
+        <Button onClick={() => onChange([...items, item.default])} size="sm" type="button" variant="secondary">{t("添加一项")}</Button>
+      </div>
+    );
+  }
+  return (
+    <Input
+      id={id}
+      max={field.type === "number" ? field.max : undefined}
+      min={field.type === "number" ? field.min : undefined}
+      onChange={(event) => {
+        const raw = event.currentTarget.value;
+        onChange(field.type === "number" ? (raw.trim() === "" || Number.isNaN(Number(raw)) ? raw : Number(raw)) : raw);
+      }}
+      type={field.type === "number" ? "number" : field.secret ? "password" : "text"}
+      value={String(value ?? "")}
+    />
   );
 }
 

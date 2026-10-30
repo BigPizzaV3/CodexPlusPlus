@@ -985,41 +985,70 @@ struct ExtensionPackage {
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionConfigField {
     pub key: String,
-    /// string / number / boolean / select
+    /// string / text（多行）/ number / boolean / select / array / object
     #[serde(rename = "type")]
     pub kind: String,
-    pub title: String,
-    pub description: String,
+    /// 字符串，或 `{ en, zh, ... }` 多语言文本（管理器按界面语言显示）。
+    pub title: Value,
+    pub description: Value,
     pub default: Value,
     /// select 的可选值：[{ value, label }]
     pub options: Vec<Value>,
     /// 界面上按密码框显示。值仍以明文存在本机 user_scripts.json。
     pub secret: bool,
+    /// number 的取值范围。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// array 的元素类型（键为空的字段）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Box<ExtensionConfigField>>,
+    /// object 的子字段。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<ExtensionConfigField>,
 }
 
 impl ExtensionConfigField {
-    /// 校验一个值是否合乎类型；select 必须是可选值之一。
+    /// 校验一个值是否合乎类型；select 必须是可选值之一；对象可以缺键（缺的取默认），不能有未声明的键。
     fn accepts(&self, value: &Value) -> bool {
         match self.kind.as_str() {
-            "string" => value.is_string(),
-            "number" => value.is_number(),
+            "string" | "text" => value.is_string(),
+            "number" => value.as_f64().is_some_and(|number| {
+                self.min.is_none_or(|min| number >= min) && self.max.is_none_or(|max| number <= max)
+            }),
             "boolean" => value.is_boolean(),
             "select" => self.options.iter().any(|option| option.get("value") == Some(value)),
+            "array" => value.as_array().is_some_and(|items| {
+                items.len() <= 200 && self.items.as_ref().is_some_and(|field| items.iter().all(|item| field.accepts(item)))
+            }),
+            "object" => value.as_object().is_some_and(|map| {
+                map.iter().all(|(key, item)| {
+                    self.properties.iter().find(|field| &field.key == key).is_some_and(|field| field.accepts(item))
+                })
+            }),
             _ => false,
+        }
+    }
+
+    /// 生效值：合法的已存值，对象逐个子字段合并默认值；否则取默认值。
+    fn resolve(&self, stored: Option<&Value>) -> Value {
+        match (self.kind.as_str(), stored) {
+            ("object", Some(Value::Object(map))) if self.accepts(&Value::Object(map.clone())) => {
+                Value::Object(self.properties.iter().map(|field| (field.key.clone(), field.resolve(map.get(&field.key)))).collect())
+            }
+            ("object", _) => self.default.clone(),
+            (_, Some(value)) if self.accepts(value) => value.clone(),
+            _ => self.default.clone(),
         }
     }
 }
 
-/// 生效配置：每个声明的键取已存且合法的值，否则取默认值。
+/// 生效配置：每个声明的键取已存且合法的值，否则取默认值（对象按子字段合并）。
 fn resolve_extension_config(schema: &[ExtensionConfigField], stored: Option<&Map<String, Value>>) -> Value {
     let mut resolved = Map::new();
     for field in schema {
-        let value = stored
-            .and_then(|values| values.get(&field.key))
-            .filter(|value| field.accepts(value))
-            .cloned()
-            .unwrap_or_else(|| field.default.clone());
-        resolved.insert(field.key.clone(), value);
+        resolved.insert(field.key.clone(), field.resolve(stored.and_then(|values| values.get(&field.key))));
     }
     Value::Object(resolved)
 }
@@ -1712,58 +1741,116 @@ fn parse_extension_config_schema(value: Option<&Value>) -> anyhow::Result<Vec<Ex
     if map.len() > 32 {
         anyhow::bail!("config 最多 32 项");
     }
-    map.iter()
-        .map(|(key, field)| {
-            if key.is_empty() || !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
-                anyhow::bail!("配置键 {key:?} 只能包含字母、数字、_、-");
-            }
-            let field = field.as_object().with_context(|| format!("config.{key} 必须是对象"))?;
-            let kind = field.get("type").and_then(Value::as_str).unwrap_or("string").to_string();
-            let options = match field.get("options") {
-                None => Vec::new(),
-                Some(Value::Array(items)) => items
-                    .iter()
-                    .map(|item| match item {
-                        Value::Object(object) if object.contains_key("value") => Ok(json!({
-                            "value": object["value"],
-                            "label": object.get("label").and_then(Value::as_str).map(str::to_owned)
-                                .unwrap_or_else(|| object["value"].to_string().trim_matches('"').to_string()),
-                        })),
-                        Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(json!({ "value": item, "label": item.to_string().trim_matches('"') })),
-                        _ => anyhow::bail!("config.{key}.options 的每一项要么是值，要么是 {{ value, label }}"),
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?,
-                Some(_) => anyhow::bail!("config.{key}.options 必须是数组"),
-            };
-            if !["string", "number", "boolean", "select"].contains(&kind.as_str()) {
-                anyhow::bail!("config.{key}.type 只能是 string、number、boolean、select");
-            }
-            if kind == "select" && options.is_empty() {
-                anyhow::bail!("config.{key} 是 select，必须给 options");
-            }
-            let mut result = ExtensionConfigField {
-                key: key.clone(),
-                kind: kind.clone(),
-                title: field.get("title").and_then(Value::as_str).unwrap_or(key).to_string(),
-                description: field.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
-                default: Value::Null,
-                options,
-                secret: field.get("secret").and_then(Value::as_bool).unwrap_or(false),
-            };
+    map.iter().map(|(key, field)| parse_config_field(key, &format!("config.{key}"), field, 0)).collect()
+}
+
+/// 解析一个配置字段。`path` 用于报错（如 `config.proxy.host`），`depth` 限制对象嵌套层数。
+fn parse_config_field(key: &str, path: &str, field: &Value, depth: usize) -> anyhow::Result<ExtensionConfigField> {
+    if !key.is_empty() && !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+        anyhow::bail!("配置键 {key:?} 只能包含字母、数字、_、-");
+    }
+    let field = field.as_object().with_context(|| format!("{path} 必须是对象"))?;
+    let kind = field.get("type").and_then(Value::as_str).unwrap_or("string").to_string();
+    if !["string", "text", "number", "boolean", "select", "array", "object"].contains(&kind.as_str()) {
+        anyhow::bail!("{path}.type 只能是 string、text、number、boolean、select、array、object");
+    }
+    // title / description：字符串，或 { 语言: 文本 } 多语言对象。
+    let text = |name: &str, fallback: &str| -> anyhow::Result<Value> {
+        match field.get(name) {
+            None => Ok(json!(fallback)),
+            Some(Value::String(text)) => Ok(json!(text)),
+            Some(Value::Object(map)) if !map.is_empty() && map.values().all(Value::is_string) => Ok(Value::Object(map.clone())),
+            Some(_) => anyhow::bail!("{path}.{name} 必须是字符串或 {{ 语言: 文本 }}"),
+        }
+    };
+    let options = match field.get("options") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| match item {
+                Value::Object(object) if object.contains_key("value") => Ok(json!({
+                    "value": object["value"],
+                    "label": object.get("label").and_then(Value::as_str).map(str::to_owned)
+                        .unwrap_or_else(|| object["value"].to_string().trim_matches('"').to_string()),
+                })),
+                Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(json!({ "value": item, "label": item.to_string().trim_matches('"') })),
+                _ => anyhow::bail!("{path}.options 的每一项要么是值，要么是 {{ value, label }}"),
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        Some(_) => anyhow::bail!("{path}.options 必须是数组"),
+    };
+    if kind == "select" && options.is_empty() {
+        anyhow::bail!("{path} 是 select，必须给 options");
+    }
+    let bound = |name: &str| -> anyhow::Result<Option<f64>> {
+        match field.get(name) {
+            None => Ok(None),
+            Some(value) => value.as_f64().map(Some).with_context(|| format!("{path}.{name} 必须是数字")),
+        }
+    };
+    let items = if kind == "array" {
+        let items = field.get("items").with_context(|| format!("{path} 是 array，必须给 items（元素类型）"))?;
+        let item = parse_config_field("", &format!("{path}.items"), items, depth + 1)?;
+        if matches!(item.kind.as_str(), "array" | "object") {
+            anyhow::bail!("{path}.items 只能是简单类型（string、text、number、boolean、select）");
+        }
+        Some(Box::new(item))
+    } else {
+        None
+    };
+    let properties = if kind == "object" {
+        if depth >= 2 {
+            anyhow::bail!("{path} 嵌套过深（对象最多 3 层）");
+        }
+        let map = field
+            .get("properties")
+            .and_then(Value::as_object)
+            .filter(|map| !map.is_empty())
+            .with_context(|| format!("{path} 是 object，必须给 properties（子字段）"))?;
+        if map.len() > 32 {
+            anyhow::bail!("{path}.properties 最多 32 项");
+        }
+        map.iter()
+            .map(|(child, value)| parse_config_field(child, &format!("{path}.{child}"), value, depth + 1))
+            .collect::<anyhow::Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let mut result = ExtensionConfigField {
+        key: key.to_string(),
+        kind: kind.clone(),
+        title: text("title", key)?,
+        description: text("description", "")?,
+        default: Value::Null,
+        options,
+        secret: field.get("secret").and_then(Value::as_bool).unwrap_or(false),
+        min: bound("min")?,
+        max: bound("max")?,
+        items,
+        properties,
+    };
+    result.default = match kind.as_str() {
+        // 对象的默认值由子字段默认值组成；清单里写的 default 只用来覆盖其中的键。
+        "object" => {
+            let given = field.get("default").and_then(Value::as_object).cloned().unwrap_or_default();
+            Value::Object(result.properties.iter().map(|child| (child.key.clone(), child.resolve(given.get(&child.key)))).collect())
+        }
+        _ => {
             let fallback = match kind.as_str() {
-                "number" => json!(0),
+                "number" => match result.min { Some(min) if min > 0.0 => json!(min), _ => json!(0) },
                 "boolean" => json!(false),
                 "select" => result.options[0]["value"].clone(),
+                "array" => json!([]),
                 _ => json!(""),
             };
-            result.default = match field.get("default") {
+            match field.get("default") {
                 Some(value) if result.accepts(value) => value.clone(),
-                Some(_) => anyhow::bail!("config.{key}.default 与 type 不符"),
+                Some(_) => anyhow::bail!("{path}.default 与 type 不符"),
                 None => fallback,
-            };
-            Ok(result)
-        })
-        .collect()
+            }
+        }
+    };
+    Ok(result)
 }
 
 /// 解析 `tools`：`[{ "name": "lookup", "description": "…", "inputSchema": {…}, "script": "tools/lookup.mjs", "timeout": 30 }]`。

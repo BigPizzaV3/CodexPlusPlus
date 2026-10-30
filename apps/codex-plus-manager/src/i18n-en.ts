@@ -3176,6 +3176,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "响应流": "Response stream",
   "失败重试": "Retry on error",
   "提供服务：{0}": "Provides services: {0}",
+  "删除第 {0} 项": "Remove item {0}",
+  "添加一项": "Add item",
   "资源超出大小上限未加载：{0}": "Assets over the size limit were not loaded: {0}",
   "万物皆拓展": "Everything is an extension",
   "Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。": "Codex++ is built on an everything-is-an-extension architecture: the UI, commands, the tools the model can use, hooks into the agent loop, and the requests and replies exchanged with the model can all be taken over by extensions. Describe what you want in a Codex conversation and get an extension of your own.",

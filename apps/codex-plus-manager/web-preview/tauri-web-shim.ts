@@ -552,8 +552,16 @@ const demoUserScripts = { enabled: true, skip_next_start: false, scripts: [
         { key: "minutes", type: "number", title: "专注时长（分钟）", description: "每个番茄钟的长度", default: 25, options: [], secret: false },
         { key: "sound", type: "boolean", title: "结束时提示音", description: "", default: true, options: [], secret: false },
         { key: "theme", type: "select", title: "配色", description: "", default: "red", options: [{ value: "red", label: "番茄红" }, { value: "green", label: "薄荷绿" }], secret: false },
+        { key: "note", type: "text", title: { zh: "结束提示语", en: "Finish message" }, description: "", default: "休息一下\n喝口水", options: [], secret: false },
+        { key: "tags", type: "array", title: "标签", description: "", default: ["工作"], options: [], secret: false,
+          items: { key: "", type: "string", title: "", description: "", default: "", options: [], secret: false } },
+        { key: "webhook", type: "object", title: { zh: "结束时通知", en: "Webhook" }, description: "番茄钟结束时发一个请求", default: { url: "", retry: 1 }, options: [], secret: false,
+          properties: [
+            { key: "url", type: "string", title: "地址", description: "", default: "", options: [], secret: false },
+            { key: "retry", type: "number", title: "重试次数", description: "", default: 1, options: [], secret: false, min: 0, max: 5 },
+          ] },
       ],
-      config: { minutes: 25, sound: true, theme: "red" } } },
+      config: { minutes: 25, sound: true, theme: "red", note: "休息一下\n喝口水", tags: ["工作"], webhook: { url: "", retry: 1 } } } },
   { key: "user:future-ext", name: "未来拓展", source: "user", kind: "package", enabled: true, status: "failed",
     error: "需要拓展 API v2，当前 Codex++ 提供 v1，请升级 Codex++", package: { id: "future-ext", version: "1.0.0", description: "", engine: 2, routes: [] } },
 ] };
