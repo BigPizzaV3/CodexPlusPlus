@@ -38,7 +38,7 @@
     {
       "name": "50-navigation.js",
       "description": "导航入口安装、rail 按钮、页面布局与选中态同步",
-      "lines": 188
+      "lines": 192
     },
     {
       "name": "60-plugin-marketplace.js",
@@ -143,7 +143,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 654
+      "lines": 652
     },
     {
       "name": "97-agent-pet.js",

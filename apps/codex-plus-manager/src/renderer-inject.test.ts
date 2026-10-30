@@ -834,7 +834,9 @@ describe("renderer injection header compatibility", () => {
 
     assert.match(renderer, /function installCodexPlusNavigationEntries\(\)/);
     // 两条路径互斥：有 rail 就移除旧入口，没有就移除 rail 入口。
-    assert.match(renderer, /if \(installCodexPlusRailNavigation\(\)\) \{\s*detachCodexPlusSidebarNavigation\(\);\s*return;\s*\}/);
+    // rail 分支同时补画拓展入口：冷启动时内置入口常由启动补扫装上，它只调这个函数，
+    // 拓展入口若不在这里补，页面空闲时会一直缺失（实测复现过）。
+    assert.match(renderer, /if \(installCodexPlusRailNavigation\(\)\) \{\s*detachCodexPlusSidebarNavigation\(\);[\s\S]{0,300}?refreshCodexPlusRailNavigation\(\);\s*return;\s*\}/);
     assert.match(renderer, /removeCodexPlusRailNavigation\(\);\s*installCodexPlusSidebarNavigation\(\);/);
     assert.match(renderer, /function detachCodexPlusSidebarNavigation\(\)/);
     // 启动补扫要认两条路径任意一条已装上。

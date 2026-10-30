@@ -8472,6 +8472,10 @@
     document.getElementById(codexPlusSidebarPluginMarketId)?.remove();
     if (installCodexPlusRailNavigation()) {
       detachCodexPlusSidebarNavigation();
+      // 拓展入口跟着内置入口一起补。冷启动时内置入口常由启动补扫装上，那条路径
+      // 不走完整 scan；拓展入口若只在 scan 里补，页面空闲时会一直缺失。
+      // 内部靠 id 幂等，每轮调用不会重复插入。
+      refreshCodexPlusRailNavigation();
       return;
     }
     removeCodexPlusRailNavigation();
@@ -20274,10 +20278,8 @@
         "existing-renderer"
       );
     }
+    // 拓展注册的图标栏入口也在这里补（见 installCodexPlusNavigationEntries）。
     installCodexPlusNavigationEntries();
-    // 拓展注册的图标栏入口与内置入口走同一条刷新路径：rail 渲染晚于注入，
-    // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
-    refreshCodexPlusRailNavigation();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
