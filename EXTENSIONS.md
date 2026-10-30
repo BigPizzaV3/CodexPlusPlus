@@ -161,6 +161,7 @@ codexPlus.extension((ctx) => {
 | `call(route, payload, options)` | 拓展包只能调清单里声明的路由；单文件脚本沿用全局白名单 |
 | `toast / fail / dispose` | 提示、上报失败、主动卸载 |
 | `registerComposerAction(def)` | 输入区（发送按钮那一行）的图标按钮，`onActivate({ editor, insertText, close })` |
+| `registerCommand({ name, description, run })` | 斜杠命令：输入框里 `/name 参数` 回车时调用 `run(args, { editor, insertText, setText, toast })`，输入框随后清空；输入 `/` 时在输入框上方提示匹配的拓展命令，Tab 补全。只拦截已注册的拓展命令，同名时先注册的生效 |
 | `storage.get / set / remove / keys` | 按拓展 id 隔离的本地存储，值按 JSON 存取 |
 | `config` | 生效配置的只读快照（清单 `config` 声明，见「拓展配置」） |
 | `id / scriptKey / manifest / disposed` | 只读信息 |

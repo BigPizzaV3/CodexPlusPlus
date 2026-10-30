@@ -241,6 +241,14 @@
       call: codexPlusExtensionCall,
 
       /**
+       * 注册斜杠命令：在输入框输入「/name 参数」回车时调用 run(args, { editor, insertText, setText, toast })，
+       * 输入框随后清空；输入「/」时在输入框上方提示匹配的拓展命令，Tab 补全。
+       */
+      registerCommand(definition, options = {}) {
+        return codexPlusRegisterExtensionCommand(definition, options);
+      },
+
+      /**
        * 在输入区（发送按钮所在那一行）加一个图标按钮。
        * onActivate({ editor, insertText, close }) 中 insertText(text) 把文字插入当前输入框。
        */

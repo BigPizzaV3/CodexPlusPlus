@@ -126,6 +126,9 @@ interface CodexPlusExtensionApi {
     options?: CodexPlusRegisterOptions,
   ): CodexPlusDispose;
 
+  /** 注册斜杠命令：输入框里「/name 参数」回车时调用。 */
+  registerCommand(definition: CodexPlusCommandDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+
   /** 在会话行「更多操作」里加一项。 */
   registerRowAction(
     definition: CodexPlusRowActionDefinition,
@@ -159,6 +162,19 @@ interface CodexPlusExtensionApi {
    * 需要用这个方法上报，管理页才能显示出来。
    */
   fail(error: unknown): void;
+}
+
+interface CodexPlusCommandDefinition {
+  /** 字母、数字、_、-，最长 32。 */
+  name: string;
+  description?: string;
+  run(args: string, context: {
+    editor: HTMLElement;
+    insertText(text: string): boolean;
+    /** 用 text 替换输入框内容。 */
+    setText(text: string): boolean;
+    toast(message: string, options?: CodexPlusToastOptions): void;
+  }): void | Promise<void>;
 }
 
 interface CodexPlusComposerActionDefinition {
@@ -239,6 +255,7 @@ interface CodexPlusExtensionContext {
   registerMenuItem(definition: Record<string, unknown>, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerPage(definition: CodexPlusPageDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerComposerAction(definition: CodexPlusComposerActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerCommand(definition: CodexPlusCommandDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
 
   /** 拓展间事件；`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;

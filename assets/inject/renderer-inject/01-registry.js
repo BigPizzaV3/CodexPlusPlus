@@ -21,6 +21,7 @@
     pages: new Map(),
     menuItems: new Map(),
     composerActions: new Map(),
+    commands: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
@@ -97,8 +98,8 @@
       throw new Error(`拓展项总数已达上限 ${codexPlusExtensionGlobalLimit}`);
     }
     // 每个类别至少要有一个可调用的钩子，否则注册进来也渲染不出东西。
-    // 菜单项的开关形态是 onChange，页面/入口是 render，其余是 onActivate。
-    const callbacks = ["render", "onActivate", "onChange", "onCleanup"];
+    // 菜单项的开关形态是 onChange，页面/入口是 render，斜杠命令是 run，其余是 onActivate。
+    const callbacks = ["render", "onActivate", "onChange", "onCleanup", "run"];
     if (definition && !callbacks.some((name) => typeof definition[name] === "function")) {
       throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
     }

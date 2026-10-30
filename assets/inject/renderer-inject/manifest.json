@@ -8,7 +8,7 @@
     {
       "name": "01-registry.js",
       "description": "拓展注册中心、扩展选择器登记与失败上报",
-      "lines": 178
+      "lines": 179
     },
     {
       "name": "10-style.js",
@@ -118,17 +118,17 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 301
+      "lines": 309
     },
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 403
+      "lines": 406
     },
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
-      "lines": 408
+      "lines": 553
     },
     {
       "name": "93-dictation.js",

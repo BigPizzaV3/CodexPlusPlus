@@ -39,6 +39,7 @@ codexPlus.extension((ctx) => {
 | `ctx.registerMenuItem(def)` | Codex++ 菜单「主页」面板的一行。开关形态：`{ label, description, toggleValue: () => bool, onChange: (next) => {} }`；按钮形态：`{ label, description, buttonLabel, onActivate: ({ close }) => {} }` |
 | `ctx.registerRowAction({ label, icon, onActivate })` | 会话行「更多操作」里的一项，`onActivate({ row, session_id, close })` |
 | `ctx.registerComposerAction({ label, icon, onActivate })` | 输入区（发送按钮那一行）的图标按钮，`onActivate({ editor, insertText, close })`，`insertText(text)` 往输入框插字。比自己往输入区塞节点稳，Codex 改结构由 Codex++ 适配 |
+| `ctx.registerCommand({ name, description, run(args, { editor, insertText, setText, toast }) })` | 斜杠命令：用户在输入框输入 `/name 参数` 回车时调用，输入框随后清空；输入 `/` 时有提示、Tab 补全。只拦截已注册的拓展命令，Codex 自己的命令不受影响 |
 | `ctx.on("codex/turn/completed", (params) => …)` | Codex 会话事件：`codex/thread/started`、`codex/turn/started`、`codex/turn/completed`、`codex/item/started`、`codex/item/completed`、`codex/item/agentMessage/delta`、`codex/error`，params 是 Codex 通知原样参数 |
 | `ctx.intercept("codex/request", ({ method, params }, next) => next({ method, params: 新params }))` | 改写发往 Codex 的请求（例如 `turn/start` 时给用户输入加前缀）。必须同步返回，只能改 params；不改就原样 `next(value)` |
 | `ctx.storage.get(key, 默认值) / set(key, value) / remove(key)` | 按拓展隔离的本地存储，值按 JSON 存取 |
