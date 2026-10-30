@@ -8,7 +8,7 @@ import { t, tf } from "./i18n";
 import "./CommunityExtensionsPanel.css";
 
 // 与 crates/codex-plus-core/src/extension_discovery.rs 对应。
-type Permissions = {
+export type Permissions = {
   backend: string | null;
   hooks: { event: string; matcher: string }[];
   gatewayRequest: number;
@@ -17,7 +17,9 @@ type Permissions = {
   routes: string[];
   renderer: string[];
 };
-type Installed = { version: string; tag: string | null; sha: string; fromDefaultBranch: boolean } | null;
+type Installed = { version: string; tag: string | null; sha: string; fromDefaultBranch: boolean; channel?: Channel } | null;
+/** 安装渠道：社区（未审核）、精选（锁定到审核过的提交）、官方。 */
+export type Channel = "community" | "curated" | "official";
 type Entry = {
   repo: string;
   url: string;
@@ -38,6 +40,8 @@ type Entry = {
   compatible: boolean;
   permissions: Permissions;
   installed: Installed;
+  /** 精选清单给出的警示：与官方 / 精选拓展同 id、自称官方。 */
+  warnings?: string[];
 };
 type Listing = {
   enabled: boolean;
@@ -47,7 +51,7 @@ type Listing = {
   problems: string[];
   message: string;
 };
-type Prepared = {
+export type Prepared = {
   token: string;
   repo: string;
   id: string;
@@ -58,15 +62,16 @@ type Prepared = {
   fromDefaultBranch: boolean;
   fromAsset: boolean;
   permissions: Permissions;
-  conflict: { source: "local" | "github"; repo?: string } | null;
+  channel?: Channel;
+  conflict: { source: "local" | "github"; repo?: string; channel?: Channel } | null;
 };
 type Sort = "stars" | "updated" | "name";
 
-function request<T>(action: string, payload?: unknown): Promise<T> {
+export function request<T>(action: string, payload?: unknown): Promise<T> {
   return invoke<T>("extension_community_request", { action, payload: payload ?? null });
 }
 
-function errorText(error: unknown): string {
+export function errorText(error: unknown): string {
   return typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
 }
 
@@ -85,7 +90,7 @@ function permissionLines(permissions: Permissions): { risk: "high" | "medium" | 
   return lines;
 }
 
-function riskBadges(permissions: Permissions): string[] {
+export function riskBadges(permissions: Permissions): string[] {
   const badges: string[] = [];
   if (permissions.backend) badges.push(t("后台进程"));
   if (permissions.hooks.length) badges.push(t("钩子"));
@@ -242,6 +247,7 @@ export function CommunityExtensionsPanel({ onInstalled, onOpenUrl }: { onInstall
                     <strong>{entry.name}</strong>
                     <span className="community-ext-badge is-unreviewed">{t("未审核")}</span>
                     {riskBadges(entry.permissions).map((badge) => <span className="community-ext-badge" key={badge}>{badge}</span>)}
+                    {entry.warnings?.length ? <span className="community-ext-badge is-suspicious">{t("可疑")}</span> : null}
                   </div>
                   <div className="community-ext-actions">
                     {entry.installed ? <span className="community-ext-installed">{tf("已安装 {0}", [versionText(entry.installed)])}</span> : null}
@@ -252,6 +258,7 @@ export function CommunityExtensionsPanel({ onInstalled, onOpenUrl }: { onInstall
                   </div>
                 </header>
                 {entry.description ? <p className="community-ext-description">{entry.description}</p> : null}
+                {entry.warnings?.map((warning) => <p className="community-ext-dialog-warning" key={warning}>{warning}</p>)}
                 <div className="community-ext-facts">
                   <button className="community-ext-repo" onClick={() => onOpenUrl(entry.url)} type="button">
                     <ExternalLink className="h-3 w-3" />
@@ -277,12 +284,14 @@ export function CommunityExtensionsPanel({ onInstalled, onOpenUrl }: { onInstall
   );
 }
 
-function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Prepared; onCancel: () => void; onInstall: (enable: boolean) => void }) {
+export function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Prepared; onCancel: () => void; onInstall: (enable: boolean) => void }) {
   const [enable, setEnable] = useState(false);
   const lines = permissionLines(prepared.permissions);
+  // 精选 / 官方拓展审核过，不用危险样式吓人；社区拓展保持红色确认。
+  const reviewed = prepared.channel === "official" || prepared.channel === "curated";
   return (
     <div aria-modal="true" className="modal-backdrop app-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }} role="dialog">
-      <div className="modal-card confirm-modal app-dialog community-ext-dialog" data-danger>
+      <div className="modal-card confirm-modal app-dialog community-ext-dialog" data-danger={reviewed ? undefined : true}>
         <div className="modal-head">
           <div>
             <h2>{tf("安装 {0}", [prepared.name])}</h2>
@@ -290,7 +299,13 @@ function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Prepared; 
           <button aria-label={t("关闭")} className="toast-close" onClick={onCancel} type="button">×</button>
         </div>
         <div className="confirm-modal-body">
-          <p className="community-ext-dialog-warning">{t("未经 Codex++ 审核，作者可以在新版本里加入任意代码。只安装你信任的作者的拓展。")}</p>
+          {prepared.channel === "official" ? (
+            <p className="community-ext-dialog-trusted">{t("Codex++ 官方拓展，安装的是审核过的版本。")}</p>
+          ) : prepared.channel === "curated" ? (
+            <p className="community-ext-dialog-trusted">{t("经 Codex++ 审核的精选拓展，安装的是审核过的那一版；作者之后的改动要再审核才会更新。")}</p>
+          ) : (
+            <p className="community-ext-dialog-warning">{t("未经 Codex++ 审核，作者可以在新版本里加入任意代码。只安装你信任的作者的拓展。")}</p>
+          )}
           <div className="community-ext-dialog-version">
             <code>{prepared.repo}</code>
             <span>
@@ -309,7 +324,9 @@ function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Prepared; 
           )}
           {prepared.conflict ? (
             <p className="community-ext-dialog-warning">
-              {prepared.conflict.source === "github"
+              {prepared.conflict.source === "github" && prepared.conflict.channel && prepared.conflict.channel !== "community" && prepared.channel === "community"
+                ? tf("本机已装 {0} 的{1}版本 {2}，社区里的同 id 拓展不能替换它。", [prepared.conflict.repo ?? "", prepared.conflict.channel === "official" ? t("官方") : t("精选"), prepared.id])
+                : prepared.conflict.source === "github"
                 ? tf("本机已有来自 {0} 的同名拓展 {1}，安装会替换它（旧版本移到备份目录）。", [prepared.conflict.repo ?? "", prepared.id])
                 : tf("本机已有手动或对话生成的同名拓展 {0}，安装会替换它（旧版本移到备份目录）。", [prepared.id])}
             </p>
@@ -321,7 +338,7 @@ function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Prepared; 
         </div>
         <div className="app-dialog-actions">
           <Button onClick={onCancel} variant="secondary">{t("取消")}</Button>
-          <Button className="app-dialog-danger" onClick={() => onInstall(enable)}>
+          <Button className={reviewed ? undefined : "app-dialog-danger"} onClick={() => onInstall(enable)}>
             {prepared.conflict ? t("替换并安装") : t("安装")}
           </Button>
         </div>

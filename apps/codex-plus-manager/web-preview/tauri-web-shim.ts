@@ -635,7 +635,10 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { id: "relay-balance", name: "Codex Relay Balance", description: "通用中转站余额与模型用量监控，支持自动读取或手动填写接口、日期范围、Token 明细和实际扣费倍率。", version: "0.3.7", author: "Codex++ Community", tags: ["codex", "relay", "balance", "usage", "quota"], homepage: "https://github.com/demo/relay-balance", script_url: "", installed: false, installedVersion: "", updateAvailable: false },
       { id: "model-matrix", name: "Codex Model Matrix", description: "紧凑且适配主题的 Codex 模型选择器，配备可拖动吸附的推理强度滑块。", version: "1.0.0", author: "lx", tags: ["codex", "models", "reasoning"], homepage: "https://github.com/demo/model-matrix", script_url: "", installed: true, installedVersion: "1.0.0", updateAvailable: false },
       { id: "context-meter", name: "Codex Context Used Meter", description: "在 Codex App 对话界面显示当前会话上下文余量。", version: "101", author: "Minghou-Lei", tags: ["context", "tokens"], homepage: "", script_url: "", installed: false, installedVersion: "", updateAvailable: false },
-    ] }, user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
+    ], packages: [
+      { kind: "package", id: "session-search", name: L("会话搜索", "Session search"), description: L("在侧边栏搜索全部历史会话，回车跳到命中的那一轮。", "Search all past sessions from the sidebar and jump to the matching turn."), version: "1.0.0", author: "Codex++", tags: ["history"], homepage: "", icon: "", updatedAt: "2026-10-30", repo: "BigPizzaV3/codexpp-session-search", tag: "v1.0.0", sha: "9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a", official: true, channel: "official", installed: false, installedVersion: "", installedSha: "", updateAvailable: false },
+      { kind: "package", id: "word-guard", name: L("命令守卫", "Command guard"), description: L("拦截危险的 shell 命令，并给出更安全的替代写法。", "Block dangerous shell commands and suggest safer alternatives."), version: "1.2.0", author: "alice", tags: ["hooks"], homepage: "", icon: "", updatedAt: "2026-10-28", repo: "alice/codexpp-word-guard", tag: "v1.2.0", sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", official: false, channel: "curated", installed: true, installedVersion: "1.1.0", installedSha: "0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a9c1e", updateAvailable: true },
+    ], blockedInstalled: [] }, user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
     case "load_ccs_providers": return ok({ providers: [] }) as T;
     case "weixin_connect_status": return ok({ state: "disconnected", message: "演示模式", accountId: "", hasToken: false, lastPeerId: "", lastMessageAtMs: 0, processedMessages: 0 }) as T;
     case "load_local_sessions":
@@ -695,8 +698,9 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
         pushedAt: "2026-10-28T09:00:00Z", id: repo.split("/")[1], name: repo.split("/")[1], version: "1.0.0", author: "", homepage: "",
         icon: "", keywords: [], engine: 1, compatible: true, permissions: perms(), installed: null, ...extra,
       });
-      if (args.action === "prepare") return {
-        token: "demo", repo: args.payload?.repo, id: "word-guard", name: L("命令守卫", "Command guard"), version: "1.2.0", tag: "v1.2.0",
+      if (args.action === "prepare" || args.action === "preparePackage") return {
+        channel: args.action === "preparePackage" ? "curated" : "community",
+        token: "demo", repo: args.payload?.repo ?? "alice/codexpp-word-guard", id: "word-guard", name: L("命令守卫", "Command guard"), version: "1.2.0", tag: "v1.2.0",
         sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", fromDefaultBranch: false, fromAsset: true,
         permissions: perms({ backend: "backend/main.mjs", hooks: [{ event: "PreToolUse", matcher: "^Bash$" }], gatewayRequest: 1, tools: ["guard_status"], routes: ["/settings/get"] }),
         conflict: null,

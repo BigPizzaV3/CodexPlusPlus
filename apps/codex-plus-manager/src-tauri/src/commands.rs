@@ -5927,7 +5927,7 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
 
 #[tauri::command]
 pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
-    match script_market::fetch_market_manifest(script_market::DEFAULT_MARKET_INDEX_URL).await {
+    match script_market::cached_market_manifest(true).await {
         Ok(manifest) => ok(
             "脚本市场已刷新。",
             script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),
@@ -9423,13 +9423,19 @@ fn script_market_payload_from_manifest(
         .iter()
         .map(|script| market_script_payload(script, &installed))
         .collect::<Vec<_>>();
+    // 精选拓展包（含官方）与已装但被下架的拓展。
+    let (packages, blocked_installed) =
+        script_market::market_packages_payload(&default_user_script_manager(), manifest);
     ScriptMarketPayload {
         market: json!({
             "status": status,
             "message": message,
             "indexUrl": script_market::DEFAULT_MARKET_INDEX_URL,
             "updatedAt": manifest.updated_at.clone().unwrap_or_default(),
-            "scripts": scripts
+            "scripts": scripts,
+            "packages": packages,
+            "blocked": manifest.blocked,
+            "blockedInstalled": blocked_installed
         }),
         user_scripts,
     }

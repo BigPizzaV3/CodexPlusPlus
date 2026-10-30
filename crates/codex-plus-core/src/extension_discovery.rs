@@ -430,6 +430,59 @@ pub struct InstallRecord {
     #[serde(default)]
     pub from_asset: bool,
     pub installed_at: u64,
+    /// 安装渠道：`community`（社区栏，未审核）、`curated`（精选清单，锁定到审核过的提交）、`official`（官方）。
+    #[serde(default = "community_channel")]
+    pub channel: String,
+}
+
+fn community_channel() -> String {
+    CHANNEL_COMMUNITY.to_string()
+}
+
+pub const CHANNEL_COMMUNITY: &str = "community";
+pub const CHANNEL_CURATED: &str = "curated";
+pub const CHANNEL_OFFICIAL: &str = "official";
+
+/// 精选清单给社区栏的约束：下架名单、已收进精选的仓库（社区栏不再重复显示）、精选拓展的 id。
+#[derive(Debug, Clone, Default)]
+pub struct CuratedFilter {
+    /// `owner/repo`，小写比较。
+    pub blocked: Vec<String>,
+    pub curated_repos: Vec<String>,
+    /// 精选拓展 id → (仓库, 是否官方)。
+    pub curated_ids: BTreeMap<String, (String, bool)>,
+    /// 官方所有者（小写）。
+    pub official_owners: Vec<String>,
+}
+
+impl CuratedFilter {
+    fn has_repo(list: &[String], repo: &str) -> bool {
+        list.iter().any(|item| item.eq_ignore_ascii_case(repo))
+    }
+
+    pub fn is_blocked(&self, repo: &str) -> bool {
+        Self::has_repo(&self.blocked, repo)
+    }
+
+    /// 社区条目的警示：与精选 / 官方拓展同 id、非官方仓库自称官方。
+    pub fn warnings(&self, entry: &CommunityEntry) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if let Some((repo, official)) = self.curated_ids.get(&entry.id) {
+            if !repo.eq_ignore_ascii_case(&entry.repo) {
+                warnings.push(if *official {
+                    format!("与官方拓展同 id（官方版本来自 {repo}），可能是仿冒")
+                } else {
+                    format!("与精选拓展同 id（精选版本来自 {repo}）")
+                });
+            }
+        }
+        let owner_official = self.official_owners.iter().any(|owner| owner.eq_ignore_ascii_case(&entry.owner));
+        let text = format!("{} {} {}", entry.name, entry.description, entry.author).to_lowercase();
+        if !owner_official && ["官方", "official", "codex++ 出品", "codex++出品"].iter().any(|word| text.contains(word)) {
+            warnings.push("自称官方，但不是 Codex++ 官方仓库".to_string());
+        }
+        warnings
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -504,6 +557,17 @@ impl CommunityStore {
 
     /// 社区栏列表。缓存未过期且不强制刷新时不联网；搜索失败时退回上次的缓存。
     pub async fn list(&self, endpoints: &Endpoints, manager: &UserScriptManager, force: bool) -> Value {
+        self.list_filtered(endpoints, manager, force, &CuratedFilter::default()).await
+    }
+
+    /// 带精选清单约束的列表：下架的仓库与已收进精选的仓库不显示，可疑条目带警示。
+    pub async fn list_filtered(
+        &self,
+        endpoints: &Endpoints,
+        manager: &UserScriptManager,
+        force: bool,
+        filter: &CuratedFilter,
+    ) -> Value {
         let state = self.load_state();
         if !state.enabled {
             return json!({
@@ -538,9 +602,11 @@ impl CommunityStore {
         let entries = cache
             .entries
             .iter()
+            .filter(|entry| !filter.is_blocked(&entry.repo) && !CuratedFilter::has_repo(&filter.curated_repos, &entry.repo))
             .map(|entry| {
                 let mut item = serde_json::to_value(entry).unwrap_or(Value::Null);
                 item["installed"] = installed_status(&state, manager, &entry.id, &entry.repo);
+                item["warnings"] = json!(filter.warnings(entry));
                 item
             })
             .collect::<Vec<_>>();
@@ -580,37 +646,69 @@ impl CommunityStore {
         }
         let resolved = resolve_version(&client, endpoints, repo, &entry.id, &entry.default_branch).await?;
         let bytes = download(&client, endpoints, repo, &resolved).await?;
+        self.stage(manager, repo, &entry.id, &resolved, &bytes, CHANNEL_COMMUNITY)
+    }
 
+    /// 精选 / 官方拓展：清单给定仓库与审核过的提交，直接按提交下载，不解析最新版本。
+    pub async fn prepare_pinned(
+        &self,
+        endpoints: &Endpoints,
+        manager: &UserScriptManager,
+        pinned: &PinnedPackage,
+    ) -> anyhow::Result<Value> {
+        validate_repo(&pinned.repo)?;
+        validate_extension_id(&pinned.id)?;
+        if pinned.sha.len() != 40 || !pinned.sha.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            bail!("精选清单里 {} 的提交 sha 无效", pinned.id);
+        }
+        let client = endpoints.client()?;
+        let resolved = ResolvedVersion { tag: pinned.tag.clone(), sha: pinned.sha.to_lowercase(), asset: None, from_default_branch: false };
+        let bytes = download(&client, endpoints, &pinned.repo, &resolved).await?;
+        self.stage(manager, &pinned.repo, &pinned.id, &resolved, &bytes, &pinned.channel)
+    }
+
+    /// 解包、校验并暂存，返回给确认框的信息。
+    fn stage(
+        &self,
+        manager: &UserScriptManager,
+        repo: &str,
+        id: &str,
+        resolved: &ResolvedVersion,
+        bytes: &[u8],
+        channel: &str,
+    ) -> anyhow::Result<Value> {
         self.prune_staging();
-        let token = format!("{}-{}", entry.id, now_millis());
+        let token = format!("{id}-{}", now_millis());
         let staging = self.staging_dir().join(&token);
-        let package_dir = staging.join("user").join(&entry.id);
+        let package_dir = staging.join("user").join(id);
         let result = (|| -> anyhow::Result<Value> {
-            extract_package(&bytes, &entry.id, &package_dir)?;
-            let manifest = validate_staged(&staging, &entry.id)?;
+            extract_package(bytes, id, &package_dir)?;
+            let manifest = validate_staged(&staging, id)?;
             let version = manifest.get("version").and_then(Value::as_str).unwrap_or("").to_string();
             let meta = json!({
                 "repo": repo,
-                "id": entry.id,
+                "id": id,
                 "version": version,
                 "tag": resolved.tag,
                 "sha": resolved.sha,
                 "fromDefaultBranch": resolved.from_default_branch,
                 "fromAsset": resolved.asset.is_some(),
+                "channel": channel,
             });
             std::fs::write(staging.join(STAGING_META), serde_json::to_vec_pretty(&meta)?)?;
             Ok(json!({
                 "token": token,
                 "repo": repo,
-                "id": entry.id,
-                "name": manifest.get("name").and_then(Value::as_str).unwrap_or(&entry.id),
+                "id": id,
+                "name": manifest.get("name").and_then(Value::as_str).unwrap_or(id),
                 "version": version,
                 "tag": resolved.tag,
                 "sha": resolved.sha,
                 "fromDefaultBranch": resolved.from_default_branch,
                 "fromAsset": resolved.asset.is_some(),
+                "channel": channel,
                 "permissions": manifest_permissions(&manifest),
-                "conflict": local_conflict(&self.load_state(), manager, &entry.id, repo),
+                "conflict": local_conflict(&self.load_state(), manager, id, repo),
             }))
         })();
         if result.is_err() {
@@ -638,6 +736,15 @@ impl CommunityStore {
         let (repo, id) = (text("repo"), text("id"));
         validate_extension_id(&id)?;
         let mut state = self.load_state();
+        let channel = meta.get("channel").and_then(Value::as_str).unwrap_or(CHANNEL_COMMUNITY).to_string();
+        // 已装的官方 / 精选版本不能被社区版本替换（防止同 id 的仿冒包顶掉审核过的版本）。
+        if channel == CHANNEL_COMMUNITY {
+            if let Some(existing) = state.installs.get(&id).filter(|record| record.channel != CHANNEL_COMMUNITY) {
+                if existing.repo != repo {
+                    bail!("本机已装 {} 的{}版本 {id}，社区里的同 id 拓展不能替换它", existing.repo, channel_label(&existing.channel));
+                }
+            }
+        }
         if !local_conflict(&state, manager, &id, &repo).is_null() && !replace {
             bail!("本机已有同 id 的拓展 {id}，确认替换后再安装");
         }
@@ -671,6 +778,7 @@ impl CommunityStore {
             from_default_branch: meta.get("fromDefaultBranch").and_then(Value::as_bool).unwrap_or(false),
             from_asset: meta.get("fromAsset").and_then(Value::as_bool).unwrap_or(false),
             installed_at: now_secs(),
+            channel,
         };
         state.installs.insert(id.clone(), record.clone());
         self.save_state(&state)?;
@@ -730,6 +838,7 @@ fn installed_status(state: &CommunityState, manager: &UserScriptManager, id: &st
             "tag": record.tag,
             "sha": record.sha,
             "fromDefaultBranch": record.from_default_branch,
+            "channel": record.channel,
         }),
         _ => Value::Null,
     }
@@ -742,9 +851,38 @@ fn local_conflict(state: &CommunityState, manager: &UserScriptManager, id: &str,
     }
     match state.installs.get(id) {
         Some(record) if record.repo == repo => Value::Null,
-        Some(record) => json!({ "source": "github", "repo": record.repo }),
+        Some(record) => json!({ "source": "github", "repo": record.repo, "channel": record.channel }),
         None => json!({ "source": "local" }),
     }
+}
+
+fn channel_label(channel: &str) -> &'static str {
+    match channel {
+        CHANNEL_OFFICIAL => "官方",
+        CHANNEL_CURATED => "精选",
+        _ => "社区",
+    }
+}
+
+/// 精选清单里一个锁定版本的拓展包。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinnedPackage {
+    pub repo: String,
+    pub id: String,
+    pub tag: Option<String>,
+    pub sha: String,
+    /// `curated` 或 `official`。
+    pub channel: String,
+}
+
+/// 本机从 GitHub 安装过的拓展：id → 记录。精选面板用它算「已安装 / 有更新」。
+pub fn installed_records(store: &CommunityStore, manager: &UserScriptManager) -> BTreeMap<String, InstallRecord> {
+    store
+        .load_state()
+        .installs
+        .into_iter()
+        .filter(|(id, _)| manager.user_dir().join(id).join(EXTENSION_MANIFEST_FILE).is_file())
+        .collect()
 }
 
 fn validate_repo(repo: &str) -> anyhow::Result<()> {

@@ -21,6 +21,7 @@ window.codexPlus
 - [拓展实例与拓展包：codexPlus.extension](#拓展实例与拓展包codexplusextension)
 - [在 Codex 对话里造拓展](#在-codex-对话里造拓展)
 - [发布到社区拓展](#发布到社区拓展)
+- [精选与官方拓展](#精选与官方拓展)
 - [API 参考](#api-参考)
 - [后端调用与路由白名单](#后端调用与路由白名单)
 - [类名与属性契约](#类名与属性契约)
@@ -558,6 +559,30 @@ user_scripts/
 社区栏标着「未审核」：用户安装前会看到这个版本声明的全部能力（后台进程、钩子、网关中间件、模型工具、路由、页面脚本），
 安装后默认不启用。解包限制为 2000 个文件、10 MiB，拒绝软链和越界路径；清单的 `id` 必须与默认分支上的一致。
 本机已有同 id 的拓展时需要用户确认替换，旧目录移到 `extension_backups/`。
+
+### 精选与官方拓展
+
+管理器「拓展 → 精选」分栏来自 Codex++ 维护的精选清单（`BigPizzaV3/CodexPlusPlusScriptMarket` 的 `index.json`），
+每一条都经过审核。清单里除了老的单文件脚本，还可以放拓展包：
+
+```json
+{
+  "scripts": [
+    { "kind": "package", "id": "word-count", "name": "字数统计", "description": "…", "author": "alice",
+      "repo": "alice/codexpp-word-count", "tag": "v1.2.0", "sha": "<40 位提交 sha>", "official": false }
+  ],
+  "blocked": ["mallory/codexpp-miner"]
+}
+```
+
+- **锁定提交**：安装只按 `sha` 从 GitHub 下载这一个提交，不看作者后来发的 release 或 tag。作者更新后要重新审核、改清单里的
+  `sha`，用户那边才会看到「更新」。`tag` 只用于展示。拓展包条目也可以单独放在顶层的 `packages` 数组里。
+- **官方**：条目写了 `"official": true`，**并且**仓库属于 Codex++ 官方账号（代码里的 `OFFICIAL_OWNERS`，目前是
+  `BigPizzaV3`）才显示「官方」徽章并排在最前；只满足其一的按精选显示。拓展自己的清单里写什么都不算数。
+- **下架**：`blocked` 里的仓库在社区栏不显示、不能安装；本机已经装了的会在精选栏顶部提示停用（不会自动删除）。
+- **与社区栏的关系**：进了精选清单的仓库不再出现在社区栏。社区栏里和精选 / 官方拓展同 id 的条目、以及非官方仓库自称「官方」
+  的条目会标「可疑」并写明原因；本机装着官方或精选版本时，社区里同 id 的拓展不能替换它。
+- 想申请精选：向市场仓库提 PR 加一条 `kind: "package"` 条目，写明要审核的 tag 与对应 sha。
 
 ---
 

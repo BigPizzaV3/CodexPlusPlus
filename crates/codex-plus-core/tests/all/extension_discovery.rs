@@ -1,8 +1,8 @@
 use std::io::Write;
 
 use codex_plus_core::extension_discovery::{
-    CommunityStore, Endpoints, SearchRepo, asset_name, community_entry, extract_package, parse_search_page,
-    pick_latest_tag,
+    CommunityStore, CuratedFilter, Endpoints, PinnedPackage, SearchRepo, asset_name, community_entry, extract_package,
+    parse_search_page, pick_latest_tag,
 };
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -440,4 +440,106 @@ async fn live_install_from_real_github() {
     assert_eq!(item["status"], "disabled");
     let listed = store.list(&endpoints, &manager, false).await;
     assert_eq!(listed["entries"][0]["installed"]["tag"], "v0.1.0");
+}
+
+
+#[tokio::test]
+async fn curated_packages_install_pinned_and_lock_out_community_replacements() {
+    let root = tempdir().unwrap();
+    let server = MockServer::start().await;
+    mount_listing(&server, 1).await;
+    // 精选版本：只按清单里的提交下载，不查 release / tag。
+    Mock::given(method("GET"))
+        .and(path(format!("/codeload/BigPizzaV3/codexpp-word-count/zip/{SHA_V1}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(package_zip("codexpp-word-count-1111", &manifest("word-count", "1.0.0"))))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let store = CommunityStore::new(root.path());
+    let manager = manager(root.path());
+    let endpoints = endpoints(&server);
+    let pinned = PinnedPackage {
+        repo: "BigPizzaV3/codexpp-word-count".into(),
+        id: "word-count".into(),
+        tag: Some("v1.0.0".into()),
+        sha: SHA_V1.to_uppercase(),
+        channel: "official".into(),
+    };
+    let prepared = store.prepare_pinned(&endpoints, &manager, &pinned).await.unwrap();
+    assert_eq!(prepared["sha"], SHA_V1);
+    assert_eq!(prepared["channel"], "official");
+    assert_eq!(prepared["fromAsset"], false);
+    store.install(&manager, prepared["token"].as_str().unwrap(), true, false).unwrap();
+    let record = &store.load_state().installs["word-count"];
+    assert_eq!((record.channel.as_str(), record.sha.as_str()), ("official", SHA_V1));
+
+    // 社区里另一个仓库的同 id 拓展：即使用户点了替换，也不能顶掉官方版本。
+    Mock::given(method("GET")).and(path("/repos/alice/codexpp-word-count/releases/latest")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+    Mock::given(method("GET")).and(path("/repos/alice/codexpp-word-count/tags")).respond_with(ResponseTemplate::new(200).set_body_json(json!([]))).mount(&server).await;
+    Mock::given(method("GET")).and(path("/repos/alice/codexpp-word-count/commits/main")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "sha": SHA_HEAD }))).mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/codeload/alice/codexpp-word-count/zip/{SHA_HEAD}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(package_zip("x", &manifest("word-count", "9.9.9"))))
+        .mount(&server)
+        .await;
+    store.list(&endpoints, &manager, false).await;
+    let community = store.prepare(&endpoints, &manager, "alice/codexpp-word-count").await.unwrap();
+    assert_eq!(community["conflict"]["channel"], "official");
+    let refused = store.install(&manager, community["token"].as_str().unwrap(), true, true).unwrap_err();
+    assert!(format!("{refused:#}").contains("官方版本"), "{refused:#}");
+    assert_eq!(store.load_state().installs["word-count"].repo, "BigPizzaV3/codexpp-word-count");
+
+    // 无效 sha 直接拒绝，不发请求。
+    let bad = PinnedPackage { sha: "main".into(), ..pinned.clone() };
+    assert!(store.prepare_pinned(&endpoints, &manager, &bad).await.unwrap_err().to_string().contains("sha 无效"));
+}
+
+#[tokio::test]
+async fn community_listing_honours_blocked_and_curated_repos_and_flags_impostors() {
+    let root = tempdir().unwrap();
+    let server = MockServer::start().await;
+    mount_listing(&server, 1).await;
+    let store = CommunityStore::new(root.path());
+    let manager = manager(root.path());
+    let endpoints = endpoints(&server);
+    let ids = |listing: &Value| listing["entries"].as_array().unwrap().iter().map(|entry| entry["repo"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    let plain = store.list(&endpoints, &manager, false).await;
+    assert_eq!(ids(&plain), ["alice/codexpp-word-count"]);
+    assert_eq!(plain["entries"][0]["warnings"], json!([]));
+
+    // 官方拓展用了同一个 id：社区条目带仿冒警示。
+    let mut curated_ids = std::collections::BTreeMap::new();
+    curated_ids.insert("word-count".to_string(), ("BigPizzaV3/codexpp-word-count".to_string(), true));
+    let impostor = CuratedFilter { curated_ids, official_owners: vec!["bigpizzav3".into()], ..CuratedFilter::default() };
+    let flagged = store.list_filtered(&endpoints, &manager, false, &impostor).await;
+    assert!(flagged["entries"][0]["warnings"][0].as_str().unwrap().contains("官方拓展同 id"));
+
+    // 下架或已进精选的仓库不显示。
+    let blocked = CuratedFilter { blocked: vec!["ALICE/codexpp-word-count".into()], ..CuratedFilter::default() };
+    assert!(ids(&store.list_filtered(&endpoints, &manager, false, &blocked).await).is_empty());
+    let curated = CuratedFilter { curated_repos: vec!["alice/codexpp-word-count".into()], ..CuratedFilter::default() };
+    assert!(ids(&store.list_filtered(&endpoints, &manager, false, &curated).await).is_empty());
+}
+
+#[test]
+fn self_proclaimed_official_entries_are_flagged() {
+    let repo = SearchRepo {
+        repo: "mallory/codexpp-tools".into(),
+        url: String::new(),
+        owner: "mallory".into(),
+        owner_avatar: String::new(),
+        description: "Codex++ 官方出品的工具集".into(),
+        stars: 1,
+        license: "MIT".into(),
+        default_branch: "main".into(),
+        pushed_at: String::new(),
+    };
+    let mut claimed = manifest("tools", "1.0.0");
+    claimed["name"] = json!("Codex++ 官方工具集");
+    let entry = community_entry(&repo, "https://raw.example", &claimed).unwrap();
+    let filter = CuratedFilter { official_owners: vec!["BigPizzaV3".into()], ..CuratedFilter::default() };
+    assert!(filter.warnings(&entry).iter().any(|warning| warning.contains("自称官方")));
+    let official = community_entry(&SearchRepo { owner: "bigpizzav3".into(), repo: "BigPizzaV3/codexpp-tools".into(), ..repo }, "https://raw.example", &claimed).unwrap();
+    assert!(filter.warnings(&official).is_empty(), "官方账号自己的仓库不算自称");
 }

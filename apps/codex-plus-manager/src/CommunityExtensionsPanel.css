@@ -40,3 +40,11 @@
 .shell .community-ext-permissions li[data-risk=high]::before { background:hsl(var(--status-error, 0 72% 51%)); }
 .shell .community-ext-permissions li[data-risk=medium]::before { background:hsl(var(--status-warning)); }
 .shell .community-ext-dialog-enable { display:inline-flex; align-items:center; gap:8px; font-size:12px; }
+.shell .community-ext-badge.is-suspicious { background:hsl(var(--status-error, 0 72% 51%) / .12); color:hsl(var(--status-error, 0 72% 51%)); }
+.shell .community-ext-badge.is-official { background:hsl(var(--primary) / .14); color:hsl(var(--primary)); font-weight:600; }
+.shell .community-ext-badge.is-curated { background:hsl(var(--status-success, 142 60% 36%) / .12); color:hsl(var(--status-success, 142 60% 36%)); }
+.shell .community-ext-dialog-trusted { margin:0; padding:8px 10px; border-radius:8px; font-size:12px; line-height:1.5; color:hsl(var(--status-success, 142 60% 36%)); border:1px solid hsl(var(--status-success, 142 60% 36%) / .4); }
+.shell .curated-packages { display:flex; flex-direction:column; gap:10px; margin-bottom:14px; }
+.shell .curated-packages-head { display:flex; align-items:baseline; gap:8px; font-size:13px; font-weight:600; }
+.shell .curated-packages-head span { font-size:12px; font-weight:400; color:hsl(var(--muted-foreground)); }
+.shell .community-ext-card[data-channel=official] { border-color:hsl(var(--primary) / .35); }

@@ -116,6 +116,7 @@ import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-m
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { DshPluginsPanel } from "./DshPluginsPanel";
 import { CommunityExtensionsPanel } from "./CommunityExtensionsPanel";
+import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
 import { SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
@@ -1239,6 +1240,9 @@ type ScriptMarketResult = CommandResult<{
     indexUrl: string;
     updatedAt: string;
     scripts: ScriptMarketItem[];
+    /** 精选拓展包（含官方），锁定到审核过的提交。老版本后端没有这个字段。 */
+    packages?: CuratedPackage[];
+    blockedInstalled?: BlockedInstall[];
   };
   user_scripts: UserScriptInventory;
 }>;
@@ -9655,6 +9659,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   const inventory = settings?.user_scripts;
   const scripts = inventory?.scripts ?? [];
   const marketScripts = market?.market.scripts ?? [];
+  const marketPackages = market?.market.packages ?? [];
   const [marketSearch, setMarketSearch] = useState("");
   const [marketView, setMarketView] = useState<"grid" | "list">("grid");
   // 市场脚本 / 本地脚本放在同一块里切换，不再上下堆三张卡片。
@@ -9747,7 +9752,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
       <div className="script-market-toolbar">
         <div className="mg-segmented user-scripts-panes" role="tablist" aria-label={t("拓展")}>
           <button aria-selected={pane === "market"} data-active={pane === "market"} onClick={() => setPane("market")} role="tab" type="button">
-            {t("拓展市场")}<span>{marketScripts.length}</span>
+            {t("精选")}<span>{marketScripts.length + marketPackages.length}</span>
           </button>
           <button aria-selected={pane === "community"} data-active={pane === "community"} onClick={() => setPane("community")} role="tab" type="button">
             {t("社区拓展")}
@@ -9799,7 +9804,15 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         </> : pane === "local" ? <span className="user-scripts-summary">{t("内置、手动安装、市场安装和对话生成的拓展；可在这里启停，单文件脚本可删除")}</span> : null}
       </div>
       {pane === "market" ? (
-        marketScripts.length ? (
+        <>
+        <CuratedPackagesSection
+          blockedInstalled={market?.market.blockedInstalled ?? []}
+          onInstalled={async () => { await actions.reloadUserScripts(); await actions.refreshScriptMarket(); }}
+          onOpenUrl={(url) => void actions.openExternalUrl(url)}
+          packages={marketPackages}
+          search={marketSearch}
+        />
+        {marketScripts.length ? (
           filteredMarketScripts.length ? (
             <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
               {sortedMarketScripts.map((script) => (
@@ -9815,9 +9828,10 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           ) : (
             <div className="empty">{t("没有匹配的拓展。")}</div>
           )
-        ) : (
+        ) : marketPackages.length ? null : (
           <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新加载拓展市场。")}</div>
-        )
+        )}
+        </>
       ) : pane === "community" ? (
         <CommunityExtensionsPanel onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
       ) : pane === "dsh" ? (

@@ -120,3 +120,36 @@ fn market_script_updated_at_is_parsed_and_forwarded() {
     assert_eq!(scripts[1]["updatedAt"], "2026-09-01");
     assert_eq!(scripts[2]["updatedAt"], "");
 }
+
+#[test]
+fn curated_packages_blocked_list_and_official_owner_check() {
+    let sha = "a".repeat(40);
+    let manifest = parse_market_manifest(json!({
+        "version": 2,
+        "scripts": [
+            { "id": "old-script", "name": "老脚本", "version": "1.0.0", "script_url": "https://example.com/a.js" },
+            { "kind": "package", "id": "word-count", "name": "字数统计", "repo": "BigPizzaV3/codexpp-word-count", "tag": "v1.0.0", "sha": sha, "official": true },
+            { "kind": "package", "id": "fake-official", "name": "假官方", "repo": "mallory/codexpp-fake", "sha": sha, "official": true },
+            { "kind": "package", "id": "bad-sha", "name": "坏 sha", "repo": "alice/x", "sha": "main" },
+        ],
+        "packages": [{ "id": "notes", "name": "便签", "repo": "alice/codexpp-notes", "sha": sha.to_uppercase() }],
+        "blocked": ["evil/codexpp-miner", "not-a-repo"],
+    }))
+    .unwrap();
+    assert_eq!(manifest.scripts.len(), 1, "拓展包条目不混进单文件脚本");
+    let ids = manifest.packages.iter().map(|package| package.id.as_str()).collect::<Vec<_>>();
+    assert_eq!(ids, ["word-count", "fake-official", "notes"], "sha 无效的条目丢弃；packages 数组也认");
+    let find = |id: &str| manifest.packages.iter().find(|package| package.id == id).unwrap();
+    assert!(find("word-count").is_official(), "清单声明官方且仓库属于官方账号");
+    assert_eq!(find("word-count").channel(), "official");
+    assert!(!find("fake-official").is_official(), "清单声明官方但仓库不属于官方账号：只算精选");
+    assert_eq!(find("fake-official").channel(), "curated");
+    assert_eq!(find("notes").sha, sha, "sha 统一小写");
+    assert_eq!(manifest.blocked, ["evil/codexpp-miner"]);
+
+    let filter = codex_plus_core::script_market::curated_filter(&manifest);
+    assert!(filter.is_blocked("Evil/CodexPP-Miner"), "下架名单不分大小写");
+    assert_eq!(filter.curated_ids["word-count"], ("BigPizzaV3/codexpp-word-count".to_string(), true));
+    let pinned = find("word-count").pinned();
+    assert_eq!((pinned.repo.as_str(), pinned.sha.as_str(), pinned.channel.as_str()), ("BigPizzaV3/codexpp-word-count", sha.as_str(), "official"));
+}
