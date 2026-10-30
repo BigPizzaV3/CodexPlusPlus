@@ -2,10 +2,12 @@
 //
 //   node host.mjs inspect <包目录> [选项.json]  分析一个 dsh 插件包，把兼容性报告（JSON）写到 stdout
 //   node host.mjs serve <registry.json>   以 stdio MCP 服务运行注册表里启用的插件，把它们的工具暴露给 Codex
+//   bridge.mjs 引入本模块，在 Codex 钩子 / 网关中间件进程里加载插件、派发映射过去的事件
 //
 // dsh 插件是 Cordis 插件：`inject` 声明依赖的服务，`apply(ctx, config)` 里注册工具等副作用。
 // Codex App 没有 dsh 的 agent 循环与会话服务，这里只提供工具插件真正能用上的那部分 ctx：
-// tools / systemPrompt（片段汇总成 MCP instructions）/ logger / timer / effect / on 等；
+// tools / systemPrompt（片段经网关追加到 instructions，也汇总进 MCP instructions）/ logger / timer / effect / on 等；
+// 少数能对上 Codex 钩子的事件（见 EVENT_HOOKS）由 Codex++ 生成的配套拓展包转发；
 // 必需依赖里有别的服务时不加载，并在报告里写明缺了什么。
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
@@ -15,14 +17,28 @@ import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseYaml } from './yaml.mjs'
 
-const HOST_VERSION = '1'
+const HOST_VERSION = '2'
 const HOST_DIR = dirname(fileURLToPath(import.meta.url))
 const SHIMS = {
   '@deepseek-ai/dsh-tools': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-tools.mjs')).href,
   '@deepseek-ai/schemastery': pathToFileURL(join(HOST_DIR, 'shims', 'schemastery.mjs')).href,
   '@deepseek-ai/cordis': pathToFileURL(join(HOST_DIR, 'shims', 'cordis.mjs')).href,
   '@deepseek-ai/dsh-skill': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-skill.mjs')).href,
+  '@deepseek-ai/dsh-system-prompt': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-system-prompt.mjs')).href,
+  '@deepseek-ai/dsh-llm': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-llm.mjs')).href,
 }
+/**
+ * 能映射到 Codex 钩子的 dsh 事件。监听器由配套拓展包的钩子脚本经 bridge.mjs 调用，
+ * dsh 的决定翻译成 Codex 钩子输出（语义对照见设计文档）。
+ */
+export const EVENT_HOOKS = {
+  'tools/pre-execute': 'PreToolUse',
+  'tools/post-execute': 'PostToolUse',
+  'agent/pre-step': 'UserPromptSubmit',
+  'agent/turn-stopping': 'Stop',
+}
+/** 系统提示词片段的映射目标：经网关中间件追加到每次模型请求的 instructions。 */
+export const INSTRUCTIONS_TARGET = 'instructions'
 const MCP_CLIENT_MODULE = '@deepseek-ai/dsh-mcp-client'
 const GROUP_MODULE = 'cordis:group'
 /** 宿主能提供的服务；Cordis 自带的 logger / timer 一并算上。skills 只截取注册的 skill，交给 Codex Skills。 */
@@ -33,7 +49,7 @@ const MAX_SKILL_SCAN_DEPTH = 4
 const MAX_SCANNED_SKILLS = 64
 const MAX_TEXT_BYTES = 1024 * 1024
 
-// MCP 帧走 stdout，插件的 console 输出一律改到 stderr。
+// MCP 帧走 stdout（钩子 / 网关进程里 stdout 是运行器的结果），插件的 console 输出一律改到 stderr。
 const writeStdout = process.stdout.write.bind(process.stdout)
 for (const level of ['log', 'info', 'debug', 'trace']) {
   console[level] = (...args) => console.error(...args)
@@ -49,7 +65,7 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
 }
 
-function errorText(error) {
+export function errorText(error) {
   if (error instanceof Error) return error.message || String(error)
   return String(error)
 }
@@ -349,14 +365,75 @@ function writeRuntimeSkill(outDir, definition) {
 // 插件运行时
 // ---------------------------------------------------------------------------
 
-class Host {
+export class Host {
   constructor() {
     /** name → { def, pluginKey } */
     this.tools = new Map()
-    /** 系统提示词片段，汇总成 MCP instructions。 */
+    /** 系统提示词片段，汇总成 MCP instructions，并由配套拓展包经网关追加到 instructions。 */
     this.sections = []
+    /** dsh 的动态上下文（systemPrompt.context）：Codex 里没有用户侧快照，并到片段后面。 */
+    this.contexts = []
+    /** name → provider：片段里 `{{name}}` 的取值。 */
+    this.variables = new Map()
     this.listeners = new Map()
     this.disposers = []
+  }
+
+  /**
+   * 拼出系统提示词：片段按 order、name 排序，之后接动态上下文；`{{变量}}` 用插件注册的变量求值，
+   * 求不出的原样保留（dsh 会直接报错，这里宁可宽松，不能挡住模型请求）。
+   */
+  assemblePrompt(context = {}) {
+    const render = (entry) => {
+      try {
+        const text = typeof entry.text === 'function' ? entry.text(context) : entry.text
+        if (typeof text !== 'string' || !text.trim()) return ''
+        if (entry.interpolate === false) return text.trim()
+        return text.replace(/\{\{([A-Za-z_][\w.-]*)\}\}/g, (whole, name) => {
+          const provider = this.variables.get(name)
+          if (typeof provider !== 'function') return whole
+          try {
+            const value = provider(context)
+            return typeof value === 'string' ? value : whole
+          } catch {
+            return whole
+          }
+        }).trim()
+      } catch (error) {
+        console.error(`[dsh-host] 提示词 ${entry.name} 生成失败：${errorText(error)}`)
+        return ''
+      }
+    }
+    const byOrder = (a, b) => a.order - b.order || String(a.name).localeCompare(String(b.name))
+    return [...[...this.sections].sort(byOrder), ...[...this.contexts].sort(byOrder)]
+      .map(render)
+      .filter(Boolean)
+      .join('\n\n')
+  }
+
+  /** 提示词是否全是静态文本（可以在分析时求好，直接写进配套拓展包，不必每次请求加载插件）。 */
+  promptIsStatic() {
+    return this.variables.size === 0
+      && [...this.sections, ...this.contexts].every((entry) => typeof entry.text === 'string')
+  }
+
+  /** 按 Cordis waterfall 语义派发：每个监听器拿到 next()，最后一个的 next() 返回 fallback()。 */
+  async waterfall(event, args, fallback) {
+    const list = [...(this.listeners.get(event) ?? [])]
+    const run = async (index) => {
+      if (index >= list.length) return fallback()
+      return list[index].listener(...args, () => run(index + 1))
+    }
+    return run(0)
+  }
+
+  /** 按 Cordis serial 语义派发：依次等待每个监听器，返回第一个非 undefined 的结果。 */
+  async serial(event, args) {
+    for (const { listener } of [...(this.listeners.get(event) ?? [])]) {
+      const result = await listener(...args)
+      if (result !== undefined) return result
+    }
+    return undefined
   }
 
   /** 收集本行经 ctx.skills 注册的 skill：直接注册的定义，加上各 provider 列出并读取到的定义。 */
@@ -385,6 +462,9 @@ class Host {
     }
     const note = (text) => {
       if (!state.notes.includes(text)) state.notes.push(text)
+    }
+    const mapTo = (target) => {
+      if (state.mappings && !state.mappings.includes(target)) state.mappings.push(target)
     }
     const logger = makeLogger(state.key)
     const timer = {
@@ -430,19 +510,40 @@ class Host {
       },
       systemPrompt: {
         section(section) {
-          const entry = { pluginKey: state.key, name: section?.name, order: Number(section?.order) || 0, text: section?.text }
+          const entry = {
+            pluginKey: state.key,
+            name: section?.name,
+            order: Number(section?.order) || 0,
+            text: section?.text,
+            interpolate: section?.interpolate,
+          }
           host.sections.push(entry)
-          note('系统提示词片段会汇总进 MCP instructions，只在 Codex 连接 MCP 时提供一次')
+          mapTo(INSTRUCTIONS_TARGET)
+          if (section?.complete) note('complete 片段在 Codex 里只追加到 instructions，不会替换 Codex 自己的系统提示词')
           return track(() => {
             host.sections = host.sections.filter((item) => item !== entry)
           })
         },
-        context() {
-          note('systemPrompt.context 依赖 dsh 的回合上下文，Codex 里不生效')
-          return () => {}
+        context(context) {
+          const entry = {
+            pluginKey: state.key,
+            name: context?.name,
+            order: Number(context?.order) || 0,
+            text: context?.text,
+            interpolate: context?.interpolate,
+          }
+          host.contexts.push(entry)
+          mapTo(INSTRUCTIONS_TARGET)
+          note('systemPrompt.context 在 Codex 里并入 instructions，不会作为用户侧上下文快照逐回合刷新')
+          return track(() => {
+            host.contexts = host.contexts.filter((item) => item !== entry)
+          })
         },
-        variable() {
-          return () => {}
+        variable(name, provider) {
+          if (typeof name === 'string' && typeof provider === 'function') host.variables.set(name, provider)
+          return track(() => {
+            if (host.variables.get(name) === provider) host.variables.delete(name)
+          })
         },
         tools() {
           return () => {}
@@ -487,11 +588,14 @@ class Host {
         }
         return track(() => dispose?.())
       },
-      on(event, listener) {
-        if (event !== 'ready' && event !== 'dispose') note(`事件 ${String(event)} 来自 dsh 运行时，Codex 里不会触发`)
+      on(event, listener, options) {
+        if (EVENT_HOOKS[event]) mapTo(EVENT_HOOKS[event])
+        else if (event !== 'ready' && event !== 'dispose') note(`事件 ${String(event)} 来自 dsh 运行时，Codex 里不会触发`)
         const list = host.listeners.get(event) ?? []
         const entry = { listener, state }
-        list.push(entry)
+        // Cordis 的 prepend：排到最前（waterfall 里最外层，先调 next() 就能看到其余监听器的结果）。
+        if (options === true || options?.prepend) list.unshift(entry)
+        else list.push(entry)
         host.listeners.set(event, list)
         return track(() => {
           const current = host.listeners.get(event) ?? []
@@ -560,6 +664,7 @@ class Host {
       reasons: [],
       notes: [],
       tools: [],
+      mappings: [],
     }
     if (row.name === MCP_CLIENT_MODULE) {
       const converted = toMcpServer(row)
@@ -594,9 +699,14 @@ class Host {
       const runtimePackage = error?.code === 'ERR_MODULE_NOT_FOUND'
         ? /Cannot find package '(@deepseek-ai\/(?:dsh-[^'/]+|cordis[^'/]*))/.exec(errorText(error))?.[1]
         : undefined
+      // 替身只提供运行时包的一小部分导出，用到别的就同样算不兼容。
+      const shimGap = /The requested module '(@deepseek-ai\/[^']+)' does not provide an export named '([^']+)'/.exec(errorText(error))
       if (runtimePackage) {
         record.status = 'incompatible'
         record.reasons.push(`依赖 dsh 运行时包 ${runtimePackage}，Codex++ 不提供（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）`)
+      } else if (shimGap && SHIMS[shimGap[1]]) {
+        record.status = 'incompatible'
+        record.reasons.push(`用到 dsh 运行时包 ${shimGap[1]} 的 ${shimGap[2]}，Codex++ 只提供它的少量替身导出`)
       } else {
         record.status = 'error'
         record.reasons.push(`加载失败：${errorText(error)}`)
@@ -642,6 +752,7 @@ class Host {
       config,
       tools: record.tools,
       notes: record.notes,
+      mappings: record.mappings,
       disposers: this.disposers,
       pending: [],
       skillDefinitions: [],
@@ -661,7 +772,7 @@ class Host {
       return { name, description: def?.description ?? '' }
     })
     record.skills = []
-    for (const definition of await this.collectSkills(state)) {
+    for (const definition of this.skipSkills ? [] : await this.collectSkills(state)) {
       const skill = { name: definition.name, description: String(definition.description ?? ''), resourceDir: definition.resourceBase?.path }
       if (this.skillsOut) {
         try {
@@ -674,10 +785,10 @@ class Host {
       record.skills.push(skill)
     }
     if (record.notes.length > 0) record.status = 'partial'
-    if (record.skills.length > 0 && record.tools.length === 0) {
+    if (record.skills.length > 0 && record.tools.length === 0 && record.mappings.length === 0) {
       record.kind = 'skills'
       if (record.status === 'compatible') record.status = 'skills'
-    } else if (record.tools.length === 0 && record.status !== 'partial') {
+    } else if (record.tools.length === 0 && record.mappings.length === 0 && record.status !== 'partial') {
       record.notes.push('加载成功，但没有注册任何工具')
     }
     return record
@@ -686,9 +797,12 @@ class Host {
   async loadPackage(root, packageKey, options = {}) {
     // inspect 时把代码注册的 skill 写到这里；serve 不写。
     this.skillsOut = typeof options.skillsOut === 'string' && options.skillsOut ? options.skillsOut : undefined
+    // 钩子 / 网关进程只要事件监听器与提示词，不碰 skill。
+    this.skipSkills = Boolean(options.skipSkills)
     this.dependencyDirs = new Set()
     const report = {
       hostVersion: HOST_VERSION,
+      inspectedAt: Date.now(),
       root,
       name: undefined,
       version: undefined,
@@ -699,6 +813,7 @@ class Host {
       skills: [],
       client: false,
       diagnostics: [],
+      bridge: { hooks: [], instructions: false, staticPrompt: null },
     }
     let pkg
     try {
@@ -728,9 +843,11 @@ class Host {
       if (rows.length > 0 && !pkg.name) rows[0].name = entry
     }
     const disabledRows = new Set(options.disabledRows ?? [])
+    // 钩子 / 网关进程只加载用得上的行，其余行不跑 apply。
+    const onlyRows = Array.isArray(options.onlyRows) ? new Set(options.onlyRows) : undefined
     const configs = options.configs && typeof options.configs === 'object' ? options.configs : {}
     for (const row of rows) {
-      if (disabledRows.has(row.id)) row.disabled = true
+      if (disabledRows.has(row.id) || (onlyRows && !onlyRows.has(row.id))) row.disabled = true
       // 管理器里填的配置浅合并到 bundle patch 的配置之上。
       const override = configs[row.id]
       if (override && typeof override === 'object' && !Array.isArray(override)) {
@@ -738,6 +855,8 @@ class Host {
       }
       report.rows.push(await this.loadRow(row, root, pkg, packageKey))
     }
+    report.bridge = this.bridgeSummary(report.rows)
+    if (this.skipSkills) return report
     // 代码注册的 skill（可能来自依赖包）优先；同名或同一资源目录的 SKILL.md 文件不再重复列出。
     const runtimeSkills = report.rows.flatMap((row) => (row.skills ?? []).filter((skill) => skill.directory))
     const covered = new Set(runtimeSkills.flatMap((skill) => [skill.name, skill.resourceDir].filter(Boolean)))
@@ -780,16 +899,16 @@ class Host {
   }
 
   instructions() {
-    const parts = []
-    for (const section of [...this.sections].sort((a, b) => a.order - b.order)) {
-      try {
-        const text = typeof section.text === 'function' ? section.text({}) : section.text
-        if (typeof text === 'string' && text.trim()) parts.push(text.trim())
-      } catch (error) {
-        console.error(`[dsh-host] 提示词片段 ${section.name} 生成失败：${errorText(error)}`)
-      }
-    }
-    return parts.join('\n\n')
+    return this.assemblePrompt({})
+  }
+
+  /** 包级汇总：哪些 Codex 钩子要转发、提示词是否追加到 instructions、能否在分析时求成静态文本。 */
+  bridgeSummary(rows) {
+    const active = rows.filter((row) => row.enabled && (row.status === 'compatible' || row.status === 'partial'))
+    const hooks = [...new Set(active.flatMap((row) => row.mappings ?? []).filter((target) => target !== INSTRUCTIONS_TARGET))].sort()
+    const instructions = active.some((row) => row.mappings?.includes(INSTRUCTIONS_TARGET))
+    const staticPrompt = instructions && this.promptIsStatic() ? this.assemblePrompt({}) || null : null
+    return { hooks, instructions, staticPrompt }
   }
 
   async dispose() {
@@ -986,8 +1105,19 @@ async function inspect(root, optionsPath) {
   writeStdout(`${JSON.stringify(report)}\n`)
 }
 
-const [command, target, extra] = process.argv.slice(2)
-if (command === 'inspect' && target) {
+function isMainModule() {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+const [command, target, extra] = isMainModule() ? process.argv.slice(2) : ['library']
+if (command === 'library') {
+  // 被 bridge.mjs 引入，不跑命令行入口。
+} else if (command === 'inspect' && target) {
   inspect(target, extra).then(
     () => process.exit(0),
     (error) => {

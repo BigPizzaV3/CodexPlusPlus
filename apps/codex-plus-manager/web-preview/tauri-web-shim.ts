@@ -678,11 +678,12 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
         source: { type: "npm", spec: "dsh-greet-bundle" }, root: "", managed: true, enabled: true,
         disabledRows: [], configs: { greet: { greeting: "Hi there" } }, importedSkills: ["greet-skill"], toolCount: 1,
         mcpJson: JSON.stringify({ mcpServers: { demo: { command: "npx", args: ["-y", "@modelcontextprotocol/server-everything"] } } }, null, 2),
+        companion: { id: "dsh-dsh-greet-bundle", hooks: ["PreToolUse", "Stop"], instructions: true, staticPrompt: true, installed: true, enabled: true, scriptsEnabled: true },
         report: {
           kind: "bundle", title: L("问候工具", "Greeting tools"), description: L("给 dsh 用的问候工具。", "Greeting tools for dsh."), client: false, diagnostics: [],
           skills: [{ name: "greet-skill", description: "How to greet people politely." }],
           rows: [
-            { id: "greet", module: "dsh-greet-bundle", status: "partial", kind: "plugin", reasons: [], notes: [L("系统提示词片段会汇总进 MCP instructions，只在 Codex 连接 MCP 时提供一次", "System prompt sections are merged into MCP instructions, given once when Codex connects")], tools: [{ name: "greet", description: "Greet someone by name." }] },
+            { id: "greet", module: "dsh-greet-bundle", status: "compatible", kind: "plugin", reasons: [], notes: [], mappings: ["instructions", "PreToolUse", "Stop"], tools: [{ name: "greet", description: "Greet someone by name." }] },
             { id: "session-tool", module: "./session.js", status: "incompatible", kind: "plugin", reasons: [L("依赖 Codex++ 不提供的服务：sessions（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）", "Needs services Codex++ does not provide: sessions")], notes: [], tools: [] },
             { id: "demo-mcp", module: "@deepseek-ai/dsh-mcp-client", status: "compatible", kind: "mcp", reasons: [], notes: [L("MCP 配置可导入 Codex；reconnect、toolCallTimeoutMs 等 dsh 专属字段会被丢弃", "The MCP config can be imported into Codex; dsh-only fields are dropped")], tools: [] },
           ],

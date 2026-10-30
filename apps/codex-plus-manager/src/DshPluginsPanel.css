@@ -45,3 +45,6 @@
 .shell .dsh-plugin-config-actions { display:flex; gap:6px; }
 .shell .dsh-plugin-skills { display:flex; align-items:center; gap:8px; font-size:12px; color:hsl(var(--muted-foreground)); }
 .shell .dsh-plugin-skills > span { flex:1; min-width:0; }
+.shell .dsh-plugin-mappings { display:flex; gap:4px; flex-wrap:wrap; }
+.shell .dsh-mapping { display:inline-flex; padding:1px 7px; border-radius:999px; font-size:11px; background:hsl(var(--muted)); color:hsl(var(--foreground)); white-space:nowrap; }
+.shell .dsh-plugin-companion { display:flex; flex-direction:column; gap:4px; font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); }

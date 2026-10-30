@@ -19,6 +19,8 @@ type ReportRow = {
   reasons: string[];
   notes: string[];
   tools: { name: string; description: string }[];
+  /** 映射到 Codex 的去处：Codex 钩子事件名，或 "instructions"（经网关追加的系统提示词）。 */
+  mappings?: string[];
 };
 type Report = {
   kind?: string;
@@ -44,6 +46,16 @@ type DshPlugin = {
   importedSkills: string[];
   toolCount: number;
   mcpJson: string | null;
+  /** 配套拓展包（系统提示词 → 网关 instructions，dsh 事件 → Codex 钩子）；没有可映射的内容时为 null。 */
+  companion: {
+    id: string;
+    hooks: string[];
+    instructions: boolean;
+    staticPrompt: boolean;
+    installed: boolean;
+    enabled: boolean;
+    scriptsEnabled: boolean;
+  } | null;
 };
 type Snapshot = {
   message: string;
@@ -127,7 +139,7 @@ export function DshPluginsPanel() {
     <div className="dsh-plugins">
       <div className="dsh-plugins-intro">
         <p>
-          {t("导入 dsh（deepseek-harness）插件：工具插件经 Codex++ 托管的 MCP 在 Codex 里调用，skill 导入 Codex Skills，MCP 配置可一键复制导入。依赖 dsh agent 循环、会话或模型服务的插件无法在 Codex 里运行，会逐项说明原因。")}
+          {t("导入 dsh（deepseek-harness）插件：工具插件经 Codex++ 托管的 MCP 在 Codex 里调用，skill 导入 Codex Skills，MCP 配置可一键复制导入；系统提示词与工具前后、回合前后的事件经自动生成的配套拓展转成网关 instructions 与 Codex 钩子。依赖 dsh agent 循环、会话或模型服务的插件无法在 Codex 里运行，会逐项说明原因。")}
         </p>
         <div className="dsh-plugins-import">
           <Input
@@ -287,6 +299,15 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
                   ) : null}
                 </span>
               </div>
+              {row.mappings?.length ? (
+                <div className="dsh-plugin-mappings">
+                  {row.mappings.map((target) => (
+                    <span className="dsh-mapping" key={target}>
+                      {target === "instructions" ? t("提示词 → instructions") : tf("钩子 {0}", [target])}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
               {row.tools.length ? (
                 <ul className="dsh-plugin-tools">
                   {row.tools.map((tool) => (
@@ -318,6 +339,7 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
           ))}
         </div>
       ) : null}
+      {plugin.companion ? <CompanionLine companion={plugin.companion} /> : null}
       {(report.skills?.length ?? 0) > 0 ? (
         <div className="dsh-plugin-skills">
           <span>
@@ -340,5 +362,28 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** 配套拓展包的现状：映射到了哪里、在不在、有没有被停用。 */
+function CompanionLine({ companion }: { companion: NonNullable<DshPlugin["companion"]> }) {
+  const parts: string[] = [];
+  if (companion.instructions) {
+    parts.push(companion.staticPrompt ? t("系统提示词追加到每次请求的 instructions") : t("系统提示词（含动态片段）每次请求求值后追加到 instructions"));
+  }
+  if (companion.hooks.length) parts.push(tf("事件转成 Codex 钩子 {0}", [companion.hooks.join("、")]));
+  let state = "";
+  if (!companion.installed) state = t("配套拓展包未生成，点「重新分析」重试。");
+  else if (!companion.scriptsEnabled) state = t("拓展总开关已关闭，配套拓展包不会运行。");
+  else if (!companion.enabled) state = t("配套拓展包已停用。");
+  return (
+    <div className="dsh-plugin-companion">
+      <span>
+        {tf("配套拓展「{0}」：{1}。", [companion.id, parts.join("；")])}
+        {companion.instructions ? t("提示词只对经 Codex++ 本地代理 / 网关发出的请求生效。") : null}
+        {companion.hooks.length ? t("钩子需在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」；每次事件在新进程里加载插件，插件的内存状态不跨事件保留。") : null}
+      </span>
+      {state ? <div className="dsh-plugins-warning">{state}</div> : null}
+    </div>
   );
 }

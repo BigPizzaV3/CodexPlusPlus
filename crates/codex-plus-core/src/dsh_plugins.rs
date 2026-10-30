@@ -6,7 +6,9 @@
 //! - 工具插件：在 Node 子进程里的兼容宿主（`assets/dsh-host/`）中运行，经托管 MCP
 //!   `[mcp_servers.codex_plus_dsh]` 把工具暴露给 Codex；
 //! - skill：包里的 `SKILL.md` 目录交给 Skills 管理导入；
-//! - MCP 配置行：转换成标准 `mcpServers` JSON，由用户走现有「导入 MCP」流程。
+//! - MCP 配置行：转换成标准 `mcpServers` JSON，由用户走现有「导入 MCP」流程；
+//! - 系统提示词片段与能对上的 dsh 事件（工具前后、回合前、回合停止）：生成配套拓展包
+//!   `dsh-<插件 id>`，用网关请求中间件追加 instructions、用 Codex 钩子转发事件（宿主的 `bridge.mjs`）。
 //!
 //! 本模块负责来源解析与获取（本地目录 / npm / git）、依赖安装、调用宿主分析、注册表，以及 MCP 启动入口。
 //! 插件代码以用户权限运行、没有沙箱（与 dsh 相同）；依赖安装一律 `--ignore-scripts`。
@@ -22,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::managed_mcp::{self, ManagedMcp};
+use crate::user_scripts::{ExtensionWrite, UserScriptManager};
 
 pub use crate::managed_mcp::RegistrationStatus;
 
@@ -43,6 +46,7 @@ const HOST_FILES: &[(&str, &str)] = &[
     ("host.mjs", include_str!("../../../assets/dsh-host/host.mjs")),
     ("loader.mjs", include_str!("../../../assets/dsh-host/loader.mjs")),
     ("yaml.mjs", include_str!("../../../assets/dsh-host/yaml.mjs")),
+    ("bridge.mjs", include_str!("../../../assets/dsh-host/bridge.mjs")),
     (
         "shims/dsh-tools.mjs",
         include_str!("../../../assets/dsh-host/shims/dsh-tools.mjs"),
@@ -58,6 +62,14 @@ const HOST_FILES: &[(&str, &str)] = &[
     (
         "shims/dsh-skill.mjs",
         include_str!("../../../assets/dsh-host/shims/dsh-skill.mjs"),
+    ),
+    (
+        "shims/dsh-system-prompt.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-system-prompt.mjs"),
+    ),
+    (
+        "shims/dsh-llm.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-llm.mjs"),
     ),
 ];
 
@@ -1034,6 +1046,232 @@ pub fn report_tool_count(report: &Value) -> usize {
                 .sum()
         })
         .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// 配套拓展包：系统提示词 → 网关 instructions，dsh 事件 → Codex 钩子
+// ---------------------------------------------------------------------------
+
+/// 配套拓展包里的标记文件：写着注册表位置与插件 id，钩子 / 网关脚本据此加载插件。
+const COMPANION_MARKER: &str = "dsh-bridge.json";
+const COMPANION_HOOK_SCRIPT: &str = "hooks/dsh.mjs";
+const COMPANION_GATEWAY_SCRIPT: &str = "gateway/instructions.mjs";
+const COMPANION_PROMPT_FILE: &str = "prompt.txt";
+/// 钩子要加载插件再派发，给足时间；Codex 那边的分发条目固定 120 秒。
+const COMPANION_HOOK_TIMEOUT_SECS: u64 = 30;
+/// 静态提示词只是读文件；动态的要加载插件，取网关中间件允许的上限。
+const COMPANION_STATIC_GATEWAY_TIMEOUT_SECS: u64 = 3;
+const COMPANION_DYNAMIC_GATEWAY_TIMEOUT_SECS: u64 = 10;
+
+/// 插件对应的配套拓展包 id。
+pub fn companion_id(plugin_id: &str) -> String {
+    let mut id = format!("dsh-{plugin_id}");
+    id.truncate(64);
+    id
+}
+
+/// 报告里要转发的 Codex 钩子事件、提示词是否追加到 instructions、能否用静态文本。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgePlan {
+    pub hooks: Vec<String>,
+    pub instructions: bool,
+    pub static_prompt: Option<String>,
+}
+
+impl BridgePlan {
+    pub fn is_empty(&self) -> bool {
+        self.hooks.is_empty() && !self.instructions
+    }
+}
+
+pub fn report_bridge(report: &Value) -> BridgePlan {
+    let bridge = report.get("bridge");
+    let hooks = bridge
+        .and_then(|bridge| bridge.get("hooks"))
+        .and_then(Value::as_array)
+        .map(|hooks| {
+            hooks
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|event| crate::user_scripts::EXTENSION_HOOK_EVENTS.contains(event))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    BridgePlan {
+        hooks,
+        instructions: bridge
+            .and_then(|bridge| bridge.get("instructions"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        static_prompt: bridge
+            .and_then(|bridge| bridge.get("staticPrompt"))
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_string),
+    }
+}
+
+/// JS 字符串字面量（JSON 字符串即合法的 JS 字符串）。
+fn js_string(value: &str) -> String {
+    Value::String(value.to_string()).to_string()
+}
+
+/// 由插件报告生成配套拓展包的内容；没有要映射的东西时返回 `None`。
+pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path: &Path) -> Option<ExtensionWrite> {
+    let plan = report_bridge(&record.report);
+    if plan.is_empty() {
+        return None;
+    }
+    let bridge_url = reqwest::Url::from_file_path(bridge_path).ok()?.to_string();
+    let display = if record.name.is_empty() { &record.id } else { &record.name };
+    let header = format!(
+        "// 由 Codex++ 根据 dsh 插件「{display}」生成，重新分析插件时会覆盖，不要手改。\n"
+    );
+    let mut files = BTreeMap::new();
+    files.insert(
+        COMPANION_MARKER.to_string(),
+        serde_json::to_string_pretty(&json!({
+            "registry": registry_path.to_string_lossy(),
+            "plugin": record.id,
+            "bridge": bridge_path.to_string_lossy(),
+        }))
+        .ok()?,
+    );
+    let config_line = "const CONFIG = new URL('../dsh-bridge.json', import.meta.url)\n";
+    let mut hooks = serde_json::Map::new();
+    if !plan.hooks.is_empty() {
+        files.insert(
+            COMPANION_HOOK_SCRIPT.to_string(),
+            format!(
+                "{header}// 把插件的事件监听器转发成 Codex 钩子：{}。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function hook(payload, {{ event }}) {{\n  const {{ runHook }} = await import({})\n  return runHook(fileURLToPath(CONFIG), event, payload)\n}}\n",
+                plan.hooks.join("、"),
+                js_string(&bridge_url),
+            ),
+        );
+        for event in &plan.hooks {
+            hooks.insert(
+                event.clone(),
+                json!([{ "script": COMPANION_HOOK_SCRIPT, "timeout": COMPANION_HOOK_TIMEOUT_SECS }]),
+            );
+        }
+    }
+    let gateway = if plan.instructions {
+        let (script, timeout) = match &plan.static_prompt {
+            Some(text) => {
+                files.insert(COMPANION_PROMPT_FILE.to_string(), text.clone());
+                (
+                    format!(
+                        "{header}// 把插件的系统提示词片段（静态文本，见 prompt.txt）追加到每次模型请求的 instructions。\nimport {{ readFileSync }} from 'node:fs'\n\nconst TEXT = readFileSync(new URL('../prompt.txt', import.meta.url), 'utf8').trim()\n\nexport default function request(body) {{\n  if (!TEXT || !body || typeof body !== 'object') return null\n  const current = typeof body.instructions === 'string' ? body.instructions : ''\n  if (current.includes(TEXT)) return null\n  return {{ ...body, instructions: current ? `${{current}}\\n\\n${{TEXT}}` : TEXT }}\n}}\n"
+                    ),
+                    COMPANION_STATIC_GATEWAY_TIMEOUT_SECS,
+                )
+            }
+            None => (
+                format!(
+                    "{header}// 插件的系统提示词有动态片段：每次模型请求加载插件求值，追加到 instructions。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function request(body) {{\n  const {{ requestInstructions }} = await import({})\n  return requestInstructions(fileURLToPath(CONFIG), body)\n}}\n",
+                    js_string(&bridge_url),
+                ),
+                COMPANION_DYNAMIC_GATEWAY_TIMEOUT_SECS,
+            ),
+        };
+        files.insert(COMPANION_GATEWAY_SCRIPT.to_string(), script);
+        Some(json!({ "request": [{ "script": COMPANION_GATEWAY_SCRIPT, "timeout": timeout }] }))
+    } else {
+        None
+    };
+    let mut targets = plan.hooks.clone();
+    if plan.instructions {
+        targets.push("instructions".to_string());
+    }
+    Some(ExtensionWrite {
+        id: companion_id(&record.id),
+        name: format!("dsh：{display}"),
+        version: if record.version.is_empty() { "0.1.0".to_string() } else { record.version.clone() },
+        description: format!(
+            "由 Codex++ 为 dsh 插件「{display}」生成：{}。在「dsh 插件」里管理，随插件启停与移除。",
+            targets.join("、")
+        ),
+        routes: Vec::new(),
+        renderer: Vec::new(),
+        hooks: (!hooks.is_empty()).then(|| Value::Object(hooks)),
+        gateway,
+        files,
+    })
+}
+
+impl DshPlugins {
+    /// 让插件的配套拓展包与最新报告、启停状态一致：需要就写入（覆盖），不需要就移入备份。
+    /// 返回配套拓展包的现状；调用方随后应同步 Codex 钩子配置（`extension_hooks::sync_default`）。
+    pub fn sync_companion(&self, manager: &UserScriptManager, id: &str) -> anyhow::Result<Value> {
+        let registry = self.load()?;
+        let record = registry
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == id)
+            .with_context(|| format!("没有 id 为 {id} 的 dsh 插件"))?;
+        let host = self.ensure_host()?;
+        let bridge = host.with_file_name("bridge.mjs");
+        let Some(write) = companion_write(record, &self.registry_path(), &bridge) else {
+            self.remove_companion(manager, id)?;
+            return Ok(Value::Null);
+        };
+        let written = manager.write_extension_package(&write)?;
+        let key = crate::user_scripts::extension_package_key(&write.id);
+        manager.set_script_enabled(&key, record.enabled)?;
+        let plan = report_bridge(&record.report);
+        Ok(json!({
+            "id": write.id,
+            "key": key,
+            "directory": written.get("directory"),
+            "manifestError": written.get("manifestError"),
+            "hooks": plan.hooks,
+            "instructions": plan.instructions,
+            "staticPrompt": plan.static_prompt.is_some(),
+            "enabled": record.enabled,
+        }))
+    }
+
+    /// 移除插件的配套拓展包（移入 dsh 插件备份目录，可恢复）。只动带标记文件、指向本插件的目录。
+    pub fn remove_companion(&self, manager: &UserScriptManager, id: &str) -> anyhow::Result<bool> {
+        let directory = manager.user_dir().join(companion_id(id));
+        let Ok(metadata) = std::fs::symlink_metadata(&directory) else {
+            return Ok(false);
+        };
+        if !metadata.is_dir() {
+            return Ok(false);
+        }
+        let owned = std::fs::read_to_string(directory.join(COMPANION_MARKER))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .is_some_and(|marker| marker.get("plugin").and_then(Value::as_str) == Some(id));
+        if !owned {
+            return Ok(false);
+        }
+        self.backup(&format!("companion-{}", companion_id(id)), &directory)?;
+        Ok(true)
+    }
+
+    /// 配套拓展包的现状（给管理器显示）：期望的映射，以及包是否在、是否启用。
+    pub fn companion_status(&self, manager: &UserScriptManager, record: &PluginRecord) -> Value {
+        let plan = report_bridge(&record.report);
+        if plan.is_empty() {
+            return Value::Null;
+        }
+        let id = companion_id(&record.id);
+        let key = crate::user_scripts::extension_package_key(&id);
+        let config = manager.load_config();
+        json!({
+            "id": id,
+            "hooks": plan.hooks,
+            "instructions": plan.instructions,
+            "staticPrompt": plan.static_prompt.is_some(),
+            "installed": manager.user_dir().join(&id).join(COMPANION_MARKER).is_file(),
+            "enabled": config.enabled && config.scripts.get(&key).copied().unwrap_or(true),
+            "scriptsEnabled": config.enabled,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

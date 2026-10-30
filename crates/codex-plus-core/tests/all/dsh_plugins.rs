@@ -158,7 +158,8 @@ fn dsh_import_bundle_reports_compatibility_per_row() {
     assert_eq!(report["title"], "问候工具");
 
     let greet = row(report, "greet");
-    assert_eq!(greet["status"], "partial", "用了 systemPrompt，应标为部分兼容：{greet}");
+    assert_eq!(greet["status"], "compatible", "systemPrompt 经网关追加到 instructions，完整兼容：{greet}");
+    assert_eq!(greet["mappings"], json!(["instructions"]));
     assert_eq!(greet["tools"][0]["name"], "greet");
 
     // cordis:group 的子行被展开；依赖会话服务的行不加载。
@@ -602,4 +603,132 @@ fn dsh_skill_files_in_referenced_dependencies_are_scanned_with_limits() {
         assert!(!names.contains(&"escaped"), "软链到包外的依赖不扫");
         assert!(diagnostics.contains("指向包外"), "{diagnostics}");
     }
+}
+
+/// 系统提示词与能对上 Codex 钩子的 dsh 事件：导入后生成配套拓展包，经 Codex++ 的钩子分发与网关中间件
+/// 跑通插件的监听器（拦截、补上下文、拒绝输入、要求继续），并随插件启停、配置与移除同步。
+#[tokio::test]
+async fn dsh_events_and_system_prompt_run_through_companion_extension() {
+    use codex_plus_core::extension_gateway::apply_request_with;
+    use codex_plus_core::extension_hooks::dispatch;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins
+        .import(&local_source(&fixture("policy-plugin")), &toolchain)
+        .unwrap();
+    let main = row(&record.report, "dsh-policy-demo");
+    assert_eq!(main["status"], "compatible", "{main}");
+    let mut mappings: Vec<&str> = main["mappings"].as_array().unwrap().iter().map(|item| item.as_str().unwrap()).collect();
+    mappings.sort();
+    assert_eq!(mappings, ["PostToolUse", "PreToolUse", "Stop", "UserPromptSubmit", "instructions"]);
+
+    let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+    assert_eq!(companion["id"], "dsh-dsh-policy-demo");
+    assert_eq!(companion["manifestError"], Value::Null, "{companion}");
+    assert_eq!(companion["staticPrompt"], true);
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(scripts.path().join("user/dsh-dsh-policy-demo/codexpp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(manifest["hooks"]["PreToolUse"].is_array() && manifest["hooks"]["Stop"].is_array(), "{manifest}");
+    assert!(manifest["gateway"]["request"].is_array(), "{manifest}");
+    assert_eq!(manifest["renderer"], json!([]), "只有钩子与网关，不往页面注入脚本");
+    let hooks = manager.enabled_extension_hooks().unwrap();
+    assert_eq!(hooks.len(), 4, "四个事件各一条钩子");
+
+    // PreToolUse：dsh 的 deny → Codex 的 permissionDecision deny；放行时不表态。
+    let denied = dispatch(&manager, "PreToolUse", json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}})).await.unwrap();
+    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny", "{denied}");
+    assert!(denied["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("rm -rf is blocked"));
+    let allowed = dispatch(&manager, "PreToolUse", json!({"tool_name": "Bash", "tool_input": {"command": "ls"}})).await.unwrap();
+    assert_eq!(allowed, json!({}));
+    // PostToolUse：dsh 的 block → decision block + reason。
+    let blocked = dispatch(&manager, "PostToolUse", json!({"tool_name": "Bash", "tool_input": {"command": "cat .env"}, "tool_response": "SECRET=1"})).await.unwrap();
+    assert_eq!(blocked["decision"], "block", "{blocked}");
+    assert!(blocked["reason"].as_str().unwrap().contains("withheld"));
+    // 插件的内存状态跨钩子进程保留（常驻进程），并按会话区分 agent。
+    let ls = json!({"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": "a"});
+    assert_eq!(dispatch(&manager, "PostToolUse", ls.clone()).await.unwrap(), json!({}));
+    let repeated = dispatch(&manager, "PostToolUse", ls.clone()).await.unwrap();
+    assert_eq!(repeated["hookSpecificOutput"]["additionalContext"], "policy-demo: \"ls\" repeated 2 times", "{repeated}");
+    let other_session = dispatch(&manager, "PostToolUse", json!({"session_id": "s2", "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": "a"})).await.unwrap();
+    assert_eq!(other_session, json!({}), "别的会话是另一个 agent");
+    // UserPromptSubmit：reject → block；新增消息 → additionalContext。
+    let rejected = dispatch(&manager, "UserPromptSubmit", json!({"prompt": "please forbidden-word"})).await.unwrap();
+    assert_eq!(rejected["decision"], "block", "{rejected}");
+    let enriched = dispatch(&manager, "UserPromptSubmit", json!({"prompt": "hello"})).await.unwrap();
+    assert_eq!(enriched["hookSpecificOutput"]["additionalContext"], "policy-demo: remember the house rules", "{enriched}");
+    // Stop：steer → block；已经多走过一轮（stop_hook_active）时不再拦。
+    let stop = dispatch(&manager, "Stop", json!({"stop_hook_active": false})).await.unwrap();
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(stop["reason"].as_str().unwrap().contains("summarize"));
+    let again = dispatch(&manager, "Stop", json!({"stop_hook_active": true})).await.unwrap();
+    assert_eq!(again, json!({}));
+
+    // 网关：静态提示词追加到 instructions，重复请求不重复追加。
+    let mut body = json!({"model": "gpt-x", "instructions": "base", "input": []});
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert_eq!(body["instructions"], "base\n\nNever run destructive shell commands without asking.");
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert_eq!(body["instructions"], "base\n\nNever run destructive shell commands without asking.");
+
+    // 动态片段：每次请求加载插件求值，变量按请求的模型取值。
+    plugins
+        .set_row_config(&record.id, "dsh-policy-demo", Some(json!({"dynamicPrompt": true, "requireSummary": false})))
+        .unwrap();
+    plugins.reinspect(&record.id, &toolchain).unwrap();
+    let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+    assert_eq!(companion["staticPrompt"], false, "{companion}");
+    let mut body = json!({"model": "gpt-dyn", "instructions": "base"});
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert_eq!(body["instructions"], "base\n\nNever run destructive shell commands without asking. (model: gpt-dyn)");
+    let stop = dispatch(&manager, "Stop", json!({"stop_hook_active": false})).await.unwrap();
+    assert_eq!(stop, json!({}), "改了配置后按新配置运行");
+
+    // 停用插件：配套拓展包一并停用，钩子与网关都不再生效。
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    assert!(manager.enabled_extension_hooks().unwrap().is_empty());
+    let mut body = json!({"instructions": "base"});
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert_eq!(body["instructions"], "base");
+
+    // 移除：配套拓展包移入备份，不留在拓展目录里。
+    plugins.remove(&record.id).unwrap();
+    assert!(plugins.remove_companion(&manager, &record.id).unwrap());
+    assert!(!scripts.path().join("user/dsh-dsh-policy-demo").exists());
+    assert!(std::fs::read_dir(plugins.root().join("backups")).unwrap().any(|entry| {
+        entry.unwrap().file_name().to_string_lossy().starts_with("companion-dsh-dsh-policy-demo")
+    }));
+}
+
+/// 只注册工具的插件不生成配套拓展包；替身缺的导出判为不兼容而不是加载失败。
+#[test]
+fn dsh_tool_only_plugins_need_no_companion() {
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = codex_plus_core::user_scripts::UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("greet-bundle")), &toolchain).unwrap();
+    let plan = dsh_plugins::report_bridge(&record.report);
+    // greet-bundle 只有工具与静态提示词片段：提示词仍要追加，但没有钩子。
+    assert!(plan.hooks.is_empty(), "{plan:?}");
+    assert!(plan.instructions);
+    let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+    assert!(companion["hooks"].as_array().unwrap().is_empty());
+    assert!(manager.enabled_extension_hooks().unwrap().is_empty());
 }

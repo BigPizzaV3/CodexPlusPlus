@@ -1,10 +1,12 @@
 //! 管理器「导入 dsh 插件」入口：导入、启停、配置、移除，以及把 dsh 插件 MCP 接入 Codex。
+//! 插件的系统提示词与事件监听器经配套拓展包（网关中间件 + Codex 钩子）生效，每次变更后同步。
 
 use std::path::Path;
 
 use anyhow::{Context, bail};
 use codex_plus_core::dsh_plugins::{self, DshPlugins, Toolchain};
 use codex_plus_core::settings::SettingsStore;
+use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
 
 #[tauri::command]
@@ -20,7 +22,10 @@ fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
     let plugins = DshPlugins::new(&state_dir);
     let executable = std::env::current_exe().context("无法定位 Codex++ 程序")?;
     let home = codex_plus_core::codex_home::default_codex_home_dir();
+    let manager = crate::commands::default_user_script_manager();
     let mut message = String::new();
+    // 需要同步配套拓展包的插件 id。
+    let mut companion: Option<String> = None;
     match action {
         "snapshot" => {}
         "import" => {
@@ -41,20 +46,26 @@ fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
                 message.push_str("；包里有 MCP 配置，可复制后在 MCP 设置里导入");
             }
             message.push('。');
+            companion = Some(record.id);
         }
         "reinspect" => {
-            plugins.reinspect(text(&payload, "id")?, &Toolchain::detect())?;
+            let id = text(&payload, "id")?;
+            plugins.reinspect(id, &Toolchain::detect())?;
             message = "已重新分析。".to_string();
+            companion = Some(id.to_string());
         }
         "set_enabled" => {
-            plugins.set_enabled(text(&payload, "id")?, flag(&payload, "enabled")?)?;
+            let id = text(&payload, "id")?;
+            plugins.set_enabled(id, flag(&payload, "enabled")?)?;
             message = "已保存，新开 Codex 对话后生效。".to_string();
+            companion = Some(id.to_string());
         }
         "set_row_enabled" => {
             let id = text(&payload, "id")?;
             plugins.set_row_enabled(id, text(&payload, "rowId")?, flag(&payload, "enabled")?)?;
             plugins.reinspect(id, &Toolchain::detect())?;
             message = "已保存，新开 Codex 对话后生效。".to_string();
+            companion = Some(id.to_string());
         }
         "set_config" => {
             let id = text(&payload, "id")?;
@@ -62,6 +73,7 @@ fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
             plugins.set_row_config(id, text(&payload, "rowId")?, config)?;
             plugins.reinspect(id, &Toolchain::detect())?;
             message = "配置已保存并重新分析。".to_string();
+            companion = Some(id.to_string());
         }
         "import_skills" => {
             let id = text(&payload, "id")?;
@@ -80,6 +92,13 @@ fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
             if !record.imported_skills.is_empty() {
                 message.push_str("它导入的 skill 保留在 Skills 页，需要时在那里停用。");
             }
+            match plugins.remove_companion(&manager, &record.id) {
+                Ok(true) => {
+                    sync_hooks(&manager, &mut message);
+                }
+                Ok(false) => {}
+                Err(error) => message.push_str(&format!("配套拓展包未能移除：{error:#}")),
+            }
         }
         "connect_codex" => {
             crate::agent_collaboration_commands::connect_codex(
@@ -93,7 +112,44 @@ fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
         }
         _ => bail!("不支持的 dsh 插件操作：{action}"),
     }
-    snapshot(&plugins, &home, &executable, &state_dir, message)
+    if let Some(id) = companion {
+        match plugins.sync_companion(&manager, &id) {
+            Ok(status) => {
+                if action == "import" && !status.is_null() {
+                    message.push_str(&companion_message(&status));
+                }
+                sync_hooks(&manager, &mut message);
+            }
+            Err(error) => message.push_str(&format!("配套拓展包未能更新：{error:#}")),
+        }
+    }
+    snapshot(&plugins, &manager, &home, &executable, &state_dir, message)
+}
+
+/// 导入时说明映射到了哪里。
+fn companion_message(status: &Value) -> String {
+    let mut parts = Vec::new();
+    if status["instructions"] == true {
+        parts.push("系统提示词经网关追加到 instructions".to_string());
+    }
+    let hooks: Vec<&str> = status["hooks"]
+        .as_array()
+        .map(|hooks| hooks.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if !hooks.is_empty() {
+        parts.push(format!("事件转成 Codex 钩子 {}", hooks.join("、")));
+    }
+    format!("已生成配套拓展「{}」：{}。", status["id"].as_str().unwrap_or_default(), parts.join("；"))
+}
+
+/// 让 Codex 配置里的拓展钩子分发条目与启用中的拓展一致；新增条目时提醒用户去信任。
+fn sync_hooks(manager: &UserScriptManager, message: &mut String) {
+    let hooks = codex_plus_core::extension_hooks::sync_default(manager);
+    if let Some(error) = hooks.get("error").and_then(Value::as_str) {
+        message.push_str(&format!("Codex 钩子配置未能同步：{error}"));
+    } else if hooks["added"].as_array().is_some_and(|added| !added.is_empty()) {
+        message.push_str("Codex 配置里新增了「Codex++ 拓展钩子」，请在 Codex 的 Hooks 设置里信任一次，新开对话生效。");
+    }
 }
 
 fn text<'a>(payload: &'a Value, key: &str) -> anyhow::Result<&'a str> {
@@ -145,6 +201,7 @@ fn import_skills(plugins: &DshPlugins, id: &str, report: &Value) -> anyhow::Resu
 
 fn snapshot(
     plugins: &DshPlugins,
+    manager: &UserScriptManager,
     home: &Path,
     executable: &Path,
     state_dir: &Path,
@@ -161,6 +218,7 @@ fn snapshot(
             item["mcpJson"] = dsh_plugins::mcp_servers_json(&record.report)
                 .map(|value| json!(serde_json::to_string_pretty(&value).unwrap_or_default()))
                 .unwrap_or(Value::Null);
+            item["companion"] = plugins.companion_status(manager, record);
             item
         })
         .collect();

@@ -2793,7 +2793,7 @@ export const EN_PLAIN: Record<string, string> = {
   "导入时会在本机运行插件代码来列出它的工具，插件以你的用户权限运行、没有沙箱。只导入你信任的插件。继续吗？": "Importing runs the plugin's code on this machine to list its tools. Plugins run with your user permissions and no sandbox. Only import plugins you trust. Continue?",
   "导入 dsh 插件": "Import dsh plugin",
   "选择 dsh 插件包目录（含 package.json）": "Choose a dsh plugin package directory (with package.json)",
-  "导入 dsh（deepseek-harness）插件：工具插件经 Codex++ 托管的 MCP 在 Codex 里调用，skill 导入 Codex Skills，MCP 配置可一键复制导入。依赖 dsh agent 循环、会话或模型服务的插件无法在 Codex 里运行，会逐项说明原因。": "Import dsh (deepseek-harness) plugins: tool plugins run in Codex through an MCP server managed by Codex++, skills go into Codex Skills, and MCP configs can be copied and imported. Plugins that need the dsh agent loop, sessions or model services cannot run in Codex; the reason is shown for each one.",
+  "导入 dsh（deepseek-harness）插件：工具插件经 Codex++ 托管的 MCP 在 Codex 里调用，skill 导入 Codex Skills，MCP 配置可一键复制导入；系统提示词与工具前后、回合前后的事件经自动生成的配套拓展转成网关 instructions 与 Codex 钩子。依赖 dsh agent 循环、会话或模型服务的插件无法在 Codex 里运行，会逐项说明原因。": "Import dsh (deepseek-harness) plugins: tool plugins run in Codex through an MCP server managed by Codex++, skills go into Codex Skills, and MCP configs can be copied and imported; system prompts and tool/turn events become gateway instructions and Codex hooks through a generated companion extension. Plugins that need the dsh agent loop, sessions or model services cannot run in Codex; the reason is shown for each one.",
   "插件来源": "Plugin source",
   "npm 包名（如 @scope/dsh-tool-x）、git 地址（可加 #分支&path:子目录）或本地目录绝对路径": "npm package (e.g. @scope/dsh-tool-x), git URL (optionally #branch&path:subdir) or absolute local directory",
   "本地目录": "Local directory",
@@ -2817,6 +2817,14 @@ export const EN_PLAIN: Record<string, string> = {
   "导入 skill": "Import skills",
   "包里有 MCP 配置，复制后可在「MCP」页用 JSON 导入。": "This package has MCP configs; copy them and import the JSON on the MCP page.",
   "复制 MCP JSON": "Copy MCP JSON",
+  "提示词 → instructions": "Prompt → instructions",
+  "系统提示词追加到每次请求的 instructions": "system prompt appended to the instructions of every request",
+  "系统提示词（含动态片段）每次请求求值后追加到 instructions": "system prompt (with dynamic parts) evaluated per request and appended to instructions",
+  "配套拓展包未生成，点「重新分析」重试。": "The companion extension was not generated; click Analyze again to retry.",
+  "拓展总开关已关闭，配套拓展包不会运行。": "Extensions are turned off globally, so the companion extension will not run.",
+  "配套拓展包已停用。": "The companion extension is disabled.",
+  "提示词只对经 Codex++ 本地代理 / 网关发出的请求生效。": "The prompt only applies to requests sent through the Codex++ local proxy / gateway.",
+  "钩子需在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」；每次事件在新进程里加载插件，插件的内存状态不跨事件保留。": "Hooks need “Codex++ extension hooks” trusted in Codex's Hooks settings; each event loads the plugin in a new process, so in-memory plugin state does not carry over between events.",
   // 网关：私有接口订阅与通用 Agent
   "登录失败": "Sign-in failed",
   "当前版本不支持这个订阅": "This version does not support this subscription",
@@ -3217,6 +3225,9 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0} 个 skill": "{0} skills",
   "已导入 Skills：{0}": "Imported skills: {0}",
   "包含 skill：{0}": "Contains skills: {0}",
+  "钩子 {0}": "Hook {0}",
+  "事件转成 Codex 钩子 {0}": "events forwarded as Codex hooks {0}",
+  "配套拓展「{0}」：{1}。": "Companion extension “{0}”: {1}. ",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated
