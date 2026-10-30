@@ -4088,3 +4088,231 @@ describe("图标栏按钮的悬浮提示", () => {
     assert.match(style, /\.codex-plus-rail-tooltip-fallback \{/);
   });
 });
+
+describe("extension rpc frame interception", () => {
+  type Frame = unknown[];
+  type Handler = (...args: any[]) => any;
+
+  async function runtime() {
+    const rpc = await readFile(
+      new URL("../../../assets/inject/renderer-inject/91-extension-rpc.js", import.meta.url), "utf8",
+    );
+    const kernel = await readFile(
+      new URL("../../../assets/inject/renderer-inject/91-extension-runtime.js", import.meta.url), "utf8",
+    );
+    // 用真实的 codex/request 链实现，保证两边语义一致。
+    const waterfall = kernel.slice(kernel.indexOf("  function codexPlusIsThenable(value)"),
+      kernel.indexOf("  /** 通知所有监听者"))
+      + kernel.slice(kernel.indexOf("  function codexPlusRunWaterfall(name, value)"),
+        kernel.indexOf("  /**\n   * Codex 会话事件"));
+    assert.ok(waterfall.includes("function codexPlusRunWaterfall"));
+    const sent: Frame[] = [];
+    const toasts: string[] = [];
+    const failures: string[] = [];
+    class MessagePort {}
+    (MessagePort.prototype as any).postMessage = function (message: Frame) { sent.push(message); };
+    const window: Record<string, unknown> = { MessagePort };
+    const listeners = new Map<string, Set<{ handler: Handler; scriptKey: string }>>();
+    const interceptors = new Map<string, Array<{ handler: Handler; scriptKey: string; order: number; seq: number }>>();
+    const api = new Function("window", "codexPlusExtensionListeners", "codexPlusExtensionInterceptors",
+      "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "showToast",
+      `${waterfall}\n${rpc}\nreturn { codexPlusRpcDecode, codexPlusRpcEncode };`,
+    )(
+      window, listeners, interceptors,
+      (_key: string, label: string, callback: () => unknown) => {
+        try {
+          return { ok: true, value: callback() };
+        } catch (error) {
+          failures.push(`${label}: ${(error as Error).message}`);
+          return { ok: false, error };
+        }
+      },
+      (_key: string, message: string) => failures.push(message),
+      (message: string) => toasts.push(message),
+    );
+    let seq = 0;
+    const on = (name: string, handler: Handler) => {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      listeners.get(name)!.add({ handler, scriptKey: "probe" });
+    };
+    const intercept = (name: string, handler: Handler) => {
+      interceptors.set(name, [...(interceptors.get(name) || []), { handler, scriptKey: "probe", order: 0, seq: ++seq }]);
+    };
+    const port = new MessagePort() as { postMessage: (frame: Frame) => void };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    return { api, window, sent, toasts, failures, on, intercept, port, settle };
+  }
+
+  const settings = { model: "jojocodemax/gpt-6.1-sol", reasoning_effort: "high", developer_instructions: null };
+  const userText = { type: "text", text: "REQTEST hi\n", text_elements: [[{ start: 0, end: 7 }]] };
+  // 宿主发起轮次前回调页面要参数：start.request 即 turn/start 参数，steer 是会话忙时的候选。
+  function turnResolve(exportId: number, messageId = "m-1"): Frame {
+    return ["resolve", exportId, {
+      conversationId: "thread-1",
+      resume: { conversationId: "thread-1", model: null, collaborationMode: { mode: "default", settings: { ...settings } } },
+      steer: { input: [[{ ...userText }]], clientUserMessageId: messageId, restoreMessage: { text: "REQTEST hi" } },
+      start: {
+        request: {
+          threadId: "thread-1", clientUserMessageId: messageId, input: [[{ ...userText }]], model: null, effort: null,
+          collaborationMode: { mode: "default", settings: { ...settings } },
+        },
+        context: { onRequestDispatched: ["export", -799] },
+      },
+    }];
+  }
+
+  it("passes frames through synchronously when no extension listens", async () => {
+    const env = await runtime();
+    const frame = turnResolve(7);
+    env.port.postMessage(frame);
+    assert.equal(env.sent.length, 1);
+    assert.equal(env.sent[0], frame, "the original frame object goes out untouched");
+  });
+
+  it("round-trips capnweb values and keeps tagged values opaque", async () => {
+    const env = await runtime();
+    const encoded = { list: [["a", [["b"]]]], cb: ["export", -3], empty: [[]], n: null };
+    const decoded = env.api.codexPlusRpcDecode(encoded);
+    assert.deepEqual(decoded.list, ["a", ["b"]]);
+    assert.deepEqual(decoded.empty, []);
+    assert.deepEqual(Object.keys(decoded.cb), [], "tagged tuples are not exposed as plain data");
+    assert.deepEqual(env.api.codexPlusRpcEncode(decoded), encoded);
+  });
+
+  it("runs dsh agent/pre-step once per user message and rewrites both turn candidates", async () => {
+    const env = await runtime();
+    const seen: Array<{ method: string; text: string }> = [];
+    let preSteps = 0;
+    env.on("agent/pre-step", async ({ agent, step, messages }: any, next: () => Promise<any>) => {
+      preSteps += 1;
+      assert.equal(agent.session.id, "thread-1");
+      assert.equal(step, 1);
+      assert.equal(messages[0].role, "user");
+      assert.equal(messages[0].content[0].text, "REQTEST hi\n");
+      const decision = await next();
+      return { ...decision, messages: [...decision.messages, { role: "user", content: [{ type: "text", text: "[time]" }] }] };
+    });
+    env.intercept("codex/request", (value: any, next: (v: unknown) => unknown) => {
+      seen.push({ method: value.method, text: value.params.input.map((item: any) => item.text).join("|") });
+      return next(value);
+    });
+    env.port.postMessage(turnResolve(7));
+    const later: Frame = ["push", ["pipeline", -4, ["markRead"], ["thread-1"]]];
+    env.port.postMessage(later);
+    assert.equal(env.sent.length, 0, "frames after a pending rewrite wait for it");
+    await env.settle();
+    assert.equal(env.sent.length, 2);
+    assert.equal(env.sent[1], later, "queued frames keep their order");
+    const value = (env.sent[0] as any)[2];
+    assert.equal(env.sent[0][0], "resolve");
+    assert.equal(env.sent[0][1], 7);
+    for (const input of [value.start.request.input, value.steer.input]) {
+      assert.equal(input.length, 1, "arrays stay capnweb-encoded");
+      assert.deepEqual(input[0][0], userText, "unchanged text keeps its text_elements");
+      assert.deepEqual(input[0][1], { type: "text", text: "[time]", text_elements: [[]] });
+    }
+    assert.deepEqual(value.start.context.onRequestDispatched, ["export", -799]);
+    assert.deepEqual(seen, [
+      { method: "turn/start", text: "REQTEST hi\n|[time]" },
+      { method: "turn/steer", text: "REQTEST hi\n|[time]" },
+    ]);
+
+    // 同一条消息的另一份候选帧复用上面的决定，不再跑 pre-step。
+    env.port.postMessage(turnResolve(8));
+    await env.settle();
+    assert.equal(preSteps, 1);
+    assert.equal((env.sent[2] as any)[2].start.request.input[0].length, 2);
+  });
+
+  it("applies dsh agent/request model and effort to every settings holder", async () => {
+    const env = await runtime();
+    env.on("agent/request", async (_params: unknown, next: () => Promise<any>) => {
+      const config = await next();
+      assert.deepEqual(config, { provider: "jojocodemax", model: "jojocodemax/gpt-6.1-sol", reasoningEffort: "high" });
+      return { ...config, model: "other/gpt-5", reasoningEffort: "low" };
+    });
+    env.port.postMessage(turnResolve(9));
+    await env.settle();
+    const value = (env.sent[0] as any)[2];
+    for (const holder of [value.start.request, value.resume]) {
+      assert.equal(holder.collaborationMode.settings.model, "other/gpt-5");
+      assert.equal(holder.collaborationMode.settings.reasoning_effort, "low");
+    }
+    assert.equal(value.start.request.model, null, "explicit null overrides stay null");
+  });
+
+  it("reads model settings from resume when the host first asks for the steer candidate only", async () => {
+    const env = await runtime();
+    const configs: unknown[] = [];
+    env.on("agent/request", async (_params: unknown, next: () => Promise<any>) => {
+      const config = await next();
+      configs.push(config);
+      return { ...config, reasoningEffort: "low" };
+    });
+    const steerOnly = turnResolve(12, "m-3") as any;
+    delete steerOnly[2].start;
+    env.port.postMessage(steerOnly);
+    env.port.postMessage(turnResolve(13, "m-3"));
+    await env.settle();
+    assert.deepEqual(configs, [{ provider: "jojocodemax", model: "jojocodemax/gpt-6.1-sol", reasoningEffort: "high" }]);
+    assert.equal((env.sent[0] as any)[2].resume.collaborationMode.settings.reasoning_effort, "low");
+    assert.equal((env.sent[1] as any)[2].start.request.collaborationMode.settings.reasoning_effort, "low");
+  });
+
+  it("turns a pre-step rejection into a capnweb reject frame", async () => {
+    const env = await runtime();
+    env.on("agent/pre-step", () => ({ kind: "reject", reason: "blocked by policy" }));
+    env.port.postMessage(turnResolve(10));
+    await env.settle();
+    assert.deepEqual(env.sent[0], ["reject", 10, ["error", "Error", "blocked by policy"]]);
+    assert.deepEqual(env.toasts, ["blocked by policy"]);
+  });
+
+  it("treats the first turn of a new conversation as turn/start", async () => {
+    const env = await runtime();
+    env.intercept("codex/request", (value: any, next: (v: unknown) => unknown) => {
+      if (value.method !== "turn/start") return next(value);
+      return next({ ...value, params: { ...value.params, input: [{ type: "text", text: "（中文）" }, ...value.params.input] } });
+    });
+    const callbacks = { onSettled: ["export", -688] };
+    env.port.postMessage(["push", ["pipeline", -188, ["startConversation"], [{
+      input: [[{ ...userText }]], clientUserMessageId: "m-2", collaborationMode: { mode: "default", settings: { ...settings } },
+    }, callbacks]]]);
+    await env.settle();
+    const [, expr] = env.sent[0] as [string, any[]];
+    assert.deepEqual(expr.slice(0, 3), ["pipeline", -188, ["startConversation"]]);
+    assert.deepEqual(expr[3][0].input, [[{ type: "text", text: "（中文）" }, userText]]);
+    assert.equal(expr[3][1], callbacks, "exported callbacks are forwarded as-is");
+  });
+
+  it("keeps the push id sequence when a new conversation is rejected", async () => {
+    const env = await runtime();
+    env.on("agent/pre-step", async () => ({ kind: "reject" }));
+    env.port.postMessage(["push", ["pipeline", -188, ["startConversation"], [{ input: [[{ ...userText }]] }, {}]]]);
+    await env.settle();
+    assert.deepEqual(env.sent[0], ["push", ["pipeline", -188, ["__codexPlusRejectedByExtension"], []]]);
+  });
+
+  it("routes manager sendRequest calls through codex/request", async () => {
+    const env = await runtime();
+    env.intercept("codex/request", (value: any, next: (v: unknown) => unknown) =>
+      next(value.method === "hooks/list" ? { ...value, params: { cwds: [...value.params.cwds, "/extra"] } } : value));
+    const untouched: Frame = ["push", ["pipeline", -188, ["sendRequest"], ["config/read", { cwd: null }, { priority: "critical" }]]];
+    env.port.postMessage(["push", ["pipeline", -188, ["sendRequest"], ["hooks/list", { cwds: [["/a"]] }]]]);
+    env.port.postMessage(untouched);
+    await env.settle();
+    assert.deepEqual(env.sent[0], ["push", ["pipeline", -188, ["sendRequest"], ["hooks/list", { cwds: [["/a", "/extra"]] }]]]);
+    assert.equal(env.sent[1], untouched, "a request the chain did not change goes out as the same object");
+  });
+
+  it("skips a throwing listener instead of blocking the turn", async () => {
+    const env = await runtime();
+    env.on("agent/pre-step", () => { throw new Error("boom"); });
+    const frame = turnResolve(11);
+    env.port.postMessage(frame);
+    await env.settle();
+    assert.equal(env.sent.length, 1);
+    assert.deepEqual((env.sent[0] as any)[2].start.request.input, (frame as any)[2].start.request.input);
+    assert.ok(env.failures.some((message) => message.includes("boom")));
+  });
+});

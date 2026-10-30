@@ -126,6 +126,11 @@
       "lines": 893
     },
     {
+      "name": "91-extension-rpc.js",
+      "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
+      "lines": 432
+    },
+    {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
       "lines": 553

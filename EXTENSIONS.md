@@ -217,11 +217,47 @@ codexPlus.extension((ctx) => {
 
 - 已转发的事件：`codex/thread/started`、`codex/turn/started`、`codex/turn/completed`、`codex/item/started`、
   `codex/item/completed`、`codex/item/agentMessage/delta`、`codex/error`；处理器参数是通知的原样 `params` 和 `{ method }`。
-- `codex/request` 的值是 `{ method, params }`。这条路径是同步的：中间件必须同步返回，返回 Promise 视为出错并原样放行；
-  只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
-- 已知问题：当前版本的 Codex 上，发起对话轮次（`turn/start`）的请求不经过 Codex++ 捕获到的 app-server 客户端，
-  `codex/request` 暂时拦不到它（其它请求可以）。要改写发给模型的内容，先用「网关请求中间件」。
+- `codex/request` 的值是 `{ method, params }`，只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
+  新版 Codex 的请求经页面与宿主进程之间的 RPC 发出，Codex++ 在这一层拦截，中间件可以返回 Promise，
+  超过 5 秒或出错时原样发出；旧版 Codex 的消息分发路径是同步的，那里返回 Promise 视为出错并原样放行。
+- 一条用户消息会同时备好 `turn/start` 和 `turn/steer` 两份候选（会话空闲时发前者，正在回复时发后者），
+  中间件会各收到一次，要改写用户输入就两种都处理。新会话的首条消息按 `turn/start` 交给中间件，
+  它的 `params` 还带着建会话用的字段（`cwd`、`workspaceRoots` 等），没有 `threadId`。
 - 两者都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
+
+### 步骤准入与模型请求（与 dsh 同名同语义）
+
+`agent/pre-step` 和 `agent/request` 按 dsh 的写法用 `ctx.on` 注册，处理器是 `(params, next)`：
+先 `await next()` 拿到下游的决定，再返回改过的版本。
+
+```js
+codexPlus.extension((ctx) => {
+  // 每条用户消息后面补一条上下文（同 dsh-time-context 的写法）
+  ctx.on("agent/pre-step", async ({ agent, messages, signal }, next) => {
+    const decision = await next();
+    if (decision.kind === "reject" || signal.aborted) return decision;
+    const note = { role: "user", content: [{ type: "text", text: `[now: ${new Date().toISOString()}]` }] };
+    return { ...decision, messages: [...decision.messages, note] };
+  });
+  // 换模型或推理强度
+  ctx.on("agent/request", async (params, next) => {
+    const config = await next();
+    return { ...config, reasoningEffort: "high" };
+  });
+});
+```
+
+- `agent/pre-step`：`params` 是 `{ agent, turn, step, messages, signal, conversationId }`，`messages` 是本轮要进入的用户消息
+  （`{ role: "user", id, source: { kind: "user" }, content: [{ type: "text", text }, …] }`，图片、提及等非文本条目原样在 `content` 里）。
+  返回 `{ kind: "enter", messages }` 改写本轮输入（可以增删消息、改文字），或 `{ kind: "reject", reason? }` 不发这一轮，
+  Codex 会显示发送失败，Codex++ 用 `reason` 弹提示。
+- `agent/request`：`params` 是 `{ agent, turn, step, signal, conversationId }`，`next()` 返回
+  `{ provider, model, reasoningEffort }`。`model` 是 Codex 里的完整模型 id（如 `jojocodemax/gpt-6.1-sol`），`provider` 是斜杠前的部分；
+  改 `model` 或 `reasoningEffort` 会写回本轮的协作模式设置，只改 `provider` 时按「供应商/模型」拼回去。
+- 与 dsh 的差别：Codex 只在用户发消息时经过这里，一轮里的后续步骤（工具调用之后）不会再触发，`step` 恒为 1，`turn` 拿不到（`undefined`）；
+  `agent` 只是 `{ id, session: { id } }` 描述，没有 `steer` / `inject` 等方法；`maxTokens`、`startsRequestSeries` 不生效。
+  处理器抛错时跳过它、按 `next()` 的结果继续，不会挡住 Codex 发消息；全链超过 5 秒按原样发出，`signal` 随之中止。
+- 同一条用户消息只跑一次这两条链，结果套用到它的 `turn/start` 与 `turn/steer` 两份候选上，之后才轮到 `codex/request`。
 
 ### 拓展配置
 
