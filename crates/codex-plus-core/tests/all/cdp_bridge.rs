@@ -3345,7 +3345,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"31\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"32\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3449,9 +3449,9 @@ const pureApiHost = {{
   model: hostModel,
 }};
 patchModelContainer(pureApiHost, "local");
-if (pureApiHost.defaultModel !== savedDefault) process.exit(11);
-if (pureApiHost.defaultModel.defaultReasoningEffort !== "xhigh") process.exit(12);
-if (pureApiHost.default_model !== "outside-provider-list") process.exit(13);
+if (pureApiHost.defaultModel.model !== "supplier-default") process.exit(11);
+if (pureApiHost.defaultModel.defaultReasoningEffort !== "medium") process.exit(12);
+if (pureApiHost.default_model !== "supplier-default") process.exit(13);
 if (pureApiHost.model !== hostModel) process.exit(14);
 if (!pureApiHost.models.some((item) => item.model === "supplier-default")) process.exit(15);
 "#
@@ -3731,8 +3731,8 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
         cases["unfilteredModelScenarios"],
         json!([true, true, true, true, true])
     );
-    assert_eq!(cases["pureApiDefaultModel"], "gpt-unavailable");
-    assert_eq!(cases["pureApiStatsigDefault"], "gpt-unavailable");
+    assert_eq!(cases["pureApiDefaultModel"], "relay-model");
+    assert_eq!(cases["pureApiStatsigDefault"], "relay-model");
     assert_eq!(cases["modelsRestoredAfterModeChange"], true);
     assert_eq!(cases["modelsRestoredAfterReinjection"], true);
     assert_eq!(cases["modelsRestoredAfterCatalogFailure"], true);

@@ -431,7 +431,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "31";
+  const codexAppServerModelRequestPatchVersion = "32";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -5509,7 +5509,6 @@
     const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
     // nullable 字段和仅指定供应商不是模型选择；补供应商时必须同时保留保存的模型设置。
     if (specified(params.model) || (requestedProvider && requestedProvider !== "openai" && requestedProvider !== target)) return params;
-    if (refreshFailed) throw new Error("无法确认当前供应商，请重新打开会话后再试");
     if (specified(params.config?.model)) {
       return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
     }
@@ -5527,22 +5526,30 @@
       if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
       if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
     };
-    const metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
-      { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+    let metadata;
+    let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
+    if (!fallbackReason) {
+      try {
+        metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
+          { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+      } catch {
+        fallbackReason = "metadata_unavailable";
+      }
+    }
     assertUnchanged();
     if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
         || typeof metadata.model !== "string" || !metadata.model.trim()
         || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
         || (metadata.reasoningEffort !== null
           && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
-      throw new Error("无法读取此会话保存的模型设置，未覆盖原有选择");
+      fallbackReason ||= "metadata_unavailable";
     }
     const config = { ...(params.config || {}) };
     delete config.model;
     // null 表示原线程未指定档位，沿用原生默认语义；显式请求设置始终优先。
     if (!specified(config.model_reasoning_effort)) {
       delete config.model_reasoning_effort;
-      if (metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
+      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
     }
     if (sendRequest) {
       // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
@@ -5562,7 +5569,14 @@
         throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
       }
     }
-    const next = { ...params, model: metadata.model, modelProvider: target, config };
+    const next = { ...params, modelProvider: target, config };
+    if (fallbackReason) {
+      // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
+      delete next.model;
+      sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
+    } else {
+      next.model = metadata.model;
+    }
     delete next.model_provider;
     (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
     return next;
@@ -5574,10 +5588,12 @@
       return verifyCodexPureApiResumeResult(String(params.method), params.params, result, hostId);
     }
     if (method !== "thread/resume" || !window.__codexPlusPureApiPreparedResumes?.has(params)) return;
-    if (result?.modelProvider !== params.modelProvider || result?.model !== params.model
+    if (result?.modelProvider !== params.modelProvider || (params.model && result?.model !== params.model)
         || (Object.prototype.hasOwnProperty.call(params.config, "model_reasoning_effort")
           && result?.reasoningEffort !== params.config.model_reasoning_effort)) {
-      throw new Error("会话未采用保存的模型和当前供应商，请重新启动 Codex 后重试");
+      throw new Error(params.model
+        ? "会话未采用保存的模型和当前供应商，请重新启动 Codex 后重试"
+        : "会话未采用当前供应商或指定的推理档位，请重新启动 Codex 后重试");
     }
   }
 
@@ -11626,11 +11642,11 @@
     if (snapshot) snapshot.patched = [...collection];
   }
 
-  function patchModelDefaults(value) {
+  function patchModelDefaults(value, allowed) {
+    const policy = modelFilterPolicy(allowed);
     const previous = codexPlusModelDefaultSnapshots.get(value);
     let changed = false;
-    // 目录只提供选项；宿主默认值和线程选择不能由当前供应商的首个模型接管。
-    if (previous) {
+    if (previous && previous.policy !== policy) {
       for (const [key, state] of Object.entries(previous.fields)) {
         if (value[key] === state.patched && value[key] !== state.original) {
           value[key] = state.original;
@@ -11639,6 +11655,22 @@
       }
       codexPlusModelDefaultSnapshots.delete(value);
     }
+    if (!allowed) return changed;
+    const snapshot = codexPlusModelDefaultSnapshots.get(value) || { policy, fields: {} };
+    const fallback = [codexModelCatalog.model, codexModelCatalog.default_model, ...allowed]
+      .find((name) => typeof name === "string" && allowed.has(name));
+    for (const key of ["defaultModel", "default_model"]) {
+      const original = value[key];
+      const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
+      if (!name || allowed.has(name)) continue;
+      const patched = typeof original === "string" ? fallback : codexPlusModelDescriptor(fallback);
+      if (!snapshot.fields[key] || original !== snapshot.fields[key].patched) {
+        snapshot.fields[key] = { original, patched };
+      }
+      value[key] = patched;
+      changed = true;
+    }
+    codexPlusModelDefaultSnapshots.set(value, snapshot);
     return changed;
   }
 

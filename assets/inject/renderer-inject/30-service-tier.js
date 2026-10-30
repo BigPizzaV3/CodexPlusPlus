@@ -144,7 +144,6 @@
     const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
     // nullable 字段和仅指定供应商不是模型选择；补供应商时必须同时保留保存的模型设置。
     if (specified(params.model) || (requestedProvider && requestedProvider !== "openai" && requestedProvider !== target)) return params;
-    if (refreshFailed) throw new Error("无法确认当前供应商，请重新打开会话后再试");
     if (specified(params.config?.model)) {
       return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
     }
@@ -162,22 +161,30 @@
       if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
       if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
     };
-    const metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
-      { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+    let metadata;
+    let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
+    if (!fallbackReason) {
+      try {
+        metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
+          { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+      } catch {
+        fallbackReason = "metadata_unavailable";
+      }
+    }
     assertUnchanged();
     if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
         || typeof metadata.model !== "string" || !metadata.model.trim()
         || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
         || (metadata.reasoningEffort !== null
           && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
-      throw new Error("无法读取此会话保存的模型设置，未覆盖原有选择");
+      fallbackReason ||= "metadata_unavailable";
     }
     const config = { ...(params.config || {}) };
     delete config.model;
     // null 表示原线程未指定档位，沿用原生默认语义；显式请求设置始终优先。
     if (!specified(config.model_reasoning_effort)) {
       delete config.model_reasoning_effort;
-      if (metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
+      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
     }
     if (sendRequest) {
       // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
@@ -197,7 +204,14 @@
         throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
       }
     }
-    const next = { ...params, model: metadata.model, modelProvider: target, config };
+    const next = { ...params, modelProvider: target, config };
+    if (fallbackReason) {
+      // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
+      delete next.model;
+      sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
+    } else {
+      next.model = metadata.model;
+    }
     delete next.model_provider;
     (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
     return next;
@@ -209,10 +223,12 @@
       return verifyCodexPureApiResumeResult(String(params.method), params.params, result, hostId);
     }
     if (method !== "thread/resume" || !window.__codexPlusPureApiPreparedResumes?.has(params)) return;
-    if (result?.modelProvider !== params.modelProvider || result?.model !== params.model
+    if (result?.modelProvider !== params.modelProvider || (params.model && result?.model !== params.model)
         || (Object.prototype.hasOwnProperty.call(params.config, "model_reasoning_effort")
           && result?.reasoningEffort !== params.config.model_reasoning_effort)) {
-      throw new Error("会话未采用保存的模型和当前供应商，请重新启动 Codex 后重试");
+      throw new Error(params.model
+        ? "会话未采用保存的模型和当前供应商，请重新启动 Codex 后重试"
+        : "会话未采用当前供应商或指定的推理档位，请重新启动 Codex 后重试");
     }
   }
 
