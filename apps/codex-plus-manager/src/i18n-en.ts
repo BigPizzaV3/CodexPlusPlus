@@ -2817,6 +2817,18 @@ export const EN_PLAIN: Record<string, string> = {
   "导入 skill": "Import skills",
   "包里有 MCP 配置，复制后可在「MCP」页用 JSON 导入。": "This package has MCP configs; copy them and import the JSON on the MCP page.",
   "复制 MCP JSON": "Copy MCP JSON",
+  // 网关：私有接口订阅与通用 Agent
+  "登录失败": "Sign-in failed",
+  "当前版本不支持这个订阅": "This version does not support this subscription",
+  "通过模拟官方客户端调用未公开的接口，可能随时失效，也有账号被限制的风险。": "This calls undocumented APIs by acting as the official client. It may stop working at any time, and the account may be restricted.",
+  "粘贴 token、Cookie 或导出的登录文件内容": "Paste a token, cookie, or the contents of an exported sign-in file",
+  "开始登录": "Sign in",
+  "浏览器登录": "Sign in with browser",
+  "验证码登录": "Sign in with a device code",
+  "导入本机客户端的登录": "Import the sign-in from the local client",
+  "粘贴凭据": "Paste credentials",
+  "复制地址": "Copy URL",
+  "复制 token": "Copy token",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.

@@ -79,7 +79,7 @@ const LOGIN_METHOD_LABELS: Record<SubscriptionLoginMethod, string> = {
 };
 
 /** 浏览器登录的订阅各自的命令。 */
-const BROWSER_LOGIN_COMMANDS: Record<"chatgpt" | "chatgpt-api" | "grok", string> = {
+const BROWSER_LOGIN_COMMANDS: Record<string, string> = {
   chatgpt: "login_gateway_chatgpt",
   "chatgpt-api": "login_gateway_chatgpt_api",
   grok: "login_gateway_grok",
@@ -398,7 +398,7 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
         return;
       }
       void notify(title, t("已在浏览器打开登录页，登录完成后回到这里。5 分钟内有效。"), "info");
-      await run(`login:${kind}`, BROWSER_LOGIN_COMMANDS[kind as keyof typeof BROWSER_LOGIN_COMMANDS], skip ? { skipAgents: skip } : undefined, title, false, { background: true });
+      await run(`login:${kind}`, BROWSER_LOGIN_COMMANDS[kind], skip ? { skipAgents: skip } : undefined, title, false, { background: true });
     } finally {
       if (current()) {
         setPending(null);
