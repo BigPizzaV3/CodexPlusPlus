@@ -3607,6 +3607,7 @@
         line-height: 20px;
         overflow-wrap: anywhere;
       }
+      .codex-plus-discovery-description strong { color: var(--codex-plus-text); font-weight: 650; }
       .codex-plus-discovery-toolbar { display: flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; }
       .codex-plus-discovery-search {
         display: flex;
