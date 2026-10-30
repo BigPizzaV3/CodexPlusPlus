@@ -1519,8 +1519,12 @@ span.gw-popover-check {
   cursor: pointer;
 }
 
-.gw-catalog-item:hover:not(:disabled) {
-  background: var(--gw-soft);
+/* 悬停 / 键盘焦点：主题色底 + 描边，深色主题下也一眼能看出指着哪一项。 */
+.gw-portal .gw-catalog-item:hover:not(:disabled),
+.gw-portal .gw-catalog-item:focus-visible {
+  background: hsl(var(--primary) / 0.16);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.55);
+  outline: none;
 }
 
 .gw-catalog-item > span {
