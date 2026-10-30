@@ -179,3 +179,41 @@ fn publishes_end_to_end_against_a_local_remote() {
     assert!(steps.contains(&"取回仓库") && !steps.contains(&"创建仓库"), "{steps:?}");
     assert!(show("v1.0.1:codexpp.json").contains("\"version\": \"1.0.1\""));
 }
+
+/// 真实发布：用本机已登录的 gh 发布到 GitHub，再按社区栏的流程从 GitHub 装回来。
+/// 会建公开仓库，只手动跑：`cargo test -p codex-plus-core --test all extension_publish::live -- --ignored --nocapture`
+#[tokio::test]
+#[ignore]
+async fn live_publish_and_install_from_github() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let manager = manager(root);
+    write_package(root, "publish-smoke-test", json!({
+        "name": "发布流程测试",
+        "description": "Codex++ 一键发布的实测包，可以删除",
+        "version": "0.1.0",
+        "author": "BigPizzaV3",
+        "renderer": "main.js",
+    }), &[("main.js", "codexPlus.extension((ctx) => { ctx.registerCommand({ name: \"publish-smoke\", description: \"发布流程测试\", run: (args, { toast }) => toast(\"发布流程测试\") }); });")]);
+    let publisher = Publisher::new(root).expect("需要本机 gh 与 git");
+    let options = PublishOptions { repo_name: String::new(), license: Some("mit".into()), generate_readme: true };
+    let result = publisher.publish(&manager, "publish-smoke-test", &options);
+    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    assert_eq!(result["ok"], true);
+    let repo = result["repo"].as_str().unwrap().to_string();
+
+    // 社区栏安装流程：按 release → tag 解析版本，下载 release 附件并校验，装进另一个临时目录。
+    let install_root = tempfile::tempdir().unwrap();
+    let installer = UserScriptManager::new(install_root.path().join("builtin"), install_root.path().join("user_scripts"), install_root.path().join("user_scripts.json"));
+    let store = codex_plus_core::extension_discovery::CommunityStore::new(install_root.path());
+    let endpoints = codex_plus_core::extension_discovery::Endpoints::github();
+    let prepared = store.prepare(&endpoints, &installer, &repo).await.unwrap();
+    println!("prepared: tag={} sha={} fromAsset={}", prepared["tag"], prepared["sha"], prepared["fromAsset"]);
+    assert_eq!(prepared["tag"], "v0.1.0");
+    assert_eq!(prepared["fromAsset"], true, "从 release 附件安装（计入下载量）");
+    store.install(&installer, prepared["token"].as_str().unwrap(), true, false).unwrap();
+    let installed: Value = serde_json::from_str(&fs::read_to_string(install_root.path().join("user_scripts/publish-smoke-test/codexpp.json")).unwrap()).unwrap();
+    assert_eq!(installed["repository"], repo.as_str());
+    assert!(install_root.path().join("user_scripts/publish-smoke-test/README.md").is_file());
+    assert!(install_root.path().join("user_scripts/publish-smoke-test/LICENSE").is_file());
+}

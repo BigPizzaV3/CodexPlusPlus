@@ -523,6 +523,10 @@ impl Publisher {
                 other => bail!("不支持的许可证 {other}"),
             };
             let body = step(steps, "取许可证文本", self.gh(&["api", &format!("licenses/{key}"), "--jq", ".body"]))?;
+            // 发布框里只显示许可证名，不刷整段正文。
+            if let Some(last) = steps.last_mut() {
+                last.output = body.lines().next().unwrap_or(key).to_string();
+            }
             let year = 1970 + std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_secs()).unwrap_or(0) / 31_557_600;
             let author = manifest.get("author").and_then(Value::as_str).filter(|author| !author.is_empty()).unwrap_or(&owner).to_string();
             let body = body.replace("[year]", &year.to_string()).replace("[fullname]", &author);
