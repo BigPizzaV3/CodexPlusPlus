@@ -208,6 +208,8 @@ user_scripts/
 | --- | --- |
 | `codexpp_extension_guide` | 创作指南（`assets/extension-creator/guide.md`）、API 版本与可用路由 |
 | `codexpp_extension_list` / `codexpp_extension_read` | 列出拓展与加载状态、读回某个拓展的源码 |
+| `codexpp_extension_inspect` | 只读查看正在运行的 Codex 页面：关键区域概览，或按文字 / 选择器查元素，返回稳定属性与建议选择器 |
+| `codexpp_extension_screenshot` | 截取 Codex 页面的某个元素或整个窗口，写完拓展后确认效果 |
 | `codexpp_extension_write` | 写入 `user_scripts/<id>/`（清单由参数生成），立刻热重载并返回加载状态与报错 |
 | `codexpp_extension_set_enabled` / `codexpp_extension_reload` | 启停、手动热重载 |
 

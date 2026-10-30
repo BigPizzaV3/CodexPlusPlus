@@ -39,10 +39,14 @@ const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const SETTLE_DELAY: Duration = Duration::from_millis(800);
 
 const GUIDE: &str = include_str!("../../../assets/extension-creator/guide.md");
+/// 只读页面查看脚本：以 `(脚本)(参数)` 求值，agent 只能传参数，不能传代码。
+const INSPECT_SCRIPT: &str = include_str!("../../../assets/extension-creator/inspect.js");
+/// 截图宽度上限（CSS 像素），超出时按比例缩小，免得图片撑爆对话。
+const SCREENSHOT_MAX_WIDTH: f64 = 1400.0;
 const EXTENSION_API_SOURCE: &str =
     include_str!("../../../assets/inject/renderer-inject/91-extension-api.js");
 
-const INSTRUCTIONS: &str = "用户想给 Codex 加功能、改界面、做个小工具，或说「做个插件 / 做个拓展」时，用这些工具在对话里直接做出 Codex++ 拓展（注意：这不是 Codex 自带的插件，Codex 插件是 skills/MCP 包，不归这里管）：先调用 codexpp_extension_guide 读创作指南（只需一次），再用 codexpp_extension_write 写入，根据返回的加载状态和报错迭代到能用为止，最后告诉用户在哪里使用。改已有拓展前先 codexpp_extension_read。拓展在用户自己的 Codex 页面里运行，写入前确认需求，不要做用户没要求的事。跟用户交流时称它为「拓展」。";
+const INSTRUCTIONS: &str = "用户想给 Codex 加功能、改界面、做个小工具，或说「做个插件 / 做个拓展」时，用这些工具在对话里直接做出 Codex++ 拓展（注意：这不是 Codex 自带的插件，Codex 插件是 skills/MCP 包，不归这里管）：先调用 codexpp_extension_guide 读创作指南（只需一次）；要改 Codex 原生界面时先用 codexpp_extension_inspect 查清页面结构，不要猜选择器；再用 codexpp_extension_write 写入，写完用 codexpp_extension_screenshot 截图确认效果，根据返回的加载状态和报错迭代到能用为止，最后告诉用户在哪里使用。改已有拓展前先 codexpp_extension_read。拓展在用户自己的 Codex 页面里运行，写入前确认需求，不要做用户没要求的事。跟用户交流时称它为「拓展」。";
 
 /// 服务依赖：拓展目录与 Codex 页面调试端口。端口为空时只写文件、不热重载。
 pub struct ExtensionCreator {
@@ -155,8 +159,14 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
+/// 工具结果里带这个键时，直接作为 MCP content 返回（截图要返回图片块）。
+const MCP_CONTENT_KEY: &str = "__mcpContent";
+
 fn tool_result(result: anyhow::Result<Value>) -> Value {
     match result {
+        Ok(Value::Object(mut object)) if object.contains_key(MCP_CONTENT_KEY) => {
+            json!({"content": object.remove(MCP_CONTENT_KEY).unwrap_or(Value::Null), "isError": false})
+        }
         Ok(value) => json!({"content": [{"type": "text", "text": value.to_string()}], "isError": false}),
         Err(error) => json!({"content": [{"type": "text", "text": format!("{error:#}")}], "isError": true}),
     }
@@ -185,6 +195,35 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {"id": {"type": "string", "description": "拓展 id"}},
                 "required": ["id"],
+                "additionalProperties": false,
+            },
+            "annotations": read_only,
+        },
+        {
+            "name": "codexpp_extension_inspect",
+            "description": "只读查看用户正在运行的 Codex 页面结构，写改动 Codex 原生界面的拓展前先用它认路。不给条件时返回关键区域概览（输入框、输入区按钮、图标栏、顶栏）；给 query 按 aria-label / title / 文字查找，给 selector 按 CSS 选择器查找。每个元素返回稳定属性、建议选择器（只用稳定属性拼成）与带构建哈希、不可依赖的类名。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "按 aria-label、title、placeholder 或文字查找，例如「发送」"},
+                    "selector": {"type": "string", "description": "CSS 选择器"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "最多返回几个元素，默认 20"},
+                    "visibleOnly": {"type": "boolean", "description": "只返回可见元素，默认 true"},
+                    "includeCodexPlus": {"type": "boolean", "description": "是否包含 Codex++ 与拓展自己插入的节点，默认 false"}
+                },
+                "additionalProperties": false,
+            },
+            "annotations": read_only,
+        },
+        {
+            "name": "codexpp_extension_screenshot",
+            "description": "截取用户正在运行的 Codex 页面：给 selector 截那个元素（可加 padding 留边），不给截整个窗口。写完拓展后用它确认效果。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "要截取的元素的 CSS 选择器；省略则截整个窗口"},
+                    "padding": {"type": "integer", "minimum": 0, "maximum": 400, "description": "元素四周留出的像素，默认 16"}
+                },
                 "additionalProperties": false,
             },
             "annotations": read_only,
@@ -260,6 +299,30 @@ struct WriteFile {
     content: String,
 }
 
+#[derive(Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct InspectArguments {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    visible_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    include_codex_plus: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScreenshotArguments {
+    #[serde(default)]
+    selector: Option<String>,
+    #[serde(default)]
+    padding: Option<u32>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IdArguments {
@@ -329,6 +392,17 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
             reload_and_report(creator, &key).await
         }
         "codexpp_extension_reload" => reload_and_report(creator, "").await,
+        "codexpp_extension_inspect" => {
+            let arguments: InspectArguments =
+                serde_json::from_value(arguments).context("codexpp_extension_inspect 参数无效")?;
+            let websocket = codex_page_websocket(&creator.debug_ports).await?;
+            evaluate_value(&websocket, &format!("({})({})", INSPECT_SCRIPT.trim(), serde_json::to_string(&arguments)?)).await
+        }
+        "codexpp_extension_screenshot" => {
+            let arguments: ScreenshotArguments =
+                serde_json::from_value(arguments).context("codexpp_extension_screenshot 参数无效")?;
+            screenshot(&creator.debug_ports, arguments).await
+        }
         _ => anyhow::bail!("未知工具 {name}"),
     }
 }
@@ -387,6 +461,94 @@ async fn reload(creator: &ExtensionCreator) -> Value {
         }
     }
     json!({ "reloaded": false, "reason": last_error })
+}
+
+/// 用户正在运行的 Codex 主页面的 CDP 地址。只认 Codex 主页面，不碰管理器或其他窗口。
+async fn codex_page_websocket(ports: &[u16]) -> anyhow::Result<String> {
+    for port in ports {
+        let Ok(targets) = crate::cdp::list_targets(*port).await else {
+            continue;
+        };
+        if let Some(websocket) = crate::cdp::pick_injectable_codex_page_target(&targets)
+            .ok()
+            .and_then(|target| target.web_socket_debugger_url)
+        {
+            return Ok(websocket);
+        }
+    }
+    anyhow::bail!("没有找到已连接的 Codex 页面：请确认 Codex 由 Codex++ 启动并且正在运行")
+}
+
+async fn evaluate_value(websocket: &str, expression: &str) -> anyhow::Result<Value> {
+    let response = crate::bridge::evaluate_script_return_by_value(websocket, expression).await?;
+    if let Some(exception) = response.pointer("/result/exceptionDetails") {
+        anyhow::bail!(
+            "页面脚本出错：{}",
+            exception
+                .pointer("/exception/description")
+                .and_then(Value::as_str)
+                .unwrap_or("renderer exception")
+        );
+    }
+    Ok(response
+        .pointer("/result/result/value")
+        .cloned()
+        .unwrap_or(Value::Null))
+}
+
+async fn screenshot(ports: &[u16], arguments: ScreenshotArguments) -> anyhow::Result<Value> {
+    let websocket = codex_page_websocket(ports).await?;
+    let padding = f64::from(arguments.padding.unwrap_or(16));
+    // 只读：取元素或视口的位置，不改页面。选择器作为 JSON 字符串传入，不拼进代码。
+    let probe = format!(
+        r#"(() => {{
+  const selector = {selector};
+  const viewport = {{ x: 0, y: 0, width: innerWidth, height: innerHeight }};
+  if (!selector) return {{ found: true, rect: viewport, viewport }};
+  let el = null;
+  try {{ el = document.querySelector(selector); }} catch (error) {{ return {{ found: false, error: "选择器无效：" + error.message }}; }}
+  if (!el) return {{ found: false, error: "页面上没有匹配的元素" }};
+  const r = el.getBoundingClientRect();
+  return {{ found: r.width > 0 && r.height > 0, error: r.width > 0 && r.height > 0 ? "" : "元素不可见（宽或高为 0）", rect: {{ x: r.x, y: r.y, width: r.width, height: r.height }}, viewport }};
+}})()"#,
+        selector = serde_json::to_string(&arguments.selector.clone().unwrap_or_default())?
+    );
+    let located = evaluate_value(&websocket, &probe).await?;
+    if located["found"] != true {
+        anyhow::bail!("{}", located["error"].as_str().unwrap_or("无法定位截图区域"));
+    }
+    let number = |value: &Value| value.as_f64().unwrap_or(0.0);
+    let (view_width, view_height) = (number(&located["viewport"]["width"]), number(&located["viewport"]["height"]));
+    let rect = &located["rect"];
+    let x = (number(&rect["x"]) - padding).max(0.0);
+    let y = (number(&rect["y"]) - padding).max(0.0);
+    let width = (number(&rect["x"]) + number(&rect["width"]) + padding).min(view_width) - x;
+    let height = (number(&rect["y"]) + number(&rect["height"]) + padding).min(view_height) - y;
+    if width <= 0.0 || height <= 0.0 {
+        anyhow::bail!("截图区域在窗口之外");
+    }
+    let scale = (SCREENSHOT_MAX_WIDTH / width).min(1.0);
+    let response = crate::bridge::send_cdp_command(
+        &websocket,
+        "Page.captureScreenshot",
+        json!({
+            "format": "png",
+            "captureBeyondViewport": false,
+            "clip": { "x": x, "y": y, "width": width, "height": height, "scale": scale },
+        }),
+    )
+    .await?;
+    let data = response
+        .pointer("/result/data")
+        .and_then(Value::as_str)
+        .filter(|data| !data.is_empty())
+        .context("Codex 页面没有返回截图")?;
+    Ok(json!({
+        MCP_CONTENT_KEY: [
+            { "type": "image", "data": data, "mimeType": "image/png" },
+            { "type": "text", "text": json!({ "selector": arguments.selector, "clip": { "x": x.round(), "y": y.round(), "width": width.round(), "height": height.round() }, "scale": scale }).to_string() },
+        ]
+    }))
 }
 
 async fn live_status(ports: &[u16]) -> Option<(u16, Value)> {

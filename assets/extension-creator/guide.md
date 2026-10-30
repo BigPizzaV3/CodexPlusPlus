@@ -9,14 +9,17 @@
 
 1. 先弄清用户想要什么：出现在哪里（图标栏整页 / Codex++ 菜单开关或按钮 / 会话行「更多」菜单 / 直接改页面）、
    点了做什么、要不要记住设置。需求含糊时先问，别猜。
-2. 用 `codexpp_extension_write` 写入：给一个简短的英文 `id`（字母数字 `-` `_`），中文 `name` 与 `description`，
+2. 要改 Codex 原生界面时（换图标、改颜色、隐藏或挪动按钮、在输入框旁加东西），先用
+   `codexpp_extension_inspect` 查页面结构，不要凭印象猜选择器。见下文「改 Codex 原生界面」。
+3. 用 `codexpp_extension_write` 写入：给一个简短的英文 `id`（字母数字 `-` `_`），中文 `name` 与 `description`，
    代码放在 `files` 里（默认入口 `renderer.js`）。`codexpp.json` 由工具生成，不要自己写。
-3. 看返回结果里的 `status` / `error`：
-   - `loaded` 且没有 `error`：告诉用户去哪里看（例如「左侧图标栏新出现的 X 入口」）。
+4. 看返回结果里的 `status` / `error`：
+   - `loaded` 且没有 `error`：改了界面的话用 `codexpp_extension_screenshot` 截图确认真的生效（选择器没命中
+     时拓展不会报错，只是没效果），再告诉用户去哪里看（例如「左侧图标栏新出现的 X 入口」）。
    - `failed` 或有 `error`：读错误、改代码、再写一次。同一个 `id` 重复写入会覆盖。
    - `reload.reloaded = false`：按 `reload.reason` 告诉用户需要做什么（通常是在 Codex++ 管理器里点「热重载」）。
-4. 改已有拓展前先 `codexpp_extension_read` 读回现有代码，在它的基础上改。
-5. 不提供删除：用户不想要了就 `codexpp_extension_set_enabled` 停用，并告诉用户拓展目录在哪里、可以手动删除。
+5. 改已有拓展前先 `codexpp_extension_read` 读回现有代码，在它的基础上改。
+6. 不提供删除：用户不想要了就 `codexpp_extension_set_enabled` 停用，并告诉用户拓展目录在哪里、可以手动删除。
 
 ## 代码骨架
 
@@ -46,6 +49,40 @@ codexPlus.extension((ctx) => {
 | `ctx.fail(error)` | 上报 `await` 之后的异步错误，否则管理页看不到 |
 
 `icon` 只接受单个字符（如 `"⏱"`）或 SVG 字符串。每个拓展最多注册 16 项。
+
+## 改 Codex 原生界面
+
+拓展和 Codex 页面同权，原生界面的任何部分都能改，但 Codex 的页面结构没有稳定性承诺，按下面做才不容易失效：
+
+- **先查再写**：`codexpp_extension_inspect` 不带参数给出输入框、输入区按钮、图标栏、顶栏的概览；`query`
+  按 aria-label / 文字找（例如「发送」「语音」），`selector` 验证你写的选择器能命中几个元素。
+- **只用稳定选择器**：用返回结果里的 `selector`（由 aria-label、role、data-* 拼成）。`hashedClasses` 里
+  `_Xxx_1abcd_2` 这种类名带构建哈希，Codex 一发版就变，绝不要用。
+- **外观改动优先纯 CSS**：注入一个 `<style>` 隐藏原图标、用 `::before` / `::after` 放新内容、改颜色尺寸。
+  不动 Codex 的节点，React 重绘也不会冲掉，停用拓展时移除 `<style>` 即恢复原样。
+- **要加节点时**：插在目标旁边而不是替换它（替换会断掉 Codex 绑在节点上的事件），节点带 `data-codex-plus-ext`；
+  目标可能晚出现或被重建（例如发送按钮只在输入框有文字时出现），用 `ctx.effect` 里的 `MutationObserver`
+  监听并在撤销函数里 `disconnect()`。
+- **找不到目标就什么都不做**，不要抛错卡住；改完用 `codexpp_extension_screenshot` 截图确认。
+- 查不到元素时可能是它还没出现：告诉用户需要的状态（例如「先在输入框里打几个字」），再查一次。
+
+示例：把语音按钮的图标换成狗头（选择器以 inspect 实际查到的为准）：
+
+```js
+codexPlus.extension((ctx) => {
+  ctx.effect(() => {
+    const style = document.createElement("style");
+    style.id = "codex-plus-ext-doge-voice-style";
+    style.setAttribute("data-codex-plus-ext", "doge-voice");
+    style.textContent = `
+      button[aria-label="开始新的语音聊天"] svg { display: none; }
+      button[aria-label="开始新的语音聊天"]::after { content: "🐶"; font-size: 18px; line-height: 1; }
+    `;
+    document.head.append(style);
+    return () => style.remove();
+  });
+});
+```
 
 ## 必须遵守
 

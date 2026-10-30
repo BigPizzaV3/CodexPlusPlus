@@ -77,6 +77,8 @@ async fn mcp_handshake_lists_tools_and_ignores_notifications() {
             "codexpp_extension_guide",
             "codexpp_extension_list",
             "codexpp_extension_read",
+            "codexpp_extension_inspect",
+            "codexpp_extension_screenshot",
             "codexpp_extension_write",
             "codexpp_extension_set_enabled",
             "codexpp_extension_reload"
@@ -84,6 +86,14 @@ async fn mcp_handshake_lists_tools_and_ignores_notifications() {
     );
     // 没有删除工具：删除留给用户自己。
     assert!(!names.iter().any(|name| name.contains("delete") || name.contains("remove")));
+    // 页面查看与截图只读；没连 Codex 时如实报错，不伪造结果。
+    for tool in ["codexpp_extension_inspect", "codexpp_extension_screenshot"] {
+        let (error, message) = call(&creator, tool, json!({})).await;
+        assert!(error, "{tool}");
+        assert!(message.as_str().unwrap().contains("没有找到已连接的 Codex 页面"), "{message}");
+    }
+    let (error, message) = call(&creator, "codexpp_extension_inspect", json!({"script": "alert(1)"})).await;
+    assert!(error && message.as_str().unwrap().contains("参数无效"), "不接受代码参数：{message}");
     let unknown = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 3, "method": "resources/list"}))
         .await
         .unwrap();
@@ -202,4 +212,23 @@ async fn write_rejects_unsafe_input_and_reports_manifest_errors() {
     missing.renderer = vec!["renderer.js".to_string()];
     let written = manager.write_extension_package(&missing).unwrap();
     assert!(written["manifestError"].as_str().unwrap().contains("不存在"));
+}
+
+#[test]
+fn inspect_script_is_a_single_function_expression() {
+    // 页面查看脚本以 `(脚本)(参数)` 求值：必须恰好是一个函数表达式，语法错误要在这里暴露，而不是到用户页面上才报。
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = root.join("assets/extension-creator/inspect.js");
+    let output = std::process::Command::new("node")
+        .arg("-e")
+        .arg(r#"
+const source = require("node:fs").readFileSync(process.argv[1], "utf8").trim();
+const fn = new Function(`return (${source});`)();
+if (typeof fn !== "function") throw new Error("inspect.js 不是函数表达式");
+if (/\.(innerHTML|outerHTML|textContent)\s*=[^=]|\.remove\(|\.append|setAttribute\(|\.click\(/.test(source)) throw new Error("inspect.js 必须只读");
+"#)
+        .arg(&script)
+        .output()
+        .expect("node is required");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
