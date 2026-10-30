@@ -15,7 +15,7 @@
    * 不读 DOM；实际挂载发生在 99-tail 之前，那时所有依赖函数都已可用。
    */
   const codexPlusExtensionApiVersion = 1;
-  const codexPlusExtensionAdapterVersion = "1.1.0";
+  const codexPlusExtensionAdapterVersion = "1.2.0";
 
   /** 类名与属性契约。一旦发布不再更名，新增用新名字。 */
   const codexPlusExtensionConstants = {
@@ -170,6 +170,42 @@
   }
 
   /**
+   * 注册一个整页视图，并自动配一个图标栏入口。
+   *
+   * 内置的三个页面（Codex++ / 拓展 / 推荐内容）都是「rail 入口 + 整页」的形态，
+   * 第三方页面沿用同一种形态，用户才不会在弹窗里找入口。抽成独立函数是因为
+   * codexPlus.registerPage 与插件内核的 ctx.registerPage 共用这一套逻辑。
+   */
+  function codexPlusRegisterExtensionPage(definition, options = {}) {
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const pageId = `${scriptKey}:page:${options.id || codexPlusExtensionIdSeed()}`;
+    const disposePage = registerCodexPlusExtension("page", codexPlusRegistry.pages, pageId, definition, scriptKey);
+    // 入口与页面成对存在：页面没了，入口也该消失，否则点了没有任何反应。
+    const entry = {
+      ...definition,
+      label: options.navLabel || definition.navLabel || definition.title || pageId,
+      icon: options.icon || definition.icon,
+      pageId,
+      order: Math.max(1000, Number.isFinite(options.order) ? Number(options.order) : 0),
+    };
+    const navId = `${scriptKey}:navEntry:${pageId}`;
+    let disposeNav = null;
+    try {
+      disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
+    } catch {
+      // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
+    }
+    codexPlusRefreshExtensionHosts();
+    return () => {
+      try {
+        disposeNav?.();
+      } catch {}
+      disposePage();
+      codexPlusRefreshExtensionHosts();
+    };
+  }
+
+  /**
    * 构建对外对象。
    *
    * 拆成函数而不是直接字面量，是为了让 99-tail 之前的挂载点能按顺序装配：
@@ -182,8 +218,12 @@
       constants: codexPlusExtensionConstants,
       // 用 getter 而不是快照：脚本初始化结束后再读也能拿到自己的 key。
       get script() {
-        return { key: codexPlusCurrentExtensionScriptKey() };
+        const key = codexPlusCurrentExtensionScriptKey();
+        return { key, manifest: codexPlusPluginManifest(key) };
       },
+
+      /** 创建一个插件实例：ctx 上的注册都随实例卸载自动撤销，见 91-plugin-runtime.js。 */
+      plugin: codexPlusCreatePlugin,
 
       /** 显示提示。type: info | success | warn | error */
       toast(message, options) {
@@ -231,32 +271,7 @@
        * render 每次打开都被重新调用，不要缓存 DOM（见本文件顶部的生命周期约定）。
        */
       registerPage(definition, options = {}) {
-        const scriptKey = codexPlusCurrentExtensionScriptKey(options);
-        const pageId = `${scriptKey}:page:${options.id || codexPlusExtensionIdSeed()}`;
-        const disposePage = registerCodexPlusExtension("page", codexPlusRegistry.pages, pageId, definition, scriptKey);
-        // 入口与页面成对存在：页面没了，入口也该消失，否则点了没有任何反应。
-        const entry = {
-          ...definition,
-          label: options.navLabel || definition.navLabel || definition.title || pageId,
-          icon: options.icon || definition.icon,
-          pageId,
-          order: Math.max(1000, Number.isFinite(options.order) ? Number(options.order) : 0),
-        };
-        const navId = `${scriptKey}:navEntry:${pageId}`;
-        let disposeNav = null;
-        try {
-          disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
-        } catch {
-          // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
-        }
-        codexPlusRefreshExtensionHosts();
-        return () => {
-          try {
-            disposeNav?.();
-          } catch {}
-          disposePage();
-          codexPlusRefreshExtensionHosts();
-        };
+        return codexPlusRegisterExtensionPage(definition, options);
       },
 
       /** 注册清理函数，热重载时逆序执行。 */

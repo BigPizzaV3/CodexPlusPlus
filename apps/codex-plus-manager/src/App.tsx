@@ -687,6 +687,8 @@ type UserScriptInventory = {
     key: string;
     name: string;
     source: string;
+    kind?: "script" | "package";
+    plugin?: { id: string; version: string; description: string; engine: number; routes: string[] } | null;
     enabled: boolean;
     status: string;
     error: string;
@@ -16128,14 +16130,20 @@ function localScriptStateLabel(state: LocalScriptState): { label: string; hint: 
 /// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
 /// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
 function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; actions: Actions }) {
-  const source = script.market_id ? tf("市场 · {0}", [script.version || t("未知版本")]) : script.source === "builtin" ? t("内置") : t("用户");
-  const canDelete = script.source === "user";
+  const isPackage = script.kind === "package";
+  const source = script.market_id
+    ? tf("市场 · {0}", [script.version || t("未知版本")])
+    : isPackage
+      ? tf("插件包 · {0}", [script.plugin?.version || t("未知版本")])
+      : script.source === "builtin" ? t("内置") : t("用户");
+  // 插件包是文件夹，后端只删单文件，这里不给删除按钮。
+  const canDelete = script.source === "user" && !isPackage;
   const state = localScriptState(script, globalEnabled);
   const { label, hint } = localScriptStateLabel(state);
   const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
   return (
     <div className="table-row user-script-row">
-      <span>{script.name}</span>
+      <span title={script.plugin?.description || undefined}>{script.name}</span>
       <span>{source}</span>
       <div className="user-script-state">
         <label className="relay-bare-switch" title={script.enabled ? t("关闭该脚本") : t("启用该脚本")}>

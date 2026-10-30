@@ -6,7 +6,7 @@ Codex++ 把注入到 Codex 页面里的 UI 能力开放给用户脚本（拓展�
 window.codexPlus
 ```
 
-本文档描述**当前已经可用**的接口。接口版本：`apiVersion = 1`（适配层 `1.0.0`）。
+本文档描述**当前已经可用**的接口。接口版本：`apiVersion = 1`（适配层 `1.2.0`）。
 
 - 想了解设计取舍与已知限制的来龙去脉，见 [docs/specs/2026-09-30-ui-extension-api-design.md](docs/specs/2026-09-30-ui-extension-api-design.md)
 - 类型声明：起 `types/codex-plus-extensions.d.ts`，在脚本开头加 `/// <reference types="./codex-plus-extensions" />` 即可获得编辑器补全
@@ -18,6 +18,7 @@ window.codexPlus
 - [快速上手](#快速上手)
 - [脚本放在哪、怎么生效](#脚本放在哪怎么生效)
 - [生命周期契约（最重要的一节）](#生命周期契约最重要的一节)
+- [插件：codexPlus.plugin 与插件包](#插件codexplusplugin-与插件包)
 - [API 参考](#api-参考)
 - [后端调用与路由白名单](#后端调用与路由白名单)
 - [类名与属性契约](#类名与属性契约)
@@ -76,11 +77,11 @@ window.codexPlus.registerMenuItem({
 | macOS / Linux | `~/.config/Codex++/user_scripts/` |
 | Windows | `%APPDATA%\Codex++\user_scripts\` |
 
-- 只加载 `.js` 文件，按文件名小写排序执行
-- 每个脚本在独立 IIFE 里运行，互不污染
+- 加载 `.js` 文件和带 `codexpp.json` 的子目录（插件包，见下文），按名称小写排序执行
+- 每个脚本 / 插件包在独立 IIFE 里运行，互不污染
 - 改完脚本后在管理页点「热重载拓展」即可生效，无需重启 Codex
 
-脚本标识（`codexPlus.script.key`）形如 `user:my-script.js`，由来源目录与文件名拼成。
+脚本标识（`codexPlus.script.key`）形如 `user:my-script.js`，由来源目录与文件名拼成；插件包是 `user:<目录名>`。
 
 ---
 
@@ -123,6 +124,79 @@ window.codexPlus.onCleanup(() => clearInterval(timer));
 
 ---
 
+## 插件：codexPlus.plugin 与插件包
+
+新写的拓展推荐用 `codexPlus.plugin`。它创建一个插件实例 `ctx`，**ctx 上的每次注册都随实例卸载按逆序自动撤销**，
+不需要自己维护 dispose 列表，热重载时也不会残留旧实例。
+
+```js
+codexPlus.plugin((ctx) => {
+  ctx.registerPage({ title: "时钟", render: ({ container }) => { container.textContent = new Date().toLocaleTimeString(); } });
+  ctx.setInterval(() => ctx.emit("clock/tick", Date.now()), 1000); // 卸载时自动清理
+  ctx.listen(window, "focus", () => ctx.toast("欢迎回来"));        // 卸载时自动 removeEventListener
+  ctx.effect(() => {                                                // 任意副作用：返回撤销函数
+    const observer = new MutationObserver(() => {});
+    observer.observe(document.body, { childList: true });
+    return () => observer.disconnect();
+  });
+});
+```
+
+要点：
+
+- **在脚本同步初始化期间调用**。此时内核会替你登记热重载清理；`await` 之后创建的实例只能自己 `ctx.dispose()`。
+- `apply` 同步抛错时，已做的注册先回滚再把错误抛出（脚本标为加载失败）；异步 `apply` reject 时同样回滚并上报。
+- 回调、事件处理器、中间件抛错都记进本脚本的失败通道，不会影响其他拓展。
+
+| ctx 成员 | 说明 |
+| --- | --- |
+| `effect(fn)` | 立即执行 `fn`，它返回的函数在卸载时调用；返回值可提前撤销 |
+| `registerRowAction / registerNavEntry / registerMenuItem / registerPage` | 同 `codexPlus.register*`，归属与撤销自动处理 |
+| `on(event, handler)` / `emit(event, ...args)` | 插件间事件。内核广播 `plugin/apply`、`plugin/dispose`（参数 `{ id, scriptKey }`） |
+| `intercept(name, handler, { order })` / `waterfall(name, value)` | 中间件链：`handler(value, next)` 调 `next(v)` 交给下一个，不调即短路；出错的中间件被跳过；没有中间件时原样返回 |
+| `listen(target, type, handler, options)` | 自动撤销的 `addEventListener` |
+| `setTimeout / setInterval` | 自动清理的定时器 |
+| `call(route, payload, options)` | 插件包只能调清单里声明的路由；单文件脚本沿用全局白名单 |
+| `toast / fail / dispose` | 提示、上报失败、主动卸载 |
+| `id / scriptKey / manifest / disposed` | 只读信息 |
+
+### 插件包
+
+一个插件可以是一个目录：放在 `user_scripts/` 下，根部有 `codexpp.json`。
+
+```
+user_scripts/
+  clock/
+    codexpp.json
+    renderer.js
+```
+
+```json
+{
+  "id": "clock",
+  "name": "时钟",
+  "version": "0.1.0",
+  "description": "图标栏里的时钟页面",
+  "engines": { "codexpp": 1 },
+  "renderer": ["renderer.js"],
+  "permissions": { "routes": ["/diagnostics/log"] }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 必填，只能包含字母、数字、`-`、`_` |
+| `name` / `version` / `description` | 管理页展示用 |
+| `engines.codexpp` | 需要的 `apiVersion`，高于当前 Codex++ 时不加载并在管理页显示原因 |
+| `renderer` | 字符串或数组，必须是包内相对路径；按顺序拼进同一个作用域执行 |
+| `permissions.routes` | `ctx.call` 能调的路由，需在[路由白名单](#后端调用与路由白名单)内。这是声明约束而不是安全边界 |
+
+清单不合法（JSON 错误、入口越出包目录、版本不兼容等）时包不注入，管理页显示「加载失败」和原因。
+未知字段会被忽略，后续版本会在清单里增加更多能力面。插件包是文件夹，管理页不提供删除按钮，请在目录里手动移除。
+整体设计见 [docs/plans/2026-10-30-codexpp-plugin-system-design.md](docs/plans/2026-10-30-codexpp-plugin-system-design.md)。
+
+---
+
 ## API 参考
 
 ### `codexPlus.version` / `codexPlus.apiVersion`
@@ -138,7 +212,7 @@ if (window.codexPlus.apiVersion < 1) {
 
 ### `codexPlus.script`
 
-`{ key: string }`，当前脚本的标识。用于诊断与日志。是 getter，脚本初始化结束后再读也能拿到。
+`{ key: string, manifest }`，当前脚本的标识与清单（插件包才有，单文件脚本为 `null`）。用于诊断与日志。是 getter，脚本初始化结束后再读也能拿到。
 
 ### `codexPlus.toast(message, options?)`
 

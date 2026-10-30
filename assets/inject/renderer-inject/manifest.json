@@ -118,7 +118,12 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 275
+      "lines": 290
+    },
+    {
+      "name": "91-plugin-runtime.js",
+      "description": "插件运行时内核 codexPlus.plugin：实例寿命、自动撤销、事件总线与 waterfall 中间件",
+      "lines": 269
     },
     {
       "name": "92-extension-host.js",

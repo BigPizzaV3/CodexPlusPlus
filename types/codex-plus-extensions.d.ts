@@ -83,8 +83,17 @@ interface CodexPlusExtensionApi {
   readonly version: string;
   /** 接口契约版本。后端契约变化时增加，脚本可据此提示用户升级。 */
   readonly apiVersion: number;
-  /** 当前脚本的标识，形如 `user:my-script.js`。 */
-  readonly script: { readonly key: string };
+  /** 当前脚本的标识，形如 `user:my-script.js`；插件包附带清单，单文件脚本为 null。 */
+  readonly script: { readonly key: string; readonly manifest: CodexPlusPluginManifest | null };
+
+  /**
+   * 创建一个插件实例。ctx 上的每次注册都随实例卸载按逆序自动撤销；
+   * 在脚本同步初始化期间调用时，热重载会自动卸载旧实例。
+   */
+  plugin(
+    definition: ((ctx: CodexPlusPluginContext) => void | Promise<void>) | CodexPlusPluginDefinition,
+    options?: { id?: string; scriptKey?: string },
+  ): CodexPlusPluginContext;
 
   /** 稳定的类名与属性契约。这些值一旦发布不再更名。 */
   readonly constants: {
@@ -141,6 +150,60 @@ interface CodexPlusExtensionApi {
    * 需要用这个方法上报，管理页才能显示出来。
    */
   fail(error: unknown): void;
+}
+
+/** `codexpp.json` 中下发给页面的字段。 */
+interface CodexPlusPluginManifest {
+  id: string;
+  name: string | null;
+  version: string;
+  description: string;
+  engines: { codexpp: number };
+  permissions: { routes: string[] };
+}
+
+interface CodexPlusPluginDefinition {
+  id?: string;
+  apply(ctx: CodexPlusPluginContext): void | Promise<void>;
+}
+
+/** waterfall 中间件：调 next(v) 交给下一个，不调即短路。 */
+type CodexPlusInterceptor<T = unknown> = (value: T, next: (value?: T) => T | Promise<T>) => T | Promise<T>;
+
+interface CodexPlusPluginContext {
+  readonly id: string;
+  readonly scriptKey: string;
+  readonly manifest: CodexPlusPluginManifest | null;
+  readonly disposed: boolean;
+
+  /** 立即执行 fn；它返回的函数在卸载时调用。返回值可提前撤销。 */
+  effect(fn: () => void | (() => void)): CodexPlusDispose;
+
+  registerRowAction(definition: CodexPlusRowActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerNavEntry(definition: CodexPlusNavEntryDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  /** 定义形态同 codexPlus.registerMenuItem：开关给 onChange，按钮给 onActivate。 */
+  registerMenuItem(definition: Record<string, unknown>, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerPage(definition: CodexPlusPageDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+
+  /** 插件间事件。内核广播 `plugin/apply`、`plugin/dispose`，参数为 `{ id, scriptKey }`。 */
+  on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;
+  emit(event: string, ...args: unknown[]): void;
+
+  /** 往名为 name 的中间件链挂一个中间件，order 小的先执行。 */
+  intercept<T = unknown>(name: string, handler: CodexPlusInterceptor<T>, options?: { order?: number }): CodexPlusDispose;
+  /** 跑一条中间件链；没有中间件时原样返回 value。 */
+  waterfall<T = unknown>(name: string, value: T): T | Promise<T>;
+
+  listen(target: EventTarget, type: string, handler: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): CodexPlusDispose;
+  setTimeout(handler: (...args: any[]) => void, delay?: number, ...args: unknown[]): CodexPlusDispose;
+  setInterval(handler: (...args: any[]) => void, delay?: number, ...args: unknown[]): CodexPlusDispose;
+
+  /** 包插件只能调 codexpp.json `permissions.routes` 里声明的路由。 */
+  call<T = unknown>(route: CodexPlusExtensionRoute, payload?: Record<string, unknown>, options?: CodexPlusCallOptions): Promise<T>;
+  toast(message: string, options?: CodexPlusToastOptions): { ok: boolean; value?: CodexPlusDispose };
+  fail(error: unknown): void;
+  /** 主动卸载。重复调用无效果。 */
+  dispose(): void;
 }
 
 interface Window {

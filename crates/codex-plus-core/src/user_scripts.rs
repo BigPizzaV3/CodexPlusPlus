@@ -12,6 +12,13 @@ use crate::script_market::MarketScript;
 pub const BOOTSTRAP_SCRIPT: &str = include_str!("../../../assets/inject/user-scripts-bootstrap.js");
 const RUNTIME_SCRIPT: &str = include_str!("../../../assets/inject/user-scripts-runtime.js");
 
+/// 拓展 API 契约版本，必须与 `91-extension-api.js` 的 `codexPlusExtensionApiVersion` 一致。
+/// 插件包在 `codexpp.json` 的 `engines.codexpp` 里声明需要的版本，高于此值的不加载。
+pub const EXTENSION_API_VERSION: u64 = 1;
+
+/// 插件包的清单文件名。目录里有它，目录才被当成插件包。
+pub const PLUGIN_MANIFEST_FILE: &str = "codexpp.json";
+
 /// 一次性连接当前 Codex 页面；不增加轮询，也不接管 launcher 的桥接连接。
 pub async fn reload_live_scripts(
     debug_port: u16,
@@ -233,6 +240,10 @@ impl UserScriptManager {
             anyhow::bail!("invalid user script key");
         }
         let path = self.user_dir.join(file_name);
+        // 插件包是目录。删除只做单文件，目录交给用户在文件夹里自己处理。
+        if path.is_dir() {
+            anyhow::bail!("插件包是一个文件夹，请在用户脚本目录中手动移除：{}", path.display());
+        }
         let canonical_user_dir = self
             .user_dir
             .canonicalize()
@@ -323,8 +334,14 @@ impl UserScriptManager {
             if !script.enabled {
                 continue;
             }
-            let source = fs::read_to_string(&script.path)
-                .unwrap_or_else(|error| format!("throw new Error({});", json!(error.to_string())));
+            let source = match &script.package {
+                // 清单不合法或版本不兼容的包不注入，原因在管理页显示。
+                Some(package) if package.error.is_some() => continue,
+                Some(package) => package_source(package),
+                None => fs::read_to_string(&script.path).unwrap_or_else(|error| {
+                    format!("throw new Error({});", json!(error.to_string()))
+                }),
+            };
             blocks.push(wrap_script(&script, &source));
         }
         Ok(blocks.join("\n"))
@@ -383,13 +400,19 @@ impl UserScriptManager {
             .into_iter()
             .map(|script| {
                 let market = config.market.get(&script.key);
+                let package_error = script
+                    .package
+                    .as_ref()
+                    .and_then(|package| package.error.as_deref());
                 let fallback_status = if !config.enabled || !script.enabled {
                     "disabled"
+                } else if package_error.is_some() {
+                    "failed"
                 } else {
                     "not_loaded"
                 };
                 let live = runtime_scripts.and_then(|items| items.get(&script.key));
-                let status = if fallback_status == "disabled" {
+                let status = if fallback_status == "disabled" || package_error.is_some() {
                     fallback_status
                 } else {
                     live.and_then(|item| item.get("status").and_then(Value::as_str))
@@ -397,6 +420,8 @@ impl UserScriptManager {
                 };
                 let error = if fallback_status == "disabled" {
                     ""
+                } else if let Some(error) = package_error {
+                    error
                 } else {
                     live.and_then(|item| item.get("error").and_then(Value::as_str))
                         .unwrap_or("")
@@ -405,6 +430,8 @@ impl UserScriptManager {
                     "key": script.key,
                     "name": script.name,
                     "source": script.source,
+                    "kind": if script.package.is_some() { "package" } else { "script" },
+                    "plugin": script.package.as_ref().map(|package| package.summary()),
                     "enabled": script.enabled,
                     "status": status,
                     "error": error,
@@ -441,10 +468,19 @@ impl UserScriptManager {
         let Ok(entries) = fs::read_dir(directory) else {
             return Ok(());
         };
+        // 单文件脚本是 `*.js`；插件包是带 codexpp.json 的子目录。目录名以 .js 结尾的
+        // 不当包处理，免得和同名脚本文件抢同一个 key。
         let mut paths = entries
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("js"))
+            .filter(|path| {
+                let is_js = path.extension().and_then(|value| value.to_str()) == Some("js");
+                if path.is_dir() {
+                    !is_js && path.join(PLUGIN_MANIFEST_FILE).is_file()
+                } else {
+                    is_js
+                }
+            })
             .collect::<Vec<_>>();
         paths.sort_by_key(|path| {
             path.file_name()
@@ -458,12 +494,17 @@ impl UserScriptManager {
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_default();
             let key = format!("{source}:{name}");
+            let package = path.is_dir().then(|| load_plugin_package(&path));
             scripts.push(UserScriptFile {
                 enabled: config.scripts.get(&key).copied().unwrap_or(true),
                 key,
-                name,
+                name: package
+                    .as_ref()
+                    .and_then(|package| package.name.clone())
+                    .unwrap_or(name),
                 source: source.to_string(),
                 path,
+                package,
             });
         }
         Ok(())
@@ -477,6 +518,166 @@ struct UserScriptFile {
     source: String,
     path: PathBuf,
     enabled: bool,
+    package: Option<PluginPackage>,
+}
+
+/// 一个插件包：目录 + `codexpp.json`。
+///
+/// 清单有问题时仍然返回包（`error` 非空），让它出现在管理页上并显示原因，
+/// 而不是悄无声息地消失。
+#[derive(Debug)]
+struct PluginPackage {
+    id: String,
+    name: Option<String>,
+    version: String,
+    description: String,
+    engine: u64,
+    routes: Vec<String>,
+    renderer: Vec<PathBuf>,
+    error: Option<String>,
+}
+
+impl PluginPackage {
+    fn summary(&self) -> Value {
+        json!({
+            "id": self.id,
+            "version": self.version,
+            "description": self.description,
+            "engine": self.engine,
+            "routes": self.routes,
+        })
+    }
+
+    /// 交给 renderer 的清单：只放展示与权限需要的字段，不带本机路径。
+    fn renderer_manifest(&self) -> Value {
+        json!({
+            "id": self.id,
+            "name": self.name,
+            "version": self.version,
+            "description": self.description,
+            "engines": { "codexpp": self.engine },
+            "permissions": { "routes": self.routes },
+        })
+    }
+}
+
+fn load_plugin_package(directory: &std::path::Path) -> PluginPackage {
+    let mut package = PluginPackage {
+        id: String::new(),
+        name: None,
+        version: String::new(),
+        description: String::new(),
+        engine: EXTENSION_API_VERSION,
+        routes: Vec::new(),
+        renderer: Vec::new(),
+        error: None,
+    };
+    if let Err(error) = parse_plugin_manifest(directory, &mut package) {
+        package.error = Some(error.to_string());
+    }
+    package
+}
+
+fn parse_plugin_manifest(
+    directory: &std::path::Path,
+    package: &mut PluginPackage,
+) -> anyhow::Result<()> {
+    let text = fs::read_to_string(directory.join(PLUGIN_MANIFEST_FILE))
+        .with_context(|| format!("读取 {PLUGIN_MANIFEST_FILE} 失败"))?;
+    let Value::Object(raw) = serde_json::from_str::<Value>(&text)
+        .with_context(|| format!("{PLUGIN_MANIFEST_FILE} 不是合法的 JSON"))?
+    else {
+        anyhow::bail!("{PLUGIN_MANIFEST_FILE} 顶层必须是对象");
+    };
+    package.name = string_field(&raw, "name");
+    package.version = string_field(&raw, "version").unwrap_or_default();
+    package.description = string_field(&raw, "description").unwrap_or_default();
+    package.id = string_field(&raw, "id").unwrap_or_default();
+    if package.id.is_empty()
+        || !package
+            .id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        anyhow::bail!("清单的 id 必填，且只能包含字母、数字、- 和 _");
+    }
+    if let Some(engine) = raw.get("engines").and_then(|engines| engines.get("codexpp")) {
+        package.engine = engine
+            .as_u64()
+            .context("engines.codexpp 必须是正整数（拓展 API 版本）")?;
+    }
+    package.routes = match raw.get("permissions").and_then(|value| value.get("routes")) {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(ToOwned::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .context("permissions.routes 只能是字符串数组")?,
+        Some(_) => anyhow::bail!("permissions.routes 只能是字符串数组"),
+    };
+    let entries = match raw.get("renderer") {
+        None => Vec::new(),
+        Some(Value::String(entry)) => vec![entry.clone()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(ToOwned::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .context("renderer 只能是字符串或字符串数组")?,
+        Some(_) => anyhow::bail!("renderer 只能是字符串或字符串数组"),
+    };
+    if entries.is_empty() {
+        anyhow::bail!("清单没有声明 renderer 入口");
+    }
+    let root = directory
+        .canonicalize()
+        .with_context(|| format!("无法解析插件目录 {}", directory.display()))?;
+    package.renderer = entries
+        .iter()
+        .map(|entry| resolve_package_entry(&root, entry))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    // 版本校验放在最后：清单本身的格式错误更具体，优先报。
+    if package.engine > EXTENSION_API_VERSION {
+        anyhow::bail!(
+            "需要拓展 API v{}，当前 Codex++ 提供 v{}，请升级 Codex++",
+            package.engine,
+            EXTENSION_API_VERSION
+        );
+    }
+    Ok(())
+}
+
+/// 入口只能指向包内的文件：拒绝绝对路径、`..`，以及经软链逃出包目录的路径。
+fn resolve_package_entry(root: &std::path::Path, entry: &str) -> anyhow::Result<PathBuf> {
+    let relative = std::path::Path::new(entry);
+    if entry.trim().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("renderer 入口 {entry} 必须是包内的相对路径");
+    }
+    let resolved = root
+        .join(relative)
+        .canonicalize()
+        .with_context(|| format!("renderer 入口 {entry} 不存在"))?;
+    if !resolved.starts_with(root) || !resolved.is_file() {
+        anyhow::bail!("renderer 入口 {entry} 必须是包内的文件");
+    }
+    Ok(resolved)
+}
+
+/// 包的各个入口按清单顺序拼进同一个作用域，相当于一次简单打包。
+fn package_source(package: &PluginPackage) -> String {
+    package
+        .renderer
+        .iter()
+        .map(|path| {
+            fs::read_to_string(path)
+                .unwrap_or_else(|error| format!("throw new Error({});", json!(error.to_string())))
+        })
+        .collect::<Vec<_>>()
+        .join("\n;\n")
 }
 
 fn wrap_script(script: &UserScriptFile, source: &str) -> String {
@@ -488,7 +689,7 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
   window.__codexPlusUserScripts = window.__codexPlusUserScripts || {{ scripts: {{}} }};
   const key = {key};
   window.__codexPlusUserScripts.currentKey = key;
-  window.__codexPlusUserScripts.scripts[key] = {{ key, name: {name}, source: {source_name}, status: "loading", error: "", loadedAt: new Date().toISOString() }};
+  window.__codexPlusUserScripts.scripts[key] = {{ key, name: {name}, source: {source_name}, manifest: {manifest}, status: "loading", error: "", loadedAt: new Date().toISOString() }};
   try {{
 {source}
     window.__codexPlusUserScripts.scripts[key].status = "loaded";
@@ -504,6 +705,11 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
         key = json!(script.key).to_string(),
         name = json!(script.name).to_string(),
         source_name = json!(script.source).to_string(),
+        manifest = script
+            .package
+            .as_ref()
+            .map(PluginPackage::renderer_manifest)
+            .unwrap_or(Value::Null),
         source = source
     )
 }
@@ -607,6 +813,16 @@ mod runtime_status_tests {
             url: url.to_string(),
             web_socket_debugger_url: Some(websocket.to_string()),
         }
+    }
+
+    #[test]
+    fn extension_api_version_matches_renderer_contract() {
+        let api = include_str!("../../../assets/inject/renderer-inject/91-extension-api.js");
+        let expected = format!("const codexPlusExtensionApiVersion = {EXTENSION_API_VERSION};");
+        assert!(
+            api.contains(&expected),
+            "EXTENSION_API_VERSION 与 91-extension-api.js 不一致"
+        );
     }
 
     #[test]

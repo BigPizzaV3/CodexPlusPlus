@@ -3086,6 +3086,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "日志大小 {0}": "Log size {0}",
   "日志大小 {0}，仅显示末尾 {1} 行": "Log size {0}; showing only the last {1} lines",
   "市场 · {0}": "Marketplace · {0}",
+  "插件包 · {0}": "Plugin · {0}",
   "当前版本 {0}": "Current version {0}",
   "第 {0} 页": "Page {0}",
   "第 {0} 页，每页最多 {1} 条，按更新时间倒序显示": "Page {0}, up to {1} sessions per page, newest first",

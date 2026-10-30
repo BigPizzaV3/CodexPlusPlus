@@ -3390,3 +3390,232 @@ return {
     assert.deepEqual(stateCalls.map((call) => call.method), ["get-setting", "set-setting"]);
   });
 });
+
+/**
+ * 插件运行时内核（91-plugin-runtime.js）。
+ *
+ * 内核承诺「ctx 上的注册随实例卸载自动撤销」，这是热重载不残留旧实例的前提；
+ * waterfall 的短路、出错跳过语义是宿主后续挂协议中间件的基础，都要守住。
+ */
+describe("插件运行时内核", () => {
+  async function kernel(options: { scriptKey?: string; manifest?: unknown; initializing?: boolean } = {}) {
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/91-plugin-runtime.js", import.meta.url), "utf8",
+    );
+    const scriptKey = options.scriptKey ?? "user:demo";
+    const cleanups: Array<() => void> = [];
+    const failures: Array<{ scriptKey: string; message: string }> = [];
+    const registered: Array<{ kind: string; scriptKey: string; disposed: boolean }> = [];
+    const calls: string[] = [];
+    const toasts: string[] = [];
+    const timers = new Map<number, () => void>();
+    let timerId = 0;
+    const window = {
+      __codexPlusUserScripts: {
+        currentKey: options.initializing === false ? null : scriptKey,
+        scripts: { [scriptKey]: { manifest: options.manifest ?? null } },
+        registerCleanup: (fn: () => void) => cleanups.push(fn),
+      },
+      setTimeout: (fn: () => void) => { const id = ++timerId; timers.set(id, fn); return id; },
+      clearTimeout: (id: number) => timers.delete(id),
+      setInterval: (fn: () => void) => { const id = ++timerId; timers.set(id, fn); return id; },
+      clearInterval: (id: number) => timers.delete(id),
+    };
+    const register = (kind: string, itemOptions: { scriptKey: string }) => {
+      const item = { kind, scriptKey: itemOptions.scriptKey, disposed: false };
+      registered.push(item);
+      return () => { item.disposed = true; };
+    };
+    const api = new Function(
+      "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegistry", "codexPlusExtensionCall", "showToast",
+      `${source}\nreturn { create: codexPlusCreatePlugin, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitPluginEvent, instances: codexPlusPluginInstances };`,
+    )(
+      window,
+      (key: string, label: string, callback: () => unknown) => {
+        try {
+          return { ok: true, value: callback() };
+        } catch (error) {
+          failures.push({ scriptKey: key, message: `${label}: ${(error as Error).message}` });
+          return { ok: false, error: String(error) };
+        }
+      },
+      (key: string, message: string) => failures.push({ scriptKey: key, message }),
+      (itemOptions?: { scriptKey?: string }) => itemOptions?.scriptKey || window.__codexPlusUserScripts.currentKey || "",
+      (kind: string, _registry: unknown, _definition: unknown, itemOptions: { scriptKey: string }) => register(kind, itemOptions),
+      (_definition: unknown, itemOptions: { scriptKey: string }) => register("page", itemOptions),
+      { rowActions: new Map(), navEntries: new Map(), menuItems: new Map() },
+      (route: string) => { calls.push(route); return Promise.resolve({ status: "ok" }); },
+      (message: string) => toasts.push(message),
+    ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown> };
+    return { ...api, window, cleanups, failures, registered, calls, toasts, timers };
+  }
+
+  it("卸载时按注册逆序撤销全部副作用，归属绑定到当前脚本", async () => {
+    const k = await kernel();
+    const order: string[] = [];
+    const listeners: string[] = [];
+    const target = {
+      addEventListener: (type: string) => listeners.push(`+${type}`),
+      removeEventListener: (type: string) => listeners.push(`-${type}`),
+    };
+    const ctx = k.create((ctx: any) => {
+      ctx.effect(() => () => order.push("first"));
+      ctx.registerPage({ title: "页" });
+      ctx.registerRowAction({ onActivate() {} });
+      ctx.listen(target, "focus", () => {});
+      ctx.setInterval(() => {}, 1000);
+      ctx.effect(() => () => order.push("last"));
+    });
+    assert.equal(ctx.id, "user:demo");
+    assert.deepEqual(k.registered.map((item) => [item.kind, item.scriptKey]), [["page", "user:demo"], ["rowAction", "user:demo"]]);
+    assert.equal(k.timers.size, 1);
+    // 同步初始化期间创建：已登记到用户脚本运行时，热重载时整体卸载。
+    assert.equal(k.cleanups.length, 1);
+    k.cleanups[0]();
+    assert.deepEqual(order, ["last", "first"]);
+    assert.ok(k.registered.every((item) => item.disposed));
+    assert.deepEqual(listeners, ["+focus", "-focus"]);
+    assert.equal(k.timers.size, 0);
+    assert.equal(ctx.disposed, true);
+    assert.equal(k.instances.size, 0);
+    ctx.dispose();
+    assert.deepEqual(order, ["last", "first"], "重复卸载不再执行撤销");
+    // 卸载后的注册立刻撤销，不会泄漏。
+    let late = false;
+    ctx.effect(() => () => { late = true; });
+    assert.equal(late, true);
+  });
+
+  it("提前撤销只撤销那一项；撤销抛错不中断其余撤销", async () => {
+    const k = await kernel();
+    const order: string[] = [];
+    const ctx = k.create((ctx: any) => {
+      ctx.effect(() => () => order.push("a"));
+      const revoke = ctx.effect(() => () => order.push("b"));
+      ctx.effect(() => () => { throw new Error("坏撤销"); });
+      revoke();
+    });
+    assert.deepEqual(order, ["b"]);
+    ctx.dispose();
+    assert.deepEqual(order, ["b", "a"]);
+    assert.match(k.failures[0].message, /坏撤销/);
+  });
+
+  it("await 之后创建的实例不登记热重载清理", async () => {
+    const k = await kernel({ initializing: false });
+    const ctx = k.create({ id: "late", apply() {} }, { scriptKey: "user:demo" });
+    assert.equal(ctx.id, "late");
+    assert.equal(k.cleanups.length, 0);
+  });
+
+  it("事件总线：处理器互相隔离，卸载后不再收到；广播生命周期事件", async () => {
+    const k = await kernel();
+    const seen: string[] = [];
+    const lifecycle: string[] = [];
+    k.create((ctx: any) => {
+      ctx.on("plugin/apply", (info: { id: string }) => lifecycle.push(`apply:${info.id}`));
+      ctx.on("plugin/dispose", (info: { id: string }) => lifecycle.push(`dispose:${info.id}`));
+    }, { id: "observer" });
+    const emitter = k.create((ctx: any) => {
+      ctx.on("ping", () => { throw new Error("坏处理器"); });
+      ctx.on("ping", (value: string) => seen.push(value));
+    }, { id: "emitter" });
+    emitter.emit("ping", "1");
+    assert.deepEqual(seen, ["1"]);
+    assert.equal(k.failures.length, 1);
+    emitter.dispose();
+    k.emit("ping", ["2"]);
+    assert.deepEqual(seen, ["1"]);
+    // apply 事件在 apply 返回后广播，插件自己也能收到。
+    assert.deepEqual(lifecycle, ["apply:observer", "apply:emitter", "dispose:emitter"]);
+  });
+
+  it("waterfall：按 order 串联、可短路、出错跳过且下游只执行一次", async () => {
+    const k = await kernel();
+    assert.equal(k.waterfall("greet", "hi"), "hi", "没有中间件时原样返回");
+    let downstreamRuns = 0;
+    const ctx = k.create((ctx: any) => {
+      ctx.intercept("greet", (value: string, next: (v: string) => string) => next(`${value}!`), { order: 10 });
+      ctx.intercept("greet", (value: string, next: (v: string) => string) => next(`<${value}>`), { order: -1 });
+      ctx.intercept("greet", (value: string) => { downstreamRuns++; return `${value}#`; }, { order: 20 });
+    });
+    assert.equal(ctx.waterfall("greet", "hi"), "<hi>!#");
+    const short = k.create((ctx: any) => ctx.intercept("greet", () => "stop", { order: -5 }));
+    assert.equal(k.waterfall("greet", "hi"), "stop");
+    short.dispose();
+    const broken = k.create((ctx: any) => {
+      ctx.intercept("greet", () => { throw new Error("前置出错"); }, { order: -9 });
+      ctx.intercept("greet", (value: string, next: (v: string) => string) => { next(value); throw new Error("后置出错"); }, { order: 15 });
+    });
+    downstreamRuns = 0;
+    assert.equal(k.waterfall("greet", "hi"), "<hi>!#");
+    assert.equal(downstreamRuns, 1, "已调过 next 的中间件出错时沿用下游结果");
+    assert.equal(k.failures.length, 2);
+    broken.dispose();
+    ctx.dispose();
+    assert.equal(k.waterfall("greet", "hi"), "hi");
+  });
+
+  it("waterfall：异步中间件 reject 时跳过它", async () => {
+    const k = await kernel();
+    k.create((ctx: any) => {
+      ctx.intercept("load", async () => { throw new Error("异步出错"); });
+      ctx.intercept("load", async (value: number, next: (v: number) => unknown) => next(value + 1), { order: 5 });
+    });
+    assert.equal(await k.waterfall("load", 1), 2);
+    assert.match(k.failures[0].message, /异步出错/);
+  });
+
+  it("包插件只能调清单声明的路由，单文件脚本沿用全局白名单", async () => {
+    const k = await kernel({ manifest: { id: "pkg", permissions: { routes: ["/diagnostics/log"] } } });
+    const ctx = k.create(() => {});
+    assert.equal(ctx.id, "pkg");
+    assert.equal(ctx.manifest.id, "pkg");
+    await ctx.call("/diagnostics/log", {});
+    await assert.rejects(ctx.call("/session/export", {}), /未在 codexpp\.json 声明路由权限/);
+    assert.deepEqual(k.calls, ["/diagnostics/log"]);
+    const script = await kernel();
+    await script.create(() => {}).call("/session/export", {});
+    assert.deepEqual(script.calls, ["/session/export"]);
+  });
+
+  it("apply 同步抛错时回滚已做的注册并抛给调用方；异步失败也回滚", async () => {
+    const k = await kernel();
+    assert.throws(() => k.create((ctx: any) => {
+      ctx.registerPage({ title: "半成品" });
+      throw new Error("初始化失败");
+    }), /初始化失败/);
+    assert.equal(k.registered[0].disposed, true);
+    assert.equal(k.instances.size, 0);
+    const ctx = k.create(async (ctx: any) => {
+      ctx.registerMenuItem({ onActivate() {} });
+      await Promise.resolve();
+      throw new Error("异步初始化失败");
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(ctx.disposed, true);
+    assert.equal(k.registered[1].disposed, true);
+    assert.match(k.failures.at(-1)!.message, /异步初始化失败/);
+  });
+
+  it("一次性定时器触发后自行注销，不留在撤销列表里", async () => {
+    const k = await kernel();
+    let fired = 0;
+    const ctx = k.create((ctx: any) => ctx.setTimeout(() => { fired++; }, 10));
+    const [[id, run]] = [...k.timers.entries()];
+    k.timers.delete(id);
+    run();
+    assert.equal(fired, 1);
+    ctx.dispose();
+    assert.equal(fired, 1);
+  });
+
+  it("对外接口挂出 plugin 入口并把清单放进 script", async () => {
+    const api = await readFile(new URL("../../../assets/inject/renderer-inject/91-extension-api.js", import.meta.url), "utf8");
+    assert.match(api, /plugin: codexPlusCreatePlugin,/);
+    assert.match(api, /return \{ key, manifest: codexPlusPluginManifest\(key\) \};/);
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    assert.ok(renderer.indexOf("function codexPlusCreatePlugin(") < renderer.indexOf("window.codexPlus = buildCodexPlusExtensionApi();"));
+  });
+});
