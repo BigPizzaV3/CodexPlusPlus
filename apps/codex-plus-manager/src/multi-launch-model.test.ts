@@ -7,6 +7,7 @@ import {
   multiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
   multiLaunchInstanceStatus,
+  multiLaunchInstanceVisible,
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model.ts";
@@ -45,6 +46,21 @@ describe("Codex 多开运行实例模型", () => {
     assert.equal(multiLaunchInstanceRunning(instance({ status: "running_degraded" })), true);
     assert.equal(multiLaunchInstanceRunning(instance({ status: "stopped", running: true })), true);
     assert.equal(multiLaunchInstanceRunning(instance({ status: "stopped" })), false);
+  });
+
+  it("实例列表保留运行中的主实例和未确认状态，只隐藏已停止实例", () => {
+    const instances = [
+      instance({ instanceId: "main", isMain: true, status: "stopped", running: true }),
+      instance({ instanceId: "running", status: "running", running: true }),
+      instance({ instanceId: "starting", status: "starting", running: false }),
+      instance({ instanceId: "unknown", status: "unknown", running: false }),
+      instance({ instanceId: "failed", status: "failed", running: false }),
+      instance({ instanceId: "stopped", status: "stopped", running: false }),
+      instance({ instanceId: "legacy-stopped", status: " STOPPED " }),
+    ];
+    assert.deepEqual(instances.filter(multiLaunchInstanceVisible).map((item) => item.instanceId), [
+      "main", "running", "starting", "unknown", "failed",
+    ]);
   });
 
   // Windows 上「点了多开没窗口」曾经完全静默，现在至少要把原因显示出来。

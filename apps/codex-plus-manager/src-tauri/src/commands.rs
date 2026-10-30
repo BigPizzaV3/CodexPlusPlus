@@ -1179,26 +1179,32 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
             .as_ref()
             .map_or(1, |instance| instance.generation.saturating_add(1)),
     );
-    if let Ok(existing) = load_multi_instance_manifest(&root)
-        && multi_instance_is_running(&existing)
-    {
-        // 运行中的实例不会重新写入供应商配置（#2754：改了 Key 再点「启动」仍用旧配置），
-        // 明确告诉用户要点「重启」，前端据 alreadyRunning 直接展示这句提示。
-        return ok(
-            "Codex 多开实例已经在运行；如刚修改过供应商或 API Key，请在「当前运行实例」中点「重启」使新配置生效。",
-            json!({
-                "alreadyRunning": true,
-                "instanceId": existing.instance_id,
-                "profileId": existing.profile_id,
-                "pid": existing.pid,
-                "debugPort": existing.debug_port,
-                "helperPort": existing.helper_port,
-                "codexHome": existing.codex_home,
-                "sqliteHome": existing.sqlite_home,
-                "userDataDir": existing.user_data_dir,
-                "appPath": existing.app_path
-            }),
-        );
+    if let Ok(existing) = load_multi_instance_manifest(&root) {
+        if multi_instance_is_running(&existing) {
+            // 运行中的实例不会重新写入供应商配置（#2754：改了 Key 再点「启动」仍用旧配置），
+            // 明确告诉用户要点「重启」，前端据 alreadyRunning 直接展示这句提示。
+            return ok(
+                "Codex 多开实例已经在运行；如刚修改过供应商或 API Key，请在「当前运行实例」中点「重启」使新配置生效。",
+                json!({
+                    "alreadyRunning": true,
+                    "instanceId": existing.instance_id,
+                    "profileId": existing.profile_id,
+                    "pid": existing.pid,
+                    "debugPort": existing.debug_port,
+                    "helperPort": existing.helper_port,
+                    "codexHome": existing.codex_home,
+                    "sqliteHome": existing.sqlite_home,
+                    "userDataDir": existing.user_data_dir,
+                    "appPath": existing.app_path
+                }),
+            );
+        }
+        if !multi_instance_relaunch_is_safe_with(&existing, stale_multi_instance_is_absent) {
+            return failed(
+                "旧实例的进程或数据目录仍在使用，或暂时无法确认已释放；请关闭旧实例后重试。",
+                json!({"instanceId": instance_id}),
+            );
+        }
     }
     // 先分配端口，再生成 config.toml。Chat Completions 通过实例专属协议代理
     // 转换，配置里的本地 base_url 必须与这个 helper 端口一致。
@@ -1966,6 +1972,14 @@ fn stale_multi_instance_is_absent(instance: &CodexMultiInstance) -> anyhow::Resu
     }
 }
 
+fn multi_instance_relaunch_is_safe_with(
+    instance: &CodexMultiInstance,
+    mut absent: impl FnMut(&CodexMultiInstance) -> anyhow::Result<bool>,
+) -> bool {
+    instance.identity.is_none()
+        || matches!(absent(instance), Ok(true)) && matches!(absent(instance), Ok(true))
+}
+
 fn multi_instance_resources_are_absent(instance: &CodexMultiInstance) -> anyhow::Result<bool> {
     #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
@@ -2026,26 +2040,37 @@ fn multi_instance_is_running(instance: &CodexMultiInstance) -> bool {
 }
 
 fn multi_instance_is_starting(instance: &CodexMultiInstance) -> bool {
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    {
+        multi_instance_is_starting_with(
+            instance,
+            codex_plus_core::multi_worker::codex_process_generation_exited,
+        )
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        let _ = instance;
+        false
+    }
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
+fn multi_instance_is_starting_with(
+    instance: &CodexMultiInstance,
+    generation_exited: impl FnOnce(u32, Option<u64>) -> anyhow::Result<bool>,
+) -> bool {
     if instance.is_main
         || instance.generation == 0
         || instance.status == "stopped"
         || instance.identity.is_some()
         || instance.launch_result.is_some()
-        || instance.worker_birth_id.is_none_or(|birth| birth == 0)
     {
         return false;
     }
-    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-    if let Some(pid) = instance.pid {
-        return matches!(
-            codex_plus_core::multi_worker::codex_process_generation_exited(
-                pid,
-                instance.worker_birth_id,
-            ),
-            Ok(false)
-        );
-    }
-    false
+    instance.pid.is_some_and(|pid| {
+        let birth = instance.worker_birth_id.filter(|birth| *birth != 0);
+        !matches!(generation_exited(pid, birth), Ok(true))
+    })
 }
 
 fn multi_instance_snapshot_status(instance: &CodexMultiInstance, running: bool) -> &'static str {
@@ -13185,6 +13210,53 @@ model_reasoning_effort = "high"
         instance
     }
 
+    #[test]
+    fn multi_instance_relaunch_requires_two_confirmed_absence_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut instance = ready_multi_instance_fixture(temp.path());
+        for failed_probe in [0, 1, 2] {
+            let calls = std::cell::Cell::new(0);
+            assert!(!multi_instance_relaunch_is_safe_with(&instance, |_| {
+                calls.set(calls.get() + 1);
+                if failed_probe == 0 {
+                    anyhow::bail!("query unavailable");
+                }
+                Ok(calls.get() != failed_probe)
+            }));
+        }
+        let calls = std::cell::Cell::new(0);
+        assert!(multi_instance_relaunch_is_safe_with(&instance, |_| {
+            calls.set(calls.get() + 1);
+            Ok(true)
+        }));
+        assert_eq!(calls.get(), 2);
+        instance.identity = None;
+        assert!(multi_instance_relaunch_is_safe_with(&instance, |_| {
+            panic!("legacy instances retain their existing admission checks")
+        }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn multi_instance_relaunch_rejects_live_identity_without_cdp() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut instance = ready_multi_instance_fixture(temp.path());
+        let codex_plus_core::watcher::ProcessInstanceState::Running { birth_id, .. } =
+            codex_plus_core::watcher::inspect_process_instance(std::process::id())
+        else {
+            panic!("test process must be alive");
+        };
+        let birth = birth_id.unwrap().parse().unwrap();
+        let identity = instance.identity.as_mut().unwrap();
+        identity.process_id = std::process::id();
+        identity.process_birth_id = birth;
+        instance.pid = None;
+        assert!(!multi_instance_relaunch_is_safe_with(
+            &instance,
+            stale_multi_instance_is_absent
+        ));
+    }
+
     #[cfg(windows)]
     #[test]
     fn multi_instance_starting_rejects_stop_without_consuming_ready() {
@@ -13199,19 +13271,39 @@ model_reasoning_effort = "high"
         else {
             panic!("test process must be alive");
         };
-        instance.worker_birth_id = birth_id.and_then(|birth| birth.parse().ok());
-        assert!(instance.worker_birth_id.is_some());
-        save_multi_instance_manifest(temp.path(), &instance).unwrap();
+        let birth = birth_id.and_then(|birth| birth.parse().ok());
+        assert!(birth.is_some());
         let receipt_path = temp.path().join(MULTI_LAUNCH_RESULT_FILE);
         std::fs::write(&receipt_path, "{}").unwrap();
-        assert_eq!(multi_instance_snapshot_status(&instance, false), "starting");
-        assert!(stop_multi_instance_lifecycle(temp.path(), &instance).is_err());
-        assert_eq!(std::fs::read_to_string(&receipt_path).unwrap(), "{}");
+        for worker_birth in [birth, None, Some(0)] {
+            instance.worker_birth_id = worker_birth;
+            save_multi_instance_manifest(temp.path(), &instance).unwrap();
+            assert_eq!(multi_instance_snapshot_status(&instance, false), "starting");
+            assert!(stop_multi_instance_lifecycle(temp.path(), &instance).is_err());
+            assert_eq!(std::fs::read_to_string(&receipt_path).unwrap(), "{}");
+        }
         write_multi_instance_result(temp.path(), &instance, &ready).unwrap();
         let running = load_multi_instance_manifest(temp.path()).unwrap();
         assert_eq!(running.launch_result.unwrap().status, "ready");
         instance.status = "stopped".into();
         assert!(!multi_instance_is_starting(&instance));
+    }
+
+    #[test]
+    fn multi_instance_starting_keeps_guard_when_worker_query_is_uncertain() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut instance = ready_multi_instance_fixture(temp.path());
+        instance.launch_result = None;
+        instance.identity = None;
+        instance.pid = Some(123);
+        instance.worker_birth_id = None;
+
+        assert!(multi_instance_is_starting_with(&instance, |pid, birth| {
+            assert_eq!((pid, birth), (123, None));
+            Err(std::io::Error::other("query unavailable").into())
+        }));
+        assert!(multi_instance_is_starting_with(&instance, |_, _| Ok(false)));
+        assert!(!multi_instance_is_starting_with(&instance, |_, _| Ok(true)));
     }
 
     #[test]

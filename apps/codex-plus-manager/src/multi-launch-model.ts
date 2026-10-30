@@ -41,6 +41,10 @@ export function multiLaunchInstanceRunning(instance: MultiLaunchInstance): boole
   return ["running", "running_degraded", "ready", "connected", "ok"].includes(multiLaunchInstanceStatus(instance));
 }
 
+export function multiLaunchInstanceVisible(instance: MultiLaunchInstance): boolean {
+  return multiLaunchInstanceRunning(instance) || multiLaunchInstanceStatus(instance) !== "stopped";
+}
+
 export function multiLaunchInstanceCanStop(instance: MultiLaunchInstance): boolean {
   const status = multiLaunchInstanceStatus(instance);
   return status !== "starting" && (multiLaunchInstanceRunning(instance) || status === "unknown" || status === "failed");

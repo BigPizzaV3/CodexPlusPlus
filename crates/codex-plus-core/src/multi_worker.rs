@@ -185,13 +185,17 @@ pub(crate) fn codex_arguments_match(
     if ports.len() != 1 || ports[0].parse::<u16>().ok() != Some(debug_port) || debug_port == 0 {
         return false;
     }
-    if user_paths.len() != 1 || user_data_dir.as_os_str().is_empty() {
+    if user_paths.len() != 1 || !user_data_dir.is_absolute() {
+        return false;
+    }
+    let actual_path = Path::new(user_paths[0]);
+    if !actual_path.is_absolute() {
         return false;
     }
     let Ok(expected) = user_data_dir.canonicalize() else {
         return false;
     };
-    let Ok(actual) = Path::new(user_paths[0]).canonicalize() else {
+    let Ok(actual) = actual_path.canonicalize() else {
         return false;
     };
     #[cfg(windows)]
@@ -854,14 +858,16 @@ pub fn codex_user_data_is_absent(
         executable.is_absolute() && user_data_dir.is_absolute(),
         "多开路径必须是绝对路径"
     );
-    let executable = scan_image_path_with(executable, |path| path.canonicalize())?
-        .unwrap_or_else(|| executable.to_path_buf());
+    let resolved_executable = scan_image_path_with(executable, |path| path.canonicalize())?;
+    let fallback_uid = resolved_executable.is_none().then(|| unsafe { libc::geteuid() });
+    let executable = resolved_executable.unwrap_or_else(|| executable.to_path_buf());
     let user_data_dir = user_data_dir.canonicalize()?;
     let snapshot = macos_process_snapshot()?;
     if !macos_snapshot_user_data_is_absent_with(
         &snapshot,
         &executable,
         &user_data_dir,
+        fallback_uid,
         macos_process_arguments,
         macos_process_snapshot,
     )? {
@@ -874,10 +880,10 @@ pub fn codex_user_data_is_absent(
         |port| {
             let owners = macos_listener_process_ids(port)?;
             for pid in &owners {
-                let image = snapshot
+                let process = snapshot
                     .get(pid)
                     .ok_or_else(|| std::io::Error::other("监听进程不在本次快照中"))?;
-                if !macos_image_is_candidate(image, &executable) {
+                if !macos_process_may_use_user_data(process, &executable, fallback_uid) {
                     continue;
                 }
                 let arguments = process_read_or_exited(macos_process_arguments(*pid), || {
@@ -899,9 +905,9 @@ pub fn codex_user_data_is_absent(
 }
 
 #[cfg(target_os = "macos")]
-fn macos_process_snapshot() -> anyhow::Result<std::collections::BTreeMap<u32, PathBuf>> {
+fn macos_process_snapshot() -> anyhow::Result<std::collections::BTreeMap<u32, MacosSnapshotProcess>> {
     let output = std::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,stat=,comm="])
+        .args(["-axww", "-o", "pid=,uid=,stat=,comm="])
         .output()?;
     if !output.status.success() {
         return Err(std::io::Error::other("无法读取进程快照").into());
@@ -910,9 +916,16 @@ fn macos_process_snapshot() -> anyhow::Result<std::collections::BTreeMap<u32, Pa
 }
 
 #[cfg(any(target_os = "macos", test))]
+#[derive(Clone)]
+struct MacosSnapshotProcess {
+    uid: u32,
+    image: PathBuf,
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn parse_macos_process_snapshot(
     bytes: &[u8],
-) -> anyhow::Result<std::collections::BTreeMap<u32, PathBuf>> {
+) -> anyhow::Result<std::collections::BTreeMap<u32, MacosSnapshotProcess>> {
     anyhow::ensure!(
         bytes.len() <= 8 * 1024 * 1024 && bytes.ends_with(b"\n"),
         "进程快照截断或过大"
@@ -929,6 +942,9 @@ fn parse_macos_process_snapshot(
             .split_once(char::is_whitespace)
             .ok_or_else(|| anyhow::anyhow!("进程快照缺少映像"))?;
         let pid = pid.parse::<u32>()?;
+        let (uid, rest) = rest.trim().split_once(char::is_whitespace)
+            .ok_or_else(|| anyhow::anyhow!("进程快照缺少用户身份"))?;
+        let uid = uid.parse::<u32>()?;
         let (state, image) = rest.trim().split_once(char::is_whitespace)
             .ok_or_else(|| anyhow::anyhow!("进程快照缺少状态或映像"))?;
         anyhow::ensure!(!image.trim().is_empty(), "进程快照缺少映像");
@@ -936,7 +952,7 @@ fn parse_macos_process_snapshot(
             continue;
         }
         anyhow::ensure!(
-            processes.insert(pid, PathBuf::from(image.trim())).is_none(),
+            processes.insert(pid, MacosSnapshotProcess { uid, image: PathBuf::from(image.trim()) }).is_none(),
             "进程快照含重复 PID"
         );
     }
@@ -953,16 +969,27 @@ fn macos_image_is_candidate(image: &Path, executable: &Path) -> bool {
 }
 
 #[cfg(any(target_os = "macos", test))]
+fn macos_process_may_use_user_data(
+    process: &MacosSnapshotProcess,
+    executable: &Path,
+    fallback_uid: Option<u32>,
+) -> bool {
+    fallback_uid.is_some_and(|uid| process.uid == uid)
+        || macos_image_is_candidate(&process.image, executable)
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn macos_snapshot_user_data_is_absent_with(
-    snapshot: &std::collections::BTreeMap<u32, PathBuf>,
+    snapshot: &std::collections::BTreeMap<u32, MacosSnapshotProcess>,
     executable: &Path,
     user_data: &Path,
+    fallback_uid: Option<u32>,
     mut arguments: impl FnMut(u32) -> anyhow::Result<Vec<String>>,
-    refresh: impl FnOnce() -> anyhow::Result<std::collections::BTreeMap<u32, PathBuf>>,
+    refresh: impl FnOnce() -> anyhow::Result<std::collections::BTreeMap<u32, MacosSnapshotProcess>>,
 ) -> anyhow::Result<bool> {
     let mut failures = Vec::new();
-    for (pid, image) in snapshot {
-        if !macos_image_is_candidate(image, executable) {
+    for (pid, process) in snapshot {
+        if !macos_process_may_use_user_data(process, executable, fallback_uid) {
             continue;
         }
         let args = match arguments(*pid) {
@@ -1115,7 +1142,9 @@ fn arguments_user_data_matches(arguments: &[String], expected: &Path) -> anyhow:
         return Ok(false);
     };
     anyhow::ensure!(!path.is_empty(), "数据目录参数为空");
-    let actual = Path::new(path).canonicalize()?;
+    let path = Path::new(path);
+    anyhow::ensure!(path.is_absolute(), "进程数据目录是相对路径，无法确认归属");
+    let actual = path.canonicalize()?;
     #[cfg(windows)]
     return Ok(actual
         .to_string_lossy()
@@ -1295,12 +1324,13 @@ mod tests {
 
     #[test]
     fn macos_snapshot_preserves_spaced_images_and_rejects_incomplete_output() {
-        let snapshot = parse_macos_process_snapshot(b" 42 S /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n 43 S+ /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n 44 Z /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n").unwrap();
+        let snapshot = parse_macos_process_snapshot(b" 42 501 S /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n 43 501 S+ /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n 44 501 Z /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n").unwrap();
         let executable = Path::new("/Applications/Codex Dev.app/Contents/MacOS/Codex Dev");
-        assert_eq!(snapshot.get(&42).unwrap(), executable);
+        assert_eq!(snapshot.get(&42).unwrap().image.as_path(), executable);
+        assert_eq!(snapshot.get(&42).unwrap().uid, 501);
         assert!(!snapshot.contains_key(&44));
         assert!(macos_image_is_candidate(
-            snapshot.get(&43).unwrap(),
+            &snapshot.get(&43).unwrap().image,
             executable
         ));
         for invalid in [
@@ -1309,8 +1339,9 @@ mod tests {
             &b"42"[..],
             &b"42 image"[..],
             &b"42 \n"[..],
-            &b"42 S image\n42 S other\n"[..],
-            &b"not-pid S image\n"[..],
+            &b"42 501 S image\n42 501 S other\n"[..],
+            &b"not-pid 501 S image\n"[..],
+            &b"42 not-uid S image\n"[..],
         ] {
             assert!(parse_macos_process_snapshot(invalid).is_err());
         }
@@ -1345,7 +1376,7 @@ mod tests {
             (1..=100)
                 .map(|pid| {
                     format!(
-                        "{pid} S /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n"
+                        "{pid} 501 S /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n"
                     )
                 })
                 .collect::<String>()
@@ -1358,6 +1389,7 @@ mod tests {
                 &snapshot,
                 executable,
                 &own,
+                None,
                 |_| {
                     reads.set(reads.get() + 1);
                     Ok(vec![
@@ -1375,6 +1407,7 @@ mod tests {
                 &snapshot,
                 executable,
                 &own,
+                None,
                 |_| {
                     Ok(vec![
                         "Helper".into(),
@@ -1391,6 +1424,7 @@ mod tests {
                 &snapshot,
                 executable,
                 &own,
+                None,
                 |_| anyhow::bail!("process arguments unreadable"),
                 || {
                     refreshes.set(refreshes.get() + 1);
@@ -1413,11 +1447,110 @@ mod tests {
                 &snapshot,
                 executable,
                 &own,
+                None,
                 |_| { anyhow::bail!("unreadable") },
                 || anyhow::bail!("snapshot failed")
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn macos_migrated_images_with_the_same_user_data_are_not_ignored() {
+        use std::cell::Cell;
+        let temp = tempfile::tempdir().unwrap();
+        let own = temp.path().canonicalize().unwrap();
+        let old_image = temp.path().join("Old Codex.app/Contents/MacOS/Codex");
+        assert!(old_image.canonicalize().is_err());
+        let moved_image = Path::new("/Applications/New Codex.app/Contents/MacOS/ChatGPT");
+        let moved_helper = Path::new("/Applications/New Codex.app/Contents/Frameworks/Helper");
+        let other_image = Path::new("/Applications/Other.app/Contents/MacOS/Other");
+        let current_uid = 501;
+        let snapshot = [
+            (42, MacosSnapshotProcess { uid: current_uid, image: moved_image.into() }),
+            (43, MacosSnapshotProcess { uid: current_uid, image: moved_helper.into() }),
+            (44, MacosSnapshotProcess { uid: 502, image: other_image.into() }),
+        ]
+        .into_iter()
+        .collect();
+        assert!(macos_snapshot_user_data_is_absent_with(
+            &snapshot,
+            &old_image,
+            &own,
+            None,
+            |_| panic!("normal scans skip unrelated same-user processes"),
+            || panic!("successful reads do not require a refresh"),
+        )
+        .unwrap());
+        for holder in [42, 43] {
+            let read_other_user = Cell::new(false);
+            assert!(!macos_snapshot_user_data_is_absent_with(
+                &snapshot,
+                &old_image,
+                &own,
+                Some(current_uid),
+                |pid| {
+                    if pid == 44 {
+                        read_other_user.set(true);
+                    }
+                    Ok(if pid == holder {
+                        vec!["Codex".into(), format!("--user-data-dir={}", own.display())]
+                    } else {
+                        vec!["unrelated".into()]
+                    })
+                },
+                || panic!("successful reads do not require a refresh"),
+            )
+            .unwrap());
+            assert!(!read_other_user.get());
+        }
+        assert!(macos_snapshot_user_data_is_absent_with(
+            &snapshot,
+            &old_image,
+            &own,
+            Some(current_uid),
+            |pid| {
+                assert_ne!(pid, 44);
+                Ok(vec!["unrelated".into()])
+            },
+            || panic!("successful reads do not require a refresh"),
+        )
+        .unwrap());
+        let mut original_image_other_user = snapshot.clone();
+        original_image_other_user.insert(45, MacosSnapshotProcess {
+            uid: 502,
+            image: old_image.clone(),
+        });
+        assert!(!macos_snapshot_user_data_is_absent_with(
+            &original_image_other_user,
+            &old_image,
+            &own,
+            Some(current_uid),
+            |pid| {
+                Ok(if pid == 45 {
+                    vec!["Codex".into(), format!("--user-data-dir={}", own.display())]
+                } else {
+                    vec!["unrelated".into()]
+                })
+            },
+            || panic!("successful reads do not require a refresh"),
+        )
+        .unwrap());
+        assert!(macos_snapshot_user_data_is_absent_with(
+            &snapshot,
+            &old_image,
+            &own,
+            Some(current_uid),
+            |pid| {
+                assert_ne!(pid, 44);
+                if pid == 42 {
+                    anyhow::bail!("migrated process arguments unavailable")
+                }
+                Ok(vec!["unrelated".into()])
+            },
+            || Ok(snapshot.clone()),
+        )
+        .is_err());
     }
 
     #[test]
@@ -1550,6 +1683,25 @@ mod tests {
             arguments_user_data_matches(&["Codex".into(), "--user-data-dir".into()], &expected)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn relative_user_data_never_uses_the_managers_working_directory() {
+        let manager_cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let other_data = temp.path().canonicalize().unwrap();
+        for path in [".", "missing-relative-data", r"C:relative-data", r"\relative-data"] {
+            for args in [
+                vec!["Codex".into(), format!("--user-data-dir={path}")],
+                vec!["Codex".into(), "--user-data-dir".into(), path.into()],
+            ] {
+                assert!(arguments_user_data_matches(&args, &manager_cwd).is_err());
+                assert!(arguments_user_data_matches(&args, &other_data).is_err());
+                let mut identity_args = args;
+                identity_args.push("--remote-debugging-port=9341".into());
+                assert!(!codex_arguments_match(&identity_args, &manager_cwd, 9341));
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]
