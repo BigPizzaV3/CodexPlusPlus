@@ -1322,6 +1322,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "weixin", get label() { return t("微信连接"); }, icon: ScanLine, tool: "codex" },
   { id: "enhance", get label() { return t("增强"); }, icon: Hammer, tool: "codex" },
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
+  // 拓展注入的是 Codex 页面（tool 保持 codex，顶栏才有重启 Codex），但入口放在侧栏「全局管理」，
+  // 和 MCP、Skills 并列，不藏在 Codex 的页签里。
   { id: "userScripts", get label() { return t("拓展"); }, icon: FileCode2, tool: "codex" },
   { id: "pluginMarket", get label() { return t("插件市场"); }, icon: Store, tool: "codex" },
   { id: "recommendations", get label() { return t("推荐内容"); }, icon: ExternalLink },
@@ -1357,7 +1359,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ id: string; routes: Route[] }> = [
   { id: "overview", routes: ["overview"] },
   { id: "providers", routes: ["relay", "relayEnvironment", "multiLaunch"] },
-  { id: "enhance", routes: ["claude", "enhance", "dreamSkin", "userScripts", "pluginMarket", "weixin"] },
+  { id: "enhance", routes: ["claude", "enhance", "dreamSkin", "pluginMarket", "weixin"] },
   // 安装维护并进了设置页（排在设置下方），不再单独占一个页签；"maintenance" 路由保留为设置页的别名。
   { id: "settings", routes: ["agentSettings"] },
 ];
@@ -1372,12 +1374,12 @@ const lastAgentRoute = new Map<string, Route>();
  * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
  * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
  */
-const globalNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
+const globalNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
 /** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
 const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
-/** 侧栏「全局管理」分组：同时管理所有 Agent 的请求日志、会话、MCP 与 Skills。 */
-const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "context", "skills"];
+/** 侧栏「全局管理」分组：请求日志、会话、MCP、Skills，以及给 Codex 加能力的拓展。 */
+const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "context", "skills", "userScripts"];
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
@@ -1398,6 +1400,14 @@ const gatewayRouteByTab = { ...Object.fromEntries(Object.entries(gatewayTabByRou
  * 要么不接入、照它自己的配置文件直连。
  */
 const agentHomeRoute: Record<string, Route> = { codex: "overview", claude: "claude", grok: "overview" };
+/**
+ * 侧栏 Agent 列表里不显示的工具。Grok 在 Codex++ 里没有专属的增强页面，只经网关接入，
+ * 在「Agent 接入」里管理；请求日志、MCP 等跨 Agent 的页面照常支持它。
+ */
+const hiddenSidebarTools = new Set<string>(["grok"]);
+/** 上次停在被隐藏的工具上时回到 Codex，免得侧栏没有任何 Agent 处于选中态。 */
+const visibleActiveTool = (toolId: string | null | undefined) =>
+  toolId && !hiddenSidebarTools.has(toolId) ? toolId : "codex";
 /** 轻量检查 Codex 进程是否还在的间隔（只在管理器窗口可见时查）。 */
 const codexRunningPollMs = 5_000;
 const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "overview");
@@ -1711,8 +1721,8 @@ export function App() {
   const refreshTools = async (silent = true) => {
     const result = await run(() => call<ToolsResult>("list_tools"));
     if (result) {
-      setToolEntries(result.tools ?? []);
-      setActiveTool(result.activeTool || "codex");
+      setToolEntries((result.tools ?? []).filter((tool) => !hiddenSidebarTools.has(tool.id)));
+      setActiveTool(visibleActiveTool(result.activeTool));
       if (!silent) showResultNotice(t("工具列表"), result, { silentSuccess: true });
     }
     return result;
@@ -1802,7 +1812,7 @@ export function App() {
       const normalized = normalizeSettings(result.settings);
       setSettingsForm(normalized);
       // 侧栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
-      setActiveTool(normalized.activeTool || "codex");
+      setActiveTool(visibleActiveTool(normalized.activeTool));
       setLaunchForm((current) => ({
         ...current,
         appPath: current.appPath || result.settings.codexAppPath || "",

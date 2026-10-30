@@ -163,7 +163,7 @@ test("紧凑密度层：管理页不再套外框，覆盖规则带 .shell 前缀
 
 test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所有 Agent，不再挂在 Codex 下面", () => {
   // 「用量」入口在全局管理里：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
-  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills"\]/);
+  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills", "userScripts"\]/);
   assert.match(text, /const navAliasRoute: Partial<Record<Route, Route>> = \{ requestLog: "gatewayUsage" \};/);
   for (const id of ["requestLog", "sessions", "context", "skills"]) {
     const line = text.split("\n").find((row) => row.includes(`{ id: "${id}",`));
@@ -476,4 +476,15 @@ test("Codex 在它自己的窗口里退出后，侧栏 / 顶栏的运行状态�
   assert.match(entry, /if \(document\.visibilityState !== "visible"\) return;/);
   assert.match(entry, /running !== codexAppRunning\) void refreshOverview\(true\)/);
   assert.match(text, /const codexRunningPollMs = 5_000;/);
+});
+
+test("拓展是侧栏一级入口，不再藏在 Codex 页签里；Grok 不在侧栏 Agent 列表", () => {
+  const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const routeTool"));
+  assert.doesNotMatch(sections, /"userScripts"/, "拓展不再出现在 Agent 页签里");
+  assert.match(text, /const globalNavigationRoutes: Route\[\] = \[[^\]]*"userScripts"/);
+  assert.match(text, /const hiddenSidebarTools = new Set<string>\(\["grok"\]\);/);
+  assert.match(text, /setToolEntries\(\(result\.tools \?\? \[\]\)\.filter\(\(tool\) => !hiddenSidebarTools\.has\(tool\.id\)\)\);/);
+  // 上次停在被隐藏的工具上时回到 Codex。
+  assert.match(text, /setActiveTool\(visibleActiveTool\(result\.activeTool\)\);/);
+  assert.match(text, /setActiveTool\(visibleActiveTool\(normalized\.activeTool\)\);/);
 });
