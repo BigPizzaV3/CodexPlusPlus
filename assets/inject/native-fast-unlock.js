@@ -478,7 +478,8 @@
 
   registerRewriter({
     id: "fast",
-    targets: [{ name: "app-initial", prefix: entryPrefix, unique: true }],
+    // 26.1027 的入口经 app-main 引用 app-initial；旧版仍可直接发现目标块。
+    targets: [{ name: "app-initial", prefix: entryPrefix, via: ["app-main-"], unique: true }],
     enabled: () => runtime.status().enabled,
     plan: (source, url) => plan(source, url),
   });

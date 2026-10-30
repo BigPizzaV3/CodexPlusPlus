@@ -94,7 +94,74 @@ function moduleReferences(parser, source) {
   return references;
 }
 
+async function runDiscoveryTests(source, url) {
+  const index = new URL("./index-fixture.js", url).href;
+  const main = new URL("./app-main-fixture.js", url).href;
+  const initialImport = 'import "./app-initial-fixture.js";';
+  const mainImport = 'import(`./app-main-fixture.js`);';
+  const document = { scripts: [{ src: index }] };
+  const location = new URL("app://-/index.html");
+
+  // 旧入口直接引用 app-initial；26.1027 经 app-main 引用同一目标块。
+  for (const entry of [initialImport, mainImport, `${mainImport}${initialImport}`]) {
+    const env = browser();
+    const sources = new Map([
+      [index, entry],
+      [main, `${initialImport}import "./app-runtime-unrelated.js";import "./unrelated.js";`],
+      [url, source],
+    ]);
+    const fetched = [];
+    const result = await env.api.prepareDocumentModules({
+      document, location,
+      fetchText: async target => { fetched.push(target); return sources.get(target) ?? null; },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+    assert.equal(result.diagnostics.rewriters.fast, "patched");
+    assert.equal(result.modules.length, 1, "中间模块只用于发现，不改写或额外预加载");
+    assert.equal(result.modules[0].url, url);
+    assert.ok(result.modules[0].patchedSource.includes('__codexPlusNativeFastCompiled="v1"'));
+    assert.deepEqual(fetched, entry === initialImport ? [index, url] : [index, main, url], "去重且不遍历无关模块");
+    assert.equal(env.events.length, 0, "准备模块不改变当前文档");
+  }
+
+  const duplicate = new URL("./app-initial-duplicate.js", url).href;
+  for (const failure of ["missing-main", "fetch-failed", "missing-initial", "incomplete-gates", "duplicate-initial"]) {
+    const env = browser();
+    const result = await env.api.prepareDocumentModules({
+      document, location,
+      fetchText: async target => {
+        if (target === index) return mainImport;
+        if (target === main) {
+          if (failure === "missing-main") return null;
+          if (failure === "fetch-failed") throw new Error("fixture fetch failed");
+          return `${initialImport}${failure === "duplicate-initial" ? 'import "./app-initial-duplicate.js";' : ""}`;
+        }
+        if (target === url) {
+          if (failure === "missing-initial") return null;
+          return failure === "incomplete-gates" ? "export const changed = true;" : source;
+        }
+        return target === duplicate ? source : null;
+      },
+    });
+    assert.equal(result.ok, false, failure);
+    assert.equal(result.modules.length, 0, "发现或匹配失败时不留下半套补丁");
+    assert.equal(env.events.length, 0);
+  }
+
+  for (const settings of [{ ...enabled, enhancementsEnabled: false }, { ...enabled, codexAppNativeFastUnlock: false }]) {
+    const env = browser();
+    env.api.runtime.update(settings);
+    let fetched = false;
+    const result = await env.api.prepareDocumentModules({
+      document, location, fetchText: async () => { fetched = true; return source; },
+    });
+    assert.equal(result.diagnostics.reason, "disabled");
+    assert.equal(fetched, false, "关闭任一开关后不发现或改写模块");
+  }
+}
+
 async function runNativeFastModuleTests({ source, url }) {
+  await runDiscoveryTests(source, url);
   const fixture = [
     'import dependency from "./static.js"; import "./side.js";',
     'export { dependency } from "../export.js"; export * from "./star.js";',
