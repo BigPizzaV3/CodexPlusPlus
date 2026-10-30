@@ -22,6 +22,17 @@ pub struct CodexInstanceIdentity {
     pub executable: PathBuf,
 }
 
+pub fn lock_instance_lifecycle(root: &Path) -> anyhow::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("lifecycle.lock"))?;
+    fs2::FileExt::lock_exclusive(&file)?;
+    Ok(file)
+}
+
 #[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn valid_stop_identity(identity: &CodexInstanceIdentity) -> bool {
     !identity.instance_id.trim().is_empty()
@@ -306,9 +317,14 @@ fn unix_birth_token(pid: u32) -> Option<u64> {
     else {
         return None;
     };
-    Some(birth.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+    Some(unix_birth_hash(&birth))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn unix_birth_hash(birth: &str) -> u64 {
+    birth.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
         (hash ^ byte as u64).wrapping_mul(0x100000001b3)
-    }))
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -581,6 +597,196 @@ pub(crate) fn worker_identity_matches(
     expected == actual
 }
 
+#[cfg(windows)]
+pub fn codex_process_generation_exited(
+    pid: u32,
+    expected_birth: Option<u64>,
+) -> anyhow::Result<bool> {
+    if pid == 0 || pid == std::process::id() || expected_birth == Some(0) {
+        return Ok(false);
+    }
+    let Some(process) = crate::windows_integration::VerifiedStopProcess::capture(pid, false)?
+    else {
+        return Ok(true);
+    };
+    Ok(expected_birth.is_some_and(|birth| birth != process.birth_id) || !process.is_alive()?)
+}
+
+#[cfg(target_os = "macos")]
+pub fn codex_process_generation_exited(
+    pid: u32,
+    expected_birth: Option<u64>,
+) -> anyhow::Result<bool> {
+    use crate::watcher::{ProcessInstanceState, inspect_process_instance};
+    if pid == 0 || pid == std::process::id() || expected_birth == Some(0) {
+        return Ok(false);
+    }
+    match inspect_process_instance(pid) {
+        ProcessInstanceState::NotRunning => Ok(true),
+        ProcessInstanceState::Running {
+            birth_id: Some(birth),
+            ..
+        } => Ok(expected_birth.is_some_and(|expected| expected != unix_birth_hash(&birth))),
+        _ => anyhow::bail!("无法确认进程是否已退出"),
+    }
+}
+
+#[cfg(windows)]
+pub fn codex_user_data_is_absent(
+    executable: &Path,
+    user_data_dir: &Path,
+    debug_port: u16,
+    helper_port: u16,
+) -> anyhow::Result<bool> {
+    use crate::windows_integration::{VerifiedStopProcess, bounded_process_snapshot};
+    anyhow::ensure!(
+        debug_port != 0 && helper_port != 0 && debug_port != helper_port,
+        "实例端口无效"
+    );
+    anyhow::ensure!(
+        executable.is_absolute() && user_data_dir.is_absolute(),
+        "多开路径必须是绝对路径"
+    );
+    let executable = executable.canonicalize()?;
+    let user_data_dir = user_data_dir.canonicalize()?;
+    let name = executable
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("缺少桌面程序名"))?;
+    for entry in bounded_process_snapshot(32768)? {
+        if !entry.exe_file.eq_ignore_ascii_case(&name.to_string_lossy()) {
+            continue;
+        }
+        let Some(process) = VerifiedStopProcess::capture(entry.process_id, false)? else {
+            continue;
+        };
+        if !process.is_alive()? {
+            continue;
+        }
+        let image = process.image()?.canonicalize()?;
+        if image
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&executable.to_string_lossy())
+            && arguments_use_user_data(&process.arguments()?, &user_data_dir)?
+        {
+            return Ok(false);
+        }
+    }
+    for port in [debug_port, helper_port] {
+        if !crate::windows_integration::loopback_listener_process_ids(port)?.is_empty() {
+            return Ok(false);
+        }
+    }
+    loopback_ports_are_free(debug_port, helper_port)
+}
+
+#[cfg(target_os = "macos")]
+pub fn codex_user_data_is_absent(
+    executable: &Path,
+    user_data_dir: &Path,
+    debug_port: u16,
+    helper_port: u16,
+) -> anyhow::Result<bool> {
+    anyhow::ensure!(
+        executable.is_absolute() && user_data_dir.is_absolute(),
+        "多开路径必须是绝对路径"
+    );
+    let executable = executable.canonicalize()?;
+    let user_data_dir = user_data_dir.canonicalize()?;
+    let frameworks = executable
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow::anyhow!("多开应用路径无效"))?
+        .join("Frameworks");
+    #[cfg(target_os = "macos")]
+    let output = std::process::Command::new("ps")
+        .args(["-axww", "-o", "pid=,comm="])
+        .output()?;
+    anyhow::ensure!(
+        output.status.success() && output.stdout.len() <= 8 * 1024 * 1024,
+        "无法读取进程快照"
+    );
+    let snapshot = std::str::from_utf8(&output.stdout)?;
+    anyhow::ensure!(
+        !snapshot.trim().is_empty() && snapshot.lines().count() <= 32768,
+        "进程快照无效"
+    );
+    for line in snapshot.lines() {
+        let (pid, image) = line
+            .trim()
+            .split_once(char::is_whitespace)
+            .ok_or_else(|| anyhow::anyhow!("进程快照缺少映像"))?;
+        let pid = pid.parse::<u32>()?;
+        let image = Path::new(image.trim());
+        if image != executable && !image.starts_with(&frameworks) {
+            continue;
+        }
+        if matches!(
+            crate::watcher::inspect_process_instance(pid),
+            crate::watcher::ProcessInstanceState::NotRunning
+        ) {
+            continue;
+        }
+        let arguments = macos_process_arguments(pid)?;
+        if arguments_user_data_matches(&arguments, &user_data_dir)? {
+            return Ok(false);
+        }
+    }
+    loopback_ports_are_free(debug_port, helper_port)
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn loopback_ports_are_free(debug_port: u16, helper_port: u16) -> anyhow::Result<bool> {
+    anyhow::ensure!(
+        debug_port != 0 && helper_port != 0 && debug_port != helper_port,
+        "实例端口无效"
+    );
+    let mut reservations = Vec::new();
+    for port in [debug_port, helper_port] {
+        for host in ["127.0.0.1", "::1"] {
+            let Ok(listener) = std::net::TcpListener::bind((host, port)) else {
+                return Ok(false);
+            };
+            reservations.push(listener);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn arguments_use_user_data(arguments: &[String], expected: &Path) -> anyhow::Result<bool> {
+    arguments_user_data_matches(arguments, expected)
+}
+
+#[cfg(any(windows, target_os = "macos", test))]
+fn arguments_user_data_matches(arguments: &[String], expected: &Path) -> anyhow::Result<bool> {
+    let mut paths = Vec::new();
+    let mut tokens = arguments.iter().skip(1);
+    while let Some(token) = tokens.next() {
+        if token == "--user-data-dir" {
+            paths.push(
+                tokens
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("数据目录参数缺少值"))?
+                    .as_str(),
+            );
+        } else if let Some(value) = token.strip_prefix("--user-data-dir=") {
+            paths.push(value);
+        }
+    }
+    anyhow::ensure!(paths.len() <= 1, "数据目录参数重复，无法确认归属");
+    let Some(path) = paths.first() else {
+        return Ok(false);
+    };
+    anyhow::ensure!(!path.is_empty(), "数据目录参数为空");
+    let actual = Path::new(path).canonicalize()?;
+    #[cfg(windows)]
+    return Ok(actual
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&expected.to_string_lossy()));
+    #[cfg(not(windows))]
+    Ok(actual == expected)
+}
+
 #[cfg(any(windows, test))]
 pub(crate) fn worker_image_matches(image: &Path, arguments: &[String]) -> bool {
     let Some(argv_image) = arguments.first().map(Path::new) else {
@@ -611,7 +817,11 @@ pub fn worker_birth_id(child: &std::process::Child) -> Option<u64> {
     {
         crate::windows_integration::child_process_birth_id(child)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        unix_birth_token(child.id())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = child;
         None
@@ -630,6 +840,39 @@ pub fn terminate_verified_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lifecycle_lock_serializes_generation_and_receipt_writers() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = lock_instance_lifecycle(temp.path()).unwrap();
+        let second = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp.path().join("lifecycle.lock"))
+            .unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
+        drop(first);
+        fs2::FileExt::try_lock_exclusive(&second).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_user_data_scan_requires_one_exact_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let own = temp.path().join("own data");
+        let neighbor = temp.path().join("own data other");
+        std::fs::create_dir(&own).unwrap();
+        std::fs::create_dir(&neighbor).unwrap();
+        let expected = own.canonicalize().unwrap();
+        let mut args = vec!["Codex".into(), format!("--user-data-dir={}", own.display())];
+        assert!(arguments_user_data_matches(&args, &expected).unwrap());
+        assert!(!arguments_user_data_matches(&args, &neighbor.canonicalize().unwrap()).unwrap());
+        args.push(format!("--user-data-dir={}", own.display()));
+        assert!(arguments_user_data_matches(&args, &expected).is_err());
+        assert!(
+            arguments_user_data_matches(&["Codex".into(), "--user-data-dir".into()], &expected)
+                .is_err()
+        );
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
