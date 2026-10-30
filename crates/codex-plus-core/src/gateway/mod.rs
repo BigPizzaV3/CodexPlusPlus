@@ -14,6 +14,8 @@
 //! - [`usage`]：按天汇总的用量统计；[`balance`]：供应商余额；[`sessions`]：各 Agent 的本地会话；
 //! - [`pipeline`]：候选循环；[`probe`]：供应商池的「测试」（单发一条短请求，不计入路由与统计）；
 //! - [`anthropic_inbound`] / [`anthropic_outbound`]：Claude Code 的协议转换；
+//! - [`chat_inbound`] / [`chat_outbound`]：OpenAI Chat Completions 客户端的协议转换；
+//! - [`gemini_inbound`] / [`gemini_outbound`]：Gemini API 客户端（如 Gemini CLI）的协议转换；
 //! - [`server`]：HTTP 入口；
 //! - [`apply`]：开启 / 关闭时改写 Agent 配置；[`restore`]：接入前配置的存档与断开时的还原。
 
@@ -23,8 +25,12 @@ pub mod anthropic_inbound;
 pub mod anthropic_outbound;
 pub mod apply;
 pub mod balance;
+pub mod chat_inbound;
+pub mod chat_outbound;
 pub mod chatgpt_backend;
 pub mod drift;
+pub mod gemini_inbound;
+pub mod gemini_outbound;
 pub mod images;
 pub mod key_pool;
 pub mod model_sync;
