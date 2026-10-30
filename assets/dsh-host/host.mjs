@@ -8,7 +8,7 @@
 // tools / systemPrompt（片段汇总成 MCP instructions）/ logger / timer / effect / on 等；
 // 必需依赖里有别的服务时不加载，并在报告里写明缺了什么。
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { register } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -29,6 +29,8 @@ const GROUP_MODULE = 'cordis:group'
 const SUPPORTED_SERVICES = new Set(['tools', 'systemPrompt', 'logger', 'timer', 'skills'])
 const APPLY_TIMEOUT_MS = 15_000
 const MAX_SKILL_SCAN_DEPTH = 4
+/** 一个包（含它引用的依赖包）最多列出多少个 SKILL.md。 */
+const MAX_SCANNED_SKILLS = 64
 const MAX_TEXT_BYTES = 1024 * 1024
 
 // MCP 帧走 stdout，插件的 console 输出一律改到 stderr。
@@ -154,7 +156,7 @@ function resolveRowModule(row, root, pkg) {
     return { error: `无法读取 ${packageName}/package.json：${errorText(error)}` }
   }
   const path = packageEntry(directory, installed, subpath)
-  return path && existsSync(path) ? { path } : { error: `${name} 没有可加载的入口` }
+  return path && existsSync(path) ? { path, packageDir: directory } : { error: `${name} 没有可加载的入口`, packageDir: directory }
 }
 
 /** 展开 patch 里的 insert 行；cordis:group 的子行放在 config 里。 */
@@ -275,10 +277,14 @@ function parseFrontmatter(text) {
   }
 }
 
-/** 包里所有 SKILL.md（不进 node_modules / 隐藏目录），每个所在目录是一个 skill。 */
-function scanSkills(root) {
+/**
+ * 包里所有 SKILL.md（不进 node_modules / 隐藏目录、不跟软链），每个所在目录是一个 skill。
+ * `budget.remaining` 是多次扫描共用的数量上限。
+ */
+function scanSkills(root, budget = { remaining: MAX_SCANNED_SKILLS }) {
   const skills = []
   const walk = (directory, depth) => {
+    if (budget.remaining <= 0) return
     let entries
     try {
       entries = readdirSync(directory, { withFileTypes: true })
@@ -299,6 +305,7 @@ function scanSkills(root) {
         description: typeof meta.description === 'string' ? meta.description : '',
         directory,
       })
+      budget.remaining--
       return
     }
     if (depth >= MAX_SKILL_SCAN_DEPTH) return
@@ -572,6 +579,8 @@ class Host {
       return record
     }
     const resolved = resolveRowModule(row, root, pkg)
+    // 行引用的依赖包里可能放着现成的 SKILL.md，即使它的代码加载不了也要扫到。
+    if (resolved.packageDir) this.dependencyDirs?.add(resolved.packageDir)
     if (resolved.error) {
       record.status = resolved.builtin ? 'incompatible' : 'error'
       record.reasons.push(resolved.error)
@@ -677,6 +686,7 @@ class Host {
   async loadPackage(root, packageKey, options = {}) {
     // inspect 时把代码注册的 skill 写到这里；serve 不写。
     this.skillsOut = typeof options.skillsOut === 'string' && options.skillsOut ? options.skillsOut : undefined
+    this.dependencyDirs = new Set()
     const report = {
       hostVersion: HOST_VERSION,
       root,
@@ -731,9 +741,37 @@ class Host {
     // 代码注册的 skill（可能来自依赖包）优先；同名或同一资源目录的 SKILL.md 文件不再重复列出。
     const runtimeSkills = report.rows.flatMap((row) => (row.skills ?? []).filter((skill) => skill.directory))
     const covered = new Set(runtimeSkills.flatMap((skill) => [skill.name, skill.resourceDir].filter(Boolean)))
+    const budget = { remaining: MAX_SCANNED_SKILLS }
+    const scanned = scanSkills(root, budget)
+    let realRoot
+    try {
+      realRoot = realpathSync(root)
+    } catch {
+      realRoot = root
+    }
+    for (const directory of this.dependencyDirs) {
+      // 依赖包必须真的在本包目录里；软链到包外（如 pnpm store、别的 checkout）不扫，避免读到包外的文件。
+      let real
+      try {
+        real = realpathSync(directory)
+      } catch {
+        continue
+      }
+      if (!isInside(realRoot, real)) {
+        report.diagnostics.push(`依赖包 ${relative(root, directory)} 指向包外，未扫描其中的 SKILL.md`)
+        continue
+      }
+      scanned.push(...scanSkills(real, budget))
+    }
+    if (budget.remaining <= 0) report.diagnostics.push(`SKILL.md 超过 ${MAX_SCANNED_SKILLS} 个，只列出前 ${MAX_SCANNED_SKILLS} 个`)
+    const seen = new Set()
     report.skills = [
       ...runtimeSkills.map(({ name, description, directory }) => ({ name, description, directory })),
-      ...scanSkills(root).filter((skill) => !covered.has(skill.name) && !covered.has(skill.directory)),
+      ...scanned.filter((skill) => {
+        if (covered.has(skill.name) || covered.has(skill.directory) || seen.has(skill.name)) return false
+        seen.add(skill.name)
+        return true
+      }),
     ]
     if (report.rows.length === 0 && report.skills.length === 0) {
       report.diagnostics.push('没有找到可加载的插件入口、bundle patch 或 SKILL.md')

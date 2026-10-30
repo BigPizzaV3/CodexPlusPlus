@@ -525,3 +525,81 @@ export function apply(ctx) {
         codex_plus_core::skills::parse_skill_frontmatter(&skill_md, "fallback");
     assert_eq!((name.as_str(), description.as_str()), ("dsh-badge", "Add the badge: use on every PR."));
 }
+
+/// 行引用的依赖包里放着现成的 SKILL.md：代码加载不了也要扫到；
+/// 软链到包外的依赖不扫；数量有上限。
+#[test]
+fn dsh_skill_files_in_referenced_dependencies_are_scanned_with_limits() {
+    let Some(toolchain) = toolchain() else { return };
+    let source = tempfile::tempdir().unwrap();
+    let root = source.path();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"name":"dsh-memory","type":"module","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("cordis.patch.yml"),
+        "- insert:\n    - id: memory\n      name: '@acme/dsh-memory-skills'\n    - id: outside\n      name: '@acme/linked'\n    - id: many\n      name: '@acme/many'\n",
+    )
+    .unwrap();
+    let write_package = |directory: &Path, name: &str, code: &str| {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            directory.join("package.json"),
+            format!(r#"{{"name":"{name}","type":"module","main":"index.js"}}"#),
+        )
+        .unwrap();
+        std::fs::write(directory.join("index.js"), code).unwrap();
+    };
+    let write_skill = |directory: &Path, name: &str| {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name} skill\n---\n\nBody\n"),
+        )
+        .unwrap();
+    };
+    // 代码引用 dsh 运行时包、加载不了，但 skill 文件就在包里。
+    let memory = root.join("node_modules/@acme/dsh-memory-skills");
+    write_package(
+        &memory,
+        "@acme/dsh-memory-skills",
+        "import '@deepseek-ai/dsh-skill-filesystem'\nexport function apply() {}\n",
+    );
+    write_skill(&memory.join("skills/recall"), "recall");
+    write_skill(&memory.join("skills/remember"), "remember");
+    // 软链到包外的依赖：不扫。
+    let outside = tempfile::tempdir().unwrap();
+    write_package(outside.path(), "@acme/linked", "export function apply() {}\n");
+    write_skill(&outside.path().join("skills/escaped"), "escaped");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), root.join("node_modules/@acme/linked")).unwrap();
+    // 超过上限的只列前面一部分。
+    let many = root.join("node_modules/@acme/many");
+    write_package(&many, "@acme/many", "export function apply() {}\n");
+    for index in 0..70 {
+        write_skill(&many.join(format!("skills/s{index:02}")), &format!("s{index:02}"));
+    }
+
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let report = plugins.import(&local_source(root), &toolchain).unwrap().report;
+
+    assert_eq!(row(&report, "memory")["status"], "incompatible", "代码加载不了只是不兼容");
+    let names: Vec<&str> = report["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|skill| skill["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"recall") && names.contains(&"remember"), "{names:?}");
+    assert_eq!(names.len(), 64, "数量上限");
+    let diagnostics = report["diagnostics"].to_string();
+    assert!(diagnostics.contains("只列出前 64 个"), "{diagnostics}");
+    #[cfg(unix)]
+    {
+        assert!(!names.contains(&"escaped"), "软链到包外的依赖不扫");
+        assert!(diagnostics.contains("指向包外"), "{diagnostics}");
+    }
+}

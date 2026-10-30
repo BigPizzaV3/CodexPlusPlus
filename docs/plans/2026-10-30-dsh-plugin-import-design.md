@@ -43,7 +43,7 @@ dsh 的 agent 循环、会话存储、LLM 服务都不在 Codex App 里，所以
 | 工具插件用到 `systemPrompt.section` | 同上 | 片段汇总进 MCP `instructions` | **部分兼容**：只在 MCP 初始化时给一次，不按回合重组；`context` / `variable` / `tools` 提供方忽略 |
 | 工具插件用 `registerOptions.when`、`exec.agent`、`exec.deferContext`、`exec.concludeTurn`、`presentCall/presentResult` | 运行时调用 | 无对应扩展点 | **部分兼容**：`when` 视为始终可用；`exec.agent` 为空；`deferContext` / `concludeTurn` 空操作；展示钩子忽略 |
 | 工具 render 出的图片块 | `type: 'image'`（引用 dsh 会话附件） | — | **不兼容**：附件存储属于 dsh 会话，转成文字占位 |
-| skill 包（`SKILL.md` 文件，或经 `ctx.skills.register` / `registerProvider` 在代码里注册） | 包内扫描到 `SKILL.md`；或加载插件时截取 `ctx.skills` 的注册（宿主提供 `skills` 服务与 `@deepseek-ai/dsh-skill` 替身），依赖包里的 skill 也能拿到 | 代码注册的写成 `SKILL.md` 目录（带上资源目录里的文件），与文件形式的一起复制进 Codex++ 的 Skills 源目录并启用到 Codex | **完全兼容**（内容层面）；skill 文档里写死的 dsh 专属路径/工具名需要用户自行判断 |
+| skill 包（`SKILL.md` 文件，或经 `ctx.skills.register` / `registerProvider` 在代码里注册） | 包内扫描到 `SKILL.md`；或加载插件时截取 `ctx.skills` 的注册（宿主提供 `skills` 服务与 `@deepseek-ai/dsh-skill` 替身），依赖包里的 skill 也能拿到；bundle 行引用的依赖包里现成的 `SKILL.md` 也会扫描（最多 64 个，不跟软链，指向包外的依赖不扫） | 代码注册的写成 `SKILL.md` 目录（带上资源目录里的文件），与文件形式的一起复制进 Codex++ 的 Skills 源目录并启用到 Codex | **完全兼容**（内容层面）；skill 文档里写死的 dsh 专属路径/工具名需要用户自行判断 |
 | MCP 配置行（`dsh-mcp-client`） | patch 行 `name` 为 `@deepseek-ai/dsh-mcp-client` | 生成标准 `mcpServers` JSON，交给现有「导入 MCP」流程写入 Codex | **完全兼容**（stdio / streamable-http）；`reconnect`、`toolCallTimeoutMs` 等 dsh 专属字段丢弃 |
 | `cordis:group` 行 | patch 行 | 展开子行逐一判定 | 按子行 |
 | 依赖 agent 循环 / 会话 / LLM / 子 agent / 工作流 / shell / 工作目录服务的插件（`agents`、`sessions`、`sessionProjections`、`llm`、`subagents`、`workflowEngine`、`shell`、`workingDirectory` 等服务…） | `inject` 必需项含不支持的服务，或导入了宿主才有的 dsh 运行时包（如 `@deepseek-ai/dsh-llm`） | 无 | **不兼容**：Codex App 的 agent 循环、会话存储与模型调用不在 Codex++ 手里，不加载并列出缺的服务 |
