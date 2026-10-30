@@ -9696,6 +9696,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           {market?.market.updatedAt ? ` · ${tf("清单更新于 {0}", [formatMarketUpdatedAt(market.market.updatedAt)])}` : market ? ` · ${market.market.message}` : ` · ${t("尚未刷新")}`}
         </span>
       </div>
+      <PluginCreatorStrip />
       <div className="script-market-toolbar">
         <div className="mg-segmented user-scripts-panes" role="tablist" aria-label={t("脚本")}>
           <button aria-selected={pane === "market"} data-active={pane === "market"} onClick={() => setPane("market")} role="tab" type="button">
@@ -16124,6 +16125,51 @@ function localScriptStateLabel(state: LocalScriptState): { label: string; hint: 
     case "notLoaded":
       return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载脚本") };
   }
+}
+
+type PluginCreatorStatus = {
+  status: "connected" | "not_connected" | "conflict";
+  message: string;
+  configPath?: string;
+  pluginsDirectory?: string;
+};
+
+/// 「对话造插件」：把插件创作 MCP 接入 Codex 后，用户在 Codex 对话里描述需求，agent 直接写出插件并热重载。
+function PluginCreatorStrip() {
+  const [state, setState] = useState<PluginCreatorStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const request = async (action: "status" | "connect") => {
+    setBusy(true);
+    setError("");
+    try {
+      setState(await invoke<PluginCreatorStatus>("plugin_creator_request", { action }));
+    } catch (failure) {
+      setError(String(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    void request("status");
+  }, []);
+  const connected = state?.status === "connected";
+  const hint = error || (connected
+    ? t("已接入。新开一个 Codex 对话，说「帮我做个插件：…」即可")
+    : state?.status === "conflict" ? state.message : t("接入后可在 Codex 对话里描述需求，由 agent 直接写出插件并热重载"));
+  return (
+    <div className="user-scripts-strip plugin-creator-strip" data-status={state?.status ?? "loading"}>
+      <span className="plugin-creator-title">{t("对话造插件")}</span>
+      <span className="user-scripts-summary plugin-creator-hint" title={state?.pluginsDirectory}>{hint}</span>
+      {connected ? (
+        <UiBadge variant="secondary">{t("已接入 Codex")}</UiBadge>
+      ) : (
+        <Button disabled={busy || !state || state.status === "conflict"} onClick={() => void request("connect")} size="sm" variant="secondary">
+          {busy ? t("接入中…") : t("接入 Codex")}
+        </Button>
+      )}
+    </div>
+  );
 }
 
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。

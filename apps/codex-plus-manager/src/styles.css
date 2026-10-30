@@ -13390,6 +13390,14 @@ button.side-item:hover {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
 }
+.shell .plugin-creator-strip .plugin-creator-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.shell .plugin-creator-strip .plugin-creator-hint {
+  margin-left: 0;
+  flex: 1 1 240px;
+}
 .shell .user-scripts-page .script-market-toolbar {
   display: flex;
   flex-wrap: wrap;
