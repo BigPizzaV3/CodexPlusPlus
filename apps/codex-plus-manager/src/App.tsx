@@ -9841,7 +9841,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
       ) : (
         <Panel>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
+            {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
           </div>
         </Panel>
       )}
@@ -16307,33 +16307,39 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
   const [publishOpen, setPublishOpen] = useState(false);
   const displayName = localizedPackageText(script.package?.locales, "title", script.name);
   const displayDescription = localizedPackageText(script.package?.locales, "description", script.package?.description ?? "");
+  // 拓展声明的能力，排成一行小标签；警示类（资源超限）用警告色。
+  const pkg = script.package;
+  const joined = (parts: unknown[]) => parts.filter((part): part is string => typeof part === "string" && part !== "").join("、");
+  type CapabilityTag = { text: string; tone?: "warn"; title?: string };
+  const capabilityCandidates: Array<CapabilityTag | null> = [
+    pkg?.hookEvents?.length ? { text: tf("Codex 钩子：{0}", [pkg.hookEvents.join("、")]) } : null,
+    pkg?.tools?.length ? { text: tf("模型工具：{0}", [pkg.tools.join("、")]) } : null,
+    pkg?.backend ? { text: t("常驻后台") } : null,
+    pkg?.services?.length ? { text: tf("提供服务：{0}", [pkg.services.join("、")]) } : null,
+    pkg?.toolPipeline && (pkg.toolPipeline.preExecute || pkg.toolPipeline.execute || pkg.toolPipeline.postExecute)
+      ? { text: tf("工具管道：{0}", [joined([pkg.toolPipeline.preExecute && t("改参数"), pkg.toolPipeline.execute && t("代为执行"), pkg.toolPipeline.postExecute && t("改结果")])]) }
+      : null,
+    pkg?.gatewayRequest || pkg?.gatewayResponse || pkg?.gatewayError
+      ? { text: tf("网关中间件：{0}", [joined([!!pkg.gatewayRequest && t("请求"), !!pkg.gatewayResponse && t("响应流"), !!pkg.gatewayError && t("失败重试")])]) }
+      : null,
+    pkg?.skippedAssets?.length
+      ? { text: tf("资源超出大小上限未加载：{0}", [pkg.skippedAssets.join("、")]), tone: "warn" as const, title: pkg.skippedAssets.join("\n") }
+      : null,
+  ];
+  const capabilityTags = capabilityCandidates.filter((tag): tag is CapabilityTag => tag !== null);
   return (
     <>
     <div className="table-row user-script-row">
       <div className="user-script-name">
         <strong>{displayName}</strong>
         {displayDescription ? <small title={displayDescription}>{displayDescription}</small> : null}
-        {script.package?.hookEvents?.length ? <small className="user-script-hooks">{tf("Codex 钩子：{0}", [script.package.hookEvents.join("、")])}</small> : null}
-        {script.package?.tools?.length ? <small className="user-script-hooks">{tf("模型工具：{0}", [script.package.tools.join("、")])}</small> : null}
-        {script.package?.backend ? <small className="user-script-hooks">{t("常驻后台")}</small> : null}
-        {script.package?.services?.length ? <small className="user-script-hooks">{tf("提供服务：{0}", [script.package.services.join("、")])}</small> : null}
-        {script.package?.skippedAssets?.length
-          ? <small className="user-script-hooks" data-tone="warn" title={script.package.skippedAssets.join("\n")}>{tf("资源超出大小上限未加载：{0}", [script.package.skippedAssets.join("、")])}</small>
-          : null}
-        {script.package?.toolPipeline && (script.package.toolPipeline.preExecute || script.package.toolPipeline.execute || script.package.toolPipeline.postExecute)
-          ? <small className="user-script-hooks">{tf("工具管道：{0}", [[
-              script.package.toolPipeline.preExecute ? t("改参数") : "",
-              script.package.toolPipeline.execute ? t("代为执行") : "",
-              script.package.toolPipeline.postExecute ? t("改结果") : "",
-            ].filter(Boolean).join("、")])}</small>
-          : null}
-        {script.package?.gatewayRequest || script.package?.gatewayResponse || script.package?.gatewayError
-          ? <small className="user-script-hooks">{tf("网关中间件：{0}", [[
-              script.package.gatewayRequest ? t("请求") : "",
-              script.package.gatewayResponse ? t("响应流") : "",
-              script.package.gatewayError ? t("失败重试") : "",
-            ].filter(Boolean).join("、")])}</small>
-          : null}
+        {capabilityTags.length ? (
+          <div className="user-script-tags">
+            {capabilityTags.map((tag) => (
+              <span className="user-script-tag" data-tone={tag.tone} key={tag.text} title={tag.title ?? tag.text}>{tag.text}</span>
+            ))}
+          </div>
+        ) : null}
       </div>
       <span>{source}</span>
       <div className="user-script-state">
@@ -16350,21 +16356,18 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
       </div>
       <div className="script-row-actions">
         {configSchema.length ? (
-          <Button aria-expanded={configOpen} onClick={() => setConfigOpen((open) => !open)} size="sm" variant="outline">
+          <Button aria-expanded={configOpen} aria-label={t("设置")} className="user-script-icon-action" data-active={configOpen || undefined} onClick={() => setConfigOpen((open) => !open)} size="icon" title={t("设置")} variant="ghost">
             <Settings className="h-4 w-4" />
-            {t("设置")}
           </Button>
         ) : null}
         {canPublish ? (
-          <Button onClick={() => setPublishOpen(true)} size="sm" variant="outline" title={t("发布到 GitHub，出现在其他人的社区拓展里")}>
+          <Button aria-label={t("发布到 GitHub")} className="user-script-icon-action" onClick={() => setPublishOpen(true)} size="icon" title={t("发布到 GitHub，出现在其他人的社区拓展里")} variant="ghost">
             <Upload className="h-4 w-4" />
-            {t("发布")}
           </Button>
         ) : null}
         {canDelete ? (
-          <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
+          <Button aria-label={t("删除")} className="user-script-icon-action" data-danger onClick={() => void actions.deleteUserScript(script.key)} size="icon" title={t("删除")} variant="ghost">
             <Trash2 className="h-4 w-4" />
-            {t("删除")}
           </Button>
         ) : null}
       </div>

@@ -13569,11 +13569,50 @@ button.side-item:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.shell .user-script-row .user-script-name .user-script-hooks {
-  color: hsl(var(--primary));
+/* 本地拓展行：操作列按内容宽度（图标按钮不换行），能力排成一行小标签 */
+.shell .user-script-row {
+  grid-template-columns: minmax(160px, 1fr) 120px 150px auto;
+  align-items: center;
 }
-.shell .user-script-row .user-script-name .user-script-hooks[data-tone="warn"] {
+.shell .user-script-row .script-row-actions {
+  flex-wrap: nowrap;
+  gap: 2px;
+  min-width: 32px;
+}
+.shell .user-script-row .user-script-icon-action {
+  width: 30px;
+  height: 30px;
+  color: hsl(var(--muted-foreground));
+}
+.shell .user-script-row .user-script-icon-action:hover,
+.shell .user-script-row .user-script-icon-action[data-active] {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
+}
+.shell .user-script-row .user-script-icon-action[data-danger]:hover {
+  color: hsl(var(--status-error));
+}
+.shell .user-script-row .user-script-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+.shell .user-script-row .user-script-tag {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+}
+.shell .user-script-row .user-script-tag[data-tone="warn"] {
   color: hsl(var(--status-warning));
+  background: hsl(var(--status-warning) / 0.12);
 }
 /* 拓展设置表单：展开在拓展行下方 */
 .shell .extension-config-form {
