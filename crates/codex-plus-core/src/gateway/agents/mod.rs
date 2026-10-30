@@ -11,7 +11,10 @@
 //! 新增 Agent：在 `catalog_*.rs` 里写一条规格并登记到该文件的 `SPECS`；
 //! 写配置时供应商名统一用 [`PROVIDER_ID`]，地址用 [`Wiring`] 给的，不要硬编码端口。
 
+pub mod catalog_apps;
+pub mod catalog_cli;
 pub mod catalog_core;
+pub mod catalog_tools;
 pub mod connect;
 pub mod env;
 pub mod files;
@@ -113,7 +116,14 @@ impl std::fmt::Debug for AgentSpec {
 /// 全部通用 Agent，按界面上的顺序。
 pub fn all() -> &'static [&'static AgentSpec] {
     static ALL: OnceLock<Vec<&'static AgentSpec>> = OnceLock::new();
-    ALL.get_or_init(|| catalog_core::SPECS.iter().collect())
+    ALL.get_or_init(|| {
+        catalog_core::SPECS
+            .iter()
+            .chain(catalog_cli::SPECS)
+            .chain(catalog_tools::SPECS)
+            .chain(catalog_apps::SPECS)
+            .collect()
+    })
 }
 
 pub fn spec(id: &str) -> Option<&'static AgentSpec> {
