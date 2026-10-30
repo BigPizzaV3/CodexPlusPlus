@@ -135,7 +135,114 @@
     });
   }
 
+  /**
+   * 会话写入（与 dsh 的 SessionStore 对应）：经 Codex 自己的 AppServerManager 调 app-server。
+   *
+   * 新版 Codex 在页面里用 `scope.get(管理器原子).forHost(hostId).sendRequest(method, params)` 发请求；原子是入口
+   * 模块的一个导出（名字随构建变），这里按「scope.get 出来的值带 forHost」把它找出来并缓存。scope 取自任意
+   * 带 React fiber 的界面节点，每次调用现取（界面重建后旧 scope 会失效）。只开放下面几个方法，不开放删除等。
+   */
+  const codexPlusSessionMethods = {
+    list: "thread/list",
+    fork: "thread/fork",
+    append: "thread/inject_items",
+    startTurn: "turn/start",
+    interrupt: "turn/interrupt",
+  };
+  let codexPlusManagerAtom = null;
+
+  function codexPlusFindAppScope() {
+    const candidates = document.querySelectorAll("[data-app-action-sidebar-thread-id], [data-codex-composer-root], main, aside");
+    for (const node of candidates) {
+      const key = Object.getOwnPropertyNames(node).find((name) => name.startsWith("__reactFiber$"));
+      let fiber = key ? node[key] : null;
+      for (let depth = 0; fiber && depth < 40; depth += 1, fiber = fiber.return) {
+        let hook = fiber.memoizedState;
+        for (let index = 0; hook && index < 64; index += 1, hook = hook.next) {
+          const scope = hook.memoizedState?.current;
+          if (scope && typeof scope.get === "function" && scope.node) return scope;
+        }
+      }
+    }
+    return null;
+  }
+
+  async function codexPlusAppServerClient(hostId = "local") {
+    const scope = codexPlusFindAppScope();
+    if (!scope) throw new Error("Codex 界面还没准备好，稍后再试");
+    const managerFrom = (atom) => {
+      try {
+        const manager = scope.get(atom);
+        return manager && typeof manager.forHost === "function" ? manager : null;
+      } catch {
+        return null;
+      }
+    };
+    let manager = codexPlusManagerAtom ? managerFrom(codexPlusManagerAtom) : null;
+    if (!manager) {
+      const module = await loadOptionalCodexAppModule("app-initial-");
+      for (const value of Object.values(module || {})) {
+        if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
+        manager = managerFrom(value);
+        if (manager) {
+          codexPlusManagerAtom = value;
+          break;
+        }
+      }
+    }
+    if (!manager) throw new Error("没有找到 Codex 的 app-server 连接（Codex 版本不兼容）");
+    return manager.forHost(hostId);
+  }
+
+  /** 把 append 的条目整理成 app-server 的 ResponseItem：字符串当作用户消息，{ role, text } 按角色转成消息。 */
+  function codexPlusSessionItem(entry) {
+    if (typeof entry === "string") return { type: "message", role: "user", content: [{ type: "input_text", text: entry }] };
+    if (entry && typeof entry === "object" && typeof entry.type === "string") return entry;
+    const role = entry?.role === "assistant" || entry?.role === "developer" ? entry.role : "user";
+    return { type: "message", role, content: [{ type: role === "assistant" ? "output_text" : "input_text", text: String(entry?.text ?? "") }] };
+  }
+
+  /** 按方法名调用会话写入；params 形状见 codexPlusSessionsService。也给 Codex++ 进程经 CDP 调（后台、工具）。 */
+  async function codexPlusSessionsCall(name, params = {}) {
+    const method = codexPlusSessionMethods[name];
+    if (!method) throw new Error(`会话服务没有方法 ${name}`);
+    const client = await codexPlusAppServerClient(params.hostId || "local");
+    switch (name) {
+      case "list":
+        return client.sendRequest(method, { limit: params.limit ?? 50, ...(params.cursor ? { cursor: params.cursor } : {}), ...(params.archived ? { archived: true } : {}) });
+      case "fork":
+        return (await client.sendRequest(method, { threadId: String(params.id), ...(params.options || {}) }))?.thread ?? null;
+      case "append": {
+        const items = (Array.isArray(params.items) ? params.items : [params.items]).map(codexPlusSessionItem);
+        await client.sendRequest(method, { threadId: String(params.id), items });
+        return { appended: items.length };
+      }
+      case "startTurn": {
+        const input = typeof params.input === "string" ? [{ type: "text", text: params.input }] : params.input;
+        if (!Array.isArray(input) || !input.length) throw new Error("startTurn 需要输入文字");
+        return (await client.sendRequest(method, { threadId: String(params.id), input, ...(params.options || {}) }))?.turn ?? null;
+      }
+      case "interrupt":
+        return client.sendRequest(method, { threadId: String(params.id), turnId: String(params.turnId || "") });
+      default:
+        throw new Error(`会话服务没有方法 ${name}`);
+    }
+  }
+
+  /** 内置的会话写入服务（inject: ["sessions"]）：分叉、追加条目、发起 / 中断一轮。读请用 sessionQuery。 */
+  function codexPlusSessionsService() {
+    return Object.freeze({
+      list: (options = {}) => codexPlusSessionsCall("list", options),
+      fork: (id, options) => codexPlusSessionsCall("fork", { id, options }),
+      append: (id, items) => codexPlusSessionsCall("append", { id, items }),
+      startTurn: (id, input, options) => codexPlusSessionsCall("startTurn", { id, input, options }),
+      interrupt: (id, turnId) => codexPlusSessionsCall("interrupt", { id, turnId }),
+    });
+  }
+
   function installCodexPlusBuiltinServices() {
+    window.__codexPlusSessionsCall = codexPlusSessionsCall;
+    if (!codexPlusServices.has("sessions")) codexPlusProvideService("sessions", codexPlusSessionsService(), "builtin");
     if (!codexPlusServices.has("sessionQuery")) codexPlusProvideService("sessionQuery", codexPlusSessionQueryService(), "builtin");
     // 全局的多语言服务：写成 inject: ["locale"] 的拓展也能用（ctx.locale 是按实例自动撤销的同一套接口）。
     if (!codexPlusServices.has("locale")) {

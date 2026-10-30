@@ -37,7 +37,7 @@ pub async fn run_runner(node: &Path, runner: &str, input: &Value, limit: Duratio
     serde_json::from_slice(&buffer).context("拓展脚本运行器输出不是 JSON")
 }
 
-/// 运行器里的宿主调用客户端：`write`、`host(service, method, params)`、只读会话查询 `sessionQuery`、
+/// 运行器里的宿主调用客户端：`write`、`host(service, method, params)`、只读会话查询 `sessionQuery`、会话写入 `sessions`、
 /// 按名字调用后台服务的 `service(name)`、以及处理回复的 `handleHostReply(message)`。运行器在 import
 /// 之后放一行 `/*HOST_CLIENT*/`，由 [`with_host_client`] 替换成这段代码。
 pub const HOST_CLIENT_JS: &str = r#"
@@ -103,6 +103,14 @@ const sessionQuery = Object.freeze({
   },
   searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
   searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
+});
+// 会话写入（分叉、追加条目、发起 / 中断一轮），经 Codex 页面里的 app-server 连接完成。
+const sessions = Object.freeze({
+  list: (options) => host("sessions", "list", options ?? {}),
+  fork: (id, options) => host("sessions", "fork", { id, options }),
+  append: (id, items) => host("sessions", "append", { id, items }),
+  startTurn: (id, input, options) => host("sessions", "startTurn", { id, input, options }),
+  interrupt: (id, turnId) => host("sessions", "interrupt", { id, turnId }),
 });
 // 宿主调用的回复：处理了就返回 true。
 const handleHostReply = (message) => {

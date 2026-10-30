@@ -3536,7 +3536,7 @@ describe("拓展运行时内核", () => {
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
       "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
-      `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices };`,
+      `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices, sessionItem: codexPlusSessionItem, sessionsCall: codexPlusSessionsCall };`,
     )(
       window,
       (key: string, label: string, callback: () => unknown) => {
@@ -3569,7 +3569,8 @@ describe("拓展运行时内核", () => {
       localStorage,
     ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown>;
       bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any;
-      services: Map<string, { value: unknown; owner: string }>; installBuiltins: () => void };
+      services: Map<string, { value: unknown; owner: string }>; installBuiltins: () => void;
+      sessionItem: (entry: unknown) => any; sessionsCall: (name: string, params?: unknown) => Promise<unknown> };
     return { ...api, window, cleanups, failures, registered, calls, toasts, timers, store };
   }
 
@@ -3985,6 +3986,21 @@ describe("拓展运行时内核", () => {
     const send = source.match(/proto\.sendRequest = async function codexPlusModelPatchedSendRequest[\s\S]*?\n    \};/);
     assert.ok(send);
     assert.doesNotMatch(send![0], /codexPlusApplyExtensionRequestMiddleware/, "sendRequest 里不能再跑一次");
+  });
+
+  it("内置 sessions 服务：append 条目规整成 ResponseItem，只开放分叉 / 追加 / 发起 / 中断 / 列表", async () => {
+    const k = await kernel();
+    k.installBuiltins();
+    const sessions: any = k.services.get("sessions")?.value;
+    assert.equal(k.services.get("sessions")?.owner, "builtin");
+    assert.deepEqual(Object.keys(sessions).sort(), ["append", "fork", "interrupt", "list", "startTurn"]);
+    assert.ok(Object.isFrozen(sessions));
+    assert.deepEqual(k.sessionItem("你好"), { type: "message", role: "user", content: [{ type: "input_text", text: "你好" }] });
+    assert.deepEqual(k.sessionItem({ role: "assistant", text: "好的" }), { type: "message", role: "assistant", content: [{ type: "output_text", text: "好的" }] });
+    assert.deepEqual(k.sessionItem({ role: "system", text: "x" }).role, "user", "未知角色按用户消息处理");
+    const raw = { type: "function_call_output", call_id: "c1", output: "ok" };
+    assert.equal(k.sessionItem(raw), raw, "已经是 ResponseItem 的原样保留");
+    await assert.rejects(k.sessionsCall("delete", { id: "x" }), /没有方法 delete/);
   });
 
   it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {

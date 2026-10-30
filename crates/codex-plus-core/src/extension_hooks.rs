@@ -59,7 +59,7 @@ const runHooks = (input) => Promise.all(input.hooks.map(async (hook) => {
     if (hook.adapter === "preExecute" || hook.adapter === "execute") {
       // 工具管道：参数是工具输入，上下文带工具名、调用 id 与完整负载。
       const payload = structuredClone(input.payload);
-      const context = { event: input.event, extension: hook.id, config: hook.config ?? {}, name: payload?.tool_name ?? "", callId: payload?.tool_use_id ?? null, cwd: payload?.cwd ?? null, payload, sessionQuery, service };
+      const context = { event: input.event, extension: hook.id, config: hook.config ?? {}, name: payload?.tool_name ?? "", callId: payload?.tool_use_id ?? null, cwd: payload?.cwd ?? null, payload, sessionQuery, sessions, service };
       const result = await race(fn(payload?.tool_input ?? null, context));
       if (result === undefined || result === null) return { id: hook.id, output: null };
       if (hook.adapter === "execute") return { id: hook.id, executed: typeof result === "string" ? result : JSON.stringify(result) };
@@ -68,7 +68,7 @@ const runHooks = (input) => Promise.all(input.hooks.map(async (hook) => {
       }
       return { id: hook.id, output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: result } } };
     }
-    const output = await race(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {}, sessionQuery, service }));
+    const output = await race(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {}, sessionQuery, sessions, service }));
     return { id: hook.id, output: output ?? null };
   } catch (error) {
     return { id: hook.id, error: String(error?.stack || error?.message || error) };

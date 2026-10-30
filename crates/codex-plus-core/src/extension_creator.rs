@@ -625,7 +625,7 @@ lines.on("line", async (line) => {
     const fn = typeof module.default === "function" ? module.default : module[input.tool];
     if (typeof fn !== "function") throw new Error(`${input.script} 没有默认导出函数`);
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${input.timeoutMs / 1000} 秒）`)), input.timeoutMs); });
-    const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {}, sessionQuery, service })), timeout]);
+    const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {}, sessionQuery, sessions, service })), timeout]);
     write({ final: { result: result === undefined ? null : result } });
   } catch (error) {
     write({ final: { error: String(error?.stack || error?.message || error) } });

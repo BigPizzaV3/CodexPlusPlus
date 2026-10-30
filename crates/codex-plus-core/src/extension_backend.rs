@@ -53,6 +53,7 @@ lines.on("line", async (line) => {
           dataDir: message.dataDir,
           emit: (event, payload) => write({ event: String(event), payload: payload ?? null }),
           sessionQuery,
+          sessions,
           // 提供服务：名字要在 codexpp.json 的 backend.provides 里声明，别处才找得到。
           provide: (name, impl) => { provided.set(String(name), impl); },
           // 调用任一拓展后台提供的服务（包括自己的）：service("名字").方法(...参数)。
@@ -258,8 +259,62 @@ async fn host_call_inner(message: &Value, manager: &UserScriptManager) -> anyhow
             }
             call_service(manager, &params).await
         }
+        ("sessions", "list" | "fork" | "append" | "startTurn" | "interrupt") => {
+            // 会话写入经 Codex 页面里的 app-server 连接完成：在页面里调 __codexPlusSessionsCall。
+            let ports = REMOTE_BRIDGE_PORTS.get().cloned().unwrap_or_else(default_debug_ports);
+            page_call(&ports, "__codexPlusSessionsCall", &json!(method), &params).await
+        }
         _ => anyhow::bail!("不能调用 {service}.{method}"),
     }
+}
+
+/// Codex 页面的调试端口：最近一次启动记录（本实例与常规安装），再补默认端口。
+fn default_debug_ports() -> Vec<u16> {
+    let mut ports = Vec::new();
+    let mut records = vec![crate::paths::default_app_state_dir().join("latest-status.json")];
+    if let Some(home) = std::env::var_os("HOME") {
+        records.push(PathBuf::from(home).join(".codex-session-delete/latest-status.json"));
+    }
+    for path in records {
+        if let Ok(Some(status)) = crate::status::StatusStore::new(path).load_latest() {
+            if let Some(port) = status.debug_port.filter(|port| *port > 0 && !ports.contains(port)) {
+                ports.push(port);
+            }
+        }
+    }
+    if !ports.contains(&9229) {
+        ports.push(9229);
+    }
+    ports
+}
+
+/// 在 Codex 页面里调用一个全局函数 `window[function](name, params)`，返回它的结果。
+async fn page_call(ports: &[u16], function: &str, name: &Value, params: &Value) -> anyhow::Result<Value> {
+    let mut websocket = None;
+    for port in ports {
+        let Ok(targets) = crate::cdp::list_targets(*port).await else {
+            continue;
+        };
+        if let Some(url) = crate::cdp::pick_injectable_codex_page_target(&targets).ok().and_then(|target| target.web_socket_debugger_url) {
+            websocket = Some(url);
+            break;
+        }
+    }
+    let websocket = websocket.context("没有找到已连接的 Codex 页面")?;
+    let expression = format!(
+        "(async () => {{ if (typeof window.{function} !== \"function\") throw new Error(\"Codex 页面还没装好 Codex++ 拓展运行时\"); return JSON.stringify(await window.{function}({name}, {params})); }})()"
+    );
+    let response = crate::bridge::evaluate_script_with_await_promise(&websocket, &expression, true).await?;
+    if let Some(exception) = response.pointer("/result/exceptionDetails") {
+        let message = exception
+            .pointer("/exception/description")
+            .and_then(Value::as_str)
+            .or_else(|| exception.get("text").and_then(Value::as_str))
+            .unwrap_or("未知错误");
+        anyhow::bail!("{}", message.lines().next().unwrap_or(message));
+    }
+    let text = response.pointer("/result/result/value").and_then(Value::as_str).unwrap_or("null");
+    Ok(serde_json::from_str(text).unwrap_or(Value::Null))
 }
 
 /// 不托管后台的进程（拓展 MCP、钩子）设置：服务调用经这些 CDP 调试端口上的 Codex 页面桥接转发。
