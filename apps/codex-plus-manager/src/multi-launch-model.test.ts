@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  multiLaunchInstanceCanRestart,
+  multiLaunchInstanceCanStop,
   multiLaunchInstanceFailure,
   multiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
@@ -16,6 +18,17 @@ const instance = (patch: Partial<MultiLaunchInstance> = {}): MultiLaunchInstance
 });
 
 describe("Codex 多开运行实例模型", () => {
+  it("启动期间禁止结束和重启，其他状态保留原有操作", () => {
+    const starting = instance({ status: " STARTING ", running: true });
+    assert.equal(multiLaunchInstanceCanStop(starting), false);
+    assert.equal(multiLaunchInstanceCanRestart(starting), false);
+    for (const status of ["running", "unknown", "failed"]) {
+      assert.equal(multiLaunchInstanceCanStop(instance({ status })), true);
+      assert.equal(multiLaunchInstanceCanRestart(instance({ status })), true);
+    }
+    assert.equal(multiLaunchInstanceCanStop(instance({ status: "stopped" })), false);
+    assert.equal(multiLaunchInstanceCanRestart(instance({ status: "stopped" })), true);
+  });
   it("主 Codex 优先使用主实例标签", () => {
     assert.equal(multiLaunchInstanceLabel(instance({ isMain: true, profileName: "旧名称" })), "主 Codex");
   });

@@ -41,6 +41,15 @@ export function multiLaunchInstanceRunning(instance: MultiLaunchInstance): boole
   return ["running", "running_degraded", "ready", "connected", "ok"].includes(multiLaunchInstanceStatus(instance));
 }
 
+export function multiLaunchInstanceCanStop(instance: MultiLaunchInstance): boolean {
+  const status = multiLaunchInstanceStatus(instance);
+  return status !== "starting" && (multiLaunchInstanceRunning(instance) || status === "unknown" || status === "failed");
+}
+
+export function multiLaunchInstanceCanRestart(instance: MultiLaunchInstance): boolean {
+  return multiLaunchInstanceStatus(instance) !== "starting";
+}
+
 /**
  * 实例启动失败时给用户看的原因，没失败时返回空串。
  *

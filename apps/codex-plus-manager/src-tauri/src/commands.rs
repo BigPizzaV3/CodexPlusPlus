@@ -1675,6 +1675,10 @@ fn stop_codex_multi_instance_blocking(
 }
 
 fn stop_multi_instance_lifecycle(root: &Path, instance: &CodexMultiInstance) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !multi_instance_is_starting(instance),
+        "实例正在启动，请等待启动结果后再结束或重启"
+    );
     let cleanup = (|| {
         if let Some(identity) = instance.identity.as_ref() {
             anyhow::ensure!(
@@ -1985,9 +1989,35 @@ fn multi_instance_is_running(instance: &CodexMultiInstance) -> bool {
     .unwrap_or(false)
 }
 
+fn multi_instance_is_starting(instance: &CodexMultiInstance) -> bool {
+    if instance.is_main
+        || instance.generation == 0
+        || instance.status == "stopped"
+        || instance.identity.is_some()
+        || instance.launch_result.is_some()
+        || instance.worker_birth_id.is_none_or(|birth| birth == 0)
+    {
+        return false;
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    if let Some(pid) = instance.pid {
+        return matches!(
+            codex_plus_core::multi_worker::codex_process_generation_exited(
+                pid,
+                instance.worker_birth_id,
+            ),
+            Ok(false)
+        );
+    }
+    false
+}
+
 fn multi_instance_snapshot_status(instance: &CodexMultiInstance, running: bool) -> &'static str {
     if running {
         return multi_instance_status(true, instance.launch_result.as_ref());
+    }
+    if multi_instance_is_starting(instance) {
+        return "starting";
     }
     if instance
         .launch_result
@@ -13076,6 +13106,35 @@ model_reasoning_effort = "high"
         )
         .unwrap();
         instance
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn multi_instance_starting_rejects_stop_without_consuming_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut instance = ready_multi_instance_fixture(temp.path());
+        let ready = instance.launch_result.take().unwrap();
+        instance.identity = None;
+        instance.running = false;
+        instance.pid = Some(std::process::id());
+        let codex_plus_core::watcher::ProcessInstanceState::Running { birth_id, .. } =
+            codex_plus_core::watcher::inspect_process_instance(std::process::id())
+        else {
+            panic!("test process must be alive");
+        };
+        instance.worker_birth_id = birth_id.and_then(|birth| birth.parse().ok());
+        assert!(instance.worker_birth_id.is_some());
+        save_multi_instance_manifest(temp.path(), &instance).unwrap();
+        let receipt_path = temp.path().join(MULTI_LAUNCH_RESULT_FILE);
+        std::fs::write(&receipt_path, "{}").unwrap();
+        assert_eq!(multi_instance_snapshot_status(&instance, false), "starting");
+        assert!(stop_multi_instance_lifecycle(temp.path(), &instance).is_err());
+        assert_eq!(std::fs::read_to_string(&receipt_path).unwrap(), "{}");
+        write_multi_instance_result(temp.path(), &instance, &ready).unwrap();
+        let running = load_multi_instance_manifest(temp.path()).unwrap();
+        assert_eq!(running.launch_result.unwrap().status, "ready");
+        instance.status = "stopped".into();
+        assert!(!multi_instance_is_starting(&instance));
     }
 
     #[test]
