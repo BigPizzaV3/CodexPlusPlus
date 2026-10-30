@@ -13572,8 +13572,13 @@ button.side-item:hover {
 /* 本地拓展行：每行是独立网格，操作列必须定宽（一行最多两个图标），否则图标多的行会把中间两列挤偏；
    能力排成一行小标签。窄屏沿用全局 .table-row 的单列堆叠。 */
 .shell .user-script-row {
-  grid-template-columns: minmax(160px, 1fr) 120px 150px 96px;
+  grid-template-columns: minmax(160px, 1fr) 120px 116px 62px;
   align-items: center;
+}
+/* 来源 / 版本靠右，和开关、操作图标收在右侧一组 */
+.shell .user-script-row > span {
+  text-align: right;
+  white-space: nowrap;
 }
 .shell .user-script-row .script-row-actions {
   flex-wrap: nowrap;
@@ -13583,6 +13588,9 @@ button.side-item:hover {
 @media (max-width: 860px) {
   .shell .user-script-row {
     grid-template-columns: 1fr;
+  }
+  .shell .user-script-row > span {
+    text-align: left;
   }
   .shell .user-script-row .script-row-actions {
     justify-content: flex-start;
@@ -13599,6 +13607,25 @@ button.side-item:hover {
   background: hsl(var(--muted));
 }
 .shell .user-script-row .user-script-icon-action[data-danger]:hover {
+  color: hsl(var(--status-error));
+}
+/* 「更多」菜单：触发按钮与左侧图标按钮同色，菜单项带图标 */
+.shell .user-script-row .mg-icon-button {
+  color: hsl(var(--muted-foreground));
+}
+.shell .user-script-row .mg-icon-button:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
+}
+.shell .user-script-row .mg-menu {
+  min-width: 160px;
+}
+.shell .user-script-row .user-script-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.shell .user-script-row .mg-menu .mg-danger {
   color: hsl(var(--status-error));
 }
 .shell .user-script-row .user-script-tags {

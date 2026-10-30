@@ -144,7 +144,7 @@ import { PluginMarketScreen } from "./PluginMarketScreen";
 import { defaultMarketSort, localScriptState, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
 import { ReleaseNotes } from "./ReleaseNotes";
 import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
-import { McpPage, PageHeader } from "./ManagementPages";
+import { McpPage, Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { SkillsPage } from "./ManagementExtra";
 import { ProjectSessionPage } from "./ProjectSessionPage";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
@@ -16360,15 +16360,19 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
             <Settings className="h-4 w-4" />
           </Button>
         ) : null}
-        {canPublish ? (
-          <Button aria-label={t("发布到 GitHub")} className="user-script-icon-action" onClick={() => setPublishOpen(true)} size="icon" title={t("发布到 GitHub，出现在其他人的社区拓展里")} variant="ghost">
-            <Upload className="h-4 w-4" />
-          </Button>
-        ) : null}
-        {canDelete ? (
-          <Button aria-label={t("删除")} className="user-script-icon-action" data-danger onClick={() => void actions.deleteUserScript(script.key)} size="icon" title={t("删除")} variant="ghost">
-            <Trash2 className="h-4 w-4" />
-          </Button>
+        {canPublish || canDelete ? (
+          <Menu label={tf("{0} 的更多操作", [displayName])}>
+            {canPublish ? (
+              <MenuItem onClick={() => setPublishOpen(true)}>
+                <span className="user-script-menu-item"><Upload className="h-4 w-4" />{t("发布到 GitHub")}</span>
+              </MenuItem>
+            ) : null}
+            {canDelete ? (
+              <MenuItem danger onClick={() => void actions.deleteUserScript(script.key)}>
+                <span className="user-script-menu-item"><Trash2 className="h-4 w-4" />{t("删除")}</span>
+              </MenuItem>
+            ) : null}
+          </Menu>
         ) : null}
       </div>
     </div>
