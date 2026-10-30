@@ -438,3 +438,90 @@ fn dsh_npm_live_import_runs_published_tool_plugin() {
     plugins.remove(&record.id).unwrap();
     assert!(!Path::new(&record.root).exists());
 }
+
+/// 代码里注册的 skill（含依赖包里的）会被截下来写成 SKILL.md 目录；
+/// 引用 dsh 运行时包的行判为不兼容，而不是「加载失败」。
+#[test]
+fn dsh_skills_registered_in_code_become_skill_directories() {
+    let Some(toolchain) = toolchain() else { return };
+    let source = tempfile::tempdir().unwrap();
+    let root = source.path();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"name":"dsh-skill-bundle","type":"module","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("cordis.patch.yml"),
+        "- insert:\n    - id: badge\n      name: '@acme/dsh-skill-badge'\n    - id: llm-tool\n      name: ./llm.js\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("llm.js"),
+        "import { LlmService } from '@deepseek-ai/dsh-llm'\nexport function apply() {}\n",
+    )
+    .unwrap();
+    // skill 在依赖包里：只有代码注册，没有现成的 SKILL.md。
+    let dependency = root.join("node_modules/@acme/dsh-skill-badge");
+    std::fs::create_dir_all(dependency.join("assets")).unwrap();
+    std::fs::write(
+        dependency.join("package.json"),
+        r#"{"name":"@acme/dsh-skill-badge","type":"module","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(dependency.join("assets/badge.md"), "Add the badge.").unwrap();
+    std::fs::write(dependency.join("assets/badge.png"), "png").unwrap();
+    std::fs::write(
+        dependency.join("index.js"),
+        r#"import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { BUNDLED_SKILL_RANK } from '@deepseek-ai/dsh-skill'
+export const inject = ['skills']
+const assets = fileURLToPath(new URL('./assets/', import.meta.url))
+const candidate = {
+  name: 'dsh-badge', description: 'Add the badge: use on every PR.', rank: BUNDLED_SKILL_RANK,
+  invocation: { modelInvocable: true, userInvocable: true }, provider: 'badge', source: 'bundled',
+  resourceBase: { kind: 'directory', path: assets }, locator: 'badge',
+}
+export function apply(ctx) {
+  ctx.skills.registerProvider(() => ({
+    name: 'badge',
+    list: async () => [candidate],
+    get: async (item) => ({ ...item, content: await readFile(new URL('./assets/badge.md', import.meta.url), 'utf8') }),
+  }))
+  ctx.skills.register({ name: 'inline-note', description: 'Inline skill', content: 'Inline body', source: 'runtime' })
+}
+"#,
+    )
+    .unwrap();
+
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(root), &toolchain).unwrap();
+    let report = &record.report;
+
+    let badge = row(report, "badge");
+    assert_eq!(badge["status"], "skills", "{badge}");
+    let llm = row(report, "llm-tool");
+    assert_eq!(llm["status"], "incompatible", "{llm}");
+    assert!(llm["reasons"][0].as_str().unwrap().contains("@deepseek-ai/dsh-llm"));
+
+    let mut names: Vec<&str> = report["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|skill| skill["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["dsh-badge", "inline-note"]);
+    let dirs = dsh_plugins::report_skill_dirs(report);
+    let badge_dir = dirs.iter().find(|dir| dir.ends_with("dsh-badge")).unwrap();
+    let skill_md = std::fs::read_to_string(badge_dir.join("SKILL.md")).unwrap();
+    assert!(skill_md.starts_with("---\nname: \"dsh-badge\"\ndescription: \"Add the badge: use on every PR.\"\n---"));
+    assert!(skill_md.contains("Add the badge."));
+    assert!(badge_dir.join("badge.png").is_file(), "资源目录的文件一并带上");
+    assert!(dirs.iter().all(|dir| dir.starts_with(plugins.root())), "写在 Codex++ 自己的目录里");
+    let (name, description) =
+        codex_plus_core::skills::parse_skill_frontmatter(&skill_md, "fallback");
+    assert_eq!((name.as_str(), description.as_str()), ("dsh-badge", "Add the badge: use on every PR."));
+}

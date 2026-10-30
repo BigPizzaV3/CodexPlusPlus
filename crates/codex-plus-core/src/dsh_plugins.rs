@@ -55,6 +55,10 @@ const HOST_FILES: &[(&str, &str)] = &[
         "shims/cordis.mjs",
         include_str!("../../../assets/dsh-host/shims/cordis.mjs"),
     ),
+    (
+        "shims/dsh-skill.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-skill.mjs"),
+    ),
 ];
 
 const REGISTRY_VERSION: u32 = 1;
@@ -456,6 +460,11 @@ impl DshPlugins {
         self.root.join(".staging")
     }
 
+    /// 插件在代码里注册的 skill 被宿主写成 SKILL.md 目录放在这里，再导入 Codex Skills。
+    fn skills_dir(&self, id: &str) -> PathBuf {
+        self.root.join("skills").join(id)
+    }
+
     /// 写出内嵌的兼容宿主，返回 `host.mjs` 路径。内容没变不重写：每个 Codex 会话都会启动一次 MCP。
     pub fn ensure_host(&self) -> anyhow::Result<PathBuf> {
         let directory = self.root.join("host");
@@ -594,14 +603,14 @@ impl DshPlugins {
         }
         if managed {
             // 先在暂存位置确认包可分析，再替换正式目录。
-            inspect_package(node, host, &fetched, &record, staging)?;
+            inspect_package(node, host, &fetched, &record, staging, &staging.join("skills"))?;
             std::fs::create_dir_all(self.packages_dir())?;
             if std::fs::symlink_metadata(&root).is_ok() {
                 self.backup(&id, &root)?;
             }
             move_dir(&fetched, &root)?;
         }
-        record.report = inspect_package(node, host, &root, &record, staging)?;
+        record.report = inspect_package(node, host, &root, &record, staging, &self.skills_dir(&id))?;
         if let Some(index) = previous {
             let old = registry.plugins.remove(index);
             // 换了位置的旧托管目录同样移入备份，不留孤儿目录。
@@ -628,7 +637,8 @@ impl DshPlugins {
             .staging_dir()
             .join(uuid::Uuid::new_v4().simple().to_string());
         std::fs::create_dir_all(&staging)?;
-        let report = inspect_package(node, &host, Path::new(&record.root), record, &staging);
+        let skills_out = self.skills_dir(&record.id);
+        let report = inspect_package(node, &host, Path::new(&record.root), record, &staging, &skills_out);
         let _ = remove_dir_quietly(&staging);
         record.report = report?;
         let record = record.clone();
@@ -911,13 +921,15 @@ fn install_dependencies(directory: &Path, toolchain: &Toolchain) -> anyhow::Resu
     run_with_timeout(command, INSTALL_TIMEOUT, "安装插件依赖").map(|_| ())
 }
 
-/// 调用宿主分析包：执行插件的 apply 收集工具，输出 JSON 报告。
+/// 调用宿主分析包：执行插件的 apply 收集工具与 skill，输出 JSON 报告。
+/// 代码注册的 skill 写到 `skills_out` 下。
 fn inspect_package(
     node: &Path,
     host: &Path,
     root: &Path,
     record: &PluginRecord,
     staging: &Path,
+    skills_out: &Path,
 ) -> anyhow::Result<Value> {
     let options = staging.join(format!("inspect-{}.json", uuid::Uuid::new_v4().simple()));
     std::fs::write(
@@ -925,6 +937,7 @@ fn inspect_package(
         serde_json::to_vec(&json!({
             "disabledRows": record.disabled_rows,
             "configs": record.configs,
+            "skillsOut": skills_out,
         }))?,
     )?;
     let mut command = Command::new(node);

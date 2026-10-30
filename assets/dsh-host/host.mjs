@@ -8,7 +8,7 @@
 // tools / systemPrompt（片段汇总成 MCP instructions）/ logger / timer / effect / on 等；
 // 必需依赖里有别的服务时不加载，并在报告里写明缺了什么。
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { register } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -21,11 +21,12 @@ const SHIMS = {
   '@deepseek-ai/dsh-tools': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-tools.mjs')).href,
   '@deepseek-ai/schemastery': pathToFileURL(join(HOST_DIR, 'shims', 'schemastery.mjs')).href,
   '@deepseek-ai/cordis': pathToFileURL(join(HOST_DIR, 'shims', 'cordis.mjs')).href,
+  '@deepseek-ai/dsh-skill': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-skill.mjs')).href,
 }
 const MCP_CLIENT_MODULE = '@deepseek-ai/dsh-mcp-client'
 const GROUP_MODULE = 'cordis:group'
-/** 宿主能提供的服务；Cordis 自带的 logger / timer 一并算上。 */
-const SUPPORTED_SERVICES = new Set(['tools', 'systemPrompt', 'logger', 'timer'])
+/** 宿主能提供的服务；Cordis 自带的 logger / timer 一并算上。skills 只截取注册的 skill，交给 Codex Skills。 */
+const SUPPORTED_SERVICES = new Set(['tools', 'systemPrompt', 'logger', 'timer', 'skills'])
 const APPLY_TIMEOUT_MS = 15_000
 const MAX_SKILL_SCAN_DEPTH = 4
 const MAX_TEXT_BYTES = 1024 * 1024
@@ -310,6 +311,33 @@ function scanSkills(root) {
   return skills
 }
 
+/** skill 名 → 目录名：Codex Skills 的 id 只接受小写字母、数字与 -_。 */
+function skillDirectoryName(name) {
+  const id = String(name).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+  return id || 'skill'
+}
+
+/** 把插件经 ctx.skills 注册的 skill 写成 SKILL.md 目录；资源目录里的其他文件一并带上。 */
+function writeRuntimeSkill(outDir, definition) {
+  const directory = join(outDir, skillDirectoryName(definition.name))
+  mkdirSync(directory, { recursive: true })
+  const base = definition.resourceBase?.kind === 'directory' ? definition.resourceBase.path : undefined
+  if (base && existsSync(base) && statSync(base).isDirectory()) {
+    cpSync(base, directory, {
+      recursive: true,
+      force: true,
+      filter: (source) => {
+        const name = source.split(sep).pop()
+        return !(source !== base && (name === 'node_modules' || name.startsWith('.') || (dirname(source) === base && name === 'SKILL.md')))
+      },
+    })
+  }
+  // JSON 字符串是合法的 YAML 双引号标量，描述里的冒号、换行都不会破坏 frontmatter。
+  const frontmatter = [`name: ${JSON.stringify(String(definition.name))}`, `description: ${JSON.stringify(String(definition.description ?? ''))}`]
+  writeFileSync(join(directory, 'SKILL.md'), `---\n${frontmatter.join('\n')}\n---\n\n${String(definition.content ?? '').trim()}\n`)
+  return directory
+}
+
 // ---------------------------------------------------------------------------
 // 插件运行时
 // ---------------------------------------------------------------------------
@@ -322,6 +350,24 @@ class Host {
     this.sections = []
     this.listeners = new Map()
     this.disposers = []
+  }
+
+  /** 收集本行经 ctx.skills 注册的 skill：直接注册的定义，加上各 provider 列出并读取到的定义。 */
+  async collectSkills(state) {
+    const definitions = [...state.skillDefinitions]
+    for (const provider of state.skillProviders) {
+      try {
+        const listed = await provider.list({})
+        const candidates = Array.isArray(listed) ? listed : (listed?.candidates ?? [])
+        for (const candidate of candidates) {
+          const definition = await provider.get(candidate, {})
+          if (definition && typeof definition.content === 'string') definitions.push({ ...candidate, ...definition })
+        }
+      } catch (error) {
+        state.notes.push(`skill 提供方 ${provider?.name ?? ''} 读取失败：${errorText(error)}`)
+      }
+    }
+    return definitions.filter((definition) => typeof definition?.name === 'string' && definition.name)
   }
 
   createContext(state) {
@@ -399,6 +445,29 @@ class Host {
         },
         getSectionOrder: () => 0,
         getContextOrder: () => 0,
+      },
+      skills: {
+        register(skill) {
+          state.skillDefinitions.push(skill)
+          return track(() => {
+            state.skillDefinitions = state.skillDefinitions.filter((item) => item !== skill)
+          })
+        },
+        registerProvider(create) {
+          const controller = new AbortController()
+          const provider = create({ signal: controller.signal, invalidate() {} })
+          state.skillProviders.push(provider)
+          return track(() => {
+            controller.abort()
+            state.skillProviders = state.skillProviders.filter((item) => item !== provider)
+          })
+        },
+        async list() {
+          return []
+        },
+        async get() {
+          return undefined
+        },
       },
       effect(callback) {
         let dispose
@@ -512,8 +581,17 @@ class Host {
     try {
       module = await import(pathToFileURL(resolved.path).href)
     } catch (error) {
-      record.status = 'error'
-      record.reasons.push(`加载失败：${errorText(error)}`)
+      // 引用了宿主才有的 dsh 运行时包（peer 依赖）：这是不兼容，不是包坏了。
+      const runtimePackage = error?.code === 'ERR_MODULE_NOT_FOUND'
+        ? /Cannot find package '(@deepseek-ai\/(?:dsh-[^'/]+|cordis[^'/]*))/.exec(errorText(error))?.[1]
+        : undefined
+      if (runtimePackage) {
+        record.status = 'incompatible'
+        record.reasons.push(`依赖 dsh 运行时包 ${runtimePackage}，Codex++ 不提供（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）`)
+      } else {
+        record.status = 'error'
+        record.reasons.push(`加载失败：${errorText(error)}`)
+      }
       return record
     }
     const plugin = pluginFromModule(module)
@@ -532,14 +610,8 @@ class Host {
     record.inject = inject
     const missing = inject.required.filter((name) => !SUPPORTED_SERVICES.has(name))
     if (missing.length > 0) {
-      if (missing.every((name) => name === 'skills')) {
-        record.status = 'skills'
-        record.kind = 'skills'
-        record.reasons.push('通过 ctx.skills 注册 skill；skill 文件会直接导入 Codex skills')
-      } else {
-        record.status = 'incompatible'
-        record.reasons.push(`依赖 Codex++ 不提供的服务：${missing.join(', ')}（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）`)
-      }
+      record.status = 'incompatible'
+      record.reasons.push(`依赖 Codex++ 不提供的服务：${missing.join(', ')}（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）`)
       return record
     }
     const optionalMissing = inject.optional.filter((name) => !SUPPORTED_SERVICES.has(name))
@@ -563,6 +635,8 @@ class Host {
       notes: record.notes,
       disposers: this.disposers,
       pending: [],
+      skillDefinitions: [],
+      skillProviders: [],
     }
     try {
       const ctx = this.createContext(state)
@@ -577,14 +651,32 @@ class Host {
       const def = this.tools.get(name)?.def
       return { name, description: def?.description ?? '' }
     })
+    record.skills = []
+    for (const definition of await this.collectSkills(state)) {
+      const skill = { name: definition.name, description: String(definition.description ?? ''), resourceDir: definition.resourceBase?.path }
+      if (this.skillsOut) {
+        try {
+          skill.directory = writeRuntimeSkill(this.skillsOut, definition)
+        } catch (error) {
+          record.notes.push(`skill ${definition.name} 写出失败：${errorText(error)}`)
+          continue
+        }
+      }
+      record.skills.push(skill)
+    }
     if (record.notes.length > 0) record.status = 'partial'
-    if (record.tools.length === 0 && record.status !== 'partial') {
+    if (record.skills.length > 0 && record.tools.length === 0) {
+      record.kind = 'skills'
+      if (record.status === 'compatible') record.status = 'skills'
+    } else if (record.tools.length === 0 && record.status !== 'partial') {
       record.notes.push('加载成功，但没有注册任何工具')
     }
     return record
   }
 
   async loadPackage(root, packageKey, options = {}) {
+    // inspect 时把代码注册的 skill 写到这里；serve 不写。
+    this.skillsOut = typeof options.skillsOut === 'string' && options.skillsOut ? options.skillsOut : undefined
     const report = {
       hostVersion: HOST_VERSION,
       root,
@@ -636,7 +728,13 @@ class Host {
       }
       report.rows.push(await this.loadRow(row, root, pkg, packageKey))
     }
-    report.skills = scanSkills(root)
+    // 代码注册的 skill（可能来自依赖包）优先；同名或同一资源目录的 SKILL.md 文件不再重复列出。
+    const runtimeSkills = report.rows.flatMap((row) => (row.skills ?? []).filter((skill) => skill.directory))
+    const covered = new Set(runtimeSkills.flatMap((skill) => [skill.name, skill.resourceDir].filter(Boolean)))
+    report.skills = [
+      ...runtimeSkills.map(({ name, description, directory }) => ({ name, description, directory })),
+      ...scanSkills(root).filter((skill) => !covered.has(skill.name) && !covered.has(skill.directory)),
+    ]
     if (report.rows.length === 0 && report.skills.length === 0) {
       report.diagnostics.push('没有找到可加载的插件入口、bundle patch 或 SKILL.md')
     }
