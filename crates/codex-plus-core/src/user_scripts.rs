@@ -320,6 +320,25 @@ impl UserScriptManager {
             .collect())
     }
 
+    /// 启用中、清单无误的拓展包声明的模型工具，附带拓展 id。
+    pub fn enabled_extension_tools(&self) -> anyhow::Result<Vec<(String, ExtensionTool)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none())
+            .flat_map(|package| {
+                let id = package.id.clone();
+                package.tools.into_iter().map(move |tool| (id.clone(), tool))
+            })
+            .collect())
+    }
+
     /// 启用中、清单无误的拓展包声明的网关请求中间件，按拓展 key 排序（即执行顺序）。
     pub fn enabled_gateway_middlewares(&self) -> anyhow::Result<Vec<(String, ExtensionGatewayMiddleware)>> {
         let config = self.load_config();
@@ -372,7 +391,9 @@ impl UserScriptManager {
         // 没指定页面入口时：有 renderer.js 就用它；只声明 hooks 的拓展可以没有页面入口。
         let renderer = if !write.renderer.is_empty() {
             write.renderer.clone()
-        } else if write.files.contains_key("renderer.js") || (write.hooks.is_none() && write.gateway.is_none()) {
+        } else if write.files.contains_key("renderer.js")
+            || (write.hooks.is_none() && write.gateway.is_none() && write.tools.is_none())
+        {
             vec!["renderer.js".to_string()]
         } else {
             Vec::new()
@@ -441,6 +462,9 @@ impl UserScriptManager {
         }
         if let Some(gateway) = &write.gateway {
             manifest["gateway"] = gateway.clone();
+        }
+        if let Some(tools) = &write.tools {
+            manifest["tools"] = tools.clone();
         }
         crate::settings::atomic_write(
             &directory.join(EXTENSION_MANIFEST_FILE),
@@ -719,7 +743,29 @@ struct ExtensionPackage {
     renderer: Vec<PathBuf>,
     hooks: Vec<ExtensionHook>,
     gateway_request: Vec<ExtensionGatewayMiddleware>,
+    tools: Vec<ExtensionTool>,
     error: Option<String>,
+}
+
+/// 拓展声明的一个模型工具（codexpp.json 的 `tools[]`），由 Codex++ 拓展 MCP 对外提供。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExtensionTool {
+    /// 拓展内的工具名：字母、数字、_、-。对外名为 `<拓展 id>__<name>`。
+    pub name: String,
+    pub description: String,
+    /// JSON Schema（object），原样交给 MCP。
+    pub input_schema: Value,
+    /// 包内脚本的绝对路径：默认导出 `async (args, context) => 结果`。
+    pub script: PathBuf,
+    pub timeout_secs: u64,
+}
+
+/// 拓展工具单次调用的超时上限（秒）。
+pub const EXTENSION_TOOL_MAX_TIMEOUT_SECS: u64 = 300;
+
+/// 拓展工具对外的名字。MCP 工具名只能是字母、数字、_、-，最长 64。
+pub fn extension_tool_public_name(extension_id: &str, tool: &str) -> String {
+    format!("{extension_id}__{tool}")
 }
 
 /// 拓展声明的一条网关请求中间件（codexpp.json 的 `gateway.request[]`）。
@@ -799,6 +845,7 @@ impl ExtensionPackage {
             "routes": self.routes,
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
             "gatewayRequest": self.gateway_request.len(),
+            "tools": self.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
         })
     }
 
@@ -828,6 +875,8 @@ pub struct ExtensionWrite {
     pub hooks: Option<Value>,
     /// 原样写进清单的 `gateway`，加载时校验。
     pub gateway: Option<Value>,
+    /// 原样写进清单的 `tools`，加载时校验。
+    pub tools: Option<Value>,
     pub files: BTreeMap<String, String>,
 }
 
@@ -919,6 +968,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         renderer: Vec::new(),
         hooks: Vec::new(),
         gateway_request: Vec::new(),
+        tools: Vec::new(),
         error: None,
     };
     if let Err(error) = parse_extension_manifest(directory, &mut package) {
@@ -976,8 +1026,9 @@ fn parse_extension_manifest(
     };
     let hooks_declared = raw.get("hooks").is_some_and(|hooks| hooks.as_object().is_some_and(|map| !map.is_empty()));
     let gateway_declared = raw.get("gateway").is_some();
-    if entries.is_empty() && !hooks_declared && !gateway_declared {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks 或 gateway");
+    let tools_declared = raw.get("tools").is_some_and(|tools| tools.as_array().is_some_and(|list| !list.is_empty()));
+    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway 或 tools");
     }
     let root = directory
         .canonicalize()
@@ -988,6 +1039,7 @@ fn parse_extension_manifest(
         .collect::<anyhow::Result<Vec<_>>>()?;
     package.hooks = parse_extension_hooks(&root, raw.get("hooks"))?;
     package.gateway_request = parse_gateway_middlewares(&root, raw.get("gateway"))?;
+    package.tools = parse_extension_tools(&root, &package.id, raw.get("tools"))?;
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if package.engine > EXTENSION_API_VERSION {
         anyhow::bail!(
@@ -1086,6 +1138,66 @@ fn parse_gateway_middlewares(
                     })?,
             };
             Ok(ExtensionGatewayMiddleware {
+                script: resolve_package_entry(root, script)?,
+                timeout_secs,
+            })
+        })
+        .collect()
+}
+
+/// 解析 `tools`：`[{ "name": "lookup", "description": "…", "inputSchema": {…}, "script": "tools/lookup.mjs", "timeout": 30 }]`。
+fn parse_extension_tools(
+    root: &std::path::Path,
+    extension_id: &str,
+    value: Option<&Value>,
+) -> anyhow::Result<Vec<ExtensionTool>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().context("tools 必须是数组")?;
+    let mut names = std::collections::BTreeSet::new();
+    items
+        .iter()
+        .map(|item| {
+            let item = item.as_object().context("tools 的每一项必须是对象")?;
+            let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let public = extension_tool_public_name(extension_id, &name);
+            if name.is_empty()
+                || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+                || public.len() > 64
+            {
+                anyhow::bail!("工具名 {name:?} 只能包含字母、数字、_、-，且「拓展id__工具名」不超过 64 个字符");
+            }
+            if !names.insert(name.clone()) {
+                anyhow::bail!("工具名 {name} 重复");
+            }
+            let description = item
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .with_context(|| format!("工具 {name} 缺少 description"))?
+                .to_string();
+            let input_schema = match item.get("inputSchema") {
+                None => serde_json::json!({ "type": "object", "properties": {} }),
+                Some(schema) if schema.get("type").and_then(Value::as_str) == Some("object") => schema.clone(),
+                Some(_) => anyhow::bail!("工具 {name} 的 inputSchema 必须是 type 为 object 的 JSON Schema"),
+            };
+            let script = item
+                .get("script")
+                .and_then(Value::as_str)
+                .with_context(|| format!("工具 {name} 缺少 script"))?;
+            let timeout_secs = match item.get("timeout") {
+                None => 30,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|seconds| (1..=EXTENSION_TOOL_MAX_TIMEOUT_SECS).contains(seconds))
+                    .with_context(|| format!("工具 {name} 的 timeout 必须是 1~{EXTENSION_TOOL_MAX_TIMEOUT_SECS} 秒"))?,
+            };
+            Ok(ExtensionTool {
+                name,
+                description,
+                input_schema,
                 script: resolve_package_entry(root, script)?,
                 timeout_secs,
             })

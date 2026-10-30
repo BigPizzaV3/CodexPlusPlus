@@ -187,6 +187,35 @@ codexPlus.extension((ctx) => {
   只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
 - 两者都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
 
+### 给模型加工具
+
+拓展包可以声明给 Codex 模型调用的工具，由已接入的 Codex++ 拓展 MCP（`codex_plus_extensions`）对外提供：
+
+```json
+{
+  "id": "text-tools",
+  "name": "文本工具",
+  "tools": [{
+    "name": "word_count",
+    "description": "统计一段文字的字数",
+    "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] },
+    "script": "tools/word-count.mjs",
+    "timeout": 30
+  }]
+}
+```
+
+```js
+// tools/word-count.mjs：默认导出 (args, { extension, tool }) => 结果
+export default ({ text }) => `共 ${[...text].length} 个字符`;
+```
+
+- 对外工具名为 `<拓展 id>__<工具名>`（合计不超过 64 个字符）；`inputSchema` 必须是 `type: "object"` 的 JSON Schema，省略时为空对象。
+- 返回字符串作为文本；返回 `{ content: [...] }` 按 MCP 内容块原样返回；其它值转为 JSON 文本；抛错时以错误返回给模型。
+  `timeout` 1~300 秒，默认 30。每次调用起一个 Node 进程。
+- 前提是在「拓展」页的「对话造拓展」里接入过 Codex。拓展写入、启停、重载后服务会通知 Codex 刷新工具列表；
+  已经开着的对话可能仍用旧列表，新开对话一定生效。
+
 ### Codex 钩子
 
 拓展包可以在清单里声明 Codex 钩子，在工具执行前后、提交提示词时、本轮结束前插手 Codex 的 agent 循环：
@@ -271,6 +300,7 @@ user_scripts/
 | `renderer` | 字符串或数组，必须是包内相对路径；按顺序拼进同一个作用域执行。只声明 `hooks` 的拓展可以省略 |
 | `hooks` | Codex 钩子声明，见上文「Codex 钩子」 |
 | `gateway` | 网关请求中间件声明，见上文「网关请求中间件」 |
+| `tools` | 给模型的工具声明，见上文「给模型加工具」 |
 | `permissions.routes` | `ctx.call` 能调的路由，需在[路由白名单](#后端调用与路由白名单)内。这是声明约束而不是安全边界 |
 
 清单不合法（JSON 错误、入口越出包目录、版本不兼容等）时包不注入，管理页显示「加载失败」和原因。

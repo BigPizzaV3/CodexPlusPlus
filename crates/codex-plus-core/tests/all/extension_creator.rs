@@ -232,3 +232,57 @@ if (/\.(innerHTML|outerHTML|textContent)\s*=[^=]|\.remove\(|\.append|setAttribut
         .expect("node is required");
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
+
+#[tokio::test]
+async fn extension_declared_tools_are_listed_and_callable() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        eprintln!("跳过：本机没有 Node");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let (error, written) = call(
+        &creator,
+        "codexpp_extension_write",
+        json!({
+            "id": "calc", "name": "计算器",
+            "tools": [
+                {"name": "add", "description": "两数相加", "inputSchema": {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}, "script": "tools/add.mjs"},
+                {"name": "rich", "description": "返回内容块", "script": "tools/rich.mjs"},
+                {"name": "boom", "description": "会出错", "script": "tools/boom.mjs", "timeout": 5}
+            ],
+            "files": [
+                {"path": "tools/add.mjs", "content": "export default ({ a, b }, { extension, tool }) => `${extension}/${tool}: ${a + b}`;"},
+                {"path": "tools/rich.mjs", "content": "export default async () => ({ content: [{ type: 'text', text: '第一段' }, { type: 'text', text: '第二段' }] });"},
+                {"path": "tools/boom.mjs", "content": "export default () => { throw new Error('坏工具'); };"}
+            ]
+        }),
+    )
+    .await;
+    assert!(!error, "{written}");
+    assert_eq!(written["extension"]["status"], "not_loaded");
+    assert_eq!(written["extension"]["package"]["tools"], json!(["add", "rich", "boom"]));
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("user/calc/codexpp.json")).unwrap()).unwrap();
+    assert_eq!(manifest["renderer"], json!([]), "只声明工具的拓展没有页面入口");
+
+    let list = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list"})).await.unwrap();
+    let names = list["result"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert!(names.contains(&"calc__add".to_string()) && names.contains(&"codexpp_extension_write".to_string()));
+    let add = list["result"]["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "calc__add").unwrap();
+    assert_eq!(add["inputSchema"]["required"], json!(["a", "b"]));
+    assert!(add["description"].as_str().unwrap().contains("[Codex++ 拓展 calc]"));
+
+    let response = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "calc__add", "arguments": {"a": 2, "b": 3}}})).await.unwrap();
+    assert_eq!(response["result"]["isError"], false);
+    assert_eq!(response["result"]["content"][0]["text"], "calc/add: 5");
+    let rich = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "calc__rich", "arguments": {}}})).await.unwrap();
+    assert_eq!(rich["result"]["content"][1]["text"], "第二段");
+    let (error, message) = call(&creator, "calc__boom", json!({})).await;
+    assert!(error && message.as_str().unwrap().contains("坏工具"), "{message}");
+
+    creator.manager.set_script_enabled("user:calc", false).unwrap();
+    let list = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 12, "method": "tools/list"})).await.unwrap();
+    assert!(!list["result"]["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "calc__add"), "停用后工具消失");
+    let (error, _) = call(&creator, "calc__add", json!({"a": 1, "b": 1})).await;
+    assert!(error);
+}

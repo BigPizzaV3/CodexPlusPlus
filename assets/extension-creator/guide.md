@@ -88,6 +88,21 @@ codexPlus.extension((ctx) => {
 });
 ```
 
+## 给模型加工具
+
+要让 Codex 的模型能**调用**一个新能力（查资料、算东西、调本地服务），在 `codexpp_extension_write` 的 `tools`
+参数里声明，脚本放在 `files` 里：
+
+```json
+[{ "name": "word_count", "description": "统计一段文字的字数", "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] }, "script": "tools/word-count.mjs", "timeout": 30 }]
+```
+
+- 脚本默认导出 `(args, { extension, tool }) => 结果`，可以 async。返回字符串作为文本；返回 `{ content: [...] }`
+  按 MCP 内容块原样返回；其它值转成 JSON 文本；抛错时模型会看到错误。`timeout` 1~300 秒，默认 30。
+- 工具名只能是字母、数字、`_`、`-`；对外名字是 `<拓展 id>__<工具名>`，由已接入的 Codex++ 拓展 MCP 提供。
+  写入后告诉用户：**新开一个对话**工具才会出现。
+- 工具脚本以用户权限运行，只做描述里写的事。
+
 ## Codex 钩子（拦截工具调用、给提示词补上下文）
 
 页面拓展管不到 Codex 的 agent 循环；要在**工具执行前后、用户提交提示词时、本轮结束前**插手，用钩子。

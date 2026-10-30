@@ -5,10 +5,8 @@
 //! 拿到的是 Responses 请求体的副本，返回新对象即替换、返回 null 即不改；任何出错、超时
 //! 都保留原请求，绝不能挡住发往模型的请求。官方直连（不经 Codex++ 代理）的请求不经过这里。
 
-use std::path::Path;
 use std::time::Duration;
 
-use anyhow::Context;
 use serde_json::{Value, json};
 
 use crate::user_scripts::{ExtensionGatewayMiddleware, UserScriptManager};
@@ -108,7 +106,7 @@ async fn run_chain(
     request: &Value,
     request_path: &str,
 ) -> anyhow::Result<Value> {
-    let node = crate::dsh_plugins::locate_node().context("没有找到 Node 运行时，网关中间件未运行")?;
+    let node = crate::extension_node::require_node()?;
     let input = json!({
         "path": request_path,
         "body": request,
@@ -119,32 +117,6 @@ async fn run_chain(
         })).collect::<Vec<_>>(),
     });
     let limit = Duration::from_secs(middlewares.iter().map(|(_, item)| item.timeout_secs).sum::<u64>() + 2).min(CHAIN_LIMIT);
-    run_node(&node, &input, limit).await
+    crate::extension_node::run_runner(&node, RUNNER, &input, limit).await
 }
 
-async fn run_node(node: &Path, input: &Value, limit: Duration) -> anyhow::Result<Value> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut command = tokio::process::Command::new(node);
-    command
-        .args(["--input-type=module", "-e", RUNNER])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    // Windows 上不能闪出黑色终端窗口。
-    #[cfg(windows)]
-    command.creation_flags(crate::windows_create_no_window());
-    let mut child = command.spawn().context("无法启动 Node 运行网关中间件")?;
-    let mut stdin = child.stdin.take().context("Node 进程没有 stdin")?;
-    stdin.write_all(input.to_string().as_bytes()).await?;
-    drop(stdin);
-    let mut stdout = child.stdout.take().context("Node 进程没有 stdout")?;
-    let read = async {
-        let mut buffer = Vec::new();
-        stdout.read_to_end(&mut buffer).await?;
-        child.wait().await?;
-        anyhow::Ok(buffer)
-    };
-    let buffer = tokio::time::timeout(limit, read).await.context("网关中间件整体超时")??;
-    serde_json::from_slice(&buffer).context("网关中间件运行器输出不是 JSON")
-}
