@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Download, ExternalLink, Loader2, RefreshCw, Search, ShieldAlert, ShieldCheck, Star } from "lucide-react";
-import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "./gateway-ui";
@@ -243,30 +242,9 @@ export function CommunityExtensionsPanel({
       ) : null}
       {enabled ? (
         entries.length ? (
-          <div className={view === "list" ? "script-market-list" : "script-market-grid"}>
+          <div className={view === "list" ? "community-ext-list" : "script-market-grid"}>
             {entries.map((entry) => (
               <ExtensionCard
-                actions={
-                  <>
-                    {entry.installed?.channel === "local" ? null : (
-                      // 本机源码不给安装按钮：从 GitHub 重装会覆盖本机源码。
-                      <Button disabled={!entry.compatible || preparing !== ""} onClick={() => void prepare(entry)} size="sm" variant={entry.installed ? "secondary" : "default"}>
-                        {preparing === entry.repo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                        {entry.installed ? t("重新安装") : t("安装")}
-                      </Button>
-                    )}
-                    <Button onClick={() => onOpenUrl(entry.url)} size="sm" title={entry.repo} variant="secondary">
-                      <Star className="h-4 w-4" />
-                      {entry.stars}
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
-                    {curation?.maintainer ? (
-                      <Button disabled={reviewing !== ""} onClick={() => setReviewing(entry.repo)} size="sm" title={t("审核这个拓展的最新版本，通过后收录进精选")} variant="ghost">
-                        <ShieldCheck className="h-4 w-4" />{t("审核")}
-                      </Button>
-                    ) : null}
-                  </>
-                }
                 badges={
                   <>
                     <span className="community-ext-badge is-unreviewed">{t("未审核")}</span>
@@ -276,7 +254,18 @@ export function CommunityExtensionsPanel({
                 }
                 description={entry.description}
                 dimmed={!entry.compatible}
+                facts={
+                  <>
+                    <span className="community-ext-stars"><Star className="h-3 w-3" />{entry.stars}</span>
+                    {entry.version ? <span>{tf("默认分支 {0}", [entry.version])}</span> : null}
+                    {entry.license ? <span>{entry.license}</span> : null}
+                    {entry.pushedAt ? <span>{tf("更新于 {0}", [entry.pushedAt.slice(0, 10)])}</span> : null}
+                    {!entry.compatible ? <span className="community-ext-warning">{tf("需要拓展 API v{0}，请先更新 Codex++", [entry.engine])}</span> : null}
+                  </>
+                }
+                icon={entry.icon || entry.ownerAvatar}
                 key={entry.repo}
+                link={{ url: entry.url, text: entry.repo, button: <><Star className="h-4 w-4" />{entry.stars}<ExternalLink className="h-3 w-3" /></> }}
                 meta={
                   <>
                     {entry.author || entry.owner} · v{entry.version}
@@ -286,12 +275,29 @@ export function CommunityExtensionsPanel({
                   </>
                 }
                 name={entry.name}
-                status={
-                  entry.installed?.channel === "local" ? (
-                    <UiBadge className="script-market-status" title={t("你在本机编写并发布的拓展，在「本地拓展」里管理")} variant="secondary">{tf("本机源码 {0}", [entry.installed.version])}</UiBadge>
-                  ) : entry.installed ? (
-                    <UiBadge className="script-market-status" variant="secondary">{tf("已安装 {0}", [versionText(entry.installed)])}</UiBadge>
+                onOpenUrl={onOpenUrl}
+                primary={
+                  entry.installed?.channel === "local" ? null : (
+                    // 本机源码不给安装按钮：从 GitHub 重装会覆盖本机源码。
+                    <Button disabled={!entry.compatible || preparing !== ""} onClick={() => void prepare(entry)} size="sm" variant={entry.installed ? "ghost" : view === "grid" ? "default" : "secondary"}>
+                      {preparing === entry.repo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                      {entry.installed ? t("重新安装") : t("安装")}
+                    </Button>
+                  )
+                }
+                secondary={
+                  curation?.maintainer ? (
+                    <Button disabled={reviewing !== ""} onClick={() => setReviewing(entry.repo)} size="sm" title={t("审核这个拓展的最新版本，通过后收录进精选")} variant="ghost">
+                      <ShieldCheck className="h-4 w-4" />{t("审核")}
+                    </Button>
                   ) : null
+                }
+                status={
+                  entry.installed?.channel === "local"
+                    ? { text: tf("本机源码 {0}", [entry.installed.version]), title: t("你在本机编写并发布的拓展，在「本地拓展」里管理") }
+                    : entry.installed
+                    ? { text: tf("已安装 {0}", [versionText(entry.installed)]) }
+                    : null
                 }
                 tags={entry.keywords}
                 view={view}

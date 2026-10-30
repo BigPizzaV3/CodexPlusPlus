@@ -117,6 +117,7 @@ import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-m
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { DshPluginsPanel } from "./DshPluginsPanel";
 import { CommunityExtensionsPanel, type CommunitySort } from "./CommunityExtensionsPanel";
+import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
 import { ExtensionPublishDialog } from "./ExtensionPublishDialog";
 import { SectionLabel, Switch } from "./gateway-ui";
@@ -1229,6 +1230,8 @@ type ScriptMarketItem = {
   tags: string[];
   homepage: string;
   script_url: string;
+  /// 可选图标地址，清单多数条目没有。
+  icon?: string;
   /// 该脚本最近更新时间（ISO），清单逐条提供；老清单没有时为空（#2781）。
   updatedAt?: string;
   installed: boolean;
@@ -11280,73 +11283,64 @@ function MarketScriptCard({
 }) {
   // 「未安装」是默认状态：满屏同一个徽标只是噪音，只给已安装 / 可更新打标。
   const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : null;
-  // 标签最多露 3 个，其余收成「+N」，否则卡片被撑成高低不齐的两三行。
-  const visibleTags = script.tags.slice(0, 3);
-  const hiddenTags = script.tags.slice(3);
   const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
   const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
   const updatedTime = parseMarketTime(script.updatedAt);
+  // 头像：清单给的图标，否则主页仓库作者的 GitHub 头像；主页就是市场仓库时退回名字首字，免得全是同一个头像。
+  const homepageRepo = isGitHubHomepage ? script.homepage.replace(/^https?:\/\/github\.com\//, "").split(/[/?#]/).slice(0, 2).join("/") : "";
+  const icon = script.icon || (homepageRepo && !SCRIPT_MARKET_REPOSITORY_URL.includes(homepageRepo) ? githubAvatar(homepageRepo) : "");
+  const updatedText = updatedTime !== null ? tf("{0}更新", [formatRelativeAge(updatedTime)]) : "";
   return (
-    <div className="script-market-card" data-view={view}>
-      <div className="script-market-title">
-        <div>
-          <strong>{script.name}</strong>
-          <span>
-            {script.author || t("未知作者")} · v{script.version}
-            {updatedTime !== null ? (
-              <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>
-                {" · "}{tf("{0}更新", [formatRelativeAge(updatedTime)])}
-              </time>
-            ) : null}
-          </span>
-        </div>
-        {status ? <UiBadge className="script-market-status" variant={script.updateAvailable ? "default" : "secondary"}>{status}</UiBadge> : null}
-      </div>
-      <p className="script-market-description">{script.description || t("暂无描述。")}</p>
-      {/* 没有标签就不渲染空容器：空容器会让被拉伸的卡片在描述下露出半行（见 .script-market-card 样式注释）。 */}
-      {script.tags.length ? <div className="script-market-tags">
-        {visibleTags.map((tag) => (
-          <span className="script-market-tag" key={tag}>{tag}</span>
-        ))}
-        {hiddenTags.length ? (
-          <span className="script-market-tag script-market-tag-more" title={hiddenTags.join("、")}>+{hiddenTags.length}</span>
-        ) : null}
-      </div> : null}
-      <div className="script-market-actions">
-        <Button onClick={() => void actions.installMarketScript(script.id)} size="sm">
+    <ExtensionCard
+      description={script.description}
+      facts={
+        <>
+          <span>{script.author || t("未知作者")}</span>
+          <span>v{script.version}</span>
+          {updatedTime !== null ? <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>{updatedText}</time> : null}
+        </>
+      }
+      icon={icon}
+      link={
+        script.homepage
+          ? {
+            url: script.homepage,
+            text: homepageRepo || t("主页"),
+            title: githubSupportLabel,
+            button: isGitHubHomepage ? <><Star className="h-4 w-4" />Star<ExternalLink className="h-3 w-3" /></> : <><ExternalLink className="h-4 w-4" />{t("主页")}</>,
+          }
+          : null
+      }
+      meta={
+        <>
+          {script.author || t("未知作者")} · v{script.version}
+          {updatedTime !== null ? (
+            <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>
+              {" · "}{updatedText}
+            </time>
+          ) : null}
+        </>
+      }
+      name={script.name}
+      onOpenUrl={(url) => void actions.openExternalUrl(url)}
+      primary={
+        <Button onClick={() => void actions.installMarketScript(script.id)} size="sm" variant={view === "list" && script.installed && !script.updateAvailable ? "ghost" : view === "list" ? "secondary" : "default"}>
           <Download className="h-4 w-4" />
           {script.updateAvailable ? t("更新") : script.installed ? t("重新安装") : t("安装")}
         </Button>
-        {script.homepage ? (
-          <Button
-            aria-label={githubSupportLabel}
-            onClick={() => void actions.openExternalUrl(script.homepage)}
-            size="sm"
-            title={githubSupportLabel}
-            variant="secondary"
-          >
-            {isGitHubHomepage ? (
-              <>
-                <Star className="h-4 w-4" />
-                Star
-                <ExternalLink className="h-3 w-3" />
-              </>
-            ) : (
-              <>
-                <ExternalLink className="h-4 w-4" />
-                {t("主页")}
-              </>
-            )}
-          </Button>
-        ) : null}
-        {installedKey ? (
-          <Button onClick={() => void actions.deleteUserScript(installedKey)} size="sm" variant="outline">
+      }
+      secondary={
+        installedKey ? (
+          <Button onClick={() => void actions.deleteUserScript(installedKey)} size="sm" variant={view === "list" ? "ghost" : "outline"}>
             <Trash2 className="h-4 w-4" />
             {t("卸载")}
           </Button>
-        ) : null}
-      </div>
-    </div>
+        ) : null
+      }
+      status={status ? { text: status, highlight: script.updateAvailable } : null}
+      tags={script.tags}
+      view={view}
+    />
   );
 }
 
