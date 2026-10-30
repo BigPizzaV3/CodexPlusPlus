@@ -13569,15 +13569,24 @@ button.side-item:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 本地拓展行：操作列按内容宽度（图标按钮不换行），能力排成一行小标签 */
+/* 本地拓展行：每行是独立网格，操作列必须定宽（一行最多两个图标），否则图标多的行会把中间两列挤偏；
+   能力排成一行小标签。窄屏沿用全局 .table-row 的单列堆叠。 */
 .shell .user-script-row {
-  grid-template-columns: minmax(160px, 1fr) 120px 150px auto;
+  grid-template-columns: minmax(160px, 1fr) 120px 150px 96px;
   align-items: center;
 }
 .shell .user-script-row .script-row-actions {
   flex-wrap: nowrap;
+  justify-content: flex-end;
   gap: 2px;
-  min-width: 32px;
+}
+@media (max-width: 860px) {
+  .shell .user-script-row {
+    grid-template-columns: 1fr;
+  }
+  .shell .user-script-row .script-row-actions {
+    justify-content: flex-start;
+  }
 }
 .shell .user-script-row .user-script-icon-action {
   width: 30px;
