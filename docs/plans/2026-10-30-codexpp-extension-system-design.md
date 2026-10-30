@@ -1,7 +1,7 @@
 # Codex++ 拓展体系设计
 
 日期：2026-10-30
-状态：P0 实施中，P1~P4 为规划
+状态：P0~P3 已实施（P1、P3 部分），P4 与持续项为规划
 相关：`docs/specs/2026-09-30-extension-api-design.md`（拓展 API 现状）、`EXTENSIONS.md`（开发指南）
 
 ---
@@ -118,10 +118,10 @@ codexPlus.extension((ctx) => {
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| **P0** | 内核（ctx / effect / 事件 / waterfall / 自动清理）；`codexpp.json` 包加载、版本校验、路由权限；管理页显示包信息 | 一个拓展包能注册页面、热重载不刷新页面、越权路由被拒 |
-| P1 | 协议层类型化事件（turn 开始 / 结束、item 完成、thread 切换）与中间件；扩充 UI slot（输入框附近、消息节点装饰、右侧面板、设置项）；`configSchema` 自动生成设置表单 | 用拓展实现一个「轮次结束提示」不依赖 Codex DOM |
-| P2 | Codex hooks 代理：Codex++ 作为统一 hook 命令写入 config，按事件分发给拓展声明的 hook；聚合 MCP：拓展声明工具，由 Codex++ 的 MCP 服务暴露给 Codex | 拓展可阻塞危险命令、注册一个工具被模型调用 |
-| P3 | 网关中间件：请求 / 响应走子进程 JSON 协议（与 Codex hooks 同一套 stdin/stdout 约定），不嵌入 JS 引擎 | 拓展可往系统提示词追加段落 |
+| **P0** ✅ | 内核（ctx / effect / 事件 / waterfall / 自动清理）；`codexpp.json` 包加载、版本校验、路由权限；管理页显示包信息 | 一个拓展包能注册页面、热重载不刷新页面、越权路由被拒 |
+| **P1** ✅（部分） | 已做：会话事件 `codex/*`、`codex/request` 请求中间件、输入区按钮插槽、`ctx.storage`、对话造拓展的页面查看与截图。未做：消息节点装饰、右侧面板插槽、`configSchema` 设置表单。`codex/request` 依赖 app-server 客户端类捕获，该捕获在新版 Codex 上失效，另案修复 | 拓展订阅轮次结束、往输入区加按钮 |
+| **P2** ✅ | Codex hooks：拓展声明 `hooks`，Codex++ 只写固定分发条目（用户信任一次），`--codex-plus-hook` 每次起一个 Node 跑完命中的钩子并按协议合并。聚合 MCP 的工具注册由对话造拓展 MCP 与 dsh 导入的托管 MCP 覆盖 | 拓展可阻塞危险命令、给提示词补上下文 |
+| **P3** ✅（请求侧） | 网关请求中间件 `gateway.request`：本地代理解析请求体后按顺序改写；响应流改写未做 | 拓展可往系统提示词追加段落 |
 | P4 | 拓展市场支持拓展包；安装时校验 `engines`，展示权限 | 市场能装拓展包 |
 | 持续 | 把内置功能（宠物、听写、轮次回退、用量状态栏）逐个拆成内置拓展 | API 足够表达内置功能 |
 
