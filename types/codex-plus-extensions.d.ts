@@ -355,7 +355,13 @@ interface CodexPlusSessionQuery {
   filterEvents(id: string, filters?: { types?: string[]; text?: string; limit?: number }): Promise<CodexPlusSessionEvent[]>;
   readEvent(query: { sessionId: string; seq: number; before?: number; after?: number }): Promise<CodexPlusSessionEvent[]>;
   searchSessions(query: { query: string; archived?: boolean; limit?: number; cursor?: string | null }): Promise<{ items: CodexPlusSession[]; nextCursor: string | null }>;
-  searchEvents(query: { query: string; sessionId?: string; types?: string[]; limit?: number; cursor?: string | null }): Promise<{ items: Array<{ sessionId: string; event: CodexPlusSessionEvent }>; nextCursor: string | null }>;
+  searchEvents(query: { query: string; sessionId?: string; types?: string[]; archived?: boolean; limit?: number; cursor?: string | null }): Promise<{ items: Array<{ sessionId: string; event: CodexPlusSessionEvent }>; nextCursor: string | null }>;
+  /** seq 及之后的完整事件（增量读）。 */
+  readEventsSince(query: { sessionId: string; seq: number; limit?: number }): Promise<CodexPlusSessionEvent[]>;
+  /** 把事件日志折叠成状态。 */
+  project<S>(id: string, reducer: { init?: S | (() => S); apply(state: S, event: CodexPlusSessionEvent): S | undefined }): Promise<S>;
+  /** 订阅新事件（默认从当前末尾开始），返回撤销函数。 */
+  observeSession(id: string, handler: (event: CodexPlusSessionEvent) => void, options?: { intervalMs?: number; fromSeq?: number }): CodexPlusDispose;
 }
 
 /** 多语言。查找顺序：当前语言 → 主语言 → en，先在命名空间、再在 common，最后返回 key。 */

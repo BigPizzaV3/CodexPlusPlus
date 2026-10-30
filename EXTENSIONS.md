@@ -219,6 +219,8 @@ codexPlus.extension((ctx) => {
   `codex/item/completed`、`codex/item/agentMessage/delta`、`codex/error`；处理器参数是通知的原样 `params` 和 `{ method }`。
 - `codex/request` 的值是 `{ method, params }`。这条路径是同步的：中间件必须同步返回，返回 Promise 视为出错并原样放行；
   只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
+- 已知问题：当前版本的 Codex 上，发起对话轮次（`turn/start`）的请求不经过 Codex++ 捕获到的 app-server 客户端，
+  `codex/request` 暂时拦不到它（其它请求可以）。要改写发给模型的内容，先用「网关请求中间件」。
 - 两者都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
 
 ### 拓展配置
@@ -237,8 +239,13 @@ codexPlus.extension((ctx) => {
 }
 ```
 
-- 类型：`string`、`number`、`boolean`、`select`（`options` 为值或 `{ value, label }`）；最多 32 项。没给 `default` 时取
-  空串 / 0 / false / 第一个选项。`secret` 只影响界面（密码框），值仍以明文存在本机 `user_scripts.json` 的 `configs` 里。
+- 类型：`string`、`text`（多行）、`number`（可加 `min` / `max`）、`boolean`、`select`（`options` 为值或 `{ value, label }`）、
+  `array`（`items` 为元素类型，只能是简单类型，最多 200 项）、`object`（`properties` 为子字段，最多嵌套 3 层）；每层最多
+  32 项。没给 `default` 时取空串 / 0（有 `min` 取 `min`）/ false / 第一个选项 / 空数组；对象的默认值由子字段默认值组成，
+  清单里的 `default` 只覆盖其中的键。`secret` 只影响界面（密码框），值仍以明文存在本机 `user_scripts.json` 的 `configs` 里。
+- `title` / `description` 可以是字符串，也可以是 `{ "zh": "…", "en": "…" }`，管理器按界面语言显示。
+- 嵌套示例：`"proxy": { "type": "object", "properties": { "host": { "type": "string" }, "port": { "type": "number", "min": 1, "max": 65535 } } }`，
+  `"words": { "type": "array", "items": { "type": "string" } }`。保存时对象可以只给部分键（其余取默认），未声明的键会被拒绝。
 - 读取：页面代码用 `ctx.config`；钩子、网关中间件、工具脚本用第二个参数的 `context.config`。都是生效配置
   （默认值叠加已保存且类型正确的值）的只读快照。
 - 修改：管理器表单保存后自动热重载；对话造拓展可用 `codexpp_extension_configure` 改值。只接受声明过的键，类型不符即报错。
@@ -352,6 +359,54 @@ export default async function* (context, next) {
 - 任一中间件出错、超时（`timeout` 1~10 秒，按单个事件计）或工作进程退出，这次回复剩下的部分原样放行。
 - 只对经 Codex++ 本地代理 / 网关的流式回复生效；官方直连、远程压缩回复不经过这里。
 
+### 网关失败重试
+
+```json
+{ "gateway": { "error": [{ "script": "gateway/error.mjs", "timeout": 5 }] } }
+```
+
+```js
+// gateway/error.mjs：默认导出 (error, { path, extension, config }) => { retry: true, delayMs } | { kind: "retry" } | null
+export default (error) => (error.status === 429 && error.attempt < 2 ? { retry: true, delayMs: error.json?.retryAfterMs ?? 2000 } : null);
+```
+
+- 上游返回错误状态时调用，`error` 为 `{ status, body, json, path, attempt }`（`body` 最多 64 KiB）。多个拓展按顺序问，
+  第一个要求重试的生效；同一请求最多重发 3 次，间隔最多 10 秒。不重试时 Codex 照常收到原错误。
+- 只对经 Codex++ 代理 / 网关的请求生效；没有拓展声明时不读响应体，零开销。流式回复中途断开不在此列。
+
+### 工具管道
+
+对应「工具执行前 / 执行 / 执行后」三段：
+
+```json
+{
+  "toolPipeline": {
+    "preExecute": [{ "matcher": "^Bash$", "script": "tools/pre.mjs", "timeout": 30 }],
+    "execute": [{ "matcher": "^Bash$", "script": "tools/exec.mjs", "timeout": 60 }],
+    "postExecute": [{ "matcher": "^exec_command$", "script": "tools/post.mjs", "timeout": 5 }]
+  }
+}
+```
+
+```js
+// tools/pre.mjs：改参数或拦截
+export default (input, { name, callId }) => input.command.includes("rm -rf") ? { deny: "不允许" } : null;
+// tools/exec.mjs：返回结果即代为执行，原工具不跑；返回 undefined 交还原工具
+export default (input) => (input.command === "date" ? new Date().toISOString() : undefined);
+// tools/post.mjs：改写模型看到的工具结果
+export default (output) => (typeof output === "string" ? output.replace(/sk-\w+/g, "sk-***") : undefined);
+```
+
+- `preExecute` / `execute` 在 Codex 的 PreToolUse 钩子里运行（`matcher` 匹配钩子里的工具名，如 `Bash`），上下文
+  `{ name, callId, cwd, payload, config, sessionQuery, service }`；用到时 Codex 配置里会写入「Codex++ 拓展钩子」分发条目，
+  需要在 Codex 的 Hooks 设置里信任一次。
+- `execute` 返回结果后，原工具调用以「拒绝 + 结果」结束；经 Codex++ 代理时，下一次请求里网关把这条工具输出整个换成
+  纯结果，模型看到的就是执行结果。不经代理时模型从拒绝理由里读到结果。
+- `postExecute` 在网关请求侧改写 `function_call_output` / `custom_tool_call_output`（`matcher` 匹配模型侧工具名，如
+  `exec_command`、`apply_patch`、`mcp__服务__工具`），上下文 `{ name, input, callId, config }`。按「拓展 + 脚本 + 调用 +
+  输出」缓存，同一条结果只改一次。只对经 Codex++ 代理的请求生效。
+- Codex 界面里显示的仍是原工具结果；改写只影响模型看到的内容。
+
 ### 会话历史（只读）
 
 内置服务 `sessionQuery` 只读查询 Codex 的会话，页面、常驻后台、模型工具三处都能用：
@@ -375,7 +430,10 @@ codexPlus.extension({ inject: ["sessionQuery"], async apply(ctx) {
 | `filterEvents(id, { types?, text?, limit? })` | 匹配的事件（文本不分大小写） |
 | `readEvent({ sessionId, seq, before?, after? })` | 以 seq 为中心的事件窗口 |
 | `searchSessions({ query, limit?, cursor? })` | `{ items, nextCursor }`，按标题、首条消息、目录匹配 |
-| `searchEvents({ query, sessionId?, types?, limit?, cursor? })` | `{ items: [{ sessionId, event }], nextCursor }`；不给 sessionId 时只搜最近 100 个会话 |
+| `searchEvents({ query, sessionId?, types?, archived?, limit?, cursor? })` | `{ items: [{ sessionId, event }], nextCursor }`；不给 sessionId 时按新到旧扫全部会话，找够一页即停 |
+| `readEventsSince({ sessionId, seq, limit? })` | seq 及之后的完整事件（增量读） |
+| `project(id, { init, apply })` | 把事件日志折叠成状态：`apply(state, event)` 返回新状态 |
+| `observeSession(id, handler, { intervalMs?, fromSeq? })` | 订阅新事件（默认从当前末尾开始，每 2 秒增量读），返回撤销函数；页面与后台可用 |
 
 - 会话：`{ id, title, cwd, model, createdAt, updatedAt, archived, preview, gitBranch }`。
 - 事件：`{ type, seq, time, data }`。`type` 有 `turn/start`、`user/message`、`assistant/message`（`data.phase`）、
@@ -401,6 +459,31 @@ codexPlus.extension({ inject: ["metrics"], apply(ctx) { ctx.metrics.record("open
 - 可选依赖：不写进 `inject`，用到时 `ctx.get(name)`（不存在为 `undefined`）。
 - `ctx.inject(deps, apply)`：子作用域，只让依赖某服务的那部分挂起 / 重建。
 - 内置服务：`sessionQuery`、`locale`。`codexPlus.services()` 列出当前已提供的服务与提供方。
+
+#### 后台提供的服务（跨进程）
+
+常驻后台也能提供服务，页面、其它后台、模型工具、钩子都按名字调用，调用都落到同一个后台进程：
+
+```json
+{ "backend": { "script": "backend/main.mjs", "provides": ["counter"] } }
+```
+
+```js
+// backend/main.mjs
+export default ({ provide }) => {
+  let total = 0;
+  provide("counter", { add: (n) => (total += n), total: () => total });
+  return {};
+};
+// 页面：codexPlus.extension({ inject: ["counter"], async apply(ctx) { await ctx.counter.add(1); } })
+// 后台 / 模型工具 / 钩子：await service("counter").add(1)   （service 在默认导出的参数或第二个参数里）
+```
+
+- 服务名要在 `backend.provides` 里声明（字母开头，字母、数字、`_ . -`），后台代码里用 `provide(name, impl)` 实现；
+  同名时按拓展 key 顺序先声明的生效。调用参数和返回值要能 JSON 序列化，方法都是异步的。
+- 页面：注入包把后台服务清单交给页面，登记成可 `inject` 的服务；页面里已有同名服务时以页面的为准。
+- 拓展 MCP（模型工具）与钩子进程不托管后台，它们的调用经 Codex 页面桥接转给托管后台的 Codex++ 进程，
+  所以 Codex 需要开着。
 
 ### 多语言
 
@@ -436,7 +519,7 @@ codexPlus.extension((ctx) => {
 ```
 
 ```js
-// backend/main.mjs：默认导出 (ctx) => 方法表；ctx = { extension, config, dataDir, emit, log, sessionQuery }
+// backend/main.mjs：默认导出 (ctx) => 方法表；ctx = { extension, config, dataDir, emit, log, sessionQuery, provide, service }
 import fs from "node:fs";
 export default ({ emit }) => ({
   read: () => (fs.existsSync("note.txt") ? fs.readFileSync("note.txt", "utf8") : ""),
@@ -501,7 +584,7 @@ user_scripts/
 | --- | --- |
 | `id` | 必填，只能包含字母、数字、`-`、`_` |
 | `name` / `version` / `description` | 管理页展示用 |
-| `engines.codexpp` | 需要的 `apiVersion`，高于当前 Codex++ 时不加载并在管理页显示原因 |
+| `engines.codexpp` | 整数：需要的 `apiVersion`；字符串：对 Codex++ 版本的 semver 范围（如 `"^2.1"`、`">=2.1.0 <3"`、`"2.x"`、`"1.0 - 2.5"`、`"^1 \|\| ^2"`）。不满足时不加载并在管理页显示原因 |
 | `renderer` | 字符串或数组，必须是包内相对路径；按顺序拼进同一个作用域执行。只声明 `hooks` 的拓展可以省略 |
 | `hooks` | Codex 钩子声明，见上文「Codex 钩子」 |
 | `gateway` | 网关请求中间件声明，见上文「网关请求中间件」 |

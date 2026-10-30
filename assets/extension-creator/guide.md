@@ -129,7 +129,9 @@ img.src = ctx.asset("assets/pet.png");   // data URL，页面里直接可用
   "theme": { "type": "select", "title": "配色", "options": [{ "value": "red", "label": "番茄红" }, { "value": "green", "label": "薄荷绿" }] } }
 ```
 
-- `type` 可选 `string`、`number`、`boolean`、`select`（必须给 `options`）；`secret: true` 时界面按密码框显示。
+- `type` 可选 `string`、`text`（多行）、`number`（可加 `min` / `max`）、`boolean`、`select`（必须给 `options`）、
+  `array`（`items` 写元素类型，只能是简单类型）、`object`（`properties` 写子字段，最多 3 层）；`secret: true` 时界面按密码框显示。
+- `title` / `description` 可以写 `{ "zh": "…", "en": "…" }`，管理器按界面语言显示。
 - 页面代码读 `ctx.config.minutes`；钩子、网关中间件、工具脚本读第二个参数的 `context.config`。都是只读快照。
 - 用户在 Codex++ 管理器的拓展列表里点「设置」修改；对话里用户说「改成 50 分钟」时，用
   `codexpp_extension_configure` 改值即可，不必重写代码。改完会自动热重载。
@@ -188,6 +190,37 @@ img.src = ctx.asset("assets/pet.png");   // data URL，页面里直接可用
 - 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过这里，要告诉用户。
 - 它挡在每一次模型请求前面：保持快、只做用户要求的事、不要外发请求内容。出错或超时会保留原请求。
 
+## 请求失败时重试（gateway.error）
+
+上游返回错误状态（429、5xx 等）时让拓展决定要不要重发，在 `gateway` 参数里声明 `error`：
+
+```js
+// gateway/error.mjs：默认导出 (error, { path, extension, config }) => { retry: true, delayMs } | null
+export default (error) => (error.status === 429 && error.attempt < 2 ? { retry: true, delayMs: 2000 } : null);
+```
+
+- `error` 是 `{ status, body（文本，最多 64 KiB）, json（能解析时）, path, attempt（已重试次数）}`。
+- 返回 `{ retry: true, delayMs }`（或 `{ kind: "retry" }`）即重发同一请求；最多 3 次，间隔最多 10 秒。
+
+## 工具管道（改工具参数、代为执行、改工具结果）
+
+在 `codexpp_extension_write` 的 `toolPipeline` 参数里声明，每项 `{ matcher, script, timeout }`：
+
+```json
+{ "preExecute": [{ "matcher": "^Bash$", "script": "tools/pre.mjs" }],
+  "execute": [{ "matcher": "^Bash$", "script": "tools/exec.mjs" }],
+  "postExecute": [{ "matcher": "^exec_command$", "script": "tools/post.mjs" }] }
+```
+
+- `preExecute`：`(input, { name, callId, cwd, payload, config }) => 新 input | { deny: "原因" } | null`。改参数或拦截，
+  在 Codex 的 PreToolUse 钩子里跑，`matcher` 匹配钩子里的工具名（如 `Bash`）。
+- `execute`：同样的参数，返回结果（字符串或 JSON）就由拓展代为执行，原工具不跑；返回 `undefined` 交还原工具。
+  经 Codex++ 代理时模型看到的就是这个结果，不经代理时模型从「拒绝理由」里读到它。
+- `postExecute`：`(output, { name, input, callId, config }) => 新 output | undefined`。改写工具结果，`matcher` 匹配
+  模型侧的工具名（如 `exec_command`、`apply_patch`、`mcp__服务__工具`）。只对经 Codex++ 代理的请求生效，
+  同一条结果只改一次。
+- 前两段用到 PreToolUse 钩子：第一次用时要告诉用户在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」一次。
+
 ## 网关响应流中间件（改写模型的回复）
 
 要在模型的回复**流回 Codex 的途中**改写（替换敏感词、给回复加尾注、拦掉某类事件），在 `gateway` 参数里声明
@@ -229,10 +262,12 @@ export default async function* (context, next) {
 `filterEvents(id, { types, text })`、`readEvent({ sessionId, seq, before, after })`、
 `searchSessions({ query, limit, cursor })` → `{ items, nextCursor }`、`searchEvents({ query, sessionId, types, limit, cursor })`。
 
+- 另有 `readEventsSince({ sessionId, seq })`（增量读）、`project(id, { init, apply })`（把事件折叠成状态）、
+  `observeSession(id, handler, { intervalMs })`（订阅新事件，返回撤销函数；页面与后台可用）。
 - 会话：`{ id, title, cwd, model, createdAt, updatedAt, archived, preview, gitBranch }`。
 - 事件：`{ type, seq, time, data }`，`type` 为 `turn/start`、`user/message`、`assistant/message`、`assistant/reasoning`、
   `tool/call`、`tool/result`；`data` 里有 `turn`、`text` / `name` / `input` / `output` 等。
-- 当前页面所在会话的 id：消息插槽回调里的 `message.conversationId`。
+- 当前页面所在会话的 id：消息插槽回调里的 `message.conversationId`。钩子脚本的第二个参数里也有 `sessionQuery`。
 
 ## 拓展之间共享能力（服务）
 
@@ -248,6 +283,9 @@ codexPlus.extension({ inject: ["wordCounter"], apply(ctx) { ctx.toast(String(ctx
 - 服务名是全局扁平的，重名会报错；可选依赖用 `ctx.get("名字")`（不存在时为 undefined）。
 - `ctx.inject(["名字"], (sub) => { ... })` 开一个子作用域，只让依赖那个服务的部分挂起。
 - 内置服务：`sessionQuery`（只读会话查询）、`locale`（多语言）。
+- 后台也能提供服务，给页面、别的后台、模型工具、钩子共用：在 `backend` 里写 `"provides": ["counter"]`，后台默认导出里
+  `provide("counter", { add(n) { ... } })`；别处用 `service("counter").add(1)`（后台、工具、钩子），页面直接
+  `inject: ["counter"]`。所有调用都落到同一个后台进程，状态是共享的。
 
 ## 多语言
 
@@ -263,7 +301,7 @@ codexPlus.extension({ inject: ["wordCounter"], apply(ctx) { ctx.toast(String(ctx
 在 `codexpp_extension_write` 的 `backend` 参数里写 `{ "script": "backend/main.mjs" }`，脚本放在 `files` 里：
 
 ```js
-// backend/main.mjs：默认导出 (ctx) => 方法表，可以 async；ctx = { extension, config, dataDir, emit, log, sessionQuery }
+// backend/main.mjs：默认导出 (ctx) => 方法表，可以 async；ctx = { extension, config, dataDir, emit, log, sessionQuery, provide, service }
 import fs from "node:fs";
 export default ({ emit }) => {
   let count = 0;
