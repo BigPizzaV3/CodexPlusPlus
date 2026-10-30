@@ -1202,6 +1202,7 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         config: None,
         files,
         backend: None,
+        assets: Default::default(),
     })
 }
 

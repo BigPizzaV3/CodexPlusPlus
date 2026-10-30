@@ -376,3 +376,57 @@ fn package_locales_are_loaded_and_validated() {
     let bundle = creator.manager.build_initial_bundle().unwrap();
     assert!(bundle.contains("Hi {name}"), "renderer 清单带上包内词条");
 }
+
+#[tokio::test]
+async fn write_accepts_lenient_shapes_and_copies_binary_assets() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    // 一张真实的 1x1 PNG，按字节复制进包。
+    let png: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63,
+        0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let source = temp.path().join("pet.png");
+    fs::write(&source, png).unwrap();
+
+    // renderer 写成字符串、files 里混用 content 与 sourcePath。
+    let (error, written) = call(&creator, "codexpp_extension_write", json!({
+        "id": "pet", "name": "桌宠", "renderer": "main.js",
+        "files": [
+            {"path": "main.js", "content": "codexPlus.extension((ctx) => { window.__petSrc = ctx.asset('assets/pet.png'); });"},
+            {"path": "assets/pet.png", "sourcePath": source.to_string_lossy()},
+        ],
+    })).await;
+    assert!(!error, "{written}");
+    assert!(written.get("items").is_none(), "写入结果只带这一个拓展，不带全部列表");
+    assert_eq!(written["extension"]["package"]["assets"], json!(["assets/pet.png"]));
+    assert_eq!(fs::read(temp.path().join("user/pet/assets/pet.png")).unwrap(), png, "按字节复制");
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("user/pet/codexpp.json")).unwrap()).unwrap();
+    assert_eq!(manifest["renderer"], json!(["main.js"]));
+    let bundle = creator.manager.build_initial_bundle().unwrap();
+    assert!(bundle.contains("data:image/png;base64,iVBORw0KGgo"), "页面清单带上资源的 data URL");
+
+    // files 写成 { 路径: 内容 } 也认。
+    let (error, written) = call(&creator, "codexpp_extension_write", json!({
+        "id": "map-files", "name": "映射写法", "files": {"renderer.js": "codexPlus.extension(() => {});"},
+    })).await;
+    assert!(!error, "{written}");
+    assert!(temp.path().join("user/map-files/renderer.js").is_file());
+
+    // 不合格的资源：类型不对、相对路径、content 与 sourcePath 同时给、超过 1 MiB。
+    let text = temp.path().join("notes.txt");
+    fs::write(&text, "x").unwrap();
+    let big = temp.path().join("big.png");
+    fs::write(&big, vec![0u8; 1024 * 1024 + 1]).unwrap();
+    for (files, expected) in [
+        (json!([{"path": "assets/notes.txt", "sourcePath": text.to_string_lossy()}]), "不是支持的资源类型"),
+        (json!([{"path": "assets/pet.png", "sourcePath": "pet.png"}]), "必须是绝对路径"),
+        (json!([{"path": "assets/pet.png", "content": "x", "sourcePath": source.to_string_lossy()}]), "其中之一"),
+        (json!([{"path": "assets/big.png", "sourcePath": big.to_string_lossy()}]), "超过单个资源上限"),
+    ] {
+        let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "bad-asset", "name": "坏资源", "files": files})).await;
+        assert!(error && message.as_str().unwrap().contains(expected), "{expected}: {message}");
+    }
+    assert!(!temp.path().join("user/bad-asset").exists(), "校验失败时什么都不写");
+}

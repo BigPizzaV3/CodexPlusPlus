@@ -3936,6 +3936,16 @@ describe("拓展运行时内核", () => {
     assert.equal(k.services.get("locale")?.owner, "builtin");
   });
 
+  it("ctx.asset：按包内路径取资源的 data URL，可省略 assets/ 前缀，找不到返回空串", async () => {
+    const k = await kernel({ manifest: { id: "pet", assets: { "assets/pet.png": "data:image/png;base64,AAAA" } } });
+    const ctx = k.create(() => {});
+    assert.equal(ctx.asset("assets/pet.png"), "data:image/png;base64,AAAA");
+    assert.equal(ctx.asset("./assets/pet.png"), "data:image/png;base64,AAAA");
+    assert.equal(ctx.asset("pet.png"), "data:image/png;base64,AAAA");
+    assert.equal(ctx.asset("assets/missing.png"), "");
+    assert.equal((await kernel()).create(() => {}).asset("assets/pet.png"), "", "单文件脚本没有资源");
+  });
+
   it("一次性定时器触发后自行注销，不留在撤销列表里", async () => {
     const k = await kernel();
     let fired = 0;

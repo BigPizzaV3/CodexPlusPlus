@@ -703,7 +703,7 @@ type UserScriptInventory = {
     package?: {
       id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
       configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>; backend?: boolean;
-      gatewayRequest?: number; gatewayResponse?: number;
+      gatewayRequest?: number; gatewayResponse?: number; skippedAssets?: string[];
       locales?: Record<string, { title?: string | null; description?: string | null }>;
     } | null;
     enabled: boolean;
@@ -16291,6 +16291,9 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         {script.package?.hookEvents?.length ? <small className="user-script-hooks">{tf("Codex 钩子：{0}", [script.package.hookEvents.join("、")])}</small> : null}
         {script.package?.tools?.length ? <small className="user-script-hooks">{tf("模型工具：{0}", [script.package.tools.join("、")])}</small> : null}
         {script.package?.backend ? <small className="user-script-hooks">{t("常驻后台")}</small> : null}
+        {script.package?.skippedAssets?.length
+          ? <small className="user-script-hooks" data-tone="warn" title={script.package.skippedAssets.join("\n")}>{tf("资源超出大小上限未加载：{0}", [script.package.skippedAssets.join("、")])}</small>
+          : null}
         {script.package?.gatewayRequest || script.package?.gatewayResponse
           ? <small className="user-script-hooks">{tf("网关中间件：{0}", [[
               script.package.gatewayRequest ? t("请求") : "",

@@ -166,6 +166,7 @@ codexPlus.extension((ctx) => {
 | `registerMessageAction({ label, icon, roles, visible, onActivate })` | 每条对话消息操作行（复制、编辑旁）的图标按钮，`onActivate({ message, close })`；`message` 见下 |
 | `registerMessageDecoration({ roles, visible, render })` | 消息正文下方的一块内容：`render({ message, container })`，消息文字变化（流式输出）时清空重画，留空不占位 |
 | `registerSidePanel({ title, icon, width, render })` | 右侧面板：顶栏右侧出现开关，打开时主区域让出宽度；`render({ container, close })` 每次打开调用，可返回清理函数；返回值带 `open() / close() / toggle()` |
+| `asset(path)` | 包内 `assets/` 资源的 data URL（图片、音频、字体），找不到返回空串 |
 | `provide(name, value) / get(name) / inject(deps, apply)` | 拓展间服务，见「拓展间服务」 |
 | `locale.t / register / bind / resolve / current` | 多语言，见「多语言」 |
 | `storage.get / set / remove / keys` | 按拓展 id 隔离的本地存储，值按 JSON 存取 |
@@ -456,6 +457,21 @@ codexPlus.extension((ctx) => {
 - 与后台之间是行式 JSON：方法只收一个 JSON 参数、返回可序列化的值，抛错即 reject。默认超时 20 秒，最多 24 秒。
 - `emit(event, payload)` 进有界队列（每个后台保留最近 200 条），页面 `ctx.backend.on` 以长轮询取走；`on` 不会启动后台。
 - 后台以你的用户权限运行、没有沙箱。只启用你信任的拓展。
+
+### 资源文件
+
+拓展包里的图片、音频、字体放在 `assets/` 下，页面代码用 `ctx.asset(path)` 取 data URL：
+
+```js
+codexPlus.extension((ctx) => {
+  const audio = new Audio(ctx.asset("assets/ding.mp3"));
+  ctx.registerComposerAction({ label: "叮", icon: "🔔", onActivate: () => audio.play() });
+});
+```
+
+- 支持 png / jpg / gif / webp / svg / ico / avif / mp3 / wav / ogg / m4a / woff / woff2 / ttf / otf。单个最大 1 MiB，
+  一个包合计最大 4 MiB，超出的不下发（管理器里能看到 `skippedAssets`）。资源随拓展下发给页面，越小越好。
+- 页面里不能用 `file://` 加载本机文件。对话造拓展时，agent 用写入工具 `files[].sourcePath` 把本机文件按字节复制进包。
 
 ### 拓展包
 

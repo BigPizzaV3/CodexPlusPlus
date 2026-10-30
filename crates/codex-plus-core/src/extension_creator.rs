@@ -257,7 +257,7 @@ fn tool_definitions() -> Value {
                     "description": {"type": "string", "description": "一句话说明拓展做什么"},
                     "version": {"type": "string", "description": "版本号，默认 0.1.0"},
                     "routes": {"type": "array", "items": {"type": "string"}, "description": "拓展需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
-                    "renderer": {"type": "array", "items": {"type": "string"}, "description": "按顺序执行的页面入口文件；省略时若 files 里有 renderer.js 就用它，只声明 hooks 的拓展可以没有页面入口"},
+                    "renderer": {"type": ["array", "string"], "items": {"type": "string"}, "description": "按顺序执行的页面入口文件；省略时若 files 里有 renderer.js 就用它，只声明 hooks 的拓展可以没有页面入口"},
                     "hooks": {"type": "object", "description": "Codex 钩子声明，例如 {\"PreToolUse\": [{\"matcher\": \"^Bash$\", \"script\": \"hooks/guard.mjs\", \"timeout\": 30}]}；写法见指南「Codex 钩子」"},
                     "backend": {"type": "object", "description": "常驻后台声明，例如 {\"script\": \"backend/main.mjs\"}；脚本默认导出 async (ctx) => ({ 方法 })，页面用 ctx.backend.call / on 调用。写法见指南「常驻后台」"},
                     "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
@@ -265,11 +265,15 @@ fn tool_definitions() -> Value {
                     "gateway": {"type": "object", "description": "网关中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\"}], \"response\": [{\"script\": \"gateway/response.mjs\"}]}；request 改写发给模型的请求，response 改写模型回复的事件流。写法见指南「网关请求中间件」「网关响应流中间件」"},
                     "files": {
                         "type": "array",
-                        "description": "要写入的文件（包内相对路径 + 完整内容），不要包含 codexpp.json",
+                        "description": "要写入的文件，不要包含 codexpp.json。文本给 content；图片、音频、字体等资源给 sourcePath（本机文件的绝对路径，按字节复制，放在 assets/ 下，页面里用 ctx.asset(\"assets/xx.png\") 取地址）。不要把 base64 写进代码",
                         "items": {
                             "type": "object",
-                            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-                            "required": ["path", "content"],
+                            "properties": {
+                                "path": {"type": "string", "description": "包内相对路径"},
+                                "content": {"type": "string", "description": "文本文件的完整内容"},
+                                "sourcePath": {"type": "string", "description": "二进制资源：本机文件绝对路径（png / jpg / gif / webp / svg / mp3 / wav / ogg / woff2 等，单个最大 1 MiB）"},
+                            },
+                            "required": ["path"],
                             "additionalProperties": false,
                         },
                     },
@@ -321,7 +325,7 @@ struct WriteArguments {
     version: String,
     #[serde(default)]
     routes: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_list")]
     renderer: Vec<String>,
     #[serde(default)]
     hooks: Option<Value>,
@@ -333,14 +337,50 @@ struct WriteArguments {
     config: Option<Value>,
     #[serde(default)]
     backend: Option<Value>,
+    #[serde(deserialize_with = "file_list")]
     files: Vec<WriteFile>,
 }
 
+/// 一个要写入的文件：文本给 `content`，图片 / 音频 / 字体等二进制资源给 `sourcePath`（本机文件，按字节复制）。
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WriteFile {
     path: String,
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    source_path: Option<String>,
+}
+
+/// `renderer` 既收数组也收单个字符串（清单本身两种写法都认，agent 常写成字符串）。
+fn string_or_list<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Either::deserialize(deserializer)? {
+        Either::One(value) => vec![value],
+        Either::Many(values) => values,
+    })
+}
+
+/// `files` 既收 `[{ path, content | sourcePath }]`，也收 `{ "路径": "内容" }`。
+fn file_list<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<WriteFile>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        List(Vec<WriteFile>),
+        Map(BTreeMap<String, String>),
+    }
+    Ok(match Either::deserialize(deserializer)? {
+        Either::List(files) => files,
+        Either::Map(files) => files
+            .into_iter()
+            .map(|(path, content)| WriteFile { path, content: Some(content), source_path: None })
+            .collect(),
+    })
 }
 
 #[derive(Deserialize, serde::Serialize)]
@@ -413,8 +453,14 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
             let arguments: WriteArguments =
                 serde_json::from_value(arguments).context("codexpp_extension_write 参数无效")?;
             let mut files = BTreeMap::new();
+            let mut assets = BTreeMap::new();
             for file in arguments.files {
-                if files.insert(file.path.clone(), file.content).is_some() {
+                let duplicate = match (file.content, file.source_path) {
+                    (Some(content), None) => files.insert(file.path.clone(), content).is_some(),
+                    (None, Some(source)) => assets.insert(file.path.clone(), std::path::PathBuf::from(source)).is_some(),
+                    _ => anyhow::bail!("文件 {} 要给 content（文本）或 sourcePath（本机文件）其中之一", file.path),
+                };
+                if duplicate || (files.contains_key(&file.path) && assets.contains_key(&file.path)) {
                     anyhow::bail!("文件 {} 重复出现", file.path);
                 }
             }
@@ -431,6 +477,7 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 config: arguments.config,
                 backend: arguments.backend,
                 files,
+                assets,
             })?;
             let key = user_scripts::extension_package_key(&arguments.id);
             let mut result = reload_and_report(creator, &key).await?;
@@ -491,7 +538,12 @@ async fn reload_and_report(creator: &ExtensionCreator, key: &str) -> anyhow::Res
     if hooks["added"].as_array().is_some_and(|added| !added.is_empty()) {
         hooks["note"] = json!("Codex 配置里新增了 Codex++ 拓展钩子的分发条目：Codex 会在用户信任后才运行它们（每个事件信任一次），请提醒用户在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」，并新开对话生效。");
     }
-    Ok(json!({ "reload": reload, "extension": target, "items": items, "hooks": hooks }))
+    // 写入 / 启停 / 配置单个拓展时只回这一个，不带全部列表（几十个拓展的摘要会白白占满 agent 的上下文）。
+    let mut result = json!({ "reload": reload, "extension": target, "hooks": hooks });
+    if key.is_empty() {
+        result["items"] = json!(items);
+    }
+    Ok(result)
 }
 
 /// 只有页内重载才自动执行。某个已加载脚本没登记清理函数时，重载会整页刷新 Codex，

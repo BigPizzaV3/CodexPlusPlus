@@ -19354,6 +19354,16 @@
 
       locale,
 
+      /**
+       * 包内资源的地址（data URL），可直接给 img.src / audio.src / CSS url()。资源放在包的 assets/ 下，
+       * 例如 ctx.asset("assets/pet.png")；找不到时返回空串（单文件脚本没有资源）。
+       */
+      asset(path) {
+        const key = String(path || "").replace(/^\.?\//, "");
+        const assets = manifest?.assets && typeof manifest.assets === "object" ? manifest.assets : {};
+        return assets[key] || assets[`assets/${key}`] || "";
+      },
+
       /** 提供一个服务（扁平命名空间，重名抛错）；随实例卸载撤销，依赖它的拓展随之卸载。 */
       provide(name, value) {
         return track(codexPlusProvideService(String(name), value, scriptKey || extensionId));

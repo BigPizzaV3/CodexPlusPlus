@@ -456,8 +456,37 @@ impl UserScriptManager {
     /// 返回脚本 key 与清单校验结果（`error` 非空表示包写好了但不会被加载）。
     pub fn write_extension_package(&self, write: &ExtensionWrite) -> anyhow::Result<Value> {
         validate_extension_id(&write.id)?;
-        if write.files.is_empty() || write.files.len() > EXTENSION_WRITE_MAX_FILES {
+        let file_count = write.files.len() + write.assets.len();
+        if file_count == 0 || file_count > EXTENSION_WRITE_MAX_FILES {
             anyhow::bail!("files 需要 1~{EXTENSION_WRITE_MAX_FILES} 个文件");
+        }
+        // 先把二进制资源读进内存并校验，任何一个不合格就什么都不写。
+        let mut asset_bytes = Vec::new();
+        let mut asset_total = 0usize;
+        for (path, source) in &write.assets {
+            validate_package_relative_path(path)?;
+            if write.files.contains_key(path) {
+                anyhow::bail!("文件 {path} 重复出现");
+            }
+            if extension_asset_mime(path).is_none() {
+                anyhow::bail!("{path} 不是支持的资源类型（图片、音频、字体）；文本文件请用 content");
+            }
+            if !source.is_absolute() {
+                anyhow::bail!("{path} 的 sourcePath 必须是绝对路径");
+            }
+            let metadata = fs::metadata(source).with_context(|| format!("读不到 {}", source.display()))?;
+            if !metadata.is_file() {
+                anyhow::bail!("{} 不是普通文件", source.display());
+            }
+            if metadata.len() > EXTENSION_ASSET_MAX_BYTES as u64 {
+                anyhow::bail!("{path} 超过单个资源上限 {} KiB，先压缩或缩小尺寸", EXTENSION_ASSET_MAX_BYTES / 1024);
+            }
+            let bytes = fs::read(source).with_context(|| format!("读不到 {}", source.display()))?;
+            asset_total += bytes.len();
+            asset_bytes.push((path.clone(), bytes));
+        }
+        if asset_total > EXTENSION_ASSET_MAX_TOTAL_BYTES {
+            anyhow::bail!("资源总量超过 {} KiB", EXTENSION_ASSET_MAX_TOTAL_BYTES / 1024);
         }
         let mut total = 0usize;
         for (path, content) in &write.files {
@@ -531,6 +560,21 @@ impl UserScriptManager {
             }
             crate::settings::atomic_write(&target, content.as_bytes())
                 .with_context(|| format!("无法写入 {path}"))?;
+        }
+        for (path, bytes) in &asset_bytes {
+            let target = directory.join(path);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("无法创建目录 {}", parent.display()))?;
+                let parent = parent.canonicalize().context("无法解析拓展子目录")?;
+                if !parent.starts_with(&directory) {
+                    anyhow::bail!("{path} 指向拓展包以外，未写入");
+                }
+            }
+            if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+                anyhow::bail!("{path} 是符号链接，未写入");
+            }
+            crate::settings::atomic_write(&target, bytes).with_context(|| format!("无法写入 {path}"))?;
         }
         let manifest = json!({
             "id": write.id,
@@ -846,6 +890,10 @@ struct ExtensionPackage {
     backend: Option<PathBuf>,
     /// 包内 `locale/<语言>.json`：语言 id → 词条（`meta.title` / `meta.description` 是本地化的名称与描述）。
     locales: std::collections::BTreeMap<String, Value>,
+    /// 包内 `assets/` 的资源：包内路径 → data URL，交给页面的 `ctx.asset(path)`。
+    assets: std::collections::BTreeMap<String, String>,
+    /// 超出大小上限而没有下发的资源。
+    skipped_assets: Vec<String>,
     /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
     config: Value,
     error: Option<String>,
@@ -1004,6 +1052,8 @@ impl ExtensionPackage {
             "configSchema": self.config_schema,
             "backend": self.backend.is_some(),
             "config": self.config,
+            "assets": self.assets.keys().collect::<Vec<_>>(),
+            "skippedAssets": self.skipped_assets,
             // 只给名称与描述的本地化版本，词条本身留给页面运行时。
             "locales": self.locales.iter().map(|(lang, messages)| (lang.clone(), json!({
                 "title": messages.pointer("/meta/title").cloned().unwrap_or(Value::Null),
@@ -1023,6 +1073,7 @@ impl ExtensionPackage {
             "permissions": { "routes": self.routes },
             "config": self.config,
             "locales": self.locales,
+            "assets": self.assets,
         })
     }
 }
@@ -1047,11 +1098,86 @@ pub struct ExtensionWrite {
     /// 原样写进清单的 `backend`，加载时校验。
     pub backend: Option<Value>,
     pub files: BTreeMap<String, String>,
+    /// 二进制资源：包内路径 → 本机源文件，按字节复制（图片、音频、字体）。
+    pub assets: BTreeMap<String, PathBuf>,
 }
 
 const EXTENSION_WRITE_MAX_FILES: usize = 32;
 const EXTENSION_WRITE_MAX_FILE_BYTES: usize = 256 * 1024;
 const EXTENSION_WRITE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
+/// 单个二进制资源（图片、音频、字体）的上限，以及一个包里资源的总上限。
+/// 资源会以 data URL 随清单下发给页面，太大会拖慢每次加载。
+const EXTENSION_ASSET_MAX_BYTES: usize = 1024 * 1024;
+const EXTENSION_ASSET_MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
+
+/// 支持的资源类型（按扩展名），返回 MIME。
+fn extension_asset_mime(path: &str) -> Option<&'static str> {
+    let extension = path.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        _ => return None,
+    })
+}
+
+/// 读包内 `assets/` 下的资源，转成 data URL 交给页面（`ctx.asset(path)`）。超限的跳过并记下原因。
+fn load_extension_assets(root: &std::path::Path) -> (std::collections::BTreeMap<String, String>, Vec<String>) {
+    use base64::Engine;
+    let mut assets = std::collections::BTreeMap::new();
+    let mut skipped = Vec::new();
+    let mut total = 0usize;
+    let mut stack = vec![root.join("assets")];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut entries = entries.flatten().collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Some(relative) = path.strip_prefix(root).ok().map(|relative| relative.to_string_lossy().replace('\\', "/")) else {
+                continue;
+            };
+            let Some(mime) = extension_asset_mime(&relative) else {
+                continue;
+            };
+            let size = metadata.len() as usize;
+            if size > EXTENSION_ASSET_MAX_BYTES || total + size > EXTENSION_ASSET_MAX_TOTAL_BYTES {
+                skipped.push(relative);
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            total += bytes.len();
+            assets.insert(relative, format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)));
+        }
+    }
+    (assets, skipped)
+}
 /// 读回拓展包时的上限：只读文本、跳过大文件，避免把整个目录塞进对话。
 const EXTENSION_READ_MAX_TOTAL_BYTES: usize = 512 * 1024;
 
@@ -1142,6 +1268,8 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         config_schema: Vec::new(),
         backend: None,
         locales: Default::default(),
+        assets: Default::default(),
+        skipped_assets: Vec::new(),
         config: json!({}),
         error: None,
     };
@@ -1225,6 +1353,7 @@ fn parse_extension_manifest(
         Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
     };
     package.locales = load_extension_locales(&root)?;
+    (package.assets, package.skipped_assets) = load_extension_assets(&root);
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if package.engine > EXTENSION_API_VERSION {
         anyhow::bail!(

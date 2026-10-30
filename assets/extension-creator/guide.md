@@ -49,7 +49,8 @@ codexPlus.extension((ctx) => {
 | `ctx.registerNavEntry({ label, icon, onActivate })` | 只要一个图标栏按钮、不要整页时用 |
 | `ctx.effect(() => cleanupFn)` | 任意副作用（MutationObserver、插入的 DOM、patch 的函数），返回撤销函数 |
 | `ctx.listen(target, type, handler, options)` | 自动撤销的事件监听 |
-| `ctx.setInterval / ctx.setTimeout` | 自动清理的定时器，返回值是撤销函数 |
+| `ctx.setInterval / ctx.setTimeout` | 自动清理的定时器。**返回值是撤销函数（调用它即取消），不是定时器 id**，不能交给 `clearTimeout` |
+| `ctx.asset("assets/pet.png")` | 包内资源（图片、音频、字体）的 data URL，直接给 `img.src` / CSS `url()`；写法见「图片、音频等资源」 |
 | `ctx.on(event, fn) / ctx.emit(event, ...args)` | 拓展之间的事件 |
 | `ctx.intercept(name, (value, next) => next(value), { order }) / ctx.waterfall(name, value)` | 中间件链 |
 | `ctx.call(route, payload)` | 调 Codex++ 后端，只能调写进 `routes` 参数且在可用列表里的路由 |
@@ -72,7 +73,14 @@ codexPlus.extension((ctx) => {
   目标可能晚出现或被重建（例如发送按钮只在输入框有文字时出现），用 `ctx.effect` 里的 `MutationObserver`
   监听并在撤销函数里 `disconnect()`。
 - **找不到目标就什么都不做**，不要抛错卡住；改完用 `codexpp_extension_screenshot` 截图确认。
-- 查不到元素时可能是它还没出现：告诉用户需要的状态（例如「先在输入框里打几个字」），再查一次。
+- 查不到元素时可能是它还没出现：告诉用户需要的状态（例如「先打开设置页」），再查一次。
+- **输入区右下角的主按钮是一个会变的槽位**：发送（有字、空闲）/ 排队（有字、运行中）/ 停止（无字、运行中）/
+  开启语音聊天（无字、空闲），`aria-label` 跟着变。你调用工具时 Codex 正在运行这一轮，**永远看不到空闲时的
+  发送按钮**，不要让用户「打几个字再告诉我」。用 `inspect` 概览里的 `composerPrimaryAction.selector`
+  （`button.bg-composer-primary`）选这个槽位，再按需要用 `:not([aria-label="停止"])` 之类排除状态；
+  界面是英文时 `aria-label` 是英文。
+- 不要用 Computer Use / 截屏控制去操作 Codex 自己的窗口（会被拒绝，也会打断用户），看页面一律用
+  `codexpp_extension_inspect` 和 `codexpp_extension_screenshot`。
 
 示例：把语音按钮的图标换成狗头（选择器以 inspect 实际查到的为准）：
 
@@ -91,6 +99,26 @@ codexPlus.extension((ctx) => {
   });
 });
 ```
+
+## 图片、音频等资源
+
+桌宠图片、提示音、字体这类二进制文件放在包的 `assets/` 下，用 `codexpp_extension_write` 的 `files` 里写
+`sourcePath`（本机文件的绝对路径，按字节复制），不要把 base64 粘进代码：
+
+```json
+{ "path": "assets/pet.png", "sourcePath": "/Users/me/Downloads/pet-transparent.png" }
+```
+
+```js
+const img = document.createElement("img");
+img.src = ctx.asset("assets/pet.png");   // data URL，页面里直接可用
+```
+
+- 支持 png / jpg / gif / webp / svg / ico / avif / mp3 / wav / ogg / m4a / woff / woff2 / ttf / otf；单个最大 1 MiB，
+  一个包合计最大 4 MiB（资源会随拓展下发给页面，越小越好，图片先缩到实际显示尺寸的 2 倍以内）。
+- 页面里不能用 `file://` 路径加载本机文件；也不要在终端里把图片 base64 打印出来再复制进代码——对话里的长
+  base64 会被替换成占位符，写进代码就坏了。
+- 文本文件（代码、JSON、CSS）照旧用 `content`。
 
 ## 可配置项
 
@@ -260,6 +288,12 @@ ctx.backend.on("tick", ({ count }) => ctx.toast(`第 ${count} 分钟`));
   `call(method, params, { timeout })` 最多 24 秒，耗时更久的活儿先返回、做完再 `emit`。
 - `emit(event, payload)` 推给页面的 `ctx.backend.on(event, handler)`（`"*"` 收全部）；`on` 不会启动后台。
 - 后台以用户权限运行、没有沙箱，只做用户要求的事。
+
+## 工具连接断开时
+
+`codexpp_extension_*` 工具报 `Transport closed` 说明拓展服务断开了（通常是 Codex++ 刚更新或重启过），这个对话
+里不会自动恢复：告诉用户**新开一个对话**继续，拓展文件已经写好的不会丢。不要自己在终端里拉起 Codex++ 进程模拟
+工具调用。
 
 ## 必须遵守
 

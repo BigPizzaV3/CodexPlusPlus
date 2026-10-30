@@ -13572,6 +13572,9 @@ button.side-item:hover {
 .shell .user-script-row .user-script-name .user-script-hooks {
   color: hsl(var(--primary));
 }
+.shell .user-script-row .user-script-name .user-script-hooks[data-tone="warn"] {
+  color: hsl(var(--status-warning));
+}
 /* 拓展设置表单：展开在拓展行下方 */
 .shell .extension-config-form {
   display: grid;

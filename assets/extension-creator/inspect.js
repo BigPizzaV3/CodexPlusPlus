@@ -144,14 +144,26 @@
   const buttonsIn = (root) => (root ? [...root.querySelectorAll("button")].filter(keep).slice(0, 12).map(describe) : []);
   const rail = first("nav[data-app-navigation-rail]");
   const header = first("header");
+  // 输入区右下角的主按钮槽：同一个位置按状态换成不同按钮（发送 / 排队 / 停止 / 语音聊天），
+  // aria-label 跟着变，但都带 bg-composer-primary。agent 调用工具时 Codex 正在运行，看到的总是
+  // 「停止」或「排队」，看不到空闲时的发送按钮，所以要按这个槽位而不是按 aria-label 选。
+  const primary = (composerArea && [...composerArea.querySelectorAll("button.bg-composer-primary, button.size-token-button-composer")].find(keep)) ||
+    first("[data-composer-surface-overflow] button.bg-composer-primary");
   return {
     page,
     mode: "landmarks",
     notes: [
-      "发送按钮等元素可能只在特定状态下出现（例如输入框有文字时），查不到时换个状态再查，或用 MutationObserver 等它出现。",
+      "你调用这些工具时 Codex 正在运行本轮对话，输入区主按钮显示的是「停止」（输入框为空）或「排队」（输入框有字）；空闲时它才是「发送」（有字）或「开启语音聊天」（无字）。别让用户等状态切换，按 composerPrimaryAction.selector 选这个槽位。",
+      "元素可能只在特定状态下出现，查不到时可以换个状态再查，或用 MutationObserver 等它出现。",
       "hashedClasses 里的类名带构建哈希，Codex 发版后会变，不要依赖；优先用 selector 字段给出的稳定选择器。",
     ],
     composer: composer && describe(composer),
+    composerPrimaryAction: primary && {
+      ...describe(primary),
+      selector: "[data-composer-surface-overflow] button.bg-composer-primary",
+      currentLabel: primary.getAttribute("aria-label") || "",
+      states: "同一槽位：发送（有字、空闲）/ 排队（有字、运行中）/ 停止（无字、运行中）/ 开启语音聊天（无字、空闲）。只想改发送时排除 停止 与 语音：button.bg-composer-primary:not([aria-label=\"停止\"]):not([aria-label*=\"语音\"])；界面是英文时 aria-label 为英文。",
+    },
     composerButtons: buttonsIn(composerArea),
     rail: rail && { ...describe(rail), buttons: buttonsIn(rail) },
     header: header && { ...describe(header), buttons: buttonsIn(header) },
