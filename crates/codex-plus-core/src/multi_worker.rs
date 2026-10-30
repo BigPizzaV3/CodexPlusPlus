@@ -631,7 +631,7 @@ pub fn codex_process_generation_exited(
     expected_birth: Option<u64>,
 ) -> anyhow::Result<bool> {
     use crate::watcher::{ProcessInstanceState, inspect_process_instance};
-    if pid == 0 || pid == std::process::id() || expected_birth == Some(0) {
+    if pid == 0 || expected_birth == Some(0) {
         return Ok(false);
     }
     match inspect_process_instance(pid) {
@@ -750,61 +750,171 @@ pub fn codex_user_data_is_absent(
     helper_port: u16,
 ) -> anyhow::Result<bool> {
     anyhow::ensure!(
+        debug_port != 0 && helper_port != 0 && debug_port != helper_port,
+        "实例端口无效"
+    );
+    anyhow::ensure!(
         executable.is_absolute() && user_data_dir.is_absolute(),
         "多开路径必须是绝对路径"
     );
     let executable = executable.canonicalize()?;
     let user_data_dir = user_data_dir.canonicalize()?;
-    let frameworks = executable
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| anyhow::anyhow!("多开应用路径无效"))?
-        .join("Frameworks");
-    #[cfg(target_os = "macos")]
+    let snapshot = macos_process_snapshot()?;
+    if !macos_snapshot_user_data_is_absent_with(
+        &snapshot,
+        &executable,
+        &user_data_dir,
+        macos_process_arguments,
+        macos_process_snapshot,
+    )? {
+        return Ok(false);
+    }
+    loopback_ports_are_free_with(
+        debug_port,
+        helper_port,
+        |host, port| std::net::TcpListener::bind((host, port)),
+        |port| {
+            let owners = macos_listener_process_ids(port)?;
+            for pid in &owners {
+                let image = snapshot
+                    .get(pid)
+                    .ok_or_else(|| std::io::Error::other("监听进程不在本次快照中"))?;
+                if !macos_image_is_candidate(image, &executable) {
+                    continue;
+                }
+                let arguments = process_read_or_exited(macos_process_arguments(*pid), || {
+                    Ok(!macos_process_snapshot()?.contains_key(pid))
+                })?;
+                if let Some(arguments) = arguments
+                    && arguments_user_data_matches(&arguments, &user_data_dir)?
+                {
+                    return Ok(false);
+                }
+            }
+            anyhow::ensure!(
+                macos_listener_process_ids(port)? == owners,
+                "端口归属在核验期间改变"
+            );
+            Ok(true)
+        },
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_snapshot() -> anyhow::Result<std::collections::BTreeMap<u32, PathBuf>> {
     let output = std::process::Command::new("ps")
         .args(["-axww", "-o", "pid=,comm="])
         .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("无法读取进程快照").into());
+    }
+    parse_macos_process_snapshot(&output.stdout)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_process_snapshot(
+    bytes: &[u8],
+) -> anyhow::Result<std::collections::BTreeMap<u32, PathBuf>> {
     anyhow::ensure!(
-        output.status.success() && output.stdout.len() <= 8 * 1024 * 1024,
-        "无法读取进程快照"
+        bytes.len() <= 8 * 1024 * 1024 && bytes.ends_with(b"\n"),
+        "进程快照截断或过大"
     );
-    let snapshot = std::str::from_utf8(&output.stdout)?;
+    let snapshot = std::str::from_utf8(bytes)?;
     anyhow::ensure!(
         !snapshot.trim().is_empty() && snapshot.lines().count() <= 32768,
         "进程快照无效"
     );
+    let mut processes = std::collections::BTreeMap::new();
     for line in snapshot.lines() {
         let (pid, image) = line
             .trim()
             .split_once(char::is_whitespace)
             .ok_or_else(|| anyhow::anyhow!("进程快照缺少映像"))?;
         let pid = pid.parse::<u32>()?;
-        let image = Path::new(image.trim());
-        if image != executable && !image.starts_with(&frameworks) {
+        anyhow::ensure!(!image.trim().is_empty(), "进程快照缺少映像");
+        anyhow::ensure!(
+            processes.insert(pid, PathBuf::from(image.trim())).is_none(),
+            "进程快照含重复 PID"
+        );
+    }
+    Ok(processes)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_image_is_candidate(image: &Path, executable: &Path) -> bool {
+    image == executable
+        || executable
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|contents| image.starts_with(contents.join("Frameworks")))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_snapshot_user_data_is_absent_with(
+    snapshot: &std::collections::BTreeMap<u32, PathBuf>,
+    executable: &Path,
+    user_data: &Path,
+    mut arguments: impl FnMut(u32) -> anyhow::Result<Vec<String>>,
+    refresh: impl FnOnce() -> anyhow::Result<std::collections::BTreeMap<u32, PathBuf>>,
+) -> anyhow::Result<bool> {
+    let mut failures = Vec::new();
+    for (pid, image) in snapshot {
+        if !macos_image_is_candidate(image, executable) {
             continue;
         }
-        if matches!(
-            crate::watcher::inspect_process_instance(pid),
-            crate::watcher::ProcessInstanceState::NotRunning
-        ) {
-            continue;
-        }
-        let arguments = macos_process_arguments(pid)?;
-        if arguments_user_data_matches(&arguments, &user_data_dir)? {
-            return Ok(false);
+        let args = match arguments(*pid) {
+            Ok(args) => args,
+            Err(error) => {
+                failures.push((*pid, error));
+                continue;
+            }
+        };
+        match arguments_user_data_matches(&args, user_data) {
+            Ok(true) => return Ok(false),
+            Ok(false) => {}
+            Err(error) if error.is::<std::io::Error>() => failures.push((*pid, error)),
+            Err(error) => return Err(error),
         }
     }
-    loopback_ports_are_free(debug_port, helper_port)
+    if !failures.is_empty() {
+        let current = refresh()?;
+        for (pid, error) in failures {
+            if current.contains_key(&pid) {
+                return Err(std::io::Error::other(error).into());
+            }
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(target_os = "macos")]
-fn loopback_ports_are_free(debug_port: u16, helper_port: u16) -> anyhow::Result<bool> {
-    loopback_ports_are_free_with(
-        debug_port,
-        helper_port,
-        |host, port| std::net::TcpListener::bind((host, port)),
-        |_| Ok(false),
-    )
+fn macos_listener_process_ids(port: u16) -> anyhow::Result<Vec<u32>> {
+    let output = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-a", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("无法查询监听进程归属").into());
+    }
+    parse_macos_listener_process_ids(&output.stdout)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_listener_process_ids(bytes: &[u8]) -> anyhow::Result<Vec<u32>> {
+    anyhow::ensure!(
+        bytes.len() <= 1024 * 1024 && bytes.ends_with(b"\n"),
+        "监听进程快照截断或过大"
+    );
+    let text = std::str::from_utf8(bytes)?;
+    let mut ids = Vec::new();
+    for line in text.lines() {
+        let pid = line.parse::<u32>()?;
+        anyhow::ensure!(pid != 0 && ids.len() < 32768, "监听进程快照无效");
+        ids.push(pid);
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    anyhow::ensure!(!ids.is_empty(), "占用端口的进程归属尚未确认");
+    Ok(ids)
 }
 
 #[cfg(any(windows, target_os = "macos", test))]
@@ -922,6 +1032,132 @@ pub fn terminate_verified_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_snapshot_preserves_spaced_images_and_rejects_incomplete_output() {
+        let snapshot = parse_macos_process_snapshot(b" 42 /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n 43 /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n").unwrap();
+        let executable = Path::new("/Applications/Codex Dev.app/Contents/MacOS/Codex Dev");
+        assert_eq!(snapshot.get(&42).unwrap(), executable);
+        assert!(macos_image_is_candidate(
+            snapshot.get(&43).unwrap(),
+            executable
+        ));
+        for invalid in [
+            &b""[..],
+            &b"\n"[..],
+            &b"42"[..],
+            &b"42 image"[..],
+            &b"42 \n"[..],
+            &b"42 image\n42 other\n"[..],
+            &b"not-pid image\n"[..],
+        ] {
+            assert!(parse_macos_process_snapshot(invalid).is_err());
+        }
+        assert!(parse_macos_process_snapshot(&vec![b'x'; 8 * 1024 * 1024 + 1]).is_err());
+        assert!(parse_macos_process_snapshot("42 image\n".repeat(32769).as_bytes()).is_err());
+        assert_eq!(
+            parse_macos_listener_process_ids(b"42\n43\n42\n").unwrap(),
+            vec![42, 43]
+        );
+        for invalid in [
+            &b""[..],
+            &b"42"[..],
+            &b"0\n"[..],
+            &b"x42\n"[..],
+            &b"42\nbad\n"[..],
+        ] {
+            assert!(parse_macos_listener_process_ids(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn macos_snapshot_refreshes_once_for_many_failed_reads_and_never_assumes_exit() {
+        use std::cell::Cell;
+        let temp = tempfile::tempdir().unwrap();
+        let own = temp.path().join("own data");
+        let neighbor = temp.path().join("neighbor data");
+        std::fs::create_dir(&own).unwrap();
+        std::fs::create_dir(&neighbor).unwrap();
+        let own = own.canonicalize().unwrap();
+        let executable = Path::new("/Applications/Codex Dev.app/Contents/MacOS/Codex Dev");
+        let snapshot = parse_macos_process_snapshot(
+            (1..=100)
+                .map(|pid| {
+                    format!(
+                        "{pid} /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n"
+                    )
+                })
+                .collect::<String>()
+                .as_bytes(),
+        )
+        .unwrap();
+        let reads = Cell::new(0);
+        assert!(
+            macos_snapshot_user_data_is_absent_with(
+                &snapshot,
+                executable,
+                &own,
+                |_| {
+                    reads.set(reads.get() + 1);
+                    Ok(vec![
+                        "Helper".into(),
+                        format!("--user-data-dir={}", neighbor.display()),
+                    ])
+                },
+                || panic!("successful reads do not spawn another ps")
+            )
+            .unwrap()
+        );
+        assert_eq!(reads.get(), 100);
+        assert!(
+            !macos_snapshot_user_data_is_absent_with(
+                &snapshot,
+                executable,
+                &own,
+                |_| {
+                    Ok(vec![
+                        "Helper".into(),
+                        format!("--user-data-dir={}", own.display()),
+                    ])
+                },
+                || panic!("live own process")
+            )
+            .unwrap()
+        );
+        for gone in [false, true] {
+            let refreshes = Cell::new(0);
+            let result = macos_snapshot_user_data_is_absent_with(
+                &snapshot,
+                executable,
+                &own,
+                |_| anyhow::bail!("process arguments unreadable"),
+                || {
+                    refreshes.set(refreshes.get() + 1);
+                    if gone {
+                        Ok(Default::default())
+                    } else {
+                        Ok(snapshot.clone())
+                    }
+                },
+            );
+            assert_eq!(refreshes.get(), 1);
+            if gone {
+                assert!(result.unwrap());
+            } else {
+                assert!(result.is_err());
+            }
+        }
+        assert!(
+            macos_snapshot_user_data_is_absent_with(
+                &snapshot,
+                executable,
+                &own,
+                |_| { anyhow::bail!("unreadable") },
+                || anyhow::bail!("snapshot failed")
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn generation_queries_keep_permission_failures_uncertain_and_compare_current_pid() {

@@ -29,7 +29,8 @@ use windows::Win32::System::Registry::{
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE,
     PROCESS_TERMINATE, PROCESS_VM_READ, QueryFullProcessImageNameW, TerminateProcess,
     WaitForSingleObject,
 };
@@ -415,8 +416,20 @@ pub fn process_birth_id(process_id: u32) -> Option<u64> {
 
 #[cfg(windows)]
 pub(crate) fn process_lifetime(process_id: u32) -> anyhow::Result<Option<(u64, bool)>> {
-    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
-    {
+    process_lifetime_with(process_id, |access, pid| unsafe {
+        OpenProcess(access, false, pid)
+    })
+}
+
+#[cfg(windows)]
+fn process_lifetime_with(
+    process_id: u32,
+    open: impl FnOnce(
+        windows::Win32::System::Threading::PROCESS_ACCESS_RIGHTS,
+        u32,
+    ) -> windows::core::Result<HANDLE>,
+) -> anyhow::Result<Option<(u64, bool)>> {
+    let handle = match open(PROCESS_QUERY_LIMITED_INFORMATION, process_id) {
         Ok(handle) => handle,
         Err(error) if error.code().0 as u32 == 0x80070057 => return Ok(None),
         Err(error) => {
@@ -434,10 +447,11 @@ pub(crate) fn process_lifetime(process_id: u32) -> anyhow::Result<Option<(u64, b
         .context("无法读取进程创建身份")?;
     let birth = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
     anyhow::ensure!(birth != 0, "进程创建身份无效");
-    Ok(Some((
-        birth,
-        exit.dwHighDateTime != 0 || exit.dwLowDateTime != 0,
-    )))
+    let mut exit_code = 0_u32;
+    unsafe { GetExitCodeProcess(handle, &mut exit_code) }
+        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+        .context("无法确认进程退出状态")?;
+    Ok(Some((birth, exit_code != 259)))
 }
 
 #[cfg(windows)]
@@ -1152,6 +1166,37 @@ fn parse_listener_process_ids(bytes: &[u8], ipv6: bool, port: u16) -> anyhow::Re
 #[cfg(test)]
 mod listener_owner_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn minimum_query_survives_vm_read_denial_but_keeps_query_denial_uncertain() {
+        use windows::core::{Error, HRESULT};
+        let denied = || Error::from_hresult(HRESULT(0x80070005_u32 as i32));
+        let open = |access: windows::Win32::System::Threading::PROCESS_ACCESS_RIGHTS, pid| {
+            if access.0 & PROCESS_VM_READ.0 != 0 {
+                return Err(denied());
+            }
+            assert_eq!(access, PROCESS_QUERY_LIMITED_INFORMATION);
+            unsafe { OpenProcess(access, false, pid) }
+        };
+        let pid = std::process::id();
+        assert!(open(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, pid).is_err());
+        let (birth, exited) = process_lifetime_with(pid, open).unwrap().unwrap();
+        assert_eq!(Some(birth), process_birth_id(pid));
+        assert!(!exited);
+        let result = process_lifetime_with(pid, |access, _| {
+            assert_eq!(access, PROCESS_QUERY_LIMITED_INFORMATION);
+            Err(denied())
+        });
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
 
     fn table(ipv6: bool, rows: &[(u32, u16, bool, u32)]) -> Vec<u8> {
         let mut bytes = (rows.len() as u32).to_ne_bytes().to_vec();
