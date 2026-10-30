@@ -1201,6 +1201,7 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         tools: None,
         config: None,
         files,
+        backend: None,
     })
 }
 

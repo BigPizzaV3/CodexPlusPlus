@@ -37,6 +37,8 @@ pub async fn reload_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
+    // 拓展重载后旧后台的方法表、配置都过期了：先全部停掉，下次调用按新代码重起。
+    crate::extension_backend::stop_all().await;
     apply_scripts_at(websocket, manager, &manager.build_reload_bundle()?).await
 }
 
@@ -44,6 +46,8 @@ pub async fn load_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
+    // 页面重新加载：上一个页面的后台不再有人用。
+    crate::extension_backend::stop_all().await;
     apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?).await
 }
 
@@ -359,6 +363,28 @@ impl UserScriptManager {
         Ok(resolve_extension_config(&package.config_schema, Some(&stored)))
     }
 
+    /// 启用中、清单无误的拓展包的常驻后台：(拓展 id, 后台脚本, 生效配置)。
+    pub fn enabled_extension_backend(&self, key: &str) -> anyhow::Result<(String, PathBuf, Value)> {
+        let config = self.load_config();
+        if !config.enabled {
+            anyhow::bail!("本地拓展整体已关闭");
+        }
+        let script = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .with_context(|| format!("没有找到拓展 {key}"))?;
+        if !script.enabled {
+            anyhow::bail!("拓展 {key} 已停用");
+        }
+        let package = script.package.with_context(|| format!("{key} 不是拓展包，没有后台"))?;
+        if let Some(error) = package.error {
+            anyhow::bail!("拓展包清单有误：{error}");
+        }
+        let backend = package.backend.with_context(|| format!("拓展 {key} 没有声明 backend"))?;
+        Ok((package.id, backend, package.config))
+    }
+
     /// 启用中、清单无误的拓展包声明的模型工具，附带拓展 id。
     pub fn enabled_extension_tools(&self) -> anyhow::Result<Vec<(String, ExtensionTool)>> {
         let config = self.load_config();
@@ -439,7 +465,7 @@ impl UserScriptManager {
         let renderer = if !write.renderer.is_empty() {
             write.renderer.clone()
         } else if write.files.contains_key("renderer.js")
-            || (write.hooks.is_none() && write.gateway.is_none() && write.tools.is_none())
+            || (write.hooks.is_none() && write.gateway.is_none() && write.tools.is_none() && write.backend.is_none())
         {
             vec!["renderer.js".to_string()]
         } else {
@@ -515,6 +541,9 @@ impl UserScriptManager {
         }
         if let Some(config) = &write.config {
             manifest["config"] = config.clone();
+        }
+        if let Some(backend) = &write.backend {
+            manifest["backend"] = backend.clone();
         }
         crate::settings::atomic_write(
             &directory.join(EXTENSION_MANIFEST_FILE),
@@ -799,6 +828,8 @@ struct ExtensionPackage {
     gateway_request: Vec<ExtensionGatewayMiddleware>,
     tools: Vec<ExtensionTool>,
     config_schema: Vec<ExtensionConfigField>,
+    /// 常驻后台脚本（codexpp.json 的 `backend.script`）。
+    backend: Option<PathBuf>,
     /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
     config: Value,
     error: Option<String>,
@@ -954,6 +985,7 @@ impl ExtensionPackage {
             "gatewayRequest": self.gateway_request.len(),
             "tools": self.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
             "configSchema": self.config_schema,
+            "backend": self.backend.is_some(),
             "config": self.config,
         })
     }
@@ -989,6 +1021,8 @@ pub struct ExtensionWrite {
     pub tools: Option<Value>,
     /// 原样写进清单的 `config`（配置 schema），加载时校验。
     pub config: Option<Value>,
+    /// 原样写进清单的 `backend`，加载时校验。
+    pub backend: Option<Value>,
     pub files: BTreeMap<String, String>,
 }
 
@@ -1082,6 +1116,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         gateway_request: Vec::new(),
         tools: Vec::new(),
         config_schema: Vec::new(),
+        backend: None,
         config: json!({}),
         error: None,
     };
@@ -1141,8 +1176,9 @@ fn parse_extension_manifest(
     let hooks_declared = raw.get("hooks").is_some_and(|hooks| hooks.as_object().is_some_and(|map| !map.is_empty()));
     let gateway_declared = raw.get("gateway").is_some();
     let tools_declared = raw.get("tools").is_some_and(|tools| tools.as_array().is_some_and(|list| !list.is_empty()));
-    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway 或 tools");
+    let backend_declared = raw.get("backend").is_some();
+    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools 或 backend");
     }
     let root = directory
         .canonicalize()
@@ -1155,6 +1191,14 @@ fn parse_extension_manifest(
     package.gateway_request = parse_gateway_middlewares(&root, raw.get("gateway"))?;
     package.tools = parse_extension_tools(&root, &package.id, raw.get("tools"))?;
     package.config_schema = parse_extension_config_schema(raw.get("config"))?;
+    package.backend = match raw.get("backend") {
+        None => None,
+        Some(Value::Object(backend)) => Some(resolve_package_entry(
+            &root,
+            backend.get("script").and_then(Value::as_str).context("backend 缺少 script")?,
+        )?),
+        Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
+    };
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if package.engine > EXTENSION_API_VERSION {
         anyhow::bail!(

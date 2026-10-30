@@ -701,7 +701,7 @@ type UserScriptInventory = {
     kind?: "script" | "package";
     package?: {
       id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
-      configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>;
+      configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>; backend?: boolean;
     } | null;
     enabled: boolean;
     status: string;
@@ -16243,6 +16243,7 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         {script.package?.description ? <small title={script.package.description}>{script.package.description}</small> : null}
         {script.package?.hookEvents?.length ? <small className="user-script-hooks">{tf("Codex 钩子：{0}", [script.package.hookEvents.join("、")])}</small> : null}
         {script.package?.tools?.length ? <small className="user-script-hooks">{tf("模型工具：{0}", [script.package.tools.join("、")])}</small> : null}
+        {script.package?.backend ? <small className="user-script-hooks">{t("常驻后台")}</small> : null}
       </div>
       <span>{source}</span>
       <div className="user-script-state">

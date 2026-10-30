@@ -3760,6 +3760,41 @@ describe("拓展运行时内核", () => {
     assert.equal(ctx.storage.get("count"), null);
   });
 
+  it("ctx.backend：call 走桥接带上本脚本 key，on 长轮询分发事件，卸载后停止", async () => {
+    const k = await kernel({ scriptKey: "user:pkg-b" });
+    const requests: Array<[string, any]> = [];
+    let eventsServed = 0;
+    let release: (() => void) | null = null;
+    (k.window as any).__codexSessionDeleteBridge = (path: string, payload: any) => {
+      requests.push([path, payload]);
+      if (path === "/extensions/backend/call") {
+        return Promise.resolve(payload.method === "boom" ? { status: "failed", message: "后台坏了" } : { status: "ok", result: { echo: payload.params } });
+      }
+      eventsServed++;
+      if (eventsServed === 1) return Promise.resolve({ status: "ok", running: true, next: 2, events: [{ seq: 2, event: "tick", payload: { n: 1 } }] });
+      return new Promise((resolve) => { release = () => resolve({ status: "ok", running: true, next: 2, events: [] }); });
+    };
+    const seen: unknown[] = [];
+    const ctx = k.create(() => {});
+    assert.deepEqual(await ctx.backend.call("add", { x: 1 }, { timeout: 5000 }), { echo: { x: 1 } });
+    const instance = requests[0][1].instance;
+    assert.match(instance, /^[a-z0-9]+-[a-z0-9]+$/);
+    assert.deepEqual(requests[0], ["/extensions/backend/call", { key: "user:pkg-b", instance, method: "add", params: { x: 1 }, timeoutMs: 5000 }]);
+    await assert.rejects(ctx.backend.call("boom"), /后台坏了/);
+    ctx.backend.on("tick", (payload: unknown, meta: unknown) => seen.push(["tick", payload, meta]));
+    ctx.backend.on("*", (payload: unknown) => seen.push(["*", payload]));
+    for (let i = 0; i < 5 && eventsServed < 2; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(seen, [["tick", { n: 1 }, { event: "tick" }], ["*", { n: 1 }]]);
+    const polls = requests.filter(([path]) => path === "/extensions/backend/events");
+    assert.equal(polls.length, 2, "两个订阅共用一条轮询");
+    assert.deepEqual(polls[1][1], { key: "user:pkg-b", instance, since: 2, waitMs: 20000 });
+    ctx.dispose();
+    release!();
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(requests.filter(([path]) => path === "/extensions/backend/events").length, 2, "卸载后不再轮询");
+    assert.deepEqual(requests.filter(([path]) => path === "/extensions/backend/stop"), [["/extensions/backend/stop", { key: "user:pkg-b", instance }]], "用过后台的实例卸载时通知停止");
+  });
+
   it("一次性定时器触发后自行注销，不留在撤销列表里", async () => {
     const k = await kernel();
     let fired = 0;

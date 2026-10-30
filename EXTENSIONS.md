@@ -293,6 +293,38 @@ export default (body) => ({ ...body, instructions: `${body.instructions ?? ""}\n
 - 只有存在启用中的网关中间件时才会为每个请求起一个 Node 进程；任何中间件出错或超时都会保留原请求并记诊断日志。
 - 中间件能看到完整的请求内容（含对话），以你的用户权限运行。只启用你信任的拓展。
 
+### 常驻后台
+
+页面脚本拿不到本地文件、进程和长时间运行的计时器。拓展包可以声明一个常驻后台，由页面经 `ctx.backend` 调用：
+
+```json
+{ "id": "notes", "name": "便签", "renderer": "main.js", "backend": { "script": "backend/main.mjs" } }
+```
+
+```js
+// backend/main.mjs：默认导出 (ctx) => 方法表；ctx = { extension, config, dataDir, emit, log }
+import fs from "node:fs";
+export default ({ emit }) => ({
+  read: () => (fs.existsSync("note.txt") ? fs.readFileSync("note.txt", "utf8") : ""),
+  save: (text) => { fs.writeFileSync("note.txt", String(text)); emit("saved", { length: String(text).length }); return true; },
+});
+```
+
+```js
+// main.js（页面）
+codexPlus.extension((ctx) => {
+  ctx.backend.on("saved", ({ length }) => ctx.toast(`已保存 ${length} 字`));
+  ctx.registerCommand({ name: "note", description: "读便签", run: async () => ctx.toast(await ctx.backend.call("read")) });
+});
+```
+
+- 第一次 `call` 时用 Node 启动（优先 Codex App 自带的 Node，或 `CODEX_PLUS_NODE`），之后常驻在 Codex++ 启动器里；
+  页面加载、拓展热重载 / 启停时全部停止，下次调用重新启动。内存状态不持久，要持久就写文件。
+- 工作目录是 `~/.config/Codex++/extension-data/<拓展 id>/`（即 `ctx.dataDir`）。
+- 与后台之间是行式 JSON：方法只收一个 JSON 参数、返回可序列化的值，抛错即 reject。默认超时 20 秒，最多 24 秒。
+- `emit(event, payload)` 进有界队列（每个后台保留最近 200 条），页面 `ctx.backend.on` 以长轮询取走；`on` 不会启动后台。
+- 后台以你的用户权限运行、没有沙箱。只启用你信任的拓展。
+
 ### 拓展包
 
 一个拓展可以是一个目录：放在 `user_scripts/` 下，根部有 `codexpp.json`。

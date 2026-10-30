@@ -259,6 +259,7 @@ fn tool_definitions() -> Value {
                     "routes": {"type": "array", "items": {"type": "string"}, "description": "拓展需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
                     "renderer": {"type": "array", "items": {"type": "string"}, "description": "按顺序执行的页面入口文件；省略时若 files 里有 renderer.js 就用它，只声明 hooks 的拓展可以没有页面入口"},
                     "hooks": {"type": "object", "description": "Codex 钩子声明，例如 {\"PreToolUse\": [{\"matcher\": \"^Bash$\", \"script\": \"hooks/guard.mjs\", \"timeout\": 30}]}；写法见指南「Codex 钩子」"},
+                    "backend": {"type": "object", "description": "常驻后台声明，例如 {\"script\": \"backend/main.mjs\"}；脚本默认导出 async (ctx) => ({ 方法 })，页面用 ctx.backend.call / on 调用。写法见指南「常驻后台」"},
                     "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
                     "tools": {"type": "array", "description": "给模型用的工具声明，例如 [{\"name\": \"lookup\", \"description\": \"…\", \"inputSchema\": {\"type\": \"object\", \"properties\": {…}}, \"script\": \"tools/lookup.mjs\", \"timeout\": 30}]；写法见指南「给模型加工具」", "items": {"type": "object"}},
                     "gateway": {"type": "object", "description": "网关请求中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\", \"timeout\": 5}]}；写法见指南「网关请求中间件」"},
@@ -330,6 +331,8 @@ struct WriteArguments {
     tools: Option<Value>,
     #[serde(default)]
     config: Option<Value>,
+    #[serde(default)]
+    backend: Option<Value>,
     files: Vec<WriteFile>,
 }
 
@@ -426,6 +429,7 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 gateway: arguments.gateway,
                 tools: arguments.tools,
                 config: arguments.config,
+                backend: arguments.backend,
                 files,
             })?;
             let key = user_scripts::extension_package_key(&arguments.id);

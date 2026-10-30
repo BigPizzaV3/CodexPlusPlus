@@ -18954,11 +18954,81 @@
 
     // 生效配置（清单 config 默认值叠加用户在管理器 / 对话里设置的值）。改配置会热重载拓展，这里是只读快照。
     const config = Object.freeze({ ...(manifest?.config && typeof manifest.config === "object" ? manifest.config : {}) });
+    // 常驻后台：call 调方法（首次调用时 Codex++ 启动后台进程），on 订阅后台 emit 的事件（长轮询，
+    // 随实例卸载停止；on 本身不启动后台）。走内部桥接路由，不经拓展路由白名单，key 固定为本脚本。
+    // 用过后台的实例卸载时通知 Codex++ 停掉它；带实例标识，热重载时不会误停新实例拉起的后台。
+    const backendHandlers = new Map();
+    const backendInstance = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    let backendPolling = false;
+    let backendStopTracked = false;
+    const trackBackendStop = () => {
+      if (backendStopTracked) return;
+      backendStopTracked = true;
+      track(() => {
+        void backendBridge("/extensions/backend/stop", {}).catch(() => {});
+      });
+    };
+    const backendBridge = (path, payload) => {
+      const bridge = window.__codexSessionDeleteBridge;
+      if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
+      return Promise.resolve(bridge(path, { key: scriptKey, instance: backendInstance, ...payload })).then((result) => {
+        if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${path} 调用失败`);
+        return result;
+      });
+    };
+    const pollBackendEvents = async () => {
+      if (backendPolling) return;
+      backendPolling = true;
+      let since = 0;
+      try {
+        while (!disposed && backendHandlers.size) {
+          let result;
+          try {
+            result = await backendBridge("/extensions/backend/events", { since, waitMs: 20000 });
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            continue;
+          }
+          for (const item of result.events || []) {
+            for (const name of [item.event, "*"]) {
+              for (const handler of [...(backendHandlers.get(name) || [])]) {
+                runCodexPlusExtensionCallback(scriptKey, `backend.on:${item.event}`, () => handler(item.payload, { event: item.event }));
+              }
+            }
+          }
+          since = Number(result.next) || since;
+          // 后台还没起：稍后再看，不空转。
+          if (!result.running) await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+      } finally {
+        backendPolling = false;
+      }
+    };
+    const backend = {
+      call(method, params = null, callOptions = {}) {
+        const timeoutMs = Number.isFinite(callOptions.timeout) ? Number(callOptions.timeout) : undefined;
+        trackBackendStop();
+        return backendBridge("/extensions/backend/call", { method: String(method), params, timeoutMs }).then((result) => result.result);
+      },
+      on(event, handler) {
+        if (typeof handler !== "function") throw new Error("后台事件处理器必须是函数");
+        const name = String(event);
+        if (!backendHandlers.has(name)) backendHandlers.set(name, new Set());
+        backendHandlers.get(name).add(handler);
+        void pollBackendEvents();
+        return track(() => {
+          const set = backendHandlers.get(name);
+          set?.delete(handler);
+          if (set && !set.size) backendHandlers.delete(name);
+        });
+      },
+    };
     const ctx = {
       id: extensionId,
       scriptKey,
       manifest,
       config,
+      backend,
       get disposed() {
         return disposed;
       },

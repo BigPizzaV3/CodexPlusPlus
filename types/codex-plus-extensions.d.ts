@@ -243,6 +243,13 @@ interface CodexPlusExtensionContext {
   readonly manifest: CodexPlusExtensionManifest | null;
   readonly disposed: boolean;
   readonly storage: CodexPlusExtensionStorage;
+  /** 常驻后台（清单 `backend`）：call 调它导出的方法，on 订阅它 emit 的事件。 */
+  readonly backend: {
+    /** 首次调用时启动后台进程。超时默认 20 秒，最多 24 秒。 */
+    call<T = unknown>(method: string, params?: unknown, options?: { timeout?: number }): Promise<T>;
+    /** 订阅后台事件（"*" 收全部）；不会启动后台，后台起来后才开始收到。 */
+    on(event: string, handler: (payload: unknown, meta: { event: string }) => void): CodexPlusDispose;
+  };
   /** 生效配置：清单 `config` 的默认值叠加用户设置的值。只读；改配置会热重载拓展。 */
   readonly config: Readonly<Record<string, unknown>>;
 

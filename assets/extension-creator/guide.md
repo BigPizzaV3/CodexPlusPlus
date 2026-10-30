@@ -157,6 +157,38 @@ codexPlus.extension((ctx) => {
 - 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过这里，要告诉用户。
 - 它挡在每一次模型请求前面：保持快、只做用户要求的事、不要外发请求内容。出错或超时会保留原请求。
 
+## 常驻后台（页面调本地能力、保持状态、推事件）
+
+页面脚本跑在 Codex 页面里，不能读写本地文件、起进程、长时间计时。要这些能力就声明一个常驻后台，
+在 `codexpp_extension_write` 的 `backend` 参数里写 `{ "script": "backend/main.mjs" }`，脚本放在 `files` 里：
+
+```js
+// backend/main.mjs：默认导出 (ctx) => 方法表，可以 async；ctx = { extension, config, dataDir, emit, log }
+import fs from "node:fs";
+export default ({ emit }) => {
+  let count = 0;
+  setInterval(() => emit("tick", { count: ++count }), 60_000);
+  return {
+    async readNote() { return fs.existsSync("note.txt") ? fs.readFileSync("note.txt", "utf8") : ""; },
+    async saveNote(text) { fs.writeFileSync("note.txt", String(text)); return true; },
+  };
+};
+```
+
+```js
+// 页面侧
+const text = await ctx.backend.call("readNote");
+ctx.backend.on("tick", ({ count }) => ctx.toast(`第 ${count} 分钟`));
+```
+
+- 第一次 `call` 时 Codex++ 用 Node 启动后台，之后常驻；页面刷新、拓展热重载 / 启停时全部停掉，下次调用再起。
+  所以后台里的内存状态会丢，要持久就写文件。
+- 工作目录是拓展专属的数据目录（`ctx.dataDir`），相对路径都落在这里。
+- 方法只收一个参数（JSON），返回值要能 JSON 序列化；抛错时页面的 `call` 会 reject。默认 20 秒超时，
+  `call(method, params, { timeout })` 最多 24 秒，耗时更久的活儿先返回、做完再 `emit`。
+- `emit(event, payload)` 推给页面的 `ctx.backend.on(event, handler)`（`"*"` 收全部）；`on` 不会启动后台。
+- 后台以用户权限运行、没有沙箱，只做用户要求的事。
+
 ## 必须遵守
 
 - **自己插入到 Codex 页面里的节点必须带 `data-codex-plus-ext` 属性**（值写拓展 id），否则会触发 Codex++ 的
