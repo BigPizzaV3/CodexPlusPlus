@@ -133,6 +133,7 @@ const CLIENT_OWNED_FLAGS = [
   "--codex-plus-cu-mcp",
   "--codex-plus-browser-mcp",
   "--codex-plus-agent-mcp",
+  "--codex-plus-dsh-mcp",
   "--codex-plus-browser-turn-end",
   "--codex-plus-cu-cli",
 ];

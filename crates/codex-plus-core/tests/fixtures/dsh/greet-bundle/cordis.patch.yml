@@ -1,0 +1,23 @@
+# Greeting bundle
+- insert:
+    - id: greet
+      name: dsh-greet-bundle
+      config:
+        greeting: 'Hi there'
+    - id: greet-group
+      name: cordis:group
+      config:
+        - id: session-tool
+          name: ./session.js
+        - id: official-todo
+          name: '@deepseek-ai/dsh-tool-todo'
+          config: { allowParallelInProgress: true }
+    - id: demo-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: demo
+        transport: stdio
+        command: npx
+        args: [-y, "@modelcontextprotocol/server-everything"]
+        env:
+          DEMO: "1"

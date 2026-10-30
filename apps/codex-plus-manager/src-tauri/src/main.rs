@@ -62,6 +62,18 @@ fn main() {
         }
         return;
     }
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == codex_plus_core::dsh_plugins::MCP_FLAG)
+    {
+        match codex_plus_core::dsh_plugins::run_mcp(&args[2..]) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("dsh 插件 MCP 启动失败：{error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     if let Some(options_path) = args
         .windows(2)
         .find(|window| window[0] == "--codex-plus-multi-worker")
