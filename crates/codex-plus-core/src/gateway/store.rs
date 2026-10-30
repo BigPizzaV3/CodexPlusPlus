@@ -621,6 +621,56 @@ impl Default for GatewayStore {
     }
 }
 
+impl GatewaySettings {
+    /// 并入拓展声明的模型供应商（不落盘）：来源记为 `extension:<拓展 id>`，与已有供应商同 id 时以已有的为准。
+    /// 只在构建 Agent 的模型资料与网关路由这些只读的地方调用，不要在读-改-写里用，免得写进 gateway.json。
+    pub fn with_extension_providers(self) -> Self {
+        self.with_extension_providers_from(&crate::user_scripts::default_user_script_manager())
+    }
+
+    pub fn with_extension_providers_from(mut self, manager: &crate::user_scripts::UserScriptManager) -> Self {
+        let providers = manager.enabled_extension_providers().unwrap_or_default();
+        for (extension, provider) in providers {
+            if self.providers.iter().any(|existing| existing.relay.id == provider.id) {
+                continue;
+            }
+            let relay = RelayProfile {
+                id: provider.id.clone(),
+                name: provider.name.clone(),
+                base_url: provider.base_url.clone(),
+                api_key: provider.api_key.clone(),
+                no_auth: provider.api_key.is_empty(),
+                protocol: match provider.protocol.as_str() {
+                    "chat" => crate::settings::RelayProtocol::ChatCompletions,
+                    "anthropic" => crate::settings::RelayProtocol::AnthropicMessages,
+                    _ => crate::settings::RelayProtocol::Responses,
+                },
+                model: provider.models.first().cloned().unwrap_or_default(),
+                model_list: provider.models.join("\n"),
+                ..RelayProfile::default()
+            };
+            self.providers.push(GatewayProvider {
+                enabled: true,
+                source: format!("extension:{extension}"),
+                price: None,
+                model_prices: BTreeMap::new(),
+                model_windows: BTreeMap::new(),
+                context_window: None,
+                proxy: String::new(),
+                key_rpm: None,
+                key_concurrency: None,
+                upstream_new: Vec::new(),
+                upstream_gone: Vec::new(),
+                models_checked_at_ms: 0,
+                newapi_access: None,
+                relay,
+                extra: Map::new(),
+            });
+        }
+        self
+    }
+}
+
 impl GatewayStore {
     pub fn default_path() -> PathBuf {
         crate::paths::default_app_state_dir().join(STORE_FILE)

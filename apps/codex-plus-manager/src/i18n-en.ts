@@ -3210,6 +3210,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "响应流": "Response stream",
   "失败重试": "Retry on error",
   "提供服务：{0}": "Provides services: {0}",
+  "模型供应商：{0}": "Model providers: {0}",
   "删除第 {0} 项": "Remove item {0}",
   "添加一项": "Add item",
   "资源超出大小上限未加载：{0}": "Assets over the size limit were not loaded: {0}",

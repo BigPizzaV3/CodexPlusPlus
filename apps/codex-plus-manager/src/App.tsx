@@ -712,6 +712,7 @@ type UserScriptInventory = {
       id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
       configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>; backend?: boolean;
       gatewayRequest?: number; gatewayResponse?: number; gatewayError?: number; services?: string[];
+      providers?: Array<{ id: string; name: string; models: string[] }>;
       toolPipeline?: { preExecute?: number; execute?: number; postExecute?: number }; skippedAssets?: string[];
       locales?: Record<string, { title?: string | null; description?: string | null }>;
     } | null;
@@ -16316,6 +16317,7 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
     pkg?.tools?.length ? { text: tf("模型工具：{0}", [pkg.tools.join("、")]) } : null,
     pkg?.backend ? { text: t("常驻后台") } : null,
     pkg?.services?.length ? { text: tf("提供服务：{0}", [pkg.services.join("、")]) } : null,
+    pkg?.providers?.length ? { text: tf("模型供应商：{0}", [pkg.providers.map((provider) => provider.name || provider.id).join("、")]) } : null,
     pkg?.toolPipeline && (pkg.toolPipeline.preExecute || pkg.toolPipeline.execute || pkg.toolPipeline.postExecute)
       ? { text: tf("工具管道：{0}", [joined([pkg.toolPipeline.preExecute && t("改参数"), pkg.toolPipeline.execute && t("代为执行"), pkg.toolPipeline.postExecute && t("改结果")])]) }
       : null,

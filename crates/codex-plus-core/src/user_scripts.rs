@@ -413,6 +413,31 @@ impl UserScriptManager {
         self.enabled_gateway_list(|package| &package.gateway_request)
     }
 
+    /// 启用中、清单无误的拓展声明的模型供应商：(拓展 id, 供应商)，Key 已按配置解析好。
+    pub fn enabled_extension_providers(&self) -> anyhow::Result<Vec<(String, ExtensionProvider)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none())
+            .flat_map(|package| {
+                let id = package.id.clone();
+                let config = package.config.clone();
+                package.providers.into_iter().map(move |mut provider| {
+                    if let Some(key) = &provider.api_key_config {
+                        provider.api_key = config.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+                    }
+                    (id.clone(), provider)
+                })
+            })
+            .collect())
+    }
+
     /// 启用中的后台服务：服务名 → 提供它的拓展 key。同名时先扫描到的（按 key 顺序）生效。
     pub fn enabled_backend_services(&self) -> anyhow::Result<Vec<(String, String)>> {
         let config = self.load_config();
@@ -567,7 +592,7 @@ impl UserScriptManager {
         let renderer = if !write.renderer.is_empty() {
             write.renderer.clone()
         } else if write.files.contains_key("renderer.js")
-            || (write.hooks.is_none() && write.gateway.is_none() && write.tools.is_none() && write.backend.is_none() && write.tool_pipeline.is_none())
+            || (write.hooks.is_none() && write.gateway.is_none() && write.tools.is_none() && write.backend.is_none() && write.tool_pipeline.is_none() && write.providers.is_none())
         {
             vec!["renderer.js".to_string()]
         } else {
@@ -664,6 +689,9 @@ impl UserScriptManager {
         }
         if let Some(pipeline) = &write.tool_pipeline {
             manifest["toolPipeline"] = pipeline.clone();
+        }
+        if let Some(providers) = &write.providers {
+            manifest["providers"] = providers.clone();
         }
         crate::settings::atomic_write(
             &directory.join(EXTENSION_MANIFEST_FILE),
@@ -969,6 +997,8 @@ struct ExtensionPackage {
     backend: Option<PathBuf>,
     /// 后台对外提供的服务名（codexpp.json 的 `backend.provides`）。
     backend_provides: Vec<String>,
+    /// 拓展声明的模型供应商（codexpp.json 的 `providers`），并入网关的供应商池。
+    providers: Vec<ExtensionProvider>,
     /// 包内 `locale/<语言>.json`：语言 id → 词条（`meta.title` / `meta.description` 是本地化的名称与描述）。
     locales: std::collections::BTreeMap<String, Value>,
     /// 包内 `assets/` 的资源：包内路径 → data URL，交给页面的 `ctx.asset(path)`。
@@ -1133,6 +1163,78 @@ pub struct ExtensionHook {
     pub adapter: Option<String>,
 }
 
+/// 拓展声明的一个模型供应商（codexpp.json 的 `providers[]`）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionProvider {
+    /// 供应商短名，模型名写成 `<id>/<模型>`；只能是字母、数字、- 和 _。
+    pub id: String,
+    pub name: String,
+    /// responses / chat / anthropic
+    pub protocol: String,
+    pub base_url: String,
+    /// 字面值，或空串（这时取 api_key_config 指向的配置项）。
+    #[serde(skip_serializing)]
+    pub api_key: String,
+    /// 从拓展配置的哪个键取 Key（`{ "config": "apiKey" }`）。
+    pub api_key_config: Option<String>,
+    pub models: Vec<String>,
+}
+
+/// 解析 `providers`：`[{ id, name, protocol, baseUrl, apiKey: "字面值" | { config: "键" }, models: [...] }]`。
+fn parse_extension_providers(value: Option<&Value>, schema: &[ExtensionConfigField]) -> anyhow::Result<Vec<ExtensionProvider>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().context("providers 必须是数组")?;
+    if items.len() > 8 {
+        anyhow::bail!("providers 最多 8 个");
+    }
+    items
+        .iter()
+        .map(|item| {
+            let item = item.as_object().context("providers 的每一项必须是对象")?;
+            let text = |key: &str| item.get(key).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
+            let id = text("id");
+            if id.is_empty() || id.len() > 48 || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+                anyhow::bail!("providers 的 id 必填，只能是字母、数字、- 和 _：{id:?}");
+            }
+            let protocol = match text("protocol").as_str() {
+                "" | "responses" => "responses",
+                "chat" => "chat",
+                "anthropic" => "anthropic",
+                other => anyhow::bail!("providers.{id}.protocol 只能是 responses、chat、anthropic，不认识 {other}"),
+            }
+            .to_string();
+            let base_url = text("baseUrl");
+            if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+                anyhow::bail!("providers.{id}.baseUrl 必须是 http(s) 地址");
+            }
+            let (api_key, api_key_config) = match item.get("apiKey") {
+                None => (String::new(), None),
+                Some(Value::String(key)) => (key.clone(), None),
+                Some(Value::Object(reference)) => {
+                    let key = reference.get("config").and_then(Value::as_str).context("providers.apiKey 写成 { \"config\": \"配置键\" }")?;
+                    if !schema.iter().any(|field| field.key == key && field.kind == "string") {
+                        anyhow::bail!("providers.{id}.apiKey 引用的配置项 {key} 没有声明，或不是 string");
+                    }
+                    (String::new(), Some(key.to_string()))
+                }
+                Some(_) => anyhow::bail!("providers.{id}.apiKey 只能是字符串或 {{ \"config\": \"配置键\" }}"),
+            };
+            let models = item
+                .get("models")
+                .and_then(Value::as_array)
+                .map(|list| list.iter().filter_map(Value::as_str).map(str::trim).filter(|model| !model.is_empty()).map(str::to_string).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if models.is_empty() {
+                anyhow::bail!("providers.{id}.models 至少要有一个模型");
+            }
+            Ok(ExtensionProvider { name: if text("name").is_empty() { id.clone() } else { text("name") }, id, protocol, base_url, api_key, api_key_config, models })
+        })
+        .collect()
+}
+
 /// 拓展可以挂的 Codex 钩子事件。SessionEnd / Interrupt 的超时只有 1~3 秒，起 Node 来不及，不开放。
 pub const EXTENSION_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
@@ -1170,6 +1272,7 @@ impl ExtensionPackage {
             "configSchema": self.config_schema,
             "backend": self.backend.is_some(),
             "services": self.backend_provides,
+            "providers": self.providers.iter().map(|provider| json!({ "id": provider.id, "name": provider.name, "models": provider.models })).collect::<Vec<_>>(),
             "config": self.config,
             "assets": self.assets.keys().collect::<Vec<_>>(),
             "skippedAssets": self.skipped_assets,
@@ -1218,6 +1321,8 @@ pub struct ExtensionWrite {
     pub backend: Option<Value>,
     /// 原样写进清单的 `toolPipeline`，加载时校验。
     pub tool_pipeline: Option<Value>,
+    /// 原样写进清单的 `providers`，加载时校验。
+    pub providers: Option<Value>,
     pub files: BTreeMap<String, String>,
     /// 二进制资源：包内路径 → 本机源文件，按字节复制（图片、音频、字体）。
     pub assets: BTreeMap<String, PathBuf>,
@@ -1388,6 +1493,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         tool_post_execute: Vec::new(),
         gateway_error: Vec::new(),
         backend_provides: Vec::new(),
+        providers: Vec::new(),
         tools: Vec::new(),
         config_schema: Vec::new(),
         backend: None,
@@ -1461,8 +1567,9 @@ fn parse_extension_manifest(
     let tools_declared = raw.get("tools").is_some_and(|tools| tools.as_array().is_some_and(|list| !list.is_empty()));
     let backend_declared = raw.get("backend").is_some();
     let pipeline_declared = raw.get("toolPipeline").is_some();
-    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline 或 backend");
+    let providers_declared = raw.get("providers").is_some_and(|value| value.as_array().is_some_and(|list| !list.is_empty()));
+    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers 或 backend");
     }
     let root = directory
         .canonicalize()
@@ -1507,6 +1614,7 @@ fn parse_extension_manifest(
         Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
     };
     package.locales = load_extension_locales(&root)?;
+    package.providers = parse_extension_providers(raw.get("providers"), &package.config_schema)?;
     (package.assets, package.skipped_assets) = load_extension_assets(&root);
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if let Some(range) = engine_range {

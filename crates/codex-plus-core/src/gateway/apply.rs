@@ -233,7 +233,8 @@ fn write_agent_config(
     agent: &ToolId,
     binding: &AgentBinding,
 ) -> anyhow::Result<Option<String>> {
-    let gateway = ctx.gateway.load()?;
+    // 拓展声明的供应商也写进 Agent 的模型资料（只读，不落盘）。
+    let gateway = ctx.gateway.load()?.with_extension_providers();
     match agent {
         ToolId::Claude => {
             // 还没指向网关：先把 settings.json 原样存一份，断开时据此还原（见 [`restore_claude`]）。

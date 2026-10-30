@@ -121,7 +121,7 @@ pub(crate) async fn handle(
         stream.shutdown().await?;
         return Ok(());
     }
-    let gateway = GatewayStore::default().load().unwrap_or_default();
+    let gateway = GatewayStore::default().load().unwrap_or_default().with_extension_providers();
     let Some(binding) = gateway.active_binding(&agent) else {
         let message = format!(
             "Codex++ 网关模式没有为 {} 开启，请在 Codex++ 里打开网关模式或切回直连供应商",
@@ -294,7 +294,7 @@ pub(crate) async fn handle_codex_images_from_helper(
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    let gateway = GatewayStore::default().load().unwrap_or_default();
+    let gateway = GatewayStore::default().load().unwrap_or_default().with_extension_providers();
     handle_images(
         stream,
         &gateway,
@@ -467,7 +467,7 @@ pub(crate) async fn open_responses_for_agent(
     client: Option<&tokio::net::TcpStream>,
 ) -> anyhow::Result<(UpstreamProxyResponse, Option<KeySlot>)> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let gateway = GatewayStore::default().load().unwrap_or_default();
+    let gateway = GatewayStore::default().load().unwrap_or_default().with_extension_providers();
     let request: Value = serde_json::from_str(request_body)?;
     // 起名模型：Codex 给会话起名的请求改发到绑定指定的模型，不落到订阅额度上。
     let title_model = route::title_model_override(&gateway, agent, &request);
