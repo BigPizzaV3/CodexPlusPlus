@@ -40,6 +40,18 @@
 - **订阅额度**：ChatGPT 订阅账号读每次响应的 `x-codex-*` 头，并每 10 分钟查 `wham/usage`；Copilot 查
   `copilot_internal/user` 的本月高级请求。只在内存（`gateway::quota`），供应商池的账号行显示剩余比例和各窗口重置时间。
 
+## 通用 Agent
+
+Codex / Claude Code / Grok 之外的 Agent 由规格表接入（`gateway/agents/`，`catalog_*.rs` 各一批）：每条规格写明怎么
+探测本机装了、主配置文件在哪、接入时往配置里写什么（供应商统一叫 `codexplus`，地址是 `/gw/<id>`，Key 是这个 Agent
+的网关 token）。写入只在内存文档上改（JSON 容忍注释、TOML、YAML 按顶层键、`.env`、整份文件），由框架统一落盘：
+接入前把每个文件的原文和改到的键存到 `backups/agent-<id>-before-gateway.json`，断开时只把这些键改回去；
+配置里找不到 `/gw/<id>` 时算被别的工具改掉。网关对通用 Agent 同时接受 Chat Completions、Responses、
+Anthropic Messages 与 Gemini（`/v1beta/models/<模型>:streamGenerateContent`，Key 可放 `x-goog-api-key` 或 `?key=`）。
+
+只能用环境变量、数据库或运行中的本地 API 配置的应用（Claude Science、Cursor Private Inference、NewMax、
+OpenHanako、Alma、Cindy、AionUi、Lody），以及不支持自定义地址的（Cursor CLI、Devin CLI）没有接入。
+
 ## 结构
 
 ```
@@ -143,15 +155,19 @@ Agent 打开「接入」后，池里所有打开的供应商的模型和所有�
   （Responses 协议，带 Grok CLI 的客户端标识头，版本号被 xAI 提高时会回 426，需要跟着改）；access token 快过期时用
   refresh token 换新。部分 SuperGrok 账号会被 xAI 的白名单拒绝（403），这时只能用 API Key。
 - 账号类凭据都带 `codex_plus_account` / `codex_plus_gateway` 标记，与各 Agent 自己的登录互不影响。
-- 没有接入：Claude 订阅（Anthropic 条款只允许官方客户端使用订阅凭据）、Gemini CLI（Google 已于 2026-06-18 停止个人账号的
-  Code Assist，且其说明写明第三方使用违反政策）、Antigravity（客户端密钥未公开，只能从客户端里提取）。
+- 不接入：Claude 订阅（Anthropic 条款只允许官方客户端使用订阅凭据，且不做绕过其第三方流量识别的处理）。
 - **OpenCode Go / Zen**（预设，用 OpenCode 控制台的 Key；也可在「导入…」里用 `opencode auth login` 保存在
   `~/.local/share/opencode/auth.json` 的 Key）：同一个网关里每个模型只在一种协议上提供，网关按 models.dev 目录（与价格表
   共用的缓存）逐个模型切换协议和地址——GPT / Grok / Muse 走 Responses，Claude、MiniMax、部分 Qwen 走 Anthropic，
   其余走 Chat；目录里没有的按模型名推断。每个请求带 `x-opencode-session`（按对话保持不变，缺了上游回 400）。
   Gemini 模型只走 Google 接口、免费模型只对 OpenCode 自己开放，都不列出。
-- 其它订阅（Cursor、Kiro、Devin、Qoder、Zed、WorkBuddy、ZCode、Factory 等）需要模拟各家客户端调用私有接口，
-  暂不内置。
+- **私有接口订阅**（`gateway/subscriptions/`）：Cursor、Kiro、Zed、Command Code、Devin、Factory、Qoder / Qoder CN、
+  WorkBuddy / WorkBuddy AI、ZCode、Xiaomi MiMo、Gemini Code Assist、Antigravity。每家实现 `Subscription`
+  （登录、刷新、列模型、发对话），在池里是一个普通的 Chat Completions 供应商：请求前地址指到 helper 的
+  `/sub/<供应商 id>/v1`，适配入口读 gateway.json 里的凭据、快过期时刷新并写回，再按各家协议（protobuf、AWS 事件流、
+  Code Assist、各家 JSON）发出去，答复统一转成 Chat SSE；失败按状态码回给管道（401 停用到重新登录、429 冷却）。
+  登录方式按家而定：浏览器、验证码、导入本机官方客户端的登录、粘贴凭据。Gemini Code Assist 只支持 Standard /
+  Enterprise（需要 Google Cloud 项目 id，可在粘贴框里填）；Antigravity 账号有被 Google 停用的风险。
 - 除 ChatGPT API 外，以上登录都是冒用官方客户端身份调用未公开的接口，可能随时失效，也有账号被限制的风险。
 
 ## 限制
