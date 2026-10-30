@@ -540,7 +540,16 @@ user_scripts/
 ### 发布到社区拓展
 
 管理器「拓展」页的「社区拓展」分栏会列出 GitHub 上打了 `codexpp-extension` topic 的公开仓库，所有 Codex++ 用户都能看到并安装。
-目前要手动发布（一键发布在规划中）：
+
+**一键发布**：在「本地拓展」里点拓展包那一行的「发布」。需要本机装了 GitHub CLI 并登录（`gh auth login`），git 配好
+`user.name` / `user.email`；Codex++ 不读、不存 token，推送时只在那一条命令上借用 `gh auth git-credential`。
+发布前会检查清单（名称、描述、`x.y.z` 版本号）、密钥（`.env`、`*.pem`、`auth.json` 等文件名，`sk-…`、`ghp_…`、私钥等内容，
+`secret` 配置项的默认值）、软链与体积，有问题时不能发布；版本号已在远端存在时可以点「补丁号 +1」。发布会：
+建公开仓库 `codexpp-<id>`（可改名）或取回已有仓库 → 用拓展包整体替换仓库内容并写入 `repository` → 没有 README 时按清单生成、
+按选择加 LICENSE → 提交并打 `v<version>` → 推送 → 建 release 并上传 `<id>-v<version>.zip` → 加 topic。每一步的输出都显示在
+发布框里，失败时停在那一步，可以改好后重试。
+
+也可以手动发布：
 
 1. 仓库**根目录**放拓展包（`codexpp.json` 和它引用的文件），推到公开仓库。一个仓库只放一个拓展包。
 2. 仓库设置 → Topics 加上 `codexpp-extension`。最长 10 分钟后出现在社区栏（列表缓存周期），用户点「刷新」可立即看到。

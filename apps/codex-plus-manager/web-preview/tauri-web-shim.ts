@@ -691,6 +691,11 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       message: "", configPath: "~/.codex/config.toml", extensionsDirectory: "~/.config/Codex++/user_scripts",
     } as T;
     // 社区拓展演示数据：一个带钩子与后台的、一个只有页面脚本且已安装的、一个需要新版 Codex++ 的。
+    case "extension_publish_request": {
+      const report = { id: args.payload?.id, name: L("字数统计", "Word count"), version: args.action === "bump" ? "1.0.1" : "1.0.0", description: L("统计输入框字数", "Count characters"), errors: [], warnings: [L("没有 README，发布时会按清单生成一份", "No README; one will be generated from the manifest")], secrets: [], files: 4, bytes: 5120, hasReadme: false, hasLicense: false, publishedRepo: null, suggestedRepoName: `codexpp-${args.payload?.id}`, gh: { ready: true, account: "demo-user" } };
+      if (args.action === "publish") return { ok: true, repo: `demo-user/codexpp-${args.payload?.id}`, url: "https://github.com/", version: "1.0.0", steps: ["发布前检查", "确认 GitHub 账号", "确认 git 身份", "创建仓库", "初始化工作副本", "整理文件", "提交", "打标签", "推送", "创建 release", "添加 topic"].map((step) => ({ step, ok: true, output: "" })) } as T;
+      return report as T;
+    }
     case "extension_community_request": {
       const perms = (extra: Record<string, unknown> = {}) => ({ backend: null, hooks: [], gatewayRequest: 0, gatewayResponse: 0, tools: [], routes: [], renderer: ["main.js"], ...extra });
       const entry = (repo: string, extra: Record<string, unknown>) => ({

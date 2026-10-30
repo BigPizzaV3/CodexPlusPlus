@@ -95,6 +95,7 @@ import {
   TriangleAlert,
   CircleX,
   X,
+  Upload,
   type LucideIcon,
 } from "lucide-react";
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
@@ -117,6 +118,7 @@ import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { DshPluginsPanel } from "./DshPluginsPanel";
 import { CommunityExtensionsPanel } from "./CommunityExtensionsPanel";
 import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
+import { ExtensionPublishDialog } from "./ExtensionPublishDialog";
 import { SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
@@ -16300,6 +16302,9 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
   const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
   const configSchema = script.package?.configSchema ?? [];
   const [configOpen, setConfigOpen] = useState(false);
+  // 用户自己的拓展包可以一键发布到 GitHub（单文件脚本、内置拓展没有这个入口）。
+  const canPublish = isPackage && script.source === "user" && !!script.package?.id;
+  const [publishOpen, setPublishOpen] = useState(false);
   const displayName = localizedPackageText(script.package?.locales, "title", script.name);
   const displayDescription = localizedPackageText(script.package?.locales, "description", script.package?.description ?? "");
   return (
@@ -16350,6 +16355,12 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
             {t("设置")}
           </Button>
         ) : null}
+        {canPublish ? (
+          <Button onClick={() => setPublishOpen(true)} size="sm" variant="outline" title={t("发布到 GitHub，出现在其他人的社区拓展里")}>
+            <Upload className="h-4 w-4" />
+            {t("发布")}
+          </Button>
+        ) : null}
         {canDelete ? (
           <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
             <Trash2 className="h-4 w-4" />
@@ -16358,6 +16369,9 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         ) : null}
       </div>
     </div>
+    {publishOpen && script.package?.id ? (
+      <ExtensionPublishDialog id={script.package.id} onClose={() => setPublishOpen(false)} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+    ) : null}
     {configOpen && configSchema.length ? (
       <ExtensionConfigForm
         fields={configSchema}

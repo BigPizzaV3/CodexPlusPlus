@@ -48,3 +48,11 @@
 .shell .curated-packages-head { display:flex; align-items:baseline; gap:8px; font-size:13px; font-weight:600; }
 .shell .curated-packages-head span { font-size:12px; font-weight:400; color:hsl(var(--muted-foreground)); }
 .shell .community-ext-card[data-channel=official] { border-color:hsl(var(--primary) / .35); }
+.shell .extension-publish-field { display:flex; align-items:center; gap:10px; font-size:12px; }
+.shell .extension-publish-field > span { flex:none; min-width:72px; color:hsl(var(--muted-foreground)); }
+.shell .extension-publish-field > input, .shell .extension-publish-field > div { flex:1; min-width:0; }
+.shell .extension-publish-steps { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px; max-height:260px; overflow:auto; }
+.shell .extension-publish-steps li { display:flex; gap:8px; font-size:12px; }
+.shell .extension-publish-steps li[data-ok=true] svg { color:hsl(var(--status-success, 142 60% 36%)); flex:none; }
+.shell .extension-publish-steps li[data-ok=false] svg { color:hsl(var(--status-error, 0 72% 51%)); flex:none; }
+.shell .extension-publish-steps pre { margin:2px 0 0; font-size:11px; white-space:pre-wrap; overflow-wrap:anywhere; color:hsl(var(--muted-foreground)); max-height:96px; overflow:auto; }
