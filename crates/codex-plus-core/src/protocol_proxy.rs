@@ -3536,7 +3536,25 @@ async fn open_responses_proxy_request_once(
     set_message_phase_fill(settings.codex_app_third_party_reasoning_collapse);
     let mut request_json: Value = serde_json::from_str(body)?;
     // 拓展的网关请求中间件：在 Codex++ 自己的转换之前改写原始 Responses 请求。没有拓展声明时零开销。
-    crate::extension_gateway::apply_request(&mut request_json, request_path).await;
+    if let Err(reason) = crate::extension_gateway::apply_request(&mut request_json, request_path).await {
+        // 拓展拒绝了这一步：不发给模型，直接回一个 Codex 能显示原因的错误。
+        return Ok(UpstreamProxyResponse {
+            status_code: 400,
+            content_type: "application/json".to_string(),
+            is_stream: false,
+            wire_api: UpstreamWireApi::Responses,
+            compaction: false,
+            native_compaction_passthrough: false,
+            buffered_body: Some(serde_json::to_vec(&json!({
+                "error": { "type": "invalid_request_error", "code": "extension_rejected", "message": reason }
+            }))?),
+            stream_prefix: Vec::new(),
+            request_trace: None,
+            exec_adapted: false,
+            exec_outcome: None,
+            response: None,
+        });
+    }
     expand_local_compaction_history(&mut request_json);
     let local_compaction_request = !is_responses_compact_proxy_path(request_path)
         && !request_has_compaction_trigger(&request_json)

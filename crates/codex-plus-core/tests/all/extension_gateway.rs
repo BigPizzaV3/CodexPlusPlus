@@ -220,3 +220,50 @@ export default (error, { path }) => {
     assert_eq!(decide_retry_for(&list, 503, b"", "/v1/responses", 0).await, Some(std::time::Duration::from_secs(10)), "间隔最多 10 秒");
     assert_eq!(decide_retry_for(&[], 503, b"", "/v1/responses", 0).await, None, "没有中间件时不重试");
 }
+
+#[test]
+fn request_step_counts_tool_results_since_the_last_user_message() {
+    use codex_plus_core::extension_gateway::request_step;
+    let first = request_step(&json!({"input": [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "旧问题"}]},
+        {"type": "function_call_output", "call_id": "old", "output": "x"},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "新问题"}]},
+    ]}));
+    assert_eq!(first, json!({"index": 1, "toolResults": 0, "userText": "新问题", "firstStep": true}));
+    let third = request_step(&json!({"input": [
+        {"role": "user", "content": "新问题"},
+        {"type": "function_call", "call_id": "a", "name": "shell", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "a", "output": "1"},
+        {"type": "custom_tool_call_output", "call_id": "b", "output": "2"},
+    ]}));
+    assert_eq!(third["index"], 3);
+    assert_eq!(third["firstStep"], false);
+    assert_eq!(third["userText"], "新问题");
+}
+
+#[tokio::test]
+async fn request_middlewares_see_the_step_and_can_reject_it() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "a-gate", json!({"request": [{"script": "gateway/a.mjs"}]}), &[("gateway/a.mjs", r#"
+export default (body, { step }) => {
+  if (step.index > 2) return { reject: `第 ${step.index} 步超过上限` };
+  return { ...body, instructions: `step=${step.index}` };
+};"#)]);
+    write_package(&temp, "b-after", json!({"request": [{"script": "gateway/b.mjs"}]}), &[("gateway/b.mjs", r#"
+export default (body) => ({ ...body, instructions: body.instructions + "|b" });"#)]);
+    let mut first = json!({"input": [{"role": "user", "content": "hi"}]});
+    apply_request_with(&manager, &mut first, "/v1/responses").await.unwrap();
+    assert_eq!(first["instructions"], "step=1|b");
+    let mut third = json!({"input": [
+        {"role": "user", "content": "hi"},
+        {"type": "function_call_output", "call_id": "a", "output": "1"},
+        {"type": "function_call_output", "call_id": "b", "output": "2"},
+    ]});
+    let rejected = apply_request_with(&manager, &mut third, "/v1/responses").await.unwrap_err();
+    assert_eq!(rejected, "第 3 步超过上限");
+    assert!(third.get("instructions").is_none(), "拒绝时不改请求，后面的中间件也不跑");
+}

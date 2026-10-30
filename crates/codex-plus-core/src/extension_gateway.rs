@@ -14,8 +14,9 @@ use crate::user_scripts::{ExtensionGatewayMiddleware, UserScriptManager};
 /// 整条中间件链的超时上限：逐个超时之和与此取小。
 const CHAIN_LIMIT: Duration = Duration::from_secs(15);
 
-/// stdin：`{ path, body, middlewares: [{ id, script, timeoutMs }] }`；按顺序调用默认导出，
-/// 返回对象就作为下一个的输入。stdout：`{ body, changed, errors: [{ id, error }] }`。
+/// stdin：`{ path, body, step, middlewares: [{ id, script, timeoutMs }] }`；按顺序调用默认导出，
+/// 返回对象就作为下一个的输入，返回 `{ reject: "原因" }` 即拒绝这一步。
+/// stdout：`{ body, changed, errors: [{ id, error }], rejected: { id, reason } | null }`。
 const RUNNER: &str = r#"
 import { pathToFileURL } from "node:url";
 const chunks = [];
@@ -23,6 +24,7 @@ for await (const chunk of process.stdin) chunks.push(chunk);
 const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 let body = input.body;
 let changed = false;
+let rejected = null;
 const errors = [];
 for (const item of input.middlewares) {
   let timer;
@@ -31,7 +33,12 @@ for (const item of input.middlewares) {
     const fn = typeof module.default === "function" ? module.default : module.request;
     if (typeof fn !== "function") { errors.push({ id: item.id, error: `${item.script} 没有默认导出函数` }); continue; }
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${item.timeoutMs / 1000} 秒）`)), item.timeoutMs); });
-    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id, config: item.config ?? {} })), timeout]);
+    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id, config: item.config ?? {}, step: input.step })), timeout]);
+    // { reject: "原因" }：这一步不发给模型，Codex 收到带原因的错误。后面的中间件不再跑。
+    if (next && typeof next === "object" && !Array.isArray(next) && typeof next.reject === "string" && Object.keys(next).length === 1) {
+      rejected = { id: item.id, reason: next.reject };
+      break;
+    }
     if (next && typeof next === "object" && !Array.isArray(next)) { body = next; changed = true; }
   } catch (error) {
     errors.push({ id: item.id, error: String(error?.stack || error?.message || error) });
@@ -39,7 +46,7 @@ for (const item of input.middlewares) {
     clearTimeout(timer);
   }
 }
-process.stdout.write(JSON.stringify({ body, changed, errors }));
+process.stdout.write(JSON.stringify({ body, changed, errors, rejected }));
 "#;
 
 /// 启用中的中间件清单缓存。每次模型请求都要查一遍，扫目录、读清单不能每次都做；
@@ -83,27 +90,53 @@ pub fn headers_mark_applied(raw_headers: &str) -> bool {
 }
 
 /// 用默认的用户脚本位置改写请求。没有中间件、或任何环节失败时不改 `request`。
-pub async fn apply_request(request: &mut Value, request_path: &str) {
+///
+/// 有中间件拒绝这一步时返回 `Err(原因)`，调用方据此直接回错误、不发给模型。
+pub async fn apply_request(request: &mut Value, request_path: &str) -> Result<(), String> {
     if already_applied() {
-        return;
+        return Ok(());
     }
     let manager = crate::user_scripts::default_user_script_manager();
     apply_tool_pipeline(&manager, &cached_post_execute(), request).await;
     let middlewares = cached_middlewares();
     if middlewares.is_empty() {
-        return;
+        return Ok(());
     }
-    apply_middlewares(&middlewares, request, request_path).await;
+    apply_middlewares(&middlewares, request, request_path).await
 }
 
-pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value, request_path: &str) {
+pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value, request_path: &str) -> Result<(), String> {
     let post_execute = manager.enabled_tool_post_execute().unwrap_or_default();
     apply_tool_pipeline(manager, &post_execute, request).await;
     let middlewares = match manager.enabled_gateway_middlewares() {
         Ok(middlewares) if !middlewares.is_empty() => middlewares,
-        _ => return,
+        _ => return Ok(()),
     };
-    apply_middlewares(&middlewares, request, request_path).await;
+    apply_middlewares(&middlewares, request, request_path).await
+}
+
+/// 这一步在本轮里是第几步：最后一条用户消息之后已有几个工具结果，再加 1。
+/// 也带上本轮用户输入的文字，方便中间件按轮判断。
+pub fn request_step(request: &Value) -> Value {
+    let input = request.get("input").and_then(Value::as_array).cloned().unwrap_or_default();
+    let last_user = input.iter().rposition(|item| {
+        item.get("role").and_then(Value::as_str) == Some("user")
+            && item.get("type").and_then(Value::as_str).is_none_or(|kind| kind == "message")
+    });
+    let after = last_user.map(|index| &input[index + 1..]).unwrap_or(&input[..]);
+    let tool_results = after
+        .iter()
+        .filter(|item| matches!(item.get("type").and_then(Value::as_str), Some("function_call_output" | "custom_tool_call_output")))
+        .count();
+    let user_text = last_user
+        .and_then(|index| input[index].get("content"))
+        .map(|content| match content {
+            Value::String(text) => text.clone(),
+            Value::Array(blocks) => blocks.iter().filter_map(|block| block.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
+    json!({ "index": tool_results + 1, "toolResults": tool_results, "userText": user_text, "firstStep": tool_results == 0 })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -424,9 +457,17 @@ pub async fn decide_retry_for(
     }
 }
 
-async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str) {
+async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str) -> Result<(), String> {
     match run_chain(middlewares, request, request_path).await {
         Ok(result) => {
+            if let Some(rejected) = result.get("rejected").filter(|value| value.is_object()) {
+                let reason = rejected.get("reason").and_then(Value::as_str).unwrap_or("拓展拒绝了这一步").to_string();
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "extension_gateway.request_rejected",
+                    json!({ "path": request_path, "extension": rejected.get("id"), "reason": reason }),
+                );
+                return Err(reason);
+            }
             for error in result["errors"].as_array().into_iter().flatten() {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "extension_gateway.middleware_failed",
@@ -436,12 +477,14 @@ async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)],
             if result["changed"] == true && result["body"].is_object() {
                 *request = result["body"].clone();
             }
+            Ok(())
         }
         Err(error) => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "extension_gateway.chain_failed",
                 json!({ "path": request_path, "error": format!("{error:#}") }),
             );
+            Ok(())
         }
     }
 }
@@ -455,6 +498,7 @@ async fn run_chain(
     let input = json!({
         "path": request_path,
         "body": request,
+        "step": request_step(request),
         "middlewares": middlewares.iter().map(|(id, item)| json!({
             "id": id,
             "script": item.script,
