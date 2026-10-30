@@ -162,6 +162,7 @@ codexPlus.extension((ctx) => {
 | `toast / fail / dispose` | 提示、上报失败、主动卸载 |
 | `registerComposerAction(def)` | 输入区（发送按钮那一行）的图标按钮，`onActivate({ editor, insertText, close })` |
 | `storage.get / set / remove / keys` | 按拓展 id 隔离的本地存储，值按 JSON 存取 |
+| `config` | 生效配置的只读快照（清单 `config` 声明，见「拓展配置」） |
 | `id / scriptKey / manifest / disposed` | 只读信息 |
 
 ### Codex 会话事件与请求中间件
@@ -186,6 +187,28 @@ codexPlus.extension((ctx) => {
 - `codex/request` 的值是 `{ method, params }`。这条路径是同步的：中间件必须同步返回，返回 Promise 视为出错并原样放行；
   只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
 - 两者都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
+
+### 拓展配置
+
+拓展包可以在清单里声明配置项，Codex++ 管理器会自动生成设置表单（拓展列表里的「设置」）：
+
+```json
+{
+  "id": "pomodoro",
+  "config": {
+    "minutes": { "type": "number", "title": "专注时长（分钟）", "description": "每个番茄钟的长度", "default": 25 },
+    "sound": { "type": "boolean", "title": "结束时提示音", "default": true },
+    "theme": { "type": "select", "title": "配色", "options": [{ "value": "red", "label": "番茄红" }, "green"] },
+    "token": { "type": "string", "title": "API 令牌", "secret": true }
+  }
+}
+```
+
+- 类型：`string`、`number`、`boolean`、`select`（`options` 为值或 `{ value, label }`）；最多 32 项。没给 `default` 时取
+  空串 / 0 / false / 第一个选项。`secret` 只影响界面（密码框），值仍以明文存在本机 `user_scripts.json` 的 `configs` 里。
+- 读取：页面代码用 `ctx.config`；钩子、网关中间件、工具脚本用第二个参数的 `context.config`。都是生效配置
+  （默认值叠加已保存且类型正确的值）的只读快照。
+- 修改：管理器表单保存后自动热重载；对话造拓展可用 `codexpp_extension_configure` 改值。只接受声明过的键，类型不符即报错。
 
 ### 给模型加工具
 
@@ -301,6 +324,7 @@ user_scripts/
 | `hooks` | Codex 钩子声明，见上文「Codex 钩子」 |
 | `gateway` | 网关请求中间件声明，见上文「网关请求中间件」 |
 | `tools` | 给模型的工具声明，见上文「给模型加工具」 |
+| `config` | 配置项声明，见上文「拓展配置」 |
 | `permissions.routes` | `ctx.call` 能调的路由，需在[路由白名单](#后端调用与路由白名单)内。这是声明约束而不是安全边界 |
 
 清单不合法（JSON 错误、入口越出包目录、版本不兼容等）时包不注入，管理页显示「加载失败」和原因。

@@ -31,7 +31,7 @@ for (const item of input.middlewares) {
     const fn = typeof module.default === "function" ? module.default : module.request;
     if (typeof fn !== "function") { errors.push({ id: item.id, error: `${item.script} 没有默认导出函数` }); continue; }
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${item.timeoutMs / 1000} 秒）`)), item.timeoutMs); });
-    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id })), timeout]);
+    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id, config: item.config ?? {} })), timeout]);
     if (next && typeof next === "object" && !Array.isArray(next)) { body = next; changed = true; }
   } catch (error) {
     errors.push({ id: item.id, error: String(error?.stack || error?.message || error) });
@@ -114,6 +114,7 @@ async fn run_chain(
             "id": id,
             "script": item.script,
             "timeoutMs": item.timeout_secs * 1000,
+            "config": item.config,
         })).collect::<Vec<_>>(),
     });
     let limit = Duration::from_secs(middlewares.iter().map(|(_, item)| item.timeout_secs).sum::<u64>() + 2).min(CHAIN_LIMIT);

@@ -18943,10 +18943,13 @@
     };
     const info = { id: extensionId, scriptKey };
 
+    // 生效配置（清单 config 默认值叠加用户在管理器 / 对话里设置的值）。改配置会热重载拓展，这里是只读快照。
+    const config = Object.freeze({ ...(manifest?.config && typeof manifest.config === "object" ? manifest.config : {}) });
     const ctx = {
       id: extensionId,
       scriptKey,
       manifest,
+      config,
       get disposed() {
         return disposed;
       },

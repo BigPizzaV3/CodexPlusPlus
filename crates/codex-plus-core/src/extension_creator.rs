@@ -259,6 +259,7 @@ fn tool_definitions() -> Value {
                     "routes": {"type": "array", "items": {"type": "string"}, "description": "拓展需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
                     "renderer": {"type": "array", "items": {"type": "string"}, "description": "按顺序执行的页面入口文件；省略时若 files 里有 renderer.js 就用它，只声明 hooks 的拓展可以没有页面入口"},
                     "hooks": {"type": "object", "description": "Codex 钩子声明，例如 {\"PreToolUse\": [{\"matcher\": \"^Bash$\", \"script\": \"hooks/guard.mjs\", \"timeout\": 30}]}；写法见指南「Codex 钩子」"},
+                    "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
                     "tools": {"type": "array", "description": "给模型用的工具声明，例如 [{\"name\": \"lookup\", \"description\": \"…\", \"inputSchema\": {\"type\": \"object\", \"properties\": {…}}, \"script\": \"tools/lookup.mjs\", \"timeout\": 30}]；写法见指南「给模型加工具」", "items": {"type": "object"}},
                     "gateway": {"type": "object", "description": "网关请求中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\", \"timeout\": 5}]}；写法见指南「网关请求中间件」"},
                     "files": {
@@ -284,6 +285,17 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {"id": {"type": "string"}, "enabled": {"type": "boolean"}},
                 "required": ["id", "enabled"],
+                "additionalProperties": false,
+            },
+            "annotations": writes,
+        },
+        {
+            "name": "codexpp_extension_configure",
+            "description": "修改一个拓展包的配置值（只能改清单 config 里声明过的项），保存后热重载。用户说「把 X 改成 Y」且 X 是拓展配置时用它，不必重写代码。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "values": {"type": "object", "description": "要设置的配置项与值"}},
+                "required": ["id", "values"],
                 "additionalProperties": false,
             },
             "annotations": writes,
@@ -316,6 +328,8 @@ struct WriteArguments {
     gateway: Option<Value>,
     #[serde(default)]
     tools: Option<Value>,
+    #[serde(default)]
+    config: Option<Value>,
     files: Vec<WriteFile>,
 }
 
@@ -354,6 +368,13 @@ struct ScreenshotArguments {
 #[serde(deny_unknown_fields)]
 struct IdArguments {
     id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigureArguments {
+    id: String,
+    values: serde_json::Map<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -404,6 +425,7 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 hooks: arguments.hooks,
                 gateway: arguments.gateway,
                 tools: arguments.tools,
+                config: arguments.config,
                 files,
             })?;
             let key = user_scripts::extension_package_key(&arguments.id);
@@ -422,6 +444,15 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
             reload_and_report(creator, &key).await
         }
         "codexpp_extension_reload" => reload_and_report(creator, "").await,
+        "codexpp_extension_configure" => {
+            let arguments: ConfigureArguments =
+                serde_json::from_value(arguments).context("codexpp_extension_configure 参数无效")?;
+            let key = user_scripts::extension_package_key(&arguments.id);
+            let config = creator.manager.set_extension_config(&key, &arguments.values)?;
+            let mut result = reload_and_report(creator, &key).await?;
+            result["config"] = config;
+            Ok(result)
+        }
         name if name.contains("__") => call_extension_tool(creator, name, arguments).await,
         "codexpp_extension_inspect" => {
             let arguments: InspectArguments =
@@ -527,7 +558,7 @@ try {
   const fn = typeof module.default === "function" ? module.default : module[input.tool];
   if (typeof fn !== "function") throw new Error(`${input.script} 没有默认导出函数`);
   const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${input.timeoutMs / 1000} 秒）`)), input.timeoutMs); });
-  const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool })), timeout]);
+  const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {} })), timeout]);
   process.stdout.write(JSON.stringify({ result: result === undefined ? null : result }));
 } catch (error) {
   process.stdout.write(JSON.stringify({ error: String(error?.stack || error?.message || error) }));
@@ -552,6 +583,7 @@ async fn call_extension_tool(creator: &ExtensionCreator, name: &str, arguments: 
         "extension": id,
         "tool": tool.name,
         "timeoutMs": tool.timeout_secs * 1000,
+        "config": tool.config,
     });
     let output = crate::extension_node::run_runner(
         &node,

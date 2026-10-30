@@ -6167,6 +6167,19 @@ pub fn set_user_scripts_skip_next_start(skip: bool) -> CommandResult<SettingsPay
     }
 }
 
+/// 保存拓展包的配置（清单 config 里声明的项）。页面侧要热重载后才读到新值，由前端随后触发。
+#[tauri::command]
+pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>) -> CommandResult<SettingsPayload> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return failed("拓展 key 不能为空。", fallback_settings_payload());
+    }
+    match default_user_script_manager().set_extension_config(trimmed, &values) {
+        Ok(_) => settings_payload("拓展配置已保存。", "拓展配置保存失败"),
+        Err(error) => failed(&format!("拓展配置保存失败：{error:#}"), fallback_settings_payload()),
+    }
+}
+
 #[tauri::command]
 pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();

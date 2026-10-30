@@ -491,6 +491,7 @@ pub fn run() {
             commands::set_user_scripts_enabled,
             commands::set_user_scripts_skip_next_start,
             commands::set_user_script_enabled,
+            commands::set_extension_config,
             commands::delete_user_script,
             commands::refresh_skill_catalog,
             commands::list_installed_skills,

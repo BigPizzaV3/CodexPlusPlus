@@ -81,6 +81,7 @@ async fn mcp_handshake_lists_tools_and_ignores_notifications() {
             "codexpp_extension_screenshot",
             "codexpp_extension_write",
             "codexpp_extension_set_enabled",
+            "codexpp_extension_configure",
             "codexpp_extension_reload"
         ]
     );
@@ -285,4 +286,53 @@ async fn extension_declared_tools_are_listed_and_callable() {
     assert!(!list["result"]["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "calc__add"), "停用后工具消失");
     let (error, _) = call(&creator, "calc__add", json!({"a": 1, "b": 1})).await;
     assert!(error);
+}
+
+#[tokio::test]
+async fn extension_config_defaults_validation_and_delivery() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let (error, written) = call(
+        &creator,
+        "codexpp_extension_write",
+        json!({
+            "id": "pomo", "name": "番茄钟",
+            "config": {
+                "minutes": {"type": "number", "title": "时长", "default": 25},
+                "theme": {"type": "select", "title": "配色", "options": [{"value": "red", "label": "红"}, "green"]},
+                "token": {"type": "string", "title": "令牌", "secret": true}
+            },
+            "tools": [{"name": "minutes", "description": "当前时长", "script": "tools/minutes.mjs"}],
+            "files": [
+                {"path": "renderer.js", "content": "codexPlus.extension(() => {});"},
+                {"path": "tools/minutes.mjs", "content": "export default (_, { config }) => `${config.minutes}|${config.theme}`;"}
+            ]
+        }),
+    )
+    .await;
+    assert!(!error, "{written}");
+    let package = &written["extension"]["package"];
+    assert_eq!(package["config"], json!({"minutes": 25, "theme": "red", "token": ""}), "默认值与类型兜底");
+    assert_eq!(package["configSchema"][1]["options"][1], json!({"value": "green", "label": "green"}));
+
+    // 类型不符、未声明的键都拒绝，存储保持不变。
+    for bad in [json!({"minutes": "50"}), json!({"theme": "blue"}), json!({"unknown": 1})] {
+        let (error, message) = call(&creator, "codexpp_extension_configure", json!({"id": "pomo", "values": bad})).await;
+        assert!(error, "{message}");
+    }
+    let (error, configured) = call(&creator, "codexpp_extension_configure", json!({"id": "pomo", "values": {"minutes": 50, "theme": "green"}})).await;
+    assert!(!error, "{configured}");
+    assert_eq!(configured["config"], json!({"minutes": 50, "theme": "green", "token": ""}));
+    let stored: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("user_scripts.json")).unwrap()).unwrap();
+    assert_eq!(stored["configs"]["user:pomo"], json!({"minutes": 50, "theme": "green"}));
+
+    // 页面清单带生效配置。
+    let bundle = creator.manager.build_enabled_bundle().unwrap();
+    assert!(bundle.contains(r#""config":{"minutes":50,"theme":"green","token":""}"#), "页面侧 ctx.config 的来源");
+
+    // 工具脚本从 context.config 读到同一份。
+    if codex_plus_core::dsh_plugins::locate_node().is_some() {
+        let response = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "pomo__minutes", "arguments": {}}})).await.unwrap();
+        assert_eq!(response["result"]["content"][0]["text"], "50|green");
+    }
 }

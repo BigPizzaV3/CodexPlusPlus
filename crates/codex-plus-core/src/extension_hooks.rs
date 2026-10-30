@@ -44,7 +44,7 @@ const results = await Promise.all(input.hooks.map(async (hook) => {
     const fn = typeof module.default === "function" ? module.default : module[input.event];
     if (typeof fn !== "function") return { id: hook.id, error: `${hook.script} 没有默认导出函数` };
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${hook.timeoutMs / 1000} 秒）`)), hook.timeoutMs); });
-    const output = await Promise.race([Promise.resolve(fn(structuredClone(input.payload), { event: input.event, extension: hook.id })), timeout]);
+    const output = await Promise.race([Promise.resolve(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {} })), timeout]);
     return { id: hook.id, output: output ?? null };
   } catch (error) {
     return { id: hook.id, error: String(error?.stack || error?.message || error) };
@@ -94,6 +94,7 @@ pub async fn dispatch(
             "script": hook.script,
             "matcher": hook.matcher,
             "timeoutMs": hook.timeout_secs * 1000,
+            "config": hook.config,
         })).collect::<Vec<_>>(),
     });
     let longest = hooks.iter().map(|(_, hook)| hook.timeout_secs).max().unwrap_or(30);

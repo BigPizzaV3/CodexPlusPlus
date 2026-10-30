@@ -681,6 +681,16 @@ const emptyContextSelection = (): RelayContextSelection => ({
   plugins: [],
 });
 
+type ExtensionConfigField = {
+  key: string;
+  type: "string" | "number" | "boolean" | "select";
+  title: string;
+  description: string;
+  default: unknown;
+  options: Array<{ value: unknown; label: string }>;
+  secret: boolean;
+};
+
 type UserScriptInventory = {
   enabled?: boolean;
   skip_next_start?: boolean;
@@ -689,7 +699,10 @@ type UserScriptInventory = {
     name: string;
     source: string;
     kind?: "script" | "package";
-    package?: { id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[] } | null;
+    package?: {
+      id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
+      configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>;
+    } | null;
     enabled: boolean;
     status: string;
     error: string;
@@ -1902,6 +1915,17 @@ export function App() {
     setSettings(result);
     setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
     showResultNotice(t("本地拓展"), result);
+  };
+
+  /// 保存拓展配置后热重载，页面侧的 ctx.config 才会读到新值。
+  const setExtensionConfig = async (key: string, values: Record<string, unknown>) => {
+    const result = await run(() => call<SettingsResult>("set_extension_config", { key, values }));
+    if (!result) return false;
+    setSettings(result);
+    showResultNotice(t("本地拓展"), result);
+    if (!isSuccessStatus(result.status)) return false;
+    await reloadUserScripts();
+    return true;
   };
 
   const setUserScriptEnabled = async (key: string, enabled: boolean) => {
@@ -4470,6 +4494,7 @@ export function App() {
       setUserScriptsEnabled,
       setUserScriptsSkipNextStart,
       setUserScriptEnabled,
+      setExtensionConfig,
       deleteUserScript,
       refreshLocalSessions,
       listProjectSessions,
@@ -5198,6 +5223,7 @@ type Actions = {
   setUserScriptsEnabled: (enabled: boolean) => Promise<void>;
   setUserScriptsSkipNextStart: (skip: boolean) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
+  setExtensionConfig: (key: string, values: Record<string, unknown>) => Promise<boolean>;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
   listProjectSessions: (cwd: string) => Promise<LocalSession[]>;
@@ -16207,12 +16233,16 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
   const state = localScriptState(script, globalEnabled);
   const { label, hint } = localScriptStateLabel(state);
   const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
+  const configSchema = script.package?.configSchema ?? [];
+  const [configOpen, setConfigOpen] = useState(false);
   return (
+    <>
     <div className="table-row user-script-row">
       <div className="user-script-name">
         <strong>{script.name}</strong>
         {script.package?.description ? <small title={script.package.description}>{script.package.description}</small> : null}
         {script.package?.hookEvents?.length ? <small className="user-script-hooks">{tf("Codex 钩子：{0}", [script.package.hookEvents.join("、")])}</small> : null}
+        {script.package?.tools?.length ? <small className="user-script-hooks">{tf("模型工具：{0}", [script.package.tools.join("、")])}</small> : null}
       </div>
       <span>{source}</span>
       <div className="user-script-state">
@@ -16228,6 +16258,12 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         <span className="user-script-state-label" data-state={state} title={stateHint}>{label}</span>
       </div>
       <div className="script-row-actions">
+        {configSchema.length ? (
+          <Button aria-expanded={configOpen} onClick={() => setConfigOpen((open) => !open)} size="sm" variant="outline">
+            <Settings className="h-4 w-4" />
+            {t("设置")}
+          </Button>
+        ) : null}
         {canDelete ? (
           <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
             <Trash2 className="h-4 w-4" />
@@ -16236,6 +16272,79 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         ) : null}
       </div>
     </div>
+    {configOpen && configSchema.length ? (
+      <ExtensionConfigForm
+        fields={configSchema}
+        values={script.package?.config ?? {}}
+        onCancel={() => setConfigOpen(false)}
+        onSave={async (values) => {
+          if (await actions.setExtensionConfig(script.key, values)) setConfigOpen(false);
+        }}
+      />
+    ) : null}
+    </>
+  );
+}
+
+/// 按拓展清单的 config schema 生成的设置表单。值类型严格按 schema：数字框转成数字、开关是布尔、下拉取选项原值。
+function ExtensionConfigForm({ fields, values, onSave, onCancel }: {
+  fields: ExtensionConfigField[];
+  values: Record<string, unknown>;
+  onSave: (values: Record<string, unknown>) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState<Record<string, unknown>>(() => ({ ...values }));
+  const [saving, setSaving] = useState(false);
+  const set = (key: string, value: unknown) => setDraft((current) => ({ ...current, [key]: value }));
+  return (
+    <form
+      className="extension-config-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setSaving(true);
+        void onSave(draft).finally(() => setSaving(false));
+      }}
+    >
+      {fields.map((field) => {
+        const id = `extension-config-${field.key}`;
+        const value = draft[field.key] ?? field.default;
+        return (
+          <div className="extension-config-field" key={field.key}>
+            <label htmlFor={id}>{field.title}</label>
+            {field.type === "boolean" ? (
+              <label className="relay-bare-switch">
+                <input checked={value === true} id={id} onChange={() => set(field.key, value !== true)} type="checkbox" />
+                <ToggleVisual />
+              </label>
+            ) : field.type === "select" ? (
+              <AppSelect
+                ariaLabel={field.title}
+                id={id}
+                onChange={(index) => set(field.key, field.options[Number(index)]?.value)}
+                options={field.options.map((option, index) => ({ value: String(index), label: option.label }))}
+                size="sm"
+                value={String(Math.max(0, field.options.findIndex((option) => option.value === value)))}
+              />
+            ) : (
+              <Input
+                id={id}
+                onChange={(event) => {
+                  const raw = event.currentTarget.value;
+                  set(field.key, field.type === "number" ? (raw.trim() === "" || Number.isNaN(Number(raw)) ? raw : Number(raw)) : raw);
+                }}
+                type={field.type === "number" ? "number" : field.secret ? "password" : "text"}
+                value={String(value ?? "")}
+              />
+            )}
+            {field.description ? <small>{field.description}</small> : null}
+          </div>
+        );
+      })}
+      <div className="extension-config-actions">
+        <Button disabled={saving} onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+        <Button disabled={saving} size="sm" type="submit">{saving ? t("保存中…") : t("保存并热重载")}</Button>
+      </div>
+    </form>
   );
 }
 

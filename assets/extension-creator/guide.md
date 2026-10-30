@@ -88,6 +88,20 @@ codexPlus.extension((ctx) => {
 });
 ```
 
+## 可配置项
+
+用户以后可能想调的数值、开关、选项，不要写死在代码里，在 `codexpp_extension_write` 的 `config` 参数里声明：
+
+```json
+{ "minutes": { "type": "number", "title": "专注时长（分钟）", "default": 25 },
+  "theme": { "type": "select", "title": "配色", "options": [{ "value": "red", "label": "番茄红" }, { "value": "green", "label": "薄荷绿" }] } }
+```
+
+- `type` 可选 `string`、`number`、`boolean`、`select`（必须给 `options`）；`secret: true` 时界面按密码框显示。
+- 页面代码读 `ctx.config.minutes`；钩子、网关中间件、工具脚本读第二个参数的 `context.config`。都是只读快照。
+- 用户在 Codex++ 管理器的拓展列表里点「设置」修改；对话里用户说「改成 50 分钟」时，用
+  `codexpp_extension_configure` 改值即可，不必重写代码。改完会自动热重载。
+
 ## 给模型加工具
 
 要让 Codex 的模型能**调用**一个新能力（查资料、算东西、调本地服务），在 `codexpp_extension_write` 的 `tools`

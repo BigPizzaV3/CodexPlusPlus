@@ -3134,6 +3134,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "拓展包 · {0}": "Package · {0}",
   "对话造拓展": "Build extensions in chat",
   "Codex 钩子：{0}": "Codex hooks: {0}",
+  "模型工具：{0}": "Model tools: {0}",
+  "保存并热重载": "Save and hot-reload",
   "新开一个 Codex 对话，说「帮我做个拓展：…」即可": "Start a new Codex chat and say \"make me an extension: …\"",
   "在 Codex 对话里描述需求，agent 直接写出拓展并热重载": "Describe what you want in a Codex chat; the agent writes the extension and hot-reloads it",
   "已接入 Codex": "Connected to Codex",
