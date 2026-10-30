@@ -733,18 +733,27 @@ pub struct ExtensionGatewayMiddleware {
 /// 网关请求中间件的超时上限（秒）：它挡在每一次模型请求前面，不能太久。
 pub const EXTENSION_GATEWAY_MAX_TIMEOUT_SECS: u64 = 10;
 
-/// 与管理器一致的默认用户脚本位置：内置目录在程序旁，用户目录在配置目录下。
-/// 给不经过管理器的进程（本地代理、钩子分发）用。
+/// Codex++ 的用户脚本配置目录：Windows 为 `%APPDATA%\\Codex++`，其余为 `$XDG_CONFIG_HOME/Codex++`
+/// 或 `~/.config/Codex++`。管理器、启动器、本地代理、钩子分发共用这一份，不各自再算。
+pub fn default_user_scripts_config_dir() -> PathBuf {
+    if cfg!(windows) {
+        if let Some(roaming) = std::env::var_os("APPDATA") {
+            return PathBuf::from(roaming).join("Codex++");
+        }
+        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+            return home.join("AppData").join("Roaming").join("Codex++");
+        }
+    }
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
+        .unwrap_or_else(|| PathBuf::from(".config"))
+        .join("Codex++")
+}
+
+/// 默认用户脚本位置：内置目录在程序旁，用户目录在配置目录下。
 pub fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = if cfg!(windows) && std::env::var_os("APPDATA").is_some() {
-        PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("Codex++")
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-            .unwrap_or_else(|| PathBuf::from(".config"))
-            .join("Codex++")
-    };
+    let config_dir = default_user_scripts_config_dir();
     let builtin_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf))

@@ -260,6 +260,11 @@ pub fn run() {
             build_main_window(app.handle(), url, !start_minimized)?;
             install_tray(app)?;
             gateway_commands::set_app_handle(app.handle().clone());
+            // Codex 钩子的分发条目里写的是程序绝对路径：程序换了位置（更新、换安装目录）后
+            // 旧条目会指向不存在的路径，启动时按当前程序与拓展同步一次。没有拓展钩子时只读不写。
+            tauri::async_runtime::spawn_blocking(|| {
+                codex_plus_core::extension_hooks::sync_default(&commands::default_user_script_manager());
+            });
             codex_plus_core::settings::set_external_settings_change_listener(
                 gateway_commands::notify_settings_changed,
             );

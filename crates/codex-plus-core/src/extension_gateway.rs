@@ -44,10 +44,33 @@ for (const item of input.middlewares) {
 process.stdout.write(JSON.stringify({ body, changed, errors }));
 "#;
 
+/// 启用中的中间件清单缓存。每次模型请求都要查一遍，扫目录、读清单不能每次都做；
+/// 3 秒足够让拓展启停后很快生效。
+const MIDDLEWARE_CACHE_TTL: Duration = Duration::from_secs(3);
+type MiddlewareList = Vec<(String, ExtensionGatewayMiddleware)>;
+static MIDDLEWARE_CACHE: std::sync::Mutex<Option<(std::time::Instant, MiddlewareList)>> = std::sync::Mutex::new(None);
+
+fn cached_middlewares() -> MiddlewareList {
+    let mut cache = MIDDLEWARE_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, list)) = cache.as_ref() {
+        if at.elapsed() < MIDDLEWARE_CACHE_TTL {
+            return list.clone();
+        }
+    }
+    let list = crate::user_scripts::default_user_script_manager()
+        .enabled_gateway_middlewares()
+        .unwrap_or_default();
+    *cache = Some((std::time::Instant::now(), list.clone()));
+    list
+}
+
 /// 用默认的用户脚本位置改写请求。没有中间件、或任何环节失败时不改 `request`。
 pub async fn apply_request(request: &mut Value, request_path: &str) {
-    let manager = crate::user_scripts::default_user_script_manager();
-    apply_request_with(&manager, request, request_path).await;
+    let middlewares = cached_middlewares();
+    if middlewares.is_empty() {
+        return;
+    }
+    apply_middlewares(&middlewares, request, request_path).await;
 }
 
 pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value, request_path: &str) {
@@ -55,7 +78,11 @@ pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value
         Ok(middlewares) if !middlewares.is_empty() => middlewares,
         _ => return,
     };
-    match run_chain(&middlewares, request, request_path).await {
+    apply_middlewares(&middlewares, request, request_path).await;
+}
+
+async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str) {
+    match run_chain(middlewares, request, request_path).await {
         Ok(result) => {
             for error in result["errors"].as_array().into_iter().flatten() {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
