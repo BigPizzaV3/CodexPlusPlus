@@ -658,6 +658,28 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       }) as T;
       return ok({ platform: null, rate: null, usage: null, detail: "演示模式" }) as T;
     }
+    // dsh 插件演示数据：一个按教程写的组合包（工具 + skill + MCP 行 + 不兼容行）。
+    case "dsh_plugins_request": return {
+      message: "",
+      plugins: [{
+        id: "dsh-greet-bundle", name: "dsh-greet-bundle", version: "0.1.0",
+        source: { type: "npm", spec: "dsh-greet-bundle" }, root: "", managed: true, enabled: true,
+        disabledRows: [], configs: { greet: { greeting: "Hi there" } }, importedSkills: ["greet-skill"], toolCount: 1,
+        mcpJson: JSON.stringify({ mcpServers: { demo: { command: "npx", args: ["-y", "@modelcontextprotocol/server-everything"] } } }, null, 2),
+        report: {
+          kind: "bundle", title: L("问候工具", "Greeting tools"), description: L("给 dsh 用的问候工具。", "Greeting tools for dsh."), client: false, diagnostics: [],
+          skills: [{ name: "greet-skill", description: "How to greet people politely." }],
+          rows: [
+            { id: "greet", module: "dsh-greet-bundle", status: "partial", kind: "plugin", reasons: [], notes: [L("系统提示词片段会汇总进 MCP instructions，只在 Codex 连接 MCP 时提供一次", "System prompt sections are merged into MCP instructions, given once when Codex connects")], tools: [{ name: "greet", description: "Greet someone by name." }] },
+            { id: "session-tool", module: "./session.js", status: "incompatible", kind: "plugin", reasons: [L("依赖 Codex++ 不提供的服务：sessions（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）", "Needs services Codex++ does not provide: sessions")], notes: [], tools: [] },
+            { id: "demo-mcp", module: "@deepseek-ai/dsh-mcp-client", status: "compatible", kind: "mcp", reasons: [], notes: [L("MCP 配置可导入 Codex；reconnect、toolCallTimeoutMs 等 dsh 专属字段会被丢弃", "The MCP config can be imported into Codex; dsh-only fields are dropped")], tools: [] },
+          ],
+        },
+      }],
+      integration: { status: "registered", registered: true, message: "" },
+      toolchain: { node: "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node", npm: "/usr/local/bin/npm", git: "/usr/bin/git" },
+      pluginDir: "",
+    } as T;
     default: return ok() as T;
   }
 }

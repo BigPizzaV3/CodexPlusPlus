@@ -273,7 +273,7 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
                 <strong>{row.id}</strong>
                 {row.module !== row.id ? <code>{row.module}</code> : null}
                 <span className="dsh-plugin-row-actions">
-                  {row.kind === "plugin" || row.status === "disabled" ? (
+                  {(row.kind === "plugin" && row.status !== "incompatible") || row.status === "disabled" ? (
                     <>
                       <button disabled={busy !== null} onClick={() => startEdit(row)} type="button">{t("配置")}</button>
                       <button
