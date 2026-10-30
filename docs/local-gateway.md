@@ -161,13 +161,13 @@ Agent 打开「接入」后，池里所有打开的供应商的模型和所有�
   共用的缓存）逐个模型切换协议和地址——GPT / Grok / Muse 走 Responses，Claude、MiniMax、部分 Qwen 走 Anthropic，
   其余走 Chat；目录里没有的按模型名推断。每个请求带 `x-opencode-session`（按对话保持不变，缺了上游回 400）。
   Gemini 模型只走 Google 接口、免费模型只对 OpenCode 自己开放，都不列出。
-- **私有接口订阅**（`gateway/subscriptions/`）：Cursor、Kiro、Zed、Command Code、Devin、Factory、Qoder / Qoder CN、
-  WorkBuddy / WorkBuddy AI、ZCode、Xiaomi MiMo、Gemini Code Assist、Antigravity。每家实现 `Subscription`
+- **Google 订阅**（`gateway/subscriptions/`）：Gemini Code Assist、Antigravity。每家实现 `Subscription`
   （登录、刷新、列模型、发对话），在池里是一个普通的 Chat Completions 供应商：请求前地址指到 helper 的
-  `/sub/<供应商 id>/v1`，适配入口读 gateway.json 里的凭据、快过期时刷新并写回，再按各家协议（protobuf、AWS 事件流、
-  Code Assist、各家 JSON）发出去，答复统一转成 Chat SSE；失败按状态码回给管道（401 停用到重新登录、429 冷却）。
-  登录方式按家而定：浏览器、验证码、导入本机官方客户端的登录、粘贴凭据。Gemini Code Assist 只支持 Standard /
-  Enterprise（需要 Google Cloud 项目 id，可在粘贴框里填）；Antigravity 账号有被 Google 停用的风险。
+  `/sub/<供应商 id>/v1`，适配入口读 gateway.json 里的凭据、快过期时刷新并写回，再转成 Code Assist 请求发出去，
+  答复统一转成 Chat SSE；失败按状态码回给管道（401 停用到重新登录、429 冷却）。Gemini Code Assist 只支持
+  Standard / Enterprise（需要 Google Cloud 项目 id，可在粘贴框里填）；Antigravity 账号有被 Google 停用的风险。
+- 不内置：Cursor、Kiro、Zed、Command Code、Devin、Factory、Qoder、WorkBuddy、ZCode、Xiaomi MiMo 等需要冒充各家
+  客户端调用私有接口的订阅，违反厂商条款的风险大。
 - 除 ChatGPT API 外，以上登录都是冒用官方客户端身份调用未公开的接口，可能随时失效，也有账号被限制的风险。
 
 ## 限制

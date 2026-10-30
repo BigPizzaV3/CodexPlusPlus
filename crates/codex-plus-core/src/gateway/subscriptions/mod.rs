@@ -1,6 +1,6 @@
-//! 私有接口订阅：Cursor、Kiro、Devin、Qoder、Gemini Code Assist 等。
+//! 私有接口订阅：Gemini Code Assist、Antigravity。
 //!
-//! 这些订阅的接口各不相同（protobuf、AWS 事件流、各家自己的 JSON），不适合塞进 `protocol_proxy`。
+//! 这些订阅的接口与 OpenAI / Anthropic 都不同（Google Code Assist），不适合塞进 `protocol_proxy`。
 //! 做法是把每家包成一个「本地上游」：
 //!
 //! ```text
@@ -12,31 +12,17 @@
 //! 供应商池里它就是一个普通的 Chat Completions 供应商（`auth_contents` 里记着订阅类型和凭据），
 //! 路由、多账号轮换、冷却、用量统计都照旧；请求前 [`prepare`] 把地址指到本地适配入口。
 //!
-//! 新增订阅：实现 [`Subscription`]，登记到某个 `catalog_*.rs` 的 `ITEMS`。
+//! 新增订阅：实现 [`Subscription`]，登记到 `catalog.rs` 的 `ITEMS`。
 //! 这些都是冒用官方客户端身份调用未公开的接口，可能随时失效，也有账号被限制的风险（界面上会提示）。
 
 pub mod antigravity;
-pub mod b_shared;
-pub mod catalog_a;
-pub mod catalog_b;
-pub mod catalog_c;
+pub mod catalog;
 pub mod chat;
 pub mod code_assist;
-pub mod commandcode;
-pub mod cursor;
-pub mod devin;
-pub mod editor_kit;
-pub mod factory;
 pub mod gemini;
 pub mod google;
-pub mod kiro;
-pub mod mimo;
 pub mod oauth;
-pub mod qoder;
 pub mod server;
-pub mod workbuddy;
-pub mod zcode;
-pub mod zed;
 
 use std::pin::Pin;
 use std::sync::OnceLock;
@@ -172,14 +158,7 @@ pub trait Subscription: Send + Sync {
 /// 全部订阅。
 pub fn all() -> &'static [&'static dyn Subscription] {
     static ALL: OnceLock<Vec<&'static dyn Subscription>> = OnceLock::new();
-    ALL.get_or_init(|| {
-        catalog_a::ITEMS
-            .iter()
-            .chain(catalog_b::ITEMS)
-            .chain(catalog_c::ITEMS)
-            .copied()
-            .collect()
-    })
+    ALL.get_or_init(|| catalog::ITEMS.to_vec())
 }
 
 pub fn get(id: &str) -> Option<&'static dyn Subscription> {
