@@ -250,19 +250,21 @@ async fn extension_declared_tools_are_listed_and_callable() {
             "tools": [
                 {"name": "add", "description": "两数相加", "inputSchema": {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}, "script": "tools/add.mjs"},
                 {"name": "rich", "description": "返回内容块", "script": "tools/rich.mjs"},
-                {"name": "boom", "description": "会出错", "script": "tools/boom.mjs", "timeout": 5}
+                {"name": "boom", "description": "会出错", "script": "tools/boom.mjs", "timeout": 5},
+                {"name": "history", "description": "查会话", "script": "tools/history.mjs"}
             ],
             "files": [
                 {"path": "tools/add.mjs", "content": "export default ({ a, b }, { extension, tool }) => `${extension}/${tool}: ${a + b}`;"},
                 {"path": "tools/rich.mjs", "content": "export default async () => ({ content: [{ type: 'text', text: '第一段' }, { type: 'text', text: '第二段' }] });"},
-                {"path": "tools/boom.mjs", "content": "export default () => { throw new Error('坏工具'); };"}
+                {"path": "tools/boom.mjs", "content": "export default () => { throw new Error('坏工具'); };"},
+                {"path": "tools/history.mjs", "content": "export default async (args, { sessionQuery }) => sessionQuery.readTitle('no-such-session-0000').then((title) => 'OK:' + title, (error) => 'ERR:' + error.message);"}
             ]
         }),
     )
     .await;
     assert!(!error, "{written}");
     assert_eq!(written["extension"]["status"], "not_loaded");
-    assert_eq!(written["extension"]["package"]["tools"], json!(["add", "rich", "boom"]));
+    assert_eq!(written["extension"]["package"]["tools"], json!(["add", "rich", "boom", "history"]));
     let manifest: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("user/calc/codexpp.json")).unwrap()).unwrap();
     assert_eq!(manifest["renderer"], json!([]), "只声明工具的拓展没有页面入口");
 
@@ -280,6 +282,10 @@ async fn extension_declared_tools_are_listed_and_callable() {
     assert_eq!(rich["result"]["content"][1]["text"], "第二段");
     let (error, message) = call(&creator, "calc__boom", json!({})).await;
     assert!(error && message.as_str().unwrap().contains("坏工具"), "{message}");
+    // 工具脚本经宿主调用只读查询会话：错误原样回到脚本（不存在的会话，或本机没有 Codex 数据库）。
+    let history = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "calc__history", "arguments": {}}})).await.unwrap();
+    let text = history["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("ERR:") && (text.contains("没有找到会话") || text.contains("会话数据库")), "{text}");
 
     creator.manager.set_script_enabled("user:calc", false).unwrap();
     let list = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 12, "method": "tools/list"})).await.unwrap();
@@ -335,4 +341,38 @@ async fn extension_config_defaults_validation_and_delivery() {
         let response = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "pomo__minutes", "arguments": {}}})).await.unwrap();
         assert_eq!(response["result"]["content"][0]["text"], "50|green");
     }
+}
+
+#[test]
+fn package_locales_are_loaded_and_validated() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let package = |id: &str, files: &[(&str, &str)]| {
+        let dir = temp.path().join("user").join(id);
+        fs::create_dir_all(dir.join("locale")).unwrap();
+        fs::write(dir.join("codexpp.json"), json!({"id": id, "name": id, "description": "原始描述", "renderer": "main.js"}).to_string()).unwrap();
+        fs::write(dir.join("main.js"), "").unwrap();
+        for (path, content) in files {
+            fs::write(dir.join(path), content).unwrap();
+        }
+    };
+    package("hello", &[
+        ("locale/en.json", r#"{"meta": {"title": "Hello", "description": "Says hello"}, "hi": "Hi {name}"}"#),
+        ("locale/zh-TW.json", r#"{"meta": {"title": "哈囉"}}"#),
+        ("locale/README.txt", "不是语言文件，忽略"),
+    ]);
+    package("bad-name", &[("locale/english.json", "{}")]);
+    package("bad-json", &[("locale/en.json", "[1]")]);
+    let inventory = creator.manager.inventory().unwrap();
+    let find = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).unwrap().clone();
+    let hello = find("user:hello");
+    assert_eq!(hello["error"], "");
+    assert_eq!(hello["package"]["locales"]["en"], json!({"title": "Hello", "description": "Says hello"}), "摘要只带名称与描述");
+    assert_eq!(hello["package"]["locales"]["zh-TW"]["title"], "哈囉");
+    assert!(hello["package"]["locales"]["zh-TW"]["description"].is_null());
+    assert!(find("user:bad-name")["error"].as_str().unwrap().contains("不是合法的语言 id"));
+    assert!(find("user:bad-json")["error"].as_str().unwrap().contains("顶层必须是对象"));
+    // 页面拿到的清单带整份词条。
+    let bundle = creator.manager.build_initial_bundle().unwrap();
+    assert!(bundle.contains("Hi {name}"), "renderer 清单带上包内词条");
 }

@@ -1001,24 +1001,29 @@ async fn handle_claude_messages(
                     inner: stream,
                     converter: dialect.converter(&client_model, input_estimate),
                 };
-                if let Some(body) = response.buffered_body.take() {
-                    sink.send(&body).await?;
-                } else {
-                    let prefix = std::mem::take(&mut response.stream_prefix);
-                    let wire_api = response.wire_api;
-                    let (_failure, _usage, _detail, first_output_at_ms) =
-                        forward_protocol_proxy_stream(
-                            &mut sink,
-                            &prefix,
-                            response.take_response()?,
-                            wire_api,
-                            Some(&responses_body),
-                            session.as_deref(),
-                        )
-                        .await?;
-                    if let Some(first_output_at_ms) = first_output_at_ms {
-                        request_log.mark_first_token_at(first_output_at_ms);
+                {
+                    // 拓展的网关响应流中间件看到的是 Responses 事件，转换成客户端格式之前生效。
+                    let mut filtered = crate::launcher::ExtensionResponseSink::new(&mut sink, "/responses", Some(&responses_body)).await;
+                    if let Some(body) = response.buffered_body.take() {
+                        filtered.send(&body).await?;
+                    } else {
+                        let prefix = std::mem::take(&mut response.stream_prefix);
+                        let wire_api = response.wire_api;
+                        let (_failure, _usage, _detail, first_output_at_ms) =
+                            forward_protocol_proxy_stream(
+                                &mut filtered,
+                                &prefix,
+                                response.take_response()?,
+                                wire_api,
+                                Some(&responses_body),
+                                session.as_deref(),
+                            )
+                            .await?;
+                        if let Some(first_output_at_ms) = first_output_at_ms {
+                            request_log.mark_first_token_at(first_output_at_ms);
+                        }
                     }
+                    filtered.finish().await?;
                 }
                 let tail = sink.converter.finish();
                 if !tail.is_empty() {

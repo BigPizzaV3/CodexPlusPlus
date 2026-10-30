@@ -340,6 +340,13 @@ pub async fn handle_bridge_request(
         "/extensions/backend/call" => crate::extension_backend::route_call(&payload).await,
         "/extensions/backend/events" => crate::extension_backend::route_events(&payload).await,
         "/extensions/backend/stop" => crate::extension_backend::route_stop(&payload).await,
+        "/extensions/history" => {
+            let payload = payload.clone();
+            tokio::task::spawn_blocking(move || crate::extension_history::route(&payload))
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result)
+        }
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager(payload.clone()).await,
         "/manager/open-transient" => ctx.runtime.open_transient_manager(payload.clone()).await,

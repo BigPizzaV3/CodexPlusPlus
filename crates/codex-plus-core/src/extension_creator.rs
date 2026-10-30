@@ -262,7 +262,7 @@ fn tool_definitions() -> Value {
                     "backend": {"type": "object", "description": "常驻后台声明，例如 {\"script\": \"backend/main.mjs\"}；脚本默认导出 async (ctx) => ({ 方法 })，页面用 ctx.backend.call / on 调用。写法见指南「常驻后台」"},
                     "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
                     "tools": {"type": "array", "description": "给模型用的工具声明，例如 [{\"name\": \"lookup\", \"description\": \"…\", \"inputSchema\": {\"type\": \"object\", \"properties\": {…}}, \"script\": \"tools/lookup.mjs\", \"timeout\": 30}]；写法见指南「给模型加工具」", "items": {"type": "object"}},
-                    "gateway": {"type": "object", "description": "网关请求中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\", \"timeout\": 5}]}；写法见指南「网关请求中间件」"},
+                    "gateway": {"type": "object", "description": "网关中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\"}], \"response\": [{\"script\": \"gateway/response.mjs\"}]}；request 改写发给模型的请求，response 改写模型回复的事件流。写法见指南「网关请求中间件」「网关响应流中间件」"},
                     "files": {
                         "type": "array",
                         "description": "要写入的文件（包内相对路径 + 完整内容），不要包含 codexpp.json",
@@ -553,22 +553,56 @@ fn extension_tool_definitions(manager: &UserScriptManager) -> Vec<Value> {
 /// stdin：`{ script, args, extension, tool, timeoutMs }`；调用默认导出，stdout：`{ result }` 或 `{ error }`。
 const TOOL_RUNNER: &str = r#"
 import { pathToFileURL } from "node:url";
-const chunks = [];
-for await (const chunk of process.stdin) chunks.push(chunk);
-const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-let timer;
-try {
-  const module = await import(pathToFileURL(input.script).href);
-  const fn = typeof module.default === "function" ? module.default : module[input.tool];
-  if (typeof fn !== "function") throw new Error(`${input.script} 没有默认导出函数`);
-  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${input.timeoutMs / 1000} 秒）`)), input.timeoutMs); });
-  const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {} })), timeout]);
-  process.stdout.write(JSON.stringify({ result: result === undefined ? null : result }));
-} catch (error) {
-  process.stdout.write(JSON.stringify({ error: String(error?.stack || error?.message || error) }));
-} finally {
-  clearTimeout(timer);
-}
+import readline from "node:readline";
+const write = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const lines = readline.createInterface({ input: process.stdin });
+const hostPending = new Map();
+let hostSeq = 0;
+const host = (service, method, params) => new Promise((resolve, reject) => {
+  const id = ++hostSeq;
+  hostPending.set(id, { resolve, reject });
+  write({ host: id, service, method, params: params ?? null });
+});
+const withId = (method) => (id, options) => host("sessionQuery", method, { id, options: options ?? {} });
+// 只读会话查询，和页面、后台里的 sessionQuery 同一套方法。
+const sessionQuery = Object.freeze({
+  listSessions: (options) => host("sessionQuery", "listSessions", options ?? {}),
+  filterSessions: (filters) => host("sessionQuery", "filterSessions", filters ?? {}),
+  readSession: (id) => host("sessionQuery", "readSession", { id }),
+  readTitle: (id) => host("sessionQuery", "readTitle", { id }),
+  listEvents: withId("listEvents"),
+  filterEvents: withId("filterEvents"),
+  readEvent: (query) => host("sessionQuery", "readEvent", query ?? {}),
+  searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
+  searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
+});
+let input = null;
+lines.on("line", async (line) => {
+  let message;
+  try { message = JSON.parse(line); } catch { return; }
+  if (message.hostReply !== undefined) {
+    const waiter = hostPending.get(message.hostReply);
+    hostPending.delete(message.hostReply);
+    if (message.error !== undefined) waiter?.reject(new Error(message.error)); else waiter?.resolve(message.result);
+    return;
+  }
+  if (input) return;
+  input = message;
+  let timer;
+  try {
+    const module = await import(pathToFileURL(input.script).href);
+    const fn = typeof module.default === "function" ? module.default : module[input.tool];
+    if (typeof fn !== "function") throw new Error(`${input.script} 没有默认导出函数`);
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${input.timeoutMs / 1000} 秒）`)), input.timeoutMs); });
+    const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {}, sessionQuery })), timeout]);
+    write({ final: { result: result === undefined ? null : result } });
+  } catch (error) {
+    write({ final: { error: String(error?.stack || error?.message || error) } });
+  } finally {
+    clearTimeout(timer);
+    process.exit(0);
+  }
+});
 "#;
 
 /// 执行一个拓展工具。结果约定：字符串 → 文本；`{ content: [...] }` → 原样作为 MCP 内容块；
@@ -589,7 +623,7 @@ async fn call_extension_tool(creator: &ExtensionCreator, name: &str, arguments: 
         "timeoutMs": tool.timeout_secs * 1000,
         "config": tool.config,
     });
-    let output = crate::extension_node::run_runner(
+    let output = crate::extension_node::run_runner_with_host(
         &node,
         TOOL_RUNNER,
         &input,

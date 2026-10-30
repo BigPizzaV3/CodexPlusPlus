@@ -13390,6 +13390,53 @@ button.side-item:hover {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
 }
+/* 拓展页理念横幅：大标题 + 一句说明 + 能力标签，与下方卡片同宽同圆角 */
+.shell .extensions-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid hsl(var(--primary) / 0.25);
+  border-radius: 10px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, hsl(var(--primary) / 0.14), transparent 60%),
+    hsl(var(--card));
+}
+.shell .extensions-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.shell .extensions-hero-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: hsl(var(--foreground));
+}
+.shell .extensions-hero-lead {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: hsl(var(--muted-foreground));
+}
+.shell .extensions-hero-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.shell .extensions-hero-capabilities li {
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  line-height: 22px;
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+}
 /* 对话造拓展：图标 + 标题/说明 + 右侧操作，与上方状态条同宽同圆角 */
 .shell .extension-creator-card {
   display: flex;

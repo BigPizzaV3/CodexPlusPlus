@@ -37,6 +37,49 @@ pub async fn run_runner(node: &Path, runner: &str, input: &Value, limit: Duratio
     serde_json::from_slice(&buffer).context("拓展脚本运行器输出不是 JSON")
 }
 
+/// 带宿主调用的运行方式：stdin 第一行写 `input` 且保持打开；运行器中途可以写
+/// `{ host, service, method, params }` 请求 Codex++（目前是只读会话查询），回复以
+/// `{ hostReply, result | error }` 写回 stdin；最后一行 `{ final: 结果 }` 即运行结果。
+pub async fn run_runner_with_host(node: &Path, runner: &str, input: &Value, limit: Duration) -> anyhow::Result<Value> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut command = tokio::process::Command::new(node);
+    command
+        .args(["--input-type=module", "-e", runner])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(crate::windows_create_no_window());
+    let mut child = command.spawn().context("无法启动 Node 运行拓展脚本")?;
+    let mut stdin = child.stdin.take().context("Node 进程没有 stdin")?;
+    let stdout = child.stdout.take().context("Node 进程没有 stdout")?;
+    stdin.write_all(format!("{input}\n").as_bytes()).await?;
+    stdin.flush().await?;
+    let run = async {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        while let Some(line) = lines.next_line().await? {
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if let Some(id) = message.get("host").and_then(Value::as_u64) {
+                let reply = match crate::extension_backend::host_call(&message).await {
+                    Ok(result) => serde_json::json!({ "hostReply": id, "result": result }),
+                    Err(error) => serde_json::json!({ "hostReply": id, "error": format!("{error:#}") }),
+                };
+                stdin.write_all(format!("{reply}\n").as_bytes()).await?;
+                stdin.flush().await?;
+            } else if let Some(result) = message.get("final") {
+                return anyhow::Ok(result.clone());
+            }
+        }
+        anyhow::bail!("拓展脚本运行器没有给出结果")
+    };
+    let result = tokio::time::timeout(limit, run).await.context("拓展脚本整体超时")?;
+    let _ = child.kill().await;
+    result
+}
+
 /// 找 Node；找不到时给出统一的提示。
 pub fn require_node() -> anyhow::Result<std::path::PathBuf> {
     crate::dsh_plugins::locate_node().context(
