@@ -660,16 +660,18 @@ pub fn codex_user_data_is_absent(
         executable.is_absolute() && user_data_dir.is_absolute(),
         "多开路径必须是绝对路径"
     );
-    let executable = executable.canonicalize()?;
+    let resolved_executable = scan_image_path_with(executable, |path| path.canonicalize())?;
     let user_data_dir = user_data_dir.canonicalize()?;
-    let name = executable
+    let name = resolved_executable
+        .as_deref()
+        .unwrap_or(executable)
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("缺少桌面程序名"))?;
     for entry in bounded_process_snapshot(32768)? {
         if !entry.exe_file.eq_ignore_ascii_case(&name.to_string_lossy()) {
             continue;
         }
-        if windows_process_uses_user_data(entry.process_id, &executable, &user_data_dir)? {
+        if windows_process_uses_user_data(entry.process_id, executable, &user_data_dir)? {
             return Ok(false);
         }
     }
@@ -681,7 +683,7 @@ pub fn codex_user_data_is_absent(
             let owners = crate::windows_integration::loopback_listener_process_ids(port)?;
             anyhow::ensure!(!owners.is_empty(), "占用端口的进程归属尚未确认");
             for pid in &owners {
-                if windows_process_uses_user_data(*pid, &executable, &user_data_dir)? {
+                if windows_process_uses_user_data(*pid, executable, &user_data_dir)? {
                     return Ok(false);
                 }
             }
@@ -707,6 +709,39 @@ fn process_read_or_exited<T>(
 }
 
 #[cfg(windows)]
+fn scan_image_path_with(
+    path: &Path,
+    resolve: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
+) -> std::io::Result<Option<PathBuf>> {
+    use std::io::{Error, ErrorKind};
+    if !path.is_absolute() {
+        return Err(Error::from(ErrorKind::InvalidInput));
+    }
+    // 映像允许安装路径消失或权限受限；数据目录仍由调用方严格解析。
+    match resolve(path) {
+        Ok(resolved) => Ok(Some(resolved)),
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::PermissionDenied) => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn scan_images_match_with(
+    actual: &Path,
+    expected: &Path,
+    mut resolve: impl FnMut(&Path) -> std::io::Result<PathBuf>,
+) -> std::io::Result<bool> {
+    let resolved_actual = scan_image_path_with(actual, &mut resolve)?;
+    let resolved_expected = scan_image_path_with(expected, resolve)?;
+    Ok(match (resolved_actual, resolved_expected) {
+        (Some(actual), Some(expected)) => windows_process_tree::same_resolved_path(&actual, &expected),
+        _ => windows_process_tree::same_resolved_path(actual, expected),
+    })
+}
+
+#[cfg(windows)]
 fn windows_process_uses_user_data(
     pid: u32,
     executable: &Path,
@@ -722,17 +757,16 @@ fn windows_process_uses_user_data(
     if !process.is_alive()? {
         return Ok(false);
     }
-    let Some(image) = process_read_or_exited(
-        process.image().and_then(|image| Ok(image.canonicalize()?)),
+    let Some(image_matches) = process_read_or_exited(
+        process.image().and_then(|image| {
+            Ok(scan_images_match_with(&image, executable, |path| path.canonicalize())?)
+        }),
         || Ok(!process.is_alive()?),
     )?
     else {
         return Ok(false);
     };
-    if !image
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&executable.to_string_lossy())
-    {
+    if !image_matches {
         return Ok(false);
     }
     let Some(arguments) = process_read_or_exited(process.arguments(), || Ok(!process.is_alive()?))?
@@ -1032,6 +1066,73 @@ pub fn terminate_verified_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn absence_image_fallback_only_accepts_missing_or_denied_absolute_images() {
+        use std::io::{Error, ErrorKind};
+        let image = Path::new(r"C:\Program Files\WindowsApps\Codex\ChatGPT.exe");
+        let equivalent = Path::new(r"\\?\C:\PROGRAM FILES\WINDOWSAPPS\CODEX\CHATGPT.EXE");
+        let neighbor = Path::new(r"C:\Program Files\OtherApps\Codex\ChatGPT.exe");
+        for kind in [ErrorKind::NotFound, ErrorKind::PermissionDenied] {
+            assert!(scan_image_path_with(image, |_| Err(Error::from(kind))).unwrap().is_none());
+            assert!(scan_images_match_with(image, equivalent, |_| Err(Error::from(kind))).unwrap());
+            assert!(!scan_images_match_with(image, neighbor, |_| Err(Error::from(kind))).unwrap());
+            assert!(scan_images_match_with(Path::new("ChatGPT.exe"), image, |_| {
+                Err(Error::from(kind))
+            }).is_err());
+        }
+        for kind in [ErrorKind::Other, ErrorKind::InvalidData, ErrorKind::TimedOut] {
+            assert!(scan_images_match_with(image, image, |_| Err(Error::from(kind))).is_err());
+            assert!(scan_images_match_with(image, neighbor, |path| {
+                Err(Error::from(if path == image { ErrorKind::PermissionDenied } else { kind }))
+            }).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn absence_image_comparison_prefers_resolved_paths_and_preserves_original_fallback() {
+        use std::io::{Error, ErrorKind};
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("ChatGPT.exe");
+        let neighbor = temp.path().join("Neighbor.exe");
+        let mut calls = 0;
+        assert!(!scan_images_match_with(&image, &image, |_| {
+            calls += 1;
+            Ok(if calls == 1 { image.clone() } else { neighbor.clone() })
+        }).unwrap());
+        assert!(scan_images_match_with(&image, &image, |path| {
+            if path == image && calls == 2 {
+                calls += 1;
+                Ok(PathBuf::from(format!(r"\\?\{}", path.display())))
+            } else {
+                Err(Error::from(ErrorKind::PermissionDenied))
+            }
+        }).unwrap());
+        std::fs::create_dir(temp.path().join("nested")).unwrap();
+        std::fs::write(&image, "").unwrap();
+        let alias = temp.path().join("nested/../ChatGPT.exe");
+        assert!(scan_images_match_with(&image, &alias, |path| path.canonicalize()).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn absence_image_missing_installation_does_not_block_native_neighbor_ports() {
+        let temp = tempfile::tempdir().unwrap();
+        let removed_image = temp.path().join("removed-installation/absence-image-fixture.exe");
+        let user_data = temp.path().join("own-data");
+        std::fs::create_dir(&user_data).unwrap();
+        let debug = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let helper = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let debug_port = debug.local_addr().unwrap().port();
+        let helper_port = helper.local_addr().unwrap().port();
+        assert!(codex_user_data_is_absent(&removed_image, &user_data, debug_port, helper_port).unwrap());
+        assert!(codex_user_data_is_absent(
+            &removed_image, &temp.path().join("missing-user-data"), debug_port, helper_port
+        ).is_err());
+        assert!(debug.local_addr().is_ok() && helper.local_addr().is_ok());
+    }
 
     #[test]
     fn macos_snapshot_preserves_spaced_images_and_rejects_incomplete_output() {
