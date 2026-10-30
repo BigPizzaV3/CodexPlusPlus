@@ -81,14 +81,28 @@ pub async fn serve(creator: ExtensionCreator) -> anyhow::Result<()> {
             },
         };
         if let Some(response) = response {
+            let changes_tools = response_changes_tools(&response);
             let stdout = std::io::stdout();
             let mut output = stdout.lock();
             serde_json::to_writer(&mut output, &response).context("无法写入 MCP 响应")?;
             output.write_all(b"\n")?;
+            // 拓展写入、启停、重载后，它声明的工具可能变了：通知 Codex 重新拉工具列表。
+            if changes_tools {
+                output.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n")?;
+            }
             output.flush()?;
         }
     }
     Ok(())
+}
+
+/// 响应是否来自会改变拓展工具列表的调用（写入、启停、重载），据此发 list_changed 通知。
+fn response_changes_tools(response: &Value) -> bool {
+    response
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .is_some_and(|value| value.get("reload").is_some())
 }
 
 /// 读一行；超过上限时丢弃整行余下部分并返回 `Some(None)`，EOF 返回 `None`。
@@ -133,12 +147,16 @@ pub async fn handle_request(creator: &ExtensionCreator, request: Value) -> Optio
             } else {
                 "2025-06-18"
             };
-            json!({"protocolVersion": version, "capabilities": {"tools": {"listChanged": false}},
+            json!({"protocolVersion": version, "capabilities": {"tools": {"listChanged": true}},
                 "serverInfo": {"name": "codex-plus-extension-creator", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS})
         }
         "ping" => json!({}),
-        "tools/list" => json!({"tools": tool_definitions()}),
+        "tools/list" => {
+            let mut tools = tool_definitions().as_array().cloned().unwrap_or_default();
+            tools.extend(extension_tool_definitions(&creator.manager));
+            json!({ "tools": tools })
+        }
         "tools/call" => match params.get("name").and_then(Value::as_str) {
             Some(name) => tool_result(
                 call_tool(
@@ -241,6 +259,8 @@ fn tool_definitions() -> Value {
                     "routes": {"type": "array", "items": {"type": "string"}, "description": "拓展需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
                     "renderer": {"type": "array", "items": {"type": "string"}, "description": "按顺序执行的页面入口文件；省略时若 files 里有 renderer.js 就用它，只声明 hooks 的拓展可以没有页面入口"},
                     "hooks": {"type": "object", "description": "Codex 钩子声明，例如 {\"PreToolUse\": [{\"matcher\": \"^Bash$\", \"script\": \"hooks/guard.mjs\", \"timeout\": 30}]}；写法见指南「Codex 钩子」"},
+                    "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
+                    "tools": {"type": "array", "description": "给模型用的工具声明，例如 [{\"name\": \"lookup\", \"description\": \"…\", \"inputSchema\": {\"type\": \"object\", \"properties\": {…}}, \"script\": \"tools/lookup.mjs\", \"timeout\": 30}]；写法见指南「给模型加工具」", "items": {"type": "object"}},
                     "gateway": {"type": "object", "description": "网关请求中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\", \"timeout\": 5}]}；写法见指南「网关请求中间件」"},
                     "files": {
                         "type": "array",
@@ -265,6 +285,17 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {"id": {"type": "string"}, "enabled": {"type": "boolean"}},
                 "required": ["id", "enabled"],
+                "additionalProperties": false,
+            },
+            "annotations": writes,
+        },
+        {
+            "name": "codexpp_extension_configure",
+            "description": "修改一个拓展包的配置值（只能改清单 config 里声明过的项），保存后热重载。用户说「把 X 改成 Y」且 X 是拓展配置时用它，不必重写代码。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "values": {"type": "object", "description": "要设置的配置项与值"}},
+                "required": ["id", "values"],
                 "additionalProperties": false,
             },
             "annotations": writes,
@@ -295,6 +326,10 @@ struct WriteArguments {
     hooks: Option<Value>,
     #[serde(default)]
     gateway: Option<Value>,
+    #[serde(default)]
+    tools: Option<Value>,
+    #[serde(default)]
+    config: Option<Value>,
     files: Vec<WriteFile>,
 }
 
@@ -333,6 +368,13 @@ struct ScreenshotArguments {
 #[serde(deny_unknown_fields)]
 struct IdArguments {
     id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigureArguments {
+    id: String,
+    values: serde_json::Map<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -382,6 +424,8 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 renderer: arguments.renderer,
                 hooks: arguments.hooks,
                 gateway: arguments.gateway,
+                tools: arguments.tools,
+                config: arguments.config,
                 files,
             })?;
             let key = user_scripts::extension_package_key(&arguments.id);
@@ -400,6 +444,16 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
             reload_and_report(creator, &key).await
         }
         "codexpp_extension_reload" => reload_and_report(creator, "").await,
+        "codexpp_extension_configure" => {
+            let arguments: ConfigureArguments =
+                serde_json::from_value(arguments).context("codexpp_extension_configure 参数无效")?;
+            let key = user_scripts::extension_package_key(&arguments.id);
+            let config = creator.manager.set_extension_config(&key, &arguments.values)?;
+            let mut result = reload_and_report(creator, &key).await?;
+            result["config"] = config;
+            Ok(result)
+        }
+        name if name.contains("__") => call_extension_tool(creator, name, arguments).await,
         "codexpp_extension_inspect" => {
             let arguments: InspectArguments =
                 serde_json::from_value(arguments).context("codexpp_extension_inspect 参数无效")?;
@@ -474,6 +528,80 @@ async fn reload(creator: &ExtensionCreator) -> Value {
         }
     }
     json!({ "reloaded": false, "reason": last_error })
+}
+
+/// 启用中拓展声明的工具，以 MCP 工具定义返回。名字是 `<拓展 id>__<工具名>`。
+fn extension_tool_definitions(manager: &UserScriptManager) -> Vec<Value> {
+    manager
+        .enabled_extension_tools()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, tool)| {
+            json!({
+                "name": user_scripts::extension_tool_public_name(&id, &tool.name),
+                "description": format!("[Codex++ 拓展 {id}] {}", tool.description),
+                "inputSchema": tool.input_schema,
+            })
+        })
+        .collect()
+}
+
+/// stdin：`{ script, args, extension, tool, timeoutMs }`；调用默认导出，stdout：`{ result }` 或 `{ error }`。
+const TOOL_RUNNER: &str = r#"
+import { pathToFileURL } from "node:url";
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+let timer;
+try {
+  const module = await import(pathToFileURL(input.script).href);
+  const fn = typeof module.default === "function" ? module.default : module[input.tool];
+  if (typeof fn !== "function") throw new Error(`${input.script} 没有默认导出函数`);
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${input.timeoutMs / 1000} 秒）`)), input.timeoutMs); });
+  const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {} })), timeout]);
+  process.stdout.write(JSON.stringify({ result: result === undefined ? null : result }));
+} catch (error) {
+  process.stdout.write(JSON.stringify({ error: String(error?.stack || error?.message || error) }));
+} finally {
+  clearTimeout(timer);
+}
+"#;
+
+/// 执行一个拓展工具。结果约定：字符串 → 文本；`{ content: [...] }` → 原样作为 MCP 内容块；
+/// 其它值 → JSON 文本。脚本抛错 → isError。
+async fn call_extension_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> anyhow::Result<Value> {
+    let (id, tool) = creator
+        .manager
+        .enabled_extension_tools()?
+        .into_iter()
+        .find(|(id, tool)| user_scripts::extension_tool_public_name(id, &tool.name) == name)
+        .with_context(|| format!("未知工具 {name}（对应的拓展可能已停用或删除）"))?;
+    let node = crate::extension_node::require_node()?;
+    let input = json!({
+        "script": tool.script,
+        "args": arguments,
+        "extension": id,
+        "tool": tool.name,
+        "timeoutMs": tool.timeout_secs * 1000,
+        "config": tool.config,
+    });
+    let output = crate::extension_node::run_runner(
+        &node,
+        TOOL_RUNNER,
+        &input,
+        Duration::from_secs(tool.timeout_secs + 5),
+    )
+    .await?;
+    if let Some(error) = output.get("error").and_then(Value::as_str) {
+        anyhow::bail!("拓展 {id} 的工具 {} 出错：{error}", tool.name);
+    }
+    let result = output.get("result").cloned().unwrap_or(Value::Null);
+    let content = match &result {
+        Value::String(text) => json!([{ "type": "text", "text": text }]),
+        Value::Object(object) if object.get("content").is_some_and(Value::is_array) => object["content"].clone(),
+        other => json!([{ "type": "text", "text": other.to_string() }]),
+    };
+    Ok(json!({ MCP_CONTENT_KEY: content }))
 }
 
 /// 用户正在运行的 Codex 主页面的 CDP 地址。只认 Codex 主页面，不碰管理器或其他窗口。

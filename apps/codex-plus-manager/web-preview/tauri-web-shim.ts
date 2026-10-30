@@ -546,7 +546,14 @@ const demoClaudeEnhance = {
 const demoUserScripts = { enabled: true, skip_next_start: false, scripts: [
   { key: "user:copy-title.js", name: "copy-title.js", source: "user", kind: "script", package: null, enabled: true, status: "loaded", error: "" },
   { key: "user:pomodoro_timer", name: "番茄钟", source: "user", kind: "package", enabled: true, status: "loaded", error: "",
-    package: { id: "pomodoro_timer", version: "0.1.0", description: "在左侧图标栏提供可持久化的 25 分钟番茄钟", engine: 1, routes: [] } },
+    package: { id: "pomodoro_timer", version: "0.1.0", description: "在左侧图标栏提供可持久化的 25 分钟番茄钟", engine: 1, routes: [],
+      hookEvents: ["Stop"], tools: ["remaining"],
+      configSchema: [
+        { key: "minutes", type: "number", title: "专注时长（分钟）", description: "每个番茄钟的长度", default: 25, options: [], secret: false },
+        { key: "sound", type: "boolean", title: "结束时提示音", description: "", default: true, options: [], secret: false },
+        { key: "theme", type: "select", title: "配色", description: "", default: "red", options: [{ value: "red", label: "番茄红" }, { value: "green", label: "薄荷绿" }], secret: false },
+      ],
+      config: { minutes: 25, sound: true, theme: "red" } } },
   { key: "user:future-ext", name: "未来拓展", source: "user", kind: "package", enabled: true, status: "failed",
     error: "需要拓展 API v2，当前 Codex++ 提供 v1，请升级 Codex++", package: { id: "future-ext", version: "1.0.0", description: "", engine: 2, routes: [] } },
 ] };
@@ -666,6 +673,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       }) as T;
       return ok({ platform: null, rate: null, usage: null, detail: "演示模式" }) as T;
     }
+    case "set_extension_config": return settingsResult() as T;
     case "extension_creator_request": return {
       status: args.action === "connect" ? "connected" : "not_connected",
       message: "", configPath: "~/.codex/config.toml", extensionsDirectory: "~/.config/Codex++/user_scripts",

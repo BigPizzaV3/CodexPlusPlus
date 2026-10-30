@@ -44,7 +44,7 @@ const results = await Promise.all(input.hooks.map(async (hook) => {
     const fn = typeof module.default === "function" ? module.default : module[input.event];
     if (typeof fn !== "function") return { id: hook.id, error: `${hook.script} 没有默认导出函数` };
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${hook.timeoutMs / 1000} 秒）`)), hook.timeoutMs); });
-    const output = await Promise.race([Promise.resolve(fn(structuredClone(input.payload), { event: input.event, extension: hook.id })), timeout]);
+    const output = await Promise.race([Promise.resolve(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {} })), timeout]);
     return { id: hook.id, output: output ?? null };
   } catch (error) {
     return { id: hook.id, error: String(error?.stack || error?.message || error) };
@@ -84,9 +84,7 @@ pub async fn dispatch(
     if hooks.is_empty() {
         return Ok(json!({}));
     }
-    let node = crate::dsh_plugins::locate_node().context(
-        "没有找到 Node 运行时，拓展钩子未运行：请安装 Codex App（自带 Node）或 Node.js，也可用 CODEX_PLUS_NODE 指定",
-    )?;
+    let node = crate::extension_node::require_node()?;
     let input = json!({
         "event": event,
         "subject": matcher_subject(event, &payload),
@@ -96,10 +94,12 @@ pub async fn dispatch(
             "script": hook.script,
             "matcher": hook.matcher,
             "timeoutMs": hook.timeout_secs * 1000,
+            "config": hook.config,
         })).collect::<Vec<_>>(),
     });
     let longest = hooks.iter().map(|(_, hook)| hook.timeout_secs).max().unwrap_or(30);
-    let results = run_node(&node, &input, Duration::from_secs(longest + 5)).await?;
+    let results = crate::extension_node::run_runner(&node, RUNNER, &input, Duration::from_secs(longest + 5)).await?;
+    let results = results.as_array().cloned().unwrap_or_default();
     for item in &results {
         if let Some(error) = item.get("error").and_then(Value::as_str) {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -115,35 +115,6 @@ pub async fn dispatch(
     Ok(merge_outputs(event, &outputs))
 }
 
-async fn run_node(node: &Path, input: &Value, limit: Duration) -> anyhow::Result<Vec<Value>> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut command = tokio::process::Command::new(node);
-    command
-        .args(["--input-type=module", "-e", RUNNER])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    // Windows 上不能闪出黑色终端窗口。
-    #[cfg(windows)]
-    command.creation_flags(crate::windows_create_no_window());
-    let mut child = command.spawn().context("无法启动 Node 运行拓展钩子")?;
-    let mut stdin = child.stdin.take().context("Node 进程没有 stdin")?;
-    stdin.write_all(input.to_string().as_bytes()).await?;
-    drop(stdin);
-    let mut stdout = child.stdout.take().context("Node 进程没有 stdout")?;
-    let read = async {
-        let mut buffer = Vec::new();
-        stdout.read_to_end(&mut buffer).await?;
-        child.wait().await?;
-        anyhow::Ok(buffer)
-    };
-    let buffer = tokio::time::timeout(limit, read)
-        .await
-        .context("拓展钩子整体超时")??;
-    let results: Value = serde_json::from_slice(&buffer).context("拓展钩子运行器输出不是 JSON")?;
-    Ok(results.as_array().cloned().unwrap_or_default())
-}
 
 /// 按 Codex 钩子协议合并多个拓展的输出。规则（与同一事件多条钩子的语义一致）：
 /// - `permissionDecision`：任一 deny 即 deny；否则任一 allow 即 allow（只采用第一个 `updatedInput`）

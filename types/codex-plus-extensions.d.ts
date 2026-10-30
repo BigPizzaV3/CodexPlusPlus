@@ -210,6 +210,7 @@ interface CodexPlusExtensionManifest {
   description: string;
   engines: { codexpp: number };
   permissions: { routes: string[] };
+  config: Record<string, unknown>;
 }
 
 interface CodexPlusExtensionDefinition {
@@ -226,6 +227,8 @@ interface CodexPlusExtensionContext {
   readonly manifest: CodexPlusExtensionManifest | null;
   readonly disposed: boolean;
   readonly storage: CodexPlusExtensionStorage;
+  /** 生效配置：清单 `config` 的默认值叠加用户设置的值。只读；改配置会热重载拓展。 */
+  readonly config: Readonly<Record<string, unknown>>;
 
   /** 立即执行 fn；它返回的函数在卸载时调用。返回值可提前撤销。 */
   effect(fn: () => void | (() => void)): CodexPlusDispose;

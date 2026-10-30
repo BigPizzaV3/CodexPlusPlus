@@ -13525,6 +13525,31 @@ button.side-item:hover {
 .shell .user-script-row .user-script-name .user-script-hooks {
   color: hsl(var(--primary));
 }
+/* 拓展设置表单：展开在拓展行下方 */
+.shell .extension-config-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.35);
+}
+.shell .extension-config-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 13px;
+}
+.shell .extension-config-field small {
+  grid-column: 2;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+.shell .extension-config-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
 /* 本地脚本状态列：开关 + 加载状态标记 */
 .shell .user-script-row .user-script-state {
   display: flex;

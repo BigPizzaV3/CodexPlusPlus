@@ -111,6 +111,9 @@ pub struct UserScriptConfig {
     pub skip_next_start: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub market: BTreeMap<String, MarketScriptInstall>,
+    /// 拓展包的配置值，键是脚本 key（`user:<id>`）。只存清单 schema 里声明过的键。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub configs: BTreeMap<String, Map<String, Value>>,
 }
 
 impl Default for UserScriptConfig {
@@ -120,6 +123,7 @@ impl Default for UserScriptConfig {
             scripts: BTreeMap::new(),
             skip_next_start: false,
             market: BTreeMap::new(),
+            configs: BTreeMap::new(),
         }
     }
 }
@@ -315,7 +319,65 @@ impl UserScriptManager {
             .filter(|package| package.error.is_none())
             .flat_map(|package| {
                 let id = package.id.clone();
-                package.hooks.into_iter().map(move |hook| (id.clone(), hook))
+                let config = package.config.clone();
+                package.hooks.into_iter().map(move |mut hook| {
+                    hook.config = config.clone();
+                    (id.clone(), hook)
+                })
+            })
+            .collect())
+    }
+
+    /// 保存一个拓展包的配置：只接受清单 schema 里声明的键，类型不符即报错。返回生效配置。
+    pub fn set_extension_config(&self, key: &str, values: &Map<String, Value>) -> anyhow::Result<Value> {
+        let config = self.load_config();
+        let package = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .and_then(|script| script.package)
+            .with_context(|| format!("没有找到拓展包 {key}"))?;
+        if let Some(error) = &package.error {
+            anyhow::bail!("拓展包清单有误，不能保存配置：{error}");
+        }
+        let mut stored = Map::new();
+        for (name, value) in values {
+            let field = package
+                .config_schema
+                .iter()
+                .find(|field| &field.key == name)
+                .with_context(|| format!("拓展没有声明配置项 {name}"))?;
+            if !field.accepts(value) {
+                anyhow::bail!("配置项 {name} 的值与类型 {} 不符", field.kind);
+            }
+            stored.insert(name.clone(), value.clone());
+        }
+        let _guard = self.config_lock.lock().unwrap();
+        let mut latest = self.load_config_unlocked();
+        latest.configs.insert(key.to_string(), stored.clone());
+        self.save_config_unlocked(&latest)?;
+        Ok(resolve_extension_config(&package.config_schema, Some(&stored)))
+    }
+
+    /// 启用中、清单无误的拓展包声明的模型工具，附带拓展 id。
+    pub fn enabled_extension_tools(&self) -> anyhow::Result<Vec<(String, ExtensionTool)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none())
+            .flat_map(|package| {
+                let id = package.id.clone();
+                let config = package.config.clone();
+                package.tools.into_iter().map(move |mut tool| {
+                    tool.config = config.clone();
+                    (id.clone(), tool)
+                })
             })
             .collect())
     }
@@ -334,7 +396,11 @@ impl UserScriptManager {
             .filter(|package| package.error.is_none())
             .flat_map(|package| {
                 let id = package.id.clone();
-                package.gateway_request.into_iter().map(move |item| (id.clone(), item))
+                let config = package.config.clone();
+                package.gateway_request.into_iter().map(move |mut item| {
+                    item.config = config.clone();
+                    (id.clone(), item)
+                })
             })
             .collect())
     }
@@ -372,7 +438,9 @@ impl UserScriptManager {
         // 没指定页面入口时：有 renderer.js 就用它；只声明 hooks 的拓展可以没有页面入口。
         let renderer = if !write.renderer.is_empty() {
             write.renderer.clone()
-        } else if write.files.contains_key("renderer.js") || (write.hooks.is_none() && write.gateway.is_none()) {
+        } else if write.files.contains_key("renderer.js")
+            || (write.hooks.is_none() && write.gateway.is_none() && write.tools.is_none())
+        {
             vec!["renderer.js".to_string()]
         } else {
             Vec::new()
@@ -441,6 +509,12 @@ impl UserScriptManager {
         }
         if let Some(gateway) = &write.gateway {
             manifest["gateway"] = gateway.clone();
+        }
+        if let Some(tools) = &write.tools {
+            manifest["tools"] = tools.clone();
+        }
+        if let Some(config) = &write.config {
+            manifest["config"] = config.clone();
         }
         crate::settings::atomic_write(
             &directory.join(EXTENSION_MANIFEST_FILE),
@@ -677,7 +751,11 @@ impl UserScriptManager {
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_default();
             let key = format!("{source}:{name}");
-            let package = path.is_dir().then(|| load_extension_package(&path));
+            let package = path.is_dir().then(|| {
+                let mut package = load_extension_package(&path);
+                package.config = resolve_extension_config(&package.config_schema, config.configs.get(&key));
+                package
+            });
             scripts.push(UserScriptFile {
                 enabled: config.scripts.get(&key).copied().unwrap_or(true),
                 key,
@@ -719,7 +797,78 @@ struct ExtensionPackage {
     renderer: Vec<PathBuf>,
     hooks: Vec<ExtensionHook>,
     gateway_request: Vec<ExtensionGatewayMiddleware>,
+    tools: Vec<ExtensionTool>,
+    config_schema: Vec<ExtensionConfigField>,
+    /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
+    config: Value,
     error: Option<String>,
+}
+
+/// 拓展配置项（codexpp.json 的 `config.<key>`）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionConfigField {
+    pub key: String,
+    /// string / number / boolean / select
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub title: String,
+    pub description: String,
+    pub default: Value,
+    /// select 的可选值：[{ value, label }]
+    pub options: Vec<Value>,
+    /// 界面上按密码框显示。值仍以明文存在本机 user_scripts.json。
+    pub secret: bool,
+}
+
+impl ExtensionConfigField {
+    /// 校验一个值是否合乎类型；select 必须是可选值之一。
+    fn accepts(&self, value: &Value) -> bool {
+        match self.kind.as_str() {
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            "select" => self.options.iter().any(|option| option.get("value") == Some(value)),
+            _ => false,
+        }
+    }
+}
+
+/// 生效配置：每个声明的键取已存且合法的值，否则取默认值。
+fn resolve_extension_config(schema: &[ExtensionConfigField], stored: Option<&Map<String, Value>>) -> Value {
+    let mut resolved = Map::new();
+    for field in schema {
+        let value = stored
+            .and_then(|values| values.get(&field.key))
+            .filter(|value| field.accepts(value))
+            .cloned()
+            .unwrap_or_else(|| field.default.clone());
+        resolved.insert(field.key.clone(), value);
+    }
+    Value::Object(resolved)
+}
+
+/// 拓展声明的一个模型工具（codexpp.json 的 `tools[]`），由 Codex++ 拓展 MCP 对外提供。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExtensionTool {
+    /// 拓展内的工具名：字母、数字、_、-。对外名为 `<拓展 id>__<name>`。
+    pub name: String,
+    pub description: String,
+    /// JSON Schema（object），原样交给 MCP。
+    pub input_schema: Value,
+    /// 包内脚本的绝对路径：默认导出 `async (args, context) => 结果`。
+    pub script: PathBuf,
+    pub timeout_secs: u64,
+    /// 所属拓展的生效配置，作为 context.config 交给脚本。
+    pub config: Value,
+}
+
+/// 拓展工具单次调用的超时上限（秒）。
+pub const EXTENSION_TOOL_MAX_TIMEOUT_SECS: u64 = 300;
+
+/// 拓展工具对外的名字。MCP 工具名只能是字母、数字、_、-，最长 64。
+pub fn extension_tool_public_name(extension_id: &str, tool: &str) -> String {
+    format!("{extension_id}__{tool}")
 }
 
 /// 拓展声明的一条网关请求中间件（codexpp.json 的 `gateway.request[]`）。
@@ -728,23 +877,34 @@ pub struct ExtensionGatewayMiddleware {
     /// 包内脚本的绝对路径：默认导出 `async (body, context) => 新 body | null`。
     pub script: PathBuf,
     pub timeout_secs: u64,
+    /// 所属拓展的生效配置，作为 context.config 交给脚本。
+    pub config: Value,
 }
 
 /// 网关请求中间件的超时上限（秒）：它挡在每一次模型请求前面，不能太久。
 pub const EXTENSION_GATEWAY_MAX_TIMEOUT_SECS: u64 = 10;
 
-/// 与管理器一致的默认用户脚本位置：内置目录在程序旁，用户目录在配置目录下。
-/// 给不经过管理器的进程（本地代理、钩子分发）用。
+/// Codex++ 的用户脚本配置目录：Windows 为 `%APPDATA%\\Codex++`，其余为 `$XDG_CONFIG_HOME/Codex++`
+/// 或 `~/.config/Codex++`。管理器、启动器、本地代理、钩子分发共用这一份，不各自再算。
+pub fn default_user_scripts_config_dir() -> PathBuf {
+    if cfg!(windows) {
+        if let Some(roaming) = std::env::var_os("APPDATA") {
+            return PathBuf::from(roaming).join("Codex++");
+        }
+        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+            return home.join("AppData").join("Roaming").join("Codex++");
+        }
+    }
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
+        .unwrap_or_else(|| PathBuf::from(".config"))
+        .join("Codex++")
+}
+
+/// 默认用户脚本位置：内置目录在程序旁，用户目录在配置目录下。
 pub fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = if cfg!(windows) && std::env::var_os("APPDATA").is_some() {
-        PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("Codex++")
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-            .unwrap_or_else(|| PathBuf::from(".config"))
-            .join("Codex++")
-    };
+    let config_dir = default_user_scripts_config_dir();
     let builtin_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
@@ -762,6 +922,8 @@ pub struct ExtensionHook {
     /// 包内脚本的绝对路径：默认导出 `async (payload, context) => output`。
     pub script: PathBuf,
     pub timeout_secs: u64,
+    /// 所属拓展的生效配置，作为 context.config 交给脚本。
+    pub config: Value,
 }
 
 /// 拓展可以挂的 Codex 钩子事件。SessionEnd / Interrupt 的超时只有 1~3 秒，起 Node 来不及，不开放。
@@ -790,6 +952,9 @@ impl ExtensionPackage {
             "routes": self.routes,
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
             "gatewayRequest": self.gateway_request.len(),
+            "tools": self.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
+            "configSchema": self.config_schema,
+            "config": self.config,
         })
     }
 
@@ -802,6 +967,7 @@ impl ExtensionPackage {
             "description": self.description,
             "engines": { "codexpp": self.engine },
             "permissions": { "routes": self.routes },
+            "config": self.config,
         })
     }
 }
@@ -819,6 +985,10 @@ pub struct ExtensionWrite {
     pub hooks: Option<Value>,
     /// 原样写进清单的 `gateway`，加载时校验。
     pub gateway: Option<Value>,
+    /// 原样写进清单的 `tools`，加载时校验。
+    pub tools: Option<Value>,
+    /// 原样写进清单的 `config`（配置 schema），加载时校验。
+    pub config: Option<Value>,
     pub files: BTreeMap<String, String>,
 }
 
@@ -910,6 +1080,9 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         renderer: Vec::new(),
         hooks: Vec::new(),
         gateway_request: Vec::new(),
+        tools: Vec::new(),
+        config_schema: Vec::new(),
+        config: json!({}),
         error: None,
     };
     if let Err(error) = parse_extension_manifest(directory, &mut package) {
@@ -967,8 +1140,9 @@ fn parse_extension_manifest(
     };
     let hooks_declared = raw.get("hooks").is_some_and(|hooks| hooks.as_object().is_some_and(|map| !map.is_empty()));
     let gateway_declared = raw.get("gateway").is_some();
-    if entries.is_empty() && !hooks_declared && !gateway_declared {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks 或 gateway");
+    let tools_declared = raw.get("tools").is_some_and(|tools| tools.as_array().is_some_and(|list| !list.is_empty()));
+    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway 或 tools");
     }
     let root = directory
         .canonicalize()
@@ -979,6 +1153,8 @@ fn parse_extension_manifest(
         .collect::<anyhow::Result<Vec<_>>>()?;
     package.hooks = parse_extension_hooks(&root, raw.get("hooks"))?;
     package.gateway_request = parse_gateway_middlewares(&root, raw.get("gateway"))?;
+    package.tools = parse_extension_tools(&root, &package.id, raw.get("tools"))?;
+    package.config_schema = parse_extension_config_schema(raw.get("config"))?;
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if package.engine > EXTENSION_API_VERSION {
         anyhow::bail!(
@@ -1037,6 +1213,7 @@ fn parse_extension_hooks(
                 matcher,
                 script: resolve_package_entry(root, script)?,
                 timeout_secs,
+                config: Value::Null,
             });
         }
     }
@@ -1079,6 +1256,131 @@ fn parse_gateway_middlewares(
             Ok(ExtensionGatewayMiddleware {
                 script: resolve_package_entry(root, script)?,
                 timeout_secs,
+                config: Value::Null,
+            })
+        })
+        .collect()
+}
+
+/// 解析 `config`：`{ "minutes": { "type": "number", "title": "时长", "default": 25 } }`。
+fn parse_extension_config_schema(value: Option<&Value>) -> anyhow::Result<Vec<ExtensionConfigField>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let map = value.as_object().context("config 必须是对象：{ 键: { type, title, default } }")?;
+    if map.len() > 32 {
+        anyhow::bail!("config 最多 32 项");
+    }
+    map.iter()
+        .map(|(key, field)| {
+            if key.is_empty() || !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+                anyhow::bail!("配置键 {key:?} 只能包含字母、数字、_、-");
+            }
+            let field = field.as_object().with_context(|| format!("config.{key} 必须是对象"))?;
+            let kind = field.get("type").and_then(Value::as_str).unwrap_or("string").to_string();
+            let options = match field.get("options") {
+                None => Vec::new(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Object(object) if object.contains_key("value") => Ok(json!({
+                            "value": object["value"],
+                            "label": object.get("label").and_then(Value::as_str).map(str::to_owned)
+                                .unwrap_or_else(|| object["value"].to_string().trim_matches('"').to_string()),
+                        })),
+                        Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(json!({ "value": item, "label": item.to_string().trim_matches('"') })),
+                        _ => anyhow::bail!("config.{key}.options 的每一项要么是值，要么是 {{ value, label }}"),
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+                Some(_) => anyhow::bail!("config.{key}.options 必须是数组"),
+            };
+            if !["string", "number", "boolean", "select"].contains(&kind.as_str()) {
+                anyhow::bail!("config.{key}.type 只能是 string、number、boolean、select");
+            }
+            if kind == "select" && options.is_empty() {
+                anyhow::bail!("config.{key} 是 select，必须给 options");
+            }
+            let mut result = ExtensionConfigField {
+                key: key.clone(),
+                kind: kind.clone(),
+                title: field.get("title").and_then(Value::as_str).unwrap_or(key).to_string(),
+                description: field.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
+                default: Value::Null,
+                options,
+                secret: field.get("secret").and_then(Value::as_bool).unwrap_or(false),
+            };
+            let fallback = match kind.as_str() {
+                "number" => json!(0),
+                "boolean" => json!(false),
+                "select" => result.options[0]["value"].clone(),
+                _ => json!(""),
+            };
+            result.default = match field.get("default") {
+                Some(value) if result.accepts(value) => value.clone(),
+                Some(_) => anyhow::bail!("config.{key}.default 与 type 不符"),
+                None => fallback,
+            };
+            Ok(result)
+        })
+        .collect()
+}
+
+/// 解析 `tools`：`[{ "name": "lookup", "description": "…", "inputSchema": {…}, "script": "tools/lookup.mjs", "timeout": 30 }]`。
+fn parse_extension_tools(
+    root: &std::path::Path,
+    extension_id: &str,
+    value: Option<&Value>,
+) -> anyhow::Result<Vec<ExtensionTool>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().context("tools 必须是数组")?;
+    let mut names = std::collections::BTreeSet::new();
+    items
+        .iter()
+        .map(|item| {
+            let item = item.as_object().context("tools 的每一项必须是对象")?;
+            let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let public = extension_tool_public_name(extension_id, &name);
+            if name.is_empty()
+                || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+                || public.len() > 64
+            {
+                anyhow::bail!("工具名 {name:?} 只能包含字母、数字、_、-，且「拓展id__工具名」不超过 64 个字符");
+            }
+            if !names.insert(name.clone()) {
+                anyhow::bail!("工具名 {name} 重复");
+            }
+            let description = item
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .with_context(|| format!("工具 {name} 缺少 description"))?
+                .to_string();
+            let input_schema = match item.get("inputSchema") {
+                None => serde_json::json!({ "type": "object", "properties": {} }),
+                Some(schema) if schema.get("type").and_then(Value::as_str) == Some("object") => schema.clone(),
+                Some(_) => anyhow::bail!("工具 {name} 的 inputSchema 必须是 type 为 object 的 JSON Schema"),
+            };
+            let script = item
+                .get("script")
+                .and_then(Value::as_str)
+                .with_context(|| format!("工具 {name} 缺少 script"))?;
+            let timeout_secs = match item.get("timeout") {
+                None => 30,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|seconds| (1..=EXTENSION_TOOL_MAX_TIMEOUT_SECS).contains(seconds))
+                    .with_context(|| format!("工具 {name} 的 timeout 必须是 1~{EXTENSION_TOOL_MAX_TIMEOUT_SECS} 秒"))?,
+            };
+            Ok(ExtensionTool {
+                name,
+                description,
+                input_schema,
+                script: resolve_package_entry(root, script)?,
+                timeout_secs,
+                config: Value::Null,
             })
         })
         .collect()
@@ -1178,11 +1480,22 @@ fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
+    let configs = raw
+        .get("configs")
+        .and_then(Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(key, value)| Some((key.clone(), value.as_object()?.clone())))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     UserScriptConfig {
         enabled,
         scripts,
         skip_next_start,
         market,
+        configs,
     }
 }
 

@@ -467,6 +467,103 @@ it("keeps background-resume scan scheduling bounded and independent of retired f
   assert.doesNotMatch(scan, /requestAnimationFrame/);
 });
 
+describe("app-server client capture locating", () => {
+  const marker = "AppServerRequestClient is missing a message dispatcher";
+  // 与 Codex 26.10xx 的产物同形：类在 app-initial 里，sendRequest 首句就是 marker。
+  const classSource = "var a=1;\nfYt=class{hostId;async sendRequest(e,t,n){if(this.dispatchMessage==null)"
+    + `throw Error(\`${marker}\`);return this.enqueueRequest(e,t,n)}}`;
+
+  async function runtime(assets: Record<string, string>) {
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8",
+    );
+    const section = source.slice(source.indexOf("  // issue #2177"),
+      source.indexOf("    function installCodexAppServerClientPrototypePatch()"));
+    assert.ok(section.includes("async function installCodexAppServerClientCapture()"));
+    const visible: string[] = [];
+    const fetched: string[] = [];
+    const diagnostics: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    const timers: Array<{ delay: number; callback: () => void }> = [];
+    const window: Record<string, unknown> = {
+      setTimeout: (callback: () => void, delay: number) => { timers.push({ delay, callback }); return timers.length; },
+    };
+    const api = new Function("window", "fetch", "codexAppAssetCandidateUrls", "codexAppAssetUrl",
+      "sendCodexPlusDiagnostic", "codexAppServerClientCaptureMarker", "codexAppServerClientCaptureAnchor",
+      `${section}\nreturn { installCodexAppServerClientCapture };`,
+    )(
+      window,
+      async (url: string) => {
+        fetched.push(url);
+        return { ok: url in assets, text: async () => assets[url] || "" };
+      },
+      () => visible.slice(),
+      (part: string) => visible.find((url) => url.includes(part)) || "",
+      (event: string, detail: Record<string, unknown>) => diagnostics.push({ event, detail }),
+      marker,
+      "async sendRequest(",
+    );
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    async function fireTimer() {
+      const timer = timers.shift();
+      assert.ok(timer, "expected a pending retry");
+      timer.callback();
+      await flush();
+      return timer.delay;
+    }
+    return { api, window, visible, fetched, diagnostics, timers, fireTimer, flush };
+  }
+
+  it("retries until the class asset becomes visible and does not refetch checked assets", async () => {
+    const shared = "app://-/assets/app-shared-1.js";
+    const initial = "app://-/assets/app-initial-2.js";
+    const env = await runtime({ [shared]: "export const x=1;", [initial]: classSource });
+    // 首轮 Fast 模块还没执行完，只看得到入口与 modulepreload 的 app-shared。
+    env.visible.push("app://-/assets/index-0.js", shared);
+    await env.api.installCodexAppServerClientCapture();
+    assert.equal(env.window.__codexPlusAppServerClientCapture, undefined);
+    assert.equal(env.diagnostics.length, 0, "a miss that will be retried is not reported as a failure");
+    assert.equal(env.timers.length, 1);
+
+    env.visible.push(initial);
+    assert.equal(await env.fireTimer(), 1000);
+    assert.deepEqual(env.window.__codexPlusAppServerClientCapture, {
+      urlRegex: "app://-/assets/app-initial-2\\.js", lineNumber: 1, columnNumber: 41,
+    });
+    assert.equal(env.fetched.filter((url) => url === shared).length, 1);
+    assert.equal(env.diagnostics.at(-1)?.event, "app_server_client_capture_located");
+    assert.equal(env.diagnostics.at(-1)?.detail.attempts, 2);
+    assert.equal(env.timers.length, 0);
+    // 已定位后再被扫描调用不会重新拉取。
+    const fetchCount = env.fetched.length;
+    await env.api.installCodexAppServerClientCapture();
+    assert.equal(env.fetched.length, fetchCount);
+  });
+
+  it("still finds the class in app-shared on the first pass for older Codex builds", async () => {
+    const shared = "app://-/assets/app-shared-9.js";
+    const env = await runtime({ [shared]: classSource });
+    env.visible.push(shared);
+    await env.api.installCodexAppServerClientCapture();
+    assert.equal((env.window.__codexPlusAppServerClientCapture as { lineNumber: number }).lineNumber, 1);
+    assert.equal(env.timers.length, 0);
+  });
+
+  it("reports one failure after the bounded retries run out", async () => {
+    const shared = "app://-/assets/app-shared-1.js";
+    const env = await runtime({ [shared]: "export const x=1;" });
+    env.visible.push(shared);
+    await env.api.installCodexAppServerClientCapture();
+    const delays: number[] = [];
+    while (env.timers.length) delays.push(await env.fireTimer());
+    assert.ok(delays.reduce((sum, delay) => sum + delay, 0) < 90000, "retries finish inside the launcher wait window");
+    assert.equal(env.fetched.length, 1);
+    assert.deepEqual(env.diagnostics, [{
+      event: "app_server_client_capture_locate_failed",
+      detail: { reason: "anchor_missing", candidateCount: 0, checkedCount: 1, attempts: delays.length + 1 },
+    }]);
+  });
+});
+
 it("groups aggregate models by exact member identity instead of bare model name", async () => {
   const picker = await readFile(
     new URL("../../../assets/inject/renderer-inject/71-model-picker-groups.js", import.meta.url),

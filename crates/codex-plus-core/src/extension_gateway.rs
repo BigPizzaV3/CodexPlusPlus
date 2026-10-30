@@ -5,10 +5,8 @@
 //! 拿到的是 Responses 请求体的副本，返回新对象即替换、返回 null 即不改；任何出错、超时
 //! 都保留原请求，绝不能挡住发往模型的请求。官方直连（不经 Codex++ 代理）的请求不经过这里。
 
-use std::path::Path;
 use std::time::Duration;
 
-use anyhow::Context;
 use serde_json::{Value, json};
 
 use crate::user_scripts::{ExtensionGatewayMiddleware, UserScriptManager};
@@ -33,7 +31,7 @@ for (const item of input.middlewares) {
     const fn = typeof module.default === "function" ? module.default : module.request;
     if (typeof fn !== "function") { errors.push({ id: item.id, error: `${item.script} 没有默认导出函数` }); continue; }
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${item.timeoutMs / 1000} 秒）`)), item.timeoutMs); });
-    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id })), timeout]);
+    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id, config: item.config ?? {} })), timeout]);
     if (next && typeof next === "object" && !Array.isArray(next)) { body = next; changed = true; }
   } catch (error) {
     errors.push({ id: item.id, error: String(error?.stack || error?.message || error) });
@@ -44,10 +42,33 @@ for (const item of input.middlewares) {
 process.stdout.write(JSON.stringify({ body, changed, errors }));
 "#;
 
+/// 启用中的中间件清单缓存。每次模型请求都要查一遍，扫目录、读清单不能每次都做；
+/// 3 秒足够让拓展启停后很快生效。
+const MIDDLEWARE_CACHE_TTL: Duration = Duration::from_secs(3);
+type MiddlewareList = Vec<(String, ExtensionGatewayMiddleware)>;
+static MIDDLEWARE_CACHE: std::sync::Mutex<Option<(std::time::Instant, MiddlewareList)>> = std::sync::Mutex::new(None);
+
+fn cached_middlewares() -> MiddlewareList {
+    let mut cache = MIDDLEWARE_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, list)) = cache.as_ref() {
+        if at.elapsed() < MIDDLEWARE_CACHE_TTL {
+            return list.clone();
+        }
+    }
+    let list = crate::user_scripts::default_user_script_manager()
+        .enabled_gateway_middlewares()
+        .unwrap_or_default();
+    *cache = Some((std::time::Instant::now(), list.clone()));
+    list
+}
+
 /// 用默认的用户脚本位置改写请求。没有中间件、或任何环节失败时不改 `request`。
 pub async fn apply_request(request: &mut Value, request_path: &str) {
-    let manager = crate::user_scripts::default_user_script_manager();
-    apply_request_with(&manager, request, request_path).await;
+    let middlewares = cached_middlewares();
+    if middlewares.is_empty() {
+        return;
+    }
+    apply_middlewares(&middlewares, request, request_path).await;
 }
 
 pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value, request_path: &str) {
@@ -55,7 +76,11 @@ pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value
         Ok(middlewares) if !middlewares.is_empty() => middlewares,
         _ => return,
     };
-    match run_chain(&middlewares, request, request_path).await {
+    apply_middlewares(&middlewares, request, request_path).await;
+}
+
+async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str) {
+    match run_chain(middlewares, request, request_path).await {
         Ok(result) => {
             for error in result["errors"].as_array().into_iter().flatten() {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -81,7 +106,7 @@ async fn run_chain(
     request: &Value,
     request_path: &str,
 ) -> anyhow::Result<Value> {
-    let node = crate::dsh_plugins::locate_node().context("没有找到 Node 运行时，网关中间件未运行")?;
+    let node = crate::extension_node::require_node()?;
     let input = json!({
         "path": request_path,
         "body": request,
@@ -89,35 +114,10 @@ async fn run_chain(
             "id": id,
             "script": item.script,
             "timeoutMs": item.timeout_secs * 1000,
+            "config": item.config,
         })).collect::<Vec<_>>(),
     });
     let limit = Duration::from_secs(middlewares.iter().map(|(_, item)| item.timeout_secs).sum::<u64>() + 2).min(CHAIN_LIMIT);
-    run_node(&node, &input, limit).await
+    crate::extension_node::run_runner(&node, RUNNER, &input, limit).await
 }
 
-async fn run_node(node: &Path, input: &Value, limit: Duration) -> anyhow::Result<Value> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut command = tokio::process::Command::new(node);
-    command
-        .args(["--input-type=module", "-e", RUNNER])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    // Windows 上不能闪出黑色终端窗口。
-    #[cfg(windows)]
-    command.creation_flags(crate::windows_create_no_window());
-    let mut child = command.spawn().context("无法启动 Node 运行网关中间件")?;
-    let mut stdin = child.stdin.take().context("Node 进程没有 stdin")?;
-    stdin.write_all(input.to_string().as_bytes()).await?;
-    drop(stdin);
-    let mut stdout = child.stdout.take().context("Node 进程没有 stdout")?;
-    let read = async {
-        let mut buffer = Vec::new();
-        stdout.read_to_end(&mut buffer).await?;
-        child.wait().await?;
-        anyhow::Ok(buffer)
-    };
-    let buffer = tokio::time::timeout(limit, read).await.context("网关中间件整体超时")??;
-    serde_json::from_slice(&buffer).context("网关中间件运行器输出不是 JSON")
-}
