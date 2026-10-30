@@ -521,7 +521,7 @@ describe("app-server client capture locating", () => {
     env.visible.push("app://-/assets/index-0.js", shared);
     await env.api.installCodexAppServerClientCapture();
     assert.equal(env.window.__codexPlusAppServerClientCapture, undefined);
-    assert.deepEqual(env.diagnostics, [], "a miss that will be retried is not reported as a failure");
+    assert.equal(env.diagnostics.length, 0, "a miss that will be retried is not reported as a failure");
     assert.equal(env.timers.length, 1);
 
     env.visible.push(initial);
