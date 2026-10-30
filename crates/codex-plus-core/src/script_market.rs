@@ -385,6 +385,8 @@ pub fn market_packages_payload(manager: &UserScriptManager, manifest: &ScriptMar
         .iter()
         .map(|package| {
             let record = installed.get(&package.id).filter(|record| record.repo.eq_ignore_ascii_case(&package.repo));
+            // 没有安装记录时，本机可能就是它的源码（自己发布的）。
+            let local_source = record.is_none().then(|| crate::extension_discovery::local_source_version(manager, &package.id, &package.repo)).flatten();
             serde_json::json!({
                 "kind": "package",
                 "id": package.id,
@@ -401,8 +403,9 @@ pub fn market_packages_payload(manager: &UserScriptManager, manifest: &ScriptMar
                 "sha": package.sha,
                 "official": package.is_official(),
                 "channel": package.channel(),
-                "installed": record.is_some(),
-                "installedVersion": record.map(|record| record.version.clone()).unwrap_or_default(),
+                "installed": record.is_some() || local_source.is_some(),
+                "localSource": local_source.is_some(),
+                "installedVersion": record.map(|record| record.version.clone()).or(local_source).unwrap_or_default(),
                 "installedSha": record.map(|record| record.sha.clone()).unwrap_or_default(),
                 "updateAvailable": record.is_some_and(|record| !record.sha.eq_ignore_ascii_case(&package.sha)),
             })

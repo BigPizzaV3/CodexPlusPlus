@@ -17,7 +17,8 @@ export type Permissions = {
   routes: string[];
   renderer: string[];
 };
-type Installed = { version: string; tag: string | null; sha: string; fromDefaultBranch: boolean; channel?: Channel } | null;
+// channel 为 "local"：本机就是这个仓库的源码（自己写的、从这里发布的），不是从 GitHub 装的。
+type Installed = { version: string; tag: string | null; sha: string; fromDefaultBranch: boolean; channel?: Channel | "local" } | null;
 /** 安装渠道：社区（未审核）、精选（锁定到审核过的提交）、官方。 */
 export type Channel = "community" | "curated" | "official";
 type Entry = {
@@ -250,11 +251,18 @@ export function CommunityExtensionsPanel({ onInstalled, onOpenUrl }: { onInstall
                     {entry.warnings?.length ? <span className="community-ext-badge is-suspicious">{t("可疑")}</span> : null}
                   </div>
                   <div className="community-ext-actions">
-                    {entry.installed ? <span className="community-ext-installed">{tf("已安装 {0}", [versionText(entry.installed)])}</span> : null}
-                    <Button disabled={!entry.compatible || preparing !== ""} onClick={() => void prepare(entry)} size="sm" variant={entry.installed ? "ghost" : "secondary"}>
-                      {preparing === entry.repo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                      {entry.installed ? t("重新安装") : t("安装")}
-                    </Button>
+                    {entry.installed?.channel === "local" ? (
+                      // 从 GitHub 重装会覆盖本机源码，这里不给按钮。
+                      <span className="community-ext-installed" title={t("你在本机编写并发布的拓展，在「本地拓展」里管理")}>{tf("本机源码 {0}", [entry.installed.version])}</span>
+                    ) : (
+                      <>
+                        {entry.installed ? <span className="community-ext-installed">{tf("已安装 {0}", [versionText(entry.installed)])}</span> : null}
+                        <Button disabled={!entry.compatible || preparing !== ""} onClick={() => void prepare(entry)} size="sm" variant={entry.installed ? "ghost" : "secondary"}>
+                          {preparing === entry.repo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                          {entry.installed ? t("重新安装") : t("安装")}
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </header>
                 {entry.description ? <p className="community-ext-description">{entry.description}</p> : null}

@@ -22,6 +22,8 @@ export type CuratedPackage = {
   official: boolean;
   channel: "official" | "curated";
   installed: boolean;
+  /** 本机就是它的源码（自己发布的），不是从 GitHub 装的。 */
+  localSource?: boolean;
   installedVersion: string;
   installedSha: string;
   updateAvailable: boolean;
@@ -124,11 +126,17 @@ export function CuratedPackagesSection({
                   )}
                 </div>
                 <div className="community-ext-actions">
-                  {item.installed ? <span className="community-ext-installed">{tf("已安装 {0}", [item.installedVersion || item.installedSha.slice(0, 7)])}</span> : null}
-                  <Button disabled={preparing !== "" || (item.installed && !item.updateAvailable)} onClick={() => void prepare(item)} size="sm" variant={item.installed && !item.updateAvailable ? "ghost" : "secondary"}>
-                    {preparing === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    {item.updateAvailable ? t("更新") : item.installed ? t("已是审核版本") : t("安装")}
-                  </Button>
+                  {item.localSource ? (
+                    <span className="community-ext-installed" title={t("你在本机编写并发布的拓展，在「本地拓展」里管理")}>{tf("本机源码 {0}", [item.installedVersion])}</span>
+                  ) : (
+                    <>
+                      {item.installed ? <span className="community-ext-installed">{tf("已安装 {0}", [item.installedVersion || item.installedSha.slice(0, 7)])}</span> : null}
+                      <Button disabled={preparing !== "" || (item.installed && !item.updateAvailable)} onClick={() => void prepare(item)} size="sm" variant={item.installed && !item.updateAvailable ? "ghost" : "secondary"}>
+                        {preparing === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                        {item.updateAvailable ? t("更新") : item.installed ? t("已是审核版本") : t("安装")}
+                      </Button>
+                    </>
+                  )}
                 </div>
               </header>
               {item.description ? <p className="community-ext-description">{item.description}</p> : null}

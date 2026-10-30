@@ -442,6 +442,8 @@ fn community_channel() -> String {
 pub const CHANNEL_COMMUNITY: &str = "community";
 pub const CHANNEL_CURATED: &str = "curated";
 pub const CHANNEL_OFFICIAL: &str = "official";
+/// 只用于展示：本机就是这个仓库的源码，不是从 GitHub 装的。
+pub const CHANNEL_LOCAL: &str = "local";
 
 /// 精选清单给社区栏的约束：下架名单、已收进精选的仓库（社区栏不再重复显示）、精选拓展的 id。
 #[derive(Debug, Clone, Default)]
@@ -840,8 +842,24 @@ fn installed_status(state: &CommunityState, manager: &UserScriptManager, id: &st
             "fromDefaultBranch": record.from_default_branch,
             "channel": record.channel,
         }),
-        _ => Value::Null,
+        // 本机就是源码（自己写的、从这里发布上去的）：没有安装记录，但清单的 repository 指向这个仓库。
+        _ => match local_source_version(manager, id, repo) {
+            Some(version) => json!({ "version": version, "tag": null, "sha": "", "fromDefaultBranch": false, "channel": CHANNEL_LOCAL }),
+            None => Value::Null,
+        },
     }
+}
+
+/// 本机同 id 的拓展包是这个仓库的源码（清单 `repository` 指向它，比如一键发布写回的）时，返回本地版本号。
+pub fn local_source_version(manager: &UserScriptManager, id: &str, repo: &str) -> Option<String> {
+    let text = std::fs::read_to_string(manager.user_dir().join(id).join(EXTENSION_MANIFEST_FILE)).ok()?;
+    let manifest: Value = serde_json::from_str(&text).ok()?;
+    let declared = manifest.get("repository").and_then(Value::as_str)?.trim();
+    let declared = declared.trim_start_matches("https://github.com/").trim_end_matches(".git").trim_end_matches('/');
+    if !declared.eq_ignore_ascii_case(repo) {
+        return None;
+    }
+    Some(manifest.get("version").and_then(Value::as_str).unwrap_or_default().to_string())
 }
 
 /// 本机同 id 的拓展是否来自别处（手写、对话生成或另一个仓库）。是的话返回它的来源说明。

@@ -212,6 +212,21 @@ async fn listing_is_cached_and_falls_back_when_github_fails() {
     let second = store.list(&endpoints(&server), &manager, false).await;
     assert_eq!(second["entries"], first["entries"]);
     assert_eq!(second["stale"], false);
+    // 本机就是源码（一键发布写回了 repository）：没有安装记录，也算已有，渠道是 local。
+    let source = manager.user_dir().join("word-count");
+    std::fs::create_dir_all(&source).unwrap();
+    let mut local = manifest("word-count", "1.2.0");
+    local["repository"] = json!("https://github.com/Alice/codexpp-word-count.git");
+    std::fs::write(source.join("codexpp.json"), serde_json::to_string(&local).unwrap()).unwrap();
+    let own = store.list(&endpoints(&server), &manager, false).await;
+    assert_eq!(own["entries"][0]["installed"]["channel"], "local", "{own}");
+    assert_eq!(own["entries"][0]["installed"]["version"], "1.2.0");
+    // repository 指向别的仓库就不算。
+    local["repository"] = json!("bob/codexpp-word-count");
+    std::fs::write(source.join("codexpp.json"), serde_json::to_string(&local).unwrap()).unwrap();
+    let other = store.list(&endpoints(&server), &manager, false).await;
+    assert_eq!(other["entries"][0]["installed"], Value::Null);
+    std::fs::remove_file(source.join("codexpp.json")).unwrap();
 
     // 强制刷新时 GitHub 失败：退回上次的列表并标注。
     let down = MockServer::start().await;

@@ -3171,6 +3171,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "发布新版本": "Publish new version",
   "发布到 GitHub": "Publish to GitHub",
   "收起设置": "Hide settings",
+  "本机源码 {0}": "Local source {0}",
+  "你在本机编写并发布的拓展，在「本地拓展」里管理": "You wrote and published this extension on this machine; manage it under Local extensions",
   "{0} 的更多操作": "More actions for {0}",
   "{0} 个文件，{1} KB": "{0} files, {1} KB",
   "将以 GitHub 账号 {0} 发布为公开仓库，打上 codexpp-extension 标签，其他 Codex++ 用户能在「社区拓展」里看到并安装。": "Will be published as a public repository under the GitHub account {0}, tagged codexpp-extension, so other Codex++ users can find and install it under Community extensions.",
