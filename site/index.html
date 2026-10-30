@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Codex++ — 让 AI 编程 Agent 更顺手</title>
-<meta name="description" content="Codex++ 是 AI 编程 Agent 的统一管理工具：内置本地网关，Codex、Claude Code、Grok 共用一份供应商池，按模型名路由、出错自动换下一家；同时提供 Codex 与 Claude Desktop 增强、会话管理和跨 Agent 的 Computer Use。">
+<meta name="description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池，按模型名路由、出错自动换下一家。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Codex++">
 <meta property="og:locale" content="zh_CN">
 <meta property="og:title" content="Codex++ — 让 AI 编程 Agent 更顺手">
-<meta property="og:description" content="Codex++ 是 AI 编程 Agent 的统一管理工具：内置本地网关，Codex、Claude Code、Grok 共用一份供应商池，按模型名路由、出错自动换下一家；同时提供 Codex 与 Claude Desktop 增强、会话管理和跨 Agent 的 Computer Use。">
+<meta property="og:description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池，按模型名路由、出错自动换下一家。">
 <meta property="og:url" content="https://codexpp.cc/">
 <meta property="og:image" content="https://codexpp.cc/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -18,7 +18,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/site.css?v=20261030-1">
+<link rel="stylesheet" href="css/site.css?v=20261031-1">
 <script>
   // 主题与 js 标记要在首帧前定好，避免闪一下
   (function () {
@@ -38,6 +38,7 @@
       <span class="brand-name">Codex<b>++</b></span>
     </a>
     <nav class="nav-links" aria-label="页面导航">
+      <a href="#create">拓展</a>
       <a href="#gateway">网关</a>
       <a href="#features">功能</a>
       <a href="#modes">两种模式</a>
@@ -67,22 +68,23 @@
 <section class="hero">
   <div class="wrap">
     <div class="hero-copy">
-      <a class="hero-badge" href="#news"><b>2.x</b>新增本地网关：所有 Agent 共用一份供应商池 →</a>
-      <h1>一个网关，<br><em>接通所有 Agent</em></h1>
-      <p class="hero-sub">Codex、Claude Code、Grok 经 Codex++ 接入任意供应商：按模型名路由，Key 冷却或出错自动换下一家。Codex 与 Claude Desktop 的增强、会话和 Computer Use 也在同一个管理器里。</p>
+      <a class="hero-badge" href="#create"><b>新</b>万物皆拓展：在 Codex 对话里说一句，就能造拓展 →</a>
+      <h1>万物皆拓展，<br><em>Codex 由你来改</em></h1>
+      <p class="hero-sub">界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。内置本地网关，让 Codex、Claude Code 等 50 多个 Agent 共用一份供应商池。</p>
       <div class="hero-cta">
         <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           下载 <span data-site-version>v2.1.4</span>
         </a>
-        <a class="btn btn-ghost btn-lg" href="guide.html">十分钟上手教程</a>
+        <a class="btn btn-ghost btn-lg" href="#create">看看怎么造拓展</a>
       </div>
       <p class="hero-meta"><span>Windows · macOS</span><span>开源 · AGPL-3.0</span><span>数据只存本机</span><span>不改官方应用文件</span></p>
     </div>
 
     <div class="tour">
       <div class="tour-tabs" role="tablist" aria-label="管理器界面导览">
-        <button class="tour-tab" role="tab" id="tab-hub" aria-controls="panel-hub" aria-selected="true" data-title="网关 › 总览" data-cap="谁在用、走哪家、是否健康，一屏看全。">网关总览</button>
+        <button class="tour-tab" role="tab" id="tab-ext" aria-controls="panel-ext" aria-selected="true" data-title="全局管理 › 拓展" data-cap="精选、社区、本地拓展和 dsh 插件都在一页：装别人的，也管自己做的。">万物皆拓展</button>
+        <button class="tour-tab" role="tab" id="tab-hub" aria-controls="panel-hub" aria-selected="false" data-title="网关 › 总览" data-cap="谁在用、走哪家、是否健康，一屏看全。">网关总览</button>
         <button class="tour-tab" role="tab" id="tab-pool" aria-controls="panel-pool" aria-selected="false" data-title="网关 › 供应商池" data-cap="加一次，所有 Agent 都能用；订阅显示剩余额度，中转站显示倍率与余额。">供应商池</button>
         <button class="tour-tab" role="tab" id="tab-routing" aria-controls="panel-routing" aria-selected="false" data-title="网关 › 路由" data-cap="依次、轮换、按权重、额度优先、速度优先；多家都有的模型自动成组。">路由</button>
         <button class="tour-tab" role="tab" id="tab-usage" aria-controls="panel-usage" aria-selected="false" data-title="全局管理 › 用量" data-cap="费用、token 与缓存命中，按 Agent、供应商、模型拆开看。">用量</button>
@@ -90,17 +92,18 @@
         <button class="tour-tab" role="tab" id="tab-live" aria-controls="panel-live" aria-selected="false" data-title="在线体验 · 演示数据" data-cap="真实的管理器前端跑在浏览器里，点点看；数据是演示用的。"><span class="live-dot" aria-hidden="true"></span>在线体验</button>
       </div>
       <div class="window">
-        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span id="tourTitle">网关 › 总览</span></div>
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span id="tourTitle">全局管理 › 拓展</span></div>
         <div class="tour-stage">
-          <div class="tour-panel active" role="tabpanel" id="panel-hub" aria-labelledby="tab-hub"><img src="assets/gateway-hub.webp" alt="网关总览：Codex 与 Claude Code 经 Codex++ 接入供应商池，右侧是各家供应商的今日调用、Key 冷却与限流状态" width="2880" height="1800"></div>
+          <div class="tour-panel active" role="tabpanel" id="panel-ext" aria-labelledby="tab-ext"><img src="assets/ext-featured.webp" alt="拓展页：万物皆拓展的能力标签、对话造拓展入口，以及经审核的官方与精选拓展包" width="2880" height="1800"></div>
+          <div class="tour-panel" role="tabpanel" id="panel-hub" aria-labelledby="tab-hub"><img src="assets/gateway-hub.webp" alt="网关总览：Codex 与 Claude Code 经 Codex++ 接入供应商池，右侧是各家供应商的今日调用、Key 冷却与限流状态" loading="lazy" width="2880" height="1800"></div>
           <div class="tour-panel" role="tabpanel" id="panel-pool" aria-labelledby="tab-pool"><img src="assets/gateway-providers.webp" alt="供应商池：ChatGPT 订阅、DeepSeek、Kimi、智谱 GLM 与两个中转站，显示额度、倍率、余额与限流恢复时间" loading="lazy" width="2880" height="1200"></div>
           <div class="tour-panel" role="tabpanel" id="panel-routing" aria-labelledby="tab-routing"><img src="assets/gateway-routing.webp" alt="路由页：自建的「主力编程」依次组与「便宜轮换」轮换组，下方是自动组" loading="lazy" width="2880" height="1800"></div>
           <div class="tour-panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage"><img src="assets/usage-stats.webp" alt="用量统计：估算费用、token、缓存命中、调用次数与按天柱状图" loading="lazy" width="2880" height="1800"></div>
           <div class="tour-panel" role="tabpanel" id="panel-log" aria-labelledby="tab-log"><img src="assets/usage-requests.webp" alt="请求日志：进行中的请求、自动重试、429 限流后换下一家，以及 token 与费用" loading="lazy" width="2880" height="1520"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live"><iframe title="Codex++ 管理器在线体验（演示数据）" data-src="manager-preview/?previewRoute=hub&amp;lang=zh&amp;v=20261030"></iframe></div>
+          <div class="tour-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live"><iframe title="Codex++ 管理器在线体验（演示数据）" data-src="manager-preview/?previewRoute=userScripts&amp;lang=zh&amp;v=20261031"></iframe></div>
         </div>
       </div>
-      <p class="tour-cap" id="tourCap" aria-live="polite">谁在用、走哪家、是否健康，一屏看全。</p>
+      <p class="tour-cap" id="tourCap" aria-live="polite">精选、社区、本地拓展和 dsh 插件都在一页：装别人的，也管自己做的。</p>
     </div>
 
     <div class="agents-row">
@@ -110,18 +113,175 @@
         <li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude Code</li>
         <li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude Desktop</li>
         <li><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/grok.svg);mask-image:url(assets/agents/grok.svg)" aria-hidden="true"></span>Grok</li>
-        <li class="more">DeepSeek Harness 等</li>
+        <li>Gemini CLI</li>
+        <li>OpenCode</li>
+        <li>Zed</li>
+        <li>VS Code</li>
+        <li class="more">等 50+ Agent</li>
       </ul>
     </div>
   </div>
 </section>
 
+<!-- ========== 对话造拓展 ========== -->
+<section class="section" id="create">
+  <div class="wrap demo-split">
+    <div>
+      <div class="sec-head reveal">
+        <span class="eyebrow">Build by chatting</span>
+        <h2>说一句话，<em>拓展就写好了</em></h2>
+        <p>不用自己写代码。接入后，Codex 能看到自己的页面结构、写出拓展、热重载，再截图确认效果。</p>
+      </div>
+      <ol class="demo-steps">
+        <li class="reveal"><b>在「拓展」页点「接入 Codex」</b><span>Codex 多一个本机 MCP 服务，能查看页面结构、截图、写入并热重载拓展。</span></li>
+        <li class="reveal"><b>新开对话，直接说需求</b><span>比如 <q>把发送按钮改成🐶狗头</q>、<q>把上下文圆环改成彩虹进度条</q>。说「插件」也行。</span></li>
+        <li class="reveal"><b>改完就生效，不满意接着说</b><span>agent 写出拓展包并热重载，截图确认后告诉你；想发给别人，点「发布」。</span></li>
+      </ol>
+      <div class="chips reveal"><span class="chip">只写你的拓展目录</span><span class="chip">写入走 Codex 工具审批</span><span class="chip">不会替你删文件</span></div>
+    </div>
+    <figure class="demo-shot reveal">
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>Codex · 对话造拓展</span></div>
+        <a href="assets/extension-chat.png" data-zoom><img src="assets/extension-chat.png" alt="实测：在 Codex 对话里让 agent 把发送按钮换成狗头、把上下文圆环换成彩虹渐变进度条，两处都已生效" width="1582" height="1768" loading="lazy"></a>
+      </div>
+      <div class="demo-zoom" aria-hidden="true"><span>改完的输入框</span><img src="assets/extension-chat-zoom.png" alt="" width="860" height="96" loading="lazy"></div>
+      <figcaption>实测：两句话，发送按钮换成狗头，上下文圆环换成彩虹进度条。</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ========== 拓展能力 ========== -->
+<section class="section tint" id="extensions">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Extensions</span>
+      <h2>不止改界面，<em>整条链路都能接管</em></h2>
+      <p>拓展是一个带 <code>codexpp.json</code> 的文件夹。每次注册都随拓展卸载自动撤销，改完即热重载，坏了也不影响别的拓展。</p>
+    </div>
+    <div class="caps">
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg><h3>界面插槽与页面</h3></div>
+        <p>输入框上方、对话区、侧栏、标题栏都有插槽；还能加页面、菜单项和会话行操作。</p>
+        <code>registerSlot</code>
+      </article>
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 15 5-5-5-5"/><path d="M12 19h7"/></svg><h3>斜杠命令与输入区按钮</h3></div>
+        <p>输入 / 时提示拓展命令并可 Tab 补全；发送按钮那一行加图标按钮。</p>
+        <code>registerCommand</code>
+      </article>
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M15 3v14"/></svg><h3>消息操作与侧边面板</h3></div>
+        <p>每条消息下加按钮或一块内容，右侧面板随开随关，主区域自动让位。</p>
+        <code>registerSidePanel</code>
+      </article>
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><h3>给模型加工具</h3></div>
+        <p>在清单里声明工具，经 Codex++ 拓展 MCP 提供给模型调用。</p>
+        <code>tools</code>
+      </article>
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z"/><path d="M12 6v6l4 2"/></svg><h3>Codex 钩子</h3></div>
+        <p>工具前后、回合结束等钩子由 Codex++ 统一分发给各拓展。</p>
+        <code>hooks</code>
+      </article>
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.17-2.83L3 3"/><path d="m15 9 6-6"/></svg><h3>网关中间件</h3></div>
+        <p>请求发往上游前改写、响应流里改写、失败时自定义重试。</p>
+        <code>gateway</code>
+      </article>
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h6"/><path d="m17 15 3 3-3 3"/></svg><h3>工具管道</h3></div>
+        <p>工具执行前改参数、代为执行，或改写工具结果。</p>
+        <code>toolPipeline</code>
+      </article>
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M6 12h12M6 16h8"/></svg><h3>常驻后台与服务</h3></div>
+        <p>后台进程常驻；拓展之间按名字提供和调用服务，跨进程也行。</p>
+        <code>backend</code>
+      </article>
+      <article class="cap reveal">
+        <div class="cap-top"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></svg><h3>会话、配置与多语言</h3></div>
+        <p>只读查询与订阅会话；声明配置项自动生成设置表单，支持多语言。</p>
+        <code>config</code>
+      </article>
+    </div>
+    <div class="code-pair reveal">
+      <div class="code-card">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>pomodoro/codexpp.json</span></div>
+<pre class="code">{
+  <span class="s">"id"</span>: <span class="s">"pomodoro"</span>,
+  <span class="s">"name"</span>: <span class="s">"番茄钟"</span>,
+  <span class="s">"version"</span>: <span class="s">"0.1.0"</span>,
+  <span class="s">"engines"</span>: { <span class="s">"codexpp"</span>: <span class="s">"^2.1"</span> },
+  <span class="s">"renderer"</span>: [<span class="s">"renderer.js"</span>]
+}</pre>
+      </div>
+      <div class="code-card">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>pomodoro/renderer.js</span></div>
+<pre class="code">codexPlus.<span class="f">extension</span>((ctx) =&gt; {
+  <span class="k">const</span> bar = ctx.<span class="f">registerSlot</span>({ slot: <span class="s">"composer.above"</span>,
+    render: ({ container }) =&gt; { container.textContent = <span class="s">"🍅 25:00"</span>; } });
+  ctx.<span class="f">registerCommand</span>({ name: <span class="s">"focus"</span>, description: <span class="s">"开始专注"</span>,
+    run: () =&gt; ctx.<span class="f">toast</span>(<span class="s">"开始专注 25 分钟"</span>) });
+  ctx.<span class="f">setInterval</span>(() =&gt; bar.<span class="f">refresh</span>(), <span class="s">1000</span>); <span class="c">// 卸载时自动清理</span>
+});</pre>
+      </div>
+    </div>
+    <p class="code-note reveal">完整接口见 <a href="https://github.com/BigPizzaV3/CodexPlusPlus/blob/main/EXTENSIONS.md" target="_blank" rel="noopener">拓展开发指南</a>，类型声明在仓库 <code>types/</code> 下。</p>
+  </div>
+</section>
+
+<!-- ========== 拓展生态 ========== -->
+<section class="section" id="market">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Ecosystem</span>
+      <h2>装别人的，<em>也发自己的</em></h2>
+      <p>精选、社区、本地拓展和 dsh 插件都在管理器「拓展」页。装之前看得到每个拓展声明的全部能力。</p>
+    </div>
+    <div class="bento">
+      <article class="card w4 reveal">
+        <div class="card-body">
+          <span class="card-tag">经审核</span>
+          <h3>精选与官方拓展</h3>
+          <p>每一条都经 Codex++ 审核，安装锁定到审核过的那次提交；作者之后的改动要再审核才会推送给你。有下架名单，也会标出冒名的同名拓展。</p>
+        </div>
+        <a class="card-shot" href="assets/ext-featured.webp" data-zoom><img src="assets/ext-featured.webp" alt="精选分栏：官方的会话搜索拓展与精选的命令守卫拓展，显示审核版本与锁定提交" loading="lazy"></a>
+      </article>
+      <article class="card card-plain reveal">
+        <div class="card-body">
+          <h3>一键发布</h3>
+          <p>在本地拓展那一行点「发布」：先查清单、密钥与体积，再建仓库、打 tag、传 release、加 topic，每一步的输出都显示在发布框里。</p>
+          <ul>
+            <li>不读、不存你的 GitHub token</li>
+            <li>版本号重复时可一键补丁号 +1</li>
+          </ul>
+        </div>
+      </article>
+      <article class="card w3 reveal">
+        <div class="card-body">
+          <h3>社区拓展</h3>
+          <p>GitHub 上打了 <code>codexpp-extension</code> 标签的公开仓库自动出现在这里。标着「未审核」，装之前列出它要的后台进程、钩子、网关中间件和模型工具，装完默认不启用。</p>
+        </div>
+        <a class="card-shot" href="assets/ext-community.webp" data-zoom><img src="assets/ext-community.webp" alt="社区拓展分栏：未审核提示、按星标排序的拓展列表与各自声明的能力" loading="lazy"></a>
+      </article>
+      <article class="card w3 reveal">
+        <div class="card-body">
+          <h3>导入 dsh 插件</h3>
+          <p>DeepSeek Harness 的工具插件经 Codex++ 托管的 MCP 在 Codex 里运行，skill 导入 Codex Skills；系统提示词与事件自动转成网关 instructions 和 Codex 钩子。跑不了的逐项说明原因。</p>
+        </div>
+        <a class="card-shot" href="assets/ext-dsh.webp" data-zoom><img src="assets/ext-dsh.webp" alt="dsh 插件分栏：导入的问候工具包，逐项显示完全兼容、不兼容与原因" loading="lazy"></a>
+      </article>
+    </div>
+  </div>
+</section>
+
 <!-- ========== 网关原理 ========== -->
-<section class="section" id="gateway">
+<section class="section tint" id="gateway">
   <div class="wrap">
     <div class="sec-head reveal">
       <span class="eyebrow">Gateway</span>
-      <h2>Agent 只认一个地址，<em>供应商随你换</em></h2>
+      <h2>50 多个 Agent，<em>共用一份供应商池</em></h2>
       <p>接入网关后，Agent 的请求都发给本机的 Codex++。它按模型名在供应商池里挑一家，限流就换 Key，出错就换下一家，对 Agent 来说什么都没变。</p>
     </div>
 
@@ -160,12 +320,12 @@
       <article class="point reveal">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
         <h3>多 Key 与订阅</h3>
-        <p>Key 轮换、限流冷却、401 停用；ChatGPT、Copilot、SuperGrok 登录进池。</p>
+        <p>Key 轮换、限流冷却、401 停用；ChatGPT、Copilot、Cursor 等订阅登录进池。</p>
       </article>
       <article class="point reveal">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg>
         <h3>协议互转</h3>
-        <p>Claude Code 也能用 Chat / Responses 上游，网关在中间自动转换。</p>
+        <p>Anthropic、Chat、Responses、Gemini 协议互相转换，Agent 和上游不必说同一种协议。</p>
       </article>
       <article class="point reveal">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 16v-3"/><path d="M12 16V8"/><path d="M17 16v-6"/></svg>
@@ -179,15 +339,25 @@
       <div class="syntax-row"><code>deepseek/deepseek-v4-pro</code><span>只发给这一家</span></div>
       <div class="syntax-row"><code>group/coding</code><span>你建的模型组，按组的路由方式挑成员</span></div>
     </div>
+    <div class="cloud reveal">
+      <h3>能接入的 Agent</h3>
+      <p>命令行、桌面应用和 IDE 里的 Agent，只列出本机装了的；Claude Code 还能用 Chat / Responses 协议的上游。</p>
+      <div class="chips"><span class="chip hot">Codex</span><span class="chip hot">Claude Code</span><span class="chip">Claude Desktop</span><span class="chip hot">Grok</span><span class="chip">Gemini CLI</span><span class="chip">OpenCode</span><span class="chip">Qwen Code</span><span class="chip">Kimi Code</span><span class="chip">Cline</span><span class="chip">Goose</span><span class="chip">Crush</span><span class="chip">Droid</span><span class="chip">Copilot CLI</span><span class="chip">Qoder CLI</span><span class="chip">Zed</span><span class="chip">VS Code Chat</span><span class="chip">Raycast</span><span class="chip">DeepSeek Harness</span><span class="chip">WorkBuddy</span><span class="chip">ZCode</span><span class="chip">OpenClaw</span><span class="chip">Pi</span><span class="chip">等 50+ 个</span></div>
+    </div>
+    <div class="cloud reveal">
+      <h3>能登录进池的订阅</h3>
+      <p>在网关里登录，显示套餐与剩余额度；和 Agent 自己的登录互不影响。</p>
+      <div class="chips"><span class="chip">ChatGPT</span><span class="chip">GitHub Copilot</span><span class="chip">SuperGrok</span><span class="chip">Cursor</span><span class="chip">Kiro</span><span class="chip">Zed</span><span class="chip">Gemini Code Assist</span><span class="chip">Antigravity</span><span class="chip">Devin</span><span class="chip">Factory</span><span class="chip">Command Code</span></div>
+    </div>
   </div>
 </section>
 
 <!-- ========== 功能 ========== -->
-<section class="section tint" id="features">
+<section class="section" id="features">
   <div class="wrap">
     <div class="sec-head reveal">
       <span class="eyebrow">Features</span>
-      <h2>网关之外，<em>还有一整套增强</em></h2>
+      <h2>开箱即有，<em>一整套增强</em></h2>
       <p>每项增强都能单独开关；关掉增强总开关，供应商与启动管理照常可用。</p>
     </div>
 
@@ -272,8 +442,8 @@
       </article>
       <article class="mini reveal">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.47 2.5 2.5 0 1 1 3.01 3.01 1 1 0 0 0-.47 1.68l1.57 1.57a2.4 2.4 0 0 1 0 3.41l-1.57 1.57a1 1 0 0 1-1.68-.47 2.5 2.5 0 1 0-3.01 3.01 1 1 0 0 1 .47 1.68l-1.57 1.57a2.4 2.4 0 0 1-3.41 0l-1.57-1.57a1 1 0 0 0-1.68.47 2.5 2.5 0 1 1-3.01-3.01 1 1 0 0 0 .47-1.68l-1.57-1.57a2.4 2.4 0 0 1 0-3.41l1.57-1.57a1 1 0 0 1 1.68.47 2.5 2.5 0 1 0 3.01-3.01 1 1 0 0 1-.47-1.68l1.57-1.57a2.4 2.4 0 0 1 3.41 0z"/></svg>
-        <h4>拓展、MCP 与 Skills</h4>
-        <p>社区脚本、插件市场；MCP、Skills 按 Agent 启用。</p>
+        <h4>MCP、Skills 与插件市场</h4>
+        <p>MCP、Skills 按 Agent 启用；Codex 插件市场可装可卸。</p>
       </article>
       <article class="mini reveal">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>
@@ -300,7 +470,7 @@
 </section>
 
 <!-- ========== 在 Codex 里 ========== -->
-<section class="section" id="inside">
+<section class="section tint" id="inside">
   <div class="wrap">
     <div class="sec-head reveal">
       <span class="eyebrow">Inside Codex</span>
@@ -318,14 +488,14 @@
       </figure>
       <figure class="shot-card reveal">
         <a class="shot" href="assets/extension-market.png" data-zoom><img src="assets/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具" loading="lazy"></a>
-        <figcaption><b>拓展市场</b><span>社区脚本即装即用：余额面板、模型矩阵、提示词优化。</span></figcaption>
+        <figcaption><b>Codex 里的拓展页</b><span>不离开 Codex 也能浏览、安装和启停拓展。</span></figcaption>
       </figure>
     </div>
   </div>
 </section>
 
 <!-- ========== 两种模式 ========== -->
-<section class="section tint" id="modes">
+<section class="section" id="modes">
   <div class="wrap">
     <div class="sec-head reveal">
       <span class="eyebrow">Modes</span>
@@ -371,7 +541,7 @@ your-model<span class="h">[128000]</span></pre>
 </section>
 
 <!-- ========== 上手与下载 ========== -->
-<section class="section" id="start">
+<section class="section tint" id="start">
   <div class="wrap">
     <div class="sec-head reveal">
       <span class="eyebrow">Get started</span>
@@ -414,7 +584,7 @@ your-model<span class="h">[128000]</span></pre>
 </section>
 
 <!-- ========== 更新与问答 ========== -->
-<section class="section tint" id="news">
+<section class="section" id="news">
   <div class="wrap split">
     <div>
       <div class="sec-head reveal">
@@ -432,6 +602,14 @@ your-model<span class="h">[128000]</span></pre>
         <h2>先问，<em>先答</em></h2>
       </div>
       <div class="faq-list">
+        <details class="faq-item" id="faq-extension-safety">
+          <summary>装别人的拓展安全吗？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>精选与官方拓展经 Codex++ 审核，安装锁定到审核过的那次提交。社区拓展未经审核，作者可以在新版本里加入任意代码：安装前会列出它声明的全部能力（后台进程、钩子、网关中间件、模型工具、路由、页面脚本），装完默认不启用，请只安装你信任的作者的拓展。</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>对话造拓展怎么开始？写坏了怎么办？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>在管理器「拓展」页的「对话造拓展」点「接入 Codex」，然后新开一个 Codex 对话说需求。拓展写在你自己的拓展目录里，每次写入都走 Codex 的工具审批；拓展出错只影响它自己，可以在「本地拓展」里停用，或让 agent 接着改。</p></div>
+        </details>
         <details class="faq-item">
           <summary>启动后，为什么没有 Codex++ 菜单？<span class="faq-x" aria-hidden="true"></span></summary>
           <div class="faq-a"><p>确认是在 <b>Codex++</b> 界面中点「启动 Codex」打开的官方应用。打开「Codex → 设置」（安装维护在设置页下方）与「关于」页面，检查应用路径、启动状态和诊断日志。macOS 上也可以打开「自动接管官方 App」，自己双击启动官方 App 时由 Codex++ 接管。</p></div>
@@ -466,7 +644,7 @@ your-model<span class="h">[128000]</span></pre>
 </section>
 
 <!-- ========== 社区与赞助 ========== -->
-<section class="section" id="community">
+<section class="section tint" id="community">
   <div class="wrap">
     <div class="sec-head reveal">
       <span class="eyebrow">Community</span>
@@ -503,8 +681,8 @@ your-model<span class="h">[128000]</span></pre>
   <div class="wrap">
     <div class="cta-box reveal">
       <img src="assets/logo.png" alt="">
-      <h2>你的 Agent，<em>值得这两个加号</em></h2>
-      <p>免费开源 · AGPL-3.0 · Windows 与 macOS。配置与会话数据都留在你自己的电脑上。</p>
+      <h2>你的 Codex，<em>由你来改</em></h2>
+      <p>免费开源 · AGPL-3.0 · Windows 与 macOS。拓展、配置与会话数据都留在你自己的电脑上。</p>
       <div class="hero-cta">
         <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">下载 <span data-site-version>v2.1.4</span></a>
         <a class="btn btn-ghost btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">在 GitHub 上点个 Star</a>
@@ -527,6 +705,7 @@ your-model<span class="h">[128000]</span></pre>
     </div>
     <nav class="footer-links" aria-label="站点链接">
       <a href="guide.html">使用教程</a>
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus/blob/main/EXTENSIONS.md" target="_blank" rel="noopener">拓展开发指南</a>
       <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">Releases</a>
       <a href="https://github.com/BigPizzaV3/CodexPlusPlus/blob/main/CHANGELOG.md" target="_blank" rel="noopener">更新日志</a>
@@ -545,6 +724,6 @@ your-model<span class="h">[128000]</span></pre>
   <p></p>
 </dialog>
 
-<script src="js/site.js?v=20261030-1"></script>
+<script src="js/site.js?v=20261031-1"></script>
 </body>
 </html>

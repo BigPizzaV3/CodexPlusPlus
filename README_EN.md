@@ -16,13 +16,15 @@
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ is a unified manager for AI coding agents. Since 2.0 it ships a local gateway: Codex, Claude Code, and the Grok CLI share one provider pool, requests are routed by model name, and traffic moves to the next provider automatically when a key cools down or a provider trips. ChatGPT, GitHub Copilot, and SuperGrok subscriptions can be signed in to the pool as well. The original direct mode (official login, official login + API, pure API, aggregate providers) is fully preserved, and you can switch between the two at any time.
+Codex++ is a unified manager for AI coding agents, built on an everything-is-an-extension architecture: UI, commands, tools for the model, agent-loop hooks, and the requests and replies sent to models can all be taken over by extensions. No code required: say “turn the send button into a dog” in a Codex chat and the agent writes the extension, hot-reloads it, and confirms with a screenshot.
 
-It also provides session management, Codex UI enhancements, an enhanced Claude Desktop copy, Computer Use sharing across agents, and sub-agent collaboration. Double-click to open its window and launch each app from there. It never modifies any official app's installation files.
+It also ships a local gateway: Codex, Claude Code, Gemini CLI, OpenCode, Zed, and 50+ other agents share one provider pool, requests are routed by model name, and traffic moves to the next provider automatically when a key cools down or a provider trips. ChatGPT, GitHub Copilot, Cursor, and other subscriptions can be signed in to the pool as well. The original direct mode (official login, official login + API, pure API, aggregate providers) is fully preserved, and you can switch between the two at any time.
+
+There is also session management, Codex UI enhancements, an enhanced Claude Desktop copy, Computer Use sharing across agents, and sub-agent collaboration. Double-click to open its window and launch each app from there. It never modifies any official app's installation files.
 
 <p align="center">
-  <img src="docs/images/readme-preview/gateway-hub-en.webp" alt="Gateway overview: Codex and Claude Code reach the provider pool through Codex++, with today's calls, cooling keys, and rate limits per provider" width="100%">
-  <br><sub>Any agent, any provider through Codex++: who is using it, which provider answers, and whether it is healthy, on one screen.</sub>
+  <img src="docs/images/readme-preview/extension-chat.png" alt="Real session: in a Codex chat the agent turned the send button into a dog and the context ring into a rainbow progress bar, both live" width="720">
+  <br><sub>A real session (in Chinese): two requests, a dog send button, and a rainbow context bar.</sub>
 </p>
 
 ## Quick Start
@@ -60,10 +62,14 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 | **Claude Code** | Providers of any protocol through the gateway (Anthropic requests are converted to Chat / Responses); Computer Use connection |
 | **Claude Desktop** | Enhanced copy (Chinese UI, dictation, Computer Use); Computer Use connection |
 | **Grok CLI** | The shared provider pool through the gateway, including SuperGrok subscriptions |
-| **DeepSeek Harness and more** | Computer Use connection; callable as a sub-agent from Codex chats |
+| **Gemini CLI, OpenCode, Zed, VS Code, and 50+ more** | The shared provider pool through the gateway, with Anthropic / Chat / Responses / Gemini conversion |
+| **DeepSeek Harness and more** | Computer Use connection; callable as a sub-agent from Codex chats; dsh plugins can be imported into Codex |
 
 | Area | Capabilities |
 | --- | --- |
+| Everything is an extension · new | An extension is a folder with a `codexpp.json`: UI slots and pages, slash commands and composer buttons, message actions and side panels, tools for the model over MCP, Codex hooks, a tool pipeline, gateway request / response / retry middleware, background processes and services, session queries, config forms, and i18n. Registrations are undone automatically and edits hot-reload. See the [extension guide](EXTENSIONS.md) (Chinese) |
+| Build by chatting · new | Click Connect to Codex on the Extensions page, then describe what you want in a Codex chat; the agent inspects the page, writes the extension, hot-reloads, and takes a screenshot. Writes stay in your extensions folder and go through Codex tool approval |
+| Extension ecosystem · new | Featured and official extensions reviewed by Codex++ and pinned to the reviewed commit; community extensions from GitHub repos tagged `codexpp-extension` (capabilities shown before install, disabled by default); one-click publish to GitHub; import DeepSeek Harness (dsh) plugins |
 | Gateway · new | One local gateway for Codex, Claude Code, and Grok with a shared provider pool; routing by bare model name, `<provider>/<model>`, or `group/<id>`; models offered by several providers form automatic groups |
 | Routing and keys · new | Groups run in order, rotate, by weight, quota first, speed first, or manually, with optional conversation stickiness; multiple keys per provider with 429 cooldown, quota cooldown, 401 disable, and 5xx circuit breaking; optional per-key RPM and concurrency limits |
 | Subscriptions and relays · new | Sign in to ChatGPT, ChatGPT API, GitHub Copilot, and SuperGrok inside the gateway and see remaining quota; sub2api / new-api relays are detected with their multiplier and balance |
@@ -83,6 +89,25 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
 ## Screenshots
+
+**Extensions** — featured, community, local extensions, and dsh plugins on one page.
+
+<p align="center">
+  <img src="docs/images/readme-preview/ext-featured.webp" alt="Extensions page: capability tags, the build-by-chatting entry, and reviewed official and featured extension packages" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/readme-preview/ext-community.webp" alt="Community extensions: the unreviewed notice and extensions sorted by stars" width="100%"></td>
+    <td width="50%"><img src="docs/images/readme-preview/ext-dsh.webp" alt="dsh plugins: an imported bundle with each item marked compatible or not" width="100%"></td>
+  </tr>
+</table>
+
+**Gateway overview** — any agent, any provider: who is using it, which provider answers, and whether it is healthy.
+
+<p align="center">
+  <img src="docs/images/readme-preview/gateway-hub-en.webp" alt="Gateway overview: Codex and Claude Code reach the provider pool through Codex++, with today's calls, cooling keys, and rate limits per provider" width="100%">
+</p>
 
 **Provider pool** — add a provider once and every connected agent can use it; subscriptions show remaining quota, relays show their multiplier and balance.
 
@@ -224,6 +249,10 @@ The About page can check and start updates. Older macOS two-app versions require
 `~/.codex` above refers to the Codex home directory: it follows the `CODEX_HOME` environment variable when set, and defaults to `.codex` under the user profile otherwise.
 
 ## FAQ
+
+### Is it safe to install other people's extensions?
+
+Featured and official extensions are reviewed by Codex++ and install the exact reviewed commit. Community extensions are not reviewed and authors can add any code in a new version: before install you see every capability they declare (background processes, hooks, gateway middleware, model tools, routes, page scripts), and installs start disabled. Only install extensions from authors you trust.
 
 ### The Codex++ menu does not appear
 

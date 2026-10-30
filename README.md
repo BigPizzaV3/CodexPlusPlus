@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>给你的 AI 编程 Agent 加一点「++」。</strong><br>
-  内置本地网关：Codex、Claude Code、Grok 共用一份供应商池，按模型名路由、出错自动换下一家。
+  万物皆拓展：在 Codex 对话里说一句，就能造一个拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池。
 </p>
 
 <p align="center">
@@ -24,13 +24,15 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/readme-preview/gateway-hub.webp" alt="网关总览：Codex 与 Claude Code 经 Codex++ 接入供应商池，左边是 Agent，右边是各家供应商的今日调用、Key 冷却与限流状态" width="100%">
-  <br><sub>任意 Agent 经 Codex++ 接入任意供应商：谁在用、走哪家、是否健康，一屏看全。</sub>
+  <img src="docs/images/readme-preview/ext-featured.webp" alt="拓展页：万物皆拓展的能力标签、对话造拓展入口，以及经审核的官方与精选拓展包" width="100%">
+  <br><sub>精选、社区、本地拓展和 dsh 插件都在一页：装别人的，也管自己做的。</sub>
 </p>
 
-Codex++ 是 AI 编程 Agent 的统一管理应用。从 2.0 起，它内置一个本地网关：Codex、Claude Code、Grok 共用一份供应商池，按模型名选供应商，Key 冷却或供应商熔断时自动换上游，ChatGPT、GitHub Copilot、SuperGrok 订阅也能登录进池。原来的直连模式（官方登录、官方 + API、纯 API、聚合供应商）完整保留，两种模式可以随时切换。
+Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。不想写代码？在 Codex 对话里说一句「把发送按钮改成狗头」，agent 就会写出拓展、热重载并截图确认。
 
-此外它还提供会话管理、Codex 界面增强、Claude Desktop 增强版、跨 Agent 的 Computer Use 与子 Agent 协作。双击打开管理界面，再从界面启动各个应用；它不修改任何官方应用的安装文件。
+它还内置一个本地网关：Codex、Claude Code、Gemini CLI、OpenCode、Zed 等 50 多个 Agent 共用一份供应商池，按模型名选供应商，Key 冷却或供应商熔断时自动换上游，ChatGPT、GitHub Copilot、Cursor 等订阅也能登录进池。原来的直连模式（官方登录、官方 + API、纯 API、聚合供应商）完整保留，两种模式可以随时切换。
+
+此外还有会话管理、Codex 界面增强、Claude Desktop 增强版、跨 Agent 的 Computer Use 与子 Agent 协作。双击打开管理界面，再从界面启动各个应用；它不修改任何官方应用的安装文件。
 
 ## 交流与支持
 
@@ -138,11 +140,20 @@ Codex++ 是 AI 编程 Agent 的统一管理应用。从 2.0 起，它内置一�
 | **Claude Code** | 经网关接入任意协议的供应商（Anthropic 请求在网关里转成 Chat / Responses）、接入 Computer Use |
 | **Claude Desktop** | 增强版（中文界面、语音输入、Computer Use）、接入 Computer Use |
 | **Grok CLI** | 经网关接入供应商池，可用 SuperGrok 订阅 |
-| **DeepSeek Harness 等** | 接入 Computer Use、在 Codex 对话中作为子 Agent 调用 |
+| **Gemini CLI、OpenCode、Zed、VS Code 等 50+ Agent** | 经网关接入供应商池，Anthropic / Chat / Responses / Gemini 协议互转 |
+| **DeepSeek Harness 等** | 接入 Computer Use、在 Codex 对话中作为子 Agent 调用；dsh 插件可导入 Codex |
 
 <table>
   <tr>
-    <td width="50%" valign="top"><strong>🌐 本地网关 · 新</strong><br>一份供应商池给所有 Agent 用，按模型名路由，出错自动换下一家。</td>
+    <td width="50%" valign="top"><strong>🧩 万物皆拓展 · 新</strong><br>界面、命令、模型工具、钩子、网关请求都能由拓展接管。</td>
+    <td width="50%" valign="top"><strong>💬 对话造拓展 · 新</strong><br>在 Codex 对话里说需求，agent 写出拓展并热重载。</td>
+  </tr>
+  <tr>
+    <td valign="top"><strong>🛍️ 精选、社区与一键发布 · 新</strong><br>审核过的精选拓展、GitHub 社区拓展，自己的一键发布。</td>
+    <td valign="top"><strong>🔁 导入 dsh 插件 · 新</strong><br>工具插件经托管 MCP 在 Codex 里运行。</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><strong>🌐 本地网关</strong><br>50 多个 Agent 共用一份供应商池，按模型名路由，出错自动换下一家。</td>
     <td width="50%" valign="top"><strong>🔀 路由与模型组 · 新</strong><br>依次、轮换、按权重、额度优先、速度优先，可按会话固定。</td>
   </tr>
   <tr>
@@ -167,7 +178,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用。从 2.0 起，它内置一�
   </tr>
   <tr>
     <td valign="top"><strong>⚡ API Key 原生 Fast</strong><br>纯 API Key 也能用 Standard / Fast 控件。</td>
-    <td valign="top"><strong>🧩 拓展、MCP 与 Skills</strong><br>社区脚本、插件市场；MCP、Skills 按 Agent 启用。</td>
+    <td valign="top"><strong>🧰 MCP、Skills 与插件市场</strong><br>MCP、Skills 按 Agent 启用；Codex 插件市场可装可卸。</td>
   </tr>
   <tr>
     <td valign="top"><strong>🖥️ 托盘快捷面板</strong><br>点托盘图标就能换模型、看用量和最近请求。</td>
@@ -182,6 +193,47 @@ Codex++ 是 AI 编程 Agent 的统一管理应用。从 2.0 起，它内置一�
 所有增强都能单独开关；关闭增强总开关后，供应商与启动管理照常可用。
 
 ## 看看它能做什么
+
+### 万物皆拓展：说一句话，拓展就写好了
+
+在管理器「拓展」页点「接入 Codex」，新开一个 Codex 对话直接说需求。agent 能查看 Codex 自己的页面结构，写出拓展包、热重载，再截图确认效果；拓展只写在你自己的拓展目录里，写入走 Codex 的工具审批。
+
+<p align="center">
+  <img src="docs/images/readme-preview/extension-chat.png" alt="实测：在 Codex 对话里让 agent 把发送按钮换成狗头、把上下文圆环换成彩虹渐变进度条，两处都已生效" width="720">
+  <br><sub>实测：两句话，发送按钮换成狗头，上下文圆环换成彩虹进度条。</sub>
+</p>
+
+拓展是一个带 `codexpp.json` 的文件夹，能做的不止改界面：
+
+| 能力 | 说明 |
+| --- | --- |
+| 界面插槽与页面 | 输入框上方、对话区、侧栏、标题栏插槽；页面、菜单项、会话行操作 |
+| 斜杠命令与输入区按钮 | 输入 `/` 时提示拓展命令并可补全；发送按钮旁加图标按钮 |
+| 消息操作与侧边面板 | 每条消息下加按钮或内容；右侧面板 |
+| 给模型加工具 | 清单里声明工具，经 Codex++ 拓展 MCP 提供给模型 |
+| Codex 钩子与工具管道 | 工具前后、回合结束等钩子；执行前改参数、代为执行、改写结果 |
+| 网关中间件 | 请求发往上游前改写、响应流改写、失败重试 |
+| 常驻后台与服务 | 后台进程；拓展间按名字提供和调用服务，可跨进程 |
+| 会话、配置与多语言 | 只读查询与订阅会话；配置项自动生成设置表单 |
+
+完整接口见 [拓展开发指南](EXTENSIONS.md)。
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><strong>精选与官方拓展</strong><br>经 Codex++ 审核，安装锁定到审核过的提交。<br><img src="docs/images/readme-preview/ext-featured.webp" alt="精选分栏：官方的会话搜索拓展与精选的命令守卫拓展" width="100%"></td>
+    <td width="50%" valign="top"><strong>社区拓展</strong><br>GitHub 上打了 <code>codexpp-extension</code> 标签的仓库；装前列出全部能力，装完默认不启用。<br><img src="docs/images/readme-preview/ext-community.webp" alt="社区拓展分栏：未审核提示与按星标排序的拓展列表" width="100%"></td>
+  </tr>
+  <tr>
+    <td valign="top"><strong>导入 dsh 插件</strong><br>工具插件经托管 MCP 在 Codex 里运行，提示词与事件转成网关 instructions 与 Codex 钩子。<br><img src="docs/images/readme-preview/ext-dsh.webp" alt="dsh 插件分栏：导入的工具包逐项显示兼容情况" width="100%"></td>
+    <td valign="top"><strong>一键发布</strong><br>在本地拓展那一行点「发布」：检查清单、密钥与体积后建仓库、打 tag、传 release、加 topic，每一步都显示进度。不读、不存你的 GitHub token。</td>
+  </tr>
+</table>
+
+### 网关总览：50 多个 Agent，一份供应商池
+
+<p align="center">
+  <img src="docs/images/readme-preview/gateway-hub.webp" alt="网关总览：Codex 与 Claude Code 经 Codex++ 接入供应商池，右边是各家供应商的今日调用、Key 冷却与限流状态" width="100%">
+</p>
 
 ### 供应商池：加一次，所有 Agent 都能用
 
@@ -272,10 +324,12 @@ Codex++ 是 AI 编程 Agent 的统一管理应用。从 2.0 起，它内置一�
   <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器按供应商分组折叠：供应商 4 组（默认，7 个模型）与 DeepSeek 组（2 个模型）" width="560">
 </p>
 
-### 拓展市场
+### Codex 里的拓展页
+
+不离开 Codex 也能浏览、安装和启停拓展。
 
 <p align="center">
-  <img src="docs/images/readme-preview/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具" width="100%">
+  <img src="docs/images/readme-preview/extension-market.png" alt="Codex 里的拓展页：浏览和安装拓展" width="100%">
 </p>
 
 ### 认真工作，也可以有点趣味
@@ -351,6 +405,13 @@ another-model[128000]
 API Key 只保存在本机，界面里只显示打码后的样子；提交反馈前请隐藏密钥与认证信息。
 
 ## 常见问题
+
+<details>
+  <summary><strong>装别人的拓展安全吗？</strong></summary>
+
+精选与官方拓展经 Codex++ 审核，安装锁定到审核过的那次提交。社区拓展未经审核，作者可以在新版本里加入任意代码：安装前会列出它声明的全部能力（后台进程、钩子、网关中间件、模型工具、路由、页面脚本），装完默认不启用，请只安装你信任的作者的拓展。
+
+</details>
 
 <details>
   <summary><strong>启动后，为什么没有 Codex++ 菜单？</strong></summary>
