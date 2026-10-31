@@ -4,6 +4,76 @@ use codex_plus_core::codex_sqlite::{
 };
 use rusqlite::Connection;
 
+#[test]
+fn resume_model_metadata_is_read_only_and_reads_one_thread_tuple() {
+    let _guard = super::common::global_state_lock();
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("state_5.sqlite");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads(id TEXT PRIMARY KEY, model TEXT, reasoning_effort TEXT);
+         INSERT INTO threads VALUES('a','saved-model-a','ultra'),('b','saved-model-b','low'),('c','saved-model-c',NULL);"
+    ).unwrap();
+    drop(db);
+    let before = std::fs::read(&path).unwrap();
+    for (id, model, effort) in [("a", "saved-model-a", Some("ultra")), ("b", "saved-model-b", Some("low")), ("c", "saved-model-c", None)] {
+        let value = codex_plus_core::codex_sqlite::thread_resume_model_metadata(home.path(), id).unwrap().unwrap();
+        assert_eq!(value.model, model);
+        assert_eq!(value.reasoning_effort.as_deref(), effort);
+        assert_eq!(value.thread_id, id);
+    }
+    assert!(codex_plus_core::codex_sqlite::thread_resume_model_metadata(home.path(), "missing").unwrap().is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn resume_model_metadata_does_not_create_a_missing_database_or_guess_missing_fields() {
+    let _guard = super::common::global_state_lock();
+    let home = tempfile::tempdir().unwrap();
+    let read = |id| codex_plus_core::codex_sqlite::thread_resume_model_metadata(home.path(), id);
+    assert!(read("a").unwrap().is_none());
+    assert!(!home.path().join("state_5.sqlite").exists());
+    assert!(read("").is_err());
+    let db = Connection::open(home.path().join("state_5.sqlite")).unwrap();
+    db.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY, model TEXT); INSERT INTO threads VALUES('a','saved');").unwrap();
+    assert!(read("a").is_err());
+    db.execute_batch("ALTER TABLE threads ADD COLUMN reasoning_effort TEXT; UPDATE threads SET model='', reasoning_effort='high';").unwrap();
+    assert!(read("a").is_err());
+    db.execute_batch("UPDATE threads SET model='saved', reasoning_effort='';").unwrap();
+    assert!(read("a").is_err());
+}
+
+#[test]
+fn resume_model_metadata_rejects_conflicting_candidate_databases() {
+    let _guard = super::common::global_state_lock();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join("sqlite")).unwrap();
+    for (path, model) in [(home.path().join("state_5.sqlite"), "old"), (home.path().join("sqlite/codex-dev.db"), "current")] {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY, model TEXT, reasoning_effort TEXT);").unwrap();
+        db.execute("INSERT INTO threads VALUES('a',?1,'high')", [model]).unwrap();
+    }
+    assert!(codex_plus_core::codex_sqlite::thread_resume_model_metadata(home.path(), "a").is_err());
+}
+
+#[test]
+fn resume_model_metadata_skips_unrelated_legacy_rows_and_accepts_identical_tuples() {
+    let _guard = super::common::global_state_lock();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join("sqlite")).unwrap();
+    let legacy = Connection::open(home.path().join("sqlite/codex-dev.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY); INSERT INTO threads VALUES('other');").unwrap();
+    let modern = Connection::open(home.path().join("state_5.sqlite")).unwrap();
+    modern.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY, model TEXT, reasoning_effort TEXT);
+        INSERT INTO threads VALUES('a','saved','high');").unwrap();
+    let read = || codex_plus_core::codex_sqlite::thread_resume_model_metadata(home.path(), "a");
+    assert_eq!(read().unwrap().unwrap().model, "saved");
+    legacy.execute_batch("ALTER TABLE threads ADD COLUMN model TEXT;
+        ALTER TABLE threads ADD COLUMN reasoning_effort TEXT;
+        INSERT INTO threads VALUES('a','saved','high');").unwrap();
+    assert_eq!(read().unwrap().unwrap().reasoning_effort.as_deref(), Some("high"));
+}
+
 fn create_threads_table(conn: &Connection) {
     conn.execute(
         "CREATE TABLE threads (

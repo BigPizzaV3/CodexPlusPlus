@@ -531,6 +531,24 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
         }
+        "/thread-resume-model-metadata" => {
+            let request = payload.clone();
+            tokio::task::spawn_blocking(move || {
+                anyhow::ensure!(
+                    request.get("host_id").and_then(Value::as_str) == Some("local")
+                        && request.get("hostId").is_none_or(|host| host.as_str() == Some("local")),
+                    "Thread model metadata is local-only"
+                );
+                let thread_id = request.get("thread_id").and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("Thread ID is required"))?;
+                let snapshot = crate::codex_sqlite::thread_resume_model_metadata(
+                    &crate::codex_home::default_codex_home_dir(), thread_id,
+                )?.ok_or_else(|| anyhow::anyhow!("Saved thread model settings were not found"))?;
+                let mut value = serde_json::to_value(snapshot)?;
+                value["status"] = json!("ok");
+                Ok(value)
+            }).await.unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())))
+        }
         "/side-chat/source" | "/side-chat/save" => {
             let request = payload.clone();
             let operation = if path == "/side-chat/source" {
