@@ -2525,6 +2525,34 @@ export const EN_PLAIN: Record<string, string> = {
   "管理 Grok CLI 的模型与 API 端点": "Manage Grok CLI models and API endpoints",
 
   // Skills 面板
+  "所属分组": "Group",
+  "按来源自动分组": "Automatically group by source",
+  "更新分组内全部 Skill": "Update all skills in group",
+  "修改仓库来源": "Change repository source",
+  "GitHub 仓库地址": "GitHub repository URL",
+  "分支": "Branch",
+  "验证并添加仓库": "Validate and add repository",
+  "该仓库已添加，请直接选择仓库路径。": "This repository is already added. Select a repository path.",
+  "无法识别仓库地址，请输入 GitHub 链接或 owner/repo。": "Enter a valid GitHub URL or owner/repo.",
+  "子目录格式无效。": "The subdirectory is invalid.",
+  "匹配方式": "Matching mode",
+  "自动匹配": "Automatic match",
+  "手动选择": "Manual selection",
+  "手动选择 · 内容一致": "Manual selection · Content matches",
+  "手动选择 · 内容不一致": "Manual selection · Content differs",
+  "搜索仓库或 Skill 路径": "Search repositories or skill paths",
+  "没有可选择的仓库 Skill。": "No repository skills are available.",
+  "没有匹配的仓库路径。": "No repository paths match.",
+  "批量匹配仓库来源": "Match repository sources",
+  "匹配 Skill 仓库来源": "Match skill repository source",
+  "匹配仓库来源": "Match repository source",
+  "选择仓库来源": "Select repository source",
+  "尚未添加仓库。": "No repositories have been added.",
+  "未找到匹配来源。": "No matching sources found.",
+  "没有需要补充来源的 Skill。": "No skills need a repository source.",
+  "请选择唯一的仓库路径；同一路径不能关联多个 Skill。": "Select a unique repository path for each skill.",
+  "内容一致": "Content matches",
+  "名称相似，内容不同": "Similar name, different content",
   "Skills": "Skills",
   "Skills 技能": "Skills",
   "Skills 仓库源": "Skill repositories",
@@ -2836,6 +2864,12 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "正在检查仓库 {0}/{1}": "Checking repositories {0}/{1}",
+  "已检查 {0} 个仓库，{1} 个 Skill 有候选来源": "Checked {0} repositories; {1} skills have candidate sources",
+  "{0} 个仓库检查失败": "{0} repository checks failed",
+  "{0} 项无法比较": "{0} items could not be compared",
+  "已选 {0} 项": "{0} selected",
+  "关联所选 {0} 项": "Link {0} selected",
   // 中转站（sub2api / new-api）倍率 / 余额
   "倍率 {0}": "Rate {0}",
   "分组倍率取自最近一次消费记录（分组 {0}）": "Group rate taken from the latest usage record (group {0})",
@@ -3371,6 +3405,12 @@ export const EN_BACKEND: Record<string, string> = {
 // Pattern-based backend translations: [regex, replacement template].
 // Checked when EN_BACKEND exact match fails — covers messages with dynamic values.
 export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
+  [/^添加仓库失败：仓库验证失败，未保存: (.+)$/, "Repository validation failed; nothing was saved: $1"],
+  [/^添加仓库失败：仓库已存在，未修改现有配置$/, "Repository already exists; its settings were not changed."],
+  [/^添加仓库失败：(.+)$/, "Failed to add repository: $1"],
+  [/^仓库已验证并添加，发现 (\d+) 个 Skill。$/, "Repository validated and added; found $1 skills."],
+  [/^仓库验证失败，未保存：(.+)$/, "Repository validation failed; nothing was saved: $1"],
+  [/^仓库已验证并保存，发现 (\d+) 个 Skill。$/, "Repository validated and saved; found $1 skills."],
   [/^已同步模型：新增 (\d+) 个：(.+?)；移除 (\d+) 个：(.+)。$/, "Models synced. Added $1: $2. Removed $3: $4."],
   [/^已同步模型：新增 (\d+) 个：(.+)。$/, "Models synced. Added $1: $2."],
   [/^已同步模型：移除 (\d+) 个：(.+)。$/, "Models synced. Removed $1: $2."],

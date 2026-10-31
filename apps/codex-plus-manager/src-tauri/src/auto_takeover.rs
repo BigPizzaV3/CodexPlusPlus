@@ -666,31 +666,12 @@ fn wait_for_instance_exit(app_dir: &Path, instance: &InstanceKey, budget: Durati
 /// 探针会立刻二次接管。
 fn spawn_takeover(actual_port: u16) {
     let started_at = Instant::now();
-    // 这次到底是「重启官方 App」还是「附着到已带端口的实例」？
-    // 后者不动用户窗口，不能算进重启额度，也不能记成重启（否则日志与预算都会失真）。
-    let restarting = !codex_plus_core::cdp::endpoint_available(actual_port);
     with_inner(|state| {
         state.our_launch_at = Some(started_at);
         state.last_attempt = Some(started_at);
         state.state = "taking_over";
         state.last_reason = Some("takeover".to_string());
     });
-    let now = now_ms();
-    with_inner(|state| {
-        if restarting {
-            push_restart(&mut state.restart_history_ms, now);
-            state.restarts_total = state.restarts_total.saturating_add(1);
-        }
-        state.last_takeover_at_ms = Some(now);
-    });
-    log_event(
-        if restarting {
-            "takeover.restart_requested"
-        } else {
-            "takeover.attach_requested"
-        },
-        json!({ "debugPort": actual_port, "restarting": restarting }),
-    );
 
     // 实际启动放到独立线程：`launcher::start` 会阻塞到注入完成（冷启动可达百秒），
     // 探针线程不能卡在那里；串行锁交给启动线程持有，避免与用户点「启动」抢跑。
@@ -705,6 +686,44 @@ fn spawn_takeover(actual_port: u16) {
                 return;
             }
         };
+        let manager = crate::commands::default_skills_manager();
+        let _skills_guard = match manager.lock_recovered_transactions() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let message = crate::commands::skill_launch_recovery_error(&error);
+                let failures = with_inner(|state| {
+                    state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+                    state.last_failure = Some(Instant::now());
+                    state.last_error = Some(message.clone());
+                    state.state = "degraded";
+                    state.consecutive_failures
+                });
+                log_event(
+                    "takeover.degraded",
+                    json!({ "message": message, "consecutiveFailures": failures,
+                        "backoffMs": backoff_delay_ms(failures) }),
+                );
+                return;
+            }
+        };
+        // 等待恢复后重新探测，附着不应计入重启额度。
+        let restarting = !codex_plus_core::cdp::endpoint_available(actual_port);
+        let now = now_ms();
+        with_inner(|state| {
+            if restarting {
+                push_restart(&mut state.restart_history_ms, now);
+                state.restarts_total = state.restarts_total.saturating_add(1);
+            }
+            state.last_takeover_at_ms = Some(now);
+        });
+        log_event(
+            if restarting {
+                "takeover.restart_requested"
+            } else {
+                "takeover.attach_requested"
+            },
+            json!({ "debugPort": actual_port, "restarting": restarting }),
+        );
         let latest = StatusStore::default().load_latest().ok().flatten();
         let app_dir = resolve_app_dir(latest.as_ref());
         // 需要重启时先请官方 App 退出：macOS 走 AppleEvent quit，Windows 走 taskkill。

@@ -163,6 +163,171 @@ pub fn default_ccs_skills_dir() -> PathBuf {
     home_dir().join(".cc-switch").join("skills")
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CcsSkillOrigin {
+    pub repo_key: String,
+    pub repo_path: String,
+}
+
+/// 只读 cc-switch 的来源；缺少或存在歧义的来源以空字段表示。
+pub fn skill_origins_from_db(
+    path: &Path,
+) -> anyhow::Result<std::collections::BTreeMap<String, CcsSkillOrigin>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if !path.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut columns_stmt = conn.prepare("PRAGMA table_info(skills)")?;
+    let columns = columns_stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    anyhow::ensure!(
+        columns.contains("directory"),
+        "cc-switch skills 表缺少 directory 列"
+    );
+    let column = |name: &'static str| if columns.contains(name) { name } else { "NULL" };
+    let sql = format!(
+        "SELECT directory, {}, {}, {}, {}, {} FROM skills",
+        column("repo_owner"),
+        column("repo_name"),
+        column("repo_branch"),
+        column("readme_url"),
+        column("id")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0).ok(),
+            row.get::<_, Option<String>>(1).ok().flatten(),
+            row.get::<_, Option<String>>(2).ok().flatten(),
+            row.get::<_, Option<String>>(3).ok().flatten(),
+            row.get::<_, Option<String>>(4).ok().flatten(),
+            row.get::<_, Option<String>>(5).ok().flatten(),
+        ))
+    })?;
+    let mut origins = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    let mut ambiguous = BTreeSet::new();
+    for row in rows {
+        let (directory, owner, name, branch, url, id) = row?;
+        let Some(directory) = directory.filter(|name| {
+            !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+        }) else {
+            continue;
+        };
+        let directory_key = directory.to_lowercase();
+        if !seen.insert(directory_key.clone()) {
+            ambiguous.insert(directory_key);
+        }
+        let origin = match (owner, name, branch) {
+            (Some(owner), Some(name), Some(branch))
+                if owner == owner.trim()
+                    && name == name.trim()
+                    && !matches!(owner.as_str(), "." | "..")
+                    && !matches!(name.as_str(), "." | "..")
+                    && ccs_id_matches_repo(id.as_deref(), &owner, &name)
+                    && valid_ccs_skill_branch(&branch) =>
+            {
+                crate::skills::normalize_repo(crate::skills::SkillRepo {
+                    owner,
+                    name,
+                    branch,
+                    subdir: String::new(),
+                    enabled: true,
+                })
+                .ok()
+                .map(|repo| CcsSkillOrigin {
+                    repo_path: url
+                        .as_deref()
+                        .and_then(|url| ccs_skill_repo_path(url, &repo))
+                        .unwrap_or_default(),
+                    repo_key: repo.key(),
+                })
+                .unwrap_or_default()
+            }
+            _ => CcsSkillOrigin::default(),
+        };
+        origins.insert(directory, origin);
+    }
+    for (directory, origin) in &mut origins {
+        if ambiguous.contains(&directory.to_lowercase()) {
+            *origin = CcsSkillOrigin::default();
+        }
+    }
+    Ok(origins)
+}
+
+fn ccs_id_matches_repo(id: Option<&str>, owner: &str, name: &str) -> bool {
+    match id.and_then(|id| id.split_once(':')) {
+        Some(("local", _)) => false,
+        Some((prefix, _)) if prefix.contains('/') => {
+            prefix.eq_ignore_ascii_case(&format!("{owner}/{name}"))
+        }
+        _ => true,
+    }
+}
+
+fn valid_ccs_skill_branch(branch: &str) -> bool {
+    !branch.is_empty()
+        && branch == branch.trim()
+        && !branch.starts_with('-')
+        && !branch.ends_with('.')
+        && !branch.contains("..")
+        && !branch.chars().any(|ch| {
+            ch.is_control()
+                || ch.is_whitespace()
+                || matches!(
+                    ch,
+                    ':' | '@' | '\\' | '~' | '^' | '?' | '*' | '[' | '%' | '#'
+                )
+        })
+        && branch
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
+}
+
+fn ccs_skill_repo_path(value: &str, repo: &crate::skills::SkillRepo) -> Option<String> {
+    // URL 解析器会规范化点路径，先拒绝原文中的转义和歧义路径。
+    let raw = value.split(['?', '#']).next()?;
+    if raw.contains(['%', '\\']) || raw.split('/').any(|part| matches!(part, "." | "..")) {
+        return None;
+    }
+    let url = reqwest::Url::parse(value).ok()?;
+    if url.scheme() != "https"
+        || url.host_str()? != "github.com"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+    {
+        return None;
+    }
+    let parts: Vec<_> = url.path_segments()?.collect();
+    let branch: Vec<_> = repo.branch.split('/').collect();
+    let path_start = 3 + branch.len();
+    if parts.len() <= path_start
+        || !parts[0].eq_ignore_ascii_case(&repo.owner)
+        || !parts[1].eq_ignore_ascii_case(&repo.name)
+        || !matches!(parts[2], "blob" | "tree")
+        || parts[3..path_start] != branch
+        || parts.last()? != &"SKILL.md"
+        || parts[path_start..]
+            .iter()
+            .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return None;
+    }
+    Some(if parts.len() == path_start + 1 {
+        ".".into()
+    } else {
+        parts[path_start..parts.len() - 1].join("/")
+    })
+}
+
 pub fn list_codex_providers_from_default_db() -> anyhow::Result<Vec<CcsProviderImport>> {
     list_codex_providers_from_db(&default_ccs_db_path())
 }
@@ -579,6 +744,275 @@ mod tests {
     use super::*;
     use rusqlite::params;
     use serde_json::json;
+
+    #[test]
+    fn skill_import_reads_repository_metadata_without_guessing_ambiguous_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("cc.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute("CREATE TABLE skills (directory TEXT, repo_owner TEXT, repo_name TEXT, repo_branch TEXT, readme_url TEXT)", []).unwrap();
+        for (dir, owner, repo, branch, url) in [
+            (
+                "known",
+                Some("owner"),
+                Some("repo"),
+                Some("main"),
+                Some("https://github.com/owner/repo/blob/main/skills/demo/SKILL.md"),
+            ),
+            (
+                "nested-branch",
+                Some("owner"),
+                Some("repo"),
+                Some("feature/v2"),
+                Some("https://github.com/owner/repo/blob/feature/v2/skills/demo/SKILL.md"),
+            ),
+            (
+                "root",
+                Some("owner"),
+                Some("repo"),
+                Some("feature/v2"),
+                Some("https://github.com/owner/repo/blob/feature/v2/SKILL.md"),
+            ),
+            ("no-url", Some("owner"), Some("repo"), Some("main"), None),
+            (
+                "no-branch",
+                Some("owner"),
+                Some("repo"),
+                None,
+                Some("https://github.com/owner/repo/blob/main/demo/SKILL.md"),
+            ),
+            ("user", None, None, None, None),
+            (
+                "mismatch",
+                Some("owner"),
+                Some("repo"),
+                Some("main"),
+                Some("https://github.com/other/repo/blob/main/wrong/SKILL.md"),
+            ),
+            ("duplicate", Some("one"), Some("repo"), Some("main"), None),
+            ("duplicate", None, None, None, None),
+            (
+                "CaseCollision",
+                Some("one"),
+                Some("repo"),
+                Some("main"),
+                None,
+            ),
+            (
+                "casecollision",
+                Some("two"),
+                Some("repo"),
+                Some("main"),
+                None,
+            ),
+            (
+                "bad-branch",
+                Some("owner"),
+                Some("repo"),
+                Some("feature//v2"),
+                None,
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO skills VALUES (?1,?2,?3,?4,?5)",
+                params![dir, owner, repo, branch, url],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let origins = skill_origins_from_db(&db).unwrap();
+        assert_eq!(
+            origins["known"],
+            CcsSkillOrigin {
+                repo_key: "owner/repo@main".into(),
+                repo_path: "skills/demo".into()
+            }
+        );
+        assert_eq!(
+            origins["nested-branch"],
+            CcsSkillOrigin {
+                repo_key: "owner/repo@feature/v2".into(),
+                repo_path: "skills/demo".into()
+            }
+        );
+        assert_eq!(
+            origins["root"],
+            CcsSkillOrigin {
+                repo_key: "owner/repo@feature/v2".into(),
+                repo_path: ".".into()
+            }
+        );
+        assert_eq!(
+            origins["no-url"],
+            CcsSkillOrigin {
+                repo_key: "owner/repo@main".into(),
+                repo_path: String::new()
+            }
+        );
+        for id in [
+            "user",
+            "no-branch",
+            "duplicate",
+            "CaseCollision",
+            "casecollision",
+            "bad-branch",
+        ] {
+            assert_eq!(origins[id], CcsSkillOrigin::default(), "{id}");
+        }
+        assert_eq!(origins["mismatch"].repo_key, "owner/repo@main");
+        assert!(origins["mismatch"].repo_path.is_empty());
+    }
+
+    #[test]
+    fn skill_import_handles_legacy_skills_tables_with_missing_optional_columns() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("without-readme.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE skills (directory TEXT, repo_owner TEXT, repo_name TEXT, repo_branch TEXT);
+            INSERT INTO skills VALUES ('remote', 'owner', 'repo', 'main');
+            INSERT INTO skills VALUES ('local', NULL, NULL, NULL);").unwrap();
+        drop(conn);
+        let origins = skill_origins_from_db(&db).unwrap();
+        assert_eq!(
+            origins["remote"],
+            CcsSkillOrigin {
+                repo_key: "owner/repo@main".into(),
+                repo_path: String::new()
+            }
+        );
+        assert_eq!(origins["local"], CcsSkillOrigin::default());
+
+        let old_db = temp.path().join("legacy.db");
+        let conn = Connection::open(&old_db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skills (directory TEXT, app_type TEXT);
+            INSERT INTO skills VALUES ('old', 'codex');",
+        )
+        .unwrap();
+        drop(conn);
+        let origins = skill_origins_from_db(&old_db).unwrap();
+        assert_eq!(origins["old"], CcsSkillOrigin::default());
+    }
+
+    #[test]
+    fn ccs_skill_conflicting_id_and_repository_metadata_are_not_assigned() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("cc.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE skills (id TEXT, directory TEXT, repo_owner TEXT, repo_name TEXT, repo_branch TEXT);
+            INSERT INTO skills VALUES ('owner/repo:original', 'renamed', 'owner', 'repo', 'main');
+            INSERT INTO skills VALUES ('local:personal', 'personal', 'owner', 'repo', 'main');
+            INSERT INTO skills VALUES ('other/repo:wrong', 'wrong', 'owner', 'repo', 'main');
+            INSERT INTO skills VALUES ('legacy-id', 'legacy', 'owner', 'repo', 'main');").unwrap();
+        drop(conn);
+        let origins = skill_origins_from_db(&db).unwrap();
+        assert_eq!(origins["renamed"].repo_key, "owner/repo@main");
+        assert_eq!(origins["legacy"].repo_key, "owner/repo@main");
+        assert_eq!(origins["personal"], CcsSkillOrigin::default());
+        assert_eq!(origins["wrong"], CcsSkillOrigin::default());
+    }
+
+    #[test]
+    fn ccs_skill_paths_require_the_entire_matching_branch_and_a_safe_manifest_path() {
+        let repo = crate::skills::SkillRepo {
+            owner: "owner".into(),
+            name: "repo".into(),
+            branch: "feature/v2".into(),
+            subdir: String::new(),
+            enabled: true,
+        };
+        for (url, expected) in [
+            (
+                "https://github.com/owner/repo/blob/feature/v2/SKILL.md",
+                Some("."),
+            ),
+            (
+                "https://github.com/owner/repo/tree/feature/v2/skills/demo/SKILL.md",
+                Some("skills/demo"),
+            ),
+            (
+                "https://github.com/owner/repo/blob/feature/v2-extra/skills/demo/SKILL.md",
+                None,
+            ),
+            (
+                "https://github.com/owner/repo/blob/feature/skills/demo/SKILL.md",
+                None,
+            ),
+            (
+                "https://github.com/other/repo/blob/feature/v2/skills/demo/SKILL.md",
+                None,
+            ),
+            (
+                "https://github.com/owner/repo/blob/feature/v2/wrong/../demo/SKILL.md",
+                None,
+            ),
+            (
+                "https://github.com/owner/repo/blob/feature/v2/skills%2Fdemo/SKILL.md",
+                None,
+            ),
+            (
+                "https://github.com/owner/repo/blob/feature/v2/skills//demo/SKILL.md",
+                None,
+            ),
+            (
+                "https://user@github.com/owner/repo/blob/feature/v2/skills/demo/SKILL.md",
+                None,
+            ),
+            (
+                "http://github.com/owner/repo/blob/feature/v2/skills/demo/SKILL.md",
+                None,
+            ),
+        ] {
+            assert_eq!(
+                ccs_skill_repo_path(url, &repo).as_deref(),
+                expected,
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn ccs_local_skill_import_keeps_channel_separate_from_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("cc.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE skills (directory TEXT, repo_owner TEXT, repo_name TEXT, repo_branch TEXT, readme_url TEXT);
+            INSERT INTO skills VALUES ('personal', NULL, NULL, NULL, NULL);").unwrap();
+        drop(conn);
+        let origins = skill_origins_from_db(&db).unwrap();
+        let source = temp.path().join("incoming/personal");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("SKILL.md"),
+            "---\nname: Personal\n---\nPersonal skill\n",
+        )
+        .unwrap();
+        let manager = crate::skills::SkillsManager::new(
+            temp.path().join("library"),
+            temp.path().join("backups"),
+            temp.path().join("state.json"),
+            temp.path().join("home"),
+        );
+        let candidates = vec![("personal".into(), source)];
+        let preview = manager.preview_skill_import(&candidates, &origins).unwrap();
+        let selection = crate::skills::SkillImportSelection {
+            id: preview[0].id.clone(),
+            source_hash: preview[0].source_hash.clone(),
+            repo_key: preview[0].repo_key.clone(),
+            repo_path: preview[0].repo_path.clone(),
+            target_id: None,
+            target_snapshot: None,
+        };
+        let (count, errors) = manager
+            .apply_skill_import(&candidates, &origins, "cc-switch", &[selection])
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(errors.is_empty());
+        let state = manager.load_state();
+        assert_eq!(state.installed["personal"].import_source, "cc-switch");
+        assert!(state.installed["personal"].repo_key.is_empty());
+        assert!(state.installed["personal"].repo_path.is_empty());
+    }
 
     fn create_ccs_db(path: &Path) {
         let conn = Connection::open(path).unwrap();

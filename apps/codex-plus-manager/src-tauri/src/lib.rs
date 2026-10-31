@@ -266,10 +266,29 @@ pub fn run() {
             // Computer Use 操作后台应用时的悬浮预览（同 Codex 的画中画）。
             cu_pip::start(app.handle().clone());
             commands::start_weixin_connect_from_saved_settings();
-            commands::resume_existing_codex_background(
-                app.handle().clone(),
-                start_codex_at_login || start_codex_on_open,
-            );
+            let startup_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match tauri::async_runtime::spawn_blocking(commands::prepare_skills_on_startup)
+                    .await
+                {
+                    Ok(Ok(())) => commands::resume_existing_codex_background(
+                        startup_app,
+                        start_codex_at_login || start_codex_on_open,
+                    ),
+                    result => {
+                        let message = match result {
+                            Ok(Err(error)) => format!("{error:#}"),
+                            Err(error) => error.to_string(),
+                            Ok(Ok(())) => unreachable!(),
+                        };
+                        eprintln!("Skill 管理库恢复失败，未自动启动 Codex：{message}");
+                        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                            "manager.skills_startup_recovery_failed",
+                            serde_json::json!({ "message": message }),
+                        );
+                    }
+                }
+            });
             // 网关模式：有 Agent 走网关时常驻 helper 必须在线。后台线程里跑，
             // WSL 网卡查询与监听绑定不拖慢窗口出现。
             gateway_commands::start_from_saved_state_in_background();
@@ -475,17 +494,26 @@ pub fn run() {
             commands::set_user_script_enabled,
             commands::delete_user_script,
             commands::refresh_skill_catalog,
+            commands::refresh_skill_repo,
             commands::list_installed_skills,
+            commands::resolve_skill_conflict,
             commands::import_ccs_skills,
             commands::import_local_skills,
+            commands::preview_skill_import,
+            commands::apply_skill_import,
+            commands::find_skill_repository_matches,
+            commands::apply_skill_repository_matches,
             commands::install_skill,
             commands::update_skill,
+            commands::preview_skill_update,
+            commands::update_skill_confirmed,
             commands::set_skill_enabled,
             commands::set_skill_enabled_for,
             commands::uninstall_skill,
             commands::restore_skill_backup,
             commands::delete_skill_backup,
             commands::upsert_skill_repo,
+            commands::add_skill_repo,
             commands::inspect_skill_repo,
             commands::delete_skill_repo,
             commands::open_external_url,

@@ -75,14 +75,14 @@ export function groupSkills<T extends GroupableSkill>(
   customNames: string[],
   assignments: Record<string, string>,
   order: string[],
-  labels: { builtin: string; user: string; source: (skill: T) => string },
+  labels: { builtin: string; user: string; source?: (skill: T) => string },
   includeEmpty = true,
   aliases: Record<string, string> = {},
   assignmentsByIdentity: Record<string, string> = {},
-  knownRepositories: GroupableRepository[] = [],
+  knownRepositories?: GroupableRepository[],
 ): SkillGroup<T>[] {
   const groups = new Map<string, SkillGroup<T>>();
-  const sourceLabels = new Map(known.map((skill) => [defaultSkillGroupKey(skill), labels.source(skill)]));
+  const sourceLabels = new Map(known.map((skill) => [defaultSkillGroupKey(skill), labels.source?.(skill)]));
   const add = (key: string, label: string, kind: SkillGroup<T>["kind"]) => {
     if (!groups.has(key)) groups.set(key, { key, label, kind, items: [] });
   };
@@ -94,15 +94,21 @@ export function groupSkills<T extends GroupableSkill>(
       const name = !skill.bundled && skillRepositoryName(skill.repoKey);
       if (name) {
         const key = repositorySkillGroupKey(name);
-        add(key, aliases[key] || labels.source(skill) || name, "repo");
+        add(key, aliases[key] || labels.source?.(skill) || name, "repo");
       }
     }
     // 与后端仓库配置的 owner/name 规则一致，导入渠道本身不创建仓库组。
-    for (const repo of knownRepositories) {
+    for (const repo of knownRepositories || []) {
       if (!/^[A-Za-z0-9._-]+$/.test(repo.owner) || !/^[A-Za-z0-9._-]+$/.test(repo.name)) continue;
       const name = `${repo.owner}/${repo.name}`;
       const key = repositorySkillGroupKey(name);
       add(key, aliases[key] || name, "repo");
+    }
+    // 旧调用未提供仓库清单时，保留已记录的空仓库分组。
+    if (!knownRepositories) {
+      for (const key of [...order, ...Object.keys(aliases), ...Object.values(assignments)]) {
+        if (key.startsWith("repo:") && key.length > 5) add(key, aliases[key] || key.slice(5), "repo");
+      }
     }
   }
   for (const skill of visible) {
@@ -135,7 +141,7 @@ export function sortSkillGroupsByName<T>(groups: SkillGroup<T>[], direction: Ski
   return [...pinned, ...movable];
 }
 
-export function sortSkillGroupKeys<T>(groups: SkillGroup<T>[], direction: SkillGroupSortDirection): string[] {
+export function sortSkillGroupKeys<T>(groups: SkillGroup<T>[], direction: SkillGroupSortDirection = "asc"): string[] {
   return sortSkillGroupsByName(groups, direction)
     .filter((group) => group.kind === "repo" || group.kind === "custom").map((group) => group.key);
 }

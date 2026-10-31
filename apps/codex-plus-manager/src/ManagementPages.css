@@ -294,15 +294,25 @@
 .mg-push { margin-left:auto; }
 .mg-toolbar-actions { display:flex; align-items:center; gap:6px; }
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-head,
-.mg-agent-matrix.mg-skill-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) 150px repeat(3,84px) 120px; }
+.mg-agent-matrix.mg-skill-matrix .mg-matrix-row,
+.mg-skill-matrix .mg-skill-group-row { grid-template-columns:minmax(180px,1fr) 116px repeat(3,76px) 116px; min-width:680px; }
+.mg-skills-page .mg-toolbar { flex-wrap:wrap; }
+.mg-agent-matrix.mg-skill-matrix { overflow:auto; }
 .mg-skill-matrix .mg-row-main { width:100%; cursor:pointer; }
 .mg-skill-matrix .mg-skill-source { min-width:0; padding-right:12px; }
 .mg-skill-matrix .mg-skill-source .mg-link-button { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
 .mg-skill-matrix .mg-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; }
-.mg-skill-matrix .mg-skill-group-row { display:flex; align-items:center; gap:8px; min-height:36px; padding:0 12px 0 8px; border-bottom:1px solid hsl(var(--border)); background:hsl(var(--muted) / .5); }
-.mg-skill-matrix .mg-skill-group-row .mg-group-head { flex:1; min-width:0; height:36px; padding:0 4px; border:0; background:transparent; }
+.mg-skill-matrix .mg-skill-group-row { display:grid; align-items:center; gap:0; min-height:40px; padding:0 12px 0 16px; border-bottom:1px solid hsl(var(--border)); background:hsl(var(--muted) / .5); }
+.mg-skill-matrix .mg-skill-group-name { display:flex; align-items:center; min-width:0; }
+.mg-skill-matrix .mg-skill-group-row .mg-group-head { flex:1; min-width:0; height:40px; padding:0 4px; border:0; background:transparent; }
 .mg-skill-matrix .mg-skill-group-row .mg-group-head strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.mg-skill-matrix .mg-skill-group-row .mg-group-head small { flex:none; white-space:nowrap; }
+.mg-skill-matrix .mg-skill-group-row .mg-group-head small { flex:none; margin-left:auto; white-space:nowrap; font-size:11px; }
+.mg-skill-matrix .mg-skill-batch-label { justify-self:end; padding-right:8px; font-size:11px; color:hsl(var(--muted-foreground)); }
+.mg-skill-matrix .mg-skill-batch-cell { display:flex; justify-content:center; align-items:center; height:32px; }
+.mg-skill-matrix .mg-skill-batch-cell input { width:15px; height:15px; margin:0; accent-color:hsl(var(--primary)); cursor:pointer; }
+.mg-skill-matrix .mg-skill-batch-cell input:disabled { cursor:not-allowed; opacity:.45; }
+.mg-skill-matrix .mg-cell:disabled { cursor:not-allowed; }
+.mg-skill-matrix .mg-cell:disabled > span[data-on="true"] { background:hsl(var(--muted-foreground) / .42); border-color:transparent; box-shadow:none; }
 .mg-skill-matrix .mg-skill-group-row .mg-row-actions { display:flex; flex:none; gap:4px; }
 .mg-skill-matrix .mg-skill-group-row .mg-button { height:24px; padding:0 8px; font-size:12px; }
 .mg-skill-matrix .mg-skill-drag, .mg-skill-matrix .mg-skill-drag-placeholder { flex:none; width:24px; height:24px; }
@@ -313,6 +323,42 @@
 .mg-menu button[aria-checked="true"]::after { content:"✓"; float:right; color:hsl(var(--brand-accent)); }
 .mg-skill-matrix .mg-skill-group { margin:0; }
 .mg-skill-matrix .mg-skill-source small { font-size:11px; color:hsl(var(--muted-foreground)); }
+.mg-skill-action-menu { z-index:1000; overflow:auto; padding:5px; border:1px solid hsl(var(--border)); border-radius:7px; background:hsl(var(--popover)); color:hsl(var(--foreground)); box-shadow:var(--shadow-lg); }
+.mg-skill-action-menu button { display:flex; align-items:center; gap:9px; width:100%; min-height:34px; padding:7px 9px; border:0; border-radius:5px; background:transparent; color:inherit; font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+.mg-skill-action-menu button:hover, .mg-skill-action-menu button:focus-visible { outline:none; background:hsl(var(--accent)); }
+.mg-skill-action-menu button:disabled { opacity:.45; cursor:not-allowed; }
+.mg-skill-action-menu button span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mg-skill-action-menu button.mg-danger { color:hsl(var(--destructive)); }
+.mg-skill-action-menu .mg-skill-menu-back { color:hsl(var(--muted-foreground)); border-bottom:1px solid hsl(var(--border)); border-radius:0; margin-bottom:4px; }
+.mg-skill-menu-divider { height:1px; margin:4px 0; background:hsl(var(--border)); }
+.mg-skill-conflict-badge, .mg-skill-conflict-action { color:hsl(var(--status-warning)); }
+.mg-skill-conflict-dialog .confirm-modal-body { display:flex; flex-direction:column; gap:10px; }
+.mg-skill-version-choice { display:flex; align-items:flex-start; gap:10px; padding:10px; border:1px solid hsl(var(--border)); border-radius:6px; cursor:pointer; }
+.mg-skill-version-choice:has(input:checked) { border-color:hsl(var(--primary)); background:hsl(var(--accent)); }
+.mg-skill-version-choice input { margin-top:3px; accent-color:hsl(var(--primary)); }
+.mg-skill-version-choice span { display:flex; flex-direction:column; gap:3px; }
+.mg-skill-version-choice small { color:hsl(var(--muted-foreground)); }
+.mg-skill-import-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }
+.mg-skill-import-note { margin:0; color:hsl(var(--muted-foreground)); font-size:12px; }
+.mg-skill-import-toolbar .mg-row-actions { flex-wrap:wrap; }
+.mg-skill-import-list { border:1px solid hsl(var(--border)); border-radius:6px; }
+.mg-skill-import-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(140px,220px); align-items:center; gap:12px; min-height:60px; padding:8px 10px; border-bottom:1px solid hsl(var(--border)); }
+.mg-skill-import-row:last-child { border-bottom:0; }
+.mg-skill-import-row > label { display:flex; align-items:center; gap:10px; min-width:0; }
+.mg-skill-import-row input { width:15px; height:15px; margin:0; flex:none; accent-color:hsl(var(--primary)); }
+.mg-skill-import-row label span { display:flex; min-width:0; flex-direction:column; gap:3px; }
+.mg-skill-import-row label strong, .mg-skill-import-row label small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mg-skill-import-row small { color:hsl(var(--muted-foreground)); font-size:11px; }
+.mg-skill-import-target { display:flex; flex-direction:column; gap:3px; min-width:0; font-size:11px; color:hsl(var(--muted-foreground)); }
+.mg-skill-import-target .app-select { width:100%; min-width:0; }
+.app-select.mg-skill-long-select { min-width:0; max-width:100%; }
+.app-select.mg-skill-long-select .app-select-trigger { height:auto; padding-block:7px; }
+.app-select-menu.mg-skill-long-select .app-select-option { padding-block:6px; }
+.app-select.mg-skill-long-select .app-select-trigger > span,
+.app-select-menu.mg-skill-long-select .app-select-option-label { overflow:visible; overflow-wrap:anywhere; text-overflow:clip; white-space:normal; }
+.mg-skill-import-duplicate { color:hsl(var(--status-warning)) !important; }
+.mg-skill-import-error { color:hsl(var(--status-warning)) !important; overflow-wrap:anywhere; }
+@media (max-width:620px) { .mg-skill-import-row { grid-template-columns:minmax(0,1fr); } }
 /* 多 Agent 表头（MCP / Skills）：Agent 列是图标 + 名字 + 数量三行，比普通表头高，上下留出边距 */
 .shell .mg-agent-matrix .mg-matrix-head { padding-top: 8px; padding-bottom: 8px; }
 .shell .mg-agent-matrix .mg-agent-column { gap: 3px; }

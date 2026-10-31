@@ -294,6 +294,71 @@ pub fn proxied_client(user_agent: &str) -> anyhow::Result<reqwest::Client> {
     build_proxied_client(user_agent, None)
 }
 
+pub(crate) fn proxied_client_with_proxy(
+    user_agent: &str,
+    proxy: &str,
+) -> anyhow::Result<reqwest::Client> {
+    build_proxied_client(user_agent, Some(proxy))
+}
+
+pub(crate) fn direct_client_with_timeouts(user_agent: &str) -> anyhow::Result<reqwest::Client> {
+    Ok(apply_configured_ca_certificate(
+        reqwest::Client::builder()
+            .user_agent(user_agent)
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(10)),
+    )?
+    .build()?)
+}
+
+#[cfg(test)]
+mod proxy_override_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[tokio::test]
+    async fn explicit_proxy_routes_without_system_proxy_or_destination_dns() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline, "显式代理未收到请求");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = [0; 4096];
+            let length = stream.read(&mut bytes).unwrap();
+            assert!(
+                String::from_utf8_lossy(&bytes[..length])
+                    .starts_with("GET http://skill-fixture.invalid/manifest ")
+            );
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture",
+                )
+                .unwrap();
+        });
+        let response = proxied_client_with_proxy("Skill proxy test", &format!("http://{address}"))
+            .unwrap()
+            .get("http://skill-fixture.invalid/manifest")
+            .timeout(std::time::Duration::from_secs(4))
+            .send()
+            .await;
+        server.join().unwrap();
+        assert_eq!(response.unwrap().text().await.unwrap(), "fixture");
+    }
+}
+
 /// Provider-specific proxy override for opt-in routing. Set
 /// `CODEX_PLUS_PROXY_<PROFILE_ID>` (non-alphanumeric characters become `_`),
 /// or use `CODEX_PLUS_PROXY` as a process-wide fallback.

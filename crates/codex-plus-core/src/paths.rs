@@ -11,7 +11,8 @@ const PENDING_PROVIDER_IMPORT_FILE: &str = "pending-provider-import.json";
 const PENDING_SESSION_SHARE_FILE: &str = "pending-session-share.txt";
 const PENDING_REMOTE_CONTROL_RECOVERY_FILE: &str = "pending-remote-control-recovery.json";
 const SKILLS_STATE_FILE: &str = "skills.json";
-const SKILLS_DIR: &str = "skills";
+const SKILLS_DIR: &str = "skills-library";
+const LEGACY_SKILLS_DIR: &str = "skills";
 const SKILL_BACKUPS_DIR: &str = "skill-backups";
 const PENDING_MANAGER_NAVIGATION_FILE: &str = "pending-manager-navigation.json";
 
@@ -124,10 +125,13 @@ pub fn default_pending_remote_control_recovery_path() -> PathBuf {
     default_app_state_dir().join(PENDING_REMOTE_CONTROL_RECOVERY_FILE)
 }
 
-/// Skills 的「单一事实来源」目录。已安装的 skill 目录都放这里，
-/// 启用时再软链到 `$CODEX_HOME/skills/<id>`，停用只删链接、源目录留着。
+/// 独立管理库使用新目录，避免第三方仍指向旧目录的链接写穿管理库。
 pub fn default_skills_source_dir() -> PathBuf {
     default_app_state_dir().join(SKILLS_DIR)
+}
+
+pub fn default_legacy_skills_source_dir() -> PathBuf {
+    default_app_state_dir().join(LEGACY_SKILLS_DIR)
 }
 
 pub fn default_skills_state_path() -> PathBuf {

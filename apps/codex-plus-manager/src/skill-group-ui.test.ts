@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { customSkillGroupKey, defaultSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { skillAgents, skillBatchHasPending } from "./skill-agent-batch.ts";
+import { SkillTaskQueue } from "./skill-task-queue.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
 type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean };
@@ -38,6 +40,8 @@ function createHarness(saved = "{}") {
       if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
       return [slots[index], (value: any) => { slots[index] = typeof value === "function" ? value(slots[index]) : value; }];
     },
+    useRef: (initial: any) => { const index = cursor++; if (!(index in slots)) slots[index] = { current: initial }; return slots[index]; },
+    useSyncExternalStore: (_subscribe: any, getSnapshot: () => any) => getSnapshot(),
     useEffect: (run: () => void, deps?: any[]) => {
       const index = cursor++;
       const previous = slots[index] as any[] | undefined;
@@ -48,6 +52,7 @@ function createHarness(saved = "{}") {
     useSensors: (...values: any[]) => values, useSensor: () => null, PointerSensor: "pointer", KeyboardSensor: "keyboard",
     sortableKeyboardCoordinates: null, closestCenter: null, verticalListSortingStrategy: null,
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
+    window: { addEventListener: () => {}, removeEventListener: () => {} },
     invoke: async (command: string) => {
       calls.push(command);
       if (command !== "list_installed_skills" && command !== "refresh_skill_catalog") throw new Error(`Unexpected command: ${command}`);
@@ -55,14 +60,16 @@ function createHarness(saved = "{}") {
     },
     ok: (result: { status: string }) => result.status === "ok", SKILL_GROUP_STORAGE_KEY: "codex-plus-plus.skill-groups.v1",
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
-    groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
+    groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey, defaultSkillGroupKey,
+    skillAgents, skillBatchHasPending, skillUpdateQueue: new SkillTaskQueue(), checkRepositories: async () => {},
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
     sourceLabel: (item: FixtureSkill) => item.bundled ? "内置" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
-    repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
+    repoKey: (repo: FixtureRepo) => `${repo.owner}/${repo.name}@${repo.branch}${repo.subdir ? `:${repo.subdir}` : ""}`,
+    repoUrl: () => "", importChannel: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
-  for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "DndContext", "SortableContext",
-    "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "GripVertical"]) context[name] = name;
+  for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "SortableSkillGroup", "DndContext", "SortableContext", "SkillActionMenu", "GroupAgentSelect",
+    "SkillDetailDrawer", "SkillRepoDrawer", "SkillRepositoryMatchDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ChevronsUp", "ChevronsDown", "CloudDownload", "Edit3", "Trash2", "AlertTriangle", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "GripVertical"]) context[name] = name;
   vm.createContext(context);
   vm.runInContext(code, context);
   const collect = (node: any, result: Element[]) => {
@@ -87,14 +94,22 @@ function createHarness(saved = "{}") {
   const groupButton = (key: string, text: string) => {
     const children: Element[] = [];
     collect(group(key).children[0]("handle"), children);
-    const button = children.find((node) => node.type === "Button" && node.children.includes(text));
+    const button = children.find((node) => node.type === "button" && String(node.props["aria-label"] || "").startsWith(text === "重命名" ? "重命名分组" : text));
     assert.ok(button);
-    return button;
+    return { ...button, props: { ...button.props, onClick: async () => { button.props.onClick(); await tick(); } } };
   };
   const rowElements = (groupKey: string, repoKey: string, id: string) => {
-    const children: Element[] = [];
+    let children: Element[] = [];
     collect(group(groupKey).children[0]("handle"), children);
-    const row = children.find((node) => node.type === "div" && node.props.className === "mg-matrix-row" && node.props.key === skillIdentityKey({ repoKey, id }));
+    let row = children.find((node) => node.type === "div" && node.props.className === "mg-matrix-row" && node.props.key === skillIdentityKey({ repoKey, id }));
+    if (!row) {
+      const header = children.find((node) => node.type === "button" && node.props.className === "mg-group-head" && !node.props["aria-expanded"]);
+      assert.ok(header);
+      header.props.onClick(); render();
+      children = [];
+      collect(group(groupKey).children[0]("handle"), children);
+      row = children.find((node) => node.type === "div" && node.props.className === "mg-matrix-row" && node.props.key === skillIdentityKey({ repoKey, id }));
+    }
     assert.ok(row);
     const result: Element[] = [];
     collect(row, result);
@@ -118,23 +133,23 @@ test("shared IDs support independent choices while retaining legacy assignments 
   assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.repoKey), ["local", "cc-switch"]);
   assert.ok(ui.rowElements("user", "local", "local-import").some((node) => node.type === "small" && node.children.includes("本地导入")));
   assert.ok(ui.rowElements("user", "cc-switch", "cc-import").some((node) => node.type === "small" && node.children.includes("cc-switch")));
-  assert.equal(ui.rowElements("builtin", "", "shared").some((node) => node.props.className === "mg-menu-label"), false);
-  assert.ok(ui.rowElements("custom:Manual", "a/repo@main", "shared").some((node) => node.props.className === "mg-menu-label"));
+  assert.equal(ui.rowElements("builtin", "", "shared").find((node) => node.type === "SkillActionMenu")?.props.skill.bundled, true);
+  assert.equal(ui.rowElements("custom:Manual", "a/repo@main", "shared").find((node) => node.type === "SkillActionMenu")?.props.group.key, "custom:Manual");
   assert.deepEqual(ui.savedState().assignments, { shared: "Manual" });
   assert.equal(ui.savedState().future, "keep");
 
-  const reset = ui.rowElements("custom:Manual", "a/repo@main", "shared").find((node) => node.type === "MenuItem" && node.children.includes("按来源"));
-  assert.ok(reset); reset.props.onClick(); ui.render();
+  const reset = ui.rowElements("custom:Manual", "a/repo@main", "shared").find((node) => node.type === "SkillActionMenu");
+  assert.ok(reset); assert.equal(reset.props.originGroup.key, "repo:a/repo"); reset.props.onAssign(""); ui.render();
   assert.deepEqual(ui.savedState().assignments, { shared: "Manual" });
   assert.deepEqual(ui.savedState().assignmentsByIdentity, { [skillIdentityKey(skill("shared", "a/repo@main"))]: "" });
   assert.equal(ui.group("repo:a/repo").props.group.items.length, 1);
   assert.equal(ui.group("repo:z/repo").props.group.items.length, 0);
   assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
   assert.equal(ui.group("builtin").props.group.items.length, 1);
-  assert.equal(ui.rowElements("repo:a/repo", "a/repo@main", "shared").find((node) => node.type === "MenuItem" && node.children.includes("按来源"))?.props.checked, true);
+  assert.equal(ui.rowElements("repo:a/repo", "a/repo@main", "shared").find((node) => node.type === "SkillActionMenu")?.props.assignment, "");
 
-  const assign = ui.rowElements("repo:a/repo", "a/repo@main", "shared").find((node) => node.type === "MenuItem" && node.children.includes("Other"));
-  assert.ok(assign); assign.props.onClick(); ui.render();
+  const assign = ui.rowElements("repo:a/repo", "a/repo@main", "shared").find((node) => node.type === "SkillActionMenu");
+  assert.ok(assign); assert.ok(assign.props.groups.some((group: { key: string }) => group.key === "custom:Other")); assign.props.onAssign("custom:Other"); ui.render();
   assert.deepEqual(ui.savedState().assignments, { shared: "Manual" });
   assert.deepEqual(ui.savedState().assignmentsByIdentity, { [skillIdentityKey(skill("shared", "a/repo@main"))]: "custom:Other" });
   assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
@@ -180,8 +195,8 @@ test("shared IDs support independent choices while retaining legacy assignments 
 test("known repository groups stay empty in installed view after individual moves and sorting", async () => {
   const ui = createHarness(JSON.stringify({ names: ["Manual"], assignments: {} }));
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
-  const move = ui.rowElements("repo:a/repo", "a/repo@main", "alpha").find((node) => node.type === "MenuItem" && node.children.includes("Manual"));
-  assert.ok(move); move.props.onClick(); ui.render();
+  const move = ui.rowElements("repo:a/repo", "a/repo@main", "alpha").find((node) => node.type === "SkillActionMenu");
+  assert.ok(move); move.props.onAssign("custom:Manual"); ui.render();
   assert.equal(ui.group("repo:a/repo").props.group.items.length, 0);
   assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
   ui.sort().props.onClick(); ui.render();
@@ -254,8 +269,8 @@ test("new assignments for duplicate IDs without legacy settings affect only one 
   const ui = createHarness(JSON.stringify({ names: ["Manual"], assignments: {} }));
   ui.server.skills = [skill("same", "a/repo@main"), skill("same", "z/repo@main")];
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
-  const move = ui.rowElements("repo:a/repo", "a/repo@main", "same").find((node) => node.type === "MenuItem" && node.children.includes("Manual"));
-  assert.ok(move); move.props.onClick(); ui.render();
+  const move = ui.rowElements("repo:a/repo", "a/repo@main", "same").find((node) => node.type === "SkillActionMenu");
+  assert.ok(move); move.props.onAssign("custom:Manual"); ui.render();
   assert.equal(ui.group("repo:z/repo").props.group.items.length, 1);
   assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
   assert.deepEqual(ui.savedState().assignments, {});
@@ -266,6 +281,22 @@ test("new assignments for duplicate IDs without legacy settings affect only one 
   assert.equal(restored.group("custom:Manual").props.group.items.length, 1);
 });
 
+test("detail group selection uses the selected repository identity for duplicate IDs", async () => {
+  const ui = createHarness(JSON.stringify({ names: ["Manual"], assignments: {} }));
+  ui.server.skills = [skill("same", "a/repo@main"), skill("same", "z/repo@main")];
+  ui.render(); await tick(); ui.render();
+  const row = ui.rowElements("repo:a/repo", "a/repo@main", "same");
+  const open = row.find((node) => node.type === "button" && node.props.className === "mg-row-main");
+  assert.ok(open); open.props.onClick(); ui.render();
+  let detail = ui.find((node) => node.type === "SkillDetailDrawer");
+  assert.equal(detail.props.group.key, "repo:a/repo");
+  detail.props.onAssign("custom:Manual"); ui.render();
+  detail = ui.find((node) => node.type === "SkillDetailDrawer");
+  assert.equal(detail.props.group.key, "custom:Manual");
+  assert.deepEqual(ui.group("repo:z/repo").props.group.items.map((item: FixtureSkill) => item.repoKey), ["z/repo@main"]);
+  assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey(skill("same", "a/repo@main"))], "custom:Manual");
+});
+
 test("rows with ambiguous colon-joined identities remain distinct", async () => {
   const first = skill("x", "owner/repo@main:sub");
   const second = skill("sub:x", "owner/repo@main");
@@ -274,8 +305,8 @@ test("rows with ambiguous colon-joined identities remain distinct", async () => 
   const ui = createHarness(JSON.stringify({ names: ["Manual"], assignments: {} }));
   ui.server.skills = [first, second];
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
-  const move = ui.rowElements("repo:owner/repo", first.repoKey, first.id).find((node) => node.type === "MenuItem" && node.children.includes("Manual"));
-  assert.ok(move); move.props.onClick(); ui.render();
+  const move = ui.rowElements("repo:owner/repo", first.repoKey, first.id).find((node) => node.type === "SkillActionMenu");
+  assert.ok(move); move.props.onAssign("custom:Manual"); ui.render();
   assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.id), ["x"]);
   assert.deepEqual(ui.group("repo:owner/repo").props.group.items.map((item: FixtureSkill) => item.id), ["sub:x"]);
   assert.ok(ui.rowElements("repo:owner/repo", second.repoKey, second.id).length);
@@ -286,7 +317,7 @@ test("empty custom groups show immediately in both tabs and survive reload", asy
   ui.render(); await tick(); ui.render();
   assert.ok(ui.order().includes("custom:Empty"));
   ui.prompts.push("New");
-  await ui.find((node) => node.type === "Button" && node.children.includes("新建分组")).props.onClick();
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "新建分组").props.onClick(); await tick();
   ui.render();
   assert.ok(ui.order().includes("custom:New"));
   assert.deepEqual(ui.savedState().future, { keep: true });
@@ -294,10 +325,12 @@ test("empty custom groups show immediately in both tabs and survive reload", asy
   assert.ok(ui.order().includes("custom:Empty"));
   assert.equal(ui.group("builtin").props.disabled, true);
   assert.equal(ui.group("user").props.disabled, true);
+  ui.selectTab("发现");
+  assert.ok(ui.order().includes("custom:Empty"));
   const restored = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"));
   restored.render(); await tick(); restored.render();
   assert.ok(restored.order().includes("custom:New"));
-  assert.deepEqual(ui.calls, ["list_installed_skills", "refresh_skill_catalog"]);
+  assert.deepEqual(ui.calls, ["list_installed_skills"]);
 });
 
 test("sort, reload and manual drag preserve the full order and pinned groups", async () => {
@@ -341,7 +374,7 @@ test("an active name direction also sorts groups created after restoring it", as
   const ui = createHarness(JSON.stringify({ names: ["middle"], assignments: {}, sortDirection: "desc" }));
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
   ui.prompts.push("zzzz");
-  await ui.find((node) => node.type === "Button" && node.children.includes("新建分组")).props.onClick();
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "新建分组").props.onClick(); await tick();
   ui.render();
   assert.deepEqual(ui.order().slice(0, 3), ["builtin", "user", "custom:zzzz"]);
   assert.equal(ui.savedState().sortDirection, "desc");
