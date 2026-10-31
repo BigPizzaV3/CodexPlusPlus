@@ -149,7 +149,7 @@
   }
 
   /**
-   * 会话写入（与 dsh 的 SessionStore 对应）：经 Codex 自己的 AppServerManager 调 app-server。
+   * 会话写入：经 Codex 自己的 AppServerManager 调 app-server。
    *
    * 新版 Codex 在页面里用 `scope.get(管理器原子).forHost(hostId).sendRequest(method, params)` 发请求；原子是入口
    * 模块的一个导出（名字随构建变），这里按「scope.get 出来的值带 forHost」把它找出来并缓存。scope 取自任意

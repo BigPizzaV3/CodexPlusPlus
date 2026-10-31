@@ -1,5 +1,5 @@
   /**
-   * 拓展的 RPC 层拦截点：`agent/pre-step`、`agent/request`（与 dsh 同名同语义）和 `codex/request`。
+   * 拓展的 RPC 层拦截点：`agent/pre-step`、`agent/request` 和 `codex/request`。
    *
    * 新版 Codex 把 app-server manager 搬进了宿主进程，页面经 MessagePort 用 capnweb 协议调它，
    * 页面里已经没有发 turn/start 的请求客户端（见 70-model-catalog 的类捕获，只剩旧路径）。
@@ -15,7 +15,7 @@
    * capnweb 的 import id 按 push 顺序隐式分配，所以改写某一帧要等中间件时，同一端口后面的帧
    * 必须排队、按原顺序发出。没有拓展挂这些拦截点时一律同步放行，零开销。
    *
-   * dsh 语义（`ctx.on(name, async (params, next) => …)`，先 `await next()` 拿下游决定再改）：
+   * 语义（`ctx.on(name, async (params, next) => …)`，先 `await next()` 拿下游决定再改）：
    *   - `agent/pre-step`：params `{ agent, turn, step, messages, signal }`，决定是
    *     `{ kind: "enter", messages }` 或 `{ kind: "reject", reason? }`。拒绝时这一轮不发出。
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
@@ -85,8 +85,8 @@
   }
 
   /**
-   * dsh 式 waterfall：监听器按注册顺序 `handler(params, next)`，`next()` 不带参数、返回下游决定，
-   * 链尾是 fallback。和 dsh 不同的是出错隔离：监听器抛错或 reject 时记到该拓展名下，按调用 next() 处理，
+   * 可等待下游的 waterfall：监听器按注册顺序 `handler(params, next)`，`next()` 不带参数、返回下游决定，
+   * 链尾是 fallback。另外做了出错隔离：监听器抛错或 reject 时记到该拓展名下，按调用 next() 处理，
    * 不能因为一个拓展挡住 Codex 发消息。返回 undefined 也按 next() 处理。
    */
   function codexPlusRunListenerWaterfall(name, params, fallback) {
@@ -109,7 +109,7 @@
     return step(0);
   }
 
-  /** Codex 的 input 条目 → dsh 用户消息。非文本条目（图片、提及等）原样放进 content，改写回去时保留。 */
+  /** Codex 的 input 条目 → 拓展看到的用户消息。非文本条目（图片、提及等）原样放进 content，改写回去时保留。 */
   function codexPlusRpcInputToMessages(input, id) {
     const content = (Array.isArray(input) ? input : []).map((item) => {
       if (item?.type !== "text") return { ...item };
@@ -120,7 +120,7 @@
     return [{ role: "user", id: String(id || ""), source: { kind: "user" }, content }];
   }
 
-  /** dsh 消息 → Codex 的 input 条目。文本没改的条目沿用原条目（保留 text_elements 等标注）。 */
+  /** 拓展消息 → Codex 的 input 条目。文本没改的条目沿用原条目（保留 text_elements 等标注）。 */
   function codexPlusRpcMessagesToInput(messages) {
     const items = [];
     for (const message of Array.isArray(messages) ? messages : []) {

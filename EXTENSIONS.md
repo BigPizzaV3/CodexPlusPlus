@@ -254,14 +254,14 @@ codexPlus.extension((ctx) => {
   它的 `params` 还带着建会话用的字段（`cwd`、`workspaceRoots` 等），没有 `threadId`。
 - 两者都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
 
-### 步骤准入与模型请求（与 dsh 同名同语义）
+### 步骤准入与模型请求
 
-`agent/pre-step` 和 `agent/request` 按 dsh 的写法用 `ctx.on` 注册，处理器是 `(params, next)`：
+`agent/pre-step` 和 `agent/request` 用 `ctx.on` 注册，处理器是 `(params, next)`：
 先 `await next()` 拿到下游的决定，再返回改过的版本。
 
 ```js
 codexPlus.extension((ctx) => {
-  // 每条用户消息后面补一条上下文（同 dsh-time-context 的写法）
+  // 每条用户消息后面补一条上下文
   ctx.on("agent/pre-step", async ({ agent, messages, signal }, next) => {
     const decision = await next();
     if (decision.kind === "reject" || signal.aborted) return decision;
@@ -283,7 +283,7 @@ codexPlus.extension((ctx) => {
 - `agent/request`：`params` 是 `{ agent, turn, step, signal, conversationId }`，`next()` 返回
   `{ provider, model, reasoningEffort }`。`model` 是 Codex 里的完整模型 id（如 `jojocodemax/gpt-6.1-sol`），`provider` 是斜杠前的部分；
   改 `model` 或 `reasoningEffort` 会写回本轮的协作模式设置，只改 `provider` 时按「供应商/模型」拼回去。
-- 与 dsh 的差别：Codex 只在用户发消息时经过这里，一轮里的后续步骤（工具调用之后）不会再触发，`step` 恒为 1，`turn` 拿不到（`undefined`）；
+- 限制：Codex 只在用户发消息时经过这里，一轮里的后续步骤（工具调用之后）不会再触发，`step` 恒为 1，`turn` 拿不到（`undefined`）；
   `agent` 只是 `{ id, session: { id } }` 描述，没有 `steer` / `inject` 等方法；`maxTokens`、`startsRequestSeries` 不生效。
   处理器抛错时跳过它、按 `next()` 的结果继续，不会挡住 Codex 发消息；全链超过 5 秒按原样发出，`signal` 随之中止。
 - 同一条用户消息只跑一次这两条链，结果套用到它的 `turn/start` 与 `turn/steer` 两份候选上，之后才轮到 `codex/request`。
@@ -401,7 +401,7 @@ export default (body) => ({ ...body, instructions: `${body.instructions ?? ""}\n
   前一个的输出是后一个的输入。
 - 按步触发：agent 每走一步（每次工具调用之后）都会向模型发一次请求，都经过这里。第二个参数里的 `step` 是
   `{ index, toolResults, userText, firstStep }`（本轮第几步、已有几个工具结果、本轮用户输入、是否第一步）。
-  返回 `{ reject: "原因" }` 即不发这一步，Codex 收到带原因的错误，后面的中间件不再跑（对应 dsh `agent/pre-step` 的 reject）。`timeout` 1~10 秒（默认 5），整条链最多 15 秒。
+  返回 `{ reject: "原因" }` 即不发这一步，Codex 收到带原因的错误，后面的中间件不再跑（与页面侧 `agent/pre-step` 的 reject 相同）。`timeout` 1~10 秒（默认 5），整条链最多 15 秒。
 - 加请求头：往第二个参数的 `headers` 对象里写（`context.headers["x-trace"] = "1"`），发往上游时附上。
   鉴权、Cookie、Host、内容长度 / 类型这类头由 Codex++ 管，写了也会被忽略。失败重试时沿用同一组头。
 - 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过 Codex++，不受影响。
@@ -536,7 +536,7 @@ codexPlus.extension((ctx) => {
 
 ### 会话写入（分叉、追加、发起一轮）
 
-内置服务 `sessions` 经 Codex 自己的 app-server 连接写会话，对应 dsh 的 `session.append` / `fork`：
+内置服务 `sessions` 经 Codex 自己的 app-server 连接写会话：
 
 ```js
 codexPlus.extension({ inject: ["sessions", "sessionQuery"], async apply(ctx) {
@@ -585,7 +585,7 @@ codexPlus.extension({ inject: ["sessions", "sessionQuery"], async apply(ctx) {
   （用户在拓展设置里填，Key 不写进代码）。`models` 至少一个；每个拓展最多 8 个供应商。
 - `"discoverModels": true`：从上游 `/models` 拉模型列表（10 分钟刷新一次），与 `models` 合并；这时 `models` 可以为空。
 - 只在构建 Agent 模型资料与网关路由时并入，不写进 `gateway.json`；与用户已有的同 id 供应商以用户的为准。拓展停用即消失。
-- 要用代码实现一个供应商（相当于 dsh 写 provider 适配器）：在常驻后台里起一个本机 HTTP 服务实现 Chat / Responses 接口，
+- 要用代码实现一个供应商（用代码写供应商适配器）：在常驻后台里起一个本机 HTTP 服务实现 Chat / Responses 接口，
   `baseUrl` 指向 `http://127.0.0.1:<端口>`。
 
 ### 拓展调模型
