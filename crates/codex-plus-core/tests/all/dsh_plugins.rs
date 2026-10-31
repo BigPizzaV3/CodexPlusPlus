@@ -162,10 +162,10 @@ fn dsh_import_bundle_reports_compatibility_per_row() {
     assert_eq!(greet["mappings"], json!(["instructions"]));
     assert_eq!(greet["tools"][0]["name"], "greet");
 
-    // cordis:group 的子行被展开；依赖子 agent 编排服务的行不加载。
+    // cordis:group 的子行被展开；依赖工作流引擎的行不加载。
     let session = row(report, "session-tool");
     assert_eq!(session["status"], "incompatible");
-    assert!(session["reasons"][0].as_str().unwrap().contains("subagents"));
+    assert!(session["reasons"][0].as_str().unwrap().contains("workflowEngine"));
     assert_eq!(row(report, "official-todo")["status"], "incompatible");
 
     let mcp = dsh_plugins::mcp_servers_json(report).unwrap();
@@ -839,7 +839,7 @@ fn dsh_client_plugin_gets_renderer_glue_and_routed_fetch() {
 
     let backend = dir.join("backend/main.mjs");
     let script = format!(
-        "const {{ default: create }} = await import({}); const methods = create(); const reply = await methods.fetch({{ path: '/api/client-demo/echo', method: 'POST', headers: {{ 'content-type': 'application/json' }}, body: JSON.stringify({{ text: 'ping' }}) }}); const missing = await methods.fetch({{ path: '/api/nope' }}); process.stdout.write(JSON.stringify({{ reply, missing: missing.status }})); process.exit(0)",
+        "const {{ default: create }} = await import({}); const methods = create(); const reply = await methods.fetch({{ path: '/api/client-demo/echo', method: 'POST', headers: {{ 'content-type': 'application/json' }}, body: JSON.stringify({{ text: 'ping' }}) }}); const missing = await methods.fetch({{ path: '/api/nope' }}); const rpc = await methods.rpc({{ channel: '/client-demo', endpoint: 'ping', payload: {{ a: 1 }} }}); const denied = await methods.rpc({{ channel: '/client-demo', endpoint: 'secret' }}); const nobody = await methods.rpc({{ channel: '/other', endpoint: 'x' }}); process.stdout.write(JSON.stringify({{ reply, missing: missing.status, rpc, denied, nobody }})); process.exit(0)",
         json!(url_of(&backend))
     );
     let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
@@ -848,6 +848,10 @@ fn dsh_client_plugin_gets_renderer_glue_and_routed_fetch() {
     let body: Value = serde_json::from_str(result["reply"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(body["echo"], "ping");
     assert_eq!(result["missing"], 404);
+    // RPC：通道处理器给出结果，拦截器按 endpoint 优先，没有处理器时 NOT_FOUND。
+    assert_eq!(result["rpc"], json!({"ok": true, "value": {"endpoint": "ping", "payload": {"a": 1}, "hits": 1}}), "{result}");
+    assert_eq!(result["denied"]["error"]["code"], "DENIED");
+    assert_eq!(result["nobody"]["error"]["code"], "NOT_FOUND");
 
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
@@ -1200,6 +1204,151 @@ async fn dsh_second_batch_services_and_events() {
     let mut body = json!({"model": "gpt-x", "instructions": "base rules", "input": []});
     apply_request_with(&manager, &mut body, "/v1/responses").await;
     assert_eq!(body["instructions"], "BASE rules", "{body}");
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+/// llm 替身：工具、图片、助手的工具调用与 tool 结果翻成 Responses 条目交给宿主调用；回复里的推理与工具调用
+/// 按 dsh 的块顺序拆成流式块，finish 为 tool-calls。宿主调用用一个假的可执行文件代替。
+#[cfg(unix)]
+#[test]
+fn dsh_llm_stand_in_passes_tools_and_splits_tool_calls() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(toolchain) = toolchain() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let fake = temp.path().join("host");
+    let seen = temp.path().join("seen.json");
+    std::fs::write(&fake, format!(
+        "#!{}\nlet input='';process.stdin.on('data',c=>input+=c).on('end',()=>{{require('fs').writeFileSync({},input);process.stdout.write(JSON.stringify({{result:{{text:'ok',reasoning:'think',toolCalls:[{{callId:'c1',name:'weather',arguments:'{{}}'}}]}}}})+'\\n')}})\n",
+        toolchain.node.as_ref().unwrap().display(),
+        json!(seen.to_string_lossy()),
+    )).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = format!(
+        "const {{ createLlm }} = await import({}); const out = []; for await (const chunk of createLlm().stream({{ tools: [{{ name: 'weather', description: 'w', parameters: {{ type: 'object' }} }}], messages: [{{ role: 'user', content: [{{ type: 'text', text: 'hi' }}, {{ type: 'image', data: 'AAA', mimeType: 'image/png' }}] }}, {{ role: 'assistant', content: [{{ type: 'tool-call', id: 'c0', name: 'weather', arguments: '{{}}' }}] }}, {{ role: 'tool', toolCallId: 'c0', content: [{{ type: 'text', text: 'sunny' }}] }}] }})) out.push(chunk.type + ':' + (chunk.blockType ?? chunk.reason?.kind ?? '')); process.stdout.write(JSON.stringify(out)); process.exit(0)",
+        json!(url_of(&host_source("services.mjs")))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap())
+        .args(["--input-type=module", "-e", &script])
+        .env("CODEX_PLUS_HOST_EXE", &fake)
+        .output()
+        .unwrap();
+    let chunks: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(chunks, json!([
+        "block-start:reasoning", "reasoning-delta:", "block-end:",
+        "block-start:text", "text-delta:", "block-end:",
+        "block-start:tool-call", "tool-call-delta:", "block-end:",
+        "usage:", "finish:tool-calls"
+    ]), "{}", String::from_utf8_lossy(&output.stderr));
+    let request: Value = serde_json::from_str(&std::fs::read_to_string(&seen).unwrap()).unwrap();
+    assert_eq!(request["params"]["input"], json!([
+        {"role": "user", "content": [{"type": "input_text", "text": "hi"}, {"type": "input_image", "image_url": "data:image/png;base64,AAA"}]},
+        {"type": "function_call", "call_id": "c0", "name": "weather", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c0", "output": "sunny"}
+    ]));
+    assert_eq!(request["params"]["tools"][0]["name"], "weather");
+}
+
+/// bundle patch 的完整语义：按 id 覆盖字段、`{ id, insert }` 插进组、include 文件与它自己的 patches、
+/// name 对不上的覆盖跳过、`!!js` 只认字面量与 env。
+#[test]
+fn dsh_bundle_patch_semantics_match_dsh() {
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("patch-bundle")), &toolchain).unwrap();
+    let rows: Vec<(String, String, Vec<String>)> = record.report["rows"].as_array().unwrap().iter().map(|row| (
+        row["id"].as_str().unwrap().to_string(),
+        row["status"].as_str().unwrap().to_string(),
+        row["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect(),
+    )).collect();
+    let owned = |id: &str, status: &str, tools: &[&str]| (id.to_string(), status.to_string(), tools.iter().map(|tool| tool.to_string()).collect::<Vec<_>>());
+    assert_eq!(rows, vec![
+        owned("a", "compatible", &["say_two"]),
+        owned("b", "compatible", &["say_bee"]),
+        owned("c", "disabled", &[]),
+        owned("d", "compatible", &["say_dee_loud"]),
+    ], "{}", record.report);
+    let diagnostics = record.report["diagnostics"].to_string();
+    assert!(diagnostics.contains("name 对不上"), "{diagnostics}");
+}
+
+/// 插件市场索引（格式 1）：npm 与 git 来源翻成导入能用的来源字符串，取最新版本，认不出的跳过。
+#[test]
+fn dsh_market_index_entries_become_import_sources() {
+    let entries = dsh_plugins::parse_market_index(&json!({
+        "format": 1,
+        "title": "demo",
+        "plugins": [
+            { "name": "@scope/dsh-tool-a", "metadata": { "title": "工具 A", "description": "说明 A" }, "versions": [
+                { "version": "0.1.0", "source": { "type": "npm" } },
+                { "version": "0.2.0", "source": { "type": "npm", "registry": "https://npm.example.com" } }
+            ] },
+            { "name": "dsh-git-b", "title": "B", "versions": [{ "version": "1.0.0", "source": { "type": "git", "url": "https://github.com/x/y.git", "commit": "abc123", "path": "packages/b" } }] },
+            { "name": "weird", "versions": [{ "version": "1", "source": { "type": "tarball" } }] },
+            { "name": "empty", "versions": [] }
+        ]
+    })).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].source, "@scope/dsh-tool-a@0.2.0");
+    assert_eq!(entries[0].title, "工具 A");
+    assert!(entries[0].note.as_deref().unwrap().contains("npm.example.com"));
+    assert_eq!(entries[1].source, "https://github.com/x/y.git#abc123&path:packages/b");
+    assert!(matches!(dsh_plugins::parse_source(&entries[1].source).unwrap(), PluginSource::Git { reference: Some(ref commit), path: Some(ref path), .. } if commit == "abc123" && path == "packages/b"));
+    assert!(dsh_plugins::parse_market_index(&json!({ "format": 2, "plugins": [] })).is_err());
+}
+
+/// 近似实现的运行时服务：计划模式在 PreToolUse 里拒绝写类工具，目标在 Stop 里要求继续（到完成或上限），
+/// 插件自己的 fs 写入先问 fs/write-intent、读到 / 确认不存在时发 fs/observed。
+#[tokio::test]
+async fn dsh_runtime_stand_ins_plan_mode_goals_and_fs_intents() {
+    use codex_plus_core::extension_hooks::dispatch;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(scripts.path().join("builtin"), scripts.path().join("user"), scripts.path().join("user_scripts.json"));
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("runtime-plugin")), &toolchain).unwrap();
+    let plan = dsh_plugins::report_bridge(&record.report);
+    for hook in ["PreToolUse", "Stop"] {
+        assert!(plan.hooks.iter().any(|item| item == hook), "{hook}：{plan:?}");
+    }
+
+    let responses = serve(&plugins, &toolchain, &[call(1, "probe_runtime", json!({ "dir": work.path().to_string_lossy() }))]);
+    let probe: Value = serde_json::from_str(responses[0]["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(probe, json!({ "second": "FS_STALE_VERSION", "observed": 3, "providers": ["codex"], "planClass": "function" }), "{responses:?}");
+
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    let dir = scripts.path().join("user/dsh-dsh-runtime-demo");
+    let command = |name: &str, input: &str| {
+        let script = format!(
+            "const {{ default: create }} = await import({}); process.stdout.write(JSON.stringify(await create().command({{ name: {}, rawInput: {}, sessionId: 'r1' }}))); process.exit(0)",
+            json!(url_of(&dir.join("backend/main.mjs"))), json!(name), json!(input)
+        );
+        let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+        serde_json::from_slice::<Value>(&output.stdout).unwrap_or(Value::Null)
+    };
+    // 计划模式：apply_patch 被拒，读类工具放行；关掉后放行。
+    assert_eq!(command("plan", "")["text"], "committed");
+    let denied = dispatch(&manager, "PreToolUse", json!({"session_id": "r1", "tool_name": "apply_patch", "tool_input": {}})).await.unwrap();
+    assert!(denied["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap_or_default().contains("计划模式"), "{denied}");
+    assert_eq!(dispatch(&manager, "PreToolUse", json!({"session_id": "r1", "tool_name": "Bash", "tool_input": {"command": "ls"}})).await.unwrap(), json!({}));
+    assert_eq!(command("plan", "off")["text"], "committed");
+    let allowed = dispatch(&manager, "PreToolUse", json!({"session_id": "r1", "tool_name": "apply_patch", "tool_input": {}})).await.unwrap();
+    assert!(allowed["hookSpecificOutput"].get("permissionDecision").is_none(), "{allowed}");
+    assert!(allowed["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().contains("计划模式已关闭"), "切换时排下的说明随下一次钩子带上：{allowed}");
+    // 目标：要停下时要求继续（钩子续过一轮后也照样），完成后放行。
+    assert_eq!(command("goal", "ship it")["text"], "active");
+    let stop = dispatch(&manager, "Stop", json!({"session_id": "r1", "stop_hook_active": false})).await.unwrap();
+    assert!(stop["reason"].as_str().unwrap_or_default().contains("ship it"), "{stop}");
+    let again = dispatch(&manager, "Stop", json!({"session_id": "r1", "stop_hook_active": true})).await.unwrap();
+    assert_eq!(again["decision"], "block", "{again}");
+    assert_eq!(command("done", "")["text"], "complete");
+    assert_eq!(dispatch(&manager, "Stop", json!({"session_id": "r1", "stop_hook_active": true})).await.unwrap(), json!({}));
 
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();

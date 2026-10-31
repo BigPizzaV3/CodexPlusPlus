@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EVENT_HOOKS, Host, INSTRUCTIONS_TARGET, MIRROR_HOOKS, MIRROR_TARGET, errorText } from './host.mjs'
-import { createSchedule, messageText } from './services.mjs'
+import { PLAN_MODE_WRITE_TOOLS, createSchedule, messageText } from './services.mjs'
 
 const BRIDGE_FILE = fileURLToPath(import.meta.url)
 const HOST_FILE = fileURLToPath(new URL('./host.mjs', import.meta.url))
@@ -183,6 +183,10 @@ const TRANSLATE = {
     if (decision?.kind === 'deny' || decision?.kind === 'cancel') {
       return deny(decision.kind === 'cancel' ? 'dsh 插件取消了这次工具调用' : String(decision.reason || '被 dsh 插件拒绝'))
     }
+    // 计划模式：这个 agent 开着时拒绝 Codex 的写类工具。
+    if (host.planMode?.states.get(agent) === true && PLAN_MODE_WRITE_TOOLS.has(String(payload?.tool_name ?? ''))) {
+      return deny('计划模式中：先给出计划，不要修改文件')
+    }
     // ctx.tools.guard：在 pre-execute 之后、执行之前，任何一个给出理由就拒绝。
     const guarded = host.guardReason(exec)
     if (guarded) return deny(guarded)
@@ -235,12 +239,17 @@ const TRANSLATE = {
 
   async Stop(host, payload, agent, sink, signal) {
     // 已经因为 Stop 钩子多走过一轮：不再拦，避免无条件 steer 的插件让 Codex 停不下来。
+    // 只有 ctx.goals 的目标（有次数上限）可以接着要求继续。
     if (payload?.stop_hook_active === true) {
+      const nudge = host.goals?.nudge(agent)
+      if (nudge) return { decision: 'block', reason: nudge }
       agent.setStatus('idle')
       return {}
     }
     await host.serial('agent/turn-stopping', [{ agent, turn: agent.session.turn, signal }])
-    const text = messagesText(sink.steer)
+    // ctx.goals：目标还在推进就要求再走一轮。
+    const nudge = host.goals?.nudge(agent)
+    const text = [messagesText(sink.steer), nudge].filter(Boolean).join('\n\n')
     if (text) return { decision: 'block', reason: text }
     agent.setStatus('idle')
     return {}
@@ -296,7 +305,7 @@ async function dispatchHook(host, hookEvent, payload) {
   if (!agent) return null
   if (payload?.model) agent.session.model = payload.model
   const listened = (HOOK_LISTENS[hookEvent] && host.hasListeners(HOOK_LISTENS[hookEvent]))
-    || (hookEvent === 'PreToolUse' && (host.toolGuards.length > 0 || host.hasListeners('tools/execute')))
+    || (hookEvent === 'PreToolUse' && (host.toolGuards.length > 0 || host.hasListeners('tools/execute') || host.planMode?.states.get(agent) === true))
   const controller = new AbortController()
   const sink = { agent, steer: [], inject: [], pending: [] }
   // 钩子之外排下的上下文：有输出能带上的钩子才取走。
@@ -797,6 +806,7 @@ async function runDaemon(configPath) {
     if (message.kind === 'error') return { output: await errorFor(host, message.error) }
     if (message.kind === 'command') return { output: await commandFor(host, message) }
     if (message.kind === 'fetch') return { output: await host.fetchRoute(message.request) }
+    if (message.kind === 'rpc') return { output: await host.runRpc(message.request) }
     if (message.kind === 'webhook') return { output: await webhookFor(host, message.request) }
     return { error: `不认识的请求 ${message.kind}` }
   }
@@ -1014,6 +1024,13 @@ export async function runFetch(config, request) {
   const plugin = readPlugin(config)
   if (!plugin || !mappedRows(plugin, 'connection').length) return { status: 503, headers: {}, body: JSON.stringify({ ok: false, error: { message: '插件已停用' } }) }
   return handle(config, plugin, mappedRows(plugin), { kind: 'fetch', request }, (host) => host.fetchRoute(request))
+}
+
+/** 前端半边的 ctx.connection.rpc.call 入口：交给插件宿主半边经 ctx.connection.rpc 注册的处理器。 */
+export async function runRpc(config, request) {
+  const plugin = readPlugin(config)
+  if (!plugin || !mappedRows(plugin, 'connection').length) return { ok: false, error: { code: 'UNAVAILABLE', message: '插件已停用', details: {} } }
+  return handle(config, plugin, mappedRows(plugin), { kind: 'rpc', request }, (host) => host.runRpc(request))
 }
 
 /** 定时任务入口（配套拓展包的后台每分钟调一次）：到点的往会话里发起一轮。不需要加载插件。 */

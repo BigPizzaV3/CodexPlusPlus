@@ -118,6 +118,38 @@
     return key ? [...modifiers, key].join("+") : "";
   }
 
+  /**
+   * 所有 dsh 前端插件的插槽登记（跨包共享）。对得上 Codex++ 位置的插槽直接渲染进去；对不上的作为「子插槽」，
+   * 由别的 dsh 组件经 renderSlot / renderSlotChain 渲染（dsh 的复合组件就是这样拼起来的）；factory 经 renderFactorySlot。
+   */
+  const codexPlusDshSlotEntries = new Map();
+  const codexPlusDshFactories = new Map();
+  const codexPlusDshSlotListeners = new Set();
+  /** 被 renderSlot / renderSlotChain 请求过的插槽名：对不上 Codex++ 位置、也没人渲染的才算「不会显示」。 */
+  const codexPlusDshRequestedSlots = new Set();
+  let codexPlusDshSlotRevision = 0;
+
+  function codexPlusDshSlotsChanged() {
+    codexPlusDshSlotRevision += 1;
+    for (const listener of [...codexPlusDshSlotListeners]) {
+      try { listener(); } catch {}
+    }
+  }
+
+  function codexPlusDshAddSlotEntry(entry) {
+    if (!codexPlusDshSlotEntries.has(entry.name)) codexPlusDshSlotEntries.set(entry.name, new Set());
+    codexPlusDshSlotEntries.get(entry.name).add(entry);
+    codexPlusDshSlotsChanged();
+    return () => {
+      codexPlusDshSlotEntries.get(entry.name)?.delete(entry);
+      codexPlusDshSlotsChanged();
+    };
+  }
+
+  function codexPlusDshEntriesOf(name) {
+    return [...(codexPlusDshSlotEntries.get(name) ?? [])].sort((left, right) => left.order - right.order);
+  }
+
   /** 一个可订阅的快照（dsh 的 ObservableSnapshot），给 useSyncExternalStore 用。 */
   function codexPlusDshSnapshotStore(initial, start) {
     let value = initial;
@@ -194,20 +226,76 @@
       },
       retainInfo: () => undefined,
     };
-    const uiWorkspace = {
-      selection: { getSnapshot: () => ({ sessionId: codexPlusCurrentSessionId() || undefined }), subscribe: () => () => {} },
-      clearMain() {},
+    // 当前会话：轮询 Codex 当前打开的会话 id（切会话没有事件可听），变了才通知订阅者。
+    const selection = codexPlusDshSnapshotStore({ sessionId: codexPlusCurrentSessionId() || undefined }, (set) => {
+      let last = codexPlusCurrentSessionId() || undefined;
+      const timer = setInterval(() => {
+        const next = codexPlusCurrentSessionId() || undefined;
+        if (next !== last) {
+          last = next;
+          set({ sessionId: next });
+        }
+      }, 800);
+      return () => clearInterval(timer);
+    });
+    const uiWorkspace = { selection, clearMain() {} };
+    // 会话运行状态：拓展内核的 agent/status（running / idle / aborted）按会话记下来，给 useSessionStatus。
+    // 有组件订阅时才听（agent/status 会让内核起会话轮询）。
+    const statuses = codexPlusDshSnapshotStore({}, (set) => ctx.on("agent/status", (payload) => {
+      const id = payload?.sessionId ?? payload?.agent?.session?.id;
+      if (!id) return;
+      set({ ...statuses.getSnapshot(), [id]: payload.status === "running" ? "running" : "idle" });
+    }));
+    // 前端半边连插件宿主半边：rpc.call 经配套拓展包的后台转给插件经 ctx.connection.rpc 注册的处理器。
+    const connectionState = codexPlusDshSnapshotStore({ kind: "connected" });
+    const connection = {
+      hostname: globalThis.location?.hostname ?? "localhost",
+      isLoopback: true,
+      generation: codexPlusDshSnapshotStore({ id: 1 }),
+      state: connectionState,
+      rpc: {
+        async call(channel, endpoint, payload) {
+          try {
+            const result = await ctx.backend.call("rpc", { channel, endpoint, payload }, { timeout: 120000 });
+            if (result?.ok && Array.isArray(result.attachments)) {
+              // 附件按 path 放回 value 里（字节经 JSON 往返时是 base64）。
+              const value = structuredClone(result.value);
+              for (const { path, base64 } of result.attachments) {
+                const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+                let cursor = value;
+                for (const step of path.slice(0, -1)) cursor = cursor?.[step];
+                if (cursor && path.length) cursor[path[path.length - 1]] = bytes;
+              }
+              return { ok: true, value };
+            }
+            return result ?? { ok: false, error: { code: "EMPTY", message: "插件没有返回结果", details: {} } };
+          } catch (error) {
+            return { ok: false, error: { code: "TRANSPORT", message: String(error?.message || error), details: {} } };
+          }
+        },
+      },
+      reconnect() {},
+      registerGenerationSource: () => () => {},
+      start: () => ({ stop() {} }),
+      stop() {},
     };
+    let localeSnapshot = { id: ctx.locale.current, revision: 0 };
     const localeService = {
       register(ns, langOrDicts, dict) {
         return ctx.locale.register(String(ns), langOrDicts, dict);
       },
       bind: (ns) => ctx.locale.bind(String(ns)),
       getLocale: () => ({ id: ctx.locale.current }),
-      getSnapshot: () => ({ id: ctx.locale.current, revision: 0 }),
-      subscribe: (listener) => ctx.on("locale/change", () => listener()),
+      getSnapshot: () => localeSnapshot,
+      subscribe: (listener) => ctx.on("locale/change", () => {
+        localeSnapshot = { id: ctx.locale.current, revision: localeSnapshot.revision + 1 };
+        listener();
+      }),
       resolveText: ctx.locale.resolve,
-      setLocale() {},
+      // 界面语言跟着 Codex 走，插件不能改；记一条说明。
+      setLocale(id) {
+        if (id && id !== ctx.locale.current) fail(`setLocale(${id}) 不生效：界面语言跟随 Codex 的设置`);
+      },
     };
 
     // dsh 的快捷键命令 → Codex++ 快捷键：取默认绑定（macOS 优先按平台挑），按下时问命令的 resolve。
@@ -335,7 +423,51 @@
         try { root.unmount(); } catch {}
       });
     };
+    // 子插槽与 factory 的渲染：订阅跨包登记表，登记变化时重画；每个条目各自的错误边界。
+    const useSlotRevision = () => React.useSyncExternalStore((listener) => {
+      codexPlusDshSlotListeners.add(listener);
+      return () => codexPlusDshSlotListeners.delete(listener);
+    }, () => codexPlusDshSlotRevision);
+    const SlotOutlet = ({ name, owner, opts, chain }) => {
+      useSlotRevision();
+      codexPlusDshRequestedSlots.add(name);
+      let entries = codexPlusDshEntriesOf(name);
+      if (opts?.entryKey !== undefined) entries = entries.filter((entry) => entry.key === String(opts.entryKey));
+      if (opts?.only !== undefined) entries = entries.filter((entry) => entry.id === String(opts.only) || entry.key === String(opts.only));
+      if (chain) {
+        for (const entry of entries) {
+          let matched = null;
+          try {
+            matched = typeof entry.select === "function" ? entry.select(owner) : owner;
+          } catch (error) {
+            entry.fail(`插槽 ${name} 的 select 出错：${error?.message || error}`);
+          }
+          if (matched !== null && matched !== undefined) return entry.element({ ...owner, matched });
+        }
+        return opts?.fallback ?? null;
+      }
+      if (!entries.length) return opts?.fallback ?? null;
+      return React.createElement(React.Fragment, null, ...entries.map((entry) => entry.element({ ...owner }, entry.id)));
+    };
+    const renderSlot = (name, owner = {}, opts = {}) => React.createElement(SlotOutlet, { name: String(name), owner, opts });
+    const renderSlotChain = (name, owner = {}, opts = {}) => React.createElement(SlotOutlet, { name: String(name), owner, opts, chain: true });
+    const renderFactorySlot = (name, props = {}, options = {}) => {
+      const FactoryOutlet = () => {
+        useSlotRevision();
+        const factory = codexPlusDshFactories.get(String(name));
+        if (!factory) return options.fallback ?? null;
+        return factory.element({
+          ...props,
+          useFactorySlot: (slot, fallback) => options.slots?.[slot] ?? factory.localSlots?.[slot] ?? fallback,
+        });
+      };
+      return React.createElement(FactoryOutlet);
+    };
+    const SessionProvider = ({ children }) => children ?? null;
     const standardProps = (sessionId) => ({
+      renderSlot,
+      renderSlotChain,
+      SessionProvider,
       sessionId,
       useSessions: () => React.useSyncExternalStore(sessionList.subscribe, sessionList.getSnapshot),
       useSession: (selector) => {
@@ -343,21 +475,22 @@
         const session = sessionId ? list.byId[sessionId] : undefined;
         return typeof selector === "function" ? selector(session) : session;
       },
-      useSessionStatus: () => "idle",
+      useSessionStatus: (id) => {
+        const map = React.useSyncExternalStore(statuses.subscribe, statuses.getSnapshot);
+        return map[id ?? sessionId] ?? "idle";
+      },
       useWorkspaces: () => React.useSyncExternalStore(workspaceList.subscribe, workspaceList.getSnapshot),
       usePanelInfo: () => ({ visible: true }),
       useProjection: () => undefined,
-      renderFactorySlot: () => null,
+      renderFactorySlot,
     });
+    // 本包登记的、对不上 Codex++ 位置的插槽：全部 apply 后过一会儿还没有任何组件渲染它，才记「不会显示」。
+    const unmappedNames = new Set();
 
     let anonymous = 0;
     const register = (options = {}, Component) => {
       const name = String(options?.name || "");
       const target = codexPlusDshSlotMap[name];
-      if (!target) {
-        fail(`插槽 ${name} 在 Codex 里没有对应位置，这个组件不会显示`);
-        return () => {};
-      }
       if (typeof Component !== "function" && typeof Component !== "object") {
         fail(`插槽 ${name} 注册的不是 React 组件`);
         return () => {};
@@ -378,6 +511,28 @@
       const props = (extra) => ({ ...standardProps(extra.sessionId ?? (codexPlusCurrentSessionId() || undefined)), t, ...face, ...extra });
       const label = typeof options.label === "function" ? options.label() : String(options.label || options.id || packageName);
       const id = `dsh-${name}-${options.id || options.key || ++anonymous}`;
+      // 先登记进跨包登记表：父组件的 renderSlot 能渲染它；对得上 Codex++ 位置的再挂到那里。
+      const entry = {
+        id,
+        name,
+        key: options.key !== undefined ? String(options.key) : undefined,
+        order,
+        select: options.select,
+        fail,
+        element: (extra, key) => React.createElement(Boundary, { key }, React.createElement(Component, props(extra))),
+      };
+      const unregister = ctx.effect(() => codexPlusDshAddSlotEntry(entry));
+      if (!target) {
+        unmappedNames.add(name);
+        return unregister;
+      }
+      const dispose = mapToCodex(target, { name, Component, options, order, props, label, id });
+      return () => {
+        unregister();
+        dispose?.();
+      };
+    };
+    const mapToCodex = (target, { name, Component, options, order, props, label, id }) => {
       switch (target.kind) {
         case "slot":
           return ctx.registerSlot({
@@ -463,17 +618,50 @@
           try { dispose?.(); } catch {}
         }));
       },
-      entries: () => [],
-      entriesOfSlot: () => [],
-      spec: (key) => (codexPlusDshSlotMap[key] ? { key } : undefined),
-      snapshot: () => ({}),
+      entries: () => [...codexPlusDshSlotEntries.values()].flatMap((set) => [...set]).map(({ id, name, key, order }) => ({ id, name, key, order })),
+      entriesOfSlot: (key) => codexPlusDshEntriesOf(String(key)).map(({ id, name, key: entryKey, order }) => ({ id, name, key: entryKey, order })),
+      spec: (key) => (codexPlusDshSlotMap[key] || codexPlusDshSlotEntries.has(String(key)) ? { key } : undefined),
+      snapshot: () => ({ revision: codexPlusDshSlotRevision }),
       onEntryError: () => () => {},
-      subscribe: () => () => {},
-      registerFactory: () => () => {},
+      subscribe(listener) {
+        codexPlusDshSlotListeners.add(listener);
+        return ctx.effect(() => () => codexPlusDshSlotListeners.delete(listener));
+      },
+      // factory：别的插件经 renderFactorySlot(name, props, { slots }) 渲染，useFactorySlot 取局部子插槽。
+      registerFactory(options = {}, Component) {
+        const name = String(options?.name || "");
+        if (!name || (typeof Component !== "function" && typeof Component !== "object")) return () => {};
+        let face = {};
+        try {
+          const raw = typeof options.inject === "function" ? options.inject() || {} : {};
+          const { hooks, ...rest } = raw;
+          face = { ...rest };
+          for (const [key, hook] of Object.entries(hooks || {})) face[`use${key[0].toUpperCase()}${key.slice(1)}`] = hook;
+        } catch (error) {
+          fail(`factory ${name} 的 inject 出错：${error?.message || error}`);
+        }
+        const t = options.locale ? ctx.locale.bind(String(options.locale)) : (key) => key;
+        let store;
+        try {
+          store = typeof options.store === "function" ? options.store() : options.store;
+        } catch {}
+        const factory = {
+          localSlots: options.slots && typeof options.slots === "object" ? {} : undefined,
+          element: (extra) => React.createElement(Boundary, null, React.createElement(Component, {
+            ...standardProps(codexPlusCurrentSessionId() || undefined), t, store, ...face, ...extra,
+          })),
+        };
+        codexPlusDshFactories.set(name, factory);
+        codexPlusDshSlotsChanged();
+        return ctx.effect(() => () => {
+          if (codexPlusDshFactories.get(name) === factory) codexPlusDshFactories.delete(name);
+          codexPlusDshSlotsChanged();
+        });
+      },
     };
     const services = {
       slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace,
-      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers,
+      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers, connection,
     };
     // Cordis 的 ready / dispose 只对本插件包：ready 在全部 apply 跑完后发，dispose 随拓展卸载。
     const readyHandlers = [];
@@ -575,6 +763,13 @@
     }
     if (ctx.disposed) return;
     ready = true;
+    // 对不上 Codex++ 位置的插槽：给页面一点时间画出父组件，仍没人渲染才记一条说明。
+    if (unmappedNames.size) {
+      ctx.setTimeout(() => {
+        const orphaned = [...unmappedNames].filter((name) => !codexPlusDshRequestedSlots.has(name));
+        if (orphaned.length) fail(`插槽 ${orphaned.join("、")} 在 Codex 里没有对应位置，也没有别的 dsh 组件渲染它，不会显示`);
+      }, 3000);
+    }
     for (const handler of readyHandlers.splice(0)) {
       try {
         await handler();

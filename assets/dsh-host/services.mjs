@@ -29,6 +29,7 @@ export const SUPPORTED_SERVICES = new Set([
   'fs', 'subprocess', 'shell', 'web', 'credentials', 'storageDomain', 'userQuestions', 'agentDefaultModel',
   'connection', 'schedule', 'webhookRuntime', 'jobs', 'workspaceRegistry', 'approval',
   'storage', 'spillStore', 'shellEnv', 'sessionTitle', 'tokenMeter', 'sessionTelemetry',
+  'planMode', 'goals', 'subagents',
 ])
 
 /** 只在钩子常驻进程里才「活」的服务：MCP 进程里拿得到，但没有会话事件流入。 */
@@ -669,10 +670,24 @@ export function createSessionQuery(mirror) {
 
 /** ctx.llm：stream 经 Codex++ 协议代理发一次（整段返回后拆成 dsh 的流式块）。 */
 export function createLlm() {
-  const promptOf = (options) => (options?.messages ?? []).map((message) => {
+  // dsh 消息 → Responses 输入条目：文字与图片进 message，助手的工具调用块成 function_call，tool 消息成 function_call_output。
+  const promptOf = (options) => (options?.messages ?? []).flatMap((message) => {
+    if (message?.role === 'tool') {
+      return [{ type: 'function_call_output', call_id: String(message.toolCallId ?? ''), output: messageText(message) }]
+    }
     const role = message?.role === 'assistant' ? 'assistant' : message?.role === 'system' || message?.role === 'developer' ? 'developer' : 'user'
-    return { role, content: messageText(message) }
-  }).filter((item) => item.content)
+    const blocks = Array.isArray(message?.content) ? message.content : [{ type: 'text', text: messageText(message) }]
+    const parts = blocks.flatMap((block) => {
+      if (block?.type === 'text' && block.text) return [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: String(block.text) }]
+      if (block?.type === 'image' && typeof block.data === 'string' && role !== 'assistant') {
+        return [{ type: 'input_image', image_url: `data:${block.mimeType ?? 'image/png'};base64,${block.data}` }]
+      }
+      return []
+    })
+    const calls = blocks.filter((block) => block?.type === 'tool-call')
+      .map((block) => ({ type: 'function_call', call_id: String(block.id), name: String(block.name), arguments: String(block.arguments ?? '{}') }))
+    return [...(parts.length ? [{ role, content: parts }] : []), ...calls]
+  })
   return {
     stream(options = {}) {
       return (async function* () {
@@ -681,6 +696,7 @@ export function createLlm() {
           const model = options.provider && options.model && !String(options.model).includes('/') && options.provider !== 'codex'
             ? `${options.provider}/${options.model}`
             : options.model
+          const tools = (options.tools ?? []).map((tool) => ({ name: String(tool.name), description: String(tool.description ?? ''), parameters: tool.parameters ?? { type: 'object', properties: {} } }))
           result = await hostCall('llm', 'complete', {
             input: promptOf(options),
             ...(options.system ? { instructions: String(options.system) } : {}),
@@ -688,16 +704,38 @@ export function createLlm() {
             ...(options.reasoningEffort ? { reasoningEffort: String(options.reasoningEffort) } : {}),
             ...(options.maxTokens ? { maxOutputTokens: Number(options.maxTokens) } : {}),
             ...(options.temperature !== undefined ? { temperature: Number(options.temperature) } : {}),
+            ...(tools.length ? { tools } : {}),
+            ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
           }, { signal: options.signal })
         } catch (error) {
           const aborted = options.signal?.aborted
           yield { type: 'finish', reason: { kind: aborted ? 'aborted' : 'error', failure: { message: String(error?.message ?? error), code: aborted ? 'ABORTED' : 'LLM_ERROR' } } }
           return
         }
+        // 一次性拿到整段回复后按 dsh 的块顺序拆开：推理、文字、各个工具调用。
+        let index = 0
+        const reasoning = String(result?.reasoning ?? '')
+        if (reasoning) {
+          yield { type: 'block-start', index, blockType: 'reasoning' }
+          yield { type: 'reasoning-delta', index, text: reasoning }
+          yield { type: 'block-end', index, block: { type: 'reasoning', text: reasoning } }
+          index += 1
+        }
         const text = String(result?.text ?? '')
-        yield { type: 'block-start', index: 0, blockType: 'text' }
-        if (text) yield { type: 'text-delta', index: 0, text }
-        yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+        const calls = Array.isArray(result?.toolCalls) ? result.toolCalls : []
+        if (text || !calls.length) {
+          yield { type: 'block-start', index, blockType: 'text' }
+          if (text) yield { type: 'text-delta', index, text }
+          yield { type: 'block-end', index, block: { type: 'text', text } }
+          index += 1
+        }
+        for (const call of calls) {
+          const block = { type: 'tool-call', id: String(call.callId ?? randomUUID()), name: String(call.name ?? ''), arguments: typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments ?? {}) }
+          yield { type: 'block-start', index, blockType: 'tool-call' }
+          yield { type: 'tool-call-delta', index, id: block.id, name: block.name, argumentsDelta: block.arguments }
+          yield { type: 'block-end', index, block }
+          index += 1
+        }
         const usage = result?.usage ?? {}
         yield {
           type: 'usage',
@@ -707,7 +745,7 @@ export function createLlm() {
             totalTokens: Number(usage.total_tokens ?? 0) || undefined,
           },
         }
-        yield { type: 'finish', reason: { kind: 'stop' } }
+        yield { type: 'finish', reason: { kind: calls.length ? 'tool-calls' : 'stop' } }
       })()
     },
     listProviders() {
@@ -811,7 +849,14 @@ const FS_CODES = { ENOENT: 'FS_NOT_FOUND', ENOTDIR: 'FS_NOT_DIRECTORY', EACCES: 
 const fsError = (error, path) => (error instanceof FsError ? error : new FsError(`${path}: ${error?.message ?? error}`, FS_CODES[error?.code] ?? 'FS_IO_ERROR', { cause: error }))
 const versionOf = (info) => `${info.mtimeMs}:${info.size}`
 
-export function createFs() {
+/**
+ * 本机 fs（dsh 的 FileSystem）。写 / 改之前问插件的 fs/write-intent、fs/edit-intent（第一个给出意图的监听器说了算），
+ * 读到 / 确认不存在时发 fs/observed（同 dsh 的「先读后写」由插件自己实现）。
+ */
+export function createFs(events = {}) {
+  const waterfall = events.waterfall ?? ((_event, _args, fallback) => fallback())
+  const emit = events.emit ?? (() => {})
+  const observe = (value, info) => emit('fs/observed', [target(pathOf(value)), info ? { kind: 'present', version: info.version } : { kind: 'absent' }, undefined])
   const target = (path) => freeze({ targetKey: path, displayPath: path })
   const pathOf = (value) => (typeof value === 'string' ? value : value?.targetKey)
   const fs = {
@@ -829,9 +874,14 @@ export function createFs() {
     async stat(value) {
       try {
         const info = await stat(pathOf(value))
-        return { version: versionOf(info), type: info.isFile() ? 'file' : info.isDirectory() ? 'directory' : 'other', size: info.size }
+        const result = { version: versionOf(info), type: info.isFile() ? 'file' : info.isDirectory() ? 'directory' : 'other', size: info.size }
+        observe(value, result)
+        return result
       } catch (error) {
-        if (error?.code === 'ENOENT') return undefined
+        if (error?.code === 'ENOENT') {
+          observe(value, undefined)
+          return undefined
+        }
         throw fsError(error, pathOf(value))
       }
     },
@@ -877,8 +927,9 @@ export function createFs() {
         throw fsError(error, pathOf(value))
       }
     },
-    async writeText(value, content, expected) {
+    async writeText(value, content, given) {
       const path = pathOf(value)
+      const expected = given ?? await waterfall('fs/write-intent', [target(path), undefined], async () => undefined)
       const before = await readFile(path, 'utf8').catch(() => null)
       if (expected?.kind === 'createIfAbsent' && before !== null) throw new FsError(`${path} 已存在`, 'FS_STALE_VERSION')
       if (expected?.kind === 'replaceIfVersion') {
@@ -894,8 +945,9 @@ export function createFs() {
       const info = await fs.stat(value)
       return { operation: before === null ? 'create' : 'update', version: info?.version, before, after: String(content) }
     },
-    async editText(value, { oldString, newString, replaceAll } = {}, expected) {
+    async editText(value, { oldString, newString, replaceAll } = {}, given) {
       const path = pathOf(value)
+      const expected = given ?? await waterfall('fs/edit-intent', [target(path), undefined], async () => undefined)
       const before = await fs.readText(value)
       if (expected?.version) {
         const current = await fs.stat(value)
@@ -1725,3 +1777,156 @@ export function createSessionTelemetry() {
   return { sharing: 'disabled', emit() {}, flush() {}, async shutdown() {} }
 }
 
+
+// ---------------------------------------------------------------------------
+// 近似实现的运行时服务：planMode、goals、subagents（Codex 的 agent 循环不在 Codex++ 手里，按钩子与会话写入近似）
+// ---------------------------------------------------------------------------
+
+/** 计划模式下 Codex 里拒绝的写类工具。 */
+export const PLAN_MODE_WRITE_TOOLS = new Set(['apply_patch', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'write_file', 'edit_file'])
+
+/**
+ * 计划模式（dsh 的 planMode）：按 agent 记开关。开着时 PreToolUse 拒绝写类工具（bridge 负责），
+ * 切换时往 agent 排一条说明，让模型知道现在只该出计划。
+ */
+export function createPlanMode() {
+  const states = new WeakMap()
+  return {
+    states,
+    get: (agent) => ({ active: states.get(agent) === true }),
+    set(agent, active) {
+      if (!agent || typeof agent !== 'object') return 'cancelled'
+      const next = active === true
+      if ((states.get(agent) === true) === next) return 'noop'
+      states.set(agent, next)
+      agent.inject?.(userMessage(next
+        ? '计划模式已开启：先给出完整计划，不要修改文件；需要动手时等用户确认后再关闭计划模式。'
+        : '计划模式已关闭：可以按计划修改文件了。', { kind: 'plan-mode' }))
+      return 'committed'
+    },
+  }
+}
+
+/**
+ * 目标（dsh 的 goals）：按 agent 记一个目标。目标处于 active 时，Codex 每轮要停下（Stop 钩子）就要求它继续推进，
+ * 直到插件 complete / block / pause / clear，或连续推进次数到上限（默认 8 次，避免停不下来）。
+ */
+export function createGoals({ maxRounds = 8 } = {}) {
+  const goals = new WeakMap()
+  const view = (goal) => (goal ? freeze({ ...goal }) : undefined)
+  const require = (agent) => {
+    const goal = goals.get(agent)
+    if (!goal) throw new Error('这个 agent 没有目标')
+    return goal
+  }
+  const set = (agent, patch) => {
+    const goal = { ...require(agent), ...patch, updatedAt: Date.now() }
+    goals.set(agent, goal)
+    return view(goal)
+  }
+  return {
+    get: (agent) => view(goals.get(agent)),
+    create(agent, request = {}) {
+      const objective = String(request.objective ?? request.text ?? request.title ?? '').trim()
+      if (!objective) throw new Error('目标需要 objective')
+      const goal = { id: randomUUID(), objective, status: 'active', rounds: 0, createdAt: Date.now(), updatedAt: Date.now() }
+      goals.set(agent, goal)
+      return view(goal)
+    },
+    edit: (agent, _ref, request = {}) => set(agent, request.objective ? { objective: String(request.objective) } : {}),
+    pause: (agent) => set(agent, { status: 'paused' }),
+    resume: (agent) => set(agent, { status: 'active', rounds: 0 }),
+    complete: (agent) => set(agent, { status: 'complete' }),
+    block: (agent, _ref, reason) => set(agent, { status: 'blocked', reason: typeof reason === 'string' ? reason : reason?.text ?? '' }),
+    disarm(agent) {
+      const goal = goals.get(agent)
+      goals.delete(agent)
+      return view(goal)
+    },
+    clear(agent) {
+      const goal = require(agent)
+      goals.delete(agent)
+      return { id: goal.id }
+    },
+    /** Stop 钩子里调用：目标还在推进且没到上限时给出要求继续的话，否则 undefined。 */
+    nudge(agent) {
+      const goal = goals.get(agent)
+      if (!goal || goal.status !== 'active') return undefined
+      if (goal.rounds >= maxRounds) {
+        goals.set(agent, { ...goal, status: 'paused', reason: `连续推进 ${maxRounds} 次后暂停` })
+        return undefined
+      }
+      goals.set(agent, { ...goal, rounds: goal.rounds + 1 })
+      return `目标还没完成，继续推进：${goal.objective}`
+    },
+  }
+}
+
+/**
+ * 子 agent（dsh 的 subagents）：在 Codex++ 里新建一个 Codex 会话跑子任务，等它这一轮结束再取最后一条回复。
+ * 不是 Codex 原生的子 agent 树；provider 只有 codex，不能注册别的 provider。
+ */
+export function createSubagents({ emit = () => {}, pollMs = 1500, timeoutMs = 15 * 60 * 1000 } = {}) {
+  const runs = new Map()
+  const finished = async (sessionId, signal) => {
+    const started = Date.now()
+    while (Date.now() - started < timeoutMs) {
+      if (signal?.aborted) throw signal.reason ?? new Error('aborted')
+      const read = await hostCall('sessionQuery', 'readSession', { id: sessionId }).catch(() => null)
+      const events = Array.isArray(read?.events) ? read.events : []
+      const last = events.findLast?.((event) => event?.type === 'turn/complete' || event?.type === 'turn/aborted')
+      if (last) {
+        const reply = events.findLast((event) => event?.type === 'assistant/message')
+        return { aborted: last.type === 'turn/aborted', text: String(reply?.data?.text ?? '') }
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+    }
+    throw new Error('子 agent 超时没有结束')
+  }
+  const service = {
+    list: () => ['codex'],
+    getProvider: (name) => (name === 'codex' ? { name: 'codex' } : undefined),
+    registerProvider() {
+      throw new Error('Codex++ 里子 agent 只能跑在 Codex 会话上，不能注册别的 provider')
+    },
+    resolveMaxDepth: () => 1,
+    async start(name, request = {}) {
+      if (name && name !== 'codex') throw new Error(`没有子 agent provider ${name}`)
+      const prompt = String(request.prompt ?? request.task ?? request.message ?? '').trim()
+      if (!prompt) throw new Error('子 agent 需要 prompt')
+      const created = await hostCall('sessions', 'create', { input: prompt, options: request.cwd ? { cwd: request.cwd } : {} })
+      const sessionId = String(created?.thread?.id ?? '')
+      if (!sessionId) throw new Error('Codex 没有返回子会话的 id')
+      const runId = randomUUID()
+      const parent = request.parent?.session?.id ?? request.parentSessionId
+      emit('subagent/start', [{ runId, provider: 'codex', id: sessionId, local: true, agentType: request.agentType }])
+      const done = finished(sessionId, request.signal).then((result) => {
+        emit('subagent/end', [{ runId, provider: 'codex', id: sessionId, local: true, stopReason: result.aborted ? 'interrupted' : 'completed', lastAssistantMessage: [{ type: 'text', text: result.text }] }])
+        return result
+      })
+      const run = { runId, sessionId, parent, provider: 'codex', wait: () => done }
+      runs.set(runId, run)
+      return run
+    },
+    async prompt(request = {}, signal) {
+      const run = await service.start('codex', { ...request, signal })
+      const result = await run.wait()
+      return { runId: run.runId, sessionId: run.sessionId, content: [{ type: 'text', text: result.text }] }
+    },
+    async listChildren(parentSessionId) {
+      return [...runs.values()].filter((run) => run.parent === parentSessionId).map((run) => ({ sessionId: run.sessionId, runId: run.runId, provider: 'codex' }))
+    },
+    async listDescendants(rootSessionId) {
+      return service.listChildren(rootSessionId)
+    },
+    interrupt(targetSessionId) {
+      void hostCall('sessions', 'interrupt', { id: targetSessionId }).catch(() => {})
+    },
+    async sendMessage(_sender, targetId, content) {
+      const text = messageText({ content })
+      await hostCall('sessions', 'steer', { id: targetId, input: text }).catch(() => hostCall('sessions', 'startTurn', { id: targetId, input: text }))
+      return randomUUID()
+    },
+  }
+  return service
+}

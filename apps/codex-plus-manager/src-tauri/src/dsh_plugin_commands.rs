@@ -11,6 +11,12 @@ use serde_json::{Value, json};
 
 #[tauri::command]
 pub async fn dsh_plugins_request(action: String, payload: Option<Value>) -> Result<Value, String> {
+    // 浏览插件市场索引：只下载、解析，不改任何状态；选中后走普通的「导入」。
+    if action == "browse_index" {
+        let url = payload.as_ref().and_then(|payload| payload.get("url")).and_then(Value::as_str).unwrap_or_default().to_string();
+        let entries = dsh_plugins::fetch_market_index(&url).await.map_err(|error| format!("{error:#}"))?;
+        return Ok(json!({ "entries": entries }));
+    }
     tauri::async_runtime::spawn_blocking(move || handle(&action, payload.unwrap_or(Value::Null)))
         .await
         .map_err(|error| error.to_string())?

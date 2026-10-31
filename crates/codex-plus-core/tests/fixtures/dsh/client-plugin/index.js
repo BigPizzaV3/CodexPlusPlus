@@ -14,5 +14,8 @@ export function apply(ctx) {
       return new Response(JSON.stringify({ ok: true, echo: body.text, hits }), { headers: { 'content-type': 'application/json' } })
     },
   }))
+  // RPC：前端半边 ctx.connection.rpc.call('/client-demo', endpoint, payload)；拦截器优先于通道处理器。
+  ctx.effect(() => ctx.connection.rpc.handle('/client-demo', async (endpoint, payload) => ({ ok: true, value: { endpoint, payload, hits } })))
+  ctx.effect(() => ctx.connection.rpc.intercept('/client-demo', (endpoint) => endpoint === 'secret', async () => ({ ok: false, error: { code: 'DENIED', message: 'no', details: {} } })))
   ctx.get('commands')?.register({ name: 'client-demo', description: '前端演示', handler: () => ({ kind: 'success', text: `hits=${hits}` }) })
 }

@@ -560,6 +560,8 @@ interface CodexPlusExtensionContext {
   };
   /** 生效配置：清单 `config` 的默认值叠加用户设置的值。只读；改配置会热重载拓展。 */
   readonly config: Readonly<Record<string, unknown>>;
+  /** 清单 `instances` 里的哪一份；没声明实例时为 null。 */
+  readonly instance: { id: string; name: string } | null;
   /** 包内 assets/ 资源（图片、音频、字体）的 data URL；找不到返回空串。 */
   asset(path: string): string;
   /** 多语言（随实例卸载自动撤销登记）。 */

@@ -6,21 +6,25 @@ import { readFile } from "node:fs/promises";
 // 只验证服务桥接、依赖判定、ready 与配置传递，不渲染真组件。
 async function runtime() {
   const source = await readFile(new URL("../../../assets/inject/renderer-inject/96-dsh-client.js", import.meta.url), "utf8");
+  // 极简的 React：createElement 只记结构，renderTree 把函数组件 / 类组件递归展开成纯数据，测试读结果。
+  const Fragment = Symbol("Fragment");
   const React = {
-    Component: class {},
-    createElement: () => null,
+    Fragment,
+    Component: class { props: any; constructor(props: any) { this.props = props; } },
+    createElement: (type: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => ({ type, props: { ...(props ?? {}), children } }),
     useSyncExternalStore: (_subscribe: unknown, get: () => unknown) => get(),
   };
-  const libs = { react: React, reactDomClient: { createRoot: () => ({ render() {}, unmount() {} }) }, reactDom: {}, jsxRuntime: {} };
+  const libs = { react: React, reactDomClient: { createRoot: () => ({ render: (element: unknown) => renderTree(element), unmount() {} }) }, reactDom: {}, jsxRuntime: {} };
   const themeCalls: string[] = [];
   type Runtime = {
     run: (ctx: unknown, modules: unknown[], options?: Record<string, unknown>) => Promise<void>;
     shortcutKey: (binding: unknown) => string;
     slotMap: Record<string, { kind: string; slot?: string }>;
+    slotEntries: (name: string) => Array<{ order: number }>;
   };
   const run: Runtime = new Function(
     "codexAppAssetCandidateUrls", "codexPlusServices", "codexPlusCurrentSessionId", "codexPlusIsMacPlatform", "codexPlusThemesService", "document",
-    `${source}\ncodexPlusReactModulesPromise = Promise.resolve(arguments[6]);\nreturn { run: codexPlusRunDshClient, shortcutKey: codexPlusDshShortcutKey, slotMap: codexPlusDshSlotMap };`,
+    `${source}\ncodexPlusReactModulesPromise = Promise.resolve(arguments[6]);\nreturn { run: codexPlusRunDshClient, shortcutKey: codexPlusDshShortcutKey, slotMap: codexPlusDshSlotMap, slotEntries: codexPlusDshEntriesOf };`,
   )(
     () => [],
     new Map(),
@@ -55,6 +59,23 @@ async function runtime() {
 }
 
 const modules = (plugin: unknown) => [{ id: "demo", factory: () => plugin }];
+
+/** 把 createElement 记下的结构展开：函数组件调用、类组件 render、Fragment 摊平，最后只剩字符串与宿主元素。 */
+function renderTree(node: any): any {
+  if (node === null || node === undefined || typeof node === "string" || typeof node === "number") return node;
+  if (Array.isArray(node)) return node.map(renderTree).flat().filter((item) => item !== null && item !== undefined);
+  const { type, props } = node;
+  if (typeof type === "function") {
+    if (type.prototype?.render) {
+      const instance = new type(props);
+      instance.state = type.getDerivedStateFromError ? { failed: false } : {};
+      return renderTree(instance.render());
+    }
+    return renderTree(type(props));
+  }
+  if (typeof type === "symbol") return renderTree(props.children);
+  return { type, children: renderTree(props.children) };
+}
 
 describe("dsh 前端插件运行时", () => {
   it("可选依赖缺了照样加载，必需依赖缺了不加载；配置交给 apply，全部 apply 后发 ready", async () => {
@@ -126,5 +147,33 @@ describe("dsh 前端插件运行时", () => {
     assert.equal(k.shortcutKey({ code: "KeyG", secondCode: "KeyH", modifiers: ["primary"] }), "");
     assert.equal(k.shortcutKey({ code: "Digit1", modifiers: ["alt"] }), "Alt+1");
     assert.deepEqual(k.failures, []);
+  });
+
+  it("对不上 Codex++ 位置的插槽作为子插槽：父组件 renderSlot / renderSlotChain 渲染，factory 经 renderFactorySlot", async () => {
+    const k = await runtime();
+    let parentProps: any;
+    await k.run(k.ctx, modules({ inject: ["slots"], apply(ctx: any) {
+      ctx.slots.register({ name: "conversation.approval.detail" }, (props: any) => { parentProps = props; return null; });
+      ctx.slots.register({ name: "demo.child", order: 2 }, (props: any) => `second:${props.label}`);
+      ctx.slots.register({ name: "demo.child", order: 1 }, (props: any) => `first:${props.label}`);
+      ctx.slots.register({ name: "demo.keyed", key: "bash" }, () => "bash-view");
+      ctx.slots.register({ name: "demo.keyed", key: "web" }, () => "web-view");
+      ctx.slots.register({ name: "demo.chain", select: (owner: any) => (owner.kind === "quota" ? { left: 3 } : null) }, (props: any) => `quota:${props.matched.left}`);
+      ctx.slots.registerFactory({ name: "demo.card", scope: "root", slots: { footer: {} } }, (props: any) => {
+        const Footer = props.useFactorySlot("footer", () => "default-footer");
+        return [`card:${props.title}`, Footer({})];
+      });
+    } }), { packageName: "demo" });
+    k.calls.find(([kind]) => kind === "slot")![1].render({ container: {} });
+    assert.ok(parentProps, "映射到 approval 的父组件拿到了 props");
+    assert.deepEqual(renderTree(parentProps.renderSlot("demo.child", { label: "x" })), ["first:x", "second:x"], "按 order 渲染全部条目");
+    assert.deepEqual(renderTree(parentProps.renderSlot("demo.keyed", {}, { entryKey: "web" })), ["web-view"], "keyed 按 entryKey 分派");
+    assert.equal(renderTree(parentProps.renderSlot("demo.none", {}, { fallback: "empty" })), "empty");
+    assert.deepEqual(renderTree(parentProps.renderSlotChain("demo.chain", { kind: "quota" })), ["quota:3"], "chain 取第一个 select 命中的");
+    assert.equal(renderTree(parentProps.renderSlotChain("demo.chain", { kind: "other" }, { fallback: null })), null);
+    assert.deepEqual(renderTree(parentProps.renderFactorySlot("demo.card", { title: "T" })), ["card:T", "default-footer"]);
+    assert.deepEqual(renderTree(parentProps.renderFactorySlot("demo.card", { title: "T" }, { slots: { footer: () => "custom-footer" } })), ["card:T", "custom-footer"]);
+    assert.deepEqual(k.slotEntries("demo.child").map((entry: any) => entry.order), [1, 2]);
+    assert.deepEqual(k.failures, [], "子插槽有人渲染就不算失败");
   });
 });

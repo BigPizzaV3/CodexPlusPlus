@@ -1,5 +1,6 @@
 // 第二批替身服务对应的 dsh 包：插件多半只 import 里面的品牌构造函数、错误类或抽象类（实例由宿主经 ctx 提供）。
-// dsh-spill、dsh-user-approval、dsh-session-title、dsh-token-meter、dsh-shell-env、dsh-storage、dsh-session-telemetry 的替身都从这里导出。
+// dsh-spill、dsh-user-approval、dsh-session-title、dsh-token-meter、dsh-shell-env、dsh-storage、dsh-session-telemetry、
+// dsh-plan-mode、dsh-goal、dsh-subagent 的替身都从这里导出。
 
 const brand = (value) => String(value)
 
@@ -20,6 +21,9 @@ export class TokenMeter extends HostProvided {}
 export class ShellEnvRegistry extends HostProvided {}
 export class Storage extends HostProvided {}
 export class SessionTelemetryBackend extends HostProvided {}
+export class PlanModeController extends HostProvided {}
+export class GoalService extends HostProvided {}
+export class SubagentRuntime extends HostProvided {}
 
 export class SessionTitleInvalidError extends Error {
   constructor(message = '会话标题不合法') {

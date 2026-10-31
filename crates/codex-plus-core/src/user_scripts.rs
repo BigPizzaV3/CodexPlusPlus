@@ -1223,6 +1223,8 @@ struct ExtensionPackage {
     gateway_error: Vec<ExtensionGatewayMiddleware>,
     tools: Vec<ExtensionTool>,
     config_schema: Vec<ExtensionConfigField>,
+    /// 页面脚本按实例各应用一次（codexpp.json 的 `instances`）：`[{ id, name, config }]`。
+    instances: Vec<Value>,
     /// 常驻后台脚本（codexpp.json 的 `backend.script`）。
     backend: Option<PathBuf>,
     /// 后台对外提供的服务名（codexpp.json 的 `backend.provides`）。
@@ -1648,6 +1650,7 @@ impl ExtensionPackage {
             "engines": { "codexpp": self.engine },
             "permissions": { "routes": self.routes },
             "config": self.config,
+            "instances": self.instances,
             "locales": self.locales,
             "assets": self.assets,
         })
@@ -1869,6 +1872,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         providers: Vec::new(),
         tools: Vec::new(),
         config_schema: Vec::new(),
+        instances: Vec::new(),
         backend: None,
         locales: Default::default(),
         assets: Default::default(),
@@ -1966,6 +1970,7 @@ fn parse_extension_manifest(
     package.gateway_replaces = parse_gateway_replaces(raw.get("gateway"))?;
     package.tools = parse_extension_tools(&root, &package.id, raw.get("tools"))?;
     package.config_schema = parse_extension_config_schema(raw.get("config"))?;
+    package.instances = parse_extension_instances(raw.get("instances"), &package.config_schema)?;
     package.backend = match raw.get("backend") {
         None => None,
         Some(Value::Object(backend)) => {
@@ -2285,6 +2290,37 @@ fn parse_gateway_middlewares(
             .collect()
     };
     Ok((parse("request")?, parse("response")?, parse("error")?))
+}
+
+/// 解析 `instances`：同一个拓展的页面脚本开几份，每份 `{ id, name?, config? }`，`config` 只能写清单 `config` 里声明过的键。
+fn parse_extension_instances(value: Option<&Value>, schema: &[ExtensionConfigField]) -> anyhow::Result<Vec<Value>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().context("instances 必须是数组：[{ \"id\": \"work\", \"config\": { … } }]")?;
+    if items.len() > 16 {
+        anyhow::bail!("instances 最多 16 个");
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    items
+        .iter()
+        .map(|item| {
+            let item = item.as_object().context("instances 的每一项必须是对象")?;
+            let id = item.get("id").and_then(Value::as_str).context("instances 的每一项要有 id")?;
+            if id.is_empty() || id.len() > 32 || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+                anyhow::bail!("instances 的 id {id:?} 只能是 1~32 个字母、数字、_、-");
+            }
+            if !seen.insert(id.to_string()) {
+                anyhow::bail!("instances 的 id {id} 重复");
+            }
+            let config = item.get("config").cloned().unwrap_or_else(|| json!({}));
+            let config_map = config.as_object().with_context(|| format!("instances.{id}.config 必须是对象"))?;
+            if let Some(key) = config_map.keys().find(|key| !schema.iter().any(|field| &field.key == *key)) {
+                anyhow::bail!("instances.{id}.config 里的 {key} 没有在清单 config 里声明");
+            }
+            Ok(json!({ "id": id, "name": item.get("name").and_then(Value::as_str).unwrap_or(id), "config": config }))
+        })
+        .collect()
 }
 
 /// 解析 `gateway.replaces`：要关掉的内置网关环节，只能是 [`BUILTIN_GATEWAY_SEGMENTS`] 里的名字。

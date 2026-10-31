@@ -31,3 +31,28 @@ fn replies_are_parsed_across_protocols() {
     let failed = json!({ "error": { "message": "额度不足" } }).to_string();
     assert_eq!(parse_reply(failed.as_bytes())["error"]["message"], "额度不足");
 }
+
+#[test]
+fn tools_are_sent_and_tool_calls_parsed() {
+    let body = request_body(&json!({ "model": "m", "input": "查天气", "tools": [{ "name": "weather", "description": "查天气", "parameters": { "type": "object" } }], "toolChoice": "auto" }), None).unwrap();
+    assert_eq!(body["tools"], json!([{ "type": "function", "name": "weather", "description": "查天气", "parameters": { "type": "object" } }]));
+    assert_eq!(body["tool_choice"], "auto");
+    assert!(request_body(&json!({ "model": "m", "input": "x", "tools": [{ "description": "没名字" }] }), None).is_err());
+    // Responses 流：output_item.done 里的 function_call，加上推理摘要。
+    let sse = concat!(
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"想一想\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"bj\\\"}\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"weather\",\"arguments\":\"{}\"}]}}\n\n",
+    );
+    let reply = parse_reply(sse.as_bytes());
+    assert_eq!(reply["toolCalls"], json!([{ "callId": "c1", "name": "weather", "arguments": "{\"city\":\"bj\"}" }]), "同一个调用只记一次");
+    assert_eq!(reply["reasoning"], "想一想");
+    // Chat 流：tool_calls 按 index 拼参数。
+    let chat = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"t1\",\"function\":{\"name\":\"weather\",\"arguments\":\"{\\\"ci\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ty\\\":1}\"}}]}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    assert_eq!(parse_reply(chat.as_bytes())["toolCalls"], json!([{ "callId": "t1", "name": "weather", "arguments": "{\"city\":1}" }]));
+    assert!(parse_reply(b"{\"object\":\"response\",\"output\":[]}").get("toolCalls").is_none());
+}

@@ -137,6 +137,9 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-shell-env",
     "@deepseek-ai/dsh-storage",
     "@deepseek-ai/dsh-session-telemetry",
+    "@deepseek-ai/dsh-plan-mode",
+    "@deepseek-ai/dsh-goal",
+    "@deepseek-ai/dsh-subagent",
 ];
 
 /// 插件来源。
@@ -206,6 +209,96 @@ pub struct PluginRecord {
 
 fn default_true() -> bool {
     true
+}
+
+/// dsh 插件市场索引（格式 1）里的一项：取最新版本的来源，翻成「导入」能直接用的来源字符串。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketEntry {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub version: String,
+    /// 交给 [`parse_source`] 的字符串：npm 是 `name@version`，git 是 `url#commit&path:子目录`。
+    pub source: String,
+    /// 来源里 Codex++ 不支持、被忽略的部分（如自定义 npm registry）。
+    pub note: Option<String>,
+}
+
+/// 解析插件市场索引（格式 1：`{ format: 1, plugins: [{ name, versions: [{ version, source }] }] }`）。
+pub fn parse_market_index(index: &Value) -> anyhow::Result<Vec<MarketEntry>> {
+    if index.get("format").and_then(Value::as_u64) != Some(1) {
+        bail!("不是格式 1 的 dsh 插件市场索引");
+    }
+    let plugins = index.get("plugins").and_then(Value::as_array).context("索引里没有 plugins")?;
+    let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    let mut entries = Vec::new();
+    for plugin in plugins.iter().take(500) {
+        let name = text(plugin, "name");
+        let Some(latest) = plugin.get("versions").and_then(Value::as_array).and_then(|versions| versions.last()) else { continue };
+        let version = text(latest, "version");
+        let source = &latest["source"];
+        let (spec, note) = match source.get("type").and_then(Value::as_str) {
+            Some("npm") => {
+                let package = source.get("name").and_then(Value::as_str).unwrap_or(&name);
+                let spec = if version.is_empty() { package.to_string() } else { format!("{package}@{version}") };
+                let note = source.get("registry").and_then(Value::as_str).map(|registry| format!("索引指定了 npm registry {registry}，Codex++ 用本机 npm 的默认 registry"));
+                (spec, note)
+            }
+            Some("git") => {
+                let url = text(source, "url");
+                if url.is_empty() {
+                    continue;
+                }
+                let mut fragment = Vec::new();
+                if let Some(commit) = source.get("commit").and_then(Value::as_str) {
+                    fragment.push(commit.to_string());
+                }
+                if let Some(path) = source.get("path").and_then(Value::as_str) {
+                    fragment.push(format!("path:{path}"));
+                }
+                (if fragment.is_empty() { url } else { format!("{url}#{}", fragment.join("&")) }, None)
+            }
+            _ => continue,
+        };
+        if name.is_empty() || parse_source(&spec).is_err() {
+            continue;
+        }
+        let meta = plugin.get("metadata").unwrap_or(&Value::Null);
+        entries.push(MarketEntry {
+            title: [text(plugin, "title"), text(meta, "title")].into_iter().find(|title| !title.is_empty()).unwrap_or_else(|| name.clone()),
+            description: [text(plugin, "description"), text(meta, "description")].into_iter().find(|text| !text.is_empty()).unwrap_or_default(),
+            name,
+            version,
+            source: spec,
+            note,
+        });
+    }
+    Ok(entries)
+}
+
+/// 下载并解析插件市场索引；只认 http(s)，最大 4 MiB。
+pub async fn fetch_market_index(url: &str) -> anyhow::Result<Vec<MarketEntry>> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        bail!("索引地址必须是 http(s)");
+    }
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("CodexPlusPlus/dsh-market")
+        .build()?
+        .get(url)
+        .send()
+        .await
+        .context("下载索引失败")?;
+    if !response.status().is_success() {
+        bail!("下载索引失败：HTTP {}", response.status());
+    }
+    let bytes = response.bytes().await?;
+    if bytes.len() > MAX_REPORT_BYTES {
+        bail!("索引超过 4 MiB");
+    }
+    parse_market_index(&serde_json::from_slice(&bytes).context("索引不是有效 JSON")?)
 }
 
 /// 解析用户输入的来源：绝对路径 / `~/` 是本地目录；URL、`git@`、`.git` 结尾是 git；其余按 npm spec。
@@ -1424,7 +1517,7 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         files.insert(
             COMPANION_BACKEND_SCRIPT.to_string(),
             format!(
-                "{header}// 后台：页面斜杠命令、前端插件的请求、定时任务（每分钟）、webhook，都转给插件。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nconst bridge = () => import({})\n\nexport default () => ({{\n  async command({{ name, rawInput, sessionId }} = {{}}) {{\n    return (await bridge()).runCommand(fileURLToPath(CONFIG), name, rawInput, sessionId)\n  }},\n  async fetch(request = {{}}) {{\n    return (await bridge()).runFetch(fileURLToPath(CONFIG), request)\n  }},\n  async tick() {{\n    return (await bridge()).runTick(fileURLToPath(CONFIG))\n  }},\n  async http(request) {{\n    return (await bridge()).runWebhook(fileURLToPath(CONFIG), request)\n  }},\n}})\n",
+                "{header}// 后台：页面斜杠命令、前端插件的请求、定时任务（每分钟）、webhook，都转给插件。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nconst bridge = () => import({})\n\nexport default () => ({{\n  async command({{ name, rawInput, sessionId }} = {{}}) {{\n    return (await bridge()).runCommand(fileURLToPath(CONFIG), name, rawInput, sessionId)\n  }},\n  async fetch(request = {{}}) {{\n    return (await bridge()).runFetch(fileURLToPath(CONFIG), request)\n  }},\n  async rpc(request = {{}}) {{\n    return (await bridge()).runRpc(fileURLToPath(CONFIG), request)\n  }},\n  async tick() {{\n    return (await bridge()).runTick(fileURLToPath(CONFIG))\n  }},\n  async http(request) {{\n    return (await bridge()).runWebhook(fileURLToPath(CONFIG), request)\n  }},\n}})\n",
                 js_string(&bridge_url),
             ),
         );

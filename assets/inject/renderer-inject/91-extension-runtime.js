@@ -730,10 +730,21 @@
     const apply = typeof definition === "function" ? definition : definition?.apply;
     if (typeof apply !== "function") throw new Error("拓展必须提供 apply(ctx) 函数");
     const scriptKey = codexPlusCurrentExtensionScriptKey(options);
-    const manifest = codexPlusExtensionManifest(scriptKey);
-    const extensionId = String(
-      (typeof definition === "object" && definition?.id) || options.id || manifest?.id || scriptKey || "anonymous",
+    const packageManifest = codexPlusExtensionManifest(scriptKey);
+    // 清单声明了 instances：同一个拓展按实例各应用一次（同 dsh 同一插件开多份），配置是包配置叠上实例配置。
+    const instances = Array.isArray(packageManifest?.instances) ? packageManifest.instances : [];
+    if (instances.length && !options.instance) {
+      const handles = instances.map((instance) => codexPlusCreateExtension(definition, { ...options, scriptKey, instance }));
+      return handles[0];
+    }
+    const instance = options.instance ?? null;
+    const manifest = instance
+      ? { ...packageManifest, instance: { id: String(instance.id), name: instance.name ?? String(instance.id) }, config: { ...(packageManifest?.config ?? {}), ...(instance.config ?? {}) } }
+      : packageManifest;
+    const baseId = String(
+      (typeof definition === "object" && definition?.id) || options.id || packageManifest?.id || scriptKey || "anonymous",
     );
+    const extensionId = instance ? `${baseId}#${instance.id}` : baseId;
     const rawInject = (typeof definition === "object" && definition?.inject) || options.inject;
     const inject = codexPlusNormalizeInject(rawInject);
     const required = codexPlusRequiredInject(rawInject);
@@ -841,7 +852,13 @@
       };
     };
 
-    const registerOptions = (itemOptions) => ({ ...(itemOptions || {}), scriptKey });
+    // 多实例时注册项的 id 带上实例 id，同一个拓展的几份不会互相顶掉。
+    const instanceId = manifest?.instance?.id;
+    const registerOptions = (itemOptions) => ({
+      ...(itemOptions || {}),
+      ...(instanceId && itemOptions?.id ? { id: `${itemOptions.id}@${instanceId}` } : {}),
+      scriptKey,
+    });
     // 按拓展隔离的本地存储：键名自动带拓展 id 前缀，值按 JSON 存取。
     const storagePrefix = `codexpp:ext:${extensionId}:`;
     const storage = {
@@ -980,6 +997,8 @@
       id: extensionId,
       scriptKey,
       manifest,
+      /** 清单 instances 里的哪一份（{ id, name }）；没声明实例时为 null。 */
+      instance: manifest?.instance ?? null,
       config,
       backend,
       llm,

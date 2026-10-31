@@ -551,3 +551,31 @@ async fn extension_prompts_and_resources_are_served_over_mcp() {
     let after = handle_request(&creator, rpc(7, "resources/list", json!({}))).await.unwrap();
     assert!(after["result"]["resources"].as_array().unwrap().is_empty(), "停用后不再提供");
 }
+
+#[test]
+fn package_instances_are_validated_and_reach_the_page() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let package = |id: &str, instances: serde_json::Value| {
+        let dir = temp.path().join("user").join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("codexpp.json"), json!({
+            "id": id, "name": id, "renderer": "main.js",
+            "config": { "label": { "type": "string", "default": "默认" } },
+            "instances": instances,
+        }).to_string()).unwrap();
+        fs::write(dir.join("main.js"), "").unwrap();
+    };
+    package("multi", json!([{ "id": "work", "name": "工作", "config": { "label": "工作区" } }, { "id": "home" }]));
+    package("dup", json!([{ "id": "a" }, { "id": "a" }]));
+    package("undeclared", json!([{ "id": "a", "config": { "color": "red" } }]));
+    package("bad-id", json!([{ "id": "有空 格" }]));
+    let inventory = creator.manager.inventory().unwrap();
+    let error = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).unwrap()["error"].as_str().unwrap().to_string();
+    assert_eq!(error("user:multi"), "");
+    assert!(error("user:dup").contains("重复"));
+    assert!(error("user:undeclared").contains("没有在清单 config 里声明"));
+    assert!(error("user:bad-id").contains("只能是"));
+    let bundle = creator.manager.build_initial_bundle().unwrap();
+    assert!(bundle.contains(r#""instances":[{"config":{"label":"工作区"},"id":"work","name":"工作"},{"config":{},"id":"home","name":"home"}]"#), "页面清单带上实例");
+}

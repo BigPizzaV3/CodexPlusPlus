@@ -123,7 +123,7 @@
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1253
+      "lines": 1272
     },
     {
       "name": "91-extension-rpc.js",
@@ -173,7 +173,7 @@
     {
       "name": "96-dsh-client.js",
       "description": "dsh 前端插件运行时：用 Codex 的 React 渲染 dsh 插槽组件，映射到 Codex++ 的界面插槽",
-      "lines": 585
+      "lines": 780
     },
     {
       "name": "97-agent-pet.js",

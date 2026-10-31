@@ -770,7 +770,12 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       } as T;
     }
     // dsh 插件演示数据：一个按教程写的组合包（工具 + skill + MCP 行 + 不兼容行）。
-    case "dsh_plugins_request": return {
+    case "dsh_plugins_request": if (args.action === "browse_index") return {
+      entries: [
+        { name: "@deepseek-ai/dsh-persona", title: L("人设", "Persona"), description: L("给模型加一段人设提示词", "Adds a persona prompt"), version: "0.2.0", source: "@deepseek-ai/dsh-persona@0.2.0", note: null },
+        { name: "dsh-git-demo", title: "Git demo", description: L("从 git 仓库导入", "Imported from git"), version: "1.0.0", source: "https://github.com/x/y.git#abc123&path:packages/demo", note: null },
+      ],
+    } as T; else return {
       message: "",
       plugins: [{
         id: "dsh-greet-bundle", name: "dsh-greet-bundle", version: "0.1.0",
@@ -782,7 +787,8 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
           kind: "bundle", title: L("问候工具", "Greeting tools"), description: L("给 dsh 用的问候工具。", "Greeting tools for dsh."), client: false, diagnostics: [],
           skills: [{ name: "greet-skill", description: "How to greet people politely." }],
           rows: [
-            { id: "greet", module: "dsh-greet-bundle", status: "compatible", kind: "plugin", reasons: [], notes: [], mappings: ["instructions", "PreToolUse", "Stop"], tools: [{ name: "greet", description: "Greet someone by name." }] },
+            { id: "greet", module: "dsh-greet-bundle", status: "compatible", kind: "plugin", reasons: [], notes: [], mappings: ["instructions", "PreToolUse", "Stop"], tools: [{ name: "greet", description: "Greet someone by name." }],
+              configSchema: { type: "object", dict: { greeting: { type: "string", meta: { default: "Hello", description: L("问候语", "Greeting") } }, punctuation: { type: "union", list: [{ type: "const", value: "!" }, { type: "const", value: "." }], meta: { default: "!" } }, times: { type: "number", meta: { default: 1, min: 1, max: 5 } } } } },
             { id: "session-tool", module: "./session.js", status: "incompatible", kind: "plugin", reasons: [L("依赖 Codex++ 不提供的服务：sessions（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）", "Needs services Codex++ does not provide: sessions")], notes: [], tools: [] },
             { id: "demo-mcp", module: "@deepseek-ai/dsh-mcp-client", status: "compatible", kind: "mcp", reasons: [], notes: [L("MCP 配置可导入 Codex；reconnect、toolCallTimeoutMs 等 dsh 专属字段会被丢弃", "The MCP config can be imported into Codex; dsh-only fields are dropped")], tools: [] },
           ],

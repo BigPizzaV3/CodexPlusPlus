@@ -76,6 +76,28 @@ pub fn request_body(params: &Value, fallback_model: Option<String>) -> anyhow::R
     if let Some(temperature) = params.get("temperature").and_then(Value::as_f64) {
         body["temperature"] = json!(temperature);
     }
+    // 函数工具：`[{ name, description, parameters }]` 或现成的 Responses 工具项；模型要调用时回复里给出 toolCalls。
+    if let Some(tools) = params.get("tools").and_then(Value::as_array).filter(|tools| !tools.is_empty()) {
+        let tools = tools
+            .iter()
+            .map(|tool| {
+                let name = tool.get("name").and_then(Value::as_str).context("tools 的每一项要有 name")?;
+                if tool.get("type").is_some() {
+                    return Ok(tool.clone());
+                }
+                Ok(json!({
+                    "type": "function",
+                    "name": name,
+                    "description": tool.get("description").cloned().unwrap_or(json!("")),
+                    "parameters": tool.get("parameters").cloned().unwrap_or(json!({ "type": "object", "properties": {} })),
+                }))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        body["tools"] = json!(tools);
+        if let Some(choice) = params.get("toolChoice").filter(|choice| !choice.is_null()) {
+            body["tool_choice"] = choice.clone();
+        }
+    }
     if body.to_string().len() > MAX_INPUT_BYTES {
         anyhow::bail!("请求超过 1 MiB");
     }
@@ -90,7 +112,49 @@ pub fn parse_reply(bytes: &[u8]) -> Value {
     let mut usage = Value::Null;
     let mut model = Value::Null;
     let mut error = Value::Null;
+    // 工具调用：Responses 的 function_call 条目，或 Chat 的 tool_calls（流式按 index 拼参数）。
+    let mut calls: Vec<Value> = Vec::new();
+    let mut chat_calls: std::collections::BTreeMap<u64, (String, String, String)> = std::collections::BTreeMap::new();
+    let mut reasoning = String::new();
     let mut absorb = |event: &Value, out: &mut String| {
+        let mut push_call = |item: &Value| {
+            if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                let call_id = item.get("call_id").or_else(|| item.get("id")).and_then(Value::as_str).unwrap_or_default().to_string();
+                if !calls.iter().any(|call| call["callId"] == call_id.as_str()) {
+                    calls.push(json!({ "callId": call_id, "name": item["name"], "arguments": item.get("arguments").cloned().unwrap_or(json!("")) }));
+                }
+            }
+        };
+        if event.get("type").and_then(Value::as_str) == Some("response.output_item.done") {
+            push_call(&event["item"]);
+        }
+        if let Some(Some(delta)) = (event.get("type").and_then(Value::as_str) == Some("response.reasoning_summary_text.delta")).then(|| event["delta"].as_str()) {
+            reasoning.push_str(delta);
+        }
+        for item in event.pointer("/response/output").and_then(Value::as_array).into_iter().flatten() {
+            push_call(item);
+        }
+        if event.get("object").and_then(Value::as_str) == Some("response") {
+            for item in event["output"].as_array().into_iter().flatten() {
+                push_call(item);
+            }
+        }
+        for choice in event.get("choices").and_then(Value::as_array).into_iter().flatten() {
+            let tool_calls = choice.pointer("/delta/tool_calls").or_else(|| choice.pointer("/message/tool_calls"));
+            for (position, call) in tool_calls.and_then(Value::as_array).into_iter().flatten().enumerate() {
+                let index = call.get("index").and_then(Value::as_u64).unwrap_or(position as u64);
+                let entry = chat_calls.entry(index).or_default();
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    entry.0 = id.to_string();
+                }
+                if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                    entry.1.push_str(name);
+                }
+                if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str) {
+                    entry.2.push_str(arguments);
+                }
+            }
+        }
         if let Some(found) = event.get("model").filter(|value| value.is_string()) {
             model = found.clone();
         }
@@ -147,7 +211,15 @@ pub fn parse_reply(bytes: &[u8]) -> Value {
         }
     }
     let text = completed.filter(|text| !text.is_empty()).unwrap_or(out);
-    json!({ "text": text, "model": model, "usage": usage, "error": error })
+    calls.extend(chat_calls.into_values().map(|(id, name, arguments)| json!({ "callId": id, "name": name, "arguments": arguments })));
+    let mut reply = json!({ "text": text, "model": model, "usage": usage, "error": error });
+    if !calls.is_empty() {
+        reply["toolCalls"] = json!(calls);
+    }
+    if !reasoning.is_empty() {
+        reply["reasoning"] = json!(reasoning);
+    }
+    reply
 }
 
 fn output_text(response: &Value) -> String {

@@ -20,7 +20,7 @@ import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
 import {
   AgentRegistry, MIRROR_SERVICES, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
-  createApproval, createSessionTelemetry, createSessionTitle, createShellEnv, createSpillStore, createStorage, createTokenMeter, createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
+  createApproval, createGoals, createPlanMode, createSubagents, PLAN_MODE_WRITE_TOOLS, createSessionTelemetry, createSessionTitle, createShellEnv, createSpillStore, createStorage, createTokenMeter, createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
   createWorkspaceRegistry,
 } from './services.mjs'
 
@@ -50,6 +50,9 @@ const SHIMS = {
   '@deepseek-ai/dsh-shell-env': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-storage': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-session-telemetry': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-plan-mode': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-goal': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-subagent': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
 }
 /**
  * 能映射到 Codex 钩子的 dsh 事件。监听器由配套拓展包的钩子脚本经 bridge.mjs 调用，
@@ -91,7 +94,12 @@ const AGENT_LIFECYCLE_EVENTS = new Set(['session/flush', 'session/disposed', 'ag
 /** tools/execute（waterfall）：插件不调 next() 直接给结果就是代为执行。 */
 export const TOOL_EXECUTE_EVENT = 'tools/execute'
 /** 宿主自己会发的注册变化事件：监听它们不提示「不会触发」。 */
-const HOST_EMITTED_EVENTS = new Set(['tools/change', 'skills/change', 'commands/change', 'system-prompt/change', 'schedule/changed', 'credentials/changed', 'domain/changed'])
+const HOST_EMITTED_EVENTS = new Set([
+  'tools/change', 'skills/change', 'commands/change', 'system-prompt/change', 'schedule/changed', 'credentials/changed', 'domain/changed',
+  // 宿主的 fs 服务在写 / 改 / 读时发（只管插件自己经 ctx.fs 的读写，管不到 Codex 的工具）。
+  'fs/write-intent', 'fs/edit-intent', 'fs/observed',
+  'subagent/start', 'subagent/end',
+])
 /** Cordis 的事件方法可以带 thisArg：`ctx.emit(thisArg, name, ...args)`。返回 [事件名, 其余参数]。 */
 function eventArgs(args) {
   const list = [...args]
@@ -247,20 +255,133 @@ function resolveRowModule(row, root, pkg) {
 }
 
 /** 展开 patch 里的 insert 行；cordis:group 的子行放在 config 里。 */
-function collectRows(entries, baseDir, diagnostics, out, parentDisabled = false) {
+/** include 行：把另一个 YAML / JSON 条目文件（包内）的内容当作一组子行，带上它自己的 patches。 */
+const INCLUDE_MODULES = new Set(['cordis:include', '@deepseek-ai/cordis-plugin-include'])
+
+/**
+ * `!!js` 表达式只做有限求值，不执行任意代码：字面量 true / false，以及 `env.X`、`process.env.X`（可带 `!`）。
+ * 求不出时返回 undefined。
+ */
+function evalTagged(value) {
+  if (!value || typeof value !== 'object' || typeof value.tag !== 'string') return value
+  // YAML 里常写成 !!js "true"：去掉一层引号。
+  const expression = String(value.value ?? '').trim().replace(/^(["'])(.*)\1$/, '$2').trim()
+  if (expression === 'true' || expression === 'false') return expression === 'true'
+  const match = /^(!?)\s*(?:process\.)?env\.([A-Za-z_][\w]*)$/.exec(expression)
+  if (match) {
+    const set = Boolean(process.env[match[2]]) && !['0', 'false', ''].includes(String(process.env[match[2]]).toLowerCase())
+    return match[1] ? !set : set
+  }
+  return undefined
+}
+
+function collectRows(entries, baseDir, diagnostics, out, parentDisabled = false, depth = 0) {
   for (const row of entries ?? []) {
     if (!row || typeof row !== 'object' || typeof row.name !== 'string') {
       diagnostics.push('patch 中有缺少 name 的插件行，已跳过')
       continue
     }
-    const disabled = parentDisabled || row.disabled === true
-    if (row.disabled && typeof row.disabled === 'object') diagnostics.push(`插件行 ${row.id ?? row.name} 的 disabled 是表达式，按启用处理`)
-    if (row.name === GROUP_MODULE) {
-      collectRows(Array.isArray(row.config) ? row.config : [], baseDir, diagnostics, out, disabled)
+    let disabledValue = row.disabled
+    if (disabledValue && typeof disabledValue === 'object') {
+      disabledValue = evalTagged(disabledValue)
+      if (disabledValue === undefined) diagnostics.push(`插件行 ${row.id ?? row.name} 的 disabled 表达式求不出来，按启用处理`)
+    }
+    const disabled = parentDisabled || disabledValue === true
+    if (row.name === GROUP_MODULE || row.group === true) {
+      collectRows(Array.isArray(row.config) ? row.config : [], baseDir, diagnostics, out, disabled, depth)
+      continue
+    }
+    if (INCLUDE_MODULES.has(row.name)) {
+      collectRows(readIncludedRows(row, baseDir, diagnostics, depth), baseDir, diagnostics, out, disabled, depth + 1)
       continue
     }
     out.push({ id: String(row.id ?? row.name), name: row.name, config: row.config ?? undefined, disabled, baseDir })
   }
+}
+
+/** 读 include 行指向的条目文件：只认包内路径，最多嵌套 4 层；文件里的条目再应用 include 自己的 patches。 */
+function readIncludedRows(row, baseDir, diagnostics, depth) {
+  const path = typeof row.config?.path === 'string' ? resolve(baseDir, row.config.path) : undefined
+  if (!path || depth >= 4) {
+    diagnostics.push(`include 行 ${row.id ?? row.name} 缺少 path 或嵌套太深，已跳过`)
+    return []
+  }
+  if (!isInside(baseDir, path) || !existsSync(path)) {
+    diagnostics.push(`include 行 ${row.id ?? row.name} 指向的 ${row.config.path} 不在包内或不存在`)
+    return Array.isArray(row.config?.initial) ? row.config.initial : []
+  }
+  let entries
+  try {
+    const text = readFileSync(path, 'utf8')
+    entries = path.endsWith('.json') ? JSON.parse(text) : parseYaml(text)
+  } catch (error) {
+    diagnostics.push(`无法解析 include 文件 ${row.config.path}：${errorText(error)}`)
+    return []
+  }
+  return applyEntryPatches(Array.isArray(entries) ? entries : [], row.config?.patches, diagnostics)
+}
+
+/**
+ * dsh 的 patch 语义（同 dsh-app-boot 的 applyEntryPatches）：`{ insert }` 追加行（带 id 时插进那个组），
+ * 其余带 id 的项按 id 覆盖已有行的字段（写了 name 时要对得上）。不改输入。
+ */
+function applyEntryPatches(data, patches, diagnostics) {
+  const entries = structuredClone(Array.isArray(data) ? data : [])
+  if (!Array.isArray(patches) || !patches.length) return entries
+  const byId = new Map()
+  const index = (list) => {
+    for (const entry of list) {
+      if (!entry || typeof entry !== 'object') continue
+      if (entry.id) byId.set(String(entry.id), entry)
+      if ((entry.group || entry.name === GROUP_MODULE) && Array.isArray(entry.config)) index(entry.config)
+    }
+  }
+  index(entries)
+  for (const patch of patches) {
+    if (!patch || typeof patch !== 'object') continue
+    const { id, insert, name, ...overrides } = patch
+    if (insert) {
+      const rows = Array.isArray(insert) ? structuredClone(insert) : []
+      if (id) {
+        const target = byId.get(String(id))
+        if (!target || !(target.group || target.name === GROUP_MODULE)) {
+          diagnostics.push(`patch insert：没有找到组 ${id}，已跳过`)
+          continue
+        }
+        if (!Array.isArray(target.config)) target.config = []
+        target.config.push(...rows)
+      } else {
+        entries.push(...rows)
+      }
+      index(rows)
+      continue
+    }
+    if (!id) {
+      diagnostics.push('patch：非 insert 的项需要 id，已跳过')
+      continue
+    }
+    const target = byId.get(String(id))
+    if (!target) {
+      diagnostics.push(`patch：没有找到行 ${id}，已跳过`)
+      continue
+    }
+    if (name && name !== target.name) {
+      diagnostics.push(`patch：行 ${id} 的 name 对不上（${target.name} ≠ ${name}），已跳过`)
+      continue
+    }
+    for (const [key, value] of Object.entries(overrides)) target[key] = value
+  }
+  return entries
+}
+
+function resolveTaggedConfig(value) {
+  if (!value || typeof value !== 'object') return value
+  if (typeof value.tag === 'string' && 'value' in value && Object.keys(value).length === 2) {
+    const resolved = evalTagged(value)
+    return resolved === undefined ? value : resolved
+  }
+  if (Array.isArray(value)) return value.map(resolveTaggedConfig)
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveTaggedConfig(item)]))
 }
 
 function hasTaggedValue(value) {
@@ -273,6 +394,8 @@ function readBundleRows(root, pkg, diagnostics) {
   const patchField = pkg.dsh?.bundle?.patch
   const patches = Array.isArray(patchField) ? patchField : [patchField]
   const rows = []
+  let entries = []
+  let baseDir = root
   for (const patch of patches) {
     if (typeof patch !== 'string') continue
     const path = resolve(root, patch)
@@ -287,14 +410,11 @@ function readBundleRows(root, pkg, diagnostics) {
       diagnostics.push(`无法解析 ${patch}：${errorText(error)}`)
       continue
     }
-    for (const entry of Array.isArray(document) ? document : []) {
-      if (!entry || typeof entry !== 'object') continue
-      for (const operation of Object.keys(entry)) {
-        if (operation !== 'insert') diagnostics.push(`${patch} 里的 ${operation} 操作不支持，已忽略`)
-      }
-      collectRows(entry.insert, dirname(path), diagnostics, rows)
-    }
+    // 多个 patch 文件按顺序作用在同一棵条目树上，最后再展开成行。
+    entries = applyEntryPatches(entries, Array.isArray(document) ? document : [], diagnostics)
+    baseDir = dirname(path)
   }
+  collectRows(entries, baseDir, diagnostics, rows)
   return rows
 }
 
@@ -457,6 +577,9 @@ export class Host {
     this.commands = new Map()
     /** path → { methods, fetch }：插件经 ctx.connection.fetch 注册的路由。 */
     this.routes = new Map()
+    /** channel → handler、拦截器：插件经 ctx.connection.rpc 注册，前端半边的 rpc.call 转过来。 */
+    this.rpcHandlers = new Map()
+    this.rpcInterceptors = []
     const emit = (event, args) => this.emitEvent(event, args)
     this.mirror = new SessionMirror({ dataDir: options.mirrorDir, emit })
     /** 插件经 ctx.webhookRuntime 注册的规则（配套拓展包的后台把 /webhook/<kind> 请求转过来）。 */
@@ -567,7 +690,7 @@ export class Host {
       agents: this.agentRegistry.service(),
       llm: createLlm(),
       commands,
-      fs: createFs(),
+      fs: createFs({ waterfall: (event, args, fallback) => host.waterfall(event, args, fallback), emit: (event, args) => host.emitEvent(event, args) }),
       subprocess: createSubprocess(),
       shell: createShell(),
       web: createWeb(),
@@ -577,6 +700,9 @@ export class Host {
       workspaceRegistry: createWorkspaceRegistry(),
       agentDefaultModel: Object.freeze({ provider: 'codex', model: undefined, reasoningEffort: undefined }),
       shellEnv: createShellEnv(),
+      planMode: (host.planMode ??= createPlanMode()),
+      goals: (host.goals ??= createGoals()),
+      subagents: createSubagents({ emit: (event, args) => host.emitEvent(event, args) }),
       sessionTitle: createSessionTitle(),
       tokenMeter: createTokenMeter(),
       sessionTelemetry: createSessionTelemetry(),
@@ -621,6 +747,30 @@ export class Host {
     }
     if (!(response instanceof Response)) response = new Response(typeof response === 'string' ? response : JSON.stringify(response ?? null))
     return { status: response.status, headers: Object.fromEntries(response.headers.entries()), body: await response.text() }
+  }
+
+  /**
+   * 调插件注册的 RPC：{ channel, endpoint, payload } → dsh 的 ConnectionRpcResult。拦截器（按 endpoint 匹配）优先；
+   * 附件的字节转成 base64（经后台 JSON 往返）。
+   */
+  async runRpc({ channel, endpoint, payload } = {}) {
+    const key = String(channel ?? '')
+    const target = String(endpoint ?? '')
+    const interceptor = this.rpcInterceptors.find((item) => item.channel === key && safeMatch(item.matches, target))
+    const handler = interceptor?.handler ?? this.rpcHandlers.get(key)
+    if (!handler) return { ok: false, error: { code: 'NOT_FOUND', message: `没有插件处理 ${key} ${target}`, details: {} } }
+    const controller = new AbortController()
+    try {
+      const result = await handler(target, payload, controller.signal, { kind: 'operator', id: 'codex-plus' })
+      if (!result || typeof result !== 'object' || typeof result.ok !== 'boolean') return { ok: true, value: result ?? null }
+      if (!result.ok) return { ok: false, error: { code: String(result.error?.code ?? 'ERROR'), message: String(result.error?.message ?? ''), details: result.error?.details ?? {} } }
+      const attachments = (result.attachments ?? []).map((item) => ({ path: item.path, base64: Buffer.from(item.bytes ?? []).toString('base64') }))
+      return { ok: true, value: result.value ?? null, ...(attachments.length ? { attachments } : {}) }
+    } catch (error) {
+      return { ok: false, error: { code: 'HANDLER_FAILED', message: errorText(error), details: {} } }
+    } finally {
+      controller.abort()
+    }
   }
 
   /** emit 语义：同步依次调用，不等待；监听器出错只记日志。 */
@@ -1060,10 +1210,27 @@ export class Host {
             })
           },
         },
+        // 前端半边的 ctx.connection.rpc.call(channel, endpoint, payload) 经配套拓展包的后台转到这里。
         rpc: {
-          handle() {
-            note('connection.rpc 在 Codex++ 里不可用，只支持 connection.fetch.register')
-            return () => {}
+          handle(channel, handler) {
+            if (typeof handler !== 'function') return async () => {}
+            mapTo(CONNECTION_TARGET)
+            const key = String(channel)
+            host.rpcHandlers.set(key, handler)
+            const dispose = track(() => {
+              if (host.rpcHandlers.get(key) === handler) host.rpcHandlers.delete(key)
+            })
+            return async () => dispose()
+          },
+          intercept(channel, matches, handler) {
+            if (typeof handler !== 'function' || typeof matches !== 'function') return async () => {}
+            mapTo(CONNECTION_TARGET)
+            const entry = { channel: String(channel), matches, handler }
+            host.rpcInterceptors.push(entry)
+            const dispose = track(() => {
+              host.rpcInterceptors = host.rpcInterceptors.filter((item) => item !== entry)
+            })
+            return async () => dispose()
           },
         },
       },
@@ -1299,6 +1466,9 @@ export class Host {
     // 只声明 sessions 的插件多半只是 get 一下会话读 cwd，不值得为它在每次工具调用上起钩子；用到 agent / 投影才挂。
     if ([...inject.required, ...inject.optional].some((name) => name === 'agents' || name === 'sessionProjections')) record.mappings.push(MIRROR_TARGET)
     if ([...inject.required, ...inject.optional].includes('schedule')) record.mappings.push(SCHEDULE_TARGET)
+    // 计划模式靠 PreToolUse 拒绝写类工具，目标靠 Stop 要求继续；两者都要按会话认出 agent（镜像）。
+    if ([...inject.required, ...inject.optional].includes('planMode')) record.mappings.push('PreToolUse', MIRROR_TARGET)
+    if ([...inject.required, ...inject.optional].includes('goals')) record.mappings.push('Stop', MIRROR_TARGET)
     const mirrorNotes = {
       sessions: 'ctx.sessions 是 Codex 会话的镜像（由 Codex 钩子事件生成）：没有模型的流式内容与推理，Codex 自己的会话日志请用 sessionQuery',
       agents: 'ctx.agents 里的 agent 是 Codex 会话的替身：steer / inject 在钩子里翻成补充上下文或要求继续，钩子之外经 Codex++ 往会话里插话',
@@ -1313,10 +1483,14 @@ export class Host {
       subprocess: 'ctx.subprocess 不提供 PTY 终端',
       web: 'ctx.web 只有 fetch，没有联网搜索',
       userQuestions: 'ctx.userQuestions 在 Codex 页面里弹框提问（一题一问）',
+      planMode: 'ctx.planMode 开着时，Codex 的写类工具（apply_patch 等）在 PreToolUse 里被拒绝；需要信任 Codex++ 拓展钩子',
+      goals: 'ctx.goals 的目标在 Codex 每轮要停下时要求继续推进，连续 8 次后自动暂停',
+      subagents: 'ctx.subagents 新建一个 Codex 会话跑子任务并等它结束，不是 Codex 原生的子 agent 树',
     }
     for (const name of [...inject.required, ...inject.optional]) if (mirrorNotes[name]) record.notes.push(mirrorNotes[name])
-    let config = row.config ?? {}
-    if (hasTaggedValue(config)) record.notes.push('配置里的 !!js 表达式不会求值')
+    // 配置里的 !!js：能有限求值的（字面量、env）换成值，其余保留原样并说明。
+    let config = resolveTaggedConfig(row.config ?? {})
+    if (hasTaggedValue(config)) record.notes.push('配置里的 !!js 表达式只认 true / false 与 env.X，其余不会求值')
     // 配置 schema 给管理器生成表单：先记下来，配置不合法（比如缺必填项）时用户才有地方填。
     if (plugin.Config && typeof plugin.Config.toJSON === 'function') {
       try {
@@ -1606,6 +1780,14 @@ function toMcpContent(blocks) {
     else if (block !== undefined) content.push({ type: 'text', text: JSON.stringify(block) })
   }
   return content
+}
+
+function safeMatch(matches, endpoint) {
+  try {
+    return Boolean(matches(endpoint))
+  } catch {
+    return false
+  }
 }
 
 /** 工具的参数 JSON Schema（defineTool 已经把 dsh 的参数表转好）。 */

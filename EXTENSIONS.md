@@ -320,6 +320,10 @@ codexPlus.extension((ctx) => {
 - 读取：页面代码用 `ctx.config`；钩子、网关中间件、工具脚本用第二个参数的 `context.config`。都是生效配置
   （默认值叠加已保存且类型正确的值）的只读快照。
 - 修改：管理器表单保存后自动热重载；对话造拓展可用 `codexpp_extension_configure` 改值。只接受声明过的键，类型不符即报错。
+- 多实例：清单写 `"instances": [{ "id": "work", "name": "工作", "config": { "label": "工作区" } }, { "id": "home" }]`，
+  页面脚本按实例各应用一次，`ctx.config` 是生效配置叠上该实例的 `config`，`ctx.instance` 为 `{ id, name }`，
+  `ctx.id` 变成 `<拓展 id>#<实例 id>`，注册项的 `id` 与 `ctx.storage` 也按实例分开。实例最多 16 个，`config` 只能写清单 `config`
+  里声明过的键。钩子、网关、后台不分实例。
 
 ### 给模型加工具
 

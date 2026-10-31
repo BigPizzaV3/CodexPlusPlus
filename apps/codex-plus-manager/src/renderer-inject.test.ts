@@ -3973,6 +3973,17 @@ describe("拓展运行时内核", () => {
     assert.ok(after.includes("async-dispose") && after.includes("dispose-event"), after.join(","));
   });
 
+  it("清单声明 instances 时按实例各应用一次：配置叠上实例配置，id 与注册项都带实例", async () => {
+    const k = await kernel({ manifest: { id: "multi", config: { label: "默认", size: 1 }, instances: [{ id: "work", name: "工作", config: { label: "工作区" } }, { id: "home", name: "home", config: {} }] } });
+    const seen: string[] = [];
+    k.create((ctx: any) => {
+      seen.push(`${ctx.id}|${ctx.instance?.id}|${ctx.config.label}|${ctx.config.size}`);
+      ctx.registerPage({ title: ctx.config.label, render() {} }, { id: "main" });
+    });
+    assert.deepEqual(seen, ["multi#work|work|工作区|1", "multi#home|home|默认|1"]);
+    assert.equal(k.registered.filter((item: any) => item.kind === "page" && !item.disposed).length, 2, "两份的页面互不顶掉");
+  });
+
   it("内置 sessionQuery 服务：方法名对齐会话查询，参数经桥接转给 /extensions/history", async () => {
     const k = await kernel();
     const requests: Array<[string, any]> = [];

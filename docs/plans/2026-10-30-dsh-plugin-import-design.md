@@ -246,3 +246,21 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 | `dsh-spill` / `dsh-user-approval` / `dsh-session-title` / `dsh-token-meter` / `dsh-shell-env` / `dsh-storage` / `dsh-session-telemetry` 包 | 替身导出品牌构造函数、错误类与抽象类 | |
 | 插件 Config → 设置表单 | 分析时记下 `Config.toJSON()`（替身的 schemastery 也给出同形 JSON），管理器转成拓展设置表单（文本、密钥、数字范围、下拉、数组、嵌套对象）；表达不了的字段改用 JSON 编辑 | 配置缺必填项时也能先填表单 |
 
+## 11. 第六期：子插槽与 factory、前端服务实化、RPC、llm 工具调用、patch 语义、市场索引、近似运行时服务（2026-11-01）
+
+| dsh 能力 | 落点 | 差别 |
+|---|---|---|
+| 子插槽（`renderSlot` / `renderSlotChain` / keyed / `registerFactory` / `renderFactorySlot` / `useFactorySlot`） | 所有 dsh 前端插件的插槽登记跨包共享；对不上 Codex++ 位置的插槽作为子插槽，由父组件渲染；chain 取第一个 `select` 命中的；keyed 按 `entryKey`；factory 的局部子插槽可被调用方替换 | `defineStore` 的 store 只把 `store` 原样交给组件；对不上位置、3 秒内也没人渲染的插槽才记「不会显示」 |
+| 前端 `connection` | `rpc.call(channel, endpoint, payload)` 经配套拓展包的后台转给宿主半边 `ctx.connection.rpc.handle / intercept` 注册的处理器（拦截器优先），附件字节经 base64 往返 | 没有流式 `open`；连接状态恒为已连接 |
+| 前端 `sessions` / `uiWorkspace` / `locale` | `useSessionStatus` 跟随会话轮次的 running / idle；`uiWorkspace.selection` 跟随 Codex 当前会话；locale 的快照随语言切换递增 revision | `setLocale` 不生效（语言跟随 Codex） |
+| `llm.stream` 工具与多模态 | 工具、图片、助手的工具调用与 tool 结果翻成 Responses 条目；回复里的推理与工具调用拆成 reasoning / tool-call 块，finish 为 `tool-calls` | 仍是一次性返回后拆块，不是真流式 |
+| bundle patch | 照 dsh 的 `applyEntryPatches`：`{ insert }` 追加、`{ id, insert }` 插进组、其余按 id 覆盖字段（写了 name 要对得上）；`cordis:include` 读包内条目文件并应用它自己的 patches；`group: true` 也算组 | `!!js` 只求值 `true` / `false` 与 `env.X`（可带 `!`），其余不执行 |
+| 插件市场索引（格式 1） | 管理器「浏览索引」列出最新版本，npm 来源翻成 `name@version`，git 来源翻成 `url#commit&path:子目录`，点「导入」走现有流程 | 自定义 npm registry 不支持，列表里注明 |
+| 拓展多实例 | 原生拓展清单 `instances`：页面脚本按实例各应用一次 | 钩子、网关、后台不分实例 |
+| `planMode` | 按 agent 记开关，开着时 PreToolUse 拒绝 Codex 的写类工具（apply_patch 等），切换时排一条说明 | 只认工具名，管不到 shell 里的写操作 |
+| `goals` | 目标 active 时 Codex 每轮要停下就要求继续（钩子续过的轮次也算），完成 / 阻塞 / 暂停 / 清除后放行，连续 8 次自动暂停 | 没有 dsh 的目标工具，完成要由插件调用 `complete` |
+| `subagents` | `start` / `prompt` 新建一个 Codex 会话跑子任务并等它结束，发 `subagent/start` / `subagent/end`；`interrupt`、`sendMessage`、`listChildren` 可用 | 不是 Codex 原生子 agent 树；provider 只有 codex |
+| `fs/write-intent` / `fs/edit-intent` / `fs/observed` | 宿主的 fs 服务写 / 改前先问插件，读到 / 确认不存在时发观察 | 只管插件自己经 `ctx.fs` 的读写，管不到 Codex 的工具 |
+
+仍未做（原因）：`workflowEngine`、`ptcRuntime`（dsh 自己的工作流 DSL 与执行环境，建在它的 agent 循环上）、typert 类型化 RPC（依赖 zod schema 注册与 dsh Web 客户端的 remote；前后端通信可用 `connection.rpc`）、`mcpResources`（Codex 自己连 MCP 读资源）、`webServer`（webhook 路由已覆盖收请求的场景）、Service 类与 Cordis 的 isolate。
+

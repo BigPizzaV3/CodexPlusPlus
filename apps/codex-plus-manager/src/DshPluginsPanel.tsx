@@ -100,11 +100,29 @@ async function request(action: string, payload: Record<string, unknown> = {}): P
   return invoke<Snapshot>("dsh_plugins_request", { action, payload });
 }
 
+/** 插件市场索引（格式 1）里的一项，source 可直接交给「导入」。与 dsh_plugins.rs 的 MarketEntry 对应。 */
+type MarketEntry = { name: string; title: string; description: string; version: string; source: string; note: string | null };
+
 export function DshPluginsPanel() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [source, setSource] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [indexUrl, setIndexUrl] = useState("");
+  const [market, setMarket] = useState<MarketEntry[] | null>(null);
+
+  const browseIndex = async () => {
+    setBusy("browse");
+    try {
+      const result = await invoke<{ entries: MarketEntry[] }>("dsh_plugins_request", { action: "browse_index", payload: { url: indexUrl.trim() } });
+      setMarket(result.entries);
+      if (!result.entries.length) setNotice({ tone: "ok", text: t("索引里没有能导入的插件。") });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const run = useCallback(async (label: string, action: string, payload: Record<string, unknown> = {}) => {
     setBusy(label);
@@ -172,6 +190,33 @@ export function DshPluginsPanel() {
             {t("本地目录")}
           </Button>
         </div>
+        <div className="dsh-plugins-import">
+          <Input
+            aria-label={t("插件市场索引地址")}
+            disabled={busy !== null}
+            onChange={(event) => setIndexUrl(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && indexUrl.trim()) void browseIndex();
+            }}
+            placeholder={t("dsh 插件市场索引地址（格式 1 的 JSON），列出后可逐个导入")}
+            value={indexUrl}
+          />
+          <Button disabled={busy !== null || !indexUrl.trim()} onClick={() => void browseIndex()} size="sm" variant="secondary">
+            {busy === "browse" ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {t("浏览索引")}
+          </Button>
+        </div>
+        {market?.length ? (
+          <ul className="dsh-plugin-tools dsh-plugins-market">
+            {market.map((entry) => (
+              <li key={`${entry.name}@${entry.version}`}>
+                <code>{entry.title}{entry.version ? ` ${entry.version}` : ""}</code>
+                <span>{entry.description}{entry.note ? `（${entry.note}）` : ""}</span>
+                <Button disabled={busy !== null} onClick={() => void importSource(entry.source)} size="sm" variant="ghost">{t("导入")}</Button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {missingNode ? <div className="dsh-plugins-warning">{t("没有找到 Node 运行时：请安装 Codex App（自带 Node）或 Node.js 后再导入。")}</div> : null}
         {snapshot && !snapshot.toolchain.npm ? <div className="dsh-plugins-hint">{t("未找到 npm：只能导入本地目录，或不需要额外依赖的 git 仓库。")}</div> : null}
       </div>
