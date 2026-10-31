@@ -504,6 +504,49 @@ fn qualified_provider<'a>(
     qualified_in(&binding_pool_relays(gateway, binding), model)
 }
 
+pub(super) fn has_explicit_model_identity(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> bool {
+    let (model, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    if group_by_model(gateway, &model).is_some() {
+        return true;
+    }
+    let relays = binding_pool_relays(gateway, binding);
+    if declared_by_any(&relays, &model) {
+        return false;
+    }
+    if model
+        .strip_prefix(GROUP_MODEL_PREFIX)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return true;
+    }
+    let Some((provider, name)) = model.split_once('/') else {
+        return false;
+    };
+    !name.trim().is_empty()
+        && gateway
+            .providers
+            .iter()
+            .any(|entry| entry.relay.id.eq_ignore_ascii_case(provider))
+}
+
+pub(super) fn model_identity_kind(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> &'static str {
+    if group_by_model(gateway, model).is_some() {
+        "group"
+    } else if qualified_provider(gateway, binding, model).is_some() {
+        "provider"
+    } else {
+        "bare"
+    }
+}
+
 /// [`qualified_provider`] 的规则，作用在给定的供应商列表上。
 fn qualified_in<'a>(
     relays: &[&'a RelayProfile],

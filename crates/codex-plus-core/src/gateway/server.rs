@@ -408,9 +408,15 @@ pub(crate) async fn open_responses_for_agent(
 ) -> anyhow::Result<(UpstreamProxyResponse, Option<KeySlot>)> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let gateway = GatewayStore::default().load().unwrap_or_default();
-    let request: Value = serde_json::from_str(request_body)?;
+    let mut request: Value = serde_json::from_str(request_body)?;
     // 起名模型：Codex 给会话起名的请求改发到绑定指定的模型，不落到订阅额度上。
     let title_model = route::title_model_override(&gateway, agent, &request);
+    if title_model.is_none()
+        && !route::is_codex_title_request(&request)
+        && request["model"] != crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL
+    {
+        super::subagent_models::prepare(&gateway, agent, &mut request, session_headers).await?;
+    }
     let model = title_model
         .as_deref()
         .unwrap_or_else(|| request.get("model").and_then(Value::as_str).unwrap_or(""));

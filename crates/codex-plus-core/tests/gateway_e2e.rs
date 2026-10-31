@@ -196,11 +196,17 @@ fn claude_request(stream: bool) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gateway_end_to_end() {
     let state_dir = tempfile::tempdir().unwrap();
+    let codex_home = state_dir.path().join("codex-home");
+    let sqlite_home = state_dir.path().join("codex-sqlite");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    std::fs::create_dir_all(&sqlite_home).unwrap();
     unsafe {
         std::env::set_var(
             codex_plus_core::paths::STATE_DIR_ENV,
             state_dir.path().to_str().unwrap(),
         );
+        std::env::set_var("CODEX_HOME", &codex_home);
+        std::env::set_var("CODEX_SQLITE_HOME", &sqlite_home);
     }
     let port = {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -993,7 +999,9 @@ async fn gateway_end_to_end() {
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status().as_u16(), 200, "{url}");
+        let status = response.status().as_u16();
+        let response_body = response.text().await.unwrap();
+        assert_eq!(status, 200, "{url}: {response_body}");
         let seen = identity_seen.lock().unwrap();
         let (head, _) = seen.last().unwrap();
         let head = head.to_ascii_lowercase();
@@ -1019,6 +1027,156 @@ async fn gateway_end_to_end() {
         assert_eq!(head.matches("originator:").count(), 1, "{head}");
     }
     assert_eq!(identity_seen.lock().unwrap().len(), 2);
+    assert!(
+        state_dir
+            .path()
+            .join("gateway-subagent-models.sqlite")
+            .is_file()
+    );
+
+    let saved_gateway = gateway.clone();
+    let fake_response = json!({
+        "id": "resp_inheritance", "object": "response", "status": "completed",
+        "model": "gpt-6.1-sol", "output": []
+    })
+    .to_string();
+    let (first_base, first_seen) =
+        mock_upstream(vec![(200, "application/json", fake_response.clone())]).await;
+    let (second_base, second_seen) =
+        mock_upstream(vec![(200, "application/json", fake_response)]).await;
+    gateway.providers = providers(vec![
+        relay(
+            "inherit-a",
+            &first_base,
+            "fake-a",
+            RelayProtocol::Responses,
+            "gpt-6.1-sol\ngpt-6.1-terra",
+        ),
+        relay(
+            "inherit-b",
+            &second_base,
+            "fake-b",
+            RelayProtocol::Responses,
+            "gpt-6.1-sol\ngpt-6.1-terra",
+        ),
+    ]);
+    gateway.bindings.get_mut("codex").unwrap().model = "inherit-a/gpt-6.1-sol".into();
+    save(&gateway);
+    for (index, (url, auth)) in [
+        (
+            format!("http://127.0.0.1:{port}/gw/codex/v1/responses"),
+            "cpx-gw-codex-e2e",
+        ),
+        (
+            format!("http://127.0.0.1:{port}/v1/responses"),
+            "chatgpt-access-token",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let parent = format!("inherit-parent-{index}");
+        let child = format!("inherit-child-{index}");
+        for (thread, model, parent_thread) in [
+            (parent.as_str(), "inherit-b/gpt-6.1-terra", None),
+            (child.as_str(), "gpt-6.1-sol", Some(parent.as_str())),
+        ] {
+            let metadata = json!({"thread_id":thread,"turn_id":"turn", "parent_thread_id":parent_thread.unwrap_or(""), "parent_turn_id":if parent_thread.is_some() { "turn" } else { "" }});
+            let mut request = reqwest::Client::new()
+                .post(&url)
+                .bearer_auth(auth)
+                .header("session-id", thread)
+                .header("x-codex-turn-metadata", metadata.to_string())
+                .json(&json!({"model":model,"input":[]}));
+            if let Some(parent_thread) = parent_thread {
+                request = request
+                    .header("x-codex-parent-thread-id", parent_thread)
+                    .header("x-openai-subagent", "collab_spawn");
+            }
+            let response = request.send().await.unwrap();
+            let status = response.status();
+            let body = response.text().await.unwrap();
+            assert_eq!(status.as_u16(), 200, "{url}: {body}");
+        }
+    }
+    assert!(first_seen.lock().unwrap().is_empty());
+    {
+        let seen = second_seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert!(
+            seen.iter()
+                .all(|(_, body)| body["model"] == "gpt-6.1-terra")
+        );
+    }
+    let explicit_response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/gw/codex/v1/responses"))
+        .bearer_auth("cpx-gw-codex-e2e")
+        .header("session-id", "explicit-child")
+        .header("x-codex-parent-thread-id", "inherit-parent-0")
+        .header("x-openai-subagent", "collab_spawn")
+        .header("x-codex-turn-metadata", json!({"thread_id":"explicit-child","turn_id":"turn","parent_thread_id":"inherit-parent-0","parent_turn_id":"turn"}).to_string())
+        .json(&json!({"model":"inherit-a/gpt-6.1-sol","input":[]}))
+        .send().await.unwrap();
+    assert_eq!(explicit_response.status().as_u16(), 200);
+    assert_eq!(
+        first_seen.lock().unwrap().last().unwrap().1["model"],
+        "gpt-6.1-sol"
+    );
+    gateway.groups = vec![GatewayGroup {
+        id: "inherit-group".into(),
+        name: "inherit-group".into(),
+        mode: GroupMode::Manual,
+        members: vec![
+            GroupMember {
+                model: "inherit-a/gpt-6.1-sol".into(),
+                weight: 1,
+            },
+            GroupMember {
+                model: "inherit-b/gpt-6.1-terra".into(),
+                weight: 1,
+            },
+        ],
+        pick: "inherit-b/gpt-6.1-terra".into(),
+        ..Default::default()
+    }];
+    save(&gateway);
+    for (thread, model, parent) in [
+        ("group-parent", "group/inherit-group", None),
+        ("group-child", "gpt-6.1-sol", Some("group-parent")),
+    ] {
+        if parent.is_some() {
+            gateway.groups[0].pick = "inherit-a/gpt-6.1-sol".into();
+            save(&gateway);
+        }
+        let metadata = json!({"thread_id":thread,"turn_id":"turn", "parent_thread_id":parent.unwrap_or(""), "parent_turn_id":if parent.is_some() { "turn" } else { "" }});
+        let mut request = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{port}/gw/codex/v1/responses"))
+            .bearer_auth("cpx-gw-codex-e2e")
+            .header("session-id", thread)
+            .header("x-codex-turn-metadata", metadata.to_string())
+            .json(&json!({"model":model,"input":[]}));
+        if let Some(parent) = parent {
+            request = request
+                .header("x-codex-parent-thread-id", parent)
+                .header("x-openai-subagent", "collab_spawn");
+        }
+        let response = request.send().await.unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(status.as_u16(), 200, "{thread}: {body}");
+    }
+    assert_eq!(first_seen.lock().unwrap().len(), 2);
+    assert_eq!(second_seen.lock().unwrap().len(), 5);
+    assert_eq!(
+        first_seen.lock().unwrap().last().unwrap().1["model"],
+        "gpt-6.1-sol"
+    );
+    assert_eq!(
+        second_seen.lock().unwrap().last().unwrap().1["model"],
+        "gpt-6.1-terra"
+    );
+    gateway = saved_gateway;
+    save(&gateway);
 
     // —— 8e. 生图：自动选池里的生图模型，第一家 5xx 换下一家，请求里的模型名换成那一家的 ——
     let (bad_base, _) = mock_upstream(vec![(

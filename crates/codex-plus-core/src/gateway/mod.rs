@@ -40,6 +40,7 @@ pub mod server;
 pub mod sessions;
 pub mod speed;
 pub mod store;
+mod subagent_models;
 pub mod usage;
 
 /// helper 收到的路径是否归网关处理。

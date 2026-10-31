@@ -27,7 +27,7 @@ pub fn codex_session_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
     codex_session_db_paths_in_home(&sqlite_home)
 }
 
-fn codex_session_db_paths_in_home(home: &Path) -> Vec<PathBuf> {
+pub(crate) fn codex_session_db_paths_in_home(home: &Path) -> Vec<PathBuf> {
     let mut paths = codex_sqlite_dir_session_dbs(home);
     let legacy = legacy_state_db_path(home);
     if !paths.iter().any(|path| path == &legacy) {
@@ -68,7 +68,7 @@ fn resolve_sqlite_home_from_env() -> Option<PathBuf> {
     resolve_sqlite_home(std::env::var_os("CODEX_SQLITE_HOME"))
 }
 
-fn resolve_sqlite_home_home_or_default(home: &Path) -> PathBuf {
+pub(crate) fn resolve_sqlite_home_home_or_default(home: &Path) -> PathBuf {
     resolve_sqlite_home_from_env().unwrap_or_else(|| home.to_path_buf())
 }
 
