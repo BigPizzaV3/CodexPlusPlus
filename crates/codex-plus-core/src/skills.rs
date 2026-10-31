@@ -16,7 +16,7 @@
 //! Windows 上建软链需要开发者模式或管理员权限，失败时自动回退成复制。
 
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
+use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +27,8 @@ use sha2::{Digest, Sha256};
 
 const SKILL_MANIFEST_FILE: &str = "SKILL.md";
 const BUNDLED_SKILLS_DIR: &str = ".system";
+/// 本地清单只需要 frontmatter，避免将整个 Skill 正文读入内存。
+const SKILL_FRONTMATTER_LIMIT_BYTES: usize = 256 * 1024;
 /// 从本地目录导入的 Skill 的来源标记（#511），前端按它显示「本地导入」分组。
 pub const LOCAL_IMPORT_REPO_KEY: &str = "local";
 /// 单个仓库 zip 的下载上限。skill 仓库都是纯文本，64 MiB 足够宽松了。
@@ -1305,9 +1307,47 @@ fn unquote_scalar(value: &str) -> String {
 }
 
 fn read_skill_manifest(manifest: &Path, fallback_id: &str) -> (String, String) {
-    match std::fs::read_to_string(manifest) {
-        Ok(text) => parse_skill_frontmatter(&text, fallback_id),
-        Err(_) => (fallback_id.to_string(), String::new()),
+    let text = (|| -> Option<String> {
+        if !std::fs::metadata(manifest).ok()?.is_file() {
+            return None;
+        }
+        let file = std::fs::File::open(manifest).ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        read_bounded_skill_manifest(file)
+    })();
+    text.map(|text| parse_skill_frontmatter(&text, fallback_id))
+        .unwrap_or_else(|| (fallback_id.to_string(), String::new()))
+}
+
+fn read_bounded_skill_manifest(reader: impl Read) -> Option<String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((SKILL_FRONTMATTER_LIMIT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() <= SKILL_FRONTMATTER_LIMIT_BYTES {
+        return String::from_utf8(bytes).ok();
+    }
+
+    let mut reader = BufReader::new(bytes.as_slice());
+    let mut text = String::new();
+    let mut first = true;
+    loop {
+        let start = text.len();
+        if reader.read_line(&mut text).ok()? == 0 || text.len() > SKILL_FRONTMATTER_LIMIT_BYTES {
+            return None;
+        }
+        let delimiter = text[start..].trim() == "---";
+        if first {
+            if !delimiter {
+                return None;
+            }
+            first = false;
+        } else if delimiter {
+            return Some(text);
+        }
     }
 }
 
@@ -2109,6 +2149,223 @@ mod tests {
         assert_eq!(folded, "First line. Second line.");
         let (_, literal) = parse_skill_frontmatter("---\ndescription: |\n  First\n  Second\n---\n", "example");
         assert_eq!(literal, "First\nSecond");
+    }
+
+    #[test]
+    fn local_manifest_does_not_decode_large_body() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        let mut file = std::fs::File::create(&manifest).unwrap();
+        file.write_all(b"---\nname: Sample\ndescription: Metadata\n---\n")
+            .unwrap();
+        file.write_all(&[0xff]).unwrap();
+        file.write_all(&vec![b'x'; 512 * 1024]).unwrap();
+        drop(file);
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("Sample".into(), "Metadata".into())
+        );
+    }
+
+    #[test]
+    fn local_manifest_preserves_invalid_utf8_fallback_for_short_body() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        let mut file = std::fs::File::create(&manifest).unwrap();
+        file.write_all(b"---\nname: Sample\n---\ninvalid: ")
+            .unwrap();
+        file.write_all(&[0xff]).unwrap();
+        drop(file);
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("fallback".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn local_manifest_reads_at_most_budget_plus_probe_byte() {
+        struct CountingReader<'a> {
+            bytes: &'a [u8],
+            count: &'a mut usize,
+        }
+
+        impl Read for CountingReader<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.bytes.read(buffer)?;
+                *self.count += count;
+                Ok(count)
+            }
+        }
+
+        let mut bytes = b"---\nname: Sample\n---\n".to_vec();
+        bytes.resize(SKILL_FRONTMATTER_LIMIT_BYTES * 2, b'x');
+        let mut count = 0;
+        let text = read_bounded_skill_manifest(CountingReader {
+            bytes: &bytes,
+            count: &mut count,
+        })
+        .unwrap();
+
+        assert_eq!(count, SKILL_FRONTMATTER_LIMIT_BYTES + 1);
+        assert_eq!(parse_skill_frontmatter(&text, "fallback").0, "Sample");
+    }
+
+    #[test]
+    fn local_manifest_preserves_crlf_and_multibyte_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        std::fs::write(&manifest, "---\r\nname: Caf\u{e9}\r\ndescription: Example\r\n---\r\nbody")
+            .unwrap();
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("Caf\u{e9}".into(), "Example".into())
+        );
+    }
+
+    #[test]
+    fn local_manifest_falls_back_when_frontmatter_exceeds_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        let mut file = std::fs::File::create(&manifest).unwrap();
+        file.write_all(b"---\nname: Partial\nother: ").unwrap();
+        file.write_all(&vec![b'x'; 256 * 1024]).unwrap();
+        file.write_all(b"\n---\n").unwrap();
+        drop(file);
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("fallback".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn local_manifest_preserves_short_unclosed_frontmatter() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        std::fs::write(&manifest, "---\nname: Incomplete\n").unwrap();
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("Incomplete".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn local_manifest_accepts_frontmatter_at_budget_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        let prefix = b"---\nname: Boundary\nother: ";
+        let suffix = b"\n---\n";
+        let mut file = std::fs::File::create(&manifest).unwrap();
+        file.write_all(prefix).unwrap();
+        file.write_all(&vec![b'x'; SKILL_FRONTMATTER_LIMIT_BYTES - prefix.len() - suffix.len()])
+            .unwrap();
+        file.write_all(suffix).unwrap();
+        file.write_all(b"body after boundary").unwrap();
+        drop(file);
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("Boundary".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn local_manifest_falls_back_on_utf8_split_at_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        let prefix = b"---\nname: Partial\nother: ";
+        let mut file = std::fs::File::create(&manifest).unwrap();
+        file.write_all(prefix).unwrap();
+        file.write_all(&vec![b'x'; SKILL_FRONTMATTER_LIMIT_BYTES - prefix.len()])
+            .unwrap();
+        file.write_all(&[0xc3, 0xa9]).unwrap();
+        file.write_all(b"\n---\n").unwrap();
+        drop(file);
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("fallback".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn local_manifest_accepts_large_crlf_body_with_utf8_split_at_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        let prefix = "---\r\nname: Caf\u{e9}\r\n---\r\n".as_bytes();
+        let mut file = std::fs::File::create(&manifest).unwrap();
+        file.write_all(prefix).unwrap();
+        file.write_all(&vec![b'x'; SKILL_FRONTMATTER_LIMIT_BYTES - 1 - prefix.len()])
+            .unwrap();
+        file.write_all(&[0xc3, 0xa9]).unwrap();
+        drop(file);
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("Caf\u{e9}".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn local_manifest_rejects_truncated_delimiter_at_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("SKILL.md");
+        let prefix = b"---\nname: Partial\nother: ";
+        let suffix = b"\n---";
+        let mut file = std::fs::File::create(&manifest).unwrap();
+        file.write_all(prefix).unwrap();
+        file.write_all(&vec![b'x'; SKILL_FRONTMATTER_LIMIT_BYTES - prefix.len() - suffix.len()])
+            .unwrap();
+        file.write_all(suffix).unwrap();
+        file.write_all(b"x\n").unwrap();
+        drop(file);
+
+        assert_eq!(
+            read_skill_manifest(&manifest, "fallback"),
+            ("fallback".into(), String::new())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_inventory_reads_manifest_through_directory_junction() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        write_skill(&source, "---\nname: Shared\ndescription: Linked\n---\nbody");
+        let skills = temp.path().join("codex-home").join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        let link = skills.join("shared");
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "could not create directory junction: {:?}", output);
+
+        let entries = manager(&temp).local_inventory();
+        assert_eq!(entry(&entries, "shared").name, "Shared");
+        assert_eq!(entry(&entries, "shared").description, "Linked");
+        std::fs::remove_dir(link).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_manifest_reads_through_shared_directory_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        write_skill(&source, "---\nname: Shared\ndescription: Linked\n---\nbody");
+        let link = temp.path().join("linked");
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+
+        assert_eq!(
+            read_skill_manifest(&link.join("SKILL.md"), "fallback"),
+            ("Shared".into(), "Linked".into())
+        );
     }
 
     #[test]
