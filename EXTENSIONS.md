@@ -154,9 +154,9 @@ codexPlus.extension((ctx) => {
 
 | ctx 成员 | 说明 |
 | --- | --- |
-| `effect(fn)` | 立即执行 `fn`，它返回的函数在卸载时调用；返回值可提前撤销 |
+| `effect(fn)` | 立即执行 `fn`，它返回的函数在卸载时调用；返回值可提前撤销。`fn` 是 async 时等它给出撤销函数，实例已卸载就拿到时立刻撤销 |
 | `registerRowAction / registerNavEntry / registerMenuItem / registerPage` | 同 `codexPlus.register*`，归属与撤销自动处理 |
-| `on(event, handler)` / `emit(event, ...args)` | 拓展间事件。内核广播 `extension/apply`、`extension/dispose`（参数 `{ id, scriptKey }`） |
+| `on(event, handler)` / `emit(event, ...args)` | 拓展间事件。内核广播 `extension/apply`（`apply` 含异步部分完成后）、`extension/dispose`（参数 `{ id, scriptKey }`）。`on("ready")` / `on("dispose")` 只属于本实例：`ready` 在 `apply` 完成后调用（已完成时立即调用），`dispose` 在卸载时调用 |
 | `intercept(name, handler, { order })` / `waterfall(name, value)` | 中间件链：`handler(value, next)` 调 `next(v)` 交给下一个，不调即短路；出错的中间件被跳过；没有中间件时原样返回 |
 | `listen(target, type, handler, options)` | 自动撤销的 `addEventListener` |
 | `setTimeout / setInterval` | 自动清理的定时器 |
@@ -701,8 +701,7 @@ codexPlus.extension((ctx) => {
 ### 内置拓展与顶替
 
 Codex++ 自带的功能（Agent 桌宠、用量状态栏、语音听写、轮次回退、打字特效、侧聊保存、历史轮次补全、容量不足自动重试、
-请求状态条、会话分享、模型分组、梦皮主题、插件市场解锁、多开身份提示、会话标题中间件、会话删除、Markdown 导出、会话 ID 角标、
-滚动位置恢复、对话宽度、消息导航条靠右、粘贴修复、下一步建议、回答大纲、桌宠跟随鼠标）也挂在拓展内核上：每个是一个内置拓展实例
+请求状态条、会话分享、模型分组、梦皮主题、插件市场解锁、多开身份提示、会话标题中间件）也挂在拓展内核上：每个是一个内置拓展实例
 （`scriptKey` 为 `builtin:<id>`），和第三方拓展走同一套生命周期，在 `extensions/changed` 里也能看到。
 
 - 能用公开接口表达的部分就用公开接口写：Agent 桌宠挂在 `overlay` 插槽给的容器里、用量状态栏在 `composer.below`、
@@ -785,7 +784,8 @@ codexPlus.extension({ inject: ["metrics"], apply(ctx) { ctx.metrics.record("open
 - `inject`：写在 `codexPlus.extension({ inject, apply })` 里（或第二个参数 `{ inject }`）。依赖没到时挂起、不报错；
   提供方卸载或被替换时依赖方先卸载、回到挂起，提供方回来后自动重新应用。此时 `codexPlus.extension` 返回的是
   生命周期句柄 `{ id, state, ctx, dispose() }`，`state` 为 `pending` / `active` / `failed` / `disposed`。
-- 可选依赖：不写进 `inject`，用到时 `ctx.get(name)`（不存在为 `undefined`）。
+- 可选依赖：`inject` 用对象写法 `{ metrics: { required: false } }`，缺了照样应用，`ctx.metrics` 为 `undefined`；
+  提供方出现、消失或被替换时同样重新应用。也可以不写进 `inject`，用到时 `ctx.get(name)`（不存在为 `undefined`）。
 - `ctx.inject(deps, apply)`：子作用域，只让依赖某服务的那部分挂起 / 重建。
 - 内置服务：`sessionQuery`、`locale`。`codexPlus.services()` 列出当前已提供的服务与提供方。
 

@@ -108,9 +108,25 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(180);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_SOURCE_LEN: usize = 512;
 const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
-/// 宿主自己提供的 peer 包；只依赖它们时不需要跑 npm install。
+/// 宿主自己提供的 peer 包（`host.mjs` 的 SHIMS 去掉 schemastery，测试守住两边一致）；只依赖它们时不需要跑 npm install。
 /// schemastery 按 dsh 约定是普通运行时依赖，声明了就装真包，替身只兜底没装的情况。
-const HOST_PROVIDED_PACKAGES: &[&str] = &["@deepseek-ai/cordis", "@deepseek-ai/dsh-tools"];
+pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
+    "@deepseek-ai/cordis",
+    "@deepseek-ai/dsh-tools",
+    "@deepseek-ai/dsh-skill",
+    "@deepseek-ai/dsh-system-prompt",
+    "@deepseek-ai/dsh-llm",
+    "@deepseek-ai/dsh-session",
+    "@deepseek-ai/dsh-fs",
+    "@deepseek-ai/dsh-credentials",
+    "@deepseek-ai/dsh-storage-domain",
+    "@deepseek-ai/dsh-web",
+    "@deepseek-ai/dsh-user-questions",
+    "@deepseek-ai/dsh-session-query",
+    "@deepseek-ai/dsh-subprocess",
+    "@deepseek-ai/dsh-shell",
+    "@deepseek-ai/dsh-commands",
+];
 
 /// 插件来源。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1157,6 +1173,8 @@ pub struct BridgePlan {
 pub struct BridgeClient {
     pub entry: PathBuf,
     pub package_name: String,
+    /// 前端插件 apply 的第二个参数：包自己那一行的配置。
+    pub config: Value,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1252,6 +1270,7 @@ pub fn report_bridge(report: &Value) -> BridgePlan {
             Some(BridgeClient {
                 entry: PathBuf::from(client.get("entry")?.as_str()?),
                 package_name: client.get("packageName").and_then(Value::as_str).unwrap_or_default().to_string(),
+                config: client.get("config").filter(|config| config.is_object()).cloned().unwrap_or_else(|| json!({})),
             })
         }),
     }
@@ -1379,9 +1398,10 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         );
         if let Some((client, source)) = &client_source {
             script.push_str(&format!(
-                "\n  // dsh 前端插件：截住它的 __ModuleLoader__.load，把发往 /api/ 的 fetch 经后台转给插件的宿主半边，\n  // 再交给 Codex++ 的 dsh 前端运行时（React 用 Codex 页面自己的，dsh 插槽映射到 Codex++ 的插槽）。\n  const modules = []\n  const loader = {{ load: (module) => modules.push(module) }}\n  const routed = async (input, init = {{}}) => {{\n    const url = typeof input === 'string' ? input : String(input?.url ?? input)\n    if (!url.startsWith('/api/')) return globalThis.fetch(input, init)\n    const reply = await ctx.backend.call('fetch', {{ path: url, method: init.method || 'GET', headers: init.headers ?? {{}}, body: init.body ?? null }}, {{ timeout: 120000 }})\n    return new Response(reply?.body ?? '', {{ status: reply?.status ?? 502, headers: reply?.headers ?? {{}} }})\n  }}\n  const window = new Proxy(globalThis.window, {{\n    get: (target, key) => key === '__ModuleLoader__' ? loader : key === 'fetch' ? routed : Reflect.get(target, key),\n  }})\n  const fetch = routed\n  ;(function () {{\n// ---- {name} 的前端入口 ----\n{source}\n// ---- 前端入口结束 ----\n  }}).call(window)\n  void codexPlus.dshClient(ctx, modules, {{ packageName: {package} }}).catch((error) => ctx.fail(error))\n",
+                "\n  // dsh 前端插件：截住它的 __ModuleLoader__.load，把发往 /api/ 的 fetch 经后台转给插件的宿主半边，\n  // 再交给 Codex++ 的 dsh 前端运行时（React 用 Codex 页面自己的，dsh 插槽映射到 Codex++ 的插槽）。\n  const modules = []\n  const loader = {{ load: (module) => modules.push(module) }}\n  const routed = async (input, init = {{}}) => {{\n    const url = typeof input === 'string' ? input : String(input?.url ?? input)\n    if (!url.startsWith('/api/')) return globalThis.fetch(input, init)\n    const reply = await ctx.backend.call('fetch', {{ path: url, method: init.method || 'GET', headers: init.headers ?? {{}}, body: init.body ?? null }}, {{ timeout: 120000 }})\n    return new Response(reply?.body ?? '', {{ status: reply?.status ?? 502, headers: reply?.headers ?? {{}} }})\n  }}\n  const window = new Proxy(globalThis.window, {{\n    get: (target, key) => key === '__ModuleLoader__' ? loader : key === 'fetch' ? routed : Reflect.get(target, key),\n  }})\n  const fetch = routed\n  ;(function () {{\n// ---- {name} 的前端入口 ----\n{source}\n// ---- 前端入口结束 ----\n  }}).call(window)\n  void codexPlus.dshClient(ctx, modules, {{ packageName: {package}, config: {config} }}).catch((error) => ctx.fail(error))\n",
                 name = client.package_name,
                 package = js_string(&client.package_name),
+                config = client.config,
             ));
         }
         script.push_str("})\n");

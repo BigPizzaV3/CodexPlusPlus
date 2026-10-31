@@ -101,7 +101,7 @@ interface CodexPlusExtensionApi {
    */
   extension(
     definition: ((ctx: CodexPlusExtensionContext) => void | Promise<void>) | CodexPlusExtensionDefinition,
-    options?: { id?: string; scriptKey?: string; inject?: string[] },
+    options?: { id?: string; scriptKey?: string; inject?: CodexPlusInject },
   ): CodexPlusExtensionContext | CodexPlusExtensionFiber;
 
   /** 当前已提供的服务与提供方。取值请在拓展里 inject 或 ctx.get。 */
@@ -377,10 +377,13 @@ interface CodexPlusExtensionManifest {
   locales?: Record<string, Record<string, unknown>>;
 }
 
+/** 依赖的服务：数组都是必需依赖；对象写法里 `{ required: false }` 是可选依赖（缺了也应用，变了照样重新应用）。 */
+type CodexPlusInject = string[] | Record<string, { required?: boolean } | true>;
+
 interface CodexPlusExtensionDefinition {
   id?: string;
-  /** 依赖的服务名。声明后 extension() 返回生命周期句柄：依赖齐全才应用，提供方消失时卸载、回来时重新应用。 */
-  inject?: string[];
+  /** 依赖的服务。声明后 extension() 返回生命周期句柄：必需依赖齐全才应用，提供方消失时卸载、回来时重新应用。 */
+  inject?: CodexPlusInject;
   apply(ctx: CodexPlusExtensionContext): void | Promise<void>;
 }
 
@@ -577,7 +580,7 @@ interface CodexPlusExtensionContext {
   /** 取服务，不存在时为 undefined（可选依赖）。 */
   get<T = unknown>(name: string): T | undefined;
   /** 子作用域：deps 齐全时以子 ctx 调用 apply；服务消失时卸载、回来时重新应用。 */
-  inject(deps: string[], apply: (ctx: CodexPlusExtensionContext) => void | Promise<void>): CodexPlusExtensionFiber;
+  inject(deps: CodexPlusInject, apply: (ctx: CodexPlusExtensionContext) => void | Promise<void>): CodexPlusExtensionFiber;
 
   /** 立即执行 fn；它返回的函数在卸载时调用。返回值可提前撤销。 */
   effect(fn: () => void | (() => void)): CodexPlusDispose;
@@ -605,7 +608,7 @@ interface CodexPlusExtensionContext {
   /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
   currentSessionId(): string;
 
-  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
+  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;
   emit(event: string, ...args: unknown[]): void;
 

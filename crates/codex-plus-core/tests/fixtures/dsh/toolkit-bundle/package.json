@@ -1,0 +1,8 @@
+{
+  "name": "dsh-toolkit-bundle",
+  "version": "0.1.0",
+  "description": "演示 bundle 里插件之间用事件互通，以及工具守卫、可见性限制、tools/execute 代为执行",
+  "type": "module",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*" }
+}

@@ -42,6 +42,12 @@
     return [...new Set(names.map(String).filter((name) => codexPlusServiceNamePattern.test(name)))];
   }
 
+  /** 必需依赖：对象写法里 { name: { required: false } } 是可选依赖，缺了也应用，变了照样重载。 */
+  function codexPlusRequiredInject(inject) {
+    if (!inject || Array.isArray(inject) || typeof inject !== "object") return codexPlusNormalizeInject(inject);
+    return codexPlusNormalizeInject(Object.keys(inject).filter((name) => inject[name]?.required !== false));
+  }
+
   function codexPlusServiceChanged() {
     for (const fiber of [...codexPlusServiceFibers]) {
       try {
@@ -718,7 +724,9 @@
     const extensionId = String(
       (typeof definition === "object" && definition?.id) || options.id || manifest?.id || scriptKey || "anonymous",
     );
-    const inject = codexPlusNormalizeInject((typeof definition === "object" && definition?.inject) || options.inject);
+    const rawInject = (typeof definition === "object" && definition?.inject) || options.inject;
+    const inject = codexPlusNormalizeInject(rawInject);
+    const required = codexPlusRequiredInject(rawInject);
     const runtime = window.__codexPlusUserScripts;
     const reloadable = !!scriptKey && runtime?.currentKey === scriptKey && typeof runtime.registerCleanup === "function";
     if (!inject.length) {
@@ -726,7 +734,7 @@
       if (reloadable) runtime.registerCleanup(() => ctx.dispose());
       return ctx;
     }
-    const fiber = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject });
+    const fiber = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject, required });
     if (reloadable) runtime.registerCleanup(() => fiber.dispose());
     return fiber;
   }
@@ -735,7 +743,7 @@
    * 声明了 inject 的拓展：依赖齐全才创建实例；依赖消失或换了提供者就卸载实例、回到挂起，
    * 提供者回来再重新应用。返回的句柄可以随时 dispose。
    */
-  function codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject }) {
+  function codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject, required = inject }) {
     let tokens = "";
     // apply 里提供服务会触发全体复查，又回到这个句柄：正在检查时只记下「需要再查一次」。
     let checking = false;
@@ -764,7 +772,7 @@
         }
       },
       update() {
-        const ready = inject.every((name) => codexPlusServices.has(name));
+        const ready = required.every((name) => codexPlusServices.has(name));
         const current = inject.map((name) => codexPlusServices.get(name)?.token ?? "").join("|");
         if (fiber.ctx && (!ready || current !== tokens)) {
           const ctx = fiber.ctx;
@@ -851,6 +859,8 @@
       },
     };
     const info = { id: extensionId, scriptKey };
+    const readyHandlers = new Set();
+    let applied = false;
     const locale = Object.freeze({
       /** 当前语言 id（取 Codex 页面的 lang，如 zh-CN）。 */
       get current() {
@@ -994,7 +1004,9 @@
       /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
       inject(deps, apply) {
         if (typeof apply !== "function") throw new Error("inject 需要 apply(ctx) 函数");
-        const child = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject: codexPlusNormalizeInject(deps) });
+        const child = codexPlusCreateExtensionFiber({
+          apply, scriptKey, manifest, extensionId, inject: codexPlusNormalizeInject(deps), required: codexPlusRequiredInject(deps),
+        });
         track(() => child.dispose());
         return child;
       },
@@ -1002,7 +1014,20 @@
       /** 立即执行 fn；它返回的函数在卸载时调用。 */
       effect(fn) {
         if (typeof fn !== "function") throw new Error("effect 需要一个函数");
-        return track(fn());
+        const result = fn();
+        if (!codexPlusIsThenable(result)) return track(result);
+        // 异步 effect：等它给出撤销函数；实例先卸载了就在拿到时立刻撤销。
+        let cancelled = false;
+        let dispose = null;
+        Promise.resolve(result).then((value) => {
+          if (typeof value !== "function") return;
+          if (cancelled) runCodexPlusExtensionCallback(scriptKey, `${extensionId}.dispose`, value);
+          else dispose = value;
+        }, (error) => ctx.fail(error));
+        return track(() => {
+          cancelled = true;
+          dispose?.();
+        });
       },
 
       registerRowAction(definition, itemOptions) {
@@ -1076,6 +1101,16 @@
       on(event, handler) {
         if (typeof event !== "string" || !event) throw new Error("事件名不能为空");
         if (typeof handler !== "function") throw new Error("事件处理器必须是函数");
+        // ready / dispose 只属于本实例（同 Cordis）：ready 在 apply（含异步部分）完成后触发，dispose 随卸载。
+        if (event === "ready") {
+          if (applied) {
+            queueMicrotask(() => !disposed && runCodexPlusExtensionCallback(scriptKey, `${extensionId}.ready`, handler));
+            return () => {};
+          }
+          readyHandlers.add(handler);
+          return track(() => readyHandlers.delete(handler));
+        }
+        if (event === "dispose") return track(() => runCodexPlusExtensionCallback(scriptKey, `${extensionId}.dispose`, handler));
         const listener = { handler, scriptKey };
         if (!codexPlusExtensionListeners.has(event)) codexPlusExtensionListeners.set(event, new Set());
         codexPlusExtensionListeners.get(event).add(listener);
@@ -1187,15 +1222,22 @@
       ctx.dispose();
       throw error;
     }
+    // apply 完成（异步 apply 等它 resolve）后才算应用好：发 extension/apply，再调本实例的 ready 监听器。
+    const settle = () => {
+      if (disposed) return;
+      applied = true;
+      codexPlusEmitExtensionEvent("extension/apply", [info]);
+      if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
+      for (const handler of [...readyHandlers]) runCodexPlusExtensionCallback(scriptKey, `${extensionId}.ready`, handler);
+      readyHandlers.clear();
+    };
     if (codexPlusIsThenable(result)) {
-      Promise.resolve(result).catch((error) => {
+      Promise.resolve(result).then(settle, (error) => {
         ctx.fail(error);
         ctx.dispose();
       });
-    }
-    if (!disposed) {
-      codexPlusEmitExtensionEvent("extension/apply", [info]);
-      if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
+    } else {
+      settle();
     }
     return ctx;
   }

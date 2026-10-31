@@ -42,7 +42,7 @@ dsh 的 agent 循环、会话存储、LLM 服务都不在 Codex App 里，所以
 | 工具插件（`inject` 只含 `tools` / `systemPrompt` / `logger` / `timer`） | 加载后 `ctx.tools.register` 出工具 | 兼容宿主进程内运行，经托管 MCP `codex_plus_dsh` 暴露为 Codex 工具 | **完全兼容**（工具调用、参数 schema、render、超时、取消） |
 | 用到 `systemPrompt.section` / `context` / `variable` 的插件（含只做提示词的插件，如 `dsh-persona`） | 加载时截取注册 | 配套拓展包的网关请求中间件把片段追加到每次模型请求的 `instructions`（静态文本分析时求好直接嵌入；有函数片段或变量时每次请求求值）；同时汇总进 MCP `instructions` | **完全兼容**（经 Codex++ 本地代理 / 网关的请求）；官方直连的请求不经网关，只剩 MCP `instructions`；`complete` 片段只追加不替换 Codex 自己的提示词；`context` 并入 instructions 而不是逐回合刷新的用户侧快照；未注册的 `{{变量}}` 原样保留；`tools` 提供方忽略 |
 | 监听 `tools/pre-execute` / `tools/post-execute` / `agent/pre-step` / `agent/turn-stopping` 的插件（策略、守卫类，如 `dsh-repeat-tool-reminder`） | `ctx.on` 这四个事件 | 配套拓展包声明对应的 Codex 钩子 PreToolUse / PostToolUse / UserPromptSubmit / Stop，钩子脚本经 `bridge.mjs` 派发给插件的监听器，把 dsh 的决定翻译成钩子输出（见 4.1） | **完全兼容**（拦截、补上下文、拒绝输入、要求继续）；dsh 决定里 Codex 钩子表达不了的部分忽略（见 4.1）；需要用户在 Codex 里信任一次「Codex++ 拓展钩子」 |
-| 监听其它 dsh 事件（`agent/created`、`session/event`、`tools/execute`、`system-prompt/assemble`…） | `ctx.on` | 无 | **不生效**：报告里逐条注明「来自 dsh 运行时，Codex 里不会触发」 |
+| 监听其它 dsh 事件 | `ctx.on` | 见第 8、9 节：大部分已有落点（会话镜像、网关、钩子、插件间事件总线） | 首期**不生效**；现状以第 8、9 节为准，仍不触发的事件在报告里逐条注明 |
 | 工具插件用 `registerOptions.when`、`exec.agent`、`exec.deferContext`、`exec.concludeTurn`、`presentCall/presentResult` | 运行时调用 | 无对应扩展点 | **部分兼容**：`when` 视为始终可用；`exec.agent` 为空；`deferContext` / `concludeTurn` 空操作；展示钩子忽略 |
 | 工具 render 出的图片块 | `type: 'image'`（引用 dsh 会话附件） | — | **不兼容**：附件存储属于 dsh 会话，转成文字占位 |
 | skill 包（`SKILL.md` 文件，或经 `ctx.skills.register` / `registerProvider` 在代码里注册） | 包内扫描到 `SKILL.md`；或加载插件时截取 `ctx.skills` 的注册（宿主提供 `skills` 服务与 `@deepseek-ai/dsh-skill` 替身），依赖包里的 skill 也能拿到；bundle 行引用的依赖包里现成的 `SKILL.md` 也会扫描（最多 64 个，不跟软链，指向包外的依赖不扫） | 代码注册的写成 `SKILL.md` 目录（带上资源目录里的文件），与文件形式的一起复制进 Codex++ 的 Skills 源目录并启用到 Codex | **完全兼容**（内容层面）；skill 文档里写死的 dsh 专属路径/工具名需要用户自行判断 |
@@ -173,7 +173,7 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 
 ## 8. 第二期：替身服务、会话镜像、命令与前端插件（2026-10-31）
 
-目标是让导入的 dsh 插件能碰到的服务都有替身：Codex 的 agent 循环与会话存储仍不在 Codex++ 手里，做不到的部分调用时说明原因。上面第 3 节里判为不兼容的几类，现在的去处：
+目标是让导入的 dsh 插件常用的服务都有替身（还没覆盖的见第 9 节的覆盖表）：Codex 的 agent 循环与会话存储仍不在 Codex++ 手里，做不到的部分调用时说明原因。上面第 3 节里判为不兼容的几类，现在的去处：
 
 | dsh 服务 / 事件 | 现在的落点 | 差别 |
 |---|---|---|
@@ -209,3 +209,23 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 
 仍然做不到：替换 Codex 的 agent 循环、会话存储格式；官方直连（不经 Codex++ 代理）时的按步 `agent/pre-step`、工具结果改写与回复流改写；
 `subagents` / `workflowEngine` / `typert` / `sandboxPolicy` 这类 dsh 自己的运行时服务。
+
+## 9. 第四期：插件间事件、工具运行时、前端服务（2026-11-01）
+
+| dsh 能力 | 落点 | 差别 |
+|---|---|---|
+| 插件之间的 `ctx.emit` / `parallel` / `serial` / `bail` / `waterfall` / `off` | 同一个宿主进程（同一个包）里的监听器共用一张表，按 Cordis 五种语义派发，支持 thisArg 写法 | 不同包之间不互通（各自一个进程） |
+| `tools/change`、`skills/change`、`commands/change`、`system-prompt/change` | 宿主在注册 / 撤销时发 | |
+| `tools/execute`（waterfall） | 插件自己的工具：MCP 进程里完整包住执行；Codex 的工具：PreToolUse 钩子里跑，插件不调 `next()` 直接给结果即代为执行（原工具以「拒绝 + 结果」结束，经代理的下一次请求里换成纯结果） | Codex 的工具执行不在宿主里，调 `next()` 的包裹式监听器（超时、重试）只能放行原工具 |
+| `tools.guard` | pre-execute 之后、执行之前（PreToolUse 与插件自己工具的 MCP 调用） | |
+| `tools.restrict` | 插件自己的工具从 MCP `tools/list` 去掉；Codex 的工具在网关里从请求 `tools` 去掉 | 后者只对经代理的请求生效 |
+| `tools.execute` / `schemas` / `executionMode` | 只覆盖本包注册的工具 | `presentAs` 忽略 |
+| 钩子里的工具名 | 插件自己的 MCP 工具去掉 `mcp__codex_plus_dsh__` 前缀，与插件注册的名字一致 | |
+| 前端插件配置 | 配套拓展包把包自己那一行的配置（含管理器覆盖）传给前端插件的 `apply` | |
+| 前端 `ready` / `dispose`、可选依赖 | 全部 `apply` 跑完后发 `ready`；`inject` 对象写法的 `required: false` 缺了照样加载，`ctx.inject` 缺服务时不激活也不报错 | |
+| 前端 `shortcuts` / `commandUi` / `theme` | 分别桥接到 Codex++ 的快捷键、斜杠命令（`popupSelect` 用对话框列选项）、主题 | 快捷键只取默认绑定，不支持双键序列 |
+| 前端 `inputTriggers` | 服务存在但注册不进去：`/` 与 `@` 菜单归 Codex，记一条失败说明 | |
+| 前端插槽 | 新增 `conversation.approval.detail`、`conversation.input.activity`、`conversation.hero.*`、`conversation.view`、`main.conversation`、`conversation.header*`、`conversation.session.header(.lineage)`、`sidebar.session.row.hover`、`shell.quota-notice`、`rightbar.session`（侧边面板）、`tool.view.cordis` | |
+
+`HOST_PROVIDED_PACKAGES`（不必 npm install 的宿主包）与 `host.mjs` 的替身表保持一致，测试守住。
+

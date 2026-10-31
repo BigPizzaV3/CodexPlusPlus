@@ -40,6 +40,8 @@ const HOST_FILE = fileURLToPath(new URL('./host.mjs', import.meta.url))
 const SERVICES_FILE = fileURLToPath(new URL('./services.mjs', import.meta.url))
 /** Codex 的工具名 → dsh 的工具名（插件多按 dsh 的名字判断）。参数形状两边一致（{ command }）。 */
 const TOOL_ALIASES = { Bash: 'bash', shell: 'bash', local_shell: 'bash' }
+/** dsh 插件自己的工具经托管 MCP 暴露，钩子里的名字带这个前缀；去掉后与插件注册的名字一致。 */
+const OWN_MCP_PREFIX = 'mcp__codex_plus_dsh__'
 /** 常驻进程空闲多久退出。 */
 const DAEMON_IDLE_MS = 20 * 60 * 1000
 /** 常驻进程定期检查配置文件是否还在（插件移除、测试目录清理后自行退出）。 */
@@ -142,7 +144,7 @@ function makeExec(payload, agent, signal) {
   return {
     callId,
     rootCallId: callId,
-    name: TOOL_ALIASES[name] ?? name,
+    name: TOOL_ALIASES[name] ?? (name.startsWith(OWN_MCP_PREFIX) ? name.slice(OWN_MCP_PREFIX.length) : name),
     arguments: payload?.tool_input ?? {},
     agent,
     signal,
@@ -175,11 +177,26 @@ const TRANSLATE = {
     const exec = makeExec(payload, agent, signal)
     const decision = await host.waterfall('tools/pre-execute', [exec], async () => ({ kind: 'allow' }))
     const contexts = sinkContexts(sink)
+    const deny = (reason) => withContext('PreToolUse', {
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason },
+    }, contexts)
     if (decision?.kind === 'deny' || decision?.kind === 'cancel') {
-      const reason = decision.kind === 'cancel' ? 'dsh 插件取消了这次工具调用' : String(decision.reason || '被 dsh 插件拒绝')
-      return withContext('PreToolUse', {
-        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason },
-      }, contexts)
+      return deny(decision.kind === 'cancel' ? 'dsh 插件取消了这次工具调用' : String(decision.reason || '被 dsh 插件拒绝'))
+    }
+    // ctx.tools.guard：在 pre-execute 之后、执行之前，任何一个给出理由就拒绝。
+    const guarded = host.guardReason(exec)
+    if (guarded) return deny(guarded)
+    // tools/execute：插件不调 next() 直接给结果就是代为执行——原工具以「拒绝 + 结果」结束，
+    // 结果记成改写，经 Codex++ 代理的下一次请求里整条换成纯结果。插件自己的工具在 MCP 进程里跑这条链，这里跳过；
+    // 调 next() 的包裹式监听器（超时、重试）包不住 Codex 的工具执行，只能放行原工具。
+    if (!String(payload?.tool_name ?? '').startsWith(OWN_MCP_PREFIX) && host.hasListeners('tools/execute')) {
+      const passed = Symbol('codexpp.pass')
+      const result = await host.waterfall('tools/execute', [exec], async () => passed)
+      if (result !== passed && result && typeof result === 'object' && Array.isArray(result.content)) {
+        rememberPostDecision(host, exec.callId, { kind: 'accept', content: result.content })
+        host.emitEvent('tools/result', [exec, result])
+        return deny(`dsh 插件已代为执行这次调用，结果：\n${blocksText(result.content)}`)
+      }
     }
     return withContext('PreToolUse', {}, contexts)
   },
@@ -265,7 +282,8 @@ async function dispatchHook(host, hookEvent, payload) {
   const agent = host.agentRegistry.get(payload?.session_id)
   if (!agent) return null
   if (payload?.model) agent.session.model = payload.model
-  const listened = HOOK_LISTENS[hookEvent] && host.hasListeners(HOOK_LISTENS[hookEvent])
+  const listened = (HOOK_LISTENS[hookEvent] && host.hasListeners(HOOK_LISTENS[hookEvent]))
+    || (hookEvent === 'PreToolUse' && (host.toolGuards.length > 0 || host.hasListeners('tools/execute')))
   const controller = new AbortController()
   const sink = { agent, steer: [], inject: [], pending: [] }
   // 钩子之外排下的上下文：有输出能带上的钩子才取走。
@@ -362,6 +380,14 @@ function outputText(output) {
   return JSON.stringify(output ?? null)
 }
 
+/** 请求 tools 里一项对应的 dsh 工具名：Codex 的 shell 类工具记作 bash，插件自己的 MCP 工具去掉前缀。 */
+function requestToolName(tool) {
+  const raw = String(tool?.name ?? tool?.type ?? '')
+  if (raw === 'exec_command') return 'bash'
+  if (TOOL_ALIASES[raw]) return TOOL_ALIASES[raw]
+  return raw.startsWith(OWN_MCP_PREFIX) ? raw.slice(OWN_MCP_PREFIX.length) : raw
+}
+
 /** 网关请求中间件（每一步）：agent/request 改模型、按步的 agent/pre-step、tools/post-execute 改写结果、排下的上下文。 */
 async function stepFor(host, body, context = {}) {
   if (!body || typeof body !== 'object' || !Array.isArray(body.input)) return null
@@ -430,6 +456,17 @@ async function stepFor(host, body, context = {}) {
       }
       if (decided?.reasoningEffort && decided.reasoningEffort !== current.reasoningEffort) {
         next = { ...next, reasoning: { ...(next.reasoning ?? {}), effort: String(decided.reasoningEffort) } }
+        changed = true
+      }
+    }
+    // 5. ctx.tools.restrict：从请求的 tools 里去掉被限制的工具，模型就看不到它们。
+    if (host.toolRestrictions.length && Array.isArray(next.tools)) {
+      const kept = next.tools.filter((tool) => {
+        const name = requestToolName(tool)
+        return !name || host.toolVisible(name)
+      })
+      if (kept.length !== next.tools.length) {
+        next = { ...next, tools: kept }
         changed = true
       }
     }

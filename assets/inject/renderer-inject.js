@@ -3898,32 +3898,7 @@
     return settings;
   }
 
-  /**
-   * 功能侧读到的设置：设置项开着、且对应的内置拓展在用（没停用、没被顶替）才算开。
-   * 设置页的开关要显示 / 切换用户自己存的值，传 { ignoreBuiltins: true }。
-   * 映射写在函数里：多个测试把本函数单独切片到沙箱里执行。
-   */
-  function codexPlusSettings(options) {
-    const withBuiltins = (settings) => {
-      const inactive = globalThis.__codexPlusBuiltinInactive;
-      if (options?.ignoreBuiltins || !inactive?.size) return settings;
-      const builtinSettings = {
-        sessionDelete: "session-delete",
-        markdownExport: "markdown-export",
-        threadIdBadge: "thread-id-badge",
-        threadScrollRestore: "thread-scroll-restore",
-        conversationView: "conversation-view",
-        activityOverlayRight: "activity-overlay-right",
-        pasteFix: "paste-fix",
-        stepwise: "stepwise",
-        answerOutline: "answer-outline",
-        petRealMouseLook: "pet-real-mouse",
-      };
-      Object.entries(builtinSettings).forEach(([key, id]) => {
-        if (inactive.has(id)) settings[key] = false;
-      });
-      return settings;
-    };
+  function codexPlusSettings() {
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
         pluginMarketplaceUnlock: false,
@@ -3961,10 +3936,10 @@
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       delete settings.customLayout;
       delete settings.serviceTierControls;
-      return withBuiltins(settings);
+      return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
-      return withBuiltins(settings);
+      return settings;
     }
   }
 
@@ -4760,23 +4735,20 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
-    if (key === "threadScrollRestore" && !value) stopThreadScrollRestore();
+    if (key === "threadScrollRestore" && !value) {
+      clearTimeout(window.__codexThreadScrollSaveTimer);
+      window.__codexThreadScrollSaveTimer = null;
+      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+      (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+      window.__codexThreadScrollRestoreTimers = [];
+      (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+      window.__codexThreadScrollSyncTimers = [];
+      window.__codexThreadScrollRuntime = null;
+    }
     if (key === "stepwise") syncStepwisePanel(value);
     renderCodexPlusMenu();
     scan();
-  }
-
-  /** 滚动位置恢复关掉时（设置关、或内置拓展停用）撤掉排着的保存 / 恢复定时器，作废进行中的轮次。 */
-  function stopThreadScrollRestore() {
-    clearTimeout(window.__codexThreadScrollSaveTimer);
-    window.__codexThreadScrollSaveTimer = null;
-    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
-    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
-    window.__codexThreadScrollRestoreTimers = [];
-    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
-    window.__codexThreadScrollSyncTimers = [];
-    window.__codexThreadScrollRuntime = null;
   }
 
   function syncStepwisePanel(
@@ -4825,7 +4797,7 @@
     setCodexPlusSetting("conversationViewMaxWidth", width);
   }
   function renderCodexPlusMenu() {
-    const settings = codexPlusSettings({ ignoreBuiltins: true });
+    const settings = codexPlusSettings();
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
       const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;
@@ -8151,7 +8123,7 @@
       if (toggle) {
         if (toggle.disabled || toggle.dataset.pending === "true") return;
         const key = toggle.getAttribute("data-codex-plus-setting");
-        setCodexPlusSetting(key, !codexPlusSettings({ ignoreBuiltins: true })[key]);
+        setCodexPlusSetting(key, !codexPlusSettings()[key]);
         return;
       }
       const backendToggle = target?.closest("[data-codex-backend-setting]");
@@ -18941,6 +18913,12 @@
     return [...new Set(names.map(String).filter((name) => codexPlusServiceNamePattern.test(name)))];
   }
 
+  /** 必需依赖：对象写法里 { name: { required: false } } 是可选依赖，缺了也应用，变了照样重载。 */
+  function codexPlusRequiredInject(inject) {
+    if (!inject || Array.isArray(inject) || typeof inject !== "object") return codexPlusNormalizeInject(inject);
+    return codexPlusNormalizeInject(Object.keys(inject).filter((name) => inject[name]?.required !== false));
+  }
+
   function codexPlusServiceChanged() {
     for (const fiber of [...codexPlusServiceFibers]) {
       try {
@@ -19617,7 +19595,9 @@
     const extensionId = String(
       (typeof definition === "object" && definition?.id) || options.id || manifest?.id || scriptKey || "anonymous",
     );
-    const inject = codexPlusNormalizeInject((typeof definition === "object" && definition?.inject) || options.inject);
+    const rawInject = (typeof definition === "object" && definition?.inject) || options.inject;
+    const inject = codexPlusNormalizeInject(rawInject);
+    const required = codexPlusRequiredInject(rawInject);
     const runtime = window.__codexPlusUserScripts;
     const reloadable = !!scriptKey && runtime?.currentKey === scriptKey && typeof runtime.registerCleanup === "function";
     if (!inject.length) {
@@ -19625,7 +19605,7 @@
       if (reloadable) runtime.registerCleanup(() => ctx.dispose());
       return ctx;
     }
-    const fiber = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject });
+    const fiber = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject, required });
     if (reloadable) runtime.registerCleanup(() => fiber.dispose());
     return fiber;
   }
@@ -19634,7 +19614,7 @@
    * 声明了 inject 的拓展：依赖齐全才创建实例；依赖消失或换了提供者就卸载实例、回到挂起，
    * 提供者回来再重新应用。返回的句柄可以随时 dispose。
    */
-  function codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject }) {
+  function codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject, required = inject }) {
     let tokens = "";
     // apply 里提供服务会触发全体复查，又回到这个句柄：正在检查时只记下「需要再查一次」。
     let checking = false;
@@ -19663,7 +19643,7 @@
         }
       },
       update() {
-        const ready = inject.every((name) => codexPlusServices.has(name));
+        const ready = required.every((name) => codexPlusServices.has(name));
         const current = inject.map((name) => codexPlusServices.get(name)?.token ?? "").join("|");
         if (fiber.ctx && (!ready || current !== tokens)) {
           const ctx = fiber.ctx;
@@ -19750,6 +19730,8 @@
       },
     };
     const info = { id: extensionId, scriptKey };
+    const readyHandlers = new Set();
+    let applied = false;
     const locale = Object.freeze({
       /** 当前语言 id（取 Codex 页面的 lang，如 zh-CN）。 */
       get current() {
@@ -19893,7 +19875,9 @@
       /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
       inject(deps, apply) {
         if (typeof apply !== "function") throw new Error("inject 需要 apply(ctx) 函数");
-        const child = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject: codexPlusNormalizeInject(deps) });
+        const child = codexPlusCreateExtensionFiber({
+          apply, scriptKey, manifest, extensionId, inject: codexPlusNormalizeInject(deps), required: codexPlusRequiredInject(deps),
+        });
         track(() => child.dispose());
         return child;
       },
@@ -19901,7 +19885,20 @@
       /** 立即执行 fn；它返回的函数在卸载时调用。 */
       effect(fn) {
         if (typeof fn !== "function") throw new Error("effect 需要一个函数");
-        return track(fn());
+        const result = fn();
+        if (!codexPlusIsThenable(result)) return track(result);
+        // 异步 effect：等它给出撤销函数；实例先卸载了就在拿到时立刻撤销。
+        let cancelled = false;
+        let dispose = null;
+        Promise.resolve(result).then((value) => {
+          if (typeof value !== "function") return;
+          if (cancelled) runCodexPlusExtensionCallback(scriptKey, `${extensionId}.dispose`, value);
+          else dispose = value;
+        }, (error) => ctx.fail(error));
+        return track(() => {
+          cancelled = true;
+          dispose?.();
+        });
       },
 
       registerRowAction(definition, itemOptions) {
@@ -19975,6 +19972,16 @@
       on(event, handler) {
         if (typeof event !== "string" || !event) throw new Error("事件名不能为空");
         if (typeof handler !== "function") throw new Error("事件处理器必须是函数");
+        // ready / dispose 只属于本实例（同 Cordis）：ready 在 apply（含异步部分）完成后触发，dispose 随卸载。
+        if (event === "ready") {
+          if (applied) {
+            queueMicrotask(() => !disposed && runCodexPlusExtensionCallback(scriptKey, `${extensionId}.ready`, handler));
+            return () => {};
+          }
+          readyHandlers.add(handler);
+          return track(() => readyHandlers.delete(handler));
+        }
+        if (event === "dispose") return track(() => runCodexPlusExtensionCallback(scriptKey, `${extensionId}.dispose`, handler));
         const listener = { handler, scriptKey };
         if (!codexPlusExtensionListeners.has(event)) codexPlusExtensionListeners.set(event, new Set());
         codexPlusExtensionListeners.get(event).add(listener);
@@ -20086,15 +20093,22 @@
       ctx.dispose();
       throw error;
     }
+    // apply 完成（异步 apply 等它 resolve）后才算应用好：发 extension/apply，再调本实例的 ready 监听器。
+    const settle = () => {
+      if (disposed) return;
+      applied = true;
+      codexPlusEmitExtensionEvent("extension/apply", [info]);
+      if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
+      for (const handler of [...readyHandlers]) runCodexPlusExtensionCallback(scriptKey, `${extensionId}.ready`, handler);
+      readyHandlers.clear();
+    };
     if (codexPlusIsThenable(result)) {
-      Promise.resolve(result).catch((error) => {
+      Promise.resolve(result).then(settle, (error) => {
         ctx.fail(error);
         ctx.dispose();
       });
-    }
-    if (!disposed) {
-      codexPlusEmitExtensionEvent("extension/apply", [info]);
-      if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
+    } else {
+      settle();
     }
     return ctx;
   }
@@ -24055,34 +24069,6 @@
       { id: "plugin-market-unlock", name: "插件市场解锁" },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
-      // 以下几项的开关都经 codexPlusSettings() 读（停用时对应设置项读成关），切换后补一轮扫描让界面跟上。
-      { id: "session-delete", name: "会话删除", sync: () => scheduleDeferredScan() },
-      { id: "markdown-export", name: "Markdown 导出", sync: () => scheduleDeferredScan() },
-      { id: "thread-id-badge", name: "会话 ID 角标", sync: () => scheduleDeferredScan() },
-      {
-        id: "thread-scroll-restore",
-        name: "滚动位置恢复",
-        sync: () => {
-          if (!codexPlusSettings().threadScrollRestore) stopThreadScrollRestore();
-          scheduleDeferredScan();
-        },
-      },
-      {
-        id: "conversation-view",
-        name: "对话宽度",
-        sync: () => {
-          refreshConversationViewControls();
-          scheduleDeferredScan();
-        },
-      },
-      { id: "activity-overlay-right", name: "消息导航条靠右", sync: () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.() },
-      // 每次粘贴时现查，不用同步。
-      { id: "paste-fix", name: "粘贴修复" },
-      // 悬浮球自己读后台设置再按停用集合判断，这里只让它重新算一次。
-      { id: "stepwise", name: "下一步建议", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
-      { id: "answer-outline", name: "回答大纲", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
-      // 启动器每 5 秒按内置拓展状态决定是否驱动，页面侧无事可做。
-      { id: "pet-real-mouse", name: "桌宠跟随鼠标" },
     ];
   }
 
@@ -24379,7 +24365,34 @@
     "settings.general.item": { kind: "settings" },
     "settings.plugins.tab": { kind: "settings" },
     "sidebar.panellist": { kind: "page" },
+    "conversation.approval.detail": { kind: "slot", slot: "approval" },
+    "conversation.input.activity": { kind: "slot", slot: "activity.after" },
+    "conversation.hero.workspace": { kind: "slot", slot: "home.above" },
+    "conversation.hero.agentPreset": { kind: "slot", slot: "home.above" },
+    "conversation.hero.brand.mark": { kind: "slot", slot: "home.above" },
+    "conversation.view": { kind: "slot", slot: "thread.top" },
+    "main.conversation": { kind: "slot", slot: "thread.top" },
+    "conversation.header": { kind: "slot", slot: "header.title" },
+    "conversation.header.leading": { kind: "slot", slot: "header.title" },
+    "conversation.session.header": { kind: "slot", slot: "header.title" },
+    "conversation.session.header.lineage": { kind: "slot", slot: "header.title" },
+    "sidebar.session.row.hover": { kind: "slot", slot: "sessionRow.suffix" },
+    "shell.quota-notice": { kind: "slot", slot: "overlay" },
+    // 右侧栏的会话面板：Codex 里放进顶栏开关打开的侧边面板。
+    "rightbar.session": { kind: "sidePanel" },
+    "tool.view.cordis": { kind: "toolView" },
   };
+
+  /** dsh 快捷键绑定（{ code, modifiers }）→ Codex++ 的 "Mod+Shift+K" 写法；认不出时返回空串。 */
+  function codexPlusDshShortcutKey(binding) {
+    if (!binding || typeof binding.code !== "string" || binding.secondCode) return "";
+    const names = { primary: "Mod", control: "Ctrl", alt: "Alt", shift: "Shift", meta: "Meta" };
+    const modifiers = (Array.isArray(binding.modifiers) ? binding.modifiers : []).map((item) => names[item]).filter(Boolean);
+    const code = binding.code;
+    const key = /^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? code.slice(5) : /^F\d{1,2}$/.test(code) ? code
+      : ({ Comma: ",", Period: ".", Slash: "/", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Minus: "-", Equal: "=", Backquote: "`", Space: "Space", Enter: "Enter", Escape: "Escape" })[code];
+    return key ? [...modifiers, key].join("+") : "";
+  }
 
   /** 一个可订阅的快照（dsh 的 ObservableSnapshot），给 useSyncExternalStore 用。 */
   function codexPlusDshSnapshotStore(initial, start) {
@@ -24472,6 +24485,107 @@
       resolveText: ctx.locale.resolve,
       setLocale() {},
     };
+
+    // dsh 的快捷键命令 → Codex++ 快捷键：取默认绑定（macOS 优先按平台挑），按下时问命令的 resolve。
+    const shortcutsService = {
+      runtime: "web",
+      platform: codexPlusIsMacPlatform ? "mac" : "windows",
+      stopSequenceMs: 1000,
+      catalog: codexPlusDshSnapshotStore([]),
+      config: codexPlusDshSnapshotStore({}),
+      fixedCatalog: codexPlusDshSnapshotStore([]),
+      register(command) {
+        const defaults = command?.defaults || {};
+        const platform = codexPlusIsMacPlatform ? "mac" : "windows";
+        const binding = Object.entries(defaults).find(([profile]) => profile.endsWith(`:${platform}`))?.[1] ?? Object.values(defaults)[0];
+        const key = codexPlusDshShortcutKey(binding);
+        if (!key) {
+          fail(`快捷键命令 ${command?.id || "?"} 的默认绑定 Codex 里表达不了，没有注册`);
+          return () => {};
+        }
+        try {
+          return ctx.registerShortcut({
+            key,
+            description: typeof command.label === "function" ? command.label() : String(command.id || ""),
+            run: ({ event }) => {
+              const resolution = command.resolve?.({ source: "keyboard", region: "page", modal: null, target: event?.target ?? null });
+              if (resolution?.status === "handled") resolution.run();
+            },
+          });
+        } catch (error) {
+          fail(`快捷键 ${key} 注册失败：${error?.message || error}`);
+          return () => {};
+        }
+      },
+      registerFixed: () => () => {},
+      observeFixedInput: () => () => {},
+      describeBinding: (binding) => ({ keys: codexPlusDshShortcutKey(binding).split("+").filter(Boolean), aria: codexPlusDshShortcutKey(binding) }),
+      edit: async () => ({ ok: false, reason: "Codex++ 里快捷键在拓展里改" }),
+      recording: async () => {},
+      closeWindow: async () => {},
+    };
+    // dsh 的命令面板贡献 → Codex 输入框里的斜杠命令：action 直接跑；popupSelect 先列选项让用户挑。
+    const commandUi = {
+      register(contribution) {
+        const name = String(contribution?.name || "");
+        const ui = contribution?.ui;
+        if (!name || !ui) return () => {};
+        const session = () => ({ sessionId: codexPlusCurrentSessionId() || undefined });
+        try {
+          return ctx.registerCommand({
+            name,
+            description: typeof contribution.description === "function" ? contribution.description() : (typeof contribution.label === "function" ? contribution.label() : ""),
+            async run(_args, { toast }) {
+              if (typeof contribution.available === "function" && !contribution.available(session())) {
+                toast(`/${name} 现在不可用`, { type: "warning" });
+                return;
+              }
+              if (ui.kind === "action") return ui.run(session());
+              if (ui.kind !== "popupSelect") return;
+              const controller = new AbortController();
+              const options = await ui.options(session(), controller.signal);
+              if (!options?.length) {
+                toast(ui.searchLabels?.().empty || "没有可选项", { type: "info" });
+                return;
+              }
+              const picked = await ctx.ask({
+                title: typeof contribution.label === "function" ? contribution.label() : `/${name}`,
+                options: options.slice(0, 12).map((option) => ({ value: option.id, label: option.badge ? `${option.label}（${option.badge}）` : option.label })),
+              });
+              const option = options.find((item) => item.id === picked?.value);
+              if (option) await ui.onSelect(option, session());
+            },
+          });
+        } catch (error) {
+          fail(`命令 /${name} 注册失败：${error?.message || error}`);
+          return () => {};
+        }
+      },
+      decorate: () => () => {},
+      dismiss() {},
+      popupFor: () => undefined,
+    };
+    // dsh 主题（tokens）→ Codex++ 主题：token 名写成 CSS 变量；切换走 codexPlus.themes。
+    const themeService = {
+      getTheme: () => ({ preference: "system", fontSize: 14, active: { id: codexPlusThemesService().current || "default", colorScheme: document.documentElement.classList.contains("dark") ? "dark" : "light", tokens: {} }, themes: [], revision: 0 }),
+      exportInspectTokens: () => [],
+      setTheme: (id) => codexPlusThemesService().apply(String(id)),
+      setFontSize() {},
+      register(definition) {
+        if (!definition?.id) return () => {};
+        const variables = {};
+        for (const [name, value] of Object.entries(definition.tokens || {})) variables[name.startsWith("--") ? name : `--${name}`] = String(value);
+        return ctx.registerTheme({ id: String(definition.id), name: String(definition.id), variables });
+      },
+      overrideTokens: () => () => {},
+    };
+    // dsh 的 / 与 @ 菜单在 Codex 里归 Codex 自己：输入触发源注册不进去，记一条说明但不挡插件加载。
+    const inputTriggers = new Proxy({}, {
+      get: (_target, key) => (key === "then" ? undefined : (...args) => {
+        if (key === "register" || key === "registerSource") fail(`输入触发源 ${args[0]?.trigger || ""}${args[0]?.name || ""} 用的是 Codex 自己的 / 或 @ 菜单，Codex++ 不接管，不会出现`);
+        return () => {};
+      }),
+    });
 
     // ---- 渲染 ----
     class Boundary extends React.Component {
@@ -24590,6 +24704,11 @@
             title: label,
             render: ({ container, close }) => mount(container, Component, props({ close: close || (() => {}) })),
           }, { id });
+        case "sidePanel":
+          return ctx.registerSidePanel({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ close })),
+          }, { id });
         case "floating":
           return ctx.registerFloatingTab({
             title: label,
@@ -24628,7 +24747,13 @@
       subscribe: () => () => {},
       registerFactory: () => () => {},
     };
-    const services = { slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace };
+    const services = {
+      slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace,
+      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers,
+    };
+    // Cordis 的 ready / dispose 只对本插件包：ready 在全部 apply 跑完后发，dispose 随拓展卸载。
+    const readyHandlers = [];
+    let ready = false;
     const clientCtx = new Proxy({
       get: (name) => services[name],
       effect(callback) {
@@ -24644,13 +24769,25 @@
         }
         return () => {};
       },
-      on: (event, handler) => ctx.on(String(event), handler),
+      on(event, handler) {
+        if (event === "ready") {
+          if (ready) queueMicrotask(() => handler());
+          else readyHandlers.push(handler);
+          return () => {
+            const index = readyHandlers.indexOf(handler);
+            if (index >= 0) readyHandlers.splice(index, 1);
+          };
+        }
+        if (event === "dispose") return ctx.effect(() => handler);
+        return ctx.on(String(event), handler);
+      },
       emit: (event, ...args) => ctx.emit(String(event), ...args),
+      // 可选依赖的激活写法：依赖都在才调用；Codex 里没有的服务不调用，也不算错（Cordis 同样只是不激活）。
       inject(names, callback) {
         const list = Array.isArray(names) ? names : Object.keys(names || {});
         const missing = list.filter((item) => !(item in services));
         if (missing.length) {
-          fail(`可选依赖 ${missing.join("、")} 在 Codex 里没有`);
+          console.info(`[dsh ${packageName}] ctx.inject 的 ${missing.join("、")} 在 Codex 里没有，这一段不激活`);
           return () => {};
         }
         return clientCtx.effect(() => callback(clientCtx));
@@ -24697,7 +24834,10 @@
         fail(`${entry?.id || packageName} 没有导出 apply`);
         continue;
       }
-      const inject = Array.isArray(plugin?.inject) ? plugin.inject : Object.keys(plugin?.inject || {});
+      // inject 的对象写法里 { name: { required: false } } 是可选依赖：缺了照样加载。
+      const inject = Array.isArray(plugin?.inject)
+        ? plugin.inject
+        : Object.entries(plugin?.inject || {}).filter(([, spec]) => spec?.required !== false).map(([name]) => name);
       const missing = inject.filter((name) => !(name in services));
       if (missing.length) {
         fail(`${entry?.id || packageName} 依赖 ${missing.join("、")}，Codex 里没有这些前端服务，不加载`);
@@ -24707,6 +24847,15 @@
         await apply(clientCtx, options.config ?? {});
       } catch (error) {
         fail(`${entry?.id || packageName} 的 apply 出错：${error?.stack || error?.message || error}`);
+      }
+    }
+    if (ctx.disposed) return;
+    ready = true;
+    for (const handler of readyHandlers.splice(0)) {
+      try {
+        await handler();
+      } catch (error) {
+        fail(`ready 监听器出错：${error?.message || error}`);
       }
     }
   }
@@ -25362,8 +25511,6 @@ if (window.__CODEX_PLUS_PASTE_FIX__ && window.__CODEX_PLUS_PASTE_FIX__.enabled =
     const MAX_INLINE_LENGTH = 20000;
 
     const handler = (e) => {
-      // 内置拓展「paste-fix」停用或被顶替时放行；handler 只装一次，所以每次粘贴时现查。
-      if (globalThis.__codexPlusBuiltinInactive?.has('paste-fix')) return;
       const cd = e.clipboardData;
       if (!cd) return;
 

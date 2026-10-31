@@ -3898,6 +3898,51 @@ describe("拓展运行时内核", () => {
     assert.throws(() => ctx.provide("bad name", 1), /服务名不合法/);
   });
 
+  it("服务：inject 对象写法的 required:false 是可选依赖，缺了也应用、提供方出现时重新应用", async () => {
+    const k = await kernel();
+    const seen: string[] = [];
+    const consumer = k.create({
+      inject: { metrics: { required: false }, store: true },
+      apply(ctx: any) { seen.push(`apply:${ctx.metrics?.name ?? "无"}`); },
+    });
+    assert.equal(consumer.state, "pending", "必需依赖 store 没到");
+    k.create((ctx: any) => ctx.provide("store", {}));
+    assert.deepEqual(seen, ["apply:无"], "可选依赖缺了照样应用");
+    const provider = k.create((ctx: any) => ctx.provide("metrics", { name: "一号" }));
+    assert.deepEqual(seen, ["apply:无", "apply:一号"], "可选依赖出现时重新应用");
+    provider.dispose();
+    assert.deepEqual(seen.at(-1), "apply:无", "可选依赖消失时退回无依赖的应用");
+    assert.equal(consumer.state, "active");
+  });
+
+  it("ready 在 apply（含异步部分）完成后调用，extension/apply 随后广播；异步 effect 卸载时也撤销", async () => {
+    const k = await kernel();
+    const seen: string[] = [];
+    k.create((ctx: any) => ctx.on("extension/apply", ({ id }: any) => id === "late" && seen.push("broadcast")));
+    let release: () => void = () => {};
+    const ctx = k.create({
+      id: "late",
+      async apply(ctx: any) {
+        ctx.on("ready", () => seen.push("ready"));
+        ctx.on("dispose", () => seen.push("dispose-event"));
+        ctx.effect(async () => () => seen.push("async-dispose"));
+        await new Promise<void>((done) => { release = done; });
+        seen.push("applied");
+      },
+    });
+    assert.deepEqual(seen, [], "apply 没完成前不算应用好");
+    release();
+    await new Promise((done) => setTimeout(done, 0));
+    assert.deepEqual(seen, ["applied", "broadcast", "ready"]);
+    let late = 0;
+    ctx.on("ready", () => { late += 1; });
+    await Promise.resolve();
+    assert.equal(late, 1, "已经 ready 时注册的监听器立即调用");
+    ctx.dispose();
+    const after: string[] = seen;
+    assert.ok(after.includes("async-dispose") && after.includes("dispose-event"), after.join(","));
+  });
+
   it("内置 sessionQuery 服务：方法名对齐会话查询，参数经桥接转给 /extensions/history", async () => {
     const k = await kernel();
     const requests: Array<[string, any]> = [];

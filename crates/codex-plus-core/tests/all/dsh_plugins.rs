@@ -829,6 +829,13 @@ fn dsh_client_plugin_gets_renderer_glue_and_routed_fetch() {
     assert!(renderer.contains("window.__ModuleLoader__.load({"), "插件的前端入口原样夹在里面");
     assert!(renderer.contains("codexPlus.dshClient(ctx, modules"), "交给页面的 dsh 前端运行时");
     assert!(renderer.contains("ctx.backend.call('fetch'"), "/api 请求经后台转发");
+    assert!(renderer.contains("config: {}"), "没填配置时前端插件拿到空对象");
+    // 管理器里填的配置也交给前端插件的 apply。
+    plugins.set_row_config(&record.id, "dsh-client-demo", Some(json!({"greeting": "hey"}))).unwrap();
+    plugins.reinspect(&record.id, &toolchain).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    let renderer = std::fs::read_to_string(dir.join("renderer.js")).unwrap();
+    assert!(renderer.contains(r#"config: {"greeting":"hey"}"#), "{renderer}");
 
     let backend = dir.join("backend/main.mjs");
     let script = format!(
@@ -1052,4 +1059,80 @@ fn dsh_tool_only_plugins_need_no_companion() {
     let companion = plugins.sync_companion(&manager, &record.id).unwrap();
     assert!(companion["hooks"].as_array().unwrap().is_empty());
     assert!(manager.enabled_extension_hooks().unwrap().is_empty());
+}
+
+/// bundle 里的插件之间用 ctx.emit / serial / waterfall / bail 互通；工具守卫、可见性限制与
+/// tools/execute 代为执行经配套拓展包的钩子与网关生效。
+#[tokio::test]
+async fn dsh_bundle_rows_talk_through_events_and_tool_runtime() {
+    use codex_plus_core::extension_gateway::apply_request_with;
+    use codex_plus_core::extension_hooks::dispatch;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("toolkit-bundle")), &toolchain).unwrap();
+    let emitter = row(&record.report, "emitter");
+    let mut mappings: Vec<&str> = emitter["mappings"].as_array().unwrap().iter().map(|item| item.as_str().unwrap()).collect();
+    mappings.sort();
+    assert_eq!(mappings, ["PreToolUse", "gateway:step"], "{emitter}");
+
+    // 工具在 MCP 进程里执行：经 serial / waterfall / bail 拿到另一行插件的答复。
+    let responses = serve(&plugins, &toolchain, &[
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+        call(2, "count_up", json!({})),
+        call(3, "count_up", json!({})),
+    ]);
+    assert_eq!(responses[0]["result"]["tools"][0]["name"], "count_up", "{responses:?}");
+    assert_eq!(responses[1]["result"]["content"][0]["text"], "pong 1! (seen 1)", "{responses:?}");
+    assert_eq!(responses[2]["result"]["content"][0]["text"], "pong 2! (seen 2)", "{responses:?}");
+
+    let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+    assert_eq!(companion["manifestError"], Value::Null, "{companion}");
+    // 守卫：pre-execute 放行后仍可拒绝。
+    let guarded = dispatch(&manager, "PreToolUse", json!({"tool_name": "Bash", "tool_input": {"command": "shutdown now"}})).await.unwrap();
+    assert!(guarded["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().ends_with("toolkit: shutdown is guarded"), "{guarded}");
+    assert_eq!(dispatch(&manager, "PreToolUse", json!({"tool_name": "Bash", "tool_input": {"command": "ls"}})).await.unwrap(), json!({}));
+    // 代为执行：原工具以「拒绝 + 结果」结束，下一次请求里网关把输出换成纯结果。
+    let executed = dispatch(&manager, "PreToolUse", json!({"session_id": "t1", "tool_name": "Bash", "tool_use_id": "call-now", "tool_input": {"command": "toolkit-now"}})).await.unwrap();
+    assert!(executed["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("TOOLKIT-TIME"), "{executed}");
+    let mut body = json!({"model": "gpt-x", "prompt_cache_key": "t1", "tools": [
+        {"type": "function", "name": "exec_command"},
+        {"type": "function", "name": "web_search"},
+    ], "input": [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "time?"}]},
+        {"type": "function_call", "call_id": "call-now", "name": "exec_command", "arguments": "{\"cmd\":\"toolkit-now\"}"},
+        {"type": "function_call_output", "call_id": "call-now", "output": "denied by hook"},
+    ]});
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert_eq!(body["input"][2]["output"], "TOOLKIT-TIME", "{body}");
+    // 可见性限制：请求里的 web_search 被去掉。
+    assert_eq!(body["tools"], json!([{"type": "function", "name": "exec_command"}]), "{body}");
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+/// Rust 侧「宿主提供、不必 npm install」的包与 host.mjs 的替身表一致（schemastery 除外：声明了就装真包）。
+#[test]
+fn dsh_host_provided_packages_match_host_shims() {
+    let host = std::fs::read_to_string(host_source("host.mjs")).unwrap();
+    let start = host.find("const SHIMS = {").unwrap();
+    let end = start + host[start..].find("\n}").unwrap();
+    let mut shims: Vec<&str> = host[start..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('\'')?.split('\'').next())
+        .filter(|name| *name != "@deepseek-ai/schemastery")
+        .collect();
+    shims.sort();
+    let mut provided = dsh_plugins::HOST_PROVIDED_PACKAGES.to_vec();
+    provided.sort();
+    assert_eq!(provided, shims);
 }

@@ -76,6 +76,16 @@ export const GATEWAY_EVENTS = {
  * tools/post-execute 改写的工具结果在下一次请求里换进 input。
  */
 export const STEP_EVENTS = new Set(['agent/pre-step', 'tools/post-execute'])
+/** tools/execute（waterfall）：插件不调 next() 直接给结果就是代为执行。 */
+export const TOOL_EXECUTE_EVENT = 'tools/execute'
+/** 宿主自己会发的注册变化事件：监听它们不提示「不会触发」。 */
+const HOST_EMITTED_EVENTS = new Set(['tools/change', 'skills/change', 'commands/change', 'system-prompt/change', 'schedule/changed', 'credentials/changed', 'domain/changed'])
+/** Cordis 的事件方法可以带 thisArg：`ctx.emit(thisArg, name, ...args)`。返回 [事件名, 其余参数]。 */
+function eventArgs(args) {
+  const list = [...args]
+  if (typeof list[0] !== 'string' && typeof list[1] === 'string') list.shift()
+  return [String(list.shift()), list]
+}
 /** 插件注册的斜杠命令：配套拓展包在 Codex 页面里注册同名命令，经后台转给常驻进程执行。 */
 export const COMMANDS_TARGET = 'commands'
 /** 插件宿主半边经 ctx.connection.fetch 注册的 HTTP 路由：前端半边的 fetch('/api/…') 经配套拓展包的后台转过来。 */
@@ -419,6 +429,10 @@ export class Host {
   constructor(options = {}) {
     /** name → { def, pluginKey } */
     this.tools = new Map()
+    /** ctx.tools.guard 注册的守卫：在 tools/pre-execute 之后、工具执行之前，返回字符串即拒绝。 */
+    this.toolGuards = []
+    /** ctx.tools.restrict 注册的可见性限制（allow / deny 工具名）。 */
+    this.toolRestrictions = []
     /** 系统提示词片段，汇总成 MCP instructions，并由配套拓展包经网关追加到 instructions。 */
     this.sections = []
     /** dsh 的动态上下文（systemPrompt.context）：Codex 里没有用户侧快照，并到片段后面。 */
@@ -708,6 +722,91 @@ export class Host {
     return undefined
   }
 
+  /** 工具名在 ctx.tools.restrict 之下是否可见。 */
+  toolVisible(name) {
+    for (const filter of this.toolRestrictions) {
+      if (Array.isArray(filter.allow) && !filter.allow.includes(name)) return false
+      if (Array.isArray(filter.deny) && filter.deny.includes(name)) return false
+    }
+    return true
+  }
+
+  /** 第一个给出拒绝理由的守卫；守卫抛错按「无意见」处理。 */
+  guardReason(exec) {
+    for (const guard of this.toolGuards) {
+      try {
+        const reason = guard(exec)
+        if (typeof reason === 'string' && reason) return reason
+      } catch (error) {
+        console.error(`[dsh-host] 工具守卫失败：${errorText(error)}`)
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * 执行本包注册的工具（MCP tools/call 与 ctx.tools.execute 共用）：守卫 → tools/execute waterfall → 工具本体，
+   * 返回 dsh 的 ToolExecutionResult。tools/pre-execute 与 tools/post-execute 由 Codex 的钩子负责（工具名去掉 MCP 前缀后与这里一致）。
+   */
+  async executeTool(input = {}) {
+    const name = String(input.name ?? '')
+    const callId = String(input.callId ?? `codexpp-${Date.now()}`)
+    const args = input.arguments ?? {}
+    const controller = new AbortController()
+    const signal = input.signal ?? controller.signal
+    const exec = {
+      callId,
+      rootCallId: String(input.rootCallId ?? callId),
+      name,
+      arguments: args,
+      signal,
+      agent: input.agent,
+      token: Symbol('codexpp.tool'),
+      deferContext() {},
+      concludeTurn() {},
+    }
+    const failure = (message) => Object.freeze({ isError: true, error: { kind: 'error', message }, content: [{ type: 'text', text: message }] })
+    const entry = this.tools.get(name)
+    if (!entry || !this.toolVisible(name)) return failure(`未知工具：${name}`)
+    const denied = this.guardReason(exec)
+    if (denied) return failure(denied)
+    const body = async () => {
+      try {
+        const timeout = entry.def.timeoutMs
+        const value = await withTimeout(Promise.resolve(entry.def.execute(exec.arguments, exec)), timeout, `工具执行超过 ${timeout} ms`)
+        return Object.freeze({ isError: false, value: value ?? null, content: renderValue(entry.def, exec.arguments, value) })
+      } catch (error) {
+        controller.abort()
+        return failure(errorText(error))
+      }
+    }
+    let result
+    try {
+      result = this.hasListeners(TOOL_EXECUTE_EVENT) ? await this.waterfall(TOOL_EXECUTE_EVENT, [exec], body) : await body()
+    } catch (error) {
+      result = failure(errorText(error))
+    }
+    if (!result || typeof result !== 'object' || !Array.isArray(result.content)) result = failure('tools/execute 监听器没有返回工具结果')
+    this.emitEvent('tools/result', [exec, result])
+    return result
+  }
+
+  /** 按 Cordis bail 语义派发：同步依次调用，返回第一个非 undefined 的结果。 */
+  bail(event, args) {
+    for (const { listener } of [...(this.listeners.get(event) ?? [])]) {
+      const result = listener(...args)
+      if (result !== undefined) return result
+    }
+    return undefined
+  }
+
+  /** Cordis waterfall 的原样组合：不额外包 Promise，返回最外层监听器的返回值（插件间的同步 waterfall 也成立）。 */
+  waterfallSync(event, args, fallback) {
+    const list = [...(this.listeners.get(event) ?? [])]
+    const run = (index) => (index >= list.length ? fallback() : list[index].listener(...args, () => run(index + 1)))
+    return run(0)
+  }
+
   /** 收集本行经 ctx.skills 注册的 skill：直接注册的定义，加上各 provider 列出并读取到的定义。 */
   async collectSkills(state) {
     const definitions = [...state.skillDefinitions]
@@ -739,6 +838,8 @@ export class Host {
       if (state.mappings && !state.mappings.includes(target)) state.mappings.push(target)
     }
     const logger = makeLogger(state.key)
+    // 注册变化事件（tools/change 等）：微任务里发，注册方的同步代码先跑完。
+    const changed = (event) => queueMicrotask(() => host.emitEvent(event, []))
     const shared = this.sharedServices()
     host.schedules ??= createSchedule(host.dataDir, (event, args) => host.emitEvent(event, args))
     const pluginServices = {
@@ -783,8 +884,10 @@ export class Host {
           if (options && typeof options.when === 'function') note('工具的 when 条件依赖 dsh 的 agent，Codex 里视为始终可用')
           host.tools.set(definition.name, { def: definition, pluginKey: state.key })
           state.tools.push(definition.name)
+          changed('tools/change')
           return track(() => {
             if (host.tools.get(definition.name)?.def === definition) host.tools.delete(definition.name)
+            changed('tools/change')
           })
         },
         get(name) {
@@ -792,6 +895,39 @@ export class Host {
         },
         has(name) {
           return host.tools.has(name)
+        },
+        /** 本包注册的工具（Codex 的原生工具不在这里）：只给 name / description / parameters。 */
+        schemas() {
+          return [...host.tools.values()]
+            .filter(({ def }) => host.toolVisible(def.name))
+            .map(({ def }) => ({ name: def.name, description: def.description ?? '', parameters: toolParameters(def) }))
+        },
+        /** 执行本包注册的工具：守卫 → tools/execute → 工具本体，之后发 tools/result。 */
+        execute(input) {
+          return host.executeTool(input)
+        },
+        executionMode: () => ({ kind: 'parallel' }),
+        guard(guard) {
+          if (typeof guard !== 'function') return () => {}
+          host.toolGuards.push(guard)
+          mapTo('PreToolUse')
+          return track(() => {
+            host.toolGuards = host.toolGuards.filter((item) => item !== guard)
+          })
+        },
+        restrict(filter) {
+          if (!filter || typeof filter !== 'object') return () => {}
+          host.toolRestrictions.push(filter)
+          mapTo('gateway:step')
+          changed('tools/change')
+          return track(() => {
+            host.toolRestrictions = host.toolRestrictions.filter((item) => item !== filter)
+            changed('tools/change')
+          })
+        },
+        presentAs() {
+          note('tools.presentAs 是 dsh 的工具展示方式，Codex 里没有对应，忽略')
+          return () => {}
         },
       },
       systemPrompt: {
@@ -805,9 +941,11 @@ export class Host {
           }
           host.sections.push(entry)
           mapTo(INSTRUCTIONS_TARGET)
+          changed('system-prompt/change')
           if (section?.complete) note('complete 片段在 Codex 里只追加到 instructions，不会替换 Codex 自己的系统提示词')
           return track(() => {
             host.sections = host.sections.filter((item) => item !== entry)
+            changed('system-prompt/change')
           })
         },
         context(context) {
@@ -820,9 +958,11 @@ export class Host {
           }
           host.contexts.push(entry)
           mapTo(INSTRUCTIONS_TARGET)
+          changed('system-prompt/change')
           note('systemPrompt.context 在 Codex 里并入 instructions，不会作为用户侧上下文快照逐回合刷新')
           return track(() => {
             host.contexts = host.contexts.filter((item) => item !== entry)
+            changed('system-prompt/change')
           })
         },
         variable(name, provider) {
@@ -843,8 +983,10 @@ export class Host {
       skills: {
         register(skill) {
           state.skillDefinitions.push(skill)
+          changed('skills/change')
           return track(() => {
             state.skillDefinitions = state.skillDefinitions.filter((item) => item !== skill)
+            changed('skills/change')
           })
         },
         registerProvider(create) {
@@ -891,7 +1033,12 @@ export class Host {
         register(definition) {
           mapTo(COMMANDS_TARGET)
           state.commands?.push({ name: definition?.name, description: definition?.description ?? '', hint: definition?.input?.hint ?? '' })
-          return track(shared.commands.register(definition))
+          changed('commands/change')
+          const dispose = shared.commands.register(definition)
+          return track(() => {
+            dispose?.()
+            changed('commands/change')
+          })
         },
       },
       sessionProjections: {
@@ -936,9 +1083,15 @@ export class Host {
         if (EVENT_HOOKS[event]) mapTo(EVENT_HOOKS[event])
         else if (GATEWAY_EVENTS[event]) mapTo(`gateway:${GATEWAY_EVENTS[event]}`)
         else if (MIRROR_EVENTS.has(event)) mapTo(MIRROR_TARGET)
-        else if (event === 'session/flush' || event === 'session/disposed') {
+        else if (event === TOOL_EXECUTE_EVENT) {
+          // 代为执行 Codex 的工具：在 PreToolUse 钩子里跑，结果经网关换进下一次请求。
+          mapTo('PreToolUse')
+          mapTo('gateway:step')
+        } else if (event === 'session/flush' || event === 'session/disposed') {
           // 镜像会话在常驻进程退出时落盘，不派发这两个事件。
-        } else if (event !== 'ready' && event !== 'dispose') note(`事件 ${String(event)} 来自 dsh 运行时，Codex 里不会触发`)
+        } else if (!HOST_EMITTED_EVENTS.has(event) && event !== 'ready' && event !== 'dispose') {
+          note(`事件 ${String(event)} Codex 里不会触发，只有同一个包里的其它插件 emit 时才会收到`)
+        }
         const list = host.listeners.get(event) ?? []
         const entry = { listener, state }
         // Cordis 的 prepend：排到最前（waterfall 里最外层，先调 next() 就能看到其余监听器的结果）。
@@ -957,18 +1110,32 @@ export class Host {
         })
         return dispose
       },
-      off() {},
-      emit() {},
-      async parallel() {},
-      async serial() {
-        return undefined
+      // 插件之间的事件：同一个宿主进程（同一个包）里的监听器共享一张表，按 Cordis 的五种语义派发。
+      // 第一个参数不是字符串时按 Cordis 的 thisArg 写法跳过。
+      off(event, listener) {
+        const current = host.listeners.get(event) ?? []
+        host.listeners.set(event, current.filter((item) => item.listener !== listener))
       },
-      bail() {
-        return undefined
+      emit(...args) {
+        const [event, rest] = eventArgs(args)
+        host.emitEvent(event, rest)
+      },
+      async parallel(...args) {
+        const [event, rest] = eventArgs(args)
+        await host.parallel(event, rest)
+      },
+      async serial(...args) {
+        const [event, rest] = eventArgs(args)
+        return host.serial(event, rest)
+      },
+      bail(...args) {
+        const [event, rest] = eventArgs(args)
+        return host.bail(event, rest)
       },
       waterfall(...args) {
-        const next = args[args.length - 1]
-        return typeof next === 'function' ? next() : undefined
+        const [event, rest] = eventArgs(args)
+        const next = typeof rest[rest.length - 1] === 'function' ? rest.pop() : () => undefined
+        return host.waterfallSync(event, rest, next)
       },
       get(name) {
         if (!SUPPORTED_SERVICES.has(name)) return undefined
@@ -1242,7 +1409,12 @@ export class Host {
       report.rows.push(await this.loadRow(row, root, pkg, packageKey))
     }
     report.bridge = this.bridgeSummary(report.rows)
-    if (report.clientEntry) report.bridge.client = { entry: report.clientEntry, packageName: report.name ?? '' }
+    if (report.clientEntry) {
+      // 前端半边拿包自己那一行的配置（含管理器里的覆盖）；bundle 没有同名行时用第一行。
+      const own = rows.find((row) => row.name === report.name) ?? rows[0]
+      const config = own?.config && typeof own.config === 'object' && !Array.isArray(own.config) ? own.config : {}
+      report.bridge.client = { entry: report.clientEntry, packageName: report.name ?? '', config }
+    }
     if (this.skipSkills) return report
     // 代码注册的 skill（可能来自依赖包）优先；同名或同一资源目录的 SKILL.md 文件不再重复列出。
     const runtimeSkills = report.rows.flatMap((row) => (row.skills ?? []).filter((skill) => skill.directory))
@@ -1381,6 +1553,11 @@ function toMcpContent(blocks) {
   return content
 }
 
+/** 工具的参数 JSON Schema（defineTool 已经把 dsh 的参数表转好）。 */
+function toolParameters(def) {
+  return def.parameters && typeof def.parameters === 'object' ? def.parameters : { type: 'object', properties: {} }
+}
+
 function renderValue(def, args, value) {
   try {
     return toMcpContent(def.output.render(args, value))
@@ -1437,10 +1614,10 @@ async function serve(registryPath) {
         return
       case 'tools/list':
         reply(id, {
-          tools: [...host.tools.values()].map(({ def }) => ({
+          tools: [...host.tools.values()].filter(({ def }) => host.toolVisible(def.name)).map(({ def }) => ({
             name: def.name,
             description: def.description ?? '',
-            inputSchema: def.parameters && typeof def.parameters === 'object' ? def.parameters : { type: 'object', properties: {} },
+            inputSchema: toolParameters(def),
           })),
         })
         return
@@ -1451,28 +1628,11 @@ async function serve(registryPath) {
           fail(id, -32602, `未知工具：${name}`)
           return
         }
-        const args = params?.arguments ?? {}
         const controller = new AbortController()
         running.set(id, controller)
-        const callId = `codexpp-${String(id)}`
-        const exec = {
-          callId,
-          rootCallId: callId,
-          name,
-          arguments: args,
-          signal: controller.signal,
-          agent: undefined,
-          token: Symbol('codexpp.tool'),
-          deferContext() {},
-          concludeTurn() {},
-        }
         try {
-          const timeout = entry.def.timeoutMs
-          const value = await withTimeout(Promise.resolve(entry.def.execute(args, exec)), timeout, `工具执行超过 ${timeout} ms`)
-          reply(id, { content: renderValue(entry.def, args, value), isError: false })
-        } catch (error) {
-          controller.abort()
-          reply(id, { content: [{ type: 'text', text: errorText(error) }], isError: true })
+          const result = await host.executeTool({ callId: `codexpp-${String(id)}`, name, arguments: params?.arguments ?? {}, signal: controller.signal })
+          reply(id, { content: toMcpContent(result.content), isError: result.isError === true })
         } finally {
           running.delete(id)
         }

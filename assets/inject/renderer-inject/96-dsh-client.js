@@ -89,7 +89,34 @@
     "settings.general.item": { kind: "settings" },
     "settings.plugins.tab": { kind: "settings" },
     "sidebar.panellist": { kind: "page" },
+    "conversation.approval.detail": { kind: "slot", slot: "approval" },
+    "conversation.input.activity": { kind: "slot", slot: "activity.after" },
+    "conversation.hero.workspace": { kind: "slot", slot: "home.above" },
+    "conversation.hero.agentPreset": { kind: "slot", slot: "home.above" },
+    "conversation.hero.brand.mark": { kind: "slot", slot: "home.above" },
+    "conversation.view": { kind: "slot", slot: "thread.top" },
+    "main.conversation": { kind: "slot", slot: "thread.top" },
+    "conversation.header": { kind: "slot", slot: "header.title" },
+    "conversation.header.leading": { kind: "slot", slot: "header.title" },
+    "conversation.session.header": { kind: "slot", slot: "header.title" },
+    "conversation.session.header.lineage": { kind: "slot", slot: "header.title" },
+    "sidebar.session.row.hover": { kind: "slot", slot: "sessionRow.suffix" },
+    "shell.quota-notice": { kind: "slot", slot: "overlay" },
+    // 右侧栏的会话面板：Codex 里放进顶栏开关打开的侧边面板。
+    "rightbar.session": { kind: "sidePanel" },
+    "tool.view.cordis": { kind: "toolView" },
   };
+
+  /** dsh 快捷键绑定（{ code, modifiers }）→ Codex++ 的 "Mod+Shift+K" 写法；认不出时返回空串。 */
+  function codexPlusDshShortcutKey(binding) {
+    if (!binding || typeof binding.code !== "string" || binding.secondCode) return "";
+    const names = { primary: "Mod", control: "Ctrl", alt: "Alt", shift: "Shift", meta: "Meta" };
+    const modifiers = (Array.isArray(binding.modifiers) ? binding.modifiers : []).map((item) => names[item]).filter(Boolean);
+    const code = binding.code;
+    const key = /^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? code.slice(5) : /^F\d{1,2}$/.test(code) ? code
+      : ({ Comma: ",", Period: ".", Slash: "/", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Minus: "-", Equal: "=", Backquote: "`", Space: "Space", Enter: "Enter", Escape: "Escape" })[code];
+    return key ? [...modifiers, key].join("+") : "";
+  }
 
   /** 一个可订阅的快照（dsh 的 ObservableSnapshot），给 useSyncExternalStore 用。 */
   function codexPlusDshSnapshotStore(initial, start) {
@@ -182,6 +209,107 @@
       resolveText: ctx.locale.resolve,
       setLocale() {},
     };
+
+    // dsh 的快捷键命令 → Codex++ 快捷键：取默认绑定（macOS 优先按平台挑），按下时问命令的 resolve。
+    const shortcutsService = {
+      runtime: "web",
+      platform: codexPlusIsMacPlatform ? "mac" : "windows",
+      stopSequenceMs: 1000,
+      catalog: codexPlusDshSnapshotStore([]),
+      config: codexPlusDshSnapshotStore({}),
+      fixedCatalog: codexPlusDshSnapshotStore([]),
+      register(command) {
+        const defaults = command?.defaults || {};
+        const platform = codexPlusIsMacPlatform ? "mac" : "windows";
+        const binding = Object.entries(defaults).find(([profile]) => profile.endsWith(`:${platform}`))?.[1] ?? Object.values(defaults)[0];
+        const key = codexPlusDshShortcutKey(binding);
+        if (!key) {
+          fail(`快捷键命令 ${command?.id || "?"} 的默认绑定 Codex 里表达不了，没有注册`);
+          return () => {};
+        }
+        try {
+          return ctx.registerShortcut({
+            key,
+            description: typeof command.label === "function" ? command.label() : String(command.id || ""),
+            run: ({ event }) => {
+              const resolution = command.resolve?.({ source: "keyboard", region: "page", modal: null, target: event?.target ?? null });
+              if (resolution?.status === "handled") resolution.run();
+            },
+          });
+        } catch (error) {
+          fail(`快捷键 ${key} 注册失败：${error?.message || error}`);
+          return () => {};
+        }
+      },
+      registerFixed: () => () => {},
+      observeFixedInput: () => () => {},
+      describeBinding: (binding) => ({ keys: codexPlusDshShortcutKey(binding).split("+").filter(Boolean), aria: codexPlusDshShortcutKey(binding) }),
+      edit: async () => ({ ok: false, reason: "Codex++ 里快捷键在拓展里改" }),
+      recording: async () => {},
+      closeWindow: async () => {},
+    };
+    // dsh 的命令面板贡献 → Codex 输入框里的斜杠命令：action 直接跑；popupSelect 先列选项让用户挑。
+    const commandUi = {
+      register(contribution) {
+        const name = String(contribution?.name || "");
+        const ui = contribution?.ui;
+        if (!name || !ui) return () => {};
+        const session = () => ({ sessionId: codexPlusCurrentSessionId() || undefined });
+        try {
+          return ctx.registerCommand({
+            name,
+            description: typeof contribution.description === "function" ? contribution.description() : (typeof contribution.label === "function" ? contribution.label() : ""),
+            async run(_args, { toast }) {
+              if (typeof contribution.available === "function" && !contribution.available(session())) {
+                toast(`/${name} 现在不可用`, { type: "warning" });
+                return;
+              }
+              if (ui.kind === "action") return ui.run(session());
+              if (ui.kind !== "popupSelect") return;
+              const controller = new AbortController();
+              const options = await ui.options(session(), controller.signal);
+              if (!options?.length) {
+                toast(ui.searchLabels?.().empty || "没有可选项", { type: "info" });
+                return;
+              }
+              const picked = await ctx.ask({
+                title: typeof contribution.label === "function" ? contribution.label() : `/${name}`,
+                options: options.slice(0, 12).map((option) => ({ value: option.id, label: option.badge ? `${option.label}（${option.badge}）` : option.label })),
+              });
+              const option = options.find((item) => item.id === picked?.value);
+              if (option) await ui.onSelect(option, session());
+            },
+          });
+        } catch (error) {
+          fail(`命令 /${name} 注册失败：${error?.message || error}`);
+          return () => {};
+        }
+      },
+      decorate: () => () => {},
+      dismiss() {},
+      popupFor: () => undefined,
+    };
+    // dsh 主题（tokens）→ Codex++ 主题：token 名写成 CSS 变量；切换走 codexPlus.themes。
+    const themeService = {
+      getTheme: () => ({ preference: "system", fontSize: 14, active: { id: codexPlusThemesService().current || "default", colorScheme: document.documentElement.classList.contains("dark") ? "dark" : "light", tokens: {} }, themes: [], revision: 0 }),
+      exportInspectTokens: () => [],
+      setTheme: (id) => codexPlusThemesService().apply(String(id)),
+      setFontSize() {},
+      register(definition) {
+        if (!definition?.id) return () => {};
+        const variables = {};
+        for (const [name, value] of Object.entries(definition.tokens || {})) variables[name.startsWith("--") ? name : `--${name}`] = String(value);
+        return ctx.registerTheme({ id: String(definition.id), name: String(definition.id), variables });
+      },
+      overrideTokens: () => () => {},
+    };
+    // dsh 的 / 与 @ 菜单在 Codex 里归 Codex 自己：输入触发源注册不进去，记一条说明但不挡插件加载。
+    const inputTriggers = new Proxy({}, {
+      get: (_target, key) => (key === "then" ? undefined : (...args) => {
+        if (key === "register" || key === "registerSource") fail(`输入触发源 ${args[0]?.trigger || ""}${args[0]?.name || ""} 用的是 Codex 自己的 / 或 @ 菜单，Codex++ 不接管，不会出现`);
+        return () => {};
+      }),
+    });
 
     // ---- 渲染 ----
     class Boundary extends React.Component {
@@ -300,6 +428,11 @@
             title: label,
             render: ({ container, close }) => mount(container, Component, props({ close: close || (() => {}) })),
           }, { id });
+        case "sidePanel":
+          return ctx.registerSidePanel({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ close })),
+          }, { id });
         case "floating":
           return ctx.registerFloatingTab({
             title: label,
@@ -338,7 +471,13 @@
       subscribe: () => () => {},
       registerFactory: () => () => {},
     };
-    const services = { slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace };
+    const services = {
+      slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace,
+      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers,
+    };
+    // Cordis 的 ready / dispose 只对本插件包：ready 在全部 apply 跑完后发，dispose 随拓展卸载。
+    const readyHandlers = [];
+    let ready = false;
     const clientCtx = new Proxy({
       get: (name) => services[name],
       effect(callback) {
@@ -354,13 +493,25 @@
         }
         return () => {};
       },
-      on: (event, handler) => ctx.on(String(event), handler),
+      on(event, handler) {
+        if (event === "ready") {
+          if (ready) queueMicrotask(() => handler());
+          else readyHandlers.push(handler);
+          return () => {
+            const index = readyHandlers.indexOf(handler);
+            if (index >= 0) readyHandlers.splice(index, 1);
+          };
+        }
+        if (event === "dispose") return ctx.effect(() => handler);
+        return ctx.on(String(event), handler);
+      },
       emit: (event, ...args) => ctx.emit(String(event), ...args),
+      // 可选依赖的激活写法：依赖都在才调用；Codex 里没有的服务不调用，也不算错（Cordis 同样只是不激活）。
       inject(names, callback) {
         const list = Array.isArray(names) ? names : Object.keys(names || {});
         const missing = list.filter((item) => !(item in services));
         if (missing.length) {
-          fail(`可选依赖 ${missing.join("、")} 在 Codex 里没有`);
+          console.info(`[dsh ${packageName}] ctx.inject 的 ${missing.join("、")} 在 Codex 里没有，这一段不激活`);
           return () => {};
         }
         return clientCtx.effect(() => callback(clientCtx));
@@ -407,7 +558,10 @@
         fail(`${entry?.id || packageName} 没有导出 apply`);
         continue;
       }
-      const inject = Array.isArray(plugin?.inject) ? plugin.inject : Object.keys(plugin?.inject || {});
+      // inject 的对象写法里 { name: { required: false } } 是可选依赖：缺了照样加载。
+      const inject = Array.isArray(plugin?.inject)
+        ? plugin.inject
+        : Object.entries(plugin?.inject || {}).filter(([, spec]) => spec?.required !== false).map(([name]) => name);
       const missing = inject.filter((name) => !(name in services));
       if (missing.length) {
         fail(`${entry?.id || packageName} 依赖 ${missing.join("、")}，Codex 里没有这些前端服务，不加载`);
@@ -417,6 +571,15 @@
         await apply(clientCtx, options.config ?? {});
       } catch (error) {
         fail(`${entry?.id || packageName} 的 apply 出错：${error?.stack || error?.message || error}`);
+      }
+    }
+    if (ctx.disposed) return;
+    ready = true;
+    for (const handler of readyHandlers.splice(0)) {
+      try {
+        await handler();
+      } catch (error) {
+        fail(`ready 监听器出错：${error?.message || error}`);
       }
     }
   }
