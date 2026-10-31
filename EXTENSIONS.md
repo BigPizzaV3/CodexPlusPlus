@@ -414,6 +414,30 @@ export default (body) => ({ ...body, instructions: `${body.instructions ?? ""}\n
 - 只有存在启用中的网关中间件时才会为每个请求起一个 Node 进程；任何中间件出错或超时都会保留原请求并记诊断日志。
 - 中间件能看到完整的请求内容（含对话），以你的用户权限运行。只启用你信任的拓展。
 
+#### 段、顺序与关掉内置环节
+
+Codex++ 自己在发请求前也会做几件事（本地压缩、第三方推理折叠、exec 工具适配、按供应商路由与协议转换）。
+拓展的中间件可以排在这些内置环节之前或之后，也可以关掉其中可替换的环节自己实现：
+
+```json
+{
+  "gateway": {
+    "request": [
+      { "script": "gateway/early.mjs", "order": -10 },
+      { "script": "gateway/upstream.mjs", "stage": "upstream" }
+    ],
+    "replaces": ["builtin:reasoning-collapse"]
+  }
+}
+```
+
+- `stage`：`request`（默认）在内置环节之前改原始 Responses 请求；`upstream` 在内置环节之后改真正发给上游的请求体，
+  第二个参数多给 `stage: "upstream"`、`wireApi`（`responses` / `chat` / `anthropic`…）、`relay: { id, name }`、`model`、
+  `attempt`（换候选重发时每次都跑，请求体按候选不同）。`upstream` 段同样可以 `{ reject }`、加请求头。
+- `order`：同一段里越小越先，相同时按拓展 key 顺序。
+- `replaces`：关掉的内置环节，可选 `builtin:local-compaction`（本地压缩）、`builtin:reasoning-collapse`（第三方推理折叠）、
+  `builtin:exec-adapt`（exec 工具适配）。拓展启用时生效，停用后恢复。路由、协议转换、鉴权不能关。
+
 ### 网关响应流中间件
 
 拓展包可以改写模型回复流回 Codex 的事件，写法是「包住整条流」的中间件：
@@ -590,7 +614,8 @@ codexPlus.extension({ inject: ["sessions", "sessionQuery"], async apply(ctx) {
 - `protocol`：`responses`（默认）/ `chat` / `anthropic`。`apiKey` 写字面值，或 `{ "config": "键" }` 引用拓展的 string 配置项
   （用户在拓展设置里填，Key 不写进代码）。`models` 至少一个；每个拓展最多 8 个供应商。
 - `"discoverModels": true`：从上游 `/models` 拉模型列表（10 分钟刷新一次），与 `models` 合并；这时 `models` 可以为空。
-- 只在构建 Agent 模型资料与网关路由时并入，不写进 `gateway.json`；与用户已有的同 id 供应商以用户的为准。拓展停用即消失。
+- 只在构建 Agent 模型资料与网关路由时并入，不写进 `gateway.json`；与用户已有的同 id 供应商以用户的为准，
+  写了 `"override": true` 时顶替用户的那个（位置不变）。拓展停用即消失、被顶替的恢复。
 - 要用代码实现一个供应商（用代码写供应商适配器）：在常驻后台里起一个本机 HTTP 服务实现 Chat / Responses 接口，
   `baseUrl` 指向 `http://127.0.0.1:<端口>`。
 

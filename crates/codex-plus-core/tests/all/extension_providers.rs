@@ -70,3 +70,28 @@ fn providers_are_validated_resolved_and_merged_without_overriding() {
     let again = GatewaySettings::default().with_extension_providers_from(&manager);
     assert!(!again.providers.iter().any(|provider| provider.relay.id == "myrelay"));
 }
+
+/// 拓展写了 `override: true` 的供应商顶替已有同 id 的（位置不变），停用拓展后恢复成用户自己的。
+#[test]
+fn providers_with_override_replace_the_existing_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "swap", json!({
+        "providers": [{ "id": "local", "name": "拓展的", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["tiny"], "override": true }]
+    }));
+    let mut settings: GatewaySettings = serde_json::from_value(json!({})).unwrap_or_default();
+    for id in ["first", "local", "last"] {
+        let mut provider = serde_json::from_value::<codex_plus_core::gateway::store::GatewayProvider>(json!({
+            "relay": serde_json::to_value(codex_plus_core::settings::RelayProfile { id: id.into(), name: id.into(), ..Default::default() }).unwrap()
+        })).unwrap();
+        provider.source = "user".into();
+        settings.providers.push(provider);
+    }
+    let merged = settings.clone().with_extension_providers_from(&manager);
+    let ids = merged.providers.iter().map(|provider| (provider.relay.id.as_str(), provider.source.as_str())).collect::<Vec<_>>();
+    assert_eq!(ids, [("first", "user"), ("local", "extension:swap"), ("last", "user")]);
+    assert_eq!(merged.providers[1].relay.base_url, "http://127.0.0.1:9000/v1");
+    manager.set_script_enabled("user:swap", false).unwrap();
+    let restored = settings.with_extension_providers_from(&manager);
+    assert_eq!(restored.providers[1].source, "user");
+}

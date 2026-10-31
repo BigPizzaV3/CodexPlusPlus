@@ -437,6 +437,22 @@ impl UserScriptManager {
         self.enabled_gateway_list(|package| &package.gateway_request)
     }
 
+    /// 启用中的拓展关掉的内置网关环节：(拓展 id, 环节名)。
+    pub fn enabled_gateway_replaces(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none())
+            .flat_map(|package| package.gateway_replaces.iter().map(|name| (package.id.clone(), name.clone())).collect::<Vec<_>>())
+            .collect())
+    }
+
     /// 启用中、清单无误的拓展声明的模型供应商：(拓展 id, 供应商)，Key 已按配置解析好。
     pub fn enabled_extension_providers(&self) -> anyhow::Result<Vec<(String, ExtensionProvider)>> {
         let config = self.load_config();
@@ -1146,6 +1162,8 @@ struct ExtensionPackage {
     renderer: Vec<PathBuf>,
     hooks: Vec<ExtensionHook>,
     gateway_request: Vec<ExtensionGatewayMiddleware>,
+    /// 关掉的内置网关环节（codexpp.json 的 `gateway.replaces`）。
+    gateway_replaces: Vec<String>,
     /// 网关响应流中间件（codexpp.json 的 `gateway.response`）。
     gateway_response: Vec<ExtensionGatewayMiddleware>,
     /// 工具结果改写（codexpp.json 的 `toolPipeline.postExecute`），由网关请求侧执行。
@@ -1320,7 +1338,17 @@ pub struct ExtensionGatewayMiddleware {
     pub timeout_secs: u64,
     /// 所属拓展的生效配置，作为 context.config 交给脚本。
     pub config: Value,
+    /// 请求中间件跑在哪一段：`request`（默认，Codex++ 自己的转换之前，改原始 Responses 请求）或
+    /// `upstream`（Codex++ 的压缩、路由、协议转换之后，改真正发给上游的请求体）。
+    #[serde(default)]
+    pub stage: String,
+    /// 同一段里的先后：越小越先，相同时按拓展顺序。
+    #[serde(default)]
+    pub order: i64,
 }
+
+/// 拓展能用 `gateway.replaces` 关掉的 Codex++ 内置网关环节（关掉后拓展自己在 upstream 段里实现）。
+pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &["builtin:local-compaction", "builtin:reasoning-collapse", "builtin:exec-adapt"];
 
 /// 网关请求中间件的超时上限（秒）：它挡在每一次模型请求前面，不能太久。
 pub const EXTENSION_GATEWAY_MAX_TIMEOUT_SECS: u64 = 10;
@@ -1387,6 +1415,9 @@ pub struct ExtensionProvider {
     pub models: Vec<String>,
     /// `discoverModels: true`：定期从上游 `/models` 拉模型列表，与 `models` 合并。
     pub discover_models: bool,
+    /// `override: true`：与已有供应商同 id 时顶替它（拓展停用后恢复）；默认以已有的为准。
+    #[serde(rename = "override")]
+    pub override_existing: bool,
 }
 
 /// 拓展的一条定时任务：每隔 `every_minutes` 分钟（或每天 `at` 时刻）调用后台方法 `method`。
@@ -1490,7 +1521,8 @@ fn parse_extension_providers(value: Option<&Value>, schema: &[ExtensionConfigFie
             if models.is_empty() && !discover_models {
                 anyhow::bail!("providers.{id}.models 至少要有一个模型（或设 discoverModels: true 从上游拉）");
             }
-            Ok(ExtensionProvider { name: if text("name").is_empty() { id.clone() } else { text("name") }, id, protocol, base_url, api_key, api_key_config, models, discover_models })
+            let override_existing = item.get("override").and_then(Value::as_bool).unwrap_or(false);
+            Ok(ExtensionProvider { name: if text("name").is_empty() { id.clone() } else { text("name") }, id, protocol, base_url, api_key, api_key_config, models, discover_models, override_existing })
         })
         .collect()
 }
@@ -1525,6 +1557,7 @@ impl ExtensionPackage {
             "routes": self.routes,
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
             "gatewayRequest": self.gateway_request.len(),
+            "gatewayReplaces": self.gateway_replaces,
             "gatewayResponse": self.gateway_response.len(),
             "gatewayError": self.gateway_error.len(),
             "toolPipeline": {
@@ -1774,6 +1807,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         renderer: Vec::new(),
         hooks: Vec::new(),
         gateway_request: Vec::new(),
+        gateway_replaces: Vec::new(),
         gateway_response: Vec::new(),
         tool_post_execute: Vec::new(),
         gateway_error: Vec::new(),
@@ -1877,6 +1911,7 @@ fn parse_extension_manifest(
     package.hooks.extend(tool_hooks);
     package.tool_post_execute = tool_post_execute;
     (package.gateway_request, package.gateway_response, package.gateway_error) = parse_gateway_middlewares(&root, raw.get("gateway"))?;
+    package.gateway_replaces = parse_gateway_replaces(raw.get("gateway"))?;
     package.tools = parse_extension_tools(&root, &package.id, raw.get("tools"))?;
     package.config_schema = parse_extension_config_schema(raw.get("config"))?;
     package.backend = match raw.get("backend") {
@@ -2176,8 +2211,8 @@ fn parse_gateway_middlewares(
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     };
     let map = value.as_object().context("gateway 必须是对象：{ \"request\": [...], \"response\": [...], \"error\": [...] }")?;
-    if let Some(key) = map.keys().find(|key| !["request", "response", "error"].contains(&key.as_str())) {
-        anyhow::bail!("gateway 只支持 request（请求中间件）、response（响应流中间件）与 error（失败重试），不认识 {key}");
+    if let Some(key) = map.keys().find(|key| !["request", "response", "error", "replaces"].contains(&key.as_str())) {
+        anyhow::bail!("gateway 只支持 request（请求中间件）、response（响应流中间件）、error（失败重试）与 replaces（关掉内置环节），不认识 {key}");
     }
     let parse = |kind: &str| -> anyhow::Result<Vec<ExtensionGatewayMiddleware>> {
         let Some(list) = map.get(kind) else {
@@ -2201,15 +2236,44 @@ fn parse_gateway_middlewares(
                             format!("gateway.{kind} 的 timeout 必须是 1~{EXTENSION_GATEWAY_MAX_TIMEOUT_SECS} 秒")
                         })?,
                 };
+                let stage = match item.get("stage").and_then(Value::as_str) {
+                    None | Some("request") => "request",
+                    Some("upstream") if kind == "request" => "upstream",
+                    Some(other) => anyhow::bail!("gateway.{kind} 的 stage 只能是 request 或 upstream（只有 request 中间件能用 upstream），不认识 {other}"),
+                };
+                let order = match item.get("order") {
+                    None => 0,
+                    Some(value) => value.as_i64().with_context(|| format!("gateway.{kind} 的 order 必须是整数"))?,
+                };
                 Ok(ExtensionGatewayMiddleware {
                     script: resolve_package_entry(root, script)?,
                     timeout_secs,
                     config: Value::Null,
+                    stage: stage.to_string(),
+                    order,
                 })
             })
             .collect()
     };
     Ok((parse("request")?, parse("response")?, parse("error")?))
+}
+
+/// 解析 `gateway.replaces`：要关掉的内置网关环节，只能是 [`BUILTIN_GATEWAY_SEGMENTS`] 里的名字。
+fn parse_gateway_replaces(value: Option<&Value>) -> anyhow::Result<Vec<String>> {
+    let Some(list) = value.and_then(|gateway| gateway.get("replaces")) else {
+        return Ok(Vec::new());
+    };
+    let items = list.as_array().context("gateway.replaces 必须是数组")?;
+    items
+        .iter()
+        .map(|item| {
+            let name = item.as_str().context("gateway.replaces 的每一项必须是字符串")?;
+            if !BUILTIN_GATEWAY_SEGMENTS.contains(&name) {
+                anyhow::bail!("gateway.replaces 只能是 {}，不认识 {name}", BUILTIN_GATEWAY_SEGMENTS.join("、"));
+            }
+            Ok(name.to_string())
+        })
+        .collect()
 }
 
 /// 解析 `config`：`{ "minutes": { "type": "number", "title": "时长", "default": 25 } }`。

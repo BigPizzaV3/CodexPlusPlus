@@ -341,7 +341,7 @@ fn tool_definitions() -> Value {
                     "backend": {"type": "object", "description": "常驻后台声明，例如 {\"script\": \"backend/main.mjs\"}；脚本默认导出 async (ctx) => ({ 方法 })，页面用 ctx.backend.call / on 调用。写法见指南「常驻后台」"},
                     "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
                     "tools": {"type": "array", "description": "给模型用的工具声明，例如 [{\"name\": \"lookup\", \"description\": \"…\", \"inputSchema\": {\"type\": \"object\", \"properties\": {…}}, \"script\": \"tools/lookup.mjs\", \"timeout\": 30}]；写法见指南「给模型加工具」", "items": {"type": "object"}},
-                    "gateway": {"type": "object", "description": "网关中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\"}], \"response\": [{\"script\": \"gateway/response.mjs\"}]}；request 改写发给模型的请求，response 改写模型回复的事件流。写法见指南「网关请求中间件」「网关响应流中间件」"},
+                    "gateway": {"type": "object", "description": "网关中间件声明，例如 {\"request\": [{\"script\": \"gateway/request.mjs\"}], \"response\": [{\"script\": \"gateway/response.mjs\"}]}；request 改写发给模型的请求（stage 为 upstream 时改 Codex++ 转换后真正发给上游的请求体，order 决定先后），response 改写模型回复的事件流，replaces 关掉内置环节（builtin:local-compaction / builtin:reasoning-collapse / builtin:exec-adapt）。写法见指南「网关请求中间件」「网关响应流中间件」"},
                     "files": {
                         "type": "array",
                         "description": "要写入的文件，不要包含 codexpp.json。文本给 content；图片、音频、字体等资源给 sourcePath（本机文件的绝对路径，按字节复制，放在 assets/ 下，页面里用 ctx.asset(\"assets/xx.png\") 取地址）。不要把 base64 写进代码",

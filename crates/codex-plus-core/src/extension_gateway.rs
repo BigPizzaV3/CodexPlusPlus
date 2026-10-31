@@ -35,7 +35,7 @@ for (const item of input.middlewares) {
     const fn = typeof module.default === "function" ? module.default : module.request;
     if (typeof fn !== "function") { errors.push({ id: item.id, error: `${item.script} 没有默认导出函数` }); continue; }
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${item.timeoutMs / 1000} 秒）`)), item.timeoutMs); });
-    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id, config: item.config ?? {}, step: input.step, headers })), timeout]);
+    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { ...(input.context ?? {}), path: input.path, extension: item.id, config: item.config ?? {}, step: input.step, headers })), timeout]);
     // { reject: "原因" }：这一步不发给模型，Codex 收到带原因的错误。后面的中间件不再跑。
     if (next && typeof next === "object" && !Array.isArray(next) && typeof next.reject === "string" && Object.keys(next).length === 1) {
       rejected = { id: item.id, reason: next.reject };
@@ -69,6 +69,30 @@ fn cached_middlewares() -> MiddlewareList {
         .unwrap_or_default();
     *cache = Some((std::time::Instant::now(), list.clone()));
     list
+}
+
+/// 某一段（`request` / `upstream`）的中间件，按 `order` 稳定排序（相同时保持拓展顺序）。
+fn stage_middlewares(list: &[(String, ExtensionGatewayMiddleware)], stage: &str) -> MiddlewareList {
+    let mut picked: MiddlewareList = list
+        .iter()
+        .filter(|(_, item)| (if item.stage.is_empty() { "request" } else { item.stage.as_str() }) == stage)
+        .cloned()
+        .collect();
+    picked.sort_by_key(|(_, item)| item.order);
+    picked
+}
+
+static REPLACES_CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<(String, String)>)>> = std::sync::Mutex::new(None);
+
+/// 内置网关环节（[`crate::user_scripts::BUILTIN_GATEWAY_SEGMENTS`]）是否被启用中的拓展用 `gateway.replaces` 关掉。
+pub fn builtin_replaced(segment: &str) -> bool {
+    let mut cache = REPLACES_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let fresh = cache.as_ref().is_some_and(|(at, _)| at.elapsed() < MIDDLEWARE_CACHE_TTL);
+    if !fresh {
+        let list = crate::user_scripts::default_user_script_manager().enabled_gateway_replaces().unwrap_or_default();
+        *cache = Some((std::time::Instant::now(), list));
+    }
+    cache.as_ref().is_some_and(|(_, list)| list.iter().any(|(_, name)| name == segment))
 }
 
 /// Codex++ 自己的启动器把请求转给本机网关时带上的请求头：说明拓展中间件已在外层跑过。
@@ -135,21 +159,42 @@ pub async fn apply_request(request: &mut Value, request_path: &str) -> Result<()
     }
     let manager = crate::user_scripts::default_user_script_manager();
     apply_tool_pipeline(&manager, &cached_post_execute(), request).await;
-    let middlewares = cached_middlewares();
+    let middlewares = stage_middlewares(&cached_middlewares(), "request");
     if middlewares.is_empty() {
         return Ok(());
     }
-    apply_middlewares(&middlewares, request, request_path).await
+    apply_middlewares(&middlewares, request, request_path, Value::Null).await
 }
 
 pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value, request_path: &str) -> Result<(), String> {
     let post_execute = manager.enabled_tool_post_execute().unwrap_or_default();
     apply_tool_pipeline(manager, &post_execute, request).await;
-    let middlewares = match manager.enabled_gateway_middlewares() {
-        Ok(middlewares) if !middlewares.is_empty() => middlewares,
-        _ => return Ok(()),
-    };
-    apply_middlewares(&middlewares, request, request_path).await
+    let middlewares = stage_middlewares(&manager.enabled_gateway_middlewares().unwrap_or_default(), "request");
+    if middlewares.is_empty() {
+        return Ok(());
+    }
+    apply_middlewares(&middlewares, request, request_path, Value::Null).await
+}
+
+/// upstream 段：Codex++ 自己的压缩、路由、协议转换之后，改真正发给上游的请求体（`context` 带上
+/// `stage: "upstream"`、`wireApi`、`relay`、`model`）。没有声明这一段的拓展时零开销；拒绝时返回 `Err(原因)`。
+pub async fn apply_upstream_request(body: &mut Value, request_path: &str, context: Value) -> Result<(), String> {
+    if already_applied() {
+        return Ok(());
+    }
+    let middlewares = stage_middlewares(&cached_middlewares(), "upstream");
+    if middlewares.is_empty() {
+        return Ok(());
+    }
+    apply_middlewares(&middlewares, body, request_path, context).await
+}
+
+pub async fn apply_upstream_request_with(manager: &UserScriptManager, body: &mut Value, request_path: &str, context: Value) -> Result<(), String> {
+    let middlewares = stage_middlewares(&manager.enabled_gateway_middlewares().unwrap_or_default(), "upstream");
+    if middlewares.is_empty() {
+        return Ok(());
+    }
+    apply_middlewares(&middlewares, body, request_path, context).await
 }
 
 /// 这一步在本轮里是第几步：最后一条用户消息之后已有几个工具结果，再加 1。
@@ -518,8 +563,9 @@ pub async fn decide_retry_for(
     }
 }
 
-async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str) -> Result<(), String> {
-    match run_chain(middlewares, request, request_path).await {
+async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str, context: Value) -> Result<(), String> {
+    let upstream_stage = !context.is_null();
+    match run_chain(middlewares, request, request_path, context).await {
         Ok(result) => {
             if let Some(rejected) = result.get("rejected").filter(|value| value.is_object()) {
                 let reason = rejected.get("reason").and_then(Value::as_str).unwrap_or("拓展拒绝了这一步").to_string();
@@ -538,7 +584,10 @@ async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)],
             if result["changed"] == true && result["body"].is_object() {
                 *request = result["body"].clone();
             }
-            set_extension_headers(allowed_headers(&result["headers"]));
+            // upstream 段加的请求头接在 request 段的后面。
+            let mut headers = if upstream_stage { extension_headers() } else { Vec::new() };
+            headers.extend(allowed_headers(&result["headers"]));
+            set_extension_headers(headers);
             Ok(())
         }
         Err(error) => {
@@ -555,11 +604,13 @@ async fn run_chain(
     middlewares: &[(String, ExtensionGatewayMiddleware)],
     request: &Value,
     request_path: &str,
+    context: Value,
 ) -> anyhow::Result<Value> {
     let node = crate::extension_node::require_node()?;
     let input = json!({
         "path": request_path,
         "body": request,
+        "context": context,
         "step": request_step(request),
         "middlewares": middlewares.iter().map(|(id, item)| json!({
             "id": id,

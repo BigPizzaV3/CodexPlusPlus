@@ -274,3 +274,46 @@ export default (body) => ({ ...body, instructions: body.instructions + "|b" });"
     assert_eq!(rejected, "第 3 步超过上限");
     assert!(third.get("instructions").is_none(), "拒绝时不改请求，后面的中间件也不跑");
 }
+
+/// gateway.request 的 stage / order 与 gateway.replaces：清单校验，request 段按 order 排序，
+/// upstream 段单独跑并拿到上游的上下文，replaces 列出被关掉的内置环节。
+#[tokio::test]
+async fn request_stages_order_and_builtin_replaces() {
+    use codex_plus_core::extension_gateway::apply_upstream_request_with;
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "bad-stage", json!({"response": [{"script": "gateway/a.mjs", "stage": "upstream"}]}), &[("gateway/a.mjs", "export default () => null")]);
+    write_package(&temp, "bad-replace", json!({"replaces": ["builtin:routing"]}), &[]);
+    write_package(&temp, "a-late", json!({"request": [{"script": "gateway/a.mjs", "order": 10}]}),
+        &[("gateway/a.mjs", r#"export default (body) => ({ ...body, instructions: `${body.instructions}|late` });"#)]);
+    write_package(&temp, "b-early", json!({
+        "request": [
+            {"script": "gateway/b.mjs", "order": -5},
+            {"script": "gateway/up.mjs", "stage": "upstream"}
+        ],
+        "replaces": ["builtin:local-compaction"]
+    }), &[
+        ("gateway/b.mjs", r#"export default (body) => ({ ...body, instructions: `${body.instructions}|early` });"#),
+        ("gateway/up.mjs", r#"export default (body, context) => ({ ...body, seen: `${context.stage}:${context.wireApi}:${context.relay.id}` });"#),
+    ]);
+    let inventory = manager.inventory().unwrap();
+    let find = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).unwrap().clone();
+    assert!(find("user:bad-stage")["error"].as_str().unwrap().contains("stage"), "{}", find("user:bad-stage"));
+    assert!(find("user:bad-replace")["error"].as_str().unwrap().contains("builtin:local-compaction"));
+    assert_eq!(find("user:b-early")["package"]["gatewayReplaces"], json!(["builtin:local-compaction"]));
+    assert_eq!(manager.enabled_gateway_replaces().unwrap(), vec![("b-early".to_string(), "builtin:local-compaction".to_string())]);
+
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        eprintln!("跳过：本机没有 Node");
+        return;
+    }
+    // request 段：order 小的先跑，upstream 段的中间件不在这里。
+    let mut request = json!({"model": "gpt", "instructions": "原始", "input": []});
+    apply_request_with(&manager, &mut request, "/v1/responses").await.unwrap();
+    assert_eq!(request["instructions"], "原始|early|late");
+    assert!(request.get("seen").is_none());
+    // upstream 段：拿到 Codex++ 转换后的请求体与上游信息。
+    let mut upstream = json!({"model": "deepseek-chat", "messages": []});
+    apply_upstream_request_with(&manager, &mut upstream, "/v1/responses", json!({"stage": "upstream", "wireApi": "chat", "relay": {"id": "r1"}})).await.unwrap();
+    assert_eq!(upstream["seen"], "upstream:chat:r1");
+}

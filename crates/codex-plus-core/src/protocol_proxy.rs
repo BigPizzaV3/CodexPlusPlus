@@ -3528,22 +3528,7 @@ async fn open_responses_proxy_request_with_extensions(
     let mut request_json: Value = serde_json::from_str(body)?;
     if let Err(reason) = crate::extension_gateway::apply_request(&mut request_json, request_path).await {
         // 拓展拒绝了这一步：不发给模型、也不进失败重试，直接回一个 Codex 能显示原因的错误。
-        return Ok(UpstreamProxyResponse {
-            status_code: 400,
-            content_type: "application/json".to_string(),
-            is_stream: false,
-            wire_api: UpstreamWireApi::Responses,
-            compaction: false,
-            native_compaction_passthrough: false,
-            buffered_body: Some(serde_json::to_vec(&json!({
-                "error": { "type": "invalid_request_error", "code": "extension_rejected", "message": reason }
-            }))?),
-            stream_prefix: Vec::new(),
-            request_trace: None,
-            exec_adapted: false,
-            exec_outcome: None,
-            response: None,
-        });
+        return extension_rejected_response(&reason);
     }
     let mut body = request_json.to_string();
     let mut attempt = 0;
@@ -3577,6 +3562,26 @@ async fn open_responses_proxy_request_with_extensions(
     }
 }
 
+/// 拓展网关中间件拒绝了这一步：回一个 Codex 能显示原因的 400 错误。
+fn extension_rejected_response(reason: &str) -> anyhow::Result<UpstreamProxyResponse> {
+    Ok(UpstreamProxyResponse {
+        status_code: 400,
+        content_type: "application/json".to_string(),
+        is_stream: false,
+        wire_api: UpstreamWireApi::Responses,
+        compaction: false,
+        native_compaction_passthrough: false,
+        buffered_body: Some(serde_json::to_vec(&json!({
+            "error": { "type": "invalid_request_error", "code": "extension_rejected", "message": reason }
+        }))?),
+        stream_prefix: Vec::new(),
+        request_trace: None,
+        exec_adapted: false,
+        exec_outcome: None,
+        response: None,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn open_responses_proxy_request_once(
     body: &str,
@@ -3588,7 +3593,11 @@ async fn open_responses_proxy_request_once(
     live_request_id: Option<&str>,
     forced: Option<ForcedRelay>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    set_message_phase_fill(settings.codex_app_third_party_reasoning_collapse);
+    // 拓展可以用 gateway.replaces 关掉内置的推理折叠、本地压缩、exec 适配，自己在 upstream 段里做。
+    set_message_phase_fill(
+        settings.codex_app_third_party_reasoning_collapse
+            && !crate::extension_gateway::builtin_replaced("builtin:reasoning-collapse"),
+    );
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
     let local_compaction_request = !is_responses_compact_proxy_path(request_path)
@@ -3780,8 +3789,9 @@ async fn open_responses_proxy_request_once(
         {
             logical_body["model"] = json!(model);
         }
-        let experimental_local_compaction =
-            local_compaction_request && relay.local_compaction_prompt_at_end_enabled();
+        let experimental_local_compaction = local_compaction_request
+            && relay.local_compaction_prompt_at_end_enabled()
+            && !crate::extension_gateway::builtin_replaced("builtin:local-compaction");
         let cache_key = relay.local_compaction_prompt_at_end_enabled()
             .then(|| local_compaction::key(&relay, &logical_body, session_headers))
             .flatten();
@@ -3949,7 +3959,22 @@ async fn open_responses_proxy_request_once(
             && !xai_upstream
             && !is_compaction_request
             && !experimental_local_compaction
+            && !crate::extension_gateway::builtin_replaced("builtin:exec-adapt")
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
+        // 拓展网关中间件的 upstream 段：Codex++ 自己的压缩、路由、协议转换之后，改真正发给这个上游的请求体。
+        // 换候选重发时每次都跑（候选不同，请求体也不同）。拒绝时同 request 段，直接回带原因的错误。
+        let upstream_context = json!({
+            "stage": "upstream",
+            "wireApi": wire_api,
+            "relay": { "id": relay.id, "name": relay.name },
+            "model": upstream_body.get("model").cloned().unwrap_or(Value::Null),
+            "attempt": attempt + 1,
+        });
+        if let Err(reason) = crate::extension_gateway::apply_upstream_request(&mut upstream_body, request_path, upstream_context)
+        .await
+        {
+            return Ok(extension_rejected_response(&reason)?);
+        }
         let mut key = None;
         let mut exec_adapted = forced_adapted;
         let send = async {

@@ -622,7 +622,8 @@ impl Default for GatewayStore {
 }
 
 impl GatewaySettings {
-    /// 并入拓展声明的模型供应商（不落盘）：来源记为 `extension:<拓展 id>`，与已有供应商同 id 时以已有的为准。
+    /// 并入拓展声明的模型供应商（不落盘）：来源记为 `extension:<拓展 id>`，与已有供应商同 id 时以已有的为准，
+    /// 拓展写了 `override: true` 时顶替已有的（位置不变）。
     /// 只在构建 Agent 的模型资料与网关路由这些只读的地方调用，不要在读-改-写里用，免得写进 gateway.json。
     ///
     /// 网关每个请求都会走到这里：拓展目录的扫描结果缓存 3 秒，拓展启停、改配置后很快生效。
@@ -652,7 +653,8 @@ impl GatewaySettings {
 
     fn merge_extension_providers(mut self, providers: Vec<(String, crate::user_scripts::ExtensionProvider)>) -> Self {
         for (extension, mut provider) in providers {
-            if self.providers.iter().any(|existing| existing.relay.id == provider.id) {
+            let existing = self.providers.iter().position(|existing| existing.relay.id == provider.id);
+            if existing.is_some() && !provider.override_existing {
                 continue;
             }
             if provider.discover_models {
@@ -677,7 +679,7 @@ impl GatewaySettings {
                 model_list: provider.models.join("\n"),
                 ..RelayProfile::default()
             };
-            self.providers.push(GatewayProvider {
+            let entry = GatewayProvider {
                 enabled: true,
                 source: format!("extension:{extension}"),
                 price: None,
@@ -693,7 +695,11 @@ impl GatewaySettings {
                 newapi_access: None,
                 relay,
                 extra: Map::new(),
-            });
+            };
+            match existing {
+                Some(index) => self.providers[index] = entry,
+                None => self.providers.push(entry),
+            }
         }
         self
     }
