@@ -30,17 +30,17 @@
       "managerTab": "stepwise"
     },
     {
+      "id": "appearance",
+      "title": "外观",
+      "description": "Codex 窗口的主题、背景图与多开标识。",
+      "managerTab": "general"
+    },
+    {
       "id": "standalone",
       "title": "独立模式",
       "description": "增强总开关关闭后仍会生效的补丁。",
       "managerTab": "general",
       "standalone": true
-    },
-    {
-      "id": "appearance",
-      "title": "外观",
-      "description": "Codex 窗口的主题、背景图与多开标识。",
-      "managerTab": "general"
     }
   ],
   "items": [

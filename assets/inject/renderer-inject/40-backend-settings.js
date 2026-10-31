@@ -578,6 +578,7 @@
       codexPlusUserScripts = result;
       codexPlusUserScriptsLoaded = true;
       renderUserScripts();
+      syncCodexPlusBuiltinExtensionToggles();
       // 已安装状态变了，市场的「已安装/有更新」标记也要跟着刷新。
       if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
     }
@@ -1238,7 +1239,9 @@
 
   // ── 设置项清单 ──────────────────────────────────────────────────────────────
   // 设置页里每个开关的标题、说明、分组都来自后端 /settings/catalog，
-  // 与管理器「Codex → 增强」页 import 的是同一份 JSON（crates/codex-plus-core/assets/enhancement-settings.json）。
+  // 与管理器「Codex → 内置拓展」页 import 的是同一份 JSON（crates/codex-plus-core/assets/enhancement-settings.json）。
+  // 每个功能是一个内置拓展：开关就是它对应的设置项，子选项（清单里 parent 指向它）缩进排在它下面；
+  // 没有设置项的内置拓展（清单顶层 builtins）经 /user-scripts/set-script-enabled 启停。
   // 这里不写任何一份设置文案：拿不到清单时只显示原因与重试，绝不退回写死的副本。
   let codexPlusSettingsCatalog = null;
   // idle / loading / failed / ok。idle 与 loading 渲染相同的“正在读取”。
@@ -1250,7 +1253,9 @@
     const groups = value.groups.filter((group) => group && typeof group.id === "string" && typeof group.title === "string");
     const items = value.items.filter((item) => item && typeof item.key === "string" && typeof item.group === "string"
       && typeof item.title === "string" && Array.isArray(item.surfaces));
-    return groups.length && items.length ? { groups, items } : null;
+    const builtins = (Array.isArray(value.builtins) ? value.builtins : []).filter((entry) => entry && typeof entry.id === "string"
+      && typeof entry.group === "string" && typeof entry.title === "string");
+    return groups.length && items.length ? { groups, items, builtins } : null;
   }
 
   function codexPlusSettingsCatalogItemVisible(item) {
@@ -1384,12 +1389,12 @@
     const experimental = codexPlusExperimentalTitle.test(item.title);
     const tags = [
       experimental ? '<em class="codex-plus-feature-tag" data-tone="experimental">实验</em>' : "",
-      codexPlusRestartHint.test(description) ? '<em class="codex-plus-feature-tag">需重启</em>' : "",
+      item.restart === true || codexPlusRestartHint.test(description) ? '<em class="codex-plus-feature-tag">需重启</em>' : "",
     ].join("");
     return escapeHtml(experimental ? item.title.replace(codexPlusExperimentalTitle, "") : item.title) + tags;
   }
 
-  function renderCodexPlusSettingsCatalogRow(item) {
+  function renderCodexPlusSettingsCatalogRow(item, options = {}) {
     const title = escapeHtml(item.title);
     let control = "";
     if (item.key === "codexAppTypingEffect" && item.control === "select") {
@@ -1407,11 +1412,85 @@
     const rawDescription = codexPlusSettingsCatalogDescription(item);
     const description = escapeHtml(rawDescription);
     const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
+    const builtin = item.builtin ? ` data-codex-plus-builtin="${escapeHtml(item.builtin)}"` : "";
+    const param = options.param ? " data-codex-plus-builtin-param=\"true\"" : "";
     return `
-                <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}">
+                <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}"${builtin}${param}>
                   <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div></div>
                   ${control}
                 </div>`;
+  }
+
+  /**
+   * 清单顶层的内置拓展（桌宠、听写、梦皮……）：设置字段是本页认识的顶层字段就照常绑定设置；
+   * 嵌套字段或没有设置字段的，开关走 /user-scripts/set-script-enabled（后台按清单写设置或记在用户脚本配置里）。
+   */
+  function renderCodexPlusBuiltinEntryRow(entry) {
+    const title = escapeHtml(entry.title);
+    const setting = typeof entry.setting === "string" && !entry.setting.includes(".") ? entry.setting : "";
+    const localKey = setting ? codexPlusLocalSettingKey(setting) : "";
+    const binding = localKey ? `data-codex-plus-setting="${escapeHtml(localKey)}"`
+      : setting ? `data-codex-backend-setting="${escapeHtml(setting)}"`
+        : `data-codex-builtin-extension="${escapeHtml(entry.id)}"`;
+    return `
+                <div class="codex-plus-row" data-codex-plus-builtin="${escapeHtml(entry.id)}">
+                  <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(entry, entry.description || "")}</div><div class="codex-plus-row-description">${escapeHtml(entry.description || "")}</div></div>
+                  <button type="button" class="codex-plus-toggle" ${binding} role="switch" aria-checked="false" aria-label="${title}"><span></span></button>
+                </div>`;
+  }
+
+  /** 一组里的行：不属于任何内置拓展的设置（总开关等）在前，然后每个内置拓展一行、子选项紧跟其后。 */
+  function renderCodexPlusSettingsGroupRows(catalog, group) {
+    const visible = (item) => item.group === group.id && codexPlusSettingsCatalogItemVisible(item);
+    const params = (id) => catalog.items.filter((item) => item.parent === id && codexPlusSettingsCatalogItemVisible(item))
+      .map((item) => renderCodexPlusSettingsCatalogRow(item, { param: true }));
+    return [
+      ...catalog.items.filter((item) => visible(item) && !item.builtin && !item.parent).map((item) => renderCodexPlusSettingsCatalogRow(item)),
+      ...catalog.items.filter((item) => visible(item) && item.builtin)
+        .flatMap((item) => [renderCodexPlusSettingsCatalogRow(item), ...params(item.builtin)]),
+      ...(catalog.builtins || []).filter((entry) => entry.group === group.id)
+        .flatMap((entry) => [renderCodexPlusBuiltinEntryRow(entry), ...params(entry.id)]),
+    ].filter(Boolean);
+  }
+
+  /**
+   * 内置拓展开关（走用户脚本配置的那几个）与「已被顶替」提示，按后台给的内置拓展现状同步。
+   * 提示写在说明元素的 data-codex-builtin-replaced 上，由样式接在说明后面显示。
+   */
+  function syncCodexPlusBuiltinExtensionToggles() {
+    const builtins = new Map((codexPlusUserScripts.builtins || []).map((builtin) => [builtin.id, builtin]));
+    document.querySelectorAll(".codex-plus-toggle[data-codex-builtin-extension]").forEach((button) => {
+      const builtin = builtins.get(button.getAttribute("data-codex-builtin-extension"));
+      const enabled = String(builtin ? !!builtin.enabled : true);
+      button.dataset.pending = String(!builtin);
+      if (button.dataset.enabled === enabled) return;
+      button.dataset.enabled = enabled;
+      button.setAttribute("aria-checked", enabled);
+    });
+    document.querySelectorAll(".codex-plus-row[data-codex-plus-builtin]").forEach((row) => {
+      const replacedBy = builtins.get(row.getAttribute("data-codex-plus-builtin"))?.replacedBy;
+      const text = replacedBy ? `已被 ${String(replacedBy).replace(/^user:/, "")} 顶替` : "";
+      const description = row.querySelector(".codex-plus-row-description");
+      if (!description) return;
+      if (text) description.setAttribute("data-codex-builtin-replaced", text);
+      else description.removeAttribute("data-codex-builtin-replaced");
+    });
+  }
+
+  /** 页面里切换一个内置拓展：后台写设置或用户脚本配置，回来后同步页面里的停用状态与设置。 */
+  async function setCodexPlusBuiltinExtensionEnabled(id, enabled) {
+    await loadUserScripts("/user-scripts/set-script-enabled", { key: `builtin:${id}`, enabled });
+    const builtins = codexPlusUserScripts.builtins || [];
+    if (builtins.length) {
+      window.__codexPlusBuiltinExtensionState = {
+        disabled: builtins.filter((builtin) => !builtin.setting && !builtin.enabled).map((builtin) => builtin.id),
+        replacedBy: Object.fromEntries(builtins.filter((builtin) => builtin.replacedBy).map((builtin) => [builtin.id, builtin.replacedBy])),
+      };
+      try { window.__codexPlusSyncBuiltinExtensions?.(); } catch {}
+    }
+    // 有设置字段的（桌宠、听写）后台改的是设置，重新读一次让功能跟上。
+    await loadBackendSettings();
+    syncCodexPlusBuiltinExtensionToggles();
   }
 
   /** 设置页主体：清单就绪时按分组生成，否则显示读取中 / 读取失败与重试。 */
@@ -1436,11 +1515,10 @@
     // 清单没有这一组时退到 chat 组，再不行放第一组，保证总能看到。
     const ambientGroupId = ["stepwise", "chat"].find((id) => catalog.groups.some((group) => group.id === id))
       || catalog.groups[0]?.id;
+    // typeof 守卫：测试会把这段单独切出来执行，那时用户脚本状态不在作用域里。
+    if (typeof codexPlusUserScriptsLoaded !== "undefined" && !codexPlusUserScriptsLoaded) void loadUserScripts();
     return catalog.groups.map((group, index) => {
-      const rows = catalog.items
-        .filter((item) => item.group === group.id && codexPlusSettingsCatalogItemVisible(item))
-        .map(renderCodexPlusSettingsCatalogRow)
-        .filter(Boolean);
+      const rows = renderCodexPlusSettingsGroupRows(catalog, group);
       if (group.id === ambientGroupId) rows.push(renderCodexAmbientSuggestionsRow());
       if (index === 0) rows.unshift(renderCodexPlusBackendStatusRow());
       return rows.length ? renderCodexPlusSettingsSection(group.title, rows.join("")) : "";
@@ -1466,6 +1544,7 @@
     renderBackendStatus();
     refreshCodexPlusBackendToggles();
     syncCodexAmbientSuggestionsToggles();
+    syncCodexPlusBuiltinExtensionToggles();
   }
 
   function openCodexPlusModal(options = {}) {
@@ -1709,6 +1788,12 @@
       if (issueButton) {
         const issueUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/issues";
         window.open(issueUrl, "_blank");
+        return;
+      }
+      const builtinToggle = target?.closest("[data-codex-builtin-extension]");
+      if (builtinToggle) {
+        if (builtinToggle.dataset.pending === "true") return;
+        void setCodexPlusBuiltinExtensionEnabled(builtinToggle.getAttribute("data-codex-builtin-extension"), builtinToggle.dataset.enabled !== "true");
         return;
       }
       const userScriptToggle = target?.closest("[data-codex-user-script-key]");

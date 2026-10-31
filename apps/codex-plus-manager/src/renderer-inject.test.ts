@@ -1219,7 +1219,8 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     const html = page.sections() + template.slice(template.indexOf('<section class="codex-plus-settings-section" aria-label="工具与关于"'));
     const sections = Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g));
     const expectedGroups = catalog.groups
-      .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex")))
+      .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex"))
+        || catalog.builtins.some((entry: { group: string }) => entry.group === group.id))
       .map((group: { title: string }) => group.title);
     assert.deepEqual(sections.map((match) => match[1]), [...expectedGroups, "工具与关于"]);
     for (const [, title, contents] of sections) {
@@ -3221,8 +3222,20 @@ describe("Codex++ 设置页按设置项清单生成", () => {
   type CatalogItem = {
     key: string; group: string; control: string; title: string; description: string; descriptionWhenEnhancementsOn?: string;
     surfaces: string[]; platforms?: string[]; codexInputs?: Array<{ id: string; label: string; hint?: string }>;
+    builtin?: string; parent?: string; restart?: boolean;
   };
-  type Catalog = { groups: Array<{ id: string; title: string; description?: string }>; items: CatalogItem[] };
+  type BuiltinEntry = { id: string; group: string; title: string; description: string; setting?: string };
+  type Catalog = { groups: Array<{ id: string; title: string; description?: string }>; items: CatalogItem[]; builtins: BuiltinEntry[] };
+  /** 设置页一组里的行序：不属于内置拓展的设置在前，然后每个内置拓展一行、子选项紧跟其后。 */
+  const groupOrder = (catalog: Catalog, groupId: string, visible: (item: CatalogItem) => boolean) => {
+    const params = (id: string) => catalog.items.filter((item) => item.parent === id && visible(item));
+    const inGroup = catalog.items.filter((item) => item.group === groupId && visible(item));
+    return [
+      ...inGroup.filter((item) => !item.builtin && !item.parent),
+      ...inGroup.filter((item) => item.builtin).flatMap((item) => [item, ...params(item.builtin!)]),
+      ...catalog.builtins.filter((entry) => entry.group === groupId).flatMap((entry) => params(entry.id)),
+    ];
+  };
   const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
   const readCatalog = async (): Promise<Catalog> => JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
   const visibleOn = (platform: string) => (item: CatalogItem) => item.surfaces.includes("codex")
@@ -3260,8 +3273,25 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     // #686：「上下文感知建议」直接读写 Codex 自己的设置，不在清单里，单独校验。
     const ambientKey = "codexAppAmbientSuggestions";
     const rows = sections.flatMap((section) => section.rows.filter((row) => row.key && row.key !== ambientKey));
-    const expected = catalog.groups.flatMap((group) => catalog.items.filter((item) => item.group === group.id && visibleOn("macos")(item)));
+    const expected = catalog.groups.flatMap((group) => groupOrder(catalog, group.id, visibleOn("macos")));
     assert.deepEqual(rows.map((row) => row.key), expected.map((item) => item.key));
+    // 子选项缩进挂在所属内置拓展下面；内置拓展行带 id。
+    for (const item of expected.filter((candidate) => candidate.parent)) {
+      assert.match(html, new RegExp(`data-codex-plus-setting-row="${item.key}"[^>]*data-codex-plus-builtin-param="true"`), `${item.key} 是子选项`);
+    }
+    for (const item of expected.filter((candidate) => candidate.builtin)) {
+      assert.match(html, new RegExp(`data-codex-plus-setting-row="${item.key}" data-codex-plus-builtin="${item.builtin}"`));
+    }
+    // 清单顶层的内置拓展各一行：本页认识的顶层设置照常绑定，其余经用户脚本配置启停。
+    for (const entry of catalog.builtins) {
+      const row = html.match(new RegExp(`<div class="codex-plus-row" data-codex-plus-builtin="${entry.id}">[\\s\\S]*?</button>`))?.[0];
+      assert.ok(row, `${entry.id} 缺一行`);
+      assert.ok(row.includes(`aria-label="${entry.title}"`));
+      if (!entry.setting || entry.setting.includes(".")) assert.match(row, new RegExp(`data-codex-builtin-extension="${entry.id}"`));
+      else assert.doesNotMatch(row, /data-codex-builtin-extension=/);
+    }
+    assert.match(html, /data-codex-plus-builtin="dream-skin">[\s\S]*?data-codex-plus-setting="dreamSkinEnabled"/);
+    assert.match(html, /data-codex-plus-builtin="image-overlay">[\s\S]*?data-codex-backend-setting="codexAppImageOverlayEnabled"/);
     const ambientSection = sections.find((section) => section.rows.some((row) => row.key === ambientKey));
     assert.equal(ambientSection?.title, catalog.groups.find((group) => group.id === "stepwise")!.title, "上下文感知建议应在 stepwise 组");
     const ambientRow = ambientSection!.rows.find((row) => row.key === ambientKey)!;
@@ -3276,7 +3306,7 @@ describe("Codex++ 设置页按设置项清单生成", () => {
       assert.equal(section.title, catalog.groups.find((group) => group.id === item.group)!.title);
       // 与管理器一致：「（实验）」改成小标签，说明里要求重启的加「需重启」。
       const experimental = /\s*(?:（实验性?）|\(experimental\))$/i;
-      const needsRestart = /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i.test(item.descriptionWhenEnhancementsOn ?? item.description);
+      const needsRestart = item.restart === true || /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i.test(item.descriptionWhenEnhancementsOn ?? item.description);
       assert.equal(row.title, item.title.replace(experimental, ""));
       assert.deepEqual(row.tags, [...(experimental.test(item.title) ? ["实验"] : []), ...(needsRestart ? ["需重启"] : [])], `${item.key} 标签`);
       assert.equal(row.description, item.descriptionWhenEnhancementsOn ?? item.description);
