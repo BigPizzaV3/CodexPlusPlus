@@ -1743,6 +1743,11 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         codex_plus_core::routes::evaluate_extension_cdp(debug_port, &payload).await
     }
 
+    async fn set_thread_goal_in_owner(&self, payload: Value) -> anyhow::Result<Value> {
+        let debug_port = *self.debug_port.lock().unwrap();
+        codex_plus_core::native_thread_goal::set_in_owner(debug_port, payload).await
+    }
+
     async fn script_market_list(&self) -> anyhow::Result<Value> {
         codex_plus_core::script_market::list_market_scripts(&self.user_scripts).await
     }
@@ -2631,6 +2636,31 @@ mod tests {
         runtime.open_transient_manager(json!({})).await.unwrap();
         assert_eq!(*navigations.lock().unwrap(), vec![json!({}), json!({})]);
         *NAVIGATION_HANDLER.get().unwrap().lock().unwrap() = None;
+    }
+
+    #[tokio::test]
+    async fn thread_goal_uses_the_launchers_current_instance_port() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let length = stream.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..length]).starts_with("GET /json "));
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]"
+            ).await.unwrap();
+        });
+        let runtime = LauncherRuntimeService::new(1, default_user_script_manager());
+        runtime.set_debug_port(port);
+        let result = runtime.set_thread_goal_in_owner(json!({
+            "hostId": "local", "threadId": "synthetic-thread", "requestId": "test-request",
+            "params": { "objective": "synthetic objective" }
+        })).await;
+        let served = tokio::time::timeout(std::time::Duration::from_secs(3), server).await;
+        assert!(served.unwrap().is_ok());
+        assert_eq!(result.unwrap_err().to_string(), "会话所在窗口暂不可用，请稍后重试设置目标");
     }
 
     #[test]

@@ -34,6 +34,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/user-scripts/load", json!({})),
         ("/cdp/targets", json!({})),
         ("/cdp/evaluate", json!({"kind":"avatar-overlay","expression":"1"})),
+        ("/thread-goal/set-in-owner", json!({"params":{"objective":"goal"}})),
         ("/devtools/open", json!({})),
         ("/manager/open", json!({})),
         ("/manager/open-transient", json!({})),
@@ -112,6 +113,53 @@ async fn cdp_routes_are_wired_for_extensions() {
         "{}",
         result
     );
+}
+
+#[tokio::test]
+async fn thread_goal_route_preserves_payload_and_checks_the_live_enhancement_switch() {
+    let settings = Arc::new(FakeSettings::default());
+    let runtime = Arc::new(FakeRuntime::default());
+    let ctx = BridgeContext::new(settings.clone(), runtime.clone(), Arc::new(FakeData));
+    let payload = json!({
+        "hostId": "local", "threadId": "test-thread", "requestId": "goal-request",
+        "params": { "objective": "native goal", "appendTranscriptItem": false,
+            "threadSettings": { "model": "selected-model" } }
+    });
+    settings.settings.lock().unwrap().enhancements_enabled = false;
+    let disabled = handle_bridge_request(ctx.clone(), "/thread-goal/set-in-owner", payload.clone()).await;
+    assert_eq!(disabled["status"], "failed");
+    assert_eq!(disabled["code"], "goal-enhancements-disabled");
+    assert!(runtime.goal_payloads.lock().unwrap().is_empty());
+    settings.settings.lock().unwrap().enhancements_enabled = true;
+    let enabled = handle_bridge_request(ctx, "/thread-goal/set-in-owner", payload.clone()).await;
+    assert_eq!(enabled["status"], "ok");
+    assert_eq!(*runtime.goal_payloads.lock().unwrap(), vec![payload]);
+}
+
+#[tokio::test]
+async fn thread_goal_route_redacts_unexpected_errors_and_failed_values() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::default()), runtime.clone(), Arc::new(FakeData),
+    );
+    for reply in [
+        Err("Runtime.evaluate: secret-token at app://-/private.js with secret-stack".to_string()),
+        Ok(json!({
+            "status": "failed", "code": "private-error",
+            "message": "secret-token at app://-/private.js with secret-stack"
+        })),
+    ] {
+        *runtime.goal_reply.lock().unwrap() = Some(reply);
+        let response = handle_bridge_request(
+            ctx.clone(), "/thread-goal/set-in-owner", json!({"session_id":"secret-session"}),
+        ).await;
+        assert_eq!(response, json!({
+            "status": "failed", "code": "goal-forward-failed",
+            "message": "会话所在窗口暂不可用，请稍后重试设置目标"
+        }));
+        assert!(!response.to_string().contains("secret"));
+        assert!(!response.to_string().contains("app://"));
+    }
 }
 
 #[tokio::test]
@@ -1525,6 +1573,8 @@ struct FakeRuntime {
     enabled: Mutex<bool>,
     script_enabled: Mutex<bool>,
     manager_payload: Mutex<Value>,
+    goal_payloads: Mutex<Vec<Value>>,
+    goal_reply: Mutex<Option<Result<Value, String>>>,
 }
 
 impl Default for FakeRuntime {
@@ -1533,12 +1583,22 @@ impl Default for FakeRuntime {
             enabled: Mutex::new(true),
             script_enabled: Mutex::new(true),
             manager_payload: Mutex::new(json!({})),
+            goal_payloads: Mutex::new(Vec::new()),
+            goal_reply: Mutex::new(None),
         }
     }
 }
 
 #[async_trait]
 impl BridgeRuntimeService for FakeRuntime {
+    async fn set_thread_goal_in_owner(&self, payload: Value) -> anyhow::Result<Value> {
+        self.goal_payloads.lock().unwrap().push(payload);
+        if let Some(reply) = self.goal_reply.lock().unwrap().take() {
+            return reply.map_err(anyhow::Error::msg);
+        }
+        Ok(json!({"status": "ok"}))
+    }
+
     async fn user_script_inventory(&self) -> anyhow::Result<Value> {
         Ok(self.inventory(false))
     }

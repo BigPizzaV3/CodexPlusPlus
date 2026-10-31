@@ -31,6 +31,11 @@
       "lines": 67
     },
     {
+      "name": "32-thread-goal.js",
+      "description": "目标设置转发到原生会话所属窗口",
+      "lines": 17
+    },
+    {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
       "lines": 2165
@@ -58,7 +63,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1159
+      "lines": 1160
     },
     {
       "name": "71-model-picker-groups.js",
