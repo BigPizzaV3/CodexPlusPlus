@@ -180,6 +180,12 @@
       [data-codex-plus-ui-slot="sessionRow.prefix"],[data-codex-plus-ui-slot="sessionRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
       [data-codex-plus-ui-slot="sessionRow.prefix"]{margin-right:4px}
       [data-codex-plus-ui-slot="sessionRow.suffix"]{margin-left:4px}
+      [data-codex-plus-ui-slot="composer.left"],[data-codex-plus-ui-slot="composer.right"],[data-codex-plus-ui-slot="header.title"],[data-codex-plus-ui-slot="sidebar.section"],[data-codex-plus-ui-slot="projectRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
+      [data-codex-plus-ui-slot="composer.right"]{margin-right:4px}
+      [data-codex-plus-ui-slot="header.title"]{margin-left:6px}
+      [data-codex-plus-ui-slot="composer.below"]{margin:6px 0 0}
+      [data-codex-plus-ui-slot="home.above"]{margin:0 0 10px}
+      [data-codex-plus-ui-slot="approval"]{padding:0 16px 12px}
       [data-codex-plus-ui-slot="activity.after"]{margin:4px 0 2px}
       [data-codex-plus-ui-slot="overlay"]{position:fixed;inset:0;z-index:2147483600;pointer-events:none}
       [data-codex-plus-ui-slot="overlay"] .codex-plus-ui-slot-item>*{pointer-events:auto}`;
@@ -224,7 +230,7 @@
 
   /** 有没有挂在对话区里的界面插槽：它们和消息插槽共用对话区的观察器。 */
   function codexPlusHasThreadUiSlots() {
-    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above", "activity.after"].includes(item.slot));
+    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above", "approval", "activity.after"].includes(item.slot));
   }
 
   function refreshCodexPlusMessageSlots() {
@@ -404,11 +410,21 @@
    * turn.after（每一轮对话的末尾，render 收到 turnKey）、sessionRow.prefix / sessionRow.suffix
    * （侧栏每个会话行标题前 / 后，render 收到 sessionId、title）、overlay（铺满窗口的浮层，默认不挡点击）、
    * activity.after（对话里每个活动条目——命令、工具 / 子 agent 调用、出错、推理——的末尾，render 收到
-   * kind、itemIds、text；条目在 Codex 折叠的「用时 Ns」里，展开后才渲染）。
+   * kind、itemIds、text；条目在 Codex 折叠的「用时 Ns」里，展开后才渲染）、
+   * composer.left / composer.right（输入框底栏左侧按钮组末尾 / 右侧按钮组开头）、composer.below（输入框下方）、
+   * home.above（新对话首页输入框上方）、header.title（顶栏标题后面）、approval（审批卡片底部，render 收到 kind）、
+   * projectRow.suffix（侧栏项目行名称后，render 收到 projectId、label）、sidebar.section（侧栏分组标题右侧，
+   * render 收到 section）。
    * 每个位置一个带拓展标记的宿主节点，里面每个注册项一个容器；容器新建时调用 render（DOM 会随 Codex 重建，
    * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
    */
-  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar", "turn.after", "sessionRow.prefix", "sessionRow.suffix", "overlay", "activity.after"];
+  const codexPlusUiSlotNames = [
+    "composer.above", "composer.below", "composer.left", "composer.right", "home.above",
+    "thread.top", "thread.bottom", "turn.after", "header.title", "titlebar", "approval",
+    "sidebar.top", "sidebar.bottom", "sidebar.section", "sessionRow.prefix", "sessionRow.suffix", "projectRow.suffix",
+    "overlay",
+    "activity.after",
+  ];
   const codexPlusUiSlotVersions = new Map();
 
   function codexPlusUiSlotAnchors(slot) {
@@ -446,6 +462,51 @@
           };
           const next = title.nextElementSibling;
           return [{ parent: title.parentElement, place: slot === "sessionRow.prefix" ? title : (next && !isExtensionUiNode(next) ? next : "end"), info }];
+        });
+      case "composer.below":
+        return visible("[data-codex-composer-root]").map((node) => ({ parent: node, place: "end" }));
+      case "composer.left":
+        // 底栏左侧按钮组（添加内容、权限……）：「添加内容」按钮所在的那一行 flex。
+        return visible("[data-composer-footer-responsive]")
+          .map((footer) => {
+            const row = footer.querySelector("[data-composer-navigation-target]")?.closest("div.flex");
+            return row && footer.contains(row) ? row : null;
+          })
+          .filter(Boolean)
+          .map((row) => ({ parent: row, place: "end" }));
+      case "composer.right":
+        // 底栏右侧按钮组（听写、发送）：放在最前面。
+        return visible('[data-composer-footer-responsive] > [class*="col-start-3"]')
+          .map((group) => group.querySelector(":scope div.shrink-0.items-center"))
+          .filter(Boolean)
+          .map((row) => ({ parent: row, place: "start" }));
+      case "home.above":
+        return visible('[data-codex-composer-root][data-composer-placement="home"]').map((node) => ({ parent: node.parentElement, place: node }));
+      case "header.title":
+        return visible("[data-app-shell-titlebar-content]").map((node) => ({ parent: node, place: "end" }));
+      case "approval":
+        return visible("[data-codex-approval-surface]").map((card) => ({
+          parent: card,
+          place: "end",
+          info: { kind: card.tagName === "FORM" || card.querySelector("form") ? "form" : "card" },
+        }));
+      case "sidebar.section":
+        return visible("[data-app-action-sidebar-section]").flatMap((section) => {
+          const actions = section.querySelector(':scope [class*="nav-section-title"] > div.shrink-0');
+          return actions ? [{ parent: actions, place: "start", info: { section: section.getAttribute("data-app-action-sidebar-section-heading") || "" } }] : [];
+        });
+      case "projectRow.suffix":
+        return visible("[data-app-action-sidebar-project-row]").flatMap((row) => {
+          const label = row.querySelector("[data-marquee-text]")?.parentElement;
+          if (!label?.parentElement) return [];
+          return [{
+            parent: label.parentElement,
+            place: label.nextElementSibling && !isExtensionUiNode(label.nextElementSibling) ? label.nextElementSibling : "end",
+            info: {
+              projectId: row.getAttribute("data-app-action-sidebar-project-id") || "",
+              label: row.getAttribute("data-app-action-sidebar-project-label") || "",
+            },
+          }];
         });
       case "overlay":
         return document.body ? [{ parent: document.body, place: "end" }] : [];

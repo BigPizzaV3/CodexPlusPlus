@@ -170,3 +170,28 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 4. 官方直连（不经 Codex++ 代理）时的提示词注入：目前只有 MCP `instructions` 兜底；
 5. 更多 dsh 事件：`agent/created`（可对上 SessionStart，但 dsh 插件在这里多半调用 agent 循环的能力）、
    `tools/execute` 包裹式超时 / 重试（Codex 钩子没有包裹执行的能力）暂不映射。
+
+## 8. 第二期：替身服务、会话镜像、命令与前端插件（2026-10-31）
+
+目标是让导入的 dsh 插件能碰到的服务都有替身：Codex 的 agent 循环与会话存储仍不在 Codex++ 手里，做不到的部分调用时说明原因。上面第 3 节里判为不兼容的几类，现在的去处：
+
+| dsh 服务 / 事件 | 现在的落点 | 差别 |
+|---|---|---|
+| `sessions`、`agents`、`sessionProjections` | 会话镜像（`assets/dsh-host/services.mjs`）：钩子常驻进程把 Codex 钩子翻成 dsh 会话日志（turn/start、user/message、tool/call、tool/result、turn/end、compaction/*），插件 append 的领域事件一并进镜像，按会话落盘到 `data/<插件>/mirror/`；投影在镜像上折叠 | 没有模型的流式内容与推理；`create` / `fork` 抛错（改用 `ctx.sessions.codex.*` 经 Codex++ 读写真实 Codex 会话）；用到 agents / 投影 / 镜像事件的插件，配套拓展包会挂上 SessionStart、UserPromptSubmit、Pre/PostToolUse、Stop、Pre/PostCompact 全部钩子 |
+| `agent.steer` / `inject` / `followup` | 钩子里翻成要求继续 / 补充上下文；钩子之外 steer、followup 经 Codex++ 往 Codex 会话插话 / 发起一轮，inject 排到下一次钩子带上 | `cancel` 不可用（拿不到正在跑的那一轮）；只声明 `sessions` 的插件不挂镜像钩子（多半只读 cwd） |
+| `sessionQuery` | 经 Codex++ 的只读会话查询，事件映射成 dsh 的类型与 data 形状 | `observeSession` 是一次性快照 |
+| `llm` | `stream()` 经 Codex++ 协议代理一次性返回再拆成流式块；替身 `dsh-llm` 补了 `BlockAssembler`、错误类与消息构造函数 | 不能注册 adapter |
+| `commands` | 配套拓展包在 Codex 输入框里注册同名斜杠命令，经后台 → bridge → 常驻进程执行，结果用提示条显示 | |
+| `connection.fetch` | 前端半边的 `fetch('/api/…')` 经后台 → bridge → 常驻进程交给注册的路由 | `connection.rpc` 不可用 |
+| `fs`、`shell`、`subprocess`、`web`、`credentials`、`storageDomain`、`userQuestions` | 本机 Node 实现；`userQuestions` 在 Codex 页面弹框；`credentials` 先看插件配置里同名的键再看环境变量 | 不做沙箱与「先读后写」策略，没有 PTY 与联网搜索 |
+| `agent/created`、`subagent/start`、`subagent/end` | SessionStart、SubagentStart、SubagentStop 钩子 | |
+| `tools/result`、`session/event`、`agent/status` | 由会话镜像派发 | |
+| `agent/request`、`system-prompt/assemble` | 网关请求中间件（改 model / reasoning.effort；改写后的片段追加到 instructions） | 只对经 Codex++ 代理的请求生效 |
+| `agent/request-error` | 网关失败重试 | 同上 |
+| 前端插件 `dsh.client` | 页面运行时 `96-dsh-client.js`：用 Codex 页面自己的 React 19 渲染组件，dsh 插槽映射到 Codex++ 的插槽（`shell.overlay` → overlay、会话「…」菜单 → 会话行菜单自绘项、`conversation.input.left/right` → composer.left/right、`conversation.chat.turnTail` → turn.after、`settings.section` → 整页……） | 对不上的插槽不显示并记一条失败；dsh 专属前端服务（store、remote、conversation、uiSession 的大部分 hooks）不可用 |
+
+宿主调用通道：所有 Codex++ 起的 Node 进程都带 `CODEX_PLUS_HOST_EXE`，替身服务经 `CodexPlusPlus --codex-plus-host-call`
+（stdin 一个 `{ service, method, params }`）读写会话、调模型、问用户（`assets/dsh-host/host-call.mjs`）。
+
+仍然做不到：替换 Codex 的 agent 循环、会话存储格式、按步触发的 `agent/pre-step`（Codex 只在用户提交时经过钩子）、
+在钩子里改写工具结果、`subagents` / `workflowEngine` / `jobs` / `typert` 这类 dsh 自己的运行时服务。

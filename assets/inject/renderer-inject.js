@@ -14786,7 +14786,7 @@
   }
 
   function capacityAutoRetryEnabled() {
-    return capacityAutoRetrySettings().capacityAutoRetry === true;
+    return capacityAutoRetrySettings().capacityAutoRetry === true && !window.__codexPlusBuiltinInactive?.has("capacity-auto-retry");
   }
 
   function capacityAutoRetryMaxAttempts() {
@@ -15687,7 +15687,8 @@
   function codexPlusUsageEnabled() {
     return !codexPlusUsageState.disposed
       && codexPlusBackendSettingsLoaded
-      && codexPlusSettings().usageStatusLine === true;
+      && codexPlusSettings().usageStatusLine === true
+      && !window.__codexPlusBuiltinInactive?.has("usage-statusline");
   }
 
   /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */
@@ -16007,6 +16008,10 @@
   }
 
   function codexPlusProxyStatusRender() {
+    if (!!window.__codexPlusBuiltinInactive?.has("proxy-request-status")) {
+      codexPlusProxyStatusHide();
+      return;
+    }
     const card = codexPlusProxyStatusComposerCard();
     const threadId = card ? codexPlusProxyStatusThreadId(card) : "";
     // 首页/新会话没有当前会话 id：不能把“没有会话”当成“不过滤”，
@@ -16097,7 +16102,7 @@
 
   async function codexPlusProxyStatusRefresh() {
     if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
-    if (document.hidden) return;
+    if (document.hidden || !!window.__codexPlusBuiltinInactive?.has("proxy-request-status")) return;
     codexPlusProxyStatusState.inFlight = true;
     try {
       const result = await codexPlusProxyStatusPostWithTimeout();
@@ -16152,7 +16157,8 @@
 
   function historyTurnRecoveryEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
-      && codexPlusBackendSettings.codexAppHistoryTurnRecovery === true;
+      && codexPlusBackendSettings.codexAppHistoryTurnRecovery === true
+      && !window.__codexPlusBuiltinInactive?.has("history-turn-recovery");
   }
 
   function historyTurnRecoveryTarget() {
@@ -16696,7 +16702,8 @@
   const codexPlusTurnRewind = window.__codexPlusTurnRewind
     || (window.__codexPlusTurnRewind = createCodexPlusTurnRewindController(window));
   function codexPlusTurnRewindEnabled() {
-    return codexPlusBackendSettingsLoaded === true && codexPlusSettings().turnRewind === true;
+    return codexPlusBackendSettingsLoaded === true && codexPlusSettings().turnRewind === true
+      && !window.__codexPlusBuiltinInactive?.has("turn-rewind");
   }
   codexPlusTurnRewind.setEnabledCheck(codexPlusTurnRewindEnabled);
   // 仅接入消息菜单，不改原生模块、安装目录或对第三方拓展开放写 RPC。
@@ -17025,7 +17032,7 @@
   document.querySelectorAll(sideChatSaveSelector).forEach(button => button.remove());
 
   function sideChatSaveEnabled() {
-    return codexPlusSettings().sideChatSave === true;
+    return codexPlusSettings().sideChatSave === true && !window.__codexPlusBuiltinInactive?.has("side-chat-save");
   }
 
   async function sideChatSource(sourceId, boundary = {}) {
@@ -17373,6 +17380,14 @@
   function disposeSessionMoreMenu(menu) {
     closeSessionMoreMenu(menu);
     menu.__codexSessionMoreCleanup?.();
+    // 拓展用 render 自己画的菜单项（例如 dsh 前端插件的 React 组件）：菜单拆掉时一并卸载。
+    menu.querySelectorAll?.("[data-codex-plus-extension-item]").forEach((item) => {
+      const cleanup = item.__codexPlusRowActionCleanup;
+      item.__codexPlusRowActionCleanup = null;
+      if (typeof cleanup === "function") {
+        try { cleanup(); } catch {}
+      }
+    });
     const group = menu.__codexSessionMoreGroup;
     if (group?.__codexSessionMoreMenu === menu) group.__codexSessionMoreMenu = null;
     menu.__codexSessionMoreCleanup = null;
@@ -18666,6 +18681,24 @@
         return [...codexPlusServices.entries()].map(([name, entry]) => ({ name, owner: entry.owner }));
       },
 
+      /**
+       * 在拓展实例里运行 dsh 前端插件（由 Codex++ 生成的 dsh 配套拓展包调用）：modules 是截住的
+       * __ModuleLoader__.load 参数，dsh 插槽映射到 Codex++ 的插槽，见 96-dsh-client.js。
+       */
+      dshClient(ctx, modules, options) {
+        return codexPlusRunDshClient(ctx, modules, options);
+      },
+
+      /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+      currentSessionId() {
+        return codexPlusCurrentSessionId();
+      },
+
+      /** 内置拓展的现状：[{ id, name, active, disabled, replacedBy }]。见 96-builtin-extensions.js。 */
+      builtins() {
+        return codexPlusBuiltinExtensionList();
+      },
+
       /** 显示提示。type: info | success | warn | error */
       toast(message, options) {
         return runCodexPlusExtensionCallback(
@@ -19258,9 +19291,13 @@
    * 把新事件逐条发出去。新版 Codex 的通知不经过页面，rollout 是页面能拿到的唯一完整来源。
    *   - `session/event`：(event, { sessionId })，event 形状同 sessionQuery 的事件日志
    *   - `agent/status`：({ sessionId, status: "running" | "idle" | "aborted", turn, reason? })
+   *   - 更细的通知（agent 只是 { id, session: { id } } 描述，没有 steer / inject）：
+   *     `tools/result`：(exec { callId, name, arguments }, result { isError: false, content })，工具结果写进会话时；
+   *     `agent/created`：({ agent, source: "startup" })，观察开始后新出现的会话；
+   *     `agent/error`：({ agent, turn, error })，一轮被中止（turn/aborted）时
    * 没人监听时自动停；监听开始前已有的事件不重放，之后新建的会话从头发。
    */
-  const codexPlusSessionWatchEvents = ["session/event", "agent/status"];
+  const codexPlusSessionWatchEvents = ["session/event", "agent/status", "tools/result", "agent/created", "agent/error"];
   let codexPlusSessionWatcher = null;
 
   function codexPlusWantsSessionWatch() {
@@ -19278,6 +19315,8 @@
     if (codexPlusSessionWatcher || !codexPlusWantsSessionWatch()) return;
     const query = codexPlusSessionQueryService();
     const cursors = new Map();
+    // callId → { name, arguments }：tools/result 要带上调用时的工具名与参数。
+    const calls = new Map();
     let primed = false;
     const tick = async () => {
       if (!codexPlusWantsSessionWatch()) {
@@ -19289,6 +19328,7 @@
         for (const [index, session] of (sessions || []).entries()) {
           let cursor = cursors.get(session.id);
           if (!cursor) {
+            if (primed) codexPlusEmitExtensionEvent("agent/created", [{ agent: codexPlusAgentDescriptor(session.id), source: "startup" }]);
             let next = 0;
             if (!primed) {
               const tail = await query.listEvents(session.id, { fromEnd: true, limit: 1 }).catch(() => []);
@@ -19307,6 +19347,7 @@
             codexPlusEmitExtensionEvent("session/event", [event, { sessionId: session.id }]);
             const status = codexPlusSessionStatusOf(event);
             if (status) codexPlusEmitExtensionEvent("agent/status", [{ sessionId: session.id, ...status }]);
+            codexPlusEmitSessionNotices(session.id, event, calls);
           }
         }
         primed = true;
@@ -19314,6 +19355,34 @@
       codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 5000 : 1500);
     };
     codexPlusSessionWatcher = setTimeout(tick, 0);
+  }
+
+  /** 页面通知里的 agent 描述：只有会话 id，不能往会话里插话。 */
+  function codexPlusAgentDescriptor(sessionId) {
+    return Object.freeze({ id: sessionId, session: Object.freeze({ id: sessionId }) });
+  }
+
+  /** 会话事件 → tools/result、agent/error 通知。calls 记着工具调用，工具结果到了再配对。 */
+  function codexPlusEmitSessionNotices(sessionId, event, calls) {
+    if (event.type === "tool/call") {
+      calls.set(event.data?.callId, { name: event.data?.name ?? "", arguments: event.data?.input ?? "" });
+      if (calls.size > 500) calls.delete(calls.keys().next().value);
+      return;
+    }
+    if (event.type === "tool/result" && codexPlusExtensionListeners.get("tools/result")?.size) {
+      const call = calls.get(event.data?.callId) || {};
+      let parsed = call.arguments;
+      try { parsed = typeof call.arguments === "string" ? JSON.parse(call.arguments) : call.arguments; } catch {}
+      const agent = codexPlusAgentDescriptor(sessionId);
+      codexPlusEmitExtensionEvent("tools/result", [
+        { callId: event.data?.callId ?? "", name: call.name ?? "", arguments: parsed, agent },
+        { isError: false, value: event.data?.output ?? "", content: [{ type: "text", text: String(event.data?.output ?? "") }] },
+      ]);
+      return;
+    }
+    if (event.type === "turn/aborted") {
+      codexPlusEmitExtensionEvent("agent/error", [{ agent: codexPlusAgentDescriptor(sessionId), turn: event.data?.turn, error: new Error(String(event.data?.reason ?? "aborted")) }]);
+    }
   }
 
   /** 通知所有监听者。逐个隔离：一个处理器抛错不影响其余。 */
@@ -19801,6 +19870,10 @@
       },
       registerTheme(definition, itemOptions) {
         return track(codexPlusRegisterTheme(definition, registerOptions(itemOptions)));
+      },
+      /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+      currentSessionId() {
+        return codexPlusCurrentSessionId();
       },
       /** 弹对话框问用户，返回 { value, text }；取消为 null。 */
       ask(question) {
@@ -20712,6 +20785,19 @@
     return dispose;
   }
 
+  /** 当前打开的 Codex 会话 id（首页、新对话还没有 id 时为空串）。 */
+  function codexPlusCurrentSessionId() {
+    try {
+      const fromRow = normalizedCodexThreadUuid(currentSessionRef()?.session_id);
+      if (fromRow) return fromRow;
+    } catch {}
+    // 侧栏收起或当前会话不在列表里时，取可见输入框上方标着的会话 id（多个标签页只认看得见的那个）。
+    const marked = [...document.querySelectorAll("[data-above-composer-conversation-id]")]
+      // 这个标记节点本身常是空的（empty:hidden），按它所在输入框是否可见判断。
+      .find((node) => node.closest("[data-codex-composer-root]")?.getBoundingClientRect().width > 0);
+    return normalizedCodexThreadUuid(marked?.getAttribute("data-above-composer-conversation-id")) || "";
+  }
+
   function codexPlusFindExtensionCommand(name) {
     return codexPlusExtensionItems(codexPlusRegistry.commands).find((item) => item.name === name) || null;
   }
@@ -20822,6 +20908,7 @@
           return codexPlusInsertComposerText(editor, value);
         },
         toast: (message, toastOptions) => showToast(String(message ?? ""), toastOptions || {}),
+        sessionId: codexPlusCurrentSessionId(),
       }));
       if (result.ok && result.value && typeof result.value.then === "function") {
         result.value.catch((error) => codexPlusMarkExtensionFailure(command.scriptKey, `command./${command.name}: ${String(error?.stack || error?.message || error)}`));
@@ -20914,6 +21001,24 @@
     const items = codexPlusExtensionItems(codexPlusRegistry.rowActions);
     if (!items.length) return;
     items.forEach((definition) => {
+      // 自绘项：render({ container, session_id, title, close }) 往菜单里的一个容器画（返回的清理函数在菜单拆掉时调用）。
+      if (typeof definition.render === "function") {
+        const item = document.createElement("div");
+        item.className = "codex-session-more-menu-custom";
+        item.dataset.codexPlusExtensionItem = definition.id;
+        markCodexPlusExtensionNode(item, definition.scriptKey);
+        moreMenu.appendChild(item);
+        const ref = sessionRefFromRow(row);
+        const result = runCodexPlusExtensionCallback(definition.scriptKey, "rowAction.render", () => definition.render({
+          container: item,
+          row,
+          session_id: ref.session_id,
+          title: ref.title || row.getAttribute("data-app-action-sidebar-thread-title") || "",
+          close: () => closeSessionMoreMenus(),
+        }));
+        if (result.ok && typeof result.value === "function") item.__codexPlusRowActionCleanup = result.value;
+        return;
+      }
       const item = createSessionMoreMenuItem(definition.label || definition.id, definition.icon || "◇", (event) => {
         stopActionButtonEvent(row, moreButton, event);
         closeSessionMoreMenus();
@@ -21112,6 +21217,12 @@
       [data-codex-plus-ui-slot="sessionRow.prefix"],[data-codex-plus-ui-slot="sessionRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
       [data-codex-plus-ui-slot="sessionRow.prefix"]{margin-right:4px}
       [data-codex-plus-ui-slot="sessionRow.suffix"]{margin-left:4px}
+      [data-codex-plus-ui-slot="composer.left"],[data-codex-plus-ui-slot="composer.right"],[data-codex-plus-ui-slot="header.title"],[data-codex-plus-ui-slot="sidebar.section"],[data-codex-plus-ui-slot="projectRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
+      [data-codex-plus-ui-slot="composer.right"]{margin-right:4px}
+      [data-codex-plus-ui-slot="header.title"]{margin-left:6px}
+      [data-codex-plus-ui-slot="composer.below"]{margin:6px 0 0}
+      [data-codex-plus-ui-slot="home.above"]{margin:0 0 10px}
+      [data-codex-plus-ui-slot="approval"]{padding:0 16px 12px}
       [data-codex-plus-ui-slot="activity.after"]{margin:4px 0 2px}
       [data-codex-plus-ui-slot="overlay"]{position:fixed;inset:0;z-index:2147483600;pointer-events:none}
       [data-codex-plus-ui-slot="overlay"] .codex-plus-ui-slot-item>*{pointer-events:auto}`;
@@ -21156,7 +21267,7 @@
 
   /** 有没有挂在对话区里的界面插槽：它们和消息插槽共用对话区的观察器。 */
   function codexPlusHasThreadUiSlots() {
-    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above", "activity.after"].includes(item.slot));
+    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above", "approval", "activity.after"].includes(item.slot));
   }
 
   function refreshCodexPlusMessageSlots() {
@@ -21336,11 +21447,21 @@
    * turn.after（每一轮对话的末尾，render 收到 turnKey）、sessionRow.prefix / sessionRow.suffix
    * （侧栏每个会话行标题前 / 后，render 收到 sessionId、title）、overlay（铺满窗口的浮层，默认不挡点击）、
    * activity.after（对话里每个活动条目——命令、工具 / 子 agent 调用、出错、推理——的末尾，render 收到
-   * kind、itemIds、text；条目在 Codex 折叠的「用时 Ns」里，展开后才渲染）。
+   * kind、itemIds、text；条目在 Codex 折叠的「用时 Ns」里，展开后才渲染）、
+   * composer.left / composer.right（输入框底栏左侧按钮组末尾 / 右侧按钮组开头）、composer.below（输入框下方）、
+   * home.above（新对话首页输入框上方）、header.title（顶栏标题后面）、approval（审批卡片底部，render 收到 kind）、
+   * projectRow.suffix（侧栏项目行名称后，render 收到 projectId、label）、sidebar.section（侧栏分组标题右侧，
+   * render 收到 section）。
    * 每个位置一个带拓展标记的宿主节点，里面每个注册项一个容器；容器新建时调用 render（DOM 会随 Codex 重建，
    * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
    */
-  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar", "turn.after", "sessionRow.prefix", "sessionRow.suffix", "overlay", "activity.after"];
+  const codexPlusUiSlotNames = [
+    "composer.above", "composer.below", "composer.left", "composer.right", "home.above",
+    "thread.top", "thread.bottom", "turn.after", "header.title", "titlebar", "approval",
+    "sidebar.top", "sidebar.bottom", "sidebar.section", "sessionRow.prefix", "sessionRow.suffix", "projectRow.suffix",
+    "overlay",
+    "activity.after",
+  ];
   const codexPlusUiSlotVersions = new Map();
 
   function codexPlusUiSlotAnchors(slot) {
@@ -21378,6 +21499,51 @@
           };
           const next = title.nextElementSibling;
           return [{ parent: title.parentElement, place: slot === "sessionRow.prefix" ? title : (next && !isExtensionUiNode(next) ? next : "end"), info }];
+        });
+      case "composer.below":
+        return visible("[data-codex-composer-root]").map((node) => ({ parent: node, place: "end" }));
+      case "composer.left":
+        // 底栏左侧按钮组（添加内容、权限……）：「添加内容」按钮所在的那一行 flex。
+        return visible("[data-composer-footer-responsive]")
+          .map((footer) => {
+            const row = footer.querySelector("[data-composer-navigation-target]")?.closest("div.flex");
+            return row && footer.contains(row) ? row : null;
+          })
+          .filter(Boolean)
+          .map((row) => ({ parent: row, place: "end" }));
+      case "composer.right":
+        // 底栏右侧按钮组（听写、发送）：放在最前面。
+        return visible('[data-composer-footer-responsive] > [class*="col-start-3"]')
+          .map((group) => group.querySelector(":scope div.shrink-0.items-center"))
+          .filter(Boolean)
+          .map((row) => ({ parent: row, place: "start" }));
+      case "home.above":
+        return visible('[data-codex-composer-root][data-composer-placement="home"]').map((node) => ({ parent: node.parentElement, place: node }));
+      case "header.title":
+        return visible("[data-app-shell-titlebar-content]").map((node) => ({ parent: node, place: "end" }));
+      case "approval":
+        return visible("[data-codex-approval-surface]").map((card) => ({
+          parent: card,
+          place: "end",
+          info: { kind: card.tagName === "FORM" || card.querySelector("form") ? "form" : "card" },
+        }));
+      case "sidebar.section":
+        return visible("[data-app-action-sidebar-section]").flatMap((section) => {
+          const actions = section.querySelector(':scope [class*="nav-section-title"] > div.shrink-0');
+          return actions ? [{ parent: actions, place: "start", info: { section: section.getAttribute("data-app-action-sidebar-section-heading") || "" } }] : [];
+        });
+      case "projectRow.suffix":
+        return visible("[data-app-action-sidebar-project-row]").flatMap((row) => {
+          const label = row.querySelector("[data-marquee-text]")?.parentElement;
+          if (!label?.parentElement) return [];
+          return [{
+            parent: label.parentElement,
+            place: label.nextElementSibling && !isExtensionUiNode(label.nextElementSibling) ? label.nextElementSibling : "end",
+            info: {
+              projectId: row.getAttribute("data-app-action-sidebar-project-id") || "",
+              label: row.getAttribute("data-app-action-sidebar-project-label") || "",
+            },
+          }];
         });
       case "overlay":
         return document.body ? [{ parent: document.body, place: "end" }] : [];
@@ -21935,7 +22101,8 @@
 
   function codexPlusDictationEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
-      && codexPlusBackendSettings.dictation?.enabled === true;
+      && codexPlusBackendSettings.dictation?.enabled === true
+      && !window.__codexPlusBuiltinInactive?.has("dictation");
   }
 
   function codexPlusDictationEditor(scope) {
@@ -22538,6 +22705,7 @@
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-typing-effects"]');
 
   function codexPlusTypingEffectMode() {
+    if (!!window.__codexPlusBuiltinInactive?.has("typing-effects")) return "off";
     const value = codexPlusSettings().typingEffect;
     return ["rainbow", "fireworks", "stars"].includes(value) ? value : "off";
   }
@@ -23582,6 +23750,592 @@
     runScanStep(scanLightweight);
     scheduleDeferredScan();
   }
+  /**
+   * 内置拓展：Codex++ 自带的功能也挂在拓展内核上，和第三方拓展走同一套生命周期
+   * （没有特权功能：自带的也能单独停用、被别的拓展顶替）。
+   *
+   *   - 每个内置功能是一个拓展实例（scriptKey = builtin:<id>）：实例在时功能可用，卸载时功能撤下；
+   *   - 管理器「内置拓展」里可以单独停用（用户脚本配置里 scripts["builtin:<id>"] = false）；
+   *   - 第三方拓展包在 codexpp.json 里声明 `replaces: ["<id>"]`，它启用时对应的内置拓展让位；
+   *   - 功能自己的设置开关（如「Agent 桌宠」）照旧生效：内置拓展是外面一层，两者都开功能才出现。
+   *
+   * 停用 / 顶替状态由 Codex++ 随用户脚本注入包下发（window.__codexPlusBuiltinExtensionState），
+   * 热重载时更新。功能的开关检查在注入早期（本分片执行前）、以及只抽单个分片的测试里也会被调用，所以只记
+   * 「停用的」：window.__codexPlusBuiltinInactive 里没有的 id 都算启用，功能侧写成
+   * `!window.__codexPlusBuiltinInactive?.has("<id>")`。实例卸载时加进集合，装上时移出。
+   */
+  function codexPlusBuiltinInactiveIds() {
+    if (!(window.__codexPlusBuiltinInactive instanceof Set)) window.__codexPlusBuiltinInactive = new Set();
+    return window.__codexPlusBuiltinInactive;
+  }
+
+  /** 内置拓展是否在用（没被停用、没被顶替）。 */
+  function codexPlusBuiltinExtensionActive(id) {
+    return !window.__codexPlusBuiltinInactive?.has(id);
+  }
+
+  /**
+   * 内置拓展清单。sync 在装上 / 卸下后调用，让功能按新的开关状态挂载或撤下（函数声明提前，
+   * 这里引用后面分片里的函数没有问题；不存在时跳过）。apply 是完全用公开拓展接口写的内置拓展。
+   * 管理器里的名字与说明在 Rust 侧 BUILTIN_EXTENSIONS 维护，两边 id 要一致。
+   */
+  function codexPlusBuiltinExtensionCatalog() {
+    return [
+      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet() },
+      { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.() },
+      { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
+      { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
+      { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects() },
+      { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons() },
+      { id: "history-turn-recovery", name: "历史轮次补全" },
+      { id: "capacity-auto-retry", name: "容量不足自动重试" },
+      { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.() },
+      { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
+      { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
+    ];
+  }
+
+  /** 下发的停用 / 顶替状态：{ disabled: [id], replacedBy: { id: 拓展 key } }。 */
+  function codexPlusBuiltinExtensionState() {
+    const state = window.__codexPlusBuiltinExtensionState;
+    return {
+      disabled: new Set(Array.isArray(state?.disabled) ? state.disabled.map(String) : []),
+      replacedBy: state?.replacedBy && typeof state.replacedBy === "object" ? state.replacedBy : {},
+    };
+  }
+
+  const codexPlusBuiltinExtensionHandles = new Map();
+
+  function codexPlusRunBuiltinSync(definition) {
+    if (typeof definition.sync !== "function") return;
+    runScanStep(() => definition.sync());
+  }
+
+  /** 按下发状态装上 / 卸下内置拓展。重复调用只处理有变化的项。 */
+  function syncCodexPlusBuiltinExtensions() {
+    const inactive = codexPlusBuiltinInactiveIds();
+    const state = codexPlusBuiltinExtensionState();
+    for (const definition of codexPlusBuiltinExtensionCatalog()) {
+      const wanted = !state.disabled.has(definition.id) && !state.replacedBy[definition.id];
+      const handle = codexPlusBuiltinExtensionHandles.get(definition.id);
+      if (wanted && !handle) {
+        try {
+          const ctx = codexPlusCreateExtension({
+            id: `builtin:${definition.id}`,
+            apply(ctx) {
+              inactive.delete(definition.id);
+              ctx.effect(() => () => {
+                inactive.add(definition.id);
+                codexPlusRunBuiltinSync(definition);
+              });
+              if (typeof definition.apply === "function") definition.apply(ctx);
+              codexPlusRunBuiltinSync(definition);
+            },
+          }, { scriptKey: `builtin:${definition.id}` });
+          codexPlusBuiltinExtensionHandles.set(definition.id, ctx);
+        } catch (error) {
+          codexPlusMarkExtensionFailure(`builtin:${definition.id}`, String(error?.stack || error?.message || error));
+        }
+      } else if (!wanted && handle) {
+        codexPlusBuiltinExtensionHandles.delete(definition.id);
+        handle.dispose();
+      } else if (!wanted && !inactive.has(definition.id)) {
+        // 还没装上过（注入早期按默认启用跑着）：直接记成停用，让功能撤下。
+        inactive.add(definition.id);
+        codexPlusRunBuiltinSync(definition);
+      }
+    }
+  }
+
+  /** 内置拓展的现状：给 codexPlus.builtins() 与诊断用。 */
+  function codexPlusBuiltinExtensionList() {
+    const state = codexPlusBuiltinExtensionState();
+    return codexPlusBuiltinExtensionCatalog().map(({ id, name }) => ({
+      id,
+      name,
+      active: codexPlusBuiltinExtensionActive(id),
+      disabled: state.disabled.has(id),
+      replacedBy: state.replacedBy[id] || null,
+    }));
+  }
+
+  /**
+   * 多开身份提示：完全用公开拓展接口写的内置拓展（overlay 插槽），示范内置功能与第三方拓展同一种写法。
+   * 启动器在独立 Codex 实例注入前设置 window.__CODEX_PLUS_INSTANCE_LABEL__（或兼容的 __CODEX_PLUS_INSTANCE_ID__）；
+   * 普通主实例没有这些值，不注册任何东西。
+   */
+  function codexPlusInstanceIdentityExtension(ctx) {
+    const raw = window.__CODEX_PLUS_INSTANCE_LABEL__ || window.__CODEX_PLUS_INSTANCE_ID__;
+    const label = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!label) return;
+    ctx.registerSlot({
+      slot: "overlay",
+      order: 0,
+      render: ({ container }) => {
+        const node = document.createElement("div");
+        node.id = "codex-plus-instance-identity";
+        node.setAttribute("role", "status");
+        node.setAttribute("aria-label", `当前 Codex++ 多开身份：${label}`);
+        node.style.cssText = [
+          "position:fixed",
+          "top:8px",
+          "left:50%",
+          "transform:translateX(-50%)",
+          "pointer-events:none",
+          "user-select:none",
+          "box-sizing:border-box",
+          "max-width:min(80vw,640px)",
+          "overflow:hidden",
+          "text-overflow:ellipsis",
+          "white-space:nowrap",
+          "padding:3px 10px",
+          "border:1px solid color-mix(in srgb,currentColor 22%,transparent)",
+          "border-radius:999px",
+          "background:color-mix(in srgb,var(--color-token-bg-primary,#202020) 88%,transparent)",
+          "color:var(--color-token-text-secondary,rgba(210,210,220,.9))",
+          "font:11px/16px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
+          "letter-spacing:.02em",
+          "opacity:.86",
+        ].join(";");
+        node.textContent = `Codex++ 多开 · ${label}`;
+        container.appendChild(node);
+      },
+    });
+  }
+
+  /**
+   * 会话标题中间件：会话第一轮结束后，若有拓展挂了 `session/title` 中间件，
+   * 以 { sessionId, title, firstMessage, lastMessage } 跑一遍链，结果的 title 与原标题不同就改名。
+   * 每个会话只处理一次（本页面生命周期内）；没有中间件时什么也不做，也不启动会话观察。
+   */
+  function codexPlusSessionTitleExtension(ctx) {
+    const handled = new Set();
+    const firstMessages = new Map();
+    let watching = null;
+    const sync = () => {
+      const wanted = codexPlusExtensionInterceptors.has("session/title");
+      if (wanted && !watching) {
+        watching = ctx.on("session/event", (event, { sessionId }) => {
+          if (event?.type === "user/message" && !firstMessages.has(sessionId)) firstMessages.set(sessionId, String(event.data?.text ?? ""));
+          if (event?.type !== "turn/complete" || handled.has(sessionId)) return;
+          handled.add(sessionId);
+          void codexPlusRunSessionTitle(sessionId, firstMessages.get(sessionId) ?? "", String(event.data?.lastMessage ?? ""));
+        });
+      } else if (!wanted && watching) {
+        watching();
+        watching = null;
+      }
+    };
+    ctx.on("extensions/changed", sync);
+    ctx.setTimeout(sync, 0);
+  }
+
+  async function codexPlusRunSessionTitle(sessionId, firstMessage, lastMessage) {
+    const query = codexPlusServices.get("sessionQuery")?.value;
+    const sessions = codexPlusServices.get("sessions")?.value;
+    if (!query || !sessions) return;
+    try {
+      const title = String((await query.readTitle(sessionId)) ?? "");
+      const result = await Promise.race([
+        Promise.resolve(codexPlusRunWaterfall("session/title", { sessionId, title, firstMessage, lastMessage })),
+        new Promise((resolve) => setTimeout(() => resolve(null), 30000)),
+      ]);
+      const next = String(result?.title ?? "").trim();
+      if (next && next !== title) await sessions.rename(sessionId, next.slice(0, 120));
+    } catch (error) {
+      codexPlusMarkExtensionFailure("builtin:session-title-hook", String(error?.stack || error?.message || error));
+    }
+  }
+  /**
+   * dsh 前端（client）插件的运行时：codexPlus.dshClient(ctx, modules, options)。
+   *
+   * dsh 的前端插件是懒 CJS 工厂（window.__ModuleLoader__.load({ id, factory })），factory(require) 返回
+   * { inject, apply(ctx) }，apply 里用 ctx.slots.register(options, Component) 往 dsh Web 客户端的 React 插槽里放组件。
+   * Codex 的页面也是 React（19），这里把 Codex 自己的 React / ReactDOM 交给插件的 require，再把 dsh 插槽一一对到
+   * Codex++ 的界面插槽：组件用 createRoot 渲染进插槽容器，随拓展实例卸载。对不上的插槽不显示，记一条失败说明。
+   *
+   * 配套拓展包把插件的 client.js 夹在两段胶水之间：前一段截住 __ModuleLoader__.load 并给 fetch 换成经后台转给插件
+   * 宿主半边（ctx.connection.fetch 注册的路由）的版本，后一段调这里。设计见 docs/plans/2026-10-30-dsh-plugin-import-design.md。
+   */
+
+  let codexPlusReactModulesPromise = null;
+
+  /**
+   * 找 Codex 页面里的 React、ReactDOM、react-dom/client、jsx-runtime。打包器把 CJS 依赖做成惰性 getter
+   * （`()=>(t||(e((t={exports:{}}).exports,t,t.exports),e=null),t.exports)`）导出，调用它就拿到模块本身；
+   * 这些 getter 只做一次初始化、之后返回缓存，调用没有副作用。
+   */
+  function loadCodexPlusReactModules() {
+    codexPlusReactModulesPromise ||= (async () => {
+      const getter = /^\(\)=>\(\w\|\|\(\w\(\(\w=\{exports:\{\}\}\)\.exports,\w,\w\.exports\),\w=null\),\w\.exports\)$/;
+      const urls = codexAppAssetCandidateUrls().filter((url) => /\.js(\?|$)/.test(url));
+      urls.sort((left, right) => Number(right.includes("app-shared")) - Number(left.includes("app-shared")));
+      const found = {};
+      for (const url of urls) {
+        let module;
+        try {
+          module = await import(url);
+        } catch {
+          continue;
+        }
+        for (const value of Object.values(module)) {
+          if (typeof value !== "function") continue;
+          let source = "";
+          try {
+            source = Function.prototype.toString.call(value);
+          } catch {}
+          if (!getter.test(source)) continue;
+          let exports;
+          try {
+            exports = value();
+          } catch {
+            continue;
+          }
+          if (!exports || (typeof exports !== "object" && typeof exports !== "function")) continue;
+          if (!found.react && typeof exports.createElement === "function" && typeof exports.useState === "function") found.react = exports;
+          else if (!found.reactDomClient && typeof exports.createRoot === "function") found.reactDomClient = exports;
+          else if (!found.reactDom && typeof exports.createPortal === "function" && typeof exports.flushSync === "function") found.reactDom = exports;
+          else if (!found.jsxRuntime && typeof exports.jsx === "function" && typeof exports.jsxs === "function") found.jsxRuntime = exports;
+        }
+        if (found.react && found.reactDomClient && found.reactDom && found.jsxRuntime) return found;
+      }
+      if (!found.react || !found.reactDomClient) throw new Error("没有在 Codex 页面里找到 React（Codex 版本不兼容）");
+      return found;
+    })();
+    codexPlusReactModulesPromise.catch(() => {
+      codexPlusReactModulesPromise = null;
+    });
+    return codexPlusReactModulesPromise;
+  }
+
+  /**
+   * dsh 插槽 → Codex++ 位置。kind：slot（界面插槽）、rowAction（会话行「更多」菜单的自绘项）、
+   * message（助手消息下方）、page（整页，带图标栏入口）。
+   */
+  const codexPlusDshSlotMap = {
+    "shell.overlay": { kind: "slot", slot: "overlay" },
+    "sidebar.workspaces.session.menu.item": { kind: "rowAction" },
+    "sidebar.workspaces.session.row.action": { kind: "slot", slot: "sessionRow.suffix" },
+    "sidebar.session.row.leading": { kind: "slot", slot: "sessionRow.prefix" },
+    "sidebar.footer.action": { kind: "slot", slot: "sidebar.bottom" },
+    "conversation.chat.turnTail": { kind: "slot", slot: "turn.after" },
+    "conversation.input.left": { kind: "slot", slot: "composer.left" },
+    "conversation.input.right": { kind: "slot", slot: "composer.right" },
+    "conversation.input.dock": { kind: "slot", slot: "composer.above" },
+    "conversation.input.overlay": { kind: "slot", slot: "composer.above" },
+    "conversation.composer.dock": { kind: "slot", slot: "composer.below" },
+    "conversation.session.header.actions": { kind: "slot", slot: "header.title" },
+    "conversation.session.header.utilities": { kind: "slot", slot: "titlebar" },
+    "conversation.session.header.corner": { kind: "slot", slot: "titlebar" },
+    "conversation.chat.assistant-actions": { kind: "message" },
+    "settings.section": { kind: "page" },
+    "settings.general.item": { kind: "page" },
+    "sidebar.panellist": { kind: "page" },
+  };
+
+  /** 一个可订阅的快照（dsh 的 ObservableSnapshot），给 useSyncExternalStore 用。 */
+  function codexPlusDshSnapshotStore(initial, start) {
+    let value = initial;
+    const listeners = new Set();
+    let stop = null;
+    return {
+      getSnapshot: () => value,
+      subscribe(listener) {
+        listeners.add(listener);
+        if (listeners.size === 1 && typeof start === "function") stop = start((next) => {
+          value = next;
+          for (const item of [...listeners]) {
+            try { item(); } catch {}
+          }
+        });
+        return () => {
+          listeners.delete(listener);
+          if (!listeners.size && typeof stop === "function") {
+            stop();
+            stop = null;
+          }
+        };
+      },
+      set(next) {
+        value = next;
+        for (const item of [...listeners]) {
+          try { item(); } catch {}
+        }
+      },
+    };
+  }
+
+  async function codexPlusRunDshClient(ctx, modules, options = {}) {
+    const packageName = String(options.packageName || ctx.id);
+    const libs = await loadCodexPlusReactModules();
+    if (ctx.disposed) return;
+    const { react: React, reactDomClient } = libs;
+    const fail = (message) => ctx.fail(new Error(`[dsh ${packageName}] ${message}`));
+
+    // ---- 客户端服务 ----
+    const sessionQuery = codexPlusServices.get("sessionQuery")?.value;
+    const sessionsWrite = codexPlusServices.get("sessions")?.value;
+    const emptyList = { ids: [], byId: {}, phase: "loading", projectionsBySession: {} };
+    const toList = (records) => {
+      const byId = {};
+      for (const record of records || []) {
+        byId[record.id] = { sessionId: record.id, agentAvailable: true, updatedAt: Number(record.updatedAt) || 0, running: false, blank: false, cwd: record.cwd || undefined, title: record.title || "" };
+      }
+      return { ids: Object.keys(byId), byId, phase: "ready", projectionsBySession: {} };
+    };
+    const refreshList = async () => {
+      if (!sessionQuery) return;
+      try {
+        sessionList.set(toList(await sessionQuery.listSessions({ limit: 100 })));
+      } catch (error) {
+        fail(`读取会话列表失败：${error?.message || error}`);
+      }
+    };
+    const sessionList = codexPlusDshSnapshotStore(emptyList, () => {
+      void refreshList();
+      const timer = setInterval(() => void refreshList(), 15000);
+      return () => clearInterval(timer);
+    });
+    const workspaceList = codexPlusDshSnapshotStore({ items: [], archivedSessionIds: [], pinnedSessionIds: [] });
+    const clientSessions = {
+      list: sessionList,
+      refresh: refreshList,
+      async create({ cwd } = {}) {
+        const result = await sessionsWrite?.create(undefined, cwd ? { cwd } : {});
+        return result?.thread?.id;
+      },
+      async fork({ sessionId } = {}) {
+        return (await sessionsWrite?.fork(sessionId))?.id;
+      },
+      retainInfo: () => undefined,
+    };
+    const uiWorkspace = {
+      selection: { getSnapshot: () => ({ sessionId: codexPlusCurrentSessionId() || undefined }), subscribe: () => () => {} },
+      clearMain() {},
+    };
+    const localeService = {
+      register(ns, langOrDicts, dict) {
+        return ctx.locale.register(String(ns), langOrDicts, dict);
+      },
+      bind: (ns) => ctx.locale.bind(String(ns)),
+      getLocale: () => ({ id: ctx.locale.current }),
+      getSnapshot: () => ({ id: ctx.locale.current, revision: 0 }),
+      subscribe: (listener) => ctx.on("locale/change", () => listener()),
+      resolveText: ctx.locale.resolve,
+      setLocale() {},
+    };
+
+    // ---- 渲染 ----
+    class Boundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { failed: false };
+      }
+      static getDerivedStateFromError() {
+        return { failed: true };
+      }
+      componentDidCatch(error) {
+        fail(`组件出错：${error?.stack || error?.message || error}`);
+      }
+      render() {
+        return this.state.failed ? null : this.props.children;
+      }
+    }
+    const mount = (container, Component, props) => {
+      const root = reactDomClient.createRoot(container);
+      root.render(React.createElement(Boundary, null, React.createElement(Component, props)));
+      // React 不允许在渲染过程中同步卸载另一棵树：挪到微任务里。
+      return () => queueMicrotask(() => {
+        try { root.unmount(); } catch {}
+      });
+    };
+    const standardProps = (sessionId) => ({
+      sessionId,
+      useSessions: () => React.useSyncExternalStore(sessionList.subscribe, sessionList.getSnapshot),
+      useSession: (selector) => {
+        const list = React.useSyncExternalStore(sessionList.subscribe, sessionList.getSnapshot);
+        const session = sessionId ? list.byId[sessionId] : undefined;
+        return typeof selector === "function" ? selector(session) : session;
+      },
+      useSessionStatus: () => "idle",
+      useWorkspaces: () => React.useSyncExternalStore(workspaceList.subscribe, workspaceList.getSnapshot),
+      usePanelInfo: () => ({ visible: true }),
+      useProjection: () => undefined,
+      renderFactorySlot: () => null,
+    });
+
+    let anonymous = 0;
+    const register = (options = {}, Component) => {
+      const name = String(options?.name || "");
+      const target = codexPlusDshSlotMap[name];
+      if (!target) {
+        fail(`插槽 ${name} 在 Codex 里没有对应位置，这个组件不会显示`);
+        return () => {};
+      }
+      if (typeof Component !== "function" && typeof Component !== "object") {
+        fail(`插槽 ${name} 注册的不是 React 组件`);
+        return () => {};
+      }
+      const t = options.locale ? ctx.locale.bind(String(options.locale)) : (key) => key;
+      let face = {};
+      if (typeof options.inject === "function") {
+        try {
+          const raw = options.inject() || {};
+          const { hooks, ...rest } = raw;
+          face = { ...rest };
+          for (const [key, hook] of Object.entries(hooks || {})) face[`use${key[0].toUpperCase()}${key.slice(1)}`] = hook;
+        } catch (error) {
+          fail(`插槽 ${name} 的 inject 出错：${error?.message || error}`);
+        }
+      }
+      const order = Number.isFinite(options.order) ? Number(options.order) : 0;
+      const props = (extra) => ({ ...standardProps(extra.sessionId ?? (codexPlusCurrentSessionId() || undefined)), t, ...face, ...extra });
+      const label = typeof options.label === "function" ? options.label() : String(options.label || options.id || packageName);
+      const id = `dsh-${name}-${options.id || options.key || ++anonymous}`;
+      switch (target.kind) {
+        case "slot":
+          return ctx.registerSlot({
+            slot: target.slot,
+            order,
+            render: ({ container, sessionId, title, turnKey }) => mount(container, Component, props({
+              ...(sessionId ? { sessionId, displayTitle: title } : {}),
+              ...(turnKey ? { turn: { key: turnKey }, seq: 0, openFile: () => {} } : {}),
+              wide: true,
+            })),
+          }, { id });
+        case "rowAction":
+          return ctx.registerRowAction({
+            label,
+            order,
+            render: ({ container, session_id, title, close }) => mount(container, Component, props({
+              sessionId: session_id,
+              displayTitle: title,
+              useMenuOpenState: () => [true, (open) => {
+                if (!open) close();
+              }],
+            })),
+          }, { id });
+        case "message":
+          return ctx.registerMessageDecoration({
+            roles: ["assistant"],
+            order,
+            render: ({ message, container }) => mount(container, Component, props({ messageId: message.id, sessionId: message.conversationId || undefined })),
+          }, { id });
+        case "page":
+          return ctx.registerPage({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ close: close || (() => {}) })),
+          }, { id, navLabel: label });
+        default:
+          return () => {};
+      }
+    };
+    const slots = {
+      register,
+      // Codex++ 的插槽一开始就都在：立刻执行，回调返回的撤销函数随拓展卸载。
+      inject(key, callback) {
+        let result;
+        try {
+          result = callback();
+        } catch (error) {
+          fail(`插槽 ${key} 的注册出错：${error?.message || error}`);
+          return () => {};
+        }
+        const disposers = typeof result === "function" ? [result] : result && typeof result[Symbol.iterator] === "function" ? [...result] : [];
+        return ctx.effect(() => () => disposers.forEach((dispose) => {
+          try { dispose?.(); } catch {}
+        }));
+      },
+      entries: () => [],
+      entriesOfSlot: () => [],
+      spec: (key) => (codexPlusDshSlotMap[key] ? { key } : undefined),
+      snapshot: () => ({}),
+      onEntryError: () => () => {},
+      subscribe: () => () => {},
+      registerFactory: () => () => {},
+    };
+    const services = { slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace };
+    const clientCtx = new Proxy({
+      get: (name) => services[name],
+      effect(callback) {
+        const result = callback();
+        if (typeof result === "function") return ctx.effect(() => result);
+        if (result && typeof result.next === "function") {
+          // generator effect：yield 出来的撤销函数随拓展卸载。
+          const disposers = [];
+          for (let step = result.next(); !step.done; step = result.next()) if (typeof step.value === "function") disposers.push(step.value);
+          return ctx.effect(() => () => disposers.reverse().forEach((dispose) => {
+            try { dispose(); } catch {}
+          }));
+        }
+        return () => {};
+      },
+      on: (event, handler) => ctx.on(String(event), handler),
+      emit: (event, ...args) => ctx.emit(String(event), ...args),
+      inject(names, callback) {
+        const list = Array.isArray(names) ? names : Object.keys(names || {});
+        const missing = list.filter((item) => !(item in services));
+        if (missing.length) {
+          fail(`可选依赖 ${missing.join("、")} 在 Codex 里没有`);
+          return () => {};
+        }
+        return clientCtx.effect(() => callback(clientCtx));
+      },
+      setTimeout: (handler, delay) => ctx.setTimeout(handler, delay),
+      setInterval: (handler, delay) => ctx.setInterval(handler, delay),
+      logger: Object.assign((scope) => console.info.bind(console, `[dsh ${packageName}:${scope}]`), {
+        info: console.info.bind(console, `[dsh ${packageName}]`),
+        warn: console.warn.bind(console, `[dsh ${packageName}]`),
+        error: console.error.bind(console, `[dsh ${packageName}]`),
+        debug: () => {},
+      }),
+    }, {
+      get(target, key) {
+        if (key in target) return target[key];
+        if (typeof key === "string" && key in services) return services[key];
+        return undefined;
+      },
+    });
+
+    const builtinModules = {
+      react: React,
+      "react/jsx-runtime": libs.jsxRuntime,
+      "react/jsx-dev-runtime": libs.jsxRuntime,
+      "react-dom": libs.reactDom,
+      "react-dom/client": reactDomClient,
+    };
+    const require = (name) => {
+      if (name in builtinModules && builtinModules[name]) return builtinModules[name];
+      throw new Error(`dsh 前端插件 require 了 ${name}，Codex++ 只提供 React 与 ReactDOM`);
+    };
+    for (const entry of Array.isArray(modules) ? modules : []) {
+      if (ctx.disposed) return;
+      let plugin;
+      try {
+        const exported = entry?.factory?.(require);
+        plugin = exported?.default && typeof exported.default.apply === "function" ? exported.default : exported;
+      } catch (error) {
+        fail(`加载 ${entry?.id || packageName} 失败：${error?.message || error}`);
+        continue;
+      }
+      const apply = typeof plugin === "function" ? plugin : plugin?.apply;
+      if (typeof apply !== "function") {
+        fail(`${entry?.id || packageName} 没有导出 apply`);
+        continue;
+      }
+      const inject = Array.isArray(plugin?.inject) ? plugin.inject : Object.keys(plugin?.inject || {});
+      const missing = inject.filter((name) => !(name in services));
+      if (missing.length) {
+        fail(`${entry?.id || packageName} 依赖 ${missing.join("、")}，Codex 里没有这些前端服务，不加载`);
+        continue;
+      }
+      try {
+        await apply(clientCtx, options.config ?? {});
+      } catch (error) {
+        fail(`${entry?.id || packageName} 的 apply 出错：${error?.stack || error?.message || error}`);
+      }
+    }
+  }
   // Agent 桌宠：Codex 窗口里一个可拖动的小角色，按下以底边为支点压扁、松开回弹，并播放按压 / 松开音。
   // 图片不随应用打包：经桥接 `/agent-pet/image` 由后端联网下载、缓存后以 data URI 返回。
   // 内嵌的两组音效随启动器注入（window.__CODEX_PLUS_AGENT_PET_SOUNDS__）；下载音效组和用户导入的自定义音效
@@ -23633,7 +24387,8 @@
   }
 
   function codexPlusAgentPetActive(settings) {
-    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.agents.includes("codex");
+    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.agents.includes("codex")
+      && !window.__codexPlusBuiltinInactive?.has("agent-pet");
   }
 
   function readCodexPlusAgentPetPosition() {
@@ -23966,6 +24721,8 @@
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
       'nav[data-app-navigation-rail]',
+      // 审批卡片出现时补上拓展的 approval 插槽。
+      "[data-codex-approval-surface]",
       ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
     ].join(", ");
   }
@@ -24157,70 +24914,8 @@
       if (++attempts >= 60 && codexPlusBackendSettingsLoaded) window.clearInterval(timer);
     }, 250);
   })();
-  /**
-   * 多开实例身份提示。
-   *
-   * 启动器会在独立 Codex 实例的 renderer 注入前设置
-   * `window.__CODEX_PLUS_INSTANCE_LABEL__`（或兼容用的
-   * `window.__CODEX_PLUS_INSTANCE_ID__`）。普通主实例没有这些值，因此不会
-   * 渲染提示。节点带有扩展归属标记，避免被扫描调度器当成 Codex 原生节点
-   * 触发自喂循环；也不占用公开的 window.codexPlus API 名称。
-   */
-  function installCodexPlusInstanceIdentity() {
-    const raw = window.__CODEX_PLUS_INSTANCE_LABEL__ || window.__CODEX_PLUS_INSTANCE_ID__;
-    const label = String(raw || "").replace(/\s+/g, " ").trim();
-    if (!label) return;
-    const mount = () => {
-      if (!document.body) return false;
-      let node = document.getElementById("codex-plus-instance-identity");
-      if (!node) {
-        node = document.createElement("div");
-        node.id = "codex-plus-instance-identity";
-        node.setAttribute("data-codex-plus-ext", "instance-identity");
-        node.setAttribute("role", "status");
-        node.style.cssText = [
-          "position:fixed",
-          "top:8px",
-          "left:50%",
-          "transform:translateX(-50%)",
-          "z-index:2147483600",
-          "pointer-events:none",
-          "user-select:none",
-          "box-sizing:border-box",
-          "max-width:min(80vw,640px)",
-          "overflow:hidden",
-          "text-overflow:ellipsis",
-          "white-space:nowrap",
-          "padding:3px 10px",
-          "border:1px solid color-mix(in srgb,currentColor 22%,transparent)",
-          "border-radius:999px",
-          "background:color-mix(in srgb,var(--color-token-bg-primary,#202020) 88%,transparent)",
-          "color:var(--color-token-text-secondary,rgba(210,210,220,.9))",
-          "font:11px/16px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
-          "letter-spacing:.02em",
-          "opacity:.86",
-        ].join(";");
-        document.body.appendChild(node);
-      }
-      node.textContent = `Codex++ 多开 · ${label}`;
-      node.setAttribute("aria-label", `当前 Codex++ 多开身份：${label}`);
-      return true;
-    };
-    if (mount()) return;
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", mount, { once: true });
-    } else {
-      const observer = new MutationObserver(() => {
-        if (mount()) observer.disconnect();
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-      setTimeout(() => observer.disconnect(), 10000);
-    }
-  }
-
   installCodexConfigReadDeadline();
   installCodexPlusForceChineseLocale();
-  installCodexPlusInstanceIdentity();
   runScanStep(installCodexPlusTypingEffects);
   runScanStep(syncCodexPlusAgentPet);
   let codexPlusResizeRafId = 0;
@@ -24257,6 +24952,11 @@
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
+  // 内置功能挂到拓展内核上（见 96-builtin-extensions.js）。旧版直接挂在 body 上的多开身份提示先摘掉，
+  // 现在由内置拓展经 overlay 插槽画。用户脚本注入包下发停用 / 顶替状态后会再调一次。
+  document.querySelector('body > #codex-plus-instance-identity[data-codex-plus-ext="instance-identity"]')?.remove();
+  window.__codexPlusSyncBuiltinExtensions = syncCodexPlusBuiltinExtensions;
+  syncCodexPlusBuiltinExtensions();
 })();
 
 // === 粘贴修复 (CodexPlusPlus 页面增强) ===

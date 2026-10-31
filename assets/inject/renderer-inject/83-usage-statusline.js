@@ -525,7 +525,8 @@
   function codexPlusUsageEnabled() {
     return !codexPlusUsageState.disposed
       && codexPlusBackendSettingsLoaded
-      && codexPlusSettings().usageStatusLine === true;
+      && codexPlusSettings().usageStatusLine === true
+      && !window.__codexPlusBuiltinInactive?.has("usage-statusline");
   }
 
   /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */

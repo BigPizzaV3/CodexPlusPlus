@@ -52,6 +52,12 @@ type DshPlugin = {
     hooks: string[];
     instructions: boolean;
     staticPrompt: boolean;
+    /** agent/request（改模型 / 推理强度）经网关请求中间件。 */
+    gatewayRequest?: boolean;
+    /** agent/request-error 经网关失败重试。 */
+    gatewayError?: boolean;
+    /** 插件注册的斜杠命令，在 Codex 输入框里同名可用。 */
+    commands?: { name: string; description: string; hint: string }[];
     installed: boolean;
     enabled: boolean;
     scriptsEnabled: boolean;
@@ -303,7 +309,7 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
                 <div className="dsh-plugin-mappings">
                   {row.mappings.map((target) => (
                     <span className="dsh-mapping" key={target}>
-                      {target === "instructions" ? t("提示词 → instructions") : tf("钩子 {0}", [target])}
+                      {mappingLabel(target)}
                     </span>
                   ))}
                 </div>
@@ -365,6 +371,28 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
   );
 }
 
+/** 一行插件映射到 Codex 的去处，给人看的说法。 */
+function mappingLabel(target: string): string {
+  switch (target) {
+    case "instructions":
+      return t("提示词 → instructions");
+    case "mirror":
+      return t("会话镜像（钩子 → dsh 会话日志）");
+    case "commands":
+      return t("斜杠命令");
+    case "connection":
+      return t("前端请求路由");
+    case "gateway:request":
+      return t("模型请求 → 网关");
+    case "gateway:instructions":
+      return t("提示词组装 → 网关");
+    case "gateway:error":
+      return t("失败重试 → 网关");
+    default:
+      return tf("钩子 {0}", [target]);
+  }
+}
+
 /** 配套拓展包的现状：映射到了哪里、在不在、有没有被停用。 */
 function CompanionLine({ companion }: { companion: NonNullable<DshPlugin["companion"]> }) {
   const parts: string[] = [];
@@ -372,6 +400,9 @@ function CompanionLine({ companion }: { companion: NonNullable<DshPlugin["compan
     parts.push(companion.staticPrompt ? t("系统提示词追加到每次请求的 instructions") : t("系统提示词（含动态片段）每次请求求值后追加到 instructions"));
   }
   if (companion.hooks.length) parts.push(tf("事件转成 Codex 钩子 {0}", [companion.hooks.join("、")]));
+  if (companion.gatewayRequest) parts.push(t("agent/request 经网关改模型与推理强度"));
+  if (companion.gatewayError) parts.push(t("agent/request-error 经网关决定失败重试"));
+  if (companion.commands?.length) parts.push(tf("斜杠命令 {0}", [companion.commands.map((command) => `/${command.name}`).join(" ")]));
   let state = "";
   if (!companion.installed) state = t("配套拓展包未生成，点「重新分析」重试。");
   else if (!companion.scriptsEnabled) state = t("拓展总开关已关闭，配套拓展包不会运行。");
@@ -381,7 +412,7 @@ function CompanionLine({ companion }: { companion: NonNullable<DshPlugin["compan
       <span>
         {tf("配套拓展「{0}」：{1}。", [companion.id, parts.join("；")])}
         {companion.instructions ? t("提示词只对经 Codex++ 本地代理 / 网关发出的请求生效。") : null}
-        {companion.hooks.length ? t("钩子需在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」；每次事件在新进程里加载插件，插件的内存状态不跨事件保留。") : null}
+        {companion.hooks.length ? t("钩子需在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」；插件在常驻进程里运行，内存状态跨事件保留。") : null}
       </span>
       {state ? <div className="dsh-plugins-warning">{state}</div> : null}
     </div>

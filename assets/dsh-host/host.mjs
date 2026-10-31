@@ -5,9 +5,10 @@
 //   bridge.mjs 引入本模块，在 Codex 钩子 / 网关中间件进程里加载插件、派发映射过去的事件
 //
 // dsh 插件是 Cordis 插件：`inject` 声明依赖的服务，`apply(ctx, config)` 里注册工具等副作用。
-// Codex App 没有 dsh 的 agent 循环与会话服务，这里只提供工具插件真正能用上的那部分 ctx：
-// tools / systemPrompt（片段经网关追加到 instructions，也汇总进 MCP instructions）/ logger / timer / effect / on 等；
-// 少数能对上 Codex 钩子的事件（见 EVENT_HOOKS）由 Codex++ 生成的配套拓展包转发；
+// Codex App 没有 dsh 的 agent 循环与会话服务，这里提供插件能用上的那部分 ctx：
+// tools / systemPrompt（片段经网关追加到 instructions，也汇总进 MCP instructions）/ logger / timer / effect / on 等，
+// 以及 services.mjs 里的替身服务（会话镜像、agent 替身、llm、commands、fs、shell……）；
+// 能对上 Codex 钩子 / 网关的事件（见 EVENT_HOOKS、GATEWAY_EVENTS）由 Codex++ 生成的配套拓展包转发；
 // 必需依赖里有别的服务时不加载，并在报告里写明缺了什么。
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
@@ -15,9 +16,14 @@ import { register } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
+import {
+  AgentRegistry, MIRROR_SERVICES, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createLlm, createSessionQuery,
+  createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb,
+} from './services.mjs'
 
-const HOST_VERSION = '2'
+const HOST_VERSION = '3'
 const HOST_DIR = dirname(fileURLToPath(import.meta.url))
 const SHIMS = {
   '@deepseek-ai/dsh-tools': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-tools.mjs')).href,
@@ -26,6 +32,16 @@ const SHIMS = {
   '@deepseek-ai/dsh-skill': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-skill.mjs')).href,
   '@deepseek-ai/dsh-system-prompt': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-system-prompt.mjs')).href,
   '@deepseek-ai/dsh-llm': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-llm.mjs')).href,
+  '@deepseek-ai/dsh-session': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-session.mjs')).href,
+  '@deepseek-ai/dsh-fs': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-fs.mjs')).href,
+  '@deepseek-ai/dsh-credentials': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-credentials.mjs')).href,
+  '@deepseek-ai/dsh-storage-domain': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-storage-domain.mjs')).href,
+  '@deepseek-ai/dsh-web': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
+  '@deepseek-ai/dsh-user-questions': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
+  '@deepseek-ai/dsh-session-query': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
+  '@deepseek-ai/dsh-subprocess': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
+  '@deepseek-ai/dsh-shell': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
+  '@deepseek-ai/dsh-commands': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
 }
 /**
  * 能映射到 Codex 钩子的 dsh 事件。监听器由配套拓展包的钩子脚本经 bridge.mjs 调用，
@@ -36,18 +52,35 @@ export const EVENT_HOOKS = {
   'tools/post-execute': 'PostToolUse',
   'agent/pre-step': 'UserPromptSubmit',
   'agent/turn-stopping': 'Stop',
+  'agent/created': 'SessionStart',
+  'subagent/start': 'SubagentStart',
+  'subagent/end': 'SubagentStop',
 }
+/**
+ * 由会话镜像派发的事件：钩子常驻进程把 Codex 钩子翻成 dsh 会话日志，再按 dsh 的语义发这些事件。
+ * 用到它们（或 sessions / agents / sessionProjections 服务）的插件，配套拓展包会挂上 MIRROR_HOOKS 全部钩子。
+ */
+export const MIRROR_EVENTS = new Set(['session/event', 'session/created', 'agent/status', 'tools/result'])
+export const MIRROR_HOOKS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'PreCompact', 'PostCompact']
+/** 能对上 Codex++ 网关中间件的事件：agent/request 改模型 / 推理强度，agent/request-error 决定重试。 */
+export const GATEWAY_EVENTS = { 'agent/request': 'request', 'system-prompt/assemble': 'instructions', 'agent/request-error': 'error' }
+/** 插件注册的斜杠命令：配套拓展包在 Codex 页面里注册同名命令，经后台转给常驻进程执行。 */
+export const COMMANDS_TARGET = 'commands'
+/** 插件宿主半边经 ctx.connection.fetch 注册的 HTTP 路由：前端半边的 fetch('/api/…') 经配套拓展包的后台转过来。 */
+export const CONNECTION_TARGET = 'connection'
+/** 需要会话镜像（钩子常驻进程把 Codex 钩子翻成 dsh 会话日志）的行，映射到这个目标。 */
+export const MIRROR_TARGET = 'mirror'
 /** 系统提示词片段的映射目标：经网关中间件追加到每次模型请求的 instructions。 */
 export const INSTRUCTIONS_TARGET = 'instructions'
 const MCP_CLIENT_MODULE = '@deepseek-ai/dsh-mcp-client'
 const GROUP_MODULE = 'cordis:group'
-/** 宿主能提供的服务；Cordis 自带的 logger / timer 一并算上。skills 只截取注册的 skill，交给 Codex Skills。 */
-const SUPPORTED_SERVICES = new Set(['tools', 'systemPrompt', 'logger', 'timer', 'skills'])
 const APPLY_TIMEOUT_MS = 15_000
 const MAX_SKILL_SCAN_DEPTH = 4
 /** 一个包（含它引用的依赖包）最多列出多少个 SKILL.md。 */
 const MAX_SCANNED_SKILLS = 64
 const MAX_TEXT_BYTES = 1024 * 1024
+/** 配套拓展包单个文件的上限（与 Codex++ 写拓展包的限制一致，再留出胶水代码的余量）。 */
+const CLIENT_MAX_BYTES = 240 * 1024
 
 // MCP 帧走 stdout（钩子 / 网关进程里 stdout 是运行器的结果），插件的 console 输出一律改到 stderr。
 const writeStdout = process.stdout.write.bind(process.stdout)
@@ -366,7 +399,8 @@ function writeRuntimeSkill(outDir, definition) {
 // ---------------------------------------------------------------------------
 
 export class Host {
-  constructor() {
+  /** @param {{ mirrorDir?: string }} options mirrorDir：会话镜像落盘目录（钩子常驻进程给；MCP / 分析进程不给，只在内存里）。 */
+  constructor(options = {}) {
     /** name → { def, pluginKey } */
     this.tools = new Map()
     /** 系统提示词片段，汇总成 MCP instructions，并由配套拓展包经网关追加到 instructions。 */
@@ -377,6 +411,196 @@ export class Host {
     this.variables = new Map()
     this.listeners = new Map()
     this.disposers = []
+    /** name → { def, state }：插件经 ctx.commands 注册的斜杠命令。 */
+    this.commands = new Map()
+    /** path → { methods, fetch }：插件经 ctx.connection.fetch 注册的路由。 */
+    this.routes = new Map()
+    const emit = (event, args) => this.emitEvent(event, args)
+    this.mirror = new SessionMirror({ dataDir: options.mirrorDir, emit })
+    this.agentRegistry = new AgentRegistry({ mirror: this.mirror, emit, serial: (event, args) => this.serial(event, args) })
+    this.shared = undefined
+  }
+
+  /** 所有插件共用的替身服务（按需建）。credentials / storageDomain 按插件建，见 createContext。 */
+  sharedServices() {
+    if (this.shared) return this.shared
+    const host = this
+    const mirror = this.mirror
+    const sessions = {
+      get: (id) => mirror.sessions.get(String(id)),
+      list: () => [...mirror.sessions.values()],
+      create() {
+        throw new Error('Codex++ 里不能新建 dsh 会话；要新建 Codex 会话请用 ctx.sessions.codex.create')
+      },
+      fork() {
+        throw new Error('Codex++ 里不能分叉 dsh 会话；要分叉 Codex 会话请用 ctx.sessions.codex.fork')
+      },
+      async flush(session) {
+        mirror.flushAll()
+        await host.parallel('session/flush', [session])
+        return true
+      },
+      registerMessageProjection: () => () => Promise.resolve(),
+      /** Codex++ 扩展：直接读写 Codex 会话（经 Codex 页面里的 app-server 连接）。 */
+      codex: Object.freeze(Object.fromEntries(
+        ['list', 'create', 'fork', 'rename', 'append', 'startTurn', 'steer', 'interrupt', 'compact'].map((method) => [method, (...args) => {
+          const [first, second, third] = args
+          const params = method === 'list' ? (first ?? {})
+            : method === 'create' ? { input: first, options: second }
+              : method === 'rename' ? { id: first, name: second }
+                : method === 'append' ? { id: first, items: second }
+                  : method === 'startTurn' ? { id: first, input: second, options: third }
+                    : method === 'steer' ? { id: first, input: second, turnId: third }
+                      : method === 'interrupt' ? { id: first, turnId: second }
+                        : { id: first, options: second }
+          return hostCall('sessions', method, params)
+        }]),
+      )),
+    }
+    const sessionProjections = {
+      register(definition) {
+        const key = String(definition?.key ?? '')
+        if (!key || typeof definition?.init !== 'function' || typeof definition?.apply !== 'function') {
+          throw new Error('sessionProjections.register 需要 key、init、apply')
+        }
+        mirror.projections.set(key, definition)
+        return () => {
+          if (mirror.projections.get(key) === definition) mirror.projections.delete(key)
+        }
+      },
+      stateOf: (session, key) => mirror.stateOf(session, key),
+      snapshot(session, keys) {
+        const wanted = Array.isArray(keys) ? keys : [...mirror.projections.keys()]
+        return { asOfSeq: (session?.seq ?? 0) - 1, values: Object.fromEntries(wanted.map((key) => [key, mirror.stateOf(session, key)])) }
+      },
+      onChanged(listener) {
+        mirror.changeListeners.add(listener)
+        return () => mirror.changeListeners.delete(listener)
+      },
+      cachedSnapshot: () => undefined,
+      checkpoint: () => undefined,
+      restore: () => undefined,
+      hydrate: async () => undefined,
+      viewCheckpoint: () => undefined,
+    }
+    const commands = {
+      register(definition) {
+        const name = String(definition?.name ?? '')
+        if (!/^[a-z][a-z0-9_-]*$/.test(name)) throw new TypeError(`命令名不合法：${name}`)
+        if (typeof definition?.handler !== 'function') throw new TypeError(`命令 /${name} 缺少 handler`)
+        if (host.commands.has(name)) throw new Error(`命令 /${name} 已注册`)
+        const entry = { def: definition }
+        host.commands.set(name, entry)
+        return () => {
+          if (host.commands.get(name) === entry) host.commands.delete(name)
+        }
+      },
+      list: () => [...host.commands.values()].map(({ def }) => ({ definitionId: def.definitionId, name: def.name, description: def.description, input: def.input })),
+      find: (agent, name) => host.commands.get(String(name))?.def,
+      async execute(agent, line, attachments = [], signal) {
+        const match = /^\/([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/.exec(String(line ?? '').trim())
+        if (!match) return undefined
+        const result = await host.runCommand(match[1], match[2] ?? '', agent, signal)
+        return result ? { commandId: `codexpp-${Date.now()}`, result } : undefined
+      },
+    }
+    this.shared = {
+      sessions,
+      sessionQuery: createSessionQuery(mirror),
+      sessionProjections,
+      agents: this.agentRegistry.service(),
+      llm: createLlm(),
+      commands,
+      fs: createFs(),
+      subprocess: createSubprocess(),
+      shell: createShell(),
+      web: createWeb(),
+      userQuestions: createUserQuestions(),
+      agentDefaultModel: Object.freeze({ provider: 'codex', model: undefined, reasoningEffort: undefined }),
+    }
+    return this.shared
+  }
+
+  /** 执行插件注册的斜杠命令；没有这个命令返回 undefined。handler 抛错收敛成 error 结果（同 dsh）。 */
+  async runCommand(name, rawInput, agent, signal) {
+    const entry = this.commands.get(String(name))
+    if (!entry) return undefined
+    try {
+      const result = await entry.def.handler({
+        commandId: `codexpp-${Date.now()}`,
+        agent,
+        rawInput: String(rawInput ?? ''),
+        attachments: [],
+        signal: signal ?? new AbortController().signal,
+      })
+      return result && typeof result === 'object' ? result : { kind: 'success' }
+    } catch (error) {
+      return { kind: 'error', text: errorText(error) }
+    }
+  }
+
+  /**
+   * 调插件注册的路由：{ path, method, headers, body } → { status, headers, body }。
+   * 前端半边（dsh.client）在 Codex 页面里发的 fetch('/api/…') 经配套拓展包的后台转到这里。
+   */
+  async fetchRoute({ path, method = 'GET', headers = {}, body = null } = {}) {
+    const url = new URL(String(path ?? '/'), 'http://codexpp.local')
+    const route = this.routes.get(url.pathname)
+    if (!route) return { status: 404, headers: {}, body: JSON.stringify({ ok: false, error: { message: `没有路由 ${url.pathname}` } }) }
+    const verb = String(method).toUpperCase()
+    if (route.methods.length && !route.methods.includes(verb)) return { status: 405, headers: {}, body: '' }
+    const request = new Request(url, { method: verb, headers, ...(body !== null && verb !== 'GET' && verb !== 'HEAD' ? { body: String(body) } : {}) })
+    let response
+    try {
+      response = await route.fetch(request)
+    } catch (error) {
+      return { status: 500, headers: {}, body: JSON.stringify({ ok: false, error: { message: errorText(error) } }) }
+    }
+    if (!(response instanceof Response)) response = new Response(typeof response === 'string' ? response : JSON.stringify(response ?? null))
+    return { status: response.status, headers: Object.fromEntries(response.headers.entries()), body: await response.text() }
+  }
+
+  /** emit 语义：同步依次调用，不等待；监听器出错只记日志。 */
+  emitEvent(event, args) {
+    for (const { listener } of [...(this.listeners.get(event) ?? [])]) {
+      try {
+        const result = listener(...args)
+        if (result && typeof result.then === 'function') result.catch((error) => console.error(`[dsh-host] ${event} 监听器失败：${errorText(error)}`))
+      } catch (error) {
+        console.error(`[dsh-host] ${event} 监听器失败：${errorText(error)}`)
+      }
+    }
+  }
+
+  /** parallel 语义：并发等待全部监听器。 */
+  async parallel(event, args) {
+    await Promise.allSettled([...(this.listeners.get(event) ?? [])].map(({ listener }) => listener(...args)))
+  }
+
+  hasListeners(event) {
+    return (this.listeners.get(event)?.length ?? 0) > 0
+  }
+
+  /**
+   * 带 system-prompt/assemble 中间件的提示词：先按 dsh 的结构拼出 assembly，交给插件的 waterfall 改写，再渲染成文本。
+   * 没有监听器时等同 assemblePrompt。
+   */
+  async assemblePromptAsync(context = {}) {
+    if (!this.hasListeners('system-prompt/assemble')) return this.assemblePrompt(context)
+    const base = { sections: [], contexts: [], tools: [], variables: {} }
+    const fallback = async () => base
+    let assembly
+    try {
+      assembly = await this.waterfall('system-prompt/assemble', [base, { agent: context.agent, signal: context.signal }], fallback)
+    } catch (error) {
+      console.error(`[dsh-host] system-prompt/assemble 失败：${errorText(error)}`)
+      assembly = base
+    }
+    const own = this.assemblePrompt(context)
+    const added = [...(assembly?.sections ?? []), ...(assembly?.contexts ?? [])]
+      .map((entry) => (typeof entry?.text === 'string' ? entry.text.trim() : ''))
+      .filter(Boolean)
+    return [own, ...added].filter(Boolean).join('\n\n')
   }
 
   /**
@@ -467,6 +691,11 @@ export class Host {
       if (state.mappings && !state.mappings.includes(target)) state.mappings.push(target)
     }
     const logger = makeLogger(state.key)
+    const shared = this.sharedServices()
+    const pluginServices = {
+      credentials: createCredentials(state.config),
+      storageDomain: createStorageDomain(state.dataDir),
+    }
     const timer = {
       setTimeout(callback, ms, ...args) {
         const handle = setTimeout(callback, ms, ...args)
@@ -577,6 +806,62 @@ export class Host {
           return undefined
         },
       },
+      ...shared,
+      ...pluginServices,
+      connection: {
+        fetch: {
+          register(route) {
+            const path = String(route?.path ?? '')
+            if (!path.startsWith('/') || typeof route?.fetch !== 'function') throw new TypeError('connection.fetch.register 需要以 / 开头的 path 与 fetch(request)')
+            if (host.routes.has(path)) throw new Error(`路由 ${path} 已注册`)
+            mapTo(CONNECTION_TARGET)
+            const entry = { methods: (route.methods ?? []).map((item) => String(item).toUpperCase()), fetch: route.fetch }
+            host.routes.set(path, entry)
+            return track(() => {
+              if (host.routes.get(path) === entry) host.routes.delete(path)
+            })
+          },
+        },
+        rpc: {
+          handle() {
+            note('connection.rpc 在 Codex++ 里不可用，只支持 connection.fetch.register')
+            return () => {}
+          },
+        },
+      },
+      commands: {
+        ...shared.commands,
+        register(definition) {
+          mapTo(COMMANDS_TARGET)
+          state.commands?.push({ name: definition?.name, description: definition?.description ?? '', hint: definition?.input?.hint ?? '' })
+          return track(shared.commands.register(definition))
+        },
+      },
+      sessionProjections: {
+        ...shared.sessionProjections,
+        register(definition) {
+          mapTo(MIRROR_TARGET)
+          return track(shared.sessionProjections.register(definition))
+        },
+        onChanged(listener) {
+          mapTo(MIRROR_TARGET)
+          return track(shared.sessionProjections.onChanged(listener))
+        },
+      },
+      /** 可选依赖的激活写法：服务都在就立刻以子 ctx 调用（Codex++ 里服务不会中途出现或消失）。 */
+      inject(names, callback) {
+        const list = Array.isArray(names) ? names : Object.keys(names ?? {})
+        const missing = list.filter((name) => !SUPPORTED_SERVICES.has(name))
+        if (missing.length > 0) {
+          note(`ctx.inject 里的 ${missing.join(', ')} 在 Codex++ 里没有，这一段不会生效`)
+          return () => {}
+        }
+        if (list.some((name) => MIRROR_SERVICES.has(name))) mapTo(MIRROR_TARGET)
+        const result = callback(proxy)
+        if (typeof result === 'function') track(result)
+        else if (result && typeof result.then === 'function') state.pending.push(result.then((value) => typeof value === 'function' && track(value)))
+        return () => {}
+      },
       effect(callback) {
         let dispose
         const result = callback()
@@ -590,7 +875,11 @@ export class Host {
       },
       on(event, listener, options) {
         if (EVENT_HOOKS[event]) mapTo(EVENT_HOOKS[event])
-        else if (event !== 'ready' && event !== 'dispose') note(`事件 ${String(event)} 来自 dsh 运行时，Codex 里不会触发`)
+        else if (GATEWAY_EVENTS[event]) mapTo(`gateway:${GATEWAY_EVENTS[event]}`)
+        else if (MIRROR_EVENTS.has(event)) mapTo(MIRROR_TARGET)
+        else if (event === 'session/flush' || event === 'session/disposed') {
+          // 镜像会话在常驻进程退出时落盘，不派发这两个事件。
+        } else if (event !== 'ready' && event !== 'dispose') note(`事件 ${String(event)} 来自 dsh 运行时，Codex 里不会触发`)
         const list = host.listeners.get(event) ?? []
         const entry = { listener, state }
         // Cordis 的 prepend：排到最前（waterfall 里最外层，先调 next() 就能看到其余监听器的结果）。
@@ -623,13 +912,15 @@ export class Host {
         return typeof next === 'function' ? next() : undefined
       },
       get(name) {
-        return SUPPORTED_SERVICES.has(name) ? base[name] : undefined
+        if (!SUPPORTED_SERVICES.has(name)) return undefined
+        if (MIRROR_SERVICES.has(name)) mapTo(MIRROR_TARGET)
+        return proxy[name]
       },
       async plugin(plugin, config) {
         return host.applyPlugin(plugin, config, state)
       },
     }
-    return new Proxy(base, {
+    const proxy = new Proxy(base, {
       get(target, key) {
         if (key in target) return target[key]
         if (typeof key === 'symbol' || key === 'then' || key === 'toJSON') return undefined
@@ -637,6 +928,7 @@ export class Host {
         return undefined
       },
     })
+    return proxy
   }
 
   async applyPlugin(plugin, config, parentState) {
@@ -665,6 +957,7 @@ export class Host {
       notes: [],
       tools: [],
       mappings: [],
+      commands: [],
     }
     if (row.name === MCP_CLIENT_MODULE) {
       const converted = toMcpServer(row)
@@ -735,6 +1028,21 @@ export class Host {
     }
     const optionalMissing = inject.optional.filter((name) => !SUPPORTED_SERVICES.has(name))
     if (optionalMissing.length > 0) record.notes.push(`可选服务 ${optionalMissing.join(', ')} 不可用`)
+    // 依赖会话 / agent / 投影的插件要会话镜像：配套拓展包会挂上把 Codex 钩子翻成 dsh 会话日志的那几个钩子。
+    // 只声明 sessions 的插件多半只是 get 一下会话读 cwd，不值得为它在每次工具调用上起钩子；用到 agent / 投影才挂。
+    if ([...inject.required, ...inject.optional].some((name) => name === 'agents' || name === 'sessionProjections')) record.mappings.push(MIRROR_TARGET)
+    const mirrorNotes = {
+      sessions: 'ctx.sessions 是 Codex 会话的镜像（由 Codex 钩子事件生成）：没有模型的流式内容与推理，Codex 自己的会话日志请用 sessionQuery',
+      agents: 'ctx.agents 里的 agent 是 Codex 会话的替身：steer / inject 在钩子里翻成补充上下文或要求继续，钩子之外经 Codex++ 往会话里插话',
+      sessionProjections: 'sessionProjections 在会话镜像上折叠；客户端 useProjection 视图不提供',
+      llm: 'ctx.llm.stream 经 Codex++ 协议代理一次性返回，拆成流式块；不能注册 adapter',
+      fs: 'ctx.fs 是本机文件系统，不做沙箱与「先读后写」策略',
+      shell: 'ctx.shell 用本机 shell 执行，不做沙箱',
+      subprocess: 'ctx.subprocess 不提供 PTY 终端',
+      web: 'ctx.web 只有 fetch，没有联网搜索',
+      userQuestions: 'ctx.userQuestions 在 Codex 页面里弹框提问（一题一问）',
+    }
+    for (const name of [...inject.required, ...inject.optional]) if (mirrorNotes[name]) record.notes.push(mirrorNotes[name])
     let config = row.config ?? {}
     if (hasTaggedValue(config)) record.notes.push('配置里的 !!js 表达式不会求值')
     if (typeof plugin.Config === 'function') {
@@ -757,6 +1065,9 @@ export class Host {
       pending: [],
       skillDefinitions: [],
       skillProviders: [],
+      commands: record.commands,
+      // 插件自己的数据（storageDomain 的 JSON 文件）放这里；分析进程不给，只在内存里。
+      dataDir: this.dataDir ? join(this.dataDir, row.id.replace(/[^\w.-]/g, '_')) : undefined,
     }
     try {
       const ctx = this.createContext(state)
@@ -795,6 +1106,7 @@ export class Host {
   }
 
   async loadPackage(root, packageKey, options = {}) {
+    this.dataDir = typeof options.dataDir === 'string' && options.dataDir ? options.dataDir : undefined
     // inspect 时把代码注册的 skill 写到这里；serve 不写。
     this.skillsOut = typeof options.skillsOut === 'string' && options.skillsOut ? options.skillsOut : undefined
     // 钩子 / 网关进程只要事件监听器与提示词，不碰 skill。
@@ -831,7 +1143,16 @@ export class Host {
     report.engines = pkg.engines?.dsh
     report.client = Boolean(pkg.dsh?.client)
     if (report.client) {
-      report.diagnostics.push('包含 dsh 前端 slot 插件（dsh.client）：它向 dsh Web 客户端的 React slot 注册组件，Codex 页面结构不同，需要改写成 Codex++ 拓展包')
+      // 前端半边：exports["./client"] 指向的懒 CJS 工厂，由配套拓展包夹上胶水在 Codex 页面里运行（96-dsh-client.js）。
+      const entry = packageEntry(root, pkg, './client')
+      if (entry && existsSync(entry) && statSync(entry).size <= CLIENT_MAX_BYTES) {
+        report.clientEntry = entry
+        report.diagnostics.push(`包含 dsh 前端插件（dsh.client）：在 Codex 页面里用 Codex 的 React 运行，dsh 插槽映射到 Codex++ 的界面插槽；对不上的插槽、dsh 专属的前端服务（store、remote、conversation 等）不可用`)
+      } else {
+        report.diagnostics.push(entry && existsSync(entry)
+          ? `dsh 前端插件入口超过 ${CLIENT_MAX_BYTES / 1024} KiB，不加载`
+          : 'package.json 声明了 dsh.client，但没有找到 exports["./client"] 入口')
+      }
     }
     let rows
     if (pkg.dsh?.bundle?.patch) {
@@ -856,6 +1177,7 @@ export class Host {
       report.rows.push(await this.loadRow(row, root, pkg, packageKey))
     }
     report.bridge = this.bridgeSummary(report.rows)
+    if (report.clientEntry) report.bridge.client = { entry: report.clientEntry, packageName: report.name ?? '' }
     if (this.skipSkills) return report
     // 代码注册的 skill（可能来自依赖包）优先；同名或同一资源目录的 SKILL.md 文件不再重复列出。
     const runtimeSkills = report.rows.flatMap((row) => (row.skills ?? []).filter((skill) => skill.directory))
@@ -905,10 +1227,23 @@ export class Host {
   /** 包级汇总：哪些 Codex 钩子要转发、提示词是否追加到 instructions、能否在分析时求成静态文本。 */
   bridgeSummary(rows) {
     const active = rows.filter((row) => row.enabled && (row.status === 'compatible' || row.status === 'partial'))
-    const hooks = [...new Set(active.flatMap((row) => row.mappings ?? []).filter((target) => target !== INSTRUCTIONS_TARGET))].sort()
-    const instructions = active.some((row) => row.mappings?.includes(INSTRUCTIONS_TARGET))
-    const staticPrompt = instructions && this.promptIsStatic() ? this.assemblePrompt({}) || null : null
-    return { hooks, instructions, staticPrompt }
+    const targets = new Set(active.flatMap((row) => row.mappings ?? []))
+    const hookEvents = new Set(Object.values(EVENT_HOOKS))
+    const hooks = new Set([...targets].filter((target) => hookEvents.has(target)))
+    const mirror = targets.has(MIRROR_TARGET)
+    if (mirror) for (const hook of MIRROR_HOOKS) hooks.add(hook)
+    const instructions = targets.has(INSTRUCTIONS_TARGET) || targets.has('gateway:instructions')
+    const staticPrompt = instructions && !targets.has('gateway:instructions') && this.promptIsStatic() ? this.assemblePrompt({}) || null : null
+    const commands = active.flatMap((row) => row.commands ?? []).filter((command) => typeof command?.name === 'string' && command.name)
+    return {
+      hooks: [...hooks].sort(),
+      instructions,
+      staticPrompt,
+      mirror,
+      gateway: { request: targets.has('gateway:request'), error: targets.has('gateway:error') },
+      connection: targets.has(CONNECTION_TARGET),
+      commands,
+    }
   }
 
   async dispose() {
@@ -996,6 +1331,7 @@ async function serve(registryPath) {
       const report = await host.loadPackage(plugin.root, String(plugin.id ?? plugin.root), {
         disabledRows: plugin.disabledRows,
         configs: plugin.configs,
+        dataDir: join(dirname(registryPath), 'data', String(plugin.id ?? 'plugin').replace(/[^\w.-]/g, '_')),
       })
       for (const row of report.rows) {
         if (row.status === 'error') console.error(`[dsh-host] ${plugin.id}/${row.id}：${row.reasons.join('；')}`)

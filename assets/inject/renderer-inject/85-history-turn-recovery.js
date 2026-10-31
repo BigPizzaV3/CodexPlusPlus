@@ -10,7 +10,8 @@
 
   function historyTurnRecoveryEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
-      && codexPlusBackendSettings.codexAppHistoryTurnRecovery === true;
+      && codexPlusBackendSettings.codexAppHistoryTurnRecovery === true
+      && !window.__codexPlusBuiltinInactive?.has("history-turn-recovery");
   }
 
   function historyTurnRecoveryTarget() {

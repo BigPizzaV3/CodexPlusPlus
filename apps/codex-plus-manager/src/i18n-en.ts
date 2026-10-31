@@ -5,6 +5,31 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  // 内置拓展
+  "内置拓展": "Built-in extensions",
+  "Codex++ 自带的功能也挂在拓展内核上：可以单独停用，也可以被声明 replaces 的拓展顶替；功能自己的设置开关照旧生效": "Codex++'s own features run on the extension kernel too: disable any of them here, or let an extension that declares replaces take over. Each feature's own setting still applies.",
+  "停用该内置拓展": "Disable this built-in extension",
+  "启用该内置拓展": "Enable this built-in extension",
+  "窗口里可拖动的小角色，按下压扁、松开回弹并播放音效": "A draggable character that squishes when pressed and bounces back with sound",
+  "输入框下方显示本会话的 token 用量、缓存命中与生成速度": "Shows this session's token usage, cache hits and generation speed below the composer",
+  "语音听写": "Dictation",
+  "输入框旁的麦克风按钮，录音转写成文字": "A microphone button next to the composer that transcribes speech",
+  "轮次回退": "Turn rewind",
+  "消息菜单里的「回退到这一轮」": "\"Rewind to this turn\" in the message menu",
+  "打字特效": "Typing effects",
+  "输入时的彩虹、烟花、星星特效": "Rainbow, fireworks and star effects while typing",
+  "侧聊保存": "Side chat save",
+  "把侧聊标签页保存成独立会话": "Save a side chat tab as its own session",
+  "历史轮次补全": "History turn recovery",
+  "打开长会话时补齐没加载出来的早期轮次": "Fills in early turns that did not load when opening a long session",
+  "容量不足自动重试": "Auto-retry on capacity errors",
+  "上游提示容量不足时自动重发": "Resends automatically when the upstream reports it is at capacity",
+  "请求状态条": "Request status bar",
+  "输入框上方显示经 Codex++ 代理的请求进行到哪一步": "Shows the progress of requests through the Codex++ proxy above the composer",
+  "多开身份提示": "Instance identity badge",
+  "多开实例顶部显示实例名（用公开拓展接口写成）": "Shows the instance name at the top of extra Codex instances (written with the public extension API)",
+  "会话标题中间件": "Session title middleware",
+  "首轮结束后按拓展的 session/title 中间件改会话标题": "Renames a session after its first turn using extensions' session/title middleware",
   // 使用模式（只管理 Codex / 全部功能）
   "你打算怎么用 Codex++？": "How will you use Codex++?",
   "Codex++ 除了 Codex 还能管理其他 Agent。只用 Codex 的话，可以隐藏用不到的内容，界面更清爽。以后可以在设置里改。": "Besides Codex, Codex++ can manage other agents. If you only use Codex, hide what you don't need for a cleaner interface. You can change this later in Settings.",
@@ -2876,6 +2901,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  // 内置拓展
+  "已被 {0} 顶替": "Replaced by {0}",
   // 使用模式：只管理 Codex 时的单 Agent 文案
   "{0} 接入": "{0} connection",
   "{0} 通过 Codex++ 使用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。": "{0} uses {1} providers through Codex++. Requests are routed by model name and switch upstream automatically when a key cools down or a provider trips its breaker.",

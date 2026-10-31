@@ -19,6 +19,7 @@ pub async fn run_runner(node: &Path, runner: &str, input: &Value, limit: Duratio
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    crate::extension_backend::set_host_exe_env(&mut command);
     // Windows 上不能闪出黑色终端窗口。
     #[cfg(windows)]
     command.creation_flags(crate::windows_create_no_window());
@@ -203,6 +204,7 @@ pub async fn run_runner_with_host(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    crate::extension_backend::set_host_exe_env(&mut command);
     #[cfg(windows)]
     command.creation_flags(crate::windows_create_no_window());
     let mut child = command.spawn().context("无法启动 Node 运行拓展脚本")?;

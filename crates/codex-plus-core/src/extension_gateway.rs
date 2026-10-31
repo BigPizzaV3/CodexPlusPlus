@@ -752,6 +752,7 @@ async fn spawn_response_worker() -> anyhow::Result<ResponseWorker> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    crate::extension_backend::set_host_exe_env(&mut command);
     #[cfg(windows)]
     command.creation_flags(crate::windows_create_no_window());
     let mut child = command.spawn()?;

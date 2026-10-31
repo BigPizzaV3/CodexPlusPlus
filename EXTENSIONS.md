@@ -196,7 +196,11 @@ codexPlus.extension((ctx) => {
   `sessionRow.prefix` / `sessionRow.suffix`（侧栏每个会话标题前 / 后，多收到 `sessionId`、`title`）、
   `overlay`（铺满窗口的浮层，默认不挡点击，放进去的元素可以点）、`activity.after`（对话里每个活动条目——命令、
   工具 / 子 agent 调用、出错——的末尾，多收到 `kind`（`command` / `toolCall` / `fileChange` / `reasoning` / `error` /
-  `other`）、`itemIds`、`text`；条目收在 Codex 的「用时 Ns」里，用户展开后才出现；推理只在 Codex 的显示模式会显示推理时才有条目）。
+  `other`）、`itemIds`、`text`；条目收在 Codex 的「用时 Ns」里，用户展开后才出现；推理只在 Codex 的显示模式会显示推理时才有条目）、
+  `composer.left` / `composer.right`（输入框底栏左侧按钮组末尾 / 右侧按钮组开头，和「添加内容」「发送」同一行）、
+  `composer.below`（输入框下方）、`home.above`（新对话首页输入框上方）、`header.title`（顶栏会话标题后面）、
+  `approval`（审批卡片底部，多收到 `kind`）、`sidebar.section`（侧栏「项目」「最近」等分组标题右侧，多收到 `section`）、
+  `projectRow.suffix`（侧栏项目名后面，多收到 `projectId`、`label`）。
   未知位置会报错。
 - `render({ container, slot, ... })` 在容器新建时调用；Codex 重建 DOM（切换会话、侧栏刷新）后会重新调用，不要缓存节点。
   返回的函数在该项被撤下或重画前调用。`container` 留空则不占位。返回的句柄带 `refresh()` 强制重画。
@@ -692,6 +696,41 @@ codexPlus.extension((ctx) => {
 - 输入触发在光标前是「触发符 + 查询词」（触发符前是开头或空白、查询词里没有空白）时弹出，↑↓ 选、回车 / Tab 确认、Esc 关。
 - 主题切换时发 `theme/change` 事件；拓展装上 / 卸下后合并发一次 `extensions/changed`（`{ extensions: [{ id, scriptKey, version }] }`）。
 
+### 内置拓展与顶替
+
+Codex++ 自带的功能（Agent 桌宠、用量状态栏、语音听写、轮次回退、打字特效、侧聊保存、历史轮次补全、容量不足自动重试、
+请求状态条、多开身份提示、会话标题中间件）也挂在拓展内核上：每个是一个内置拓展实例（`scriptKey` 为 `builtin:<id>`），
+和第三方拓展走同一套生命周期，在 `extensions/changed` 里也能看到。
+
+- 管理器「拓展 → 本地」最下面的「内置拓展」可以单独停用某一项；功能自己的设置开关照旧生效，两个都开功能才出现。
+- 拓展包在清单里声明 `replaces` 即可顶替内置功能，它启用时内置的让位、停用时内置的回来：
+
+```json
+{ "id": "my-pet", "renderer": "renderer.js", "replaces": ["agent-pet"] }
+```
+
+- `codexPlus.builtins()` 返回 `[{ id, name, active, disabled, replacedBy }]`。「多开身份提示」完全用公开接口（`overlay` 插槽）写成，
+  可以当作写法参考；「会话标题中间件」是 `ctx.intercept("session/title", (value, next) => …)` 链：会话首轮结束后以
+  `{ sessionId, title, firstMessage, lastMessage }` 跑一遍，返回值的 `title` 与原标题不同就改名。
+
+### 按事件找写法
+
+同一类能力在 Codex++ 里按层落在不同地方：页面里的 `ctx.on` 只能观察和改写页面经手的东西，工具执行、模型请求要在 Node 侧
+（清单的 `toolPipeline` / `hooks` / `gateway`）插手。
+
+| 想做的事 | 写法 |
+| --- | --- |
+| 改写或拒绝本轮用户输入、换模型 / 推理强度 | 页面 `ctx.on("agent/pre-step" / "agent/request", (params, next) => …)`（见上一节） |
+| 观察全部会话的事件、轮次开始 / 结束 | 页面 `ctx.on("session/event" / "agent/status", …)` |
+| 工具结果写进会话、新会话出现、一轮被中止时得到通知 | 页面 `ctx.on("tools/result" / "agent/created" / "agent/error", …)`：`tools/result` 收到 `({ callId, name, arguments, agent }, { isError, value, content })`，`agent` 只是 `{ id, session: { id } }` 描述 |
+| 工具执行前改参数 / 拦截、代为执行、执行后改结果 | 清单 `toolPipeline` 的 preExecute / execute / postExecute |
+| 本轮要停下时要求继续、会话开始时补上下文、子 agent 起止 | 清单 `hooks`：Stop / SessionStart / SubagentStart / SubagentStop |
+| 改系统提示词、改写模型回复流 | 清单 `gateway.request` / `gateway.response`；只改提示词也可以用 `instructions` |
+| 上游出错时重试或降级 | 清单 `gateway.error` |
+
+已经按 dsh 插件写法写好的插件（`apply(ctx)` 里 `ctx.on("tools/pre-execute", …)`、`ctx.tools.register(…)`、`ctx.commands.register(…)`
+等）不用改写：在管理器「拓展 → dsh 插件」用本地目录导入即可，支持情况见 `docs/plans/2026-10-30-dsh-plugin-import-design.md`。
+
 ### 拓展间服务
 
 ```js
@@ -989,10 +1028,16 @@ try {
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `label` | 是 | 菜单项文字 |
-| `onActivate` | 是 | `({ row, session_id, close }) => void` |
+| `onActivate` | 二选一 | `({ row, session_id, close }) => void` |
+| `render` | 二选一 | `({ container, row, session_id, title, close }) => void \| cleanup`：自己往菜单里画一项（如 React 组件），菜单拆掉时调用返回的清理函数 |
 | `icon` | 否 | 单个字形或 SVG 字符串；不传用 `◇` |
 
 `onActivate` 收到的 `row` 是该会话行的 DOM 元素，`session_id` 已解析好，`close()` 关闭菜单。
+
+### `codexPlus.currentSessionId()`
+
+当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。拓展实例上同名 `ctx.currentSessionId()`；斜杠命令的
+`run(args, context)` 里也有 `context.sessionId`。
 
 ### `codexPlus.registerNavEntry(definition, options?)`
 

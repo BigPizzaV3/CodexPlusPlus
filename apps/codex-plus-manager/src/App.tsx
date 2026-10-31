@@ -704,9 +704,19 @@ type ExtensionConfigField = {
   properties?: ExtensionConfigField[];
 };
 
+type BuiltinExtension = {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  replacedBy?: string | null;
+};
+
 type UserScriptInventory = {
   enabled?: boolean;
   skip_next_start?: boolean;
+  builtins?: BuiltinExtension[];
   scripts?: Array<{
     key: string;
     name: string;
@@ -9917,6 +9927,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           <div className="table">
             {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
           </div>
+          {inventory?.builtins?.length ? <BuiltinExtensionsSection builtins={inventory.builtins} actions={actions} /> : null}
         </Panel>
       )}
     </div>
@@ -16368,6 +16379,68 @@ function localizedPackageText(
     if (typeof value === "string" && value.trim()) return value;
   }
   return fallback;
+}
+
+/// 内置拓展的显示文案（Rust 侧 BUILTIN_EXTENSIONS 也有一份中文，用来兜底未知 id）。
+function builtinExtensionText(builtin: BuiltinExtension): { name: string; description: string } {
+  switch (builtin.id) {
+    case "agent-pet": return { name: t("Agent 桌宠"), description: t("窗口里可拖动的小角色，按下压扁、松开回弹并播放音效") };
+    case "usage-statusline": return { name: t("用量状态栏"), description: t("输入框下方显示本会话的 token 用量、缓存命中与生成速度") };
+    case "dictation": return { name: t("语音听写"), description: t("输入框旁的麦克风按钮，录音转写成文字") };
+    case "turn-rewind": return { name: t("轮次回退"), description: t("消息菜单里的「回退到这一轮」") };
+    case "typing-effects": return { name: t("打字特效"), description: t("输入时的彩虹、烟花、星星特效") };
+    case "side-chat-save": return { name: t("侧聊保存"), description: t("把侧聊标签页保存成独立会话") };
+    case "history-turn-recovery": return { name: t("历史轮次补全"), description: t("打开长会话时补齐没加载出来的早期轮次") };
+    case "capacity-auto-retry": return { name: t("容量不足自动重试"), description: t("上游提示容量不足时自动重发") };
+    case "proxy-request-status": return { name: t("请求状态条"), description: t("输入框上方显示经 Codex++ 代理的请求进行到哪一步") };
+    case "instance-identity": return { name: t("多开身份提示"), description: t("多开实例顶部显示实例名（用公开拓展接口写成）") };
+    case "session-title-hook": return { name: t("会话标题中间件"), description: t("首轮结束后按拓展的 session/title 中间件改会话标题") };
+    default: return { name: builtin.name, description: builtin.description };
+  }
+}
+
+/// 内置拓展：Codex++ 自带功能也是拓展，可以单独停用，或被声明了 replaces 的拓展顶替。
+/// 功能自己的设置开关照旧生效，这里是外面一层。
+function BuiltinExtensionsSection({ builtins, actions }: { builtins: BuiltinExtension[]; actions: Actions }) {
+  return (
+    <div className="builtin-extensions">
+      <div className="builtin-extensions-title">
+        <strong>{t("内置拓展")}</strong>
+        <small>{t("Codex++ 自带的功能也挂在拓展内核上：可以单独停用，也可以被声明 replaces 的拓展顶替；功能自己的设置开关照旧生效")}</small>
+      </div>
+      <div className="table">
+        {builtins.map((builtin) => {
+          const text = builtinExtensionText(builtin);
+          const state = builtin.replacedBy ? "replaced" : builtin.enabled ? "loaded" : "disabled";
+          const label = builtin.replacedBy
+            ? tf("已被 {0} 顶替", [builtin.replacedBy.replace(/^user:/, "")])
+            : builtin.enabled ? t("启用") : t("已停用");
+          return (
+            <div className="table-row user-script-row" key={builtin.id}>
+              <div className="user-script-name">
+                <strong>{text.name}</strong>
+                <small title={text.description}>{text.description}</small>
+              </div>
+              <span>{t("内置")}</span>
+              <div className="user-script-state">
+                <label className="relay-bare-switch" title={builtin.enabled ? t("停用该内置拓展") : t("启用该内置拓展")}>
+                  <input
+                    aria-label={tf("启用 {0}", [text.name])}
+                    checked={builtin.enabled}
+                    onChange={() => void actions.setUserScriptEnabled(builtin.key, !builtin.enabled)}
+                    type="checkbox"
+                  />
+                  <ToggleVisual />
+                </label>
+                <span className="user-script-state-label" data-state={state}>{label}</span>
+              </div>
+              <div className="script-row-actions" />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。

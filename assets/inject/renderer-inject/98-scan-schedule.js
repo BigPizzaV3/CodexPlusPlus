@@ -39,6 +39,8 @@
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
       'nav[data-app-navigation-rail]',
+      // 审批卡片出现时补上拓展的 approval 插槽。
+      "[data-codex-approval-surface]",
       ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
     ].join(", ");
   }

@@ -162,10 +162,10 @@ fn dsh_import_bundle_reports_compatibility_per_row() {
     assert_eq!(greet["mappings"], json!(["instructions"]));
     assert_eq!(greet["tools"][0]["name"], "greet");
 
-    // cordis:group 的子行被展开；依赖会话服务的行不加载。
+    // cordis:group 的子行被展开；依赖子 agent 编排服务的行不加载。
     let session = row(report, "session-tool");
     assert_eq!(session["status"], "incompatible");
-    assert!(session["reasons"][0].as_str().unwrap().contains("sessions"));
+    assert!(session["reasons"][0].as_str().unwrap().contains("subagents"));
     assert_eq!(row(report, "official-todo")["status"], "incompatible");
 
     let mcp = dsh_plugins::mcp_servers_json(report).unwrap();
@@ -709,6 +709,128 @@ async fn dsh_events_and_system_prompt_run_through_companion_extension() {
     assert!(std::fs::read_dir(plugins.root().join("backups")).unwrap().any(|entry| {
         entry.unwrap().file_name().to_string_lossy().starts_with("companion-dsh-dsh-policy-demo")
     }));
+}
+
+/// 依赖 sessions / agents / sessionProjections / commands 的插件：钩子事件喂进会话镜像，投影随之前进；
+/// agent/created 对上 SessionStart，钩子之外排下的上下文在下一次钩子带上；agent/request 经网关改推理强度；
+/// 斜杠命令生成页面脚本与后台，后台经 bridge 转给插件。
+#[tokio::test]
+async fn dsh_session_services_run_on_codex_session_mirror() {
+    use codex_plus_core::extension_gateway::apply_request_with;
+    use codex_plus_core::extension_hooks::dispatch;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("session-plugin")), &toolchain).unwrap();
+    let main = row(&record.report, "dsh-session-demo");
+    assert_eq!(main["status"], "partial", "镜像服务有说明，按部分兼容：{main}");
+    let plan = dsh_plugins::report_bridge(&record.report);
+    assert!(plan.gateway_request && !plan.instructions, "{plan:?}");
+    assert_eq!(plan.commands.len(), 1);
+    for hook in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"] {
+        assert!(plan.hooks.iter().any(|item| item == hook), "会话镜像要 {hook}：{plan:?}");
+    }
+
+    let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+    assert_eq!(companion["manifestError"], Value::Null, "{companion}");
+    let dir = scripts.path().join("user/dsh-dsh-session-demo");
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("codexpp.json")).unwrap()).unwrap();
+    assert_eq!(manifest["renderer"], json!(["renderer.js"]), "{manifest}");
+    assert_eq!(manifest["backend"]["script"], "backend/main.mjs", "{manifest}");
+    assert!(std::fs::read_to_string(dir.join("renderer.js")).unwrap().contains("\"calls\""));
+
+    let session = |extra: Value| {
+        let mut payload = json!({"session_id": "mirror-1", "cwd": "/tmp"});
+        payload.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        payload
+    };
+    let start = dispatch(&manager, "SessionStart", session(json!({"source": "startup"}))).await.unwrap();
+    assert_eq!(start["hookSpecificOutput"]["additionalContext"], "session-demo: hello mirror-1 (startup)", "{start}");
+    dispatch(&manager, "UserPromptSubmit", session(json!({"prompt": "hi"}))).await.unwrap();
+    for index in 0..3 {
+        let call = session(json!({"tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_use_id": format!("c{index}"), "tool_response": "ok"}));
+        dispatch(&manager, "PreToolUse", call.clone()).await.unwrap();
+        dispatch(&manager, "PostToolUse", call).await.unwrap();
+    }
+    // 第三次工具结果后排下的上下文（钩子之外的 inject）随下一次钩子带上。
+    let next = dispatch(&manager, "PreToolUse", session(json!({"tool_name": "Bash", "tool_input": {"command": "pwd"}, "tool_use_id": "c3"}))).await.unwrap();
+    assert_eq!(next["hookSpecificOutput"]["additionalContext"], "session-demo: 3 tool calls so far", "{next}");
+
+    // 网关：agent/request 把推理强度改成 high。
+    let mut body = json!({"model": "gpt-x", "prompt_cache_key": "mirror-1", "reasoning": {"effort": "low"}, "input": []});
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert_eq!(body["reasoning"]["effort"], "high", "{body}");
+
+    // 斜杠命令：后台脚本经 bridge 转给常驻进程，投影读的是镜像的状态。
+    let backend = dir.join("backend/main.mjs");
+    let script = format!(
+        "const {{ default: create }} = await import({}); const methods = create(); process.stdout.write(JSON.stringify(await methods.command({{ name: 'calls', rawInput: '', sessionId: 'mirror-1' }}))); process.exit(0)",
+        json!(url_of(&backend))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(result["kind"], "success", "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(result["text"], "calls=4 turns=1 events=9", "{result}");
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    assert!(manager.enabled_extension_hooks().unwrap().is_empty());
+}
+
+/// 带前端半边（dsh.client）的插件：配套拓展包的页面脚本夹着插件的 client.js 与胶水，
+/// 前端发往 /api 的请求经后台 → bridge → 常驻进程交给插件注册的路由。
+#[test]
+fn dsh_client_plugin_gets_renderer_glue_and_routed_fetch() {
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("client-plugin")), &toolchain).unwrap();
+    let plan = dsh_plugins::report_bridge(&record.report);
+    assert!(plan.connection && plan.client.is_some(), "{plan:?}");
+
+    let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+    assert_eq!(companion["manifestError"], Value::Null, "{companion}");
+    let dir = scripts.path().join("user/dsh-dsh-client-demo");
+    let renderer = std::fs::read_to_string(dir.join("renderer.js")).unwrap();
+    assert!(renderer.contains("window.__ModuleLoader__.load({"), "插件的前端入口原样夹在里面");
+    assert!(renderer.contains("codexPlus.dshClient(ctx, modules"), "交给页面的 dsh 前端运行时");
+    assert!(renderer.contains("ctx.backend.call('fetch'"), "/api 请求经后台转发");
+
+    let backend = dir.join("backend/main.mjs");
+    let script = format!(
+        "const {{ default: create }} = await import({}); const methods = create(); const reply = await methods.fetch({{ path: '/api/client-demo/echo', method: 'POST', headers: {{ 'content-type': 'application/json' }}, body: JSON.stringify({{ text: 'ping' }}) }}); const missing = await methods.fetch({{ path: '/api/nope' }}); process.stdout.write(JSON.stringify({{ reply, missing: missing.status }})); process.exit(0)",
+        json!(url_of(&backend))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(result["reply"]["status"], 200, "{}", String::from_utf8_lossy(&output.stderr));
+    let body: Value = serde_json::from_str(result["reply"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["echo"], "ping");
+    assert_eq!(result["missing"], 404);
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+fn url_of(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    if text.starts_with('/') { format!("file://{text}") } else { format!("file:///{text}") }
 }
 
 /// 只注册工具的插件不生成配套拓展包；替身缺的导出判为不兼容而不是加载失败。

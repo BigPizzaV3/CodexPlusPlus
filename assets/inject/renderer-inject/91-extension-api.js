@@ -252,6 +252,24 @@
         return [...codexPlusServices.entries()].map(([name, entry]) => ({ name, owner: entry.owner }));
       },
 
+      /**
+       * 在拓展实例里运行 dsh 前端插件（由 Codex++ 生成的 dsh 配套拓展包调用）：modules 是截住的
+       * __ModuleLoader__.load 参数，dsh 插槽映射到 Codex++ 的插槽，见 96-dsh-client.js。
+       */
+      dshClient(ctx, modules, options) {
+        return codexPlusRunDshClient(ctx, modules, options);
+      },
+
+      /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+      currentSessionId() {
+        return codexPlusCurrentSessionId();
+      },
+
+      /** 内置拓展的现状：[{ id, name, active, disabled, replacedBy }]。见 96-builtin-extensions.js。 */
+      builtins() {
+        return codexPlusBuiltinExtensionList();
+      },
+
       /** 显示提示。type: info | success | warn | error */
       toast(message, options) {
         return runCodexPlusExtensionCallback(

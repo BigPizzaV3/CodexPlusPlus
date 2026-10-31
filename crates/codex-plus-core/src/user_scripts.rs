@@ -838,6 +838,7 @@ impl UserScriptManager {
         let config = self.load_config();
         let scripts = self.scan_scripts(&config, runtime_status)?;
         Ok(json!({
+            "builtins": self.builtin_extensions()?,
             "enabled": config.enabled,
             "skip_next_start": config.skip_next_start,
             "builtin_dir": self.builtin_dir.to_string_lossy(),
@@ -846,12 +847,60 @@ impl UserScriptManager {
         }))
     }
 
+    /// 内置拓展的停用 / 顶替状态：`{ disabled: [id], replacedBy: { id: 拓展 key } }`。
+    pub fn builtin_extension_state(&self) -> anyhow::Result<Value> {
+        let config = self.load_config();
+        let disabled = BUILTIN_EXTENSIONS
+            .iter()
+            .map(|(id, _, _)| *id)
+            .filter(|id| config.scripts.get(&builtin_extension_key(id)) == Some(&false))
+            .collect::<Vec<_>>();
+        let mut replaced_by = Map::new();
+        if config.enabled {
+            for script in self.scan_script_files(&config)? {
+                let Some(package) = script.package.as_ref().filter(|package| script.enabled && package.error.is_none()) else {
+                    continue;
+                };
+                for id in &package.replaces {
+                    replaced_by.entry(id.clone()).or_insert_with(|| Value::String(script.key.clone()));
+                }
+            }
+        }
+        Ok(json!({ "disabled": disabled, "replacedBy": replaced_by }))
+    }
+
+    /// 内置拓展列表（给管理器）：名称、说明、是否启用、被哪个拓展顶替。
+    pub fn builtin_extensions(&self) -> anyhow::Result<Value> {
+        let state = self.builtin_extension_state()?;
+        Ok(Value::Array(
+            BUILTIN_EXTENSIONS
+                .iter()
+                .map(|(id, name, description)| {
+                    let disabled = state["disabled"].as_array().is_some_and(|list| list.iter().any(|item| item == id));
+                    json!({
+                        "id": id,
+                        "key": builtin_extension_key(id),
+                        "name": name,
+                        "description": description,
+                        "enabled": !disabled,
+                        "replacedBy": state["replacedBy"].get(*id).cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect(),
+        ))
+    }
+
     pub fn build_enabled_bundle(&self) -> anyhow::Result<String> {
         let config = self.load_config();
+        // 内置拓展的停用 / 顶替状态总要下发（用户脚本总开关关着也一样），页面据此装上 / 卸下内置功能。
+        let builtin_state = format!(
+            "window.__codexPlusBuiltinExtensionState = {}; try {{ window.__codexPlusSyncBuiltinExtensions?.(); }} catch {{}}",
+            self.builtin_extension_state().unwrap_or_else(|_| json!({}))
+        );
         if !config.enabled {
-            return Ok(String::new());
+            return Ok(builtin_state);
         }
-        let mut blocks = vec![RUNTIME_SCRIPT.to_string()];
+        let mut blocks = vec![builtin_state, RUNTIME_SCRIPT.to_string()];
         // 后台服务清单先交给页面：页面把它们登记成可 inject 的服务（调用经桥接转到提供方后台）。
         let services = self
             .enabled_backend_services()
@@ -1099,6 +1148,8 @@ struct ExtensionPackage {
     skipped_assets: Vec<String>,
     /// 技能、子 agent、外部 MCP 服务器、全局指令（同步进 Codex home）。
     codex: crate::extension_codex::ExtensionCodexAssets,
+    /// 顶替的内置拓展 id（codexpp.json 的 `replaces`）：本拓展启用时，这些内置拓展让位。
+    replaces: Vec<String>,
     /// 包目录（绝对路径）。
     root: Option<PathBuf>,
     /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
@@ -1463,6 +1514,7 @@ impl ExtensionPackage {
             "services": self.backend_provides,
             "providers": self.providers.iter().map(|provider| json!({ "id": provider.id, "name": provider.name, "models": provider.models })).collect::<Vec<_>>(),
             "codex": self.codex.summary(),
+            "replaces": self.replaces,
             "config": self.config,
             "assets": self.assets.keys().collect::<Vec<_>>(),
             "skippedAssets": self.skipped_assets,
@@ -1709,6 +1761,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         assets: Default::default(),
         skipped_assets: Vec::new(),
         codex: Default::default(),
+        replaces: Vec::new(),
         root: None,
         config: json!({}),
         error: None,
@@ -1830,6 +1883,7 @@ fn parse_extension_manifest(
         }
         Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
     };
+    package.replaces = parse_extension_replaces(raw.get("replaces"))?;
     package.schedules = parse_extension_schedules(raw.get("schedules"))?;
     if !package.schedules.is_empty() && package.backend.is_none() {
         anyhow::bail!("schedules 调用的是后台方法，需要同时声明 backend");
@@ -1854,6 +1908,48 @@ fn parse_extension_manifest(
         );
     }
     Ok(())
+}
+
+/// Codex++ 自带功能对应的内置拓展：id、名称、说明。页面侧的清单在
+/// `assets/inject/renderer-inject/96-builtin-extensions.js`，两边 id 要一致。
+/// 停用存在配置的 `scripts["builtin:<id>"] = false`；拓展包可用 `replaces` 顶替。
+pub const BUILTIN_EXTENSIONS: &[(&str, &str, &str)] = &[
+    ("agent-pet", "Agent 桌宠", "窗口里可拖动的小角色，按下压扁、松开回弹并播放音效"),
+    ("usage-statusline", "用量状态栏", "输入框下方显示本会话的 token 用量、缓存命中与生成速度"),
+    ("dictation", "语音听写", "输入框旁的麦克风按钮，录音转写成文字"),
+    ("turn-rewind", "轮次回退", "消息菜单里的「回退到这一轮」"),
+    ("typing-effects", "打字特效", "输入时的彩虹、烟花、星星特效"),
+    ("side-chat-save", "侧聊保存", "把侧聊标签页保存成独立会话"),
+    ("history-turn-recovery", "历史轮次补全", "打开长会话时补齐没加载出来的早期轮次"),
+    ("capacity-auto-retry", "容量不足自动重试", "上游提示容量不足时自动重发"),
+    ("proxy-request-status", "请求状态条", "输入框上方显示经 Codex++ 代理的请求进行到哪一步"),
+    ("instance-identity", "多开身份提示", "多开实例顶部显示实例名（用公开拓展接口写成）"),
+    ("session-title-hook", "会话标题中间件", "首轮结束后按拓展的 session/title 中间件改会话标题"),
+];
+
+/// 内置拓展在配置里的 key。
+pub fn builtin_extension_key(id: &str) -> String {
+    format!("builtin:{id}")
+}
+
+fn parse_extension_replaces(value: Option<&Value>) -> anyhow::Result<Vec<String>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().context("replaces 只能是内置拓展 id 的字符串数组")?;
+    let mut replaces = Vec::new();
+    for item in items {
+        let id = item.as_str().context("replaces 只能是内置拓展 id 的字符串数组")?;
+        let id = id.strip_prefix("builtin:").unwrap_or(id);
+        if !BUILTIN_EXTENSIONS.iter().any(|(builtin, _, _)| *builtin == id) {
+            let known = BUILTIN_EXTENSIONS.iter().map(|(builtin, _, _)| *builtin).collect::<Vec<_>>().join("、");
+            anyhow::bail!("replaces 里的 {id} 不是内置拓展（可用：{known}）");
+        }
+        if !replaces.iter().any(|existing| existing == id) {
+            replaces.push(id.to_string());
+        }
+    }
+    Ok(replaces)
 }
 
 /// 单个语言文件的大小上限。

@@ -337,6 +337,19 @@
     return dispose;
   }
 
+  /** 当前打开的 Codex 会话 id（首页、新对话还没有 id 时为空串）。 */
+  function codexPlusCurrentSessionId() {
+    try {
+      const fromRow = normalizedCodexThreadUuid(currentSessionRef()?.session_id);
+      if (fromRow) return fromRow;
+    } catch {}
+    // 侧栏收起或当前会话不在列表里时，取可见输入框上方标着的会话 id（多个标签页只认看得见的那个）。
+    const marked = [...document.querySelectorAll("[data-above-composer-conversation-id]")]
+      // 这个标记节点本身常是空的（empty:hidden），按它所在输入框是否可见判断。
+      .find((node) => node.closest("[data-codex-composer-root]")?.getBoundingClientRect().width > 0);
+    return normalizedCodexThreadUuid(marked?.getAttribute("data-above-composer-conversation-id")) || "";
+  }
+
   function codexPlusFindExtensionCommand(name) {
     return codexPlusExtensionItems(codexPlusRegistry.commands).find((item) => item.name === name) || null;
   }
@@ -447,6 +460,7 @@
           return codexPlusInsertComposerText(editor, value);
         },
         toast: (message, toastOptions) => showToast(String(message ?? ""), toastOptions || {}),
+        sessionId: codexPlusCurrentSessionId(),
       }));
       if (result.ok && result.value && typeof result.value.then === "function") {
         result.value.catch((error) => codexPlusMarkExtensionFailure(command.scriptKey, `command./${command.name}: ${String(error?.stack || error?.message || error)}`));
@@ -539,6 +553,24 @@
     const items = codexPlusExtensionItems(codexPlusRegistry.rowActions);
     if (!items.length) return;
     items.forEach((definition) => {
+      // 自绘项：render({ container, session_id, title, close }) 往菜单里的一个容器画（返回的清理函数在菜单拆掉时调用）。
+      if (typeof definition.render === "function") {
+        const item = document.createElement("div");
+        item.className = "codex-session-more-menu-custom";
+        item.dataset.codexPlusExtensionItem = definition.id;
+        markCodexPlusExtensionNode(item, definition.scriptKey);
+        moreMenu.appendChild(item);
+        const ref = sessionRefFromRow(row);
+        const result = runCodexPlusExtensionCallback(definition.scriptKey, "rowAction.render", () => definition.render({
+          container: item,
+          row,
+          session_id: ref.session_id,
+          title: ref.title || row.getAttribute("data-app-action-sidebar-thread-title") || "",
+          close: () => closeSessionMoreMenus(),
+        }));
+        if (result.ok && typeof result.value === "function") item.__codexPlusRowActionCleanup = result.value;
+        return;
+      }
       const item = createSessionMoreMenuItem(definition.label || definition.id, definition.icon || "◇", (event) => {
         stopActionButtonEvent(row, moreButton, event);
         closeSessionMoreMenus();

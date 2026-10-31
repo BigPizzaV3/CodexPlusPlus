@@ -190,6 +190,7 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    set_host_exe_env(&mut command);
     // Windows 上不能闪出黑色终端窗口。
     #[cfg(windows)]
     command.creation_flags(crate::windows_create_no_window());
@@ -380,6 +381,39 @@ static REMOTE_BRIDGE_PORTS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock:
 
 pub fn set_remote_bridge_ports(ports: Vec<u16>) {
     let _ = REMOTE_BRIDGE_PORTS.set(ports);
+}
+
+/// 宿主调用的命令行入口参数：`CodexPlusPlus --codex-plus-host-call`，stdin 一个 `{ service, method, params }`，
+/// stdout 一行 `{ result }` 或 `{ error }`。给不经运行器起的 Node 进程用（dsh 插件 MCP、钩子常驻进程）。
+pub const HOST_CALL_FLAG: &str = "--codex-plus-host-call";
+/// Codex++ 起 Node 进程时设置：指向 Codex++ 可执行文件，Node 侧据此发起宿主调用。
+pub const HOST_EXE_ENV: &str = "CODEX_PLUS_HOST_EXE";
+const MAX_HOST_CALL_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 给 Node 子进程设置 [`HOST_EXE_ENV`]（取当前可执行文件；拿不到就不设，Node 侧报「不可用」）。
+pub fn set_host_exe_env(command: &mut tokio::process::Command) {
+    if let Ok(exe) = std::env::current_exe() {
+        command.env(HOST_EXE_ENV, exe);
+    }
+}
+
+/// [`HOST_CALL_FLAG`] 的实现：读 stdin、调 [`host_call`]、把结果写到 stdout。总是返回 0，错误写进输出。
+pub async fn run_host_call_cli(manager: &UserScriptManager) -> i32 {
+    use std::io::Read;
+    let mut raw = Vec::new();
+    let read = std::io::stdin().take(MAX_HOST_CALL_BYTES + 1).read_to_end(&mut raw);
+    let reply = match read {
+        Ok(_) if raw.len() as u64 <= MAX_HOST_CALL_BYTES => match serde_json::from_slice::<Value>(&raw) {
+            Ok(message) => match host_call(&message, manager).await {
+                Ok(result) => json!({ "result": result }),
+                Err(error) => json!({ "error": format!("{error:#}") }),
+            },
+            Err(error) => json!({ "error": format!("宿主调用的输入不是 JSON：{error}") }),
+        },
+        _ => json!({ "error": "宿主调用的输入过大或读取失败" }),
+    };
+    println!("{reply}");
+    0
 }
 
 /// 在 Codex 页面里调用桥接路由，返回路由结果（失败时报错）。

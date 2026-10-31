@@ -78,6 +78,15 @@ pub fn run_extension_hook(event: &str) -> i32 {
     tauri::async_runtime::block_on(codex_plus_core::extension_hooks::run_cli(&manager, event))
 }
 
+/// 宿主调用：`--codex-plus-host-call`，dsh 插件宿主等 Node 进程经它读写会话、调模型、问用户。
+pub fn run_extension_host_call() -> i32 {
+    let manager = commands::default_user_script_manager();
+    codex_plus_core::extension_backend::set_remote_bridge_ports(extension_creator_commands::debug_ports(
+        &codex_plus_core::paths::default_app_state_dir(),
+    ));
+    tauri::async_runtime::block_on(codex_plus_core::extension_backend::run_host_call_cli(&manager))
+}
+
 /// 「对话造拓展」MCP：由 Codex 以 `--codex-plus-extension-mcp` 拉起的 stdio 进程。
 pub fn run_extension_creator_mcp(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
     extension_creator_commands::run_mcp(args)

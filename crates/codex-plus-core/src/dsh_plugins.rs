@@ -71,6 +71,34 @@ const HOST_FILES: &[(&str, &str)] = &[
         "shims/dsh-llm.mjs",
         include_str!("../../../assets/dsh-host/shims/dsh-llm.mjs"),
     ),
+    (
+        "services.mjs",
+        include_str!("../../../assets/dsh-host/services.mjs"),
+    ),
+    (
+        "host-call.mjs",
+        include_str!("../../../assets/dsh-host/host-call.mjs"),
+    ),
+    (
+        "shims/dsh-session.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-session.mjs"),
+    ),
+    (
+        "shims/dsh-fs.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-fs.mjs"),
+    ),
+    (
+        "shims/dsh-credentials.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-credentials.mjs"),
+    ),
+    (
+        "shims/dsh-storage-domain.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-storage-domain.mjs"),
+    ),
+    (
+        "shims/dsh-errors.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-errors.mjs"),
+    ),
 ];
 
 const REGISTRY_VERSION: u32 = 1;
@@ -1057,6 +1085,9 @@ const COMPANION_MARKER: &str = "dsh-bridge.json";
 const COMPANION_HOOK_SCRIPT: &str = "hooks/dsh.mjs";
 const COMPANION_GATEWAY_SCRIPT: &str = "gateway/instructions.mjs";
 const COMPANION_PROMPT_FILE: &str = "prompt.txt";
+const COMPANION_ERROR_SCRIPT: &str = "gateway/error.mjs";
+const COMPANION_RENDERER_SCRIPT: &str = "renderer.js";
+const COMPANION_BACKEND_SCRIPT: &str = "backend/main.mjs";
 /// 钩子要加载插件再派发，给足时间；Codex 那边的分发条目固定 120 秒。
 const COMPANION_HOOK_TIMEOUT_SECS: u64 = 30;
 /// 静态提示词只是读文件；动态的要加载插件，取网关中间件允许的上限。
@@ -1077,11 +1108,42 @@ pub struct BridgePlan {
     pub hooks: Vec<String>,
     pub instructions: bool,
     pub static_prompt: Option<String>,
+    /// 插件监听 agent/request（改模型 / 推理强度）：网关请求中间件要加载插件。
+    pub gateway_request: bool,
+    /// 插件监听 agent/request-error：挂网关失败重试。
+    pub gateway_error: bool,
+    /// 插件注册的斜杠命令：在 Codex 页面里注册同名命令，经配套拓展包的后台转给插件。
+    pub commands: Vec<BridgeCommand>,
+    /// 插件宿主半边注册了 HTTP 路由（ctx.connection.fetch）：前端半边的请求经后台转过去。
+    pub connection: bool,
+    /// dsh 前端插件（dsh.client）的入口文件与包名：夹上胶水作为配套拓展包的页面脚本。
+    pub client: Option<BridgeClient>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeClient {
+    pub entry: PathBuf,
+    pub package_name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeCommand {
+    pub name: String,
+    pub description: String,
+    pub hint: String,
 }
 
 impl BridgePlan {
     pub fn is_empty(&self) -> bool {
-        self.hooks.is_empty() && !self.instructions
+        self.hooks.is_empty()
+            && !self.instructions
+            && !self.gateway_request
+            && !self.gateway_error
+            && self.commands.is_empty()
+            && !self.connection
+            && self.client.is_none()
     }
 }
 
@@ -1110,6 +1172,46 @@ pub fn report_bridge(report: &Value) -> BridgePlan {
             .and_then(Value::as_str)
             .filter(|text| !text.trim().is_empty())
             .map(str::to_string),
+        gateway_request: bridge
+            .and_then(|bridge| bridge.pointer("/gateway/request"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        gateway_error: bridge
+            .and_then(|bridge| bridge.pointer("/gateway/error"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        commands: bridge
+            .and_then(|bridge| bridge.get("commands"))
+            .and_then(Value::as_array)
+            .map(|commands| {
+                let mut seen = std::collections::BTreeSet::new();
+                commands
+                    .iter()
+                    .filter_map(|command| {
+                        let name = command.get("name")?.as_str()?;
+                        // 与页面斜杠命令的命名规则一致；重名只留第一个。
+                        let valid = name.len() <= 32
+                            && name.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric())
+                            && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
+                        (valid && seen.insert(name.to_string())).then(|| BridgeCommand {
+                            name: name.to_string(),
+                            description: command.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
+                            hint: command.get("hint").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        connection: bridge
+            .and_then(|bridge| bridge.get("connection"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        client: bridge.and_then(|bridge| bridge.get("client")).and_then(|client| {
+            Some(BridgeClient {
+                entry: PathBuf::from(client.get("entry")?.as_str()?),
+                package_name: client.get("packageName").and_then(Value::as_str).unwrap_or_default().to_string(),
+            })
+        }),
     }
 }
 
@@ -1157,8 +1259,10 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
             );
         }
     }
-    let gateway = if plan.instructions {
-        let (script, timeout) = match &plan.static_prompt {
+    let mut gateway = serde_json::Map::new();
+    if plan.instructions || plan.gateway_request {
+        let static_prompt = plan.static_prompt.as_ref().filter(|_| !plan.gateway_request);
+        let (script, timeout) = match static_prompt {
             Some(text) => {
                 files.insert(COMPANION_PROMPT_FILE.to_string(), text.clone());
                 (
@@ -1170,20 +1274,82 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
             }
             None => (
                 format!(
-                    "{header}// 插件的系统提示词有动态片段：每次模型请求加载插件求值，追加到 instructions。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function request(body) {{\n  const {{ requestInstructions }} = await import({})\n  return requestInstructions(fileURLToPath(CONFIG), body)\n}}\n",
+                    "{header}// 每次模型请求交给插件：提示词片段（含 system-prompt/assemble 改写）追加到 instructions，agent/request 改模型与推理强度。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function request(body, context) {{\n  const {{ requestGateway }} = await import({})\n  return requestGateway(fileURLToPath(CONFIG), body, {{ step: context?.step }})\n}}\n",
                     js_string(&bridge_url),
                 ),
                 COMPANION_DYNAMIC_GATEWAY_TIMEOUT_SECS,
             ),
         };
         files.insert(COMPANION_GATEWAY_SCRIPT.to_string(), script);
-        Some(json!({ "request": [{ "script": COMPANION_GATEWAY_SCRIPT, "timeout": timeout }] }))
+        gateway.insert("request".into(), json!([{ "script": COMPANION_GATEWAY_SCRIPT, "timeout": timeout }]));
+    }
+    if plan.gateway_error {
+        files.insert(
+            COMPANION_ERROR_SCRIPT.to_string(),
+            format!(
+                "{header}// 上游出错时问插件的 agent/request-error：返回 {{ kind: 'retry' }} 就重发。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function error(failure) {{\n  const {{ requestError }} = await import({})\n  return requestError(fileURLToPath(CONFIG), failure)\n}}\n",
+                js_string(&bridge_url),
+            ),
+        );
+        gateway.insert("error".into(), json!([{ "script": COMPANION_ERROR_SCRIPT, "timeout": COMPANION_DYNAMIC_GATEWAY_TIMEOUT_SECS }]));
+    }
+    let gateway = (!gateway.is_empty()).then_some(Value::Object(gateway));
+    // 页面脚本：斜杠命令在 Codex 输入框里同名注册，dsh 前端插件夹上胶水在页面里运行；
+    // 两者的请求都经配套拓展包的后台转给插件常驻进程（后台 → bridge.mjs → 常驻进程）。
+    let client_source = match &plan.client {
+        Some(client) => match std::fs::read_to_string(&client.entry) {
+            Ok(source) => Some((client, source)),
+            Err(error) => {
+                eprintln!("[dsh] 读取前端插件 {} 失败：{error}", client.entry.display());
+                None
+            }
+        },
+        None => None,
+    };
+    let mut renderer = Vec::new();
+    if !plan.commands.is_empty() || client_source.is_some() {
+        let commands = serde_json::to_string(&plan.commands).ok()?;
+        let mut script = format!(
+            "{header}// 插件注册的 dsh 斜杠命令，在 Codex 输入框里同名可用；结果用提示条显示。\nconst COMMANDS = {commands}\n\ncodexPlus.extension((ctx) => {{\n  for (const command of COMMANDS) {{\n    ctx.registerCommand({{\n      name: command.name,\n      description: command.hint ? `${{command.description}} ${{command.hint}}` : command.description,\n      async run(rawInput, {{ toast, sessionId }}) {{\n        try {{\n          const result = await ctx.backend.call('command', {{ name: command.name, rawInput, sessionId }}, {{ timeout: 120000 }})\n          if (result?.kind === 'error') toast(result.text || `/${{command.name}} 失败`, {{ type: 'error' }})\n          else toast(result?.text || `/${{command.name}} 已完成`, {{ type: 'success' }})\n        }} catch (error) {{\n          toast(`/${{command.name}} 失败：${{error?.message ?? error}}`, {{ type: 'error' }})\n        }}\n      }},\n    }})\n  }}\n"
+        );
+        if let Some((client, source)) = &client_source {
+            script.push_str(&format!(
+                "\n  // dsh 前端插件：截住它的 __ModuleLoader__.load，把发往 /api/ 的 fetch 经后台转给插件的宿主半边，\n  // 再交给 Codex++ 的 dsh 前端运行时（React 用 Codex 页面自己的，dsh 插槽映射到 Codex++ 的插槽）。\n  const modules = []\n  const loader = {{ load: (module) => modules.push(module) }}\n  const routed = async (input, init = {{}}) => {{\n    const url = typeof input === 'string' ? input : String(input?.url ?? input)\n    if (!url.startsWith('/api/')) return globalThis.fetch(input, init)\n    const reply = await ctx.backend.call('fetch', {{ path: url, method: init.method || 'GET', headers: init.headers ?? {{}}, body: init.body ?? null }}, {{ timeout: 120000 }})\n    return new Response(reply?.body ?? '', {{ status: reply?.status ?? 502, headers: reply?.headers ?? {{}} }})\n  }}\n  const window = new Proxy(globalThis.window, {{\n    get: (target, key) => key === '__ModuleLoader__' ? loader : key === 'fetch' ? routed : Reflect.get(target, key),\n  }})\n  const fetch = routed\n  ;(function () {{\n// ---- {name} 的前端入口 ----\n{source}\n// ---- 前端入口结束 ----\n  }}).call(window)\n  void codexPlus.dshClient(ctx, modules, {{ packageName: {package} }}).catch((error) => ctx.fail(error))\n",
+                name = client.package_name,
+                package = js_string(&client.package_name),
+            ));
+        }
+        script.push_str("})\n");
+        files.insert(COMPANION_RENDERER_SCRIPT.to_string(), script);
+        renderer.push(COMPANION_RENDERER_SCRIPT.to_string());
+    }
+    let backend = if !plan.commands.is_empty() || plan.connection {
+        files.insert(
+            COMPANION_BACKEND_SCRIPT.to_string(),
+            format!(
+                "{header}// 页面斜杠命令与前端插件请求的执行端：转给插件常驻进程。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nconst bridge = () => import({})\n\nexport default () => ({{\n  async command({{ name, rawInput, sessionId }} = {{}}) {{\n    return (await bridge()).runCommand(fileURLToPath(CONFIG), name, rawInput, sessionId)\n  }},\n  async fetch(request = {{}}) {{\n    return (await bridge()).runFetch(fileURLToPath(CONFIG), request)\n  }},\n}})\n",
+                js_string(&bridge_url),
+            ),
+        );
+        Some(json!({ "script": COMPANION_BACKEND_SCRIPT }))
     } else {
         None
     };
     let mut targets = plan.hooks.clone();
     if plan.instructions {
         targets.push("instructions".to_string());
+    }
+    if plan.gateway_request {
+        targets.push("模型请求".to_string());
+    }
+    if plan.gateway_error {
+        targets.push("失败重试".to_string());
+    }
+    if plan.client.is_some() {
+        targets.push("前端界面".to_string());
+    }
+    if !plan.commands.is_empty() {
+        targets.push(format!("命令 {}", plan.commands.iter().map(|command| format!("/{}", command.name)).collect::<Vec<_>>().join(" ")));
     }
     Some(ExtensionWrite {
         id: companion_id(&record.id),
@@ -1194,14 +1360,14 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
             targets.join("、")
         ),
         routes: Vec::new(),
-        renderer: Vec::new(),
+        renderer,
         hooks: (!hooks.is_empty()).then(|| Value::Object(hooks)),
         gateway,
         // 工具仍走 dsh 插件自己的 MCP（codex_plus_dsh），不重复声明成拓展工具。
         tools: None,
         config: None,
         files,
-        backend: None,
+        backend,
         tool_pipeline: None,
         providers: None,
         extra: Default::default(),
@@ -1237,6 +1403,9 @@ impl DshPlugins {
             "hooks": plan.hooks,
             "instructions": plan.instructions,
             "staticPrompt": plan.static_prompt.is_some(),
+            "gatewayRequest": plan.gateway_request,
+            "gatewayError": plan.gateway_error,
+            "commands": plan.commands,
             "enabled": record.enabled,
         }))
     }
@@ -1275,6 +1444,9 @@ impl DshPlugins {
             "hooks": plan.hooks,
             "instructions": plan.instructions,
             "staticPrompt": plan.static_prompt.is_some(),
+            "gatewayRequest": plan.gateway_request,
+            "gatewayError": plan.gateway_error,
+            "commands": plan.commands,
             "installed": manager.user_dir().join(&id).join(COMPANION_MARKER).is_file(),
             "enabled": config.enabled && config.scripts.get(&key).copied().unwrap_or(true),
             "scriptsEnabled": config.enabled,
@@ -1311,6 +1483,10 @@ pub fn run_mcp(args: &[OsString]) -> anyhow::Result<i32> {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // 插件经 Codex++ 可执行文件发起宿主调用（读写会话、调模型、问用户）。
+    if let Ok(exe) = std::env::current_exe() {
+        command.env(crate::extension_backend::HOST_EXE_ENV, exe);
+    }
     // stdio 已接到 Codex 的管道上，不需要控制台窗口。
     #[cfg(windows)]
     {

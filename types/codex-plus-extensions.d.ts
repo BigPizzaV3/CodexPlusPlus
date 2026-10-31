@@ -48,11 +48,20 @@ interface CodexPlusRowActionDefinition {
   label: string;
   /** 单个字形或 SVG 字符串。 */
   icon?: string;
-  onActivate(context: {
+  /** 普通菜单项：点击时调用。与 render 二选一。 */
+  onActivate?(context: {
     row: HTMLElement;
     session_id: string;
     close: () => void;
   }): void;
+  /** 自绘菜单项：往菜单里的一个容器画（例如 React 组件）；可返回清理函数，菜单拆掉时调用。 */
+  render?(context: {
+    container: HTMLElement;
+    row: HTMLElement;
+    session_id: string;
+    title: string;
+    close: () => void;
+  }): void | (() => void);
 }
 
 interface CodexPlusPageDefinition {
@@ -97,6 +106,10 @@ interface CodexPlusExtensionApi {
 
   /** 当前已提供的服务与提供方。取值请在拓展里 inject 或 ctx.get。 */
   services(): Array<{ name: string; owner: string }>;
+  /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+  currentSessionId(): string;
+  /** 内置拓展的现状：Codex++ 自带功能也挂在拓展内核上，可停用、可被 replaces 顶替。 */
+  builtins(): Array<{ id: string; name: string; active: boolean; disabled: boolean; replacedBy: string | null }>;
 
   /** @deprecated 早期名称，等同于 {@link CodexPlusExtensionApi.extension}。 */
   plugin: CodexPlusExtensionApi["extension"];
@@ -253,18 +266,24 @@ interface CodexPlusSidePanelDefinition {
 }
 
 type CodexPlusSlotName =
-  | "composer.above" | "thread.top" | "thread.bottom" | "sidebar.top" | "sidebar.bottom" | "titlebar"
-  | "turn.after" | "sessionRow.prefix" | "sessionRow.suffix" | "overlay" | "activity.after";
+  | "composer.above" | "composer.below" | "composer.left" | "composer.right" | "home.above"
+  | "thread.top" | "thread.bottom" | "turn.after" | "activity.after" | "header.title" | "titlebar" | "approval"
+  | "sidebar.top" | "sidebar.bottom" | "sidebar.section" | "sessionRow.prefix" | "sessionRow.suffix" | "projectRow.suffix"
+  | "overlay";
 
 interface CodexPlusSlotDefinition {
   slot: CodexPlusSlotName;
   /** 越小越靠前。 */
   order?: number;
   /** 容器新建时调用（Codex 重建 DOM 后会再调）；可返回清理函数。容器留空则不占位。 */
-  /** turn.after 多给 turnKey；sessionRow.* 多给 sessionId、title；activity.after 多给 kind、itemIds、text。 */
+  /**
+   * turn.after 多给 turnKey；sessionRow.* 多给 sessionId、title；activity.after 多给 kind、itemIds、text；
+   * approval 多给 kind（form / card）；projectRow.suffix 多给 projectId、label；sidebar.section 多给 section。
+   */
   render(context: {
     container: HTMLElement; slot: CodexPlusSlotName; turnKey?: string; sessionId?: string; title?: string;
-    kind?: "command" | "toolCall" | "fileChange" | "reasoning" | "error" | "other"; itemIds?: string[]; text?: string;
+    kind?: "command" | "toolCall" | "fileChange" | "reasoning" | "error" | "other" | "form" | "card"; itemIds?: string[]; text?: string;
+    projectId?: string; label?: string; section?: string;
   }): void | (() => void);
 }
 
@@ -543,6 +562,8 @@ interface CodexPlusExtensionContext {
   registerTheme(definition: CodexPlusThemeDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   /** 弹对话框问用户；取消或超时为 null。 */
   ask(question: CodexPlusAskQuestion): Promise<{ value: unknown; text: string | null } | null>;
+  /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+  currentSessionId(): string;
 
   /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;

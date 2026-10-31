@@ -13737,6 +13737,25 @@ button.side-item:hover {
 .shell .user-script-row .user-script-state-label[data-state="globalOff"] {
   color: hsl(var(--status-warning));
 }
+.shell .user-script-row .user-script-state-label[data-state="replaced"] {
+  color: hsl(var(--status-warning));
+}
+/* 内置拓展：本地拓展列表下面一段，标题一行加说明。 */
+.shell .builtin-extensions {
+  margin-top: 14px;
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 10px;
+}
+.shell .builtin-extensions-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 4px 8px;
+}
+.shell .builtin-extensions-title small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
 
 /* ── 皮肤管理：顶部压成一条细栏；主题页签按内容宽度；主题卡片缩小、一行放更多 ── */
 .shell .dream-skin-page .dream-skin-overview-content {

@@ -145,6 +145,10 @@
   }
 
   function codexPlusProxyStatusRender() {
+    if (!!window.__codexPlusBuiltinInactive?.has("proxy-request-status")) {
+      codexPlusProxyStatusHide();
+      return;
+    }
     const card = codexPlusProxyStatusComposerCard();
     const threadId = card ? codexPlusProxyStatusThreadId(card) : "";
     // 首页/新会话没有当前会话 id：不能把“没有会话”当成“不过滤”，
@@ -235,7 +239,7 @@
 
   async function codexPlusProxyStatusRefresh() {
     if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
-    if (document.hidden) return;
+    if (document.hidden || !!window.__codexPlusBuiltinInactive?.has("proxy-request-status")) return;
     codexPlusProxyStatusState.inFlight = true;
     try {
       const result = await codexPlusProxyStatusPostWithTimeout();

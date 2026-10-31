@@ -49,7 +49,8 @@
   }
 
   function codexPlusAgentPetActive(settings) {
-    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.agents.includes("codex");
+    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.agents.includes("codex")
+      && !window.__codexPlusBuiltinInactive?.has("agent-pet");
   }
 
   function readCodexPlusAgentPetPosition() {

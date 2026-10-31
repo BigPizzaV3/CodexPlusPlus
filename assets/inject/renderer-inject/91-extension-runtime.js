@@ -464,9 +464,13 @@
    * 把新事件逐条发出去。新版 Codex 的通知不经过页面，rollout 是页面能拿到的唯一完整来源。
    *   - `session/event`：(event, { sessionId })，event 形状同 sessionQuery 的事件日志
    *   - `agent/status`：({ sessionId, status: "running" | "idle" | "aborted", turn, reason? })
+   *   - 更细的通知（agent 只是 { id, session: { id } } 描述，没有 steer / inject）：
+   *     `tools/result`：(exec { callId, name, arguments }, result { isError: false, content })，工具结果写进会话时；
+   *     `agent/created`：({ agent, source: "startup" })，观察开始后新出现的会话；
+   *     `agent/error`：({ agent, turn, error })，一轮被中止（turn/aborted）时
    * 没人监听时自动停；监听开始前已有的事件不重放，之后新建的会话从头发。
    */
-  const codexPlusSessionWatchEvents = ["session/event", "agent/status"];
+  const codexPlusSessionWatchEvents = ["session/event", "agent/status", "tools/result", "agent/created", "agent/error"];
   let codexPlusSessionWatcher = null;
 
   function codexPlusWantsSessionWatch() {
@@ -484,6 +488,8 @@
     if (codexPlusSessionWatcher || !codexPlusWantsSessionWatch()) return;
     const query = codexPlusSessionQueryService();
     const cursors = new Map();
+    // callId → { name, arguments }：tools/result 要带上调用时的工具名与参数。
+    const calls = new Map();
     let primed = false;
     const tick = async () => {
       if (!codexPlusWantsSessionWatch()) {
@@ -495,6 +501,7 @@
         for (const [index, session] of (sessions || []).entries()) {
           let cursor = cursors.get(session.id);
           if (!cursor) {
+            if (primed) codexPlusEmitExtensionEvent("agent/created", [{ agent: codexPlusAgentDescriptor(session.id), source: "startup" }]);
             let next = 0;
             if (!primed) {
               const tail = await query.listEvents(session.id, { fromEnd: true, limit: 1 }).catch(() => []);
@@ -513,6 +520,7 @@
             codexPlusEmitExtensionEvent("session/event", [event, { sessionId: session.id }]);
             const status = codexPlusSessionStatusOf(event);
             if (status) codexPlusEmitExtensionEvent("agent/status", [{ sessionId: session.id, ...status }]);
+            codexPlusEmitSessionNotices(session.id, event, calls);
           }
         }
         primed = true;
@@ -520,6 +528,34 @@
       codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 5000 : 1500);
     };
     codexPlusSessionWatcher = setTimeout(tick, 0);
+  }
+
+  /** 页面通知里的 agent 描述：只有会话 id，不能往会话里插话。 */
+  function codexPlusAgentDescriptor(sessionId) {
+    return Object.freeze({ id: sessionId, session: Object.freeze({ id: sessionId }) });
+  }
+
+  /** 会话事件 → tools/result、agent/error 通知。calls 记着工具调用，工具结果到了再配对。 */
+  function codexPlusEmitSessionNotices(sessionId, event, calls) {
+    if (event.type === "tool/call") {
+      calls.set(event.data?.callId, { name: event.data?.name ?? "", arguments: event.data?.input ?? "" });
+      if (calls.size > 500) calls.delete(calls.keys().next().value);
+      return;
+    }
+    if (event.type === "tool/result" && codexPlusExtensionListeners.get("tools/result")?.size) {
+      const call = calls.get(event.data?.callId) || {};
+      let parsed = call.arguments;
+      try { parsed = typeof call.arguments === "string" ? JSON.parse(call.arguments) : call.arguments; } catch {}
+      const agent = codexPlusAgentDescriptor(sessionId);
+      codexPlusEmitExtensionEvent("tools/result", [
+        { callId: event.data?.callId ?? "", name: call.name ?? "", arguments: parsed, agent },
+        { isError: false, value: event.data?.output ?? "", content: [{ type: "text", text: String(event.data?.output ?? "") }] },
+      ]);
+      return;
+    }
+    if (event.type === "turn/aborted") {
+      codexPlusEmitExtensionEvent("agent/error", [{ agent: codexPlusAgentDescriptor(sessionId), turn: event.data?.turn, error: new Error(String(event.data?.reason ?? "aborted")) }]);
+    }
   }
 
   /** 通知所有监听者。逐个隔离：一个处理器抛错不影响其余。 */
@@ -1007,6 +1043,10 @@
       },
       registerTheme(definition, itemOptions) {
         return track(codexPlusRegisterTheme(definition, registerOptions(itemOptions)));
+      },
+      /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+      currentSessionId() {
+        return codexPlusCurrentSessionId();
       },
       /** 弹对话框问用户，返回 { value, text }；取消为 null。 */
       ask(question) {
