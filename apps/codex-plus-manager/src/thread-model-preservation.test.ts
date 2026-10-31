@@ -434,7 +434,7 @@ describe("pure API persisted model snapshot", () => {
           const innerParams = method === "send-cli-request-for-host" ? params.params : params;
           if (innerMethod === "thread/read") {
             if (scenario === "state-failed") throw new Error("read unavailable");
-            if (scenario === "state-timeout") return new Promise(() => {});
+            if (scenario === "state-timeout") return new Promise<never>(() => {});
             if (scenario === "state-unknown") return { thread: { status: { type: "unknown" } } };
             return { thread: { id: "a", modelProvider: "openai", status: { type: "notLoaded" } } };
           }
