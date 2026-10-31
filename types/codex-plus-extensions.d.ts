@@ -421,7 +421,7 @@ interface CodexPlusLlm {
 }
 
 interface CodexPlusInputTriggerDefinition {
-  /** 符号开头的短前缀，如 "@"、"#"。 */
+  /** 符号开头的短前缀，如 "#"、"%"。@ $ / 是 Codex 自己的，注册会报错。 */
   trigger: string;
   items(query: string, context: { editor: HTMLElement }): Array<CodexPlusInputTriggerItem> | Promise<Array<CodexPlusInputTriggerItem>>;
 }

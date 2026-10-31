@@ -665,8 +665,8 @@ export default ({ sessions }) => ({
 
 ```js
 codexPlus.extension((ctx) => {
-  // 输入框里打 @ 时弹候选，选中后把「@查询词」换成 insert
-  ctx.registerInputTrigger({ trigger: "@", items: async (query) => [{ label: "README.md", description: "项目说明", insert: "@README.md " }] });
+  // 输入框里打 # 时弹候选，选中后把「#查询词」换成 insert（@ $ / 是 Codex 自己的，不能用）
+  ctx.registerInputTrigger({ trigger: "#", items: async (query) => [{ label: "#123 登录失败", description: "issue", insert: "#123 " }] });
   // 快捷键：Mod 在 macOS 是 ⌘，其余是 Ctrl；必须带修饰键（或 F1~F12）
   ctx.registerShortcut({ key: "Mod+Shift+K", run: () => ctx.toast("按下了") });
   // 主题：同一时间只生效一个，用户的选择记在本机
@@ -679,6 +679,7 @@ codexPlus.extension((ctx) => {
 // 常驻后台、模型工具、钩子：ui.ask({ … }) / ui.toast("文字")，在 Codex 页面里弹（最长等 10 分钟）
 ```
 
+- `@`（提及）、`$`（技能）、`/`（命令）是 Codex 自己的触发符，拓展注册会报错。
 - 输入触发在光标前是「触发符 + 查询词」（触发符前是开头或空白、查询词里没有空白）时弹出，↑↓ 选、回车 / Tab 确认、Esc 关。
 - 主题切换时发 `theme/change` 事件；拓展装上 / 卸下后合并发一次 `extensions/changed`（`{ extensions: [{ id, scriptKey, version }] }`）。
 

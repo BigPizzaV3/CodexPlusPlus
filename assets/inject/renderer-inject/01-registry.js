@@ -105,9 +105,10 @@
       throw new Error(`拓展项总数已达上限 ${codexPlusExtensionGlobalLimit}`);
     }
     // 每个类别至少要有一个可调用的钩子，否则注册进来也渲染不出东西。
-    // 菜单项的开关形态是 onChange，页面/入口是 render，斜杠命令是 run，其余是 onActivate。
-    const callbacks = ["render", "onActivate", "onChange", "onCleanup", "run"];
-    if (definition && !callbacks.some((name) => typeof definition[name] === "function")) {
+    // 菜单项的开关形态是 onChange，页面/入口是 render，斜杠命令与快捷键是 run，输入触发是 items，其余是 onActivate。
+    // 主题是纯样式，没有回调。
+    const callbacks = ["render", "onActivate", "onChange", "onCleanup", "run", "items"];
+    if (definition && kind !== "theme" && !callbacks.some((name) => typeof definition[name] === "function")) {
       throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
     }
     const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;

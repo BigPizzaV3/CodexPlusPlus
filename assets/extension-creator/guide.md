@@ -306,7 +306,8 @@ export default async function* (context, next) {
 
 ## 输入触发、快捷键、主题、问用户
 
-- `ctx.registerInputTrigger({ trigger: "@", items: async (query) => [{ label, description, insert }] })`：输入框里打 @ 时弹候选。
+- `ctx.registerInputTrigger({ trigger: "#", items: async (query) => [{ label, description, insert }] })`：输入框里打 # 时弹候选。
+  `@`、`$`、`/` 是 Codex 自己的提及与命令，不能用。
 - `ctx.registerShortcut({ key: "Mod+Shift+K", run })`：Mod 在 macOS 是 ⌘；必须带修饰键。
 - `ctx.registerTheme({ id, name, variables: { "--变量": "值" }, css })`，`ctx.themes.apply(id)` 切换，`apply(null)` 恢复。
 - `await ctx.ask({ title, message, options: [{ value, label }], input: { placeholder } })` → `{ value, text }` 或 null；

@@ -1896,9 +1896,10 @@
       throw new Error(`拓展项总数已达上限 ${codexPlusExtensionGlobalLimit}`);
     }
     // 每个类别至少要有一个可调用的钩子，否则注册进来也渲染不出东西。
-    // 菜单项的开关形态是 onChange，页面/入口是 render，斜杠命令是 run，其余是 onActivate。
-    const callbacks = ["render", "onActivate", "onChange", "onCleanup", "run"];
-    if (definition && !callbacks.some((name) => typeof definition[name] === "function")) {
+    // 菜单项的开关形态是 onChange，页面/入口是 render，斜杠命令与快捷键是 run，输入触发是 items，其余是 onActivate。
+    // 主题是纯样式，没有回调。
+    const callbacks = ["render", "onActivate", "onChange", "onCleanup", "run", "items"];
+    if (definition && kind !== "theme" && !callbacks.some((name) => typeof definition[name] === "function")) {
       throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
     }
     const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;
@@ -21122,6 +21123,8 @@
     codexPlusMessageRefreshTimer = setTimeout(() => {
       codexPlusMessageRefreshTimer = 0;
       refreshCodexPlusMessageSlots();
+      // 对话区里的界面插槽（每轮末尾、对话顶部 / 底部）也跟着对话内容走：切会话、新一轮出现时补上。
+      if (codexPlusHasThreadUiSlots()) refreshCodexPlusUiSlots();
     }, codexPlusMessageSlotRefreshDelayMs);
   }
 
@@ -21146,11 +21149,16 @@
     for (const target of targets) codexPlusMessageObserver.observe(target, { childList: true, subtree: true, characterData: true });
   }
 
+  /** 有没有挂在对话区里的界面插槽：它们和消息插槽共用对话区的观察器。 */
+  function codexPlusHasThreadUiSlots() {
+    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above"].includes(item.slot));
+  }
+
   function refreshCodexPlusMessageSlots() {
     const actions = codexPlusExtensionItems(codexPlusRegistry.messageActions);
     const decorations = codexPlusExtensionItems(codexPlusRegistry.messageDecorations);
     const active = actions.length > 0 || decorations.length > 0;
-    syncCodexPlusMessageObserver(active);
+    syncCodexPlusMessageObserver(active || codexPlusHasThreadUiSlots());
     if (!active) {
       if (codexPlusMessageSlotsRendered) {
         document.querySelectorAll(`[${codexPlusMessageSlotAttribute}]`).forEach((node) => node.remove());
@@ -21491,7 +21499,8 @@
   /**
    * 拓展的输入触发、快捷键、主题与向用户提问。
    *
-   * - 输入触发：registerInputTrigger({ trigger: "@", items(query) => [{ label, description?, insert }] })。
+   * - 输入触发：registerInputTrigger({ trigger: "#", items(query) => [{ label, description?, insert }] })。
+   *   @、$、/ 是 Codex 自己的提及与命令，不让拓展占用。
    *   输入框里光标前是「触发符 + 查询词」时弹出候选，选中后把这一段换成 insert。
    * - 快捷键：registerShortcut({ key: "Mod+Shift+K", run, allowInInput? })。Mod 在 macOS 是 ⌘，其余是 Ctrl。
    * - 主题：registerTheme({ id, name, variables: { "--x": "值" }, css })，同一时间只有一个生效，选择记在本机。
@@ -21499,12 +21508,15 @@
    */
 
   // ---------------------------------------------------------------- 输入触发
-  const codexPlusTriggerPattern = /^[@#$%&~!^:+][\w-]{0,7}$|^\/\/[\w-]{0,6}$/;
+  const codexPlusTriggerPattern = /^[#%&~!^:+][\w-]{0,7}$/;
+  /** Codex 自己占用的触发符：@ 提及文件 / 应用，$ 提及技能，/ 是斜杠命令。拓展抢这些只会和原生菜单打架。 */
+  const codexPlusReservedTriggers = /^[@$/]/;
   let codexPlusTriggerState = null;
 
   function codexPlusRegisterInputTrigger(definition, options = {}) {
     const trigger = String(definition?.trigger || "");
-    if (!codexPlusTriggerPattern.test(trigger)) throw new Error("trigger 是一个符号开头的短前缀，例如 \"@\"、\"#\"、\"$tool\"");
+    if (codexPlusReservedTriggers.test(trigger)) throw new Error(`触发符 ${trigger[0]} 是 Codex 自己在用的（@ 提及、$ 技能、/ 命令），换一个，例如 "#"`);
+    if (!codexPlusTriggerPattern.test(trigger)) throw new Error("trigger 是一个符号开头的短前缀，例如 \"#\"、\"%\"、\"#issue\"");
     if (typeof definition?.items !== "function") throw new Error(`输入触发 ${trigger} 需要 items(query) 返回候选`);
     const dispose = codexPlusRegisterExtensionItem("inputTrigger", codexPlusRegistry.inputTriggers, { ...definition, trigger }, options);
     installCodexPlusInputTriggerHandlers();
@@ -21611,6 +21623,14 @@
   function installCodexPlusInputTriggerHandlers() {
     // 共用命令提示的样式（命令提示的处理器同时装上也无妨：没有命令时它什么都不做）。
     installCodexPlusCommandHandlers();
+    if (!document.getElementById("codex-plus-input-trigger-style")) {
+      const style = document.createElement("style");
+      style.id = "codex-plus-input-trigger-style";
+      markCodexPlusExtensionNode(style, "builtin-input-triggers");
+      style.textContent = `#codex-plus-input-trigger-hints{position:fixed;z-index:2147483645;display:flex;flex-direction:column;gap:2px;max-height:min(360px,50vh);overflow:auto;padding:6px;border-radius:12px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);background:var(--color-token-main-surface-primary,var(--codex-plus-bg-elevated,#262626));color:var(--color-token-text-primary,var(--codex-plus-text,#eee));box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:13px}
+        #codex-plus-input-trigger-hints .codex-plus-command-hint[aria-selected="true"]{background:color-mix(in srgb,currentColor 12%,transparent)}`;
+      document.head.append(style);
+    }
     if (window.__codexPlusInputTriggerHandlersInstalled) return;
     window.__codexPlusInputTriggerHandlersInstalled = true;
     const onInput = (event) => {

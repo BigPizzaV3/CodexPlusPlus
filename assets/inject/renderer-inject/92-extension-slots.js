@@ -195,6 +195,8 @@
     codexPlusMessageRefreshTimer = setTimeout(() => {
       codexPlusMessageRefreshTimer = 0;
       refreshCodexPlusMessageSlots();
+      // 对话区里的界面插槽（每轮末尾、对话顶部 / 底部）也跟着对话内容走：切会话、新一轮出现时补上。
+      if (codexPlusHasThreadUiSlots()) refreshCodexPlusUiSlots();
     }, codexPlusMessageSlotRefreshDelayMs);
   }
 
@@ -219,11 +221,16 @@
     for (const target of targets) codexPlusMessageObserver.observe(target, { childList: true, subtree: true, characterData: true });
   }
 
+  /** 有没有挂在对话区里的界面插槽：它们和消息插槽共用对话区的观察器。 */
+  function codexPlusHasThreadUiSlots() {
+    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above"].includes(item.slot));
+  }
+
   function refreshCodexPlusMessageSlots() {
     const actions = codexPlusExtensionItems(codexPlusRegistry.messageActions);
     const decorations = codexPlusExtensionItems(codexPlusRegistry.messageDecorations);
     const active = actions.length > 0 || decorations.length > 0;
-    syncCodexPlusMessageObserver(active);
+    syncCodexPlusMessageObserver(active || codexPlusHasThreadUiSlots());
     if (!active) {
       if (codexPlusMessageSlotsRendered) {
         document.querySelectorAll(`[${codexPlusMessageSlotAttribute}]`).forEach((node) => node.remove());

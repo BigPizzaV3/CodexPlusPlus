@@ -1,7 +1,8 @@
   /**
    * 拓展的输入触发、快捷键、主题与向用户提问。
    *
-   * - 输入触发：registerInputTrigger({ trigger: "@", items(query) => [{ label, description?, insert }] })。
+   * - 输入触发：registerInputTrigger({ trigger: "#", items(query) => [{ label, description?, insert }] })。
+   *   @、$、/ 是 Codex 自己的提及与命令，不让拓展占用。
    *   输入框里光标前是「触发符 + 查询词」时弹出候选，选中后把这一段换成 insert。
    * - 快捷键：registerShortcut({ key: "Mod+Shift+K", run, allowInInput? })。Mod 在 macOS 是 ⌘，其余是 Ctrl。
    * - 主题：registerTheme({ id, name, variables: { "--x": "值" }, css })，同一时间只有一个生效，选择记在本机。
@@ -9,12 +10,15 @@
    */
 
   // ---------------------------------------------------------------- 输入触发
-  const codexPlusTriggerPattern = /^[@#$%&~!^:+][\w-]{0,7}$|^\/\/[\w-]{0,6}$/;
+  const codexPlusTriggerPattern = /^[#%&~!^:+][\w-]{0,7}$/;
+  /** Codex 自己占用的触发符：@ 提及文件 / 应用，$ 提及技能，/ 是斜杠命令。拓展抢这些只会和原生菜单打架。 */
+  const codexPlusReservedTriggers = /^[@$/]/;
   let codexPlusTriggerState = null;
 
   function codexPlusRegisterInputTrigger(definition, options = {}) {
     const trigger = String(definition?.trigger || "");
-    if (!codexPlusTriggerPattern.test(trigger)) throw new Error("trigger 是一个符号开头的短前缀，例如 \"@\"、\"#\"、\"$tool\"");
+    if (codexPlusReservedTriggers.test(trigger)) throw new Error(`触发符 ${trigger[0]} 是 Codex 自己在用的（@ 提及、$ 技能、/ 命令），换一个，例如 "#"`);
+    if (!codexPlusTriggerPattern.test(trigger)) throw new Error("trigger 是一个符号开头的短前缀，例如 \"#\"、\"%\"、\"#issue\"");
     if (typeof definition?.items !== "function") throw new Error(`输入触发 ${trigger} 需要 items(query) 返回候选`);
     const dispose = codexPlusRegisterExtensionItem("inputTrigger", codexPlusRegistry.inputTriggers, { ...definition, trigger }, options);
     installCodexPlusInputTriggerHandlers();
@@ -121,6 +125,14 @@
   function installCodexPlusInputTriggerHandlers() {
     // 共用命令提示的样式（命令提示的处理器同时装上也无妨：没有命令时它什么都不做）。
     installCodexPlusCommandHandlers();
+    if (!document.getElementById("codex-plus-input-trigger-style")) {
+      const style = document.createElement("style");
+      style.id = "codex-plus-input-trigger-style";
+      markCodexPlusExtensionNode(style, "builtin-input-triggers");
+      style.textContent = `#codex-plus-input-trigger-hints{position:fixed;z-index:2147483645;display:flex;flex-direction:column;gap:2px;max-height:min(360px,50vh);overflow:auto;padding:6px;border-radius:12px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);background:var(--color-token-main-surface-primary,var(--codex-plus-bg-elevated,#262626));color:var(--color-token-text-primary,var(--codex-plus-text,#eee));box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:13px}
+        #codex-plus-input-trigger-hints .codex-plus-command-hint[aria-selected="true"]{background:color-mix(in srgb,currentColor 12%,transparent)}`;
+      document.head.append(style);
+    }
     if (window.__codexPlusInputTriggerHandlersInstalled) return;
     window.__codexPlusInputTriggerHandlersInstalled = true;
     const onInput = (event) => {

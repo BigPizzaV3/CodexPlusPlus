@@ -355,7 +355,13 @@ async fn page_call(ports: &[u16], function: &str, name: &Value, params: &Value) 
     let expression = format!(
         "(async () => {{ if (typeof window.{function} !== \"function\") throw new Error(\"Codex 页面还没装好 Codex++ 拓展运行时\"); return JSON.stringify(await window.{function}({name}, {params})); }})()"
     );
-    let response = crate::bridge::evaluate_script_with_await_promise(&websocket, &expression, true).await?;
+    // 提问要等用户回答：按它的 timeoutMs 多给 5 秒；其余页面调用（会话写入）给 30 秒。
+    let timeout = if function == "__codexPlusUiCall" && name == "ask" {
+        Duration::from_millis(params.get("timeoutMs").and_then(Value::as_u64).unwrap_or(600_000).min(600_000) + 5_000)
+    } else {
+        Duration::from_secs(30)
+    };
+    let response = crate::bridge::evaluate_script_with_timeout(&websocket, &expression, timeout).await?;
     if let Some(exception) = response.pointer("/result/exceptionDetails") {
         let message = exception
             .pointer("/exception/description")

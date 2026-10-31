@@ -284,6 +284,16 @@ pub async fn evaluate_script_with_await_promise(
     ensure_runtime_evaluate_succeeded(response)
 }
 
+/// 同上，但自定截止时间：页面里要等用户操作（拓展弹框提问）时，默认的 5 秒不够。
+pub async fn evaluate_script_with_timeout(websocket_url: &str, script: &str, timeout: Duration) -> anyhow::Result<Value> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    let response = session
+        .send_command_with_timeout(1, "Runtime.evaluate", runtime_evaluate_params_with_await_promise(script, true), timeout)
+        .await?;
+    ensure_runtime_evaluate_succeeded(response)
+}
+
 pub fn capture_screenshot_params() -> Value {
     json!({
         "format": "png",

@@ -4414,15 +4414,18 @@ describe("拓展输入触发、快捷键与主题", () => {
 
   it("输入触发：取光标前最近的触发符，查询词里有空白就不算", async () => {
     const { api, registry } = await extras();
-    api.registerTrigger({ trigger: "@", items: () => [] });
+    api.registerTrigger({ trigger: "%", items: () => [] });
     api.registerTrigger({ trigger: "#", items: () => [] });
-    assert.equal(api.match("请看 @rea").query, "rea");
-    assert.equal(api.match("请看 @rea").item.trigger, "@");
-    assert.equal(api.match("a@b"), null, "触发符前要是开头或空白");
-    assert.equal(api.match("@foo bar"), null, "已经输完一个词");
-    assert.equal(api.match("@x #iss").item.trigger, "#");
+    assert.equal(api.match("请看 %rea").query, "rea");
+    assert.equal(api.match("请看 %rea").item.trigger, "%");
+    assert.equal(api.match("a%b"), null, "触发符前要是开头或空白");
+    assert.equal(api.match("%foo bar"), null, "已经输完一个词");
+    assert.equal(api.match("%x #iss").item.trigger, "#");
     assert.equal(registry.inputTriggers.size, 2);
     assert.throws(() => api.registerTrigger({ trigger: "abc", items: () => [] }), /符号开头/);
+    for (const reserved of ["@", "$", "/", "@me"]) {
+      assert.throws(() => api.registerTrigger({ trigger: reserved, items: () => [] }), /Codex 自己在用/, reserved);
+    }
   });
 
   it("主题：选中的主题生效并记住，拓展卸下后撤掉样式、回来自动恢复", async () => {

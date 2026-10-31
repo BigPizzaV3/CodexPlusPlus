@@ -8,7 +8,7 @@
     {
       "name": "01-registry.js",
       "description": "拓展注册中心、扩展选择器登记与失败上报",
-      "lines": 186
+      "lines": 187
     },
     {
       "name": "10-style.js",
@@ -138,12 +138,12 @@
     {
       "name": "92-extension-slots.js",
       "description": "拓展消息插槽（操作按钮、装饰）与右侧面板",
-      "lines": 563
+      "lines": 570
     },
     {
       "name": "92-extension-extras.js",
       "description": "拓展输入触发、快捷键、主题、向用户提问与拓展变更事件",
-      "lines": 376
+      "lines": 388
     },
     {
       "name": "93-dictation.js",
