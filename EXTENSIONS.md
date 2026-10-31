@@ -820,7 +820,8 @@ codexPlus.extension({ inject: ["metrics"], apply(ctx) { ctx.metrics.record("open
 - 可选依赖：`inject` 用对象写法 `{ metrics: { required: false } }`，缺了照样应用，`ctx.metrics` 为 `undefined`；
   提供方出现、消失或被替换时同样重新应用。也可以不写进 `inject`，用到时 `ctx.get(name)`（不存在为 `undefined`）。
 - `ctx.inject(deps, apply)`：子作用域，只让依赖某服务的那部分挂起 / 重建。
-- 内置服务：`sessionQuery`、`locale`。`codexPlus.services()` 列出当前已提供的服务与提供方。
+- 内置服务：`sessionQuery`、`locale`；内置功能的数据也是服务：`codexpp.usage`（`cached(threadId?)` 取用量状态栏算好的速度、缓存命中、上下文占用）、
+  `codexpp.proxyStatus`（`requests()` 最近的代理请求、`fetch()` 立即问一次），用 `replaces` 顶替这些内置界面的拓展照样能 inject。`codexPlus.services()` 列出当前已提供的服务与提供方。
 
 #### 后台提供的服务（跨进程）
 

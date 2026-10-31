@@ -29,18 +29,22 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet(), apply: codexPlusAgentPetExtension },
+      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet(), scan: () => syncCodexPlusAgentPet(), apply: codexPlusAgentPetExtension },
       { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
       { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
-      { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects() },
-      { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons() },
+      // 打字特效的全局监听只在拓展装上时挂，卸下时摘掉。
+      { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects(), apply: (ctx) => ctx.effect(() => {
+        installCodexPlusTypingEffects();
+        return () => uninstallCodexPlusTypingEffects();
+      }) },
+      { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons(), scan: () => refreshSideChatSaveButtons() },
       { id: "history-turn-recovery", name: "历史轮次补全" },
       { id: "capacity-auto-retry", name: "容量不足自动重试" },
       { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.(), apply: codexPlusProxyStatusExtension },
       { id: "session-share", name: "会话分享", sync: () => installSessionShareButton() },
       { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.scan?.() },
-      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin() },
+      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin(), scan: () => refreshDreamSkin() },
       { id: "plugin-market-unlock", name: "插件市场解锁" },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
@@ -101,8 +105,33 @@
     runScanStep(() => definition.sync());
   }
 
+  /**
+   * 内置功能的数据作为服务提供（不随界面那一层的内置拓展装卸）：用 replaces 顶替用量状态栏、请求状态条的拓展
+   * 也能 inject 这些数据，自己画界面。
+   *   codexpp.usage：cached(threadId) → { speed, cache, context, stale, modelContextWindow } | null（状态栏取过数据的会话）
+   *   codexpp.proxyStatus：requests() → 最近一次轮询到的代理请求；fetch() → 立即问一次 Codex++
+   */
+  function installCodexPlusBuiltinDataServices() {
+    if (codexPlusServices.has("codexpp.usage")) return;
+    codexPlusProvideService("codexpp.usage", Object.freeze({
+      cached: (threadId) => codexPlusUsageSnapshot(codexPlusUsageState.cache.get(String(threadId || codexPlusCurrentSessionId()))),
+    }), "builtin");
+    codexPlusProvideService("codexpp.proxyStatus", Object.freeze({
+      requests: () => [...(codexPlusProxyStatusState.requests ?? [])],
+      async fetch() {
+        const result = await codexPlusProxyStatusPostWithTimeout();
+        return result?.status === "ok" && Array.isArray(result.requests) ? result.requests : [];
+      },
+    }), "builtin");
+  }
+
   /** 按下发状态装上 / 卸下内置拓展。重复调用只处理有变化的项。 */
   function syncCodexPlusBuiltinExtensions() {
+    try {
+      installCodexPlusBuiltinDataServices();
+    } catch (error) {
+      codexPlusMarkExtensionFailure("builtin:data-services", String(error?.stack || error?.message || error));
+    }
     const inactive = codexPlusBuiltinInactiveIds();
     const state = codexPlusBuiltinExtensionState();
     for (const definition of codexPlusBuiltinExtensionCatalog()) {
@@ -118,6 +147,7 @@
                 inactive.add(definition.id);
                 codexPlusRunBuiltinSync(definition);
               });
+              if (typeof definition.scan === "function") ctx.effect(() => registerCodexPlusScanStep(definition.id, definition.scan));
               if (typeof definition.apply === "function") definition.apply(ctx);
               codexPlusRunBuiltinSync(definition);
             },

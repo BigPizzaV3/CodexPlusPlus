@@ -23478,6 +23478,22 @@
     if (event.target === state.editor || event.target === state.composition?.editor) clearCodexPlusTypingEffects();
   }
 
+  /** 摘掉打字特效的全局监听（内置拓展卸下时）。 */
+  function uninstallCodexPlusTypingEffects() {
+    const state = codexPlusTypingEffects;
+    if (!state.installed) return;
+    state.installed = false;
+    document.removeEventListener("input", codexPlusTypingEffectInput, true);
+    document.removeEventListener("compositionstart", codexPlusTypingEffectCompositionStart, true);
+    document.removeEventListener("compositionend", codexPlusTypingEffectCompositionEnd, true);
+    document.removeEventListener("focusout", codexPlusTypingEffectFocusOut, true);
+    document.removeEventListener("visibilitychange", syncCodexPlusTypingEffects);
+    window.removeEventListener("blur", clearCodexPlusTypingEffects);
+    window.removeEventListener("resize", clearCodexPlusTypingEffects);
+    state.media?.removeEventListener?.("change", syncCodexPlusTypingEffects);
+    clearCodexPlusTypingEffects();
+  }
+
   function installCodexPlusTypingEffects() {
     const state = codexPlusTypingEffects;
     if (state.disposed) return;
@@ -24137,8 +24153,8 @@
         }
       }
     }
-    if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-    refreshDreamSkin();
+    // 内置拓展登记的扫描步骤（桌宠、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
+    runCodexPlusScanSteps();
     refreshThreadIdBadges();
     // 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
     runScanStep(filterDeletedSessionRows);
@@ -24146,10 +24162,27 @@
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
-    refreshSideChatSaveButtons();
     removeLegacyCodexServiceTierBadges();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
+  }
+
+  /** 扫描步骤登记处：id → 函数。内置拓展在 apply 里登记、卸下时撤销（见 96-builtin-extensions.js）。 */
+  function codexPlusScanSteps() {
+    globalThis.__codexPlusScanSteps ??= new Map();
+    return globalThis.__codexPlusScanSteps;
+  }
+
+  function registerCodexPlusScanStep(id, step) {
+    const steps = codexPlusScanSteps();
+    steps.set(id, step);
+    return () => {
+      if (steps.get(id) === step) steps.delete(id);
+    };
+  }
+
+  function runCodexPlusScanSteps() {
+    for (const step of [...codexPlusScanSteps().values()]) runScanStep(step);
   }
 
   function runScanStep(step) {
@@ -24202,18 +24235,22 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet(), apply: codexPlusAgentPetExtension },
+      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet(), scan: () => syncCodexPlusAgentPet(), apply: codexPlusAgentPetExtension },
       { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
       { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
-      { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects() },
-      { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons() },
+      // 打字特效的全局监听只在拓展装上时挂，卸下时摘掉。
+      { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects(), apply: (ctx) => ctx.effect(() => {
+        installCodexPlusTypingEffects();
+        return () => uninstallCodexPlusTypingEffects();
+      }) },
+      { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons(), scan: () => refreshSideChatSaveButtons() },
       { id: "history-turn-recovery", name: "历史轮次补全" },
       { id: "capacity-auto-retry", name: "容量不足自动重试" },
       { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.(), apply: codexPlusProxyStatusExtension },
       { id: "session-share", name: "会话分享", sync: () => installSessionShareButton() },
       { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.scan?.() },
-      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin() },
+      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin(), scan: () => refreshDreamSkin() },
       { id: "plugin-market-unlock", name: "插件市场解锁" },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
@@ -24274,8 +24311,33 @@
     runScanStep(() => definition.sync());
   }
 
+  /**
+   * 内置功能的数据作为服务提供（不随界面那一层的内置拓展装卸）：用 replaces 顶替用量状态栏、请求状态条的拓展
+   * 也能 inject 这些数据，自己画界面。
+   *   codexpp.usage：cached(threadId) → { speed, cache, context, stale, modelContextWindow } | null（状态栏取过数据的会话）
+   *   codexpp.proxyStatus：requests() → 最近一次轮询到的代理请求；fetch() → 立即问一次 Codex++
+   */
+  function installCodexPlusBuiltinDataServices() {
+    if (codexPlusServices.has("codexpp.usage")) return;
+    codexPlusProvideService("codexpp.usage", Object.freeze({
+      cached: (threadId) => codexPlusUsageSnapshot(codexPlusUsageState.cache.get(String(threadId || codexPlusCurrentSessionId()))),
+    }), "builtin");
+    codexPlusProvideService("codexpp.proxyStatus", Object.freeze({
+      requests: () => [...(codexPlusProxyStatusState.requests ?? [])],
+      async fetch() {
+        const result = await codexPlusProxyStatusPostWithTimeout();
+        return result?.status === "ok" && Array.isArray(result.requests) ? result.requests : [];
+      },
+    }), "builtin");
+  }
+
   /** 按下发状态装上 / 卸下内置拓展。重复调用只处理有变化的项。 */
   function syncCodexPlusBuiltinExtensions() {
+    try {
+      installCodexPlusBuiltinDataServices();
+    } catch (error) {
+      codexPlusMarkExtensionFailure("builtin:data-services", String(error?.stack || error?.message || error));
+    }
     const inactive = codexPlusBuiltinInactiveIds();
     const state = codexPlusBuiltinExtensionState();
     for (const definition of codexPlusBuiltinExtensionCatalog()) {
@@ -24291,6 +24353,7 @@
                 inactive.add(definition.id);
                 codexPlusRunBuiltinSync(definition);
               });
+              if (typeof definition.scan === "function") ctx.effect(() => registerCodexPlusScanStep(definition.id, definition.scan));
               if (typeof definition.apply === "function") definition.apply(ctx);
               codexPlusRunBuiltinSync(definition);
             },
@@ -25829,8 +25892,7 @@
   })();
   installCodexConfigReadDeadline();
   installCodexPlusForceChineseLocale();
-  runScanStep(installCodexPlusTypingEffects);
-  runScanStep(syncCodexPlusAgentPet);
+  // 打字特效、桌宠由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);

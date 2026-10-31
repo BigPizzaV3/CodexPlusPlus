@@ -622,8 +622,8 @@
         }
       }
     }
-    if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-    refreshDreamSkin();
+    // 内置拓展登记的扫描步骤（桌宠、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
+    runCodexPlusScanSteps();
     refreshThreadIdBadges();
     // 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
     runScanStep(filterDeletedSessionRows);
@@ -631,10 +631,27 @@
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
-    refreshSideChatSaveButtons();
     removeLegacyCodexServiceTierBadges();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
+  }
+
+  /** 扫描步骤登记处：id → 函数。内置拓展在 apply 里登记、卸下时撤销（见 96-builtin-extensions.js）。 */
+  function codexPlusScanSteps() {
+    globalThis.__codexPlusScanSteps ??= new Map();
+    return globalThis.__codexPlusScanSteps;
+  }
+
+  function registerCodexPlusScanStep(id, step) {
+    const steps = codexPlusScanSteps();
+    steps.set(id, step);
+    return () => {
+      if (steps.get(id) === step) steps.delete(id);
+    };
+  }
+
+  function runCodexPlusScanSteps() {
+    for (const step of [...codexPlusScanSteps().values()]) runScanStep(step);
   }
 
   function runScanStep(step) {
