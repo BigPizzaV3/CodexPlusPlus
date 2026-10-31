@@ -133,7 +133,7 @@
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
-      "lines": 553
+      "lines": 557
     },
     {
       "name": "92-extension-slots.js",
@@ -143,7 +143,7 @@
     {
       "name": "92-extension-extras.js",
       "description": "拓展输入触发、快捷键、主题、向用户提问与拓展变更事件",
-      "lines": 388
+      "lines": 402
     },
     {
       "name": "93-dictation.js",

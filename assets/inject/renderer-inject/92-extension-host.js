@@ -394,9 +394,13 @@
     panel.style.minWidth = `${Math.round(Math.min(rect.width, 420))}px`;
   }
 
+  // 「已装过」记在本份注入代码里，不记在 window 上：重建后新代码注入到没刷新的页面时，
+  // window 上的标记是旧代码留下的，照它跳过就只剩读旧注册表的旧监听器。旧监听器按 window 上存的引用摘掉。
+  let codexPlusCommandHandlersInstalled = false;
+
   function installCodexPlusCommandHandlers() {
-    if (window.__codexPlusCommandHandlersInstalled) return;
-    window.__codexPlusCommandHandlersInstalled = true;
+    if (codexPlusCommandHandlersInstalled) return;
+    codexPlusCommandHandlersInstalled = true;
     if (!document.getElementById("codex-plus-command-hints-style")) {
       const style = document.createElement("style");
       style.id = "codex-plus-command-hints-style";

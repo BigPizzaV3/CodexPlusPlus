@@ -20769,9 +20769,13 @@
     panel.style.minWidth = `${Math.round(Math.min(rect.width, 420))}px`;
   }
 
+  // 「已装过」记在本份注入代码里，不记在 window 上：重建后新代码注入到没刷新的页面时，
+  // window 上的标记是旧代码留下的，照它跳过就只剩读旧注册表的旧监听器。旧监听器按 window 上存的引用摘掉。
+  let codexPlusCommandHandlersInstalled = false;
+
   function installCodexPlusCommandHandlers() {
-    if (window.__codexPlusCommandHandlersInstalled) return;
-    window.__codexPlusCommandHandlersInstalled = true;
+    if (codexPlusCommandHandlersInstalled) return;
+    codexPlusCommandHandlersInstalled = true;
     if (!document.getElementById("codex-plus-command-hints-style")) {
       const style = document.createElement("style");
       style.id = "codex-plus-command-hints-style";
@@ -21513,6 +21517,10 @@
   const codexPlusReservedTriggers = /^[@$/]/;
   let codexPlusTriggerState = null;
 
+  // 「已装过」记在本份注入代码里（见 installCodexPlusCommandHandlers 的说明）。
+  let codexPlusInputTriggerHandlersInstalled = false;
+  let codexPlusShortcutHandlerInstalled = false;
+
   function codexPlusRegisterInputTrigger(definition, options = {}) {
     const trigger = String(definition?.trigger || "");
     if (codexPlusReservedTriggers.test(trigger)) throw new Error(`触发符 ${trigger[0]} 是 Codex 自己在用的（@ 提及、$ 技能、/ 命令），换一个，例如 "#"`);
@@ -21631,8 +21639,8 @@
         #codex-plus-input-trigger-hints .codex-plus-command-hint[aria-selected="true"]{background:color-mix(in srgb,currentColor 12%,transparent)}`;
       document.head.append(style);
     }
-    if (window.__codexPlusInputTriggerHandlersInstalled) return;
-    window.__codexPlusInputTriggerHandlersInstalled = true;
+    if (codexPlusInputTriggerHandlersInstalled) return;
+    codexPlusInputTriggerHandlersInstalled = true;
     const onInput = (event) => {
       if (!codexPlusRegistry.inputTriggers.size) return;
       const editor = codexPlusComposerEditorFrom(event.target);
@@ -21657,13 +21665,21 @@
         codexPlusAcceptTrigger(state.items[state.active]);
       }
     };
-    document.addEventListener("input", onInput, true);
-    document.addEventListener("keydown", onKeyDown, true);
-    document.addEventListener("focusout", (event) => {
+    const onFocusOut = (event) => {
       if (codexPlusTriggerState && event.target === codexPlusTriggerState.editor) setTimeout(() => {
         if (codexPlusTriggerState && !codexPlusTriggerState.editor.contains(document.activeElement)) hideCodexPlusTriggerHints();
       }, 150);
-    }, true);
+    };
+    const previous = window.__codexPlusInputTriggerHandlers;
+    if (previous) {
+      document.removeEventListener("input", previous.onInput, true);
+      document.removeEventListener("keydown", previous.onKeyDown, true);
+      document.removeEventListener("focusout", previous.onFocusOut, true);
+    }
+    window.__codexPlusInputTriggerHandlers = { onInput, onKeyDown, onFocusOut };
+    document.addEventListener("input", onInput, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("focusout", onFocusOut, true);
   }
 
   // ---------------------------------------------------------------- 快捷键
@@ -21699,9 +21715,10 @@
     if (typeof definition?.run !== "function") throw new Error("快捷键需要 run()");
     const spec = codexPlusParseShortcut(definition.key);
     const dispose = codexPlusRegisterExtensionItem("shortcut", codexPlusRegistry.shortcuts, { ...definition, spec }, options);
-    if (!window.__codexPlusShortcutHandlerInstalled) {
-      window.__codexPlusShortcutHandlerInstalled = true;
-      document.addEventListener("keydown", (event) => {
+    if (!codexPlusShortcutHandlerInstalled) {
+      codexPlusShortcutHandlerInstalled = true;
+      document.removeEventListener("keydown", window.__codexPlusShortcutHandler, true);
+      window.__codexPlusShortcutHandler = (event) => {
         if (event.isComposing || !codexPlusRegistry.shortcuts.size) return;
         const inInput = !!event.target?.closest?.("input, textarea, [contenteditable=true]");
         const item = codexPlusExtensionItems(codexPlusRegistry.shortcuts)
@@ -21713,7 +21730,8 @@
         if (result.ok && codexPlusIsThenable(result.value)) {
           result.value.catch((error) => codexPlusMarkExtensionFailure(item.scriptKey, `shortcut:${item.key}: ${String(error?.stack || error?.message || error)}`));
         }
-      }, true);
+      };
+      document.addEventListener("keydown", window.__codexPlusShortcutHandler, true);
     }
     return dispose;
   }
