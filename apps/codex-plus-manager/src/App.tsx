@@ -16399,6 +16399,16 @@ function builtinExtensionText(builtin: BuiltinExtension): { name: string; descri
     case "plugin-market-unlock": return { name: t("插件市场解锁"), description: t("解锁 Codex 插件市场（停用后刷新页面生效）") };
     case "instance-identity": return { name: t("多开身份提示"), description: t("多开实例顶部显示实例名（用公开拓展接口写成）") };
     case "session-title-hook": return { name: t("会话标题中间件"), description: t("首轮结束后按拓展的 session/title 中间件改会话标题") };
+    case "session-delete": return { name: t("会话删除"), description: t("会话行与归档页的删除按钮") };
+    case "markdown-export": return { name: t("Markdown 导出"), description: t("会话行「…」菜单与归档页里的导出") };
+    case "thread-id-badge": return { name: t("会话 ID 角标"), description: t("会话行标题旁显示会话 ID 与创建时间") };
+    case "thread-scroll-restore": return { name: t("滚动位置恢复"), description: t("切回会话时回到上次看到的位置") };
+    case "conversation-view": return { name: t("对话宽度"), description: t("按设置的宽度放宽对话区与输入框") };
+    case "activity-overlay-right": return { name: t("消息导航条靠右"), description: t("把消息导航条和预览卡片移到右侧") };
+    case "paste-fix": return { name: t("粘贴修复"), description: t("从 Word 等处粘贴时插入纯文本，不被识别成附件") };
+    case "stepwise": return { name: t("下一步建议"), description: t("悬浮球里的下一步建议") };
+    case "answer-outline": return { name: t("回答大纲"), description: t("悬浮球里按标题列出回答大纲，点击跳转") };
+    case "pet-real-mouse": return { name: t("桌宠跟随鼠标"), description: t("Codex 自带桌宠的视线跟随真实鼠标") };
     default: return { name: builtin.name, description: builtin.description };
   }
 }

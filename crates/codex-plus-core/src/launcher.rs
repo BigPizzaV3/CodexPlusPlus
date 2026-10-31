@@ -5992,9 +5992,17 @@ async fn pet_overlay_has_screen_point_hook(websocket_url: &str) -> anyhow::Resul
     Ok(runtime_evaluate_result_is_true(&result))
 }
 
-async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+/// 桌宠跟随鼠标：增强总开关、功能开关、内置拓展「pet-real-mouse」三者都开着才驱动。
+/// 设置关着时短路，不去扫拓展目录。
+fn pet_real_mouse_enabled() -> bool {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let enabled = settings.enhancements_enabled && settings.codex_app_pet_real_mouse_look;
+    settings.enhancements_enabled
+        && settings.codex_app_pet_real_mouse_look
+        && crate::user_scripts::default_user_script_manager().builtin_extension_active("pet-real-mouse")
+}
+
+async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+    let enabled = pet_real_mouse_enabled();
     let targets = crate::cdp::list_targets(debug_port).await?;
     for target in targets
         .iter()
@@ -6034,8 +6042,7 @@ async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyh
 #[cfg(any(windows, target_os = "macos"))]
 async fn run_pet_real_mouse_cursor_driver(debug_port: u16) {
     loop {
-        let settings = SettingsStore::default().load().unwrap_or_default();
-        if !settings.enhancements_enabled || !settings.codex_app_pet_real_mouse_look {
+        if !pet_real_mouse_enabled() {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             continue;
         }

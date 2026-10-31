@@ -64,3 +64,27 @@ fn replaces_must_name_a_known_builtin() {
     assert!(package["error"].as_str().unwrap().contains("不是内置拓展"), "{package}");
     assert_eq!(manager.builtin_extension_state().unwrap()["replacedBy"], json!({}));
 }
+
+#[test]
+fn builtin_extension_active_follows_disable_and_replaces() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(temp.path());
+    assert!(manager.builtin_extension_active("pet-real-mouse"));
+    manager.set_script_enabled("builtin:pet-real-mouse", false).unwrap();
+    assert!(!manager.builtin_extension_active("pet-real-mouse"));
+    assert!(manager.builtin_extension_active("paste-fix"));
+    write_package(temp.path(), "my-paste", json!({ "id": "my-paste", "renderer": "renderer.js", "replaces": ["paste-fix"] }));
+    assert!(!manager.builtin_extension_active("paste-fix"));
+}
+
+/// 内置拓展的 id 在 Rust 清单、页面清单、管理器文案三处要一致。
+#[test]
+fn builtin_extension_ids_match_page_catalog_and_manager_text() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let catalog = fs::read_to_string(root.join("assets/inject/renderer-inject/96-builtin-extensions.js")).unwrap();
+    let manager_text = fs::read_to_string(root.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
+    for (id, _, _) in BUILTIN_EXTENSIONS {
+        assert!(catalog.contains(&format!("id: \"{id}\"")), "页面内置拓展清单缺 {id}");
+        assert!(manager_text.contains(&format!("case \"{id}\": return {{ name: t(")), "管理器内置拓展文案缺 {id}");
+    }
+}

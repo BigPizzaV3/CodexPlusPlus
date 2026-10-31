@@ -1752,7 +1752,7 @@
       if (toggle) {
         if (toggle.disabled || toggle.dataset.pending === "true") return;
         const key = toggle.getAttribute("data-codex-plus-setting");
-        setCodexPlusSetting(key, !codexPlusSettings()[key]);
+        setCodexPlusSetting(key, !codexPlusSettings({ ignoreBuiltins: true })[key]);
         return;
       }
       const backendToggle = target?.closest("[data-codex-backend-setting]");

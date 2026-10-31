@@ -405,8 +405,10 @@
       && generation === state.runtimeGeneration;
   }
 
+  // 内置拓展「stepwise」/「answer-outline」停用或被顶替时（页面里的 __codexPlusBuiltinInactive 集合），
+  // 设置开着也不启用；悬浮球与主注入跑在同一个页面里，直接读同一个集合。
   function stepwiseEnabled(settings = state.settings) {
-    return settings?.enabled === true;
+    return settings?.enabled === true && !globalThis.__codexPlusBuiltinInactive?.has("stepwise");
   }
 
   function normalizeGenerationMode(value) {
@@ -418,7 +420,7 @@
   }
 
   function outlineEnabled(settings = state.settings) {
-    return settings?.answerOutlineEnabled === true;
+    return settings?.answerOutlineEnabled === true && !globalThis.__codexPlusBuiltinInactive?.has("answer-outline");
   }
 
   function runtimeEnabled(settings = state.settings) {

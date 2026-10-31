@@ -1919,7 +1919,32 @@
     return settings;
   }
 
-  function codexPlusSettings() {
+  /**
+   * 功能侧读到的设置：设置项开着、且对应的内置拓展在用（没停用、没被顶替）才算开。
+   * 设置页的开关要显示 / 切换用户自己存的值，传 { ignoreBuiltins: true }。
+   * 映射写在函数里：多个测试把本函数单独切片到沙箱里执行。
+   */
+  function codexPlusSettings(options) {
+    const withBuiltins = (settings) => {
+      const inactive = globalThis.__codexPlusBuiltinInactive;
+      if (options?.ignoreBuiltins || !inactive?.size) return settings;
+      const builtinSettings = {
+        sessionDelete: "session-delete",
+        markdownExport: "markdown-export",
+        threadIdBadge: "thread-id-badge",
+        threadScrollRestore: "thread-scroll-restore",
+        conversationView: "conversation-view",
+        activityOverlayRight: "activity-overlay-right",
+        pasteFix: "paste-fix",
+        stepwise: "stepwise",
+        answerOutline: "answer-outline",
+        petRealMouseLook: "pet-real-mouse",
+      };
+      Object.entries(builtinSettings).forEach(([key, id]) => {
+        if (inactive.has(id)) settings[key] = false;
+      });
+      return settings;
+    };
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
         pluginMarketplaceUnlock: false,
@@ -1957,10 +1982,10 @@
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       delete settings.customLayout;
       delete settings.serviceTierControls;
-      return settings;
+      return withBuiltins(settings);
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
-      return settings;
+      return withBuiltins(settings);
     }
   }
 
@@ -2756,20 +2781,23 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
-    if (key === "threadScrollRestore" && !value) {
-      clearTimeout(window.__codexThreadScrollSaveTimer);
-      window.__codexThreadScrollSaveTimer = null;
-      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
-      (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollRestoreTimers = [];
-      (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollSyncTimers = [];
-      window.__codexThreadScrollRuntime = null;
-    }
+    if (key === "threadScrollRestore" && !value) stopThreadScrollRestore();
     if (key === "stepwise") syncStepwisePanel(value);
     renderCodexPlusMenu();
     scan();
+  }
+
+  /** 滚动位置恢复关掉时（设置关、或内置拓展停用）撤掉排着的保存 / 恢复定时器，作废进行中的轮次。 */
+  function stopThreadScrollRestore() {
+    clearTimeout(window.__codexThreadScrollSaveTimer);
+    window.__codexThreadScrollSaveTimer = null;
+    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollRestoreTimers = [];
+    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollSyncTimers = [];
+    window.__codexThreadScrollRuntime = null;
   }
 
   function syncStepwisePanel(

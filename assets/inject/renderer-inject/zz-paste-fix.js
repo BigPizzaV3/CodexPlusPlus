@@ -17,6 +17,8 @@ if (window.__CODEX_PLUS_PASTE_FIX__ && window.__CODEX_PLUS_PASTE_FIX__.enabled =
     const MAX_INLINE_LENGTH = 20000;
 
     const handler = (e) => {
+      // 内置拓展「paste-fix」停用或被顶替时放行；handler 只装一次，所以每次粘贴时现查。
+      if (globalThis.__codexPlusBuiltinInactive?.has('paste-fix')) return;
       const cd = e.clipboardData;
       if (!cd) return;
 

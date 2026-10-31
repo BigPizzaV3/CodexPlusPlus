@@ -883,6 +883,16 @@ impl UserScriptManager {
         Ok(json!({ "disabled": disabled, "replacedBy": replaced_by }))
     }
 
+    /// 内置拓展是否在用（没被停用、也没被启用的拓展包顶替）。给不在页面里跑的内置功能用，例如启动器驱动的桌宠跟随鼠标；
+    /// 读不到配置时按启用算，和页面侧「不在停用集合里就算启用」一致。
+    pub fn builtin_extension_active(&self, id: &str) -> bool {
+        let Ok(state) = self.builtin_extension_state() else {
+            return true;
+        };
+        let disabled = state["disabled"].as_array().is_some_and(|list| list.iter().any(|item| item == id));
+        !disabled && state["replacedBy"].get(id).is_none()
+    }
+
     /// 内置拓展列表（给管理器）：名称、说明、是否启用、被哪个拓展顶替。
     pub fn builtin_extensions(&self) -> anyhow::Result<Value> {
         let state = self.builtin_extension_state()?;
@@ -1959,7 +1969,18 @@ pub const BUILTIN_EXTENSIONS: &[(&str, &str, &str)] = &[
     ("plugin-market-unlock", "插件市场解锁", "解锁 Codex 插件市场（停用后刷新页面生效）"),
     ("instance-identity", "多开身份提示", "多开实例顶部显示实例名（用公开拓展接口写成）"),
     ("session-title-hook", "会话标题中间件", "首轮结束后按拓展的 session/title 中间件改会话标题"),
+    ("session-delete", "会话删除", "会话行与归档页的删除按钮"),
+    ("markdown-export", "Markdown 导出", "会话行「…」菜单与归档页里的导出"),
+    ("thread-id-badge", "会话 ID 角标", "会话行标题旁显示会话 ID 与创建时间"),
+    ("thread-scroll-restore", "滚动位置恢复", "切回会话时回到上次看到的位置"),
+    ("conversation-view", "对话宽度", "按设置的宽度放宽对话区与输入框"),
+    ("activity-overlay-right", "消息导航条靠右", "把消息导航条和预览卡片移到右侧"),
+    ("paste-fix", "粘贴修复", "从 Word 等处粘贴时插入纯文本，不被识别成附件"),
+    ("stepwise", "下一步建议", "悬浮球里的下一步建议"),
+    ("answer-outline", "回答大纲", "悬浮球里按标题列出回答大纲，点击跳转"),
+    ("pet-real-mouse", "桌宠跟随鼠标", "Codex 自带桌宠的视线跟随真实鼠标"),
 ];
+
 
 /// 内置拓展在配置里的 key。
 pub fn builtin_extension_key(id: &str) -> String {

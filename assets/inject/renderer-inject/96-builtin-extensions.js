@@ -44,6 +44,34 @@
       { id: "plugin-market-unlock", name: "插件市场解锁" },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
+      // 以下几项的开关都经 codexPlusSettings() 读（停用时对应设置项读成关），切换后补一轮扫描让界面跟上。
+      { id: "session-delete", name: "会话删除", sync: () => scheduleDeferredScan() },
+      { id: "markdown-export", name: "Markdown 导出", sync: () => scheduleDeferredScan() },
+      { id: "thread-id-badge", name: "会话 ID 角标", sync: () => scheduleDeferredScan() },
+      {
+        id: "thread-scroll-restore",
+        name: "滚动位置恢复",
+        sync: () => {
+          if (!codexPlusSettings().threadScrollRestore) stopThreadScrollRestore();
+          scheduleDeferredScan();
+        },
+      },
+      {
+        id: "conversation-view",
+        name: "对话宽度",
+        sync: () => {
+          refreshConversationViewControls();
+          scheduleDeferredScan();
+        },
+      },
+      { id: "activity-overlay-right", name: "消息导航条靠右", sync: () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.() },
+      // 每次粘贴时现查，不用同步。
+      { id: "paste-fix", name: "粘贴修复" },
+      // 悬浮球自己读后台设置再按停用集合判断，这里只让它重新算一次。
+      { id: "stepwise", name: "下一步建议", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
+      { id: "answer-outline", name: "回答大纲", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
+      // 启动器每 5 秒按内置拓展状态决定是否驱动，页面侧无事可做。
+      { id: "pet-real-mouse", name: "桌宠跟随鼠标" },
     ];
   }
 
