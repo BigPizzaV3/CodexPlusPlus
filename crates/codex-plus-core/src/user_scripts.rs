@@ -847,6 +847,20 @@ impl UserScriptManager {
         }))
     }
 
+    /// 声明了 `dsh` 的拓展包：(脚本 key, 拓展 id, dsh 插件目录, 是否启用, 版本)。不合法的包跳过。
+    pub fn extension_dsh_plugins(&self) -> anyhow::Result<Vec<(String, String, PathBuf, bool, String)>> {
+        let config = self.load_config();
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter_map(|script| {
+                let package = script.package.as_ref().filter(|package| package.error.is_none())?;
+                let root = package.dsh.clone()?;
+                Some((script.key.clone(), package.id.clone(), root, config.enabled && script.enabled, package.version.clone()))
+            })
+            .collect())
+    }
+
     /// 内置拓展的停用 / 顶替状态：`{ disabled: [id], replacedBy: { id: 拓展 key } }`。
     pub fn builtin_extension_state(&self) -> anyhow::Result<Value> {
         let config = self.load_config();
@@ -1150,6 +1164,8 @@ struct ExtensionPackage {
     codex: crate::extension_codex::ExtensionCodexAssets,
     /// 顶替的内置拓展 id（codexpp.json 的 `replaces`）：本拓展启用时，这些内置拓展让位。
     replaces: Vec<String>,
+    /// 包内按 dsh 插件写法写的插件目录（codexpp.json 的 `dsh`）：启用时由 dsh 兼容宿主运行。
+    dsh: Option<PathBuf>,
     /// 包目录（绝对路径）。
     root: Option<PathBuf>,
     /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
@@ -1515,6 +1531,7 @@ impl ExtensionPackage {
             "providers": self.providers.iter().map(|provider| json!({ "id": provider.id, "name": provider.name, "models": provider.models })).collect::<Vec<_>>(),
             "codex": self.codex.summary(),
             "replaces": self.replaces,
+            "dsh": self.dsh.is_some(),
             "config": self.config,
             "assets": self.assets.keys().collect::<Vec<_>>(),
             "skippedAssets": self.skipped_assets,
@@ -1762,6 +1779,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         skipped_assets: Vec::new(),
         codex: Default::default(),
         replaces: Vec::new(),
+        dsh: None,
         root: None,
         config: json!({}),
         error: None,
@@ -1825,6 +1843,7 @@ fn parse_extension_manifest(
             .context("renderer 只能是字符串或字符串数组")?,
         Some(_) => anyhow::bail!("renderer 只能是字符串或字符串数组"),
     };
+    let dsh_declared = raw.get("dsh").is_some();
     let hooks_declared = raw.get("hooks").is_some_and(|hooks| hooks.as_object().is_some_and(|map| !map.is_empty()));
     let gateway_declared = raw.get("gateway").is_some();
     let tools_declared = raw.get("tools").is_some_and(|tools| tools.as_array().is_some_and(|list| !list.is_empty()));
@@ -1836,7 +1855,7 @@ fn parse_extension_manifest(
         .with_context(|| format!("无法解析拓展目录 {}", directory.display()))?;
     package.root = Some(root.clone());
     package.codex = crate::extension_codex::parse(&root, &raw)?;
-    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && package.codex.is_empty() {
+    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && package.codex.is_empty() {
         anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、skills、agents、mcpServers 或 instructions");
     }
     package.renderer = entries
@@ -1884,6 +1903,17 @@ fn parse_extension_manifest(
         Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
     };
     package.replaces = parse_extension_replaces(raw.get("replaces"))?;
+    package.dsh = match raw.get("dsh") {
+        None => None,
+        Some(Value::String(entry)) => {
+            let path = resolve_package_path(&root, entry)?;
+            if !path.join("package.json").is_file() {
+                anyhow::bail!("dsh 指向的目录 {entry} 里没有 package.json");
+            }
+            Some(path)
+        }
+        Some(_) => anyhow::bail!("dsh 只能是包内目录（里面放按 dsh 插件写法写的 package.json）"),
+    };
     package.schedules = parse_extension_schedules(raw.get("schedules"))?;
     if !package.schedules.is_empty() && package.backend.is_none() {
         anyhow::bail!("schedules 调用的是后台方法，需要同时声明 backend");
@@ -1923,6 +1953,10 @@ pub const BUILTIN_EXTENSIONS: &[(&str, &str, &str)] = &[
     ("history-turn-recovery", "历史轮次补全", "打开长会话时补齐没加载出来的早期轮次"),
     ("capacity-auto-retry", "容量不足自动重试", "上游提示容量不足时自动重发"),
     ("proxy-request-status", "请求状态条", "输入框上方显示经 Codex++ 代理的请求进行到哪一步"),
+    ("session-share", "会话分享", "会话顶栏的分享按钮"),
+    ("model-picker-groups", "模型分组", "模型选择器里按供应商分组折叠"),
+    ("dream-skin", "梦皮主题", "Codex 窗口的梦皮主题与壁纸"),
+    ("plugin-market-unlock", "插件市场解锁", "解锁 Codex 插件市场（停用后刷新页面生效）"),
     ("instance-identity", "多开身份提示", "多开实例顶部显示实例名（用公开拓展接口写成）"),
     ("session-title-hook", "会话标题中间件", "首轮结束后按拓展的 session/title 中间件改会话标题"),
 ];

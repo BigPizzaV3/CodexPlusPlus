@@ -200,7 +200,9 @@ codexPlus.extension((ctx) => {
   `composer.left` / `composer.right`（输入框底栏左侧按钮组末尾 / 右侧按钮组开头，和「添加内容」「发送」同一行）、
   `composer.below`（输入框下方）、`home.above`（新对话首页输入框上方）、`header.title`（顶栏会话标题后面）、
   `approval`（审批卡片底部，多收到 `kind`）、`sidebar.section`（侧栏「项目」「最近」等分组标题右侧，多收到 `section`）、
-  `projectRow.suffix`（侧栏项目名后面，多收到 `projectId`、`label`）。
+  `projectRow.suffix`（侧栏项目名后面，多收到 `projectId`、`label`）、`composer.model`（输入框底栏的模型 / 推理强度按钮后面）、
+  `settings.nav`（Codex 设置页左侧导航末尾，多收到 `sampleClass`：原生导航项的类名，可借来对齐样式）。
+  `activity.after` 的 `kind` 还可能是 `plan`（计划条目）。
   未知位置会报错。
 - `render({ container, slot, ... })` 在容器新建时调用；Codex 重建 DOM（切换会话、侧栏刷新）后会重新调用，不要缓存节点。
   返回的函数在该项被撤下或重画前调用。`container` 留空则不占位。返回的句柄带 `refresh()` 强制重画。
@@ -434,7 +436,7 @@ export default async function* (context, next) {
   `next()` 自己给出整条流；`next()` 只能调用一次。改了文字增量时，`response.output_item.done` /
   `response.completed` 里的完整文本要一并改。
 - `context`：`{ path, extension, config, request }`，`request` 是请求摘要（`model`、`instructions`、`reasoning`、
-  `tools` 工具名、`inputItems`、`lastUserText`），不含完整对话。
+  `tools` 工具名、`inputItems`、`lastUserText`、`sessionId` 会话 id），不含完整对话。
 - 多个拓展按拓展 key 顺序嵌套，先声明的在最外层。所有响应中间件跑在一个常驻 Node 工作进程里，每个事件一次往返。
 - 任一中间件出错、超时（`timeout` 1~10 秒，按单个事件计）或工作进程退出，这次回复剩下的部分原样放行。
 - 只对经 Codex++ 本地代理 / 网关的流式回复生效；官方直连、远程压缩回复不经过这里。
@@ -699,8 +701,13 @@ codexPlus.extension((ctx) => {
 ### 内置拓展与顶替
 
 Codex++ 自带的功能（Agent 桌宠、用量状态栏、语音听写、轮次回退、打字特效、侧聊保存、历史轮次补全、容量不足自动重试、
-请求状态条、多开身份提示、会话标题中间件）也挂在拓展内核上：每个是一个内置拓展实例（`scriptKey` 为 `builtin:<id>`），
-和第三方拓展走同一套生命周期，在 `extensions/changed` 里也能看到。
+请求状态条、会话分享、模型分组、梦皮主题、插件市场解锁、多开身份提示、会话标题中间件）也挂在拓展内核上：每个是一个内置拓展实例
+（`scriptKey` 为 `builtin:<id>`），和第三方拓展走同一套生命周期，在 `extensions/changed` 里也能看到。
+
+- 能用公开接口表达的部分就用公开接口写：Agent 桌宠挂在 `overlay` 插槽给的容器里、用量状态栏在 `composer.below`、
+  请求状态条在 `composer.above`，多开身份提示与会话标题中间件整个是公开接口写成的。其余内置功能要改 Codex 自己的界面
+  （原生菜单、原生重试按钮、原生会话管理器），这类「改 Codex 原生界面」的能力刻意不开放给拓展（见「尚未开放的接口」），
+  所以它们只走内置拓展的生命周期与开关。
 
 - 管理器「拓展 → 本地」最下面的「内置拓展」可以单独停用某一项；功能自己的设置开关照旧生效，两个都开功能才出现。
 - 拓展包在清单里声明 `replaces` 即可顶替内置功能，它启用时内置的让位、停用时内置的回来：
@@ -712,6 +719,29 @@ Codex++ 自带的功能（Agent 桌宠、用量状态栏、语音听写、轮次
 - `codexPlus.builtins()` 返回 `[{ id, name, active, disabled, replacedBy }]`。「多开身份提示」完全用公开接口（`overlay` 插槽）写成，
   可以当作写法参考；「会话标题中间件」是 `ctx.intercept("session/title", (value, next) => …)` 链：会话首轮结束后以
   `{ sessionId, title, firstMessage, lastMessage }` 跑一遍，返回值的 `title` 与原标题不同就改名。
+
+### 悬浮球页签、工具调用视图、设置页分区
+
+```js
+codexPlus.extension((ctx) => {
+  // 右下角悬浮球面板里加一个页签（悬浮球的「下一步建议」或「回答大纲」至少开着一个时可见）
+  ctx.registerFloatingTab({ title: "待办", icon: "✓", render: ({ container, close }) => {
+    container.textContent = "今天还有 3 件事";
+  } });
+  // 对话里的工具调用 / 命令条目末尾挂一块内容；按工具名（字符串、正则或正则字符串）或条目类型过滤
+  ctx.registerToolView({ tools: ["exec_command", /^mcp__/], render: ({ container, call }) => {
+    // call：{ kind, itemIds, text, sessionId, callId, name, input, output }，工具名、参数、结果来自会话日志
+    container.textContent = `${call.name} 输出 ${String(call.output ?? "").length} 字`;
+  } });
+  ctx.registerToolView({ kinds: ["plan"], render: ({ container }) => { container.textContent = "计划条目"; } });
+  // Codex 设置页左侧导航末尾加一项，点开是自己画的页面
+  ctx.registerSettingsSection({ title: "我的拓展", icon: "⚙", render: ({ container }) => {
+    container.textContent = "设置内容";
+  } });
+});
+```
+
+- 三者都随拓展实例卸载撤下。工具调用条目收在 Codex 的「用时 Ns」里，用户展开后才出现；只按 `kinds` 过滤时不读会话日志。
 
 ### 按事件找写法
 
@@ -729,7 +759,15 @@ Codex++ 自带的功能（Agent 桌宠、用量状态栏、语音听写、轮次
 | 上游出错时重试或降级 | 清单 `gateway.error` |
 
 已经按 dsh 插件写法写好的插件（`apply(ctx)` 里 `ctx.on("tools/pre-execute", …)`、`ctx.tools.register(…)`、`ctx.commands.register(…)`
-等）不用改写：在管理器「拓展 → dsh 插件」用本地目录导入即可，支持情况见 `docs/plans/2026-10-30-dsh-plugin-import-design.md`。
+等）不用改写：在管理器「拓展 → dsh 插件」用本地目录导入，或者放进拓展包里、在清单里用 `dsh` 指向它：
+
+```json
+{ "id": "my-kit", "renderer": "renderer.js", "dsh": "dsh-plugin" }
+```
+
+`dsh-plugin/` 是包内一个带 `package.json` 的目录（单个插件或 bundle 都行）。拓展启用时 Codex++ 把它作为 dsh 插件导入
+（id 为 `ext-<拓展 id>`）并生成配套拓展包，拓展停用时一起停用、删除时一起移除；插件目录或拓展版本变了会重新分析。
+支持情况见 `docs/plans/2026-10-30-dsh-plugin-import-design.md`。
 
 ### 拓展间服务
 
@@ -1211,7 +1249,6 @@ await window.codexPlus.call("/cdp/evaluate", {
 3. **`render` 里抛错不会白屏**。Codex++ 会捕获并把错误写进该脚本的状态（管理页可见），页面上显示一块错误占位。
 4. **回调抛错不会冒泡到点击处理**。所有你提供的回调都经过失败隔离包装，抛错会被记录并上报，但不会影响 Codex++ 自身 UI 的可用性。
 5. **图标仅支持单个字形或 SVG 字符串**，不接受任意 HTML（注入任意 HTML 会让拓展有机会破坏内置 UI 结构）。
-6. **浮层面板（右下角悬浮球）的 tab 尚未开放**，见下节。
 
 ---
 
@@ -1240,7 +1277,6 @@ await window.codexPlus.call("/cdp/evaluate", {
 
 | 能力 | 状态 |
 | --- | --- |
-| 浮层面板 tab（右下角悬浮球里加视图） | 未开放。该系统是编译期拼接的闭合结构，改造面较大，见设计文档的 Step 4 |
 | Codex 原生 DOM 的操作接口 | 不打算开放。那是脚本自己打补丁的事，Codex++ 不对其稳定性作任何承诺 |
 | 写类后端路由（`/settings/set`、`/delete` 等） | 未开放，需逐个评估后再决定 |
 

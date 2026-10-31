@@ -211,7 +211,8 @@
     const navId = `${scriptKey}:navEntry:${pageId}`;
     let disposeNav = null;
     try {
-      disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
+      // options.nav === false：只要页面、不要图标栏入口（例如从 Codex 设置页里打开的拓展分区）。
+      if (options.nav !== false) disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
     } catch {
       // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
     }
@@ -343,6 +344,18 @@
       },
       registerSlot(definition, options = {}) {
         return codexPlusRegisterExtensionSlot(definition, options);
+      },
+      /** 右下角悬浮球面板里加一个页签：render({ container, close })，可返回清理函数。 */
+      registerFloatingTab(definition, options = {}) {
+        return codexPlusRegisterFloatingTab(definition, options);
+      },
+      /** 对话里的工具调用 / 命令条目末尾挂内容：tools / kinds 过滤，render({ container, call })。 */
+      registerToolView(definition, options = {}) {
+        return codexPlusRegisterToolView(definition, options);
+      },
+      /** Codex 设置页左侧导航末尾加一项，点开是 render({ container, close }) 画的页面。 */
+      registerSettingsSection(definition, options = {}) {
+        return codexPlusRegisterSettingsSection(definition, options);
       },
 
       /** 在会话行「更多操作」里加一项。 */

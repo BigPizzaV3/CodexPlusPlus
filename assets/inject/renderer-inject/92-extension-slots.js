@@ -169,7 +169,8 @@
       .codex-plus-side-panel-toggle .codex-plus-ext-icon,.codex-plus-side-panel-toggle svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
       .codex-plus-side-panel-toggle[aria-pressed="true"]{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 12%,transparent))}
       .codex-plus-ui-slot{display:flex;flex-direction:column;gap:6px;min-width:0}
-      .codex-plus-ui-slot:not(:has(.codex-plus-ui-slot-item:not(:empty))){display:none}
+      .codex-plus-ui-slot:not(:has(.codex-plus-ui-slot-item:not(:empty):not(:has(> [data-hidden="true"]:only-child)))){display:none}
+      .codex-plus-ui-slot-item:has(> [data-hidden="true"]:only-child){display:none}
       .codex-plus-ui-slot-item:empty{display:none}
       [data-codex-plus-ui-slot="composer.above"]{margin:0 0 8px}
       [data-codex-plus-ui-slot="thread.top"],[data-codex-plus-ui-slot="thread.bottom"]{width:min(100%,var(--thread-content-max-width,768px));margin:12px auto;padding:0 16px;box-sizing:border-box}
@@ -182,6 +183,9 @@
       [data-codex-plus-ui-slot="sessionRow.suffix"]{margin-left:4px}
       [data-codex-plus-ui-slot="composer.left"],[data-codex-plus-ui-slot="composer.right"],[data-codex-plus-ui-slot="header.title"],[data-codex-plus-ui-slot="sidebar.section"],[data-codex-plus-ui-slot="projectRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
       [data-codex-plus-ui-slot="composer.right"]{margin-right:4px}
+      [data-codex-plus-ui-slot="composer.model"]{flex-direction:row;align-items:center;flex:none;gap:4px;margin-left:2px}
+      [data-codex-plus-ui-slot="settings.nav"]{gap:2px}
+      .codex-plus-settings-nav-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:0;cursor:pointer}
       [data-codex-plus-ui-slot="header.title"]{margin-left:6px}
       [data-codex-plus-ui-slot="composer.below"]{margin:6px 0 0}
       [data-codex-plus-ui-slot="home.above"]{margin:0 0 10px}
@@ -419,7 +423,7 @@
    * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
    */
   const codexPlusUiSlotNames = [
-    "composer.above", "composer.below", "composer.left", "composer.right", "home.above",
+    "composer.above", "composer.below", "composer.left", "composer.right", "composer.model", "home.above", "settings.nav",
     "thread.top", "thread.bottom", "turn.after", "header.title", "titlebar", "approval",
     "sidebar.top", "sidebar.bottom", "sidebar.section", "sessionRow.prefix", "sessionRow.suffix", "projectRow.suffix",
     "overlay",
@@ -469,7 +473,8 @@
         // 底栏左侧按钮组（添加内容、权限……）：「添加内容」按钮所在的那一行 flex。
         return visible("[data-composer-footer-responsive]")
           .map((footer) => {
-            const row = footer.querySelector("[data-composer-navigation-target]")?.closest("div.flex");
+            // 只认带「添加内容 / 权限」的那一行；首页顶上的工作区栏（项目、运行位置）也带导航目标，不算。
+            const row = footer.querySelector('[data-composer-navigation-target="add-context"], [data-composer-navigation-target="permissions"]')?.closest("div.flex");
             return row && footer.contains(row) ? row : null;
           })
           .filter(Boolean)
@@ -480,6 +485,26 @@
           .map((group) => group.querySelector(":scope div.shrink-0.items-center"))
           .filter(Boolean)
           .map((row) => ({ parent: row, place: "start" }));
+      case "composer.model": {
+        // 模型 / 推理强度选择按钮后面。
+        // 按钮外面包着一层提示用的 span，挂在包着它的那一行 flex 里、紧跟在这一项后面。
+        return visible('[data-composer-navigation-target="reasoning"]').flatMap((button) => {
+          const row = button.parentElement?.closest("div.flex");
+          if (!row) return [];
+          const item = [...row.children].find((child) => child.contains(button));
+          const next = item?.nextElementSibling;
+          return [{ parent: row, place: next && !isExtensionUiNode(next) ? next : "end" }];
+        });
+      }
+      case "settings.nav": {
+        // Codex 设置页左侧导航（各项带 data-settings-panel-slug）的末尾；sampleClass 是原生导航项的类名，可以借来对齐样式。
+        const items = visible("[data-settings-panel-slug]");
+        if (!items.length) return [];
+        let list = items[0].parentElement;
+        while (list && !items.every((item) => list.contains(item))) list = list.parentElement;
+        if (!list) return [];
+        return [{ parent: list, place: "end", info: { sampleClass: items[0].className || "" } }];
+      }
       case "home.above":
         return visible('[data-codex-composer-root][data-composer-placement="home"]').map((node) => ({ parent: node.parentElement, place: node }));
       case "header.title":
@@ -530,6 +555,7 @@
   function codexPlusActivityKind(id) {
     if (/^exec-/.test(id)) return "command";
     if (/^turn-error-/.test(id)) return "error";
+    if (/plan/i.test(id)) return "plan";
     if (/reason/i.test(id)) return "reasoning";
     if (/patch|file-?change/i.test(id)) return "fileChange";
     if (/^call_|^fc_|tool|mcp/i.test(id)) return "toolCall";

@@ -11,6 +11,9 @@
   const codexPlusAgentPet = {
     disposed: false,
     root: null,
+    /** overlay 插槽给的容器（内置拓展装上时有）；mountedHost 是桌宠当前挂在的那个（挂在 body 上时为 null）。 */
+    host: null,
+    mountedHost: null,
     body: null,
     image: null,
     imageKey: "",
@@ -50,7 +53,7 @@
 
   function codexPlusAgentPetActive(settings) {
     return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.agents.includes("codex")
-      && !window.__codexPlusBuiltinInactive?.has("agent-pet");
+      && !globalThis.__codexPlusBuiltinInactive?.has("agent-pet");
   }
 
   function readCodexPlusAgentPetPosition() {
@@ -219,7 +222,10 @@
     image.style.cssText = "width:100%;height:100%;object-fit:contain;pointer-events:none;filter:drop-shadow(0 4px 8px rgba(0,0,0,.18));";
     body.appendChild(image);
     root.appendChild(body);
-    document.body.appendChild(root);
+    // 内置拓展经公开的 overlay 插槽给了容器就放进去（见 96-builtin-extensions.js），否则直接挂在 body 上。
+    const slotHost = codexPlusAgentPet.host?.isConnected ? codexPlusAgentPet.host : null;
+    (slotHost || document.body).appendChild(root);
+    codexPlusAgentPet.mountedHost = slotHost;
     codexPlusAgentPet.root = root;
     codexPlusAgentPet.body = body;
     codexPlusAgentPet.image = image;
@@ -326,7 +332,8 @@
       return;
     }
     if (!document.body) return;
-    if (!codexPlusAgentPet.root || !codexPlusAgentPet.root.isConnected) {
+    const wantedHost = codexPlusAgentPet.host?.isConnected ? codexPlusAgentPet.host : null;
+    if (!codexPlusAgentPet.root || !codexPlusAgentPet.root.isConnected || codexPlusAgentPet.mountedHost !== wantedHost) {
       if (codexPlusAgentPet.root) unmountCodexPlusAgentPet();
       mountCodexPlusAgentPet(settings);
     }

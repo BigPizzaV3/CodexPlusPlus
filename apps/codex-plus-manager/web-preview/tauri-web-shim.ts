@@ -543,7 +543,16 @@ const demoClaudeEnhance = {
 };
 
 // 本地拓展演示数据：一个单文件脚本、一个已加载的拓展包、一个清单有误的拓展包。
-const demoUserScripts = { enabled: true, skip_next_start: false, scripts: [
+const demoBuiltins = [
+  ["agent-pet", "Agent 桌宠", true, null], ["usage-statusline", "用量状态栏", true, null], ["dictation", "语音听写", false, null],
+  ["turn-rewind", "轮次回退", true, "user:pomodoro_timer"], ["typing-effects", "打字特效", true, null],
+  ["side-chat-save", "侧聊保存", true, null], ["history-turn-recovery", "历史轮次补全", true, null],
+  ["capacity-auto-retry", "容量不足自动重试", true, null], ["proxy-request-status", "请求状态条", true, null],
+  ["session-share", "会话分享", true, null], ["model-picker-groups", "模型分组", true, null],
+  ["dream-skin", "梦皮主题", true, null], ["plugin-market-unlock", "插件市场解锁", true, null],
+  ["instance-identity", "多开身份提示", true, null], ["session-title-hook", "会话标题中间件", true, null],
+].map(([id, name, enabled, replacedBy]) => ({ id, key: `builtin:${id}`, name, description: "", enabled, replacedBy }));
+const demoUserScripts = { enabled: true, skip_next_start: false, builtins: demoBuiltins, scripts: [
   { key: "user:copy-title.js", name: "copy-title.js", source: "user", kind: "script", package: null, enabled: true, status: "loaded", error: "" },
   { key: "user:pomodoro_timer", name: "番茄钟", source: "user", kind: "package", enabled: true, status: "loaded", error: "",
     package: { id: "pomodoro_timer", version: "0.1.0", description: "在左侧图标栏提供可持久化的 25 分钟番茄钟", engine: 1, routes: [],

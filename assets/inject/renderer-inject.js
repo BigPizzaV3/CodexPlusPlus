@@ -1820,6 +1820,7 @@
     inputTriggers: new Map(),
     shortcuts: new Map(),
     themes: new Map(),
+    floatingTabs: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
@@ -4666,7 +4667,7 @@
     const settings = codexPlusSettings();
     const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
     const action = dreamSkinRefreshAction({
-      enabled: !!settings.dreamSkinEnabled,
+      enabled: !!settings.dreamSkinEnabled && !globalThis.__codexPlusBuiltinInactive?.has("dream-skin"),
       paused: !!settings.dreamSkinPaused,
       backendLoaded: !!codexPlusBackendSettingsLoaded,
       externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
@@ -9417,7 +9418,8 @@
   }
 
   function codexPluginMarketplacePatchEnabled() {
-    return codexPlusBackendSettingsLoaded && !!codexPlusSettings().pluginMarketplaceUnlock;
+    return codexPlusBackendSettingsLoaded && !!codexPlusSettings().pluginMarketplaceUnlock
+      && !globalThis.__codexPlusBuiltinInactive?.has("plugin-market-unlock");
   }
 
   let cachedSessionRows = [];
@@ -13714,8 +13716,9 @@
   function codexPlusModelPickerScan() {
     const state = codexPlusModelPickerGroupsState;
     if (state.disposed) return;
-    const menu = codexPlusModelPickerMenu();
-    const list = codexPlusModelPickerList(menu);
+    // 内置拓展「模型分组」停用时当作没有列表：已分组的列表还原。
+    const menu = globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups") ? null : codexPlusModelPickerMenu();
+    const list = menu ? codexPlusModelPickerList(menu) : null;
     if (!list) {
       if (state.activeList) {
         codexPlusModelPickerClear(state.activeList);
@@ -14118,7 +14121,9 @@
   function installSessionShareButton() {
     const existing = document.querySelectorAll(`.${sessionShareButtonClass}`);
     const ref = currentSessionRef();
-    const actionGroup = codexPlusSettings().sessionShare && ref.session_id ? sessionSharePlacement() : null;
+    const actionGroup = codexPlusSettings().sessionShare && ref.session_id && !globalThis.__codexPlusBuiltinInactive?.has("session-share")
+      ? sessionSharePlacement()
+      : null;
     if (!(actionGroup instanceof HTMLElement)) {
       existing.forEach((button) => button.remove());
       return;
@@ -14786,7 +14791,7 @@
   }
 
   function capacityAutoRetryEnabled() {
-    return capacityAutoRetrySettings().capacityAutoRetry === true && !window.__codexPlusBuiltinInactive?.has("capacity-auto-retry");
+    return capacityAutoRetrySettings().capacityAutoRetry === true && !globalThis.__codexPlusBuiltinInactive?.has("capacity-auto-retry");
   }
 
   function capacityAutoRetryMaxAttempts() {
@@ -15524,11 +15529,30 @@
     codexPlusUsageDiagnoseOnce("usage_statusline_data_partial", missing.join(","), { missing, events: events.length });
   }
 
+  /**
+   * 状态栏放在哪：内置拓展经公开的 composer.below 插槽登记了容器时放进卡片所在输入框的那个容器
+   * （见 96-builtin-extensions.js），否则（单独运行本分片、旧版页面）紧跟在输入卡片后面。
+   */
+  function codexPlusUsageSlotHost(card) {
+    const root = card?.closest?.("[data-codex-composer-root]");
+    if (!root) return null;
+    for (const container of codexPlusUsageState.slotHosts || []) {
+      if (container.isConnected && root.contains(container)) return container;
+    }
+    return null;
+  }
+
+  function codexPlusUsageNodePlaced(node, card) {
+    if (!node?.isConnected) return false;
+    const host = codexPlusUsageSlotHost(card);
+    return host ? node.parentElement === host : node.previousElementSibling === card;
+  }
+
   function codexPlusUsageEnsureNode(card) {
     const host = card?.parentElement;
     if (!host) return null;
     let node = codexPlusUsageState.node;
-    if (node?.isConnected && node.previousElementSibling === card) return node;
+    if (codexPlusUsageNodePlaced(node, card)) return node;
     if (!node) {
       node = document.createElement("div");
       node.id = codexPlusUsageStatusLineId;
@@ -15536,7 +15560,9 @@
       node.setAttribute("role", "status");
       codexPlusUsageState.node = node;
     }
-    card.insertAdjacentElement("afterend", node);
+    const slotHost = codexPlusUsageSlotHost(card);
+    if (slotHost) slotHost.appendChild(node);
+    else card.insertAdjacentElement("afterend", node);
     return node;
   }
 
@@ -15688,7 +15714,7 @@
     return !codexPlusUsageState.disposed
       && codexPlusBackendSettingsLoaded
       && codexPlusSettings().usageStatusLine === true
-      && !window.__codexPlusBuiltinInactive?.has("usage-statusline");
+      && !globalThis.__codexPlusBuiltinInactive?.has("usage-statusline");
   }
 
   /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */
@@ -15706,7 +15732,7 @@
     }
     const changed = codexPlusUsageState.threadId !== threadId
       || !codexPlusUsageState.node?.isConnected
-      || codexPlusUsageState.node.previousElementSibling !== card;
+      || !codexPlusUsageNodePlaced(codexPlusUsageState.node, card);
     const node = codexPlusUsageEnsureNode(card);
     if (!node) return null;
     if (changed) {
@@ -15981,6 +16007,9 @@
     // 放进只包住输入框的 relative 容器里，插在卡片前会跑到输入框内部。
     const anchor = card?.closest("[data-codex-composer-root]") || card;
     if (!anchor?.parentElement) return null;
+    // 内置拓展经公开的 composer.above 插槽登记了容器（见 96-builtin-extensions.js）：放进紧挨着这个输入框的那个。
+    const slotHost = [...(codexPlusProxyStatusState.slotHosts || [])]
+      .find((container) => container.isConnected && container.closest("[data-codex-plus-ui-slot]")?.nextElementSibling === anchor);
     let node = codexPlusProxyStatusState.node;
     if (!node) {
       node = document.createElement("div");
@@ -15989,7 +16018,9 @@
       node.setAttribute("role", "status");
       codexPlusProxyStatusState.node = node;
     }
-    if (!node.isConnected || node.nextElementSibling !== anchor) {
+    if (slotHost) {
+      if (node.parentElement !== slotHost) slotHost.appendChild(node);
+    } else if (!node.isConnected || node.nextElementSibling !== anchor) {
       anchor.insertAdjacentElement("beforebegin", node);
     }
     return node;
@@ -16008,7 +16039,7 @@
   }
 
   function codexPlusProxyStatusRender() {
-    if (!!window.__codexPlusBuiltinInactive?.has("proxy-request-status")) {
+    if (!!globalThis.__codexPlusBuiltinInactive?.has("proxy-request-status")) {
       codexPlusProxyStatusHide();
       return;
     }
@@ -16102,7 +16133,7 @@
 
   async function codexPlusProxyStatusRefresh() {
     if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
-    if (document.hidden || !!window.__codexPlusBuiltinInactive?.has("proxy-request-status")) return;
+    if (document.hidden || !!globalThis.__codexPlusBuiltinInactive?.has("proxy-request-status")) return;
     codexPlusProxyStatusState.inFlight = true;
     try {
       const result = await codexPlusProxyStatusPostWithTimeout();
@@ -16158,7 +16189,7 @@
   function historyTurnRecoveryEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
       && codexPlusBackendSettings.codexAppHistoryTurnRecovery === true
-      && !window.__codexPlusBuiltinInactive?.has("history-turn-recovery");
+      && !globalThis.__codexPlusBuiltinInactive?.has("history-turn-recovery");
   }
 
   function historyTurnRecoveryTarget() {
@@ -16703,7 +16734,7 @@
     || (window.__codexPlusTurnRewind = createCodexPlusTurnRewindController(window));
   function codexPlusTurnRewindEnabled() {
     return codexPlusBackendSettingsLoaded === true && codexPlusSettings().turnRewind === true
-      && !window.__codexPlusBuiltinInactive?.has("turn-rewind");
+      && !globalThis.__codexPlusBuiltinInactive?.has("turn-rewind");
   }
   codexPlusTurnRewind.setEnabledCheck(codexPlusTurnRewindEnabled);
   // 仅接入消息菜单，不改原生模块、安装目录或对第三方拓展开放写 RPC。
@@ -17032,7 +17063,7 @@
   document.querySelectorAll(sideChatSaveSelector).forEach(button => button.remove());
 
   function sideChatSaveEnabled() {
-    return codexPlusSettings().sideChatSave === true && !window.__codexPlusBuiltinInactive?.has("side-chat-save");
+    return codexPlusSettings().sideChatSave === true && !globalThis.__codexPlusBuiltinInactive?.has("side-chat-save");
   }
 
   async function sideChatSource(sourceId, boundary = {}) {
@@ -18640,7 +18671,8 @@
     const navId = `${scriptKey}:navEntry:${pageId}`;
     let disposeNav = null;
     try {
-      disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
+      // options.nav === false：只要页面、不要图标栏入口（例如从 Codex 设置页里打开的拓展分区）。
+      if (options.nav !== false) disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
     } catch {
       // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
     }
@@ -18772,6 +18804,18 @@
       },
       registerSlot(definition, options = {}) {
         return codexPlusRegisterExtensionSlot(definition, options);
+      },
+      /** 右下角悬浮球面板里加一个页签：render({ container, close })，可返回清理函数。 */
+      registerFloatingTab(definition, options = {}) {
+        return codexPlusRegisterFloatingTab(definition, options);
+      },
+      /** 对话里的工具调用 / 命令条目末尾挂内容：tools / kinds 过滤，render({ container, call })。 */
+      registerToolView(definition, options = {}) {
+        return codexPlusRegisterToolView(definition, options);
+      },
+      /** Codex 设置页左侧导航末尾加一项，点开是 render({ container, close }) 画的页面。 */
+      registerSettingsSection(definition, options = {}) {
+        return codexPlusRegisterSettingsSection(definition, options);
       },
 
       /** 在会话行「更多操作」里加一项。 */
@@ -19861,6 +19905,18 @@
         const handle = track(slot);
         handle.refresh = slot.refresh;
         return handle;
+      },
+      registerFloatingTab(definition, itemOptions) {
+        return track(codexPlusRegisterFloatingTab(definition, registerOptions(itemOptions)));
+      },
+      registerToolView(definition, itemOptions) {
+        const view = codexPlusRegisterToolView(definition, registerOptions(itemOptions));
+        const handle = track(view);
+        handle.refresh = view.refresh;
+        return handle;
+      },
+      registerSettingsSection(definition, itemOptions) {
+        return track(codexPlusRegisterSettingsSection(definition, registerOptions(itemOptions)));
       },
       registerInputTrigger(definition, itemOptions) {
         return track(codexPlusRegisterInputTrigger(definition, registerOptions(itemOptions)));
@@ -21206,7 +21262,8 @@
       .codex-plus-side-panel-toggle .codex-plus-ext-icon,.codex-plus-side-panel-toggle svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
       .codex-plus-side-panel-toggle[aria-pressed="true"]{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 12%,transparent))}
       .codex-plus-ui-slot{display:flex;flex-direction:column;gap:6px;min-width:0}
-      .codex-plus-ui-slot:not(:has(.codex-plus-ui-slot-item:not(:empty))){display:none}
+      .codex-plus-ui-slot:not(:has(.codex-plus-ui-slot-item:not(:empty):not(:has(> [data-hidden="true"]:only-child)))){display:none}
+      .codex-plus-ui-slot-item:has(> [data-hidden="true"]:only-child){display:none}
       .codex-plus-ui-slot-item:empty{display:none}
       [data-codex-plus-ui-slot="composer.above"]{margin:0 0 8px}
       [data-codex-plus-ui-slot="thread.top"],[data-codex-plus-ui-slot="thread.bottom"]{width:min(100%,var(--thread-content-max-width,768px));margin:12px auto;padding:0 16px;box-sizing:border-box}
@@ -21219,6 +21276,9 @@
       [data-codex-plus-ui-slot="sessionRow.suffix"]{margin-left:4px}
       [data-codex-plus-ui-slot="composer.left"],[data-codex-plus-ui-slot="composer.right"],[data-codex-plus-ui-slot="header.title"],[data-codex-plus-ui-slot="sidebar.section"],[data-codex-plus-ui-slot="projectRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
       [data-codex-plus-ui-slot="composer.right"]{margin-right:4px}
+      [data-codex-plus-ui-slot="composer.model"]{flex-direction:row;align-items:center;flex:none;gap:4px;margin-left:2px}
+      [data-codex-plus-ui-slot="settings.nav"]{gap:2px}
+      .codex-plus-settings-nav-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:0;cursor:pointer}
       [data-codex-plus-ui-slot="header.title"]{margin-left:6px}
       [data-codex-plus-ui-slot="composer.below"]{margin:6px 0 0}
       [data-codex-plus-ui-slot="home.above"]{margin:0 0 10px}
@@ -21456,7 +21516,7 @@
    * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
    */
   const codexPlusUiSlotNames = [
-    "composer.above", "composer.below", "composer.left", "composer.right", "home.above",
+    "composer.above", "composer.below", "composer.left", "composer.right", "composer.model", "home.above", "settings.nav",
     "thread.top", "thread.bottom", "turn.after", "header.title", "titlebar", "approval",
     "sidebar.top", "sidebar.bottom", "sidebar.section", "sessionRow.prefix", "sessionRow.suffix", "projectRow.suffix",
     "overlay",
@@ -21506,7 +21566,8 @@
         // 底栏左侧按钮组（添加内容、权限……）：「添加内容」按钮所在的那一行 flex。
         return visible("[data-composer-footer-responsive]")
           .map((footer) => {
-            const row = footer.querySelector("[data-composer-navigation-target]")?.closest("div.flex");
+            // 只认带「添加内容 / 权限」的那一行；首页顶上的工作区栏（项目、运行位置）也带导航目标，不算。
+            const row = footer.querySelector('[data-composer-navigation-target="add-context"], [data-composer-navigation-target="permissions"]')?.closest("div.flex");
             return row && footer.contains(row) ? row : null;
           })
           .filter(Boolean)
@@ -21517,6 +21578,26 @@
           .map((group) => group.querySelector(":scope div.shrink-0.items-center"))
           .filter(Boolean)
           .map((row) => ({ parent: row, place: "start" }));
+      case "composer.model": {
+        // 模型 / 推理强度选择按钮后面。
+        // 按钮外面包着一层提示用的 span，挂在包着它的那一行 flex 里、紧跟在这一项后面。
+        return visible('[data-composer-navigation-target="reasoning"]').flatMap((button) => {
+          const row = button.parentElement?.closest("div.flex");
+          if (!row) return [];
+          const item = [...row.children].find((child) => child.contains(button));
+          const next = item?.nextElementSibling;
+          return [{ parent: row, place: next && !isExtensionUiNode(next) ? next : "end" }];
+        });
+      }
+      case "settings.nav": {
+        // Codex 设置页左侧导航（各项带 data-settings-panel-slug）的末尾；sampleClass 是原生导航项的类名，可以借来对齐样式。
+        const items = visible("[data-settings-panel-slug]");
+        if (!items.length) return [];
+        let list = items[0].parentElement;
+        while (list && !items.every((item) => list.contains(item))) list = list.parentElement;
+        if (!list) return [];
+        return [{ parent: list, place: "end", info: { sampleClass: items[0].className || "" } }];
+      }
       case "home.above":
         return visible('[data-codex-composer-root][data-composer-placement="home"]').map((node) => ({ parent: node.parentElement, place: node }));
       case "header.title":
@@ -21567,6 +21648,7 @@
   function codexPlusActivityKind(id) {
     if (/^exec-/.test(id)) return "command";
     if (/^turn-error-/.test(id)) return "error";
+    if (/plan/i.test(id)) return "plan";
     if (/reason/i.test(id)) return "reasoning";
     if (/patch|file-?change/i.test(id)) return "fileChange";
     if (/^call_|^fc_|tool|mcp/i.test(id)) return "toolCall";
@@ -22087,6 +22169,155 @@
       codexPlusEmitExtensionEvent("extensions/changed", [{ extensions }]);
     }, 300);
   }
+  /**
+   * 更多视图接口：悬浮球页签、工具调用视图、Codex 设置页分区。
+   *
+   * - registerFloatingTab：右下角悬浮球面板里加一个页签（悬浮球的「下一步建议」或「回答大纲」至少开着一个时可见）。
+   *   悬浮球是单独注入的脚本，这里把注册项同步到 window.__codexPlusFloatingTabs，再请它重画。
+   * - registerToolView：对话里的工具调用 / 命令条目末尾挂一块自己的内容（在 activity.after 插槽上），
+   *   按工具名或条目类型匹配；render 收到的 call 带工具名、参数、结果（从会话日志里按调用 id 找）。
+   * - registerSettingsSection：Codex 设置页左侧导航末尾加一项，点开是拓展自己画的页面。
+   */
+
+  // ---------------------------------------------------------------- 悬浮球页签
+  function syncCodexPlusFloatingTabs() {
+    const tabs = new Map();
+    for (const item of codexPlusExtensionItems(codexPlusRegistry.floatingTabs)) {
+      tabs.set(item.id, {
+        id: item.id,
+        title: String(item.title || item.label || item.id),
+        icon: item.icon,
+        scriptKey: item.scriptKey,
+        render: (context) => {
+          const result = runCodexPlusExtensionCallback(item.scriptKey, "floatingTab.render", () => item.render(context));
+          return result.ok ? result.value : undefined;
+        },
+        fail: (error) => codexPlusMarkExtensionFailure(item.scriptKey, `floatingTab: ${String(error?.stack || error?.message || error)}`),
+      });
+    }
+    window.__codexPlusFloatingTabs = tabs;
+    try {
+      window.__codexStepwisePanel?.renderFloat?.({ preserveMorph: true });
+    } catch {}
+  }
+
+  function codexPlusRegisterFloatingTab(definition, options = {}) {
+    if (typeof definition?.render !== "function") throw new Error("悬浮球页签需要 render({ container, close })");
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = `${scriptKey}:floatingTab:${options.id || codexPlusExtensionIdSeed()}`;
+    const dispose = registerCodexPlusExtension("floatingTab", codexPlusRegistry.floatingTabs, id, definition, scriptKey);
+    syncCodexPlusFloatingTabs();
+    return () => {
+      dispose();
+      syncCodexPlusFloatingTabs();
+    };
+  }
+
+  // ---------------------------------------------------------------- 工具调用视图
+  /** 会话的工具调用表（调用 id → 工具名、参数、结果），读一次缓存 3 秒。 */
+  const codexPlusToolCallCache = new Map();
+
+  function codexPlusToolCalls(sessionId) {
+    const cached = codexPlusToolCallCache.get(sessionId);
+    if (cached && Date.now() - cached.at < 3000) return cached.promise;
+    const promise = (async () => {
+      const query = codexPlusServices.get("sessionQuery")?.value;
+      if (!query || !sessionId) return new Map();
+      const { events } = await query.readSession(sessionId);
+      const calls = new Map();
+      for (const event of events || []) {
+        if (event.type === "tool/call") {
+          let input = event.data?.input;
+          try { input = typeof input === "string" ? JSON.parse(input) : input; } catch {}
+          calls.set(event.data?.callId, { callId: event.data?.callId, name: event.data?.name || "", input, output: null });
+        } else if (event.type === "tool/result" && calls.has(event.data?.callId)) {
+          calls.get(event.data.callId).output = event.data?.output ?? null;
+        }
+      }
+      return calls;
+    })();
+    codexPlusToolCallCache.set(sessionId, { at: Date.now(), promise });
+    if (codexPlusToolCallCache.size > 8) codexPlusToolCallCache.delete(codexPlusToolCallCache.keys().next().value);
+    promise.catch(() => codexPlusToolCallCache.delete(sessionId));
+    return promise;
+  }
+
+  /** 条目 id 里带着调用 id（命令条目是 exec-<调用 id>）：按包含关系找。 */
+  function codexPlusFindToolCall(calls, itemIds) {
+    for (const itemId of itemIds || []) {
+      if (calls.has(itemId)) return calls.get(itemId);
+      for (const [callId, call] of calls) if (callId && itemId.includes(callId)) return call;
+    }
+    return null;
+  }
+
+  function codexPlusToolViewMatches(definition, call) {
+    const kinds = definition.kinds ? [].concat(definition.kinds) : null;
+    if (kinds && !kinds.includes(call.kind)) return false;
+    const tools = definition.tools ? [].concat(definition.tools) : null;
+    if (!tools) return true;
+    return tools.some((pattern) => pattern instanceof RegExp ? pattern.test(call.name) : String(pattern) === call.name || new RegExp(`^(?:${pattern})$`).test(call.name));
+  }
+
+  function codexPlusRegisterToolView(definition, options = {}) {
+    if (typeof definition?.render !== "function") throw new Error("工具调用视图需要 render({ container, call })");
+    return codexPlusRegisterExtensionSlot({
+      slot: "activity.after",
+      order: definition.order,
+      render: ({ container, kind, itemIds, text }) => {
+        let cleanup = null;
+        let cancelled = false;
+        const sessionId = codexPlusCurrentSessionId();
+        const base = { kind, itemIds, text, sessionId, callId: null, name: "", input: null, output: null };
+        const draw = (call) => {
+          if (cancelled || !codexPlusToolViewMatches(definition, call)) return;
+          const result = runCodexPlusExtensionCallback(options.scriptKey || codexPlusCurrentExtensionScriptKey(options), "toolView.render", () => definition.render({ container, call }));
+          if (result.ok && typeof result.value === "function") cleanup = result.value;
+        };
+        if (!definition.tools && !definition.resolve) draw(base);
+        else {
+          codexPlusToolCalls(sessionId).then((calls) => {
+            const found = codexPlusFindToolCall(calls, itemIds);
+            draw(found ? { ...base, ...found, kind } : base);
+          }).catch(() => draw(base));
+        }
+        return () => {
+          cancelled = true;
+          if (typeof cleanup === "function") cleanup();
+        };
+      },
+    }, options);
+  }
+
+  // ---------------------------------------------------------------- Codex 设置页分区
+  function codexPlusRegisterSettingsSection(definition, options = {}) {
+    if (typeof definition?.render !== "function") throw new Error("设置分区需要 render({ container, close })");
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = options.id || codexPlusExtensionIdSeed();
+    const disposePage = codexPlusRegisterExtensionPage(definition, { ...options, scriptKey, id: `settings-${id}`, nav: false });
+    const pageId = `${scriptKey}:page:settings-${id}`;
+    const title = String(definition.title || id);
+    const disposeSlot = codexPlusRegisterExtensionSlot({
+      slot: "settings.nav",
+      order: definition.order,
+      render: ({ container, sampleClass }) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `${sampleClass || ""} codex-plus-settings-nav-item`.trim();
+        button.innerHTML = `${codexPlusExtensionIconMarkup(definition)}<span>${escapeHtml(title)}</span>`;
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openCodexPlusExtensionPage(pageId);
+        });
+        container.appendChild(button);
+      },
+    }, { scriptKey, id: `settings-nav-${id}` });
+    return () => {
+      disposeSlot();
+      disposePage();
+    };
+  }
   // API Key 听写使用独立的 ASR 服务。新版原生 capability / app-host RPC 是只读的，
   // 因此入口与录音由 CPP 管理，识别结果通过原生编辑器事务回填，保持草稿和附件。
   window.__codexPlusDictationRuntime?.dispose?.();
@@ -22102,7 +22333,7 @@
   function codexPlusDictationEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
       && codexPlusBackendSettings.dictation?.enabled === true
-      && !window.__codexPlusBuiltinInactive?.has("dictation");
+      && !globalThis.__codexPlusBuiltinInactive?.has("dictation");
   }
 
   function codexPlusDictationEditor(scope) {
@@ -22705,7 +22936,7 @@
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-typing-effects"]');
 
   function codexPlusTypingEffectMode() {
-    if (!!window.__codexPlusBuiltinInactive?.has("typing-effects")) return "off";
+    if (!!globalThis.__codexPlusBuiltinInactive?.has("typing-effects")) return "off";
     const value = codexPlusSettings().typingEffect;
     return ["rainbow", "fireworks", "stars"].includes(value) ? value : "off";
   }
@@ -23761,17 +23992,17 @@
    *
    * 停用 / 顶替状态由 Codex++ 随用户脚本注入包下发（window.__codexPlusBuiltinExtensionState），
    * 热重载时更新。功能的开关检查在注入早期（本分片执行前）、以及只抽单个分片的测试里也会被调用，所以只记
-   * 「停用的」：window.__codexPlusBuiltinInactive 里没有的 id 都算启用，功能侧写成
-   * `!window.__codexPlusBuiltinInactive?.has("<id>")`。实例卸载时加进集合，装上时移出。
+   * 「停用的」：globalThis.__codexPlusBuiltinInactive 里没有的 id 都算启用，功能侧写成
+   * `!globalThis.__codexPlusBuiltinInactive?.has("<id>")`。实例卸载时加进集合，装上时移出。
    */
   function codexPlusBuiltinInactiveIds() {
-    if (!(window.__codexPlusBuiltinInactive instanceof Set)) window.__codexPlusBuiltinInactive = new Set();
-    return window.__codexPlusBuiltinInactive;
+    if (!(globalThis.__codexPlusBuiltinInactive instanceof Set)) globalThis.__codexPlusBuiltinInactive = new Set();
+    return globalThis.__codexPlusBuiltinInactive;
   }
 
   /** 内置拓展是否在用（没被停用、没被顶替）。 */
   function codexPlusBuiltinExtensionActive(id) {
-    return !window.__codexPlusBuiltinInactive?.has(id);
+    return !globalThis.__codexPlusBuiltinInactive?.has(id);
   }
 
   /**
@@ -23781,15 +24012,19 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet() },
-      { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.() },
+      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet(), apply: codexPlusAgentPetExtension },
+      { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
       { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
       { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects() },
       { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons() },
       { id: "history-turn-recovery", name: "历史轮次补全" },
       { id: "capacity-auto-retry", name: "容量不足自动重试" },
-      { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.() },
+      { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.(), apply: codexPlusProxyStatusExtension },
+      { id: "session-share", name: "会话分享", sync: () => installSessionShareButton() },
+      { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.scan?.() },
+      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin() },
+      { id: "plugin-market-unlock", name: "插件市场解锁" },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
     ];
@@ -23857,6 +24092,57 @@
       disabled: state.disabled.has(id),
       replacedBy: state.replacedBy[id] || null,
     }));
+  }
+
+  /** Agent 桌宠：经公开的 overlay 插槽拿容器，桌宠挂在里面（拖动、按压的逻辑在 97-agent-pet.js）。 */
+  function codexPlusAgentPetExtension(ctx) {
+    ctx.registerSlot({
+      slot: "overlay",
+      order: 10,
+      render: ({ container }) => {
+        codexPlusAgentPet.host = container;
+        runScanStep(syncCodexPlusAgentPet);
+        return () => {
+          if (codexPlusAgentPet.host === container) codexPlusAgentPet.host = null;
+          runScanStep(syncCodexPlusAgentPet);
+        };
+      },
+    });
+  }
+
+  /** 用量状态栏：经公开的 composer.below 插槽拿每个输入框下方的容器，状态栏放进当前输入框的那个。 */
+  function codexPlusUsageStatusLineExtension(ctx) {
+    codexPlusUsageState.slotHosts ||= new Set();
+    ctx.registerSlot({
+      slot: "composer.below",
+      order: 0,
+      render: ({ container }) => {
+        codexPlusUsageState.slotHosts.add(container);
+        window.__codexPlusUsageStatusLineRuntime?.sync?.();
+        return () => {
+          codexPlusUsageState.slotHosts.delete(container);
+          if (codexPlusUsageState.node?.parentElement === container) codexPlusUsageState.node.remove();
+          window.__codexPlusUsageStatusLineRuntime?.sync?.();
+        };
+      },
+    });
+  }
+
+  /** 请求状态条：经公开的 composer.above 插槽拿每个输入框上方的容器。 */
+  function codexPlusProxyStatusExtension(ctx) {
+    codexPlusProxyStatusState.slotHosts ||= new Set();
+    ctx.registerSlot({
+      slot: "composer.above",
+      order: 0,
+      render: ({ container }) => {
+        codexPlusProxyStatusState.slotHosts.add(container);
+        window.__codexPlusProxyRequestStatusRuntime?.refresh?.();
+        return () => {
+          codexPlusProxyStatusState.slotHosts.delete(container);
+          if (codexPlusProxyStatusState.node?.parentElement === container) codexPlusProxyStatusState.node.remove();
+        };
+      },
+    });
   }
 
   /**
@@ -24027,9 +24313,15 @@
     "conversation.session.header.actions": { kind: "slot", slot: "header.title" },
     "conversation.session.header.utilities": { kind: "slot", slot: "titlebar" },
     "conversation.session.header.corner": { kind: "slot", slot: "titlebar" },
+    // 右侧栏的页签（如 dsh 的终端、文件、文档预览）：Codex 里放进悬浮球面板的页签。
+    "sidebar.right.pane.tab": { kind: "floating" },
     "conversation.chat.assistant-actions": { kind: "message" },
-    "settings.section": { kind: "page" },
-    "settings.general.item": { kind: "page" },
+    "conversation.input.model": { kind: "slot", slot: "composer.model" },
+    "tool.call.toolview": { kind: "toolView" },
+    "conversation.plan-review.actions": { kind: "toolView", kinds: ["plan"] },
+    "settings.section": { kind: "settings" },
+    "settings.general.item": { kind: "settings" },
+    "settings.plugins.tab": { kind: "settings" },
     "sidebar.panellist": { kind: "page" },
   };
 
@@ -24221,6 +24513,32 @@
             order,
             render: ({ message, container }) => mount(container, Component, props({ messageId: message.id, sessionId: message.conversationId || undefined })),
           }, { id });
+        case "toolView":
+          // keyed 插槽按工具名分派（key 就是工具名）；计划评审按条目类型。
+          return ctx.registerToolView({
+            ...(options.key ? { tools: [String(options.key)] } : {}),
+            ...(target.kinds ? { kinds: target.kinds } : {}),
+            order,
+            render: ({ container, call }) => mount(container, Component, props({
+              sessionId: call.sessionId || undefined,
+              callId: call.callId,
+              toolName: call.name,
+              phase: "result",
+              block: { type: "tool-call", id: call.callId, name: call.name, arguments: JSON.stringify(call.input ?? {}), result: call.output },
+              useDisclosure: () => [true, () => {}],
+              openFile: () => {},
+            })),
+          }, { id });
+        case "settings":
+          return ctx.registerSettingsSection({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ close: close || (() => {}) })),
+          }, { id });
+        case "floating":
+          return ctx.registerFloatingTab({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ dismiss: close, tab: { id } })),
+          }, { id });
         case "page":
           return ctx.registerPage({
             title: label,
@@ -24349,6 +24667,9 @@
   const codexPlusAgentPet = {
     disposed: false,
     root: null,
+    /** overlay 插槽给的容器（内置拓展装上时有）；mountedHost 是桌宠当前挂在的那个（挂在 body 上时为 null）。 */
+    host: null,
+    mountedHost: null,
     body: null,
     image: null,
     imageKey: "",
@@ -24388,7 +24709,7 @@
 
   function codexPlusAgentPetActive(settings) {
     return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.agents.includes("codex")
-      && !window.__codexPlusBuiltinInactive?.has("agent-pet");
+      && !globalThis.__codexPlusBuiltinInactive?.has("agent-pet");
   }
 
   function readCodexPlusAgentPetPosition() {
@@ -24557,7 +24878,10 @@
     image.style.cssText = "width:100%;height:100%;object-fit:contain;pointer-events:none;filter:drop-shadow(0 4px 8px rgba(0,0,0,.18));";
     body.appendChild(image);
     root.appendChild(body);
-    document.body.appendChild(root);
+    // 内置拓展经公开的 overlay 插槽给了容器就放进去（见 96-builtin-extensions.js），否则直接挂在 body 上。
+    const slotHost = codexPlusAgentPet.host?.isConnected ? codexPlusAgentPet.host : null;
+    (slotHost || document.body).appendChild(root);
+    codexPlusAgentPet.mountedHost = slotHost;
     codexPlusAgentPet.root = root;
     codexPlusAgentPet.body = body;
     codexPlusAgentPet.image = image;
@@ -24664,7 +24988,8 @@
       return;
     }
     if (!document.body) return;
-    if (!codexPlusAgentPet.root || !codexPlusAgentPet.root.isConnected) {
+    const wantedHost = codexPlusAgentPet.host?.isConnected ? codexPlusAgentPet.host : null;
+    if (!codexPlusAgentPet.root || !codexPlusAgentPet.root.isConnected || codexPlusAgentPet.mountedHost !== wantedHost) {
       if (codexPlusAgentPet.root) unmountCodexPlusAgentPet();
       mountCodexPlusAgentPet(settings);
     }
@@ -24723,6 +25048,8 @@
       'nav[data-app-navigation-rail]',
       // 审批卡片出现时补上拓展的 approval 插槽。
       "[data-codex-approval-surface]",
+      // Codex 设置页导航出现时补上 settings.nav 插槽。
+      "[data-settings-panel-slug]",
       ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
     ].join(", ");
   }

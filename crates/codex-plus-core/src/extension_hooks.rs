@@ -440,6 +440,8 @@ pub fn sync_default(manager: &UserScriptManager) -> Value {
     if manager.config_path() != crate::user_scripts::default_user_script_manager().config_path() {
         return json!({ "skipped": "不是默认的拓展目录，不同步 Codex 配置" });
     }
+    // 拓展包带来的 dsh 插件先同步：它们的配套拓展包会带来钩子，下面一并写进 Codex 配置。
+    let dsh = crate::dsh_plugins::sync_extension_plugins_default(manager);
     let home = crate::codex_home::default_codex_home_dir();
     let result = std::env::current_exe()
         .context("无法定位 Codex++ 程序")
@@ -455,7 +457,10 @@ pub fn sync_default(manager: &UserScriptManager) -> Value {
             report
         });
     match result {
-        Ok(report) => report,
+        Ok(mut report) => {
+            report["dsh"] = dsh;
+            report
+        }
         Err(error) => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "extension_hooks.sync_failed",

@@ -11,7 +11,7 @@
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-typing-effects"]');
 
   function codexPlusTypingEffectMode() {
-    if (!!window.__codexPlusBuiltinInactive?.has("typing-effects")) return "off";
+    if (!!globalThis.__codexPlusBuiltinInactive?.has("typing-effects")) return "off";
     const value = codexPlusSettings().typingEffect;
     return ["rainbow", "fireworks", "stars"].includes(value) ? value : "off";
   }

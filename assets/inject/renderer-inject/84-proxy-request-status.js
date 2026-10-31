@@ -118,6 +118,9 @@
     // 放进只包住输入框的 relative 容器里，插在卡片前会跑到输入框内部。
     const anchor = card?.closest("[data-codex-composer-root]") || card;
     if (!anchor?.parentElement) return null;
+    // 内置拓展经公开的 composer.above 插槽登记了容器（见 96-builtin-extensions.js）：放进紧挨着这个输入框的那个。
+    const slotHost = [...(codexPlusProxyStatusState.slotHosts || [])]
+      .find((container) => container.isConnected && container.closest("[data-codex-plus-ui-slot]")?.nextElementSibling === anchor);
     let node = codexPlusProxyStatusState.node;
     if (!node) {
       node = document.createElement("div");
@@ -126,7 +129,9 @@
       node.setAttribute("role", "status");
       codexPlusProxyStatusState.node = node;
     }
-    if (!node.isConnected || node.nextElementSibling !== anchor) {
+    if (slotHost) {
+      if (node.parentElement !== slotHost) slotHost.appendChild(node);
+    } else if (!node.isConnected || node.nextElementSibling !== anchor) {
       anchor.insertAdjacentElement("beforebegin", node);
     }
     return node;
@@ -145,7 +150,7 @@
   }
 
   function codexPlusProxyStatusRender() {
-    if (!!window.__codexPlusBuiltinInactive?.has("proxy-request-status")) {
+    if (!!globalThis.__codexPlusBuiltinInactive?.has("proxy-request-status")) {
       codexPlusProxyStatusHide();
       return;
     }
@@ -239,7 +244,7 @@
 
   async function codexPlusProxyStatusRefresh() {
     if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
-    if (document.hidden || !!window.__codexPlusBuiltinInactive?.has("proxy-request-status")) return;
+    if (document.hidden || !!globalThis.__codexPlusBuiltinInactive?.has("proxy-request-status")) return;
     codexPlusProxyStatusState.inFlight = true;
     try {
       const result = await codexPlusProxyStatusPostWithTimeout();

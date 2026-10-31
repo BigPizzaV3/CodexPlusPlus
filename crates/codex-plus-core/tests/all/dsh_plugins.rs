@@ -629,7 +629,7 @@ async fn dsh_events_and_system_prompt_run_through_companion_extension() {
     assert_eq!(main["status"], "compatible", "{main}");
     let mut mappings: Vec<&str> = main["mappings"].as_array().unwrap().iter().map(|item| item.as_str().unwrap()).collect();
     mappings.sort();
-    assert_eq!(mappings, ["PostToolUse", "PreToolUse", "Stop", "UserPromptSubmit", "instructions"]);
+    assert_eq!(mappings, ["PostToolUse", "PreToolUse", "Stop", "UserPromptSubmit", "gateway:step", "instructions"]);
 
     let companion = plugins.sync_companion(&manager, &record.id).unwrap();
     assert_eq!(companion["id"], "dsh-dsh-policy-demo");
@@ -680,6 +680,24 @@ async fn dsh_events_and_system_prompt_run_through_companion_extension() {
     assert_eq!(body["instructions"], "base\n\nNever run destructive shell commands without asking.");
     apply_request_with(&manager, &mut body, "/v1/responses").await;
     assert_eq!(body["instructions"], "base\n\nNever run destructive shell commands without asking.");
+
+    // tools/post-execute 的 block 钩子里只能拦下，模型看到的工具结果在下一次请求里换成插件给的反馈；
+    // 工具调用之后的每一步也跑 agent/pre-step（这个插件每步补一句提醒）。
+    let secret = json!({"session_id": "s3", "tool_name": "Bash", "tool_input": {"command": "cat .env"}, "tool_use_id": "call-secret", "tool_response": "SECRET=1"});
+    assert_eq!(dispatch(&manager, "PostToolUse", secret).await.unwrap()["decision"], "block");
+    let mut body = json!({"model": "gpt-x", "instructions": "base", "prompt_cache_key": "s3", "input": [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "read env"}]},
+        {"type": "function_call", "call_id": "call-secret", "name": "shell", "arguments": "{\"command\":\"cat .env\"}"},
+        {"type": "function_call_output", "call_id": "call-secret", "output": "SECRET=1"},
+    ]});
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert!(body["input"][2]["output"].as_str().unwrap().contains("withheld"), "{body}");
+    assert_eq!(body["input"][3]["content"][0]["text"], "policy-demo: remember the house rules", "{body}");
+    // 同一条结果在后续请求里（没经过钩子的新进程也一样）照旧换掉，不再追加重复的提醒以外的东西。
+    let mut again = json!({"model": "gpt-x", "instructions": "base", "prompt_cache_key": "s3", "input": body["input"].as_array().unwrap()[..3].to_vec()});
+    again["input"][2]["output"] = json!("SECRET=1");
+    apply_request_with(&manager, &mut again, "/v1/responses").await;
+    assert!(again["input"][2]["output"].as_str().unwrap().contains("withheld"), "{again}");
 
     // 动态片段：每次请求加载插件求值，变量按请求的模型取值。
     plugins
@@ -733,7 +751,7 @@ async fn dsh_session_services_run_on_codex_session_mirror() {
     let main = row(&record.report, "dsh-session-demo");
     assert_eq!(main["status"], "partial", "镜像服务有说明，按部分兼容：{main}");
     let plan = dsh_plugins::report_bridge(&record.report);
-    assert!(plan.gateway_request && !plan.instructions, "{plan:?}");
+    assert!(plan.gateway_step && !plan.instructions, "{plan:?}");
     assert_eq!(plan.commands.len(), 1);
     for hook in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"] {
         assert!(plan.hooks.iter().any(|item| item == hook), "会话镜像要 {hook}：{plan:?}");
@@ -826,6 +844,187 @@ fn dsh_client_plugin_gets_renderer_glue_and_routed_fetch() {
 
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+/// llm/stream 改写回复流（文字增量与收尾里的完整文本都换成插件的）、agent/assistant-stream 观察到每一帧。
+#[tokio::test]
+async fn dsh_stream_events_rewrite_the_response_stream() {
+    use codex_plus_core::extension_gateway::ResponseFilter;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("stream-plugin")), &toolchain).unwrap();
+    let plan = dsh_plugins::report_bridge(&record.report);
+    assert!(plan.gateway_response, "{plan:?}");
+    let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+    assert_eq!(companion["manifestError"], Value::Null, "{companion}");
+
+    let events = [
+        json!({"type": "response.created", "response": {"id": "r1"}}),
+        json!({"type": "response.content_part.added", "item_id": "m1", "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}}),
+        json!({"type": "response.output_text.delta", "item_id": "m1", "output_index": 0, "content_index": 0, "delta": "hello "}),
+        json!({"type": "response.output_text.delta", "item_id": "m1", "output_index": 0, "content_index": 0, "delta": "world"}),
+        json!({"type": "response.output_text.done", "item_id": "m1", "output_index": 0, "content_index": 0, "text": "hello world"}),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message", "id": "m1", "content": [{"type": "output_text", "text": "hello world"}]}}),
+        json!({"type": "response.completed", "response": {"id": "r1", "output": [{"type": "message", "id": "m1", "content": [{"type": "output_text", "text": "hello world"}]}], "usage": {"input_tokens": 3, "output_tokens": 2}}}),
+    ];
+    let bytes: Vec<u8> = events.iter().map(|event| format!("event: {}\ndata: {}\n\n", event["type"].as_str().unwrap(), event)).collect::<String>().into_bytes();
+    let middlewares = manager.enabled_gateway_response_middlewares().unwrap();
+    let request = json!({"model": "gpt", "prompt_cache_key": "stream-1", "input": []});
+    let mut filter = ResponseFilter::start_with(&middlewares, "/v1/responses", Some(&request)).await.expect("应建立会话");
+    let mut out = filter.push(&bytes).await;
+    out.extend(filter.finish().await);
+    let text = String::from_utf8_lossy(&out).to_string();
+    let parsed: Vec<Value> = text.split("\n\n").filter_map(|block| block.lines().find_map(|line| line.strip_prefix("data: "))).filter_map(|data| serde_json::from_str(data).ok()).collect();
+    let deltas: String = parsed.iter().filter(|event| event["type"] == "response.output_text.delta").map(|event| event["delta"].as_str().unwrap().to_string()).collect();
+    assert_eq!(deltas, "HELLO WORLD", "{text}");
+    let done = parsed.iter().find(|event| event["type"] == "response.output_text.done").unwrap();
+    assert_eq!(done["text"], "HELLO WORLD");
+    let completed = parsed.iter().find(|event| event["type"] == "response.completed").unwrap();
+    assert_eq!(completed["response"]["output"][0]["content"][0]["text"], "HELLO WORLD");
+    let order: Vec<&str> = parsed.iter().map(|event| event["type"].as_str().unwrap()).collect();
+    assert_eq!(order.last(), Some(&"response.completed"), "{order:?}");
+
+    // 观察：常驻进程里的插件收到了 start / chunk / end 帧。
+    let dir = scripts.path().join("user/dsh-dsh-stream-demo");
+    let script = format!(
+        "const {{ default: create }} = await import({}); process.stdout.write(JSON.stringify(await create().command({{ name: 'frames', rawInput: '' }}))); process.exit(0)",
+        json!(url_of(&dir.join("backend/main.mjs")))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    let frames: Value = serde_json::from_str(result["text"].as_str().unwrap_or("{}")).unwrap_or(Value::Null);
+    assert_eq!(frames["start"], 1, "{result} {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(frames["end"], 1);
+    assert!(frames["chunk"].as_u64().unwrap() >= 4, "{frames}");
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+/// schedule / webhookRuntime / jobs / workspaceRegistry：工具里建的定时任务落在插件数据目录，配套拓展包的后台
+/// 每分钟 tick；webhook 规则经后台的 HTTP 路由触发；jobs 在进程里跑完；定时规则的匹配按时区算。
+#[test]
+fn dsh_schedule_webhook_and_jobs_services() {
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("schedule-plugin")), &toolchain).unwrap();
+    let plan = dsh_plugins::report_bridge(&record.report);
+    assert!(plan.schedule && plan.webhook, "{plan:?}");
+    let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+    assert_eq!(companion["manifestError"], Value::Null, "{companion}");
+    let dir = scripts.path().join("user/dsh-dsh-schedule-demo");
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("codexpp.json")).unwrap()).unwrap();
+    assert_eq!(manifest["schedules"], json!([{ "method": "tick", "everyMinutes": 1 }]), "{manifest}");
+    assert_eq!(manifest["backend"]["http"], true);
+
+    // 工具经 MCP 调用：建一个每分钟的定时任务、跑一个后台任务。
+    let responses = serve(&plugins, &toolchain, &[
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        call(2, "remind_me", json!({"session": "s-sched", "prompt": "看看构建"})),
+    ]);
+    let value: Value = serde_json::from_str(responses[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(value, json!({ "schedule": "every", "listed": 1, "job": "completed", "workspaces": true }), "{responses:?}");
+    let stored = std::fs::read_to_string(plugins.root().join("data").join(&record.id).join("schedules.json")).unwrap();
+    assert!(stored.contains("看看构建"), "{stored}");
+
+    // 后台：tick 还没到点不触发；webhook 交给规则（没有 Codex++ 宿主时新建会话失败，记成 error）。
+    let script = format!(
+        "const {{ default: create }} = await import({}); const m = create(); const ticked = await m.tick(); const hook = await m.http({{ method: 'POST', path: '/webhook/demo/push', headers: {{}}, body: JSON.stringify({{ action: 'go', ref: 'main' }}) }}); const other = await m.http({{ method: 'POST', path: '/webhook/nope', headers: {{}}, body: '{{}}' }}); process.stdout.write(JSON.stringify({{ ticked, hook, other }})); process.exit(0)",
+        json!(url_of(&dir.join("backend/main.mjs")))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).env_remove("CODEX_PLUS_HOST_EXE").args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(result["ticked"], json!([]), "{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert_eq!(result["hook"]["status"], 202, "{result}");
+    assert_eq!(result["hook"]["json"]["started"][0]["rule"], "demo-rule");
+    assert!(result["hook"]["json"]["started"][0]["error"].as_str().unwrap().contains("Codex++"), "{result}");
+    assert_eq!(result["other"]["status"], 404);
+
+    // 规则匹配：daily / weekly / cron 按时区，every 按上次触发时间。
+    let services = url_of(&host_source("services.mjs"));
+    let script = format!(
+        "const {{ scheduleDue }} = await import({services:?}); const at = new Date('2026-11-02T01:30:10Z'); const out = [
+          scheduleDue({{ kind: 'daily', hour: 9, minute: 30, timeZone: 'Asia/Shanghai' }}, at),
+          scheduleDue({{ kind: 'daily', hour: 9, minute: 31, timeZone: 'Asia/Shanghai' }}, at),
+          scheduleDue({{ kind: 'weekly', hour: 9, minute: 30, timeZone: 'Asia/Shanghai', weekdays: ['mon'] }}, at),
+          scheduleDue({{ kind: 'weekly', hour: 9, minute: 30, timeZone: 'Asia/Shanghai', weekdays: ['tue'] }}, at),
+          scheduleDue({{ kind: 'cron', expression: '*/15 9 * * 1-5', timeZone: 'Asia/Shanghai' }}, at),
+          scheduleDue({{ kind: 'cron', expression: '0 9 * * *', timeZone: 'Asia/Shanghai' }}, at),
+          scheduleDue({{ kind: 'every', everySeconds: 60, scheduledAt: at.getTime() - 61000 }}, at),
+          scheduleDue({{ kind: 'every', everySeconds: 60, scheduledAt: at.getTime() - 10000 }}, at),
+          scheduleDue({{ kind: 'after', dueAt: at.getTime() - 1, lastFiredAt: 0 }}, at),
+        ]; process.stdout.write(JSON.stringify(out)); process.exit(0)"
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let due: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(due, json!([true, false, true, false, true, false, true, false, true]), "{}", String::from_utf8_lossy(&output.stderr));
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+/// 拓展包清单里的 `dsh` 指向包内一个按 dsh 写法写的插件：随拓展启用导入、停用停用、删除移除。
+#[test]
+fn extension_package_can_carry_a_dsh_plugin() {
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let package = scripts.path().join("user/kit");
+    std::fs::create_dir_all(package.join("dsh")).unwrap();
+    for name in ["package.json", "index.js"] {
+        std::fs::copy(fixture("policy-plugin").join(name), package.join("dsh").join(name)).unwrap();
+    }
+    std::fs::write(package.join("codexpp.json"), json!({ "id": "kit", "name": "套件", "version": "1.0.0", "dsh": "dsh" }).to_string()).unwrap();
+    let inventory = manager.inventory().unwrap();
+    let entry = inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == "user:kit").cloned().unwrap();
+    assert_eq!(entry["error"], "", "{entry}");
+    assert_eq!(entry["package"]["dsh"], true);
+
+    let plugins = DshPlugins::new(state.path());
+    let report = plugins.sync_extension_plugins(&manager, &toolchain).unwrap();
+    assert_eq!(report["changed"], json!(["ext-kit"]), "{report}");
+    let record = plugins.load().unwrap().plugins.into_iter().find(|plugin| plugin.id == "ext-kit").unwrap();
+    assert_eq!(record.owner.as_deref(), Some("user:kit"));
+    assert!(scripts.path().join("user/dsh-ext-kit/codexpp.json").is_file(), "配套拓展包生成了");
+    assert!(!manager.enabled_extension_hooks().unwrap().is_empty());
+    // 没变化时不重新分析。
+    assert_eq!(plugins.sync_extension_plugins(&manager, &toolchain).unwrap()["changed"], json!([]));
+
+    manager.set_script_enabled("user:kit", false).unwrap();
+    plugins.sync_extension_plugins(&manager, &toolchain).unwrap();
+    assert!(!plugins.load().unwrap().plugins.iter().find(|plugin| plugin.id == "ext-kit").unwrap().enabled);
+    assert!(manager.enabled_extension_hooks().unwrap().is_empty(), "配套拓展包随之停用");
+
+    std::fs::remove_file(package.join("codexpp.json")).unwrap();
+    plugins.sync_extension_plugins(&manager, &toolchain).unwrap();
+    assert!(plugins.load().unwrap().plugins.iter().all(|plugin| plugin.id != "ext-kit"));
+    assert!(!scripts.path().join("user/dsh-ext-kit").exists());
+    assert!(package.join("dsh/index.js").is_file(), "插件源码原地不动");
 }
 
 fn url_of(path: &Path) -> String {

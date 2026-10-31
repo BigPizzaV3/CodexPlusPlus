@@ -52,8 +52,10 @@ type DshPlugin = {
     hooks: string[];
     instructions: boolean;
     staticPrompt: boolean;
-    /** agent/request（改模型 / 推理强度）经网关请求中间件。 */
-    gatewayRequest?: boolean;
+    /** 每一步的模型请求交给插件（agent/request、按步的 agent/pre-step、改写工具结果）。 */
+    gatewayStep?: boolean;
+    /** llm/stream / agent/assistant-stream 经网关响应流中间件。 */
+    gatewayResponse?: boolean;
     /** agent/request-error 经网关失败重试。 */
     gatewayError?: boolean;
     /** 插件注册的斜杠命令，在 Codex 输入框里同名可用。 */
@@ -383,7 +385,10 @@ function mappingLabel(target: string): string {
     case "connection":
       return t("前端请求路由");
     case "gateway:request":
-      return t("模型请求 → 网关");
+    case "gateway:step":
+      return t("每一步的请求 → 网关");
+    case "gateway:response":
+      return t("回复流 → 网关");
     case "gateway:instructions":
       return t("提示词组装 → 网关");
     case "gateway:error":
@@ -400,7 +405,8 @@ function CompanionLine({ companion }: { companion: NonNullable<DshPlugin["compan
     parts.push(companion.staticPrompt ? t("系统提示词追加到每次请求的 instructions") : t("系统提示词（含动态片段）每次请求求值后追加到 instructions"));
   }
   if (companion.hooks.length) parts.push(tf("事件转成 Codex 钩子 {0}", [companion.hooks.join("、")]));
-  if (companion.gatewayRequest) parts.push(t("agent/request 经网关改模型与推理强度"));
+  if (companion.gatewayStep) parts.push(t("每一步的模型请求经网关交给插件（换模型、按步准入、改写工具结果）"));
+  if (companion.gatewayResponse) parts.push(t("回复流经网关交给插件（llm/stream、agent/assistant-stream）"));
   if (companion.gatewayError) parts.push(t("agent/request-error 经网关决定失败重试"));
   if (companion.commands?.length) parts.push(tf("斜杠命令 {0}", [companion.commands.map((command) => `/${command.name}`).join(" ")]));
   let state = "";

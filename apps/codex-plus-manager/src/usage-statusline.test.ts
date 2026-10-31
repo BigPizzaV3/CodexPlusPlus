@@ -288,7 +288,7 @@ function lifecycle() {
     ...["codexPlusUsageState", "codexPlusUsageStaleMs", "codexPlusUsageIdleIntervalMs",
       "codexPlusUsageActiveIntervalMs", "codexPlusUsageWarmupIntervalMs", "codexPlusUsageFailureLimit",
       "codexPlusUsagePercent", "codexPlusUsageLatestTurn", "codexPlusUsageMaxIntervalSeconds", "codexPlusUsageRate", "codexPlusUsageTurnCache", "codexPlusUsageSnapshot",
-      "codexPlusUsageHide", "codexPlusUsageShow", "codexPlusUsageSyncPlacement",
+      "codexPlusUsageHide", "codexPlusUsageShow", "codexPlusUsageSyncPlacement", "codexPlusUsageSlotHost", "codexPlusUsageNodePlaced",
       "codexPlusUsageDiagnosticLimit", "codexPlusUsageDiagnoseOnce", "codexPlusUsageNoteDataGaps",
       "codexPlusUsageRemember", "codexPlusUsageRefresh", "codexPlusUsageTick"].map(declaration),
     "return { state: codexPlusUsageState, sync: codexPlusUsageSyncPlacement, tick: codexPlusUsageTick, remember: codexPlusUsageRemember };",

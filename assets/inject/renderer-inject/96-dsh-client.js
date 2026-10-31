@@ -79,9 +79,15 @@
     "conversation.session.header.actions": { kind: "slot", slot: "header.title" },
     "conversation.session.header.utilities": { kind: "slot", slot: "titlebar" },
     "conversation.session.header.corner": { kind: "slot", slot: "titlebar" },
+    // 右侧栏的页签（如 dsh 的终端、文件、文档预览）：Codex 里放进悬浮球面板的页签。
+    "sidebar.right.pane.tab": { kind: "floating" },
     "conversation.chat.assistant-actions": { kind: "message" },
-    "settings.section": { kind: "page" },
-    "settings.general.item": { kind: "page" },
+    "conversation.input.model": { kind: "slot", slot: "composer.model" },
+    "tool.call.toolview": { kind: "toolView" },
+    "conversation.plan-review.actions": { kind: "toolView", kinds: ["plan"] },
+    "settings.section": { kind: "settings" },
+    "settings.general.item": { kind: "settings" },
+    "settings.plugins.tab": { kind: "settings" },
     "sidebar.panellist": { kind: "page" },
   };
 
@@ -272,6 +278,32 @@
             roles: ["assistant"],
             order,
             render: ({ message, container }) => mount(container, Component, props({ messageId: message.id, sessionId: message.conversationId || undefined })),
+          }, { id });
+        case "toolView":
+          // keyed 插槽按工具名分派（key 就是工具名）；计划评审按条目类型。
+          return ctx.registerToolView({
+            ...(options.key ? { tools: [String(options.key)] } : {}),
+            ...(target.kinds ? { kinds: target.kinds } : {}),
+            order,
+            render: ({ container, call }) => mount(container, Component, props({
+              sessionId: call.sessionId || undefined,
+              callId: call.callId,
+              toolName: call.name,
+              phase: "result",
+              block: { type: "tool-call", id: call.callId, name: call.name, arguments: JSON.stringify(call.input ?? {}), result: call.output },
+              useDisclosure: () => [true, () => {}],
+              openFile: () => {},
+            })),
+          }, { id });
+        case "settings":
+          return ctx.registerSettingsSection({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ close: close || (() => {}) })),
+          }, { id });
+        case "floating":
+          return ctx.registerFloatingTab({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ dismiss: close, tab: { id } })),
           }, { id });
         case "page":
           return ctx.registerPage({

@@ -1035,6 +1035,18 @@
         handle.refresh = slot.refresh;
         return handle;
       },
+      registerFloatingTab(definition, itemOptions) {
+        return track(codexPlusRegisterFloatingTab(definition, registerOptions(itemOptions)));
+      },
+      registerToolView(definition, itemOptions) {
+        const view = codexPlusRegisterToolView(definition, registerOptions(itemOptions));
+        const handle = track(view);
+        handle.refresh = view.refresh;
+        return handle;
+      },
+      registerSettingsSection(definition, itemOptions) {
+        return track(codexPlusRegisterSettingsSection(definition, registerOptions(itemOptions)));
+      },
       registerInputTrigger(definition, itemOptions) {
         return track(codexPlusRegisterInputTrigger(definition, registerOptions(itemOptions)));
       },

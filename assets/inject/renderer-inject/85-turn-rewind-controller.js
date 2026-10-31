@@ -255,6 +255,6 @@
     || (window.__codexPlusTurnRewind = createCodexPlusTurnRewindController(window));
   function codexPlusTurnRewindEnabled() {
     return codexPlusBackendSettingsLoaded === true && codexPlusSettings().turnRewind === true
-      && !window.__codexPlusBuiltinInactive?.has("turn-rewind");
+      && !globalThis.__codexPlusBuiltinInactive?.has("turn-rewind");
   }
   codexPlusTurnRewind.setEnabledCheck(codexPlusTurnRewindEnabled);

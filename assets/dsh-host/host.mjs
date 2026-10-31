@@ -19,8 +19,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
 import {
-  AgentRegistry, MIRROR_SERVICES, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createLlm, createSessionQuery,
-  createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb,
+  AgentRegistry, MIRROR_SERVICES, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
+  createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
+  createWorkspaceRegistry,
 } from './services.mjs'
 
 const HOST_VERSION = '3'
@@ -63,11 +64,26 @@ export const EVENT_HOOKS = {
 export const MIRROR_EVENTS = new Set(['session/event', 'session/created', 'agent/status', 'tools/result'])
 export const MIRROR_HOOKS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'PreCompact', 'PostCompact']
 /** 能对上 Codex++ 网关中间件的事件：agent/request 改模型 / 推理强度，agent/request-error 决定重试。 */
-export const GATEWAY_EVENTS = { 'agent/request': 'request', 'system-prompt/assemble': 'instructions', 'agent/request-error': 'error' }
+export const GATEWAY_EVENTS = {
+  'agent/request': 'step',
+  'system-prompt/assemble': 'instructions',
+  'agent/request-error': 'error',
+  'llm/stream': 'response',
+  'agent/assistant-stream': 'response',
+}
+/**
+ * 除了钩子之外还要在网关请求侧跑的事件：agent/pre-step 在工具调用之后的每一步也触发，
+ * tools/post-execute 改写的工具结果在下一次请求里换进 input。
+ */
+export const STEP_EVENTS = new Set(['agent/pre-step', 'tools/post-execute'])
 /** 插件注册的斜杠命令：配套拓展包在 Codex 页面里注册同名命令，经后台转给常驻进程执行。 */
 export const COMMANDS_TARGET = 'commands'
 /** 插件宿主半边经 ctx.connection.fetch 注册的 HTTP 路由：前端半边的 fetch('/api/…') 经配套拓展包的后台转过来。 */
 export const CONNECTION_TARGET = 'connection'
+/** 用到 ctx.schedule 的行：配套拓展包挂每分钟一次的定时任务，到点往会话里发消息。 */
+export const SCHEDULE_TARGET = 'schedule'
+/** 注册了 webhook 规则的行：配套拓展包开 /ext/<拓展>/webhook/<kind> 路由。 */
+export const WEBHOOK_TARGET = 'webhook'
 /** 需要会话镜像（钩子常驻进程把 Codex 钩子翻成 dsh 会话日志）的行，映射到这个目标。 */
 export const MIRROR_TARGET = 'mirror'
 /** 系统提示词片段的映射目标：经网关中间件追加到每次模型请求的 instructions。 */
@@ -417,6 +433,10 @@ export class Host {
     this.routes = new Map()
     const emit = (event, args) => this.emitEvent(event, args)
     this.mirror = new SessionMirror({ dataDir: options.mirrorDir, emit })
+    /** 插件经 ctx.webhookRuntime 注册的规则（配套拓展包的后台把 /webhook/<kind> 请求转过来）。 */
+    this.webhooks = createWebhookRuntime()
+    /** 插件包的 ctx.schedule（记录存在包的数据目录，按包共用）。 */
+    this.schedules = undefined
     this.agentRegistry = new AgentRegistry({ mirror: this.mirror, emit, serial: (event, args) => this.serial(event, args) })
     this.shared = undefined
   }
@@ -516,6 +536,8 @@ export class Host {
       shell: createShell(),
       web: createWeb(),
       userQuestions: createUserQuestions(),
+      jobs: createJobs((event, args) => host.emitEvent(event, args)),
+      workspaceRegistry: createWorkspaceRegistry(),
       agentDefaultModel: Object.freeze({ provider: 'codex', model: undefined, reasoningEffort: undefined }),
     }
     return this.shared
@@ -651,6 +673,32 @@ export class Host {
     return run(0)
   }
 
+  /**
+   * 流式 waterfall（llm/stream）：监听器 `(options, next) => AsyncIterable`，next() 同步返回下游的可迭代对象，
+   * 链尾是 fallback()。某个监听器抛错时跳过它，用下游的流。
+   */
+  waterfallStream(event, options, fallback) {
+    const list = [...(this.listeners.get(event) ?? [])]
+    const run = (index) => {
+      if (index >= list.length) return fallback()
+      let downstream
+      const next = () => {
+        downstream ??= run(index + 1)
+        return downstream
+      }
+      try {
+        const result = list[index].listener(options, next)
+        if (result && typeof result[Symbol.asyncIterator] === 'function') return result
+        if (result && typeof result[Symbol.iterator] === 'function') return (async function* () { yield* result })()
+        console.error(`[dsh-host] ${event} 监听器没有返回可迭代对象，已跳过`)
+      } catch (error) {
+        console.error(`[dsh-host] ${event} 监听器失败，已跳过：${errorText(error)}`)
+      }
+      return next()
+    }
+    return run(0)
+  }
+
   /** 按 Cordis serial 语义派发：依次等待每个监听器，返回第一个非 undefined 的结果。 */
   async serial(event, args) {
     for (const { listener } of [...(this.listeners.get(event) ?? [])]) {
@@ -692,9 +740,18 @@ export class Host {
     }
     const logger = makeLogger(state.key)
     const shared = this.sharedServices()
+    host.schedules ??= createSchedule(host.dataDir, (event, args) => host.emitEvent(event, args))
     const pluginServices = {
       credentials: createCredentials(state.config),
       storageDomain: createStorageDomain(state.dataDir),
+      schedule: host.schedules,
+      webhookRuntime: {
+        ...host.webhooks,
+        register(rule) {
+          mapTo(WEBHOOK_TARGET)
+          return track(host.webhooks.register(rule))
+        },
+      },
     }
     const timer = {
       setTimeout(callback, ms, ...args) {
@@ -857,6 +914,7 @@ export class Host {
           return () => {}
         }
         if (list.some((name) => MIRROR_SERVICES.has(name))) mapTo(MIRROR_TARGET)
+        if (list.includes('schedule')) mapTo(SCHEDULE_TARGET)
         const result = callback(proxy)
         if (typeof result === 'function') track(result)
         else if (result && typeof result.then === 'function') state.pending.push(result.then((value) => typeof value === 'function' && track(value)))
@@ -874,6 +932,7 @@ export class Host {
         return track(() => dispose?.())
       },
       on(event, listener, options) {
+        if (STEP_EVENTS.has(event)) mapTo('gateway:step')
         if (EVENT_HOOKS[event]) mapTo(EVENT_HOOKS[event])
         else if (GATEWAY_EVENTS[event]) mapTo(`gateway:${GATEWAY_EVENTS[event]}`)
         else if (MIRROR_EVENTS.has(event)) mapTo(MIRROR_TARGET)
@@ -914,6 +973,7 @@ export class Host {
       get(name) {
         if (!SUPPORTED_SERVICES.has(name)) return undefined
         if (MIRROR_SERVICES.has(name)) mapTo(MIRROR_TARGET)
+        if (name === 'schedule') mapTo(SCHEDULE_TARGET)
         return proxy[name]
       },
       async plugin(plugin, config) {
@@ -1031,6 +1091,7 @@ export class Host {
     // 依赖会话 / agent / 投影的插件要会话镜像：配套拓展包会挂上把 Codex 钩子翻成 dsh 会话日志的那几个钩子。
     // 只声明 sessions 的插件多半只是 get 一下会话读 cwd，不值得为它在每次工具调用上起钩子；用到 agent / 投影才挂。
     if ([...inject.required, ...inject.optional].some((name) => name === 'agents' || name === 'sessionProjections')) record.mappings.push(MIRROR_TARGET)
+    if ([...inject.required, ...inject.optional].includes('schedule')) record.mappings.push(SCHEDULE_TARGET)
     const mirrorNotes = {
       sessions: 'ctx.sessions 是 Codex 会话的镜像（由 Codex 钩子事件生成）：没有模型的流式内容与推理，Codex 自己的会话日志请用 sessionQuery',
       agents: 'ctx.agents 里的 agent 是 Codex 会话的替身：steer / inject 在钩子里翻成补充上下文或要求继续，钩子之外经 Codex++ 往会话里插话',
@@ -1038,6 +1099,10 @@ export class Host {
       llm: 'ctx.llm.stream 经 Codex++ 协议代理一次性返回，拆成流式块；不能注册 adapter',
       fs: 'ctx.fs 是本机文件系统，不做沙箱与「先读后写」策略',
       shell: 'ctx.shell 用本机 shell 执行，不做沙箱',
+      schedule: 'ctx.schedule 到点经 Codex++ 往 Codex 会话里发起一轮（每分钟检查一次，需要 Codex++ 在运行）',
+      webhookRuntime: 'webhook 规则经 Codex++ 本地代理的 /ext/<配套拓展>/webhook/<kind> 接收，不校验签名',
+      jobs: 'ctx.jobs 只在当前进程里登记，不跨进程',
+      workspaceRegistry: 'ctx.workspaceRegistry 由 Codex 会话的工作目录归出来，只读',
       subprocess: 'ctx.subprocess 不提供 PTY 终端',
       web: 'ctx.web 只有 fetch，没有联网搜索',
       userQuestions: 'ctx.userQuestions 在 Codex 页面里弹框提问（一题一问）',
@@ -1240,8 +1305,15 @@ export class Host {
       instructions,
       staticPrompt,
       mirror,
-      gateway: { request: targets.has('gateway:request'), error: targets.has('gateway:error') },
+      // step：每一步的请求都交给插件（agent/request、按步的 agent/pre-step、改写工具结果、钩子之外排下的上下文）。
+      gateway: {
+        step: targets.has('gateway:step') || targets.has('gateway:request') || mirror,
+        error: targets.has('gateway:error'),
+        response: targets.has('gateway:response'),
+      },
       connection: targets.has(CONNECTION_TARGET),
+      schedule: targets.has(SCHEDULE_TARGET),
+      webhook: targets.has(WEBHOOK_TARGET),
       commands,
     }
   }

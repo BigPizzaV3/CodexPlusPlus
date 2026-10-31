@@ -169,6 +169,12 @@ pub struct PluginRecord {
     /// 已导入 Codex Skills 的 skill id。
     #[serde(default)]
     pub imported_skills: Vec<String>,
+    /// 由拓展包（codexpp.json 的 `dsh`）带来的插件：拓展的脚本 key。随拓展启停、删除。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// 拓展包的版本与插件目录的修改时间：变了就重新分析。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_fingerprint: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -558,7 +564,19 @@ impl DshPlugins {
             .join(uuid::Uuid::new_v4().simple().to_string());
         std::fs::create_dir_all(&staging)
             .with_context(|| format!("无法创建临时目录 {}", staging.display()))?;
-        let result = self.import_in(source, toolchain, node, &host, &staging);
+        let result = self.import_in(source, toolchain, node, &host, &staging, None);
+        let _ = remove_dir_quietly(&staging);
+        result
+    }
+
+    /// 以指定 id 导入本地目录（拓展包带来的插件用 `ext-<拓展 id>`，不和用户自己导入的同名包冲突）。
+    fn import_local_as(&self, root: &Path, id: &str, toolchain: &Toolchain) -> anyhow::Result<PluginRecord> {
+        let host = self.ensure_host()?;
+        let node = toolchain.require_node()?;
+        let staging = self.staging_dir().join(uuid::Uuid::new_v4().simple().to_string());
+        std::fs::create_dir_all(&staging).with_context(|| format!("无法创建临时目录 {}", staging.display()))?;
+        let source = PluginSource::Local { path: root.to_string_lossy().into_owned() };
+        let result = self.import_in(&source, toolchain, node, &host, &staging, Some(id));
         let _ = remove_dir_quietly(&staging);
         result
     }
@@ -570,6 +588,7 @@ impl DshPlugins {
         node: &Path,
         host: &Path,
         staging: &Path,
+        id_override: Option<&str>,
     ) -> anyhow::Result<PluginRecord> {
         let (fetched, managed) = match source {
             PluginSource::Local { path } => {
@@ -603,7 +622,7 @@ impl DshPlugins {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "plugin".to_string())
             });
-        let id = plugin_id_from_name(&name);
+        let id = id_override.map(str::to_string).unwrap_or_else(|| plugin_id_from_name(&name));
         validate_plugin_id(&id)?;
         if managed && needs_dependency_install(&package) {
             install_dependencies(&fetched, toolchain)?;
@@ -633,9 +652,13 @@ impl DshPlugins {
             imported_at: now_millis(),
             report: Value::Null,
             imported_skills: Vec::new(),
+            owner: None,
+            owner_fingerprint: None,
         };
         if let Some(index) = previous {
             let old = &registry.plugins[index];
+            record.owner = old.owner.clone();
+            record.owner_fingerprint = old.owner_fingerprint.clone();
             record.enabled = old.enabled;
             record.disabled_rows = old.disabled_rows.clone();
             record.configs = old.configs.clone();
@@ -1086,6 +1109,8 @@ const COMPANION_HOOK_SCRIPT: &str = "hooks/dsh.mjs";
 const COMPANION_GATEWAY_SCRIPT: &str = "gateway/instructions.mjs";
 const COMPANION_PROMPT_FILE: &str = "prompt.txt";
 const COMPANION_ERROR_SCRIPT: &str = "gateway/error.mjs";
+const COMPANION_STEP_SCRIPT: &str = "gateway/step.mjs";
+const COMPANION_RESPONSE_SCRIPT: &str = "gateway/response.mjs";
 const COMPANION_RENDERER_SCRIPT: &str = "renderer.js";
 const COMPANION_BACKEND_SCRIPT: &str = "backend/main.mjs";
 /// 钩子要加载插件再派发，给足时间；Codex 那边的分发条目固定 120 秒。
@@ -1108,14 +1133,21 @@ pub struct BridgePlan {
     pub hooks: Vec<String>,
     pub instructions: bool,
     pub static_prompt: Option<String>,
-    /// 插件监听 agent/request（改模型 / 推理强度）：网关请求中间件要加载插件。
-    pub gateway_request: bool,
+    /// 每一步的模型请求都交给插件：agent/request（改模型 / 推理强度）、按步的 agent/pre-step、
+    /// tools/post-execute 改写的工具结果、钩子之外排下的上下文。
+    pub gateway_step: bool,
+    /// 插件监听 llm/stream / agent/assistant-stream：挂网关响应流中间件。
+    pub gateway_response: bool,
     /// 插件监听 agent/request-error：挂网关失败重试。
     pub gateway_error: bool,
     /// 插件注册的斜杠命令：在 Codex 页面里注册同名命令，经配套拓展包的后台转给插件。
     pub commands: Vec<BridgeCommand>,
     /// 插件宿主半边注册了 HTTP 路由（ctx.connection.fetch）：前端半边的请求经后台转过去。
     pub connection: bool,
+    /// 插件用到 ctx.schedule：后台每分钟检查一次到点的定时任务。
+    pub schedule: bool,
+    /// 插件注册了 webhook 规则：后台开 /ext/<配套拓展>/webhook/<kind>。
+    pub webhook: bool,
     /// dsh 前端插件（dsh.client）的入口文件与包名：夹上胶水作为配套拓展包的页面脚本。
     pub client: Option<BridgeClient>,
 }
@@ -1139,10 +1171,13 @@ impl BridgePlan {
     pub fn is_empty(&self) -> bool {
         self.hooks.is_empty()
             && !self.instructions
-            && !self.gateway_request
+            && !self.gateway_step
+            && !self.gateway_response
             && !self.gateway_error
             && self.commands.is_empty()
             && !self.connection
+            && !self.schedule
+            && !self.webhook
             && self.client.is_none()
     }
 }
@@ -1172,8 +1207,13 @@ pub fn report_bridge(report: &Value) -> BridgePlan {
             .and_then(Value::as_str)
             .filter(|text| !text.trim().is_empty())
             .map(str::to_string),
-        gateway_request: bridge
-            .and_then(|bridge| bridge.pointer("/gateway/request"))
+        // 旧报告里叫 request。
+        gateway_step: bridge
+            .and_then(|bridge| bridge.pointer("/gateway/step").or_else(|| bridge.pointer("/gateway/request")))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        gateway_response: bridge
+            .and_then(|bridge| bridge.pointer("/gateway/response"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
         gateway_error: bridge
@@ -1206,6 +1246,8 @@ pub fn report_bridge(report: &Value) -> BridgePlan {
             .and_then(|bridge| bridge.get("connection"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        schedule: bridge.and_then(|bridge| bridge.get("schedule")).and_then(Value::as_bool).unwrap_or(false),
+        webhook: bridge.and_then(|bridge| bridge.get("webhook")).and_then(Value::as_bool).unwrap_or(false),
         client: bridge.and_then(|bridge| bridge.get("client")).and_then(|client| {
             Some(BridgeClient {
                 entry: PathBuf::from(client.get("entry")?.as_str()?),
@@ -1260,9 +1302,9 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         }
     }
     let mut gateway = serde_json::Map::new();
-    if plan.instructions || plan.gateway_request {
-        let static_prompt = plan.static_prompt.as_ref().filter(|_| !plan.gateway_request);
-        let (script, timeout) = match static_prompt {
+    let mut requests = Vec::new();
+    if plan.instructions {
+        let (script, timeout) = match &plan.static_prompt {
             Some(text) => {
                 files.insert(COMPANION_PROMPT_FILE.to_string(), text.clone());
                 (
@@ -1274,14 +1316,37 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
             }
             None => (
                 format!(
-                    "{header}// 每次模型请求交给插件：提示词片段（含 system-prompt/assemble 改写）追加到 instructions，agent/request 改模型与推理强度。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function request(body, context) {{\n  const {{ requestGateway }} = await import({})\n  return requestGateway(fileURLToPath(CONFIG), body, {{ step: context?.step }})\n}}\n",
+                    "{header}// 插件的系统提示词有动态片段（或 system-prompt/assemble）：每次模型请求求值，追加到 instructions。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function request(body) {{\n  const {{ requestInstructions }} = await import({})\n  return requestInstructions(fileURLToPath(CONFIG), body)\n}}\n",
                     js_string(&bridge_url),
                 ),
                 COMPANION_DYNAMIC_GATEWAY_TIMEOUT_SECS,
             ),
         };
         files.insert(COMPANION_GATEWAY_SCRIPT.to_string(), script);
-        gateway.insert("request".into(), json!([{ "script": COMPANION_GATEWAY_SCRIPT, "timeout": timeout }]));
+        requests.push(json!({ "script": COMPANION_GATEWAY_SCRIPT, "timeout": timeout }));
+    }
+    if plan.gateway_step {
+        files.insert(
+            COMPANION_STEP_SCRIPT.to_string(),
+            format!(
+                "{header}// 每一步的模型请求交给插件：agent/request 改模型与推理强度，工具调用之后的每一步跑 agent/pre-step（可拒绝这一步），\n// tools/post-execute 改写的工具结果换进 input，钩子之外 agent.inject 排下的上下文带上。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function request(body, context) {{\n  const {{ requestStep }} = await import({})\n  return requestStep(fileURLToPath(CONFIG), body, {{ step: context?.step }})\n}}\n",
+                js_string(&bridge_url),
+            ),
+        );
+        requests.push(json!({ "script": COMPANION_STEP_SCRIPT, "timeout": COMPANION_DYNAMIC_GATEWAY_TIMEOUT_SECS }));
+    }
+    if !requests.is_empty() {
+        gateway.insert("request".into(), Value::Array(requests));
+    }
+    if plan.gateway_response {
+        files.insert(
+            COMPANION_RESPONSE_SCRIPT.to_string(),
+            format!(
+                "{header}// 模型回复流交给插件：llm/stream 改写、agent/assistant-stream 观察。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nexport default async function* response(context, next) {{\n  const {{ responseStream }} = await import({})\n  yield* responseStream(fileURLToPath(CONFIG), context, next())\n}}\n",
+                js_string(&bridge_url),
+            ),
+        );
+        gateway.insert("response".into(), json!([{ "script": COMPANION_RESPONSE_SCRIPT, "timeout": COMPANION_DYNAMIC_GATEWAY_TIMEOUT_SECS }]));
     }
     if plan.gateway_error {
         files.insert(
@@ -1323,15 +1388,19 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         files.insert(COMPANION_RENDERER_SCRIPT.to_string(), script);
         renderer.push(COMPANION_RENDERER_SCRIPT.to_string());
     }
-    let backend = if !plan.commands.is_empty() || plan.connection {
+    let mut extra = serde_json::Map::new();
+    let backend = if !plan.commands.is_empty() || plan.connection || plan.schedule || plan.webhook {
         files.insert(
             COMPANION_BACKEND_SCRIPT.to_string(),
             format!(
-                "{header}// 页面斜杠命令与前端插件请求的执行端：转给插件常驻进程。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nconst bridge = () => import({})\n\nexport default () => ({{\n  async command({{ name, rawInput, sessionId }} = {{}}) {{\n    return (await bridge()).runCommand(fileURLToPath(CONFIG), name, rawInput, sessionId)\n  }},\n  async fetch(request = {{}}) {{\n    return (await bridge()).runFetch(fileURLToPath(CONFIG), request)\n  }},\n}})\n",
+                "{header}// 后台：页面斜杠命令、前端插件的请求、定时任务（每分钟）、webhook，都转给插件。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nconst bridge = () => import({})\n\nexport default () => ({{\n  async command({{ name, rawInput, sessionId }} = {{}}) {{\n    return (await bridge()).runCommand(fileURLToPath(CONFIG), name, rawInput, sessionId)\n  }},\n  async fetch(request = {{}}) {{\n    return (await bridge()).runFetch(fileURLToPath(CONFIG), request)\n  }},\n  async tick() {{\n    return (await bridge()).runTick(fileURLToPath(CONFIG))\n  }},\n  async http(request) {{\n    return (await bridge()).runWebhook(fileURLToPath(CONFIG), request)\n  }},\n}})\n",
                 js_string(&bridge_url),
             ),
         );
-        Some(json!({ "script": COMPANION_BACKEND_SCRIPT }))
+        if plan.schedule {
+            extra.insert("schedules".into(), json!([{ "method": "tick", "everyMinutes": 1 }]));
+        }
+        Some(if plan.webhook { json!({ "script": COMPANION_BACKEND_SCRIPT, "http": true }) } else { json!({ "script": COMPANION_BACKEND_SCRIPT }) })
     } else {
         None
     };
@@ -1339,14 +1408,23 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
     if plan.instructions {
         targets.push("instructions".to_string());
     }
-    if plan.gateway_request {
-        targets.push("模型请求".to_string());
+    if plan.gateway_step {
+        targets.push("每一步的模型请求".to_string());
+    }
+    if plan.gateway_response {
+        targets.push("回复流".to_string());
     }
     if plan.gateway_error {
         targets.push("失败重试".to_string());
     }
     if plan.client.is_some() {
         targets.push("前端界面".to_string());
+    }
+    if plan.schedule {
+        targets.push("定时任务".to_string());
+    }
+    if plan.webhook {
+        targets.push("webhook".to_string());
     }
     if !plan.commands.is_empty() {
         targets.push(format!("命令 {}", plan.commands.iter().map(|command| format!("/{}", command.name)).collect::<Vec<_>>().join(" ")));
@@ -1370,7 +1448,7 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         backend,
         tool_pipeline: None,
         providers: None,
-        extra: Default::default(),
+        extra,
         assets: Default::default(),
     })
 }
@@ -1403,7 +1481,8 @@ impl DshPlugins {
             "hooks": plan.hooks,
             "instructions": plan.instructions,
             "staticPrompt": plan.static_prompt.is_some(),
-            "gatewayRequest": plan.gateway_request,
+            "gatewayStep": plan.gateway_step,
+            "gatewayResponse": plan.gateway_response,
             "gatewayError": plan.gateway_error,
             "commands": plan.commands,
             "enabled": record.enabled,
@@ -1444,13 +1523,99 @@ impl DshPlugins {
             "hooks": plan.hooks,
             "instructions": plan.instructions,
             "staticPrompt": plan.static_prompt.is_some(),
-            "gatewayRequest": plan.gateway_request,
+            "gatewayStep": plan.gateway_step,
+            "gatewayResponse": plan.gateway_response,
             "gatewayError": plan.gateway_error,
             "commands": plan.commands,
             "installed": manager.user_dir().join(&id).join(COMPANION_MARKER).is_file(),
             "enabled": config.enabled && config.scripts.get(&key).copied().unwrap_or(true),
             "scriptsEnabled": config.enabled,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 拓展包带来的 dsh 插件（codexpp.json 的 `dsh`）
+// ---------------------------------------------------------------------------
+
+/// 拓展包带来的插件 id。
+pub fn extension_plugin_id(extension_id: &str) -> String {
+    plugin_id_from_name(&format!("ext-{extension_id}"))
+}
+
+fn dsh_fingerprint(root: &Path, version: &str) -> String {
+    let modified = |path: PathBuf| {
+        std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0)
+    };
+    format!("{version}|{}|{}", modified(root.join("package.json")), modified(root.to_path_buf()))
+}
+
+impl DshPlugins {
+    /// 让拓展包带来的插件与拓展的启停一致：启用的导入（插件目录或拓展版本变了就重新分析）、停用的停用、
+    /// 拓展删掉的移除，并同步各自的配套拓展包。没有拓展声明 `dsh` 时什么也不做。
+    pub fn sync_extension_plugins(&self, manager: &UserScriptManager, toolchain: &Toolchain) -> anyhow::Result<Value> {
+        let declared = manager.extension_dsh_plugins()?;
+        let registry = self.load()?;
+        let owned: Vec<PluginRecord> = registry.plugins.iter().filter(|plugin| plugin.owner.is_some()).cloned().collect();
+        if declared.is_empty() && owned.is_empty() {
+            return Ok(json!({ "changed": [] }));
+        }
+        let mut changed = Vec::new();
+        let mut errors = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for (key, extension_id, root, enabled, version) in declared {
+            let id = extension_plugin_id(&extension_id);
+            seen.insert(id.clone());
+            let fingerprint = dsh_fingerprint(&root, &version);
+            let existing = registry.plugins.iter().find(|plugin| plugin.id == id);
+            let outcome = (|| -> anyhow::Result<bool> {
+                if enabled && existing.is_none_or(|plugin| plugin.owner_fingerprint.as_deref() != Some(fingerprint.as_str()) || plugin.root != root.to_string_lossy()) {
+                    self.import_local_as(&root, &id, toolchain)?;
+                    self.update(&id, |record| {
+                        record.owner = Some(key.clone());
+                        record.owner_fingerprint = Some(fingerprint.clone());
+                        record.enabled = true;
+                        Ok(())
+                    })?;
+                } else if existing.is_some_and(|plugin| plugin.enabled != enabled) {
+                    self.set_enabled(&id, enabled)?;
+                } else {
+                    return Ok(false);
+                }
+                self.sync_companion(manager, &id)?;
+                Ok(true)
+            })();
+            match outcome {
+                Ok(true) => changed.push(id),
+                Ok(false) => {}
+                Err(error) => errors.push(json!({ "extension": key, "error": format!("{error:#}") })),
+            }
+        }
+        for plugin in owned.iter().filter(|plugin| !seen.contains(&plugin.id)) {
+            let _ = self.remove_companion(manager, &plugin.id);
+            match self.remove(&plugin.id) {
+                Ok(_) => changed.push(plugin.id.clone()),
+                Err(error) => errors.push(json!({ "plugin": plugin.id, "error": format!("{error:#}") })),
+            }
+        }
+        Ok(json!({ "changed": changed, "errors": errors }))
+    }
+}
+
+/// 用默认状态目录同步拓展包带来的插件（拓展增删启停之后调用，失败只记日志）。
+pub fn sync_extension_plugins_default(manager: &UserScriptManager) -> Value {
+    let plugins = DshPlugins::new(&crate::paths::default_app_state_dir());
+    match plugins.sync_extension_plugins(manager, &Toolchain::detect()) {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log("dsh_plugins.extension_sync_failed", json!({ "error": format!("{error:#}") }));
+            json!({ "error": format!("{error:#}") })
+        }
     }
 }
 

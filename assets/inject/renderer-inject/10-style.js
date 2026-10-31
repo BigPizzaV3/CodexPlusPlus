@@ -2688,7 +2688,7 @@
     const settings = codexPlusSettings();
     const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
     const action = dreamSkinRefreshAction({
-      enabled: !!settings.dreamSkinEnabled,
+      enabled: !!settings.dreamSkinEnabled && !globalThis.__codexPlusBuiltinInactive?.has("dream-skin"),
       paused: !!settings.dreamSkinPaused,
       backendLoaded: !!codexPlusBackendSettingsLoaded,
       externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,

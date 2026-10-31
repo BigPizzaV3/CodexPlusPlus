@@ -1025,8 +1025,9 @@
   function codexPlusModelPickerScan() {
     const state = codexPlusModelPickerGroupsState;
     if (state.disposed) return;
-    const menu = codexPlusModelPickerMenu();
-    const list = codexPlusModelPickerList(menu);
+    // 内置拓展「模型分组」停用时当作没有列表：已分组的列表还原。
+    const menu = globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups") ? null : codexPlusModelPickerMenu();
+    const list = menu ? codexPlusModelPickerList(menu) : null;
     if (!list) {
       if (state.activeList) {
         codexPlusModelPickerClear(state.activeList);

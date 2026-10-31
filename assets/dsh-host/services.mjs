@@ -27,7 +27,7 @@ export const SUPPORTED_SERVICES = new Set([
   'tools', 'systemPrompt', 'logger', 'timer', 'skills',
   'sessions', 'sessionQuery', 'sessionProjections', 'agents', 'llm', 'commands',
   'fs', 'subprocess', 'shell', 'web', 'credentials', 'storageDomain', 'userQuestions', 'agentDefaultModel',
-  'connection',
+  'connection', 'schedule', 'webhookRuntime', 'jobs', 'workspaceRegistry',
 ])
 
 /** 只在钩子常驻进程里才「活」的服务：MCP 进程里拿得到，但没有会话事件流入。 */
@@ -1104,5 +1104,419 @@ export function createStorageDomain(dataDir) {
         },
       }
     },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// schedule：定时往会话里发一条消息
+// ---------------------------------------------------------------------------
+
+export class ScheduleInputError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'ScheduleInputError'
+    this.code = 'SCHEDULE_INPUT'
+  }
+}
+
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+
+/** 某个时区里的「现在」：年月日、时分、星期（0=周日）。 */
+function zonedParts(date, timeZone) {
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone || undefined, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', weekday: 'short',
+    }).formatToParts(date).map((part) => [part.type, part.value]))
+    return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day), hour: Number(parts.hour) % 24, minute: Number(parts.minute), weekday: WEEKDAYS.indexOf(String(parts.weekday).slice(0, 3).toLowerCase()) }
+  } catch {
+    throw new ScheduleInputError(`不认识的时区：${timeZone}`)
+  }
+}
+
+function parseClock(text) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(text ?? ''))
+  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) throw new ScheduleInputError(`时间要写成 HH:MM：${text}`)
+  return { hour: Number(match[1]), minute: Number(match[2]) }
+}
+
+/** 五段 cron（分 时 日 月 星期），支持 * , - /。 */
+function cronField(spec, value, min, max) {
+  return String(spec).split(',').some((part) => {
+    const [range, stepText] = part.split('/')
+    const step = stepText ? Number(stepText) : 1
+    let [from, to] = range === '*' ? [min, max] : range.split('-').map(Number)
+    if (to === undefined) to = stepText ? max : from
+    if (!Number.isFinite(from) || !Number.isFinite(to) || !(step > 0)) throw new ScheduleInputError(`cron 字段不对：${part}`)
+    return value >= from && value <= to && (value - from) % step === 0
+  })
+}
+
+function cronMatches(expression, parts) {
+  const fields = String(expression).trim().split(/\s+/)
+  if (fields.length !== 5) throw new ScheduleInputError('cron 要五段：分 时 日 月 星期')
+  const weekday = fields[4].replace(/\b7\b/g, '0')
+  return cronField(fields[0], parts.minute, 0, 59) && cronField(fields[1], parts.hour, 0, 23)
+    && cronField(fields[2], parts.day, 1, 31) && cronField(fields[3], parts.month, 1, 12) && cronField(weekday, parts.weekday, 0, 6)
+}
+
+/** 记录这一分钟是否该触发。lastFiredAt 防止同一分钟内触发两次。 */
+export function scheduleDue(record, now = new Date()) {
+  const minuteStart = Math.floor(now.getTime() / 60000) * 60000
+  if (record.lastFiredAt && record.lastFiredAt >= minuteStart && record.kind !== 'every') return false
+  switch (record.kind) {
+    case 'after':
+    case 'at':
+      return !record.lastFiredAt && now.getTime() >= record.dueAt
+    case 'every':
+      return now.getTime() >= (record.lastFiredAt || record.scheduledAt) + record.everySeconds * 1000
+    case 'daily': {
+      const parts = zonedParts(now, record.timeZone)
+      return parts.hour === record.hour && parts.minute === record.minute
+    }
+    case 'weekly': {
+      const parts = zonedParts(now, record.timeZone)
+      return parts.hour === record.hour && parts.minute === record.minute && record.weekdays.includes(WEEKDAYS[parts.weekday])
+    }
+    case 'cron':
+      return cronMatches(record.expression, zonedParts(now, record.timeZone))
+    default:
+      return false
+  }
+}
+
+function normalizeSchedule(input, now = Date.now()) {
+  const prompt = String(input?.prompt ?? '').trim()
+  if (!prompt) throw new ScheduleInputError('定时任务要有 prompt')
+  const base = { id: randomUUID(), title: String(input?.title || prompt.slice(0, 40)), prompt, scheduledAt: now }
+  if (input?.after_seconds !== undefined) {
+    const seconds = Number(input.after_seconds)
+    if (!(seconds > 0)) throw new ScheduleInputError('after_seconds 要大于 0')
+    return { ...base, kind: 'after', dueAt: now + seconds * 1000 }
+  }
+  if (input?.at !== undefined) {
+    const at = typeof input.at === 'string' ? Date.parse(input.at) : Date.parse(`${input.at.date}T${input.at.time}`)
+    if (!Number.isFinite(at)) throw new ScheduleInputError(`at 不是合法时间：${JSON.stringify(input.at)}`)
+    return { ...base, kind: 'at', dueAt: at }
+  }
+  if (input?.every_seconds !== undefined) {
+    const seconds = Number(input.every_seconds)
+    if (!(seconds >= 60)) throw new ScheduleInputError('every_seconds 至少 60（Codex++ 每分钟检查一次）')
+    return { ...base, kind: 'every', everySeconds: seconds }
+  }
+  if (input?.daily) {
+    zonedParts(new Date(), input.daily.time_zone)
+    return { ...base, kind: 'daily', ...parseClock(input.daily.time), timeZone: input.daily.time_zone }
+  }
+  if (input?.weekly) {
+    zonedParts(new Date(), input.weekly.time_zone)
+    const weekdays = (input.weekly.weekdays ?? []).map((day) => String(day).slice(0, 3).toLowerCase())
+    if (!weekdays.length || weekdays.some((day) => !WEEKDAYS.includes(day))) throw new ScheduleInputError('weekly.weekdays 要写 mon … sun')
+    return { ...base, kind: 'weekly', ...parseClock(input.weekly.time), timeZone: input.weekly.time_zone, weekdays }
+  }
+  if (input?.cron) {
+    cronMatches(input.cron.expression, zonedParts(new Date(), input.cron.time_zone))
+    return { ...base, kind: 'cron', expression: String(input.cron.expression), timeZone: input.cron.time_zone }
+  }
+  throw new ScheduleInputError('要给 after_seconds、at、every_seconds、daily、weekly、cron 之一')
+}
+
+/** ctx.schedule：记录存在插件数据目录的 schedules.json（MCP 进程与钩子常驻进程共用），由配套拓展包的定时任务每分钟检查。 */
+export function createSchedule(dataDir, emit) {
+  const path = dataDir ? join(dataDir, 'schedules.json') : undefined
+  let memory = { sessions: {}, history: [] }
+  const read = () => {
+    if (!path || !existsSync(path)) return memory
+    try {
+      return JSON.parse(readFileSync(path, 'utf8'))
+    } catch {
+      return { sessions: {}, history: [] }
+    }
+  }
+  const write = (value) => {
+    memory = value
+    if (!path) return
+    mkdirSync(dirname(path), { recursive: true })
+    const temp = `${path}.${process.pid}.tmp`
+    writeFileSync(temp, JSON.stringify(value))
+    renameSync(temp, path)
+  }
+  const changed = () => emit?.('schedule/changed', [])
+  const view = (record) => {
+    const { lastFiredAt, dueAt, everySeconds, hour, minute, timeZone, weekdays, expression, ...rest } = record
+    const time = hour !== undefined ? `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}` : undefined
+    return {
+      ...rest,
+      ...(dueAt !== undefined ? { dueAt: new Date(dueAt).toISOString() } : {}),
+      ...(everySeconds !== undefined ? { every_seconds: everySeconds } : {}),
+      ...(time ? { time, time_zone: timeZone } : {}),
+      ...(weekdays ? { weekdays } : {}),
+      ...(expression ? { expression, time_zone: timeZone } : {}),
+      ...(lastFiredAt ? { lastFiredAt: new Date(lastFiredAt).toISOString() } : {}),
+    }
+  }
+  const service = {
+    async create(sessionId, input) {
+      const record = normalizeSchedule(input)
+      const state = read()
+      const id = String(sessionId ?? '')
+      if (!id) throw new ScheduleInputError('定时任务要指定会话')
+      state.sessions[id] = [...(state.sessions[id] ?? []), record]
+      write(state)
+      changed()
+      return view(record)
+    },
+    async list({ sessionId } = {}) {
+      return (read().sessions[String(sessionId ?? '')] ?? []).map(view)
+    },
+    async catalog() {
+      return Object.entries(read().sessions).flatMap(([sessionId, records]) => records.map((record) => ({ ...view(record), sessionId, status: record.done ? 'done' : 'active' })))
+    },
+    async history({ sessionId } = {}) {
+      return read().history.filter((item) => !sessionId || item.sessionId === sessionId)
+    },
+    async delete({ sessionId, id } = {}) {
+      const state = read()
+      const list = state.sessions[String(sessionId ?? '')] ?? []
+      const rest = list.filter((record) => record.id !== id)
+      if (rest.length === list.length) return false
+      state.sessions[String(sessionId)] = rest
+      write(state)
+      changed()
+      return true
+    },
+    async update({ sessionId, id, ...input } = {}) {
+      const state = read()
+      const list = state.sessions[String(sessionId ?? '')] ?? []
+      const index = list.findIndex((record) => record.id === id)
+      if (index < 0) throw new ScheduleInputError(`没有定时任务 ${id}`)
+      const next = { ...normalizeSchedule({ prompt: list[index].prompt, title: list[index].title, ...input }), id }
+      list[index] = next
+      write(state)
+      changed()
+      return view(next)
+    },
+    /** 每分钟由配套拓展包的后台调用：到点的往会话里发起一轮。返回本次触发的记录。 */
+    async tick(now = new Date(), deliver = (sessionId, prompt) => hostCall('sessions', 'startTurn', { id: sessionId, input: prompt })) {
+      const state = read()
+      const fired = []
+      for (const [sessionId, records] of Object.entries(state.sessions)) {
+        for (const record of records) {
+          if (record.done) continue
+          let due = false
+          try {
+            due = scheduleDue(record, now)
+          } catch {
+            due = false
+          }
+          if (!due) continue
+          record.lastFiredAt = now.getTime()
+          if (record.kind === 'after' || record.kind === 'at') record.done = true
+          const entry = { sessionId, id: record.id, title: record.title, firedAt: now.toISOString() }
+          try {
+            await deliver(sessionId, `[定时任务：${record.title}]\n${record.prompt}`)
+          } catch (error) {
+            entry.error = String(error?.message ?? error)
+          }
+          fired.push(entry)
+          state.history = [...state.history, entry].slice(-200)
+        }
+      }
+      if (fired.length) {
+        write(state)
+        changed()
+      }
+      return fired
+    },
+  }
+  return service
+}
+
+// ---------------------------------------------------------------------------
+// webhookRuntime：外部请求（Codex++ 后台的 /ext/<拓展>/webhook/<kind>）触发新会话
+// ---------------------------------------------------------------------------
+
+export function createWebhookRuntime() {
+  const rules = new Map()
+  return {
+    rules,
+    register(rule) {
+      if (!rule || typeof rule.id !== 'string' || typeof rule.kind !== 'string' || typeof rule.run !== 'function') {
+        throw new TypeError('webhookRuntime.register 需要 { id, kind, run }')
+      }
+      if (rules.has(rule.id)) throw new Error(`webhook 规则 ${rule.id} 已注册`)
+      rules.set(rule.id, rule)
+      return async () => {
+        if (rules.get(rule.id) === rule) rules.delete(rule.id)
+      }
+    },
+    /** 交给匹配的规则；规则返回 { prompt, workspacePath, title, model } 就新建一个 Codex 会话跑 prompt。 */
+    async dispatch(delivery, { signal } = {}) {
+      const started = []
+      for (const rule of rules.values()) {
+        if (rule.kind !== delivery.kind) continue
+        let plan
+        try {
+          plan = await rule.run(delivery, signal ?? new AbortController().signal)
+        } catch (error) {
+          started.push({ rule: rule.id, error: String(error?.message ?? error) })
+          continue
+        }
+        if (!plan?.prompt) {
+          started.push({ rule: rule.id, skipped: true })
+          continue
+        }
+        try {
+          const result = await hostCall('sessions', 'create', {
+            input: String(plan.prompt),
+            options: { ...(plan.workspacePath ? { cwd: String(plan.workspacePath) } : {}), ...(plan.model?.model ? { model: String(plan.model.model) } : {}) },
+          })
+          const threadId = result?.thread?.id
+          if (threadId && plan.title) await hostCall('sessions', 'rename', { id: threadId, name: String(plan.title) }).catch(() => {})
+          started.push({ rule: rule.id, sessionId: threadId ?? null })
+        } catch (error) {
+          started.push({ rule: rule.id, error: String(error?.message ?? error) })
+        }
+      }
+      return started
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// jobs：后台任务登记处（进程内）
+// ---------------------------------------------------------------------------
+
+export function createJobs(emit) {
+  const jobs = new Map()
+  const listeners = new Set()
+  const publish = (job) => {
+    for (const listener of listeners) {
+      try { listener(view(job)) } catch {}
+    }
+    emit?.('jobs/change', [view(job)])
+  }
+  const view = (job) => ({
+    id: job.id, kind: job.kind, label: job.label, owner: job.owner, status: job.status, progress: job.progress,
+    detail: job.detail, startedAt: job.startedAt, finishedAt: job.finishedAt, output: { total: job.output.length, earliest: 0 },
+  })
+  const find = (id, caller) => {
+    const job = jobs.get(id)
+    if (!job) throw new Error(`没有后台任务 ${id}`)
+    if (caller && job.owner && caller !== job.owner) throw new Error(`后台任务 ${id} 不属于 ${caller}`)
+    return job
+  }
+  return {
+    start({ kind, label, owner, outputLimitBytes = 1024 * 1024, run } = {}) {
+      if (typeof run !== 'function') throw new TypeError('jobs.start 需要 run(job)')
+      const job = { id: randomUUID(), kind: String(kind ?? 'job'), label: String(label ?? ''), owner, status: 'running', progress: undefined, detail: undefined, startedAt: Date.now(), finishedAt: undefined, output: '', result: undefined }
+      jobs.set(job.id, job)
+      const handle = run({
+        id: job.id,
+        append(text) {
+          job.output = `${job.output}${String(text ?? '')}`.slice(-outputLimitBytes)
+        },
+        updateProgress(line) {
+          job.progress = String(line ?? '')
+          publish(job)
+        },
+      })
+      job.cancel = handle?.cancel
+      job.done = Promise.resolve(handle?.done).then((outcome) => {
+        if (job.status === 'stopping') job.status = 'killed'
+        else job.status = outcome?.status ?? 'completed'
+        job.detail = outcome?.detail
+        job.result = outcome?.result
+      }, (error) => {
+        job.status = 'failed'
+        job.detail = String(error?.message ?? error)
+      }).finally(() => {
+        job.finishedAt = Date.now()
+        publish(job)
+      })
+      publish(job)
+      return job.id
+    },
+    list: (caller) => [...jobs.values()].filter((job) => !caller || !job.owner || job.owner === caller).map(view),
+    get: (id, caller) => view(find(id, caller)),
+    read: (id, caller) => {
+      const job = find(id, caller)
+      return { chunks: job.output ? [{ text: job.output }] : [], lossy: false, result: job.result, job: view(job) }
+    },
+    readAt(id, from, caller) {
+      const job = find(id, caller)
+      return { chunks: [{ text: job.output.slice(Number(from) || 0) }], lossy: false, job: view(job) }
+    },
+    kill(id, caller, reason) {
+      const job = find(id, caller)
+      if (job.status !== 'running') return 'already-finished'
+      job.status = 'stopping'
+      try { job.cancel?.(reason) } catch {}
+      publish(job)
+      return 'requested'
+    },
+    async wait(id, timeoutMs, caller, signal) {
+      const job = find(id, caller)
+      await Promise.race([job.done, new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(timeoutMs) || 0))), new Promise((resolve) => signal?.addEventListener?.('abort', resolve, { once: true }))])
+      return view(job)
+    },
+    remove(id, caller) {
+      find(id, caller)
+      jobs.delete(id)
+    },
+    events: {
+      subscribe(filter, listener) {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// workspaceRegistry：按 Codex 会话的工作目录归出来的工作区（只读）
+// ---------------------------------------------------------------------------
+
+export function createWorkspaceRegistry() {
+  let cache = []
+  let loaded = null
+  const refresh = async () => {
+    const sessions = (await hostCall('sessionQuery', 'listSessions', { limit: 500 })) ?? []
+    const byPath = new Map()
+    for (const session of sessions) {
+      if (!session?.cwd) continue
+      const item = byPath.get(session.cwd) ?? { id: session.cwd, path: session.cwd, title: session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? session.cwd, createdAt: Infinity, updatedAt: 0, sessionIds: [] }
+      item.sessionIds.push(session.id)
+      item.createdAt = Math.min(item.createdAt, Number(session.createdAt) || 0)
+      item.updatedAt = Math.max(item.updatedAt, Number(session.updatedAt) || 0)
+      byPath.set(session.cwd, item)
+    }
+    cache = [...byPath.values()].map((item) => Object.freeze({ ...item, async status() { return existsSync(item.path) ? 'ok' : 'missing-dir' } }))
+    return cache
+  }
+  const ensure = () => (loaded ??= refresh().catch(() => cache))
+  const readOnly = (name) => async () => {
+    throw new Error(`workspaceRegistry.${name} 在 Codex++ 里不可用：工作区由 Codex 的会话目录归出来，是只读的`)
+  }
+  void ensure()
+  return {
+    list: () => cache,
+    get: (id) => cache.find((item) => item.id === id),
+    async refresh() {
+      loaded = null
+      return ensure()
+    },
+    async resolveByPath(path) {
+      await ensure()
+      return cache.find((item) => item.path === path)
+    },
+    archivedSessionIds: [],
+    pinnedSessionIds: [],
+    create: readOnly('create'),
+    delete: readOnly('delete'),
+    insertBefore: readOnly('insertBefore'),
+    archiveSession: readOnly('archiveSession'),
+    unarchiveSession: readOnly('unarchiveSession'),
+    pinSession: readOnly('pinSession'),
+    unpinSession: readOnly('unpinSession'),
   }
 }

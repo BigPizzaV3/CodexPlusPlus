@@ -589,7 +589,8 @@
   }
 
   function codexPluginMarketplacePatchEnabled() {
-    return codexPlusBackendSettingsLoaded && !!codexPlusSettings().pluginMarketplaceUnlock;
+    return codexPlusBackendSettingsLoaded && !!codexPlusSettings().pluginMarketplaceUnlock
+      && !globalThis.__codexPlusBuiltinInactive?.has("plugin-market-unlock");
   }
 
   let cachedSessionRows = [];

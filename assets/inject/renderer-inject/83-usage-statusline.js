@@ -362,11 +362,30 @@
     codexPlusUsageDiagnoseOnce("usage_statusline_data_partial", missing.join(","), { missing, events: events.length });
   }
 
+  /**
+   * 状态栏放在哪：内置拓展经公开的 composer.below 插槽登记了容器时放进卡片所在输入框的那个容器
+   * （见 96-builtin-extensions.js），否则（单独运行本分片、旧版页面）紧跟在输入卡片后面。
+   */
+  function codexPlusUsageSlotHost(card) {
+    const root = card?.closest?.("[data-codex-composer-root]");
+    if (!root) return null;
+    for (const container of codexPlusUsageState.slotHosts || []) {
+      if (container.isConnected && root.contains(container)) return container;
+    }
+    return null;
+  }
+
+  function codexPlusUsageNodePlaced(node, card) {
+    if (!node?.isConnected) return false;
+    const host = codexPlusUsageSlotHost(card);
+    return host ? node.parentElement === host : node.previousElementSibling === card;
+  }
+
   function codexPlusUsageEnsureNode(card) {
     const host = card?.parentElement;
     if (!host) return null;
     let node = codexPlusUsageState.node;
-    if (node?.isConnected && node.previousElementSibling === card) return node;
+    if (codexPlusUsageNodePlaced(node, card)) return node;
     if (!node) {
       node = document.createElement("div");
       node.id = codexPlusUsageStatusLineId;
@@ -374,7 +393,9 @@
       node.setAttribute("role", "status");
       codexPlusUsageState.node = node;
     }
-    card.insertAdjacentElement("afterend", node);
+    const slotHost = codexPlusUsageSlotHost(card);
+    if (slotHost) slotHost.appendChild(node);
+    else card.insertAdjacentElement("afterend", node);
     return node;
   }
 
@@ -526,7 +547,7 @@
     return !codexPlusUsageState.disposed
       && codexPlusBackendSettingsLoaded
       && codexPlusSettings().usageStatusLine === true
-      && !window.__codexPlusBuiltinInactive?.has("usage-statusline");
+      && !globalThis.__codexPlusBuiltinInactive?.has("usage-statusline");
   }
 
   /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */
@@ -544,7 +565,7 @@
     }
     const changed = codexPlusUsageState.threadId !== threadId
       || !codexPlusUsageState.node?.isConnected
-      || codexPlusUsageState.node.previousElementSibling !== card;
+      || !codexPlusUsageNodePlaced(codexPlusUsageState.node, card);
     const node = codexPlusUsageEnsureNode(card);
     if (!node) return null;
     if (changed) {

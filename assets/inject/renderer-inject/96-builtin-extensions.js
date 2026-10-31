@@ -9,17 +9,17 @@
    *
    * 停用 / 顶替状态由 Codex++ 随用户脚本注入包下发（window.__codexPlusBuiltinExtensionState），
    * 热重载时更新。功能的开关检查在注入早期（本分片执行前）、以及只抽单个分片的测试里也会被调用，所以只记
-   * 「停用的」：window.__codexPlusBuiltinInactive 里没有的 id 都算启用，功能侧写成
-   * `!window.__codexPlusBuiltinInactive?.has("<id>")`。实例卸载时加进集合，装上时移出。
+   * 「停用的」：globalThis.__codexPlusBuiltinInactive 里没有的 id 都算启用，功能侧写成
+   * `!globalThis.__codexPlusBuiltinInactive?.has("<id>")`。实例卸载时加进集合，装上时移出。
    */
   function codexPlusBuiltinInactiveIds() {
-    if (!(window.__codexPlusBuiltinInactive instanceof Set)) window.__codexPlusBuiltinInactive = new Set();
-    return window.__codexPlusBuiltinInactive;
+    if (!(globalThis.__codexPlusBuiltinInactive instanceof Set)) globalThis.__codexPlusBuiltinInactive = new Set();
+    return globalThis.__codexPlusBuiltinInactive;
   }
 
   /** 内置拓展是否在用（没被停用、没被顶替）。 */
   function codexPlusBuiltinExtensionActive(id) {
-    return !window.__codexPlusBuiltinInactive?.has(id);
+    return !globalThis.__codexPlusBuiltinInactive?.has(id);
   }
 
   /**
@@ -29,15 +29,19 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet() },
-      { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.() },
+      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet(), apply: codexPlusAgentPetExtension },
+      { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
       { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
       { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects() },
       { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons() },
       { id: "history-turn-recovery", name: "历史轮次补全" },
       { id: "capacity-auto-retry", name: "容量不足自动重试" },
-      { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.() },
+      { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.(), apply: codexPlusProxyStatusExtension },
+      { id: "session-share", name: "会话分享", sync: () => installSessionShareButton() },
+      { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.scan?.() },
+      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin() },
+      { id: "plugin-market-unlock", name: "插件市场解锁" },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
     ];
@@ -105,6 +109,57 @@
       disabled: state.disabled.has(id),
       replacedBy: state.replacedBy[id] || null,
     }));
+  }
+
+  /** Agent 桌宠：经公开的 overlay 插槽拿容器，桌宠挂在里面（拖动、按压的逻辑在 97-agent-pet.js）。 */
+  function codexPlusAgentPetExtension(ctx) {
+    ctx.registerSlot({
+      slot: "overlay",
+      order: 10,
+      render: ({ container }) => {
+        codexPlusAgentPet.host = container;
+        runScanStep(syncCodexPlusAgentPet);
+        return () => {
+          if (codexPlusAgentPet.host === container) codexPlusAgentPet.host = null;
+          runScanStep(syncCodexPlusAgentPet);
+        };
+      },
+    });
+  }
+
+  /** 用量状态栏：经公开的 composer.below 插槽拿每个输入框下方的容器，状态栏放进当前输入框的那个。 */
+  function codexPlusUsageStatusLineExtension(ctx) {
+    codexPlusUsageState.slotHosts ||= new Set();
+    ctx.registerSlot({
+      slot: "composer.below",
+      order: 0,
+      render: ({ container }) => {
+        codexPlusUsageState.slotHosts.add(container);
+        window.__codexPlusUsageStatusLineRuntime?.sync?.();
+        return () => {
+          codexPlusUsageState.slotHosts.delete(container);
+          if (codexPlusUsageState.node?.parentElement === container) codexPlusUsageState.node.remove();
+          window.__codexPlusUsageStatusLineRuntime?.sync?.();
+        };
+      },
+    });
+  }
+
+  /** 请求状态条：经公开的 composer.above 插槽拿每个输入框上方的容器。 */
+  function codexPlusProxyStatusExtension(ctx) {
+    codexPlusProxyStatusState.slotHosts ||= new Set();
+    ctx.registerSlot({
+      slot: "composer.above",
+      order: 0,
+      render: ({ container }) => {
+        codexPlusProxyStatusState.slotHosts.add(container);
+        window.__codexPlusProxyRequestStatusRuntime?.refresh?.();
+        return () => {
+          codexPlusProxyStatusState.slotHosts.delete(container);
+          if (codexPlusProxyStatusState.node?.parentElement === container) codexPlusProxyStatusState.node.remove();
+        };
+      },
+    });
   }
 
   /**

@@ -16393,6 +16393,10 @@ function builtinExtensionText(builtin: BuiltinExtension): { name: string; descri
     case "history-turn-recovery": return { name: t("历史轮次补全"), description: t("打开长会话时补齐没加载出来的早期轮次") };
     case "capacity-auto-retry": return { name: t("容量不足自动重试"), description: t("上游提示容量不足时自动重发") };
     case "proxy-request-status": return { name: t("请求状态条"), description: t("输入框上方显示经 Codex++ 代理的请求进行到哪一步") };
+    case "session-share": return { name: t("会话分享"), description: t("会话顶栏的分享按钮") };
+    case "model-picker-groups": return { name: t("模型分组"), description: t("模型选择器里按供应商分组折叠") };
+    case "dream-skin": return { name: t("梦皮主题"), description: t("Codex 窗口的梦皮主题与壁纸") };
+    case "plugin-market-unlock": return { name: t("插件市场解锁"), description: t("解锁 Codex 插件市场（停用后刷新页面生效）") };
     case "instance-identity": return { name: t("多开身份提示"), description: t("多开实例顶部显示实例名（用公开拓展接口写成）") };
     case "session-title-hook": return { name: t("会话标题中间件"), description: t("首轮结束后按拓展的 session/title 中间件改会话标题") };
     default: return { name: builtin.name, description: builtin.description };

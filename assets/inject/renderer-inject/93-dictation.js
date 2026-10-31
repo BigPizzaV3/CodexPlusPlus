@@ -13,7 +13,7 @@
   function codexPlusDictationEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
       && codexPlusBackendSettings.dictation?.enabled === true
-      && !window.__codexPlusBuiltinInactive?.has("dictation");
+      && !globalThis.__codexPlusBuiltinInactive?.has("dictation");
   }
 
   function codexPlusDictationEditor(scope) {

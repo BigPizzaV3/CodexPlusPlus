@@ -27,13 +27,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createConnection, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EVENT_HOOKS, Host, INSTRUCTIONS_TARGET, MIRROR_HOOKS, MIRROR_TARGET, errorText } from './host.mjs'
-import { messageText } from './services.mjs'
+import { createSchedule, messageText } from './services.mjs'
 
 const BRIDGE_FILE = fileURLToPath(import.meta.url)
 const HOST_FILE = fileURLToPath(new URL('./host.mjs', import.meta.url))
@@ -188,6 +188,8 @@ const TRANSLATE = {
     const exec = makeExec(payload, agent, signal)
     const result = makeResult(payload?.tool_response)
     const decision = await host.waterfall('tools/post-execute', [exec, result], async () => ({ kind: 'accept' }))
+    // 改写结果（accept 带 content / value，或 block）钩子表达不了：记下来，下一次模型请求在网关里换进 input。
+    rememberPostDecision(host, exec.callId, decision)
     host.emitEvent('tools/result', [exec, result])
     const contexts = [messagesText(decision?.additionalContexts), ...sinkContexts(sink)]
     if (decision?.kind === 'block') {
@@ -296,35 +298,274 @@ export function appendInstructions(body, text) {
 /** 请求属于哪个 Codex 会话：Codex 把会话 id 放在 prompt_cache_key。 */
 const sessionIdOf = (body) => (typeof body?.prompt_cache_key === 'string' ? body.prompt_cache_key : '')
 
-/** 网关请求中间件：插件的提示词追加到 instructions，agent/request 改模型与推理强度。返回新 body 或 null。 */
-async function gatewayFor(host, body, context = {}) {
+/** 网关请求中间件（提示词）：插件的片段（含 system-prompt/assemble 改写）追加到 instructions。 */
+async function instructionsFor(host, body) {
   if (!body || typeof body !== 'object') return null
-  let next = body
-  let changed = false
   const agent = sessionIdOf(body) ? host.agentRegistry.get(sessionIdOf(body)) : undefined
-  const prompt = await host.assemblePromptAsync({ agent, modelSelection: { model: body.model } })
-  const appended = appendInstructions(next, prompt)
-  if (appended) {
-    next = appended
-    changed = true
+  return appendInstructions(body, await host.assemblePromptAsync({ agent, modelSelection: { model: body.model } }))
+}
+
+// ---- tools/post-execute 的改写结果 ----
+
+const MAX_POST_DECISIONS = 2000
+const OUTPUT_TYPES = new Set(['function_call_output', 'custom_tool_call_output'])
+
+/** 只记会改结果的决定（accept 带 content / value，或 block）；按调用 id 落盘，常驻进程重启后历史请求里的改写照旧。 */
+function rememberPostDecision(host, callId, decision) {
+  if (!callId || !decision || typeof decision !== 'object') return
+  let replacement
+  if (decision.kind === 'block') replacement = blocksText(decision.feedback) || '被 dsh 插件拦下'
+  else if (decision.kind === 'accept' && decision.content !== undefined) replacement = blocksText(decision.content)
+  else if (decision.kind === 'accept' && decision.value !== undefined) replacement = typeof decision.value === 'string' ? decision.value : JSON.stringify(decision.value)
+  if (replacement === undefined) return
+  const store = postDecisions(host)
+  store.map.delete(callId)
+  store.map.set(callId, replacement)
+  while (store.map.size > MAX_POST_DECISIONS) store.map.delete(store.map.keys().next().value)
+  if (store.path) {
+    try {
+      mkdirSync(dirname(store.path), { recursive: true })
+      writeFileSync(store.path, JSON.stringify(Object.fromEntries(store.map)))
+    } catch (error) {
+      console.error(`[dsh-bridge] 工具结果改写记录写入失败：${errorText(error)}`)
+    }
   }
-  if (host.hasListeners('agent/request')) {
-    const model = String(next.model ?? '')
-    const slash = model.indexOf('/')
-    const current = { provider: slash > 0 ? model.slice(0, slash) : 'codex', model, reasoningEffort: next.reasoning?.effort }
-    const controller = new AbortController()
-    const decided = await host.waterfall('agent/request', [{ agent, turn: agent?.session.turn ?? 0, step: Number(context?.step?.index) || 1, signal: controller.signal }], async () => current)
+}
+
+function postDecisions(host) {
+  if (host.postDecisions) return host.postDecisions
+  const path = host.mirror.dataDir ? join(host.mirror.dataDir, 'post-decisions.json') : undefined
+  let map = new Map()
+  if (path && existsSync(path)) {
+    try {
+      map = new Map(Object.entries(JSON.parse(readFileSync(path, 'utf8'))))
+    } catch {
+      map = new Map()
+    }
+  }
+  host.postDecisions = { path, map, seen: new Set() }
+  return host.postDecisions
+}
+
+/** 本轮（最后一条用户消息之后）的工具调用与结果，给没经过钩子的结果补跑 tools/post-execute。 */
+function currentTurnItems(input) {
+  let start = 0
+  input.forEach((item, index) => {
+    if (item?.role === 'user' && (item.type === undefined || item.type === 'message')) start = index + 1
+  })
+  return input.slice(start)
+}
+
+function outputText(output) {
+  if (typeof output === 'string') return output
+  if (Array.isArray(output)) return output.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('')
+  return JSON.stringify(output ?? null)
+}
+
+/** 网关请求中间件（每一步）：agent/request 改模型、按步的 agent/pre-step、tools/post-execute 改写结果、排下的上下文。 */
+async function stepFor(host, body, context = {}) {
+  if (!body || typeof body !== 'object' || !Array.isArray(body.input)) return null
+  const step = context?.step ?? {}
+  const sessionId = sessionIdOf(body)
+  const agent = host.agentRegistry.get(sessionId)
+  let input = body.input
+  let changed = false
+  let next = body
+  const controller = new AbortController()
+  try {
+    // 1. 本轮里还没经过钩子的工具结果（钩子没被信任、或在别的进程里）补跑一次 tools/post-execute。
+    const store = postDecisions(host)
+    if (host.hasListeners('tools/post-execute')) {
+      const calls = new Map()
+      for (const item of currentTurnItems(input)) {
+        if (item?.type === 'function_call' || item?.type === 'custom_tool_call') calls.set(item.call_id, item)
+        if (!OUTPUT_TYPES.has(item?.type) || !item.call_id || store.map.has(item.call_id) || store.seen.has(item.call_id)) continue
+        store.seen.add(item.call_id)
+        const call = calls.get(item.call_id)
+        let args = call?.arguments ?? call?.input ?? {}
+        try { args = typeof args === 'string' ? JSON.parse(args) : args } catch {}
+        const name = String(call?.name ?? '')
+        const exec = { callId: item.call_id, rootCallId: item.call_id, name: name === 'shell' || name === 'exec_command' ? 'bash' : name, arguments: args, agent, signal: controller.signal, token: Symbol('codexpp.gateway') }
+        const text = outputText(item.output)
+        const result = Object.freeze({ isError: false, value: text, content: [{ type: 'text', text }] })
+        const decision = await host.waterfall('tools/post-execute', [exec, result], async () => ({ kind: 'accept' }))
+        rememberPostDecision(host, item.call_id, decision)
+      }
+    }
+    // 2. 把记下的改写换进 input（每次请求都带着整段历史，所以每次都换）。
+    if (store.map.size) {
+      const replaced = input.map((item) => {
+        if (!OUTPUT_TYPES.has(item?.type) || !store.map.has(item.call_id)) return item
+        const text = store.map.get(item.call_id)
+        return outputText(item.output) === text ? item : { ...item, output: text }
+      })
+      if (replaced.some((item, index) => item !== input[index])) {
+        input = replaced
+        changed = true
+      }
+    }
+    // 3. 排下的上下文与按步的 agent/pre-step：第一步已由 UserPromptSubmit 钩子处理过 pre-step，这里只补排下的上下文。
+    const pending = agent ? agent.takePending() : []
+    let messages = pending
+    if (!step.firstStep && host.hasListeners('agent/pre-step')) {
+      const decision = await host.waterfall('agent/pre-step', [{ agent, messages: pending, turn: agent?.session.turn ?? 0, step: Number(step.index) || 1, signal: controller.signal }], async () => ({ kind: 'enter', messages: pending }))
+      if (decision?.kind === 'reject') return { reject: String(decision.reason || '这一步被 dsh 插件拒绝') }
+      messages = Array.isArray(decision?.messages) ? decision.messages : pending
+    }
+    const additions = messages.map(messageText).map((text) => text.trim()).filter(Boolean)
+    if (additions.length) {
+      input = [...input, ...additions.map((text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }))]
+      changed = true
+    }
+    if (changed) next = { ...body, input }
+    // 4. agent/request：改模型、推理强度。
+    if (host.hasListeners('agent/request')) {
+      const model = String(next.model ?? '')
+      const slash = model.indexOf('/')
+      const current = { provider: slash > 0 ? model.slice(0, slash) : 'codex', model, reasoningEffort: next.reasoning?.effort }
+      const decided = await host.waterfall('agent/request', [{ agent, turn: agent?.session.turn ?? 0, step: Number(step.index) || 1, signal: controller.signal }], async () => current)
+      if (decided?.model && decided.model !== current.model) {
+        next = { ...next, model: String(decided.model) }
+        changed = true
+      }
+      if (decided?.reasoningEffort && decided.reasoningEffort !== current.reasoningEffort) {
+        next = { ...next, reasoning: { ...(next.reasoning ?? {}), effort: String(decided.reasoningEffort) } }
+        changed = true
+      }
+    }
+  } finally {
     controller.abort()
-    if (decided?.model && decided.model !== current.model) {
-      next = { ...next, model: String(decided.model) }
-      changed = true
-    }
-    if (decided?.reasoningEffort && decided.reasoningEffort !== current.reasoningEffort) {
-      next = { ...next, reasoning: { ...(next.reasoning ?? {}), effort: String(decided.reasoningEffort) } }
-      changed = true
-    }
   }
   return changed ? next : null
+}
+
+/** 旧版配套拓展包只有一个网关脚本：提示词与每一步的处理一起做。 */
+async function gatewayFor(host, body, context = {}) {
+  const withPrompt = (await instructionsFor(host, body)) ?? body
+  const stepped = await stepFor(host, withPrompt, context)
+  if (stepped?.reject) return stepped
+  const result = stepped ?? withPrompt
+  return result === body ? null : result
+}
+
+// ---- llm/stream 与 agent/assistant-stream：网关响应流 ----
+
+/** Responses SSE 事件 → dsh 流式块（只翻文字、推理、工具调用参数、用量与结束）。 */
+function chunksOfEvent(event, state) {
+  const chunks = []
+  const index = Number(event?.output_index ?? 0)
+  const start = (blockType) => {
+    if (state.started.has(index)) return
+    state.started.add(index)
+    chunks.push({ type: 'block-start', index, blockType })
+  }
+  switch (event?.type) {
+    case 'response.output_text.delta':
+      start('text')
+      chunks.push({ type: 'text-delta', index, text: String(event.delta ?? '') })
+      break
+    case 'response.reasoning_summary_text.delta':
+    case 'response.reasoning_text.delta':
+      start('reasoning')
+      chunks.push({ type: 'reasoning-delta', index, text: String(event.delta ?? '') })
+      break
+    case 'response.function_call_arguments.delta':
+      start('tool-call')
+      chunks.push({ type: 'tool-call-delta', index, id: String(event.item_id ?? ''), argumentsDelta: String(event.delta ?? '') })
+      break
+    case 'response.completed':
+    case 'response.incomplete': {
+      const usage = event.response?.usage
+      if (usage) chunks.push({ type: 'usage', usage: { inputTokens: Number(usage.input_tokens ?? 0), outputTokens: Number(usage.output_tokens ?? 0), totalTokens: Number(usage.total_tokens ?? 0) || undefined } })
+      chunks.push({ type: 'finish', reason: { kind: event.type === 'response.completed' ? 'stop' : 'max-tokens' } })
+      break
+    }
+    case 'response.failed':
+      chunks.push({ type: 'finish', reason: { kind: 'error', failure: { message: String(event.response?.error?.message ?? 'failed'), code: String(event.response?.error?.code ?? 'ERROR') } } })
+      break
+    default:
+      break
+  }
+  return chunks
+}
+
+/** 一条流在常驻进程里的状态：上游块排进队列，插件的 llm/stream 链从队列里读、产出的块攒进 outbox。 */
+function openStreamState(host, { sessionId, model }) {
+  const queue = []
+  let closed = false
+  let wake = null
+  let idleWaiter = null
+  const outbox = []
+  const agent = host.agentRegistry.get(sessionId)
+  const attemptId = `codexpp-${Date.now().toString(36)}`
+  let revision = 0
+  const frame = (value) => host.emitEvent('agent/assistant-stream', [{ agent, frame: { attemptId, revision: revision++, ...value } }])
+  const upstream = (async function* () {
+    for (;;) {
+      if (queue.length) {
+        yield queue.shift()
+        continue
+      }
+      if (closed) return
+      const resume = idleWaiter
+      idleWaiter = null
+      resume?.()
+      await new Promise((resolve) => {
+        wake = resolve
+      })
+    }
+  })()
+  const state = { started: new Set(), outbox, done: false, error: null }
+  frame({ type: 'start', turn: agent?.session.turn ?? 0, step: 1 })
+  const options = Object.freeze({ provider: 'codex', model: String(model ?? ''), messages: [], sessionId })
+  const output = host.hasListeners('llm/stream')
+    ? host.waterfallStream('llm/stream', options, () => upstream)
+    : upstream
+  state.pump = (async () => {
+    try {
+      let index = 0
+      for await (const chunk of output) {
+        outbox.push(chunk)
+        frame({ type: 'chunk', index: index++, time: Date.now(), chunk })
+      }
+    } catch (error) {
+      state.error = errorText(error)
+    } finally {
+      state.done = true
+      frame({ type: 'end', index: 0, outcome: { kind: 'abandoned' } })
+      const resume = idleWaiter
+      idleWaiter = null
+      resume?.()
+    }
+  })()
+  /** 喂一批上游块，等插件把它们消化完（又在等下一块）或整条链结束，交回这期间产出的块。 */
+  state.feed = async (chunks, end) => {
+    queue.push(...chunks)
+    if (end) closed = true
+    const idle = new Promise((resolve) => {
+      idleWaiter = resolve
+    })
+    const resume = wake
+    wake = null
+    resume?.()
+    if (end) await state.pump
+    else await Promise.race([idle, state.pump])
+    return outbox.splice(0)
+  }
+  return state
+}
+
+async function streamFor(host, message) {
+  host.streams ??= new Map()
+  if (message.phase === 'start') {
+    host.streams.set(message.rid, openStreamState(host, message))
+    return { rewrite: host.hasListeners('llm/stream') }
+  }
+  const state = host.streams.get(message.rid)
+  if (!state) return { error: '流已结束' }
+  const chunks = await state.feed(message.chunks ?? [], message.phase === 'end')
+  if (message.phase === 'end') host.streams.delete(message.rid)
+  return { chunks, error: state.error }
 }
 
 /** 网关失败重试：agent/request-error 返回 { kind: 'retry' } 就重发。 */
@@ -335,6 +576,30 @@ async function errorFor(host, error) {
   const action = await host.waterfall('agent/request-error', [{ agent: undefined, turn: 0, step: 1, provider: 'codex', failure, retryPolicy: undefined, signal: controller.signal }], async () => undefined)
   controller.abort()
   return action?.kind === 'retry' ? { retry: true, delayMs: Number(action.delayMs) || 1000 } : null
+}
+
+/** /webhook/<kind> 的请求 → dsh 的 delivery，交给插件的 webhook 规则。 */
+async function webhookFor(host, request = {}) {
+  const match = /\/webhook\/(.+)$/.exec(String(request.path ?? ''))
+  if (!match) return { status: 404, body: '路径要写成 /webhook/<kind>' }
+  let event = request.json
+  if (event === undefined) {
+    try {
+      event = JSON.parse(String(request.body ?? 'null'))
+    } catch {
+      event = String(request.body ?? '')
+    }
+  }
+  const headers = request.headers ?? {}
+  const delivery = {
+    kind: decodeURIComponent(match[1]),
+    source: 'codexpp-http',
+    deliveryId: String(headers['x-github-delivery'] ?? headers['x-request-id'] ?? `codexpp-${Date.now()}`),
+    event,
+    receivedAt: Date.now(),
+  }
+  const started = await host.webhooks.dispatch(delivery)
+  return { status: started.length ? 202 : 404, json: { kind: delivery.kind, started } }
 }
 
 async function commandFor(host, { name, rawInput, sessionId }) {
@@ -472,10 +737,14 @@ async function runDaemon(configPath) {
       return { restart: true }
     }
     if (message.kind === 'hook') return { output: await dispatchHook(host, message.event, message.payload) }
-    if (message.kind === 'instructions' || message.kind === 'gateway') return { output: await gatewayFor(host, message.body, message.context) }
+    if (message.kind === 'instructions') return { output: await instructionsFor(host, message.body) }
+    if (message.kind === 'step') return { output: await stepFor(host, message.body, message.context) }
+    if (message.kind === 'gateway') return { output: await gatewayFor(host, message.body, message.context) }
+    if (message.kind === 'stream') return { output: await streamFor(host, message) }
     if (message.kind === 'error') return { output: await errorFor(host, message.error) }
     if (message.kind === 'command') return { output: await commandFor(host, message) }
     if (message.kind === 'fetch') return { output: await host.fetchRoute(message.request) }
+    if (message.kind === 'webhook') return { output: await webhookFor(host, message.request) }
     return { error: `不认识的请求 ${message.kind}` }
   }
   server.on('connection', (socket) => {
@@ -560,14 +829,125 @@ export async function runHook(config, hookEvent, payload) {
 export async function requestGateway(config, body, context = {}) {
   const plugin = readPlugin(config)
   if (!plugin) return null
-  const rows = [...new Set([...mappedRows(plugin, INSTRUCTIONS_TARGET), ...mappedRows(plugin, 'gateway:instructions'), ...mappedRows(plugin, 'gateway:request')])]
+  const rows = [...new Set([INSTRUCTIONS_TARGET, 'gateway:instructions', 'gateway:request', 'gateway:step', MIRROR_TARGET].flatMap((target) => mappedRows(plugin, target)))]
   if (!rows.length) return null
   const { step } = context ?? {}
   return handle(config, plugin, mappedRows(plugin), { kind: 'gateway', body, context: { step } }, (host) => gatewayFor(host, body, { step }))
 }
 
-/** 旧版配套拓展包的入口名。 */
-export const requestInstructions = (config, body) => requestGateway(config, body)
+/** 网关请求中间件入口（提示词）：插件的片段追加到 instructions。 */
+export async function requestInstructions(config, body) {
+  const plugin = readPlugin(config)
+  if (!plugin) return null
+  const rows = [...new Set([...mappedRows(plugin, INSTRUCTIONS_TARGET), ...mappedRows(plugin, 'gateway:instructions')])]
+  if (!rows.length) return null
+  return handle(config, plugin, mappedRows(plugin), { kind: 'instructions', body }, (host) => instructionsFor(host, body))
+}
+
+/** 网关请求中间件入口（每一步）：agent/request、按步的 agent/pre-step、改写工具结果、排下的上下文。 */
+export async function requestStep(config, body, context = {}) {
+  const plugin = readPlugin(config)
+  if (!plugin) return null
+  const rows = [...new Set(['gateway:step', 'gateway:request', MIRROR_TARGET].flatMap((target) => mappedRows(plugin, target)))]
+  if (!rows.length) return null
+  const { step } = context ?? {}
+  return handle(config, plugin, mappedRows(plugin), { kind: 'step', body, context: { step } }, (host) => stepFor(host, body, { step }))
+}
+
+/**
+ * 网关响应流中间件入口：上游 Responses 事件翻成 dsh 流式块交给插件（llm/stream 改写、agent/assistant-stream 观察）。
+ * 插件改写了文字时，文字增量换成插件产出的，收尾事件里的完整文本一并改；只观察时原样放行。
+ * 只经常驻进程（流要跨多次往返保持状态）；常驻进程起不来时原样放行。
+ */
+export async function* responseStream(config, context, upstream) {
+  const plugin = readPlugin(config)
+  if (typeof config !== 'string' || !plugin || !mappedRows(plugin, 'gateway:response').length) {
+    yield* upstream
+    return
+  }
+  const rid = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const call = (message) => viaDaemon(config, plugin, { kind: 'stream', rid, ...message }).then((reply) => reply.output ?? {})
+  let opened
+  try {
+    opened = await call({ phase: 'start', sessionId: context?.request?.sessionId ?? '', model: context?.request?.model ?? '' })
+  } catch (error) {
+    console.error(`[dsh-bridge] 响应流交给插件失败：${errorText(error)}`)
+    yield* upstream
+    return
+  }
+  const rewrite = Boolean(opened?.rewrite)
+  const state = { started: new Set() }
+  const meta = new Map()
+  const texts = new Map()
+  const held = []
+  // 插件产出的块 → Responses 事件（只翻文字增量，其余块只用于观察）。
+  const emit = (chunks) => {
+    const events = []
+    for (const chunk of chunks ?? []) {
+      if (chunk?.type !== 'text-delta') continue
+      const info = meta.get(Number(chunk.index)) ?? { item_id: '', content_index: 0 }
+      texts.set(Number(chunk.index), `${texts.get(Number(chunk.index)) ?? ''}${chunk.text ?? ''}`)
+      events.push({ type: 'response.output_text.delta', item_id: info.item_id, output_index: Number(chunk.index), content_index: info.content_index, delta: String(chunk.text ?? '') })
+    }
+    return events
+  }
+  // 收尾事件里的完整文本换成插件产出的。
+  const fixText = (event) => {
+    const index = Number(event?.output_index)
+    const patchItem = (item, at) => {
+      if (!item || item.type !== 'message' || !texts.has(at)) return item
+      return { ...item, content: (item.content ?? []).map((part) => (part?.type === 'output_text' ? { ...part, text: texts.get(at) } : part)) }
+    }
+    switch (event?.type) {
+      case 'response.output_text.done':
+        return texts.has(index) ? { ...event, text: texts.get(index) } : event
+      case 'response.content_part.done':
+        return texts.has(index) && event.part?.type === 'output_text' ? { ...event, part: { ...event.part, text: texts.get(index) } } : event
+      case 'response.output_item.done':
+        return { ...event, item: patchItem(event.item, index) }
+      case 'response.completed':
+      case 'response.incomplete':
+        return event.response ? { ...event, response: { ...event.response, output: (event.response.output ?? []).map((item, at) => patchItem(item, at)) } } : event
+      default:
+        return event
+    }
+  }
+  const isFinal = (event) => /\.done$/.test(String(event?.type)) || ['response.completed', 'response.incomplete', 'response.failed'].includes(event?.type)
+  let failed = false
+  for await (const event of upstream) {
+    if (event?.type === 'response.output_text.delta' || event?.type === 'response.content_part.added') {
+      meta.set(Number(event.output_index ?? 0), { item_id: event.item_id ?? '', content_index: Number(event.content_index ?? 0) })
+    }
+    let chunks = []
+    if (!failed) {
+      try {
+        const reply = await call({ phase: 'event', chunks: chunksOfEvent(event, state) })
+        chunks = reply.chunks ?? []
+      } catch (error) {
+        console.error(`[dsh-bridge] 响应流中途交给插件失败，剩下的原样放行：${errorText(error)}`)
+        failed = true
+      }
+    }
+    if (!rewrite || failed) {
+      yield* held.splice(0)
+      yield event
+      continue
+    }
+    yield* emit(chunks)
+    // 文字增量由插件给；收尾事件等插件产出完再发（里面的完整文本要换成插件的）。
+    if (event?.type === 'response.output_text.delta') continue
+    if (isFinal(event)) held.push(event)
+    else yield event
+  }
+  let tail = []
+  try {
+    tail = (await call({ phase: 'end', chunks: [] })).chunks ?? []
+  } catch (error) {
+    console.error(`[dsh-bridge] 响应流收尾失败：${errorText(error)}`)
+  }
+  if (rewrite && !failed) yield* emit(tail)
+  for (const event of held) yield rewrite && !failed ? fixText(event) : event
+}
 
 /** 网关失败重试入口：返回 { retry, delayMs } 或 null。 */
 export async function requestError(config, error) {
@@ -581,6 +961,20 @@ export async function runFetch(config, request) {
   const plugin = readPlugin(config)
   if (!plugin || !mappedRows(plugin, 'connection').length) return { status: 503, headers: {}, body: JSON.stringify({ ok: false, error: { message: '插件已停用' } }) }
   return handle(config, plugin, mappedRows(plugin), { kind: 'fetch', request }, (host) => host.fetchRoute(request))
+}
+
+/** 定时任务入口（配套拓展包的后台每分钟调一次）：到点的往会话里发起一轮。不需要加载插件。 */
+export async function runTick(config) {
+  const plugin = readPlugin(config)
+  if (!plugin || !mappedRows(plugin, 'schedule').length) return []
+  return createSchedule(dataDirOf(plugin)).tick()
+}
+
+/** webhook 入口（配套拓展包后台的 HTTP 路由）：返回 { status, json | body }。 */
+export async function runWebhook(config, request) {
+  const plugin = readPlugin(config)
+  if (!plugin || !mappedRows(plugin, 'webhook').length) return { status: 503, body: '插件已停用' }
+  return handle(config, plugin, mappedRows(plugin), { kind: 'webhook', request }, (host) => webhookFor(host, request))
 }
 
 /** 页面斜杠命令入口（配套拓展包的后台调用）：返回 dsh 的 CommandResult。 */

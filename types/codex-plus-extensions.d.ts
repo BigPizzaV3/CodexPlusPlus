@@ -159,6 +159,9 @@ interface CodexPlusExtensionApi {
   registerShortcut(definition: CodexPlusShortcutDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerTheme(definition: CodexPlusThemeDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   ask(question: CodexPlusAskQuestion): Promise<{ value: unknown; text: string | null } | null>;
+  registerFloatingTab(definition: CodexPlusFloatingTabDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerToolView(definition: CodexPlusToolViewDefinition, options?: CodexPlusRegisterOptions): CodexPlusSlotHandle;
+  registerSettingsSection(definition: CodexPlusSettingsSectionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
 
   /** 在会话行「更多操作」里加一项。 */
   registerRowAction(
@@ -266,7 +269,7 @@ interface CodexPlusSidePanelDefinition {
 }
 
 type CodexPlusSlotName =
-  | "composer.above" | "composer.below" | "composer.left" | "composer.right" | "home.above"
+  | "composer.above" | "composer.below" | "composer.left" | "composer.right" | "composer.model" | "home.above" | "settings.nav"
   | "thread.top" | "thread.bottom" | "turn.after" | "activity.after" | "header.title" | "titlebar" | "approval"
   | "sidebar.top" | "sidebar.bottom" | "sidebar.section" | "sessionRow.prefix" | "sessionRow.suffix" | "projectRow.suffix"
   | "overlay";
@@ -282,9 +285,43 @@ interface CodexPlusSlotDefinition {
    */
   render(context: {
     container: HTMLElement; slot: CodexPlusSlotName; turnKey?: string; sessionId?: string; title?: string;
-    kind?: "command" | "toolCall" | "fileChange" | "reasoning" | "error" | "other" | "form" | "card"; itemIds?: string[]; text?: string;
-    projectId?: string; label?: string; section?: string;
+    kind?: "command" | "toolCall" | "fileChange" | "reasoning" | "plan" | "error" | "other" | "form" | "card"; itemIds?: string[]; text?: string;
+    projectId?: string; label?: string; section?: string; sampleClass?: string;
   }): void | (() => void);
+}
+
+interface CodexPlusFloatingTabDefinition {
+  title: string;
+  /** 单个字形或 SVG 字符串。 */
+  icon?: string;
+  order?: number;
+  render(context: { container: HTMLElement; close(): void }): void | (() => void);
+}
+
+interface CodexPlusToolCall {
+  kind: "command" | "toolCall" | "fileChange" | "reasoning" | "plan" | "error" | "other";
+  itemIds: string[];
+  text: string;
+  sessionId: string;
+  callId: string | null;
+  name: string;
+  input: unknown;
+  output: unknown;
+}
+
+interface CodexPlusToolViewDefinition {
+  /** 工具名：字符串（整名或正则字符串）或正则。不给时不按工具名过滤。 */
+  tools?: Array<string | RegExp>;
+  kinds?: CodexPlusToolCall["kind"][];
+  order?: number;
+  render(context: { container: HTMLElement; call: CodexPlusToolCall }): void | (() => void);
+}
+
+interface CodexPlusSettingsSectionDefinition {
+  title: string;
+  icon?: string;
+  order?: number;
+  render(context: { container: HTMLElement; close: () => void }): void | (() => void);
 }
 
 /** 撤销函数，另带 refresh()：强制所有位置重画该项。 */
@@ -562,6 +599,9 @@ interface CodexPlusExtensionContext {
   registerTheme(definition: CodexPlusThemeDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   /** 弹对话框问用户；取消或超时为 null。 */
   ask(question: CodexPlusAskQuestion): Promise<{ value: unknown; text: string | null } | null>;
+  registerFloatingTab(definition: CodexPlusFloatingTabDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerToolView(definition: CodexPlusToolViewDefinition, options?: CodexPlusRegisterOptions): CodexPlusSlotHandle;
+  registerSettingsSection(definition: CodexPlusSettingsSectionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
   currentSessionId(): string;
 

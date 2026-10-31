@@ -6,6 +6,17 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   // 内置拓展
+  "模型分组": "Model grouping",
+  "模型选择器里按供应商分组折叠": "Groups models by provider in the model picker, with collapsible groups",
+  "会话分享": "Session share",
+  "会话顶栏的分享按钮": "The share button in the session header",
+  "梦皮主题": "Dream skin",
+  "Codex 窗口的梦皮主题与壁纸": "Dream skin theme and wallpaper for the Codex window",
+  "解锁 Codex 插件市场（停用后刷新页面生效）": "Unlocks the Codex plugin market (refresh the page after disabling)",
+  "每一步的模型请求经网关交给插件（换模型、按步准入、改写工具结果）": "Every model request step goes through the plugin via the gateway (model switching, per-step admission, tool result rewriting)",
+  "回复流经网关交给插件（llm/stream、agent/assistant-stream）": "The response stream goes through the plugin via the gateway (llm/stream, agent/assistant-stream)",
+  "每一步的请求 → 网关": "Each request step → gateway",
+  "回复流 → 网关": "Response stream → gateway",
   "内置拓展": "Built-in extensions",
   "Codex++ 自带的功能也挂在拓展内核上：可以单独停用，也可以被声明 replaces 的拓展顶替；功能自己的设置开关照旧生效": "Codex++'s own features run on the extension kernel too: disable any of them here, or let an extension that declares replaces take over. Each feature's own setting still applies.",
   "停用该内置拓展": "Disable this built-in extension",

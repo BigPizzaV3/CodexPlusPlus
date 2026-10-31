@@ -865,6 +865,8 @@ fn request_summary(request: Option<&Value>) -> Value {
             .collect::<Vec<_>>()).unwrap_or_default(),
         "inputItems": input.map(Vec::len).unwrap_or(0),
         "lastUserText": last_user_text,
+        // Codex 把会话 id 放在 prompt_cache_key：中间件据此认出是哪个会话。
+        "sessionId": request.get("prompt_cache_key").cloned().unwrap_or(Value::Null),
     })
 }
 

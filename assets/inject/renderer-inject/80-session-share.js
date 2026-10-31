@@ -305,7 +305,9 @@
   function installSessionShareButton() {
     const existing = document.querySelectorAll(`.${sessionShareButtonClass}`);
     const ref = currentSessionRef();
-    const actionGroup = codexPlusSettings().sessionShare && ref.session_id ? sessionSharePlacement() : null;
+    const actionGroup = codexPlusSettings().sessionShare && ref.session_id && !globalThis.__codexPlusBuiltinInactive?.has("session-share")
+      ? sessionSharePlacement()
+      : null;
     if (!(actionGroup instanceof HTMLElement)) {
       existing.forEach((button) => button.remove());
       return;

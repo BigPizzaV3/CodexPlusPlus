@@ -190,8 +190,22 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 | `agent/request-error` | 网关失败重试 | 同上 |
 | 前端插件 `dsh.client` | 页面运行时 `96-dsh-client.js`：用 Codex 页面自己的 React 19 渲染组件，dsh 插槽映射到 Codex++ 的插槽（`shell.overlay` → overlay、会话「…」菜单 → 会话行菜单自绘项、`conversation.input.left/right` → composer.left/right、`conversation.chat.turnTail` → turn.after、`settings.section` → 整页……） | 对不上的插槽不显示并记一条失败；dsh 专属前端服务（store、remote、conversation、uiSession 的大部分 hooks）不可用 |
 
+第三期补上（同日）：
+
+| dsh 服务 / 事件 | 落点 | 差别 |
+|---|---|---|
+| `tools/post-execute` 改写结果（accept 带 content / value、block） | 钩子里记下决定（按调用 id 落盘），之后每次经 Codex++ 代理的请求在网关里把这条工具输出换掉；钩子没跑到的结果网关补跑一次 | 只对经代理的请求生效；Codex 界面里显示的仍是原结果 |
+| `agent/pre-step` 按步触发 | 第一步由 UserPromptSubmit 钩子处理；工具调用之后的每一步由网关请求中间件（`gateway/step.mjs`）触发，可拒绝这一步、可追加消息；钩子之外 `agent.inject` 排下的上下文也在这里带上 | 只对经代理的请求生效 |
+| `llm/stream`、`agent/assistant-stream` | 网关响应流中间件（`gateway/response.mjs`）：上游 Responses 事件翻成 dsh 流式块交给常驻进程里的插件，插件改写的文字增量换回去，收尾事件里的完整文本一并改；只观察时原样放行 | 只翻文字、推理、工具调用参数与用量；改写时 `*.done` 收尾事件等插件产出完再发 |
+| `schedule` | 记录存在插件数据目录（MCP 进程与常驻进程共用），配套拓展包的后台每分钟 tick，到点经 Codex++ 在会话里发起一轮；支持 after / at / every / daily / weekly / cron 与时区 | Codex++ 没在运行时不触发，不补跑 |
+| `webhookRuntime` | 配套拓展包开 `backend.http`，`/ext/dsh-<插件>/webhook/<kind>` 的请求交给规则，规则给出 prompt 就新建 Codex 会话 | 不校验签名 |
+| `jobs` | 进程内登记处 | 不跨进程 |
+| `workspaceRegistry` | 按 Codex 会话的工作目录归出来 | 只读 |
+| 前端插槽 `tool.call.toolview`、`conversation.plan-review.actions`、`conversation.input.model`、`settings.section`、`sidebar.right.pane.tab` | 工具调用视图、计划条目视图、composer.model 插槽、Codex 设置页分区、悬浮球页签 | |
+| 拓展包里直接带 dsh 插件 | `codexpp.json` 的 `dsh` 指向包内插件目录，随拓展启停 / 删除导入、停用、移除 | |
+
 宿主调用通道：所有 Codex++ 起的 Node 进程都带 `CODEX_PLUS_HOST_EXE`，替身服务经 `CodexPlusPlus --codex-plus-host-call`
 （stdin 一个 `{ service, method, params }`）读写会话、调模型、问用户（`assets/dsh-host/host-call.mjs`）。
 
-仍然做不到：替换 Codex 的 agent 循环、会话存储格式、按步触发的 `agent/pre-step`（Codex 只在用户提交时经过钩子）、
-在钩子里改写工具结果、`subagents` / `workflowEngine` / `jobs` / `typert` 这类 dsh 自己的运行时服务。
+仍然做不到：替换 Codex 的 agent 循环、会话存储格式；官方直连（不经 Codex++ 代理）时的按步 `agent/pre-step`、工具结果改写与回复流改写；
+`subagents` / `workflowEngine` / `typert` / `sandboxPolicy` 这类 dsh 自己的运行时服务。
