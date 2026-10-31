@@ -1949,12 +1949,14 @@ export function App() {
     return true;
   };
 
+  /// 启停单个拓展后热重载，Codex 页面才会真的装上 / 卸下它（与整体开关、保存配置一致）。
   const setUserScriptEnabled = async (key: string, enabled: boolean) => {
     const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled }));
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地拓展"), result);
+      if (isSuccessStatus(result.status)) await reloadUserScripts();
+      else showResultNotice(t("本地拓展"), result);
       await refreshUserScriptInventory();
     }
   };
