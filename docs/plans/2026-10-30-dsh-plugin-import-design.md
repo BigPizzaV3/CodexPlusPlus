@@ -229,3 +229,20 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 
 `HOST_PROVIDED_PACKAGES`（不必 npm install 的宿主包）与 `host.mjs` 的替身表保持一致，测试守住。
 
+## 10. 第五期：会话与 agent 生命周期、审批、第二批替身服务、Config 表单（2026-11-01）
+
+| dsh 能力 | 落点 | 差别 |
+|---|---|---|
+| `sessions.create` / `fork` | 经 Codex++ 新建 / 分叉真实的 Codex 会话，返回它的镜像 | 镜像只有之后的事件；dsh 的会话日志格式不在 Codex 里 |
+| `agents.create` / `resume` | 给了 `sessionId` 就挂到那个 Codex 会话；没给就先新建 Codex 会话。返回 agent 替身 | 跑模型的仍是 Codex 自己的循环 |
+| `agent.cancel` | 经 Codex++ 中断会话里进行中的那一轮（没给 turnId 时读会话找正在跑的一轮） | |
+| `agent.inbox` 的 `replace` / `remove` / `splice`，`agent/inbox/inserted / claimed / discarded` | 还没交给 Codex 的排队消息可以改；排队、被下一次钩子取走、被清掉时发事件 | 已经进了 Codex 这一轮的改不了 |
+| `agent/disposed`、`session/disposed`、`session/flush` | 常驻进程退出时按 dsh 的顺序发（先 flush 落盘） | |
+| `approval` 服务、`approval/request` | Codex 的 PermissionRequest 钩子 → `approval/request` waterfall：`allowed-once` 放行、`rejected` / `cancelled` 拒绝、不表态交还 Codex；`ctx.approval.request` 链尾按策略（`never` 放行，`ask` 在 Codex 页面弹框） | 需要在 Codex 里信任一次 PermissionRequest 钩子 |
+| `user-questions/request` | `userQuestions.ask` 先过 waterfall，插件能自己答；链尾才在 Codex 页面弹框 | |
+| `system-prompt/assemble` | assembly 里多一段 `codex:instructions`（经代理请求里 Codex 自己的系统提示词）：没动它就只追加，删了或改了它就整段替换 instructions | 只对经代理的请求生效 |
+| 镜像里的助手回复 | Stop 负载的 `last_assistant_message` 写成 `assistant/message` | 只有每轮最后一条，没有中间的流式内容与推理 |
+| `storage`、`spillStore`、`shellEnv`、`sessionTitle`、`tokenMeter`、`sessionTelemetry` | storage 的 domain 形态即插件的 storageDomain；spill 写插件数据目录；sessionTitle.rename 改 Codex 会话名；tokenMeter 按字数粗估；遥测丢弃 | shellEnv 只影响宿主自己的 shell / subprocess，不影响 Codex 的 shell |
+| `dsh-spill` / `dsh-user-approval` / `dsh-session-title` / `dsh-token-meter` / `dsh-shell-env` / `dsh-storage` / `dsh-session-telemetry` 包 | 替身导出品牌构造函数、错误类与抽象类 | |
+| 插件 Config → 设置表单 | 分析时记下 `Config.toJSON()`（替身的 schemastery 也给出同形 JSON），管理器转成拓展设置表单（文本、密钥、数字范围、下拉、数组、嵌套对象）；表达不了的字段改用 JSON 编辑 | 配置缺必填项时也能先填表单 |
+

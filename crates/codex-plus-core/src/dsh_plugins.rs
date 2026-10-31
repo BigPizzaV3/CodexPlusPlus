@@ -99,6 +99,10 @@ const HOST_FILES: &[(&str, &str)] = &[
         "shims/dsh-errors.mjs",
         include_str!("../../../assets/dsh-host/shims/dsh-errors.mjs"),
     ),
+    (
+        "shims/dsh-services.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-services.mjs"),
+    ),
 ];
 
 const REGISTRY_VERSION: u32 = 1;
@@ -126,6 +130,13 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-subprocess",
     "@deepseek-ai/dsh-shell",
     "@deepseek-ai/dsh-commands",
+    "@deepseek-ai/dsh-spill",
+    "@deepseek-ai/dsh-user-approval",
+    "@deepseek-ai/dsh-session-title",
+    "@deepseek-ai/dsh-token-meter",
+    "@deepseek-ai/dsh-shell-env",
+    "@deepseek-ai/dsh-storage",
+    "@deepseek-ai/dsh-session-telemetry",
 ];
 
 /// 插件来源。

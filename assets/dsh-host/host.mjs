@@ -20,11 +20,11 @@ import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
 import {
   AgentRegistry, MIRROR_SERVICES, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
-  createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
+  createApproval, createSessionTelemetry, createSessionTitle, createShellEnv, createSpillStore, createStorage, createTokenMeter, createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
   createWorkspaceRegistry,
 } from './services.mjs'
 
-const HOST_VERSION = '3'
+const HOST_VERSION = '4'
 const HOST_DIR = dirname(fileURLToPath(import.meta.url))
 const SHIMS = {
   '@deepseek-ai/dsh-tools': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-tools.mjs')).href,
@@ -43,6 +43,13 @@ const SHIMS = {
   '@deepseek-ai/dsh-subprocess': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
   '@deepseek-ai/dsh-shell': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
   '@deepseek-ai/dsh-commands': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-errors.mjs')).href,
+  '@deepseek-ai/dsh-spill': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-user-approval': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-session-title': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-token-meter': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-shell-env': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-storage': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-session-telemetry': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
 }
 /**
  * 能映射到 Codex 钩子的 dsh 事件。监听器由配套拓展包的钩子脚本经 bridge.mjs 调用，
@@ -56,6 +63,7 @@ export const EVENT_HOOKS = {
   'agent/created': 'SessionStart',
   'subagent/start': 'SubagentStart',
   'subagent/end': 'SubagentStop',
+  'approval/request': 'PermissionRequest',
 }
 /**
  * 由会话镜像派发的事件：钩子常驻进程把 Codex 钩子翻成 dsh 会话日志，再按 dsh 的语义发这些事件。
@@ -76,6 +84,10 @@ export const GATEWAY_EVENTS = {
  * tools/post-execute 改写的工具结果在下一次请求里换进 input。
  */
 export const STEP_EVENTS = new Set(['agent/pre-step', 'tools/post-execute'])
+/** system-prompt/assemble 里代表 Codex 自己系统提示词的片段名：插件删改它就整段替换 instructions。 */
+export const CODEX_INSTRUCTIONS_SECTION = 'codex:instructions'
+/** 会话镜像与 agent 替身自己发的生命周期事件。 */
+const AGENT_LIFECYCLE_EVENTS = new Set(['session/flush', 'session/disposed', 'agent/disposed'])
 /** tools/execute（waterfall）：插件不调 next() 直接给结果就是代为执行。 */
 export const TOOL_EXECUTE_EVENT = 'tools/execute'
 /** 宿主自己会发的注册变化事件：监听它们不提示「不会触发」。 */
@@ -463,11 +475,21 @@ export class Host {
     const sessions = {
       get: (id) => mirror.sessions.get(String(id)),
       list: () => [...mirror.sessions.values()],
-      create() {
-        throw new Error('Codex++ 里不能新建 dsh 会话；要新建 Codex 会话请用 ctx.sessions.codex.create')
+      /** 新建会话：经 Codex++ 新建一个真实的 Codex 会话，返回它的镜像（dsh 的会话日志格式不在 Codex 里）。 */
+      async create(options = {}) {
+        const cwd = typeof options?.cwd === 'string' ? options.cwd : options?.meta?.cwd
+        const result = await hostCall('sessions', 'create', { options: cwd ? { cwd } : {} })
+        const id = result?.thread?.id
+        if (!id) throw new Error('Codex 没有返回新会话的 id')
+        return mirror.ensure(String(id), { cwd })
       },
-      fork() {
-        throw new Error('Codex++ 里不能分叉 dsh 会话；要分叉 Codex 会话请用 ctx.sessions.codex.fork')
+      /** 分叉会话：分叉对应的 Codex 会话，返回新会话的镜像（只有之后的事件进镜像）。 */
+      async fork(source, options = {}) {
+        const id = typeof source === 'string' ? source : source?.id ?? source?.sessionId
+        if (!id) throw new Error('sessions.fork 需要会话或会话 id')
+        const thread = await hostCall('sessions', 'fork', { id: String(id), options: options?.codex ?? {} })
+        if (!thread?.id) throw new Error('Codex 没有返回分叉出的会话 id')
+        return mirror.ensure(String(thread.id), { cwd: thread.cwd })
       },
       async flush(session) {
         mirror.flushAll()
@@ -549,10 +571,15 @@ export class Host {
       subprocess: createSubprocess(),
       shell: createShell(),
       web: createWeb(),
-      userQuestions: createUserQuestions(),
+      userQuestions: createUserQuestions((event, args, fallback) => host.waterfall(event, args, fallback)),
+      approval: createApproval((event, args, fallback) => host.waterfall(event, args, fallback)),
       jobs: createJobs((event, args) => host.emitEvent(event, args)),
       workspaceRegistry: createWorkspaceRegistry(),
       agentDefaultModel: Object.freeze({ provider: 'codex', model: undefined, reasoningEffort: undefined }),
+      shellEnv: createShellEnv(),
+      sessionTitle: createSessionTitle(),
+      tokenMeter: createTokenMeter(),
+      sessionTelemetry: createSessionTelemetry(),
     }
     return this.shared
   }
@@ -618,25 +645,32 @@ export class Host {
   }
 
   /**
-   * 带 system-prompt/assemble 中间件的提示词：先按 dsh 的结构拼出 assembly，交给插件的 waterfall 改写，再渲染成文本。
-   * 没有监听器时等同 assemblePrompt。
+   * 带 system-prompt/assemble 中间件的提示词。assembly 里按 dsh 的结构放进插件自己的片段，外加一段
+   * `codex:instructions`（Codex 自己的系统提示词，经代理时才有）。插件的 waterfall 可以增删改片段：
+   * - 没动 codex 那一段：返回 `{ text }`，追加到 Codex 的 instructions 后面；
+   * - 删了或改了 codex 那一段：返回 `{ text, replace: true }`，整段 instructions 换成渲染结果。
+   * 没有监听器时等同 assemblePrompt（只追加）。
    */
-  async assemblePromptAsync(context = {}) {
-    if (!this.hasListeners('system-prompt/assemble')) return this.assemblePrompt(context)
-    const base = { sections: [], contexts: [], tools: [], variables: {} }
-    const fallback = async () => base
+  async assembleInstructions(context = {}, codexInstructions = '') {
+    if (!this.hasListeners('system-prompt/assemble')) return { text: this.assemblePrompt(context) }
+    const own = (entries) => entries.map((entry) => ({ name: entry.name, order: entry.order, text: this.renderEntry(entry, context) })).filter((entry) => entry.text)
+    const codex = codexInstructions ? { name: CODEX_INSTRUCTIONS_SECTION, order: -1_000_000, text: codexInstructions } : undefined
+    const base = { sections: [...(codex ? [codex] : []), ...own(this.sections)], contexts: own(this.contexts), tools: [], variables: {} }
     let assembly
     try {
-      assembly = await this.waterfall('system-prompt/assemble', [base, { agent: context.agent, signal: context.signal }], fallback)
+      assembly = await this.waterfall('system-prompt/assemble', [base, { agent: context.agent, signal: context.signal }], async () => base)
     } catch (error) {
       console.error(`[dsh-host] system-prompt/assemble 失败：${errorText(error)}`)
       assembly = base
     }
-    const own = this.assemblePrompt(context)
-    const added = [...(assembly?.sections ?? []), ...(assembly?.contexts ?? [])]
-      .map((entry) => (typeof entry?.text === 'string' ? entry.text.trim() : ''))
-      .filter(Boolean)
-    return [own, ...added].filter(Boolean).join('\n\n')
+    const byOrder = (a, b) => (Number(a?.order) || 0) - (Number(b?.order) || 0)
+    const sections = [...(Array.isArray(assembly?.sections) ? assembly.sections : [])].sort(byOrder)
+    const contexts = [...(Array.isArray(assembly?.contexts) ? assembly.contexts : [])].sort(byOrder)
+    const textOf = (entry) => (typeof entry?.text === 'string' ? entry.text.trim() : '')
+    const kept = sections.find((entry) => entry?.name === CODEX_INSTRUCTIONS_SECTION)
+    const replace = Boolean(codex) && (!kept || textOf(kept) !== codexInstructions.trim())
+    const rest = [...sections, ...contexts].filter((entry) => replace || entry?.name !== CODEX_INSTRUCTIONS_SECTION)
+    return { text: rest.map(textOf).filter(Boolean).join('\n\n'), replace }
   }
 
   /**
@@ -644,31 +678,33 @@ export class Host {
    * 求不出的原样保留（dsh 会直接报错，这里宁可宽松，不能挡住模型请求）。
    */
   assemblePrompt(context = {}) {
-    const render = (entry) => {
-      try {
-        const text = typeof entry.text === 'function' ? entry.text(context) : entry.text
-        if (typeof text !== 'string' || !text.trim()) return ''
-        if (entry.interpolate === false) return text.trim()
-        return text.replace(/\{\{([A-Za-z_][\w.-]*)\}\}/g, (whole, name) => {
-          const provider = this.variables.get(name)
-          if (typeof provider !== 'function') return whole
-          try {
-            const value = provider(context)
-            return typeof value === 'string' ? value : whole
-          } catch {
-            return whole
-          }
-        }).trim()
-      } catch (error) {
-        console.error(`[dsh-host] 提示词 ${entry.name} 生成失败：${errorText(error)}`)
-        return ''
-      }
-    }
     const byOrder = (a, b) => a.order - b.order || String(a.name).localeCompare(String(b.name))
     return [...[...this.sections].sort(byOrder), ...[...this.contexts].sort(byOrder)]
-      .map(render)
+      .map((entry) => this.renderEntry(entry, context))
       .filter(Boolean)
       .join('\n\n')
+  }
+
+  /** 渲染一个片段：函数片段按上下文求值，`{{变量}}` 用插件注册的变量替换，求不出的原样保留。 */
+  renderEntry(entry, context = {}) {
+    try {
+      const text = typeof entry.text === 'function' ? entry.text(context) : entry.text
+      if (typeof text !== 'string' || !text.trim()) return ''
+      if (entry.interpolate === false) return text.trim()
+      return text.replace(/\{\{([A-Za-z_][\w.-]*)\}\}/g, (whole, name) => {
+        const provider = this.variables.get(name)
+        if (typeof provider !== 'function') return whole
+        try {
+          const value = provider(context)
+          return typeof value === 'string' ? value : whole
+        } catch {
+          return whole
+        }
+      }).trim()
+    } catch (error) {
+      console.error(`[dsh-host] 提示词 ${entry.name} 生成失败：${errorText(error)}`)
+      return ''
+    }
   }
 
   /** 提示词是否全是静态文本（可以在分析时求好，直接写进配套拓展包，不必每次请求加载插件）。 */
@@ -842,9 +878,12 @@ export class Host {
     const changed = (event) => queueMicrotask(() => host.emitEvent(event, []))
     const shared = this.sharedServices()
     host.schedules ??= createSchedule(host.dataDir, (event, args) => host.emitEvent(event, args))
+    const storageDomain = createStorageDomain(state.dataDir)
     const pluginServices = {
       credentials: createCredentials(state.config),
-      storageDomain: createStorageDomain(state.dataDir),
+      storageDomain,
+      storage: createStorage(storageDomain),
+      spillStore: createSpillStore(state.dataDir),
       schedule: host.schedules,
       webhookRuntime: {
         ...host.webhooks,
@@ -1087,8 +1126,9 @@ export class Host {
           // 代为执行 Codex 的工具：在 PreToolUse 钩子里跑，结果经网关换进下一次请求。
           mapTo('PreToolUse')
           mapTo('gateway:step')
-        } else if (event === 'session/flush' || event === 'session/disposed') {
-          // 镜像会话在常驻进程退出时落盘，不派发这两个事件。
+        } else if (AGENT_LIFECYCLE_EVENTS.has(event) || event.startsWith('agent/inbox/')) {
+          // 由常驻进程里的会话镜像与 agent 替身派发（退出时落盘、cancel、排消息……）。
+          mapTo(MIRROR_TARGET)
         } else if (!HOST_EMITTED_EVENTS.has(event) && event !== 'ready' && event !== 'dispose') {
           note(`事件 ${String(event)} Codex 里不会触发，只有同一个包里的其它插件 emit 时才会收到`)
         }
@@ -1277,6 +1317,12 @@ export class Host {
     for (const name of [...inject.required, ...inject.optional]) if (mirrorNotes[name]) record.notes.push(mirrorNotes[name])
     let config = row.config ?? {}
     if (hasTaggedValue(config)) record.notes.push('配置里的 !!js 表达式不会求值')
+    // 配置 schema 给管理器生成表单：先记下来，配置不合法（比如缺必填项）时用户才有地方填。
+    if (plugin.Config && typeof plugin.Config.toJSON === 'function') {
+      try {
+        record.configSchema = JSON.parse(JSON.stringify(plugin.Config.toJSON()))
+      } catch {}
+    }
     if (typeof plugin.Config === 'function') {
       try {
         config = plugin.Config(config)
@@ -1491,6 +1537,15 @@ export class Host {
   }
 
   async dispose() {
+    // 常驻进程退出：会话先落盘（session/flush），再按 dsh 的顺序发 agent/disposed、session/disposed。
+    for (const session of this.mirror.sessions.values()) {
+      try {
+        await this.parallel('session/flush', [session])
+      } catch {}
+    }
+    this.mirror.flushAll()
+    for (const agent of this.agentRegistry.list()) this.emitEvent('agent/disposed', [{ agent }])
+    for (const session of this.mirror.sessions.values()) this.emitEvent('session/disposed', [session])
     for (const { listener } of this.listeners.get('dispose') ?? []) {
       try {
         await listener()

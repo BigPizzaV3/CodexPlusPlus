@@ -2881,6 +2881,7 @@ export const EN_PLAIN: Record<string, string> = {
   "插件配置（JSON）": "Plugin config (JSON)",
   "浅合并到组合包里的配置之上；留空表示清除。": "Shallow-merged over the bundle's config; leave empty to clear.",
   "保存并重新分析": "Save and analyze",
+  "改用 JSON 编辑": "Edit as JSON",
   "重新导入 skill": "Re-import skills",
   "导入 skill": "Import skills",
   "包里有 MCP 配置，复制后可在「MCP」页用 JSON 导入。": "This package has MCP configs; copy them and import the JSON on the MCP page.",

@@ -246,6 +246,19 @@ const TRANSLATE = {
     return {}
   },
 
+  // Codex 要用户审批一次工具调用：交给插件的 approval/request。allowed-once → 放行，rejected / cancelled → 拒绝，
+  // 插件不表态（链尾 unavailable）就交还给 Codex 自己弹审批。
+  async PermissionRequest(host, payload, agent, sink, signal) {
+    const exec = makeExec(payload, agent, signal)
+    const reason = typeof payload?.reason === 'string' ? payload.reason : undefined
+    const outcome = await host.waterfall('approval/request', [{ agent, toolName: exec.name, callId: exec.callId, reason, signal }], async () => 'unavailable')
+    if (outcome === 'allowed-once') return { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } }
+    if (outcome === 'rejected' || outcome === 'cancelled') {
+      return { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: outcome === 'cancelled' ? 'dsh 插件取消了这次审批' : '被 dsh 插件拒绝' } } }
+    }
+    return {}
+  },
+
   async SubagentStart(host, payload) {
     host.emitEvent('subagent/start', [{ runId: String(payload?.agent_id ?? payload?.tool_use_id ?? ''), provider: 'codex', id: String(payload?.agent_id ?? ''), local: true, agentType: payload?.agent_type }])
     return {}
@@ -320,7 +333,10 @@ const sessionIdOf = (body) => (typeof body?.prompt_cache_key === 'string' ? body
 async function instructionsFor(host, body) {
   if (!body || typeof body !== 'object') return null
   const agent = sessionIdOf(body) ? host.agentRegistry.get(sessionIdOf(body)) : undefined
-  return appendInstructions(body, await host.assemblePromptAsync({ agent, modelSelection: { model: body.model } }))
+  const current = typeof body.instructions === 'string' ? body.instructions : ''
+  const { text, replace } = await host.assembleInstructions({ agent, modelSelection: { model: body.model } }, current)
+  if (replace) return text === current ? null : { ...body, instructions: text }
+  return appendInstructions(body, text)
 }
 
 // ---- tools/post-execute 的改写结果 ----

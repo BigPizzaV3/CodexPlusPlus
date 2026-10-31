@@ -24,19 +24,62 @@ function makeSchema(kind, extra = {}) {
       meta.required = value !== false
       return proxy
     },
+    // 与真 Schemastery 的 toJSON 同形：{ type, dict / inner / list / value, meta }，管理器据此生成设置表单。
     toJSON() {
-      return { type: meta.kind }
+      const json = { type: meta.kind === 'any' ? 'any' : meta.kind }
+      if (meta.kind === 'object') json.dict = Object.fromEntries(Object.entries(meta.dict ?? {}).map(([key, child]) => [key, toJson(child)]))
+      if (meta.kind === 'array' || meta.kind === 'dict') json.inner = toJson(meta.inner)
+      if (meta.kind === 'union') json.list = (meta.list ?? []).map(toJson)
+      if (meta.kind === 'const') json.value = meta.value
+      const info = {}
+      for (const key of ['default', 'required', 'description', 'role', 'min', 'max', 'hidden']) {
+        if (meta[key] !== undefined && meta[key] !== false) info[key] = clone(meta[key])
+      }
+      if (Object.keys(info).length) json.meta = info
+      return json
+    },
+    description(text) {
+      meta.description = text
+      return proxy
+    },
+    i18n(dict) {
+      // { zh: '说明', en: 'desc' } 或 { zh: { description } } 都按说明处理。
+      if (dict && typeof dict === 'object') {
+        meta.description = Object.fromEntries(Object.entries(dict).map(([lang, value]) => [lang, typeof value === 'string' ? value : value?.description ?? value?.$description ?? '']))
+      }
+      return proxy
+    },
+    role(value) {
+      meta.role = value
+      return proxy
+    },
+    min(value) {
+      meta.min = value
+      return proxy
+    },
+    max(value) {
+      meta.max = value
+      return proxy
+    },
+    hidden(value = true) {
+      meta.hidden = value !== false
+      return proxy
     },
   })
   const proxy = new Proxy(target, {
     get(object, key) {
       if (key in object) return object[key]
       if (typeof key === 'symbol' || key === 'then') return undefined
-      // 其余修饰器（description、min、max、pattern、role、hidden、i18n、step…）都无副作用。
+      // 其余修饰器（pattern、step、comment…）都无副作用。
       return () => proxy
     },
   })
   return proxy
+}
+
+function toJson(schema) {
+  if (schema && typeof schema.toJSON === 'function') return schema.toJSON()
+  return { type: 'const', value: schema }
 }
 
 function resolve(meta, value, path) {

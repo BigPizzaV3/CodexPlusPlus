@@ -19144,8 +19144,18 @@
         if (!Array.isArray(input) || !input.length) throw new Error("startTurn 需要输入文字");
         return (await client.sendRequest(method, { threadId: String(params.id), input, ...(params.options || {}) }))?.turn ?? null;
       }
-      case "interrupt":
-        return client.sendRequest(method, { threadId: String(params.id), turnId: String(params.turnId || "") });
+      case "interrupt": {
+        // 没给 turnId 时取会话里正在跑的那一轮（dsh 的 agent.cancel 只知道会话）。
+        let turnId = String(params.turnId || "");
+        if (!turnId) {
+          const read = await client.sendRequest("thread/read", { threadId: String(params.id), includeTurns: true });
+          const turns = Array.isArray(read?.thread?.turns) ? read.thread.turns : [];
+          const running = [...turns].reverse().find((turn) => /^in[_-]?progress$/i.test(String(turn?.status?.type ?? turn?.status ?? "")));
+          turnId = String(running?.id ?? "");
+          if (!turnId) return { interrupted: false, reason: "会话里没有正在进行的一轮" };
+        }
+        return client.sendRequest(method, { threadId: String(params.id), turnId });
+      }
       case "create":
         // 新建会话；给了 input 时紧接着发起第一轮。
         {

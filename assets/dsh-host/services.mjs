@@ -27,7 +27,8 @@ export const SUPPORTED_SERVICES = new Set([
   'tools', 'systemPrompt', 'logger', 'timer', 'skills',
   'sessions', 'sessionQuery', 'sessionProjections', 'agents', 'llm', 'commands',
   'fs', 'subprocess', 'shell', 'web', 'credentials', 'storageDomain', 'userQuestions', 'agentDefaultModel',
-  'connection', 'schedule', 'webhookRuntime', 'jobs', 'workspaceRegistry',
+  'connection', 'schedule', 'webhookRuntime', 'jobs', 'workspaceRegistry', 'approval',
+  'storage', 'spillStore', 'shellEnv', 'sessionTitle', 'tokenMeter', 'sessionTelemetry',
 ])
 
 /** 只在钩子常驻进程里才「活」的服务：MCP 进程里拿得到，但没有会话事件流入。 */
@@ -303,9 +304,20 @@ export class SessionMirror {
         })
         break
       }
-      case 'Stop':
+      case 'Stop': {
+        // Codex 的 Stop 负载带这一轮最后一条助手回复：补进镜像，投影与 session/event 才看得到模型说了什么。
+        const reply = typeof payload?.last_assistant_message === 'string' ? payload.last_assistant_message : ''
+        if (reply.trim()) {
+          session.append('assistant/message', {
+            turn: session.turn,
+            step,
+            message: { id: randomUUID(), role: 'assistant', content: textBlocks(clip(reply)), source: { kind: 'model' } },
+            stream: [],
+          })
+        }
         session.append('turn/end', { turn: session.turn, reason: { kind: 'completed' } })
         break
+      }
       case 'PreCompact':
         session.append('compaction/start', { compactionId: randomUUID(), turn: session.turn || null })
         break
@@ -362,28 +374,54 @@ export class AgentRegistry {
       nextTurn: [],
       nextStep: [],
       clear() {
+        const discarded = pendingInject.splice(0)
         inbox.nextTurn.length = 0
         inbox.nextStep.length = 0
-        pendingInject.length = 0
+        for (const message of discarded) registry.emit('agent/inbox/discarded', [{ agent, message }])
       },
       append(target, message) {
         ;(target === 'next-step' ? inbox.nextStep : inbox.nextTurn).push(message)
         pendingInject.push(message)
+        registry.emit('agent/inbox/inserted', [{ agent, message }])
       },
       prepend(target, message) {
         ;(target === 'next-step' ? inbox.nextStep : inbox.nextTurn).unshift(message)
         pendingInject.unshift(message)
+        registry.emit('agent/inbox/inserted', [{ agent, message }])
       },
-      replace() {
-        return false
+      // 还没交给 Codex 的排队消息可以改：按消息对象或 id 找。已经进了 Codex 这一轮的改不了。
+      replace(match, next) {
+        const index = pendingIndex(match)
+        if (index < 0) return false
+        pendingInject[index] = next
+        for (const list of [inbox.nextTurn, inbox.nextStep]) {
+          const at = list.findIndex((item) => sameMessage(item, match))
+          if (at >= 0) list[at] = next
+        }
+        return true
       },
-      remove() {
-        return false
+      remove(match) {
+        const index = pendingIndex(match)
+        if (index < 0) return false
+        const [message] = pendingInject.splice(index, 1)
+        for (const list of [inbox.nextTurn, inbox.nextStep]) {
+          const at = list.findIndex((item) => sameMessage(item, match))
+          if (at >= 0) list.splice(at, 1)
+        }
+        registry.emit('agent/inbox/discarded', [{ agent, message }])
+        return true
       },
-      splice() {
-        return []
+      splice(start, deleteCount, ...items) {
+        const removed = pendingInject.splice(start, deleteCount ?? pendingInject.length, ...items)
+        inbox.nextTurn.splice(0, inbox.nextTurn.length, ...pendingInject)
+        inbox.nextStep.length = 0
+        for (const message of removed) registry.emit('agent/inbox/discarded', [{ agent, message }])
+        for (const message of items) registry.emit('agent/inbox/inserted', [{ agent, message }])
+        return removed
       },
     }
+    const sameMessage = (item, match) => item === match || (match && typeof match === 'object' ? item?.id && item.id === match.id : item?.id === match)
+    const pendingIndex = (match) => pendingInject.findIndex((item) => sameMessage(item, match))
     const agent = {
       id: session.id,
       session,
@@ -417,8 +455,11 @@ export class AgentRegistry {
           console.error(`[dsh-host] agent.followup 转给 Codex 失败：${error?.message ?? error}`)
         })
       },
+      /** 中止正在跑的那一轮：经 Codex++ 中断 Codex 会话里进行中的回合。 */
       cancel() {
-        console.error('[dsh-host] agent.cancel 在 Codex 里不可用（拿不到正在跑的那一轮），已忽略')
+        void hostCall('sessions', 'interrupt', { id: session.id }).then(() => agent.setStatus('idle'), (error) => {
+          console.error(`[dsh-host] agent.cancel 转给 Codex 失败：${error?.message ?? error}`)
+        })
       },
       whenIdle() {
         return status === 'idle' ? Promise.resolve() : new Promise((resolve) => idleWaiters.push(resolve))
@@ -431,6 +472,7 @@ export class AgentRegistry {
         const taken = pendingInject.splice(0)
         inbox.nextTurn.length = 0
         inbox.nextStep.length = 0
+        for (const message of taken) registry.emit('agent/inbox/claimed', [{ agent, message, turn: session.turn }])
         return taken
       },
       setStatus(next) {
@@ -466,11 +508,23 @@ export class AgentRegistry {
       },
       withInitiator: (agent, fn) => fn(),
       withoutInitiator: (fn) => fn(),
-      async create() {
-        throw new Error('Codex++ 里不能经 dsh 新建 agent；请用 ctx.sessions.codex.create 新建 Codex 会话')
+      /**
+       * 新建 agent：给了 sessionId 就挂到那个 Codex 会话上；没给就先经 Codex++ 新建一个 Codex 会话。
+       * agent 仍是替身——跑模型的是 Codex 自己的循环，替身负责 steer / inject / followup / cancel 与事件。
+       */
+      async create(options = {}) {
+        let id = options?.sessionId
+        if (!id) {
+          const cwd = options?.meta?.cwd
+          const result = await hostCall('sessions', 'create', { options: cwd ? { cwd } : {} })
+          id = result?.thread?.id
+          if (!id) throw new Error('Codex 没有返回新会话的 id')
+        }
+        return registry.get(String(id))
       },
-      async resume() {
-        throw new Error('Codex++ 里不能经 dsh 恢复 agent')
+      async resume(options = {}) {
+        if (!options?.sessionId) throw new Error('agents.resume 需要 sessionId')
+        return registry.get(String(options.sessionId))
       },
     }
   }
@@ -678,9 +732,16 @@ export function createLlm() {
   }
 }
 
-export function createUserQuestions() {
-  return {
-    async ask(request = {}) {
+/**
+ * 问用户。dsh 的 user-questions/request 是 waterfall：插件可以先答（不调 next）或改写，链尾才真的在 Codex 页面里弹框。
+ * @param waterfall (event, args, fallback) => Promise：宿主的 waterfall 派发。
+ */
+export function createUserQuestions(waterfall = (_event, _args, fallback) => fallback()) {
+  const service = {
+    ask(request = {}) {
+      return waterfall('user-questions/request', [request], () => service.askInCodex(request))
+    },
+    async askInCodex(request = {}) {
       const questions = Array.isArray(request.questions) ? request.questions : []
       if (!questions.length) throw new UserQuestionError('没有问题', 'EMPTY_QUESTIONS')
       const answers = []
@@ -702,10 +763,42 @@ export function createUserQuestions() {
       return { answers }
     },
     async askTimed(request, callId, timeoutMs) {
-      return this.ask({ ...request, signal: AbortSignal.timeout(Math.max(1000, Number(timeoutMs) || 60_000)) })
+      return service.ask({ ...request, signal: AbortSignal.timeout(Math.max(1000, Number(timeoutMs) || 60_000)) })
     },
     answer() {
       return false
+    },
+  }
+  return service
+}
+
+/**
+ * 审批（dsh-user-approval）：request 先过 approval/request waterfall（插件可直接放行 / 拒绝），链尾按策略决定——
+ * 策略 never 直接放行，ask 在 Codex 页面里弹框问用户。Codex 自己的审批另走 PermissionRequest 钩子（见 bridge）。
+ */
+export function createApproval(waterfall = (_event, _args, fallback) => fallback()) {
+  const policies = new WeakMap()
+  const askUser = async (req) => {
+    let reply
+    try {
+      reply = await hostCall('ui', 'ask', {
+        title: `允许调用 ${req.toolName}？`,
+        message: String(req.displayReason?.zh ?? req.displayReason?.en ?? req.reason ?? ''),
+        options: [{ value: 'rejected', label: '拒绝' }, { value: 'allowed-once', label: '允许一次' }],
+      }, { signal: req.signal })
+    } catch {
+      return 'unavailable'
+    }
+    return reply ? (reply.value === 'allowed-once' ? 'allowed-once' : 'rejected') : 'cancelled'
+  }
+  return {
+    config: { policy: 'ask' },
+    setPolicy(agent, policy) {
+      if (agent && typeof agent === 'object') policies.set(agent, policy === 'never' ? 'never' : 'ask')
+    },
+    overrideOf: () => undefined,
+    request(req = {}) {
+      return waterfall('approval/request', [req], async () => (policies.get(req.agent) === 'never' ? 'allowed-once' : askUser(req)))
     },
   }
 }
@@ -1520,3 +1613,115 @@ export function createWorkspaceRegistry() {
     unpinSession: readOnly('unpinSession'),
   }
 }
+
+// ---------------------------------------------------------------------------
+// 小服务：storage、spillStore、shellEnv、sessionTitle、tokenMeter、sessionTelemetry
+// ---------------------------------------------------------------------------
+
+/** dsh 的 storage：按形态挂载存储设施；domain 形态就是本插件的 storageDomain。 */
+export function createStorage(domain) {
+  const forms = new Map([['domain', domain]])
+  return {
+    backend: Object.freeze({}),
+    mount(form, facility) {
+      const key = String(form)
+      const previous = forms.get(key)
+      forms.set(key, facility)
+      return () => {
+        if (forms.get(key) !== facility) return
+        if (previous === undefined) forms.delete(key)
+        else forms.set(key, previous)
+      }
+    },
+    form: (form) => forms.get(String(form)),
+    get domain() {
+      return forms.get('domain')
+    },
+  }
+}
+
+/** 大段工具输出落盘（dsh 的 spillStore）：写到插件数据目录，返回模型能照着去读的位置。 */
+export function createSpillStore(dataDir) {
+  return {
+    async saveText(input = {}) {
+      if (!dataDir) throw new Error('spillStore 需要插件数据目录（只在 Codex++ 起的插件进程里可用）')
+      const owner = String(input.owner?.sessionId ?? 'unknown').replace(/[^\w.-]/g, '_')
+      const name = String(input.suggestedName ?? 'output.txt').replace(/[^\w.-]/g, '_').slice(0, 80) || 'output.txt'
+      const dir = join(dataDir, 'spill', owner)
+      mkdirSync(dir, { recursive: true })
+      const path = join(dir, `${randomUUID().slice(0, 8)}-${name}`)
+      const content = String(input.content ?? '')
+      await writeFile(path, content)
+      return freeze({ locator: path, bytes: Buffer.byteLength(content), retrievalHint: `完整内容已保存到 ${path}，需要时读这个文件` })
+    },
+  }
+}
+
+/** bash 环境变量贡献者登记处（dsh 的 shellEnv）。Codex 自己的 shell 不读它；本宿主的 shell / subprocess 服务会带上。 */
+export function createShellEnv() {
+  const contributors = new Set()
+  return {
+    register(contributor) {
+      if (!contributor || typeof contributor.resolve !== 'function') return () => {}
+      contributors.add(contributor)
+      return () => contributors.delete(contributor)
+    },
+    collect(execution) {
+      const env = {}
+      for (const contributor of contributors) {
+        try {
+          Object.assign(env, contributor.resolve(execution) ?? {})
+        } catch (error) {
+          console.error(`[dsh-host] shellEnv 贡献者失败：${error?.message ?? error}`)
+        }
+      }
+      return freeze(env)
+    },
+    list: () => [...contributors].flatMap((contributor) => (Array.isArray(contributor.variables) ? contributor.variables : [])),
+  }
+}
+
+/** 会话标题（dsh 的 sessionTitle）：改名经 Codex++ 改 Codex 会话的名字；自动生成标题交给 Codex 自己。 */
+export function createSessionTitle() {
+  const titles = new Map()
+  return {
+    get: (session) => titles.get(session?.id),
+    rename(session, title) {
+      const text = String(title ?? '').trim()
+      if (!text) throw new Error('标题不能为空')
+      const snapshot = freeze({ title: text, source: 'manual', updatedAt: Date.now() })
+      titles.set(session?.id, snapshot)
+      void hostCall('sessions', 'rename', { id: session?.id, name: text }).catch((error) => {
+        console.error(`[dsh-host] 会话改名转给 Codex 失败：${error?.message ?? error}`)
+      })
+      return snapshot
+    },
+    refresh: async (session) => titles.get(session?.id),
+    register: () => () => Promise.resolve(),
+  }
+}
+
+/** 估算 token（dsh 的 tokenMeter）：按会话镜像里的消息字数粗估（约 4 个字符一个 token），不是模型的真实计数。 */
+export function createTokenMeter() {
+  const estimate = (text) => Math.ceil(String(text ?? '').length / 4)
+  const estimateMessage = (message) => estimate(messageText(message))
+  return {
+    estimateMessage,
+    measure(session) {
+      const nodes = (session?.events ?? [])
+        .filter((event) => MESSAGE_EVENTS.has(event.type))
+        .map((event) => {
+          const tokens = estimateMessage(event.type === 'user/message' ? event.data : event.data?.message)
+          return freeze({ seq: event.seq, tokens, heuristicTokens: tokens })
+        })
+      const total = nodes.reduce((sum, node) => sum + node.tokens, 0)
+      return freeze({ logRevision: session?.seq ?? 0, baseline: { kind: 'heuristic' }, surfaceDeltaTokens: 0, totalTokens: total, surfaceTokens: total, nodes })
+    },
+  }
+}
+
+/** 会话遥测（dsh 的 sessionTelemetry）：Codex++ 不上报，记录直接丢弃。 */
+export function createSessionTelemetry() {
+  return { sharing: 'disabled', emit() {}, flush() {}, async shutdown() {} }
+}
+

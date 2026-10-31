@@ -5,6 +5,7 @@ import { Copy, FolderOpen, Loader2, Plug, RefreshCw, Trash2, Upload } from "luci
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { appConfirm } from "./app-dialog";
+import { ExtensionConfigForm, schemasteryFields, type SchemasteryJson } from "./extension-config-form";
 import { Switch } from "./gateway-ui";
 import { t, tf } from "./i18n";
 import "./DshPluginsPanel.css";
@@ -21,6 +22,8 @@ type ReportRow = {
   tools: { name: string; description: string }[];
   /** 映射到 Codex 的去处：Codex 钩子事件名，或 "instructions"（经网关追加的系统提示词）。 */
   mappings?: string[];
+  /** 插件 Config 的 Schemastery JSON：管理器据此生成设置表单。 */
+  configSchema?: SchemasteryJson;
 };
 type Report = {
   kind?: string;
@@ -209,12 +212,15 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
   const report = plugin.report ?? {};
   const rows = report.rows ?? [];
   const [editing, setEditing] = useState<string | null>(null);
+  /** 正在编辑的行用表单还是 JSON：有可表达的 Config 字段时默认表单。 */
+  const [rawJson, setRawJson] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
   const key = (suffix: string) => `${plugin.id}:${suffix}`;
 
   const startEdit = (row: ReportRow) => {
     setEditing(row.id);
+    setRawJson(schemasteryFields(row.configSchema).length === 0);
     setDraftError(null);
     const current = plugin.configs[row.id];
     setDraft(current === undefined ? "{\n  \n}" : JSON.stringify(current, null, 2));
@@ -326,7 +332,21 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
               {[...row.reasons, ...row.notes].map((text) => (
                 <div className="dsh-plugin-reason" key={text}>{text}</div>
               ))}
-              {editing === row.id ? (
+              {editing === row.id && !rawJson ? (
+                <div className="dsh-plugin-config">
+                  <ExtensionConfigForm
+                    fields={schemasteryFields(row.configSchema)}
+                    onCancel={() => setEditing(null)}
+                    onSave={async (values) => {
+                      if (await onRun(key("config"), "set_config", { id: plugin.id, rowId: row.id, config: values })) setEditing(null);
+                    }}
+                    saveLabel={t("保存并重新分析")}
+                    values={(plugin.configs[row.id] as Record<string, unknown> | undefined) ?? {}}
+                  />
+                  <Button onClick={() => setRawJson(true)} size="sm" variant="ghost">{t("改用 JSON 编辑")}</Button>
+                </div>
+              ) : null}
+              {editing === row.id && rawJson ? (
                 <div className="dsh-plugin-config">
                   <textarea
                     aria-label={t("插件配置（JSON）")}

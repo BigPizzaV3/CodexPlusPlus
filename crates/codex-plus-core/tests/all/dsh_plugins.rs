@@ -1136,3 +1136,71 @@ fn dsh_host_provided_packages_match_host_shims() {
     provided.sort();
     assert_eq!(provided, shims);
 }
+
+/// 第二批替身服务：审批对上 PermissionRequest，提问 waterfall 能由插件自己答，system-prompt/assemble 拿到
+/// Codex 真实的 instructions（改了它就整段替换），Stop 负载里的助手回复进镜像，spill / tokenMeter / storage 可用。
+#[tokio::test]
+async fn dsh_second_batch_services_and_events() {
+    use codex_plus_core::extension_gateway::apply_request_with;
+    use codex_plus_core::extension_hooks::dispatch;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        scripts.path().join("builtin"),
+        scripts.path().join("user"),
+        scripts.path().join("user_scripts.json"),
+    );
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("service-plugin")), &toolchain).unwrap();
+    let main = row(&record.report, "dsh-service-demo");
+    assert!(main["status"] == "compatible" || main["status"] == "partial", "{main}");
+    let plan = dsh_plugins::report_bridge(&record.report);
+    assert!(plan.hooks.iter().any(|hook| hook == "PermissionRequest"), "{plan:?}");
+
+    // 工具在 MCP 进程里用到的服务。
+    let responses = serve(&plugins, &toolchain, &[call(1, "probe_services", json!({}))]);
+    let probe: Value = serde_json::from_str(responses[0]["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(probe, json!({"answer": "yes", "spillBytes": 100, "locator": true, "tokens": 2, "domain": true, "title": null, "telemetry": "disabled"}), "{responses:?}");
+
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    // 审批：bash 放行、apply_patch 拒绝、其余不表态（交还 Codex 弹审批）。
+    let allowed = dispatch(&manager, "PermissionRequest", json!({"session_id": "a1", "tool_name": "Bash", "tool_input": {"command": "make"}})).await.unwrap();
+    assert_eq!(allowed["hookSpecificOutput"]["decision"]["behavior"], "allow", "{allowed}");
+    let denied = dispatch(&manager, "PermissionRequest", json!({"session_id": "a1", "tool_name": "apply_patch", "tool_input": {}})).await.unwrap();
+    assert_eq!(denied["hookSpecificOutput"]["decision"]["behavior"], "deny", "{denied}");
+    let untouched = dispatch(&manager, "PermissionRequest", json!({"session_id": "a1", "tool_name": "web_fetch", "tool_input": {}})).await.unwrap();
+    assert_eq!(untouched, json!({}));
+
+    // 提示词组装：插件看得到 Codex 的 instructions，默认只追加。
+    let mut body = json!({"model": "gpt-x", "instructions": "base rules", "input": []});
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert_eq!(body["instructions"], "base rules\n\nservice-demo: be brief", "{body}");
+
+    // Stop 负载里的助手回复进镜像，投影读得到；inbox 排队、改写与事件。
+    dispatch(&manager, "UserPromptSubmit", json!({"session_id": "a1", "prompt": "hi"})).await.unwrap();
+    dispatch(&manager, "Stop", json!({"session_id": "a1", "stop_hook_active": false, "last_assistant_message": "hello from codex"})).await.unwrap();
+    let dir = scripts.path().join("user/dsh-dsh-service-demo");
+    let script = format!(
+        "const {{ default: create }} = await import({}); const methods = create(); process.stdout.write(JSON.stringify(await methods.command({{ name: 'replies', rawInput: '', sessionId: 'a1' }}))); process.exit(0)",
+        json!(url_of(&dir.join("backend/main.mjs")))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(result["kind"], "success", "{}", String::from_utf8_lossy(&output.stderr));
+    let text: Value = serde_json::from_str(result["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, json!({"replies": ["hello from codex"], "inserted": 1, "replaced": true, "tokens": true}), "{text}");
+
+    // 改了 Codex 那一段就整段替换 instructions。
+    plugins.set_row_config(&record.id, "dsh-service-demo", Some(json!({"replaceCodex": true}))).unwrap();
+    plugins.reinspect(&record.id, &toolchain).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    let mut body = json!({"model": "gpt-x", "instructions": "base rules", "input": []});
+    apply_request_with(&manager, &mut body, "/v1/responses").await;
+    assert_eq!(body["instructions"], "BASE rules", "{body}");
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}
