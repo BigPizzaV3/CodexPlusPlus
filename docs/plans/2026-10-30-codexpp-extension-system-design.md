@@ -129,6 +129,7 @@ codexPlus.extension((ctx) => {
 | 不做 | 文件监听自动热重载：`docs/user-script-reload.md` 明确「不增加后台轮询或文件监听器」，对话写入后自动重载、手动改文件用「热重载」 | — |
 | **服务与数据** ✅ | 只读会话查询服务 `sessionQuery`（页面 / 后台 / 工具三处可用，事件日志形状 `{ type, seq, time, data }`）；拓展间服务 `ctx.provide` / `inject` / `ctx.inject` / `ctx.get`，依赖缺失挂起、提供方消失卸载、回来重新应用；多语言 `locale/<语言>.json` 与 `ctx.locale` | 拓展能搜历史会话、互相调用、随界面语言切换 |
 | 持续 | 把内置功能（宠物、听写、轮次回退、用量状态栏）逐个拆成内置拓展 | API 足够表达内置功能 |
+| **对齐 dsh** ✅（2026-11-01） | 拓展内核：可选依赖（`inject` 对象写法 `required: false`）、实例级 `ready` / `dispose`、异步 effect、清单 `instances` 多实例；网关：`stage: upstream` 排在内置环节之后、`order`、`replaces` 关掉内置环节、供应商 `override`；内置拓展：扫描步骤与全局监听归拓展所有，`codexpp.usage` / `codexpp.proxyStatus` 数据服务。dsh 插件侧的覆盖见 `2026-10-30-dsh-plugin-import-design.md` 第 9~11 节 | — |
 
 ## 六、对话造拓展
 
