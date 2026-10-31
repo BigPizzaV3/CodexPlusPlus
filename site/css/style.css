@@ -769,6 +769,7 @@ body::after {
   font-size: 13px;
   margin-top: 34px;
 }
+.steps-more { display: flex; justify-content: center; margin-top: 22px; }
 
 /* ============ 最新动态 ============ */
 

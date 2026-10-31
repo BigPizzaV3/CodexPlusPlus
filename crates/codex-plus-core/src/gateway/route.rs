@@ -67,6 +67,16 @@ pub struct RoutePlan {
     pub candidates: Vec<GatewayCandidate>,
     /// 候选为空且是因为 Key 都在冷却/熔断时，最近一个恢复的等待时间。
     pub cooling: Option<Duration>,
+    /// 候选为空时，冷却中的 Key（按恢复先后排）：最早的那个很快恢复时，候选循环等一等再试它，
+    /// 不马上回本地 429（#2802）。有可用候选时为空。
+    pub waiting: Vec<WaitingCandidate>,
+}
+
+/// 冷却中的一个候选与它还要冷却多久。
+#[derive(Debug, Clone)]
+pub struct WaitingCandidate {
+    pub candidate: GatewayCandidate,
+    pub remaining: Duration,
 }
 
 /// 供应商公布的模型（默认模型 + 模型列表），去掉窗口后缀。
@@ -971,6 +981,8 @@ fn resolve_plan_with(
     let now = Instant::now();
     let mut candidates = Vec::new();
     let mut cooling: Option<Duration> = None;
+    // 冷却 / 熔断中的候选：只在一个可用候选都没有时才用得上。
+    let mut waiting: Vec<(GatewayCandidate, Duration, key_pool::WaitReason)> = Vec::new();
     for (relay, upstream_model) in relays {
         let provider = gateway.provider(&relay.id);
         let window = provider.and_then(|provider| provider.window_for(&upstream_model));
@@ -978,24 +990,54 @@ fn resolve_plan_with(
         let limits = provider
             .map(GatewayProvider::key_limits)
             .unwrap_or_default();
-        let (keys, soonest) = key_pool::order_keys_with(
+        let order = key_pool::order_keys_detailed(
             &relay,
             gateway.key_policy.mode,
             conversation.as_deref(),
             now,
             advance,
         );
-        if let Some(soonest) = soonest {
+        if let Some(soonest) = order.soonest {
             cooling = Some(cooling.map_or(soonest, |current| current.min(soonest)));
         }
-        for key in keys {
-            candidates.push(GatewayCandidate {
-                relay: key.relay,
-                key: key.key,
-                upstream_model: upstream_model.clone(),
-                window,
-                limits,
-            });
+        let candidate = |key: key_pool::KeyCandidate| GatewayCandidate {
+            relay: key.relay,
+            key: key.key,
+            upstream_model: upstream_model.clone(),
+            window,
+            limits,
+        };
+        for key in order.available {
+            candidates.push(candidate(key));
+        }
+        for key in order.waiting {
+            waiting.push((candidate(key.candidate), key.remaining, key.reason));
+        }
+    }
+    let mut waiting_candidates = Vec::new();
+    if candidates.is_empty() {
+        // 熔断是为了把请求引到别家（#2802）：一个可用候选都没有时它拦下的就是全部请求，
+        // 把偶发的 5xx / 断连放大成整整一分钟的本地 429，比直连还糟。这时熔断中的供应商照常放行
+        // （相当于半开探测），成功一次就关闭熔断；失败时客户端拿到的是上游的真实错误。
+        for (candidate, remaining, reason) in waiting {
+            match reason {
+                key_pool::WaitReason::Breaker => candidates.push(candidate),
+                key_pool::WaitReason::Cooling => waiting_candidates.push(WaitingCandidate {
+                    candidate,
+                    remaining,
+                }),
+            }
+        }
+        waiting_candidates.sort_by_key(|item| item.remaining);
+        if candidates.is_empty() {
+            cooling = waiting_candidates
+                .first()
+                .map(|item| item.remaining)
+                .or(cooling);
+        } else {
+            // 熔断中的供应商已放行成候选：`cooling` 只在一个候选都没有时才有意义（#2761）。
+            waiting_candidates.clear();
+            cooling = None;
         }
     }
     Ok(RoutePlan {
@@ -1009,6 +1051,7 @@ fn resolve_plan_with(
         hold_on_switch,
         candidates,
         cooling,
+        waiting: waiting_candidates,
     })
 }
 
@@ -1031,6 +1074,8 @@ mod tests {
             upstream_new: Vec::new(),
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
+            newapi_access: None,
+            upstream_meta: Default::default(),
             relay: RelayProfile {
                 id: id.to_string(),
                 name: id.to_string(),

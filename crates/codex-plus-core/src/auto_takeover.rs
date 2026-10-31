@@ -178,7 +178,28 @@ pub fn has_other_desktop_instance(
             !debug_port_pids.contains(process_id) && Some(*process_id) != current_pid
         });
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        let expected = crate::app_paths::build_codex_executable(app_dir);
+        let expected_str = expected.to_string_lossy();
+        let all = crate::watcher::find_linux_codex_desktop_main_processes(None);
+        let excluded = crate::watcher::find_linux_codex_desktop_main_processes(Some(exclude_port));
+        let mut excluded = excluded
+            .into_iter()
+            .map(|process| process.pid)
+            .collect::<Vec<_>>();
+        if let Some(pid) = current_pid {
+            excluded.push(pid);
+        }
+        return all.iter().any(|process| {
+            let matches_expected = process.executable == expected_str
+                || std::fs::read_link(format!("/proc/{}/exe", process.pid))
+                    .map(|target| target == expected || target.starts_with(app_dir))
+                    .unwrap_or(false);
+            matches_expected && !excluded.contains(&process.pid)
+        });
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         let _ = (app_dir, exclude_port, current_pid);
         false
@@ -246,10 +267,33 @@ pub fn probe_desktop_app(app_dir: &Path) -> AppProbe {
     {
         return probe_windows_desktop_app(app_dir);
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        return probe_linux_desktop_app(app_dir);
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         let _ = app_dir;
         AppProbe::Unknown
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_linux_desktop_app(app_dir: &Path) -> AppProbe {
+    let expected = crate::app_paths::build_codex_executable(app_dir);
+    let expected_str = expected.to_string_lossy();
+    let processes = crate::watcher::find_linux_codex_desktop_main_processes(None);
+    match processes.into_iter().find(|process| {
+        process.executable == expected_str
+            || std::fs::read_link(format!("/proc/{}/exe", process.pid))
+                .map(|target| target == expected || target.starts_with(app_dir))
+                .unwrap_or(false)
+    }) {
+        Some(process) => AppProbe::Running(InstanceKey::new(
+            process.pid,
+            process.lstart.clone(),
+        )),
+        None => AppProbe::NotRunning,
     }
 }
 
@@ -364,10 +408,61 @@ pub fn request_desktop_exit(app_dir: &Path, instance: &InstanceKey, graceful: bo
     {
         return request_windows_exit(instance, graceful);
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        return request_linux_exit(instance, graceful);
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         false
     }
+}
+
+#[cfg(target_os = "linux")]
+fn request_linux_exit(instance: &InstanceKey, graceful: bool) -> bool {
+    // 结束前复核进程启动时间，防止 PID 被操作系统回收并复用后误杀无关进程
+    if !instance.lstart.is_empty() {
+        if let Some(current_starttime) = crate::watcher::linux_process_starttime(instance.pid) {
+            if current_starttime != instance.lstart {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "takeover.exit_request_skipped_reused_pid",
+                    serde_json::json!({
+                        "pid": instance.pid,
+                        "expected_lstart": instance.lstart,
+                        "actual_lstart": current_starttime,
+                    }),
+                );
+                return false;
+            }
+        } else {
+            // /proc/<pid>/stat 已不存在，说明进程已经退出
+            return true;
+        }
+    }
+
+    let sig = if graceful { "-15" } else { "-9" };
+    #[cfg(target_os = "linux")]
+    let accepted = std::process::Command::new("kill")
+        .arg(sig)
+        .arg(instance.pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        if accepted {
+            "takeover.exit_request"
+        } else {
+            "takeover.exit_request_failed"
+        },
+        serde_json::json!({
+            "pid": instance.pid,
+            "force": !graceful,
+            "accepted": accepted,
+        }),
+    );
+    accepted
 }
 
 #[cfg(target_os = "macos")]

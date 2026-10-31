@@ -96,7 +96,26 @@ export type GatewayPoolEntry = {
   lentToCodex?: boolean;
   /** 订阅账号的剩余额度；查不到或普通供应商为空。 */
   quota?: ProviderQuota | null;
+  /** 已保存的 Key（打码，#2782）：订阅账号等不用 Key 的为空。旧版后端没有。 */
+  keys?: ProviderKeyView[];
+  /** 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额。旧版后端没有。 */
+  balanceApi?: boolean;
+  /** new-api 访问令牌（打码，#2793）：只用来查账户余额；没配置为空。令牌原文不出后端。 */
+  newapiAccess?: NewApiAccessView | null;
 };
+
+/** 已保存的 new-api 访问令牌：只有打码后的样子和用户 ID。 */
+export type NewApiAccessView = { masked: string; userId: string };
+
+/** 供应商已保存的一个 Key：后端只给标识和打码后的样子，原文不出后端。删除 / 替换按 `id`。 */
+export type ProviderKeyView = { id: string; masked: string };
+
+/** Key 池健康状态里的 Key 标识换成打码后的 Key 显示；只剩一个 Key 时 Key 池按 `primary` 记。找不到就原样显示标识。 */
+export function keyLabel(keys: ProviderKeyView[] | undefined, keyId: string): string {
+  const list = keys ?? [];
+  const found = list.find((key) => key.id === keyId) ?? (keyId === "primary" && list.length === 1 ? list[0] : undefined);
+  return found ? found.masked : keyId;
+}
 
 export type ProviderPrice = { currency: string; input: number; cachedInput: number; output: number };
 
@@ -311,6 +330,17 @@ export function parseKeyLimit(value: string): number | null {
 
 /** 请求日志「重试原因」里网关记的限速排队：`local_rate_limit_wait_ms:<毫秒>`。 */
 export const QUEUE_REASON_PREFIX = "local_rate_limit_wait_ms:";
+
+/**
+ * 请求日志「重试原因」里的说明：换上游后被拒收，去掉了别家签发的压缩上下文（compaction），
+ * 较早的对话内容上游已经看不到。只是说明，不算一次重试。
+ */
+export const FOREIGN_COMPACTION_DROPPED_REASON = "foreign_compaction_dropped";
+
+/** 这次请求是否去掉过别家签发的压缩上下文。 */
+export function foreignCompactionDropped(reasons: string[] | null | undefined): boolean {
+  return (reasons ?? []).includes(FOREIGN_COMPACTION_DROPPED_REASON);
+}
 
 /** 这次请求因 Codex++ 本地限速排队了多久（毫秒）；没排过队返回 null。 */
 export function queueWaitMs(reasons: string[] | null | undefined): number | null {
@@ -1174,7 +1204,7 @@ export type UsageSummary = {
   byModel: UsageGroup[];
   costs: UsageCost[];
 };
-export type ProviderBalance = { providerId: string; provider: string; baseUrl: string; amount?: number | null; currency: string; error?: string | null };
+export type ProviderBalance = { providerId: string; provider: string; baseUrl: string; amount?: number | null; currency: string; error?: string | null; note?: string | null };
 export type UsageRange = "today" | "7d" | "30d" | "all";
 
 /** 统计范围从哪一刻开始（本地时间当天零点往前推）；「全部」没有起点。 */

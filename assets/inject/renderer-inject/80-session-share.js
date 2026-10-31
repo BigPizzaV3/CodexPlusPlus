@@ -539,7 +539,8 @@
     const rules = new Set();
     for (const id of deletedSessionRowIds) {
       const uuid = normalizedCodexThreadUuid(id);
-      if (uuid) rules.add(`[data-app-action-sidebar-thread-id$="${CSS.escape(uuid)}"]{display:none !important}`);
+      // uuid 后缀按不区分大小写匹配，属性里大写写法的重建行也能在首帧隐藏（#2791）。
+      if (uuid) rules.add(`[data-app-action-sidebar-thread-id$="${CSS.escape(uuid)}" i]{display:none !important}`);
       else rules.add(`[data-app-action-sidebar-thread-id="${CSS.escape(id)}"]{display:none !important}`);
     }
     // 属性里看不出 uuid 的重建行（临时 client-new-thread id、只在 href / React props
@@ -574,6 +575,41 @@
     if (!uuids.size && !document.querySelector(`[${deletedSessionRowMarker}]`)) return;
     for (const row of sessionRows()) {
       const hidden = uuids.size > 0 && uuids.has(deletedSessionUuid(sessionRefFromRow(row).session_id));
+      if (hidden && row.getAttribute(deletedSessionRowMarker) !== "true") row.setAttribute(deletedSessionRowMarker, "true");
+      else if (!hidden && row.getAttribute(deletedSessionRowMarker) !== null) row.removeAttribute(deletedSessionRowMarker);
+    }
+  }
+
+  /**
+   * 在观察器回调里同步给新出现的已删会话行打隐藏标记（#2791）。
+   *
+   * filterDeletedSessionRows 挂在扫描里，要等 200ms 定时器再加一帧 rAF 才执行：
+   * 折叠再展开项目分组时，Codex 按缓存重建出的已删会话行会先画出来、再被藏起，
+   * 用户能看到「闪一下再消失」。MutationObserver 回调是微任务，在浏览器绘制下一帧
+   * 之前就会执行，这里只检查本批变更里新增、或身份属性（thread id / href）变了的
+   * 侧栏行，判定方式与 filterDeletedSessionRows 相同，行在首帧就不可见。
+   * 没有已删记录时立即返回，平时不增加开销；标记属性不在扫描 observer 的
+   * attributeFilter 里，写标记不会引发自喂扫描。
+   */
+  function hideDeletedSessionRowsInMutations(mutations) {
+    if (!deletedSessionRowIds.size || !mutations?.length) return;
+    const uuids = deletedSessionUuids();
+    if (!uuids.size) return;
+    const rowSelector = selectors.sidebarThread;
+    const rows = new Set();
+    const collect = (node) => {
+      if (node?.nodeType !== 1) return;
+      // 节点本身或其祖先是侧栏行（行内的链接 / 标题被替换）；以及新插入子树里的行。
+      const owner = node.closest?.(rowSelector);
+      if (owner) rows.add(owner);
+      node.querySelectorAll?.(rowSelector)?.forEach?.((row) => rows.add(row));
+    };
+    for (const mutation of mutations) {
+      if (mutation.type === "attributes") collect(mutation.target);
+      else mutation.addedNodes?.forEach?.(collect);
+    }
+    for (const row of rows) {
+      const hidden = uuids.has(deletedSessionUuid(sessionRefFromRow(row).session_id));
       if (hidden && row.getAttribute(deletedSessionRowMarker) !== "true") row.setAttribute(deletedSessionRowMarker, "true");
       else if (!hidden && row.getAttribute(deletedSessionRowMarker) !== null) row.removeAttribute(deletedSessionRowMarker);
     }

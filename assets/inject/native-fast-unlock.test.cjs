@@ -20,10 +20,20 @@ const queueExplicitBedrock = queueExplicit.replace("return t?.type===`chatgpt`?"
 // 26.1021.3705：保留实际默认队列结构，仅统一夹具依赖的函数名。
 const queueDefaultRuntime = function Vin(e,{runtime:t},n,r){let i=null;return{async readServiceTier(r){for(;i!=null;)await i.catch(()=>void 0);return n(),zin(e.requestClient,e.logger,r,async()=>{if(e.getHostId()===`local`&&await t.isUsingCopilotInference())return!1;let n=await e.getAccount({priority:`critical`});return n.account?.type===`chatgpt`||n.account?.type===`amazonBedrock`})},async writeServiceTier(t,a){let o=i,s=(async()=>(await o?.catch(()=>void 0),n(),e.sendRequest(`config/batchWrite`,{edits:[{keyPath:a==null?`service_tier`:`profiles.${a}.service_tier`,value:t??`default`,mergeStrategy:`upsert`}],filePath:null,expectedVersion:null,reloadUserConfig:!0})))();i=s;try{return await s}finally{i===s&&(i=null,r())}},writeModel(t,n,r){return e.sendRequest(`config/batchWrite`,a1t(t,n,r))},readShellEnvironmentPolicy(e,t){return Promise.resolve(null)}}}.toString();
 
+// 外围写法漂移（每个门控一处，都是历次 Codex 更新里真实变过的位置）：严格结构认不出，由核心结构兜底。
+const drift = (fixture, from, to) => { assert.ok(fixture.includes(from), from); return fixture.replace(from, to); };
+const coreDrift = [
+  drift(uiBedrock, ",n=q(gk),r=e?.hostId??n,", ",n=q(gk),z=1,r=e?.hostId??n,"),
+  drift(requestBedrock, "let n=await v$s(e,t);", "let n=await v$s(e,t,!0);"),
+  drift(queueDefaultRuntime, "&&await t.isUsingCopilotInference())return!1;", "&&(await t.isUsingCopilotInference()))return!1;"),
+  drift(queueExplicitBedrock, "{settings:t,storage:n,filesystem:r,runtime:i}", "{settings:t,storage:n,filesystem:r,runtime:i,remote:v}"),
+];
+
 const shapes = [
   { name: "legacy", fixtures: [ui, request, queueDefault, queueExplicit], bedrockNative: false },
   { name: "bedrock", fixtures: [uiBedrock, requestBedrock, queueDefaultBedrock, queueExplicitBedrock], bedrockNative: true },
   { name: "runtime-copilot", fixtures: [uiBedrock, requestBedrock, queueDefaultRuntime, queueExplicitBedrock], bedrockNative: true },
+  { name: "core-drift", fixtures: coreDrift, bedrockNative: true, strategy: "core" },
 ];
 
 // 原生 requirements 和 tier 解析函数也直接保留，验证补丁没有绕开它们。
@@ -347,9 +357,29 @@ async function runNativeFastTests() {
   assert.equal(api.plan(shadowedRuntime, url).diagnostics.reason, "shadowed-bindings");
   const mixedDefaults = `${sourceOf(shapes[2].fixtures)}\n${queueDefaultBedrock}`;
   assert.equal(api.plan(mixedDefaults, url).diagnostics.reason, "ambiguous-gates", "不同历史结构同时出现也必须拒绝");
+  for (const shape of shapes) {
+    const strategies = api.plan(sourceOf(shape.fixtures), url).diagnostics.strategies;
+    for (const kind of ["ui-access", "request-access", "queue-default-access", "queue-explicit-access"]) {
+      assert.equal(strategies[kind], shape.strategy ?? "strict", `${shape.name} ${kind}`);
+    }
+  }
+  // 核心结构的 queue-explicit 也必须能解析出 runtime；外层函数头里没有 runtime 时放弃，而不是丢掉 Copilot 判定。
+  const noRuntime = sourceOf(coreDrift).replace("{settings:t,storage:n,filesystem:r,runtime:i,remote:v}", "{settings:t,storage:n,filesystem:r,remote:v}");
+  assert.equal(api.plan(noRuntime, url).diagnostics.reason, "incomplete-gates");
+
+  // Copilot 判定换了写法但仍是紧挨着取账号的提前返回：由核心结构兜底，判定原样保留在放行条件之前。
   const changedCopilot = sourceOf(shapes[2].fixtures).replace("t.isUsingCopilotInference()", "t.isCopilotApiAvailable()");
-  assert.equal(api.transform(changedCopilot, url).patchedSource, changedCopilot, "未知 Copilot 结构不得部分应用");
-  assert.equal(api.plan(changedCopilot, url).diagnostics.reason, "incomplete-gates");
+  const changedPlan = api.plan(changedCopilot, url);
+  assert.equal(changedPlan.ok, true, "Copilot 判定换写法时由核心结构兜底");
+  assert.equal(changedPlan.diagnostics.strategies["queue-default-access"], "core");
+  const changedPatched = api.transform(changedCopilot, url).patchedSource;
+  assert.ok(changedPatched.indexOf("await t.isCopilotApiAvailable())return!1;") < changedPatched.indexOf("runtime?.allow?.(e.getHostId(),n.account?.type)"),
+    "Copilot 提前返回必须保留在放行条件之前");
+  // Copilot 判定整个消失：选了 Copilot 的请求可能走到放行条件，宁可不改。
+  const droppedCopilot = sourceOf(shapes[2].fixtures).replace("if(e.getHostId()===`local`&&await t.isUsingCopilotInference())return!1;", "");
+  assert.notEqual(droppedCopilot, sourceOf(shapes[2].fixtures));
+  assert.equal(api.transform(droppedCopilot, url).patchedSource, droppedCopilot, "缺少 Copilot 判定时不得部分应用");
+  assert.equal(api.plan(droppedCopilot, url).diagnostics.reason, "incomplete-gates");
   return "Native Fast structure matching (legacy, Bedrock and runtime Copilot shapes), four auth paths, requirements, local scope, opt-in, queue and module transport behavior passed";
 }
 

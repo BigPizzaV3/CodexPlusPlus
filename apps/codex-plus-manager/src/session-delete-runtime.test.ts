@@ -12,6 +12,7 @@ const uuid = "11111111-1111-4111-8111-111111111111";
 const otherUuid = "22222222-2222-4222-8222-222222222222";
 
 class Element {
+  nodeType = 1;
   attributes = new Map<string, string>();
   parentElement: Element | null = null;
   // 有 parentElement 时所在区域：侧栏列表（aside）或导航栏（nav rail）。
@@ -27,8 +28,10 @@ class Element {
   setAttribute(key: string, value: string) { this.attributes.set(key, value); }
   removeAttribute(key: string) { this.attributes.delete(key); }
   querySelector() { return null; }
+  querySelectorAll(_selector?: string): Element[] { return []; }
   get isConnected() { return !this.removed; }
   closest(selector: string): Element | null {
+    if (selector === "[data-app-action-sidebar-thread-id]" && this.getAttribute("data-app-action-sidebar-thread-id") !== null) return this;
     if (selector.includes("data-codex-plus-ext") && this.getAttribute("data-codex-plus-ext")) return this;
     if (!this.parentElement) return null;
     if (selector.includes("aside") && this.region === "aside") return this.parentElement;
@@ -124,7 +127,7 @@ function deleteFixture() {
       querySelector: (selector: string) => rows.find((element) => element.isConnected && selector.includes("data-codex-plus-deleted-session-row") && element.getAttribute("data-codex-plus-deleted-session-row") !== null) ?? null,
       getElementById: (id: string) => styles.get(id) ?? null,
       createElement: () => new Element(),
-    }, selectors: { threadTitle: ".title" },
+    }, selectors: { threadTitle: ".title", sidebarThread: "[data-app-action-sidebar-thread-id]" },
     sessionRows: () => rows.filter((element) => element.isConnected),
     visibleElement: (element: Element) => element.visible && element.isConnected,
     isExtensionUiNode: (element: Element) => !!element.getAttribute("data-codex-plus-ext"),
@@ -357,6 +360,34 @@ test("sidebar rebuilds hide rows resolved to a deleted thread until undo (#2671)
   // 撤销后恢复显示。
   f.context.unhideDeletedSessionRows([`${uuid}`]);
   assert.equal(rebuilt.getAttribute("data-codex-plus-deleted-session-row"), null);
+});
+
+test("observer callback hides rebuilt rows of a deleted thread before the first paint (#2791)", async () => {
+  const f = deleteFixture(); await f.begin(); await f.finish();
+  // 折叠再展开：Codex 一次插入整个分组，已删会话的行属性是临时 id，uuid 只在 React props 里。
+  const rebuilt = row("client-new-thread:fixture", "local", { conversationId: uuid, hostId: "local" });
+  rebuilt.setAttribute("href", "");
+  const sibling = row(otherUuid, "local");
+  const group = new Element();
+  group.querySelectorAll = () => [rebuilt, sibling];
+  // 不经过扫描（200ms 定时器 + rAF），在观察器回调里同步打标记。
+  f.context.hideDeletedSessionRowsInMutations([{ type: "childList", addedNodes: [group], removedNodes: [] }]);
+  assert.equal(rebuilt.getAttribute("data-codex-plus-deleted-session-row"), "true");
+  assert.equal(sibling.getAttribute("data-codex-plus-deleted-session-row"), null, "其它会话不受影响");
+  // React 复用同一节点给别的会话（只改身份属性）时，同步摘掉标记，避免反向闪烁。
+  rebuilt.__reactFiber$fixture.pendingProps = { conversationId: otherUuid, hostId: "local" };
+  f.context.hideDeletedSessionRowsInMutations([{ type: "attributes", target: rebuilt, addedNodes: [], removedNodes: [] }]);
+  assert.equal(rebuilt.getAttribute("data-codex-plus-deleted-session-row"), null);
+  // 没有删除记录时直接返回，不解析任何行。
+  const idle = deleteFixture();
+  const untouched = row(uuid, "local");
+  idle.context.hideDeletedSessionRowsInMutations([{ type: "childList", addedNodes: [untouched], removedNodes: [] }]);
+  assert.equal(untouched.getAttribute("data-codex-plus-deleted-session-row"), null);
+  // 后缀规则不区分大小写，属性里是大写 uuid 的行也由样式表在首帧隐藏。
+  assert.match(f.styles.get("codex-plus-deleted-session-rows")!.textContent, new RegExp(`thread-id\\$="${uuid}" i\\]`));
+  // 观察器回调先同步过滤，再排常规扫描。
+  const startup = shard("99-startup.js");
+  assert.match(startup, /new MutationObserver\(\(mutations\) => \{[^}]*hideDeletedSessionRowsInMutations\(mutations\)[^}]*scheduleScan\(mutations\);/);
 });
 
 test("quick delete skips confirmation only for local sessions (#48)", async () => {

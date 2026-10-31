@@ -122,7 +122,7 @@ test("路由说明的失败原因按标记翻译，不再按「是不是汉字�
   assert.doesNotMatch(hub, /一-龥/);
   assert.match(hub, /typeof arg === "object" \? t\(arg\.zh\) : arg/);
   assert.match(read("GatewayModelMatrix.tsx"), /\.join\(t\("、"\)\)/);
-  assert.match(read("GatewayProviders.tsx"), /\$\{key\.keyId\}\$\{t\("："\)\}/);
+  assert.match(read("GatewayProviders.tsx"), /\$\{keyLabel\(entry\.keys, key\.keyId\)\}\$\{t\("："\)\}/);
 });
 
 test("权重输入：删空、输入到一半不改值，失焦后规范成 ≥ 1 的整数", () => {

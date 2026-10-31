@@ -28,13 +28,15 @@ import { AGENT_ICONS, Avatar, type Notify, type Run } from "./gateway-ui";
 import { successRate } from "./hub-overview-model";
 import { openRequestLog } from "./UsageTabs";
 import { TopbarActions } from "./TopbarActions";
+import { cachedProviderBalances, loadProviderBalances, subscribeProviderBalances } from "./provider-balances";
 
-const memo: { range: UsageRange; summary: UsageSummary | null; balances: ProviderBalance[] | null } = { range: "30d", summary: null, balances: null };
+const memo: { range: UsageRange; summary: UsageSummary | null } = { range: "30d", summary: null };
 
 export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayload | null; busy: string | null; run: Run; notify: Notify }) {
   const [range, setRangeState] = useState<UsageRange>(memo.range);
   const [summary, setSummary] = useState<UsageSummary | null>(memo.summary);
-  const [balances, setBalances] = useState<ProviderBalance[] | null>(memo.balances);
+  // 余额和供应商池卡片共用一份（#2793），谁先查到另一边直接用。
+  const [balances, setBalances] = useState<ProviderBalance[] | null>(cachedProviderBalances().balances);
   const [loadingBalances, setLoadingBalances] = useState(false);
   const [split, setSplit] = useState<"provider" | "model" | "agent">("provider");
 
@@ -56,14 +58,13 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
       if (id === latest.current) await notify(t("调用失败"), String(error), "failed");
     }
   };
-  const loadBalances = async () => {
+  const loadBalances = async (force: boolean) => {
     setLoadingBalances(true);
     try {
-      const result = await invoke<{ status: string; balances?: ProviderBalance[] }>("load_gateway_balances");
-      memo.balances = result.balances ?? [];
-      setBalances(memo.balances);
-    } catch {
-      setBalances([]);
+      setBalances(await loadProviderBalances(
+        () => invoke<{ status: string; balances?: ProviderBalance[] }>("load_gateway_balances"),
+        { force, maxAge: null },
+      ));
     } finally {
       setLoadingBalances(false);
     }
@@ -76,10 +77,12 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
 
   useEffect(() => {
     void load(range);
-    if (!memo.balances) void loadBalances();
+    if (!cachedProviderBalances().balances) void loadBalances(false);
     // 进入时读一次；切换范围时由 setRange 读。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // 供应商池卡片那边刷新了余额，这里跟着更新。
+  useEffect(() => subscribeProviderBalances(setBalances), []);
 
   const ranges: Array<{ id: UsageRange; label: string }> = [
     { id: "today", label: t("今天") },
@@ -109,7 +112,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
       </div>
       {/* 刷新放进外壳顶栏（网关页在用量页签不再放它自己的刷新），页面里不再重复一个。 */}
       <TopbarActions>
-        <button aria-label={t("刷新")} className="gw-icon-button gw-usage-refresh" onClick={() => { void load(range); void loadBalances(); }} title={t("刷新")} type="button">
+        <button aria-label={t("刷新")} className="gw-icon-button gw-usage-refresh" onClick={() => { void load(range); void loadBalances(true); }} title={t("刷新")} type="button">
           <RefreshCw className={`h-4 w-4 ${loadingBalances ? "animate-spin" : ""}`} />
         </button>
       </TopbarActions>
@@ -124,7 +127,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
               </div>
               <div className="gw-balance-row">
                 <span>{t("余额")}</span>
-                {balance.amount !== null && balance.amount !== undefined ? <strong>{formatMoney(balance.amount, balance.currency)}</strong> : <small title={balance.error ?? ""}>{t(balance.error ?? "查不到")}</small>}
+                {balance.amount !== null && balance.amount !== undefined ? <strong>{formatMoney(balance.amount, balance.currency)}</strong> : <small title={balance.error ?? (balance.note ? t(balance.note) : "")}>{balance.error ? t(balance.error) : balance.note ? "—" : t("查不到")}</small>}
               </div>
             </div>
           ))}

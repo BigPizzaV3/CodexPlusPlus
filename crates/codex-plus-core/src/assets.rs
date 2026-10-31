@@ -48,6 +48,86 @@ fn agent_pet_sounds_script() -> String {
     )
 }
 
+/// 大肥鱼（旧版 DeepSeek 鲸鱼挂件）的角色图、音效与动图，来自上游原样素材，
+/// 许可范围见 `assets/inject/upstream/whale-widget/PROVENANCE.md`。
+const WHALE_DEFAULT_IMAGE: &[u8] =
+    include_bytes!("../../../assets/inject/upstream/whale-widget/DSniang1.png");
+const WHALE_RUNTIME: &str =
+    include_str!("../../../assets/inject/upstream/whale-widget/full-widget-codex.js");
+const WHALE_MEDIA: &[(&str, &str, &[u8])] = &[
+    ("DSniang1.png", "image/png", WHALE_DEFAULT_IMAGE),
+    (
+        "Ya1.mp3",
+        "audio/mpeg",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/Ya1.mp3"),
+    ),
+    (
+        "Ya2.mp3",
+        "audio/mpeg",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/Ya2.mp3"),
+    ),
+    (
+        "D1.mp3",
+        "audio/mpeg",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/D1.mp3"),
+    ),
+    (
+        "D2.mp3",
+        "audio/mpeg",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/D2.mp3"),
+    ),
+    (
+        "minecraft-exp-orb.wav",
+        "audio/wav",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/minecraft-exp-orb.wav"),
+    ),
+    (
+        "task-end-a.wav",
+        "audio/wav",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/task-end-a.wav"),
+    ),
+    (
+        "bubble-petpet.gif",
+        "image/gif",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/bubble-petpet.gif"),
+    ),
+    (
+        "bubble-money1.gif",
+        "image/gif",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/bubble-money1.gif"),
+    ),
+    (
+        "rua.gif",
+        "image/gif",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/rua.gif"),
+    ),
+];
+
+/// 大肥鱼的默认角色图（data URI），供管理器「Agent 桌宠」页预览。
+pub fn whale_default_image_data_uri() -> String {
+    image_data_uri("image/png", WHALE_DEFAULT_IMAGE)
+}
+
+fn whale_assets_json() -> String {
+    let values: serde_json::Map<String, Value> = WHALE_MEDIA
+        .iter()
+        .map(|(name, mime, bytes)| ((*name).to_string(), json!(image_data_uri(mime, bytes))))
+        .collect();
+    Value::Object(values).to_string()
+}
+
+fn whale_runtime_script() -> String {
+    // 直接注入函数声明；完整引擎使用词法宿主，不要求 renderer 开放 unsafe-eval。
+    // 与旧版一致始终内嵌：在管理器里切到大肥鱼后几秒内生效，不用重启 Codex。
+    format!(
+        "window.__CODEX_PLUS_WHALE_IMAGE__ = {};\nwindow.__CODEX_PLUS_WHALE_ASSETS__ = {};\nwindow.__CODEX_PLUS_WHALE_ENGINE__ = function(window,document,fetch,localStorage,setTimeout,clearTimeout,setInterval,clearInterval,requestAnimationFrame,cancelAnimationFrame,MutationObserver,ResizeObserver,AudioContext,webkitAudioContext,Image,Audio) {{\n{}\n}};\n",
+        serde_json::to_string(&image_data_uri("image/png", WHALE_DEFAULT_IMAGE))
+            .expect("whale image should serialize"),
+        whale_assets_json(),
+        WHALE_RUNTIME
+    )
+}
+
 #[cfg(windows)]
 const DREAM_TARGET_CSS: &str =
     include_str!("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css");
@@ -575,8 +655,9 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&hide_official_usage_alert)
             .expect("usage alert config should serialize"),
         format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
             agent_pet_sounds_script(),
+            whale_runtime_script(),
             include_str!("../../../assets/inject/composer-readiness.js"),
             format!(
                 "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});\n{}\nwindow.__codexPlusNativePredictions.runtime.update({});",
@@ -789,6 +870,40 @@ mod tests {
     fn injection_does_not_project_retired_plugin_cache() {
         let script = injection_script_with_settings(57321, &BackendSettings::default());
         assert!(!script.contains("window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ ="));
+    }
+
+    #[test]
+    fn whale_character_is_embedded_for_offline_and_live_enable() {
+        let script = injection_script(57321);
+        let prefix = "window.__CODEX_PLUS_WHALE_IMAGE__ = ";
+        let value = script.split_once(prefix).unwrap().1.lines().next().unwrap();
+        let uri: String = serde_json::from_str(value.trim_end_matches(';')).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(uri.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        assert_eq!(bytes, WHALE_DEFAULT_IMAGE);
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn whale_media_preserves_original_audio_and_animation_bytes() {
+        let values: Value = serde_json::from_str(&whale_assets_json()).unwrap();
+        assert_eq!(values.as_object().unwrap().len(), 10);
+        for (name, mime, expected) in WHALE_MEDIA {
+            let uri = values[*name].as_str().unwrap();
+            let prefix = format!("data:{mime};base64,");
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(uri.strip_prefix(&prefix).unwrap())
+                .unwrap();
+            assert_eq!(&decoded, expected);
+        }
+        let script = whale_runtime_script();
+        assert!(script.contains("window.__CODEX_PLUS_WHALE_ENGINE__ = function("));
+        assert!(!script.contains("new Function("));
+        // 桌宠按压音与大肥鱼内置音效是同一份原样素材。
+        let sounds = agent_pet_sounds();
+        assert_eq!(sounds["duck"]["press"], values["Ya1.mp3"]);
+        assert_eq!(sounds["fx1"]["release"], values["D2.mp3"]);
     }
 
     #[test]

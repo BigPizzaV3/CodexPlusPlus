@@ -828,6 +828,12 @@ fn injection_script_installs_image_overlay_from_data_uri() {
     assert!(script.contains("image.src = resource.imageSource"));
     assert!(!script.contains("JSON.stringify(source)"));
     assert!(overlay_script.contains("zIndex: String(wallpaperLayer)"));
+    // #2813：祖先带 translate/transform 时 fixed 背景会退化为元素局部坐标，受影响表面改按视口换算。
+    assert!(overlay_script.contains("[paint.transform, paint.translate, paint.scale, paint.rotate]"));
+    assert!(overlay_script.contains(
+        "background-attachment:scroll!important;background-size:${geometry.size}!important"
+    ));
+    assert!(overlay_script.contains("[document, \"transitionend\", onPaintMotionEnd, true]"));
     assert!(script.contains("pointerEvents: \"none\""));
     assert!(!script.contains("codexPlusImageOverlayTransparentTargetSelector"));
     assert!(!script.contains("function installCodexPlusImageOverlayForeground"));
@@ -2910,6 +2916,22 @@ fn injection_script_exposes_the_usage_status_line() {
     assert!(script.contains("registerCodexPlusExtensionSelector"));
     // 设置面板里的开关要能立刻生效，不用等下一拍轮询。
     assert!(script.contains("__CODEX_PLUS_USAGE_STATUSLINE_SYNC__"));
+}
+
+#[test]
+fn injection_script_gates_the_proxy_request_status_bar() {
+    let script = assets::injection_script(57321);
+
+    // 开关接线（#2824）：默认开 → 后端映射 → 增强总开关关闭时一并关。
+    assert!(script.contains("proxyRequestStatus: true"));
+    assert!(script.contains("proxyRequestStatus: \"codexAppProxyRequestStatus\""));
+    assert!(script.contains("proxyRequestStatus: false"));
+    // 关闭时渲染和轮询都要先过开关，不能只藏节点还在每 1.2 秒打 /proxy-status。
+    assert!(script.contains("function codexPlusProxyStatusEnabled()"));
+    assert_eq!(
+        script.matches("if (!codexPlusProxyStatusEnabled())").count(),
+        2
+    );
 }
 
 #[test]

@@ -39,6 +39,10 @@ pub struct MarketScript {
     /// 可选图标 URL。清单目前还没提供，留好通路：有就用，没有回退默认字形。
     #[serde(default)]
     pub icon: String,
+    /// 该脚本最近一次更新的时间（ISO 8601，可只写日期），由市场清单逐条提供（#2781）。
+    /// 老清单没有则为空，前端不显示、按更新时间排序时排到末尾。
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 pub fn parse_market_manifest(raw: Value) -> anyhow::Result<ScriptMarketManifest> {
@@ -192,6 +196,7 @@ pub fn market_scripts_payload(
                 "requirements": script.requirements,
                 "limitations": script.limitations,
                 "icon": script.icon,
+                "updatedAt": script.updated_at,
                 "installed": local_version.is_some(),
                 "installedVersion": local_version.cloned().unwrap_or_default(),
                 "updateAvailable": local_version
@@ -264,7 +269,18 @@ fn parse_market_script(raw: Value) -> Option<MarketScript> {
         requirements: string_list(&raw, "requirements"),
         limitations: string_list(&raw, "limitations"),
         icon: optional_string(&raw, "icon"),
+        updated_at: market_script_updated_at(&raw),
     })
+}
+
+/// 逐条脚本的更新时间。清单手工维护，兼容 `updated_at` / `updatedAt` 两种写法；
+/// 不在这里校验格式，前端解析失败时按「未标注」处理。
+fn market_script_updated_at(raw: &Value) -> String {
+    ["updated_at", "updatedAt"]
+        .iter()
+        .map(|key| optional_string(raw, key))
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
 }
 
 /// 取字符串数组字段，去掉空项。清单里 requirements/limitations 都是可选的。

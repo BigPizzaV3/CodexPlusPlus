@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
-import { agentPetSettingsIssue, agentPetSoundKey, defaultAgentPetSettings, normalizeAgentPetSettings } from "./agent-pet-settings.ts";
+import { agentPetSettingsIssue, agentPetSoundKey, defaultAgentPetSettings, isAgentPetImagePetActive, isAgentPetWhaleWidgetActive, normalizeAgentPetSettings } from "./agent-pet-settings.ts";
 import { agentPetReleaseDelay } from "./agent-pet-sound.ts";
 
 /**
@@ -39,9 +39,36 @@ test("音效键：自定义音效带文件名，换了文件键就变", () => {
   );
 });
 
-test("旧版用量挂件开着的用户升级后桌宠保持开启，已有桌宠设置时以它为准", () => {
-  assert.equal(normalizeAgentPetSettings(undefined, true).enabled, true);
+test("旧版用量挂件开着的用户升级后开启大肥鱼，已有桌宠设置时以它为准", () => {
+  const legacy = normalizeAgentPetSettings(undefined, true);
+  assert.equal(legacy.enabled, true);
+  assert.equal(legacy.kind, "whaleWidget");
+  assert.equal(isAgentPetWhaleWidgetActive(legacy), true);
+  assert.equal(normalizeAgentPetSettings(undefined, false).kind, "image");
   assert.equal(normalizeAgentPetSettings({ enabled: false }, true).enabled, false);
+  // 已有桌宠设置但没写 kind（升级到简单桌宠之后保存过）：保持现状，仍是简单桌宠。
+  const existing = normalizeAgentPetSettings({ enabled: true, image: "fox" }, true);
+  assert.equal(existing.kind, "image");
+  assert.equal(existing.image, "fox");
+});
+
+test("桌宠类型：未知值回落到简单桌宠，两种类型互斥", () => {
+  assert.equal(defaultAgentPetSettings().kind, "image");
+  for (const kind of ["dragon", "", 1, null]) assert.equal(normalizeAgentPetSettings({ kind }).kind, "image", String(kind));
+  assert.equal(normalizeAgentPetSettings({ kind: " whaleWidget " }).kind, "whaleWidget");
+  const cases: Array<[Partial<ReturnType<typeof defaultAgentPetSettings>>, boolean, boolean]> = [
+    [{ enabled: true, kind: "image" }, true, false],
+    [{ enabled: true, kind: "whaleWidget" }, false, true],
+    [{ enabled: false, kind: "whaleWidget" }, false, false],
+    [{ enabled: true, kind: "whaleWidget", agents: [] }, false, false],
+  ];
+  for (const [patch, image, whale] of cases) {
+    const settings = { ...defaultAgentPetSettings(), ...patch };
+    assert.equal(isAgentPetImagePetActive(settings), image, JSON.stringify(patch));
+    assert.equal(isAgentPetWhaleWidgetActive(settings), whale, JSON.stringify(patch));
+  }
+  // 选了大肥鱼时不再校验简单桌宠没填好的自定义图片，避免拦住保存。
+  assert.equal(agentPetSettingsIssue({ ...defaultAgentPetSettings(), kind: "whaleWidget", image: "custom", customImageUrl: "bad" }), null);
 });
 
 test("自定义图片只接受不带账号信息的 https 地址", () => {
@@ -190,6 +217,19 @@ test("拖动后记住位置，单纯点按不改位置", () => {
   assert.deepEqual(JSON.parse(storage.get("codexPlus.agentPet.position.v1")!), { right: 128, bottom: 182 });
 });
 
+test("选了大肥鱼时简单桌宠不挂载，切过去时已挂载的会卸载（两者互斥）", async () => {
+  const whale = fixture({ ...defaultAgentPetSettings(), enabled: true, kind: "whaleWidget" });
+  runInContext("syncCodexPlusAgentPet()", whale.context);
+  await flush();
+  assert.equal(whale.body.children.length, 0);
+  assert.deepEqual(whale.requests, [], "不取图、不取音效");
+  const { context, body } = fixture({ ...defaultAgentPetSettings(), enabled: true });
+  runInContext("syncCodexPlusAgentPet()", context);
+  assert.equal(body.children.length, 1);
+  runInContext("codexPlusBackendSettings = { agentPet: { ...codexPlusBackendSettings.agentPet, kind: \"whaleWidget\" } }; syncCodexPlusAgentPet()", context);
+  assert.equal(body.children.length, 0);
+});
+
 test("关闭、未选 Codex 或还没读到设置时不挂载；关闭后卸载", () => {
   assert.equal(fixture(null).body.children.length, 0);
   for (const agentPet of [{ ...defaultAgentPetSettings() }, { ...defaultAgentPetSettings(), enabled: true, agents: [] }]) {
@@ -209,7 +249,23 @@ test("管理器：Agent 桌宠是「工具」里的独立页面，图库与图�
   assert.match(app, /route === "agentPet" \? \(\s*<AgentPetPage/);
   assert.match(page, /invoke<CatalogEntry\[\]>\("agent_pet_catalog"\)/);
   assert.match(page, /invoke<ImageResult>\("agent_pet_image", \{ image, customImageUrl \}\)/);
-  assert.doesNotMatch(app, /WhaleBalance|whale-settings|t\("Codex 用量挂件"\)/);
+  // 旧版增强页里的「Codex 用量挂件」开关已并入桌宠类型，余额配置改由 Agent 桌宠页提供。
+  assert.doesNotMatch(app, /t\("Codex 用量挂件"\)|WhaleBalanceSettingsFields/);
+  assert.match(app, /<AgentPetPage[\s\S]*?whaleBalance=\{settingsForm\}[\s\S]*?onWhaleBalanceChange=/);
+});
+
+test("管理器：桌宠类型二选一，选大肥鱼时显示余额配置与素材来源", () => {
+  assert.match(page, /role="radiogroup" aria-label=\{t\("桌宠类型"\)\}/);
+  assert.match(page, /\[AGENT_PET_KIND_IMAGE,[\s\S]*?\[AGENT_PET_KIND_WHALE_WIDGET,[\s\S]*?t\("大肥鱼（DeepSeek 鲸鱼）"\)/);
+  assert.match(page, /\{isWhale \? \(\r?\n\s*<WhaleWidgetSection /);
+  assert.match(page, /invoke<string>\("agent_pet_whale_image"\)/);
+  for (const value of ["auto", "off", "custom"]) assert.match(page, new RegExp(`\\{ value: "${value}", label:`));
+  for (const field of ["codexAppWhaleBalancePath", "codexAppWhaleBalanceField", "codexAppWhaleBalanceCurrency", "codexAppWhaleBalanceScale"]) {
+    assert.match(page, new RegExp(`onChange\\(\\{ ${field}: `), field);
+  }
+  assert.match(page, /MeteorNOX\/DeepSeek-Balance-Whale-Widget/);
+  // 保存前按同一规则校验：选了大肥鱼才校验自定义余额接口。
+  assert.match(app, /whaleBalanceSettingsIssue\(settings, isAgentPetWhaleWidgetActive\(settings\.agentPet\)\)/);
 });
 
 test("试听与 Codex 同一套衔接：点按时松开音排到按压音结束前 40ms，按住超过时长则立即播放", () => {

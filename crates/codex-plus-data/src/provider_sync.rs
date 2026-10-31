@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_PROVIDER: &str = "openai";
+/// Codex++ 受管会话连接使用的内部别名供应商（渲染层 managed session connection
+/// 只在单个会话的连接覆盖里临时声明它）。历史会话的 session_meta 会记下这个名字，
+/// 但它不是用户的供应商，不能作为把历史会话迁移过去的「同步目标」（#2791）。
+const MANAGED_SESSION_PROVIDER_ALIAS: &str = "codex_plus_managed";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
 const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
@@ -546,6 +550,7 @@ struct CatalogRepairThread {
 struct CatalogRepairObservedThread {
     thread: CatalogRepairThread,
     eligible: bool,
+    excluded_by_metadata: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1932,7 +1937,8 @@ pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTarg
         source: ProviderSyncTargetSource,
     ) {
         for id in ids {
-            if !is_valid_provider_id_for_discovery(&id) {
+            // 内部别名只会出现在历史里（或兼容表里），列出来也选不了，只会一直挂在列表中（#2791）。
+            if !is_valid_provider_id_for_discovery(&id) || is_provider_sync_internal_alias(&id) {
                 continue;
             }
             sources.entry(id).or_default().insert(source);
@@ -2014,6 +2020,11 @@ fn resolve_provider_sync_target_snapshot(
         if !is_valid_explicit_provider_id(trimmed) {
             return Err("Invalid provider sync target identity".to_string());
         }
+        if is_provider_sync_internal_alias(trimmed) {
+            return Err(format!(
+                "Provider sync target {trimmed:?} is an internal Codex++ session alias"
+            ));
+        }
     }
 
     let live_config = load_live_provider_config(config_path)?;
@@ -2063,6 +2074,11 @@ fn revalidate_provider_sync_target_snapshot(
         );
     }
     Ok(())
+}
+
+/// 是否为 Codex++ 内部会话别名供应商；这类 id 不进入同步目标列表，也不能被显式选为目标。
+pub fn is_provider_sync_internal_alias(value: &str) -> bool {
+    value.trim() == MANAGED_SESSION_PROVIDER_ALIAS
 }
 
 fn is_valid_explicit_provider_id(value: &str) -> bool {
@@ -5747,6 +5763,7 @@ fn collect_catalog_repair_plan(
         let git_branch = text_expr(&columns, "git_branch", "NULL");
         let thread_source = text_expr(&columns, "thread_source", "NULL");
         let archived = text_expr(&columns, "archived", "0");
+        let history_mode = text_expr(&columns, "history_mode", "'legacy'");
         // Current app-server listing uses preview; paginated histories can retain a zero
         // legacy user-event flag even when they contain real user messages.
         let has_user_content = if columns.contains("preview") {
@@ -5757,7 +5774,7 @@ fn collect_catalog_repair_plan(
         let agent_role = text_expr(&columns, "agent_role", "''");
         let subagent_filter = subagent_filter(&db, "threads.id")?;
         let sql = format!(
-            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_content}, {agent_role} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
+            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_content}, {agent_role}, {history_mode} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
         );
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
@@ -5779,10 +5796,11 @@ fn collect_catalog_repair_plan(
                 row.get::<_, i64>(9).unwrap_or_default(),
                 row.get::<_, i64>(10).unwrap_or(1),
                 row.get::<_, String>(11).unwrap_or_default(),
+                row.get::<_, String>(12).unwrap_or_default(),
             ))
         })?;
         for item in rows {
-            let (thread, archived, has_user_content, agent_role) = item?;
+            let (thread, archived, has_user_content, agent_role, history_mode) = item?;
             // issue #2199：删除墓碑一票否决。资格判定里没有「删除态」，只要 rollout
             // 文件还在（删除失败或被别的进程锁住等），被删的会话就会被重新插回 catalog。
             // 在收集阶段直接跳过，它既不进候选，也不会在下面的择优平局里胜出。
@@ -5796,29 +5814,35 @@ fn collect_catalog_repair_plan(
                 });
             let non_root = is_catalog_non_root_agent(&thread, &spawned_child_ids);
             let source_is_exec = thread.source_kind.trim().eq_ignore_ascii_case("exec");
-            let rollout_exists = catalog_rollout_path_exists(home, &thread.source_detail);
-            let eligible = archived == 0
-                && has_user_content == 1
-                && agent_role.trim().is_empty()
-                && !marked_non_user
-                && !source_is_exec
-                && !non_root
-                && rollout_exists;
+            // 原生分页迁移把历史存进 SQLite 后，可能删掉 JSONL。
+            let history_available = history_mode == "paginated"
+                || catalog_rollout_path_exists(home, &thread.source_detail);
+            let excluded_by_metadata = archived != 0
+                || has_user_content != 1
+                || !agent_role.trim().is_empty()
+                || marked_non_user
+                || source_is_exec
+                || non_root;
+            let eligible = !excluded_by_metadata && history_available;
             let replace = observed_threads
                 .get(&thread.id)
                 .map(|current: &CatalogRepairObservedThread| {
-                    // Copies can share a timestamp; an ineligible observation wins the tie so
-                    // an archived or agent-owned thread cannot be resurrected by a stale copy.
+                    // 时间戳相同时元数据排除优先；只缺旧版存储不能否决
+                    // 同样新、且历史可用的副本。
                     thread.source_updated_at > current.thread.source_updated_at
                         || (thread.source_updated_at == current.thread.source_updated_at
-                            && !eligible
-                            && current.eligible)
+                            && (excluded_by_metadata, eligible)
+                                > (current.excluded_by_metadata, current.eligible))
                 })
                 .unwrap_or(true);
             if replace {
                 observed_threads.insert(
                     thread.id.clone(),
-                    CatalogRepairObservedThread { thread, eligible },
+                    CatalogRepairObservedThread {
+                        thread,
+                        eligible,
+                        excluded_by_metadata,
+                    },
                 );
             }
         }

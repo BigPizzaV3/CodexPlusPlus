@@ -247,6 +247,14 @@
       "surfaces": ["manager", "codex"]
     },
     {
+      "key": "codexAppProxyRequestStatus",
+      "group": "chat",
+      "control": "bool",
+      "title": "请求状态条",
+      "description": "请求经 Codex++ 网关或本地代理时，在输入框上方显示正在请求、等待返回、重试和生成进度。关闭后不再显示，也不再查询请求状态。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
       "key": "codexAppActivityOverlayRight",
       "group": "pet",
       "control": "bool",

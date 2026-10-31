@@ -628,7 +628,7 @@ ${slice("  let codexPlusSettingsCatalog = null;", "  function refreshCodexPlusSe
 function parseSettingsSections(html: string) {
   return Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g), ([, title, body]) => ({
     title,
-    rows: Array.from(body.matchAll(/<div class="codex-plus-row"(?: data-codex-plus-setting-row="([^"]+)")?[^>]*>\s*<div><div class="codex-plus-row-title">([\s\S]*?)<\/div><div class="codex-plus-row-description"[^>]*>([^<]*)<\/div><\/div>([\s\S]*?)(?=<div class="codex-plus-row"|$)/g), ([, key, rowTitle, description, control]) => ({
+    rows: Array.from(body.matchAll(/<div class="codex-plus-row"(?: data-codex-plus-setting-row="([^"]+)")?[^>]*>\s*<div><div class="codex-plus-row-title">([\s\S]*?)<\/div><div class="codex-plus-row-description"[^>]*>([^<]*)<\/div>(?:<div class="codex-plus-row-description" data-codex-plus-native-fast-status="true"[^>]*><\/div>)?<\/div>([\s\S]*?)(?=<div class="codex-plus-row"|$)/g), ([, key, rowTitle, description, control]) => ({
       key: key ?? "",
       // 标题后面可能跟着「实验」「需重启」小标签，拆开分别校验。
       title: rowTitle.replace(/<em class="codex-plus-feature-tag"[^>]*>[^<]*<\/em>/g, ""),

@@ -21,6 +21,7 @@ const ts = require("typescript");
 
 const SRC_FILES = [
   "src/App.tsx",
+  "src/AgentCollaborationPage.tsx",
   "src/agent-cache.tsx",
   "src/components/ProviderPresetSelector.tsx",
   "src/ClaudeProviderPage.tsx",

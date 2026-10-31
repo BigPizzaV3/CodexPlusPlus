@@ -94,7 +94,154 @@ function moduleReferences(parser, source) {
   return references;
 }
 
+async function runDiscoveryTests(source, url) {
+  const index = new URL("./index-fixture.js", url).href;
+  const main = new URL("./app-main-fixture.js", url).href;
+  const initialImport = 'import "./app-initial-fixture.js";';
+  const mainImport = 'import(`./app-main-fixture.js`);';
+  const document = { scripts: [{ src: index }] };
+  const location = new URL("app://-/index.html");
+
+  // 旧入口直接引用 app-initial；26.1027 经 app-main 引用同一目标块。
+  for (const entry of [initialImport, mainImport, `${mainImport}${initialImport}`]) {
+    const env = browser();
+    const sources = new Map([
+      [index, entry],
+      [main, `${initialImport}import "./app-runtime-unrelated.js";import "./unrelated.js";`],
+      [url, source],
+    ]);
+    const fetched = [];
+    const result = await env.api.prepareDocumentModules({
+      document, location,
+      fetchText: async target => { fetched.push(target); return sources.get(target) ?? null; },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+    assert.equal(result.diagnostics.rewriters.fast, "patched");
+    assert.equal(result.modules.length, 1, "中间模块只用于发现，不改写或额外预加载");
+    assert.equal(result.modules[0].url, url);
+    assert.ok(result.modules[0].patchedSource.includes('__codexPlusNativeFastCompiled="v1"'));
+    assert.deepEqual(fetched, entry === initialImport ? [index, url] : [index, main, url], "去重且不遍历无关模块");
+    assert.equal(env.events.length, 0, "准备模块不改变当前文档");
+  }
+
+  const duplicate = new URL("./app-initial-duplicate.js", url).href;
+  for (const failure of ["missing-main", "fetch-failed", "missing-initial", "incomplete-gates", "duplicate-initial"]) {
+    const env = browser();
+    const result = await env.api.prepareDocumentModules({
+      document, location,
+      fetchText: async target => {
+        if (target === index) return mainImport;
+        if (target === main) {
+          if (failure === "missing-main") return null;
+          if (failure === "fetch-failed") throw new Error("fixture fetch failed");
+          return `${initialImport}${failure === "duplicate-initial" ? 'import "./app-initial-duplicate.js";' : ""}`;
+        }
+        if (target === url) {
+          if (failure === "missing-initial") return null;
+          return failure === "incomplete-gates" ? "export const changed = true;" : source;
+        }
+        return target === duplicate ? source : null;
+      },
+    });
+    assert.equal(result.ok, false, failure);
+    assert.equal(result.modules.length, 0, "发现或匹配失败时不留下半套补丁");
+    assert.equal(env.events.length, 0);
+  }
+
+  await runContentDiscoveryTests(source, url, { index, main, mainImport, document, location });
+
+  for (const settings of [{ ...enabled, enhancementsEnabled: false }, { ...enabled, codexAppNativeFastUnlock: false }]) {
+    const env = browser();
+    env.api.runtime.update(settings);
+    let fetched = false;
+    const result = await env.api.prepareDocumentModules({
+      document, location, fetchText: async () => { fetched = true; return source; },
+    });
+    assert.equal(result.diagnostics.reason, "disabled");
+    assert.equal(fetched, false, "关闭任一开关后不发现或改写模块");
+  }
+}
+
+// 目标块换名或改由别的块引用时，按四个门控共用的字符串常量找回同一块（Fast「通杀」加固）。
+async function runContentDiscoveryTests(source, url, { index, main, mainImport, document, location }) {
+  const renamed = new URL("./app-boot-fixture.js", url).href;
+  const unrelated = Array.from({ length: 40 }, (_, number) => new URL(`./chunk-${number}.js`, url).href);
+  const reference = (target) => `import "./${target.split("/").pop()}";`;
+  const run = async (sources) => {
+    const env = browser();
+    const fetched = [];
+    const result = await env.api.prepareDocumentModules({
+      document, location,
+      fetchText: async (target) => { fetched.push(target); return sources.get(target) ?? null; },
+    });
+    return { env, result, fetched };
+  };
+
+  // 换名后仍经 app-main 引用：名字找不到，按内容在两层内找到，入口标记随补丁落在新名字的块上。
+  {
+    const { env, result, fetched } = await run(new Map([
+      [index, mainImport],
+      [main, `${unrelated.map(reference).join("")}${reference(renamed)}`],
+      ...unrelated.map((target) => [target, "export const unrelated = true;"]),
+      [renamed, source],
+    ]));
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+    assert.equal(result.diagnostics.rewriters.fast, "patched");
+    assert.equal(result.diagnostics.discovery["fast:app-initial"], "content");
+    assert.deepEqual([...result.modules].map((item) => item.url), [renamed], "无关块只读不改，也不预加载");
+    assert.ok(result.modules[0].patchedSource.includes('__codexPlusNativeFastCompiled="v1"'), "入口标记跟着补丁走");
+    assert.equal(fetched.at(-1), renamed, "找到目标块后立即停止扫描");
+    assert.equal(new Set(fetched).size, fetched.length, "同一块不重复读取");
+    // 安装时按完成标记认入口，不再依赖 app-initial 文件名。
+    const installed = env.api.installModules([{ url: new URL("./side.js", url).href, patchedSource: "export {};" }, ...result.modules]);
+    assert.equal(installed.ok, true, JSON.stringify(installed.diagnostics));
+    assert.equal(installed.diagnostics.url, renamed);
+  }
+
+  // 名字仍是 app-initial 时照旧按名字认，不触发内容扫描。
+  {
+    const { result, fetched } = await run(new Map([[index, mainImport], [main, reference(url)], [url, source]]));
+    assert.equal(result.diagnostics.discovery["fast:app-initial"], "name");
+    assert.deepEqual(fetched, [index, main, url]);
+  }
+
+  // 按内容扫描找到第一块完整的就停（控制读取量），不再继续读后面的同类块。
+  {
+    const twin = new URL("./app-boot-twin.js", url).href;
+    const { result, fetched } = await run(new Map([[index, mainImport], [main, `${reference(renamed)}${reference(twin)}`], [renamed, source], [twin, source]]));
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+    assert.equal(result.modules[0].url, renamed);
+    assert.ok(!fetched.includes(twin), "找到后不再读取");
+  }
+
+  // 已读到的两个不同名块都含完整门控（例如都由入口直接引用）：无法确定是哪个，整体放弃。
+  {
+    const twin = new URL("./app-boot-twin.js", url).href;
+    const env = browser();
+    const result = env.api.prepareModules([{ url: renamed, source }, { url: twin, source }]);
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics.rewriters.fast, "ambiguous-app-initial");
+  }
+
+  // 只含锚点、门控结构不完整的块不会被当成目标。
+  {
+    const decoy = "export const readServiceTier = 1, submissionOptions = 2, serviceTierAccess = 3;";
+    const { result } = await run(new Map([[index, mainImport], [main, reference(renamed)], [renamed, decoy]]));
+    assert.equal(result.ok, false);
+    assert.equal(result.modules.length, 0);
+  }
+
+  // 超过两层的块不扫：扫描范围有上限，不会把整个资源目录读一遍。
+  {
+    const deeper = new URL("./deeper-fixture.js", url).href;
+    const { result, fetched } = await run(new Map([[index, mainImport], [main, reference(deeper)], [deeper, reference(renamed)], [renamed, source]]));
+    assert.equal(result.ok, false);
+    assert.ok(!fetched.includes(renamed), "第三层不读取");
+  }
+}
+
 async function runNativeFastModuleTests({ source, url }) {
+  await runDiscoveryTests(source, url);
   const fixture = [
     'import dependency from "./static.js"; import "./side.js";',
     'export { dependency } from "../export.js"; export * from "./star.js";',

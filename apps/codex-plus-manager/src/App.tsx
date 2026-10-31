@@ -121,8 +121,9 @@ import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
+import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, usageRangeStart, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
@@ -135,6 +136,7 @@ import { shouldShowTour, TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-mod
 import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
 import { PluginMarketScreen } from "./PluginMarketScreen";
+import { defaultMarketSort, localScriptState, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
 import { ReleaseNotes } from "./ReleaseNotes";
 import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
 import { McpPage, PageHeader } from "./ManagementPages";
@@ -153,7 +155,8 @@ import {
   type EnhancementSettingItem,
 } from "./enhancement-catalog";
 import { DEFAULT_AUTO_COMPACT_PERCENT, autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
-import { agentPetSettingsIssue, defaultAgentPetSettings, normalizeAgentPetSettings, type AgentPetIssue, type AgentPetSettings } from "./agent-pet-settings";
+import { agentPetSettingsIssue, defaultAgentPetSettings, isAgentPetWhaleWidgetActive, normalizeAgentPetSettings, type AgentPetIssue, type AgentPetSettings } from "./agent-pet-settings";
+import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceSettings } from "./whale-settings";
 import { AgentPetPage } from "./AgentPetPage";
 import {
   applyDictationPreset,
@@ -244,6 +247,8 @@ import {
   normalizeAggregateDefaultRelayId,
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
+import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
@@ -284,10 +289,21 @@ import {
 import { subscribeLanguage, getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import { vlmTestTranslation } from "./vlm-test-translation";
 import {
+  applyResolvedTheme,
+  loadThemePreference,
+  resolveTheme,
+  storeThemePreference,
+  systemPrefersDark,
+  toggledThemePreference,
+  watchSystemTheme,
+  type ThemePreference,
+} from "./theme-mode";
+import {
   multiLaunchInstanceFailure,
   multiLaunchInstanceLabel as formatMultiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
   multiLaunchInstanceStatus,
+  runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
 
@@ -391,7 +407,8 @@ type MultiLaunchInstancesResult = CommandResult<{
   instances: MultiLaunchInstance[];
 }>;
 
-type BackendSettings = {
+/** 顶层的 `codexAppWhaleBalance*` 是大肥鱼（Agent 桌宠类型之一）的余额配置。 */
+type BackendSettings = WhaleBalanceSettings & {
   revision?: string;
   /** Agent 桌宠（与 Rust `agent_pet` 对应）。 */
   agentPet: AgentPetSettings;
@@ -423,6 +440,7 @@ type BackendSettings = {
   codexAppMarkdownExport: boolean;
   codexAppSessionShare: boolean;
   codexAppUsageStatusLine: boolean;
+  codexAppProxyRequestStatus: boolean;
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
   codexAppTypingEffect: TypingEffect;
@@ -484,9 +502,12 @@ type BackendSettings = {
   weixinConnectToken: string;
   weixinConnectAccountId: string;
   weixinConnectAllowFrom: string;
+  weixinConnectAllowOutboundAttachments: boolean;
   weixinConnectRouteTag: string;
   weixinConnectWorkDir: string;
   weixinConnectModel: string;
+  weixinConnectReasoningEffort: string;
+  weixinConnectProjectId: string;
   weixinConnectSandbox: "read-only" | "workspace-write" | "danger-full-access";
   weixinConnectCodexPath: string;
   relayBaseUrl: string;
@@ -783,6 +804,22 @@ type WeixinQrResult = CommandResult<{
   hasToken: boolean;
 }>;
 
+type WeixinConnectCatalog = {
+  status: string;
+  message?: string;
+  model?: string;
+  default_model?: string;
+  models: string[];
+  modelMetadata?: Record<string, {
+    displayName?: string;
+    supportedReasoningEfforts?: { reasoningEffort: string; description?: string }[];
+  }>;
+};
+
+type WeixinConnectProjects = {
+  projects: { id: string; name: string; roots?: { path: string }[] }[];
+};
+
 type DesktopCodexCliResult = CommandResult<{
   path: string | null;
 }>;
@@ -935,11 +972,21 @@ type ProviderImportRequest = {
   relayMode: string;
   configContents: string;
   authContents: string;
+  /** 空为直连模式供应商；"pool" 为网关供应商池。 */
+  target?: string;
 };
 
 type PendingProviderImportResult = CommandResult<{
   pending: ProviderImportRequest | null;
+  /** pending 文件内容的指纹，确认 / 取消时带回。 */
+  fingerprint?: string | null;
 }>;
+
+type PendingProviderImport = { request: ProviderImportRequest; fingerprint: string };
+
+function pendingProviderImportFromResult(result: { pending: ProviderImportRequest | null; fingerprint?: string | null }): PendingProviderImport | null {
+  return result.pending ? { request: result.pending, fingerprint: result.fingerprint ?? "" } : null;
+}
 
 type EnvConflict = {
   name: string;
@@ -1185,6 +1232,8 @@ type ScriptMarketItem = {
   tags: string[];
   homepage: string;
   script_url: string;
+  /// 该脚本最近更新时间（ISO），清单逐条提供；老清单没有时为空（#2781）。
+  updatedAt?: string;
   installed: boolean;
   installedVersion: string;
   updateAvailable: boolean;
@@ -1378,9 +1427,12 @@ const gatewayRouteByTab = { ...Object.fromEntries(Object.entries(gatewayTabByRou
  * 要么不接入、照它自己的配置文件直连。
  */
 const agentHomeRoute: Record<string, Route> = { codex: "overview", claude: "claude", grok: "overview" };
+/** 轻量检查 Codex 进程是否还在的间隔（只在管理器窗口可见时查）。 */
+const codexRunningPollMs = 5_000;
 const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "overview");
 
 const defaultSettings: BackendSettings = {
+  ...defaultWhaleBalanceSettings(),
   agentPet: defaultAgentPetSettings(),
   codexAppPath: "",
   codexAppAutoTakeover: false,
@@ -1407,6 +1459,7 @@ const defaultSettings: BackendSettings = {
   codexAppMarkdownExport: true,
   codexAppSessionShare: true,
   codexAppUsageStatusLine: true,
+  codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
   codexAppTypingEffect: "off",
@@ -1460,9 +1513,12 @@ const defaultSettings: BackendSettings = {
   weixinConnectToken: "",
   weixinConnectAccountId: "",
   weixinConnectAllowFrom: "",
+  weixinConnectAllowOutboundAttachments: false,
   weixinConnectRouteTag: "",
   weixinConnectWorkDir: "",
   weixinConnectModel: "",
+  weixinConnectReasoningEffort: "",
+  weixinConnectProjectId: "",
   weixinConnectSandbox: "read-only",
   weixinConnectCodexPath: "",
   relayBaseUrl: "",
@@ -1517,7 +1573,9 @@ const defaultSettings: BackendSettings = {
 
 export function App() {
   useSyncExternalStore(subscribeLanguage, getLanguage, getLanguage);
-  const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => loadThemePreference());
+  const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
+  const theme: Theme = resolveTheme(themePreference, systemDark);
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
   /** 合并后的「设置」页里要滚到的分组（原来跳「关于」的地方滚到版本与更新、日志）。 */
   const [settingsFocus, setSettingsFocus] = useState<string | null>(() => initialSettingsFocus());
@@ -1551,7 +1609,7 @@ export function App() {
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [relayEnvironment, setRelayEnvironment] = useState<RelayEnvironmentResult | null>(null);
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
-  const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
+  const [pendingProviderImport, setPendingProviderImport] = useState<PendingProviderImport | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
@@ -1968,27 +2026,31 @@ export function App() {
   const refreshPendingProviderImport = async (silent = true) => {
     const result = await run(() => call<PendingProviderImportResult>("load_pending_provider_import"));
     if (result) {
-      setPendingProviderImport(result.pending);
+      setPendingProviderImport(pendingProviderImportFromResult(result));
       if (!silent && !isSuccessStatus(result.status)) showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
     }
     return result;
   };
 
+  // 确认 / 取消都带上弹窗展示时的指纹：期间被新链接覆盖时后端拒绝写入，弹窗换成新的那条重新确认。
   const confirmPendingProviderImport = async () => {
-    const result = await run(() => call<SettingsResult>("confirm_pending_provider_import"));
+    const fingerprint = pendingProviderImport?.fingerprint ?? "";
+    const result = await run(() => call<SettingsResult>("confirm_pending_provider_import", { fingerprint }));
     if (result) {
-      setPendingProviderImport(null);
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       showResultNotice(t("Codex++ 导入"), result);
+      if (isSuccessStatus(result.status)) setPendingProviderImport(null);
+      else await refreshPendingProviderImport(true);
       await refreshCcsProviders(true);
     }
   };
 
   const dismissPendingProviderImport = async () => {
-    const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import"));
+    const fingerprint = pendingProviderImport?.fingerprint ?? null;
+    const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import", { fingerprint }));
     if (result) {
-      setPendingProviderImport(null);
+      setPendingProviderImport(isSuccessStatus(result.status) ? pendingProviderImportFromResult(result) : null);
       showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
     }
   };
@@ -3108,7 +3170,7 @@ export function App() {
 
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
-    const petIssue = agentPetValidationMessage(agentPetSettingsIssue(next.agentPet));
+    const petIssue = agentPetSaveIssue(next);
     if (petIssue) {
       showNotice(t("Agent 桌宠"), petIssue, "failed");
       return;
@@ -3124,13 +3186,15 @@ export function App() {
         setSettings(result);
         setSettingsForm(normalizeSettings(result.settings));
       }
-      showNotice(t("设置保存"), result.message, result.status);
+      showNotice(t("设置保存"), route === "weixin" && result.status === "ok"
+        ? t("已保存，下一条微信消息生效。")
+        : result.message, result.status);
     }
   };
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
     const normalized = normalizeSettings(next);
-    const petIssue = agentPetValidationMessage(agentPetSettingsIssue(normalized.agentPet));
+    const petIssue = agentPetSaveIssue(normalized);
     if (petIssue) {
       showNotice(t("Agent 桌宠"), petIssue, "failed");
       return null;
@@ -3159,7 +3223,7 @@ export function App() {
   /// 草稿仍是「有修改」，由页面下一轮再存。
   const autoSaveSettings = async (snapshot: BackendSettings): Promise<AutoSaveOutcome> => {
     const normalized = normalizeSettings(snapshot);
-    const issue = agentPetValidationMessage(agentPetSettingsIssue(normalized.agentPet))
+    const issue = agentPetSaveIssue(normalized)
       || dictationSettingsValidationMessage(dictationSettingsIssue(normalized.dictation));
     if (issue) return { status: "invalid", message: issue };
     try {
@@ -4130,11 +4194,15 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [route]);
 
+  useEffect(() => watchSystemTheme(setSystemDark), []);
+
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
-    document.documentElement.classList.toggle("light", theme === "light");
-    window.localStorage.setItem("codex-plus-theme", theme);
+    applyResolvedTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    storeThemePreference(themePreference);
+  }, [themePreference]);
 
   useEffect(() => {
     const refresh = () => { void refreshOverview(true); };
@@ -4479,13 +4547,31 @@ export function App() {
       refreshAutoTakeover: () => refreshAutoTakeover(false),
       takeOverNow: () => runAutoTakeoverCommand("take_over_codex_now"),
       pauseAutoTakeover: () => runAutoTakeoverCommand("pause_auto_takeover_for_instance"),
-      toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+      toggleTheme: () => setThemePreference(toggledThemePreference(theme)),
+      setThemePreference,
     }),
     [route, launchForm, settingsForm, settings, overview, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, getLanguage()],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
   const isManagementScreen = route === "relay" || route === "multiLaunch" || route === "sessions" || route === "context" || route === "skills";
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
+  // Codex 可能在它自己的窗口里被退出，既不经过 Codex++ 也不触发窗口聚焦（#2778）。
+  // 窗口可见时每 5 秒只查一次进程是否还在，和当前显示不一致再完整刷新概览。
+  useEffect(() => {
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void invoke<boolean | null>("codex_app_running")
+        .then((running) => {
+          if (!disposed && typeof running === "boolean" && running !== codexAppRunning) void refreshOverview(true);
+        })
+        .catch(() => undefined);
+    }, codexRunningPollMs);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [codexAppRunning]);
   // 「启动 / 重启 Codex」：Codex 页面的顶栏按钮和侧栏播放键共用一份状态，都走 actions.launch / actions.restart。
   const codexToolEntry = toolEntries.find((entry) => entry.id === "codex");
   const codexLaunch: CodexLaunchState = {
@@ -4623,7 +4709,12 @@ export function App() {
             />
           ) : null}
           {route === "multiLaunch" ? (
-            <CodexMultiLaunchScreen form={settingsForm} actions={actions} />
+            <CodexMultiLaunchScreen
+              form={settingsForm}
+              relayFiles={relayFiles}
+              onOpenRelay={() => void navigate("relay")}
+              actions={actions}
+            />
           ) : null}
           {route === "relayEnvironment" ? (
             <ProxySettingsScreen
@@ -4752,6 +4843,9 @@ export function App() {
             <AgentPetPage
               settings={settingsForm.agentPet}
               onChange={(agentPet) => setSettingsForm((current) => ({ ...current, agentPet }))}
+              whaleBalance={settingsForm}
+              onWhaleBalanceChange={(patch) => setSettingsForm((current) => ({ ...current, ...patch }))}
+              whaleBalanceIssue={whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalizeWhaleBalanceSettings(settingsForm), isAgentPetWhaleWidgetActive(settingsForm.agentPet)))}
               autoSave={<SettingsAutoSave dirty={settingsDirty} form={settingsForm} actions={actions} />}
             />
           ) : null}
@@ -4816,6 +4910,7 @@ export function App() {
                   form={settingsForm}
                   settings={settings}
                   theme={theme}
+                  themePreference={themePreference}
                   actions={actions}
                   onOpenAgentSettings={() => void (async () => {
                     if (activeTool !== "codex") await switchTool("codex");
@@ -4921,7 +5016,7 @@ export function App() {
       ) : null}
       {pendingProviderImport ? (
         <PendingProviderImportDialog
-          request={pendingProviderImport}
+          request={pendingProviderImport.request}
           onConfirm={() => void confirmPendingProviderImport()}
           onDismiss={() => void dismissPendingProviderImport()}
         />
@@ -5186,6 +5281,7 @@ type Actions = {
   takeOverNow: () => Promise<void>;
   pauseAutoTakeover: () => Promise<void>;
   toggleTheme: () => void;
+  setThemePreference: (preference: ThemePreference) => void;
   checkHealth: () => Promise<void>;
 };
 
@@ -5359,6 +5455,100 @@ function WeixinConnectScreen({
   onCopyQr: (url: string) => void;
 }) {
   const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [catalog, setCatalog] = useState<WeixinConnectCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState("");
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const [projects, setProjects] = useState<WeixinConnectProjects | null>(null);
+  const [projectsError, setProjectsError] = useState("");
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsRevision, setProjectsRevision] = useState(0);
+  const [resetPeerId, setResetPeerId] = useState("");
+  const [resetPending, setResetPending] = useState(false);
+  const [resetMessage, setResetMessage] = useState("");
+
+  useEffect(() => {
+    let disposed = false;
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      setCatalogLoading(true);
+      try {
+        const result = await invoke<WeixinConnectCatalog>("weixin_connect_catalog");
+        if (disposed) return;
+        if (result.status === "failed" || !Array.isArray(result.models)) {
+          throw new Error(result.message || t("读取模型目录失败。"));
+        }
+        setCatalog(result);
+        setCatalogError("");
+      } catch (error) {
+        if (!disposed) setCatalogError(String(error));
+      } finally {
+        inFlight = false;
+        if (!disposed) setCatalogLoading(false);
+      }
+    };
+    void refresh();
+    return () => {
+      disposed = true;
+    };
+  }, [catalogRevision]);
+
+  const projectCodexPath = form.weixinConnectCodexPath.trim();
+  const projectWorkDir = form.weixinConnectWorkDir.trim();
+  useEffect(() => {
+    let disposed = false;
+    let inFlight = false;
+    setProjects(null);
+    setProjectsError("");
+    if (!projectsRevision && !form.weixinConnectProjectId) {
+      setProjectsLoading(false);
+      return;
+    }
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      setProjectsLoading(true);
+      try {
+        const result = await invoke<WeixinConnectProjects>("weixin_connect_projects", {
+          codexPath: projectCodexPath,
+          workDir: projectWorkDir,
+        });
+        if (disposed) return;
+        if (!Array.isArray(result.projects)) throw new Error(t("读取项目列表失败。"));
+        setProjects(result);
+        setProjectsError("");
+      } catch (error) {
+        if (!disposed) setProjectsError(String(error));
+      } finally {
+        inFlight = false;
+        if (!disposed) setProjectsLoading(false);
+      }
+    };
+    // 输入目录或 CLI 路径时稍等，避免每个按键都启动一次项目查询。
+    const initialTimer = window.setTimeout(() => void refresh(), 350);
+    return () => {
+      disposed = true;
+      window.clearTimeout(initialTimer);
+    };
+  }, [projectCodexPath, projectWorkDir, projectsRevision]);
+
+  const models = catalog?.models ?? [];
+  const inheritedModel = catalog?.model || catalog?.default_model || "";
+  const effectiveModel = form.weixinConnectModel || inheritedModel;
+  const reasoningEfforts = Array.from(new Set(
+    (catalog?.modelMetadata?.[effectiveModel]?.supportedReasoningEfforts ?? [])
+      .map((entry) => entry.reasoningEffort)
+      .filter(Boolean),
+  ));
+  const modelUnavailable = Boolean(catalog && !catalogError && form.weixinConnectModel
+    && !models.includes(form.weixinConnectModel));
+  const reasoningUnavailable = Boolean(catalog && !catalogError && form.weixinConnectReasoningEffort
+    && !reasoningEfforts.includes(form.weixinConnectReasoningEffort));
+  const projectOptions = projects?.projects ?? [];
+  const projectUnavailable = Boolean(projects && !projectsError && form.weixinConnectProjectId
+    && !projectOptions.some((project) => project.id === form.weixinConnectProjectId));
   const workDirOptions = useMemo(
     () => Array.from(new Set(sessions.map((session) => session.cwd.trim()).filter(Boolean))).sort(),
     [sessions],
@@ -5506,6 +5696,19 @@ function WeixinConnectScreen({
                   value={form.weixinConnectAllowFrom}
                 />
               </label>
+              <div className="field">
+                <span>{t("工作区附件回传")}</span>
+                <Switch
+                  label={t("允许向指定微信用户回传工作区文件")}
+                  on={form.weixinConnectAllowOutboundAttachments}
+                  disabled={!form.weixinConnectAllowOutboundAttachments && (
+                    !form.weixinConnectAllowFrom.split(",").some((peer) => peer.trim())
+                    || form.weixinConnectAllowFrom.split(",").some((peer) => peer.trim() === "*")
+                    || !form.weixinConnectWorkDir.trim()
+                  )}
+                  onToggle={() => onFormChange({ ...form, weixinConnectAllowOutboundAttachments: !form.weixinConnectAllowOutboundAttachments })}
+                />
+              </div>
               <label className="field">
                 <span>{t("账号标识")}</span>
                 <Input
@@ -5562,14 +5765,95 @@ function WeixinConnectScreen({
                 />
                 <small className="weixin-field-hint">{t("选择后自动带入该会话的工作目录，微信联系人仍保持独立会话。")}</small>
               </label>
-              <label className="field">
+              <label aria-invalid={modelUnavailable || Boolean(catalogError)} className="field">
                 <span>{t("模型")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectModel: event.target.value })}
-                  placeholder={t("留空时使用 Codex 当前默认模型")}
-                  value={form.weixinConnectModel}
+                <div className="weixin-path-row">
+                  <AppSelect
+                    ariaLabel={t("模型")}
+                    onChange={(next) => onFormChange({ ...form, weixinConnectModel: next })}
+                    options={[
+                      { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${inheritedModel})` : ""}` },
+                      ...(form.weixinConnectModel && !models.includes(form.weixinConnectModel) ? [{
+                        value: form.weixinConnectModel,
+                        label: `${form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
+                      }] : []),
+                      ...models.map((model) => ({ value: model, label: catalog?.modelMetadata?.[model]?.displayName || model })),
+                    ]}
+                    value={form.weixinConnectModel}
+                  />
+                  <Button aria-label={t("刷新模型目录")} disabled={catalogLoading} onClick={() => setCatalogRevision((value) => value + 1)} size="icon" title={t("刷新模型目录")} type="button" variant="outline">
+                    <RefreshCw className={`h-4 w-4${catalogLoading ? " animate-spin" : ""}`} />
+                  </Button>
+                </div>
+                {catalogError ? <small className="weixin-field-hint request-log-error" role="alert">{catalogError}</small> : null}
+                {modelUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前模型已不在可用模型目录中，请重新选择。")}</small> : null}
+                {catalog && !catalogError && !models.length ? <small className="weixin-field-hint" role="status">{t("当前没有可用模型，请检查供应商配置。")}</small> : null}
+              </label>
+              <label aria-invalid={reasoningUnavailable} className="field">
+                <span>{t("推理强度")}</span>
+                <AppSelect
+                  ariaLabel={t("推理强度")}
+                  onChange={(next) => onFormChange({ ...form, weixinConnectReasoningEffort: next })}
+                  options={[
+                    { value: "", label: t("继承 Codex 推理强度") },
+                    ...(form.weixinConnectReasoningEffort && !reasoningEfforts.includes(form.weixinConnectReasoningEffort) ? [{
+                      value: form.weixinConnectReasoningEffort,
+                      label: `${form.weixinConnectReasoningEffort} (${reasoningUnavailable ? t("不可用") : t("当前值")})`,
+                    }] : []),
+                    ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
+                  ]}
+                  value={form.weixinConnectReasoningEffort}
                 />
+                {reasoningUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前模型不支持已选推理强度，请重新选择或继承。")}</small> : null}
+              </label>
+              <label aria-invalid={projectUnavailable || Boolean(projectsError)} className="field">
+                <span>{t("新会话项目")}</span>
+                <div className="weixin-path-row">
+                  <AppSelect
+                    ariaLabel={t("新会话项目")}
+                    onChange={(id) => {
+                      const selected = projectOptions.find((project) => project.id === id);
+                      onFormChange({
+                        ...form,
+                        weixinConnectProjectId: id,
+                        weixinConnectWorkDir: selected?.roots?.[0]?.path || form.weixinConnectWorkDir,
+                      });
+                    }}
+                    options={[
+                      { value: "", label: t("不归属项目") },
+                      ...(form.weixinConnectProjectId && !projectOptions.some((project) => project.id === form.weixinConnectProjectId) ? [{
+                        value: form.weixinConnectProjectId,
+                        label: `${form.weixinConnectProjectId} (${projectUnavailable ? t("不可用") : t("当前值")})`,
+                      }] : []),
+                      ...projectOptions.map((project) => ({ value: project.id, label: project.name || project.id })),
+                    ]}
+                    value={form.weixinConnectProjectId}
+                  />
+                  <Button aria-label={t("刷新项目")} disabled={projectsLoading} onClick={() => setProjectsRevision((value) => value + 1)} size="icon" title={t("刷新项目")} type="button" variant="outline">
+                    <RefreshCw className={`h-4 w-4${projectsLoading ? " animate-spin" : ""}`} />
+                  </Button>
+                </div>
+                {projectsError ? <small className="weixin-field-hint request-log-error" role="alert">{projectsError}</small> : null}
+                {projectUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前项目已不在项目列表中，请重新选择。")}</small> : null}
+              </label>
+              <label className="field">
+                <span>{t("重置联系人会话")}</span>
+                <div className="weixin-path-row">
+                  <Input aria-label={t("需要重置的联系人 ID")} placeholder={status?.lastPeerId || t("联系人 ID")} value={resetPeerId} onChange={(event) => setResetPeerId(event.target.value)} />
+                  <Button aria-label={t("重置该联系人会话")} title={t("重置该联系人会话，下一条消息生效并保留原历史")} size="icon" variant="outline" type="button" disabled={resetPending || !resetPeerId.trim()} onClick={async () => {
+                    setResetPending(true);
+                    setResetMessage("");
+                    try {
+                      await invoke("weixin_connect_reset_session", { peerId: resetPeerId.trim(), accountId: form.weixinConnectAccountId.trim() });
+                      setResetMessage(t("已保存重置请求，下一条消息开启新会话，原历史保留。"));
+                    } catch (error) {
+                      setResetMessage(String(error));
+                    } finally {
+                      setResetPending(false);
+                    }
+                  }}><RefreshCw className={`h-4 w-4${resetPending ? " animate-spin" : ""}`} /></Button>
+                </div>
+                {resetMessage ? <small className="weixin-field-hint" role="status">{resetMessage}</small> : null}
               </label>
               <label className="field">
                 <span>{t("沙箱权限")}</span>
@@ -6236,13 +6520,18 @@ function requestLogRetryLabel(entry: RequestLogEntry) {
   // 网关因 Codex++ 本地限速排过队：标出排了多久。
   const queued = queueWaitMs(entry.retryReasons);
   const queue = queued === null ? "" : tf("限速排队 {0}", [formatQueueWait(queued)]);
-  return [base, queue].filter(Boolean).join(" · ") || "-";
+  // 换上游后去掉了别家签发的压缩上下文：较早的对话内容上游已看不到，必须让用户看得见。
+  const compaction = foreignCompactionDropped(entry.retryReasons) ? t("已去掉别家压缩上下文") : "";
+  return [base, queue, compaction].filter(Boolean).join(" · ") || "-";
 }
 
-/** 重试原因的展示：网关记的限速排队换成「限速排队 Xs」，其它原样。 */
+/** 重试原因的展示：网关记的限速排队换成「限速排队 Xs」，去掉别家压缩上下文换成说明，其它原样。 */
 function requestLogRetryReasons(entry: RequestLogEntry): string {
   return (entry.retryReasons ?? [])
     .map((reason) => {
+      if (reason === FOREIGN_COMPACTION_DROPPED_REASON) {
+        return t("已去掉别家签发的压缩上下文，较早的对话内容不可用");
+      }
       if (!reason.startsWith(QUEUE_REASON_PREFIX)) return reason;
       const queued = queueWaitMs([reason]);
       return queued === null ? reason : tf("限速排队 {0}", [formatQueueWait(queued)]);
@@ -6599,7 +6888,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
                     ) : null}
                   </span>
                   <span
-                    className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null ? "request-log-retry" : "request-log-muted"}
+                    className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) ? "request-log-retry" : "request-log-muted"}
                     title={requestLogRetryReasons(entry)}
                   >
                     {requestLogRetryLabel(entry)}
@@ -7165,11 +7454,13 @@ function RelayScreen({
       <PageHeader
         icon={<KeyRound className="h-5 w-5" />}
         title={t("供应商列表")}
-        actions={takenOverByGateway ? null : (
+        actions={(
           <>
             {/* 总开关很少改动：收成标题栏里的小开关，完整说明放在悬停提示里；关闭时下方另有提示条。 */}
-            {/* Codex 被新版网关接管时，旧版的切换、导入、添加都不起作用，整组隐藏；先「断开并还原」。 */}
-            <label
+            {/* Codex 被新版网关接管时，旧版的切换、添加都不起作用，直接隐藏；先「断开并还原」。
+                「从第三方导入」保留（#2801）：导入只写旧版供应商列表、不动 Codex 配置，
+                导进来的供应商可以直接多开，也能在网关「添加供应商 → 导入…」里复制进供应商池。 */}
+            {takenOverByGateway ? null : <label
               className="switch-row compact relay-master-switch relay-master-switch-compact"
               title={t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
             >
@@ -7184,7 +7475,7 @@ function RelayScreen({
               />
               <span>{t("配置切换")}</span>
               <ToggleVisual />
-            </label>
+            </label>}
             <div className="third-party-import" ref={thirdPartyImportTriggerRef}>
               <Button
                 onClick={openThirdPartyImport}
@@ -7283,12 +7574,14 @@ function RelayScreen({
                 </div>
               ) : null}
             </div>
-            <Button
-              onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}
-            >
-              <Plus className="h-4 w-4" />
-              {t("添加供应商")}
-            </Button>
+            {takenOverByGateway ? null : (
+              <Button
+                onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}
+              >
+                <Plus className="h-4 w-4" />
+                {t("添加供应商")}
+              </Button>
+            )}
           </>
         )}
       />
@@ -7306,6 +7599,8 @@ function RelayScreen({
           {normalized.relayProfilesEnabled && takenOverByGateway ? (
             <p className="relay-switch-off-note" role="status">
               {t("Codex 正由 Codex++ 网关接管，旧版供应商列表已隐藏。点上方「断开并还原」（或「切回直连」）后恢复。")}
+              {/* #2801：列表藏起来后用户找不到编辑 / 删除和 cc-switch 导入，在这里指路。 */}
+              {" "}{t("这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。")}
             </p>
           ) : null}
           {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
@@ -7403,22 +7698,72 @@ function multiLaunchSupported(profile: RelayProfile): boolean {
 
 function CodexMultiLaunchScreen({
   form,
+  relayFiles,
+  onOpenRelay,
   actions,
 }: {
   form: BackendSettings;
+  relayFiles: RelayFilesResult | null;
+  onOpenRelay: () => void;
   actions: Actions;
 }) {
   const normalized = normalizeSettings(form);
+  // #2801：Codex 被网关接管、或「配置切换」关闭时，旧版供应商页的列表整块隐藏，
+  // 多开里这些供应商（多是早年从 cc-switch 导入的）就没地方编辑、删除了，这里直接给入口。
+  const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
+  const detailProfile = detailProfileId
+    ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
+    : null;
+  useEffect(() => {
+    if (detailProfileId && !normalized.relayProfiles.some((profile) => profile.id === detailProfileId)) {
+      setDetailProfileId(null);
+    }
+  }, [detailProfileId, normalized.relayProfiles]);
+  const deleteProfile = async (profile: RelayProfile) => {
+    const name = profile.name || t("未命名供应商");
+    // 当前正在使用、或是聚合配置的默认 / 最后成员：和旧版列表一样直接说明原因，不弹确认。
+    const deleteIssue = relayProfileDeleteIssue(normalized, profile.id);
+    if (deleteIssue) {
+      await actions.showMessage(t("删除供应商"), deleteIssue, "failed");
+      return;
+    }
+    const running = runningInstancesForProfile(actions.multiLaunchInstances, profile.id);
+    const message = running.length
+      ? tf("删除供应商「{0}」？它还有 {1} 个多开实例在运行，删除后实例不会被结束，但之后不能再用它启动。", [name, running.length])
+      : tf("删除供应商「{0}」？删除后不能再用它启动多开实例，旧版供应商列表里也会一并移除。", [name]);
+    if (!(await appConfirm(message, { title: t("删除供应商"), confirmText: t("删除"), danger: true }))) return;
+    await actions.saveSettingsValue(removeRelayProfile(normalized, profile.id), true);
+  };
+  if (detailProfile) {
+    return (
+      <RelayProfileDetail
+        profile={detailProfile}
+        relayFiles={detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+        form={normalized}
+        onBack={() => setDetailProfileId(null)}
+        onFormChange={(next) => actions.saveSettingsValue(next, true)}
+        onSaved={() => setDetailProfileId(null)}
+        actions={actions}
+      />
+    );
+  }
   return (
     <div className="mg-page relay-management-page">
       <PageHeader
         icon={<Layers3 className="h-5 w-5" />}
         title={t("Codex多开")}
         actions={(
-          <Button onClick={() => void actions.refreshSettings(true)} variant="secondary">
-            <RefreshCw className="h-4 w-4" />
-            {t("刷新供应商")}
-          </Button>
+          <>
+            {/* cc-switch 导入和添加供应商都在旧版供应商页；网关接管时那里只留「从第三方导入」。 */}
+            <Button onClick={onOpenRelay} title={t("到「旧版供应商配置」添加供应商，或用「从第三方导入」导入 cc-switch 的供应商")} variant="secondary">
+              <Download className="h-4 w-4" />
+              {t("导入或添加供应商")}
+            </Button>
+            <Button onClick={() => void actions.refreshSettings(true)} variant="secondary">
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新供应商")}
+            </Button>
+          </>
         )}
       />
       <div className="mg-content">
@@ -7508,13 +7853,22 @@ function CodexMultiLaunchScreen({
                 const aggregate = isAggregateRelayProfile(profile);
                 const unsupported = !multiLaunchSupported(profile);
                 const pending = actions.multiLaunchPending === profile.id;
+                // 网关托管的那一项由「Agent 接入」管理，和旧版列表一样不给编辑、删除。
+                const gatewayManaged = profile.id === CODEX_GATEWAY_RELAY_ID;
+                const active = profile.id === normalized.activeRelayId;
+                const runningCount = runningInstancesForProfile(actions.multiLaunchInstances, profile.id).length;
                 return (
                   <div className="relay-profile-card multi-launch-card" data-relay-profile-id={profile.id} key={profile.id}>
                     <span className="relay-index" title={profile.name || t("未命名供应商")}>{providerInitial(profile.name)}</span>
                     <span className="relay-summary">
-                      <strong>{profile.name || t("未命名供应商")}</strong>
+                      <strong>
+                        <span className="relay-summary-name">{profile.name || t("未命名供应商")}</span>
+                        {active ? <span className="relay-active-badge">{t("使用中")}</span> : null}
+                        {runningCount ? <span className="relay-tag" data-tone="official">{tf("{0} 个实例运行中", [runningCount])}</span> : null}
+                      </strong>
                       <small>{relayProfileModeLabel(profile)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
                     </span>
+                    {/* 操作区是 row-reverse：「启动」写在最前面贴右，编辑 / 删除悬停时出现在它左边，与旧版列表一致。 */}
                     <span className="relay-card-actions">
                       <Button
                         disabled={unsupported || pending}
@@ -7529,6 +7883,29 @@ function CodexMultiLaunchScreen({
                         <Rocket className="h-4 w-4" />
                         {pending ? t("启动中") : t("启动")}
                       </Button>
+                      {gatewayManaged ? null : (
+                        <span className="relay-card-extra">
+                          <Button
+                            aria-label={tf("编辑供应商「{0}」", [profile.name || t("未命名供应商")])}
+                            onClick={() => setDetailProfileId(profile.id)}
+                            size="icon"
+                            title={t("编辑")}
+                            variant="ghost"
+                          >
+                            <Edit3 className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            aria-label={tf("删除供应商「{0}」", [profile.name || t("未命名供应商")])}
+                            disabled={normalized.relayProfiles.length <= 1}
+                            onClick={() => void deleteProfile(profile)}
+                            size="icon"
+                            title={t("删除供应商")}
+                            variant="ghost"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </span>
+                      )}
                     </span>
                   </div>
                 );
@@ -7725,6 +8102,20 @@ function envConflictSourceLabel(source: string): string {
 function agentPetValidationMessage(issue: AgentPetIssue | null): string | null {
   if (issue === "customUrl") return t("自定义图片地址无效，请填写 https:// 开头的图片地址。");
   return null;
+}
+
+function whaleBalanceValidationMessage(issue: WhaleBalanceIssue | null): string | null {
+  if (issue === "path") return t("请填写供应商同域下的余额接口路径，不包含网址、查询参数或片段。");
+  if (issue === "field") return t("请填写余额字段路径，例如 data.balance 或 data.accounts[0].balance。");
+  if (issue === "currency") return t("币种请使用三位代码，例如 USD 或 CNY。");
+  if (issue === "scale") return t("金额倍率必须是大于 0 且不超过 1e12 的有限数值。");
+  return null;
+}
+
+/** 保存前校验 Agent 桌宠：简单桌宠的自定义图片地址；选了大肥鱼时校验它的自定义余额接口。 */
+function agentPetSaveIssue(settings: BackendSettings): string | null {
+  return agentPetValidationMessage(agentPetSettingsIssue(settings.agentPet))
+    || whaleBalanceValidationMessage(whaleBalanceSettingsIssue(settings, isAgentPetWhaleWidgetActive(settings.agentPet)));
 }
 
 type DictationLocalModelState = {
@@ -9491,6 +9882,14 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
       return haystack.includes(query);
     });
   }, [marketSearch, marketScripts]);
+  // 用户没手动选排序时跟随数据：清单里每个脚本都标了更新时间就默认「最近更新」，否则保持清单原顺序。
+  const [marketSortChoice, setMarketSortChoice] = useState<ScriptMarketSort | null>(null);
+  const marketSort = marketSortChoice ?? defaultMarketSort(marketScripts);
+  const sortedMarketScripts = useMemo(
+    () => sortMarketScripts(filteredMarketScripts, marketSort),
+    [filteredMarketScripts, marketSort],
+  );
+  const hasMarketUpdateTimes = marketScripts.some((script) => parseMarketTime(script.updatedAt) !== null);
   const installedCount = marketScripts.filter((script) => script.installed).length;
   // market_id -> 本地脚本 key。只用 user 来源的脚本：内置脚本走的是 builtin: 前缀，
   // 后端 delete_user_script 只接受 user:，映射过去会直接报错。
@@ -9567,6 +9966,23 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
               value={marketSearch}
             />
           </div>
+          <AppSelect
+            ariaLabel={t("市场脚本排序")}
+            className="script-market-sort"
+            onChange={(value) => setMarketSortChoice(value)}
+            options={[
+              { value: "default", label: t("默认顺序") },
+              {
+                value: "updated",
+                label: t("最近更新"),
+                title: hasMarketUpdateTimes ? undefined : t("市场清单暂未提供脚本更新时间"),
+              },
+              { value: "name", label: t("名称") },
+            ]}
+            size="sm"
+            title={t("市场脚本排序")}
+            value={marketSort}
+          />
           <div className="script-market-view-toggle" role="group" aria-label={t("脚本排版")}>
             <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
               <LayoutGrid className="h-4 w-4" />
@@ -9583,7 +9999,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         marketScripts.length ? (
           filteredMarketScripts.length ? (
             <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
-              {filteredMarketScripts.map((script) => (
+              {sortedMarketScripts.map((script) => (
                 <MarketScriptCard
                   actions={actions}
                   installedKey={installedKeyByMarketId.get(script.id)}
@@ -9602,7 +10018,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
       ) : (
         <Panel>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
+            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
           </div>
         </Panel>
       )}
@@ -10207,7 +10623,7 @@ function MaintenanceScreen({
               {autoTakeover?.lastTakeoverAtMs ? (
                 <p className="hint">{tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()])}</p>
               ) : null}
-              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS。")}</p>}
+              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS 和 Linux。")}</p>}
               <p className="hint">{t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}</p>
               <Toolbar>
                 <Button variant="secondary" onClick={() => void actions.takeOverNow()}>{t("立即接管")}</Button>
@@ -10567,6 +10983,7 @@ function GlobalSettingsScreen({
   form,
   settings,
   theme,
+  themePreference,
   actions,
   onOpenAgentSettings,
   onOpenTour,
@@ -10576,6 +10993,7 @@ function GlobalSettingsScreen({
   form: BackendSettings;
   settings: SettingsResult | null;
   theme: Theme;
+  themePreference: ThemePreference;
   actions: Actions;
   onOpenAgentSettings: () => void;
 }) {
@@ -10592,10 +11010,28 @@ function GlobalSettingsScreen({
           <div className="global-setting-row">
             <div className="global-setting-copy">
               <strong>{t("界面主题")}</strong>
-              <span>{t("当前为")}{theme === "dark" ? t("深色") : t("浅色")}{t("模式。")}</span>
+              <span>{themePreference === "system"
+                ? `${t("跟随系统外观，当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`
+                : `${t("当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`}</span>
             </div>
             <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
+              <div aria-label={t("界面主题")} className="segmented" role="group">
+                {([
+                  ["system", t("跟随系统")],
+                  ["light", t("浅色")],
+                  ["dark", t("深色")],
+                ] as const).map(([value, label]) => (
+                  <button
+                    aria-pressed={themePreference === value}
+                    className={themePreference === value ? "active" : ""}
+                    key={value}
+                    onClick={() => actions.setThemePreference(value)}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
           <div className="global-setting-row">
@@ -10801,6 +11237,10 @@ function SortableRelayProfileCard({
   const active = profile.id === form.activeRelayId;
   // 网关托管的供应商：由「Agent 接入」管理，这里只能「使用」（重新接入）。
   const gatewayManaged = profile.id === CODEX_GATEWAY_RELAY_ID;
+  const billing = useRelayBillingProbe(
+    !gatewayManaged && relayBillingProbeEligible(profile) ? relayBillingCacheKey(profile) : "",
+    () => invoke<CommandResult<RelayBillingProbe>>("probe_relay_billing", { profile }),
+  );
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -10848,6 +11288,9 @@ function SortableRelayProfileCard({
             <span className="relay-tag" data-tone="protocol">{relayProtocolShortLabel(profile.protocol)}</span>
           ) : null}
           {active ? <span className="relay-active-badge">{t("使用中")}</span> : null}
+          {!billing.probe && billing.settled ? (
+            <RelayBillingRetry failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} />
+          ) : null}
         </strong>
         <small>
           {gatewayManaged
@@ -10860,6 +11303,9 @@ function SortableRelayProfileCard({
               : t("使用 Codex 当前登录的 ChatGPT 账号")
             : relayProfileConfigBrief(profile)}
         </small>
+        {billing.probe ? (
+          <RelayBillingLine failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} probe={billing.probe} />
+        ) : null}
       </span>
       <span className="relay-card-actions">
         <Button
@@ -10973,6 +11419,23 @@ function formatMarketUpdatedAt(value: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/// 市场脚本更新时间的相对描述：刚刚 / N 小时前 / N 天前 / N 个月前 / N 年前。
+function formatRelativeAge(time: number, now = Date.now()): string {
+  const age = relativeAge(time, now);
+  switch (age.unit) {
+    case "justNow":
+      return t("刚刚");
+    case "hours":
+      return tf("{0} 小时前", [age.value]);
+    case "days":
+      return tf("{0} 天前", [age.value]);
+    case "months":
+      return tf("{0} 个月前", [age.value]);
+    case "years":
+      return tf("{0} 年前", [age.value]);
+  }
+}
+
 function MarketScriptCard({
   script,
   actions,
@@ -10993,12 +11456,20 @@ function MarketScriptCard({
   const hiddenTags = script.tags.slice(3);
   const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
   const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
+  const updatedTime = parseMarketTime(script.updatedAt);
   return (
     <div className="script-market-card" data-view={view}>
       <div className="script-market-title">
         <div>
           <strong>{script.name}</strong>
-          <span>{script.author || t("未知作者")} · v{script.version}</span>
+          <span>
+            {script.author || t("未知作者")} · v{script.version}
+            {updatedTime !== null ? (
+              <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>
+                {" · "}{tf("{0}更新", [formatRelativeAge(updatedTime)])}
+              </time>
+            ) : null}
+          </span>
         </div>
         {status ? <UiBadge className="script-market-status" variant={script.updateAvailable ? "default" : "secondary"}>{status}</UiBadge> : null}
       </div>
@@ -11276,7 +11747,8 @@ function RelayProfileDetail({
           {aggregateProfile ? (
             <UiBadge variant="secondary">{aggregateModeRequired ? t("聚合")
               : draft.aggregate?.modelAggregationEnabled === true ? t("模型聚合") : t("故障转移")}</UiBadge>
-          ) : isNew ? null : (
+          ) : isNew || form.activeRelayId === CODEX_GATEWAY_RELAY_ID ? null : (
+            // 网关接管期间（从多开页进来编辑）不给「设为当前」：切走会绕过「断开并还原」（#2801）。
             <Button
               disabled={actions.relaySwitching}
               onClick={switchDraft}
@@ -14828,23 +15300,30 @@ function PendingProviderImportDialog({
   onConfirm: () => void;
   onDismiss: () => void;
 }) {
+  const toPool = request.target === "pool";
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal-card provider-import-modal">
         <div className="modal-head">
           <div>
             <h2>{t("导入 Codex++ 供应商")}</h2>
-            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
+            <p>{toPool ? t("检测到来自网页的供应商导入请求，确认后会加进网关供应商池，并自动从上游获取模型。") : t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
           </div>
           <button className="toast-close" onClick={onDismiss} type="button">×</button>
         </div>
         <div className="metric-list">
           <Metric label={t("名称")} value={request.name || t("未命名供应商")} />
+          <Metric label={t("导入到")} value={toPool ? t("网关供应商池") : t("直连模式供应商")} />
           <Metric label="Base URL" value={request.baseUrl || t("未填写")} />
           <Metric label={t("协议")} value={providerImportWireApiLabel(request.wireApi)} />
-          <Metric label={t("模式")} value={providerImportRelayModeLabel(request.relayMode)} />
+          {toPool ? null : <Metric label={t("模式")} value={providerImportRelayModeLabel(request.relayMode)} />}
           <Metric label="API Key" value={maskSecret(request.apiKey)} />
         </div>
+        {toPool ? (
+          <div className="hint-line" role="note">
+            {t("导入后供应商默认启用，会按「Agent 接入」里各 Agent 的「添加供应商时自动加入」设置立即承接请求。")}
+          </div>
+        ) : null}
         <div className="hint-line" role="note">
           {t("安全提示：网页链接中的自定义 config.toml 和 auth.json 不会执行；管理工具只会使用上方字段生成受管配置。")}
         </div>
@@ -15745,7 +16224,7 @@ function AppSidebar({
       <button className="side-search" data-tour="palette" onClick={onOpenPalette} type="button">
         <Search aria-hidden="true" className="side-item-icon" />
         <span>{t("快速跳转")}</span>
-        <kbd>⌘K</kbd>
+        <kbd>{paletteShortcut}</kbd>
       </button>
 
       <nav aria-label={t("主导航")} className="side-nav">
@@ -15900,20 +16379,50 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions }) {
+/// 本地脚本合并状态的文案与悬停说明。
+function localScriptStateLabel(state: LocalScriptState): { label: string; hint: string } {
+  switch (state) {
+    case "off":
+      return { label: t("已关闭"), hint: t("该脚本已关闭，不会注入 Codex") };
+    case "globalOff":
+      return { label: t("整体已关闭"), hint: t("脚本开着，但「启用本地脚本」整体开关关着，暂不注入") };
+    case "loaded":
+      return { label: t("已加载"), hint: t("已在 Codex 里运行") };
+    case "loading":
+      return { label: t("加载中"), hint: t("正在 Codex 里加载") };
+    case "failed":
+      return { label: t("加载失败"), hint: t("脚本在 Codex 里运行出错") };
+    case "notLoaded":
+      return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载脚本") };
+  }
+}
+
+/// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
+/// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
+/// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
+function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; actions: Actions }) {
   const source = script.market_id ? tf("市场 · {0}", [script.version || t("未知版本")]) : script.source === "builtin" ? t("内置") : t("用户");
   const canDelete = script.source === "user";
+  const state = localScriptState(script, globalEnabled);
+  const { label, hint } = localScriptStateLabel(state);
+  const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
   return (
-    <div className="table-row">
+    <div className="table-row user-script-row">
       <span>{script.name}</span>
       <span>{source}</span>
-      <span>{script.enabled ? t("启用") : t("关闭")}</span>
-      <span>{script.status}</span>
+      <div className="user-script-state">
+        <label className="relay-bare-switch" title={script.enabled ? t("关闭该脚本") : t("启用该脚本")}>
+          <input
+            aria-label={tf("启用 {0}", [script.name])}
+            checked={script.enabled}
+            onChange={() => void actions.setUserScriptEnabled(script.key, !script.enabled)}
+            type="checkbox"
+          />
+          <ToggleVisual />
+        </label>
+        <span className="user-script-state-label" data-state={state} title={stateHint}>{label}</span>
+      </div>
       <div className="script-row-actions">
-        <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} size="sm" variant="secondary">
-          {script.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
-          {script.enabled ? t("禁用") : t("启用")}
-        </Button>
         {canDelete ? (
           <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
             <Trash2 className="h-4 w-4" />
@@ -16793,9 +17302,12 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
-    // 旧版「Codex 用量挂件」开着、还没有桌宠设置的用户，升级后桌宠保持开启。
+    ...normalizeWhaleBalanceSettings(settings),
+    // 旧版「Codex 用量挂件」开着、还没有桌宠设置的用户，升级后桌宠开启并选中大肥鱼。
     agentPet: normalizeAgentPetSettings(settings.agentPet, (settings as { codexAppWhaleWidgetEnabled?: unknown }).codexAppWhaleWidgetEnabled === true),
     ccsDbPath: (settings.ccsDbPath || "").trim(),
+    weixinConnectReasoningEffort: (settings.weixinConnectReasoningEffort || "").trim(),
+    weixinConnectProjectId: (settings.weixinConnectProjectId || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
@@ -16819,6 +17331,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     codexAppDreamSkinThemeConfig: normalizeDreamSkinTheme(settings.codexAppDreamSkinThemeConfig),
     codexAppDreamSkinImagePath: (settings.codexAppDreamSkinImagePath || "").trim(),
     codexAppStepwiseProtocol: normalizeStepwiseProtocol(settings.codexAppStepwiseProtocol),
+    weixinConnectAllowOutboundAttachments: settings.weixinConnectAllowOutboundAttachments === true,
     codexAppStepwiseGenerationMode: normalizeStepwiseGenerationMode(settings.codexAppStepwiseGenerationMode),
     codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 4, 0, 6),
     codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
@@ -17139,6 +17652,9 @@ function providerImportWireApiLabel(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (normalized === "chat" || normalized === "chat_completions" || normalized === "chat-completions") {
     return "Chat Completions";
+  }
+  if (normalized === "anthropic" || normalized === "anthropic_messages" || normalized === "anthropic-messages" || normalized === "messages") {
+    return "Anthropic Messages";
   }
   return "Responses";
 }
@@ -18472,11 +18988,6 @@ function formatDuration(startedAtMs: number): string {
 function stringifyError(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
-}
-
-function loadInitialTheme(): Theme {
-  if (typeof window === "undefined") return "dark";
-  return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
 }
 
 /** 启动落在网关「总览」：Agent 概览跟着上次点的 Agent 走，落在那里像是停在了某个 Agent 里。 */

@@ -12,7 +12,9 @@
    * `/thread-usage-live`，宿主只读文件尾部。
    *
    * 节点挂在输入卡片（[data-composer-surface-variant]）之后、同一父容器内，也就是
-   * 「输入框下方、卡片外」。节点带 data-codex-plus-ext，扫描调度器会把它排除在
+   * 「输入框下方、卡片外」。旧版 Codex 没有这个属性，退回旧类名或输入框所在的 form，
+   * 会话 id 退回侧边栏当前行 + 地址栏，挂不上时写诊断日志（issue #2753）。
+   * 节点带 data-codex-plus-ext，扫描调度器会把它排除在
    * 自喂循环之外（issue #1960）。
    */
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-usage-statusline"]');
@@ -42,6 +44,10 @@
     lastFingerprint: "",
     cache: new Map(),
     observer: null,
+    /** 页面里出现过新版 composer 标记后就不再走旧版兜底。 */
+    modernDom: false,
+    /** 已经写过的诊断原因，每个页面生命周期一条只记一次。 */
+    diagnosed: new Set(),
   };
 
   const codexPlusUsageSvgNs = "http://www.w3.org/2000/svg";
@@ -167,43 +173,201 @@
     return parts;
   }
 
+  /** 当前版本 Codex（26.825 起）的输入卡片。 */
+  const codexPlusUsageCardSelector = "[data-composer-surface-variant]";
+  /**
+   * 旧版 Codex 的输入卡片（issue #2753）：26.825 之前没有 data-composer-surface-variant，
+   * 卡片是 `.composer-surface-chrome`，或带 CSS Modules 类名 `_ComposerLayoutRoot_` 的容器，
+   * 和 Dream Skin 选择器契约里 composer-chrome 的几代写法一致。Intel Mac 拿不到新版
+   * Codex（新版只发 arm64），只能停在旧版，所以这条兜底在 macOS 上最常用到。
+   */
+  const codexPlusUsageLegacyCardSelector = '.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]';
+  const codexPlusUsageEditorSelector = '.ProseMirror[contenteditable="true"], textarea:not(:disabled):not([readonly]), [role="textbox"][contenteditable="true"]';
+  /** 同一页面生命周期内诊断事件的上限，避免 DOM 反复变化时刷屏。 */
+  const codexPlusUsageDiagnosticLimit = 8;
+
+  /**
+   * 找输入卡片，返回 `{ card, source }`；source 记录走的是哪条路径，写进诊断日志。
+   *
+   * 旧版兜底只在页面从没出现过新版输入卡片标记时启用：新版 Codex 停在设置页等没有 composer 的
+   * 页面时，不能把别处的 form 当成输入框。
+   *
+   * 「新版」只认 data-composer-surface-variant：部分旧版 Codex 已经有 data-codex-composer-root，
+   * 却还没有新版卡片标记（#2753 的 Intel Mac 日志：composerRoot=1、surfaceVariant=0），
+   * 把根标记也算作新版会让旧版永远走不到兜底。
+   */
   function codexPlusUsageComposerCard() {
-    const cards = [...document.querySelectorAll("[data-composer-surface-variant]")];
     let fallback = null;
-    for (const card of cards) {
+    for (const card of document.querySelectorAll(codexPlusUsageCardSelector)) {
       if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
       fallback = card;
       // 首页可能同时挂着多个 composer 外壳；带真实输入框的那个才是当前会话。
-      if (card.querySelector('.ProseMirror[contenteditable="true"], textarea:not(:disabled):not([readonly]), [role="textbox"][contenteditable="true"]')) {
-        return card;
-      }
+      if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "surface-variant" };
     }
-    return fallback;
+    if (fallback) return { card: fallback, source: "surface-variant" };
+    if (!codexPlusUsageState.modernDom && document.querySelector(codexPlusUsageCardSelector)) {
+      codexPlusUsageState.modernDom = true;
+    }
+    if (codexPlusUsageState.modernDom) return null;
+    for (const card of document.querySelectorAll(codexPlusUsageLegacyCardSelector)) {
+      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
+      // 旧版类名也可能挂在装饰容器上，必须真的包着输入框才算。
+      if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "legacy-chrome" };
+    }
+    // 有 composer 根标记、没有旧类名的过渡版本：根节点包着输入框时就挂在根上。
+    for (const card of document.querySelectorAll("[data-codex-composer-root]")) {
+      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
+      if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "composer-root" };
+    }
+    // 类名也对不上时按输入框本身找：取 ProseMirror 所在的 form。
+    for (const editor of document.querySelectorAll('.ProseMirror[contenteditable="true"]')) {
+      if (!visibleElement(editor) || editor.closest('[data-codex-plus-ext], [role="dialog"]')) continue;
+      const form = editor.closest("form");
+      if (form && visibleElement(form)) return { card: form, source: "editor-form" };
+    }
+    return null;
+  }
+
+  function codexPlusUsageValidThreadId(value) {
+    const id = String(value || "").replace(/^local:/, "").trim();
+    if (!id || id === "__proto__" || id === "prototype" || id === "constructor") return "";
+    return /^[A-Za-z0-9_.-]{8,128}$/.test(id) ? id : "";
   }
 
   /**
-   * 当前会话 id。
+   * 旧版 Codex 的当前会话：侧边栏当前行 + 地址栏（currentSessionRef，删除 / 导出也靠它
+   * 认当前会话）。测试沙箱里没有这个函数，按缺失处理。
+   */
+  function codexPlusUsageLegacyThreadId() {
+    if (typeof currentSessionRef !== "function") return "";
+    try {
+      return currentSessionRef()?.session_id || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /**
+   * 当前会话，返回 `{ id, source, reason, placement }`；拿不到 id 时 reason 说明原因。
    *
    * `[data-above-composer-conversation-id]` 是 Codex 自己挂在 composer 上的会话标识，
    * 比侧边栏选中行更贴近「这个输入框属于哪个会话」。侧边栏只作兜底，而且**只在
    * placement=thread 时用**：首页/新会话草稿的 composer 是 placement=home，此时侧边栏
    * 仍选中着上一个 thread，兜底会把上一个会话的读数挂到新会话上。
    * 新会话草稿的 id 形如 `local:client-new-thread:<uuid>`，还没有 rollout，直接当作无会话。
+   *
+   * 旧版 Codex 的 composer 上既没有 data-codex-composer-root / data-composer-placement，
+   * 也没有会话标识（issue #2753），这时 placement 为空，退回侧边栏当前行 + 地址栏。
    */
-  function codexPlusUsageThreadId(card) {
-    const composerRoot = card?.closest("[data-codex-composer-root]");
+  function codexPlusUsageResolveThread(card) {
+    const none = (reason, placement = "") => ({ id: "", source: "", reason, placement });
+    if (!card) return none("no-card");
+    const composerRoot = card.closest?.("[data-codex-composer-root]") || null;
+    const placement = String(composerRoot?.getAttribute("data-composer-placement") || "");
     const fromComposer = composerRoot
       ?.querySelector("[data-above-composer-conversation-id]")
       ?.getAttribute("data-above-composer-conversation-id");
-    const inThread = composerRoot?.getAttribute("data-composer-placement") === "thread";
-    const fromSidebar = inThread
-      ? document
+    if (fromComposer) {
+      const id = codexPlusUsageValidThreadId(fromComposer);
+      if (id) return { id, source: "composer", reason: "", placement };
+      return none(/client-new-thread:/i.test(fromComposer) ? "draft" : "invalid-id", placement);
+    }
+    if (placement === "home") return none("home", placement);
+    if (placement === "thread") {
+      const fromSidebar = codexPlusUsageValidThreadId(document
         .querySelector('[data-app-action-sidebar-thread-selected="true"][data-app-action-sidebar-thread-id]')
-        ?.getAttribute("data-app-action-sidebar-thread-id")
-      : null;
-    const id = String(fromComposer || fromSidebar || "").replace(/^local:/, "").trim();
-    if (!id || id === "__proto__" || id === "prototype" || id === "constructor") return "";
-    return /^[A-Za-z0-9_.-]{8,128}$/.test(id) ? id : "";
+        ?.getAttribute("data-app-action-sidebar-thread-id"));
+      if (fromSidebar) return { id: fromSidebar, source: "sidebar", reason: "", placement };
+    } else if (placement) {
+      // 其它显式 placement（侧边对话等）不认侧边栏，和原来的行为一致。
+      return none("other-placement", placement.slice(0, 32));
+    }
+    const legacy = codexPlusUsageValidThreadId(codexPlusUsageLegacyThreadId());
+    if (legacy) return { id: legacy, source: "legacy", reason: "", placement };
+    return none("no-thread-id", placement);
+  }
+
+  function codexPlusUsageThreadId(card) {
+    return codexPlusUsageResolveThread(card).id;
+  }
+
+  /** 同一原因每个页面生命周期只记一次。 */
+  function codexPlusUsageDiagnoseOnce(event, key, detail) {
+    const seen = codexPlusUsageState.diagnosed;
+    const fullKey = `${event}:${key}`;
+    if (seen.has(fullKey) || seen.size >= codexPlusUsageDiagnosticLimit) return;
+    seen.add(fullKey);
+    try {
+      Promise.resolve(sendCodexPlusDiagnostic(event, detail)).catch(() => {});
+    } catch (_) {
+      // 诊断失败不能影响状态栏本身。
+    }
+  }
+
+  /** 挂载失败时的 DOM 快照：只记数量和布尔值，不记会话 id 与内容。 */
+  function codexPlusUsageDomProbe() {
+    const count = (selector) => {
+      try {
+        return document.querySelectorAll(selector).length;
+      } catch (_) {
+        return -1;
+      }
+    };
+    return {
+      surfaceVariant: count(codexPlusUsageCardSelector),
+      composerRoot: count("[data-codex-composer-root]"),
+      conversationMarker: count("[data-above-composer-conversation-id]"),
+      legacyChrome: count(".composer-surface-chrome"),
+      layoutRoot: count('[class*="_ComposerLayoutRoot_"]'),
+      editors: count('.ProseMirror[contenteditable="true"]'),
+      sidebarRows: count("[data-app-action-sidebar-thread-id]"),
+      sidebarSelected: count('[data-app-action-sidebar-thread-selected="true"]'),
+      locationHasThread: typeof locationThreadId === "function" ? !!locationThreadId() : null,
+    };
+  }
+
+  function codexPlusUsageVisibleEditor() {
+    return [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')]
+      .some((editor) => visibleElement(editor) && !editor.closest("[data-codex-plus-ext]"));
+  }
+
+  /**
+   * 把挂载结果写进诊断日志（issue #2753：同样设置 Windows 有、Mac 没有，用户侧无从排查）。
+   *   - 页面上有输入框却找不到卡片、或找到卡片却认不出会话 → usage_statusline_mount_missing；
+   *   - 走了旧版兜底才挂上 → usage_statusline_fallback_mount，方便确认用户是旧版 Codex。
+   * 首页、新会话草稿、没有输入框的页面本来就不显示，不记。
+   */
+  function codexPlusUsageReportPlacement(found, thread) {
+    let event = "";
+    let detail = null;
+    if (!found) {
+      if (!codexPlusUsageVisibleEditor()) return;
+      event = "usage_statusline_mount_missing";
+      detail = { reason: "no-composer-card" };
+    } else if (!thread?.id) {
+      const reason = thread?.reason || "no-thread-id";
+      if (reason === "home" || reason === "draft") return;
+      event = "usage_statusline_mount_missing";
+      detail = { reason, card: found.source, placement: thread?.placement || "" };
+    } else if (found.source !== "surface-variant" || thread.source === "legacy") {
+      event = "usage_statusline_fallback_mount";
+      detail = { card: found.source, thread: thread.source };
+    } else {
+      return;
+    }
+    codexPlusUsageDiagnoseOnce(event, Object.values(detail).join("|"), { ...detail, dom: codexPlusUsageDomProbe() });
+  }
+
+  /** 旧版 Codex 的 rollout 可能缺窗口或轮 id：照样显示（对应项为 --），只记一次缺了什么。 */
+  function codexPlusUsageNoteDataGaps(events) {
+    if (!Array.isArray(events) || !events.length) return;
+    const latest = events[events.length - 1] || {};
+    const missing = [];
+    if (!(Number(latest.context_window) > 0)) missing.push("context_window");
+    if (!events.some((item) => typeof item?.turn_id === "string" && item.turn_id)) missing.push("turn_id");
+    if (!events.some((item) => Number.isFinite(Date.parse(item?.t)))) missing.push("t");
+    if (!missing.length) return;
+    codexPlusUsageDiagnoseOnce("usage_statusline_data_partial", missing.join(","), { missing, events: events.length });
   }
 
   function codexPlusUsageEnsureNode(card) {
@@ -374,8 +538,12 @@
 
   /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */
   function codexPlusUsageSyncPlacement() {
-    const card = codexPlusUsageEnabled() ? codexPlusUsageComposerCard() : null;
-    const threadId = codexPlusUsageThreadId(card);
+    const enabled = codexPlusUsageEnabled();
+    const found = enabled ? codexPlusUsageComposerCard() : null;
+    const card = found?.card || null;
+    const thread = codexPlusUsageResolveThread(card);
+    if (enabled) codexPlusUsageReportPlacement(found, thread);
+    const threadId = thread.id;
     if (!card || !threadId) {
       codexPlusUsageHide();
       codexPlusUsageState.threadId = "";
@@ -408,7 +576,8 @@
   /** 只观察输入框结构和会话标识，忽略状态栏自身的写入，避免自喂循环。 */
   function codexPlusUsageObserve() {
     if (!document.body || typeof MutationObserver !== "function") return;
-    const selector = "[data-codex-composer-root], [data-composer-surface-variant], [data-above-composer-conversation-id]";
+    // 旧版 Codex 没有前三个标记，输入框结构变化只能靠旧类名感知（issue #2753）。
+    const selector = `[data-codex-composer-root], ${codexPlusUsageCardSelector}, [data-above-composer-conversation-id], ${codexPlusUsageLegacyCardSelector}`;
     codexPlusUsageState.observer = new MutationObserver((records) => {
       const relevant = records.some((record) => {
         if (record.target?.closest?.("[data-codex-plus-ext]")) return false;
@@ -428,6 +597,8 @@
       attributeFilter: [
         "data-above-composer-conversation-id", "data-composer-placement",
         "data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-id",
+        // 旧版侧边栏用 active / aria-current 标当前行。
+        "data-app-action-sidebar-thread-active", "aria-current",
       ],
     });
   }
@@ -438,7 +609,16 @@
     try {
       const result = await postJson("/thread-usage-live", { session_id: threadId });
       codexPlusUsageState.failures = 0;
-      if (result?.status !== "ok" || !Array.isArray(result.events)) return null;
+      if (result?.status !== "ok" || !Array.isArray(result.events)) {
+        // 栏位照样显示占位符；这里只把宿主给的原因记一次，便于区分「没挂上」和「没数据」。
+        const status = String(result?.status || "invalid").slice(0, 32);
+        codexPlusUsageDiagnoseOnce("usage_statusline_data_unavailable", status, {
+          status,
+          message: String(result?.message || "").slice(0, 200),
+        });
+        return null;
+      }
+      codexPlusUsageNoteDataGaps(result.events);
       return result.events;
     } finally {
       codexPlusUsageState.inFlight = false;

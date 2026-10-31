@@ -261,6 +261,99 @@
   font-size: 0.76rem;
 }
 
+/* 桌宠类型：简单桌宠 / 大肥鱼，二选一。 */
+.shell .agent-pet-kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.shell .agent-pet-kind {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  padding: 10px 12px;
+  text-align: left;
+  transition:
+    border-color var(--motion-normal) var(--motion-ease),
+    background-color var(--motion-normal) var(--motion-ease);
+}
+
+.shell .agent-pet-kind:hover {
+  border-color: hsl(var(--primary) / 0.32);
+  background: hsl(var(--accent) / 0.45);
+}
+
+.shell .agent-pet-kind.is-selected {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.08);
+  color: hsl(var(--foreground));
+}
+
+.shell .agent-pet-kind-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.6);
+}
+
+.shell .agent-pet-kind-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.shell .agent-pet-kind-text strong {
+  color: hsl(var(--foreground));
+  font-size: 0.86rem;
+}
+
+.shell .agent-pet-kind-text small {
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+/* 大肥鱼：旧版增强页里的「API 余额」配置。 */
+.shell .agent-pet-whale-fields {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  max-width: 520px;
+}
+
+.shell .agent-pet-whale-field {
+  display: grid;
+  gap: 4px;
+  font-size: 0.82rem;
+}
+
+.shell .agent-pet-whale-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.shell .agent-pet-whale > .agent-pet-credit {
+  display: block;
+  margin-top: 12px;
+}
+
+.shell .agent-pet-whale-figure {
+  width: 160px;
+  max-width: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
 .agent-pet-preview {
   position: sticky;
   top: 12px;

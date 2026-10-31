@@ -22,7 +22,7 @@ test("整体设置只放应用级选项，Agent 设置承担工具级选项", ()
     assert.ok(global.includes(`t("${copy}")`), `整体设置应包含 ${copy}`);
   }
   assert.doesNotMatch(global, /Codex 供应商设置|Codex 图片覆盖层|Codex 启动参数/);
-  for (const action of ["actions.toggleTheme", "actions.exportSettings", "actions.importSettings"]) {
+  for (const action of ["actions.setThemePreference", "actions.exportSettings", "actions.importSettings"]) {
     assert.ok(global.includes(action), `整体设置应保留 ${action}`);
     assert.ok(!agent.includes(action), `Agent 设置不应包含 ${action}`);
   }

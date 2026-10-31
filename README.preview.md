@@ -198,7 +198,7 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   <img src="docs/images/readme-preview/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" width="58%">
 </p>
 
-Agent 桌宠默认关闭，可在管理器「Agent 桌宠」页开启，目前支持 Codex。图片在运行时联网拉取并缓存在本机，详见 [Agent 桌宠说明](docs/agent-pet.md)。
+Agent 桌宠默认关闭，可在管理器「Agent 桌宠」页开启，目前支持 Codex。图片在运行时联网拉取并缓存在本机，详见 [Agent 桌宠说明](docs/agent-pet.md)。桌宠类型也可选「大肥鱼（DeepSeek 鲸鱼）」，即原版用量挂件，API 余额为可选能力，详见 [大肥鱼说明](docs/whale-widget.md)；鲸鱼角色与素材来自 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，归属见该文档的参考来源。
 
 ## 快速上手
 

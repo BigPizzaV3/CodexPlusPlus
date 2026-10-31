@@ -30,6 +30,12 @@ pub fn agent_pet_sounds() -> serde_json::Value {
     codex_plus_core::assets::agent_pet_sounds()
 }
 
+/// 大肥鱼（旧版 DeepSeek 鲸鱼挂件）的角色图，供页面预览；与 Codex 里内嵌的是同一张原样素材。
+#[tauri::command]
+pub fn agent_pet_whale_image() -> String {
+    codex_plus_core::assets::whale_default_image_data_uri()
+}
+
 /// 可下载音效组目录（含作者与授权）：`[{ id, name, author, license, sourceUrl }]`。
 #[tauri::command]
 pub fn agent_pet_sound_catalog() -> Vec<AgentPetSoundEntry> {
@@ -158,6 +164,15 @@ mod tests {
                 assert!(uri.starts_with("data:audio/mpeg;base64,"), "{set}.{slot}");
             }
         }
+    }
+
+    #[test]
+    fn whale_image_is_the_embedded_png() {
+        let uri = agent_pet_whale_image();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(uri.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     }
 
     #[test]

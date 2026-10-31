@@ -1,3 +1,5 @@
+use crate::gateway::apply::ProviderInput;
+use crate::gateway::store::GatewayStore;
 use crate::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore};
 use anyhow::Context;
 use std::path::Path;
@@ -16,7 +18,43 @@ pub struct ProviderImportRequest {
     pub config_contents: String,
     #[serde(default)]
     pub auth_contents: String,
+    /// 导入到哪里：空为直连模式供应商（原有行为），`pool` 为网关供应商池。
+    #[serde(default)]
+    pub target: String,
 }
+
+/// 导入目标：网关供应商池。
+pub const IMPORT_TARGET_POOL: &str = "pool";
+
+/// 唯一接受的导入链接地址（查询参数之前的部分）。
+pub const PROVIDER_IMPORT_URL: &str = "codexplusplus://v1/import/provider";
+
+/// 待确认导入和它的指纹。指纹是 pending 文件内容的 SHA-256：弹窗展示时拿到，确认时带回，
+/// 后端比对一致才写入，免得用户确认的是一条、实际导入的是随后被新链接覆盖的另一条。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingProviderImport {
+    pub request: ProviderImportRequest,
+    pub fingerprint: String,
+}
+
+/// 确认导入的结果；`to_pool` 与实际导入取自同一次读取。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmedProviderImport {
+    pub result: ProviderImportResult,
+    pub to_pool: bool,
+}
+
+/// 确认时 pending 已被新链接覆盖。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingProviderImportChanged;
+
+impl std::fmt::Display for PendingProviderImportChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("导入内容已变化，请重新确认")
+    }
+}
+
+impl std::error::Error for PendingProviderImportChanged {}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -185,12 +223,162 @@ pub fn clear_pending_provider_import() -> anyhow::Result<()> {
     clear_pending_provider_import_at(&crate::paths::default_pending_provider_import_path())
 }
 
-pub fn confirm_pending_provider_import() -> anyhow::Result<Option<ProviderImportResult>> {
-    let path = crate::paths::default_pending_provider_import_path();
-    if !path.exists() {
+pub fn load_pending_provider_import_with_fingerprint()
+-> anyhow::Result<Option<PendingProviderImport>> {
+    load_pending_provider_import_with_fingerprint_at(
+        &crate::paths::default_pending_provider_import_path(),
+    )
+}
+
+/// 读一次 pending 文件，同时给出内容和指纹。
+pub fn load_pending_provider_import_with_fingerprint_at(
+    path: &Path,
+) -> anyhow::Result<Option<PendingProviderImport>> {
+    let contents = match std::fs::read(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("读取待确认供应商导入失败：{}", path.to_string_lossy())
+            });
+        }
+    };
+    let request = serde_json::from_slice(&contents).context("待确认供应商导入内容无效")?;
+    Ok(Some(PendingProviderImport {
+        request,
+        fingerprint: pending_fingerprint(&contents),
+    }))
+}
+
+fn pending_fingerprint(contents: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(contents))
+}
+
+/// 确认导入：只有 pending 的指纹与弹窗展示时一致才写入；导入目标与内容来自同一次读取。
+pub fn confirm_pending_provider_import_matching(
+    fingerprint: &str,
+) -> anyhow::Result<Option<ConfirmedProviderImport>> {
+    confirm_pending_provider_import_matching_at(
+        &crate::paths::default_pending_provider_import_path(),
+        fingerprint,
+        SettingsStore::default(),
+        &GatewayStore::default(),
+    )
+}
+
+pub fn confirm_pending_provider_import_matching_at(
+    path: &Path,
+    fingerprint: &str,
+    settings: SettingsStore,
+    gateway: &GatewayStore,
+) -> anyhow::Result<Option<ConfirmedProviderImport>> {
+    let Some(pending) = load_pending_provider_import_with_fingerprint_at(path)? else {
         return Ok(None);
+    };
+    if pending.fingerprint != fingerprint.trim() {
+        return Err(PendingProviderImportChanged.into());
     }
-    confirm_pending_provider_import_at(&path, SettingsStore::default()).map(Some)
+    let to_pool = is_pool_import(&pending.request);
+    let result = if to_pool {
+        import_provider_to_pool(pending.request, gateway)?
+    } else {
+        import_provider_with_store(pending.request, settings)?
+    };
+    // 导入期间又来了新链接时留着它，等界面轮询到后再让用户确认。
+    clear_pending_provider_import_if_unchanged_at(path, &pending.fingerprint)?;
+    Ok(Some(ConfirmedProviderImport { result, to_pool }))
+}
+
+/// 取消导入：只删用户看到的那一条；已被新链接覆盖时保留并返回新的那条。
+pub fn dismiss_pending_provider_import_matching(
+    fingerprint: Option<&str>,
+) -> anyhow::Result<Option<PendingProviderImport>> {
+    dismiss_pending_provider_import_matching_at(
+        &crate::paths::default_pending_provider_import_path(),
+        fingerprint,
+    )
+}
+
+pub fn dismiss_pending_provider_import_matching_at(
+    path: &Path,
+    fingerprint: Option<&str>,
+) -> anyhow::Result<Option<PendingProviderImport>> {
+    let Some(fingerprint) = fingerprint.map(str::trim).filter(|value| !value.is_empty()) else {
+        clear_pending_provider_import_at(path)?;
+        return Ok(None);
+    };
+    clear_pending_provider_import_if_unchanged_at(path, fingerprint)?;
+    load_pending_provider_import_with_fingerprint_at(path)
+}
+
+fn clear_pending_provider_import_if_unchanged_at(
+    path: &Path,
+    fingerprint: &str,
+) -> anyhow::Result<()> {
+    let current = match std::fs::read(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("读取待确认供应商导入失败：{}", path.to_string_lossy())
+            });
+        }
+    };
+    if pending_fingerprint(&current) == fingerprint {
+        clear_pending_provider_import_at(path)?;
+    }
+    Ok(())
+}
+
+/// 导入链接带 `target=pool` 时，确认后加进网关供应商池而不是直连模式。
+pub fn is_pool_import(request: &ProviderImportRequest) -> bool {
+    request.target == IMPORT_TARGET_POOL
+}
+
+pub fn confirm_pending_provider_import_to_pool_at(
+    path: &Path,
+    store: &GatewayStore,
+) -> anyhow::Result<ProviderImportResult> {
+    let request = load_pending_provider_import_at(path)?.context("没有待确认的供应商导入")?;
+    let result = import_provider_to_pool(request, store)?;
+    clear_pending_provider_import_at(path)?;
+    Ok(result)
+}
+
+/// 把导入请求加进网关供应商池。同一地址下已有相同 Key 的供应商时不重复添加。
+/// 模型列表留空，由调用方随后从上游获取。
+pub fn import_provider_to_pool(
+    request: ProviderImportRequest,
+    store: &GatewayStore,
+) -> anyhow::Result<ProviderImportResult> {
+    let request = normalize_request(request)?;
+    let gateway = store.load()?;
+    if let Some(existing) = gateway.providers.iter().find(|provider| {
+        let relay = &provider.relay;
+        relay.upstream_base_url.trim_end_matches('/') == request.base_url
+            && (relay.api_key == request.api_key
+                || relay.api_keys.iter().any(|key| key.api_key == request.api_key))
+    }) {
+        return Ok(ProviderImportResult {
+            imported: false,
+            profile_id: existing.relay.id.clone(),
+            profile_name: existing.relay.name.clone(),
+        });
+    }
+    let input = ProviderInput {
+        name: request.name.clone(),
+        base_url: request.base_url.clone(),
+        protocol: relay_protocol(&request.wire_api),
+        keys: vec![request.api_key.clone()],
+        ..ProviderInput::default()
+    };
+    let (_, id) = crate::gateway::apply::create_provider(store, &input, "import:url", None)?;
+    Ok(ProviderImportResult {
+        imported: true,
+        profile_id: id,
+        profile_name: request.name,
+    })
 }
 
 pub fn save_pending_provider_import_at(
@@ -280,7 +468,10 @@ pub fn import_provider_with_store(
 }
 
 pub fn request_from_url(url: &str) -> anyhow::Result<ProviderImportRequest> {
-    let (_, query) = url.split_once('?').context("导入链接缺少查询参数")?;
+    let (location, query) = url.trim().split_once('?').context("导入链接缺少查询参数")?;
+    if location.trim_end_matches('/') != PROVIDER_IMPORT_URL {
+        anyhow::bail!("只支持 {PROVIDER_IMPORT_URL} 导入链接");
+    }
     let mut values = std::collections::BTreeMap::<String, String>::new();
     for pair in query.split('&') {
         if pair.is_empty() {
@@ -289,9 +480,11 @@ pub fn request_from_url(url: &str) -> anyhow::Result<ProviderImportRequest> {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         values.insert(percent_decode(key), percent_decode(value));
     }
+    let base_url = required_value(&values, "baseUrl")?;
+    validate_import_base_url(&base_url)?;
     Ok(ProviderImportRequest {
         name: required_value(&values, "name")?,
-        base_url: required_value(&values, "baseUrl")?,
+        base_url,
         api_key: required_value(&values, "apiKey")?,
         wire_api: values
             .get("wireApi")
@@ -303,7 +496,32 @@ pub fn request_from_url(url: &str) -> anyhow::Result<ProviderImportRequest> {
             .unwrap_or_else(default_relay_mode),
         config_contents: String::new(),
         auth_contents: String::new(),
+        target: normalize_target(values.get("target").map(String::as_str).unwrap_or_default()),
     })
+}
+
+/// 导入链接里的 Base URL 只接受 http / https，其它协议（file、javascript 等）一律拒绝。
+fn validate_import_base_url(value: &str) -> anyhow::Result<()> {
+    let parsed = reqwest::Url::parse(value.trim())
+        .map_err(|_| anyhow::anyhow!("导入链接的 Base URL 不是有效的网址：{value}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => anyhow::bail!(
+            "导入链接的 Base URL 只支持 http:// 或 https:// 地址，不支持 {other}://"
+        ),
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        anyhow::bail!("导入链接的 Base URL 缺少主机名");
+    }
+    Ok(())
+}
+
+/// 导入目标只认识网关供应商池，其余（含空）都按直连模式处理。
+fn normalize_target(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "pool" | "gateway" | "gateway-pool" => IMPORT_TARGET_POOL.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn relay_profile_from_request(
@@ -392,6 +610,7 @@ pub fn pool_relay_profile(
         relay_mode: default_relay_mode(),
         config_contents: String::new(),
         auth_contents: String::new(),
+        target: String::new(),
     })?;
     let mut profile = relay_profile_from_request(&request, existing_ids);
     let default_model = default_model.trim();
@@ -579,6 +798,222 @@ mod tests {
     }
 
     #[test]
+    fn parses_pool_target_from_url() {
+        let pool = request_from_url(
+            "codexplusplus://v1/import/provider?name=JOJO%20Code&baseUrl=https%3A%2F%2Fmax2.jojocode.com&apiKey=sk-test&wireApi=anthropic&target=pool",
+        )
+        .unwrap();
+        let unknown = request_from_url(
+            "codexplusplus://v1/import/provider?name=X&baseUrl=https%3A%2F%2Fa.example%2Fv1&apiKey=sk-test&target=whatever",
+        )
+        .unwrap();
+        let legacy = request_from_url(
+            "codexplusplus://v1/import/provider?name=X&baseUrl=https%3A%2F%2Fa.example%2Fv1&apiKey=sk-test",
+        )
+        .unwrap();
+
+        assert!(is_pool_import(&pool));
+        assert_eq!(pool.wire_api, "anthropic");
+        assert!(!is_pool_import(&unknown));
+        assert!(!is_pool_import(&legacy));
+    }
+
+    #[test]
+    fn imports_provider_to_gateway_pool_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(dir.path().join("gateway.json"));
+        let request = request_from_url(
+            "codexplusplus://v1/import/provider?name=JOJO%20Code%20Claude&baseUrl=https%3A%2F%2Fmax2.jojocode.com%2F&apiKey=sk-claude&wireApi=anthropic&target=pool",
+        )
+        .unwrap();
+
+        let first = import_provider_to_pool(request.clone(), &store).unwrap();
+        let second = import_provider_to_pool(request, &store).unwrap();
+        let gateway = store.load().unwrap();
+
+        assert!(first.imported);
+        assert!(!second.imported);
+        assert_eq!(first.profile_id, second.profile_id);
+        assert_eq!(gateway.providers.len(), 1);
+        let relay = &gateway.providers[0].relay;
+        assert_eq!(relay.protocol, RelayProtocol::AnthropicMessages);
+        assert_eq!(relay.upstream_base_url, "https://max2.jojocode.com");
+        assert_eq!(relay.api_key, "sk-claude");
+        assert_eq!(gateway.providers[0].source, "import:url");
+    }
+
+    #[test]
+    fn confirms_pending_pool_import_and_keeps_direct_profiles_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending_path = dir.path().join("pending-provider-import.json");
+        let gateway = GatewayStore::at(dir.path().join("gateway.json"));
+        let mut request = request_from_url(
+            "codexplusplus://v1/import/provider?name=JOJO%20Code&baseUrl=https%3A%2F%2Fmax2.jojocode.com%2Fv1&apiKey=sk-test&target=pool",
+        )
+        .unwrap();
+        request.config_contents = "notify = [\"calc\"]\n".to_string();
+        save_pending_provider_import_at(&pending_path, &request).unwrap();
+
+        let result = confirm_pending_provider_import_to_pool_at(&pending_path, &gateway).unwrap();
+
+        assert!(result.imported);
+        assert_eq!(gateway.load().unwrap().providers.len(), 1);
+        assert!(!pending_path.exists());
+    }
+
+    #[test]
+    fn rejects_other_import_paths_and_non_http_base_urls() {
+        let path_error = request_from_url(
+            "codexplusplus://v1/import/skin?name=X&baseUrl=https%3A%2F%2Fa.example&apiKey=sk-test",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(path_error.contains("codexplusplus://v1/import/provider"), "{path_error}");
+        assert!(
+            request_from_url(
+                "codexplusplus://v2/import/provider?name=X&baseUrl=https%3A%2F%2Fa.example&apiKey=sk-test"
+            )
+            .is_err()
+        );
+        for base_url in ["file%3A%2F%2F%2Fetc%2Fpasswd", "javascript%3Aalert(1)", "ftp%3A%2F%2Fa.example", "not-a-url"] {
+            let error = request_from_url(&format!(
+                "codexplusplus://v1/import/provider?name=X&baseUrl={base_url}&apiKey=sk-test"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("Base URL"), "{base_url}: {error}");
+        }
+        // 末尾带斜杠、http 地址照常接受。
+        let request = request_from_url(
+            "codexplusplus://v1/import/provider/?name=X&baseUrl=http%3A%2F%2F127.0.0.1%3A3000%2Fv1&apiKey=sk-test",
+        )
+        .unwrap();
+        assert_eq!(request.base_url, "http://127.0.0.1:3000/v1");
+    }
+
+    fn save_pending_url(path: &Path, url: &str) -> String {
+        save_pending_provider_import_at(path, &request_from_url(url).unwrap()).unwrap();
+        load_pending_provider_import_with_fingerprint_at(path)
+            .unwrap()
+            .unwrap()
+            .fingerprint
+    }
+
+    #[test]
+    fn confirm_rejects_pending_import_replaced_after_it_was_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending_path = dir.path().join("pending-provider-import.json");
+        let settings = SettingsStore::new(dir.path().join("settings.json"));
+        let gateway = GatewayStore::at(dir.path().join("gateway.json"));
+        let shown = save_pending_url(
+            &pending_path,
+            "codexplusplus://v1/import/provider?name=Shown&baseUrl=https%3A%2F%2Fshown.example&apiKey=sk-shown",
+        );
+        // 弹窗展示后又来了一条新链接（导入到供应商池），覆盖了 pending。
+        let replaced = save_pending_url(
+            &pending_path,
+            "codexplusplus://v1/import/provider?name=Other&baseUrl=https%3A%2F%2Fother.example&apiKey=sk-other&target=pool",
+        );
+        assert_ne!(shown, replaced);
+
+        let error = confirm_pending_provider_import_matching_at(
+            &pending_path,
+            &shown,
+            settings.clone(),
+            &gateway,
+        )
+        .unwrap_err();
+
+        assert!(error.downcast_ref::<PendingProviderImportChanged>().is_some());
+        assert_eq!(error.to_string(), "导入内容已变化，请重新确认");
+        // 什么都没写，新的那条仍待确认。
+        assert!(gateway.load().unwrap().providers.is_empty());
+        assert!(
+            !settings
+                .load()
+                .unwrap_or_default()
+                .relay_profiles
+                .iter()
+                .any(|profile| profile.name == "Shown" || profile.name == "Other")
+        );
+        assert!(pending_path.exists());
+
+        // 带上新指纹再确认：按同一次读取的 target=pool 导入到供应商池。
+        let confirmed = confirm_pending_provider_import_matching_at(
+            &pending_path,
+            &replaced,
+            settings,
+            &gateway,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(confirmed.to_pool);
+        assert!(confirmed.result.imported);
+        assert_eq!(gateway.load().unwrap().providers.len(), 1);
+        assert!(!pending_path.exists());
+    }
+
+    #[test]
+    fn confirm_matching_fingerprint_imports_direct_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending_path = dir.path().join("pending-provider-import.json");
+        let settings = SettingsStore::new(dir.path().join("settings.json"));
+        let gateway = GatewayStore::at(dir.path().join("gateway.json"));
+        let fingerprint = save_pending_url(
+            &pending_path,
+            "codexplusplus://v1/import/provider?name=Direct&baseUrl=https%3A%2F%2Fdirect.example%2Fv1&apiKey=sk-direct",
+        );
+
+        let confirmed = confirm_pending_provider_import_matching_at(
+            &pending_path,
+            &fingerprint,
+            settings.clone(),
+            &gateway,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(!confirmed.to_pool);
+        assert!(confirmed.result.imported);
+        assert!(settings.load().unwrap().relay_profiles.iter().any(|profile| profile.name == "Direct"));
+        assert!(gateway.load().unwrap_or_default().providers.is_empty());
+        assert!(!pending_path.exists());
+        // 已经没有待确认导入时返回 None。
+        assert!(
+            confirm_pending_provider_import_matching_at(&pending_path, &fingerprint, settings, &gateway)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn dismiss_keeps_pending_import_replaced_after_it_was_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending_path = dir.path().join("pending-provider-import.json");
+        let shown = save_pending_url(
+            &pending_path,
+            "codexplusplus://v1/import/provider?name=Shown&baseUrl=https%3A%2F%2Fshown.example&apiKey=sk-shown",
+        );
+        let replaced = save_pending_url(
+            &pending_path,
+            "codexplusplus://v1/import/provider?name=Other&baseUrl=https%3A%2F%2Fother.example&apiKey=sk-other",
+        );
+
+        let remaining = dismiss_pending_provider_import_matching_at(&pending_path, Some(&shown))
+            .unwrap()
+            .unwrap();
+        assert_eq!(remaining.fingerprint, replaced);
+        assert_eq!(remaining.request.name, "Other");
+
+        assert!(
+            dismiss_pending_provider_import_matching_at(&pending_path, Some(&replaced))
+                .unwrap()
+                .is_none()
+        );
+        assert!(!pending_path.exists());
+    }
+
+    #[test]
     fn url_import_discards_embedded_config_and_auth_payloads() {
         use base64::Engine as _;
 
@@ -610,6 +1045,7 @@ mod tests {
                 "notify = [\"powershell\", \"-Command\", \"calc\"]\n[mcp_servers.evil]\ncommand = \"cmd\"\n"
                     .to_string(),
             auth_contents: r#"{"OPENAI_API_KEY":"sk-test","exec":"calc"}"#.to_string(),
+            target: String::new(),
         };
 
         let first = import_provider_with_store(request.clone(), store.clone()).unwrap();
@@ -660,6 +1096,7 @@ mod tests {
             relay_mode: "pureApi".to_string(),
             config_contents: "notify = [\"calc\"]\n".to_string(),
             auth_contents: r#"{"OPENAI_API_KEY":"sk-test","exec":"calc"}"#.to_string(),
+            target: String::new(),
         };
 
         save_pending_provider_import_at(&path, &request).unwrap();
@@ -691,6 +1128,7 @@ mod tests {
                 relay_mode: "pureApi".to_string(),
                 config_contents: String::new(),
                 auth_contents: String::new(),
+                target: String::new(),
             },
         )
         .unwrap();

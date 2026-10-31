@@ -2474,6 +2474,85 @@ body.gw-sorting * {
   opacity: 0.75;
 }
 
+/* 供应商标题栏右侧：编辑（铅笔）+ 开关放在同一格里，不改整行的列宽（#2782）。
+   订阅账号没有编辑按钮，留同宽的空位让各行开关对齐。 */
+.shell .gw-pool-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shell .gw-pool-actions .gw-pool-edit,
+.shell .gw-pool-actions .gw-pool-edit-slot {
+  width: 26px;
+  height: 26px;
+  flex: none;
+}
+
+/* 详情各行的「编辑」等小图标按钮：比标题栏的再小一号，跟在文字后面。 */
+.shell .gw-pool-detail .gw-inline-icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 6px;
+}
+
+.shell .gw-pool-detail .gw-inline-icon:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.shell .gw-pool-detail .gw-inline-icon:disabled:hover {
+  background: transparent;
+  color: var(--gw-mute);
+}
+
+.shell .gw-pool-detail .gw-inline-danger:not(:disabled):hover {
+  color: var(--gw-err);
+}
+
+/* 已保存的 Key：打码后的 Key + 替换 / 删除，后面是「添加 Key」或正在填写的输入框。 */
+.shell .gw-key-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+}
+
+.shell .gw-key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.shell .gw-key-item[data-editing="true"] .gw-chip {
+  color: var(--gw-ink);
+  box-shadow: 0 0 0 1px var(--gw-line);
+}
+
+/* 详情底栏左侧：「测试」与订阅账号的「重新登录」并排，「删除」仍靠右。 */
+.shell .gw-detail-foot .gw-detail-foot-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+}
+
+.shell .gw-key-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.shell .gw-key-editor .gw-key-input {
+  width: 260px;
+  max-width: 100%;
+  height: 28px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+
 .shell .gw-status {
   display: inline-flex;
   align-items: center;

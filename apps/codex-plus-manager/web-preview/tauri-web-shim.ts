@@ -41,6 +41,7 @@ const demoSettings = {
   codexAppSessionDeleteSkipConfirm: false,
   codexAppMarkdownExport: true,
   codexAppUsageStatusLine: true,
+  codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
   codexAppTypingEffect: "off",
@@ -136,6 +137,47 @@ const demoSettings = {
     anthropicPromptCache: true,
     anthropicImpersonateClaudeCode: false,
     anthropicThinkingMode: "",
+  }, {
+    id: "sub2api-demo",
+    name: "sub2api 中转（演示）",
+    model: "deepseek-v4-pro[1M]",
+    baseUrl: "https://sub2api.example.com/v1",
+    upstreamBaseUrl: "https://sub2api.example.com/v1",
+    apiKey: "sk-demo",
+    protocol: "responses",
+    relayMode: "mixedApi",
+    officialMixApiKey: false,
+    hideOfficialUsageAlert: false,
+    testModel: "deepseek-v4-pro",
+    configContents: "",
+    authContents: "",
+    useCommonConfig: true,
+    contextSelection: { mcpServers: [], skills: [], plugins: [] },
+    contextSelectionInitialized: true,
+    contextWindow: "1000000",
+    autoCompactLimit: "800000",
+    modelList: "deepseek-v4-pro[1M]\ndeepseek-v4-flash[128K]",
+    modelWindows: "",
+    modelAutoCompact: "",
+    modelMetadata: "",
+    modelVlm: "",
+    vlmApiKey: "",
+    vlmModel: "",
+    vlmBaseUrl: "",
+    userAgent: "",
+    customHeaders: [],
+    sub2apiEnabled: false,
+    noAuth: false,
+    sub2apiMultiplier: "",
+    standardOpenaiProtocol: false,
+    webSearchHistoryCompat: false,
+    strictResponsesReasoning: false,
+    stripImageGenerationTool: false,
+    anthropicAuthHeader: "x-api-key",
+    anthropicMaxTokens: 0,
+    anthropicPromptCache: true,
+    anthropicImpersonateClaudeCode: false,
+    anthropicThinkingMode: "",
   }],
   relayCommonConfigContents: "",
   relayPreserveNonproviderSettings: false,
@@ -146,8 +188,14 @@ const demoSettings = {
   relayTestModel: "gpt-5.4-mini",
   tools: {},
   activeTool: "codex",
+  codexAppWhaleBalanceProtocol: "auto",
+  codexAppWhaleBalancePath: "",
+  codexAppWhaleBalanceField: "",
+  codexAppWhaleBalanceCurrency: "USD",
+  codexAppWhaleBalanceScale: 1,
   agentPet: {
     enabled: false,
+    kind: "image",
     agents: ["codex"],
     image: "whale",
     customImageUrl: "",
@@ -215,7 +263,7 @@ const overview = ok({
     debugger: { status: "disconnected", address: null, message: "等待 Codex 连接" },
     protocol_conversion_enabled: true,
   },
-  current_version: "2.1.2",
+  current_version: "2.1.4",
   update_status: "up_to_date",
   settings_path: "演示模式",
   logs_path: "演示模式",
@@ -248,6 +296,8 @@ const gateway = ok({
     { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", protocol: "chatCompletions", official: true, models: ["deepseek-v4-pro", "deepseek-v4-flash"], keyCount: 3 },
     { id: "kimi", name: "Kimi", baseUrl: "https://api.moonshot.cn/v1", protocol: "chatCompletions", official: true, models: ["kimi-k2-turbo"], keyCount: 2 },
     { id: "zhipu", name: "智谱 GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", protocol: "chatCompletions", official: true, models: ["glm-5"], keyCount: 1 },
+    { id: "sub2api-pool", name: "sub2api 站点（演示）", baseUrl: "https://sub2api.example.com", protocol: "responses", official: false, models: ["gpt-5.5"], keyCount: 1 },
+    { id: "newapi-pool", name: "new-api 站点（演示）", baseUrl: "https://newapi.example.com/v1", protocol: "chatCompletions", official: false, models: ["claude-sonnet-5-5"], keyCount: 1 },
   ],
   groups: [],
   agents: [
@@ -387,6 +437,8 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     ] as T;
     case "agent_pet_sound": return { status: "failed", message: "网页预览不提供音效下载" } as T;
     case "agent_pet_import_sound": return { status: "ok", file: `${String(args.slot ?? "press")}-0123456789abcdef.mp3` } as T;
+    // 网页预览不内嵌大肥鱼素材，页面会显示占位。
+    case "agent_pet_whale_image": return "" as T;
     case "agent_pet_image": return agentPetPreviewImage(String(args.image ?? ""), String(args.customImageUrl ?? "")) as T;
     case "lookup_model_prices": return ok({ source: "models.dev", fetchedAtMs: Date.now(), prices: ((args.models as string[]) ?? []).map((model) => ({ model, price: { providerId: "anthropic", providerName: "Anthropic", modelId: model, currency: "USD", input: 3, cachedInput: 0.3, output: 15, context: 200000 } })) }) as T;
     case "list_installed_skills":
@@ -434,7 +486,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "load_pending_dream_skin_community": return ok({ versionId: "" }) as T;
     case "load_watcher_state": return ok({ enabled: false, running: false, status: "disabled", message: "演示模式" }) as T;
     case "load_auto_takeover_state": return ok({ running: false, enabled: false, message: "演示模式" }) as T;
-    case "update_check": return ok({ currentVersion: "2.1.2", latestVersion: "2.1.2", updateAvailable: false }) as T;
+    case "update_check": return ok({ currentVersion: "2.1.4", latestVersion: "2.1.4", updateAvailable: false }) as T;
     case "refresh_script_market": return ok({ market: { status: "ok", message: "演示模式", updatedAt: "2026-10-26T12:51:00Z", scripts: [
       { id: "relay-balance", name: "Codex Relay Balance", description: "通用中转站余额与模型用量监控，支持自动读取或手动填写接口、日期范围、Token 明细和实际扣费倍率。", version: "0.3.7", author: "Codex++ Community", tags: ["codex", "relay", "balance", "usage", "quota"], homepage: "https://github.com/demo/relay-balance", script_url: "", installed: false, installedVersion: "", updateAvailable: false },
       { id: "model-matrix", name: "Codex Model Matrix", description: "紧凑且适配主题的 Codex 模型选择器，配备可拖动吸附的推理强度滑块。", version: "1.0.0", author: "lx", tags: ["codex", "models", "reasoning"], homepage: "https://github.com/demo/model-matrix", script_url: "", installed: true, installedVersion: "1.0.0", updateAvailable: false },
@@ -446,6 +498,33 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "list_local_sessions": return ok({ dbPath: "演示模式", dbPaths: [], sessions: [], offset: 0, limit: 50, hasMore: false, totalCount: 0 }) as T;
     case "load_relay_environment":
     case "check_relay_environment": return ok({ clashVergeTun: { enabled: false, configPath: null }, proxyEnvironment: { variables: [] }, codexEnvFile: { exists: false, path: "" } }) as T;
+    // 中转站识别：演示供应商按地址返回 sub2api（倍率 + 钱包余额）或 new-api（分组倍率 + Key 额度），其余识别不出。
+    case "probe_relay_billing": {
+      const profile = (args as { profile?: { baseUrl?: string } } | undefined)?.profile;
+      if (!profile?.baseUrl?.includes("sub2api")) return ok({ platform: null, rate: null, usage: null, detail: "演示模式" }) as T;
+      return ok({
+        platform: "sub2api",
+        rate: { endpoint: "https://sub2api.example.com/v1/sub2api/billing", multiplier: 0.9, appliedPeakMultiplier: 1.5, group: null },
+        usage: { endpoint: "https://sub2api.example.com/v1/usage", kind: "wallet", isValid: true, planName: "钱包余额", remaining: 12.345, quotaLimit: null, quotaUsed: null, unit: "USD", rateLimits: [] },
+        detail: "",
+      }) as T;
+    }
+    case "probe_gateway_provider_billing": {
+      const id = (args as { id?: string }).id;
+      if (id === "sub2api-pool") return ok({
+        platform: "sub2api",
+        rate: { endpoint: "https://sub2api.example.com/v1/sub2api/billing", multiplier: 0.28, appliedPeakMultiplier: null, group: null },
+        usage: { endpoint: "https://sub2api.example.com/v1/usage", kind: "wallet", isValid: true, planName: "钱包余额", remaining: 97505834.07, quotaLimit: null, quotaUsed: null, unit: "USD", rateLimits: [] },
+        detail: "",
+      }) as T;
+      if (id === "newapi-pool") return ok({
+        platform: "newapi",
+        rate: { endpoint: "https://newapi.example.com/api/log/token", multiplier: 1.5, appliedPeakMultiplier: null, group: "vip" },
+        usage: { endpoint: "https://newapi.example.com/api/usage/token/", kind: "keyQuota", isValid: true, planName: "codex", remaining: 36.5, quotaLimit: 50, quotaUsed: 13.5, unit: "CNY", rateLimits: [] },
+        detail: "",
+      }) as T;
+      return ok({ platform: null, rate: null, usage: null, detail: "演示模式" }) as T;
+    }
     default: return ok() as T;
   }
 }

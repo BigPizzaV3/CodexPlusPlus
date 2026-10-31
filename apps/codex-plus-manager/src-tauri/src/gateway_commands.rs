@@ -8,6 +8,7 @@ use serde::Serialize;
 use codex_plus_core::gateway::activity::{self, ActivitySnapshot};
 use codex_plus_core::gateway::apply::{self, ApplyContext, GroupInput, ProviderInput};
 use codex_plus_core::gateway::key_pool::{self, PoolSnapshot};
+use codex_plus_core::gateway::meta_sync;
 use codex_plus_core::gateway::model_sync;
 use codex_plus_core::gateway::store::{
     AgentBinding, GatewayGroup, GatewaySettings, GatewayStore, KeyRotationMode, new_client_token,
@@ -29,6 +30,8 @@ pub struct GatewayPoolEntry {
     pub official: bool,
     pub models: Vec<String>,
     pub key_count: usize,
+    /// 已保存的 Key（打码，#2782）：只有标识和头尾几位，Key 原文不传给界面。订阅账号等不用 Key 的为空。
+    pub keys: Vec<apply::ProviderKeyView>,
     pub enabled: bool,
     /// 预设 key 或导入来源，界面判断「已添加」用。
     pub source: String,
@@ -64,6 +67,10 @@ pub struct GatewayPoolEntry {
     pub upstream_gone: Vec<String>,
     /// 订阅账号的额度（ChatGPT 5 小时 / 每周、Copilot 本月高级请求）；查不到或普通供应商为空。
     pub quota: Option<codex_plus_core::gateway::quota::ProviderQuota>,
+    /// 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额，不当中转站识别。
+    pub balance_api: bool,
+    /// new-api 访问令牌（打码，#2793）；没配置为空。令牌原文不传给界面。
+    pub newapi_access: Option<apply::NewApiAccessView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,6 +178,7 @@ fn pool_entry(
         official: codex_plus_core::official_login::member_uses_official_login_transport(relay),
         models: codex_plus_core::gateway::route::relay_models(relay),
         key_count: key_pool::expand_keys(relay).len(),
+        keys: Vec::new(),
         enabled,
         source: source.to_string(),
         price,
@@ -189,6 +197,8 @@ fn pool_entry(
         upstream_new: upstream.0,
         upstream_gone: upstream.1,
         quota: codex_plus_core::gateway::quota::get(&relay.id),
+        balance_api: codex_plus_core::gateway::balance::has_balance_api(relay),
+        newapi_access: None,
     }
 }
 
@@ -213,6 +223,8 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         .providers
         .iter()
         .map(|provider| GatewayPoolEntry {
+            keys: apply::provider_keys(&provider.relay),
+            newapi_access: apply::provider_newapi_access(provider),
             model_windows: provider.model_windows.clone(),
             context_window: provider.context_window,
             key_rpm: provider.key_rpm,
@@ -676,6 +688,131 @@ pub fn update_gateway_provider(
     respond("供应商已保存。", "保存供应商失败", result)
 }
 
+/// 给网关供应商再加一个 Key（#2782，在供应商池的详情里操作）。
+#[tauri::command]
+pub fn add_gateway_provider_key(id: String, key: String) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "Key 已添加。",
+        "添加 Key 失败",
+        refresh_agents(apply::add_provider_key(&GatewayStore::default(), &id, &key)),
+    )
+}
+
+/// 把供应商的某个 Key 换成新值（按 Key 的标识找，#2782）。
+#[tauri::command]
+pub fn replace_gateway_provider_key(
+    id: String,
+    key_id: String,
+    key: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "Key 已替换。",
+        "替换 Key 失败",
+        refresh_agents(apply::replace_provider_key(
+            &GatewayStore::default(),
+            &id,
+            &key_id,
+            &key,
+        )),
+    )
+}
+
+/// 删掉供应商的某个 Key（按 Key 的标识找，至少保留一个，#2782）。
+#[tauri::command]
+pub fn delete_gateway_provider_key(
+    id: String,
+    key_id: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "Key 已删除。",
+        "删除 Key 失败",
+        refresh_agents(apply::delete_provider_key(
+            &GatewayStore::default(),
+            &id,
+            &key_id,
+        )),
+    )
+}
+
+/// 进行中的供应商测试：(序号, 中止函数)。同一时间只留一个，开始新的测试时中止上一个。
+static PROBE_TASK: std::sync::Mutex<Option<(u64, Box<dyn FnOnce() + Send>)>> =
+    std::sync::Mutex::new(None);
+static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 测试被用户取消时的提示；界面按 status `cancelled` 识别。
+const PROBE_CANCELLED: &str = "测试已取消。";
+
+fn probe_slot() -> std::sync::MutexGuard<'static, Option<(u64, Box<dyn FnOnce() + Send>)>> {
+    PROBE_TASK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 测试供应商池里的一家供应商：发一条很短的请求（见 `gateway::probe`），不计入路由与统计。
+/// `key_id` 给了就只用这个 Key（按标识选，完整 Key 不经过界面）；`model` 为空时用默认模型。
+/// 在后台任务里跑、最多 60 秒，可用 [`cancel_gateway_provider_test`] 取消。
+#[tauri::command]
+pub async fn test_gateway_provider(
+    id: String,
+    model: Option<String>,
+    key_id: Option<String>,
+) -> CommandResult<Option<codex_plus_core::gateway::probe::ProbeResult>> {
+    let handle = tauri::async_runtime::spawn(async move {
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        let gateway = GatewayStore::default().load()?;
+        codex_plus_core::gateway::probe::probe_provider(
+            &settings,
+            &gateway,
+            &id,
+            model.as_deref().unwrap_or_default(),
+            key_id.as_deref(),
+        )
+        .await
+    });
+    let seq = PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let abort = handle.inner().abort_handle();
+    if let Some((_, previous)) = probe_slot().replace((seq, Box::new(move || abort.abort()))) {
+        previous();
+    }
+    let joined = handle.await;
+    {
+        let mut slot = probe_slot();
+        if slot.as_ref().is_some_and(|(current, _)| *current == seq) {
+            *slot = None;
+        }
+    }
+    match joined {
+        Ok(Ok(result)) => ok(
+            if result.ok {
+                "测试成功。"
+            } else {
+                "测试失败。"
+            },
+            Some(result),
+        ),
+        Ok(Err(error)) => failed(&format!("测试失败：{error:#}"), None),
+        Err(tauri::Error::JoinError(error)) if error.is_cancelled() => CommandResult {
+            status: "cancelled".to_string(),
+            message: PROBE_CANCELLED.to_string(),
+            payload: None,
+        },
+        Err(error) => failed(&format!("测试失败：测试任务异常退出：{error}"), None),
+    }
+}
+
+/// 取消进行中的供应商测试（关掉测试弹窗、点「取消」时调用）。没有进行中的测试时什么也不做。
+#[tauri::command]
+pub fn cancel_gateway_provider_test() -> CommandResult<()> {
+    let cancelled = probe_slot().take().map(|(_, abort)| abort()).is_some();
+    ok(
+        if cancelled {
+            PROBE_CANCELLED
+        } else {
+            "没有进行中的测试。"
+        },
+        (),
+    )
+}
+
 /// 只改供应商的价格与独立代理（在供应商池的详情里编辑）。
 #[tauri::command]
 pub fn save_gateway_provider_extras(
@@ -704,6 +841,32 @@ pub fn save_gateway_provider_limits(
         "限速已保存。",
         "保存限速失败",
         apply::set_provider_limits(&GatewayStore::default(), &id, rpm, concurrency),
+    )
+}
+
+/// 改 new-api 供应商的访问令牌与用户 ID（#2793，在供应商池的详情里编辑）。
+/// `token` 留空沿用已保存的；`clear` 删掉令牌，之后不再查账户余额。令牌不写进返回的消息。
+#[tauri::command]
+pub fn save_gateway_provider_newapi_access(
+    id: String,
+    token: Option<String>,
+    user_id: String,
+    clear: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        if clear {
+            "访问令牌已清除。"
+        } else {
+            "访问令牌已保存。"
+        },
+        "保存访问令牌失败",
+        apply::set_provider_newapi_access(
+            &GatewayStore::default(),
+            &id,
+            token.as_deref(),
+            &user_id,
+            clear,
+        ),
     )
 }
 
@@ -745,35 +908,126 @@ pub async fn check_gateway_provider_models(
     }
 }
 
-/// 供应商详情里的「从上游获取」：上游新增的模型直接加进列表，已有的不删。
+/// 供应商详情里「从上游同步」的第一步（#2785）：拉上游模型，返回和现有列表的差异供用户勾选，
+/// 不改任何数据。拉取失败或上游返回空列表时报错。
 #[tauri::command]
-pub async fn fetch_gateway_provider_models(id: String) -> CommandResult<Option<GatewayPayload>> {
-    let result = model_sync::fetch_provider_models(&GatewayStore::default(), &id).await;
+pub async fn preview_gateway_provider_models_sync(
+    id: String,
+) -> CommandResult<Option<model_sync::ModelSyncPreview>> {
+    match model_sync::preview_provider_models(&GatewayStore::default(), &id).await {
+        Ok(preview) => ok(
+            &format!(
+                "上游有 {} 个模型：新增 {} 个，已下架 {} 个。",
+                preview.upstream.len(),
+                preview.added.len(),
+                preview.removed.len()
+            ),
+            Some(preview),
+        ),
+        Err(error) => failed(&format!("获取模型列表失败：{error:#}"), None),
+    }
+}
+
+/// 「从上游同步」的第二步：只删用户勾选移除的、只加勾选新增的；被删模型的价格、窗口、思考等级一并清掉。
+#[tauri::command]
+pub fn apply_gateway_provider_models_sync(
+    id: String,
+    remove: Vec<String>,
+    add: Vec<String>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = model_sync::apply_upstream_sync(&GatewayStore::default(), &id, &remove, &add);
     let message = match &result {
-        Ok((_, diff)) if diff.added.is_empty() => format!(
-            "上游有 {} 个模型，列表已是最新。",
-            diff.upstream.len()
-        ),
-        Ok((_, diff)) => format!(
-            "上游有 {} 个模型，已加入 {} 个：{}。",
-            diff.upstream.len(),
-            diff.added.len(),
-            diff.added.join("、")
-        ),
+        Ok((_, changes)) => sync_models_message(changes),
         Err(_) => String::new(),
     };
-    let gone = result.as_ref().map_or(0, |(_, diff)| diff.removed.len());
-    let message = if gone > 0 {
-        format!("{message}另有 {gone} 个上游已没有，可在「编辑」里移除。")
-    } else {
-        message
-    };
-    let added = result.as_ref().is_ok_and(|(_, diff)| !diff.added.is_empty());
+    let added = result
+        .as_ref()
+        .is_ok_and(|(_, changes)| !changes.added.is_empty());
     let result = refresh_agents(result);
     if added {
         autofill_prices(Some(id));
     }
-    respond(&message, "获取模型列表失败", result)
+    respond(&message, "从上游同步模型失败", result)
+}
+
+/// 「从上游同步上下文窗口 / 思考等级」的第一步（#2807）：拉上游 `/models`，读每个模型的元数据，
+/// 返回和现有设置的差异供用户勾选，不改任何数据。
+#[tauri::command]
+pub async fn preview_gateway_provider_meta_sync(
+    id: String,
+) -> CommandResult<Option<meta_sync::MetaSyncPreview>> {
+    match meta_sync::preview_provider_meta(&GatewayStore::default(), &id).await {
+        Ok(preview) => ok(
+            &format!(
+                "上游有 {} 个模型：上下文窗口有 {} 处不同，思考等级有 {} 处不同。",
+                preview.upstream_models,
+                preview.windows.len(),
+                preview.reasoning.len()
+            ),
+            Some(preview),
+        ),
+        Err(error) => failed(&format!("读取上游模型资料失败：{error:#}"), None),
+    }
+}
+
+/// 第二步：只写用户勾选的上下文窗口；窗口写在 Agent 的模型资料里，存完重写 Agent 配置。
+#[tauri::command]
+pub fn apply_gateway_provider_windows_sync(
+    id: String,
+    picks: Vec<meta_sync::WindowPick>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = refresh_agents(meta_sync::apply_window_sync(
+        &GatewayStore::default(),
+        &id,
+        &picks,
+    ));
+    let message = match &result {
+        Ok((_, written)) => format!("已从上游同步 {written} 个模型的上下文窗口。"),
+        Err(_) => String::new(),
+    };
+    respond(&message, "同步上下文窗口失败", result)
+}
+
+/// 第二步：只写用户勾选的思考等级；写进模型资料，存完重写 Agent 配置。
+#[tauri::command]
+pub fn apply_gateway_provider_reasoning_sync(
+    id: String,
+    picks: Vec<meta_sync::ReasoningPick>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = refresh_agents(meta_sync::apply_reasoning_sync(
+        &GatewayStore::default(),
+        &id,
+        &picks,
+    ));
+    let message = match &result {
+        Ok((_, written)) => format!("已从上游同步 {written} 个模型的思考等级。"),
+        Err(_) => String::new(),
+    };
+    respond(&message, "同步思考等级失败", result)
+}
+
+/// 「从上游同步」的结果提示：新增、移除各几个（列出模型名），都没有就说列表没变。
+fn sync_models_message(changes: &model_sync::ModelChanges) -> String {
+    let mut parts = Vec::new();
+    if !changes.added.is_empty() {
+        parts.push(format!(
+            "新增 {} 个：{}",
+            changes.added.len(),
+            changes.added.join("、")
+        ));
+    }
+    if !changes.removed.is_empty() {
+        parts.push(format!(
+            "移除 {} 个：{}",
+            changes.removed.len(),
+            changes.removed.join("、")
+        ));
+    }
+    if parts.is_empty() {
+        "模型列表没有变化。".to_string()
+    } else {
+        format!("已同步模型：{}。", parts.join("；"))
+    }
 }
 
 /// 保存手动编辑或刷新后的模型列表；新加的模型按公开价格表补价格。
@@ -802,6 +1056,18 @@ fn refresh_added<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
         refresh_quotas();
     }
     refresh_agents(result)
+}
+
+/// 网页导入链接（`target=pool`）加进供应商池之后：重写开着的 Agent 配置，
+/// 并在后台从上游获取模型列表（导入链接不带模型），拿到后再补价格。
+pub(crate) fn after_url_pool_import(id: String) {
+    let _ = refresh_added(Ok(()));
+    tauri::async_runtime::spawn(async move {
+        let result = model_sync::fetch_provider_models(&GatewayStore::default(), &id).await;
+        if refresh_agents(result).is_ok() {
+            autofill_prices(Some(id));
+        }
+    });
 }
 
 /// 一键同步价格：按公开价格表更新这个供应商所有模型的价格并保存。
@@ -1191,13 +1457,19 @@ fn probe_cli_version(binary: &str) -> Option<String> {
         .into_iter()
         .map(|dir| dir.join(binary))
         .find(|candidate| candidate.is_file())?;
-    let mut child = std::process::Command::new(path)
+    let mut command = std::process::Command::new(path);
+    command
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    // CLI 是控制台程序：Windows 上不加 CREATE_NO_WINDOW，打开 Agent 页时会闪黑色终端（#2778）。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(codex_plus_core::windows_create_no_window());
+    }
+    let mut child = command.spawn().ok()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
     loop {
         match child.try_wait() {
@@ -1286,6 +1558,43 @@ pub fn clear_gateway_usage() -> CommandResult<Option<GatewayPayload>> {
 #[serde(rename_all = "camelCase")]
 pub struct GatewayBalances {
     pub balances: Vec<codex_plus_core::gateway::balance::ProviderBalance>,
+}
+
+/// 识别网关供应商是哪种中转站（sub2api / new-api），并取回倍率和余额。Key 只在后端，前端按 id 调。
+#[tauri::command]
+pub async fn probe_gateway_provider_billing(
+    id: String,
+) -> CommandResult<codex_plus_core::relay_billing::RelayBillingProbe> {
+    let provider = GatewayStore::default().load().ok().and_then(|gateway| {
+        gateway
+            .provider(&id)
+            .map(|provider| (provider.relay.clone(), provider.newapi_access.clone()))
+    });
+    let Some((relay, newapi_access)) = provider else {
+        return failed(
+            &format!("供应商不存在：{id}"),
+            codex_plus_core::relay_billing::RelayBillingProbe::unrecognized(
+                codex_plus_core::relay_billing::RelayBillingOutcome::NotRelay,
+                String::new(),
+            ),
+        );
+    };
+    // 识别成 new-api 且配置了访问令牌时，顺带查账户余额（#2793）。
+    let probe = codex_plus_core::relay_billing::probe_relay_billing_with_access(
+        &relay,
+        newapi_access.as_ref(),
+    )
+    .await;
+    let message = match &probe.platform {
+        Some(platform) => format!("已识别为 {platform}。"),
+        None if probe.outcome
+            == codex_plus_core::relay_billing::RelayBillingOutcome::Unavailable =>
+        {
+            "暂时获取不到倍率和余额。".to_string()
+        }
+        None => "不是已知的中转站。".to_string(),
+    };
+    ok(&message, probe)
 }
 
 /// 查池里有余额接口的供应商的余额（联网，每家最多 10 秒）。
@@ -1660,7 +1969,8 @@ pub async fn login_gateway_grok(
     use codex_plus_core::gateway::accounts;
     let outcome = cancellable_login(async move {
         let tokens = accounts::grok_login(open_in_browser).await?;
-        let models = accounts::grok_models(&tokens.access_token).await;
+        // 登录时还没有供应商（也就没有它的代理设置），走系统代理。
+        let models = accounts::grok_models(&tokens.access_token, None).await;
         add_account_provider(
             accounts::grok_relay(&tokens, &models),
             "grok",
@@ -1685,6 +1995,7 @@ pub async fn login_gateway_chatgpt_api(
         let models = accounts::chatgpt_api_models(
             &account.access_token,
             &codex_plus_core::codex_home::default_codex_home_dir(),
+            None,
         )
         .await;
         add_account_provider(
@@ -1705,8 +2016,28 @@ pub fn reset_gateway_key_health(relay_id: String) -> CommandResult<Option<Gatewa
     ok("已重置该供应商的 Key 状态。", current_payload())
 }
 
+/// 管理器启动（Tauri setup）时调用：[`start_from_saved_state`] 放到后台线程跑，不阻塞窗口出现。
+///
+/// Codex 在 WSL 里运行时，重写配置要先查 WSL 虚拟网卡（PowerShell，最多 8 秒）再等监听绑定
+/// （最多 10 秒），开机自启时同步跑会让窗口晚出现十几秒（#2773 后续）。
+pub fn start_from_saved_state_in_background() {
+    let spawned = std::thread::Builder::new()
+        .name("codex-plus-gateway-startup".to_string())
+        .spawn(start_from_saved_state);
+    if let Err(error) = spawned {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "gateway.startup_thread_failed",
+            serde_json::json!({ "message": error.to_string() }),
+        );
+        // 起不了线程时退回同步执行：宁可启动慢，也不能让走网关的 Agent 没有 helper。
+        start_from_saved_state();
+    }
+}
+
 /// 管理器启动时：有 Agent 开着网关就拉起常驻 helper，并在端口变化或退出 / 更新前恢复过直连的情况下重写配置。
 pub fn start_from_saved_state() {
+    // Codex 在 WSL 里运行时（仅 Windows）定期核对网关的 WSL 网卡地址：WSL 往往比 Codex++ 晚启动（#2773）。
+    codex_plus_core::wsl_network::start_codex_gateway_wsl_watch();
     let Ok(gateway) = GatewayStore::default().load() else {
         return;
     };

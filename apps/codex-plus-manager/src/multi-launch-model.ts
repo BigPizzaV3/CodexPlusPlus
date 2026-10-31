@@ -53,3 +53,17 @@ export function multiLaunchInstanceFailure(instance: MultiLaunchInstance): strin
   if (!result || result.status !== "failed") return "";
   return result.message?.trim() || "Codex 实例启动失败，原因未记录。";
 }
+
+/**
+ * 正在用某个供应商跑着的多开实例（不含主 Codex）。
+ *
+ * 多开页删除供应商前用它提醒：实例拿着自己的配置目录在跑，删掉供应商不会结束它，
+ * 但之后就不能再从这里用这个供应商启动（#2801）。
+ */
+export function runningInstancesForProfile(instances: MultiLaunchInstance[], profileId: string): MultiLaunchInstance[] {
+  const id = profileId.trim();
+  if (!id) return [];
+  return instances.filter((instance) => !instance.isMain
+    && instance.profileId?.trim() === id
+    && multiLaunchInstanceRunning(instance));
+}

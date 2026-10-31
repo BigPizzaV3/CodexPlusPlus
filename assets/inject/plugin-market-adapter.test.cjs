@@ -320,3 +320,108 @@ test("配置读取超时与插件传输同时安装时只取消读取并透传�
     assert.equal(f.calls.length, 0, "不访问插件索引或重发用户请求");
   }
 });
+
+// #2790：新版 Codex 插件页输入关键词后改走服务端 plugin/search，不再本地过滤 plugin/list。
+const gmailSummary = { name: "gmail", id: "gmail@codex-plus-plugin-market-0123456789ab", codexPlusIndexId: "gmail", installed: false,
+  keywords: ["email", "google workspace"], interface: { displayName: "Gmail", shortDescription: "Work with Gmail using the configured Gmail app connector." } };
+const mailToolSummary = { name: "mail-tool", id: "mail-tool@codex-plus-plugin-market-ba9876543210", codexPlusIndexId: "mail-tool", installed: false,
+  keywords: [], interface: { displayName: "Mail Tool", shortDescription: "Drafts replies for Gmail threads." } };
+const searchCatalog = () => ({ marketplaces: [{ name: "codex-plus-index-public", path: sentinel(), plugins: [{ ...mailToolSummary }, { ...gmailSummary }, { ...managedSummary }] }], marketplaceLoadErrors: [], featuredPluginIds: [] });
+// vm 上下文里的数组与测试进程不同 realm，先展开再比较。
+const pluginNames = (result) => [...result.data].map((entry) => entry.plugin.name);
+const searchHandler = async (_, payload) => {
+  if (payload.method === "list-plugins") return searchCatalog();
+  if (payload.method === "read-plugin") return { plugin: { summary: { ...gmailSummary }, skills: [] } };
+  return installResult();
+};
+
+test("plugin/search 首页结果补入索引插件：名称命中优先、保留原生结果与游标、可直接安装", async () => {
+  const f = fixture(searchHandler);
+  const client = new f.context.NativeClient();
+  client.sendRequest = async (method, params) => {
+    client.calls.push({ method, params });
+    return { data: [{ marketplaceName: "openai-bundled", marketplacePath: "/fixture/bundled.json", plugin: { name: "system", id: "system@openai-bundled" } }], nextCursor: "next" };
+  };
+  f.api.patchClient(client);
+  assert.equal(f.api.normalize("plugin/search", {}), "search-plugins");
+  const result = await client.sendRequest("plugin/search", { searchTerm: " GMAIL ", limit: 50 });
+  assert.deepEqual(pluginNames(result), ["system", "gmail", "mail-tool"]);
+  assert.equal(result.nextCursor, "next", "保留原生翻页游标");
+  assert.equal(result.data[1].marketplacePath, sentinel());
+  assert.equal(result.data[1].marketplaceName, "codex-plus-index-public");
+  assert.equal(client.calls.length, 1, "原生 plugin/search 照常执行");
+  // 再搜一次走目录缓存，不重复拉索引。
+  await client.sendRequest("plugin/search", { searchTerm: "google workspace" });
+  assert.equal(f.calls.filter((call) => call.payload.method === "list-plugins").length, 1);
+  // 搜索结果里的托管插件安装仍由本层接管，不进原生安装器。
+  const installed = await client.sendRequest("plugin/install", { marketplacePath: sentinel(), pluginName: "gmail" });
+  assert.equal(installed.authPolicy, "ON_USE");
+  assert.equal(f.calls.find((call) => call.payload.method === "install-plugin").payload.params.pluginName, "gmail");
+  assert.equal(client.calls.length, 2);
+});
+
+test("plugin/search：原生同 id 不重复；翻页、个人目录、远程 host、空关键词不混入；遵守 limit", async () => {
+  const f = fixture(searchHandler);
+  const native = async () => ({ data: [{ marketplaceName: "codex-plus-plugin-market-0123456789ab", marketplacePath: "/fixture/installed.json", plugin: { ...gmailSummary, installed: true } }], nextCursor: null });
+  const deduped = await f.api.intercept("plugin/search", { searchTerm: "gmail" }, {}, native, "local");
+  assert.equal(deduped.data.filter((entry) => entry.plugin.id === gmailSummary.id).length, 1);
+  assert.equal(deduped.data[0].plugin.installed, true);
+  assert.equal(f.api.intercept("plugin/search", { searchTerm: "gmail", cursor: "page-2" }, {}, native, "local"), null);
+  assert.equal(f.api.intercept("plugin/search", { searchTerm: "gmail", scope: "personal" }, {}, native, "local"), null);
+  assert.equal(f.api.intercept("plugin/search", { searchTerm: "gmail" }, {}, native, "ssh-host"), null);
+  const empty = async () => ({ data: [], nextCursor: null });
+  const global = await f.api.intercept("plugin/search", { searchTerm: "mail tool", scope: "global" }, {}, empty, "local");
+  assert.deepEqual(pluginNames(global), ["mail-tool"]);
+  const blank = await f.api.intercept("plugin/search", { searchTerm: "  " }, {}, empty, "local");
+  assert.deepEqual(pluginNames(blank), []);
+  const limited = await f.api.intercept("plugin/search", { searchTerm: "gmail", limit: 1 }, {}, empty, "local");
+  assert.deepEqual(pluginNames(limited), ["gmail"]);
+});
+
+test("plugin/search：API Key 远程鉴权错误兜底为索引结果，其他原生错误透传，索引离线时保留原生结果", async () => {
+  const f = fixture(searchHandler);
+  const authFailed = await f.api.intercept("plugin/search", { searchTerm: "gmail" }, {},
+    async () => { throw new Error("chatgpt authentication required for remote plugin catalog; api key auth is not supported"); }, "local");
+  assert.deepEqual(pluginNames(authFailed), ["gmail", "mail-tool"]);
+  assert.equal(authFailed.nextCursor, null);
+  await assert.rejects(f.api.intercept("plugin/search", { searchTerm: "gmail" }, {}, async () => { throw new Error("protocol malformed"); }, "local"), /protocol malformed/);
+  const offline = fixture(async () => ({ status: "failed", message: "后端未连接" }));
+  const kept = await offline.api.intercept("plugin/search", { searchTerm: "system" }, {},
+    async () => ({ data: [{ marketplaceName: "openai-bundled", marketplacePath: "/fixture/bundled.json", plugin: { name: "system", id: "system@openai-bundled" } }], nextCursor: null }), "local");
+  assert.deepEqual(pluginNames(kept), ["system"]);
+});
+
+test("plugin/search 走 MCP 消息传输时也合并索引结果", async () => {
+  const f = fixture(searchHandler);
+  f.api.patchBridge();
+  await f.window.electronBridge.sendMessageFromView({ type: "mcp-request", hostId: "local", request: { id: "plugin/search:1", method: "plugin/search", params: { searchTerm: "gmail", limit: 50 } } });
+  assert.equal(f.originalMessages.length, 1, "原生搜索请求照常发出");
+  f.response({ type: "mcp-response", hostId: "local", message: { id: "plugin/search:1", result: { data: [], nextCursor: null } } });
+  await flush();
+  const reply = f.delivered.find((event) => event.data?.message?.id === "plugin/search:1").data;
+  assert.deepEqual(pluginNames(reply.message.result), ["gmail", "mail-tool"]);
+});
+
+test("装完插件刷新原生插件列表：新版 Codex 没有全局 queryClient 时从 React 树找到并按 plugins 前缀失效", () => {
+  const conversation = readFileSync(`${root}/95-conversation-view.js`, "utf8");
+  const clear = native.slice(native.indexOf("  function clearPluginMarketplaceQueryCache("), native.indexOf("  function installPluginMarketplaceBridgePatch("));
+  const finder = conversation.slice(conversation.indexOf("  function looksLikeQueryClient("), conversation.indexOf("  function mainRateLimitQueries("));
+  const invalidated = [], diagnostics = [];
+  const client = { getQueryCache() { return {}; }, setQueryData() {}, invalidateQueries(filters) { invalidated.push(filters.queryKey); return Promise.resolve(); } };
+  // React 根容器 → QueryClientProvider（props.client），没有 window.__REACT_QUERY_CLIENT__。
+  const rootNode = { "__reactContainer$x": { stateNode: { current: { child: { memoizedProps: {}, sibling: { memoizedProps: { client } } } } } } };
+  const run = (documentRoot) => {
+    const context = {
+      window: {}, document: { getElementById: () => documentRoot, body: null, documentElement: null },
+      clearPluginMarketplaceRemoteCatalogUnavailable() {},
+      sendCodexPlusDiagnostic(event) { diagnostics.push(event); },
+    };
+    vm.runInNewContext(`${finder}\n${clear}\nclearPluginMarketplaceQueryCache(); clearPluginMarketplaceQueryCache();`, context);
+  };
+  run(rootNode);
+  assert.deepEqual(JSON.parse(JSON.stringify(invalidated)), [["plugins"], ["plugins"]]);
+  assert.deepEqual(diagnostics, []);
+  // 找不到时只报一次诊断，不抛错。
+  run(null);
+  assert.deepEqual(diagnostics, ["plugin_marketplace_query_client_missing"]);
+});

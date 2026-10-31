@@ -90,18 +90,14 @@ impl StatusStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
-
+    /// 每次新建一个随机命名的空目录。不能用「进程号 + 计数器」命名：目录不会删除，
+    /// 进程号复用后会撞上上次留下的 settings.json，保存时报 settings_revision_conflict。
     fn temp_dir() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "codex-plus-core-status-test-{}-{}",
-            std::process::id(),
-            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        path
+        tempfile::Builder::new()
+            .prefix("codex-plus-core-status-test-")
+            .tempdir()
+            .unwrap()
+            .keep()
     }
 
     #[test]

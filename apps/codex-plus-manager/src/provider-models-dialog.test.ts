@@ -11,8 +11,11 @@ test("模型列表可以手动编辑、从上游刷新，后台发现的新模�
   const providers = read("GatewayProviders.tsx");
   assert.match(providers, /"save_gateway_provider_models", \{ id: entry\.id, models, defaultModel \}/);
   assert.match(providers, /setModelsOpen\(true\)/);
-  // 详情里「编辑」旁一键从上游获取，新增的直接加进列表。
-  assert.match(providers, /"fetch_gateway_provider_models", \{ id: entry\.id \}/);
+  // 详情里「编辑」旁的「从上游同步」先打开预览弹窗，勾选后才写入（#2785）。
+  assert.match(providers, /onClick=\{\(\) => setSyncOpen\(true\)\}/);
+  assert.match(providers, /"apply_gateway_provider_models_sync", \{ id: entry\.id, remove, add \}, t\("从上游同步"\)\)/);
+  assert.match(providers, /\{t\("从上游同步"\)\}/);
+  assert.doesNotMatch(providers, /fetch_gateway_provider_models/);
   assert.doesNotMatch(providers, /只属于网关，直连模式里看不到/);
 });
 

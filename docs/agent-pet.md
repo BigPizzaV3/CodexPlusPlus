@@ -1,6 +1,10 @@
 # Agent 桌宠
 
-在 Codex 里放一只可拖动的桌宠。点击时会压扁再弹回，并播放按压 / 松开音效。
+在 Codex 里放一只可拖动的桌宠。桌宠有两种类型，二选一、同一时间只显示一个：
+
+- **简单桌宠**（默认）：点击时会压扁再弹回，并播放按压 / 松开音效，图片可从图库挑或用自己的；
+- **大肥鱼（DeepSeek 鲸鱼）**：完整的旧版鲸鱼用量挂件，含余额、价格 / 用量统计、泡泡编辑器、音效库和提醒，
+  说明见 [大肥鱼（Codex 用量挂件）](whale-widget.md)。
 
 ## 开启
 
@@ -12,8 +16,14 @@
 - **大小**：64–240 像素，默认 112；
 - **音效**：开关、音效组和音量。音效组可选内嵌的两组、可下载的二次元音效，或导入本地音频作为自定义按压 / 松开音。
 
-设置保存在 `settings.json` 的 `agentPet` 字段。旧版「用量挂件」开着的用户升级后，桌宠会自动开启；
-旧挂件的余额、价格、用量统计已经移除，相关设置在下次保存时清理。
+选了大肥鱼时，页面只显示它的「API 余额（可选）」配置，其余设置在 Codex 里点鲸鱼旁的菜单完成。
+
+设置保存在 `settings.json` 的 `agentPet` 字段，`kind` 为 `image`（简单桌宠）或 `whaleWidget`（大肥鱼），
+缺省或未知值按简单桌宠处理。迁移规则：
+
+- 旧版「Codex 用量挂件」（`codexAppWhaleWidgetEnabled`）开着、还没有 `agentPet` 的用户：桌宠开启并选中大肥鱼，
+  余额配置 `codexAppWhaleBalance*` 原样保留，旧开关在下次保存时清理；
+- 已经有 `agentPet` 的用户保持现状（没有 `kind` 的仍是简单桌宠）。
 
 ## 图片
 
@@ -72,4 +82,6 @@
 - 渲染进程取图 / 取音效：桥接路由 `/agent-pet/image`、`/agent-pet/sound`（内置功能专用，不开放给第三方拓展）；
 - 管理器命令：`agent_pet_catalog`、`agent_pet_image`、`agent_pet_sounds`、`agent_pet_sound_catalog`、
   `agent_pet_sound`、`agent_pet_import_sound`；
-- 渲染进程界面：`assets/inject/renderer-inject/97-agent-pet.js`。
+- 渲染进程界面：`assets/inject/renderer-inject/97-agent-pet.js`（简单桌宠）、
+  `96-whale-compat.js` / `96-whale-widget.js`（大肥鱼，桥接路由 `/whale/*`，同样不开放给第三方拓展）；
+  两边都按 `agentPet.kind` 判断，选中另一种时不挂载。

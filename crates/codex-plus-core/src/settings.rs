@@ -757,17 +757,14 @@ pub const AGENT_PET_MIN_SIZE: u32 = 64;
 pub const AGENT_PET_MAX_SIZE: u32 = 240;
 const AGENT_PET_DEFAULT_SIZE: u32 = 112;
 const AGENT_PET_DEFAULT_VOLUME: f64 = 0.6;
-/// 已移除的旧用量挂件开关；只在迁移时读取，保存时不再写出。
+/// 桌宠类型：图库 / 自定义图片的简单桌宠（默认）。
+pub const AGENT_PET_KIND_IMAGE: &str = "image";
+/// 桌宠类型：完整的旧版「大肥鱼」（DeepSeek 鲸鱼）用量挂件，含余额、价格 / 用量统计、泡泡与音效。
+pub const AGENT_PET_KIND_WHALE_WIDGET: &str = "whaleWidget";
+/// 旧版「Codex 用量挂件」开关；已并入 `agentPet`（类型选大肥鱼），只在迁移时读取，保存时不再写出。
+/// 余额相关的 `codexAppWhaleBalance*` 仍是大肥鱼的配置，照常保留。
 const LEGACY_PET_WIDGET_KEY: &str = "codexAppWhaleWidgetEnabled";
-/// 旧用量挂件（余额 / 价格 / 用量统计）留下的全部键，读写时一并清理。
-const LEGACY_PET_WIDGET_KEYS: [&str; 6] = [
-    LEGACY_PET_WIDGET_KEY,
-    "codexAppWhaleBalanceProtocol",
-    "codexAppWhaleBalancePath",
-    "codexAppWhaleBalanceField",
-    "codexAppWhaleBalanceCurrency",
-    "codexAppWhaleBalanceScale",
-];
+const LEGACY_PET_WIDGET_KEYS: [&str; 1] = [LEGACY_PET_WIDGET_KEY];
 
 /// Agent 桌宠设置。反序列化是宽松的：任一字段类型不对只回落该字段默认值，
 /// 不能因为桌宠配置写坏就让整份 settings.json 解析失败。
@@ -775,6 +772,9 @@ const LEGACY_PET_WIDGET_KEYS: [&str; 6] = [
 #[serde(rename_all = "camelCase")]
 pub struct AgentPetSettings {
     pub enabled: bool,
+    /// 桌宠类型：`image`（图库 / 自定义图片的简单桌宠）或 `whaleWidget`（完整的大肥鱼挂件）。
+    /// 两者互斥，同一时间只显示一个。
+    pub kind: String,
     /// 在哪些 Agent 里显示桌宠；目前只认 `codex`。
     pub agents: Vec<String>,
     /// 内置图库 id，或 `custom`（此时使用 `custom_image_url`）。
@@ -796,6 +796,7 @@ impl Default for AgentPetSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            kind: AGENT_PET_KIND_IMAGE.to_string(),
             agents: vec!["codex".to_string()],
             image: crate::agent_pet::DEFAULT_IMAGE_ID.to_string(),
             custom_image_url: String::new(),
@@ -825,6 +826,9 @@ impl AgentPetSettings {
         };
         if let Some(value) = map.get("enabled").and_then(Value::as_bool) {
             settings.enabled = value;
+        }
+        if let Some(value) = map.get("kind").and_then(Value::as_str) {
+            settings.kind = value.to_string();
         }
         if let Some(items) = map.get("agents").and_then(Value::as_array) {
             settings.agents = items
@@ -870,6 +874,12 @@ impl AgentPetSettings {
             }
         }
         self.agents = agents;
+        // 未知类型回落到简单桌宠，不能因为写坏的值意外加载完整挂件。
+        self.kind = if self.kind.trim() == AGENT_PET_KIND_WHALE_WIDGET {
+            AGENT_PET_KIND_WHALE_WIDGET.to_string()
+        } else {
+            AGENT_PET_KIND_IMAGE.to_string()
+        };
         let image = self.image.trim();
         self.image = if image == crate::agent_pet::CUSTOM_IMAGE_ID
             || crate::agent_pet::is_builtin_image(image)
@@ -907,9 +917,33 @@ impl AgentPetSettings {
         };
     }
 
-    /// 是否在指定 Agent 里显示桌宠。
+    /// 是否在指定 Agent 里显示桌宠（不区分类型）。
     pub fn enabled_for(&self, agent: &str) -> bool {
         self.enabled && self.agents.iter().any(|item| item == agent)
+    }
+
+    /// 选中的是不是大肥鱼（完整用量挂件）。
+    pub fn is_whale_widget(&self) -> bool {
+        self.kind == AGENT_PET_KIND_WHALE_WIDGET
+    }
+
+    /// Codex 里是否显示简单桌宠（图库 / 自定义图片）；选了大肥鱼时为 false。
+    pub fn image_pet_active(&self) -> bool {
+        self.enabled_for("codex") && !self.is_whale_widget()
+    }
+
+    /// Codex 里是否显示大肥鱼；与简单桌宠互斥。
+    pub fn whale_widget_active(&self) -> bool {
+        self.enabled_for("codex") && self.is_whale_widget()
+    }
+
+    /// 已开启并选中大肥鱼的设置（迁移与测试用）。
+    pub fn whale_widget() -> Self {
+        Self {
+            enabled: true,
+            kind: AGENT_PET_KIND_WHALE_WIDGET.to_string(),
+            ..Self::default()
+        }
     }
 }
 
@@ -922,19 +956,17 @@ fn clamp_agent_pet_size(value: f64) -> u32 {
         .clamp(AGENT_PET_MIN_SIZE as f64, AGENT_PET_MAX_SIZE as f64) as u32
 }
 
-/// 旧版只有用量挂件开关：开着且还没有 `agentPet` 时，迁移成「桌宠已开启」。
+/// 旧版只有用量挂件开关：开着且还没有 `agentPet` 时，迁移成「桌宠已开启、类型为大肥鱼」，
+/// 让还停在旧版的用户升级后看到的仍是原来的鲸鱼挂件。已经有 `agentPet` 的用户保持现状。
 fn legacy_pet_widget_enabled(raw: &Map<String, Value>) -> bool {
     !raw.contains_key("agentPet")
         && raw.get(LEGACY_PET_WIDGET_KEY).and_then(Value::as_bool) == Some(true)
 }
 
-/// 把旧用量挂件开关迁移进原始设置对象，并删掉旧挂件的全部键。
+/// 把旧用量挂件开关迁移进原始设置对象，并删掉旧开关（余额配置保留）。
 fn migrate_legacy_pet_widget(raw: &mut Map<String, Value>) {
     if legacy_pet_widget_enabled(raw) {
-        let settings = AgentPetSettings {
-            enabled: true,
-            ..AgentPetSettings::default()
-        };
+        let settings = AgentPetSettings::whale_widget();
         raw.insert(
             "agentPet".to_string(),
             serde_json::to_value(settings).unwrap_or_else(|_| Value::Object(Map::new())),
@@ -1077,6 +1109,9 @@ pub struct BackendSettings {
     // 默认开启：纯展示层状态栏，不改变 Codex 的请求内容与本地数据，误开没有副作用。
     #[serde(rename = "codexAppUsageStatusLine", default = "default_true")]
     pub codex_app_usage_status_line: bool,
+    // 默认开启：输入框上方的请求状态条（#2824），纯展示层；关掉后注入层停止轮询 /proxy-status。
+    #[serde(rename = "codexAppProxyRequestStatus", default = "default_true")]
+    pub codex_app_proxy_request_status: bool,
     // 默认开启：只在受管副本的页面里加一个语音入口，识别走 Codex++ 自己的听写服务，
     // 不改官方应用、不动输入框已有内容；关掉只是没有入口，已运行的副本需重启才生效。
     #[serde(rename = "claudeAppVoiceInput", default = "default_true")]
@@ -1153,6 +1188,26 @@ pub struct BackendSettings {
     pub codex_app_capacity_auto_retry: bool,
     #[serde(rename = "codexAppTurnRewind", default)]
     pub codex_app_turn_rewind: bool,
+    /// 大肥鱼（旧版鲸鱼挂件）的余额查询方式：`auto` / `custom` / `off`。
+    #[serde(
+        rename = "codexAppWhaleBalanceProtocol",
+        default = "default_whale_balance_protocol"
+    )]
+    pub codex_app_whale_balance_protocol: String,
+    #[serde(rename = "codexAppWhaleBalancePath", default)]
+    pub codex_app_whale_balance_path: String,
+    #[serde(rename = "codexAppWhaleBalanceField", default)]
+    pub codex_app_whale_balance_field: String,
+    #[serde(
+        rename = "codexAppWhaleBalanceCurrency",
+        default = "default_whale_balance_currency"
+    )]
+    pub codex_app_whale_balance_currency: String,
+    #[serde(
+        rename = "codexAppWhaleBalanceScale",
+        default = "default_whale_balance_scale"
+    )]
+    pub codex_app_whale_balance_scale: f64,
     /// Agent 桌宠；旧的 `codexAppWhaleWidgetEnabled` 在读取时迁移到这里。
     #[serde(rename = "agentPet", default)]
     pub agent_pet: AgentPetSettings,
@@ -1255,12 +1310,18 @@ pub struct BackendSettings {
     pub weixin_connect_account_id: String,
     #[serde(rename = "weixinConnectAllowFrom", default)]
     pub weixin_connect_allow_from: String,
+    #[serde(rename = "weixinConnectAllowOutboundAttachments", default)]
+    pub weixin_connect_allow_outbound_attachments: bool,
     #[serde(rename = "weixinConnectRouteTag", default)]
     pub weixin_connect_route_tag: String,
     #[serde(rename = "weixinConnectWorkDir", default)]
     pub weixin_connect_work_dir: String,
     #[serde(rename = "weixinConnectModel", default)]
     pub weixin_connect_model: String,
+    #[serde(rename = "weixinConnectReasoningEffort", default)]
+    pub weixin_connect_reasoning_effort: String,
+    #[serde(rename = "weixinConnectProjectId", default)]
+    pub weixin_connect_project_id: String,
     #[serde(
         rename = "weixinConnectSandbox",
         default = "default_weixin_connect_sandbox"
@@ -1399,6 +1460,7 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_session_share: true,
             codex_app_usage_status_line: true,
+            codex_app_proxy_request_status: true,
             claude_app_voice_input: true,
             claude_app_localization: true,
             claude_app_computer_use: false,
@@ -1422,6 +1484,11 @@ impl Default for BackendSettings {
             codex_app_activity_overlay_right: false,
             codex_app_capacity_auto_retry: false,
             codex_app_turn_rewind: false,
+            codex_app_whale_balance_protocol: default_whale_balance_protocol(),
+            codex_app_whale_balance_path: String::new(),
+            codex_app_whale_balance_field: String::new(),
+            codex_app_whale_balance_currency: default_whale_balance_currency(),
+            codex_app_whale_balance_scale: default_whale_balance_scale(),
             agent_pet: AgentPetSettings::default(),
             codex_app_stepwise_enabled: false,
             codex_app_stepwise_generation_mode: default_stepwise_generation_mode(),
@@ -1451,9 +1518,12 @@ impl Default for BackendSettings {
             weixin_connect_token: String::new(),
             weixin_connect_account_id: String::new(),
             weixin_connect_allow_from: String::new(),
+            weixin_connect_allow_outbound_attachments: false,
             weixin_connect_route_tag: String::new(),
             weixin_connect_work_dir: String::new(),
             weixin_connect_model: String::new(),
+            weixin_connect_reasoning_effort: String::new(),
+            weixin_connect_project_id: String::new(),
             weixin_connect_sandbox: default_weixin_connect_sandbox(),
             weixin_connect_codex_path: String::new(),
             relay_base_url: default_relay_base_url(),
@@ -1902,6 +1972,18 @@ pub fn default_computer_use_approval() -> String {
 
 /// Computer Use 默认用 JS（cua_repl）：与 Codex 当前主要的 CU 路径一致，
 /// 自带完整使用说明与确认规则，并能用 paste 输入中文。离散工具需要用户主动切换。
+fn default_whale_balance_protocol() -> String {
+    "auto".to_string()
+}
+
+fn default_whale_balance_currency() -> String {
+    "USD".to_string()
+}
+
+fn default_whale_balance_scale() -> f64 {
+    1.0
+}
+
 pub fn default_computer_use_mode() -> String {
     "js".to_string()
 }
@@ -2172,6 +2254,15 @@ pub struct SettingsStore {
     path: PathBuf,
 }
 
+struct SettingsFileLock(File);
+
+impl Drop for SettingsFileLock {
+    fn drop(&mut self) {
+        // 并发启动子进程可能继承句柄；事务结束时主动解锁，不能只等最后一个句柄关闭。
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
 /// 配置不应承载无界的转义膨胀或文件内容。超限时只报错，不覆盖原文件。
 pub const MAX_SETTINGS_FILE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -2234,7 +2325,45 @@ impl SettingsStore {
         Self { path }
     }
 
-    fn write_lock(&self) -> anyhow::Result<File> {
+    /// 与设置提交串行绑定，不能让启动时加载的旧授权跨过后续撤销。
+    pub fn weixin_outbound_policy(
+        &self,
+        config: &crate::connect::WeixinConnectConfig,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<crate::connect::outbound::OutboundPolicy> {
+        let _lock = self.write_lock()?;
+        let (settings, outbound_revision) = self.load_outbound_settings()?;
+        Ok(crate::connect::outbound::OutboundPolicy::bind_settings(
+            self.clone(), config, &settings, &outbound_revision, stop,
+        ))
+    }
+
+    /// 不读取可能回滚的事务中间值，也不阻塞正在发送附件的异步任务。
+    pub(crate) fn try_load_committed(&self) -> anyhow::Result<Option<(BackendSettings, String)>> {
+        let file = OpenOptions::new().read(true).write(true).open(self.path.with_extension("json.lock"))?;
+        match FileExt::try_lock_shared(&file) {
+            Ok(()) => {
+                let _lock = SettingsFileLock(file);
+                self.load_outbound_settings().map(Some)
+            }
+            Err(error) if error.kind() == fs2::lock_contended_error().kind() => Ok(None),
+            Err(error) => Err(error).context("核验微信附件权限时获取设置读锁失败"),
+        }
+    }
+
+    // 调用方持有同一个设置锁，授权值与 epoch 必须来自同一次已提交快照。
+    fn load_outbound_settings(&self) -> anyhow::Result<(BackendSettings, String)> {
+        let settings = self.load()?;
+        let raw = self.load_raw_object()?;
+        let revision = match raw.get("_weixinOutboundRevision") {
+            Some(Value::String(revision)) => revision.clone(),
+            None => String::new(),
+            _ => anyhow::bail!("微信附件授权版本不是字符串"),
+        };
+        Ok((settings, revision))
+    }
+
+    fn write_lock(&self) -> anyhow::Result<SettingsFileLock> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -2242,7 +2371,7 @@ impl SettingsStore {
         let path = self.path.with_extension("json.lock");
         let file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(path)?;
         file.lock_exclusive().context("获取设置写锁失败")?;
-        Ok(file)
+        Ok(SettingsFileLock(file))
     }
 
     pub fn revision(&self) -> anyhow::Result<String> {
@@ -2284,7 +2413,7 @@ impl SettingsStore {
         if contents.contains(LEGACY_PET_WIDGET_KEY) {
             if let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(&contents) {
                 if legacy_pet_widget_enabled(&raw) {
-                    parsed.agent_pet.enabled = true;
+                    parsed.agent_pet = AgentPetSettings::whale_widget();
                 }
             }
         }
@@ -2377,6 +2506,7 @@ impl SettingsStore {
         // 完整表单不能擦除新版本或拓展写入的未知字段；profile 以稳定 ID 对齐。
         preserve_unknown_settings_fields(&mut next, &raw)?;
         next.remove("revision");
+        update_weixin_outbound_revision(&mut next, &raw);
         serialize_settings_bounded(&Value::Object(next))
     }
 
@@ -2488,6 +2618,7 @@ impl SettingsStore {
             );
         }
         raw.remove("revision");
+        update_weixin_outbound_revision(&mut raw, &original_raw);
         let bytes = serialize_settings_bounded(&Value::Object(raw))?;
         atomic_write(&self.path, &bytes)?;
         settings.settings_revision = settings_revision(Some(&bytes));
@@ -2557,6 +2688,34 @@ fn validate_settings_snapshot(bytes: &[u8]) -> anyhow::Result<()> {
         anyhow::bail!("settings 快照顶层不是 JSON 对象，原文件未修改");
     }
     Ok(())
+}
+
+fn update_weixin_outbound_revision(next: &mut Map<String, Value>, previous: &Map<String, Value>) {
+    let changed = [
+        "weixinConnectEnabled",
+        "weixinConnectAllowOutboundAttachments",
+        "weixinConnectAllowFrom",
+        "weixinConnectWorkDir",
+        "weixinConnectAccountId",
+        "weixinConnectToken",
+        "weixinConnectBaseUrl",
+        "weixinConnectRouteTag",
+    ].into_iter().any(|key| {
+        let default = match key {
+            "weixinConnectEnabled" | "weixinConnectAllowOutboundAttachments" => Value::Bool(false),
+            "weixinConnectBaseUrl" => Value::String(crate::connect::DEFAULT_WEIXIN_BASE_URL.to_string()),
+            _ => Value::String(String::new()),
+        };
+        previous.get(key).unwrap_or(&default) != next.get(key).unwrap_or(&default)
+    });
+    // 只记录授权变更；快速关闭再开启也不能恢复旧 permit，无关保存不影响在途附件。
+    next.remove("_settingsCommitId");
+    next.remove("_weixinOutboundRevision");
+    if changed {
+        next.insert("_weixinOutboundRevision".to_string(), Value::String(uuid::Uuid::new_v4().to_string()));
+    } else if let Some(revision) = previous.get("_weixinOutboundRevision") {
+        next.insert("_weixinOutboundRevision".to_string(), revision.clone());
+    }
 }
 
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
@@ -2719,6 +2878,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppSessionShare");
     merge_bool_setting(target, source, "codexAppUsageStatusLine");
+    merge_bool_setting(target, source, "codexAppProxyRequestStatus");
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
     if let Some(value @ ("off" | "rainbow" | "fireworks" | "stars")) =
@@ -2742,6 +2902,30 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppActivityOverlayRight");
     merge_bool_setting(target, source, "codexAppCapacityAutoRetry");
     merge_bool_setting(target, source, "codexAppTurnRewind");
+    if let Some(value @ ("auto" | "custom" | "off")) =
+        source.get("codexAppWhaleBalanceProtocol").and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppWhaleBalanceProtocol".to_string(),
+            Value::String(value.to_string()),
+        );
+    }
+    for key in [
+        "codexAppWhaleBalancePath",
+        "codexAppWhaleBalanceField",
+        "codexAppWhaleBalanceCurrency",
+    ] {
+        if let Some(value) = source.get(key).and_then(Value::as_str) {
+            target.insert(key.to_string(), Value::String(value.trim().to_string()));
+        }
+    }
+    if let Some(value) = source
+        .get("codexAppWhaleBalanceScale")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+    {
+        target.insert("codexAppWhaleBalanceScale".to_string(), Value::from(value));
+    }
     if let Some(patch) = source.get("agentPet").and_then(Value::as_object) {
         // 只合并补丁里出现的已知字段，再整体归一化写回。
         let mut merged = target
@@ -2751,6 +2935,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             .unwrap_or_default();
         for key in [
             "enabled",
+            "kind",
             "agents",
             "image",
             "customImageUrl",
@@ -2924,6 +3109,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
     }
     merge_bool_setting(target, source, "weixinConnectEnabled");
+    merge_bool_setting(target, source, "weixinConnectAllowOutboundAttachments");
     for key in [
         "weixinConnectBaseUrl",
         "weixinConnectToken",
@@ -2932,6 +3118,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         "weixinConnectRouteTag",
         "weixinConnectWorkDir",
         "weixinConnectModel",
+        "weixinConnectReasoningEffort",
+        "weixinConnectProjectId",
         "weixinConnectSandbox",
         "weixinConnectCodexPath",
     ] {
@@ -3349,6 +3537,24 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     settings.dictation.normalize();
     settings.claude_app_bash_timeout.normalize();
     settings.agent_pet.normalize();
+    settings.codex_app_whale_balance_protocol =
+        match settings.codex_app_whale_balance_protocol.trim() {
+            "custom" => "custom",
+            "off" => "off",
+            _ => "auto",
+        }
+        .to_string();
+    settings.codex_app_whale_balance_path = settings.codex_app_whale_balance_path.trim().to_string();
+    settings.codex_app_whale_balance_field = settings.codex_app_whale_balance_field.trim().to_string();
+    settings.codex_app_whale_balance_currency = settings
+        .codex_app_whale_balance_currency
+        .trim()
+        .to_ascii_uppercase();
+    if !settings.codex_app_whale_balance_scale.is_finite()
+        || settings.codex_app_whale_balance_scale <= 0.0
+    {
+        settings.codex_app_whale_balance_scale = default_whale_balance_scale();
+    }
     settings.codex_app_typing_effect = normalize_typing_effect(&settings.codex_app_typing_effect);
     settings.ccs_db_path = settings.ccs_db_path.trim().to_string();
     settings.ccs_import_sources.retain(|id, _| settings.relay_profiles.iter().any(|profile| &profile.id == id));
@@ -3412,6 +3618,9 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     settings.weixin_connect_route_tag = settings.weixin_connect_route_tag.trim().to_string();
     settings.weixin_connect_work_dir = settings.weixin_connect_work_dir.trim().to_string();
     settings.weixin_connect_model = settings.weixin_connect_model.trim().to_string();
+    settings.weixin_connect_reasoning_effort =
+        settings.weixin_connect_reasoning_effort.trim().to_string();
+    settings.weixin_connect_project_id = settings.weixin_connect_project_id.trim().to_string();
     settings.weixin_connect_sandbox = match settings.weixin_connect_sandbox.trim() {
         "workspace-write" => "workspace-write",
         "danger-full-access" => "danger-full-access",
@@ -3652,6 +3861,43 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn settings_weixin_outbound_revision_ignores_defaults_and_unrelated_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, b"{}").unwrap();
+        let store = SettingsStore::new(path);
+        store.save(&store.load().unwrap()).unwrap();
+        assert!(!store.load_raw_object().unwrap().contains_key("_weixinOutboundRevision"));
+        store.update(json!({"weixinConnectModel": "next-turn-model", "_weixinOutboundRevision": "untrusted"})).unwrap();
+        assert!(!store.load_raw_object().unwrap().contains_key("_weixinOutboundRevision"));
+        store.update(json!({"weixinConnectEnabled": true})).unwrap();
+        let revision = store.load_raw_object().unwrap()["_weixinOutboundRevision"].clone();
+        store.update(json!({"weixinConnectEnabled": true, "_weixinOutboundRevision": "untrusted"})).unwrap();
+        let mut settings = store.load().unwrap();
+        settings.weixin_connect_model = "another-next-turn-model".into();
+        store.save(&settings).unwrap();
+        assert_eq!(store.load_raw_object().unwrap()["_weixinOutboundRevision"], revision);
+        store.update(json!({"weixinConnectEnabled": false})).unwrap();
+        assert_ne!(store.load_raw_object().unwrap()["_weixinOutboundRevision"], revision);
+    }
+
+    #[test]
+    fn settings_committed_read_does_not_wait_for_a_cloned_write_lock_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path().join("settings.json"));
+        store.save(&store.load().unwrap()).unwrap();
+        let lock = store.write_lock().unwrap();
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(store.try_load_committed().unwrap().is_none());
+        drop(lock);
+        assert!(
+            store.try_load_committed().unwrap().is_some(),
+            "a completed transaction kept its lock through a cloned handle"
+        );
+        drop(inherited);
+    }
+
     #[cfg(unix)]
     #[test]
     fn atomic_write_keeps_symlink_and_updates_its_target() {
@@ -3673,18 +3919,14 @@ mod tests {
             .map(|entry| entry.file_name()).collect();
         assert_eq!(leftovers.len(), 1, "链接所在目录不应残留临时文件：{leftovers:?}");
     }
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
-
+    /// 每次新建一个随机命名的空目录。不能用「进程号 + 计数器」命名：目录不会删除，
+    /// 进程号复用后会撞上上次留下的 settings.json，保存时报 settings_revision_conflict。
     fn temp_dir() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "codex-plus-core-settings-test-{}-{}",
-            std::process::id(),
-            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        path
+        tempfile::Builder::new()
+            .prefix("codex-plus-core-settings-test-")
+            .tempdir()
+            .unwrap()
+            .keep()
     }
 
     #[test]
@@ -3805,6 +4047,8 @@ mod tests {
             crate::connect::DEFAULT_WEIXIN_BASE_URL
         );
         assert!(settings.weixin_connect_token.is_empty());
+        assert!(settings.weixin_connect_reasoning_effort.is_empty());
+        assert!(settings.weixin_connect_project_id.is_empty());
         assert_eq!(settings.weixin_connect_sandbox, "read-only");
     }
 
@@ -4956,6 +5200,7 @@ experimental_bearer_token = "sk-existing""#
     fn settings_store_update_persists_weixin_connect_settings() {
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
+        assert!(!store.load().unwrap().weixin_connect_allow_outbound_attachments);
 
         let updated = store
             .update(json!({
@@ -4964,15 +5209,19 @@ experimental_bearer_token = "sk-existing""#
                 "weixinConnectToken": " token ",
                 "weixinConnectAccountId": " bot-1 ",
                 "weixinConnectAllowFrom": " user@im.wechat ",
+                "weixinConnectAllowOutboundAttachments": true,
                 "weixinConnectRouteTag": " route ",
                 "weixinConnectWorkDir": " /workspace ",
                 "weixinConnectModel": " gpt-test ",
+                "weixinConnectReasoningEffort": " high ",
+                "weixinConnectProjectId": " project-1 ",
                 "weixinConnectSandbox": "workspace-write",
                 "weixinConnectCodexPath": " /usr/local/bin/codex "
             }))
             .unwrap();
 
         assert!(updated.weixin_connect_enabled);
+        assert!(updated.weixin_connect_allow_outbound_attachments);
         assert_eq!(
             updated.weixin_connect_base_url,
             "https://ilink.example.test"
@@ -4983,9 +5232,54 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(updated.weixin_connect_route_tag, "route");
         assert_eq!(updated.weixin_connect_work_dir, "/workspace");
         assert_eq!(updated.weixin_connect_model, "gpt-test");
+        assert_eq!(updated.weixin_connect_reasoning_effort, "high");
+        assert_eq!(updated.weixin_connect_project_id, "project-1");
         assert_eq!(updated.weixin_connect_sandbox, "workspace-write");
         assert_eq!(updated.weixin_connect_codex_path, "/usr/local/bin/codex");
         assert_eq!(store.load().unwrap(), updated);
+        let disabled = store.update(json!({ "weixinConnectAllowOutboundAttachments": false })).unwrap();
+        assert!(!disabled.weixin_connect_allow_outbound_attachments);
+        assert!(!store.load().unwrap().weixin_connect_allow_outbound_attachments);
+    }
+
+    #[test]
+    fn settings_store_weixin_connect_options_preserve_values_until_explicitly_cleared() {
+        let legacy: BackendSettings = serde_json::from_str("{}").unwrap();
+        assert!(legacy.weixin_connect_reasoning_effort.is_empty());
+        assert!(legacy.weixin_connect_project_id.is_empty());
+
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        let mut settings = BackendSettings::default();
+        // 目录可随供应商和项目变化；保留失效值交给 UI 提示，不能静默重置。
+        settings.weixin_connect_reasoning_effort = " future-effort ".to_string();
+        settings.weixin_connect_project_id = " deleted-project ".to_string();
+        store.save(&settings).unwrap();
+        let saved = store.load().unwrap();
+        assert_eq!(saved.weixin_connect_reasoning_effort, "future-effort");
+        assert_eq!(saved.weixin_connect_project_id, "deleted-project");
+
+        let updated = store.update(json!({"weixinConnectModel": "new-model"})).unwrap();
+        assert_eq!(updated.weixin_connect_reasoning_effort, "future-effort");
+        assert_eq!(updated.weixin_connect_project_id, "deleted-project");
+        let updated = store
+            .update(json!({
+                "weixinConnectReasoningEffort": null,
+                "weixinConnectProjectId": 42
+            }))
+            .unwrap();
+        assert_eq!(updated.weixin_connect_reasoning_effort, "future-effort");
+        assert_eq!(updated.weixin_connect_project_id, "deleted-project");
+
+        let cleared = store
+            .update(json!({
+                "weixinConnectReasoningEffort": " ",
+                "weixinConnectProjectId": ""
+            }))
+            .unwrap();
+        assert!(cleared.weixin_connect_reasoning_effort.is_empty());
+        assert!(cleared.weixin_connect_project_id.is_empty());
+        assert_eq!(store.load().unwrap(), cleared);
     }
 
     /// #2028 存量迁移：系统保护目录（WindowsApps）里的 CLI 无法被第三方进程执行，

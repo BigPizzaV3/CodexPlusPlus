@@ -70,6 +70,14 @@ pub struct GatewayProvider {
     /// 上次检查上游模型的时间（毫秒），0 表示没检查过。
     #[serde(default, skip_serializing_if = "is_zero")]
     pub models_checked_at_ms: u64,
+    /// new-api 中转站的访问令牌与用户 ID（#2793）：只用来查账户余额，留空不查。
+    /// 和 Key 一样只存在 gateway.json，界面只拿到打码后的样子。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newapi_access: Option<crate::relay_billing::NewApiAccess>,
+    /// 上次「从上游同步上下文窗口 / 思考等级」写进去的值（#2807）。
+    /// 现值和这里一样说明是同步来的，下次同步默认可覆盖；不一样就是用户手动改过的，默认不覆盖。
+    #[serde(default, skip_serializing_if = "UpstreamMetaRecord::is_empty")]
+    pub upstream_meta: UpstreamMetaRecord,
     pub relay: RelayProfile,
     /// 不认识的字段（更新版本写的）原样保留，保存时写回，回滚后再升级不丢数据。
     #[serde(flatten)]
@@ -78,6 +86,39 @@ pub struct GatewayProvider {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+/// 从上游同步写入的模型资料记录（#2807），键是小写、去掉 `[1M]` 后缀的模型名。
+/// 只用来区分「同步来的」和「用户手动设的」，不参与路由和 Agent 配置。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamMetaRecord {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub windows: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reasoning: BTreeMap<String, SyncedReasoning>,
+}
+
+impl UpstreamMetaRecord {
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty() && self.reasoning.is_empty()
+    }
+
+    /// 去掉 `gone` 判定为已删除的模型的记录。
+    pub fn retain_models(&mut self, keep: impl Fn(&str) -> bool) {
+        self.windows.retain(|model, _| keep(model));
+        self.reasoning.retain(|model, _| keep(model));
+    }
+}
+
+/// 同步写入的一组思考等级。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncedReasoning {
+    #[serde(default)]
+    pub levels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_level: Option<String>,
 }
 
 impl GatewayProvider {
@@ -983,6 +1024,8 @@ mod tests {
             upstream_new: Vec::new(),
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
+            newapi_access: None,
+            upstream_meta: Default::default(),
             relay: RelayProfile {
                 id: "deepseek".to_string(),
                 ..RelayProfile::default()

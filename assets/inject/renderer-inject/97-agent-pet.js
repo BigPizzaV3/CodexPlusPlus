@@ -3,6 +3,7 @@
   // 内嵌的两组音效随启动器注入（window.__CODEX_PLUS_AGENT_PET_SOUNDS__）；下载音效组和用户导入的自定义音效
   // 经桥接 `/agent-pet/sound` 取 data URI。一律直接从字节解码，不依赖 fetch(data:)。
   // 设置读后端的 `agentPet`，与「Codex 增强」总开关无关；目前只有 Codex 一个 Agent。
+  // `agentPet.kind` 为 whaleWidget（大肥鱼）时这里不挂载，由 96-whale-widget.js 显示完整鲸鱼挂件。
   window.__codexPlusAgentPetRuntime?.dispose?.();
   const codexPlusAgentPetPositionKey = "codexPlus.agentPet.position.v1";
   const codexPlusAgentPetSquash = "scaleY(0.88) scaleX(1.05)";
@@ -36,6 +37,8 @@
     const volume = Number(raw.volume);
     return {
       enabled: raw.enabled === true,
+      // `whaleWidget` 表示选了大肥鱼（完整鲸鱼挂件，见 96-whale-widget.js），其余都按简单桌宠处理。
+      kind: raw.kind === "whaleWidget" ? "whaleWidget" : "image",
       agents: Array.isArray(raw.agents) ? raw.agents : ["codex"],
       image: typeof raw.image === "string" ? raw.image : "whale",
       customImageUrl: typeof raw.customImageUrl === "string" ? raw.customImageUrl : "",
@@ -48,8 +51,10 @@
     };
   }
 
+  // 选了大肥鱼时简单桌宠不挂载：两者互斥，同一时间只显示一个。
   function codexPlusAgentPetActive(settings) {
-    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.agents.includes("codex");
+    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.kind !== "whaleWidget"
+      && settings.agents.includes("codex");
   }
 
   function readCodexPlusAgentPetPosition() {

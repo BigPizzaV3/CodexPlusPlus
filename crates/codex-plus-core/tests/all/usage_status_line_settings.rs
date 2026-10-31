@@ -52,3 +52,28 @@ fn usage_status_line_round_trips_through_partial_updates() {
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(raw["codexAppUsageStatusLine"], json!(true));
 }
+
+// 输入框上方的请求状态条（#2824）：同样默认开，且能经 /settings/set 部分更新关掉。
+#[test]
+fn proxy_request_status_defaults_to_on_and_round_trips() {
+    let settings: BackendSettings = serde_json::from_value(json!({
+        "enhancementsEnabled": true,
+    }))
+    .unwrap();
+    assert!(settings.codex_app_proxy_request_status);
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    store.save(&BackendSettings::default()).unwrap();
+    assert!(store.load().unwrap().codex_app_proxy_request_status);
+
+    store
+        .update(json!({ "codexAppProxyRequestStatus": false }))
+        .unwrap();
+    assert!(!store.load().unwrap().codex_app_proxy_request_status);
+
+    store
+        .update(json!({ "codexAppProxyRequestStatus": true }))
+        .unwrap();
+    assert!(store.load().unwrap().codex_app_proxy_request_status);
+}

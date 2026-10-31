@@ -113,20 +113,27 @@ async fn open_candidates(
         ..RequestTrace::default()
     };
     let conversation_seed = conversation_seed(&request);
+    let mut pending = fit_first(&plan.candidates, estimate_tokens(&request));
     if plan.candidates.is_empty() {
-        if let Some(wait) = plan.cooling {
-            recorder.cooling(wait.as_millis() as u64);
-            return Ok(GatewayOutcome {
-                upstream: GatewayUpstream::Cooling(wait),
-                trace,
-                busy: None,
-                slot: None,
-            });
+        let Some(wait) = plan.cooling else {
+            anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
+        };
+        // 所有 Key 都在冷却（#2802）：最早的那个很快恢复时等它一等再试，不马上回本地 429——
+        // Codex 自己的重试几秒内就用完了，冷却稍长一点就会整轮失败，而直连时这几秒后上游多半已恢复。
+        match wait_for_cooling_key(plan, &request).await? {
+            Some(ready) => pending = vec![ready],
+            None => {
+                recorder.cooling(wait.as_millis() as u64);
+                return Ok(GatewayOutcome {
+                    upstream: GatewayUpstream::Cooling(wait),
+                    trace,
+                    busy: None,
+                    slot: None,
+                });
+            }
         }
-        anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
     }
     let mut last_error: Option<anyhow::Error> = None;
-    let mut pending = fit_first(&plan.candidates, estimate_tokens(&request));
     // 主动限速：第一次因为候选都满了而排队的时刻，和累计排了多久。
     let mut queue_started: Option<Instant> = None;
     let mut queued = Duration::ZERO;
@@ -332,6 +339,69 @@ async fn open_candidates(
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("网关的所有上游都失败了")))
 }
 
+/// 所有 Key 都在冷却时，最早恢复的那个最多等这么久（#2802）。
+///
+/// 覆盖无提示 429 的前三次退避（5 / 10 / 20 秒）和上游给的短 Retry-After；
+/// 更久的冷却（额度耗尽、上游明确要求等一分钟以上）照旧马上回 429，不让请求一直挂着。
+pub const COOLING_WAIT_LIMIT: Duration = Duration::from_secs(20);
+
+/// 等冷却中最早恢复的 Key 恢复，交回它；等不到（超过 [`COOLING_WAIT_LIMIT`]）返回 None。
+///
+/// 等的过程中别的请求可能又把它打进冷却（再 429 一次），这时按新的剩余时间接着等，总时长不超过上限；
+/// 客户端断开就不再等。
+async fn wait_for_cooling_key<'a>(
+    plan: &'a RoutePlan,
+    request: &GatewayRequest<'_>,
+) -> anyhow::Result<Option<&'a GatewayCandidate>> {
+    let Some(first) = plan.waiting.first() else {
+        return Ok(None);
+    };
+    let started = Instant::now();
+    let deadline = started + COOLING_WAIT_LIMIT;
+    if started + first.remaining > deadline {
+        return Ok(None);
+    }
+    if let Some(id) = request.live_request_id {
+        crate::request_log::update_running_phase(id, "waiting");
+    }
+    loop {
+        let now = Instant::now();
+        // 冷却中的 Key 里现在还要等最短的那个。
+        let next = plan
+            .waiting
+            .iter()
+            .map(|item| {
+                let remaining =
+                    key_pool::cooling_remaining(&item.candidate.key, now).unwrap_or_default();
+                (&item.candidate, remaining)
+            })
+            .min_by_key(|(_, remaining)| *remaining);
+        let Some((candidate, remaining)) = next else {
+            return Ok(None);
+        };
+        if remaining.is_zero() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "gateway.cooling_wait",
+                serde_json::json!({
+                    "relayId": candidate.relay.id,
+                    "keyId": candidate.key.key_id,
+                    "waitedMs": started.elapsed().as_millis() as u64,
+                }),
+            );
+            return Ok(Some(candidate));
+        }
+        if now + remaining > deadline {
+            return Ok(None);
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(remaining) => {}
+            _ = client_gone(request.client) => {
+                anyhow::bail!("客户端已断开，放弃等待冷却中的上游 Key");
+            }
+        }
+    }
+}
+
 /// 请求日志里「限速排队」的记录：`local_rate_limit_wait_ms:<毫秒>`，界面显示成「限速排队 Xs」。
 pub const QUEUE_REASON_PREFIX: &str = "local_rate_limit_wait_ms:";
 
@@ -511,6 +581,8 @@ async fn attempt_pipeline(
             session_id: Some(cache_key.as_str()),
             thread_id: Some(cache_key.as_str()),
             opencode_session: None,
+            // ChatGPT 后端的身份头由官方登录通道自己定，不沿用客户端带来的。
+            client_identity: &[],
         }
     } else {
         request.session_headers
@@ -558,6 +630,30 @@ async fn attempt_pipeline(
         upstream: GatewayUpstream::Pipeline(response),
         class,
     })
+}
+
+/// 只发一次、只发给这个候选（供应商池的「测试」用，见 [`crate::gateway::probe`]）。
+///
+/// 和候选循环里的一次尝试走同一条路（ChatGPT 后端的请求整理、协议转换、代理、认证都一样），
+/// 但调用方要自己先做 `prepare_relay` / OpenCode 的 prepare；这里不占限速名额、不记 Key 冷却 /
+/// 熔断 / 测速、不改会话固定、不写路由动态，也不记额度。
+///
+/// 成功时原样交回上游响应；上游报错时响应体已读进 `buffered_body`，并给出网关会怎么分类。
+/// `Err` 是请求没能发出或没收到响应（连接失败、超时、请求本身不被支持）。
+pub(crate) async fn attempt_once(
+    settings: &BackendSettings,
+    candidate: &GatewayCandidate,
+    request: &GatewayRequest<'_>,
+) -> anyhow::Result<(UpstreamProxyResponse, Option<FailureClass>)> {
+    let upstream = match attempt_pipeline(settings, candidate, request).await {
+        Ok(Attempt::Success(upstream)) => (upstream, None),
+        Ok(Attempt::Failed { upstream, class }) => (upstream, Some(class)),
+        Err(AttemptError::Fatal(error) | AttemptError::Transport(error)) => return Err(error),
+    };
+    match upstream {
+        (GatewayUpstream::Pipeline(response), class) => Ok((response, class)),
+        _ => anyhow::bail!("测试请求只走协议代理链路"),
+    }
 }
 
 /// ChatGPT 后端的响应头带着这个账号的额度，顺手记下（模型组「额度优先」、供应商池显示用）。

@@ -82,6 +82,7 @@ test("startup settings loading keeps retrying with backoff instead of giving up 
 test("startup and heartbeat settings loads re-apply the dream skin", async () => {
   const source = fragment("40-backend-settings.js");
   let refreshes = 0;
+  let weixinSyncs = 0;
   let loaded = true;
   const context = vm.createContext({
     codexPlusSettings: () => ({ conversationView: false }),
@@ -89,6 +90,7 @@ test("startup and heartbeat settings loads re-apply the dream skin", async () =>
     codexRemoteSessionProviderOverrideEnabled: () => false,
     refreshCodexPlusBackendToggles: () => {},
     syncOfficialUsagePolicy: () => {}, syncCodexPlusTypingEffects: () => {},
+    syncWeixinDesktopThreads: async () => { weixinSyncs += 1; },
     renderCodexPlusMenu: () => {}, refreshConversationView: () => {},
     syncCodexPlusBackendToggleButtons: () => {}, runScanStep: (fn: () => void) => fn(),
     refreshDreamSkin: () => { refreshes += 1; },
@@ -98,10 +100,13 @@ test("startup and heartbeat settings loads re-apply the dream skin", async () =>
   vm.runInContext(slice(source, "  let syncBackendSettingsInFlight", "  async function setBackendSetting("), context);
   await (context.loadBackendSettings as () => Promise<boolean>)();
   assert.equal(refreshes, 1);
+  assert.equal(weixinSyncs, 1);
   await (context.syncBackendSettingsFromHeartbeat as () => Promise<void>)();
   assert.equal(refreshes, 2);
+  assert.equal(weixinSyncs, 2);
   loaded = false;
   await (context.loadBackendSettings as () => Promise<boolean>)();
   await (context.syncBackendSettingsFromHeartbeat as () => Promise<void>)();
   assert.equal(refreshes, 2, "failed reads keep the current skin state");
+  assert.equal(weixinSyncs, 2, "failed reads do not synchronize Weixin threads");
 });

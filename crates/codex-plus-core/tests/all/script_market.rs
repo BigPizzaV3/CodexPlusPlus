@@ -1,4 +1,7 @@
-use codex_plus_core::script_market::{download_script, fetch_market_manifest};
+use codex_plus_core::script_market::{
+    download_script, fetch_market_manifest, market_scripts_payload, parse_market_manifest,
+};
+use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -64,4 +67,56 @@ async fn download_script_returns_body() {
         .unwrap();
 
     assert_eq!(body, b"console.log('ok');");
+}
+
+// 市场清单逐条脚本的更新时间（#2781）：兼容 updated_at / updatedAt，缺省为空，
+// 并原样透传到给前端的 payload，供卡片显示和按更新时间排序。
+#[test]
+fn market_script_updated_at_is_parsed_and_forwarded() {
+    let manifest = parse_market_manifest(json!({
+        "version": 1,
+        "updated_at": "2026-10-26T12:51:20.000Z",
+        "scripts": [
+            {
+                "id": "snake",
+                "name": "Snake",
+                "version": "1.0.0",
+                "script_url": "https://example.com/snake.js",
+                "updated_at": " 2026-10-20T08:00:00Z ",
+            },
+            {
+                "id": "camel",
+                "name": "Camel",
+                "version": "1.0.0",
+                "script_url": "https://example.com/camel.js",
+                "updatedAt": "2026-09-01",
+            },
+            {
+                "id": "legacy",
+                "name": "Legacy",
+                "version": "1.0.0",
+                "script_url": "https://example.com/legacy.js",
+            },
+        ],
+    }))
+    .unwrap();
+
+    let updated: Vec<&str> = manifest
+        .scripts
+        .iter()
+        .map(|script| script.updated_at.as_str())
+        .collect();
+    assert_eq!(updated, vec!["2026-10-20T08:00:00Z", "2026-09-01", ""]);
+
+    let temp = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        temp.path().join("user_scripts.json"),
+    );
+    let payload = market_scripts_payload(&manager, &manifest, "ok", "");
+    let scripts = payload["scripts"].as_array().unwrap();
+    assert_eq!(scripts[0]["updatedAt"], "2026-10-20T08:00:00Z");
+    assert_eq!(scripts[1]["updatedAt"], "2026-09-01");
+    assert_eq!(scripts[2]["updatedAt"], "");
 }

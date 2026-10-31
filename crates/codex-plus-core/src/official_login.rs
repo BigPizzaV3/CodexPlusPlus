@@ -543,7 +543,9 @@ async fn resolve_official_credential_with(
     let token_url = token_url_override
         .map(str::to_string)
         .unwrap_or_else(oauth_token_url);
-    let refreshed = match refresh_codex_tokens(&token_url, &login.refresh_token).await {
+    let proxy = token_refresh_proxy(profile);
+    let proxy = proxy.as_deref();
+    let refreshed = match refresh_codex_tokens(&token_url, &login.refresh_token, proxy).await {
         Ok(tokens) => tokens,
         Err(error) => {
             // live 里可能是更新一代的 refresh token：换它再试一次。
@@ -552,7 +554,7 @@ async fn resolve_official_credential_with(
             });
             match live {
                 Some(live) if live.account_id == login.account_id => {
-                    match refresh_codex_tokens(&token_url, &live.refresh_token).await {
+                    match refresh_codex_tokens(&token_url, &live.refresh_token, proxy).await {
                         Ok(tokens) => tokens,
                         Err(retry_error) => {
                             mark_refresh_failure(&account_key);
@@ -613,14 +615,26 @@ fn current_auth_contents(store: &SettingsStore, profile_id: &str) -> Option<Stri
         .map(|profile| profile.auth_contents.clone())
 }
 
+/// 官方登录 token 刷新用的代理。网关供应商（`gateway_proxy` 为 Some）的刷新属于这个供应商，
+/// 按它自己的代理设置发，没开系统代理时也能刷新（#2775）。直连模式的纯官方登录不走独立代理
+/// （与 [`RelayProfile::uses_independent_proxy`] 一致），不读残留的按 id 代理表或
+/// `CODEX_PLUS_PROXY`，保持原来的 reqwest 默认行为（系统代理 / 代理环境变量）。
+fn token_refresh_proxy(profile: &RelayProfile) -> Option<String> {
+    profile.gateway_proxy.as_ref()?;
+    crate::relay_proxy::proxy_for_relay(profile)
+}
+
 async fn refresh_codex_tokens(
     token_url: &str,
     refresh_token: &str,
+    proxy: Option<&str>,
 ) -> anyhow::Result<RefreshedTokens> {
-    let client = reqwest::Client::builder()
-        .user_agent(format!("CodexPlusPlus/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = crate::http_client::build_with_relay_proxy(
+        reqwest::Client::builder()
+            .user_agent(format!("CodexPlusPlus/{}", env!("CARGO_PKG_VERSION")))
+            .timeout(std::time::Duration::from_secs(30)),
+        proxy,
+    )?;
     let response = client
         .post(token_url)
         .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
@@ -829,6 +843,33 @@ mod tests {
         }
     }
 
+    /// 直连模式的纯官方登录：即使按 id 代理表里残留了这个供应商的代理，token 刷新也不套用；
+    /// 网关供应商才按它自己的代理设置（含「直连」）刷新。
+    #[test]
+    fn token_refresh_proxy_applies_only_to_gateway_providers() {
+        let temp = tempfile::tempdir().unwrap();
+        let _scope = crate::relay_proxy::ProxyPathTestScope::new(temp.path());
+        crate::relay_proxy::set_proxy_for_profile("official", "http://127.0.0.1:9").unwrap();
+        let mut profile = official_profile("{}");
+        assert_eq!(
+            crate::relay_proxy::configured_proxy_for_profile("official").as_deref(),
+            Some("http://127.0.0.1:9")
+        );
+        assert!(!profile.uses_independent_proxy());
+        assert_eq!(token_refresh_proxy(&profile), None);
+
+        profile.gateway_proxy = Some("http://127.0.0.1:8".to_string());
+        assert_eq!(
+            token_refresh_proxy(&profile).as_deref(),
+            Some("http://127.0.0.1:8")
+        );
+        profile.gateway_proxy = Some(crate::relay_proxy::DIRECT_PROXY.to_string());
+        assert_eq!(
+            token_refresh_proxy(&profile).as_deref(),
+            Some(crate::relay_proxy::DIRECT_PROXY)
+        );
+    }
+
     #[test]
     fn parses_login_from_auth_contents() {
         let login = official_login_from_auth_contents(
@@ -997,5 +1038,95 @@ mod tests {
         let login = official_login_from_auth_contents(&persisted.auth_contents).unwrap();
         assert_eq!(login.access_token, "fresh-access");
         assert_eq!(login.refresh_token, "fresh-refresh");
+    }
+
+    /// #2775：供应商单独填了（带用户名密码的）HTTP 代理时，官方登录的 token 刷新要经过它，
+    /// 不能只看系统代理，否则没开系统代理时刷新直连 OpenAI 失败。
+    #[tokio::test]
+    async fn token_refresh_goes_through_the_relays_own_proxy() {
+        use base64::Engine;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // 本地「代理」：收下第一条请求原样记录，再替上游回刷新结果。
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let proxy = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 8192];
+            let mut request = Vec::new();
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n")
+                    && String::from_utf8_lossy(&request).contains("grant_type=refresh_token")
+                {
+                    break;
+                }
+            }
+            let body = r#"{"access_token":"proxied-access","refresh_token":"proxied-refresh"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&request).to_string()
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        let expired = fake_jwt(json!({ "exp": now_ms() / 1000 - 60 }));
+        let mut profile = official_profile(
+            &json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": expired,
+                    "refresh_token": "proxy-refresh",
+                    "account_id": "acct-proxy-2775"
+                }
+            })
+            .to_string(),
+        );
+        // 密码里的 @ 按 URL 规则写成 %40，代理认证时要还原。
+        profile.gateway_proxy = Some(format!("http://user-2775:p%40ss@{address}"));
+        let mut settings = crate::settings::BackendSettings::default();
+        settings.relay_profiles = vec![profile.clone()];
+        store.save(&settings).unwrap();
+
+        // 上游是个解析不了的域名：不经过代理就到不了。
+        let credential = resolve_official_credential_with(
+            &profile,
+            false,
+            &store,
+            temp.path(),
+            Some("http://auth.codex-plus-2775.invalid/oauth/token"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(credential.access_token, "proxied-access");
+
+        let request = proxy.join().unwrap();
+        assert!(
+            request.starts_with("POST http://auth.codex-plus-2775.invalid/oauth/token "),
+            "{request}"
+        );
+        let expected_auth = format!(
+            "basic {}",
+            base64::engine::general_purpose::STANDARD.encode("user-2775:p@ss")
+        );
+        assert!(
+            request.lines().any(|line| {
+                line.split_once(':').is_some_and(|(name, value)| {
+                    name.eq_ignore_ascii_case("proxy-authorization")
+                        && value.trim().eq_ignore_ascii_case(&expected_auth)
+                })
+            }),
+            "{request}"
+        );
+        assert!(request.contains("refresh_token=proxy-refresh"), "{request}");
     }
 }

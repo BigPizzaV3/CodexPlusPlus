@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { filterCommands, type PaletteCommand } from "./command-palette-model.ts";
+import { filterCommands, paletteShortcutLabel, type PaletteCommand } from "./command-palette-model.ts";
 
 const command = (id: string, group: string, label: string, keywords = ""): PaletteCommand => ({ id, group, label, keywords, run: () => undefined });
 const commands = [
@@ -19,4 +19,10 @@ test("多个词都要命中，可以跨标签、分组与关键词", () => {
   assert.deepEqual(filterCommands(commands, "claude 供应商").map((item) => item.id), ["c"]);
   assert.deepEqual(filterCommands(commands, "RESTART").map((item) => item.id), ["d"]);
   assert.deepEqual(filterCommands(commands, "不存在"), []);
+});
+
+test("快捷键提示按平台显示：macOS 是 ⌘K，Windows / Linux 是 Ctrl K（#2778）", () => {
+  assert.equal(paletteShortcutLabel("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"), "⌘K");
+  assert.equal(paletteShortcutLabel("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/130.0"), "Ctrl K");
+  assert.equal(paletteShortcutLabel("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"), "Ctrl K");
 });

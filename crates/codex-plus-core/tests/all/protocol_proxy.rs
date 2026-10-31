@@ -6415,6 +6415,7 @@ async fn responses_proxy_preserves_session_headers_through_both_protocols() {
                     session_id: Some(session_id),
                     thread_id: Some(thread_id),
                     opencode_session: Some(opencode_session),
+                    client_identity: &[],
                 },
             )
             .await
@@ -6492,6 +6493,7 @@ async fn responses_proxy_session_headers_keep_custom_headers_authoritative() {
                 session_id: Some("client-session"),
                 thread_id: Some("client-thread"),
                 opencode_session: Some("client-opencode"),
+                client_identity: &[],
             },
         )
         .await
@@ -6542,6 +6544,7 @@ async fn responses_proxy_omits_empty_or_invalid_session_headers_and_keeps_legacy
                     session_id: Some("   "),
                     thread_id: Some("invalid\r\nx-injected: value"),
                     opencode_session: None,
+                    client_identity: &[],
                 },
             )
             .await
@@ -8472,6 +8475,9 @@ async fn retry_budget_exhausted_commits_without_waiting_grace() {
             .write_all(proxy_sse_response(&first_attempt_failure).as_bytes())
             .await
             .unwrap();
+        // 这个假上游每条连接只答一次：答完就关，否则上游 client 复用连接（#2761）
+        // 会把重试发到这条不再读请求的连接上。
+        drop(stream);
         // 第二次尝试：写出首段正文后挂住连接。
         let (mut stream, _) = listener.accept().await.unwrap();
         let _ = read_http_request(&mut stream).await;

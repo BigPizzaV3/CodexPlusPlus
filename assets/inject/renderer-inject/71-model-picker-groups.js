@@ -1022,12 +1022,65 @@
    * 为什么还要轮询：React 复用行节点时不会产生 childList 变更，只靠 MutationObserver
    * 会漏掉"标签变了"这种情况。600ms 一次、且只在菜单开着时跑，开销可以忽略。
    */
+  /**
+   * 模型菜单开着却认不出来时（#2753：旧版 Codex 上分组不出现），记一次结构快照，
+   * 好据此补上旧版的识别规则。只在页面上真有一个装着目录里模型的原生单选菜单时记，
+   * 每个页面最多一次；只记标记数量和结构特征，不记模型名等文本。
+   */
+  function codexPlusModelPickerReportUnrecognized() {
+    const state = codexPlusModelPickerGroupsState;
+    if (state.unrecognizedReported) return;
+    let exact = null;
+    for (const menu of document.querySelectorAll('[role="menu"]')) {
+      if (!visibleElement(menu) || menu.closest("[data-codex-plus-ext]")) continue;
+      const radios = [...menu.querySelectorAll('[role="menuitemradio"]')];
+      if (radios.length < 2) continue;
+      // 先过廉价的 DOM 条件，真有候选菜单时才建目录映射（扫描每 600ms 一次）。
+      exact ||= codexPlusModelPickerCatalogExactMap();
+      if (!exact.size) return;
+      const known = radios.filter((row) => {
+        const text = (row.textContent || "").replace(/\s+/g, " ").trim();
+        return exact.has(`raw\u0000${text}`) || exact.has(codexPlusModelPickerNormalizeLoose(text));
+      }).length;
+      if (!known) continue;
+      state.unrecognizedReported = true;
+      const count = (selector) => {
+        try { return menu.querySelectorAll(selector).length; } catch (_) { return -1; }
+      };
+      const modulePrefixes = new Set();
+      for (const node of [menu, ...menu.querySelectorAll("[class]")].slice(0, 400)) {
+        for (const token of String(node.getAttribute("class") || "").split(/\s+/)) {
+          const match = /^_([A-Za-z]+)_/.exec(token);
+          if (match) modulePrefixes.add(match[1]);
+        }
+      }
+      const dataAttributes = (node) => (node ? [...node.attributes].map((item) => item.name).filter((name) => name.startsWith("data-")) : []);
+      try {
+        Promise.resolve(sendCodexPlusDiagnostic("model_picker_groups_menu_unrecognized", {
+          radios: radios.length,
+          catalogMatches: known,
+          pickerView: document.querySelectorAll("[data-model-picker-view]").length,
+          modelList: count('[class*="_ModelList_"]'),
+          rowContent: count("[data-menu-row-content]"),
+          flex1: count("span.flex-1, span[class*='flex-1']"),
+          menuData: dataAttributes(menu),
+          rowData: dataAttributes(radios[0]),
+          modulePrefixes: [...modulePrefixes].slice(0, 16),
+        })).catch(() => {});
+      } catch (_) {
+        // 诊断失败不能影响原生菜单。
+      }
+      return;
+    }
+  }
+
   function codexPlusModelPickerScan() {
     const state = codexPlusModelPickerGroupsState;
     if (state.disposed) return;
     const menu = codexPlusModelPickerMenu();
     const list = codexPlusModelPickerList(menu);
     if (!list) {
+      codexPlusModelPickerReportUnrecognized();
       if (state.activeList) {
         codexPlusModelPickerClear(state.activeList);
         state.activeList = null;

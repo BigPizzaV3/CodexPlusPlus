@@ -441,15 +441,24 @@ pub struct DeviceCode {
     pub expires_in: u64,
 }
 
-fn http_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .user_agent("GitHubCopilotChat/0.26.7")
-        .timeout(Duration::from_secs(30))
-        .build()?)
+/// GitHub / Copilot 请求的 client。`proxy` 是所属供应商的代理设置（[`relay_proxy`]）；
+/// 登录时还没有供应商，传 None 走系统代理 / 环境变量（#2775）。
+fn http_client(proxy: Option<&str>) -> anyhow::Result<reqwest::Client> {
+    crate::http_client::build_with_relay_proxy(
+        reqwest::Client::builder()
+            .user_agent("GitHubCopilotChat/0.26.7")
+            .timeout(Duration::from_secs(30)),
+        proxy,
+    )
+}
+
+/// 供应商自己的代理设置：已经建好的账号类供应商，token 刷新、额度和模型查询都按它发（#2775）。
+fn relay_proxy(relay: &RelayProfile) -> Option<String> {
+    crate::relay_proxy::proxy_for_relay(relay)
 }
 
 pub async fn copilot_device_code() -> anyhow::Result<DeviceCode> {
-    let response = http_client()?
+    let response = http_client(None)?
         .post(GITHUB_DEVICE_CODE_URL)
         .header(reqwest::header::ACCEPT, "application/json")
         .form(&[("client_id", COPILOT_CLIENT_ID), ("scope", "read:user")])
@@ -526,7 +535,7 @@ pub fn parse_device_poll(value: &Value) -> DevicePoll {
 
 /// 等用户在浏览器里输入验证码，拿到 GitHub token。
 pub async fn copilot_wait_for_github_token(code: &DeviceCode) -> anyhow::Result<String> {
-    let client = http_client()?;
+    let client = http_client(None)?;
     let mut interval = code.interval;
     let deadline = std::time::Instant::now() + Duration::from_secs(code.expires_in.max(60));
     while std::time::Instant::now() < deadline {
@@ -603,7 +612,7 @@ pub async fn copilot_user(relay: &RelayProfile) -> anyhow::Result<Value> {
         })
         .filter(|token| !token.is_empty())
         .context("Copilot 登录信息不完整，请重新登录")?;
-    let mut request = http_client()?
+    let mut request = http_client(relay_proxy(relay).as_deref())?
         .get(COPILOT_USER_URL)
         .header(
             reqwest::header::AUTHORIZATION,
@@ -620,8 +629,12 @@ pub async fn copilot_user(relay: &RelayProfile) -> anyhow::Result<Value> {
     Ok(response.json().await?)
 }
 
-pub async fn copilot_exchange(github_token: &str) -> anyhow::Result<CopilotToken> {
-    let mut request = http_client()?
+/// `proxy`：所属供应商的代理设置，登录时传 None。
+pub async fn copilot_exchange(
+    github_token: &str,
+    proxy: Option<&str>,
+) -> anyhow::Result<CopilotToken> {
+    let mut request = http_client(proxy)?
         .get(COPILOT_TOKEN_URL)
         .header(
             reqwest::header::AUTHORIZATION,
@@ -647,7 +660,7 @@ pub async fn copilot_exchange(github_token: &str) -> anyhow::Result<CopilotToken
 }
 
 async fn github_login_name(github_token: &str) -> String {
-    let Ok(client) = http_client() else {
+    let Ok(client) = http_client(None) else {
         return String::new();
     };
     let Ok(response) = client
@@ -675,9 +688,9 @@ async fn github_login_name(github_token: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Copilot 账号可用的对话模型。
-pub async fn copilot_models(token: &CopilotToken) -> Vec<String> {
-    let Ok(client) = http_client() else {
+/// Copilot 账号可用的对话模型。`proxy`：所属供应商的代理设置，登录时传 None。
+pub async fn copilot_models(token: &CopilotToken, proxy: Option<&str>) -> Vec<String> {
+    let Ok(client) = http_client(proxy) else {
         return Vec::new();
     };
     let mut request = client
@@ -764,9 +777,9 @@ pub fn copilot_relay(
 /// 完成 Copilot 登录：拿 GitHub token → 换 Copilot token → 读模型。
 pub async fn copilot_finish(code: &DeviceCode) -> anyhow::Result<RelayProfile> {
     let github_token = copilot_wait_for_github_token(code).await?;
-    let token = copilot_exchange(&github_token).await?;
+    let token = copilot_exchange(&github_token, None).await?;
     let login = github_login_name(&github_token).await;
-    let models = copilot_models(&token).await;
+    let models = copilot_models(&token, None).await;
     Ok(copilot_relay(&login, &github_token, &token, &models))
 }
 
@@ -1000,16 +1013,17 @@ pub fn parse_grok_tokens(value: &Value, previous_refresh: &str) -> anyhow::Resul
     })
 }
 
-async fn grok_token_request(form: &[(&str, &str)]) -> anyhow::Result<Value> {
-    let response = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?
-        .post(GROK_TOKEN_URL)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .form(form)
-        .send()
-        .await
-        .context("连不上 auth.x.ai")?;
+async fn grok_token_request(form: &[(&str, &str)], proxy: Option<&str>) -> anyhow::Result<Value> {
+    let response = crate::http_client::build_with_relay_proxy(
+        reqwest::Client::builder().timeout(Duration::from_secs(30)),
+        proxy,
+    )?
+    .post(GROK_TOKEN_URL)
+    .header(reqwest::header::ACCEPT, "application/json")
+    .form(form)
+    .send()
+    .await
+    .context("连不上 auth.x.ai")?;
     let status = response.status();
     let value: Value = response.json().await.unwrap_or(Value::Null);
     if !status.is_success() && value.get("access_token").is_none() {
@@ -1042,20 +1056,23 @@ pub async fn grok_login(open_browser: impl FnOnce(&str)) -> anyhow::Result<GrokT
     )
     .await
     .map_err(|_| anyhow::anyhow!("登录超时：5 分钟内没有完成浏览器登录"))??;
-    let value = grok_token_request(&[
-        ("grant_type", "authorization_code"),
-        ("code", &code),
-        ("redirect_uri", &redirect_uri),
-        ("client_id", GROK_CLIENT_ID),
-        ("code_verifier", &verifier),
-    ])
+    let value = grok_token_request(
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", &redirect_uri),
+            ("client_id", GROK_CLIENT_ID),
+            ("code_verifier", &verifier),
+        ],
+        None,
+    )
     .await?;
     parse_grok_tokens(&value, "")
 }
 
 /// SuperGrok 订阅的额度（Grok CLI 的 `/usage` 读的同一个接口）。`relay` 要先经过 `prepare_relay`。
 pub async fn grok_billing(relay: &RelayProfile) -> anyhow::Result<Value> {
-    let mut request = http_client()?
+    let mut request = http_client(relay_proxy(relay).as_deref())?
         .get(format!("{GROK_PROXY_BASE}/billing?format=credits"))
         .bearer_auth(&relay.api_key)
         .header(reqwest::header::USER_AGENT, grok_user_agent())
@@ -1073,16 +1090,17 @@ pub async fn grok_billing(relay: &RelayProfile) -> anyhow::Result<Value> {
     Ok(response.json().await?)
 }
 
-/// SuperGrok 账号可用的模型；读不到时用常见的几个。
-pub async fn grok_models(access_token: &str) -> Vec<String> {
+/// SuperGrok 账号可用的模型；读不到时用常见的几个。`proxy`：所属供应商的代理设置，登录时传 None。
+pub async fn grok_models(access_token: &str, proxy: Option<&str>) -> Vec<String> {
     refresh_grok_client_version().await;
     let fetched = async {
-        let mut request = reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()
-            .ok()?
-            .get(format!("{GROK_PROXY_BASE}/models-v2"))
-            .bearer_auth(access_token);
+        let mut request = crate::http_client::build_with_relay_proxy(
+            reqwest::Client::builder().timeout(Duration::from_secs(20)),
+            proxy,
+        )
+        .ok()?
+        .get(format!("{GROK_PROXY_BASE}/models-v2"))
+        .bearer_auth(access_token);
         for (key, value) in grok_proxy_headers() {
             request = request.header(key, value);
         }
@@ -1207,11 +1225,14 @@ async fn prepare_grok(relay: &RelayProfile, value: &Value) -> anyhow::Result<Rel
     if refresh.is_empty() {
         bail!("SuperGrok 登录已过期，请重新登录");
     }
-    let response = grok_token_request(&[
-        ("grant_type", "refresh_token"),
-        ("client_id", GROK_CLIENT_ID),
-        ("refresh_token", &refresh),
-    ])
+    let response = grok_token_request(
+        &[
+            ("grant_type", "refresh_token"),
+            ("client_id", GROK_CLIENT_ID),
+            ("refresh_token", &refresh),
+        ],
+        relay_proxy(relay).as_deref(),
+    )
     .await
     .context("SuperGrok 登录已失效，请重新登录")?;
     grok_finish_refresh(&store, relay, &latest, &response, &refresh)
@@ -1487,15 +1508,19 @@ fn siwc_check_id(claims: &Value, client_id: &str, nonce: &str) -> anyhow::Result
     Ok(())
 }
 
-async fn siwc_token_request(form: &[(&str, &str)]) -> Result<Value, (String, String)> {
+async fn siwc_token_request(
+    form: &[(&str, &str)],
+    proxy: Option<&str>,
+) -> Result<Value, (String, String)> {
     let token_url = std::env::var("CODEX_PLUS_SIWC_TOKEN_URL")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| SIWC_TOKEN_URL.to_string());
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| (String::new(), error.to_string()))?;
+    let client = crate::http_client::build_with_relay_proxy(
+        reqwest::Client::builder().timeout(Duration::from_secs(30)),
+        proxy,
+    )
+    .map_err(|error| (String::new(), error.to_string()))?;
     let response = client
         .post(token_url)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -1565,14 +1590,17 @@ pub async fn chatgpt_api_login(
         .filter(|id| !id.is_empty())
         .context("OpenAI 没有完成应用注册（回调里没有 client_id），请重新登录")?;
     let code = params.get("code").cloned().unwrap_or_default();
-    let value = siwc_token_request(&[
-        ("grant_type", "authorization_code"),
-        ("client_id", &client_id),
-        ("code", &code),
-        ("code_verifier", &verifier),
-        ("redirect_uri", &redirect_uri),
-        ("resource", SIWC_API),
-    ])
+    let value = siwc_token_request(
+        &[
+            ("grant_type", "authorization_code"),
+            ("client_id", &client_id),
+            ("code", &code),
+            ("code_verifier", &verifier),
+            ("redirect_uri", &redirect_uri),
+            ("resource", SIWC_API),
+        ],
+        None,
+    )
     .await
     .map_err(|(_, message)| anyhow::anyhow!("换取登录 token 失败：{message}"))?;
     let account = siwc_from_tokens(&value, &client_id, &host_id, Some(&nonce))?;
@@ -1584,20 +1612,26 @@ pub async fn chatgpt_api_login(
 
 /// 账号可用的模型：OpenAI 给这个 token 列出的模型，再补上 Codex 为 ChatGPT 套餐列出的
 /// （本机 Codex 的模型缓存里有，目录里没列也能用）；目录里标为隐藏的不加。
-pub async fn chatgpt_api_models(access_token: &str, codex_home: &Path) -> Vec<String> {
+/// `proxy`：所属供应商的代理设置，登录时传 None。
+pub async fn chatgpt_api_models(
+    access_token: &str,
+    codex_home: &Path,
+    proxy: Option<&str>,
+) -> Vec<String> {
     let fetched = async {
-        let value: Value = reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()
-            .ok()?
-            .get(format!("{SIWC_API}/models"))
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .ok()?
-            .json()
-            .await
-            .ok()?;
+        let value: Value = crate::http_client::build_with_relay_proxy(
+            reqwest::Client::builder().timeout(Duration::from_secs(20)),
+            proxy,
+        )
+        .ok()?
+        .get(format!("{SIWC_API}/models"))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
         Some(value)
     }
     .await
@@ -1774,12 +1808,15 @@ async fn prepare_chatgpt_api(relay: &RelayProfile, value: &Value) -> anyhow::Res
     if client_id.is_empty() || refresh.is_empty() {
         bail!("ChatGPT API 登录信息不完整，请重新登录");
     }
-    let response = siwc_token_request(&[
-        ("grant_type", "refresh_token"),
-        ("client_id", &client_id),
-        ("refresh_token", &refresh),
-        ("resource", SIWC_API),
-    ])
+    let response = siwc_token_request(
+        &[
+            ("grant_type", "refresh_token"),
+            ("client_id", &client_id),
+            ("refresh_token", &refresh),
+            ("resource", SIWC_API),
+        ],
+        relay_proxy(relay).as_deref(),
+    )
     .await;
     let response = match response {
         Ok(value) => value,
@@ -1878,9 +1915,10 @@ pub async fn chatgpt_api_revoke(relay: &RelayProfile) -> anyhow::Result<()> {
         return Ok(());
     }
     let text = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or_default();
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()?;
+    let client = crate::http_client::build_for_relay(
+        reqwest::Client::builder().timeout(Duration::from_secs(15)),
+        relay,
+    )?;
     let discovery: Value = client
         .get(format!("{SIWC_ISSUER}/.well-known/openid-configuration"))
         .send()
@@ -2106,7 +2144,7 @@ async fn prepare_copilot(relay: &RelayProfile, value: &Value) -> anyhow::Result<
     if github_token.is_empty() {
         bail!("Copilot 登录信息不完整，请重新登录");
     }
-    let token = copilot_exchange(github_token).await?;
+    let token = copilot_exchange(github_token, relay_proxy(relay).as_deref()).await?;
     let mut updated = relay.clone();
     let mut auth = value.clone();
     auth["copilot_token"] = json!(token.token);
@@ -2242,6 +2280,8 @@ mod tests {
                 upstream_new: Vec::new(),
                 upstream_gone: Vec::new(),
                 models_checked_at_ms: 0,
+                newapi_access: None,
+                upstream_meta: Default::default(),
                 relay,
                 extra: Default::default(),
             });
@@ -2612,6 +2652,8 @@ mod tests {
                 upstream_new: Vec::new(),
                 upstream_gone: Vec::new(),
                 models_checked_at_ms: 0,
+                newapi_access: None,
+                upstream_meta: Default::default(),
                 relay,
                 extra: Default::default(),
             });

@@ -5,6 +5,7 @@ import {
   multiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
   multiLaunchInstanceStatus,
+  runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model.ts";
 
@@ -61,5 +62,18 @@ describe("Codex 多开运行实例模型", () => {
       ),
       "",
     );
+  });
+
+  // #2801：多开页删除供应商前，要提醒还有哪些实例在用它。
+  it("按供应商找出正在运行的多开实例，不含主 Codex 和已停止的", () => {
+    const instances = [
+      instance({ instanceId: "main", isMain: true, profileId: "ccs-a" }),
+      instance({ instanceId: "a-1", profileId: " ccs-a " }),
+      instance({ instanceId: "a-2", profileId: "ccs-a", status: "stopped", running: false }),
+      instance({ instanceId: "b-1", profileId: "ccs-b" }),
+    ];
+    assert.deepEqual(runningInstancesForProfile(instances, "ccs-a").map((item) => item.instanceId), ["a-1"]);
+    assert.deepEqual(runningInstancesForProfile(instances, "missing"), []);
+    assert.deepEqual(runningInstancesForProfile(instances, "  "), []);
   });
 });

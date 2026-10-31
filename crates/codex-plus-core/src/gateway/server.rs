@@ -163,6 +163,8 @@ pub(crate) async fn handle(
             // Codex 带自己的会话头和实验特性头，照旧传给上游。
             let thread_id = header_value_from_headers(headers, "thread-id");
             let beta_features = header_value_from_headers(headers, "x-codex-beta-features");
+            // Codex 的客户端身份头（originator、x-codex-* 等）照原样带给上游（#2783）。
+            let client_identity = client_identity_headers(&agent, headers);
             handle_protocol_proxy_connection(
                 stream,
                 &request_body,
@@ -172,6 +174,7 @@ pub(crate) async fn handle(
                     session_id: session_id.as_deref(),
                     thread_id: thread_id.as_deref(),
                     opencode_session: None,
+                    client_identity: &client_identity,
                 },
                 method,
                 path,
@@ -202,6 +205,15 @@ pub(crate) async fn handle(
         }
         _ => write_error(stream, &agent, 404, &format!("网关不支持 {method} {tail}")).await,
     }
+}
+
+/// 网关转发给上游的客户端身份头（#2783）：只有 Codex 的请求才带，
+/// 其它 Agent（Claude Code、Grok 等）按原有逻辑，一个都不透传。
+pub fn client_identity_headers(agent: &ToolId, raw_headers: &str) -> Vec<(String, String)> {
+    if *agent != ToolId::Codex {
+        return Vec::new();
+    }
+    crate::protocol_proxy::codex_client_identity_headers(raw_headers)
 }
 
 /// 一个生图请求：`/images/edits`（multipart）或 `/images/generations`（JSON）。
@@ -605,6 +617,7 @@ async fn handle_claude_messages(
                 session_id: session.as_deref(),
                 thread_id: None,
                 opencode_session: None,
+                client_identity: &[],
             },
             live_request_id: Some(live_request_id.as_str()),
             // 「请求避震」对新旧两套同时生效（只在用户打开时起作用）。

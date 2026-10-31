@@ -295,10 +295,42 @@ test("置顶推荐位只放在网关总览一处，各 Agent 的概览不再重�
   assert.equal((text.match(/<SponsorBoard /g) ?? []).length, 1);
 });
 
-test("Codex 被网关接管时，旧版供应商页的配置切换、从第三方导入、添加供应商整组隐藏（不是置灰）", () => {
+test("Codex 被网关接管时，旧版供应商页的配置切换、添加供应商隐藏（不是置灰），从第三方导入保留（#2801）", () => {
   const screen = functionSource("RelayScreen");
-  assert.match(screen, /actions=\{takenOverByGateway \? null : \(/);
+  assert.doesNotMatch(screen, /actions=\{takenOverByGateway \? null : \(/);
+  assert.match(screen, /\{takenOverByGateway \? null : <label\r?\n\s+className="switch-row compact relay-master-switch/);
+  assert.match(screen, /\{takenOverByGateway \? null : \(\r?\n\s+<Button\r?\n\s+onClick=\{\(\) => \{ setNewProfileDraft\(null\); setDetailProfileId\(null\); setProviderCatalogOpen\(true\); \}\}/);
+  // 导入只写旧版供应商列表、不动 Codex 配置，接管期间也要能从 cc-switch 导入。
+  const header = screen.slice(screen.indexOf("<PageHeader"), screen.indexOf('<div className="mg-content">'));
+  assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<div className="third-party-import"/);
+  assert.match(header, /<div className="third-party-import" ref=\{thirdPartyImportTriggerRef\}>/);
   assert.doesNotMatch(screen, /disabled=\{takenOverByGateway\}/);
+  assert.match(screen, /t\("这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。"\)/);
+});
+
+test("多开页可以直接编辑、删除供应商：删除先查占用再二次确认，网关托管项不给入口（#2801）", () => {
+  const screen = functionSource("CodexMultiLaunchScreen");
+  // 编辑就地打开同一个供应商详情页，返回 / 保存后回到多开列表。
+  assert.match(screen, /<RelayProfileDetail\r?\n\s+profile=\{detailProfile\}/);
+  assert.match(screen, /onBack=\{\(\) => setDetailProfileId\(null\)\}/);
+  assert.match(screen, /onClick=\{\(\) => setDetailProfileId\(profile\.id\)\}/);
+  // 删除：先用旧版列表同一套占用检查，再提醒运行中的多开实例，最后危险确认。
+  const remove = screen.slice(screen.indexOf("const deleteProfile"), screen.indexOf("if (detailProfile)"));
+  const issue = remove.indexOf("relayProfileDeleteIssue(normalized, profile.id)");
+  const confirm = remove.indexOf("appConfirm(message");
+  const save = remove.indexOf("removeRelayProfile(normalized, profile.id)");
+  assert.ok(issue > 0 && confirm > issue && save > confirm, "删除必须先查占用、再确认、最后保存");
+  assert.match(remove, /runningInstancesForProfile\(actions\.multiLaunchInstances, profile\.id\)/);
+  assert.match(remove, /danger: true/);
+  assert.match(screen, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
+  assert.match(screen, /\{gatewayManaged \? null : \(\r?\n\s+<span className="relay-card-extra">/);
+  assert.match(screen, /disabled=\{normalized\.relayProfiles\.length <= 1\}/);
+  // 使用中的供应商给出标记；导入入口指到旧版供应商页。
+  assert.match(screen, /\{active \? <span className="relay-active-badge">\{t\("使用中"\)\}<\/span> : null\}/);
+  assert.match(screen, /onClick=\{onOpenRelay\}/);
+  assert.match(functionSource("App"), /<CodexMultiLaunchScreen\r?\n\s+form=\{settingsForm\}\r?\n\s+relayFiles=\{relayFiles\}\r?\n\s+onOpenRelay=\{\(\) => void navigate\("relay"\)\}/);
+  // 网关接管期间从多开进详情页，不能「设为当前」绕过断开并还原。
+  assert.match(functionSource("RelayProfileDetail"), /isNew \|\| form\.activeRelayId === CODEX_GATEWAY_RELAY_ID \? null : \(/);
 });
 
 test("用量图表有鼠标交互：整列感应、高亮当天、浮出明细卡", () => {
@@ -425,4 +457,23 @@ test("添加供应商是弹出框，不再铺在供应商池页面里；池为�
   assert.match(providers, /\{catalogOpen \? \(\n\s*<ProviderCatalog/);
   assert.doesNotMatch(providers, /showCatalog/);
   assert.match(providers, /className="gw-card gw-pool-empty"/);
+});
+
+test("侧栏一级分组标题比子项醒目，快速跳转的快捷键按平台显示且弱化（#2778）", () => {
+  assert.match(functionSource("AppSidebar"), /<kbd>\{paletteShortcut\}<\/kbd>/);
+  assert.doesNotMatch(functionSource("AppSidebar"), /<kbd>⌘K<\/kbd>/);
+  const label = styles.match(/\.side-group-label > button:first-child \{[^}]*\}/)?.[0] ?? "";
+  const item = styles.match(/\n\.side-item \{[^}]*\}/)?.[0] ?? "";
+  const size = (rule: string) => Number(rule.match(/font-size: ([\d.]+)px/)?.[1] ?? 0);
+  assert.ok(size(item) > 0 && size(label) >= size(item), "分组标题字号不能比子项小");
+  assert.match(label, /font-weight: 700/);
+  assert.match(styles, /\.side-search kbd \{[^}]*font-size: 9\.5px/);
+});
+
+test("Codex 在它自己的窗口里退出后，侧栏 / 顶栏的运行状态能跟上（#2778）", () => {
+  const entry = functionSource("App");
+  assert.match(entry, /invoke<boolean \| null>\("codex_app_running"\)/);
+  assert.match(entry, /if \(document\.visibilityState !== "visible"\) return;/);
+  assert.match(entry, /running !== codexAppRunning\) void refreshOverview\(true\)/);
+  assert.match(text, /const codexRunningPollMs = 5_000;/);
 });

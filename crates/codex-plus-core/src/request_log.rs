@@ -491,6 +491,11 @@ pub fn usage_from_response_json(value: &Value) -> Option<RequestUsage> {
         .get("response")
         .and_then(|response| response.get("usage"))
         .or_else(|| value.get("usage"))?;
+    usage_from_responses_usage(usage)
+}
+
+/// Responses / Anthropic 形状的 usage 对象（input_tokens / output_tokens）。
+fn usage_from_responses_usage(usage: &Value) -> Option<RequestUsage> {
     let input_tokens = usage.get("input_tokens").and_then(Value::as_u64)?;
     let output_tokens = usage.get("output_tokens").and_then(Value::as_u64)?;
     let cached_tokens = usage
@@ -516,7 +521,15 @@ pub fn usage_from_body_bytes(body: &[u8]) -> Option<RequestUsage> {
     if let Some(usage) = usage_from_response_json(&value) {
         return Some(usage);
     }
-    let usage = value.get("usage")?;
+    usage_from_usage_value(value.get("usage")?)
+}
+
+/// 从单个 usage 对象里提取用量：Responses / Anthropic 的 input/output 字段与
+/// chat completions 的 prompt/completion 字段都认。流式转换器收尾时用它记账（#2803）。
+pub fn usage_from_usage_value(usage: &Value) -> Option<RequestUsage> {
+    if let Some(parsed) = usage_from_responses_usage(usage) {
+        return Some(parsed);
+    }
     let input_tokens = usage
         .get("prompt_tokens")
         .or_else(|| usage.get("input_tokens"))
@@ -530,11 +543,15 @@ pub fn usage_from_body_bytes(body: &[u8]) -> Option<RequestUsage> {
         .and_then(Value::as_u64)
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64))
         .unwrap_or(0);
+    let reasoning_tokens = usage
+        .pointer("/completion_tokens_details/reasoning_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     Some(RequestUsage {
         input_tokens,
         output_tokens,
         cached_tokens,
-        reasoning_tokens: 0,
+        reasoning_tokens,
     })
 }
 

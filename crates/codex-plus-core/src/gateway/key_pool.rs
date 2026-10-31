@@ -18,8 +18,11 @@ use serde::Serialize;
 use crate::gateway::store::KeyRotationMode;
 use crate::settings::RelayProfile;
 
-/// 限流没给 Retry-After 时的首个冷却时长，之后按连续次数翻倍。
-const RATE_LIMIT_BASE_COOLDOWN: Duration = Duration::from_secs(30);
+/// 限流没给任何恢复时间（Retry-After / x-ratelimit-reset*）时的首个冷却时长，之后按连续次数翻倍。
+///
+/// 原来 30 秒起步（#2802）：只有一个 Key 时，一次 429 就让所有会话被网关本地拒绝半分钟，
+/// 而 Codex 自己的重试几秒内就用完了，比直连还糟。偶发的 429 多半几秒就恢复，先短冷却、连续再翻倍。
+const RATE_LIMIT_BASE_COOLDOWN: Duration = Duration::from_secs(5);
 const RATE_LIMIT_MAX_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 /// 额度耗尽且上游没说何时恢复时的冷却时长。
 const QUOTA_DEFAULT_COOLDOWN: Duration = Duration::from_secs(60 * 60);
@@ -112,7 +115,7 @@ pub fn classify_failure(
             reset_after: reset_after_from_body(&text).or_else(|| retry_after(headers)),
         },
         429 => FailureClass::RateLimited {
-            retry_after: retry_after(headers),
+            retry_after: retry_after(headers).or_else(|| rate_limit_reset(headers)),
         },
         401 => FailureClass::AuthInvalid,
         403 if text.contains("invalid_api_key")
@@ -141,6 +144,95 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
         return Some(Duration::from_millis(ms as u64));
     }
     crate::protocol_proxy::exec_retry_after_duration(headers, SystemTime::now())
+}
+
+/// OpenAI 风格的限流重置头（#2802）：`x-ratelimit-reset-requests` / `x-ratelimit-reset-tokens`
+/// （`1s`、`6m0s`、`250ms` 这类写法），以及不少中转站用的 `x-ratelimit-reset`（秒数或 Unix 时间戳）。
+///
+/// 对应的 `x-ratelimit-remaining-*` 为 0 的那一项才是这次超限的原因，取它们里最晚的；
+/// 看不出是哪一项时取最早的，宁可早点再试也不多冷却。上限与指数退避的上限一致。
+fn rate_limit_reset(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let mut exhausted: Vec<Duration> = Vec::new();
+    let mut any: Vec<Duration> = Vec::new();
+    for kind in ["requests", "tokens"] {
+        let Some(reset) = header(&format!("x-ratelimit-reset-{kind}")).and_then(parse_reset_value)
+        else {
+            continue;
+        };
+        any.push(reset);
+        if header(&format!("x-ratelimit-remaining-{kind}"))
+            .and_then(|value| value.parse::<f64>().ok())
+            .is_some_and(|remaining| remaining <= 0.0)
+        {
+            exhausted.push(reset);
+        }
+    }
+    if let Some(reset) = header("x-ratelimit-reset").and_then(parse_reset_value) {
+        any.push(reset);
+    }
+    exhausted
+        .into_iter()
+        .max()
+        .or_else(|| any.into_iter().min())
+        .map(|reset| reset.min(RATE_LIMIT_MAX_COOLDOWN))
+}
+
+/// 重置时间的几种写法：`1h2m3.5s` / `250ms` 这类时长、纯秒数，或 Unix 时间戳（秒或毫秒）。
+fn parse_reset_value(value: &str) -> Option<Duration> {
+    if let Ok(number) = value.parse::<f64>() {
+        if !number.is_finite() || number < 0.0 {
+            return None;
+        }
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_secs_f64();
+        let seconds = if number >= 1e12 {
+            // 毫秒时间戳。
+            (number / 1000.0 - now).max(0.0)
+        } else if number >= 1e9 {
+            // 秒时间戳。
+            (number - now).max(0.0)
+        } else {
+            number
+        };
+        return Some(Duration::from_secs_f64(seconds));
+    }
+    let mut total = 0.0_f64;
+    let mut rest = value;
+    let mut matched = false;
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+            .unwrap_or(rest.len());
+        if digits == 0 {
+            return None;
+        }
+        let amount = rest[..digits].parse::<f64>().ok()?;
+        rest = &rest[digits..];
+        let (unit, len) = if rest.starts_with("ms") {
+            (0.001, 2)
+        } else if rest.starts_with('h') {
+            (3600.0, 1)
+        } else if rest.starts_with('m') {
+            (60.0, 1)
+        } else if rest.starts_with('s') {
+            (1.0, 1)
+        } else {
+            return None;
+        };
+        rest = &rest[len..];
+        total += amount * unit;
+        matched = true;
+    }
+    (matched && total.is_finite()).then(|| Duration::from_secs_f64(total))
 }
 
 /// ChatGPT 订阅额度耗尽时错误体里带 `resets_in_seconds`。
@@ -281,16 +373,66 @@ pub fn order_keys_with(
     now: Instant,
     advance: bool,
 ) -> (Vec<KeyCandidate>, Option<Duration>) {
+    let order = order_keys_detailed(relay, mode, conversation, now, advance);
+    (order.available, order.soonest)
+}
+
+/// 供应商是否正处于熔断中（只读，诊断与测试用）。
+pub fn breaker_open(relay_id: &str, now: Instant) -> bool {
+    lock()
+        .providers
+        .get(relay_id)
+        .and_then(|provider| provider.open_until)
+        .is_some_and(|open_until| open_until > now)
+}
+
+/// 暂时不可用的 Key 为什么不可用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitReason {
+    /// 这个 Key 自己在冷却（429 / 额度耗尽 / 官方登录 401）。
+    Cooling,
+    /// Key 本身没事，是整个供应商在熔断（连续 5xx / 连接失败）。
+    Breaker,
+}
+
+/// 冷却或熔断中的一个 Key：多久后恢复、为什么。停用（401）的 Key 不在这里。
+#[derive(Debug, Clone)]
+pub struct WaitingKey {
+    pub candidate: KeyCandidate,
+    pub remaining: Duration,
+    pub reason: WaitReason,
+}
+
+/// [`order_keys_detailed`] 的结果。
+#[derive(Debug, Clone, Default)]
+pub struct KeyOrder {
+    /// 现在可用的 Key，按策略排好序。
+    pub available: Vec<KeyCandidate>,
+    /// 冷却 / 熔断中的 Key 里最早多久后恢复。
+    pub soonest: Option<Duration>,
+    /// 冷却 / 熔断中的 Key（按书写顺序），供候选全空时决定是等一等还是放行（#2802）。
+    pub waiting: Vec<WaitingKey>,
+}
+
+/// 同 [`order_keys_with`]，另外交回冷却 / 熔断中的 Key 及其原因。
+pub fn order_keys_detailed(
+    relay: &RelayProfile,
+    mode: KeyRotationMode,
+    conversation: Option<&str>,
+    now: Instant,
+    advance: bool,
+) -> KeyOrder {
     let all = expand_keys(relay);
     let mut state = lock();
-    if let Some(provider) = state.providers.get(&relay.id)
-        && let Some(open_until) = provider.open_until
-        && open_until > now
-    {
-        return (Vec::new(), Some(open_until - now));
-    }
+    let breaker = state
+        .providers
+        .get(&relay.id)
+        .and_then(|provider| provider.open_until)
+        .filter(|open_until| *open_until > now)
+        .map(|open_until| open_until - now);
     let mut available = Vec::new();
-    let mut soonest: Option<Duration> = None;
+    let mut waiting = Vec::new();
+    let mut soonest: Option<Duration> = breaker;
     for candidate in all {
         let health = state
             .keys
@@ -303,9 +445,24 @@ pub fn order_keys_with(
                 && until > now
             {
                 let remaining = until - now;
-                soonest = Some(soonest.map_or(remaining, |current| current.min(remaining)));
+                if breaker.is_none() {
+                    soonest = Some(soonest.map_or(remaining, |current| current.min(remaining)));
+                }
+                waiting.push(WaitingKey {
+                    candidate,
+                    remaining,
+                    reason: WaitReason::Cooling,
+                });
                 continue;
             }
+        }
+        if let Some(remaining) = breaker {
+            waiting.push(WaitingKey {
+                candidate,
+                remaining,
+                reason: WaitReason::Breaker,
+            });
+            continue;
         }
         available.push(candidate);
     }
@@ -341,7 +498,21 @@ pub fn order_keys_with(
             available.rotate_left(offset);
         }
     }
-    (available, soonest)
+    KeyOrder {
+        available,
+        soonest,
+        waiting,
+    }
+}
+
+/// 这个 Key 自己还要冷却多久；没在冷却返回 None（供应商熔断不算，见 [`WaitReason::Breaker`]）。
+pub fn cooling_remaining(key: &KeyRef, now: Instant) -> Option<Duration> {
+    lock()
+        .keys
+        .get(&(key.relay_id.clone(), key.key_id.clone()))
+        .and_then(|health| health.cooldown_until)
+        .filter(|until| *until > now)
+        .map(|until| until - now)
 }
 
 /// 记一次失败。返回是否应该换下一个候选。
@@ -421,6 +592,20 @@ pub fn reset(relay_id: &str) {
     state.providers.remove(relay_id);
     state.sticky.retain(|(relay, _), _| relay != relay_id);
     state.round_robin.remove(relay_id);
+}
+
+/// 某个 Key 被删除或换成新值（#2782）：清掉它的冷却 / 停用记录、限速计数，以及固定到它的会话。
+///
+/// 会话固定指向已删的 Key 时，下次请求按策略重新选 Key；进行中的请求名额释放时找不到计数，自然无事。
+/// 供应商级的熔断不动：那是上游地址的问题，与哪个 Key 无关。
+pub fn forget_key(relay_id: &str, key_id: &str) {
+    let mut state = lock();
+    state.keys.remove(&(relay_id.to_string(), key_id.to_string()));
+    state
+        .sticky
+        .retain(|(relay, _), pinned| !(relay == relay_id && pinned == key_id));
+    drop(state);
+    usage_lock().remove(&(relay_id.to_string(), key_id.to_string()));
 }
 
 /// UI 展示用的健康快照，不含 Key 原文。
@@ -965,6 +1150,138 @@ mod tests {
         record_success(&key, None);
         let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, None, now);
         assert_eq!(keys.len(), 1);
+    }
+
+    /// 429 没给 Retry-After 时看限流重置头（#2802）：超限的那一项（remaining 为 0）说了算。
+    #[test]
+    fn rate_limit_reset_headers_set_the_cooldown() {
+        let class = |pairs: &[(&'static str, &str)]| classify_failure(429, &headers(pairs), b"{}");
+        assert_eq!(
+            class(&[
+                ("x-ratelimit-remaining-requests", "0"),
+                ("x-ratelimit-reset-requests", "1m2.5s"),
+                ("x-ratelimit-remaining-tokens", "5000"),
+                ("x-ratelimit-reset-tokens", "250ms"),
+            ]),
+            FailureClass::RateLimited {
+                retry_after: Some(Duration::from_millis(62_500))
+            }
+        );
+        assert_eq!(
+            class(&[
+                ("x-ratelimit-reset-requests", "6s"),
+                ("x-ratelimit-reset-tokens", "250ms"),
+            ]),
+            FailureClass::RateLimited {
+                retry_after: Some(Duration::from_millis(250))
+            },
+            "看不出是哪一项超限时取最早的"
+        );
+        assert_eq!(
+            class(&[("x-ratelimit-reset", "3")]),
+            FailureClass::RateLimited {
+                retry_after: Some(Duration::from_secs(3))
+            }
+        );
+        assert_eq!(
+            class(&[("retry-after", "7"), ("x-ratelimit-reset-requests", "1s")]),
+            FailureClass::RateLimited {
+                retry_after: Some(Duration::from_secs(7))
+            },
+            "Retry-After 优先"
+        );
+        assert_eq!(
+            class(&[("x-ratelimit-reset-requests", "5h")]),
+            FailureClass::RateLimited {
+                retry_after: Some(RATE_LIMIT_MAX_COOLDOWN)
+            },
+            "重置头给的时间同样封顶"
+        );
+        assert_eq!(
+            class(&[("x-ratelimit-reset-requests", "soon")]),
+            FailureClass::RateLimited { retry_after: None },
+            "看不懂的写法当没给"
+        );
+        let epoch = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 30;
+        let FailureClass::RateLimited {
+            retry_after: Some(wait),
+        } = class(&[("x-ratelimit-reset", &epoch.to_string())])
+        else {
+            panic!("Unix 时间戳也认");
+        };
+        assert!(
+            (Duration::from_secs(28)..=Duration::from_secs(30)).contains(&wait),
+            "{wait:?}"
+        );
+        // 额度耗尽不看这些头：它们说的是限流窗口，不是额度何时恢复。
+        assert_eq!(
+            classify_failure(
+                429,
+                &headers(&[("x-ratelimit-reset-requests", "1s")]),
+                br#"{"error":{"code":"insufficient_quota"}}"#
+            ),
+            FailureClass::QuotaExhausted { reset_after: None }
+        );
+    }
+
+    /// 无提示的 429：第一次只冷却 5 秒，连续再翻倍（#2802，原来 30 秒起步）。
+    #[test]
+    fn first_rate_limit_without_hint_cools_briefly() {
+        let relay = relay("kp-short-cool", &[("a", "sk-a")]);
+        let now = Instant::now();
+        let key = expand_keys(&relay)[0].key.clone();
+        let limited = FailureClass::RateLimited { retry_after: None };
+        record_failure(&key, &limited, now);
+        assert_eq!(cooling_remaining(&key, now), Some(Duration::from_secs(5)));
+        record_failure(&key, &limited, now);
+        assert_eq!(cooling_remaining(&key, now), Some(Duration::from_secs(10)));
+        record_success(&key, None);
+        assert_eq!(cooling_remaining(&key, now), None);
+        record_failure(&key, &limited, now);
+        assert_eq!(
+            cooling_remaining(&key, now),
+            Some(Duration::from_secs(5)),
+            "成功一次后从头算"
+        );
+    }
+
+    /// 熔断中的 Key 交回时标明是熔断，自己在冷却的标明是冷却（候选全空时据此决定放行还是等）。
+    #[test]
+    fn waiting_keys_carry_the_reason() {
+        let relay = relay("kp-waiting", &[("a", "sk-a"), ("b", "sk-b")]);
+        let now = Instant::now();
+        let keys = expand_keys(&relay);
+        record_failure(
+            &keys[0].key,
+            &FailureClass::RateLimited {
+                retry_after: Some(Duration::from_secs(8)),
+            },
+            now,
+        );
+        let order = order_keys_detailed(&relay, KeyRotationMode::Sticky, None, now, false);
+        assert_eq!(order.available.len(), 1);
+        assert_eq!(order.waiting.len(), 1);
+        assert_eq!(order.waiting[0].reason, WaitReason::Cooling);
+        assert_eq!(order.waiting[0].remaining, Duration::from_secs(8));
+        for _ in 0..BREAKER_THRESHOLD {
+            record_failure(&keys[1].key, &FailureClass::ServerError, now);
+        }
+        let order = order_keys_detailed(&relay, KeyRotationMode::Sticky, None, now, false);
+        assert!(order.available.is_empty());
+        assert_eq!(order.soonest, Some(BREAKER_OPEN));
+        let reasons = order
+            .waiting
+            .iter()
+            .map(|item| (item.candidate.key.key_id.as_str(), item.reason))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reasons,
+            vec![("a", WaitReason::Cooling), ("b", WaitReason::Breaker)]
+        );
     }
 
     #[test]

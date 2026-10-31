@@ -23,6 +23,15 @@ pub struct BridgeContext {
 }
 
 impl BridgeContext {
+    #[cfg(test)]
+    pub(crate) fn with_test_settings(store: SettingsStore, app_dir: PathBuf) -> Self {
+        Self::new(
+            Arc::new(CoreSettingsService { store, app_dir: Some(app_dir.clone()) }),
+            Arc::new(CoreRuntimeService::new(0, StatusStore::new(app_dir.join("status.json")))),
+            Arc::new(UnavailableDataService),
+        )
+    }
+
     pub fn new(
         settings: Arc<dyn BridgeSettingsService>,
         runtime: Arc<dyn BridgeRuntimeService>,
@@ -76,6 +85,11 @@ pub trait BridgeSettingsService: Send + Sync {
     /// Agent 桌宠自定义音效目录；测试可覆盖成临时目录。
     fn agent_pet_custom_dir(&self) -> PathBuf {
         crate::agent_pet::default_custom_dir()
+    }
+
+    fn whale_ledger_path(&self) -> PathBuf {
+        // 账本固定在状态目录：迁移设置文件路径后不能跟着换位置，否则余额历史看似清空。
+        crate::paths::default_app_state_dir().join("whale-balance.sqlite3")
     }
 }
 
@@ -177,6 +191,9 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
+    async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"unavailable","message":"本机用量统计暂不可用"}))
+    }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
@@ -185,6 +202,9 @@ pub trait BridgeDataService: Send + Sync {
     /// 内置状态栏专用，不进第三方拓展路由白名单。
     async fn thread_usage_live(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "本机用量快照暂不可用", "events": []}))
+    }
+    async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "message": "当前后端暂不支持会话用量摘要"}))
     }
     async fn find_archived_thread_by_title(
         &self,
@@ -388,9 +408,62 @@ pub async fn handle_bridge_request(
                 .thread_usage_live(session_from_payload(&payload))
                 .await
         }
+        // 仅内置挂件（大肥鱼）使用，不加入第三方拓展路由白名单。
+        // 只在 Agent 桌宠选中大肥鱼时可用，见 `crate::whale::enabled`。
+        "/whale/history" => match ctx.settings.get_settings().await {
+            Ok(settings)
+                if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
+            {
+                ctx.data.whale_history(payload.clone()).await
+            }
+            Ok(_) => Ok(json!({"status":"disabled"})),
+            Err(_) => Ok(json!({"status":"unavailable","message":"无法读取挂件设置"})),
+        },
+        "/whale/full" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                let path = ctx.settings.whale_ledger_path();
+                let requested_path = payload
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let history = if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&path)
+                    && matches!(
+                        requested_path,
+                        "/dsh-whale/usage-records.json" | "/dsh-whale/api-models.json"
+                    ) {
+                    ctx.data
+                        .whale_history(crate::whale_full::history_query(&path))
+                        .await
+                        .unwrap_or_else(|_| json!({"status":"unavailable"}))
+                } else {
+                    Value::Null
+                };
+                Ok(crate::whale_full::handle(&settings, path, payload.clone(), history).await)
+            }
+            Err(_) => Ok(json!({"status":503,"body":{"ok":false,"error":"无法读取挂件设置"}})),
+        },
+        "/whale/balance" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                Ok(crate::whale::balance(&settings, ctx.settings.whale_ledger_path()).await)
+            }
+            Err(_) => Ok(crate::whale::unavailable("无法读取挂件设置")),
+        },
+        "/whale/session" => match ctx.settings.get_settings().await {
+            Ok(settings)
+                if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
+            {
+                ctx.data.whale_session(session_from_payload(&payload)).await
+            }
+            Ok(_) => Ok(json!({"status": "disabled"})),
+            Err(_) => Ok(json!({"status": "unavailable", "message": "无法读取挂件设置"})),
+        },
         // 仅内置 Agent 桌宠使用，不加入第三方拓展路由白名单。payload 忽略，只按当前设置取图。
+        // 选中大肥鱼时简单桌宠不显示，图片与音效路由一并返回 disabled（两者互斥）。
         "/agent-pet/image" => match ctx.settings.get_settings().await {
-            Ok(settings) if crate::agent_pet::enabled_for(&settings.agent_pet, "codex") => {
+            Ok(settings) if settings.agent_pet.image_pet_active() => {
                 let pet = &settings.agent_pet;
                 match crate::agent_pet::load_image(
                     &pet.image,
@@ -415,7 +488,7 @@ pub async fn handle_bridge_request(
         },
         // 同上，仅内置桌宠使用。内嵌音效组渲染进程自带，这里只服务下载组和自定义组。
         "/agent-pet/sound" => match ctx.settings.get_settings().await {
-            Ok(settings) if crate::agent_pet::enabled_for(&settings.agent_pet, "codex") => {
+            Ok(settings) if settings.agent_pet.image_pet_active() => {
                 let pet = &settings.agent_pet;
                 match crate::agent_pet::load_sound(
                     &pet.sound_set,
@@ -889,6 +962,10 @@ fn settings_payload_value(
     }
     remove_named_keys(&mut value);
     if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "weixinDesktopSync".to_string(),
+            serde_json::to_value(crate::connect::desktop_sync::pending())?,
+        );
         object.remove("codexAppStepwiseApiKey");
         if let Some(dictation) = object.get_mut("dictation").and_then(Value::as_object_mut) {
             let configured = dictation

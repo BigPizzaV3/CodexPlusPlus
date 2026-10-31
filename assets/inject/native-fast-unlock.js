@@ -45,6 +45,19 @@
   const gates = [
     {
       kind: "ui-access",
+      // 核心结构：只锚定门控表达式、`authMethod ?? null` 与紧随的 {authMethod,hostId} 查询键，
+      // 以及后面的 serviceTierAccess 返回值；hook 的缓存槽、加载态写法变了也能认出来。
+      core: {
+        pattern: [
+          `(?<variable>${id})=(?<gate>(?<identity>${id})\\?\\.authMethod===${chatgpt}\\|\\|\\k<identity>\\?\\.authMethod===${token}(?:\\|\\|\\k<identity>\\?\\.authMethod===${literal})*),`,
+          `(?<method>${id})=\\k<identity>\\?\\.authMethod\\?\\?null,[^{}]{0,300}\\{authMethod:\\k<method>,hostId:(?<host>${id})\\}`,
+          `[\\s\\S]{0,1500}?serviceTierAccess:`,
+        ].join(""),
+        distinct: ["identity", "host"],
+        // host 取自查询键，必须在门控之前已经声明，否则补丁会碰到未初始化的绑定。
+        validate: (groups, source, index) => declaredBefore(source, index, groups.host),
+        replacement: (groups) => `(${groups.gate}||${allow(groups.host, `${groups.identity}?.authMethod`)})`,
+      },
       pattern: [
         `function ${id}\\((?<argument>${id})\\)\\{let ${id}=\\(0,${id}\\.c\\)\\(\\d+\\),(?<fallback>${id})=${id}\\(${id}\\),`,
         `(?<host>${id})=\\k<argument>\\?\\.hostId\\?\\?\\k<fallback>,(?<identity>${id})=${id}\\(\\k<host>\\),`,
@@ -59,6 +72,17 @@
     },
     {
       kind: "request-access",
+      // 核心结构：门控 + 之后同一认证变量写入 {authMethod,hostId} 查询键；host 必须是函数参数，避免引用尚未声明的变量。
+      core: {
+        pattern: [
+          `async function ${id}\\((?<params>${id}(?:,${id}){0,4})\\)\\{[^{}]{0,300}?`,
+          `if\\((?<gate>(?<auth>${id})!==${chatgpt}&&\\k<auth>!==${token}(?:&&\\k<auth>!==${literal})*)\\)return null;`,
+          `[^]{0,400}?\\.query\\.setData\\(${id},\\{authMethod:\\k<auth>,hostId:(?<host>${id})\\}`,
+        ].join(""),
+        distinct: ["auth", "host"],
+        validate: (groups) => groups.params.split(",").includes(groups.host),
+        replacement: (groups) => `${groups.gate}&&!(${allow(groups.host, groups.auth)})`,
+      },
       pattern: [
         `async function ${id}\\((?<scope>${id}),(?<host>${id})\\)\\{let (?<auth>${id})=await ${id}\\(\\k<scope>,\\k<host>\\);`,
         `if\\((?<gate>\\k<auth>!==${chatgpt}&&\\k<auth>!==${token}(?:&&\\k<auth>!==${literal})*)\\)return null;`,
@@ -69,6 +93,19 @@
     },
     {
       kind: "queue-default-access",
+      // 核心结构：readServiceTier 里「Copilot 提前返回 → 取账号 → 比较 account.type」这一段。
+      // Copilot 判定的写法历次都在变，这里不认具体写法、原样保留，但必须仍是紧挨着取账号的 `if(…Copilot…)return!1`：
+      // 选了 Copilot 的请求在这里就返回，到不了放行条件；判定整个消失时宁可不改。
+      core: {
+        pattern: [
+          `async readServiceTier\\(${id}\\)\\{[^]{0,600}?`,
+          `if\\([^;]{0,300}?Copilot[^;]{0,300}?\\)return!1;`,
+          `let (?<result>${id})=await (?<manager>${id})\\.getAccount\\(\\{priority:${critical}\\}\\);`,
+          `return (?<gate>\\k<result>\\.account\\?\\.type===${chatgpt}(?:\\|\\|\\k<result>\\.account\\?\\.type===${literal})*)\\}\\)\\},async writeServiceTier\\(`,
+        ].join(""),
+        distinct: ["manager", "result"],
+        replacement: (groups) => `(${groups.gate}||${allow(`${groups.manager}.getHostId()`, `${groups.result}.account?.type`)})`,
+      },
       variants: [
         {
           pattern: [
@@ -112,6 +149,38 @@
     },
     {
       kind: "queue-explicit-access",
+      // 核心结构：submissionOptions → executionHostId → 「serviceTier 非空才取账号」这一段。
+      // 外层函数的参数解构（settings/storage/filesystem/runtime）历次可能增减，改为单独解析。
+      core: {
+        pattern: [
+          `(?<options>${id})=${id}\\.submissionOptions[^]{0,600}?`,
+          `(?<host>${id})=\\k<options>\\?\\.executionHostId\\?\\?(?<manager>${id})\\.getHostId\\(\\);[^]{0,2400}?`,
+          `\\(async\\(\\)=>\\{if\\(\\k<options>==null\\)return [^;]{0,200};`,
+          `if\\(\\k<options>\\.serviceTier==null\\)return null;let\\{account:(?<account>${id})\\}=await \\k<manager>\\.getAccount\\(\\{priority:${critical}\\}\\);`,
+          `return (?<gate>\\k<account>\\?\\.type===${chatgpt}(?:\\|\\|\\k<account>\\?\\.type===${literal})*)\\?\\k<options>\\.serviceTier:null`,
+        ].join(""),
+        // 从最近的外层函数头解析 runtime / storage；没有 runtime 就无法保留 Copilot 判定，直接放弃。
+        resolve: (groups, source, index) => {
+          const head = source.slice(Math.max(0, index - 800), index);
+          const headers = [...head.matchAll(new RegExp(`function ${id}\\(${id},\\{(?<fields>[^{}]{0,200})\\}`, "g"))];
+          const fields = headers.at(-1)?.groups?.fields;
+          const runtime = fields && new RegExp(`(?:^|,)runtime:(${id})(?:,|$)`).exec(fields)?.[1];
+          if (!runtime) return null;
+          const storage = new RegExp(`(?:^|,)storage:(${id})(?:,|$)`).exec(fields)?.[1] ?? null;
+          return { runtime, storage };
+        },
+        distinct: ["manager", "host", "account", "runtime", "storage"],
+        // 与严格结构同样：只放行本机执行端，且所选 Copilot 不能借底层 API 身份放行。
+        // Copilot 判定兼容两代写法：新版 runtime.isUsingCopilotInference()，旧版 storage 标记 + isCopilotApiAvailable()。
+        // 两种方法都不在时按「选了 Copilot」处理（不放行），也不会因为方法缺失抛错打断提交。
+        replacement: (groups) => {
+          const legacy = groups.storage
+            ? `typeof ${groups.storage}.readGlobalState==="function"&&typeof ${groups.runtime}.isCopilotApiAvailable==="function"?await ${groups.storage}.readGlobalState(\`use-copilot-auth-if-available\`)===!0&&await ${groups.runtime}.isCopilotApiAvailable():!0`
+            : "!0";
+          const copilot = `(typeof ${groups.runtime}.isUsingCopilotInference==="function"?await ${groups.runtime}.isUsingCopilotInference():${legacy})`;
+          return `(${groups.gate}||${groups.host}===${local}&&${allow(`${groups.manager}.getHostId()`, `${groups.account}?.type`)}&&!${copilot})`;
+        },
+      },
       pattern: [
         `function ${id}\\((?<manager>${id}),\\{settings:(?<settings>${id}),storage:(?<storage>${id}),filesystem:${id},runtime:(?<runtime>${id})\\},(?<readDefault>${id}),${id},${id}\\)\\{`,
         `return async\\(${id},(?<message>${id})\\)=>\\{let (?<options>${id})=\\k<message>\\.submissionOptions,${id}=\\k<message>\\.context\\.workPermissions,${id}=${id}!=null,`,
@@ -127,8 +196,37 @@
     },
   ];
 
+  // 绑定是否在 index 之前已声明（let/const/var、逗号续声明或函数参数）；只往回看一小段，宁可放弃也不猜。
+  function declaredBefore(source, index, name) {
+    if (typeof name !== "string" || !new RegExp(`^${id}$`).test(name)) return false;
+    const head = source.slice(Math.max(0, index - 800), index);
+    const escaped = name.replace(/\$/g, "\\$");
+    return new RegExp(`(?:\\blet |\\bconst |\\bvar |[,(])${escaped}(?:=|,|\\))`).test(head);
+  }
+
+  // 每个门控先试已核对的严格结构；一处都没命中时才退到只锚定核心片段的结构。
+  // 两种策略都要求恰好命中一处，四个门控必须全部命中，否则整体放弃。
+  function gateMatches(source, definition) {
+    const collect = (variants) => variants.flatMap((variant) =>
+      [...source.matchAll(new RegExp(variant.pattern, "g"))].map((match) => ({ match, variant })));
+    let strategy = "strict";
+    let found = collect(definition.variants ?? [definition]);
+    if (!found.length && definition.core) {
+      strategy = "core";
+      found = collect([definition.core]);
+    }
+    const matches = found.map(({ match, variant }) => {
+      const extra = variant.resolve ? variant.resolve(match.groups, source, match.index) : {};
+      if (!extra) return null;
+      const groups = { ...match.groups, ...extra };
+      if (variant.validate && variant.validate(groups, source, match.index) !== true) return null;
+      return { match, variant, groups };
+    }).filter(Boolean);
+    return { strategy: matches.length ? strategy : "none", matches };
+  }
+
   function plan(source, url) {
-    const diagnostics = { url, reason: "ready", matches: {} };
+    const diagnostics = { url, reason: "ready", matches: {}, strategies: {} };
     const failed = (reason) => ({ ok: false, replacements: [], diagnostics: { ...diagnostics, reason } });
     if (typeof source !== "string" || !source || typeof url !== "string" || !url.trim()) {
       return failed("invalid-input");
@@ -136,20 +234,20 @@
     const replacements = [];
     for (const definition of gates) {
       // 同一门控的多个历史结构合并计数：任何版本只允许恰好命中一处。
-      const matches = (definition.variants ?? [definition]).flatMap((variant) =>
-        [...source.matchAll(new RegExp(variant.pattern, "g"))].map((match) => ({ match, variant })));
+      const { strategy, matches } = gateMatches(source, definition);
       diagnostics.matches[definition.kind] = matches.length;
+      diagnostics.strategies[definition.kind] = strategy;
       if (matches.length !== 1) continue;
-      const { match, variant } = matches[0];
-      const names = (variant.distinct ?? []).map((name) => match.groups[name]);
+      const { match, variant, groups } = matches[0];
+      const names = (variant.distinct ?? []).map((name) => groups[name]).filter((name) => name != null);
       if (new Set(names).size !== names.length) return failed("shadowed-bindings");
-      const gate = match.groups.gate;
+      const gate = groups.gate;
       const offset = match[0].indexOf(gate);
       if (offset < 0 || offset !== match[0].lastIndexOf(gate) || /[\r\n]/.test(gate)) {
         return failed("unsupported-shape");
       }
       const start = match.index + offset;
-      const text = variant.replacement(match.groups);
+      const text = variant.replacement(groups);
       if (/[\r\n]/.test(text)) return failed("unsupported-shape");
       replacements.push({ kind: definition.kind, start, end: start + gate.length, text });
     }
@@ -438,8 +536,9 @@
   }
 
   // 入口模块（app-initial）追加执行完成标记；启动守护和重载探针都只看这一个标记。
+  const completionMarker = 'window.__codexPlusNativeFastCompiled="v1";';
   function entryModuleSource(source, url) {
-    return `${source}\n;window.__codexPlusNativeFastCompiled="v1";window.__codexPlusNativeFastPatchState="patched";window.__codexPlusNativeFastModuleComplete?.();\n//# sourceURL=${url}\n`;
+    return `${source}\n;${completionMarker}window.__codexPlusNativeFastPatchState="patched";window.__codexPlusNativeFastModuleComplete?.();\n//# sourceURL=${url}\n`;
   }
 
   function prepareModule(source, url) {
@@ -478,7 +577,12 @@
 
   registerRewriter({
     id: "fast",
-    targets: [{ name: "app-initial", prefix: entryPrefix, unique: true }],
+    // 26.1027 的入口经 app-main 引用 app-initial；旧版仍可直接发现目标块。
+    // 文件名只是线索：按名字找不到或结构不符时，再按四个门控都会用到的字符串常量找同一块（换名、拆分入口都能认）。
+    targets: [{
+      name: "app-initial", prefix: entryPrefix, via: ["app-main-"], unique: true, entry: true,
+      anchors: ["readServiceTier", "submissionOptions", "serviceTierAccess"],
+    }],
     enabled: () => runtime.status().enabled,
     plan: (source, url) => plan(source, url),
   });
@@ -494,6 +598,30 @@
   function matchesTarget(target, url) {
     const name = moduleFileName(url);
     return name.startsWith(target.prefix) && /^[\w-]+\.js$/.test(name.slice(target.prefix.length));
+  }
+
+  function containsAnchors(target, source) {
+    return Array.isArray(target.anchors) && target.anchors.length > 0 && typeof source === "string"
+      && target.anchors.every((anchor) => source.includes(anchor));
+  }
+
+  // 在一组候选块里挑出唯一结构完整的那块。
+  function pickTarget(rewriter, target, candidates) {
+    if (!candidates.length) return { ok: false, reason: `missing-${target.name}` };
+    if (target.unique && candidates.length !== 1) return { ok: false, reason: `ambiguous-${target.name}` };
+    const results = candidates.map((item) => ({ item, result: planRewriter(rewriter, item.source, item.url, target) }));
+    const matched = results.filter(({ result }) => result.ok === true);
+    // 同名前缀的其它块必须完全不含目标结构；部分命中说明结构已变化，不能猜。
+    const partial = results.some(({ result }) => result.ok !== true && Number(result.diagnostics?.matched) > 0);
+    if (matched.length !== 1 || partial) {
+      return {
+        ok: false,
+        reason: matched.length > 1 || partial
+          ? `ambiguous-${target.name}`
+          : `${target.name}:${results[0]?.result?.diagnostics?.reason ?? "unsupported"}`,
+      };
+    }
+    return { ok: true, url: matched[0].item.url, replacements: matched[0].result.replacements };
   }
 
   function activeRewriters() {
@@ -551,7 +679,7 @@
 
   // app:// 模式在文档开始前一次性准备全部模块，因此可以跨块校验每个改写器的完整性。
   function prepareModules(modules) {
-    const diagnostics = { reason: "modules-prepared", rewriters: {}, modules: 0 };
+    const diagnostics = { reason: "modules-prepared", rewriters: {}, discovery: {}, modules: 0 };
     const failed = (reason) => ({ ok: false, modules: [], diagnostics: { ...diagnostics, reason } });
     if (!Array.isArray(modules)) return failed("invalid-input");
     const sources = modules.filter((item) => item && typeof item.url === "string" && typeof item.source === "string"
@@ -559,24 +687,26 @@
     const active = activeRewriters();
     if (!active.length) return failed("disabled");
     const accepted = new Map();
+    const entries = [];
     for (const rewriter of active) {
       const perModule = new Map();
+      const entryUrls = [];
       let reason = "patched";
       for (const target of rewriter.targets) {
-        const candidates = sources.filter((item) => matchesTarget(target, item.url));
-        if (!candidates.length) { reason = `missing-${target.name}`; break; }
-        if (target.unique && candidates.length !== 1) { reason = `ambiguous-${target.name}`; break; }
-        const results = candidates.map((item) => ({ item, result: planRewriter(rewriter, item.source, item.url, target) }));
-        const matched = results.filter(({ result }) => result.ok === true);
-        // 同名前缀的其它块必须完全不含目标结构；部分命中说明结构已变化，不能猜。
-        const partial = results.some(({ result }) => result.ok !== true && Number(result.diagnostics?.matched) > 0);
-        if (matched.length !== 1 || partial) {
-          reason = matched.length > 1 || partial
-            ? `ambiguous-${target.name}`
-            : `${target.name}:${results[0]?.result?.diagnostics?.reason ?? "unsupported"}`;
-          break;
+        let picked = pickTarget(rewriter, target, sources.filter((item) => matchesTarget(target, item.url)));
+        let discovery = "name";
+        if (!picked.ok && target.anchors) {
+          // 按名字没认出来：改在含全部锚点的其它块里找，仍然要求唯一且结构完整。
+          const byContent = sources.filter((item) => !matchesTarget(target, item.url) && containsAnchors(target, item.source));
+          const alternative = byContent.length ? pickTarget(rewriter, target, byContent) : null;
+          if (alternative?.ok) { picked = alternative; discovery = "content"; }
+          // 按名字根本没找到时，诊断报内容查找失败的原因（更接近实际情况）。
+          else if (alternative && picked.reason === `missing-${target.name}`) picked = alternative;
         }
-        perModule.set(matched[0].item.url, matched[0].result.replacements);
+        if (!picked.ok) { reason = picked.reason; break; }
+        diagnostics.discovery[`${rewriter.id}:${target.name}`] = discovery;
+        perModule.set(picked.url, picked.replacements);
+        if (target.entry) entryUrls.push(picked.url);
       }
       if (reason === "patched") {
         for (const [url, replacements] of perModule) {
@@ -585,11 +715,12 @@
         }
       }
       diagnostics.rewriters[rewriter.id] = reason;
-      if (reason === "patched") accepted.set(rewriter.id, perModule);
+      if (reason === "patched") { accepted.set(rewriter.id, perModule); entries.push(...entryUrls); }
     }
     if (!accepted.size) return failed("unsupported");
     const urls = new Set([...accepted.values()].flatMap((perModule) => [...perModule.keys()]));
-    const entry = [...urls].find((url) => moduleFileName(url).startsWith(entryPrefix));
+    // 入口 = 先登记的改写器（Fast）实际改到的入口块；文件名不再作为依据。
+    const entry = entries.find((url) => urls.has(url)) ?? [...urls].find((url) => moduleFileName(url).startsWith(entryPrefix));
     if (!entry) return failed("entry-not-patched");
     const prepared = [];
     for (const url of urls) {
@@ -639,7 +770,38 @@
         try { queue.push({ url: new URL(`./${name}`, url).href, depth: depth + 1 }); } catch { /* 忽略非法地址。 */ }
       }
     }
+    await discoverByContent(entries, active, found, fetchText);
     return found;
+  }
+
+  // 按名字没找到含锚点的块时（换名、入口拆分），从入口起不看文件名广度优先找两层。
+  // 有次数和体积上限，找到即停；只保留含锚点的块，其余读完就丢，不占内存。
+  async function discoverByContent(entries, active, found, fetchText) {
+    const pending = () => active.flatMap((rewriter) => rewriter.targets)
+      .filter((target) => target.anchors && !found.some((item) => containsAnchors(target, item.source)));
+    if (!pending().length) return;
+    const known = new Map(found.map((item) => [item.url, item.source]));
+    const queue = entries.map((url) => ({ url, depth: 0 }));
+    const seen = new Set();
+    let fetched = 0;
+    let bytes = 0;
+    while (queue.length && pending().length && fetched < 320 && bytes < 192 * 1024 * 1024) {
+      const { url, depth } = queue.shift();
+      if (seen.has(url)) continue;
+      seen.add(url);
+      let source = known.get(url);
+      if (source === undefined) {
+        fetched++;
+        try { source = await fetchText(url); } catch { source = null; }
+        if (typeof source !== "string") continue;
+        bytes += source.length;
+        if (pending().some((target) => containsAnchors(target, source))) found.push({ url, source });
+      }
+      if (depth >= 2) continue;
+      for (const match of source.matchAll(/["'`]\.\/([\w-]+\.js)["'`]/g)) {
+        try { queue.push({ url: new URL(`./${match[1]}`, url).href, depth: depth + 1 }); } catch { /* 忽略非法地址。 */ }
+      }
+    }
   }
 
   async function prepareDocumentModules(options = {}) {
@@ -669,7 +831,11 @@
   }
 
   function installModules(modules, details = {}) {
-    const entryModule = Array.isArray(modules) ? modules.find((item) => moduleFileName(item?.url).startsWith(entryPrefix)) ?? modules[0] : null;
+    // 入口按完成标记认（Fast 改到哪块，标记就在哪块）；旧调用方没有标记时退回文件名。
+    const entryModule = Array.isArray(modules)
+      ? modules.find((item) => typeof item?.patchedSource === "string" && item.patchedSource.includes(completionMarker))
+        ?? modules.find((item) => moduleFileName(item?.url).startsWith(entryPrefix)) ?? modules[0]
+      : null;
     const url = entryModule?.url;
     const patchedSource = entryModule?.patchedSource;
     const diagnostics = { url, reason: "module-preloaded", modules: Array.isArray(modules) ? modules.length : 0 };

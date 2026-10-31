@@ -4976,8 +4976,10 @@ input[type="range"]:disabled {
   display: grid;
 }
 
+/* 本地脚本行：名称 / 来源 / 开关 + 状态 / 操作（#2781 起开关与加载状态合并为一列）。
+ * 每行是独立网格，操作列给定宽：内置脚本没有删除按钮，用 auto 会让这一行的状态列错位。 */
 .table-row {
-  grid-template-columns: minmax(120px, 1.4fr) 110px 80px minmax(90px, 1fr) auto;
+  grid-template-columns: minmax(120px, 1.4fr) 110px minmax(130px, 1fr) 96px;
 }
 
 .script-row-actions {
@@ -11772,6 +11774,49 @@ select {
 .relay-tag[data-tone="aggregate"] { border-color: hsl(var(--brand-accent) / 0.4); color: hsl(var(--brand-accent)); }
 .relay-tag[data-tone="protocol"] { border-style: dashed; }
 .relay-tag[data-tone="gateway"] { border-color: hsl(var(--status-success) / 0.4); color: hsl(var(--status-success)); }
+.relay-tag[data-tone="billing"] { border-color: hsl(190 70% 55% / 0.4); color: hsl(190 70% 62%); }
+/* 中转站（sub2api / new-api）的倍率 / 余额行：在地址下面，一行放不下就换行。 */
+.relay-billing-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.relay-billing-part { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.relay-billing-part + .relay-billing-part::before { content: "·"; margin-right: 8px; opacity: 0.6; }
+.relay-billing-part[data-tone="warning"] { color: hsl(var(--status-warning)); }
+.relay-billing-part[data-tone="danger"] { color: hsl(var(--destructive)); }
+.relay-billing-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.relay-billing-refresh:hover:not(:disabled) { background: hsl(var(--muted)); opacity: 1; }
+.relay-billing-refresh:disabled { cursor: default; }
+/* 没识别出中转站时的刷新入口：不占眼，悬停卡片 / 键盘聚焦 / 正在刷新时才显示。 */
+.relay-billing-refresh.relay-billing-retry { flex-shrink: 0; color: hsl(var(--muted-foreground)); opacity: 0; }
+.relay-profile-card:hover .relay-billing-retry,
+.relay-profile-card:focus-within .relay-billing-retry,
+.gw-pool-row:hover .relay-billing-retry,
+.gw-pool-row:focus-within .relay-billing-retry,
+.relay-billing-refresh.relay-billing-retry:disabled { opacity: 0.7; }
+.relay-billing-refresh.relay-billing-retry:hover:not(:disabled) { opacity: 1; }
+.gw-billing-stale { margin-right: 4px; color: hsl(var(--status-warning)); font-size: 11px; font-style: normal; white-space: nowrap; }
+/* 网关供应商池右侧：中转站倍率 + 余额徽章，复用订阅额度徽章（.gw-quota-badge）的样式。 */
+.gw-billing-label { font-variant-numeric: tabular-nums; }
+.gw-billing-label em { margin-left: 6px; color: hsl(var(--status-warning)); font-style: normal; }
+.gw-billing-status { display: inline-flex; align-items: center; gap: 2px; }
 /* 第二行只剩地址：不再用主题色，弱化成辅助信息。 */
 .relay-management-page .relay-summary small {
   overflow: hidden;
@@ -12077,6 +12122,19 @@ select {
   font-size: 10px;
 }
 
+/* 侧栏「快速跳转」的快捷键只是提示，弱化成淡色小字，悬停时再清楚一点（#2778）。 */
+.side-search kbd {
+  padding: 0 4px;
+  border-color: hsl(var(--input) / 0.55);
+  color: hsl(var(--muted-foreground) / 0.55);
+  font-size: 9.5px;
+  line-height: 15px;
+}
+
+.side-search:hover kbd {
+  color: hsl(var(--muted-foreground));
+}
+
 .side-nav {
   flex: 1;
   min-height: 0;
@@ -12088,9 +12146,10 @@ select {
 .side-group-label {
   display: flex;
   align-items: center;
-  padding: 10px 0 2px;
+  padding: 12px 0 3px;
 }
 
+/* 一级分组标题要比下面的子项醒目：字号不小于子项（12.5px）、加粗、颜色更实（#2778）。 */
 .side-group-label > button:first-child {
   display: inline-flex;
   flex: 1;
@@ -12099,11 +12158,11 @@ select {
   padding: 2px 4px;
   border: 0;
   background: transparent;
-  color: hsl(var(--muted-foreground) / 0.75);
+  color: hsl(var(--foreground) / 0.88);
   font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   text-align: left;
   cursor: pointer;
 }
@@ -12113,8 +12172,9 @@ select {
 }
 
 .side-group-chevron {
-  width: 12px;
-  height: 12px;
+  width: 13px;
+  height: 13px;
+  color: hsl(var(--muted-foreground));
   transition: transform var(--motion-fast) var(--motion-ease);
 }
 
@@ -13301,11 +13361,11 @@ button.side-item:hover {
   font-size: 15px;
   font-weight: 600;
 }
-.shell .weixin-connect-page .weixin-connect-form :is(.weixin-path-row button, select) {
+.shell .weixin-connect-page .weixin-connect-form :is(.weixin-path-row button, .app-select-trigger) {
   height: 32px;
   min-height: 32px;
 }
-.shell .weixin-connect-page .weixin-connect-form .weixin-path-row button[title] {
+.shell .weixin-connect-page .weixin-connect-form .weixin-path-row > button[title] {
   width: 32px;
 }
 
@@ -13368,6 +13428,33 @@ button.side-item:hover {
   padding: 0 6px;
   font-size: 10.5px;
   line-height: 18px;
+}
+/* 市场排序下拉：按内容宽度，不占满工具栏（#2781） */
+.shell .user-scripts-page .app-select.script-market-sort {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 112px;
+}
+/* 本地脚本状态列：开关 + 加载状态标记 */
+.shell .user-script-row .user-script-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.shell .user-script-row .user-script-state-label {
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: default;
+}
+.shell .user-script-row .user-script-state-label[data-state="loaded"] {
+  color: hsl(var(--status-success));
+}
+.shell .user-script-row .user-script-state-label[data-state="failed"] {
+  color: hsl(var(--status-error));
+}
+.shell .user-script-row .user-script-state-label[data-state="globalOff"] {
+  color: hsl(var(--status-warning));
 }
 
 /* ── 皮肤管理：顶部压成一条细栏；主题页签按内容宽度；主题卡片缩小、一行放更多 ── */

@@ -1569,6 +1569,11 @@ impl AnthropicSseToResponsesConverter {
         self.chat.has_terminal_event()
     }
 
+    /// 本次请求的用量（请求日志 / 网关用量统计用）。
+    pub(crate) fn request_usage(&self) -> Option<crate::request_log::RequestUsage> {
+        self.chat.request_usage()
+    }
+
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
         let chat_bytes = self.bridge.push_bytes(bytes);
         if chat_bytes.is_empty() {

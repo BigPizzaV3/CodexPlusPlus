@@ -51,9 +51,11 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
   let loads = true;
   let syncs = 0;
   let renders = 0;
+  let weixinSyncs = 0;
   const context = vm.createContext({
     codexPlusSettings: () => ({ conversationView: false }),
     loadBackendSettingsState: async () => loads,
+    syncWeixinDesktopThreads: async () => { weixinSyncs += 1; },
     syncOfficialUsagePolicy: () => {}, refreshConversationView: () => {},
     syncCodexPlusTypingEffects: () => { syncs += 1; },
     renderCodexPlusMenu: () => { renders += 1; }, runScanStep: (fn: () => void) => fn(), syncCodexPlusBackendToggleButtons: () => {},
@@ -66,7 +68,9 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
   await context.syncBackendSettingsFromHeartbeat();
   assert.equal(syncs, 1);
   assert.equal(renders, 1);
+  assert.equal(weixinSyncs, 1);
   loads = false;
   await context.syncBackendSettingsFromHeartbeat();
   assert.equal(syncs, 1, "failed reads retain the current effect");
+  assert.equal(weixinSyncs, 1, "failed reads do not synchronize Weixin threads");
 });

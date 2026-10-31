@@ -32,7 +32,37 @@ fn browser_identity_change_requires_two_distinct_observations() {
 }
 
 #[tokio::test]
+async fn fake_launch_does_not_connect_to_cdp_after_successful_injection() {
+    let _state = crate::common::IsolatedTestState::new();
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir(&app_dir).unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new())));
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: listener.local_addr().unwrap().port(),
+            status_store: StatusStore::new(temp.path().join("status.json")),
+            ..LaunchOptions::default()
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    handle.wait_for_codex_exit().await.unwrap();
+}
+
+#[tokio::test]
 async fn launch_receipt_status_and_injection_follow_final_wrapper_port() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app = temp.path().join("Codex.app");
     std::fs::create_dir(&app).unwrap();
@@ -51,6 +81,7 @@ async fn launch_receipt_status_and_injection_follow_final_wrapper_port() {
             codex_home: Some(temp.path().join("codex-home")),
             sqlite_home: Some(temp.path().join("sqlite-home")),
             state_dir: Some(temp.path().join("state")),
+            replace_blocking_main_instance: false,
         },
         &hooks,
     )
@@ -697,6 +728,8 @@ fn app_paths_linux_finds_codex_app_from_search_roots_avoiding_empty_opt() {
     let chatgpt_dir = usr_lib.join("chatgpt");
     std::fs::create_dir_all(&chatgpt_dir).unwrap();
     std::fs::write(chatgpt_dir.join("ChatGPT"), "").unwrap();
+    std::fs::create_dir(chatgpt_dir.join("resources")).unwrap();
+    std::fs::write(chatgpt_dir.join("resources/app.asar"), "electron").unwrap();
 
     let roots = vec![opt, usr_lib];
     assert_eq!(
@@ -1106,6 +1139,7 @@ fn ports_non_windows_keeps_requested_even_when_busy() {
 
 #[tokio::test]
 async fn default_helper_serves_backend_status_over_http() {
+    let _state = crate::common::IsolatedTestState::new();
     let hooks = DefaultLaunchHooks::default();
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1176,6 +1210,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
 
 #[tokio::test]
 async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profile() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1240,6 +1275,7 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
 
 #[tokio::test]
 async fn native_module_reload_runs_only_after_successful_opt_in_launch_injection() {
+    let _state = crate::common::IsolatedTestState::new();
     // Fast 与输入预测共用一次启动重载；任一开启都要重载，两者都关时不碰页面。
     for (enhancements, native_fast, native_predictions, injection_ok) in [
         (true, true, false, true),
@@ -1303,6 +1339,7 @@ async fn native_module_reload_runs_only_after_successful_opt_in_launch_injection
 
 #[tokio::test]
 async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1337,6 +1374,7 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
 
 #[tokio::test]
 async fn launch_lifecycle_keeps_js_injection_with_legacy_launch_mode() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1381,6 +1419,7 @@ async fn launch_lifecycle_keeps_js_injection_with_legacy_launch_mode() {
 
 #[tokio::test]
 async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1420,6 +1459,7 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
 
 #[tokio::test]
 async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enhancements() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1485,6 +1525,7 @@ fn official_mix_responses_settings() -> BackendSettings {
 /// 而不是像过去那样一次 bind 失败就中止整个启动。
 #[tokio::test]
 async fn fixed_protocol_proxy_port_waits_for_the_previous_helper_to_release_it() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1523,6 +1564,7 @@ async fn fixed_protocol_proxy_port_waits_for_the_previous_helper_to_release_it()
 /// 等不到就得给出能照着做的说明，而不是裸的 bind 失败。
 #[tokio::test]
 async fn a_permanently_busy_protocol_proxy_port_reports_what_the_user_should_do() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1567,6 +1609,7 @@ async fn a_permanently_busy_protocol_proxy_port_reports_what_the_user_should_do(
 #[tokio::test]
 async fn a_persistently_forbidden_protocol_proxy_port_fails_after_the_wait_with_actionable_advice()
 {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1631,6 +1674,7 @@ async fn a_persistently_forbidden_protocol_proxy_port_fails_after_the_wait_with_
 /// 这不是 Hyper-V 把端口永久划走，短窗口内重试成功后应照常启动。
 #[tokio::test]
 async fn a_transient_forbidden_protocol_proxy_port_retries_until_it_can_bind() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1674,6 +1718,7 @@ async fn a_transient_forbidden_protocol_proxy_port_retries_until_it_can_bind() {
 /// 与占用/保留都无关的其他 bind 失败：错误原样冒泡，不误贴「被占用」「被保留」的标签。
 #[tokio::test]
 async fn an_unrelated_helper_bind_error_is_reported_as_is() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1721,6 +1766,7 @@ async fn an_unrelated_helper_bind_error_is_reported_as_is() {
 /// macOS 允许端口释放竞态的六秒重试；其他平台的浮动端口仍立即失败。
 #[tokio::test]
 async fn a_busy_floating_helper_port_respects_the_platform_retry_budget() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1762,6 +1808,7 @@ async fn a_busy_floating_helper_port_respects_the_platform_retry_budget() {
 
 #[tokio::test]
 async fn pending_remote_control_recovery_runs_without_an_official_mix_profile() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1793,6 +1840,7 @@ async fn pending_remote_control_recovery_runs_without_an_official_mix_profile() 
 
 #[tokio::test]
 async fn official_mix_responses_profile_keeps_proxy_when_profile_switching_is_disabled() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1836,6 +1884,7 @@ async fn official_mix_responses_profile_keeps_proxy_when_profile_switching_is_di
 
 #[tokio::test]
 async fn launch_lifecycle_does_not_apply_relay_profile_before_launching_codex() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1867,6 +1916,7 @@ async fn launch_lifecycle_does_not_apply_relay_profile_before_launching_codex() 
 
 #[tokio::test]
 async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabled() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1898,6 +1948,7 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
 
 #[tokio::test]
 async fn launch_lifecycle_tolerates_duplicate_context_parent_tables_without_applying_relay() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1950,6 +2001,7 @@ experimental_bearer_token = "sk-test"
 
 #[tokio::test]
 async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1995,6 +2047,7 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
 
 #[tokio::test]
 async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2032,6 +2085,7 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
 
 #[tokio::test]
 async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2120,6 +2174,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
 
 #[tokio::test]
 async fn launch_starts_helper_when_model_routing_is_enabled() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2188,6 +2243,7 @@ async fn launch_starts_helper_when_model_routing_is_enabled() {
 
 #[tokio::test]
 async fn launch_starts_helper_when_web_search_history_compat_is_enabled() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2233,6 +2289,7 @@ async fn launch_starts_helper_when_web_search_history_compat_is_enabled() {
 
 #[tokio::test]
 async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2282,6 +2339,7 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
 
 #[tokio::test]
 async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_injection_fails() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2320,6 +2378,7 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
 #[tokio::test]
 async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_helper_until_exit()
 {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2397,6 +2456,7 @@ async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_
 
 #[tokio::test]
 async fn standalone_quota_unlock_disabled_does_not_connect_to_cdp() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2430,6 +2490,7 @@ async fn standalone_quota_unlock_disabled_does_not_connect_to_cdp() {
 
 #[tokio::test]
 async fn isolated_quota_gate_is_not_started_when_status_save_fails() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2462,6 +2523,7 @@ async fn isolated_quota_gate_is_not_started_when_status_save_fails() {
 
 #[tokio::test]
 async fn isolated_quota_gate_stops_on_exit_monitor_error_and_explicit_restart() {
+    let _state = crate::common::IsolatedTestState::new();
     use tokio::io::AsyncReadExt;
     for (wait_error, explicit_stop) in [(false, false), (true, false), (false, true)] {
         let temp = tempfile::tempdir().unwrap();
@@ -2520,6 +2582,7 @@ async fn isolated_quota_gate_stops_on_exit_monitor_error_and_explicit_restart() 
 
 #[tokio::test]
 async fn proxy_only_packaged_launch_captures_identity_without_attempting_renderer_injection() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2564,6 +2627,7 @@ async fn proxy_only_packaged_launch_captures_identity_without_attempting_rendere
 
 #[tokio::test]
 async fn default_provider_sync_enabled_fails_instead_of_silently_skipping() {
+    let _state = crate::common::IsolatedTestState::new();
     let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new()))).with_provider_sync_unsupported();
 
     let error = hooks
@@ -2627,6 +2691,7 @@ fn launcher_macos_debug_launch_restarts_existing_non_cdp_instance() {
 
 #[tokio::test]
 async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
+    let _state = crate::common::IsolatedTestState::new();
     let error = DefaultLaunchHooks::default()
         .run_provider_sync()
         .await
@@ -2649,6 +2714,7 @@ fn paused_dream_skin_does_not_reapply_the_native_base_theme_on_launch() {
 
 #[tokio::test]
 async fn native_browser_lifecycle_uses_one_settings_snapshot_and_stops_on_success_or_failure() {
+    let _state = crate::common::IsolatedTestState::new();
     for fail in [false, true] {
         let temp = tempfile::tempdir().unwrap();
         let app_dir = temp.path().join("Codex.app");
@@ -2703,6 +2769,7 @@ async fn native_browser_lifecycle_uses_one_settings_snapshot_and_stops_on_succes
 
 #[tokio::test]
 async fn launch_exit_saves_failed_terminal_state_with_complete_error_chain() {
+    let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2730,6 +2797,7 @@ async fn launch_exit_saves_failed_terminal_state_with_complete_error_chain() {
 
 #[derive(Clone)]
 struct FakeHooks {
+    directory: Arc<tempfile::TempDir>,
     events: Arc<Mutex<Vec<String>>>,
     settings: BackendSettings,
     launch_result: CodexLaunch,
@@ -2753,6 +2821,7 @@ struct FakeHooks {
 impl FakeHooks {
     fn new(events: Arc<Mutex<Vec<String>>>) -> Self {
         Self {
+            directory: Arc::new(tempfile::tempdir().unwrap()),
             events,
             settings: BackendSettings::default(),
             launch_result: CodexLaunch::Process {
@@ -2830,6 +2899,20 @@ impl FakeHooks {
 
 #[async_trait::async_trait(?Send)]
 impl LaunchHooks for FakeHooks {
+    fn codex_home_dir(&self) -> PathBuf {
+        self.directory.path().to_path_buf()
+    }
+
+    fn state_dir(&self) -> PathBuf {
+        self.directory.path().join("state")
+    }
+
+    fn select_protocol_proxy_port(&self) -> u16 {
+        57321
+    }
+
+    async fn sanitize_local_storage_model_suffixes(&self, _debug_port: u16) {}
+
     fn resolve_app_dir(
         &self,
         app_dir: Option<&Path>,

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model.ts";
+import { matchesManagementQuery, normalizeProjectPath, sessionGroups, type ManagedSession } from "./management-model.ts";
 
 type Tree = { type: string; props: Record<string, any>; children: unknown[] };
 const source = readFileSync(new URL("./ProjectSessionPage.tsx", import.meta.url), "utf8");
@@ -162,4 +162,18 @@ test("a single project starts expanded and respects a manual collapse", () => {
   toggle.props.onClick(); tree = f.render();
   assert.equal(nodes(tree).find((node) => node.props.className === "mg-session-group-toggle")?.props["aria-expanded"], false);
   assert.equal(nodes(tree).filter((node) => node.props.className === "mg-session-row").length, 0);
+});
+
+test("Windows long-path prefixes are stripped from project headings and grouping (#2791)", () => {
+  assert.equal(normalizeProjectPath("\\\\?\\C:\\Users\\me\\Documents\\ChatGPT\\my app\\"), "C:/Users/me/Documents/ChatGPT/my app");
+  assert.equal(normalizeProjectPath("\\\\?\\UNC\\server\\share\\repo"), "//server/share/repo");
+  assert.equal(normalizeProjectPath("\\\\server\\share\\repo"), "//server/share/repo");
+  assert.equal(normalizeProjectPath("\\\\?\\E:\\"), "E:");
+  assert.equal(normalizeProjectPath("/projects/alpha/"), "/projects/alpha");
+  // 不是盘符或 UNC 的命名空间路径不知道如何还原，保持原样。
+  assert.equal(normalizeProjectPath("\\\\?\\Volume{abc}\\repo"), "//?/Volume{abc}/repo");
+  const groups = sessionGroups([session("long", "\\\\?\\E:\\Work\\new-chat"), session("plain", "E:\\Work\\new-chat\\")], "project");
+  assert.equal(groups.length, 1, "带不带前缀是同一个项目");
+  assert.equal(groups[0].path, "E:/Work/new-chat");
+  assert.equal(groups[0].label, "new-chat");
 });

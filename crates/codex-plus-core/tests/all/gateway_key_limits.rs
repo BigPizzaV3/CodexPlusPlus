@@ -95,6 +95,8 @@ fn provider(id: &str, base_url: &str, keys: &[&str], limits: KeyLimits) -> Gatew
         upstream_new: Vec::new(),
         upstream_gone: Vec::new(),
         models_checked_at_ms: 0,
+        newapi_access: None,
+        upstream_meta: Default::default(),
         relay: RelayProfile {
             id: id.to_string(),
             name: id.to_string(),
@@ -159,6 +161,7 @@ async fn send(
                 session_id: conversation,
                 thread_id: None,
                 opencode_session: None,
+                client_identity: &[],
             },
             live_request_id: None,
             auto_retry: false,

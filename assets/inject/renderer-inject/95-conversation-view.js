@@ -619,6 +619,7 @@
       }
     }
     if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
+    if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
     refreshDreamSkin();
     refreshThreadIdBadges();
     // 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。

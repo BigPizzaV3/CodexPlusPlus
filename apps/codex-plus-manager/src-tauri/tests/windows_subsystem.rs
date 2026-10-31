@@ -198,8 +198,14 @@ fn manager_second_instance_activates_existing_macos_bundle() {
 
 #[test]
 fn manager_queues_codexplusplus_provider_urls_for_confirmation_on_startup() {
-    let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("read manager main.rs");
+    // 导入链接的处理抽成了 lib.rs 里的 handle_provider_import_url，启动参数与 macOS 的 Opened 事件共用。
+    let main_rs = [
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+            .expect("read manager main.rs"),
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+            .expect("read manager lib.rs"),
+    ]
+    .concat();
 
     assert!(main_rs.contains("codexplusplus://"));
     assert!(main_rs.contains("provider_import::save_pending_provider_import_from_url"));

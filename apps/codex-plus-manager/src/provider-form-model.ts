@@ -39,9 +39,6 @@ export function removeModel(draft: ProviderDraft, model: string): ProviderDraft 
   return withModels(draft, draftModels(draft).filter((item) => item !== model));
 }
 
-/** 上游返回的模型太多（聚合站常有几百个）时让用户挑；少的直接替换。 */
-export const FETCHED_DIRECT_LIMIT = 40;
-
 export function draftKeys(draft: ProviderDraft): string[] {
   const keys = draft.keys.split(/\r?\n/);
   return keys.length ? keys : [""];

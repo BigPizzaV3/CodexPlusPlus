@@ -1,10 +1,13 @@
-#[cfg(any(windows, target_os = "macos", test))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 端口只是连接地址；停止实例必须同时持有这一代的进程和 Browser 身份。
+#[cfg(any(windows, test))]
+mod windows_process_tree;
+#[cfg(windows)]
+use windows_process_tree::CodexInstanceProcessTree;
+
+/// 端口只是连接地址；停止实例必须核验保存的进程身份，不能依赖 CDP 健康。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexInstanceIdentity {
@@ -19,7 +22,130 @@ pub struct CodexInstanceIdentity {
     pub executable: PathBuf,
 }
 
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
+fn valid_stop_identity(identity: &CodexInstanceIdentity) -> bool {
+    !identity.instance_id.trim().is_empty()
+        && identity.generation != 0
+        && !identity.browser_id.is_empty()
+        && identity.process_id != 0
+        && identity.process_id != std::process::id()
+        && identity.process_birth_id != 0
+        && identity.debug_port != 0
+        && identity.helper_port != 0
+        && identity.user_data_dir.is_absolute()
+        && identity.executable.is_absolute()
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
+fn record_stop_verification_failure(
+    identity: &CodexInstanceIdentity,
+    result: &anyhow::Result<bool>,
+) {
+    let detail = match result {
+        Ok(true) => return,
+        Ok(false) => serde_json::json!({
+            "reason": "identity_changed",
+        }),
+        Err(error) => serde_json::json!({
+            "reason": "verification_error",
+            "message": format!("{error:#}"),
+        }),
+    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "multi_worker.stop_verification_failed",
+        serde_json::json!({
+            "instanceId": identity.instance_id,
+            "generation": identity.generation,
+            "processId": identity.process_id,
+            "debugPort": identity.debug_port,
+            "detail": detail,
+        }),
+    );
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn canonical_identity_user_data(path: &Path) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(!path.as_os_str().is_empty(), "多开实例必须指定精确数据目录");
+    Ok(path.canonicalize()?)
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
+fn codex_identity_arguments_match(arguments: &[String], identity: &CodexInstanceIdentity) -> bool {
+    codex_arguments_match(arguments, &identity.user_data_dir, identity.debug_port)
+}
+
+/// 同时检查两个 loopback 地址族，不能用页面列表不可读掩盖 Browser 冲突。
+#[cfg(any(windows, test))]
+async fn check_stop_browser_identity(identity: &CodexInstanceIdentity) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_millis(750))
+        .build()?;
+    for host in ["127.0.0.1", "[::1]"] {
+        let response = client
+            .get(format!(
+                "http://{host}:{}/json/version",
+                identity.debug_port
+            ))
+            .send()
+            .await;
+        let mut response = match response {
+            Ok(response) => response
+                .error_for_status()
+                .context("CDP Browser 响应无效")?,
+            // 仅传输失联允许退回保存身份；收到可读但无效的身份仍然拒绝。
+            Err(error) if error.is_connect() || error.is_timeout() => continue,
+            Err(error) => return Err(error).context("无法核验 CDP Browser"),
+        };
+        let mut bytes = Vec::new();
+        let mut disconnected = false;
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(error) if error.is_timeout() || error.is_body() || error.is_connect() => {
+                    // 已收到完整可读身份时仍执行否决，不能用后续断连掩盖冲突。
+                    if let Ok(browser) =
+                        serde_json::from_slice::<crate::cdp::CdpBrowserIdentity>(&bytes)
+                    {
+                        verify_stop_browser(identity, &browser)?;
+                    }
+                    disconnected = true;
+                    break;
+                }
+                Err(error) => return Err(error).context("CDP Browser 响应读取失败"),
+            };
+            anyhow::ensure!(
+                bytes.len() + chunk.len() <= 64 * 1024,
+                "CDP Browser 响应过大"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        if disconnected {
+            continue;
+        }
+        let browser: crate::cdp::CdpBrowserIdentity =
+            serde_json::from_slice(&bytes).context("CDP Browser 身份格式无效")?;
+        verify_stop_browser(identity, &browser)?;
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn verify_stop_browser(
+    identity: &CodexInstanceIdentity,
+    browser: &crate::cdp::CdpBrowserIdentity,
+) -> anyhow::Result<()> {
+    crate::cdp::validate_cdp_websocket_url(&browser.web_socket_debugger_url, identity.debug_port)?;
+    anyhow::ensure!(
+        browser.browser_id()? == identity.browser_id,
+        "CDP Browser 身份冲突，拒绝停止或结束 worker"
+    );
+    Ok(())
+}
+
 pub(crate) fn codex_arguments_match(
     arguments: &[String],
     user_data_dir: &Path,
@@ -45,11 +171,10 @@ pub(crate) fn codex_arguments_match(
             ports.push(value.as_str());
         }
     }
-    if ports.len() != 1
-        || ports[0].parse::<u16>().ok() != Some(debug_port)
-        || debug_port == 0
-        || user_paths.len() != 1
-    {
+    if ports.len() != 1 || ports[0].parse::<u16>().ok() != Some(debug_port) || debug_port == 0 {
+        return false;
+    }
+    if user_paths.len() != 1 || user_data_dir.as_os_str().is_empty() {
         return false;
     }
     let Ok(expected) = user_data_dir.canonicalize() else {
@@ -152,8 +277,28 @@ fn macos_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
     Ok(args)
 }
 
-#[cfg(target_os = "macos")]
-fn macos_birth_token(pid: u32) -> Option<u64> {
+#[cfg(target_os = "linux")]
+fn linux_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
+    let content = std::fs::read(format!("/proc/{pid}/cmdline"))?;
+    let args = content
+        .split(|&byte| byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).to_string())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!args.is_empty(), "进程参数为空");
+    Ok(args)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn unix_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
+    #[cfg(target_os = "macos")]
+    { macos_process_arguments(pid) }
+    #[cfg(target_os = "linux")]
+    { linux_process_arguments(pid) }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn unix_birth_token(pid: u32) -> Option<u64> {
     let crate::watcher::ProcessInstanceState::Running {
         birth_id: Some(birth),
         ..
@@ -166,7 +311,7 @@ fn macos_birth_token(pid: u32) -> Option<u64> {
     }))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub async fn capture_codex_instance_identity(
     instance_id: &str,
     generation: u64,
@@ -184,13 +329,13 @@ pub async fn capture_codex_instance_identity(
     anyhow::ensure!(candidates.len() == 1, "无法唯一确认多开进程");
     let process_id = candidates[0];
     let process_birth_id =
-        macos_birth_token(process_id).ok_or_else(|| anyhow::anyhow!("无法确认多开进程创建身份"))?;
+        unix_birth_token(process_id).ok_or_else(|| anyhow::anyhow!("无法确认多开进程创建身份"))?;
     let identity = CodexInstanceIdentity {
         instance_id: instance_id.into(),
         generation,
         debug_port,
         helper_port,
-        user_data_dir: user_data_dir.canonicalize()?,
+        user_data_dir: canonical_identity_user_data(user_data_dir)?,
         browser_id,
         process_id,
         process_birth_id,
@@ -203,21 +348,22 @@ pub async fn capture_codex_instance_identity(
     Ok(identity)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub async fn codex_instance_identity_matches(
     identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
-    if identity.generation == 0
+    if !valid_stop_identity(identity)
+        || identity.generation == 0
         || identity.instance_id.is_empty()
         || identity.browser_id.is_empty()
         || identity.debug_port == 0
         || identity.helper_port == 0
-        || macos_birth_token(identity.process_id) != Some(identity.process_birth_id)
+        || unix_birth_token(identity.process_id) != Some(identity.process_birth_id)
     {
         return Ok(false);
     }
-    let args = macos_process_arguments(identity.process_id)?;
-    if !codex_arguments_match(&args, &identity.user_data_dir, identity.debug_port)
+    let args = unix_process_arguments(identity.process_id)?;
+    if !codex_identity_arguments_match(&args, identity)
         || args
             .first()
             .and_then(|path| Path::new(path).canonicalize().ok())
@@ -228,32 +374,37 @@ pub async fn codex_instance_identity_matches(
     }
     Ok(
         codex_browser_id(identity.debug_port).await? == identity.browser_id
-            && macos_birth_token(identity.process_id) == Some(identity.process_birth_id),
+            && unix_birth_token(identity.process_id) == Some(identity.process_birth_id),
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub async fn terminate_verified_codex_instance(
     identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
-    if !codex_instance_identity_matches(identity).await? {
-        return Ok(false);
+    let result = async {
+        if !codex_instance_identity_matches(identity).await? {
+            return Ok(false);
+        }
+        let browser = crate::cdp::browser_identity(identity.debug_port).await?;
+        if browser.browser_id()? != identity.browser_id {
+            return Ok(false);
+        }
+        // 发给这一代 Browser 的专属 WebSocket，不按 PID/端口发送 kill。
+        crate::bridge::send_cdp_command(
+            &browser.web_socket_debugger_url,
+            "Browser.close",
+            serde_json::json!({}),
+        )
+        .await?;
+        Ok(true)
     }
-    let browser = crate::cdp::browser_identity(identity.debug_port).await?;
-    if browser.browser_id()? != identity.browser_id {
-        return Ok(false);
-    }
-    // 发给这一代 Browser 的专属 WebSocket，不按 PID/端口发送 kill。
-    crate::bridge::send_cdp_command(
-        &browser.web_socket_debugger_url,
-        "Browser.close",
-        serde_json::json!({}),
-    )
-    .await?;
-    Ok(true)
+    .await;
+    record_stop_verification_failure(identity, &result);
+    result
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub async fn capture_codex_instance_identity(
     _instance_id: &str,
     _generation: u64,
@@ -264,13 +415,13 @@ pub async fn capture_codex_instance_identity(
 ) -> anyhow::Result<CodexInstanceIdentity> {
     anyhow::bail!("当前系统无法安全确认多开进程身份")
 }
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub async fn codex_instance_identity_matches(
     _identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
     Ok(false)
 }
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub async fn terminate_verified_codex_instance(
     _identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
@@ -291,7 +442,7 @@ pub async fn capture_codex_instance_identity(
         !instance_id.trim().is_empty() && generation != 0 && debug_port != 0 && helper_port != 0,
         "多开实例身份字段不完整"
     );
-    let user_data_dir = user_data_dir.canonicalize()?;
+    let user_data_dir = canonical_identity_user_data(user_data_dir)?;
     let executable = executable
         .canonicalize()
         .unwrap_or_else(|_| executable.to_path_buf());
@@ -300,10 +451,6 @@ pub async fn capture_codex_instance_identity(
         .context("无法确认多开调试端口所属进程")?;
     let arguments = crate::windows_integration::process_arguments(process.process_id)
         .context("无法读取多开进程数据目录")?;
-    anyhow::ensure!(
-        codex_arguments_match(&arguments, &user_data_dir, debug_port),
-        "多开进程参数与实例身份不一致"
-    );
     let identity = CodexInstanceIdentity {
         instance_id: instance_id.into(),
         generation,
@@ -316,6 +463,10 @@ pub async fn capture_codex_instance_identity(
         executable,
     };
     anyhow::ensure!(
+        codex_identity_arguments_match(&arguments, &identity),
+        "多开进程参数与实例身份不一致"
+    );
+    anyhow::ensure!(
         process.is_alive()? && codex_instance_identity_matches(&identity).await?,
         "多开进程在确认身份期间已改变"
     );
@@ -326,7 +477,8 @@ pub async fn capture_codex_instance_identity(
 pub async fn codex_instance_identity_matches(
     identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
-    if identity.instance_id.is_empty()
+    if !valid_stop_identity(identity)
+        || identity.instance_id.is_empty()
         || identity.generation == 0
         || identity.browser_id.is_empty()
         || identity.process_id == 0
@@ -349,7 +501,7 @@ pub async fn codex_instance_identity_matches(
     let Some(arguments) = crate::windows_integration::process_arguments(process.process_id) else {
         return Ok(false);
     };
-    if !codex_arguments_match(&arguments, &identity.user_data_dir, identity.debug_port) {
+    if !codex_identity_arguments_match(&arguments, identity) {
         return Ok(false);
     }
     Ok(
@@ -359,13 +511,50 @@ pub async fn codex_instance_identity_matches(
 }
 
 #[cfg(windows)]
+pub fn wait_for_codex_instance_exit(identity: &CodexInstanceIdentity) -> anyhow::Result<()> {
+    use anyhow::Context;
+    anyhow::ensure!(valid_stop_identity(identity), "多开实例身份字段不完整");
+    let process = match crate::windows_integration::TrackedWindowsProcess::capture(
+        identity.process_id,
+        &identity.executable,
+    ) {
+        Ok(process) => process.context("多开进程映像身份冲突")?,
+        Err(_) if crate::watcher::process_id_is_running(identity.process_id) == Some(false) => {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    anyhow::ensure!(
+        process.birth_id == identity.process_birth_id,
+        "多开进程创建身份冲突"
+    );
+    // 页面导航和 CDP 暂时失联不等于桌面退出；始终观察已核验的同一代进程。
+    while process.is_alive()? {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 pub async fn terminate_verified_codex_instance(
     identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
-    if !codex_instance_identity_matches(identity).await? {
-        return Ok(false);
+    let result = async {
+        if !valid_stop_identity(identity) {
+            return Ok(false);
+        }
+        // 捕获到退出确认全程持有句柄，CDP 只提供额外的否决证据。
+        let Some(mut tree) = CodexInstanceProcessTree::capture(identity)? else {
+            // 原代根已确认退出；不把正常退出竞争视为身份冲突或接管其他进程。
+            return Ok(true);
+        };
+        check_stop_browser_identity(identity).await?;
+        tree.stop_and_wait()?;
+        Ok(true)
     }
-    crate::windows_integration::terminate_verified_codex_instance(identity)
+    .await;
+    record_stop_verification_failure(identity, &result);
+    result
 }
 
 #[cfg(any(windows, test))]
@@ -390,6 +579,30 @@ pub(crate) fn worker_identity_matches(
         return false;
     };
     expected == actual
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn worker_image_matches(image: &Path, arguments: &[String]) -> bool {
+    let Some(argv_image) = arguments.first().map(Path::new) else {
+        return false;
+    };
+    // 相对 argv[0] 不能借用新管理器的工作目录解释为旧 worker 映像。
+    if !image.is_absolute() || !argv_image.is_absolute() {
+        return false;
+    }
+    let (Ok(actual), Ok(argument)) = (image.canonicalize(), argv_image.canonicalize()) else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        actual
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&argument.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        actual == argument
+    }
 }
 
 /// 直接从仍由父进程持有的 Child 句柄读取创建身份，避免按 PID 重新打开另一进程。
@@ -453,6 +666,38 @@ mod tests {
         ];
         assert!(codex_arguments_match(&args, &own, 9341));
         assert!(!codex_arguments_match(&args[..4], &own, 9341));
+    }
+
+    #[test]
+    fn empty_user_data_is_rejected_for_every_instance() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut identity = CodexInstanceIdentity {
+            instance_id: "main".into(),
+            generation: 1,
+            debug_port: 9341,
+            helper_port: 9342,
+            user_data_dir: PathBuf::new(),
+            browser_id: "main-browser".into(),
+            process_id: 42,
+            process_birth_id: 1,
+            executable: temp.path().join("ChatGPT.exe"),
+        };
+        let args = vec!["ChatGPT.exe".into(), "--remote-debugging-port=9341".into()];
+        assert!(!valid_stop_identity(&identity));
+        assert!(!codex_identity_arguments_match(&args, &identity));
+        assert!(!codex_arguments_match(&args, Path::new(""), 9341));
+        let mut explicit = args.clone();
+        explicit.push(format!("--user-data-dir={}", temp.path().display()));
+        assert!(!codex_identity_arguments_match(&explicit, &identity));
+        let mut duplicate = args.clone();
+        duplicate.push("--remote-debugging-port=9341".into());
+        assert!(!codex_identity_arguments_match(&duplicate, &identity));
+        identity.instance_id = "multi".into();
+        assert!(!valid_stop_identity(&identity));
+        assert!(!codex_identity_arguments_match(&args, &identity));
+        identity.user_data_dir = temp.path().canonicalize().unwrap();
+        assert!(codex_identity_arguments_match(&explicit, &identity));
+        assert!(!codex_identity_arguments_match(&args, &identity));
     }
 
     fn arguments(options: &Path) -> Vec<String> {
@@ -523,5 +768,143 @@ mod tests {
             &arguments(&missing),
             &missing
         ));
+    }
+
+    #[test]
+    fn worker_image_uses_its_own_argv_not_the_new_manager_location() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_dir = temp.path().join("old version");
+        let new_dir = temp.path().join("new version");
+        std::fs::create_dir(&old_dir).unwrap();
+        std::fs::create_dir(&new_dir).unwrap();
+        let old_worker = old_dir.join("manager.exe");
+        let new_manager = new_dir.join("manager.exe");
+        let neighbor = old_dir.join("neighbor.exe");
+        let options = temp.path().join("worker-options.json");
+        std::fs::write(&old_worker, "").unwrap();
+        std::fs::write(&new_manager, "").unwrap();
+        std::fs::write(&neighbor, "").unwrap();
+        std::fs::write(&options, "{}").unwrap();
+        let mut args = arguments(&options);
+        args[0] = old_worker.to_string_lossy().into_owned();
+        assert!(worker_identity_matches(Some(41), Some(41), &args, &options));
+        assert!(worker_image_matches(&old_worker, &args));
+        assert!(!worker_image_matches(&new_manager, &args));
+        assert!(!worker_image_matches(&neighbor, &args));
+        assert!(!worker_image_matches(
+            &old_worker,
+            &[new_manager.to_string_lossy().into_owned()]
+        ));
+        assert!(!worker_image_matches(
+            &old_worker,
+            &["old-worker.exe".into()]
+        ));
+        assert!(!worker_image_matches(&old_worker, &[]));
+    }
+
+    #[tokio::test]
+    async fn readable_browser_conflict_is_rejected_without_a_page_list() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        let server = MockServer::start().await;
+        Mock::given(path("/json/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Browser": "fixture",
+                "webSocketDebuggerUrl": format!("ws://127.0.0.1:{}/devtools/browser/neighbor",
+                    server.address().port())
+            })))
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().unwrap();
+        let identity = CodexInstanceIdentity {
+            instance_id: "own".into(),
+            generation: 1,
+            debug_port: server.address().port(),
+            helper_port: 9342,
+            user_data_dir: temp.path().into(),
+            browser_id: "own".into(),
+            process_id: 42,
+            process_birth_id: 1,
+            executable: temp.path().join("ChatGPT.exe"),
+        };
+        assert!(check_stop_browser_identity(&identity).await.is_err());
+        let mut matching = identity;
+        matching.browser_id = "neighbor".into();
+        assert!(check_stop_browser_identity(&matching).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn browser_transport_loss_allows_saved_identity_but_invalid_response_does_not() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().unwrap();
+        let mut identity = CodexInstanceIdentity {
+            instance_id: "own".into(),
+            generation: 1,
+            debug_port: server.address().port(),
+            helper_port: 9342,
+            user_data_dir: temp.path().into(),
+            browser_id: "own".into(),
+            process_id: 42,
+            process_birth_id: 1,
+            executable: temp.path().join("ChatGPT.exe"),
+        };
+        Mock::given(path("/json/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("invalid browser"))
+            .mount(&server)
+            .await;
+        assert!(check_stop_browser_identity(&identity).await.is_err());
+        drop(server);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        identity.debug_port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(check_stop_browser_identity(&identity).await.is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn worker_waits_for_its_process_without_cdp_and_rejects_another_generation() {
+        use std::os::windows::process::CommandExt;
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut child = ChildGuard(
+            std::process::Command::new(&executable)
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 2",
+                ])
+                .creation_flags(crate::windows_integration::CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap(),
+        );
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let birth = crate::windows_integration::process_birth_id(child.0.id()).unwrap();
+        let mut identity = CodexInstanceIdentity {
+            instance_id: "worker-lifetime".into(),
+            generation: 1,
+            debug_port: port.local_addr().unwrap().port(),
+            helper_port: 9342,
+            user_data_dir: home.path().into(),
+            browser_id: "saved-browser".into(),
+            process_id: child.0.id(),
+            process_birth_id: birth ^ 1,
+            executable,
+        };
+        assert!(wait_for_codex_instance_exit(&identity).is_err());
+        assert!(child.0.try_wait().unwrap().is_none());
+        identity.process_birth_id = birth;
+        wait_for_codex_instance_exit(&identity).unwrap();
+        assert!(child.0.try_wait().unwrap().is_some());
+        // 已确认退出的同一代进程允许正常收尾。
+        wait_for_codex_instance_exit(&identity).unwrap();
     }
 }

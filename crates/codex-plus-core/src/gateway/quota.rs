@@ -310,12 +310,14 @@ pub async fn refresh(relay: &RelayProfile) -> anyhow::Result<Option<ProviderQuot
     let now = now_ms();
     let quota = if crate::official_login::member_uses_official_login_transport(relay) {
         let credential = crate::official_login::resolve_official_credential(relay, false).await?;
-        let mut request = reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()?
-            .get(CHATGPT_USAGE_URL)
-            .bearer_auth(&credential.access_token)
-            .header(reqwest::header::ACCEPT, "application/json");
+        // 额度查询按这个供应商自己的代理设置发（#2775）。
+        let mut request = crate::http_client::build_for_relay(
+            reqwest::Client::builder().timeout(Duration::from_secs(20)),
+            relay,
+        )?
+        .get(CHATGPT_USAGE_URL)
+        .bearer_auth(&credential.access_token)
+        .header(reqwest::header::ACCEPT, "application/json");
         if !credential.account_id.is_empty() {
             request = request.header("chatgpt-account-id", credential.account_id.as_str());
         }

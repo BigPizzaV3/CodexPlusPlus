@@ -1,6 +1,7 @@
 use codex_plus_core::watcher::{
     MACOS_WATCHER_LABEL, build_spawn_launcher_command, build_watcher_install_plan, cdp_listening,
     codex_process_ids, disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
+    is_linux_codex_desktop_process, parse_linux_proc_stat_starttime,
     macos_launcher_process_names, macos_launch_agent_installed_at, macos_launch_agent_path_at,
     macos_launch_agent_plist, process_id_is_running, process_ids_still_running,
     remove_macos_launch_agent_at, should_recover_stale_launcher, watcher_disabled_flag,
@@ -444,4 +445,169 @@ fn find_codex_processes_ignores_unrelated_processes() {
     ];
 
     assert!(find_codex_processes_from_snapshot(&processes).is_empty());
+}
+
+#[test]
+fn linux_proc_stat_starttime_parsing_tests() {
+    // 1. 标准 /proc/<pid>/stat 输出：第 22 个字段（从最后一个 ')' 算起第 19 个 token）为 starttime
+    let stat = "66483 (cat) R 61311 66483 66483 34818 66483 4194304 215 0 0 0 0 0 0 0 22 0 1 0 8908263 9170944 428 18446744073709551615";
+    assert_eq!(
+        parse_linux_proc_stat_starttime(stat),
+        Some("8908263".to_string())
+    );
+
+    // 2. comm 中包含空格与嵌套括号的复杂真实场景（如 "(ChatGPT (Dev))"）
+    let complex_stat = "12345 (ChatGPT (Dev)) S 1000 12345 12345 0 0 4194304 100 0 0 0 10 5 0 0 20 0 5 0 12345678 1000000 500";
+    assert_eq!(
+        parse_linux_proc_stat_starttime(complex_stat),
+        Some("12345678".to_string())
+    );
+
+    // 3. 截断或非法的 stat 串，必须返回 None
+    assert_eq!(parse_linux_proc_stat_starttime(""), None);
+    assert_eq!(parse_linux_proc_stat_starttime("12345 (cat)"), None);
+    assert_eq!(parse_linux_proc_stat_starttime("12345 cat R 1 2 3"), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_find_codex_processes_live_test() {
+    let pids = codex_plus_core::watcher::find_codex_processes();
+    let p9229 = codex_plus_core::watcher::find_codex_processes_for_debug_port(9229);
+    for pid in pids.iter().chain(p9229.iter()) {
+        assert!(*pid > 0);
+    }
+}
+
+#[test]
+fn linux_codex_desktop_process_pure_function_argv_and_exe_tests() {
+    use std::path::Path;
+
+    // 1. 任意非 Codex 的 AppImage（如 Obsidian.AppImage）绝对不能被识别为桌面版
+    assert!(!is_linux_codex_desktop_process(
+        &["/home/user/Applications/Obsidian.AppImage".into()],
+        Some(Path::new("/home/user/Applications/Obsidian.AppImage")),
+        None,
+        None,
+    ));
+    assert!(!is_linux_codex_desktop_process(
+        &["Obsidian.AppImage".into()],
+        Some(Path::new("/usr/bin/Obsidian.AppImage")),
+        None,
+        None,
+    ));
+
+    // AppImage 实际运行时 exe 指向挂载目录，未挂载文件路径本身不按文件名比对
+    assert!(!is_linux_codex_desktop_process(
+        &["/home/user/Applications/ChatGPT.AppImage".into()],
+        Some(Path::new("/home/user/Applications/ChatGPT.AppImage")),
+        None,
+        None,
+    ));
+    // 挂载后的 AppImage 目录通过 expected_app_dir 比对
+    let mount_dir = Path::new("/tmp/.mount_ChatGPT1234");
+    let mount_exe = Path::new("/tmp/.mount_ChatGPT1234/ChatGPT");
+    assert!(is_linux_codex_desktop_process(
+        &["/tmp/.mount_ChatGPT1234/ChatGPT".into()],
+        Some(mount_exe),
+        Some(mount_dir),
+        None,
+    ));
+
+    // 2. 带有引号参数的命令行（直接模拟 /proc/<pid>/cmdline 的 NUL 分隔真实 argv token）
+    assert!(!is_linux_codex_desktop_process(
+        &["codex".into(), "修一下 app.asar".into()],
+        Some(Path::new("/usr/bin/codex")),
+        None,
+        None,
+    ));
+    assert!(!is_linux_codex_desktop_process(
+        &["codex".into(), "--msg=remote-debugging-port=9222".into()],
+        Some(Path::new("/usr/bin/codex")),
+        None,
+        None,
+    ));
+    assert!(!is_linux_codex_desktop_process(
+        &["/usr/lib/codex/codex".into()],
+        Some(Path::new("/usr/lib/codex/codex")),
+        None,
+        None,
+    ));
+
+    // 3. 官方桌面安装目录（白名单）
+    assert!(is_linux_codex_desktop_process(
+        &["/usr/lib/chatgpt/ChatGPT".into()],
+        Some(Path::new("/usr/lib/chatgpt/ChatGPT")),
+        None,
+        None,
+    ));
+    assert!(is_linux_codex_desktop_process(
+        &["/opt/codex/codex".into()],
+        Some(Path::new("/opt/codex/codex")),
+        None,
+        None,
+    ));
+
+    // 4. 动态解析出来的应用目录（expected_app_dir / build_codex_executable）比对
+    let custom_app_dir = Path::new("/custom/chatgpt");
+    let custom_exe = Path::new("/custom/chatgpt/ChatGPT");
+    assert!(is_linux_codex_desktop_process(
+        &["/custom/chatgpt/ChatGPT".into()],
+        Some(custom_exe),
+        Some(custom_app_dir),
+        None,
+    ));
+    // 目录不匹配且无调试端口时拒绝
+    assert!(!is_linux_codex_desktop_process(
+        &["/other/chatgpt/ChatGPT".into()],
+        Some(Path::new("/other/chatgpt/ChatGPT")),
+        Some(custom_app_dir),
+        None,
+    ));
+
+    // 5. 调试端口过滤与多开隔离：主实例 (9229) vs 多开实例 (9230)
+    let argv_9229 = vec![
+        "/usr/lib/chatgpt/ChatGPT".into(),
+        "--remote-debugging-port=9229".into(),
+    ];
+    let argv_9230 = vec![
+        "/usr/lib/chatgpt/ChatGPT".into(),
+        "--remote-debugging-port=9230".into(),
+    ];
+    let exe = Some(Path::new("/usr/lib/chatgpt/ChatGPT"));
+
+    // 不指定 expected_port 时两者均为桌面主进程
+    assert!(is_linux_codex_desktop_process(&argv_9229, exe, None, None));
+    assert!(is_linux_codex_desktop_process(&argv_9230, exe, None, None));
+
+    // 指定 expected_port 9229 时，仅匹配 argv_9229
+    assert!(is_linux_codex_desktop_process(
+        &argv_9229,
+        exe,
+        None,
+        Some(9229)
+    ));
+    assert!(!is_linux_codex_desktop_process(
+        &argv_9230,
+        exe,
+        None,
+        Some(9229)
+    ));
+
+    // 指定 expected_port 9230 时，仅匹配 argv_9230
+    assert!(!is_linux_codex_desktop_process(
+        &argv_9229,
+        exe,
+        None,
+        Some(9230)
+    ));
+    assert!(is_linux_codex_desktop_process(
+        &argv_9230,
+        exe,
+        None,
+        Some(9230)
+    ));
+
+    // 6. 空 argv 必须直接返回 false
+    assert!(!is_linux_codex_desktop_process(&[], None, None, None));
 }

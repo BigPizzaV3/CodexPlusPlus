@@ -1,7 +1,10 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, ArrowRight, BookOpen, ChevronDown, Copy, Edit3, ExternalLink, FolderOpen, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen, ChevronDown, Copy, Edit3, ExternalLink, FolderOpen, GripVertical, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
@@ -10,6 +13,7 @@ import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
 import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
 import { SkillListViewport } from "./SkillListViewport";
+import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
 import { TopbarActions } from "./TopbarActions";
 
 type Result = { status: string; message: string };
@@ -175,6 +179,13 @@ function SkillDetailDrawer({ skill, count, onClose, onOpenUrl, onOpenRepo }: { s
   const url = repoUrl(skill);
   return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}><dl className="mg-detail"><dt>{t("来源")}</dt><dd>{url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : sourceLabel(skill)}</dd><dt>{t("Skill ID")}</dt><dd>{skill.id}</dd><dt>{t("仓库路径")}</dt><dd>{skill.repoPath || "—"}</dd><dt>{t("介绍")}</dt><dd>{skill.description || t("暂无描述")}</dd>{url && <><dt>GitHub</dt><dd><button className="mg-link-button" type="button" onClick={() => onOpenUrl(url)}><ExternalLink size={13}/>{url}</button></dd></>}</dl></ManagementDrawer>;
 }
+function SortableSkillGroup({ group, disabled, children }: { group: SkillGroup<Skill>; disabled: boolean; children: (handle: ReactNode) => ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: group.key, disabled });
+  const handle = disabled ? <span className="mg-skill-drag-placeholder" aria-hidden="true" /> :
+    <button type="button" className="mg-icon-button mg-skill-drag" title={t("拖动分组排序")} aria-label={`${t("拖动分组排序")} ${group.label}`} {...attributes} {...listeners}><GripVertical size={15}/></button>;
+  return <section className="mg-skill-group" ref={setNodeRef} data-dragging={isDragging}
+    style={{ transform: CSS.Transform.toString(transform), transition }}>{children(handle)}</section>;
+}
 export function SkillsPage({ notify }: { notify: Notify }) {
   const [data, setData] = useState<SkillPayload | null>(null);
   const [tab, setTab] = useState<"discover" | "installed">("discover");
@@ -185,21 +196,21 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [customGroupNames, setCustomGroupNames] = useState<string[]>(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(SKILL_GROUP_STORAGE_KEY) || "{}");
-      return Array.isArray(raw.names) ? raw.names.filter((name: unknown): name is string => typeof name === "string" && name.trim().length > 0) : [];
-    } catch { return []; }
-  });
-  const [customGroupAssignments, setCustomGroupAssignments] = useState<Record<string, string>>(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(SKILL_GROUP_STORAGE_KEY) || "{}");
-      return raw.assignments && typeof raw.assignments === "object" ? raw.assignments : {};
-    } catch { return {}; }
-  });
+  const [storedGroups] = useState(() => readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY)));
+  const [customGroupNames, setCustomGroupNames] = useState<string[]>(storedGroups.names);
+  const [customGroupAssignments, setCustomGroupAssignments] = useState<Record<string, string>>(storedGroups.assignments);
+  const [assignmentsByIdentity, setAssignmentsByIdentity] = useState<Record<string, string>>(storedGroups.assignmentsByIdentity);
+  const [groupOrder, setGroupOrder] = useState<string[]>(storedGroups.order);
+  const [groupSortDirection, setGroupSortDirection] = useState<SkillGroupSortDirection | null>(storedGroups.sortDirection);
+  const [groupAliases] = useState<Record<string, string>>(storedGroups.aliases);
   useEffect(() => {
-    localStorage.setItem(SKILL_GROUP_STORAGE_KEY, JSON.stringify({ names: customGroupNames, assignments: customGroupAssignments }));
-  }, [customGroupNames, customGroupAssignments]);
+    const stored = readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY));
+    localStorage.setItem(SKILL_GROUP_STORAGE_KEY, JSON.stringify({ ...stored, names: customGroupNames, assignments: customGroupAssignments, assignmentsByIdentity, order: groupOrder, sortDirection: groupSortDirection }));
+  }, [customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection]);
+  const groupSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const load = async (command = "refresh_skill_catalog") => {
     setLoading(true);
     try {
@@ -301,16 +312,21 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const items = useMemo(() => (data?.skills || [])
     .filter((s) => (tab === "installed" ? s.installed : !s.installed || s.bundled))
     .filter((s) => matchesManagementQuery([s.id, s.name, s.description, s.repoKey, sourceLabel(s)], deferredQuery)), [data, tab, deferredQuery]);
+  const knownSkills = useMemo(() => data?.skills || [], [data]);
+  const knownRepositories = useMemo(() => data?.repos || [], [data]);
+  const builtinGroupLabel = t("内置");
+  const userGroupLabel = t("用户");
+  const localGroupLabel = t("本地导入");
+  const allGroups = useMemo(() => {
+    const result = groupSkills(knownSkills, knownSkills, customGroupNames, customGroupAssignments, groupOrder,
+      { builtin: builtinGroupLabel, user: userGroupLabel, source: sourceLabel }, true, groupAliases, assignmentsByIdentity, knownRepositories);
+    return groupSortDirection ? sortSkillGroupsByName(result, groupSortDirection) : result;
+  }, [knownSkills, knownRepositories, customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection, groupAliases, builtinGroupLabel, userGroupLabel, localGroupLabel]);
   const groups = useMemo(() => {
-    const grouped = new Map<string, Skill[]>();
-    for (const skill of items) {
-      const source = customGroupAssignments[skill.id] || sourceLabel(skill);
-      const list = grouped.get(source) || [];
-      list.push(skill);
-      grouped.set(source, list);
-    }
-    return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [items, customGroupAssignments]);
+    const result = groupSkills(items, knownSkills, customGroupNames, customGroupAssignments, groupOrder,
+      { builtin: builtinGroupLabel, user: userGroupLabel, source: sourceLabel }, !query.trim(), groupAliases, assignmentsByIdentity, knownRepositories);
+    return groupSortDirection ? sortSkillGroupsByName(result, groupSortDirection) : result;
+  }, [items, knownSkills, knownRepositories, customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection, groupAliases, builtinGroupLabel, userGroupLabel, localGroupLabel, query]);
   const openUrl = async (url: string) => {
     try { await invoke("open_external_url", { url }); }
     catch (e) { await notify("Skills", String(e), "failed"); }
@@ -324,20 +340,37 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     const normalized = (await appPrompt(t("重命名 Skill 分组"), { defaultValue: oldName, placeholder: t("分组名称") }))?.trim();
     if (!normalized || normalized === oldName || customGroupNames.includes(normalized)) return;
     setCustomGroupNames((old) => old.map((item) => item === oldName ? normalized : item));
-    setCustomGroupAssignments((old) => Object.fromEntries(Object.entries(old).map(([id, group]) => [id, group === oldName ? normalized : group])));
+    setCustomGroupAssignments((old) => Object.fromEntries(Object.entries(old).map(([id, group]) => {
+      const name = legacySkillCustomGroupName(group, customGroupNames);
+      return [id, name === oldName ? normalized : name ?? group];
+    })));
+    setAssignmentsByIdentity((old) => Object.fromEntries(Object.entries(old).map(([key, group]) => [key,
+      group === customSkillGroupKey(oldName) ? customSkillGroupKey(normalized) : group])));
+    setGroupOrder((old) => old.map((key) => key === customSkillGroupKey(oldName) ? customSkillGroupKey(normalized) : key));
+    setCollapsedGroups((old) => {
+      const next = new Set(old);
+      if (next.delete(customSkillGroupKey(oldName))) next.add(customSkillGroupKey(normalized));
+      return next;
+    });
   };
   const deleteCustomGroup = async (name: string) => {
     if (!(await appConfirm(tf("删除分组“{0}”？其中的 Skill 将回到来源分组。", [name]), { title: t("删除分组"), confirmText: t("删除"), danger: true }))) return;
     setCustomGroupNames((old) => old.filter((item) => item !== name));
-    setCustomGroupAssignments((old) => Object.fromEntries(Object.entries(old).filter(([, group]) => group !== name)));
+    setCustomGroupAssignments((old) => Object.fromEntries(Object.entries(old).filter(([, group]) =>
+      legacySkillCustomGroupName(group, customGroupNames) !== name)));
+    setAssignmentsByIdentity((old) => Object.fromEntries(Object.entries(old).map(([key, group]) => [key,
+      group === customSkillGroupKey(name) ? "" : group])));
+    setGroupOrder((old) => old.filter((key) => key !== customSkillGroupKey(name)));
   };
-  const assignSkillGroup = (skillId: string, group: string) => {
-    setCustomGroupAssignments((old) => {
-      const next = { ...old };
-      if (group) next[skillId] = group;
-      else delete next[skillId];
-      return next;
-    });
+  const assignSkillGroup = (skill: Skill, group: string) => {
+    setAssignmentsByIdentity((old) => ({ ...old, [skillIdentityKey(skill)]: group ? customSkillGroupKey(group) : "" }));
+  };
+  const handleGroupDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id || query.trim() || busy || loading) return;
+    const movable = new Set(groups.filter((group) => group.kind === "repo" || group.kind === "custom").map((group) => group.key));
+    if (!movable.has(String(active.id)) || !movable.has(String(over.id))) return;
+    setGroupOrder(moveSkillGroup(allGroups, String(active.id), String(over.id)));
+    setGroupSortDirection(null);
   };
   const skillAgents = (s: Skill) => s.agents ?? (s.enabled ? ["codex"] : []);
   const agentCount = (agent: McpAgentId) => (data?.skills || []).filter((s) => s.installed && skillAgents(s).includes(agent)).length;
@@ -345,7 +378,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const renderSkillRow = (s: Skill) => {
     // 只卸载 Codex++ 管理的或 Codex 目录里的；Claude / Grok 自己目录里的 Skill 不动。
     const canUninstall = s.installed && !s.bundled && (s.managed || skillAgents(s).includes("codex") || s.agents === undefined);
-    return <div className="mg-matrix-row" key={s.repoKey + ":" + s.id}>
+    const assignment = skillGroupAssignment(s, customGroupNames, customGroupAssignments, assignmentsByIdentity);
+    return <div className="mg-matrix-row" key={skillIdentityKey(s)}>
       <button type="button" className="mg-row-main" onClick={() => setDetail(s)}>
         <div><strong title={s.name || s.id}>{s.name || s.id}</strong>{s.updateAvailable ? <span className="mg-badge">{t("可更新")}</span> : null}</div>
         <small title={s.description}>{s.description || t("暂无描述")}</small>
@@ -363,10 +397,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         {s.installed && s.updateAvailable ? <Button onClick={() => void run("update_skill", { repoKey: s.repoKey, id: s.id })} disabled={busy}>{t("更新")}</Button> : null}
         <Menu>
           <MenuItem onClick={() => setDetail(s)}>{t("查看详情")}</MenuItem>
-          {customGroupNames.length ? <>
+          {!s.bundled && customGroupNames.length ? <>
             <div className="mg-menu-label">{t("分组")}</div>
-            <MenuItem checked={!customGroupAssignments[s.id]} onClick={() => assignSkillGroup(s.id, "")}>{t("按来源")}</MenuItem>
-            {customGroupNames.map((group) => <MenuItem checked={customGroupAssignments[s.id] === group} key={group} onClick={() => assignSkillGroup(s.id, group)}>{group}</MenuItem>)}
+            <MenuItem checked={!assignment} onClick={() => assignSkillGroup(s, "")}>{t("按来源")}</MenuItem>
+            {customGroupNames.map((group) => <MenuItem checked={assignment === customSkillGroupKey(group)} key={group} onClick={() => assignSkillGroup(s, group)}>{group}</MenuItem>)}
           </> : null}
           {canUninstall ? <MenuItem danger disabled={busy} onClick={() => void run("uninstall_skill", { id: s.id })}>{t("卸载")}</MenuItem> : null}
         </Menu>
@@ -392,8 +426,15 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       <span>{items.length === tabTotal ? `${tabTotal} ${t("个 Skill")}` : `${items.length} / ${tabTotal}`}</span>
       <div className="mg-push mg-toolbar-actions">
         <Button onClick={createCustomGroup}>{t("新建分组")}</Button>
+        <button type="button" className="mg-icon-button" disabled={busy || loading}
+          aria-label={`${t("按名称排序")} (${groupSortDirection === "asc" ? "A-Z" : groupSortDirection === "desc" ? "Z-A" : "A-Z / Z-A"})`}
+          title={`${t("按名称排序")} (${groupSortDirection === "asc" ? "Z-A" : "A-Z"})`} onClick={() => {
+            const direction = nextSkillGroupSortDirection(groupSortDirection);
+            setGroupOrder(sortSkillGroupKeys(allGroups, direction));
+            setGroupSortDirection(direction);
+          }}>{groupSortDirection === "asc" ? <ArrowDownAZ size={17}/> : groupSortDirection === "desc" ? <ArrowDownZA size={17}/> : <ArrowDownUp size={17}/>}</button>
         {groups.length > 1 ? <>
-          <Button onClick={() => setCollapsedGroups(new Set(groups.map(([source]) => source)))}>{t("全部折叠")}</Button>
+          <Button onClick={() => setCollapsedGroups(new Set(groups.map((group) => group.key)))}>{t("全部折叠")}</Button>
           <Button onClick={() => setCollapsedGroups(new Set())}>{t("全部展开")}</Button>
         </> : null}
       </div>
@@ -401,23 +442,26 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     <div className="mg-content">
       <div className="mg-matrix mg-agent-matrix mg-skill-matrix" aria-busy={loading}>
         <div className="mg-matrix-head"><span>{t("技能")}</span><span>{t("来源")}</span>{MCP_AGENTS.map((agent) => <AgentColumn agent={agent} count={agentCount(agent)} key={agent} title={data?.agentSkillsDirs?.[agent]} />)}<span className="mg-actions-label">{t("操作")}</span></div>
-        {!groups.length ? <div className="mg-empty"><h2>{loading ? t("正在扫描…") : t("没有匹配的 Skill")}</h2></div> : groups.map(([source, groupItems]) => {
-          const collapsed = collapsedGroups.has(source) && !query.trim();
-          const canBatch = groupItems.some((skill) => skill.installed && !skill.bundled);
-          const custom = customGroupNames.includes(source);
-          return <section className="mg-skill-group" key={source}>
+        {!groups.length ? <div className="mg-empty"><h2>{loading ? t("正在扫描…") : t("没有匹配的 Skill")}</h2></div> :
+          <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
+            <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
+          const collapsed = collapsedGroups.has(group.key) && !query.trim();
+          const canBatch = group.items.some((skill) => skill.installed && !skill.bundled);
+          const movable = group.kind === "repo" || group.kind === "custom";
+          return <SortableSkillGroup group={group} key={group.key} disabled={!movable || !!query.trim() || busy || loading}>{(handle) => <>
             <div className="mg-skill-group-row">
-              <button type="button" className="mg-group-head" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((old) => { const next = new Set(old); next.has(source) ? next.delete(source) : next.add(source); return next; })}>
-                <ChevronDown size={15} className={collapsed ? "mg-chevron-collapsed" : ""}/><strong>{source}</strong><small>{groupItems.length} {t("个 Skill")}</small>
+              {handle}
+              <button type="button" className="mg-group-head" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((old) => { const next = new Set(old); next.has(group.key) ? next.delete(group.key) : next.add(group.key); return next; })}>
+                <ChevronDown size={15} className={collapsed ? "mg-chevron-collapsed" : ""}/><strong title={group.label}>{group.label}</strong><small>{group.items.length} {t("个 Skill")}</small>
               </button>
               <div className="mg-row-actions">
-                {custom ? <><Button disabled={busy} onClick={() => renameCustomGroup(source)}>{t("重命名")}</Button><Button disabled={busy} onClick={() => deleteCustomGroup(source)}>{t("删除分组")}</Button></> : null}
-                {canBatch ? <><Button disabled={busy} onClick={() => void runBatch(groupItems, true)}>{t("全部启用")}</Button><Button disabled={busy} onClick={() => void runBatch(groupItems, false)}>{t("全部停用")}</Button></> : null}
+                {group.kind === "custom" ? <><Button disabled={busy} onClick={() => renameCustomGroup(group.label)}>{t("重命名")}</Button><Button disabled={busy} onClick={() => deleteCustomGroup(group.label)}>{t("删除分组")}</Button></> : null}
+                {canBatch ? <><Button disabled={busy} onClick={() => void runBatch(group.items, true)}>{t("全部启用")}</Button><Button disabled={busy} onClick={() => void runBatch(group.items, false)}>{t("全部停用")}</Button></> : null}
               </div>
             </div>
-            {!collapsed ? groupItems.map(renderSkillRow) : null}
-          </section>;
-        })}
+            {!collapsed ? group.items.map(renderSkillRow) : null}
+          </>}</SortableSkillGroup>;
+        })}</SortableContext></DndContext>}
       </div>
       {data?.repoErrors?.length ? <div className="mg-notice mg-warning">{data.repoErrors.map((e) => <p key={e}>{e}</p>)}</div> : null}
     </div>

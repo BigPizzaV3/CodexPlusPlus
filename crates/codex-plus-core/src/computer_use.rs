@@ -1057,16 +1057,13 @@ fn claude_desktop_running() -> bool {
     }
     #[cfg(windows)]
     {
-        // Windows 上进程名即 Claude.exe；用 tasklist 过滤，避免引入额外依赖。
-        let output = Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq Claude.exe", "/NH"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-        return match output {
-            Ok(output) => String::from_utf8_lossy(&output.stdout).contains("Claude.exe"),
-            Err(_) => false,
-        };
+        // Windows 上进程名即 Claude.exe。直接枚举进程快照，不再起 tasklist：
+        // 管理器是 GUI 子系统，起控制台程序不加 CREATE_NO_WINDOW 就会闪黑色终端，
+        // 而 Agent 页每次切到 Claude Code 都会查这里（issue #2778）。
+        // 区分大小写：小写的 claude.exe 是 Claude Code 命令行，不是桌面端（与原 tasklist 判断一致）。
+        return crate::windows_enumerate_processes()
+            .iter()
+            .any(|process| process.exe_file == "Claude.exe");
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {

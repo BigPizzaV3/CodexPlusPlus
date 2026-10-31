@@ -1,8 +1,9 @@
-/** 网关「添加 / 编辑供应商」弹窗：连接（名称、协议、地址、多个 Key）、模型（从上游获取）、价格（按公开价格表自动填）。 */
+/** 网关「添加 / 编辑供应商」弹窗：连接（名称、协议、地址、多个 Key）、模型（从上游获取后勾选）、价格（按公开价格表自动填）；
+ * 编辑时还能从这里打开上下文窗口弹窗。 */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Plus, RefreshCw, Search, Star, X } from "lucide-react";
+import { Pencil, Plus, RefreshCw, Search, Star, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
@@ -21,7 +22,6 @@ import { Avatar } from "./gateway-ui";
 import { useEscapeLayer } from "./use-escape-layer";
 import { lookupPublicPrices } from "./ProviderExtrasDialog";
 import {
-  FETCHED_DIRECT_LIMIT,
   addModel,
   defaultModel,
   draftKeys,
@@ -32,6 +32,8 @@ import {
   withKeys,
   withModels,
 } from "./provider-form-model";
+import { windowSummary } from "./ProviderWindowsDialog";
+import { filterModels, pickerOutcome, pickerRows, type PickerRow } from "./provider-sync-model";
 import "./ProviderFormDialog.css";
 
 export type ProviderFormState = { mode: "preset"; preset: GatewayPreset } | { mode: "custom" } | { mode: "edit"; entry: GatewayPoolEntry };
@@ -49,6 +51,8 @@ export function ProviderFormDialog({
   onSubmit,
   onCancel,
   agentPicks,
+  windowsEntry,
+  onEditWindows,
 }: {
   form: ProviderFormState;
   busy: string | null;
@@ -56,6 +60,10 @@ export function ProviderFormDialog({
   onCancel: () => void;
   /** 新添加时显示「给哪些 Agent 用」，编辑时不传。 */
   agentPicks?: ReactNode;
+  /** 编辑时：这个供应商的最新数据（显示已填的上下文窗口）。新添加时不传，模型还没保存，不显示窗口入口。 */
+  windowsEntry?: GatewayPoolEntry;
+  /** 编辑时打开上下文窗口弹窗，按弹窗里正在编辑的模型列表列出。 */
+  onEditWindows?: (models: string[]) => void;
 }) {
   const editing = form.mode === "edit";
   const preset = form.mode === "preset" ? form.preset : null;
@@ -64,7 +72,7 @@ export function ProviderFormDialog({
   const autoPrice = useRef(!editing && !hasPrice(draft));
   const [fetching, setFetching] = useState(false);
   const [fetchNote, setFetchNote] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
-  const [picker, setPicker] = useState<{ models: string[]; selected: Set<string>; query: string } | null>(null);
+  const [picker, setPicker] = useState<PickerState | null>(null);
   const [modelInput, setModelInput] = useState("");
   const update = (patch: Partial<ProviderDraft>) => setDraft((previous) => ({ ...previous, ...patch }));
   const validation = validateProviderDraft(draft, editing);
@@ -106,12 +114,9 @@ export function ProviderFormDialog({
       const fetched = result.models ?? [];
       if (result.status !== "ok" || !fetched.length) {
         setFetchNote({ tone: "error", text: result.message });
-      } else if (fetched.length <= FETCHED_DIRECT_LIMIT) {
-        setDraft((previous) => withModels(previous, fetched));
-        setFetchNote({ tone: "ok", text: tf("从上游获取到 {0} 个模型", [fetched.length]) });
       } else {
-        // 模型太多：让用户挑，默认勾上列表里已有的。
-        setPicker({ models: fetched, selected: new Set(models.filter((model) => fetched.includes(model))), query: "" });
+        // 不论多少都让用户挑（#2785）：已在列表里的默认勾上（取消勾选表示移除），上游新增的默认不勾。
+        setPicker({ rows: pickerRows(models, fetched), selected: new Set(models), query: "", fetched: fetched.length });
       }
     } catch (error) {
       setFetchNote({ tone: "error", text: String(error) });
@@ -122,7 +127,10 @@ export function ProviderFormDialog({
 
   const title = form.mode === "edit" ? tf("编辑 {0}", [maskAccountName(form.entry.name)]) : preset ? tf("添加 {0}", [preset.name]) : t("添加自定义供应商");
   const subtitle = preset?.apiKeyUrl ? tf("在 {0} 获取 Key", [presetHost(preset.apiKeyUrl)]) : editing ? tf("现有 {0} 个 Key", [form.entry.keyCount]) : t("任意 OpenAI / Anthropic 兼容接口");
-  const keyHint = editing ? t("留空表示不改") : preset?.defaultKey ? t("本机服务不校验 Key，保留默认值即可") : t("多个自动轮换");
+  // 编辑时已保存的 Key 只列打码后的样子，增删、替换在供应商池详情的「Key」一行里单独做（#2782）；
+  // 旧版后端没给 Key 列表时仍是「留空表示不改」的输入框。
+  const savedKeys = form.mode === "edit" ? form.entry.keys ?? [] : [];
+  const keyHint = editing ? (savedKeys.length ? t("在供应商详情的「Key」一行里单独替换、删除或添加") : t("留空表示不改")) : preset?.defaultKey ? t("本机服务不校验 Key，保留默认值即可") : t("多个自动轮换");
 
   return createPortal(
     <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
@@ -167,7 +175,12 @@ export function ProviderFormDialog({
             </label>
             <div className="pf-field">
               <span>{t("API Key")} <small>{keyHint}</small></span>
-              {keys.map((key, index) => (
+              {savedKeys.length ? (
+                <div className="pf-chips">
+                  {savedKeys.map((key) => <span className="pf-chip" key={key.id}><span className="pf-mono">{key.masked}</span></span>)}
+                </div>
+              ) : null}
+              {savedKeys.length ? null : keys.map((key, index) => (
                 <div className="pf-key" key={index}>
                   <Input
                     autoComplete="off"
@@ -188,9 +201,11 @@ export function ProviderFormDialog({
                   ) : null}
                 </div>
               ))}
-              <button className="pf-link" onClick={() => setDraft((previous) => withKeys(previous, [...draftKeys(previous), ""]))} type="button">
-                <Plus />{t("再加一个 Key")}
-              </button>
+              {savedKeys.length ? null : (
+                <button className="pf-link" onClick={() => setDraft((previous) => withKeys(previous, [...draftKeys(previous), ""]))} type="button">
+                  <Plus />{t("再加一个 Key")}
+                </button>
+              )}
             </div>
           </section>
 
@@ -202,7 +217,17 @@ export function ProviderFormDialog({
               </button>
             </h4>
             {fetchNote ? <p className="pf-note" data-tone={fetchNote.tone}>{fetchNote.text}</p> : null}
-            {picker ? <ModelPicker picker={picker} setPicker={setPicker} onApply={(chosen) => { setDraft((previous) => withModels(previous, chosen)); setPicker(null); setFetchNote({ tone: "ok", text: tf("已选 {0} 个模型", [chosen.length]) }); }} /> : null}
+            {picker ? (
+              <ModelPicker
+                onApply={(chosen, added, removed) => {
+                  setDraft((previous) => withModels(previous, chosen));
+                  setPicker(null);
+                  setFetchNote({ tone: "ok", text: tf("已选 {0} 个模型（新增 {1}，移除 {2}）", [chosen.length, added, removed]) });
+                }}
+                picker={picker}
+                setPicker={setPicker}
+              />
+            ) : null}
             <div className="pf-chips">
               {models.map((model) => (
                 <span className="pf-chip" data-default={model === chosenModel} key={model}>
@@ -230,6 +255,16 @@ export function ProviderFormDialog({
               />
             </div>
             <p className="pf-hint">{t("星标是默认模型；Agent 请求这些模型名时会路由到这个供应商。")}</p>
+            {/* 编辑时：加完模型顺手设上下文窗口（#2785），复用详情里的窗口弹窗，按这里正在编辑的模型列表列出。 */}
+            {windowsEntry && onEditWindows ? (
+              <div className="pf-windows-entry">
+                <span>{t("上下文窗口")}</span>
+                <span className="pf-windows-summary">{windowSummary({ ...windowsEntry, models }) || t("未填写，用模型自带资料")}</span>
+                <button className="pf-link" disabled={!models.length || busy !== null} onClick={() => onEditWindows(models)} type="button">
+                  <Pencil />{t("编辑上下文窗口")}
+                </button>
+              </div>
+            ) : null}
           </section>
 
           {draft.protocol === "responses" ? (
@@ -263,20 +298,22 @@ export function ProviderFormDialog({
   );
 }
 
-/** 上游模型太多时的勾选列表：可搜索，默认勾上已有的。 */
+type PickerState = { rows: PickerRow[]; selected: Set<string>; query: string; fetched: number };
+
+/** 「从上游获取」的勾选列表：先列已在列表里的（默认勾上，取消勾选表示移除；上游没有的标出来），
+ * 再列上游新增的（默认不勾）。可搜索，「全选 / 全不选」只作用于搜索结果里的新增模型。 */
 function ModelPicker({
   picker,
   setPicker,
   onApply,
 }: {
-  picker: { models: string[]; selected: Set<string>; query: string };
-  setPicker: (next: { models: string[]; selected: Set<string>; query: string } | null) => void;
-  onApply: (models: string[]) => void;
+  picker: PickerState;
+  setPicker: (next: PickerState | null) => void;
+  onApply: (models: string[], added: number, removed: number) => void;
 }) {
-  const visible = useMemo(() => {
-    const query = picker.query.trim().toLowerCase();
-    return query ? picker.models.filter((model) => model.toLowerCase().includes(query)) : picker.models;
-  }, [picker.models, picker.query]);
+  const visible = useMemo(() => filterModels(picker.rows, picker.query, (row) => row.model), [picker.rows, picker.query]);
+  const visibleNew = visible.filter((row) => !row.inList).map((row) => row.model);
+  const outcome = pickerOutcome(picker.rows, picker.selected);
   // 勾选列表也是一层：Esc 只收起它，不关掉整个表单。
   useEscapeLayer(true, () => setPicker(null));
   const toggle = (model: string) => {
@@ -284,6 +321,12 @@ function ModelPicker({
     if (selected.has(model)) selected.delete(model);
     else selected.add(model);
     setPicker({ ...picker, selected });
+  };
+  const tag = (row: PickerRow) => {
+    if (row.inList && !picker.selected.has(row.model)) return { text: t("将移除"), tone: "remove" };
+    if (row.inList && !row.upstream) return { text: t("上游没有"), tone: "gone" };
+    if (row.inList) return { text: t("已在列表"), tone: undefined };
+    return picker.selected.has(row.model) ? { text: t("将加入"), tone: "add" } : null;
   };
   return (
     <div className="pf-picker">
@@ -296,23 +339,30 @@ function ModelPicker({
             // 这个搜索框在表单里：回车只是搜索，不能提交整个表单。
             if (event.key === "Enter") event.preventDefault();
           }}
-          placeholder={tf("上游有 {0} 个模型，搜索后勾选", [picker.models.length])}
+          placeholder={tf("上游有 {0} 个模型，搜索后勾选", [picker.fetched])}
           value={picker.query}
         />
-        <button className="pf-link" onClick={() => setPicker({ ...picker, selected: new Set([...picker.selected, ...visible]) })} type="button">{t("全选当前")}</button>
+        <button className="pf-link" disabled={!visibleNew.length} onClick={() => setPicker({ ...picker, selected: new Set([...picker.selected, ...visibleNew]) })} title={t("勾选搜索结果里所有新增的模型")} type="button">{t("全选新增")}</button>
+        <button className="pf-link" disabled={!visibleNew.some((model) => picker.selected.has(model))} onClick={() => setPicker({ ...picker, selected: new Set([...picker.selected].filter((model) => !visibleNew.includes(model))) })} title={t("取消勾选搜索结果里新增的模型，已在列表里的不动")} type="button">{t("全不选新增")}</button>
       </div>
       <div className="pf-picker-list">
-        {visible.slice(0, 500).map((model) => (
-          <label key={model}>
-            <input checked={picker.selected.has(model)} onChange={() => toggle(model)} type="checkbox" />
-            <span>{model}</span>
-          </label>
-        ))}
+        {visible.slice(0, 500).map((row) => {
+          const label = tag(row);
+          return (
+            <label data-in-list={row.inList} key={row.model}>
+              <input checked={picker.selected.has(row.model)} onChange={() => toggle(row.model)} type="checkbox" />
+              <span>{row.model}</span>
+              {label ? <span className="pf-picker-tag" data-tone={label.tone}>{label.text}</span> : null}
+            </label>
+          );
+        })}
+        {!visible.length ? <span className="pf-picker-empty">{t("没有匹配的模型")}</span> : null}
       </div>
       <div className="pf-picker-foot">
+        <span className="pf-sync-summary">{tf("新增 {0} · 移除 {1}", [outcome.added, outcome.removed])}</span>
         <button className="pf-link" onClick={() => setPicker(null)} type="button">{t("取消")}</button>
-        <Button disabled={!picker.selected.size} onClick={() => onApply(picker.models.filter((model) => picker.selected.has(model)))} size="sm" type="button">
-          {tf("使用选中的 {0} 个", [picker.selected.size])}
+        <Button disabled={!outcome.models.length} onClick={() => onApply(outcome.models, outcome.added, outcome.removed)} size="sm" type="button">
+          {tf("使用选中的 {0} 个", [outcome.models.length])}
         </Button>
       </div>
     </div>

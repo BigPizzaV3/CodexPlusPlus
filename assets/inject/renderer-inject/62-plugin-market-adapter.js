@@ -43,6 +43,11 @@
   function codexPlusPluginNativeListAllowed(operation) {
     if (!codexPlusPluginNativeLocal(operation)) return false;
     if (operation.method === "installed-plugins") return true;
+    if (operation.method === "search-plugins") {
+      // 只在「全部 / OpenAI」目录的首页结果里补索引条目；个人、工作区目录与翻页不混入。
+      const scope = operation.params?.scope;
+      return (scope == null || scope === "global") && operation.params?.cursor == null;
+    }
     if (operation.method !== "list-plugins") return false;
     const kinds = operation.params?.marketplaceKinds;
     return !Array.isArray(kinds) || kinds.length === 0 || kinds.includes("local");
@@ -132,8 +137,60 @@
     return result;
   }
 
+  function codexPlusPluginNativeSearchTerms(value) {
+    return String(value || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  }
+
+  /** 返回 -1 表示不匹配；0 表示名称命中，排在描述 / 关键词命中（1）之前。 */
+  function codexPlusPluginNativeSearchRank(plugin, terms) {
+    const ui = plugin?.interface || {};
+    const title = [plugin?.name, ui.displayName].filter((value) => typeof value === "string").join(" ").toLowerCase();
+    const text = [title, ui.shortDescription, ui.developerName, ...(Array.isArray(plugin?.keywords) ? plugin.keywords : [])]
+      .filter((value) => typeof value === "string").join(" ").toLowerCase();
+    if (!terms.every((term) => text.includes(term))) return -1;
+    return terms.every((term) => title.includes(term)) ? 0 : 1;
+  }
+
+  /**
+   * 新版 Codex（app-server ≥ 0.147.0-alpha.6，API Key / ChatGPT 登录都走）的插件页搜索改成
+   * 服务端 plugin/search，不再在 plugin/list 结果里本地过滤，所以只合并列表时搜不到索引插件（#2790）。
+   * 这里按同一份索引目录本地匹配，追加到原生结果后面；原生已返回的同 id 条目不重复。
+   */
+  async function codexPlusPluginNativeSearchExtend(operation, original) {
+    const base = original && typeof original === "object" ? original : {};
+    const data = Array.isArray(base.data) ? base.data : [];
+    const terms = codexPlusPluginNativeSearchTerms(operation.params?.searchTerm);
+    const result = { ...base, data, nextCursor: base.nextCursor ?? null, __codexPlusIndexMerged: true };
+    if (terms.length === 0) return result;
+    let catalog;
+    try {
+      // 与插件页列表共用同一个目录缓存键，连续输入不会反复拉索引。
+      catalog = await codexPlusPluginNativeCatalog({ ...operation, method: "list-plugins", params: {} });
+    } catch {
+      // 索引暂不可用时保留原生搜索结果；列表页会显示具体加载错误。
+      return result;
+    }
+    const seen = new Set(data.map((entry) => entry?.plugin?.id).filter(Boolean));
+    const limit = Number.isInteger(operation.params?.limit) && operation.params.limit > 0 ? operation.params.limit : 50;
+    const matches = [];
+    for (const market of catalog.marketplaces || []) {
+      if (!codexPlusPluginNativeSource({ marketplacePath: market.path, localMarketplaceName: market.name })) continue;
+      for (const plugin of market.plugins || []) {
+        if (typeof plugin?.id !== "string" || seen.has(plugin.id)) continue;
+        const rank = codexPlusPluginNativeSearchRank(plugin, terms);
+        if (rank < 0) continue;
+        seen.add(plugin.id);
+        matches.push({ rank, entry: { marketplaceName: market.name, marketplacePath: market.path, plugin } });
+      }
+    }
+    matches.sort((left, right) => left.rank - right.rank);
+    result.data = [...data, ...matches.slice(0, limit).map((match) => match.entry)];
+    return result;
+  }
+
   async function codexPlusPluginNativeExtend(operation, original) {
     if (original?.__codexPlusIndexMerged) return original;
+    if (operation.method === "search-plugins") return await codexPlusPluginNativeSearchExtend(operation, original);
     try {
       return codexPlusPluginNativeMerge(original, await codexPlusPluginNativeCatalog(operation), operation.method);
     } catch (error) {
@@ -216,7 +273,9 @@
         result = await original({ ...(options || {}), [codexPlusPluginNativeBypass]: true });
       } catch (error) {
         if (!pluginMarketplaceRemoteAuthError(error)) throw error;
-        result = { marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: [] };
+        result = operation.method === "search-plugins"
+          ? { data: [], nextCursor: null }
+          : { marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: [] };
       }
       return await codexPlusPluginNativeExtend(operation, result);
     })();

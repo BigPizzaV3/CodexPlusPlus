@@ -538,6 +538,15 @@ fn platform_asset_rank(name: &str) -> u8 {
     if cfg!(windows) && is_windows_installer_asset(name) {
         return 0;
     }
+    if cfg!(target_os = "linux") {
+        if !is_linux_installer_asset(name) {
+            return 2;
+        }
+        if is_linux_native_arch_asset(name) {
+            return 0;
+        }
+        return 1;
+    }
     2
 }
 
@@ -567,6 +576,25 @@ fn is_macos_native_arch_asset(name: &str) -> bool {
     }
     // No arch token at all — assume it matches the current arch.
     true
+}
+
+fn is_linux_installer_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("codex")
+        && lower.contains("plus")
+        && (lower.ends_with(".deb")
+            || lower.ends_with(".appimage")
+            || lower.ends_with(".tar.gz"))
+}
+
+fn is_linux_native_arch_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let native_tokens: &[&str] = match std::env::consts::ARCH {
+        "x86_64" => &["amd64", "x86_64", "x64"],
+        "aarch64" => &["arm64", "aarch64"],
+        _ => return true,
+    };
+    native_tokens.iter().any(|token| lower.contains(token))
 }
 
 fn is_windows_installer_asset(name: &str) -> bool {
@@ -605,7 +633,16 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
             .map_err(|error| anyhow::anyhow!("打开 DMG 失败：{error}"))
     }
 
-    #[cfg(all(not(windows), not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("打开安装包失败：{error}"))
+    }
+
+    #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
     {
         let _ = path;
         anyhow::bail!("当前平台不支持启动安装包")

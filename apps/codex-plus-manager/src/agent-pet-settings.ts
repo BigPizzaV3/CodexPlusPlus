@@ -6,14 +6,20 @@
  *
  * 音效组：`duck` / `fx1` 随应用内嵌；其余 id 来自后端的可下载音效目录，用到时才下载；
  * `custom` 使用用户导入的本地音频（文件名存在 `customSoundPress` / `customSoundRelease`）。
+ *
+ * 桌宠类型 `kind`：`image` 是上面这种图库 / 自定义图片的简单桌宠；`whaleWidget` 是完整的旧版
+ * 「大肥鱼」（DeepSeek 鲸鱼用量挂件，含余额、价格 / 用量统计、泡泡与音效）。两者互斥，同一时间只显示一个；
+ * 大肥鱼的余额配置仍是顶层的 `codexAppWhaleBalance*`（见 whale-settings.ts）。
  */
 export type AgentPetAgent = "codex" | "claude" | "grok";
+export type AgentPetKind = "image" | "whaleWidget";
 /** 内嵌音效组、可下载音效组 id 或 `custom`。 */
 export type AgentPetSoundSet = string;
 export type AgentPetSoundSlot = "press" | "release";
 
 export type AgentPetSettings = {
   enabled: boolean;
+  kind: AgentPetKind;
   agents: AgentPetAgent[];
   image: string;
   customImageUrl: string;
@@ -28,6 +34,8 @@ export type AgentPetSettings = {
 /** 已经接入的 Agent。其余的在页面上显示为「即将支持」。 */
 export const AGENT_PET_SUPPORTED_AGENTS: readonly AgentPetAgent[] = ["codex"];
 export const AGENT_PET_CUSTOM_IMAGE = "custom";
+export const AGENT_PET_KIND_IMAGE: AgentPetKind = "image";
+export const AGENT_PET_KIND_WHALE_WIDGET: AgentPetKind = "whaleWidget";
 export const AGENT_PET_CUSTOM_SOUND = "custom";
 /** 随应用内嵌、不用下载的音效组。 */
 export const AGENT_PET_EMBEDDED_SOUND_SETS: readonly string[] = ["duck", "fx1"];
@@ -39,6 +47,7 @@ const AGENT_PET_DEFAULT_VOLUME = 0.6;
 export function defaultAgentPetSettings(): AgentPetSettings {
   return {
     enabled: false,
+    kind: AGENT_PET_KIND_IMAGE,
     agents: ["codex"],
     image: "whale",
     customImageUrl: "",
@@ -55,12 +64,15 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 
 /**
  * 规范化。`legacyWidgetEnabled` 是旧版「Codex 用量挂件」的开关：
- * 没有保存过桌宠设置、但旧挂件开着的用户，升级后桌宠默认保持开启。
+ * 没有保存过桌宠设置、但旧挂件开着的用户，升级后桌宠开启并选中大肥鱼（与原来看到的一致）；
+ * 已经有桌宠设置的用户保持现状，没写 `kind` 的按简单桌宠处理。
  */
 export function normalizeAgentPetSettings(raw: unknown, legacyWidgetEnabled = false): AgentPetSettings {
   const defaults = defaultAgentPetSettings();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { ...defaults, enabled: legacyWidgetEnabled === true };
+    return legacyWidgetEnabled === true
+      ? { ...defaults, enabled: true, kind: AGENT_PET_KIND_WHALE_WIDGET }
+      : defaults;
   }
   const value = raw as Partial<Record<keyof AgentPetSettings, unknown>>;
   const agents = Array.isArray(value.agents)
@@ -75,6 +87,8 @@ export function normalizeAgentPetSettings(raw: unknown, legacyWidgetEnabled = fa
   const image = typeof value.image === "string" && value.image.trim() ? value.image.trim() : defaults.image;
   return {
     enabled: value.enabled === true,
+    // 未知类型回落到简单桌宠，与后端一致。
+    kind: typeof value.kind === "string" && value.kind.trim() === AGENT_PET_KIND_WHALE_WIDGET ? AGENT_PET_KIND_WHALE_WIDGET : AGENT_PET_KIND_IMAGE,
     agents: Array.from(new Set(agents)),
     image,
     customImageUrl: typeof value.customImageUrl === "string" ? value.customImageUrl.trim() : "",
@@ -90,8 +104,19 @@ export function normalizeAgentPetSettings(raw: unknown, legacyWidgetEnabled = fa
 
 export type AgentPetIssue = "customUrl";
 
-/** 只有选了自定义图片时才校验地址：必须是不带账号信息的 https 地址。 */
+/** Codex 里是否显示大肥鱼：桌宠开启、勾选了 Codex，且类型选的是大肥鱼。 */
+export function isAgentPetWhaleWidgetActive(settings: AgentPetSettings): boolean {
+  return settings.enabled && settings.kind === AGENT_PET_KIND_WHALE_WIDGET && settings.agents.includes("codex");
+}
+
+/** Codex 里是否显示简单桌宠；选了大肥鱼时为 false（两者互斥）。 */
+export function isAgentPetImagePetActive(settings: AgentPetSettings): boolean {
+  return settings.enabled && settings.kind !== AGENT_PET_KIND_WHALE_WIDGET && settings.agents.includes("codex");
+}
+
+/** 只有简单桌宠选了自定义图片时才校验地址：必须是不带账号信息的 https 地址。 */
 export function agentPetSettingsIssue(settings: AgentPetSettings): AgentPetIssue | null {
+  if (settings.kind === AGENT_PET_KIND_WHALE_WIDGET) return null;
   if (settings.image !== AGENT_PET_CUSTOM_IMAGE) return null;
   return isAgentPetImageUrl(settings.customImageUrl) ? null : "customUrl";
 }

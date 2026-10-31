@@ -4,16 +4,24 @@
  * 图片不随应用打包：内置图库只保存 id，预览和 Codex 里显示的图片都由后端运行时联网下载、
  * 缓存在本机；也可以填一个 https 图片地址。目前只有 Codex 能显示桌宠。
  * 音效同理：两组内嵌，其余音效组用到时才下载；也可以导入本地音频作为自定义按压 / 松开音。
+ *
+ * 桌宠类型二选一：上面这种「简单桌宠」，或完整的旧版「大肥鱼」（DeepSeek 鲸鱼用量挂件，
+ * 含余额、价格 / 用量统计、泡泡编辑器、音效库与提醒）。两者互斥，同一时间只显示一个。
+ * 大肥鱼的角色与素材随启动器内嵌（上游原样素材），它自己的配置在 Codex 里点角色旁的菜单完成；
+ * 这里只放旧版增强页里的「API 余额」配置。
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, FileAudio, ImageOff, Link2, Loader2, PawPrint, RefreshCw, Volume2, X } from "lucide-react";
+import { Check, FileAudio, Fish, ImageOff, Image as ImageIcon, Link2, Loader2, PawPrint, RefreshCw, Volume2, X } from "lucide-react";
+import { AppSelect } from "./AppSelect";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { PageHeader } from "./ManagementPages";
 import {
   AGENT_PET_CUSTOM_IMAGE,
   AGENT_PET_CUSTOM_SOUND,
+  AGENT_PET_KIND_IMAGE,
+  AGENT_PET_KIND_WHALE_WIDGET,
   AGENT_PET_EMBEDDED_SOUND_SETS,
   AGENT_PET_SIZE_MAX,
   AGENT_PET_SIZE_MIN,
@@ -22,10 +30,12 @@ import {
   agentPetSoundKey,
   isAgentPetImageUrl,
   type AgentPetAgent,
+  type AgentPetKind,
   type AgentPetSettings,
   type AgentPetSoundSlot,
 } from "./agent-pet-settings";
 import { AgentPetSoundPlayer, type AgentPetSoundSources } from "./agent-pet-sound";
+import type { WhaleBalanceProtocol, WhaleBalanceSettings } from "./whale-settings";
 import { t, tf } from "./i18n";
 import "./AgentPetPage.css";
 
@@ -70,13 +80,29 @@ async function loadImage(image: string, customImageUrl = ""): Promise<PreviewSta
   }
 }
 
-export function AgentPetPage({ settings, onChange, autoSave }: {
+export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWhaleBalanceChange, whaleBalanceIssue = null }: {
   settings: AgentPetSettings;
   onChange: (next: AgentPetSettings) => void;
   /** 自动保存状态，由主界面提供（与其他设置页同一套保存逻辑）。 */
   autoSave: ReactNode;
+  /** 大肥鱼的余额配置（设置里顶层的 `codexAppWhaleBalance*`）。 */
+  whaleBalance: WhaleBalanceSettings;
+  onWhaleBalanceChange: (patch: Partial<WhaleBalanceSettings>) => void;
+  /** 余额配置的校验提示，由主界面按保存时同一规则算出。 */
+  whaleBalanceIssue?: string | null;
 }) {
   const update = (patch: Partial<AgentPetSettings>) => onChange({ ...settings, ...patch });
+  const isWhale = settings.kind === AGENT_PET_KIND_WHALE_WIDGET;
+  // 大肥鱼的角色图随应用内嵌，由后端交给页面预览。
+  const [whaleImage, setWhaleImage] = useState<PreviewState | null>(null);
+  useEffect(() => {
+    if (!isWhale || whaleImage) return;
+    setWhaleImage({ state: "loading" });
+    void invoke<string>("agent_pet_whale_image")
+      .then((image) => setWhaleImage(image ? { state: "ok", image } : { state: "failed", message: t("大肥鱼预览暂不可用") }))
+      .catch((error) => setWhaleImage({ state: "failed", message: errorText(error) }));
+  }, [isWhale, whaleImage]);
+  const selectKind = (kind: AgentPetKind) => update({ kind });
   const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
   const [catalogError, setCatalogError] = useState("");
   const [previews, setPreviews] = useState<Record<string, PreviewState>>({});
@@ -292,6 +318,38 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
           </section>
 
           <section className="feature-group">
+            <div className="feature-group-head">
+              <strong>{t("桌宠类型")}</strong>
+              <small>{t("二选一，同一时间只显示一个。")}</small>
+            </div>
+            <div className="agent-pet-kinds" role="radiogroup" aria-label={t("桌宠类型")}>
+              {([
+                [AGENT_PET_KIND_IMAGE, <ImageIcon key="icon" className="h-5 w-5" />, t("简单桌宠"), t("从图库挑一张图或用自己的图片，点一下压扁回弹，带按压音效。")],
+                [AGENT_PET_KIND_WHALE_WIDGET, <Fish key="icon" className="h-5 w-5" />, t("大肥鱼（DeepSeek 鲸鱼）"), t("原版鲸鱼用量挂件：余额、价格与用量统计、泡泡编辑器、音效库和提醒。")],
+              ] as Array<[AgentPetKind, ReactNode, string, string]>).map(([kind, icon, title, detail]) => (
+                <button
+                  key={kind}
+                  type="button"
+                  role="radio"
+                  aria-checked={settings.kind === kind}
+                  className={`agent-pet-kind ${settings.kind === kind ? "is-selected" : ""}`}
+                  onClick={() => selectKind(kind)}
+                >
+                  <span className="agent-pet-kind-icon">{icon}</span>
+                  <span className="agent-pet-kind-text">
+                    <strong>{title}</strong>
+                    <small>{detail}</small>
+                  </span>
+                  {settings.kind === kind ? <Check className="h-4 w-4" /> : null}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {isWhale ? (
+            <WhaleWidgetSection balance={whaleBalance} onChange={onWhaleBalanceChange} issue={whaleBalanceIssue} />
+          ) : <>
+          <section className="feature-group">
             <div className="feature-group-head agent-pet-group-head">
               <div>
                 <strong>{t("形象")}</strong>
@@ -475,8 +533,24 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
               </div>
             </div>
           </section>
+          </>}
         </div>
 
+        {isWhale ? (
+          <aside className="agent-pet-preview" aria-label={t("预览")}>
+            <span className="agent-pet-preview-label">{t("预览")}</span>
+            <div className="agent-pet-stage">
+              {whaleImage?.state === "ok" ? (
+                <img className="agent-pet-whale-figure" src={whaleImage.image} alt={t("大肥鱼（DeepSeek 鲸鱼）")} draggable={false} />
+              ) : whaleImage?.state === "failed" ? (
+                <span className="agent-pet-muted"><ImageOff className="h-5 w-5" /> {whaleImage.message}</span>
+              ) : (
+                <Loader2 className="h-6 w-6 animate-spin" />
+              )}
+            </div>
+            <small className="agent-pet-muted">{t("在 Codex 里可以拖动、缩放它，点角色旁的菜单配置泡泡、音效、提醒和用量统计。")}</small>
+          </aside>
+        ) : (
         <aside className="agent-pet-preview" aria-label={t("预览")}>
           <span className="agent-pet-preview-label">{t("预览 · 按住试试")}</span>
           <div className="agent-pet-stage">
@@ -490,8 +564,69 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
           </div>
           <small className="agent-pet-muted">{t("在 Codex 里可以拖动它换位置，位置会记住。")}</small>
         </aside>
+        )}
       </div>
     </div>
+  );
+}
+
+/**
+ * 大肥鱼的设置：旧版增强页「Codex 用量挂件 → API 余额（可选）」原样搬到这里。
+ * 余额查询复用 Codex++ 当前供应商的密钥，只在本机后端使用。
+ */
+function WhaleWidgetSection({ balance, onChange, issue }: {
+  balance: WhaleBalanceSettings;
+  onChange: (patch: Partial<WhaleBalanceSettings>) => void;
+  issue: string | null;
+}) {
+  return (
+    <section className="feature-group agent-pet-whale">
+      <div className="feature-group-head">
+        <strong>{t("API 余额（可选）")}</strong>
+        <small>{t("跟随 Codex++ 当前供应商查询余额；Codex 订阅额度和本地 token 无需配置此项。")}</small>
+      </div>
+      <div className="agent-pet-whale-fields">
+        <label className="agent-pet-whale-field">
+          <span>{t("余额查询方式")}</span>
+          <AppSelect<WhaleBalanceProtocol>
+            value={balance.codexAppWhaleBalanceProtocol}
+            ariaLabel={t("余额查询方式")}
+            onChange={(value) => onChange({ codexAppWhaleBalanceProtocol: value })}
+            options={[
+              { value: "auto", label: t("自动识别已支持的接口") },
+              { value: "off", label: t("仅显示 Codex 用量") },
+              { value: "custom", label: t("自定义供应商余额接口") },
+            ]}
+          />
+        </label>
+        {balance.codexAppWhaleBalanceProtocol === "custom" ? <>
+          <small className="agent-pet-muted">{t("按供应商文档填写 GET 接口和返回字段，复用当前供应商的 API Key。币种和倍率应与供应商账单一致。")}</small>
+          <label className="agent-pet-whale-field">
+            <span>{t("余额接口路径")}</span>
+            <Input value={balance.codexAppWhaleBalancePath} placeholder="/api/balance" onChange={(event) => onChange({ codexAppWhaleBalancePath: event.currentTarget.value })} />
+          </label>
+          <label className="agent-pet-whale-field">
+            <span>{t("余额字段路径")}</span>
+            <Input value={balance.codexAppWhaleBalanceField} placeholder="data.balance" onChange={(event) => onChange({ codexAppWhaleBalanceField: event.currentTarget.value })} />
+          </label>
+          <div className="agent-pet-whale-row">
+            <label className="agent-pet-whale-field">
+              <span>{t("余额币种")}</span>
+              <Input maxLength={3} value={balance.codexAppWhaleBalanceCurrency} placeholder="USD" onChange={(event) => onChange({ codexAppWhaleBalanceCurrency: event.currentTarget.value.toUpperCase() })} />
+            </label>
+            <label className="agent-pet-whale-field">
+              <span>{t("金额倍率")}</span>
+              <Input type="number" step="any" min={0} value={Number.isFinite(balance.codexAppWhaleBalanceScale) ? balance.codexAppWhaleBalanceScale : ""} onChange={(event) => onChange({ codexAppWhaleBalanceScale: event.currentTarget.valueAsNumber })} />
+            </label>
+          </div>
+          <small className="agent-pet-muted">{t("显示金额 = 接口数值 × 倍率；例如接口返回分时，倍率填 0.01。")}</small>
+          {issue ? <p className="agent-pet-error" role="alert">{issue}</p> : null}
+        </> : null}
+      </div>
+      <small className="agent-pet-muted agent-pet-credit">
+        {t("鲸鱼角色、完整界面引擎及内置音效 / 动图来自 MeteorNOX/DeepSeek-Balance-Whale-Widget（代码 MIT；素材按上游声明原样提供，不重新授权，也不声明为本项目原创）。")}
+      </small>
+    </section>
   );
 }
 

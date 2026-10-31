@@ -600,6 +600,8 @@
     if (method === "plugin/install") return "install-plugin";
     if (method === "plugin/read") return "read-plugin";
     if (method === "plugin/installed") return "installed-plugins";
+    // 新版 app-server 的服务端插件搜索（#2790）：插件页输入关键词后不再本地过滤 plugin/list。
+    if (method === "plugin/search") return "search-plugins";
     if (method === "plugin/uninstall") return "uninstall-plugin";
     return String(method || "");
   }

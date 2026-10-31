@@ -1,0 +1,694 @@
+{
+  "source": {
+    "repository": "https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget",
+    "commit": "fce34e3abd1fe8b616e287b9864305c7f0be81a0",
+    "path": "lib/index.js",
+    "symbol": "API_TEMPLATES"
+  },
+  "templates": {
+    "deepseek": {
+      "name": "DeepSeek",
+      "currency": "CNY",
+      "keyRef": "DEEPSEEK_API_KEY",
+      "builtin": true,
+      "balance": {
+        "url": "https://api.deepseek.com/user/balance",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": "balance_infos[0].total_balance"
+        }
+      }
+    },
+    "openrouter": {
+      "name": "OpenRouter",
+      "currency": "USD",
+      "keyRef": "OPENROUTER_API_KEY",
+      "balance": {
+        "url": "https://openrouter.ai/api/v1/credits",
+        "auth": "Bearer {key}",
+        "json": {
+          "total": "data.total_credits",
+          "used": "data.total_usage"
+        }
+      }
+    },
+    "siliconflow_cn": {
+      "name": "硅基流动（CN）",
+      "currency": "CNY",
+      "keyRef": "SILICONFLOW_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方已下线 /user/info 余额接口（2026-08-14 起停止服务；公告称后续会提供替代 API，暂未上线）→ 余额显示「—」，今日已用按会话事件估算；「测试连通性」用 /v1/models 验证 key",
+      "matchIds": [
+        "siliconflow",
+        "Qwen",
+        "deepseek-ai"
+      ],
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      },
+      "probeUrl": "https://api.siliconflow.cn/v1/models"
+    },
+    "siliconflow_en": {
+      "name": "硅基流动（EN）",
+      "currency": "USD",
+      "keyRef": "SILICONFLOW_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "同国内站：/user/info 余额接口已停止服务（国际站文档尚未同步）→ 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "siliconflow",
+        "Qwen",
+        "deepseek-ai"
+      ],
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      },
+      "probeUrl": "https://api.siliconflow.com/v1/models"
+    },
+    "moonshot": {
+      "name": "Kimi / Moonshot（CN）",
+      "currency": "CNY",
+      "keyRef": "MOONSHOT_API_KEY",
+      "matchIds": [
+        "moonshot",
+        "kimi"
+      ],
+      "balance": {
+        "url": "https://api.moonshot.cn/v1/users/me/balance",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": "data.available_balance"
+        }
+      },
+      "probeUrl": "https://api.moonshot.cn/v1/models"
+    },
+    "moonshot_intl": {
+      "name": "Kimi / Moonshot（国际）",
+      "currency": "USD",
+      "keyRef": "MOONSHOT_INTL_API_KEY",
+      "balance": {
+        "url": "https://api.moonshot.ai/v1/users/me/balance",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": "data.available_balance"
+        }
+      },
+      "probeUrl": "https://api.moonshot.ai/v1/models"
+    },
+    "stepfun": {
+      "name": "阶跃星辰 StepFun",
+      "currency": "CNY",
+      "keyRef": "STEPFUN_API_KEY",
+      "matchIds": [
+        "stepfun",
+        "step-"
+      ],
+      "balance": {
+        "url": "https://api.stepfun.com/v1/accounts",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": "balance"
+        }
+      }
+    },
+    "novita": {
+      "name": "Novita AI",
+      "currency": "USD",
+      "keyRef": "NOVITA_API_KEY",
+      "matchIds": [
+        "novita"
+      ],
+      "balance": {
+        "url": "https://api.novita.ai/v3/user/balance",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": "availableBalance",
+          "scale": 0.0001
+        }
+      }
+    },
+    "volcengine_ark": {
+      "name": "火山方舟 Ark",
+      "currency": "CNY",
+      "keyRef": "ARK_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "余额/用量需火山引擎 AK/SK 签名的 OpenAPI（或控制台）→ 余额「—」，今日已用按会话事件估算；探活用 /api/v3/models（实测可用）",
+      "matchIds": [
+        "doubao",
+        "ep-"
+      ],
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      },
+      "probeUrl": "https://ark.cn-beijing.volces.com/api/v3/models"
+    },
+    "zhipu_glm_coding": {
+      "name": "智谱 GLM Coding Plan（订阅）",
+      "currency": "CNY",
+      "keyRef": "ZHIPU_API_KEY",
+      "kind": "quota",
+      "quota": {
+        "url": "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+        "auth": "{key}",
+        "json": {
+          "level": "data.level",
+          "windows": [
+            {
+              "key": "rolling",
+              "label": "5h",
+              "pick": {
+                "list": "data.limits",
+                "types": [
+                  "TOKENS_LIMIT",
+                  "CREDIT_LIMIT"
+                ],
+                "unit": 3
+              },
+              "percent": "percentage",
+              "resetAt": "nextResetTime"
+            },
+            {
+              "key": "weekly",
+              "label": "周",
+              "pick": {
+                "list": "data.limits",
+                "types": [
+                  "TOKENS_LIMIT",
+                  "CREDIT_LIMIT"
+                ],
+                "unit": 6
+              },
+              "percent": "percentage",
+              "resetAt": "nextResetTime"
+            }
+          ]
+        }
+      },
+      "probeUrl": "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+    },
+    "kimi_coding": {
+      "name": "Kimi Coding（订阅）",
+      "currency": "CNY",
+      "keyRef": "KIMI_CODING_KEY",
+      "kind": "quota",
+      "quota": {
+        "url": "https://api.kimi.com/coding/v1/usages",
+        "auth": "Bearer {key}",
+        "json": {
+          "remain": "usage.remaining",
+          "total": "usage.limit",
+          "resetAt": "usage.resetTime"
+        }
+      },
+      "probeUrl": "https://api.kimi.com/coding/v1/usages"
+    },
+    "minimax_coding": {
+      "name": "MiniMax Coding（订阅）",
+      "currency": "CNY",
+      "keyRef": "MINIMAX_API_KEY",
+      "kind": "quota",
+      "quota": {
+        "url": "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+        "auth": "Bearer {key}",
+        "json": {
+          "remainPct": "model_remains[0].current_interval_remaining_percent",
+          "weeklyRemainPct": "model_remains[0].current_weekly_remaining_percent",
+          "resetAtMs": "model_remains[0].end_time"
+        }
+      },
+      "probeUrl": "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
+    },
+    "opencode_go": {
+      "name": "OpenCode Go（订阅）",
+      "currency": "USD",
+      "keyRef": "OPENCODE_GO_API_KEY",
+      "kind": "quota",
+      "quota": {
+        "url": "https://opencode.ai/zen/go/v1/usage",
+        "auth": "Bearer {key}",
+        "json": {
+          "windows": [
+            {
+              "key": "rolling",
+              "label": "5h",
+              "percent": "usage.rolling.percent",
+              "resetAt": "usage.rolling.resetsAt"
+            },
+            {
+              "key": "weekly",
+              "label": "周",
+              "percent": "usage.weekly.percent",
+              "resetAt": "usage.weekly.resetsAt"
+            },
+            {
+              "key": "monthly",
+              "label": "月",
+              "percent": "usage.monthly.percent",
+              "resetAt": "usage.monthly.resetsAt"
+            }
+          ]
+        }
+      },
+      "probeUrl": "https://opencode.ai/zen/go/v1/usage"
+    },
+    "openai_compat": {
+      "name": "OpenAI 兼容中转站",
+      "currency": "USD",
+      "keyRef": "CUSTOM_API_KEY",
+      "needsBaseUrl": true,
+      "balance": {
+        "url": "{base}/v1/dashboard/billing/subscription",
+        "auth": "Bearer {key}",
+        "json": {
+          "total": "hard_limit_usd"
+        },
+        "usage": {
+          "url": "{base}/v1/dashboard/billing/usage",
+          "auth": "Bearer {key}",
+          "json": {
+            "used": "total_usage",
+            "scale": 0.01
+          }
+        }
+      }
+    },
+    "custom": {
+      "name": "自定义 HTTP",
+      "currency": "CNY",
+      "keyRef": "CUSTOM_API_KEY",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "codex": {
+      "name": "Codex（本地会话）",
+      "currency": "CNY",
+      "keyRef": "",
+      "kind": "codex",
+      "balance": {
+        "url": "",
+        "auth": "",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "openai": {
+      "name": "OpenAI",
+      "currency": "USD",
+      "keyRef": "OPENAI_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方已下线 billing 余额接口，没有「用 API key 查余额」的公开接口（只能看控制台）→ 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "gpt",
+        "o1-",
+        "o3-",
+        "o4-",
+        "chatgpt"
+      ],
+      "probeUrl": "https://api.openai.com/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "anthropic": {
+      "name": "Anthropic Claude",
+      "currency": "USD",
+      "keyRef": "ANTHROPIC_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口；用量要走 Admin API（需 admin key）或控制台。注意其探活需要 x-api-key + anthropic-version 两个请求头，本挂件暂不支持 → 不提供探活",
+      "matchIds": [
+        "claude"
+      ],
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "gemini": {
+      "name": "Google Gemini",
+      "currency": "USD",
+      "keyRef": "GEMINI_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口（配额只在 AI Studio / Cloud 控制台）→ 余额「—」，今日已用按会话事件估算；探活用 ?key= 形式",
+      "matchIds": [
+        "gemini"
+      ],
+      "probeUrl": "https://generativelanguage.googleapis.com/v1beta/models?key={key}",
+      "balance": {
+        "url": "",
+        "auth": "",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "xai": {
+      "name": "xAI Grok",
+      "currency": "USD",
+      "keyRef": "XAI_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无公开的余额查询接口（额度在 console.x.ai）→ 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "grok"
+      ],
+      "probeUrl": "https://api.x.ai/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "groq": {
+      "name": "Groq",
+      "currency": "USD",
+      "keyRef": "GROQ_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口（免费额度/速率在控制台看）→ 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "llama",
+        "mixtral",
+        "qwen",
+        "deepseek",
+        "gemma",
+        "whisper"
+      ],
+      "probeUrl": "https://api.groq.com/openai/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "mistral": {
+      "name": "Mistral AI",
+      "currency": "USD",
+      "keyRef": "MISTRAL_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "mistral",
+        "codestral",
+        "magistral",
+        "pixtral",
+        "ministral"
+      ],
+      "probeUrl": "https://api.mistral.ai/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "together": {
+      "name": "Together AI",
+      "currency": "USD",
+      "keyRef": "TOGETHER_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "meta-llama",
+        "Qwen",
+        "deepseek",
+        "mistralai",
+        "nvidia"
+      ],
+      "probeUrl": "https://api.together.xyz/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "fireworks": {
+      "name": "Fireworks AI",
+      "currency": "USD",
+      "keyRef": "FIREWORKS_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "accounts/fireworks",
+        "llama-v3",
+        "qwen"
+      ],
+      "probeUrl": "https://api.fireworks.ai/inference/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "deepinfra": {
+      "name": "DeepInfra",
+      "currency": "USD",
+      "keyRef": "DEEPINFRA_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "meta-llama",
+        "Qwen",
+        "deepseek"
+      ],
+      "probeUrl": "https://api.deepinfra.com/v1/openai/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "cerebras": {
+      "name": "Cerebras",
+      "currency": "USD",
+      "keyRef": "CEREBRAS_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "llama",
+        "qwen"
+      ],
+      "probeUrl": "https://api.cerebras.ai/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "dashscope": {
+      "name": "阿里云百炼（通义千问）",
+      "currency": "CNY",
+      "keyRef": "DASHSCOPE_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "云厂商：余额/账单要走阿里云 AK/SK 的 OpenAPI（或控制台），API key 查不到 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "qwen",
+        "qwq",
+        "qvq"
+      ],
+      "probeUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "qianfan": {
+      "name": "百度千帆（文心）",
+      "currency": "CNY",
+      "keyRef": "QIANFAN_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "云厂商：余额/账单要走百度云 AK/SK（或控制台），API key 查不到 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "ernie"
+      ],
+      "probeUrl": "https://qianfan.baidubce.com/v2/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "hunyuan": {
+      "name": "腾讯混元",
+      "currency": "CNY",
+      "keyRef": "HUNYUAN_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "云厂商：余额/账单要走腾讯云 SecretId/Key（或控制台），API key 查不到 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "hunyuan"
+      ],
+      "probeUrl": "https://api.hunyuan.cloud.tencent.com/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "spark": {
+      "name": "讯飞星火",
+      "currency": "CNY",
+      "keyRef": "SPARK_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口（额度在控制台）→ 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "spark",
+        "generalv",
+        "4.0ultra"
+      ],
+      "probeUrl": "https://spark-api-open.xf-yun.com/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "modelscope": {
+      "name": "魔搭 ModelScope",
+      "currency": "CNY",
+      "keyRef": "MODELSCOPE_API_KEY",
+      "noBalanceApi": true,
+      "apiNote": "官方无余额接口 → 余额「—」，今日已用按会话事件估算",
+      "matchIds": [
+        "Qwen",
+        "deepseek",
+        "MiniMax",
+        "glm"
+      ],
+      "probeUrl": "https://api-inference.modelscope.cn/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "Bearer {key}",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "ollama": {
+      "name": "本地模型（Ollama / LM Studio）",
+      "currency": "CNY",
+      "keyRef": "",
+      "noBalanceApi": true,
+      "needsBaseUrl": true,
+      "apiNote": "本地推理没有余额概念 → 余额「—」；填好 Base URL（如 http://127.0.0.1:11434/v1）后按会话事件统计 token",
+      "matchIds": [
+        "llama",
+        "qwen",
+        "gemma",
+        "deepseek",
+        "mistral",
+        "phi"
+      ],
+      "probeUrl": "{base}/v1/models",
+      "balance": {
+        "url": "",
+        "auth": "",
+        "json": {
+          "remaining": ""
+        }
+      }
+    },
+    "zhipu_glm_coding_intl": {
+      "name": "智谱 GLM Coding Plan（国际 z.ai）",
+      "currency": "USD",
+      "keyRef": "ZHIPU_INTL_API_KEY",
+      "kind": "quota",
+      "quota": {
+        "url": "https://api.z.ai/api/monitor/usage/quota/limit",
+        "auth": "{key}",
+        "json": {
+          "level": "data.level",
+          "windows": [
+            {
+              "key": "rolling",
+              "label": "5h",
+              "pick": {
+                "list": "data.limits",
+                "types": [
+                  "TOKENS_LIMIT",
+                  "CREDIT_LIMIT"
+                ],
+                "unit": 3
+              },
+              "percent": "percentage",
+              "resetAt": "nextResetTime"
+            },
+            {
+              "key": "weekly",
+              "label": "周",
+              "pick": {
+                "list": "data.limits",
+                "types": [
+                  "TOKENS_LIMIT",
+                  "CREDIT_LIMIT"
+                ],
+                "unit": 6
+              },
+              "percent": "percentage",
+              "resetAt": "nextResetTime"
+            }
+          ]
+        }
+      },
+      "probeUrl": "https://api.z.ai/api/monitor/usage/quota/limit"
+    },
+    "minimax_coding_intl": {
+      "name": "MiniMax Coding（国际）",
+      "currency": "USD",
+      "keyRef": "MINIMAX_INTL_API_KEY",
+      "kind": "quota",
+      "quota": {
+        "url": "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
+        "auth": "Bearer {key}",
+        "json": {
+          "remainPct": "model_remains[0].current_interval_remaining_percent",
+          "weeklyRemainPct": "model_remains[0].current_weekly_remaining_percent",
+          "resetAtMs": "model_remains[0].end_time"
+        }
+      },
+      "probeUrl": "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
+    }
+  }
+}

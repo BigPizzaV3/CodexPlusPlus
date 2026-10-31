@@ -187,7 +187,7 @@ export function PluginMarketScreen() {
               <Button aria-pressed={source === "public"} disabled={busy} onClick={() => selectSource("public")} title={t("收录已确认可公开分发的插件。")} variant={source === "public" ? "secondary" : "ghost"}>
                 {t("公开精选")}
               </Button>
-              <Button aria-pressed={source === "full"} disabled={busy} onClick={() => selectSource("full")} title={t("完整缓存为私有仓库，需要 GitHub 访问权限。")} variant={source === "full" ? "secondary" : "ghost"}>
+              <Button aria-pressed={source === "full"} disabled={busy} onClick={() => selectSource("full")} title={t("完整市场收录全部插件，索引较大，首次加载可能需要几秒。")} variant={source === "full" ? "secondary" : "ghost"}>
                 {t("完整缓存")}
               </Button>
             </div>

@@ -306,3 +306,88 @@ export function ProviderLimitsDialog({
     document.body,
   );
 }
+
+/**
+ * new-api 的访问令牌（#2793）：new-api「个人设置 → 安全设置」里生成的访问令牌，区别于 API Key，
+ * 只用来查账户余额。已保存的令牌只显示打码后的样子；令牌框留空表示沿用。
+ */
+export function ProviderNewApiAccessDialog({
+  entry,
+  busy,
+  onSave,
+  onClear,
+  onCancel,
+}: {
+  entry: GatewayPoolEntry;
+  busy: boolean;
+  onSave: (token: string | null, userId: string) => void;
+  onClear: () => void;
+  onCancel: () => void;
+}) {
+  const saved = entry.newapiAccess ?? null;
+  const [token, setToken] = useState("");
+  const [userId, setUserId] = useState(saved?.userId ?? "");
+  const tokenValue = token.trim();
+  const userIdValue = userId.trim();
+  // 还没保存过令牌时必须填；空着只是不能保存，不提示错误。
+  const missing = !saved && !tokenValue;
+  const error = /\s/.test(tokenValue)
+    ? t("访问令牌里不能有空格或换行")
+    : !/^\d*$/.test(userIdValue)
+      ? t("用户 ID 只能是数字")
+      : "";
+  useEscapeLayer(true, onCancel);
+
+  return createPortal(
+    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <form
+        className="pf-modal pf-extras-modal"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!error && !missing) onSave(tokenValue || null, userIdValue);
+        }}
+      >
+        <header className="pf-head">
+          <Avatar baseUrl={entry.baseUrl} name={entry.name} />
+          <div>
+            <strong>{tf("{0} 的访问令牌", [maskAccountName(entry.name)])}</strong>
+            <small>{t("可选：只用来查 new-api 账户余额，留空不查")}</small>
+          </div>
+          <button aria-label={t("关闭")} className="pf-icon" onClick={onCancel} type="button"><X /></button>
+        </header>
+
+        <div className="pf-body">
+          <section className="pf-section">
+            <h4>{t("访问令牌")}<small>{t("在 new-api 的「个人设置 → 安全设置」里生成，不是 API Key")}</small></h4>
+            <label className="pf-field">
+              <span>{t("访问令牌")}</span>
+              <Input
+                autoComplete="off"
+                onChange={(event) => setToken(event.currentTarget.value)}
+                placeholder={saved ? tf("已保存 {0}，留空不改", [saved.masked]) : t("粘贴访问令牌")}
+                spellCheck={false}
+                type="password"
+                value={token}
+              />
+            </label>
+            <label className="pf-field">
+              <span>{t("用户 ID")} <small>New-Api-User</small></span>
+              <Input inputMode="numeric" onChange={(event) => setUserId(event.currentTarget.value)} placeholder={t("个人设置里显示的 ID")} value={userId} />
+            </label>
+            <p className="pf-note">{t("按 new-api 文档，查余额要同时带访问令牌和用户 ID（旧版必须填用户 ID）；新版的分权限令牌需要勾选「个人资料 · 查看」。令牌只存在本机，和 Key 一样不显示原文。")}</p>
+          </section>
+        </div>
+
+        <footer className="pf-foot">
+          <span className="pf-error">{error}</span>
+          {saved ? (
+            <Button disabled={busy} onClick={onClear} size="sm" type="button" variant="ghost">{t("清除令牌")}</Button>
+          ) : null}
+          <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+          <Button disabled={busy || missing || Boolean(error)} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
+        </footer>
+      </form>
+    </div>,
+    document.body,
+  );
+}

@@ -243,10 +243,10 @@ fn continuation_is_scoped_to_completed_native_session_and_rejects_concurrent_wor
     let store = store(&temp);
     enable(&store, &["codex", "claude"]);
     let parent = store.submit(request(&temp, "codex")).unwrap();
-    assert!(
-        store.submit(request(&temp, "codex")).is_err(),
-        "每个 worker 只能有一个活跃任务"
-    );
+    // 同一 worker 繁忙时新任务排队而不是被拒绝（#2772）；取消后不影响下面的续聊校验。
+    let queued = store.submit(request(&temp, "codex")).unwrap();
+    assert_eq!(queued.status, "queued");
+    store.cancel(&queued.id).unwrap();
     store.claim(&parent.id).unwrap();
     store
         .finish(&parent.id, "completed", "done", "", "native-session")

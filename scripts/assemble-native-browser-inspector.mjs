@@ -30,7 +30,7 @@ for (const dependency of [...dependencies].sort()) {
   const dir = path.join(root, "apps/codex-plus-manager/node_modules", dependency);
   const pkg = JSON.parse(await readFile(path.join(dir, "package.json"), "utf8"));
   let license;
-  for (const name of ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENSE-MIT.txt"]) {
+  for (const name of ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENSE-MIT.txt", "license.md", "license", "license.txt"]) {
     license = await readFile(path.join(dir, name), "utf8").catch(() => null);
     if (license) break;
   }

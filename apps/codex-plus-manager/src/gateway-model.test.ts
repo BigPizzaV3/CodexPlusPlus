@@ -11,6 +11,7 @@ import {
   dispatchStatus,
   draftFromBinding,
   formatRemaining,
+  keyLabel,
   activeSponsorIds,
   gatewayPresets,
   groupModelId,
@@ -24,6 +25,8 @@ import {
   parseKeyLimit,
   formatQueueWait,
   queueWaitMs,
+  foreignCompactionDropped,
+  FOREIGN_COMPACTION_DROPPED_REASON,
   pickerSections,
   presetAdded,
   presetHost,
@@ -302,6 +305,9 @@ test("网关页接入导航，命令已注册", () => {
     "reset_gateway_key_health",
     "create_gateway_provider",
     "update_gateway_provider",
+    "add_gateway_provider_key",
+    "replace_gateway_provider_key",
+    "delete_gateway_provider_key",
     "delete_gateway_provider",
     "set_gateway_provider_enabled",
     "reorder_gateway_providers",
@@ -427,10 +433,46 @@ test("请求日志认出网关记的限速排队", () => {
   assert.match(app, /tf\("限速排队 \{0\}", \[formatQueueWait\(queued\)\]\)/);
 });
 
+test("请求日志认出去掉别家签发的压缩上下文，并显示成说明文字", () => {
+  assert.equal(FOREIGN_COMPACTION_DROPPED_REASON, "foreign_compaction_dropped");
+  assert.equal(foreignCompactionDropped(undefined), false);
+  assert.equal(foreignCompactionDropped(["invalid_encrypted_content"]), false);
+  assert.equal(foreignCompactionDropped(["invalid_encrypted_content", "foreign_compaction_dropped"]), true);
+  assert.match(app, /t\("已去掉别家签发的压缩上下文，较早的对话内容不可用"\)/);
+  assert.match(app, /t\("已去掉别家压缩上下文"\)/);
+});
+
 test("供应商池详情能编辑每个 Key 的限速", () => {
   const providers = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
   assert.match(providers, /"save_gateway_provider_limits", \{ id: entry\.id, rpm, concurrency \}/);
   assert.match(lib, /gateway_commands::save_gateway_provider_limits,/);
+});
+
+test("供应商池：编辑在标题栏、各处编辑是图标按钮；已保存的 Key 打码列出，按标识单独替换、删除（#2782）", () => {
+  const providers = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
+  // 详情里不再有「编辑」文字按钮，底部也没有「编辑 >」；标题栏有铅笔按钮，悬停与无障碍名保留文案。
+  assert.doesNotMatch(providers, /\{t\("编辑"\)\}/);
+  assert.match(providers, /aria-label=\{tf\("编辑 \{0\}", \[maskAccountName\(entry\.name\)\]\)\}\s+className="gw-icon-button gw-pool-edit"/);
+  assert.match(providers, /<button aria-label=\{label\} className="gw-icon-button gw-inline-icon"[^>]*title=\{label\}/);
+  for (const label of ["编辑模型列表", "编辑价格", "编辑上下文窗口", "编辑思考等级", "编辑代理", "编辑限速"]) {
+    assert.match(providers, new RegExp(`<EditIcon [^>]*label=\\{t\\("${label}"\\)\\}`), label);
+  }
+  assert.match(providers, /<ProviderKeyList busy=\{busy\} entry=\{entry\} onTest=\{\(keyId\) => setTestKey\(keyId\)\} run=\{run\} \/>/);
+  const keys = readFileSync(new URL("./ProviderKeyList.tsx", import.meta.url), "utf8");
+  assert.match(keys, /"add_gateway_provider_key", \{ id: entry\.id, key \}/);
+  assert.match(keys, /"replace_gateway_provider_key", \{ id: entry\.id, keyId: editing\.keyId, key \}/);
+  assert.match(keys, /"delete_gateway_provider_key", \{ id: entry\.id, keyId \}/);
+  assert.match(keys, /type="password"/, "新填的 Key 不明文显示");
+  assert.match(keys, /disabled=\{busy !== null \|\| last\}/, "只剩一个 Key 时不能删");
+  // 编辑弹窗里已保存的 Key 只列打码后的样子，不再是「留空表示不改」的空输入框。
+  const form = readFileSync(new URL("./ProviderFormDialog.tsx", import.meta.url), "utf8");
+  assert.match(form, /savedKeys\.map\(\(key\) => <span className="pf-chip" key=\{key\.id\}><span className="pf-mono">\{key\.masked\}<\/span><\/span>\)/);
+  // Key 池健康状态里的 Key 标识换成打码后的 Key；单 Key 时 Key 池记作 primary。
+  const saved = [{ id: "key-1", masked: "sk-alp…AAAA" }, { id: "key-2", masked: "sk-bra…BBBB" }];
+  assert.equal(keyLabel(saved, "key-2"), "sk-bra…BBBB");
+  assert.equal(keyLabel(saved, "primary"), "primary");
+  assert.equal(keyLabel([saved[0]], "primary"), "sk-alp…AAAA");
+  assert.equal(keyLabel(undefined, "key-9"), "key-9");
 });
 
 test("供应商代理：留空和直连都合法，直连不分大小写（#2760）", () => {

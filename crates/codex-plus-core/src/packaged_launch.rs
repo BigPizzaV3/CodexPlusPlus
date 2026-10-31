@@ -55,6 +55,9 @@
 //!    进程原样存在），新进程拿不到单实例锁直接退出。launcher 现在启动前先识别这种情况
 //!    （`main_instances_blocking_debug_launch`）；其余失败靠 wrapper 轨迹与宿主内的
 //!    `SEEN_PIDS` 区分「wrapper 没执行 / Codex 没起来 / 起来又退了」。
+//! 7. Codex++ 以管理员身份运行时，Codex 继承提权令牌，会被 Chromium 经 explorer 降权重启而
+//!    脱离包上下文（issue #2789 的 `elevated:true` + 「出现过 1 个进程、随后 0 个」）。现在提权
+//!    时带上 [`DO_NOT_DE_ELEVATE_SWITCH`]；这一推断同样只能靠实机日志确认。
 //!
 //! 以上任何一条都不要当成已验证；`cargo test` 只覆盖纯函数与 CDP 探测这两块。
 
@@ -113,6 +116,73 @@ fn push_env_scrub_lines(script: &mut String) {
     for name in SCRUBBED_CODEX_ENV_VARS {
         script.push_str(&format!("set \"{name}=\"\r\n"));
     }
+}
+
+/// Chromium「提权启动时自动降权重启」的豁免开关（issue #2789 #2764）。
+///
+/// Chromium 在 Windows 上发现浏览器进程以「拆分令牌的提权部分」运行（UAC 开启、管理员
+/// 「以管理员身份运行」）时，会经 `base::win::RunDeElevated` 由 explorer 以普通权限重新
+/// 拉起自己并让当前进程退出，重启出来的进程带上本开关防止循环（`chrome_main_delegate.cc`
+/// 的 `MaybeAutoDeElevate`，开关定义在 `chrome/common/chrome_switches.h` 的
+/// `kDoNotDeElevateOnLaunch`）。Codex 的 Windows 版基于含 chrome 层的 Chromium 外壳，
+/// 主进程 JS 也在读这个开关（`hasDoNotDeElevateSwitch`），说明这条逻辑在 Codex 里生效。
+///
+/// 对 Codex++ 的影响：Codex++ 被以管理员身份运行时，包上下文 wrapper 拉起的 Codex 继承
+/// 提权令牌，Chromium 随即经 explorer 降权重启——重启出来的进程不再处于 MSIX 包上下文
+/// （没有包身份），也拿不到 wrapper 设置的环境；表现就是「出现过 1 个 Codex 进程，随后
+/// 一个不剩、调试端口始终不监听」。所以 Codex++ 提权时显式带上本开关，让 Codex 留在
+/// 包上下文里启动（与 Codex++ 同权限）。未提权时 Chromium 本来就不会降权，不加。
+pub const DO_NOT_DE_ELEVATE_SWITCH: &str = "--do-not-de-elevate";
+
+/// 打包版主实例的启动附加参数：Codex++ 提权运行时补上 [`DO_NOT_DE_ELEVATE_SWITCH`]
+/// （纯函数）。用户自己已经写了该开关时不重复添加；未提权时原样返回。
+pub fn packaged_launch_extra_args(extra_args: &[String], elevated: bool) -> Vec<String> {
+    let mut args = extra_args.to_vec();
+    let already_present = args.iter().any(|arg| {
+        arg.trim()
+            .split('=')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(DO_NOT_DE_ELEVATE_SWITCH))
+    });
+    if elevated && !already_present {
+        args.push(DO_NOT_DE_ELEVATE_SWITCH.to_string());
+    }
+    args
+}
+
+/// `IApplicationActivationManager::ActivateApplication` 的调用上限（issue #2795）。
+///
+/// 正常几秒内返回。#2795 的日志停在 `launch_codex` 阶段十几分钟没有下文，同时任务管理器里
+/// 有一个「已挂起」、内存 0.1 MB 的 Codex 进程——激活调用原先没有超时，一旦卡住 Codex++
+/// 就一直停在「启动 Codex」、没有任何报错。超过上限即放弃本次激活并给出提示。
+pub const AUMID_ACTIVATION_CALL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// AUMID 激活调用超时（见 [`AUMID_ACTIVATION_CALL_TIMEOUT`]），供调用方 `downcast_ref` 区分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AumidActivationTimedOut {
+    pub seconds: u64,
+}
+
+impl std::fmt::Display for AumidActivationTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Windows 激活 Codex（ActivateApplication）{} 秒内没有返回",
+            self.seconds
+        )
+    }
+}
+
+impl std::error::Error for AumidActivationTimedOut {}
+
+/// AUMID 激活调用超时后给用户看的提示（纯函数）。
+pub fn aumid_activation_timed_out_message(seconds: u64, executable_name: &str) -> String {
+    format!(
+        "启动 Codex 失败：Windows 激活 Codex {seconds} 秒内没有返回。\
+         可能是系统里残留了「已挂起」的 Codex 进程（任务管理器「进程」页里 ChatGPT / Codex \
+         状态显示为已挂起、内存只有零点几 MB）。请在任务管理器「详细信息」页结束所有 \
+         {executable_name} 进程（或注销 / 重启电脑）后，再点「启动 Codex」。"
+    )
 }
 
 /// CDP 就绪轮询间隔。
@@ -583,8 +653,106 @@ pub fn existing_main_instance_blocks_launch_message(
         "检测到 Codex 已在运行，但没有开启调试端口 {debug_port}（主进程 PID {ids}）。\
          Codex 同时只允许一个主实例，Codex++ 再启动的实例会把请求交给它后立即退出，无法注入。\
          请先完全退出 Codex：关掉窗口后若托盘里还有 Codex 图标，右键选择退出；\
-         或在任务管理器里结束所有 {executable_name} 进程。然后再点「启动 Codex」。"
+         或在任务管理器里结束所有 {executable_name} 进程。然后再点「启动 Codex」。\
+         也可以点「重启 Codex」，由 Codex++ 结束它并重新启动。"
     )
+}
+
+/// 挡路主进程退出后，可以顺带清理的残留进程（纯逻辑，平台调用全部注入；issue #2764 后续）。
+///
+/// 「重启 Codex」只结束检测认定的主进程本身，不按进程树（`taskkill /T`）结束：从 Codex
+/// 里打开的 VS Code、浏览器、Agent 起的 dev server 等都挂在它的进程树下，不能一起杀掉。
+/// Electron 子进程正常会随主进程退出；万一有残留，只允许清理这里返回的进程：
+///
+/// - 从 `target` 出发、只经过「可清理」的进程向下走：遇到不可清理的进程（终端、编辑器、
+///   浏览器……）就停下，它和它的整棵子树都不碰；
+/// - 每条父子边都要用创建时间证实（子进程不早于父进程创建），防 PID 复用把无关进程算进来；
+/// - `may_clean` 由调用方按 [`may_clean_up_after_blocking_main_instance`] 判断。
+///
+/// `processes` 是进程快照里的 `(pid, 父 pid)`，`birth` 读进程创建时间（读不到返回 `None`）。
+/// 返回值已排序、去重，不含 `target` 本身。
+#[cfg(any(windows, test))]
+pub fn blocking_main_instance_leftovers(
+    target: u32,
+    processes: &[(u32, u32)],
+    mut birth: impl FnMut(u32) -> Option<u64>,
+    mut may_clean: impl FnMut(u32) -> bool,
+) -> Vec<u32> {
+    if target == 0 {
+        return Vec::new();
+    }
+    let mut visited = std::collections::HashSet::from([target]);
+    let mut queue = std::collections::VecDeque::from([target]);
+    let mut leftovers = Vec::new();
+    while let Some(parent) = queue.pop_front() {
+        let parent_birth = birth(parent);
+        for &(process_id, parent_process_id) in processes {
+            if parent_process_id != parent || process_id == 0 || visited.contains(&process_id) {
+                continue;
+            }
+            let verified_child = match (parent_birth, birth(process_id)) {
+                (Some(parent_birth), Some(child_birth)) => child_birth >= parent_birth,
+                _ => false,
+            };
+            if !verified_child || !may_clean(process_id) {
+                continue;
+            }
+            visited.insert(process_id);
+            queue.push_back(process_id);
+            leftovers.push(process_id);
+        }
+    }
+    leftovers.sort_unstable();
+    leftovers
+}
+
+/// 挡路主进程退出后残留的某个进程能否由 Codex++ 结束（纯函数）。
+///
+/// 只认同一 MSIX 包内的 Codex 自家进程：
+/// - 与 Codex 同名（`ChatGPT.exe`）的 Electron 子进程（命令行带 `--type=`）；
+/// - 包内自带的 `codex.exe`（Codex 拉起的 app-server）。
+///
+/// 路径读不到、不在同一包族（另装的 ChatGPT 桌面版、用户自己装的 codex CLI）、
+/// 同名但不是子进程（多开实例、别的主进程、读不到命令行）、其他任何程序一律不碰。
+#[cfg(any(windows, test))]
+pub fn may_clean_up_after_blocking_main_instance(
+    exe_file: &str,
+    executable_path: Option<&str>,
+    command_line: Option<&str>,
+    codex_executable: &str,
+) -> bool {
+    if !executable_path.is_some_and(|path| same_windows_apps_package_family(path, codex_executable))
+    {
+        return false;
+    }
+    let codex_file_name = codex_executable
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(codex_executable);
+    if exe_file.eq_ignore_ascii_case(codex_file_name) {
+        return classify_existing_codex_process(command_line, 0) == ExistingCodexProcess::Child;
+    }
+    exe_file.eq_ignore_ascii_case("codex.exe")
+}
+
+/// 等待期过后仍需强制结束的进程（纯函数，读创建时间通过参数注入）。
+///
+/// `recorded` 是动手前记下的 `(pid, 创建时间)`，调用方只传仍在运行的那些。等待期间
+/// 原进程可能已退出、PID 被别的进程复用：记录过创建时间的，必须与现在读到的一致才算
+/// 同一个进程；当时就读不到创建时间的（只有主进程本身可能出现）保持原判断。
+#[cfg(any(windows, test))]
+pub fn processes_still_to_force_stop(
+    recorded: &[(u32, Option<u64>)],
+    mut birth: impl FnMut(u32) -> Option<u64>,
+) -> Vec<u32> {
+    recorded
+        .iter()
+        .filter(|(process_id, recorded_birth)| match recorded_birth {
+            Some(recorded_birth) => birth(*process_id) == Some(*recorded_birth),
+            None => true,
+        })
+        .map(|(process_id, _)| *process_id)
+        .collect()
 }
 
 /// [`build_main_instance_wrapper_script`] + 写入 `<state_dir>/packaged-launch-main.cmd`。
@@ -1728,6 +1896,52 @@ mod tests {
     }
 
     #[test]
+    fn elevated_packaged_launch_keeps_codex_from_de_elevating() {
+        let extra = vec!["--lang=zh-CN".to_string()];
+        // 未提权：参数原样不变。
+        assert_eq!(packaged_launch_extra_args(&extra, false), extra);
+        // 提权：补上 Chromium 的降权豁免开关（issue #2789）。
+        assert_eq!(
+            packaged_launch_extra_args(&extra, true),
+            vec!["--lang=zh-CN".to_string(), "--do-not-de-elevate".to_string()]
+        );
+        // 用户已写过（大小写、首尾空白不同）时不重复添加。
+        let user = vec![" --Do-Not-De-Elevate ".to_string()];
+        assert_eq!(packaged_launch_extra_args(&user, true), user);
+        // 只认完整开关名，前缀相同的别的开关不算。
+        let similar = vec!["--do-not-de-elevate-later".to_string()];
+        assert_eq!(packaged_launch_extra_args(&similar, true).len(), 2);
+    }
+
+    #[test]
+    fn elevated_main_wrapper_passes_do_not_de_elevate_to_codex() {
+        let args = packaged_launch_extra_args(&[], true);
+        let mut launch_args = vec!["--remote-debugging-port=9229".to_string()];
+        launch_args.extend(args);
+        let script =
+            build_main_instance_wrapper_script(Path::new(r"C:\app\ChatGPT.exe"), &launch_args)
+                .unwrap();
+        assert!(script.contains(
+            "start \"\" /b \"C:\\app\\ChatGPT.exe\" --remote-debugging-port=9229 --do-not-de-elevate\r\n"
+        ));
+    }
+
+    #[test]
+    fn aumid_activation_timeout_is_typed_and_actionable() {
+        let error = anyhow::Error::new(AumidActivationTimedOut { seconds: 20 });
+        assert_eq!(
+            error.downcast_ref::<AumidActivationTimedOut>(),
+            Some(&AumidActivationTimedOut { seconds: 20 })
+        );
+        assert!(error.to_string().contains("20 秒内没有返回"));
+        let message = aumid_activation_timed_out_message(20, "ChatGPT.exe");
+        assert!(message.contains("20 秒"));
+        assert!(message.contains("已挂起"));
+        assert!(message.contains("ChatGPT.exe"));
+        assert!(AUMID_ACTIVATION_CALL_TIMEOUT >= Duration::from_secs(10));
+    }
+
+    #[test]
     fn both_wrappers_clear_the_scrubbed_env_vars_before_starting_codex() {
         let main = build_main_instance_wrapper_script(
             Path::new(r"C:\app\ChatGPT.exe"),
@@ -2223,6 +2437,154 @@ mod tests {
         assert!(message.contains("28480, 31144"));
         assert!(message.contains("ChatGPT.exe"));
         assert!(message.contains("托盘"));
+        assert!(message.contains("重启 Codex"));
+    }
+
+    #[test]
+    fn leftovers_after_blocking_main_instance_never_include_foreign_subtrees() {
+        // 28480：挡路主进程；28524 / 28568：Electron 子进程；29000：包内 codex.exe；
+        // 31000：从 Codex 里打开的 VS Code；31100：VS Code 起的 node（dev server）；
+        // 32000：Codex 终端里的 pwsh，32100：pwsh 里跑的同包 codex.exe（用户自己起的）。
+        let processes = [
+            (28480, 4000),
+            (28524, 28480),
+            (28568, 28480),
+            (29000, 28524),
+            (31000, 28480),
+            (31100, 31000),
+            (32000, 28480),
+            (32100, 32000),
+            (50000, 1),
+        ];
+        let birth = |pid: u32| -> Option<u64> {
+            match pid {
+                28480 => Some(100),
+                4000 | 1 | 50000 => Some(1),
+                _ => Some(pid as u64),
+            }
+        };
+        let cleanable = |pid: u32| matches!(pid, 28524 | 28568 | 29000 | 32100);
+        // 只沿可清理的进程向下走：VS Code / pwsh 及其子树一个都不碰，主进程本身也不在里面。
+        assert_eq!(
+            blocking_main_instance_leftovers(28480, &processes, birth, cleanable),
+            vec![28524, 28568, 29000]
+        );
+        // PID 复用：父 PID 指向主进程、却比它更早创建的无关进程，不算残留。
+        let reused = [(28480, 4000), (777, 28480)];
+        assert!(
+            blocking_main_instance_leftovers(
+                28480,
+                &reused,
+                |pid| Some(if pid == 777 { 5 } else { 100 }),
+                |_| true
+            )
+            .is_empty()
+        );
+        // 创建时间读不到：父子关系无法证实，同样不算。
+        assert!(
+            blocking_main_instance_leftovers(
+                28480,
+                &reused,
+                |pid| (pid == 28480).then_some(100),
+                |_| true
+            )
+            .is_empty()
+        );
+        // 目标是 0、父子关系成环（快照里 PID 复用造成）：都能正常结束。
+        assert!(blocking_main_instance_leftovers(0, &processes, birth, |_| true).is_empty());
+        assert_eq!(
+            blocking_main_instance_leftovers(
+                1,
+                &[(1, 2), (2, 1)],
+                |pid| Some(pid as u64),
+                |_| true
+            ),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn only_codex_processes_of_the_same_package_may_be_cleaned_up() {
+        let codex = r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1023.6621.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe";
+        let bundled_cli = r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1023.6621.0_x64__2p2nqsd0c76g0\app\resources\codex.exe";
+        let other_package = r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2025.1.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe";
+        let allowed = |exe: &str, path: Option<&str>, command_line: Option<&str>| {
+            may_clean_up_after_blocking_main_instance(exe, path, command_line, codex)
+        };
+        // 同包族的 Electron 子进程、包内 codex.exe：可以清理。
+        assert!(allowed(
+            "ChatGPT.exe",
+            Some(codex),
+            Some(&format!("{STORE_EXE} --type=renderer"))
+        ));
+        assert!(allowed(
+            "codex.exe",
+            Some(bundled_cli),
+            Some("codex.exe app-server")
+        ));
+        // 多开实例、另一个主进程、读不到命令行：都不能动。
+        assert!(!allowed(
+            "ChatGPT.exe",
+            Some(codex),
+            Some(&format!(
+                "{STORE_EXE} --remote-debugging-port=9442 --user-data-dir=C:\\m"
+            ))
+        ));
+        assert!(!allowed("ChatGPT.exe", Some(codex), Some(STORE_EXE)));
+        assert!(!allowed("chatgpt.exe", Some(codex), None));
+        // 另装的 ChatGPT 桌面版、路径读不到：不能动。
+        assert!(!allowed(
+            "ChatGPT.exe",
+            Some(other_package),
+            Some("ChatGPT.exe --type=renderer")
+        ));
+        assert!(!allowed(
+            "ChatGPT.exe",
+            None,
+            Some(&format!("{STORE_EXE} --type=gpu-process"))
+        ));
+        // 包外的程序（用户装的 codex CLI、VS Code、node、浏览器、Codex++ 自身）：一律不碰。
+        assert!(!allowed(
+            "codex.exe",
+            Some(r"C:\Users\me\AppData\Roaming\npm\node_modules\@openai\codex\codex.exe"),
+            None
+        ));
+        assert!(!allowed("codex.exe", None, None));
+        assert!(!allowed(
+            "Code.exe",
+            Some(r"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe"),
+            None
+        ));
+        assert!(!allowed(
+            "node.exe",
+            Some(r"C:\Program Files\nodejs\node.exe"),
+            None
+        ));
+        assert!(!allowed(
+            "CodexPlusPlus.exe",
+            Some(r"C:\Program Files\Codex++\CodexPlusPlus.exe"),
+            None
+        ));
+    }
+
+    #[test]
+    fn force_stop_skips_processes_whose_pid_was_reused_while_waiting() {
+        let recorded = [(100, Some(10)), (200, Some(20)), (300, None)];
+        // 100 未变；200 已退出、PID 被创建时间不同的进程复用；300 当时就读不到创建时间。
+        let birth = |pid: u32| match pid {
+            100 => Some(10),
+            200 => Some(99),
+            _ => None,
+        };
+        assert_eq!(
+            processes_still_to_force_stop(&recorded, birth),
+            vec![100, 300]
+        );
+        // 现在读不到创建时间（进程刚退出）：记录过的就不再强杀。
+        assert_eq!(
+            processes_still_to_force_stop(&[(100, Some(10))], |_| None),
+            Vec::<u32>::new()
+        );
     }
 
     #[test]

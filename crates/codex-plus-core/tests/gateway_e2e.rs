@@ -148,6 +148,8 @@ fn providers(relays: Vec<RelayProfile>) -> Vec<GatewayProvider> {
             upstream_new: Vec::new(),
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
+            newapi_access: None,
+            upstream_meta: Default::default(),
             relay,
             extra: Default::default(),
         })
@@ -942,6 +944,81 @@ async fn gateway_end_to_end() {
         .collect::<Vec<_>>();
     assert_eq!(codex_entries.len(), 1, "{codex_entries:?}");
     assert_eq!(codex_entries[0].agent.as_deref(), Some("codex"));
+
+    // —— 8d2. #2783：Codex 的客户端标识（UA、originator、x-codex-*）经网关原样带给 Responses 上游，
+    //         直接访问网关、以 ChatGPT 身份经本地代理转进网关两条路都一样 ——
+    let codex_ua = "codex_cli_rs/0.165.0 (Windows 10.0.26100; x86_64) WindowsTerminal";
+    let responses_json = json!({
+        "id": "resp_e2e", "object": "response", "status": "completed", "model": "gpt-up",
+        "output": [{ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "ok" }] }]
+    })
+    .to_string();
+    let (identity_base, identity_seen) =
+        mock_upstream(vec![(200, "application/json", responses_json)]).await;
+    gateway.providers = providers(vec![relay(
+        "sub2api",
+        &identity_base,
+        "sk-sub2api",
+        RelayProtocol::Responses,
+        "glm-5.3",
+    )]);
+    save(&gateway);
+    let codex_body = json!({
+        "model": "glm-5.3",
+        "instructions": "You are Codex.",
+        "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }]
+    });
+    for (url, auth) in [
+        (
+            format!("http://127.0.0.1:{port}/gw/codex/v1/responses"),
+            "cpx-gw-codex-e2e",
+        ),
+        (
+            format!("http://127.0.0.1:{port}/v1/responses"),
+            "chatgpt-access-token",
+        ),
+    ] {
+        let response = reqwest::Client::new()
+            .post(&url)
+            .bearer_auth(auth)
+            .header("user-agent", codex_ua)
+            .header("originator", "codex_cli_rs")
+            .header("x-codex-window-id", "win-2783:0")
+            .header("x-codex-turn-metadata", "{\"turn_id\":\"t-2783\"}")
+            .header("x-codex-beta-features", "remote_compaction_v2")
+            .header("x-codex-turn-state", "sticky-from-elsewhere")
+            .header("cookie", "secret=1")
+            .header("session-id", "codex-session-2783")
+            .json(&codex_body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200, "{url}");
+        let seen = identity_seen.lock().unwrap();
+        let (head, _) = seen.last().unwrap();
+        let head = head.to_ascii_lowercase();
+        for expected in [
+            format!("user-agent: {}", codex_ua.to_ascii_lowercase()),
+            "originator: codex_cli_rs".to_string(),
+            "x-codex-window-id: win-2783:0".to_string(),
+            "x-codex-turn-metadata: {\"turn_id\":\"t-2783\"}".to_string(),
+            "x-codex-beta-features: remote_compaction_v2".to_string(),
+            "session-id: codex-session-2783".to_string(),
+            "authorization: bearer sk-sub2api".to_string(),
+        ] {
+            assert!(head.contains(&expected), "{url} 缺 {expected}：{head}");
+        }
+        for leaked in [
+            "x-codex-turn-state",
+            "cookie:",
+            "cpx-gw-codex-e2e",
+            "chatgpt-access-token",
+        ] {
+            assert!(!head.contains(leaked), "{url} 不该带 {leaked}：{head}");
+        }
+        assert_eq!(head.matches("originator:").count(), 1, "{head}");
+    }
+    assert_eq!(identity_seen.lock().unwrap().len(), 2);
 
     // —— 8e. 生图：自动选池里的生图模型，第一家 5xx 换下一家，请求里的模型名换成那一家的 ——
     let (bad_base, _) = mock_upstream(vec![(

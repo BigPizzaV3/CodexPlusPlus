@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测、常量与图片覆盖层",
-      "lines": 1791
+      "lines": 1942
     },
     {
       "name": "01-registry.js",
@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2798
+      "lines": 2801
     },
     {
       "name": "20-menu.js",
@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2136
+      "lines": 2165
     },
     {
       "name": "50-navigation.js",
@@ -43,7 +43,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1897
+      "lines": 1903
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -53,22 +53,22 @@
     {
       "name": "62-plugin-market-adapter.js",
       "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
-      "lines": 397
+      "lines": 456
     },
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1161
+      "lines": 1163
     },
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器按供应商分组折叠（聚合供应商场景）",
-      "lines": 1124
+      "lines": 1177
     },
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具；分享入口已撤出管理器扫描",
-      "lines": 874
+      "lines": 910
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -82,13 +82,13 @@
     },
     {
       "name": "83-usage-statusline.js",
-      "description": "输入框下方用量状态栏：输出吞吐、缓存命中率与上下文占用",
-      "lines": 528
+      "description": "输入框下方用量状态栏：输出吞吐、缓存命中率与上下文占用；旧版 Codex 挂载兜底与诊断",
+      "lines": 708
     },
     {
       "name": "84-proxy-request-status.js",
       "description": "输入框上方的请求避震状态条：正在请求 / 等待上游 / 正在重试 / 正在生成",
-      "lines": 280
+      "lines": 294
     },
     {
       "name": "85-history-turn-recovery.js",
@@ -109,6 +109,11 @@
       "name": "85-side-chat-save.js",
       "description": "本地旁支保存：主历史读取引用、原生缓存采集与普通会话恢复",
       "lines": 333
+    },
+    {
+      "name": "85-weixin-desktop-sync.js",
+      "description": "微信线程目录与显式项目归属同步",
+      "lines": 113
     },
     {
       "name": "90-action-groups.js",
@@ -138,12 +143,22 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 654
+      "lines": 655
+    },
+    {
+      "name": "96-whale-compat.js",
+      "description": "大肥鱼（完整鲸鱼挂件）：Codex 宿主与私有桥接适配",
+      "lines": 533
+    },
+    {
+      "name": "96-whale-widget.js",
+      "description": "大肥鱼：按 Agent 桌宠类型挂载 / 卸载完整引擎",
+      "lines": 71
     },
     {
       "name": "97-agent-pet.js",
       "description": "Agent 桌宠：可拖动角色、按压压扁回弹与按压音效",
-      "lines": 343
+      "lines": 348
     },
     {
       "name": "98-scan-schedule.js",
@@ -158,7 +173,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 95
+      "lines": 100
     },
     {
       "name": "99-tail.js",

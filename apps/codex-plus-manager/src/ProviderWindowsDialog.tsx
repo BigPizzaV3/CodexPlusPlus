@@ -36,6 +36,13 @@ export function windowSummary(entry: GatewayPoolEntry): string {
   return fallback ? tf("所有模型 · {0}", [formatTokens(fallback)]) : "";
 }
 
+/** 弹窗只列了部分模型（编辑弹窗里按编辑中的列表打开）时，没列出的模型原来单独写的窗口照旧带上，
+ * 保存是整表替换，不能把它们丢掉。 */
+export function withUnlistedWindows(entry: GatewayPoolEntry, shown: string[], windows: Record<string, number>): Record<string, number> {
+  const kept = Object.entries(entry.modelWindows ?? {}).filter(([model]) => !shown.some((item) => item.toLowerCase() === model.toLowerCase()));
+  return { ...Object.fromEntries(kept), ...windows };
+}
+
 /** 输入框里的写法：1000000 → 1M，200000 → 200K。 */
 function windowText(value: number | null | undefined): string {
   return value ? formatTokens(value) : "";

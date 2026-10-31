@@ -63,6 +63,7 @@
   installCodexPlusForceChineseLocale();
   installCodexPlusInstanceIdentity();
   runScanStep(installCodexPlusTypingEffects);
+  runScanStep(syncCodexPlusWhaleWidget);
   runScanStep(syncCodexPlusAgentPet);
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
@@ -74,7 +75,11 @@
   };
   window.addEventListener("resize", window.__codexPlusResizeHandler);
   window.__codexSessionDeleteObserver?.disconnect();
-  window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
+  window.__codexSessionDeleteObserver = new MutationObserver((mutations) => {
+    // 先同步藏起已删会话的重建行（首帧前生效，#2791），再按原规则排扫描。
+    runScanStep(() => hideDeletedSessionRowsInMutations(mutations));
+    scheduleScan(mutations);
+  });
   window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, {
     childList: true,
     subtree: true,

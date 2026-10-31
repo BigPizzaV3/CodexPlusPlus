@@ -85,8 +85,16 @@ pub fn diagnostic_log_path() -> PathBuf {
 
 #[doc(hidden)]
 pub fn set_diagnostic_log_path_for_tests(path: Option<PathBuf>) {
+    swap_diagnostic_log_path_for_tests(path);
+}
+
+#[doc(hidden)]
+pub fn swap_diagnostic_log_path_for_tests(path: Option<PathBuf>) -> Option<PathBuf> {
     let lock = TEST_LOG_PATH.get_or_init(|| Mutex::new(None));
-    *lock.lock().expect("test log path lock poisoned") = path;
+    std::mem::replace(
+        &mut *lock.lock().expect("test log path lock poisoned"),
+        path,
+    )
 }
 
 fn now_ms() -> u64 {

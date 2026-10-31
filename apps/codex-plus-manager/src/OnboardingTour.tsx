@@ -6,6 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, X } from "lucide-react";
 import { t, tf } from "./i18n";
+import { paletteShortcut } from "./command-palette-model";
 import { placeCard, TOUR_STEPS } from "./onboarding-model";
 import { useEscapeLayer } from "./use-escape-layer";
 import "./OnboardingTour.css";
@@ -89,7 +90,8 @@ export function OnboardingTour({ onClose }: { onClose: (finished: boolean) => vo
         </button>
         <span className="tour-step">{tf("{0} / {1}", [index + 1, TOUR_STEPS.length])}</span>
         <h3 id="tour-title">{t(step.title)}</h3>
-        <p>{t(step.body)}</p>
+        {/* 文案里写的是 ⌘K，Windows / Linux 换成真实键位 Ctrl K。 */}
+        <p>{t(step.body).replace("⌘K", paletteShortcut)}</p>
         <div className="tour-dots" aria-hidden="true">
           {TOUR_STEPS.map((item, position) => <i data-active={position === index} key={item.id} />)}
         </div>

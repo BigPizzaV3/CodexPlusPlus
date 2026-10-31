@@ -1,6 +1,6 @@
 use codex_plus_data::{
     ProviderSyncProgressPhase, ProviderSyncStatus, ProviderSyncTargetSource,
-    apply_session_index_cleanup,
+    apply_session_index_cleanup, is_provider_sync_internal_alias,
     load_provider_sync_targets, preview_session_index_cleanup,
     remote_control_session_recovery_candidate_exists, run_provider_sync,
     run_provider_sync_with_target, run_provider_sync_with_target_and_progress,
@@ -626,6 +626,46 @@ fn provider_sync_resolves_exact_generic_provider_ids_case_sensitively() {
         .unwrap();
     assert!(!history_only.is_resolvable);
     assert!(history_only.unavailable_reason.is_some());
+}
+
+#[test]
+fn provider_sync_targets_hide_the_internal_managed_session_alias() {
+    // #2791：受管会话的 session_meta 记下了内部别名 codex_plus_managed，当前配置没有
+    // 对应表时，它以「选不了」的状态一直挂在同步目标下拉里。
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    write_provider_config_with_tables(&home, "custom", &[]);
+    write_rollout(
+        &home.join("sessions/rollout-managed.jsonl"),
+        "codex_plus_managed",
+        "thread-managed",
+        "C:/workspace",
+    );
+
+    let targets = load_provider_sync_targets(Some(&home));
+    assert!(
+        targets
+            .targets
+            .iter()
+            .all(|target| target.id != "codex_plus_managed")
+    );
+    let current = targets.targets.first().unwrap();
+    assert_eq!(current.id, "custom");
+    assert!(current.is_resolvable);
+
+    // 配置里即便有同名兼容表，也不能把历史会话迁移到内部别名上。
+    write_provider_config_with_tables(&home, "custom", &["codex_plus_managed"]);
+    let targets = load_provider_sync_targets(Some(&home));
+    assert!(
+        targets
+            .targets
+            .iter()
+            .all(|target| target.id != "codex_plus_managed")
+    );
+    assert!(validate_provider_sync_target(Some(&home), Some("codex_plus_managed")).is_err());
+    assert!(is_provider_sync_internal_alias("codex_plus_managed"));
+    assert!(!is_provider_sync_internal_alias("custom"));
 }
 
 #[test]
@@ -2174,6 +2214,273 @@ fn provider_sync_catalog_uses_preview_on_modern_schema_without_rewriting_history
     assert_eq!(without_legacy_flag.sqlite_catalog_rows_inserted, 1);
     assert_eq!(without_legacy_flag.sqlite_catalog_rows_removed, 0);
     assert_eq!(rollout_files_snapshot(&rollout_dir), rollouts_before);
+}
+
+#[test]
+fn provider_sync_catalog_preserves_paginated_threads_without_rollout_files() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    write_provider_config(&home, "custom");
+    let global_state = json!({
+        "thread-project-assignments": {"missing": {"projectId":"project","projectKind":"local"}},
+        "projectless-thread-ids": ["projectless"]
+    })
+    .to_string();
+    fs::write(home.join(".codex-global-state.json"), &global_state).unwrap();
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT, agent_role TEXT,
+            preview TEXT, history_mode TEXT, model TEXT, reasoning_effort TEXT, project_id TEXT
+        );",
+    )
+    .unwrap();
+    for (id, mode, archived, preview, source, thread_source, role) in [
+        ("retained", Some("paginated"), 0, "User", "vscode", "user", ""),
+        ("missing", Some("paginated"), 0, "User", "vscode", "user", ""),
+        ("projectless", Some("paginated"), 0, "User", "cli", "user", ""),
+        ("legacy", Some("legacy"), 0, "User", "vscode", "user", ""),
+        ("unknown", Some("future"), 0, "User", "vscode", "user", ""),
+        ("null-mode", None, 0, "User", "vscode", "user", ""),
+        ("archived", Some("paginated"), 1, "User", "vscode", "user", ""),
+        ("empty", Some("paginated"), 0, "", "vscode", "user", ""),
+        ("child", Some("paginated"), 0, "User", "subagent", "subagent", ""),
+        ("role", Some("paginated"), 0, "User", "vscode", "user", "reviewer"),
+        ("ambient", Some("paginated"), 0, "User", "vscode", "ambient_suggestions", ""),
+        ("exec", Some("paginated"), 0, "User", "exec", "user", ""),
+        ("deleted", Some("paginated"), 0, "User", "vscode", "user", ""),
+    ] {
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'custom', ?2, 0, 'E:/project', ?1, ?3, ?4, 100000, 300000, ?5,
+                'main', ?6, ?7, ?8, 'saved-model', 'high', 'saved-project'
+            )",
+            rusqlite::params![
+                id, archived, format!("sessions/{id}.jsonl"), source, thread_source,
+                role, preview, mode
+            ],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let state_before = fs::read(&state_db).unwrap();
+    fs::create_dir_all(home.join("tmp")).unwrap();
+    fs::write(home.join("tmp/provider-sync-tombstones.json"), r#"["deleted"]"#).unwrap();
+    let catalogs = [sqlite_dir.join("codex-dev.db"), sqlite_dir.join("codex.db")];
+    for path in &catalogs {
+        create_local_thread_catalog_db(path, &[("retained", "custom")]);
+        let db = Connection::open(path).unwrap();
+        db.execute("INSERT INTO local_thread_catalog_hosts VALUES ('remote', 'ssh')", [])
+            .unwrap();
+        db.execute(
+            "INSERT INTO local_thread_catalog SELECT 'remote', 'archived', display_title,
+                source_created_at, source_updated_at, cwd, source_kind, source_detail,
+                model_provider, git_branch, observation_sequence, missing_candidate, thread_source
+             FROM local_thread_catalog WHERE thread_id = 'retained'",
+            [],
+        )
+        .unwrap();
+    }
+
+    // 迁移删掉旧 JSONL 后，原生历史可能完全存在 SQLite 里。
+    // 第一次修复也要能在不打开、不创建历史库的情况下完成。
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced, "{first:?}");
+    for path in &catalogs {
+        assert!(
+            catalog_rows_snapshot(path).contains(&("local".into(), "retained".into())),
+            "a paginated thread must not disappear when its old JSONL is gone"
+        );
+        assert_eq!(
+            catalog_rows_snapshot(path),
+            vec![
+                ("local".into(), "missing".into()),
+                ("local".into(), "projectless".into()),
+                ("local".into(), "retained".into()),
+                ("remote".into(), "archived".into()),
+            ]
+        );
+        let db = Connection::open(path).unwrap();
+        let restored: (String, String, String) = db.query_row(
+            "SELECT cwd, model_provider, thread_source FROM local_thread_catalog
+             WHERE host_id='local' AND thread_id='missing'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(restored, ("E:/project".into(), "custom".into(), "user".into()));
+    }
+    assert_eq!(first.sqlite_catalog_rows_inserted, 4);
+    assert_eq!(first.sqlite_catalog_rows_removed, 0);
+    assert_eq!(fs::read(&state_db).unwrap(), state_before);
+    assert!(!home.join("sessions").exists());
+    let history = home.join("thread_history_1.sqlite");
+    assert!(!history.exists());
+    let history_db = Connection::open(&history).unwrap();
+    history_db.execute_batch(
+        "CREATE TABLE thread_items (thread_id TEXT, item_json TEXT);
+         INSERT INTO thread_items VALUES ('missing', 'native history sentinel');",
+    ).unwrap();
+    drop(history_db);
+    let history_before = fs::read(&history).unwrap();
+    let history_mtime = fs::metadata(&history).unwrap().modified().unwrap();
+    let second = run_provider_sync(Some(&home));
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{second:?}");
+    assert_eq!(second.sqlite_rows_updated, 0);
+    assert!(second.backup_dir.is_none());
+    assert_eq!(fs::read(&state_db).unwrap(), state_before);
+    assert_eq!(fs::read(&history).unwrap(), history_before);
+    assert_eq!(fs::metadata(&history).unwrap().modified().unwrap(), history_mtime);
+    assert_eq!(
+        fs::read_to_string(home.join(".codex-global-state.json")).unwrap(),
+        global_state
+    );
+}
+
+#[test]
+fn provider_sync_catalog_merges_equal_timestamp_storage_copies() {
+    for modern_first in [false, true] {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let sqlite_dir = home.join("sqlite");
+        fs::create_dir_all(&sqlite_dir).unwrap();
+        write_provider_config(&home, "custom");
+        let global = json!({"thread-project-assignments": {
+            "missing": {"projectId": "project", "projectKind": "local"}
+        }}).to_string();
+        fs::write(home.join(".codex-global-state.json"), &global).unwrap();
+        let ids = [
+            "retained", "missing", "archived-modern", "archived-legacy", "role", "child",
+            "exec", "ambient", "empty", "newer-legacy", "newer-modern", "legacy-only",
+        ];
+        let root = home.join("state_5.sqlite");
+        let old = sqlite_dir.join("state_5.sqlite");
+        let (modern, legacy) = if modern_first { (&old, &root) } else { (&root, &old) };
+        create_catalog_storage_copy_db(modern, true, &ids[..ids.len() - 1]);
+        create_catalog_storage_copy_db(legacy, false, &ids);
+        Connection::open(modern).unwrap().execute_batch(
+            "UPDATE threads SET archived = 1 WHERE id = 'archived-modern';
+             UPDATE threads SET updated_at_ms = 400000 WHERE id = 'newer-modern';",
+        ).unwrap();
+        Connection::open(legacy).unwrap().execute_batch(
+            "UPDATE threads SET archived = 1 WHERE id IN ('archived-legacy', 'newer-modern');
+             UPDATE threads SET agent_role = 'reviewer' WHERE id = 'role';
+             UPDATE threads SET source = 'subagent', thread_source = 'subagent' WHERE id = 'child';
+             UPDATE threads SET source = 'exec' WHERE id = 'exec';
+             UPDATE threads SET thread_source = 'ambient_suggestions' WHERE id = 'ambient';
+             UPDATE threads SET preview = '' WHERE id = 'empty';
+             UPDATE threads SET updated_at_ms = 400000 WHERE id = 'newer-legacy';",
+        ).unwrap();
+        let sources_before = [fs::read(&root).unwrap(), fs::read(&old).unwrap()];
+        let history = home.join("thread_history_1.sqlite");
+        Connection::open(&history).unwrap().execute_batch(
+            "CREATE TABLE thread_items (thread_id TEXT, item_json TEXT);
+             INSERT INTO thread_items VALUES ('missing', 'native history sentinel');",
+        ).unwrap();
+        let history_before = fs::read(&history).unwrap();
+        let catalogs = [sqlite_dir.join("codex-dev.db"), sqlite_dir.join("codex.db")];
+        let initial = ids.iter().filter(|id| !matches!(**id, "missing" | "newer-modern"))
+            .map(|id| (*id, "custom")).collect::<Vec<_>>();
+        for path in &catalogs {
+            create_local_thread_catalog_db(path, &initial);
+            Connection::open(path).unwrap().execute_batch(
+                "INSERT INTO local_thread_catalog_hosts VALUES ('remote', 'ssh');
+                 INSERT INTO local_thread_catalog SELECT 'remote', thread_id, display_title,
+                    source_created_at, source_updated_at, cwd, source_kind, source_detail,
+                    model_provider, git_branch, observation_sequence, missing_candidate, thread_source
+                 FROM local_thread_catalog WHERE thread_id = 'archived-modern';",
+            ).unwrap();
+        }
+
+        let first = run_provider_sync(Some(&home));
+        assert_eq!(first.status, ProviderSyncStatus::Synced, "{first:?}");
+        for path in &catalogs {
+            assert!(
+                catalog_rows_snapshot(path).contains(&("local".into(), "retained".into())),
+                "a legacy copy missing JSONL must not veto equal-timestamp paginated history"
+            );
+            assert_eq!(
+                catalog_rows_snapshot(path),
+                vec![
+                    ("local".into(), "missing".into()),
+                    ("local".into(), "newer-modern".into()),
+                    ("local".into(), "retained".into()),
+                    ("remote".into(), "archived-modern".into()),
+                ],
+                "metadata exclusions and newer observations must retain their priority"
+            );
+        }
+        assert_eq!(first.sqlite_catalog_rows_inserted, 4);
+        assert_eq!(first.sqlite_catalog_rows_removed, 18);
+        assert_eq!([fs::read(&root).unwrap(), fs::read(&old).unwrap()], sources_before);
+        assert_eq!(fs::read(&history).unwrap(), history_before);
+        assert_eq!(fs::read_to_string(home.join(".codex-global-state.json")).unwrap(), global);
+        assert!(!home.join("sessions").exists());
+
+        let second = run_provider_sync(Some(&home));
+        assert_eq!(second.status, ProviderSyncStatus::Synced, "{second:?}");
+        assert_eq!(second.sqlite_rows_updated, 0);
+        assert!(second.backup_dir.is_none());
+        assert_eq!([fs::read(&root).unwrap(), fs::read(&old).unwrap()], sources_before);
+        assert_eq!(fs::read(&history).unwrap(), history_before);
+    }
+}
+
+#[test]
+fn provider_sync_catalog_equal_timestamp_exclusions_are_order_independent() {
+    // 历史可用、缺旧版存储、已归档副本三种情况可能以任意顺序出现。
+    for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let sqlite_dir = home.join("sqlite");
+        fs::create_dir_all(&sqlite_dir).unwrap();
+        write_provider_config(&home, "custom");
+        for (path, kind) in [
+            sqlite_dir.join("a.db"), sqlite_dir.join("b.db"), home.join("state_5.sqlite"),
+        ].iter().zip(order) {
+            create_catalog_storage_copy_db(path, kind == 0, &["shared"]);
+            if kind == 2 {
+                Connection::open(path).unwrap()
+                    .execute("UPDATE threads SET archived = 1", []).unwrap();
+            }
+        }
+        let catalog = sqlite_dir.join("codex-dev.db");
+        create_local_thread_catalog_db(&catalog, &[("shared", "custom")]);
+        let result = run_provider_sync(Some(&home));
+        assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+        assert_eq!(result.sqlite_catalog_rows_inserted, 0);
+        assert_eq!(result.sqlite_catalog_rows_removed, 1);
+        assert!(catalog_rows_snapshot(&catalog).is_empty(), "order={order:?}");
+    }
+}
+
+fn create_catalog_storage_copy_db(path: &Path, paginated: bool, ids: &[&str]) {
+    let db = Connection::open(path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT, agent_role TEXT,
+            preview TEXT, model TEXT, reasoning_effort TEXT, project_id TEXT
+        );",
+    ).unwrap();
+    for id in ids {
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'custom', 0, 1, 'E:/project', ?1, ?2, 'vscode', 100000,
+                300000, 'user', 'main', '', 'User', 'saved-model', 'high', 'saved-project'
+            )",
+            rusqlite::params![id, format!("sessions/{id}.jsonl")],
+        ).unwrap();
+    }
+    if paginated {
+        db.execute("ALTER TABLE threads ADD COLUMN history_mode TEXT DEFAULT 'paginated'", [])
+            .unwrap();
+    }
 }
 
 #[test]

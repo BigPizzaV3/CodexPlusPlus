@@ -21,3 +21,14 @@ export function filterCommands(commands: PaletteCommand[], query: string): Palet
     return terms.every((term) => haystack.includes(term));
   });
 }
+
+/**
+ * 打开命令面板的快捷键提示，按真实绑定显示：macOS 是 ⌘K，Windows / Linux 是 Ctrl K
+ * （App 里 metaKey || ctrlKey 加 K 都能打开；#2778：Windows 上原来也写 ⌘K）。
+ */
+export function paletteShortcutLabel(userAgent: string): string {
+  return /\bMacintosh\b|\bMac OS X\b/i.test(userAgent) ? "⌘K" : "Ctrl K";
+}
+
+/** 当前平台的快捷键提示；没有 navigator（node 测试）时按 macOS 处理。 */
+export const paletteShortcut = paletteShortcutLabel(typeof navigator === "undefined" ? "Macintosh" : navigator.userAgent);
