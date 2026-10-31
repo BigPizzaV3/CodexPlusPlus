@@ -147,7 +147,7 @@ pub async fn handle_request(creator: &ExtensionCreator, request: Value) -> Optio
             } else {
                 "2025-06-18"
             };
-            json!({"protocolVersion": version, "capabilities": {"tools": {"listChanged": true}},
+            json!({"protocolVersion": version, "capabilities": {"tools": {"listChanged": true}, "prompts": {"listChanged": false}, "resources": {"listChanged": false}},
                 "serverInfo": {"name": "codex-plus-extension-creator", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS})
         }
@@ -168,9 +168,79 @@ pub async fn handle_request(creator: &ExtensionCreator, request: Value) -> Optio
             ),
             None => return Some(rpc_error(id, -32602, "tools/call 缺少工具名")),
         },
+        "prompts/list" => json!({ "prompts": extension_prompts(&creator.manager).into_iter().map(|(public, prompt)| json!({
+            "name": public, "description": prompt.description, "arguments": prompt.arguments,
+        })).collect::<Vec<_>>() }),
+        "prompts/get" => {
+            let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+            let Some((_, prompt)) = extension_prompts(&creator.manager).into_iter().find(|(public, _)| public == name) else {
+                return Some(rpc_error(id, -32602, "没有这个提示词"));
+            };
+            let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            for required in prompt.arguments.iter().filter(|argument| argument["required"] == true) {
+                if arguments.get(required["name"].as_str().unwrap_or_default()).is_none() {
+                    return Some(rpc_error(id, -32602, &format!("缺少参数 {}", required["name"].as_str().unwrap_or_default())));
+                }
+            }
+            json!({ "description": prompt.description, "messages": [{ "role": "user", "content": { "type": "text", "text": crate::extension_codex::render_prompt(&prompt.template, &arguments) } }] })
+        }
+        "resources/list" => json!({ "resources": extension_resources(&creator.manager).into_iter().map(|(uri, resource)| json!({
+            "uri": uri, "name": resource.name, "description": resource.description, "mimeType": resource.mime_type,
+        })).collect::<Vec<_>>() }),
+        "resources/templates/list" => json!({ "resourceTemplates": [] }),
+        "resources/read" => {
+            let uri = params.get("uri").and_then(Value::as_str).unwrap_or_default();
+            let Some((_, resource)) = extension_resources(&creator.manager).into_iter().find(|(candidate, _)| candidate == uri) else {
+                return Some(rpc_error(id, -32602, "没有这个资源"));
+            };
+            match read_resource(uri, &resource) {
+                Ok(content) => json!({ "contents": [content] }),
+                Err(error) => return Some(rpc_error(id, -32603, &format!("{error:#}"))),
+            }
+        }
         _ => return Some(rpc_error(id, -32601, "未实现的 MCP 方法")),
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+/// 启用中拓展的提示词：(对外名 `<拓展>__<名字>`, 提示词)。
+fn extension_prompts(manager: &user_scripts::UserScriptManager) -> Vec<(String, crate::extension_codex::ExtensionPrompt)> {
+    manager
+        .enabled_codex_assets()
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|item| {
+            let id = item.id.clone();
+            item.assets.prompts.into_iter().map(move |prompt| (user_scripts::extension_tool_public_name(&id, &prompt.name), prompt))
+        })
+        .collect()
+}
+
+/// 启用中拓展的资源：(uri, 资源)。
+fn extension_resources(manager: &user_scripts::UserScriptManager) -> Vec<(String, crate::extension_codex::ExtensionResource)> {
+    manager
+        .enabled_codex_assets()
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|item| {
+            let (id, root) = (item.id.clone(), item.root.clone());
+            item.assets.resources.into_iter().map(move |resource| (crate::extension_codex::resource_uri(&id, &root, &resource.file), resource))
+        })
+        .collect()
+}
+
+fn read_resource(uri: &str, resource: &crate::extension_codex::ExtensionResource) -> anyhow::Result<Value> {
+    use base64::Engine;
+    let metadata = std::fs::metadata(&resource.file)?;
+    if metadata.len() > crate::extension_codex::RESOURCE_MAX_BYTES {
+        anyhow::bail!("资源超过 1 MiB");
+    }
+    let bytes = std::fs::read(&resource.file)?;
+    Ok(match String::from_utf8(bytes) {
+        Ok(text) if !resource.mime_type.starts_with("image/") => json!({ "uri": uri, "mimeType": resource.mime_type, "text": text }),
+        Ok(text) => json!({ "uri": uri, "mimeType": resource.mime_type, "blob": base64::engine::general_purpose::STANDARD.encode(text.as_bytes()) }),
+        Err(error) => json!({ "uri": uri, "mimeType": resource.mime_type, "blob": base64::engine::general_purpose::STANDARD.encode(error.into_bytes()) }),
+    })
 }
 
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
@@ -261,6 +331,13 @@ fn tool_definitions() -> Value {
                     "hooks": {"type": "object", "description": "Codex 钩子声明，例如 {\"PreToolUse\": [{\"matcher\": \"^Bash$\", \"script\": \"hooks/guard.mjs\", \"timeout\": 30}]}；写法见指南「Codex 钩子」"},
                     "toolPipeline": {"type": "object", "description": "工具管道声明，例如 {\"preExecute\": [{\"matcher\": \"^Bash$\", \"script\": \"tools/pre.mjs\"}], \"execute\": [...], \"postExecute\": [...]}：preExecute 改参数或拦截，execute 代为执行，postExecute 改写工具结果。写法见指南「工具管道」"},
                     "providers": {"type": "array", "description": "模型供应商，例如 [{\"id\": \"myrelay\", \"protocol\": \"chat\", \"baseUrl\": \"https://…/v1\", \"apiKey\": {\"config\": \"apiKey\"}, \"models\": [\"m1\"]}]：并入 Codex++ 网关供应商池，模型名是 <id>/<模型>。写法见指南「模型供应商」"},
+                    "skills": {"type": "array", "items": {"type": "string"}, "description": "技能目录（包内含 SKILL.md 的目录），例如 [\"skills/review\"]；省略时自动收 skills/*/SKILL.md。启用后装进 ~/.codex/skills，新开对话可用"},
+                    "agents": {"type": "array", "description": "子 agent 预设，例如 [{\"name\": \"reviewer\", \"description\": \"代码审查\", \"instructions\": \"prompts/reviewer.md\", \"model\": \"gpt-5\", \"reasoningEffort\": \"high\"}]：写成 Codex 的 agents 角色"},
+                    "mcpServers": {"type": "object", "description": "外部 MCP 服务器，例如 {\"weather\": {\"command\": \"node\", \"args\": [\"${extensionDir}/mcp/server.mjs\"], \"env\": {\"KEY\": \"${config.apiKey}\"}}} 或 {\"docs\": {\"url\": \"https://…/mcp\"}}：写进 Codex 配置"},
+                    "schedules": {"type": "array", "description": "定时任务，例如 [{\"method\": \"digest\", \"at\": \"09:00\"}, {\"method\": \"poll\", \"everyMinutes\": 30}]：到点调用后台导出的方法，需要同时声明 backend"},
+                    "prompts": {"type": "array", "description": "提示词模板，例如 [{\"name\": \"review\", \"description\": \"审查\", \"arguments\": [{\"name\": \"focus\"}], \"template\": \"prompts/review.md\"}]：模板里写 {{focus}}，经 Codex++ 拓展 MCP 提供"},
+                    "resources": {"type": "array", "description": "只读资源，例如 [{\"name\": \"规范\", \"file\": \"docs/style.md\"}]：经 Codex++ 拓展 MCP 提供给模型读取"},
+                    "instructions": {"type": "string", "description": "全局指令：包内 .md 路径或文字，合并进 ~/.codex/AGENTS.md 里 Codex++ 托管的一段（官方直连也生效）"},
                     "backend": {"type": "object", "description": "常驻后台声明，例如 {\"script\": \"backend/main.mjs\"}；脚本默认导出 async (ctx) => ({ 方法 })，页面用 ctx.backend.call / on 调用。写法见指南「常驻后台」"},
                     "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
                     "tools": {"type": "array", "description": "给模型用的工具声明，例如 [{\"name\": \"lookup\", \"description\": \"…\", \"inputSchema\": {\"type\": \"object\", \"properties\": {…}}, \"script\": \"tools/lookup.mjs\", \"timeout\": 30}]；写法见指南「给模型加工具」", "items": {"type": "object"}},
@@ -298,7 +375,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "codexpp_extension_configure",
-            "description": "修改一个拓展包的配置值（只能改清单 config 里声明过的项），保存后热重载。用户说「把 X 改成 Y」且 X 是拓展配置时用它，不必重写代码。",
+            "description": "修改一个拓展包的配置值（只能改清单 config 里声明过的项），只覆盖给出的键，其余保留；保存后热重载。用户说「把 X 改成 Y」且 X 是拓展配置时用它，不必重写代码。secret 项（如 API Key）在清单里显示为 ******，不要让用户把 Key 发进对话，请他们在管理器里填。",
             "inputSchema": {
                 "type": "object",
                 "properties": {"id": {"type": "string"}, "values": {"type": "object", "description": "要设置的配置项与值"}},
@@ -343,6 +420,20 @@ struct WriteArguments {
     tool_pipeline: Option<Value>,
     #[serde(default)]
     providers: Option<Value>,
+    #[serde(default)]
+    skills: Option<Value>,
+    #[serde(default)]
+    agents: Option<Value>,
+    #[serde(default, rename = "mcpServers")]
+    mcp_servers: Option<Value>,
+    #[serde(default)]
+    instructions: Option<Value>,
+    #[serde(default)]
+    schedules: Option<Value>,
+    #[serde(default)]
+    prompts: Option<Value>,
+    #[serde(default)]
+    resources: Option<Value>,
     #[serde(deserialize_with = "file_list")]
     files: Vec<WriteFile>,
 }
@@ -484,6 +575,18 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 backend: arguments.backend,
                 tool_pipeline: arguments.tool_pipeline,
                 providers: arguments.providers,
+                extra: [
+                    ("skills", arguments.skills),
+                    ("agents", arguments.agents),
+                    ("mcpServers", arguments.mcp_servers),
+                    ("instructions", arguments.instructions),
+                    ("schedules", arguments.schedules),
+                    ("prompts", arguments.prompts),
+                    ("resources", arguments.resources),
+                ]
+                    .into_iter()
+                    .filter_map(|(key, item)| item.map(|item| (key.to_string(), item)))
+                    .collect(),
                 files,
                 assets,
             })?;
@@ -507,9 +610,10 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
             let arguments: ConfigureArguments =
                 serde_json::from_value(arguments).context("codexpp_extension_configure 参数无效")?;
             let key = user_scripts::extension_package_key(&arguments.id);
-            let config = creator.manager.set_extension_config(&key, &arguments.values)?;
+            let config = creator.manager.update_extension_config(&key, &arguments.values)?;
             let mut result = reload_and_report(creator, &key).await?;
-            result["config"] = config;
+            let schema = result.pointer("/extension/package/configSchema").cloned().unwrap_or(Value::Null);
+            result["config"] = user_scripts::mask_secret_config(&schema, &config);
             Ok(result)
         }
         name if name.contains("__") => call_extension_tool(creator, name, arguments).await,
@@ -629,7 +733,7 @@ lines.on("line", async (line) => {
     const fn = typeof module.default === "function" ? module.default : module[input.tool];
     if (typeof fn !== "function") throw new Error(`${input.script} 没有默认导出函数`);
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${input.timeoutMs / 1000} 秒）`)), input.timeoutMs); });
-    const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {}, sessionQuery, sessions, service })), timeout]);
+    const result = await Promise.race([Promise.resolve(fn(input.args ?? {}, { extension: input.extension, tool: input.tool, config: input.config ?? {}, sessionQuery, sessions, service, llm, ui })), timeout]);
     write({ final: { result: result === undefined ? null : result } });
   } catch (error) {
     write({ final: { error: String(error?.stack || error?.message || error) } });
@@ -792,12 +896,21 @@ fn summarize_items(inventory: &Value, only: Option<&str>) -> Vec<Value> {
                         "enabled": item["enabled"],
                         "status": item["status"],
                         "error": item["error"],
-                        "package": item["package"],
+                        "package": mask_package_secrets(&item["package"]),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 清单里的拓展配置交给模型前把 secret 项打码。
+fn mask_package_secrets(package: &Value) -> Value {
+    let mut package = package.clone();
+    if package.get("config").is_some() {
+        package["config"] = user_scripts::mask_secret_config(&package["configSchema"], &package["config"]);
+    }
+    package
 }
 
 /// 从拓展接口层源码里读路由白名单，免得两处维护漂移。

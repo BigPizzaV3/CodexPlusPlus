@@ -103,6 +103,19 @@
        * 订阅会话的新事件：按 intervalMs（默认 2 秒）增量读取，handler(event) 逐条收到。
        * 默认从当前末尾开始（不回放历史），fromSeq 指定起点。返回撤销函数。
        */
+      /** 订阅全部会话的新事件：handler(event, { sessionId })，返回撤销函数。等同 ctx.on("session/event")。 */
+      observeAll(handler) {
+        if (typeof handler !== "function") throw new Error("observeAll 需要 handler(event, { sessionId })");
+        const listener = { handler, scriptKey: "builtin:sessionQuery" };
+        if (!codexPlusExtensionListeners.has("session/event")) codexPlusExtensionListeners.set("session/event", new Set());
+        codexPlusExtensionListeners.get("session/event").add(listener);
+        codexPlusEnsureSessionWatcher();
+        return () => {
+          const listeners = codexPlusExtensionListeners.get("session/event");
+          listeners?.delete(listener);
+          if (listeners && !listeners.size) codexPlusExtensionListeners.delete("session/event");
+        };
+      },
       observeSession(id, handler, options = {}) {
         if (typeof handler !== "function") throw new Error("observeSession 需要 handler(event)");
         let stopped = false;
@@ -144,10 +157,14 @@
    */
   const codexPlusSessionMethods = {
     list: "thread/list",
+    create: "thread/start",
     fork: "thread/fork",
+    rename: "thread/name/set",
     append: "thread/inject_items",
     startTurn: "turn/start",
+    steer: "turn/steer",
     interrupt: "turn/interrupt",
+    compact: "thread/compact/start",
   };
   let codexPlusManagerAtom = null;
 
@@ -224,24 +241,56 @@
       }
       case "interrupt":
         return client.sendRequest(method, { threadId: String(params.id), turnId: String(params.turnId || "") });
+      case "create":
+        // 新建会话；给了 input 时紧接着发起第一轮。
+        {
+          const thread = (await client.sendRequest(method, { ...(params.options || {}) }))?.thread ?? null;
+          if (thread?.id && params.input) {
+            const turn = await codexPlusSessionsCall("startTurn", { id: thread.id, input: params.input, hostId: params.hostId });
+            return { thread, turn };
+          }
+          return { thread, turn: null };
+        }
+      case "rename":
+        if (!String(params.name || "").trim()) throw new Error("rename 需要新名字");
+        return client.sendRequest(method, { threadId: String(params.id), name: String(params.name).trim() });
+      case "steer": {
+        // 会话正忙时往当前这一轮插话。
+        const input = typeof params.input === "string" ? [{ type: "text", text: params.input }] : params.input;
+        if (!Array.isArray(input) || !input.length) throw new Error("steer 需要输入文字");
+        return client.sendRequest(method, { threadId: String(params.id), input, ...(params.turnId ? { expectedTurnId: String(params.turnId) } : {}) });
+      }
+      case "compact":
+        return client.sendRequest(method, { threadId: String(params.id) });
       default:
         throw new Error(`会话服务没有方法 ${name}`);
     }
   }
 
-  /** 内置的会话写入服务（inject: ["sessions"]）：分叉、追加条目、发起 / 中断一轮。读请用 sessionQuery。 */
+  /** 内置的会话写入服务（inject: ["sessions"]）：新建、分叉、改名、追加条目、发起 / 插话 / 中断一轮、压缩。读请用 sessionQuery。 */
   function codexPlusSessionsService() {
     return Object.freeze({
       list: (options = {}) => codexPlusSessionsCall("list", options),
+      create: (input, options) => codexPlusSessionsCall("create", { input, options }),
       fork: (id, options) => codexPlusSessionsCall("fork", { id, options }),
+      rename: (id, name) => codexPlusSessionsCall("rename", { id, name }),
       append: (id, items) => codexPlusSessionsCall("append", { id, items }),
       startTurn: (id, input, options) => codexPlusSessionsCall("startTurn", { id, input, options }),
+      steer: (id, input, turnId) => codexPlusSessionsCall("steer", { id, input, turnId }),
       interrupt: (id, turnId) => codexPlusSessionsCall("interrupt", { id, turnId }),
+      compact: (id) => codexPlusSessionsCall("compact", { id }),
     });
   }
 
   function installCodexPlusBuiltinServices() {
     window.__codexPlusSessionsCall = codexPlusSessionsCall;
+    // 后台、工具、钩子经 CDP 调：window.__codexPlusUiCall("ask", 参数)。
+    window.__codexPlusUiCall = (name, params) => {
+      if (name === "ask") return codexPlusAsk(params || {});
+      if (name === "toast") return showToast(String(params?.message ?? ""), params?.options || {}), true;
+      throw new Error(`界面服务没有方法 ${name}`);
+    };
+    if (!codexPlusServices.has("themes") && typeof codexPlusThemesService === "function") codexPlusProvideService("themes", codexPlusThemesService(), "builtin");
     if (!codexPlusServices.has("sessions")) codexPlusProvideService("sessions", codexPlusSessionsService(), "builtin");
     if (!codexPlusServices.has("sessionQuery")) codexPlusProvideService("sessionQuery", codexPlusSessionQueryService(), "builtin");
     // 全局的多语言服务：写成 inject: ["locale"] 的拓展也能用（ctx.locale 是按实例自动撤销的同一套接口）。
@@ -408,6 +457,69 @@
 
   function codexPlusIsThenable(value) {
     return !!value && typeof value.then === "function";
+  }
+
+  /**
+   * 全部会话的事件流：有拓展监听 `session/event` / `agent/status` 时，按会话更新时间增量读 rollout，
+   * 把新事件逐条发出去。新版 Codex 的通知不经过页面，rollout 是页面能拿到的唯一完整来源。
+   *   - `session/event`：(event, { sessionId })，event 形状同 sessionQuery 的事件日志
+   *   - `agent/status`：({ sessionId, status: "running" | "idle" | "aborted", turn, reason? })
+   * 没人监听时自动停；监听开始前已有的事件不重放，之后新建的会话从头发。
+   */
+  const codexPlusSessionWatchEvents = ["session/event", "agent/status"];
+  let codexPlusSessionWatcher = null;
+
+  function codexPlusWantsSessionWatch() {
+    return codexPlusSessionWatchEvents.some((event) => codexPlusExtensionListeners.get(event)?.size);
+  }
+
+  function codexPlusSessionStatusOf(event) {
+    if (event.type === "turn/start") return { status: "running", turn: event.data?.turn };
+    if (event.type === "turn/complete") return { status: "idle", turn: event.data?.turn };
+    if (event.type === "turn/aborted") return { status: "aborted", turn: event.data?.turn, reason: event.data?.reason ?? null };
+    return null;
+  }
+
+  function codexPlusEnsureSessionWatcher() {
+    if (codexPlusSessionWatcher || !codexPlusWantsSessionWatch()) return;
+    const query = codexPlusSessionQueryService();
+    const cursors = new Map();
+    let primed = false;
+    const tick = async () => {
+      if (!codexPlusWantsSessionWatch()) {
+        codexPlusSessionWatcher = null;
+        return;
+      }
+      try {
+        const sessions = await query.listSessions({ limit: 20 });
+        for (const [index, session] of (sessions || []).entries()) {
+          let cursor = cursors.get(session.id);
+          if (!cursor) {
+            let next = 0;
+            if (!primed) {
+              const tail = await query.listEvents(session.id, { fromEnd: true, limit: 1 }).catch(() => []);
+              next = tail.length ? tail[0].seq + 1 : 0;
+            }
+            cursor = { updatedAt: primed ? null : session.updatedAt, next };
+            cursors.set(session.id, cursor);
+            if (!primed) continue;
+          }
+          // 最近的几个会话每轮都看（更新时间精度只到秒），其余按更新时间变化再读。
+          if (index >= 3 && cursor.updatedAt === session.updatedAt) continue;
+          cursor.updatedAt = session.updatedAt;
+          const events = await query.readEventsSince({ sessionId: session.id, seq: cursor.next, limit: 200 }).catch(() => []);
+          for (const event of events || []) {
+            cursor.next = event.seq + 1;
+            codexPlusEmitExtensionEvent("session/event", [event, { sessionId: session.id }]);
+            const status = codexPlusSessionStatusOf(event);
+            if (status) codexPlusEmitExtensionEvent("agent/status", [{ sessionId: session.id, ...status }]);
+          }
+        }
+        primed = true;
+      } catch {}
+      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 5000 : 1500);
+    };
+    codexPlusSessionWatcher = setTimeout(tick, 0);
   }
 
   /** 通知所有监听者。逐个隔离：一个处理器抛错不影响其余。 */
@@ -755,12 +867,13 @@
     const pollBackendEvents = async () => {
       if (backendPolling) return;
       backendPolling = true;
-      let since = 0;
+      // 首次订阅从队尾开始：后台已在跑时，订阅前的旧事件不重放给这个页面实例。
+      let since = "latest";
       try {
         while (!disposed && backendHandlers.size) {
           let result;
           try {
-            result = await backendBridge("/extensions/backend/events", { since, waitMs: 20000 });
+            result = await backendBridge("/extensions/backend/events", { since, waitMs: since === "latest" ? 0 : 20000 });
           } catch {
             await new Promise((resolve) => setTimeout(resolve, 2000));
             continue;
@@ -772,7 +885,7 @@
               }
             }
           }
-          since = Number(result.next) || since;
+          since = Number(result.next) || (since === "latest" ? 0 : since);
           // 后台还没起：稍后再看，不空转。
           if (!result.running) await new Promise((resolve) => setTimeout(resolve, 3000));
         }
@@ -780,6 +893,14 @@
         backendPolling = false;
       }
     };
+    // 调模型：经 Codex++ 协议代理用当前供应商（不跑拓展网关中间件）。
+    const llm = Object.freeze({
+      complete(options) {
+        const payload = typeof options === "string" ? { input: options } : options ?? {};
+        return backendBridge("/extensions/llm/complete", payload).then((result) => result.result);
+      },
+      listModels: () => backendBridge("/extensions/llm/models", {}).then((result) => result.result),
+    });
     const backend = {
       call(method, params = null, callOptions = {}) {
         const timeoutMs = Number.isFinite(callOptions.timeout) ? Number(callOptions.timeout) : undefined;
@@ -805,6 +926,10 @@
       manifest,
       config,
       backend,
+      llm,
+      get themes() {
+        return codexPlusServices.get("themes")?.value;
+      },
       get disposed() {
         return disposed;
       },
@@ -874,6 +999,19 @@
         handle.refresh = slot.refresh;
         return handle;
       },
+      registerInputTrigger(definition, itemOptions) {
+        return track(codexPlusRegisterInputTrigger(definition, registerOptions(itemOptions)));
+      },
+      registerShortcut(definition, itemOptions) {
+        return track(codexPlusRegisterShortcut(definition, registerOptions(itemOptions)));
+      },
+      registerTheme(definition, itemOptions) {
+        return track(codexPlusRegisterTheme(definition, registerOptions(itemOptions)));
+      },
+      /** 弹对话框问用户，返回 { value, text }；取消为 null。 */
+      ask(question) {
+        return codexPlusAsk(question);
+      },
       registerSidePanel(definition, itemOptions) {
         const panel = codexPlusRegisterExtensionSidePanel(definition, registerOptions(itemOptions));
         const handle = track(panel);
@@ -889,6 +1027,7 @@
         const listener = { handler, scriptKey };
         if (!codexPlusExtensionListeners.has(event)) codexPlusExtensionListeners.set(event, new Set());
         codexPlusExtensionListeners.get(event).add(listener);
+        if (codexPlusSessionWatchEvents.includes(event)) codexPlusEnsureSessionWatcher();
         return track(() => {
           const listeners = codexPlusExtensionListeners.get(event);
           listeners?.delete(listener);
@@ -971,6 +1110,7 @@
         }
         codexPlusExtensionInstances.delete(ctx);
         codexPlusEmitExtensionEvent("extension/dispose", [info]);
+        if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
       },
     };
 
@@ -1001,6 +1141,9 @@
         ctx.dispose();
       });
     }
-    if (!disposed) codexPlusEmitExtensionEvent("extension/apply", [info]);
+    if (!disposed) {
+      codexPlusEmitExtensionEvent("extension/apply", [info]);
+      if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
+    }
     return ctx;
   }

@@ -651,9 +651,16 @@ impl GatewaySettings {
     }
 
     fn merge_extension_providers(mut self, providers: Vec<(String, crate::user_scripts::ExtensionProvider)>) -> Self {
-        for (extension, provider) in providers {
+        for (extension, mut provider) in providers {
             if self.providers.iter().any(|existing| existing.relay.id == provider.id) {
                 continue;
+            }
+            if provider.discover_models {
+                for model in discovered_extension_models(&provider) {
+                    if !provider.models.contains(&model) {
+                        provider.models.push(model);
+                    }
+                }
             }
             let relay = RelayProfile {
                 id: provider.id.clone(),
@@ -690,6 +697,57 @@ impl GatewaySettings {
         }
         self
     }
+}
+
+/// 拓展供应商从上游拉到的模型：供应商 id + 地址 → (拉取时间, 模型)。过期就在后台重拉，这次先用旧的。
+type DiscoveredModels = std::collections::HashMap<String, (std::time::Instant, Vec<String>)>;
+static DISCOVERED_MODELS: std::sync::LazyLock<std::sync::Mutex<DiscoveredModels>> = std::sync::LazyLock::new(Default::default);
+const DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider) -> Vec<String> {
+    let key = format!("{}|{}", provider.id, provider.base_url);
+    let (models, stale) = {
+        let mut cache = DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match cache.get(&key) {
+            Some((at, models)) => (models.clone(), at.elapsed() > DISCOVERY_TTL),
+            None => {
+                // 先占位，免得并发请求各拉一遍。
+                cache.insert(key.clone(), (std::time::Instant::now(), Vec::new()));
+                (Vec::new(), true)
+            }
+        }
+    };
+    if stale {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let relay = RelayProfile {
+                id: provider.id.clone(),
+                base_url: provider.base_url.clone(),
+                api_key: provider.api_key.clone(),
+                no_auth: provider.api_key.is_empty(),
+                protocol: match provider.protocol.as_str() {
+                    "chat" => crate::settings::RelayProtocol::ChatCompletions,
+                    "anthropic" => crate::settings::RelayProtocol::AnthropicMessages,
+                    _ => crate::settings::RelayProtocol::Responses,
+                },
+                ..RelayProfile::default()
+            };
+            DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entry(key.clone()).and_modify(|entry| entry.0 = std::time::Instant::now());
+            handle.spawn(async move {
+                match crate::gateway::model_sync::upstream_models(&relay).await {
+                    Ok(models) => {
+                        DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(key, (std::time::Instant::now(), models));
+                    }
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "extension_providers.discover_failed",
+                            serde_json::json!({ "provider": relay.id, "error": format!("{error:#}") }),
+                        );
+                    }
+                }
+            });
+        }
+    }
+    models
 }
 
 impl GatewayStore {

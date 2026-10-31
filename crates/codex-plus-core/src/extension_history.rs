@@ -127,6 +127,53 @@ pub fn list_sessions(home: &Path, query: &Value) -> anyhow::Result<Value> {
     Ok(json!({ "sessions": sessions, "total": total, "offset": offset, "limit": limit }))
 }
 
+/// 按条件筛会话：条件下推到 SQL，不受「最近 500 条」限制。
+/// `{ id?, cwd?（前缀）, archived?, createdAfter?, createdBefore?, limit? }`
+fn filter_sessions(home: &Path, options: &Value) -> anyhow::Result<Value> {
+    let (connection, columns) = thread_db(home)?;
+    let has = |column: &str| columns.iter().any(|existing| existing == column);
+    let mut conditions = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(id) = options.get("id").and_then(Value::as_str) {
+        conditions.push("id = ?".to_string());
+        values.push(id.to_string().into());
+    }
+    if has("archived") {
+        match options.get("archived").and_then(Value::as_bool) {
+            Some(true) => conditions.push("archived != 0".to_string()),
+            Some(false) => conditions.push("(archived = 0 OR archived IS NULL)".to_string()),
+            // 按 id 精确查时不限归档状态；其余默认只看未归档。
+            None if options.get("id").is_some() => {}
+            None => conditions.push("(archived = 0 OR archived IS NULL)".to_string()),
+        }
+    }
+    if let (Some(cwd), true) = (options.get("cwd").and_then(Value::as_str), has("cwd")) {
+        conditions.push("cwd LIKE ? ESCAPE '\\'".to_string());
+        values.push(format!("{}%", cwd.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")).into());
+    }
+    if has("created_at") {
+        if let Some(after) = options.get("createdAfter").and_then(Value::as_i64) {
+            conditions.push("created_at >= ?".to_string());
+            values.push(after.into());
+        }
+        if let Some(before) = options.get("createdBefore").and_then(Value::as_i64) {
+            conditions.push("created_at < ?".to_string());
+            values.push(before.into());
+        }
+    }
+    let limit = options.get("limit").and_then(Value::as_u64).unwrap_or(MAX_PAGE as u64).clamp(1, MAX_PAGE as u64);
+    let filter = if conditions.is_empty() { String::new() } else { format!(" WHERE {}", conditions.join(" AND ")) };
+    let order = if has("updated_at") { " ORDER BY updated_at DESC" } else { "" };
+    let sql = format!("SELECT {} FROM threads{filter}{order} LIMIT {limit}", select_list(&columns));
+    let mut statement = connection.prepare(&sql)?;
+    let sessions = statement
+        .query_map(params_from_iter(values.iter()), thread_value)?
+        .filter_map(Result::ok)
+        .map(|(session, _)| session)
+        .collect::<Vec<_>>();
+    Ok(Value::Array(sessions))
+}
+
 fn find_thread(home: &Path, id: &str) -> anyhow::Result<(Value, Option<PathBuf>)> {
     let (connection, columns) = thread_db(home)?;
     let sql = format!("SELECT {} FROM threads WHERE id = ?1", select_list(&columns));
@@ -183,7 +230,8 @@ fn output_text(output: &Value) -> String {
 }
 
 /// 把 rollout 整理成事件日志：`{ type, seq, time, data }`，seq 从 0 连续编号。
-/// 类型：`turn/start`、`user/message`、`assistant/message`、`assistant/reasoning`、`tool/call`、`tool/result`。
+/// 类型：`turn/start`、`user/message`、`assistant/message`、`assistant/reasoning`、`tool/call`、`tool/result`、
+/// `turn/complete`（含耗时）、`turn/aborted`（含原因）、`token/usage`、`session/compacted`。
 fn rollout_events(path: &Path) -> anyhow::Result<Vec<Value>> {
     let content = std::fs::read_to_string(path).with_context(|| format!("无法读取 rollout {}", path.display()))?;
     let mut events = Vec::new();
@@ -233,6 +281,32 @@ fn rollout_events(path: &Path) -> anyhow::Result<Vec<Value>> {
                     "turn": turn, "callId": payload["call_id"].as_str().unwrap_or_default(),
                     "output": truncate(&output_text(&payload["output"]), MAX_TEXT),
                 }));
+            }
+            (Some("event_msg"), Some("task_complete")) => {
+                push(&mut events, "turn/complete", time, json!({
+                    "turn": payload["turn_id"].as_str().unwrap_or(&turn),
+                    "durationMs": payload.get("duration_ms").cloned().unwrap_or(Value::Null),
+                    "lastMessage": truncate(payload["last_agent_message"].as_str().unwrap_or_default(), MAX_TEXT),
+                }));
+            }
+            (Some("event_msg"), Some("turn_aborted")) => {
+                push(&mut events, "turn/aborted", time, json!({
+                    "turn": payload["turn_id"].as_str().unwrap_or(&turn),
+                    "reason": payload.get("reason").cloned().unwrap_or(Value::Null),
+                }));
+            }
+            (Some("event_msg"), Some("token_count")) => {
+                if let Some(info) = payload.get("info").filter(|info| !info.is_null()) {
+                    push(&mut events, "token/usage", time, json!({
+                        "turn": turn,
+                        "total": info.get("total_token_usage").cloned().unwrap_or(Value::Null),
+                        "last": info.get("last_token_usage").cloned().unwrap_or(Value::Null),
+                        "contextWindow": info.get("model_context_window").cloned().unwrap_or(Value::Null),
+                    }));
+                }
+            }
+            (Some("compacted"), _) | (Some("event_msg"), Some("context_compacted")) => {
+                push(&mut events, "session/compacted", time, json!({ "turn": turn }));
             }
             (Some("response_item"), Some("reasoning")) => {
                 let summary = payload["summary"]
@@ -363,24 +437,7 @@ pub fn call(home: &Path, method: &str, params: &Value) -> anyhow::Result<Value> 
     let options = params.get("options").cloned().unwrap_or_else(|| params.clone());
     Ok(match method {
         "listSessions" => list_sessions(home, &options)?["sessions"].take(),
-        "filterSessions" => {
-            let mut sessions = list_sessions(home, &json!({ "archived": options.get("archived"), "limit": MAX_PAGE }))?["sessions"].take();
-            let wanted_id = options.get("id").and_then(Value::as_str);
-            let cwd = options.get("cwd").and_then(Value::as_str);
-            let after = options.get("createdAfter").and_then(Value::as_i64);
-            let before = options.get("createdBefore").and_then(Value::as_i64);
-            let limit = options.get("limit").and_then(Value::as_u64).unwrap_or(MAX_PAGE as u64) as usize;
-            let list = sessions.as_array_mut().map(std::mem::take).unwrap_or_default();
-            Value::Array(
-                list.into_iter()
-                    .filter(|session| wanted_id.is_none_or(|id| session["id"] == id))
-                    .filter(|session| cwd.is_none_or(|cwd| session["cwd"].as_str().is_some_and(|value| value.starts_with(cwd))))
-                    .filter(|session| after.is_none_or(|after| session["createdAt"].as_i64().is_some_and(|value| value >= after)))
-                    .filter(|session| before.is_none_or(|before| session["createdAt"].as_i64().is_some_and(|value| value < before)))
-                    .take(limit)
-                    .collect(),
-            )
-        }
+        "filterSessions" => filter_sessions(home, &options)?,
         "readSession" => {
             let (session, events) = session_events(home, &id_param()?)?;
             json!({ "session": session, "events": events })

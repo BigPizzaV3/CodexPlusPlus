@@ -201,7 +201,8 @@ async fn error_middlewares_decide_whether_to_retry() {
     if codex_plus_core::dsh_plugins::locate_node().is_none() {
         return;
     }
-    use codex_plus_core::extension_gateway::decide_retry_for;
+    use codex_plus_core::extension_gateway::{RetryDecision, decide_retry_for};
+    let wait = |ms: u64| Some(RetryDecision { delay: std::time::Duration::from_millis(ms), model: None });
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(&temp);
     write_package(&temp, "a-broken", json!({"error": [{"script": "gateway/a.mjs"}]}), &[("gateway/a.mjs", "export default () => { throw new Error('坏'); }")]);
@@ -209,15 +210,21 @@ async fn error_middlewares_decide_whether_to_retry() {
 export default (error, { path }) => {
   if (error.status === 429 && error.attempt < 2) return { kind: "retry", delayMs: error.json?.retryAfterMs ?? 50 };
   if (error.status === 503 && path === "/v1/responses") return { retry: true, delayMs: 999999 };
+  if (error.status === 404) return { kind: "fallback", model: " gpt-5-mini " };
   return null;
 };"#)]);
     let list = manager.enabled_gateway_error_middlewares().unwrap();
     assert_eq!(list.len(), 2);
     let retry = decide_retry_for(&list, 429, br#"{"retryAfterMs": 120}"#, "/v1/responses", 0).await;
-    assert_eq!(retry, Some(std::time::Duration::from_millis(120)), "坏中间件被跳过，后面的照常决定");
+    assert_eq!(retry, wait(120), "坏中间件被跳过，后面的照常决定");
     assert_eq!(decide_retry_for(&list, 429, b"{}", "/v1/responses", 2).await, None, "拓展自己限制次数");
     assert_eq!(decide_retry_for(&list, 400, b"bad request", "/v1/responses", 0).await, None);
-    assert_eq!(decide_retry_for(&list, 503, b"", "/v1/responses", 0).await, Some(std::time::Duration::from_secs(10)), "间隔最多 10 秒");
+    assert_eq!(decide_retry_for(&list, 503, b"", "/v1/responses", 0).await, wait(10_000), "间隔最多 10 秒");
+    assert_eq!(
+        decide_retry_for(&list, 404, b"", "/v1/responses", 0).await,
+        Some(RetryDecision { delay: std::time::Duration::ZERO, model: Some("gpt-5-mini".into()) }),
+        "降级：换模型重发"
+    );
     assert_eq!(decide_retry_for(&[], 503, b"", "/v1/responses", 0).await, None, "没有中间件时不重试");
 }
 

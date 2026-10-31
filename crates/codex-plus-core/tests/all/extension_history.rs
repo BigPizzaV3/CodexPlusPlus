@@ -18,8 +18,11 @@ fn home_with_threads() -> tempfile::TempDir {
         json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"cmd\":\"ls\"}", "call_id": "c1"}}),
         json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "a.txt"}}),
         json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "m1", "phase": "final_answer", "content": [{"type": "output_text", "text": "画好了"}]}}),
+        json!({"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": 120}, "last_token_usage": {"total_tokens": 20}, "model_context_window": 1000}}}),
+        json!({"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-1", "duration_ms": 1500, "last_agent_message": "画好了"}}),
         json!({"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-2"}}),
         json!({"type": "response_item", "payload": {"type": "message", "role": "user", "id": "u2", "content": [{"type": "input_text", "text": "再改改"}]}}),
+        json!({"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "turn-2", "reason": "interrupted"}}),
     ];
     fs::write(&rollout, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\nnot json\n").unwrap();
     let db = rusqlite::Connection::open(temp.path().join("state_5.sqlite")).unwrap();
@@ -54,6 +57,8 @@ fn session_queries_list_filter_and_search_read_only() {
     assert_eq!(ids(&call(home, "listSessions", &json!({"archived": true})).unwrap()), ["t-c"]);
     assert_eq!(ids(&call(home, "filterSessions", &json!({"cwd": "/wo", "createdAfter": 1})).unwrap()), ["t-a", "t-b"]);
     assert_eq!(ids(&call(home, "filterSessions", &json!({"id": "t-b"})).unwrap()), ["t-b"]);
+    assert_eq!(ids(&call(home, "filterSessions", &json!({"id": "t-c"})).unwrap()), ["t-c"], "按 id 查不受归档状态限制");
+    assert_eq!(ids(&call(home, "filterSessions", &json!({"cwd": "/work", "archived": true})).unwrap()), ["t-c"]);
     assert_eq!(call(home, "readTitle", &json!("t-a")).unwrap(), "画曲线图");
 
     // % 按字面量匹配，不当通配符；游标分页。
@@ -84,7 +89,8 @@ fn session_events_follow_the_event_log_shape() {
     let kinds = events.iter().map(|event| event["type"].as_str().unwrap()).collect::<Vec<_>>();
     assert_eq!(kinds, [
         "turn/start", "user/message", "assistant/reasoning", "tool/call", "tool/result", "assistant/message",
-        "turn/start", "user/message",
+        "token/usage", "turn/complete",
+        "turn/start", "user/message", "turn/aborted",
     ]);
     assert!(events.iter().enumerate().all(|(index, event)| event["seq"] == index), "seq 连续");
     assert_eq!(events[1]["data"]["text"], "帮我画图", "去掉开发者消息与环境上下文");
@@ -92,7 +98,10 @@ fn session_events_follow_the_event_log_shape() {
     assert_eq!(events[3]["data"]["name"], "shell");
     assert_eq!(events[4]["data"]["output"], "a.txt");
     assert_eq!(events[5]["data"]["phase"], "final_answer");
-    assert_eq!(events[7]["data"]["turn"], "turn-2");
+    assert_eq!(events[6]["data"]["contextWindow"], 1000);
+    assert_eq!(events[7]["data"], json!({"turn": "turn-1", "durationMs": 1500, "lastMessage": "画好了"}));
+    assert_eq!(events[9]["data"]["turn"], "turn-2");
+    assert_eq!(events[10]["data"]["reason"], "interrupted");
     assert!(!read.to_string().contains("密文"), "不返回加密推理");
 
     let messages = call(home, "listEvents", &json!({"id": "t-a", "types": ["user/message", "assistant/message"], "fromEnd": true, "limit": 2})).unwrap();
@@ -104,7 +113,7 @@ fn session_events_follow_the_event_log_shape() {
     assert_eq!(window.as_array().unwrap().iter().map(|event| event["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [2, 3, 4]);
     let hits = call(home, "searchEvents", &json!({"query": "再改"})).unwrap();
     assert_eq!(hits["items"][0]["sessionId"], "t-a");
-    assert_eq!(hits["items"][0]["event"]["seq"], 7);
+    assert_eq!(hits["items"][0]["event"]["seq"], 9);
 }
 
 #[test]
@@ -112,18 +121,18 @@ fn cached_events_refresh_when_the_rollout_grows() {
     let _guard = crate::common::global_state_lock();
     let home = home_with_threads();
     let home = home.path();
-    let before = call(home, "readEventsSince", &json!({"sessionId": "t-a", "seq": 6})).unwrap();
-    assert_eq!(before.as_array().unwrap().len(), 2, "seq 6、7");
+    let before = call(home, "readEventsSince", &json!({"sessionId": "t-a", "seq": 9})).unwrap();
+    assert_eq!(before.as_array().unwrap().len(), 2, "seq 9、10");
     // 往 rollout 追加一条助手消息：缓存按修改时间与大小失效，增量读取能拿到新事件。
     let rollout = home.join("rollout-a.jsonl");
     let mut content = std::fs::read_to_string(&rollout).unwrap();
     content.push_str(&json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "m2", "content": [{"type": "output_text", "text": "改好了"}]}}).to_string());
     content.push('\n');
     std::fs::write(&rollout, content).unwrap();
-    let after = call(home, "readEventsSince", &json!({"sessionId": "t-a", "seq": 8})).unwrap();
+    let after = call(home, "readEventsSince", &json!({"sessionId": "t-a", "seq": 11})).unwrap();
     assert_eq!(after[0]["type"], "assistant/message");
     assert_eq!(after[0]["data"]["text"], "改好了");
-    assert_eq!(after[0]["seq"], 8);
+    assert_eq!(after[0]["seq"], 11);
     let all = call(home, "searchEvents", &json!({"query": "改好"})).unwrap();
-    assert_eq!(all["items"][0]["event"]["seq"], 8, "全量搜索看到新内容");
+    assert_eq!(all["items"][0]["event"]["seq"], 11, "全量搜索看到新内容");
 }

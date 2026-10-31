@@ -59,7 +59,7 @@ const runHooks = (input) => Promise.all(input.hooks.map(async (hook) => {
     if (hook.adapter === "preExecute" || hook.adapter === "execute") {
       // 工具管道：参数是工具输入，上下文带工具名、调用 id 与完整负载。
       const payload = structuredClone(input.payload);
-      const context = { event: input.event, extension: hook.id, config: hook.config ?? {}, name: payload?.tool_name ?? "", callId: payload?.tool_use_id ?? null, cwd: payload?.cwd ?? null, payload, sessionQuery, sessions, service };
+      const context = { event: input.event, extension: hook.id, config: hook.config ?? {}, name: payload?.tool_name ?? "", callId: payload?.tool_use_id ?? null, cwd: payload?.cwd ?? null, payload, sessionQuery, sessions, service, llm, ui };
       const result = await race(fn(payload?.tool_input ?? null, context));
       if (result === undefined || result === null) return { id: hook.id, output: null };
       if (hook.adapter === "execute") return { id: hook.id, executed: typeof result === "string" ? result : JSON.stringify(result) };
@@ -68,7 +68,7 @@ const runHooks = (input) => Promise.all(input.hooks.map(async (hook) => {
       }
       return { id: hook.id, output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: result } } };
     }
-    const output = await race(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {}, sessionQuery, sessions, service }));
+    const output = await race(fn(structuredClone(input.payload), { event: input.event, extension: hook.id, config: hook.config ?? {}, sessionQuery, sessions, service, llm, ui }));
     return { id: hook.id, output: output ?? null };
   } catch (error) {
     return { id: hook.id, error: String(error?.stack || error?.message || error) };
@@ -180,13 +180,20 @@ fn store_tool_execution(manager: &UserScriptManager, extension: &str, payload: &
     Ok(token)
 }
 
-/// 按令牌取回代执行结果。
-pub fn load_tool_execution(manager: &UserScriptManager, token: &str) -> Option<String> {
+/// 按令牌取回代执行结果。记录里存了调用 id 的，必须与这条工具输出的 `call_id` 一致，
+/// 免得别的输出里恰好出现旧令牌（比如 grep 到数据目录）时被整条换成旧结果。
+pub fn load_tool_execution(manager: &UserScriptManager, token: &str, call_id: &str) -> Option<String> {
     if token.is_empty() || !token.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return None;
     }
     let text = std::fs::read_to_string(manager.tool_exec_dir().join(format!("{token}.json"))).ok()?;
-    serde_json::from_str::<Value>(&text).ok()?.get("output")?.as_str().map(str::to_string)
+    let record = serde_json::from_str::<Value>(&text).ok()?;
+    if let Some(expected) = record.get("callId").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+        if expected != call_id {
+            return None;
+        }
+    }
+    record.get("output")?.as_str().map(str::to_string)
 }
 
 /// 按 Codex 钩子协议合并多个拓展的输出。规则（与同一事件多条钩子的语义一致）：
@@ -421,12 +428,26 @@ pub fn sync_codex_config(
     Ok(json!({ "events": events, "added": added, "changed": changed, "configPath": path.to_string_lossy() }))
 }
 
-/// 用默认位置同步（Codex home、当前程序）。给拓展增删启停之后调用，失败只记日志。
+/// 用默认位置同步（Codex home、当前程序）：钩子分发条目，以及拓展的技能、子 agent、MCP 服务器、全局指令。
+/// 给拓展增删启停之后调用，失败只记日志。只同步默认的拓展目录：测试等用临时目录的 manager
+/// 不能把用户真实的 Codex 配置改成测试里的那一套。
 pub fn sync_default(manager: &UserScriptManager) -> Value {
+    if manager.config_path() != crate::user_scripts::default_user_script_manager().config_path() {
+        return json!({ "skipped": "不是默认的拓展目录，不同步 Codex 配置" });
+    }
+    let home = crate::codex_home::default_codex_home_dir();
     let result = std::env::current_exe()
         .context("无法定位 Codex++ 程序")
-        .and_then(|executable| {
-            sync_codex_config(&crate::codex_home::default_codex_home_dir(), &executable, manager)
+        .and_then(|executable| sync_codex_config(&home, &executable, manager))
+        .map(|mut report| {
+            report["codex"] = match manager.enabled_codex_assets().and_then(|enabled| crate::extension_codex::sync(&home, manager, &enabled)) {
+                Ok(codex) => codex,
+                Err(error) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log("extension_codex.sync_failed", json!({ "error": format!("{error:#}") }));
+                    json!({ "error": format!("{error:#}") })
+                }
+            };
+            report
         });
     match result {
         Ok(report) => report,

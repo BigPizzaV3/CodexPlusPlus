@@ -341,6 +341,9 @@ pub async fn handle_bridge_request(
         "/extensions/backend/events" => crate::extension_backend::route_events(&payload).await,
         "/extensions/backend/stop" => crate::extension_backend::route_stop(&payload).await,
         "/extensions/services/call" => crate::extension_backend::route_service_call(&payload).await,
+        // 拓展自己调模型（ctx.llm）：经协议代理用当前供应商，不跑拓展网关中间件。
+        "/extensions/llm/complete" => crate::extension_llm::route_complete(&payload).await,
+        "/extensions/llm/models" => crate::extension_llm::route_models(),
         "/extensions/history" => {
             let payload = payload.clone();
             tokio::task::spawn_blocking(move || crate::extension_history::route(&payload))

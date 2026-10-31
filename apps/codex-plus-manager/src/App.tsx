@@ -716,6 +716,8 @@ type UserScriptInventory = {
       providers?: Array<{ id: string; name: string; models: string[] }>;
       toolPipeline?: { preExecute?: number; execute?: number; postExecute?: number }; skippedAssets?: string[];
       locales?: Record<string, { title?: string | null; description?: string | null }>;
+      http?: boolean; schedules?: Array<{ method: string; everyMinutes?: number | null; at?: string | null }>;
+      codex?: { skills?: string[]; agents?: string[]; mcpServers?: string[]; instructions?: boolean; prompts?: string[]; resources?: string[] };
     } | null;
     enabled: boolean;
     status: string;
@@ -16343,6 +16345,15 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
     pkg?.gatewayRequest || pkg?.gatewayResponse || pkg?.gatewayError
       ? { text: tf("网关中间件：{0}", [joined([!!pkg.gatewayRequest && t("请求"), !!pkg.gatewayResponse && t("响应流"), !!pkg.gatewayError && t("失败重试")])]) }
       : null,
+    pkg?.codex?.skills?.length ? { text: tf("技能：{0}", [pkg.codex.skills.join("、")]) } : null,
+    pkg?.codex?.agents?.length ? { text: tf("子 agent：{0}", [pkg.codex.agents.join("、")]) } : null,
+    pkg?.codex?.mcpServers?.length ? { text: tf("MCP 服务器：{0}", [pkg.codex.mcpServers.join("、")]) } : null,
+    pkg?.codex?.instructions ? { text: t("全局指令") } : null,
+    pkg?.codex?.prompts?.length || pkg?.codex?.resources?.length
+      ? { text: tf("提示词 / 资源：{0}", [[...(pkg.codex.prompts ?? []), ...(pkg.codex.resources ?? [])].join("、")]) }
+      : null,
+    pkg?.schedules?.length ? { text: tf("定时任务：{0}", [pkg.schedules.map((item) => item.at ? `${item.method} ${item.at}` : tf("{0} 每 {1} 分钟", [item.method, String(item.everyMinutes ?? "")])).join("、")]) } : null,
+    pkg?.http ? { text: tf("HTTP 路由：/ext/{0}/", [pkg.id]) } : null,
     pkg?.skippedAssets?.length
       ? { text: tf("资源超出大小上限未加载：{0}", [pkg.skippedAssets.join("、")]), tone: "warn" as const, title: pkg.skippedAssets.join("\n") }
       : null,

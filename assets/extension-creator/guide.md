@@ -203,7 +203,9 @@ export default (error) => (error.status === 429 && error.attempt < 2 ? { retry: 
 ```
 
 - `error` 是 `{ status, body（文本，最多 64 KiB）, json（能解析时）, path, attempt（已重试次数）}`。
-- 返回 `{ retry: true, delayMs }`（或 `{ kind: "retry" }`）即重发同一请求；最多 3 次，间隔最多 10 秒。
+- 返回 `{ retry: true, delayMs }`（或 `{ kind: "retry" }`）即重发同一请求；返回 `{ kind: "fallback", model: "备用模型" }` 即换模型重发；
+  最多 3 次，间隔最多 10 秒。
+- 网关请求中间件想加请求头时写第二个参数的 `headers`（`context.headers["x-trace"] = "1"`），鉴权类头会被忽略。
 
 ## 工具管道（改工具参数、代为执行、改工具结果）
 
@@ -269,19 +271,54 @@ export default async function* (context, next) {
   `observeSession(id, handler, { intervalMs })`（订阅新事件，返回撤销函数；页面与后台可用）。
 - 会话：`{ id, title, cwd, model, createdAt, updatedAt, archived, preview, gitBranch }`。
 - 事件：`{ type, seq, time, data }`，`type` 为 `turn/start`、`user/message`、`assistant/message`、`assistant/reasoning`、
-  `tool/call`、`tool/result`；`data` 里有 `turn`、`text` / `name` / `input` / `output` 等。
+  `tool/call`、`tool/result`、`turn/complete`、`turn/aborted`、`token/usage`、`session/compacted`；`data` 里有 `turn`、`text` / `name` / `input` / `output` 等。
+- 跟踪所有会话：页面 `ctx.on("session/event", (event, { sessionId }) => …)`、`ctx.on("agent/status", ({ sessionId, status }) => …)`
+  （status 为 running / idle / aborted）；后台 `sessionQuery.observeAll(handler, { onStatus })`。`codex/turn/completed` 这类旧事件在新版 Codex 里收不到，不要用。
 - 当前页面所在会话的 id：消息插槽回调里的 `message.conversationId`。钩子脚本的第二个参数里也有 `sessionQuery`。
 
 ## 写会话（分叉、追加条目、让 agent 跑一轮）
 
-`inject: ["sessions"]` 后（后台、工具、钩子的上下文里也有 `sessions`）：`fork(id)` 分叉、`append(id, "文字" | [{ role, text }])`
-追加条目、`startTurn(id, "文字")` 发起一轮（会真的调用模型，只在用户要求时用）、`interrupt(id, turnId)`、`list()`。
+`inject: ["sessions"]` 后（后台、工具、钩子的上下文里也有 `sessions`）：`create("文字")` 新建会话并跑第一轮、`fork(id)` 分叉、
+`rename(id, "标题")`、`append(id, "文字" | [{ role, text }])` 追加条目、`startTurn(id, "文字")` 发起一轮、`steer(id, "文字")`
+往正在跑的一轮插话（这三个会真的调用模型，只在用户要求时用）、`interrupt(id, turnId)`、`compact(id)`、`list()`。
+
+## 让拓展自己调模型
+
+页面 `ctx.llm`，后台 / 工具 / 钩子上下文里的 `llm`：`await llm.complete({ input: "文字或消息数组", instructions?, model?, reasoningEffort? })`
+→ `{ text, model, usage }`；`llm.listModels()` → `{ models, default }`。用当前供应商，会消耗额度，不经过拓展网关中间件。
+
+## 技能、子 agent、MCP 服务器、全局指令、提示词与资源
+
+`codexpp_extension_write` 的参数：
+- `skills`：包内含 `SKILL.md` 的目录（省略时自动收 `skills/*/SKILL.md`），装进 `~/.codex/skills`。
+- `agents`：`[{ name, description, instructions: "prompts/x.md" 或文字, model?, reasoningEffort? }]`，写成 Codex 的子 agent 角色。
+- `mcpServers`：`{ 名字: { command, args, env } | { url } }`，写进 Codex 配置；`${extensionDir}`、`${config.键}` 会被替换。
+- `instructions`：文字或包内 .md，合并进全局 AGENTS.md（官方直连也生效）——用户要「改系统提示词」「每次都遵守某规则」时用它。
+- `prompts`：`[{ name, description, arguments: [{ name, required }], template: "文字或 .md，含 {{参数}}" }]`；
+  `resources`：`[{ name, file: "docs/x.md" }]`。两者经 Codex++ 拓展 MCP 提供。
+- 前四类在新开的 Codex 对话里生效，提醒用户新开对话。
+
+## Webhook 与定时任务
+
+- `backend: { "script": "backend/main.mjs", "http": true }` 后，`http://127.0.0.1:<Codex++ 本地代理端口>/ext/<拓展 id>/<路径>`
+  交给后台导出的 `http({ method, path, query, headers, body, json })`，返回字符串或 `{ status, json | body }`。
+- `schedules: [{ method: "digest", at: "09:00" }, { method: "poll", everyMinutes: 30 }]`：到点调用后台方法，需要声明 `backend`。
+
+## 输入触发、快捷键、主题、问用户
+
+- `ctx.registerInputTrigger({ trigger: "@", items: async (query) => [{ label, description, insert }] })`：输入框里打 @ 时弹候选。
+- `ctx.registerShortcut({ key: "Mod+Shift+K", run })`：Mod 在 macOS 是 ⌘；必须带修饰键。
+- `ctx.registerTheme({ id, name, variables: { "--变量": "值" }, css })`，`ctx.themes.apply(id)` 切换，`apply(null)` 恢复。
+- `await ctx.ask({ title, message, options: [{ value, label }], input: { placeholder } })` → `{ value, text }` 或 null；
+  后台 / 工具 / 钩子里用 `ui.ask(...)`、`ui.toast("文字")`。
+- 新插槽位置：`turn.after`（每轮末尾，render 收到 turnKey）、`sessionRow.prefix` / `sessionRow.suffix`（侧栏会话标题前后，收到 sessionId）、`overlay`（全窗口浮层）。
 
 ## 提供模型供应商
 
 在 `codexpp_extension_write` 的 `providers` 参数里声明 `[{ id, name, protocol: "responses" | "chat" | "anthropic", baseUrl,
 apiKey: { "config": "apiKey" }, models: [...] }]`，同时在 `config` 里声明 `apiKey`（string、secret）。并入 Codex++ 网关后，
-模型名是 `<id>/<模型>`，要在网关模式下使用。Key 让用户在拓展设置里填，不要写进代码。
+模型名是 `<id>/<模型>`，要在网关模式下使用。Key 让用户在拓展设置里填，不要写进代码，也不要让用户把 Key 发进对话。
+上游有 `/models` 接口时可以写 `discoverModels: true` 自动拉模型列表。
 
 ## 拓展之间共享能力（服务）
 
@@ -296,7 +333,7 @@ codexPlus.extension({ inject: ["wordCounter"], apply(ctx) { ctx.toast(String(ctx
 
 - 服务名是全局扁平的，重名会报错；可选依赖用 `ctx.get("名字")`（不存在时为 undefined）。
 - `ctx.inject(["名字"], (sub) => { ... })` 开一个子作用域，只让依赖那个服务的部分挂起。
-- 内置服务：`sessionQuery`（只读会话查询）、`locale`（多语言）。
+- 内置服务：`sessionQuery`（只读会话查询）、`sessions`（会话写入）、`locale`（多语言）、`themes`（主题）。
 - 后台也能提供服务，给页面、别的后台、模型工具、钩子共用：在 `backend` 里写 `"provides": ["counter"]`，后台默认导出里
   `provide("counter", { add(n) { ... } })`；别处用 `service("counter").add(1)`（后台、工具、钩子），页面直接
   `inject: ["counter"]`。所有调用都落到同一个后台进程，状态是共享的。

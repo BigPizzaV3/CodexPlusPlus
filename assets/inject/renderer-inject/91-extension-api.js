@@ -311,6 +311,18 @@
        * sidebar.bottom、titlebar。render({ container, slot }) 在容器新建时调用（Codex 重建 DOM 后会再调），
        * 可返回清理函数。返回的撤销函数上带 refresh() 强制重画。
        */
+      registerInputTrigger(definition, options = {}) {
+        return codexPlusRegisterInputTrigger(definition, options);
+      },
+      registerShortcut(definition, options = {}) {
+        return codexPlusRegisterShortcut(definition, options);
+      },
+      registerTheme(definition, options = {}) {
+        return codexPlusRegisterTheme(definition, options);
+      },
+      ask(question) {
+        return codexPlusAsk(question);
+      },
       registerSlot(definition, options = {}) {
         return codexPlusRegisterExtensionSlot(definition, options);
       },

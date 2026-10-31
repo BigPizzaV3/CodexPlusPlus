@@ -1759,6 +1759,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         let _ = debug_port;
     }
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        // 拓展的定时任务跟着托管后台的这个进程走。
+        crate::extension_backend::start_scheduler();
         let bridge_reinjector = self.bridge_reinjector.lock().await.clone();
         let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -2109,6 +2111,19 @@ pub(crate) async fn handle_helper_connection_on(
         }))?;
         write_http_response(&mut stream, "403 Forbidden", "application/json; charset=utf-8", &body)
             .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    // 拓展挂的 HTTP 路由（webhook）：/ext/<拓展 id>/…，交给声明了 backend.http 的拓展后台处理。
+    // 网页（带 Origin）发来的一律拒绝，免得随便一个页面就能触发本机拓展。
+    if path.starts_with("/ext/") {
+        let (status, content_type, body) = if header_value_from_headers(&request_headers, "origin").is_some_and(|origin| !origin.trim().is_empty()) {
+            (403, "application/json; charset=utf-8".to_string(), br#"{"error":"extension routes do not accept browser requests"}"#.to_vec())
+        } else {
+            crate::extension_backend::route_http(method, raw_path, &request_headers, &request.body).await
+        };
+        let status_line = format!("{status} {}", if (200..300).contains(&status) { "OK" } else { "Error" });
+        write_http_response(&mut stream, &status_line, &content_type, &body).await?;
         stream.shutdown().await?;
         return Ok(());
     }

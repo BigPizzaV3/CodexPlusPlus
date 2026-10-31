@@ -16,7 +16,7 @@ const CHAIN_LIMIT: Duration = Duration::from_secs(15);
 
 /// stdin：`{ path, body, step, middlewares: [{ id, script, timeoutMs }] }`；按顺序调用默认导出，
 /// 返回对象就作为下一个的输入，返回 `{ reject: "原因" }` 即拒绝这一步。
-/// stdout：`{ body, changed, errors: [{ id, error }], rejected: { id, reason } | null }`。
+/// stdout：`{ body, changed, errors: [{ id, error }], rejected: { id, reason } | null, headers }`。
 const RUNNER: &str = r#"
 import { pathToFileURL } from "node:url";
 const chunks = [];
@@ -26,6 +26,8 @@ let body = input.body;
 let changed = false;
 let rejected = null;
 const errors = [];
+// 中间件可以往 context.headers 里加请求头（发给上游时附上）；鉴权类的头由 Codex++ 过滤掉。
+const headers = {};
 for (const item of input.middlewares) {
   let timer;
   try {
@@ -33,7 +35,7 @@ for (const item of input.middlewares) {
     const fn = typeof module.default === "function" ? module.default : module.request;
     if (typeof fn !== "function") { errors.push({ id: item.id, error: `${item.script} 没有默认导出函数` }); continue; }
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${item.timeoutMs / 1000} 秒）`)), item.timeoutMs); });
-    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id, config: item.config ?? {}, step: input.step })), timeout]);
+    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { path: input.path, extension: item.id, config: item.config ?? {}, step: input.step, headers })), timeout]);
     // { reject: "原因" }：这一步不发给模型，Codex 收到带原因的错误。后面的中间件不再跑。
     if (next && typeof next === "object" && !Array.isArray(next) && typeof next.reject === "string" && Object.keys(next).length === 1) {
       rejected = { id: item.id, reason: next.reject };
@@ -46,7 +48,7 @@ for (const item of input.middlewares) {
     clearTimeout(timer);
   }
 }
-process.stdout.write(JSON.stringify({ body, changed, errors, rejected }));
+process.stdout.write(JSON.stringify({ body, changed, errors, rejected, headers }));
 "#;
 
 /// 启用中的中间件清单缓存。每次模型请求都要查一遍，扫目录、读清单不能每次都做；
@@ -79,6 +81,41 @@ tokio::task_local! {
 
 fn already_applied() -> bool {
     EXTENSIONS_ALREADY_APPLIED.try_with(|applied| *applied).unwrap_or(false)
+}
+
+tokio::task_local! {
+    /// 请求中间件加的请求头：协议代理在发往上游时附上（只在这一次请求的 future 里可见）。
+    pub static EXTENSION_HEADERS: std::cell::RefCell<Vec<(String, String)>>;
+}
+
+/// 当前请求上拓展加的请求头。
+pub fn extension_headers() -> Vec<(String, String)> {
+    EXTENSION_HEADERS.try_with(|headers| headers.borrow().clone()).unwrap_or_default()
+}
+
+fn set_extension_headers(headers: Vec<(String, String)>) {
+    let _ = EXTENSION_HEADERS.try_with(|current| *current.borrow_mut() = headers);
+}
+
+/// 拓展只能加自定义头：鉴权、Cookie、Host、内容长度 / 类型这类由 Codex++ 自己管。
+pub fn allowed_headers(raw: &Value) -> Vec<(String, String)> {
+    const BLOCKED: &[&str] = &["authorization", "proxy-authorization", "cookie", "host", "content-length", "content-type", "transfer-encoding", "connection", "x-api-key", "api-key"];
+    raw.as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, value)| {
+            let name = name.trim().to_ascii_lowercase();
+            let value = match value {
+                Value::String(text) => text.clone(),
+                Value::Number(number) => number.to_string(),
+                Value::Bool(flag) => flag.to_string(),
+                _ => return None,
+            };
+            let valid = !name.is_empty() && name.len() <= 64 && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') && value.len() <= 4096 && !value.contains(['\r', '\n']);
+            (valid && !BLOCKED.contains(&name.as_str()) && name != EXTENSIONS_APPLIED_HEADER).then_some((name, value))
+        })
+        .take(32)
+        .collect()
 }
 
 /// 原始请求头里是否带了「已跑过拓展中间件」的标记。
@@ -212,8 +249,13 @@ fn exec_token(output: &Value) -> Option<String> {
         Value::String(text) => text.clone(),
         other => other.to_string(),
     };
-    let start = text.find("[[codexpp-exec:")? + "[[codexpp-exec:".len();
+    // 标记由钩子追加在拒绝理由末尾：取最后一个，且其后只能剩空白或引号等收尾字符。
+    let start = text.rfind("[[codexpp-exec:")? + "[[codexpp-exec:".len();
     let end = text[start..].find("]]")? + start;
+    let tail = &text[end + 2..];
+    if tail.chars().any(|ch| ch.is_alphanumeric()) {
+        return None;
+    }
     Some(text[start..end].to_string())
 }
 
@@ -227,8 +269,9 @@ async fn apply_tool_pipeline(
     };
     // 代执行结果换回。
     for item in input.iter_mut().filter(|item| is_tool_output(item)) {
+        let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or_default().to_string();
         if let Some(token) = item.get("output").and_then(exec_token) {
-            if let Some(output) = crate::extension_hooks::load_tool_execution(manager, &token) {
+            if let Some(output) = crate::extension_hooks::load_tool_execution(manager, &token, &call_id) {
                 item["output"] = Value::String(output);
             }
         }
@@ -272,7 +315,7 @@ async fn apply_tool_pipeline(
         }
     }
     if !pending.is_empty() {
-        match run_post_execute(post_execute, pending).await {
+        match run_post_execute(post_execute, pending.clone()).await {
             Ok(reply) => {
                 for error in reply["errors"].as_array().into_iter().flatten() {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -293,6 +336,13 @@ async fn apply_tool_pipeline(
                     "extension_gateway.post_execute_failed",
                     json!({ "error": format!("{error:#}") }),
                 );
+                // 整条链超时 / 失败：这批输出记成「不改」，免得之后每个请求都再等一遍。
+                let mut cache = POST_EXECUTE_RESULTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                for item in &pending {
+                    if let Some(key) = item["key"].as_str() {
+                        cache.insert(key.to_string(), None);
+                    }
+                }
                 return;
             }
         }
@@ -345,6 +395,7 @@ for (const item of input.middlewares) {
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${item.timeoutMs / 1000} 秒）`)), item.timeoutMs); });
     const result = await Promise.race([Promise.resolve(fn(structuredClone(input.error), { path: input.error.path, extension: item.id, config: item.config ?? {} })), timeout]);
     if (result && (result.retry === true || result.kind === "retry")) { decision = { id: item.id, delayMs: Number(result.delayMs) || 0 }; break; }
+    if (result && result.kind === "fallback" && typeof result.model === "string" && result.model.trim()) { decision = { id: item.id, delayMs: Number(result.delayMs) || 0, model: result.model.trim() }; break; }
   } catch (error) {
     errors.push({ id: item.id, error: String(error?.stack || error?.message || error) });
   } finally {
@@ -374,13 +425,20 @@ fn cached_error_middlewares() -> MiddlewareList {
     list
 }
 
+/// 失败中间件的决定：等多久重发；`model` 非空时换这个模型重发（降级）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetryDecision {
+    pub delay: Duration,
+    pub model: Option<String>,
+}
+
 /// 上游返回错误时问拓展要不要重试；要就返回等待间隔。读过的响应体会放回 `buffered_body`，
 /// 不重试时调用方照常拿到原错误。
 pub async fn decide_retry(
     response: &mut crate::protocol_proxy::UpstreamProxyResponse,
     request_path: &str,
     attempt: usize,
-) -> Option<Duration> {
+) -> Option<RetryDecision> {
     if already_applied() {
         return None;
     }
@@ -393,7 +451,7 @@ pub async fn decide_retry_with(
     response: &mut crate::protocol_proxy::UpstreamProxyResponse,
     request_path: &str,
     attempt: usize,
-) -> Option<Duration> {
+) -> Option<RetryDecision> {
     if middlewares.is_empty() {
         return None;
     }
@@ -412,7 +470,7 @@ pub async fn decide_retry_for(
     body: &[u8],
     request_path: &str,
     attempt: usize,
-) -> Option<Duration> {
+) -> Option<RetryDecision> {
     if middlewares.is_empty() {
         return None;
     }
@@ -443,9 +501,12 @@ pub async fn decide_retry_for(
             let decision = reply.get("decision").filter(|decision| decision.is_object())?;
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "extension_gateway.retry",
-                json!({ "extension": decision.get("id"), "status": status, "attempt": attempt }),
+                json!({ "extension": decision.get("id"), "status": status, "attempt": attempt, "model": decision.get("model") }),
             );
-            Some(Duration::from_millis(decision["delayMs"].as_u64().unwrap_or(0)).min(RETRY_DELAY_LIMIT))
+            Some(RetryDecision {
+                delay: Duration::from_millis(decision["delayMs"].as_u64().unwrap_or(0)).min(RETRY_DELAY_LIMIT),
+                model: decision.get("model").and_then(Value::as_str).map(str::to_string),
+            })
         }
         Err(error) => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -477,6 +538,7 @@ async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)],
             if result["changed"] == true && result["body"].is_object() {
                 *request = result["body"].clone();
             }
+            set_extension_headers(allowed_headers(&result["headers"]));
             Ok(())
         }
         Err(error) => {
@@ -817,6 +879,26 @@ pub struct ResponseFilter {
     passthrough: bool,
     /// 链路已经结束（中间件不再要源事件）：之后的源事件丢弃。
     done: bool,
+    /// 已向 worker 发过 end / abort，会话已在 worker 侧清理。
+    closed: bool,
+}
+
+/// 回复中途断开（Codex 取消、连接中断）时 filter 被直接丢弃，不会走到 finish：
+/// 补发 abort，免得 worker 里的中间件会话一直挂着。
+impl Drop for ResponseFilter {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let worker = self.worker.clone();
+        let rid = self.rid;
+        handle.spawn(async move {
+            let _ = worker.send(json!({ "op": "abort", "rid": rid })).await;
+        });
+    }
 }
 
 impl ResponseFilter {
@@ -854,7 +936,7 @@ impl ResponseFilter {
         }
         .await;
         match started {
-            Ok((worker, rid)) => Some(Self { worker, rid, timeout, buffer: Vec::new(), event_lines: false, passthrough: false, done: false }),
+            Ok((worker, rid)) => Some(Self { worker, rid, timeout, buffer: Vec::new(), event_lines: false, passthrough: false, done: false, closed: false }),
             Err(error) => {
                 log_response_failure(request_path, &error);
                 None
@@ -897,6 +979,7 @@ impl ResponseFilter {
         if self.passthrough || self.done {
             return out;
         }
+        self.closed = true;
         match self.worker.request(json!({ "op": "end", "rid": self.rid }), self.timeout).await {
             Ok(reply) => out.extend(self.serialize(&reply["events"])),
             Err(error) => {
@@ -950,6 +1033,7 @@ impl ResponseFilter {
             Err(error) => {
                 log_response_failure("event", &error);
                 self.passthrough = true;
+                self.closed = true;
                 let _ = self.worker.send(json!({ "op": "abort", "rid": self.rid })).await;
                 raw()
             }

@@ -142,6 +142,10 @@ interface CodexPlusExtensionApi {
   registerSidePanel(definition: CodexPlusSidePanelDefinition, options?: CodexPlusRegisterOptions): CodexPlusSidePanelHandle;
   /** 往 Codex 界面的固定位置放内容（输入框上方、对话区顶部 / 底部、侧栏顶部 / 底部、标题栏）。 */
   registerSlot(definition: CodexPlusSlotDefinition, options?: CodexPlusRegisterOptions): CodexPlusSlotHandle;
+  registerInputTrigger(definition: CodexPlusInputTriggerDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerShortcut(definition: CodexPlusShortcutDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerTheme(definition: CodexPlusThemeDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  ask(question: CodexPlusAskQuestion): Promise<{ value: unknown; text: string | null } | null>;
 
   /** 在会话行「更多操作」里加一项。 */
   registerRowAction(
@@ -248,14 +252,17 @@ interface CodexPlusSidePanelDefinition {
   render(context: { container: HTMLElement; close(): void }): void | (() => void);
 }
 
-type CodexPlusSlotName = "composer.above" | "thread.top" | "thread.bottom" | "sidebar.top" | "sidebar.bottom" | "titlebar";
+type CodexPlusSlotName =
+  | "composer.above" | "thread.top" | "thread.bottom" | "sidebar.top" | "sidebar.bottom" | "titlebar"
+  | "turn.after" | "sessionRow.prefix" | "sessionRow.suffix" | "overlay";
 
 interface CodexPlusSlotDefinition {
   slot: CodexPlusSlotName;
   /** 越小越靠前。 */
   order?: number;
   /** 容器新建时调用（Codex 重建 DOM 后会再调）；可返回清理函数。容器留空则不占位。 */
-  render(context: { container: HTMLElement; slot: CodexPlusSlotName }): void | (() => void);
+  /** turn.after 多给 turnKey；sessionRow.* 多给 sessionId、title。 */
+  render(context: { container: HTMLElement; slot: CodexPlusSlotName; turnKey?: string; sessionId?: string; title?: string }): void | (() => void);
 }
 
 /** 撤销函数，另带 refresh()：强制所有位置重画该项。 */
@@ -377,6 +384,16 @@ interface CodexPlusSessionQuery {
   project<S>(id: string, reducer: { init?: S | (() => S); apply(state: S, event: CodexPlusSessionEvent): S | undefined }): Promise<S>;
   /** 订阅新事件（默认从当前末尾开始），返回撤销函数。 */
   observeSession(id: string, handler: (event: CodexPlusSessionEvent) => void, options?: { intervalMs?: number; fromSeq?: number }): CodexPlusDispose;
+  /** 订阅全部会话的新事件，返回撤销函数。后台里可另给 onStatus。 */
+  observeAll(handler: (event: CodexPlusSessionEvent, meta: { sessionId: string }) => void, options?: { intervalMs?: number; onStatus?: (status: CodexPlusAgentStatus) => void }): CodexPlusDispose;
+}
+
+/** `agent/status` 事件的参数。 */
+interface CodexPlusAgentStatus {
+  sessionId: string;
+  status: "running" | "idle" | "aborted";
+  turn?: string;
+  reason?: string | null;
 }
 
 /** 内置的会话写入服务（inject: ["sessions"]）。 */
@@ -386,6 +403,68 @@ interface CodexPlusSessions {
   append(id: string, items: string | { role?: "user" | "assistant" | "developer"; text: string } | Array<string | { role?: string; text: string } | Record<string, unknown>>): Promise<{ appended: number }>;
   startTurn(id: string, input: string | Array<{ type: "text"; text: string }>, options?: Record<string, unknown>): Promise<{ id: string; status: string; [key: string]: unknown }>;
   interrupt(id: string, turnId: string): Promise<unknown>;
+  /** 新建会话；给了 input 时紧接着发起第一轮。 */
+  create(input?: string | Array<{ type: "text"; text: string }>, options?: Record<string, unknown>): Promise<{ thread: { id: string; [key: string]: unknown } | null; turn: unknown }>;
+  rename(id: string, name: string): Promise<unknown>;
+  /** 往正在跑的一轮插话。 */
+  steer(id: string, input: string | Array<{ type: "text"; text: string }>, turnId?: string): Promise<unknown>;
+  compact(id: string): Promise<unknown>;
+}
+
+/** 拓展调模型（经 Codex++ 协议代理，用当前供应商）。 */
+interface CodexPlusLlm {
+  complete(options: string | {
+    input: string | Array<{ role?: "user" | "assistant" | "developer" | "system"; content: string | unknown[] } | string>;
+    model?: string; instructions?: string; reasoningEffort?: string; maxOutputTokens?: number; temperature?: number;
+  }): Promise<{ text: string; model: string | null; usage: Record<string, unknown> | null }>;
+  listModels(): Promise<{ models: Array<{ id: string; name: string | null; contextWindow: number | null }>; default: string | null }>;
+}
+
+interface CodexPlusInputTriggerDefinition {
+  /** 符号开头的短前缀，如 "@"、"#"。 */
+  trigger: string;
+  items(query: string, context: { editor: HTMLElement }): Array<CodexPlusInputTriggerItem> | Promise<Array<CodexPlusInputTriggerItem>>;
+}
+
+interface CodexPlusInputTriggerItem {
+  label: string;
+  description?: string;
+  /** 选中后替换「触发符 + 查询词」的文字，默认用 label。 */
+  insert?: string;
+  onSelect?(): void;
+}
+
+interface CodexPlusShortcutDefinition {
+  /** 如 "Mod+Shift+K"；Mod 在 macOS 是 ⌘，其余是 Ctrl。必须带修饰键（F1~F12 除外）。 */
+  key: string;
+  run(context: { event: KeyboardEvent }): void | Promise<void>;
+  /** 焦点在输入框里时也触发，默认 true。 */
+  allowInInput?: boolean;
+  description?: string;
+}
+
+interface CodexPlusThemeDefinition {
+  id: string;
+  name?: string | Record<string, string>;
+  /** CSS 变量，写进 :root。 */
+  variables?: Record<string, string>;
+  css?: string;
+}
+
+interface CodexPlusThemes {
+  list(): Array<{ id: string; name: string; extension: string }>;
+  readonly current: string | null;
+  /** 切换主题；null 恢复默认。 */
+  apply(id: string | null): string | null;
+}
+
+interface CodexPlusAskQuestion {
+  title?: string | Record<string, string>;
+  message?: string | Record<string, string>;
+  /** 按钮，最后一个是默认（回车）。 */
+  options?: Array<string | { value: unknown; label: string }>;
+  input?: { placeholder?: string; default?: string; multiline?: boolean };
+  timeoutMs?: number;
 }
 
 /** 多语言。查找顺序：当前语言 → 主语言 → en，先在命名空间、再在 common，最后返回 key。 */
@@ -425,8 +504,12 @@ interface CodexPlusExtensionContext {
   readonly locale: CodexPlusLocale;
   /** inject 了 sessionQuery 时可用。其它 inject 的服务同样以服务名挂在 ctx 上。 */
   readonly sessionQuery?: CodexPlusSessionQuery;
-  /** inject 了 sessions 时可用：分叉、追加条目、发起 / 中断一轮。 */
+  /** inject 了 sessions 时可用：新建、分叉、改名、追加条目、发起 / 插话 / 中断一轮、压缩。 */
   readonly sessions?: CodexPlusSessions;
+  /** 调模型。 */
+  readonly llm: CodexPlusLlm;
+  /** 主题。 */
+  readonly themes: CodexPlusThemes;
   /** 所属生命周期句柄（仅声明了 inject 的拓展）。 */
   readonly fiber?: CodexPlusExtensionFiber;
 
@@ -452,8 +535,13 @@ interface CodexPlusExtensionContext {
   registerSidePanel(definition: CodexPlusSidePanelDefinition, options?: CodexPlusRegisterOptions): CodexPlusSidePanelHandle;
   /** 往 Codex 界面的固定位置放内容（输入框上方、对话区顶部 / 底部、侧栏顶部 / 底部、标题栏）。 */
   registerSlot(definition: CodexPlusSlotDefinition, options?: CodexPlusRegisterOptions): CodexPlusSlotHandle;
+  registerInputTrigger(definition: CodexPlusInputTriggerDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerShortcut(definition: CodexPlusShortcutDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerTheme(definition: CodexPlusThemeDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  /** 弹对话框问用户；取消或超时为 null。 */
+  ask(question: CodexPlusAskQuestion): Promise<{ value: unknown; text: string | null } | null>;
 
-  /** 拓展间事件；`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
+  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;
   emit(event: string, ...args: unknown[]): void;
 

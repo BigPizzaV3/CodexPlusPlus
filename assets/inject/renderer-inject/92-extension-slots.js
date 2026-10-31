@@ -175,7 +175,13 @@
       [data-codex-plus-ui-slot="thread.top"],[data-codex-plus-ui-slot="thread.bottom"]{width:min(100%,var(--thread-content-max-width,768px));margin:12px auto;padding:0 16px;box-sizing:border-box}
       [data-codex-plus-ui-slot="sidebar.top"],[data-codex-plus-ui-slot="sidebar.bottom"]{padding:6px 8px}
       [data-codex-plus-ui-slot="titlebar"]{display:contents}
-      [data-codex-plus-ui-slot="titlebar"] .codex-plus-ui-slot-item{display:contents}`;
+      [data-codex-plus-ui-slot="titlebar"] .codex-plus-ui-slot-item{display:contents}
+      [data-codex-plus-ui-slot="turn.after"]{margin-top:6px}
+      [data-codex-plus-ui-slot="sessionRow.prefix"],[data-codex-plus-ui-slot="sessionRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
+      [data-codex-plus-ui-slot="sessionRow.prefix"]{margin-right:4px}
+      [data-codex-plus-ui-slot="sessionRow.suffix"]{margin-left:4px}
+      [data-codex-plus-ui-slot="overlay"]{position:fixed;inset:0;z-index:2147483600;pointer-events:none}
+      [data-codex-plus-ui-slot="overlay"] .codex-plus-ui-slot-item>*{pointer-events:auto}`;
     document.head.append(style);
   }
 
@@ -386,11 +392,13 @@
    * 通用界面插槽：拓展用 registerSlot({ slot, render }) 往 Codex 界面的固定位置放自己的内容。
    *
    * 位置：composer.above（输入框上方）、thread.top / thread.bottom（对话区顶部 / 底部）、
-   * sidebar.top / sidebar.bottom（左侧栏列表顶部 / 底部）、titlebar（标题栏右侧按钮组）。
+   * sidebar.top / sidebar.bottom（左侧栏列表顶部 / 底部）、titlebar（标题栏右侧按钮组）、
+   * turn.after（每一轮对话的末尾，render 收到 turnKey）、sessionRow.prefix / sessionRow.suffix
+   * （侧栏每个会话行标题前 / 后，render 收到 sessionId、title）、overlay（铺满窗口的浮层，默认不挡点击）。
    * 每个位置一个带拓展标记的宿主节点，里面每个注册项一个容器；容器新建时调用 render（DOM 会随 Codex 重建，
    * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
    */
-  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar"];
+  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar", "turn.after", "sessionRow.prefix", "sessionRow.suffix", "overlay"];
   const codexPlusUiSlotVersions = new Map();
 
   function codexPlusUiSlotAnchors(slot) {
@@ -413,6 +421,24 @@
       case "sidebar.bottom":
         return visible("[data-app-action-sidebar-scroll]")
           .map((list) => ({ parent: list, place: slot === "sidebar.top" ? "start" : "end" }));
+      case "turn.after":
+        // 每一轮的容器带 data-turn-key（虚拟列表只渲染可见的几轮）。
+        return visible(".thread-scroll-container [data-turn-key]")
+          .map((turn) => ({ parent: turn, place: "end", info: { turnKey: turn.getAttribute("data-turn-key") || "" } }));
+      case "sessionRow.prefix":
+      case "sessionRow.suffix":
+        return visible("[data-app-action-sidebar-thread-row]").flatMap((row) => {
+          const title = row.querySelector("[data-thread-title-trigger]");
+          if (!title?.parentElement) return [];
+          const info = {
+            sessionId: String(row.getAttribute("data-app-action-sidebar-thread-id") || "").replace(/^local:/, ""),
+            title: row.getAttribute("data-app-action-sidebar-thread-title") || "",
+          };
+          const next = title.nextElementSibling;
+          return [{ parent: title.parentElement, place: slot === "sessionRow.prefix" ? title : (next && !isExtensionUiNode(next) ? next : "end"), info }];
+        });
+      case "overlay":
+        return document.body ? [{ parent: document.body, place: "end" }] : [];
       case "titlebar": {
         const toolbar = codexPlusSidePanelToolbar();
         if (!toolbar) return [];
@@ -454,7 +480,7 @@
         host.querySelectorAll("[data-codex-plus-slot-item]").forEach(codexPlusRunSlotCleanup);
         host.remove();
       });
-      for (const { parent, place } of anchors) {
+      for (const { parent, place, info } of anchors) {
         if (!parent) continue;
         let host = [...parent.children].find((node) => node.getAttribute?.("data-codex-plus-ui-slot") === slot);
         if (!host) {
@@ -478,11 +504,20 @@
             child.remove();
           }
         }
+        // 按注册顺序就位：只在顺序不对时挪动，已就位的节点不碰（挪动会让里面的输入框失焦）。
+        let previous = null;
+        const placeAfterPrevious = (container) => {
+          const expected = previous ? previous.nextElementSibling : host.firstElementChild;
+          if (expected !== container) host.insertBefore(container, expected);
+          previous = container;
+        };
         for (const item of slotItems) {
           const version = String(codexPlusUiSlotVersions.get(item.id) || 0);
           let container = [...host.children].find((child) => child.dataset.slotItemId === item.id);
-          if (container && container.dataset.slotVersion === version) {
-            if (host.lastElementChild !== container) host.appendChild(container);
+          // 同一个宿主换了归属（会话行被复用给别的会话）时整项重画。
+          const infoKey = info ? JSON.stringify(info) : "";
+          if (container && container.dataset.slotVersion === version && (container.__codexPlusSlotInfo ?? "") === infoKey) {
+            placeAfterPrevious(container);
             continue;
           }
           if (container) {
@@ -497,8 +532,9 @@
             markCodexPlusExtensionNode(container, item.scriptKey);
           }
           container.dataset.slotVersion = version;
-          host.appendChild(container);
-          const result = runCodexPlusExtensionCallback(item.scriptKey, "slot.render", () => item.render({ container, slot }));
+          container.__codexPlusSlotInfo = infoKey;
+          placeAfterPrevious(container);
+          const result = runCodexPlusExtensionCallback(item.scriptKey, "slot.render", () => item.render({ container, slot, ...(info || {}) }));
           if (result.ok && typeof result.value === "function") container.__codexPlusSlotCleanup = result.value;
         }
       }

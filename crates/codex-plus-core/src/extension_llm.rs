@@ -1,0 +1,234 @@
+//! 拓展自己调模型（页面 `ctx.llm`、后台 / 工具里的 `llm`）：经 Codex++ 的协议代理，用当前的
+//! 供应商与模型路由发一次 Responses 请求，把回复整理成 `{ text, model, usage }`。
+//!
+//! 这一跳不跑拓展的网关中间件（免得拓展自己的请求再被拓展改写、甚至递归）。
+//! 上游可能是 Responses 也可能是 Chat Completions，流式与非流式都认。
+
+use anyhow::Context;
+use serde_json::{Value, json};
+
+/// 单次调用的最长等待。
+const LLM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const MAX_INPUT_BYTES: usize = 1024 * 1024;
+
+/// 拓展给的输入：字符串当一条用户消息；数组里是 `{ role, content | text }` 或现成的 Responses 条目。
+fn input_items(input: &Value) -> anyhow::Result<Vec<Value>> {
+    let message = |role: &str, text: &str| {
+        let kind = if role == "assistant" { "output_text" } else { "input_text" };
+        json!({ "type": "message", "role": role, "content": [{ "type": kind, "text": text }] })
+    };
+    Ok(match input {
+        Value::String(text) => vec![message("user", text)],
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                if let Some(text) = item.as_str() {
+                    return Ok(message("user", text));
+                }
+                let object = item.as_object().context("input 的每一项是字符串或 { role, content }")?;
+                if object.get("type").and_then(Value::as_str).is_some() && object.get("role").is_none() {
+                    return Ok(item.clone());
+                }
+                let role = match object.get("role").and_then(Value::as_str).unwrap_or("user") {
+                    role @ ("user" | "assistant" | "developer" | "system") => role,
+                    other => anyhow::bail!("不支持的角色 {other}"),
+                };
+                let role = if role == "system" { "developer" } else { role };
+                match object.get("content").or_else(|| object.get("text")) {
+                    Some(Value::String(text)) => Ok(message(role, text)),
+                    Some(Value::Array(_)) => Ok(json!({ "type": "message", "role": role, "content": object["content"] })),
+                    _ => anyhow::bail!("消息缺少 content"),
+                }
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        _ => anyhow::bail!("input 需要是字符串或消息数组"),
+    })
+}
+
+/// 当前 Codex 配置里的默认模型。
+fn default_model() -> Option<String> {
+    let text = std::fs::read_to_string(crate::codex_home::default_codex_home_dir().join("config.toml")).ok()?;
+    let document = text.parse::<toml_edit::DocumentMut>().ok()?;
+    document.get("model").and_then(|item| item.as_str()).map(str::to_string)
+}
+
+/// 拼请求体：`{ model?, input, instructions?, reasoningEffort?, maxOutputTokens?, temperature? }`。
+pub fn request_body(params: &Value, fallback_model: Option<String>) -> anyhow::Result<Value> {
+    let model = params
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .or(fallback_model)
+        .context("没有指定 model，Codex 配置里也没有默认模型")?;
+    let input = input_items(params.get("input").context("缺少 input")?)?;
+    let mut body = json!({ "model": model, "input": input, "stream": true, "store": false });
+    if let Some(instructions) = params.get("instructions").and_then(Value::as_str).filter(|text| !text.is_empty()) {
+        body["instructions"] = json!(instructions);
+    }
+    if let Some(effort) = params.get("reasoningEffort").and_then(Value::as_str) {
+        body["reasoning"] = json!({ "effort": effort });
+    }
+    if let Some(limit) = params.get("maxOutputTokens").and_then(Value::as_u64) {
+        body["max_output_tokens"] = json!(limit);
+    }
+    if let Some(temperature) = params.get("temperature").and_then(Value::as_f64) {
+        body["temperature"] = json!(temperature);
+    }
+    if body.to_string().len() > MAX_INPUT_BYTES {
+        anyhow::bail!("请求超过 1 MiB");
+    }
+    Ok(body)
+}
+
+/// 从上游回复里取文字：Responses / Chat Completions，流式（SSE）或整段 JSON。
+pub fn parse_reply(bytes: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = String::new();
+    let mut completed: Option<String> = None;
+    let mut usage = Value::Null;
+    let mut model = Value::Null;
+    let mut error = Value::Null;
+    let mut absorb = |event: &Value, out: &mut String| {
+        if let Some(found) = event.get("model").filter(|value| value.is_string()) {
+            model = found.clone();
+        }
+        if let Some(found) = event.get("usage").filter(|value| !value.is_null()) {
+            usage = found.clone();
+        }
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => out.push_str(event["delta"].as_str().unwrap_or_default()),
+            Some("response.completed" | "response.done") => {
+                let response = &event["response"];
+                if let Some(found) = response.get("usage").filter(|value| !value.is_null()) {
+                    usage = found.clone();
+                }
+                if let Some(found) = response.get("model").filter(|value| value.is_string()) {
+                    model = found.clone();
+                }
+                completed = Some(output_text(response));
+            }
+            Some("response.failed" | "error") => {
+                error = event.get("response").and_then(|response| response.get("error")).or_else(|| event.get("error")).cloned().unwrap_or_else(|| event.clone());
+            }
+            _ => {}
+        }
+        // Chat Completions：流式 delta 或整段 message。
+        for choice in event.get("choices").and_then(Value::as_array).into_iter().flatten() {
+            if let Some(delta) = choice.pointer("/delta/content").and_then(Value::as_str) {
+                out.push_str(delta);
+            } else if let Some(content) = choice.pointer("/message/content").and_then(Value::as_str) {
+                out.push_str(content);
+            }
+        }
+        // 整段的错误体：`{ error: {...} }`。
+        if event.get("type").is_none() {
+            if let Some(found) = event.get("error").filter(|value| !value.is_null()) {
+                error = found.clone();
+            }
+        }
+        // 非流式的 Responses 对象。
+        if event.get("object").and_then(Value::as_str) == Some("response") {
+            completed = Some(output_text(event));
+        }
+    };
+    if let Ok(whole) = serde_json::from_str::<Value>(text.trim()) {
+        absorb(&whole, &mut out);
+    } else {
+        for line in text.lines() {
+            let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
+            if data == "[DONE]" {
+                continue;
+            }
+            if let Ok(event) = serde_json::from_str::<Value>(data) {
+                absorb(&event, &mut out);
+            }
+        }
+    }
+    let text = completed.filter(|text| !text.is_empty()).unwrap_or(out);
+    json!({ "text": text, "model": model, "usage": usage, "error": error })
+}
+
+fn output_text(response: &Value) -> String {
+    response["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+        .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+        .filter_map(|part| part.get("text").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// 发一次请求并整理回复。
+pub async fn complete(params: &Value) -> anyhow::Result<Value> {
+    let body = request_body(params, default_model())?;
+    let run = async {
+        let mut response = crate::protocol_proxy::open_responses_proxy_request(&body.to_string(), Some("CodexPlusPlus/extension-llm")).await?;
+        let status = response.status_code;
+        let bytes = response.read_body().await?;
+        anyhow::Ok((status, bytes))
+    };
+    let (status, bytes) = crate::extension_gateway::EXTENSIONS_ALREADY_APPLIED
+        .scope(true, tokio::time::timeout(LLM_TIMEOUT, run))
+        .await
+        .context("模型调用超时")??;
+    let reply = parse_reply(&bytes);
+    if !(200..300).contains(&status) || !reply["error"].is_null() {
+        let detail = match &reply["error"] {
+            Value::Null => String::from_utf8_lossy(&bytes[..bytes.len().min(400)]).to_string(),
+            Value::Object(error) => error.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| reply["error"].to_string()),
+            other => other.to_string(),
+        };
+        anyhow::bail!("模型调用失败（HTTP {status}）：{detail}");
+    }
+    let mut reply = reply;
+    if reply["model"].is_null() {
+        reply["model"] = body["model"].clone();
+    }
+    reply.as_object_mut().map(|object| object.remove("error"));
+    Ok(reply)
+}
+
+/// 可用模型：Codex 当前模型目录（config.toml 的 `model_catalog_json`）里的模型，加上默认模型。
+pub fn list_models() -> anyhow::Result<Value> {
+    let home = crate::codex_home::default_codex_home_dir();
+    let text = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let document = text.parse::<toml_edit::DocumentMut>().unwrap_or_default();
+    let mut models = Vec::new();
+    if let Some(catalog) = document.get("model_catalog_json").and_then(|item| item.as_str()) {
+        let path = std::path::Path::new(catalog);
+        let path = if path.is_absolute() { path.to_path_buf() } else { home.join(path) };
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+                for model in parsed["models"].as_array().into_iter().flatten() {
+                    let Some(slug) = model.get("slug").or_else(|| model.get("id")).and_then(Value::as_str) else { continue };
+                    models.push(json!({
+                        "id": slug,
+                        "name": model.get("display_name").cloned().unwrap_or(Value::Null),
+                        "contextWindow": model.get("context_window").cloned().unwrap_or(Value::Null),
+                    }));
+                }
+            }
+        }
+    }
+    let current = document.get("model").and_then(|item| item.as_str()).map(str::to_string);
+    if let Some(current) = &current {
+        if !models.iter().any(|model| model["id"] == current.as_str()) {
+            models.insert(0, json!({ "id": current, "name": Value::Null, "contextWindow": Value::Null }));
+        }
+    }
+    Ok(json!({ "models": models, "default": current }))
+}
+
+/// 桥接路由 `/extensions/llm/complete`。
+pub async fn route_complete(payload: &Value) -> anyhow::Result<Value> {
+    Ok(json!({ "status": "ok", "result": complete(payload).await? }))
+}
+
+/// 桥接路由 `/extensions/llm/models`。
+pub fn route_models() -> anyhow::Result<Value> {
+    Ok(json!({ "status": "ok", "result": list_models()? }))
+}

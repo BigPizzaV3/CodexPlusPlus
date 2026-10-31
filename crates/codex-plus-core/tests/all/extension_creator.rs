@@ -95,7 +95,7 @@ async fn mcp_handshake_lists_tools_and_ignores_notifications() {
     }
     let (error, message) = call(&creator, "codexpp_extension_inspect", json!({"script": "alert(1)"})).await;
     assert!(error && message.as_str().unwrap().contains("参数无效"), "不接受代码参数：{message}");
-    let unknown = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 3, "method": "resources/list"}))
+    let unknown = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 3, "method": "sampling/createMessage"}))
         .await
         .unwrap();
     assert_eq!(unknown["error"]["code"], -32601);
@@ -336,10 +336,22 @@ async fn extension_config_defaults_validation_and_delivery() {
     let bundle = creator.manager.build_enabled_bundle().unwrap();
     assert!(bundle.contains(r#""config":{"minutes":50,"theme":"green","token":""}"#), "页面侧 ctx.config 的来源");
 
+    // secret 项：管理器里填的 Key 不交给模型；对话只改别的键时 Key 保留，传回打码值也保留。
+    creator.manager.set_extension_config("user:pomo", &json!({"minutes": 50, "theme": "green", "token": "sk-secret"}).as_object().unwrap().clone()).unwrap();
+    let (_, listed) = call(&creator, "codexpp_extension_list", json!({})).await;
+    assert!(!listed.to_string().contains("sk-secret"), "清单不能带出 secret 值：{listed}");
+    let item = listed["items"].as_array().unwrap().iter().find(|item| item["key"] == "user:pomo").unwrap();
+    assert_eq!(item["package"]["config"]["token"], "******");
+    let (error, configured) = call(&creator, "codexpp_extension_configure", json!({"id": "pomo", "values": {"minutes": 40, "token": "******"}})).await;
+    assert!(!error, "{configured}");
+    assert!(!configured.to_string().contains("sk-secret"), "配置结果不能带出 secret 值：{configured}");
+    let stored: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("user_scripts.json")).unwrap()).unwrap();
+    assert_eq!(stored["configs"]["user:pomo"], json!({"minutes": 40, "theme": "green", "token": "sk-secret"}));
+
     // 工具脚本从 context.config 读到同一份。
     if codex_plus_core::dsh_plugins::locate_node().is_some() {
         let response = handle_request(&creator, json!({"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "pomo__minutes", "arguments": {}}})).await.unwrap();
-        assert_eq!(response["result"]["content"][0]["text"], "50|green");
+        assert_eq!(response["result"]["content"][0]["text"], "40|green");
     }
 }
 
@@ -505,4 +517,37 @@ fn config_schema_supports_text_ranges_arrays_objects_and_i18n() {
     for bad in [json!({"minutes": 500}), json!({"proxy": {"hostname": "x"}}), json!({"levels": ["mid"]}), json!({"words": [1]})] {
         assert!(creator.manager.set_extension_config("user:rich", &values(bad.clone())).is_err(), "{bad}");
     }
+}
+
+#[tokio::test]
+async fn extension_prompts_and_resources_are_served_over_mcp() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let dir = temp.path().join("user/kb");
+    fs::create_dir_all(dir.join("docs")).unwrap();
+    fs::write(dir.join("docs/style.md"), "# 规范\n用短句。").unwrap();
+    fs::write(dir.join("review.md"), "请审查 {{file}}，重点看 {{focus}}。").unwrap();
+    fs::write(dir.join("codexpp.json"), json!({
+        "id": "kb", "name": "知识库",
+        "prompts": [{ "name": "review", "description": "审查", "arguments": [{ "name": "file", "required": true }, { "name": "focus" }], "template": "review.md" }],
+        "resources": [{ "name": "写作规范", "file": "docs/style.md" }]
+    }).to_string()).unwrap();
+    let rpc = |id: u64, method: &str, params: Value| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    let init = handle_request(&creator, rpc(1, "initialize", json!({}))).await.unwrap();
+    assert!(init["result"]["capabilities"]["prompts"].is_object() && init["result"]["capabilities"]["resources"].is_object());
+    let prompts = handle_request(&creator, rpc(2, "prompts/list", json!({}))).await.unwrap();
+    assert_eq!(prompts["result"]["prompts"][0]["name"], "kb__review");
+    let got = handle_request(&creator, rpc(3, "prompts/get", json!({"name": "kb__review", "arguments": {"file": "a.rs"}}))).await.unwrap();
+    assert_eq!(got["result"]["messages"][0]["content"]["text"], "请审查 a.rs，重点看 。");
+    let missing = handle_request(&creator, rpc(4, "prompts/get", json!({"name": "kb__review", "arguments": {}}))).await.unwrap();
+    assert!(missing["error"]["message"].as_str().unwrap().contains("缺少参数 file"));
+    let resources = handle_request(&creator, rpc(5, "resources/list", json!({}))).await.unwrap();
+    let uri = resources["result"]["resources"][0]["uri"].as_str().unwrap().to_string();
+    assert_eq!(uri, "codexpp://kb/docs/style.md");
+    assert_eq!(resources["result"]["resources"][0]["mimeType"], "text/markdown");
+    let read = handle_request(&creator, rpc(6, "resources/read", json!({"uri": uri}))).await.unwrap();
+    assert_eq!(read["result"]["contents"][0]["text"], "# 规范\n用短句。");
+    creator.manager.set_script_enabled("user:kb", false).unwrap();
+    let after = handle_request(&creator, rpc(7, "resources/list", json!({}))).await.unwrap();
+    assert!(after["result"]["resources"].as_array().unwrap().is_empty(), "停用后不再提供");
 }

@@ -192,8 +192,10 @@ codexPlus.extension((ctx) => {
 ```
 
 - 位置：`composer.above`（输入框上方）、`thread.top` / `thread.bottom`（对话区顶部 / 底部）、`sidebar.top` / `sidebar.bottom`
-  （左侧栏列表顶部 / 底部）、`titlebar`（标题栏右侧按钮组）。未知位置会报错。
-- `render({ container, slot })` 在容器新建时调用；Codex 重建 DOM（切换会话、侧栏刷新）后会重新调用，不要缓存节点。
+  （左侧栏列表顶部 / 底部）、`titlebar`（标题栏右侧按钮组）、`turn.after`（每一轮对话末尾，render 多收到 `turnKey`）、
+  `sessionRow.prefix` / `sessionRow.suffix`（侧栏每个会话标题前 / 后，多收到 `sessionId`、`title`）、
+  `overlay`（铺满窗口的浮层，默认不挡点击，放进去的元素可以点）。未知位置会报错。
+- `render({ container, slot, ... })` 在容器新建时调用；Codex 重建 DOM（切换会话、侧栏刷新）后会重新调用，不要缓存节点。
   返回的函数在该项被撤下或重画前调用。`container` 留空则不占位。返回的句柄带 `refresh()` 强制重画。
 - 同一位置多个拓展按 `order` 排列（越小越靠前）。拓展卸载、热重载时自动撤下。
 
@@ -240,6 +242,7 @@ codexPlus.extension((ctx) => {
 
 - 已转发的事件：`codex/thread/started`、`codex/turn/started`、`codex/turn/completed`、`codex/item/started`、
   `codex/item/completed`、`codex/item/agentMessage/delta`、`codex/error`；处理器参数是通知的原样 `params` 和 `{ method }`。
+  **新版 Codex 的通知不再经过页面，这些事件收不到**；要跟踪会话进展请用下面「会话历史」里的 `session/event` / `agent/status`。
 - `codex/request` 的值是 `{ method, params }`，只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
   新版 Codex 的请求经页面与宿主进程之间的 RPC 发出，Codex++ 在这一层拦截，中间件可以返回 Promise，
   超过 5 秒或出错时原样发出；旧版 Codex 的消息分发路径是同步的，那里返回 Promise 视为出错并原样放行。
@@ -390,6 +393,8 @@ export default (body) => ({ ...body, instructions: `${body.instructions ?? ""}\n
 - 按步触发：agent 每走一步（每次工具调用之后）都会向模型发一次请求，都经过这里。第二个参数里的 `step` 是
   `{ index, toolResults, userText, firstStep }`（本轮第几步、已有几个工具结果、本轮用户输入、是否第一步）。
   返回 `{ reject: "原因" }` 即不发这一步，Codex 收到带原因的错误，后面的中间件不再跑（对应 dsh `agent/pre-step` 的 reject）。`timeout` 1~10 秒（默认 5），整条链最多 15 秒。
+- 加请求头：往第二个参数的 `headers` 对象里写（`context.headers["x-trace"] = "1"`），发往上游时附上。
+  鉴权、Cookie、Host、内容长度 / 类型这类头由 Codex++ 管，写了也会被忽略。失败重试时沿用同一组头。
 - 只对经 Codex++ 本地代理 / 网关发出的请求生效（中转、聚合、网关模式）；官方直连不经过 Codex++，不受影响。
 - 只有存在启用中的网关中间件时才会为每个请求起一个 Node 进程；任何中间件出错或超时都会保留原请求并记诊断日志。
 - 中间件能看到完整的请求内容（含对话），以你的用户权限运行。只启用你信任的拓展。
@@ -432,6 +437,8 @@ export default async function* (context, next) {
 export default (error) => (error.status === 429 && error.attempt < 2 ? { retry: true, delayMs: error.json?.retryAfterMs ?? 2000 } : null);
 ```
 
+- 返回 `{ kind: "fallback", model: "其它模型" }` 即换这个模型重发（降级），同样计入 3 次上限。
+- 被拓展请求中间件拒绝的那一步不会进入这里。
 - 上游返回错误状态时调用，`error` 为 `{ status, body, json, path, attempt }`（`body` 最多 64 KiB）。多个拓展按顺序问，
   第一个要求重试的生效；同一请求最多重发 3 次，间隔最多 10 秒。不重试时 Codex 照常收到原错误。
 - 只对经 Codex++ 代理 / 网关的请求生效；没有拓展声明时不读响应体，零开销。流式回复中途断开不在此列。
@@ -499,9 +506,24 @@ codexPlus.extension({ inject: ["sessionQuery"], async apply(ctx) {
 
 - 会话：`{ id, title, cwd, model, createdAt, updatedAt, archived, preview, gitBranch }`。
 - 事件：`{ type, seq, time, data }`。`type` 有 `turn/start`、`user/message`、`assistant/message`（`data.phase`）、
-  `assistant/reasoning`（只有摘要）、`tool/call`（`name`、`callId`、`input`）、`tool/result`（`callId`、`output`）。
+  `assistant/reasoning`（只有摘要）、`tool/call`（`name`、`callId`、`input`）、`tool/result`（`callId`、`output`）、
+  `turn/complete`（`durationMs`、`lastMessage`）、`turn/aborted`（`reason`）、`token/usage`（`total`、`last`、`contextWindow`）、
+  `session/compacted`。
   Codex 注入的环境上下文、开发者消息、加密推理不返回；单条文本超过 2 万字截断。
 - 全程只读：数据库只读打开，rollout 文件只读。
+
+#### 全部会话的事件流
+
+```js
+codexPlus.extension((ctx) => {
+  ctx.on("session/event", (event, { sessionId }) => { if (event.type === "tool/call") console.log(sessionId, event.data.name); });
+  ctx.on("agent/status", ({ sessionId, status, turn }) => { /* status: running | idle | aborted */ });
+});
+// 常驻后台：sessionQuery.observeAll((event, { sessionId }) => …, { onStatus })
+```
+
+- 有人监听时才开始轮询（页面可见时 1.5 秒一次，后台 2 秒），只看最近更新的 20 个会话；监听前已有的事件不重放，
+  之后新建的会话从头发。监听全部撤下后自动停。页面里也可以用 `sessionQuery.observeAll(handler)`。
 
 ### 会话写入（分叉、追加、发起一轮）
 
@@ -521,10 +543,14 @@ codexPlus.extension({ inject: ["sessions", "sessionQuery"], async apply(ctx) {
 | 方法 | 说明 |
 | --- | --- |
 | `list({ limit?, cursor?, archived? })` | Codex 的会话列表（`thread/list` 的原样结果） |
+| `create(input?, options?)` | 新建会话；给了 `input` 时紧接着发起第一轮，返回 `{ thread, turn }` |
 | `fork(id, options?)` | 分叉，返回新会话（含 `id`、`forkedFromId`） |
+| `rename(id, name)` | 改会话标题 |
 | `append(id, items)` | 追加条目：字符串当作用户消息，`{ role, text }` 按角色转成消息，带 `type` 的对象按 Responses 条目原样写入 |
 | `startTurn(id, input, options?)` | 以 `input`（文字或 `[{ type: "text", text }]`）发起一轮，返回 `{ id, status, … }` |
+| `steer(id, input, turnId?)` | 会话正在跑时往当前这一轮插话 |
 | `interrupt(id, turnId)` | 中断一轮 |
+| `compact(id)` | 压缩会话上下文 |
 
 - 只开放上面几个方法（没有删除）。页面里 `inject: ["sessions"]`；常驻后台、模型工具、钩子的上下文里也有 `sessions`，
   由 Codex++ 在 Codex 页面里执行，所以 Codex 需要开着。
@@ -548,9 +574,113 @@ codexPlus.extension({ inject: ["sessions", "sessionQuery"], async apply(ctx) {
 
 - `protocol`：`responses`（默认）/ `chat` / `anthropic`。`apiKey` 写字面值，或 `{ "config": "键" }` 引用拓展的 string 配置项
   （用户在拓展设置里填，Key 不写进代码）。`models` 至少一个；每个拓展最多 8 个供应商。
+- `"discoverModels": true`：从上游 `/models` 拉模型列表（10 分钟刷新一次），与 `models` 合并；这时 `models` 可以为空。
 - 只在构建 Agent 模型资料与网关路由时并入，不写进 `gateway.json`；与用户已有的同 id 供应商以用户的为准。拓展停用即消失。
 - 要用代码实现一个供应商（相当于 dsh 写 provider 适配器）：在常驻后台里起一个本机 HTTP 服务实现 Chat / Responses 接口，
   `baseUrl` 指向 `http://127.0.0.1:<端口>`。
+
+### 拓展调模型
+
+页面里 `ctx.llm`，常驻后台、模型工具、钩子的上下文里 `llm`，经 Codex++ 协议代理用当前的供应商与模型路由发一次请求：
+
+```js
+const { text, model, usage } = await ctx.llm.complete({
+  input: "把下面这段话改成一句话摘要：……",   // 字符串，或 [{ role: "user" | "assistant" | "developer", content }]
+  instructions: "只输出摘要",                 // 可选
+  model: "gpt-5-mini",                        // 可选，默认 Codex 配置里的 model
+  reasoningEffort: "low",                     // 可选；还有 maxOutputTokens、temperature
+});
+const { models, default: current } = await ctx.llm.listModels(); // Codex 当前模型目录里的模型
+```
+
+- 这次请求不经过任何拓展的网关中间件（免得自己改写自己）；上游是 Responses 还是 Chat Completions、流式还是整段都会整理成 `text`。
+- 会消耗额度，单次最长 120 秒。
+
+### 技能、子 agent、MCP 服务器与全局指令
+
+这几类是 Codex 自己的能力，拓展启用时由 Codex++ 写进 Codex 的配置目录，停用时撤掉（只动自己写过的，不覆盖你已有的同名条目）：
+
+```json
+{
+  "id": "review-kit",
+  "agents": [{ "name": "reviewer", "description": "代码审查，改完代码后派它", "instructions": "prompts/reviewer.md", "model": "gpt-5", "reasoningEffort": "high" }],
+  "mcpServers": {
+    "docs": { "command": "node", "args": ["${extensionDir}/mcp/server.mjs"], "env": { "API_KEY": "${config.apiKey}" } },
+    "search": { "url": "https://example.com/mcp" }
+  },
+  "instructions": "rules.md",
+  "config": { "apiKey": { "type": "string", "secret": true } }
+}
+```
+
+- `skills`：包内含 `SKILL.md` 的目录列表；省略时自动收 `skills/*/SKILL.md`。装进 `~/.codex/skills/<拓展 id>-<目录名>`。
+- `agents`：写成 Codex 的 `[agents.<拓展 id>-<名字>]` 角色；`instructions`（文字或包内 .md）、`model`、`reasoningEffort`
+  放进 Codex++ 生成的角色配置文件。`nicknames` 可给角色起几个昵称。
+- `mcpServers`：本地进程（`command` / `args` / `env` / `cwd`）或 HTTP（`url` / `headers`），二选一；
+  写成 `[mcp_servers.<拓展 id>-<名字>]`。字符串里的 `${extensionDir}` 换成包目录，`${config.键}` 换成拓展配置值。
+- `instructions`：文字或包内 .md，合并进 `~/.codex/AGENTS.md` 里 Codex++ 托管的一段——官方直连也生效，适合改系统提示词。
+- 改动在新开的 Codex 对话里生效。
+
+### 提示词与资源
+
+```json
+{
+  "prompts": [{ "name": "review", "description": "审查一个文件", "arguments": [{ "name": "file", "required": true }], "template": "prompts/review.md" }],
+  "resources": [{ "name": "团队规范", "file": "docs/style.md" }]
+}
+```
+
+- 经 Codex++ 拓展 MCP（`codex_plus_extensions`）提供：提示词对外名 `<拓展 id>__<名字>`，模板里的 `{{参数}}` 换成调用时的值；
+  资源地址 `codexpp://<拓展 id>/<包内路径>`，单个文件最多 1 MiB。
+
+### HTTP 路由与定时任务
+
+```json
+{
+  "backend": { "script": "backend/main.mjs", "http": true },
+  "schedules": [{ "method": "digest", "at": "09:00" }, { "method": "poll", "everyMinutes": 30 }]
+}
+```
+
+```js
+// backend/main.mjs
+export default ({ sessions }) => ({
+  // POST http://127.0.0.1:<Codex++ 本地代理端口>/ext/<拓展 id>/hook
+  http(request) {          // { method, path, query, headers, body, json? }
+    if (request.path === "/hook") return { status: 200, json: { ok: true } };
+    return { status: 404, body: "not found" };
+  },
+  async digest() { /* 每天 9 点 */ },
+  async poll() { /* 每 30 分钟 */ },
+});
+```
+
+- `backend.http: true` 才开放 `/ext/<拓展 id>/…`；返回字符串当纯文本，返回 `{ status?, headers?, body?, json? }` 按字段组装。
+  带 `Origin` 的请求（网页发来的）一律拒绝。
+- `schedules`：`everyMinutes`（1~10080）或 `at: "HH:MM"`（本机时区）二选一，最多 8 条，需要同时声明 `backend`。
+  Codex++ 每分钟检查一次，到点调用后台方法（参数 `{ scheduledAt, schedule }`）；上次运行时间记在拓展数据目录，重启不补跑也不重复。
+  Codex++ 没在运行时不会触发。
+
+### 输入触发、快捷键、主题与提问
+
+```js
+codexPlus.extension((ctx) => {
+  // 输入框里打 @ 时弹候选，选中后把「@查询词」换成 insert
+  ctx.registerInputTrigger({ trigger: "@", items: async (query) => [{ label: "README.md", description: "项目说明", insert: "@README.md " }] });
+  // 快捷键：Mod 在 macOS 是 ⌘，其余是 Ctrl；必须带修饰键（或 F1~F12）
+  ctx.registerShortcut({ key: "Mod+Shift+K", run: () => ctx.toast("按下了") });
+  // 主题：同一时间只生效一个，用户的选择记在本机
+  ctx.registerTheme({ id: "sepia", name: "复古", variables: { "--color-token-main-surface-primary": "#f4ecd8" }, css: "body{letter-spacing:.01em}" });
+  ctx.themes.apply("sepia");     // 也可以 inject: ["themes"] 后 list() / current / apply(null)
+  // 问用户：返回 { value, text }，取消为 null
+  const answer = await ctx.ask({ title: "要继续吗？", options: [{ value: "no", label: "算了" }, { value: "yes", label: "继续" }] });
+  const named = await ctx.ask({ title: "起个名字", input: { placeholder: "名字" } });
+});
+// 常驻后台、模型工具、钩子：ui.ask({ … }) / ui.toast("文字")，在 Codex 页面里弹（最长等 10 分钟）
+```
+
+- 输入触发在光标前是「触发符 + 查询词」（触发符前是开头或空白、查询词里没有空白）时弹出，↑↓ 选、回车 / Tab 确认、Esc 关。
+- 主题切换时发 `theme/change` 事件；拓展装上 / 卸下后合并发一次 `extensions/changed`（`{ extensions: [{ id, scriptKey, version }] }`）。
 
 ### 拓展间服务
 

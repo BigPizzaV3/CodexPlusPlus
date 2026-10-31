@@ -3988,12 +3988,12 @@ describe("拓展运行时内核", () => {
     assert.doesNotMatch(send![0], /codexPlusApplyExtensionRequestMiddleware/, "sendRequest 里不能再跑一次");
   });
 
-  it("内置 sessions 服务：append 条目规整成 ResponseItem，只开放分叉 / 追加 / 发起 / 中断 / 列表", async () => {
+  it("内置 sessions 服务：append 条目规整成 ResponseItem，只开放新建 / 分叉 / 改名 / 追加 / 发起 / 插话 / 中断 / 压缩 / 列表", async () => {
     const k = await kernel();
     k.installBuiltins();
     const sessions: any = k.services.get("sessions")?.value;
     assert.equal(k.services.get("sessions")?.owner, "builtin");
-    assert.deepEqual(Object.keys(sessions).sort(), ["append", "fork", "interrupt", "list", "startTurn"]);
+    assert.deepEqual(Object.keys(sessions).sort(), ["append", "compact", "create", "fork", "interrupt", "list", "rename", "startTurn", "steer"]);
     assert.ok(Object.isFrozen(sessions));
     assert.deepEqual(k.sessionItem("你好"), { type: "message", role: "user", content: [{ type: "input_text", text: "你好" }] });
     assert.deepEqual(k.sessionItem({ role: "assistant", text: "好的" }), { type: "message", role: "assistant", content: [{ type: "output_text", text: "好的" }] });
@@ -4351,5 +4351,99 @@ describe("extension rpc frame interception", () => {
     assert.equal(env.sent.length, 1);
     assert.deepEqual((env.sent[0] as any)[2].start.request.input, (frame as any)[2].start.request.input);
     assert.ok(env.failures.some((message) => message.includes("boom")));
+  });
+});
+
+describe("拓展输入触发、快捷键与主题", () => {
+  async function extras(platform = "MacIntel") {
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/92-extension-extras.js", import.meta.url), "utf8",
+    );
+    const registry = { inputTriggers: new Map(), shortcuts: new Map(), themes: new Map() };
+    const emitted: unknown[] = [];
+    const styles = new Map<string, { id: string; textContent: string; remove: () => void }>();
+    const rootAttributes = new Map<string, string>();
+    const document = {
+      getElementById: (id: string) => styles.get(id) ?? null,
+      createElement: () => {
+        const node = { id: "", textContent: "", remove: () => styles.delete(node.id) };
+        return node;
+      },
+      head: { append: (node: { id: string; textContent: string; remove: () => void }) => styles.set(node.id, node) },
+      documentElement: {
+        setAttribute: (name: string, value: string) => rootAttributes.set(name, value),
+        removeAttribute: (name: string) => rootAttributes.delete(name),
+      },
+      addEventListener: () => {},
+    };
+    const store = new Map<string, string>();
+    const localStorage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => store.set(key, value), removeItem: (key: string) => store.delete(key) };
+    const api = new Function(
+      "document", "localStorage", "navigator", "window", "codexPlusRegistry", "codexPlusExtensionItems", "codexPlusRegisterExtensionItem",
+      "markCodexPlusExtensionNode", "codexPlusEmitExtensionEvent", "codexPlusResolveText", "installCodexPlusCommandHandlers",
+      `${source}\nreturn { parse: codexPlusParseShortcut, matches: codexPlusShortcutMatches, match: codexPlusMatchInputTrigger, registerTheme: codexPlusRegisterTheme, themes: codexPlusThemesService(), registerTrigger: codexPlusRegisterInputTrigger };`,
+    )(
+      document, localStorage, { platform }, {},
+      registry,
+      (map: Map<string, unknown>) => [...map.values()],
+      (kind: string, map: Map<string, unknown>, definition: Record<string, unknown>, options: { id?: string }) => {
+        const id = `user:demo:${kind}:${options.id ?? map.size}`;
+        map.set(id, { ...definition, id, scriptKey: "user:demo" });
+        return () => map.delete(id);
+      },
+      () => {},
+      (event: string, args: unknown[]) => emitted.push([event, ...args]),
+      (value: unknown) => value,
+      () => {},
+    );
+    return { api, registry, styles, rootAttributes, store, emitted };
+  }
+
+  it("快捷键：Mod 在 macOS 是 ⌘，要求带修饰键", async () => {
+    const { api } = await extras("MacIntel");
+    const spec = api.parse("Mod+Shift+K");
+    assert.deepEqual(spec, { ctrl: false, meta: true, shift: true, alt: false, key: "k" });
+    assert.equal(api.matches(spec, { key: "K", code: "KeyK", metaKey: true, shiftKey: true, ctrlKey: false, altKey: false }), true);
+    assert.equal(api.matches(spec, { key: "k", code: "KeyK", metaKey: true, shiftKey: false, ctrlKey: false, altKey: false }), false);
+    assert.throws(() => api.parse("K"), /需要带 Mod/);
+    assert.throws(() => api.parse("Mod+K+J"), /只能有一个主键/);
+    assert.ok(api.parse("F5"), "功能键可以不带修饰键");
+    const { api: windows } = await extras("Win32");
+    assert.equal(windows.parse("Mod+K").ctrl, true);
+  });
+
+  it("输入触发：取光标前最近的触发符，查询词里有空白就不算", async () => {
+    const { api, registry } = await extras();
+    api.registerTrigger({ trigger: "@", items: () => [] });
+    api.registerTrigger({ trigger: "#", items: () => [] });
+    assert.equal(api.match("请看 @rea").query, "rea");
+    assert.equal(api.match("请看 @rea").item.trigger, "@");
+    assert.equal(api.match("a@b"), null, "触发符前要是开头或空白");
+    assert.equal(api.match("@foo bar"), null, "已经输完一个词");
+    assert.equal(api.match("@x #iss").item.trigger, "#");
+    assert.equal(registry.inputTriggers.size, 2);
+    assert.throws(() => api.registerTrigger({ trigger: "abc", items: () => [] }), /符号开头/);
+  });
+
+  it("主题：选中的主题生效并记住，拓展卸下后撤掉样式、回来自动恢复", async () => {
+    const { api, styles, rootAttributes, store, emitted } = await extras();
+    const dispose = api.registerTheme({ id: "sepia", name: "复古", variables: { "--color-token-main-surface-primary": "#f4ecd8", "bad name": "x" }, css: "body{letter-spacing:.01em}" });
+    assert.deepEqual(api.themes.list().map((theme: { id: string }) => theme.id), ["sepia"]);
+    assert.equal(api.themes.current, null);
+    api.themes.apply("sepia");
+    assert.equal(store.get("codexPlusExtensionTheme"), "sepia");
+    const css = styles.get("codex-plus-extension-theme")!.textContent;
+    assert.match(css, /:root\{--color-token-main-surface-primary:#f4ecd8\}/);
+    assert.doesNotMatch(css, /bad name/);
+    assert.equal(rootAttributes.get("data-codex-plus-theme"), "sepia");
+    assert.deepEqual(emitted.at(-1), ["theme/change", { id: "sepia" }]);
+    dispose();
+    assert.equal(styles.has("codex-plus-extension-theme"), false);
+    assert.equal(store.get("codexPlusExtensionTheme"), "sepia", "选择保留");
+    api.registerTheme({ id: "sepia", css: "body{}" });
+    assert.equal(rootAttributes.get("data-codex-plus-theme"), "sepia");
+    assert.throws(() => api.themes.apply("missing"), /没有主题/);
+    api.themes.apply(null);
+    assert.equal(styles.has("codex-plus-extension-theme"), false);
   });
 });

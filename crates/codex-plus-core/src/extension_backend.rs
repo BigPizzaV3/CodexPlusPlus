@@ -32,9 +32,11 @@ pub const MAX_EVENT_WAIT: Duration = Duration::from_secs(20);
 const RUNNER: &str = r#"
 import { pathToFileURL } from "node:url";
 import readline from "node:readline";
+import fs from "node:fs";
 const lines = readline.createInterface({ input: process.stdin });
 let methods = null;
 let ready = null;
+let dataDir = null;
 const provided = new Map();
 /*HOST_CLIENT*/
 lines.on("line", async (line) => {
@@ -42,6 +44,7 @@ lines.on("line", async (line) => {
   try { message = JSON.parse(line); } catch { return; }
   if (handleHostReply(message)) return;
   if (!ready) {
+    dataDir = message.dataDir;
     ready = (async () => {
       try {
         const module = await import(pathToFileURL(message.script).href);
@@ -54,6 +57,10 @@ lines.on("line", async (line) => {
           emit: (event, payload) => write({ event: String(event), payload: payload ?? null }),
           sessionQuery,
           sessions,
+          // 调模型：llm.complete({ input, model?, instructions? }) → { text, model, usage }；llm.listModels()。
+          llm,
+          // 问用户 / 提示：ui.ask({ title, message, options?, input? })、ui.toast(文字)，在 Codex 页面里弹。
+          ui,
           // 提供服务：名字要在 codexpp.json 的 backend.provides 里声明，别处才找得到。
           provide: (name, impl) => { provided.set(String(name), impl); },
           // 调用任一拓展后台提供的服务（包括自己的）：service("名字").方法(...参数)。
@@ -71,6 +78,43 @@ lines.on("line", async (line) => {
   await ready;
   const { id, method, params } = message;
   try {
+    // 定时任务：宿主每分钟发一次 { schedules: [{ method, everyMinutes?, at? }] }，到点的就调。
+    // 上次运行时间记在数据目录，重启后不会重复补跑；at 按本机时区判断。
+    if (method === "__tick") {
+      const statePath = `${dataDir}/.schedules.json`;
+      let state = {};
+      try { state = JSON.parse(fs.readFileSync(statePath, "utf8")); } catch {}
+      const now = Date.now();
+      const ran = [];
+      for (const schedule of params?.schedules ?? []) {
+        const key = `${schedule.method}|${schedule.everyMinutes ?? ""}|${schedule.at ?? ""}`;
+        const last = Number(state[key]) || 0;
+        let due = false;
+        if (schedule.everyMinutes) {
+          if (!last) state[key] = now;
+          else due = now - last >= schedule.everyMinutes * 60000;
+        } else if (schedule.at) {
+          const [hour, minute] = schedule.at.split(":").map(Number);
+          const target = new Date(now);
+          target.setHours(hour, minute, 0, 0);
+          due = now >= target.getTime() && last < target.getTime() && now - target.getTime() < 6 * 3600000;
+          if (!last && !due) state[key] = now;
+        }
+        if (!due) continue;
+        state[key] = now;
+        const fn = methods?.[schedule.method];
+        try {
+          if (typeof fn !== "function") throw new Error(`后台没有方法 ${schedule.method}`);
+          await fn({ scheduledAt: now, schedule });
+          ran.push({ method: schedule.method });
+        } catch (error) {
+          ran.push({ method: schedule.method, error: String(error?.stack || error?.message || error) });
+        }
+      }
+      try { fs.writeFileSync(statePath, JSON.stringify(state)); } catch {}
+      write({ id, result: { ran } });
+      return;
+    }
     // 别处按服务名调来的方法：{ name, method, args }，分派到 ctx.provide 登记的实现。
     if (method === "__service") {
       const impl = provided.get(params?.name);
@@ -259,11 +303,18 @@ async fn host_call_inner(message: &Value, manager: &UserScriptManager) -> anyhow
             }
             call_service(manager, &params).await
         }
-        ("sessions", "list" | "fork" | "append" | "startTurn" | "interrupt") => {
+        ("sessions", "list" | "create" | "fork" | "rename" | "append" | "startTurn" | "steer" | "interrupt" | "compact") => {
             // 会话写入经 Codex 页面里的 app-server 连接完成：在页面里调 __codexPlusSessionsCall。
             let ports = REMOTE_BRIDGE_PORTS.get().cloned().unwrap_or_else(default_debug_ports);
             page_call(&ports, "__codexPlusSessionsCall", &json!(method), &params).await
         }
+        ("ui", "ask" | "toast") => {
+            // 问用户 / 提示：在 Codex 页面里弹，等用户回答（提问最长等 10 分钟）。
+            let ports = REMOTE_BRIDGE_PORTS.get().cloned().unwrap_or_else(default_debug_ports);
+            page_call(&ports, "__codexPlusUiCall", &json!(method), &params).await
+        }
+        ("llm", "complete") => crate::extension_llm::complete(&params).await,
+        ("llm", "listModels") => crate::extension_llm::list_models(),
         _ => anyhow::bail!("不能调用 {service}.{method}"),
     }
 }
@@ -354,12 +405,52 @@ async fn remote_bridge_call(ports: &[u16], path: &str, payload: &Value) -> anyho
     Ok(result)
 }
 
+/// 扫描拓展目录的短缓存：服务调用、后台调用每次都要知道「谁启用着、脚本与配置是什么」，
+/// 一轮对话里可能连续几十次，没必要每次都整轮扫描。改动最多 2 秒后生效。
+const SCAN_CACHE_TTL: Duration = Duration::from_secs(2);
+type ScanCache<T> = std::sync::LazyLock<std::sync::Mutex<HashMap<String, (std::time::Instant, T)>>>;
+static BACKEND_SCAN: ScanCache<Result<(String, PathBuf, Value), String>> = std::sync::LazyLock::new(Default::default);
+static SERVICE_SCAN: ScanCache<Vec<(String, String)>> = std::sync::LazyLock::new(Default::default);
+
+fn cached<T: Clone>(cache: &ScanCache<T>, key: &str, load: impl FnOnce() -> T) -> T {
+    if let Some((at, value)) = cache.lock().unwrap().get(key) {
+        if at.elapsed() < SCAN_CACHE_TTL {
+            return value.clone();
+        }
+    }
+    let value = load();
+    cache.lock().unwrap().insert(key.to_string(), (std::time::Instant::now(), value.clone()));
+    value
+}
+
+fn declared_backend(manager: &UserScriptManager, key: &str) -> anyhow::Result<(String, PathBuf, Value)> {
+    let cache_key = format!("{}\u{0}{key}", manager.config_path().display());
+    cached(&BACKEND_SCAN, &cache_key, || manager.enabled_extension_backend(key).map_err(|error| error.to_string())).map_err(anyhow::Error::msg)
+}
+
+fn backend_services(manager: &UserScriptManager) -> anyhow::Result<Vec<(String, String)>> {
+    let cache_key = manager.config_path().display().to_string();
+    if let Some((at, value)) = SERVICE_SCAN.lock().unwrap().get(&cache_key) {
+        if at.elapsed() < SCAN_CACHE_TTL {
+            return Ok(value.clone());
+        }
+    }
+    let value = manager.enabled_backend_services()?;
+    SERVICE_SCAN.lock().unwrap().insert(cache_key, (std::time::Instant::now(), value.clone()));
+    Ok(value)
+}
+
+/// 清掉扫描缓存（热重载、启停拓展后立即生效用）。
+pub fn invalidate_scan_cache() {
+    BACKEND_SCAN.lock().unwrap().clear();
+    SERVICE_SCAN.lock().unwrap().clear();
+}
+
 /// 按服务名调用提供它的后台：`{ name, method, args, timeoutMs? }`。后台没起就先起。
 pub async fn call_service(manager: &UserScriptManager, params: &Value) -> anyhow::Result<Value> {
     let name = params.get("name").and_then(Value::as_str).context("缺少服务名")?;
     let method = params.get("method").and_then(Value::as_str).filter(|method| !method.is_empty()).context("缺少服务方法名")?;
-    let (_, key) = manager
-        .enabled_backend_services()?
+    let (_, key) = backend_services(manager)?
         .into_iter()
         .find(|(service, _)| service == name)
         .with_context(|| format!("没有拓展提供服务 {name}（需要在 codexpp.json 的 backend.provides 里声明）"))?;
@@ -382,7 +473,21 @@ pub async fn route_service_call(payload: &Value) -> anyhow::Result<Value> {
 
 /// 正在启动中的后台：key → 启动完成的通知。启动（最多 15 秒等就绪）不占全局锁，
 /// 否则一个后台在启动时调用别的后台服务会和全局锁互相等待。
-static STARTING: std::sync::LazyLock<Mutex<HashMap<String, Arc<Notify>>>> = std::sync::LazyLock::new(Default::default);
+static STARTING: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<Notify>>>> = std::sync::LazyLock::new(Default::default);
+
+/// 启动方的收尾：无论启动成功、失败还是调用方被取消（future 被丢弃），都移除启动中标记并唤醒等待者，
+/// 否则被取消后标记留着，之后每次调用都会等满 15 秒报「启动超时」。
+struct StartingGuard {
+    key: String,
+    notify: Arc<Notify>,
+}
+
+impl Drop for StartingGuard {
+    fn drop(&mut self) {
+        STARTING.lock().unwrap().remove(&self.key);
+        self.notify.notify_waiters();
+    }
+}
 
 /// 确保 key 的后台在跑且与当前清单一致：过期的换掉，没起的由第一个调用方启动，其余调用方等它（最多 15 秒）。
 async fn ensure_started(
@@ -404,7 +509,7 @@ async fn ensure_started(
             }
         }
         let (notify, starter) = {
-            let mut starting = STARTING.lock().await;
+            let mut starting = STARTING.lock().unwrap();
             match starting.get(key) {
                 Some(notify) => (notify.clone(), false),
                 None => {
@@ -415,22 +520,16 @@ async fn ensure_started(
             }
         };
         if starter {
-            let outcome = match spawn(manager, declared).await {
-                Ok(backend) => {
-                    BACKENDS.lock().await.insert(key.to_string(), backend);
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            };
-            STARTING.lock().await.remove(key);
-            notify.notify_waiters();
-            return outcome;
+            let _guard = StartingGuard { key: key.to_string(), notify };
+            let backend = spawn(manager, declared).await?;
+            BACKENDS.lock().await.insert(key.to_string(), backend);
+            return Ok(());
         }
         // 别人正在启动：等它结束后再看一次（结束得早于开始等待时，下一轮直接看到结果）。
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        if !STARTING.lock().await.contains_key(key) {
+        if !STARTING.lock().unwrap().contains_key(key) {
             continue;
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
@@ -453,7 +552,7 @@ pub async fn call(
         anyhow::bail!("方法名无效");
     }
     // 扫描拓展目录在锁外做；拓展已停用就停掉还在跑的后台。
-    let declared = match manager.enabled_extension_backend(key) {
+    let declared = match declared_backend(manager, key) {
         Ok(declared) => declared,
         Err(error) => {
             BACKENDS.lock().await.remove(key);
@@ -529,6 +628,13 @@ pub async fn events(key: &str, since: u64, wait: Duration) -> Value {
     }
 }
 
+/// 后台队列里最新事件的序号；后台没起时为 None。
+async fn latest_seq(key: &str) -> Option<u64> {
+    let queue = BACKENDS.lock().await.get(key)?.events.clone();
+    let last = queue.lock().await.back().map(|(seq, _)| *seq).unwrap_or(0);
+    Some(last)
+}
+
 /// 停掉全部后台（页面加载、热重载拓展时调用）。进程随 Child 释放被杀掉。
 pub async fn stop_all() {
     BACKENDS.lock().await.clear();
@@ -547,6 +653,112 @@ pub async fn stop(key: &str, instance: Option<&str>) -> bool {
         backends.remove(key);
     }
     matches
+}
+
+/// 拓展的 HTTP 路由：`/ext/<拓展 id>/<路径>?<查询>` 交给该拓展后台导出的 `http(request)`。
+/// 拓展要在 codexpp.json 里写 `backend.http: true` 才对外开放。返回 (状态码, Content-Type, 响应体)。
+///
+/// request：`{ method, path, query, headers, body }`（body 是文本；JSON 请求另给 `json`）。
+/// 后台返回字符串当纯文本；返回 `{ status?, headers?: { "content-type" }, body?, json? }` 按字段组装；其余当 JSON。
+pub async fn route_http(method: &str, raw_path: &str, raw_headers: &str, body: &[u8]) -> (u16, String, Vec<u8>) {
+    route_http_with(&crate::user_scripts::default_user_script_manager(), method, raw_path, raw_headers, body).await
+}
+
+pub async fn route_http_with(manager: &UserScriptManager, method: &str, raw_path: &str, raw_headers: &str, body: &[u8]) -> (u16, String, Vec<u8>) {
+    let fail = |status: u16, message: String| (status, "application/json; charset=utf-8".to_string(), json!({ "error": message }).to_string().into_bytes());
+    let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
+    let Some(rest) = path.strip_prefix("/ext/") else {
+        return fail(404, "not found".into());
+    };
+    let (id, sub) = rest.split_once('/').map(|(id, sub)| (id, format!("/{sub}"))).unwrap_or((rest, "/".to_string()));
+    if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+        return fail(404, "not found".into());
+    }
+    let key = crate::user_scripts::extension_package_key(id);
+    if !manager.extension_backend_http(&key) {
+        return fail(404, format!("extension {id} does not serve HTTP"));
+    }
+    let headers = raw_headers
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), Value::String(value.trim().to_string())))
+        .collect::<serde_json::Map<_, _>>();
+    let text = String::from_utf8_lossy(body).to_string();
+    let mut request = json!({ "method": method, "path": sub, "query": query, "headers": headers, "body": text });
+    if let Ok(parsed) = serde_json::from_slice::<Value>(body) {
+        request["json"] = parsed;
+    }
+    match call(manager, &key, "http", request, DEFAULT_CALL_TIMEOUT, None).await {
+        Ok(Value::String(text)) => (200, "text/plain; charset=utf-8".into(), text.into_bytes()),
+        Ok(Value::Object(response)) if response.contains_key("status") || response.contains_key("body") || response.contains_key("json") => {
+            let status = response.get("status").and_then(Value::as_u64).filter(|code| (100..600).contains(code)).unwrap_or(200) as u16;
+            let content_type = response
+                .get("headers")
+                .and_then(|headers| headers.get("content-type").or_else(|| headers.get("Content-Type")))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(value) = response.get("json") {
+                return (status, content_type.unwrap_or_else(|| "application/json; charset=utf-8".into()), value.to_string().into_bytes());
+            }
+            let body = match response.get("body") {
+                Some(Value::String(text)) => text.clone().into_bytes(),
+                Some(Value::Null) | None => Vec::new(),
+                Some(other) => other.to_string().into_bytes(),
+            };
+            (status, content_type.unwrap_or_else(|| "text/plain; charset=utf-8".into()), body)
+        }
+        Ok(value) => (200, "application/json; charset=utf-8".into(), value.to_string().into_bytes()),
+        Err(error) => fail(502, format!("{error:#}")),
+    }
+}
+
+/// 定时任务调度：每分钟给声明了 schedules 的拓展后台发一次 `__tick`（没起就先起），到点与否由后台按本机时区判断。
+/// 只在托管后台的进程（启动器）里起一次。
+pub fn start_scheduler() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    handle.spawn(async {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let manager = crate::user_scripts::default_user_script_manager();
+            let schedules = tokio::task::spawn_blocking({
+                let manager = manager.clone();
+                move || manager.enabled_extension_schedules().unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default();
+            let mut grouped: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+            for (key, schedule) in schedules {
+                grouped.entry(key).or_default().push(serde_json::to_value(schedule).unwrap_or(Value::Null));
+            }
+            for (key, list) in grouped {
+                match call(&manager, &key, "__tick", json!({ "schedules": list }), Duration::from_secs(55), None).await {
+                    Ok(result) => {
+                        for failure in result["ran"].as_array().into_iter().flatten().filter(|item| item.get("error").is_some()) {
+                            let _ = crate::diagnostic_log::append_diagnostic_log(
+                                "extension_backend.schedule_failed",
+                                json!({ "extension": key, "method": failure.get("method"), "error": failure.get("error") }),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "extension_backend.schedule_failed",
+                            json!({ "extension": key, "error": format!("{error:#}") }),
+                        );
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// 桥接路由 `/extensions/backend/call`：`{ key, method, params, timeoutMs? }`。
@@ -573,8 +785,15 @@ pub async fn route_stop(payload: &Value) -> anyhow::Result<Value> {
 }
 
 /// 桥接路由 `/extensions/backend/events`：`{ key, since, waitMs? }`。
+/// `since: "latest"` 用于刚开始订阅：后台已在跑时从队尾开始，不把订阅前的旧事件重放给新页面实例。
 pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
     let key = payload.get("key").and_then(Value::as_str).context("缺少拓展 key")?;
+    if payload.get("since").and_then(Value::as_str) == Some("latest") {
+        return Ok(match latest_seq(key).await {
+            Some(next) => json!({ "status": "ok", "events": [], "next": next, "running": true }),
+            None => json!({ "status": "ok", "events": [], "next": 0, "running": false }),
+        });
+    }
     let since = payload.get("since").and_then(Value::as_u64).unwrap_or(0);
     let wait = payload
         .get("waitMs")

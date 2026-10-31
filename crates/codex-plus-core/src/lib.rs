@@ -1,3 +1,6 @@
+#![recursion_limit = "256"]
+
+
 pub mod ads;
 pub mod aggregate_catalog;
 pub mod agent_cache;
@@ -100,9 +103,11 @@ pub mod sub2api;
 pub mod tools;
 pub mod update;
 pub mod extension_backend;
+pub mod extension_codex;
 pub mod extension_creator;
 pub mod extension_gateway;
 pub mod extension_history;
+pub mod extension_llm;
 pub mod extension_publish;
 pub mod extension_hooks;
 pub mod extension_node;

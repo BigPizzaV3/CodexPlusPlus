@@ -1817,6 +1817,9 @@
     messageDecorations: new Map(),
     sidePanels: new Map(),
     slots: new Map(),
+    inputTriggers: new Map(),
+    shortcuts: new Map(),
+    themes: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
@@ -18721,6 +18724,18 @@
        * sidebar.bottom、titlebar。render({ container, slot }) 在容器新建时调用（Codex 重建 DOM 后会再调），
        * 可返回清理函数。返回的撤销函数上带 refresh() 强制重画。
        */
+      registerInputTrigger(definition, options = {}) {
+        return codexPlusRegisterInputTrigger(definition, options);
+      },
+      registerShortcut(definition, options = {}) {
+        return codexPlusRegisterShortcut(definition, options);
+      },
+      registerTheme(definition, options = {}) {
+        return codexPlusRegisterTheme(definition, options);
+      },
+      ask(question) {
+        return codexPlusAsk(question);
+      },
       registerSlot(definition, options = {}) {
         return codexPlusRegisterExtensionSlot(definition, options);
       },
@@ -18881,6 +18896,19 @@
        * 订阅会话的新事件：按 intervalMs（默认 2 秒）增量读取，handler(event) 逐条收到。
        * 默认从当前末尾开始（不回放历史），fromSeq 指定起点。返回撤销函数。
        */
+      /** 订阅全部会话的新事件：handler(event, { sessionId })，返回撤销函数。等同 ctx.on("session/event")。 */
+      observeAll(handler) {
+        if (typeof handler !== "function") throw new Error("observeAll 需要 handler(event, { sessionId })");
+        const listener = { handler, scriptKey: "builtin:sessionQuery" };
+        if (!codexPlusExtensionListeners.has("session/event")) codexPlusExtensionListeners.set("session/event", new Set());
+        codexPlusExtensionListeners.get("session/event").add(listener);
+        codexPlusEnsureSessionWatcher();
+        return () => {
+          const listeners = codexPlusExtensionListeners.get("session/event");
+          listeners?.delete(listener);
+          if (listeners && !listeners.size) codexPlusExtensionListeners.delete("session/event");
+        };
+      },
       observeSession(id, handler, options = {}) {
         if (typeof handler !== "function") throw new Error("observeSession 需要 handler(event)");
         let stopped = false;
@@ -18922,10 +18950,14 @@
    */
   const codexPlusSessionMethods = {
     list: "thread/list",
+    create: "thread/start",
     fork: "thread/fork",
+    rename: "thread/name/set",
     append: "thread/inject_items",
     startTurn: "turn/start",
+    steer: "turn/steer",
     interrupt: "turn/interrupt",
+    compact: "thread/compact/start",
   };
   let codexPlusManagerAtom = null;
 
@@ -19002,24 +19034,56 @@
       }
       case "interrupt":
         return client.sendRequest(method, { threadId: String(params.id), turnId: String(params.turnId || "") });
+      case "create":
+        // 新建会话；给了 input 时紧接着发起第一轮。
+        {
+          const thread = (await client.sendRequest(method, { ...(params.options || {}) }))?.thread ?? null;
+          if (thread?.id && params.input) {
+            const turn = await codexPlusSessionsCall("startTurn", { id: thread.id, input: params.input, hostId: params.hostId });
+            return { thread, turn };
+          }
+          return { thread, turn: null };
+        }
+      case "rename":
+        if (!String(params.name || "").trim()) throw new Error("rename 需要新名字");
+        return client.sendRequest(method, { threadId: String(params.id), name: String(params.name).trim() });
+      case "steer": {
+        // 会话正忙时往当前这一轮插话。
+        const input = typeof params.input === "string" ? [{ type: "text", text: params.input }] : params.input;
+        if (!Array.isArray(input) || !input.length) throw new Error("steer 需要输入文字");
+        return client.sendRequest(method, { threadId: String(params.id), input, ...(params.turnId ? { expectedTurnId: String(params.turnId) } : {}) });
+      }
+      case "compact":
+        return client.sendRequest(method, { threadId: String(params.id) });
       default:
         throw new Error(`会话服务没有方法 ${name}`);
     }
   }
 
-  /** 内置的会话写入服务（inject: ["sessions"]）：分叉、追加条目、发起 / 中断一轮。读请用 sessionQuery。 */
+  /** 内置的会话写入服务（inject: ["sessions"]）：新建、分叉、改名、追加条目、发起 / 插话 / 中断一轮、压缩。读请用 sessionQuery。 */
   function codexPlusSessionsService() {
     return Object.freeze({
       list: (options = {}) => codexPlusSessionsCall("list", options),
+      create: (input, options) => codexPlusSessionsCall("create", { input, options }),
       fork: (id, options) => codexPlusSessionsCall("fork", { id, options }),
+      rename: (id, name) => codexPlusSessionsCall("rename", { id, name }),
       append: (id, items) => codexPlusSessionsCall("append", { id, items }),
       startTurn: (id, input, options) => codexPlusSessionsCall("startTurn", { id, input, options }),
+      steer: (id, input, turnId) => codexPlusSessionsCall("steer", { id, input, turnId }),
       interrupt: (id, turnId) => codexPlusSessionsCall("interrupt", { id, turnId }),
+      compact: (id) => codexPlusSessionsCall("compact", { id }),
     });
   }
 
   function installCodexPlusBuiltinServices() {
     window.__codexPlusSessionsCall = codexPlusSessionsCall;
+    // 后台、工具、钩子经 CDP 调：window.__codexPlusUiCall("ask", 参数)。
+    window.__codexPlusUiCall = (name, params) => {
+      if (name === "ask") return codexPlusAsk(params || {});
+      if (name === "toast") return showToast(String(params?.message ?? ""), params?.options || {}), true;
+      throw new Error(`界面服务没有方法 ${name}`);
+    };
+    if (!codexPlusServices.has("themes") && typeof codexPlusThemesService === "function") codexPlusProvideService("themes", codexPlusThemesService(), "builtin");
     if (!codexPlusServices.has("sessions")) codexPlusProvideService("sessions", codexPlusSessionsService(), "builtin");
     if (!codexPlusServices.has("sessionQuery")) codexPlusProvideService("sessionQuery", codexPlusSessionQueryService(), "builtin");
     // 全局的多语言服务：写成 inject: ["locale"] 的拓展也能用（ctx.locale 是按实例自动撤销的同一套接口）。
@@ -19186,6 +19250,69 @@
 
   function codexPlusIsThenable(value) {
     return !!value && typeof value.then === "function";
+  }
+
+  /**
+   * 全部会话的事件流：有拓展监听 `session/event` / `agent/status` 时，按会话更新时间增量读 rollout，
+   * 把新事件逐条发出去。新版 Codex 的通知不经过页面，rollout 是页面能拿到的唯一完整来源。
+   *   - `session/event`：(event, { sessionId })，event 形状同 sessionQuery 的事件日志
+   *   - `agent/status`：({ sessionId, status: "running" | "idle" | "aborted", turn, reason? })
+   * 没人监听时自动停；监听开始前已有的事件不重放，之后新建的会话从头发。
+   */
+  const codexPlusSessionWatchEvents = ["session/event", "agent/status"];
+  let codexPlusSessionWatcher = null;
+
+  function codexPlusWantsSessionWatch() {
+    return codexPlusSessionWatchEvents.some((event) => codexPlusExtensionListeners.get(event)?.size);
+  }
+
+  function codexPlusSessionStatusOf(event) {
+    if (event.type === "turn/start") return { status: "running", turn: event.data?.turn };
+    if (event.type === "turn/complete") return { status: "idle", turn: event.data?.turn };
+    if (event.type === "turn/aborted") return { status: "aborted", turn: event.data?.turn, reason: event.data?.reason ?? null };
+    return null;
+  }
+
+  function codexPlusEnsureSessionWatcher() {
+    if (codexPlusSessionWatcher || !codexPlusWantsSessionWatch()) return;
+    const query = codexPlusSessionQueryService();
+    const cursors = new Map();
+    let primed = false;
+    const tick = async () => {
+      if (!codexPlusWantsSessionWatch()) {
+        codexPlusSessionWatcher = null;
+        return;
+      }
+      try {
+        const sessions = await query.listSessions({ limit: 20 });
+        for (const [index, session] of (sessions || []).entries()) {
+          let cursor = cursors.get(session.id);
+          if (!cursor) {
+            let next = 0;
+            if (!primed) {
+              const tail = await query.listEvents(session.id, { fromEnd: true, limit: 1 }).catch(() => []);
+              next = tail.length ? tail[0].seq + 1 : 0;
+            }
+            cursor = { updatedAt: primed ? null : session.updatedAt, next };
+            cursors.set(session.id, cursor);
+            if (!primed) continue;
+          }
+          // 最近的几个会话每轮都看（更新时间精度只到秒），其余按更新时间变化再读。
+          if (index >= 3 && cursor.updatedAt === session.updatedAt) continue;
+          cursor.updatedAt = session.updatedAt;
+          const events = await query.readEventsSince({ sessionId: session.id, seq: cursor.next, limit: 200 }).catch(() => []);
+          for (const event of events || []) {
+            cursor.next = event.seq + 1;
+            codexPlusEmitExtensionEvent("session/event", [event, { sessionId: session.id }]);
+            const status = codexPlusSessionStatusOf(event);
+            if (status) codexPlusEmitExtensionEvent("agent/status", [{ sessionId: session.id, ...status }]);
+          }
+        }
+        primed = true;
+      } catch {}
+      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 5000 : 1500);
+    };
+    codexPlusSessionWatcher = setTimeout(tick, 0);
   }
 
   /** 通知所有监听者。逐个隔离：一个处理器抛错不影响其余。 */
@@ -19533,12 +19660,13 @@
     const pollBackendEvents = async () => {
       if (backendPolling) return;
       backendPolling = true;
-      let since = 0;
+      // 首次订阅从队尾开始：后台已在跑时，订阅前的旧事件不重放给这个页面实例。
+      let since = "latest";
       try {
         while (!disposed && backendHandlers.size) {
           let result;
           try {
-            result = await backendBridge("/extensions/backend/events", { since, waitMs: 20000 });
+            result = await backendBridge("/extensions/backend/events", { since, waitMs: since === "latest" ? 0 : 20000 });
           } catch {
             await new Promise((resolve) => setTimeout(resolve, 2000));
             continue;
@@ -19550,7 +19678,7 @@
               }
             }
           }
-          since = Number(result.next) || since;
+          since = Number(result.next) || (since === "latest" ? 0 : since);
           // 后台还没起：稍后再看，不空转。
           if (!result.running) await new Promise((resolve) => setTimeout(resolve, 3000));
         }
@@ -19558,6 +19686,14 @@
         backendPolling = false;
       }
     };
+    // 调模型：经 Codex++ 协议代理用当前供应商（不跑拓展网关中间件）。
+    const llm = Object.freeze({
+      complete(options) {
+        const payload = typeof options === "string" ? { input: options } : options ?? {};
+        return backendBridge("/extensions/llm/complete", payload).then((result) => result.result);
+      },
+      listModels: () => backendBridge("/extensions/llm/models", {}).then((result) => result.result),
+    });
     const backend = {
       call(method, params = null, callOptions = {}) {
         const timeoutMs = Number.isFinite(callOptions.timeout) ? Number(callOptions.timeout) : undefined;
@@ -19583,6 +19719,10 @@
       manifest,
       config,
       backend,
+      llm,
+      get themes() {
+        return codexPlusServices.get("themes")?.value;
+      },
       get disposed() {
         return disposed;
       },
@@ -19652,6 +19792,19 @@
         handle.refresh = slot.refresh;
         return handle;
       },
+      registerInputTrigger(definition, itemOptions) {
+        return track(codexPlusRegisterInputTrigger(definition, registerOptions(itemOptions)));
+      },
+      registerShortcut(definition, itemOptions) {
+        return track(codexPlusRegisterShortcut(definition, registerOptions(itemOptions)));
+      },
+      registerTheme(definition, itemOptions) {
+        return track(codexPlusRegisterTheme(definition, registerOptions(itemOptions)));
+      },
+      /** 弹对话框问用户，返回 { value, text }；取消为 null。 */
+      ask(question) {
+        return codexPlusAsk(question);
+      },
       registerSidePanel(definition, itemOptions) {
         const panel = codexPlusRegisterExtensionSidePanel(definition, registerOptions(itemOptions));
         const handle = track(panel);
@@ -19667,6 +19820,7 @@
         const listener = { handler, scriptKey };
         if (!codexPlusExtensionListeners.has(event)) codexPlusExtensionListeners.set(event, new Set());
         codexPlusExtensionListeners.get(event).add(listener);
+        if (codexPlusSessionWatchEvents.includes(event)) codexPlusEnsureSessionWatcher();
         return track(() => {
           const listeners = codexPlusExtensionListeners.get(event);
           listeners?.delete(listener);
@@ -19749,6 +19903,7 @@
         }
         codexPlusExtensionInstances.delete(ctx);
         codexPlusEmitExtensionEvent("extension/dispose", [info]);
+        if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
       },
     };
 
@@ -19779,7 +19934,10 @@
         ctx.dispose();
       });
     }
-    if (!disposed) codexPlusEmitExtensionEvent("extension/apply", [info]);
+    if (!disposed) {
+      codexPlusEmitExtensionEvent("extension/apply", [info]);
+      if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
+    }
     return ctx;
   }
   /**
@@ -20944,7 +21102,13 @@
       [data-codex-plus-ui-slot="thread.top"],[data-codex-plus-ui-slot="thread.bottom"]{width:min(100%,var(--thread-content-max-width,768px));margin:12px auto;padding:0 16px;box-sizing:border-box}
       [data-codex-plus-ui-slot="sidebar.top"],[data-codex-plus-ui-slot="sidebar.bottom"]{padding:6px 8px}
       [data-codex-plus-ui-slot="titlebar"]{display:contents}
-      [data-codex-plus-ui-slot="titlebar"] .codex-plus-ui-slot-item{display:contents}`;
+      [data-codex-plus-ui-slot="titlebar"] .codex-plus-ui-slot-item{display:contents}
+      [data-codex-plus-ui-slot="turn.after"]{margin-top:6px}
+      [data-codex-plus-ui-slot="sessionRow.prefix"],[data-codex-plus-ui-slot="sessionRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
+      [data-codex-plus-ui-slot="sessionRow.prefix"]{margin-right:4px}
+      [data-codex-plus-ui-slot="sessionRow.suffix"]{margin-left:4px}
+      [data-codex-plus-ui-slot="overlay"]{position:fixed;inset:0;z-index:2147483600;pointer-events:none}
+      [data-codex-plus-ui-slot="overlay"] .codex-plus-ui-slot-item>*{pointer-events:auto}`;
     document.head.append(style);
   }
 
@@ -21155,11 +21319,13 @@
    * 通用界面插槽：拓展用 registerSlot({ slot, render }) 往 Codex 界面的固定位置放自己的内容。
    *
    * 位置：composer.above（输入框上方）、thread.top / thread.bottom（对话区顶部 / 底部）、
-   * sidebar.top / sidebar.bottom（左侧栏列表顶部 / 底部）、titlebar（标题栏右侧按钮组）。
+   * sidebar.top / sidebar.bottom（左侧栏列表顶部 / 底部）、titlebar（标题栏右侧按钮组）、
+   * turn.after（每一轮对话的末尾，render 收到 turnKey）、sessionRow.prefix / sessionRow.suffix
+   * （侧栏每个会话行标题前 / 后，render 收到 sessionId、title）、overlay（铺满窗口的浮层，默认不挡点击）。
    * 每个位置一个带拓展标记的宿主节点，里面每个注册项一个容器；容器新建时调用 render（DOM 会随 Codex 重建，
    * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
    */
-  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar"];
+  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar", "turn.after", "sessionRow.prefix", "sessionRow.suffix", "overlay"];
   const codexPlusUiSlotVersions = new Map();
 
   function codexPlusUiSlotAnchors(slot) {
@@ -21182,6 +21348,24 @@
       case "sidebar.bottom":
         return visible("[data-app-action-sidebar-scroll]")
           .map((list) => ({ parent: list, place: slot === "sidebar.top" ? "start" : "end" }));
+      case "turn.after":
+        // 每一轮的容器带 data-turn-key（虚拟列表只渲染可见的几轮）。
+        return visible(".thread-scroll-container [data-turn-key]")
+          .map((turn) => ({ parent: turn, place: "end", info: { turnKey: turn.getAttribute("data-turn-key") || "" } }));
+      case "sessionRow.prefix":
+      case "sessionRow.suffix":
+        return visible("[data-app-action-sidebar-thread-row]").flatMap((row) => {
+          const title = row.querySelector("[data-thread-title-trigger]");
+          if (!title?.parentElement) return [];
+          const info = {
+            sessionId: String(row.getAttribute("data-app-action-sidebar-thread-id") || "").replace(/^local:/, ""),
+            title: row.getAttribute("data-app-action-sidebar-thread-title") || "",
+          };
+          const next = title.nextElementSibling;
+          return [{ parent: title.parentElement, place: slot === "sessionRow.prefix" ? title : (next && !isExtensionUiNode(next) ? next : "end"), info }];
+        });
+      case "overlay":
+        return document.body ? [{ parent: document.body, place: "end" }] : [];
       case "titlebar": {
         const toolbar = codexPlusSidePanelToolbar();
         if (!toolbar) return [];
@@ -21223,7 +21407,7 @@
         host.querySelectorAll("[data-codex-plus-slot-item]").forEach(codexPlusRunSlotCleanup);
         host.remove();
       });
-      for (const { parent, place } of anchors) {
+      for (const { parent, place, info } of anchors) {
         if (!parent) continue;
         let host = [...parent.children].find((node) => node.getAttribute?.("data-codex-plus-ui-slot") === slot);
         if (!host) {
@@ -21247,11 +21431,20 @@
             child.remove();
           }
         }
+        // 按注册顺序就位：只在顺序不对时挪动，已就位的节点不碰（挪动会让里面的输入框失焦）。
+        let previous = null;
+        const placeAfterPrevious = (container) => {
+          const expected = previous ? previous.nextElementSibling : host.firstElementChild;
+          if (expected !== container) host.insertBefore(container, expected);
+          previous = container;
+        };
         for (const item of slotItems) {
           const version = String(codexPlusUiSlotVersions.get(item.id) || 0);
           let container = [...host.children].find((child) => child.dataset.slotItemId === item.id);
-          if (container && container.dataset.slotVersion === version) {
-            if (host.lastElementChild !== container) host.appendChild(container);
+          // 同一个宿主换了归属（会话行被复用给别的会话）时整项重画。
+          const infoKey = info ? JSON.stringify(info) : "";
+          if (container && container.dataset.slotVersion === version && (container.__codexPlusSlotInfo ?? "") === infoKey) {
+            placeAfterPrevious(container);
             continue;
           }
           if (container) {
@@ -21266,8 +21459,9 @@
             markCodexPlusExtensionNode(container, item.scriptKey);
           }
           container.dataset.slotVersion = version;
-          host.appendChild(container);
-          const result = runCodexPlusExtensionCallback(item.scriptKey, "slot.render", () => item.render({ container, slot }));
+          container.__codexPlusSlotInfo = infoKey;
+          placeAfterPrevious(container);
+          const result = runCodexPlusExtensionCallback(item.scriptKey, "slot.render", () => item.render({ container, slot, ...(info || {}) }));
           if (result.ok && typeof result.value === "function") container.__codexPlusSlotCleanup = result.value;
         }
       }
@@ -21293,6 +21487,382 @@
       refreshCodexPlusUiSlots();
     };
     return handle;
+  }
+  /**
+   * 拓展的输入触发、快捷键、主题与向用户提问。
+   *
+   * - 输入触发：registerInputTrigger({ trigger: "@", items(query) => [{ label, description?, insert }] })。
+   *   输入框里光标前是「触发符 + 查询词」时弹出候选，选中后把这一段换成 insert。
+   * - 快捷键：registerShortcut({ key: "Mod+Shift+K", run, allowInInput? })。Mod 在 macOS 是 ⌘，其余是 Ctrl。
+   * - 主题：registerTheme({ id, name, variables: { "--x": "值" }, css })，同一时间只有一个生效，选择记在本机。
+   * - 提问：codexPlusAsk({ title, message, options?, input? }) → 用户的回答，取消时为 null。后台经 CDP 也能调。
+   */
+
+  // ---------------------------------------------------------------- 输入触发
+  const codexPlusTriggerPattern = /^[@#$%&~!^:+][\w-]{0,7}$|^\/\/[\w-]{0,6}$/;
+  let codexPlusTriggerState = null;
+
+  function codexPlusRegisterInputTrigger(definition, options = {}) {
+    const trigger = String(definition?.trigger || "");
+    if (!codexPlusTriggerPattern.test(trigger)) throw new Error("trigger 是一个符号开头的短前缀，例如 \"@\"、\"#\"、\"$tool\"");
+    if (typeof definition?.items !== "function") throw new Error(`输入触发 ${trigger} 需要 items(query) 返回候选`);
+    const dispose = codexPlusRegisterExtensionItem("inputTrigger", codexPlusRegistry.inputTriggers, { ...definition, trigger }, options);
+    installCodexPlusInputTriggerHandlers();
+    return dispose;
+  }
+
+  /** 光标前的文字（只看光标所在的文本节点，够用且不受富文本结构影响）。 */
+  function codexPlusTextBeforeCaret(editor) {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !selection.isCollapsed) return null;
+    const node = selection.anchorNode;
+    if (!node || !editor.contains(node) || node.nodeType !== Node.TEXT_NODE) return null;
+    return node.textContent.slice(0, selection.anchorOffset);
+  }
+
+  function codexPlusMatchInputTrigger(before) {
+    let best = null;
+    for (const item of codexPlusExtensionItems(codexPlusRegistry.inputTriggers)) {
+      const index = before.lastIndexOf(item.trigger);
+      if (index < 0 || (index > 0 && !/\s/.test(before[index - 1]))) continue;
+      const query = before.slice(index + item.trigger.length);
+      if (/\s/.test(query) || query.length > 64) continue;
+      if (!best || index > best.index || (index === best.index && item.trigger.length > best.item.trigger.length)) best = { item, index, query };
+    }
+    return best;
+  }
+
+  function hideCodexPlusTriggerHints() {
+    codexPlusTriggerState = null;
+    document.getElementById("codex-plus-input-trigger-hints")?.remove();
+  }
+
+  function codexPlusAcceptTrigger(choice) {
+    const state = codexPlusTriggerState;
+    if (!state || !choice) return;
+    const { editor, match } = state;
+    hideCodexPlusTriggerHints();
+    editor.focus();
+    const selection = window.getSelection();
+    const length = match.item.trigger.length + match.query.length;
+    for (let index = 0; index < length; index += 1) selection.modify("extend", "backward", "character");
+    document.execCommand("insertText", false, String(choice.insert ?? choice.label ?? ""));
+    if (typeof choice.onSelect === "function") runCodexPlusExtensionCallback(match.item.scriptKey, "inputTrigger.onSelect", () => choice.onSelect());
+  }
+
+  function renderCodexPlusTriggerHints() {
+    const state = codexPlusTriggerState;
+    if (!state) return;
+    if (!state.items.length) {
+      document.getElementById("codex-plus-input-trigger-hints")?.remove();
+      return;
+    }
+    let panel = document.getElementById("codex-plus-input-trigger-hints");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "codex-plus-input-trigger-hints";
+      panel.className = "codex-plus-hint-panel";
+      panel.setAttribute("role", "listbox");
+      markCodexPlusExtensionNode(panel, "builtin-input-triggers");
+      document.body.appendChild(panel);
+    }
+    panel.textContent = "";
+    state.items.forEach((choice, index) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "codex-plus-command-hint";
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", String(index === state.active));
+      row.innerHTML = `<strong>${escapeHtml(String(choice.label ?? choice.insert ?? ""))}</strong><span>${escapeHtml(String(choice.description || ""))}</span>`;
+      row.addEventListener("pointerdown", (event) => event.preventDefault());
+      row.addEventListener("click", () => codexPlusAcceptTrigger(choice));
+      panel.appendChild(row);
+    });
+    const rect = state.editor.getBoundingClientRect();
+    panel.style.left = `${Math.round(rect.left)}px`;
+    panel.style.bottom = `${Math.round(window.innerHeight - rect.top + 8)}px`;
+    panel.style.minWidth = `${Math.round(Math.min(rect.width, 420))}px`;
+  }
+
+  async function updateCodexPlusTriggerHints(editor) {
+    const before = codexPlusTextBeforeCaret(editor);
+    const match = before === null ? null : codexPlusMatchInputTrigger(before);
+    if (!match) {
+      hideCodexPlusTriggerHints();
+      return;
+    }
+    const token = Symbol("trigger");
+    codexPlusTriggerState = { editor, match, items: codexPlusTriggerState?.items || [], active: 0, token };
+    const result = runCodexPlusExtensionCallback(match.item.scriptKey, `inputTrigger.items:${match.item.trigger}`, () => match.item.items(match.query, { editor }));
+    if (!result.ok) return hideCodexPlusTriggerHints();
+    let items;
+    try {
+      items = await result.value;
+    } catch (error) {
+      codexPlusMarkExtensionFailure(match.item.scriptKey, `inputTrigger.items: ${String(error?.stack || error?.message || error)}`);
+      return hideCodexPlusTriggerHints();
+    }
+    // 等候选期间用户又输入了：以最新一次为准。
+    if (codexPlusTriggerState?.token !== token) return;
+    codexPlusTriggerState.items = (Array.isArray(items) ? items : []).filter((choice) => choice && typeof choice === "object").slice(0, 12);
+    renderCodexPlusTriggerHints();
+  }
+
+  function installCodexPlusInputTriggerHandlers() {
+    // 共用命令提示的样式（命令提示的处理器同时装上也无妨：没有命令时它什么都不做）。
+    installCodexPlusCommandHandlers();
+    if (window.__codexPlusInputTriggerHandlersInstalled) return;
+    window.__codexPlusInputTriggerHandlersInstalled = true;
+    const onInput = (event) => {
+      if (!codexPlusRegistry.inputTriggers.size) return;
+      const editor = codexPlusComposerEditorFrom(event.target);
+      if (editor) void updateCodexPlusTriggerHints(editor);
+    };
+    const onKeyDown = (event) => {
+      const state = codexPlusTriggerState;
+      if (!state || !state.items.length || event.isComposing) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        hideCodexPlusTriggerHints();
+      } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        state.active = (state.active + step + state.items.length) % state.items.length;
+        renderCodexPlusTriggerHints();
+      } else if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        codexPlusAcceptTrigger(state.items[state.active]);
+      }
+    };
+    document.addEventListener("input", onInput, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("focusout", (event) => {
+      if (codexPlusTriggerState && event.target === codexPlusTriggerState.editor) setTimeout(() => {
+        if (codexPlusTriggerState && !codexPlusTriggerState.editor.contains(document.activeElement)) hideCodexPlusTriggerHints();
+      }, 150);
+    }, true);
+  }
+
+  // ---------------------------------------------------------------- 快捷键
+  const codexPlusIsMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+
+  /** "Mod+Shift+K" → { mod, ctrl, meta, shift, alt, key }；key 按 event.key 小写比较。 */
+  function codexPlusParseShortcut(text) {
+    const parts = String(text || "").split("+").map((part) => part.trim()).filter(Boolean);
+    const spec = { ctrl: false, meta: false, shift: false, alt: false, key: "" };
+    for (const part of parts) {
+      const lower = part.toLowerCase();
+      if (lower === "mod") spec[codexPlusIsMac ? "meta" : "ctrl"] = true;
+      else if (lower === "ctrl" || lower === "control") spec.ctrl = true;
+      else if (lower === "cmd" || lower === "meta" || lower === "command") spec.meta = true;
+      else if (lower === "shift") spec.shift = true;
+      else if (lower === "alt" || lower === "option") spec.alt = true;
+      else if (spec.key) throw new Error(`快捷键 ${text} 只能有一个主键`);
+      else spec.key = lower === "space" ? " " : lower;
+    }
+    if (!spec.key) throw new Error(`快捷键 ${text} 缺少主键`);
+    if (!spec.ctrl && !spec.meta && !spec.alt && !/^f\d{1,2}$/.test(spec.key)) throw new Error(`快捷键 ${text} 需要带 Mod / Ctrl / Alt（或用 F1~F12），免得吞掉普通输入`);
+    return spec;
+  }
+
+  function codexPlusShortcutMatches(spec, event) {
+    const key = String(event.key || "").toLowerCase();
+    const code = String(event.code || "").toLowerCase();
+    const sameKey = key === spec.key || code === `key${spec.key}` || code === `digit${spec.key}`;
+    return sameKey && event.ctrlKey === spec.ctrl && event.metaKey === spec.meta && event.shiftKey === spec.shift && event.altKey === spec.alt;
+  }
+
+  function codexPlusRegisterShortcut(definition, options = {}) {
+    if (typeof definition?.run !== "function") throw new Error("快捷键需要 run()");
+    const spec = codexPlusParseShortcut(definition.key);
+    const dispose = codexPlusRegisterExtensionItem("shortcut", codexPlusRegistry.shortcuts, { ...definition, spec }, options);
+    if (!window.__codexPlusShortcutHandlerInstalled) {
+      window.__codexPlusShortcutHandlerInstalled = true;
+      document.addEventListener("keydown", (event) => {
+        if (event.isComposing || !codexPlusRegistry.shortcuts.size) return;
+        const inInput = !!event.target?.closest?.("input, textarea, [contenteditable=true]");
+        const item = codexPlusExtensionItems(codexPlusRegistry.shortcuts)
+          .find((candidate) => codexPlusShortcutMatches(candidate.spec, event) && (!inInput || candidate.allowInInput !== false));
+        if (!item) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const result = runCodexPlusExtensionCallback(item.scriptKey, `shortcut:${item.key}`, () => item.run({ event }));
+        if (result.ok && codexPlusIsThenable(result.value)) {
+          result.value.catch((error) => codexPlusMarkExtensionFailure(item.scriptKey, `shortcut:${item.key}: ${String(error?.stack || error?.message || error)}`));
+        }
+      }, true);
+    }
+    return dispose;
+  }
+
+  // ---------------------------------------------------------------- 主题
+  const codexPlusThemeStorageKey = "codexPlusExtensionTheme";
+
+  function codexPlusCurrentThemeId() {
+    try {
+      return localStorage.getItem(codexPlusThemeStorageKey) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function codexPlusThemeCss(theme) {
+    const variables = Object.entries(theme.variables || {})
+      .filter(([name]) => /^--[\w-]+$/.test(name))
+      .map(([name, value]) => `${name}:${String(value).replace(/[;{}]/g, "")}`)
+      .join(";");
+    return `${variables ? `:root{${variables}}\n` : ""}${typeof theme.css === "string" ? theme.css : ""}`;
+  }
+
+  /** 把记住的主题画上去；主题没注册（拓展停用）时撤掉样式但保留选择，拓展回来后自动恢复。 */
+  function applyCodexPlusTheme() {
+    const id = codexPlusCurrentThemeId();
+    const theme = id ? codexPlusExtensionItems(codexPlusRegistry.themes).find((item) => item.themeId === id) : null;
+    let style = document.getElementById("codex-plus-extension-theme");
+    if (!theme) {
+      style?.remove();
+      document.documentElement.removeAttribute("data-codex-plus-theme");
+      return;
+    }
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "codex-plus-extension-theme";
+      markCodexPlusExtensionNode(style, theme.scriptKey);
+      document.head.append(style);
+    }
+    const css = codexPlusThemeCss(theme);
+    if (style.textContent !== css) style.textContent = css;
+    document.documentElement.setAttribute("data-codex-plus-theme", id);
+  }
+
+  function codexPlusRegisterTheme(definition, options = {}) {
+    const themeId = String(definition?.id || "").trim();
+    if (!/^[\w-]{1,48}$/.test(themeId)) throw new Error("主题 id 只能是字母、数字、_、-");
+    if (!definition.variables && typeof definition.css !== "string") throw new Error(`主题 ${themeId} 需要 variables 或 css`);
+    const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || `theme-${themeId}` });
+    applyCodexPlusTheme();
+    return () => {
+      dispose();
+      applyCodexPlusTheme();
+    };
+  }
+
+  /** 内置的主题服务（inject: ["themes"]，ctx.themes 同一套）：列出、切换、当前。 */
+  function codexPlusThemesService() {
+    return Object.freeze({
+      list: () => codexPlusExtensionItems(codexPlusRegistry.themes).map((item) => ({ id: item.themeId, name: codexPlusResolveText(item.name), extension: item.scriptKey })),
+      get current() {
+        return codexPlusCurrentThemeId() || null;
+      },
+      apply(id) {
+        const next = id ? String(id) : "";
+        if (next && !codexPlusExtensionItems(codexPlusRegistry.themes).some((item) => item.themeId === next)) throw new Error(`没有主题 ${next}`);
+        try {
+          if (next) localStorage.setItem(codexPlusThemeStorageKey, next);
+          else localStorage.removeItem(codexPlusThemeStorageKey);
+        } catch {}
+        applyCodexPlusTheme();
+        codexPlusEmitExtensionEvent("theme/change", [{ id: next || null }]);
+        return next || null;
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------- 向用户提问
+  /**
+   * 弹一个对话框问用户：options 给按钮（字符串或 { value, label }），input 给输入框（{ placeholder, default, multiline }）。
+   * 返回 { value, text }；用户关掉或超时返回 null。同一时间只显示一个，后来的排队。
+   */
+  let codexPlusAskQueue = Promise.resolve();
+
+  function codexPlusAsk(question = {}) {
+    const run = () => new Promise((resolve) => {
+      const options = (Array.isArray(question.options) && question.options.length ? question.options : [{ value: "ok", label: "确定" }])
+        .slice(0, 6)
+        .map((option) => (typeof option === "object" && option ? { value: option.value ?? option.label, label: String(option.label ?? option.value) } : { value: option, label: String(option) }));
+      const overlay = document.createElement("div");
+      overlay.className = "codex-plus-ask-overlay";
+      markCodexPlusExtensionNode(overlay, "builtin-ask");
+      const input = question.input
+        ? (question.input.multiline ? `<textarea class="codex-plus-ask-input" rows="4"></textarea>` : `<input class="codex-plus-ask-input" type="text">`)
+        : "";
+      overlay.innerHTML = `<div class="codex-plus-ask" role="dialog" aria-modal="true">
+        <div class="codex-plus-ask-title">${escapeHtml(String(codexPlusResolveText(question.title) || "拓展想问你"))}</div>
+        ${question.message ? `<div class="codex-plus-ask-message">${escapeHtml(String(codexPlusResolveText(question.message)))}</div>` : ""}
+        ${input}
+        <div class="codex-plus-ask-actions">
+          <button type="button" class="codex-plus-ask-cancel">取消</button>
+          ${options.map((option, index) => `<button type="button" class="codex-plus-ask-option" data-index="${index}">${escapeHtml(option.label)}</button>`).join("")}
+        </div></div>`;
+      const field = overlay.querySelector(".codex-plus-ask-input");
+      if (field) {
+        field.value = String(question.input.default ?? "");
+        field.placeholder = String(question.input.placeholder ?? "");
+      }
+      let timer = null;
+      const finish = (answer) => {
+        clearTimeout(timer);
+        overlay.remove();
+        document.removeEventListener("keydown", onKey, true);
+        resolve(answer);
+      };
+      const onKey = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          finish(null);
+        } else if (event.key === "Enter" && !event.shiftKey && (!field || field.tagName === "INPUT")) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          finish({ value: options[options.length - 1].value, text: field ? field.value : null });
+        }
+      };
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay || event.target.closest(".codex-plus-ask-cancel")) return finish(null);
+        const button = event.target.closest(".codex-plus-ask-option");
+        if (button) finish({ value: options[Number(button.dataset.index)].value, text: field ? field.value : null });
+      });
+      document.addEventListener("keydown", onKey, true);
+      installCodexPlusAskStyle();
+      document.body.appendChild(overlay);
+      (field || overlay.querySelector(".codex-plus-ask-option:last-child"))?.focus();
+      const timeoutMs = Number(question.timeoutMs);
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) timer = setTimeout(() => finish(null), timeoutMs);
+    });
+    const answer = codexPlusAskQueue.then(run, run);
+    codexPlusAskQueue = answer.catch(() => null);
+    return answer;
+  }
+
+  function installCodexPlusAskStyle() {
+    if (document.getElementById("codex-plus-ask-style")) return;
+    const style = document.createElement("style");
+    style.id = "codex-plus-ask-style";
+    markCodexPlusExtensionNode(style, "builtin-ask");
+    style.textContent = `.codex-plus-ask-overlay{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.35)}
+      .codex-plus-ask{width:min(440px,calc(100vw - 48px));display:flex;flex-direction:column;gap:12px;padding:18px;border-radius:14px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);background:var(--color-token-main-surface-primary,var(--codex-plus-bg-elevated,#262626));color:var(--color-token-text-primary,var(--codex-plus-text,#eee));box-shadow:0 16px 48px rgba(0,0,0,.35);font-size:13px}
+      .codex-plus-ask-title{font-size:15px;font-weight:600}
+      .codex-plus-ask-message{white-space:pre-wrap;opacity:.8;line-height:1.5}
+      .codex-plus-ask-input{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);background:transparent;color:inherit;font:inherit;resize:vertical}
+      .codex-plus-ask-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px}
+      .codex-plus-ask-actions button{padding:6px 14px;border-radius:8px;border:1px solid color-mix(in srgb,currentColor 16%,transparent);background:transparent;color:inherit;cursor:pointer;font:inherit}
+      .codex-plus-ask-actions .codex-plus-ask-option:last-child{background:var(--color-token-text-primary,#eee);color:var(--color-token-main-surface-primary,#111);border-color:transparent}`;
+    document.head.append(style);
+  }
+
+  // ---------------------------------------------------------------- 拓展变更事件
+  /** 拓展装上 / 卸下后合并成一次 `extensions/changed`（热重载时一批拓展会连续变动）。 */
+  let codexPlusExtensionsChangedTimer = null;
+
+  function scheduleCodexPlusExtensionsChanged() {
+    clearTimeout(codexPlusExtensionsChangedTimer);
+    codexPlusExtensionsChangedTimer = setTimeout(() => {
+      const extensions = [...codexPlusExtensionInstances].map((instance) => ({ id: instance.id, scriptKey: instance.scriptKey, version: instance.manifest?.version ?? null }));
+      codexPlusEmitExtensionEvent("extensions/changed", [{ extensions }]);
+    }, 300);
   }
   // API Key 听写使用独立的 ASR 服务。新版原生 capability / app-host RPC 是只读的，
   // 因此入口与录音由 CPP 管理，识别结果通过原生编辑器事务回填，保持草稿和附件。

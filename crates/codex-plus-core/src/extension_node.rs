@@ -101,16 +101,74 @@ const sessionQuery = Object.freeze({
     void tick();
     return () => { stopped = true; clearTimeout(timer); };
   },
+  // 订阅全部会话的新事件：handler(event, { sessionId })；onStatus({ sessionId, status, turn }) 可选。
+  // 已有事件不重放，订阅之后新建的会话从头发。返回撤销函数。
+  observeAll(handler, options = {}) {
+    let stopped = false;
+    let primed = false;
+    let timer = null;
+    const cursors = new Map();
+    const interval = Math.max(500, Number(options.intervalMs) || 2000);
+    const statusOf = (event) => event.type === "turn/start" ? "running" : event.type === "turn/complete" ? "idle" : event.type === "turn/aborted" ? "aborted" : null;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const list = await host("sessionQuery", "listSessions", { limit: 20 });
+        for (const [index, session] of (list || []).entries()) {
+          let cursor = cursors.get(session.id);
+          if (!cursor) {
+            let next = 0;
+            if (!primed) {
+              const tail = await host("sessionQuery", "listEvents", { id: session.id, options: { fromEnd: true, limit: 1 } }).catch(() => []);
+              next = tail.length ? tail[0].seq + 1 : 0;
+            }
+            cursor = { updatedAt: primed ? null : session.updatedAt, next };
+            cursors.set(session.id, cursor);
+            if (!primed) continue;
+          }
+          if (index >= 3 && cursor.updatedAt === session.updatedAt) continue;
+          cursor.updatedAt = session.updatedAt;
+          for (const event of await readEventsSince({ sessionId: session.id, seq: cursor.next, limit: 200 }).catch(() => [])) {
+            if (stopped) return;
+            cursor.next = event.seq + 1;
+            try { handler(event, { sessionId: session.id }); } catch {}
+            const status = statusOf(event);
+            if (status && typeof options.onStatus === "function") {
+              try { options.onStatus({ sessionId: session.id, status, turn: event.data?.turn, reason: event.data?.reason ?? null }); } catch {}
+            }
+          }
+        }
+        primed = true;
+      } catch {}
+      if (!stopped) timer = setTimeout(tick, interval);
+    };
+    void tick();
+    return () => { stopped = true; clearTimeout(timer); };
+  },
   searchSessions: (query) => host("sessionQuery", "searchSessions", query ?? {}),
   searchEvents: (query) => host("sessionQuery", "searchEvents", query ?? {}),
 });
-// 会话写入（分叉、追加条目、发起 / 中断一轮），经 Codex 页面里的 app-server 连接完成。
+// 会话写入（新建、分叉、改名、追加条目、发起 / 插话 / 中断一轮、压缩），经 Codex 页面里的 app-server 连接完成。
 const sessions = Object.freeze({
   list: (options) => host("sessions", "list", options ?? {}),
+  create: (input, options) => host("sessions", "create", { input, options }),
   fork: (id, options) => host("sessions", "fork", { id, options }),
+  rename: (id, name) => host("sessions", "rename", { id, name }),
   append: (id, items) => host("sessions", "append", { id, items }),
   startTurn: (id, input, options) => host("sessions", "startTurn", { id, input, options }),
+  steer: (id, input, turnId) => host("sessions", "steer", { id, input, turnId }),
   interrupt: (id, turnId) => host("sessions", "interrupt", { id, turnId }),
+  compact: (id) => host("sessions", "compact", { id }),
+});
+// 拓展自己调模型：经 Codex++ 协议代理用当前供应商。complete({ input, model?, instructions?, reasoningEffort? })。
+const llm = Object.freeze({
+  complete: (options) => host("llm", "complete", typeof options === "string" ? { input: options } : options ?? {}),
+  listModels: () => host("llm", "listModels", {}),
+});
+// 界面：ui.ask({ title, message, options?, input? }) → { value, text } | null；ui.toast(文字)。
+const ui = Object.freeze({
+  ask: (question) => host("ui", "ask", { timeoutMs: 600000, ...(question ?? {}) }),
+  toast: (message, options) => host("ui", "toast", { message: String(message ?? ""), options }),
 });
 // 宿主调用的回复：处理了就返回 true。
 const handleHostReply = (message) => {

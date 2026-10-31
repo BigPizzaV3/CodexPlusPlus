@@ -231,3 +231,66 @@ async fn a_backend_can_call_another_backends_service_while_starting() {
     stop(&format!("user:{consumer}"), None).await;
     stop(&format!("user:{provider}"), None).await;
 }
+
+#[tokio::test]
+async fn http_routes_and_schedules_reach_the_backend() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        eprintln!("跳过：本机没有 Node");
+        return;
+    }
+    use codex_plus_core::extension_backend::route_http_with;
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let id = format!("http-probe-{}", std::process::id());
+    let key = format!("user:{id}");
+    write_package(&temp, &id, json!({
+        "backend": {"script": "backend/main.mjs", "http": true},
+        "schedules": [{"method": "tick", "everyMinutes": 1}, {"method": "missing", "at": "00:00"}]
+    }), &[("backend/main.mjs", r#"
+let ticks = 0;
+export default () => ({
+  http(request) {
+    if (request.path === "/text") return `hi ${request.query}`;
+    if (request.path === "/json") return { status: 201, json: { got: request.json, method: request.method } };
+    return { status: 404, body: "nope" };
+  },
+  tick() { ticks += 1; },
+  ticks() { return ticks; },
+});"#)]);
+    let headers = "POST /ext/x HTTP/1.1\r\nContent-Type: application/json\r\n";
+    let (status, kind, body) = route_http_with(&manager, "GET", &format!("/ext/{id}/text?a=1"), headers, b"").await;
+    assert_eq!((status, kind.as_str(), body.as_slice()), (200, "text/plain; charset=utf-8", b"hi a=1".as_slice()));
+    let (status, _, body) = route_http_with(&manager, "POST", &format!("/ext/{id}/json"), headers, br#"{"x":1}"#).await;
+    assert_eq!(status, 201);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), json!({"got": {"x": 1}, "method": "POST"}));
+    assert_eq!(route_http_with(&manager, "GET", &format!("/ext/{id}/other"), headers, b"").await.0, 404);
+    assert_eq!(route_http_with(&manager, "GET", "/ext/not-there/x", headers, b"").await.0, 404, "没声明 http 的拓展不开放");
+
+    // 定时：第一次 tick 只记起点；把上次运行时间拨回 2 分钟前，再 tick 就会调用。
+    let schedules = json!({"schedules": [{"method": "tick", "everyMinutes": 1}]});
+    call(&manager, &key, "__tick", schedules.clone(), Duration::from_secs(20), None).await.unwrap();
+    assert_eq!(call(&manager, &key, "ticks", json!(null), Duration::from_secs(20), None).await.unwrap(), 0);
+    let state_path = temp.path().join("extension-data").join(&id).join(".schedules.json");
+    let state: serde_json::Value = serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+    let (state_key, last) = state.as_object().unwrap().iter().next().map(|(key, value)| (key.clone(), value.as_u64().unwrap())).unwrap();
+    fs::write(&state_path, json!({ state_key: last - 120_000 }).to_string()).unwrap();
+    let ran = call(&manager, &key, "__tick", schedules, Duration::from_secs(20), None).await.unwrap();
+    assert_eq!(ran["ran"], json!([{"method": "tick"}]));
+    assert_eq!(call(&manager, &key, "ticks", json!(null), Duration::from_secs(20), None).await.unwrap(), 1);
+    assert_eq!(manager.enabled_extension_schedules().unwrap().len(), 2);
+    stop(&key, None).await;
+}
+
+#[test]
+fn schedules_are_validated() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "no-backend", json!({"renderer": "main.js", "schedules": [{"method": "a", "everyMinutes": 5}]}), &[("main.js", "")]);
+    write_package(&temp, "both", json!({"backend": {"script": "backend/main.mjs"}, "schedules": [{"method": "a", "everyMinutes": 5, "at": "09:00"}]}), &[("backend/main.mjs", "")]);
+    write_package(&temp, "bad-time", json!({"backend": {"script": "backend/main.mjs"}, "schedules": [{"method": "a", "at": "25:00"}]}), &[("backend/main.mjs", "")]);
+    let inventory = manager.inventory().unwrap();
+    let error = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).unwrap()["error"].as_str().unwrap().to_string();
+    assert!(error("user:no-backend").contains("需要同时声明 backend"));
+    assert!(error("user:both").contains("二选一"));
+    assert!(error("user:bad-time").contains("HH:MM"));
+}

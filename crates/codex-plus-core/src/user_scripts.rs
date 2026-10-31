@@ -189,6 +189,7 @@ impl UserScriptManager {
     }
 
     fn save_config_unlocked(&self, config: &UserScriptConfig) -> anyhow::Result<()> {
+        crate::extension_backend::invalidate_scan_cache();
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!(
@@ -363,6 +364,29 @@ impl UserScriptManager {
         Ok(resolve_extension_config(&package.config_schema, Some(&stored)))
     }
 
+    /// 对话里改配置：只覆盖给出的键，其余沿用已存值；secret 项传回打码值时保留原值。
+    pub fn update_extension_config(&self, key: &str, values: &Map<String, Value>) -> anyhow::Result<Value> {
+        let config = self.load_config();
+        let schema = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .and_then(|script| script.package)
+            .map(|package| package.config_schema)
+            .unwrap_or_default();
+        let mut merged = config.configs.get(key).cloned().unwrap_or_default();
+        // 已存值里已不在声明中的键丢掉，免得校验报「未声明」；新给的未声明键照常报错。
+        merged.retain(|name, _| schema.iter().any(|field| &field.key == name));
+        for (name, value) in values {
+            let secret = schema.iter().any(|field| &field.key == name && field.secret);
+            if secret && value.as_str() == Some(SECRET_MASK) {
+                continue;
+            }
+            merged.insert(name.clone(), value.clone());
+        }
+        self.set_extension_config(key, &merged)
+    }
+
     /// 启用中、清单无误的拓展包的常驻后台：(拓展 id, 后台脚本, 生效配置)。
     pub fn enabled_extension_backend(&self, key: &str) -> anyhow::Result<(String, PathBuf, Value)> {
         let config = self.load_config();
@@ -435,6 +459,59 @@ impl UserScriptManager {
                     (id.clone(), provider)
                 })
             })
+            .collect())
+    }
+
+    /// 启用中、清单无误、声明了技能 / 子 agent / MCP 服务器 / 全局指令的拓展包。
+    pub fn enabled_codex_assets(&self) -> anyhow::Result<Vec<crate::extension_codex::EnabledCodexAssets>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none() && !package.codex.is_empty())
+            .filter_map(|package| {
+                Some(crate::extension_codex::EnabledCodexAssets {
+                    name: package.name.clone().unwrap_or_else(|| package.id.clone()),
+                    id: package.id,
+                    root: package.root?,
+                    config: package.config,
+                    assets: package.codex,
+                })
+            })
+            .collect())
+    }
+
+    /// 这个拓展（启用中、清单无误、声明了 backend.http）是否对外处理 HTTP。
+    pub fn extension_backend_http(&self, key: &str) -> bool {
+        let config = self.load_config();
+        config.enabled
+            && self.scan_script_files(&config).ok().into_iter().flatten().any(|script| {
+                script.key == key
+                    && script.enabled
+                    && script.package.as_ref().is_some_and(|package| package.error.is_none() && package.backend.is_some() && package.backend_http)
+            })
+    }
+
+    /// 启用中、清单无误的拓展的定时任务：(拓展 key, 任务)。
+    pub fn enabled_extension_schedules(&self) -> anyhow::Result<Vec<(String, ExtensionSchedule)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| {
+                let package = script.package.filter(|package| package.error.is_none() && package.backend.is_some())?;
+                Some(package.schedules.into_iter().map(move |schedule| (script.key.clone(), schedule)))
+            })
+            .flatten()
             .collect())
     }
 
@@ -529,6 +606,11 @@ impl UserScriptManager {
             .collect())
     }
 
+    /// 用户脚本配置文件（启停、配置值都存在这里）。
+    pub fn config_path(&self) -> &std::path::Path {
+        &self.config_path
+    }
+
     /// 用户脚本目录（拓展包就放在它下面）。
     pub fn user_dir(&self) -> &std::path::Path {
         &self.user_dir
@@ -542,6 +624,7 @@ impl UserScriptManager {
     /// 返回脚本 key 与清单校验结果（`error` 非空表示包写好了但不会被加载）。
     pub fn write_extension_package(&self, write: &ExtensionWrite) -> anyhow::Result<Value> {
         validate_extension_id(&write.id)?;
+        crate::extension_backend::invalidate_scan_cache();
         let file_count = write.files.len() + write.assets.len();
         if file_count == 0 || file_count > EXTENSION_WRITE_MAX_FILES {
             anyhow::bail!("files 需要 1~{EXTENSION_WRITE_MAX_FILES} 个文件");
@@ -692,6 +775,11 @@ impl UserScriptManager {
         }
         if let Some(providers) = &write.providers {
             manifest["providers"] = providers.clone();
+        }
+        for (key, item) in &write.extra {
+            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources") {
+                manifest[key.as_str()] = item.clone();
+            }
         }
         crate::settings::atomic_write(
             &directory.join(EXTENSION_MANIFEST_FILE),
@@ -997,6 +1085,10 @@ struct ExtensionPackage {
     backend: Option<PathBuf>,
     /// 后台对外提供的服务名（codexpp.json 的 `backend.provides`）。
     backend_provides: Vec<String>,
+    /// 后台处理 `/ext/<id>/…` 的 HTTP 请求（codexpp.json 的 `backend.http: true`）。
+    backend_http: bool,
+    /// 定时调用后台方法（codexpp.json 的 `schedules`）。
+    schedules: Vec<ExtensionSchedule>,
     /// 拓展声明的模型供应商（codexpp.json 的 `providers`），并入网关的供应商池。
     providers: Vec<ExtensionProvider>,
     /// 包内 `locale/<语言>.json`：语言 id → 词条（`meta.title` / `meta.description` 是本地化的名称与描述）。
@@ -1005,6 +1097,10 @@ struct ExtensionPackage {
     assets: std::collections::BTreeMap<String, String>,
     /// 超出大小上限而没有下发的资源。
     skipped_assets: Vec<String>,
+    /// 技能、子 agent、外部 MCP 服务器、全局指令（同步进 Codex home）。
+    codex: crate::extension_codex::ExtensionCodexAssets,
+    /// 包目录（绝对路径）。
+    root: Option<PathBuf>,
     /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
     config: Value,
     error: Option<String>,
@@ -1072,6 +1168,39 @@ impl ExtensionConfigField {
             _ => self.default.clone(),
         }
     }
+}
+
+/// 交给模型前 secret 配置项显示成的打码值。
+pub const SECRET_MASK: &str = "******";
+
+/// 把配置里 secret 项（含对象子字段、数组元素里的）换成打码值。`schema` 是序列化后的字段数组，
+/// 交给模型的清单、配置结果都要过一遍，免得 API Key 进模型上下文和会话记录。
+pub fn mask_secret_config(schema: &Value, config: &Value) -> Value {
+    fn mask_field(field: &Value, value: &Value) -> Value {
+        if field["secret"].as_bool() == Some(true) {
+            return match value {
+                Value::Null => Value::Null,
+                Value::String(text) if text.is_empty() => value.clone(),
+                _ => Value::String(SECRET_MASK.into()),
+            };
+        }
+        match (field["type"].as_str(), value) {
+            (Some("object"), Value::Object(_)) => mask_secret_config(&field["properties"], value),
+            (Some("array"), Value::Array(items)) => Value::Array(items.iter().map(|item| mask_field(&field["items"], item)).collect()),
+            _ => value.clone(),
+        }
+    }
+    let (Some(fields), Some(map)) = (schema.as_array(), config.as_object()) else {
+        return config.clone();
+    };
+    Value::Object(
+        map.iter()
+            .map(|(key, value)| {
+                let masked = fields.iter().find(|field| field["key"] == *key).map_or_else(|| value.clone(), |field| mask_field(field, value));
+                (key.clone(), masked)
+            })
+            .collect(),
+    )
 }
 
 /// 生效配置：每个声明的键取已存且合法的值，否则取默认值（对象按子字段合并）。
@@ -1179,9 +1308,62 @@ pub struct ExtensionProvider {
     /// 从拓展配置的哪个键取 Key（`{ "config": "apiKey" }`）。
     pub api_key_config: Option<String>,
     pub models: Vec<String>,
+    /// `discoverModels: true`：定期从上游 `/models` 拉模型列表，与 `models` 合并。
+    pub discover_models: bool,
 }
 
-/// 解析 `providers`：`[{ id, name, protocol, baseUrl, apiKey: "字面值" | { config: "键" }, models: [...] }]`。
+/// 拓展的一条定时任务：每隔 `every_minutes` 分钟（或每天 `at` 时刻）调用后台方法 `method`。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionSchedule {
+    pub method: String,
+    pub every_minutes: Option<u64>,
+    /// 每天的本地时刻 "HH:MM"。
+    pub at: Option<String>,
+}
+
+/// 解析 `schedules`：`[{ method, everyMinutes } | { method, at: "09:30" }]`。
+fn parse_extension_schedules(value: Option<&Value>) -> anyhow::Result<Vec<ExtensionSchedule>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().context("schedules 必须是数组")?;
+    if items.len() > 8 {
+        anyhow::bail!("schedules 最多 8 条");
+    }
+    items
+        .iter()
+        .map(|item| {
+            let method = item.get("method").and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
+            if method.is_empty() || method.starts_with("__") {
+                anyhow::bail!("schedules 的每一项需要 method（后台导出的方法名）");
+            }
+            let every_minutes = match item.get("everyMinutes") {
+                None => None,
+                Some(value) => Some(value.as_u64().filter(|minutes| (1..=10080).contains(minutes)).context("everyMinutes 是 1~10080 的整数")?),
+            };
+            let at = match item.get("at") {
+                None => None,
+                Some(value) => {
+                    let text = value.as_str().context("at 写成 \"HH:MM\"")?;
+                    let valid = text.split_once(':').is_some_and(|(hour, minute)| {
+                        hour.len() == 2 && minute.len() == 2 && hour.parse::<u32>().is_ok_and(|hour| hour < 24) && minute.parse::<u32>().is_ok_and(|minute| minute < 60)
+                    });
+                    if !valid {
+                        anyhow::bail!("at 写成 \"HH:MM\"（24 小时制），不认识 {text}");
+                    }
+                    Some(text.to_string())
+                }
+            };
+            if every_minutes.is_some() == at.is_some() {
+                anyhow::bail!("schedules.{method} 需要 everyMinutes 或 at，二选一");
+            }
+            Ok(ExtensionSchedule { method, every_minutes, at })
+        })
+        .collect()
+}
+
+/// 解析 `providers`：`[{ id, name, protocol, baseUrl, apiKey: "字面值" | { config: "键" }, models: [...], discoverModels? }]`。
 fn parse_extension_providers(value: Option<&Value>, schema: &[ExtensionConfigField]) -> anyhow::Result<Vec<ExtensionProvider>> {
     let Some(value) = value else {
         return Ok(Vec::new());
@@ -1227,10 +1409,11 @@ fn parse_extension_providers(value: Option<&Value>, schema: &[ExtensionConfigFie
                 .and_then(Value::as_array)
                 .map(|list| list.iter().filter_map(Value::as_str).map(str::trim).filter(|model| !model.is_empty()).map(str::to_string).collect::<Vec<_>>())
                 .unwrap_or_default();
-            if models.is_empty() {
-                anyhow::bail!("providers.{id}.models 至少要有一个模型");
+            let discover_models = item.get("discoverModels").and_then(Value::as_bool).unwrap_or(false);
+            if models.is_empty() && !discover_models {
+                anyhow::bail!("providers.{id}.models 至少要有一个模型（或设 discoverModels: true 从上游拉）");
             }
-            Ok(ExtensionProvider { name: if text("name").is_empty() { id.clone() } else { text("name") }, id, protocol, base_url, api_key, api_key_config, models })
+            Ok(ExtensionProvider { name: if text("name").is_empty() { id.clone() } else { text("name") }, id, protocol, base_url, api_key, api_key_config, models, discover_models })
         })
         .collect()
 }
@@ -1271,8 +1454,11 @@ impl ExtensionPackage {
             "tools": self.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
             "configSchema": self.config_schema,
             "backend": self.backend.is_some(),
+            "http": self.backend_http,
+            "schedules": self.schedules,
             "services": self.backend_provides,
             "providers": self.providers.iter().map(|provider| json!({ "id": provider.id, "name": provider.name, "models": provider.models })).collect::<Vec<_>>(),
+            "codex": self.codex.summary(),
             "config": self.config,
             "assets": self.assets.keys().collect::<Vec<_>>(),
             "skippedAssets": self.skipped_assets,
@@ -1323,6 +1509,8 @@ pub struct ExtensionWrite {
     pub tool_pipeline: Option<Value>,
     /// 原样写进清单的 `providers`，加载时校验。
     pub providers: Option<Value>,
+    /// 原样写进清单的其余键：`skills`、`agents`、`mcpServers`、`instructions`、`schedules`、`prompts`、`resources`，加载时校验。
+    pub extra: Map<String, Value>,
     pub files: BTreeMap<String, String>,
     /// 二进制资源：包内路径 → 本机源文件，按字节复制（图片、音频、字体）。
     pub assets: BTreeMap<String, PathBuf>,
@@ -1395,15 +1583,29 @@ fn load_extension_assets(root: &std::path::Path) -> (std::collections::BTreeMap<
                 skipped.push(relative);
                 continue;
             }
-            let Ok(bytes) = fs::read(&path) else {
-                continue;
+            // 每次扫描都会走到这里：按（路径, 大小, 修改时间）缓存编码结果，文件没变就不重读。
+            let modified = metadata.modified().ok();
+            let cached = ASSET_CACHE.lock().unwrap().get(&path).filter(|entry| entry.0 == metadata.len() && entry.1 == modified).map(|entry| entry.2.clone());
+            let data_url = match cached {
+                Some(data_url) => data_url,
+                None => {
+                    let Ok(bytes) = fs::read(&path) else {
+                        continue;
+                    };
+                    let data_url = format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
+                    ASSET_CACHE.lock().unwrap().insert(path.clone(), (metadata.len(), modified, data_url.clone()));
+                    data_url
+                }
             };
-            total += bytes.len();
-            assets.insert(relative, format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)));
+            total += size;
+            assets.insert(relative, data_url);
         }
     }
     (assets, skipped)
 }
+
+type AssetCacheEntry = (u64, Option<std::time::SystemTime>, String);
+static ASSET_CACHE: std::sync::LazyLock<Mutex<std::collections::HashMap<PathBuf, AssetCacheEntry>>> = std::sync::LazyLock::new(Default::default);
 /// 读回拓展包时的上限：只读文本、跳过大文件，避免把整个目录塞进对话。
 const EXTENSION_READ_MAX_TOTAL_BYTES: usize = 512 * 1024;
 
@@ -1493,6 +1695,8 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         tool_post_execute: Vec::new(),
         gateway_error: Vec::new(),
         backend_provides: Vec::new(),
+        backend_http: false,
+        schedules: Vec::new(),
         providers: Vec::new(),
         tools: Vec::new(),
         config_schema: Vec::new(),
@@ -1500,6 +1704,8 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         locales: Default::default(),
         assets: Default::default(),
         skipped_assets: Vec::new(),
+        codex: Default::default(),
+        root: None,
         config: json!({}),
         error: None,
     };
@@ -1568,12 +1774,14 @@ fn parse_extension_manifest(
     let backend_declared = raw.get("backend").is_some();
     let pipeline_declared = raw.get("toolPipeline").is_some();
     let providers_declared = raw.get("providers").is_some_and(|value| value.as_array().is_some_and(|list| !list.is_empty()));
-    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers 或 backend");
-    }
     let root = directory
         .canonicalize()
         .with_context(|| format!("无法解析拓展目录 {}", directory.display()))?;
+    package.root = Some(root.clone());
+    package.codex = crate::extension_codex::parse(&root, &raw)?;
+    if entries.is_empty() && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && package.codex.is_empty() {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、skills、agents、mcpServers 或 instructions");
+    }
     package.renderer = entries
         .iter()
         .map(|entry| resolve_package_entry(&root, entry))
@@ -1606,6 +1814,11 @@ fn parse_extension_manifest(
                     .collect::<anyhow::Result<Vec<_>>>()?,
                 Some(_) => anyhow::bail!("backend.provides 只能是字符串数组"),
             };
+            package.backend_http = match backend.get("http") {
+                None => false,
+                Some(Value::Bool(flag)) => *flag,
+                Some(_) => anyhow::bail!("backend.http 只能是 true / false"),
+            };
             Some(resolve_package_entry(
                 &root,
                 backend.get("script").and_then(Value::as_str).context("backend 缺少 script")?,
@@ -1613,6 +1826,10 @@ fn parse_extension_manifest(
         }
         Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
     };
+    package.schedules = parse_extension_schedules(raw.get("schedules"))?;
+    if !package.schedules.is_empty() && package.backend.is_none() {
+        anyhow::bail!("schedules 调用的是后台方法，需要同时声明 backend");
+    }
     package.locales = load_extension_locales(&root)?;
     package.providers = parse_extension_providers(raw.get("providers"), &package.config_schema)?;
     (package.assets, package.skipped_assets) = load_extension_assets(&root);
@@ -2023,6 +2240,22 @@ fn parse_extension_tools(
 }
 
 /// 入口只能指向包内的文件：拒绝绝对路径、`..`，以及经软链逃出包目录的路径。
+/// 包内相对路径（文件或目录）→ 绝对路径；不许跳出包目录。
+pub fn resolve_package_path(root: &std::path::Path, entry: &str) -> anyhow::Result<PathBuf> {
+    let relative = std::path::Path::new(entry);
+    if entry.trim().is_empty()
+        || relative.is_absolute()
+        || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("{entry} 必须是包内的相对路径");
+    }
+    let resolved = root.join(relative).canonicalize().with_context(|| format!("包内没有 {entry}"))?;
+    if !resolved.starts_with(root) {
+        anyhow::bail!("{entry} 必须在包目录里");
+    }
+    Ok(resolved)
+}
+
 fn resolve_package_entry(root: &std::path::Path, entry: &str) -> anyhow::Result<PathBuf> {
     let relative = std::path::Path::new(entry);
     if entry.trim().is_empty()

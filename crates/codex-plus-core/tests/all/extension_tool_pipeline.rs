@@ -73,8 +73,9 @@ export default (input) => input.command === "date" ? "2026-10-30（缓存的结�
     let reason = executed["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap();
     assert!(reason.contains("2026-10-30（缓存的结果）"), "不经代理时模型也能从理由里读到结果：{reason}");
     let token = reason.split("[[codexpp-exec:").nth(1).unwrap().split("]]").next().unwrap();
-    assert_eq!(load_tool_execution(&manager, token).as_deref(), Some("2026-10-30（缓存的结果）"));
-    assert!(load_tool_execution(&manager, "../etc").is_none(), "令牌只认十六进制");
+    assert_eq!(load_tool_execution(&manager, token, "call_1").as_deref(), Some("2026-10-30（缓存的结果）"));
+    assert!(load_tool_execution(&manager, token, "call_9").is_none(), "调用 id 对不上不换");
+    assert!(load_tool_execution(&manager, "../etc", "call_1").is_none(), "令牌只认十六进制");
 
     // 网关请求侧：代执行的工具输出按令牌换成纯结果。
     let mut request = json!({"input": [
@@ -83,6 +84,20 @@ export default (input) => input.command === "date" ? "2026-10-30（缓存的结�
     ]});
     apply_request_with(&manager, &mut request, "/v1/responses").await;
     assert_eq!(request["input"][1]["output"], "2026-10-30（缓存的结果）");
+
+    // 别的工具输出里恰好带着旧令牌（比如 grep 到数据目录）：不换。
+    let grep = format!("{}\nmore lines after it", tool_marker(token));
+    let mut request = json!({"input": [
+        {"type": "function_call_output", "call_id": "call_2", "output": format!("工具调用被拒绝：{reason}")},
+        {"type": "function_call_output", "call_id": "call_1", "output": grep.clone()},
+    ]});
+    apply_request_with(&manager, &mut request, "/v1/responses").await;
+    assert_ne!(request["input"][0]["output"], "2026-10-30（缓存的结果）", "调用 id 不同");
+    assert_eq!(request["input"][1]["output"], grep, "令牌后面还有正文");
+}
+
+fn tool_marker(token: &str) -> String {
+    codex_plus_core::extension_hooks::tool_exec_marker(token)
 }
 
 #[tokio::test]
