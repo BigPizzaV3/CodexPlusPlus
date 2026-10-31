@@ -7072,6 +7072,23 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
     )
 }
 
+/// 实时请求流：托盘「流量」页签和总览拓扑图的光点动画每秒轮询它。
+/// 只读日志末尾和进行中的请求，不补会话标题和费用，保持轻量。
+#[tauri::command]
+pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
+    let limit = limit.unwrap_or(30).clamp(1, 200);
+    match codex_plus_core::request_log::read_recent_request_logs(limit) {
+        Ok(entries) => ok(
+            &format!("已读取 {} 条请求。", entries.len()),
+            json!({ "entries": entries }),
+        ),
+        Err(error) => failed(
+            &format!("读取请求日志失败：{error}"),
+            json!({ "entries": [] }),
+        ),
+    }
+}
+
 #[tauri::command]
 pub fn load_request_logs(
     limit: Option<usize>,

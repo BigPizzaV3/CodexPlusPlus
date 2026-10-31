@@ -339,6 +339,7 @@ pub fn run() {
             commands::stop_codex_plus,
             commands::load_settings,
             commands::load_request_logs,
+            commands::load_request_flow,
             commands::clear_request_logs,
             commands::dictation_local_model_status,
             commands::download_dictation_local_model,

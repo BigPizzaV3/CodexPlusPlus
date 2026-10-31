@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { GatewayPayload } from "./gateway-model.ts";
-import { hubAgents, hubFeed, hubLinks, hubProviders, hubTotals, successRate } from "./hub-overview-model.ts";
+import { hubAgents, hubFeed, hubLinks, hubProviders, hubTotals, routeRecordsByEntry, successRate } from "./hub-overview-model.ts";
 
 function payload(): GatewayPayload {
   const binding = (model: string) => ({
@@ -121,4 +121,21 @@ test("hub 统计与成功率", () => {
   assert.deepEqual(hubTotals(null), { requests: 0, rerouted: 0, coolingKeys: 0, openBreakers: 0 });
   assert.equal(successRate({ calls: 10, errors: 1, inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 }), 0.9);
   assert.equal(successRate({ calls: 0, errors: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 }), null);
+});
+
+test("最近请求里能展开路由经过的：每个 Agent 最近一次结束、结束时间对得上网关记录的那条", () => {
+  const data = payload();
+  const record = data.activity!.agents[0].last!;
+  const row = (id: string, timestampMs: number, fields: Record<string, unknown> = {}) => ({ id, agent: "claude", startedAtMs: timestampMs - 1_000, timestampMs, durationMs: 1_000, model: "m", ...fields });
+  const matched = routeRecordsByEntry(data, [
+    row("running", record.finishedAtMs + 9_000, { state: "running" }),
+    row("latest", record.finishedAtMs + 1_200),
+    row("older", record.finishedAtMs - 60_000),
+    row("grok", record.finishedAtMs, { agent: "grok" }),
+  ]);
+  assert.deepEqual([...matched.keys()], ["latest"]);
+  assert.equal(matched.get("latest"), record);
+  // 结束时间对不上（比如网关重启后日志里只剩旧请求）就不给展开。
+  assert.equal(routeRecordsByEntry(data, [row("stale", record.finishedAtMs - 60_000)]).size, 0);
+  assert.equal(routeRecordsByEntry(null, [row("x", 1)]).size, 0);
 });

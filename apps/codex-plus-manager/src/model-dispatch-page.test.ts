@@ -5,12 +5,14 @@ import test from "node:test";
 const read = (name: string) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
 
 
-test("总览「最近请求」可展开看这次怎么走的，右上角去请求日志", () => {
+test("总览「最近请求」是真实请求列表，对得上路由记录的那条可展开看这次怎么走的，右上角去请求日志", () => {
   const hub = read("HubOverview.tsx");
   assert.match(hub, /<h3>\{t\("最近请求"\)\}<\/h3>/);
   assert.match(hub, /onNavigate\("requestLog"\)/);
   assert.doesNotMatch(hub, /gatewayRouting/);
-  assert.match(hub, /routeNarrative\(item\.agent, record, payload\)/);
+  assert.match(hub, /useRequestFlow\(FLOW_REFRESH_MS\)/);
+  assert.match(hub, /<FlowRequestRow entry=\{entry\} \/>/);
+  assert.match(hub, /routeNarrative\(agent, record, payload\)/);
 });
 
 test("界面不再出现「路由组」，统一叫模型组", () => {

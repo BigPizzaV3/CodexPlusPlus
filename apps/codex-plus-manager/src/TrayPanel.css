@@ -84,7 +84,7 @@ body:has(.tray-panel) {
 /* ———— 页签条：三格等宽，图标在上、文字在下，选中格浮起 ———— */
 .tray-panel .tp-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   margin: 0 12px 10px;
   padding: 3px;
@@ -779,4 +779,112 @@ body:has(.tray-panel) {
 .tray-panel .tp-foot-button:hover {
   background: hsl(var(--accent));
   color: var(--gw-ink);
+}
+
+/* ———— 实时：请求流 ———— */
+.tray-panel .tp-flow-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.tray-panel .tp-flow-stats .tp-stat[data-live="true"] strong {
+  color: hsl(var(--brand-accent));
+}
+
+/* 竖排小地图：上排 Agent、中间 Codex++、下排供应商；连线和光点由 HubTopology 画。
+   总览在窄窗口下会隐藏连线，这里要显式打开。 */
+.tray-panel .hub-topology.tp-flow-topology {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 30px;
+  padding: 14px 12px;
+}
+
+.tray-panel .tp-flow-topology .hub-links {
+  display: block;
+}
+
+.tray-panel .tp-flow-topology .hub-links path:not([data-busy]) {
+  stroke: hsl(var(--muted-foreground) / 0.32);
+}
+
+.tray-panel .tp-flow-row {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tray-panel .tp-flow-chip {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 116px;
+  height: 26px;
+  padding: 0 9px 0 6px;
+  border: 1px solid var(--gw-line);
+  border-radius: 7px;
+  background: hsl(var(--muted) / 0.5);
+  font-size: 11.5px;
+  font-weight: 500;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.tray-panel .tp-flow-chip[data-live="true"] {
+  border-color: hsl(var(--brand-accent) / 0.6);
+  background: hsl(var(--brand-accent) / 0.1);
+}
+
+.tray-panel .tp-flow-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tray-panel .tp-flow-chip .gw-avatar {
+  flex-shrink: 0;
+}
+
+.tray-panel .tp-flow-icon {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.tray-panel .tp-flow-hub {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 12px 0 5px;
+  border: 1px solid var(--gw-line);
+  border-radius: 8px;
+  background: hsl(var(--background));
+  font-size: 12px;
+  font-weight: 600;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.tray-panel .tp-flow-hub[data-live="true"] {
+  border-color: hsl(var(--brand-accent) / 0.6);
+  box-shadow: 0 0 12px hsl(var(--brand-accent) / 0.25);
+}
+
+.tray-panel .tp-flow-hub img {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+
+.tray-panel .tp-flow-list > .rf-row {
+  padding: 8px 12px 8px 10px;
+}
+
+.tray-panel .tp-flow-chip .gw-avatar[data-size="sm"] {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 8.5px;
 }

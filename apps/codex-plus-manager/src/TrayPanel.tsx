@@ -1,18 +1,20 @@
 /**
- * 托盘快捷面板：三个页签——
+ * 托盘快捷面板：四个页签——
  * 概览（Codex 状态与启动 / 重启 / 停止、今日速览、常用入口）、
- * 用量（今天 / 7 天的请求与 token、订阅额度、余额）、网关（各 Agent 换模型、最近请求）。
+ * 用量（今天 / 7 天的请求与 token、订阅额度、余额）、网关（各 Agent 换模型、最近请求）、
+ * 实时（Agent → Codex++ → 供应商的实时请求流，每条真实请求一颗来回的光点）。
  * 旧版的直连供应商切换不放进面板：供应商统一在网关里管。
  *
  * 会拉起进程的操作（启动 / 重启 / 停止 Codex）不在面板里重做一遍，而是发给主窗口，
  * 走主窗口现有的流程（校验、冲突弹窗、等待启动结果），做完主窗口回一个结果。
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   Activity,
   ChartColumn,
+  Radio,
   Check,
   ChevronDown,
   ChevronRight,
@@ -54,6 +56,10 @@ import {
   maskAccountName,
 } from "./gateway-model";
 import { AGENT_ICONS, APP_LOGO_URL, AutoTag, Avatar, AgentIcon, ModelViewGlyph } from "./gateway-ui";
+import { HubTopology } from "./HubOverview";
+import type { HubLink } from "./hub-overview-model";
+import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
+import { busyLinks, flowAgent, flowColumns, flowStatus } from "./request-flow-model";
 import {
   activeRelayItem,
   codexEnhanced,
@@ -110,7 +116,11 @@ type LogEntry = {
 type UsageRange = "today" | "7d";
 
 /** 网关页签要看实时请求，刷得勤一些；其它页签慢一点。都只在面板可见时刷。 */
-const REFRESH_MS: Record<TrayTabId, number> = { home: 5000, usage: 8000, gateway: 3000 };
+const REFRESH_MS: Record<TrayTabId, number> = { home: 5000, usage: 8000, gateway: 3000, flow: 8000 };
+/** 实时页签的请求流单独每秒读一次（只读日志末尾），光点跟得上真实请求。 */
+const FLOW_REFRESH_MS = 1000;
+/** 实时页签列出的请求条数。 */
+const FLOW_LIST_LIMIT = 20;
 /** 发给主窗口的请求最多等这么久（启动 Codex 本身最多等 30 秒）。 */
 const REQUEST_TIMEOUT_MS = 90_000;
 
@@ -118,6 +128,7 @@ const TAB_META: Record<TrayTabId, { label: string; icon: LucideIcon }> = {
   home: { label: "概览", icon: House },
   usage: { label: "用量", icon: ChartColumn },
   gateway: { label: "网关", icon: Waypoints },
+  flow: { label: "实时", icon: Radio },
 };
 
 type Pending = { id: string; kind: TrayRequest["kind"]; target?: string };
@@ -202,6 +213,7 @@ export function TrayPanel() {
     if (which === "home") jobs.push(loadSettings(), loadUsage("today"));
     if (which === "usage") jobs.push(loadUsage(rangeRef.current), loadGateway());
     if (which === "gateway") jobs.push(loadGateway(), loadLogs());
+    if (which === "flow") jobs.push(loadUsage("today"));
     await Promise.all(jobs);
   };
 
@@ -385,6 +397,7 @@ export function TrayPanel() {
           />
         ) : null}
         {tab === "gateway" ? <GatewayTab logs={logs} onOpenRoute={openRoute} onPayload={setPayload} payload={payload} /> : null}
+        {tab === "flow" ? <FlowTab onOpenRoute={openRoute} today={usage.today ?? null} /> : null}
       </div>
 
       {flash ? (
@@ -765,6 +778,81 @@ function GatewayTab({
             );
           })}
           {recent.length === 0 ? <div className="tp-empty">{t("还没有请求")}</div> : null}
+        </div>
+      </Section>
+    </>
+  );
+}
+
+/* —————————————— 实时 —————————————— */
+
+/**
+ * 实时请求流：上面三个数（进行中、今日请求、今日 token），中间是竖排的小地图——
+ * 上排 Agent、中间 Codex++、下排供应商；每条真实请求一颗光点，发出时往下走到供应商，
+ * 回答完再走回来（成功绿、失败红），进行中的连线一直流动。下面是最近的请求。
+ */
+function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRoute: (route: TrayRoute) => Promise<void> }) {
+  const focus = useAgentFocus();
+  const { entries, pulses, loaded } = useRequestFlow(FLOW_REFRESH_MS);
+  const visible = entries.filter((entry) => agentVisible(focus, flowAgent(entry)));
+  const columns = flowColumns(visible);
+  const runningCount = visible.filter((entry) => flowStatus(entry) === "running").length;
+  const maxCount = Math.max(1, ...columns.agents.map((node) => node.count), ...columns.providers.map((node) => node.count));
+  const links: HubLink[] = [
+    ...columns.agents.map((node) => ({ from: `agent:${node.id}`, to: "hub", tone: "idle" as const, weight: (node.count / maxCount) * 0.4 })),
+    ...columns.providers.map((node) => ({ from: "hub", to: `provider:${node.id}`, tone: "idle" as const, weight: (node.count / maxCount) * 0.4 })),
+  ];
+  const busyKey = visible.filter((entry) => entry.state === "running").map((entry) => `${entry.id}:${entry.relayId}`).join("|");
+  // busy 只随进行中的请求变化。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const flow = useMemo(() => ({ pulses, busy: busyLinks(visible) }), [pulses, busyKey]);
+  const glance = usageGlance(today);
+  const now = Date.now();
+  return (
+    <>
+      <div className="tp-card tp-stats tp-flow-stats">
+        <span className="tp-stat" data-live={runningCount > 0}>
+          <strong>{runningCount}</strong>
+          <small>{t("进行中")}</small>
+        </span>
+        <Stat label={t("今日请求")} value={glance ? String(glance.calls) : "—"} />
+        <Stat label="Token" value={glance ? formatTokens(glance.inputTokens + glance.outputTokens) : "—"} />
+      </div>
+
+      {columns.agents.length ? (
+        <div className="tp-card tp-flow-map">
+          <HubTopology className="tp-flow-topology" flow={flow} links={links} ports vertical>
+            <div className="tp-flow-row">
+              {columns.agents.map((node) => (
+                <span className="tp-flow-chip" data-live={node.live} data-node={`agent:${node.id}`} key={node.id} title={agentName(node.id)}>
+                  <AgentIcon agent={node.id} className="tp-flow-icon" />
+                  <span>{agentName(node.id)}</span>
+                </span>
+              ))}
+            </div>
+            <div className="tp-flow-row">
+              <span className="tp-flow-hub" data-live={runningCount > 0} data-node="hub">
+                <img alt="" src={APP_LOGO_URL} />
+                <span>Codex++</span>
+              </span>
+            </div>
+            <div className="tp-flow-row">
+              {columns.providers.map((node) => (
+                <span className="tp-flow-chip" data-live={node.live} data-node={`provider:${node.id}`} key={node.id} title={node.name}>
+                  <Avatar name={node.name} size="sm" />
+                  <span>{node.name}</span>
+                </span>
+              ))}
+            </div>
+          </HubTopology>
+        </div>
+      ) : null}
+
+      <Section aside={<LinkButton label={t("请求日志")} onClick={() => void onOpenRoute("requestLog")} />} title={t("实时请求")}>
+        <div className="tp-card tp-list tp-flow-list">
+          {visible.slice(0, FLOW_LIST_LIMIT).map((entry) => <FlowRequestRow entry={entry} key={entry.id} now={now} />)}
+          {!loaded ? <div className="tp-empty">{t("读取中…")}</div> : null}
+          {loaded && visible.length === 0 ? <div className="tp-empty">{t("还没有经过 Codex++ 的请求。在接入的 Agent 里发一条消息，这里会实时显示。")}</div> : null}
         </div>
       </Section>
     </>

@@ -430,6 +430,44 @@ const demoRequestLogs = () => [
   demoRequest(10, 33, { ...claudeRequest, model: "claude-sonnet-4-5", upstreamModel: "claude-sonnet-5-5", relayId: "newapi-pool", relayName: L("new-api 站点（演示）", "new-api relay (demo)"), durationMs: 7_300, firstTokenMs: 1_210, usage: { inputTokens: 39_400, outputTokens: 1_120, cachedTokens: 36_864 }, cacheHitRatio: 0.936 }),
 ];
 
+// 实时请求流演示（托盘「流量」页签、总览拓扑图）：在演示日志之上每隔一两秒「发出」一条请求，
+// 几秒后答完（偶尔失败），光点据此来回走。
+const demoFlowTemplates = [
+  { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "chatgpt-pro", relayName: "ChatGPT Pro" },
+  { ...claudeRequest, model: "claude-sonnet-4-5", upstreamModel: "deepseek-v4-pro", relayId: "deepseek", relayName: "DeepSeek" },
+  { ...claudeRequest, model: "claude-opus-4-5", upstreamModel: "kimi-k2-turbo", relayId: "kimi", relayName: "Kimi" },
+  { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "sub2api-pool", relayName: L("sub2api 站点（演示）", "sub2api relay (demo)") },
+];
+const demoFlow = { live: [] as Array<Record<string, unknown> & { finishAt: number }>, nextAt: 0, seq: 0 };
+const demoRequestFlow = (limit: number) => {
+  const now = Date.now();
+  if (now >= demoFlow.nextAt) {
+    const template = demoFlowTemplates[demoFlow.seq % demoFlowTemplates.length];
+    demoFlow.seq += 1;
+    demoFlow.live.unshift({ ...demoRequest(1000 + demoFlow.seq, 0, template), id: `flow-${demoFlow.seq}`, state: "running", success: false, durationMs: 0, finishAt: now + 1500 + Math.random() * 3500 });
+    demoFlow.nextAt = now + 1200 + Math.random() * 2400;
+  }
+  for (const entry of demoFlow.live) {
+    if (entry.state !== "running" || now < entry.finishAt) continue;
+    const failed = demoFlow.seq % 7 === 0;
+    const durationMs = now - (entry.startedAtMs as number);
+    const outputTokens = Math.round(durationMs * (0.2 + Math.random() * 0.4));
+    Object.assign(entry, {
+      state: failed ? "failed" : "success",
+      success: !failed,
+      statusCode: failed ? 429 : 200,
+      error: failed ? L("上游限流（429）", "Upstream rate limited (429)") : null,
+      timestampMs: now,
+      durationMs,
+      firstTokenMs: 600,
+      usage: failed ? null : { inputTokens: 40_000 + Math.round(Math.random() * 160_000), outputTokens },
+    });
+  }
+  demoFlow.live = demoFlow.live.slice(0, 40);
+  const base = demoRequestLogs().filter((entry) => entry.state !== "running");
+  return [...demoFlow.live, ...base].slice(0, limit);
+};
+
 // 会话页演示数据：Codex 的本地会话与 Claude Code / Grok 的会话放在一起。
 const demoCodexSessions = () => [
   { id: "c1", title: L("重构网关的路由面板", "Refactor the gateway routing panel"), cwd: "/Users/demo/Projects/codex-plus", modelProvider: "codex_plus_gateway", archived: false, updatedAtMs: Date.now() - 30_000, rolloutPath: "", dbPath: "" },
@@ -611,6 +649,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { agent: "grok", id: "g1", title: L("解释这段正则", "Explain this regex"), cwd: "/Users/demo/Projects/data-tools", updatedAtMs: Date.now() - 5 * 3_600_000 },
     ] : [] }) as T;
     case "load_request_logs": return ok({ entries: demoRequestLogs() }) as T;
+    case "load_request_flow": return ok({ entries: demoRequestFlow(Number(args.limit) || 30) }) as T;
     case "startup_options": return ok({ showUpdate: false }) as T;
     case "consume_pending_manager_navigation": return null as T;
     case "load_overview": return overview as T;

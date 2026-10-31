@@ -454,6 +454,12 @@ export const EN_PLAIN: Record<string, string> = {
   "依次": "In order",
   "依次：按成员顺序，前一个答不了才换下一个，每个成员再按自己的 Key 轮换。": "In order: member by member, moving on only when one can't answer, each over its own keys.",
   "正在回答…": "answering…",
+  // 实时请求流（托盘「实时」页签、总览「最近请求」）
+  "实时": "Live",
+  "实时请求": "Live requests",
+  "还没有经过 Codex++ 的请求。在接入的 Agent 里发一条消息，这里会实时显示。": "No requests through Codex++ yet. Send a message from a connected agent and it shows up here live.",
+  "由 {0} 转来": "from {0}",
+  "第 {0} 次尝试": "attempt {0}",
   "Key 都已停用": "all keys disabled",
   "一个 Key": "one key",
   "连不上": "unreachable",
