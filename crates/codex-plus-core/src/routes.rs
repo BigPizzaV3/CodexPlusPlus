@@ -203,6 +203,16 @@ pub trait BridgeDataService: Send + Sync {
     async fn thread_usage_live(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "本机用量快照暂不可用", "events": []}))
     }
+    /// 向本机拓展提供只读用量历史，与状态栏和 Gateway 计费分离。
+    async fn usage_history(&self, _query: Value) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "unavailable",
+            "complete": false,
+            "message": "结构化用量历史服务未接入",
+        }))
+    }
+    /// 关闭查询时释放本进程的只读缓存，默认实现兼容其他数据服务。
+    async fn clear_usage_history(&self) {}
     async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "当前后端暂不支持会话用量摘要"}))
     }
@@ -408,6 +418,21 @@ pub async fn handle_bridge_request(
                 .thread_usage_live(session_from_payload(&payload))
                 .await
         }
+        "/usage/history" => match ctx.settings.get_settings().await {
+            Ok(settings) if settings.usage_history_enabled => {
+                ctx.data.usage_history(payload.clone()).await
+            }
+            _ => {
+                ctx.data.clear_usage_history().await;
+                Ok(json!({
+                    "status": "unavailable",
+                    "enabled": false,
+                    "complete": false,
+                    "records": [],
+                    "message": "本机用量历史未开启或设置不可用",
+                }))
+            }
+        },
         // 仅内置挂件（大肥鱼）使用，不加入第三方拓展路由白名单。
         // 只在 Agent 桌宠选中大肥鱼时可用，见 `crate::whale::enabled`。
         "/whale/history" => match ctx.settings.get_settings().await {

@@ -117,6 +117,7 @@ mod updater;
 mod upstream_connection_reuse;
 mod upstream_theme_assets;
 mod upstream_worktree;
+mod usage_history_routes;
 mod usage_status_line_settings;
 mod user_scripts_reload;
 mod watcher;

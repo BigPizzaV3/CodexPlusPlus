@@ -5,6 +5,9 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "本机用量历史": "Local usage history",
+  "启用本机用量历史": "Enable local usage history",
+  "允许扩展按需读取本机用量元数据，默认关闭。": "Allow extensions to read local usage metadata on demand. Disabled by default.",
   // Agent 桌宠
   "试听": "Preview sound",
   "Agent 桌宠": "Agent pet",

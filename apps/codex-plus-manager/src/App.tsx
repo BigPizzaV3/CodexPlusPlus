@@ -440,6 +440,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppMarkdownExport: boolean;
   codexAppSessionShare: boolean;
   codexAppUsageStatusLine: boolean;
+  usageHistoryEnabled: boolean;
   codexAppProxyRequestStatus: boolean;
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
@@ -1459,6 +1460,7 @@ const defaultSettings: BackendSettings = {
   codexAppMarkdownExport: true,
   codexAppSessionShare: true,
   codexAppUsageStatusLine: true,
+  usageHistoryEnabled: false,
   codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
@@ -10890,6 +10892,16 @@ function AgentSettingsScreen({
           </CardContent>
         </Panel>
 
+        <Panel id="codex-settings-usage-history">
+          <SwitchPanelHead
+            checked={form.usageHistoryEnabled}
+            detail={t("允许扩展按需读取本机用量元数据，默认关闭。")}
+            label={t("启用本机用量历史")}
+            onChange={(checked) => onFormChange({ ...form, usageHistoryEnabled: checked })}
+            title={t("本机用量历史")}
+          />
+        </Panel>
+
         <Panel id="codex-settings-launch-args">
           <CardHead title={t("Codex 启动参数")} detail={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
           <CardContent className="settings-content setting-rows">
@@ -17302,6 +17314,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
+    usageHistoryEnabled: settings.usageHistoryEnabled === true,
     ...normalizeWhaleBalanceSettings(settings),
     // 旧版「Codex 用量挂件」开着、还没有桌宠设置的用户，升级后桌宠开启并选中大肥鱼。
     agentPet: normalizeAgentPetSettings(settings.agentPet, (settings as { codexAppWhaleWidgetEnabled?: unknown }).codexAppWhaleWidgetEnabled === true),

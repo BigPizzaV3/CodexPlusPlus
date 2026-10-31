@@ -19,5 +19,8 @@ thiserror.workspace = true
 toml.workspace = true
 uuid.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 tempfile.workspace = true
