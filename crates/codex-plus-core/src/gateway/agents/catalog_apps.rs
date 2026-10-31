@@ -351,7 +351,7 @@ pub const CLAUDE_DESKTOP: AgentSpec = AgentSpec {
         }
         Ok(())
     },
-    hint: "完全退出并重新打开 Claude Desktop 后生效（Code 与 Cowork 走网关，无需 Anthropic 登录）；它只列 Claude 名字的模型，请求会转到主模型",
+    hint: "完全退出并重新打开 Claude Desktop 后生效（Code 与 Cowork 走网关，无需 Anthropic 登录）；非 Claude 模型在它的选择器里以真实名字显示（底层 id 是 claude-gw- 开头的别名）",
 };
 
 // ---------------------------------------------------------------- Zed

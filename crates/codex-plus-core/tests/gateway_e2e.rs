@@ -640,6 +640,38 @@ async fn gateway_end_to_end() {
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["group/group", "deepseek-v4-pro", "glm-5.3"]);
 
+    // Claude Desktop：非 Claude 模型换成数字别名，真实名字在 display_name 里。
+    gateway.bindings.insert(
+        "claude-desktop".into(),
+        binding("deepseek-v4-pro", "cpx-gw-desktop-e2e"),
+    );
+    save(&gateway);
+    let models = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/gw/claude-desktop/v1/models"))
+        .bearer_auth("cpx-gw-desktop-e2e")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let rows = models["data"].as_array().unwrap();
+    let names = rows
+        .iter()
+        .map(|row| row["display_name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["deepseek-v4-pro", "glm-5.3", "group/group"]);
+    for row in rows {
+        let real = row["display_name"].as_str().unwrap();
+        assert_eq!(
+            row["id"],
+            codex_plus_core::gateway::route::claude_alias(real)
+        );
+        assert!(row["id"].as_str().unwrap().starts_with("claude-gw-"));
+    }
+    gateway.bindings.remove("claude-desktop");
+    save(&gateway);
+
     // —— 8. Grok：Responses 客户端 → Chat 上游，输出 Responses 事件流 ——
     let (grok_base, grok_seen) =
         mock_upstream(vec![(200, "text/event-stream", chat_sse("Grok 你好"))]).await;

@@ -15,6 +15,7 @@
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
+use crate::gateway::agents;
 use crate::gateway::anthropic_inbound;
 use crate::gateway::anthropic_outbound::{
     ResponsesSseToAnthropicSse, anthropic_error_body, anthropic_message_to_sse,
@@ -1333,6 +1334,35 @@ async fn handle_models(
             "first_id": models.first(),
             "last_id": models.last()
         }),
+        // Claude Desktop 只列 Claude 名字的模型：非 Claude 模型换成数字别名，真实名字放进 display_name。
+        ToolId::Unknown(id) if id == agents::catalog_apps::CLAUDE_DESKTOP.id => {
+            let rows: Vec<Value> = models
+                .iter()
+                .map(|model| {
+                    let id = route::claude_alias(model);
+                    let mut row = json!({
+                        "id": id,
+                        "object": "model",
+                        "type": "model",
+                        "display_name": model,
+                        "created": 0,
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "owned_by": "codex-plus"
+                    });
+                    if id != *model {
+                        row["description"] = json!("经 Codex++ 网关转发");
+                    }
+                    row
+                })
+                .collect();
+            json!({
+                "object": "list",
+                "first_id": rows.first().map(|row| row["id"].clone()),
+                "last_id": rows.last().map(|row| row["id"].clone()),
+                "data": rows,
+                "has_more": false
+            })
+        }
         // 通用 Agent 不知道用哪种协议来问：一份同时符合 OpenAI 与 Anthropic 格式的列表。
         ToolId::Unknown(_) => json!({
             "object": "list",
@@ -1366,21 +1396,10 @@ async fn handle_models(
 
 /// 暴露给 Agent 的模型：默认模型在前，然后是池里所有能用的模型和路由组，以及绑定里声明的模型。
 pub fn exposed_models(gateway: &GatewaySettings, agent: &ToolId) -> Vec<String> {
-    let Some(binding) = gateway.binding(agent) else {
-        return Vec::new();
-    };
-    let mut models = Vec::new();
-    let default = route::binding_default_model(gateway, binding);
-    if !default.is_empty() {
-        models.push(default);
-    }
-    let pool_models = route::pool_models(gateway, binding);
-    for model in pool_models.into_iter().chain(binding.declared_models()) {
-        if !models.contains(&model) {
-            models.push(model);
-        }
-    }
-    models
+    gateway
+        .binding(agent)
+        .map(|binding| route::binding_exposed_models(gateway, binding))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
