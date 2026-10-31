@@ -292,16 +292,40 @@ fn macos_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
     Ok(args)
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_process_arguments(content: &[u8]) -> Vec<String> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+    let mut args = content
+        .split(|&byte| byte == 0)
+        .map(|part| String::from_utf8_lossy(part).to_string())
+        .collect::<Vec<_>>();
+    if content.last() == Some(&0) {
+        args.pop();
+    }
+    if args.iter().all(String::is_empty) {
+        args.clear();
+    }
+    args
+}
+
 #[cfg(target_os = "linux")]
 fn linux_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
     let content = std::fs::read(format!("/proc/{pid}/cmdline"))?;
-    let args = content
-        .split(|&byte| byte == 0)
-        .filter(|part| !part.is_empty())
-        .map(|part| String::from_utf8_lossy(part).to_string())
-        .collect::<Vec<_>>();
-    anyhow::ensure!(!args.is_empty(), "进程参数为空");
-    Ok(args)
+    Ok(parse_linux_process_arguments(&content))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_is_verified_kernel_thread(
+    status: &str,
+    birth: u64,
+    lifetime: Option<(u64, bool)>,
+) -> bool {
+    let mut values = status
+        .lines()
+        .filter_map(|line| line.strip_prefix("Kthread:").map(str::trim));
+    values.next() == Some("1") && values.next().is_none() && lifetime == Some((birth, false))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -309,7 +333,11 @@ fn unix_process_arguments(pid: u32) -> anyhow::Result<Vec<String>> {
     #[cfg(target_os = "macos")]
     { macos_process_arguments(pid) }
     #[cfg(target_os = "linux")]
-    { linux_process_arguments(pid) }
+    {
+        let arguments = linux_process_arguments(pid)?;
+        anyhow::ensure!(!arguments.is_empty(), "进程参数为空");
+        Ok(arguments)
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -944,7 +972,12 @@ fn parse_macos_process_snapshot(
         let pid = pid.parse::<u32>()?;
         let (uid, rest) = rest.trim().split_once(char::is_whitespace)
             .ok_or_else(|| anyhow::anyhow!("进程快照缺少用户身份"))?;
-        let uid = uid.parse::<u32>()?;
+        // macOS ps 会把部分 uid_t（例如 nobody）按有符号数显示。
+        let uid = if uid.starts_with('-') {
+            uid.parse::<i32>()? as u32
+        } else {
+            uid.parse::<u32>()?
+        };
         let (state, image) = rest.trim().split_once(char::is_whitespace)
             .ok_or_else(|| anyhow::anyhow!("进程快照缺少状态或映像"))?;
         anyhow::ensure!(!image.trim().is_empty(), "进程快照缺少映像");
@@ -1076,12 +1109,20 @@ pub fn codex_user_data_is_absent(
             continue;
         };
         let arguments = process_read_or_exited(linux_process_arguments(pid), || {
-            Ok(linux_process_lifetime(pid)?.is_none_or(|current| current.1 || current.0 != birth))
+            Ok(linux_process_lifetime(pid)?.is_none_or(|current| current.1))
         })?;
-        if let Some(arguments) = arguments
-            && arguments_user_data_matches(&arguments, &user_data)?
-        {
-            return Ok(false);
+        if let Some(arguments) = arguments {
+            if arguments.is_empty() {
+                let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+                let current = linux_process_lifetime(pid)?;
+                if linux_is_verified_kernel_thread(&status, birth, current) {
+                    continue;
+                }
+                return Err(std::io::Error::other("无法确认空参数进程是否使用实例目录").into());
+            }
+            if arguments_user_data_matches(&arguments, &user_data)? {
+                return Ok(false);
+            }
         }
     }
     // 无法确认占用者时保留 unknown，不因端口可达而停止其他实例。
@@ -1294,6 +1335,41 @@ mod tests {
     }
 
     #[test]
+    fn linux_empty_cmdline_requires_a_verified_kernel_thread() {
+        for bytes in [&b""[..], &b"\0"[..], &b"\0\0"[..]] {
+            assert!(parse_linux_process_arguments(bytes).is_empty());
+        }
+        assert!(linux_is_verified_kernel_thread(
+            "Name:\tkworker\nKthread:\t1\n",
+            42,
+            Some((42, false))
+        ));
+        for (status, lifetime) in [
+            ("Kthread:\t0\n", Some((42, false))),
+            ("Name:\tunknown\n", Some((42, false))),
+            ("Kthread:\t1\nKthread:\t1\n", Some((42, false))),
+            ("Kthread:\t1\n", Some((43, false))),
+            ("Kthread:\t1\n", Some((42, true))),
+            ("Kthread:\t1\n", None),
+        ] {
+            assert!(!linux_is_verified_kernel_thread(status, 42, lifetime));
+        }
+    }
+
+    #[test]
+    fn linux_cmdline_preserves_empty_argument_positions() {
+        let temp = tempfile::tempdir().unwrap();
+        let user_data = temp.path().canonicalize().unwrap();
+        let content = format!("\0--user-data-dir={}\0\0last\0", user_data.display());
+        let args = parse_linux_process_arguments(content.as_bytes());
+        assert_eq!(args.len(), 4);
+        assert_eq!(args[0], "");
+        assert_eq!(args[2], "");
+        assert_eq!(args[3], "last");
+        assert!(arguments_user_data_matches(&args, &user_data).unwrap());
+    }
+
+    #[test]
     fn linux_proc_snapshot_checks_starttime_and_handles_spaced_parentheses_and_zombies() {
         let stat = |state, birth| format!("42 (Codex (test) worker) {state} {}{birth} 0 0\n", "0 ".repeat(18));
         let live = parse_linux_process_lifetime(&stat("S", "12345")).unwrap();
@@ -1324,10 +1400,18 @@ mod tests {
 
     #[test]
     fn macos_snapshot_preserves_spaced_images_and_rejects_incomplete_output() {
-        let snapshot = parse_macos_process_snapshot(b" 42 501 S /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n 43 501 S+ /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n 44 501 Z /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n").unwrap();
+        let snapshot = parse_macos_process_snapshot(b" 42 501 S /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n 43 501 S+ /Applications/Codex Dev.app/Contents/Frameworks/Helper (Renderer)\n 44 501 Z /Applications/Codex Dev.app/Contents/MacOS/Codex Dev\n 45 -2 S /usr/libexec/dhcp6d\n 46 4294967294 S /usr/libexec/other\n").unwrap();
         let executable = Path::new("/Applications/Codex Dev.app/Contents/MacOS/Codex Dev");
         assert_eq!(snapshot.get(&42).unwrap().image.as_path(), executable);
         assert_eq!(snapshot.get(&42).unwrap().uid, 501);
+        assert_eq!(snapshot.get(&45).unwrap().uid, u32::MAX - 1);
+        assert_eq!(snapshot.get(&46).unwrap().uid, u32::MAX - 1);
+        assert!(macos_process_may_use_user_data(
+            snapshot.get(&45).unwrap(), executable, Some(u32::MAX - 1)
+        ));
+        assert!(!macos_process_may_use_user_data(
+            snapshot.get(&45).unwrap(), executable, Some(501)
+        ));
         assert!(!snapshot.contains_key(&44));
         assert!(macos_image_is_candidate(
             &snapshot.get(&43).unwrap().image,
@@ -1342,6 +1426,8 @@ mod tests {
             &b"42 501 S image\n42 501 S other\n"[..],
             &b"not-pid 501 S image\n"[..],
             &b"42 not-uid S image\n"[..],
+            &b"42 -2147483649 S image\n"[..],
+            &b"42 4294967296 S image\n"[..],
         ] {
             assert!(parse_macos_process_snapshot(invalid).is_err());
         }
