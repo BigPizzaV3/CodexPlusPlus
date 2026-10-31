@@ -154,14 +154,17 @@ import { SkillsPage } from "./ManagementExtra";
 import { ProjectSessionPage } from "./ProjectSessionPage";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import {
+  builtinSettingValue,
   enhancementGroup,
   enhancementGroupAnchorId,
   enhancementItem,
   enhancementPlatformFromUserAgent,
   isEnhancementItemMasterGated,
-  managerGeneralGroups,
-  managerGroupItems,
+  managerBuiltinCards,
+  managerBuiltinGroups,
   managerStandaloneGroup,
+  withBuiltinSetting,
+  type BuiltinExtensionCard,
   type EnhancementSettingItem,
 } from "./enhancement-catalog";
 import { DEFAULT_AUTO_COMPACT_PERCENT, autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
@@ -696,8 +699,14 @@ type BuiltinExtension = {
   key: string;
   name: string;
   description: string;
+  group?: string;
   enabled: boolean;
   replacedBy?: string | null;
+  /** 启停读写的设置字段；没有时启停记在用户脚本配置里。 */
+  setting?: string | null;
+  params?: string[];
+  restartRequired?: boolean;
+  replaceable?: boolean;
 };
 
 type UserScriptInventory = {
@@ -1354,7 +1363,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "context", label: "MCP", icon: Network },
   { id: "skills", label: "Skills", icon: BookOpen },
   { id: "weixin", get label() { return t("微信连接"); }, icon: ScanLine, tool: "codex" },
-  { id: "enhance", get label() { return t("增强"); }, icon: Hammer, tool: "codex" },
+  { id: "enhance", get label() { return t("内置拓展"); }, icon: Hammer, tool: "codex" },
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
   // 拓展注入的是 Codex 页面（tool 保持 codex，顶栏才有重启 Codex），但入口放在侧栏「全局管理」，
   // 和 MCP、Skills 并列，不藏在 Codex 的页签里。
@@ -4856,6 +4865,8 @@ export function App() {
               onTabChange={setEnhancementTab}
               form={settingsForm}
               onFormChange={setSettingsForm}
+              builtins={settings?.user_scripts?.builtins ?? []}
+              onNavigate={(target) => void navigate(target)}
               actions={actions}
             />
           ) : null}
@@ -4881,7 +4892,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
@@ -8185,11 +8196,7 @@ function StepwiseSettingsPanel({ form, onFormChange, actions }: {
       <CardHead title={t(group.title)} detail={t(group.description ?? "")} />
       <CardContent className="settings-content">
         <div className="settings-block stepwise-settings-block" id={ENHANCEMENT_SECTION_IDS.stepwise}>
-          <div className="enhance-service-toggles">
-            {managerGroupItems(group.id, enhancementPlatform).map((item) => (
-              <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={form.enhancementsEnabled} />
-            ))}
-          </div>
+          {/* 「下一步建议」「回答大纲」的开关与「建议直接发送」在「内置拓展」标签的卡片里，这里只放共用的连接设置。 */}
           <div className="stepwise-settings-section">{t("连接")}</div>
           <div className="form-row">
             <Field label="Base URL">
@@ -8399,6 +8406,8 @@ function EnhanceScreen({
   onTabChange,
   form,
   onFormChange,
+  builtins,
+  onNavigate,
   actions,
 }: {
   dirty: boolean;
@@ -8406,6 +8415,9 @@ function EnhanceScreen({
   onTabChange: (tab: EnhancementTab) => void;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
+  /** 后台给的内置拓展现状（顶替、没有设置字段的启停）。 */
+  builtins: BuiltinExtension[];
+  onNavigate: (route: Route) => void;
   actions: Actions;
 }) {
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
@@ -8434,8 +8446,27 @@ function EnhanceScreen({
     }
     return <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />;
   };
+  const builtinStates = new Map(builtins.map((builtin) => [builtin.id, builtin]));
+  // 有单独配置页的内置拓展：卡片上给「设置」入口。
+  const openBuiltinSettings = (target: BuiltinSettingsTarget) => {
+    if (target.tab) onTabChange(target.tab);
+    else if (target.route) onNavigate(target.route);
+  };
+  const renderBuiltin = (card: BuiltinExtensionCard) => (
+    <BuiltinExtensionCardView
+      key={card.id}
+      card={card}
+      form={form}
+      onFormChange={onFormChange}
+      masterEnabled={masterEnabled}
+      state={builtinStates.get(card.id)}
+      renderSetting={renderSetting}
+      onOpenSettings={openBuiltinSettings}
+      actions={actions}
+    />
+  );
   const tabs: Array<{ value: EnhancementTab; label: string }> = [
-    { value: "general", label: t("常用增强") },
+    { value: "general", label: t("内置拓展") },
     { value: "dictation", label: t("语音输入") },
     { value: "stepwise", label: t(enhancementGroup("stepwise").title) },
   ];
@@ -8445,7 +8476,7 @@ function EnhanceScreen({
   };
   // 「常用增强」页里的分组，显示在左侧目录的页签下面，点了滚到对应分组。
   // 分组按清单顺序列出，独立模式排最后；锚点 id 由清单分组 id 生成，保持稳定。
-  const generalSections = [...managerGeneralGroups(), managerStandaloneGroup()]
+  const generalSections = [...managerBuiltinGroups(), managerStandaloneGroup()]
     .map((group) => ({ id: enhancementGroupAnchorId(group), label: t(group.title) }));
   return (
     <div className="settings-page enhance-page sectioned-page">
@@ -8503,17 +8534,13 @@ function EnhanceScreen({
           <CardContent className="enhance-content">
             <div className="enhance-feature-groups">
               {/* 关闭增强时这组是唯一仍会生效的补丁，因此提到最前面；开启增强时它排在最后。 */}
-              {masterEnabled ? null : (
-                <StandaloneModeGroup form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
-              )}
-              {managerGeneralGroups().map((group) => (
+              {masterEnabled ? null : <StandaloneModeGroup renderBuiltin={renderBuiltin} />}
+              {managerBuiltinGroups().map((group) => (
                 <FeatureGroup key={group.id} id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
-                  {managerGroupItems(group.id, enhancementPlatform).map(renderSetting)}
+                  {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
                 </FeatureGroup>
               ))}
-              {masterEnabled ? (
-                <StandaloneModeGroup form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
-              ) : null}
+              {masterEnabled ? <StandaloneModeGroup renderBuiltin={renderBuiltin} /> : null}
             </div>
             <div className="hint-line enhance-footer-hint">
               <Info className="h-4 w-4" />
@@ -8533,24 +8560,126 @@ function EnhanceScreen({
   );
 }
 
-// 增强总开关关闭后仍生效的独立补丁。不受总开关禁用，所以不放进 FeatureGroup 的
-// masterEnabled 门控里；位置在该页「常用增强」标签内，关闭增强时提到最前面。
-function StandaloneModeGroup({
-  form,
-  onFormChange,
-  masterEnabled,
-}: {
-  form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
-  masterEnabled: boolean;
-}) {
+// 总开关关闭后仍生效的独立补丁。卡片照常经 EnhancementSettingControl 渲染，清单里 masterGated: false，
+// 不随总开关禁用；位置在「内置拓展」标签内，关闭总开关时提到最前面。
+function StandaloneModeGroup({ renderBuiltin }: { renderBuiltin: (card: BuiltinExtensionCard) => ReactNode }) {
   const group = managerStandaloneGroup();
   return (
     <FeatureGroup id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
-      {managerGroupItems(group.id, enhancementPlatform).map((item) => (
-        <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
-      ))}
+      {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
     </FeatureGroup>
+  );
+}
+
+type BuiltinSettingsTarget = { tab?: EnhancementTab; route?: Route };
+
+/** 有单独配置页的内置拓展：卡片上的「设置」去哪里。 */
+const BUILTIN_SETTINGS_TARGETS: Record<string, BuiltinSettingsTarget> = {
+  dictation: { tab: "dictation" },
+  stepwise: { tab: "stepwise" },
+  "answer-outline": { tab: "stepwise" },
+  "agent-pet": { route: "agentPet" },
+  "dream-skin": { route: "dreamSkin" },
+  "image-overlay": { route: "agentSettings" },
+};
+
+/// 一个内置拓展的卡片：开关（就是对应的设置项；没有设置项的记在用户脚本配置里）、
+/// 被拓展顶替时的提示、打开后显示的子选项、有单独配置页的「设置」入口。
+function BuiltinExtensionCardView({
+  card,
+  form,
+  onFormChange,
+  masterEnabled,
+  state,
+  renderSetting,
+  onOpenSettings,
+  actions,
+}: {
+  card: BuiltinExtensionCard;
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  masterEnabled: boolean;
+  state?: BuiltinExtension;
+  renderSetting: (item: EnhancementSettingItem) => ReactNode;
+  onOpenSettings: (target: BuiltinSettingsTarget) => void;
+  actions: Actions;
+}) {
+  const { item, entry } = card;
+  const gated = item ? isEnhancementItemMasterGated(item) : true;
+  const disabled = gated && !masterEnabled;
+  let on: boolean;
+  let control: ReactNode;
+  if (item?.control === "select") {
+    // 下拉型（打字特效）：开关写 builtinOn / builtinOff，样式在打开后作为参数选。
+    const key = item.key as keyof BackendSettings;
+    const value = String(form[key] ?? "");
+    on = value !== "" && value !== (item.builtinOff ?? "off");
+    control = (
+      <FeatureToggle
+        title={t(item.title)}
+        detail={t(item.description)}
+        checked={on}
+        disabled={disabled}
+        onChange={(checked) => onFormChange({ ...form, [key]: checked ? item.builtinOn ?? "" : item.builtinOff ?? "off" })}
+      />
+    );
+  } else if (item) {
+    on = form[item.key as keyof BackendSettings] === true;
+    control = renderSetting(item);
+  } else if (entry?.setting) {
+    const setting = entry.setting;
+    on = builtinSettingValue(form, setting) === true;
+    control = (
+      <FeatureToggle
+        title={t(entry.title)}
+        detail={t(entry.description)}
+        checked={on}
+        disabled={disabled}
+        onChange={(checked) => onFormChange(withBuiltinSetting(form, setting, checked))}
+      />
+    );
+  } else {
+    on = state?.enabled ?? true;
+    control = (
+      <FeatureToggle
+        title={t(entry?.title ?? card.id)}
+        detail={t(entry?.description ?? "")}
+        checked={on}
+        disabled={disabled}
+        onChange={(checked) => void actions.setUserScriptEnabled(`builtin:${card.id}`, checked)}
+      />
+    );
+  }
+  const target = BUILTIN_SETTINGS_TARGETS[card.id];
+  const selectOptions = item?.control === "select" ? (item.options ?? []).filter((option) => option.value !== (item.builtinOff ?? "off")) : [];
+  return (
+    <div className="builtin-card" data-builtin-id={card.id}>
+      {control}
+      {state?.replacedBy ? (
+        <small className="builtin-card-note">{tf("已被 {0} 顶替", [state.replacedBy.replace(/^user:/, "")])}</small>
+      ) : null}
+      {on && (card.params.length || selectOptions.length) ? (
+        <div className="builtin-card-params">
+          {item?.control === "select" ? (
+            <AppSelect<string>
+              ariaLabel={t(item.title)}
+              value={String(form[item.key as keyof BackendSettings] ?? "")}
+              disabled={disabled}
+              onChange={(value) => onFormChange({ ...form, [item.key]: value })}
+              options={selectOptions.map((option) => ({ value: option.value, label: t(option.label) }))}
+            />
+          ) : null}
+          {card.params.map((param) => (
+            <EnhancementSettingControl key={param.key} item={param} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
+          ))}
+        </div>
+      ) : null}
+      {target ? (
+        <button type="button" className="builtin-card-settings" onClick={() => onOpenSettings(target)}>
+          {t("设置")}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -9693,7 +9822,7 @@ function dreamSkinStateLabel(state: "pass" | "warning" | "fail" | "not_running")
   return t("Codex 未运行或不可连接");
 }
 
-function UserScriptsScreen({ settings, market, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; actions: Actions }) {
+function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; actions: Actions }) {
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
     if (reloading) return;
@@ -9914,7 +10043,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           <div className="table">
             {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
           </div>
-          {inventory?.builtins?.length ? <BuiltinExtensionsSection builtins={inventory.builtins} actions={actions} /> : null}
+          {inventory?.builtins?.length ? <BuiltinExtensionsSummary builtins={inventory.builtins} onOpen={onOpenBuiltins} /> : null}
         </Panel>
       )}
     </div>
@@ -16368,78 +16497,21 @@ function localizedPackageText(
   return fallback;
 }
 
-/// 内置拓展的显示文案（Rust 侧 BUILTIN_EXTENSIONS 也有一份中文，用来兜底未知 id）。
-function builtinExtensionText(builtin: BuiltinExtension): { name: string; description: string } {
-  switch (builtin.id) {
-    case "agent-pet": return { name: t("Agent 桌宠"), description: t("窗口里可拖动的小角色，按下压扁、松开回弹并播放音效") };
-    case "usage-statusline": return { name: t("用量状态栏"), description: t("输入框下方显示本会话的 token 用量、缓存命中与生成速度") };
-    case "dictation": return { name: t("语音听写"), description: t("输入框旁的麦克风按钮，录音转写成文字") };
-    case "turn-rewind": return { name: t("轮次回退"), description: t("消息菜单里的「回退到这一轮」") };
-    case "typing-effects": return { name: t("打字特效"), description: t("输入时的彩虹、烟花、星星特效") };
-    case "side-chat-save": return { name: t("侧聊保存"), description: t("把侧聊标签页保存成独立会话") };
-    case "history-turn-recovery": return { name: t("历史轮次补全"), description: t("打开长会话时补齐没加载出来的早期轮次") };
-    case "capacity-auto-retry": return { name: t("容量不足自动重试"), description: t("上游提示容量不足时自动重发") };
-    case "proxy-request-status": return { name: t("请求状态条"), description: t("输入框上方显示经 Codex++ 代理的请求进行到哪一步") };
-    case "session-share": return { name: t("会话分享"), description: t("会话顶栏的分享按钮") };
-    case "model-picker-groups": return { name: t("模型分组"), description: t("模型选择器里按供应商分组折叠") };
-    case "dream-skin": return { name: t("梦皮主题"), description: t("Codex 窗口的梦皮主题与壁纸") };
-    case "plugin-market-unlock": return { name: t("插件市场解锁"), description: t("解锁 Codex 插件市场（停用后刷新页面生效）") };
-    case "instance-identity": return { name: t("多开身份提示"), description: t("多开实例顶部显示实例名（用公开拓展接口写成）") };
-    case "session-title-hook": return { name: t("会话标题中间件"), description: t("首轮结束后按拓展的 session/title 中间件改会话标题") };
-    case "session-delete": return { name: t("会话删除"), description: t("会话行与归档页的删除按钮") };
-    case "markdown-export": return { name: t("Markdown 导出"), description: t("会话行「…」菜单与归档页里的导出") };
-    case "thread-id-badge": return { name: t("会话 ID 角标"), description: t("会话行标题旁显示会话 ID 与创建时间") };
-    case "thread-scroll-restore": return { name: t("滚动位置恢复"), description: t("切回会话时回到上次看到的位置") };
-    case "conversation-view": return { name: t("对话宽度"), description: t("按设置的宽度放宽对话区与输入框") };
-    case "activity-overlay-right": return { name: t("消息导航条靠右"), description: t("把消息导航条和预览卡片移到右侧") };
-    case "paste-fix": return { name: t("粘贴修复"), description: t("从 Word 等处粘贴时插入纯文本，不被识别成附件") };
-    case "stepwise": return { name: t("下一步建议"), description: t("悬浮球里的下一步建议") };
-    case "answer-outline": return { name: t("回答大纲"), description: t("悬浮球里按标题列出回答大纲，点击跳转") };
-    case "pet-real-mouse": return { name: t("桌宠跟随鼠标"), description: t("Codex 自带桌宠的视线跟随真实鼠标") };
-    default: return { name: builtin.name, description: builtin.description };
-  }
-}
-
-/// 内置拓展：Codex++ 自带功能也是拓展，可以单独停用，或被声明了 replaces 的拓展顶替。
-/// 功能自己的设置开关照旧生效，这里是外面一层。
-function BuiltinExtensionsSection({ builtins, actions }: { builtins: BuiltinExtension[]; actions: Actions }) {
+/// 本地拓展列表底部的内置拓展入口：Codex++ 自带的功能都是内置拓展，开关与参数统一在「内置拓展」页管理，
+/// 这里只给个数和被顶替的项，免得两处各有一套开关。
+function BuiltinExtensionsSummary({ builtins, onOpen }: { builtins: BuiltinExtension[]; onOpen: () => void }) {
+  const enabled = builtins.filter((builtin) => builtin.enabled && !builtin.replacedBy).length;
+  const replaced = builtins.filter((builtin) => builtin.replacedBy);
   return (
     <div className="builtin-extensions">
       <div className="builtin-extensions-title">
         <strong>{t("内置拓展")}</strong>
-        <small>{t("Codex++ 自带的功能也挂在拓展内核上：可以单独停用，也可以被声明 replaces 的拓展顶替；功能自己的设置开关照旧生效")}</small>
+        <small>
+          {tf("Codex++ 自带的功能都是内置拓展：已启用 {0} / 共 {1} 项。可以被声明 replaces 的拓展顶替。", [String(enabled), String(builtins.length)])}
+          {replaced.length ? ` ${tf("已被顶替：{0}", [replaced.map((builtin) => `${t(builtin.name)} → ${String(builtin.replacedBy).replace(/^user:/, "")}`).join("、")])}` : ""}
+        </small>
       </div>
-      <div className="table">
-        {builtins.map((builtin) => {
-          const text = builtinExtensionText(builtin);
-          const state = builtin.replacedBy ? "replaced" : builtin.enabled ? "loaded" : "disabled";
-          const label = builtin.replacedBy
-            ? tf("已被 {0} 顶替", [builtin.replacedBy.replace(/^user:/, "")])
-            : builtin.enabled ? t("启用") : t("已停用");
-          return (
-            <div className="table-row user-script-row" key={builtin.id}>
-              <div className="user-script-name">
-                <strong>{text.name}</strong>
-                <small title={text.description}>{text.description}</small>
-              </div>
-              <span>{t("内置")}</span>
-              <div className="user-script-state">
-                <label className="relay-bare-switch" title={builtin.enabled ? t("停用该内置拓展") : t("启用该内置拓展")}>
-                  <input
-                    aria-label={tf("启用 {0}", [text.name])}
-                    checked={builtin.enabled}
-                    onChange={() => void actions.setUserScriptEnabled(builtin.key, !builtin.enabled)}
-                    type="checkbox"
-                  />
-                  <ToggleVisual />
-                </label>
-                <span className="user-script-state-label" data-state={state}>{label}</span>
-              </div>
-              <div className="script-row-actions" />
-            </div>
-          );
-        })}
-      </div>
+      <Button size="sm" variant="secondary" onClick={onOpen}>{t("管理内置拓展")}</Button>
     </div>
   );
 }

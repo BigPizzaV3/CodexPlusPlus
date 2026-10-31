@@ -72,6 +72,16 @@
       { id: "answer-outline", name: "回答大纲", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
       // 启动器每 5 秒按内置拓展状态决定是否驱动，页面侧无事可做。
       { id: "pet-real-mouse", name: "桌宠跟随鼠标" },
+      // 以下由 Rust 侧（启动、注入、本地代理）按设置项与内置拓展状态生效，多数要重启 Codex，页面侧只登记。
+      { id: "model-whitelist-unlock", name: "模型白名单解锁" },
+      { id: "native-fast-unlock", name: "原生 Fast 强制解锁" },
+      { id: "native-predictions", name: "原生输入预测" },
+      { id: "reasoning-collapse", name: "第三方模型回答完自动折叠过程" },
+      { id: "disable-work-view", name: "纯 API 模式禁用 Work 视图" },
+      { id: "force-chinese-locale", name: "强制中文界面" },
+      { id: "native-browser-identification", name: "原生 Edge / Chrome 请求标识兼容" },
+      { id: "standalone-quota-unlock", name: "官方额度解锁" },
+      { id: "image-overlay", name: "背景图" },
     ];
   }
 

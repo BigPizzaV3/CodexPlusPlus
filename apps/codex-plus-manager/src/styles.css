@@ -3725,6 +3725,42 @@ details.relay-fold[open] > .relay-fold-body {
   opacity: 0.58;
 }
 
+/* 内置拓展卡片：开关卡在上，打开后子选项缩进挂在下面，有单独配置页的给「设置」入口。 */
+.builtin-card {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.builtin-card-params {
+  display: grid;
+  gap: 6px;
+  margin-left: 8px;
+  border-left: 2px solid hsl(var(--border));
+  padding-left: 10px;
+}
+
+.builtin-card-note {
+  padding: 0 4px;
+  color: hsl(var(--status-warning));
+  font-size: 12px;
+}
+
+.builtin-card-settings {
+  justify-self: start;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  padding: 0 4px;
+  color: hsl(var(--primary));
+  font-size: 12px;
+}
+
+.builtin-card-settings:hover {
+  text-decoration: underline;
+}
+
 .feature-toggle strong,
 .feature-toggle small {
   display: block;
@@ -13740,17 +13776,21 @@ button.side-item:hover {
 .shell .user-script-row .user-script-state-label[data-state="replaced"] {
   color: hsl(var(--status-warning));
 }
-/* 内置拓展：本地拓展列表下面一段，标题一行加说明。 */
+/* 内置拓展入口：本地拓展列表下面一行，左边个数说明，右边「管理内置拓展」。 */
 .shell .builtin-extensions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-top: 14px;
   border-top: 1px solid hsl(var(--border));
-  padding-top: 10px;
+  padding: 10px 4px 0;
 }
 .shell .builtin-extensions-title {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 0 4px 8px;
+  min-width: 0;
 }
 .shell .builtin-extensions-title small {
   color: hsl(var(--muted-foreground));

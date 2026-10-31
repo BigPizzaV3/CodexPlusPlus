@@ -1,12 +1,24 @@
-//! 内置拓展：Codex++ 自带功能挂在拓展内核上，可在配置里单独停用，也可被拓展包的 `replaces` 顶替。
+//! 内置拓展：Codex++ 自带功能挂在拓展内核上，可单独停用，也可被拓展包的 `replaces` 顶替。
+//! 有设置字段的内置拓展，开关就是那个设置项；没有的记在用户脚本配置里。
 
 use std::fs;
 
-use codex_plus_core::user_scripts::{BUILTIN_EXTENSIONS, UserScriptManager};
-use serde_json::json;
+use codex_plus_core::settings::SettingsStore;
+use codex_plus_core::settings_catalog::builtin_extension_defs;
+use codex_plus_core::user_scripts::UserScriptManager;
+use serde_json::{Value, json};
 
 fn manager(root: &std::path::Path) -> UserScriptManager {
     UserScriptManager::new(root.join("builtin"), root.join("user"), root.join("user_scripts.json"))
+        .with_settings_path(root.join("settings.json"))
+}
+
+fn builtin(manager: &UserScriptManager, id: &str) -> Value {
+    manager.builtin_extensions().unwrap().as_array().unwrap().iter().find(|item| item["id"] == id).cloned().unwrap()
+}
+
+fn settings(root: &std::path::Path) -> Value {
+    serde_json::to_value(SettingsStore::new(root.join("settings.json")).load().unwrap()).unwrap()
 }
 
 fn write_package(root: &std::path::Path, id: &str, manifest: serde_json::Value) {
@@ -17,24 +29,70 @@ fn write_package(root: &std::path::Path, id: &str, manifest: serde_json::Value) 
 }
 
 #[test]
-fn builtins_are_listed_enabled_by_default_and_can_be_disabled() {
+fn builtins_without_a_setting_are_enabled_by_default_and_can_be_disabled() {
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(temp.path());
     let builtins = manager.builtin_extensions().unwrap();
-    assert_eq!(builtins.as_array().unwrap().len(), BUILTIN_EXTENSIONS.len());
-    assert!(builtins.as_array().unwrap().iter().all(|item| item["enabled"] == true));
+    assert_eq!(builtins.as_array().unwrap().len(), builtin_extension_defs().len());
+    assert_eq!(builtin(&manager, "proxy-request-status")["enabled"], true);
+    assert_eq!(builtin(&manager, "proxy-request-status")["setting"], Value::Null);
 
-    manager.set_script_enabled("builtin:agent-pet", false).unwrap();
+    manager.set_script_enabled("builtin:proxy-request-status", false).unwrap();
     let state = manager.builtin_extension_state().unwrap();
-    assert_eq!(state["disabled"], json!(["agent-pet"]));
-    let pet = manager.builtin_extensions().unwrap().as_array().unwrap().iter().find(|item| item["id"] == "agent-pet").cloned().unwrap();
-    assert_eq!(pet["enabled"], false);
+    assert_eq!(state["disabled"], json!(["proxy-request-status"]));
+    assert_eq!(builtin(&manager, "proxy-request-status")["enabled"], false);
 
     // 状态总随注入包下发，用户脚本总开关关着也一样（页面据此卸下内置功能）。
     manager.set_global_enabled(false).unwrap();
     let bundle = manager.build_enabled_bundle().unwrap();
     assert!(bundle.contains("window.__codexPlusBuiltinExtensionState"), "{bundle}");
-    assert!(bundle.contains("\"agent-pet\""));
+    assert!(bundle.contains("\"proxy-request-status\""));
+}
+
+#[test]
+fn builtins_with_a_setting_use_that_setting_as_their_switch() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(temp.path());
+    // 默认值跟着设置走：粘贴修复默认关、会话删除默认开。
+    assert_eq!(builtin(&manager, "paste-fix")["enabled"], false);
+    assert_eq!(builtin(&manager, "paste-fix")["setting"], "codexAppPasteFix");
+    assert_eq!(builtin(&manager, "paste-fix")["restartRequired"], true);
+    assert_eq!(builtin(&manager, "session-delete")["enabled"], true);
+    assert_eq!(builtin(&manager, "session-delete")["params"], json!(["codexAppSessionDeleteSkipConfirm"]));
+
+    manager.set_script_enabled("builtin:paste-fix", true).unwrap();
+    assert_eq!(settings(temp.path())["codexAppPasteFix"], true);
+    assert_eq!(builtin(&manager, "paste-fix")["enabled"], true);
+    manager.set_script_enabled("builtin:session-delete", false).unwrap();
+    assert_eq!(settings(temp.path())["codexAppSessionDelete"], false);
+    assert_eq!(builtin(&manager, "session-delete")["enabled"], false);
+
+    // 嵌套字段与下拉型。
+    manager.set_script_enabled("builtin:agent-pet", true).unwrap();
+    assert_eq!(settings(temp.path())["agentPet"]["enabled"], true);
+    assert_eq!(builtin(&manager, "agent-pet")["enabled"], true);
+    manager.set_script_enabled("builtin:typing-effects", true).unwrap();
+    assert_eq!(settings(temp.path())["codexAppTypingEffect"], "rainbow");
+    assert_eq!(builtin(&manager, "typing-effects")["enabled"], true);
+    manager.set_script_enabled("builtin:typing-effects", false).unwrap();
+    assert_eq!(settings(temp.path())["codexAppTypingEffect"], "off");
+
+    // 有设置字段的不进下发的停用集合，功能自己读设置；也不在用户脚本配置里另记一份。
+    let state = manager.builtin_extension_state().unwrap();
+    assert_eq!(state["disabled"], json!([]));
+    assert!(manager.load_config().scripts.keys().all(|key| !key.starts_with("builtin:")));
+}
+
+#[test]
+fn stale_disable_flags_for_setting_backed_builtins_are_ignored_and_cleared() {
+    let temp = tempfile::tempdir().unwrap();
+    // 旧版本把会话删除记成停用。
+    fs::write(temp.path().join("user_scripts.json"), json!({ "enabled": true, "scripts": { "builtin:session-delete": false } }).to_string()).unwrap();
+    let manager = manager(temp.path());
+    assert_eq!(manager.builtin_extension_state().unwrap()["disabled"], json!([]));
+    assert_eq!(builtin(&manager, "session-delete")["enabled"], true);
+    manager.set_script_enabled("builtin:session-delete", true).unwrap();
+    assert!(!manager.load_config().scripts.contains_key("builtin:session-delete"));
 }
 
 #[test]
@@ -65,26 +123,41 @@ fn replaces_must_name_a_known_builtin() {
     assert_eq!(manager.builtin_extension_state().unwrap()["replacedBy"], json!({}));
 }
 
+/// 在后台生效的内置拓展（不查顶替状态）不能被顶替，免得声明了 replaces 却实际没让位。
+#[test]
+fn backend_builtins_cannot_be_replaced() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(temp.path());
+    assert_eq!(builtin(&manager, "native-fast-unlock")["replaceable"], false);
+    assert_eq!(builtin(&manager, "paste-fix")["replaceable"], true);
+    write_package(temp.path(), "fast", json!({ "id": "fast", "renderer": "renderer.js", "replaces": ["native-fast-unlock"] }));
+    let inventory = manager.inventory().unwrap();
+    let package = inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == "user:fast").cloned().unwrap();
+    assert!(package["error"].as_str().unwrap().contains("不能被拓展顶替"), "{package}");
+}
+
 #[test]
 fn builtin_extension_active_follows_disable_and_replaces() {
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(temp.path());
-    assert!(manager.builtin_extension_active("pet-real-mouse"));
-    manager.set_script_enabled("builtin:pet-real-mouse", false).unwrap();
-    assert!(!manager.builtin_extension_active("pet-real-mouse"));
+    assert!(manager.builtin_extension_active("proxy-request-status"));
+    manager.set_script_enabled("builtin:proxy-request-status", false).unwrap();
+    assert!(!manager.builtin_extension_active("proxy-request-status"));
     assert!(manager.builtin_extension_active("paste-fix"));
     write_package(temp.path(), "my-paste", json!({ "id": "my-paste", "renderer": "renderer.js", "replaces": ["paste-fix"] }));
     assert!(!manager.builtin_extension_active("paste-fix"));
 }
 
-/// 内置拓展的 id 在 Rust 清单、页面清单、管理器文案三处要一致。
+/// 内置拓展的 id 在清单（enhancement-settings.json）与页面清单两处要一致，且不重复。
 #[test]
-fn builtin_extension_ids_match_page_catalog_and_manager_text() {
+fn builtin_extension_ids_match_page_catalog() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let catalog = fs::read_to_string(root.join("assets/inject/renderer-inject/96-builtin-extensions.js")).unwrap();
-    let manager_text = fs::read_to_string(root.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
-    for (id, _, _) in BUILTIN_EXTENSIONS {
+    let mut seen = std::collections::BTreeSet::new();
+    for def in builtin_extension_defs() {
+        let id = &def.id;
+        assert!(seen.insert(id.clone()), "内置拓展 id 重复：{id}");
+        assert!(!def.name.is_empty() && !def.description.is_empty() && !def.group.is_empty(), "{id} 缺名称、说明或分组");
         assert!(catalog.contains(&format!("id: \"{id}\"")), "页面内置拓展清单缺 {id}");
-        assert!(manager_text.contains(&format!("case \"{id}\": return {{ name: t(")), "管理器内置拓展文案缺 {id}");
     }
 }

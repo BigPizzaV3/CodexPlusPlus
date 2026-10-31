@@ -152,6 +152,8 @@ pub struct UserScriptManager {
     user_dir: PathBuf,
     config_path: PathBuf,
     config_lock: Arc<Mutex<()>>,
+    /// 后台设置文件。内置拓展里有对应设置字段的，启停就读写这里（见 [`Self::with_settings_path`]）。
+    settings_path: Option<PathBuf>,
 }
 
 impl UserScriptManager {
@@ -165,7 +167,24 @@ impl UserScriptManager {
             user_dir: user_dir.into(),
             config_path: config_path.into(),
             config_lock: Arc::new(Mutex::new(())),
+            settings_path: None,
         }
+    }
+
+    /// 指定后台设置文件：有设置字段的内置拓展（会话删除、粘贴修复……）启停时读写它，
+    /// 和管理器增强页、Codex 设置页是同一个开关。没指定时按设置默认值读、不能切换。
+    pub fn with_settings_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.settings_path = Some(path.into());
+        self
+    }
+
+    /// 当前设置的 JSON 形态（读不到时用默认设置）。
+    fn settings_value(&self) -> Value {
+        let settings = match &self.settings_path {
+            Some(path) => crate::settings::SettingsStore::new(path.clone()).load().unwrap_or_default(),
+            None => crate::settings::BackendSettings::default(),
+        };
+        serde_json::to_value(settings).unwrap_or_default()
     }
 
     pub fn load_config(&self) -> UserScriptConfig {
@@ -236,6 +255,22 @@ impl UserScriptManager {
     pub fn set_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
         let mut config = self.load_config_unlocked();
+        // 有设置字段的内置拓展：开关就是那个设置项，写设置，不在用户脚本配置里另记一份
+        // （顺手清掉旧版本记下的停用标记，免得它在没有入口的地方一直压着功能）。
+        let setting = key
+            .strip_prefix("builtin:")
+            .and_then(crate::settings_catalog::builtin_extension_def)
+            .and_then(|def| def.setting.as_deref().map(|setting| (def, setting)));
+        if let Some((def, setting)) = setting {
+            let path = self.settings_path.clone().context("没有设置文件，不能切换这个内置拓展")?;
+            let value = if enabled { def.on_value.clone() } else { def.off_value.clone() };
+            let patch = setting.rsplit('.').fold(value, |inner, segment| json!({ segment: inner }));
+            crate::settings::SettingsStore::new(path).update(patch)?;
+            if config.scripts.remove(key).is_some() {
+                self.save_config_unlocked(&config)?;
+            }
+            return Ok(config);
+        }
         config.scripts.insert(key.to_string(), enabled);
         self.save_config_unlocked(&config)?;
         Ok(config)
@@ -878,11 +913,14 @@ impl UserScriptManager {
     }
 
     /// 内置拓展的停用 / 顶替状态：`{ disabled: [id], replacedBy: { id: 拓展 key } }`。
+    /// `disabled` 只含没有设置字段、在用户脚本配置里停用的项；有设置字段的由功能自己读设置判断，
+    /// 页面上切设置立刻生效，不必等注入包重发。
     pub fn builtin_extension_state(&self) -> anyhow::Result<Value> {
         let config = self.load_config();
-        let disabled = BUILTIN_EXTENSIONS
+        let disabled = crate::settings_catalog::builtin_extension_defs()
             .iter()
-            .map(|(id, _, _)| *id)
+            .filter(|def| def.setting.is_none())
+            .map(|def| def.id.as_str())
             .filter(|id| config.scripts.get(&builtin_extension_key(id)) == Some(&false))
             .collect::<Vec<_>>();
         let mut replaced_by = Map::new();
@@ -909,21 +947,34 @@ impl UserScriptManager {
         !disabled && state["replacedBy"].get(id).is_none()
     }
 
-    /// 内置拓展列表（给管理器）：名称、说明、是否启用、被哪个拓展顶替。
+    /// 内置拓展列表（给管理器）：名称、说明、分组、是否启用、被哪个拓展顶替、对应的设置字段与子选项。
+    /// 有设置字段的，「是否启用」就是那个设置项的值。
     pub fn builtin_extensions(&self) -> anyhow::Result<Value> {
         let state = self.builtin_extension_state()?;
+        let settings = self.settings_value();
         Ok(Value::Array(
-            BUILTIN_EXTENSIONS
+            crate::settings_catalog::builtin_extension_defs()
                 .iter()
-                .map(|(id, name, description)| {
-                    let disabled = state["disabled"].as_array().is_some_and(|list| list.iter().any(|item| item == id));
+                .map(|def| {
+                    let id = def.id.as_str();
+                    let enabled = match &def.setting {
+                        Some(setting) => def.is_on(setting.split('.').try_fold(&settings, |value, segment| value.get(segment))),
+                        None => !state["disabled"].as_array().is_some_and(|list| list.iter().any(|item| item == id)),
+                    };
                     json!({
                         "id": id,
                         "key": builtin_extension_key(id),
-                        "name": name,
-                        "description": description,
-                        "enabled": !disabled,
-                        "replacedBy": state["replacedBy"].get(*id).cloned().unwrap_or(Value::Null),
+                        "name": def.name,
+                        "description": def.description,
+                        "group": def.group,
+                        "enabled": enabled,
+                        "replacedBy": state["replacedBy"].get(id).cloned().unwrap_or(Value::Null),
+                        "setting": def.setting,
+                        "params": def.params,
+                        "restartRequired": def.restart,
+                        "platforms": def.platforms,
+                        "masterGated": def.master_gated,
+                        "replaceable": def.replaceable,
                     })
                 })
                 .collect(),
@@ -1380,6 +1431,7 @@ pub fn default_user_script_manager() -> UserScriptManager {
         .map(|path| path.join("user_scripts"))
         .unwrap_or_else(|| PathBuf::from("user_scripts"));
     UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
+        .with_settings_path(crate::paths::default_settings_path())
 }
 
 /// 拓展声明的一条 Codex 钩子（codexpp.json 的 `hooks.<事件>[]`）。
@@ -1985,39 +2037,8 @@ fn parse_extension_manifest(
     Ok(())
 }
 
-/// Codex++ 自带功能对应的内置拓展：id、名称、说明。页面侧的清单在
-/// `assets/inject/renderer-inject/96-builtin-extensions.js`，两边 id 要一致。
-/// 停用存在配置的 `scripts["builtin:<id>"] = false`；拓展包可用 `replaces` 顶替。
-pub const BUILTIN_EXTENSIONS: &[(&str, &str, &str)] = &[
-    ("agent-pet", "Agent 桌宠", "窗口里可拖动的小角色，按下压扁、松开回弹并播放音效"),
-    ("usage-statusline", "用量状态栏", "输入框下方显示本会话的 token 用量、缓存命中与生成速度"),
-    ("dictation", "语音听写", "输入框旁的麦克风按钮，录音转写成文字"),
-    ("turn-rewind", "轮次回退", "消息菜单里的「回退到这一轮」"),
-    ("typing-effects", "打字特效", "输入时的彩虹、烟花、星星特效"),
-    ("side-chat-save", "侧聊保存", "把侧聊标签页保存成独立会话"),
-    ("history-turn-recovery", "历史轮次补全", "打开长会话时补齐没加载出来的早期轮次"),
-    ("capacity-auto-retry", "容量不足自动重试", "上游提示容量不足时自动重发"),
-    ("proxy-request-status", "请求状态条", "输入框上方显示经 Codex++ 代理的请求进行到哪一步"),
-    ("session-share", "会话分享", "会话顶栏的分享按钮"),
-    ("model-picker-groups", "模型分组", "模型选择器里按供应商分组折叠"),
-    ("dream-skin", "梦皮主题", "Codex 窗口的梦皮主题与壁纸"),
-    ("plugin-market-unlock", "插件市场解锁", "解锁 Codex 插件市场（停用后刷新页面生效）"),
-    ("instance-identity", "多开身份提示", "多开实例顶部显示实例名（用公开拓展接口写成）"),
-    ("session-title-hook", "会话标题中间件", "首轮结束后按拓展的 session/title 中间件改会话标题"),
-    ("session-delete", "会话删除", "会话行与归档页的删除按钮"),
-    ("markdown-export", "Markdown 导出", "会话行「…」菜单与归档页里的导出"),
-    ("thread-id-badge", "会话 ID 角标", "会话行标题旁显示会话 ID 与创建时间"),
-    ("thread-scroll-restore", "滚动位置恢复", "切回会话时回到上次看到的位置"),
-    ("conversation-view", "对话宽度", "按设置的宽度放宽对话区与输入框"),
-    ("activity-overlay-right", "消息导航条靠右", "把消息导航条和预览卡片移到右侧"),
-    ("paste-fix", "粘贴修复", "从 Word 等处粘贴时插入纯文本，不被识别成附件"),
-    ("stepwise", "下一步建议", "悬浮球里的下一步建议"),
-    ("answer-outline", "回答大纲", "悬浮球里按标题列出回答大纲，点击跳转"),
-    ("pet-real-mouse", "桌宠跟随鼠标", "Codex 自带桌宠的视线跟随真实鼠标"),
-];
-
-
-/// 内置拓展在配置里的 key。
+/// 内置拓展在配置里的 key。清单见 `settings_catalog::builtin_extension_defs`（来自 enhancement-settings.json），
+/// 页面侧清单在 `assets/inject/renderer-inject/96-builtin-extensions.js`，两边 id 要一致。
 pub fn builtin_extension_key(id: &str) -> String {
     format!("builtin:{id}")
 }
@@ -2031,9 +2052,17 @@ fn parse_extension_replaces(value: Option<&Value>) -> anyhow::Result<Vec<String>
     for item in items {
         let id = item.as_str().context("replaces 只能是内置拓展 id 的字符串数组")?;
         let id = id.strip_prefix("builtin:").unwrap_or(id);
-        if !BUILTIN_EXTENSIONS.iter().any(|(builtin, _, _)| *builtin == id) {
-            let known = BUILTIN_EXTENSIONS.iter().map(|(builtin, _, _)| *builtin).collect::<Vec<_>>().join("、");
+        let Some(def) = crate::settings_catalog::builtin_extension_def(id) else {
+            let known = crate::settings_catalog::builtin_extension_defs()
+                .iter()
+                .filter(|def| def.replaceable)
+                .map(|def| def.id.as_str())
+                .collect::<Vec<_>>()
+                .join("、");
             anyhow::bail!("replaces 里的 {id} 不是内置拓展（可用：{known}）");
+        };
+        if !def.replaceable {
+            anyhow::bail!("内置拓展 {id} 在 Codex++ 后台生效，不能被拓展顶替；可以在管理器里停用它");
         }
         if !replaces.iter().any(|existing| existing == id) {
             replaces.push(id.to_string());
