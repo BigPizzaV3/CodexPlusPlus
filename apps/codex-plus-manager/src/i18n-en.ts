@@ -5,6 +5,17 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  // 使用模式（只管理 Codex / 全部功能）
+  "你打算怎么用 Codex++？": "How will you use Codex++?",
+  "Codex++ 除了 Codex 还能管理其他 Agent。只用 Codex 的话，可以隐藏用不到的内容，界面更清爽。以后可以在设置里改。": "Besides Codex, Codex++ can manage other agents. If you only use Codex, hide what you don't need for a cleaner interface. You can change this later in Settings.",
+  "使用模式": "Usage mode",
+  "只管理 Codex": "Codex only",
+  "换供应商、增强、皮肤、拓展。隐藏 Claude Code、Grok 等其他 Agent 的内容，网关只给 Codex 用。": "Providers, enhancements, skins and extensions. Hides Claude Code, Grok and other agents; the gateway serves Codex only.",
+  "全部功能": "All features",
+  "同时管理 Codex、Claude Code、Grok 等多个 Agent，经同一个网关共用供应商池。": "Manage Codex, Claude Code, Grok and more side by side, sharing one provider pool through the gateway.",
+  "修改": "Change",
+  "只管理 Codex：Claude Code、Grok 等其他 Agent 的内容已隐藏，网关只给 Codex 用。已接入网关的其他 Agent 照常工作。": "Codex only: Claude Code, Grok and other agents are hidden and the gateway serves Codex only. Agents already connected to the gateway keep working.",
+  "全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 的话可以切到「只管理 Codex」，隐藏用不到的内容。": "All features: manage Codex, Claude Code, Grok and more. If you only use Codex, switch to “Codex only” to hide what you don't need.",
   // Agent 桌宠
   "试听": "Preview sound",
   "Agent 桌宠": "Agent pet",
@@ -2865,6 +2876,18 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  // 使用模式：只管理 Codex 时的单 Agent 文案
+  "{0} 接入": "{0} connection",
+  "{0} 通过 Codex++ 使用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。": "{0} uses {1} providers through Codex++. Requests are routed by model name and switch upstream automatically when a key cools down or a provider trips its breaker.",
+  "网关把 {0} 接到 Codex++ 的供应商池：一处管理 Key 和模型，在这里就能随时换模型。": "The gateway connects {0} to the Codex++ provider pool: manage keys and models in one place and switch models here anytime.",
+  "{0} 用的模型": "Model used by {0}",
+  "{0} 经 Codex++ 接入任意供应商：走哪家、是否健康，一屏看全": "{0} reaches any provider through Codex++: which one it uses and whether it's healthy, at a glance",
+  "让 {0} 经 Codex++ 网关接入供应商池，并选它默认用的模型": "Connect {0} to the provider pool through the Codex++ gateway and pick its default model",
+  "Codex++ 让 {0} 经本地网关接入任意供应商。花半分钟认识一下各个入口。": "Codex++ connects {0} to any provider through a local gateway. Take half a minute to get to know the main entry points.",
+  "第二步：让 {0} 走网关": "Step 2: route {0} through the gateway",
+  "打开 {0} 的网关开关并选一个默认模型；供应商池里的模型就会出现在 {0} 自己的模型列表里。": "Turn on the gateway switch for {0} and pick a default model; models from the provider pool then appear in {0}'s own model list.",
+  "{0} 的专属设置": "{0} settings",
+  "点进 {0} 管理它自己的增强、皮肤、插件等。想管理别的 Agent，可以在设置里把使用模式切到「全部功能」。": "Open {0} to manage its enhancements, skins, plugins and more. To manage other agents, switch the usage mode to “All features” in Settings.",
   // 中转站（sub2api / new-api）倍率 / 余额
   "倍率 {0}": "Rate {0}",
   "分组倍率取自最近一次消费记录（分组 {0}）": "Group rate taken from the latest usage record (group {0})",

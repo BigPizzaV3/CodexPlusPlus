@@ -55,6 +55,8 @@ import { ProviderTestDialog } from "./ProviderTestDialog";
 import { gatewayJump } from "./gateway-store";
 import { ModelMatrix } from "./GatewayModelMatrix";
 import { useEscapeLayer } from "./use-escape-layer";
+import { singleAgent, visibleAgents } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 
 /** 能在网关里直接登录的订阅。 */
 type AccountKind = "chatgpt" | "chatgpt-api" | "copilot" | "grok" | `sub:${string}`;
@@ -863,8 +865,10 @@ function EditIcon({ label, disabled, onClick }: { label: string; disabled: boole
 /** 添加时给哪些 Agent 用：一排可切换的 Agent，默认按各自的「添加供应商时自动加入」。 */
 function AgentPicks({ payload, picked, onChange }: { payload: GatewayPayload | null; picked: GatewayAgentId[]; onChange: (next: GatewayAgentId[]) => void }) {
   // 只列内置的三个和已接入的通用 Agent；装了但没接入的不在这里出现。
-  const agents = glanceAgents(payload?.agents);
-  if (!agents.length) return null;
+  // 没勾选的 Agent 不列（保持各自的默认）；单 Agent 模式下只有一个可选，整行不显示。
+  const focus = useAgentFocus();
+  const agents = visibleAgents(focus, glanceAgents(payload?.agents));
+  if (!agents.length || singleAgent(focus)) return null;
   return (
     <div className="gw-agent-picks">
       <span>{t("添加后给这些 Agent 用")}</span>

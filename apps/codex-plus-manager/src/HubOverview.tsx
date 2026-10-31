@@ -18,6 +18,8 @@ import { hubAgents, hubFeed, hubLinks, hubPoolState, hubProviders, hubTotals, su
 import { AGENT_ICONS, APP_LOGO_URL, Avatar, KeyCount, MemberStatusLabel, agentIconIsColor, makeRun, type Notify, type Run } from "./gateway-ui";
 import { publishGatewayPayload, useGatewayPayload } from "./gateway-store";
 import { AgentConnectDialog } from "./GatewayAgents";
+import { agentVisible, singleAgent } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import { ProviderAdder } from "./GatewayProviders";
 import "./HubOverview.css";
 
@@ -74,11 +76,14 @@ export function HubOverview({
     () => (usage ? new Map(usage.byProvider.map((group) => [group.key, group.calls])) : null),
     [usage],
   );
-  const agents = hubAgents(payload, codex);
+  // 没勾选的 Agent 不在总览里出现；单 Agent 模式下网关就是这一个 Agent 专用的供应商池。
+  const focus = useAgentFocus();
+  const solo = singleAgent(focus);
+  const agents = hubAgents(payload, codex).filter((agent) => agentVisible(focus, agent.id));
   const providers = hubProviders(payload, callsByProvider);
   const links = hubLinks(agents, providers);
   const totals = hubTotals(payload);
-  const feed = hubFeed(payload);
+  const feed = hubFeed(payload).filter((item) => agentVisible(focus, item.agent));
   const connected = agents.filter((agent) => agent.enabled).length;
   // 「接入 Agent」「添加供应商」就地弹窗，不跳到对应页面。
   const [adding, setAdding] = useState<"agent" | "provider" | "import" | null>(null);
@@ -92,9 +97,11 @@ export function HubOverview({
       {/* 页面标题已在外壳顶栏，这里只留一句现状说明。 */}
       <header className="hub-intro">
         <p>
-          {payload
-            ? tf("{0} 个 Agent 通过 Codex++ 共用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [connected, providers.length])
-            : t("正在读取网关状态…")}
+          {!payload
+            ? t("正在读取网关状态…")
+            : solo
+              ? tf("{0} 通过 Codex++ 使用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [agentName(solo), providers.length])
+              : tf("{0} 个 Agent 通过 Codex++ 共用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [connected, providers.length])}
         </p>
       </header>
 
@@ -119,10 +126,12 @@ export function HubOverview({
                 {agent.enabled ? <span className="hub-node-num">{agent.requests}</span> : null}
               </button>
             ))}
-            <button className="hub-node hub-node-ghost" onClick={() => setAdding("agent")} type="button">
-              <Plus aria-hidden="true" className="h-4 w-4" />
-              {t("接入 Agent")}
-            </button>
+            {solo ? null : (
+              <button className="hub-node hub-node-ghost" onClick={() => setAdding("agent")} type="button">
+                <Plus aria-hidden="true" className="h-4 w-4" />
+                {t("接入 Agent")}
+              </button>
+            )}
           </div>
 
           <div className="hub-core" data-node="hub" data-running={payload?.helperRunning ?? false}>
@@ -196,7 +205,7 @@ export function HubOverview({
             <h3>{t("今日用量")}</h3>
             <button className="hub-link" onClick={() => onNavigate("gatewayUsage")} type="button">{t("明细")}<ArrowUpRight className="h-3.5 w-3.5" /></button>
           </div>
-          <UsageStats usage={usage} />
+          <UsageStats showAgents={!solo} usage={usage} />
         </section>
       </div>
 
@@ -252,14 +261,13 @@ function FeedRow({ item, payload }: { item: HubFeedItem; payload: GatewayPayload
   );
 }
 
-function UsageStats({ usage }: { usage: UsageSummary | null }) {
+function UsageStats({ usage, showAgents }: { usage: UsageSummary | null; showAgents: boolean }) {
   if (!usage) return <p className="hub-empty">{t("读取中…")}</p>;
   const totals = usage.totals;
   if (totals.calls === 0) return <p className="hub-empty">{t("今天还没有经过网关的请求。")}</p>;
   const rate = successRate(totals);
   const cache = cacheHitRate(totals);
   const cost = usage.costs.filter((item) => item.amount > 0).map((item) => formatMoney(item.amount, item.currency)).join(" + ");
-  const agentTotal = usage.byAgent.reduce((sum, group) => sum + group.calls, 0) || 1;
   return (
     <>
       <dl className="hub-stats">
@@ -269,11 +277,24 @@ function UsageStats({ usage }: { usage: UsageSummary | null }) {
         <div><dt>{t("缓存命中")}</dt><dd>{cache === null ? "—" : `${Math.round(cache * 100)}%`}</dd></div>
         {cost ? <div className="hub-stats-wide"><dt>{t("估算费用")}</dt><dd>{cost}</dd></div> : null}
       </dl>
+      {showAgents ? <AgentSplit usage={usage} /> : null}
+    </>
+  );
+}
+
+/** 今日调用按 Agent 拆分的占比条；单 Agent 模式下没有意义，不画。 */
+function AgentSplit({ usage }: { usage: UsageSummary }) {
+  const focus = useAgentFocus();
+  const groups = usage.byAgent.filter((group) => agentVisible(focus, group.key));
+  const agentTotal = groups.reduce((sum, group) => sum + group.calls, 0) || 1;
+  if (!groups.length) return null;
+  return (
+    <>
       <div className="hub-split" aria-label={t("按 Agent 拆分")}>
-        {usage.byAgent.map((group) => <i data-agent={group.key} key={group.key} style={{ flex: group.calls }} title={`${agentName(group.key)} · ${group.calls}`} />)}
+        {groups.map((group) => <i data-agent={group.key} key={group.key} style={{ flex: group.calls }} title={`${agentName(group.key)} · ${group.calls}`} />)}
       </div>
       <div className="hub-legend">
-        {usage.byAgent.map((group) => (
+        {groups.map((group) => (
           <span key={group.key}><i data-agent={group.key} />{agentName(group.key)} {Math.round((group.calls / agentTotal) * 100)}%</span>
         ))}
       </div>

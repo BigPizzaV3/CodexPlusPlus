@@ -137,6 +137,9 @@ import { agentTabGroups, agentTarget } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
+import { AgentFocusDialog } from "./AgentFocusDialog";
+import { agentVisible, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
+import { needAgentFocusPrompt, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { shouldShowTour, TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
@@ -1418,6 +1421,18 @@ const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "contex
 const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
 const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentPet", "agentCollaboration", "agentCache"];
+/**
+ * 只在管理其他 Agent 时才有用的页面：只管理 Codex 时不进侧栏和命令面板。
+ * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
+ */
+const multiAgentRoutes = new Set<Route>(["agentCollaboration", "computerUse"]);
+const visibleToolRoutes = (soloAgent: string | null) => (soloAgent ? toolNavigationRoutes.filter((routeId) => !multiAgentRoutes.has(routeId)) : toolNavigationRoutes);
+/** 设置页里「使用模式」一行的说明。 */
+function agentFocusDescription(focus: AgentFocus): string {
+  return focus === "codex"
+    ? t("只管理 Codex：Claude Code、Grok 等其他 Agent 的内容已隐藏，网关只给 Codex 用。已接入网关的其他 Agent 照常工作。")
+    : t("全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 的话可以切到「只管理 Codex」，隐藏用不到的内容。");
+}
 /** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
 const gatewayTabByRoute: Partial<Record<Route, GatewayTab>> = {
   gateway: "agents",
@@ -1643,6 +1658,13 @@ export function App() {
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(() => initialTourOpen());
+  // 使用模式（只管理 Codex / 全部功能）：没问过就先问，问完再进首次引导（引导按模式换说法）。
+  const agentFocus = useAgentFocus();
+  const [agentFocusOpen, setAgentFocusOpen] = useState(needAgentFocusPrompt);
+  const closeAgentFocus = useCallback((mode: FocusMode) => {
+    saveAgentFocus(mode);
+    setAgentFocusOpen(false);
+  }, []);
   const closeTour = useCallback(() => {
     // 看完或跳过都记下来，下次不再自动弹出；设置页里可以重新打开。
     try { window.localStorage.setItem(TOUR_STORAGE_KEY, String(TOUR_VERSION)); } catch { /* 存不了就只影响本次 */ }
@@ -4604,6 +4626,17 @@ export function App() {
   // 网关、全局管理、工具类页面和 Claude Code / Grok 的页面都不算（Codex++ 不只服务 Codex）。
   const onCodexPage = routeTool(route) === "codex" || (route === "overview" && activeTool === "codex");
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
+  // 没勾选的 Agent 不进侧栏和命令面板；只影响显示，它的配置和网关接入照旧。
+  const shownTools = toolEntries.filter((entry) => agentVisible(agentFocus, entry.id));
+  const soloAgent = singleAgent(agentFocus);
+  const shownSessionTab: SessionTab = soloAgent === "codex" ? "codex" : sessionTab;
+  // 侧栏聚焦的 Agent 被隐藏了：换到第一个还显示的 Agent，免得停在一个看不见的 Agent 的页面上。
+  const fallbackTool = shownTools.find((entry) => entry.switchable)?.id;
+  useEffect(() => {
+    if (agentFocus && fallbackTool && !agentVisible(agentFocus, activeTool)) void switchTool(fallbackTool);
+    // switchTool 每次渲染都是新函数，只在选择或聚焦变化时检查。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentFocus, activeTool, fallbackTool]);
 
   const isGatewayPage = gatewayNavigationRoutes.includes(route);
   const crumbGroup = isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
@@ -4619,10 +4652,10 @@ export function App() {
   gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("网关"), () => void navigate(routeId), "gateway")));
   managementNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("全局管理"), () => void navigate(routeId))));
   pushCommand(routeCommand("requestLog", t("全局管理"), () => void navigate("requestLog"), "usage requests"));
-  for (const tool of toolEntries.filter((entry) => entry.switchable)) {
+  for (const tool of shownTools.filter((entry) => entry.switchable)) {
     agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
   }
-  [...toolNavigationRoutes, "settings" as Route].forEach((routeId) => pushCommand(routeCommand(routeId, t("工具"), () => void navigate(routeId))));
+  [...visibleToolRoutes(soloAgent), "settings" as Route].forEach((routeId) => pushCommand(routeCommand(routeId, t("工具"), () => void navigate(routeId))));
   paletteCommands.push(
     {
       id: "action:codex",
@@ -4639,7 +4672,8 @@ export function App() {
   return (
     <div className={`shell ${theme}`}>
       <AppSidebar
-        tools={toolEntries}
+        tools={shownTools}
+        soloAgent={soloAgent}
         activeTool={activeTool}
         route={route}
         theme={theme}
@@ -4653,19 +4687,20 @@ export function App() {
         codexRun={{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch.unavailableReason, onStart: codexLaunch.onLaunch, onStop: () => void actions.stopCodex() }}
       />
       <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
-      {tourOpen ? <OnboardingTour onClose={closeTour} /> : null}
+      {agentFocusOpen ? <AgentFocusDialog initial={agentFocus} onDone={closeAgentFocus} /> : null}
+      {tourOpen && !agentFocusOpen ? <OnboardingTour focus={agentFocus} onClose={closeTour} /> : null}
       <main className="workspace">
         <header className="topbar" key={`topbar-${route}`}>
           <div className="topbar-heading">
             <div className="topbar-title">
               <span className="topbar-crumb">{crumbGroup}</span>
               <ChevronRight aria-hidden="true" className="topbar-crumb-sep" />
-              <h1>{route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : routeTitle(navAliasRoute[route] ?? route)}</h1>
+              <h1>{route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : soloAgent && route === "gateway" ? tf("{0} 接入", [agentName(soloAgent)]) : routeTitle(navAliasRoute[route] ?? route)}</h1>
             </div>
             <p>
               {route === "agentSettings"
                 ? tf("只作用于 {0}；界面主题、配置备份等整体设置在侧栏底部的齿轮里。", [activeToolName])
-                : routeSubtitle(navAliasRoute[route] ?? route)}
+                : routeSubtitle(navAliasRoute[route] ?? route, soloAgent)}
             </p>
           </div>
           <div className="topbar-actions">
@@ -4750,15 +4785,16 @@ export function App() {
             />
           ) : null}
           {route === "claude" ? <ClaudeLocalizationScreen /> : null}
-          {route === "sessions" ? <SessionAgentTabs onChange={setSessionTab} value={sessionTab} /> : null}
-          {route === "sessions" && sessionTab !== "codex" ? (
+          {/* 只管理 Codex 时没有 Agent 页签，直接是 Codex 的完整会话管理。 */}
+          {route === "sessions" && !soloAgent ? <SessionAgentTabs onChange={setSessionTab} value={sessionTab} /> : null}
+          {route === "sessions" && shownSessionTab !== "codex" ? (
             <div className="mg-page gateway-page">
               <div className="mg-content gw-content">
-                <SessionsView agent={sessionTab} notify={actions.showMessage} />
+                <SessionsView agent={shownSessionTab} notify={actions.showMessage} />
               </div>
             </div>
           ) : null}
-          {route === "sessions" && sessionTab === "codex" ? (
+          {route === "sessions" && shownSessionTab === "codex" ? (
             <ProjectSessionPage
               sessions={localSessions}
               onRefresh={async (offset) => { await actions.refreshLocalSessions(false, offset ?? 0); }}
@@ -4918,6 +4954,8 @@ export function App() {
                 <AppSettingsFocus focus={settingsFocus} onDone={() => setSettingsFocus(null)} />
                 <GlobalSettingsScreen
                   onOpenTour={() => setTourOpen(true)}
+                  agentFocus={agentFocus}
+                  onOpenAgentFocus={() => setAgentFocusOpen(true)}
                   dirty={settingsDirty}
                   form={settingsForm}
                   settings={settings}
@@ -6403,6 +6441,9 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   const [filter, setFilter] = useState<"all" | "running" | "success" | "failed" | "retried">("all");
   const [sessionFilter, setSessionFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState<"all" | "codex" | "claude" | "grok">(initialAgent);
+  // 只管理 Codex 时固定看 Codex 的请求，不出现 Agent 筛选。
+  const codexOnly = singleAgent(useAgentFocus()) === "codex";
+  const agentScope = codexOnly ? "codex" : agentFilter;
   // 初始过滤只用一次：之后从侧栏进来仍是「全部」。
   useEffect(() => { if (initialAgent !== "all" || Object.keys(initialFocus).length) onConsumeInitialAgent?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -6421,7 +6462,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   const filterArgs = {
     limit: REQUEST_LOG_LIMIT,
     sinceMs: sinceMs ?? null,
-    agent: agentFilter === "all" ? null : agentFilter,
+    agent: agentScope === "all" ? null : agentScope,
     relayId: relayFilter?.id ?? null,
     model: modelFilter || null,
   };
@@ -6453,7 +6494,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, agentFilter, relayFilter?.id, modelFilter]);
+  }, [range, agentScope, relayFilter?.id, modelFilter]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -6519,7 +6560,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
       if (filter === "success" && (running || !entry.success)) return false;
       if (filter === "failed" && (running || entry.success)) return false;
       if (filter === "retried" && entry.autoRetries === 0 && entry.attempts <= 1) return false;
-      if (agentFilter !== "all" && requestLogAgent(entry) !== agentFilter) return false;
+      if (agentScope !== "all" && requestLogAgent(entry) !== agentScope) return false;
       const threadId = (entry.threadId ?? "").trim();
       if (sessionFilter === "__none__") {
         if (threadId) return false;
@@ -6540,7 +6581,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         .toLowerCase()
         .includes(needle);
     });
-  }, [entries, filter, query, sessionFilter, agentFilter]);
+  }, [entries, filter, query, sessionFilter, agentScope]);
 
   return (
     <Panel className="request-log-panel">
@@ -6555,7 +6596,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </div>
-          <AppSelect
+          {codexOnly ? null : <AppSelect
             ariaLabel={t("按 Agent 筛选")}
             className="request-log-select"
             menuWidth={160}
@@ -6568,7 +6609,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
             ] as AppSelectOption<typeof agentFilter>[]}
             size="sm"
             value={agentFilter}
-          />
+          />}
           <AppSelect
             ariaLabel={t("时间段")}
             className="request-log-select"
@@ -10842,8 +10883,12 @@ function GlobalSettingsScreen({
   actions,
   onOpenAgentSettings,
   onOpenTour,
+  agentFocus,
+  onOpenAgentFocus,
 }: {
   onOpenTour: () => void;
+  agentFocus: AgentFocus;
+  onOpenAgentFocus: () => void;
   dirty: boolean;
   form: BackendSettings;
   settings: SettingsResult | null;
@@ -10886,6 +10931,15 @@ function GlobalSettingsScreen({
             </div>
             <div className="global-setting-actions">
               <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("关闭窗口后释放界面内存")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
+            </div>
+          </div>
+          <div className="global-setting-row">
+            <div className="global-setting-copy">
+              <strong>{t("使用模式")}</strong>
+              <span>{agentFocusDescription(agentFocus)}</span>
+            </div>
+            <div className="global-setting-actions">
+              <Button size="sm" variant="secondary" onClick={onOpenAgentFocus}>{t("修改")}</Button>
             </div>
           </div>
           <div className="global-setting-row">
@@ -15964,7 +16018,10 @@ function AppSidebar({
   pendingUpdateVersion,
   onOpenUpdate,
   codexRun,
+  soloAgent,
 }: {
+  /** 单 Agent 模式下的那个 Agent：侧栏不再出现「接入更多 Agent」的入口和多 Agent 工具。 */
+  soloAgent: string | null;
   /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。
       unavailableReason 非空（如没找到 Codex 应用）时播放键置灰，悬停显示原因。 */
   codexRun: { running: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void };
@@ -16012,6 +16069,8 @@ function AppSidebar({
     if (!item) return null;
     const Icon = item.icon;
     const selected = route === item.id || navAliasRoute[route] === item.id;
+    // 单 Agent 模式：「Agent 接入」只管这一个 Agent，叫「Codex 接入」这样更直白。
+    const label = soloAgent && item.id === "gateway" ? tf("{0} 接入", [agentName(soloAgent)]) : item.label;
     return (
       <button
         aria-current={selected ? "page" : undefined}
@@ -16019,11 +16078,11 @@ function AppSidebar({
         data-tour={`nav-${item.id}`}
         key={item.id}
         onClick={() => onNavigate(item.id)}
-        title={item.label}
+        title={label}
         type="button"
       >
         <Icon aria-hidden="true" className="side-item-icon" />
-        <span className="side-item-label">{item.label}</span>
+        <span className="side-item-label">{label}</span>
         {item.badge ? <span className="side-item-badge">{t(item.badge)}</span> : null}
       </button>
     );
@@ -16064,9 +16123,11 @@ function AppSidebar({
           {groupLabel(
             "agents",
             "Agent",
-            <button aria-label={t("接入 Agent")} className="side-group-add" onClick={() => onNavigate("gateway")} title={t("接入 Agent")} type="button">
-              <Plus aria-hidden="true" />
-            </button>,
+            soloAgent ? undefined : (
+              <button aria-label={t("接入 Agent")} className="side-group-add" onClick={() => onNavigate("gateway")} title={t("接入 Agent")} type="button">
+                <Plus aria-hidden="true" />
+              </button>
+            ),
           )}
           <div className="side-group-items">
             {/* 每个 Agent 一行，始终都在；点一下切到它，回到上次看的页面（没有就是落脚页）。它的页面都在内容区顶部的页签里。 */}
@@ -16125,7 +16186,7 @@ function AppSidebar({
 
         <section className={`side-group ${collapsed.includes("tools") ? "collapsed" : ""}`}>
           {groupLabel("tools", t("工具"))}
-          <div className="side-group-items">{toolNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+          <div className="side-group-items">{visibleToolRoutes(soloAgent).map((routeId) => renderItem(routeId))}</div>
         </section>
       </nav>
 
@@ -16660,7 +16721,10 @@ function routeTitle(route: Route) {
   return routes.find((item) => item.id === route)?.label ?? t("概览");
 }
 
-function routeSubtitle(route: Route) {
+/** 页面副标题；只管理 Codex（soloAgent）时网关两页不讲「任意 Agent」。 */
+function routeSubtitle(route: Route, soloAgent: string | null = null) {
+  if (soloAgent && route === "hub") return tf("{0} 经 Codex++ 接入任意供应商：走哪家、是否健康，一屏看全", [agentName(soloAgent)]);
+  if (soloAgent && route === "gateway") return tf("让 {0} 经 Codex++ 网关接入供应商池，并选它默认用的模型", [agentName(soloAgent)]);
   const subtitles: Record<Route, string> = {
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),

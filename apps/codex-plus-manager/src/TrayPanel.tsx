@@ -76,6 +76,8 @@ import {
   type TraySettings,
   type TrayTabId,
 } from "./tray-panel-model";
+import { agentVisible, singleAgent, visibleAgents } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
 import "./TrayPanel.css";
 
@@ -468,6 +470,8 @@ function HomeTab({
   const glance = usageGlance(today);
   const busy = pending !== null;
   const busyKind = pending && pending.kind !== "navigate" ? pending.kind : null;
+  // 没勾选 Codex 时不放 Codex 的状态卡和启停按钮。
+  const showCodex = agentVisible(useAgentFocus(), "codex");
   const connection = settings?.relayProfilesEnabled === false
     ? t("供应商配置已关闭")
     : !active
@@ -477,7 +481,7 @@ function HomeTab({
         : tf("直连 · {0}", [active.name || t("未命名供应商")]);
   return (
     <>
-      <div className="tp-card tp-codex">
+      {showCodex ? <div className="tp-card tp-codex">
         <div className="tp-codex-top">
           <img alt="" src={AGENT_ICONS.codexApp} />
           <div className="tp-codex-name">
@@ -520,7 +524,7 @@ function HomeTab({
             </button>
           )}
         </div>
-      </div>
+      </div> : null}
 
       <button className="tp-card tp-today" onClick={onShowUsage} title={t("查看用量")} type="button">
         <Stat label={t("今日请求")} value={glance ? String(glance.calls) : "—"} />
@@ -691,6 +695,8 @@ function GatewayTab({
   onOpenRoute: (route: TrayRoute) => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
+  const focus = useAgentFocus();
+  const solo = singleAgent(focus);
   const run = async (command: string, args: Record<string, unknown>) => {
     try {
       const result = await invoke<GatewayResult>(command, args);
@@ -706,7 +712,9 @@ function GatewayTab({
       <div className="tp-card tp-intro">
         <Waypoints aria-hidden="true" className="tp-intro-icon" />
         <strong>{t("还没用上网关")}</strong>
-        <p>{t("网关把 Codex、Claude Code、Grok 接到同一个供应商池：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
+        <p>{solo
+          ? tf("网关把 {0} 接到 Codex++ 的供应商池：一处管理 Key 和模型，在这里就能随时换模型。", [agentName(solo)])
+          : t("网关把 Codex、Claude Code、Grok 接到同一个供应商池：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
         <div className="tp-intro-actions">
           <button className="tp-button" data-variant="primary" onClick={() => void onOpenRoute("gatewayProviders")} type="button">{t("添加供应商")}</button>
           <button className="tp-button" onClick={() => void onOpenRoute("gateway")} type="button">{t("了解网关")}</button>
@@ -716,7 +724,7 @@ function GatewayTab({
   }
 
   const now = Date.now();
-  const recent = logs.slice(0, 8);
+  const recent = logs.filter((entry) => agentVisible(focus, entry.agent || "codex")).slice(0, 8);
   return (
     <>
       <div className="tp-gateway-status">
@@ -725,9 +733,9 @@ function GatewayTab({
         <LinkButton label={t("管理")} onClick={() => void onOpenRoute("gateway")} />
       </div>
 
-      <Section title={t("各 Agent 用的模型")}>
+      <Section title={solo ? tf("{0} 用的模型", [agentName(solo)]) : t("各 Agent 用的模型")}>
         <div className="tp-card tp-list">
-          {glanceAgents(payload?.agents).map((agent) => (
+          {visibleAgents(focus, glanceAgents(payload?.agents)).map((agent) => (
             <PanelAgentRow agent={agent} key={agent.agent} onRun={run} payload={payload} />
           ))}
         </div>

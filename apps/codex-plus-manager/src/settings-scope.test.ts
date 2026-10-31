@@ -60,11 +60,13 @@ test("Computer Use 放在侧栏「工具」组，不再出现在每个 Agent 的
   assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /gatewayNavigationRoutes\.map/);
-  assert.match(sidebar, /toolNavigationRoutes\.map/);
+  assert.match(sidebar, /visibleToolRoutes\(soloAgent\)\.map/);
+  // 只管理 Codex 时不显示：Codex 自带 Computer Use，这一页接入的是其他客户端。
+  assert.match(globalNavigation, /const multiAgentRoutes = new Set<Route>\(\["agentCollaboration", "computerUse"\]\);/);
 });
 
 test("Agent 设置标题跟随当前 Agent，整体设置标题固定", () => {
   const entry = functionSource("App");
-  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : routeTitle\(navAliasRoute\[route\] \?\? route\)/);
+  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : soloAgent && route === "gateway" \? tf\("\{0\} 接入", \[agentName\(soloAgent\)\]\) : routeTitle\(navAliasRoute\[route\] \?\? route\)/);
   assert.match(entry, /const activeToolName = toolEntries\.find/);
 });

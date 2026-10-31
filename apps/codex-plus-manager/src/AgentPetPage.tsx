@@ -27,6 +27,8 @@ import {
 } from "./agent-pet-settings";
 import { AgentPetSoundPlayer, type AgentPetSoundSources } from "./agent-pet-sound";
 import { t, tf } from "./i18n";
+import { singleAgent } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import "./AgentPetPage.css";
 
 type CatalogEntry = { id: string; name: string; credit?: string };
@@ -77,6 +79,8 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
   autoSave: ReactNode;
 }) {
   const update = (patch: Partial<AgentPetSettings>) => onChange({ ...settings, ...patch });
+  // 只管理 Codex 时桌宠只会出现在 Codex 里，不用再选「显示在」。
+  const codexOnly = singleAgent(useAgentFocus()) === "codex";
   const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
   const [catalogError, setCatalogError] = useState("");
   const [previews, setPreviews] = useState<Record<string, PreviewState>>({});
@@ -266,7 +270,7 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
 
       <div className={`agent-pet-layout ${settings.enabled ? "" : "is-off"}`}>
         <div className="agent-pet-main">
-          <section className="feature-group">
+          {codexOnly ? null : <section className="feature-group">
             <div className="feature-group-head">
               <strong>{t("显示在")}</strong>
               <small>{t("目前只支持 Codex，其他 Agent 后续接入。")}</small>
@@ -289,7 +293,7 @@ export function AgentPetPage({ settings, onChange, autoSave }: {
                 );
               })}
             </div>
-          </section>
+          </section>}
 
           <section className="feature-group">
             <div className="feature-group-head agent-pet-group-head">
