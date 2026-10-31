@@ -363,7 +363,13 @@ export default (payload) => /rm\s+-rf\s+\//.test(payload.tool_input?.command ?? 
 ```
 
 - 可用事件：`SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、
-  `PostCompact`、`SubagentStart`、`SubagentStop`、`Stop`（`SessionEnd` / `Interrupt` 超时只有 1~3 秒，不开放）。
+  `PostCompact`、`SubagentStart`、`SubagentStop`、`Stop`、`PreModelRequest`、`PostModelRequest`
+  （`SessionEnd` / `Interrupt` 超时只有 1~3 秒，不开放）。
+- `PreModelRequest` / `PostModelRequest`：agent 每次请求模型前 / 后各触发一次，**官方直连也触发**，适合按步观察
+  （计步、计时、记用量、按步提醒）。payload 有 `session_id`、`turn_id`、`model`、`transcript_path`、`cwd`；
+  `PostModelRequest` 另有 `status`、`error`、`token_usage`。不带消息内容，要看内容用 `context.sessionQuery`
+  按 `session_id` 读。**只能观察**：Codex 不采用它们的输出，拦不下这一步，也加不了上下文；要改请求请用网关中间件
+  （需经 Codex++ 代理）。`matcher` 按模型名匹配。它们挡在每一步前面，脚本要快。
 - `payload` 与输出都按 Codex 钩子协议；多个拓展的输出由 Codex++ 合并：任一 `deny` 即拒绝、`allow` 只采用第一个
   `updatedInput`、`decision: "block"` 与 `continue: false` 任一即生效、`additionalContext` 与 `systemMessage` 按拓展顺序拼接。
 - 运行方式：Codex++ 只往 `~/.codex/config.toml` 写**固定的分发条目**（每个用到的事件一条，命令

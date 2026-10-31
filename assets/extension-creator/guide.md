@@ -162,7 +162,9 @@ img.src = ctx.asset("assets/pet.png");   // data URL，页面里直接可用
 ```
 
 - 可用事件：`SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、
-  `PostCompact`、`SubagentStart`、`SubagentStop`、`Stop`。`matcher` 是正则，按工具名（PreToolUse / PostToolUse /
+  `PostCompact`、`SubagentStart`、`SubagentStop`、`Stop`、`PreModelRequest`、`PostModelRequest`。
+  后两个在每次请求模型前后触发（官方直连也触发），只能观察、不能拦截或改写，payload 有 `session_id`、`turn_id`、`model`，
+  `PostModelRequest` 另有 `status`、`token_usage`；用户要「每一步都记录 / 计数 / 提醒」且不经代理时用它们。`matcher` 是正则，按工具名（PreToolUse / PostToolUse /
   PermissionRequest）、`source`（SessionStart）等匹配，省略表示全部。`timeout` 1~100 秒，默认 30。
 - 脚本是 Node ESM 模块，默认导出 `(payload, { event, extension }) => 输出`，可以是 async。`payload` 是 Codex 传来的
   原样数据（`tool_name`、`tool_input`、`prompt`、`cwd` 等，下划线命名）。返回 `null` 表示没意见。

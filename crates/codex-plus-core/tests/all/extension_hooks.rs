@@ -102,3 +102,32 @@ fn sync_reports_only_newly_added_events() {
     assert_eq!((removed["changed"].clone(), removed["added"].clone()), (json!(true), json!([])));
     assert_eq!(std::fs::read_to_string(home.join("config.toml")).unwrap(), "model = \"x\"\n", "移除后恢复原样");
 }
+
+#[tokio::test]
+async fn model_request_hooks_observe_each_step_and_return_nothing() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let log = temp.path().join("steps.log");
+    let script = format!(
+        r#"import fs from "node:fs";
+export default (payload, {{ event }}) => {{
+  fs.appendFileSync({log:?}, `${{event}} ${{payload.model}} ${{payload.token_usage?.total_tokens ?? "-"}}\n`);
+  return {{ decision: "block", reason: "观察类钩子的输出会被丢掉" }};
+}};"#
+    );
+    write_package(
+        &temp,
+        "steps",
+        json!({"PreModelRequest": [{"matcher": "^gpt-", "script": "hooks/step.mjs"}], "PostModelRequest": [{"script": "hooks/step.mjs"}]}),
+        &[("hooks/step.mjs", &script)],
+    );
+    let pre = dispatch(&manager, "PreModelRequest", json!({"hook_event_name": "PreModelRequest", "session_id": "s1", "turn_id": "t1", "model": "gpt-x"})).await.unwrap();
+    assert_eq!(pre, json!({}), "Codex 不采用这两个事件的输出，Codex++ 也不回任何字段");
+    let skipped = dispatch(&manager, "PreModelRequest", json!({"model": "other"})).await.unwrap();
+    assert_eq!(skipped, json!({}));
+    dispatch(&manager, "PostModelRequest", json!({"model": "gpt-x", "status": "completed", "token_usage": {"total_tokens": 11}})).await.unwrap();
+    assert_eq!(fs::read_to_string(&log).unwrap(), "PreModelRequest gpt-x -\nPostModelRequest gpt-x 11\n", "matcher 按模型名匹配");
+}

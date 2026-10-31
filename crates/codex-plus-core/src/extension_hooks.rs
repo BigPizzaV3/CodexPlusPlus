@@ -85,6 +85,7 @@ fn matcher_subject(event: &str, payload: &Value) -> Value {
         "SessionStart" => "source",
         "PreCompact" | "PostCompact" => "trigger",
         "SubagentStart" | "SubagentStop" => "agent_type",
+        "PreModelRequest" | "PostModelRequest" => "model",
         _ => return Value::Null,
     };
     payload.get(field).cloned().unwrap_or(Value::String(String::new()))
@@ -203,6 +204,10 @@ pub fn load_tool_execution(manager: &UserScriptManager, token: &str, call_id: &s
 /// - `additionalContext`、`systemMessage`、各类原因：按拓展顺序拼接并标注来源
 /// - `PermissionRequest` 的 `decision.behavior`：deny 优先于 allow
 pub fn merge_outputs(event: &str, outputs: &[(String, Value)]) -> Value {
+    // 每步前后的模型请求钩子只用来观察，Codex 不采用输出：不回任何字段，免得被当成协议外输出报错。
+    if matches!(event, "PreModelRequest" | "PostModelRequest") {
+        return json!({});
+    }
     let mut merged = Map::new();
     let mut specific = Map::new();
     let mut deny_reasons = Vec::new();

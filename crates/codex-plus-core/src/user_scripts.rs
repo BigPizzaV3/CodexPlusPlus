@@ -1419,6 +1419,8 @@ fn parse_extension_providers(value: Option<&Value>, schema: &[ExtensionConfigFie
 }
 
 /// 拓展可以挂的 Codex 钩子事件。SessionEnd / Interrupt 的超时只有 1~3 秒，起 Node 来不及，不开放。
+/// PreModelRequest / PostModelRequest 在 agent 每次请求模型前后触发（官方直连也触发），只能观察：
+/// Codex 不采用它们的输出，拦不下请求，也加不了上下文。
 pub const EXTENSION_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -1430,6 +1432,8 @@ pub const EXTENSION_HOOK_EVENTS: &[&str] = &[
     "SubagentStart",
     "SubagentStop",
     "Stop",
+    "PreModelRequest",
+    "PostModelRequest",
 ];
 /// 单个拓展钩子的超时上限（秒）。写进 Codex 配置的分发命令固定用 120 秒，要留出余量。
 pub const EXTENSION_HOOK_MAX_TIMEOUT_SECS: u64 = 100;
