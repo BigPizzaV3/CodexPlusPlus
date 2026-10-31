@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2819
+      "lines": 2847
     },
     {
       "name": "20-menu.js",
@@ -168,7 +168,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 251
+      "lines": 279
     },
     {
       "name": "96-dsh-client.js",
@@ -203,7 +203,7 @@
     {
       "name": "zz-paste-fix.js",
       "description": "粘贴修复块：Word 粘贴降级为纯文本",
-      "lines": 49
+      "lines": 51
     }
   ]
 }
