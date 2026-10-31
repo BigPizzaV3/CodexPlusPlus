@@ -141,13 +141,14 @@
     }
     const specified = (value) => typeof value === "string" && !!value.trim();
     const target = codexRemoteSessionTargetProvider();
+    if (target === "openai") return params;
     const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
     // nullable 字段和仅指定供应商不是模型选择；补供应商时必须同时保留保存的模型设置。
     if (specified(params.model) || (requestedProvider && requestedProvider !== "openai" && requestedProvider !== target)) return params;
     if (specified(params.config?.model)) {
       return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
     }
-    if (!target || target === "openai") throw new Error("当前纯 API 供应商不可用");
+    if (!target) throw new Error("当前纯 API 供应商不可用");
     const requestSignature = () => JSON.stringify([params.threadId,
       ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
       params.config]);
@@ -179,13 +180,6 @@
           && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
       fallbackReason ||= "metadata_unavailable";
     }
-    const config = { ...(params.config || {}) };
-    delete config.model;
-    // null 表示原线程未指定档位，沿用原生默认语义；显式请求设置始终优先。
-    if (!specified(config.model_reasoning_effort)) {
-      delete config.model_reasoning_effort;
-      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
-    }
     if (sendRequest) {
       // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
       let timer;
@@ -196,13 +190,23 @@
             { timeoutMs: codexAppServerPreparationTimeoutMs }),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
         ]);
+      } catch {
+        fallbackReason = "thread_state_unavailable";
       } finally { clearTimeout(timer); }
       assertUnchanged();
       const status = read?.thread?.status?.type;
-      if (!["idle", "notLoaded", "active"].includes(status)) throw new Error("无法确认会话连接状态，请重新打开会话");
-      if (status !== "notLoaded" && read.thread.modelProvider !== target) {
+      if (!["idle", "notLoaded", "active"].includes(status)) {
+        fallbackReason = "thread_state_unavailable";
+      } else if (status !== "notLoaded" && read.thread.modelProvider !== target) {
         throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
       }
+    }
+    const config = { ...(params.config || {}) };
+    delete config.model;
+    // 降级时不带入部分历史设置，显式请求档位始终优先。
+    if (!specified(config.model_reasoning_effort)) {
+      delete config.model_reasoning_effort;
+      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
     }
     const next = { ...params, modelProvider: target, config };
     if (fallbackReason) {
@@ -223,12 +227,13 @@
       return verifyCodexPureApiResumeResult(String(params.method), params.params, result, hostId);
     }
     if (method !== "thread/resume" || !window.__codexPlusPureApiPreparedResumes?.has(params)) return;
-    if (result?.modelProvider !== params.modelProvider || (params.model && result?.model !== params.model)
-        || (Object.prototype.hasOwnProperty.call(params.config, "model_reasoning_effort")
-          && result?.reasoningEffort !== params.config.model_reasoning_effort)) {
-      throw new Error(params.model
-        ? "会话未采用保存的模型和当前供应商，请重新启动 Codex 后重试"
-        : "会话未采用当前供应商或指定的推理档位，请重新启动 Codex 后重试");
+    const modelMismatch = !!params.model && result?.model !== params.model;
+    const providerMismatch = result?.modelProvider !== params.modelProvider;
+    const reasoningEffortMismatch = Object.prototype.hasOwnProperty.call(params.config, "model_reasoning_effort")
+      && result?.reasoningEffort !== params.config.model_reasoning_effort;
+    if (modelMismatch || providerMismatch || reasoningEffortMismatch) {
+      sendCodexPlusDiagnostic("pure_api_resume_result_mismatch",
+        { modelMismatch, providerMismatch, reasoningEffortMismatch });
     }
   }
 

@@ -153,6 +153,25 @@ describe("pure API persisted model snapshot", () => {
     assert.equal(api.calls.length, 0);
   });
 
+  it("passes OpenAI session identity resumes through unchanged without auxiliary reads", async () => {
+    for (const sync of [false, true]) {
+      for (const refreshFailed of [false, true]) {
+        const api = snapshotRuntime(async () => { throw new Error("must not read"); });
+        api.settings.providerSyncEnabled = sync;
+        api.settings.relayProfiles[0].configContents = 'model_provider = "openai"';
+        for (const optional of [{}, { model: null }, { model_provider: "openai" }, { config: { model: "chosen" } }]) {
+          const params = { threadId: "a", ...optional };
+          const routed = api.apply("thread/resume", params);
+          const result = await api.prepare("thread/resume", routed, "local", refreshFailed,
+            async () => { throw new Error("must not read state"); });
+          assert.equal(result, params);
+        }
+        assert.equal(api.calls.length, 0);
+        assert.equal(api.diagnostics.length, 0);
+      }
+    }
+  });
+
   it("restores persisted choices through provider-only and empty optional fields in the actual routing order", async () => {
     for (const optional of [
       { model: null }, { model: "" }, { model: " " }, { model: undefined },
@@ -210,8 +229,10 @@ describe("pure API persisted model snapshot", () => {
         detail: { reason: "metadata_unavailable" } }]);
       api.verify("thread/resume", result,
         { model: "native-default", modelProvider: "custom", reasoningEffort: "low" }, "local");
-      assert.throws(() => api.verify("thread/resume", result,
-        { model: "native-default", modelProvider: "openai", reasoningEffort: "low" }, "local"), /当前供应商/);
+      api.verify("thread/resume", result,
+        { model: "native-default", modelProvider: "openai", reasoningEffort: "low" }, "local");
+      assert.deepEqual(api.diagnostics.at(-1), { event: "pure_api_resume_result_mismatch",
+        detail: { modelMismatch: false, providerMismatch: true, reasoningEffortMismatch: false } });
     }
     const failed = snapshotRuntime(async () => { throw new Error("SQLite unavailable"); });
     const result = await failed.prepare("thread/resume", { threadId: "a" }, "local");
@@ -293,7 +314,7 @@ describe("pure API persisted model snapshot", () => {
     assert.equal(api.diagnostics.length, 0);
   });
 
-  it("rejects loaded old-provider sessions without unloading and verifies every restored setting", async () => {
+  it("rejects confirmed loaded old-provider sessions and only diagnoses restored setting differences", async () => {
     for (const status of ["notLoaded", "idle", "active"]) {
       const api = snapshotRuntime();
       const calls: string[] = [];
@@ -313,19 +334,58 @@ describe("pure API persisted model snapshot", () => {
         { model: "saved-model", modelProvider: "openai" }, { model: "global", modelProvider: "custom" },
         { model: "saved-model", modelProvider: "custom", reasoningEffort: "low" },
       ]) {
-        assert.throws(() => api.verify("thread/resume", patched, result, "local"), /未采用保存的模型/);
+        const original = structuredClone(result);
+        api.verify("thread/resume", patched, result, "local");
+        assert.deepEqual(result, original);
+        assert.equal(api.diagnostics.at(-1).event, "pure_api_resume_result_mismatch");
+      }
+      assert.equal(api.diagnostics.length, 3);
+    }
+  });
+
+  it("falls back after failed, timed-out or unknown state reads without injecting saved effort", async () => {
+    const rpcs = [
+      async () => { throw new Error("read unavailable"); },
+      async () => new Promise(() => {}),
+      async () => null,
+      async () => ({ thread: { modelProvider: "custom", status: { type: "unknown" } } }),
+    ];
+    for (const rpc of rpcs) {
+      for (const effort of [undefined, "low"]) {
+        const api = snapshotRuntime();
+        const params = { threadId: "a", config: { model_context_window: 500000,
+          ...(effort ? { model_reasoning_effort: effort } : {}) } };
+        const original = structuredClone(params);
+        const result = await api.prepare("thread/resume", params, "local", false, rpc);
+        assert.equal(result.modelProvider, "custom");
+        assert.equal(Object.hasOwn(result, "model"), false);
+        assert.equal(result.config.model_reasoning_effort, effort);
+        assert.equal(result.config.model_context_window, 500000);
+        assert.deepEqual(params, original);
+        assert.deepEqual(api.diagnostics, [{ event: "pure_api_resume_model_fallback",
+          detail: { reason: "thread_state_unavailable" } }]);
       }
     }
   });
 
-  it("never continues after failed or timed-out state reads", async () => {
+  it("ignores late state reads after fallback and still rejects concurrent changes on read errors", async () => {
+    let finish!: (value: any) => void;
     const api = snapshotRuntime();
-    for (const rpc of [
-      async () => { throw new Error("read unavailable"); },
-      async () => new Promise(() => {}),
-    ]) {
-      await assert.rejects(api.prepare("thread/resume", { threadId: "a" }, "local", false, rpc),
-        /read unavailable|读取会话状态超时/);
+    const result = await api.prepare("thread/resume", { threadId: "a" }, "local", false,
+      () => new Promise(resolve => { finish = resolve; }));
+    finish({ thread: { modelProvider: "openai", status: { type: "idle" } } });
+    await Promise.resolve();
+    assert.equal(Object.hasOwn(result, "model"), false);
+    assert.equal(api.diagnostics.length, 1);
+    for (const changed of ["provider", "model"]) {
+      const current = snapshotRuntime();
+      const params: any = { threadId: "a" };
+      await assert.rejects(current.prepare("thread/resume", params, "local", false, async () => {
+        if (changed === "provider") current.settings.relayProfiles[0].configContents = 'model_provider = "changed"';
+        else params.model = "new-choice";
+        throw new Error("read unavailable");
+      }), /已变化/);
+      assert.equal(current.diagnostics.length, 0);
     }
   });
 
@@ -359,7 +419,8 @@ describe("pure API persisted model snapshot", () => {
     const version = readFileSync(new URL("../../../assets/inject/renderer-inject/00-prelude.js", import.meta.url), "utf8")
       .match(/const codexAppServerModelRequestPatchVersion = "([^"]+)"/)?.[1];
     for (const [mode, scenario, optional] of ["instance", "prototype", "envelope"].flatMap(mode =>
-      ["snapshot", "missing", "read-failed", "refresh-failed"].flatMap(scenario =>
+      ["snapshot", "missing", "read-failed", "refresh-failed", "openai", "state-failed",
+        "state-timeout", "state-unknown", "result-mismatch"].flatMap(scenario =>
         [{}, { model: null }, { modelProvider: "openai" },
           { config: { model: null, model_reasoning_effort: null } }].map(optional => [mode, scenario, optional] as const)))) {
       const calls: any[] = [];
@@ -372,7 +433,14 @@ describe("pure API persisted model snapshot", () => {
           const innerMethod = method === "send-cli-request-for-host" ? params.method : method;
           const innerParams = method === "send-cli-request-for-host" ? params.params : params;
           if (innerMethod === "thread/read") {
+            if (scenario === "state-failed") throw new Error("read unavailable");
+            if (scenario === "state-timeout") return new Promise(() => {});
+            if (scenario === "state-unknown") return { thread: { status: { type: "unknown" } } };
             return { thread: { id: "a", modelProvider: "openai", status: { type: "notLoaded" } } };
+          }
+          if (scenario === "result-mismatch") {
+            return { model: "normalized-model", modelProvider: "normalized-provider",
+              reasoningEffort: "low", thread: { id: "a" } };
           }
           return { model: innerParams.model || "native-default", modelProvider: innerParams.modelProvider,
             reasoningEffort: innerParams.config?.model_reasoning_effort, thread: { id: "a" } };
@@ -383,9 +451,10 @@ describe("pure API persisted model snapshot", () => {
         window: { __codexPlusAppServerClientClass: Client, __codexSessionDeleteBridge: () => {} }, client,
         codexAppServerModelRequestPatchVersion: version,
         codexPlusBackendSettings: { relayProfilesEnabled: true, activeRelayId: "relay", providerSyncEnabled: false,
-          relayProfiles: [{ id: "relay", relayMode: "pureApi", configContents: 'model_provider = "custom"' }] },
+          relayProfiles: [{ id: "relay", relayMode: "pureApi",
+            configContents: `model_provider = "${scenario === "openai" ? "openai" : "custom"}"` }] },
         codexModelCatalog: {}, codexPlusBackendSettingsLoaded: true,
-        codexAppServerPreparationTimeoutMs: 1000,
+        codexAppServerPreparationTimeoutMs: 30,
         postJson: async (_route: string, payload: any) => {
           metadataReads++;
           if (scenario === "missing") return { status: "failed" };
@@ -406,18 +475,27 @@ describe("pure API persisted model snapshot", () => {
       vm.runInContext(override + readSource + instance + prototype, context);
       vm.runInContext(mode === "prototype" ? "installCodexAppServerClientPrototypePatch()" : "patchAppServerModelRequestClient(client)", context);
       const params = { threadId: "a", ...optional };
-      await client.sendRequest(mode === "envelope" ? "send-cli-request-for-host" : "thread/resume",
+      const result = await client.sendRequest(mode === "envelope" ? "send-cli-request-for-host" : "thread/resume",
         mode === "envelope" ? { hostId: "local", method: "thread/resume", params } : params);
       const resumes = calls.filter(call => (mode === "envelope" ? call.params.method : call.method) === "thread/resume");
       assert.equal(resumes.length, 1);
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, scenario === "openai" ? 1 : 2);
       const received = mode === "envelope" ? resumes[0].params.params : resumes[0].params;
+      if (scenario === "openai") {
+        assert.deepEqual(received, params);
+        assert.equal(metadataReads, 0);
+        assert.equal(diagnostics.includes("pure_api_resume_model_fallback"), false);
+        assert.equal(diagnostics.includes("pure_api_resume_result_mismatch"), false);
+        continue;
+      }
       assert.equal(received.modelProvider, "custom");
       assert.equal(metadataReads, scenario === "refresh-failed" ? 0 : 1);
-      if (scenario === "snapshot") {
+      if (scenario === "snapshot" || scenario === "result-mismatch") {
         assert.equal(received.model, "saved-outside-catalog");
         assert.equal(received.config.model_reasoning_effort, "ultra");
         assert.equal(diagnostics.includes("pure_api_resume_model_fallback"), false);
+        assert.equal(diagnostics.includes("pure_api_resume_result_mismatch"), scenario === "result-mismatch");
+        if (scenario === "result-mismatch") assert.equal(result.model, "normalized-model");
       } else {
         assert.equal(Object.hasOwn(received, "model"), false);
         assert.equal(Object.hasOwn(received.config, "model"), false);

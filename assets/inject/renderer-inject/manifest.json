@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 1017
+      "lines": 1022
     },
     {
       "name": "31-config-read-deadline.js",
