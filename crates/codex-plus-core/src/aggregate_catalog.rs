@@ -787,6 +787,7 @@ pub fn catalog_summary(
     aggregate: &AggregateRelayProfile,
 ) -> anyhow::Result<Value> {
     let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let effective_config_model = crate::model_catalog::effective_config_model(&config);
     let published = config_catalog_pointer(&config)
         .and_then(|pointer| owned_catalog_path(home, &aggregate.id, &pointer))
         .and_then(|path| std::fs::read_to_string(path).ok());
@@ -822,6 +823,7 @@ pub fn catalog_summary(
         "path": home.join("config.toml").to_string_lossy(),
         "service_tier": Value::Null,
         "model": ids.first().cloned().unwrap_or_default(),
+        "effective_config_model": effective_config_model,
         "model_provider": aggregate.id,
         "codex_model_provider": crate::model_catalog::codex_model_provider_for_relay_profile(home, profile),
         "provider_name": aggregate.name,

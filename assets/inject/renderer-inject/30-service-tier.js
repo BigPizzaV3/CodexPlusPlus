@@ -877,8 +877,12 @@
       if (seq !== codexPlusBackendSettingsSeq) {
         return false;
       }
+      const previousSettings = codexPlusBackendSettings;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (typeof refreshCodexModelCatalogForSettings === "function") {
+        refreshCodexModelCatalogForSettings(previousSettings, codexPlusBackendSettings);
+      }
       globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
         enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
         codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,

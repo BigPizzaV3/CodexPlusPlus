@@ -410,6 +410,13 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
             .cloned()
             .unwrap_or_else(|| json!([]))
     });
+    if metadata
+        .get("visibility")
+        .and_then(Value::as_str)
+        .is_some_and(|visibility| visibility.eq_ignore_ascii_case("hide"))
+    {
+        ui["hidden"] = json!(true);
+    }
     // 供应商分组身份（模型聚合在 catalog 条目上写的 `codex_plus_group` /
     // `codex_plus_group_id`）：这份 UI 元数据是白名单结构，不在这里显式转发就流不到
     // 前端。只在值是非空字符串时写——单供应商直连的目录没有这两个键，因此不会凭空

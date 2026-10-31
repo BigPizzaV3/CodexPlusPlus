@@ -187,6 +187,39 @@ fn catalog_summary_model_metadata_carries_group_identity() {
     );
 }
 
+#[test]
+fn published_aggregate_summary_reports_the_live_config_model_not_the_first_entry() {
+    let home = tempfile::tempdir().unwrap();
+    let aggregate = aggregate(&["relay-a", "relay-b"], "relay-a");
+    let settings = settings(
+        vec![
+            member("relay-a", "Provider A"),
+            member("relay-b", "Provider B"),
+        ],
+        &aggregate,
+    );
+    let payload = catalog(&settings, &aggregate);
+    let ids = catalog_slugs(&payload);
+    let configured = ids.iter().copied().find(|id| *id != ids[0]).unwrap();
+    std::fs::create_dir(home.path().join("model-catalogs")).unwrap();
+    let path = home.path().join("model-catalogs/agg.json");
+    std::fs::write(&path, payload.to_string()).unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "model_catalog_json = {:?}\nmodel = {:?}\n",
+            path.to_str().unwrap(),
+            configured
+        ),
+    )
+    .unwrap();
+
+    let summary = catalog_summary(home.path(), &settings, &aggregate).unwrap();
+    assert_eq!(summary["status"], "ok");
+    assert_eq!(summary["model"], ids[0]);
+    assert_eq!(summary["effective_config_model"], configured);
+}
+
 /// 成员列表里同一个 relay id 出现两次（配置漂移/重复添加）：模型只发布一份，
 /// 不会出现两组。
 #[test]

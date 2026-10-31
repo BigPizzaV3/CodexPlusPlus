@@ -31,8 +31,9 @@ test("路由页：「我的组」和「自动组」两段卡片，卡片上直�
   assert.match(page, /"save_gateway_auto_group", \{\s*model: group\.name,/);
   assert.match(page, /onPick=\{\(\) => onChange\(\{ pick: member\.model \}\)\}/);
   assert.match(page, /onToggle=\{\(\) => onChange\(\{ hideMembers: !group\.hideMembers \}\)\}/);
-  // 编辑器不管隐藏成员与手动选中：保存时沿用卡片上的。
-  assert.match(page, /hideMembers: previous\?\.hideMembers \?\? false, pick: previous\?\.pick \?\? ""/);
+  // 编辑器不管可见性与手动选中：保存时沿用卡片上的。
+  assert.match(page, /hideMembers: previous\?\.hideMembers \?\? false, hideCodexGroup: previous\?\.hideCodexGroup \?\? false, pick: previous\?\.pick \?\? ""/);
+  assert.match(page, /onToggle=\{\(\) => onChange\(\{ hideCodexGroup: !group\.hideCodexGroup \}\)\}/);
 });
 
 test("侧栏顺序：供应商池 → Agent 接入 → 路由；供应商池里「按模型」是供应商 × 模型矩阵，点列头回到列表展开那一家", () => {

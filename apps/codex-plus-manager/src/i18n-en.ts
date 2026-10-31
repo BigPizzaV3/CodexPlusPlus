@@ -1271,6 +1271,8 @@ export const EN_PLAIN: Record<string, string> = {
   "手动模式只用选中的那个成员，不需要会话固定": "Manual uses only the picked member, so it needs no stickiness",
   "打开后，组里的模型不再单独出现在 Agent 的模型列表里，只能通过这个组来选；直接写名字仍然能用。": "When on, the group's models leave the agents' model lists and are offered through this group alone; asking for one by name still works.",
   "隐藏成员": "Hide members",
+  "在 Codex 隐藏模型组": "Hide group in Codex",
+  "仅在 Codex 模型列表隐藏这个组入口，不改变成员显示或路由。": "Hide this group only in the Codex model list, without changing member visibility or routing.",
   "回到依次、缓存期内固定、不隐藏成员": "Back to In order, While cached, members shown",
   "这个自动组不再出现在 Agent 里，不带供应商的模型名按供应商池的顺序依次尝试": "This auto group leaves the agents' lists; the plain model name tries providers in pool order",
   "正在用这一个": "In use",
@@ -2832,6 +2834,8 @@ export const EN_PLAIN: Record<string, string> = {
   "导入或添加供应商": "Import or add providers",
   "到「旧版供应商配置」添加供应商，或用「从第三方导入」导入 cc-switch 的供应商": "Go to Legacy provider settings to add a provider, or use Import from third party to import cc-switch providers",
   "这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。": "You can still edit or delete these providers by hovering a card on the Multi-instance page; use Import from third party at the top right to import cc-switch providers.",
+  "会话模型选择保留（实验）": "Retain conversation model selection (experimental)",
+  "默认关闭。记录本机会话的模型和推理档位；仅对本次运行中新建且未恢复的非受管会话尝试同步选择器，不改写会话恢复请求。已有会话、受管连接和远程会话不会自动同步。": "Off by default. Records local conversation model and reasoning choices. Picker synchronization is limited to new, unmanaged conversations created in this run that have not been resumed. Resume requests are not changed; existing, managed, and remote conversations are not synchronized automatically.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.

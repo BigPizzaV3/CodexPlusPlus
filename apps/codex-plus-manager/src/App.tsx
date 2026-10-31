@@ -424,6 +424,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppStandaloneQuotaUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppModelWhitelistUnlock: boolean;
+  codexAppThreadModelRetention: boolean;
   codexAppSessionDelete: boolean;
   codexAppSessionDeleteSkipConfirm: boolean;
   codexAppSideChatSave: boolean;
@@ -1424,6 +1425,7 @@ const defaultSettings: BackendSettings = {
   codexAppStandaloneQuotaUnlock: false,
   codexAppPluginMarketplaceUnlock: true,
   codexAppModelWhitelistUnlock: true,
+  codexAppThreadModelRetention: false,
   codexAppSessionDelete: true,
   codexAppSessionDeleteSkipConfirm: false,
   codexAppSideChatSave: false,

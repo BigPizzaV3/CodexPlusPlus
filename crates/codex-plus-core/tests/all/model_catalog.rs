@@ -429,6 +429,56 @@ experimental_bearer_token = "relay-key"
 }
 
 #[tokio::test]
+async fn gateway_catalog_file_metadata_follows_dynamic_updates() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("gateway-models.json");
+    write_config(
+        temp.path(),
+        "model = \"private-model\"\nmodel_catalog_json = 'gateway-models.json'\n",
+    );
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for (group, effort) in [("provider-a", "low"), ("provider-b", "high")] {
+        std::fs::write(
+            &path,
+            json!({
+                "models": [
+                    {
+                        "slug": "private-model",
+                        "display_name": "Private Model",
+                        "codex_plus_group": "Pool",
+                        "codex_plus_group_id": group,
+                        "supported_reasoning_levels": [{"effort": effort}],
+                        "default_reasoning_level": effort,
+                        "context_window": 96_000,
+                        "service_tiers": [{"id": "priority"}]
+                    },
+                    {"slug": "hidden-model", "visibility": "hide", "codex_plus_group_id": "hidden"},
+                    {"slug": "not-api", "supported_in_api": false}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let result =
+            read_codex_model_catalog_from_home(temp.path(), &HashMap::new(), client.clone()).await;
+        assert_eq!(result["models"], json!(["private-model"]));
+        assert_eq!(result["default_model"], "private-model");
+        let metadata = &result["modelMetadata"]["private-model"];
+        assert_eq!(metadata["codex_plus_group_id"], group);
+        assert_eq!(metadata["displayName"], "Private Model");
+        assert_eq!(metadata["defaultReasoningEffort"], effort);
+        assert_eq!(
+            metadata["supportedReasoningEfforts"][0]["reasoningEffort"],
+            effort
+        );
+        assert_eq!(metadata["contextWindow"], 96_000);
+        assert_eq!(metadata["serviceTiers"][0]["id"], "priority");
+        assert!(result["modelMetadata"].get("hidden-model").is_none());
+        assert!(result["modelMetadata"].get("not-api").is_none());
+    }
+}
+
+#[tokio::test]
 async fn model_catalog_reads_single_quoted_config_model_catalog_json_path() {
     let temp = tempfile::tempdir().unwrap();
     let catalog_path = temp.path().join("literal-path-models.json");

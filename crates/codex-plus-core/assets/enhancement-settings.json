@@ -82,6 +82,14 @@
       "surfaces": ["manager", "codex"]
     },
     {
+      "key": "codexAppThreadModelRetention",
+      "group": "plugins",
+      "control": "bool",
+      "title": "会话模型选择保留（实验）",
+      "description": "默认关闭。记录本机会话的模型和推理档位；仅对本次运行中新建且未恢复的非受管会话尝试同步选择器，不改写会话恢复请求。已有会话、受管连接和远程会话不会自动同步。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
       "key": "codexAppNativeFastUnlock",
       "group": "plugins",
       "control": "bool",

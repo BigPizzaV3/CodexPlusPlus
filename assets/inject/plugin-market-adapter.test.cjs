@@ -24,10 +24,12 @@ const official = () => ({ marketplaces: [{ name: "openai-bundled", path: "/fixtu
 const installResult = () => ({ appsNeedingAuth: [], authPolicy: "ON_USE" });
 
 function fixture(handler, { enabled = true } = {}) {
-  const calls = [], originalMessages = [], delivered = [], toasts = [], handlers = new Map(), timers = new Map();
+  const calls = [], originalMessages = [], delivered = [], toasts = [], retainedRequests = [], handlers = new Map(), timers = new Map();
   let timerId = 0;
+  const modelCatalogRuntime = {};
   const window = {
     location: { origin: "app://-" },
+    __codexPlusModelCatalogRuntime: modelCatalogRuntime,
     addEventListener(type, callback) { const list = handlers.get(type) || []; list.push(callback); handlers.set(type, list); },
     removeEventListener(type, callback) { handlers.set(type, (handlers.get(type) || []).filter((item) => item !== callback)); },
     dispatchEvent(event) {
@@ -38,9 +40,10 @@ function fixture(handler, { enabled = true } = {}) {
     electronBridge: { sendMessageFromView: async (message) => { originalMessages.push(message); } },
   };
   class MessageEvent { constructor(type, init) { Object.assign(this, { type }, init); } stopImmediatePropagation() { this.stopped = true; } }
-  class NativeClient { constructor(hostId = "local") { this.hostId = hostId; this.calls = []; } async sendRequest(method, params) { this.calls.push({ method, params }); return official(); } }
+  class NativeClient { constructor(hostId = "local") { this.hostId = hostId; this.calls = []; this.options = []; } async sendRequest(method, params, options) { this.calls.push({ method, params }); this.options.push(options); return official(); } }
   const context = vm.createContext({
     window, MessageEvent, Error, console, Date,
+    codexModelCatalogRuntime: modelCatalogRuntime,
     codexPlusIsWindowsPlatform: false, codexAppServerModelRequestPatchVersion: "11", codexPluginMarketplaceUnlockVersion: "17",
     codexPlusBackendSettingsLoaded: true,
     codexPlusBackendSettings: {},
@@ -66,6 +69,10 @@ function fixture(handler, { enabled = true } = {}) {
     applyCodexRemoteSessionProviderOverride: (_, params) => params, applyCodexServiceTierRequestOnly: (_, params) => params,
     refreshCodexThreadModelBeforeTurn: async () => null,
     codexThreadModelRequestState: () => ({ threadId: "", model: "" }),
+    sendCodexRetainedModelRequest: (client, send, method, params, options) => {
+      retainedRequests.push({ client, method, params, options });
+      return send(method, params, options);
+    },
     NativeClient,
     postJson: async (path, payload) => {
       calls.push({ path, payload });
@@ -83,7 +90,7 @@ function fixture(handler, { enabled = true } = {}) {
     patchPrototype: installCodexAppServerClientPrototypePatch, normalize: appServerModelRequestMethod,
   };`, context);
   return {
-    api: context.api, context, window, calls, originalMessages, delivered, timers, toasts,
+    api: context.api, context, window, calls, originalMessages, delivered, timers, toasts, retainedRequests,
     response: (data) => window.dispatchEvent(new MessageEvent("message", { data, source: window })),
     outboundEvent: (detail, forwarded = false) => window.dispatchEvent({ type: "codex-message-from-view", detail, __codexForwardedViaBridge: forwarded }),
     runPoll: async () => { const [id, timer] = [...timers].find(([, timer]) => timer.delay === 1500); timers.delete(id); timer.callback(); await flush(); },
@@ -248,13 +255,32 @@ test("未启用聚合保护时，模型与插件原型包装共同保留原生�
   f.api.patchClient(client);
   const modelParams = { includeHidden: false };
   const turnParams = { threadId: "fixture-thread", model: "fixture-model", input: [] };
-  await client.sendRequest("model/list", modelParams);
-  await client.sendRequest("turn/start", turnParams);
+  const options = { priority: "fixture" };
+  await client.sendRequest("model/list", modelParams, options);
+  await client.sendRequest("turn/start", turnParams, options);
   assert.deepEqual(client.calls, [
     { method: "model/list", params: modelParams },
     { method: "turn/start", params: turnParams },
   ]);
+  assert.deepEqual(client.options, [options, options]);
+  assert.deepEqual(f.retainedRequests.map(({ method }) => method), ["model/list", "turn/start"]);
+  assert.ok(f.retainedRequests.every((request) => request.client === client && request.options === options));
   assert.equal(f.calls.length, 0, "无关请求不访问插件索引");
+});
+
+test("过期模型目录运行时不能安装原型补丁，当前运行时安装保持幂等", () => {
+  const f = fixture();
+  f.window.__codexPlusAppServerClientClass = f.context.NativeClient;
+  const original = f.context.NativeClient.prototype.sendRequest;
+  f.window.__codexPlusModelCatalogRuntime = {};
+  assert.equal(f.api.patchPrototype(), false);
+  assert.equal(f.context.NativeClient.prototype.sendRequest, original);
+  f.window.__codexPlusModelCatalogRuntime = f.context.codexModelCatalogRuntime;
+  assert.equal(f.api.patchPrototype(), true);
+  const patched = f.context.NativeClient.prototype.sendRequest;
+  assert.notEqual(patched, original);
+  assert.equal(f.api.patchPrototype(), true);
+  assert.equal(f.context.NativeClient.prototype.sendRequest, patched);
 });
 
 test("fetch JSONRPC封装、原生非鉴权错误和无关message分别保留", async () => {

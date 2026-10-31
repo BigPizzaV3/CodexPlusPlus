@@ -1095,6 +1095,8 @@ pub struct BackendSettings {
     pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
     pub codex_app_model_whitelist_unlock: bool,
+    #[serde(rename = "codexAppThreadModelRetention", default)]
+    pub codex_app_thread_model_retention: bool,
     #[serde(rename = "codexAppSessionDelete", default = "default_true")]
     pub codex_app_session_delete: bool,
     /// 快速删除（#48）：本地会话删除时跳过确认弹窗；远端会话仍强制确认。默认关。
@@ -1447,6 +1449,7 @@ impl Default for BackendSettings {
             codex_app_disable_work_view: false,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_model_whitelist_unlock: true,
+            codex_app_thread_model_retention: false,
             codex_app_session_delete: true,
             codex_app_session_delete_skip_confirm: false,
             codex_app_side_chat_save: false,
@@ -2850,6 +2853,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppDisableWorkView");
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
+    merge_bool_setting(target, source, "codexAppThreadModelRetention");
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppSessionDeleteSkipConfirm");
     merge_bool_setting(target, source, "codexAppSideChatSave");
@@ -5775,6 +5779,20 @@ experimental_bearer_token = "sk-existing""#
         assert!(store.load().unwrap().codex_app_turn_rewind);
         store.update(json!({ "codexAppTurnRewind": false })).unwrap();
         assert!(!store.load().unwrap().codex_app_turn_rewind);
+    }
+
+    #[test]
+    fn thread_model_retention_is_opt_in_and_round_trips_through_settings_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        assert!(!BackendSettings::default().codex_app_thread_model_retention);
+        let legacy: BackendSettings = serde_json::from_value(json!({})).unwrap();
+        assert!(!legacy.codex_app_thread_model_retention);
+        store.save(&BackendSettings::default()).unwrap();
+        assert!(store.update(json!({ "codexAppThreadModelRetention": true })).unwrap().codex_app_thread_model_retention);
+        assert!(store.load().unwrap().codex_app_thread_model_retention);
+        assert!(!store.update(json!({ "codexAppThreadModelRetention": false })).unwrap().codex_app_thread_model_retention);
+        assert!(!store.load().unwrap().codex_app_thread_model_retention);
     }
 
     #[test]

@@ -128,6 +128,8 @@ export type GatewayGroupEntry = {
   members: GroupMember[];
   /** 隐藏成员：组里的模型不再单独出现在 Agent 的模型列表里，只能通过组来选。 */
   hideMembers?: boolean;
+  /** 只在 Codex 模型列表中隐藏本组入口。 */
+  hideCodexGroup?: boolean;
   /** 手动模式下选中的成员（成员的模型名）。 */
   pick?: string;
 };
@@ -547,7 +549,7 @@ export function pickerSections(
   const sections: PickerSection[] = [];
   const providers = agentPoolProviders(payload, exclude);
   // 多家都有的模型：每家名下那份固定发给这一家（`<供应商 id>/<模型>`）；它的自动组生效时另列一份裸名，
-  // 选它按自动组的方式走。只有一家的模型用裸名。隐藏了成员的组，成员不单独列出。与写给 Codex 的模型列表一致。
+  // 选它按自动组的方式走。只有一家的模型用裸名。隐藏了成员的组，成员不单独列出。
   const unlisted = unlistedModels(payload);
   const shared: string[] = [];
   for (const entry of providers) {
@@ -565,6 +567,7 @@ export function pickerSections(
   }
   const autoItems = shared
     .filter((model) => activeAutoGroup(payload, model))
+    .filter((model) => !unlisted.has(model.toLowerCase()))
     .map((model) => ({
       model,
       label: prettyModelName(model),

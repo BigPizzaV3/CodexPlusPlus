@@ -1063,6 +1063,9 @@ pub fn exposed_models(gateway: &GatewaySettings, agent: &ToolId) -> Vec<String> 
     let Some(binding) = gateway.binding(agent) else {
         return Vec::new();
     };
+    if *agent == ToolId::Codex {
+        return route::codex_binding_models(gateway, binding);
+    }
     let mut models = Vec::new();
     let default = route::binding_default_model(gateway, binding);
     if !default.is_empty() {

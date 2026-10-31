@@ -33,7 +33,7 @@ test("模型选择器：多家都有的模型在每家名下固定发给那一�
   for (const model of ["chatgpt/gpt-6.1-sol", "jojo/gpt-6.1-sol", "gpt-6.1-sol"]) assert.equal(modelRoutable(payload(), model), true, model);
 });
 
-test("自动组：关了自动建组、或这个自动组被隐藏时，不出现「自动组」那一段；隐藏成员时各家那份不单独列出", () => {
+test("自动组可隐藏自己的入口，隐藏成员保留自动组并隐藏供应商固定入口", () => {
   const off = payload();
   off.gateway.autoModels = false;
   assert.deepEqual(pickerSections(off, "", () => "").map((section) => section.key), ["provider:chatgpt", "provider:jojo"]);
@@ -44,9 +44,46 @@ test("自动组：关了自动建组、或这个自动组被隐藏时，不出�
   hideMembers.autoGroups![0].hideMembers = true;
   const sections = pickerSections(hideMembers, "", () => "");
   assert.deepEqual(sections.find((section) => section.key === "provider:chatgpt")?.items.map((item) => item.model), ["gpt-6.1-terra"]);
+  assert.equal(sections.find((section) => section.key === "provider:jojo")?.items.some((item) => item.model === "jojo/gpt-6.1-sol"), false);
   assert.deepEqual(sections.find((section) => section.key === "auto")?.items.map((item) => item.model), ["gpt-6.1-sol"]);
   const page = readFileSync(new URL("./GatewayPage.tsx", import.meta.url), "utf8");
   assert.match(page, /"save_gateway_auto_models", \{ enabled: !autoOn \}/, "自动建组开关在路由页");
+});
+
+test("自建组隐藏共享裸模型时保留供应商固定入口", () => {
+  const data = payload();
+  data.groups = [{
+    id: "shared", name: "Shared", mode: "inOrder", hideMembers: true,
+    members: [{ model: "GPT-6.1-SOL", weight: 1 }],
+  }];
+  const sections = pickerSections(data, "", () => "");
+  assert.equal(sections.some(section => section.key === "auto"), false);
+  for (const id of ["chatgpt", "jojo"]) {
+    assert(sections.find(section => section.key === `provider:${id}`)?.items
+      .some(item => item.model === `${id}/gpt-6.1-sol`));
+  }
+  assert.deepEqual(sections.find(section => section.key === "group")?.items.map(item => item.model), ["group/shared"]);
+  assert.equal(pickerSections(data, "sol", () => "").some(section => section.key === "auto"), false);
+});
+
+test("旧的隐藏成员设置保留模型组，Codex 专用组隐藏不影响管理器的 Agent 选择器", () => {
+  const data = payload();
+  data.groups = [
+    { id: "1", name: "1", mode: "inOrder", hideCodexGroup: true,
+      members: [{ model: "group/coding", weight: 1 }, { model: "jojo/gpt-6.1-sol", weight: 1 }] },
+    { id: "coding", name: "Coding", mode: "inOrder",
+      members: [{ model: "jojo/gpt-6.1-sol", weight: 1 }] },
+  ];
+  const sections = pickerSections(data, "", () => "");
+  assert(sections.find(section => section.key === "provider:jojo")?.items
+    .some(item => item.model === "jojo/gpt-6.1-sol"));
+  assert.deepEqual(sections.find(section => section.key === "group")?.items.map(item => item.model), ["group/1", "group/coding"]);
+  assert(modelRoutable(data, "group/1"), "隐藏入口仍保留路由能力");
+  data.groups[0].hideCodexGroup = false;
+  data.groups[0].hideMembers = true;
+  const legacy = pickerSections(data, "", () => "");
+  assert.equal(legacy.find(section => section.key === "provider:jojo")?.items.some(item => item.model === "jojo/gpt-6.1-sol"), false);
+  assert.deepEqual(legacy.find(section => section.key === "group")?.items.map(item => item.model), ["group/1", "group/coding"]);
 });
 
 test("模型按钮：自动切换的模型带「自动」标签与专用图标；Codex 目录侧同样拆开（后端测试覆盖）", () => {

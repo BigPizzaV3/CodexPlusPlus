@@ -318,9 +318,12 @@ describe("managed aggregate session connection", () => {
         __codexPlusModelRequestPatch: "16",
       });
       const profile: any = { id: "aggregate", relayMode: "aggregate" };
+      const catalogRuntime = {};
       const context = vm.createContext({
         window: { __codexPlusAppServerClientClass: Client,
+          __codexPlusModelCatalogRuntime: catalogRuntime,
           __codexPlusAppServerClientPrototypePatchInstalled: "16", __codexSessionDeleteBridge: {} },
+        codexModelCatalogRuntime: catalogRuntime,
         client, codexAppServerModelRequestPatchVersion: version,
         codexPlusBackendSettings: { managedSessionConnection: {
           profileId: "aggregate", provider: "codex_plus_managed", baseUrl: "http://127.0.0.1:62021/v1",
@@ -328,6 +331,8 @@ describe("managed aggregate session connection", () => {
         codexRemoteSessionActiveProfile: () => profile,
         codexPlusBackendSettingsLoaded: true,
         registerNativeHostClient() {}, codexPlusPluginNativeInterceptClient: () => null,
+        sendCodexRetainedModelRequest: (_client: any, send: any, method: string, params: any, options: any) =>
+          send(method, params, options),
         appServerModelRequestMethod: (method: string, params: any) =>
           method === "send-cli-request-for-host" ? params.method : method,
         codexRemoteSessionProviderRequestMethod: () => true,

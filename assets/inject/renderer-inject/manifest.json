@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2799
+      "lines": 2802
     },
     {
       "name": "20-menu.js",
@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 900
+      "lines": 904
     },
     {
       "name": "31-config-read-deadline.js",
@@ -58,12 +58,12 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1159
+      "lines": 1778
     },
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器按供应商分组折叠（聚合供应商场景）",
-      "lines": 1177
+      "lines": 1468
     },
     {
       "name": "80-session-share.js",

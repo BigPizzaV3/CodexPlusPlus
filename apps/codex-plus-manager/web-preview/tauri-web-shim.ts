@@ -37,6 +37,7 @@ const demoSettings = {
   codexAppStandaloneQuotaUnlock: false,
   codexAppPluginMarketplaceUnlock: true,
   codexAppModelWhitelistUnlock: true,
+  codexAppThreadModelRetention: false,
   codexAppSessionDelete: true,
   codexAppSessionDeleteSkipConfirm: false,
   codexAppMarkdownExport: true,

@@ -1281,6 +1281,42 @@ fn groups_are_saved_validated_and_unlinked_on_delete() {
     assert_eq!(saved.members[0].weight, 1, "权重至少为 1");
     assert_eq!(saved.mode, GroupMode::Rotate);
     assert_eq!(saved.sticky, GroupSticky::Cache, "没填时默认缓存期内固定");
+    assert!(!saved.hide_codex_group, "旧配置没有新字段时默认不隐藏组");
+    let (_, _) = save_group(
+        store,
+        &GroupInput {
+            id: fast.clone(),
+            name: "Fast".into(),
+            members: vec![member("deepseek-v4-flash")],
+            hide_codex_group: Some(true),
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let (gateway, _) = save_group(
+        store,
+        &GroupInput {
+            id: fast.clone(),
+            name: "Fast renamed".into(),
+            members: vec![member("deepseek-v4-flash")],
+            hide_members: true,
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let saved = gateway.group(&fast).unwrap();
+    assert!(saved.hide_codex_group, "旧调用方未传新字段时保留已有设置");
+    assert!(saved.hide_members, "旧字段仍保留原语义");
+    let stored = serde_json::to_value(saved).unwrap();
+    assert_eq!(stored["hideMembers"], true);
+    assert_eq!(stored["hideCodexGroup"], true);
+    let legacy: codex_plus_core::gateway::store::GatewayGroup = serde_json::from_value(json!({
+        "id": "legacy", "name": "Legacy", "hideMembers": true,
+        "members": [{"model": "deepseek-v4-flash", "weight": 1}]
+    }))
+    .unwrap();
+    assert!(legacy.hide_members);
+    assert!(!legacy.hide_codex_group);
     let gateway = delete_group(store, &fast).unwrap();
     assert_eq!(
         gateway.group(&coder).unwrap().members.len(),
@@ -1555,6 +1591,487 @@ fn codex_catalog(ctx: &ApplyContext) -> Value {
         ctx.codex_home.join(pointer)
     };
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn gateway_catalog_includes_declared_models_with_provider_metadata() {
+    let fixture = fixture(57389);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let id = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Other".into(),
+            model: "other-model".into(),
+            model_list: "other-model".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    set_provider_metadata(
+        &ctx.gateway,
+        &id,
+        &json!({
+            "claude-opus-5-5": {
+                "display_name": "Private Claude",
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
+                "default_reasoning_level": "high",
+                "service_tiers": [{"id": "priority"}]
+            },
+            "unlisted-chat": {
+                "supported_reasoning_levels": [{"effort": "low"}],
+                "default_reasoning_level": "low"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Daily".into(),
+            members: vec![GroupMember {
+                model: format!("{id}/claude-opus-5-5"),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let declared = format!("{id}/claude-opus-5-5");
+    let alias = format!("{id}/deepseek-v4-flash");
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: format!("{declared}[96K]"),
+            extra_models: vec![
+                alias.clone(),
+                "DEEPSEEK-V4-FLASH".into(),
+                "group/DAILY".into(),
+                "unlisted-chat[64K]".into(),
+            ],
+            context_window: Some(128_000),
+            ..AgentBinding::default()
+        },
+    )
+    .unwrap();
+    let catalog = codex_catalog(ctx);
+    let models = catalog["models"].as_array().unwrap();
+    let entry = |slug: &str| {
+        models
+            .iter()
+            .find(|entry| entry["slug"] == slug)
+            .unwrap_or_else(|| panic!("目录里没有 {slug}：{catalog}"))
+    };
+    assert_eq!(models[0]["slug"], declared);
+    assert_eq!(entry(&declared)["codex_plus_group_id"], id);
+    assert_eq!(entry(&declared)["display_name"], "Private Claude");
+    assert_eq!(entry(&declared)["default_reasoning_level"], "high");
+    assert_eq!(
+        entry(&declared)["supported_reasoning_levels"][0]["effort"],
+        "low"
+    );
+    assert_eq!(entry(&declared)["service_tiers"][0]["id"], "priority");
+    assert_eq!(entry(&declared)["context_window"], 96_000);
+    assert_eq!(entry(&alias)["codex_plus_group_id"], id);
+    assert_eq!(entry("unlisted-chat")["codex_plus_group_id"], id);
+    assert_eq!(entry("unlisted-chat")["default_reasoning_level"], "low");
+    assert_eq!(entry("unlisted-chat")["context_window"], 64_000);
+    assert_eq!(entry("group/daily")["display_name"], "Daily");
+    assert_eq!(entry("group/daily")["default_reasoning_level"], "high");
+    assert_eq!(
+        models
+            .iter()
+            .filter(|entry| {
+                entry["slug"]
+                    .as_str()
+                    .unwrap()
+                    .eq_ignore_ascii_case("deepseek-v4-flash")
+            })
+            .count(),
+        1
+    );
+    let groups: Vec<&str> = models
+        .iter()
+        .map(|entry| {
+            entry["codex_plus_group_id"]
+                .as_str()
+                .expect("模型要有分组")
+        })
+        .collect();
+    let mut blocks = groups.clone();
+    blocks.dedup();
+    let unique: std::collections::HashSet<_> = groups.into_iter().collect();
+    assert_eq!(blocks.len(), unique.len(), "同一供应商的模型不能分成几块");
+    let settings = ctx.settings.load().unwrap();
+    let metadata: Value =
+        serde_json::from_str(&settings.active_relay_profile().model_metadata).unwrap();
+    assert_eq!(metadata[&declared]["codex_plus_group_id"], id);
+    assert_eq!(metadata[&alias]["codex_plus_group_id"], id);
+    let gateway = ctx.gateway.load().unwrap();
+    let plan =
+        codex_plus_core::gateway::route::resolve_plan(&gateway, &ToolId::Codex, "unlisted-chat", None)
+            .unwrap();
+    assert_eq!(plan.candidates[0].relay.id, id);
+    assert_eq!(plan.candidates[0].upstream_model, "unlisted-chat");
+}
+
+#[test]
+fn gateway_catalog_refresh_follows_model_sync_and_pool_changes() {
+    use codex_plus_core::gateway::apply::save_auto_group;
+    use codex_plus_core::gateway::model_sync::{set_provider_models, sync_upstream_models};
+    use codex_plus_core::gateway::store::AutoGroupSettings;
+
+    let fixture = fixture(57388);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let first = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    let (_, second) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Mirror".into(),
+            model_list: "deepseek-v4-pro\nmirror-only".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let entries = || codex_catalog(ctx)["models"].as_array().unwrap().clone();
+    assert!(
+        entries()
+            .iter()
+            .any(|entry| entry["codex_plus_group"] == "自动组")
+    );
+
+    sync_upstream_models(
+        &ctx.gateway,
+        &second,
+        &[
+            "deepseek-v4-pro".into(),
+            "mirror-only".into(),
+            "synced-model".into(),
+        ],
+    )
+    .unwrap();
+    set_provider_metadata(
+        &ctx.gateway,
+        &second,
+        &json!({
+            "synced-model": {
+                "supported_reasoning_levels": [{"effort": "low"}],
+                "default_reasoning_level": "low"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    set_provider_windows(
+        &ctx.gateway,
+        &second,
+        [("synced-model".into(), 96_000)].into(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 1);
+    let models = entries();
+    let synced = models
+        .iter()
+        .find(|entry| entry["slug"] == "synced-model")
+        .unwrap();
+    assert_eq!(synced["codex_plus_group_id"], second);
+    assert_eq!(synced["default_reasoning_level"], "low");
+    assert_eq!(synced["context_window"], 96_000);
+
+    let (_, group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Synced".into(),
+            members: vec![GroupMember {
+                model: format!("{second}/synced-*"),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let models = entries();
+    let grouped = models
+        .iter()
+        .find(|entry| entry["slug"] == format!("group/{group}"))
+        .unwrap();
+    assert_eq!(grouped["codex_plus_group"], "模型组");
+    assert_eq!(grouped["default_reasoning_level"], "low");
+    assert_eq!(grouped["context_window"], 96_000);
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: group.clone(),
+            name: "Renamed".into(),
+            members: vec![GroupMember {
+                model: format!("{second}/synced-model"),
+                weight: 1,
+            }],
+            hide_codex_group: Some(true),
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(entries().iter().any(|entry| entry["slug"] == "synced-model"));
+    assert!(
+        !entries()
+            .iter()
+            .any(|entry| entry["slug"] == format!("group/{group}"))
+    );
+    delete_group(&ctx.gateway, &group).unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(
+        !entries()
+            .iter()
+            .any(|entry| entry["slug"] == format!("group/{group}"))
+    );
+    assert!(entries().iter().any(|entry| entry["slug"] == "synced-model"));
+
+    save_auto_group(
+        &ctx.gateway,
+        "deepseek-v4-pro",
+        AutoGroupSettings {
+            hidden: true,
+            ..AutoGroupSettings::default()
+        },
+    )
+    .unwrap();
+    ctx.gateway
+        .update(|gateway| {
+            gateway.bindings.get_mut("codex").unwrap().model = format!("{first}/deepseek-v4-pro");
+            Ok(())
+        })
+        .unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(!entries().iter().any(|entry| entry["slug"] == "deepseek-v4-pro"));
+    set_provider_models(&ctx.gateway, &second, &["mirror-only".into()], None).unwrap();
+    refresh_enabled(ctx).unwrap();
+    let models = entries();
+    assert!(!models.iter().any(|entry| entry["slug"] == "synced-model"));
+    assert!(
+        !models
+            .iter()
+            .any(|entry| entry["slug"] == format!("{second}/deepseek-v4-pro"))
+    );
+    assert!(models.iter().any(|entry| entry["slug"] == "deepseek-v4-pro"));
+    set_provider_enabled(&ctx.gateway, &second, false).unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(!entries().iter().any(|entry| entry["slug"] == "mirror-only"));
+    set_provider_enabled(&ctx.gateway, &second, true).unwrap();
+    ctx.gateway
+        .update(|gateway| {
+            gateway
+                .bindings
+                .get_mut("codex")
+                .unwrap()
+                .pool_exclude
+                .push(second.clone());
+            Ok(())
+        })
+        .unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(
+        !entries()
+            .iter()
+            .any(|entry| entry["codex_plus_group_id"] == second)
+    );
+}
+
+#[test]
+fn codex_hidden_group_preserves_supplier_models_and_other_groups() {
+    use codex_plus_core::gateway::model_sync::sync_upstream_models;
+
+    let fixture = fixture(57387);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let mut input = deepseek_input();
+    input.name = "First".into();
+    input.model = "gpt-6.1-sol".into();
+    input.model_list = "gpt-6.1-sol".into();
+    let (_, first) = create_provider(&ctx.gateway, &input, "", None).unwrap();
+    input.name = "Second".into();
+    let (_, second) = create_provider(&ctx.gateway, &input, "", None).unwrap();
+    ctx.gateway
+        .update(|gateway| {
+            gateway.auto_models = false;
+            Ok(())
+        })
+        .unwrap();
+    let (_, visible_group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Coding".into(),
+            members: vec![GroupMember {
+                model: format!("{second}/gpt-6.1-sol"),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let (_, hidden_group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Hidden".into(),
+            hide_codex_group: Some(true),
+            members: vec![
+                GroupMember {
+                    model: format!("group/{visible_group}"),
+                    weight: 1,
+                },
+                GroupMember {
+                    model: format!("{second}/gpt-6.1-sol"),
+                    weight: 1,
+                },
+            ],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: format!("group/{visible_group}"),
+            extra_models: vec![format!("group/{hidden_group}")],
+            ..AgentBinding::default()
+        },
+    )
+    .unwrap();
+    let catalog = codex_catalog(ctx);
+    let entries = catalog["models"].as_array().unwrap();
+    for (id, name) in [(&first, "First"), (&second, "Second")] {
+        let model = format!("{id}/gpt-6.1-sol");
+        let entry = entries.iter().find(|entry| entry["slug"] == model).unwrap();
+        assert_eq!(entry["codex_plus_group"], name);
+    }
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["slug"] == format!("group/{visible_group}"))
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|entry| entry["slug"] == format!("group/{hidden_group}"))
+    );
+    assert!(
+        ctx.gateway
+            .load()
+            .unwrap()
+            .groups
+            .iter()
+            .any(|group| group.id == hidden_group)
+    );
+
+    sync_upstream_models(
+        &ctx.gateway,
+        &second,
+        &["gpt-6.1-sol".into(), "gpt-6.1-terra".into()],
+    )
+    .unwrap();
+    ctx.gateway
+        .update(|gateway| {
+            gateway
+                .providers
+                .iter_mut()
+                .find(|provider| provider.relay.id == first)
+                .unwrap()
+                .upstream_new = vec!["gpt-6.1-terra".into()];
+            Ok(())
+        })
+        .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    let entries = catalog["models"].as_array().unwrap();
+    let terra = entries
+        .iter()
+        .find(|entry| entry["slug"] == "gpt-6.1-terra")
+        .unwrap();
+    assert_eq!(terra["codex_plus_group_id"], second);
+    // 上游检查的待加入项不属于用户已采用的模型池；采用后即时更新两家的归属。
+    sync_upstream_models(
+        &ctx.gateway,
+        &first,
+        &["gpt-6.1-sol".into(), "gpt-6.1-terra".into()],
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    let entries = catalog["models"].as_array().unwrap();
+    assert!(!entries.iter().any(|entry| entry["slug"] == "gpt-6.1-terra"));
+    for id in [&first, &second] {
+        let terra = entries
+            .iter()
+            .find(|entry| entry["slug"] == format!("{id}/gpt-6.1-terra"))
+            .unwrap();
+        assert_eq!(terra["codex_plus_group_id"], id.as_str());
+    }
+
+    // 默认恰好是隐藏组时，原生目录仍保留它的能力，但不能重新显示为可选入口。
+    let hidden_model = format!("group/{hidden_group}");
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: hidden_model.clone(),
+            ..AgentBinding::default()
+        },
+    )
+    .unwrap();
+    let catalog = codex_catalog(ctx);
+    let entries = catalog["models"].as_array().unwrap();
+    let hidden = entries
+        .iter()
+        .find(|entry| entry["slug"] == hidden_model)
+        .unwrap();
+    assert_eq!(hidden["visibility"], "hide");
+    assert_eq!(hidden["display_name"], "Hidden");
+    assert_eq!(hidden["codex_plus_group"], "模型组");
+    assert_eq!(
+        codex_plus_core::model_suffix::model_ui_metadata_with_override(&hidden_model, Some(hidden))
+            .unwrap()["hidden"],
+        true
+    );
+    let config: toml::Value = toml::from_str(&codex_config(ctx)).unwrap();
+    assert_eq!(config["model"].as_str(), Some(hidden_model.as_str()));
+    for id in [&first, &second] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry["slug"] == format!("{id}/gpt-6.1-sol"))
+            .unwrap();
+        assert_eq!(entry["visibility"], "list");
+    }
 }
 
 #[test]

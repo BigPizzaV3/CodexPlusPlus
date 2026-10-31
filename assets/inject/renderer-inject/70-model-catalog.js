@@ -20,9 +20,27 @@
     return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0)));
   }
 
-  let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+  let codexModelCatalog = window.__codexPlusModelCatalogRuntime?.catalog || { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
+  let codexModelCatalogRevision = 0;
+  const codexModelSettingsSalt = Array.from({ length: 4 }, () => (Math.random() * 0x100000000) >>> 0);
+  // 目录不依赖 DOM；热重注入接续成功快照，并阻止旧闭包的迟到请求重新发布。
+  const codexModelCatalogRuntime = {
+    catalog: codexModelCatalog,
+    source: window.__codexPlusModelCatalogRuntime?.source || "",
+    patchJson: patchModelJsonResponse,
+    patchStatsig: patchStatsigModelDynamicConfig,
+    recordRequest: recordModelListRequest,
+    patchMcp: patchMcpModelResponseData,
+    retryAt: window.__codexPlusModelCatalogRuntime?.retryAt || 0,
+    failure: window.__codexPlusModelCatalogRuntime?.failure || null,
+    matchesSettings: window.__codexPlusModelCatalogRuntime?.matchesSettings || null,
+  };
+  window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
+  if (typeof codexThreadModelRetentionSettingsChanged === "function") {
+    window.__codexPlusThreadModelRetentionRefresh = codexThreadModelRetentionSettingsChanged;
+  }
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
@@ -102,13 +120,107 @@
     ]);
   }
 
+  function codexModelSettingsSignature(settings) {
+    const profiles = Array.isArray(settings?.relayProfiles) ? settings.relayProfiles : [];
+    const profile = profiles.find((entry) => entry?.id === settings?.activeRelayId);
+    const aggregates = Array.isArray(settings?.aggregateRelayProfiles) ? settings.aggregateRelayProfiles : [];
+    const aggregate = profile?.relayMode === "aggregate"
+      ? aggregates.find((entry) => entry?.id === (settings.activeAggregateRelayId || settings.activeRelayId))
+      : null;
+    const members = Array.isArray(aggregate?.members) ? aggregate.members : [];
+    const value = JSON.stringify([settings?.relayProfilesEnabled, settings?.activeRelayId,
+      settings?.activeAggregateRelayId, settings?.activeRelayCodexProvider, profile, aggregate,
+      members.map((entry) => profiles.find((item) => item?.id === entry?.relayId))]);
+    let first = codexModelSettingsSalt[0] ^ 0x811c9dc5;
+    let second = codexModelSettingsSalt[1] ^ 0x9e3779b9;
+    let third = codexModelSettingsSalt[2] ^ 0x85ebca6b;
+    let fourth = codexModelSettingsSalt[3] ^ 0xc2b2ae35;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      first = Math.imul(first ^ code, 0x01000193);
+      second = Math.imul(second ^ code, 0x85ebca6b);
+      third = Math.imul(third ^ code, 0xc2b2ae35);
+      fourth = Math.imul(fourth ^ code, 0x27d4eb2d);
+    }
+    return `${value.length}:${first >>> 0}:${second >>> 0}:${third >>> 0}:${fourth >>> 0}`;
+  }
+
+  function codexModelSettingsMatcher(signature) {
+    return (next) => codexModelSettingsSignature(next) === signature;
+  }
+
+  function rememberCodexModelSettings(settings) {
+    codexModelCatalogRuntime.matchesSettings = codexModelSettingsMatcher(codexModelSettingsSignature(settings));
+  }
+
+  function refreshCodexModelCatalogForSettings(previous, next) {
+    const previousLoaded = Array.isArray(previous?.relayProfiles) && typeof previous?.activeRelayId === "string";
+    const source = JSON.stringify([next?.relayProfilesEnabled, next?.activeRelayId]);
+    const sameSource = !codexModelCatalogRuntime.source || codexModelCatalogRuntime.source === source;
+    const unchanged = sameSource && (previousLoaded
+      ? codexModelSettingsSignature(previous) === codexModelSettingsSignature(next)
+      : typeof codexModelCatalogRuntime.matchesSettings === "function"
+        ? codexModelCatalogRuntime.matchesSettings(next)
+        : Date.now() < codexModelCatalogRuntime.retryAt);
+    rememberCodexModelSettings(next);
+    if (unchanged) {
+      if (codexModelCatalogRuntime.retryAt && Date.now() >= codexModelCatalogRuntime.retryAt) {
+        void loadCodexModelCatalog();
+      } else if (!previousLoaded && !codexModelCatalogRuntime.retryAt) {
+        void loadCodexModelCatalog(true);
+      }
+      return;
+    }
+    if (codexModelCatalogRuntime.source && codexModelCatalogRuntime.source !== source) {
+      codexModelCatalog = { status: "loading", models: [], sources: [] };
+      codexModelCatalogRuntime.catalog = codexModelCatalog;
+    }
+    codexModelCatalogRuntime.source = source;
+    codexModelCatalogLoadedAt = 0;
+    codexModelCatalogRuntime.retryAt = 0;
+    codexModelCatalogRuntime.failure = null;
+    void loadCodexModelCatalog(true);
+  }
+
+  function refreshCodexNativeModelQueries() {
+    // 只失效本机模型查询，交给原生重新获取并发布；不刷新远程主机或整个查询缓存。
+    const client = typeof findCodexQueryClient === "function" ? findCodexQueryClient() : null;
+    if (typeof client?.invalidateQueries !== "function") return;
+    const queries = client.getQueryCache?.()?.getAll?.() || [];
+    for (const query of queries) {
+      const key = query.queryKey;
+      if (!Array.isArray(key) || !key.some((part) => typeof part === "string"
+          && /^(models|model-list|list-models-for-host|available-models)$/u.test(part))) continue;
+      if (!key.some((part) => part === "local" || part?.hostId === "local")) continue;
+      try { Promise.resolve(client.invalidateQueries({ queryKey: key, exact: true })).catch(() => {}); }
+      catch {}
+    }
+  }
+
   async function loadCodexModelCatalog(force = false) {
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
+    if (!force && Date.now() < codexModelCatalogRuntime.retryAt) return codexModelCatalogRuntime.failure || codexModelCatalog;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
-    codexModelCatalogPromise = readCodexAppServerPreparation("/codex-model-catalog", {})
+    const revision = ++codexModelCatalogRevision;
+    const current = () => revision === codexModelCatalogRevision
+      && window.__codexPlusModelCatalogRuntime === codexModelCatalogRuntime;
+    if (codexPlusBackendSettingsLoaded) {
+      codexModelCatalogRuntime.source = JSON.stringify([
+        codexPlusBackendSettings.relayProfilesEnabled, codexPlusBackendSettings.activeRelayId,
+      ]);
+      rememberCodexModelSettings(codexPlusBackendSettings);
+    }
+    let failedCatalog = null;
+    const request = readCodexAppServerPreparation("/codex-model-catalog", {})
       .then(async (result) => {
-        codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
+        let nextCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        if (!current()) return codexModelCatalog;
+        if (!["ok", "not_applied", "not_configured"].includes(nextCatalog.status)
+            || !Array.isArray(nextCatalog.models)) {
+          failedCatalog = nextCatalog;
+          throw new Error(nextCatalog.message || "Model catalog is temporarily unavailable");
+        }
+        if ((!nextCatalog.models || nextCatalog.models.length === 0) && nextCatalog.status === "not_configured") {
           try {
             const settingsResp = await readCodexAppServerPreparation("/settings/get", {});
             if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
@@ -117,8 +229,8 @@
               if (profile && profile.modelList) {
                 const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
                 if (extraModels.length > 0) {
-                  codexModelCatalog.models = extraModels;
-                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
+                  nextCatalog.models = extraModels;
+                  nextCatalog.default_model = nextCatalog.default_model || extraModels[0];
                   sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: extraModels.length });
                 }
               }
@@ -127,19 +239,39 @@
             sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
           }
         }
+        if (!current()) return codexModelCatalog;
+        const changed = JSON.stringify(codexModelCatalog) !== JSON.stringify(nextCatalog);
+        codexModelCatalog = nextCatalog;
+        codexModelCatalogRuntime.catalog = nextCatalog;
+        codexModelCatalogRuntime.retryAt = 0;
+        codexModelCatalogRuntime.failure = null;
         codexModelCatalogLoadedAt = Date.now();
+        if (changed && typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+        if (changed) refreshCodexNativeModelQueries();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
         return codexModelCatalog;
       })
       .catch((error) => {
-        codexModelCatalog = { status: "failed", message: String(error?.message || error), model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        codexModelCatalogLoadedAt = Date.now();
-        return codexModelCatalog;
+        if (!current()) return codexModelCatalog;
+        const failure = { status: "failed", message: String(error?.message || error),
+          model: typeof failedCatalog?.model === "string" ? failedCatalog.model : "",
+          default_model: typeof failedCatalog?.default_model === "string" ? failedCatalog.default_model : "",
+          models: [], sources: [] };
+        if (!["ok", "not_applied"].includes(codexModelCatalog.status)) {
+          codexModelCatalog = failure;
+          codexModelCatalogRuntime.catalog = codexModelCatalog;
+        }
+        codexModelCatalogLoadedAt = 0;
+        codexModelCatalogRuntime.retryAt = Date.now() + 10000;
+        codexModelCatalogRuntime.failure = failure;
+        sendCodexPlusDiagnostic("model_catalog_refresh_failed", { error: String(error?.message || error) });
+        return failure;
       })
       .finally(() => {
-        codexModelCatalogPromise = null;
+        if (codexModelCatalogPromise === request) codexModelCatalogPromise = null;
       });
+    codexModelCatalogPromise = request;
     return codexModelCatalogPromise;
   }
 
@@ -158,8 +290,8 @@
     const supported = codexPlusModelMetadata(modelName)?.supportedReasoningEfforts;
     if (Array.isArray(supported) && supported.length > 0) {
       const efforts = supported.map((entry) => ({ ...entry }));
-      const hasMax = efforts.some((e) => e.reasoningEffort === "max");
-      const hasUltra = efforts.some((e) => e.reasoningEffort === "ultra");
+      const hasMax = efforts.some((entry) => entry.reasoningEffort === "max");
+      const hasUltra = efforts.some((entry) => entry.reasoningEffort === "ultra");
       if (!hasMax) efforts.push({ reasoningEffort: "max", description: "Maximum reasoning depth for the hardest problems" });
       if (!hasUltra) {
         // 名单里的模型确认支持 ultra。不要再把 deepseek 放进来：它的档位上限是 max，
@@ -201,8 +333,8 @@
       slug: modelName,
       name: modelName,
       displayName: metadata?.displayName || modelName,
-      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
-      hidden: false,
+      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "当前供应商模型",
+      hidden: metadata?.hidden === true,
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
@@ -338,6 +470,29 @@
     return belongsToProfile && names.length ? new Set(names) : null;
   }
 
+  function codexAggregateAllowedModelSet(hostId, allowUnpublished = false) {
+    if (hostId !== "local" || !codexPlusBackendSettingsLoaded
+        || (codexModelCatalog.status !== "ok"
+          && !(allowUnpublished && codexModelCatalog.status === "not_applied"
+            && Array.isArray(codexModelCatalog.models)))) return null;
+    const profile = codexRemoteSessionActiveProfile();
+    if (profile?.relayMode !== "aggregate") return null;
+    const belongsToProfile = Array.isArray(codexModelCatalog.sources)
+      && codexModelCatalog.sources.some((source) =>
+        source?.id === `aggregate:${profile.id}`
+        && ["aggregate_model_catalog", "aggregate_pool_catalog"].includes(source?.type));
+    return belongsToProfile ? new Set(codexModelCatalog.status === "not_applied"
+      ? uniqueValues(codexModelCatalog.models) : codexPlusModelNames()) : null;
+  }
+
+  function codexPlusConfiguredDefaultModel() {
+    if (codexModelCatalog.status !== "ok") return "";
+    const allowed = codexAggregateAllowedModelSet("local") || codexPureApiAllowedModelSet("local");
+    if (!allowed) return "";
+    return [codexModelCatalog.model, codexModelCatalog.default_model, ...allowed]
+      .find((model) => typeof model === "string" && allowed.has(model)) || "";
+  }
+
   function patchModelArray(models, allowEmpty = false, hostId) {
     if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
     const allowed = codexPureApiAllowedModelSet(hostId);
@@ -354,9 +509,12 @@
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
       if (customModels.includes(item.model)) {
-        if (item.hidden !== false) {
-          item.hidden = false;
-          changed = true;
+        if (["ok", "not_applied"].includes(codexModelCatalog.status)) {
+          const hidden = codexPlusModelMetadata(item.model)?.hidden === true;
+          if (item.hidden !== hidden) {
+            item.hidden = hidden;
+            changed = true;
+          }
         }
         if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
       }
@@ -418,14 +576,14 @@
     if (Array.isArray(value.available_models)) {
       if (patchModelNameArray(value.available_models, hostId)) changed = true;
     }
-    if (Array.isArray(value.hiddenModels)) {
+    if (["ok", "not_applied"].includes(codexModelCatalog.status) && Array.isArray(value.hiddenModels)) {
       const before = value.hiddenModels.length;
-      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name));
+      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name) || codexPlusModelMetadata(name)?.hidden === true);
       if (value.hiddenModels.length !== before) changed = true;
     }
-    if (Array.isArray(value.hidden_models)) {
+    if (["ok", "not_applied"].includes(codexModelCatalog.status) && Array.isArray(value.hidden_models)) {
       const before = value.hidden_models.length;
-      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
+      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name) || codexPlusModelMetadata(name)?.hidden === true);
       if (value.hidden_models.length !== before) changed = true;
     }
     if (patchModelDefaults(value, allowed)) changed = true;
@@ -471,15 +629,17 @@
   }
 
   function installModelJsonResponsePatch() {
-    if (window.__codexPlusModelJsonResponsePatchInstalled === "3") return;
-    window.__codexPlusModelJsonResponsePatchInstalled = "3";
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    codexModelCatalogRuntime.patchJson = patchModelJsonResponse;
+    if (window.__codexPlusModelJsonResponsePatchInstalled === "4") return;
+    window.__codexPlusModelJsonResponsePatchInstalled = "4";
     window.__codexPlusModelJsonResponseOriginals = window.__codexPlusModelJsonResponseOriginals || {};
     const originals = window.__codexPlusModelJsonResponseOriginals;
     originals.responseJson = originals.responseJson || Response.prototype.json;
     if (typeof originals.responseJson !== "function") return;
     Response.prototype.json = async function codexPlusPatchedResponseJson(...args) {
       const payload = await originals.responseJson.apply(this, args);
-      return await patchModelJsonResponse(payload);
+      return await window.__codexPlusModelCatalogRuntime.patchJson(payload);
     };
   }
 
@@ -513,15 +673,17 @@
   }
 
   function patchStatsigModelWhitelist() {
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    codexModelCatalogRuntime.patchStatsig = patchStatsigModelDynamicConfig;
     statsigClients().forEach((client) => {
       if (typeof client.getDynamicConfig !== "function") return;
-      if (client.__codexPlusModelWhitelistPatched !== "3") {
+      if (client.__codexPlusModelWhitelistPatched !== "4") {
         const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
         client.getDynamicConfig = (name, options) => {
           const result = originalGetDynamicConfig(name, options);
-          return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
+          return String(name) === "107580212" ? window.__codexPlusModelCatalogRuntime.patchStatsig(result) : result;
         };
-        client.__codexPlusModelWhitelistPatched = "3";
+        client.__codexPlusModelWhitelistPatched = "4";
       }
       try {
         patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
@@ -531,8 +693,11 @@
   }
 
   function patchAppServerModelMessages() {
-    if (window.__codexPlusModelMessagePatchInstalled === "3") return;
-    window.__codexPlusModelMessagePatchInstalled = "3";
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    codexModelCatalogRuntime.recordRequest = recordModelListRequest;
+    codexModelCatalogRuntime.patchMcp = patchMcpModelResponseData;
+    if (window.__codexPlusModelMessagePatchInstalled === "4") return;
+    window.__codexPlusModelMessagePatchInstalled = "4";
     window.addEventListener("codex-message-from-view", (event) => {
       try {
         const detail = event?.detail;
@@ -541,7 +706,7 @@
           request.params = { ...(request.params || {}), includeHidden: true };
           if (request.id != null) {
             const requestId = String(request.id);
-            recordModelListRequest(requestId, modelResponseHostId(detail, request, request.params));
+            window.__codexPlusModelCatalogRuntime.recordRequest(requestId, modelResponseHostId(detail, request, request.params));
           }
         }
       } catch (error) {
@@ -552,7 +717,7 @@
 
     window.addEventListener("message", (event) => {
       try {
-        patchMcpModelResponseData(event?.data);
+        window.__codexPlusModelCatalogRuntime.patchMcp(event?.data);
       } catch (error) {
         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
@@ -624,6 +789,439 @@
     return result;
   }
 
+  function codexThreadModelRetentionSettingsChanged() {
+    const enabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
+      && codexPlusBackendSettings.codexAppThreadModelRetention === true;
+    const state = window.__codexPlusThreadModelRetentionState
+      || (window.__codexPlusThreadModelRetentionState = { enabled: false, epoch: 0, cache: null, threads: new Map() });
+    if (state.enabled !== enabled) {
+      state.enabled = enabled;
+      state.epoch += 1;
+      state.cache = null;
+      state.threads = new Map();
+      window.__codexPlusThreadModelSelections = new Map();
+      window.__codexPlusThreadModelPending = new Map();
+      window.__codexPlusThreadModelRestoreStates = new WeakMap();
+    }
+    return state;
+  }
+
+  function scheduleCodexThreadModelSync(delay) {
+    const epoch = codexThreadModelRetentionSettingsChanged().epoch;
+    window.setTimeout?.(() => {
+      if (codexThreadModelObserverActive() && codexThreadModelRetentionSettingsChanged().epoch === epoch) {
+        syncCodexRetainedThreadModels();
+      }
+    }, delay);
+  }
+
+  function codexThreadModelProfile() {
+    const active = codexRemoteSessionActiveProfile();
+    if (active) return active;
+    // 多开锁定供应商时不开放切换，但仍按其权威目录保存各对话选择。
+    const profile = codexPlusBackendSettings.relayProfiles?.find((entry) =>
+      entry?.id === codexPlusBackendSettings.activeRelayId);
+    if (codexModelCatalog.status !== "ok" || !profile?.id) return null;
+    const source = profile.relayMode === "aggregate" ? `aggregate:${profile.id}`
+      : profile.relayMode === "pureApi" ? `relay-profile:${profile.id}` : "";
+    return source && codexModelCatalog.sources?.some((entry) => entry?.id === source) ? profile : null;
+  }
+
+  function codexRememberedThreadModels() {
+    if (!codexThreadModelObserverActive()) return [];
+    const state = codexThreadModelRetentionSettingsChanged();
+    if (state.cache) return state.cache.entries;
+    if (!window.__codexPlusThreadModelStorageListener && typeof window.addEventListener === "function") {
+      window.__codexPlusThreadModelStorageListener = (event) => {
+        if (event.key === "codexPlus.threadModels.v1" || event.key === null) {
+          const current = window.__codexPlusThreadModelRetentionState;
+          if (current) current.cache = null;
+        }
+      };
+      window.addEventListener("storage", window.__codexPlusThreadModelStorageListener);
+    }
+    let entries = [];
+    try {
+      const value = JSON.parse(localStorage.getItem("codexPlus.threadModels.v1") || "[]");
+      if (Array.isArray(value)) entries = value.filter((entry) => entry && typeof entry.key === "string"
+        && typeof entry.model === "string" && Number.isFinite(entry.at)).slice(0, 2000);
+    } catch {}
+    const latest = new Map();
+    const scopes = new Map();
+    for (const entry of entries) {
+      try {
+        const scope = JSON.parse(entry.key);
+        if (!Array.isArray(scope) || typeof scope[0] !== "string" || typeof scope[2] !== "string") continue;
+        scopes.set(entry.key, scope);
+        const key = JSON.stringify([scope[0], scope[2]]);
+        if (!latest.has(key) || latest.get(key).at < entry.at) latest.set(key, entry);
+      } catch {}
+    }
+    state.cache = { entries, latest, scopes };
+    return entries;
+  }
+
+  function codexThreadModelStorageKey(hostId, threadId) {
+    if (!codexThreadModelObserverActive() || hostId !== "local") return "";
+    const profile = codexThreadModelProfile();
+    return profile?.id && threadId
+      ? JSON.stringify([hostId, profile.id, threadId]) : "";
+  }
+
+  function codexRetainedThreadModel(hostId, threadId) {
+    const key = codexThreadModelStorageKey(hostId, threadId);
+    if (!key || codexModelCatalog.status !== "ok") return null;
+    const profile = codexThreadModelProfile();
+    if (Array.isArray(codexModelCatalog.sources) && codexModelCatalog.sources.length
+        && !codexModelCatalog.sources.some((source) =>
+          source?.id === `${profile?.relayMode === "aggregate" ? "aggregate" : "relay-profile"}:${profile?.id}`)) return null;
+    const saved = codexLatestThreadModel(hostId, threadId);
+    if (!saved) return null;
+    const model = resolveCodexThreadModelSelection(saved);
+    if (!model) return null;
+    const metadata = codexPlusModelMetadata(model);
+    const efforts = modelReasoningEfforts(model).map((entry) => entry.reasoningEffort);
+    const effort = saved.effort == null || efforts.includes(saved.effort) ? saved.effort
+      : efforts.includes(metadata?.defaultReasoningEffort) ? metadata.defaultReasoningEffort : null;
+    return { ...saved, model, effort };
+  }
+
+  function codexLatestThreadModel(hostId, threadId) {
+    if (!codexThreadModelObserverActive() || hostId !== "local" || !threadId) return null;
+    codexRememberedThreadModels();
+    return codexThreadModelRetentionSettingsChanged().cache?.latest.get(JSON.stringify([hostId, threadId])) || null;
+  }
+
+  function codexThreadModelSourceGroup(model) {
+    const profile = codexThreadModelProfile();
+    return codexPlusModelMetadata(model)?.codex_plus_group_id
+      || (profile?.relayMode === "pureApi" ? profile.id : "");
+  }
+
+  function resolveCodexThreadModelSelection(saved) {
+    if (codexModelCatalog.status !== "ok") return "";
+    const names = codexPlusModelNames();
+    const baseName = (model, sourceGroup) => {
+      if (model.startsWith("cpx-") && model.includes("/")) return model.slice(model.indexOf("/") + 1);
+      const group = sourceGroup || codexPlusModelMetadata(model)?.codex_plus_group_id;
+      // 网关用 <供应商 id>/<模型> 固定路由；group/<id> 是独立入口，不能当供应商前缀剥掉。
+      return group && !model.startsWith("group/") && model.startsWith(`${group}/`)
+        ? model.slice(group.length + 1) : model;
+    };
+    const savedBase = baseName(saved.model, saved.groupId);
+    const matches = names.filter((model) => baseName(model) === savedBase);
+    let groupId = saved.groupId;
+    if (!groupId) {
+      const profileId = codexThreadModelRetentionSettingsChanged().cache?.scopes.get(saved.key)?.[1];
+      const profile = codexPlusBackendSettings.relayProfiles?.find((entry) => entry.id === profileId);
+      if (profile?.relayMode === "pureApi") groupId = profile.id;
+    }
+    const sameSource = groupId && matches.find((model) => codexThreadModelSourceGroup(model) === groupId);
+    if (sameSource) return sameSource;
+    const compatible = saved.effort == null ? matches : matches.filter((model) =>
+      modelReasoningEfforts(model).some((entry) => entry.reasoningEffort === saved.effort));
+    const candidates = compatible.length ? compatible : matches;
+    return candidates.find((model) => model === saved.model)
+      || candidates.find((model) => model === savedBase) || candidates[0] || "";
+  }
+
+  function captureCodexThreadModelSelection(params) {
+    const model = params?.model || params?.collaborationMode?.settings?.model;
+    if (typeof model !== "string" || !model) return null;
+    return { model, effort: params?.effort ?? params?.reasoningEffort
+      ?? params?.collaborationMode?.settings?.reasoning_effort ?? null,
+      groupId: codexThreadModelSourceGroup(model) };
+  }
+
+  function rememberCodexThreadModel(method, params, result, hostId, selection, explicit = false) {
+    if (!codexThreadModelObserverActive()) return;
+    if (!["thread/settings/update", "turn/start", "thread/start"].includes(String(method))) return;
+    const threadId = params?.threadId || result?.thread?.id;
+    const key = codexThreadModelStorageKey(hostId, threadId);
+    if (selection === undefined) selection = captureCodexThreadModelSelection(params);
+    if (!key || !selection || result?.applied === false || result?.error) return;
+    const previous = codexRememberedThreadModels();
+    // 发消息可能携带原生回退值；已有明确选择时不能用它覆盖。
+    const latest = codexLatestThreadModel(hostId, threadId);
+    if (String(method) === "turn/start" && !explicit && latest) return;
+    // 原生恢复/全局 next-turn 设置的回写不能取代用户在这个对话里的明确选择。
+    if (!explicit && latest?.explicit) return;
+    // 自动恢复到替代供应商不能覆盖原始来源，否则切回时将无法找回原选择。
+    const retained = latest && codexRetainedThreadModel(hostId, threadId);
+    if (!explicit && latest && latest.key !== key && !retained) return;
+    if (!explicit && retained && retained.model === selection.model && retained.effort === selection.effort) return;
+    const remembered = previous.find((item) => item.key === key);
+    // 自动恢复的重复确认不改变记录版本，否则会把三次重试额度不断重置。
+    if (remembered && (remembered.explicit || !explicit)
+        && remembered.groupId === selection.groupId && remembered.effort === selection.effort
+        && resolveCodexThreadModelSelection(remembered) === resolveCodexThreadModelSelection(selection)) return;
+    const entry = { key, ...selection, explicit, at: Date.now() };
+    try {
+      localStorage.setItem("codexPlus.threadModels.v1", JSON.stringify([
+        entry, ...previous.filter((item) => item.key !== key),
+      ].slice(0, 2000)));
+      codexThreadModelRetentionSettingsChanged().cache = null;
+    } catch { /* 存储不可用时继续原生流程。 */ }
+  }
+
+  function codexThreadModelIntent(hostId, threadId, params) {
+    const key = codexThreadModelStorageKey(hostId, threadId);
+    const intent = window.__codexPlusThreadModelSelections?.get(key);
+    if (!intent || Date.now() - intent.at >= 30000) return null;
+    const selection = captureCodexThreadModelSelection(params);
+    if (!selection || (intent.selection.model !== selection.model
+        && resolveCodexThreadModelSelection(intent.selection) !== selection.model)) return null;
+    return intent.powerSelection && intent.awaitPowerChange
+      || selection.effort == null || intent.selection.effort === selection.effort ? intent : null;
+  }
+
+  async function sendCodexRetainedModelRequest(client, send, method, params, options) {
+    if (!codexThreadModelObserverActive()) return await send(method, params, options);
+    if (String(method) === "send-cli-request-for-host" && params?.method) {
+      return sendCodexRetainedModelRequest({ hostId: modelResponseHostId(client, params, params.params) },
+        (_nestedMethod, _nestedParams, nestedOptions) => send(method, params, nestedOptions),
+        String(params.method), params.params, options);
+    }
+    const hostId = modelResponseHostId(client, params);
+    if (hostId !== "local") return await send(method, params, options);
+    const state = codexThreadModelRetentionSettingsChanged();
+    const epoch = state.epoch;
+    if (String(method) === "thread/resume" && params?.threadId) state.threads.set(params.threadId, "resumed");
+    const profile = codexThreadModelProfile();
+    const profileId = profile?.id;
+    const settingsAtStart = codexPlusBackendSettings;
+    const eligibleStart = String(method) === "thread/start" && profile?.relayMode === "pureApi"
+      && !codexPlusBackendSettings.managedSessionConnection && typeof codexManagedSessionConnection === "function"
+      && !codexManagedSessionConnection();
+    const key = codexThreadModelStorageKey(hostId, params?.threadId);
+    const selection = captureCodexThreadModelSelection(params);
+    const intent = codexThreadModelIntent(hostId, params?.threadId, params);
+    const explicit = !!intent;
+    const pending = window.__codexPlusThreadModelPending || (window.__codexPlusThreadModelPending = new Map());
+    const tracks = key && String(method) === "thread/settings/update";
+    if (tracks) pending.set(key, (pending.get(key) || 0) + 1);
+    try {
+      const result = await send(method, params, options);
+      if (!codexThreadModelObserverActive() || state.epoch !== epoch) return result;
+      const startedThread = result?.thread?.id || result?.threadId;
+      if (eligibleStart && settingsAtStart === codexPlusBackendSettings && profileId === codexThreadModelProfile()?.id
+          && modelResponseHostId(hostId, result, result?.thread) === "local"
+          && result?.modelProvider !== "codex_plus_managed" && result?.thread?.modelProvider !== "codex_plus_managed"
+          && !codexManagedSessionConnection() && startedThread && !result?.error && result?.applied !== false
+          && !state.threads.has(startedThread)) state.threads.set(startedThread, "fresh");
+      if (result?.applied === false || result?.error) {
+        if (explicit && window.__codexPlusThreadModelSelections?.get(key) === intent) window.__codexPlusThreadModelSelections.delete(key);
+      }
+      if (profileId === codexThreadModelProfile()?.id
+          && (!explicit || window.__codexPlusThreadModelSelections?.get(key) === intent)) {
+        const confirmedSelection = explicit && !intent.powerSelection ? intent.selection : selection;
+        rememberCodexThreadModel(method, params, result, hostId, confirmedSelection, !!explicit);
+      }
+      return result;
+    } catch (error) {
+      // 不支持的 RPC 会由原生回退到本地状态；其它失败不能确认用户选择。
+      const unsupported = error?.code === -32601 || /method (?:not found|unsupported|not supported)/i.test(String(error?.message || error));
+      if (codexThreadModelObserverActive() && state.epoch === epoch && explicit && !unsupported
+          && window.__codexPlusThreadModelSelections?.get(key) === intent) window.__codexPlusThreadModelSelections.delete(key);
+      throw error;
+    } finally {
+      if (tracks && codexThreadModelObserverActive() && state.epoch === epoch) {
+        const count = (pending.get(key) || 1) - 1;
+        if (count) pending.set(key, count); else pending.delete(key);
+      }
+    }
+  }
+
+  function codexThreadModelPickerContext(node) {
+    const fiberKey = Object.keys(node).find((key) => key.startsWith("__reactFiber$"));
+    let fiber = fiberKey ? node[fiberKey] : null;
+    let picker, conversationId = "", threadId = "", hostId = "", selectedModel = "", selectedEffort = "";
+    for (let depth = 0; fiber && depth < 128; depth++, fiber = fiber.return) {
+      const props = fiber.memoizedProps || {};
+      if (!selectedModel && typeof fiber.key === "string" && codexPlusModelNames().includes(fiber.key)) selectedModel = fiber.key;
+      if (!picker && !selectedEffort) selectedEffort = [props.value, fiber.key]
+        .find((value) => ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(value)) || "";
+      if (!picker && typeof props.model === "string" && typeof props.onSelectModel === "function"
+          && Array.isArray(props.models)) picker = props;
+      if (!conversationId && typeof props.conversationId === "string") conversationId = props.conversationId;
+      if (!threadId && typeof props.threadId === "string") threadId = props.threadId;
+      hostId = modelResponseHostId(hostId, props, { hostId: props.permissionsHostId, host_id: props.permissions_host_id });
+    }
+    return { picker, owner: conversationId || threadId, hostId, selectedModel, selectedEffort };
+  }
+
+  function observeCodexThreadModelSelection(event) {
+    if (!codexThreadModelObserverActive()) return;
+    if (!["click", "keydown", "pointerup"].includes(event.type)) return;
+    const slider = event.target?.closest?.("[data-reasoning-slider]");
+    if (slider && event.type === "click") return;
+    if (event.type === "pointerup" && !slider) return;
+    if (event.type === "keydown" && !(slider
+      ? ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
+      : ["Enter", " "].includes(event.key))) return;
+    const row = slider || event.target?.closest?.('[role="menuitemradio"]');
+    if (!row || row.getAttribute("aria-disabled") === "true"
+        || row.closest('[inert], [hidden], [aria-hidden="true"]')) return;
+    const { picker, owner, hostId, selectedModel, selectedEffort } = codexThreadModelPickerContext(row);
+    const key = codexThreadModelStorageKey(hostId, owner);
+    if (!key || !picker || picker.lockedModelSlug || picker.modelOptionsDisabled || picker.modelSelectionDisabled
+        || (slider && (picker.disabled || picker.reasoningEffortDisabled))) return;
+    if (!slider && !selectedEffort && !row.closest("[data-model-picker-view]")) return;
+    const selection = captureCodexThreadModelSelection({
+      model: slider ? picker.model : selectedModel || (selectedEffort ? picker.model : ""),
+      effort: slider ? picker.reasoningEffort : selectedEffort || null,
+    });
+    if (!selection) return;
+    noteCodexThreadModelPickerIntent(row, selection, {
+      powerSelection: !!slider, awaitPowerChange: !!slider && event.type === "keydown", effortOnly: !selectedModel,
+    });
+  }
+
+  function noteCodexThreadModelPickerIntent(node, selection, options = {}) {
+    if (!codexThreadModelObserverActive()) return;
+    const { picker, owner, hostId } = codexThreadModelPickerContext(node);
+    const key = codexThreadModelStorageKey(hostId, owner);
+    if (!key || !picker || picker.lockedModelSlug || picker.modelOptionsDisabled || picker.modelSelectionDisabled) return;
+    const selections = window.__codexPlusThreadModelSelections || (window.__codexPlusThreadModelSelections = new Map());
+    // 用户开始选择后，本次会话不再由历史记录主动切换模型或档位。
+    codexThreadModelRetentionSettingsChanged().threads.set(owner, "manual");
+    // 只记意图；原生实际选中后才持久化，取消和自动回退不算选择。
+    selections.set(key, { selection, ...options, at: Date.now(), confirmedSince: 0 });
+    for (const [entryKey, value] of selections) if (Date.now() - value.at >= 30000) selections.delete(entryKey);
+    scheduleCodexThreadModelSync(300);
+    scheduleCodexThreadModelSync(0);
+  }
+
+  function codexThreadModelObserverActive() {
+    if (window.__codexPlusThreadModelRetentionRefresh
+        && window.__codexPlusThreadModelRetentionRefresh !== codexThreadModelRetentionSettingsChanged) return false;
+    return codexThreadModelRetentionSettingsChanged().enabled
+      && (!observeCodexThreadModelSelection.__codexPlusInstalled
+        || window.__codexPlusThreadModelSelectionObserver === observeCodexThreadModelSelection);
+  }
+
+  function codexThreadModelAutomaticSyncAllowed(owner) {
+    if (!codexThreadModelObserverActive() || !owner) return false;
+    if (codexThreadModelProfile()?.relayMode !== "pureApi") return false;
+    if (codexPlusBackendSettings.managedSessionConnection
+        || typeof codexManagedSessionConnection !== "function" || codexManagedSessionConnection()) return false;
+    if (window.__codexPlusManagedSessionStarts?.has(owner) || window.__codexPlusConnectionRecoveryPending?.has(owner)) return false;
+    return codexThreadModelRetentionSettingsChanged().threads.get(owner) === "fresh";
+  }
+
+  function installCodexThreadModelSelectionObserver() {
+    if (!codexThreadModelObserverActive()) return;
+    if (window.__codexPlusThreadModelSelectionObserver === observeCodexThreadModelSelection) return;
+    const previous = window.__codexPlusThreadModelSelectionObserver;
+    for (const type of ["click", "keydown", "pointerup"]) {
+      if (previous) document.removeEventListener?.(type, previous, true);
+      document.addEventListener?.(type, observeCodexThreadModelSelection, true);
+    }
+    observeCodexThreadModelSelection.__codexPlusInstalled = true;
+    window.__codexPlusThreadModelSelectionObserver = observeCodexThreadModelSelection;
+    window.__codexPlusThreadModelRestoreStates = new WeakMap();
+  }
+
+  function syncCodexRetainedThreadModels() {
+    if (!codexThreadModelObserverActive()) return;
+    installCodexThreadModelSelectionObserver();
+    const states = window.__codexPlusThreadModelRestoreStates || (window.__codexPlusThreadModelRestoreStates = new WeakMap());
+    for (const node of document.querySelectorAll("[data-codex-intelligence-trigger]")) {
+      const { picker, owner, hostId } = codexThreadModelPickerContext(node);
+      const key = codexThreadModelStorageKey(hostId, owner);
+      if (window.__codexPlusThreadModelPending?.has(key)) continue;
+      const selections = window.__codexPlusThreadModelSelections;
+      const intent = selections?.get(key);
+      if (intent && Date.now() - intent.at < 30000) {
+        // 滑杆组合选择由原生事件提交后读取；不能把拖动预览当成最终选择。
+        if (intent.powerSelection && picker) {
+          const selection = captureCodexThreadModelSelection({ model: picker.model, effort: picker.reasoningEffort });
+          if (selection && (selection.model !== intent.selection.model || selection.effort !== intent.selection.effort)) {
+            intent.selection = selection;
+            intent.awaitPowerChange = false;
+            intent.confirmedSince = 0;
+          }
+          if (intent.awaitPowerChange) {
+            if (Date.now() - intent.at >= 600) selections.delete(key);
+            scheduleCodexThreadModelSync(300);
+            continue;
+          }
+        }
+        const target = resolveCodexThreadModelSelection(intent.selection);
+        if (picker?.model === target && (!intent.effortOnly || picker.reasoningEffort === intent.selection.effort)) {
+          if (intent.effortOnly || intent.powerSelection) {
+            // 档位已与用户提交一致即可保存；切走对话前不再额外等待 250ms。
+            rememberCodexThreadModel("thread/settings/update", { threadId: owner }, {}, hostId,
+              { ...intent.selection, effort: picker.reasoningEffort ?? null }, true);
+            selections.delete(key);
+          } else if (!intent.confirmedSince) {
+            intent.confirmedSince = Date.now();
+            scheduleCodexThreadModelSync(300);
+          } else if (Date.now() - intent.confirmedSince >= 250) {
+            rememberCodexThreadModel("thread/settings/update", { threadId: owner }, {}, hostId,
+              { ...intent.selection, effort: picker.reasoningEffort ?? null }, true);
+            selections.delete(key);
+          }
+        } else intent.confirmedSince = 0;
+        states.delete(node);
+        continue;
+      }
+      if (intent) selections.delete(key);
+      if (hostId !== "local" || !codexThreadModelAutomaticSyncAllowed(owner)) {
+        states.delete(node);
+        continue;
+      }
+      const saved = codexRetainedThreadModel(hostId, owner);
+      if (!picker || picker.lockedModelSlug || picker.modelOptionsDisabled || picker.modelSelectionDisabled) {
+        states.delete(node);
+        continue;
+      }
+      // 目录就绪后没有可恢复的模型时保留原生选择，不强制切到默认模型。
+      if (!saved) {
+        if (codexModelCatalog.status === "ok") codexThreadModelRetentionSettingsChanged().threads.set(owner, "settled");
+        states.delete(node);
+        continue;
+      }
+      if (!picker.models.some((entry) => entry?.model === saved.model)) {
+        codexThreadModelRetentionSettingsChanged().threads.set(owner, "settled");
+        states.delete(node);
+        continue;
+      }
+      const signature = JSON.stringify([key, picker.model, picker.reasoningEffort, saved.model, saved.effort, saved.at]);
+      if (picker.model === saved.model && (saved.effort == null || picker.reasoningEffort === saved.effort)) {
+        codexThreadModelRetentionSettingsChanged().threads.set(owner, "settled");
+        states.delete(node);
+        continue;
+      }
+      const previous = states.get(node);
+      if (!previous || previous.signature !== signature) {
+        states.set(node, { signature, since: Date.now(), attempts: 0, inFlight: false });
+        scheduleCodexThreadModelSync(1600);
+        continue;
+      }
+      // 避免在原生乐观更新、会话加载或用户切换模型过程中抢写。
+      if (previous.inFlight || Date.now() - previous.since < 1500) continue;
+      if (previous.attempts >= 3) {
+        codexThreadModelRetentionSettingsChanged().threads.set(owner, "settled");
+        states.delete(node);
+        continue;
+      }
+      previous.attempts += 1;
+      previous.inFlight = true;
+      const epoch = codexThreadModelRetentionSettingsChanged().epoch;
+      const settled = () => {
+        if (!codexThreadModelAutomaticSyncAllowed(owner) || codexThreadModelRetentionSettingsChanged().epoch !== epoch) return;
+        previous.inFlight = false;
+        previous.since = Date.now();
+        // 原生回调可能不返回 Promise，下一轮按实际 picker 状态确认；最多尝试三次。
+        if (states.get(node) === previous) scheduleCodexThreadModelSync(1600);
+      };
+      try {
+        Promise.resolve(picker.onSelectModel(saved.model, saved.effort)).then(settled, settled);
+      } catch { settled(); }
+    }
+  }
+
   function codexPerModelContextEnabled() {
     const profile = codexRemoteSessionActiveProfile();
     if (!profile) return false;
@@ -690,11 +1288,13 @@
 
   function patchAppServerModelRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return false;
     registerNativeHostClient(client);
     try {
       if (!Object.isExtensible(client)) return false;
       for (const key of [
         "__codexPlusModelRequestPatch",
+        "__codexPlusModelRequestRuntime",
         "__codexPlusModelOriginalSendRequest",
         "__codexPlusThreadModels",
         "__codexPlusServiceTierOriginalPrewarmThreadStart",
@@ -707,9 +1307,12 @@
     } catch {
       return false;
     }
-    if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
-    const originalSendRequest = (client.__codexPlusModelOriginalSendRequest || client.sendRequest).bind(client);
-    client.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion
+        && client.__codexPlusModelRequestRuntime === codexModelCatalogRuntime) return true;
+    const nativeSendRequest = (client.__codexPlusModelOriginalSendRequest || client.sendRequest).bind(client);
+    client.__codexPlusModelOriginalSendRequest = nativeSendRequest;
+    const originalSendRequest = (method, params, options) =>
+      sendCodexRetainedModelRequest(client, nativeSendRequest, method, params, options);
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const managed = codexPlusPluginNativeInterceptClient(method, params, options,
@@ -769,6 +1372,7 @@
       };
     }
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    client.__codexPlusModelRequestRuntime = codexModelCatalogRuntime;
     return true;
   }
 
@@ -893,7 +1497,9 @@
   }
 
     function installCodexAppServerClientPrototypePatch() {
-    if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return false;
+    if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion
+        && window.__codexPlusAppServerClientPrototypePatchRuntime === codexModelCatalogRuntime) return true;
     const wanted = codexPlusModelUnlockEnabled()
       || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
@@ -902,8 +1508,10 @@
     const klass = window.__codexPlusAppServerClientClass;
     if (!klass || typeof klass !== "function" || !klass.prototype) return false;
     const proto = klass.prototype;
-    if (proto.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) {
+    if (proto.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion
+        && proto.__codexPlusModelRequestRuntime === codexModelCatalogRuntime) {
       window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+      window.__codexPlusAppServerClientPrototypePatchRuntime = codexModelCatalogRuntime;
       return true;
     }
     try {
@@ -917,8 +1525,11 @@
       window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
       return false;
     }
-    const originalSendRequest = proto.__codexPlusModelOriginalSendRequest || proto.sendRequest;
-    proto.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    const nativeSendRequest = proto.__codexPlusModelOriginalSendRequest || proto.sendRequest;
+    proto.__codexPlusModelOriginalSendRequest = nativeSendRequest;
+    const originalSendRequest = function (method, params, options) {
+      return sendCodexRetainedModelRequest(this, nativeSendRequest.bind(this), method, params, options);
+    };
     proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
     proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const client = this;
@@ -980,7 +1591,9 @@
       };
     }
     proto.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    proto.__codexPlusModelRequestRuntime = codexModelCatalogRuntime;
     window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+    window.__codexPlusAppServerClientPrototypePatchRuntime = codexModelCatalogRuntime;
     sendCodexPlusDiagnostic("app_server_client_prototype_patch_installed", {});
     return true;
   }
@@ -1038,12 +1651,15 @@
   }
 
   function installAppServerModelRequestPatch() {
-    if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion
+        && window.__codexPlusAppServerModelRequestPatchRuntime === codexModelCatalogRuntime) return;
     if (appServerModelRequestPatchDisabled) return;
     if (appServerModelRequestPatchPromise) return;
     const patch = async () => {
       try {
         const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
+        if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
         if (modules.length === 0) {
           noteAppServerModelRequestPatchMiss("model_app_server_request_patch_skipped", {
             reason: "app_server_request_assets_missing",
@@ -1060,6 +1676,7 @@
           appServerModelRequestPatchMissCount = 0;
           appServerModelRequestPatchRetryDelayMs = 250;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
+          window.__codexPlusAppServerModelRequestPatchRuntime = codexModelCatalogRuntime;
           sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
             moduleCount: modules.length,
             candidateCount: candidates.length,
@@ -1089,7 +1706,7 @@
   }
 
   function ensureCodexModelWhitelistInstalls() {
-    if (codexPlusModelUnlockEnabled()
+    if (codexPlusModelUnlockEnabled() || codexThreadModelObserverActive()
         || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
           || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave) {
@@ -1103,6 +1720,8 @@
   }
 
   function runCodexModelWhitelistRefreshPass() {
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return false;
+    syncCodexRetainedThreadModels();
     if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
     try {
       patchStatsigModelWhitelist();
