@@ -254,15 +254,18 @@ interface CodexPlusSidePanelDefinition {
 
 type CodexPlusSlotName =
   | "composer.above" | "thread.top" | "thread.bottom" | "sidebar.top" | "sidebar.bottom" | "titlebar"
-  | "turn.after" | "sessionRow.prefix" | "sessionRow.suffix" | "overlay";
+  | "turn.after" | "sessionRow.prefix" | "sessionRow.suffix" | "overlay" | "activity.after";
 
 interface CodexPlusSlotDefinition {
   slot: CodexPlusSlotName;
   /** 越小越靠前。 */
   order?: number;
   /** 容器新建时调用（Codex 重建 DOM 后会再调）；可返回清理函数。容器留空则不占位。 */
-  /** turn.after 多给 turnKey；sessionRow.* 多给 sessionId、title。 */
-  render(context: { container: HTMLElement; slot: CodexPlusSlotName; turnKey?: string; sessionId?: string; title?: string }): void | (() => void);
+  /** turn.after 多给 turnKey；sessionRow.* 多给 sessionId、title；activity.after 多给 kind、itemIds、text。 */
+  render(context: {
+    container: HTMLElement; slot: CodexPlusSlotName; turnKey?: string; sessionId?: string; title?: string;
+    kind?: "command" | "toolCall" | "fileChange" | "reasoning" | "error" | "other"; itemIds?: string[]; text?: string;
+  }): void | (() => void);
 }
 
 /** 撤销函数，另带 refresh()：强制所有位置重画该项。 */

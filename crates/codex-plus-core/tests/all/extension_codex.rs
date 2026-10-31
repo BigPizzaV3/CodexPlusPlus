@@ -107,3 +107,31 @@ fn instructions_block_is_replaced_in_place_and_removed_cleanly() {
     assert!(second.starts_with("开头") && second.contains("规则二") && !second.contains("规则一"));
     assert_eq!(sync_instructions_text(&second, None), "开头\n");
 }
+
+/// 实测用：把一个声明了技能、子 agent、MCP 服务器、全局指令的拓展同步进 `CODEXPP_LIVE_CODEX_HOME`，
+/// 再用真实 Codex CLI 跑一轮看它是否识别。平时跳过：`CODEXPP_LIVE_CODEX_HOME=… cargo test … -- --ignored`。
+#[test]
+#[ignore]
+fn live_sync_into_codex_home() {
+    let Ok(home) = std::env::var("CODEXPP_LIVE_CODEX_HOME") else {
+        return;
+    };
+    let home = std::path::PathBuf::from(home);
+    let root = home.parent().unwrap().join("live-ext");
+    let manager = UserScriptManager::new(root.join("builtin"), root.join("user"), root.join("user_scripts.json"));
+    let dir = root.join("user/kit");
+    fs::create_dir_all(dir.join("skills/probe-skill")).unwrap();
+    fs::create_dir_all(dir.join("mcp")).unwrap();
+    fs::write(dir.join("skills/probe-skill/SKILL.md"), "---\nname: probe-skill\ndescription: PROBE-SKILL-DESCRIPTION 用来实测技能同步\n---\n先说 PROBE-SKILL-BODY\n").unwrap();
+    fs::write(dir.join("mcp/server.mjs"), include_str!("live_mcp_server.mjs")).unwrap();
+    fs::write(dir.join("rules.md"), "PROBE-GLOBAL-INSTRUCTION：回答前先说「已读规则」。").unwrap();
+    fs::write(dir.join("codexpp.json"), json!({
+        "id": "kit", "name": "实测套件",
+        "config": { "token": { "type": "string", "secret": true, "default": "PROBE-TOKEN" } },
+        "agents": [{ "name": "reviewer", "description": "PROBE-AGENT-DESCRIPTION 代码审查", "instructions": "你是审查员" }],
+        "mcpServers": { "probe": { "command": "node", "args": ["${extensionDir}/mcp/server.mjs"], "env": { "PROBE_TOKEN": "${config.token}" } } },
+        "instructions": "rules.md"
+    }).to_string()).unwrap();
+    let report = sync(&home, &manager, &manager.enabled_codex_assets().unwrap()).unwrap();
+    println!("{report}");
+}

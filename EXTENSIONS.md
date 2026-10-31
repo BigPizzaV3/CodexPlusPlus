@@ -194,7 +194,10 @@ codexPlus.extension((ctx) => {
 - 位置：`composer.above`（输入框上方）、`thread.top` / `thread.bottom`（对话区顶部 / 底部）、`sidebar.top` / `sidebar.bottom`
   （左侧栏列表顶部 / 底部）、`titlebar`（标题栏右侧按钮组）、`turn.after`（每一轮对话末尾，render 多收到 `turnKey`）、
   `sessionRow.prefix` / `sessionRow.suffix`（侧栏每个会话标题前 / 后，多收到 `sessionId`、`title`）、
-  `overlay`（铺满窗口的浮层，默认不挡点击，放进去的元素可以点）。未知位置会报错。
+  `overlay`（铺满窗口的浮层，默认不挡点击，放进去的元素可以点）、`activity.after`（对话里每个活动条目——命令、
+  工具 / 子 agent 调用、出错——的末尾，多收到 `kind`（`command` / `toolCall` / `fileChange` / `reasoning` / `error` /
+  `other`）、`itemIds`、`text`；条目收在 Codex 的「用时 Ns」里，用户展开后才出现；推理只在 Codex 的显示模式会显示推理时才有条目）。
+  未知位置会报错。
 - `render({ container, slot, ... })` 在容器新建时调用；Codex 重建 DOM（切换会话、侧栏刷新）后会重新调用，不要缓存节点。
   返回的函数在该项被撤下或重画前调用。`container` 留空则不占位。返回的句柄带 `refresh()` 强制重画。
 - 同一位置多个拓展按 `order` 排列（越小越靠前）。拓展卸载、热重载时自动撤下。

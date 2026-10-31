@@ -314,7 +314,7 @@ export default async function* (context, next) {
 - `ctx.registerTheme({ id, name, variables: { "--变量": "值" }, css })`，`ctx.themes.apply(id)` 切换，`apply(null)` 恢复。
 - `await ctx.ask({ title, message, options: [{ value, label }], input: { placeholder } })` → `{ value, text }` 或 null；
   后台 / 工具 / 钩子里用 `ui.ask(...)`、`ui.toast("文字")`。
-- 新插槽位置：`turn.after`（每轮末尾，render 收到 turnKey）、`sessionRow.prefix` / `sessionRow.suffix`（侧栏会话标题前后，收到 sessionId）、`overlay`（全窗口浮层）。
+- 新插槽位置：`turn.after`（每轮末尾，render 收到 turnKey）、`sessionRow.prefix` / `sessionRow.suffix`（侧栏会话标题前后，收到 sessionId）、`overlay`（全窗口浮层）、`activity.after`（每个命令 / 工具调用 / 出错条目末尾，收到 kind、itemIds、text）。
 
 ## 提供模型供应商
 

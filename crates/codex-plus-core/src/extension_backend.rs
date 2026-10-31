@@ -92,7 +92,8 @@ lines.on("line", async (line) => {
         let due = false;
         if (schedule.everyMinutes) {
           if (!last) state[key] = now;
-          else due = now - last >= schedule.everyMinutes * 60000;
+          // 调度本身每 60 秒一次，会有几毫秒到几秒的抖动：留 5 秒余量，免得「每分钟」变成每两分钟。
+          else due = now - last >= schedule.everyMinutes * 60000 - 5000;
         } else if (schedule.at) {
           const [hour, minute] = schedule.at.split(":").map(Number);
           const target = new Date(now);

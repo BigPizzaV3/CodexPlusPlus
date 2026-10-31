@@ -21112,6 +21112,7 @@
       [data-codex-plus-ui-slot="sessionRow.prefix"],[data-codex-plus-ui-slot="sessionRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
       [data-codex-plus-ui-slot="sessionRow.prefix"]{margin-right:4px}
       [data-codex-plus-ui-slot="sessionRow.suffix"]{margin-left:4px}
+      [data-codex-plus-ui-slot="activity.after"]{margin:4px 0 2px}
       [data-codex-plus-ui-slot="overlay"]{position:fixed;inset:0;z-index:2147483600;pointer-events:none}
       [data-codex-plus-ui-slot="overlay"] .codex-plus-ui-slot-item>*{pointer-events:auto}`;
     document.head.append(style);
@@ -21155,7 +21156,7 @@
 
   /** 有没有挂在对话区里的界面插槽：它们和消息插槽共用对话区的观察器。 */
   function codexPlusHasThreadUiSlots() {
-    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above"].includes(item.slot));
+    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above", "activity.after"].includes(item.slot));
   }
 
   function refreshCodexPlusMessageSlots() {
@@ -21333,11 +21334,13 @@
    * 位置：composer.above（输入框上方）、thread.top / thread.bottom（对话区顶部 / 底部）、
    * sidebar.top / sidebar.bottom（左侧栏列表顶部 / 底部）、titlebar（标题栏右侧按钮组）、
    * turn.after（每一轮对话的末尾，render 收到 turnKey）、sessionRow.prefix / sessionRow.suffix
-   * （侧栏每个会话行标题前 / 后，render 收到 sessionId、title）、overlay（铺满窗口的浮层，默认不挡点击）。
+   * （侧栏每个会话行标题前 / 后，render 收到 sessionId、title）、overlay（铺满窗口的浮层，默认不挡点击）、
+   * activity.after（对话里每个活动条目——命令、工具 / 子 agent 调用、出错、推理——的末尾，render 收到
+   * kind、itemIds、text；条目在 Codex 折叠的「用时 Ns」里，展开后才渲染）。
    * 每个位置一个带拓展标记的宿主节点，里面每个注册项一个容器；容器新建时调用 render（DOM 会随 Codex 重建，
    * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
    */
-  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar", "turn.after", "sessionRow.prefix", "sessionRow.suffix", "overlay"];
+  const codexPlusUiSlotNames = ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar", "turn.after", "sessionRow.prefix", "sessionRow.suffix", "overlay", "activity.after"];
   const codexPlusUiSlotVersions = new Map();
 
   function codexPlusUiSlotAnchors(slot) {
@@ -21378,6 +21381,12 @@
         });
       case "overlay":
         return document.body ? [{ parent: document.body, place: "end" }] : [];
+      case "activity.after":
+        // 活动条目带 data-local-conversation-item-target-ids（空格分隔的条目 id，前缀即类型）；挂在条目自己里面的末尾。
+        return visible(".thread-scroll-container [data-local-conversation-item-target-ids]").map((item) => {
+          const itemIds = String(item.getAttribute("data-local-conversation-item-target-ids") || "").split(/\s+/).filter(Boolean);
+          return { parent: item, place: "end", info: { kind: codexPlusActivityKind(itemIds[0] || ""), itemIds, text: (item.innerText || "").trim().slice(0, 300) } };
+        });
       case "titlebar": {
         const toolbar = codexPlusSidePanelToolbar();
         if (!toolbar) return [];
@@ -21386,6 +21395,16 @@
       default:
         return [];
     }
+  }
+
+  /** 活动条目 id 的前缀 → 类型。 */
+  function codexPlusActivityKind(id) {
+    if (/^exec-/.test(id)) return "command";
+    if (/^turn-error-/.test(id)) return "error";
+    if (/reason/i.test(id)) return "reasoning";
+    if (/patch|file-?change/i.test(id)) return "fileChange";
+    if (/^call_|^fc_|tool|mcp/i.test(id)) return "toolCall";
+    return "other";
   }
 
   function codexPlusRunSlotCleanup(node) {
