@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  ownPickerSection,
+  defaultProviderAgents,
+  glanceAgents,
+  skippedAgents,
   isDirectProxy,
   proxyAddressError,
   agentModels,
@@ -484,4 +488,40 @@ test("供应商代理：留空和直连都合法，直连不分大小写（#2760
   assert.equal(isDirectProxy("Direct"), true);
   assert.equal(isDirectProxy(""), false);
   assert.equal(isDirectProxy("http://direct.example:8080"), false);
+});
+
+test("添加供应商：只给内置和已接入的 Agent 勾选，装了没接入的既不列出也不跳过", () => {
+  const view = (agent: string, enabled: boolean) => ({ agent, name: agent, enabled, baseUrl: "", defaultModel: "", models: [] });
+  const payload = {
+    agents: [view("codex", true), view("claude", false), view("grok", false), view("opencode", true), view("hermes", false)],
+    gateway: { bindings: {} },
+  } as unknown as GatewayPayload;
+  assert.deepEqual(glanceAgents(payload.agents).map((agent) => agent.agent), ["codex", "claude", "grok", "opencode"]);
+  assert.deepEqual(defaultProviderAgents(payload), ["codex", "claude", "grok", "opencode"]);
+  assert.deepEqual(skippedAgents(payload, ["codex"]), ["claude", "grok", "opencode"]);
+});
+
+test("Agent 自带的模型：单独一组、标出直连对象，按名字或厂商筛", () => {
+  const own = { vendor: "OpenAI", current: "gpt-6-sol", models: [{ id: "gpt-6-sol", label: "GPT-6-Sol" }, { id: "gpt-6-luna", label: "gpt-6-luna" }] };
+  const section = ownPickerSection(own, "", (name) => name);
+  assert.equal(section?.key, "own");
+  assert.equal(section?.title, "OpenAI");
+  assert.deepEqual(section?.items.map((item) => [item.model, item.label, item.sub, item.direct]), [
+    ["gpt-6-sol", "GPT-6-Sol", "gpt-6-sol", "OpenAI"],
+    ["gpt-6-luna", "gpt-6-luna", "", "OpenAI"],
+  ]);
+  assert.deepEqual(ownPickerSection(own, "luna", (name) => name)?.items.map((item) => item.model), ["gpt-6-luna"]);
+  assert.equal(ownPickerSection(own, "openai", (name) => name)?.items.length, 2, "搜厂商名列出整组");
+  assert.equal(ownPickerSection(own, "deepseek", (name) => name), null);
+  assert.equal(ownPickerSection(null, "", (name) => name), null);
+});
+
+test("模型下拉：自带模型走「直连」命令，接入着时先确认；托盘面板同样列出", () => {
+  const agents = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
+  assert.match(agents, /"use_gateway_own_model"/);
+  assert.match(agents, /t\("直连，不经 Codex\+\+"\)/);
+  assert.match(agents, /if \(connected\) \{\s*const ok = await appConfirm/);
+  const tray = readFileSync(new URL("./TrayPanel.tsx", import.meta.url), "utf8");
+  assert.match(tray, /onPickOwn=\{/);
+  assert.match(tray, /"use_gateway_own_model"/);
 });

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import {
+  glanceAgents,
   agentName,
   formatElapsed,
   groupModeDescription,
@@ -49,6 +50,8 @@ import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { gatewayGeneration, publishGatewayPayload, subscribeGatewayPayload } from "./gateway-store";
+import { visibleAgents } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
 
 type Tab = "agents" | "sessions" | "providers" | "routing" | "usage" | "gateway";
@@ -728,6 +731,7 @@ function GroupEditor({
 /* —————————————————————— 网关 —————————————————————— */
 
 function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
+  const agentFocus = useAgentFocus();
   if (!payload) return null;
   const mode = payload.gateway.keyPolicy.mode;
   const restoreOnExit = payload.gateway.restoreOnExit;
@@ -745,7 +749,7 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
           <code>{`http://127.0.0.1:${payload.port}`}</code>
           <span className="gw-pill" data-tone={payload.helperRunning ? "ok" : "warning"}>{payload.helperRunning ? t("运行中") : t("未运行")}</span>
         </div>
-        {payload.agents.map((agent) => {
+        {visibleAgents(agentFocus, glanceAgents(payload.agents)).map((agent) => {
           const binding = payload.gateway.bindings[agent.agent];
           return (
             <div className="gw-setting-row" key={agent.agent}>

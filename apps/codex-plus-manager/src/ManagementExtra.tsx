@@ -10,6 +10,8 @@ import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
 import { AgentColumn, ManagementDrawer, MatrixCell, Menu, MenuItem, SearchField } from "./ManagementPages";
 import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
+import { singleAgent } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
 import { SkillListViewport } from "./SkillListViewport";
@@ -195,6 +197,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [detail, setDetail] = useState<Skill | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // 只管理 Codex 时只有 Codex 一列。
+  const agentColumns: McpAgentId[] = singleAgent(useAgentFocus()) === "codex" ? ["codex"] : MCP_AGENTS;
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [storedGroups] = useState(() => readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY)));
   const [customGroupNames, setCustomGroupNames] = useState<string[]>(storedGroups.names);
@@ -387,7 +391,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       <div className="mg-skill-source" title={s.repoKey || sourceLabel(s)}>
         {repoUrl(s) ? <button className="mg-link-button" onClick={() => openRepo(s.repoKey)} type="button">{sourceLabel(s)}</button> : <small>{sourceLabel(s)}</small>}
       </div>
-      {MCP_AGENTS.map((agent) => <MatrixCell agent={agent} key={agent} name={s.name || s.id}
+      {agentColumns.map((agent) => <MatrixCell agent={agent} key={agent} name={s.name || s.id}
         enabled={s.installed && skillAgents(s).includes(agent)}
         disabled={busy || !s.installed || s.bundled}
         hint={!s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : undefined}
@@ -440,8 +444,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       </div>
     </div>
     <div className="mg-content">
-      <div className="mg-matrix mg-agent-matrix mg-skill-matrix" aria-busy={loading}>
-        <div className="mg-matrix-head"><span>{t("技能")}</span><span>{t("来源")}</span>{MCP_AGENTS.map((agent) => <AgentColumn agent={agent} count={agentCount(agent)} key={agent} title={data?.agentSkillsDirs?.[agent]} />)}<span className="mg-actions-label">{t("操作")}</span></div>
+      <div className="mg-matrix mg-agent-matrix mg-skill-matrix" aria-busy={loading} data-columns={agentColumns.length}>
+        <div className="mg-matrix-head"><span>{t("技能")}</span><span>{t("来源")}</span>{agentColumns.map((agent) => <AgentColumn agent={agent} count={agentCount(agent)} key={agent} title={data?.agentSkillsDirs?.[agent]} />)}<span className="mg-actions-label">{t("操作")}</span></div>
         {!groups.length ? <div className="mg-empty"><h2>{loading ? t("正在扫描…") : t("没有匹配的 Skill")}</h2></div> :
           <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
             <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {

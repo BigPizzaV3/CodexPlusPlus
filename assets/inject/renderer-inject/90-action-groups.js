@@ -21,6 +21,14 @@
   function disposeSessionMoreMenu(menu) {
     closeSessionMoreMenu(menu);
     menu.__codexSessionMoreCleanup?.();
+    // 拓展用 render 自己画的菜单项（例如 dsh 前端插件的 React 组件）：菜单拆掉时一并卸载。
+    menu.querySelectorAll?.("[data-codex-plus-extension-item]").forEach((item) => {
+      const cleanup = item.__codexPlusRowActionCleanup;
+      item.__codexPlusRowActionCleanup = null;
+      if (typeof cleanup === "function") {
+        try { cleanup(); } catch {}
+      }
+    });
     const group = menu.__codexSessionMoreGroup;
     if (group?.__codexSessionMoreMenu === menu) group.__codexSessionMoreMenu = null;
     menu.__codexSessionMoreCleanup = null;

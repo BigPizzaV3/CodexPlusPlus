@@ -1,0 +1,12 @@
+{
+  "name": "dsh-session-demo",
+  "version": "0.1.0",
+  "description": "演示依赖 sessions / agents / sessionProjections / commands 的 dsh 插件在 Codex++ 里如何运行",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-session": "*"
+  }
+}

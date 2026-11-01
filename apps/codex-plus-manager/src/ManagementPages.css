@@ -294,7 +294,7 @@
 .mg-push { margin-left:auto; }
 .mg-toolbar-actions { display:flex; align-items:center; gap:6px; }
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-head,
-.mg-agent-matrix.mg-skill-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) 150px repeat(3,84px) 120px; }
+.mg-agent-matrix.mg-skill-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) 150px repeat(var(--mg-agent-columns,3),84px) 120px; }
 .mg-skill-matrix .mg-row-main { width:100%; cursor:pointer; }
 .mg-skill-matrix .mg-skill-source { min-width:0; padding-right:12px; }
 .mg-skill-matrix .mg-skill-source .mg-link-button { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }

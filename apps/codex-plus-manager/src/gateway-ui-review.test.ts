@@ -110,7 +110,7 @@ test("总览：读取中、空池、全部关闭分开显示；最近请求没�
   const hub = read("HubOverview.tsx");
   assert.match(hub, /poolState === "loading" \? <p className="hub-empty">\{t\("读取中…"\)\}<\/p>/);
   assert.match(hub, /poolState === "allOff"/);
-  assert.match(hub, /: t\("正在读取网关状态…"\)/);
+  assert.match(hub, /\? t\("正在读取网关状态…"\)/);
   const matrix = read("GatewayModelMatrix.tsx");
   assert.match(matrix, /\{!payload \? <div className="gw-empty">\{t\("正在读取…"\)\}<\/div> : null\}/);
   assert.match(matrix, /payload\.pool\.length \? t\("供应商都已关闭"\)/);

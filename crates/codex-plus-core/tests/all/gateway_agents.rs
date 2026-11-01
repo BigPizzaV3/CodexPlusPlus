@@ -1,0 +1,175 @@
+//! 通用 Agent（`gateway::agents` 规格表）的接入与还原：每条规格都过一遍「接入 → 配置指向网关 → 断开 → 一字不差还原」。
+
+use codex_plus_core::gateway::agents::{self, AgentEnv};
+use codex_plus_core::gateway::apply::{
+    ApplyContext, ProviderInput, create_provider, disable_binding, enable_binding,
+};
+use codex_plus_core::gateway::store::{AgentBinding, GatewayStore};
+use codex_plus_core::settings::{BackendSettings, RelayProtocol};
+use codex_plus_core::tools::ToolId;
+
+struct Fixture {
+    _temp: tempfile::TempDir,
+    ctx: ApplyContext,
+    home: std::path::PathBuf,
+}
+
+fn fixture() -> Fixture {
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("state");
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let ctx = ApplyContext {
+        gateway: GatewayStore::at(state.join("gateway.json")),
+        claude: codex_plus_core::tools::claude::ClaudeContext {
+            store_path: state.join("claude-providers.json"),
+            claude_home: temp.path().join("claude"),
+            backup_root: state.join("backups"),
+        },
+        grok_home: temp.path().join("grok"),
+        codex_home: temp.path().join("codex"),
+        settings: codex_plus_core::settings::SettingsStore::new(state.join("settings.json")),
+        backup_root: state.join("backups"),
+        port: 57321,
+        agent_env: AgentEnv::at(&home),
+    };
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "DeepSeek".into(),
+            base_url: "https://api.deepseek.test/v1".into(),
+            protocol: RelayProtocol::ChatCompletions,
+            keys: vec!["sk-ds".into()],
+            model: "deepseek-v4-pro".into(),
+            model_list: "deepseek-v4-pro\ndeepseek-v4-flash".into(),
+            price: None,
+            model_prices: None,
+            proxy: None,
+            strip_image_generation_tool: None,
+        },
+        "preset:deepseek",
+        None,
+    )
+    .unwrap();
+    Fixture {
+        _temp: temp,
+        ctx,
+        home,
+    }
+}
+
+fn binding() -> AgentBinding {
+    AgentBinding {
+        model: "deepseek-v4-pro".into(),
+        context_window: Some(128_000),
+        ..AgentBinding::default()
+    }
+}
+
+/// 目录下全部文件的 (相对路径, 内容)。
+fn snapshot(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let relative = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
+                out.push((relative, std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn every_generic_agent_connects_and_restores_exactly() {
+    for spec in agents::all() {
+        let fixture = fixture();
+        let ctx = &fixture.ctx;
+        let agent = ToolId::Unknown(spec.id.to_string());
+        let before = snapshot(&fixture.home);
+
+        enable_binding(ctx, &agent, binding())
+            .unwrap_or_else(|error| panic!("{} 接入失败：{error:#}", spec.id));
+        assert!(
+            agents::connect::points_at_gateway(ctx, spec),
+            "{} 接入后配置里找不到 /gw/{}",
+            spec.id,
+            spec.id
+        );
+        assert!(
+            codex_plus_core::gateway::drift::check(ctx, &agent).is_none(),
+            "{} 刚接入就报配置被改",
+            spec.id
+        );
+        // 再写一次（模型列表变化时会重写）也不能出错。
+        enable_binding(ctx, &agent, binding())
+            .unwrap_or_else(|error| panic!("{} 重写失败：{error:#}", spec.id));
+
+        disable_binding(ctx, &BackendSettings::default(), &agent)
+            .unwrap_or_else(|error| panic!("{} 断开失败：{error:#}", spec.id));
+        assert_eq!(
+            snapshot(&fixture.home),
+            before,
+            "{} 断开后没有还原成接入前的样子",
+            spec.id
+        );
+        assert!(!agents::connect::recorded(ctx, spec));
+    }
+}
+
+#[test]
+fn opencode_keeps_user_edits_made_while_connected() {
+    let fixture = fixture();
+    let ctx = &fixture.ctx;
+    let spec = agents::spec("opencode").unwrap();
+    let path = (spec.config_path)(&ctx.agent_env);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let original = "{\n  // 我的配置\n  \"theme\": \"dark\",\n  \"model\": \"anthropic/x\"\n}\n";
+    std::fs::write(&path, original).unwrap();
+    let agent = ToolId::Unknown("opencode".into());
+
+    enable_binding(ctx, &agent, binding()).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"codexplus/deepseek-v4-pro\""));
+    assert!(text.contains("http://127.0.0.1:57321/gw/opencode/v1"));
+    assert!(text.contains("\"theme\": \"dark\""));
+
+    // 接入期间用户自己加了一项。
+    let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    value["autoupdate"] = serde_json::json!(false);
+    std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
+    let restored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(restored["model"], "anthropic/x");
+    assert_eq!(restored["autoupdate"], false);
+    assert!(restored.get("provider").is_none());
+    assert!(restored.get("small_model").is_none());
+}
+
+#[test]
+fn drift_reported_when_config_rewritten_elsewhere() {
+    let fixture = fixture();
+    let ctx = &fixture.ctx;
+    let spec = agents::spec("opencode").unwrap();
+    let agent = ToolId::Unknown("opencode".into());
+    enable_binding(ctx, &agent, binding()).unwrap();
+    std::fs::write((spec.config_path)(&ctx.agent_env), "{\"model\":\"other/x\"}").unwrap();
+    assert!(codex_plus_core::gateway::drift::check(ctx, &agent).is_some());
+    // 被接管时断开：不写 Agent 的文件，只丢掉存档。
+    disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
+    assert_eq!(
+        std::fs::read_to_string((spec.config_path)(&ctx.agent_env)).unwrap(),
+        "{\"model\":\"other/x\"}"
+    );
+    assert!(!agents::connect::recorded(ctx, spec));
+}

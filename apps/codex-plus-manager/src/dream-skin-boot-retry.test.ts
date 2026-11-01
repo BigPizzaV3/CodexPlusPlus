@@ -79,34 +79,29 @@ test("startup settings loading keeps retrying with backoff instead of giving up 
   assert.ok(total > 60_000 && total < 180_000, `total retry window ${total}ms`);
 });
 
-test("startup and heartbeat settings loads re-apply the dream skin", async () => {
+// 梦皮（#2680）、微信同步等跟着设置走的功能由各自的内置拓展订阅 settings/loaded，这里只验证事件按时发出。
+test("startup and heartbeat settings loads emit settings/loaded for the dream skin and other builtins", async () => {
   const source = fragment("40-backend-settings.js");
-  let refreshes = 0;
-  let weixinSyncs = 0;
+  const emitted: string[] = [];
   let loaded = true;
   const context = vm.createContext({
     codexPlusSettings: () => ({ conversationView: false }),
     loadBackendSettingsState: async () => loaded,
     codexRemoteSessionProviderOverrideEnabled: () => false,
     refreshCodexPlusBackendToggles: () => {},
-    syncOfficialUsagePolicy: () => {}, syncCodexPlusTypingEffects: () => {},
-    syncWeixinDesktopThreads: async () => { weixinSyncs += 1; },
-    renderCodexPlusMenu: () => {}, refreshConversationView: () => {},
+    syncOfficialUsagePolicy: () => {},
+    renderCodexPlusMenu: () => {},
     syncCodexPlusBackendToggleButtons: () => {}, runScanStep: (fn: () => void) => fn(),
-    refreshDreamSkin: () => { refreshes += 1; },
+    codexPlusEmitExtensionEvent: (event: string, [detail]: Array<{ reason: string }>) => emitted.push(`${event}:${detail.reason}`),
     globalThis: {},
   });
   vm.runInContext(slice(source, "  async function loadBackendSettings(", "  /**\n   * 启动期读取后端设置的重试间隔"), context);
   vm.runInContext(slice(source, "  let syncBackendSettingsInFlight", "  async function setBackendSetting("), context);
   await (context.loadBackendSettings as () => Promise<boolean>)();
-  assert.equal(refreshes, 1);
-  assert.equal(weixinSyncs, 1);
   await (context.syncBackendSettingsFromHeartbeat as () => Promise<void>)();
-  assert.equal(refreshes, 2);
-  assert.equal(weixinSyncs, 2);
+  assert.deepEqual(emitted, ["settings/loaded:startup", "settings/loaded:heartbeat"]);
   loaded = false;
   await (context.loadBackendSettings as () => Promise<boolean>)();
   await (context.syncBackendSettingsFromHeartbeat as () => Promise<void>)();
-  assert.equal(refreshes, 2, "failed reads keep the current skin state");
-  assert.equal(weixinSyncs, 2, "failed reads do not synchronize Weixin threads");
+  assert.equal(emitted.length, 2, "failed reads keep the current skin state and do not synchronize Weixin threads");
 });

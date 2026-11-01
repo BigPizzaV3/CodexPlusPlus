@@ -173,7 +173,7 @@ test("the default-off recovery switch is exposed in both settings UIs and uses t
   assert.equal(entries[0].title, "历史轮次补载（实验）");
   assert.match(app, /codexAppHistoryTurnRecovery: boolean/);
   assert.match(app, /codexAppHistoryTurnRecovery: false/);
-  assert.match(app, /managerGroupItems\(group\.id, enhancementPlatform\)\.map\(renderSetting\)/);
+  assert.match(app, /managerBuiltinCards\(group\.id, enhancementPlatform\)\.map\(renderBuiltin\)/);
   assert.match(styles, /historyTurnRecovery: false/);
   assert.match(styles, /historyTurnRecovery: "codexAppHistoryTurnRecovery"/);
   assert.match(backend, /renderCodexPlusSettingsCatalogSections\(\)/);

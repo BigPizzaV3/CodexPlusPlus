@@ -1,18 +1,20 @@
 /**
- * 托盘快捷面板：三个页签——
+ * 托盘快捷面板：四个页签——
  * 概览（Codex 状态与启动 / 重启 / 停止、今日速览、常用入口）、
- * 用量（今天 / 7 天的请求与 token、订阅额度、余额）、网关（各 Agent 换模型、最近请求）。
+ * 用量（今天 / 7 天的请求与 token、订阅额度、余额）、网关（各 Agent 换模型、最近请求）、
+ * 实时（Agent → Codex++ → 供应商的实时请求流，每条真实请求一颗来回的光点）。
  * 旧版的直连供应商切换不放进面板：供应商统一在网关里管。
  *
  * 会拉起进程的操作（启动 / 重启 / 停止 Codex）不在面板里重做一遍，而是发给主窗口，
  * 走主窗口现有的流程（校验、冲突弹窗、等待启动结果），做完主窗口回一个结果。
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   Activity,
   ChartColumn,
+  Radio,
   Check,
   ChevronDown,
   ChevronRight,
@@ -32,8 +34,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { t, tf } from "./i18n";
-import { ModelList, Floating } from "./GatewayAgents";
+import { ModelList, Floating, ownCurrent } from "./GatewayAgents";
 import {
+  glanceAgents,
   agentModels,
   agentName,
   bindingFromDraft,
@@ -53,6 +56,10 @@ import {
   maskAccountName,
 } from "./gateway-model";
 import { AGENT_ICONS, APP_LOGO_URL, AutoTag, Avatar, AgentIcon, ModelViewGlyph } from "./gateway-ui";
+import { HubTopology } from "./HubOverview";
+import type { HubLink } from "./hub-overview-model";
+import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
+import { busyLinks, flowAgent, flowColumns, flowStatus } from "./request-flow-model";
 import {
   activeRelayItem,
   codexEnhanced,
@@ -75,6 +82,8 @@ import {
   type TraySettings,
   type TrayTabId,
 } from "./tray-panel-model";
+import { agentVisible, singleAgent, visibleAgents } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import { applyResolvedTheme, loadThemePreference, resolveTheme, systemPrefersDark, watchSystemTheme } from "./theme-mode";
 import "./GatewayPage.css";
 import "./TrayPanel.css";
@@ -101,7 +110,11 @@ type LogEntry = {
 type UsageRange = "today" | "7d";
 
 /** 网关页签要看实时请求，刷得勤一些；其它页签慢一点。都只在面板可见时刷。 */
-const REFRESH_MS: Record<TrayTabId, number> = { home: 5000, usage: 8000, gateway: 3000 };
+const REFRESH_MS: Record<TrayTabId, number> = { home: 5000, usage: 8000, gateway: 3000, flow: 8000 };
+/** 实时页签的请求流单独每秒读一次（只读日志末尾），光点跟得上真实请求。 */
+const FLOW_REFRESH_MS = 1000;
+/** 实时页签列出的请求条数。 */
+const FLOW_LIST_LIMIT = 20;
 /** 发给主窗口的请求最多等这么久（启动 Codex 本身最多等 30 秒）。 */
 const REQUEST_TIMEOUT_MS = 90_000;
 
@@ -109,6 +122,7 @@ const TAB_META: Record<TrayTabId, { label: string; icon: LucideIcon }> = {
   home: { label: "概览", icon: House },
   usage: { label: "用量", icon: ChartColumn },
   gateway: { label: "网关", icon: Waypoints },
+  flow: { label: "实时", icon: Radio },
 };
 
 type Pending = { id: string; kind: TrayRequest["kind"]; target?: string };
@@ -193,6 +207,7 @@ export function TrayPanel() {
     if (which === "home") jobs.push(loadSettings(), loadUsage("today"));
     if (which === "usage") jobs.push(loadUsage(rangeRef.current), loadGateway());
     if (which === "gateway") jobs.push(loadGateway(), loadLogs());
+    if (which === "flow") jobs.push(loadUsage("today"));
     await Promise.all(jobs);
   };
 
@@ -378,6 +393,7 @@ export function TrayPanel() {
           />
         ) : null}
         {tab === "gateway" ? <GatewayTab logs={logs} onOpenRoute={openRoute} onPayload={setPayload} payload={payload} /> : null}
+        {tab === "flow" ? <FlowTab onOpenRoute={openRoute} today={usage.today ?? null} /> : null}
       </div>
 
       {flash ? (
@@ -463,6 +479,8 @@ function HomeTab({
   const glance = usageGlance(today);
   const busy = pending !== null;
   const busyKind = pending && pending.kind !== "navigate" ? pending.kind : null;
+  // 没勾选 Codex 时不放 Codex 的状态卡和启停按钮。
+  const showCodex = agentVisible(useAgentFocus(), "codex");
   const connection = settings?.relayProfilesEnabled === false
     ? t("供应商配置已关闭")
     : !active
@@ -472,7 +490,7 @@ function HomeTab({
         : tf("直连 · {0}", [active.name || t("未命名供应商")]);
   return (
     <>
-      <div className="tp-card tp-codex">
+      {showCodex ? <div className="tp-card tp-codex">
         <div className="tp-codex-top">
           <img alt="" src={AGENT_ICONS.codexApp} />
           <div className="tp-codex-name">
@@ -515,7 +533,7 @@ function HomeTab({
             </button>
           )}
         </div>
-      </div>
+      </div> : null}
 
       <button className="tp-card tp-today" onClick={onShowUsage} title={t("查看用量")} type="button">
         <Stat label={t("今日请求")} value={glance ? String(glance.calls) : "—"} />
@@ -686,6 +704,8 @@ function GatewayTab({
   onOpenRoute: (route: TrayRoute) => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
+  const focus = useAgentFocus();
+  const solo = singleAgent(focus);
   const run = async (command: string, args: Record<string, unknown>) => {
     try {
       const result = await invoke<GatewayResult>(command, args);
@@ -701,7 +721,9 @@ function GatewayTab({
       <div className="tp-card tp-intro">
         <Waypoints aria-hidden="true" className="tp-intro-icon" />
         <strong>{t("还没用上网关")}</strong>
-        <p>{t("网关把 Codex、Claude Code、Grok 接到同一个供应商池：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
+        <p>{solo
+          ? tf("网关把 {0} 接到 Codex++ 的供应商池：一处管理 Key 和模型，在这里就能随时换模型。", [agentName(solo)])
+          : t("网关把 Codex、Claude Code、Grok 接到同一个供应商池：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
         <div className="tp-intro-actions">
           <button className="tp-button" data-variant="primary" onClick={() => void onOpenRoute("gatewayProviders")} type="button">{t("添加供应商")}</button>
           <button className="tp-button" onClick={() => void onOpenRoute("gateway")} type="button">{t("了解网关")}</button>
@@ -711,7 +733,7 @@ function GatewayTab({
   }
 
   const now = Date.now();
-  const recent = logs.slice(0, 8);
+  const recent = logs.filter((entry) => agentVisible(focus, entry.agent || "codex")).slice(0, 8);
   return (
     <>
       <div className="tp-gateway-status">
@@ -720,9 +742,9 @@ function GatewayTab({
         <LinkButton label={t("管理")} onClick={() => void onOpenRoute("gateway")} />
       </div>
 
-      <Section title={t("各 Agent 用的模型")}>
+      <Section title={solo ? tf("{0} 用的模型", [agentName(solo)]) : t("各 Agent 用的模型")}>
         <div className="tp-card tp-list">
-          {(payload?.agents ?? []).map((agent) => (
+          {visibleAgents(focus, glanceAgents(payload?.agents)).map((agent) => (
             <PanelAgentRow agent={agent} key={agent.agent} onRun={run} payload={payload} />
           ))}
         </div>
@@ -758,6 +780,81 @@ function GatewayTab({
   );
 }
 
+/* —————————————— 实时 —————————————— */
+
+/**
+ * 实时请求流：上面三个数（进行中、今日请求、今日 token），中间是竖排的小地图——
+ * 上排 Agent、中间 Codex++、下排供应商；每条真实请求一颗光点，发出时往下走到供应商，
+ * 回答完再走回来（成功绿、失败红），进行中的连线一直流动。下面是最近的请求。
+ */
+function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRoute: (route: TrayRoute) => Promise<void> }) {
+  const focus = useAgentFocus();
+  const { entries, pulses, loaded } = useRequestFlow(FLOW_REFRESH_MS);
+  const visible = entries.filter((entry) => agentVisible(focus, flowAgent(entry)));
+  const columns = flowColumns(visible);
+  const runningCount = visible.filter((entry) => flowStatus(entry) === "running").length;
+  const maxCount = Math.max(1, ...columns.agents.map((node) => node.count), ...columns.providers.map((node) => node.count));
+  const links: HubLink[] = [
+    ...columns.agents.map((node) => ({ from: `agent:${node.id}`, to: "hub", tone: "idle" as const, weight: (node.count / maxCount) * 0.4 })),
+    ...columns.providers.map((node) => ({ from: "hub", to: `provider:${node.id}`, tone: "idle" as const, weight: (node.count / maxCount) * 0.4 })),
+  ];
+  const busyKey = visible.filter((entry) => entry.state === "running").map((entry) => `${entry.id}:${entry.relayId}`).join("|");
+  // busy 只随进行中的请求变化。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const flow = useMemo(() => ({ pulses, busy: busyLinks(visible) }), [pulses, busyKey]);
+  const glance = usageGlance(today);
+  const now = Date.now();
+  return (
+    <>
+      <div className="tp-card tp-stats tp-flow-stats">
+        <span className="tp-stat" data-live={runningCount > 0}>
+          <strong>{runningCount}</strong>
+          <small>{t("进行中")}</small>
+        </span>
+        <Stat label={t("今日请求")} value={glance ? String(glance.calls) : "—"} />
+        <Stat label="Token" value={glance ? formatTokens(glance.inputTokens + glance.outputTokens) : "—"} />
+      </div>
+
+      {columns.agents.length ? (
+        <div className="tp-card tp-flow-map">
+          <HubTopology className="tp-flow-topology" flow={flow} links={links} ports vertical>
+            <div className="tp-flow-row">
+              {columns.agents.map((node) => (
+                <span className="tp-flow-chip" data-live={node.live} data-node={`agent:${node.id}`} key={node.id} title={agentName(node.id)}>
+                  <AgentIcon agent={node.id} className="tp-flow-icon" />
+                  <span>{agentName(node.id)}</span>
+                </span>
+              ))}
+            </div>
+            <div className="tp-flow-row">
+              <span className="tp-flow-hub" data-live={runningCount > 0} data-node="hub">
+                <img alt="" src={APP_LOGO_URL} />
+                <span>Codex++</span>
+              </span>
+            </div>
+            <div className="tp-flow-row">
+              {columns.providers.map((node) => (
+                <span className="tp-flow-chip" data-live={node.live} data-node={`provider:${node.id}`} key={node.id} title={node.name}>
+                  <Avatar name={node.name} size="sm" />
+                  <span>{node.name}</span>
+                </span>
+              ))}
+            </div>
+          </HubTopology>
+        </div>
+      ) : null}
+
+      <Section aside={<LinkButton label={t("请求日志")} onClick={() => void onOpenRoute("requestLog")} />} title={t("实时请求")}>
+        <div className="tp-card tp-list tp-flow-list">
+          {visible.slice(0, FLOW_LIST_LIMIT).map((entry) => <FlowRequestRow entry={entry} key={entry.id} now={now} />)}
+          {!loaded ? <div className="tp-empty">{t("读取中…")}</div> : null}
+          {loaded && visible.length === 0 ? <div className="tp-empty">{t("还没有经过 Codex++ 的请求。在接入的 Agent 里发一条消息，这里会实时显示。")}</div> : null}
+        </div>
+      </Section>
+    </>
+  );
+}
+
 /** 一个 Agent：名字 + 当前模型下拉；选模型即接入，选「默认」即断开。 */
 function PanelAgentRow({
   agent,
@@ -773,10 +870,12 @@ function PanelAgentRow({
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
   const display = modelDisplay(payload, draft.model, draft.poolExclude);
+  // 没接入、用着自带的某个模型（直连）：按钮上显示它。
+  const own = agent.enabled ? null : ownCurrent(agent);
   const head = (
     <button
       className="gw-mp-action"
-      data-active={!agent.enabled}
+      data-active={!agent.enabled && !own}
       onClick={() => {
         setOpen(false);
         if (agent.enabled) void onRun("disable_gateway_binding", { agent: agent.agent });
@@ -786,7 +885,7 @@ function PanelAgentRow({
     >
       <AgentIcon agent={agent.agent} className="gw-popover-agent" />
       {t("用默认（不经 Codex++）")}
-      {!agent.enabled ? <Check className="h-3.5 w-3.5" /> : null}
+      {!agent.enabled && !own ? <Check className="h-3.5 w-3.5" /> : null}
     </button>
   );
   return (
@@ -795,7 +894,7 @@ function PanelAgentRow({
       <strong>{agent.name}</strong>
       <button aria-expanded={open} className="gw-picker-button tp-agent-picker" onClick={() => setOpen(!open)} ref={buttonRef} type="button">
         {!agent.enabled ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
-        <span>{agent.enabled ? display.title : t("默认")}</span>
+        <span>{agent.enabled ? display.title : own ?? t("默认")}</span>
         {agent.enabled ? <AutoTag view={display} /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
@@ -807,6 +906,12 @@ function PanelAgentRow({
             setOpen(false);
             void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.model }, binding) });
           }}
+          onPickOwn={(item) => {
+            setOpen(false);
+            void onRun("use_gateway_own_model", { agent: agent.agent, model: item.model });
+          }}
+          own={agent.ownModels}
+          ownAgent={agent.name}
           payload={payload}
           selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}
         />

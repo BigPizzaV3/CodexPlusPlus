@@ -8,7 +8,8 @@ import {
   enhancementGroup,
   enhancementGroupAnchorId,
   enhancementItem,
-  managerGeneralGroups,
+  managerBuiltinCards,
+  managerBuiltinGroups,
   managerGroupItems,
   managerStandaloneGroup,
   type EnhancementPlatform,
@@ -105,7 +106,7 @@ test("retired enhancements have no settings, navigation or command references in
   assert.deepEqual([...new Set(references)], []);
 });
 
-const ENHANCEMENT_COMPONENTS = ["EnhanceScreen", "StandaloneModeGroup", "StepwiseSettingsPanel", "EnhancementSettingControl"];
+const ENHANCEMENT_COMPONENTS = ["EnhanceScreen", "StandaloneModeGroup", "StepwiseSettingsPanel", "EnhancementSettingControl", "BuiltinExtensionCardView"];
 
 function settingControls(node: ts.Node) {
   return elements(node).filter((element) => element.tagName.getText(app) === "EnhancementSettingControl");
@@ -120,12 +121,14 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   for (const element of elements(control).filter((candidate) => ["FeatureToggle", "AppSelect"].includes(candidate.tagName.getText(app)))) {
     assert.equal(attribute(element, "disabled"), "disabled");
   }
-  for (const name of ["EnhanceScreen", "StandaloneModeGroup"]) {
+  // 开关卡在 EnhanceScreen（renderSetting），子选项在内置拓展卡片里，都按总开关状态禁用。
+  for (const name of ["EnhanceScreen", "BuiltinExtensionCardView"]) {
     const placements = settingControls(component(name));
     assert.ok(placements.length > 0, `${name} renders catalog settings`);
     for (const placement of placements) assert.equal(attribute(placement, "masterEnabled"), "masterEnabled");
   }
-  assert.equal(attribute(settingControls(component("StepwiseSettingsPanel"))[0], "masterEnabled"), "form.enhancementsEnabled");
+  // 下一步建议的开关搬进了内置拓展卡片，面板里只剩连接设置。
+  assert.equal(settingControls(component("StepwiseSettingsPanel")).length, 0);
   for (const item of enhancementCatalog.items) {
     const standalone = enhancementGroup(item.group).standalone === true;
     const unmanaged = ["enhancementsEnabled", "providerSyncEnabled"].includes(item.key);
@@ -182,37 +185,41 @@ test("enhancement switches come only from the settings catalog", () => {
 });
 
 test("every manager-visible catalog item has exactly one place in the manager", () => {
+  // 每个开关是一个内置拓展卡片，子选项挂在所属卡片下；总开关与会话修复开关各在原处。
   for (const platform of ["windows", "macos", "linux"] as const) {
+    const cards = [...managerBuiltinGroups(), managerStandaloneGroup()].flatMap((group) => managerBuiltinCards(group.id, platform));
     const placed = [
-      ...managerGeneralGroups().flatMap((group) => managerGroupItems(group.id, platform)),
-      ...managerGroupItems(managerStandaloneGroup().id, platform),
-      ...managerGroupItems("stepwise", platform),
-      enhancementItem("enhancementsEnabled"),
-      enhancementItem("providerSyncEnabled"),
-    ].map((item) => item.key);
+      ...cards.flatMap((card) => [...(card.item ? [card.item.key] : []), ...card.params.map((param) => param.key)]),
+      "enhancementsEnabled",
+      "providerSyncEnabled",
+    ];
     const expected = enhancementCatalog.items
       .filter((item) => item.surfaces.includes("manager") && (!item.platforms || item.platforms.includes(platform)))
       .map((item) => item.key);
     assert.deepEqual([...placed].sort(), [...expected].sort(), `manager switches on ${platform} must match the catalog`);
     assert.equal(new Set(placed).size, placed.length);
+    // 清单顶层的内置拓展（桌宠、听写、梦皮……）也各有一张卡片。
+    const ids = cards.map((card) => card.id);
+    for (const entry of enhancementCatalog.builtins) assert.ok(ids.includes(entry.id), `${entry.id} has a card`);
+    assert.equal(new Set(ids).size, ids.length);
   }
   assert.equal(enhancementGroup("stepwise").managerTab, "stepwise");
-  // 左侧目录（PageSectionNav）的分组同样按清单生成，锚点 id 保持既有值，深链和滚动定位不受影响。
+  // 左侧目录（PageSectionNav）的分组同样按清单生成，锚点 id 由分组 id 生成，深链和滚动定位不受影响。
   assert.deepEqual(
-    [...managerGeneralGroups(), managerStandaloneGroup()].map(enhancementGroupAnchorId),
-    ["enhance-group-plugins", "enhance-group-chat", "enhance-group-pet", "enhance-group-standalone"],
+    [...managerBuiltinGroups(), managerStandaloneGroup()].map(enhancementGroupAnchorId),
+    ["enhance-group-plugins", "enhance-group-chat", "enhance-group-pet", "enhance-group-stepwise", "enhance-group-appearance", "enhance-group-standalone"],
   );
-  assert.match(appSource, /const generalSections = \[\.\.\.managerGeneralGroups\(\), managerStandaloneGroup\(\)\]\s*\.map\(\(group\) => \(\{ id: enhancementGroupAnchorId\(group\), label: t\(group\.title\) \}\)\);/);
+  assert.match(appSource, /const generalSections = \[\.\.\.managerBuiltinGroups\(\), managerStandaloneGroup\(\)\]\s*\.map\(\(group\) => \(\{ id: enhancementGroupAnchorId\(group\), label: t\(group\.title\) \}\)\);/);
   for (const name of ["EnhanceScreen", "StandaloneModeGroup"]) {
     const groups = elements(component(name)).filter((element) => element.tagName.getText(app) === "FeatureGroup");
     assert.ok(groups.length > 0);
     for (const group of groups) assert.equal(attribute(group, "id"), "enhancementGroupAnchorId(group)", `${name} groups keep their anchor id`);
+    assert.ok(descendants(component(name)).some((node) => ts.isCallExpression(node)
+      && node.expression.getText(app) === "managerBuiltinCards(group.id, enhancementPlatform).map"), `${name} cards come from the catalog`);
   }
   const enhance = component("EnhanceScreen");
-  const generalGroups = descendants(enhance).find((node) => ts.isCallExpression(node) && node.expression.getText(app) === "managerGeneralGroups().map");
+  const generalGroups = descendants(enhance).find((node) => ts.isCallExpression(node) && node.expression.getText(app) === "managerBuiltinGroups().map");
   assert.ok(generalGroups, "general tab groups are generated from the catalog");
-  const stepwise = component("StepwiseSettingsPanel");
-  assert.ok(descendants(stepwise).some((node) => ts.isCallExpression(node) && node.expression.getText(app) === "managerGroupItems(group.id, enhancementPlatform).map"));
 });
 
 test("every catalog string the manager shows has an English translation", () => {
@@ -266,10 +273,12 @@ test("enhancement panels retain every service field, private key input and Stepw
   assert.equal(attribute(fieldControl(dictation, "form.dictation.apiKey"), "type"), "password");
 
   const stepwise = component("StepwiseSettingsPanel");
-  // 三个开关按清单「下一步建议」组生成，其余连接参数仍是面板里的定制字段。
+  // 「下一步建议」「回答大纲」是两张内置拓展卡片，「建议直接发送」是前者的子选项；连接参数仍是面板里的定制字段。
   assert.deepEqual(managerGroupItems("stepwise", "macos").map((item) => item.key),
     ["codexAppStepwiseEnabled", "codexAppAnswerOutlineEnabled", "codexAppStepwiseDirectSend"]);
-  assert.ok(settingControls(stepwise).length > 0);
+  const stepwiseCards = managerBuiltinCards("stepwise", "macos");
+  assert.deepEqual(stepwiseCards.map((card) => card.id), ["stepwise", "answer-outline"]);
+  assert.deepEqual(stepwiseCards[0].params.map((param) => param.key), ["codexAppStepwiseDirectSend"]);
   for (const field of [
     "codexAppStepwiseProtocol", "codexAppStepwiseGenerationMode", "codexAppStepwiseBaseUrl",
     "codexAppStepwiseApiKey", "codexAppStepwiseApiKeyEnv", "codexAppStepwiseModel",
@@ -354,7 +363,7 @@ test("standalone quota unlock lives in its own group inside the general tab and 
   const standaloneGroup = managerStandaloneGroup();
   assert.equal(standaloneGroup.title, "独立模式");
   assert.equal(standaloneGroup.description, "增强总开关关闭后仍会生效的补丁。");
-  assert.deepEqual(managerGroupItems(standaloneGroup.id, "macos").map((item) => item.key), ["codexAppStandaloneQuotaUnlock"]);
+  assert.deepEqual(managerBuiltinCards(standaloneGroup.id, "macos").map((card) => card.item?.key), ["codexAppStandaloneQuotaUnlock"]);
   const standalone = enhancementItem("codexAppStandaloneQuotaUnlock");
   assert.equal(standalone.title, "官方额度解锁");
   assert.equal(standalone.control, "bool");
@@ -370,7 +379,8 @@ test("standalone quota unlock lives in its own group inside the general tab and 
   assert.ok(featureGroup);
   assert.equal(attribute(featureGroup, "title"), "t(group.title)");
   assert.equal(attribute(featureGroup, "detail"), 't(group.description ?? "")');
-  assert.ok(settingControls(group).length === 1);
+  assert.ok(descendants(group).some((node) => ts.isCallExpression(node)
+    && node.expression.getText(app) === "managerBuiltinCards(group.id, enhancementPlatform).map"));
 
   // EnhanceScreen 只负责按总开关状态换位置：关闭增强时置顶，开启增强时置底。
   const placements = elements(enhance).filter((element) => element.tagName.getText(app) === "StandaloneModeGroup");
@@ -404,7 +414,7 @@ test("native Fast unlock is the only Fast enhancement toggle and keeps the provi
   assert.equal(nativeFast.title, "原生 Fast 强制解锁");
   assert.notEqual(nativeFast.masterGated, false, "原生 Fast 受增强总开关控制");
   assert.match(nativeFast.description, /纯 API Key.*原生 Fast.*供应商决定/);
-  assert.ok(managerGeneralGroups().some((group) => group.id === nativeFast.group));
+  assert.ok(managerBuiltinGroups().some((group) => group.id === nativeFast.group));
   assert.ok(nativeFast.surfaces.includes("manager") && nativeFast.surfaces.includes("codex"));
   assert.deepEqual(enhancementCatalog.items.filter((item) => /Fast/.test(item.title)).map((item) => item.key), ["codexAppNativeFastUnlock"]);
   assert.ok(!enhancementCatalog.items.some((item) => item.key === "codexAppServiceTierControls"));

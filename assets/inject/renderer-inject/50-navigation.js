@@ -4,6 +4,10 @@
     document.getElementById(codexPlusSidebarPluginMarketId)?.remove();
     if (installCodexPlusRailNavigation()) {
       detachCodexPlusSidebarNavigation();
+      // 拓展入口跟着内置入口一起补。冷启动时内置入口常由启动补扫装上，那条路径
+      // 不走完整 scan；拓展入口若只在 scan 里补，页面空闲时会一直缺失。
+      // 内部靠 id 幂等，每轮调用不会重复插入。
+      refreshCodexPlusRailNavigation();
       return;
     }
     removeCodexPlusRailNavigation();

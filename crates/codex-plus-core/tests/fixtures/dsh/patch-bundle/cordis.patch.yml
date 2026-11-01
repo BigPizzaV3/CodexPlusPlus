@@ -1,0 +1,31 @@
+- insert:
+    - id: group
+      name: cordis:group
+      config:
+        - id: a
+          name: ./say.js
+          config:
+            word: one
+    - id: inc
+      name: cordis:include
+      config:
+        path: ./extra.yml
+        patches:
+          - id: c
+            disabled: true
+# 按 id 覆盖：a 的配置整段换掉
+- id: a
+  config:
+    word: two
+# 插进已有的组；disabled 用环境变量表达式（没设置 → 启用）
+- id: group
+  insert:
+    - id: b
+      name: ./say.js
+      disabled: !!js env.CODEXPP_PATCH_FIXTURE_OFF
+      config:
+        word: bee
+# name 对不上的覆盖被跳过
+- id: b
+  name: ./other.js
+  disabled: true

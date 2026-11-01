@@ -59,6 +59,8 @@ function createHarness(saved = "{}") {
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
     sourceLabel: (item: FixtureSkill) => item.bundled ? "内置" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
     repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
+    // 「只管理 Codex」时只显示 Codex 列；这里按全部 Agent 渲染。
+    singleAgent: () => null, useAgentFocus: () => "all",
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
   for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "DndContext", "SortableContext",

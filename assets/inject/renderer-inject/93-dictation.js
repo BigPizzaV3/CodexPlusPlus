@@ -12,7 +12,8 @@
 
   function codexPlusDictationEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
-      && codexPlusBackendSettings.dictation?.enabled === true;
+      && codexPlusBackendSettings.dictation?.enabled === true
+      && !globalThis.__codexPlusBuiltinInactive?.has("dictation");
   }
 
   function codexPlusDictationEditor(scope) {

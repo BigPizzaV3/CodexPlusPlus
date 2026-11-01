@@ -3,7 +3,7 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
-import { Check, ChevronDown, ChevronRight, ChevronUp, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import {
   agentModels,
@@ -11,6 +11,7 @@ import {
   bindingFromDraft,
   draftFromBinding,
   modelDisplay,
+  ownPickerSection,
   parseContextWindow,
   pickerSections,
   providerEnabled,
@@ -20,16 +21,20 @@ import {
   type GatewayAgentView,
   type GatewayPayload,
   type PickerItem,
+  type PickerSection,
   maskAccountName,
   type ImageOption,
   isFavoriteModel,
   toggleFavoriteModel,
   type GatewayResult,
+  type OwnModels,
 } from "./gateway-model";
 import { AppSelect } from "./AppSelect";
 import { shortProviderName } from "./GatewayModelMatrix";
 import { GatewayNavContext, publishGatewayPayload } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
+import { singleAgent, visibleAgents } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import { AGENT_ICONS, AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
 export function AgentsView({
@@ -45,8 +50,11 @@ export function AgentsView({
   notify: Notify;
   onManage: () => void;
 }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const agents = payload?.agents ?? [];
+  // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
+  const focus = useAgentFocus();
+  const solo = singleAgent(focus);
+  const agents = visibleAgents(focus, payload?.agents ?? []);
+  const [expanded, setExpanded] = useState<string | null>(solo);
   const connected = agents.filter((agent) => agent.enabled);
   const others = agents.filter((agent) => !agent.enabled);
   const row = (agent: GatewayAgentView) => (
@@ -65,9 +73,10 @@ export function AgentsView({
   return (
     <>
       <div className="gw-card gw-agent-card">
-        {connected.length ? <div className="gw-subhead">{t("已接入")}<em>{connected.length}</em></div> : null}
+        {/* 单 Agent 模式只有一行，不分「已接入 / 未接入」，直接展开它的设置。 */}
+        {!solo && connected.length ? <div className="gw-subhead">{t("已接入")}<em>{connected.length}</em></div> : null}
         {connected.map(row)}
-        {others.length ? <div className="gw-subhead">{t("未接入")}<em>{others.length}</em></div> : null}
+        {!solo && others.length ? <div className="gw-subhead">{t("未接入")}<em>{others.length}</em></div> : null}
         {others.map(row)}
         {!payload ? <div className="gw-empty">{t("正在读取…")}</div> : null}
       </div>
@@ -158,6 +167,18 @@ function AgentRow({
     setPickerOpen(false);
     void save({ ...draft, model: item.model });
   };
+  // 选 Agent 自带的模型：直连厂商、不经 Codex++。接入着时要先断开并还原，先问一句。
+  const pickOwn = async (item: PickerItem) => {
+    setPickerOpen(false);
+    if (connected) {
+      const ok = await appConfirm(
+        tf("改用 {0} 自带的 {1}？{0} 会断开 Codex++、还原接入前的设置，用自己的登录或 Key 直连 {2}。", [agent.name, item.label, item.direct ?? ""]),
+        { title: t("直连，不经 Codex++"), confirmText: t("断开并直连") },
+      );
+      if (!ok) return;
+    }
+    await run(`own:${agent.agent}`, "use_gateway_own_model", { agent: agent.agent, model: item.model }, t("切换模型"));
+  };
   const toggle = () => {
     if (connected) {
       void disconnect();
@@ -230,6 +251,7 @@ function AgentRow({
           }}
           onOpenChange={setPickerOpen}
           onPick={pick}
+          onPickOwn={(item) => void pickOwn(item)}
           open={pickerOpen}
           payload={payload}
         />
@@ -286,6 +308,15 @@ function AgentDetail({
   const isClaude = agent.agent === "claude";
   const [selecting, setSelecting] = useState(false);
   const [windowText, setWindowText] = useState(draft.contextWindow);
+  // 通用 Agent 有的只能在自己界面里填 Key（如 Zed 存在钥匙串里）：给出地址和本 Agent 的网关 token 一键复制。
+  const [copied, setCopied] = useState<"url" | "token" | null>(null);
+  const token = payload?.gateway.bindings[agent.agent as GatewayAgentId]?.token ?? "";
+  const copy = (kind: "url" | "token", text: string) => {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(kind);
+      window.setTimeout(() => setCopied((current) => (current === kind ? null : current)), 1500);
+    }).catch(() => undefined);
+  };
   const selectRef = useRef<HTMLButtonElement>(null);
   useEffect(() => setWindowText(draft.contextWindow), [draft.contextWindow]);
   const providers = (payload?.pool ?? []).filter(providerEnabled);
@@ -306,6 +337,28 @@ function AgentDetail({
           <span className="gw-detail-label">{tf("在 {0} 里", [agent.name])}</span>
           <div className="gw-detail-value">
             <span>{t("在 Claude Code 的")} <code className="gw-code">/model</code> {t("里切换 opus · sonnet · haiku 档，各档用的模型在下面设置。")}</span>
+          </div>
+        </div>
+      ) : null}
+      {agent.hint ? (
+        <div className="gw-detail-row">
+          <span className="gw-detail-label">{tf("在 {0} 里", [agent.name])}</span>
+          <div className="gw-detail-value">
+            <span>{t(agent.hint)}</span>
+            {agent.enabled ? (
+              <>
+                <button className="gw-text-button" onClick={() => copy("url", `${agent.baseUrl}/v1`)} type="button">
+                  {copied === "url" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {t("复制地址")}
+                </button>
+                {token ? (
+                  <button className="gw-text-button" onClick={() => copy("token", token)} type="button">
+                    {copied === "token" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {t("复制 token")}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -525,7 +578,8 @@ export function Floating({
   );
 }
 
-/** 模型列表：左侧全部 / 收藏 / 按供应商跳转，右侧分组列出模型；顶部是「默认（不经 Codex++）」与「断开」。 */
+/** 模型列表：左侧全部 / 收藏 / 按供应商跳转，右侧分组列出模型；顶部是「默认（不经 Codex++）」与「断开」。
+ * 传了 `own` 与 `onPickOwn` 时，池里的模型后面再列一组 Agent 自带的模型（直连，不经 Codex++）。 */
 export function ModelList({
   payload,
   exclude,
@@ -533,6 +587,9 @@ export function ModelList({
   head,
   skipGroup,
   onPick,
+  own,
+  ownAgent,
+  onPickOwn,
 }: {
   payload: GatewayPayload | null;
   exclude: string[];
@@ -540,6 +597,10 @@ export function ModelList({
   head?: ReactNode;
   skipGroup?: string;
   onPick: (item: PickerItem) => void;
+  own?: OwnModels | null;
+  /** Agent 的显示名，自带模型的说明里用。 */
+  ownAgent?: string;
+  onPickOwn?: (item: PickerItem) => void;
 }) {
   const nav = useContext(GatewayNavContext);
   const [query, setQuery] = useState("");
@@ -561,15 +622,18 @@ export function ModelList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stored?.join("\n")]);
   const listRef = useRef<HTMLDivElement>(null);
+  const ownList = onPickOwn ? own : null;
   const sections = useMemo(() => {
-    const all = pickerSections(payload, query, avatarOf, exclude, skipGroup);
+    const all = withOwnSection(pickerSections(payload, query, avatarOf, exclude, skipGroup), ownPickerSection(ownList, query, avatarOf));
     // 手输的模型 ID（custom）不属于哪一家，按供应商筛选时也留着。
     if (sectionOnly) return all.filter((section) => section.key === sectionOnly || section.key === "custom");
     if (!favoritesOnly) return all;
+    // 收藏的是池里的模型；Agent 自带的同名模型不算。
     return all
+      .filter((section) => section.key !== "own")
       .map((section) => ({ ...section, items: section.items.filter((item) => isFavoriteModel(favorites, item.model, payload)) }))
       .filter((section) => section.items.length);
-  }, [payload, query, exclude, favoritesOnly, sectionOnly, favorites, skipGroup]);
+  }, [payload, query, exclude, favoritesOnly, sectionOnly, favorites, skipGroup, ownList]);
   const toggleFavorite = (model: string) => {
     const next = toggleFavoriteModel(favorites, model, payload);
     setFavorites(next);
@@ -580,11 +644,15 @@ export function ModelList({
     setScope(same ? "all" : next);
     if (listRef.current) listRef.current.scrollTop = 0;
   };
-  const isSelected = (item: PickerItem) => Boolean(selectedModel) && item.model.toLowerCase() === selectedModel.toLowerCase();
+  const isSelected = (item: PickerItem) => {
+    const current = item.direct ? ownList?.current ?? "" : selectedModel;
+    return Boolean(current) && item.model.toLowerCase() === current.toLowerCase();
+  };
+  const choose = (item: PickerItem) => (item.direct && onPickOwn ? onPickOwn(item) : onPick(item));
 
   const filters = useMemo(
-    () => pickerSections(payload, "", avatarOf, exclude, skipGroup).filter((section) => section.key !== "custom"),
-    [payload, exclude, skipGroup],
+    () => withOwnSection(pickerSections(payload, "", avatarOf, exclude, skipGroup), ownPickerSection(ownList, "", avatarOf)).filter((section) => section.key !== "custom"),
+    [payload, exclude, skipGroup, ownList],
   );
   const total = sections.reduce((sum, section) => sum + section.items.length, 0);
 
@@ -631,10 +699,11 @@ export function ModelList({
                 <div
                   aria-selected={selected}
                   className="gw-mp-item"
+                  data-direct={item.direct ? true : undefined}
                   data-selected={selected}
                   key={item.model}
-                  onClick={() => onPick(item)}
-                  onKeyDown={(event) => { if (event.key === "Enter") onPick(item); }}
+                  onClick={() => choose(item)}
+                  onKeyDown={(event) => { if (event.key === "Enter") choose(item); }}
                   role="option"
                   tabIndex={0}
                 >
@@ -642,7 +711,12 @@ export function ModelList({
                     <strong title={item.model}>{item.label}</strong>
                     {item.custom ? <small>{t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{item.sub}</small> : null}
                   </span>
-                  <button
+                  {item.direct ? (
+                    <em className="gw-mp-direct" title={tf("{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。", [ownAgent ?? "Agent", item.direct])}>
+                      {t("直连，不经 Codex++")}
+                    </em>
+                  ) : null}
+                  {item.direct ? null : <button
                     aria-label={favorite ? t("取消收藏") : t("收藏")}
                     className="gw-mp-star"
                     data-on={favorite}
@@ -650,7 +724,7 @@ export function ModelList({
                     type="button"
                   >
                     <Star className="h-3.5 w-3.5" />
-                  </button>
+                  </button>}
                   {selected ? <Check className="gw-mp-check h-4 w-4" /> : null}
                 </div>
               );
@@ -661,6 +735,13 @@ export function ModelList({
       {head ? <div className="gw-mp-foot">{head}</div> : null}
     </div>
   );
+}
+
+/** 把 Agent 自带模型那一组放在池里的模型后面、手输的模型 ID 前面。 */
+function withOwnSection(sections: PickerSection[], own: PickerSection | null): PickerSection[] {
+  if (!own) return sections;
+  const custom = sections.findIndex((section) => section.key === "custom");
+  return custom < 0 ? [...sections, own] : [...sections.slice(0, custom), own, ...sections.slice(custom)];
 }
 
 /** 一项生图选项的显示名：「ChatGPT Pro · gpt-image」。 */
@@ -734,6 +815,7 @@ function ModelPicker({
   open,
   onOpenChange,
   onPick,
+  onPickOwn,
   onDisconnect,
 }: {
   agent: GatewayAgentView;
@@ -743,34 +825,39 @@ function ModelPicker({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onPick: (item: PickerItem) => void;
+  onPickOwn: (item: PickerItem) => void;
   onDisconnect: () => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const display = modelDisplay(payload, draft.model, draft.poolExclude);
-  const showDefault = !connected && !draft.model;
+  // 没接入、Agent 用着自带的某个模型：按钮上显示它（直连）。
+  const own = connected ? null : ownCurrent(agent);
+  const showDefault = !connected && !draft.model && !own;
   const selectedModel = connected || draft.model ? draft.model.trim() || agentModels(payload, draft.poolExclude)[0] || "" : "";
   const head = (
     <>
       {/* 用默认 = 断开网关并还原接入前的配置，只放这一个入口。 */}
       <button
         className="gw-mp-action"
-        data-active={!connected}
+        data-active={!connected && !own}
         onClick={onDisconnect}
         title={connected ? tf("断开 Codex++，还原 {0} 接入之前的设置", [agent.name]) : tf("{0} 自带的默认值", [agent.name])}
         type="button"
       >
         <AgentIcon agent={agent.agent} className="gw-popover-agent" />
         {t("用默认（不经 Codex++）")}
-        {!connected ? <Check className="h-3.5 w-3.5" /> : null}
+        {!connected && !own ? <Check className="h-3.5 w-3.5" /> : null}
       </button>
     </>
   );
   return (
     <div className="gw-picker">
       <button aria-expanded={open} aria-haspopup="listbox" className="gw-picker-button" onClick={() => onOpenChange(!open)} ref={buttonRef} type="button">
-        {showDefault ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
-        <span>{showDefault ? t("默认") : display.title || t("选择模型")}</span>
-        {showDefault ? null : <AutoTag view={display} />}
+        {showDefault || own ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
+        <span title={own ? tf("{0} 自带的模型，直连 {1}，不经 Codex++", [agent.name, agent.ownModels?.vendor ?? ""]) : undefined}>
+          {own ?? (showDefault ? t("默认") : display.title || t("选择模型"))}
+        </span>
+        {showDefault || own ? null : <AutoTag view={display} />}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       <Floating anchorRef={buttonRef} className="gw-model-popover" onClose={() => onOpenChange(false)} open={open} width={560}>
@@ -778,12 +865,23 @@ function ModelPicker({
           exclude={draft.poolExclude}
           head={head}
           onPick={onPick}
+          onPickOwn={onPickOwn}
+          own={agent.ownModels}
+          ownAgent={agent.name}
           payload={payload}
           selectedModel={selectedModel}
         />
       </Floating>
     </div>
   );
+}
+
+/** 没接入时 Agent 现在用的自带模型的显示名；没设时为 null。 */
+export function ownCurrent(agent: GatewayAgentView): string | null {
+  const own = agent.ownModels;
+  const current = own?.current.trim();
+  if (!own || !current) return null;
+  return own.models.find((model) => model.id.toLowerCase() === current.toLowerCase())?.label ?? current;
 }
 
 /** Claude 档位的小下拉：前缀是档位名，空值表示同默认模型。 */
