@@ -70,6 +70,8 @@ jobs:
         run: npm run vite:build
 
       - name: Rust tests
+        # 有用例卡死时到点失败，不要一直占着 runner 到作业 6 小时上限（编译加测试平时 20 分钟左右）。
+        timeout-minutes: 60
         run: cargo test --workspace
 
       - name: Build release application
@@ -243,6 +245,8 @@ jobs:
         run: npm run vite:build
 
       - name: Rust tests
+        # 有用例卡死时到点失败，不要一直占着 runner 到作业 6 小时上限（编译加测试平时 20 分钟左右）。
+        timeout-minutes: 60
         run: cargo test --workspace
 
       - name: Build Linux application
