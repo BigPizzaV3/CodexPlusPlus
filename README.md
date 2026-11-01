@@ -128,6 +128,14 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
     </td>
     <td><a href="https://apinebula.ai/ref/IiCBg1nu"><strong>APINEBULA</strong></a><br>感谢 APINEBULA 赞助本项目！APINEBULA 是银河录像局旗下的企业级 AI 聚合平台，背靠大平台资源，面向开发者、团队与企业用户提供稳定、高性价比的大模型 API 接入服务。平台聚合 Claude、GPT、Gemini 等主流满血模型，一个接口接入全球顶尖 AI 大模型，各大模型价格低至 1 折起，支持企业级高并发、正式合同、对公打款与开票服务，适合 AI 编程、Agent 开发、业务系统集成等多种场景！<a href="https://apinebula.ai/ref/IiCBg1nu">使用此链接注册</a>并在充值时填写「PLUSPLUS」优惠码可享九折优惠！</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS">
+        <img src="docs/images/sponsor-dzhsmartai.jpg" alt="DZHsmartAI" width="96">
+      </a>
+    </td>
+    <td><a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS"><strong>DZHsmartAI</strong></a><br>感谢 DZHsmartAI 赞助本项目！DZHsmartAI 量贩式中转站 —— 实惠 Token，一站式接入。DZHsmartAI 是一家专注服务开发者与企业的 AI API 中转站，主打「量贩式」定价：ChatGPT、Claude、Kimi、Grok、Gemini 等主流模型基本全覆盖，一个 API Key、一套兼容 OpenAI 的接口，改一行 base_url 就能自由切换，不用再分别注册、分别充值。目标很朴素：让更多人用上实惠的 Token——不烧钱、不烧心。通过<a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS">此链接注册</a>，即得 1 美元使用额度。</td>
+  </tr>
 </table>
 
 想支持项目或展示品牌？[联系维护者](mailto:1727532@qq.com)。
