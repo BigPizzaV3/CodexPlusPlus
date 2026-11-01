@@ -30,6 +30,22 @@ test("import preview shows per-item errors and never selects those entries", () 
   assert.match(drawer, /item\.error \? <small className="mg-skill-import-error" role="alert">\{item\.error\}<\/small>/);
 });
 
+test("incomplete comparisons require per-item confirmation and submit the previewed targets", () => {
+  const drawer = extra.slice(extra.indexOf("function SkillImportDrawer"), extra.indexOf("function SortableSkillGroup"));
+  assert.match(drawer, /item\.incompleteTargets\.map\(\(target\)/);
+  assert.match(drawer, /target\.name.*target\.id.*target\.error/);
+  assert.match(drawer, /item\.incompleteTargets\.length > 0 && !confirmed\.has\(item\.id\)/);
+  assert.match(drawer, /disabled=\{busy \|\| !chosen\.length \|\| invalidTargets \|\| duplicateIncoming \|\| duplicateTargets \|\| needsConfirmation\}/);
+  assert.match(drawer, /\[item\.id, item\.incompleteTargets\]/);
+  assert.match(extra, /key=\{importRequest\.revision\}/);
+  assert.match(extra, /selections, incompleteConfirmations/);
+  assert.match(commands, /incomplete_confirmations: Option<serde_json::Value>/);
+  const legacy = commands.slice(commands.indexOf("fn import_local_skills_blocking"), commands.indexOf("fn import_local_skills_blocking") + 2400);
+  assert.match(legacy, /manager\.preview_skill_import\(&candidates, &origins\)/);
+  assert.match(legacy, /manager\.apply_skill_import\(&candidates, &origins, "local", &selections\)/);
+  assert.doesNotMatch(legacy, /import_from_local_directory/);
+});
+
 test("manager resumes Codex only after Skill recovery succeeds", () => {
   const start = lib.indexOf("let startup_app = app.handle().clone();");
   const end = lib.indexOf("// 网关模式", start);

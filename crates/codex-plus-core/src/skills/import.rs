@@ -23,6 +23,15 @@ pub struct SkillImportMatch {
     pub snapshot: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillImportIncompleteTarget {
+    pub id: String,
+    pub name: String,
+    pub error: String,
+    pub fingerprint: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillImportCandidate {
@@ -33,6 +42,7 @@ pub struct SkillImportCandidate {
     pub repo_key: String,
     pub repo_path: String,
     pub matches: Vec<SkillImportMatch>,
+    pub incomplete_targets: Vec<SkillImportIncompleteTarget>,
     pub duplicate_candidates: Vec<String>,
     pub error: Option<String>,
 }
@@ -81,6 +91,7 @@ impl SkillsManager {
                     .map(|item| item.repo_path.clone())
                     .unwrap_or_default(),
                 matches: Vec::new(),
+                incomplete_targets: Vec::new(),
                 duplicate_candidates: Vec::new(),
                 error: None,
             };
@@ -100,6 +111,7 @@ impl SkillsManager {
                         &candidate.name,
                         &candidate.source_hash,
                         &mut snapshots,
+                        &mut candidate.incomplete_targets,
                     )
                     .context("检查已有 Skill 冲突失败")?;
                 if let Some(origin) =
@@ -175,6 +187,23 @@ impl SkillsManager {
         import_source: &str,
         selections: &[SkillImportSelection],
     ) -> anyhow::Result<(usize, Vec<String>)> {
+        self.apply_skill_import_with_confirmations(
+            candidates,
+            origins,
+            import_source,
+            selections,
+            &BTreeMap::new(),
+        )
+    }
+
+    pub fn apply_skill_import_with_confirmations(
+        &self,
+        candidates: &[(String, PathBuf)],
+        origins: &BTreeMap<String, crate::ccs_import::CcsSkillOrigin>,
+        import_source: &str,
+        selections: &[SkillImportSelection],
+        confirmations: &BTreeMap<String, Vec<SkillImportIncompleteTarget>>,
+    ) -> anyhow::Result<(usize, Vec<String>)> {
         anyhow::ensure!(
             matches!(import_source, LOCAL_IMPORT_REPO_KEY | "cc-switch"),
             "不支持的导入渠道"
@@ -210,6 +239,13 @@ impl SkillsManager {
             };
             if let Some(error) = &candidate.error {
                 errors.push(format!("{}：{}", selection.id, error));
+                continue;
+            }
+            if !incomplete_targets_confirmed(candidate, confirmations.get(&selection.id)) {
+                errors.push(format!(
+                    "{}：无法比较的已有 Skill 已变化或未确认，请重新预览",
+                    selection.id
+                ));
                 continue;
             }
             if candidate.source_hash != selection.source_hash {
@@ -286,6 +322,13 @@ impl SkillsManager {
                 errors.push(format!("{}：重新检查失败：{}", selection.id, error));
                 continue;
             }
+            if !incomplete_targets_confirmed(current, confirmations.get(&selection.id)) {
+                errors.push(format!(
+                    "{}：无法比较的已有 Skill 已变化，请重新预览",
+                    selection.id
+                ));
+                continue;
+            }
             if current.source_hash != selection.source_hash
                 || current.repo_key != selection.repo_key
                 || current.repo_path != selection.repo_path
@@ -332,9 +375,50 @@ impl SkillsManager {
                 origins.get(&candidate.id),
                 Some(&selection.source_hash),
             );
-            match staged
-                .and_then(|staged| self.commit_staged_import_unlocked(&operation, staged, snapshot))
-            {
+            match staged.and_then(|staged| {
+                let checked = (|| -> anyhow::Result<()> {
+                    let refreshed =
+                        self.preview_skill_import_unlocked(&operation, candidates, origins)?;
+                    let latest = refreshed
+                        .iter()
+                        .find(|item| item.id == selection.id)
+                        .context("导入项已不存在")?;
+                    anyhow::ensure!(
+                        latest.error.is_none()
+                            && incomplete_targets_confirmed(
+                                latest,
+                                confirmations.get(&selection.id)
+                            ),
+                        "无法比较的已有 Skill 已变化，请重新预览"
+                    );
+                    anyhow::ensure!(
+                        latest.source_hash == selection.source_hash
+                            && latest.repo_key == selection.repo_key
+                            && latest.repo_path == selection.repo_path
+                            && !latest
+                                .duplicate_candidates
+                                .iter()
+                                .any(|id| selected_ids.contains(id))
+                            && latest
+                                .matches
+                                .iter()
+                                .map(|item| item.id.to_lowercase())
+                                .collect::<std::collections::BTreeSet<_>>()
+                                == current_ids
+                            && snapshot.is_none_or(|token| latest
+                                .matches
+                                .iter()
+                                .any(|item| item.id == target && item.snapshot == token)),
+                        "导入源或重复项已变化，请重新预览"
+                    );
+                    Ok(())
+                })();
+                if let Err(error) = checked {
+                    let _ = remove_link(&staged.0);
+                    return Err(error);
+                }
+                self.commit_staged_import_unlocked(&operation, staged, snapshot)
+            }) {
                 Ok(_) => imported += 1,
                 Err(error) => errors.push(format!("{}：{error:#}", selection.id)),
             }
@@ -412,6 +496,7 @@ impl SkillsManager {
             name,
             source_hash,
             &mut TargetSnapshots::new(),
+            &mut Vec::new(),
         )
     }
 
@@ -438,6 +523,7 @@ impl SkillsManager {
         name: &str,
         source_hash: &str,
         snapshots: &mut TargetSnapshots,
+        incomplete_targets: &mut Vec<SkillImportIncompleteTarget>,
     ) -> anyhow::Result<Vec<SkillImportMatch>> {
         let mut existing: BTreeMap<String, String> = state
             .installed
@@ -477,7 +563,22 @@ impl SkillsManager {
             }
             let snapshot = match self.cached_import_target_snapshot(state, &target, snapshots) {
                 Ok(snapshot) => snapshot,
-                Err(_) if reasons.is_empty() => continue,
+                Err(error) if reasons.is_empty() => {
+                    let (fingerprint, detail) = match self.incomplete_target_fingerprint(&target) {
+                        Ok(fingerprint) => (fingerprint, format!("{error:#}")),
+                        Err(_) => (
+                            uuid::Uuid::new_v4().to_string(),
+                            format!("{error:#}；无法稳定复核目标，请修复后重新预览"),
+                        ),
+                    };
+                    incomplete_targets.push(SkillImportIncompleteTarget {
+                        fingerprint,
+                        id: target,
+                        name: existing_name,
+                        error: detail,
+                    });
+                    continue;
+                }
                 Err(error) => return Err(error.context(format!("无法比较已有 Skill：{target}"))),
             };
             if snapshot
@@ -498,6 +599,70 @@ impl SkillsManager {
             }
         }
         Ok(matches)
+    }
+
+    fn incomplete_target_fingerprint(&self, id: &str) -> anyhow::Result<String> {
+        fn visit(path: &Path, hash: &mut Sha256, count: &mut usize) -> anyhow::Result<()> {
+            *count += 1;
+            anyhow::ensure!(*count <= 4096, "目标目录过大，无法确认变化");
+            hash.update(path.as_os_str().to_string_lossy().as_bytes());
+            let metadata = match std::fs::symlink_metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    hash.update(b"absent");
+                    return Ok(());
+                }
+                Err(error) => return Err(error.into()),
+            };
+            hash.update(metadata.len().to_le_bytes());
+            hash.update(
+                format!(
+                    "{:?}{:?}{:?}",
+                    metadata.file_type(),
+                    metadata.modified()?,
+                    metadata.created()?
+                )
+                .as_bytes(),
+            );
+            #[cfg(windows)]
+            let is_link = {
+                use std::os::windows::fs::MetadataExt;
+                metadata.file_attributes() & 0x400 != 0
+            };
+            #[cfg(not(windows))]
+            let is_link = metadata.file_type().is_symlink();
+            if metadata.is_dir() && !is_link {
+                let mut entries = std::fs::read_dir(path)?
+                    .take(4097)
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                anyhow::ensure!(*count + entries.len() <= 4096, "目标目录过大，无法确认变化");
+                entries.sort();
+                for entry in entries {
+                    visit(&entry, hash, count)?;
+                }
+            }
+            Ok(())
+        }
+        let mut hash = Sha256::new();
+        let mut count = 0;
+        for root in std::iter::once(&self.source_dir)
+            .chain(std::iter::once(&self.linked_dir()))
+            .chain(self.agent_dirs.iter().map(|(_, root)| root))
+        {
+            visit(&root.join(id), &mut hash, &mut count)?;
+        }
+        Ok(format!("{:x}", hash.finalize()))
+    }
+}
+
+fn incomplete_targets_confirmed(
+    candidate: &SkillImportCandidate,
+    confirmed: Option<&Vec<SkillImportIncompleteTarget>>,
+) -> bool {
+    match confirmed {
+        Some(shown) => shown == &candidate.incomplete_targets && !shown.is_empty(),
+        None => candidate.incomplete_targets.is_empty(),
     }
 }
 
@@ -643,6 +808,8 @@ mod tests {
             .unwrap();
         for candidate in &preview[..2] {
             assert!(candidate.error.is_none());
+            assert_eq!(candidate.incomplete_targets.len(), 1);
+            assert_eq!(candidate.incomplete_targets[0].id, "existing");
         }
         for candidate in &preview[2..] {
             let error = candidate.error.as_ref().unwrap();
@@ -655,8 +822,18 @@ mod tests {
             )
         });
         let selections: Vec<_> = preview.iter().map(selection).collect();
+        let confirmations = preview[..2]
+            .iter()
+            .map(|item| (item.id.clone(), item.incomplete_targets.clone()))
+            .collect();
         let (count, errors) = manager
-            .apply_skill_import(&candidates, &BTreeMap::new(), "local", &selections)
+            .apply_skill_import_with_confirmations(
+                &candidates,
+                &BTreeMap::new(),
+                "local",
+                &selections,
+                &confirmations,
+            )
             .unwrap();
         assert_eq!(count, 2);
         assert_eq!(errors.len(), 2);
@@ -664,6 +841,128 @@ mod tests {
             std::fs::read_to_string(manager.source_dir.join("existing/SKILL.md"))
                 .unwrap()
                 .contains("original")
+        );
+    }
+
+    #[test]
+    fn incomplete_confirmation_is_required_and_bound_to_current_preview() {
+        let (temp, manager) = fixture();
+        let original = temp.path().join("original");
+        let incoming = temp.path().join("incoming");
+        write_skill(&original, "Existing", "old");
+        write_skill(&incoming, "Incoming", "new");
+        manager
+            .import_from_local_directory("existing", &original)
+            .unwrap();
+        add_oversized_file(&manager.source_dir.join("existing"));
+        let candidates = vec![("new".into(), incoming)];
+        let preview = manager
+            .preview_skill_import(&candidates, &BTreeMap::new())
+            .unwrap();
+        let chosen = selection(&preview[0]);
+        let (count, errors) = manager
+            .apply_skill_import(&candidates, &BTreeMap::new(), "local", &[chosen.clone()])
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(errors.len(), 1);
+        let confirmed = BTreeMap::from([("new".into(), preview[0].incomplete_targets.clone())]);
+        let mut forged = chosen.clone();
+        forged.target_id = Some("existing".into());
+        forged.target_snapshot = Some("forged".into());
+        let (count, _) = manager
+            .apply_skill_import_with_confirmations(
+                &candidates,
+                &BTreeMap::new(),
+                "local",
+                &[forged],
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        let mut stale = confirmed.clone();
+        stale.get_mut("new").unwrap()[0].error.push_str(" changed");
+        let (count, _) = manager
+            .apply_skill_import_with_confirmations(
+                &candidates,
+                &BTreeMap::new(),
+                "local",
+                &[chosen.clone()],
+                &stale,
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        let large_file = manager.source_dir.join("existing/oversized.bin");
+        let length = std::fs::metadata(&large_file).unwrap().len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&large_file)
+            .unwrap()
+            .set_len(length + 1)
+            .unwrap();
+        let (count, _) = manager
+            .apply_skill_import_with_confirmations(
+                &candidates,
+                &BTreeMap::new(),
+                "local",
+                &[chosen.clone()],
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        let preview = manager
+            .preview_skill_import(&candidates, &BTreeMap::new())
+            .unwrap();
+        let confirmed = BTreeMap::from([("new".into(), preview[0].incomplete_targets.clone())]);
+        let another = temp.path().join("another");
+        write_skill(&another, "Another", "other");
+        manager
+            .import_from_local_directory("another", &another)
+            .unwrap();
+        add_oversized_file(&manager.source_dir.join("another"));
+        let (count, _) = manager
+            .apply_skill_import_with_confirmations(
+                &candidates,
+                &BTreeMap::new(),
+                "local",
+                &[chosen.clone()],
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(manager.source_dir.join("existing/oversized.bin"))
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        let (count, _) = manager
+            .apply_skill_import_with_confirmations(
+                &candidates,
+                &BTreeMap::new(),
+                "local",
+                &[chosen.clone()],
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        let refreshed = manager
+            .preview_skill_import(&candidates, &BTreeMap::new())
+            .unwrap();
+        let confirmed = BTreeMap::from([("new".into(), refreshed[0].incomplete_targets.clone())]);
+        let (count, errors) = manager
+            .apply_skill_import_with_confirmations(
+                &candidates,
+                &BTreeMap::new(),
+                "local",
+                &[chosen],
+                &confirmed,
+            )
+            .unwrap();
+        assert_eq!(count, 1, "{errors:?}");
+        assert!(
+            std::fs::read_to_string(manager.source_dir.join("existing/SKILL.md"))
+                .unwrap()
+                .contains("old")
         );
     }
 

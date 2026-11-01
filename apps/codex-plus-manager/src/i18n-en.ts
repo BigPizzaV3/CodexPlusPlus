@@ -3013,6 +3013,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已检查 {0} 个仓库，{1} 个 Skill 有候选来源": "Checked {0} repositories; {1} skills have candidate sources",
   "{0} 个仓库检查失败": "{0} repository checks failed",
   "{0} 项无法比较": "{0} items could not be compared",
+  "部分已有 Skill 无法比较，可能存在未发现的重复项：": "Some existing skills could not be compared; duplicates may have been missed:",
+  "我已了解比较不完整，仍要导入此项": "I understand the comparison is incomplete and want to import this item",
   "已选 {0} 项": "{0} selected",
   "关联所选 {0} 项": "Link {0} selected",
   // 内置拓展

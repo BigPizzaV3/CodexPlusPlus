@@ -37,7 +37,8 @@ type SkillPayload = Result & { skills: Skill[]; repos: Repo[]; pendingImportedRe
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
 type RepoCheck = { state: "queued" | "running" | "done" | "failed"; message?: string };
 type SkillImportMatch = { id: string; name: string; reasons: string[]; snapshot: string };
-type SkillImportCandidate = { id: string; name: string; description: string; sourceHash: string; repoKey: string; repoPath: string; matches: SkillImportMatch[]; duplicateCandidates: string[]; error: string | null };
+type SkillImportIncompleteTarget = { id: string; name: string; error: string; fingerprint: string };
+type SkillImportCandidate = { id: string; name: string; description: string; sourceHash: string; repoKey: string; repoPath: string; matches: SkillImportMatch[]; incompleteTargets: SkillImportIncompleteTarget[]; duplicateCandidates: string[]; error: string | null };
 type SkillImportPreview = Result & { candidates: SkillImportCandidate[]; warning: string };
 type ImportRequest = { source: "local" | "cc-switch"; path: string | null; preview: SkillImportPreview; revision: number };
 const skillUpdateQueue = new SkillTaskQueue<SkillPayload>();
@@ -218,11 +219,13 @@ function SkillDetailDrawer({ skill, count, group, originGroup, groups, onAssign,
   </ManagementDrawer>;
 }
 function SkillImportDrawer({ request, busy, onClose, onRefresh, onApply }: { request: ImportRequest; busy: boolean; onClose: () => void; onRefresh: () => void;
-  onApply: (selections: { id: string; sourceHash: string; repoKey: string; repoPath: string; targetId: string | null; targetSnapshot: string | null }[]) => void }) {
+  onApply: (selections: { id: string; sourceHash: string; repoKey: string; repoPath: string; targetId: string | null; targetSnapshot: string | null }[], incompleteConfirmations: Record<string, SkillImportIncompleteTarget[]>) => void }) {
   const candidates = request.preview.candidates;
   const [selected, setSelected] = useState<Set<string>>(() => new Set(candidates.filter((item) => !item.error && !item.matches.length && !item.duplicateCandidates.length).map((item) => item.id)));
   const [targets, setTargets] = useState<Record<string, string>>(() => Object.fromEntries(candidates.filter((item) => !item.error && item.matches.length === 1).map((item) => [item.id, item.matches[0].id])));
+  const [confirmed, setConfirmed] = useState<Set<string>>(() => new Set());
   const chosen = candidates.filter((item) => !item.error && selected.has(item.id));
+  const needsConfirmation = chosen.some((item) => item.incompleteTargets.length > 0 && !confirmed.has(item.id));
   const invalidTargets = chosen.some((item) => item.matches.length > 0 && !item.matches.some((match) => match.id === targets[item.id]));
   const duplicateIncoming = chosen.some((item) => item.duplicateCandidates.some((id) => selected.has(id)));
   const targetList = chosen.map((item) => targets[item.id]).filter(Boolean);
@@ -230,9 +233,9 @@ function SkillImportDrawer({ request, busy, onClose, onRefresh, onApply }: { req
   const submit = () => onApply(chosen.map((item) => {
     const match = item.matches.find((entry) => entry.id === targets[item.id]);
     return { id: item.id, sourceHash: item.sourceHash, repoKey: item.repoKey, repoPath: item.repoPath, targetId: match?.id || null, targetSnapshot: match?.snapshot || null };
-  }));
+  }), Object.fromEntries(chosen.filter((item) => item.incompleteTargets.length && confirmed.has(item.id)).map((item) => [item.id, item.incompleteTargets])));
   return <ManagementDrawer wide dismissOnBackdrop={false} title={t("选择要导入的 Skills")} onClose={busy ? () => {} : onClose}
-    footer={<><Button onClick={onRefresh} disabled={busy}><RefreshCw size={14}/>{t("重新检查")}</Button><Button onClick={onClose} disabled={busy}>{t("取消")}</Button><Button primary onClick={submit} disabled={busy || !chosen.length || invalidTargets || duplicateIncoming || duplicateTargets}>{tf("导入所选 {0} 项", [chosen.length])}</Button></>}>
+    footer={<><Button onClick={onRefresh} disabled={busy}><RefreshCw size={14}/>{t("重新检查")}</Button><Button onClick={onClose} disabled={busy}>{t("取消")}</Button><Button primary onClick={submit} disabled={busy || !chosen.length || invalidTargets || duplicateIncoming || duplicateTargets || needsConfirmation}>{tf("导入所选 {0} 项", [chosen.length])}</Button></>}>
     {request.preview.warning && <p className="mg-notice mg-warning">{request.preview.warning}</p>}
     <p className="mg-skill-import-note">{t("覆盖时会同步已启用的 Agent 副本，并保留原版本备份。")}</p>
     <div className="mg-skill-import-toolbar"><span>{tf("共 {0} 项，已选 {1} 项", [candidates.length, chosen.length])}</span><div className="mg-row-actions">
@@ -252,6 +255,7 @@ function SkillImportDrawer({ request, busy, onClose, onRefresh, onApply }: { req
       {item.error ? <small className="mg-skill-import-error" role="alert">{item.error}</small> : item.matches.length ? <div className="mg-skill-import-target"><span>{t("覆盖已有")}</span><AppSelect value={targets[item.id] || ""} className="mg-skill-long-select" title={targetOptions.find((option) => option.value === targets[item.id])?.label || ""} ariaLabel={`${t("选择覆盖目标")} ${item.name || item.id}`} placeholder={t("选择覆盖目标")}
         disabled={!selected.has(item.id) || busy} options={targetOptions}
         onChange={(target) => setTargets((old) => ({ ...old, [item.id]: target }))}/></div> : item.duplicateCandidates.length ? <small className="mg-skill-import-duplicate">{t("导入清单中重复")}</small> : <small>{t("新增")}</small>}
+      {!item.error && item.incompleteTargets.length > 0 && <div className="mg-notice mg-warning"><strong>{t("部分已有 Skill 无法比较，可能存在未发现的重复项：")}</strong>{item.incompleteTargets.map((target) => <p key={target.id}>{target.name} ({target.id})：{target.error}</p>)}<label><input type="checkbox" checked={confirmed.has(item.id)} disabled={busy || !selected.has(item.id)} onChange={(event) => { const checked = event.currentTarget.checked; setConfirmed((old) => { const next = new Set(old); checked ? next.add(item.id) : next.delete(item.id); return next; }); }}/>{t("我已了解比较不完整，仍要导入此项")}</label></div>}
     </div>; })}</div>
   </ManagementDrawer>;
 }
@@ -756,7 +760,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       onUpdated={() => { void reloadLocal(); }}/>}
     {importRequest && <SkillImportDrawer key={importRequest.revision} request={importRequest} busy={busy}
       onClose={() => setImportRequest(null)} onRefresh={() => void previewImport(importRequest.source, importRequest.path)}
-      onApply={(selections) => { void (async () => { if (await run("apply_skill_import", { source: importRequest.source, path: importRequest.path, selections })) { setImportRequest(null); setTab("installed"); void load(); } })(); }}/>}
+      onApply={(selections, incompleteConfirmations) => { void (async () => { if (await run("apply_skill_import", { source: importRequest.source, path: importRequest.path, selections, incompleteConfirmations })) { setImportRequest(null); setTab("installed"); void load(); } })(); }}/>
+    }
     {conflict && <SkillConflictDialog key={conflict.id} skill={conflict} busy={busy} onClose={() => { dismissedConflicts.current.add(conflict.id); setConflict(null); }}
       onResolve={(keepCodex) => { void (async () => { if (await run("resolve_skill_conflict", { id: conflict.id, keepCodex })) { dismissedConflicts.current.delete(conflict.id); setConflict(null); } })(); }}/>}
   </div>;

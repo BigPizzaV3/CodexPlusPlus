@@ -6735,12 +6735,18 @@ pub async fn apply_skill_import(
     source: String,
     path: Option<String>,
     selections: Vec<codex_plus_core::skills::SkillImportSelection>,
+    incomplete_confirmations: Option<serde_json::Value>,
 ) -> CommandResult<SkillsPayload> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = default_skills_manager();
         let result = (|| -> anyhow::Result<(usize, Vec<String>)> {
             let (candidates, origins, _) = skill_import_inputs(&source, path.as_deref())?;
-            manager.apply_skill_import(&candidates, &origins, &source, &selections)
+            let confirmations = serde_json::from_value(
+                incomplete_confirmations.unwrap_or_else(|| serde_json::json!({})),
+            )?;
+            manager.apply_skill_import_with_confirmations(
+                &candidates, &origins, &source, &selections, &confirmations,
+            )
         })();
         match result {
             Ok((count, errors)) if errors.is_empty() => ok(
@@ -6919,14 +6925,29 @@ fn import_local_skills_blocking(path: &str) -> CommandResult<SkillsPayload> {
             );
         }
     };
-    let mut imported = 0usize;
-    let mut errors = Vec::new();
-    for (id, path) in candidates {
-        match manager.import_from_local_directory(&id, &path) {
-            Ok(_) => imported += 1,
-            Err(error) => errors.push(format!("{id}：{error}")),
-        }
-    }
+    let origins = Default::default();
+    let preview = match manager.preview_skill_import(&candidates, &origins) {
+        Ok(preview) => preview,
+        Err(error) => return failed(
+            &format!("本地导入 Skill 失败：{error:#}"),
+            current_skills_payload(&manager),
+        ),
+    };
+    let selections: Vec<_> = preview.iter().map(|item| codex_plus_core::skills::SkillImportSelection {
+        id: item.id.clone(),
+        source_hash: item.source_hash.clone(),
+        repo_key: item.repo_key.clone(),
+        repo_path: item.repo_path.clone(),
+        target_id: None,
+        target_snapshot: None,
+    }).collect();
+    let (imported, errors) = match manager.apply_skill_import(&candidates, &origins, "local", &selections) {
+        Ok(result) => result,
+        Err(error) => return failed(
+            &format!("本地导入 Skill 失败：{error:#}"),
+            current_skills_payload(&manager),
+        ),
+    };
     let payload = current_skills_payload(&manager);
     if errors.is_empty() {
         ok(
