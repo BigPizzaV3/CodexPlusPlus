@@ -998,7 +998,7 @@ describe("renderer injection header compatibility", () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /function installCodexPlusPageLayout\(overlay, tab\)/);
-    assert.match(renderer, /function refreshCodexPlusPageNav\(tab\)/);
+    assert.match(renderer, /function refreshCodexPlusPageNav\(tab = /);
     assert.match(renderer, /function renderCodexPlusPageNavItems\(tab\)/);
     // 三栏容器是 createElement + className 赋值的，不是 markup 字面量。
     assert.match(renderer, /layout\.className = "codex-plus-page-layout"/);
@@ -1562,6 +1562,28 @@ return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () 
     assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
     assert.equal(failed.toasts.length, 1);
     assert.match(failed.toasts[0], /Codex 页面尚未连接/);
+  });
+
+  it("keeps the 拓展 page nav when extension hosts refresh it without a tab", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const pageNav = (activeTab: string) => new Function("activeTab", `
+const codexPlusExtensionsTab = "extensions";
+const title = { textContent: "拓展" }, body = { innerHTML: "" };
+const document = { querySelector: (selector) => ({
+  "[data-codex-plus-page-nav-body]": body,
+  ".codex-plus-page-nav-title": title,
+  ".codex-plus-modal-content": { dataset: { codexPlusActiveTab: activeTab } },
+})[selector] };
+const renderCodexPlusPageNavItems = (tab) => "items:" + tab;
+${segment(renderer, "  function codexPlusModalTab(", "  let codexPlusTypingEffectDropdownCleanup")}
+${segment(renderer, "  function refreshCodexPlusPageNav(", "  /**\n   * 脚本清单变化后同步左面板")}
+refreshCodexPlusPageNav();
+return { title: title.textContent, body: body.innerHTML };`)(activeTab) as { title: string; body: string };
+    // 拓展注册 / 撤销后统一刷新不带 tab：拓展页仍是拓展列表，不能换成 Codex++ 主页导航。
+    assert.deepEqual(pageNav("extensions"), { title: "拓展", body: "items:extensions" });
+    assert.deepEqual(pageNav("home"), { title: "Codex++", body: "items:home" });
+    // 统一刷新确实是无参调用，这条默认值才有意义。
+    assert.match(renderer, /for \(const refresh of \[\s*refreshCodexPlusPageNav,/);
   });
 
   it("rebuilds nav entries left by an earlier injection so their stale handlers stop opening the old page", async () => {

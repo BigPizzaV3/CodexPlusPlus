@@ -569,8 +569,12 @@
     return "Codex++";
   }
 
-  /** 左面板内容随当前分组刷新（切 tab 后调用）。 */
-  function refreshCodexPlusPageNav(tab) {
+  /**
+   * 左面板内容随当前分组刷新（切 tab 后调用）。
+   * 不传 tab 时按页面当前分组重画：拓展注册 / 撤销后的统一刷新（codexPlusRefreshExtensionHostsNow）不带参数，
+   * 落到 home 会把「拓展」页的左面板换成 Codex++ 主页的导航，启停一个拓展就回不到列表。
+   */
+  function refreshCodexPlusPageNav(tab = codexPlusModalTab(document.querySelector(".codex-plus-modal-content")?.dataset.codexPlusActiveTab)) {
     const body = document.querySelector("[data-codex-plus-page-nav-body]");
     if (!body) return;
     const title = document.querySelector(".codex-plus-page-nav-title");
