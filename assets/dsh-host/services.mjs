@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSyn
 import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { hostCall } from './host-call.mjs'
+import { hostCall, hostCallStream } from './host-call.mjs'
 import { FsError } from './shims/dsh-fs.mjs'
 import { DomainError } from './shims/dsh-storage-domain.mjs'
 import { SessionQueryError, SubprocessExecutableNotFoundError, UserQuestionError, WebError } from './shims/dsh-errors.mjs'
@@ -669,8 +669,13 @@ export function createSessionQuery(mirror) {
   }
 }
 
-/** ctx.llm：stream 经 Codex++ 协议代理发一次（整段返回后拆成 dsh 的流式块）。 */
+/**
+ * ctx.llm：stream 经 Codex++ 协议代理发请求，边收边把文字 / 推理增量翻成 dsh 的流式块（宿主调用通道的行式流）；
+ * 工具调用与用量在回复结束后给出。插件经 registerAdapter 注册的模型供应商（provider 对得上时）直接用它的 stream。
+ */
 export function createLlm() {
+  /** provider id → adapter（插件注册的模型供应商，只在本进程里给 ctx.llm 用；Codex 自己的请求不经过它）。 */
+  const adapters = new Map()
   // dsh 消息 → Responses 输入条目：文字与图片进 message，助手的工具调用块成 function_call，tool 消息成 function_call_output。
   const promptOf = (options) => (options?.messages ?? []).flatMap((message) => {
     if (message?.role === 'tool') {
@@ -689,47 +694,82 @@ export function createLlm() {
       .map((block) => ({ type: 'function_call', call_id: String(block.id), name: String(block.name), arguments: String(block.arguments ?? '{}') }))
     return [...(parts.length ? [{ role, content: parts }] : []), ...calls]
   })
+  const adapterFor = (provider) => (provider ? adapters.get(String(provider)) : undefined)
   return {
     stream(options = {}) {
+      const adapter = adapterFor(options.provider)
+      if (adapter && typeof adapter.stream === 'function') return adapter.stream(options)
       return (async function* () {
+        const model = options.provider && options.model && !String(options.model).includes('/') && options.provider !== 'codex'
+          ? `${options.provider}/${options.model}`
+          : options.model
+        const tools = (options.tools ?? []).map((tool) => ({ name: String(tool.name), description: String(tool.description ?? ''), parameters: tool.parameters ?? { type: 'object', properties: {} } }))
+        const iterator = hostCallStream('llm', 'stream', {
+          input: promptOf(options),
+          ...(options.system ? { instructions: String(options.system) } : {}),
+          ...(model ? { model: String(model) } : {}),
+          ...(options.reasoningEffort ? { reasoningEffort: String(options.reasoningEffort) } : {}),
+          ...(options.maxTokens ? { maxOutputTokens: Number(options.maxTokens) } : {}),
+          ...(options.temperature !== undefined ? { temperature: Number(options.temperature) } : {}),
+          ...(tools.length ? { tools } : {}),
+          ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+        }, { signal: options.signal })
+        // 增量按到达顺序开块：推理块、文字块各一个；换了种类就先把上一个块收尾。
+        let index = 0
+        const open = { reasoning: undefined, text: undefined }
+        const streamed = { reasoning: '', text: '' }
+        const closed = new Set()
+        const finishBlock = function* (kind) {
+          if (open[kind] === undefined || closed.has(kind)) return
+          closed.add(kind)
+          yield { type: 'block-end', index: open[kind], block: { type: kind, text: streamed[kind] } }
+        }
         let result
         try {
-          const model = options.provider && options.model && !String(options.model).includes('/') && options.provider !== 'codex'
-            ? `${options.provider}/${options.model}`
-            : options.model
-          const tools = (options.tools ?? []).map((tool) => ({ name: String(tool.name), description: String(tool.description ?? ''), parameters: tool.parameters ?? { type: 'object', properties: {} } }))
-          result = await hostCall('llm', 'complete', {
-            input: promptOf(options),
-            ...(options.system ? { instructions: String(options.system) } : {}),
-            ...(model ? { model: String(model) } : {}),
-            ...(options.reasoningEffort ? { reasoningEffort: String(options.reasoningEffort) } : {}),
-            ...(options.maxTokens ? { maxOutputTokens: Number(options.maxTokens) } : {}),
-            ...(options.temperature !== undefined ? { temperature: Number(options.temperature) } : {}),
-            ...(tools.length ? { tools } : {}),
-            ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
-          }, { signal: options.signal })
+          for (;;) {
+            const step = await iterator.next()
+            if (step.done) {
+              result = step.value
+              break
+            }
+            const delta = step.value
+            const kind = delta?.type === 'reasoning' ? 'reasoning' : 'text'
+            const text = String(delta?.text ?? '')
+            if (!text || closed.has(kind)) continue
+            if (open[kind] === undefined) {
+              // 文字开始时把推理块收尾（dsh 的块顺序是推理在前）。
+              if (kind === 'text') yield* finishBlock('reasoning')
+              open[kind] = index++
+              yield { type: 'block-start', index: open[kind], blockType: kind }
+            }
+            streamed[kind] += text
+            yield { type: kind === 'text' ? 'text-delta' : 'reasoning-delta', index: open[kind], text }
+          }
         } catch (error) {
           const aborted = options.signal?.aborted
+          yield* finishBlock('reasoning')
+          yield* finishBlock('text')
           yield { type: 'finish', reason: { kind: aborted ? 'aborted' : 'error', failure: { message: String(error?.message ?? error), code: aborted ? 'ABORTED' : 'LLM_ERROR' } } }
           return
         }
-        // 一次性拿到整段回复后按 dsh 的块顺序拆开：推理、文字、各个工具调用。
-        let index = 0
+        // 没有流式增量的部分（上游不流式、或只在收尾事件里给）按整段回复补齐：推理、文字、各个工具调用。
         const reasoning = String(result?.reasoning ?? '')
-        if (reasoning) {
-          yield { type: 'block-start', index, blockType: 'reasoning' }
-          yield { type: 'reasoning-delta', index, text: reasoning }
-          yield { type: 'block-end', index, block: { type: 'reasoning', text: reasoning } }
-          index += 1
+        if (open.reasoning === undefined && reasoning && open.text === undefined) {
+          open.reasoning = index++
+          streamed.reasoning = reasoning
+          yield { type: 'block-start', index: open.reasoning, blockType: 'reasoning' }
+          yield { type: 'reasoning-delta', index: open.reasoning, text: reasoning }
         }
+        yield* finishBlock('reasoning')
         const text = String(result?.text ?? '')
         const calls = Array.isArray(result?.toolCalls) ? result.toolCalls : []
-        if (text || !calls.length) {
-          yield { type: 'block-start', index, blockType: 'text' }
-          if (text) yield { type: 'text-delta', index, text }
-          yield { type: 'block-end', index, block: { type: 'text', text } }
-          index += 1
+        if (open.text === undefined && (text || !calls.length)) {
+          open.text = index++
+          streamed.text = text
+          yield { type: 'block-start', index: open.text, blockType: 'text' }
+          if (text) yield { type: 'text-delta', index: open.text, text }
         }
+        yield* finishBlock('text')
         for (const call of calls) {
           const block = { type: 'tool-call', id: String(call.callId ?? randomUUID()), name: String(call.name ?? ''), arguments: typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments ?? {}) }
           yield { type: 'block-start', index, blockType: 'tool-call' }
@@ -750,20 +790,35 @@ export function createLlm() {
       })()
     },
     listProviders() {
-      return [{ id: 'codex', name: 'Codex（经 Codex++）' }]
+      return [{ id: 'codex', name: 'Codex（经 Codex++）' }, ...[...adapters.values()].map((adapter) => ({ id: adapter.id, name: String(adapter.name ?? adapter.id) }))]
     },
-    async listModels() {
+    async listModels(provider) {
+      const adapter = adapterFor(provider)
+      if (adapter && typeof adapter.listModels === 'function') return adapter.listModels()
       const listed = await hostCall('llm', 'listModels', {})
       return (listed?.models ?? []).map((model) => ({ provider: 'codex', id: String(model?.id ?? model), name: String(model?.name ?? model?.id ?? model) }))
     },
     async resolveModelInfo(provider, model) {
+      const adapter = adapterFor(provider)
+      if (adapter && typeof adapter.resolveModelInfo === 'function') return adapter.resolveModelInfo(model)
       return { provider, model, contextWindow: undefined }
     },
     resolveCallConfig(config) {
       return config
     },
-    registerAdapter() {
-      throw new Error('Codex++ 里不能注册 dsh 模型 adapter；要加模型供应商请在 Codex++ 拓展清单里声明 providers')
+    /**
+     * 插件注册模型供应商：ctx.llm.stream({ provider }) 对得上时直接用它的 stream（同一个宿主进程里）。
+     * Codex 自己的模型请求不经过它——要给 Codex 加供应商，请在 Codex++ 拓展清单里声明 providers。
+     */
+    registerAdapter(adapter) {
+      const id = String(adapter?.id ?? adapter?.provider ?? '')
+      if (!id || typeof adapter?.stream !== 'function') throw new TypeError('registerAdapter 需要 { id, stream(options) }')
+      if (id === 'codex') throw new Error('provider codex 由 Codex++ 提供，不能顶替')
+      const entry = { ...adapter, id }
+      adapters.set(id, entry)
+      return () => {
+        if (adapters.get(id) === entry) adapters.delete(id)
+      }
     },
     registerConfigurableProviders() {
       return () => {}

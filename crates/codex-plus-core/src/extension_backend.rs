@@ -315,7 +315,8 @@ async fn host_call_inner(message: &Value, manager: &UserScriptManager) -> anyhow
             let ports = REMOTE_BRIDGE_PORTS.get().cloned().unwrap_or_else(default_debug_ports);
             page_call(&ports, "__codexPlusUiCall", &json!(method), &params).await
         }
-        ("llm", "complete") => crate::extension_llm::complete(&params).await,
+        // stream 只有命令行入口（[`run_host_call_cli`]）能边收边吐；别的通道一次性返回同样的结果。
+        ("llm", "complete" | "stream") => crate::extension_llm::complete(&params).await,
         ("llm", "listModels") => crate::extension_llm::list_models(),
         _ => anyhow::bail!("不能调用 {service}.{method}"),
     }
@@ -398,12 +399,21 @@ pub fn set_host_exe_env(command: &mut tokio::process::Command) {
 }
 
 /// [`HOST_CALL_FLAG`] 的实现：读 stdin、调 [`host_call`]、把结果写到 stdout。总是返回 0，错误写进输出。
+/// `llm.stream` 是行式流：每个文字 / 推理增量先写一行 `{ "delta": ... }`，最后一行是 `{ result }` 或 `{ error }`。
 pub async fn run_host_call_cli(manager: &UserScriptManager) -> i32 {
     use std::io::Read;
     let mut raw = Vec::new();
     let read = std::io::stdin().take(MAX_HOST_CALL_BYTES + 1).read_to_end(&mut raw);
     let reply = match read {
         Ok(_) if raw.len() as u64 <= MAX_HOST_CALL_BYTES => match serde_json::from_slice::<Value>(&raw) {
+            Ok(message) if message.get("service").and_then(Value::as_str) == Some("llm") && message.get("method").and_then(Value::as_str) == Some("stream") => {
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                // Rust 的 stdout 按行刷新：每个增量写完就到了 Node 那边。
+                match crate::extension_llm::stream(&params, |delta| println!("{}", json!({ "delta": delta }))).await {
+                    Ok(result) => json!({ "result": result }),
+                    Err(error) => json!({ "error": format!("{error:#}") }),
+                }
+            }
             Ok(message) => match host_call(&message, manager).await {
                 Ok(result) => json!({ "result": result }),
                 Err(error) => json!({ "error": format!("{error:#}") }),

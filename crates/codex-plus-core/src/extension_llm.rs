@@ -234,13 +234,84 @@ fn output_text(response: &Value) -> String {
         .join("")
 }
 
+/// 流式回复的增量解析：按行切 SSE（字节可能在任意处断开，攒到换行再解码），
+/// 每个 `data:` 事件里的文字 / 推理增量交出来（Responses 与 Chat Completions 都认）。
+#[derive(Debug, Default)]
+pub struct SseDeltas {
+    buffer: Vec<u8>,
+}
+
+impl SseDeltas {
+    /// 喂一段字节，返回这段里完整事件的增量：`{ "type": "text" | "reasoning", "text": ... }`。
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<Value> {
+        self.buffer.extend_from_slice(bytes);
+        let mut deltas = Vec::new();
+        while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.buffer.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line);
+            let Some(data) = line.trim().strip_prefix("data:").map(str::trim) else { continue };
+            if data == "[DONE]" {
+                continue;
+            }
+            if let Ok(event) = serde_json::from_str::<Value>(data) {
+                deltas.extend(event_deltas(&event));
+            }
+        }
+        deltas
+    }
+}
+
+/// 一个流式事件里的文字 / 推理增量。
+fn event_deltas(event: &Value) -> Vec<Value> {
+    let mut deltas = Vec::new();
+    let mut push = |kind: &str, text: Option<&str>| {
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            deltas.push(json!({ "type": kind, "text": text }));
+        }
+    };
+    match event.get("type").and_then(Value::as_str) {
+        Some("response.output_text.delta") => push("text", event["delta"].as_str()),
+        Some("response.reasoning_summary_text.delta" | "response.reasoning_text.delta") => push("reasoning", event["delta"].as_str()),
+        _ => {}
+    }
+    for choice in event.get("choices").and_then(Value::as_array).into_iter().flatten() {
+        push("reasoning", choice.pointer("/delta/reasoning_content").and_then(Value::as_str));
+        push("text", choice.pointer("/delta/content").and_then(Value::as_str));
+    }
+    deltas
+}
+
 /// 发一次请求并整理回复。
 pub async fn complete(params: &Value) -> anyhow::Result<Value> {
+    stream(params, |_| {}).await
+}
+
+/// 发一次请求，边收边把文字 / 推理增量交给 `on_delta`，结束后整理成与 [`complete`] 相同的回复。
+pub async fn stream(params: &Value, mut on_delta: impl FnMut(Value) + Send) -> anyhow::Result<Value> {
     let body = request_body(params, default_model())?;
     let run = async {
         let mut response = crate::protocol_proxy::open_responses_proxy_request(&body.to_string(), Some("CodexPlusPlus/extension-llm")).await?;
         let status = response.status_code;
-        let bytes = response.read_body().await?;
+        let mut deltas = SseDeltas::default();
+        // 代理预读的流开头要先处理，再接着读剩下的。
+        let prefix = std::mem::take(&mut response.stream_prefix);
+        let mut bytes = Vec::new();
+        let mut feed = |chunk: &[u8], bytes: &mut Vec<u8>| {
+            bytes.extend_from_slice(chunk);
+            if (200..300).contains(&status) {
+                for delta in deltas.push(chunk) {
+                    on_delta(delta);
+                }
+            }
+        };
+        feed(&prefix, &mut bytes);
+        if let Some(buffered) = response.buffered_body.take() {
+            feed(&buffered, &mut bytes);
+        } else if let Some(mut upstream) = response.response.take() {
+            while let Some(chunk) = upstream.chunk().await? {
+                feed(&chunk, &mut bytes);
+            }
+        }
         anyhow::Ok((status, bytes))
     };
     let (status, bytes) = crate::extension_gateway::EXTENSIONS_ALREADY_APPLIED

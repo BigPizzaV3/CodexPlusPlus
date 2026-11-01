@@ -1591,3 +1591,38 @@ fn dsh_events_cross_packages_and_jobs_cross_processes() {
         plugins.sync_companion(&manager, &record.id).unwrap();
     }
 }
+
+/// llm.stream 真流式：宿主调用通道是行式流，第一段文字增量在回复结束前就到插件手里；
+/// 插件注册的 adapter 在 provider 对得上时接管 stream。宿主调用用一个假的可执行文件代替（分两段写、中间停 400ms）。
+#[cfg(unix)]
+#[test]
+fn dsh_llm_stream_yields_deltas_before_the_reply_finishes() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(toolchain) = toolchain() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let fake = temp.path().join("host");
+    std::fs::write(&fake, format!(
+        "#!{}\nlet input='';process.stdin.on('data',c=>input+=c).on('end',()=>{{const req=JSON.parse(input);if(req.method!=='stream'||!req.stream){{process.stdout.write(JSON.stringify({{error:'not streamed'}})+'\\n');return}}const w=(v)=>process.stdout.write(JSON.stringify(v)+'\\n');w({{delta:{{type:'reasoning',text:'th'}}}});w({{delta:{{type:'text',text:'Hel'}}}});setTimeout(()=>{{w({{delta:{{type:'text',text:'lo'}}}});w({{result:{{text:'Hello',reasoning:'th',usage:{{output_tokens:2}}}}}})}},400)}})\n",
+        toolchain.node.as_ref().unwrap().display(),
+    )).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = format!(
+        "const {{ createLlm }} = await import({}); const llm = createLlm(); const start = Date.now(); const out = []; let firstText; for await (const chunk of llm.stream({{ messages: [{{ role: 'user', content: [{{ type: 'text', text: 'hi' }}] }}] }})) {{ if (chunk.type === 'text-delta' && firstText === undefined) firstText = Date.now() - start; out.push(chunk.type + ':' + (chunk.text ?? chunk.blockType ?? chunk.reason?.kind ?? chunk.block?.text ?? '')) }} const total = Date.now() - start; const off = llm.registerAdapter({{ id: 'mine', async *stream(options) {{ yield {{ type: 'text-delta', index: 0, text: 'from adapter ' + options.model }} }} }}); const via = []; for await (const chunk of llm.stream({{ provider: 'mine', model: 'm1', messages: [] }})) via.push(chunk.text); const providers = llm.listProviders().map((p) => p.id); off(); process.stdout.write(JSON.stringify({{ out, early: total - firstText >= 300, via, providers, after: llm.listProviders().length }})); process.exit(0)",
+        json!(url_of(&host_source("services.mjs")))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap())
+        .args(["--input-type=module", "-e", &script])
+        .env("CODEX_PLUS_HOST_EXE", &fake)
+        .output()
+        .unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(result["out"], json!([
+        "block-start:reasoning", "reasoning-delta:th", "block-end:th",
+        "block-start:text", "text-delta:Hel", "text-delta:lo", "block-end:Hello",
+        "usage:", "finish:stop"
+    ]), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(result["early"], true, "第一段文字要在回复结束前到达：{result}");
+    assert_eq!(result["via"], json!(["from adapter m1"]));
+    assert_eq!(result["providers"], json!(["codex", "mine"]));
+    assert_eq!(result["after"], 1, "撤销后 adapter 不在了");
+}

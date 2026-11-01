@@ -1730,7 +1730,7 @@ export class Host {
       sessions: 'ctx.sessions 是 Codex 会话的镜像（由 Codex 钩子事件生成）：没有模型的流式内容与推理，Codex 自己的会话日志请用 sessionQuery',
       agents: 'ctx.agents 里的 agent 是 Codex 会话的替身：steer / inject 在钩子里翻成补充上下文或要求继续，钩子之外经 Codex++ 往会话里插话',
       sessionProjections: 'sessionProjections 在会话镜像上折叠；客户端 useProjection 视图不提供',
-      llm: 'ctx.llm.stream 经 Codex++ 协议代理一次性返回，拆成流式块；不能注册 adapter',
+      llm: 'ctx.llm.stream 经 Codex++ 协议代理边收边吐，工具调用与用量在回复结束时给出；registerAdapter 注册的供应商只给宿主进程里的 ctx.llm 用，Codex 自己的请求不经过它',
       fs: 'ctx.fs 是本机文件系统，不做沙箱与「先读后写」策略',
       shell: 'ctx.shell 用本机 shell 执行，不做沙箱',
       schedule: 'ctx.schedule 到点经 Codex++ 往 Codex 会话里发起一轮（每分钟检查一次，需要 Codex++ 在运行）',
