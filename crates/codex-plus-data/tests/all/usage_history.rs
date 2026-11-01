@@ -240,6 +240,55 @@ fn overlapping_segments_and_copies_count_each_observation_once() {
 }
 
 #[test]
+fn non_overlapping_history_base_segments_preserve_earlier_model_usage() {
+    let fixture = Fixture::new();
+    let first_path = fixture.write(
+        "history-base-first",
+        &fixture.segment(&[fixture.count(1, 3, None)]),
+    );
+    let later_model = format!("synthetic-{}", Uuid::new_v4());
+    let later_turn = Uuid::new_v4().to_string();
+    let mut meta = fixture.meta();
+    meta["payload"]["history_base"] = json!({"end_ordinal_exclusive": 2});
+    let mut context = fixture.context(&later_model);
+    context["payload"]["turn_id"] = json!(later_turn);
+    let mut observation = fixture.count(2, 5, Some(2));
+    observation["payload"]["turn_id"] = json!(later_turn);
+    let later_path = fixture.write("history-base-later", &jsonl(&[meta, context, observation]));
+    let modified = std::time::SystemTime::now();
+    for (path, modified) in [
+        (&first_path, modified - std::time::Duration::from_secs(2)),
+        (&later_path, modified),
+    ] {
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    let result = fixture.read();
+    assert_eq!(result["complete"], true);
+    assert_eq!(result["scan"]["discoveredFiles"], 2);
+    let records = result["records"].as_array().unwrap();
+    let first = records
+        .iter()
+        .find(|record| record["model"] == fixture.model)
+        .expect("earlier segment's unique model must remain");
+    assert_eq!(first["turnId"], fixture.turn);
+    assert_eq!(first["usage"], fixture.expected(3));
+    let later = records
+        .iter()
+        .find(|record| record["model"] == later_model)
+        .unwrap();
+    assert_eq!(later["turnId"], later_turn);
+    assert_eq!(later["usage"], fixture.expected(2));
+    assert_eq!(records.len(), 2);
+    fixture.assert_usage(&result, 5);
+}
+
+#[test]
 fn cumulative_rollback_uses_last_usage_and_never_replays_missing_last() {
     let fixture = Fixture::new();
     fixture.write(
