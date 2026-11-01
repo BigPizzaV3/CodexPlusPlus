@@ -3015,6 +3015,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0} 项无法比较": "{0} items could not be compared",
   "部分已有 Skill 无法比较，可能存在未发现的重复项：": "Some existing skills could not be compared; duplicates may have been missed:",
   "我已了解比较不完整，仍要导入此项": "I understand the comparison is incomplete and want to import this item",
+  "预览缺少比较结果，请更新后重新检查。": "The preview is missing comparison results. Update and check again.",
   "已选 {0} 项": "{0} selected",
   "关联所选 {0} 项": "Link {0} selected",
   // 内置拓展

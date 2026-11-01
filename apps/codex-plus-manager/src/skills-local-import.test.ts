@@ -34,12 +34,12 @@ test("incomplete comparisons require per-item confirmation and submit the previe
   const drawer = extra.slice(extra.indexOf("function SkillImportDrawer"), extra.indexOf("function SortableSkillGroup"));
   assert.match(drawer, /item\.incompleteTargets\.map\(\(target\)/);
   assert.match(drawer, /target\.name.*target\.id.*target\.error/);
-  assert.match(drawer, /item\.incompleteTargets\.length > 0 && !confirmed\.has\(item\.id\)/);
-  assert.match(drawer, /disabled=\{busy \|\| !chosen\.length \|\| invalidTargets \|\| duplicateIncoming \|\| duplicateTargets \|\| needsConfirmation\}/);
-  assert.match(drawer, /\[item\.id, item\.incompleteTargets\]/);
+  assert.match(drawer, /item\.incompleteTargets\?\.length \?\? 0/);
+  assert.match(drawer, /needsConfirmation \|\| comparisonUnavailable/);
+  assert.match(drawer, /\[item\.id, item\.incompleteTargets!\]/);
   assert.match(extra, /key=\{importRequest\.revision\}/);
   assert.match(extra, /selections, incompleteConfirmations/);
-  assert.match(commands, /incomplete_confirmations: Option<serde_json::Value>/);
+  assert.match(commands, /incomplete_confirmations:\s*Option<BTreeMap<String, Vec<codex_plus_core::skills::SkillImportIncompleteTarget>>>/);
   const legacy = commands.slice(commands.indexOf("fn import_local_skills_blocking"), commands.indexOf("fn import_local_skills_blocking") + 2400);
   assert.match(legacy, /manager\.preview_skill_import\(&candidates, &origins\)/);
   assert.match(legacy, /manager\.apply_skill_import\(&candidates, &origins, "local", &selections\)/);

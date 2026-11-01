@@ -134,7 +134,7 @@ test("long import overwrite targets remain distinct and the selected target is s
   const name = "long-skill-name-".repeat(12);
   const matches = [{ id: `${name}A`, name: `${name}A`, snapshot: "snapshot-a" },
     { id: `${name}B`, name: `${name}B`, snapshot: "snapshot-b" }];
-  const candidate = { id: "incoming", name: "Incoming", sourceHash: "source", repoKey: "local", repoPath: "incoming", matches, duplicateCandidates: [] };
+  const candidate = { id: "incoming", name: "Incoming", sourceHash: "source", repoKey: "local", repoPath: "incoming", matches, incompleteTargets: [], duplicateCandidates: [] };
   const submitted: any[] = [];
   const props = { request: { preview: { candidates: [candidate], warning: "" } }, busy: false,
     onClose: () => {}, onRefresh: () => {}, onApply: (items: any[]) => submitted.push(...items) };
@@ -160,6 +160,43 @@ test("long import overwrite targets remain distinct and the selected target is s
   elements.find((node) => node.type === "Button" && node.children.includes("导入所选 1 项"))!.props.onClick();
   assert.equal(submitted[0].targetId, matches[1].id);
   assert.equal(submitted[0].targetSnapshot, "snapshot-b");
+});
+
+test("legacy preview without comparison results renders but cannot be submitted", () => {
+  const ui = createHarness();
+  const candidate = { id: "incoming", name: "Incoming", sourceHash: "source", repoKey: "local", repoPath: "", matches: [], duplicateCandidates: [] };
+  const submitted: any[] = [];
+  const elements = ui.render("SkillImportDrawer", { request: { preview: { candidates: [candidate], warning: "" } }, busy: false,
+    onClose: () => {}, onRefresh: () => {}, onApply: (...args: any[]) => submitted.push(args) });
+  assert.ok(elements.some((node) => node.props.role === "alert" && node.children.includes("预览缺少比较结果，请更新后重新检查。")));
+  const submit = elements.find((node) => node.type === "Button" && node.children.includes("导入所选 1 项"))!;
+  assert.equal(submit.props.disabled, true);
+  submit.props.onClick();
+  assert.equal(submitted.length, 0);
+});
+
+test("incomplete preview requires explicit confirmation and submits its displayed targets", () => {
+  const ui = createHarness();
+  const target = { id: "existing", name: "Existing", error: "unreadable", fingerprint: "fingerprint" };
+  const candidate = { id: "incoming", name: "Incoming", sourceHash: "source", repoKey: "local", repoPath: "", matches: [], incompleteTargets: [target], duplicateCandidates: [] };
+  const submitted: any[] = [];
+  const props = { request: { preview: { candidates: [candidate], warning: "" } }, busy: false,
+    onClose: () => {}, onRefresh: () => {}, onApply: (...args: any[]) => submitted.push(args) };
+  let elements = ui.render("SkillImportDrawer", props);
+  assert.ok(elements.some((node) => node.type === "p" && node.children.includes("Existing") && node.children.includes("unreadable")));
+  let submit = elements.find((node) => node.type === "Button" && node.children.includes("导入所选 1 项"))!;
+  assert.equal(submit.props.disabled, true);
+  submit.props.onClick();
+  assert.equal(submitted.length, 0);
+  const boxes = elements.filter((node) => node.type === "input" && node.props.type === "checkbox");
+  assert.equal(boxes.length, 2);
+  boxes[1].props.onChange({ currentTarget: { checked: true } });
+  elements = ui.render("SkillImportDrawer", props);
+  submit = elements.find((node) => node.type === "Button" && node.children.includes("导入所选 1 项"))!;
+  assert.equal(submit.props.disabled, false);
+  submit.props.onClick();
+  assert.equal(submitted.length, 1);
+  assert.equal(JSON.stringify(submitted[0][1]), JSON.stringify({ incoming: [target] }));
 });
 
 test("long-name styles wrap both select triggers and portal option labels", () => {

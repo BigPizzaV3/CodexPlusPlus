@@ -29,7 +29,9 @@ use sha2::{Digest, Sha256};
 mod import;
 mod source_match;
 mod transaction;
-pub use import::{SkillImportCandidate, SkillImportMatch, SkillImportSelection};
+pub use import::{
+    SkillImportCandidate, SkillImportIncompleteTarget, SkillImportMatch, SkillImportSelection,
+};
 pub use source_match::{
     SkillRepositoryMatch, SkillRepositoryMatchPreview, SkillRepositoryMatchSelection,
 };

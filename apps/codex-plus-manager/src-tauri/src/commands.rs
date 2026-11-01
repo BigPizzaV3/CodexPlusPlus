@@ -6735,15 +6735,14 @@ pub async fn apply_skill_import(
     source: String,
     path: Option<String>,
     selections: Vec<codex_plus_core::skills::SkillImportSelection>,
-    incomplete_confirmations: Option<serde_json::Value>,
+    incomplete_confirmations:
+        Option<BTreeMap<String, Vec<codex_plus_core::skills::SkillImportIncompleteTarget>>>,
 ) -> CommandResult<SkillsPayload> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = default_skills_manager();
         let result = (|| -> anyhow::Result<(usize, Vec<String>)> {
             let (candidates, origins, _) = skill_import_inputs(&source, path.as_deref())?;
-            let confirmations = serde_json::from_value(
-                incomplete_confirmations.unwrap_or_else(|| serde_json::json!({})),
-            )?;
+            let confirmations = incomplete_confirmations.unwrap_or_default();
             manager.apply_skill_import_with_confirmations(
                 &candidates, &origins, &source, &selections, &confirmations,
             )
