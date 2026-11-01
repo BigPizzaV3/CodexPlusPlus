@@ -162,8 +162,10 @@ test("紧凑密度层：管理页不再套外框，覆盖规则带 .shell 前缀
 });
 
 test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所有 Agent，不再挂在 Codex 下面", () => {
+  // 万物皆拓展是全局管理的第一个入口。
+  assert.match(text, /id: "userScripts", get label\(\) \{ return t\("万物皆拓展"\); \}/);
   // 「用量」入口在全局管理里：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
-  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills", "userScripts"\]/);
+  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["userScripts", "gatewayUsage", "sessions", "context", "skills"\]/);
   assert.match(text, /const navAliasRoute: Partial<Record<Route, Route>> = \{ requestLog: "gatewayUsage" \};/);
   for (const id of ["requestLog", "sessions", "context", "skills"]) {
     const line = text.split("\n").find((row) => row.includes(`{ id: "${id}",`));

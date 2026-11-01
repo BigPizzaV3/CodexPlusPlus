@@ -1402,7 +1402,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
   // 拓展注入的是 Codex 页面（tool 保持 codex，顶栏才有重启 Codex），但入口放在侧栏「全局管理」，
   // 和 MCP、Skills 并列，不藏在 Codex 的页签里。
-  { id: "userScripts", get label() { return t("拓展"); }, icon: FileCode2, tool: "codex" },
+  { id: "userScripts", get label() { return t("万物皆拓展"); }, icon: FileCode2, tool: "codex" },
   { id: "pluginMarket", get label() { return t("插件市场"); }, icon: Store, tool: "codex" },
   { id: "recommendations", get label() { return t("推荐内容"); }, icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
@@ -1456,8 +1456,8 @@ const globalNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "
 /** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
 const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
-/** 侧栏「全局管理」分组：请求日志、会话、MCP、Skills，以及给 Codex 加能力的拓展。 */
-const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "context", "skills", "userScripts"];
+/** 侧栏「全局管理」分组：万物皆拓展置顶，其后是用量、会话、MCP、Skills。 */
+const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "sessions", "context", "skills"];
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
