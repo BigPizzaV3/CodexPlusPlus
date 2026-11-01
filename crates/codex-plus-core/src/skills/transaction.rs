@@ -1,4 +1,4 @@
-//! Skill 目录及状态的可恢复事务。日志只保存受控位置和相对标识，不执行任意路径。
+//! Skill 目录及状态的可恢复事务。日志中的归属路径只用于比较，不用于执行文件操作。
 use super::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,12 +30,23 @@ struct JournalChange {
 #[serde(rename_all = "camelCase")]
 struct SkillJournal {
     version: u8,
+    #[serde(default)]
+    owner: Option<JournalOwner>,
     operation: String,
     id: String,
     committed: bool,
     before_state: Option<Vec<u8>>,
     after_state: Option<Vec<u8>>,
     changes: Vec<JournalChange>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JournalOwner {
+    state_path: String,
+    state_target: String,
+    backups_dir: String,
+    place_roots: Vec<String>,
 }
 
 impl SkillsManager {
@@ -53,6 +64,25 @@ impl SkillsManager {
             SkillPlace::Codex => Ok(self.linked_dir()),
             SkillPlace::Agent(agent) => self.agent_dir(agent),
         }
+    }
+
+    fn journal_owner(&self, changes: &[JournalChange]) -> anyhow::Result<JournalOwner> {
+        Ok(JournalOwner {
+            // 原子写会跟随状态文件软链；目录项和目标都必须保持一致。
+            state_path: journal_path_identity(&canonical_directory_entry(&self.state_path)?),
+            state_target: journal_path_identity(&state_write_target(&self.state_path)?),
+            backups_dir: journal_path_identity(&canonical_path_with_missing_tail(
+                &self.backups_dir,
+            )?),
+            place_roots: changes
+                .iter()
+                .map(|change| {
+                    Ok(journal_path_identity(&canonical_path_with_missing_tail(
+                        &self.place_root(&change.place)?,
+                    )?))
+                })
+                .collect::<anyhow::Result<_>>()?,
+        })
     }
 
     pub(super) fn transaction_stage(
@@ -124,7 +154,8 @@ impl SkillsManager {
             Err(error) => return Err(error.into()),
         };
         let mut journal = SkillJournal {
-            version: 1,
+            version: 2,
+            owner: None,
             operation: operation.into(),
             id: id.into(),
             committed: false,
@@ -169,6 +200,7 @@ impl SkillsManager {
             std::fs::create_dir_all(&self.backups_dir)
                 .context("无法创建 Skill 备份目录，未修改原内容")?;
         }
+        journal.owner = Some(self.journal_owner(&journal.changes)?);
         let journal_dir = self.transaction_dir()?;
         std::fs::create_dir_all(&journal_dir)?;
         let path = journal_dir.join(format!("{operation}.json"));
@@ -248,13 +280,17 @@ impl SkillsManager {
     fn recover_skill_journal(&self, path: &Path) -> anyhow::Result<()> {
         let journal: SkillJournal = serde_json::from_slice(&std::fs::read(path)?)?;
         anyhow::ensure!(
-            journal.version == 1
+            journal.version == 2
                 && path.file_stem().and_then(|stem| stem.to_str())
                     == Some(journal.operation.as_str()),
-            "Skill 事务日志身份无效"
+            "Skill 事务日志缺少归属信息或身份无效，已保留现场"
         );
         validate_skill_id(&journal.id)?;
         uuid::Uuid::parse_str(&journal.operation)?;
+        anyhow::ensure!(
+            journal.owner.as_ref() == Some(&self.journal_owner(&journal.changes)?),
+            "Skill 事务日志与当前状态文件或目录不匹配，已保留现场"
+        );
         if !journal.committed && journal.after_state.is_some() {
             let current = read_optional_state(&self.state_path)?;
             anyhow::ensure!(
@@ -298,7 +334,8 @@ impl SkillsManager {
         {
             match &journal.before_state {
                 Some(bytes) => crate::settings::atomic_write(&self.state_path, bytes)?,
-                None => match std::fs::remove_file(&self.state_path) {
+                // 原子写跟随状态软链；若写入前目标不存在，只移除新建目标而保留链接。
+                None => match std::fs::remove_file(state_write_target(&self.state_path)?) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
@@ -330,6 +367,102 @@ impl SkillsManager {
         };
         std::fs::rename(&staging, destination)?;
         remove_link(backup)
+    }
+}
+
+fn journal_path_identity(path: &Path) -> String {
+    use base64::Engine;
+    // 只比较系统路径，不要求路径是合法 UTF-8。
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let bytes = {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    #[cfg(not(any(unix, windows)))]
+    let bytes = path.as_os_str().as_encoded_bytes().to_vec();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn canonical_directory_entry(path: &Path) -> anyhow::Result<PathBuf> {
+    let parent = path.parent().context("Skill 路径缺少父目录")?;
+    let name = path.file_name().context("Skill 路径缺少文件名")?;
+    Ok(canonical_path_with_missing_tail(parent)?.join(name))
+}
+
+fn state_write_target(path: &Path) -> anyhow::Result<PathBuf> {
+    let mut current = path.to_path_buf();
+    for _ in 0..16 {
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let target = std::fs::read_link(&current)?;
+                current = if target.is_absolute() {
+                    target
+                } else {
+                    current
+                        .parent()
+                        .context("Skill 状态链接缺少父目录")?
+                        .join(target)
+                };
+            }
+            Ok(_) => return canonical_directory_entry(&current),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return canonical_directory_entry(&current);
+            }
+            Err(error) => return Err(error).context("无法读取 Skill 状态链接"),
+        }
+    }
+    match std::fs::symlink_metadata(&current) {
+        Ok(metadata) => anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "Skill 状态软链接层级过深，未执行事务"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("无法读取 Skill 状态链接"),
+    }
+    canonical_directory_entry(&current)
+}
+
+fn canonical_path_with_missing_tail(path: &Path) -> anyhow::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut prefix = absolute.as_path();
+    let mut tail = Vec::new();
+    loop {
+        match prefix.canonicalize() {
+            Ok(mut resolved) => {
+                for component in tail.into_iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(prefix) {
+                    Ok(_) => return Err(error).context("无法解析 Skill 事务目录"),
+                    Err(metadata_error)
+                        if metadata_error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(metadata_error) => return Err(metadata_error.into()),
+                }
+                tail.push(
+                    prefix
+                        .file_name()
+                        .context("无法解析 Skill 事务目录")?
+                        .to_os_string(),
+                );
+                prefix = prefix.parent().context("无法解析 Skill 事务目录")?;
+            }
+            Err(error) => return Err(error).context("无法解析 Skill 事务目录"),
+        }
     }
 }
 
@@ -375,8 +508,9 @@ mod tests {
             .unwrap();
         std::fs::create_dir_all(&stage).unwrap();
         std::fs::write(stage.join("SKILL.md"), "new").unwrap();
-        let journal = SkillJournal {
-            version: 1,
+        let mut journal = SkillJournal {
+            version: 2,
+            owner: None,
             operation: operation.clone(),
             id: "alpha".into(),
             committed,
@@ -390,6 +524,7 @@ mod tests {
                 expected_backup_hash: None,
             }],
         };
+        journal.owner = Some(manager.journal_owner(&journal.changes).unwrap());
         let journal_dir = manager.transaction_dir().unwrap();
         std::fs::create_dir_all(&journal_dir).unwrap();
         let path = journal_dir.join(format!("{operation}.json"));
@@ -563,6 +698,322 @@ mod tests {
     }
 
     #[test]
+    fn recovery_rejects_a_journal_from_another_state_or_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let manager = SkillsManager::new(
+            root.join("library"),
+            root.join("backups"),
+            root.join("skills.json"),
+            root.join("home"),
+        )
+        .with_agent_dirs(vec![("claude".into(), root.join("claude"))]);
+        let places = [
+            SkillPlace::Library,
+            SkillPlace::Codex,
+            SkillPlace::Agent("claude".into()),
+        ];
+        for place in &places {
+            let target = manager.place_root(place).unwrap().join("alpha");
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("SKILL.md"), b"leave this alone").unwrap();
+        }
+        std::fs::write(&manager.state_path, b"original state").unwrap();
+        let mut journal = SkillJournal {
+            version: 2,
+            owner: None,
+            operation: uuid::Uuid::new_v4().to_string(),
+            id: "alpha".into(),
+            committed: false,
+            before_state: Some(b"original state".to_vec()),
+            after_state: Some(b"transaction state".to_vec()),
+            changes: places
+                .into_iter()
+                .map(|place| JournalChange {
+                    place,
+                    staged: true,
+                    had_original: false,
+                    preserve_backup: true,
+                    expected_backup_hash: None,
+                })
+                .collect(),
+        };
+        journal.owner = Some(manager.journal_owner(&journal.changes).unwrap());
+        let journal_dir = manager.transaction_dir().unwrap();
+        std::fs::create_dir_all(&journal_dir).unwrap();
+        let path = journal_dir.join(format!("{}.json", journal.operation));
+        let contents = serde_json::to_vec(&journal).unwrap();
+        std::fs::write(&path, &contents).unwrap();
+
+        let different_state = SkillsManager::new(
+            root.join("library"),
+            root.join("backups"),
+            root.join("other.json"),
+            root.join("home"),
+        )
+        .with_agent_dirs(vec![("claude".into(), root.join("claude"))]);
+        let different_library = SkillsManager::new(
+            root.join("other-library"),
+            root.join("backups"),
+            root.join("skills.json"),
+            root.join("home"),
+        )
+        .with_agent_dirs(vec![("claude".into(), root.join("claude"))]);
+        let different_backups = SkillsManager::new(
+            root.join("library"),
+            root.join("other-backups"),
+            root.join("skills.json"),
+            root.join("home"),
+        )
+        .with_agent_dirs(vec![("claude".into(), root.join("claude"))]);
+        let different_codex = SkillsManager::new(
+            root.join("library"),
+            root.join("backups"),
+            root.join("skills.json"),
+            root.join("other-home"),
+        )
+        .with_agent_dirs(vec![("claude".into(), root.join("claude"))]);
+        let different_agent = SkillsManager::new(
+            root.join("library"),
+            root.join("backups"),
+            root.join("skills.json"),
+            root.join("home"),
+        )
+        .with_agent_dirs(vec![("claude".into(), root.join("other-claude"))]);
+        for other in [
+            different_state,
+            different_library,
+            different_backups,
+            different_codex,
+            different_agent,
+        ] {
+            assert!(other.recover_skill_journal(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), contents);
+            assert_eq!(
+                std::fs::read(&manager.state_path).unwrap(),
+                b"original state"
+            );
+            for change in &journal.changes {
+                let target = manager
+                    .place_root(&change.place)
+                    .unwrap()
+                    .join("alpha/SKILL.md");
+                assert_eq!(std::fs::read(target).unwrap(), b"leave this alone");
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_preserves_old_unowned_journal_and_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = SkillsManager::new(
+            temp.path().join("library"),
+            temp.path().join("backups"),
+            temp.path().join("skills.json"),
+            temp.path().join("home"),
+        );
+        let target = manager.source_dir.join("alpha");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), b"existing").unwrap();
+        let journal = SkillJournal {
+            version: 1,
+            owner: None,
+            operation: uuid::Uuid::new_v4().to_string(),
+            id: "alpha".into(),
+            committed: false,
+            before_state: None,
+            after_state: None,
+            changes: vec![JournalChange {
+                place: SkillPlace::Library,
+                staged: true,
+                had_original: false,
+                preserve_backup: true,
+                expected_backup_hash: None,
+            }],
+        };
+        let dir = manager.transaction_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.json", journal.operation));
+        let contents = serde_json::to_vec(&journal).unwrap();
+        std::fs::write(&path, &contents).unwrap();
+        assert!(manager.recover_skill_journal(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), contents);
+        assert_eq!(std::fs::read(target.join("SKILL.md")).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn owner_path_is_stable_when_missing_directories_are_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("new/directory/skills.json");
+        let before = canonical_path_with_missing_tail(&path).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"state").unwrap();
+        assert_eq!(canonical_path_with_missing_tail(&path).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_symlink_alias_does_not_claim_the_original_journal() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let state = root.join("skills.json");
+        let alias = root.join("alias.json");
+        std::fs::write(&state, b"state").unwrap();
+        std::os::unix::fs::symlink(&state, &alias).unwrap();
+        let manager = SkillsManager::new(
+            root.join("library"),
+            root.join("backups"),
+            &state,
+            root.join("home"),
+        );
+        let other = SkillsManager::new(
+            root.join("library"),
+            root.join("backups"),
+            &alias,
+            root.join("home"),
+        );
+        assert_ne!(
+            manager.journal_owner(&[]).unwrap(),
+            other.journal_owner(&[]).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_owner_supports_non_utf8_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp
+            .path()
+            .join(std::ffi::OsString::from_vec(vec![b'x', 0x80]));
+        std::fs::create_dir_all(&library).unwrap();
+        let manager = SkillsManager::new(
+            &library,
+            temp.path().join("backups"),
+            temp.path().join("skills.json"),
+            temp.path().join("home"),
+        );
+        let change = JournalChange {
+            place: SkillPlace::Library,
+            staged: true,
+            had_original: false,
+            preserve_backup: true,
+            expected_backup_hash: None,
+        };
+        let owner = manager.journal_owner(&[change]).unwrap();
+        let json = serde_json::to_vec(&owner).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<JournalOwner>(&json).unwrap(),
+            owner
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_rejects_a_retargeted_state_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let state = root.join("skills.json");
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        std::fs::write(&first, b"after").unwrap();
+        std::fs::write(&second, b"after").unwrap();
+        std::os::unix::fs::symlink(&first, &state).unwrap();
+        let manager = SkillsManager::new(
+            root.join("library"),
+            root.join("backups"),
+            &state,
+            root.join("home"),
+        );
+        let mut journal = SkillJournal {
+            version: 2,
+            owner: None,
+            operation: uuid::Uuid::new_v4().to_string(),
+            id: "alpha".into(),
+            committed: false,
+            before_state: Some(b"before".to_vec()),
+            after_state: Some(b"after".to_vec()),
+            changes: Vec::new(),
+        };
+        journal.owner = Some(manager.journal_owner(&journal.changes).unwrap());
+        let dir = manager.transaction_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.json", journal.operation));
+        let contents = serde_json::to_vec(&journal).unwrap();
+        std::fs::write(&path, &contents).unwrap();
+        std::fs::remove_file(&state).unwrap();
+        std::os::unix::fs::symlink(&second, &state).unwrap();
+        assert!(manager.recover_skill_journal(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), contents);
+        assert_eq!(std::fs::read(&first).unwrap(), b"after");
+        assert_eq!(std::fs::read(&second).unwrap(), b"after");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_state_symlink_keeps_the_same_write_target_after_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("skills.json");
+        let target = temp.path().join("missing/state.json");
+        std::os::unix::fs::symlink("missing/state.json", &state).unwrap();
+        let manager = SkillsManager::new(
+            temp.path().join("library"),
+            temp.path().join("backups"),
+            &state,
+            temp.path().join("home"),
+        );
+        let before = manager.journal_owner(&[]).unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"state").unwrap();
+        assert_eq!(manager.journal_owner(&[]).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_restores_a_dangling_state_symlink_after_state_write() {
+        for target_already_removed in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let state = temp.path().join("skills.json");
+            let target = temp.path().join("missing/state.json");
+            std::os::unix::fs::symlink("missing/state.json", &state).unwrap();
+            let manager = SkillsManager::new(
+                temp.path().join("library"),
+                temp.path().join("backups"),
+                &state,
+                temp.path().join("home"),
+            );
+            let mut journal = SkillJournal {
+                version: 2,
+                owner: None,
+                operation: uuid::Uuid::new_v4().to_string(),
+                id: "alpha".into(),
+                committed: false,
+                before_state: None,
+                after_state: Some(b"after".to_vec()),
+                changes: Vec::new(),
+            };
+            journal.owner = Some(manager.journal_owner(&journal.changes).unwrap());
+            let dir = manager.transaction_dir().unwrap();
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(format!("{}.json", journal.operation));
+            std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+            crate::settings::atomic_write(&state, b"after").unwrap();
+            if target_already_removed {
+                std::fs::remove_file(&target).unwrap();
+            }
+            manager.recover_skill_journal(&path).unwrap();
+            assert!(
+                std::fs::symlink_metadata(&state)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert!(!target.exists());
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
     fn process_exit_after_publish_recovers_on_restart() {
         const ENV: &str = "CODEX_PLUS_SKILL_CRASH_FIXTURE";
         if let Some(root) = std::env::var_os(ENV) {
@@ -588,8 +1039,9 @@ mod tests {
                 suppressed_imported_repos: Default::default(),
             })
             .unwrap();
-            let journal = SkillJournal {
-                version: 1,
+            let mut journal = SkillJournal {
+                version: 2,
+                owner: None,
                 operation: operation.clone(),
                 id: "alpha".into(),
                 committed: false,
@@ -603,6 +1055,7 @@ mod tests {
                     expected_backup_hash: None,
                 }],
             };
+            journal.owner = Some(manager.journal_owner(&journal.changes).unwrap());
             let dir = manager.transaction_dir().unwrap();
             std::fs::create_dir_all(&dir).unwrap();
             crate::settings::atomic_write(
