@@ -367,9 +367,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     const request = ++dataRequest.current;
     try {
       const result = await invoke<SkillPayload>("list_installed_skills");
-      if (mounted.current && request === dataRequest.current) {
-        startTransition(() => setData(result));
-      }
+      if (!mounted.current || request !== dataRequest.current) return null;
+      startTransition(() => setData((current) => mounted.current && request === dataRequest.current ? result : current));
       return result;
     } catch (e) {
       if (mounted.current) await notify("Skills", String(e), "failed");
@@ -741,10 +740,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(detail.repoKey)}
       onEditSource={() => setMatchRequest({ id: detail.id, initialManual: true })} onMatch={() => setMatchRequest({ id: detail.id })}/>}
     {matchRequest && <SkillRepositoryMatchDrawer repos={data?.repos || []} id={matchRequest.id} initialManual={matchRequest.initialManual} onClose={() => setMatchRequest(null)} notify={notify}
-      onUpdated={() => { void reloadLocal().then((result) => {
-        if (!result) return;
+      onUpdated={() => { const pending = reloadLocal(); const request = dataRequest.current; void pending.then((result) => {
+        if (!result || !mounted.current || request !== dataRequest.current) return;
         setDetail((current) => {
-          if (!current || current !== detail) return current;
+          if (!mounted.current || request !== dataRequest.current || !current || current !== detail) return current;
           return result.skills.find((item) => item.id === current.id && item.installed)
             || (!current.installed ? result.skills.find((item) => item.id === current.id && item.repoKey === current.repoKey && item.repoPath === current.repoPath) : undefined)
             || null;

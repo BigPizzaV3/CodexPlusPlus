@@ -526,6 +526,39 @@ test("a pending matching refresh does not reopen details closed by the user", as
   assert.equal(ui.render().some((node) => node.type === "SkillDetailDrawer"), false);
 });
 
+test("an older matching refresh cannot replace detail after a newer list request", async () => {
+  const ui = createHarness();
+  ui.render(); await tick(); ui.render();
+  ui.expand("repo:a/repo");
+  ui.find((node) => node.type === "button" && node.props.className === "mg-row-main" && node.children[0]?.children[0]?.props.title === "a").props.onClick();
+  ui.render();
+  ui.find((node) => node.type === "SkillDetailDrawer").props.onEditSource();
+  ui.render();
+  ui.server.skills[0].repoPath = "older";
+  ui.holdLoads(1);
+  ui.find((node) => node.type === "SkillRepositoryMatchDrawer").props.onUpdated();
+  ui.server.skills[0].repoPath = "newer";
+  ui.focus(); await tick(); ui.render();
+  ui.pendingLoads.shift()!(); await tick(); ui.render();
+  assert.equal(ui.find((node) => node.type === "SkillDetailDrawer").props.skill.repoPath, undefined);
+  assert.equal(ui.find((node) => node.type === "SkillActionMenu" && node.props.skill.id === "a").props.skill.repoPath, "newer");
+});
+
+test("a deferred older list update cannot replace a newer list", async () => {
+  const ui = createHarness();
+  ui.render(); await tick(); ui.render();
+  ui.deferDataUpdates();
+  ui.server.skills[0].repoPath = "older";
+  ui.focus(); await tick();
+  ui.server.skills[0].repoPath = "newer";
+  ui.focus(); await tick();
+  assert.equal(ui.pendingDataUpdates.length, 2);
+  ui.pendingDataUpdates[1]();
+  ui.pendingDataUpdates[0]();
+  ui.render(); ui.expand("repo:a/repo");
+  assert.equal(ui.find((node) => node.type === "SkillActionMenu" && node.props.skill.id === "a").props.skill.repoPath, "newer");
+});
+
 test("sort button toggles order and icon, persists direction, and respects manual dragging", async () => {
   const ui = createHarness();
   ui.render(); await tick(); ui.render();
