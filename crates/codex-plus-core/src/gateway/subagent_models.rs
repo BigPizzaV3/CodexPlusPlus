@@ -680,7 +680,7 @@ fn record_decision(
     if identity.child
         && !explicit
         && (kind != current_kind
-            || !route::model_is_routable(gateway, binding, &model)
+            || route::model_entry_members(gateway, binding, &model).is_empty()
             || route::effective_model(
                 gateway,
                 binding,

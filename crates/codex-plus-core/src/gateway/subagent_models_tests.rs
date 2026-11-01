@@ -177,6 +177,38 @@ fn aggregate_identity_preserves_group_and_tracks_manual_selection() {
 }
 
 #[test]
+fn child_inherits_a_routable_hidden_default_model() {
+    let fixture = Fixture::new();
+    let mut gateway = gateway();
+    gateway.bindings.get_mut("codex").unwrap().model = "gpt-6.1-sol".into();
+    gateway.groups[0].hide_members = true;
+    gateway.groups[0].members.push(GroupMember {
+        model: "gpt-6.1-sol".into(),
+        weight: 1,
+    });
+    let binding = gateway.binding(&ToolId::Codex).unwrap();
+    assert!(!route::pool_models(&gateway, binding).contains(&"gpt-6.1-sol".to_string()));
+    assert_eq!(target(&gateway, "gpt-6.1-sol").0, "inherit-a");
+    fixture
+        .apply(&gateway, "parent", "turn", None, "gpt-6.1-sol")
+        .unwrap();
+    let child = fixture
+        .apply(
+            &gateway,
+            "child",
+            "turn",
+            Some(("parent", "turn")),
+            "gpt-6.1-terra",
+        )
+        .unwrap();
+    assert_eq!(child["model"], "gpt-6.1-sol");
+    assert_eq!(
+        target(&gateway, child["model"].as_str().unwrap()).0,
+        "inherit-a"
+    );
+}
+
+#[test]
 fn recorded_parent_turn_survives_reopen_and_default_or_parent_model_changes() {
     let fixture = Fixture::new();
     let mut gateway = gateway();
