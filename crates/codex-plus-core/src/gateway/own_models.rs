@@ -2,7 +2,8 @@
 //!
 //! 网关的模型下拉里，Codex++ 池里的模型之外再列一组「直连，不经 Codex++」：
 //! - Codex：断开网关后会回到的直连供应商的模型。官方登录读 Codex 为 ChatGPT 账号缓存的
-//!   `models_cache.json`，厂商记为 OpenAI；别的供应商读它自己的模型列表，厂商记为供应商名。
+//!   `models_cache.json`，厂商记为 OpenAI；聚合供应商列它发布给 Codex 的模型目录；别的供应商读它
+//!   自己的模型列表。后两种厂商记为供应商名。
 //! - Claude Code：它自己认的别名（opus / sonnet / haiku，Claude Code 解析成当前最新的那一个），
 //!   厂商是 Anthropic，或用户自己配的 `ANTHROPIC_BASE_URL` 的主机名。
 //!
@@ -19,7 +20,7 @@ use crate::gateway::apply::{
 };
 use crate::gateway::restore::{self as stash, FileStash};
 use crate::gateway::store::{AgentBinding, GatewaySettings};
-use crate::settings::{BackendSettings, RelayProfile};
+use crate::settings::{AggregateRelayProfile, BackendSettings, RelayMode, RelayProfile};
 use crate::tools::ToolId;
 use crate::tools::claude::{self, GATEWAY_PROVIDER_ID};
 
@@ -113,19 +114,34 @@ pub fn use_own_model(
     ctx.gateway.load()
 }
 
-/// Codex 断开后回到的直连供应商：接入着时是接入前那一个（不在了就是列表里第一个，与还原一致），
-/// 没接入时是当前那一个。聚合供应商没有一份固定的模型，不算。
+/// Codex 断开后回到的直连供应商。
+enum CodexTarget<'a> {
+    Relay(&'a RelayProfile),
+    Aggregate(&'a AggregateRelayProfile),
+}
+
+/// 接入着时是接入前那一个（不在了就是列表里第一个普通供应商，与还原一致），没接入时是当前那一个。
 fn codex_target<'a>(
     settings: &'a BackendSettings,
     binding: Option<&AgentBinding>,
-) -> Option<&'a RelayProfile> {
-    let managed = |profile: &&RelayProfile| profile.id == CODEX_GATEWAY_RELAY_ID;
-    let find = |id: &str| {
+) -> Option<CodexTarget<'a>> {
+    let find = |id: &str| -> Option<CodexTarget<'a>> {
+        if id.is_empty() || id == CODEX_GATEWAY_RELAY_ID {
+            return None;
+        }
+        // 聚合供应商在普通列表里也有一份同 id 的影子（模式 aggregate），以聚合的定义为准。
+        if let Some(aggregate) = settings
+            .aggregate_relay_profiles
+            .iter()
+            .find(|profile| profile.id == id)
+        {
+            return Some(CodexTarget::Aggregate(aggregate));
+        }
         settings
             .relay_profiles
             .iter()
-            .filter(|profile| !managed(profile))
-            .find(|profile| !id.is_empty() && profile.id == id)
+            .find(|profile| profile.id == id && profile.relay_mode != RelayMode::Aggregate)
+            .map(CodexTarget::Relay)
     };
     if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID {
         return find(settings.active_relay_id.trim());
@@ -134,44 +150,49 @@ fn codex_target<'a>(
         .map(|binding| binding.restore.codex_previous_relay_id.trim())
         .unwrap_or_default();
     find(previous).or_else(|| {
-        // 接入前是聚合供应商时会切回它：没有一份固定的模型，不列。
-        let aggregate = settings
-            .aggregate_relay_profiles
+        settings
+            .relay_profiles
             .iter()
-            .any(|profile| !previous.is_empty() && profile.id == previous);
-        if aggregate {
-            return None;
-        }
-        settings.relay_profiles.iter().find(|profile| !managed(profile))
+            .find(|profile| {
+                profile.id != CODEX_GATEWAY_RELAY_ID && profile.relay_mode != RelayMode::Aggregate
+            })
+            .map(CodexTarget::Relay)
     })
 }
 
 fn codex_own_models(ctx: &ApplyContext, binding: Option<&AgentBinding>) -> Option<OwnModels> {
     let settings = ctx.settings.load().ok()?;
-    let target = codex_target(&settings, binding)?;
-    let official = crate::official_login::is_official_login_profile(target);
-    let mut models = if official {
-        codex_cached_models(&ctx.codex_home)
-    } else {
-        Vec::new()
+    let (vendor, models) = match codex_target(&settings, binding)? {
+        CodexTarget::Relay(profile) => {
+            let official = crate::official_login::is_official_login_profile(profile);
+            let mut models = if official {
+                codex_cached_models(&ctx.codex_home)
+            } else {
+                Vec::new()
+            };
+            if models.is_empty() {
+                models = plain_models(crate::gateway::route::chat_models(profile));
+            }
+            let vendor = if official {
+                "OpenAI".to_string()
+            } else {
+                profile.name.trim().to_string()
+            };
+            (vendor, models)
+        }
+        // 聚合供应商：列它发布给 Codex 的模型目录（与 Codex 自己的选择器里看到的一致）。
+        CodexTarget::Aggregate(aggregate) => (
+            aggregate.name.trim().to_string(),
+            crate::aggregate_catalog::build_catalog_json(&settings, aggregate)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .map(|catalog| catalog_models(&catalog))
+                .unwrap_or_default(),
+        ),
     };
-    if models.is_empty() {
-        models = crate::gateway::route::chat_models(target)
-            .into_iter()
-            .map(|id| OwnModel {
-                label: id.clone(),
-                id,
-            })
-            .collect();
-    }
     if models.is_empty() {
         return None;
     }
-    let vendor = if official {
-        "OpenAI".to_string()
-    } else {
-        target.name.trim().to_string()
-    };
     let current = if settings.active_relay_id == CODEX_GATEWAY_RELAY_ID {
         String::new()
     } else {
@@ -188,17 +209,29 @@ fn codex_own_models(ctx: &ApplyContext, binding: Option<&AgentBinding>) -> Optio
     })
 }
 
-/// Codex 为登录的 ChatGPT 账号缓存的官方模型（`models_cache.json`），带官方显示名；
-/// 标成隐藏的（自动审批模型等）不算。
+fn plain_models(ids: Vec<String>) -> Vec<OwnModel> {
+    ids.into_iter()
+        .map(|id| OwnModel {
+            label: id.clone(),
+            id,
+        })
+        .collect()
+}
+
+/// Codex 为登录的 ChatGPT 账号缓存的官方模型（`models_cache.json`），带官方显示名。
 fn codex_cached_models(codex_home: &std::path::Path) -> Vec<OwnModel> {
-    let Some(cache) = std::fs::read_to_string(codex_home.join("models_cache.json"))
+    std::fs::read_to_string(codex_home.join("models_cache.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-    else {
-        return Vec::new();
-    };
+        .map(|cache| catalog_models(&cache))
+        .unwrap_or_default()
+}
+
+/// Codex 模型目录（`{"models":[{"slug","display_name","visibility"}]}`）里列出的模型；
+/// 标成隐藏的（自动审批模型等）不算。
+fn catalog_models(catalog: &Value) -> Vec<OwnModel> {
     let mut models: Vec<OwnModel> = Vec::new();
-    for entry in cache
+    for entry in catalog
         .get("models")
         .and_then(Value::as_array)
         .into_iter()
