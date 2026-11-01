@@ -19,7 +19,6 @@
 .shell .community-ext-title { flex:1; min-width:0; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 .shell .community-ext-title strong { font-size:14px; }
 .shell .community-ext-badge { display:inline-flex; padding:1px 7px; border-radius:999px; font-size:11px; background:hsl(var(--muted)); color:hsl(var(--foreground)); white-space:nowrap; }
-.shell .community-ext-badge.is-unreviewed { background:transparent; border:1px solid hsl(var(--status-warning) / .5); color:hsl(var(--status-warning)); }
 .shell .community-ext-actions { display:flex; align-items:center; gap:8px; }
 .shell .community-ext-installed { font-size:12px; color:hsl(var(--status-success, 142 60% 36%)); white-space:nowrap; }
 .shell .community-ext-description { margin:0; font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); }

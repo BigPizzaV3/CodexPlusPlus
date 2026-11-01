@@ -247,7 +247,6 @@ export function CommunityExtensionsPanel({
               <ExtensionCard
                 badges={
                   <>
-                    <span className="community-ext-badge is-unreviewed">{t("未审核")}</span>
                     {riskBadges(entry.permissions).map((badge) => <span className="community-ext-badge" key={badge}>{badge}</span>)}
                     {entry.warnings?.length ? <span className="community-ext-badge is-suspicious" title={entry.warnings.join("\n")}>{t("可疑")}</span> : null}
                   </>

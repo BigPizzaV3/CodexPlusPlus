@@ -2131,7 +2131,6 @@ export const EN_PLAIN: Record<string, string> = {
   "批量删除会话": "Bulk delete sessions",
   "把 Codex++ 菜单插入 Codex 顶部原生菜单栏。": "Insert the Codex++ menu into Codex's top native menu bar.",
   "把主对话和输入框限制到固定最大宽度，适合大屏阅读。": "Constrain the main conversation and input box to a fixed max width, good for large-screen reading.",
-  "投稿": "Submit",
   "拖动排序": "Drag to reorder",
   "按对话轮转": "Per-conversation round-robin",
   "按对话轮转会让同一对话尽量保持固定成员，降低上下文漂移。":
@@ -2997,7 +2996,6 @@ export const EN_PLAIN: Record<string, string> = {
   "星数": "Stars",
   "显示社区拓展": "Show community extensions",
   "替换并安装": "Replace and install",
-  "未审核": "Unreviewed",
   "未经 Codex++ 审核，作者可以在新版本里加入任意代码。只安装你信任的作者的拓展。": "Not reviewed by Codex++. The author can add any code in a new version. Only install extensions from authors you trust.",
   "模型工具": "Model tools",
   "正在读取社区拓展…": "Loading community extensions…",

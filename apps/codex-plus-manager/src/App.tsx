@@ -10344,10 +10344,6 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
   return (
     <div className="tp-page user-scripts-page">
       <TopbarActions>
-        <Button onClick={() => void actions.openExternalUrl(SCRIPT_MARKET_REPOSITORY_URL)} size="sm" variant="ghost">
-          <ExternalLink />
-          {t("投稿")}
-        </Button>
         <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")}>
           <RefreshCw className={reloading ? "animate-spin" : ""} />
           {t("热重载拓展")}
