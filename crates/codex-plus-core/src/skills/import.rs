@@ -46,7 +46,7 @@ impl SkillsManager {
         candidates: &[(String, PathBuf)],
         origins: &BTreeMap<String, crate::ccs_import::CcsSkillOrigin>,
     ) -> anyhow::Result<Vec<SkillImportCandidate>> {
-        let operation = self.operation_lock.lock().unwrap();
+        let operation = self.lock_operation()?;
         self.preview_skill_import_unlocked(&operation, candidates, origins)
     }
 
@@ -163,7 +163,7 @@ impl SkillsManager {
             matches!(import_source, LOCAL_IMPORT_REPO_KEY | "cc-switch"),
             "不支持的导入渠道"
         );
-        let operation = self.operation_lock.lock().unwrap();
+        let operation = self.lock_operation()?;
         let preview = self.preview_skill_import_unlocked(&operation, candidates, origins)?;
         let mut selected_ids = std::collections::BTreeSet::new();
         let mut target_ids = std::collections::BTreeSet::new();

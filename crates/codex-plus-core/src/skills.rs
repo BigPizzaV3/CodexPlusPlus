@@ -21,6 +21,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use anyhow::Context;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -221,6 +222,20 @@ pub struct SkillsManager {
     operation_lock: Arc<Mutex<()>>,
 }
 
+/// 持有共享事务目录的进程内互斥和跨进程文件锁。
+pub struct SkillOperationGuard<'a> {
+    _file: std::fs::File,
+    operation: std::sync::MutexGuard<'a, ()>,
+}
+
+impl<'a> std::ops::Deref for SkillOperationGuard<'a> {
+    type Target = std::sync::MutexGuard<'a, ()>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.operation
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LegacyUpdateState {
     Clean,
@@ -284,6 +299,29 @@ fn skills_state_lock(path: &Path) -> Arc<Mutex<()>> {
 }
 
 impl SkillsManager {
+    fn lock_operation(&self) -> anyhow::Result<SkillOperationGuard<'_>> {
+        let operation = self.operation_lock.lock().unwrap();
+        let dir = self
+            .state_path
+            .parent()
+            .context("Skill 状态文件缺少父目录")?
+            .join(".skill-transactions");
+        std::fs::create_dir_all(&dir)?;
+        // 锁文件必须稳定保留，不能删除或通过重命名替换。
+        // 不同日志目录即使共用实际库、外部工具及不配合的旧进程均不受此锁保护。
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("operation.lock"))?;
+        file.lock_exclusive().context("获取 Skill 事务锁失败")?;
+        Ok(SkillOperationGuard {
+            _file: file,
+            operation,
+        })
+    }
+
     pub fn new(
         source_dir: impl Into<PathBuf>,
         backups_dir: impl Into<PathBuf>,
@@ -292,7 +330,12 @@ impl SkillsManager {
     ) -> Self {
         let state_path = state_path.into();
         let state_lock = skills_state_lock(&state_path);
-        let operation_lock = skills_state_lock(&state_path.with_extension("skills-operation-lock"));
+        let operation_lock = skills_state_lock(
+            &state_path
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join(".skill-transactions"),
+        );
         Self {
             source_dir: source_dir.into(),
             legacy_source_dir: None,
@@ -331,7 +374,7 @@ impl SkillsManager {
     /// 各 Agent 都使用独立副本；显式停用外部目录时先纳入管理库并备份原内容。
     pub fn set_enabled_for(&self, agent: &str, id: &str, enabled: bool) -> anyhow::Result<()> {
         validate_skill_id(id)?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let existing_agent_skill = agent != "codex"
             && self
@@ -491,15 +534,15 @@ impl SkillsManager {
     }
 
     /// 启动 Codex 前准备独立库，并在调用方完成启动或重启前阻止新的 Skill 写入。
-    pub fn lock_recovered_transactions(&self) -> anyhow::Result<std::sync::MutexGuard<'_, ()>> {
-        let operation = self.operation_lock.lock().unwrap();
+    pub fn lock_recovered_transactions(&self) -> anyhow::Result<SkillOperationGuard<'_>> {
+        let operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         Ok(operation)
     }
 
     /// 恢复中断事务，并将旧版指向管理库的软链迁移为独立副本。
     pub fn prepare_managed_skills(&self) -> anyhow::Result<()> {
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()
     }
 
@@ -719,7 +762,7 @@ impl SkillsManager {
     /// 返回本地修改需要确认时的快照；确认后仍会在提交时重新校验。
     pub fn update_local_snapshot(&self, id: &str) -> anyhow::Result<Option<String>> {
         validate_skill_id(id)?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let _state = self.state_lock.lock().unwrap();
         let state = self.load_state_checked_unlocked()?;
@@ -740,7 +783,7 @@ impl SkillsManager {
     /// 用户明确选择版本后才替换；被替换的内容进入可恢复备份。
     pub fn resolve_codex_conflict(&self, id: &str, keep_codex: bool) -> anyhow::Result<()> {
         validate_skill_id(id)?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let source = self.source_dir.join(id);
         let codex = self.linked_dir().join(id);
@@ -872,7 +915,7 @@ impl SkillsManager {
 
     fn add_repo_if_absent(&self, repo: SkillRepo) -> anyhow::Result<()> {
         let repo = normalize_repo(repo)?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         let _guard = self.state_lock.lock().unwrap();
         self.recover_skill_transactions()?;
         let mut state = self.load_state_checked_unlocked()?;
@@ -903,7 +946,7 @@ impl SkillsManager {
         if previous_key.is_some_and(|previous| previous != key) {
             return Ok(false);
         }
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let _guard = self.state_lock.lock().unwrap();
         let mut state = self.load_state_checked_unlocked()?;
@@ -924,7 +967,7 @@ impl SkillsManager {
         previous_key: Option<&str>,
     ) -> anyhow::Result<Vec<SkillRepo>> {
         let repo = normalize_repo(repo)?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let _guard = self.state_lock.lock().unwrap();
         let mut state = self.load_state_checked_unlocked()?;
@@ -954,7 +997,7 @@ impl SkillsManager {
         replacement: SkillRepo,
     ) -> anyhow::Result<bool> {
         let replacement = normalize_repo(replacement)?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let _guard = self.state_lock.lock().unwrap();
         let mut state = self.load_state_checked_unlocked()?;
@@ -983,7 +1026,7 @@ impl SkillsManager {
     }
 
     pub fn delete_repo(&self, key: &str) -> anyhow::Result<Vec<SkillRepo>> {
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let _guard = self.state_lock.lock().unwrap();
         let mut state = self.load_state_checked_unlocked()?;
@@ -1344,7 +1387,7 @@ impl SkillsManager {
     ) -> anyhow::Result<SkillsState> {
         let staged =
             self.stage_skill_import(id, external_dir, import_source, origin, expected_source)?;
-        let operation = self.operation_lock.lock().unwrap();
+        let operation = self.lock_operation()?;
         self.commit_staged_import_unlocked(&operation, staged, expected_target)
     }
 
@@ -1465,7 +1508,7 @@ impl SkillsManager {
         expected_target: Option<&str>,
         expected_update: Option<&str>,
     ) -> anyhow::Result<SkillsState> {
-        let operation = self.operation_lock.lock().unwrap();
+        let operation = self.lock_operation()?;
         self.commit_staged_skill_unlocked(
             &operation,
             staging,
@@ -1801,7 +1844,7 @@ impl SkillsManager {
     /// 启用或停用 Codex 副本；内容不一致时必须先让用户选择版本。
     pub fn set_enabled(&self, id: &str, enabled: bool) -> anyhow::Result<()> {
         validate_skill_id(id)?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         self.set_enabled_unlocked(id, enabled)
     }
@@ -1872,7 +1915,7 @@ impl SkillsManager {
     /// 卸载时保留管理库和所有受控副本的备份。
     pub fn uninstall(&self, id: &str) -> anyhow::Result<SkillsState> {
         validate_skill_id(id)?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let _guard = self.state_lock.lock().unwrap();
         let mut state = self.load_state_checked_unlocked()?;
@@ -1952,12 +1995,14 @@ impl SkillsManager {
     /// 从备份恢复：目录移回 SSOT 并重新建链。
     pub fn restore_backup(&self, backup_id: &str) -> anyhow::Result<SkillsState> {
         validate_skill_id(backup_id)?;
+        let (skill_id, _) = split_backup_id(backup_id);
+        validate_skill_id(&skill_id)?;
+        let operation = self.lock_operation()?;
         let backup = self.backups_dir.join(backup_id);
         if !backup.is_dir() {
             anyhow::bail!("备份不存在：{}", backup.display());
         }
-        let (skill_id, _) = split_backup_id(backup_id);
-        validate_skill_id(&skill_id)?;
+        self.prepare_managed_skills_unlocked()?;
         let destination = self.source_dir.join(&skill_id);
         if std::fs::symlink_metadata(&destination).is_ok()
             || std::fs::symlink_metadata(self.linked_dir().join(&skill_id)).is_ok()
@@ -1973,7 +2018,8 @@ impl SkillsManager {
         }
         let (name, description) =
             read_skill_manifest(&staging.join(SKILL_MANIFEST_FILE), &skill_id);
-        let state = self.commit_staged_skill(
+        let state = self.commit_staged_skill_unlocked(
+            &operation,
             &staging,
             InstalledSkill {
                 id: skill_id.clone(),
@@ -2003,6 +2049,7 @@ impl SkillsManager {
     /// 显式删除单个备份。AGENTS.md 禁止批量删除，所以只删指定的这一个。
     pub fn delete_backup(&self, backup_id: &str) -> anyhow::Result<Vec<SkillBackup>> {
         validate_skill_id(backup_id)?;
+        let _operation = self.lock_operation()?;
         let backup = self.backups_dir.join(backup_id);
         if backup.is_dir() {
             std::fs::remove_dir_all(&backup)

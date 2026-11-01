@@ -107,6 +107,7 @@ mod script_market;
 mod settings_load_recursion;
 mod side_chat;
 mod skills_lifecycle;
+mod skills_process_lock;
 mod ssh_remote_loopback;
 mod standalone_quota_settings;
 mod tool_shards;

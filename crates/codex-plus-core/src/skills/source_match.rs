@@ -102,7 +102,7 @@ impl SkillsManager {
     ) -> anyhow::Result<bool> {
         let repo = normalize_repo(repo)?;
         let key = repo.key();
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.prepare_managed_skills_unlocked()?;
         let _state = self.state_lock.lock().unwrap();
         let mut state = self.load_state_checked_unlocked()?;
@@ -212,7 +212,7 @@ impl SkillsManager {
         if let Some(id) = only_id {
             validate_skill_id(id)?;
         }
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.recover_repository_match_transactions()?;
         let _state = self.state_lock.lock().unwrap();
         let state = self.load_state_checked_unlocked()?;
@@ -356,7 +356,7 @@ impl SkillsManager {
                 "同一个仓库路径不能关联多个 Skill"
             );
         }
-        let _operation = self.operation_lock.lock().unwrap();
+        let _operation = self.lock_operation()?;
         self.recover_repository_match_transactions()?;
         let mut applied = 0;
         let mut errors = Vec::new();

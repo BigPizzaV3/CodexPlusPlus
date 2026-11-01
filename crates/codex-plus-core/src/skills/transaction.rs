@@ -1014,6 +1014,136 @@ mod tests {
     }
 
     #[test]
+    fn live_transaction_waits_for_owner_and_recovers_after_crash() {
+        const ENV: &str = "CODEX_PLUS_SKILL_LIVE_TRANSACTION_FIXTURE";
+        if let Some(root) = std::env::var_os(ENV) {
+            let root = PathBuf::from(root);
+            let manager = SkillsManager::new(
+                root.join("library"),
+                root.join("backups"),
+                root.join("skills.json"),
+                root.join("home"),
+            );
+            let _operation = manager.lock_operation().unwrap();
+            let operation = uuid::Uuid::new_v4().to_string();
+            let stage = manager
+                .transaction_stage(&operation, 0, &SkillPlace::Library)
+                .unwrap();
+            std::fs::create_dir_all(&stage).unwrap();
+            std::fs::write(stage.join("SKILL.md"), b"new").unwrap();
+            let before = std::fs::read(&manager.state_path).unwrap();
+            let mut journal = SkillJournal {
+                version: 2,
+                owner: None,
+                operation: operation.clone(),
+                id: "alpha".into(),
+                committed: false,
+                before_state: Some(before.clone()),
+                after_state: Some(before),
+                changes: vec![JournalChange {
+                    place: SkillPlace::Library,
+                    staged: true,
+                    had_original: true,
+                    preserve_backup: true,
+                    expected_backup_hash: None,
+                }],
+            };
+            journal.owner = Some(manager.journal_owner(&journal.changes).unwrap());
+            let journal_path = manager
+                .transaction_dir()
+                .unwrap()
+                .join(format!("{operation}.json"));
+            crate::settings::atomic_write(&journal_path, &serde_json::to_vec(&journal).unwrap())
+                .unwrap();
+            std::fs::rename(
+                manager.source_dir.join("alpha"),
+                manager.transaction_backup(&journal, 0).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(root.join("published"), operation).unwrap();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let target = root.join("library/alpha");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), b"old").unwrap();
+        let before = serde_json::to_vec(&SkillsState::default()).unwrap();
+        std::fs::write(root.join("skills.json"), &before).unwrap();
+        let mut child = ChildGuard(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "skills::transaction::tests::live_transaction_waits_for_owner_and_recovers_after_crash",
+                    "--nocapture",
+                ])
+                .env(ENV, root)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !root.join("published").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child did not publish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let operation = std::fs::read_to_string(root.join("published")).unwrap();
+        let journal = root
+            .join(".skill-transactions")
+            .join(format!("{operation}.json"));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker_root = root.to_path_buf();
+        let worker = std::thread::spawn(move || {
+            let manager = SkillsManager::new(
+                worker_root.join("library"),
+                worker_root.join("backups"),
+                worker_root.join("skills.json"),
+                worker_root.join("home"),
+            );
+            started_tx.send(()).unwrap();
+            let result = manager.lock_operation().and_then(|_operation| {
+                let _state = manager.state_lock.lock().unwrap();
+                manager.recover_skill_transactions()
+            });
+            done_tx.send(result).unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(matches!(
+            done_rx.recv_timeout(std::time::Duration::from_millis(300)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(journal.exists());
+        assert!(!target.exists());
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        assert!(!journal.exists());
+        assert_eq!(std::fs::read(target.join("SKILL.md")).unwrap(), b"old");
+        assert_eq!(std::fs::read(root.join("skills.json")).unwrap(), before);
+    }
+
+    #[test]
     fn process_exit_after_publish_recovers_on_restart() {
         const ENV: &str = "CODEX_PLUS_SKILL_CRASH_FIXTURE";
         if let Some(root) = std::env::var_os(ENV) {
