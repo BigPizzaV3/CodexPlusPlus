@@ -394,6 +394,7 @@ pub fn run() {
             gateway_commands::load_gateway,
             gateway_commands::save_gateway_binding,
             gateway_commands::disable_gateway_binding,
+            gateway_commands::use_gateway_own_model,
             gateway_commands::rotate_gateway_token,
             gateway_commands::save_gateway_model_suffix,
             gateway_commands::save_gateway_auto_group,

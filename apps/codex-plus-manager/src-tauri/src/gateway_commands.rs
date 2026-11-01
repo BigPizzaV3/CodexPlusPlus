@@ -90,6 +90,8 @@ pub struct GatewayAgentView {
     pub models: Vec<String>,
     /// 开着网关、但配置已被别的工具改掉（请求不再经过 Codex++）。
     pub drift: Option<codex_plus_core::gateway::drift::Drift>,
+    /// Agent 自带的模型（用它自己的登录或 Key 直连厂商，不经 Codex++）；没有时为 None。
+    pub own_models: Option<codex_plus_core::gateway::own_models::OwnModels>,
 }
 
 /// 界面上的自动组：组本身 + 是否隐藏 + 有没有改过设置。
@@ -302,6 +304,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 drift: binding
                     .filter(|binding| binding.enabled)
                     .and_then(|_| codex_plus_core::gateway::drift::check(&drift_ctx, agent)),
+                own_models: codex_plus_core::gateway::own_models::own_models(
+                    &drift_ctx, agent, binding,
+                ),
             }
         })
         .collect();
@@ -482,6 +487,25 @@ pub fn disable_gateway_binding(agent: String) -> CommandResult<Option<GatewayPay
     respond(
         &format!("{name} 已断开并还原，新开的会话生效。"),
         "断开失败",
+        result,
+    )
+}
+
+/// 选 Agent 自带的模型：接入着就断开并还原，再把模型写进 Agent 自己的配置（直连，不经 Codex++）。
+#[tauri::command]
+pub fn use_gateway_own_model(
+    agent: String,
+    model: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = (|| {
+        let agent = parse_agent(&agent)?;
+        let settings = SettingsStore::default().load()?;
+        codex_plus_core::gateway::own_models::use_own_model(&context(), &settings, &agent, &model)
+    })();
+    let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
+    respond(
+        &format!("{name} 已改用自带的 {}，直连、不经 Codex++，新开的会话生效。", model.trim()),
+        "切换失败",
         result,
     )
 }

@@ -34,7 +34,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { t, tf } from "./i18n";
-import { ModelList, Floating } from "./GatewayAgents";
+import { ModelList, Floating, ownCurrent } from "./GatewayAgents";
 import {
   glanceAgents,
   agentModels,
@@ -870,10 +870,12 @@ function PanelAgentRow({
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
   const display = modelDisplay(payload, draft.model, draft.poolExclude);
+  // 没接入、用着自带的某个模型（直连）：按钮上显示它。
+  const own = agent.enabled ? null : ownCurrent(agent);
   const head = (
     <button
       className="gw-mp-action"
-      data-active={!agent.enabled}
+      data-active={!agent.enabled && !own}
       onClick={() => {
         setOpen(false);
         if (agent.enabled) void onRun("disable_gateway_binding", { agent: agent.agent });
@@ -883,7 +885,7 @@ function PanelAgentRow({
     >
       <AgentIcon agent={agent.agent} className="gw-popover-agent" />
       {t("用默认（不经 Codex++）")}
-      {!agent.enabled ? <Check className="h-3.5 w-3.5" /> : null}
+      {!agent.enabled && !own ? <Check className="h-3.5 w-3.5" /> : null}
     </button>
   );
   return (
@@ -892,7 +894,7 @@ function PanelAgentRow({
       <strong>{agent.name}</strong>
       <button aria-expanded={open} className="gw-picker-button tp-agent-picker" onClick={() => setOpen(!open)} ref={buttonRef} type="button">
         {!agent.enabled ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
-        <span>{agent.enabled ? display.title : t("默认")}</span>
+        <span>{agent.enabled ? display.title : own ?? t("默认")}</span>
         {agent.enabled ? <AutoTag view={display} /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
@@ -904,6 +906,12 @@ function PanelAgentRow({
             setOpen(false);
             void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.model }, binding) });
           }}
+          onPickOwn={(item) => {
+            setOpen(false);
+            void onRun("use_gateway_own_model", { agent: agent.agent, model: item.model });
+          }}
+          own={agent.ownModels}
+          ownAgent={agent.name}
           payload={payload}
           selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}
         />
