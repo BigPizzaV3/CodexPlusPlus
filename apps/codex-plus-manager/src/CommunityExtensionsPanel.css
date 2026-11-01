@@ -96,3 +96,5 @@
 /* 「我发布的」：上架状态徽标、删除仓库按钮用错误色 */
 .shell .community-ext-badge.is-listed { background:hsl(var(--status-success, 142 60% 36%) / .12); color:hsl(var(--status-success, 142 60% 36%)); }
 .shell .my-published-delete { color:hsl(var(--status-error, 0 72% 51%)); }
+.shell .my-published-repo-copy { display:flex; align-items:center; gap:8px; margin:8px 0; padding:6px 6px 6px 10px; border:1px solid hsl(var(--border)); border-radius:6px; }
+.shell .my-published-repo-copy code { flex:1; min-width:0; overflow-wrap:anywhere; font-family:var(--font-mono, monospace); font-size:12px; }

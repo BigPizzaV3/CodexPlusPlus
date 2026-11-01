@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArchiveRestore, EyeOff, Loader2, RefreshCw, Star, Trash2 } from "lucide-react";
+import { ArchiveRestore, Check, Copy, EyeOff, Loader2, RefreshCw, Star, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t, tf } from "./i18n";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
-import { appConfirm, appPrompt } from "./app-dialog";
+import { appConfirm } from "./app-dialog";
+import { useEscapeLayer } from "./use-escape-layer";
 import { errorText } from "./CommunityExtensionsPanel";
 import "./CommunityExtensionsPanel.css";
 
@@ -76,19 +77,7 @@ export function MyPublishedPanel({ onOpenUrl }: { onOpenUrl: (url: string) => vo
     if (ok) await run(entry, "unlist", tf("已下架 {0}", [entry.repo]));
   };
 
-  const remove = async (entry: PublishedEntry) => {
-    const typed = await appPrompt(t("删除 GitHub 仓库"), {
-      message: tf("将永久删除 GitHub 仓库 {0}（含所有提交、release 和 star），无法恢复；本机的拓展包不会被删除。确认请输入仓库名：", [entry.repo]),
-      placeholder: entry.repo,
-      confirmText: t("永久删除"),
-    });
-    if (typed === null) return;
-    if (typed.trim() !== entry.repo) {
-      setError(t("输入的仓库名不一致，没有删除。"));
-      return;
-    }
-    await run(entry, "deleteRepo", tf("已删除仓库 {0}", [entry.repo]));
-  };
+  const [deleting, setDeleting] = useState<PublishedEntry | null>(null);
 
   const entries = listing?.entries ?? [];
   return (
@@ -150,7 +139,7 @@ export function MyPublishedPanel({ onOpenUrl }: { onOpenUrl: (url: string) => vo
                   )
                 }
                 secondary={
-                  <Button className="my-published-delete" disabled={busy !== ""} onClick={() => void remove(entry)} size="sm" title={t("永久删除 GitHub 仓库")} variant="ghost">
+                  <Button className="my-published-delete" disabled={busy !== ""} onClick={() => setDeleting(entry)} size="sm" title={t("永久删除 GitHub 仓库")} variant="ghost">
                     <Trash2 className="h-4 w-4" />
                     {t("删除仓库")}
                   </Button>
@@ -163,6 +152,75 @@ export function MyPublishedPanel({ onOpenUrl }: { onOpenUrl: (url: string) => vo
       ) : (
         <div className="empty">{loading ? t("正在读取…") : listing ? t("还没有发布过拓展。在「本地拓展」里点拓展包的「…」→「发布到 GitHub」。") : null}</div>
       )}
+      {deleting ? (
+        <DeleteRepoDialog
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => {
+            const entry = deleting;
+            setDeleting(null);
+            void run(entry, "deleteRepo", tf("已删除仓库 {0}", [entry.repo]));
+          }}
+          repo={deleting.repo}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * 删除仓库的确认框：仓库名放在可选中的 code 里并带「复制」按钮，粘贴进输入框、完全一致后才能删。
+ * 不用通用的 appPrompt：那里的说明文字不能选中，用户只能手打仓库名。
+ */
+function DeleteRepoDialog({ repo, onCancel, onConfirm }: { repo: string; onCancel: () => void; onConfirm: () => void }) {
+  const [value, setValue] = useState("");
+  const [copied, setCopied] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const matches = value.trim() === repo;
+  useEscapeLayer(true, onCancel);
+  useEffect(() => inputRef.current?.focus(), []);
+  const copy = () => {
+    void navigator.clipboard?.writeText(repo).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    }).catch(() => undefined);
+  };
+  return (
+    <div aria-modal="true" className="modal-backdrop app-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }} role="dialog">
+      <div className="modal-card confirm-modal app-dialog" data-danger>
+        <div className="modal-head">
+          <div>
+            <h2>{t("删除 GitHub 仓库")}</h2>
+          </div>
+          <button aria-label={t("关闭")} className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+        <div className="confirm-modal-body">
+          <p className="modal-message app-dialog-message">{t("将永久删除这个 GitHub 仓库（含所有提交、release 和 star），无法恢复；本机的拓展包不会被删除。确认请把仓库名粘贴到下面：")}</p>
+          <div className="my-published-repo-copy">
+            <code>{repo}</code>
+            <Button onClick={copy} size="sm" type="button" variant="secondary">
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copied ? t("已复制") : t("复制")}
+            </Button>
+          </div>
+          <input
+            className="app-dialog-input"
+            onChange={(event) => setValue(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && matches) {
+                event.preventDefault();
+                onConfirm();
+              }
+            }}
+            placeholder={repo}
+            ref={inputRef}
+            value={value}
+          />
+        </div>
+        <div className="app-dialog-actions">
+          <Button onClick={onCancel} variant="secondary">{t("取消")}</Button>
+          <Button className="app-dialog-danger" disabled={!matches} onClick={onConfirm}>{t("永久删除")}</Button>
+        </div>
+      </div>
     </div>
   );
 }
