@@ -2854,6 +2854,10 @@ describe("拓展接口层", () => {
     assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
+    assert.ok(routes.includes("/request-log/recent"), "只读的最近请求日志应开放给拓展");
+    for (const forbidden of ["/proxy-status"]) {
+      assert.ok(!routes.includes(forbidden), `${forbidden} 只给内置状态条用`);
+    }
   });
 
   it("接口对象在 IIFE 收尾前挂载", async () => {

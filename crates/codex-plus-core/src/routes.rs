@@ -568,6 +568,26 @@ pub async fn handle_bridge_request(
             .await
             .unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())))
         }
+        "/request-log/recent" => {
+            // 只读：最近已完成的模型请求（与托盘「实时请求」同一份 request-log.jsonl），
+            // 开放给拓展做请求提示这类功能。进行中的请求只在代理进程内存里，这里不返回，
+            // 需要的话走 /proxy-status。
+            let limit = payload
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(20)
+                .clamp(1, 100) as usize;
+            tokio::task::spawn_blocking(move || {
+                crate::request_log::read_recent_request_logs_at(
+                    &crate::request_log::request_log_path(),
+                    limit,
+                )
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+            .and_then(|result| result.map_err(|error| anyhow::anyhow!(error.to_string())))
+            .map(|entries| json!({ "status": "ok", "entries": entries }))
+        }
         "/proxy-status" => {
             // 代理进程的实时请求状态只存在管理器内存里；桥接进程通过本地 helper
             // 的只读路由取一份快照，供 Codex 页面里的状态条轮询。

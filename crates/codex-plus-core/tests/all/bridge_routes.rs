@@ -80,6 +80,7 @@ async fn bridge_routes_cover_all_current_paths() {
             json!({"session_id": "s1", "title": "First"}),
         ),
         ("/archived-thread", json!({"title": "Archived"})),
+        ("/request-log/recent", json!({"limit": 5})),
     ];
 
     for (path, payload) in cases {
@@ -1195,6 +1196,48 @@ async fn bridge_backend_status_writes_diagnostic_log() {
     assert!(contents.contains("bridge.backend_status_ok"));
     assert!(contents.contains("/backend/status"));
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+}
+
+#[tokio::test]
+async fn request_log_recent_route_returns_latest_finished_entries() {
+    // 请求日志路径是进程级状态，与其它测试模块串行。
+    let _state = crate::common::global_state_lock();
+    let _log = codex_plus_core::request_log::request_log_test_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("request-log.jsonl");
+    let line = |id: &str, started: u64, success: bool| {
+        json!({
+            "id": id, "timestampMs": started + 1200, "startedAtMs": started, "durationMs": 1200,
+            "method": "POST", "path": "/v1/responses", "statusCode": if success { 200 } else { 502 },
+            "success": success, "stream": true, "model": "gpt-6-luna", "upstreamModel": "gpt-6-luna",
+            "relayId": "r1", "relayName": "ChatGPT Pro", "wireApi": "responses", "attempts": 1,
+            "autoRetries": 0, "state": if success { "success" } else { "failed" },
+            "usage": {"inputTokens": 11000, "outputTokens": 45}
+        })
+        .to_string()
+    };
+    std::fs::write(
+        &log_path,
+        [line("a", 1000, true), line("b", 2000, false), line("c", 3000, true)].join("\n") + "\n",
+    )
+    .unwrap();
+    codex_plus_core::request_log::set_request_log_path_for_tests(Some(log_path));
+
+    let result = handle_bridge_request(test_context(), "/request-log/recent", json!({"limit": 2})).await;
+    codex_plus_core::request_log::set_request_log_path_for_tests(None);
+
+    assert_eq!(result["status"], "ok", "{result}");
+    let ids: Vec<&str> = result["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["id"].as_str().unwrap())
+        .collect();
+    // 最新的在前，按 limit 截断。
+    assert_eq!(ids, ["c", "b"]);
+    assert_eq!(result["entries"][1]["success"], false);
+    assert_eq!(result["entries"][0]["usage"]["inputTokens"], 11000);
+    assert_eq!(result["entries"][0]["relayName"], "ChatGPT Pro");
 }
 
 #[test]
