@@ -1087,6 +1087,37 @@ codexPlus.extension((ctx) => {
   `localSessions`（本机会话，`{ offset, limit }`）。都不含 Key。
 - `codexPlusManager.navigate(target)`：跳到管理器别的页面（路由 id，或 `ext:<拓展 key>` 打开另一个拓展页面）。
 
+#### 公共只读数据
+
+除上述四类外，`manager.data` 还可以声明以下七类。调用方式相同；新增数据返回下表对象（没有 `status` / `message` 包装），读取失败时 Promise reject，旧四类的参数与返回结构不变。
+
+| 数据名 | 返回与范围 |
+| --- | --- |
+| `gatewayProviders` | `{ providers }`：网关供应商的 `id/name/enabled/protocol/models/modelWindows/contextWindow/keyRpm/keyConcurrency/price/modelPrices`；不是直连供应商列表 |
+| `gatewayRouting` | `{ groups, autoGroups }`：组的 `id/name/mode/sticky/members[{model,weight}]/hideMembers/pick`；自动组额外给 `hidden/customized` |
+| `gatewayHealth` | `{ scope: "managerProcess", providers, speeds, agents }`：供应商熔断状态、剩余冷却时间、连续错误数；模型首字耗时样本；Agent 请求／改道／失败计数及进行中的供应商 id。不返回 Key id、错误原文、完整请求轨迹 |
+| `gatewayQuota` | `{ scope: "managerProcess", cachedOnly: true, providers: [{ id, name, quota }] }`：已有额度缓存，`quota` 为 `{ windows: [{ windowMinutes, usedPercent, resetsAtMs }], updatedAtMs }`；无缓存时为 `null`，不是零额度 |
+| `installedSkills` | `{ skills: [{ id, name, enabled, bundled, managed, agents, contentHash }] }`：本地已装技能；`enabled` 对应 Codex，其他 Agent 看 `agents`；不读远端目录，版本以内容哈希表示 |
+| `installedPlugins` | `{ plugins: [{ id, name, version, source, enabled }] }`：仅 Codex++ 插件市场托管的本地安装记录，不代表全部 Codex 插件；`source` 仅 `public/full`，`id` 沿用原生 `name@market` 标识 |
+| `agentCollaboration` | `{ enabled, agents, tasks, total }`：Agent 的 `id/name/enabled/model/maxConcurrentTasks`；任务的 `id/agentId/status/createdAtMs/updatedAtMs/cancelRequested`。参数 `{ limit }` 默认 50、范围 1–200，按更新时间倒序、同时间按 id 升序 |
+
+```json
+{ "manager": { "page": "panel.html", "data": ["gatewayProviders", "gatewayHealth", "gatewayQuota"] } }
+```
+
+```js
+const { providers } = await codexPlusManager.data("gatewayProviders");
+const { providers: quotas } = await codexPlusManager.data("gatewayQuota");
+// 额度是缓存：quota === null 表示暂未采集，不能显示成余额为零。
+```
+
+- 新增数据在宿主侧重新检查拓展总开关、当前启停状态、有效清单及 `manager.data` 声明；停用后已打开的页面也不能继续读取。
+- 数据按明确字段构造，不透传内部配置、供应商地址、代理地址、Key（包括打码 Key）、磁盘路径、任务提示词／答案／进度／错误。
+- `gatewayHealth`、`gatewayQuota` 只读**当前管理器进程**已有缓存；网关在别的进程处理请求时可能为空或不是最新，不保证跨进程汇总。
+- 不主动探测／刷新上游、不安装下载、不启动执行器。账户余额当前只有主动联网刷新入口，暂不开放；`gatewayQuota` 是额度窗口，不是账户余额。
+- `agentCollaboration` 只读主数据库已落盘快照，不刷新租约、不创建数据库／schema／WAL sidecar，也不读取尚未 checkpoint 的 WAL；状态可能落后于执行中的任务。
+- 这些是 manager iframe 的数据能力，不扩展 renderer 的 `codexPlus.call` 白名单，也不开放设置写入、删除、安装或任意 Tauri 命令。类型定义见 `types/codex-plus-extensions.d.ts`。
+
 ### 资源文件
 
 拓展包里的图片、音频、字体放在 `assets/` 下，页面代码用 `ctx.asset(path)` 取 data URL：

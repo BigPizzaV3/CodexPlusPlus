@@ -503,6 +503,29 @@ impl UserScriptManager {
         }
         Ok(package)
     }
+    /// 管理器数据读操作在宿主侧复核清单，不信任页面传来的数据名或旧的清单快照。
+    pub fn authorize_manager_data(&self, key: &str, name: &str) -> anyhow::Result<()> {
+        if !MANAGER_DATA_SOURCES.contains(&name) {
+            anyhow::bail!("未开放的管理器数据：{name}");
+        }
+        let config = self.load_config();
+        if !config.enabled {
+            anyhow::bail!("拓展已停用");
+        }
+        let script = self.scan_script_files(&config)?.into_iter()
+            .find(|script| script.key == key && script.enabled)
+            .with_context(|| format!("没有找到已启用的拓展包 {key}"))?;
+        let package = script.package.context("只有拓展包可以读取管理器数据")?;
+        if let Some(error) = &package.error {
+            anyhow::bail!("拓展包清单有误：{error}");
+        }
+        let page = package.manager_page.context("拓展没有声明管理器面板")?;
+        if !page.data.iter().any(|item| item == name) {
+            anyhow::bail!("清单 manager.data 没有声明 {name}");
+        }
+        Ok(())
+    }
+
     /// 拓展的设置页 / 管理器面板经 `codexPlusManager.call(route, payload)` 调数据路由：
     /// 只认 [`EXTENSION_PAGE_ROUTES`] 里的、且这个拓展在清单 `permissions.routes` 里声明过的。
     pub async fn extension_page_route(&self, key: &str, route: &str, payload: &Value) -> anyhow::Result<Value> {
@@ -2283,7 +2306,11 @@ pub const MANAGER_REPLACEABLE_PAGES: &[&str] = &[
 /// 拓展的设置页 / 管理器面板经 `codexPlusManager.call(route, payload)` 能调的数据路由（还要清单声明）。
 pub const EXTENSION_PAGE_ROUTES: &[&str] = &crate::agent_pet::ROUTES;
 /// 拓展页面经 `codexPlusManager.data(name, params)` 能读的管理器数据（都是只读、不含凭据）。
-pub const MANAGER_DATA_SOURCES: &[&str] = &["requestFlow", "requestLogs", "gatewayUsage", "localSessions"];
+pub const MANAGER_DATA_SOURCES: &[&str] = &[
+    "requestFlow", "requestLogs", "gatewayUsage", "localSessions",
+    "gatewayProviders", "gatewayRouting", "gatewayHealth", "gatewayQuota",
+    "installedSkills", "installedPlugins", "agentCollaboration",
+];
 /// 拓展页面的侧栏分组。
 pub const MANAGER_NAV_GROUPS: &[&str] = &["gateway", "management", "tools"];
 

@@ -1632,6 +1632,29 @@ fn configured_plugin_enabled(home: &Path) -> anyhow::Result<BTreeMap<String, boo
         .unwrap_or_default())
 }
 
+/// 仅返回 Codex++ 插件市场托管的本地安装记录，不枚举其他来源的 Codex 插件。
+/// 不检查包目录、不拉取索引、不创建缓存；source 仅为 public/full，不包含仓库或路径。
+pub fn installed_summary(home: &Path) -> anyhow::Result<Value> {
+    let state = read_state(home)?;
+    let enabled = configured_plugin_enabled(home)?;
+    let plugins = state
+        .plugins
+        .values()
+        .map(|plugin| {
+            let source = Source::parse(&plugin.source)?;
+            let id = format!("{}@{}", plugin.name, plugin_market_name(source, &plugin.id));
+            Ok(json!({
+                "enabled": enabled.get(&id).copied().unwrap_or(true),
+                "id": id,
+                "name": plugin.name,
+                "version": plugin.version,
+                "source": source.id,
+            }))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(json!({ "plugins": plugins }))
+}
+
 fn native_summary(
     home: &Path,
     source: Source,

@@ -518,6 +518,7 @@ pub fn run() {
             commands::extension_manager_asset,
             commands::extension_page_call,
             commands::extension_manager_backend_call,
+            commands::extension_manager_data,
             commands::delete_user_script,
             commands::refresh_skill_catalog,
             commands::list_installed_skills,

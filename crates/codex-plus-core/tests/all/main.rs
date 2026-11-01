@@ -40,6 +40,8 @@ mod extension_curation;
 mod extension_llm;
 mod extension_discovery;
 mod extension_manager_page;
+mod extension_manager_data;
+mod extension_manager_sources;
 mod extension_launch;
 mod dream_skin;
 mod dream_skin_library;

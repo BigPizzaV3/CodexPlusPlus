@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
-import { MANAGER_DATA_SOURCES } from "./extension-manager-pages";
+import { managerDataRequest } from "./extension-manager-pages";
 import {
   handleManagerRequest,
   isManagerRequest,
@@ -78,9 +78,8 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
         resize: (next) => setHeight(next),
         theme: () => latest.current.theme,
         data: async (name, params) => {
-          const source = MANAGER_DATA_SOURCES[name];
-          if (!source || !latest.current.dataSources.includes(name)) throw new Error(`清单 manager.data 没有声明 ${name}`);
-          return invoke(source.command, source.args(params));
+          const request = managerDataRequest(name, params, latest.current.dataSources, scriptKey);
+          return invoke(request.command, request.args);
         },
         navigate: (next) => latest.current.onNavigate?.(next) ?? false,
         call: (route, payload) => invoke("extension_page_call", { key: scriptKey, route, payload }),

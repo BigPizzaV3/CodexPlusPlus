@@ -89,7 +89,38 @@ export const MANAGER_DATA_SOURCES: Record<string, { command: string; args: (para
     command: "list_local_sessions",
     args: (params) => ({ request: { offset: numberParam(params.offset) ?? 0, limit: numberParam(params.limit) ?? 50 } }),
   },
+  gatewayProviders: publicData("gatewayProviders"),
+  gatewayRouting: publicData("gatewayRouting"),
+  gatewayHealth: publicData("gatewayHealth"),
+  gatewayQuota: publicData("gatewayQuota"),
+  installedSkills: publicData("installedSkills"),
+  installedPlugins: publicData("installedPlugins"),
+  agentCollaboration: publicData("agentCollaboration"),
 };
+
+function publicData(name: string) {
+  return {
+    command: "extension_manager_data",
+    args: (params: Record<string, unknown>) => ({
+      name,
+      params: name === "agentCollaboration"
+        ? { limit: Math.min(200, Math.max(1, Math.floor(numberParam(params.limit) ?? 50))) }
+        : {},
+    }),
+  };
+}
+
+/** 不接受 iframe 指定命令、路径或拓展身份；新增数据出口的身份来自宿主。 */
+export function managerDataRequest(name: string, params: Record<string, unknown>, declared: string[], scriptKey: string) {
+  if (!Object.hasOwn(MANAGER_DATA_SOURCES, name) || !declared.includes(name)) {
+    throw new Error(`清单 manager.data 没有声明 ${name}`);
+  }
+  const source = MANAGER_DATA_SOURCES[name];
+  return {
+    command: source.command,
+    args: { ...source.args(params), ...(source.command === "extension_manager_data" ? { key: scriptKey } : {}) },
+  };
+}
 
 function numberParam(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;

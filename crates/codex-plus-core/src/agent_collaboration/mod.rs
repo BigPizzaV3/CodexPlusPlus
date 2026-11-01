@@ -311,6 +311,92 @@ impl Store {
         Ok(state)
     }
 
+    /// 拓展可见的本地只读快照：仅输出白名单字段，不检查 CLI、不刷新租约或过期状态。
+    /// 缺失数据库、状态表或记录时返回默认值；只读取主数据库已落盘的快照，
+    /// 不合并尚未 checkpoint 的 WAL，也不创建数据库、日志、共享内存文件或迁移 schema。
+    pub fn extension_summary(&self, limit: usize) -> anyhow::Result<Value> {
+        let payload: Option<String> = match std::fs::symlink_metadata(&self.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).context("无法检查协作状态文件"),
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    bail!("协作状态文件不能是符号链接");
+                }
+                if !metadata.is_file() {
+                    bail!("协作状态文件不是普通文件");
+                }
+                let path = self.path.canonicalize().context("无法定位协作状态文件")?;
+                let mut uri = reqwest::Url::from_file_path(path)
+                    .map_err(|_| anyhow::anyhow!("无法生成协作数据库只读地址"))?;
+                // 仅 READ_ONLY 在 WAL 模式仍可能创建 -shm；immutable 禁止这类磁盘副作用。
+                uri.set_query(Some("mode=ro&immutable=1"));
+                let connection = Connection::open_with_flags(
+                    uri.as_str(),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | rusqlite::OpenFlags::SQLITE_OPEN_URI
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )
+                .context("无法只读连接协作数据库")?;
+                let has_state: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+                     WHERE type = 'table' AND name = 'collaboration_state')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_state {
+                    connection
+                        .query_row(
+                            "SELECT payload FROM collaboration_state WHERE id = 1",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .optional()?
+                } else {
+                    None
+                }
+            }
+        };
+        let mut state = parse_state(payload.as_deref())?;
+        let total = state.tasks.len();
+        // 更新时间相同用 id 排序，避免不同页限额下顺序漂移。
+        state.tasks.sort_by(|left, right| {
+            right
+                .updated_at_ms
+                .cmp(&left.updated_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let agents: Vec<Value> = state
+            .config
+            .agents
+            .iter()
+            .map(|agent| {
+                json!({
+                    "id": agent.id,
+                    "name": agent.name,
+                    "enabled": agent.enabled,
+                    "model": agent.model,
+                    "maxConcurrentTasks": agent.max_concurrent_tasks,
+                })
+            })
+            .collect();
+        let tasks: Vec<Value> = state
+            .tasks
+            .iter()
+            .take(limit.clamp(1, 200))
+            .map(|task| {
+                json!({
+                    "id": task.id,
+                    "agentId": task.agent_id,
+                    "status": task.status,
+                    "createdAtMs": task.created_at_ms,
+                    "updatedAtMs": task.updated_at_ms,
+                    "cancelRequested": task.cancel_requested,
+                })
+            })
+            .collect();
+        Ok(json!({ "enabled": state.config.enabled, "agents": agents, "tasks": tasks, "total": total }))
+    }
+
     pub fn config(&self) -> anyhow::Result<CollaborationConfig> {
         self.with_state(|state| Ok(state.config.clone()))
     }

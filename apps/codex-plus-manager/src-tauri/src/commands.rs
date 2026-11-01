@@ -6295,6 +6295,39 @@ pub async fn extension_page_call(key: String, route: String, payload: Value) -> 
         .map_err(|error| format!("{error:#}"))
 }
 
+/// 新增管理器公共数据出口：后端复核声明、逐字段投影，不转发任意命令或内部配置。
+#[tauri::command]
+pub async fn extension_manager_data(key: String, name: String, params: Option<Value>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        default_user_script_manager().authorize_manager_data(key.trim(), &name)
+            .map_err(|_| "拓展未启用、清单无效或未声明这项管理器数据".to_string())?;
+        let params = params.unwrap_or(Value::Null);
+        let read = || -> anyhow::Result<Value> {
+            use codex_plus_core::{extension_manager_data as public, gateway};
+            match name.as_str() {
+                "gatewayProviders" | "gatewayRouting" | "gatewayHealth" | "gatewayQuota" => {
+                    let gateway = gateway::store::GatewayStore::default().load()?;
+                    Ok(match name.as_str() {
+                        "gatewayProviders" => public::gateway_providers(&gateway),
+                        "gatewayRouting" => public::gateway_routing(&gateway),
+                        "gatewayHealth" => public::gateway_health(&gateway, &gateway::key_pool::snapshot(std::time::Instant::now()), &gateway::speed::snapshot(), &gateway::activity::snapshot()),
+                        _ => public::gateway_quota(&gateway, gateway::quota::get),
+                    })
+                }
+                "installedSkills" => Ok(public::installed_skills(&default_skills_manager().local_inventory())),
+                "installedPlugins" => codex_plus_core::plugin_market::installed_summary(&codex_plus_core::codex_home::default_codex_home_dir()),
+                "agentCollaboration" => {
+                    let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 200) as usize;
+                    codex_plus_core::agent_collaboration::Store::default().extension_summary(limit)
+                }
+                _ => anyhow::bail!("未开放的数据源"),
+            }
+        };
+        // 不把底层错误中的配置路径、上游响应或原始文件内容带进 iframe。
+        read().map_err(|_| "无法读取管理器数据".to_string())
+    }).await.map_err(|_| "管理器数据读取任务失败".to_string())?
+}
+
 /// 管理器面板的 `codexPlusManager.backend.call(method, params)`：只调本拓展自己的常驻后台。
 #[tauri::command]
 pub async fn extension_manager_backend_call(key: String, method: String, params: Value) -> Result<Value, String> {
