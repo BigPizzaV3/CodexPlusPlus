@@ -2055,8 +2055,9 @@
       throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
     }
     const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;
-    // 内置项占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
-    const normalized = { ...definition, kind, id, order: Math.max(1000, order), scriptKey };
+    // 内置项（内置拓展，scriptKey 为 builtin:*）占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
+    const minOrder = String(scriptKey || "").startsWith("builtin:") ? 0 : 1000;
+    const normalized = { ...definition, kind, id, order: Math.max(minOrder, order), scriptKey };
     registry.set(id, normalized);
     codexPlusRegistryDiagnostics(kind, "register", id, scriptKey);
     return () => {
@@ -14977,7 +14978,7 @@
         const rect = button.getBoundingClientRect();
         const label = button.getAttribute("aria-label") || "";
         const text = (button.textContent || "").trim();
-        if (button.classList.contains(buttonClass) || button.classList.contains(exportButtonClass) || label === "归档对话" || label === "置顶对话") return false;
+        if (button.hasAttribute("data-codex-plus-row-action") || label === "归档对话" || label === "置顶对话") return false;
         return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
       });
       row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
@@ -16310,10 +16311,29 @@
     codexPlusUsageSchedule(codexPlusUsageWarmupIntervalMs);
   }
 
+  /**
+   * 观察与轮询随内置拓展「用量状态栏」装卸（96-builtin-extensions.js）：装上时开始，卸下时停下并摘掉状态栏，
+   * 没装着时什么也不跑。
+   */
+  function startCodexPlusUsageStatusLine() {
+    if (codexPlusUsageState.disposed) return;
+    if (!codexPlusUsageState.observer) codexPlusUsageObserve();
+    codexPlusUsageSyncPlacement();
+    codexPlusUsageSchedule(600);
+  }
+
+  function stopCodexPlusUsageStatusLine() {
+    clearTimeout(codexPlusUsageState.timer);
+    codexPlusUsageState.timer = 0;
+    codexPlusUsageState.observer?.disconnect();
+    codexPlusUsageState.observer = null;
+    codexPlusUsageState.node?.remove();
+    codexPlusUsageState.node = null;
+    codexPlusUsageState.parts = null;
+    codexPlusUsageState.lastFingerprint = "";
+  }
+
   codexPlusUsageInstallStyle();
-  codexPlusUsageObserve();
-  codexPlusUsageSyncPlacement();
-  codexPlusUsageSchedule(600);
   window.__codexPlusUsageStatusLineRuntime = {
     version: 2,
     sync: () => codexPlusUsageSchedule(0),
@@ -16609,17 +16629,30 @@
     if (!codexPlusProxyStatusState.disposed) codexPlusProxyStatusRender();
   }
 
-  codexPlusProxyStatusInstallStyle();
-  codexPlusProxyStatusRender();
-  codexPlusProxyStatusState.pollTimer = window.setInterval(
-    () => void codexPlusProxyStatusRefresh(),
-    codexPlusProxyStatusPollMs,
-  );
-  codexPlusProxyStatusState.tickTimer = window.setInterval(() => {
-    codexPlusProxyStatusState.nowMs = Date.now();
+  /** 轮询与倒计时随内置拓展「请求状态条」装卸（96-builtin-extensions.js）：没装着时不轮询。 */
+  function startCodexPlusProxyStatus() {
+    if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.pollTimer) return;
     codexPlusProxyStatusRender();
-  }, codexPlusProxyStatusTickMs);
-  void codexPlusProxyStatusRefresh();
+    codexPlusProxyStatusState.pollTimer = window.setInterval(
+      () => void codexPlusProxyStatusRefresh(),
+      codexPlusProxyStatusPollMs,
+    );
+    codexPlusProxyStatusState.tickTimer = window.setInterval(() => {
+      codexPlusProxyStatusState.nowMs = Date.now();
+      codexPlusProxyStatusRender();
+    }, codexPlusProxyStatusTickMs);
+    void codexPlusProxyStatusRefresh();
+  }
+
+  function stopCodexPlusProxyStatus() {
+    window.clearInterval(codexPlusProxyStatusState.pollTimer);
+    window.clearInterval(codexPlusProxyStatusState.tickTimer);
+    codexPlusProxyStatusState.pollTimer = 0;
+    codexPlusProxyStatusState.tickTimer = 0;
+    codexPlusProxyStatusHide();
+  }
+
+  codexPlusProxyStatusInstallStyle();
 
   window.__codexPlusProxyRequestStatusRuntime = {
     refresh: codexPlusProxyStatusRefresh,
@@ -18008,9 +18041,14 @@
     menu.remove();
   }
 
+  /** 按钮组记下的行内操作有没有缺（React 重建、克隆替换时可能丢）。 */
+  function sessionInlineActionsMissing(group) {
+    return String(group.dataset?.codexInlineActionKey || "").split("|").filter(Boolean)
+      .some((id) => !group.querySelector(`[data-codex-plus-row-action="${id}"]`));
+  }
+
   function pruneSessionMoreMenus(removedMenus = []) {
     let needsScan = false;
-    const needsDelete = codexPlusSettings().sessionDelete;
     // 菜单挂在 body 下，不会随 React 会话行一起卸载；复用现有观察器及时释放。
     const menus = new Set([...document.querySelectorAll(`.${moreMenuClass}`), ...removedMenus]);
     menus.forEach((menu) => {
@@ -18018,7 +18056,7 @@
       const group = menu.__codexSessionMoreGroup;
       if (!menu.isConnected || !row?.isConnected || !group?.isConnected || !row.contains(group)
           || !group.querySelector(`.${moreButtonClass}`)
-          || (needsDelete && !group.querySelector(`.${buttonClass}`))) {
+          || sessionInlineActionsMissing(group)) {
         if (row?.isConnected) needsScan = true;
         disposeSessionMoreMenu(menu);
       }
@@ -18030,7 +18068,7 @@
     let relevantRemoval = false;
     const removedMenus = new Set();
     const menuSelector = `.${moreMenuClass}`;
-    const actionSelector = `.${actionGroupClass}, .${moreButtonClass}, .${buttonClass}, ${menuSelector}`;
+    const actionSelector = `.${actionGroupClass}, .${moreButtonClass}, [data-codex-plus-row-action], ${menuSelector}`;
     for (const mutation of mutations || []) {
       for (const node of mutation.removedNodes) {
         if (node.nodeType !== 1 || (!node.matches(actionSelector) && !node.querySelector(actionSelector))) continue;
@@ -18298,45 +18336,60 @@
   }
 
   /**
-   * 会话行「…」菜单要放哪些项。返回空串表示没有任何菜单项，此时不渲染「…」按钮。
-   * 内置只剩 Markdown 导出；其余来自拓展注册的会话行操作（增强总开关关闭时不显示）。
-   * 返回值同时用作菜单指纹：项变了（开关切换、拓展注册 / 注销）就整组重建。
+   * 会话行操作（ctx.registerRowAction / codexPlus.registerRowAction）：placement 为 "inline" 的画成行上常驻的图标按钮，
+   * 其余进「…」菜单；surfaces 默认只在侧栏，含 "archived" 的也画在归档页的行上。内置的删除、导出也是这样注册的
+   * （见 96-builtin-extensions.js），这里只是宿主。增强总开关关闭时都不显示。
    */
-  function sessionMoreMenuKey(settings) {
-    const rowActions = codexPlusBackendSettings.enhancementsEnabled !== false
-      ? codexPlusExtensionItems(codexPlusRegistry.rowActions)
-      : [];
-    return [
-      ...(settings.markdownExport ? ["export"] : []),
-      ...rowActions.map((item) => `ext:${item.id}`),
-    ].join("|");
+  function sessionRowActionItems(surface = "sidebar") {
+    if (codexPlusBackendSettings.enhancementsEnabled === false) return [];
+    return codexPlusExtensionItems(codexPlusRegistry.rowActions)
+      .filter((item) => (Array.isArray(item.surfaces) && item.surfaces.length ? item.surfaces : ["sidebar"]).includes(surface));
+  }
+
+  /** 行内按钮的图标：SVG 原样用，其余当文字字形。 */
+  function sessionRowActionIconMarkup(icon) {
+    const text = String(icon ?? "").trim();
+    if (/^<svg[\s>]/i.test(text)) return text;
+    const glyph = (text || "◇").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]);
+    return `<span class="codex-session-action-glyph">${glyph}</span>`;
+  }
+
+  /** 拓展行操作的回调参数。归档页的行未必读得到会话 id，resolve() 必要时问 Codex++ 按标题找。 */
+  function sessionRowActionContext(row, extra = {}) {
+    const archived = extra.archived === true;
+    const ref = archived ? archivedRefFromRow(row) : sessionRefFromRow(row);
+    return {
+      row,
+      session_id: ref.session_id,
+      title: ref.title || row.getAttribute?.("data-app-action-sidebar-thread-title") || "",
+      archived,
+      resolve: () => (archived ? resolveArchivedThread(row) : Promise.resolve(sessionRefFromRow(row))),
+      close: () => closeSessionMoreMenus(),
+      ...extra,
+    };
   }
 
   function attachButton(row) {
-    const settings = codexPlusSettings();
-    const moreMenuKey = sessionMoreMenuKey(settings);
+    const items = sessionRowActionItems();
+    const inlineItems = items.filter((item) => item.placement === "inline");
+    // 菜单指纹：项变了（拓展注册 / 注销）就整组重建；空串表示没有菜单项，不渲染「…」按钮。
+    const moreMenuKey = items.filter((item) => item.placement !== "inline").map((item) => `ext:${item.id}`).join("|");
+    const inlineKey = inlineItems.map((item) => item.id).join("|");
     const needsMoreMenu = !!moreMenuKey;
-    if (!settings.sessionDelete && !needsMoreMenu) {
+    if (!inlineItems.length && !needsMoreMenu) {
       removeActionGroups(row);
       row.dataset.codexDeleteRow = "false";
       return;
     }
     const existingGroup = actionGroupFromRow(row);
-    const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
     const existingMoreButton = existingGroup?.querySelector(`.${moreButtonClass}`);
-    const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
-    const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
-    const hasUnexpectedMore = !needsMoreMenu && !!existingMoreButton;
-    const hasUnexpectedExport = !!existingExportButton;
-    const missingDelete = settings.sessionDelete && !existingDeleteButton;
-    const missingMore = needsMoreMenu && !existingMoreButton;
-    const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
+    const inlineReady = existingGroup?.dataset.codexInlineActionKey === inlineKey && !sessionInlineActionsMissing(existingGroup);
     const existingMenu = existingGroup?.__codexSessionMoreMenu;
     const menuReady = !needsMoreMenu || (existingMenu?.isConnected
       && existingMenu.__codexSessionMoreRow === row && existingMenu.__codexSessionMoreGroup === existingGroup
       && existingGroup.dataset.codexMoreMenuKey === moreMenuKey);
-    if (groupReady && deleteReady && menuReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !missingDelete && !missingMore) {
+    if (groupReady && inlineReady && menuReady && needsMoreMenu === !!existingMoreButton) {
       return;
     }
     removeActionGroups(row);
@@ -18349,6 +18402,7 @@
     group.setAttribute("data-codex-plus-ext", "session-actions");
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
     group.dataset.codexMoreMenuKey = moreMenuKey;
+    group.dataset.codexInlineActionKey = inlineKey;
     if (needsMoreMenu) {
       const moreButton = document.createElement("button");
       moreButton.type = "button";
@@ -18362,18 +18416,9 @@
       moreMenu.setAttribute("data-codex-plus-ext", "session-more-menu");
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
-      if (settings.markdownExport) {
-        moreMenu.appendChild(createSessionMoreMenuItem("导出", "⇩", (event) => {
-          stopActionButtonEvent(row, moreButton, event);
-          closeSessionMoreMenus();
-          exportMarkdown(ref);
-        }));
-      }
-      // 拓展注册的会话行操作追加在内置项之后。注册 / 注销会改变 moreMenuKey，
+      // 会话行操作按注册顺序（order）追加。注册 / 注销会改变 moreMenuKey，
       // 触发整组重建并重新走一遍这里，所以拓展项不会因为重建而丢失。
-      if (codexPlusBackendSettings.enhancementsEnabled !== false) {
-        appendCodexPlusExtensionRowActions(moreMenu, row, moreButton);
-      }
+      appendCodexPlusExtensionRowActions(moreMenu, row, moreButton);
       const openMoreMenu = (event) => {
         stopActionButtonEvent(row, moreButton, event);
         hideActionButtonTooltip();
@@ -18391,18 +18436,28 @@
       document.body.appendChild(moreMenu);
       installSessionMoreMenuAutoClose(row, moreMenu);
     }
-    if (settings.sessionDelete) {
-      const deleteButton = document.createElement("button");
-      deleteButton.type = "button";
-      deleteButton.className = `${actionButtonClass} ${buttonClass}`;
-      deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      configureSvgActionButton(deleteButton, "删除", trashIconSvg());
-      applyNativeSessionActionStyle(deleteButton);
-      const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, sessionRefFromRow(row), event);
-      installActionButtonEvents(row, deleteButton, openDeleteConfirm);
-      group.appendChild(deleteButton);
-      setTimeout(() => refreshActionButton(deleteButton, row, openDeleteConfirm), 0);
-    }
+    inlineItems.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      // 拓展自己的类名在套原生样式之前加上，换原生类名时一并保留。
+      button.className = [actionButtonClass, ...String(item.className || "").split(/\s+/).filter(Boolean)].join(" ");
+      button.setAttribute("data-codex-plus-row-action", item.id);
+      const label = String(item.label || item.id);
+      configureSvgActionButton(button, label, sessionRowActionIconMarkup(item.icon));
+      if (typeof item.onMount === "function") {
+        runCodexPlusExtensionCallback(item.scriptKey, "rowAction.onMount", () => item.onMount({ button, row, session_id: ref.session_id }));
+      }
+      applyNativeSessionActionStyle(button);
+      const activate = (event) => {
+        stopActionButtonEvent(row, button, event);
+        if (typeof item.onActivate !== "function") return;
+        runCodexPlusExtensionCallback(item.scriptKey, "rowAction.onActivate", () =>
+          item.onActivate(sessionRowActionContext(row, { button, event })));
+      };
+      installActionButtonEvents(row, button, activate);
+      group.appendChild(button);
+      setTimeout(() => refreshActionButton(button, row, activate), 0);
+    });
     row.appendChild(group);
     // 先套上原生按钮外观再量布局，避免尺寸在测量后才变化。
     syncNativeSessionActionStyle(row);
@@ -18470,37 +18525,35 @@
     event.stopImmediatePropagation?.();
   }
 
+  /** 归档页的行：surfaces 含 "archived" 的会话行操作画成「取消归档」旁的文字按钮。 */
   function attachArchivedPageDeleteButton(row) {
-    const settings = codexPlusSettings();
+    const items = sessionRowActionItems("archived");
     row.querySelectorAll("[data-codex-archive-row-action]").forEach((button) => button.remove());
     row.dataset.codexArchiveDeleteRow = "false";
-    if (!settings.sessionDelete && !settings.markdownExport) return;
+    if (!items.length) return;
     const unarchiveButton = Array.from(row.querySelectorAll("button")).find((button) => (button.textContent || "").trim() === "取消归档");
     if (!unarchiveButton) return;
     row.dataset.codexArchiveDeleteRow = "true";
     row.dataset.codexArchiveRowActionsVersion = codexArchiveRowActionsVersion;
     let insertionPoint = unarchiveButton;
-    if (settings.markdownExport) {
-      const exportButton = document.createElement("button");
-      exportButton.type = "button";
-      exportButton.className = `codex-archive-delete-all codex-archive-row-button ${exportButtonClass}`;
-      exportButton.dataset.codexArchiveRowAction = "export";
-      exportButton.textContent = "导出";
+    items.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = ["codex-archive-delete-all", "codex-archive-row-button", ...String(item.className || "").split(/\s+/).filter(Boolean)].join(" ");
+      button.dataset.codexArchiveRowAction = item.id;
+      button.textContent = String(item.label || item.id);
       ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
-        exportButton.addEventListener(eventName, stopArchivedButtonEvent, true);
+        button.addEventListener(eventName, stopArchivedButtonEvent, true);
       });
-      exportButton.addEventListener("click", async (event) => {
+      button.addEventListener("click", (event) => {
         stopArchivedButtonEvent(event);
-        const ref = await resolveArchivedThread(row);
-        if (!ref.session_id) {
-          showToast("导出失败：未找到归档会话 ID", null);
-          return;
-        }
-        await exportMarkdown(ref);
+        if (typeof item.onActivate !== "function") return;
+        runCodexPlusExtensionCallback(item.scriptKey, "rowAction.onActivate", () =>
+          item.onActivate(sessionRowActionContext(row, { archived: true, button, event })));
       }, true);
-      insertionPoint.insertAdjacentElement("afterend", exportButton);
-      insertionPoint = exportButton;
-    }
+      insertionPoint.insertAdjacentElement("afterend", button);
+      insertionPoint = button;
+    });
   }
 
   function conversationRoot() {
@@ -19227,6 +19280,7 @@
         // 重建（或摘掉）这一行的按钮组，不用等下一次扫描。
         tryAttachButton(row);
       });
+      archivedPageRows().forEach(attachArchivedPageDeleteButton);
     } catch {}
   }
 
@@ -21763,7 +21817,7 @@
    * 所以样式与内置项一致；点击后关闭菜单再执行回调。
    */
   function appendCodexPlusExtensionRowActions(moreMenu, row, moreButton) {
-    const items = codexPlusExtensionItems(codexPlusRegistry.rowActions);
+    const items = sessionRowActionItems().filter((item) => item.placement !== "inline");
     if (!items.length) return;
     items.forEach((definition) => {
       // 自绘项：render({ container, session_id, title, close }) 往菜单里的一个容器画（返回的清理函数在菜单拆掉时调用）。
@@ -21788,11 +21842,7 @@
         stopActionButtonEvent(row, moreButton, event);
         closeSessionMoreMenus();
         runCodexPlusExtensionCallback(definition.scriptKey, "rowAction.onActivate", () =>
-          definition.onActivate({
-            row,
-            session_id: sessionRefFromRow(row).session_id,
-            close: () => closeSessionMoreMenus(),
-          }));
+          definition.onActivate(sessionRowActionContext(row, { event })));
       });
       // 加分隔线：拓展项与内置项在语义上没有关联，挨着排会让人以为是一组。
       item.dataset.codexPlusExtensionItem = definition.id;
@@ -23621,7 +23671,7 @@
       void startCodexPlusDictation(null);
     }
   };
-  document.addEventListener("keydown", codexPlusDictationKeyHandler, true);
+  // 快捷键监听随内置拓展「语音听写」装卸（96-builtin-extensions.js 里经 ctx.listen 挂上）。
   const codexPlusDictationDispose = () => {
     cancelCodexPlusDictation();
     document.removeEventListener("keydown", codexPlusDictationKeyHandler, true);
@@ -24258,7 +24308,6 @@
     refreshCodexPlusUiSlots();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
-    installDeleteButtonEventDelegation();
   }
 
   // 当前供应商是模型聚合时，按成员判断是否等同于「官登混入 Key」（#2704）：
@@ -25562,6 +25611,10 @@
         };
       },
     });
+    ctx.effect(() => {
+      startCodexPlusUsageStatusLine();
+      return () => stopCodexPlusUsageStatusLine();
+    });
     codexPlusAlignWith(ctx, () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), { settings: true });
   }
 
@@ -25580,7 +25633,10 @@
         };
       },
     });
-    codexPlusAlignWith(ctx, () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.());
+    ctx.effect(() => {
+      startCodexPlusProxyStatus();
+      return () => stopCodexPlusProxyStatus();
+    });
   }
 
   /** 打字特效：全局输入监听随拓展装卸，模式跟着设置对齐。 */
@@ -25594,6 +25650,7 @@
 
   /** 语音听写：输入框 footer 会重建，入口跟着页面扫描补；卸下时撤掉入口并取消进行中的录音。 */
   function codexPlusDictationExtension(ctx) {
+    ctx.listen(document, "keydown", codexPlusDictationKeyHandler, true);
     codexPlusAlignWith(ctx, installCodexPlusDictation, { scan: "deferred" });
   }
 
@@ -25628,17 +25685,68 @@
   }
 
   /**
-   * 会话删除：删除按钮画在会话行操作按钮组里（组是删除、导出与第三方 rowAction 共用的宿主，留在内核），
-   * 这里负责装卸时让按钮组重建，以及侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
+   * 按设置开关注册 / 撤销一项会话行操作（只用公开 ctx 接口）：读到、改了设置时重新判断，开着就注册、关了就撤销。
+   */
+  function codexPlusRowActionWhen(ctx, enabled, definition) {
+    let dispose = null;
+    const sync = () => {
+      const wanted = !!enabled();
+      if (wanted && !dispose) dispose = ctx.registerRowAction(definition, { id: definition.id });
+      else if (!wanted && dispose) {
+        dispose();
+        dispose = null;
+      }
+    };
+    ctx.on("settings/loaded", () => runScanStep(sync));
+    ctx.on("settings/changed", () => runScanStep(sync));
+    sync();
+  }
+
+  /**
+   * 会话删除：会话行上常驻的删除按钮（公开的行内会话行操作），确认、删除、撤销都在 80-session-share.js；
+   * 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）；点击走文档级委托（按钮会被克隆替换）。
    */
   function codexPlusSessionDeleteExtension(ctx) {
     ctx.onScan(filterDeletedSessionRows);
-    codexPlusAlignWith(ctx, scheduleDeferredScan);
+    ctx.effect(() => {
+      installDeleteButtonEventDelegation();
+      return () => {
+        document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
+        window.__codexSessionDeleteDocumentDeleteHandler = null;
+      };
+    });
+    codexPlusRowActionWhen(ctx, () => codexPlusSettings().sessionDelete, {
+      id: "session-delete",
+      placement: "inline",
+      label: "删除",
+      icon: trashIconSvg(),
+      className: buttonClass,
+      order: 10,
+      onMount: ({ button }) => {
+        button.dataset.codexDeleteVersion = codexDeleteVersion;
+      },
+      onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event),
+    });
   }
 
-  /** Markdown 导出：导出项在会话行「更多」菜单与归档页里，装卸时让它们重建。 */
+  /** Markdown 导出：会话行「…」菜单与归档页行上的「导出」（公开的会话行操作，归档页的行按标题解析会话 id）。 */
   function codexPlusMarkdownExportExtension(ctx) {
-    codexPlusAlignWith(ctx, scheduleDeferredScan);
+    codexPlusRowActionWhen(ctx, () => codexPlusSettings().markdownExport, {
+      id: "markdown-export",
+      label: "导出",
+      icon: "⇩",
+      className: exportButtonClass,
+      surfaces: ["sidebar", "archived"],
+      order: 10,
+      onActivate: async ({ archived, resolve, row }) => {
+        const ref = archived ? await resolve() : sessionRefFromRow(row);
+        if (!ref?.session_id) {
+          showToast("导出失败：未找到归档会话 ID", null);
+          return;
+        }
+        await exportMarkdown(ref);
+      },
+    });
   }
 
   /** 会话 ID 角标。 */
@@ -27209,12 +27317,8 @@
 
     installStyle();
     sync();
+    // 之后由内置拓展「消息导航条靠右」在装卸、读到 / 改了设置时调用（96-builtin-extensions.js），这里不再自己轮询。
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__ = sync;
-    let attempts = 0;
-    const timer = window.setInterval(() => {
-      sync();
-      if (++attempts >= 60 && codexPlusBackendSettingsLoaded) window.clearInterval(timer);
-    }, 250);
   })();
   installCodexConfigReadDeadline();
   void installCodexForkReadinessFallback();

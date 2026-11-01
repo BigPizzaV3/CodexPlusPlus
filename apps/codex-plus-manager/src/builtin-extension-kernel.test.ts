@@ -167,11 +167,11 @@ test("侧聊保存挂在公开的 codex/exchange 中间件上，粘贴修复的�
   const exchange = chain("codex/exchange", { method: "thread/fork", params: {}, hostId: "local", send: async () => "sent" });
   assert.equal(await exchange.send(), "sent");
   assert.ok(calls.includes("side:local:thread/fork"));
-  assert.deepEqual(domListeners.map((entry) => entry.type), ["resize", "paste"], "对话宽度跟着窗口缩放、粘贴修复挂粘贴监听");
+  assert.deepEqual(domListeners.map((entry) => entry.type), ["keydown", "resize", "paste"], "听写快捷键、对话宽度跟着窗口缩放、粘贴修复的监听都随拓展挂上");
   (known.window as any).__codexPlusBuiltinExtensionState = { disabled: [], replacedBy: { "side-chat-save": "user:my-side", "paste-fix": "user:my-paste" } };
   api.sync();
   assert.equal(interceptors.get("codex/exchange")?.length, 0, "被顶替后中间件撤掉");
-  assert.deepEqual(domListeners.map((entry) => entry.type), ["resize"], "被顶替后粘贴监听摘掉");
+  assert.deepEqual(domListeners.map((entry) => entry.type), ["keydown", "resize"], "被顶替后粘贴监听摘掉");
 });
 
 test("同页重复注入时先卸下上一份注入包装上的内置拓展", () => {
@@ -179,11 +179,11 @@ test("同页重复注入时先卸下上一份注入包装上的内置拓展", ()
   (globalThis as any).__codexPlusBuiltinInactive = undefined;
   const first = harness();
   first.api.sync();
-  assert.equal(first.domListeners.length, 2);
+  assert.equal(first.domListeners.length, 3);
   const second = harness({ __codexPlusBuiltinExtensionHandles: (first.known.window as any).__codexPlusBuiltinExtensionHandles });
   assert.equal(first.domListeners.length, 0, "旧内核上的监听被摘掉");
   second.api.sync();
-  assert.equal(second.domListeners.length, 2);
+  assert.equal(second.domListeners.length, 3);
 });
 
 test("粘贴修复读到设置前按启动时注入的开关，读到之后按设置项，改设置不必重启", () => {

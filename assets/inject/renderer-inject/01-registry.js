@@ -113,8 +113,9 @@
       throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
     }
     const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;
-    // 内置项占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
-    const normalized = { ...definition, kind, id, order: Math.max(1000, order), scriptKey };
+    // 内置项（内置拓展，scriptKey 为 builtin:*）占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
+    const minOrder = String(scriptKey || "").startsWith("builtin:") ? 0 : 1000;
+    const normalized = { ...definition, kind, id, order: Math.max(minOrder, order), scriptKey };
     registry.set(id, normalized);
     codexPlusRegistryDiagnostics(kind, "register", id, scriptKey);
     return () => {

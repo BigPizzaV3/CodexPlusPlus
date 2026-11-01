@@ -772,8 +772,10 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
   滚动位置恢复、对话宽度、已删会话的行过滤……）经 `ctx.onScan` 登记扫描步骤；跟着设置走的订阅 `settings/loaded`、`settings/changed`。
   它们的共同写法是「装上时对齐一次、卸下时再对齐一次（这时功能读到的已是停用，自己撤下）」，第三方顶替时照抄即可。
   Codex++ 的扫描循环与读写设置的地方不再点名功能，内置拓展卸下时它的监听、中间件、扫描步骤、定时器都跟着撤掉；
-  同页重复注入时先卸下上一份注入装上的实例。仍留在内核里的是会话行操作按钮组与归档页行按钮（删除、导出与第三方
-  rowAction 共用的宿主）；「改 Codex 原生界面」的能力（原生菜单、原生重试按钮、原生会话管理器）刻意不开放给拓展（见「尚未开放的接口」）。
+  同页重复注入时先卸下上一份注入装上的实例。会话删除、Markdown 导出也是经 `registerRowAction` 注册的会话行操作
+  （删除是 `placement: "inline"`，导出带 `surfaces: ["sidebar", "archived"]`），内核只是按注册项画按钮组的宿主；
+  用量状态栏、请求状态条的轮询、语音听写的快捷键监听都在内置拓展装上时才开始，没装着时什么也不跑。
+  「改 Codex 原生界面」的能力（原生菜单、原生重试按钮、原生会话管理器）刻意不开放给拓展（见「尚未开放的接口」）。
 - 拓展包在清单里声明 `replaces` 即可顶替内置功能，它启用时内置的让位、停用时内置的回来：
 
 ```json
@@ -1130,16 +1132,23 @@ try {
 
 ### `codexPlus.registerRowAction(definition, options?)`
 
-在会话行的「更多操作」菜单里加一项。
+在会话行上加一项操作：默认进「更多操作」菜单，也可以画成行上常驻的图标按钮，或者同时出现在归档页的行上。
+内置的「删除」（行内按钮）与「导出」（菜单项 + 归档页）就是这样注册的。
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `label` | 是 | 菜单项文字 |
-| `onActivate` | 二选一 | `({ row, session_id, close }) => void` |
-| `render` | 二选一 | `({ container, row, session_id, title, close }) => void \| cleanup`：自己往菜单里画一项（如 React 组件），菜单拆掉时调用返回的清理函数 |
+| `label` | 是 | 菜单项文字；行内按钮的可访问标签与悬停提示；归档页按钮的文字 |
+| `onActivate` | 二选一 | `(context) => void`，见下 |
+| `render` | 二选一 | `({ container, row, session_id, title, close }) => void \| cleanup`：自己往菜单里画一项（如 React 组件），菜单拆掉时调用返回的清理函数（只用于菜单项） |
 | `icon` | 否 | 单个字形或 SVG 字符串；不传用 `◇` |
+| `placement` | 否 | `"menu"`（默认）或 `"inline"`：画成行上常驻的图标按钮，套 Codex 原生「置顶 / 归档」按钮的外观 |
+| `surfaces` | 否 | 出现在哪：`["sidebar"]`（默认，侧栏会话行）、加上 `"archived"` 也画在归档页行的「取消归档」旁（文字按钮） |
+| `className` | 否 | 给行内按钮 / 归档页按钮加的类名（样式与识别用） |
+| `onMount` | 否 | `({ button, row, session_id }) => void`：行内按钮建好、套原生外观之前调用，可设属性。按钮会随行重建，不要在这里挂监听 |
 
-`onActivate` 收到的 `row` 是该会话行的 DOM 元素，`session_id` 已解析好，`close()` 关闭菜单。
+`onActivate` 收到 `{ row, session_id, title, archived, resolve, close, button?, event? }`：`row` 是该行的 DOM 元素，
+`archived` 表示是不是归档页的行；归档页的行未必读得到会话 id，`await resolve()` 会按标题问 Codex++ 找到 `{ session_id, title }`。
+`close()` 关闭菜单。行内按钮被 React 摘掉时整组按指纹重建。
 
 ### `codexPlus.currentSessionId()`
 

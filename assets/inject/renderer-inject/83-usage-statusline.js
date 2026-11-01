@@ -706,10 +706,29 @@
     codexPlusUsageSchedule(codexPlusUsageWarmupIntervalMs);
   }
 
+  /**
+   * 观察与轮询随内置拓展「用量状态栏」装卸（96-builtin-extensions.js）：装上时开始，卸下时停下并摘掉状态栏，
+   * 没装着时什么也不跑。
+   */
+  function startCodexPlusUsageStatusLine() {
+    if (codexPlusUsageState.disposed) return;
+    if (!codexPlusUsageState.observer) codexPlusUsageObserve();
+    codexPlusUsageSyncPlacement();
+    codexPlusUsageSchedule(600);
+  }
+
+  function stopCodexPlusUsageStatusLine() {
+    clearTimeout(codexPlusUsageState.timer);
+    codexPlusUsageState.timer = 0;
+    codexPlusUsageState.observer?.disconnect();
+    codexPlusUsageState.observer = null;
+    codexPlusUsageState.node?.remove();
+    codexPlusUsageState.node = null;
+    codexPlusUsageState.parts = null;
+    codexPlusUsageState.lastFingerprint = "";
+  }
+
   codexPlusUsageInstallStyle();
-  codexPlusUsageObserve();
-  codexPlusUsageSyncPlacement();
-  codexPlusUsageSchedule(600);
   window.__codexPlusUsageStatusLineRuntime = {
     version: 2,
     sync: () => codexPlusUsageSchedule(0),

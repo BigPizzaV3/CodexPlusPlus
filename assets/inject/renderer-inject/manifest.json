@@ -8,7 +8,7 @@
     {
       "name": "01-registry.js",
       "description": "拓展注册中心、扩展选择器登记与失败上报",
-      "lines": 188
+      "lines": 189
     },
     {
       "name": "10-style.js",
@@ -88,12 +88,12 @@
     {
       "name": "83-usage-statusline.js",
       "description": "输入框下方用量状态栏：输出吞吐、缓存命中率与上下文占用；旧版 Codex 挂载兜底与诊断",
-      "lines": 730
+      "lines": 749
     },
     {
       "name": "84-proxy-request-status.js",
       "description": "输入框上方的请求避震状态条：正在请求 / 等待上游 / 正在重试 / 正在生成",
-      "lines": 300
+      "lines": 313
     },
     {
       "name": "85-history-turn-recovery.js",
@@ -123,12 +123,12 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1070
+      "lines": 1090
     },
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 411
+      "lines": 412
     },
     {
       "name": "91-extension-runtime.js",
@@ -143,7 +143,7 @@
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
-      "lines": 589
+      "lines": 585
     },
     {
       "name": "92-extension-slots.js",
@@ -173,7 +173,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 683
+      "lines": 682
     },
     {
       "name": "96-whale-compat.js",
@@ -188,7 +188,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 467
+      "lines": 526
     },
     {
       "name": "96-paste-fix.js",
@@ -213,7 +213,7 @@
     {
       "name": "98-avatar-overlay-layout.js",
       "description": "Codex 原生活动悬浮层右侧布局与波形镜像",
-      "lines": 54
+      "lines": 50
     },
     {
       "name": "99-startup.js",

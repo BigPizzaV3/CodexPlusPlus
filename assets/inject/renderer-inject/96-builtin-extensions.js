@@ -223,6 +223,10 @@
         };
       },
     });
+    ctx.effect(() => {
+      startCodexPlusUsageStatusLine();
+      return () => stopCodexPlusUsageStatusLine();
+    });
     codexPlusAlignWith(ctx, () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), { settings: true });
   }
 
@@ -241,7 +245,10 @@
         };
       },
     });
-    codexPlusAlignWith(ctx, () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.());
+    ctx.effect(() => {
+      startCodexPlusProxyStatus();
+      return () => stopCodexPlusProxyStatus();
+    });
   }
 
   /** 打字特效：全局输入监听随拓展装卸，模式跟着设置对齐。 */
@@ -255,6 +262,7 @@
 
   /** 语音听写：输入框 footer 会重建，入口跟着页面扫描补；卸下时撤掉入口并取消进行中的录音。 */
   function codexPlusDictationExtension(ctx) {
+    ctx.listen(document, "keydown", codexPlusDictationKeyHandler, true);
     codexPlusAlignWith(ctx, installCodexPlusDictation, { scan: "deferred" });
   }
 
@@ -289,17 +297,68 @@
   }
 
   /**
-   * 会话删除：删除按钮画在会话行操作按钮组里（组是删除、导出与第三方 rowAction 共用的宿主，留在内核），
-   * 这里负责装卸时让按钮组重建，以及侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
+   * 按设置开关注册 / 撤销一项会话行操作（只用公开 ctx 接口）：读到、改了设置时重新判断，开着就注册、关了就撤销。
+   */
+  function codexPlusRowActionWhen(ctx, enabled, definition) {
+    let dispose = null;
+    const sync = () => {
+      const wanted = !!enabled();
+      if (wanted && !dispose) dispose = ctx.registerRowAction(definition, { id: definition.id });
+      else if (!wanted && dispose) {
+        dispose();
+        dispose = null;
+      }
+    };
+    ctx.on("settings/loaded", () => runScanStep(sync));
+    ctx.on("settings/changed", () => runScanStep(sync));
+    sync();
+  }
+
+  /**
+   * 会话删除：会话行上常驻的删除按钮（公开的行内会话行操作），确认、删除、撤销都在 80-session-share.js；
+   * 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）；点击走文档级委托（按钮会被克隆替换）。
    */
   function codexPlusSessionDeleteExtension(ctx) {
     ctx.onScan(filterDeletedSessionRows);
-    codexPlusAlignWith(ctx, scheduleDeferredScan);
+    ctx.effect(() => {
+      installDeleteButtonEventDelegation();
+      return () => {
+        document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
+        window.__codexSessionDeleteDocumentDeleteHandler = null;
+      };
+    });
+    codexPlusRowActionWhen(ctx, () => codexPlusSettings().sessionDelete, {
+      id: "session-delete",
+      placement: "inline",
+      label: "删除",
+      icon: trashIconSvg(),
+      className: buttonClass,
+      order: 10,
+      onMount: ({ button }) => {
+        button.dataset.codexDeleteVersion = codexDeleteVersion;
+      },
+      onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event),
+    });
   }
 
-  /** Markdown 导出：导出项在会话行「更多」菜单与归档页里，装卸时让它们重建。 */
+  /** Markdown 导出：会话行「…」菜单与归档页行上的「导出」（公开的会话行操作，归档页的行按标题解析会话 id）。 */
   function codexPlusMarkdownExportExtension(ctx) {
-    codexPlusAlignWith(ctx, scheduleDeferredScan);
+    codexPlusRowActionWhen(ctx, () => codexPlusSettings().markdownExport, {
+      id: "markdown-export",
+      label: "导出",
+      icon: "⇩",
+      className: exportButtonClass,
+      surfaces: ["sidebar", "archived"],
+      order: 10,
+      onActivate: async ({ archived, resolve, row }) => {
+        const ref = archived ? await resolve() : sessionRefFromRow(row);
+        if (!ref?.session_id) {
+          showToast("导出失败：未找到归档会话 ID", null);
+          return;
+        }
+        await exportMarkdown(ref);
+      },
+    });
   }
 
   /** 会话 ID 角标。 */

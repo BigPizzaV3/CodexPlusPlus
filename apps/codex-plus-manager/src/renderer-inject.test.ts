@@ -24,10 +24,11 @@ describe("session more menu lifecycle", () => {
       const button = { expanded: "true", setAttribute: (_: string, value: string) => { button.expanded = value; } };
       const deleteButton = { dataset: { codexDeleteVersion: "7" } };
       const group = {
-        ...events(), isConnected: true, hasDelete: true, dataset: { codexActionGroupVersion: "7", codexMoreMenuKey: "export" },
+        ...events(), isConnected: true, hasDelete: true,
+        dataset: { codexActionGroupVersion: "7", codexMoreMenuKey: "ext:export", codexInlineActionKey: "delete" },
         __codexSessionMoreMenu: null as unknown,
         querySelector: (selector: string) => selector === ".more-button" ? button
-          : selector === ".delete-button" && group.hasDelete ? deleteButton : null,
+          : selector === '[data-codex-plus-row-action="delete"]' && group.hasDelete ? deleteButton : null,
         matches: () => false, remove: () => { group.isConnected = false; },
       };
       const row = {
@@ -64,7 +65,9 @@ describe("session more menu lifecycle", () => {
       () => ({ sessionDelete: true, markdownExport: true }), { enhancementsEnabled: true },
       "more-menu", "more-button", "delete-button", "actions", "export-button", "7", "7",
       (row: { querySelectorAll: () => unknown[] }) => row.querySelectorAll()[0], () => ({}),
-      { rowActions: new Map() }, (registry: Map<string, unknown>) => [...registry.values()],
+      // 内置的删除（行内按钮）与导出（菜单项）都是注册进来的会话行操作。
+      { rowActions: new Map([["export", { id: "export", label: "导出" }], ["delete", { id: "delete", label: "删除", placement: "inline" }]]) },
+      (registry: Map<string, unknown>) => [...registry.values()],
     );
     return {
       ...api, timers, menuQueries: () => menuQueries,
@@ -313,6 +316,7 @@ describe("session row action buttons", () => {
     querySelector(selector: string) { return this.querySelectorAll(selector)[0] ?? null; }
   }
 
+  /** 内置拓展「会话删除」「Markdown 导出」开着时注册的会话行操作（见 96-builtin-extensions.js）。 */
   async function runtime(settings: { sessionDelete: boolean; markdownExport: boolean }) {
     const source = await readFile(
       new URL("../../../assets/inject/renderer-inject/90-action-groups.js", import.meta.url), "utf8",
@@ -323,13 +327,14 @@ describe("session row action buttons", () => {
       createElement: (tag: string) => new FakeElement(tag),
       querySelectorAll: (selector: string) => body.querySelectorAll(selector),
     };
-    const registry = { rowActions: new Map<string, { id: string; label: string; order: number }>() };
+    const registry = { rowActions: new Map<string, { id: string; label: string; order: number; placement?: string; icon?: string; className?: string }>() };
     const api = new Function("document", "window", "HTMLElement", "codexPlusSettings", "codexPlusBackendSettings",
       "moreMenuClass", "moreButtonClass", "buttonClass", "actionGroupClass", "exportButtonClass", "actionButtonClass",
       "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
       "codexPlusRegistry", "codexPlusExtensionItems", "appendCodexPlusExtensionRowActions", "syncActionGroupLayout",
+      "runCodexPlusExtensionCallback", "releaseDeleteFocus", "actionTooltipClass",
       `${source.split("  function tryAttachButton(row)")[0]}
-       return { attachButton };`,
+       return { attachButton, trashIconSvg };`,
     )(
       document, { setTimeout: () => 0, clearTimeout: () => {}, requestAnimationFrame: () => 0 }, FakeElement,
       () => settings, { enhancementsEnabled: true },
@@ -337,11 +342,20 @@ describe("session row action buttons", () => {
       (row: FakeElement) => row.querySelector(".actions"), () => ({ session_id: "thread-1" }),
       registry, (map: Map<string, { order: number }>) => [...map.values()].sort((a, b) => a.order - b.order),
       (menu: FakeElement) => registry.rowActions.forEach((item) => {
+        if (item.placement === "inline") return;
         const node = menu.appendChild(new FakeElement("button"));
-        node.text = item.label;
+        node.text = `${item.icon ?? ""}${item.label}`;
       }),
       () => {},
+      (_key: string, _label: string, callback: () => unknown) => ({ ok: true, value: callback() }),
+      () => {}, "action-tooltip",
     );
+    if (settings.markdownExport) registry.rowActions.set("builtin:markdown-export", { id: "builtin:markdown-export", label: "导出", icon: "⇩", order: 10 });
+    if (settings.sessionDelete) {
+      registry.rowActions.set("builtin:session-delete", {
+        id: "builtin:session-delete", label: "删除", icon: api.trashIconSvg(), placement: "inline", className: "delete-button", order: 10,
+      });
+    }
     const row = body.appendChild(new FakeElement("div"));
     return { ...api, body, row, registry };
   }
@@ -374,11 +388,37 @@ describe("session row action buttons", () => {
     api.attachButton(api.row);
     assert.ok(api.row.querySelector(".more-button"), "a registered row action brings the … button back");
     assert.deepEqual(api.body.querySelector(".more-menu")?.children.map((item: { textContent: string }) => item.textContent), ["拓展操作"]);
-    api.registry.rowActions.clear();
+    api.registry.rowActions.delete("script:rowAction:a");
     api.attachButton(api.row);
     assert.equal(api.row.querySelector(".more-button"), null, "disposing the last row action removes it again");
     assert.equal(api.body.querySelector(".more-menu"), null, "its detached menu is disposed as well");
     assert.ok(api.row.querySelector(".delete-button"));
+  });
+
+  it("renders inline row actions from the registry with their own class, glyph and activation context", async () => {
+    const api = await runtime({ sessionDelete: true, markdownExport: false });
+    const activations: Array<{ session_id: string; archived: boolean; title: string }> = [];
+    api.registry.rowActions.set("user:pin:rowAction:star", {
+      id: "user:pin:rowAction:star", label: "收藏", icon: "★", placement: "inline", className: "my-star", order: 1000,
+      onActivate: (context: { session_id: string; archived: boolean; title: string }) => activations.push(context),
+    } as never);
+    api.attachButton(api.row);
+    const group = api.row.querySelector(".actions")!;
+    assert.equal(group.dataset.codexInlineActionKey, "builtin:session-delete|user:pin:rowAction:star", "行内按钮按 order 排，内置的删除在前");
+    assert.equal(group.querySelector(".more-button"), null, "只有行内操作时不出「…」");
+    const star = group.querySelector('[data-codex-plus-row-action="user:pin:rowAction:star"]')!;
+    assert.equal(star.className, "action-button my-star");
+    assert.equal(star.getAttribute("aria-label"), "收藏");
+    assert.equal(star.textContent, "★");
+    const event = { preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} };
+    (star.listeners.get("click") as (event: unknown) => void)(event);
+    assert.equal(activations.length, 1);
+    assert.equal(activations[0].session_id, "thread-1");
+    assert.equal(activations[0].archived, false);
+    // 行内按钮被 React 摘掉时整组按指纹重建。
+    star.remove();
+    api.attachButton(api.row);
+    assert.ok(api.row.querySelector('[data-codex-plus-row-action="user:pin:rowAction:star"]'));
   });
 
   it("dresses the delete button in the native pin/archive button classes and data attributes", async () => {
@@ -2637,6 +2677,11 @@ return { codexPlusRegistry, registerCodexPlusExtension, registerCodexPlusExtensi
     // 传入的 5 被抬到 1000：内置项永远排在拓展项之前。
     assert.deepEqual(items.map((item) => item.id), ["builtin:a", "ext:b"]);
     assert.equal(items[1].order, 1000);
+    // 内置拓展（scriptKey 为 builtin:*）经公开接口注册时可以用 0~999，排在第三方前面。
+    runtime.register("rowAction", runtime.registry.rowActions, "builtin:session-delete:rowAction:x", { order: 10, onActivate() {} }, "builtin:session-delete");
+    const ordered = runtime.items(runtime.registry.rowActions);
+    assert.equal(ordered[0].id, "builtin:session-delete:rowAction:x");
+    assert.equal(ordered[0].order, 10);
   });
 
   it("按脚本配额限制注册数量，超出时抛错", async () => {

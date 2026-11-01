@@ -48,11 +48,26 @@ interface CodexPlusRowActionDefinition {
   label: string;
   /** 单个字形或 SVG 字符串。 */
   icon?: string;
-  /** 普通菜单项：点击时调用。与 render 二选一。 */
+  /** "menu"（默认）进「更多操作」菜单；"inline" 画成行上常驻的图标按钮。 */
+  placement?: "menu" | "inline";
+  /** 出现在哪：默认 ["sidebar"]；加上 "archived" 也画在归档页的行上。 */
+  surfaces?: Array<"sidebar" | "archived">;
+  /** 给行内按钮 / 归档页按钮加的类名。 */
+  className?: string;
+  /** 行内按钮建好、套原生外观之前调用；按钮随行重建，只设属性、不挂监听。 */
+  onMount?(context: { button: HTMLButtonElement; row: HTMLElement; session_id: string }): void;
+  /** 点击时调用。菜单项与 render 二选一。 */
   onActivate?(context: {
     row: HTMLElement;
     session_id: string;
+    title: string;
+    /** 是不是归档页的行。 */
+    archived: boolean;
+    /** 归档页的行未必读得到会话 id：按标题问 Codex++ 解析。 */
+    resolve(): Promise<{ session_id: string; title: string }>;
     close: () => void;
+    button?: HTMLElement;
+    event?: Event;
   }): void;
   /** 自绘菜单项：往菜单里的一个容器画（例如 React 组件）；可返回清理函数，菜单拆掉时调用。 */
   render?(context: {

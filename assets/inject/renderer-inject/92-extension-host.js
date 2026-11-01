@@ -550,7 +550,7 @@
    * 所以样式与内置项一致；点击后关闭菜单再执行回调。
    */
   function appendCodexPlusExtensionRowActions(moreMenu, row, moreButton) {
-    const items = codexPlusExtensionItems(codexPlusRegistry.rowActions);
+    const items = sessionRowActionItems().filter((item) => item.placement !== "inline");
     if (!items.length) return;
     items.forEach((definition) => {
       // 自绘项：render({ container, session_id, title, close }) 往菜单里的一个容器画（返回的清理函数在菜单拆掉时调用）。
@@ -575,11 +575,7 @@
         stopActionButtonEvent(row, moreButton, event);
         closeSessionMoreMenus();
         runCodexPlusExtensionCallback(definition.scriptKey, "rowAction.onActivate", () =>
-          definition.onActivate({
-            row,
-            session_id: sessionRefFromRow(row).session_id,
-            close: () => closeSessionMoreMenus(),
-          }));
+          definition.onActivate(sessionRowActionContext(row, { event })));
       });
       // 加分隔线：拓展项与内置项在语义上没有关联，挨着排会让人以为是一组。
       item.dataset.codexPlusExtensionItem = definition.id;

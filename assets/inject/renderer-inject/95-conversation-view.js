@@ -208,7 +208,6 @@
     refreshCodexPlusUiSlots();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
-    installDeleteButtonEventDelegation();
   }
 
   // 当前供应商是模型聚合时，按成员判断是否等同于「官登混入 Key」（#2704）：

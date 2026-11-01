@@ -275,17 +275,30 @@
     if (!codexPlusProxyStatusState.disposed) codexPlusProxyStatusRender();
   }
 
-  codexPlusProxyStatusInstallStyle();
-  codexPlusProxyStatusRender();
-  codexPlusProxyStatusState.pollTimer = window.setInterval(
-    () => void codexPlusProxyStatusRefresh(),
-    codexPlusProxyStatusPollMs,
-  );
-  codexPlusProxyStatusState.tickTimer = window.setInterval(() => {
-    codexPlusProxyStatusState.nowMs = Date.now();
+  /** 轮询与倒计时随内置拓展「请求状态条」装卸（96-builtin-extensions.js）：没装着时不轮询。 */
+  function startCodexPlusProxyStatus() {
+    if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.pollTimer) return;
     codexPlusProxyStatusRender();
-  }, codexPlusProxyStatusTickMs);
-  void codexPlusProxyStatusRefresh();
+    codexPlusProxyStatusState.pollTimer = window.setInterval(
+      () => void codexPlusProxyStatusRefresh(),
+      codexPlusProxyStatusPollMs,
+    );
+    codexPlusProxyStatusState.tickTimer = window.setInterval(() => {
+      codexPlusProxyStatusState.nowMs = Date.now();
+      codexPlusProxyStatusRender();
+    }, codexPlusProxyStatusTickMs);
+    void codexPlusProxyStatusRefresh();
+  }
+
+  function stopCodexPlusProxyStatus() {
+    window.clearInterval(codexPlusProxyStatusState.pollTimer);
+    window.clearInterval(codexPlusProxyStatusState.tickTimer);
+    codexPlusProxyStatusState.pollTimer = 0;
+    codexPlusProxyStatusState.tickTimer = 0;
+    codexPlusProxyStatusHide();
+  }
+
+  codexPlusProxyStatusInstallStyle();
 
   window.__codexPlusProxyRequestStatusRuntime = {
     refresh: codexPlusProxyStatusRefresh,
