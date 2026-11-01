@@ -80,6 +80,7 @@ class FixtureElement {
   attributes = new Map<string, string>();
   classes = new Set<string>();
   classAdds = 0;
+  insertions = 0;
   listeners = new Map<string, Array<(event: any) => void>>();
   text = "";
   titleValue = "";
@@ -89,6 +90,7 @@ class FixtureElement {
   isConnected = true;
   style = {
     values: new Map<string, string>(),
+    getPropertyValue: (name: string) => this.style.values.get(name) ?? "",
     setProperty: (name: string, value: string) => this.style.values.set(name, value),
     removeProperty: (name: string) => this.style.values.delete(name),
   };
@@ -134,6 +136,7 @@ class FixtureElement {
     this.children.splice(index, 0, child);
     child.parentElement = this;
     child.isConnected = this.isConnected;
+    child.insertions++;
     return child;
   }
   remove() {
@@ -267,6 +270,8 @@ function domFixture(catalog: Catalog, defaultModel = "a/sol") {
   };
   vm.runInNewContext(`${source}\n globalThis.testModelPicker = {
     patch: codexPlusModelPickerPatch,
+    clear: codexPlusModelPickerClear,
+    needsRescan: codexPlusModelPickerNeedsRescan,
     defaultModel: codexPlusModelPickerDefaultModel,
     refresh: (catalog) => { codexModelCatalog = catalog; codexPlusModelPickerCatalogChanged(); },
     installLegacy: codexPlusModelPickerInstallLabel,
@@ -355,6 +360,232 @@ function catalogFor(models: string[], status = "ok"): Catalog {
     model: "a/sol", default_model: "a/sol", effective_config_model: "a/sol",
     sources: [{ id: "aggregate:fixed", type: "aggregate_model_catalog" }] };
 }
+
+function interleavedPickerFixture(nested = false) {
+  const definitions = [
+    ["fusheng/sol", "GPT-6.1-Sol", "fusheng", "浮生"],
+    ["group/coding", "Coding Models", "codex-plus-gateway-groups", "模型组"],
+    ["hanhe/sol", "GPT-6.1-Sol", "hanhe", "寒鹤"],
+    ["hanhe/terra", "GPT-6.1-Terra", "hanhe", "寒鹤"],
+    ["fusheng/terra", "GPT-6.1-Terra", "fusheng", "浮生"],
+    ["hanhe/astra", "GPT-6-Astra", "hanhe", "寒鹤"],
+    ["fusheng/astra", "GPT-6-Astra", "fusheng", "浮生"],
+    ["hanhe/luna", "GPT-6-Luna", "hanhe", "寒鹤"],
+    ["fusheng/luna", "GPT-6-Luna", "fusheng", "浮生"],
+    ["hanhe/kimi", "Kimi-K3", "hanhe", "寒鹤"],
+    ["fusheng/base", "GPT-6", "fusheng", "浮生"],
+    ["hanhe/base", "GPT-6", "hanhe", "寒鹤"],
+  ];
+  const modelMetadata = Object.fromEntries(definitions.map(([model, displayName, groupId, group]) =>
+    [model, { displayName, codex_plus_group: group, codex_plus_group_id: groupId }]));
+  const fixture = domFixture({ ...catalogFor(definitions.map(([model]) => model)), modelMetadata,
+    codex_plus_default_group_id: "fusheng", effective_config_model: "fusheng/sol" }, "fusheng/sol");
+  const models = new Map(definitions.map(([model, label]) => [model, fixture.addModel(model, label)]));
+  const container = nested ? new FixtureElement() : fixture.modelList;
+  if (nested) {
+    [...fixture.modelList.children].forEach((node) => container.appendChild(node));
+    fixture.modelList.appendChild(container);
+  }
+  const groups = [
+    { id: "fusheng", name: "浮生", rows: ["sol", "terra", "astra", "luna", "base"].map((id) => models.get(`fusheng/${id}`)!.row) },
+    { id: "codex-plus-gateway-groups", name: "模型组", rows: [models.get("group/coding")!.row] },
+    { id: "hanhe", name: "寒鹤", rows: ["sol", "terra", "astra", "luna", "kimi", "base"].map((id) => models.get(`hanhe/${id}`)!.row) },
+  ];
+  return { ...fixture, container, models, groups };
+}
+
+function nativeRowsSnapshot(list: FixtureElement) {
+  return list.querySelectorAll('[role="menuitemradio"]').map((row) =>
+    ({ row, parent: row.parentElement, insertions: row.insertions }));
+}
+
+function assertNativeRowsUnmoved(list: FixtureElement, snapshot: ReturnType<typeof nativeRowsSnapshot>) {
+  const rows = list.querySelectorAll('[role="menuitemradio"]');
+  assert.equal(rows.length, snapshot.length, "all native rows survive");
+  snapshot.forEach(({ row, parent, insertions }, index) => {
+    assert.equal(rows[index], row, `native row ${index} retains its identity and DOM order`);
+    assert.equal(row.parentElement, parent, `native row ${index} retains its parent`);
+    assert.equal(row.insertions, insertions, `patch never reinserts native row ${index}`);
+  });
+}
+
+function assertAssignedGroupOrder(fixture: ReturnType<typeof interleavedPickerFixture>) {
+  const { modelList, container, groups } = fixture;
+  assert.equal(modelList.querySelectorAll(".codex-plus-model-group-header").length, groups.length);
+  assert.equal(modelList.querySelectorAll(".codex-plus-model-group-toolbar").length, 1);
+  assert.equal(container.getAttribute("data-codex-plus-model-ordering"), "true", "the actual parent enables CSS ordering");
+  let order = 1;
+  const expected: FixtureElement[] = [];
+  for (const group of groups) {
+    const header = modelList.querySelector(`[data-codex-plus-model-group-id="${group.id}"]`)!;
+    assert.ok(header, `${group.name} has a header`);
+    assert.equal(header.querySelector(".codex-plus-model-group-title")?.textContent, group.name);
+    assert.equal(header.querySelector(".codex-plus-model-group-count")?.textContent, String(group.rows.length));
+    assert.equal(header.getAttribute("aria-expanded"), group.id === "fusheng" ? "true" : "false");
+    for (const node of [header, ...group.rows]) {
+      assert.equal(node.parentElement, container, "headers and rows are direct children of the ordering container");
+      assert.equal(node.style.getPropertyValue("--codex-plus-model-order"), String(order++), `${group.name} orders are consecutive`);
+      expected.push(node);
+    }
+    for (const row of group.rows) {
+      assert.equal(row.getAttribute("data-codex-plus-model-group"), group.id);
+      assert.equal(row.classList.contains("codex-plus-model-group-collapsed"), group.id !== "fusheng");
+    }
+  }
+  // Fake DOM 只检查 CSS 输入与直接父容器；真实布局和像素位置仍须浏览器验收。
+  const visible = container.children.filter((node) => expected.includes(node)
+    && !node.classList.contains("codex-plus-model-group-collapsed"))
+    .sort((a, b) => Number(a.style.getPropertyValue("--codex-plus-model-order"))
+      - Number(b.style.getPropertyValue("--codex-plus-model-order")));
+  const expectedVisible = expected.filter((node) => !node.classList.contains("codex-plus-model-group-collapsed"));
+  assert.equal(visible.length, 8, "five expanded Fusheng models and three headers remain");
+  visible.forEach((node, index) => assert.equal(node, expectedVisible[index], "all five Fusheng models precede the other headers"));
+}
+
+for (const nested of [false, true]) {
+  const location = nested ? "nested native container" : "list root";
+  test(`interleaved five/six-provider models retain consecutive group orders in the ${location}`, () => {
+    const fixture = interleavedPickerFixture(nested);
+    const native = nativeRowsSnapshot(fixture.modelList);
+    for (let scan = 0; scan < 3; scan++) {
+      fixture.api.patch(fixture.modelList);
+      assertNativeRowsUnmoved(fixture.modelList, native);
+      assertAssignedGroupOrder(fixture);
+    }
+  });
+
+  test(`repatch restores the removed ordering marker on the ${location}`, () => {
+    const fixture = interleavedPickerFixture(nested);
+    fixture.api.patch(fixture.modelList);
+    const native = nativeRowsSnapshot(fixture.modelList);
+    fixture.container.removeAttribute("data-codex-plus-model-ordering");
+    fixture.api.patch(fixture.modelList);
+    assertNativeRowsUnmoved(fixture.modelList, native);
+    assertAssignedGroupOrder(fixture);
+  });
+
+  for (const targetKind of ["model order", "header order", "container marker"]) {
+    test(`NeedsRescan detects a lost ${targetKind} in the ${location} and ignores stable own writes`, () => {
+      const fixture = interleavedPickerFixture(nested);
+      fixture.api.patch(fixture.modelList);
+      const native = nativeRowsSnapshot(fixture.modelList);
+      const target = targetKind === "container marker" ? fixture.container
+        : targetKind === "header order" ? fixture.modelList.querySelector('[data-codex-plus-model-group-id="hanhe"]')!
+          : fixture.models.get("fusheng/luna")!.row;
+      const attributeName = targetKind === "container marker" ? "data-codex-plus-model-ordering" : "style";
+      const records = [{ type: "attributes", target, attributeName, addedNodes: [], removedNodes: [] }];
+      // 模拟补丁自身写入产生的属性记录；不运行浏览器的 MutationObserver 或布局。
+      if (attributeName === "style") {
+        target.style.setProperty("--codex-plus-model-order", target.style.getPropertyValue("--codex-plus-model-order"));
+      } else target.setAttribute(attributeName, "true");
+      assert.equal(fixture.api.needsRescan(records), false, "stable own writes must not feed another scan");
+      if (attributeName === "style") target.style.removeProperty("--codex-plus-model-order");
+      else target.removeAttribute(attributeName);
+      assert.equal(fixture.api.needsRescan(records), true, "lost ordering triggers repair even with an unchanged group fingerprint");
+      fixture.api.patch(fixture.modelList);
+      assertNativeRowsUnmoved(fixture.modelList, native);
+      assertAssignedGroupOrder(fixture);
+      assert.equal(fixture.api.needsRescan(records), false, "the repaired state settles instead of rescanning itself");
+    });
+  }
+
+  test(`clear and repatch preserve native interleaving in the ${location}`, () => {
+    const fixture = interleavedPickerFixture(nested);
+    const native = nativeRowsSnapshot(fixture.modelList);
+    fixture.api.patch(fixture.modelList);
+    assertNativeRowsUnmoved(fixture.modelList, native);
+    assertAssignedGroupOrder(fixture);
+    fixture.api.clear(fixture.modelList);
+    assertNativeRowsUnmoved(fixture.modelList, native);
+    assert.equal(fixture.modelList.hasAttribute("data-codex-plus-model-groups"), false);
+    assert.equal(fixture.modelList.hasAttribute("data-codex-plus-model-ordering"), false);
+    assert.equal(fixture.modelList.querySelectorAll("[data-codex-plus-model-ordering]").length, 0);
+    assert.equal(fixture.modelList.querySelectorAll(".codex-plus-model-group-header").length, 0);
+    assert.equal(fixture.modelList.querySelectorAll(".codex-plus-model-group-toolbar").length, 0);
+    for (const { row } of native) {
+      assert.equal(row.style.getPropertyValue("--codex-plus-model-order"), "");
+      assert.equal(row.getAttribute("data-codex-plus-model-group"), null);
+      assert.equal(row.classList.contains("codex-plus-model-group-collapsed"), false);
+      assert.equal(row.querySelector(".codex-plus-model-group-own-label"), null);
+    }
+    fixture.api.patch(fixture.modelList);
+    assertNativeRowsUnmoved(fixture.modelList, native);
+    assertAssignedGroupOrder(fixture);
+  });
+}
+
+for (const model of ["fusheng/luna", "hanhe/luna"]) {
+  for (const damage of ["overwritten", "removed"]) {
+    test(`repatch repairs a ${damage} non-leading ${model} order with all headers intact`, () => {
+      const fixture = interleavedPickerFixture();
+      fixture.api.patch(fixture.modelList);
+      const native = nativeRowsSnapshot(fixture.modelList);
+      const style = fixture.models.get(model)!.row.style;
+      if (damage === "removed") style.removeProperty("--codex-plus-model-order");
+      else style.setProperty("--codex-plus-model-order", "999");
+      for (const group of fixture.groups) {
+        assert.equal(fixture.modelList.querySelector(`[data-codex-plus-model-group-id="${group.id}"]`)?.nextElementSibling,
+          group.rows[0], "header adjacency alone cannot detect this damaged order");
+      }
+      fixture.api.patch(fixture.modelList);
+      assertNativeRowsUnmoved(fixture.modelList, native);
+      assertAssignedGroupOrder(fixture);
+    });
+  }
+}
+
+test("intact repatches do not rewrite model orders or the ordering container marker", () => {
+  const fixture = interleavedPickerFixture();
+  fixture.api.patch(fixture.modelList);
+  const native = nativeRowsSnapshot(fixture.modelList);
+  let orderWrites = 0;
+  let containerWrites = 0;
+  for (const node of fixture.container.children) {
+    const setProperty = node.style.setProperty;
+    node.style.setProperty = (name, value) => {
+      if (name === "--codex-plus-model-order") orderWrites++;
+      return setProperty(name, value);
+    };
+  }
+  const setAttribute = fixture.container.setAttribute.bind(fixture.container);
+  fixture.container.setAttribute = (name, value) => {
+    if (name === "data-codex-plus-model-ordering") containerWrites++;
+    setAttribute(name, value);
+  };
+  for (let scan = 0; scan < 3; scan++) fixture.api.patch(fixture.modelList);
+  assert.equal(orderWrites, 0, "unchanged CSS orders do not generate style mutations");
+  assert.equal(containerWrites, 0, "the existing ordering marker is not rewritten");
+  assertNativeRowsUnmoved(fixture.modelList, native);
+  assertAssignedGroupOrder(fixture);
+});
+
+test("reused same-label native rows get new group orders without moving either node", () => {
+  const fixture = interleavedPickerFixture();
+  fixture.api.patch(fixture.modelList);
+  const native = nativeRowsSnapshot(fixture.modelList);
+  const fusheng = fixture.models.get("fusheng/terra")!;
+  const hanhe = fixture.models.get("hanhe/terra")!;
+  // React 复用同名行：首行和标题不变，分组文本指纹也不变，只有模型身份交换。
+  (fusheng.row as any).__reactFiber$fixture.key = "hanhe/terra";
+  (hanhe.row as any).__reactFiber$fixture.key = "fusheng/terra";
+  fixture.groups[0].rows[1] = hanhe.row;
+  fixture.groups[2].rows[1] = fusheng.row;
+  fixture.api.patch(fixture.modelList);
+  assertNativeRowsUnmoved(fixture.modelList, native);
+  assertAssignedGroupOrder(fixture);
+});
+
+test("native reordering is retained while group CSS orders are recalculated", () => {
+  const fixture = interleavedPickerFixture();
+  fixture.api.patch(fixture.modelList);
+  const base = fixture.models.get("fusheng/base")!.row;
+  fixture.container.insertBefore(base, fixture.models.get("fusheng/terra")!.row);
+  fixture.groups[0].rows = ["sol", "base", "terra", "astra", "luna"].map((id) => fixture.models.get(`fusheng/${id}`)!.row);
+  const native = nativeRowsSnapshot(fixture.modelList);
+  fixture.api.patch(fixture.modelList);
+  assertNativeRowsUnmoved(fixture.modelList, native);
+  assertAssignedGroupOrder(fixture);
+});
 
 function assertNoDefaultValue(fixture: ReturnType<typeof domFixture>) {
   const { row, title, description, check } = fixture.defaults;

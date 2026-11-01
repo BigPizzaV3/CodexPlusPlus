@@ -14383,10 +14383,32 @@
   function codexPlusModelPickerHeadersIntact(list, groups) {
     const toolbar = list.querySelector(".codex-plus-model-group-toolbar");
     if (!toolbar) return false;
+    let order = 1;
     return groups.every((group) => {
       const header = list.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(group.id)}"]`);
       const first = group.entries[0]?.row;
-      return !!header && !!first && header.nextElementSibling === first;
+      return !!header && !!first && header.nextElementSibling === first
+        && header.parentElement?.getAttribute("data-codex-plus-model-ordering") === "true"
+        && header.style.getPropertyValue("--codex-plus-model-order") === String(order++)
+        && group.entries.every(({ row }) => row.parentElement === header.parentElement
+          && row.style.getPropertyValue("--codex-plus-model-order") === String(order++));
+    });
+  }
+
+  function codexPlusModelPickerSyncOrder(list, groups) {
+    let order = 1;
+    groups.forEach((group) => {
+      const header = list.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(group.id)}"]`);
+      const parent = header?.parentElement;
+      if (parent && parent.getAttribute("data-codex-plus-model-ordering") !== "true") {
+        parent.setAttribute("data-codex-plus-model-ordering", "true");
+      }
+      for (const node of [header, ...group.entries.map(({ row }) => row)]) {
+        const value = String(order++);
+        if (node && node.style.getPropertyValue("--codex-plus-model-order") !== value) {
+          node.style.setProperty("--codex-plus-model-order", value);
+        }
+      }
     });
   }
 
@@ -14438,13 +14460,7 @@
       first.parentElement.insertBefore(codexPlusModelPickerGroupHeader(list, group, groups), first);
     });
     // 仅调整视觉顺序，保留 React 管理的节点及其父子关系。
-    let order = 1;
-    groups.forEach((group) => {
-      const header = list.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(group.id)}"]`);
-      header?.parentElement?.setAttribute("data-codex-plus-model-ordering", "true");
-      header?.style.setProperty("--codex-plus-model-order", String(order++));
-      group.entries.forEach(({ row }) => row.style.setProperty("--codex-plus-model-order", String(order++)));
-    });
+    codexPlusModelPickerSyncOrder(list, groups);
     codexPlusModelPickerAutoCollapse(list, groups);
     groups.forEach((group) => codexPlusModelPickerSyncGroup(list, group));
     const anchor = groups[0]?.entries[0]?.row;
@@ -14515,6 +14531,10 @@
       node.nodeType === 1 && (node.matches?.(".codex-plus-model-group-header, .codex-plus-model-group-toolbar")
         || node.querySelector?.('[role="menuitemradio"]'))))) return true;
     const changed = records.some((record) => {
+      if (record.type === "attributes") {
+        return record.attributeName === "data-codex-plus-model-ordering"
+          || record.target.matches?.('[role="menuitemradio"], .codex-plus-model-group-header');
+      }
       if (record.type === "characterData") {
         return !record.target.parentElement?.closest?.(`[data-codex-plus-ext="${codexPlusModelPickerGroupsExtMark}"]`);
       }
@@ -14529,7 +14549,8 @@
       codexPlusModelPickerGroups(rows, codexPlusModelPickerDefaultProviderName()),
     );
     if (groups.length < 2) return codexPlusModelPickerGroupsState.patchedLists.has(list);
-    return codexPlusModelPickerFingerprint(groups) !== codexPlusModelPickerGroupsState.signature;
+    return codexPlusModelPickerFingerprint(groups) !== codexPlusModelPickerGroupsState.signature
+      || !codexPlusModelPickerHeadersIntact(list, groups);
   }
 
   function codexPlusModelPickerScheduleRescan() {
@@ -14552,7 +14573,8 @@
       if (!codexPlusModelPickerNeedsRescan(records)) return;
       codexPlusModelPickerScheduleRescan();
     });
-    state.observer.observe(list, { childList: true, characterData: true, subtree: true });
+    state.observer.observe(list, { childList: true, characterData: true, subtree: true,
+      attributes: true, attributeFilter: ["style", "data-codex-plus-model-ordering"] });
   }
 
   function codexPlusModelPickerObserveMenus() {
