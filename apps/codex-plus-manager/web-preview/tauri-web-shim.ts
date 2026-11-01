@@ -446,8 +446,35 @@ const demoFlowTemplates = [
   { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "sub2api-pool", relayName: L("sub2api 站点（演示）", "sub2api relay (demo)") },
 ];
 const demoFlow = { live: [] as Array<Record<string, unknown> & { finishAt: number }>, nextAt: 0, seq: 0 };
+const flowPreviewStartedAt = Date.now();
 const demoRequestFlow = (limit: number) => {
   const now = Date.now();
+  // 确定性预览：空列表 → 未选路由 → 等待 → 响应 → 结束，覆盖真实日志的分阶段更新。
+  const scenario = new URLSearchParams(window.location.search).get("flowPreview");
+  if (scenario) {
+    const params = new URLSearchParams(window.location.search);
+    const startedAtMs = Number(params.get("flowStart")) || flowPreviewStartedAt;
+    const finished = scenario === "done" || scenario === "error";
+    const generating = scenario === "generating" || scenario === "mixed";
+    const history = [
+      { ...demoRequest(9997, 5, demoFlowTemplates[0]), id: "flow-history-ok", durationMs: 3600, usage: { inputTokens: 25000, outputTokens: 244 }, state: "success", success: true },
+      { ...demoRequest(9998, 6, { ...demoFlowTemplates[0], relayId: "jojo", relayName: "jojocodemax" }),
+        id: "flow-history-error", durationMs: 1200, state: "failed", success: false, statusCode: 429, error: "模拟历史请求：上游限流（429）" },
+    ];
+    if (scenario === "idle") return history;
+    const active = { ...demoRequest(9999, 0, demoFlowTemplates[0]), id: "flow-preview", startedAtMs,
+      state: finished ? (scenario === "error" ? "failed" : "success") : "running",
+      phase: generating ? "generating" : "waiting", firstTokenMs: generating || finished ? 1200 : null,
+      estimatedOutputTokens: generating ? Math.floor((now - startedAtMs) / 90) : null,
+      usage: finished && scenario !== "error" ? { inputTokens: 25000, outputTokens: 244 } : null,
+      durationMs: finished ? 8000 : 0, timestampMs: finished ? startedAtMs + 8000 : now,
+      relayId: scenario === "unrouted" ? "" : "chatgpt-pro", relayName: scenario === "unrouted" ? "" : "ChatGPT Pro",
+      error: scenario === "error" ? "模拟请求：上游返回 HTTP 500" : null,
+      success: scenario === "done", statusCode: scenario === "error" ? 500 : 200 };
+    const concurrent = scenario === "mixed" ? [{ ...active, id: "flow-preview-parallel", phase: "waiting",
+      firstTokenMs: null, estimatedOutputTokens: null, relayId: "jojo", relayName: "jojocodemax" }] : [];
+    return [active, ...concurrent, ...history].slice(0, limit);
+  }
   if (now >= demoFlow.nextAt) {
     const template = demoFlowTemplates[demoFlow.seq % demoFlowTemplates.length];
     demoFlow.seq += 1;

@@ -1,0 +1,26 @@
+/* 三个全配对可区分色；更多供应商用中性色+名称，不循环复用前三色。 */
+[data-flow-provider="0"] { --flow-provider-color: #3987e5; }
+[data-flow-provider="1"] { --flow-provider-color: #d95926; }
+[data-flow-provider="2"] { --flow-provider-color: #199e70; }
+[data-flow-provider="3"], [data-flow-provider="-1"] { --flow-provider-color: #969aa5; }
+.light [data-flow-provider="0"] { --flow-provider-color: #2a78d6; }
+.light [data-flow-provider="1"] { --flow-provider-color: #eb6834; }
+.light [data-flow-provider="2"] { --flow-provider-color: #1baf7a; }
+.light [data-flow-provider="3"], .light [data-flow-provider="-1"] { --flow-provider-color: #626773; }
+.flow-provider-mark {
+  display: inline-block;
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--flow-provider-color);
+}
+.rf-sub .flow-provider-mark { opacity: 1; }
+.tray-panel .tp-flow-chip[data-flow-provider][data-live="true"] {
+  border-color: var(--flow-provider-color);
+  background: color-mix(in srgb, var(--flow-provider-color) 10%, transparent);
+}
+.hub-links [data-flow-provider] .hub-stream-dot {
+  fill: var(--flow-provider-color);
+  filter: drop-shadow(0 0 2px var(--flow-provider-color));
+}

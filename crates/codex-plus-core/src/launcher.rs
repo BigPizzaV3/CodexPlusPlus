@@ -3312,7 +3312,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
         // 拓展的网关响应流中间件：在 Codex++ 自己的转换之后、写给 Codex 之前改写事件。
         let mut sink = ExtensionResponseSink::new(stream, path, request_json.as_ref()).await;
         let (failure, usage, failure_detail, first_output_at_ms) =
-            forward_protocol_proxy_stream_for_client(
+            forward_protocol_proxy_stream_for_client_with_live_request(
                 &mut sink,
                 &stream_prefix,
                 upstream.take_response()?,
@@ -3320,6 +3320,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 request_json.as_ref(),
                 session_headers.thread_id,
                 foreign_client,
+                Some(live_request_id.as_str()),
             )
             .await?;
         sink.finish().await?;
@@ -4146,6 +4147,28 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
     Option<String>,
     Option<u64>,
 )> {
+    forward_protocol_proxy_stream_for_client_with_live_request(
+        stream, prefix, response, wire_api, request, thread_id, foreign_client, None,
+    )
+    .await
+}
+
+// 保持网关等现有调用者的接口；Codex 代理额外传入进行中日志 id。
+async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
+    stream: &mut S,
+    prefix: &[u8],
+    response: reqwest::Response,
+    wire_api: crate::protocol_proxy::UpstreamWireApi,
+    request: Option<&Value>,
+    thread_id: Option<&str>,
+    foreign_client: bool,
+    live_request_id: Option<&str>,
+) -> anyhow::Result<(
+    Option<String>,
+    Option<crate::request_log::RequestUsage>,
+    Option<String>,
+    Option<u64>,
+)> {
     let mut chunks = response.bytes_stream();
     let mut first_output_at_ms = None;
     if wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
@@ -4165,9 +4188,9 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
         while let Some(chunk) = chunks.next().await {
             match chunk {
                 Ok(bytes) => {
-                    if !bytes.is_empty() && first_output_at_ms.is_none() {
-                        first_output_at_ms = Some(current_time_ms());
-                    }
+                    observe_protocol_proxy_output(
+                        &bytes, &mut first_output_at_ms, live_request_id,
+                    );
                     let out = transformer.push_bytes(&bytes);
                     stream.send(&out).await?;
                     // 超限等终态失败要立即结束流，不能等上游 EOF；
@@ -4211,9 +4234,9 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
         while let Some(chunk) = chunks.next().await {
             match chunk {
                 Ok(bytes) => {
-                    if !bytes.is_empty() && first_output_at_ms.is_none() {
-                        first_output_at_ms = Some(current_time_ms());
-                    }
+                    observe_protocol_proxy_output(
+                        &bytes, &mut first_output_at_ms, live_request_id,
+                    );
                     let converted = converter.push_bytes(&bytes);
                     if !converted.is_empty() {
                         stream.send(&converted).await?;
@@ -4266,9 +4289,9 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
     while let Some(chunk) = chunks.next().await {
         match chunk {
             Ok(bytes) => {
-                if !bytes.is_empty() && first_output_at_ms.is_none() {
-                    first_output_at_ms = Some(current_time_ms());
-                }
+                observe_protocol_proxy_output(
+                    &bytes, &mut first_output_at_ms, live_request_id,
+                );
                 let converted = converter.push_bytes(&bytes);
                 stream.send(&converted).await?;
                 if converter.has_failed() {
@@ -4313,6 +4336,21 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
     record_chat_converter_usage(thread_id, &converter);
     // 流式 Chat 上游的用量也要进请求日志和网关用量统计（#2803）。
     Ok((None, converter.request_usage(), None, first_output_at_ms))
+}
+
+// 沿用普通转发的首字口径：第一段非空上游 body；HTTP 头和空块不算。
+// 在写给下游之前发布，避免下游背压或长流让实时状态一直停在等待。
+fn observe_protocol_proxy_output(
+    bytes: &[u8],
+    first_output_at_ms: &mut Option<u64>,
+    live_request_id: Option<&str>,
+) {
+    if !bytes.is_empty() && first_output_at_ms.is_none() {
+        *first_output_at_ms = Some(current_time_ms());
+        if let Some(id) = live_request_id {
+            crate::request_log::update_running_first_token(id);
+        }
+    }
 }
 
 fn record_chat_converter_usage(
@@ -7737,6 +7775,15 @@ mod tests {
                     break;
                 }
             }
+            // open 还在等待响应头时，实际选中的路由就必须已经可见。
+            let running = crate::request_log::running_requests().into_iter()
+                .find(|entry| entry.relay_id == "request-log-relay")
+                .expect("不能等 record_upstream 才发布真实路由");
+            assert_eq!(running.relay_name, "请求日志供应商");
+            assert_eq!(running.upstream_model, "gpt-6.1-sol");
+            assert_eq!(running.wire_api, "responses");
+            assert_eq!(running.state.as_deref(), Some("running"));
+            assert!(running.first_token_ms.is_none());
             let response_body = br#"{"id":"resp_logged","object":"response","usage":{"input_tokens":120,"output_tokens":30,"input_tokens_details":{"cached_tokens":100}}}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -8697,6 +8744,75 @@ mod proxy_stream_tests {
             first_output_at_ms >= started_at_ms + 50,
             "首字时间不应在上游发送数据前记录: started={started_at_ms}, first={first_output_at_ms}"
         );
+    }
+
+    #[tokio::test]
+    async fn live_first_output_is_published_before_stream_finishes() {
+        let _guard = crate::request_log::request_log_test_guard();
+        for (wire, body) in [
+            (UpstreamWireApi::Responses, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"),
+            (UpstreamWireApi::ChatCompletions, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"),
+            (UpstreamWireApi::AnthropicMessages, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+        ] {
+            let log = super::ProxyRequestLog::begin("POST", "/responses", None, None);
+            let snapshot = || crate::request_log::running_requests().into_iter()
+                .find(|row| row.id == log.entry.id).unwrap();
+            let mut first = None;
+            super::observe_protocol_proxy_output(&[], &mut first, Some(&log.entry.id));
+            assert!(first.is_none());
+            assert!(snapshot().first_token_ms.is_none(), "空块不算输出");
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (send_body, body_ready) = tokio::sync::oneshot::channel::<()>();
+            let (finish_stream, stream_finished) = tokio::sync::oneshot::channel::<()>();
+            let upstream = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(socket.read_u8().await.unwrap());
+                }
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+                body_ready.await.unwrap();
+                socket.write_all(format!("{:X}\r\n{body}\r\n", body.len()).as_bytes()).await.unwrap();
+                stream_finished.await.unwrap();
+                socket.write_all(b"0\r\n\r\n").await.unwrap();
+            });
+            let response = reqwest::Client::builder().no_proxy().build().unwrap()
+                .get(format!("http://{address}/stream")).send().await.unwrap();
+            assert!(snapshot().first_token_ms.is_none(), "只有响应头时仍在等待");
+
+            struct NotifyingSink(Option<tokio::sync::oneshot::Sender<()>>);
+            impl super::SseSink for NotifyingSink {
+                async fn send(&mut self, _bytes: &[u8]) -> std::io::Result<()> {
+                    if let Some(notify) = self.0.take() {
+                        let _ = notify.send(());
+                    }
+                    Ok(())
+                }
+            }
+            let (sent, observed) = tokio::sync::oneshot::channel();
+            let mut sink = NotifyingSink(Some(sent));
+            let forward = super::forward_protocol_proxy_stream_for_client_with_live_request(
+                &mut sink, &[], response, wire, None, None, false, Some(&log.entry.id),
+            );
+            tokio::pin!(forward);
+            send_body.send(()).unwrap();
+            tokio::select! {
+                result = &mut forward => panic!("上游尚未结束，转发不应返回: {result:?}"),
+                result = tokio::time::timeout(Duration::from_secs(2), observed) => result.unwrap().unwrap(),
+            }
+            let generating = snapshot();
+            assert!(generating.first_token_ms.is_some(), "不能等转发返回才发布首字");
+            assert_eq!(generating.phase.as_deref(), Some("generating"));
+            crate::request_log::update_running_first_token(&log.entry.id);
+            assert_eq!(snapshot().first_token_ms, generating.first_token_ms);
+            finish_stream.send(()).unwrap();
+            let (_, _, _, first_output_at_ms) = tokio::time::timeout(Duration::from_secs(2), forward)
+                .await.unwrap().unwrap();
+            assert!(first_output_at_ms.is_some());
+            upstream.await.unwrap();
+        }
     }
 
     #[tokio::test]

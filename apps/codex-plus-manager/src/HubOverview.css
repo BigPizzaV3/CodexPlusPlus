@@ -112,17 +112,10 @@
   fill: hsl(var(--brand-accent));
 }
 
-/* 真实请求驱动的连线（总览、托盘「流量」页签）：有请求在进行的连线画成向前流动的虚线。 */
+/* 只有真实进行中的请求才亮起；等待时去程，收到输出后反向回流。 */
 .hub-links path[data-busy="true"] {
-  stroke: hsl(var(--brand-accent) / 0.8);
-  stroke-dasharray: 6 6;
-  animation: hub-flow-dash 0.9s linear infinite;
-}
-
-@keyframes hub-flow-dash {
-  to {
-    stroke-dashoffset: -12;
-  }
+  stroke: hsl(var(--brand-accent) / 0.28);
+  stroke-dasharray: none;
 }
 
 /* 连线两端的小圆点；有请求在进行时变成强调色。 */
@@ -136,35 +129,14 @@
   fill: hsl(var(--brand-accent));
 }
 
-/* 一条请求一颗光点：去程是强调色，回程成功绿、失败红。 */
-.hub-links .hub-pulse .hub-pulse-core {
+/* 单一强调色表示流量，拖尾形状表示方向；成功/失败只留在请求列表。 */
+.hub-links .hub-stream-dot {
   fill: hsl(var(--brand-accent));
-}
-
-.hub-links .hub-pulse .hub-pulse-halo {
-  fill: hsl(var(--brand-accent) / 0.22);
-}
-
-.hub-links .hub-pulse[data-tone="ok"] .hub-pulse-core {
-  fill: hsl(var(--status-success));
-}
-
-.hub-links .hub-pulse[data-tone="ok"] .hub-pulse-halo {
-  fill: hsl(var(--status-success) / 0.24);
-}
-
-.hub-links .hub-pulse[data-tone="error"] .hub-pulse-core {
-  fill: hsl(var(--status-error));
-}
-
-.hub-links .hub-pulse[data-tone="error"] .hub-pulse-halo {
-  fill: hsl(var(--status-error) / 0.24);
+  filter: drop-shadow(0 0 2px hsl(var(--brand-accent) / 0.45));
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hub-links path[data-busy="true"] {
-    animation: none;
-  }
+  .hub-streams { display: none; }
 }
 
 .hub-col {
