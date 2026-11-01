@@ -1626,3 +1626,77 @@ fn dsh_llm_stream_yields_deltas_before_the_reply_finishes() {
     assert_eq!(result["providers"], json!(["codex", "mine"]));
     assert_eq!(result["after"], 1, "撤销后 adapter 不在了");
 }
+
+/// typert 类型化 RPC：包导出 ./typert 时自动登记它的 TYPERT 清单，前端 ctx.remote 经 connection.rpc 的 /api 调到宿主：
+/// 按描述把线上参数对上方法参数（严格 codec 校验、没 schema 放行、lookup 解析成宿主对象），this.ctx.invocation 可用；
+/// stream 方法经 rpcOpen / rpcPush / rpcPull 分批收发（上行按 uplink codec 校验）。
+#[test]
+fn dsh_typert_methods_are_callable_through_connection_rpc() {
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(scripts.path().join("builtin"), scripts.path().join("user"), scripts.path().join("user_scripts.json"));
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("typert-plugin")), &toolchain).unwrap();
+    let main = row(&record.report, "dsh-typert-demo");
+    assert_eq!(main["kind"], "service", "{main}");
+    assert!(main["mappings"].as_array().unwrap().iter().any(|item| item == "connection"), "{main}");
+    assert!(dsh_plugins::report_bridge(&record.report).connection);
+    plugins.sync_companion(&manager, &record.id).unwrap();
+
+    let script = format!(r#"
+const {{ default: create }} = await import({backend})
+const api = create()
+const rpc = (endpoint, payload) => api.rpc({{ channel: '/api', endpoint, payload }})
+const out = {{}}
+out.descriptors = (await rpc('$codexpp/typert-descriptors', null)).value.map((d) => `${{d.namespace}}/${{d.method}}${{d.mode ? ':' + d.mode : ''}}`)
+out.added = (await rpc('notes/add', {{ args: {{ text: 'hello' }} }})).value
+out.positional = (await rpc('notes/add', {{ positional: ['world'] }})).value
+out.invalid = (await rpc('notes/add', {{ args: {{ text: 42 }} }})).error.code
+out.extra = (await rpc('notes/add', {{ args: {{ text: 'x', nope: 1 }} }})).error.code
+out.list = (await rpc('notes/list', {{ args: {{}} }})).value
+out.read = (await rpc('notes/read', {{ args: {{ noteId: 1 }} }})).value
+out.missing = (await rpc('notes/read', {{ args: {{ noteId: 9 }} }})).error.code
+out.unaryOnStream = (await rpc('notes/watch', {{ args: {{ prefix: '>' }} }})).error.code
+const opened = await api.rpcOpen({{ channel: '/api', endpoint: 'notes/watch', payload: {{ args: {{ prefix: '>' }} }} }})
+await api.rpcPush({{ id: opened.id, items: ['a', 'b'] }})
+await api.rpcPush({{ id: opened.id, items: [], end: true }})
+const items = []
+for (;;) {{
+  const batch = await api.rpcPull({{ id: opened.id, waitMs: 500 }})
+  items.push(...batch.items)
+  if (batch.done) break
+}}
+out.stream = items
+const bad = await api.rpcOpen({{ channel: '/api', endpoint: 'notes/watch', payload: {{ args: {{ prefix: '!' }} }} }})
+await api.rpcPush({{ id: bad.id, items: [7], end: true }})
+let failed
+for (;;) {{
+  const batch = await api.rpcPull({{ id: bad.id, waitMs: 500 }})
+  if (batch.done) {{ failed = batch.error?.message ?? null; break }}
+}}
+out.badUplink = /expected string/.test(failed ?? '')
+process.stdout.write(JSON.stringify(out))
+process.exit(0)
+"#, backend = json!(url_of(&scripts.path().join("user/dsh-dsh-typert-demo/backend/main.mjs"))));
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(result, json!({
+        "descriptors": ["notes/add", "notes/list", "notes/read", "notes/watch:stream"],
+        "added": 1,
+        "positional": 2,
+        "invalid": "gateway/arguments-invalid",
+        "extra": "gateway/arguments-invalid",
+        "list": ["hello", "world"],
+        "read": "note: world（read）",
+        "missing": "gateway/lookup-not-found",
+        "unaryOnStream": "gateway/binding-invalid",
+        "stream": [">a", ">b"],
+        "badUplink": true,
+    }), "{}", String::from_utf8_lossy(&output.stderr));
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}

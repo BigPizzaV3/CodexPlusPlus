@@ -11,6 +11,7 @@
 // 能对上 Codex 钩子 / 网关的事件（见 EVENT_HOOKS、GATEWAY_EVENTS）由 Codex++ 生成的配套拓展包转发；
 // 必需依赖里有别的服务时不加载，并在报告里写明缺了什么。
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { register } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -676,6 +677,22 @@ export class Host {
      */
     this.realms = new Map()
     this.isolateSeq = 0
+    /**
+     * typert 类型化 RPC（dsh 的 ctx.typert）：endpoint（`<namespace>/<method>`）→ 调用描述；
+     * 包导出的 `./typert`（生成的 TYPERT 清单）在加载时自动登记，插件也可以 ctx.typert.register。
+     * 前端半边的 ctx.remote.<namespace>.<method>() 经 connection.rpc 的 `/api` 通道调到这里。
+     */
+    this.typertInvocations = new Map()
+    this.typertSeen = new Set()
+    this.typertLookups = new Map()
+    this.typertContexts = new Map()
+    this.typertResources = new Map()
+    this.typertListeners = new Set()
+    this.typertPackages = new Set()
+    /** 正在进行的 typert 调用（dsh 里 Service 方法经 this.ctx.invocation 读到它）。 */
+    this.invocations = new AsyncLocalStorage()
+    /** connection.rpc.open 打开的流：id → 状态（只在常驻进程里，前端经后台分批拉取）。 */
+    this.rpcStreams = new Map()
   }
 
   /** 服务名在一组 isolate 声明下落在哪个作用域。 */
@@ -859,6 +876,290 @@ export class Host {
     return this.shared
   }
 
+  // ---- typert 类型化 RPC ----
+
+  /** 登记一份 typert 清单（生成的 TYPERT：`{ package, face, schemas, invocations }`，或 TypertRemoteContribution 的 descriptors）。 */
+  registerTypert(manifest, owner = {}) {
+    const list = Array.isArray(manifest?.invocations) ? manifest.invocations : Array.isArray(manifest?.descriptors) ? manifest.descriptors : []
+    const added = []
+    for (const descriptor of list) {
+      if (!descriptor || typeof descriptor.namespace !== 'string' || typeof descriptor.method !== 'string') continue
+      const endpoint = `${descriptor.namespace}/${descriptor.method}`
+      if (this.typertInvocations.has(endpoint)) {
+        for (const item of added) this.typertInvocations.delete(item)
+        throw new Error(`typert endpoint ${endpoint} 已经登记过`)
+      }
+      this.typertInvocations.set(endpoint, { descriptor, isolate: owner.isolate })
+      this.typertSeen.add(endpoint)
+      added.push(endpoint)
+    }
+    // 生成的 schema 工厂：按 `<包>#<名字>` 登记，ctx.typert.get(key) 首次读取时建出解析器。
+    const schemaKeys = []
+    for (const schema of Array.isArray(manifest?.schemas) ? manifest.schemas : []) {
+      if (!schema || typeof schema.name !== 'string' || typeof schema.create !== 'function') continue
+      const key = `${String(manifest.package ?? '')}#${schema.name}`
+      this.typertSchemas ??= new Map()
+      this.typertSchemas.set(key, { create: schema.create, value: undefined })
+      schemaKeys.push(key)
+    }
+    if (added.length) this.notifyTypert({ kind: 'local', added })
+    return async () => {
+      for (const endpoint of added) this.typertInvocations.delete(endpoint)
+      for (const key of schemaKeys) this.typertSchemas?.delete(key)
+      if (added.length) this.notifyTypert({ kind: 'local', removed: added })
+    }
+  }
+
+  notifyTypert(change) {
+    for (const listener of [...this.typertListeners]) {
+      try {
+        listener(change)
+      } catch (error) {
+        console.error(`[dsh-host] typert 监听器失败：${errorText(error)}`)
+      }
+    }
+  }
+
+  /** 包导出了 `./typert`（dsh 的 typert-loader 约定）：导入它的 TYPERT 清单并登记，一个包只登记一次。 */
+  async registerTypertExport(directory, owner, track) {
+    if (!directory || this.typertPackages.has(directory)) return false
+    this.typertPackages.add(directory)
+    let pkg
+    try {
+      pkg = readJson(join(directory, 'package.json'))
+    } catch {
+      return false
+    }
+    const exportsField = pkg.exports
+    if (!exportsField || typeof exportsField !== 'object' || Array.isArray(exportsField) || exportsField['./typert'] === undefined) return false
+    const path = packageEntry(directory, pkg, './typert')
+    if (!path || !existsSync(path)) throw new Error(`${pkg.name} 导出了 ./typert，但找不到 ${path ?? '入口'}`)
+    const module = await import(pathToFileURL(path).href)
+    const manifest = module.TYPERT
+    if (!manifest || typeof manifest !== 'object') throw new Error(`${pkg.name} 导出了 ./typert，但模块里没有 TYPERT 清单`)
+    if (manifest.face !== undefined && manifest.face !== 'host') throw new Error(`${pkg.name} 的 TYPERT.face 不是 host`)
+    track(this.registerTypert(manifest, owner))
+    return Array.isArray(manifest.invocations) && manifest.invocations.length > 0
+  }
+
+  /** 按 codec 校验一个边界值：生成的严格 codec 有 create() 给出 zod 解析器；没有 schema 就放行（同 dsh 的 src-json 模式只要求 JSON）。 */
+  static parseWith(codec, value) {
+    const schema = typeof codec?.create === 'function' ? codec.create() : codec?.schema ?? (typeof codec?.parse === 'function' ? codec : undefined)
+    return schema && typeof schema.parse === 'function' ? schema.parse(value) : value
+  }
+
+  /** 调用请求里的参数：dsh 的 `{ args: { 线上字段: 值 } }`，或 Codex++ 前端没有描述时的 `{ positional: [...] }`。 */
+  async typertArguments(endpoint, descriptor, payload) {
+    const parameters = Array.isArray(descriptor.parameters) ? descriptor.parameters : []
+    const named = payload && typeof payload === 'object' && payload.args && typeof payload.args === 'object' ? payload.args : undefined
+    const positional = Array.isArray(payload?.positional) ? payload.positional : undefined
+    if (named) {
+      const unknown = Object.keys(named).filter((key) => !parameters.some((parameter) => parameter.wire === key))
+      if (unknown.length) throw Object.assign(new Error(`typert ${endpoint}：多余的参数 ${unknown.join(', ')}`), { code: 'gateway/arguments-invalid' })
+    }
+    const values = []
+    for (const [index, parameter] of parameters.entries()) {
+      let value = named ? named[parameter.wire] : positional?.[index]
+      if (value === undefined && !parameter.acceptsUndefined && !(named && Object.hasOwn(named, parameter.wire))) {
+        throw Object.assign(new Error(`typert ${endpoint}：缺少参数 ${parameter.wire}`), { code: 'gateway/arguments-invalid' })
+      }
+      try {
+        value = Host.parseWith(parameter.codec, value)
+      } catch (error) {
+        throw Object.assign(new Error(`typert ${endpoint}：参数 ${parameter.wire} 不合法：${errorText(error)}`), { code: 'gateway/arguments-invalid' })
+      }
+      if (parameter.source === 'lookup') {
+        const provider = this.typertLookups.get(String(parameter.lookup))
+        const resolve = typeof provider === 'function' ? provider : provider?.resolve ?? provider?.lookup
+        if (typeof resolve !== 'function') throw Object.assign(new Error(`typert ${endpoint}：没有 ${parameter.lookup} 的查找提供方`), { code: 'gateway/lookup-unavailable' })
+        const resolved = await resolve(value)
+        if (resolved === undefined) throw Object.assign(new Error(`typert ${endpoint}：找不到 ${parameter.lookup} ${JSON.stringify(value)}`), { code: 'gateway/lookup-not-found' })
+        value = resolved
+      }
+      values.push(value)
+    }
+    return values
+  }
+
+  /** 找调用的接收者：direct 是 descriptor.service 这个服务；context 先按线上身份解析出作用域 ctx 再取服务。 */
+  async typertReceiver(endpoint, entry, payload) {
+    const { descriptor } = entry
+    if (descriptor.invocation?.kind === 'context') {
+      const adapter = this.typertContexts.get(String(descriptor.invocation.context))
+      const resolve = typeof adapter === 'function' ? adapter : adapter?.resolve
+      if (typeof resolve !== 'function') throw Object.assign(new Error(`typert ${endpoint}：没有 ${descriptor.invocation.context} 的作用域提供方`), { code: 'gateway/context-unavailable' })
+      const scoped = await resolve(payload?.args?.[descriptor.invocation.wire] ?? payload?.context)
+      if (!scoped) throw Object.assign(new Error(`typert ${endpoint}：作用域不存在`), { code: 'gateway/context-not-found' })
+      return scoped[descriptor.service] ?? scoped
+    }
+    const receiver = this.findService(String(descriptor.service), entry.isolate)
+    if (!receiver) throw Object.assign(new Error(`typert ${endpoint}：服务 ${descriptor.service} 没有提供`), { code: 'gateway/service-unavailable' })
+    return receiver
+  }
+
+  /** 执行一个 typert 调用；stream 方法返回异步迭代器。 */
+  async invokeTypert(endpoint, payload, signal, { stream = false, uplink } = {}) {
+    const entry = this.typertInvocations.get(endpoint)
+    if (!entry) throw Object.assign(new Error(`没有 typert endpoint ${endpoint}`), { code: 'gateway/unknown-endpoint' })
+    const { descriptor } = entry
+    if (Boolean(descriptor.mode === 'stream') !== stream) {
+      throw Object.assign(new Error(`typert ${endpoint} 是${descriptor.mode === 'stream' ? '流式方法，要用 rpc.open' : '一次性方法，要用 rpc.call'}`), { code: 'gateway/binding-invalid' })
+    }
+    const receiver = await this.typertReceiver(endpoint, entry, payload)
+    const name = descriptor.implementation ?? descriptor.method
+    if (typeof receiver?.[name] !== 'function') throw Object.assign(new Error(`typert ${endpoint}：${descriptor.service} 没有方法 ${name}`), { code: 'gateway/binding-invalid' })
+    const args = await this.typertArguments(endpoint, descriptor, payload)
+    if (descriptor.cancellation) args.push(signal)
+    let used = false
+    const invocation = Object.freeze({
+      request: Object.freeze({ namespace: descriptor.namespace, method: descriptor.method, args: payload?.args ?? {} }),
+      service: descriptor.service,
+      peer: Object.freeze({ id: 'codex-plus', principal: { kind: 'owner' }, signal, interactions: 'answer' }),
+      signal,
+      uplink() {
+        if (used) throw new Error('invocation.uplink() 只能取一次')
+        used = true
+        if (!uplink) return (async function* () {})()
+        return descriptor.uplink?.codec
+          ? (async function* () { for await (const item of uplink) yield Host.parseWith(descriptor.uplink.codec, item) })()
+          : uplink
+      },
+    })
+    const result = await this.invocations.run(invocation, () => receiver[name](...args))
+    if (!stream) return Host.parseWith(descriptor.result, result)
+    if (!result || typeof result[Symbol.asyncIterator] !== 'function' && typeof result[Symbol.iterator] !== 'function') {
+      throw Object.assign(new Error(`typert ${endpoint} 是流式方法，但没有返回可迭代对象`), { code: 'gateway/binding-invalid' })
+    }
+    // 异步生成器的函数体在迭代时才跑：每次 next() 都放回这次调用的上下文里，方法里读得到 this.ctx.invocation。
+    const iterator = typeof result[Symbol.asyncIterator] === 'function' ? result[Symbol.asyncIterator]() : result[Symbol.iterator]()
+    const within = (call) => this.invocations.run(invocation, call)
+    return {
+      [Symbol.asyncIterator]() {
+        return this
+      },
+      async next() {
+        const step = await within(() => iterator.next())
+        return step.done ? step : { done: false, value: Host.parseWith(descriptor.result, step.value) }
+      },
+      async return(value) {
+        return (await within(() => iterator.return?.(value))) ?? { done: true, value }
+      },
+    }
+  }
+
+  /** 前端 ctx.remote 用的描述清单（只给出调用需要的字段）。 */
+  typertDescriptors() {
+    return [...this.typertInvocations.values()].map(({ descriptor }) => ({
+      namespace: descriptor.namespace,
+      method: descriptor.method,
+      ...(descriptor.mode === 'stream' ? { mode: 'stream' } : {}),
+      ...(descriptor.uplink ? { uplink: true } : {}),
+      parameters: (descriptor.parameters ?? []).map((parameter) => ({ name: parameter.name, wire: parameter.wire, ...(parameter.acceptsUndefined ? { optional: true } : {}) })),
+      ...(descriptor.description ? { description: String(descriptor.description) } : {}),
+    }))
+  }
+
+  // ---- connection.rpc.open：流式调用（前端经后台分批拉取） ----
+
+  /** 打开一个流：目前只有 typert 的 stream 方法（dsh 里由 Gateway 的 wireStream 承载）。返回 { ok, id } 或失败。 */
+  async openRpcStream({ channel, endpoint, payload } = {}) {
+    const key = String(endpoint ?? '')
+    if (String(channel ?? '') !== '/api' || !this.typertInvocations.has(key)) {
+      return { ok: false, error: { code: 'NOT_FOUND', message: `没有流式 endpoint ${channel} ${key}`, details: {} } }
+    }
+    const controller = new AbortController()
+    const uplinkQueue = []
+    let uplinkWake = null
+    let uplinkEnded = false
+    const uplink = (async function* () {
+      for (;;) {
+        if (uplinkQueue.length) {
+          yield uplinkQueue.shift()
+          continue
+        }
+        if (uplinkEnded || controller.signal.aborted) return
+        await new Promise((resolve) => {
+          uplinkWake = resolve
+        })
+      }
+    })()
+    const id = `rpc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    const state = { items: [], done: false, error: undefined, wake: null, controller, touched: Date.now() }
+    state.push = (items = [], end = false) => {
+      uplinkQueue.push(...items)
+      if (end) uplinkEnded = true
+      const resume = uplinkWake
+      uplinkWake = null
+      resume?.()
+    }
+    const notify = () => {
+      const resume = state.wake
+      state.wake = null
+      resume?.()
+    }
+    let iterator
+    try {
+      iterator = await this.invokeTypert(key, payload, controller.signal, { stream: true, uplink })
+    } catch (error) {
+      return { ok: false, error: { code: String(error?.code ?? 'HANDLER_FAILED'), message: errorText(error), details: {} } }
+    }
+    this.rpcStreams.set(id, state)
+    void (async () => {
+      try {
+        for await (const item of iterator) {
+          if (controller.signal.aborted) break
+          state.items.push(item)
+          notify()
+        }
+      } catch (error) {
+        state.error = { code: String(error?.code ?? 'STREAM_FAILED'), message: errorText(error), details: {} }
+      } finally {
+        state.done = true
+        state.push([], true)
+        notify()
+      }
+    })()
+    return { ok: true, id }
+  }
+
+  /** 取一批流里的值：没有就最多等 waitMs；拿完且结束时给 done（并清掉这个流）。 */
+  async pullRpcStream({ id, waitMs = 1000, max = 256 } = {}) {
+    const state = this.rpcStreams.get(String(id))
+    if (!state) return { items: [], done: true, error: { code: 'NOT_FOUND', message: '流已结束或不存在', details: {} } }
+    state.touched = Date.now()
+    if (!state.items.length && !state.done) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, Math.max(0, Math.min(Number(waitMs) || 0, 25_000)))
+        state.wake = () => {
+          clearTimeout(timer)
+          resolve()
+        }
+      })
+    }
+    const items = state.items.splice(0, Math.max(1, Number(max) || 256))
+    const done = state.done && !state.items.length
+    if (done) this.rpcStreams.delete(String(id))
+    return { items, done, ...(done && state.error ? { error: state.error } : {}) }
+  }
+
+  /** 前端往流里送上行的值（dsh 的 RemoteStream 上行），end 表示上行结束。 */
+  pushRpcStream({ id, items = [], end = false } = {}) {
+    const state = this.rpcStreams.get(String(id))
+    if (!state) return { ok: false }
+    state.push(Array.isArray(items) ? items : [], Boolean(end))
+    return { ok: true }
+  }
+
+  /** 前端放弃这个流：取消调用并清掉。 */
+  closeRpcStream({ id } = {}) {
+    const state = this.rpcStreams.get(String(id))
+    if (!state) return { ok: true }
+    state.controller.abort()
+    this.rpcStreams.delete(String(id))
+    state.push([], true)
+    return { ok: true }
+  }
+
   /**
    * `!!js` 表达式里的 `ctx`：按名字取本包已提供的服务（含 Service 子类插件提供的、按行的 isolate 作用域），
    * 再取宿主替身服务；`ctx.dshHomePath(...)` 指到插件的数据目录（dsh 里是 Harness home）。
@@ -923,6 +1224,18 @@ export class Host {
   async runRpc({ channel, endpoint, payload } = {}) {
     const key = String(channel ?? '')
     const target = String(endpoint ?? '')
+    // typert：`/api` 通道上登记过的 endpoint 由宿主按调用描述派发（同 dsh 的 Typert Gateway 拦截 /api）。
+    if (key === '/api' && target === '$codexpp/typert-descriptors') return { ok: true, value: this.typertDescriptors() }
+    if (key === '/api' && this.typertInvocations.has(target)) {
+      const controller = new AbortController()
+      try {
+        return { ok: true, value: (await this.invokeTypert(target, payload, controller.signal)) ?? null }
+      } catch (error) {
+        return { ok: false, error: { code: String(error?.code ?? 'HANDLER_FAILED'), message: errorText(error), details: {} } }
+      } finally {
+        controller.abort()
+      }
+    }
     const interceptor = this.rpcInterceptors.find((item) => item.channel === key && safeMatch(item.matches, target))
     const handler = interceptor?.handler ?? this.rpcHandlers.get(key)
     if (!handler) return { ok: false, error: { code: 'NOT_FOUND', message: `没有插件处理 ${key} ${target}`, details: {} } }
@@ -1241,6 +1554,66 @@ export class Host {
           })
         },
       },
+      // dsh 的 ctx.typert：登记类型化 RPC 方法（生成的 TYPERT 清单或 descriptors），前端 ctx.remote 经 connection.rpc 调过来。
+      typert: (() => {
+        const register = (manifest) => {
+          const dispose = host.registerTypert(manifest, { isolate: state.isolate })
+          if (Array.isArray(manifest?.invocations) ? manifest.invocations.length : manifest?.descriptors?.length) mapTo(CONNECTION_TARGET)
+          track(dispose)
+          return dispose
+        }
+        const subscribe = (listener) => {
+          host.typertListeners.add(listener)
+          const dispose = async () => {
+            host.typertListeners.delete(listener)
+          }
+          track(dispose)
+          return dispose
+        }
+        const descriptors = {
+          register,
+          get: (endpoint) => host.typertInvocations.get(String(endpoint))?.descriptor,
+          hasSeen: (endpoint) => host.typertSeen.has(String(endpoint)),
+          list: () => [...host.typertInvocations.values()].map((entry) => entry.descriptor),
+          subscribe,
+        }
+        const keyed = (map) => ({
+          register(key, value) {
+            map.set(String(key), value)
+            const dispose = async () => {
+              if (map.get(String(key)) === value) map.delete(String(key))
+            }
+            track(dispose)
+            return dispose
+          },
+          get: (key) => map.get(String(key)),
+          entries: () => [...map.entries()].map(([kind, value]) => ({ kind, ...value })),
+          subscribe,
+        })
+        const lookups = keyed(host.typertLookups)
+        const contexts = keyed(host.typertContexts)
+        const schema = (key) => {
+          const entry = host.typertSchemas?.get(String(key))
+          if (!entry) return undefined
+          entry.value ??= entry.create()
+          return entry.value
+        }
+        return {
+          register,
+          local: descriptors,
+          remotes: descriptors,
+          lookups: { ...lookups, registerHost: lookups.register, configureHost: lookups.register },
+          contexts: { ...contexts, registerHost: contexts.register, registerClient: () => async () => {} },
+          resources: keyed(host.typertResources),
+          get: schema,
+          resolve(key) {
+            const found = schema(key)
+            if (!found) throw new Error(`typert schema ${key} 不存在`)
+            return found
+          },
+          list: () => [...(host.typertSchemas?.keys() ?? [])],
+        }
+      })(),
       schedule: host.schedules,
       webhookRuntime: {
         ...host.webhooks,
@@ -1606,6 +1979,8 @@ export class Host {
           if (provided !== undefined) return provided
         }
         if (key in target) return target[key]
+        // dsh 的 this.ctx.invocation：正在进行的 typert 调用（不在调用里时为 undefined）。
+        if (key === 'invocation') return host.invocations.getStore()
         if (typeof key === 'symbol' || key === 'then' || key === 'toJSON') return undefined
         note(`访问了 ctx.${String(key)}，Codex++ 不提供这个服务`)
         return undefined
@@ -1796,6 +2171,14 @@ export class Host {
     }
     if (state.provides.length) record.provides = [...new Set(state.provides)]
     if (state.listens.length) record.listens = [...new Set(state.listens)]
+    // 包导出了 ./typert（生成的类型化 RPC 清单）：同 dsh 的 typert-loader 自动登记，前端 ctx.remote 就能调。
+    try {
+      if (await this.registerTypertExport(resolved.packageDir ?? root, { isolate: state.isolate }, (dispose) => state.disposers.push(dispose))) {
+        if (!record.mappings.includes(CONNECTION_TARGET)) record.mappings.push(CONNECTION_TARGET)
+      }
+    } catch (error) {
+      record.notes.push(`typert 清单登记失败：${errorText(error)}`)
+    }
     if (plugin.serviceClass && !record.provides?.length) {
       record.notes.push(`${plugin.name || '该模块'} 是 Service 子类，但构造时没有用 super(ctx, 名字) 登记服务名，别的插件拿不到它`)
     }

@@ -26228,6 +26228,50 @@
             return { ok: false, error: { code: "TRANSPORT", message: String(error?.message || error), details: {} } };
           }
         },
+        /**
+         * 流式调用（如 typert 的 stream 方法）：后台在插件常驻进程里打开流，这里分批拉取；uplink 的值逐个送上去。
+         * signal 取消或迭代提前结束时关掉流。
+         */
+        open(channel, endpoint, payload, signal, uplink) {
+          return (async function* () {
+            const opened = await ctx.backend.call("rpcOpen", { channel, endpoint, payload }, { timeout: 120000 });
+            if (!opened?.ok) {
+              const failure = opened?.error || { code: "EMPTY", message: "插件没有打开这个流" };
+              throw Object.assign(new Error(failure.message), { code: failure.code, details: failure.details });
+            }
+            const id = opened.id;
+            let closed = false;
+            const close = () => {
+              if (closed) return;
+              closed = true;
+              ctx.backend.call("rpcClose", { id }).catch(() => {});
+            };
+            signal?.addEventListener?.("abort", close, { once: true });
+            if (uplink && typeof uplink[Symbol.asyncIterator] === "function") {
+              void (async () => {
+                for await (const item of uplink) {
+                  if (closed) return;
+                  await ctx.backend.call("rpcPush", { id, items: [item] });
+                }
+                if (!closed) await ctx.backend.call("rpcPush", { id, items: [], end: true });
+              })().catch(() => {});
+            }
+            try {
+              while (!closed) {
+                const batch = await ctx.backend.call("rpcPull", { id, waitMs: 1000 }, { timeout: 30000 });
+                for (const item of batch?.items || []) yield item;
+                if (batch?.error) throw Object.assign(new Error(batch.error.message), { code: batch.error.code, details: batch.error.details });
+                if (batch?.done) {
+                  closed = true;
+                  return;
+                }
+              }
+            } finally {
+              signal?.removeEventListener?.("abort", close);
+              close();
+            }
+          })();
+        },
       },
       reconnect() {},
       registerGenerationSource: () => () => {},
@@ -26614,9 +26658,97 @@
         });
       },
     };
+    // typert 的前端半边（dsh 的 ctx.remote）：ctx.remote.<namespace>.<method>(...) 经 connection.rpc 的 /api 通道调宿主半边
+    // 登记的类型化方法；stream 方法返回可迭代的句柄（send / end / dispose）。描述清单向宿主要一次，$mount 可以再补。
+    const remoteNamespaces = {};
+    const remoteFailure = (result) => Object.assign(new Error(result?.error?.message || "调用失败"), { code: result?.error?.code, details: result?.error?.details });
+    const remotePayload = (descriptor, args) => {
+      if (!descriptor?.parameters) return { positional: args };
+      const named = {};
+      descriptor.parameters.forEach((parameter, index) => {
+        if (args[index] !== undefined || !parameter.optional) named[parameter.wire] = args[index];
+      });
+      return { args: named };
+    };
+    const remoteMethod = (namespace, method, descriptor) => {
+      const endpoint = `${namespace}/${method}`;
+      if (descriptor?.mode !== "stream") {
+        return async (...args) => {
+          const result = await connection.rpc.call("/api", endpoint, remotePayload(descriptor, args));
+          if (!result?.ok) throw remoteFailure(result);
+          return result.value;
+        };
+      }
+      return (...args) => {
+        const controller = new AbortController();
+        const queue = [];
+        let wake = null;
+        let ended = false;
+        const resume = () => {
+          const next = wake;
+          wake = null;
+          next?.();
+        };
+        const uplink = descriptor.uplink ? (async function* () {
+          for (;;) {
+            if (queue.length) {
+              yield queue.shift();
+              continue;
+            }
+            if (ended || controller.signal.aborted) return;
+            await new Promise((done) => { wake = done; });
+          }
+        })() : undefined;
+        const items = connection.rpc.open("/api", endpoint, remotePayload(descriptor, args), controller.signal, uplink);
+        return {
+          [Symbol.asyncIterator]: () => items[Symbol.asyncIterator](),
+          send(item) {
+            queue.push(item);
+            resume();
+          },
+          end() {
+            ended = true;
+            resume();
+          },
+          dispose() {
+            controller.abort();
+            ended = true;
+            resume();
+          },
+        };
+      };
+    };
+    const addRemoteDescriptor = (descriptor) => {
+      if (!descriptor?.namespace || !descriptor?.method) return;
+      const namespace = (remoteNamespaces[descriptor.namespace] ||= {});
+      namespace[descriptor.method] = remoteMethod(descriptor.namespace, descriptor.method, {
+        mode: descriptor.mode,
+        uplink: Boolean(descriptor.uplink),
+        parameters: (descriptor.parameters || []).map((parameter) => ({ wire: parameter.wire, optional: Boolean(parameter.optional || parameter.acceptsUndefined) })),
+      });
+      services[`remote.${descriptor.namespace}`] = namespace;
+    };
+    const remote = new Proxy({
+      async $mount(contribution) {
+        for (const descriptor of contribution?.descriptors || []) addRemoteDescriptor(descriptor);
+        return async () => {};
+      },
+      // 宿主转发的事件：对上 Codex++ 拓展内核的同名事件（agent/status 等）。
+      $on: (event, listener) => ctx.on(String(event), listener),
+    }, {
+      get(target, key) {
+        if (key in target) return target[key];
+        if (typeof key !== "string" || key === "then") return undefined;
+        // 没有描述的 namespace 也能调：按位置传参，由宿主半边按它登记的描述对上参数。
+        return remoteNamespaces[key] || new Proxy({}, {
+          get: (_inner, method) => (typeof method === "string" && method !== "then" ? remoteMethod(key, method) : undefined),
+        });
+      },
+    });
+
     const services = {
       slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace,
-      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers, connection,
+      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers, connection, remote,
     };
     // Cordis 的 ready / dispose 只对本插件包：ready 在全部 apply 跑完后发，dispose 随拓展卸载。
     const readyHandlers = [];
@@ -26686,16 +26818,25 @@
       if (name in builtinModules && builtinModules[name]) return builtinModules[name];
       throw new Error(`dsh 前端插件 require 了 ${name}，Codex++ 只提供 React 与 ReactDOM`);
     };
+    // 先求出各模块的插件对象：要用 remote 的话先向宿主半边要一次 typert 描述，remote.<namespace> 才能被 inject。
+    const loaded = [];
     for (const entry of Array.isArray(modules) ? modules : []) {
-      if (ctx.disposed) return;
-      let plugin;
       try {
         const exported = entry?.factory?.(require);
-        plugin = exported?.default && typeof exported.default.apply === "function" ? exported.default : exported;
+        loaded.push({ entry, plugin: exported?.default && typeof exported.default.apply === "function" ? exported.default : exported });
       } catch (error) {
         fail(`加载 ${entry?.id || packageName} 失败：${error?.message || error}`);
-        continue;
       }
+    }
+    const injectNames = (plugin) => (Array.isArray(plugin?.inject) ? plugin.inject : Object.keys(plugin?.inject || {})).map(String);
+    if (loaded.some(({ plugin }) => injectNames(plugin).some((name) => name === "remote" || name.startsWith("remote.")))) {
+      try {
+        const listed = await connection.rpc.call("/api", "$codexpp/typert-descriptors", null);
+        if (listed?.ok) for (const descriptor of listed.value || []) addRemoteDescriptor(descriptor);
+      } catch {}
+    }
+    for (const { entry, plugin } of loaded) {
+      if (ctx.disposed) return;
       const apply = typeof plugin === "function" ? plugin : plugin?.apply;
       if (typeof apply !== "function") {
         fail(`${entry?.id || packageName} 没有导出 apply`);

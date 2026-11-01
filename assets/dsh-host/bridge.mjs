@@ -1006,6 +1006,10 @@ async function runDaemon(configPath) {
     if (message.kind === 'command') return { output: await commandFor(host, message) }
     if (message.kind === 'fetch') return { output: await host.fetchRoute(message.request) }
     if (message.kind === 'rpc') return { output: await host.runRpc(message.request) }
+    if (message.kind === 'rpc-open') return { output: await host.openRpcStream(message.request) }
+    if (message.kind === 'rpc-pull') return { output: await host.pullRpcStream(message.request) }
+    if (message.kind === 'rpc-push') return { output: host.pushRpcStream(message.request) }
+    if (message.kind === 'rpc-close') return { output: host.closeRpcStream(message.request) }
     if (message.kind === 'webhook') return { output: await webhookFor(host, message.request) }
     if (message.kind === 'bus') return { output: await busDispatch(host, message) }
     return { error: `不认识的请求 ${message.kind}` }
@@ -1231,6 +1235,22 @@ export async function runRpc(config, request) {
   const plugin = readPlugin(config)
   if (!plugin || !mappedRows(plugin, 'connection').length) return { ok: false, error: { code: 'UNAVAILABLE', message: '插件已停用', details: {} } }
   return handle(config, plugin, mappedRows(plugin), { kind: 'rpc', request }, (host) => host.runRpc(request))
+}
+
+/**
+ * 前端半边的 ctx.connection.rpc.open（流式调用，如 typert 的 stream 方法）：流要跨多次往返保持状态，只经常驻进程。
+ * action：open（{ channel, endpoint, payload } → { ok, id }）、pull（{ id, waitMs } → { items, done, error? }）、
+ * push（{ id, items, end } 上行）、close（{ id }）。
+ */
+export async function runRpcStream(config, action, request) {
+  const plugin = readPlugin(config)
+  if (!plugin || !mappedRows(plugin, 'connection').length) return { ok: false, done: true, items: [], error: { code: 'UNAVAILABLE', message: '插件已停用', details: {} } }
+  if (!['open', 'pull', 'push', 'close'].includes(action)) return { ok: false, error: { code: 'INVALID', message: `不认识的流操作 ${action}`, details: {} } }
+  try {
+    return (await viaDaemon(config, plugin, { kind: `rpc-${action}`, request: request ?? {} }, DAEMON_REPLY_TIMEOUT_MS)).output ?? null
+  } catch (error) {
+    return { ok: false, done: true, items: [], error: { code: error?.unreachable ? 'UNAVAILABLE' : 'TRANSPORT', message: errorText(error), details: {} } }
+  }
 }
 
 /** 定时任务入口（配套拓展包的后台每分钟调一次）：到点的往会话里发起一轮。不需要加载插件。 */

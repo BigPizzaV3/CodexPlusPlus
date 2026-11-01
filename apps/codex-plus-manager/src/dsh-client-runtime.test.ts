@@ -82,16 +82,16 @@ describe("dsh 前端插件运行时", () => {
     const k = await runtime();
     const seen: string[] = [];
     await k.run(k.ctx, [
-      ...modules({ inject: { remote: { required: false }, slots: true }, apply(ctx: any, config: any) {
+      ...modules({ inject: { store: { required: false }, slots: true }, apply(ctx: any, config: any) {
         seen.push(`apply:${config.greeting}`);
         ctx.on("ready", () => seen.push("ready"));
-        ctx.inject(["remote"], () => seen.push("remote 段不该激活"));
+        ctx.inject(["store"], () => seen.push("store 段不该激活"));
       } }),
-      ...modules({ inject: ["remote"], apply() { seen.push("必需依赖缺了不该加载"); } }),
+      ...modules({ inject: ["store"], apply() { seen.push("必需依赖缺了不该加载"); } }),
     ], { packageName: "demo", config: { greeting: "hey" } });
     assert.deepEqual(seen, ["apply:hey", "ready"]);
     assert.equal(k.failures.length, 1, k.failures.join("\n"));
-    assert.match(k.failures[0], /依赖 remote/);
+    assert.match(k.failures[0], /依赖 store/);
   });
 
   it("shortcuts / commandUi / theme 桥接到 Codex++ 的快捷键、斜杠命令与主题；inputTriggers 只记说明", async () => {
@@ -126,6 +126,50 @@ describe("dsh 前端插件运行时", () => {
     assert.deepEqual(k.themeCalls, ["night"]);
     assert.equal(k.failures.length, 1);
     assert.match(k.failures[0], /输入触发源 @files/);
+  });
+
+  it("ctx.remote 按宿主半边的 typert 描述调方法（命名参数）；stream 方法经 rpc.open 分批拉取并送上行", async () => {
+    const k = await runtime();
+    const backendCalls: Array<[string, any]> = [];
+    const pulls: any[] = [{ items: [">a"], done: false }, { items: [">b"], done: true }];
+    (k.ctx as any).backend = {
+      async call(method: string, payload: any) {
+        backendCalls.push([method, payload]);
+        if (method === "rpc" && payload.endpoint === "$codexpp/typert-descriptors") {
+          return { ok: true, value: [
+            { namespace: "notes", method: "add", parameters: [{ name: "text", wire: "text" }] },
+            { namespace: "notes", method: "watch", mode: "stream", uplink: true, parameters: [{ name: "prefix", wire: "prefix" }] },
+          ] };
+        }
+        if (method === "rpc" && payload.endpoint === "notes/add") return { ok: true, value: `added ${payload.payload.args.text}` };
+        if (method === "rpc") return { ok: false, error: { code: "gateway/unknown-endpoint", message: "nope", details: {} } };
+        if (method === "rpcOpen") return { ok: true, id: "s1" };
+        if (method === "rpcPull") return pulls.shift() ?? { items: [], done: true };
+        return { ok: true };
+      },
+    };
+    const seen: unknown[] = [];
+    await k.run(k.ctx, modules({ inject: ["remote", "remote.notes"], async apply(ctx: any) {
+      seen.push(await ctx.remote.notes.add("hi"));
+      try {
+        await ctx.remote.other.thing(1, 2);
+      } catch (error: any) {
+        seen.push(error.code);
+      }
+      const handle = ctx.remote.notes.watch(">");
+      handle.send("a");
+      handle.end();
+      for await (const item of handle) seen.push(item);
+    } }), { packageName: "demo" });
+    assert.deepEqual(seen, ["added hi", "gateway/unknown-endpoint", ">a", ">b"], k.failures.join("\n"));
+    const other = backendCalls.find(([method, payload]) => method === "rpc" && payload.endpoint === "other/thing");
+    assert.deepEqual(other?.[1].payload, { positional: [1, 2] }, "没有描述的 namespace 按位置传参");
+    const opened = backendCalls.find(([method]) => method === "rpcOpen");
+    assert.deepEqual(opened?.[1], { channel: "/api", endpoint: "notes/watch", payload: { args: { prefix: ">" } } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(backendCalls.some(([method, payload]) => method === "rpcPush" && payload.items[0] === "a"), "上行送上去了");
+    assert.ok(!backendCalls.some(([method]) => method === "rpcClose"), "正常结束时宿主已清掉这个流，不必再关");
+    assert.deepEqual(k.failures, []);
   });
 
   it("新映射的插槽落到 Codex++ 的位置；双键序列的快捷键认不出", async () => {
