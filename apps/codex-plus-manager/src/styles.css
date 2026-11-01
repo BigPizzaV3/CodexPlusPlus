@@ -13361,11 +13361,11 @@ button.side-item:hover {
   font-size: 15px;
   font-weight: 600;
 }
-.shell .weixin-connect-page .weixin-connect-form :is(.weixin-path-row button, select) {
+.shell .weixin-connect-page .weixin-connect-form :is(.weixin-path-row button, .app-select-trigger) {
   height: 32px;
   min-height: 32px;
 }
-.shell .weixin-connect-page .weixin-connect-form .weixin-path-row button[title] {
+.shell .weixin-connect-page .weixin-connect-form .weixin-path-row > button[title] {
   width: 32px;
 }
 

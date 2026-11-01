@@ -15,6 +15,8 @@ pub struct ConnectState {
     #[serde(default)]
     pub thread_ids: BTreeMap<String, String>,
     #[serde(default)]
+    pub completed_resets: BTreeMap<String, String>,
+    #[serde(default)]
     pub context_tokens: BTreeMap<String, String>,
     #[serde(default)]
     processed_message_keys: VecDeque<String>,
@@ -44,21 +46,36 @@ impl ConnectState {
 #[derive(Debug, Clone)]
 pub struct ConnectSessionStore {
     path: PathBuf,
+    published_path: Option<PathBuf>,
 }
 
 impl ConnectSessionStore {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            published_path: None,
+        }
     }
 
     pub fn default_for_account(account_id: &str) -> Self {
-        let account = sanitize_account_id(account_id);
-        let file_name = if account == "default" {
+        Self::in_directory(&crate::paths::default_app_state_dir(), account_id)
+    }
+
+    fn in_directory(directory: &std::path::Path, account_id: &str) -> Self {
+        let account = account_id.trim();
+        let file_name = if account.is_empty() {
             STATE_FILE.to_string()
         } else {
             format!("weixin-connect-state-{account}.json")
         };
-        Self::new(crate::paths::default_app_state_dir().join(file_name))
+        Self {
+            path: directory
+                .join("weixin-connect-state")
+                .join(format!("{}.json", account_key(account))),
+            published_path: (account.is_empty()
+                || (sanitize_account_id(account) == account && account != "default"))
+                .then(|| directory.join(file_name)),
+        }
     }
 
     pub fn load(&self) -> anyhow::Result<ConnectState> {
@@ -66,6 +83,21 @@ impl ConnectSessionStore {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .with_context(|| format!("无法解析微信连接状态 {}", self.path.display())),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(path) = &self.published_path {
+                    match std::fs::read_dir(path.parent().context("状态目录不存在")?) {
+                        Ok(entries) => {
+                            for entry in entries {
+                                let entry = entry?;
+                                if Some(entry.file_name().as_os_str()) == path.file_name() {
+                                    return serde_json::from_slice(&std::fs::read(entry.path())?)
+                                        .context("无法解析已发布的微信连接状态");
+                                }
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
                 Ok(ConnectState::default())
             }
             Err(error) => {
@@ -78,6 +110,16 @@ impl ConnectSessionStore {
         let bytes = serde_json::to_vec_pretty(state)?;
         crate::settings::atomic_write(&self.path, &bytes)
     }
+}
+
+pub(super) fn account_key(account: &str) -> String {
+    let encoded: String = account
+        .trim()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("account-{encoded}")
 }
 
 fn sanitize_account_id(value: &str) -> String {
@@ -105,7 +147,13 @@ mod tests {
             let default = ConnectSessionStore::default_for_account(account);
             let filename = format!("weixin-connect-state-{account}.json");
             assert_eq!(
-                default.path.file_name().unwrap().to_str(),
+                default
+                    .published_path
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_str(),
                 Some(filename.as_str())
             );
             assert_eq!(sanitize_account_id(account), account);
@@ -125,6 +173,66 @@ mod tests {
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 2);
         assert_eq!(sanitize_account_id("  "), "default");
         assert_eq!(sanitize_account_id("  Bot/A\\B:C\0  "), "Bot_A_B_C_");
+    }
+
+    #[test]
+    fn empty_account_preserves_published_thread_and_prefers_new_state_after_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let published = temp.path().join(STATE_FILE);
+        let old_bytes = br#"{"threadIds":{"peer":"original"},"getUpdatesBuf":"cursor"}"#;
+        std::fs::write(&published, old_bytes).unwrap();
+        let store = ConnectSessionStore::in_directory(temp.path(), "  ");
+        let mut state = store.load().unwrap();
+        assert_eq!(state.thread_ids["peer"], "original");
+        assert_eq!(state.get_updates_buf, "cursor");
+        state.get_updates_buf = "next-cursor".into();
+        store.save(&state).unwrap();
+        assert_eq!(store.load().unwrap(), state);
+        assert_eq!(std::fs::read(&published).unwrap(), old_bytes);
+        assert!(
+            ConnectSessionStore::in_directory(temp.path(), "default")
+                .load()
+                .unwrap()
+                .thread_ids
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn malformed_published_empty_account_state_is_not_silently_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let published = temp.path().join(STATE_FILE);
+        std::fs::write(&published, b"not-json").unwrap();
+        let store = ConnectSessionStore::in_directory(temp.path(), "");
+        assert!(store.load().is_err());
+        assert!(!store.path.exists());
+        assert_eq!(std::fs::read(&published).unwrap(), b"not-json");
+    }
+
+    #[test]
+    fn real_account_paths_are_case_sensitive_and_published_threads_remain_readable() {
+        let temp = tempfile::tempdir().unwrap();
+        let account = "Bot.1@wx.example";
+        let published = temp
+            .path()
+            .join(format!("weixin-connect-state-{account}.json"));
+        std::fs::write(&published, br#"{"threadIds":{"peer":"original"}}"#).unwrap();
+        let store = ConnectSessionStore::in_directory(temp.path(), account);
+        assert_eq!(store.load().unwrap().thread_ids["peer"], "original");
+        let lower = ConnectSessionStore::in_directory(temp.path(), "bot.1@wx.example");
+        assert_ne!(
+            store.path.to_string_lossy().to_lowercase(),
+            lower.path.to_string_lossy().to_lowercase()
+        );
+        assert!(lower.load().unwrap().thread_ids.is_empty());
+        let state = store.load().unwrap();
+        store.save(&state).unwrap();
+        assert_eq!(store.load().unwrap().thread_ids["peer"], "original");
+        assert!(published.exists());
+        assert_ne!(
+            ConnectSessionStore::in_directory(temp.path(), "a/b").path,
+            ConnectSessionStore::in_directory(temp.path(), "a_b").path
+        );
     }
 
     #[test]

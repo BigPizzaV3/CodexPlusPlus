@@ -944,6 +944,10 @@ fn settings_payload_value(
     }
     remove_named_keys(&mut value);
     if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "weixinDesktopSync".to_string(),
+            serde_json::to_value(crate::connect::desktop_sync::pending())?,
+        );
         object.remove("codexAppStepwiseApiKey");
         if let Some(dictation) = object.get_mut("dictation").and_then(Value::as_object_mut) {
             let configured = dictation

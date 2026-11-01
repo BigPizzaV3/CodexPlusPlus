@@ -129,7 +129,11 @@ jobs:
     # PR 构建也出通用包，跟发版产物保持一致，避免只在发版时才暴露问题。
     # 没有签名密钥，所以这里走 ad-hoc（脚本的默认行为）。
     name: macOS DMG (universal)
-    runs-on: macos-14
+    # macos-14 镜像 2026-11-02 退役，期间还有计划性停机（任务分配 runner 前就被取消）。
+    runs-on: macos-15
+    env:
+      # 与 Info.plist 的 LSMinimumSystemVersion 一致，不随 runner 的 SDK 抬高 C 依赖的最低系统版本。
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -2919,6 +2919,22 @@ fn injection_script_exposes_the_usage_status_line() {
 }
 
 #[test]
+fn injection_script_gates_the_proxy_request_status_bar() {
+    let script = assets::injection_script(57321);
+
+    // 开关接线（#2824）：默认开 → 后端映射 → 增强总开关关闭时一并关。
+    assert!(script.contains("proxyRequestStatus: true"));
+    assert!(script.contains("proxyRequestStatus: \"codexAppProxyRequestStatus\""));
+    assert!(script.contains("proxyRequestStatus: false"));
+    // 关闭时渲染和轮询都要先过开关，不能只藏节点还在每 1.2 秒打 /proxy-status。
+    assert!(script.contains("function codexPlusProxyStatusEnabled()"));
+    assert_eq!(
+        script.matches("if (!codexPlusProxyStatusEnabled())").count(),
+        2
+    );
+}
+
+#[test]
 fn injection_script_recovers_a_stalled_codex_boot_shell() {
     let script = assets::injection_script(57321);
 

@@ -511,6 +511,31 @@ pub async fn codex_instance_identity_matches(
 }
 
 #[cfg(windows)]
+pub fn wait_for_codex_instance_exit(identity: &CodexInstanceIdentity) -> anyhow::Result<()> {
+    use anyhow::Context;
+    anyhow::ensure!(valid_stop_identity(identity), "多开实例身份字段不完整");
+    let process = match crate::windows_integration::TrackedWindowsProcess::capture(
+        identity.process_id,
+        &identity.executable,
+    ) {
+        Ok(process) => process.context("多开进程映像身份冲突")?,
+        Err(_) if crate::watcher::process_id_is_running(identity.process_id) == Some(false) => {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    anyhow::ensure!(
+        process.birth_id == identity.process_birth_id,
+        "多开进程创建身份冲突"
+    );
+    // 页面导航和 CDP 暂时失联不等于桌面退出；始终观察已核验的同一代进程。
+    while process.is_alive()? {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 pub async fn terminate_verified_codex_instance(
     identity: &CodexInstanceIdentity,
 ) -> anyhow::Result<bool> {
@@ -833,5 +858,53 @@ mod tests {
         identity.debug_port = listener.local_addr().unwrap().port();
         drop(listener);
         assert!(check_stop_browser_identity(&identity).await.is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn worker_waits_for_its_process_without_cdp_and_rejects_another_generation() {
+        use std::os::windows::process::CommandExt;
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut child = ChildGuard(
+            std::process::Command::new(&executable)
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 2",
+                ])
+                .creation_flags(crate::windows_integration::CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap(),
+        );
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let birth = crate::windows_integration::process_birth_id(child.0.id()).unwrap();
+        let mut identity = CodexInstanceIdentity {
+            instance_id: "worker-lifetime".into(),
+            generation: 1,
+            debug_port: port.local_addr().unwrap().port(),
+            helper_port: 9342,
+            user_data_dir: home.path().into(),
+            browser_id: "saved-browser".into(),
+            process_id: child.0.id(),
+            process_birth_id: birth ^ 1,
+            executable,
+        };
+        assert!(wait_for_codex_instance_exit(&identity).is_err());
+        assert!(child.0.try_wait().unwrap().is_none());
+        identity.process_birth_id = birth;
+        wait_for_codex_instance_exit(&identity).unwrap();
+        assert!(child.0.try_wait().unwrap().is_some());
+        // 已确认退出的同一代进程允许正常收尾。
+        wait_for_codex_instance_exit(&identity).unwrap();
     }
 }

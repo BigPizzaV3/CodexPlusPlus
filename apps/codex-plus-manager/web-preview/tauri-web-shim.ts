@@ -41,6 +41,7 @@ const demoSettings = {
   codexAppSessionDeleteSkipConfirm: false,
   codexAppMarkdownExport: true,
   codexAppUsageStatusLine: true,
+  codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
   codexAppTypingEffect: "off",

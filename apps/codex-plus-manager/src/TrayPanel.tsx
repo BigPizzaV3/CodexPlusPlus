@@ -75,19 +75,13 @@ import {
   type TraySettings,
   type TrayTabId,
 } from "./tray-panel-model";
+import { applyResolvedTheme, loadThemePreference, resolveTheme, systemPrefersDark, watchSystemTheme } from "./theme-mode";
 import "./GatewayPage.css";
 import "./TrayPanel.css";
 
-/** 面板与主窗口共用主题设置（主窗口写在 localStorage 里）。 */
+/** 面板与主窗口共用主题设置（主窗口写在 localStorage 里），跟随系统时按当前系统外观。 */
 function applyTheme() {
-  let theme = "dark";
-  try {
-    theme = window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
-  } catch {
-    // 读不到就用深色。
-  }
-  document.documentElement.classList.toggle("dark", theme === "dark");
-  document.documentElement.classList.toggle("light", theme === "light");
+  applyResolvedTheme(resolveTheme(loadThemePreference(), systemPrefersDark()));
 }
 
 type LogEntry = {
@@ -218,9 +212,11 @@ export function TrayPanel() {
     };
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", onFocus);
+    const stopWatchingSystemTheme = watchSystemTheme(() => applyTheme());
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", onFocus);
+      stopWatchingSystemTheme();
     };
     // 只在挂载时注册。
     // eslint-disable-next-line react-hooks/exhaustive-deps

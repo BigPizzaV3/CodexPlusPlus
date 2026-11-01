@@ -5,6 +5,7 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
+    if (loaded) void syncWeixinDesktopThreads();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
     if (loaded && typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
     if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
@@ -52,6 +53,7 @@
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
+        void syncWeixinDesktopThreads();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);

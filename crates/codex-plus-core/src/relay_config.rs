@@ -3316,6 +3316,138 @@ fn prefer_live_codex_managed_entries(target_doc: &mut DocumentMut, live_doc: &Do
     }
 }
 
+/// 参数里需要检查存在性的位置：Codex 运行时 / 安装目录与插件缓存目录（#2583）。
+///
+/// 其余参数（脚本名、相对路径、用户自己的目录）不判断，避免误删。
+fn is_codex_runtime_or_plugin_cache_path(value: &str) -> bool {
+    if is_codex_managed_install_path(value) {
+        return true;
+    }
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    // 插件缓存：~/.codex/plugins/cache/<marketplace>/<插件>/<版本>/...
+    normalized.contains("/plugins/cache/")
+        // macOS 桌面版把 cua_node 等运行时放在 app bundle 的 Resources 下，换包后路径会变。
+        || normalized.contains(".app/contents/resources/")
+}
+
+/// 把参数文本还原成本地路径文本：支持 `--flag=<值>` 与 `file://` URI（含 `file:///C:/...`）。
+/// 带百分号编码的 URI 不做解码，直接跳过，宁可不删也不误删。
+fn mcp_arg_local_path_text(arg: &str) -> Option<String> {
+    let value = arg.trim();
+    let value = match value.strip_prefix("--").and_then(|rest| rest.split_once('=')) {
+        Some((_, rest)) => rest,
+        None => value,
+    };
+    let Some(rest) = value.strip_prefix("file://") else {
+        return Some(value.to_string());
+    };
+    if rest.contains('%') {
+        return None;
+    }
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let bytes = rest.as_bytes();
+    // file:///C:/... → C:/...
+    if bytes.len() >= 4
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b':'
+        && (bytes[3] == b'/' || bytes[3] == b'\\')
+    {
+        return Some(rest[1..].to_string());
+    }
+    rest.starts_with('/').then(|| rest.to_string())
+}
+
+/// 判断一条 Codex 托管的 MCP 条目是否已经失效，返回原因（不含路径）。
+///
+/// - `command` 是绝对路径且文件不存在 → 失效；`npx` / `node` 这类非绝对路径不判断。
+/// - `args` 里位于 Codex 运行时目录 / 插件缓存目录下的绝对路径不存在 → 失效。
+///
+/// 绝对路径与存在性判断由调用方注入：宿主上用 `Path`，单元测试里可模拟 Windows。
+fn codex_managed_mcp_entry_stale_reason(
+    entry: &dyn toml_edit::TableLike,
+    path_is_absolute: &dyn Fn(&str) -> bool,
+    path_exists: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if let Some(command) = entry.get("command").and_then(Item::as_str) {
+        let command = command.trim();
+        if !command.is_empty() && path_is_absolute(command) && !path_exists(command) {
+            return Some("command_missing");
+        }
+    }
+    let args = entry.get("args").and_then(Item::as_array)?;
+    let missing_arg = args
+        .iter()
+        .filter_map(|value| value.as_str())
+        .filter_map(mcp_arg_local_path_text)
+        .any(|path| {
+            is_codex_runtime_or_plugin_cache_path(&path)
+                && path_is_absolute(&path)
+                && !path_exists(&path)
+        });
+    missing_arg.then_some("arg_path_missing")
+}
+
+/// 宿主路径是否存在：只有确认不存在才算不存在，权限等错误一律按存在处理（不删）。
+/// Windows 上盘符、反斜杠与大小写由系统 API 自己处理。
+fn host_path_exists(path: &str) -> bool {
+    !matches!(Path::new(path).try_exists(), Ok(false))
+}
+
+/// 去掉已失效的 node_repl / cua_repl（#2583）。
+///
+/// 新版 Codex 的 cua_repl 改由 unified-computer-use 插件的 `.mcp.json` 提供，不再写进
+/// config.toml；config.toml 里残留的旧条目不会再被 Codex 更新，而 config 里的同名条目
+/// 优先级高于插件定义（codex-rs `McpServerCatalog`：Config 档压过 Plugin 档），会一直
+/// 盖住插件、导致 MCP 启动失败。这里在写盘前把指向已删除程序的旧条目整条（含 env 等
+/// 子表）去掉。只处理这两个 Codex 自己写入的条目名，用户自己添加的 MCP 条目一律不动。
+fn remove_stale_codex_managed_mcp_servers(doc: &mut DocumentMut) {
+    // 宿主原生的绝对路径判断：Windows 认 `C:\` / `C:/` / UNC，其他平台认 `/` 开头。
+    // 另一平台风格的路径不当作绝对路径，不判断、不删除。
+    remove_stale_codex_managed_mcp_servers_with(
+        doc,
+        &|path| Path::new(path).is_absolute(),
+        &host_path_exists,
+    );
+}
+
+fn remove_stale_codex_managed_mcp_servers_with(
+    doc: &mut DocumentMut,
+    path_is_absolute: &dyn Fn(&str) -> bool,
+    path_exists: &dyn Fn(&str) -> bool,
+) {
+    let Some(servers) = doc.get_mut("mcp_servers").and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    let mut removed: Vec<serde_json::Value> = Vec::new();
+    for id in CODEX_MANAGED_MCP_SERVER_IDS {
+        let reason = servers
+            .get(id)
+            .and_then(Item::as_table_like)
+            .and_then(|entry| {
+                codex_managed_mcp_entry_stale_reason(entry, path_is_absolute, path_exists)
+            });
+        if let Some(reason) = reason {
+            servers.remove(id);
+            removed.push(serde_json::json!({ "id": id, "reason": reason }));
+        }
+    }
+    if removed.is_empty() {
+        return;
+    }
+    if servers.is_empty() {
+        doc.as_table_mut().remove("mcp_servers");
+    }
+    // 替用户删了配置，留一条诊断方便回溯；只记条目名与原因，不记路径。
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "relay_config.stale_codex_mcp_servers_removed",
+        serde_json::json!({
+            "removed": removed,
+            "detail": "codex-managed mcp server pointed to a deleted program; removed so the bundled plugin definition takes effect",
+        }),
+    );
+}
+
 /// mcp_servers 的形状权威在 live。模板里可能留着被压平的残形（启动键缺失、
 /// env 键混进父表），这里在写盘前用 live 补齐缺键，并把与 env 子表重复的父表键移除。
 fn repair_mcp_servers_from_live(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
@@ -3376,10 +3508,12 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     let live_text = read_optional_text(&home.join("config.toml"))?;
     if live_text.trim().is_empty() {
         repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
+        remove_stale_codex_managed_mcp_servers(&mut target_doc);
         return Ok(normalize_optional_toml(target_doc));
     }
     let Ok(live_doc) = parse_toml_document(&live_text) else {
         repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
+        remove_stale_codex_managed_mcp_servers(&mut target_doc);
         return Ok(normalize_optional_toml(target_doc));
     };
     if let Some(live_desktop) = live_doc.get("desktop").cloned() {
@@ -3405,6 +3539,10 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     // 写盘前兜底：用 live 补过仍缺 command / url 的条目（模板减出来的残表，或 live 里本来就坏的），
     // Codex 会以 invalid transport 拒绝整份 config.toml、桌面版起不来，这里去掉并记诊断（#2765）。
     repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
+    // 取完 live 之后再兜底：node_repl / cua_repl 指向的程序已被 Codex 更新删掉时整条去掉，
+    // 让插件自己 .mcp.json 里的同名定义生效（config.toml 同名条目优先级高于插件，#2583）。
+    // 放在 live 合并之后，快照 / 模板里的同名旧条目也就不会再被写回。
+    remove_stale_codex_managed_mcp_servers(&mut target_doc);
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     // #2683：补回前先记下目标是否自己声明了 multi_agent_v2（v1 闸门写入或模板自带），
     // 补回之后据此决定要不要还原 v1 压下的闸门。
@@ -8182,5 +8320,121 @@ mod window_value_parsing_tests {
         // 逗号位置不规范（例如 1,0,5,0）仍按纯数字处理：这个字段的目标是拿到
         // 用户想要的窗口值，不是校验排版。真正的非数字才拒绝。
         assert_eq!(parse_optional_positive_u64("1,0,5,0", "上下文大小").unwrap(), Some(1_050));
+    }
+}
+
+#[cfg(test)]
+mod stale_codex_managed_mcp_tests {
+    use super::{mcp_arg_local_path_text, remove_stale_codex_managed_mcp_servers_with};
+    use toml_edit::DocumentMut;
+
+    /// 模拟 Windows 的绝对路径判断：盘符 + 分隔符，或 UNC。
+    fn windows_is_absolute(path: &str) -> bool {
+        let bytes = path.as_bytes();
+        (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/'))
+            || path.starts_with(r"\\")
+    }
+
+    /// 模拟 Windows 文件系统：分隔符等价、大小写不敏感。
+    fn windows_fs(existing: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |path: &str| {
+            let key = path.replace('/', "\\").to_ascii_lowercase();
+            existing
+                .iter()
+                .any(|item| item.replace('/', "\\").to_ascii_lowercase() == key)
+        }
+    }
+
+    const NEW_NODE: &str =
+        r"C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node.exe";
+    const NEW_CUA_REPL: &str = r"C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node_modules\@oai\cua-repl\bin\cua-repl.mjs";
+    const NEW_IMPORT: &str = r"C:\Users\Aqiw\.codex\plugins\cache\openai-bundled\unified-computer-use\26.1027.30824\require-browser-access.mjs";
+
+    fn run(text: &str, existing: &'static [&'static str]) -> String {
+        let mut doc: DocumentMut = text.parse().unwrap();
+        let exists = windows_fs(existing);
+        remove_stale_codex_managed_mcp_servers_with(&mut doc, &windows_is_absolute, &exists);
+        doc.to_string()
+    }
+
+    #[test]
+    fn windows_command_case_and_separator_insensitive() {
+        // 大小写、正反斜杠不同但指向同一个存在的文件：保留。
+        let text = r#"[mcp_servers.cua_repl]
+command = 'c:/users/aqiw/appdata/local/openai/codex/runtimes/cua_node/5C41F77A7900391C/bin/NODE.EXE'
+"#;
+        let out = run(text, &[NEW_NODE]);
+        assert!(out.contains("[mcp_servers.cua_repl]"), "{out}");
+    }
+
+    #[test]
+    fn windows_old_hash_command_removed_with_subtables() {
+        let text = r#"[mcp_servers.cua_repl]
+command = 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\78fb63cda1a9e2b2\bin\node.exe'
+
+[mcp_servers.cua_repl.env]
+CODEX_HOME = 'C:\Users\Aqiw\.codex'
+
+[mcp_servers.my_tool]
+command = 'C:\tools\missing.exe'
+"#;
+        let out = run(text, &[NEW_NODE]);
+        assert!(!out.contains("cua_repl"), "{out}");
+        assert!(!out.contains("78fb63cda1a9e2b2"), "{out}");
+        // 用户自己的条目即便指向不存在的程序也不动。
+        assert!(out.contains("[mcp_servers.my_tool]"), "{out}");
+    }
+
+    #[test]
+    fn windows_stale_versioned_plugin_cache_arg_removed() {
+        // command 还在，但 args 里 file:///C:/ 形式的插件缓存旧版本路径已经不存在。
+        let text = r#"[mcp_servers.cua_repl]
+command = 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node.exe'
+args = ["--import", "file:///C:/Users/Aqiw/.codex/plugins/cache/openai-bundled/unified-computer-use/26.1013.1/require-browser-access.mjs", 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node_modules\@oai\cua-repl\bin\cua-repl.mjs']
+"#;
+        let out = run(text, &[NEW_NODE, NEW_CUA_REPL]);
+        assert!(!out.contains("cua_repl"), "{out}");
+    }
+
+    #[test]
+    fn windows_current_plugin_entry_kept() {
+        let text = r#"[mcp_servers.cua_repl]
+command = 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node.exe'
+args = ["--import", "file:///C:/Users/Aqiw/.codex/plugins/cache/openai-bundled/unified-computer-use/26.1027.30824/require-browser-access.mjs", 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node_modules\@oai\cua-repl\bin\cua-repl.mjs']
+"#;
+        let out = run(text, &[NEW_NODE, NEW_CUA_REPL, NEW_IMPORT]);
+        assert!(out.contains("[mcp_servers.cua_repl]"), "{out}");
+    }
+
+    #[test]
+    fn non_absolute_command_and_foreign_style_path_are_not_judged() {
+        // `node` 这类非绝对路径、以及 Windows 上的 Unix 风格路径都不判断、不删除。
+        let text = r#"[mcp_servers.node_repl]
+command = "node"
+args = ["./server.mjs"]
+
+[mcp_servers.cua_repl]
+command = "/opt/codex/cua"
+"#;
+        let out = run(text, &[]);
+        assert!(out.contains("[mcp_servers.node_repl]"), "{out}");
+        assert!(out.contains("[mcp_servers.cua_repl]"), "{out}");
+    }
+
+    #[test]
+    fn arg_path_text_handles_file_uri_and_flag_value() {
+        assert_eq!(
+            mcp_arg_local_path_text("file:///C:/a/b.mjs").as_deref(),
+            Some("C:/a/b.mjs")
+        );
+        assert_eq!(
+            mcp_arg_local_path_text("--import=file:///Users/u/x.mjs").as_deref(),
+            Some("/Users/u/x.mjs")
+        );
+        assert_eq!(mcp_arg_local_path_text("file:///C:/a%20b/x.mjs"), None);
+        assert_eq!(mcp_arg_local_path_text("--import").as_deref(), Some("--import"));
     }
 }

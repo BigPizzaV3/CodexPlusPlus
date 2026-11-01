@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2799
+      "lines": 2801
     },
     {
       "name": "20-menu.js",
@@ -31,9 +31,14 @@
       "lines": 67
     },
     {
+      "name": "32-fork-readiness-fallback.js",
+      "description": "无账号时原生 Fork 放置门控读不到的兜底（#2826）",
+      "lines": 77
+    },
+    {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2163
+      "lines": 2165
     },
     {
       "name": "50-navigation.js",
@@ -88,7 +93,7 @@
     {
       "name": "84-proxy-request-status.js",
       "description": "输入框上方的请求避震状态条：正在请求 / 等待上游 / 正在重试 / 正在生成",
-      "lines": 280
+      "lines": 294
     },
     {
       "name": "85-history-turn-recovery.js",
@@ -109,6 +114,11 @@
       "name": "85-side-chat-save.js",
       "description": "本地旁支保存：主历史读取引用、原生缓存采集与普通会话恢复",
       "lines": 333
+    },
+    {
+      "name": "85-weixin-desktop-sync.js",
+      "description": "微信线程目录与显式项目归属同步",
+      "lines": 113
     },
     {
       "name": "90-action-groups.js",
@@ -168,7 +178,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 100
+      "lines": 101
     },
     {
       "name": "99-tail.js",

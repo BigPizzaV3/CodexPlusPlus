@@ -60,6 +60,7 @@
   }
 
   installCodexConfigReadDeadline();
+  void installCodexForkReadinessFallback();
   installCodexPlusForceChineseLocale();
   installCodexPlusInstanceIdentity();
   runScanStep(installCodexPlusTypingEffects);
