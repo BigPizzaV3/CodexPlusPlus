@@ -434,6 +434,7 @@ pub fn adapt_api_request(body: &mut Value) {
     }
     object.insert("store".to_string(), Value::Bool(false));
     object.insert("stream".to_string(), Value::Bool(true));
+    let mut pending_reasoning: Option<Map<String, Value>> = None;
     match object.get_mut("input") {
         Some(Value::String(text)) => {
             let text = std::mem::take(text);
@@ -443,6 +444,27 @@ pub fn adapt_api_request(body: &mut Value) {
             );
         }
         Some(Value::Array(items)) => {
+            // 中途改思考强度时，新版 Codex 不改请求级 reasoning，而是插一条位置型的
+            // configuration_update 输入项（保住提示词缓存）。用 ChatGPT 登录的共享额度不接受
+            // 这种输入项，会直接 400（subscription_sharing_unsupported_capability，#2834）。
+            // 去掉它们，把最后一条的设置写回请求级 reasoning：强度照样生效，只是这次切换不命中缓存。
+            let mut configured: Option<Map<String, Value>> = None;
+            items.retain(|item| {
+                if item.get("type").and_then(Value::as_str) != Some("configuration_update") {
+                    return true;
+                }
+                if let Some(Value::Object(reasoning)) = item.get("reasoning") {
+                    configured.get_or_insert_with(Map::new).extend(
+                        reasoning
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone())),
+                    );
+                }
+                false
+            });
+            if let Some(configured) = configured {
+                pending_reasoning = Some(configured);
+            }
             for item in items.iter_mut() {
                 let Some(item) = item.as_object_mut() else {
                     continue;
@@ -459,6 +481,17 @@ pub fn adapt_api_request(body: &mut Value) {
             }
         }
         _ => {}
+    }
+    if let Some(configured) = pending_reasoning {
+        let reasoning = object
+            .entry("reasoning")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !reasoning.is_object() {
+            *reasoning = Value::Object(Map::new());
+        }
+        if let Some(reasoning) = reasoning.as_object_mut() {
+            reasoning.extend(configured);
+        }
     }
     // 按对话命名缓存键：OpenAI 按它保留 ChatGPT 登录的提示词缓存。
     let has_cache_key = object
@@ -544,6 +577,47 @@ mod tests {
         assert!(only_hosted.get("tools").is_none());
         assert!(only_hosted.get("tool_choice").is_none());
         assert_eq!(only_hosted["input"][0]["content"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn api_requests_fold_configuration_updates_into_request_reasoning() {
+        // #2834：中途切换思考强度时 Codex 插入的 configuration_update 会被共享额度拒绝。
+        let mut body = json!({
+            "model": "gpt-6-luna",
+            "reasoning": { "effort": "low", "summary": "auto" },
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "test1" }] },
+                { "type": "configuration_update", "reasoning": { "effort": "medium" } },
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "test2" }] },
+                { "type": "configuration_update", "reasoning": { "effort": "high" } },
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "test3" }] }
+            ]
+        });
+        adapt_api_request(&mut body);
+        let types: Vec<&str> = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, vec!["message", "message", "message"]);
+        assert_eq!(
+            body["reasoning"],
+            json!({ "effort": "high", "summary": "auto" }),
+            "最后一次切换生效，其余字段保留"
+        );
+
+        // 请求里原本没有 reasoning 时补上；没有 configuration_update 时不动 reasoning。
+        let mut bare = json!({
+            "input": [{ "type": "configuration_update", "reasoning": { "effort": "xhigh" } }]
+        });
+        adapt_api_request(&mut bare);
+        assert_eq!(bare["reasoning"], json!({ "effort": "xhigh" }));
+        assert_eq!(bare["input"], json!([]));
+
+        let mut untouched = json!({ "reasoning": { "effort": "low" }, "input": "hi" });
+        adapt_api_request(&mut untouched);
+        assert_eq!(untouched["reasoning"], json!({ "effort": "low" }));
     }
 
     #[test]
