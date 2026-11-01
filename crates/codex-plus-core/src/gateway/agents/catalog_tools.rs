@@ -159,7 +159,8 @@ fn write_goose(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
             doc,
             "providers",
             PROVIDER_ID,
-            Some(&json!({ "enabled": true, "model": wiring.default_model, "configured": true })),
+            // 按字母序写：serde_json 开不开 preserve_order（随平台的依赖而变）写出来都一样。
+            Some(&json!({ "configured": true, "enabled": true, "model": wiring.default_model })),
         );
     } else {
         doc.set("GOOSE_PROVIDER", &json!(PROVIDER_ID));
@@ -1800,7 +1801,9 @@ mod tests {
     impl Home {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
-            let env = AgentEnv::at(temp.path());
+            // 用例都按 Unix 布局放文件（~/.config、~/.hermes…）；固定成 Linux，
+            // 免得在 Windows 上被解析到 %APPDATA% / %LOCALAPPDATA% 下。
+            let env = AgentEnv::at(temp.path()).with_os(Os::Linux);
             Self { _temp: temp, env }
         }
 

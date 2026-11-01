@@ -1913,7 +1913,8 @@ mod tests {
     fn air_runs_opencode_on_gateway_config() {
         let temp = tempfile::tempdir().unwrap();
         let env = AgentEnv::at(temp.path()).with_os(Os::Linux);
-        let dir = temp.path().join(".config/JetBrains/Air");
+        // 逐段拼：Windows 上 join(".config/JetBrains/Air") 会留下混用的分隔符，和实现拼出的字符串对不上。
+        let dir = temp.path().join(".config").join("JetBrains").join("Air");
         write_file(
             &dir.join("acp.json"),
             r#"{"agent_servers":{"Mine":{"command":"x"}}}"#,
