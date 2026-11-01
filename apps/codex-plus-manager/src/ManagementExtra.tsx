@@ -332,7 +332,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const batchOperations = useSyncExternalStore(skillBatchRegistry.subscribe, skillBatchRegistry.getSnapshot, skillBatchRegistry.getSnapshot);
-  const observedBatchOperations = useRef(batchOperations);
+  const batchOwner = useRef(Symbol("skills-page"));
   const [repoOpen, setRepoOpen] = useState(false);
   const [detail, setDetail] = useState<Skill | null>(null);
   const [conflict, setConflict] = useState<Skill | null>(null);
@@ -424,12 +424,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     window.addEventListener("focus", onFocus);
     return () => { mounted.current = false; checkGeneration.current++; dataRequest.current++; window.removeEventListener("focus", onFocus); };
   }, []);
-  useEffect(() => {
-    if (observedBatchOperations.current !== batchOperations) {
-      observedBatchOperations.current = batchOperations;
-      if (mounted.current) void reloadLocal();
-    }
-  }, [batchOperations]);
+  useEffect(() => skillBatchRegistry.subscribeSettled((operation) => {
+    if (mounted.current && operation.owner !== batchOwner.current) void reloadLocal();
+  }), []);
   useEffect(() => {
     if (conflict) return;
     const next = data?.skills.find((skill) => skill.codexConflict && !dismissedConflicts.current.has(skill.id));
@@ -484,7 +481,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       await notify("Skills", enabled ? t("该组没有可启用的 Skill") : t("该组没有可停用的 Skill"), "ok");
       return;
     }
-    let operation: PendingSkillBatchOperation = { groupKey: group.key, agent, enabled, skillIds: targets.map((skill) => skill.id), settledSkillIds: [] };
+    let operation: PendingSkillBatchOperation = { groupKey: group.key, agent, enabled, skillIds: targets.map((skill) => skill.id), settledSkillIds: [], owner: batchOwner.current };
     skillBatchRegistry.add(operation);
     let completed = 0;
     const errors: string[] = [];

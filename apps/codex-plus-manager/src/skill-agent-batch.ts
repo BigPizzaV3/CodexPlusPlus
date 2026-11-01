@@ -1,11 +1,13 @@
 export type SkillAgentState = { installed: boolean; bundled: boolean; enabled: boolean; agents?: string[] };
 export type SkillBatchOperation = { groupKey: string; agent: string; enabled: boolean; skillIds: string[] };
-export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[] };
+export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[]; owner: symbol };
 
 export class SkillBatchRegistry {
   private operations: PendingSkillBatchOperation[] = [];
   private listeners = new Set<() => void>();
+  private settledListeners = new Set<(operation: PendingSkillBatchOperation) => void>();
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
+  subscribeSettled = (listener: (operation: PendingSkillBatchOperation) => void) => { this.settledListeners.add(listener); return () => { this.settledListeners.delete(listener); }; };
   getSnapshot = () => this.operations;
   private publish(operations: PendingSkillBatchOperation[]) {
     this.operations = operations;
@@ -14,6 +16,9 @@ export class SkillBatchRegistry {
   add(operation: PendingSkillBatchOperation) { this.publish([...this.operations, operation]); }
   replace(previous: PendingSkillBatchOperation, next: PendingSkillBatchOperation) {
     this.publish(this.operations.map((item) => item === previous ? next : item));
+    if (next.settledSkillIds.length > previous.settledSkillIds.length) {
+      for (const listener of this.settledListeners) listener(next);
+    }
   }
   remove(operation: PendingSkillBatchOperation) { this.publish(this.operations.filter((item) => item !== operation)); }
 }

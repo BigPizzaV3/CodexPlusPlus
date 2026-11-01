@@ -183,6 +183,23 @@ test("pending batch survives page remount and releases its lock after failure", 
   assert.equal(ui.row("a2", "codex").props.enabled, false);
 });
 
+test("a deferred list update is discarded as soon as a newer request starts", async () => {
+  const ui = createHarness();
+  ui.render(); await tick(); ui.render();
+  ui.deferDataUpdates();
+  ui.server.skills[0].repoPath = "old";
+  ui.focus(); await tick();
+  ui.server.skills[0].repoPath = "new";
+  ui.holdLoads(1);
+  ui.focus(); await tick();
+  ui.pendingDataUpdates.shift()!();
+  ui.render(); ui.expand("repo:a/repo");
+  assert.equal(ui.find((node) => node.type === "SkillActionMenu" && node.props.skill.id === "a").props.skill.repoPath, undefined);
+  ui.pendingLoads.shift()!(); await tick();
+  ui.pendingDataUpdates.shift()!(); ui.render();
+  assert.equal(ui.find((node) => node.type === "SkillActionMenu" && node.props.skill.id === "a").props.skill.repoPath, "new");
+});
+
 test("discover installs the selected repository path with its distinct local identity", async () => {
   const ui = createHarness();
   const installed = { ...skill("alpha-original", "a/repo@main"), name: "Alpha", repoPath: "a/alpha" };

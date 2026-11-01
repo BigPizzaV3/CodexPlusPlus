@@ -4,10 +4,12 @@ import { mergeSkillAgentResult, skillBatchHasPending, skillBatchState, skillBatc
 
 test("registry releases only the completed task and keeps independent agents unlocked", () => {
   const registry = new SkillBatchRegistry();
-  const first = { groupKey: "group", agent: "codex", enabled: true, skillIds: ["a"], settledSkillIds: [] as string[] };
-  const second = { groupKey: "group", agent: "claude", enabled: true, skillIds: ["a"], settledSkillIds: [] as string[] };
+  const first = { groupKey: "group", agent: "codex", enabled: true, skillIds: ["a"], settledSkillIds: [] as string[], owner: Symbol("first") };
+  const second = { groupKey: "group", agent: "claude", enabled: true, skillIds: ["a"], settledSkillIds: [] as string[], owner: Symbol("second") };
   let changes = 0;
+  const settledEvents: symbol[] = [];
   const unsubscribe = registry.subscribe(() => changes++);
+  const unsubscribeSettled = registry.subscribeSettled((operation) => settledEvents.push(operation.owner));
   registry.add(first); registry.add(second);
   const settled = { ...first, settledSkillIds: ["a"] };
   registry.replace(first, settled);
@@ -16,8 +18,10 @@ test("registry releases only the completed task and keeps independent agents unl
   assert.equal(skillBatchHasPending(registry.getSnapshot(), [{ id: "a" }], "claude"), true);
   registry.remove(second);
   unsubscribe();
+  unsubscribeSettled();
   assert.equal(registry.getSnapshot().length, 0);
   assert.equal(changes, 5);
+  assert.deepEqual(settledEvents, [first.owner]);
 });
 
 test("batch checkboxes and targets are independent for each agent", () => {
