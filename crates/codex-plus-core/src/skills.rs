@@ -1393,12 +1393,15 @@ impl SkillsManager {
             return Err(error);
         }
         let (staged_hash, staged_manifest) = skill_directory_snapshot(&staging, true)?;
-        if staged_hash != source_hash
-            || skill_directory_hash(external_dir)? != source_hash
-            || staged_manifest.is_none()
-        {
+        let source_after_hash = skill_directory_hash(external_dir)?;
+        if let Err(error) = import::validate_import_staging(
+            &source_hash,
+            &staged_hash,
+            &source_after_hash,
+            staged_manifest.is_some(),
+        ) {
             let _ = remove_link(&staging);
-            anyhow::bail!("导入源在复制时发生变化，请重新预览");
+            return Err(error);
         }
         #[cfg(test)]
         import::run_stage_verified_hook();
@@ -1607,7 +1610,8 @@ impl SkillsManager {
         if let Some(expected) = expected_staging {
             anyhow::ensure!(
                 staging_hash == expected,
-                "导入暂存内容已变化，请重新预览"
+                "导入暂存内容已变化，已保留 {}，请检查后重新预览",
+                staging.display()
             );
         }
         installed.local_baseline_hash = if unverified_cc_switch_import {

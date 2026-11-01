@@ -30,6 +30,23 @@ fn import_source_snapshot(path: &Path) -> anyhow::Result<(String, Option<Vec<u8>
     skill_directory_snapshot(path, true)
 }
 
+pub(super) fn validate_import_staging(
+    source_hash: &str,
+    staged_hash: &str,
+    source_after_hash: &str,
+    has_manifest: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        staged_hash == source_hash && source_after_hash == source_hash,
+        "导入源在复制时发生变化，请重新预览"
+    );
+    anyhow::ensure!(
+        has_manifest,
+        "暂存目录中无法识别 SKILL.md，来源和目标的文件名大小写规则可能不同；请检查清单文件名后重新预览"
+    );
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillImportMatch {
@@ -871,14 +888,27 @@ mod tests {
         let staged = manager
             .stage_skill_import("incoming", &source, "local", None, Some(&expected))
             .unwrap();
+        let staging_path = staged.0.clone();
         write_skill(&staged.0, "Changed", "unconfirmed content");
         let operation = manager.lock_operation().unwrap();
         let error = manager
             .commit_staged_import_unlocked(&operation, staged, None, None)
             .unwrap_err();
-        assert!(format!("{error:#}").contains("导入暂存内容已变化"));
+        let message = format!("{error:#}");
+        assert!(message.contains("导入暂存内容已变化"));
+        assert!(message.contains(&staging_path.display().to_string()));
+        assert!(staging_path.join("SKILL.md").is_file());
         assert!(!manager.source_dir.join("incoming").exists());
         assert_eq!(read_skill_manifest(&source.join("SKILL.md"), "").0, "Original");
+    }
+
+    #[test]
+    fn staging_reports_unresolvable_manifest_separately_from_changed_contents() {
+        assert!(validate_import_staging("hash", "hash", "hash", true).is_ok());
+        let error = validate_import_staging("hash", "hash", "hash", false).unwrap_err();
+        assert!(format!("{error:#}").contains("大小写规则"));
+        let error = validate_import_staging("hash", "changed", "hash", false).unwrap_err();
+        assert!(format!("{error:#}").contains("导入源在复制时发生变化"));
     }
 
     #[test]
