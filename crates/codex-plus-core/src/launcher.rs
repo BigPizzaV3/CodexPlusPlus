@@ -1759,6 +1759,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         let _ = debug_port;
     }
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        // 拓展的定时任务跟着托管后台的这个进程走。
+        crate::extension_backend::start_scheduler();
         let bridge_reinjector = self.bridge_reinjector.lock().await.clone();
         let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -2112,16 +2114,46 @@ pub(crate) async fn handle_helper_connection_on(
         stream.shutdown().await?;
         return Ok(());
     }
-    if crate::gateway::is_gateway_path(path) {
-        return crate::gateway::server::handle(
+    // 拓展挂的 HTTP 路由（webhook）：/ext/<拓展 id>/…，交给声明了 backend.http 的拓展后台处理。
+    // 网页（带 Origin）发来的一律拒绝，免得随便一个页面就能触发本机拓展。
+    if path.starts_with("/ext/") {
+        let (status, content_type, body) = if header_value_from_headers(&request_headers, "origin").is_some_and(|origin| !origin.trim().is_empty()) {
+            (403, "application/json; charset=utf-8".to_string(), br#"{"error":"extension routes do not accept browser requests"}"#.to_vec())
+        } else {
+            crate::extension_backend::route_http(method, raw_path, &request_headers, &request.body).await
+        };
+        let status_line = format!("{status} {}", if (200..300).contains(&status) { "OK" } else { "Error" });
+        write_http_response(&mut stream, &status_line, &content_type, &body).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if crate::gateway::subscriptions::server::is_subscription_path(path) {
+        return crate::gateway::subscriptions::server::handle(
             &mut stream,
             method,
             path,
             &request_headers,
             &request.body,
-            remote_addr_text,
         )
         .await;
+    }
+    if crate::gateway::is_gateway_path(path) {
+        // 本机启动器转来的请求已经跑过拓展的网关中间件：网关这一层不再跑（见 EXTENSIONS_APPLIED_HEADER）。
+        let applied = crate::extension_gateway::headers_mark_applied(&request_headers);
+        // 带上查询串：Gemini 客户端把 Key 放在 `?key=` 里；网关取出后自己去掉，不进日志。
+        return crate::extension_gateway::EXTENSIONS_ALREADY_APPLIED
+            .scope(
+                applied,
+                crate::gateway::server::handle(
+                    &mut stream,
+                    method,
+                    raw_path,
+                    &request_headers,
+                    &request.body,
+                    remote_addr_text,
+                ),
+            )
+            .await;
     }
     if matches!(path, "/dictation/transcribe" | "/dictation/status") {
         return handle_dictation_connection(
@@ -3169,6 +3201,9 @@ pub(crate) async fn handle_protocol_proxy_connection(
             let mut phase = (crate::protocol_proxy::message_phase_fill_enabled() && !foreign_client)
                 .then(crate::protocol_proxy::ResponsesSseTransformer::phase_fill_only);
             let mut bytes_stream = upstream.take_response()?.bytes_stream();
+            // exec 兼容链路同样过拓展的网关响应流中间件。
+            let mut extension_filter =
+                crate::extension_gateway::ResponseFilter::start(path, request_json.as_ref()).await;
             while let Some(chunk) = bytes_stream.next().await {
                 let converted = match chunk {
                     Ok(bytes) => match converter.push_bytes(&bytes) {
@@ -3181,6 +3216,10 @@ pub(crate) async fn handle_protocol_proxy_connection(
                     Some(phase) => phase.push_bytes(&converted),
                     None => converted,
                 };
+                let converted = match extension_filter.as_mut() {
+                    Some(filter) => filter.push(&converted).await,
+                    None => converted,
+                };
                 stream.write_all(&converted).await?;
                 if converter.is_complete() {
                     break;
@@ -3190,6 +3229,10 @@ pub(crate) async fn handle_protocol_proxy_connection(
             if let Some(phase) = phase.as_mut() {
                 tail = phase.push_bytes(&tail);
                 tail.extend(phase.flush_pending());
+            }
+            if let Some(filter) = extension_filter.as_mut() {
+                tail = filter.push(&tail).await;
+                tail.extend(filter.finish().await);
             }
             stream.write_all(&tail).await?;
             let exec_succeeded = converter.succeeded();
@@ -3201,9 +3244,11 @@ pub(crate) async fn handle_protocol_proxy_connection(
             return Ok(());
         }
         let stream_prefix = std::mem::take(&mut upstream.stream_prefix);
+        // 拓展的网关响应流中间件：在 Codex++ 自己的转换之后、写给 Codex 之前改写事件。
+        let mut sink = ExtensionResponseSink::new(stream, path, request_json.as_ref()).await;
         let (failure, usage, failure_detail, first_output_at_ms) =
             forward_protocol_proxy_stream_for_client(
-                stream,
+                &mut sink,
                 &stream_prefix,
                 upstream.take_response()?,
                 upstream.wire_api,
@@ -3212,6 +3257,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 foreign_client,
             )
             .await?;
+        sink.finish().await?;
         if let Some(first_output_at_ms) = first_output_at_ms {
             request_log.mark_first_token_at(first_output_at_ms);
         }
@@ -3957,6 +4003,45 @@ pub(crate) trait SseSink {
 impl SseSink for tokio::net::TcpStream {
     async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         self.write_all(bytes).await
+    }
+}
+
+/// 在任意 SseSink 外面套上拓展的网关响应流中间件；没有中间件时直通。
+pub(crate) struct ExtensionResponseSink<'a, S> {
+    pub(crate) inner: &'a mut S,
+    filter: Option<crate::extension_gateway::ResponseFilter>,
+}
+
+impl<'a, S: SseSink> ExtensionResponseSink<'a, S> {
+    pub(crate) async fn new(inner: &'a mut S, request_path: &str, request: Option<&Value>) -> Self {
+        let filter = crate::extension_gateway::ResponseFilter::start(request_path, request).await;
+        Self { inner, filter }
+    }
+
+    /// 上游结束后调用：交出残余字节与中间件在流尾追加的事件。
+    pub(crate) async fn finish(&mut self) -> std::io::Result<()> {
+        if let Some(filter) = self.filter.as_mut() {
+            let tail = filter.finish().await;
+            if !tail.is_empty() {
+                self.inner.send(&tail).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<S: SseSink> SseSink for ExtensionResponseSink<'_, S> {
+    async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self.filter.as_mut() {
+            Some(filter) => {
+                let out = filter.push(bytes).await;
+                if out.is_empty() {
+                    return Ok(());
+                }
+                self.inner.send(&out).await
+            }
+            None => self.inner.send(bytes).await,
+        }
     }
 }
 
@@ -5907,9 +5992,17 @@ async fn pet_overlay_has_screen_point_hook(websocket_url: &str) -> anyhow::Resul
     Ok(runtime_evaluate_result_is_true(&result))
 }
 
-async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+/// 桌宠跟随鼠标：增强总开关、功能开关、内置拓展「pet-real-mouse」三者都开着才驱动。
+/// 设置关着时短路，不去扫拓展目录。
+fn pet_real_mouse_enabled() -> bool {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let enabled = settings.enhancements_enabled && settings.codex_app_pet_real_mouse_look;
+    settings.enhancements_enabled
+        && settings.codex_app_pet_real_mouse_look
+        && crate::user_scripts::default_user_script_manager().builtin_extension_active("pet-real-mouse")
+}
+
+async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+    let enabled = pet_real_mouse_enabled();
     let targets = crate::cdp::list_targets(debug_port).await?;
     for target in targets
         .iter()
@@ -5949,8 +6042,7 @@ async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyh
 #[cfg(any(windows, target_os = "macos"))]
 async fn run_pet_real_mouse_cursor_driver(debug_port: u16) {
     loop {
-        let settings = SettingsStore::default().load().unwrap_or_default();
-        if !settings.enhancements_enabled || !settings.codex_app_pet_real_mouse_look {
+        if !pet_real_mouse_enabled() {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             continue;
         }

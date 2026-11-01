@@ -39,8 +39,9 @@ const throwingStorage = {
   },
 };
 
-test("托盘面板三个页签，网关只是其中之一且排在最后；默认是概览；没有旧版的供应商切换", () => {
-  assert.deepEqual([...TRAY_TABS], ["home", "usage", "gateway"]);
+test("托盘面板四个页签：概览、用量、网关、实时；默认是概览；没有旧版的供应商切换", () => {
+  assert.deepEqual([...TRAY_TABS], ["home", "usage", "gateway", "flow"]);
+  assert.equal(restoreTrayTab("flow"), "flow");
   assert.equal(restoreTrayTab("providers"), "home", "上次停在已去掉的「供应商」页签时回到概览");
   assert.equal(restoreTrayTab(null), "home");
   assert.equal(restoreTrayTab("gateway"), "gateway");

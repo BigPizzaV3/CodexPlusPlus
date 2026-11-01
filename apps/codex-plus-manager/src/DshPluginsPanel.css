@@ -1,0 +1,50 @@
+/* 「脚本 → dsh 插件」分栏。规则带 .shell 前缀，保证正式版里不被 styles.css 的通用规则盖掉。 */
+.shell .dsh-plugins { display:flex; flex-direction:column; gap:12px; }
+.shell .dsh-plugins-intro { display:flex; flex-direction:column; gap:8px; padding:14px 16px; border:1px solid hsl(var(--border)); border-radius:10px; background:hsl(var(--card)); }
+.shell .dsh-plugins-intro p { margin:0; font-size:12px; line-height:1.6; color:hsl(var(--muted-foreground)); }
+.shell .dsh-plugins-import { display:flex; gap:8px; align-items:center; }
+.shell .dsh-plugins-import input { flex:1; min-width:0; }
+.shell .dsh-plugins-warning { font-size:12px; color:hsl(var(--status-warning)); }
+.shell .dsh-plugins-hint { font-size:12px; color:hsl(var(--muted-foreground)); }
+.shell .dsh-plugins-notice { padding:8px 12px; border-radius:8px; font-size:12px; line-height:1.5; border:1px solid hsl(var(--border)); white-space:pre-wrap; overflow-wrap:anywhere; }
+.shell .dsh-plugins-notice.is-ok { background:hsl(var(--muted)); }
+.shell .dsh-plugins-notice.is-error { color:hsl(var(--status-error, 0 72% 51%)); border-color:hsl(var(--status-error, 0 72% 51%) / .4); }
+.shell .dsh-plugins-integration { display:flex; align-items:center; gap:8px; padding:10px 14px; border:1px solid hsl(var(--border)); border-radius:10px; font-size:12px; }
+.shell .dsh-plugins-integration > span { flex:1; min-width:0; }
+.shell .dsh-plugins-list { display:flex; flex-direction:column; gap:10px; }
+.shell .dsh-plugin-card { display:flex; flex-direction:column; gap:8px; padding:14px 16px; border:1px solid hsl(var(--border)); border-radius:10px; background:hsl(var(--card)); }
+.shell .dsh-plugin-card[data-enabled=false] { opacity:.7; }
+.shell .dsh-plugin-card > header { display:flex; align-items:center; gap:10px; }
+.shell .dsh-plugin-title { flex:1; min-width:0; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.shell .dsh-plugin-title strong { font-size:14px; }
+.shell .dsh-plugin-title code, .shell .dsh-plugin-row-head code { font-size:11px; color:hsl(var(--muted-foreground)); }
+.shell .dsh-plugin-actions { display:flex; align-items:center; gap:4px; }
+.shell .dsh-plugin-switch { display:inline-flex; margin-right:4px; }
+.shell .dsh-plugin-description { margin:0; font-size:12px; color:hsl(var(--muted-foreground)); }
+.shell .dsh-plugin-source { font-size:11px; color:hsl(var(--muted-foreground)); font-family:var(--font-mono, monospace); overflow-wrap:anywhere; }
+.shell .dsh-plugin-rows { display:flex; flex-direction:column; border:1px solid hsl(var(--border)); border-radius:8px; overflow:hidden; }
+.shell .dsh-plugin-row { display:flex; flex-direction:column; gap:4px; padding:8px 12px; border-bottom:1px solid hsl(var(--border)); }
+.shell .dsh-plugin-row:last-child { border-bottom:0; }
+.shell .dsh-plugin-row-head { display:flex; align-items:center; gap:8px; font-size:12px; flex-wrap:wrap; }
+.shell .dsh-plugin-row-actions { margin-left:auto; display:flex; gap:6px; }
+.shell .dsh-plugin-row-actions button { font:inherit; font-size:11px; border:1px solid hsl(var(--border)); background:transparent; color:hsl(var(--foreground)); border-radius:6px; padding:2px 8px; cursor:pointer; }
+.shell .dsh-plugin-row-actions button:disabled { opacity:.5; cursor:not-allowed; }
+.shell .dsh-status { display:inline-flex; padding:1px 7px; border-radius:999px; font-size:11px; border:1px solid hsl(var(--border)); white-space:nowrap; }
+.shell .dsh-status.is-compatible { color:hsl(var(--status-success, 142 60% 36%)); border-color:hsl(var(--status-success, 142 60% 36%) / .45); }
+.shell .dsh-status.is-partial, .shell .dsh-status.is-skills { color:hsl(var(--status-warning)); border-color:hsl(var(--status-warning) / .45); }
+.shell .dsh-status.is-incompatible, .shell .dsh-status.is-disabled { color:hsl(var(--muted-foreground)); }
+.shell .dsh-status.is-error { color:hsl(var(--status-error, 0 72% 51%)); border-color:hsl(var(--status-error, 0 72% 51%) / .45); }
+.shell .dsh-plugin-tools { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:3px; }
+.shell .dsh-plugin-tools li { display:flex; gap:8px; font-size:12px; min-width:0; }
+.shell .dsh-plugin-tools code { flex:none; }
+.shell .dsh-plugin-tools span { color:hsl(var(--muted-foreground)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.shell .dsh-plugin-reason { font-size:11px; color:hsl(var(--muted-foreground)); line-height:1.5; }
+.shell .dsh-plugin-config { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
+.shell .dsh-plugin-config textarea { font-family:var(--font-mono, monospace); font-size:12px; padding:8px; border:1px solid hsl(var(--input)); border-radius:6px; background:hsl(var(--input) / .35); color:hsl(var(--foreground)); resize:vertical; }
+.shell .dsh-plugin-config small { font-size:11px; color:hsl(var(--muted-foreground)); }
+.shell .dsh-plugin-config-actions { display:flex; gap:6px; }
+.shell .dsh-plugin-skills { display:flex; align-items:center; gap:8px; font-size:12px; color:hsl(var(--muted-foreground)); }
+.shell .dsh-plugin-skills > span { flex:1; min-width:0; }
+.shell .dsh-plugin-mappings { display:flex; gap:4px; flex-wrap:wrap; }
+.shell .dsh-mapping { display:inline-flex; padding:1px 7px; border-radius:999px; font-size:11px; background:hsl(var(--muted)); color:hsl(var(--foreground)); white-space:nowrap; }
+.shell .dsh-plugin-companion { display:flex; flex-direction:column; gap:4px; font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); }

@@ -3,7 +3,7 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
-import { Check, ChevronDown, ChevronRight, ChevronUp, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import {
   agentModels,
@@ -30,6 +30,8 @@ import { AppSelect } from "./AppSelect";
 import { shortProviderName } from "./GatewayModelMatrix";
 import { GatewayNavContext, publishGatewayPayload } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
+import { singleAgent, visibleAgents } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import { AGENT_ICONS, AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
 export function AgentsView({
@@ -45,8 +47,11 @@ export function AgentsView({
   notify: Notify;
   onManage: () => void;
 }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const agents = payload?.agents ?? [];
+  // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
+  const focus = useAgentFocus();
+  const solo = singleAgent(focus);
+  const agents = visibleAgents(focus, payload?.agents ?? []);
+  const [expanded, setExpanded] = useState<string | null>(solo);
   const connected = agents.filter((agent) => agent.enabled);
   const others = agents.filter((agent) => !agent.enabled);
   const row = (agent: GatewayAgentView) => (
@@ -65,9 +70,10 @@ export function AgentsView({
   return (
     <>
       <div className="gw-card gw-agent-card">
-        {connected.length ? <div className="gw-subhead">{t("已接入")}<em>{connected.length}</em></div> : null}
+        {/* 单 Agent 模式只有一行，不分「已接入 / 未接入」，直接展开它的设置。 */}
+        {!solo && connected.length ? <div className="gw-subhead">{t("已接入")}<em>{connected.length}</em></div> : null}
         {connected.map(row)}
-        {others.length ? <div className="gw-subhead">{t("未接入")}<em>{others.length}</em></div> : null}
+        {!solo && others.length ? <div className="gw-subhead">{t("未接入")}<em>{others.length}</em></div> : null}
         {others.map(row)}
         {!payload ? <div className="gw-empty">{t("正在读取…")}</div> : null}
       </div>
@@ -286,6 +292,15 @@ function AgentDetail({
   const isClaude = agent.agent === "claude";
   const [selecting, setSelecting] = useState(false);
   const [windowText, setWindowText] = useState(draft.contextWindow);
+  // 通用 Agent 有的只能在自己界面里填 Key（如 Zed 存在钥匙串里）：给出地址和本 Agent 的网关 token 一键复制。
+  const [copied, setCopied] = useState<"url" | "token" | null>(null);
+  const token = payload?.gateway.bindings[agent.agent as GatewayAgentId]?.token ?? "";
+  const copy = (kind: "url" | "token", text: string) => {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(kind);
+      window.setTimeout(() => setCopied((current) => (current === kind ? null : current)), 1500);
+    }).catch(() => undefined);
+  };
   const selectRef = useRef<HTMLButtonElement>(null);
   useEffect(() => setWindowText(draft.contextWindow), [draft.contextWindow]);
   const providers = (payload?.pool ?? []).filter(providerEnabled);
@@ -306,6 +321,28 @@ function AgentDetail({
           <span className="gw-detail-label">{tf("在 {0} 里", [agent.name])}</span>
           <div className="gw-detail-value">
             <span>{t("在 Claude Code 的")} <code className="gw-code">/model</code> {t("里切换 opus · sonnet · haiku 档，各档用的模型在下面设置。")}</span>
+          </div>
+        </div>
+      ) : null}
+      {agent.hint ? (
+        <div className="gw-detail-row">
+          <span className="gw-detail-label">{tf("在 {0} 里", [agent.name])}</span>
+          <div className="gw-detail-value">
+            <span>{t(agent.hint)}</span>
+            {agent.enabled ? (
+              <>
+                <button className="gw-text-button" onClick={() => copy("url", `${agent.baseUrl}/v1`)} type="button">
+                  {copied === "url" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {t("复制地址")}
+                </button>
+                {token ? (
+                  <button className="gw-text-button" onClick={() => copy("token", token)} type="button">
+                    {copied === "token" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {t("复制 token")}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
           </div>
         </div>
       ) : null}

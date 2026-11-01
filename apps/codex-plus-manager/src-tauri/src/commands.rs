@@ -6077,7 +6077,7 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
 
 #[tauri::command]
 pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
-    match script_market::fetch_market_manifest(script_market::DEFAULT_MARKET_INDEX_URL).await {
+    match script_market::cached_market_manifest(true).await {
         Ok(manifest) => ok(
             "脚本市场已刷新。",
             script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),
@@ -6198,6 +6198,8 @@ pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
         .and_then(|status| status.debug_port)
         .unwrap_or_else(default_debug_port);
     let manager = default_user_script_manager();
+    // 手动改过拓展文件后热重载：顺带让 Codex 钩子条目与拓展声明一致。
+    codex_plus_core::extension_hooks::sync_default(&manager);
     match codex_plus_core::user_scripts::reload_live_scripts(debug_port, &manager).await {
         Ok(user_scripts) => {
             let page_reload = user_scripts["reload_mode"] == "page";
@@ -6277,7 +6279,10 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 #[tauri::command]
 pub fn set_user_scripts_enabled(enabled: bool) -> CommandResult<SettingsPayload> {
     let manager = default_user_script_manager();
-    match manager.set_global_enabled(enabled) {
+    let result = manager.set_global_enabled(enabled);
+    // 拓展声明的 Codex 钩子跟着拓展开关走：同步 Codex 配置里的分发条目（失败只记日志）。
+    codex_plus_core::extension_hooks::sync_default(&manager);
+    match result {
         Ok(_) => settings_payload(
             if enabled {
                 "本地拓展整体已开启。"
@@ -6312,6 +6317,19 @@ pub fn set_user_scripts_skip_next_start(skip: bool) -> CommandResult<SettingsPay
     }
 }
 
+/// 保存拓展包的配置（清单 config 里声明的项）。页面侧要热重载后才读到新值，由前端随后触发。
+#[tauri::command]
+pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>) -> CommandResult<SettingsPayload> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return failed("拓展 key 不能为空。", fallback_settings_payload());
+    }
+    match default_user_script_manager().set_extension_config(trimmed, &values) {
+        Ok(_) => settings_payload("拓展配置已保存。", "拓展配置保存失败"),
+        Err(error) => failed(&format!("拓展配置保存失败：{error:#}"), fallback_settings_payload()),
+    }
+}
+
 #[tauri::command]
 pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
@@ -6319,7 +6337,9 @@ pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<Sett
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
-    match manager.set_script_enabled(trimmed, enabled) {
+    let result = manager.set_script_enabled(trimmed, enabled);
+    codex_plus_core::extension_hooks::sync_default(&manager);
+    match result {
         Ok(_) => settings_payload(
             if enabled {
                 "脚本已启用。"
@@ -6342,7 +6362,9 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
-    match manager.delete_user_script(trimmed) {
+    let result = manager.delete_user_script(trimmed);
+    codex_plus_core::extension_hooks::sync_default(&manager);
+    match result {
         Ok(_) => settings_payload("脚本已删除。", "脚本删除失败"),
         Err(error) => failed(
             &format!("脚本删除失败：{error}"),
@@ -7487,7 +7509,7 @@ fn current_skills_payload(manager: &codex_plus_core::skills::SkillsManager) -> S
     skills_payload(manager, &all_cached_repo_skills(), Vec::new())
 }
 
-pub(super) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
+pub(crate) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
     codex_plus_core::skills::SkillsManager::new(
         codex_plus_core::paths::default_skills_source_dir(),
         codex_plus_core::paths::default_skill_backups_dir(),
@@ -7882,6 +7904,23 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
             "configured": codex_plus_core::relay_proxy::configured_proxy_for_profile(&profile_id).is_some()
         }),
     )
+}
+
+/// 实时请求流：托盘「流量」页签和总览拓扑图的光点动画每秒轮询它。
+/// 只读日志末尾和进行中的请求，不补会话标题和费用，保持轻量。
+#[tauri::command]
+pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
+    let limit = limit.unwrap_or(30).clamp(1, 200);
+    match codex_plus_core::request_log::read_recent_request_logs(limit) {
+        Ok(entries) => ok(
+            &format!("已读取 {} 条请求。", entries.len()),
+            json!({ "entries": entries }),
+        ),
+        Err(error) => failed(
+            &format!("读取请求日志失败：{error}"),
+            json!({ "entries": [] }),
+        ),
+    }
 }
 
 #[tauri::command]
@@ -10235,13 +10274,19 @@ fn script_market_payload_from_manifest(
         .iter()
         .map(|script| market_script_payload(script, &installed))
         .collect::<Vec<_>>();
+    // 精选拓展包（含官方）与已装但被下架的拓展。
+    let (packages, blocked_installed) =
+        script_market::market_packages_payload(&default_user_script_manager(), manifest);
     ScriptMarketPayload {
         market: json!({
             "status": status,
             "message": message,
             "indexUrl": script_market::DEFAULT_MARKET_INDEX_URL,
             "updatedAt": manifest.updated_at.clone().unwrap_or_default(),
-            "scripts": scripts
+            "scripts": scripts,
+            "packages": packages,
+            "blocked": manifest.blocked,
+            "blockedInstalled": blocked_installed
         }),
         user_scripts,
     }
@@ -10290,34 +10335,9 @@ fn market_script_payload(script: &MarketScript, installed: &BTreeMap<String, Str
     })
 }
 
-fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = user_scripts_config_dir();
-    UserScriptManager::new(
-        builtin_user_scripts_dir(),
-        config_dir.join("user_scripts"),
-        config_dir.join("user_scripts.json"),
-    )
-}
-
-fn user_scripts_config_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
-        }
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
-}
-
-fn builtin_user_scripts_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("user_scripts"))
-        .unwrap_or_else(|| PathBuf::from("user_scripts"))
+pub(crate) fn default_user_script_manager() -> UserScriptManager {
+    // 目录算法统一在 core，启动器、本地代理、钩子分发共用同一份。
+    codex_plus_core::user_scripts::default_user_script_manager()
 }
 
 fn diagnostics_report() -> String {

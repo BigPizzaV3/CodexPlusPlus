@@ -9,7 +9,9 @@
       && (!Array.isArray(pet.agents) || pet.agents.includes("codex")));
   }
   function codexPlusWhaleEnabled() {
-    return !codexPlusWhaleState.disposed && codexPlusBackendSettingsLoaded && codexPlusWhaleSelected();
+    // 大肥鱼是 Agent 桌宠的一种类型：跟着内置拓展「Agent 桌宠」停用 / 被顶替。
+    return !codexPlusWhaleState.disposed && codexPlusBackendSettingsLoaded && codexPlusWhaleSelected()
+      && !globalThis?.__codexPlusBuiltinInactive?.has("agent-pet");
   }
   function codexPlusWhaleStop() {
     codexPlusWhaleState.runtime?.dispose();

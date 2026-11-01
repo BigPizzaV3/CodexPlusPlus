@@ -7,6 +7,10 @@ use crate::user_scripts::UserScriptManager;
 pub const DEFAULT_MARKET_INDEX_URL: &str =
     "https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlusScriptMarket/main/index.json";
 
+/// 官方拓展的仓库所有者。精选清单里标了 `official` 的条目，仓库也必须属于这里列出的账号或组织，
+/// 才显示「官方」：清单写错或被误改时，别人的仓库也拿不到官方徽章。
+pub const OFFICIAL_OWNERS: &[&str] = &["BigPizzaV3"];
+
 const MARKET_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const MARKET_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -15,6 +19,60 @@ pub struct ScriptMarketManifest {
     pub version: u64,
     pub updated_at: Option<String>,
     pub scripts: Vec<MarketScript>,
+    /// 精选拓展包（清单里 `kind: "package"` 的条目），锁定到审核过的提交。
+    pub packages: Vec<MarketPackage>,
+    /// 下架名单：`owner/repo`。社区栏不显示，已装的提示停用。
+    pub blocked: Vec<String>,
+}
+
+/// 精选清单里的一个拓展包。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MarketPackage {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub author: String,
+    pub tags: Vec<String>,
+    pub homepage: String,
+    pub icon: String,
+    pub updated_at: String,
+    /// `owner/repo`。
+    pub repo: String,
+    /// 审核过的版本 tag（展示用），安装以 `sha` 为准。
+    pub tag: Option<String>,
+    /// 审核过的提交，安装只认它。
+    pub sha: String,
+    /// 清单声明为官方；还要仓库属于 [`OFFICIAL_OWNERS`] 才算官方。
+    pub official_claimed: bool,
+}
+
+impl MarketPackage {
+    pub fn owner(&self) -> &str {
+        self.repo.split('/').next().unwrap_or("")
+    }
+
+    pub fn is_official(&self) -> bool {
+        self.official_claimed && OFFICIAL_OWNERS.iter().any(|owner| owner.eq_ignore_ascii_case(self.owner()))
+    }
+
+    pub fn channel(&self) -> &'static str {
+        if self.is_official() {
+            crate::extension_discovery::CHANNEL_OFFICIAL
+        } else {
+            crate::extension_discovery::CHANNEL_CURATED
+        }
+    }
+
+    pub fn pinned(&self) -> crate::extension_discovery::PinnedPackage {
+        crate::extension_discovery::PinnedPackage {
+            repo: self.repo.clone(),
+            id: self.id.clone(),
+            tag: self.tag.clone(),
+            sha: self.sha.clone(),
+            channel: self.channel().to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,19 +111,27 @@ pub fn parse_market_manifest(raw: Value) -> anyhow::Result<ScriptMarketManifest>
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
-    let scripts = raw
-        .get("scripts")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
+    let entries = raw.get("scripts").and_then(Value::as_array).cloned().unwrap_or_default();
+    let is_package = |entry: &Value| entry.get("kind").and_then(Value::as_str) == Some("package");
+    let scripts = entries.iter().filter(|entry| !is_package(entry)).cloned().filter_map(parse_market_script).collect();
+    // 拓展包既可以混在 scripts 里（kind: "package"），也可以单独放在 packages 里。
+    let packages = entries
+        .iter()
+        .filter(|entry| is_package(entry))
+        .chain(raw.get("packages").and_then(Value::as_array).into_iter().flatten())
+        .filter_map(parse_market_package)
+        .collect();
+    let blocked = string_list(&raw, "blocked")
         .into_iter()
-        .filter_map(parse_market_script)
+        .filter(|repo| repo.split('/').count() == 2)
         .collect();
 
     Ok(ScriptMarketManifest {
         version,
         updated_at,
         scripts,
+        packages,
+        blocked,
     })
 }
 
@@ -139,7 +205,7 @@ pub async fn install_market_script(
 
 /// 拉清单并合并本地状态。两个 `BridgeRuntimeService` 实现共用，避免各写一遍。
 pub async fn list_market_scripts(manager: &UserScriptManager) -> anyhow::Result<Value> {
-    let manifest = fetch_market_manifest(DEFAULT_MARKET_INDEX_URL).await?;
+    let manifest = cached_market_manifest(true).await?;
     Ok(market_scripts_payload(
         manager,
         &manifest,
@@ -205,12 +271,16 @@ pub fn market_scripts_payload(
             })
         })
         .collect::<Vec<_>>();
+    let (packages, blocked_installed) = market_packages_payload(manager, manifest);
     serde_json::json!({
         "status": status,
         "message": message,
         "indexUrl": DEFAULT_MARKET_INDEX_URL,
         "updatedAt": manifest.updated_at.clone().unwrap_or_default(),
         "scripts": scripts,
+        "packages": packages,
+        "blocked": manifest.blocked,
+        "blockedInstalled": blocked_installed,
     })
 }
 
@@ -238,6 +308,133 @@ fn installed_market_versions(
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn parse_market_package(raw: &Value) -> Option<MarketPackage> {
+    let id = required_string(raw, "id")?;
+    let repo = required_string(raw, "repo")?;
+    let sha = required_string(raw, "sha")?;
+    let valid_repo = repo.split('/').count() == 2 && repo.split('/').all(|part| !part.is_empty());
+    let valid_sha = sha.len() == 40 && sha.chars().all(|ch| ch.is_ascii_hexdigit());
+    if !valid_repo || !valid_sha {
+        return None;
+    }
+    Some(MarketPackage {
+        name: required_string(raw, "name").unwrap_or_else(|| id.clone()),
+        id,
+        description: optional_string(raw, "description"),
+        version: optional_string(raw, "version"),
+        author: optional_string(raw, "author"),
+        tags: string_list(raw, "tags"),
+        homepage: optional_string(raw, "homepage"),
+        icon: optional_string(raw, "icon"),
+        updated_at: market_script_updated_at(raw),
+        repo,
+        tag: Some(optional_string(raw, "tag")).filter(|tag| !tag.is_empty()),
+        sha: sha.to_lowercase(),
+        official_claimed: raw.get("official").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+/// 最近一次成功拉到的清单。精选栏、社区栏的下架过滤都用它；10 分钟内不重复拉，拉失败时退回它。
+static MANIFEST_CACHE: std::sync::Mutex<Option<(std::time::Instant, ScriptMarketManifest)>> = std::sync::Mutex::new(None);
+const MANIFEST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 维护者刚写进市场仓库的清单。raw.githubusercontent 有几分钟 CDN 缓存，这段时间内以它为准，
+/// 免得刚收录的拓展在刷新后又消失。
+static PUBLISHED_MANIFEST: std::sync::Mutex<Option<(std::time::Instant, ScriptMarketManifest)>> = std::sync::Mutex::new(None);
+const PUBLISHED_MANIFEST_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 记下刚写进市场仓库的清单（精选收录 / 更新后调用）。
+pub fn remember_published_manifest(manifest: ScriptMarketManifest) {
+    *MANIFEST_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((std::time::Instant::now(), manifest.clone()));
+    *PUBLISHED_MANIFEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((std::time::Instant::now(), manifest));
+}
+
+/// 带缓存地取清单。`force` 时跳过缓存；拉取失败且有旧清单时返回旧清单。
+pub async fn cached_market_manifest(force: bool) -> anyhow::Result<ScriptMarketManifest> {
+    if let Some((at, manifest)) = PUBLISHED_MANIFEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
+        if at.elapsed() < PUBLISHED_MANIFEST_TTL {
+            return Ok(manifest.clone());
+        }
+    }
+    if !force {
+        if let Some((at, manifest)) = MANIFEST_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
+            if at.elapsed() < MANIFEST_CACHE_TTL {
+                return Ok(manifest.clone());
+            }
+        }
+    }
+    match fetch_market_manifest(DEFAULT_MARKET_INDEX_URL).await {
+        Ok(manifest) => {
+            *MANIFEST_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((std::time::Instant::now(), manifest.clone()));
+            Ok(manifest)
+        }
+        Err(error) => match MANIFEST_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
+            Some((_, manifest)) => Ok(manifest.clone()),
+            None => Err(error),
+        },
+    }
+}
+
+/// 精选清单给社区栏的约束。
+pub fn curated_filter(manifest: &ScriptMarketManifest) -> crate::extension_discovery::CuratedFilter {
+    crate::extension_discovery::CuratedFilter {
+        blocked: manifest.blocked.clone(),
+        curated_repos: manifest.packages.iter().map(|package| package.repo.clone()).collect(),
+        curated_ids: manifest
+            .packages
+            .iter()
+            .map(|package| (package.id.clone(), (package.repo.clone(), package.is_official())))
+            .collect(),
+        official_owners: OFFICIAL_OWNERS.iter().map(|owner| owner.to_string()).collect(),
+    }
+}
+
+/// 精选拓展包与下架提示给前端的部分。已安装状态来自社区安装记录（同仓库才算）。
+pub fn market_packages_payload(manager: &UserScriptManager, manifest: &ScriptMarketManifest) -> (Vec<Value>, Vec<Value>) {
+    let config_dir = manager.user_dir().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let store = crate::extension_discovery::CommunityStore::new(config_dir);
+    let installed = crate::extension_discovery::installed_records(&store, manager);
+    let mut packages = manifest
+        .packages
+        .iter()
+        .map(|package| {
+            let record = installed.get(&package.id).filter(|record| record.repo.eq_ignore_ascii_case(&package.repo));
+            // 没有安装记录时，本机可能就是它的源码（自己发布的）。
+            let local_source = record.is_none().then(|| crate::extension_discovery::local_source_version(manager, &package.id, &package.repo)).flatten();
+            serde_json::json!({
+                "kind": "package",
+                "id": package.id,
+                "name": package.name,
+                "description": package.description,
+                "version": package.version,
+                "author": package.author,
+                "tags": package.tags,
+                "homepage": package.homepage,
+                "icon": package.icon,
+                "updatedAt": package.updated_at,
+                "repo": package.repo,
+                "tag": package.tag,
+                "sha": package.sha,
+                "official": package.is_official(),
+                "channel": package.channel(),
+                "installed": record.is_some() || local_source.is_some(),
+                "localSource": local_source.is_some(),
+                "installedVersion": record.map(|record| record.version.clone()).or(local_source).unwrap_or_default(),
+                "installedSha": record.map(|record| record.sha.clone()).unwrap_or_default(),
+                "updateAvailable": record.is_some_and(|record| !record.sha.eq_ignore_ascii_case(&package.sha)),
+            })
+        })
+        .collect::<Vec<_>>();
+    // 官方排在精选前面。
+    packages.sort_by_key(|package| package["official"] != true);
+    let blocked_installed = installed
+        .iter()
+        .filter(|(_, record)| manifest.blocked.iter().any(|repo| repo.eq_ignore_ascii_case(&record.repo)))
+        .map(|(id, record)| serde_json::json!({ "id": id, "repo": record.repo }))
+        .collect();
+    (packages, blocked_installed)
 }
 
 fn parse_market_script(raw: Value) -> Option<MarketScript> {

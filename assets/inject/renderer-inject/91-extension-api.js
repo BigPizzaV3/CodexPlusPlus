@@ -15,7 +15,7 @@
    * 不读 DOM；实际挂载发生在 99-tail 之前，那时所有依赖函数都已可用。
    */
   const codexPlusExtensionApiVersion = 1;
-  const codexPlusExtensionAdapterVersion = "1.1.0";
+  const codexPlusExtensionAdapterVersion = "1.2.0";
 
   /** 类名与属性契约。一旦发布不再更名，新增用新名字。 */
   const codexPlusExtensionConstants = {
@@ -127,9 +127,29 @@
    * 所以逐项 try/catch，任何一个不存在或抛错都不影响其余。
    */
   function codexPlusRefreshExtensionHosts() {
+    codexPlusRefreshExtensionHostsNow();
+    scheduleCodexPlusExtensionHostsCatchUp();
+  }
+
+  /**
+   * 页面刚加载时拓展往往先于 Codex 的界面注册：注册那一刻输入框、侧栏、顶栏还没渲染，立即刷新没有地方挂。
+   * 首页静止时扫描也不会再跑，所以注册 / 撤销后再在 0.5、2、5 秒各补刷一次。连续注册共用同一组定时器；
+   * 各刷新按指纹幂等，界面没变时不动 DOM。
+   */
+  let codexPlusExtensionHostsCatchUpTimers = [];
+  function scheduleCodexPlusExtensionHostsCatchUp() {
+    for (const timer of codexPlusExtensionHostsCatchUpTimers) clearTimeout(timer);
+    codexPlusExtensionHostsCatchUpTimers = [500, 2000, 5000].map((delay) => setTimeout(codexPlusRefreshExtensionHostsNow, delay));
+  }
+
+  function codexPlusRefreshExtensionHostsNow() {
     for (const refresh of [
       refreshCodexPlusPageNav,
       refreshCodexPlusRailNavigation,
+      refreshCodexPlusComposerActions,
+      refreshCodexPlusMessageSlots,
+      refreshCodexPlusSidePanels,
+      refreshCodexPlusUiSlots,
       refreshExtensionSessionRows,
       refreshCodexPlusExtensionMenu,
     ]) {
@@ -170,6 +190,43 @@
   }
 
   /**
+   * 注册一个整页视图，并自动配一个图标栏入口。
+   *
+   * 内置的三个页面（Codex++ / 拓展 / 推荐内容）都是「rail 入口 + 整页」的形态，
+   * 第三方页面沿用同一种形态，用户才不会在弹窗里找入口。抽成独立函数是因为
+   * codexPlus.registerPage 与插件内核的 ctx.registerPage 共用这一套逻辑。
+   */
+  function codexPlusRegisterExtensionPage(definition, options = {}) {
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const pageId = `${scriptKey}:page:${options.id || codexPlusExtensionIdSeed()}`;
+    const disposePage = registerCodexPlusExtension("page", codexPlusRegistry.pages, pageId, definition, scriptKey);
+    // 入口与页面成对存在：页面没了，入口也该消失，否则点了没有任何反应。
+    const entry = {
+      ...definition,
+      label: options.navLabel || definition.navLabel || definition.title || pageId,
+      icon: options.icon || definition.icon,
+      pageId,
+      order: Math.max(1000, Number.isFinite(options.order) ? Number(options.order) : 0),
+    };
+    const navId = `${scriptKey}:navEntry:${pageId}`;
+    let disposeNav = null;
+    try {
+      // options.nav === false：只要页面、不要图标栏入口（例如从 Codex 设置页里打开的拓展分区）。
+      if (options.nav !== false) disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
+    } catch {
+      // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
+    }
+    codexPlusRefreshExtensionHosts();
+    return () => {
+      try {
+        disposeNav?.();
+      } catch {}
+      disposePage();
+      codexPlusRefreshExtensionHosts();
+    };
+  }
+
+  /**
    * 构建对外对象。
    *
    * 拆成函数而不是直接字面量，是为了让 99-tail 之前的挂载点能按顺序装配：
@@ -182,7 +239,36 @@
       constants: codexPlusExtensionConstants,
       // 用 getter 而不是快照：脚本初始化结束后再读也能拿到自己的 key。
       get script() {
-        return { key: codexPlusCurrentExtensionScriptKey() };
+        const key = codexPlusCurrentExtensionScriptKey();
+        return { key, manifest: codexPlusExtensionManifest(key) };
+      },
+
+      /** 创建一个拓展实例：ctx 上的注册都随实例卸载自动撤销，见 91-extension-runtime.js。 */
+      extension: codexPlusCreateExtension,
+      /** 早期名称。已有拓展（包括对话里生成的）在用，保留为别名。 */
+      plugin: codexPlusCreateExtension,
+
+      /** 当前已提供的服务：[{ name, owner }]。取值请在拓展里 inject 或 ctx.get。 */
+      services() {
+        return [...codexPlusServices.entries()].map(([name, entry]) => ({ name, owner: entry.owner }));
+      },
+
+      /**
+       * 在拓展实例里运行 dsh 前端插件（由 Codex++ 生成的 dsh 配套拓展包调用）：modules 是截住的
+       * __ModuleLoader__.load 参数，dsh 插槽映射到 Codex++ 的插槽，见 96-dsh-client.js。
+       */
+      dshClient(ctx, modules, options) {
+        return codexPlusRunDshClient(ctx, modules, options);
+      },
+
+      /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+      currentSessionId() {
+        return codexPlusCurrentSessionId();
+      },
+
+      /** 内置拓展的现状：[{ id, name, active, disabled, replacedBy }]。见 96-builtin-extensions.js。 */
+      builtins() {
+        return codexPlusBuiltinExtensionList();
       },
 
       /** 显示提示。type: info | success | warn | error */
@@ -196,6 +282,81 @@
 
       /** 调用后端白名单路由，失败时 reject。 */
       call: codexPlusExtensionCall,
+
+      /**
+       * 注册斜杠命令：在输入框输入「/name 参数」回车时调用 run(args, { editor, insertText, setText, toast })，
+       * 输入框随后清空；输入「/」时在输入框上方提示匹配的拓展命令，Tab 补全。
+       */
+      registerCommand(definition, options = {}) {
+        return codexPlusRegisterExtensionCommand(definition, options);
+      },
+
+      /**
+       * 在输入区（发送按钮所在那一行）加一个图标按钮。
+       * onActivate({ editor, insertText, close }) 中 insertText(text) 把文字插入当前输入框。
+       */
+      registerComposerAction(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, options);
+      },
+
+      /**
+       * 在每条对话消息的操作行（复制、编辑按钮旁）加一个图标按钮。
+       * roles 限定 "user" / "assistant"；visible(message) 返回 false 时这条消息不显示；
+       * onActivate({ message, close }) 里 message = { role, id, turnId, conversationId, text, element }。
+       */
+      registerMessageAction(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("messageAction", codexPlusRegistry.messageActions, definition, options);
+      },
+
+      /**
+       * 在每条对话消息的正文下方挂一块内容：render({ message, container }) 往 container 里画。
+       * 消息文字变化（流式输出）时会清空 container 重新调用；container 留空则不占位。
+       */
+      registerMessageDecoration(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("messageDecoration", codexPlusRegistry.messageDecorations, definition, options);
+      },
+
+      /**
+       * 注册右侧面板：顶栏右侧出现一个开关按钮，打开时 Codex 主区域往左让出面板宽度。
+       * render({ container, close }) 每次打开都调用，可返回清理函数（关闭时调用）。
+       * 返回的撤销函数上带 open() / close() / toggle()。
+       */
+      registerSidePanel(definition, options = {}) {
+        return codexPlusRegisterExtensionSidePanel(definition, options);
+      },
+
+      /**
+       * 往 Codex 界面的固定位置放内容：slot 为 composer.above、thread.top、thread.bottom、sidebar.top、
+       * sidebar.bottom、titlebar。render({ container, slot }) 在容器新建时调用（Codex 重建 DOM 后会再调），
+       * 可返回清理函数。返回的撤销函数上带 refresh() 强制重画。
+       */
+      registerInputTrigger(definition, options = {}) {
+        return codexPlusRegisterInputTrigger(definition, options);
+      },
+      registerShortcut(definition, options = {}) {
+        return codexPlusRegisterShortcut(definition, options);
+      },
+      registerTheme(definition, options = {}) {
+        return codexPlusRegisterTheme(definition, options);
+      },
+      ask(question) {
+        return codexPlusAsk(question);
+      },
+      registerSlot(definition, options = {}) {
+        return codexPlusRegisterExtensionSlot(definition, options);
+      },
+      /** 右下角悬浮球面板里加一个页签：render({ container, close })，可返回清理函数。 */
+      registerFloatingTab(definition, options = {}) {
+        return codexPlusRegisterFloatingTab(definition, options);
+      },
+      /** 对话里的工具调用 / 命令条目末尾挂内容：tools / kinds 过滤，render({ container, call })。 */
+      registerToolView(definition, options = {}) {
+        return codexPlusRegisterToolView(definition, options);
+      },
+      /** Codex 设置页左侧导航末尾加一项，点开是 render({ container, close }) 画的页面。 */
+      registerSettingsSection(definition, options = {}) {
+        return codexPlusRegisterSettingsSection(definition, options);
+      },
 
       /** 在会话行「更多操作」里加一项。 */
       registerRowAction(definition, options = {}) {
@@ -231,32 +392,7 @@
        * render 每次打开都被重新调用，不要缓存 DOM（见本文件顶部的生命周期约定）。
        */
       registerPage(definition, options = {}) {
-        const scriptKey = codexPlusCurrentExtensionScriptKey(options);
-        const pageId = `${scriptKey}:page:${options.id || codexPlusExtensionIdSeed()}`;
-        const disposePage = registerCodexPlusExtension("page", codexPlusRegistry.pages, pageId, definition, scriptKey);
-        // 入口与页面成对存在：页面没了，入口也该消失，否则点了没有任何反应。
-        const entry = {
-          ...definition,
-          label: options.navLabel || definition.navLabel || definition.title || pageId,
-          icon: options.icon || definition.icon,
-          pageId,
-          order: Math.max(1000, Number.isFinite(options.order) ? Number(options.order) : 0),
-        };
-        const navId = `${scriptKey}:navEntry:${pageId}`;
-        let disposeNav = null;
-        try {
-          disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
-        } catch {
-          // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
-        }
-        codexPlusRefreshExtensionHosts();
-        return () => {
-          try {
-            disposeNav?.();
-          } catch {}
-          disposePage();
-          codexPlusRefreshExtensionHosts();
-        };
+        return codexPlusRegisterExtensionPage(definition, options);
       },
 
       /** 注册清理函数，热重载时逆序执行。 */

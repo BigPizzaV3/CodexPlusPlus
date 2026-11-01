@@ -197,10 +197,14 @@
         "existing-renderer"
       );
     }
+    // 拓展注册的图标栏入口也在这里补（见 installCodexPlusNavigationEntries）。
     installCodexPlusNavigationEntries();
-    // 拓展注册的图标栏入口与内置入口走同一条刷新路径：rail 渲染晚于注入，
-    // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
-    refreshCodexPlusRailNavigation();
+    // 输入区 footer 会随会话切换、首页与对话页切换而重建，拓展的输入区按钮每轮补一次（按指纹幂等）。
+    refreshCodexPlusComposerActions();
+    // 消息插槽与侧边面板：消息、顶栏都会重建，按指纹幂等补齐；对话内容变化由插槽自己的观察器跟。
+    refreshCodexPlusMessageSlots();
+    refreshCodexPlusSidePanels();
+    refreshCodexPlusUiSlots();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
@@ -618,9 +622,8 @@
         }
       }
     }
-    if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-    if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    refreshDreamSkin();
+    // 内置拓展登记的扫描步骤（桌宠与大肥鱼、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
+    runCodexPlusScanSteps();
     refreshThreadIdBadges();
     // 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
     runScanStep(filterDeletedSessionRows);
@@ -628,10 +631,27 @@
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
-    refreshSideChatSaveButtons();
     removeLegacyCodexServiceTierBadges();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
+  }
+
+  /** 扫描步骤登记处：id → 函数。内置拓展在 apply 里登记、卸下时撤销（见 96-builtin-extensions.js）。 */
+  function codexPlusScanSteps() {
+    globalThis.__codexPlusScanSteps ??= new Map();
+    return globalThis.__codexPlusScanSteps;
+  }
+
+  function registerCodexPlusScanStep(id, step) {
+    const steps = codexPlusScanSteps();
+    steps.set(id, step);
+    return () => {
+      if (steps.get(id) === step) steps.delete(id);
+    };
+  }
+
+  function runCodexPlusScanSteps() {
+    for (const step of [...codexPlusScanSteps().values()]) runScanStep(step);
   }
 
   function runScanStep(step) {

@@ -295,7 +295,8 @@
 .mg-toolbar-actions { display:flex; align-items:center; gap:6px; }
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-head,
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-row,
-.mg-skill-matrix .mg-skill-group-row { grid-template-columns:minmax(180px,1fr) 116px repeat(3,76px) 116px; min-width:680px; }
+.mg-skill-matrix .mg-skill-group-row { grid-template-columns:minmax(180px,1fr) 116px repeat(var(--mg-agent-columns,3),76px) 116px; min-width:var(--mg-skill-min-width,680px); }
+.mg-agent-matrix.mg-skill-matrix[data-columns="1"] { --mg-skill-min-width:528px; }
 .mg-skills-page .mg-toolbar { flex-wrap:wrap; }
 .mg-agent-matrix.mg-skill-matrix { overflow:auto; }
 .mg-skill-matrix .mg-row-main { width:100%; cursor:pointer; }

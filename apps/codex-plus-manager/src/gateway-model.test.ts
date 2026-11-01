@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  defaultProviderAgents,
+  glanceAgents,
+  skippedAgents,
   isDirectProxy,
   proxyAddressError,
   agentModels,
@@ -484,4 +487,15 @@ test("供应商代理：留空和直连都合法，直连不分大小写（#2760
   assert.equal(isDirectProxy("Direct"), true);
   assert.equal(isDirectProxy(""), false);
   assert.equal(isDirectProxy("http://direct.example:8080"), false);
+});
+
+test("添加供应商：只给内置和已接入的 Agent 勾选，装了没接入的既不列出也不跳过", () => {
+  const view = (agent: string, enabled: boolean) => ({ agent, name: agent, enabled, baseUrl: "", defaultModel: "", models: [] });
+  const payload = {
+    agents: [view("codex", true), view("claude", false), view("grok", false), view("opencode", true), view("hermes", false)],
+    gateway: { bindings: {} },
+  } as unknown as GatewayPayload;
+  assert.deepEqual(glanceAgents(payload.agents).map((agent) => agent.agent), ["codex", "claude", "grok", "opencode"]);
+  assert.deepEqual(defaultProviderAgents(payload), ["codex", "claude", "grok", "opencode"]);
+  assert.deepEqual(skippedAgents(payload, ["codex"]), ["claude", "grok", "opencode"]);
 });

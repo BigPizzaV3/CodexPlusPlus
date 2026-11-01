@@ -133,6 +133,12 @@ const CLIENT_OWNED_FLAGS = [
   "--codex-plus-cu-mcp",
   "--codex-plus-browser-mcp",
   "--codex-plus-agent-mcp",
+  "--codex-plus-dsh-mcp",
+  // 拓展 MCP（对话造拓展）与它改名前的旧参数：杀掉后 Codex 不会自动重连，当前对话的拓展工具报 Transport closed。
+  "--codex-plus-extension-mcp",
+  "--codex-plus-plugin-mcp",
+  // 拓展钩子分发：Codex 每次工具调用前后短暂拉起，杀掉会让正在执行的钩子失败。
+  "--codex-plus-hook",
   "--codex-plus-browser-turn-end",
   "--codex-plus-cu-cli",
 ];

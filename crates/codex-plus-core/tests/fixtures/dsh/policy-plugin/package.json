@@ -1,0 +1,12 @@
+{
+  "name": "dsh-policy-demo",
+  "version": "0.1.0",
+  "description": "演示 dsh 事件与系统提示词如何映射到 Codex 钩子和 instructions",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/schemastery": "*"
+  }
+}

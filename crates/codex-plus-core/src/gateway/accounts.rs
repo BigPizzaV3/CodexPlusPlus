@@ -166,7 +166,7 @@ fn decode(value: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-fn jwt_claims(token: &str) -> Value {
+pub(crate) fn jwt_claims(token: &str) -> Value {
     token
         .split('.')
         .nth(1)
@@ -314,7 +314,7 @@ async fn wait_for_callback(
     Ok(params.get("code").cloned().unwrap_or_default())
 }
 
-async fn wait_for_callback_params(
+pub(crate) async fn wait_for_callback_params(
     listener: &tokio::net::TcpListener,
     callback_path: &str,
     state: &str,
@@ -2086,6 +2086,9 @@ pub async fn prepare_relay(relay: &RelayProfile) -> anyhow::Result<RelayProfile>
     let Some((kind, value)) = account_kind(relay) else {
         return Ok(relay.clone());
     };
+    if kind.starts_with(crate::gateway::subscriptions::KIND_PREFIX) {
+        return Ok(crate::gateway::subscriptions::prepare(relay));
+    }
     match kind.as_str() {
         "copilot" => prepare_copilot(relay, &value).await,
         "grok" => prepare_grok(relay, &value).await,

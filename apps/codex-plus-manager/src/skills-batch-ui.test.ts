@@ -6,6 +6,7 @@ import ts from "typescript";
 import { customSkillGroupKey, defaultSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, SkillBatchRegistry } from "./skill-agent-batch.ts";
 import { SkillTaskQueue } from "./skill-task-queue.ts";
+import { singleAgent, type AgentFocus } from "./agent-focus-model.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
 type FixtureSkill = { id: string; name: string; description: string; repoKey: string; repoPath?: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean };
@@ -22,7 +23,7 @@ const skill = (id: string, repoKey: string): FixtureSkill => ({ id, name: id, de
   enabled: false, bundled: false, updateAvailable: false, agents: [], managed: true });
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function createHarness(saved = "{}") {
+function createHarness(saved = "{}", focus: AgentFocus = "all") {
   const slots: any[] = [];
   const effects: Array<() => void> = [];
   const cleanups: Array<() => void> = [];
@@ -37,12 +38,14 @@ function createHarness(saved = "{}") {
   const failures = new Set(["a2"]);
   const updateCalls: Array<{ command: string; args: any }> = [];
   const installCalls: Array<{ command: string; args: any }> = [];
+  const agentCalls: Array<{ command: string; args: any }> = [];
   const updateQueue = new SkillTaskQueue<any>();
   const skillBatchRegistry = new SkillBatchRegistry();
   let releasePreview: (() => void) | undefined;
   const previewGate = new Promise<void>((resolve) => { releasePreview = resolve; });
   let cursor = 0;
   let elements: Element[] = [];
+  let agentFocus = focus;
   const server = { status: "ok", message: "ok", skills: [skill("a", "a/repo@main"), skill("a2", "a/repo@main"), skill("z", "z/repo@main")],
     repos: [], pendingImportedRepos: [], repositorySkills: [], repoCounts: {}, repoErrors: [], skillsDir: "", codexSkillsDir: "" };
   const snapshot = () => structuredClone(server);
@@ -69,6 +72,7 @@ function createHarness(saved = "{}") {
       return snapshot();
     }
     if (command !== "set_skill_enabled_for") throw new Error(`unexpected command ${command}`);
+    agentCalls.push({ command, args });
     const target = server.skills.find((item) => item.id === args.id)!;
     if (args.id === "z") {
       target.agents = [args.agent];
@@ -116,7 +120,7 @@ function createHarness(saved = "{}") {
     repoKey: (repo: any) => `${repo.owner}/${repo.name}@${repo.branch}${repo.subdir ? `:${repo.subdir}` : ""}`,
     repoFromKey: () => null,
     repoUrl: () => "", sourceLabel: (item: FixtureSkill) => item.repoKey.split("@", 1)[0], importChannel: () => "",
-    MCP_AGENTS: ["codex", "claude", "grok"], skillUpdateQueue: updateQueue, skillBatchRegistry,
+    MCP_AGENTS: ["codex", "claude", "grok"], singleAgent, useAgentFocus: () => agentFocus, skillUpdateQueue: updateQueue, skillBatchRegistry,
     checkRepositories: async () => {}, openDialog: async () => null, appConfirm: async () => true, appPrompt: async () => null,
   };
   for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "SortableSkillGroup", "DndContext", "SortableContext", "SkillActionMenu",
@@ -158,11 +162,33 @@ function createHarness(saved = "{}") {
     collect(context.SkillRepoDrawer(props));
     return elements;
   };
-  return { render, renderDrawer, find, groupSelect, groupInput, row, sort, order, expand, pending, pendingLoads, pendingDataUpdates, failures, notices, storage, server, updateCalls, installCalls, updateQueue,
+  return { render, renderDrawer, find, groupSelect, groupInput, row, sort, order, expand, pending, pendingLoads, pendingDataUpdates, failures, notices, storage, server, updateCalls, installCalls, agentCalls, updateQueue,
     holdLoads: (count: number) => { holdLoads = count; }, deferDataUpdates: () => { deferDataUpdates = true; },
     unmount: () => { cleanups.splice(0).forEach((cleanup) => cleanup()); slots.length = 0; },
-    focus: () => windowListeners.get("focus")?.(), releasePreview: () => releasePreview?.() };
+    focus: () => windowListeners.get("focus")?.(), releasePreview: () => releasePreview?.(),
+    setFocus: (value: AgentFocus) => { agentFocus = value; render(); } };
 }
+
+test("group selection changes only the chosen agent across focus modes", async () => {
+  const ui = createHarness("{}", "codex");
+  ui.server.skills[0].agents = ["claude", "grok"];
+  ui.server.skills[1].bundled = true;
+  ui.render(); await tick(); ui.render();
+  assert.equal(ui.groupInput("repo:a/repo", "codex").props.checked, false);
+  ui.groupInput("repo:a/repo", "codex").props.onChange({ target: { checked: true } });
+  assert.deepEqual(ui.agentCalls.map((call) => call.args.agent), ["codex"]);
+  assert.deepEqual([...ui.server.skills[0].agents].sort(), ["claude", "codex", "grok"]);
+  ui.pending.shift()!.resolve(null); await tick(); ui.render();
+  assert.equal(ui.groupInput("repo:a/repo", "codex").props.checked, true);
+  ui.setFocus("all");
+  assert.equal(ui.groupInput("repo:a/repo", "claude").props.checked, true);
+  ui.groupInput("repo:a/repo", "claude").props.onChange({ target: { checked: false } });
+  assert.deepEqual(ui.agentCalls.map((call) => call.args.agent), ["codex", "claude"]);
+  assert.deepEqual([...ui.server.skills[0].agents].sort(), ["codex", "grok"]);
+  ui.pending.shift()!.resolve(null); await tick(); ui.render();
+  assert.equal(ui.groupInput("repo:a/repo", "claude").props.checked, false);
+  assert.equal(ui.groupInput("repo:a/repo", "codex").props.checked, true);
+});
 
 test("pending batch survives page remount and releases its lock after failure", async () => {
   const ui = createHarness();

@@ -1,0 +1,9 @@
+{
+  "name": "dsh-client-demo",
+  "version": "0.1.0",
+  "description": "演示带前端半边（dsh.client）的 dsh 插件：宿主半边注册 /api 路由，前端半边往浮层与会话菜单放 React 组件",
+  "type": "module",
+  "exports": { ".": "./index.js", "./client": "./client.js", "./package.json": "./package.json" },
+  "dsh": { "client": { "platform": "web", "immediately": true } },
+  "peerDependencies": { "@deepseek-ai/cordis": "*" }
+}

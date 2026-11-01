@@ -5,7 +5,8 @@
  */
 import { PRESETS } from "./presets.ts";
 
-export type GatewayAgentId = "codex" | "claude" | "grok";
+/** 内置三个之外，通用 Agent 的 id 由后端的规格表决定（如 "opencode"）。 */
+export type GatewayAgentId = "codex" | "claude" | "grok" | (string & {});
 export type UnknownModelPolicy = "mapToDefault" | "passthrough";
 export type KeyRotationMode = "sticky" | "roundRobin";
 export type GroupMode = "inOrder" | "rotate" | "weighted" | "usage" | "fast" | "manual";
@@ -140,6 +141,12 @@ export type QuotaWindow = { windowMinutes: number | null; usedPercent: number; r
 export type ProviderQuota = { windows: QuotaWindow[]; updatedAtMs: number };
 export type SpeedView = { relayId: string; model: string; ms: number; samples: number };
 
+/** 私有接口订阅的登录方式。 */
+export type SubscriptionLoginMethod = "browser" | "deviceCode" | "importLocal" | "paste";
+export type SubscriptionView = { id: string; name: string; methods: SubscriptionLoginMethod[]; note: string };
+/** 开始登录的结果：要打开的网址、验证码、说明，以及原样传回去的状态。 */
+export type SubscriptionLoginStart = { openUrl?: string; userCode?: string; message: string; state: unknown };
+
 export type GatewayAgentView = {
   agent: GatewayAgentId;
   name: string;
@@ -147,6 +154,8 @@ export type GatewayAgentView = {
   version?: string | null;
   /** 网关改写的配置文件。 */
   configPath?: string;
+  /** 通用 Agent：在 Agent 里怎么切模型、接入后要不要重启等提示。 */
+  hint?: string;
   enabled: boolean;
   baseUrl: string;
   defaultModel: string;
@@ -219,6 +228,8 @@ export type GatewayPayload = {
   speeds?: SpeedView[];
   /** 可复制进网关的直连模式供应商。 */
   codexProviders: GatewayPoolEntry[];
+  /** 能在网关里登录的私有接口订阅（Cursor、Kiro 等）；旧版后端没有。 */
+  subscriptions?: SubscriptionView[];
   claudeProviders: Array<{ id: string; name: string }>;
   grokProfiles: Array<{ id: string; name: string }>;
   /** OpenCode 里保存的 OpenCode Go / Zen Key。 */
@@ -298,14 +309,14 @@ export function draftFromBinding(binding: AgentBinding | undefined): BindingDraf
 
 /** 添加供应商时默认勾选的 Agent：没关掉「添加供应商时自动加入」的。 */
 export function defaultProviderAgents(payload: GatewayPayload | null): GatewayAgentId[] {
-  return (payload?.agents ?? [])
+  return glanceAgents(payload?.agents)
     .map((agent) => agent.agent)
     .filter((agent) => payload?.gateway.bindings[agent]?.autoJoinProviders !== false);
 }
 
-/** 添加命令带上的 `skipAgents`：没勾选的 Agent。 */
+/** 添加命令带上的 `skipAgents`：列出来但没勾选的 Agent。没列出来的（装了没接入的）不跳过，以后接入时照常能用。 */
 export function skippedAgents(payload: GatewayPayload | null, picked: GatewayAgentId[]): GatewayAgentId[] {
-  return (payload?.agents ?? []).map((agent) => agent.agent).filter((agent) => !picked.includes(agent));
+  return glanceAgents(payload?.agents).map((agent) => agent.agent).filter((agent) => !picked.includes(agent));
 }
 
 /** 窗口支持纯数字和 `200k` / `1M` 写法。无效时返回 NaN。 */
@@ -510,8 +521,24 @@ export const GATEWAY_CLAUDE_PROVIDER_ID = "codex-plus-gateway";
 
 export const GATEWAY_AGENT_NAMES: Record<string, string> = { claude: "Claude Code", grok: "Grok", codex: "Codex" };
 
+/** 内置的三个 Agent：总览、托盘里总是列出。 */
+export const BUILTIN_GATEWAY_AGENTS = ["codex", "claude", "grok"];
+
+/** 总览、托盘这类一屏看全的地方：内置的三个，加上已经接入网关的通用 Agent；
+ * 本机装了但没接入的只在「Agent 接入」页里列出。 */
+export function glanceAgents<T extends { agent: string; enabled: boolean }>(agents: T[] | undefined): T[] {
+  return (agents ?? []).filter((agent) => agent.enabled || BUILTIN_GATEWAY_AGENTS.includes(agent.agent));
+}
+
 export function agentName(agent: string): string {
   return GATEWAY_AGENT_NAMES[agent] ?? agent;
+}
+
+/** 记下后端给的 Agent 名字（通用 Agent 的名字只在网关数据里有），会话、用量等页面按 id 取名时用。 */
+export function rememberAgentNames(agents: Array<{ agent: string; name: string }> | undefined) {
+  for (const item of agents ?? []) {
+    if (item.name && !GATEWAY_AGENT_NAMES[item.agent]) GATEWAY_AGENT_NAMES[item.agent] = item.name;
+  }
 }
 
 export type PickerItem = {

@@ -43,7 +43,8 @@ pub fn check(ctx: &ApplyContext, agent: &ToolId) -> Option<Drift> {
         ToolId::Codex => codex(&ctx.codex_home, ctx.port),
         ToolId::Claude => claude(&ctx.claude.claude_home),
         ToolId::Grok => grok(&ctx.grok_home),
-        _ => None,
+        other => crate::gateway::agents::spec(other.as_str())
+            .and_then(|spec| crate::gateway::agents::connect::drift(ctx, spec)),
     }
 }
 

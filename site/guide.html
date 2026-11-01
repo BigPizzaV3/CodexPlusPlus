@@ -16,37 +16,47 @@
 <link rel="icon" type="image/png" href="assets/logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,800;1,400&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=20261029-guide">
-<link rel="stylesheet" href="css/guide.css?v=20261029-1">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css?v=20261031-1">
+<link rel="stylesheet" href="css/guide.css?v=20261030-1">
+<script>
+  // 主题与 js 标记要在首帧前定好，避免闪一下
+  (function () {
+    var r = document.documentElement;
+    r.classList.add("js");
+    try { var t = localStorage.getItem("codexpp-theme"); if (t === "light" || t === "dark") r.setAttribute("data-theme", t); } catch (e) {}
+  })();
+</script>
 </head>
 <body class="guide-page">
 
 <!-- ========== 顶栏 ========== -->
 <header class="site-nav solid" id="siteNav">
   <div class="nav-inner">
-    <a class="brand" href="index.html">
-      <img src="assets/logo.png" alt="Codex++ 标志" class="brand-logo">
+    <a class="brand" href="index.html" aria-label="Codex++ 首页">
+      <img src="assets/logo.png" alt="" class="brand-logo">
       <span class="brand-name">Codex<b>++</b></span>
     </a>
-    <nav class="nav-links">
+    <nav class="nav-links" aria-label="页面导航">
+      <a href="index.html#create">拓展</a>
+      <a href="index.html#gateway">网关</a>
       <a href="index.html#features">功能</a>
-      <a href="index.html#showcase">实拍</a>
+      <a href="index.html#modes">两种模式</a>
       <a href="guide.html" class="active" aria-current="page">使用教程</a>
-      <a href="index.html#faq">常见问题</a>
+      <a href="index.html#faq">问答</a>
       <a href="index.html#community">社区</a>
-      <a href="index.html#download">下载</a>
     </nav>
     <div class="nav-actions">
-      <span class="nav-version mono" data-site-version>v2.1.2</span>
+      <span class="nav-version mono" data-site-version>v2.1.4</span>
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="切换明暗主题">
+        <svg class="i-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+        <svg class="i-moon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+      </button>
       <a class="btn btn-ghost btn-sm" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">
         <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
         GitHub
       </a>
-      <a class="btn btn-primary btn-sm" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        下载
-      </a>
+      <a class="btn btn-primary btn-sm" href="index.html#start">下载</a>
     </div>
   </div>
 </header>
@@ -549,16 +559,6 @@ another-model<span class="h">[128000]</span></code></pre>
 
 <script>
   (function () {
-    // 版本号与首页同源：取 releases.json 的最新一条
-    fetch("data/releases.json", { cache: "no-store" })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) {
-        var rel = data && data.releases && data.releases[0];
-        if (!rel) return;
-        document.querySelectorAll("[data-site-version]").forEach(function (el) { el.textContent = "v" + rel.version; });
-      })
-      .catch(function () {});
-
     // 窄屏下目录默认收起，点目录项后自动收起
     var toc = document.getElementById("guideToc");
     var narrow = matchMedia("(max-width: 900px)");
@@ -593,5 +593,6 @@ another-model<span class="h">[128000]</span></code></pre>
     update();
   })();
 </script>
+<script src="js/site.js?v=20261031-1"></script>
 </body>
 </html>

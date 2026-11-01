@@ -403,6 +403,64 @@ pub fn model_is_routable(gateway: &GatewaySettings, binding: &AgentBinding, mode
         || qualified_provider(gateway, binding, model).is_some()
 }
 
+/// 暴露给 Agent 的模型：默认模型在前，然后是池里所有能用的模型和路由组，以及绑定里声明的模型。
+pub fn binding_exposed_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<String> {
+    let mut models = Vec::new();
+    let default = binding_default_model(gateway, binding);
+    if !default.is_empty() {
+        models.push(default);
+    }
+    for model in pool_models(gateway, binding)
+        .into_iter()
+        .chain(binding.declared_models())
+    {
+        if !models.contains(&model) {
+            models.push(model);
+        }
+    }
+    models
+}
+
+/// 非 Claude 模型给 Claude Desktop 用的别名前缀。
+///
+/// Claude Desktop 的第三方网关模式在模型列表和发起会话时都会检查模型 id：必须含 claude / opus 等字样，
+/// 且不能含 gpt、grok、codex、gemini 等一长串黑名单字样，带 `claude-` 前缀也不行。
+/// 所以别名用「前缀 + 纯数字」，数字拼不出黑名单里的词；真实名字放在 `display_name` 里给选择器显示。
+pub const CLAUDE_ALIAS_PREFIX: &str = "claude-gw-";
+
+/// Claude Desktop 选择器里这个模型用的 id：名字里带 claude 的原样，其余换成稳定的数字别名
+/// （同一个模型名永远得到同一个别名，网关重启、池子变化都不影响已选的会话）。
+pub fn claude_alias(model: &str) -> String {
+    if model.to_ascii_lowercase().contains("claude") {
+        return model.to_string();
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(model.as_bytes());
+    let mut head = [0_u8; 8];
+    head.copy_from_slice(&digest[..8]);
+    format!(
+        "{CLAUDE_ALIAS_PREFIX}{:010}",
+        u64::from_be_bytes(head) % 10_000_000_000
+    )
+}
+
+/// 把 Claude Desktop 发来的别名还原成真实模型名；不是别名、或别名对不上这个绑定的任何模型时 None。
+fn claude_alias_target(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    requested: &str,
+) -> Option<String> {
+    if !requested
+        .get(..CLAUDE_ALIAS_PREFIX.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(CLAUDE_ALIAS_PREFIX))
+    {
+        return None;
+    }
+    binding_exposed_models(gateway, binding)
+        .into_iter()
+        .find(|model| claude_alias(model).eq_ignore_ascii_case(requested))
+}
+
 /// Codex 起名请求的提示词开头：桌面版首次起名、桌面版定期重新起名、终端版起名。
 /// 这几段由 Codex 固定拼好，作为临时线程里唯一的用户消息发出。
 const CODEX_TITLE_PROMPT_PREFIXES: &[&str] = &[
@@ -468,6 +526,9 @@ pub fn effective_model(
     if requested.is_empty() {
         return default_model.to_string();
     }
+    // Claude Desktop 选的非 Claude 模型带的是数字别名，先还原成真实名字再走下面的规则。
+    let aliased = claude_alias_target(gateway, binding, requested);
+    let requested = aliased.as_deref().unwrap_or(requested);
     // 审批模型（#2703）：codex-auto-review 改发到绑定指定的模型，优先于目录匹配与未知模型策略
     // （池里的 ChatGPT 账号可能把 codex-auto-review 列进模型表，那样会直接落到订阅额度上）。
     if requested == crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL {
@@ -1203,6 +1264,36 @@ mod tests {
         // 关掉的供应商不参与；不认识的模型改写成默认模型。
         assert_eq!(routed(&gateway, "off-model")[0].1, "deepseek-v4-pro");
         assert_eq!(routed(&gateway, "claude-opus-5-5")[0].1, "deepseek-v4-pro");
+    }
+
+    /// Claude Desktop 只认 Claude 名字：非 Claude 模型给数字别名，路由时还原成真实模型。
+    #[test]
+    fn claude_aliases_are_stable_digits_and_route_back() {
+        // 带 claude 的名字原样；其余是「前缀 + 10 位数字」，同名永远同一个别名。
+        assert_eq!(claude_alias("claude-opus-5-5"), "claude-opus-5-5");
+        let alias = claude_alias("kimi-k3");
+        let digits = alias.strip_prefix(CLAUDE_ALIAS_PREFIX).unwrap();
+        assert_eq!(digits.len(), 10);
+        assert!(digits.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(claude_alias("kimi-k3"), alias);
+        assert_ne!(claude_alias("deepseek-v4-pro"), alias);
+
+        let gateway = gateway("deepseek-v4-pro");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        assert_eq!(
+            effective_model(&gateway, &binding, "deepseek-v4-pro", &alias.to_uppercase()),
+            "kimi-k3"
+        );
+        assert_eq!(routed(&gateway, &alias), vec![pair("kimi", "kimi-k3")]);
+        // 模型组也有别名；对不上任何模型的别名按未知模型处理。
+        assert_eq!(
+            routed(&gateway, &claude_alias("group/fast"))[0],
+            pair("ds", "deepseek-v4-flash")
+        );
+        assert_eq!(
+            routed(&gateway, "claude-gw-0000000000")[0].1,
+            "deepseek-v4-pro"
+        );
     }
 
     /// #2703：绑定指定了审批模型时，codex-auto-review 改发到它；没指定时行为不变

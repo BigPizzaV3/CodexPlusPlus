@@ -1,0 +1,8 @@
+{
+  "name": "dsh-stream-demo",
+  "version": "0.1.0",
+  "description": "演示 llm/stream 改写回复流、agent/assistant-stream 观察、agent/pre-step 按步触发",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*" }
+}
