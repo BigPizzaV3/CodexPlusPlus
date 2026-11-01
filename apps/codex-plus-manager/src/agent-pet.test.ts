@@ -255,8 +255,10 @@ test("拓展卸下时桌宠撤掉，之后再同步也不挂回来", () => {
   assert.equal(f.body.children.length, 0);
 });
 
-test("管理器：Agent 桌宠是「工具」里的独立页面，设置写进桌宠拓展的配置，图库与图片都走后端命令", () => {
-  assert.match(app, /const toolNavigationRoutes: Route\[\] = \[[^\]]*"agentPet"/);
+test("管理器：Agent 桌宠是官方拓展，设置页从本地拓展那一行打开，不再单占侧栏入口；设置写进桌宠拓展的配置", () => {
+  assert.doesNotMatch(app, /const toolNavigationRoutes: Route\[\] = \[[^\]]*"agentPet"/);
+  assert.match(app, /const navParentRoute: Partial<Record<Route, Route>> = \{ agentPet: "userScripts" \}/);
+  assert.match(app, /onOpenSettings=\{script\.key === AGENT_PET_EXTENSION_KEY \? onOpenAgentPet : undefined\}/);
   assert.match(app, /route === "agentPet" \? <AgentPetExtensionScreen /);
   assert.match(app, /setExtensionConfig\(AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig\(draft\), \{ silent: true \}\)/);
   assert.match(page, /invoke<CatalogEntry\[\]>\("agent_pet_catalog"\)/);

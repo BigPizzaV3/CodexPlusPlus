@@ -1466,7 +1466,10 @@ const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "ses
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
-const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentPet", "agentCollaboration", "agentCache"];
+// Agent 桌宠是官方拓展包，设置页从「万物皆拓展 → 本地拓展」里它那一行的「设置」打开，不再单占侧栏入口。
+const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentCollaboration", "agentCache"];
+/** 不在侧栏、挂在别的入口下的页面：侧栏高亮与面包屑跟着上级入口。 */
+const navParentRoute: Partial<Record<Route, Route>> = { agentPet: "userScripts" };
 /**
  * 只在管理其他 Agent 时才有用的页面：只管理 Codex 时不进侧栏和命令面板。
  * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
@@ -4791,7 +4794,7 @@ export function App() {
   }, [agentFocus, settings]);
 
   const isGatewayPage = gatewayNavigationRoutes.includes(route);
-  const crumbGroup = isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
+  const crumbGroup = navParentRoute[route] ? routeTitle(navParentRoute[route]!) : isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
   // ⌘K：页面、各 Agent 的页面和常用操作。非当前 Agent 的页面会先切到那个 Agent。
   const paletteCommands: PaletteCommand[] = [];
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
@@ -5059,7 +5062,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} onOpenAgentPet={() => void navigate("agentPet")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
@@ -10264,7 +10267,7 @@ function dreamSkinStateLabel(state: "pass" | "warning" | "fail" | "not_running")
   return t("Codex 未运行或不可连接");
 }
 
-function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; actions: Actions }) {
+function UserScriptsScreen({ settings, market, onOpenBuiltins, onOpenAgentPet, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; onOpenAgentPet: () => void; actions: Actions }) {
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
     if (reloading) return;
@@ -10488,7 +10491,7 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
       ) : (
         <Panel>
           <div className="table">
-            {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
+            {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} onOpenSettings={script.key === AGENT_PET_EXTENSION_KEY ? onOpenAgentPet : undefined} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
           </div>
           {inventory?.builtins?.length ? <BuiltinExtensionsSummary builtins={inventory.builtins} onOpen={onOpenBuiltins} /> : null}
         </Panel>
@@ -16676,7 +16679,7 @@ function AppSidebar({
     const item = routes.find((candidate) => candidate.id === routeId);
     if (!item) return null;
     const Icon = item.icon;
-    const selected = route === item.id || navAliasRoute[route] === item.id;
+    const selected = route === item.id || navAliasRoute[route] === item.id || navParentRoute[route] === item.id;
     // 单 Agent 模式：「Agent 接入」只管这一个 Agent，叫「Codex 接入」这样更直白。
     const label = soloAgent && item.id === "gateway" ? tf("{0} 接入", [agentName(soloAgent)]) : item.label;
     return (
@@ -17042,7 +17045,13 @@ function BuiltinExtensionsSummary({ builtins, onOpen }: { builtins: BuiltinExten
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
 /// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
 /// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
-function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; actions: Actions }) {
+function ScriptRow({ script, globalEnabled, actions, onOpenSettings }: {
+  script: NonNullable<UserScriptInventory["scripts"]>[number];
+  globalEnabled: boolean;
+  actions: Actions;
+  /** 有专门设置页的拓展（Agent 桌宠）：「设置」跳到那一页，不展开通用的配置表单。 */
+  onOpenSettings?: () => void;
+}) {
   const isPackage = script.kind === "package";
   const source = script.market_id
     ? tf("市场 · {0}", [script.version || t("未知版本")])
@@ -17130,7 +17139,7 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
               </MenuItem>
             ) : null}
             {configSchema.length ? (
-              <MenuItem onClick={() => setConfigOpen((open) => !open)}>
+              <MenuItem onClick={() => (onOpenSettings ? onOpenSettings() : setConfigOpen((open) => !open))}>
                 <span className="user-script-menu-item"><Settings className="h-4 w-4" />{configOpen ? t("收起设置") : t("设置")}</span>
               </MenuItem>
             ) : null}
