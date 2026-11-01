@@ -70,7 +70,8 @@ function fixture(layout = "sidebar") {
   const calls = [];
   let railRefreshes = 0;
   const extension = node => !!node?.closest('[data-codex-plus-ext], [data-codex-plus-rail], .registered-extension');
-  const context = vm.createContext({ document, window: {}, Element, HTMLElement: Element,
+  // 注入代次：入口按钮记下建它的代次，同一代复用、更新一代遇到旧代按钮就重建（40-backend-settings.js）。
+  const context = vm.createContext({ document, window: { __codexPlusBackendGeneration: 1 }, codexPlusBackendGeneration: 1, Element, HTMLElement: Element,
     codexPlusSidebarPluginMarketId: "codex-plus-sidebar-plugin-market", codexPlusRailPluginMarketId: "codex-plus-rail-plugin-market",
     codexPlusSidebarNavId: "codex-plus-sidebar-nav", codexPlusMenuId: "codex-plus-menu", codexPlusPageClass: "codex-plus-page",
     codexPlusRailNavId: "codex-plus-rail-nav", codexPlusRailExtensionsId: "codex-plus-rail-extensions", codexPlusRailSponsorId: "codex-plus-rail-sponsor",
@@ -92,7 +93,7 @@ function fixture(layout = "sidebar") {
   });
   const functions = [
     extract(adapter, "codexPlusNativePluginNavigationEntry"), extract(adapter, "openCodexPlusNativePluginMarket"),
-    ...["codexPlusRailTemplateButton", "codexPlusRailPrimaryAnchor", "createCodexPlusRailButton", "installCodexPlusRailNavigation", "installCodexPlusSidebarNavigation", "detachCodexPlusSidebarNavigation", "removeCodexPlusRailNavigation"].map(name => extract(navigation, name)),
+    ...["codexPlusRailTemplateButton", "codexPlusRailPrimaryAnchor", "createCodexPlusRailButton", "installCodexPlusRailNavigation", "installCodexPlusSidebarNavigation", "detachCodexPlusSidebarNavigation", "removeCodexPlusRailNavigation", "codexPlusNavEntryReusable"].map(name => extract(navigation, name)),
     extract(entryNavigation, "installCodexPlusNavigationEntries"),
     ...["scanRelevantSelector", "nodeSelfOrAncestorMatchesScanRelevance", "isScanRelevantNode", "isChatContentMutation", "shouldScheduleScan"].map(name => extract(scheduler, name)),
   ].join("\n");
