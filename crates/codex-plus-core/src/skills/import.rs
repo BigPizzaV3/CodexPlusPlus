@@ -13,13 +13,21 @@ type TargetSnapshots = BTreeMap<String, Result<SkillTargetSnapshot, String>>;
 thread_local! {
     static SNAPSHOT_HASH_COUNTS: std::cell::RefCell<BTreeMap<PathBuf, usize>> = Default::default();
     static SOURCE_HASH_COUNTS: std::cell::RefCell<BTreeMap<PathBuf, usize>> = Default::default();
+    static STAGE_VERIFIED_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
 }
 
-fn import_source_hash(path: &Path) -> anyhow::Result<String> {
+#[cfg(test)]
+pub(super) fn run_stage_verified_hook() {
+    if let Some(hook) = STAGE_VERIFIED_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+fn import_source_snapshot(path: &Path) -> anyhow::Result<(String, Option<Vec<u8>>)> {
     #[cfg(test)]
     SOURCE_HASH_COUNTS
         .with(|counts| *counts.borrow_mut().entry(path.to_path_buf()).or_default() += 1);
-    skill_directory_hash(path)
+    skill_directory_snapshot(path, true)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,9 +117,11 @@ impl SkillsManager {
                     path.join(SKILL_MANIFEST_FILE).is_file(),
                     "{id} 没有 SKILL.md"
                 );
-                candidate.source_hash = import_source_hash(path).context("检查导入源失败")?;
-                (candidate.name, candidate.description) =
-                    read_skill_manifest(&path.join(SKILL_MANIFEST_FILE), id);
+                let (source_hash, manifest) =
+                    import_source_snapshot(path).context("检查导入源失败")?;
+                candidate.source_hash = source_hash;
+                let manifest = manifest.context("检查时未找到 Skill 清单")?;
+                (candidate.name, candidate.description) = parse_skill_manifest_bytes(&manifest, id);
                 candidate.matches = self
                     .import_matches_with_snapshots_unlocked(
                         &state,
@@ -759,6 +769,97 @@ mod tests {
             format!("---\nname: {name}\n---\n{body}"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn source_snapshot_keeps_manifest_bytes_from_the_hashed_version() {
+        let (temp, _) = fixture();
+        let source = temp.path().join("source");
+        write_skill(&source, "Original", "first");
+        let (hash, manifest) = import_source_snapshot(&source).unwrap();
+        write_skill(&source, "Changed", "second");
+        let (name, _) = parse_skill_manifest_bytes(manifest.as_deref().unwrap(), "fallback");
+        assert_eq!(name, "Original");
+        assert_ne!(hash, skill_directory_hash(&source).unwrap());
+    }
+
+    #[test]
+    fn source_snapshot_uses_the_manifest_name_resolved_by_the_filesystem() {
+        let (temp, _) = fixture();
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("skill.md"), "---\nname: lowercase\n---\n").unwrap();
+        let (hash, manifest) = import_source_snapshot(&source).unwrap();
+        assert_eq!(hash, skill_directory_hash(&source).unwrap());
+        if source.join(SKILL_MANIFEST_FILE).is_file() {
+            assert_eq!(
+                parse_skill_manifest_bytes(manifest.as_deref().unwrap(), "fallback").0,
+                "lowercase"
+            );
+        } else {
+            assert!(manifest.is_none());
+        }
+    }
+
+    #[test]
+    fn source_snapshot_prefers_exact_manifest_when_case_variants_coexist() {
+        let (temp, _) = fixture();
+        let source = temp.path().join("source");
+        write_skill(&source, "Exact", "body");
+        let lower = source.join("skill.md");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lower)
+        {
+            use std::io::Write;
+            file.write_all(b"---\nname: Different\n---\n").unwrap();
+        }
+        let (hash, manifest) = import_source_snapshot(&source).unwrap();
+        assert_eq!(hash, skill_directory_hash(&source).unwrap());
+        assert_eq!(
+            parse_skill_manifest_bytes(manifest.as_deref().unwrap(), "fallback").0,
+            "Exact"
+        );
+    }
+
+    #[test]
+    fn staged_import_uses_its_own_hashed_manifest_after_source_changes() {
+        let (temp, manager) = fixture();
+        let existing = temp.path().join("existing");
+        let source = temp.path().join("source");
+        write_skill(&existing, "Same Name", "existing content");
+        write_skill(&source, "Same Name", "incoming content");
+        manager
+            .import_from_local_directory("existing", &existing)
+            .unwrap();
+        let expected = skill_directory_hash(&source).unwrap();
+        let changed_source = source.clone();
+        STAGE_VERIFIED_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                write_skill(&changed_source, "Different Name", "incoming content");
+            }));
+        });
+        let staged = manager
+            .stage_skill_import("incoming", &source, "local", None, Some(&expected))
+            .unwrap();
+        assert_eq!(staged.1.name, "Same Name");
+        assert_eq!(
+            read_skill_manifest(&staged.0.join(SKILL_MANIFEST_FILE), "fallback").0,
+            staged.1.name
+        );
+        assert_eq!(
+            read_skill_manifest(&source.join(SKILL_MANIFEST_FILE), "fallback").0,
+            "Different Name"
+        );
+        let operation = manager.lock_operation().unwrap();
+        let result = manager.commit_staged_import_unlocked(&operation, staged, None, None);
+        assert!(
+            result.is_err(),
+            "the staged name still conflicts with the existing Skill"
+        );
+        assert!(!manager.source_dir.join("incoming").exists());
+        assert!(manager.source_dir.join("existing/SKILL.md").is_file());
     }
 
     #[test]

@@ -1392,13 +1392,18 @@ impl SkillsManager {
             let _ = remove_link(&staging);
             return Err(error);
         }
-        if skill_directory_hash(&staging)? != source_hash
+        let (staged_hash, staged_manifest) = skill_directory_snapshot(&staging, true)?;
+        if staged_hash != source_hash
             || skill_directory_hash(external_dir)? != source_hash
+            || staged_manifest.is_none()
         {
             let _ = remove_link(&staging);
             anyhow::bail!("导入源在复制时发生变化，请重新预览");
         }
-        let (name, description) = read_skill_manifest(&manifest, id);
+        #[cfg(test)]
+        import::run_stage_verified_hook();
+        let (name, description) =
+            parse_skill_manifest_bytes(staged_manifest.as_deref().expect("checked manifest"), id);
         let content_hash = if origin.is_some_and(|item| !item.repo_path.is_empty()) {
             skill_git_tree_hash(&staging)?
         } else {
@@ -2486,6 +2491,13 @@ fn read_skill_manifest(manifest: &Path, fallback_id: &str) -> (String, String) {
     }
 }
 
+fn parse_skill_manifest_bytes(bytes: &[u8], fallback_id: &str) -> (String, String) {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => parse_skill_frontmatter(text, fallback_id),
+        Err(_) => (fallback_id.to_string(), String::new()),
+    }
+}
+
 fn zip_entry_relative_path(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     let mut components = path.components();
@@ -3048,6 +3060,13 @@ fn link_points_to(link: &Path, target: &Path) -> bool {
 }
 
 fn skill_directory_hash(root: &Path) -> anyhow::Result<String> {
+    Ok(skill_directory_snapshot(root, false)?.0)
+}
+
+fn skill_directory_snapshot(
+    root: &Path,
+    capture_manifest: bool,
+) -> anyhow::Result<(String, Option<Vec<u8>>)> {
     fn visit(
         root: &Path,
         dir: &Path,
@@ -3089,14 +3108,35 @@ fn skill_directory_hash(root: &Path) -> anyhow::Result<String> {
     }
     let mut entries = BTreeMap::new();
     visit(root, root, &mut entries, &mut 0)?;
+    let manifest_name = if capture_manifest && root.join(SKILL_MANIFEST_FILE).is_file() {
+        let exact = entries
+            .get_key_value(SKILL_MANIFEST_FILE)
+            .filter(|(_, (directory, _))| !directory)
+            .map(|(name, _)| name.clone());
+        exact.or_else(|| {
+            let mut candidates = entries
+                .iter()
+                .filter(|(name, (directory, _))| {
+                    !directory && name.eq_ignore_ascii_case(SKILL_MANIFEST_FILE)
+                })
+                .map(|(name, _)| name.clone());
+            let candidate = candidates.next();
+            candidate.filter(|_| candidates.next().is_none())
+        })
+    } else {
+        None
+    };
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 32768];
     let mut actual_size = 0u64;
+    let mut manifest = None;
     for (name, (directory, path)) in entries {
         hasher.update(if directory { b"d" } else { b"f" });
         hasher.update((name.len() as u64).to_le_bytes());
         hasher.update(name.as_bytes());
         if !directory {
+            let capture = manifest_name.as_deref() == Some(name.as_str());
+            let mut manifest_bytes = capture.then(Vec::new);
             let mut file = std::fs::File::open(path)?;
             let mut file_hash = Sha256::new();
             loop {
@@ -3110,11 +3150,17 @@ fn skill_directory_hash(root: &Path) -> anyhow::Result<String> {
                     "Skill 内容超过 256 MiB，未完成比较"
                 );
                 file_hash.update(&buffer[..count]);
+                if let Some(bytes) = &mut manifest_bytes {
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
             }
             hasher.update(file_hash.finalize());
+            if let Some(bytes) = manifest_bytes {
+                manifest = Some(bytes);
+            }
         }
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok((format!("{:x}", hasher.finalize()), manifest))
 }
 
 /// 与 GitHub tree/ZIP 清单使用相同的 Git blob 子树哈希，导入后仍可检查更新。
