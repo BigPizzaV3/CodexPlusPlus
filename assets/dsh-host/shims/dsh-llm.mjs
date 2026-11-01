@@ -6,6 +6,7 @@
 import { randomUUID } from 'node:crypto'
 
 export const QUOTA_EXCEEDED_CODE = 'QUOTA_EXCEEDED'
+export const ACCOUNT_QUOTA_EXCEEDED_CODE = 'ACCOUNT_QUOTA'
 export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 export const IMAGE_OFFLOAD_REQUIRED_CODE = 'IMAGE_OFFLOAD_REQUIRED'
 
@@ -75,6 +76,57 @@ export function createToolResultMessage({ callId, content, isError } = {}) {
 
 export function contentHasImage(content) {
   return Array.isArray(content) && content.some((block) => block?.type === 'image')
+}
+
+export function contentHasFile(content) {
+  return Array.isArray(content) && content.some((block) => block?.type === 'file')
+}
+
+// 图片 / 文件附件给模型看的占位文字：与 dsh 逐字一致（插件常把它们拼进自己的请求或拿来比对）。
+const quoted = (value) => JSON.stringify(value)
+const imageIdentity = (ref) => (ref.name === undefined ? String(ref.attachmentId) : `${quoted(ref.name)} (${ref.attachmentId})`)
+const attachmentDigest = (ref) => String(ref.attachmentId).slice('sha256:'.length, 'sha256:'.length + 8)
+const IMAGE_EXTENSIONS = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' }
+
+function normalizedAccessText(ref, access) {
+  return ` Normalized copy (read-only; may be resized or re-encoded): ${quoted(access.readonlyPath)} (${ref.width}x${ref.height}px, ${ref.mediaType}).`
+    + ' Source dimensions, format, and byte size may differ.'
+    + ` Copy to a writable path ending in ${IMAGE_EXTENSIONS[ref.mediaType] ?? assertNever(ref.mediaType, 'image extension')} before editing.`
+}
+
+/** 附件提供方给出宿主路径、执行环境能映射时，返回只读路径；任一方给不出就是 undefined。 */
+export function resolveImageAttachmentAccess(attachments, mapHostPath, ref) {
+  const hostPath = attachments.imageHostPath(ref)
+  if (hostPath === undefined) return undefined
+  const readonlyPath = mapHostPath(hostPath)
+  return readonlyPath === undefined ? undefined : { readonlyPath }
+}
+
+export function textOnlyImageText(ref) {
+  return `[image omitted because this model accepts text only; attachment sha256:${attachmentDigest(ref)}]`
+}
+
+export function requestImageHandleText(ref, version, access) {
+  const preview = `Image ${imageIdentity(ref)}; request preview ${version.width}x${version.height}px.`
+  return access === undefined
+    ? `${preview} It may be resized or re-encoded; source dimensions, format, and byte size may differ.`
+    : preview + normalizedAccessText(ref, access)
+}
+
+export function offloadedImageText(ref, access) {
+  const identity = `image omitted to fit request image limits; ${imageIdentity(ref)}.`
+  if (access === undefined) {
+    return `[${identity} No local normalized image path is available; ask the user to attach it again if needed.]`
+  }
+  return `[${identity}${normalizedAccessText(ref, access)}]`
+}
+
+export function fileHandleText(ref, readonlyPath) {
+  const identity = `File ${quoted(ref.name)} (${ref.bytes} bytes, sha256:${attachmentDigest(ref)})`
+  if (readonlyPath === undefined) {
+    return `[${identity} was uploaded, but the current execution environment cannot access a readable path. Report that limitation if its contents are needed; do not claim to have read it.]`
+  }
+  return `[${identity}: verbatim read-only copy saved at ${quoted(readonlyPath)}. Read that path with your file tools when its contents are needed; copy it to a writable location before modifying it. When delegating file work, include this saved path in the delegation prompt; only subagents sharing this execution environment can read it.]`
 }
 
 /**

@@ -1191,13 +1191,16 @@ fn dsh_host_provided_packages_match_host_shims() {
     let host = std::fs::read_to_string(host_source("host.mjs")).unwrap();
     let start = host.find("const SHIMS = {").unwrap();
     let end = start + host[start..].find("\n}").unwrap();
-    let mut shims: Vec<&str> = host[start..end]
+    // 子路径替身（`@deepseek-ai/dsh-llm/message`）归到它的包名下。
+    let mut shims: Vec<String> = host[start..end]
         .lines()
         .filter_map(|line| line.trim().strip_prefix('\'')?.split('\'').next())
-        .filter(|name| *name != "@deepseek-ai/schemastery")
+        .map(|name| name.splitn(3, '/').take(2).collect::<Vec<_>>().join("/"))
+        .filter(|name| name != "@deepseek-ai/schemastery")
         .collect();
     shims.sort();
-    let mut provided = dsh_plugins::HOST_PROVIDED_PACKAGES.to_vec();
+    shims.dedup();
+    let mut provided = dsh_plugins::HOST_PROVIDED_PACKAGES.iter().map(|name| name.to_string()).collect::<Vec<_>>();
     provided.sort();
     assert_eq!(provided, shims);
 }
@@ -1915,6 +1918,41 @@ fn dsh_common_ecosystem_idioms_load_and_run() {
     assert_eq!(probe["fiberId"], "dsh-compat-plugin", "ctx.fiber.entry.options.id 是本行的 id：{probe}");
     assert_eq!(probe["isContext"], false, "宿主的 ctx 不是完整的 Cordis 上下文，Context.is 认 false：{probe}");
     assert_eq!(probe["receipts"], "function");
+    // 子路径导出（dsh-llm/message、token-meter/estimate）落到替身；估算与 dsh 的固定密度一致（11 字 → 3 + 4 块开销 + 4 角色开销）。
+    assert_eq!(probe["estimate"], 11, "{probe}");
+    assert_eq!(probe["apiPath"], "/api");
+    assert_eq!(probe["envelope"], json!([true, false]), "client-connection 的信封校验器认 client-request：{probe}");
+    assert_eq!(probe["refNames"], json!([true, false]));
+    assert_eq!(probe["key"], "compat/route", "credentialKey 同 dsh 是 <scope>/<id>：{probe}");
+    assert_eq!(probe["schemaError"], json!(["schema.type must be \"object\" (structured output is object-rooted)"]), "{probe}");
+    assert!(probe["sdk"].as_str().unwrap().contains("run_code"), "Codex 没有 PTC，生成 SDK 时说明原因：{probe}");
+    assert_eq!(probe["imageText"], "[image omitted because this model accepts text only; attachment sha256:01234567]");
+    assert_eq!(
+        probe["offloaded"],
+        "[image omitted to fit request image limits; \"a.png\" (sha256:0123456789abcdef). No local normalized image path is available; ask the user to attach it again if needed.]"
+    );
+}
+
+/// 插件在模块顶层（或 apply 里）调用 process.exit：宿主不退，这一行报出原因，同包别的行照常加载、工具照常可用。
+#[test]
+fn dsh_plugin_process_exit_does_not_kill_the_host() {
+    let Some(toolchain) = toolchain() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("boom");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("package.json"), r#"{"name":"dsh-boom-demo","version":"0.1.0","type":"module","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}"#).unwrap();
+    std::fs::write(package.join("cordis.patch.yml"), "- insert:\n    - id: boom\n      name: ./boom.js\n    - id: fine\n      name: ./fine.js\n").unwrap();
+    std::fs::write(package.join("boom.js"), "export const name = 'boom'\nexport function apply() {}\nprocess.exit(0)\n").unwrap();
+    std::fs::write(package.join("fine.js"), "import { defineTool } from '@deepseek-ai/dsh-tools'\nexport const name = 'fine'\nexport const inject = ['tools']\nexport function apply(ctx) {\n  ctx.tools.register(defineTool({ name: 'fine_ping', description: 'ping', parameters: {}, output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] }, async execute() { return 'pong' } }))\n}\n").unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&package), &toolchain).unwrap();
+    let boom = row(&record.report, "boom");
+    assert_eq!(boom["status"], "error", "{}", record.report);
+    assert!(boom["reasons"][0].as_str().unwrap().contains("process.exit(0)"), "{}", record.report);
+    assert_eq!(row(&record.report, "fine")["status"], "compatible", "{}", record.report);
+    let responses = serve(&plugins, &toolchain, &[call(1, "fine_ping", json!({}))]);
+    assert_eq!(responses[0]["result"]["content"][0]["text"], "pong", "{responses:?}");
 }
 
 /// 装依赖时：没发布到 npm 的依赖（多为 dsh 宿主自带的包）与只在作者工作区有效的写法（workspace:）挪成 peer、不装，
@@ -1961,4 +1999,43 @@ fn dsh_npm_import_skips_unpublished_dependencies_and_installs_dsh_utilities() {
     assert!(diagnostics.contains("依赖 local-thing 没有安装"), "{diagnostics}");
     let responses = serve(&plugins, &toolchain, &[call(1, "deps_home", json!({}))]);
     assert_eq!(responses[0]["result"]["content"][0]["text"], "/fake/.dsh", "{responses:?}");
+}
+
+/// 装上的依赖（bundle 行引用的官方模块）把 dsh 纯工具包写成 peer、指望 dsh 宿主带着：补装后再装一轮，
+/// 版本范围沿用那条 peer 声明，行能加载。
+#[cfg(unix)]
+#[test]
+fn dsh_npm_import_installs_utility_peers_of_installed_packages() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(mut toolchain) = toolchain() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("src/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("package.json"), r#"{"name":"dsh-peer-demo","version":"1.0.0","type":"module","main":"index.js",
+        "dependencies":{"official-row":"1.0.0"},"peerDependencies":{"@deepseek-ai/dsh-tools":"*"}}"#).unwrap();
+    std::fs::write(package.join("index.js"), "import { defineTool } from '@deepseek-ai/dsh-tools'\nimport { budget } from 'official-row'\nexport const name = 'peer'\nexport const inject = ['tools']\nexport function apply(ctx) {\n  ctx.tools.register(defineTool({ name: 'peer_budget', description: 'budget', parameters: {}, output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] }, async execute() { return budget() } }))\n}\n").unwrap();
+    let log = temp.path().join("npm-args.log");
+    let fake = temp.path().join("npm");
+    // 假 npm：official-row 声明 dsh-timeout 为 peer（同 dsh 官方模块），只装 dependencies 里的包。
+    std::fs::write(&fake, format!(
+        "#!{}\nconst {{ appendFileSync, mkdirSync, readFileSync, writeFileSync }} = require('fs')\nconst {{ execFileSync }} = require('child_process')\nconst args = process.argv.slice(2)\nif (args[0] === 'pack') {{\n  const dest = args[args.indexOf('--pack-destination') + 1]\n  execFileSync('tar', ['-czf', dest + '/dsh-peer-demo-1.0.0.tgz', '-C', {src}, 'package'])\n  process.stdout.write(JSON.stringify([{{ filename: 'dsh-peer-demo-1.0.0.tgz' }}]))\n  process.exit(0)\n}}\nconst deps = JSON.parse(readFileSync('package.json', 'utf8')).dependencies || {{}}\nappendFileSync({log}, JSON.stringify(deps) + '\\n')\nconst files = {{\n  'official-row': [{{ '@deepseek-ai/dsh-timeout': '^0.2.1-alpha.5' }}, \"import {{ MAX_TIMER_DELAY_MS }} from '@deepseek-ai/dsh-timeout'\\nexport const budget = () => String(MAX_TIMER_DELAY_MS)\\n\"],\n  '@deepseek-ai/dsh-timeout': [{{}}, 'export const MAX_TIMER_DELAY_MS = 2147483647\\n'],\n}}\nfor (const name of Object.keys(deps)) {{\n  const [peerDependencies, source] = files[name]\n  mkdirSync('node_modules/' + name, {{ recursive: true }})\n  writeFileSync('node_modules/' + name + '/package.json', JSON.stringify({{ name, type: 'module', main: 'index.js', peerDependencies }}))\n  writeFileSync('node_modules/' + name + '/index.js', source)\n}}\n",
+        toolchain.node.as_ref().unwrap().display(),
+        src = json!(temp.path().join("src").to_string_lossy()),
+        log = json!(log.to_string_lossy()),
+    )).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    toolchain.npm = Some(fake);
+
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&dsh_plugins::parse_source("dsh-peer-demo@1.0.0").unwrap(), &toolchain).unwrap();
+    let installs: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(
+        installs,
+        vec![json!({"official-row": "1.0.0"}), json!({"official-row": "1.0.0", "@deepseek-ai/dsh-timeout": "^0.2.1-alpha.5"})],
+        "第一轮装完发现 official-row 缺 peer 工具包，补上再装一轮",
+    );
+    assert_eq!(row(&record.report, "dsh-peer-demo")["status"], "compatible", "{}", record.report);
+    let responses = serve(&plugins, &toolchain, &[call(1, "peer_budget", json!({}))]);
+    assert_eq!(responses[0]["result"]["content"][0]["text"], "2147483647", "{responses:?}");
 }

@@ -103,6 +103,14 @@ const HOST_FILES: &[(&str, &str)] = &[
         "shims/dsh-services.mjs",
         include_str!("../../../assets/dsh-host/shims/dsh-services.mjs"),
     ),
+    (
+        "shims/dsh-token-meter-estimate.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-token-meter-estimate.mjs"),
+    ),
+    (
+        "shims/dsh-client-connection.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-client-connection.mjs"),
+    ),
 ];
 
 const REGISTRY_VERSION: u32 = 1;
@@ -137,6 +145,8 @@ pub const DSH_UTILITY_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-util-time",
     "@deepseek-ai/dsh-util-values",
     "@deepseek-ai/dsh-util-workspace-path",
+    // 只建在替身与上面工具包之上的纯逻辑库：装真包，它 import 的宿主包照常落到替身。
+    "@deepseek-ai/dsh-session-title-llm",
 ];
 
 /// package.json 里记下装依赖时跳过的依赖（名字 → 原因），重新分析时也能在报告里说明。
@@ -178,6 +188,7 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-file-reference",
     "@deepseek-ai/dsh-host-webserver",
     "@deepseek-ai/dsh-mcp-resources",
+    "@deepseek-ai/dsh-client-connection",
 ];
 
 /// 插件来源。
@@ -1265,6 +1276,7 @@ fn install_dependencies(directory: &Path, registry: Option<&str>, toolchain: &To
     let mut package = read_package_json(directory)?;
     let mut skipped = prepare_dependencies(directory, &mut package);
     let mut attempts = 0;
+    let mut utility_rounds = 0;
     loop {
         if let Some(object) = package.as_object_mut() {
             if skipped.is_empty() {
@@ -1275,7 +1287,22 @@ fn install_dependencies(directory: &Path, registry: Option<&str>, toolchain: &To
         }
         std::fs::write(directory.join("package.json"), serde_json::to_vec_pretty(&package)?)?;
         let error = match run_npm_install(directory, registry, toolchain) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                // 装上的 dsh 包（bundle 行引用的官方模块、纯逻辑库）把工具包写成 peer、指望 dsh 宿主带着：补装后再装一轮。
+                let missing = missing_utility_peers(directory);
+                if missing.is_empty() || utility_rounds >= 2 {
+                    return Ok(());
+                }
+                utility_rounds += 1;
+                if let Some(dependencies) = package.as_object_mut().and_then(|object| {
+                    object.entry("dependencies").or_insert_with(|| json!({})).as_object_mut()
+                }) {
+                    for (name, range) in missing {
+                        dependencies.entry(name).or_insert(Value::String(range));
+                    }
+                }
+                continue;
+            }
             Err(error) => error,
         };
         attempts += 1;
@@ -1294,6 +1321,34 @@ fn install_dependencies(directory: &Path, registry: Option<&str>, toolchain: &To
         }
         skipped.insert(name, reason.to_string());
     }
+}
+
+/// 已装进 `node_modules` 的包（一层，含 `@scope/`）里，声明为 peer、却没装上的 dsh 工具包（名字 → 版本范围）。
+/// 版本范围是只在作者工作区有效的写法时装 latest。
+fn missing_utility_peers(directory: &Path) -> BTreeMap<String, String> {
+    let modules = directory.join("node_modules");
+    let mut packages = Vec::new();
+    for entry in std::fs::read_dir(&modules).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if entry.file_name().to_string_lossy().starts_with('@') {
+            packages.extend(std::fs::read_dir(&path).into_iter().flatten().flatten().map(|scoped| scoped.path()));
+        } else {
+            packages.push(path);
+        }
+    }
+    let mut missing = BTreeMap::new();
+    for package in packages {
+        let Ok(manifest) = read_package_json(&package) else { continue };
+        let Some(peers) = manifest.get("peerDependencies").and_then(Value::as_object) else { continue };
+        for (name, range) in peers {
+            if !DSH_UTILITY_PACKAGES.contains(&name.as_str()) || modules.join(name).join("package.json").is_file() {
+                continue;
+            }
+            let range = range.as_str().filter(|range| !unpublishable_range(&package, range)).unwrap_or("latest");
+            missing.entry(name.clone()).or_insert_with(|| range.to_string());
+        }
+    }
+    missing
 }
 
 fn run_npm_install(directory: &Path, registry: Option<&str>, toolchain: &Toolchain) -> anyhow::Result<()> {

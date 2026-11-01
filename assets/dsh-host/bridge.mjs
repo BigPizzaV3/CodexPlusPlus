@@ -33,7 +33,7 @@ import { createConnection, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { EVENT_HOOKS, Host, INSTRUCTIONS_TARGET, MIRROR_HOOKS, MIRROR_TARGET, errorText } from './host.mjs'
+import { EVENT_HOOKS, Host, INSTRUCTIONS_TARGET, MIRROR_HOOKS, MIRROR_TARGET, errorText, guardProcessExit, hostExit } from './host.mjs'
 import { PLAN_MODE_WRITE_TOOLS, createSchedule, messageText } from './services.mjs'
 
 const BRIDGE_FILE = fileURLToPath(import.meta.url)
@@ -1133,7 +1133,7 @@ async function runDaemon(configPath) {
     }
     host.mirror.flushAll()
     await host.dispose().catch(() => {})
-    process.exit(0)
+    hostExit(0)
   }
   const touch = () => {
     clearTimeout(idle)
@@ -1448,8 +1448,9 @@ function isMainModule() {
 }
 
 if (isMainModule() && process.argv[2] === 'daemon' && process.argv[3]) {
+  guardProcessExit()
   runDaemon(process.argv[3]).catch((error) => {
     console.error(`[dsh-bridge] 常驻进程退出：${errorText(error)}`)
-    process.exit(1)
+    hostExit(1)
   })
 }

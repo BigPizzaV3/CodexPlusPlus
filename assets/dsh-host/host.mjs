@@ -42,6 +42,8 @@ const SHIMS = {
   '@deepseek-ai/dsh-skill': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-skill.mjs')).href,
   '@deepseek-ai/dsh-system-prompt': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-system-prompt.mjs')).href,
   '@deepseek-ai/dsh-llm': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-llm.mjs')).href,
+  // 子路径导出：dsh-llm/message 是根导出里消息构造函数的子集，同一个替身即可。
+  '@deepseek-ai/dsh-llm/message': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-llm.mjs')).href,
   '@deepseek-ai/dsh-session': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-session.mjs')).href,
   '@deepseek-ai/dsh-fs': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-fs.mjs')).href,
   '@deepseek-ai/dsh-credentials': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-credentials.mjs')).href,
@@ -56,6 +58,7 @@ const SHIMS = {
   '@deepseek-ai/dsh-user-approval': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-session-title': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-token-meter': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-token-meter/estimate': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-token-meter-estimate.mjs')).href,
   '@deepseek-ai/dsh-shell-env': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-storage': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-session-telemetry': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
@@ -66,6 +69,7 @@ const SHIMS = {
   '@deepseek-ai/dsh-file-reference': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-host-webserver': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-mcp-resources': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-client-connection': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-client-connection.mjs')).href,
 }
 /**
  * 能映射到 Codex 钩子的 dsh 事件。监听器由配套拓展包的钩子脚本经 bridge.mjs 调用，
@@ -150,6 +154,16 @@ const CLIENT_MAX_BYTES = 4 * 1024 * 1024
 const writeStdout = process.stdout.write.bind(process.stdout)
 for (const level of ['log', 'info', 'debug', 'trace']) {
   console[level] = (...args) => console.error(...args)
+}
+
+// 插件代码不能把宿主进程退掉：MCP 进程、常驻进程里同时跑着别的插件，分析时退掉也就没有报告。
+// 宿主自己的进程（inspect / serve / 常驻进程）里把 process.exit 换成抛错（模块顶层调用时这一行加载失败、报出原因），
+// 宿主自己退出用 hostExit。被钩子运行器等当库引入时不换：那些进程跑完要自己调 process.exit。
+export const hostExit = process.exit.bind(process)
+export function guardProcessExit() {
+  process.exit = (code) => {
+    throw new Error(`插件调用了 process.exit(${code ?? ''})：Codex++ 不允许插件退出宿主进程`)
+  }
 }
 
 register(pathToFileURL(join(HOST_DIR, 'loader.mjs')).href, import.meta.url, { data: { shims: SHIMS } })
@@ -2711,7 +2725,7 @@ async function serve(registryPath) {
     })
   })
   lines.on('close', () => {
-    void host.dispose().finally(() => process.exit(0))
+    void host.dispose().finally(() => hostExit(0))
   })
 }
 
@@ -2736,19 +2750,21 @@ const [command, target, extra] = isMainModule() ? process.argv.slice(2) : ['libr
 if (command === 'library') {
   // 被 bridge.mjs 引入，不跑命令行入口。
 } else if (command === 'inspect' && target) {
+  guardProcessExit()
   inspect(target, extra).then(
-    () => process.exit(0),
+    () => hostExit(0),
     (error) => {
       console.error(errorText(error))
-      process.exit(1)
+      hostExit(1)
     },
   )
 } else if (command === 'serve' && target) {
+  guardProcessExit()
   serve(target).catch((error) => {
     console.error(errorText(error))
-    process.exit(1)
+    hostExit(1)
   })
 } else {
   console.error('用法：host.mjs inspect <包目录> [选项.json] | host.mjs serve <registry.json>')
-  process.exit(2)
+  hostExit(2)
 }

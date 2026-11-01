@@ -365,3 +365,20 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 - 作者打包问题：依赖没声明或没发布、包里没有构建产物、传递依赖里写着 `link:` / `workspace:`、MCP 行缺 `command`。
 - 只在实测沙箱里失败（9 行）：插件直接写 `~/.dsh/...` 或开调试端口，真实导入时不受影响。
 - 3 个前端插件入口超过 4 MiB（4.8~22 MiB），不加载。
+
+**第二轮（同日，同一批样本）**：按剩下的原因里「替身缺口」那一类再补，整批重跑对比，没有包变差；
+完全没有问题行的包 137 → 143，问题行 104 → 98，导入失败 6 → 5。
+
+- 子路径导出：`@deepseek-ai/dsh-llm/message`、`@deepseek-ai/dsh-token-meter/estimate`（替身表按完整说明符匹配，子路径要单独登记）。
+- 新替身 `@deepseek-ai/dsh-client-connection`：插件只用它的协议常量（`API_PATH`、`RpcId`）与 RPC 信封校验器（`clientRequestSchema` 等，
+  实现 `parse` / `safeParse`）；真包依赖 dsh-llm / dsh-tools 等运行时，不能装。
+- 补导出：dsh-llm 的图片 / 文件占位文字（`offloadedImageText` 等，与 dsh 逐字一致）；dsh-credentials 改成 dsh 现在的写法
+  （引用就是环境变量名字符串、键是 `<scope>/<id>`，加 `isCredentialRefName` 等）；dsh-tools 的 `JsonSchemaError` 与子集检查
+  `assertSupportedJsonSchema` / `assertObjectJsonSchema`；`renderToolsSdk` 只在 PTC 模式用到，Codex 没有，调用时说明原因；
+  dsh-session-title 的 `SessionTitleProviderId`、`normalizeSessionTitle` 等纯函数。
+- 装上的 dsh 包（bundle 行引用的官方模块、纯逻辑库）把工具包写成 peer 时，补装后再装一轮；`dsh-session-title-llm` 当纯逻辑库装真包。
+- 插件调用 `process.exit`（`dsh-plugin-boom` 在模块顶层就退出）：宿主自己的进程（分析、MCP、常驻进程）里换成抛错，
+  这一行报出原因、同包别的行照常；之前整个分析没有报告。
+
+这一轮之后剥出来的下一层都是 dsh 运行时（`sessionPersistence`、`dsh-workspace`、`dsh-sandbox-policy`、`dsh-subagent` 运行时包等）。
+另有 3 个包在 `dependencies` 里写了宿主提供的包（真 dsh-tools 等），装上的是真包、又引用替身没有的旧导出，暂不处理。
