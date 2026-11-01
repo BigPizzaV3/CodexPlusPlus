@@ -809,6 +809,17 @@
         justify-content: flex-start;
       }
 
+      .csw-ext-glyph {
+        font-size: 14px;
+        line-height: 1;
+      }
+
+      .csw-ext-view {
+        padding: 10px 12px;
+        min-height: 48px;
+        overflow: auto;
+      }
+
       .csw-head-right {
         align-items: center;
         display: flex;

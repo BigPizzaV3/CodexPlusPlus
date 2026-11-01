@@ -1,0 +1,10 @@
+{
+  "name": "dsh-greet-bundle",
+  "version": "0.1.0",
+  "description": "Greeting tools for DeepSeek Harness",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "session.js", "cordis.patch.yml", "assets", "locale"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": { "@deepseek-ai/cordis": "^4.0.0", "@deepseek-ai/dsh-tools": "^0.2.0" }
+}

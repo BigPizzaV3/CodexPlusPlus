@@ -1519,8 +1519,12 @@ span.gw-popover-check {
   cursor: pointer;
 }
 
-.gw-catalog-item:hover:not(:disabled) {
-  background: var(--gw-soft);
+/* 悬停 / 键盘焦点：主题色底 + 描边，深色主题下也一眼能看出指着哪一项。 */
+.gw-portal .gw-catalog-item:hover:not(:disabled),
+.gw-portal .gw-catalog-item:focus-visible {
+  background: hsl(var(--primary) / 0.16);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.55);
+  outline: none;
 }
 
 .gw-catalog-item > span {
@@ -1939,6 +1943,19 @@ span.gw-avatar[data-size] {
   mask: var(--gw-agent-icon) center / contain no-repeat;
 }
 
+/* 通用 Agent 没有打包图标：圆角方块里放名字首字母，大小跟着图标位的宽高。 */
+.gw-agent-letter {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-size: 0.68em;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1;
+}
+
 .gw-node-agent .gw-node-agent-icon {
   width: 20px;
   height: 20px;
@@ -2313,6 +2330,22 @@ span.gw-avatar[data-size] {
 
 .gw-portal .gw-mp-star[data-on="true"] svg {
   fill: currentColor;
+}
+
+/* Agent 自带的模型：直连厂商、不经 Codex++，和池里的模型一眼区分开。 */
+.gw-portal .gw-mp-direct {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  padding: 0 6px;
+  border: 1px solid var(--gw-line);
+  border-radius: 5px;
+  color: var(--gw-mute);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .gw-portal .gw-mp-check {
@@ -3958,4 +3991,17 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
 .shell .gw-detail-value .app-select.gw-image-select {
   flex: none;
   width: 320px;
+}
+
+/* 订阅登录弹窗里粘贴 token / Cookie 的输入框 */
+.gw-textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 8px 10px;
+  border: 1px solid var(--gw-border, rgba(127, 127, 127, 0.3));
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
 }

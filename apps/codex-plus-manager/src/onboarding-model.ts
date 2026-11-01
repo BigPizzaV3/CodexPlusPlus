@@ -6,6 +6,10 @@ export type TourStep = {
   target?: string;
   title: string;
   body: string;
+  /** 有值时标题和正文是 tf 模板，按它填 {0}。 */
+  args?: string[];
+  /** 只有正文是模板、标题仍是普通文案。 */
+  plainTitle?: boolean;
 };
 
 /** 引导版本：步骤大改时加一，老用户会再看到一次。 */
@@ -61,6 +65,42 @@ export const TOUR_STEPS: TourStep[] = [
     body: "主题、配置备份、版本更新和日志都在这里。想再看一遍这个引导，也在设置里重新打开。",
   },
 ];
+
+/**
+ * 按使用模式调整的步骤。单 Agent 模式下不讲「多个 Agent 共用」，
+ * 欢迎卡、接入、Agent 列表三步换成只针对这一个 Agent 的说法（文案里的 {0} 是 Agent 名字）。
+ */
+export function tourSteps(soloName: string | null, enhanceOnly = false): TourStep[] {
+  if (enhanceOnly) return ENHANCE_TOUR_STEPS;
+  if (!soloName) return TOUR_STEPS;
+  const override: Record<string, Partial<Pick<TourStep, "title" | "body">>> = {
+    welcome: {
+      body: "Codex++ 让 {0} 经本地网关接入任意供应商。花半分钟认识一下各个入口。",
+    },
+    "agents-connect": {
+      title: "第二步：让 {0} 走网关",
+      body: "打开 {0} 的网关开关并选一个默认模型；供应商池里的模型就会出现在 {0} 自己的模型列表里。",
+    },
+    agents: {
+      title: "{0} 的专属设置",
+      body: "点进 {0} 管理它自己的增强、皮肤、插件等。想管理别的 Agent，可以在设置里把使用模式切到「全部功能」。",
+    },
+  };
+  return TOUR_STEPS.map((step) => (override[step.id] ? { ...step, ...override[step.id], args: [soloName], plainTitle: !override[step.id].title } : step));
+}
+
+/**
+ * 只用增强功能时的步骤：没有网关、供应商池和 Agent 接入，这三步去掉，其余换成不提供应商的说法。
+ */
+const ENHANCE_OVERRIDES: Record<string, Pick<TourStep, "body">> = {
+  welcome: { body: "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下各个入口。" },
+  agents: { body: "每个 Agent 一行，点进去管理它自己的增强、皮肤、插件等；Codex 行的播放键可以直接启动或停止 Codex。" },
+  management: { body: "会话、MCP、Skills 和拓展在这里统一管理，一次覆盖所有 Agent。" },
+};
+const ENHANCE_HIDDEN_STEPS = new Set(["hub", "providers", "agents-connect"]);
+const ENHANCE_TOUR_STEPS: TourStep[] = TOUR_STEPS
+  .filter((step) => !ENHANCE_HIDDEN_STEPS.has(step.id))
+  .map((step) => (ENHANCE_OVERRIDES[step.id] ? { ...step, ...ENHANCE_OVERRIDES[step.id] } : step));
 
 /** 是否需要自动弹出引导：没看过，或看的是旧版本。 */
 export function shouldShowTour(stored: string | null): boolean {

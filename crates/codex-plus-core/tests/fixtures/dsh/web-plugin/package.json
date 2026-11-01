@@ -1,0 +1,8 @@
+{
+  "name": "dsh-web-demo",
+  "version": "0.1.0",
+  "description": "演示网页路由、MCP 资源、附件与文件引用",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*", "@deepseek-ai/dsh-attachment": "*" }
+}

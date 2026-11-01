@@ -8,11 +8,16 @@ if (previewLanguage === "en" || previewLanguage === "zh") {
 }
 
 async function start() {
-  const { App } = await import("../src/App");
   const app = document.getElementById("app");
-  if (app instanceof HTMLElement) {
-    createRoot(app).render(<App />);
+  if (!(app instanceof HTMLElement)) return;
+  // 和正式版 main.tsx 一样，`#tray-panel` 打开托盘快捷面板。
+  if (window.location.hash === "#tray-panel") {
+    const { TrayPanel } = await import("../src/TrayPanel");
+    createRoot(app).render(<TrayPanel />);
+    return;
   }
+  const { App } = await import("../src/App");
+  createRoot(app).render(<App />);
 }
 
 void start();

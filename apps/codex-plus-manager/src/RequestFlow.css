@@ -1,0 +1,138 @@
+/* 实时请求流的请求行：托盘「实时」页签和总览「最近请求」共用。
+   左边状态竖条；中间上行模型、下行 Agent / 供应商 / token；右边上行耗时、下行多久以前。 */
+
+.rf-row {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.rf-rail {
+  border-radius: 3px;
+  background: hsl(var(--status-success) / 0.75);
+}
+
+.rf-row[data-status="error"] .rf-rail {
+  background: hsl(var(--status-error) / 0.85);
+}
+
+.rf-row[data-status="running"] .rf-rail {
+  background: hsl(var(--brand-accent));
+  animation: rf-blink 1.2s ease-in-out infinite;
+}
+
+.rf-main {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.rf-model {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rf-model small {
+  margin-left: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.rf-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.rf-sub > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rf-sub > i {
+  flex-shrink: 0;
+  font-style: normal;
+  opacity: 0.45;
+}
+
+.rf-sub .rf-tokens {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.rf-agent-icon {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  object-fit: contain;
+}
+
+.rf-error {
+  overflow: hidden;
+  color: hsl(var(--status-error));
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rf-side {
+  display: grid;
+  align-content: start;
+  justify-items: end;
+  gap: 1px;
+  white-space: nowrap;
+}
+
+.rf-side b {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.rf-row[data-status="running"] .rf-side b {
+  color: hsl(var(--brand-accent));
+}
+
+.rf-side small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+/* 进行中：一闪一闪的小圆点。 */
+.rf-live-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: rf-blink 1.2s ease-in-out infinite;
+}
+
+@keyframes rf-blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rf-live-dot,
+  .rf-row[data-status="running"] .rf-rail {
+    animation: none;
+  }
+}

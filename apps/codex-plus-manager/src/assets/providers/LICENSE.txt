@@ -1,6 +1,9 @@
 本目录的厂商图标来自 LobeHub Icons（@lobehub/icons-static-svg 1.99.0，https://github.com/lobehub/lobe-icons），
 按 MIT 许可使用。图标中的商标归各自所有者，仅用于标识对应的服务。
 
+例外：zed.svg（Zed Industries）、vscodium.svg、jetbrains.svg、raycast.svg 来自 Simple Icons
+（https://github.com/simple-icons/simple-icons），按 CC0 1.0 使用，同样只用于标识对应的应用。
+
 MIT License
 
 Copyright (c) 2023 LobeHub

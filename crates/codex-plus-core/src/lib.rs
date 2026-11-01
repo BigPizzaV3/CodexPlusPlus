@@ -1,3 +1,6 @@
+#![recursion_limit = "256"]
+
+
 pub mod ads;
 pub mod aggregate_catalog;
 pub mod agent_cache;
@@ -19,6 +22,9 @@ pub mod codex_local_storage;
 pub mod codex_sqlite;
 pub mod browser_use;
 pub mod computer_use;
+pub mod dsh_plugins;
+pub mod extension_curation;
+pub mod extension_discovery;
 pub mod window_capture;
 pub mod computer_use_approval;
 pub mod computer_use_js;
@@ -47,6 +53,7 @@ pub mod install;
 pub mod launcher;
 pub mod macos_window;
 pub mod manager_navigation;
+pub mod managed_mcp;
 pub mod mcp_config;
 pub mod model_catalog;
 pub mod model_pricing;
@@ -95,6 +102,16 @@ pub mod newapi;
 pub mod sub2api;
 pub mod tools;
 pub mod update;
+pub mod extension_backend;
+pub mod extension_codex;
+pub mod extension_creator;
+pub mod extension_gateway;
+pub mod extension_history;
+pub mod extension_llm;
+pub mod extension_publish;
+pub mod extension_hooks;
+pub mod extension_node;
+pub mod extension_semver;
 pub mod upstream_model_meta;
 pub mod user_scripts;
 pub mod version;

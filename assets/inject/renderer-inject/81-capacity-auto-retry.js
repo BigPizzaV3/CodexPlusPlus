@@ -63,7 +63,7 @@
   }
 
   function capacityAutoRetryEnabled() {
-    return capacityAutoRetrySettings().capacityAutoRetry === true;
+    return capacityAutoRetrySettings().capacityAutoRetry === true && !globalThis.__codexPlusBuiltinInactive?.has("capacity-auto-retry");
   }
 
   function capacityAutoRetryMaxAttempts() {
@@ -349,5 +349,4 @@
     intervalSeconds: capacityAutoRetryIntervalSeconds,
     maxAttempts: capacityAutoRetryMaxAttempts,
   };
-
-  syncCodexPlusCapacityAutoRetry();
+  // 轮询由内置拓展「容量不足自动重试」装上时启动（96-builtin-extensions.js），这里不再自启。

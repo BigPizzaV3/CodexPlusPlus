@@ -1,0 +1,8 @@
+{
+  "name": "dsh-schedule-demo",
+  "version": "0.1.0",
+  "description": "演示 schedule、webhookRuntime、jobs、workspaceRegistry 替身",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*" }
+}

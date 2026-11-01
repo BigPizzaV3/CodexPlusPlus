@@ -114,6 +114,31 @@ async fn open_candidates(
     };
     let conversation_seed = conversation_seed(&request);
     let mut pending = fit_first(&plan.candidates, estimate_tokens(&request));
+    // 拓展网关中间件的 route 段：按拓展给的顺序重排 / 筛选候选（供应商 + Key）；gateway.replaces 关掉
+    // builtin:gateway-failover 时只试第一个，失败直接回错误，不再换下一个。
+    if pending.len() > 1 {
+        let ids: Vec<String> = pending.iter().enumerate().map(|(index, candidate)| format!("{}#{index}", candidate.relay.id)).collect();
+        let described: Vec<Value> = pending
+            .iter()
+            .zip(&ids)
+            .map(|(candidate, id)| serde_json::json!({
+                "id": id,
+                "provider": candidate.relay.id,
+                "name": candidate.relay.name,
+                "model": candidate.upstream_model,
+            }))
+            .collect();
+        let context = serde_json::json!({ "model": plan.source_model, "agent": format!("{:?}", plan.agent) });
+        if let Some(order) = crate::extension_gateway::route_order(&described, context).await {
+            pending = order
+                .iter()
+                .filter_map(|id| ids.iter().position(|item| item == id).map(|index| pending[index]))
+                .collect();
+        }
+    }
+    if crate::extension_gateway::builtin_replaced("builtin:gateway-failover") {
+        pending.truncate(1);
+    }
     if plan.candidates.is_empty() {
         let Some(wait) = plan.cooling else {
             anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");

@@ -524,7 +524,27 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      /* 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。 */
+      /* 图标栏按钮提示的兜底外观：找不到原生提示样式类时使用，数值量自原生提示。 */
+      .codex-plus-rail-tooltip-fallback {
+        max-width: 320px;
+        padding: 5px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 20px;
+        background: rgb(45, 45, 45);
+        box-shadow: rgba(15, 23, 42, 0.2) 0 8px 18px 0;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 430;
+        line-height: 18px;
+        letter-spacing: -0.15px;
+        white-space: nowrap;
+      }
+      /*
+       * 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。
+       * 新版 Codex 还把弹出层挂在一个 z-60 的固定视口容器里（zoom-adjusted-viewport），
+       * 只提升里面的节点逃不出这个堆叠上下文，所以直接父容器也一起提升。
+       */
+      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [data-radix-popper-content-wrapper]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="tooltip"]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="menu"]:not(.${codexPlusPageClass} *),
@@ -1354,6 +1374,12 @@
         line-height: 20px;
       }
       .codex-plus-settings .codex-plus-row[hidden] { display: none; }
+      /* 内置拓展的子选项缩进挂在所属拓展下面；被顶替时的小字用警示色。 */
+      .codex-plus-settings .codex-plus-row[data-codex-plus-builtin-param] { padding-left: 20px; }
+      .codex-plus-settings .codex-plus-row-description[data-codex-builtin-replaced]::after {
+        content: " · " attr(data-codex-builtin-replaced);
+        color: var(--color-token-text-warning, #d97706);
+      }
       .codex-plus-settings .codex-plus-row > :first-child {
         flex: 1 1 auto;
         min-width: 0;
@@ -1615,6 +1641,7 @@
         line-height: 20px;
         overflow-wrap: anywhere;
       }
+      .codex-plus-discovery-description strong { color: var(--codex-plus-text); font-weight: 650; }
       .codex-plus-discovery-toolbar { display: flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; }
       .codex-plus-discovery-search {
         display: flex;
@@ -1900,7 +1927,32 @@
     return settings;
   }
 
-  function codexPlusSettings() {
+  /**
+   * 功能侧读到的设置：设置项开着、且对应的内置拓展在用（没停用、没被顶替）才算开。
+   * 设置页的开关要显示 / 切换用户自己存的值，传 { ignoreBuiltins: true }。
+   * 映射写在函数里：多个测试把本函数单独切片到沙箱里执行。
+   */
+  function codexPlusSettings(options) {
+    const withBuiltins = (settings) => {
+      const inactive = globalThis.__codexPlusBuiltinInactive;
+      if (options?.ignoreBuiltins || !inactive?.size) return settings;
+      const builtinSettings = {
+        sessionDelete: "session-delete",
+        markdownExport: "markdown-export",
+        threadIdBadge: "thread-id-badge",
+        threadScrollRestore: "thread-scroll-restore",
+        conversationView: "conversation-view",
+        activityOverlayRight: "activity-overlay-right",
+        pasteFix: "paste-fix",
+        stepwise: "stepwise",
+        answerOutline: "answer-outline",
+        petRealMouseLook: "pet-real-mouse",
+      };
+      Object.entries(builtinSettings).forEach(([key, id]) => {
+        if (inactive.has(id)) settings[key] = false;
+      });
+      return settings;
+    };
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
         pluginMarketplaceUnlock: false,
@@ -1939,10 +1991,10 @@
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       delete settings.customLayout;
       delete settings.serviceTierControls;
-      return settings;
+      return withBuiltins(settings);
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
-      return settings;
+      return withBuiltins(settings);
     }
   }
 
@@ -2670,7 +2722,7 @@
     const settings = codexPlusSettings();
     const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
     const action = dreamSkinRefreshAction({
-      enabled: !!settings.dreamSkinEnabled,
+      enabled: !!settings.dreamSkinEnabled && !globalThis.__codexPlusBuiltinInactive?.has("dream-skin"),
       paused: !!settings.dreamSkinPaused,
       backendLoaded: !!codexPlusBackendSettingsLoaded,
       externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
@@ -2738,20 +2790,23 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
-    if (key === "threadScrollRestore" && !value) {
-      clearTimeout(window.__codexThreadScrollSaveTimer);
-      window.__codexThreadScrollSaveTimer = null;
-      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
-      (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollRestoreTimers = [];
-      (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollSyncTimers = [];
-      window.__codexThreadScrollRuntime = null;
-    }
+    if (key === "threadScrollRestore" && !value) stopThreadScrollRestore();
     if (key === "stepwise") syncStepwisePanel(value);
     renderCodexPlusMenu();
     scan();
+  }
+
+  /** 滚动位置恢复关掉时（设置关、或内置拓展停用）撤掉排着的保存 / 恢复定时器，作废进行中的轮次。 */
+  function stopThreadScrollRestore() {
+    clearTimeout(window.__codexThreadScrollSaveTimer);
+    window.__codexThreadScrollSaveTimer = null;
+    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollRestoreTimers = [];
+    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollSyncTimers = [];
+    window.__codexThreadScrollRuntime = null;
   }
 
   function syncStepwisePanel(

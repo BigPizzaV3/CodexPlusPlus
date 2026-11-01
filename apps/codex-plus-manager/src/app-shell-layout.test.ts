@@ -163,7 +163,7 @@ test("紧凑密度层：管理页不再套外框，覆盖规则带 .shell 前缀
 
 test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所有 Agent，不再挂在 Codex 下面", () => {
   // 「用量」入口在全局管理里：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
-  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills"\]/);
+  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills", "userScripts"\]/);
   assert.match(text, /const navAliasRoute: Partial<Record<Route, Route>> = \{ requestLog: "gatewayUsage" \};/);
   for (const id of ["requestLog", "sessions", "context", "skills"]) {
     const line = text.split("\n").find((row) => row.includes(`{ id: "${id}",`));
@@ -172,19 +172,24 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  assert.match(functionSource("AppSidebar"), /managementNavigationRoutes\.map/);
+  assert.match(functionSource("AppSidebar"), /visibleRoutes\(focus, managementNavigationRoutes\)\.map/);
   // 网关的会话页并进「会话」：Codex 页签是完整的会话管理，其余页签是多 Agent 会话列表。
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
-  assert.match(entry, /route === "sessions" && sessionTab !== "codex" \? \(/);
-  assert.match(entry, /<SessionsView agent=\{sessionTab\}/);
-  assert.match(entry, /route === "sessions" && sessionTab === "codex" \? \(\s*<ProjectSessionPage/);
+  // 只管理 Codex 时没有 Agent 页签，固定显示 Codex 的完整会话管理。
+  assert.match(entry, /const shownSessionTab: SessionTab = soloAgent === "codex" \? "codex" : sessionTab;/);
+  assert.match(entry, /route === "sessions" && !soloAgent \? <SessionAgentTabs/);
+  assert.match(entry, /route === "sessions" && shownSessionTab !== "codex" \? \(/);
+  assert.match(entry, /<SessionsView agent=\{shownSessionTab\}/);
+  assert.match(entry, /route === "sessions" && shownSessionTab === "codex" \? \(\s*<ProjectSessionPage/);
 });
 
 test("请求日志按 Agent 筛选；网关记录带 agent 字段，没有的算 Codex", () => {
   const screen = functionSource("RequestLogScreen");
-  assert.match(screen, /agentFilter !== "all" && requestLogAgent\(entry\) !== agentFilter/);
-  assert.match(screen, /\[entries, filter, query, sessionFilter, agentFilter\]/);
+  // 只管理 Codex 时固定看 Codex 的请求，不出现 Agent 筛选。
+  assert.match(screen, /const agentScope = codexOnly \? "codex" : agentFilter;/);
+  assert.match(screen, /agentScope !== "all" && requestLogAgent\(entry\) !== agentScope/);
+  assert.match(screen, /\[entries, filter, query, sessionFilter, agentScope\]/);
   assert.match(functionSource("requestLogAgent"), /return entry\.agent \|\| "codex";/);
 });
 
@@ -213,8 +218,9 @@ test("Skills 与 MCP 共用一张多 Agent 表：每个 Agent 一列勾选，不
   const extra = readSource("./ManagementExtra.tsx");
   const css = readSource("./ManagementPages.css");
   assert.match(extra, /className="mg-matrix mg-agent-matrix mg-skill-matrix"/);
-  assert.match(extra, /MCP_AGENTS\.map\(\(agent\) => <AgentColumn /);
-  assert.match(extra, /MCP_AGENTS\.map\(\(agent\) => <MatrixCell /);
+  assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
+  assert.match(extra, /agentColumns\.map\(\(agent\) => <AgentColumn /);
+  assert.match(extra, /agentColumns\.map\(\(agent\) => <MatrixCell /);
   assert.doesNotMatch(extra, /mg-agent-toggle|mg-skill-group-select/);
   assert.doesNotMatch(css, /\.dark \.mg-skills-page|\.mg-skills-page \.mg-primary|\.mg-skills-page :is\(\.mg-button/);
 });
@@ -384,7 +390,9 @@ test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
 
 test("首次使用引导：首次启动自动打开（预览模式除外），看完或跳过都记下版本；设置页可重新打开；每一步的目标在侧栏都有锚点", () => {
   const app = functionSource("App");
-  assert.match(app, /\{tourOpen \? <OnboardingTour onClose=\{closeTour\} \/> : null\}/);
+  // 使用模式问卷先弹，答完才进引导。
+  assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} \/> : null\}/);
+  assert.match(app, /\{tourOpen && !agentFocusOpen \? <OnboardingTour focus=\{agentFocus\} onClose=\{closeTour\} \/> : null\}/);
   assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
   assert.match(functionSource("initialTourOpen"), /has\("previewRoute"\)/);
   assert.match(functionSource("GlobalSettingsScreen"), /onClick=\{onOpenTour\}/);
@@ -476,4 +484,15 @@ test("Codex 在它自己的窗口里退出后，侧栏 / 顶栏的运行状态�
   assert.match(entry, /if \(document\.visibilityState !== "visible"\) return;/);
   assert.match(entry, /running !== codexAppRunning\) void refreshOverview\(true\)/);
   assert.match(text, /const codexRunningPollMs = 5_000;/);
+});
+
+test("拓展是侧栏一级入口，不再藏在 Codex 页签里；Grok 不在侧栏 Agent 列表", () => {
+  const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const routeTool"));
+  assert.doesNotMatch(sections, /"userScripts"/, "拓展不再出现在 Agent 页签里");
+  assert.match(text, /const globalNavigationRoutes: Route\[\] = \[[^\]]*"userScripts"/);
+  assert.match(text, /const hiddenSidebarTools = new Set<string>\(\["grok"\]\);/);
+  assert.match(text, /setToolEntries\(\(result\.tools \?\? \[\]\)\.filter\(\(tool\) => !hiddenSidebarTools\.has\(tool\.id\)\)\);/);
+  // 上次停在被隐藏的工具上时回到 Codex。
+  assert.match(text, /setActiveTool\(visibleActiveTool\(result\.activeTool\)\);/);
+  assert.match(text, /setActiveTool\(visibleActiveTool\(normalized\.activeTool\)\);/);
 });

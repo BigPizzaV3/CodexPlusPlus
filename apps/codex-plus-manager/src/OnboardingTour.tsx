@@ -7,7 +7,9 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { paletteShortcut } from "./command-palette-model";
-import { placeCard, TOUR_STEPS } from "./onboarding-model";
+import { placeCard, tourSteps } from "./onboarding-model";
+import { providersHidden, singleAgent, type AgentFocus } from "./agent-focus-model";
+import { agentName } from "./gateway-model";
 import { useEscapeLayer } from "./use-escape-layer";
 import "./OnboardingTour.css";
 
@@ -15,14 +17,17 @@ type Rect = { left: number; top: number; right: number; bottom: number; width: n
 
 const PAD = 6;
 
-export function OnboardingTour({ onClose }: { onClose: (finished: boolean) => void }) {
+export function OnboardingTour({ focus, onClose }: { focus: AgentFocus; onClose: (finished: boolean) => void }) {
+  const solo = singleAgent(focus);
+  const steps = tourSteps(solo ? agentName(solo) : null, providersHidden(focus));
+  const text = (value: string, args?: string[]) => (args ? tf(value, args) : t(value));
   useEscapeLayer(true, () => onClose(false));
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
   const [cardPos, setCardPos] = useState<{ left: number; top: number } | null>(null);
   const card = useRef<HTMLDivElement>(null);
-  const step = TOUR_STEPS[index];
-  const last = index === TOUR_STEPS.length - 1;
+  const step = steps[index];
+  const last = index === steps.length - 1;
 
   // 量目标位置；窗口变化、侧栏滚动时重新量。
   const measure = useCallback(() => {
@@ -88,12 +93,12 @@ export function OnboardingTour({ onClose }: { onClose: (finished: boolean) => vo
         <button aria-label={t("跳过引导")} className="tour-close" onClick={() => onClose(false)} title={t("跳过引导")} type="button">
           <X aria-hidden="true" size={14} />
         </button>
-        <span className="tour-step">{tf("{0} / {1}", [index + 1, TOUR_STEPS.length])}</span>
-        <h3 id="tour-title">{t(step.title)}</h3>
+        <span className="tour-step">{tf("{0} / {1}", [index + 1, steps.length])}</span>
+        <h3 id="tour-title">{text(step.title, step.plainTitle ? undefined : step.args)}</h3>
         {/* 文案里写的是 ⌘K，Windows / Linux 换成真实键位 Ctrl K。 */}
-        <p>{t(step.body).replace("⌘K", paletteShortcut)}</p>
+        <p>{text(step.body, step.args).replace("⌘K", paletteShortcut)}</p>
         <div className="tour-dots" aria-hidden="true">
-          {TOUR_STEPS.map((item, position) => <i data-active={position === index} key={item.id} />)}
+          {steps.map((item, position) => <i data-active={position === index} key={item.id} />)}
         </div>
         <div className="tour-actions">
           {index === 0 ? (

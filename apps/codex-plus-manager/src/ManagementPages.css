@@ -281,6 +281,7 @@
 .mg-agent-matrix .mg-matrix-head,
 .mg-agent-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) repeat(var(--mg-agent-columns,3),84px) 84px; gap:0; }
 .mg-agent-matrix[data-columns="1"] { --mg-agent-columns:1; }
+.mg-agent-matrix[data-columns="2"] { --mg-agent-columns:2; }
 .mg-agent-column { gap:2px; color:hsl(var(--muted-foreground)); font-weight:500; }
 .mg-agent-column .hub-agent-glyph { width:15px; height:15px; color:hsl(var(--foreground)); }
 .mg-agent-column span { font-size:11px; white-space:nowrap; }
@@ -294,7 +295,7 @@
 .mg-push { margin-left:auto; }
 .mg-toolbar-actions { display:flex; align-items:center; gap:6px; }
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-head,
-.mg-agent-matrix.mg-skill-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) 150px repeat(3,84px) 120px; }
+.mg-agent-matrix.mg-skill-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) 150px repeat(var(--mg-agent-columns,3),84px) 120px; }
 .mg-skill-matrix .mg-row-main { width:100%; cursor:pointer; }
 .mg-skill-matrix .mg-skill-source { min-width:0; padding-right:12px; }
 .mg-skill-matrix .mg-skill-source .mg-link-button { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }

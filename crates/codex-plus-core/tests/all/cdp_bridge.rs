@@ -2823,8 +2823,10 @@ fn injection_script_heartbeat_syncs_backend_settings() {
     assert!(script.contains("function syncBackendSettingsFromHeartbeat"));
     assert!(script.contains("syncBackendSettingsInFlight"));
     assert!(script.contains("void syncBackendSettingsFromHeartbeat();"));
-    assert!(script.contains("previousConversationView"));
-    assert!(script.contains("refreshConversationView();"));
+    // 跟着设置走的功能由内置拓展订阅 settings/loaded（对话宽度开关变了就重算宽度）。
+    assert!(script.contains("emitCodexPlusSettingsLoaded(\"heartbeat\")"));
+    assert!(script.contains("function codexPlusConversationViewExtension"));
+    assert!(script.contains("runScanStep(refreshConversationView);"));
 }
 
 #[test]
@@ -2840,7 +2842,8 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
     assert!(script.contains("if (threadIdBadgeActive)"));
     assert!(script.contains("function refreshThreadIdBadges()"));
     assert!(script.contains("uuidV7TimestampMs(sessionId)"));
-    assert!(script.contains("refreshThreadIdBadges();"));
+    // 由内置拓展「会话 ID 角标」登记成扫描步骤（停用时 sync 一次把角标撤掉）。
+    assert!(script.contains(r#"{ id: "thread-id-badge", name: "会话 ID 角标", sync: () => refreshThreadIdBadges(), scan: () => refreshThreadIdBadges() }"#));
 }
 
 #[test]
@@ -2878,7 +2881,8 @@ fn injection_script_exposes_capacity_auto_retry_control() {
     assert!(script.contains("capacityAutoRetryDefaultIntervalSeconds = 0"));
     // 插进 DOM 的浮标必须带归属标记，否则会触发自喂扫描循环（issue #1960）。
     assert!(script.contains("data-codex-plus-ext\", \"capacity-auto-retry\""));
-    assert!(script.contains("syncCodexPlusCapacityAutoRetry);"));
+    // 定时器随内置拓展「容量不足自动重试」装卸，读到设置后由它订阅的 settings/loaded 同步。
+    assert!(script.contains("settings: () => syncCodexPlusCapacityAutoRetry()"));
 }
 
 #[test]
@@ -3367,7 +3371,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"27\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"28\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
