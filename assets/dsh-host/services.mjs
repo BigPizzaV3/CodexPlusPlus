@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
+import { dirname, isAbsolute, join, resolve as resolvePath, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { hostCall, hostCallStream } from './host-call.mjs'
 import { FsError } from './shims/dsh-fs.mjs'
@@ -2317,7 +2317,8 @@ export function createFileReferences() {
           if (visited++ > 2000 || found.length >= 50) return
           if (SKIP.has(entry.name) || entry.name.startsWith('.')) continue
           const full = join(dir, entry.name)
-          const rel = full.slice(base.length + 1)
+          // 交给插件的相对路径统一用 /（dsh 在各平台都这样给）。
+          const rel = full.slice(base.length + 1).split(sep).join('/')
           if (!needle || rel.toLowerCase().includes(needle)) found.push({ path: rel, kind: entry.isDirectory() ? 'directory' : 'file' })
           if (entry.isDirectory()) await walk(full, depth + 1)
         }

@@ -450,7 +450,9 @@ process.stdout.write(JSON.stringify(doc))"#,
 
 fn url_from_path(path: &Path) -> String {
     let path = path.canonicalize().unwrap();
-    let text = path.to_string_lossy().replace('\\', "/");
+    // Windows 的 canonicalize 带 `\\?\` 前缀，Node 不认这种 file URL。
+    let text = path.to_string_lossy();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/");
     if text.starts_with('/') {
         format!("file://{text}")
     } else {
