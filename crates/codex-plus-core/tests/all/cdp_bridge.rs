@@ -3050,7 +3050,8 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     assert!(script.contains(
         "? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : \"\")"
     ));
-    assert!(script.contains("const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, sessionRefFromRow(row), event)"));
+    // 删除是内置拓展注册的行内会话行操作：点击时按当下的行重新解析会话（临时 id 不删）。
+    assert!(script.contains("onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event)"));
     assert!(script.contains("会话仍在同步，请稍后重试"));
     assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
 
@@ -3327,7 +3328,9 @@ fn injection_script_moves_export_and_project_move_into_more_menu() {
     assert!(
         script.contains("configureSvgActionButton(moreButton, \"更多操作\", ellipsisIconSvg())")
     );
-    assert!(script.contains("createSessionMoreMenuItem(\"导出\""));
+    // 导出是内置拓展「Markdown 导出」注册的菜单项（会话行操作），由宿主画进「…」菜单。
+    assert!(script.contains("id: \"markdown-export\","));
+    assert!(script.contains("appendCodexPlusExtensionRowActions(moreMenu, row, moreButton)"));
     assert!(!script.contains("createSessionMoreMenuItem(\"移动\""));
     assert!(script.contains("group.appendChild(moreButton)"));
     assert!(script.contains("installMoreButtonEvents(row, moreButton, openMoreMenu)"));
@@ -3356,8 +3359,11 @@ fn injection_script_does_not_add_delete_controls_on_archived_page() {
 
     assert!(script.contains("attachArchivedPageDeleteButton"));
     assert!(script.contains("data-codex-archive-row-action"));
-    assert!(script.contains("dataset.codexArchiveRowAction = \"export\""));
-    assert!(!script.contains("dataset.codexArchiveRowAction = \"delete\""));
+    // 归档页只画 surfaces 含 "archived" 的会话行操作：导出声明了，删除没有。
+    assert!(script.contains("button.dataset.codexArchiveRowAction = item.id"));
+    assert!(script.contains("surfaces: [\"sidebar\", \"archived\"],"));
+    let delete_action = script.split("id: \"session-delete\",").nth(1).unwrap();
+    assert!(!delete_action.split("onActivate").next().unwrap().contains("archived"));
     assert!(!script.contains("installArchivedDeleteAllButton"));
     assert!(!script.contains("删除全部归档"));
 }
