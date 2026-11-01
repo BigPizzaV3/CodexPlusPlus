@@ -15,7 +15,7 @@ import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
 import { SkillListViewport } from "./SkillListViewport";
 import { customSkillGroupKey, defaultSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
-import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, type SkillBatchOperation } from "./skill-agent-batch";
+import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
 import { checkRepositories, SkillTaskQueue } from "./skill-task-queue";
 import { usePopoverLayer } from "./use-popover-layer";
 import { useEscapeLayer } from "./use-escape-layer";
@@ -33,13 +33,13 @@ type Skill = { id: string; name: string; description: string; repoKey: string; r
 type Repo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
 type SkillPayload = Result & { skills: Skill[]; repos: Repo[]; pendingImportedRepos?: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string> };
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
-type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[] };
 type RepoCheck = { state: "queued" | "running" | "done" | "failed"; message?: string };
 type SkillImportMatch = { id: string; name: string; reasons: string[]; snapshot: string };
 type SkillImportCandidate = { id: string; name: string; description: string; sourceHash: string; repoKey: string; repoPath: string; matches: SkillImportMatch[]; duplicateCandidates: string[]; error: string | null };
 type SkillImportPreview = Result & { candidates: SkillImportCandidate[]; warning: string };
 type ImportRequest = { source: "local" | "cc-switch"; path: string | null; preview: SkillImportPreview; revision: number };
 const skillUpdateQueue = new SkillTaskQueue<SkillPayload>();
+const skillBatchRegistry = new SkillBatchRegistry();
 const SKILL_GROUP_STORAGE_KEY = "codex-plus-plus.skill-groups.v1";
 const ok = (r: Result) => r.status === "ok";
 function Button({ children, onClick, disabled, primary }: { children: ReactNode; onClick: () => void; disabled?: boolean; primary?: boolean }) { return <button type="button" className={"mg-button " + (primary ? "mg-primary" : "")} onClick={onClick} disabled={disabled}>{children}</button>; }
@@ -326,12 +326,13 @@ function SkillActionMenu({ skill, groups, group, originGroup, assignment, busy, 
   </div>;
 }
 export function SkillsPage({ notify }: { notify: Notify }) {
-  const [data, setData] = useState<SkillPayload | null>(null);
+  const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>({ version: 0, value: null });
+  const data = dataState.value;
   const [tab, setTab] = useState<"discover" | "installed">("installed");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
-  const [batchOperations, setBatchOperations] = useState<PendingSkillBatchOperation[]>([]);
-  const batchOperationsRef = useRef<PendingSkillBatchOperation[]>([]);
+  const batchOperations = useSyncExternalStore(skillBatchRegistry.subscribe, skillBatchRegistry.getSnapshot, skillBatchRegistry.getSnapshot);
+  const observedBatchOperations = useRef(batchOperations);
   const [repoOpen, setRepoOpen] = useState(false);
   const [detail, setDetail] = useState<Skill | null>(null);
   const [conflict, setConflict] = useState<Skill | null>(null);
@@ -369,7 +370,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       const result = await invoke<SkillPayload>("list_installed_skills");
       if (!mounted.current || request !== dataRequest.current) return null;
       startTransition(() => {
-        setData((current) => mounted.current && request === dataRequest.current ? result : current);
+        setDataState((current) => mounted.current && request === dataRequest.current && request >= current.version ? { version: request, value: result } : current);
         setDetail((current) => {
           if (!mounted.current || request !== dataRequest.current || !current || !ok(result)) return current;
           return result.skills.find((item) => item.id === current.id && item.installed)
@@ -385,7 +386,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   };
   const applyCurrentPayload = (request: number, payload: SkillPayload) => {
     if (!mounted.current) return;
-    if (request === dataRequest.current) setData(payload);
+    if (request === dataRequest.current) setDataState((current) => mounted.current && request >= current.version ? { version: request, value: payload } : current);
     else void reloadLocal();
   };
   const checkAllRepos = (repos: Repo[], pending: Repo[] = []) => {
@@ -423,6 +424,12 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     window.addEventListener("focus", onFocus);
     return () => { mounted.current = false; checkGeneration.current++; dataRequest.current++; window.removeEventListener("focus", onFocus); };
   }, []);
+  useEffect(() => {
+    if (observedBatchOperations.current !== batchOperations) {
+      observedBatchOperations.current = batchOperations;
+      if (mounted.current) void reloadLocal();
+    }
+  }, [batchOperations]);
   useEffect(() => {
     if (conflict) return;
     const next = data?.skills.find((skill) => skill.codexConflict && !dismissedConflicts.current.has(skill.id));
@@ -471,16 +478,14 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   };
   const runBatch = async (group: SkillGroup<Skill>, agent: McpAgentId, enabled: boolean) => {
     const groupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
-    if (batchOperationsRef.current.some((operation) => operation.groupKey === group.key && operation.agent === agent)
-      || skillBatchHasPending(batchOperationsRef.current, groupItems, agent)) return;
+    if (skillBatchHasPending(skillBatchRegistry.getSnapshot(), groupItems, agent)) return;
     const targets = skillBatchTargets(group.items, agent, enabled);
     if (!targets.length) {
       await notify("Skills", enabled ? t("该组没有可启用的 Skill") : t("该组没有可停用的 Skill"), "ok");
       return;
     }
     let operation: PendingSkillBatchOperation = { groupKey: group.key, agent, enabled, skillIds: targets.map((skill) => skill.id), settledSkillIds: [] };
-    batchOperationsRef.current = [...batchOperationsRef.current, operation];
-    setBatchOperations(batchOperationsRef.current);
+    skillBatchRegistry.add(operation);
     let completed = 0;
     const errors: string[] = [];
     try {
@@ -489,8 +494,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
           const request = ++dataRequest.current;
           const result = await invoke<SkillPayload>("set_skill_enabled_for", { agent, id: skill.id, enabled });
           if (mounted.current && request === dataRequest.current) {
-            setData((current) => current && result.skills
-              ? { ...current, skills: mergeSkillAgentResult(current.skills, result.skills, skill.id, agent) } : current);
+            setDataState((current) => {
+              if (!mounted.current || request < current.version || !current.value || !result.skills) return current;
+              return { version: request, value: { ...current.value, skills: mergeSkillAgentResult(current.value.skills, result.skills, skill.id, agent) } };
+            });
           } else if (mounted.current) {
             void reloadLocal();
           }
@@ -500,14 +507,12 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         finally {
           const previous = operation;
           operation = { ...operation, settledSkillIds: [...operation.settledSkillIds, skill.id] };
-          batchOperationsRef.current = batchOperationsRef.current.map((item) => item === previous ? operation : item);
-          if (mounted.current) setBatchOperations(batchOperationsRef.current);
+          skillBatchRegistry.replace(previous, operation);
         }
       }
     } finally {
-      batchOperationsRef.current = batchOperationsRef.current.filter((item) => item !== operation);
+      skillBatchRegistry.remove(operation);
       if (mounted.current) {
-        setBatchOperations(batchOperationsRef.current);
         void reloadLocal();
       }
     }
@@ -724,7 +729,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
               </button></div>
               <span className="mg-skill-batch-label">{t("全选")}</span>
               {MCP_AGENTS.map((agent) => <GroupAgentSelect group={group} agent={agent} key={agent}
-                busy={busy || batchOperations.some((operation) => operation.groupKey === group.key && operation.agent === agent) || skillBatchHasPending(batchOperations, allGroupItems, agent)}
+                busy={busy || skillBatchHasPending(batchOperations, allGroupItems, agent)}
                 operations={batchOperations}
                 onChange={(enabled) => void runBatch(group, agent, enabled)}/>)}
               <div className="mg-row-actions">

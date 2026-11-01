@@ -1,5 +1,22 @@
 export type SkillAgentState = { installed: boolean; bundled: boolean; enabled: boolean; agents?: string[] };
 export type SkillBatchOperation = { groupKey: string; agent: string; enabled: boolean; skillIds: string[] };
+export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[] };
+
+export class SkillBatchRegistry {
+  private operations: PendingSkillBatchOperation[] = [];
+  private listeners = new Set<() => void>();
+  subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
+  getSnapshot = () => this.operations;
+  private publish(operations: PendingSkillBatchOperation[]) {
+    this.operations = operations;
+    for (const listener of this.listeners) listener();
+  }
+  add(operation: PendingSkillBatchOperation) { this.publish([...this.operations, operation]); }
+  replace(previous: PendingSkillBatchOperation, next: PendingSkillBatchOperation) {
+    this.publish(this.operations.map((item) => item === previous ? next : item));
+  }
+  remove(operation: PendingSkillBatchOperation) { this.publish(this.operations.filter((item) => item !== operation)); }
+}
 
 export function skillAgents(skill: SkillAgentState): string[] {
   return skill.agents ?? (skill.enabled ? ["codex"] : []);

@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { customSkillGroupKey, defaultSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
-import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets } from "./skill-agent-batch.ts";
+import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, SkillBatchRegistry } from "./skill-agent-batch.ts";
 import { SkillTaskQueue } from "./skill-task-queue.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
@@ -25,6 +25,7 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 function createHarness(saved = "{}") {
   const slots: any[] = [];
   const effects: Array<() => void> = [];
+  const cleanups: Array<() => void> = [];
   const storage = new Map([["codex-plus-plus.skill-groups.v1", saved]]);
   const notices: Array<{ message: string; status?: string }> = [];
   const pending: Array<{ id: string; resolve: (result: any) => void }> = [];
@@ -37,6 +38,7 @@ function createHarness(saved = "{}") {
   const updateCalls: Array<{ command: string; args: any }> = [];
   const installCalls: Array<{ command: string; args: any }> = [];
   const updateQueue = new SkillTaskQueue<any>();
+  const skillBatchRegistry = new SkillBatchRegistry();
   let releasePreview: (() => void) | undefined;
   const previewGate = new Promise<void>((resolve) => { releasePreview = resolve; });
   let cursor = 0;
@@ -95,7 +97,7 @@ function createHarness(saved = "{}") {
     useEffect: (run: () => void, deps?: any[]) => {
       const index = cursor++;
       const previous = slots[index] as any[] | undefined;
-      if (!previous || !deps || deps.some((value, i) => !Object.is(value, previous[i]))) effects.push(run);
+      if (!previous || !deps || deps.some((value, i) => !Object.is(value, previous[i]))) effects.push(() => { const cleanup = run(); if (typeof cleanup === "function") cleanups.push(cleanup); });
       slots[index] = deps;
     },
     useMemo: (run: () => any) => run(), useDeferredValue: (value: any) => value,
@@ -114,7 +116,7 @@ function createHarness(saved = "{}") {
     repoKey: (repo: any) => `${repo.owner}/${repo.name}@${repo.branch}${repo.subdir ? `:${repo.subdir}` : ""}`,
     repoFromKey: () => null,
     repoUrl: () => "", sourceLabel: (item: FixtureSkill) => item.repoKey.split("@", 1)[0], importChannel: () => "",
-    MCP_AGENTS: ["codex", "claude", "grok"], skillUpdateQueue: updateQueue,
+    MCP_AGENTS: ["codex", "claude", "grok"], skillUpdateQueue: updateQueue, skillBatchRegistry,
     checkRepositories: async () => {}, openDialog: async () => null, appConfirm: async () => true, appPrompt: async () => null,
   };
   for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "SortableSkillGroup", "DndContext", "SortableContext", "SkillActionMenu",
@@ -158,8 +160,28 @@ function createHarness(saved = "{}") {
   };
   return { render, renderDrawer, find, groupSelect, groupInput, row, sort, order, expand, pending, pendingLoads, pendingDataUpdates, failures, notices, storage, server, updateCalls, installCalls, updateQueue,
     holdLoads: (count: number) => { holdLoads = count; }, deferDataUpdates: () => { deferDataUpdates = true; },
+    unmount: () => { cleanups.splice(0).forEach((cleanup) => cleanup()); slots.length = 0; },
     focus: () => windowListeners.get("focus")?.(), releasePreview: () => releasePreview?.() };
 }
+
+test("pending batch survives page remount and releases its lock after failure", async () => {
+  const ui = createHarness();
+  ui.render(); await tick(); ui.render(); ui.expand("repo:a/repo");
+  ui.groupInput("repo:a/repo", "codex").props.onChange({ target: { checked: true } });
+  ui.unmount();
+  ui.render(); await tick(); ui.render(); ui.expand("repo:a/repo");
+  assert.equal(ui.groupSelect("repo:a/repo", "codex").props.busy, true);
+  assert.equal(ui.groupSelect("repo:a/repo", "claude").props.busy, false);
+  assert.equal(ui.groupSelect("repo:z/repo", "codex").props.busy, false);
+  ui.groupInput("repo:a/repo", "codex").props.onChange({ target: { checked: true } });
+  assert.equal(ui.pending.length, 1);
+  ui.pending.shift()!.resolve(null); await tick(); ui.render();
+  assert.equal(ui.pending[0].id, "a2");
+  ui.pending.shift()!.resolve(null); await tick(); ui.render(); await tick(); ui.render();
+  assert.equal(ui.groupSelect("repo:a/repo", "codex").props.busy, false);
+  assert.equal(ui.row("a", "codex").props.enabled, true);
+  assert.equal(ui.row("a2", "codex").props.enabled, false);
+});
 
 test("discover installs the selected repository path with its distinct local identity", async () => {
   const ui = createHarness();

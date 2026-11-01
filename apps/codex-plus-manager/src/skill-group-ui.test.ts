@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { customSkillGroupKey, defaultSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
-import { skillAgents, skillBatchHasPending } from "./skill-agent-batch.ts";
+import { skillAgents, skillBatchHasPending, SkillBatchRegistry } from "./skill-agent-batch.ts";
 import { SkillTaskQueue } from "./skill-task-queue.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
@@ -61,7 +61,7 @@ function createHarness(saved = "{}") {
     ok: (result: { status: string }) => result.status === "ok", SKILL_GROUP_STORAGE_KEY: "codex-plus-plus.skill-groups.v1",
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
     groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey, defaultSkillGroupKey,
-    skillAgents, skillBatchHasPending, skillUpdateQueue: new SkillTaskQueue(), checkRepositories: async () => {},
+    skillAgents, skillBatchHasPending, skillUpdateQueue: new SkillTaskQueue(), skillBatchRegistry: new SkillBatchRegistry(), checkRepositories: async () => {},
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
     sourceLabel: (item: FixtureSkill) => item.bundled ? "内置" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
     repoKey: (repo: FixtureRepo) => `${repo.owner}/${repo.name}@${repo.branch}${repo.subdir ? `:${repo.subdir}` : ""}`,
