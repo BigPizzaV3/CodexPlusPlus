@@ -1,3 +1,5 @@
+import { flowProviderSlot } from "./flow-provider-colors";
+import "./flow-provider-colors.css";
 /** 网关总览：任意 Agent → Codex++ → 任意供应商。左列 Agent、中间网关、右列供应商池，下方是最近请求与今日用量。 */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -18,7 +20,7 @@ import { hubAgents, hubLinks, hubPoolState, hubProviders, hubTotals, routeRecord
 import { AGENT_ICONS, APP_LOGO_URL, Avatar, KeyCount, MemberStatusLabel, agentIconIsColor, makeRun, type Notify, type Run } from "./gateway-ui";
 import { publishGatewayPayload, useGatewayPayload } from "./gateway-store";
 import { AgentConnectDialog } from "./GatewayAgents";
-import { busyLinks, flowAgent, pulseHops, type FlowEntry, type FlowHop, type FlowPulse } from "./request-flow-model";
+import { busyLinks, liveFlowRoutes, flowRoutePosition, flowAgent, pulseHops, type FlowEntry, type LiveFlowRoute } from "./request-flow-model";
 import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
 import { agentVisible, singleAgent } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
@@ -93,10 +95,10 @@ export function HubOverview({
   const requestFlow = useRequestFlow(FLOW_REFRESH_MS);
   const flowEntries = requestFlow.entries.filter((entry) => agentVisible(focus, flowAgent(entry)));
   const flow = useMemo(
-    () => ({ pulses: requestFlow.pulses, busy: busyLinks(flowEntries) }),
-    // busy 只随进行中的请求变化。
+    () => ({ busy: busyLinks(flowEntries), routes: liveFlowRoutes(flowEntries) }),
+    // 连线随进行中的请求、路由和响应阶段变化。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [requestFlow.pulses, flowEntries.filter((entry) => entry.state === "running").map((entry) => `${entry.id}:${entry.relayId}`).join("|")],
+    [flowEntries.filter((entry) => entry.state === "running").map((entry) => `${entry.id}:${entry.relayId}:${entry.phase}:${entry.firstTokenMs}:${entry.estimatedOutputTokens}`).join("|")],
   );
   const feed = flowEntries.slice(0, FEED_LIMIT);
   const routeRecords = routeRecordsByEntry(payload, feed);
@@ -122,25 +124,11 @@ export function HubOverview({
       </header>
 
       <section className="hub-card">
-        <HubTopology flow={flow} links={links}>
+        <HubTopology className="hub-topology-compact" flow={flow} links={links}>
           <div className="hub-col">
             <div className="hub-col-head"><span>{t("Agent")}</span><span>{t("请求")}</span></div>
             {agents.map((agent) => (
-              <button className="hub-node" data-node={`agent:${agent.id}`} data-off={!agent.enabled && !agent.direct} key={agent.id} onClick={() => onOpenAgent(agent.id)} type="button">
-                <span className="hub-node-icon"><AgentGlyph agent={agent.id} /></span>
-                <span className="hub-node-text">
-                  <strong>
-                    {agent.name}
-                    <i className="hub-dot" data-tone={agent.direct ? "direct" : agent.enabled ? "ok" : "off"} />
-                  </strong>
-                  <small>
-                    {agent.direct
-                      ? (agent.detail ? tf("直连 · {0}", [agent.detail]) : t("直连模式"))
-                      : agent.enabled ? agent.detail || t("已接入") : t("未接入网关")}
-                  </small>
-                </span>
-                {agent.enabled ? <span className="hub-node-num">{agent.requests}</span> : null}
-              </button>
+              <AgentNode agent={agent} key={agent.id} onOpen={() => onOpenAgent(agent.id)} />
             ))}
             {solo ? null : (
               <button className="hub-node hub-node-ghost" onClick={() => setAdding("agent")} type="button">
@@ -151,18 +139,25 @@ export function HubOverview({
           </div>
 
           <div className="hub-core" data-node="hub" data-running={payload?.helperRunning ?? false}>
-            <img alt="" src={APP_LOGO_URL} />
-            <strong>Codex++</strong>
-            <span className="hub-addr">
-              <i className="hub-dot" data-tone={payload?.helperRunning ? "ok" : "off"} />
-              {payload ? `127.0.0.1:${payload.port}` : t("读取中…")}
-            </span>
-            <div className="hub-caps">
-              <span>{t("按模型名路由")}</span>
-              <span>{t("协议互转")}</span>
-              <span>{payload?.gateway.keyPolicy.mode === "roundRobin" ? t("逐请求轮换 Key") : t("会话粘性 Key")}</span>
-              {payload?.groups.length ? <span>{tf("{0} 个模型组", [payload.groups.length])}</span> : null}
+            <div className="hub-core-head">
+              <img alt="" src={APP_LOGO_URL} />
+              <span>
+                <strong>Codex++</strong>
+                <span className="hub-addr">
+                  <i className="hub-dot" data-tone={payload?.helperRunning ? "ok" : "off"} />
+                  {payload ? `127.0.0.1:${payload.port}` : t("读取中…")}
+                </span>
+              </span>
             </div>
+            {/* 能力说明压成一行小字，不再一枚枚画标签。 */}
+            <p className="hub-caps">
+              {[
+                t("按模型名路由"),
+                t("协议互转"),
+                payload?.gateway.keyPolicy.mode === "roundRobin" ? t("逐请求轮换 Key") : t("会话粘性 Key"),
+                ...(payload?.groups.length ? [tf("{0} 个模型组", [payload.groups.length])] : []),
+              ].join(" · ")}
+            </p>
             <dl>
               <div><dt>{t("请求")}</dt><dd>{totals.requests}</dd></div>
               <div><dt>{t("换上游")}</dt><dd data-tone={totals.rerouted ? "warn" : undefined}>{totals.rerouted}</dd></div>
@@ -182,11 +177,12 @@ export function HubOverview({
               </button>
             ) : null}
             {providers.map((provider) => (
-              <button className="hub-node" data-node={`provider:${provider.id}`} key={provider.id} onClick={() => onNavigate("gatewayProviders")} type="button">
+              <button className="hub-node" data-node={`provider:${provider.id}`} data-flow-provider={flowProviderSlot(provider.id)} key={provider.id} onClick={() => onNavigate("gatewayProviders")} title={provider.name} type="button">
+                <i className="flow-provider-mark" aria-hidden="true" />
                 <Avatar baseUrl={provider.baseUrl} name={provider.name} size="sm" />
                 <span className="hub-node-text">
                   <strong>
-                    {provider.name}
+                    <span className="hub-node-name">{provider.name}</span>
                     {provider.status.state === "cooling" ? <i className="hub-dot" data-tone="warn" /> : null}
                   </strong>
                   <small data-state={provider.status.state}>
@@ -241,6 +237,26 @@ export function HubOverview({
         <ProviderAdder busy={busy} notify={notify} onClose={() => setAdding(null)} payload={payload} run={run} startWith={adding === "import" ? "import" : "catalog"} />
       ) : null}
     </div>
+  );
+}
+
+/** 左列一个 Agent：名字和当前模型同排，一行一个，省出纵向空间多放几个。 */
+function AgentNode({ agent, onOpen }: { agent: ReturnType<typeof hubAgents>[number]; onOpen: () => void }) {
+  const detail = agent.direct
+    ? (agent.detail ? tf("直连 · {0}", [agent.detail]) : t("直连模式"))
+    : agent.enabled ? agent.detail || t("已接入") : t("未接入网关");
+  return (
+    <button className="hub-node" data-node={`agent:${agent.id}`} data-off={!agent.enabled && !agent.direct} onClick={onOpen} title={`${agent.name} · ${detail}`} type="button">
+      <span className="hub-node-icon"><AgentGlyph agent={agent.id} /></span>
+      <span className="hub-node-text">
+        <strong>
+          <span className="hub-node-name">{agent.name}</span>
+          <i className="hub-dot" data-tone={agent.direct ? "direct" : agent.enabled ? "ok" : "off"} />
+        </strong>
+        <small>{detail}</small>
+      </span>
+      {agent.enabled ? <span className="hub-node-num">{agent.requests}</span> : null}
+    </button>
   );
 }
 
@@ -308,8 +324,8 @@ function AgentSplit({ usage }: { usage: UsageSummary }) {
 
 type Path = { d: string; tone: HubLink["tone"]; weight: number; key: string; x1: number; y1: number; x2: number; y2: number };
 
-/** 真实请求驱动的连线动画：每颗光点对应一条请求；`busy` 里的连线有请求正在进行，画成流动虚线。 */
-export type TopologyFlow = { pulses: FlowPulse[]; busy: Set<string> };
+/** 真实请求驱动的连线动画：当前进行中的路线驱动连续光流，完成结果只在请求行展示。 */
+export type TopologyFlow = { busy: Set<string>; routes: LiveFlowRoute[] };
 
 /**
  * 三列布局 + 一层 SVG 连线。连线端点按真实节点位置量出来，窗口或内容变化时重画。Computer Use 页也用它。
@@ -404,106 +420,88 @@ export function HubTopology({
             </g>
           );
         })}
-        {flow ? <PulseLayer pathRefs={pathRefs} pulses={flow.pulses} /> : null}
+        {flow ? <FlowStreamLayer pathRefs={pathRefs} routes={flow.routes} paths={paths} /> : null}
       </svg>
       {children}
     </div>
   );
 }
 
-/** 每段连线走这么久；一颗来回的光点走四段。 */
-const HOP_MS = 650;
-/** 同一轮里的几颗光点错开出发，不叠成一颗。 */
-const STAGGER_MS = 160;
-const MAX_ACTIVE_PULSES = 16;
-
-type ActivePulse = { seq: number; hops: FlowHop[]; tone: FlowPulse["tone"]; start: number };
-
-function easeInOut(value: number): number {
-  return value < 0.5 ? 2 * value * value : 1 - (-2 * value + 2) ** 2 / 2;
-}
-
-/**
- * 沿连线移动的光点：每帧按 getPointAtLength 摆位置，直接改 DOM，不触发 React 重渲染。
- * 只放 seq 比已放过的大的；挂载时已有的光点算作放过（切页签回来不回放）。
- */
-function PulseLayer({ pulses, pathRefs }: { pulses: FlowPulse[]; pathRefs: React.MutableRefObject<Map<string, SVGPathElement>> }) {
-  const [active, setActive] = useState<ActivePulse[]>([]);
-  const lastSeq = useRef(pulses.length ? pulses[pulses.length - 1].seq : -1);
-  const dots = useRef(new Map<number, SVGGElement>());
+/** 整条路线共用时钟和像素速度；经过 hub 的间隙也计入路程，光流在节点下穿过。 */
+function FlowStreamLayer({ routes, paths, pathRefs }: {
+  routes: LiveFlowRoute[];
+  paths: Path[];
+  pathRefs: React.MutableRefObject<Map<string, SVGPathElement>>;
+}) {
+  const root = useRef<SVGGElement>(null);
+  const epoch = useRef(performance.now());
+  const signature = routes.map((route) => route.key).join("|");
+  const visible = routes.filter((route) => pulseHops({ ...route, kind: "out" }).every((hop) => paths.some((path) => path.key === hop.key)));
 
   useEffect(() => {
-    const fresh = pulses.filter((pulse) => pulse.seq > lastSeq.current);
-    if (!fresh.length) return;
-    lastSeq.current = fresh[fresh.length - 1].seq;
-    // 系统设置了「减弱动态效果」时不放光点，流动虚线也由 CSS 关掉。
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-    const now = performance.now();
-    const started = fresh
-      .map((pulse, index) => ({
-        seq: pulse.seq,
-        tone: pulse.tone,
-        start: now + index * STAGGER_MS,
-        hops: pulseHops(pulse).filter((hop) => pathRefs.current.has(hop.key)),
-      }))
-      .filter((pulse) => pulse.hops.length > 0);
-    if (started.length) setActive((current) => [...current, ...started].slice(-MAX_ACTIVE_PULSES));
-  }, [pulses, pathRefs]);
-
-  useEffect(() => {
-    if (!active.length) return;
+    const element = root.current;
+    if (!element) return;
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let frame = 0;
-    const step = () => {
-      const now = performance.now();
-      let finished = false;
-      for (const pulse of active) {
-        const dot = dots.current.get(pulse.seq);
-        if (!dot) continue;
-        const elapsed = now - pulse.start;
-        if (elapsed >= pulse.hops.length * HOP_MS) {
-          finished = true;
-          dot.style.visibility = "hidden";
-          continue;
-        }
-        const hop = pulse.hops[Math.max(0, Math.floor(elapsed / HOP_MS))];
-        const path = pathRefs.current.get(hop.key);
-        if (elapsed < 0 || !path) {
-          dot.style.visibility = "hidden";
-          continue;
-        }
-        const progress = easeInOut((elapsed % HOP_MS) / HOP_MS);
+    const tracks = visible.map((route) => {
+      const hops = pulseHops({ ...route, kind: route.reverse ? "back" : "out" });
+      const segments: Array<{ length: number; point: (distance: number) => { x: number; y: number } }> = [];
+      for (const hop of hops) {
+        const path = pathRefs.current.get(hop.key)!;
         const length = path.getTotalLength();
-        const point = path.getPointAtLength((hop.reverse ? 1 - progress : progress) * length);
-        dot.setAttribute("transform", `translate(${point.x} ${point.y})`);
-        dot.style.visibility = "visible";
+        const point = (distance: number) => path.getPointAtLength(hop.reverse ? length - distance : distance);
+        if (segments.length) {
+          const previous = segments[segments.length - 1];
+          const a = previous.point(previous.length);
+          const b = point(0);
+          const gap = Math.hypot(b.x - a.x, b.y - a.y);
+          segments.push({ length: gap, point: (distance) => {
+            const t = gap ? distance / gap : 0;
+            return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+          } });
+        }
+        segments.push({ length, point });
       }
-      if (finished) {
-        setActive((current) => current.filter((pulse) => performance.now() - pulse.start < pulse.hops.length * HOP_MS));
-      } else {
-        frame = window.requestAnimationFrame(step);
+      const lengths = segments.map((segment) => segment.length);
+      const total = lengths.reduce((a, b) => a + b, 0);
+      const group = [...element.children].find((child) => child.getAttribute("data-route") === route.key);
+      return { segments, lengths, total, packets: group ? [...group.children] : [] };
+    });
+    const draw = (now: number) => {
+      for (const track of tracks) {
+        const sample = (distance: number) => {
+          const position = flowRoutePosition(track.lengths, distance);
+          return position ? track.segments[position.segment].point(position.progress * track.lengths[position.segment]) : null;
+        };
+        track.packets.forEach((packet, index) => {
+          const cycle = track.total + 32;
+          const head = (((now - epoch.current) * 0.075 + index * cycle / 2) % cycle);
+          [...packet.children].forEach((mark, tail) => {
+            const point = sample(head - tail * 2.5);
+            mark.setAttribute("visibility", point ? "visible" : "hidden");
+            if (point) mark.setAttribute("transform", `translate(${point.x} ${point.y})`);
+          });
+        });
       }
+      if (!motion.matches) frame = requestAnimationFrame(draw);
     };
-    frame = window.requestAnimationFrame(step);
-    return () => window.cancelAnimationFrame(frame);
-  }, [active, pathRefs]);
+    const restart = () => {
+      cancelAnimationFrame(frame);
+      if (!motion.matches && tracks.length) frame = requestAnimationFrame(draw);
+    };
+    restart();
+    motion.addEventListener("change", restart);
+    return () => { cancelAnimationFrame(frame); motion.removeEventListener("change", restart); };
+    // 路线按稳定签名更新，轮询相同数据时不重启动画。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, paths, pathRefs]);
 
-  return (
-    <>
-      {active.map((pulse) => (
-        <g
-          className="hub-pulse"
-          data-tone={pulse.tone}
-          key={pulse.seq}
-          ref={(element) => {
-            if (element) dots.current.set(pulse.seq, element);
-            else dots.current.delete(pulse.seq);
-          }}
-          style={{ visibility: "hidden" }}
-        >
-          <circle className="hub-pulse-halo" r={7} />
-          <circle className="hub-pulse-core" r={3.4} />
-        </g>
-      ))}
-    </>
-  );
+  return <g className="hub-streams" ref={root}>
+    {visible.map((route) => <g data-flow-provider={flowProviderSlot(route.relayId)} data-route={route.key} data-direction={route.reverse ? "back" : "out"} key={route.key}>
+      {[0, 1].map((packet) => <g key={packet}>
+        {Array.from({ length: 10 }, (_, tail) => <circle className="hub-stream-dot" key={tail}
+          r={tail === 0 ? 3.5 : 3 - tail * 0.22} opacity={1 - tail / 11} visibility="hidden" />)}
+      </g>)}
+    </g>)}
+  </g>;
 }

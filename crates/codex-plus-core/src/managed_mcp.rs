@@ -45,6 +45,8 @@ pub struct RegistrationStatus {
     pub config_path: String,
     pub registered: bool,
     pub owned: bool,
+    /// 本工具的条目存在但被 `enabled = false` 停用（用户取消了接入）。
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,6 +79,32 @@ pub fn install(
     executable: &Path,
     state_dir: &Path,
 ) -> anyhow::Result<InstallReceipt> {
+    commit_live(spec, home, executable, state_dir, |contents| {
+        upsert_managed_context(spec, contents, executable, state_dir)
+    })
+}
+
+/// 取消接入：把 live config 里本工具的条目置为 `enabled = false`，Codex 新会话就不再加载它的工具，
+/// 省下工具清单占用的上下文。条目本身和用户加在上面的字段都保留，重新接入时原样启用。
+pub fn disable(
+    spec: &ManagedMcp,
+    home: &Path,
+    executable: &Path,
+    state_dir: &Path,
+) -> anyhow::Result<InstallReceipt> {
+    commit_live(spec, home, executable, state_dir, |contents| {
+        disable_managed_context(spec, contents)
+    })
+}
+
+/// 在锁内读出 live config、做一次纯转换，内容有变化才备份并原子写回。
+fn commit_live(
+    spec: &ManagedMcp,
+    home: &Path,
+    executable: &Path,
+    state_dir: &Path,
+    transform: impl FnOnce(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<InstallReceipt> {
     let home = validate_paths(home, executable, state_dir)?;
     let lock_path = home.join(spec.lock_file);
     reject_symlink(&lock_path)?;
@@ -84,9 +112,8 @@ pub fn install(
     FileExt::lock_exclusive(&lock).with_context(|| format!("无法锁定{}接入操作", spec.label))?;
     let path = home.join("config.toml");
     let before = read_config(&path)?;
-    let updated =
-        upsert_managed_context(spec, before.as_deref().unwrap_or(""), executable, state_dir)?;
-    if before.as_deref() == Some(updated.as_str()) {
+    let updated = transform(before.as_deref().unwrap_or(""))?;
+    if before.as_deref().unwrap_or("") == updated {
         let document = parse_config(&updated)?;
         return Ok(InstallReceipt {
             status: status_from_document(spec, &home, &document, executable, state_dir)?,
@@ -188,6 +215,52 @@ pub fn upsert_managed_context(
         set_value_preserving_decor(server, "enabled", Value::from(true));
     }
     Ok(document.to_string())
+}
+
+/// 纯转换：把本工具的条目（含仍归本工具所有的旧名条目）置为 `enabled = false`。
+/// 没有条目或条目归属不符时原样返回，不碰别人的配置。
+pub fn disable_managed_context(spec: &ManagedMcp, contents: &str) -> anyhow::Result<String> {
+    let mut document = parse_config(contents)?;
+    let Some(servers) = document.get_mut("mcp_servers") else {
+        return Ok(contents.to_string());
+    };
+    let servers = servers
+        .as_table_like_mut()
+        .context("mcp_servers 必须是 TOML 表，未修改配置")?;
+    let mut changed = false;
+    let owned_ids = std::iter::once((spec.server_id, spec.flag)).chain(spec.legacy.iter().copied());
+    for (id, flag) in owned_ids {
+        let Some(server) = servers.get_mut(id).and_then(Item::as_table_like_mut) else {
+            continue;
+        };
+        let owned = server
+            .get("args")
+            .and_then(Item::as_array)
+            .and_then(|args| args.get(0))
+            .and_then(Value::as_str)
+            == Some(flag);
+        if owned && server.get("enabled").and_then(Item::as_bool) != Some(false) {
+            set_value_preserving_decor(server, "enabled", Value::from(false));
+            changed = true;
+        }
+    }
+    Ok(if changed { document.to_string() } else { contents.to_string() })
+}
+
+/// 托管上下文里本工具的条目是否被停用。切换供应商的 apply 流程会把停用条目整条移出 live 配置，
+/// 所以「已取消接入」要以托管上下文为准。
+pub fn disabled_in_context(spec: &ManagedMcp, contents: &str) -> bool {
+    let Ok(document) = parse_config(contents) else {
+        return false;
+    };
+    server_entry(spec, &document)
+        .ok()
+        .flatten()
+        .filter(|server| is_owned(spec, server))
+        .and_then(Item::as_table_like)
+        .and_then(|server| server.get("enabled"))
+        .and_then(Item::as_bool)
+        == Some(false)
 }
 
 fn set_value_preserving_decor(
@@ -319,6 +392,7 @@ fn status_from_document(
             config_path: home.join("config.toml").to_string_lossy().into_owned(),
             registered: false,
             owned,
+            disabled: false,
         });
     }
     let current = entry
@@ -329,7 +403,14 @@ fn status_from_document(
                 && server.get("enabled").and_then(Item::as_bool) != Some(false)
                 && args_match(spec, server.get("args").and_then(Item::as_array), state_dir)
         });
+    let disabled = entry
+        .filter(|_| owned)
+        .and_then(Item::as_table_like)
+        .and_then(|server| server.get("enabled"))
+        .and_then(Item::as_bool)
+        == Some(false);
     let (status, message) = match (entry.is_some(), owned, current) {
+        (_, true, false) if disabled => ("needs_update", "已取消接入，Codex 新对话不会加载这些工具"),
         (false, _, _) => ("missing", "尚未接入 Codex"),
         (true, false, _) => ("conflict", "同名 MCP 属于其他配置，未接管"),
         (_, true, false) => ("needs_update", "已找到本工具的 MCP，需要更新路径或启用"),
@@ -347,6 +428,7 @@ fn status_from_document(
         config_path: home.join("config.toml").to_string_lossy().into_owned(),
         registered: current,
         owned,
+        disabled,
     })
 }
 

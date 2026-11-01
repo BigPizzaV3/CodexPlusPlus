@@ -91,7 +91,57 @@ pub trait BridgeSettingsService: Send + Sync {
         // 账本固定在状态目录：迁移设置文件路径后不能跟着换位置，否则余额历史看似清空。
         crate::paths::default_app_state_dir().join("whale-balance.sqlite3")
     }
+
+    /// 有没有启用中的拓展包在清单里声明了这条路由。桌宠 / 大肥鱼的数据路由（图片、音效、用量、余额）
+    /// 只在有拓展用它时才干活：Agent 桌宠拓展停用后不联网、不扫会话日志、不查余额。测试可覆盖。
+    fn extension_route_declared(&self, route: &str) -> bool {
+        cached_route_declared(route)
+    }
 }
+
+/// [`BridgeSettingsService::extension_route_declared`] 的默认实现：按默认拓展目录判断，3 秒缓存。
+fn cached_route_declared(route: &str) -> bool {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, std::collections::BTreeMap<String, bool>)>> =
+        std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.as_ref().is_none_or(|(at, _)| at.elapsed() >= std::time::Duration::from_secs(3)) {
+        *cache = Some((std::time::Instant::now(), Default::default()));
+    }
+    let (_, entries) = cache.as_mut().expect("cache initialized");
+    if let Some(value) = entries.get(route) {
+        return *value;
+    }
+    let declared = crate::user_scripts::default_user_script_manager().route_declared(route);
+    entries.insert(route.to_string(), declared);
+    declared
+}
+
+/// 大肥鱼数据路由用的设置：拓展用到了就按「选中大肥鱼」处理，余额接口按请求里带的 `balance`（来自 Agent 桌宠拓展的配置）。
+fn whale_settings(mut settings: BackendSettings, payload: &Value) -> BackendSettings {
+    settings.agent_pet = crate::settings::AgentPetSettings::whale_widget();
+    if let Some(balance) = payload.get("balance").and_then(Value::as_object) {
+        if let Some(protocol) = balance.get("protocol").and_then(Value::as_str) {
+            settings.codex_app_whale_balance_protocol = match protocol {
+                "custom" | "off" => protocol.to_string(),
+                _ => "auto".to_string(),
+            };
+        }
+        if let Some(path) = balance.get("path").and_then(Value::as_str) {
+            settings.codex_app_whale_balance_path = path.trim().to_string();
+        }
+        if let Some(field) = balance.get("field").and_then(Value::as_str) {
+            settings.codex_app_whale_balance_field = field.trim().to_string();
+        }
+        if let Some(currency) = balance.get("currency").and_then(Value::as_str) {
+            settings.codex_app_whale_balance_currency = currency.trim().to_ascii_uppercase();
+        }
+        if let Some(scale) = balance.get("scale").and_then(Value::as_f64).filter(|scale| scale.is_finite() && *scale > 0.0) {
+            settings.codex_app_whale_balance_scale = scale;
+        }
+    }
+    settings
+}
+
 
 #[async_trait]
 pub trait BridgeRuntimeService: Send + Sync {
@@ -105,6 +155,11 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value>;
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value>;
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value>;
+    /// 保存一个拓展包的配置（Codex 里「拓展」详情页的设置面板用），回 `{status, config}`，config 是生效配置。
+    async fn set_extension_config(&self, key: String, values: serde_json::Map<String, Value>) -> anyhow::Result<Value> {
+        let config = crate::user_scripts::default_user_script_manager().set_extension_config(&key, &values)?;
+        Ok(json!({ "status": "ok", "config": config }))
+    }
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn load_user_scripts(&self) -> anyhow::Result<Value> {
         self.user_script_inventory().await
@@ -350,10 +405,27 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.runtime.delete_user_script(key).await
         }
+        // Codex++ 内部用：「拓展」详情页里拓展自己的设置面板保存配置。只写这一个拓展清单里声明过的配置项，
+        // 不进拓展路由白名单（拓展经 ctx.registerSettingsPanel 拿到的 saveConfig 只能存它自己的）。
+        "/user-scripts/set-config" => {
+            let key = payload.get("key").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            let values = payload.get("values").and_then(Value::as_object).cloned().unwrap_or_default();
+            if key.is_empty() {
+                Ok(json!({ "status": "failed", "message": "拓展 key 不能为空" }))
+            } else {
+                match ctx.runtime.set_extension_config(key, values).await {
+                    Ok(value) => Ok(value),
+                    Err(error) => Ok(json!({ "status": "failed", "message": format!("{error:#}") })),
+                }
+            }
+        }
         "/user-scripts/load" => ctx.runtime.load_user_scripts().await,
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/cdp/targets" => ctx.runtime.cdp_targets().await,
         "/cdp/evaluate" => ctx.runtime.cdp_evaluate(payload.clone()).await,
+        // 系统鼠标位置：拓展写「桌宠跟随鼠标」这类功能用（页面里拿不到窗口外的鼠标）。只读。
+        "/system/cursor-position" => crate::launcher::cursor_position()
+            .map(|(x, y)| json!({ "status": "ok", "x": x, "y": y })),
         // Codex++ 内部用：拓展要改写发往 app-server 的请求时补开客户端捕获。不进拓展路由白名单。
         "/extensions/request-capture" => ctx.runtime.request_app_server_client_capture().await,
         // 拓展常驻后台：页面侧 ctx.backend 用。进程由处理桥接的这个进程托管，与具体运行时无关。
@@ -429,11 +501,13 @@ pub async fn handle_bridge_request(
                 .thread_usage_live(session_from_payload(&payload))
                 .await
         }
-        // 仅内置挂件（大肥鱼）使用，不加入第三方拓展路由白名单。
-        // 只在 Agent 桌宠选中大肥鱼时可用，见 `crate::whale::enabled`。
+        // 大肥鱼（Agent 桌宠拓展）的数据路由：拓展白名单里开放，但只有启用中的拓展在清单里声明了它才干活。
+        // 本机用量统计与余额查询都在 Codex++ 里做，供应商的 Key 不交给页面。
+        "/whale/media" if ctx.settings.extension_route_declared(path) => Ok(crate::assets::whale_media()),
+        "/whale/media" => Ok(json!({"status":"disabled"})),
         "/whale/history" => match ctx.settings.get_settings().await {
-            Ok(settings)
-                if crate::whale::enabled(&settings)
+            Ok(_)
+                if ctx.settings.extension_route_declared(path)
                     && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
             {
                 ctx.data.whale_history(payload.clone()).await
@@ -441,8 +515,12 @@ pub async fn handle_bridge_request(
             Ok(_) => Ok(json!({"status":"disabled"})),
             Err(_) => Ok(json!({"status":"unavailable","message":"无法读取挂件设置"})),
         },
+        "/whale/full" if !ctx.settings.extension_route_declared(path) => {
+            Ok(json!({"status":403,"body":{"ok":false,"error":"Codex 用量挂件已关闭"}}))
+        }
         "/whale/full" => match ctx.settings.get_settings().await {
             Ok(settings) => {
+                let settings = whale_settings(settings, &payload);
                 let path = ctx.settings.whale_ledger_path();
                 let requested_path = payload
                     .get("path")
@@ -466,14 +544,16 @@ pub async fn handle_bridge_request(
             Err(_) => Ok(json!({"status":503,"body":{"ok":false,"error":"无法读取挂件设置"}})),
         },
         "/whale/balance" => match ctx.settings.get_settings().await {
-            Ok(settings) => {
+            Ok(settings) if ctx.settings.extension_route_declared(path) => {
+                let settings = whale_settings(settings, &payload);
                 Ok(crate::whale::balance(&settings, ctx.settings.whale_ledger_path()).await)
             }
+            Ok(_) => Ok(json!({"status":"disabled","provider":{"id":"","name":"","accountId":""},"balances":[],"updatedAt":0,"stale":false})),
             Err(_) => Ok(crate::whale::unavailable("无法读取挂件设置")),
         },
         "/whale/session" => match ctx.settings.get_settings().await {
-            Ok(settings)
-                if crate::whale::enabled(&settings)
+            Ok(_)
+                if ctx.settings.extension_route_declared(path)
                     && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
             {
                 ctx.data.whale_session(session_from_payload(&payload)).await
@@ -481,60 +561,17 @@ pub async fn handle_bridge_request(
             Ok(_) => Ok(json!({"status": "disabled"})),
             Err(_) => Ok(json!({"status": "unavailable", "message": "无法读取挂件设置"})),
         },
-        // 仅内置 Agent 桌宠使用，不加入第三方拓展路由白名单。payload 忽略，只按当前设置取图。
-        // 选中大肥鱼时简单桌宠不显示，图片与音效路由一并返回 disabled（两者互斥）。
-        "/agent-pet/image" => match ctx.settings.get_settings().await {
-            Ok(settings) if settings.agent_pet.image_pet_active() => {
-                let pet = &settings.agent_pet;
-                match crate::agent_pet::load_image(
-                    &pet.image,
-                    &pet.custom_image_url,
-                    &ctx.settings.agent_pet_cache_dir(),
-                )
-                .await
-                {
-                    Ok(image) => Ok(json!({
-                        "status": "ok",
-                        "image": image.data_uri,
-                        "id": pet.image,
-                    })),
-                    Err(error) => Ok(json!({"status": "failed", "message": format!("{error:#}")})),
-                }
+        // Agent 桌宠拓展的数据路由（图库、图片、音效、导入自定义音效）：参数来自拓展配置，按原来的设置规则校验；
+        // 下载走 Codex++ 的地址校验（只 https、拦截本机地址）与缓存。只有启用中的拓展声明了它才干活。
+        "/agent-pet/catalog" | "/agent-pet/image" | "/agent-pet/sound" | "/agent-pet/import-sound" => {
+            if ctx.settings.extension_route_declared(path) {
+                Ok(crate::agent_pet::route(path, &payload, &ctx.settings.agent_pet_cache_dir(), &ctx.settings.agent_pet_custom_dir())
+                    .await
+                    .unwrap_or_else(|| json!({"status": "failed", "message": "未知的桌宠路由"})))
+            } else {
+                Ok(json!({"status": "disabled"}))
             }
-            Ok(_) => Ok(json!({"status": "disabled"})),
-            Err(error) => Ok(json!({
-                "status": "failed",
-                "message": format!("无法读取 Agent 桌宠设置：{error}"),
-            })),
-        },
-        // 同上，仅内置桌宠使用。内嵌音效组渲染进程自带，这里只服务下载组和自定义组。
-        "/agent-pet/sound" => match ctx.settings.get_settings().await {
-            Ok(settings) if settings.agent_pet.image_pet_active() => {
-                let pet = &settings.agent_pet;
-                match crate::agent_pet::load_sound(
-                    &pet.sound_set,
-                    &pet.custom_sound_press,
-                    &pet.custom_sound_release,
-                    &ctx.settings.agent_pet_cache_dir(),
-                    &ctx.settings.agent_pet_custom_dir(),
-                )
-                .await
-                {
-                    Ok(sound) => Ok(json!({
-                        "status": "ok",
-                        "key": sound.key,
-                        "press": sound.press,
-                        "release": sound.release,
-                    })),
-                    Err(error) => Ok(json!({"status": "failed", "message": format!("{error:#}")})),
-                }
-            }
-            Ok(_) => Ok(json!({"status": "disabled"})),
-            Err(error) => Ok(json!({
-                "status": "failed",
-                "message": format!("无法读取 Agent 桌宠设置：{error}"),
-            })),
-        },
+        }
         "/archived-thread" => {
             let title = payload
                 .get("title")
@@ -582,6 +619,26 @@ pub async fn handle_bridge_request(
             })
             .await
             .unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())))
+        }
+        "/request-log/recent" => {
+            // 只读：最近已完成的模型请求（与托盘「实时请求」同一份 request-log.jsonl），
+            // 开放给拓展做请求提示这类功能。进行中的请求只在代理进程内存里，这里不返回，
+            // 需要的话走 /proxy-status。
+            let limit = payload
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(20)
+                .clamp(1, 100) as usize;
+            tokio::task::spawn_blocking(move || {
+                crate::request_log::read_recent_request_logs_at(
+                    &crate::request_log::request_log_path(),
+                    limit,
+                )
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+            .and_then(|result| result.map_err(|error| anyhow::anyhow!(error.to_string())))
+            .map(|entries| json!({ "status": "ok", "entries": entries }))
         }
         "/proxy-status" => {
             // 代理进程的实时请求状态只存在管理器内存里；桥接进程通过本地 helper
@@ -754,7 +811,10 @@ impl BridgeRuntimeService for CoreRuntimeService {
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
         match &self.user_scripts {
             Some(user_scripts) => {
-                user_scripts.set_script_enabled(&key, enabled)?;
+                let result = user_scripts.set_script_enabled(&key, enabled);
+                // 与管理器一致：拓展带的钩子 / Codex 资产跟着启停写回 Codex 配置。
+                crate::extension_hooks::sync_default(user_scripts);
+                result?;
                 user_scripts.inventory()
             }
             None => Ok(empty_user_script_inventory()),
@@ -764,7 +824,9 @@ impl BridgeRuntimeService for CoreRuntimeService {
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
         match &self.user_scripts {
             Some(user_scripts) => {
-                user_scripts.delete_user_script(&key)?;
+                let result = user_scripts.delete_user_script(&key);
+                crate::extension_hooks::sync_default(user_scripts);
+                result?;
                 user_scripts.inventory()
             }
             None => Ok(empty_user_script_inventory()),
@@ -1108,20 +1170,6 @@ mod dictation_privacy_tests {
         settings.aggregate_relay_profiles[0].session_provider = RelaySessionProvider::Custom;
         settings.relay_profiles_enabled = false;
         assert!(managed_session_connection(&settings).is_null());
-    }
-
-    #[test]
-    fn settings_bridge_preserves_session_share_choice_for_renderer_master_gating() {
-        for enabled in [false, true] {
-            let settings = BackendSettings {
-                codex_app_session_share: enabled,
-                enhancements_enabled: false,
-                ..BackendSettings::default()
-            };
-            let result = settings_payload_value(settings, String::new()).unwrap();
-            assert_eq!(result["codexAppSessionShare"], enabled);
-            assert_eq!(result["enhancementsEnabled"], false);
-        }
     }
 
     #[test]

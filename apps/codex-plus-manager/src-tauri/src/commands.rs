@@ -6264,6 +6264,53 @@ pub fn set_user_scripts_skip_next_start(skip: bool) -> CommandResult<SettingsPay
     }
 }
 
+/// 拓展的管理器面板（codexpp.json 的 `manager.page`）或设置页（`settings.page`，`kind` 为 "settings"）：
+/// 标题与 HTML，由前端放进沙箱 iframe。设置页在拓展停用时也能打开。
+#[tauri::command]
+pub fn extension_manager_page(key: String, kind: Option<String>) -> Result<Value, String> {
+    let manager = default_user_script_manager();
+    let page = if kind.as_deref() == Some("settings") {
+        manager.extension_settings_page(key.trim())
+    } else {
+        manager.extension_manager_page(key.trim())
+    };
+    page
+        .map(|(title, html)| serde_json::json!({ "title": title, "html": html }))
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// 管理器面板的 `codexPlusManager.asset(path)`：只读本拓展包 assets/ 里的资源（设置页在拓展停用时也能取）。
+#[tauri::command]
+pub fn extension_manager_asset(key: String, path: String, kind: Option<String>) -> Result<String, String> {
+    default_user_script_manager()
+        .extension_asset_for(key.trim(), &path, kind.as_deref() != Some("settings"))
+        .map_err(|error| format!("{error:#}"))
+}
+/// 设置页 / 管理器面板的 `codexPlusManager.call(route, payload)`：只认开放给拓展页面、且本拓展清单声明过的数据路由。
+#[tauri::command]
+pub async fn extension_page_call(key: String, route: String, payload: Value) -> Result<Value, String> {
+    default_user_script_manager()
+        .extension_page_route(key.trim(), route.trim(), &payload)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// 管理器面板的 `codexPlusManager.backend.call(method, params)`：只调本拓展自己的常驻后台。
+#[tauri::command]
+pub async fn extension_manager_backend_call(key: String, method: String, params: Value) -> Result<Value, String> {
+    let manager = default_user_script_manager();
+    codex_plus_core::extension_backend::call(
+        &manager,
+        key.trim(),
+        method.trim(),
+        params,
+        std::time::Duration::from_secs(30),
+        Some("manager"),
+    )
+    .await
+    .map_err(|error| format!("{error:#}"))
+}
+
 /// 保存拓展包的配置（清单 config 里声明的项）。页面侧要热重载后才读到新值，由前端随后触发。
 #[tauri::command]
 pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>) -> CommandResult<SettingsPayload> {
@@ -6275,6 +6322,21 @@ pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>)
         Ok(_) => settings_payload("拓展配置已保存。", "拓展配置保存失败"),
         Err(error) => failed(&format!("拓展配置保存失败：{error:#}"), fallback_settings_payload()),
     }
+}
+
+/// 保存配置后先试着在 Codex 页面里原地生效（拓展用 ctx.onConfigUpdate 接住时不必热重载）。返回 "applied" 或 "reload"。
+#[tauri::command]
+pub async fn update_extension_config_live(key: String) -> Result<String, String> {
+    let debug_port = StatusStore::default()
+        .load_latest()
+        .ok()
+        .flatten()
+        .and_then(|status| status.debug_port)
+        .unwrap_or_else(default_debug_port);
+    let manager = default_user_script_manager();
+    Ok(codex_plus_core::user_scripts::update_live_config(debug_port, &manager, key.trim())
+        .await
+        .unwrap_or_else(|_| "reload".to_string()))
 }
 
 #[tauri::command]

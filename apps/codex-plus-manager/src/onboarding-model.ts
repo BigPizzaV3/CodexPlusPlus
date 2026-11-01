@@ -70,7 +70,8 @@ export const TOUR_STEPS: TourStep[] = [
  * 按使用模式调整的步骤。单 Agent 模式下不讲「多个 Agent 共用」，
  * 欢迎卡、接入、Agent 列表三步换成只针对这一个 Agent 的说法（文案里的 {0} 是 Agent 名字）。
  */
-export function tourSteps(soloName: string | null): TourStep[] {
+export function tourSteps(soloName: string | null, enhanceOnly = false): TourStep[] {
+  if (enhanceOnly) return ENHANCE_TOUR_STEPS;
   if (!soloName) return TOUR_STEPS;
   const override: Record<string, Partial<Pick<TourStep, "title" | "body">>> = {
     welcome: {
@@ -87,6 +88,19 @@ export function tourSteps(soloName: string | null): TourStep[] {
   };
   return TOUR_STEPS.map((step) => (override[step.id] ? { ...step, ...override[step.id], args: [soloName], plainTitle: !override[step.id].title } : step));
 }
+
+/**
+ * 只用增强功能时的步骤：没有网关、供应商池和 Agent 接入，这三步去掉，其余换成不提供应商的说法。
+ */
+const ENHANCE_OVERRIDES: Record<string, Pick<TourStep, "body">> = {
+  welcome: { body: "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下各个入口。" },
+  agents: { body: "每个 Agent 一行，点进去管理它自己的增强、皮肤、插件等；Codex 行的播放键可以直接启动或停止 Codex。" },
+  management: { body: "会话、MCP、Skills 和拓展在这里统一管理，一次覆盖所有 Agent。" },
+};
+const ENHANCE_HIDDEN_STEPS = new Set(["hub", "providers", "agents-connect"]);
+const ENHANCE_TOUR_STEPS: TourStep[] = TOUR_STEPS
+  .filter((step) => !ENHANCE_HIDDEN_STEPS.has(step.id))
+  .map((step) => (ENHANCE_OVERRIDES[step.id] ? { ...step, ...ENHANCE_OVERRIDES[step.id] } : step));
 
 /** 是否需要自动弹出引导：没看过，或看的是旧版本。 */
 export function shouldShowTour(stored: string | null): boolean {

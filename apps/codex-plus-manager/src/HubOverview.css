@@ -112,17 +112,10 @@
   fill: hsl(var(--brand-accent));
 }
 
-/* 真实请求驱动的连线（总览、托盘「流量」页签）：有请求在进行的连线画成向前流动的虚线。 */
+/* 只有真实进行中的请求才亮起；等待时去程，收到输出后反向回流。 */
 .hub-links path[data-busy="true"] {
-  stroke: hsl(var(--brand-accent) / 0.8);
-  stroke-dasharray: 6 6;
-  animation: hub-flow-dash 0.9s linear infinite;
-}
-
-@keyframes hub-flow-dash {
-  to {
-    stroke-dashoffset: -12;
-  }
+  stroke: hsl(var(--brand-accent) / 0.28);
+  stroke-dasharray: none;
 }
 
 /* 连线两端的小圆点；有请求在进行时变成强调色。 */
@@ -136,35 +129,14 @@
   fill: hsl(var(--brand-accent));
 }
 
-/* 一条请求一颗光点：去程是强调色，回程成功绿、失败红。 */
-.hub-links .hub-pulse .hub-pulse-core {
+/* 单一强调色表示流量，拖尾形状表示方向；成功/失败只留在请求列表。 */
+.hub-links .hub-stream-dot {
   fill: hsl(var(--brand-accent));
-}
-
-.hub-links .hub-pulse .hub-pulse-halo {
-  fill: hsl(var(--brand-accent) / 0.22);
-}
-
-.hub-links .hub-pulse[data-tone="ok"] .hub-pulse-core {
-  fill: hsl(var(--status-success));
-}
-
-.hub-links .hub-pulse[data-tone="ok"] .hub-pulse-halo {
-  fill: hsl(var(--status-success) / 0.24);
-}
-
-.hub-links .hub-pulse[data-tone="error"] .hub-pulse-core {
-  fill: hsl(var(--status-error));
-}
-
-.hub-links .hub-pulse[data-tone="error"] .hub-pulse-halo {
-  fill: hsl(var(--status-error) / 0.24);
+  filter: drop-shadow(0 0 2px hsl(var(--brand-accent) / 0.45));
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hub-links path[data-busy="true"] {
-    animation: none;
-  }
+  .hub-streams { display: none; }
 }
 
 .hub-col {
@@ -598,4 +570,150 @@
 .shell .hub-node-import {
   border-color: hsl(var(--primary) / 0.45);
   color: hsl(var(--primary));
+}
+
+/* ── 网关总览的紧凑拓扑：节点一行一个、中枢缩小，同一屏能放下更多 Agent 和供应商。
+   只作用于总览（className 传入），Computer Use 页的拓扑保持原样。 ── */
+
+.hub-topology.hub-topology-compact {
+  grid-template-columns: minmax(180px, 1fr) minmax(190px, 230px) minmax(180px, 1fr);
+  gap: 0 clamp(28px, 4vw, 56px);
+  padding: 12px 14px;
+}
+
+.hub-topology-compact .hub-col {
+  gap: 4px;
+}
+
+.hub-topology-compact .hub-col-head {
+  padding: 0 4px 2px;
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-node {
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 8px;
+}
+
+.hub-topology-compact .hub-node-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.hub-topology-compact .hub-node-icon .hub-agent-glyph {
+  width: 14px;
+  height: 14px;
+}
+
+/* 名字和副信息同排：名字优先，副信息（模型 / Key 数）跟在后面，放不下就省略。 */
+.hub-topology-compact .hub-node-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hub-topology-compact .hub-node-text strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.hub-topology-compact .hub-node-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-topology-compact .hub-node-text small {
+  flex: 1 1 0;
+  min-width: 24px;
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-node-num {
+  font-size: 11.5px;
+}
+
+.hub-topology-compact .hub-node-ghost {
+  min-height: 28px;
+  padding: 2px 8px;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.hub-topology-compact .hub-node-ghost svg {
+  width: 13px;
+  height: 13px;
+}
+
+.hub-topology-compact .hub-empty {
+  padding: 4px 4px 6px;
+}
+
+.hub-topology-compact .hub-core {
+  max-width: 230px;
+  padding: 12px 12px 10px;
+  border-radius: 12px;
+  box-shadow: 0 0 0 4px hsl(var(--brand-accent) / 0.05), var(--shadow-sm);
+}
+
+.hub-topology-compact .hub-core-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: left;
+}
+
+.hub-topology-compact .hub-core-head img {
+  margin: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+.hub-topology-compact .hub-core-head strong {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.25;
+}
+
+.hub-topology-compact .hub-addr {
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-caps {
+  display: block;
+  margin: 8px 0 0;
+  color: hsl(var(--muted-foreground) / 0.85);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.hub-topology-compact .hub-core dl {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.hub-topology-compact .hub-core dt {
+  font-size: 10px;
+}
+
+.hub-topology-compact .hub-core dd {
+  font-size: 13px;
+}
+
+@media (max-width: 1080px) {
+  .hub-topology.hub-topology-compact {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 16px;
+  }
+
+  .hub-topology-compact .hub-core {
+    max-width: none;
+  }
 }

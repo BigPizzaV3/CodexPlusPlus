@@ -128,6 +128,28 @@ fn recovery_expression(request_id: &str) -> String {
     )
 }
 
+/// 会话索引修复结束后通知页面里的拓展：发公开事件 `codexpp/session-index-repaired`（`{ aborted, checkedAtMs }`）。
+/// 页面没连上、或拓展内核还没就绪时什么也不做。
+async fn notify_extensions(debug_port: u16, aborted: bool, checked_at_ms: i64) {
+    let Ok(targets) = crate::cdp::list_targets(debug_port).await else {
+        return;
+    };
+    let Ok(targets) = crate::cdp::select_extension_cdp_targets(&targets, None, Some("main")) else {
+        return;
+    };
+    let payload = json!({ "aborted": aborted, "checkedAtMs": checked_at_ms });
+    let expression = format!(
+        "(() => {{ try {{ window.__codexPlusEmitHostEvent?.(\"codexpp/session-index-repaired\", {payload}); }} catch {{}} return true; }})()"
+    );
+    for target in targets {
+        if let Some(websocket) = target.web_socket_debugger_url.as_deref()
+            && crate::cdp::validate_cdp_websocket_url(websocket, debug_port).is_ok()
+        {
+            let _ = crate::bridge::evaluate_script(websocket, &expression).await;
+        }
+    }
+}
+
 async fn recover(debug_port: u16) -> anyhow::Result<RecoveryReport> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let targets = crate::cdp::select_extension_cdp_targets(&targets, None, Some("main"))?;
@@ -198,13 +220,22 @@ fn spawn_after_index_repair(
             );
         }
         // 设置缺失、读取失败或总增强关闭时均不访问 CDP，也不触碰原生页面。
-        let enabled = tokio::task::spawn_blocking(move || store.load())
+        let settings = tokio::task::spawn_blocking(move || store.load())
             .await
             .ok()
-            .and_then(Result::ok)
-            .is_some_and(|settings| {
+            .and_then(Result::ok);
+        // 被拓展顶替时内置补载让位，改为通知页面：顶替它的拓展订阅 codexpp/session-index-repaired 自己补载。
+        // 同样只在增强开着、索引修复没中止时才访问页面。
+        let replaced = settings.as_ref().is_some_and(|settings| settings.enhancements_enabled)
+            && !aborted
+            && crate::builtin_takeover::replaced("history-turn-recovery");
+        let enabled = !replaced
+            && settings.is_some_and(|settings| {
                 settings.enhancements_enabled && settings.codex_app_history_turn_recovery
             });
+        if replaced && let Some(port) = debug_port.filter(|port| *port != 0) {
+            notify_extensions(port, aborted, checked_at_ms).await;
+        }
         let skip_reason = if !enabled {
             Some("disabled_or_settings_unavailable")
         } else if aborted {

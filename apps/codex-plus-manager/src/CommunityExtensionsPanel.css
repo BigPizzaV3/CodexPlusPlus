@@ -19,7 +19,6 @@
 .shell .community-ext-title { flex:1; min-width:0; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 .shell .community-ext-title strong { font-size:14px; }
 .shell .community-ext-badge { display:inline-flex; padding:1px 7px; border-radius:999px; font-size:11px; background:hsl(var(--muted)); color:hsl(var(--foreground)); white-space:nowrap; }
-.shell .community-ext-badge.is-unreviewed { background:transparent; border:1px solid hsl(var(--status-warning) / .5); color:hsl(var(--status-warning)); }
 .shell .community-ext-actions { display:flex; align-items:center; gap:8px; }
 .shell .community-ext-installed { font-size:12px; color:hsl(var(--status-success, 142 60% 36%)); white-space:nowrap; }
 .shell .community-ext-description { margin:0; font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); }
@@ -93,3 +92,8 @@
 .shell .ext-card-fact-tag { color:hsl(var(--muted-foreground)); }
 .shell .community-ext-installed[data-highlight] { color:hsl(var(--primary)); }
 .shell .community-ext-card.ext-card[data-dimmed] { opacity:.65; }
+/* 「我发布的」：上架状态徽标、删除仓库按钮用错误色 */
+.shell .community-ext-badge.is-listed { background:hsl(var(--status-success, 142 60% 36%) / .12); color:hsl(var(--status-success, 142 60% 36%)); }
+.shell .my-published-delete { color:hsl(var(--status-error, 0 72% 51%)); }
+.shell .my-published-repo-copy { display:flex; align-items:center; gap:8px; margin:8px 0; padding:6px 6px 6px 10px; border:1px solid hsl(var(--border)); border-radius:6px; }
+.shell .my-published-repo-copy code { flex:1; min-width:0; overflow-wrap:anywhere; font-family:var(--font-mono, monospace); font-size:12px; }

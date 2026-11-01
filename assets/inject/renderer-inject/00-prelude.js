@@ -385,10 +385,6 @@
   const zedRemoteButtonClass = "codex-zed-remote-button";
   const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";
   const sessionShareButtonClass = "codex-session-share-button";
-  const sessionShareButtonVersion = "1";
-  const codexPlusShareBaseUrl = "https://share.codexpp.cc";
-  const codexPlusShareFallbackBaseUrl = "https://codexpp-share.pages.dev";
-  const codexPlusShareMaxCharacters = 900000;
   const zedRemoteToastClass = "codex-zed-remote-toast";
   const upstreamWorktreeDialogClass = "codex-upstream-worktree-dialog";
   const upstreamBranchOptionAttribute = "data-codex-upstream-branch-option";
@@ -1939,4 +1935,3 @@
     conversationViewContentAnchor: "[data-thread-user-message-navigation-content]",
     conversationViewFooter: "[data-thread-scroll-footer]",
   };
-  const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";

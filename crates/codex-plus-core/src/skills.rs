@@ -1131,8 +1131,10 @@ async fn fetch_repo_skills_from_zip(
     repo: &SkillRepo,
     cached: &BTreeMap<String, RemoteSkill>,
     client: &reqwest::Client,
+    zip_url: &str,
+    authorize: GithubAuth,
 ) -> anyhow::Result<Vec<RemoteSkill>> {
-    let response = with_github_auth(client.get(repo_zip_url(repo)))
+    let response = authorize(client.get(zip_url))
         .header(reqwest::header::ACCEPT, "application/zip")
         .send()
         .await
@@ -1489,6 +1491,8 @@ fn github_token() -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+type GithubAuth = fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder;
+
 fn with_github_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     match github_token() {
         Some(token) => request.header(reqwest::header::AUTHORIZATION, format!("token {token}")),
@@ -1504,22 +1508,48 @@ pub async fn fetch_repo_skills(
     cached: &BTreeMap<String, RemoteSkill>,
 ) -> anyhow::Result<Vec<RemoteSkill>> {
     let client = github_client().await?;
-    let response = with_github_auth(client.get(repo_tree_url(repo)))
+    fetch_repo_skills_with_client(
+        repo,
+        cached,
+        &client,
+        &repo_tree_url(repo),
+        &repo_zip_url(repo),
+        with_github_auth,
+    )
+    .await
+}
+
+async fn fetch_repo_skills_with_client(
+    repo: &SkillRepo,
+    cached: &BTreeMap<String, RemoteSkill>,
+    client: &reqwest::Client,
+    tree_url: &str,
+    zip_url: &str,
+    authorize: GithubAuth,
+) -> anyhow::Result<Vec<RemoteSkill>> {
+    let response = authorize(client.get(tree_url))
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await;
     let response = match response {
         Ok(response) => response,
-        Err(error) => return fetch_repo_skills_from_zip(repo, cached, &client).await
-            .with_context(|| format!("文件树请求失败（{error}），压缩包回退也失败")),
+        Err(error) => {
+            return fetch_repo_skills_from_zip(repo, cached, client, zip_url, authorize)
+                .await
+                .with_context(|| format!("文件树请求失败（{error}），压缩包回退也失败"));
+        }
     };
     // 不要用 error_for_status() 一把带过：403 限流、404 仓库/分支不存在、401 令牌
     // 无效，处理方式完全不同，但用户只会看到「返回错误状态」，没法自助也没法报障
     // （#1989 里四个仓库全失败，看不出到底是限流还是网络）。
     let status = response.status();
     if !status.is_success() && (matches!(status.as_u16(), 403 | 429) || status.is_server_error()) {
-        return fetch_repo_skills_from_zip(repo, cached, &client).await;
+        return fetch_repo_skills_from_zip(repo, cached, client, zip_url, authorize)
+            .await
+            .with_context(|| {
+                format!("文件树请求失败：HTTP {}，压缩包回退也失败", status.as_u16())
+            });
     }
     if !status.is_success() {
         anyhow::bail!(
@@ -1535,7 +1565,7 @@ pub async fn fetch_repo_skills(
         .await
         .context("解析 GitHub 文件树响应失败")?;
     if tree.get("truncated").and_then(Value::as_bool) == Some(true) {
-        return fetch_repo_skills_from_zip(repo, cached, &client).await;
+        return fetch_repo_skills_from_zip(repo, cached, client, zip_url, authorize).await;
     }
 
     let skills = parse_skills_from_tree(repo, &tree);
@@ -1553,7 +1583,7 @@ pub async fn fetch_repo_skills(
                 }
             }
             let manifest_url = raw_file_url(repo, &skill_manifest_path(&skill.repo_path));
-            if let Ok(response) = with_github_auth(client.get(manifest_url))
+            if let Ok(response) = authorize(client.get(manifest_url))
                 .timeout(std::time::Duration::from_secs(15)).send().await
                 && let Ok(response) = response.error_for_status()
                 && let Ok(text) = response.text().await
@@ -2070,6 +2100,612 @@ mod tests {
             writer.finish().unwrap();
         }
         buffer.into_inner()
+    }
+
+    fn without_github_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request
+    }
+
+    const FIXTURE_GITHUB_AUTH: &str = "token fixture-github-token";
+
+    fn with_fixture_github_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request.header(reqwest::header::AUTHORIZATION, FIXTURE_GITHUB_AUTH)
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_mock_requests_use_only_explicit_auth() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let cases: [(GithubAuth, Option<&str>); 2] = [
+            (without_github_auth, None),
+            (with_fixture_github_auth, Some(FIXTURE_GITHUB_AUTH)),
+        ];
+        for (authorize, expected) in cases {
+            let server = MockServer::builder()
+                .disable_request_recording()
+                .start()
+                .await;
+            let tree = Mock::given(method("GET"))
+                .and(path("/tree"))
+                .respond_with(ResponseTemplate::new(403))
+                .expect(1)
+                .mount_as_scoped(&server)
+                .await;
+            let zip = Mock::given(method("GET"))
+                .and(path("/zip"))
+                .respond_with(ResponseTemplate::new(502))
+                .expect(1)
+                .mount_as_scoped(&server)
+                .await;
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let repo = parse_repo_key("acme/kit@main").unwrap();
+            let error = fetch_repo_skills_with_client(
+                &repo,
+                &BTreeMap::new(),
+                &client,
+                &format!("{}/tree", server.uri()),
+                &format!("{}/zip", server.uri()),
+                authorize,
+            )
+            .await
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("HTTP 403"));
+            assert!(server.received_requests().await.is_none());
+            let tree_requests = tree.received_requests().await;
+            let zip_requests = zip.received_requests().await;
+            assert_eq!(tree_requests.len(), 1);
+            assert_eq!(zip_requests.len(), 1);
+            for request in tree_requests.iter().chain(&zip_requests) {
+                let authorization = request
+                    .headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok());
+                assert!(authorization == expected, "unexpected mock authorization");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_mock_failure_does_not_print_request_headers() {
+        use futures_util::FutureExt;
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::builder()
+            .disable_request_recording()
+            .start()
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/tree"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zip"))
+            .respond_with(ResponseTemplate::new(502))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let _error = fetch_repo_skills_with_client(
+            &repo,
+            &BTreeMap::new(),
+            &client,
+            &format!("{}/tree", server.uri()),
+            &format!("{}/zip", server.uri()),
+            with_fixture_github_auth,
+        )
+        .await
+        .unwrap_err();
+        let failure = std::panic::AssertUnwindSafe(server.verify())
+            .catch_unwind()
+            .await;
+        server.reset().await;
+        let payload = failure.err().expect("expected a mock verification failure");
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(message.contains("Enable request recording"));
+        assert!(!message.contains(FIXTURE_GITHUB_AUTH));
+        assert!(!message.to_ascii_lowercase().contains("authorization:"));
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_tree_success_401_and_404_do_not_fallback() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        for status in [200, 401, 404] {
+            let server = MockServer::builder()
+                .disable_request_recording()
+                .start()
+                .await;
+            let tree = json!({"tree": [{"type": "blob", "path": "alpha/SKILL.md", "sha": "abc"}]});
+            Mock::given(method("GET"))
+                .and(path("/tree"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(tree.clone()))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/zip"))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let repo = parse_repo_key("acme/kit@main").unwrap();
+            let mut cached_skill = parse_skills_from_tree(&repo, &tree).remove(0);
+            cached_skill.name = "Cached alpha".into();
+            cached_skill.description = "Cached description".into();
+            let cached = BTreeMap::from([(cached_skill.id.clone(), cached_skill)]);
+            let result = fetch_repo_skills_with_client(
+                &repo,
+                &cached,
+                &client,
+                &format!("{}/tree", server.uri()),
+                &format!("{}/zip", server.uri()),
+                without_github_auth,
+            )
+            .await;
+            if status == 200 {
+                let skills = result.unwrap();
+                assert_eq!(skills.len(), 1);
+                assert_eq!(skills[0].name, "Cached alpha");
+            } else {
+                let error = result.unwrap_err();
+                assert!(format!("{error:#}").contains(&format!("HTTP {status}")));
+                assert_eq!(format!("{error:#}").contains("HTTP 404"), status == 404);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_status_failures_can_fallback_successfully() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        for status in [403, 429, 500, 503, 599] {
+            let server = MockServer::builder()
+                .disable_request_recording()
+                .start()
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/tree"))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/zip"))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(repo_zip(&[(
+                    "kit-main/alpha/SKILL.md",
+                    "---\nname: Alpha\ndescription: Example\n---\n",
+                )])))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let repo = parse_repo_key("acme/kit@main").unwrap();
+            let skills = fetch_repo_skills_with_client(
+                &repo,
+                &BTreeMap::new(),
+                &client,
+                &format!("{}/tree", server.uri()),
+                &format!("{}/zip", server.uri()),
+                without_github_auth,
+            )
+            .await
+            .unwrap();
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].name, "Alpha");
+        }
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_double_status_failure_keeps_both_and_zip_404_semantics() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        for (tree_status, zip_status) in [
+            (403, 502),
+            (403, 404),
+            (429, 503),
+            (429, 404),
+            (500, 502),
+            (500, 404),
+            (599, 502),
+            (599, 404),
+        ] {
+            let server = MockServer::builder()
+                .disable_request_recording()
+                .start()
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/tree"))
+                .respond_with(ResponseTemplate::new(tree_status))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/zip"))
+                .respond_with(ResponseTemplate::new(zip_status))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let repo = parse_repo_key("acme/kit@main").unwrap();
+            let error = fetch_repo_skills_with_client(
+                &repo,
+                &BTreeMap::new(),
+                &client,
+                &format!("{}/tree", server.uri()),
+                &format!("{}/zip", server.uri()),
+                without_github_auth,
+            )
+            .await
+            .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(&format!("文件树请求失败：HTTP {tree_status}")),
+                "{message}"
+            );
+            assert!(
+                message.contains(&format!("压缩包失败：HTTP {zip_status}")),
+                "{message}"
+            );
+            assert_eq!(message.contains("HTTP 404"), zip_status == 404);
+            let chain: Vec<_> = error.chain().map(ToString::to_string).collect();
+            assert_eq!(chain.len(), 2);
+            assert!(chain[0].contains(&format!("文件树请求失败：HTTP {tree_status}")));
+            assert!(chain[1].contains(&format!("压缩包失败：HTTP {zip_status}")));
+        }
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_invalid_archive_keeps_both_causes() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::builder()
+            .disable_request_recording()
+            .start()
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/tree"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"not a zip".to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let error = fetch_repo_skills_with_client(
+            &repo,
+            &BTreeMap::new(),
+            &client,
+            &format!("{}/tree", server.uri()),
+            &format!("{}/zip", server.uri()),
+            without_github_auth,
+        )
+        .await
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("HTTP 503"), "{message}");
+        assert!(message.contains("压缩包无法解析"), "{message}");
+        assert!(error.chain().count() >= 3);
+        assert!(error.downcast_ref::<zip::result::ZipError>().is_some());
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_transport_failure_keeps_original_context() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        for zip_status in [404, 502] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let closer = tokio::spawn(async move {
+                drop(listener.accept().await.unwrap());
+            });
+            let server = MockServer::builder()
+                .disable_request_recording()
+                .start()
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/zip"))
+                .respond_with(ResponseTemplate::new(zip_status))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap();
+            let repo = parse_repo_key("acme/kit@main").unwrap();
+            let tree_url = format!("http://{address}/tree");
+            let error = fetch_repo_skills_with_client(
+                &repo,
+                &BTreeMap::new(),
+                &client,
+                &tree_url,
+                &format!("{}/zip", server.uri()),
+                without_github_auth,
+            )
+            .await
+            .unwrap_err();
+            closer.await.unwrap();
+            let context = error.chain().next().unwrap().to_string();
+            let message = format!("{error:#}");
+            assert!(
+                context.contains("文件树请求失败（error sending request"),
+                "{context}"
+            );
+            assert!(context.contains(&tree_url), "{context}");
+            assert!(message.contains(&format!("HTTP {zip_status}")), "{message}");
+            assert_eq!(message.contains("HTTP 404"), zip_status == 404);
+            assert!(error.downcast_ref::<reqwest::Error>().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_transport_failure_can_fallback_successfully() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let closer = tokio::spawn(async move {
+            drop(listener.accept().await.unwrap());
+        });
+        let server = MockServer::builder()
+            .disable_request_recording()
+            .start()
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(repo_zip(&[(
+                "kit-main/alpha/SKILL.md",
+                "---\nname: Alpha\n---\n",
+            )])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let skills = fetch_repo_skills_with_client(
+            &repo,
+            &BTreeMap::new(),
+            &client,
+            &format!("http://{address}/tree"),
+            &format!("{}/zip", server.uri()),
+            without_github_auth,
+        )
+        .await
+        .unwrap();
+        closer.await.unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "Alpha");
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_status_and_zip_transport_failure_preserve_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        for partial_body in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let closer = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                if partial_body {
+                    let mut buffer = [0u8; 2048];
+                    let _ = socket.read(&mut buffer).await.unwrap();
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort")
+                        .await
+                        .unwrap();
+                }
+            });
+            let server = MockServer::builder()
+                .disable_request_recording()
+                .start()
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/tree"))
+                .respond_with(ResponseTemplate::new(429))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap();
+            let repo = parse_repo_key("acme/kit@main").unwrap();
+            let zip_url = format!("http://{address}/zip");
+            let error = fetch_repo_skills_with_client(
+                &repo,
+                &BTreeMap::new(),
+                &client,
+                &format!("{}/tree", server.uri()),
+                &zip_url,
+                without_github_auth,
+            )
+            .await
+            .unwrap_err();
+            closer.await.unwrap();
+            let message = format!("{error:#}");
+            assert!(message.contains("HTTP 429"), "{message}");
+            let expected = if partial_body {
+                "读取仓库压缩包内容失败"
+            } else {
+                "下载 acme/kit 的仓库压缩包失败"
+            };
+            assert!(message.contains(expected), "{message}");
+            let zip_error = error.downcast_ref::<reqwest::Error>().unwrap();
+            assert!(std::error::Error::source(zip_error).is_some());
+            if !partial_body {
+                assert_eq!(zip_error.url().unwrap().as_str(), zip_url);
+            }
+            let contexts: Vec<_> = error.chain().map(ToString::to_string).collect();
+            assert!(contexts[0].contains("文件树请求失败：HTTP 429"));
+            assert!(contexts[1].contains(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_truncated_tree_still_falls_back() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::builder()
+            .disable_request_recording()
+            .start()
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/tree"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"truncated": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(repo_zip(&[(
+                "kit-main/alpha/SKILL.md",
+                "---\nname: Alpha\n---\n",
+            )])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let skills = fetch_repo_skills_with_client(
+            &repo,
+            &BTreeMap::new(),
+            &client,
+            &format!("{}/tree", server.uri()),
+            &format!("{}/zip", server.uri()),
+            without_github_auth,
+        )
+        .await
+        .unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "Alpha");
+    }
+
+    #[tokio::test]
+    async fn github_tree_zip_status_context_does_not_include_proxy_or_response_secrets() {
+        use base64::Engine as _;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let proxy_secret =
+            base64::engine::general_purpose::STANDARD.encode("proxy-user:proxy-password");
+        let proxy_header = format!(
+            "proxy-authorization: basic {}",
+            proxy_secret.to_ascii_lowercase()
+        );
+        let proxy = tokio::spawn(async move {
+            for status in ["403 Forbidden", "502 Bad Gateway"] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 1024];
+                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let headers = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                assert!(headers.contains(&proxy_header));
+                assert!(
+                    !headers
+                        .lines()
+                        .any(|line| line.starts_with("authorization:"))
+                );
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nX-Private: response-secret\r\nConnection: close\r\n\r\n"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = reqwest::Client::builder()
+            .proxy(
+                reqwest::Proxy::all(format!("http://proxy-user:proxy-password@{address}")).unwrap(),
+            )
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let error = fetch_repo_skills_with_client(
+            &repo,
+            &BTreeMap::new(),
+            &client,
+            "http://example.invalid/tree",
+            "http://example.invalid/zip",
+            without_github_auth,
+        )
+        .await
+        .unwrap_err();
+        tokio::time::timeout(std::time::Duration::from_secs(5), proxy)
+            .await
+            .unwrap()
+            .unwrap();
+        let message = format!("{error:#}");
+        assert!(message.contains("HTTP 403"));
+        assert!(message.contains("HTTP 502"));
+        for rendered in [
+            format!("{error}"),
+            message,
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            for secret in [
+                "proxy-user",
+                "proxy-password",
+                "response-secret",
+                proxy_secret.as_str(),
+            ] {
+                assert!(!rendered.contains(secret));
+            }
+        }
     }
 
     fn sample_skill(id: &str, repo_path: &str, hash: &str) -> RemoteSkill {

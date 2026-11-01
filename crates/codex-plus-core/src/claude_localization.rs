@@ -13,8 +13,12 @@ use serde_json::{json, Value};
 
 static OPERATION: Mutex<()> = Mutex::new(());
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
+// 单次探测（查应用包、读版本号、查进程）的上限。Windows 上 PowerShell 第一次启动要加载
+// Appx 模块，冷启动常超过 3 秒，旧的 3 秒上限会让检测一直报超时、只有先打开 Claude
+// 预热后才检测得到（#2831）。卡死的探测仍会在上限后被终止回收。
+const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
+// 一次完整状态检测的总上限：Windows 上要依次跑三四次 PowerShell。
+const STATUS_TIMEOUT: Duration = Duration::from_secs(40);
 
 /// 探测输出落在临时文件，避免子进程填满管道后阻塞；超时确实终止并回收子进程。
 #[derive(Debug)]
@@ -1665,6 +1669,13 @@ mod tests {
         fs::write(&marker, b"started").unwrap();
         std::thread::sleep(Duration::from_millis(900));
         fs::write(marker, b"not killed").unwrap();
+    }
+
+    #[test]
+    fn probe_limits_leave_room_for_a_cold_powershell_start() {
+        // #2831：Windows PowerShell 冷启动加载 Appx 模块要好几秒，上限太紧就会一直报检测超时。
+        assert!(PROBE_TIMEOUT >= Duration::from_secs(10));
+        assert!(STATUS_TIMEOUT >= PROBE_TIMEOUT * 3);
     }
 
     #[test]

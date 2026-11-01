@@ -208,12 +208,6 @@ fn large_local_save_uses_a_fixed_prefix_without_inheriting_the_sharing_limit() {
     assert!(snapshot.get("content").is_none());
     assert!(snapshot.to_string().len() < 1024, "主历史不经过页面传输");
     assert_eq!(snapshot["timestamps"], json!(["2026-10-21T10:00:00.000Z"]));
-    assert!(
-        codex_plus_core::session_share::export_rollout(home.path(), PARENT)
-            .unwrap_err()
-            .to_string()
-            .contains("超过分享大小限制")
-    );
 
     // 创建旁支后，主会话继续追加；保存仍只读取创建时固定的前缀。
     writeln!(

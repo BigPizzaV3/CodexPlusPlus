@@ -65,7 +65,6 @@
     {
       "key": "codexAppNativeBrowserRequireIdentification",
       "builtin": "native-browser-identification",
-      "replaceable": false,
       "group": "plugins",
       "control": "bool",
       "title": "原生 Edge / Chrome 请求标识兼容（实验）",
@@ -86,7 +85,6 @@
     {
       "key": "codexAppModelWhitelistUnlock",
       "builtin": "model-whitelist-unlock",
-      "replaceable": false,
       "group": "plugins",
       "control": "bool",
       "title": "模型白名单解锁",
@@ -96,7 +94,6 @@
     {
       "key": "codexAppNativeFastUnlock",
       "builtin": "native-fast-unlock",
-      "replaceable": false,
       "group": "plugins",
       "control": "bool",
       "title": "原生 Fast 强制解锁",
@@ -107,7 +104,6 @@
     {
       "key": "codexAppNativePredictions",
       "builtin": "native-predictions",
-      "replaceable": false,
       "group": "plugins",
       "control": "bool",
       "title": "原生输入预测（实验）",
@@ -118,7 +114,6 @@
     {
       "key": "codexAppThirdPartyReasoningCollapse",
       "builtin": "reasoning-collapse",
-      "replaceable": false,
       "group": "plugins",
       "control": "bool",
       "title": "第三方模型回答完自动折叠过程",
@@ -164,7 +159,6 @@
     {
       "key": "codexAppDisableWorkView",
       "builtin": "disable-work-view",
-      "replaceable": false,
       "group": "chat",
       "control": "bool",
       "title": "纯 API 模式禁用 Work 视图",
@@ -182,15 +176,6 @@
       "surfaces": ["manager", "codex"]
     },
     {
-      "key": "codexAppSessionShare",
-      "builtin": "session-share",
-      "group": "chat",
-      "control": "bool",
-      "title": "分享会话按钮",
-      "description": "在当前会话工具栏显示分享按钮，关闭后立即隐藏。",
-      "surfaces": ["manager", "codex"]
-    },
-    {
       "key": "codexAppPasteFix",
       "builtin": "paste-fix",
       "group": "chat",
@@ -202,7 +187,6 @@
     {
       "key": "codexAppForceChineseLocale",
       "builtin": "force-chinese-locale",
-      "replaceable": false,
       "group": "chat",
       "control": "bool",
       "title": "强制中文界面",
@@ -383,13 +367,6 @@
   ],
   "builtins": [
     {
-      "id": "agent-pet",
-      "title": "Agent 桌宠",
-      "description": "窗口里可拖动的小角色，按下压扁、松开回弹并播放音效",
-      "group": "pet",
-      "setting": "agentPet.enabled"
-    },
-    {
       "id": "dictation",
       "title": "语音听写",
       "description": "输入框旁的麦克风按钮，录音转写成文字",
@@ -420,8 +397,7 @@
       "title": "背景图",
       "description": "在 Codex 窗口上叠一层自定义背景图。",
       "group": "appearance",
-      "setting": "codexAppImageOverlayEnabled",
-      "replaceable": false
+      "setting": "codexAppImageOverlayEnabled"
     },
     {
       "id": "instance-identity",

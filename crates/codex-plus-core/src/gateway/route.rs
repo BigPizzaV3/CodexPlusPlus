@@ -508,6 +508,10 @@ pub fn title_model_override(
     agent: &ToolId,
     request: &serde_json::Value,
 ) -> Option<String> {
+    // 拓展用 gateway.replaces 关掉了起名模型改发：起名请求照原来的模型路由。
+    if crate::extension_gateway::builtin_replaced("builtin:title-model") {
+        return None;
+    }
     let binding = gateway.active_binding(agent)?;
     let (title, _) = crate::model_suffix::parse_model_suffix(binding.title_model.trim());
     let title = title.trim();
@@ -1044,11 +1048,17 @@ fn resolve_plan_with(
     let mut cooling: Option<Duration> = None;
     // 冷却 / 熔断中的候选：只在一个可用候选都没有时才用得上。
     let mut waiting: Vec<(GatewayCandidate, Duration, key_pool::WaitReason)> = Vec::new();
+    // 拓展用 gateway.replaces 关掉的内置环节：冷却 / 熔断中的 Key 照常当候选（排在可用的后面），
+    // 本地限速（RPM / 并发）不再生效。要避开哪些 Key 由拓展在 route 段自己筛。
+    let cooldown_off = crate::extension_gateway::builtin_replaced("builtin:key-cooldown");
+    let breaker_off = crate::extension_gateway::builtin_replaced("builtin:key-breaker");
+    let rate_limit_off = crate::extension_gateway::builtin_replaced("builtin:local-rate-limit");
     for (relay, upstream_model) in relays {
         let provider = gateway.provider(&relay.id);
         let window = provider.and_then(|provider| provider.window_for(&upstream_model));
         // 限速满了的 Key 照样进候选：是否跳过、排队由候选循环在发请求时按实时名额决定。
         let limits = provider
+            .filter(|_| !rate_limit_off)
             .map(GatewayProvider::key_limits)
             .unwrap_or_default();
         let order = key_pool::order_keys_detailed(
@@ -1072,7 +1082,18 @@ fn resolve_plan_with(
             candidates.push(candidate(key));
         }
         for key in order.waiting {
-            waiting.push((candidate(key.candidate), key.remaining, key.reason));
+            let bypass = match key.reason {
+                // 自己在冷却的 Key 可能同时赶上供应商熔断：熔断没关掉时仍按熔断拦着。
+                key_pool::WaitReason::Cooling => {
+                    cooldown_off && (breaker_off || !key_pool::breaker_open(&key.candidate.key.relay_id, now))
+                }
+                key_pool::WaitReason::Breaker => breaker_off,
+            };
+            if bypass {
+                candidates.push(candidate(key.candidate));
+            } else {
+                waiting.push((candidate(key.candidate), key.remaining, key.reason));
+            }
         }
     }
     let mut waiting_candidates = Vec::new();

@@ -3747,18 +3747,36 @@ details.relay-fold[open] > .relay-fold-body {
   font-size: 12px;
 }
 
+/* 有单独配置页的卡：齿轮叠在开关左侧，开关卡加宽列间距给它让位。 */
+.builtin-card-head {
+  position: relative;
+  min-width: 0;
+}
+
+.builtin-card-head.has-settings > .feature-toggle {
+  column-gap: 54px;
+}
+
 .builtin-card-settings {
-  justify-self: start;
+  position: absolute;
+  top: 50%;
+  right: 60px;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
   border: 0;
+  border-radius: 6px;
   background: none;
   cursor: pointer;
-  padding: 0 4px;
-  color: hsl(var(--primary));
-  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  transform: translateY(-50%);
 }
 
 .builtin-card-settings:hover {
-  text-decoration: underline;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
 }
 
 .feature-toggle strong,
@@ -8730,22 +8748,6 @@ select {
   flex: 0 0 auto;
 }
 
-.session-share-import {
-  display: flex;
-  grid-column: 1 / -1;
-  gap: 8px;
-  align-items: center;
-}
-
-.session-share-import .input {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.session-share-import .button {
-  flex: 0 0 auto;
-}
-
 .session-repair-progress {
   margin-top: 12px;
 }
@@ -8799,10 +8801,6 @@ select {
   }
 
   .session-repair-actions {
-    grid-column: auto;
-  }
-
-  .session-share-import {
     grid-column: auto;
   }
 
@@ -13609,7 +13607,7 @@ button.side-item:hover {
    能力排成一行小标签。窄屏沿用全局 .table-row 的单列堆叠。 */
 /* 右侧「版本 · 状态 · 开关 · 更多」贴右排：开关和「更多」离右边距离固定，各行仍对齐 */
 .shell .user-script-row {
-  grid-template-columns: minmax(160px, 1fr) auto auto 30px;
+  grid-template-columns: minmax(160px, 1fr) auto auto 64px;
   column-gap: 12px;
   align-items: center;
 }
@@ -13626,6 +13624,7 @@ button.side-item:hover {
 .shell .user-script-row .script-row-actions {
   flex-wrap: nowrap;
   justify-content: flex-end;
+  gap: 4px;
 }
 @media (max-width: 860px) {
   .shell .user-script-row {
@@ -13643,6 +13642,10 @@ button.side-item:hover {
 .shell .user-script-row .mg-icon-button {
   color: hsl(var(--muted-foreground));
 }
+.shell .user-script-row .mg-icon-button[data-active] {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
+}
 .shell .user-script-row .mg-icon-button:hover {
   color: hsl(var(--foreground));
   background: hsl(var(--muted));
@@ -13654,6 +13657,44 @@ button.side-item:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* 拓展的管理器面板（manager.page）：展开在拓展行下面，iframe 高度由页面上报。 */
+.shell .extension-manager-panel {
+  margin: 4px 12px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  overflow: hidden;
+  background: hsl(var(--background));
+}
+.shell .extension-manager-panel.is-loading,
+.shell .extension-manager-panel.is-error {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: hsl(var(--muted-foreground));
+}
+.shell .extension-manager-panel.is-error {
+  color: hsl(var(--status-error));
+}
+/* 拓展贡献的管理器页面（侧栏入口、顶替内置页面）：面板占满内容区宽度。 */
+.shell .extension-page-host {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.shell .extension-manager-panel.is-full-page {
+  margin: 0;
+}
+.shell .extension-page-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 8px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
 }
 .shell .user-script-row .mg-menu .mg-danger {
   color: hsl(var(--status-error));

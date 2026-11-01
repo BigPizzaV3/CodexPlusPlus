@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   busyLinks,
+  returningLinks,
+  liveFlowRoutes,
+  flowRoutePosition,
   clockTime,
-  diffFlow,
   flowColumns,
   flowElapsed,
   flowStatus,
-  MAX_PULSES_PER_TICK,
   pulseHops,
   type FlowEntry,
 } from "./request-flow-model.ts";
@@ -23,32 +24,12 @@ test("请求状态：进行中 / 成功 / 失败", () => {
   assert.equal(flowStatus(entry("a", { statusCode: 429 })), "error");
 });
 
-test("第一轮只记状态，不回放历史请求", () => {
-  const { seen, pulses } = diffFlow(null, [entry("a"), entry("b", { state: "running" })], 0);
-  assert.equal(pulses.length, 0);
-  assert.equal(seen.get("a"), "ok");
-  assert.equal(seen.get("b"), "running");
-});
-
-test("新请求发去程，结束发回程，一轮内开始又结束的先去后回", () => {
-  const first = diffFlow(null, [entry("old")], 0);
-  const second = diffFlow(first.seen, [entry("old"), entry("live", { state: "running", startedAtMs: 3_000 }), entry("quick", { startedAtMs: 2_000, success: false })], 10);
-  assert.deepEqual(
-    second.pulses.map((pulse) => [pulse.seq, pulse.kind, pulse.tone]),
-    [[10, "round", "error"], [11, "out", "running"]],
-  );
-  const third = diffFlow(second.seen, [entry("old"), entry("live", { startedAtMs: 3_000 }), entry("quick", { success: false })], 12);
-  assert.deepEqual(third.pulses.map((pulse) => [pulse.seq, pulse.kind, pulse.tone, pulse.agent, pulse.relayId]), [[12, "back", "ok", "claude", "ds"]]);
-  // 状态没变不再放。
-  assert.equal(diffFlow(third.seen, [entry("live", { startedAtMs: 3_000 })], 13).pulses.length, 0);
-});
-
-test("积压很多时只放最近的几颗", () => {
-  const first = diffFlow(null, [], 0);
-  const burst = Array.from({ length: 20 }, (_, index) => entry(`r${index}`, { startedAtMs: index }));
-  const { pulses } = diffFlow(first.seen, burst, 0);
-  assert.equal(pulses.length, MAX_PULSES_PER_TICK);
-  assert.deepEqual(pulses.map((pulse) => pulse.seq), [0, 1, 2, 3, 4, 5]);
+test("真实生成阶段持续回流，等待重试和已完成请求不回流", () => {
+  assert.equal(returningLinks([entry("a", { state: "running", phase: "waiting" })]).size, 0);
+  assert.deepEqual([...returningLinks([entry("a", { state: "running", phase: "generating" })])], ["agent:claude>hub", "hub>provider:ds"]);
+  assert.equal(returningLinks([entry("a", { state: "running", firstTokenMs: 0 })]).size, 2);
+  assert.equal(returningLinks([entry("a", { state: "running", phase: "retrying", firstTokenMs: 100 })]).size, 0);
+  assert.equal(returningLinks([entry("a", { phase: "generating", firstTokenMs: 100 })]).size, 0);
 });
 
 test("光点路线：去程 Agent → hub → 供应商，回程倒着走；没有供应商只走 Agent 一段", () => {
@@ -60,7 +41,6 @@ test("光点路线：去程 Agent → hub → 供应商，回程倒着走；没�
     { key: "hub>provider:ds", reverse: true },
     { key: "agent:claude>hub", reverse: true },
   ]);
-  assert.equal(pulseHops({ agent: "codex", relayId: "ds", kind: "round" }).length, 4);
   assert.deepEqual(pulseHops({ agent: "codex", relayId: "", kind: "out" }), [{ key: "agent:codex>hub", reverse: false }]);
 });
 
@@ -88,4 +68,33 @@ test("耗时：进行中的按现在走秒，结束的用记录的时长", () =>
 test("时间显示成时:分:秒", () => {
   const date = new Date(2026, 10, 1, 0, 30, 5);
   assert.equal(clockTime(date.getTime()), "00:30:05");
+});
+
+test("首次打开即恢复活动路线，历史成功失败不产生延迟光点", () => {
+  const live = entry("live", { state: "running" });
+  assert.equal(liveFlowRoutes([live]).length, 1);
+  assert.equal(liveFlowRoutes([entry("done"), entry("error", { success: false })]).length, 0);
+  assert.equal(liveFlowRoutes([]).length, 0);
+});
+
+test("同一 Agent 的并发发送和响应保持独立方向，同方向去重", () => {
+  const routes = liveFlowRoutes([
+    entry("a", { state: "running", phase: "waiting" }),
+    entry("b", { state: "running", phase: "generating" }),
+    entry("c", { state: "running", phase: "generating" }),
+  ]);
+  assert.deepEqual(routes.map(r => [r.reverse, r.count]), [[false, 1], [true, 2]]);
+});
+
+test("路线补全和切换不残留旧供应商", () => {
+  assert.equal(liveFlowRoutes([entry("a", { state: "running", relayId: "" })])[0].relayId, "");
+  assert.equal(liveFlowRoutes([entry("a", { state: "running", relayId: "new" })])[0].relayId, "new");
+});
+
+test("累计路程经过连线、hub 间隙和下一段，尾迹不从终点绕回", () => {
+  assert.deepEqual(flowRoutePosition([30, 30, 60], 15), { segment: 0, progress: 0.5 });
+  assert.deepEqual(flowRoutePosition([30, 30, 60], 45), { segment: 1, progress: 0.5 });
+  assert.deepEqual(flowRoutePosition([30, 30, 60], 90), { segment: 2, progress: 0.5 });
+  assert.equal(flowRoutePosition([30, 30, 60], -1), null);
+  assert.equal(flowRoutePosition([30, 30, 60], 121), null);
 });

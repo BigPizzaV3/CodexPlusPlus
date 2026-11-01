@@ -101,7 +101,7 @@ test("启动 Codex 一眼可见：Codex 页面顶栏最右侧一个主按钮，�
   for (const id of ["relay", "multiLaunch", "enhance", "dreamSkin", "userScripts", "pluginMarket", "weixin", "agentSettings"]) {
     assert.ok(codexRoutes.includes(id), `${id} 属于 Codex，顶栏要显示启动按钮`);
   }
-  for (const id of ["hub", "gatewayProviders", "gateway", "gatewayUsage", "sessions", "claude", "settings", "agentPet"]) {
+  for (const id of ["hub", "gatewayProviders", "gateway", "gatewayUsage", "sessions", "claude", "settings"]) {
     assert.ok(!codexRoutes.includes(id), `${id} 不属于 Codex，顶栏不放启动按钮`);
   }
   // 网关总览面向所有 Agent，不放专门的「启动 Codex」按钮。
@@ -162,8 +162,10 @@ test("紧凑密度层：管理页不再套外框，覆盖规则带 .shell 前缀
 });
 
 test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所有 Agent，不再挂在 Codex 下面", () => {
+  // 万物皆拓展是全局管理的第一个入口。
+  assert.match(text, /id: "userScripts", get label\(\) \{ return t\("万物皆拓展"\); \}/);
   // 「用量」入口在全局管理里：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
-  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills", "userScripts"\]/);
+  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["userScripts", "gatewayUsage", "sessions", "context", "skills"\]/);
   assert.match(text, /const navAliasRoute: Partial<Record<Route, Route>> = \{ requestLog: "gatewayUsage" \};/);
   for (const id of ["requestLog", "sessions", "context", "skills"]) {
     const line = text.split("\n").find((row) => row.includes(`{ id: "${id}",`));
@@ -172,7 +174,7 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  assert.match(functionSource("AppSidebar"), /managementNavigationRoutes\.map/);
+  assert.match(functionSource("AppSidebar"), /visibleRoutes\(focus, managementNavigationRoutes\)\.map/);
   // 网关的会话页并进「会话」：Codex 页签是完整的会话管理，其余页签是多 Agent 会话列表。
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
@@ -218,7 +220,7 @@ test("Skills 与 MCP 共用一张多 Agent 表：每个 Agent 一列勾选，不
   const extra = readSource("./ManagementExtra.tsx");
   const css = readSource("./ManagementPages.css");
   assert.match(extra, /className="mg-matrix mg-agent-matrix mg-skill-matrix"/);
-  assert.match(extra, /const agentColumns: McpAgentId\[\] = singleAgent\(useAgentFocus\(\)\) === "codex" \? \["codex"\] : MCP_AGENTS;/);
+  assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
   assert.match(extra, /agentColumns\.map\(\(agent\) => <AgentColumn /);
   assert.match(extra, /agentColumns\.map\(\(agent\) => <MatrixCell /);
   assert.doesNotMatch(extra, /mg-agent-toggle|mg-skill-group-select/);

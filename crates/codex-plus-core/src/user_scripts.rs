@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -33,12 +33,28 @@ pub async fn reload_live_scripts(
     reload_scripts_at(websocket, manager).await
 }
 
+/// 拓展配置改了以后先试着原地生效：页面里这个拓展的所有实例都用 `ctx.onConfigUpdate` 接住新配置时返回 `"applied"`，
+/// 不必整体热重载；任何一个实例没接（或页面不支持）时返回 `"reload"`，由调用方照常热重载。
+pub async fn update_live_config(debug_port: u16, manager: &UserScriptManager, key: &str) -> anyhow::Result<String> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = live_runtime_target(&targets)?;
+    let websocket = target.web_socket_debugger_url.as_deref().context("Codex renderer has no WebSocket URL")?;
+    let config = manager.effective_extension_config(key)?;
+    let expression = format!(
+        "(() => {{ const runtime = window.__codexPlusUserScripts; return typeof runtime?.updateConfig === \"function\" ? runtime.updateConfig({}, {}) : \"reload\"; }})()",
+        serde_json::to_string(key)?,
+        config
+    );
+    let response = crate::bridge::evaluate_script(websocket, &expression).await?;
+    Ok(response.pointer("/result/result/value").and_then(Value::as_str).unwrap_or("reload").to_string())
+}
+
 pub async fn reload_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
     // 拓展重载后旧后台的方法表、配置都过期了：先全部停掉，下次调用按新代码重起。
-    crate::extension_backend::stop_all().await;
+    crate::extension_backend::stop_all(manager).await;
     apply_scripts_at(websocket, manager, &manager.build_reload_bundle()?).await
 }
 
@@ -47,7 +63,7 @@ pub async fn load_scripts_at(
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
     // 页面重新加载：上一个页面的后台不再有人用。
-    crate::extension_backend::stop_all().await;
+    crate::extension_backend::stop_all(manager).await;
     apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?).await
 }
 
@@ -154,6 +170,8 @@ pub struct UserScriptManager {
     config_lock: Arc<Mutex<()>>,
     /// 后台设置文件。内置拓展里有对应设置字段的，启停就读写这里（见 [`Self::with_settings_path`]）。
     settings_path: Option<PathBuf>,
+    /// 随 Codex++ 发布的官方拓展包所在目录（来源 `bundled`），见 [`crate::bundled_extensions`]。
+    bundled_dir: Option<PathBuf>,
 }
 
 impl UserScriptManager {
@@ -168,7 +186,29 @@ impl UserScriptManager {
             config_path: config_path.into(),
             config_lock: Arc::new(Mutex::new(())),
             settings_path: None,
+            bundled_dir: None,
         }
+    }
+
+    /// 指定官方拓展包目录（来源 `bundled`，脚本 key 为 `bundled:<目录名>`）。只扫描，不在这里写文件。
+    pub fn with_bundled_dir(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.bundled_dir = Some(directory.into());
+        self
+    }
+
+    /// 原来的内置桌宠改成了官方拓展包「Agent 桌宠」：第一次见到它时，把设置里的 `agentPet` 与
+    /// `codexAppWhaleBalance*` 换算成它的配置，启停也照原来的开关。已经迁移过（配置或开关里有它）就不再动。
+    pub fn migrate_bundled_agent_pet(&self, settings: &crate::settings::BackendSettings) -> anyhow::Result<bool> {
+        let key = crate::bundled_extensions::AGENT_PET_KEY;
+        let _guard = self.config_lock.lock().unwrap();
+        let mut config = self.load_config_unlocked();
+        if config.configs.contains_key(key) || config.scripts.contains_key(key) {
+            return Ok(false);
+        }
+        config.configs.insert(key.to_string(), crate::bundled_extensions::agent_pet_config_from_settings(settings));
+        config.scripts.insert(key.to_string(), settings.agent_pet.enabled_for("codex"));
+        self.save_config_unlocked(&config)?;
+        Ok(true)
     }
 
     /// 指定后台设置文件：有设置字段的内置拓展（会话删除、粘贴修复……）启停时读写它，
@@ -369,6 +409,85 @@ impl UserScriptManager {
     }
 
     /// 保存一个拓展包的配置：只接受清单 schema 里声明的键，类型不符即报错。返回生效配置。
+    /// 管理器面板：拓展包声明的 `manager.page` 的标题与 HTML 内容（拓展没启用或清单有误时报错）。
+    pub fn extension_manager_page(&self, key: &str) -> anyhow::Result<(String, String)> {
+        let config = self.load_config();
+        let script = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .with_context(|| format!("没有找到拓展包 {key}"))?;
+        if !script.enabled {
+            anyhow::bail!("拓展已停用");
+        }
+        let package = script.package.with_context(|| format!("{key} 不是拓展包"))?;
+        if let Some(error) = &package.error {
+            anyhow::bail!("拓展包清单有误：{error}");
+        }
+        let page = package.manager_page.with_context(|| format!("拓展 {key} 没有声明管理器面板（manager.page）"))?;
+        let (path, title) = (page.path, page.title);
+        let html = fs::read_to_string(&path).with_context(|| format!("读取 {} 失败", path.display()))?;
+        Ok((title, html))
+    }
+
+    /// 拓展自己的设置页（`settings.page`）的 HTML。拓展停用时也能打开：设置不依赖它正在运行。
+    pub fn extension_settings_page(&self, key: &str) -> anyhow::Result<(String, String)> {
+        let package = self.extension_package(key)?;
+        let path = package.settings_page.clone().with_context(|| format!("拓展 {key} 没有声明设置页（settings.page）"))?;
+        let html = fs::read_to_string(&path).with_context(|| format!("读取 {} 失败", path.display()))?;
+        Ok((package.name.clone().unwrap_or_else(|| package.id.clone()), html))
+    }
+    /// 清单无误的拓展包（不论启停）。
+    fn extension_package(&self, key: &str) -> anyhow::Result<ExtensionPackage> {
+        let config = self.load_config();
+        let package = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .and_then(|script| script.package)
+            .with_context(|| format!("没有找到拓展包 {key}"))?;
+        if let Some(error) = &package.error {
+            anyhow::bail!("拓展包清单有误：{error}");
+        }
+        Ok(package)
+    }
+    /// 拓展的设置页 / 管理器面板经 `codexPlusManager.call(route, payload)` 调数据路由：
+    /// 只认 [`EXTENSION_PAGE_ROUTES`] 里的、且这个拓展在清单 `permissions.routes` 里声明过的。
+    pub async fn extension_page_route(&self, key: &str, route: &str, payload: &Value) -> anyhow::Result<Value> {
+        if !EXTENSION_PAGE_ROUTES.contains(&route) {
+            anyhow::bail!("设置页不能调用路由 {route}");
+        }
+        let package = self.extension_package(key)?;
+        if !package.routes.iter().any(|item| item == route) {
+            anyhow::bail!("拓展没有在清单 permissions.routes 里声明 {route}");
+        }
+        crate::agent_pet::route(route, payload, &crate::agent_pet::default_cache_dir(), &crate::agent_pet::default_custom_dir())
+            .await
+            .with_context(|| format!("设置页不能调用路由 {route}"))
+    }
+    /// 拓展包 `assets/` 里的资源（data URL），给管理器面板的 `codexPlusManager.asset(path)`。
+    pub fn extension_asset(&self, key: &str, path: &str) -> anyhow::Result<String> {
+        self.extension_asset_for(key, path, true)
+    }
+    /// 同上；`require_enabled` 为 false 时停用的拓展也能取（它的设置页用）。
+    pub fn extension_asset_for(&self, key: &str, path: &str, require_enabled: bool) -> anyhow::Result<String> {
+        let config = self.load_config();
+        let package = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key && (script.enabled || !require_enabled))
+            .and_then(|script| script.package)
+            .with_context(|| format!("没有找到已启用的拓展包 {key}"))?;
+        let normalized = path.trim().trim_start_matches("./");
+        let normalized = normalized.strip_prefix("assets/").unwrap_or(normalized);
+        // 资源按包内路径登记（assets/<文件>）；写不写 assets/ 前缀都认。
+        package
+            .assets
+            .get(&format!("assets/{normalized}"))
+            .cloned()
+            .with_context(|| format!("拓展包里没有资源 {path}"))
+    }
+
     pub fn set_extension_config(&self, key: &str, values: &Map<String, Value>) -> anyhow::Result<Value> {
         let config = self.load_config();
         let package = self
@@ -397,6 +516,18 @@ impl UserScriptManager {
         latest.configs.insert(key.to_string(), stored.clone());
         self.save_config_unlocked(&latest)?;
         Ok(resolve_extension_config(&package.config_schema, Some(&stored)))
+    }
+
+    /// 一个拓展包的生效配置（默认值叠加已保存且类型正确的值）。
+    pub fn effective_extension_config(&self, key: &str) -> anyhow::Result<Value> {
+        let config = self.load_config();
+        let package = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .and_then(|script| script.package)
+            .with_context(|| format!("没有找到拓展包 {key}"))?;
+        Ok(resolve_extension_config(&package.config_schema, config.configs.get(key)))
     }
 
     /// 对话里改配置：只覆盖给出的键，其余沿用已存值；secret 项传回打码值时保留原值。
@@ -708,19 +839,32 @@ impl UserScriptManager {
         if asset_total > EXTENSION_ASSET_MAX_TOTAL_BYTES {
             anyhow::bail!("资源总量超过 {} KiB", EXTENSION_ASSET_MAX_TOTAL_BYTES / 1024);
         }
+        let max_file = write.max_file_bytes.unwrap_or(EXTENSION_WRITE_MAX_FILE_BYTES);
+        let max_total = EXTENSION_WRITE_MAX_TOTAL_BYTES.max(max_file.saturating_mul(2));
         let mut total = 0usize;
+        let mut copied_total = 0usize;
         for (path, content) in &write.files {
             validate_package_relative_path(path)?;
             if path.eq_ignore_ascii_case(EXTENSION_MANIFEST_FILE) {
                 anyhow::bail!("{EXTENSION_MANIFEST_FILE} 由清单参数生成，不能直接写");
             }
-            if content.len() > EXTENSION_WRITE_MAX_FILE_BYTES {
-                anyhow::bail!("{path} 超过单文件上限 {} KiB", EXTENSION_WRITE_MAX_FILE_BYTES / 1024);
+            if write.copied_text.contains(path) {
+                if content.len() > EXTENSION_COPIED_TEXT_MAX_BYTES {
+                    anyhow::bail!("{path} 超过复制文件上限 {} MiB", EXTENSION_COPIED_TEXT_MAX_BYTES / 1024 / 1024);
+                }
+                copied_total += content.len();
+                continue;
+            }
+            if content.len() > max_file {
+                anyhow::bail!("{path} 超过单文件上限 {} KiB；打包产物等大文件先写到本机，再用 sourcePath 复制进包", max_file / 1024);
             }
             total += content.len();
         }
-        if total > EXTENSION_WRITE_MAX_TOTAL_BYTES {
-            anyhow::bail!("文件总量超过 {} KiB", EXTENSION_WRITE_MAX_TOTAL_BYTES / 1024);
+        if total > max_total {
+            anyhow::bail!("文件总量超过 {} KiB", max_total / 1024);
+        }
+        if copied_total > EXTENSION_COPIED_TEXT_MAX_TOTAL_BYTES {
+            anyhow::bail!("复制进包的文本文件合计超过 {} MiB", EXTENSION_COPIED_TEXT_MAX_TOTAL_BYTES / 1024 / 1024);
         }
         // 没指定页面入口时：有 renderer.js 就用它；只声明 hooks 的拓展可以没有页面入口。
         let renderer = if !write.renderer.is_empty() {
@@ -828,7 +972,7 @@ impl UserScriptManager {
             manifest["providers"] = providers.clone();
         }
         for (key, item) in &write.extra {
-            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources") {
+            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources" | "manager" | "preload" | "launch" | "replaces" | "instances" | "dsh") {
                 manifest[key.as_str()] = item.clone();
             }
         }
@@ -896,6 +1040,57 @@ impl UserScriptManager {
             "user_dir": self.user_dir.to_string_lossy(),
             "scripts": scripts
         }))
+    }
+
+    /// 启用中、清单无误的拓展包声明的页面最早期脚本：(脚本 key, 拓展 id, 生效配置, 脚本)，以及有没有拓展要求启动后重载一次。
+    /// 用户脚本总开关关着、或「下次启动跳过拓展」开着时没有（不消费跳过标记，那由页面注入包消费）。
+    pub fn enabled_preloads(&self) -> anyhow::Result<(Vec<(String, String, Value, Vec<PathBuf>)>, bool)> {
+        let config = self.load_config();
+        if !config.enabled || config.skip_next_start {
+            return Ok((Vec::new(), false));
+        }
+        let mut reload = false;
+        let entries = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| {
+                let package = script.package.filter(|package| package.error.is_none() && !package.preload.scripts.is_empty())?;
+                reload |= package.preload.reload_on_launch;
+                Some((script.key, package.id, package.config, package.preload.scripts))
+            })
+            .collect();
+        Ok((entries, reload))
+    }
+
+    /// 启用中、清单无误的拓展包声明的启动前后：(拓展 id, 生效配置, launch)。
+    pub fn enabled_launches(&self) -> anyhow::Result<Vec<(String, Value, crate::extension_launch::ExtensionLaunch)>> {
+        let config = self.load_config();
+        if !config.enabled || config.skip_next_start {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .filter_map(|script| script.package)
+            .filter(|package| package.error.is_none() && !package.launch.is_empty())
+            .map(|package| (package.id, package.config, package.launch))
+            .collect())
+    }
+
+    /// 有没有启用中、清单无误的拓展包在 `permissions.routes` 里声明了这条路由（用户脚本总开关关着时没有）。
+    pub fn route_declared(&self, route: &str) -> bool {
+        let config = self.load_config();
+        if !config.enabled {
+            return false;
+        }
+        self.scan_script_files(&config).is_ok_and(|scripts| {
+            scripts.into_iter().any(|script| {
+                script.enabled
+                    && script.package.is_some_and(|package| package.error.is_none() && package.routes.iter().any(|item| item == route))
+            })
+        })
     }
 
     /// 声明了 `dsh` 的拓展包：(脚本 key, 拓展 id, dsh 插件目录, 是否启用, 版本)。不合法的包跳过。
@@ -1127,6 +1322,9 @@ impl UserScriptManager {
         })?;
         let mut scripts = Vec::new();
         self.append_scripts("builtin", &self.builtin_dir, config, &mut scripts)?;
+        if let Some(bundled) = &self.bundled_dir {
+            self.append_scripts(crate::bundled_extensions::BUNDLED_SOURCE, bundled, config, &mut scripts)?;
+        }
         self.append_scripts("user", &self.user_dir, config, &mut scripts)?;
         Ok(scripts)
     }
@@ -1247,6 +1445,14 @@ struct ExtensionPackage {
     replaces: Vec<String>,
     /// 包内按 dsh 插件写法写的插件目录（codexpp.json 的 `dsh`）：启用时由 dsh 兼容宿主运行。
     dsh: Option<PathBuf>,
+    /// 管理器里的拓展面板（codexpp.json 的 `manager`）：包内 HTML 文件、标题、侧栏入口、顶替的管理器页面、可读的数据。
+    manager_page: Option<ExtensionManagerPage>,
+    /// 拓展自己的设置页（codexpp.json 的 `settings.page`）：管理器里「设置」打开它，代替通用配置表单。
+    settings_page: Option<PathBuf>,
+    /// 页面最早期脚本（codexpp.json 的 `preload`），见 [`crate::extension_launch`]。
+    preload: crate::extension_launch::ExtensionPreload,
+    /// 启动前后（codexpp.json 的 `launch`），见 [`crate::extension_launch`]。
+    launch: crate::extension_launch::ExtensionLaunch,
     /// 包目录（绝对路径）。
     root: Option<PathBuf>,
     /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
@@ -1401,8 +1607,30 @@ pub struct ExtensionGatewayMiddleware {
     pub order: i64,
 }
 
-/// 拓展能用 `gateway.replaces` 关掉的 Codex++ 内置网关环节（关掉后拓展自己在 upstream 段里实现）。
-pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &["builtin:local-compaction", "builtin:reasoning-collapse", "builtin:exec-adapt", "builtin:relay-rotation"];
+/// 拓展能用 `gateway.replaces` 关掉的 Codex++ 内置网关环节（关掉后拓展自己在 request / route / upstream /
+/// error / response 段里实现）。内置环节都能关；仍由 Codex++ 做的只有响应方向的协议转换（响应流中间件拿到的是
+/// 转好的 Responses 事件）和官方登录凭据本身，原因见 EXTENSIONS.md「网关中间件」一节。
+pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &[
+    "builtin:local-compaction",
+    "builtin:reasoning-collapse",
+    "builtin:exec-adapt",
+    "builtin:relay-rotation",
+    "builtin:gateway-failover",
+    // 本地代理（中转与网关两种模式都经过）：
+    "builtin:auto-retry",
+    "builtin:foreign-reasoning",
+    "builtin:unlisted-model-mapping",
+    // 网关模式：
+    "builtin:key-cooldown",
+    "builtin:key-breaker",
+    "builtin:local-rate-limit",
+    "builtin:title-model",
+    // 原先不开放的四个：关掉后由拓展在 upstream / response 段自己做，见 EXTENSIONS.md「网关中间件」。
+    "builtin:request-conversion",
+    "builtin:auth-headers",
+    "builtin:official-shaping",
+    "builtin:request-log",
+];
 
 /// 网关请求中间件的超时上限（秒）：它挡在每一次模型请求前面，不能太久。
 pub const EXTENSION_GATEWAY_MAX_TIMEOUT_SECS: u64 = 10;
@@ -1433,8 +1661,28 @@ pub fn default_user_script_manager() -> UserScriptManager {
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
         .map(|path| path.join("user_scripts"))
         .unwrap_or_else(|| PathBuf::from("user_scripts"));
-    UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
+    let bundled_dir = config_dir.join("bundled_extensions");
+    let manager = UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
         .with_settings_path(crate::paths::default_settings_path())
+        .with_bundled_dir(bundled_dir.clone());
+    // 每个进程第一次用到时写出官方拓展包、迁移旧的内置桌宠设置；失败只记日志，不影响别的拓展。
+    static BUNDLED_READY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    BUNDLED_READY.get_or_init(|| {
+        if let Err(error) = crate::bundled_extensions::materialize(&bundled_dir) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bundled_extensions.materialize_failed",
+                json!({ "error": format!("{error:#}") }),
+            );
+        }
+        let settings = crate::settings::SettingsStore::default().load().unwrap_or_default();
+        if let Err(error) = manager.migrate_bundled_agent_pet(&settings) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bundled_extensions.agent_pet_migration_failed",
+                json!({ "error": format!("{error:#}") }),
+            );
+        }
+    });
+    manager
 }
 
 /// 拓展声明的一条 Codex 钩子（codexpp.json 的 `hooks.<事件>[]`）。
@@ -1630,6 +1878,20 @@ impl ExtensionPackage {
             "codex": self.codex.summary(),
             "replaces": self.replaces,
             "dsh": self.dsh.is_some(),
+            "settingsPage": self.settings_page.is_some(),
+            "managerPage": self.manager_page.as_ref().map(|page| json!({
+                "title": page.title,
+                "nav": page.nav,
+                "icon": page.icon,
+                "replaces": page.replaces,
+                "data": page.data,
+            })),
+            "preload": { "scripts": self.preload.scripts.len(), "reloadOnLaunch": self.preload.reload_on_launch },
+            "launch": {
+                "args": self.launch.args,
+                "before": self.launch.before.is_some(),
+                "after": self.launch.after.is_some(),
+            },
             "config": self.config,
             "assets": self.assets.keys().collect::<Vec<_>>(),
             "skippedAssets": self.skipped_assets,
@@ -1686,9 +1948,19 @@ pub struct ExtensionWrite {
     pub files: BTreeMap<String, String>,
     /// 二进制资源：包内路径 → 本机源文件，按字节复制（图片、音频、字体）。
     pub assets: BTreeMap<String, PathBuf>,
+    /// `files` 里从本机文件复制来的文本（打包产物等，不经模型逐字转写）：单个上限放宽到
+    /// [`EXTENSION_COPIED_TEXT_MAX_BYTES`]，合计另算。
+    pub copied_text: BTreeSet<String>,
+    /// 单个文本文件的上限，默认（None）是对话造拓展的 256 KiB。Codex++ 自己生成的包（dsh 配套拓展包里
+    /// 夹着前端插件的打包产物）可以放宽；文本文件总量上限随之放宽到它的 2 倍（至少 1 MiB）。
+    pub max_file_bytes: Option<usize>,
 }
 
 const EXTENSION_WRITE_MAX_FILES: usize = 32;
+/// 从本机复制来的文本文件（打包产物）的单个上限与合计上限。逐字写的 `content` 仍是 256 KiB：那是模型在一次
+/// 工具调用里写出来的，再长多半是截断或乱码；复制来的不经模型，只受页面注入体积约束（与 dsh 前端插件入口一致）。
+pub const EXTENSION_COPIED_TEXT_MAX_BYTES: usize = 4 * 1024 * 1024;
+const EXTENSION_COPIED_TEXT_MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const EXTENSION_WRITE_MAX_FILE_BYTES: usize = 256 * 1024;
 const EXTENSION_WRITE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
 /// 单个二进制资源（图片、音频、字体）的上限，以及一个包里资源的总上限。
@@ -1697,7 +1969,7 @@ const EXTENSION_ASSET_MAX_BYTES: usize = 1024 * 1024;
 const EXTENSION_ASSET_MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 
 /// 支持的资源类型（按扩展名），返回 MIME。
-fn extension_asset_mime(path: &str) -> Option<&'static str> {
+pub(crate) fn extension_asset_mime(path: &str) -> Option<&'static str> {
     let extension = path.rsplit('.').next()?.to_ascii_lowercase();
     Some(match extension.as_str() {
         "png" => "image/png",
@@ -1881,6 +2153,10 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         codex: Default::default(),
         replaces: Vec::new(),
         dsh: None,
+        manager_page: None,
+        settings_page: None,
+        preload: Default::default(),
+        launch: Default::default(),
         root: None,
         config: json!({}),
         error: None,
@@ -1889,6 +2165,132 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         package.error = Some(error.to_string());
     }
     package
+}
+
+/// 管理器面板页的大小上限：页面整份读进 iframe 的 srcdoc，资源另经 `asset()` 取。
+const EXTENSION_MANAGER_PAGE_MAX_BYTES: u64 = 1024 * 1024;
+
+/// 管理器里能被拓展页面顶替的内置页面（管理器的路由 id）。「万物皆拓展」「内置拓展」「设置」三页不开放：
+/// 它们是停用、改回拓展的入口，顶替后可能回不去。被顶替的页面上方仍有「查看内置页面」。
+pub const MANAGER_REPLACEABLE_PAGES: &[&str] = &[
+    "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog",
+    "overview", "relay", "multiLaunch", "relayEnvironment", "claude", "sessions", "context", "skills", "weixin",
+    "dreamSkin", "pluginMarket", "recommendations", "agentCache", "agentCollaboration", "computerUse",
+];
+/// 拓展的设置页 / 管理器面板经 `codexPlusManager.call(route, payload)` 能调的数据路由（还要清单声明）。
+pub const EXTENSION_PAGE_ROUTES: &[&str] = &crate::agent_pet::ROUTES;
+/// 拓展页面经 `codexPlusManager.data(name, params)` 能读的管理器数据（都是只读、不含凭据）。
+pub const MANAGER_DATA_SOURCES: &[&str] = &["requestFlow", "requestLogs", "gatewayUsage", "localSessions"];
+/// 拓展页面的侧栏分组。
+pub const MANAGER_NAV_GROUPS: &[&str] = &["gateway", "management", "tools"];
+
+/// 管理器里的拓展页面（codexpp.json 的 `manager`）。
+#[derive(Debug, Clone)]
+struct ExtensionManagerPage {
+    path: PathBuf,
+    title: String,
+    /// 侧栏入口所在分组；没有时只在拓展行菜单里打开。
+    nav: Option<String>,
+    /// 侧栏图标名（管理器认得的才用，否则用默认图标）。
+    icon: Option<String>,
+    /// 顶替的内置管理器页面。
+    replaces: Vec<String>,
+    /// 可读的管理器数据。
+    data: Vec<String>,
+}
+
+/// 包内的 HTML 页面：必须在包目录内、是 .html 文件、不超过 1 MiB。`field` 只用于报错。
+fn resolve_package_html(root: &std::path::Path, page: &str, field: &str) -> anyhow::Result<PathBuf> {
+    let path = root
+        .join(page)
+        .canonicalize()
+        .with_context(|| format!("{field} 指向的文件不存在：{page}"))?;
+    if !path.starts_with(root) {
+        anyhow::bail!("{field} 必须在拓展包目录内：{page}");
+    }
+    let is_html = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"));
+    if !path.is_file() || !is_html {
+        anyhow::bail!("{field} 必须是 .html 文件：{page}");
+    }
+    if fs::metadata(&path)?.len() > EXTENSION_MANAGER_PAGE_MAX_BYTES {
+        anyhow::bail!("{field} 超过 1 MiB：{page}（图片等资源放进 assets/，在页面里用 codexPlusManager.asset() 取）");
+    }
+    Ok(path)
+}
+/// 解析 `settings: { page }`：拓展自己的设置页，和 manager.page 一样放进沙箱 iframe、用同一套 codexPlusManager 接口。
+fn parse_extension_settings_page(root: &std::path::Path, raw: &Map<String, Value>) -> anyhow::Result<Option<PathBuf>> {
+    let Some(settings) = raw.get("settings") else {
+        return Ok(None);
+    };
+    let page = settings
+        .as_object()
+        .and_then(|settings| settings.get("page"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|page| !page.is_empty())
+        .context("settings 必须是对象且带 page，如 {\"page\": \"settings.html\"}")?;
+    resolve_package_html(root, page, "settings.page").map(Some)
+}
+/// 解析 `manager: { page, title, nav, icon, replaces, data }`：页面必须是包内存在的 .html 文件，不超过 1 MiB。
+fn parse_extension_manager_page(
+    root: &std::path::Path,
+    raw: &Map<String, Value>,
+    default_title: &str,
+) -> anyhow::Result<Option<ExtensionManagerPage>> {
+    let Some(manager) = raw.get("manager") else {
+        return Ok(None);
+    };
+    let Value::Object(manager) = manager else {
+        anyhow::bail!("manager 必须是对象，如 {{\"page\": \"manager.html\"}}");
+    };
+    let page = manager
+        .get("page")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|page| !page.is_empty())
+        .context("manager.page 必填：包内的 HTML 文件路径")?;
+    let path = resolve_package_html(root, page, "manager.page")?;
+    let title = manager
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(default_title)
+        .to_string();
+    let nav = match manager.get("nav") {
+        None | Some(Value::Bool(false)) | Some(Value::Null) => None,
+        Some(Value::Bool(true)) => Some("management".to_string()),
+        Some(Value::String(group)) if MANAGER_NAV_GROUPS.contains(&group.as_str()) => Some(group.clone()),
+        Some(_) => anyhow::bail!("manager.nav 只能是 true 或分组名（{}）", MANAGER_NAV_GROUPS.join("、")),
+    };
+    let icon = match manager.get("icon") {
+        None => None,
+        Some(Value::String(icon)) if !icon.is_empty() && icon.len() <= 32 && icon.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-') => Some(icon.clone()),
+        Some(_) => anyhow::bail!("manager.icon 只能是小写字母、数字与 - 组成的图标名（如 bar-chart）"),
+    };
+    let names = |key: &str, allowed: &[&str]| -> anyhow::Result<Vec<String>> {
+        let Some(value) = manager.get(key) else {
+            return Ok(Vec::new());
+        };
+        let items = value.as_array().with_context(|| format!("manager.{key} 只能是字符串数组"))?;
+        let mut list: Vec<String> = Vec::new();
+        for item in items {
+            let name = item.as_str().with_context(|| format!("manager.{key} 只能是字符串数组"))?;
+            if !allowed.contains(&name) {
+                anyhow::bail!("manager.{key} 里的 {name} 不认识（可用：{}）", allowed.join("、"));
+            }
+            if !list.iter().any(|existing| existing == name) {
+                list.push(name.to_string());
+            }
+        }
+        Ok(list)
+    };
+    let replaces = names("replaces", MANAGER_REPLACEABLE_PAGES)?;
+    let data = names("data", MANAGER_DATA_SOURCES)?;
+    Ok(Some(ExtensionManagerPage { path, title, nav, icon, replaces, data }))
 }
 
 fn parse_extension_manifest(
@@ -1949,6 +2351,9 @@ fn parse_extension_manifest(
     let gateway_declared = raw.get("gateway").is_some();
     let tools_declared = raw.get("tools").is_some_and(|tools| tools.as_array().is_some_and(|list| !list.is_empty()));
     let backend_declared = raw.get("backend").is_some();
+    let manager_declared = raw.get("manager").is_some();
+    let preload_declared = raw.get("preload").is_some();
+    let launch_declared = raw.get("launch").is_some();
     let pipeline_declared = raw.get("toolPipeline").is_some();
     let providers_declared = raw.get("providers").is_some_and(|value| value.as_array().is_some_and(|list| !list.is_empty()));
     let root = directory
@@ -1956,9 +2361,13 @@ fn parse_extension_manifest(
         .with_context(|| format!("无法解析拓展目录 {}", directory.display()))?;
     package.root = Some(root.clone());
     package.codex = crate::extension_codex::parse(&root, &raw)?;
-    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && package.codex.is_empty() {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、skills、agents、mcpServers 或 instructions");
+    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && !manager_declared && !preload_declared && !launch_declared && package.codex.is_empty() {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、manager、preload、launch、skills、agents、mcpServers 或 instructions");
     }
+    package.preload = crate::extension_launch::parse_preload(&root, raw.get("preload"))?;
+    package.launch = crate::extension_launch::parse_launch(&root, raw.get("launch"))?;
+    package.manager_page = parse_extension_manager_page(&root, &raw, package.name.as_deref().unwrap_or(&package.id))?;
+    package.settings_page = parse_extension_settings_page(&root, &raw)?;
     package.renderer = entries
         .iter()
         .map(|entry| resolve_package_entry(&root, entry))
@@ -2068,7 +2477,7 @@ fn parse_extension_replaces(value: Option<&Value>) -> anyhow::Result<Vec<String>
             anyhow::bail!("replaces 里的 {id} 不是内置拓展（可用：{known}）");
         };
         if !def.replaceable {
-            anyhow::bail!("内置拓展 {id} 在 Codex++ 后台生效，不能被拓展顶替；可以在管理器里停用它");
+            anyhow::bail!("内置拓展 {id} 只在关闭增强（拓展不加载）时生效，不能被拓展顶替；可以在管理器里停用它");
         }
         if !replaces.iter().any(|existing| existing == id) {
             replaces.push(id.to_string());

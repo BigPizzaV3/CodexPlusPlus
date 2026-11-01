@@ -1,3 +1,5 @@
+import { flowProviderSlot } from "./flow-provider-colors";
+import "./flow-provider-colors.css";
 /**
  * 托盘快捷面板：四个页签——
  * 概览（Codex 状态与启动 / 重启 / 停止、今日速览、常用入口）、
@@ -54,12 +56,13 @@ import {
   type ProviderBalance,
   type UsageSummary,
   maskAccountName,
+  visibleOwnModels,
 } from "./gateway-model";
 import { AGENT_ICONS, APP_LOGO_URL, AutoTag, Avatar, AgentIcon, ModelViewGlyph } from "./gateway-ui";
 import { HubTopology } from "./HubOverview";
 import type { HubLink } from "./hub-overview-model";
 import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
-import { busyLinks, flowAgent, flowColumns, flowStatus } from "./request-flow-model";
+import { busyLinks, liveFlowRoutes, flowAgent, flowColumns, flowStatus } from "./request-flow-model";
 import {
   activeRelayItem,
   codexEnhanced,
@@ -82,7 +85,7 @@ import {
   type TraySettings,
   type TrayTabId,
 } from "./tray-panel-model";
-import { agentVisible, singleAgent, visibleAgents } from "./agent-focus-model";
+import { agentVisible, providersHidden, singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { applyResolvedTheme, loadThemePreference, resolveTheme, systemPrefersDark, watchSystemTheme } from "./theme-mode";
 import "./GatewayPage.css";
@@ -129,7 +132,10 @@ type Pending = { id: string; kind: TrayRequest["kind"]; target?: string };
 type Flash = { tone: "ok" | "error"; text: string };
 
 export function TrayPanel() {
-  const [tab, setTabState] = useState<TrayTabId>(() => readStoredTrayTab());
+  const [storedTab, setTabState] = useState<TrayTabId>(() => readStoredTrayTab());
+  // 只用增强功能：用量、网关、请求流都和供应商有关，只留「概览」，也不画页签条。
+  const enhanceOnly = providersHidden(useAgentFocus());
+  const tab: TrayTabId = enhanceOnly ? "home" : storedTab;
   const [overview, setOverview] = useState<TrayOverview | null>(null);
   const [settings, setSettings] = useState<TraySettings | null>(null);
   const [payload, setPayload] = useState<GatewayPayload | null>(null);
@@ -348,7 +354,7 @@ export function TrayPanel() {
         </button>
       </header>
 
-      <nav aria-label={t("快捷面板页签")} className="tp-tabs" role="tablist">
+      {enhanceOnly ? null : <nav aria-label={t("快捷面板页签")} className="tp-tabs" role="tablist">
         {TRAY_TABS.map((id) => {
           const meta = TAB_META[id];
           const Icon = meta.icon;
@@ -361,7 +367,7 @@ export function TrayPanel() {
             </button>
           );
         })}
-      </nav>
+      </nav>}
 
       <div className="tp-body" role="tabpanel">
         {tab === "home" ? (
@@ -448,6 +454,13 @@ function LinkButton({ label, onClick }: { label: string; onClick: () => void }) 
 
 /* —————————————— 概览 —————————————— */
 
+/** 只用增强功能时的快速打开：只有和供应商无关的页面。 */
+const ENHANCE_QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: LucideIcon }> = [
+  { route: "overview", label: "Codex 概览", icon: House },
+  { route: "sessions", label: "会话", icon: MessagesSquare },
+  { route: "settings", label: "设置", icon: Settings },
+];
+
 const QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: LucideIcon }> = [
   { route: "sessions", label: "会话", icon: MessagesSquare },
   { route: "requestLog", label: "请求日志", icon: ScrollText },
@@ -480,7 +493,10 @@ function HomeTab({
   const busy = pending !== null;
   const busyKind = pending && pending.kind !== "navigate" ? pending.kind : null;
   // 没勾选 Codex 时不放 Codex 的状态卡和启停按钮。
-  const showCodex = agentVisible(useAgentFocus(), "codex");
+  const focus = useAgentFocus();
+  const showCodex = agentVisible(focus, "codex");
+  // 只用增强功能：不讲供应商连接，不放用量速览，快速打开只给和供应商无关的页面。
+  const enhanceOnly = providersHidden(focus);
   const connection = settings?.relayProfilesEnabled === false
     ? t("供应商配置已关闭")
     : !active
@@ -503,10 +519,12 @@ function HomeTab({
           </span>
         </div>
         <div className="tp-codex-facts">
-          <span title={active?.detail}>
-            <Plug aria-hidden="true" />
-            {connection}
-          </span>
+          {enhanceOnly ? null : (
+            <span title={active?.detail}>
+              <Plug aria-hidden="true" />
+              {connection}
+            </span>
+          )}
           {state === "running" ? (
             <span>
               <Check aria-hidden="true" />
@@ -535,16 +553,16 @@ function HomeTab({
         </div>
       </div> : null}
 
-      <button className="tp-card tp-today" onClick={onShowUsage} title={t("查看用量")} type="button">
+      {enhanceOnly ? null : <button className="tp-card tp-today" onClick={onShowUsage} title={t("查看用量")} type="button">
         <Stat label={t("今日请求")} value={glance ? String(glance.calls) : "—"} />
         <Stat label="Token" value={glance ? formatTokens(glance.inputTokens + glance.outputTokens) : "—"} />
         <Stat label={t("成功率")} value={glance?.successRate != null ? `${Math.round(glance.successRate * 100)}%` : "—"} />
         <ChevronRight aria-hidden="true" className="tp-today-arrow" />
-      </button>
+      </button>}
 
       <Section title={t("快速打开")}>
         <div className="tp-quick">
-          {QUICK_LINKS.map((link) => {
+          {(enhanceOnly ? ENHANCE_QUICK_LINKS : QUICK_LINKS).map((link) => {
             const Icon = link.icon;
             return (
               <button className="tp-quick-item" key={link.route} onClick={() => void onOpenRoute(link.route)} type="button">
@@ -789,7 +807,7 @@ function GatewayTab({
  */
 function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRoute: (route: TrayRoute) => Promise<void> }) {
   const focus = useAgentFocus();
-  const { entries, pulses, loaded } = useRequestFlow(FLOW_REFRESH_MS);
+  const { entries, loaded } = useRequestFlow(FLOW_REFRESH_MS);
   const visible = entries.filter((entry) => agentVisible(focus, flowAgent(entry)));
   const columns = flowColumns(visible);
   const runningCount = visible.filter((entry) => flowStatus(entry) === "running").length;
@@ -798,10 +816,10 @@ function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRou
     ...columns.agents.map((node) => ({ from: `agent:${node.id}`, to: "hub", tone: "idle" as const, weight: (node.count / maxCount) * 0.4 })),
     ...columns.providers.map((node) => ({ from: "hub", to: `provider:${node.id}`, tone: "idle" as const, weight: (node.count / maxCount) * 0.4 })),
   ];
-  const busyKey = visible.filter((entry) => entry.state === "running").map((entry) => `${entry.id}:${entry.relayId}`).join("|");
-  // busy 只随进行中的请求变化。
+  const busyKey = visible.filter((entry) => entry.state === "running").map((entry) => `${entry.id}:${entry.relayId}:${entry.phase}:${entry.firstTokenMs}:${entry.estimatedOutputTokens}`).join("|");
+  // 连线随真实请求的路由和响应阶段变化。
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const flow = useMemo(() => ({ pulses, busy: busyLinks(visible) }), [pulses, busyKey]);
+  const flow = useMemo(() => ({ busy: busyLinks(visible), routes: liveFlowRoutes(visible) }), [busyKey]);
   const glance = usageGlance(today);
   const now = Date.now();
   return (
@@ -834,7 +852,8 @@ function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRou
             </div>
             <div className="tp-flow-row">
               {columns.providers.map((node) => (
-                <span className="tp-flow-chip" data-live={node.live} data-node={`provider:${node.id}`} key={node.id} title={node.name}>
+                <span className="tp-flow-chip" data-live={node.live} data-node={`provider:${node.id}`} data-flow-provider={flowProviderSlot(node.id)} key={node.id} title={node.name}>
+                  <i className="flow-provider-mark" aria-hidden="true" />
                   <Avatar name={node.name} size="sm" />
                   <span>{node.name}</span>
                 </span>
@@ -910,7 +929,7 @@ function PanelAgentRow({
             setOpen(false);
             void onRun("use_gateway_own_model", { agent: agent.agent, model: item.model });
           }}
-          own={agent.ownModels}
+          own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
           selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}

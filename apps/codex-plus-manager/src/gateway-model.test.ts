@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
   ownPickerSection,
+  visibleOwnModels,
   defaultProviderAgents,
   glanceAgents,
   skippedAgents,
@@ -42,6 +43,7 @@ import {
   splitModels,
   validateDraft,
   validateProviderDraft,
+  type GatewayAgentView,
   type GatewayPayload,
 } from "./gateway-model.ts";
 
@@ -395,12 +397,13 @@ test("供应商的价格与代理在供应商池详情里编辑，添加 / 编�
 test("赞助商单独一组放在「添加供应商」最前面，不再混在中转里", () => {
   const presets = gatewayPresets(new Date(2026, 9, 26));
   const sponsors = presets.filter((preset) => preset.section === "sponsor").map((preset) => preset.key);
-  assert.deepEqual(sponsors, ["jojocode-max", "runapi", "apikeyfun"]);
+  assert.deepEqual(sponsors, ["jojocode-max", "runapi", "apikeyfun", "cccccc-api"]);
   // 到期日当天仍显示，第二天起从目录里去掉。
   const keys = (date: Date) => gatewayPresets(date).map((preset) => preset.key);
   assert.ok(keys(new Date(2026, 10, 7)).includes("runapi"));
   assert.ok(!keys(new Date(2026, 10, 8)).includes("runapi"));
-  assert.deepEqual(activeSponsorIds(new Date(2026, 10, 23)), ["jojocode-max"]);
+  assert.deepEqual(activeSponsorIds(new Date(2026, 10, 23)), ["jojocode-max", "cccccc-api"]);
+  assert.deepEqual(activeSponsorIds(new Date(2026, 11, 2)), ["jojocode-max"]);
   for (const gone of ["pateway", "therouter", "shengsuanyun", "ccsub"]) assert.ok(!keys(new Date(2026, 9, 26)).includes(gone), gone);
   assert.equal(presets[0].section, "sponsor");
   const relays = presets.filter((preset) => preset.section === "relay").map((preset) => preset.key);
@@ -524,4 +527,16 @@ test("模型下拉：自带模型走「直连」命令，接入着时先确认�
   const tray = readFileSync(new URL("./TrayPanel.tsx", import.meta.url), "utf8");
   assert.match(tray, /onPickOwn=\{/);
   assert.match(tray, /"use_gateway_own_model"/);
+});
+
+test("自带模型开关：关掉后只留 Agent 现在用着的那一个，没用着就整组不列", () => {
+  const own = { vendor: "OpenAI", current: "", models: [{ id: "gpt-6-sol", label: "GPT-6-Sol" }, { id: "gpt-6-luna", label: "gpt-6-luna" }] };
+  const agent = { agent: "codex", name: "Codex", enabled: true, baseUrl: "", defaultModel: "", models: [], ownModels: own } as GatewayAgentView;
+  const payload = (hide: string[]) => ({ gateway: { bindings: {}, hideOwnModels: hide } }) as unknown as GatewayPayload;
+  assert.equal(visibleOwnModels(agent, payload([]))?.models.length, 2);
+  assert.equal(visibleOwnModels(agent, payload(["claude"]))?.models.length, 2, "只看自己的开关");
+  assert.equal(visibleOwnModels(agent, payload(["codex"])), null);
+  const onLuna = { ...agent, ownModels: { ...own, current: "GPT-6-LUNA" } };
+  assert.deepEqual(visibleOwnModels(onLuna, payload(["codex"]))?.models.map((model) => model.id), ["gpt-6-luna"]);
+  assert.equal(visibleOwnModels({ ...agent, ownModels: null }, payload([])), null);
 });

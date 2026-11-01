@@ -34,7 +34,7 @@ type Report = {
   skills?: { name: string; description: string }[];
   diagnostics?: string[];
 };
-type PluginSource = { type: "local"; path: string } | { type: "npm"; spec: string } | { type: "git"; url: string; reference?: string; path?: string };
+type PluginSource = { type: "local"; path: string } | { type: "npm"; spec: string; registry?: string } | { type: "git"; url: string; reference?: string; path?: string };
 type DshPlugin = {
   id: string;
   name: string;
@@ -90,7 +90,7 @@ function sourceText(source: PluginSource): string {
     case "local":
       return source.path;
     case "npm":
-      return `npm: ${source.spec}`;
+      return `npm: ${source.spec}${source.registry ? `（${source.registry}）` : ""}`;
     case "git":
       return `git: ${source.url}${source.reference ? `#${source.reference}` : ""}${source.path ? ` (${source.path})` : ""}`;
   }
@@ -178,7 +178,7 @@ export function DshPluginsPanel() {
             onKeyDown={(event) => {
               if (event.key === "Enter") void importSource(source);
             }}
-            placeholder={t("npm 包名（如 @scope/dsh-tool-x）、git 地址（可加 #分支&path:子目录）或本地目录绝对路径")}
+            placeholder={t("npm 包名（如 @scope/dsh-tool-x，可加 #registry:地址）、git 地址（可加 #分支&path:子目录）或本地目录绝对路径")}
             value={source}
           />
           <Button disabled={busy !== null || !source.trim()} onClick={() => void importSource(source)} size="sm">

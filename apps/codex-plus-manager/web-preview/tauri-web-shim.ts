@@ -446,8 +446,35 @@ const demoFlowTemplates = [
   { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "sub2api-pool", relayName: L("sub2api 站点（演示）", "sub2api relay (demo)") },
 ];
 const demoFlow = { live: [] as Array<Record<string, unknown> & { finishAt: number }>, nextAt: 0, seq: 0 };
+const flowPreviewStartedAt = Date.now();
 const demoRequestFlow = (limit: number) => {
   const now = Date.now();
+  // 确定性预览：空列表 → 未选路由 → 等待 → 响应 → 结束，覆盖真实日志的分阶段更新。
+  const scenario = new URLSearchParams(window.location.search).get("flowPreview");
+  if (scenario) {
+    const params = new URLSearchParams(window.location.search);
+    const startedAtMs = Number(params.get("flowStart")) || flowPreviewStartedAt;
+    const finished = scenario === "done" || scenario === "error";
+    const generating = scenario === "generating" || scenario === "mixed";
+    const history = [
+      { ...demoRequest(9997, 5, demoFlowTemplates[0]), id: "flow-history-ok", durationMs: 3600, usage: { inputTokens: 25000, outputTokens: 244 }, state: "success", success: true },
+      { ...demoRequest(9998, 6, { ...demoFlowTemplates[0], relayId: "jojo", relayName: "jojocodemax" }),
+        id: "flow-history-error", durationMs: 1200, state: "failed", success: false, statusCode: 429, error: "模拟历史请求：上游限流（429）" },
+    ];
+    if (scenario === "idle") return history;
+    const active = { ...demoRequest(9999, 0, demoFlowTemplates[0]), id: "flow-preview", startedAtMs,
+      state: finished ? (scenario === "error" ? "failed" : "success") : "running",
+      phase: generating ? "generating" : "waiting", firstTokenMs: generating || finished ? 1200 : null,
+      estimatedOutputTokens: generating ? Math.floor((now - startedAtMs) / 90) : null,
+      usage: finished && scenario !== "error" ? { inputTokens: 25000, outputTokens: 244 } : null,
+      durationMs: finished ? 8000 : 0, timestampMs: finished ? startedAtMs + 8000 : now,
+      relayId: scenario === "unrouted" ? "" : "chatgpt-pro", relayName: scenario === "unrouted" ? "" : "ChatGPT Pro",
+      error: scenario === "error" ? "模拟请求：上游返回 HTTP 500" : null,
+      success: scenario === "done", statusCode: scenario === "error" ? 500 : 200 };
+    const concurrent = scenario === "mixed" ? [{ ...active, id: "flow-preview-parallel", phase: "waiting",
+      firstTokenMs: null, estimatedOutputTokens: null, relayId: "jojo", relayName: "jojocodemax" }] : [];
+    return [active, ...concurrent, ...history].slice(0, limit);
+  }
   if (now >= demoFlow.nextAt) {
     const template = demoFlowTemplates[demoFlow.seq % demoFlowTemplates.length];
     demoFlow.seq += 1;
@@ -593,7 +620,7 @@ const demoBuiltins = [
   ["turn-rewind", "轮次回退", true, "user:pomodoro_timer"], ["typing-effects", "打字特效", true, null],
   ["side-chat-save", "侧聊保存", true, null], ["history-turn-recovery", "历史轮次补全", true, null],
   ["capacity-auto-retry", "容量不足自动重试", true, null], ["proxy-request-status", "请求状态条", true, null],
-  ["session-share", "会话分享", true, null], ["model-picker-groups", "模型分组", true, null],
+  ["model-picker-groups", "模型分组", true, null],
   ["dream-skin", "梦皮主题", true, null], ["plugin-market-unlock", "插件市场解锁", true, null],
   ["instance-identity", "多开身份提示", true, null], ["session-title-hook", "会话标题中间件", true, null],
 ].map(([id, name, enabled, replacedBy]) => ({ id, key: `builtin:${id}`, name, description: "", enabled, replacedBy }));
@@ -744,7 +771,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "set_extension_config": return settingsResult() as T;
     case "reload_user_scripts": return settingsResult() as T;
     case "extension_creator_request": return {
-      status: args.action === "connect" ? "connected" : "not_connected",
+      status: args.action === "connect" ? "connected" : args.action === "disconnect" ? "disconnected" : "not_connected",
       message: "", configPath: "~/.codex/config.toml", extensionsDirectory: "~/.config/Codex++/user_scripts",
     } as T;
     // 社区拓展演示数据：一个带钩子与后台的、一个只有页面脚本且已安装的、一个需要新版 Codex++ 的。

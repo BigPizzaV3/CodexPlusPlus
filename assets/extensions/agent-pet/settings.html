@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* 和 Codex 里同一套变量名，settings.js 的样式两边通用；主题跟着管理器（data-theme）。 */
+  :root {
+    color-scheme: light;
+    --codex-plus-text: #18181b;
+    --codex-plus-text-secondary: #71717a;
+    --codex-plus-border: rgba(0, 0, 0, .12);
+    --codex-plus-bg-hover: rgba(0, 0, 0, .05);
+    --codex-plus-bg-selected: rgba(16, 163, 127, .08);
+    --codex-plus-bg-secondary: transparent;
+    --codex-plus-success: #0f8a6c;
+    --codex-plus-danger: #dc2626;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --codex-plus-text: #e4e4e7;
+    --codex-plus-text-secondary: #a1a1aa;
+    --codex-plus-border: rgba(255, 255, 255, .12);
+    --codex-plus-bg-hover: rgba(255, 255, 255, .06);
+    --codex-plus-bg-selected: rgba(16, 163, 127, .16);
+    --codex-plus-success: #34d399;
+    --codex-plus-danger: #f87171;
+  }
+  html, body { margin: 0; background: transparent; }
+  body {
+    padding: 12px 14px 14px;
+    color: var(--codex-plus-text);
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+/*__AGENT_PET_SETTINGS_SCRIPTS__*/
+</script>
+</body>
+</html>

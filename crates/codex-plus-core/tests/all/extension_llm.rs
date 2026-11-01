@@ -1,6 +1,6 @@
 //! 拓展调模型：请求体拼装，以及 Responses / Chat Completions、流式 / 整段回复的解析。
 
-use codex_plus_core::extension_llm::{parse_reply, request_body};
+use codex_plus_core::extension_llm::{SseDeltas, parse_reply, request_body};
 use serde_json::json;
 
 #[test]
@@ -55,4 +55,27 @@ fn tools_are_sent_and_tool_calls_parsed() {
     );
     assert_eq!(parse_reply(chat.as_bytes())["toolCalls"], json!([{ "callId": "t1", "name": "weather", "arguments": "{\"city\":1}" }]));
     assert!(parse_reply(b"{\"object\":\"response\",\"output\":[]}").get("toolCalls").is_none());
+}
+
+/// 流式增量：字节在任意处断开（包括多字节字符中间）也能拼回完整事件；Responses 与 Chat 的文字 / 推理增量都交出来。
+#[test]
+fn stream_deltas_are_emitted_as_lines_complete() {
+    let sse = "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"想\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n\ndata: {\"choices\":[{\"delta\":{\"reasoning_content\":\"r\",\"content\":\"c\"}}]}\n\ndata: [DONE]\n\n";
+    let bytes = sse.as_bytes();
+    let mut parser = SseDeltas::default();
+    let mut deltas = Vec::new();
+    // 一次喂 5 个字节：中文字符必然被切开。
+    for chunk in bytes.chunks(5) {
+        deltas.extend(parser.push(chunk));
+    }
+    assert_eq!(deltas, vec![
+        json!({ "type": "reasoning", "text": "想" }),
+        json!({ "type": "text", "text": "你好" }),
+        json!({ "type": "reasoning", "text": "r" }),
+        json!({ "type": "text", "text": "c" }),
+    ]);
+    // 半行不交：等换行到了才算一个事件。
+    let mut parser = SseDeltas::default();
+    assert!(parser.push(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}").is_empty());
+    assert_eq!(parser.push(b"\n"), vec![json!({ "type": "text", "text": "x" })]);
 }

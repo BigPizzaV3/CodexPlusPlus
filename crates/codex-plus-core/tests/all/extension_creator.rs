@@ -87,6 +87,17 @@ async fn mcp_handshake_lists_tools_and_ignores_notifications() {
     );
     // 没有删除工具：删除留给用户自己。
     assert!(!names.iter().any(|name| name.contains("delete") || name.contains("remove")));
+    // write 工具的 gateway 说明列出所有可关的内置环节，agent 造拓展时才看得到。
+    let write = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "codexpp_extension_write")
+        .unwrap();
+    let gateway = write["inputSchema"]["properties"]["gateway"]["description"].as_str().unwrap();
+    for segment in codex_plus_core::user_scripts::BUILTIN_GATEWAY_SEGMENTS {
+        assert!(gateway.contains(segment), "{segment}: {gateway}");
+    }
     // 页面查看与截图只读；没连 Codex 时如实报错，不伪造结果。
     for tool in ["codexpp_extension_inspect", "codexpp_extension_screenshot"] {
         let (error, message) = call(&creator, tool, json!({})).await;
@@ -426,13 +437,13 @@ async fn write_accepts_lenient_shapes_and_copies_binary_assets() {
     assert!(!error, "{written}");
     assert!(temp.path().join("user/map-files/renderer.js").is_file());
 
-    // 不合格的资源：类型不对、相对路径、content 与 sourcePath 同时给、超过 1 MiB。
-    let text = temp.path().join("notes.txt");
-    fs::write(&text, "x").unwrap();
+    // 不合格的复制：不是资源类型、也不是 UTF-8 文本、相对路径、content 与 sourcePath 同时给、资源超过 1 MiB。
+    let binary = temp.path().join("notes.bin");
+    fs::write(&binary, [0xff_u8, 0xfe, 0x00]).unwrap();
     let big = temp.path().join("big.png");
     fs::write(&big, vec![0u8; 1024 * 1024 + 1]).unwrap();
     for (files, expected) in [
-        (json!([{"path": "assets/notes.txt", "sourcePath": text.to_string_lossy()}]), "不是支持的资源类型"),
+        (json!([{"path": "assets/notes.bin", "sourcePath": binary.to_string_lossy()}]), "不是 UTF-8"),
         (json!([{"path": "assets/pet.png", "sourcePath": "pet.png"}]), "必须是绝对路径"),
         (json!([{"path": "assets/pet.png", "content": "x", "sourcePath": source.to_string_lossy()}]), "其中之一"),
         (json!([{"path": "assets/big.png", "sourcePath": big.to_string_lossy()}]), "超过单个资源上限"),
@@ -577,5 +588,200 @@ fn package_instances_are_validated_and_reach_the_page() {
     assert!(error("user:undeclared").contains("没有在清单 config 里声明"));
     assert!(error("user:bad-id").contains("只能是"));
     let bundle = creator.manager.build_initial_bundle().unwrap();
-    assert!(bundle.contains(r#""instances":[{"config":{"label":"工作区"},"id":"work","name":"工作"},{"config":{},"id":"home","name":"home"}]"#), "页面清单带上实例");
+    // 按 JSON 结构比较：serde_json 开不开 preserve_order（Linux 上随工作区依赖打开）键顺序不同。
+    let start = bundle.find(r#""instances":["#).expect("页面清单带上实例") + r#""instances":"#.len();
+    let instances: serde_json::Value = serde_json::Deserializer::from_str(&bundle[start..])
+        .into_iter::<serde_json::Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        instances,
+        json!([
+            { "config": { "label": "工作区" }, "id": "work", "name": "工作" },
+            { "config": {}, "id": "home", "name": "home" },
+        ]),
+        "页面清单带上实例"
+    );
+}
+
+#[tokio::test]
+async fn write_passes_manager_panel_and_replaces_into_the_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let (error, written) = call(
+        &creator,
+        "codexpp_extension_write",
+        json!({
+            "id": "my-usage", "name": "我的用量",
+            "renderer": "renderer.js",
+            "replaces": ["usage-statusline"],
+            "manager": {"page": "manager.html", "title": "用量面板"},
+            "files": [
+                {"path": "renderer.js", "content": "codexPlus.extension((ctx) => {});"},
+                {"path": "manager.html", "content": "<p>面板</p>"}
+            ]
+        }),
+    )
+    .await;
+    assert!(!error, "{written}");
+    assert!(written["written"]["manifestError"].is_null(), "{written}");
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("user/my-usage/codexpp.json")).unwrap()).unwrap();
+    assert_eq!(manifest["replaces"], json!(["usage-statusline"]), "顶替内置拓展的声明写进清单");
+    assert_eq!(manifest["manager"], json!({"page": "manager.html", "title": "用量面板"}), "管理器面板的声明写进清单");
+    let (title, html) = creator.manager.extension_manager_page("user:my-usage").unwrap();
+    assert_eq!((title.as_str(), html.as_str()), ("用量面板", "<p>面板</p>"));
+}
+
+#[tokio::test]
+async fn guide_covers_the_public_extension_surface() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_, guide) = call(&creator(&temp), "codexpp_extension_guide", json!({})).await;
+    let guide = guide["guide"].as_str().unwrap();
+    // 写入工具的参数说明里引用到的指南小节，指南里都要有。
+    for section in ["## 管理器面板", "## 顶替 Codex++ 内置功能", "## 关掉 Codex++ 网关的内置环节", "## 在拓展包里带 dsh 插件", "## 用了第三方库的界面（打包产物）", "## 赶在 Codex 之前（preload）与启动前后（launch）"] {
+        assert!(guide.contains(section), "指南缺少「{section}」");
+    }
+    for api in ["ctx.onScan", "settings/changed", "placement: \"inline\"", "window.codexPlusManager", "builtin:key-cooldown"] {
+        assert!(guide.contains(api), "指南没写 {api}");
+    }
+    assert!(!guide.contains('\u{fffd}'), "指南里有乱码");
+}
+
+/// 本机文件经 sourcePath 复制：图片按资源复制，其余按文本复制（打包产物，单个上限 4 MiB，不受逐字写的 256 KiB 限制）；
+/// 逐字写的 content 仍守 256 KiB。instances 与 dsh 写进清单。
+#[tokio::test]
+async fn write_copies_large_text_files_and_passes_instances_and_dsh() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let source = temp.path().join("dist");
+    fs::create_dir_all(&source).unwrap();
+    // 约 600 KiB 的「打包产物」：超过逐字写的上限，但在复制上限以内。
+    let bundle = format!("codexPlus.extension((ctx) => {{ ctx.config; }});\n/* {} */\n", "x".repeat(600 * 1024));
+    fs::write(source.join("renderer.js"), &bundle).unwrap();
+    fs::write(source.join("logo.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    fs::write(source.join("blob.bin"), [0xff_u8, 0xfe, 0x00, 0x80]).unwrap();
+    fs::write(source.join("huge.js"), vec![b'a'; 4 * 1024 * 1024 + 1]).unwrap();
+    let dsh_package = r#"{"name":"inner-dsh","version":"0.1.0","type":"module","main":"index.js"}"#;
+    let (error, written) = call(
+        &creator,
+        "codexpp_extension_write",
+        json!({
+            "id": "bundled", "name": "打包产物",
+            "config": {"label": {"type": "string", "default": "默认"}},
+            "instances": [{"id": "work", "name": "工作", "config": {"label": "工作区"}}, {"id": "home"}],
+            "dsh": "dsh-plugin",
+            "files": [
+                {"path": "renderer.js", "sourcePath": source.join("renderer.js").to_string_lossy()},
+                {"path": "assets/logo.png", "sourcePath": source.join("logo.png").to_string_lossy()},
+                {"path": "dsh-plugin/package.json", "content": dsh_package},
+                {"path": "dsh-plugin/index.js", "content": "export const name = 'inner'\nexport function apply() {}\n"}
+            ]
+        }),
+    )
+    .await;
+    assert!(!error, "{written}");
+    assert!(written["written"]["manifestError"].is_null(), "{written}");
+    let root = temp.path().join("user/bundled");
+    assert_eq!(fs::read_to_string(root.join("renderer.js")).unwrap(), bundle, "打包产物原样复制");
+    assert_eq!(fs::read(root.join("assets/logo.png")).unwrap(), b"\x89PNG\r\n\x1a\n");
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("codexpp.json")).unwrap()).unwrap();
+    assert_eq!(manifest["instances"][0]["id"], "work");
+    assert_eq!(manifest["dsh"], "dsh-plugin");
+
+    // 逐字写的 content 仍守 256 KiB，报错里提示改用 sourcePath。
+    let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "inline", "name": "逐字", "files": [{"path": "renderer.js", "content": "x".repeat(300 * 1024)}]})).await;
+    assert!(error && message.as_str().unwrap().contains("sourcePath"), "{message}");
+    // 复制来的文本超过 4 MiB、不是 UTF-8、不是绝对路径都拒绝。
+    for (path, source, expected) in [
+        ("renderer.js", source.join("huge.js").to_string_lossy().into_owned(), "超过复制文件上限"),
+        ("data.bin", source.join("blob.bin").to_string_lossy().into_owned(), "不是 UTF-8"),
+        ("renderer.js", "dist/renderer.js".to_string(), "必须是绝对路径"),
+    ] {
+        let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "bad", "name": "坏", "files": [{"path": path, "sourcePath": source}]})).await;
+        assert!(error && message.as_str().unwrap().contains(expected), "{path}: {message}");
+    }
+}
+
+/// 取消接入：本工具条目置为 `enabled = false`，用户字段与别的 MCP 不动，重新接入后恢复启用。
+#[test]
+fn disconnect_disables_only_owned_entry_and_reconnect_restores_it() {
+    use codex_plus_core::extension_creator::{LEGACY_MCP_FLAG, LEGACY_SERVER_ID, SERVER_ID, SPEC};
+    use codex_plus_core::managed_mcp;
+
+    let home = tempfile::tempdir().unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let state = home.path().join("state");
+    let config_path = home.path().join("config.toml");
+    fs::write(&config_path, "[mcp_servers.other]\ncommand = 'x'\n").unwrap();
+
+    // 没接入过：取消接入什么都不写。
+    let receipt = managed_mcp::disable(&SPEC, home.path(), &executable, &state).unwrap();
+    assert!(!receipt.changed);
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), "[mcp_servers.other]\ncommand = 'x'\n");
+
+    managed_mcp::install(&SPEC, home.path(), &executable, &state).unwrap();
+    // 用户在条目上自加的字段要跨取消/重新接入保留。
+    let with_user_field = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("enabled = true", "enabled = true\nstartup_timeout_sec = 30");
+    fs::write(&config_path, with_user_field).unwrap();
+
+    let receipt = managed_mcp::disable(&SPEC, home.path(), &executable, &state).unwrap();
+    assert!(receipt.changed);
+    assert!(receipt.status.disabled);
+    assert!(!receipt.status.registered);
+    let doc: toml_edit::DocumentMut = fs::read_to_string(&config_path).unwrap().parse().unwrap();
+    assert_eq!(doc["mcp_servers"][SERVER_ID]["enabled"].as_bool(), Some(false));
+    assert_eq!(doc["mcp_servers"][SERVER_ID]["startup_timeout_sec"].as_integer(), Some(30));
+    assert_eq!(doc["mcp_servers"]["other"]["command"].as_str(), Some("x"));
+    // 重复取消不再写文件。
+    assert!(!managed_mcp::disable(&SPEC, home.path(), &executable, &state).unwrap().changed);
+
+    let receipt = managed_mcp::install(&SPEC, home.path(), &executable, &state).unwrap();
+    assert!(receipt.status.registered);
+    assert!(!receipt.status.disabled);
+    let doc: toml_edit::DocumentMut = fs::read_to_string(&config_path).unwrap().parse().unwrap();
+    assert_eq!(doc["mcp_servers"][SERVER_ID]["enabled"].as_bool(), Some(true));
+    assert_eq!(doc["mcp_servers"][SERVER_ID]["startup_timeout_sec"].as_integer(), Some(30));
+
+    // 纯转换：旧名条目归本工具所有也一并停用；别人的同名条目不碰。
+    let legacy = format!(
+        "[mcp_servers.{LEGACY_SERVER_ID}]\ncommand = 'x'\nargs = ['{LEGACY_MCP_FLAG}']\n\n[mcp_servers.{SERVER_ID}]\ncommand = 'other'\nargs = ['--x']\n"
+    );
+    let disabled: toml_edit::DocumentMut =
+        managed_mcp::disable_managed_context(&SPEC, &legacy).unwrap().parse().unwrap();
+    assert_eq!(disabled["mcp_servers"][LEGACY_SERVER_ID]["enabled"].as_bool(), Some(false));
+    assert!(disabled["mcp_servers"][SERVER_ID].get("enabled").is_none());
+    assert_eq!(managed_mcp::disable_managed_context(&SPEC, "model = 'x'\n").unwrap(), "model = 'x'\n");
+}
+
+/// 托管上下文里已停用的条目经切换供应商的 apply 流程合并后，不会在 live 配置里复活
+/// （apply 流程把停用条目整条移出 live），托管上下文仍能认出「已取消接入」。
+#[test]
+fn disabled_managed_context_survives_the_relay_apply_path() {
+    use codex_plus_core::extension_creator::{SERVER_ID, SPEC};
+    use codex_plus_core::managed_mcp;
+
+    let home = tempfile::tempdir().unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let state = home.path().join("state");
+    let managed = managed_mcp::upsert_managed_context(&SPEC, "", &executable, &state).unwrap();
+    let managed = managed_mcp::disable_managed_context(&SPEC, &managed).unwrap();
+    codex_plus_core::relay_config::apply_relay_files_to_home_with_context(
+        home.path(),
+        "model = \"second\"\n",
+        "{}",
+        &managed,
+        "",
+        "",
+    )
+    .unwrap();
+    let status = managed_mcp::status(&SPEC, home.path(), &executable, &state).unwrap();
+    assert!(!status.registered);
+    let live = fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert!(!live.contains(SERVER_ID));
+    assert!(managed_mcp::disabled_in_context(&SPEC, &managed));
+    let enabled = managed_mcp::upsert_managed_context(&SPEC, &managed, &executable, &state).unwrap();
+    assert!(!managed_mcp::disabled_in_context(&SPEC, &enabled));
 }

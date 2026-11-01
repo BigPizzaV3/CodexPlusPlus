@@ -48,7 +48,7 @@ async fn backend_keeps_state_emits_events_and_stops() {
     }
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(&temp);
-    // key 带随机后缀：后台表是进程级的，别和其他用例撞。
+    // key 带随机后缀：日志、排查时好认（后台表按拓展目录隔离，不同目录的同名拓展本就不会互相影响）。
     let id = format!("backend-probe-{}", std::process::id());
     let key = format!("user:{id}");
     write_package(&temp, &id, json!({"backend": {"script": "backend/main.mjs"}, "config": {"step": {"type": "number", "default": 2}}}), &[(
@@ -81,19 +81,20 @@ export default ({ config, dataDir, emit }) => {
     assert_eq!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 6);
 
     // 事件按序号增量取走。
-    let first = events(&key, 0, Duration::from_millis(100)).await;
+    let first = events(&manager, &key, 0, Duration::from_millis(100)).await;
     let list = first["events"].as_array().unwrap();
     assert_eq!(list.len(), 3, "{first}");
     assert_eq!(list[2]["payload"]["count"], 6);
     let next = first["next"].as_u64().unwrap();
-    let empty = events(&key, next, Duration::from_millis(100)).await;
+    let empty = events(&manager, &key, next, Duration::from_millis(100)).await;
     assert_eq!(empty["events"].as_array().unwrap().len(), 0);
     assert_eq!(empty["running"], true);
 
     // 长轮询等到新事件立即返回。
     let waiter = tokio::spawn({
         let key = key.clone();
-        async move { events(&key, next, Duration::from_secs(10)).await }
+        let manager = manager.clone();
+        async move { events(&manager, &key, next, Duration::from_secs(10)).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     call(&manager, &key, "add", json!(null), Duration::from_secs(10), None).await.unwrap();
@@ -101,17 +102,17 @@ export default ({ config, dataDir, emit }) => {
     assert_eq!(woke["events"][0]["payload"]["count"], 8);
 
     // 停止后状态清零，取事件不会把后台拉起来；再调用会重新启动。
-    stop_all().await;
-    assert_eq!(events(&key, 0, Duration::from_millis(50)).await["running"], false);
+    stop_all(&manager).await;
+    assert_eq!(events(&manager, &key, 0, Duration::from_millis(50)).await["running"], false);
     assert_eq!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 2);
-    stop_all().await;
+    stop_all(&manager).await;
 
     // 实例级停止：最近调用方不是发 stop 的旧实例时不停（热重载时新实例已经拉起了后台）。
     assert_eq!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), Some("old")).await.unwrap(), 2);
     assert_eq!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), Some("new")).await.unwrap(), 4);
-    assert!(!stop(&key, Some("old")).await, "旧实例的 stop 不能停掉新实例在用的后台");
-    assert!(stop(&key, Some("new")).await);
-    assert!(!stop(&key, None).await, "已经停了");
+    assert!(!stop(&manager, &key, Some("old")).await, "旧实例的 stop 不能停掉新实例在用的后台");
+    assert!(stop(&manager, &key, Some("new")).await);
+    assert!(!stop(&manager, &key, None).await, "已经停了");
 
     // 改了配置（或脚本）后下一次调用按新内容重起。
     assert_eq!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 2);
@@ -121,7 +122,7 @@ export default ({ config, dataDir, emit }) => {
     // 停用后调用报错，并把还在跑的后台停掉。
     manager.set_script_enabled(&key, false).unwrap();
     assert!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), None).await.unwrap_err().to_string().contains("已停用"));
-    assert_eq!(events(&key, 0, Duration::from_millis(50)).await["running"], false);
+    assert_eq!(events(&manager, &key, 0, Duration::from_millis(50)).await["running"], false);
 }
 
 #[tokio::test]
@@ -135,6 +136,35 @@ async fn backend_startup_failures_are_reported() {
     write_package(&temp, &id, json!({"backend": {"script": "backend/main.mjs"}}), &[("backend/main.mjs", "throw new Error('启动就坏');")]);
     let error = call(&manager, &format!("user:{id}"), "x", json!(null), Duration::from_secs(10), None).await.unwrap_err();
     assert!(error.to_string().contains("启动就坏"), "{error}");
+}
+
+/// 后台按拓展目录隔离：两个目录里同名的拓展各有各的后台，停一个目录的全部后台不波及另一个目录
+/// （合并测试程序里各用例并发跑，一个用例的 stop_all 曾把别的用例正在用的后台杀掉）。
+#[tokio::test]
+async fn backends_are_scoped_to_their_extension_directory() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let script = [("backend/main.mjs", "export default () => { let count = 0; return { add() { count += 1; return count; } }; };")];
+    let (first_dir, second_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (first, second) = (manager(&first_dir), manager(&second_dir));
+    for temp in [&first_dir, &second_dir] {
+        write_package(temp, "same-name", json!({"backend": {"script": "backend/main.mjs"}}), &script);
+    }
+    let key = "user:same-name";
+    async fn add(manager: &UserScriptManager) -> anyhow::Result<serde_json::Value> {
+        call(manager, "user:same-name", "add", json!(null), Duration::from_secs(10), None).await
+    }
+    assert_eq!(add(&first).await.unwrap(), 1);
+    assert_eq!(add(&second).await.unwrap(), 1, "另一个目录的同名拓展不共用后台");
+    assert_eq!(add(&first).await.unwrap(), 2, "也不因指纹不同把对方换掉");
+
+    stop_all(&second).await;
+    assert_eq!(events(&second, key, 0, Duration::from_millis(50)).await["running"], false);
+    assert_eq!(events(&first, key, 0, Duration::from_millis(50)).await["running"], true);
+    assert_eq!(add(&first).await.unwrap(), 3, "停别的目录不影响这个目录在跑的后台");
+    assert!(!stop(&second, key, None).await);
+    assert!(stop(&first, key, None).await);
 }
 
 #[tokio::test]
@@ -158,7 +188,7 @@ async fn backend_can_query_sessions_through_the_host() {
     let reply = reply.as_str().unwrap();
     assert!(reply.starts_with("ERR:") && (reply.contains("没有找到会话") || reply.contains("会话数据库")), "{reply}");
     assert_eq!(call(&manager, &key, "bad", json!(null), Duration::from_secs(10), None).await.unwrap(), "没有写方法", "只读：没有写方法");
-    stop(&key, None).await;
+    stop(&manager, &key, None).await;
 }
 
 #[tokio::test]
@@ -201,8 +231,8 @@ async fn backends_and_tools_call_services_provided_by_other_backends() {
     // 页面经桥接路由调用同一个服务。
     let direct = codex_plus_core::extension_backend::call_service(&manager, &json!({"name": "counter", "method": "add", "args": [10]})).await.unwrap();
     assert_eq!(direct, 15);
-    stop(&consumer_key, None).await;
-    stop(&format!("user:{provider}"), None).await;
+    stop(&manager, &consumer_key, None).await;
+    stop(&manager, &format!("user:{provider}"), None).await;
 }
 
 #[tokio::test]
@@ -228,8 +258,8 @@ async fn a_backend_can_call_another_backends_service_while_starting() {
     let greeting = call(&manager, &format!("user:{consumer}"), "greeting", json!(null), Duration::from_secs(20), None).await.unwrap();
     assert_eq!(greeting, "你好 拓展");
     assert!(started.elapsed() < Duration::from_secs(10), "不应等到启动超时：{:?}", started.elapsed());
-    stop(&format!("user:{consumer}"), None).await;
-    stop(&format!("user:{provider}"), None).await;
+    stop(&manager, &format!("user:{consumer}"), None).await;
+    stop(&manager, &format!("user:{provider}"), None).await;
 }
 
 #[tokio::test]
@@ -278,7 +308,7 @@ export default () => ({
     assert_eq!(ran["ran"], json!([{"method": "tick"}]));
     assert_eq!(call(&manager, &key, "ticks", json!(null), Duration::from_secs(20), None).await.unwrap(), 1);
     assert_eq!(manager.enabled_extension_schedules().unwrap().len(), 2);
-    stop(&key, None).await;
+    stop(&manager, &key, None).await;
 }
 
 #[test]

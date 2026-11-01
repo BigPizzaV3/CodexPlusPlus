@@ -15,7 +15,6 @@ type CodexPlusToastType = "info" | "success" | "warn" | "error";
 /** 当前开放给拓展调用的后端路由。新增路由需在接口层显式决定。 */
 type CodexPlusExtensionRoute =
   | "/diagnostics/log"
-  | "/session/export"
   | "/thread-usage-history"
   | "/archived-thread"
   | "/export-markdown"
@@ -48,11 +47,26 @@ interface CodexPlusRowActionDefinition {
   label: string;
   /** 单个字形或 SVG 字符串。 */
   icon?: string;
-  /** 普通菜单项：点击时调用。与 render 二选一。 */
+  /** "menu"（默认）进「更多操作」菜单；"inline" 画成行上常驻的图标按钮。 */
+  placement?: "menu" | "inline";
+  /** 出现在哪：默认 ["sidebar"]；加上 "archived" 也画在归档页的行上。 */
+  surfaces?: Array<"sidebar" | "archived">;
+  /** 给行内按钮 / 归档页按钮加的类名。 */
+  className?: string;
+  /** 行内按钮建好、套原生外观之前调用；按钮随行重建，只设属性、不挂监听。 */
+  onMount?(context: { button: HTMLButtonElement; row: HTMLElement; session_id: string }): void;
+  /** 点击时调用。菜单项与 render 二选一。 */
   onActivate?(context: {
     row: HTMLElement;
     session_id: string;
+    title: string;
+    /** 是不是归档页的行。 */
+    archived: boolean;
+    /** 归档页的行未必读得到会话 id：按标题问 Codex++ 解析。 */
+    resolve(): Promise<{ session_id: string; title: string }>;
     close: () => void;
+    button?: HTMLElement;
+    event?: Event;
   }): void;
   /** 自绘菜单项：往菜单里的一个容器画（例如 React 组件）；可返回清理函数，菜单拆掉时调用。 */
   render?(context: {
@@ -562,6 +576,11 @@ interface CodexPlusExtensionContext {
   readonly config: Readonly<Record<string, unknown>>;
   /** 清单 `instances` 里的哪一份；没声明实例时为 null。 */
   readonly instance: { id: string; name: string } | null;
+  /**
+   * 配置原地更新：管理器保存配置后先问这里，handler 返回 true 表示接住了（ctx.config 换成新值、不重载）；
+   * 这个拓展只要有一个实例没接，就照常整体热重载。
+   */
+  onConfigUpdate(handler: (next: Readonly<Record<string, unknown>>, previous: Readonly<Record<string, unknown>>) => boolean): CodexPlusDispose;
   /** 包内 assets/ 资源（图片、音频、字体）的 data URL；找不到返回空串。 */
   asset(path: string): string;
   /** 多语言（随实例卸载自动撤销登记）。 */
@@ -610,7 +629,7 @@ interface CodexPlusExtensionContext {
   /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
   currentSessionId(): string;
 
-  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
+  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`、`settings/loaded`（`{ reason: "startup" | "heartbeat" }`）、`settings/changed`（`{ key, value, persisted }`）。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;
   emit(event: string, ...args: unknown[]): void;
 
@@ -622,6 +641,11 @@ interface CodexPlusExtensionContext {
   listen(target: EventTarget, type: string, handler: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): CodexPlusDispose;
   setTimeout(handler: (...args: any[]) => void, delay?: number, ...args: unknown[]): CodexPlusDispose;
   setInterval(handler: (...args: any[]) => void, delay?: number, ...args: unknown[]): CodexPlusDispose;
+  /**
+   * 跟着 Codex++ 的页面扫描跑（Codex 界面变了时调用，按帧合并、页面隐藏时不跑）。phase：deferred（默认）或 light（每次变化都跑）。
+   * 插进页面的节点必须带 data-codex-plus-ext 属性。返回的撤销函数带 run()：立即跑一次。
+   */
+  onScan(handler: () => void, options?: { phase?: "deferred" | "light" }): CodexPlusDispose & { run(): void };
 
   /** 拓展包只能调 codexpp.json `permissions.routes` 里声明的路由。 */
   call<T = unknown>(route: CodexPlusExtensionRoute, payload?: Record<string, unknown>, options?: CodexPlusCallOptions): Promise<T>;
@@ -631,6 +655,31 @@ interface CodexPlusExtensionContext {
   dispose(): void;
 }
 
+/** 管理器面板（codexpp.json 的 manager.page）里的接口：只能操作本拓展自己的配置、后台与资源。 */
+interface CodexPlusManagerPanelApi {
+  config: {
+    get(): Promise<Record<string, unknown>>;
+    /** 只能写清单 config 里声明过的项；保存后返回最新配置。 */
+    set(values: Record<string, unknown>): Promise<Record<string, unknown>>;
+    onChange(handler: (config: Record<string, unknown>) => void): () => void;
+  };
+  backend: {
+    /** 调本拓展常驻后台导出的方法，超时 30 秒。 */
+    call<T = unknown>(method: string, params?: unknown): Promise<T>;
+  };
+  /** 本拓展 assets/ 里资源的 data URL。 */
+  asset(path: string): Promise<string>;
+  toast(message: string): Promise<null>;
+  theme(): Promise<"dark" | "light">;
+  onTheme(handler: (theme: "dark" | "light") => void): () => void;
+  /** 读清单 `manager.data` 里声明过的只读管理器数据。 */
+  data(name: "requestFlow" | "requestLogs" | "gatewayUsage" | "localSessions", params?: Record<string, unknown>): Promise<unknown>;
+  /** 跳到管理器的另一个页面：路由 id（如 "hub"），或 "ext:<拓展 key>" 打开另一个拓展页面。 */
+  navigate(target: string): Promise<null>;
+}
+
 interface Window {
   codexPlus: CodexPlusExtensionApi;
+  /** 只在管理器面板页里存在。 */
+  codexPlusManager?: CodexPlusManagerPanelApi;
 }

@@ -318,6 +318,37 @@ async fn request_stages_order_and_builtin_replaces() {
     assert_eq!(upstream["seen"], "upstream:chat:r1");
 }
 
+/// 本地代理与网关模式的内置环节都能写进 gateway.replaces；不认识的名字报错并列出可用的。
+#[test]
+fn replaces_accepts_proxy_and_gateway_builtin_segments() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let opened = [
+        "builtin:auto-retry",
+        "builtin:foreign-reasoning",
+        "builtin:unlisted-model-mapping",
+        "builtin:key-cooldown",
+        "builtin:key-breaker",
+        "builtin:local-rate-limit",
+        "builtin:title-model",
+        "builtin:request-conversion",
+        "builtin:auth-headers",
+        "builtin:official-shaping",
+        "builtin:request-log",
+    ];
+    write_package(&temp, "takeover", json!({ "request": [{ "script": "gateway/a.mjs" }], "replaces": opened }),
+        &[("gateway/a.mjs", "export default () => null")]);
+    write_package(&temp, "bad-auth", json!({ "replaces": ["builtin:auth-header"] }), &[]);
+    let inventory = manager.inventory().unwrap();
+    let find = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).unwrap().clone();
+    assert_eq!(find("user:takeover")["error"], "", "{}", find("user:takeover"));
+    assert_eq!(find("user:takeover")["package"]["gatewayReplaces"], json!(opened));
+    assert!(find("user:bad-auth")["error"].as_str().unwrap().contains("builtin:key-cooldown"));
+    let replaces = manager.enabled_gateway_replaces().unwrap();
+    assert_eq!(replaces.len(), opened.len());
+    assert!(replaces.iter().all(|(key, _)| key == "takeover"));
+}
+
 /// route 段：拓展给的候选供应商顺序（可删减），认不得的 id 丢掉，一个都不认得时照原顺序。
 #[tokio::test]
 async fn route_middlewares_reorder_candidate_relays() {
@@ -336,4 +367,34 @@ async fn route_middlewares_reorder_candidate_relays() {
     assert_eq!(manager.enabled_gateway_replaces().unwrap(), vec![("router".to_string(), "builtin:relay-rotation".to_string())]);
     manager.set_script_enabled("user:router", false).unwrap();
     assert_eq!(route_order_with_manager(&manager, &candidates, json!({"model": "m"})).await, None);
+}
+
+/// 关掉 builtin:auth-headers 的拓展在 upstream 段拿到这个候选的 Key，能设鉴权头；别的拓展拿不到 Key，
+/// 设的鉴权头也被丢掉。
+#[tokio::test]
+async fn auth_headers_takeover_gets_the_credential_and_may_set_auth_headers() {
+    use codex_plus_core::extension_gateway::{apply_upstream_request_with, extension_headers, EXTENSION_HEADERS};
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        eprintln!("跳过：本机没有 Node");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "a-auth", json!({ "request": [{ "script": "gateway/up.mjs", "stage": "upstream" }], "replaces": ["builtin:auth-headers"] }),
+        &[("gateway/up.mjs", r#"export default (body, context) => { context.headers.authorization = `Bearer ${context.credential.apiKey}`; context.headers["x-seen"] = "1"; return { ...body, authSaw: context.credential?.apiKey ?? null }; };"#)]);
+    write_package(&temp, "b-other", json!({ "request": [{ "script": "gateway/up.mjs", "stage": "upstream" }] }),
+        &[("gateway/up.mjs", r#"export default (body, context) => { context.headers["x-api-key"] = "stolen"; return { ...body, otherSaw: context.credential?.apiKey ?? null }; };"#)]);
+    let mut body = json!({ "model": "m", "messages": [] });
+    let context = json!({ "stage": "upstream", "wireApi": "chat", "relay": { "id": "r1" }, "__credential": { "apiKey": "sk-test" } });
+    let headers = EXTENSION_HEADERS
+        .scope(std::cell::RefCell::new(Vec::new()), async {
+            apply_upstream_request_with(&manager, &mut body, "/v1/responses", context).await.unwrap();
+            extension_headers()
+        })
+        .await;
+    assert_eq!(body["authSaw"], "sk-test");
+    assert_eq!(body["otherSaw"], serde_json::Value::Null, "没关掉鉴权环节的拓展拿不到 Key");
+    assert!(headers.contains(&("authorization".to_string(), "Bearer sk-test".to_string())), "{headers:?}");
+    assert!(headers.contains(&("x-seen".to_string(), "1".to_string())));
+    assert!(!headers.iter().any(|(name, _)| name == "x-api-key"), "别的拓展设的鉴权头被丢掉：{headers:?}");
 }

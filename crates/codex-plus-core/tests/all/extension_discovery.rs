@@ -240,6 +240,11 @@ async fn listing_is_cached_and_falls_back_when_github_fails() {
     assert_eq!(stale["entries"], first["entries"]);
     assert!(stale["message"].as_str().unwrap().contains("限流"), "{stale}");
 
+    // 作者下架 / 删除后从缓存里拿掉（大小写不敏感），不用等缓存过期。
+    store.forget_repo("Alice/codexpp-word-count").unwrap();
+    let forgotten = store.list(&endpoints(&down), &manager, false).await;
+    assert!(forgotten["entries"].as_array().unwrap().is_empty(), "{forgotten}");
+
     store.set_enabled(false).unwrap();
     let off = store.list(&endpoints(&down), &manager, true).await;
     assert_eq!(off["enabled"], false);

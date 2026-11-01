@@ -1704,12 +1704,17 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
-        self.user_scripts.set_script_enabled(&key, enabled)?;
+        let result = self.user_scripts.set_script_enabled(&key, enabled);
+        // 与管理器一致：拓展带的钩子 / Codex 资产跟着启停写回 Codex 配置。
+        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
+        result?;
         self.user_scripts.inventory()
     }
 
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
-        self.user_scripts.delete_user_script(&key)?;
+        let result = self.user_scripts.delete_user_script(&key);
+        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
+        result?;
         self.user_scripts.inventory()
     }
 

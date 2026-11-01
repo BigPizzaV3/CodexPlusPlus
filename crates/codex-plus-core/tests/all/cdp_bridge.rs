@@ -1170,7 +1170,10 @@ fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
     assert_codex_setting_row(&script, "codexAppStepwiseEnabled", "stepwise");
     assert!(script.contains("function syncStepwisePanel"));
     assert!(script.contains("window.__codexStepwisePanel?.syncSettings"));
-    assert!(script.contains("if (key === \"stepwise\") syncStepwisePanel(value)"));
+    // 开关改了由内置拓展「下一步建议」订阅 settings/changed 让悬浮球重算，写进后端后再重读设置。
+    assert!(script.contains("function codexPlusStepwiseExtension"));
+    assert!(script.contains("codexPlusAlignWith(ctx, () => syncStepwisePanel(), { settings: true });"));
+    assert!(script.contains("emitCodexPlusSettingsChanged(key, value, true)"));
     assert!(script.contains("if (patch?.enabled === true)"));
     assert!(script.contains("activateRuntime();"));
 }
@@ -2842,7 +2845,9 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
     assert!(script.contains("if (threadIdBadgeActive)"));
     assert!(script.contains("function refreshThreadIdBadges()"));
     assert!(script.contains("uuidV7TimestampMs(sessionId)"));
-    assert!(script.contains("refreshThreadIdBadges();"));
+    // 由内置拓展「会话 ID 角标」经公开的 ctx.onScan 登记扫描步骤（卸下时再对齐一次把角标撤掉）。
+    assert!(script.contains(r#"{ id: "thread-id-badge", name: "会话 ID 角标", apply: codexPlusThreadIdBadgeExtension }"#));
+    assert!(script.contains(r#"codexPlusAlignWith(ctx, refreshThreadIdBadges, { scan: "deferred" });"#));
 }
 
 #[test]
@@ -2880,8 +2885,9 @@ fn injection_script_exposes_capacity_auto_retry_control() {
     assert!(script.contains("capacityAutoRetryDefaultIntervalSeconds = 0"));
     // 插进 DOM 的浮标必须带归属标记，否则会触发自喂扫描循环（issue #1960）。
     assert!(script.contains("data-codex-plus-ext\", \"capacity-auto-retry\""));
-    // 定时器随内置拓展「容量不足自动重试」装卸，读到设置后由它订阅的 settings/loaded 同步。
-    assert!(script.contains("settings: () => syncCodexPlusCapacityAutoRetry()"));
+    // 定时器随内置拓展「容量不足自动重试」装卸，读到 / 改了设置后由它订阅的 settings/loaded、settings/changed 同步。
+    assert!(script.contains(r#"codexPlusAlignWith(ctx, syncCodexPlusCapacityAutoRetry, { settings: "heartbeat" });"#));
+    assert!(script.contains(r#"ctx.on("settings/changed", run);"#));
 }
 
 #[test]
@@ -3020,8 +3026,8 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
         .split_once("function showToast(message, options = {})")
         .expect("undo toast should exist")
         .1
-        .split_once("function shareBase64Url")
-        .expect("undo toast should end before sharing helpers")
+        .split_once("function visibleElement")
+        .expect("undo toast should end before visibility helper")
         .0;
 
     assert!(refresh.contains("loadOptionalCodexAppModule(\"app-server-manager-signals-\")"));
@@ -3044,7 +3050,8 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     assert!(script.contains(
         "? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : \"\")"
     ));
-    assert!(script.contains("const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, sessionRefFromRow(row), event)"));
+    // 删除是内置拓展注册的行内会话行操作：点击时按当下的行重新解析会话（临时 id 不删）。
+    assert!(script.contains("onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event)"));
     assert!(script.contains("会话仍在同步，请稍后重试"));
     assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
 
@@ -3321,7 +3328,9 @@ fn injection_script_moves_export_and_project_move_into_more_menu() {
     assert!(
         script.contains("configureSvgActionButton(moreButton, \"更多操作\", ellipsisIconSvg())")
     );
-    assert!(script.contains("createSessionMoreMenuItem(\"导出\""));
+    // 导出是内置拓展「Markdown 导出」注册的菜单项（会话行操作），由宿主画进「…」菜单。
+    assert!(script.contains("id: \"markdown-export\","));
+    assert!(script.contains("appendCodexPlusExtensionRowActions(moreMenu, row, moreButton)"));
     assert!(!script.contains("createSessionMoreMenuItem(\"移动\""));
     assert!(script.contains("group.appendChild(moreButton)"));
     assert!(script.contains("installMoreButtonEvents(row, moreButton, openMoreMenu)"));
@@ -3350,8 +3359,11 @@ fn injection_script_does_not_add_delete_controls_on_archived_page() {
 
     assert!(script.contains("attachArchivedPageDeleteButton"));
     assert!(script.contains("data-codex-archive-row-action"));
-    assert!(script.contains("dataset.codexArchiveRowAction = \"export\""));
-    assert!(!script.contains("dataset.codexArchiveRowAction = \"delete\""));
+    // 归档页只画 surfaces 含 "archived" 的会话行操作：导出声明了，删除没有。
+    assert!(script.contains("button.dataset.codexArchiveRowAction = item.id"));
+    assert!(script.contains("surfaces: [\"sidebar\", \"archived\"],"));
+    let delete_action = script.split("id: \"session-delete\",").nth(1).unwrap();
+    assert!(!delete_action.split("onActivate").next().unwrap().contains("archived"));
     assert!(!script.contains("installArchivedDeleteAllButton"));
     assert!(!script.contains("删除全部归档"));
 }

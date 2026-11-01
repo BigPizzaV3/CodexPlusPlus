@@ -19,13 +19,14 @@
 
   /**
    * 内置拓展「侧聊保存」：经公开的 `codex/exchange` 中间件包住 app-server 请求，临时旁支分叉时记下主历史；
-   * 保存按钮由它登记的扫描步骤维护。拓展卸下时中间件跟着撤掉，旁支请求原样发出。
+   * 保存按钮跟着页面扫描（ctx.onScan）维护。拓展卸下时中间件跟着撤掉，旁支请求原样发出，按钮撤下。
    */
   function codexPlusSideChatSaveExtension(ctx) {
     ctx.intercept("codex/exchange", (exchange, next) => next({
       ...exchange,
       send: () => sendCodexSideChatNativeRequest(exchange, exchange.method, exchange.params, exchange.send),
     }));
+    codexPlusAlignWith(ctx, refreshSideChatSaveButtons, { scan: "deferred" });
   }
 
   // client 只用到 hostId（中间件传的是 exchange 本身）。

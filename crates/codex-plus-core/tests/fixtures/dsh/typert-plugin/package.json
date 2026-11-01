@@ -1,0 +1,11 @@
+{
+  "name": "dsh-typert-demo",
+  "version": "0.1.0",
+  "description": "typert 类型化 RPC：包导出 ./typert（生成的 TYPERT 清单），Service 子类实现方法，前端 ctx.remote 调用",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./typert": "./typert.js"
+  },
+  "peerDependencies": { "@deepseek-ai/cordis": "*" }
+}

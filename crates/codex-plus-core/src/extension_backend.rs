@@ -151,8 +151,18 @@ struct Backend {
     _child: tokio::process::Child,
 }
 
+/// 在跑的后台，按 [`slot`] 登记：同一进程里不同拓展目录的同名拓展各起各的，停一个目录的后台也不波及别的目录。
 static BACKENDS: std::sync::LazyLock<Mutex<HashMap<String, Backend>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 后台的登记键：拓展目录（以它的配置文件定位）+ 拓展 key。
+fn slot(manager: &UserScriptManager, key: &str) -> String {
+    format!("{}{key}", slot_prefix(manager))
+}
+
+fn slot_prefix(manager: &UserScriptManager) -> String {
+    format!("{}\u{0}", manager.config_path().display())
+}
 static EVENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// 拓展后台的可写数据目录：`<用户脚本配置目录>/extension-data/<拓展 id>`。
@@ -315,7 +325,8 @@ async fn host_call_inner(message: &Value, manager: &UserScriptManager) -> anyhow
             let ports = REMOTE_BRIDGE_PORTS.get().cloned().unwrap_or_else(default_debug_ports);
             page_call(&ports, "__codexPlusUiCall", &json!(method), &params).await
         }
-        ("llm", "complete") => crate::extension_llm::complete(&params).await,
+        // stream 只有命令行入口（[`run_host_call_cli`]）能边收边吐；别的通道一次性返回同样的结果。
+        ("llm", "complete" | "stream") => crate::extension_llm::complete(&params).await,
         ("llm", "listModels") => crate::extension_llm::list_models(),
         _ => anyhow::bail!("不能调用 {service}.{method}"),
     }
@@ -398,12 +409,21 @@ pub fn set_host_exe_env(command: &mut tokio::process::Command) {
 }
 
 /// [`HOST_CALL_FLAG`] 的实现：读 stdin、调 [`host_call`]、把结果写到 stdout。总是返回 0，错误写进输出。
+/// `llm.stream` 是行式流：每个文字 / 推理增量先写一行 `{ "delta": ... }`，最后一行是 `{ result }` 或 `{ error }`。
 pub async fn run_host_call_cli(manager: &UserScriptManager) -> i32 {
     use std::io::Read;
     let mut raw = Vec::new();
     let read = std::io::stdin().take(MAX_HOST_CALL_BYTES + 1).read_to_end(&mut raw);
     let reply = match read {
         Ok(_) if raw.len() as u64 <= MAX_HOST_CALL_BYTES => match serde_json::from_slice::<Value>(&raw) {
+            Ok(message) if message.get("service").and_then(Value::as_str) == Some("llm") && message.get("method").and_then(Value::as_str) == Some("stream") => {
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                // Rust 的 stdout 按行刷新：每个增量写完就到了 Node 那边。
+                match crate::extension_llm::stream(&params, |delta| println!("{}", json!({ "delta": delta }))).await {
+                    Ok(result) => json!({ "result": result }),
+                    Err(error) => json!({ "error": format!("{error:#}") }),
+                }
+            }
             Ok(message) => match host_call(&message, manager).await {
                 Ok(result) => json!({ "result": result }),
                 Err(error) => json!({ "error": format!("{error:#}") }),
@@ -537,6 +557,7 @@ async fn ensure_started(
     declared: (String, PathBuf, Value),
     wanted: &str,
 ) -> anyhow::Result<()> {
+    let key = &slot(manager, key);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         {
@@ -596,12 +617,13 @@ pub async fn call(
     let declared = match declared_backend(manager, key) {
         Ok(declared) => declared,
         Err(error) => {
-            BACKENDS.lock().await.remove(key);
+            BACKENDS.lock().await.remove(&slot(manager, key));
             return Err(error);
         }
     };
     let wanted = fingerprint(&declared.1, &declared.2);
     ensure_started(manager, key, declared, &wanted).await?;
+    let key = &slot(manager, key);
     let receiver = {
         let mut backends = BACKENDS.lock().await;
         let Some(backend) = backends.get_mut(key) else {
@@ -640,7 +662,8 @@ pub async fn call(
 }
 
 /// 取走 `since` 之后的事件；没有就最多等 `wait`。后台没起时直接返回空（不为取事件而启动后台）。
-pub async fn events(key: &str, since: u64, wait: Duration) -> Value {
+pub async fn events(manager: &UserScriptManager, key: &str, since: u64, wait: Duration) -> Value {
+    let key = &slot(manager, key);
     let wait = wait.min(MAX_EVENT_WAIT);
     let deadline = tokio::time::Instant::now() + wait;
     loop {
@@ -670,20 +693,22 @@ pub async fn events(key: &str, since: u64, wait: Duration) -> Value {
 }
 
 /// 后台队列里最新事件的序号；后台没起时为 None。
-async fn latest_seq(key: &str) -> Option<u64> {
-    let queue = BACKENDS.lock().await.get(key)?.events.clone();
+async fn latest_seq(manager: &UserScriptManager, key: &str) -> Option<u64> {
+    let queue = BACKENDS.lock().await.get(&slot(manager, key))?.events.clone();
     let last = queue.lock().await.back().map(|(seq, _)| *seq).unwrap_or(0);
     Some(last)
 }
 
-/// 停掉全部后台（页面加载、热重载拓展时调用）。进程随 Child 释放被杀掉。
-pub async fn stop_all() {
-    BACKENDS.lock().await.clear();
+/// 停掉这个拓展目录的全部后台（页面加载、热重载拓展时调用）。进程随 Child 释放被杀掉。
+pub async fn stop_all(manager: &UserScriptManager) {
+    let prefix = slot_prefix(manager);
+    BACKENDS.lock().await.retain(|slot, _| !slot.starts_with(&prefix));
 }
 
 /// 停掉一个拓展的后台。给了 `instance` 时，只在最近一次调用也来自它时才停：
 /// 热重载时旧实例的 stop 可能晚于新实例的首次调用到达，不能把新后台停了。返回是否停掉。
-pub async fn stop(key: &str, instance: Option<&str>) -> bool {
+pub async fn stop(manager: &UserScriptManager, key: &str, instance: Option<&str>) -> bool {
+    let key = &slot(manager, key);
     let mut backends = BACKENDS.lock().await;
     let matches = match (backends.get(key), instance) {
         (None, _) => false,
@@ -754,6 +779,98 @@ pub async fn route_http_with(manager: &UserScriptManager, method: &str, raw_path
     }
 }
 
+/// 请求是不是 WebSocket 升级（`Connection: Upgrade` + `Upgrade: websocket`）。
+pub fn is_websocket_upgrade(raw_headers: &str) -> bool {
+    let header = |name: &str| {
+        raw_headers.lines().skip(1).filter_map(|line| line.split_once(':')).find(|(key, _)| key.trim().eq_ignore_ascii_case(name)).map(|(_, value)| value.trim().to_ascii_lowercase())
+    };
+    header("upgrade").is_some_and(|value| value == "websocket")
+        && header("connection").is_some_and(|value| value.split(',').any(|item| item.trim() == "upgrade"))
+}
+
+/// `Host` 头是不是本机回环地址（127.0.0.1 / localhost / [::1]，可带端口）。
+pub fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split_once(']').map(|(name, _)| name).unwrap_or("")
+    } else {
+        host.rsplit_once(':').filter(|(_, port)| port.chars().all(|ch| ch.is_ascii_digit())).map(|(name, _)| name).unwrap_or(&host)
+    };
+    matches!(name, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// 拓展 HTTP 路由上的协议升级（dsh 的 `webServer.registerUpgrade`）：后台的 `upgrade(request)` 给出一个本机 socket
+/// （常驻进程里的 Node http 服务）后，把原始升级请求原样转过去，之后两边字节对拷，协议协商与帧都由插件自己的处理器负责。
+/// 网页发来的升级只接受同源（Origin 与 Host 一致，即页面本身由这条拓展路由提供）。连接结束才返回。
+pub async fn route_upgrade(stream: &mut tokio::net::TcpStream, raw_path: &str, raw_headers: &str, raw_head: &[u8]) -> anyhow::Result<()> {
+    route_upgrade_with(&crate::user_scripts::default_user_script_manager(), stream, raw_path, raw_headers, raw_head).await
+}
+
+pub async fn route_upgrade_with(
+    manager: &UserScriptManager,
+    stream: &mut tokio::net::TcpStream,
+    raw_path: &str,
+    raw_headers: &str,
+    raw_head: &[u8],
+) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    async fn refuse(stream: &mut tokio::net::TcpStream, status: &str, message: &str) -> anyhow::Result<()> {
+        let body = json!({ "error": message }).to_string();
+        let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        stream.write_all(response.as_bytes()).await?;
+        stream.shutdown().await?;
+        Ok(())
+    }
+    let header = |name: &str| raw_headers.lines().skip(1).filter_map(|line| line.split_once(':')).find(|(key, _)| key.trim().eq_ignore_ascii_case(name)).map(|(_, value)| value.trim().to_string());
+    // Host 必须是本机回环地址：挡住 DNS 重绑定（恶意域名解析到 127.0.0.1 时 Origin 与 Host 都是那个域名，同源检查拦不住）。
+    if !host_is_loopback(&header("host").unwrap_or_default()) {
+        return refuse(stream, "403 Forbidden", "extension upgrades only accept loopback hosts").await;
+    }
+    // 同源才放行：页面本身由拓展路由提供时 Origin 就是 http://<Host>。
+    if let Some(origin) = header("origin").filter(|origin| !origin.is_empty()) {
+        let host = header("host").unwrap_or_default();
+        let same = reqwest::Url::parse(&origin).ok().is_some_and(|url| url.host_str().is_some_and(|name| format!("{name}{}", url.port().map(|port| format!(":{port}")).unwrap_or_default()) == host));
+        if !same {
+            return refuse(stream, "403 Forbidden", "extension upgrades only accept same-origin pages").await;
+        }
+    }
+    let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
+    let Some(rest) = path.strip_prefix("/ext/") else {
+        return refuse(stream, "404 Not Found", "not found").await;
+    };
+    let (id, sub) = rest.split_once('/').map(|(id, sub)| (id, format!("/{sub}"))).unwrap_or((rest, "/".to_string()));
+    if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+        return refuse(stream, "404 Not Found", "not found").await;
+    }
+    let key = crate::user_scripts::extension_package_key(id);
+    if !manager.extension_backend_http(&key) {
+        return refuse(stream, "404 Not Found", &format!("extension {id} does not serve HTTP")).await;
+    }
+    let headers = raw_headers
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), Value::String(value.trim().to_string())))
+        .collect::<serde_json::Map<_, _>>();
+    let reply = match call(manager, &key, "upgrade", json!({ "path": sub, "query": query, "headers": headers }), DEFAULT_CALL_TIMEOUT, None).await {
+        Ok(reply) => reply,
+        Err(error) => return refuse(stream, "502 Bad Gateway", &format!("{error:#}")).await,
+    };
+    let Some(socket) = reply.get("socket").and_then(Value::as_str).filter(|path| !path.is_empty()) else {
+        let message = reply.get("error").and_then(Value::as_str).unwrap_or("no upgrade handler for this path");
+        return refuse(stream, "404 Not Found", message).await;
+    };
+    let mut head = raw_head.to_vec();
+    head.extend_from_slice(b"\r\n\r\n");
+    #[cfg(unix)]
+    let mut upstream = tokio::net::UnixStream::connect(socket).await.with_context(|| format!("连不上拓展的升级服务 {socket}"))?;
+    #[cfg(windows)]
+    let mut upstream = tokio::net::windows::named_pipe::ClientOptions::new().open(socket).with_context(|| format!("连不上拓展的升级服务 {socket}"))?;
+    upstream.write_all(&head).await?;
+    let _ = tokio::io::copy_bidirectional(stream, &mut upstream).await;
+    Ok(())
+}
+
 /// 定时任务调度：每分钟给声明了 schedules 的拓展后台发一次 `__tick`（没起就先起），到点与否由后台按本机时区判断。
 /// 只在托管后台的进程（启动器）里起一次。
 pub fn start_scheduler() {
@@ -821,7 +938,8 @@ pub async fn route_call(payload: &Value) -> anyhow::Result<Value> {
 /// 桥接路由 `/extensions/backend/stop`：`{ key, instance? }`，页面上的拓展实例卸载时发。
 pub async fn route_stop(payload: &Value) -> anyhow::Result<Value> {
     let key = payload.get("key").and_then(Value::as_str).context("缺少拓展 key")?;
-    let stopped = stop(key, payload.get("instance").and_then(Value::as_str)).await;
+    let manager = crate::user_scripts::default_user_script_manager();
+    let stopped = stop(&manager, key, payload.get("instance").and_then(Value::as_str)).await;
     Ok(json!({ "status": "ok", "stopped": stopped }))
 }
 
@@ -829,8 +947,9 @@ pub async fn route_stop(payload: &Value) -> anyhow::Result<Value> {
 /// `since: "latest"` 用于刚开始订阅：后台已在跑时从队尾开始，不把订阅前的旧事件重放给新页面实例。
 pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
     let key = payload.get("key").and_then(Value::as_str).context("缺少拓展 key")?;
+    let manager = crate::user_scripts::default_user_script_manager();
     if payload.get("since").and_then(Value::as_str) == Some("latest") {
-        return Ok(match latest_seq(key).await {
+        return Ok(match latest_seq(&manager, key).await {
             Some(next) => json!({ "status": "ok", "events": [], "next": next, "running": true }),
             None => json!({ "status": "ok", "events": [], "next": 0, "running": false }),
         });
@@ -841,7 +960,7 @@ pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
         .and_then(Value::as_u64)
         .map(Duration::from_millis)
         .unwrap_or(MAX_EVENT_WAIT);
-    let mut result = events(key, since, wait).await;
+    let mut result = events(&manager, key, since, wait).await;
     result["status"] = json!("ok");
     Ok(result)
 }

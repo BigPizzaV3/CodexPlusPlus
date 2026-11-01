@@ -13,11 +13,11 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { hostCall } from './host-call.mjs'
+import { hostCall, hostCallStream } from './host-call.mjs'
 import { FsError } from './shims/dsh-fs.mjs'
 import { DomainError } from './shims/dsh-storage-domain.mjs'
 import { SessionQueryError, SubprocessExecutableNotFoundError, UserQuestionError, WebError } from './shims/dsh-errors.mjs'
@@ -30,7 +30,7 @@ export const SUPPORTED_SERVICES = new Set([
   'connection', 'schedule', 'webhookRuntime', 'jobs', 'workspaceRegistry', 'approval',
   'storage', 'spillStore', 'shellEnv', 'sessionTitle', 'tokenMeter', 'sessionTelemetry',
   'planMode', 'goals', 'subagents',
-  'attachments', 'fileReferences', 'webServer', 'mcpResources',
+  'attachments', 'fileReferences', 'webServer', 'mcpResources', 'typert',
 ])
 
 /** 只在钩子常驻进程里才「活」的服务：MCP 进程里拿得到，但没有会话事件流入。 */
@@ -643,19 +643,38 @@ export function createSessionQuery(mirror) {
     async traceSession(id) {
       return { sessionId: String(id), lineage: [String(id)] }
     },
-    async observeSession(id) {
+    /**
+     * dsh 的 observeSession 是某一时刻的切面：会话在本进程的镜像里（钩子常驻进程正跟着它）时给 live 切面，
+     * 带上投影的当前值；否则从 Codex 的会话记录读一份 prepared 切面。之后的变化用 sessionProjections.onChanged / session/event 跟。
+     */
+    async observeSession(id, options = {}) {
+      const live = mirror?.sessions.get(String(id))
+      if (live) {
+        const events = freeze([...live.events])
+        const keys = [...(mirror.projections?.keys() ?? [])]
+        const observation = {
+          source: 'live',
+          header: live.header,
+          inheritedEventCount: 0,
+          events,
+          cursor: events.length ? events[events.length - 1].seq : -1,
+          ...(options?.projectionMode === 'none' || !keys.length ? {} : { projections: { asOfSeq: events.length ? events[events.length - 1].seq : -1, values: Object.fromEntries(keys.map((key) => [key, mirror.stateOf(live, key)])) } }),
+          retain: () => observation,
+          [Symbol.dispose]() {},
+        }
+        return observation
+      }
       const read = await readSession(id)
-      return {
+      const observation = {
         source: 'prepared',
         header: read.session,
         inheritedEventCount: 0,
         events: read.events,
-        cursor: read.events.length,
-        retain() {
-          return this
-        },
+        cursor: read.events.length ? read.events[read.events.length - 1].seq : -1,
+        retain: () => observation,
         [Symbol.dispose]() {},
       }
+      return observation
     },
     async searchSessions({ query: text, limit, cursor } = {}) {
       const page = await query('searchSessions', { query: String(text ?? ''), limit, cursor })
@@ -669,8 +688,13 @@ export function createSessionQuery(mirror) {
   }
 }
 
-/** ctx.llm：stream 经 Codex++ 协议代理发一次（整段返回后拆成 dsh 的流式块）。 */
+/**
+ * ctx.llm：stream 经 Codex++ 协议代理发请求，边收边把文字 / 推理增量翻成 dsh 的流式块（宿主调用通道的行式流）；
+ * 工具调用与用量在回复结束后给出。插件经 registerAdapter 注册的模型供应商（provider 对得上时）直接用它的 stream。
+ */
 export function createLlm() {
+  /** provider id → adapter（插件注册的模型供应商，只在本进程里给 ctx.llm 用；Codex 自己的请求不经过它）。 */
+  const adapters = new Map()
   // dsh 消息 → Responses 输入条目：文字与图片进 message，助手的工具调用块成 function_call，tool 消息成 function_call_output。
   const promptOf = (options) => (options?.messages ?? []).flatMap((message) => {
     if (message?.role === 'tool') {
@@ -689,47 +713,82 @@ export function createLlm() {
       .map((block) => ({ type: 'function_call', call_id: String(block.id), name: String(block.name), arguments: String(block.arguments ?? '{}') }))
     return [...(parts.length ? [{ role, content: parts }] : []), ...calls]
   })
+  const adapterFor = (provider) => (provider ? adapters.get(String(provider)) : undefined)
   return {
     stream(options = {}) {
+      const adapter = adapterFor(options.provider)
+      if (adapter) return adapter.stream(options)
       return (async function* () {
+        const model = options.provider && options.model && !String(options.model).includes('/') && options.provider !== 'codex'
+          ? `${options.provider}/${options.model}`
+          : options.model
+        const tools = (options.tools ?? []).map((tool) => ({ name: String(tool.name), description: String(tool.description ?? ''), parameters: tool.parameters ?? { type: 'object', properties: {} } }))
+        const iterator = hostCallStream('llm', 'stream', {
+          input: promptOf(options),
+          ...(options.system ? { instructions: String(options.system) } : {}),
+          ...(model ? { model: String(model) } : {}),
+          ...(options.reasoningEffort ? { reasoningEffort: String(options.reasoningEffort) } : {}),
+          ...(options.maxTokens ? { maxOutputTokens: Number(options.maxTokens) } : {}),
+          ...(options.temperature !== undefined ? { temperature: Number(options.temperature) } : {}),
+          ...(tools.length ? { tools } : {}),
+          ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+        }, { signal: options.signal })
+        // 增量按到达顺序开块：推理块、文字块各一个；换了种类就先把上一个块收尾。
+        let index = 0
+        const open = { reasoning: undefined, text: undefined }
+        const streamed = { reasoning: '', text: '' }
+        const closed = new Set()
+        const finishBlock = function* (kind) {
+          if (open[kind] === undefined || closed.has(kind)) return
+          closed.add(kind)
+          yield { type: 'block-end', index: open[kind], block: { type: kind, text: streamed[kind] } }
+        }
         let result
         try {
-          const model = options.provider && options.model && !String(options.model).includes('/') && options.provider !== 'codex'
-            ? `${options.provider}/${options.model}`
-            : options.model
-          const tools = (options.tools ?? []).map((tool) => ({ name: String(tool.name), description: String(tool.description ?? ''), parameters: tool.parameters ?? { type: 'object', properties: {} } }))
-          result = await hostCall('llm', 'complete', {
-            input: promptOf(options),
-            ...(options.system ? { instructions: String(options.system) } : {}),
-            ...(model ? { model: String(model) } : {}),
-            ...(options.reasoningEffort ? { reasoningEffort: String(options.reasoningEffort) } : {}),
-            ...(options.maxTokens ? { maxOutputTokens: Number(options.maxTokens) } : {}),
-            ...(options.temperature !== undefined ? { temperature: Number(options.temperature) } : {}),
-            ...(tools.length ? { tools } : {}),
-            ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
-          }, { signal: options.signal })
+          for (;;) {
+            const step = await iterator.next()
+            if (step.done) {
+              result = step.value
+              break
+            }
+            const delta = step.value
+            const kind = delta?.type === 'reasoning' ? 'reasoning' : 'text'
+            const text = String(delta?.text ?? '')
+            if (!text || closed.has(kind)) continue
+            if (open[kind] === undefined) {
+              // 文字开始时把推理块收尾（dsh 的块顺序是推理在前）。
+              if (kind === 'text') yield* finishBlock('reasoning')
+              open[kind] = index++
+              yield { type: 'block-start', index: open[kind], blockType: kind }
+            }
+            streamed[kind] += text
+            yield { type: kind === 'text' ? 'text-delta' : 'reasoning-delta', index: open[kind], text }
+          }
         } catch (error) {
           const aborted = options.signal?.aborted
+          yield* finishBlock('reasoning')
+          yield* finishBlock('text')
           yield { type: 'finish', reason: { kind: aborted ? 'aborted' : 'error', failure: { message: String(error?.message ?? error), code: aborted ? 'ABORTED' : 'LLM_ERROR' } } }
           return
         }
-        // 一次性拿到整段回复后按 dsh 的块顺序拆开：推理、文字、各个工具调用。
-        let index = 0
+        // 没有流式增量的部分（上游不流式、或只在收尾事件里给）按整段回复补齐：推理、文字、各个工具调用。
         const reasoning = String(result?.reasoning ?? '')
-        if (reasoning) {
-          yield { type: 'block-start', index, blockType: 'reasoning' }
-          yield { type: 'reasoning-delta', index, text: reasoning }
-          yield { type: 'block-end', index, block: { type: 'reasoning', text: reasoning } }
-          index += 1
+        if (open.reasoning === undefined && reasoning && open.text === undefined) {
+          open.reasoning = index++
+          streamed.reasoning = reasoning
+          yield { type: 'block-start', index: open.reasoning, blockType: 'reasoning' }
+          yield { type: 'reasoning-delta', index: open.reasoning, text: reasoning }
         }
+        yield* finishBlock('reasoning')
         const text = String(result?.text ?? '')
         const calls = Array.isArray(result?.toolCalls) ? result.toolCalls : []
-        if (text || !calls.length) {
-          yield { type: 'block-start', index, blockType: 'text' }
-          if (text) yield { type: 'text-delta', index, text }
-          yield { type: 'block-end', index, block: { type: 'text', text } }
-          index += 1
+        if (open.text === undefined && (text || !calls.length)) {
+          open.text = index++
+          streamed.text = text
+          yield { type: 'block-start', index: open.text, blockType: 'text' }
+          if (text) yield { type: 'text-delta', index: open.text, text }
         }
+        yield* finishBlock('text')
         for (const call of calls) {
           const block = { type: 'tool-call', id: String(call.callId ?? randomUUID()), name: String(call.name ?? ''), arguments: typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments ?? {}) }
           yield { type: 'block-start', index, blockType: 'tool-call' }
@@ -750,20 +809,70 @@ export function createLlm() {
       })()
     },
     listProviders() {
-      return [{ id: 'codex', name: 'Codex（经 Codex++）' }]
+      return [{ id: 'codex', name: 'Codex（经 Codex++）' }, ...[...adapters.values()].map((adapter) => ({ id: adapter.id, name: adapter.name }))]
     },
-    async listModels() {
+    async listModels(provider) {
+      const adapter = adapterFor(provider)
+      if (adapter) return adapter.listModels()
       const listed = await hostCall('llm', 'listModels', {})
       return (listed?.models ?? []).map((model) => ({ provider: 'codex', id: String(model?.id ?? model), name: String(model?.name ?? model?.id ?? model) }))
     },
     async resolveModelInfo(provider, model) {
+      const adapter = adapterFor(provider)
+      if (adapter) return adapter.resolveModel(model)
       return { provider, model, contextWindow: undefined }
     },
     resolveCallConfig(config) {
       return config
     },
-    registerAdapter() {
-      throw new Error('Codex++ 里不能注册 dsh 模型 adapter；要加模型供应商请在 Codex++ 拓展清单里声明 providers')
+    /**
+     * 插件注册模型供应商：ctx.llm.stream({ provider }) 对得上时直接用它的 stream（同一个宿主进程里）。
+     * Codex 自己的模型请求不经过它——要给 Codex 加供应商，请在 Codex++ 拓展清单里声明 providers。
+     */
+    // dsh 的写法：registerAdapter(providers, adapter)，adapter 是 LlmAdapter 子类（providerInfo / listModels /
+    // resolveModel / stream(options)）；返回的撤销函数带 replace(next) 换一组 provider。也认早期的 { id, stream } 单对象写法。
+    registerAdapter(providers, adapter) {
+      if (!Array.isArray(providers)) {
+        adapter = providers
+        providers = [String(adapter?.id ?? adapter?.provider ?? '')]
+      }
+      if (typeof adapter?.stream !== 'function') throw new TypeError('registerAdapter(providers, adapter)：adapter 需要 stream(options)')
+      const owned = new Set()
+      const commit = (list) => {
+        if (!list.length) throw new Error('an adapter must register at least one provider')
+        for (const provider of list) {
+          if (!provider) throw new Error('adapter provider names must be non-empty')
+          if (provider === 'codex') throw new Error('provider codex 由 Codex++ 提供，不能顶替')
+          if (adapters.has(provider) && !owned.has(provider)) throw new Error(`an adapter for provider "${provider}" is already registered`)
+        }
+        for (const provider of owned) adapters.delete(provider)
+        owned.clear()
+        for (const provider of list) {
+          const info = typeof adapter.providerInfo === 'function' ? adapter.providerInfo(provider) : undefined
+          adapters.set(provider, {
+            id: provider,
+            name: String(info?.name ?? adapter.name ?? provider),
+            stream: (options) => adapter.stream(options),
+            listModels: async () => (typeof adapter.listModels === 'function' ? adapter.listModels(provider) : []),
+            resolveModel: async (model) => (typeof adapter.resolveModel === 'function'
+              ? adapter.resolveModel(provider, model)
+              : typeof adapter.resolveModelInfo === 'function' ? adapter.resolveModelInfo(model) : { provider, id: model, name: model }),
+          })
+          owned.add(provider)
+        }
+      }
+      commit(providers.map(String))
+      let released = false
+      const dispose = () => {
+        released = true
+        for (const provider of owned) adapters.delete(provider)
+        owned.clear()
+      }
+      dispose.replace = (next) => {
+        if (released) throw new Error('a disposed adapter registration cannot replace its routes')
+        commit((next ?? []).map(String))
+      }
+      return dispose
     },
     registerConfigurableProviders() {
       return () => {}
@@ -1568,29 +1677,125 @@ export function createWebhookRuntime() {
 }
 
 // ---------------------------------------------------------------------------
-// jobs：后台任务登记处（进程内）
+// jobs：后台任务登记处（跨进程）
 // ---------------------------------------------------------------------------
 
-export function createJobs(emit) {
+/** 跨进程共享的任务快照里最多带多少输出（尾部）。 */
+const JOB_SNAPSHOT_OUTPUT = 64 * 1024
+const JOB_POLL_MS = 300
+
+/** 进程是否还在（任务快照里记着跑它的进程）。 */
+function processAlive(pid) {
+  try {
+    process.kill(Number(pid), 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
+
+/**
+ * dsh 的 jobs：任务在启动它的进程里跑；`dir`（所有插件、所有 Codex++ 起的 Node 进程共用）里写每个任务的快照，
+ * 别的进程（MCP 进程、各包的常驻进程）的 list / get / read / wait 读快照，kill 写一个停止请求文件，由跑任务的进程接手。
+ * 不给 dir 时只在当前进程里登记。
+ */
+export function createJobs(emit, { dir } = {}) {
   const jobs = new Map()
   const listeners = new Set()
+  const view = (job) => ({
+    id: job.id, kind: job.kind, label: job.label, owner: job.owner, status: job.status, progress: job.progress,
+    detail: job.detail, startedAt: job.startedAt, finishedAt: job.finishedAt, output: { total: job.outputTotal ?? job.output.length, earliest: 0 },
+  })
+  const snapshotPath = (id) => (dir ? join(dir, `${String(id).replace(/[^\w.-]/g, '_')}.json`) : undefined)
+  const killPath = (id) => (dir ? join(dir, `${String(id).replace(/[^\w.-]/g, '_')}.kill`) : undefined)
+  const writeTimers = new Map()
+  const writeSnapshot = (job) => {
+    const path = snapshotPath(job.id)
+    if (!path) return
+    try {
+      mkdirSync(dir, { recursive: true })
+      const temp = `${path}.${process.pid}.tmp`
+      writeFileSync(temp, JSON.stringify({ view: view(job), output: job.output.slice(-JOB_SNAPSHOT_OUTPUT), outputTotal: job.output.length, result: job.result ?? null, pid: process.pid }))
+      renameSync(temp, path)
+    } catch {}
+  }
+  // 输出追加很频繁：快照写入合并到 100ms 一次。
+  const scheduleWrite = (job) => {
+    if (!dir || writeTimers.has(job.id)) return
+    const timer = setTimeout(() => {
+      writeTimers.delete(job.id)
+      writeSnapshot(job)
+    }, 100)
+    timer.unref?.()
+    writeTimers.set(job.id, timer)
+  }
   const publish = (job) => {
+    writeSnapshot(job)
     for (const listener of listeners) {
       try { listener(view(job)) } catch {}
     }
     emit?.('jobs/change', [view(job)])
   }
-  const view = (job) => ({
-    id: job.id, kind: job.kind, label: job.label, owner: job.owner, status: job.status, progress: job.progress,
-    detail: job.detail, startedAt: job.startedAt, finishedAt: job.finishedAt, output: { total: job.output.length, earliest: 0 },
-  })
+  /** 别的进程的任务快照；跑它的进程已经退出却还标着 running 的，按失败处理。 */
+  const readSnapshot = (id) => {
+    const path = snapshotPath(id)
+    if (!path || !existsSync(path)) return undefined
+    try {
+      const snapshot = JSON.parse(readFileSync(path, 'utf8'))
+      if (snapshot?.view?.status === 'running' && snapshot.pid !== process.pid && !processAlive(snapshot.pid)) {
+        snapshot.view = { ...snapshot.view, status: 'failed', detail: '跑这个任务的进程已经退出' }
+      }
+      return snapshot
+    } catch {
+      return undefined
+    }
+  }
+  const remoteIds = () => {
+    if (!dir || !existsSync(dir)) return []
+    try {
+      return readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -5)).filter((id) => !jobs.has(id))
+    } catch {
+      return []
+    }
+  }
+  const allowed = (owner, caller) => !caller || !owner || caller === owner
   const find = (id, caller) => {
     const job = jobs.get(id)
-    if (!job) throw new Error(`没有后台任务 ${id}`)
-    if (caller && job.owner && caller !== job.owner) throw new Error(`后台任务 ${id} 不属于 ${caller}`)
-    return job
+    if (job) {
+      if (!allowed(job.owner, caller)) throw new Error(`后台任务 ${id} 不属于 ${caller}`)
+      return { local: job }
+    }
+    const snapshot = readSnapshot(id)
+    if (!snapshot) throw new Error(`没有后台任务 ${id}`)
+    if (!allowed(snapshot.view?.owner, caller)) throw new Error(`后台任务 ${id} 不属于 ${caller}`)
+    return { snapshot }
   }
-  return {
+  // 别的进程发来的停止请求：本进程有任务在跑时每 300ms 看一次。
+  let watcher
+  const watchKills = () => {
+    if (!dir || watcher) return
+    watcher = setInterval(() => {
+      let running = 0
+      for (const job of jobs.values()) {
+        if (job.status !== 'running') continue
+        running += 1
+        const path = killPath(job.id)
+        if (!existsSync(path)) continue
+        let reason
+        try {
+          reason = readFileSync(path, 'utf8') || undefined
+          unlinkSync(path)
+        } catch {}
+        service.kill(job.id, undefined, reason)
+      }
+      if (!running) {
+        clearInterval(watcher)
+        watcher = undefined
+      }
+    }, JOB_POLL_MS)
+    watcher.unref?.()
+  }
+  const service = {
     start({ kind, label, owner, outputLimitBytes = 1024 * 1024, run } = {}) {
       if (typeof run !== 'function') throw new TypeError('jobs.start 需要 run(job)')
       const job = { id: randomUUID(), kind: String(kind ?? 'job'), label: String(label ?? ''), owner, status: 'running', progress: undefined, detail: undefined, startedAt: Date.now(), finishedAt: undefined, output: '', result: undefined }
@@ -1599,6 +1804,7 @@ export function createJobs(emit) {
         id: job.id,
         append(text) {
           job.output = `${job.output}${String(text ?? '')}`.slice(-outputLimitBytes)
+          scheduleWrite(job)
         },
         updateProgress(line) {
           job.progress = String(line ?? '')
@@ -1619,34 +1825,70 @@ export function createJobs(emit) {
         publish(job)
       })
       publish(job)
+      watchKills()
       return job.id
     },
-    list: (caller) => [...jobs.values()].filter((job) => !caller || !job.owner || job.owner === caller).map(view),
-    get: (id, caller) => view(find(id, caller)),
+    list(caller) {
+      const local = [...jobs.values()].filter((job) => allowed(job.owner, caller)).map(view)
+      const remote = remoteIds().map(readSnapshot).filter((snapshot) => snapshot?.view && allowed(snapshot.view.owner, caller)).map((snapshot) => snapshot.view)
+      return [...local, ...remote]
+    },
+    get: (id, caller) => {
+      const found = find(id, caller)
+      return found.local ? view(found.local) : found.snapshot.view
+    },
     read: (id, caller) => {
-      const job = find(id, caller)
-      return { chunks: job.output ? [{ text: job.output }] : [], lossy: false, result: job.result, job: view(job) }
+      const found = find(id, caller)
+      if (found.local) return { chunks: found.local.output ? [{ text: found.local.output }] : [], lossy: false, result: found.local.result, job: view(found.local) }
+      const { snapshot } = found
+      return { chunks: snapshot.output ? [{ text: snapshot.output }] : [], lossy: snapshot.outputTotal > snapshot.output.length, result: snapshot.result ?? undefined, job: snapshot.view }
     },
     readAt(id, from, caller) {
-      const job = find(id, caller)
-      return { chunks: [{ text: job.output.slice(Number(from) || 0) }], lossy: false, job: view(job) }
+      const found = find(id, caller)
+      if (found.local) return { chunks: [{ text: found.local.output.slice(Number(from) || 0) }], lossy: false, job: view(found.local) }
+      const { snapshot } = found
+      const offset = snapshot.outputTotal - snapshot.output.length
+      const start = Math.max(0, (Number(from) || 0) - offset)
+      return { chunks: [{ text: snapshot.output.slice(start) }], lossy: (Number(from) || 0) < offset, job: snapshot.view }
     },
     kill(id, caller, reason) {
-      const job = find(id, caller)
-      if (job.status !== 'running') return 'already-finished'
-      job.status = 'stopping'
-      try { job.cancel?.(reason) } catch {}
-      publish(job)
+      const found = find(id, caller)
+      if (found.local) {
+        const job = found.local
+        if (job.status !== 'running') return 'already-finished'
+        job.status = 'stopping'
+        try { job.cancel?.(reason) } catch {}
+        publish(job)
+        return 'requested'
+      }
+      if (found.snapshot.view.status !== 'running') return 'already-finished'
+      // 任务在别的进程里：写停止请求，由跑它的进程接手。
+      try {
+        writeFileSync(killPath(id), String(reason ?? ''))
+      } catch {}
       return 'requested'
     },
     async wait(id, timeoutMs, caller, signal) {
-      const job = find(id, caller)
-      await Promise.race([job.done, new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(timeoutMs) || 0))), new Promise((resolve) => signal?.addEventListener?.('abort', resolve, { once: true }))])
-      return view(job)
+      const found = find(id, caller)
+      const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0)
+      if (found.local) {
+        await Promise.race([found.local.done, new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))), new Promise((resolve) => signal?.addEventListener?.('abort', resolve, { once: true }))])
+        return view(found.local)
+      }
+      for (;;) {
+        const snapshot = readSnapshot(id) ?? found.snapshot
+        if (snapshot.view.status !== 'running' || Date.now() >= deadline || signal?.aborted) return snapshot.view
+        await new Promise((resolve) => setTimeout(resolve, Math.min(JOB_POLL_MS, Math.max(0, deadline - Date.now()))))
+      }
     },
     remove(id, caller) {
-      find(id, caller)
+      const found = find(id, caller)
       jobs.delete(id)
+      if (found.local || found.snapshot) {
+        try {
+          unlinkSync(snapshotPath(id))
+        } catch {}
+      }
     },
     events: {
       subscribe(filter, listener) {
@@ -1655,6 +1897,7 @@ export function createJobs(emit) {
       },
     },
   }
+  return service
 }
 
 // ---------------------------------------------------------------------------

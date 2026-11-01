@@ -1,0 +1,15 @@
+{
+  "name": "dsh-compat-plugin",
+  "version": "0.1.0",
+  "description": "生态实测里卡得多的写法：cordis timer 的 interval / throttle、llm.registerAdapter(providers, LlmAdapter)、dsh-llm 的纯函数导出与子路径、token-meter/estimate、client-connection 的信封校验、credentials / tools 的判断函数",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-token-meter": "*",
+    "@deepseek-ai/dsh-client-connection": "*",
+    "@deepseek-ai/dsh-credentials": "*"
+  }
+}

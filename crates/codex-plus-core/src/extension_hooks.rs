@@ -572,7 +572,12 @@ command = "python3 guard.py"
         assert_eq!(pre.len(), 2, "用户的钩子保留，再加一条分发条目");
         assert_eq!(pre.get(0).unwrap()["hooks"].as_array_of_tables().unwrap().get(0).unwrap()["command"].as_str(), Some("python3 guard.py"));
         let ours = pre.get(1).unwrap()["hooks"].as_array_of_tables().unwrap().get(0).unwrap();
-        assert_eq!(ours["command"].as_str(), Some("'/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus' --codex-plus-hook PreToolUse"));
+        let expected = if cfg!(windows) {
+            "\"/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus\" --codex-plus-hook PreToolUse"
+        } else {
+            "'/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus' --codex-plus-hook PreToolUse"
+        };
+        assert_eq!(ours["command"].as_str(), Some(expected));
         assert_eq!(ours["timeout"].as_integer(), Some(120));
         assert!(pre.get(1).unwrap().get("matcher").is_none(), "分发条目匹配全部，由拓展自己的 matcher 过滤");
         assert!(document["hooks"]["Stop"].as_array_of_tables().is_some());
@@ -591,6 +596,11 @@ command = "python3 guard.py"
     #[test]
     fn command_quotes_paths_with_spaces_and_quotes() {
         let command = dispatch_command(Path::new("/Users/a b/it's/CodexPlusPlus"), "Stop").unwrap();
-        assert_eq!(command, r"'/Users/a b/it'\''s/CodexPlusPlus' --codex-plus-hook Stop");
+        // Windows 由 cmd 解析：整段加双引号（路径里不会有双引号）；其他平台按 POSIX 单引号转义。
+        if cfg!(windows) {
+            assert_eq!(command, r#""/Users/a b/it's/CodexPlusPlus" --codex-plus-hook Stop"#);
+        } else {
+            assert_eq!(command, r"'/Users/a b/it'\''s/CodexPlusPlus' --codex-plus-hook Stop");
+        }
     }
 }

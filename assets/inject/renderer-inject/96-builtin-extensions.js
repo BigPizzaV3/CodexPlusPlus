@@ -23,68 +23,42 @@
   }
 
   /**
-   * 内置拓展清单。sync 在装上 / 卸下后调用，让功能按新的开关状态挂载或撤下（函数声明提前，
-   * 这里引用后面分片里的函数没有问题；不存在时跳过）。apply 是完全用公开拓展接口写的内置拓展。
-   * 管理器里的名字与说明在 Rust 侧 BUILTIN_EXTENSIONS 维护，两边 id 要一致。
-   * settings：读到 Codex++ 设置后要跟着刷新的，经公开事件 `settings/loaded` 订阅（拓展装着才收到），
-   * 核心读设置的地方不再逐个点名功能。
+   * 内置拓展清单：每一项只有 apply(ctx)，和第三方拓展一样只用公开的 ctx 接口（onScan、on、effect、registerSlot……），
+   * 装上即生效、卸下时登记的东西自动撤销。管理器里的名字与说明在 Rust 侧 BUILTIN_EXTENSIONS 维护，两边 id 要一致。
+   * 没有 apply 的几项由 Rust 侧（启动器、注入、本地代理）或独立运行时按停用状态生效，页面侧只登记。
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      // 大肥鱼（96-whale-widget.js）是桌宠的一种类型，跟着这个内置拓展一起扫描、一起撤下。
-      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusPetKinds(), scan: () => syncCodexPlusPetKinds(), settings: () => syncCodexPlusPetKinds(), apply: codexPlusAgentPetExtension },
-      { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
-      { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation(), scan: () => installCodexPlusDictation() },
-      { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind(), scan: () => syncCodexPlusTurnRewind(), phase: "light" },
-      // 打字特效的全局监听只在拓展装上时挂，卸下时摘掉。
-      { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects(), settings: () => syncCodexPlusTypingEffects(), apply: (ctx) => ctx.effect(() => {
-        installCodexPlusTypingEffects();
-        return () => uninstallCodexPlusTypingEffects();
-      }) },
-      { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons(), scan: () => refreshSideChatSaveButtons(), apply: codexPlusSideChatSaveExtension },
+      // Agent 桌宠（含大肥鱼）已改成随 Codex++ 发布的官方拓展包（bundled:agent-pet），不再是内置拓展。
+      { id: "usage-statusline", name: "用量状态栏", apply: codexPlusUsageStatusLineExtension },
+      { id: "dictation", name: "语音听写", apply: codexPlusDictationExtension },
+      { id: "turn-rewind", name: "轮次回退", apply: codexPlusTurnRewindExtension },
+      { id: "typing-effects", name: "打字特效", apply: codexPlusTypingEffectsExtension },
+      { id: "side-chat-save", name: "侧聊保存", apply: codexPlusSideChatSaveExtension },
+      // 由 Rust 经 CDP 驱动，页面侧只登记；被顶替时 Rust 侧不再补载，顶替它的拓展订阅 codexpp/session-index-repaired 自己做。
       { id: "history-turn-recovery", name: "历史轮次补全" },
-      // 轮询定时器随拓展装卸：装上时按设置启动，卸下时 sync 读到停用就清掉定时器与浮标。
-      { id: "capacity-auto-retry", name: "容量不足自动重试", sync: () => syncCodexPlusCapacityAutoRetry(), settings: () => syncCodexPlusCapacityAutoRetry() },
-      { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.(), apply: codexPlusProxyStatusExtension },
-      { id: "session-share", name: "会话分享", sync: () => installSessionShareButton() },
-      // 自带轮询：停用时扫描清理完就停，sync 在装上时重新开始轮询。
-      { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.sync?.() },
-      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin(), scan: () => refreshDreamSkin(), settings: () => refreshDreamSkin() },
-      { id: "plugin-market-unlock", name: "插件市场解锁", scan: () => installCodexPluginMarketplacePatches() },
+      { id: "capacity-auto-retry", name: "容量不足自动重试", apply: codexPlusCapacityAutoRetryExtension },
+      { id: "proxy-request-status", name: "请求状态条", apply: codexPlusProxyStatusExtension },
+      { id: "model-picker-groups", name: "模型分组", apply: codexPlusModelPickerGroupsExtension },
+      { id: "dream-skin", name: "梦皮主题", apply: codexPlusDreamSkinExtension },
+      { id: "plugin-market-unlock", name: "插件市场解锁", apply: codexPlusPluginMarketUnlockExtension },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
-      // 以下几项的开关都经 codexPlusSettings() 读（停用时对应设置项读成关），切换后补一轮扫描让界面跟上。
-      { id: "session-delete", name: "会话删除", sync: () => scheduleDeferredScan() },
-      { id: "markdown-export", name: "Markdown 导出", sync: () => scheduleDeferredScan() },
-      { id: "thread-id-badge", name: "会话 ID 角标", sync: () => scheduleDeferredScan() },
-      {
-        id: "thread-scroll-restore",
-        name: "滚动位置恢复",
-        sync: () => {
-          if (!codexPlusSettings().threadScrollRestore) stopThreadScrollRestore();
-          scheduleDeferredScan();
-        },
-      },
-      {
-        id: "conversation-view",
-        name: "对话宽度",
-        sync: () => {
-          refreshConversationViewControls();
-          scheduleDeferredScan();
-        },
-        apply: codexPlusConversationViewExtension,
-      },
-      { id: "activity-overlay-right", name: "消息导航条靠右", sync: () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.(), settings: () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.() },
-      // 粘贴监听随拓展装卸；开关每次粘贴时现查，不用同步。
+      { id: "session-delete", name: "会话删除", apply: codexPlusSessionDeleteExtension },
+      { id: "markdown-export", name: "Markdown 导出", apply: codexPlusMarkdownExportExtension },
+      { id: "thread-id-badge", name: "会话 ID 角标", apply: codexPlusThreadIdBadgeExtension },
+      { id: "thread-scroll-restore", name: "滚动位置恢复", apply: codexPlusThreadScrollRestoreExtension },
+      { id: "conversation-view", name: "对话宽度", apply: codexPlusConversationViewExtension },
+      { id: "activity-overlay-right", name: "消息导航条靠右", apply: codexPlusActivityOverlayExtension },
       { id: "paste-fix", name: "粘贴修复", apply: codexPlusPasteFixExtension },
-      // 微信写入的会话通知桌面目录：读到设置（含心跳）时按设置里的待同步清单跑一次。
-      { id: "weixin-desktop-sync", name: "微信会话同步", settings: () => void syncWeixinDesktopThreads() },
-      // 悬浮球自己读后台设置再按停用集合判断，这里只让它重新算一次。
-      { id: "stepwise", name: "下一步建议", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
-      { id: "answer-outline", name: "回答大纲", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
-      // 启动器每 5 秒按内置拓展状态决定是否驱动，页面侧无事可做。
+      { id: "weixin-desktop-sync", name: "微信会话同步", apply: codexPlusWeixinDesktopSyncExtension },
+      // 悬浮球是独立运行时，自己按停用集合判断；这两项让它在装卸、改设置时重新算一次。
+      { id: "stepwise", name: "下一步建议", apply: codexPlusStepwiseExtension },
+      { id: "answer-outline", name: "回答大纲", apply: codexPlusStepwiseExtension },
+      // 启动器每 5 秒按内置拓展状态决定是否驱动，页面侧无事可做。等价写法：/system/cursor-position + /cdp/evaluate。
       { id: "pet-real-mouse", name: "桌宠跟随鼠标" },
-      // 以下由 Rust 侧（启动、注入、本地代理）按设置项与内置拓展状态生效，多数要重启 Codex，页面侧只登记。
+      // 以下由 Rust 侧（启动、注入、本地代理）按设置项生效，多数要重启 Codex，页面侧只登记。被顶替时 Rust 侧按
+      // 「关」处理（builtin_takeover），顶替它的拓展用 preload（页面最早期脚本）、launch（启动前后）、网关中间件写等价功能。
       { id: "model-whitelist-unlock", name: "模型白名单解锁" },
       { id: "native-fast-unlock", name: "原生 Fast 强制解锁" },
       { id: "native-predictions", name: "原生输入预测" },
@@ -95,11 +69,6 @@
       { id: "standalone-quota-unlock", name: "官方额度解锁" },
       { id: "image-overlay", name: "背景图" },
     ];
-  }
-
-  function syncCodexPlusPetKinds() {
-    syncCodexPlusAgentPet();
-    if (typeof syncCodexPlusWhaleWidget === "function") syncCodexPlusWhaleWidget();
   }
 
   /** 下发的停用 / 顶替状态：{ disabled: [id], replacedBy: { id: 拓展 key } }。 */
@@ -118,11 +87,6 @@
     } catch {}
   });
   const codexPlusBuiltinExtensionHandles = window.__codexPlusBuiltinExtensionHandles = new Map();
-
-  function codexPlusRunBuiltinSync(definition) {
-    if (typeof definition.sync !== "function") return;
-    runScanStep(() => definition.sync());
-  }
 
   /**
    * 内置功能的数据作为服务提供（不随界面那一层的内置拓展装卸）：用 replaces 顶替用量状态栏、请求状态条的拓展
@@ -161,28 +125,28 @@
           const ctx = codexPlusCreateExtension({
             id: `builtin:${definition.id}`,
             apply(ctx) {
+              // 停用集合是功能侧「这个内置拓展装着没有」的读数：装上前移出；卸下时最先记回（最后登记、最先撤销），
+              // 功能自己的撤销步骤（再对齐一次）读到的就是停用。
               inactive.delete(definition.id);
-              ctx.effect(() => () => {
-                inactive.add(definition.id);
-                codexPlusRunBuiltinSync(definition);
-              });
-              if (typeof definition.scan === "function") ctx.effect(() => registerCodexPlusScanStep(definition.id, definition.scan, definition.phase));
-              if (typeof definition.apply === "function") definition.apply(ctx);
-              codexPlusRunBuiltinSync(definition);
-              if (typeof definition.settings === "function") ctx.on("settings/loaded", () => runScanStep(definition.settings));
+              try {
+                if (typeof definition.apply === "function") definition.apply(ctx);
+              } finally {
+                ctx.effect(() => () => inactive.add(definition.id));
+              }
             },
           }, { scriptKey: `builtin:${definition.id}` });
           codexPlusBuiltinExtensionHandles.set(definition.id, ctx);
         } catch (error) {
+          inactive.add(definition.id);
           codexPlusMarkExtensionFailure(`builtin:${definition.id}`, String(error?.stack || error?.message || error));
         }
       } else if (!wanted && handle) {
         codexPlusBuiltinExtensionHandles.delete(definition.id);
         handle.dispose();
       } else if (!wanted && !inactive.has(definition.id)) {
-        // 还没装上过（注入早期按默认启用跑着）：直接记成停用，让功能撤下。
+        // 还没装上过（注入早期按默认启用跑着）：直接记成停用，补一轮扫描让按停用集合判断的功能撤下。
         inactive.add(definition.id);
-        codexPlusRunBuiltinSync(definition);
+        scheduleDeferredScan();
       }
     }
   }
@@ -199,19 +163,24 @@
     }));
   }
 
-  /** Agent 桌宠：经公开的 overlay 插槽拿容器，桌宠挂在里面（拖动、按压的逻辑在 97-agent-pet.js）。 */
-  function codexPlusAgentPetExtension(ctx) {
-    ctx.registerSlot({
-      slot: "overlay",
-      order: 10,
-      render: ({ container }) => {
-        codexPlusAgentPet.host = container;
-        runScanStep(syncCodexPlusAgentPet);
-        return () => {
-          if (codexPlusAgentPet.host === container) codexPlusAgentPet.host = null;
-          runScanStep(syncCodexPlusAgentPet);
-        };
-      },
+  /**
+   * 「按开关对齐」的内置功能共用的写法，只用公开 ctx 接口（第三方拓展照抄即可）：
+   * 装上时对齐一次，卸下时再对齐一次（这时已记成停用，功能自己撤下）；scan：跟着页面扫描对齐（"deferred" | "light"）。
+   * settings：true 在启动读到设置、页面里改了设置（settings/changed）时对齐；"heartbeat" 另外每次心跳读到设置
+   * （含管理器里改的）都对齐，只给对齐很便宜、又要跟上管理器改动的功能用。
+   */
+  function codexPlusAlignWith(ctx, align, { settings = false, scan = null } = {}) {
+    const run = () => runScanStep(align);
+    if (scan) ctx.onScan(align, { phase: scan });
+    if (settings) {
+      ctx.on("settings/loaded", (load) => {
+        if (settings === "heartbeat" || load?.reason !== "heartbeat") run();
+      });
+      ctx.on("settings/changed", run);
+    }
+    ctx.effect(() => {
+      run();
+      return run;
     });
   }
 
@@ -231,6 +200,11 @@
         };
       },
     });
+    ctx.effect(() => {
+      startCodexPlusUsageStatusLine();
+      return () => stopCodexPlusUsageStatusLine();
+    });
+    codexPlusAlignWith(ctx, () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), { settings: true });
   }
 
   /** 请求状态条：经公开的 composer.above 插槽拿每个输入框上方的容器。 */
@@ -248,18 +222,190 @@
         };
       },
     });
+    ctx.effect(() => {
+      startCodexPlusProxyStatus();
+      return () => stopCodexPlusProxyStatus();
+    });
+  }
+
+  /** 打字特效：全局输入监听随拓展装卸，模式跟着设置对齐。 */
+  function codexPlusTypingEffectsExtension(ctx) {
+    ctx.effect(() => {
+      installCodexPlusTypingEffects();
+      return () => uninstallCodexPlusTypingEffects();
+    });
+    codexPlusAlignWith(ctx, syncCodexPlusTypingEffects, { settings: "heartbeat" });
+  }
+
+  /** 语音听写：输入框 footer 会重建，入口跟着页面扫描补；卸下时撤掉入口并取消进行中的录音。 */
+  function codexPlusDictationExtension(ctx) {
+    ctx.listen(document, "keydown", codexPlusDictationKeyHandler, true);
+    codexPlusAlignWith(ctx, installCodexPlusDictation, { scan: "deferred" });
+  }
+
+  /** 轮次回退：菜单项跟着轻量扫描补，开关改了立即启停。 */
+  function codexPlusTurnRewindExtension(ctx) {
+    codexPlusAlignWith(ctx, syncCodexPlusTurnRewind, { scan: "light", settings: true });
+  }
+
+  /** 容量不足自动重试：轮询定时器装上时按设置启动，改设置即启停，卸下时清掉定时器与浮标。 */
+  function codexPlusCapacityAutoRetryExtension(ctx) {
+    codexPlusAlignWith(ctx, syncCodexPlusCapacityAutoRetry, { settings: "heartbeat" });
+  }
+
+  /** 模型分组：模型菜单的轮询随拓展装上开始；卸下时扫描一次清理分组、停下轮询。 */
+  function codexPlusModelPickerGroupsExtension(ctx) {
+    codexPlusAlignWith(ctx, () => window.__codexPlusModelPickerGroupsRuntime?.sync?.());
+  }
+
+  /** 梦皮主题：主界面重建时补皮肤，设置变了就重装或清理。 */
+  function codexPlusDreamSkinExtension(ctx) {
+    codexPlusAlignWith(ctx, refreshDreamSkin, { settings: "heartbeat", scan: "deferred" });
+  }
+
+  /** 插件市场解锁：补丁装上后撤不掉，停用后刷新页面才完全恢复。 */
+  function codexPlusPluginMarketUnlockExtension(ctx) {
+    ctx.onScan(installCodexPluginMarketplacePatches);
   }
 
   /**
-   * 对话宽度：Codex++ 设置变了（管理器里改、心跳同步过来）且「对话宽度」开关有变化时，重算一次对话区宽度。
+   * 按设置开关注册 / 撤销一项会话行操作（只用公开 ctx 接口）：读到、改了设置时重新判断，开着就注册、关了就撤销。
+   */
+  function codexPlusRowActionWhen(ctx, enabled, definition) {
+    let dispose = null;
+    const sync = () => {
+      const wanted = !!enabled();
+      if (wanted && !dispose) dispose = ctx.registerRowAction(definition, { id: definition.id });
+      else if (!wanted && dispose) {
+        dispose();
+        dispose = null;
+      }
+    };
+    ctx.on("settings/loaded", () => runScanStep(sync));
+    ctx.on("settings/changed", () => runScanStep(sync));
+    sync();
+  }
+
+  /**
+   * 会话删除：会话行上常驻的删除按钮（公开的行内会话行操作），确认、删除、撤销都在 80-session-share.js；
+   * 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）；点击走文档级委托（按钮会被克隆替换）。
+   */
+  function codexPlusSessionDeleteExtension(ctx) {
+    ctx.onScan(filterDeletedSessionRows);
+    ctx.effect(() => {
+      installDeleteButtonEventDelegation();
+      return () => {
+        document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
+        window.__codexSessionDeleteDocumentDeleteHandler = null;
+      };
+    });
+    codexPlusRowActionWhen(ctx, () => codexPlusSettings().sessionDelete, {
+      id: "session-delete",
+      placement: "inline",
+      label: "删除",
+      icon: trashIconSvg(),
+      className: buttonClass,
+      order: 10,
+      onMount: ({ button }) => {
+        button.dataset.codexDeleteVersion = codexDeleteVersion;
+      },
+      onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event),
+    });
+  }
+
+  /** Markdown 导出：会话行「…」菜单与归档页行上的「导出」（公开的会话行操作，归档页的行按标题解析会话 id）。 */
+  function codexPlusMarkdownExportExtension(ctx) {
+    codexPlusRowActionWhen(ctx, () => codexPlusSettings().markdownExport, {
+      id: "markdown-export",
+      label: "导出",
+      icon: "⇩",
+      className: exportButtonClass,
+      surfaces: ["sidebar", "archived"],
+      order: 10,
+      onActivate: async ({ archived, resolve, row }) => {
+        const ref = archived ? await resolve() : sessionRefFromRow(row);
+        if (!ref?.session_id) {
+          showToast("导出失败：未找到归档会话 ID", null);
+          return;
+        }
+        await exportMarkdown(ref);
+      },
+    });
+  }
+
+  /** 会话 ID 角标。 */
+  function codexPlusThreadIdBadgeExtension(ctx) {
+    codexPlusAlignWith(ctx, refreshThreadIdBadges, { scan: "deferred" });
+  }
+
+  /**
+   * 滚动位置恢复：滚动、导航、路由钩子跟着轻量扫描补（钩子按设置判断，关着时不动），
+   * 完整扫描时同步一次位置；关掉（改设置或卸下）时撤掉排着的保存 / 恢复定时器。
+   */
+  function codexPlusThreadScrollRestoreExtension(ctx) {
+    ctx.onScan(() => {
+      updateThreadScrollHandlers();
+      installThreadScrollProgrammaticScrollGuard();
+      installThreadScrollNavigationCapture();
+      installThreadScrollUserIntentCapture();
+      installThreadScrollRouteHooks();
+      scheduleThreadScrollSync(true);
+    }, { phase: "light" });
+    ctx.onScan(() => scheduleThreadScrollSync());
+    const stopWhenOff = () => {
+      if (!codexPlusSettings().threadScrollRestore) stopThreadScrollRestore();
+    };
+    ctx.on("settings/changed", () => runScanStep(stopWhenOff));
+    codexPlusAlignWith(ctx, () => {
+      stopWhenOff();
+      scheduleDeferredScan();
+    });
+  }
+
+  /**
+   * 对话宽度：完整扫描、窗口缩放时对齐对话区宽度；Codex++ 设置变了（管理器里改、心跳同步过来）且开关有变化时立即重算。
    */
   function codexPlusConversationViewExtension(ctx) {
+    ctx.onScan(refreshConversationView);
+    let resizeFrame = 0;
+    ctx.listen(window, "resize", () => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => runScanStep(refreshConversationView));
+    });
+    ctx.effect(() => () => cancelAnimationFrame(resizeFrame));
     let previous = !!codexPlusSettings().conversationView;
     ctx.on("settings/loaded", () => {
       const current = !!codexPlusSettings().conversationView;
       if (current === previous) return;
       previous = current;
       runScanStep(refreshConversationView);
+    });
+    codexPlusAlignWith(ctx, () => {
+      refreshConversationViewControls();
+      refreshConversationView();
+    });
+  }
+
+  /** 消息导航条靠右：按设置切换页面根节点上的属性。 */
+  function codexPlusActivityOverlayExtension(ctx) {
+    codexPlusAlignWith(ctx, () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.(), { settings: "heartbeat" });
+  }
+
+  /** 微信会话同步：微信写入的会话通知桌面目录，读到设置（含心跳）时按设置里的待同步清单跑一次。 */
+  function codexPlusWeixinDesktopSyncExtension(ctx) {
+    ctx.on("settings/loaded", () => void syncWeixinDesktopThreads());
+  }
+
+  /**
+   * 下一步建议 / 回答大纲：悬浮球是独立运行时，这里在装卸、读到 / 改了设置时让它按当前设置重新算一次；
+   * 开关写进后端后让它重读自己的设置。两个内置拓展共用这一份，各自只管自己的开关。
+   */
+  function codexPlusStepwiseExtension(ctx) {
+    const backendKey = ctx.id === "builtin:answer-outline" ? "codexAppAnswerOutlineEnabled" : "codexAppStepwiseEnabled";
+    codexPlusAlignWith(ctx, () => syncStepwisePanel(), { settings: true });
+    ctx.on("settings/changed", (change) => {
+      if (change?.key !== backendKey || change.persisted !== true) return;
+      Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel());
     });
   }
 

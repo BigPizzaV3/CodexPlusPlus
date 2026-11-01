@@ -221,9 +221,31 @@ pub fn finish_request(entry: &RequestLogEntry) {
 /// 更新进行中请求的快照（例如上游地址/首字耗时在请求结束前就已知）。
 pub fn update_running(entry: &RequestLogEntry) {
     if let Ok(mut live) = live_requests().lock()
-        && live.contains_key(&entry.id)
+        && let Some(current) = live.get_mut(&entry.id)
     {
-        live.insert(entry.id.clone(), entry.clone());
+        let mut updated = entry.clone();
+        // 预读/转发会直接发布进度，调用方持有的快照可能尚未同步，不能将其清掉。
+        updated.first_token_ms = current.first_token_ms.or(updated.first_token_ms);
+        updated.estimated_output_tokens = current
+            .estimated_output_tokens
+            .or(updated.estimated_output_tokens);
+        if current.first_token_ms.is_some() {
+            updated.phase = current.phase.clone();
+        }
+        *current = updated;
+    }
+}
+
+/// 选定真实上游后只更新路由；不触碰预读/转发已发布的首字、阶段和输出估算。
+pub(crate) fn update_running_route(id: &str, trace: &RequestTrace, stream: bool) {
+    if let Ok(mut live) = live_requests().lock()
+        && let Some(entry) = live.get_mut(id)
+    {
+        entry.relay_id = trace.relay_id.clone();
+        entry.relay_name = trace.relay_name.clone();
+        entry.upstream_model = trace.upstream_model.clone();
+        entry.wire_api = trace.wire_api.clone();
+        entry.stream = stream;
     }
 }
 
@@ -773,6 +795,56 @@ mod tests {
         assert_eq!(entries[0].state.as_deref(), Some("success"));
 
         set_request_log_path_for_tests(None);
+    }
+
+    #[test]
+    fn live_route_and_snapshot_updates_preserve_stream_progress() {
+        let _guard = request_log_test_guard();
+        let mut running = entry("live-route-progress");
+        running.first_token_ms = None;
+        running.phase = Some("requesting".to_string());
+        start_request(&running);
+        let mut trace = RequestTrace {
+            relay_id: "selected-relay".to_string(),
+            relay_name: "Selected relay".to_string(),
+            upstream_model: "real-model".to_string(),
+            wire_api: "responses".to_string(),
+            ..Default::default()
+        };
+        update_running_route(&running.id, &trace, true);
+        let selected = running_requests().into_iter().find(|row| row.id == running.id).unwrap();
+        assert_eq!(selected.relay_id, trace.relay_id);
+        assert_eq!(selected.relay_name, trace.relay_name);
+        assert_eq!(selected.upstream_model, trace.upstream_model);
+        assert_eq!(selected.wire_api, trace.wire_api);
+        assert!(selected.stream);
+        assert!(selected.first_token_ms.is_none());
+        assert_eq!(selected.phase.as_deref(), Some("requesting"));
+
+        update_running_first_token(&running.id);
+        update_running_output_estimate(&running.id, 42);
+        update_running_retry(&running.id, 2, 1, vec!["overload".to_string()]);
+        trace.relay_id = "fallback-relay".to_string();
+        update_running_route(&running.id, &trace, true);
+        let generating = running_requests().into_iter().find(|row| row.id == running.id).unwrap();
+        assert_eq!(generating.relay_id, "fallback-relay");
+        assert_eq!(generating.phase.as_deref(), Some("generating"));
+        assert_eq!(generating.estimated_output_tokens, Some(42));
+        assert_eq!(generating.attempts, 2);
+        assert_eq!(generating.auto_retries, 1);
+        assert_eq!(generating.retry_reasons, vec!["overload"]);
+
+        // record_upstream 的本地快照仍没有预读期间的生成进度。
+        running.relay_id = trace.relay_id;
+        update_running(&running);
+        let updated = running_requests().into_iter().find(|row| row.id == running.id).unwrap();
+        assert_eq!(updated.first_token_ms, generating.first_token_ms);
+        assert!(updated.first_token_ms.is_some());
+        assert_eq!(updated.phase.as_deref(), Some("generating"));
+        assert_eq!(updated.estimated_output_tokens, Some(42));
+        live_requests().lock().unwrap().remove(&running.id);
+        update_running_route(&running.id, &RequestTrace::default(), false);
+        assert!(!running_requests().iter().any(|row| row.id == running.id));
     }
 
     #[test]

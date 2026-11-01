@@ -1,5 +1,8 @@
   // 完整上游引擎的词法宿主：不替换页面全局 API；挂件关闭时释放所有副作用。
+  // 数据经平台对象 `platform`（main.js 用公开 ctx 接口实现）：call 调路由、session 取当前会话、on 订阅 Codex 事件。
   const codexPlusWhaleFullStoragePrefix = "codexPlus.whale.full.v1.";
+  /** 大肥鱼的内嵌素材（角色图、音效、动图）：挂件第一次初始化时经 `/whale/media` 取一次。 */
+  const codexPlusWhaleMedia = { image: "", assets: {} };
   function codexPlusWhaleFullNumber(value) {
     if (value === null || value === undefined || value === "") return null;
     const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : null;
@@ -15,7 +18,7 @@
     if (path === "/dsh-whale/bubble-img.png") file = ({ bimg_petpet: "bubble-petpet.gif", bimg_money1: "bubble-money1.gif" })[id];
     if (/^\/dsh-whale\/sound\/(press|release)\.mp3$/.test(path) && (!set || set === "duck" || set === "fx1")) file = fragments[(set === "fx1" ? "d" : "ya") + (path.includes("press") ? "1" : "2")];
     if (path === "/dsh-whale/role-image.png" && id === "default") file = "DSniang1.png";
-    return file ? window.__CODEX_PLUS_WHALE_ASSETS__?.[file] || (file === "DSniang1.png" ? window.__CODEX_PLUS_WHALE_IMAGE__ : "") || "" : "";
+    return file ? codexPlusWhaleMedia.assets?.[file] || (file === "DSniang1.png" ? codexPlusWhaleMedia.image : "") || "" : "";
   }
 
   function codexPlusWhaleFullDataResponse(source) {
@@ -26,7 +29,7 @@
     return new Response(bytes, { status: 200, headers: { "Content-Type": match[1] } });
   }
 
-  function createCodexPlusWhaleFullRuntime() {
+  function createCodexPlusWhaleFullRuntime(platform) {
     const state = { disposed: false, paused: document.hidden === true, timers: new Map(), rafs: new Map(), observers: new Set(), nodes: new Set(), listeners: [], audio: new Set(), pending: new Set(), media: new Map(), objectUrls: new Set(), subscriptions: [], dispatcher: null, sessionId: "", session: null, sessionAt: 0, sessionPending: null, history: null, historyAt: 0, historyPrices: "", historyPending: null, models: [], relayProfiles: [], turn: null, completed: new Set(), seq: 0, pendingWait: null, completion: null, controls: null, serial: 0 };
     const isolated = Object.create(null);
     const wrappedMedia = new WeakSet();
@@ -99,11 +102,11 @@
         const cancel = () => finish(new Error("挂件请求已取消"));
         const timer = setTimeout(() => finish(new Error("挂件请求超时")), 45000);
         state.pending.add(cancel);
-        Promise.resolve(postJson(path, payload)).then((value) => finish(active() ? null : new Error("挂件已关闭"), value), (error) => finish(error));
+        Promise.resolve(platform.call(path, payload)).then((value) => finish(active() ? null : new Error("挂件已关闭"), value), (error) => finish(error));
       });
     }
     function context() {
-      const ref = currentSessionRef() || {}, id = String(ref.session_id || ""), host = String(ref.host_id || "local");
+      const ref = platform.session() || {}, id = String(ref.session_id || ""), host = String(ref.host_id || "local");
       if (id !== state.sessionId || host !== state.sessionHost) {
         state.sessionId = id; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.turn = null; state.pendingWait = null; state.lastTurnResult = null; state.lastTurnPending = null;
       }
@@ -184,10 +187,8 @@
       return { ...model, codex: { ...data, ok: summary?.status === "ok" || summary?.status === "partial" || data.ok === true, complete: summary?.complete === true, deferred: summary?.complete === false ? Math.max(1, summary?.scan?.deferred || 1) : 0, todayTokens: total("today") ?? data.todayTokens, monthTokens: total("month") ?? data.monthTokens, totalTokens: total("all") ?? data.totalTokens, sessions: summary?.scan?.sessions ?? data.sessions ?? 0, days7: data.days7 || (summary?.days || []).slice(-7).map((day) => ({ date: day.date, tokens: day.usage?.totalTokens })), windows: data.windows || { primary: windows[0] || null, secondary: windows[1] || null } }, planSupport: windows.length > 0, plan: windows.length ? { ok: true, usedPct: windows[0].usedPct, remainPct: windows[0].usedPct == null ? null : 100 - windows[0].usedPct, windows: windows.map((entry, index) => ({ id: index === 0 ? "rolling" : "weekly", key: index === 0 ? "rolling" : "weekly", label: index === 0 ? "5h" : "周", usedPct: entry.usedPct, remainPct: entry.usedPct == null ? null : 100 - entry.usedPct, resetAt: entry.resetAt })) } : model.plan };
     }
     function subscribe() {
-      const dispatcher = window.__codexPlusRemoteSessionRecoveryDispatcher;
-      if (state.dispatcher === dispatcher && state.onEvent) return;
-      for (const unsubscribe of state.subscriptions.splice(0)) { try { unsubscribe(); } catch {} }
-      state.dispatcher = dispatcher;
+      // 公开事件 codex/<method> 由拓展内核在 Codex 重建客户端后自己重新订阅，这里订一次就够。
+      if (state.onEvent) return;
       const onEvent = (payload, method) => {
         if (!active() || state.paused) return;
         const data = payload?.params || payload || {}, turn = data.turn || data;
@@ -212,9 +213,8 @@
         }
       };
       state.onEvent = onEvent;
-      if (!dispatcher?.subscribe) return;
       for (const method of ["turn/started", "turn/completed", "thread/tokenUsage/updated", "item/tool/requestUserInput", "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "mcpServer/elicitation/request", "serverRequest/resolved", "item/tool/userInputAnswered", "item/approval/responded", "item/completed"]) {
-        try { const remove = dispatcher.subscribe(method, (payload) => onEvent(payload, method)); if (typeof remove === "function") state.subscriptions.push(remove); } catch {}
+        try { const remove = platform.on(method, (payload) => onEvent(payload, method)); if (typeof remove === "function") state.subscriptions.push(remove); } catch {}
       }
     }
     function nativeEnvelope(value, depth = 0) {

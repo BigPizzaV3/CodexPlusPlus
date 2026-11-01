@@ -3,13 +3,16 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
-const fragment = (name: string) => readFileSync(new URL(`../../../assets/inject/renderer-inject/${name}`, import.meta.url), "utf8");
-const source = fragment("96-whale-compat.js") + "\n" + fragment("96-whale-widget.js");
-/** 大肥鱼是 Agent 桌宠的一种类型：后端 agentPet 开启、勾选 Codex 且 kind 为 whaleWidget 时才挂载。 */
-const whalePet = (enabled: boolean) => ({ enabled, kind: "whaleWidget", agents: ["codex"] });
+const packageFile = (name: string) => readFileSync(new URL(`../../../assets/extensions/agent-pet/${name}`, import.meta.url), "utf8");
+/** 大肥鱼在 Agent 桌宠拓展包里：适配层 + 挂件，只用公开 ctx 接口（config、call、on）与 codexPlus.currentSession。 */
+const source = packageFile("whale-compat.js") + "\n" + packageFile("whale.js");
+const ya1 = "data:audio/mpeg;base64," + readFileSync(new URL("../../../assets/inject/upstream/whale-widget/Ya1.mp3", import.meta.url)).toString("base64");
 type Listener = (event: any) => void;
-function fixture({ enabled = true, legacy = null as any, savedConfig = true } = {}) {
-  let now = 100000, serial = 0, on = enabled, sessionId = "session-one", profileId = "profile-one", sizeSaves = 0;
+function fixture({ enabled = true, legacy = null as any, savedConfig = true, preloadMedia = true } = {}) {
+  let mediaRequests = 0;
+  let now = 100000, serial = 0, sessionId = "session-one", sizeSaves = 0;
+  // 拓展配置：kind 为 whaleWidget 时挂载大肥鱼；余额设置变了就重建。
+  let config: Record<string, unknown> = { kind: enabled ? "whaleWidget" : "image" };
   const timers = new Map<number, () => void>(), storage = new Map<string, string>(), requests: any[] = [], dispatcherListeners = new Map<string, Listener[]>();
   if (legacy) storage.set("codexPlus.whaleWidget.v1", JSON.stringify(legacy));
   class Element {
@@ -30,7 +33,17 @@ function fixture({ enabled = true, legacy = null as any, savedConfig = true } = 
   const audioContexts: any[] = [], observers: any[] = [];
   class Context { closed = false; suspended = false; constructor() { audioContexts.push(this); } close() { this.closed = true; return Promise.resolve(); } suspend() { this.suspended = true; return Promise.resolve(); } }
   class Observer { disconnected = false; constructor(_callback: Listener) { observers.push(this); } observe() {} disconnect() { this.disconnected = true; } }
-  const window: any = Object.assign(new Element("window"), { innerWidth: 1024, innerHeight: 768, location: { origin: "https://codex.test" }, fetch, AudioContext: Context, MutationObserver: Observer, Image: class extends Element { constructor() { super("img"); } }, Audio: class extends Element { constructor() { super("audio"); } }, __CODEX_PLUS_WHALE_ASSETS__: { "Ya1.mp3": "data:audio/mpeg;base64," + readFileSync(new URL("../../../assets/inject/upstream/whale-widget/Ya1.mp3", import.meta.url)).toString("base64") }, __codexPlusRemoteSessionRecoveryDispatcher: { subscribe(method: string, callback: Listener) { const list = dispatcherListeners.get(method) || []; list.push(callback); dispatcherListeners.set(method, list); return () => dispatcherListeners.set(method, (dispatcherListeners.get(method) || []).filter((item) => item !== callback)); } } });
+  const window: any = Object.assign(new Element("window"), { innerWidth: 1024, innerHeight: 768, location: { origin: "https://codex.test" }, fetch, AudioContext: Context, MutationObserver: Observer, Image: class extends Element { constructor() { super("img"); } }, Audio: class extends Element { constructor() { super("audio"); } } });
+  // 拓展 ctx 的最小替身：config 读当前配置、call 记下请求、on 订阅 codex/<method> 事件。
+  const ctx = {
+    get config() { return config; },
+    call: (path: string, payload: any) => {
+      // 内嵌素材经 /whale/media 取一次，不算进数据请求。
+      if (path === "/whale/media") return mediaRequests++, Promise.resolve({ status: "ok", image: "data:image/png;base64,AAAA", assets: { "Ya1.mp3": ya1 } });
+      requests.push({ path, payload }); return responder(path, payload);
+    },
+    on: (event: string, callback: Listener) => { const method = event.replace(/^codex\//, ""); const list = dispatcherListeners.get(method) || []; list.push(callback); dispatcherListeners.set(method, list); return () => dispatcherListeners.set(method, (dispatcherListeners.get(method) || []).filter((item) => item !== callback)); },
+  };
   const amounts = { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, totalTokens: 120 };
   const history: any = { status: "ok", complete: true, periods: Object.fromEntries(["today", "week", "month", "all"].map((key) => [key, { usage: amounts }])), models: [{ model: "gpt-test" }], codex: { ok: true, sessions: 1, days7: [{ date: "2026-10-08", tokens: 120 }] }, today: { modelTotal: null, models: [{ model: "gpt-test", cost: null }] }, days7: [], all: { days: [], events: [] }, records: [], rateLimits: [] };
   const session: any = { status: "ok", sessionId, model: "gpt-test", total: amounts, today: amounts, lastTurn: { id: "turn-one", status: "running", usage: amounts }, rateLimits: [] };
@@ -42,7 +55,7 @@ function fixture({ enabled = true, legacy = null as any, savedConfig = true } = 
     if (payload.path === "/dsh-whale/roles.json" && payload.method === "POST") full[payload.path].roles.push({ id: "imported", name: payload.body.name, url: "/dsh-whale/role-image.png?id=imported" });
     return { status: 200, body: structuredClone(full[payload.path] || { ok: true }) };
   };
-  window.__CODEX_PLUS_WHALE_ENGINE__ = (...env: any[]) => {
+  const engine = (...env: any[]) => {
     const [win, doc, _fetch, _storage, timeout, _clear, interval, _clearInterval, raf, _cancel, Mutation, _Resize, Audio] = env;
     const root = doc.createElement("div"); win.__codexPlusWhaleHost.attach(root); doc.body.appendChild(root); doc.head.appendChild(doc.createElement("style"));
     win.addEventListener("pointerdown", () => {}); doc.addEventListener("keydown", () => {});
@@ -51,30 +64,28 @@ function fixture({ enabled = true, legacy = null as any, savedConfig = true } = 
     win.__codexPlusWhaleHost.bind({ root: doc.body.children.at(-1), pollWaitState() {}, pollLastTurn() {}, refresh() {} });
   };
   class ClockDate extends Date { static now() { return now; } }
-  const context = createContext({ window, document, console, Response, Event, Uint8Array, URL, atob, fetch, Date: ClockDate, globalThis: undefined,
-    codexPlusBackendSettingsLoaded: true, codexPlusBackendSettings: { agentPet: whalePet(on) }, currentSessionRef: () => ({ session_id: sessionId }), codexRemoteSessionActiveProfile: () => ({ id: profileId }), registerCodexPlusExtensionSelector: () => true,
+  const context = createContext({ window, document, console, Response, Event, Uint8Array, URL, atob, fetch, Date: ClockDate, globalThis: undefined, ctx,
+    codexPlus: { currentSession: () => ({ id: sessionId, title: "", hostId: "local", remote: false }) }, codexPlusWhaleEngine: engine,
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
-    postJson: (path: string, payload: any) => { requests.push({ path, payload }); return responder(path, payload); },
     setTimeout: (callback: () => void) => { const id = ++serial; timers.set(id, callback); return id; }, clearTimeout: (id: number) => timers.delete(id), requestAnimationFrame: (callback: () => void) => { const id = ++serial; timers.set(id, callback); return id; }, cancelAnimationFrame: (id: number) => timers.delete(id),
   });
-  const inject = () => runInContext(`(()=>{${source}\nwindow.fixture={sync:syncCodexPlusWhaleWidget,state:codexPlusWhaleState,create:createCodexPlusWhaleFullRuntime};})()`, context);
+  // 重新注入 = 拓展卸下再装上：先撤掉上一个挂件。直接建的运行时（create）用挂件同一个数据平台，素材预先就位。
+  const inject = () => runInContext(`(()=>{window.fixture?.widget.dispose();${source}\n${preloadMedia ? `codexPlusWhaleMedia.assets={"Ya1.mp3":${JSON.stringify(ya1)}};` : ""}const widget=createCodexPlusWhaleWidget(ctx);window.fixture={widget,sync:()=>widget.sync(),get state(){return{runtime:widget.runtime,notice:widget.notice};},create:()=>createCodexPlusWhaleFullRuntime(widget.platform)};})()`, context);
   inject();
   const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
-  return { window, document, body, head, timers, storage, requests, audioContexts, observers, history, session, full, context, settle, inject, get state() { return window.fixture.state; }, get runtime() { return window.fixture.state.runtime; }, create() { return window.fixture.create(); }, sync() { window.fixture.sync(); }, enable(value: boolean) { on = value; context.codexPlusBackendSettings = { ...context.codexPlusBackendSettings, agentPet: whalePet(on) }; window.fixture.sync(); }, pet(agentPet: any) { context.codexPlusBackendSettings = { ...context.codexPlusBackendSettings, agentPet }; window.fixture.sync(); }, profile(value: string) { profileId = value; window.fixture.sync(); }, thread(value: string) { sessionId = value; window.fixture.sync(); }, emit(method: string, params: any, id?: string) { for (const callback of dispatcherListeners.get(method) || []) callback(id ? { id, params } : params); }, get sizeSaves() { return sizeSaves; }, responder(fn: any) { responder = fn; }, tick(ms: number) { now += ms; }, dispatcherListeners };
+  return { window, document, body, head, timers, storage, requests, audioContexts, observers, history, session, full, context, settle, inject, get state() { return window.fixture.state; }, get runtime() { return window.fixture.state.runtime; }, create() { return window.fixture.create(); }, sync() { window.fixture.sync(); }, enable(value: boolean) { config = { ...config, kind: value ? "whaleWidget" : "image" }; window.fixture.sync(); }, configure(next: Record<string, unknown>) { config = next; window.fixture.sync(); }, balance(patch: Record<string, unknown>) { config = { ...config, ...patch }; window.fixture.sync(); }, thread(value: string) { sessionId = value; window.fixture.sync(); }, emit(method: string, params: any, id?: string) { for (const callback of dispatcherListeners.get(method) || []) callback(id ? { id, params } : params); }, get sizeSaves() { return sizeSaves; }, get mediaRequests() { return mediaRequests; }, responder(fn: any) { responder = fn; }, tick(ms: number) { now += ms; }, dispatcherListeners };
 }
-test("widget remains opt in and follows the agent pet selection", async () => {
-  // 默认、桌宠关闭、选了简单桌宠、没勾选 Codex：都不挂载、不发请求、不起定时器。
-  for (const agentPet of [undefined, whalePet(false), { enabled: true, kind: "image", agents: ["codex"] }, { enabled: true, kind: "whaleWidget", agents: [] }]) {
-    const f = fixture({ enabled: false }); f.pet(agentPet); await f.settle();
-    assert.equal(f.requests.length, 0, JSON.stringify(agentPet)); assert.equal(f.timers.size, 0); assert.equal(f.body.children.length, 0);
+test("widget mounts only when the extension config selects the whale", async () => {
+  // 没配置类型、选了图片桌宠：都不挂载、不发请求、不起定时器。
+  for (const config of [{}, { kind: "image" }, { kind: "dragon" }]) {
+    const f = fixture({ enabled: false }); f.configure(config); await f.settle();
+    assert.equal(f.requests.length, 0, JSON.stringify(config)); assert.equal(f.timers.size, 0); assert.equal(f.body.children.length, 0);
   }
-  // 与其他 Agent 桌宠一致，不看「Codex 增强」总开关。
   const f = fixture({ enabled: false });
-  f.context.codexPlusBackendSettings = { enhancementsEnabled: false, agentPet: whalePet(true) };
-  f.sync(); await f.settle();
+  f.configure({ kind: "whaleWidget" }); await f.settle();
   assert.equal(f.body.children.length, 1);
-  // 切回简单桌宠：大肥鱼完整卸载（两者互斥）。
-  f.pet({ enabled: true, kind: "image", agents: ["codex"] });
+  // 切回图片桌宠：大肥鱼完整卸载（两者互斥）。
+  f.configure({ kind: "image" });
   assert.equal(f.body.children.length, 0); assert.equal(f.head.children.length, 0); assert.equal(f.timers.size, 0);
 });
 
@@ -99,9 +110,9 @@ test("repeated scans mount one complete engine; disable frees every native resou
   assert.ok([...f.document.listeners.values(), ...f.window.listeners.values()].every((listeners) => listeners.size === 0));
 });
 
-test("profile switch and reinjection clean old scope and preserve opt-in state", async () => {
+test("balance setting change and reinjection clean old scope and preserve opt-in state", async () => {
   const f = fixture(); f.sync(); await f.settle(); const old = f.runtime;
-  f.profile("two"); await f.settle(); assert.equal(old.state.disposed, true); assert.equal(f.body.children.length, 1);
+  f.balance({ codexAppWhaleBalanceProtocol: "off" }); await f.settle(); assert.equal(old.state.disposed, true); assert.equal(f.body.children.length, 1);
   f.inject(); f.sync(); await f.settle(); assert.equal(f.body.children.length, 1); assert.equal(f.head.children.length, 1);
 });
 
@@ -131,17 +142,18 @@ test("embedded audio remains playable when native data fetch is blocked by the h
   const response = await runtime.fetch("/dsh-whale/audio-fragment.wav?id=ya1");
   assert.equal(response.headers.get("Content-Type"), "audio/mpeg");
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), original);
-  const direct = await runtime.fetch(f.window.__CODEX_PLUS_WHALE_ASSETS__["Ya1.mp3"]);
+  const direct = await runtime.fetch(ya1);
   assert.deepEqual(Buffer.from(await direct.arrayBuffer()), original);
   assert.equal(networkCalls, 0); assert.equal(f.requests.length, 0);
   runtime.dispose();
 });
 
-test("request method, query and body round trip through a private bridge", async () => {
-  const f = fixture(); const runtime = f.create();
+test("request method, query and body round trip through the public route with the extension's balance settings", async () => {
+  const f = fixture(); f.balance({ codexAppWhaleBalanceProtocol: "custom", codexAppWhaleBalancePath: "/user/balance" }); const runtime = f.create();
   await runtime.fetch("/dsh-whale/audio.json?set=one", { method: "POST", body: JSON.stringify({ action: "save-group", name: "Test", press: "ya1", release: "" }) });
-  assert.equal(f.requests[0].path, "/whale/full");
-  assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0].payload)), { path: "/dsh-whale/audio.json", method: "POST", query: { set: "one" }, body: { action: "save-group", name: "Test", press: "ya1", release: "" } }); runtime.dispose();
+  const request = f.requests.find((item) => item.payload?.path === "/dsh-whale/audio.json");
+  assert.equal(request.path, "/whale/full");
+  assert.deepEqual(JSON.parse(JSON.stringify(request.payload)), { path: "/dsh-whale/audio.json", method: "POST", query: { set: "one" }, body: { action: "save-group", name: "Test", press: "ya1", release: "" }, balance: { protocol: "custom", path: "/user/balance", field: "", currency: "USD", scale: 1 } }); runtime.dispose();
 });
 
 test("fast native turns notify once and thread changes align historical completion", async () => {
@@ -263,4 +275,11 @@ test("turning statistics off discards both pending log summaries", async () => {
   await runtime.fetch("/dsh-whale/size.json", { method: "PUT", body: JSON.stringify({ codexStatsOn: false }) });
   resolveHistory(f.history); resolveSession(f.session); await Promise.all([history, session]);
   assert.equal(runtime.state.history, null); assert.equal(runtime.state.session, null); assert.equal(runtime.host.tokens("today"), "—"); runtime.dispose();
+});
+
+test("first mount fetches the embedded media once through /whale/media", async () => {
+  const f = fixture({ preloadMedia: false }); f.sync(); await f.settle();
+  assert.equal(f.mediaRequests, 1); assert.equal(f.body.children.length, 1);
+  f.enable(false); f.enable(true); await f.settle();
+  assert.equal(f.mediaRequests, 1, "素材只取一次");
 });

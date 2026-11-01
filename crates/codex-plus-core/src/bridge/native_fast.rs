@@ -98,7 +98,8 @@ pub(super) async fn install(
     websocket_url: &str,
     generation: BridgeGeneration,
 ) -> anyhow::Result<()> {
-    let settings = crate::settings::SettingsStore::default().load()?;
+    // 原生 Fast / 输入预测被拓展顶替时按「关」处理，交给拓展自己的 preload 脚本。
+    let settings = crate::builtin_takeover::load_effective_settings()?;
     if !crate::native_predictions::native_modules_requested(&settings) {
         return Ok(());
     }

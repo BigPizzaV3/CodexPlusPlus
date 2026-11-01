@@ -1,13 +1,17 @@
 /**
- * 使用模式：启动时问一次，「只管理 Codex」还是「全部功能」。
- * 只管理 Codex 时，Claude Code、Grok 等其他 Agent 的相关内容在界面里隐藏，
- * 网关按单 Agent 模式呈现（只给 Codex 用的供应商池），不再讲「多个 Agent 共用」。
+ * 使用模式：启动时问一次，「只管理 Codex」「只用增强功能」还是「全部功能」。
  *
- * 只影响界面显示，不改任何配置：其他 Agent 已接入网关的话照常工作。
+ * - 只管理 Codex：Claude Code、Grok 等其他 Agent 的相关内容在界面里隐藏，
+ *   网关按单 Agent 模式呈现（只给 Codex 用的供应商池），不再讲「多个 Agent 共用」。
+ * - 只用增强功能：供应商交给别的工具管理。供应商、网关、用量相关的页面全部隐藏，
+ *   保留 Codex 与 Claude Code 的增强、皮肤、拓展、会话、MCP、Skills 等；
+ *   选中时还会关掉供应商「配置切换」总开关（见 App 里 relayOffRequested 那个 effect），Codex++ 不再写 config.toml / auth.json。
+ *
+ * 除了上面那个总开关，其余只影响界面显示：已接入网关的 Agent 照常工作。
  * 记录存在 localStorage（和首次引导同一处），托盘窗口同源，也能读到。
  */
 
-export const FOCUS_MODES = ["codex", "all"] as const;
+export const FOCUS_MODES = ["codex", "enhance", "all"] as const;
 export type FocusMode = (typeof FOCUS_MODES)[number];
 
 /** 问卷版本：选项大改时加一，所有人会再被问一次。 */
@@ -47,9 +51,19 @@ export function shouldAskAgentFocus(stored: string | null): boolean {
   return !Number.isFinite(version) || version < AGENT_FOCUS_VERSION;
 }
 
-/** 某个 Agent 要不要显示：只管理 Codex 时只显示 Codex。 */
+/** 只用增强功能时保留的 Agent：有增强页的这两个。Grok 等只有网关功能，一起隐藏。 */
+const ENHANCE_AGENTS: readonly string[] = ["codex", "claude"];
+
+/** 某个 Agent 要不要显示：只管理 Codex 时只显示 Codex，只用增强功能时只显示 Codex 与 Claude Code。 */
 export function agentVisible(focus: AgentFocus, agent: string): boolean {
-  return focus !== "codex" || agent === "codex";
+  if (focus === "codex") return agent === "codex";
+  if (focus === "enhance") return ENHANCE_AGENTS.includes(agent);
+  return true;
+}
+
+/** 只用增强功能：供应商、网关、用量相关的界面都不显示。 */
+export function providersHidden(focus: AgentFocus): boolean {
+  return focus === "enhance";
 }
 
 /** 单 Agent 模式下的那个 Agent（只管理 Codex 时是 codex），否则 null。 */
@@ -59,5 +73,5 @@ export function singleAgent(focus: AgentFocus): string | null {
 
 /** 按使用模式过滤带 `agent` 字段的列表；全部功能时原样返回。 */
 export function visibleAgents<T extends { agent: string }>(focus: AgentFocus, items: T[]): T[] {
-  return focus === "codex" ? items.filter((item) => agentVisible(focus, item.agent)) : items;
+  return focus === "codex" || focus === "enhance" ? items.filter((item) => agentVisible(focus, item.agent)) : items;
 }

@@ -52,6 +52,8 @@ export type GatewaySettings = {
   imageModels?: Record<string, string>;
   /** 生图结果只给链接时原样转发、不下载成图片数据的 Agent（默认都转）。 */
   imageKeepUrls?: string[];
+  /** 模型下拉里不列自带模型的 Agent（默认都列）。 */
+  hideOwnModels?: string[];
 };
 
 export type GatewayPoolEntry = {
@@ -629,6 +631,16 @@ export function pickerSections(
   return sections;
 }
 
+/** 下拉里要列的自带模型：关掉开关后只留 Agent 现在用着的那一个（没有就不列）。 */
+export function visibleOwnModels(agent: GatewayAgentView, payload: GatewayPayload | null): OwnModels | null {
+  const own = agent.ownModels;
+  if (!own) return null;
+  if (!(payload?.gateway.hideOwnModels ?? []).includes(agent.agent)) return own;
+  const current = own.current.trim().toLowerCase();
+  const models = current ? own.models.filter((model) => model.id.toLowerCase() === current) : [];
+  return models.length ? { ...own, models } : null;
+}
+
 /** 模型下拉里 Agent 自带模型那一组（排在池里的模型后面）：按查询词筛，没有时为 null。 */
 export function ownPickerSection(own: OwnModels | null | undefined, rawQuery: string, avatar: (name: string) => string): PickerSection | null {
   if (!own || !own.models.length) return null;
@@ -1064,6 +1076,7 @@ export const SPONSORS: Array<{ id: string; expiresAt: string }> = [
   { id: "jojocode-max", expiresAt: "2029-06-15" },
   { id: "runapi", expiresAt: "2026-11-07" },
   { id: "apikeyfun", expiresAt: "2026-11-22" },
+  { id: "cccccc-api", expiresAt: "2026-12-01" },
 ];
 
 /** 本地日期（YYYY-MM-DD），与到期日按天比较。 */

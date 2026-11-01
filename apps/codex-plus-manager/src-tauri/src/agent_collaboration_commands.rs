@@ -164,12 +164,48 @@ pub(crate) fn connect_codex(
     if registration.status == "conflict" {
         bail!("同名{}属于其他配置，未覆盖", spec.label);
     }
+    commit_managed_change(
+        spec,
+        settings_store,
+        "接入",
+        |contents| {
+            codex_plus_core::managed_mcp::upsert_managed_context(spec, contents, executable, state_dir)
+        },
+        || codex_plus_core::managed_mcp::install(spec, home, executable, state_dir).map(|_| ()),
+    )
+}
+
+/// 取消接入：托管上下文与 live 配置里本工具的条目都置为 `enabled = false`（切换供应商重写配置时
+/// 也不会被重新启用）。条目归属不符时什么都不改。
+pub(crate) fn disconnect_codex(
+    spec: &codex_plus_core::managed_mcp::ManagedMcp,
+    settings_store: &SettingsStore,
+    home: &Path,
+    executable: &Path,
+    state_dir: &Path,
+) -> anyhow::Result<()> {
+    commit_managed_change(
+        spec,
+        settings_store,
+        "取消接入",
+        |contents| codex_plus_core::managed_mcp::disable_managed_context(spec, contents),
+        || codex_plus_core::managed_mcp::disable(spec, home, executable, state_dir).map(|_| ()),
+    )
+}
+
+/// 两段提交：先写 Codex++ 托管上下文，再写 Codex live 配置；live 失败时只回滚本次写入的上下文。
+fn commit_managed_change(
+    spec: &codex_plus_core::managed_mcp::ManagedMcp,
+    settings_store: &SettingsStore,
+    verb: &str,
+    transform: impl FnOnce(&str) -> anyhow::Result<String>,
+    commit_live: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let settings = settings_store
         .load()
-        .context("无法读取 Codex++ 托管配置，未接入")?;
+        .with_context(|| format!("无法读取 Codex++ 托管配置，未{verb}"))?;
     let before = settings.relay_context_config_contents.clone();
-    let updated =
-        codex_plus_core::managed_mcp::upsert_managed_context(spec, &before, executable, state_dir)?;
+    let updated = transform(&before)?;
     let changed = updated != before;
     let mut committed_context = updated.clone();
     if changed {
@@ -179,7 +215,7 @@ pub(crate) fn connect_codex(
         // 设置存储会归一化 TOML，以实际提交结果作为回滚的比较基准。
         committed_context = committed.relay_context_config_contents;
     }
-    if let Err(error) = codex_plus_core::managed_mcp::install(spec, home, executable, state_dir) {
+    if let Err(error) = commit_live() {
         if changed {
             // 重新读取，恢复的仅是本次写入的上下文字段，不能覆盖期间的其他设置变化。
             let rollback = (|| -> anyhow::Result<()> {
@@ -192,10 +228,10 @@ pub(crate) fn connect_codex(
                     .map(|_| ())
             })();
             if rollback.is_err() {
-                bail!("接入 Codex 失败：{error}；托管配置未能恢复，请刷新 MCP 设置后检查");
+                bail!("{verb} Codex 失败：{error}；托管配置未能恢复，请刷新 MCP 设置后检查");
             }
         }
-        return Err(error).with_context(|| format!("{}接入失败，托管配置已保持原状", spec.label));
+        return Err(error).with_context(|| format!("{}{verb}失败，托管配置已保持原状", spec.label));
     }
     Ok(())
 }

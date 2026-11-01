@@ -163,6 +163,15 @@
   justify-content: flex-end;
 }
 
+.tour-card p.agent-focus-warning {
+  margin: -4px 0 14px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: hsl(var(--warning, 38 92% 50%) / 0.12);
+  color: hsl(var(--foreground));
+  font-size: 11.5px;
+}
+
 .agent-focus-list {
   display: grid;
   gap: 8px;

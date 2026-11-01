@@ -1,7 +1,7 @@
 //! Agent 自带的模型（直连，不经 Codex++）：列出哪些、直连的是谁，选中后断开网关并写进 Agent 自己的配置。
 
 use codex_plus_core::gateway::apply::{ApplyContext, ProviderInput, create_provider, enable_binding};
-use codex_plus_core::gateway::own_models::{own_models, use_own_model};
+use codex_plus_core::gateway::own_models::{own_models, set_shown, use_own_model};
 use codex_plus_core::gateway::store::{AgentBinding, GatewayStore};
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use codex_plus_core::tools::ToolId;
@@ -230,4 +230,94 @@ fn agents_without_own_models_are_refused() {
     assert!(use_own_model(ctx, &BackendSettings::default(), &ToolId::Claude, "  ").is_err());
     // Codex 直连模式里没有供应商：断开后无处可回，不列。
     assert_eq!(own_models(ctx, &ToolId::Codex, None), None);
+}
+
+#[test]
+fn own_model_switch_is_per_agent_and_saved_in_the_gateway_store() {
+    let fixture = fixture(57416);
+    let ctx = &fixture.ctx;
+    assert!(ctx.gateway.load().unwrap().shows_own_models_for(&ToolId::Codex), "默认列出");
+
+    set_shown(&ctx.gateway, &ToolId::Codex, false).unwrap();
+    set_shown(&ctx.gateway, &ToolId::Codex, false).unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    assert!(!gateway.shows_own_models_for(&ToolId::Codex));
+    assert!(gateway.shows_own_models_for(&ToolId::Claude), "只关 Codex 的");
+    assert_eq!(gateway.hide_own_models, ["codex"], "重复关不重复记");
+    let raw: Value = read_json(&fixture._temp.path().join("state").join("gateway.json"));
+    assert_eq!(raw["hideOwnModels"], json!(["codex"]));
+
+    set_shown(&ctx.gateway, &ToolId::Codex, true).unwrap();
+    let raw: Value = read_json(&fixture._temp.path().join("state").join("gateway.json"));
+    assert!(raw.get("hideOwnModels").is_none(), "都列时不落盘");
+}
+
+/// 接入前 Codex 用的是聚合供应商：自带模型是它发布给 Codex 的模型目录，直连对象是聚合的名字。
+/// 普通列表里那份同 id 的影子（模式 aggregate）不能当成一个没有模型的供应商。
+#[test]
+fn codex_restoring_to_an_aggregate_lists_the_aggregate_catalog() {
+    use codex_plus_core::gateway::store::GatewayRestoreState;
+    use codex_plus_core::settings::{AggregateRelayMember, AggregateRelayProfile};
+    let fixture = fixture(57417);
+    let ctx = &fixture.ctx;
+    let relay = |id: &str, model: &str| RelayProfile {
+        id: id.to_string(),
+        name: format!("中转 {id}"),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::Responses,
+        base_url: format!("https://{id}.test/v1"),
+        api_key: format!("sk-{id}"),
+        model: model.to_string(),
+        model_list: model.to_string(),
+        ..RelayProfile::default()
+    };
+    let member = |relay_id: &str| AggregateRelayMember {
+        relay_id: relay_id.to_string(),
+        weight: 1,
+    };
+    let settings = BackendSettings {
+        relay_profiles: vec![
+            relay("relay-a", "model-a"),
+            relay("relay-b", "model-b"),
+            RelayProfile {
+                id: "agg".into(),
+                name: "聚合供应商 1".into(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: "agg".into(),
+            name: "聚合供应商 1".into(),
+            session_provider: Default::default(),
+            model_aggregation_enabled: true,
+            strategy: Default::default(),
+            members: vec![member("relay-a"), member("relay-b")],
+            routes: Vec::new(),
+            default_relay_id: "relay-a".into(),
+            sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
+        }],
+        active_relay_id: "codex-plus-gateway".into(),
+        ..BackendSettings::default()
+    };
+    ctx.settings.save(&settings).unwrap();
+    let binding = AgentBinding {
+        enabled: true,
+        restore: GatewayRestoreState {
+            codex_previous_relay_id: "agg".into(),
+            ..GatewayRestoreState::default()
+        },
+        ..binding()
+    };
+
+    let own = own_models(ctx, &ToolId::Codex, Some(&binding)).expect("聚合目录里有模型");
+    assert_eq!(own.vendor, "聚合供应商 1");
+    let ids: Vec<&str> = own.models.iter().map(|model| model.id.as_str()).collect();
+    assert!(ids.contains(&"model-a"), "默认成员用裸名：{ids:?}");
+    assert!(
+        ids.iter().any(|id| *id != "model-b" && id.ends_with("/model-b")),
+        "其它成员带成员前缀：{ids:?}"
+    );
+    assert_eq!(own.current, "");
 }
