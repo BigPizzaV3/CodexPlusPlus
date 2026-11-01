@@ -192,7 +192,7 @@ impl SkillsManager {
         &self,
         operation: &std::sync::MutexGuard<'_, ()>,
         candidate: &(String, PathBuf),
-        selected: &[(String, PathBuf)],
+        selected: &[SkillImportCandidate],
         origins: &BTreeMap<String, crate::ccs_import::CcsSkillOrigin>,
     ) -> anyhow::Result<SkillImportCandidate> {
         let mut current = self
@@ -204,25 +204,19 @@ impl SkillsManager {
             return Ok(current);
         }
         let current_origin = known_repository_origin(&current.repo_key, &current.repo_path);
-        for (id, path) in selected {
-            if *id == current.id
-                || validate_skill_id(id).is_err()
-                || !path.join(SKILL_MANIFEST_FILE).is_file()
-            {
+        // Each selected source is independently rechecked before it is installed.
+        // Comparing against its initial snapshot avoids hashing the other sources
+        // again for every item without accepting changed bytes for installation.
+        for other in selected {
+            if other.id == current.id || other.error.is_some() {
                 continue;
             }
-            let Ok(hash) = import_source_hash(path) else {
-                continue;
-            };
-            let (name, _) = read_skill_manifest(&path.join(SKILL_MANIFEST_FILE), id);
-            let other_origin = origins
-                .get(id)
-                .and_then(|origin| known_repository_origin(&origin.repo_key, &origin.repo_path));
-            if same_name(&name, &current.name)
-                || hash == current.source_hash
+            let other_origin = known_repository_origin(&other.repo_key, &other.repo_path);
+            if same_name(&other.name, &current.name)
+                || other.source_hash == current.source_hash
                 || (current_origin.is_some() && current_origin == other_origin)
             {
-                current.duplicate_candidates.push(id.clone());
+                current.duplicate_candidates.push(other.id.clone());
             }
         }
         Ok(current)
@@ -360,12 +354,9 @@ impl SkillsManager {
                 .find(|(id, _)| id == &selection.id)
                 .expect("preview candidate");
             let path = &input.1;
-            let current = match self.preview_selected_candidate_unlocked(
-                &operation,
-                input,
-                &selected_candidates,
-                origins,
-            ) {
+            let current = match self
+                .preview_selected_candidate_unlocked(&operation, input, &preview, origins)
+            {
                 Ok(current) => current,
                 Err(error) => {
                     errors.push(format!("{}：重新检查失败：{error:#}", selection.id));
@@ -432,10 +423,7 @@ impl SkillsManager {
             match staged.and_then(|staged| {
                 let checked = (|| -> anyhow::Result<()> {
                     let latest = self.preview_selected_candidate_unlocked(
-                        &operation,
-                        input,
-                        &selected_candidates,
-                        origins,
+                        &operation, input, &preview, origins,
                     )?;
                     anyhow::ensure!(
                         latest.error.is_none()
@@ -1099,7 +1087,35 @@ mod tests {
     }
 
     #[test]
-    fn changed_selected_source_is_detected_during_candidate_recheck() {
+    fn batch_source_rechecks_scale_linearly_with_the_selection() {
+        let (temp, manager) = fixture();
+        let candidates: Vec<_> = ["one", "two", "three", "four"]
+            .iter()
+            .map(|id| {
+                let path = temp.path().join(id);
+                write_skill(&path, id, id);
+                (id.to_string(), path)
+            })
+            .collect();
+        let preview = manager
+            .preview_skill_import(&candidates, &BTreeMap::new())
+            .unwrap();
+        let selections: Vec<_> = preview.iter().map(selection).collect();
+        SOURCE_HASH_COUNTS.with(|counts| counts.borrow_mut().clear());
+        let (count, errors) = manager
+            .apply_skill_import(&candidates, &BTreeMap::new(), "local", &selections)
+            .unwrap();
+        assert_eq!(count, candidates.len(), "{errors:?}");
+        SOURCE_HASH_COUNTS.with(|counts| {
+            let counts = counts.borrow();
+            for (_, path) in &candidates {
+                assert_eq!(counts.get(path), Some(&3), "{}", path.display());
+            }
+        });
+    }
+
+    #[test]
+    fn changed_selected_source_is_rejected_when_its_own_snapshot_is_rechecked() {
         let (temp, manager) = fixture();
         let first = temp.path().join("first");
         let second = temp.path().join("second");
@@ -1116,11 +1132,32 @@ mod tests {
             .preview_selected_candidate_unlocked(
                 &operation,
                 &candidates[0],
-                &candidates,
+                &before,
                 &BTreeMap::new(),
             )
             .unwrap();
-        assert_eq!(current.duplicate_candidates, vec!["second"]);
+        assert!(current.duplicate_candidates.is_empty());
+        let changed = manager
+            .preview_selected_candidate_unlocked(
+                &operation,
+                &candidates[1],
+                &before,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        assert_ne!(changed.source_hash, before[1].source_hash);
+        assert_eq!(changed.duplicate_candidates, vec!["first"]);
+        let error = manager
+            .stage_skill_import(
+                "second",
+                &second,
+                "local",
+                None,
+                Some(&before[1].source_hash),
+            )
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("导入源已变化"));
+        assert!(!manager.source_dir.join("second").exists());
     }
 
     #[test]
