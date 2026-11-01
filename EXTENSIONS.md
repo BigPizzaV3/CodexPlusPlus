@@ -160,6 +160,7 @@ codexPlus.extension((ctx) => {
 | `intercept(name, handler, { order })` / `waterfall(name, value)` | 中间件链：`handler(value, next)` 调 `next(v)` 交给下一个，不调即短路；出错的中间件被跳过；没有中间件时原样返回 |
 | `listen(target, type, handler, options)` | 自动撤销的 `addEventListener` |
 | `setTimeout / setInterval` | 自动清理的定时器 |
+| `onScan(handler, { phase })` | 跟着 Codex++ 的页面扫描跑：Codex 界面变了（会话切换、侧栏 / 输入框重建……）时调用，按帧合并、页面隐藏时不跑。`phase` 为 `deferred`（默认，完整扫描）或 `light`（每次变化都跑，handler 要便宜）。适合「Codex 重建了某块界面，把自己的东西补回去」，不必自己开 MutationObserver。插进页面的节点必须带 `data-codex-plus-ext` 属性，否则会触发自喂扫描循环。返回的撤销函数带 `run()`：立即跑一次 |
 | `call(route, payload, options)` | 拓展包只能调清单里声明的路由；单文件脚本沿用全局白名单 |
 | `toast / fail / dispose` | 提示、上报失败、主动卸载 |
 | `registerComposerAction(def)` | 输入区（发送按钮那一行）的图标按钮，`onActivate({ editor, insertText, close })` |
@@ -750,7 +751,10 @@ codexPlus.extension((ctx) => {
 - 输入触发在光标前是「触发符 + 查询词」（触发符前是开头或空白、查询词里没有空白）时弹出，↑↓ 选、回车 / Tab 确认、Esc 关。
 - 主题切换时发 `theme/change` 事件；拓展装上 / 卸下后合并发一次 `extensions/changed`（`{ extensions: [{ id, scriptKey, version }] }`）。
 - 每次从 Codex++ 读到设置（启动时、之后每次心跳）发 `settings/loaded`（`{ reason: "startup" | "heartbeat" }`）。
-  内置拓展（桌宠、打字特效、容量重试、梦皮、对话宽度、消息导航条、微信会话同步）都靠订阅它跟上设置变化。
+- 在 Codex 页面里改了一项 Codex++ 设置后发 `settings/changed`（`{ key, value, persisted }`）：`key` 是改动的设置字段
+  （存在 Codex++ 后端的用后端字段名，如 `codexAppCapacityAutoRetry`），先按新值发一次 `persisted: false`（这时读设置已是新值），
+  写进后端后再发一次 `persisted: true`。管理器里改的设置经心跳的 `settings/loaded` 过来。
+  跟着设置走的内置拓展都靠订阅这两个事件跟上设置变化，Codex++ 读写设置的地方不点名任何功能。
 
 ### 内置拓展与顶替
 
@@ -762,11 +766,14 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
   没有设置项的（请求状态条、模型分组、多开身份提示、会话标题中间件）启停记在用户脚本配置的 `scripts["builtin:<id>"]` 里。
   子选项（删除不再确认、建议直接发送、重试间隔、对话宽度……）作为所属内置拓展的参数，开关打开后在它下面显示。
 - 「启用内置拓展」总开关关闭时暂停全部内置拓展；「独立模式」里的补丁不受它控制。
-- 能用公开接口表达的部分就用公开接口写：Agent 桌宠挂在 `overlay` 插槽给的容器里、用量状态栏在 `composer.below`、
-  请求状态条在 `composer.above`，侧聊保存挂在 `codex/exchange` 中间件上，粘贴修复的监听经 `ctx.listen` 挂上，
-  跟着设置走的内置拓展订阅 `settings/loaded`，多开身份提示与会话标题中间件整个是公开接口写成的。
-  Codex++ 读设置的地方不再逐个点名功能，内置拓展卸下时它的监听、中间件、定时器都跟着撤掉；同页重复注入时先卸下上一份注入装上的实例。其余内置功能要改 Codex 自己的界面
-  （原生菜单、原生重试按钮、原生会话管理器），这类「改 Codex 原生界面」的能力刻意不开放给拓展（见「尚未开放的接口」）。
+- 页面里跑的内置拓展每个都只是一个 `apply(ctx)`，只用公开的 ctx 接口：Agent 桌宠挂在 `overlay` 插槽给的容器里、
+  用量状态栏在 `composer.below`、请求状态条在 `composer.above`，侧聊保存挂在 `codex/exchange` 中间件上，
+  粘贴修复的监听经 `ctx.listen` 挂上；Codex 重建界面后要补回去的（语音听写、轮次回退、梦皮、会话 ID 角标、
+  滚动位置恢复、对话宽度、已删会话的行过滤……）经 `ctx.onScan` 登记扫描步骤；跟着设置走的订阅 `settings/loaded`、`settings/changed`。
+  它们的共同写法是「装上时对齐一次、卸下时再对齐一次（这时功能读到的已是停用，自己撤下）」，第三方顶替时照抄即可。
+  Codex++ 的扫描循环与读写设置的地方不再点名功能，内置拓展卸下时它的监听、中间件、扫描步骤、定时器都跟着撤掉；
+  同页重复注入时先卸下上一份注入装上的实例。仍留在内核里的是会话行操作按钮组与归档页行按钮（删除、导出与第三方
+  rowAction 共用的宿主）；「改 Codex 原生界面」的能力（原生菜单、原生重试按钮、原生会话管理器）刻意不开放给拓展（见「尚未开放的接口」）。
 - 拓展包在清单里声明 `replaces` 即可顶替内置功能，它启用时内置的让位、停用时内置的回来：
 
 ```json

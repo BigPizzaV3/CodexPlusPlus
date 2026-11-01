@@ -615,7 +615,7 @@ interface CodexPlusExtensionContext {
   /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
   currentSessionId(): string;
 
-  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
+  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`、`settings/loaded`（`{ reason: "startup" | "heartbeat" }`）、`settings/changed`（`{ key, value, persisted }`）。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;
   emit(event: string, ...args: unknown[]): void;
 
@@ -627,6 +627,11 @@ interface CodexPlusExtensionContext {
   listen(target: EventTarget, type: string, handler: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): CodexPlusDispose;
   setTimeout(handler: (...args: any[]) => void, delay?: number, ...args: unknown[]): CodexPlusDispose;
   setInterval(handler: (...args: any[]) => void, delay?: number, ...args: unknown[]): CodexPlusDispose;
+  /**
+   * 跟着 Codex++ 的页面扫描跑（Codex 界面变了时调用，按帧合并、页面隐藏时不跑）。phase：deferred（默认）或 light（每次变化都跑）。
+   * 插进页面的节点必须带 data-codex-plus-ext 属性。返回的撤销函数带 run()：立即跑一次。
+   */
+  onScan(handler: () => void, options?: { phase?: "deferred" | "light" }): CodexPlusDispose & { run(): void };
 
   /** 拓展包只能调 codexpp.json `permissions.routes` 里声明的路由。 */
   call<T = unknown>(route: CodexPlusExtensionRoute, payload?: Record<string, unknown>, options?: CodexPlusCallOptions): Promise<T>;

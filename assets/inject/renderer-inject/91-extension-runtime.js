@@ -1239,6 +1239,20 @@
         }, delay);
         return track(() => window.clearInterval(timer));
       },
+      /**
+       * 跟着 Codex++ 的页面扫描跑：Codex 的界面变了（会话切换、侧栏重建、输入框重建……）时调用 handler，
+       * 按帧合并、页面隐藏时不跑。phase：deferred（默认，完整扫描）或 light（每次变化都跑的轻量扫描，handler 要便宜）。
+       * handler 插进页面的节点必须带 data-codex-plus-ext 属性，否则会触发自喂扫描循环。返回的撤销函数带 run()：立即跑一次。
+       */
+      onScan(handler, scanOptions = {}) {
+        if (typeof handler !== "function") throw new Error("onScan 需要一个函数");
+        const step = () => runCodexPlusExtensionCallback(scriptKey, `${extensionId}.onScan`, handler);
+        const revoke = track(registerCodexPlusScanStep(scriptKey, step, scanOptions?.phase));
+        revoke.run = () => {
+          if (!disposed) step();
+        };
+        return revoke;
+      },
 
       /**
        * 调后端路由。拓展包只能调清单 permissions.routes 声明过的路由；单文件脚本

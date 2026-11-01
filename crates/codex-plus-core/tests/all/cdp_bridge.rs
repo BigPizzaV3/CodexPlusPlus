@@ -1170,7 +1170,10 @@ fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
     assert_codex_setting_row(&script, "codexAppStepwiseEnabled", "stepwise");
     assert!(script.contains("function syncStepwisePanel"));
     assert!(script.contains("window.__codexStepwisePanel?.syncSettings"));
-    assert!(script.contains("if (key === \"stepwise\") syncStepwisePanel(value)"));
+    // 开关改了由内置拓展「下一步建议」订阅 settings/changed 让悬浮球重算，写进后端后再重读设置。
+    assert!(script.contains("function codexPlusStepwiseExtension"));
+    assert!(script.contains("codexPlusAlignWith(ctx, () => syncStepwisePanel(), { settings: true });"));
+    assert!(script.contains("emitCodexPlusSettingsChanged(key, value, true)"));
     assert!(script.contains("if (patch?.enabled === true)"));
     assert!(script.contains("activateRuntime();"));
 }
@@ -2842,8 +2845,9 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
     assert!(script.contains("if (threadIdBadgeActive)"));
     assert!(script.contains("function refreshThreadIdBadges()"));
     assert!(script.contains("uuidV7TimestampMs(sessionId)"));
-    // 由内置拓展「会话 ID 角标」登记成扫描步骤（停用时 sync 一次把角标撤掉）。
-    assert!(script.contains(r#"{ id: "thread-id-badge", name: "会话 ID 角标", sync: () => refreshThreadIdBadges(), scan: () => refreshThreadIdBadges() }"#));
+    // 由内置拓展「会话 ID 角标」经公开的 ctx.onScan 登记扫描步骤（卸下时再对齐一次把角标撤掉）。
+    assert!(script.contains(r#"{ id: "thread-id-badge", name: "会话 ID 角标", apply: codexPlusThreadIdBadgeExtension }"#));
+    assert!(script.contains(r#"codexPlusAlignWith(ctx, refreshThreadIdBadges, { scan: "deferred" });"#));
 }
 
 #[test]
@@ -2881,8 +2885,9 @@ fn injection_script_exposes_capacity_auto_retry_control() {
     assert!(script.contains("capacityAutoRetryDefaultIntervalSeconds = 0"));
     // 插进 DOM 的浮标必须带归属标记，否则会触发自喂扫描循环（issue #1960）。
     assert!(script.contains("data-codex-plus-ext\", \"capacity-auto-retry\""));
-    // 定时器随内置拓展「容量不足自动重试」装卸，读到设置后由它订阅的 settings/loaded 同步。
-    assert!(script.contains("settings: () => syncCodexPlusCapacityAutoRetry()"));
+    // 定时器随内置拓展「容量不足自动重试」装卸，读到 / 改了设置后由它订阅的 settings/loaded、settings/changed 同步。
+    assert!(script.contains(r#"codexPlusAlignWith(ctx, syncCodexPlusCapacityAutoRetry, { settings: "heartbeat" });"#));
+    assert!(script.contains(r#"ctx.on("settings/changed", run);"#));
 }
 
 #[test]
