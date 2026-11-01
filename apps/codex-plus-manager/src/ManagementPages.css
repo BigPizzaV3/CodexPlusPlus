@@ -294,6 +294,12 @@
 /* Skills 与 MCP 共用 .mg-agent-matrix：名称 | 来源 | 每个 Agent 一列勾选 | 操作；分组标题是表格里的一行 */
 .mg-push { margin-left:auto; }
 .mg-toolbar-actions { display:flex; align-items:center; gap:6px; }
+.mg-skills-page { min-width:0; }
+@media (max-width:760px) {
+  .mg-skills-page .mg-toolbar { flex-wrap:wrap; }
+  .mg-skills-page .mg-toolbar .mg-search { flex:1 1 200px; min-width:min(200px,100%); }
+  .mg-skills-page .mg-toolbar-actions { flex:none; }
+}
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-head,
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-row,
 .mg-skill-matrix .mg-skill-group-row { grid-template-columns:minmax(180px,1fr) 116px repeat(var(--mg-agent-columns,3),76px) 120px; min-width:var(--mg-skill-min-width,684px); }

@@ -79,6 +79,44 @@ async function fixture(browser: any) {
   return { page, errors };
 }
 
+test("group toolbar icons stay visible and operate on the real component", { skip: !esbuild || !playwright || !browserExecutable }, async () => {
+  const browser = await playwright.chromium.launch({ executablePath: browserExecutable, headless: true });
+  try {
+    const { page, errors } = await fixture(browser);
+    const actions = [
+      ["新建分组", ".lucide-folder-plus"],
+      ["全部折叠", ".lucide-chevrons-up"],
+      ["全部展开", ".lucide-chevrons-down"],
+    ];
+    for (const width of [1280, 560, 375]) {
+      await page.setViewportSize({ width, height: 800 });
+      if (process.env.SKILLS_TEST_SCREENSHOT_DIR) {
+        await page.screenshot({ path: `${process.env.SKILLS_TEST_SCREENSHOT_DIR}/toolbar-${width}.png` });
+      }
+      for (const [label, icon] of actions) {
+        const button = page.getByRole("button", { name: label, exact: true });
+        assert.equal(await button.getAttribute("title"), label);
+        assert.equal(await button.locator(icon).count(), 1);
+        const box = await button.boundingBox();
+        assert.ok(box && box.x >= 0 && box.x + box.width <= width, `${label} is outside the ${width}px viewport: ${JSON.stringify(box)}`);
+      }
+      await page.getByRole("button", { name: "全部折叠", exact: true }).click();
+      assert.ok(await page.locator(".mg-skill-group-row .mg-group-head[aria-expanded='false']").count() > 0);
+      await page.getByRole("button", { name: "全部展开", exact: true }).click();
+      assert.equal(await page.locator(".mg-skill-group-row .mg-group-head[aria-expanded='false']").count(), 0);
+      if (width === 375) {
+        const scroll = await page.locator(".mg-skill-matrix").evaluate((matrix: HTMLElement) => {
+          matrix.scrollLeft = matrix.scrollWidth;
+          return { visible: matrix.clientWidth, content: matrix.scrollWidth, position: matrix.scrollLeft };
+        });
+        assert.ok(scroll.content > scroll.visible && scroll.position > 0, "wide Skill columns must remain scrollable");
+      }
+    }
+    assert.deepEqual(errors, []);
+    await page.evaluate(() => (window as any).unmountPage());
+  } finally { await browser.close(); }
+});
+
 test("real page retains pending batch on remount and preserves unrelated controls", { skip: !esbuild || !playwright || !browserExecutable }, async () => {
   const browser = await playwright.chromium.launch({ executablePath: browserExecutable, headless: true });
   try {
@@ -143,6 +181,9 @@ test("filtered selection changes only visible Skills and queues a clicked import
     await page.getByRole("button", { name: /已安装/ }).click();
     await page.evaluate(() => (window as any).fixture.pending.shift()());
     await page.waitForFunction(() => (window as any).fixture.calls.some((call: any) => call.command === "import_ccs_skills"));
+    await page.waitForFunction(() => [...document.querySelectorAll(".mg-skill-group-row")].some((row) =>
+      row.querySelector("strong")?.textContent === "用户" && row.querySelector("small")?.textContent?.includes("1 个 Skill")));
+    await page.getByRole("button", { name: "全部展开", exact: true }).click();
     await page.getByText("gamma", { exact: true }).waitFor();
     assert.deepEqual(await page.evaluate(() => (window as any).fixture.calls.filter((call: any) => call.command === "set_skill_enabled_for").map((call: any) => call.args.id)), ["alpha"]);
     assert.deepEqual(errors, []);

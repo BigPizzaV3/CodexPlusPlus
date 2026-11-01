@@ -4,7 +4,7 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen, ChevronDown, Copy, Edit3, ExternalLink, FolderOpen, GripVertical, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronsDown, ChevronsUp, Copy, Edit3, ExternalLink, FolderOpen, FolderPlus, GripVertical, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
@@ -513,7 +513,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       <SearchField value={query} onChange={setQuery} placeholder={t("搜索 Skills 或仓库")} />
       <span>{items.length === tabTotal ? `${tabTotal} ${t("个 Skill")}` : `${items.length} / ${tabTotal}`}</span>
       <div className="mg-push mg-toolbar-actions">
-        <Button onClick={createCustomGroup}>{t("新建分组")}</Button>
+        <button type="button" className="mg-icon-button" title={t("新建分组")} aria-label={t("新建分组")}
+          onClick={createCustomGroup}><FolderPlus size={17}/></button>
         <button type="button" className="mg-icon-button" disabled={busy || loading}
           aria-label={`${t("按名称排序")} (${groupSortDirection === "asc" ? "A-Z" : groupSortDirection === "desc" ? "Z-A" : "A-Z / Z-A"})`}
           title={`${t("按名称排序")} (${groupSortDirection === "asc" ? "Z-A" : "A-Z"})`} onClick={() => {
@@ -522,8 +523,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
             setGroupSortDirection(direction);
           }}>{groupSortDirection === "asc" ? <ArrowDownAZ size={17}/> : groupSortDirection === "desc" ? <ArrowDownZA size={17}/> : <ArrowDownUp size={17}/>}</button>
         {groups.length > 1 ? <>
-          <Button onClick={() => setExpandedGroups((old) => { const next = new Set(old); groups.forEach((group) => next.delete(group.key)); return next; })}>{t("全部折叠")}</Button>
-          <Button onClick={() => setExpandedGroups(new Set(allGroups.map((group) => group.key)))}>{t("全部展开")}</Button>
+          <button type="button" className="mg-icon-button" title={t("全部折叠")} aria-label={t("全部折叠")}
+            onClick={() => setExpandedGroups((old) => { const next = new Set(old); groups.forEach((group) => next.delete(group.key)); return next; })}><ChevronsUp size={17}/></button>
+          <button type="button" className="mg-icon-button" title={t("全部展开")} aria-label={t("全部展开")}
+            onClick={() => setExpandedGroups(new Set(allGroups.map((group) => group.key)))}><ChevronsDown size={17}/></button>
         </> : null}
       </div>
     </div>
