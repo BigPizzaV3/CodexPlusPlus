@@ -2296,6 +2296,22 @@ async fn parse_repo_skills_from_zip_in_background(
         .context("后台解析 Skill 仓库压缩包失败")?
 }
 
+async fn parse_repo_tree_in_background(
+    repo: SkillRepo,
+    bytes: impl AsRef<[u8]> + Send + 'static,
+) -> anyhow::Result<Option<Vec<RemoteSkill>>> {
+    tokio::task::spawn_blocking(move || {
+        let tree: Value =
+            serde_json::from_slice(bytes.as_ref()).context("解析 GitHub 文件树响应失败")?;
+        if tree.get("truncated").and_then(Value::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        Ok(Some(parse_skills_from_tree(&repo, &tree)))
+    })
+    .await
+    .context("后台解析 GitHub 文件树失败")?
+}
+
 pub fn parse_skills_from_zip(
     repo: &SkillRepo,
     bytes: &[u8],
@@ -2863,15 +2879,14 @@ pub async fn fetch_repo_skills(
             github_status_hint(status.as_u16())
         );
     }
-    let tree = response
-        .json::<Value>()
+    let bytes = response
+        .bytes()
         .await
-        .context("解析 GitHub 文件树响应失败")?;
-    if tree.get("truncated").and_then(Value::as_bool) == Some(true) {
+        .context("读取 GitHub 文件树响应失败")?;
+    let Some(skills) = parse_repo_tree_in_background(repo.clone(), bytes).await? else {
         return fetch_repo_skills_from_zip(repo, cached, &client).await;
-    }
+    };
 
-    let skills = parse_skills_from_tree(repo, &tree);
     use futures_util::{StreamExt, stream};
     let skills = stream::iter(skills.into_iter().map(|mut skill| {
         let client = &client;
@@ -4708,6 +4723,35 @@ mod tests {
         .await
         .unwrap_err();
         assert!(format!("{error:#}").contains("压缩包无法解析"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tree_background_parser_preserves_catalog_truncation_and_errors() {
+        let repo = parse_repo_key("acme/kit@main:plugins").unwrap();
+        let tree = json!({"tree":[
+            {"type":"blob","path":"plugins/alpha/SKILL.md","sha":"aaa"},
+            {"type":"blob","path":"outside/beta/SKILL.md","sha":"bbb"}
+        ]});
+        let expected = parse_skills_from_tree(&repo, &tree);
+        let actual =
+            parse_repo_tree_in_background(repo.clone(), serde_json::to_vec(&tree).unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(
+            parse_repo_tree_in_background(repo.clone(), br#"{"truncated":true}"#.to_vec())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let error = parse_repo_tree_in_background(repo, b"invalid json".to_vec())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("解析 GitHub 文件树响应失败"));
     }
 
     #[test]

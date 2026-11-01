@@ -6395,30 +6395,23 @@ pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
 
 /// 单仓库检查独立返回，前端收到一个结果就更新一次状态。
 #[tauri::command]
-pub async fn refresh_skill_repo(repo_key: String) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    let configured = manager
-        .list_repos()
-        .into_iter()
-        .find(|repo| repo.key() == repo_key);
-    let (repo, imported) = match configured {
-        Some(repo) if repo.enabled => (repo, false),
-        Some(_) => return failed("仓库已停用，未检查。", current_skills_payload(&manager)),
-        None => match manager
-            .pending_imported_repos()
-            .into_iter()
-            .find(|repo| repo.key() == repo_key)
-        {
-            Some(repo) => (repo, true),
-            None => {
-                return failed(
-                    "仓库已删除或来源发生变化，未检查。",
-                    current_skills_payload(&manager),
-                );
-            }
-        },
+pub async fn refresh_skill_repo(repo_key: String) -> Result<CommandResult<SkillsPayload>, String> {
+    let prepare_key = repo_key.clone();
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let (repo, imported) = match skill_repo_for_refresh(&manager, &prepare_key) {
+            Ok(selection) => selection,
+            Err(message) => return Err(failed(message, current_skills_payload(&manager))),
+        };
+        let cached = cached_repo_skills(&prepare_key);
+        Ok((manager, repo, imported, cached))
+    })
+    .await
+    .map_err(|error| format!("检查仓库后台任务失败：{error}"))?;
+    let (manager, repo, imported, cached) = match prepared {
+        Ok(prepared) => prepared,
+        Err(result) => return Ok(result),
     };
-    let cached = cached_repo_skills(&repo_key);
     let result = if imported {
         codex_plus_core::skills::fetch_repo_skills(&repo, &cached)
             .await
@@ -6426,65 +6419,91 @@ pub async fn refresh_skill_repo(repo_key: String) -> CommandResult<SkillsPayload
     } else {
         codex_plus_core::skills::resolve_repo_skills(repo.clone(), &cached).await
     };
+    tauri::async_runtime::spawn_blocking(move || {
+        finish_skill_repo_refresh(&manager, &repo_key, &repo, imported, result)
+    })
+    .await
+    .map_err(|error| format!("检查仓库后台任务失败：{error}"))
+}
+
+fn skill_repo_for_refresh(
+    manager: &codex_plus_core::skills::SkillsManager,
+    repo_key: &str,
+) -> Result<(codex_plus_core::skills::SkillRepo, bool), &'static str> {
+    let configured = manager
+        .list_repos()
+        .into_iter()
+        .find(|repo| repo.key() == repo_key);
+    match configured {
+        Some(repo) if repo.enabled => Ok((repo, false)),
+        Some(_) => Err("仓库已停用，未检查。"),
+        None => match manager
+            .pending_imported_repos()
+            .into_iter()
+            .find(|repo| repo.key() == repo_key)
+        {
+            Some(repo) => Ok((repo, true)),
+            None => Err("仓库已删除或来源发生变化，未检查。"),
+        },
+    }
+}
+
+fn finish_skill_repo_refresh(
+    manager: &codex_plus_core::skills::SkillsManager,
+    repo_key: &str,
+    repo: &codex_plus_core::skills::SkillRepo,
+    imported: bool,
+    result: anyhow::Result<(
+        codex_plus_core::skills::SkillRepo,
+        Vec<codex_plus_core::skills::RemoteSkill>,
+    )>,
+) -> CommandResult<SkillsPayload> {
     let (resolved, skills) = match result {
         Ok(result) => result,
         Err(error) => {
             return failed(
                 &format!("{}/{}：{error:#}", repo.owner, repo.name),
-                current_skills_payload(&manager),
+                current_skills_payload(manager),
             );
         }
     };
     if imported {
-        let checking = manager.clone();
-        let checked_repo = resolved.clone();
-        let checked_skills = skills.clone();
-        let verified = tauri::async_runtime::spawn_blocking(move || {
-            checking.save_verified_imported_repo(checked_repo, &checked_skills)
-        })
-        .await;
-        match verified {
-            Ok(Ok(true)) => {}
-            Ok(Ok(false)) => {
+        match manager.save_verified_imported_repo(resolved.clone(), &skills) {
+            Ok(true) => {}
+            Ok(false) => {
                 return failed(
                     "仓库不可用、已删除，或未找到导入 Skill 的来源路径或一致内容，未自动添加。",
-                    current_skills_payload(&manager),
-                );
-            }
-            Ok(Err(error)) => {
-                return failed(
-                    &format!("保存已验证的导入仓库失败：{error:#}"),
-                    current_skills_payload(&manager),
+                    current_skills_payload(manager),
                 );
             }
             Err(error) => {
                 return failed(
-                    &format!("检查导入仓库失败：{error}"),
-                    current_skills_payload(&manager),
+                    &format!("保存已验证的导入仓库失败：{error:#}"),
+                    current_skills_payload(manager),
                 );
             }
         }
     } else if resolved.key() != repo_key {
-        match manager.replace_repo_if_unchanged(&repo, resolved.clone()) {
+        match manager.replace_repo_if_unchanged(repo, resolved.clone()) {
             Ok(true) => {}
             Ok(false) => {
                 return failed(
                     "仓库配置在检查期间已变更，已丢弃旧结果。",
-                    current_skills_payload(&manager),
+                    current_skills_payload(manager),
                 );
             }
             Err(error) => {
                 return failed(
                     &format!("保存仓库分支失败：{error:#}"),
-                    current_skills_payload(&manager),
+                    current_skills_payload(manager),
                 );
             }
         }
-        forget_repo_skills(&repo_key);
-    } else if !manager.list_repos().iter().any(|current| current == &repo) {
+        forget_repo_skills(repo_key);
+    } else if !manager.list_repos().iter().any(|current| current == repo) {
         return failed(
             "仓库配置在检查期间已变更，已丢弃旧结果。",
-            current_skills_payload(&manager),
+            current_skills_payload(manager),
         );
     }
     store_repo_skills(&resolved.key(), &skills);
@@ -6495,7 +6514,7 @@ pub async fn refresh_skill_repo(repo_key: String) -> CommandResult<SkillsPayload
             resolved.name,
             skills.len()
         ),
-        current_skills_payload(&manager),
+        current_skills_payload(manager),
     )
 }
 
@@ -6909,14 +6928,14 @@ pub async fn install_skill(
     repo_key: String,
     id: String,
     expected_repo_path: Option<String>,
-) -> CommandResult<SkillsPayload> {
+) -> Result<CommandResult<SkillsPayload>, String> {
     install_or_update_skill(
-        &repo_key,
-        &id,
+        repo_key,
+        id,
         "Skill 已安装。",
         "安装 Skill 失败",
         None,
-        expected_repo_path.as_deref(),
+        expected_repo_path,
         true,
     )
     .await
@@ -6927,14 +6946,14 @@ pub async fn update_skill(
     repo_key: String,
     id: String,
     expected_repo_path: Option<String>,
-) -> CommandResult<SkillsPayload> {
+) -> Result<CommandResult<SkillsPayload>, String> {
     install_or_update_skill(
-        &repo_key,
-        &id,
+        repo_key,
+        id,
         "Skill 已更新。",
         "更新 Skill 失败",
         None,
-        expected_repo_path.as_deref(),
+        expected_repo_path,
         false,
     )
     .await
@@ -6975,14 +6994,14 @@ pub async fn update_skill_confirmed(
     id: String,
     expected_snapshot: String,
     expected_repo_path: Option<String>,
-) -> CommandResult<SkillsPayload> {
+) -> Result<CommandResult<SkillsPayload>, String> {
     install_or_update_skill(
-        &repo_key,
-        &id,
+        repo_key,
+        id,
         "Skill 已更新，原版本已备份。",
         "更新 Skill 失败",
-        Some(&expected_snapshot),
-        expected_repo_path.as_deref(),
+        Some(expected_snapshot),
+        expected_repo_path,
         false,
     )
     .await
@@ -7008,6 +7027,71 @@ fn skill_install_failure_message(failure_prefix: &str, error: &anyhow::Error) ->
 }
 
 async fn install_or_update_skill(
+    repo_key: String,
+    id: String,
+    success_message: &'static str,
+    failure_prefix: &'static str,
+    expected_snapshot: Option<String>,
+    expected_repo_path: Option<String>,
+    install_only: bool,
+) -> Result<CommandResult<SkillsPayload>, String> {
+    let prepare_repo_key = repo_key.clone();
+    let prepare_id = id.clone();
+    let prepare_repo_path = expected_repo_path.clone();
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let Some(repo) = codex_plus_core::skills::parse_repo_key(&prepare_repo_key) else {
+            return Err(failed(
+                &format!("{failure_prefix}：仓库标识无法解析（{prepare_repo_key}）。"),
+                current_skills_payload(&manager),
+            ));
+        };
+        let state = manager.load_state();
+        let installed = state.installed.get(&prepare_id);
+        if (install_only && installed.is_some())
+            || (!install_only
+                && !skill_install_origin_matches(
+                    installed,
+                    &prepare_repo_key,
+                    prepare_repo_path.as_deref(),
+                ))
+        {
+            return Err(failed(
+                &format!("{failure_prefix}：Skill 的仓库来源或路径已变化，请重新检查后再更新。"),
+                current_skills_payload(&manager),
+            ));
+        }
+        Ok((manager, repo))
+    })
+    .await
+    .map_err(|error| format!("{failure_prefix}：后台任务失败：{error}"))?;
+    let (manager, repo) = match prepared {
+        Ok(prepared) => prepared,
+        Err(result) => return Ok(result),
+    };
+
+    let download = codex_plus_core::skills::download_repo_zip(&repo).await;
+    tauri::async_runtime::spawn_blocking(move || {
+        finish_install_or_update_skill(
+            &manager,
+            &repo,
+            &repo_key,
+            &id,
+            success_message,
+            failure_prefix,
+            expected_snapshot.as_deref(),
+            expected_repo_path.as_deref(),
+            install_only,
+            download,
+        )
+    })
+    .await
+    .map_err(|error| format!("{failure_prefix}：后台任务失败：{error}"))
+}
+
+fn finish_install_or_update_skill(
+    manager: &codex_plus_core::skills::SkillsManager,
+    repo: &codex_plus_core::skills::SkillRepo,
     repo_key: &str,
     id: &str,
     success_message: &str,
@@ -7015,37 +7099,21 @@ async fn install_or_update_skill(
     expected_snapshot: Option<&str>,
     expected_repo_path: Option<&str>,
     install_only: bool,
+    download: anyhow::Result<Vec<u8>>,
 ) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    let Some(repo) = codex_plus_core::skills::parse_repo_key(repo_key) else {
-        return failed(
-            &format!("{failure_prefix}：仓库标识无法解析（{repo_key}）。"),
-            current_skills_payload(&manager),
-        );
-    };
-
     let origin_error =
         || format!("{failure_prefix}：Skill 的仓库来源或路径已变化，请重新检查后再更新。");
-    let state = manager.load_state();
-    let installed = state.installed.get(id);
-    if (install_only && installed.is_some())
-        || (!install_only && !skill_install_origin_matches(installed, repo_key, expected_repo_path))
-    {
-        return failed(&origin_error(), current_skills_payload(&manager));
-    }
-
-    // 从同一份压缩包解析清单并安装，避免分支在文件树请求和下载之间发生变化。
-    let zip = match codex_plus_core::skills::download_repo_zip(&repo).await {
+    let zip = match download {
         Ok(bytes) => bytes,
         Err(error) => {
             return failed(
                 &skill_install_failure_message(failure_prefix, &error),
-                current_skills_payload(&manager),
+                current_skills_payload(manager),
             );
         }
     };
     let cached = cached_repo_skills(repo_key);
-    let skills = match codex_plus_core::skills::parse_skills_from_zip(&repo, &zip, &cached) {
+    let skills = match codex_plus_core::skills::parse_skills_from_zip(repo, &zip, &cached) {
         Ok(skills) => {
             store_repo_skills(repo_key, &skills);
             skills
@@ -7053,7 +7121,7 @@ async fn install_or_update_skill(
         Err(error) => {
             return failed(
                 &skill_install_failure_message(failure_prefix, &error),
-                current_skills_payload(&manager),
+                current_skills_payload(manager),
             );
         }
     };
@@ -7064,24 +7132,24 @@ async fn install_or_update_skill(
             Err(error) => {
                 return failed(
                     &skill_install_failure_message(failure_prefix, &error),
-                    current_skills_payload(&manager),
+                    current_skills_payload(manager),
                 );
             }
         };
         return match manager.install_new_from_zip(&skill, &zip) {
-            Ok(_) => ok(success_message, current_skills_payload(&manager)),
+            Ok(_) => ok(success_message, current_skills_payload(manager)),
             Err(error) => failed(
                 &skill_install_failure_message(failure_prefix, &error),
-                current_skills_payload(&manager),
+                current_skills_payload(manager),
             ),
         };
     }
     let installed = manager.load_state().installed.get(id).cloned();
     if !skill_install_origin_matches(installed.as_ref(), repo_key, expected_repo_path) {
-        return failed(&origin_error(), current_skills_payload(&manager));
+        return failed(&origin_error(), current_skills_payload(manager));
     }
     let Some(installed) = installed else {
-        return failed(&origin_error(), current_skills_payload(&manager));
+        return failed(&origin_error(), current_skills_payload(manager));
     };
     let Some(mut skill) = skills
         .iter()
@@ -7090,16 +7158,16 @@ async fn install_or_update_skill(
     else {
         return failed(
             &format!("{failure_prefix}：仓库里没有找到 {id}。"),
-            current_skills_payload(&manager),
+            current_skills_payload(manager),
         );
     };
     skill.id = id.to_string();
 
     match manager.update_existing_from_zip_with_confirmation(&skill, &zip, expected_snapshot) {
-        Ok(_) => ok(success_message, current_skills_payload(&manager)),
+        Ok(_) => ok(success_message, current_skills_payload(manager)),
         Err(error) => failed(
             &skill_install_failure_message(failure_prefix, &error),
-            current_skills_payload(&manager),
+            current_skills_payload(manager),
         ),
     }
 }
@@ -10623,6 +10691,92 @@ mod tests {
         assert_eq!(
             skill_install_failure_message("update failed", &error),
             "update failed：repository context: download context: root cause"
+        );
+    }
+
+    #[test]
+    fn skill_repo_refresh_selects_only_enabled_or_pending_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_path = temp.path().join("skills.json");
+        std::fs::write(
+            &state_path,
+            r#"{"repos":[{"owner":"acme","name":"disabled","branch":"main","enabled":false},{"owner":"acme","name":"enabled","branch":"main","enabled":true}],"installed":{"local":{"id":"local","repoKey":"acme/imported@main","repoPath":"alpha","importSource":"cc-switch"}}}"#,
+        )
+        .unwrap();
+        let manager = codex_plus_core::skills::SkillsManager::new(
+            temp.path().join("skills"),
+            temp.path().join("backups"),
+            &state_path,
+            temp.path().join("home"),
+        );
+
+        let (configured, imported) = skill_repo_for_refresh(&manager, "acme/enabled@main").unwrap();
+        assert_eq!(configured.key(), "acme/enabled@main");
+        assert!(!imported);
+        let (pending, imported) = skill_repo_for_refresh(&manager, "acme/imported@main").unwrap();
+        assert_eq!(pending.key(), "acme/imported@main");
+        assert!(imported);
+        assert_eq!(
+            skill_repo_for_refresh(&manager, "acme/disabled@main").unwrap_err(),
+            "仓库已停用，未检查。"
+        );
+        assert_eq!(
+            skill_repo_for_refresh(&manager, "acme/missing@main").unwrap_err(),
+            "仓库已删除或来源发生变化，未检查。"
+        );
+    }
+
+    #[test]
+    fn skill_repo_refresh_discards_a_result_after_the_repo_is_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_path = temp.path().join("skills.json");
+        let manager = codex_plus_core::skills::SkillsManager::new(
+            temp.path().join("skills"),
+            temp.path().join("backups"),
+            &state_path,
+            temp.path().join("home"),
+        );
+        let repo = codex_plus_core::skills::parse_repo_key("acme/refresh-test@main").unwrap();
+        manager.save_repo(repo.clone(), None).unwrap();
+        let mut disabled = repo.clone();
+        disabled.enabled = false;
+        manager.save_repo(disabled.clone(), None).unwrap();
+
+        let result = finish_skill_repo_refresh(
+            &manager,
+            &repo.key(),
+            &repo,
+            false,
+            Ok((repo.clone(), Vec::new())),
+        );
+        assert_eq!(result.status, "failed");
+        assert!(result.message.contains("仓库配置在检查期间已变更"));
+        assert_eq!(
+            manager
+                .list_repos()
+                .into_iter()
+                .find(|item| item.key() == repo.key()),
+            Some(disabled)
+        );
+    }
+
+    #[test]
+    fn skill_repo_refresh_preserves_network_error_chain() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = codex_plus_core::skills::SkillsManager::new(
+            temp.path().join("skills"),
+            temp.path().join("backups"),
+            temp.path().join("skills.json"),
+            temp.path().join("home"),
+        );
+        let repo = codex_plus_core::skills::parse_repo_key("acme/refresh-test@main").unwrap();
+        let error = anyhow::anyhow!("connection closed").context("download failed");
+        let result = finish_skill_repo_refresh(&manager, &repo.key(), &repo, false, Err(error));
+        assert_eq!(result.status, "failed");
+        assert!(
+            result
+                .message
+                .contains("download failed: connection closed")
         );
     }
 
