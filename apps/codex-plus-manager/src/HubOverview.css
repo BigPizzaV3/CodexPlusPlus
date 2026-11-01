@@ -571,3 +571,149 @@
   border-color: hsl(var(--primary) / 0.45);
   color: hsl(var(--primary));
 }
+
+/* ── 网关总览的紧凑拓扑：节点一行一个、中枢缩小，同一屏能放下更多 Agent 和供应商。
+   只作用于总览（className 传入），Computer Use 页的拓扑保持原样。 ── */
+
+.hub-topology.hub-topology-compact {
+  grid-template-columns: minmax(180px, 1fr) minmax(190px, 230px) minmax(180px, 1fr);
+  gap: 0 clamp(28px, 4vw, 56px);
+  padding: 12px 14px;
+}
+
+.hub-topology-compact .hub-col {
+  gap: 4px;
+}
+
+.hub-topology-compact .hub-col-head {
+  padding: 0 4px 2px;
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-node {
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 8px;
+}
+
+.hub-topology-compact .hub-node-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.hub-topology-compact .hub-node-icon .hub-agent-glyph {
+  width: 14px;
+  height: 14px;
+}
+
+/* 名字和副信息同排：名字优先，副信息（模型 / Key 数）跟在后面，放不下就省略。 */
+.hub-topology-compact .hub-node-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hub-topology-compact .hub-node-text strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.hub-topology-compact .hub-node-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-topology-compact .hub-node-text small {
+  flex: 1 1 0;
+  min-width: 24px;
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-node-num {
+  font-size: 11.5px;
+}
+
+.hub-topology-compact .hub-node-ghost {
+  min-height: 28px;
+  padding: 2px 8px;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.hub-topology-compact .hub-node-ghost svg {
+  width: 13px;
+  height: 13px;
+}
+
+.hub-topology-compact .hub-empty {
+  padding: 4px 4px 6px;
+}
+
+.hub-topology-compact .hub-core {
+  max-width: 230px;
+  padding: 12px 12px 10px;
+  border-radius: 12px;
+  box-shadow: 0 0 0 4px hsl(var(--brand-accent) / 0.05), var(--shadow-sm);
+}
+
+.hub-topology-compact .hub-core-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: left;
+}
+
+.hub-topology-compact .hub-core-head img {
+  margin: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+.hub-topology-compact .hub-core-head strong {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.25;
+}
+
+.hub-topology-compact .hub-addr {
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-caps {
+  display: block;
+  margin: 8px 0 0;
+  color: hsl(var(--muted-foreground) / 0.85);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.hub-topology-compact .hub-core dl {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.hub-topology-compact .hub-core dt {
+  font-size: 10px;
+}
+
+.hub-topology-compact .hub-core dd {
+  font-size: 13px;
+}
+
+@media (max-width: 1080px) {
+  .hub-topology.hub-topology-compact {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 16px;
+  }
+
+  .hub-topology-compact .hub-core {
+    max-width: none;
+  }
+}

@@ -124,25 +124,11 @@ export function HubOverview({
       </header>
 
       <section className="hub-card">
-        <HubTopology flow={flow} links={links}>
+        <HubTopology className="hub-topology-compact" flow={flow} links={links}>
           <div className="hub-col">
             <div className="hub-col-head"><span>{t("Agent")}</span><span>{t("请求")}</span></div>
             {agents.map((agent) => (
-              <button className="hub-node" data-node={`agent:${agent.id}`} data-off={!agent.enabled && !agent.direct} key={agent.id} onClick={() => onOpenAgent(agent.id)} type="button">
-                <span className="hub-node-icon"><AgentGlyph agent={agent.id} /></span>
-                <span className="hub-node-text">
-                  <strong>
-                    {agent.name}
-                    <i className="hub-dot" data-tone={agent.direct ? "direct" : agent.enabled ? "ok" : "off"} />
-                  </strong>
-                  <small>
-                    {agent.direct
-                      ? (agent.detail ? tf("直连 · {0}", [agent.detail]) : t("直连模式"))
-                      : agent.enabled ? agent.detail || t("已接入") : t("未接入网关")}
-                  </small>
-                </span>
-                {agent.enabled ? <span className="hub-node-num">{agent.requests}</span> : null}
-              </button>
+              <AgentNode agent={agent} key={agent.id} onOpen={() => onOpenAgent(agent.id)} />
             ))}
             {solo ? null : (
               <button className="hub-node hub-node-ghost" onClick={() => setAdding("agent")} type="button">
@@ -153,18 +139,25 @@ export function HubOverview({
           </div>
 
           <div className="hub-core" data-node="hub" data-running={payload?.helperRunning ?? false}>
-            <img alt="" src={APP_LOGO_URL} />
-            <strong>Codex++</strong>
-            <span className="hub-addr">
-              <i className="hub-dot" data-tone={payload?.helperRunning ? "ok" : "off"} />
-              {payload ? `127.0.0.1:${payload.port}` : t("读取中…")}
-            </span>
-            <div className="hub-caps">
-              <span>{t("按模型名路由")}</span>
-              <span>{t("协议互转")}</span>
-              <span>{payload?.gateway.keyPolicy.mode === "roundRobin" ? t("逐请求轮换 Key") : t("会话粘性 Key")}</span>
-              {payload?.groups.length ? <span>{tf("{0} 个模型组", [payload.groups.length])}</span> : null}
+            <div className="hub-core-head">
+              <img alt="" src={APP_LOGO_URL} />
+              <span>
+                <strong>Codex++</strong>
+                <span className="hub-addr">
+                  <i className="hub-dot" data-tone={payload?.helperRunning ? "ok" : "off"} />
+                  {payload ? `127.0.0.1:${payload.port}` : t("读取中…")}
+                </span>
+              </span>
             </div>
+            {/* 能力说明压成一行小字，不再一枚枚画标签。 */}
+            <p className="hub-caps">
+              {[
+                t("按模型名路由"),
+                t("协议互转"),
+                payload?.gateway.keyPolicy.mode === "roundRobin" ? t("逐请求轮换 Key") : t("会话粘性 Key"),
+                ...(payload?.groups.length ? [tf("{0} 个模型组", [payload.groups.length])] : []),
+              ].join(" · ")}
+            </p>
             <dl>
               <div><dt>{t("请求")}</dt><dd>{totals.requests}</dd></div>
               <div><dt>{t("换上游")}</dt><dd data-tone={totals.rerouted ? "warn" : undefined}>{totals.rerouted}</dd></div>
@@ -184,12 +177,12 @@ export function HubOverview({
               </button>
             ) : null}
             {providers.map((provider) => (
-              <button className="hub-node" data-node={`provider:${provider.id}`} data-flow-provider={flowProviderSlot(provider.id)} key={provider.id} onClick={() => onNavigate("gatewayProviders")} type="button">
+              <button className="hub-node" data-node={`provider:${provider.id}`} data-flow-provider={flowProviderSlot(provider.id)} key={provider.id} onClick={() => onNavigate("gatewayProviders")} title={provider.name} type="button">
                 <i className="flow-provider-mark" aria-hidden="true" />
                 <Avatar baseUrl={provider.baseUrl} name={provider.name} size="sm" />
                 <span className="hub-node-text">
                   <strong>
-                    {provider.name}
+                    <span className="hub-node-name">{provider.name}</span>
                     {provider.status.state === "cooling" ? <i className="hub-dot" data-tone="warn" /> : null}
                   </strong>
                   <small data-state={provider.status.state}>
@@ -244,6 +237,26 @@ export function HubOverview({
         <ProviderAdder busy={busy} notify={notify} onClose={() => setAdding(null)} payload={payload} run={run} startWith={adding === "import" ? "import" : "catalog"} />
       ) : null}
     </div>
+  );
+}
+
+/** 左列一个 Agent：名字和当前模型同排，一行一个，省出纵向空间多放几个。 */
+function AgentNode({ agent, onOpen }: { agent: ReturnType<typeof hubAgents>[number]; onOpen: () => void }) {
+  const detail = agent.direct
+    ? (agent.detail ? tf("直连 · {0}", [agent.detail]) : t("直连模式"))
+    : agent.enabled ? agent.detail || t("已接入") : t("未接入网关");
+  return (
+    <button className="hub-node" data-node={`agent:${agent.id}`} data-off={!agent.enabled && !agent.direct} onClick={onOpen} title={`${agent.name} · ${detail}`} type="button">
+      <span className="hub-node-icon"><AgentGlyph agent={agent.id} /></span>
+      <span className="hub-node-text">
+        <strong>
+          <span className="hub-node-name">{agent.name}</span>
+          <i className="hub-dot" data-tone={agent.direct ? "direct" : agent.enabled ? "ok" : "off"} />
+        </strong>
+        <small>{detail}</small>
+      </span>
+      {agent.enabled ? <span className="hub-node-num">{agent.requests}</span> : null}
+    </button>
   );
 }
 
