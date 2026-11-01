@@ -368,7 +368,15 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     try {
       const result = await invoke<SkillPayload>("list_installed_skills");
       if (!mounted.current || request !== dataRequest.current) return null;
-      startTransition(() => setData((current) => mounted.current && request === dataRequest.current ? result : current));
+      startTransition(() => {
+        setData((current) => mounted.current && request === dataRequest.current ? result : current);
+        setDetail((current) => {
+          if (!mounted.current || request !== dataRequest.current || !current || !ok(result)) return current;
+          return result.skills.find((item) => item.id === current.id && item.installed)
+            || (!current.installed ? result.skills.find((item) => item.id === current.id && item.repoKey === current.repoKey && item.repoPath === current.repoPath) : undefined)
+            || null;
+        });
+      });
       return result;
     } catch (e) {
       if (mounted.current) await notify("Skills", String(e), "failed");
@@ -740,15 +748,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(detail.repoKey)}
       onEditSource={() => setMatchRequest({ id: detail.id, initialManual: true })} onMatch={() => setMatchRequest({ id: detail.id })}/>}
     {matchRequest && <SkillRepositoryMatchDrawer repos={data?.repos || []} id={matchRequest.id} initialManual={matchRequest.initialManual} onClose={() => setMatchRequest(null)} notify={notify}
-      onUpdated={() => { const pending = reloadLocal(); const request = dataRequest.current; void pending.then((result) => {
-        if (!result || !mounted.current || request !== dataRequest.current) return;
-        setDetail((current) => {
-          if (!mounted.current || request !== dataRequest.current || !current || current !== detail) return current;
-          return result.skills.find((item) => item.id === current.id && item.installed)
-            || (!current.installed ? result.skills.find((item) => item.id === current.id && item.repoKey === current.repoKey && item.repoPath === current.repoPath) : undefined)
-            || null;
-        });
-      }); }}/>}
+      onUpdated={() => { void reloadLocal(); }}/>}
     {importRequest && <SkillImportDrawer key={importRequest.revision} request={importRequest} busy={busy}
       onClose={() => setImportRequest(null)} onRefresh={() => void previewImport(importRequest.source, importRequest.path)}
       onApply={(selections) => { void (async () => { if (await run("apply_skill_import", { source: importRequest.source, path: importRequest.path, selections })) { setImportRequest(null); setTab("installed"); void load(); } })(); }}/>}

@@ -540,8 +540,19 @@ test("an older matching refresh cannot replace detail after a newer list request
   ui.server.skills[0].repoPath = "newer";
   ui.focus(); await tick(); ui.render();
   ui.pendingLoads.shift()!(); await tick(); ui.render();
-  assert.equal(ui.find((node) => node.type === "SkillDetailDrawer").props.skill.repoPath, undefined);
+  assert.equal(ui.find((node) => node.type === "SkillDetailDrawer").props.skill.repoPath, "newer");
   assert.equal(ui.find((node) => node.type === "SkillActionMenu" && node.props.skill.id === "a").props.skill.repoPath, "newer");
+});
+
+test("a successful focus refresh updates the currently open detail", async () => {
+  const ui = createHarness();
+  ui.render(); await tick(); ui.render();
+  ui.expand("repo:a/repo");
+  ui.find((node) => node.type === "button" && node.props.className === "mg-row-main" && node.children[0]?.children[0]?.props.title === "a").props.onClick();
+  ui.render();
+  ui.server.skills[0].repoPath = "updated";
+  ui.focus(); await tick(); ui.render();
+  assert.equal(ui.find((node) => node.type === "SkillDetailDrawer").props.skill.repoPath, "updated");
 });
 
 test("a deferred older list update cannot replace a newer list", async () => {
