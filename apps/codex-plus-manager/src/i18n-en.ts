@@ -40,6 +40,8 @@ export const EN_PLAIN: Record<string, string> = {
   "多开身份提示": "Instance identity badge",
   "多开实例顶部显示实例名（用公开拓展接口写成）": "Shows the instance name at the top of extra Codex instances (written with the public extension API)",
   "会话标题中间件": "Session title middleware",
+  "微信会话同步": "WeChat session sync",
+  "微信里发起的会话及时出现在 Codex 桌面会话列表，并归到对应项目": "Makes sessions started from WeChat show up in the Codex desktop session list under the right project",
   "首轮结束后按拓展的 session/title 中间件改会话标题": "Renames a session after its first turn using extensions' session/title middleware",
   "外观": "Appearance",
   "Codex 窗口的主题、背景图与多开标识。": "Themes, background image and instance badge for the Codex window.",
@@ -1207,8 +1209,8 @@ export const EN_PLAIN: Record<string, string> = {
   "主页": "Homepage",
   "主题和启动参数": "Theme and launch arguments",
   "从 GitHub 静态清单加载": "Loaded from the static GitHub manifest",
-  "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。":
-    "Keeps only plain text when pasting rich text (e.g. from Word) into the Codex composer, avoiding it being treated as an image/file attachment. Requires restarting Codex.",
+  "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。":
+    "Keeps only plain text when pasting rich text (e.g. from Word) into the Codex composer, avoiding it being treated as an image/file attachment.",
   "从上游获取": "Fetch from upstream",
   "从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。":
     "Pull models from environment variables and config.toml's /v1/models and add them to the model list.",

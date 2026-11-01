@@ -5,19 +5,20 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
-    if (loaded) void syncWeixinDesktopThreads();
-    if (loaded) runScanStep(syncCodexPlusTypingEffects);
-    if (loaded && typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-    if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
-    // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
-    if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
     // 后端可用后预取设置项清单，首次打开设置页时不必再等一次请求。
     if (loaded && typeof loadCodexPlusSettingsCatalog === "function") void loadCodexPlusSettingsCatalog();
-    // 读到设置后立即补一次皮肤，不等下一轮 DOM 变更触发扫描（#2680）。
-    if (loaded && typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
-    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+    // 跟着设置走的功能（打字特效、桌宠、容量重试、梦皮 #2680、微信同步……）由各自的内置拓展订阅。
+    if (loaded) emitCodexPlusSettingsLoaded("startup");
     return loaded;
+  }
+
+  /**
+   * 读到后端设置（启动或心跳）后发公开事件 `settings/loaded`，参数 `{ reason: "startup" | "heartbeat" }`。
+   * 内置拓展与第三方拓展都经 ctx.on 订阅，拓展卸下时订阅跟着撤掉。
+   * typeof 守卫：本分片会被切片到不带拓展内核的沙箱里执行。
+   */
+  function emitCodexPlusSettingsLoaded(reason) {
+    if (typeof codexPlusEmitExtensionEvent === "function") codexPlusEmitExtensionEvent("settings/loaded", [{ reason }]);
   }
 
   /**
@@ -49,24 +50,14 @@
     if (syncBackendSettingsInFlight) return;
     syncBackendSettingsInFlight = true;
     try {
-      const previousConversationView = !!codexPlusSettings().conversationView;
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
-        void syncWeixinDesktopThreads();
-        runScanStep(syncCodexPlusTypingEffects);
-        if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-        if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-        if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
-        // 启动期读取全部失败时，心跳是之后唯一的设置来源；读到就补一次皮肤（#2680）。
-        if (typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
-        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+        // 启动期读取全部失败时，心跳是之后唯一的设置来源；跟着设置走的功能（含梦皮 #2680、对话宽度）由内置拓展订阅。
+        emitCodexPlusSettingsLoaded("heartbeat");
         // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
         syncCodexPlusBackendToggleButtons();
         renderCodexPlusMenu();
-        if (previousConversationView !== !!codexPlusSettings().conversationView) {
-          refreshConversationView();
-        }
       }
     } finally {
       syncBackendSettingsInFlight = false;

@@ -349,5 +349,4 @@
     intervalSeconds: capacityAutoRetryIntervalSeconds,
     maxAttempts: capacityAutoRetryMaxAttempts,
   };
-
-  syncCodexPlusCapacityAutoRetry();
+  // 轮询由内置拓展「容量不足自动重试」装上时启动（96-builtin-extensions.js），这里不再自启。

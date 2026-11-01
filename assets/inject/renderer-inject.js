@@ -6642,19 +6642,20 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
-    if (loaded) void syncWeixinDesktopThreads();
-    if (loaded) runScanStep(syncCodexPlusTypingEffects);
-    if (loaded && typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-    if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
-    // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
-    if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
     // 后端可用后预取设置项清单，首次打开设置页时不必再等一次请求。
     if (loaded && typeof loadCodexPlusSettingsCatalog === "function") void loadCodexPlusSettingsCatalog();
-    // 读到设置后立即补一次皮肤，不等下一轮 DOM 变更触发扫描（#2680）。
-    if (loaded && typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
-    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+    // 跟着设置走的功能（打字特效、桌宠、容量重试、梦皮 #2680、微信同步……）由各自的内置拓展订阅。
+    if (loaded) emitCodexPlusSettingsLoaded("startup");
     return loaded;
+  }
+
+  /**
+   * 读到后端设置（启动或心跳）后发公开事件 `settings/loaded`，参数 `{ reason: "startup" | "heartbeat" }`。
+   * 内置拓展与第三方拓展都经 ctx.on 订阅，拓展卸下时订阅跟着撤掉。
+   * typeof 守卫：本分片会被切片到不带拓展内核的沙箱里执行。
+   */
+  function emitCodexPlusSettingsLoaded(reason) {
+    if (typeof codexPlusEmitExtensionEvent === "function") codexPlusEmitExtensionEvent("settings/loaded", [{ reason }]);
   }
 
   /**
@@ -6686,24 +6687,14 @@
     if (syncBackendSettingsInFlight) return;
     syncBackendSettingsInFlight = true;
     try {
-      const previousConversationView = !!codexPlusSettings().conversationView;
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
-        void syncWeixinDesktopThreads();
-        runScanStep(syncCodexPlusTypingEffects);
-        if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-        if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-        if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
-        // 启动期读取全部失败时，心跳是之后唯一的设置来源；读到就补一次皮肤（#2680）。
-        if (typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
-        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+        // 启动期读取全部失败时，心跳是之后唯一的设置来源；跟着设置走的功能（含梦皮 #2680、对话宽度）由内置拓展订阅。
+        emitCodexPlusSettingsLoaded("heartbeat");
         // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
         syncCodexPlusBackendToggleButtons();
         renderCodexPlusMenu();
-        if (previousConversationView !== !!codexPlusSettings().conversationView) {
-          refreshConversationView();
-        }
       }
     } finally {
       syncBackendSettingsInFlight = false;
@@ -12617,7 +12608,7 @@
       const managedTurn = await sendCodexManagedSessionTurn(client, originalSendRequest,
         String(method || ""), nextParams, options, modelContextRefresh);
       if (managedTurn) return managedTurn.result;
-      const result = await sendAppServerRequestWithSideChat(client, method, nextParams,
+      const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest(method, nextParams, options));
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
@@ -12641,9 +12632,20 @@
     return true;
   }
 
-  function sendAppServerRequestWithSideChat(client, method, params, send) {
-    return typeof sendCodexSideChatNativeRequest === "function"
-      ? sendCodexSideChatNativeRequest(client, method, params, send) : send();
+  /**
+   * `codex/exchange` 中间件链：包住一次发往 app-server 的请求。值是 `{ method, params, hostId, send }`，
+   * 中间件用 `next({ ...exchange, send: 新的 send })` 在原请求前后做事（内置拓展「侧聊保存」就挂在这里），
+   * 链尾调用最终的 send。没有中间件时直接发，不多一层 Promise。
+   * 内核分片还没初始化（页面早期、只抽前面分片的测试）时读中间件表会落进暂时性死区，按没有中间件处理。
+   */
+  async function sendAppServerRequestThroughExchange(client, method, params, send) {
+    let wanted = false;
+    try {
+      wanted = codexPlusExtensionInterceptors.has("codex/exchange");
+    } catch {}
+    if (!wanted) return send();
+    const exchange = await codexPlusRunWaterfall("codex/exchange", { method, params, hostId: client.hostId, send });
+    return typeof exchange?.send === "function" ? exchange.send() : send();
   }
 
   // issue #2177：Codex 26.908 把 AppServerRequestClient 类藏进模块闭包且不再导出，
@@ -12855,7 +12857,7 @@
       const managedTurn = await sendCodexManagedSessionTurn(client, originalSendRequest.bind(client),
         String(method || ""), nextParams, options, modelContextRefresh);
       if (managedTurn) return managedTurn.result;
-      const result = await sendAppServerRequestWithSideChat(client, method, nextParams,
+      const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest.call(client, method, nextParams, options));
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
@@ -15517,8 +15519,7 @@
     intervalSeconds: capacityAutoRetryIntervalSeconds,
     maxAttempts: capacityAutoRetryMaxAttempts,
   };
-
-  syncCodexPlusCapacityAutoRetry();
+  // 轮询由内置拓展「容量不足自动重试」装上时启动（96-builtin-extensions.js），这里不再自启。
   /**
    * Codex 启动壳自救。
    *
@@ -17533,7 +17534,18 @@
     return result;
   }
 
-  // 两种原生客户端补丁共用此入口，避免再包装一层 sendRequest 原型。
+  /**
+   * 内置拓展「侧聊保存」：经公开的 `codex/exchange` 中间件包住 app-server 请求，临时旁支分叉时记下主历史；
+   * 保存按钮由它登记的扫描步骤维护。拓展卸下时中间件跟着撤掉，旁支请求原样发出。
+   */
+  function codexPlusSideChatSaveExtension(ctx) {
+    ctx.intercept("codex/exchange", (exchange, next) => next({
+      ...exchange,
+      send: () => sendCodexSideChatNativeRequest(exchange, exchange.method, exchange.params, exchange.send),
+    }));
+  }
+
+  // client 只用到 hostId（中间件传的是 exchange 本身）。
   async function sendCodexSideChatNativeRequest(client, method, params, send) {
     if (client.hostId !== "local") return send();
     if (method === "thread/stop" || method === "thread/unsubscribe") {
@@ -25304,27 +25316,30 @@
    * 内置拓展清单。sync 在装上 / 卸下后调用，让功能按新的开关状态挂载或撤下（函数声明提前，
    * 这里引用后面分片里的函数没有问题；不存在时跳过）。apply 是完全用公开拓展接口写的内置拓展。
    * 管理器里的名字与说明在 Rust 侧 BUILTIN_EXTENSIONS 维护，两边 id 要一致。
+   * settings：读到 Codex++ 设置后要跟着刷新的，经公开事件 `settings/loaded` 订阅（拓展装着才收到），
+   * 核心读设置的地方不再逐个点名功能。
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
       // 大肥鱼（96-whale-widget.js）是桌宠的一种类型，跟着这个内置拓展一起扫描、一起撤下。
-      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusPetKinds(), scan: () => syncCodexPlusPetKinds(), apply: codexPlusAgentPetExtension },
+      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusPetKinds(), scan: () => syncCodexPlusPetKinds(), settings: () => syncCodexPlusPetKinds(), apply: codexPlusAgentPetExtension },
       { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation(), scan: () => installCodexPlusDictation() },
       { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind(), scan: () => syncCodexPlusTurnRewind(), phase: "light" },
       // 打字特效的全局监听只在拓展装上时挂，卸下时摘掉。
-      { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects(), apply: (ctx) => ctx.effect(() => {
+      { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects(), settings: () => syncCodexPlusTypingEffects(), apply: (ctx) => ctx.effect(() => {
         installCodexPlusTypingEffects();
         return () => uninstallCodexPlusTypingEffects();
       }) },
-      { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons(), scan: () => refreshSideChatSaveButtons() },
+      { id: "side-chat-save", name: "侧聊保存", sync: () => refreshSideChatSaveButtons(), scan: () => refreshSideChatSaveButtons(), apply: codexPlusSideChatSaveExtension },
       { id: "history-turn-recovery", name: "历史轮次补全" },
-      { id: "capacity-auto-retry", name: "容量不足自动重试" },
+      // 轮询定时器随拓展装卸：装上时按设置启动，卸下时 sync 读到停用就清掉定时器与浮标。
+      { id: "capacity-auto-retry", name: "容量不足自动重试", sync: () => syncCodexPlusCapacityAutoRetry(), settings: () => syncCodexPlusCapacityAutoRetry() },
       { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.(), apply: codexPlusProxyStatusExtension },
       { id: "session-share", name: "会话分享", sync: () => installSessionShareButton() },
       // 自带轮询：停用时扫描清理完就停，sync 在装上时重新开始轮询。
       { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.sync?.() },
-      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin(), scan: () => refreshDreamSkin() },
+      { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin(), scan: () => refreshDreamSkin(), settings: () => refreshDreamSkin() },
       { id: "plugin-market-unlock", name: "插件市场解锁", scan: () => installCodexPluginMarketplacePatches() },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
@@ -25347,10 +25362,13 @@
           refreshConversationViewControls();
           scheduleDeferredScan();
         },
+        apply: codexPlusConversationViewExtension,
       },
-      { id: "activity-overlay-right", name: "消息导航条靠右", sync: () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.() },
-      // 每次粘贴时现查，不用同步。
-      { id: "paste-fix", name: "粘贴修复" },
+      { id: "activity-overlay-right", name: "消息导航条靠右", sync: () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.(), settings: () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.() },
+      // 粘贴监听随拓展装卸；开关每次粘贴时现查，不用同步。
+      { id: "paste-fix", name: "粘贴修复", apply: codexPlusPasteFixExtension },
+      // 微信写入的会话通知桌面目录：读到设置（含心跳）时按设置里的待同步清单跑一次。
+      { id: "weixin-desktop-sync", name: "微信会话同步", settings: () => void syncWeixinDesktopThreads() },
       // 悬浮球自己读后台设置再按停用集合判断，这里只让它重新算一次。
       { id: "stepwise", name: "下一步建议", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
       { id: "answer-outline", name: "回答大纲", sync: () => window.__codexStepwisePanel?.syncSettings?.() },
@@ -25383,7 +25401,13 @@
     };
   }
 
-  const codexPlusBuiltinExtensionHandles = new Map();
+  // 同页重复注入：先卸下上一份注入包装上的内置拓展（它们的监听、中间件、扫描步骤挂在旧内核上，新内核看不到）。
+  window.__codexPlusBuiltinExtensionHandles?.forEach((handle) => {
+    try {
+      handle.dispose();
+    } catch {}
+  });
+  const codexPlusBuiltinExtensionHandles = window.__codexPlusBuiltinExtensionHandles = new Map();
 
   function codexPlusRunBuiltinSync(definition) {
     if (typeof definition.sync !== "function") return;
@@ -25435,6 +25459,7 @@
               if (typeof definition.scan === "function") ctx.effect(() => registerCodexPlusScanStep(definition.id, definition.scan, definition.phase));
               if (typeof definition.apply === "function") definition.apply(ctx);
               codexPlusRunBuiltinSync(definition);
+              if (typeof definition.settings === "function") ctx.on("settings/loaded", () => runScanStep(definition.settings));
             },
           }, { scriptKey: `builtin:${definition.id}` });
           codexPlusBuiltinExtensionHandles.set(definition.id, ctx);
@@ -25512,6 +25537,19 @@
           if (codexPlusProxyStatusState.node?.parentElement === container) codexPlusProxyStatusState.node.remove();
         };
       },
+    });
+  }
+
+  /**
+   * 对话宽度：Codex++ 设置变了（管理器里改、心跳同步过来）且「对话宽度」开关有变化时，重算一次对话区宽度。
+   */
+  function codexPlusConversationViewExtension(ctx) {
+    let previous = !!codexPlusSettings().conversationView;
+    ctx.on("settings/loaded", () => {
+      const current = !!codexPlusSettings().conversationView;
+      if (current === previous) return;
+      previous = current;
+      runScanStep(refreshConversationView);
     });
   }
 
@@ -25601,6 +25639,47 @@
     } catch (error) {
       codexPlusMarkExtensionFailure("builtin:session-title-hook", String(error?.stack || error?.message || error));
     }
+  }
+  /**
+   * 内置拓展「粘贴修复」：在 document 捕获阶段拦截 paste，text/plain 非空时阻止默认行为并用
+   * execCommand('insertText') 插入纯文本，避免 Codex 把 Word 复制的内容识别为附件。
+   *
+   * 监听经 ctx.listen 挂上，拓展停用 / 被顶替时随卸载摘掉；热重注入时旧实例先卸载，不会重复挂。
+   * 开关：读到后端设置前按启动时注入的 window.__CODEX_PLUS_PASTE_FIX__（settings.codexAppPasteFix），
+   * 读到之后按设置项 pasteFix，所以改设置不必重启 Codex。
+   */
+  // 超过这个长度就不再拦截，交回 Codex 原生的「超长文本转附件」逻辑。
+  // 否则整段长文本会被 insertText 直接塞进输入框，造成渲染层卡死（issue #1931）。
+  const codexPlusPasteFixMaxInlineLength = 20000;
+
+  function codexPlusPasteFixEnabled() {
+    return codexPlusBackendSettingsLoaded
+      ? codexPlusSettings().pasteFix === true
+      : window.__CODEX_PLUS_PASTE_FIX__?.enabled === true;
+  }
+
+  function codexPlusPasteFixHandler(event) {
+    if (!codexPlusPasteFixEnabled()) return;
+    const text = event.clipboardData?.getData("text/plain");
+    if (typeof text !== "string" || text.length === 0) return;
+    // 长文本放行：让 Codex 自己决定是否转成附件
+    if (text.length > codexPlusPasteFixMaxInlineLength) {
+      console.log("[PasteFix]", `text too long (${text.length} chars); letting Codex handle it`);
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    let ok = false;
+    try {
+      ok = document.execCommand("insertText", false, text);
+    } catch (error) {
+      console.warn("[PasteFix]", "execCommand threw:", error && error.message);
+    }
+    if (!ok) console.warn("[PasteFix]", "execCommand failed; please paste again");
+  }
+
+  function codexPlusPasteFixExtension(ctx) {
+    ctx.listen(document, "paste", codexPlusPasteFixHandler, { capture: true });
   }
   /**
    * dsh 前端（client）插件的运行时：codexPlus.dshClient(ctx, modules, options)。
@@ -27019,54 +27098,3 @@
 })();
 
 // === 粘贴修复 (CodexPlusPlus 页面增强) ===
-// 控制开关：window.__CODEX_PLUS_PASTE_FIX__ = { enabled: <bool> }
-// 由 CodexPlusPlus 在启动时根据 settings.codexAppPasteFix 注入。
-// 关闭时不进入 if 体，行为与原 Codex 完全一致；开启时在 document 捕获阶段
-// 拦截 paste，若 text/plain 非空则阻止默认行为并调用 execCommand('insertText')
-// 插入纯文本，避免 Codex 把 Word 复制的内容识别为附件。
-// SENTINEL 保证多次执行（页面刷新、脚本重注入）只装一次 handler。
-if (window.__CODEX_PLUS_PASTE_FIX__ && window.__CODEX_PLUS_PASTE_FIX__.enabled === true) {
-  (() => {
-    const SENTINEL = '__codexPasteFixInstalled__';
-    if (window[SENTINEL]) return;
-    window[SENTINEL] = true;
-
-    const TAG = '[PasteFix]';
-
-    // 超过这个长度就不再拦截，交回 Codex 原生的「超长文本转附件」逻辑。
-    // 否则整段长文本会被 insertText 直接塞进输入框，造成渲染层卡死（issue #1931）。
-    const MAX_INLINE_LENGTH = 20000;
-
-    const handler = (e) => {
-      // 内置拓展「paste-fix」停用或被顶替时放行；handler 只装一次，所以每次粘贴时现查。
-      if (globalThis.__codexPlusBuiltinInactive?.has('paste-fix')) return;
-      const cd = e.clipboardData;
-      if (!cd) return;
-
-      const text = cd.getData('text/plain');
-      if (typeof text !== 'string' || text.length === 0) return;
-
-      // 长文本放行：让 Codex 自己决定是否转成附件
-      if (text.length > MAX_INLINE_LENGTH) {
-        console.log(TAG, `text too long (${text.length} chars); letting Codex handle it`);
-        return;
-      }
-
-      e.preventDefault();
-      e.stopImmediatePropagation();
-
-      let ok = false;
-      try {
-        ok = document.execCommand('insertText', false, text);
-      } catch (err) {
-        console.warn(TAG, 'execCommand threw:', err && err.message);
-      }
-      if (!ok) {
-        console.warn(TAG, 'execCommand failed; please paste again');
-      }
-    };
-
-    document.addEventListener('paste', handler, { capture: true });
-    console.log(TAG, 'paste handler installed (capture phase)');
-  })();
-}

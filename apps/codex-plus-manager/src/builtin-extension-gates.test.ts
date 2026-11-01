@@ -79,7 +79,7 @@ test("每个改设置项的内置拓展都登记在内置拓展清单里", () =>
   for (const id of Object.values(gated)) assert.match(catalog, new RegExp(`id: "${id}"`), id);
 });
 
-test("悬浮球的下一步建议 / 回答大纲、粘贴修复按停用集合现查", () => {
+test("悬浮球的下一步建议 / 回答大纲按停用集合现查", () => {
   const state = read("floating-panel/runtime/state.js");
   const sandbox = vm.createContext({ state: { settings: { enabled: true, answerOutlineEnabled: true } } });
   vm.runInContext(["stepwiseEnabled", "outlineEnabled", "runtimeEnabled"].map((name) => {
@@ -94,8 +94,4 @@ test("悬浮球的下一步建议 / 回答大纲、粘贴修复按停用集合�
   sandbox.__codexPlusBuiltinInactive = new Set(["stepwise", "answer-outline"]);
   assert.equal(sandbox.runtimeEnabled(), false);
 
-  const paste = read("renderer-inject/zz-paste-fix.js");
-  const handlerStart = paste.indexOf("const handler = (e) => {");
-  assert.ok(handlerStart > 0);
-  assert.match(paste.slice(handlerStart, handlerStart + 300), /__codexPlusBuiltinInactive\?\.has\('paste-fix'\)\) return;/);
 });
