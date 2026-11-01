@@ -6,7 +6,7 @@ import ts from "typescript";
 import { customSkillGroupKey, defaultSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
 import { skillAgents, skillBatchHasPending, SkillBatchRegistry } from "./skill-agent-batch.ts";
 import { SkillTaskQueue } from "./skill-task-queue.ts";
-import { singleAgent, type AgentFocus } from "./agent-focus-model.ts";
+import { agentVisible, type AgentFocus } from "./agent-focus-model.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
 type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean };
@@ -68,7 +68,7 @@ function createHarness(saved = "{}", focus: AgentFocus = "all") {
     sourceLabel: (item: FixtureSkill) => item.bundled ? "内置" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
     repoKey: (repo: FixtureRepo) => `${repo.owner}/${repo.name}@${repo.branch}${repo.subdir ? `:${repo.subdir}` : ""}`,
     repoUrl: () => "", importChannel: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
-    singleAgent, useAgentFocus: () => agentFocus,
+    agentVisible, useAgentFocus: () => agentFocus,
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
   for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "SortableSkillGroup", "DndContext", "SortableContext", "SkillActionMenu", "GroupAgentSelect",
@@ -153,14 +153,16 @@ test("focus changes keep headers, skill rows, and group selection columns aligne
   ui.setFocus("all");
   assert.equal(header().props["aria-expanded"], true);
   assertColumns(["codex", "claude", "grok"]);
+  ui.setFocus("enhance");
+  assertColumns(["codex", "claude"]);
   ui.setFocus(null);
   assertColumns(["codex", "claude", "grok"]);
   ui.setFocus("codex");
   assertColumns(["codex"]);
 });
 
-test("groups start collapsed in both focus modes and search temporarily expands matches", async () => {
-  for (const focus of ["all", "codex"] as const) {
+test("groups start collapsed in all focus modes and search temporarily expands matches", async () => {
+  for (const focus of ["all", "codex", "enhance"] as const) {
     const ui = createHarness("{}", focus);
     ui.render(); await tick(); ui.render();
     const groupKey = "repo:a/repo";
@@ -178,8 +180,10 @@ test("groups start collapsed in both focus modes and search temporarily expands 
 test("skill matrix styles share the dynamic column count across all row types", () => {
   const styles = readFileSync(new URL("./ManagementPages.css", import.meta.url), "utf8");
   assert.match(styles, /\.mg-agent-matrix\[data-columns="1"\]\s*\{\s*--mg-agent-columns:1;/);
+  assert.match(styles, /\.mg-agent-matrix\[data-columns="2"\]\s*\{\s*--mg-agent-columns:2;/);
   assert.match(styles, /\.mg-agent-matrix\.mg-skill-matrix \.mg-matrix-head,\s*\.mg-agent-matrix\.mg-skill-matrix \.mg-matrix-row,\s*\.mg-skill-matrix \.mg-skill-group-row\s*\{[^}]*repeat\(var\(--mg-agent-columns,3\),76px\)/);
   assert.match(styles, /\.mg-agent-matrix\.mg-skill-matrix\[data-columns="1"\]\s*\{\s*--mg-skill-min-width:528px;/);
+  assert.match(styles, /\.mg-agent-matrix\.mg-skill-matrix\[data-columns="2"\]\s*\{\s*--mg-skill-min-width:604px;/);
 });
 
 test("shared IDs support independent choices while retaining legacy assignments and bundled protection", async () => {

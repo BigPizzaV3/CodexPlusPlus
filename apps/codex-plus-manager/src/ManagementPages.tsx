@@ -10,7 +10,7 @@ import { matchesManagementQuery, sessionGroups, skillRepoKey, type ManagedSessio
 import { TopbarActions } from "./TopbarActions";
 import { AgentGlyph } from "./HubOverview";
 import { MCP_AGENTS, mcpCount, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
-import { singleAgent } from "./agent-focus-model";
+import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 
@@ -106,11 +106,13 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
   const [deleteTarget, setDeleteTarget] = useState<McpRow | null>(null);
   const [agentConfigs, setAgentConfigs] = useState<Partial<Record<"claude" | "grok", AgentMcpConfig>>>({});
   const [busy, setBusy] = useState(false); const lock = useRef(false);
-  // 只管理 Codex 时只有 Codex 一列，也不读 Claude / Grok 的配置，编辑、删除都不会碰它们的文件。
-  const codexOnly = singleAgent(useAgentFocus()) === "codex";
+  // 只管理 Codex 时只有 Codex 一列（只用增强功能时是 Codex、Claude Code 两列），隐藏的 Agent 不读配置，
+  // 编辑、删除都不会碰它们的文件。
+  const focus = useAgentFocus();
+  const shownAgents = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
   const loadAgents = async () => {
     const next: Partial<Record<"claude" | "grok", AgentMcpConfig>> = {};
-    for (const agent of codexOnly ? [] : (["claude", "grok"] as const)) {
+    for (const agent of (["claude", "grok"] as const).filter((item) => agentVisible(focus, item))) {
       try {
         const result = await invoke<Result & { config?: AgentMcpConfig }>("load_agent_mcp", { agent });
         if (succeeded(result) && result.config) next[agent] = result.config;
@@ -119,13 +121,13 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
     }
     setAgentConfigs(next);
   };
-  useEffect(() => { void loadAgents(); }, [codexOnly]);
+  useEffect(() => { void loadAgents(); }, [focus]);
   const codexEntries = entries.filter((entry) => entry.kind === kind);
   const rows = kind === "mcp"
     ? mergeMcpRows(codexEntries.map((entry) => ({ id: entry.id, tomlBody: entry.tomlBody, enabled: entry.enabled })), { claude: agentConfigs.claude?.entries, grok: agentConfigs.grok?.entries })
     : mergeMcpRows(codexEntries.map((entry) => ({ id: entry.id, tomlBody: entry.tomlBody, enabled: entry.enabled })), {});
   const visible = rows.filter((row) => matchesManagementQuery([row.id, row.body], query));
-  const agents: McpAgentId[] = kind === "mcp" && !codexOnly ? MCP_AGENTS : ["codex"];
+  const agents: McpAgentId[] = kind === "mcp" ? shownAgents : ["codex"];
   const write = async (task: () => Promise<boolean>) => {
     if (lock.current) return false; lock.current = true; setBusy(true);
     try { return await task(); } catch (e) { await notify("MCP", String(e), "failed"); return false; } finally { lock.current = false; setBusy(false); }

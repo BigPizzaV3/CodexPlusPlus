@@ -6,7 +6,7 @@ import ts from "typescript";
 import { customSkillGroupKey, defaultSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, SkillBatchRegistry } from "./skill-agent-batch.ts";
 import { SkillTaskQueue } from "./skill-task-queue.ts";
-import { singleAgent, type AgentFocus } from "./agent-focus-model.ts";
+import { agentVisible, type AgentFocus } from "./agent-focus-model.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
 type FixtureSkill = { id: string; name: string; description: string; repoKey: string; repoPath?: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean };
@@ -120,7 +120,7 @@ function createHarness(saved = "{}", focus: AgentFocus = "all") {
     repoKey: (repo: any) => `${repo.owner}/${repo.name}@${repo.branch}${repo.subdir ? `:${repo.subdir}` : ""}`,
     repoFromKey: () => null,
     repoUrl: () => "", sourceLabel: (item: FixtureSkill) => item.repoKey.split("@", 1)[0], importChannel: () => "",
-    MCP_AGENTS: ["codex", "claude", "grok"], singleAgent, useAgentFocus: () => agentFocus, skillUpdateQueue: updateQueue, skillBatchRegistry,
+    MCP_AGENTS: ["codex", "claude", "grok"], agentVisible, useAgentFocus: () => agentFocus, skillUpdateQueue: updateQueue, skillBatchRegistry,
     checkRepositories: async () => {}, openDialog: async () => null, appConfirm: async () => true, appPrompt: async () => null,
   };
   for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "SortableSkillGroup", "DndContext", "SortableContext", "SkillActionMenu",

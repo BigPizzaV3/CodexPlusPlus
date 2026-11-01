@@ -3984,6 +3984,22 @@ describe("拓展运行时内核", () => {
     assert.equal(k.registered.filter((item: any) => item.kind === "page" && !item.disposed).length, 2, "两份的页面互不顶掉");
   });
 
+  it("配置原地更新：实例都用 onConfigUpdate 接住时不重载，任何一个没接就整体热重载", async () => {
+    const k = await kernel({ manifest: { id: "cfg", config: { size: 1 } } });
+    const seen: string[] = [];
+    const ctx = k.create((ctx: any) => {
+      ctx.onConfigUpdate((next: any, prev: any) => { seen.push(`${prev.size}->${next.size}`); return true; });
+    });
+    const update = (k.window as any).__codexPlusUserScripts.updateConfig;
+    assert.equal(update("user:demo", { size: 2 }), "applied");
+    assert.equal(ctx.config.size, 2, "ctx.config 换成新值");
+    assert.deepEqual(seen, ["1->2"]);
+    assert.equal((k.window as any).__codexPlusUserScripts.scripts["user:demo"].manifest.config.size, 2, "之后新建的实例也读到新配置");
+    k.create(() => {});
+    assert.equal(update("user:demo", { size: 3 }), "reload", "有实例没接就整体热重载");
+    assert.equal(update("user:nobody", { size: 3 }), "reload");
+  });
+
   it("内置 sessionQuery 服务：方法名对齐会话查询，参数经桥接转给 /extensions/history", async () => {
     const k = await kernel();
     const requests: Array<[string, any]> = [];

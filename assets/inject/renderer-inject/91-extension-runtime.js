@@ -48,6 +48,26 @@
     return codexPlusNormalizeInject(Object.keys(inject).filter((name) => inject[name]?.required !== false));
   }
 
+  /**
+   * 管理器保存拓展配置后先调这里：这个拓展的所有实例都接住新配置时返回 "applied"，否则 "reload"（由管理器整体热重载）。
+   * 多实例时每份叠上自己实例的配置。
+   */
+  function codexPlusUpdateExtensionConfig(scriptKey, nextConfig) {
+    const instances = [...codexPlusExtensionInstances].filter((ctx) => ctx.scriptKey === scriptKey && !ctx.disposed);
+    if (!instances.length) return "reload";
+    for (const ctx of instances) {
+      const merged = ctx.instance ? { ...nextConfig, ...(ctx.manifest?.instance?.config ?? ctx.manifest?.instances?.find?.((item) => item.id === ctx.instance.id)?.config ?? {}) } : nextConfig;
+      if (!ctx.__tryConfigUpdate(merged)) return "reload";
+    }
+    const script = window.__codexPlusUserScripts?.scripts?.[scriptKey];
+    if (script?.manifest) script.manifest = { ...script.manifest, config: nextConfig };
+    return "applied";
+  }
+  if (typeof window !== "undefined") {
+    window.__codexPlusUserScripts ||= { scripts: {} };
+    window.__codexPlusUserScripts.updateConfig = codexPlusUpdateExtensionConfig;
+  }
+
   function codexPlusServiceChanged() {
     for (const fiber of [...codexPlusServiceFibers]) {
       try {
@@ -914,7 +934,8 @@
     });
 
     // 生效配置（清单 config 默认值叠加用户在管理器 / 对话里设置的值）。改配置会热重载拓展，这里是只读快照。
-    const config = Object.freeze({ ...(manifest?.config && typeof manifest.config === "object" ? manifest.config : {}) });
+    let config = Object.freeze({ ...(manifest?.config && typeof manifest.config === "object" ? manifest.config : {}) });
+    const configHandlers = new Set();
     // 常驻后台：call 调方法（首次调用时 Codex++ 启动后台进程），on 订阅后台 emit 的事件（长轮询，
     // 随实例卸载停止；on 本身不启动后台）。走内部桥接路由，不经拓展路由白名单，key 固定为本脚本。
     // 用过后台的实例卸载时通知 Codex++ 停掉它；带实例标识，热重载时不会误停新实例拉起的后台。
@@ -999,7 +1020,29 @@
       manifest,
       /** 清单 instances 里的哪一份（{ id, name }）；没声明实例时为 null。 */
       instance: manifest?.instance ?? null,
-      config,
+      get config() {
+        return config;
+      },
+      /**
+       * 配置原地更新：handler(新配置, 旧配置) 返回 true 表示接住了（ctx.config 换成新值，不重载）；
+       * 这个拓展只要有一个实例没接，就照常整体热重载（同 Cordis 的 internal/update 否决重启）。
+       */
+      onConfigUpdate(handler) {
+        if (typeof handler !== "function") throw new Error("onConfigUpdate 需要一个函数");
+        configHandlers.add(handler);
+        return track(() => configHandlers.delete(handler));
+      },
+      /** 内核用：问本实例能否原地接住新配置。 */
+      __tryConfigUpdate(next) {
+        if (!configHandlers.size) return false;
+        const frozen = Object.freeze({ ...(next && typeof next === "object" ? next : {}) });
+        for (const handler of [...configHandlers]) {
+          const result = runCodexPlusExtensionCallback(scriptKey, `${extensionId}.onConfigUpdate`, () => handler(frozen, config));
+          if (!result.ok || result.value !== true) return false;
+        }
+        config = frozen;
+        return true;
+      },
       backend,
       llm,
       get themes() {

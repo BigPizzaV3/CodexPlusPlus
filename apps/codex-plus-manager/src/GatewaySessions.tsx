@@ -9,6 +9,8 @@ import { appConfirm } from "./app-dialog";
 import { t, tf } from "./i18n";
 import { agentName, filterSessions, relativeTime, shortPath, type AgentSessionView, type SessionAgent } from "./gateway-model";
 import { AGENT_ICONS, AgentIcon, type Notify } from "./gateway-ui";
+import { visibleAgents } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 
 const memo: { sessions: AgentSessionView[] | null; agent: SessionAgent | "all" } = { sessions: null, agent: "all" };
 
@@ -72,7 +74,9 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const visible = useMemo(() => filterSessions(sessions ?? [], agent, query), [sessions, agent, query]);
+  // 当前使用模式下隐藏的 Agent（如只用增强功能时的 Grok）的会话不进「全部」。
+  const focus = useAgentFocus();
+  const visible = useMemo(() => filterSessions(visibleAgents(focus, sessions ?? []), agent, query), [focus, sessions, agent, query]);
   const counts = useMemo(() => {
     const all = sessions ?? [];
     return { all: all.length, codex: all.filter((s) => s.agent === "codex").length, claude: all.filter((s) => s.agent === "claude").length, grok: all.filter((s) => s.agent === "grok").length };

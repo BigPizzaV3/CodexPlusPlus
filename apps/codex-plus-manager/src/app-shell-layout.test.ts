@@ -172,7 +172,7 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  assert.match(functionSource("AppSidebar"), /managementNavigationRoutes\.map/);
+  assert.match(functionSource("AppSidebar"), /visibleRoutes\(focus, managementNavigationRoutes\)\.map/);
   // 网关的会话页并进「会话」：Codex 页签是完整的会话管理，其余页签是多 Agent 会话列表。
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
@@ -218,7 +218,7 @@ test("Skills 与 MCP 共用一张多 Agent 表：每个 Agent 一列勾选，不
   const extra = readSource("./ManagementExtra.tsx");
   const css = readSource("./ManagementPages.css");
   assert.match(extra, /className="mg-matrix mg-agent-matrix mg-skill-matrix"/);
-  assert.match(extra, /const agentColumns: McpAgentId\[\] = singleAgent\(useAgentFocus\(\)\) === "codex" \? \["codex"\] : MCP_AGENTS;/);
+  assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
   assert.match(extra, /agentColumns\.map\(\(agent\) => <AgentColumn /);
   assert.match(extra, /agentColumns\.map\(\(agent\) => <MatrixCell /);
   assert.doesNotMatch(extra, /mg-agent-toggle|mg-skill-group-select/);

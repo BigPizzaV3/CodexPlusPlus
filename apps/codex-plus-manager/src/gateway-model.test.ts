@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
   ownPickerSection,
+  visibleOwnModels,
   defaultProviderAgents,
   glanceAgents,
   skippedAgents,
@@ -42,6 +43,7 @@ import {
   splitModels,
   validateDraft,
   validateProviderDraft,
+  type GatewayAgentView,
   type GatewayPayload,
 } from "./gateway-model.ts";
 
@@ -524,4 +526,16 @@ test("模型下拉：自带模型走「直连」命令，接入着时先确认�
   const tray = readFileSync(new URL("./TrayPanel.tsx", import.meta.url), "utf8");
   assert.match(tray, /onPickOwn=\{/);
   assert.match(tray, /"use_gateway_own_model"/);
+});
+
+test("自带模型开关：关掉后只留 Agent 现在用着的那一个，没用着就整组不列", () => {
+  const own = { vendor: "OpenAI", current: "", models: [{ id: "gpt-6-sol", label: "GPT-6-Sol" }, { id: "gpt-6-luna", label: "gpt-6-luna" }] };
+  const agent = { agent: "codex", name: "Codex", enabled: true, baseUrl: "", defaultModel: "", models: [], ownModels: own } as GatewayAgentView;
+  const payload = (hide: string[]) => ({ gateway: { bindings: {}, hideOwnModels: hide } }) as unknown as GatewayPayload;
+  assert.equal(visibleOwnModels(agent, payload([]))?.models.length, 2);
+  assert.equal(visibleOwnModels(agent, payload(["claude"]))?.models.length, 2, "只看自己的开关");
+  assert.equal(visibleOwnModels(agent, payload(["codex"])), null);
+  const onLuna = { ...agent, ownModels: { ...own, current: "GPT-6-LUNA" } };
+  assert.deepEqual(visibleOwnModels(onLuna, payload(["codex"]))?.models.map((model) => model.id), ["gpt-6-luna"]);
+  assert.equal(visibleOwnModels({ ...agent, ownModels: null }, payload([])), null);
 });

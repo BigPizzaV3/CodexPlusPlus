@@ -207,7 +207,8 @@ pub async fn apply_upstream_request(body: &mut Value, request_path: &str, contex
 /// 返回同形对象（`candidates` 换成想要的顺序、可以删掉一些）或 `{ order: ["id", …] }`。返回认得的 id 顺序；
 /// 没有中间件、出错或结果里一个认得的都没有时返回 `None`（照原顺序）。
 pub async fn route_order(candidates: &[Value], context: Value) -> Option<Vec<String>> {
-    if already_applied() {
+    // 不看「上一跳已跑过」的标记：候选只在真正挑上游的那一跳出现（启动器转给网关时那一跳只有网关一个候选）。
+    if candidates.len() < 2 {
         return None;
     }
     let middlewares = stage_middlewares(&cached_middlewares(), "route");

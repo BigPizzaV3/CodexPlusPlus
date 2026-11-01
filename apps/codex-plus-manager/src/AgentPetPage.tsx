@@ -37,7 +37,7 @@ import {
 import { AgentPetSoundPlayer, type AgentPetSoundSources } from "./agent-pet-sound";
 import type { WhaleBalanceProtocol, WhaleBalanceSettings } from "./whale-settings";
 import { t, tf } from "./i18n";
-import { singleAgent } from "./agent-focus-model";
+import { agentVisible, singleAgent } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./AgentPetPage.css";
 
@@ -95,7 +95,8 @@ export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWha
 }) {
   const update = (patch: Partial<AgentPetSettings>) => onChange({ ...settings, ...patch });
   // 只管理 Codex 时桌宠只会出现在 Codex 里，不用再选「显示在」。
-  const codexOnly = singleAgent(useAgentFocus()) === "codex";
+  const focus = useAgentFocus();
+  const codexOnly = singleAgent(focus) === "codex";
   const isWhale = settings.kind === AGENT_PET_KIND_WHALE_WIDGET;
   // 大肥鱼的角色图随应用内嵌，由后端交给页面预览。
   const [whaleImage, setWhaleImage] = useState<PreviewState | null>(null);
@@ -302,7 +303,7 @@ export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWha
               <small>{t("目前只支持 Codex，其他 Agent 后续接入。")}</small>
             </div>
             <div className="agent-pet-agents" role="group" aria-label={t("显示在")}>
-              {agentOptions.map((option) => {
+              {agentOptions.filter((option) => agentVisible(focus, option.id)).map((option) => {
                 const supported = AGENT_PET_SUPPORTED_AGENTS.includes(option.id);
                 const checked = supported && settings.agents.includes(option.id);
                 return (

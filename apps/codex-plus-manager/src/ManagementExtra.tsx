@@ -11,7 +11,7 @@ import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
 import { AgentColumn, ManagementDrawer, MatrixCell, SearchField } from "./ManagementPages";
 import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
-import { singleAgent } from "./agent-focus-model";
+import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
@@ -353,7 +353,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const dismissedConflicts = useRef(new Set<string>());
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const agentColumns: McpAgentId[] = singleAgent(useAgentFocus()) === "codex" ? ["codex"] : MCP_AGENTS;
+  // 当前使用模式下隐藏的 Agent 不占列。
+  const focus = useAgentFocus();
+  const agentColumns: McpAgentId[] = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
   const [repoChecks, setRepoChecks] = useState<Record<string, RepoCheck>>({});
   const updateTasks = useSyncExternalStore(skillUpdateQueue.subscribe, skillUpdateQueue.getSnapshot, skillUpdateQueue.getSnapshot);
   const handledUpdates = useRef(new Set<number>());

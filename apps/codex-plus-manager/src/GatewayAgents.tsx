@@ -13,6 +13,7 @@ import {
   modelDisplay,
   ownPickerSection,
   parseContextWindow,
+  visibleOwnModels,
   pickerSections,
   providerEnabled,
   validateDraft,
@@ -408,6 +409,7 @@ function AgentDetail({
           </Floating>
         </div>
       </div>
+      {agent.ownModels ? <OwnModelsRow agent={agent} busy={busy} payload={payload} run={run} /> : null}
       {isClaude ? (
         <div className="gw-detail-row">
           <span className="gw-detail-label">{t("档位")}</span>
@@ -796,6 +798,30 @@ function ImageModelRow({ agent, payload, busy, run }: { agent: string; payload: 
   );
 }
 
+/** Agent 详情里的「自带模型」：模型下拉里列不列 Agent 自己的模型（直连，不经 Codex++）。 */
+function OwnModelsRow({ agent, payload, busy, run }: { agent: GatewayAgentView; payload: GatewayPayload | null; busy: string | null; run: Run }) {
+  const own = agent.ownModels;
+  if (!own) return null;
+  const shown = !(payload?.gateway.hideOwnModels ?? []).includes(agent.agent);
+  return (
+    <div className="gw-detail-row">
+      <span className="gw-detail-label">{t("自带模型")}</span>
+      <div className="gw-detail-value gw-chip-row">
+        <label className="gw-inline-field gw-inline-check" title={tf("{0} 用自己的登录或 Key 直接向 {1} 要的模型，不经 Codex++。关掉后模型下拉只列网关的模型；{0} 现在用着的那个照样显示。", [agent.name, own.vendor])}>
+          <input
+            checked={shown}
+            disabled={busy !== null}
+            onChange={(event) => void run(`own-shown:${agent.agent}`, "save_gateway_own_models_shown", { agent: agent.agent, shown: event.currentTarget.checked }, t("保存自带模型的显示设置"), true)}
+            type="checkbox"
+          />
+          <span>{tf("在模型下拉里显示 {0} 自带的模型", [agent.name])}</span>
+        </label>
+        <span className="gw-muted">{tf("直连 {0} · {1} 个", [own.vendor, own.models.length])}</span>
+      </div>
+    </div>
+  );
+}
+
 /** 收藏写进网关（同时留一份在本窗口，后端旧版时也不丢），并把新数据推给其它页面。失败不打扰用户。 */
 async function persistFavorites(models: string[]) {
   saveFavorites(models);
@@ -866,7 +892,7 @@ function ModelPicker({
           head={head}
           onPick={onPick}
           onPickOwn={onPickOwn}
-          own={agent.ownModels}
+          own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
           selectedModel={selectedModel}

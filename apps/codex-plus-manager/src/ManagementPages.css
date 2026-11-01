@@ -281,6 +281,7 @@
 .mg-agent-matrix .mg-matrix-head,
 .mg-agent-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) repeat(var(--mg-agent-columns,3),84px) 84px; gap:0; }
 .mg-agent-matrix[data-columns="1"] { --mg-agent-columns:1; }
+.mg-agent-matrix[data-columns="2"] { --mg-agent-columns:2; }
 .mg-agent-column { gap:2px; color:hsl(var(--muted-foreground)); font-weight:500; }
 .mg-agent-column .hub-agent-glyph { width:15px; height:15px; color:hsl(var(--foreground)); }
 .mg-agent-column span { font-size:11px; white-space:nowrap; }
@@ -297,6 +298,7 @@
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-row,
 .mg-skill-matrix .mg-skill-group-row { grid-template-columns:minmax(180px,1fr) 116px repeat(var(--mg-agent-columns,3),76px) 116px; min-width:var(--mg-skill-min-width,680px); }
 .mg-agent-matrix.mg-skill-matrix[data-columns="1"] { --mg-skill-min-width:528px; }
+.mg-agent-matrix.mg-skill-matrix[data-columns="2"] { --mg-skill-min-width:604px; }
 .mg-skills-page .mg-toolbar { flex-wrap:wrap; }
 .mg-agent-matrix.mg-skill-matrix { overflow:auto; }
 .mg-skill-matrix .mg-row-main { width:100%; cursor:pointer; }

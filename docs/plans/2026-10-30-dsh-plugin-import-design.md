@@ -280,3 +280,9 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 
 另外：拓展网关中间件新增 `stage: "route"`（轮换选好候选供应商后重排 / 筛选），`gateway.replaces` 可关 `builtin:relay-rotation`（不再自动换下一个供应商）。内置拓展「语音听写」「轮次回退」「插件市场解锁」的工作改由拓展登记的扫描步骤做，「模型分组」停用后不再轮询。
 
+## 13. 第八期：配置原地更新、网关模式的候选重排（2026-11-01）
+
+- 拓展配置原地更新（对应 Cordis 的 `internal/update` 否决重启）：`ctx.onConfigUpdate((next, prev) => true)` 接住时，管理器保存配置后不再整体热重载，`ctx.config` 原地换成新值；有实例没接就照常热重载。dsh 插件改配置仍是重新分析、常驻进程按版本重起。
+- 网关模式的候选（供应商 + Key）同样经过拓展网关中间件的 `route` 段；`gateway.replaces` 可关 `builtin:gateway-failover`（一个候选失败就回错误，不换下一个）。
+- 内置拓展「会话 ID 角标」改由拓展登记的扫描步骤做；会话行操作按钮组与归档页行按钮是删除、导出和第三方 rowAction 共用的宿主，留在内核。
+
