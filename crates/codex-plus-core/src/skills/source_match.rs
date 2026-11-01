@@ -94,6 +94,9 @@ fn plausible_match(id: &str, name: &str, remote: &RemoteSkill, local_hash: &str)
 }
 
 impl SkillsManager {
+    fn legacy_match_allowed(state: &SkillsState, id: &str) -> bool {
+        !state.independent_library_migrated || !state.installed.contains_key(id)
+    }
     /// cc-switch 指明仓库但没有子路径时，只有内容一致才足以自动加入仓库。
     pub fn save_verified_imported_repo(
         &self,
@@ -147,7 +150,7 @@ impl SkillsManager {
             .chain(
                 self.legacy_source_dir
                     .iter()
-                    .filter(|_| !state.independent_library_migrated)
+                    .filter(|_| Self::legacy_match_allowed(state, id))
                     .map(|root| root.join(id)),
             )
             .chain(std::iter::once(self.linked_dir().join(id)))
@@ -174,7 +177,7 @@ impl SkillsManager {
     ) -> anyhow::Result<String> {
         let snapshot = self.import_target_snapshot_unlocked(state, id)?;
         let Some(legacy) = self.legacy_source_dir.as_ref().filter(|_| {
-            !state.independent_library_migrated
+            Self::legacy_match_allowed(state, id)
                 && !self.source_dir.join(id).join(SKILL_MANIFEST_FILE).is_file()
         }) else {
             return Ok(snapshot);
@@ -231,10 +234,12 @@ impl SkillsManager {
                 .into_iter()
                 .map(|(id, _)| id),
         );
-        if !state.independent_library_migrated {
-            if let Some(legacy) = &self.legacy_source_dir {
-                ids.extend(scan_skill_dirs(legacy).into_iter().map(|(id, _)| id));
-            }
+        if let Some(legacy) = &self.legacy_source_dir {
+            ids.extend(
+                scan_skill_dirs(legacy)
+                    .into_iter()
+                    .filter_map(|(id, _)| Self::legacy_match_allowed(&state, &id).then_some(id)),
+            );
         }
         for (_, root) in &self.agent_dirs {
             ids.extend(scan_skill_dirs(root).into_iter().map(|(id, _)| id));
@@ -1362,6 +1367,84 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(alpha.join("extra.txt")).unwrap(),
             "changed after preview"
+        );
+    }
+
+    #[test]
+    fn migrated_legacy_orphans_are_discovered_and_only_selected_item_is_adopted() {
+        let (temp, manager, repo) = fixture();
+        let manager = manager.with_legacy_source_dir(temp.path().join("legacy"));
+        let alpha = temp.path().join("legacy/alpha");
+        let beta = temp.path().join("legacy/beta");
+        let original = "---\nname: Alpha\n---\nlegacy content\n";
+        write_skill(&alpha, original);
+        write_skill(&beta, "---\nname: Beta\n---\nother content\n");
+        manager.prepare_managed_skills().unwrap();
+        assert!(manager.load_state().independent_library_migrated);
+        let before = std::fs::read(&manager.state_path).unwrap();
+        let candidates = vec![remote(
+            &repo,
+            "alpha",
+            "Alpha",
+            &skill_git_tree_hash(&alpha).unwrap(),
+        )];
+        let preview = manager
+            .preview_repository_matches(&repo, &candidates, None)
+            .unwrap();
+        assert_eq!(preview.matches.len(), 1);
+        assert_eq!(preview.matches[0].local_id, "alpha");
+        assert_eq!(
+            manager
+                .preview_repository_matches(&repo, &candidates, None)
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+        assert_eq!(std::fs::read(&manager.state_path).unwrap(), before);
+        assert!(!manager.source_dir.join("alpha").exists());
+        assert!(!manager.linked_dir().join("alpha").exists());
+
+        std::fs::write(alpha.join("extra.txt"), "changed").unwrap();
+        let (count, errors) = manager
+            .apply_repository_matches(&[selection(&preview.matches[0])], &candidates)
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(std::fs::read(&manager.state_path).unwrap(), before);
+        assert!(!manager.source_dir.join("alpha").exists());
+
+        let updated_remote = vec![remote(
+            &repo,
+            "alpha",
+            "Alpha",
+            &skill_git_tree_hash(&alpha).unwrap(),
+        )];
+        let preview = manager
+            .preview_repository_matches(&repo, &updated_remote, None)
+            .unwrap();
+        assert_eq!(
+            manager
+                .apply_repository_matches(&[selection(&preview.matches[0])], &updated_remote)
+                .unwrap(),
+            (1, vec![])
+        );
+        let state = manager.load_state();
+        assert_eq!(state.installed["alpha"].repo_path, "alpha");
+        assert!(!state.installed.contains_key("beta"));
+        assert!(!manager.source_dir.join("beta").exists());
+        assert!(!manager.linked_dir().join("alpha").exists());
+        assert_eq!(
+            std::fs::read_to_string(alpha.join(SKILL_MANIFEST_FILE)).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read_to_string(alpha.join("extra.txt")).unwrap(),
+            "changed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(manager.source_dir.join("alpha/extra.txt")).unwrap(),
+            "changed"
         );
     }
 
