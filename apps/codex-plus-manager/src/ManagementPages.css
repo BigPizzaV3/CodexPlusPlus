@@ -56,6 +56,9 @@
 .mg-skills-page .mg-drawer h2 { letter-spacing:0; }
 .mg-skills-page :is(button,input):focus-visible { outline:2px solid hsl(var(--ring)); outline-offset:2px; }
 .mg-skills-page .mg-link-button { color:var(--mg-accent-ink); }
+.mg-skill-failures { margin:0 0 10px; padding:10px 12px; border:1px solid hsl(var(--status-warning) / .5); border-radius:6px; overflow-wrap:anywhere; }
+.mg-skill-failures-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.mg-skill-failures ul { max-height:160px; overflow-y:auto; margin:4px 0; padding-left:20px; }
 .mg-drawer.mg-drawer-wide { width:100vw; max-width:none; height:100dvh; border:0; box-shadow:none; }
 .mg-drawer-wide .mg-drawer-body { flex:1; min-height:0; padding:0; overflow:hidden; }
 .mg-drawer-wide>header { flex-shrink:0; padding-inline:22px; background:hsl(var(--surface-raised)); }
