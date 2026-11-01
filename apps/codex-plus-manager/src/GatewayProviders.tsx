@@ -448,8 +448,8 @@ function useLocalLogins(enabled: boolean, poolKey: string) {
       return;
     }
     let alive = true;
-    invoke<{ status: string; payload?: LocalLogin[] }>("scan_gateway_local_logins")
-      .then((result) => { if (alive) setFound(result.status === "ok" ? result.payload ?? [] : []); })
+    invoke<{ status: string; logins?: LocalLogin[] }>("scan_gateway_local_logins")
+      .then((result) => { if (alive) setFound(result.status === "ok" ? result.logins ?? [] : []); })
       .catch(() => { if (alive) setFound([]); });
     return () => { alive = false; };
   }, [enabled, poolKey]);

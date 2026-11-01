@@ -566,6 +566,13 @@ pub fn save_gateway_auto_models(enabled: bool) -> CommandResult<Option<GatewayPa
     )
 }
 
+/// [`scan_gateway_local_logins`] 的结果。要包一层：[`CommandResult`] 把 payload 用 `serde(flatten)`
+/// 摊平，直接放 `Vec` 序列化会失败，界面只会收到一个报错。
+#[derive(Debug, Default, Serialize)]
+pub struct LocalLoginsPayload {
+    pub logins: Vec<codex_plus_core::gateway::subscriptions::LocalLogin>,
+}
+
 /// 「发现本机已登录的订阅账号」开关。关着时不读各家官方客户端的登录文件。
 #[tauri::command]
 pub fn save_gateway_local_login_discovery(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
@@ -579,8 +586,7 @@ pub fn save_gateway_local_login_discovery(enabled: bool) -> CommandResult<Option
 /// 本机已登录、还没进池的订阅账号（供应商页提示导入）。开关关着时不扫描，返回空。
 /// 单独一条命令、不放进 [`GatewayPayload`]：读 sqlite / 登录文件不便宜，payload 每次改动都会重建。
 #[tauri::command]
-pub async fn scan_gateway_local_logins()
--> CommandResult<Vec<codex_plus_core::gateway::subscriptions::LocalLogin>> {
+pub async fn scan_gateway_local_logins() -> CommandResult<LocalLoginsPayload> {
     let result = tauri::async_runtime::spawn_blocking(|| {
         let gateway = GatewayStore::default().load()?;
         if !gateway.local_login_discovery {
@@ -595,9 +601,15 @@ pub async fn scan_gateway_local_logins()
     })
     .await;
     match result {
-        Ok(Ok(found)) => ok("", found),
-        Ok(Err(error)) => failed(&format!("扫描本机登录失败：{error:#}"), Vec::new()),
-        Err(error) => failed(&format!("扫描本机登录失败：{error}"), Vec::new()),
+        Ok(Ok(logins)) => ok("", LocalLoginsPayload { logins }),
+        Ok(Err(error)) => failed(
+            &format!("扫描本机登录失败：{error:#}"),
+            LocalLoginsPayload::default(),
+        ),
+        Err(error) => failed(
+            &format!("扫描本机登录失败：{error}"),
+            LocalLoginsPayload::default(),
+        ),
     }
 }
 
@@ -1624,6 +1636,25 @@ mod tests {
             Some("0.4.2-beta")
         );
         assert_eq!(parse_version("no version here"), None);
+    }
+
+    #[test]
+    fn local_logins_result_serializes_for_the_ui() {
+        // CommandResult 把 payload flatten 进去：payload 不是结构体时序列化会失败，界面收不到列表。
+        let login = codex_plus_core::gateway::subscriptions::LocalLogin {
+            id: "kiro".into(),
+            name: "Kiro".into(),
+            account: String::new(),
+        };
+        let result = crate::commands::ok(
+            "",
+            super::LocalLoginsPayload {
+                logins: vec![login],
+            },
+        );
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["logins"][0]["id"], "kiro");
     }
 }
 
