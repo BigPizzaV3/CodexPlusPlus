@@ -82,7 +82,7 @@ import {
   type TraySettings,
   type TrayTabId,
 } from "./tray-panel-model";
-import { agentVisible, singleAgent, visibleAgents } from "./agent-focus-model";
+import { agentVisible, providersHidden, singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { applyResolvedTheme, loadThemePreference, resolveTheme, systemPrefersDark, watchSystemTheme } from "./theme-mode";
 import "./GatewayPage.css";
@@ -129,7 +129,10 @@ type Pending = { id: string; kind: TrayRequest["kind"]; target?: string };
 type Flash = { tone: "ok" | "error"; text: string };
 
 export function TrayPanel() {
-  const [tab, setTabState] = useState<TrayTabId>(() => readStoredTrayTab());
+  const [storedTab, setTabState] = useState<TrayTabId>(() => readStoredTrayTab());
+  // 只用增强功能：用量、网关、请求流都和供应商有关，只留「概览」，也不画页签条。
+  const enhanceOnly = providersHidden(useAgentFocus());
+  const tab: TrayTabId = enhanceOnly ? "home" : storedTab;
   const [overview, setOverview] = useState<TrayOverview | null>(null);
   const [settings, setSettings] = useState<TraySettings | null>(null);
   const [payload, setPayload] = useState<GatewayPayload | null>(null);
@@ -348,7 +351,7 @@ export function TrayPanel() {
         </button>
       </header>
 
-      <nav aria-label={t("快捷面板页签")} className="tp-tabs" role="tablist">
+      {enhanceOnly ? null : <nav aria-label={t("快捷面板页签")} className="tp-tabs" role="tablist">
         {TRAY_TABS.map((id) => {
           const meta = TAB_META[id];
           const Icon = meta.icon;
@@ -361,7 +364,7 @@ export function TrayPanel() {
             </button>
           );
         })}
-      </nav>
+      </nav>}
 
       <div className="tp-body" role="tabpanel">
         {tab === "home" ? (
@@ -448,6 +451,13 @@ function LinkButton({ label, onClick }: { label: string; onClick: () => void }) 
 
 /* —————————————— 概览 —————————————— */
 
+/** 只用增强功能时的快速打开：只有和供应商无关的页面。 */
+const ENHANCE_QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: LucideIcon }> = [
+  { route: "overview", label: "Codex 概览", icon: House },
+  { route: "sessions", label: "会话", icon: MessagesSquare },
+  { route: "settings", label: "设置", icon: Settings },
+];
+
 const QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: LucideIcon }> = [
   { route: "sessions", label: "会话", icon: MessagesSquare },
   { route: "requestLog", label: "请求日志", icon: ScrollText },
@@ -480,7 +490,10 @@ function HomeTab({
   const busy = pending !== null;
   const busyKind = pending && pending.kind !== "navigate" ? pending.kind : null;
   // 没勾选 Codex 时不放 Codex 的状态卡和启停按钮。
-  const showCodex = agentVisible(useAgentFocus(), "codex");
+  const focus = useAgentFocus();
+  const showCodex = agentVisible(focus, "codex");
+  // 只用增强功能：不讲供应商连接，不放用量速览，快速打开只给和供应商无关的页面。
+  const enhanceOnly = providersHidden(focus);
   const connection = settings?.relayProfilesEnabled === false
     ? t("供应商配置已关闭")
     : !active
@@ -503,10 +516,12 @@ function HomeTab({
           </span>
         </div>
         <div className="tp-codex-facts">
-          <span title={active?.detail}>
-            <Plug aria-hidden="true" />
-            {connection}
-          </span>
+          {enhanceOnly ? null : (
+            <span title={active?.detail}>
+              <Plug aria-hidden="true" />
+              {connection}
+            </span>
+          )}
           {state === "running" ? (
             <span>
               <Check aria-hidden="true" />
@@ -535,16 +550,16 @@ function HomeTab({
         </div>
       </div> : null}
 
-      <button className="tp-card tp-today" onClick={onShowUsage} title={t("查看用量")} type="button">
+      {enhanceOnly ? null : <button className="tp-card tp-today" onClick={onShowUsage} title={t("查看用量")} type="button">
         <Stat label={t("今日请求")} value={glance ? String(glance.calls) : "—"} />
         <Stat label="Token" value={glance ? formatTokens(glance.inputTokens + glance.outputTokens) : "—"} />
         <Stat label={t("成功率")} value={glance?.successRate != null ? `${Math.round(glance.successRate * 100)}%` : "—"} />
         <ChevronRight aria-hidden="true" className="tp-today-arrow" />
-      </button>
+      </button>}
 
       <Section title={t("快速打开")}>
         <div className="tp-quick">
-          {QUICK_LINKS.map((link) => {
+          {(enhanceOnly ? ENHANCE_QUICK_LINKS : QUICK_LINKS).map((link) => {
             const Icon = link.icon;
             return (
               <button className="tp-quick-item" key={link.route} onClick={() => void onOpenRoute(link.route)} type="button">

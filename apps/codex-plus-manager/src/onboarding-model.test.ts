@@ -41,3 +41,12 @@ test("只管理 Codex 时引导换成单 Agent 说法，步骤和目标不变", 
   // 没改写的步骤原样保留。
   assert.equal(solo.find((step) => step.id === "providers"), TOUR_STEPS.find((step) => step.id === "providers"));
 });
+
+test("只用增强功能时去掉网关、供应商池、Agent 接入三步，欢迎卡不提供应商", () => {
+  const steps = tourSteps(null, true);
+  const ids = steps.map((step) => step.id);
+  for (const hidden of ["hub", "providers", "agents-connect"]) assert.ok(!ids.includes(hidden));
+  assert.deepEqual(ids, ["welcome", "agents", "management", "palette", "settings"]);
+  assert.match(steps[0].body, /供应商仍由你自己的工具管理/);
+  assert.equal(steps[0].args, undefined);
+});

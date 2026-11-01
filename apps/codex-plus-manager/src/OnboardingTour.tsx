@@ -8,7 +8,7 @@ import { ArrowLeft, ArrowRight, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { paletteShortcut } from "./command-palette-model";
 import { placeCard, tourSteps } from "./onboarding-model";
-import { singleAgent, type AgentFocus } from "./agent-focus-model";
+import { providersHidden, singleAgent, type AgentFocus } from "./agent-focus-model";
 import { agentName } from "./gateway-model";
 import { useEscapeLayer } from "./use-escape-layer";
 import "./OnboardingTour.css";
@@ -19,7 +19,7 @@ const PAD = 6;
 
 export function OnboardingTour({ focus, onClose }: { focus: AgentFocus; onClose: (finished: boolean) => void }) {
   const solo = singleAgent(focus);
-  const steps = tourSteps(solo ? agentName(solo) : null);
+  const steps = tourSteps(solo ? agentName(solo) : null, providersHidden(focus));
   const text = (value: string, args?: string[]) => (args ? tf(value, args) : t(value));
   useEscapeLayer(true, () => onClose(false));
   const [index, setIndex] = useState(0);

@@ -281,6 +281,7 @@
 .mg-agent-matrix .mg-matrix-head,
 .mg-agent-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) repeat(var(--mg-agent-columns,3),84px) 84px; gap:0; }
 .mg-agent-matrix[data-columns="1"] { --mg-agent-columns:1; }
+.mg-agent-matrix[data-columns="2"] { --mg-agent-columns:2; }
 .mg-agent-column { gap:2px; color:hsl(var(--muted-foreground)); font-weight:500; }
 .mg-agent-column .hub-agent-glyph { width:15px; height:15px; color:hsl(var(--foreground)); }
 .mg-agent-column span { font-size:11px; white-space:nowrap; }

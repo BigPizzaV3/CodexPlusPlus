@@ -10,7 +10,7 @@ import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
 import { AgentColumn, ManagementDrawer, MatrixCell, Menu, MenuItem, SearchField } from "./ManagementPages";
 import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
-import { singleAgent } from "./agent-focus-model";
+import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
@@ -197,8 +197,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [detail, setDetail] = useState<Skill | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  // 只管理 Codex 时只有 Codex 一列。
-  const agentColumns: McpAgentId[] = singleAgent(useAgentFocus()) === "codex" ? ["codex"] : MCP_AGENTS;
+  // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
+  const focus = useAgentFocus();
+  const agentColumns: McpAgentId[] = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [storedGroups] = useState(() => readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY)));
   const [customGroupNames, setCustomGroupNames] = useState<string[]>(storedGroups.names);

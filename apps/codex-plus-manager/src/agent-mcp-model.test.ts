@@ -29,9 +29,10 @@ test("MCP 页按 Agent 三列管理，Claude / Grok 走后端命令且命令已�
   const { readFileSync } = await import("node:fs");
   const page = readFileSync(new URL("./ManagementPages.tsx", import.meta.url), "utf8");
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
-  // 只管理 Codex 时只剩 Codex 一列，也不读 Claude / Grok 的配置。
-  assert.match(page, /const agents: McpAgentId\[\] = kind === "mcp" && !codexOnly \? MCP_AGENTS : \["codex"\];/);
-  assert.match(page, /for \(const agent of codexOnly \? \[\] : \(\["claude", "grok"\] as const\)\)/);
+  // 按使用模式去掉隐藏的 Agent 列（只管理 Codex 时只剩 Codex），隐藏的 Agent 也不读配置。
+  assert.match(page, /const shownAgents = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
+  assert.match(page, /const agents: McpAgentId\[\] = kind === "mcp" \? shownAgents : \["codex"\];/);
+  assert.match(page, /for \(const agent of \(\["claude", "grok"\] as const\)\.filter\(\(item\) => agentVisible\(focus, item\)\)\)/);
   assert.match(page, /invoke<Result & \{ config\?: AgentMcpConfig; backupPath\?: string \}>\("save_agent_mcp"/);
   assert.match(page, /const base = enabledBody\(body, true\);/, "编辑时先统一成启用，避免写到 Claude 被当成移除");
   for (const command of ["agent_mcp_commands::load_agent_mcp", "agent_mcp_commands::save_agent_mcp"]) assert.ok(lib.includes(command), command);

@@ -139,7 +139,7 @@ import { TopbarActions } from "./TopbarActions";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
 import { AgentFocusDialog } from "./AgentFocusDialog";
-import { agentVisible, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
+import { agentVisible, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
 import { needAgentFocusPrompt, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { shouldShowTour, TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
@@ -1464,12 +1464,20 @@ const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentP
  * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
  */
 const multiAgentRoutes = new Set<Route>(["agentCollaboration", "computerUse"]);
-const visibleToolRoutes = (soloAgent: string | null) => (soloAgent ? toolNavigationRoutes.filter((routeId) => !multiAgentRoutes.has(routeId)) : toolNavigationRoutes);
+/**
+ * 和供应商有关的页面：只用增强功能（供应商交给别的工具）时全部隐藏。
+ * 网关一整组、用量与请求日志、旧版供应商配置 / 代理设置，以及按供应商多开。
+ */
+const providerRoutes = new Set<Route>(["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "relayEnvironment", "multiLaunch"]);
+/** 当前使用模式下这一页是否显示：侧栏、页签、命令面板都按它过滤，停在隐藏页面上时自动离开。 */
+const routeVisible = (focus: AgentFocus, routeId: Route) =>
+  !(singleAgent(focus) && multiAgentRoutes.has(routeId)) && !(providersHidden(focus) && providerRoutes.has(routeId));
+const visibleRoutes = (focus: AgentFocus, list: Route[]) => list.filter((routeId) => routeVisible(focus, routeId));
 /** 设置页里「使用模式」一行的说明。 */
 function agentFocusDescription(focus: AgentFocus): string {
-  return focus === "codex"
-    ? t("只管理 Codex：Claude Code、Grok 等其他 Agent 的内容已隐藏，网关只给 Codex 用。已接入网关的其他 Agent 照常工作。")
-    : t("全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 的话可以切到「只管理 Codex」，隐藏用不到的内容。");
+  if (focus === "codex") return t("只管理 Codex：Claude Code、Grok 等其他 Agent 的内容已隐藏，网关只给 Codex 用。已接入网关的其他 Agent 照常工作。");
+  if (focus === "enhance") return t("只用增强功能：供应商、网关和用量已隐藏，供应商配置切换已关闭，Codex++ 不再改 Codex 的 config.toml / auth.json。");
+  return t("全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 或只用增强功能的话，可以切换模式隐藏用不到的内容。");
 }
 /** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
 const gatewayTabByRoute: Partial<Record<Route, GatewayTab>> = {
@@ -4689,6 +4697,27 @@ export function App() {
     // switchTool 每次渲染都是新函数，只在选择或聚焦变化时检查。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentFocus, activeTool, fallbackTool]);
+  // 停在当前模式下隐藏的页面上（启动默认的网关总览、托盘跳过来的请求日志等）：回到当前 Agent 的落脚页。
+  useEffect(() => {
+    if (!routeVisible(agentFocus, route)) void navigate(agentHomeRoute[activeTool] ?? "overview");
+    // navigate 每次渲染都是新函数，只在模式或页面变化时检查。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentFocus, route, activeTool]);
+  // 只用增强功能：供应商交给别的工具，关掉供应商配置切换总开关，Codex++ 不再写 config.toml / auth.json。
+  // 等设置真正读到再改（启动时表单还是默认值，直接保存会盖掉用户的设置）；切回别的模式时不自动打开。
+  const relayOffRequested = useRef(false);
+  useEffect(() => {
+    if (agentFocus !== "enhance") {
+      relayOffRequested.current = false;
+      return;
+    }
+    if (!settings || !settings.settings.relayProfilesEnabled || relayOffRequested.current) return;
+    relayOffRequested.current = true;
+    void saveSettingsValue({ ...settings.settings, relayProfilesEnabled: false }, true).then((saved) => {
+      if (saved) showNotice(t("只用增强功能"), t("已关闭供应商配置切换：Codex++ 不再改 Codex 的 config.toml / auth.json。需要时可以在「全部功能」模式的供应商页重新打开。"), "ok");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentFocus, settings]);
 
   const isGatewayPage = gatewayNavigationRoutes.includes(route);
   const crumbGroup = isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
@@ -4696,7 +4725,7 @@ export function App() {
   const paletteCommands: PaletteCommand[] = [];
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
     const item = routes.find((candidate) => candidate.id === routeId);
-    if (!item) return null;
+    if (!item || !routeVisible(agentFocus, routeId)) return null;
     const Icon = item.icon;
     return { id: `${group}:${routeId}`, group, label: item.label, keywords: `${routeId} ${keywords}`, icon: <Icon className="h-4 w-4" />, run };
   };
@@ -4707,7 +4736,7 @@ export function App() {
   for (const tool of shownTools.filter((entry) => entry.switchable)) {
     agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
   }
-  [...visibleToolRoutes(soloAgent), "settings" as Route].forEach((routeId) => pushCommand(routeCommand(routeId, t("工具"), () => void navigate(routeId))));
+  [...toolNavigationRoutes, "settings" as Route].forEach((routeId) => pushCommand(routeCommand(routeId, t("工具"), () => void navigate(routeId))));
   paletteCommands.push(
     {
       id: "action:codex",
@@ -4726,6 +4755,7 @@ export function App() {
       <AppSidebar
         tools={shownTools}
         soloAgent={soloAgent}
+        focus={agentFocus}
         activeTool={activeTool}
         route={route}
         theme={theme}
@@ -4767,7 +4797,7 @@ export function App() {
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
           key={route}
         >
-          <AgentPageTabs activeTool={activeTool} onNavigate={(next) => void navigate(next)} route={route} />
+          <AgentPageTabs activeTool={activeTool} focus={agentFocus} onNavigate={(next) => void navigate(next)} route={route} />
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
@@ -16379,9 +16409,12 @@ function loadCollapsedGroups(): string[] {
  * 当前 Agent 的全部页面：内容区顶部一排页签，分组（概览 / 供应商 / 增强 / 设置）之间用细线隔开。
  * 网关、全局管理、工具这些通用页面不显示；只有一个页面的 Agent 也不显示。
  */
-function AgentPageTabs({ route, activeTool, onNavigate }: { route: Route; activeTool: ToolId; onNavigate: (route: Route) => void }) {
+function AgentPageTabs({ route, activeTool, focus, onNavigate }: { route: Route; activeTool: ToolId; focus: AgentFocus; onNavigate: (route: Route) => void }) {
   if (globalNavigationRoutes.includes(route)) return null;
-  const groups = agentTabGroups(navigationSections, routeTool, activeTool);
+  // 当前使用模式下隐藏的页面（如只用增强功能时的供应商、多开）不出现在页签里；整组都隐藏就去掉这一组。
+  const groups = agentTabGroups(navigationSections, routeTool, activeTool)
+    .map((entry) => ({ ...entry, routes: visibleRoutes(focus, entry.routes) }))
+    .filter((entry) => entry.routes.length > 0);
   if (groups.reduce((count, entry) => count + entry.routes.length, 0) < 2) return null;
   return (
     <nav aria-label={t("Agent 页面")} className="tp-tabs agent-page-tabs" role="tablist">
@@ -16419,9 +16452,12 @@ function AppSidebar({
   onOpenUpdate,
   codexRun,
   soloAgent,
+  focus,
 }: {
   /** 单 Agent 模式下的那个 Agent：侧栏不再出现「接入更多 Agent」的入口和多 Agent 工具。 */
   soloAgent: string | null;
+  /** 使用模式：只用增强功能时没有网关分组，顶部状态卡不讲网关，Agent 行不画接入状态点。 */
+  focus: AgentFocus;
   /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。
       unavailableReason 非空（如没找到 Codex 应用）时播放键置灰，悬停显示原因。 */
   codexRun: { running: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void };
@@ -16453,6 +16489,7 @@ function AppSidebar({
     });
   };
   const onGlobalPage = globalNavigationRoutes.includes(route);
+  const enhanceOnly = providersHidden(focus);
   const languageLabel = getLanguage() === "en" ? t("切换到中文") : t("切换到英文");
   const themeLabel = theme === "dark" ? t("切换到浅色") : t("切换到深色");
   const connectedAgents = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
@@ -16500,13 +16537,24 @@ function AppSidebar({
 
   return (
     <aside className="side">
-      <button className={`side-hub ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
-        <img alt="" draggable={false} src={APP_LOGO_URL} />
-        <span className="side-hub-text">
-          <strong>Codex++</strong>
-          <small><i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />{gatewayState}</small>
-        </span>
-      </button>
+      {/* 只用增强功能时没有网关：顶部卡片只是应用名，点一下回到概览。 */}
+      {enhanceOnly ? (
+        <button className="side-hub" onClick={() => onNavigate("overview")} title={t("概览")} type="button">
+          <img alt="" draggable={false} src={APP_LOGO_URL} />
+          <span className="side-hub-text">
+            <strong>Codex++</strong>
+            <small>{t("只用增强功能")}</small>
+          </span>
+        </button>
+      ) : (
+        <button className={`side-hub ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
+          <img alt="" draggable={false} src={APP_LOGO_URL} />
+          <span className="side-hub-text">
+            <strong>Codex++</strong>
+            <small><i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />{gatewayState}</small>
+          </span>
+        </button>
+      )}
       <button className="side-search" data-tour="palette" onClick={onOpenPalette} type="button">
         <Search aria-hidden="true" className="side-item-icon" />
         <span>{t("快速跳转")}</span>
@@ -16514,16 +16562,18 @@ function AppSidebar({
       </button>
 
       <nav aria-label={t("主导航")} className="side-nav">
-        <section className={`side-group ${collapsed.includes("gateway") ? "collapsed" : ""}`}>
-          {groupLabel("gateway", t("网关"))}
-          <div className="side-group-items">{gatewayNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
-        </section>
+        {enhanceOnly ? null : (
+          <section className={`side-group ${collapsed.includes("gateway") ? "collapsed" : ""}`}>
+            {groupLabel("gateway", t("网关"))}
+            <div className="side-group-items">{gatewayNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+          </section>
+        )}
 
         <section className={`side-group ${collapsed.includes("agents") ? "collapsed" : ""}`} data-tour="agents">
           {groupLabel(
             "agents",
             "Agent",
-            soloAgent ? undefined : (
+            soloAgent || enhanceOnly ? undefined : (
               <button aria-label={t("接入 Agent")} className="side-group-add" onClick={() => onNavigate("gateway")} title={t("接入 Agent")} type="button">
                 <Plus aria-hidden="true" />
               </button>
@@ -16557,7 +16607,7 @@ function AppSidebar({
                   >
                     <AgentGlyph agent={tool.id} className="side-item-icon" />
                     <span className="side-item-label">{tool.name}</span>
-                    <i aria-hidden="true" className="side-dot side-agent-dot" data-tone={access.tone} />
+                    {enhanceOnly ? null : <i aria-hidden="true" className="side-dot side-agent-dot" data-tone={access.tone} />}
                   </button>
                   {tool.id === "codex" && tool.switchable ? (
                     <button
@@ -16581,12 +16631,12 @@ function AppSidebar({
 
         <section className={`side-group ${collapsed.includes("management") ? "collapsed" : ""}`} data-tour="management">
           {groupLabel("management", t("全局管理"))}
-          <div className="side-group-items">{managementNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+          <div className="side-group-items">{visibleRoutes(focus, managementNavigationRoutes).map((routeId) => renderItem(routeId))}</div>
         </section>
 
         <section className={`side-group ${collapsed.includes("tools") ? "collapsed" : ""}`}>
           {groupLabel("tools", t("工具"))}
-          <div className="side-group-items">{visibleToolRoutes(soloAgent).map((routeId) => renderItem(routeId))}</div>
+          <div className="side-group-items">{visibleRoutes(focus, toolNavigationRoutes).map((routeId) => renderItem(routeId))}</div>
         </section>
       </nav>
 
