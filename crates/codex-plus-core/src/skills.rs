@@ -2283,7 +2283,17 @@ async fn fetch_repo_skills_from_zip(
         );
     }
     let bytes = read_repo_zip_response(response).await?;
-    parse_skills_from_zip(repo, &bytes, cached)
+    parse_repo_skills_from_zip_in_background(repo.clone(), bytes, cached.clone()).await
+}
+
+async fn parse_repo_skills_from_zip_in_background(
+    repo: SkillRepo,
+    bytes: Vec<u8>,
+    cached: BTreeMap<String, RemoteSkill>,
+) -> anyhow::Result<Vec<RemoteSkill>> {
+    tokio::task::spawn_blocking(move || parse_skills_from_zip(&repo, &bytes, &cached))
+        .await
+        .context("后台解析 Skill 仓库压缩包失败")?
 }
 
 pub fn parse_skills_from_zip(
@@ -4669,6 +4679,35 @@ mod tests {
             zipped[0].content_hash,
             parse_skills_from_tree(&root, &tree)[0].content_hash
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn zip_fallback_background_parser_preserves_catalog_and_errors() {
+        let repo = parse_repo_key("acme/kit@main:plugins").unwrap();
+        let zip = repo_zip(&[
+            (
+                "kit-main/plugins/alpha/SKILL.md",
+                "---\nname: Actual alpha\ndescription: Nested skill\n---\n",
+            ),
+            ("kit-main/plugins/alpha/scripts/run.py", "print('ok')"),
+        ]);
+        let expected = parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).unwrap();
+        let actual = parse_repo_skills_from_zip_in_background(repo.clone(), zip, BTreeMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+
+        let error = parse_repo_skills_from_zip_in_background(
+            repo,
+            b"invalid zip".to_vec(),
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("压缩包无法解析"));
     }
 
     #[test]
