@@ -848,7 +848,7 @@
 
   // 保留旧调用入口，语音能力由独立的 opt-in 控件提供（内置拓展「语音听写」登记的步骤）。
   function installDictationSupportPatch() {
-    if (typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("dictation");
+    if (typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("builtin:dictation");
   }
 
   const codexAppServerPreparationTimeoutMs = 2000;
@@ -903,6 +903,6 @@
     // 设置已加载成功；语音 UI 的异常不应使 provider/Fast 刷新误判为失败。
     // service-tier harness 在 70 分片提前返回，尚未初始化 93 分片的录音状态。
     // 语音听写由内置拓展「语音听写」登记成扫描步骤；它停用 / 被顶替时这里什么也不做。
-    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__ && typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("dictation");
+    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__ && typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("builtin:dictation");
     return true;
   }

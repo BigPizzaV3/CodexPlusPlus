@@ -3640,6 +3640,38 @@ describe("拓展运行时内核", () => {
     assert.equal(late, true);
   });
 
+  it("ctx.onScan 把扫描步骤登记在拓展名下，run() 立即跑一次，抛错只记在拓展名下，卸载时撤销", async () => {
+    const k = await kernel();
+    const steps = new Map<number, { owner: string; step: () => void; phase?: string }>();
+    let seq = 0;
+    (globalThis as any).registerCodexPlusScanStep = (owner: string, step: () => void, phase?: string) => {
+      const id = ++seq;
+      steps.set(id, { owner, step, phase });
+      return () => steps.delete(id);
+    };
+    try {
+      let runs = 0;
+      let handle: any;
+      const ctx = k.create((ctx: any) => {
+        handle = ctx.onScan(() => { runs += 1; }, { phase: "light" });
+        ctx.onScan(() => { throw new Error("坏步骤"); });
+      });
+      assert.deepEqual([...steps.values()].map((entry) => [entry.owner, entry.phase]), [["user:demo", "light"], ["user:demo", undefined]]);
+      handle.run();
+      assert.equal(runs, 1);
+      for (const entry of steps.values()) entry.step();
+      assert.equal(runs, 2);
+      assert.ok(k.failures.some((failure) => failure.scriptKey === "user:demo" && /onScan: 坏步骤/.test(failure.message)));
+      assert.throws(() => ctx.onScan("不是函数"), /onScan 需要一个函数/);
+      ctx.dispose();
+      assert.equal(steps.size, 0, "卸载时扫描步骤撤掉");
+      handle.run();
+      assert.equal(runs, 2, "卸载后 run() 不再执行");
+    } finally {
+      delete (globalThis as any).registerCodexPlusScanStep;
+    }
+  });
+
   it("提前撤销只撤销那一项；撤销抛错不中断其余撤销", async () => {
     const k = await kernel();
     const order: string[] = [];
