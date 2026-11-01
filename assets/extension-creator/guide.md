@@ -121,7 +121,26 @@ img.src = ctx.asset("assets/pet.png");   // data URL，页面里直接可用
   一个包合计最大 4 MiB（资源会随拓展下发给页面，越小越好，图片先缩到实际显示尺寸的 2 倍以内）。
 - 页面里不能用 `file://` 路径加载本机文件；也不要在终端里把图片 base64 打印出来再复制进代码——对话里的长
   base64 会被替换成占位符，写进代码就坏了。
-- 文本文件（代码、JSON、CSS）照旧用 `content`。
+- 手写的文本文件（代码、JSON、CSS）照旧用 `content`，单个最大 256 KiB。
+
+## 用了第三方库的界面（打包产物）
+
+要用 npm 上的库（图表、编辑器、React 组件等）时，不要把库的代码或打包结果贴进 `content`：先在本机临时目录里写好源码、
+装依赖、用 esbuild 之类打包成**单个文件**，再用 `sourcePath` 把打包产物复制进包：
+
+```bash
+npx esbuild src/main.js --bundle --minify --format=iife --outfile=/tmp/my-ext/dist/renderer.js
+```
+
+```json
+{ "path": "renderer.js", "sourcePath": "/tmp/my-ext/dist/renderer.js" }
+```
+
+- 扩展名不是图片 / 音频 / 字体的 `sourcePath` 按 UTF-8 文本复制，单个最大 4 MiB、合计最大 8 MiB；打包时开 `--minify`，
+  只打进用到的部分。页面脚本要用 `--format=iife`（入口里照常调用 `codexPlus.extension`）。
+- 打包产物会随 Codex 页面注入，越小越好。
+- 之后改这个拓展：`codexpp_extension_read` 里大文件的 `content` 是 `null`（只给大小）；重写拓展包时要把它们再用 `sourcePath`
+  带上一次，否则会丢。改源码就重新打包再写入。
 
 ## 可配置项
 
@@ -136,6 +155,10 @@ img.src = ctx.asset("assets/pet.png");   // data URL，页面里直接可用
   `array`（`items` 写元素类型，只能是简单类型）、`object`（`properties` 写子字段，最多 3 层）；`secret: true` 时界面按密码框显示。
 - `title` / `description` 可以写 `{ "zh": "…", "en": "…" }`，管理器按界面语言显示。
 - 页面代码读 `ctx.config.minutes`；钩子、网关中间件、工具脚本读第二个参数的 `context.config`。都是只读快照。
+- 同一个拓展要按几组配置各跑一份（例如「工作」「休息」两个计时器）时，用 `instances` 参数：
+  `[{ "id": "work", "name": "工作", "config": { "minutes": 50 } }, { "id": "rest", "name": "休息", "config": { "minutes": 10 } }]`。
+  页面脚本按实例各调用一次，`ctx.config` 是叠上实例配置后的值，`ctx.instance` 是 `{ id, name }`，`ctx.storage` 与注册项按实例分开；
+  实例最多 16 个，实例的 `config` 只能写 `config` 里声明过的键。钩子、网关、后台不分实例。
 - 用户在 Codex++ 管理器的拓展列表里点「设置」修改；对话里用户说「改成 50 分钟」时，用
   `codexpp_extension_configure` 改值即可，不必重写代码。改完会自动热重载。
 
@@ -430,6 +453,14 @@ Codex++ 自带的功能都是内置拓展（会话删除、Markdown 导出、语
 
 要在 Codex 自己的脚本之前改页面（改写 Codex 模块、强制语言）时，用写入工具的 `preload` 参数：`{ "scripts": ["preload/patch.js"], "reloadOnLaunch": true }`。脚本在每份新文档最早执行，拿不到 `codexPlus`，只能读 `codexPlusPreload`（`{ id, key, config }`）；改了要重启 Codex。
 要在启动 Codex 之前 / 退出之后做事（改 Codex 的本地状态文件、恢复补丁）或追加启动参数时，用 `launch` 参数：`{ "args": ["--lang=zh-CN"], "before": "launch/before.mjs", "after": "launch/after.mjs" }`，脚本默认导出 `(context) => …`，拿到 `codexHome`、`stateDir`、`appDir`、`config`。顶替 Rust 侧的内置功能（原生 Fast 解锁、强制中文、Work 视图……）就用这两个。
+
+## 在拓展包里带 dsh 插件
+
+用户手上已经有按 dsh（deepseek-harness）插件写法写的插件（`apply(ctx)` 里 `ctx.tools.register`、`ctx.on("tools/pre-execute", …)`
+等），不用改写成拓展：把插件目录（带 `package.json`）作为 `files` 写进包里的一个子目录，`dsh` 参数写这个目录名（如 `"dsh-plugin"`）。
+拓展启用时 Codex++ 把它作为 dsh 插件导入运行（工具经 MCP、事件经钩子与网关），停用、删除时一起停用、移除。
+写好后用 `codexpp_extension_list` 看加载状态；dsh 插件的逐行兼容性报告在管理器「拓展 → dsh 插件」里。
+新写的功能优先直接写成拓展，`dsh` 只用于搬用户已有的 dsh 插件。
 
 ## 工具连接断开时
 

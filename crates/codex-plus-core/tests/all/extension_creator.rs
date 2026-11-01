@@ -437,13 +437,13 @@ async fn write_accepts_lenient_shapes_and_copies_binary_assets() {
     assert!(!error, "{written}");
     assert!(temp.path().join("user/map-files/renderer.js").is_file());
 
-    // 不合格的资源：类型不对、相对路径、content 与 sourcePath 同时给、超过 1 MiB。
-    let text = temp.path().join("notes.txt");
-    fs::write(&text, "x").unwrap();
+    // 不合格的复制：不是资源类型、也不是 UTF-8 文本、相对路径、content 与 sourcePath 同时给、资源超过 1 MiB。
+    let binary = temp.path().join("notes.bin");
+    fs::write(&binary, [0xff_u8, 0xfe, 0x00]).unwrap();
     let big = temp.path().join("big.png");
     fs::write(&big, vec![0u8; 1024 * 1024 + 1]).unwrap();
     for (files, expected) in [
-        (json!([{"path": "assets/notes.txt", "sourcePath": text.to_string_lossy()}]), "不是支持的资源类型"),
+        (json!([{"path": "assets/notes.bin", "sourcePath": binary.to_string_lossy()}]), "不是 UTF-8"),
         (json!([{"path": "assets/pet.png", "sourcePath": "pet.png"}]), "必须是绝对路径"),
         (json!([{"path": "assets/pet.png", "content": "x", "sourcePath": source.to_string_lossy()}]), "其中之一"),
         (json!([{"path": "assets/big.png", "sourcePath": big.to_string_lossy()}]), "超过单个资源上限"),
@@ -625,11 +625,66 @@ async fn guide_covers_the_public_extension_surface() {
     let (_, guide) = call(&creator(&temp), "codexpp_extension_guide", json!({})).await;
     let guide = guide["guide"].as_str().unwrap();
     // 写入工具的参数说明里引用到的指南小节，指南里都要有。
-    for section in ["## 管理器面板", "## 顶替 Codex++ 内置功能", "## 关掉 Codex++ 网关的内置环节"] {
+    for section in ["## 管理器面板", "## 顶替 Codex++ 内置功能", "## 关掉 Codex++ 网关的内置环节", "## 在拓展包里带 dsh 插件", "## 用了第三方库的界面（打包产物）", "## 赶在 Codex 之前（preload）与启动前后（launch）"] {
         assert!(guide.contains(section), "指南缺少「{section}」");
     }
     for api in ["ctx.onScan", "settings/changed", "placement: \"inline\"", "window.codexPlusManager", "builtin:key-cooldown"] {
         assert!(guide.contains(api), "指南没写 {api}");
     }
     assert!(!guide.contains('\u{fffd}'), "指南里有乱码");
+}
+
+/// 本机文件经 sourcePath 复制：图片按资源复制，其余按文本复制（打包产物，单个上限 4 MiB，不受逐字写的 256 KiB 限制）；
+/// 逐字写的 content 仍守 256 KiB。instances 与 dsh 写进清单。
+#[tokio::test]
+async fn write_copies_large_text_files_and_passes_instances_and_dsh() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let source = temp.path().join("dist");
+    fs::create_dir_all(&source).unwrap();
+    // 约 600 KiB 的「打包产物」：超过逐字写的上限，但在复制上限以内。
+    let bundle = format!("codexPlus.extension((ctx) => {{ ctx.config; }});\n/* {} */\n", "x".repeat(600 * 1024));
+    fs::write(source.join("renderer.js"), &bundle).unwrap();
+    fs::write(source.join("logo.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    fs::write(source.join("blob.bin"), [0xff_u8, 0xfe, 0x00, 0x80]).unwrap();
+    fs::write(source.join("huge.js"), vec![b'a'; 4 * 1024 * 1024 + 1]).unwrap();
+    let dsh_package = r#"{"name":"inner-dsh","version":"0.1.0","type":"module","main":"index.js"}"#;
+    let (error, written) = call(
+        &creator,
+        "codexpp_extension_write",
+        json!({
+            "id": "bundled", "name": "打包产物",
+            "config": {"label": {"type": "string", "default": "默认"}},
+            "instances": [{"id": "work", "name": "工作", "config": {"label": "工作区"}}, {"id": "home"}],
+            "dsh": "dsh-plugin",
+            "files": [
+                {"path": "renderer.js", "sourcePath": source.join("renderer.js").to_string_lossy()},
+                {"path": "assets/logo.png", "sourcePath": source.join("logo.png").to_string_lossy()},
+                {"path": "dsh-plugin/package.json", "content": dsh_package},
+                {"path": "dsh-plugin/index.js", "content": "export const name = 'inner'\nexport function apply() {}\n"}
+            ]
+        }),
+    )
+    .await;
+    assert!(!error, "{written}");
+    assert!(written["written"]["manifestError"].is_null(), "{written}");
+    let root = temp.path().join("user/bundled");
+    assert_eq!(fs::read_to_string(root.join("renderer.js")).unwrap(), bundle, "打包产物原样复制");
+    assert_eq!(fs::read(root.join("assets/logo.png")).unwrap(), b"\x89PNG\r\n\x1a\n");
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("codexpp.json")).unwrap()).unwrap();
+    assert_eq!(manifest["instances"][0]["id"], "work");
+    assert_eq!(manifest["dsh"], "dsh-plugin");
+
+    // 逐字写的 content 仍守 256 KiB，报错里提示改用 sourcePath。
+    let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "inline", "name": "逐字", "files": [{"path": "renderer.js", "content": "x".repeat(300 * 1024)}]})).await;
+    assert!(error && message.as_str().unwrap().contains("sourcePath"), "{message}");
+    // 复制来的文本超过 4 MiB、不是 UTF-8、不是绝对路径都拒绝。
+    for (path, source, expected) in [
+        ("renderer.js", source.join("huge.js").to_string_lossy().into_owned(), "超过复制文件上限"),
+        ("data.bin", source.join("blob.bin").to_string_lossy().into_owned(), "不是 UTF-8"),
+        ("renderer.js", "dist/renderer.js".to_string(), "必须是绝对路径"),
+    ] {
+        let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "bad", "name": "坏", "files": [{"path": path, "sourcePath": source}]})).await;
+        assert!(error && message.as_str().unwrap().contains(expected), "{path}: {message}");
+    }
 }

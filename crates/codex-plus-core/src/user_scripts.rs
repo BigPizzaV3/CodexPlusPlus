@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -779,18 +779,29 @@ impl UserScriptManager {
         let max_file = write.max_file_bytes.unwrap_or(EXTENSION_WRITE_MAX_FILE_BYTES);
         let max_total = EXTENSION_WRITE_MAX_TOTAL_BYTES.max(max_file.saturating_mul(2));
         let mut total = 0usize;
+        let mut copied_total = 0usize;
         for (path, content) in &write.files {
             validate_package_relative_path(path)?;
             if path.eq_ignore_ascii_case(EXTENSION_MANIFEST_FILE) {
                 anyhow::bail!("{EXTENSION_MANIFEST_FILE} 由清单参数生成，不能直接写");
             }
+            if write.copied_text.contains(path) {
+                if content.len() > EXTENSION_COPIED_TEXT_MAX_BYTES {
+                    anyhow::bail!("{path} 超过复制文件上限 {} MiB", EXTENSION_COPIED_TEXT_MAX_BYTES / 1024 / 1024);
+                }
+                copied_total += content.len();
+                continue;
+            }
             if content.len() > max_file {
-                anyhow::bail!("{path} 超过单文件上限 {} KiB", max_file / 1024);
+                anyhow::bail!("{path} 超过单文件上限 {} KiB；打包产物等大文件先写到本机，再用 sourcePath 复制进包", max_file / 1024);
             }
             total += content.len();
         }
         if total > max_total {
             anyhow::bail!("文件总量超过 {} KiB", max_total / 1024);
+        }
+        if copied_total > EXTENSION_COPIED_TEXT_MAX_TOTAL_BYTES {
+            anyhow::bail!("复制进包的文本文件合计超过 {} MiB", EXTENSION_COPIED_TEXT_MAX_TOTAL_BYTES / 1024 / 1024);
         }
         // 没指定页面入口时：有 renderer.js 就用它；只声明 hooks 的拓展可以没有页面入口。
         let renderer = if !write.renderer.is_empty() {
@@ -898,7 +909,7 @@ impl UserScriptManager {
             manifest["providers"] = providers.clone();
         }
         for (key, item) in &write.extra {
-            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources" | "manager" | "preload" | "launch" | "replaces") {
+            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources" | "manager" | "preload" | "launch" | "replaces" | "instances" | "dsh") {
                 manifest[key.as_str()] = item.clone();
             }
         }
@@ -1834,12 +1845,19 @@ pub struct ExtensionWrite {
     pub files: BTreeMap<String, String>,
     /// 二进制资源：包内路径 → 本机源文件，按字节复制（图片、音频、字体）。
     pub assets: BTreeMap<String, PathBuf>,
+    /// `files` 里从本机文件复制来的文本（打包产物等，不经模型逐字转写）：单个上限放宽到
+    /// [`EXTENSION_COPIED_TEXT_MAX_BYTES`]，合计另算。
+    pub copied_text: BTreeSet<String>,
     /// 单个文本文件的上限，默认（None）是对话造拓展的 256 KiB。Codex++ 自己生成的包（dsh 配套拓展包里
     /// 夹着前端插件的打包产物）可以放宽；文本文件总量上限随之放宽到它的 2 倍（至少 1 MiB）。
     pub max_file_bytes: Option<usize>,
 }
 
 const EXTENSION_WRITE_MAX_FILES: usize = 32;
+/// 从本机复制来的文本文件（打包产物）的单个上限与合计上限。逐字写的 `content` 仍是 256 KiB：那是模型在一次
+/// 工具调用里写出来的，再长多半是截断或乱码；复制来的不经模型，只受页面注入体积约束（与 dsh 前端插件入口一致）。
+pub const EXTENSION_COPIED_TEXT_MAX_BYTES: usize = 4 * 1024 * 1024;
+const EXTENSION_COPIED_TEXT_MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const EXTENSION_WRITE_MAX_FILE_BYTES: usize = 256 * 1024;
 const EXTENSION_WRITE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
 /// 单个二进制资源（图片、音频、字体）的上限，以及一个包里资源的总上限。
@@ -1848,7 +1866,7 @@ const EXTENSION_ASSET_MAX_BYTES: usize = 1024 * 1024;
 const EXTENSION_ASSET_MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 
 /// 支持的资源类型（按扩展名），返回 MIME。
-fn extension_asset_mime(path: &str) -> Option<&'static str> {
+pub(crate) fn extension_asset_mime(path: &str) -> Option<&'static str> {
     let extension = path.rsplit('.').next()?.to_ascii_lowercase();
     Some(match extension.as_str() {
         "png" => "image/png",

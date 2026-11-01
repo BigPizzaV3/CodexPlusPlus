@@ -898,7 +898,7 @@ codexPlus.extension((ctx) => {
 { "id": "my-kit", "renderer": "renderer.js", "dsh": "dsh-plugin" }
 ```
 
-`dsh-plugin/` 是包内一个带 `package.json` 的目录（单个插件或 bundle 都行）。拓展启用时 Codex++ 把它作为 dsh 插件导入
+`dsh-plugin/` 是包内一个带 `package.json` 的目录（单个插件或 bundle 都行）。对话造拓展的写入工具同样认 `dsh` 与 `instances`。拓展启用时 Codex++ 把它作为 dsh 插件导入
 （id 为 `ext-<拓展 id>`）并生成配套拓展包，拓展停用时一起停用、删除时一起移除；插件目录或拓展版本变了会重新分析。
 包里的 `Service` 子类插件会实例化并提供给同包插件 `inject`（支持行上的 `isolate` 与 `ctx.isolate`）；插件之间的自定义事件
 （`ctx.emit` / `serial` / `waterfall` …）跨包也能收到；包导出的 `./typert` 会自动登记，前端半边用 `ctx.remote.<namespace>.<method>()` 调；
@@ -1137,7 +1137,10 @@ user_scripts/
 
 边界：
 
-- 只写用户目录下的拓展包，同名目录必须是同 id 的拓展包才会覆盖；路径只能在包内，单文件 256 KiB、总量 1 MiB。
+- 只写用户目录下的拓展包，同名目录必须是同 id 的拓展包才会覆盖；路径只能在包内。
+- 大小：agent 逐字写的文本（`content`）单个 256 KiB、合计 1 MiB——这是模型一次工具调用能可靠写出的量，不是安全边界；
+  本机已有的文件用 `sourcePath` 复制：图片、音频、字体单个 1 MiB、合计 4 MiB（以 data URL 随页面下发），
+  打包产物等文本单个 4 MiB、合计 8 MiB（随页面注入）。用了第三方库的界面让 agent 先用 esbuild 打包成单文件再复制进包。
 - 不提供删除，不要的拓展由 agent 停用，文件由你手动删除。
 - 只做页内热重载。已加载的旧脚本里有没登记清理函数的，热重载会刷新整个 Codex 页面、可能打断当前对话，
   这时工具不自动重载，会让你在管理器里手动点「热重载」。

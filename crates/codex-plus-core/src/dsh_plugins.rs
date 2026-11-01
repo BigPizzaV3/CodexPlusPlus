@@ -1802,6 +1802,7 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         extra,
         assets: Default::default(),
         // 页面脚本里夹着前端插件的打包产物（宿主已限制入口不超过 4 MiB），再留出胶水代码的余量。
+        copied_text: Default::default(),
         max_file_bytes: Some(DSH_CLIENT_MAX_BYTES + 64 * 1024),
     })
 }

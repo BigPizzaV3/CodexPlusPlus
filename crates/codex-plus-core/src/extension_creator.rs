@@ -349,9 +349,11 @@ fn tool_definitions() -> Value {
                     "prompts": {"type": "array", "description": "提示词模板，例如 [{\"name\": \"review\", \"description\": \"审查\", \"arguments\": [{\"name\": \"focus\"}], \"template\": \"prompts/review.md\"}]：模板里写 {{focus}}，经 Codex++ 拓展 MCP 提供"},
                     "resources": {"type": "array", "description": "只读资源，例如 [{\"name\": \"规范\", \"file\": \"docs/style.md\"}]：经 Codex++ 拓展 MCP 提供给模型读取"},
                     "instructions": {"type": "string", "description": "全局指令：包内 .md 路径或文字，合并进 ~/.codex/AGENTS.md 里 Codex++ 托管的一段（官方直连也生效）"},
+                    "instances": {"type": "array", "items": {"type": "object"}, "description": "同一个拓展按多组配置各跑一份，例如 [{\"id\": \"work\", \"name\": \"工作\", \"config\": {\"minutes\": 50}}, {\"id\": \"rest\", \"name\": \"休息\", \"config\": {\"minutes\": 10}}]：页面脚本对每个实例各调用一次 apply，ctx.config 是实例自己的配置（与 config 声明合并）"},
+                    "dsh": {"type": "string", "description": "包内按 dsh 插件写法写的插件目录（如 \"dsh\"，目录里有 package.json 与插件入口）：拓展启用时由 Codex++ 的 dsh 兼容宿主导入运行。写法见指南「在拓展包里带 dsh 插件」"},
                     "replaces": {"type": "array", "items": {"type": "string"}, "description": "顶替的内置拓展 id，例如 [\"usage-statusline\"]：本拓展启用时这些内置拓展让位、停用时回来。写法见指南「顶替 Codex++ 内置功能」"},
                     "manager": {"type": "object", "description": "管理器面板，例如 {\"page\": \"manager.html\", \"title\": \"统计\"}：管理器「本地拓展」里这一行的菜单出现「打开面板」；nav 放进侧栏分组（gateway / management / tools），replaces 顶替管理器的内置页面，data 声明能经 codexPlusManager.data() 读的只读数据。页面放在沙箱 iframe 里，经 window.codexPlusManager 读写本拓展配置、调本拓展后台（backend.call）、取 assets 资源；页面不能联网，资源要内联或用 asset()。写法见指南「管理器面板」"},
-                    "preload": {"type": ["object", "array", "string"], "description": "页面最早期脚本，例如 {\"scripts\": [\"preload/patch.js\"], \"reloadOnLaunch\": true}：在 Codex 自己的脚本之前执行（拿不到 codexPlus，只读 codexPlusPreload），改了要重启 Codex。写法见指南「页面最早期脚本与启动前后」"},
+                    "preload": {"type": ["object", "array", "string"], "description": "页面最早期脚本，例如 {\"scripts\": [\"preload/patch.js\"], \"reloadOnLaunch\": true}：在 Codex 自己的脚本之前执行（拿不到 codexPlus，只读 codexPlusPreload），改了要重启 Codex。写法见指南「赶在 Codex 之前（preload）与启动前后（launch）」"},
                     "launch": {"type": "object", "description": "启动前后，例如 {\"args\": [\"--lang=zh-CN\"], \"before\": \"launch/before.mjs\", \"after\": \"launch/after.mjs\"}：args 追加到 Codex 启动参数，before / after 在启动 Codex 之前、退出之后跑 Node 脚本（默认导出函数，拿到 codexHome、stateDir、config）"},
                     "backend": {"type": "object", "description": "常驻后台声明，例如 {\"script\": \"backend/main.mjs\"}；脚本默认导出 async (ctx) => ({ 方法 })，页面用 ctx.backend.call / on 调用。写法见指南「常驻后台」"},
                     "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
@@ -359,13 +361,13 @@ fn tool_definitions() -> Value {
                     "gateway": {"type": "object", "description": gateway_schema_description()},
                     "files": {
                         "type": "array",
-                        "description": "要写入的文件，不要包含 codexpp.json。文本给 content；图片、音频、字体等资源给 sourcePath（本机文件的绝对路径，按字节复制，放在 assets/ 下，页面里用 ctx.asset(\"assets/xx.png\") 取地址）。不要把 base64 写进代码",
+                        "description": "要写入的文件，不要包含 codexpp.json。手写的文本给 content（单个最大 256 KiB）；本机已有的文件给 sourcePath（绝对路径）：图片、音频、字体放在 assets/ 下按字节复制（页面里用 ctx.asset(\"assets/xx.png\") 取地址，单个最大 1 MiB），打包产物等文本按 UTF-8 复制（单个最大 4 MiB）。用了第三方库的界面先用 esbuild 等打包成单个文件写到本机，再用 sourcePath 复制进包，不要把打包结果贴进 content。不要把 base64 写进代码",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "path": {"type": "string", "description": "包内相对路径"},
                                 "content": {"type": "string", "description": "文本文件的完整内容"},
-                                "sourcePath": {"type": "string", "description": "二进制资源：本机文件绝对路径（png / jpg / gif / webp / svg / mp3 / wav / ogg / woff2 等，单个最大 1 MiB）"},
+                                "sourcePath": {"type": "string", "description": "本机文件绝对路径：png / jpg / gif / webp / svg / mp3 / wav / ogg / woff2 等按资源复制（单个最大 1 MiB），其余按 UTF-8 文本复制（打包产物等，单个最大 4 MiB）"},
                             },
                             "required": ["path"],
                             "additionalProperties": false,
@@ -457,11 +459,16 @@ struct WriteArguments {
     launch: Option<Value>,
     #[serde(default)]
     replaces: Option<Value>,
+    #[serde(default)]
+    instances: Option<Value>,
+    #[serde(default)]
+    dsh: Option<Value>,
     #[serde(deserialize_with = "file_list")]
     files: Vec<WriteFile>,
 }
 
-/// 一个要写入的文件：文本给 `content`，图片 / 音频 / 字体等二进制资源给 `sourcePath`（本机文件，按字节复制）。
+/// 一个要写入的文件：文本给 `content`；本机已有的文件给 `sourcePath`——图片 / 音频 / 字体按字节复制成资源，
+/// 其余（打包产物、HTML、CSS 等文本）按 UTF-8 读进来，单个上限 4 MiB。
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WriteFile {
@@ -470,6 +477,24 @@ struct WriteFile {
     content: Option<String>,
     #[serde(default)]
     source_path: Option<String>,
+}
+
+/// `sourcePath` 指向的本机文本文件（打包产物、HTML、CSS 等）：绝对路径、普通文件、UTF-8、不超过复制上限。
+fn read_copied_text(path: &str, source: &str) -> anyhow::Result<String> {
+    let source = std::path::Path::new(source);
+    if !source.is_absolute() {
+        anyhow::bail!("{path} 的 sourcePath 必须是绝对路径");
+    }
+    let metadata = std::fs::metadata(source).with_context(|| format!("读不到 {}", source.display()))?;
+    if !metadata.is_file() {
+        anyhow::bail!("{} 不是普通文件", source.display());
+    }
+    let limit = user_scripts::EXTENSION_COPIED_TEXT_MAX_BYTES;
+    if metadata.len() > limit as u64 {
+        anyhow::bail!("{path} 超过复制文件上限 {} MiB（打包时开 minify、拆掉用不到的依赖）", limit / 1024 / 1024);
+    }
+    let bytes = std::fs::read(source).with_context(|| format!("读不到 {}", source.display()))?;
+    String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("{path} 不是 UTF-8 文本；图片、音频、字体请放在 assets/ 下（按扩展名识别为资源）"))
 }
 
 /// `renderer` 既收数组也收单个字符串（清单本身两种写法都认，agent 常写成字符串）。
@@ -574,10 +599,20 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 serde_json::from_value(arguments).context("codexpp_extension_write 参数无效")?;
             let mut files = BTreeMap::new();
             let mut assets = BTreeMap::new();
+            let mut copied_text = std::collections::BTreeSet::new();
             for file in arguments.files {
                 let duplicate = match (file.content, file.source_path) {
                     (Some(content), None) => files.insert(file.path.clone(), content).is_some(),
-                    (None, Some(source)) => assets.insert(file.path.clone(), std::path::PathBuf::from(source)).is_some(),
+                    // 图片、音频、字体：按字节复制成资源。
+                    (None, Some(source)) if user_scripts::extension_asset_mime(&file.path).is_some() => {
+                        assets.insert(file.path.clone(), std::path::PathBuf::from(source)).is_some()
+                    }
+                    // 其余按文本复制（打包产物等）：不经模型逐字转写，上限放宽。
+                    (None, Some(source)) => {
+                        let text = read_copied_text(&file.path, &source)?;
+                        copied_text.insert(file.path.clone());
+                        files.insert(file.path.clone(), text).is_some()
+                    }
                     _ => anyhow::bail!("文件 {} 要给 content（文本）或 sourcePath（本机文件）其中之一", file.path),
                 };
                 if duplicate || (files.contains_key(&file.path) && assets.contains_key(&file.path)) {
@@ -610,13 +645,16 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                     ("preload", arguments.preload),
                     ("launch", arguments.launch),
                     ("replaces", arguments.replaces),
+                    ("instances", arguments.instances),
+                    ("dsh", arguments.dsh),
                 ]
                     .into_iter()
                     .filter_map(|(key, item)| item.map(|item| (key.to_string(), item)))
                     .collect(),
                 files,
                 assets,
-                // 对话造拓展守住默认的单文件上限。
+                copied_text,
+                // 逐字写的 content 守住默认的单文件上限；复制来的文本另有上限。
                 max_file_bytes: None,
             })?;
             let key = user_scripts::extension_package_key(&arguments.id);
