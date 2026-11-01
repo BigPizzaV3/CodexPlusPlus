@@ -237,7 +237,12 @@
     .cpps-button:hover:not(:disabled) { background: var(--cpps-hover); }
     .cpps-button:disabled, .cpps-segmented button:disabled { opacity: .5; cursor: default; }
     .cpps-range { display: grid; grid-template-columns: 44px minmax(0, 1fr) 48px; align-items: center; gap: 10px; }
-    .cpps-range input { width: 100%; accent-color: var(--cpps-accent); }
+    .cpps-range input { width: 100%; height: 4px; margin: 0; padding: 0; border: 0; border-radius: 999px; outline: none; cursor: pointer;
+      -webkit-appearance: none; appearance: none; background: linear-gradient(to right, var(--cpps-accent) var(--cpps-fill, 0%), var(--cpps-border) var(--cpps-fill, 0%)); }
+    .cpps-range input:disabled { cursor: default; opacity: .55; }
+    .cpps-range input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border: 0; border-radius: 999px; background: var(--cpps-accent); box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+    .cpps-range input::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 999px; background: var(--cpps-accent); }
+    .cpps-range input:focus-visible { outline: 2px solid var(--cpps-accent); outline-offset: 4px; }
     .cpps-range output { text-align: right; color: var(--cpps-muted); font-variant-numeric: tabular-nums; }
     .cpps-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .cpps-switch-row strong { display: block; font-weight: 500; }
@@ -577,14 +582,19 @@
       const soundState = state.soundStates[config.soundSet];
       const range = (label, min, max, step, value, format, onInput, disabled = false) => {
         const output = h("output", { text: format(value) });
-        return h("label", { class: "cpps-range" }, h("span", { text: label }), h("input", {
+        // 轨道的已填充部分：Codex 会把滑块的原生外观重置掉，这里自己画。
+        const fill = (input, next) => input.style.setProperty("--cpps-fill", `${((next - min) / (max - min)) * 100}%`);
+        const input = h("input", {
           type: "range", min, max, step, value: String(value), disabled,
           oninput: (event) => {
             const next = event.target.valueAsNumber;
             output.textContent = format(next);
+            fill(event.target, next);
             onInput(next);
           },
-        }), output);
+        });
+        fill(input, value);
+        return h("label", { class: "cpps-range" }, h("span", { text: label }), input, output);
       };
       return group("大小与音效", "按下时播放按压音，松开后接上回弹音。",
         range("大小", cppPetSettingsSizeMin, cppPetSettingsSizeMax, 4, config.size, (value) => `${value}px`, (size) => {
@@ -666,7 +676,7 @@
       const whale = config.kind === "whaleWidget";
       const selected = config.image === "custom" ? state.custom : state.previews[config.image];
       let stage;
-      if (whale) stage = state.whaleImage ? h("img", { class: "cpps-whale", src: state.whaleImage, alt: "大肥鱼（DeepSeek 鲸鱼）", draggable: "false" }) : state.catalogError ? h("span", { class: "cpps-muted", text: "大肥鱼预览暂不可用" }) : spinner();
+      if (whale) stage = state.whaleImage ? h("img", { class: "cpps-whale", src: state.whaleImage, alt: "大肥鱼（DeepSeek 鲸鱼）", draggable: "false" }) : state.catalog || state.catalogError ? h("span", { class: "cpps-muted", text: "大肥鱼预览暂不可用" }) : spinner();
       else if (selected?.state === "ok") stage = figure(selected.image);
       else if (selected?.state === "failed") stage = h("span", { class: "cpps-muted", text: selected.message });
       else stage = spinner();
