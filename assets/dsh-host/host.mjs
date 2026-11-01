@@ -143,8 +143,8 @@ const MAX_SKILL_SCAN_DEPTH = 4
 /** 一个包（含它引用的依赖包）最多列出多少个 SKILL.md。 */
 const MAX_SCANNED_SKILLS = 64
 const MAX_TEXT_BYTES = 1024 * 1024
-/** 配套拓展包单个文件的上限（与 Codex++ 写拓展包的限制一致，再留出胶水代码的余量）。 */
-const CLIENT_MAX_BYTES = 240 * 1024
+/** dsh 前端插件入口的上限（与 dsh_plugins.rs 的 DSH_CLIENT_MAX_BYTES 一致）：整个夹进配套拓展包的页面脚本。 */
+const CLIENT_MAX_BYTES = 4 * 1024 * 1024
 
 // MCP 帧走 stdout（钩子 / 网关进程里 stdout 是运行器的结果），插件的 console 输出一律改到 stderr。
 const writeStdout = process.stdout.write.bind(process.stdout)
@@ -1667,14 +1667,58 @@ export class Host {
       },
       sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
     }
+    // @cordisjs/plugin-timer 的写法（dsh 插件常用）：timeout / interval 同上；throttle / debounce 返回包装过的函数，
+    // 带 dispose()，插件卸载时一并撤销还没触发的调用。
+    timer.timeout = timer.setTimeout
+    timer.interval = timer.setInterval
+    const deferred = (callback, delay, leading) => {
+      let handle
+      let last = 0
+      let pendingArgs
+      const flush = () => {
+        handle = undefined
+        last = Date.now()
+        const args = pendingArgs
+        pendingArgs = undefined
+        if (args) callback(...args)
+      }
+      const wrapped = (...args) => {
+        if (leading) {
+          const wait = delay - (Date.now() - last)
+          if (wait <= 0 && !handle) {
+            last = Date.now()
+            callback(...args)
+            return
+          }
+          pendingArgs = args
+          handle ??= setTimeout(flush, Math.max(wait, 0))
+          return
+        }
+        pendingArgs = args
+        if (handle) clearTimeout(handle)
+        handle = setTimeout(flush, delay)
+      }
+      wrapped.dispose = track(() => {
+        if (handle) clearTimeout(handle)
+        handle = undefined
+        pendingArgs = undefined
+      })
+      return wrapped
+    }
+    timer.throttle = (callback, delay) => deferred(callback, delay, true)
+    timer.debounce = (callback, delay) => deferred(callback, delay, false)
     const base = {
       name: state.pluginName,
       config: state.config,
+      // Cordis 的 fiber：插件常读 ctx.fiber.entry.options.id 拿自己这一行的 id（当命名空间、存储键）。
+      fiber: { entry: { options: { id: state.rowId, name: state.pluginName, config: state.config } } },
       logger,
       timer,
       setTimeout: timer.setTimeout,
       setInterval: timer.setInterval,
       sleep: timer.sleep,
+      throttle: timer.throttle,
+      debounce: timer.debounce,
       tools: {
         register(definition, options = {}) {
           if (!definition || typeof definition.name !== 'string' || typeof definition.execute !== 'function') {
@@ -1863,6 +1907,11 @@ export class Host {
             dispose?.()
             changed('commands/change')
           })
+        },
+        // dsh 网页客户端把上传的文件作为「回执」交给命令；Codex 的斜杠命令不带附件，登记了也不会被调用。
+        registerFileReceiptResolver() {
+          note('commands.registerFileReceiptResolver 已登记但不会被调用：Codex 的斜杠命令不带上传文件')
+          return track(() => {})
         },
       },
       sessionProjections: {
@@ -2177,6 +2226,7 @@ export class Host {
     }
     const state = {
       key: `${packageKey}/${row.id}`,
+      rowId: row.id,
       pluginName: plugin.name ?? row.id,
       config,
       tools: record.tools,
@@ -2299,7 +2349,7 @@ export class Host {
         report.diagnostics.push(`包含 dsh 前端插件（dsh.client）：在 Codex 页面里用 Codex 的 React 运行，dsh 插槽映射到 Codex++ 的界面插槽；对不上的插槽、dsh 专属的前端服务（store、remote、conversation 等）不可用`)
       } else {
         report.diagnostics.push(entry && existsSync(entry)
-          ? `dsh 前端插件入口超过 ${CLIENT_MAX_BYTES / 1024} KiB，不加载`
+          ? `dsh 前端插件入口超过 ${CLIENT_MAX_BYTES / 1024 / 1024} MiB，不加载`
           : 'package.json 声明了 dsh.client，但没有找到 exports["./client"] 入口')
       }
     }

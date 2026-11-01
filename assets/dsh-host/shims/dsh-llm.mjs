@@ -44,14 +44,6 @@ const hasCode = (error, code) => errorChain(error).some((item) => item?.code ===
 export const isQuotaExceededError = (error) => hasCode(error, QUOTA_EXCEEDED_CODE)
 export const isContextWindowExceededError = (error) => hasCode(error, CONTEXT_WINDOW_EXCEEDED_CODE)
 
-function deepFreeze(value) {
-  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
-    Object.freeze(value)
-    for (const item of Object.values(value)) deepFreeze(item)
-  }
-  return value
-}
-
 export function freezeMessage(message) {
   return deepFreeze(message)
 }
@@ -159,4 +151,93 @@ export function joinAssistantStreamText(chunks) {
   const assembler = new BlockAssembler()
   for (const chunk of chunks ?? []) assembler.push(chunk)
   return assembler.blocks().filter((block) => block.type === 'text').map((block) => block.text).join('')
+}
+
+// ---- 插件常用的纯函数与基类（与 dsh-llm 同名同义；类型只在编译期，不需要替身）----
+
+/** 品牌化 id：dsh 里只是给字符串打类型标记，运行时原样返回。 */
+export const CallId = (id) => id
+export const ToolCallId = CallId
+export const MessageId = (id) => id
+export const ProviderRequestId = (id) => id
+export const ReasoningEffortId = (id) => id
+
+export const EMPTY_RESPONSE_CODE = 'EMPTY_RESPONSE'
+export const INVALID_CREDENTIAL_CODE = 'INVALID_CREDENTIAL'
+export const CONTEXT_SUMMARY_MAX_CHARS = 120
+
+export const isHarnessError = (error) => error instanceof HarnessError
+
+export function assertNever(value, context) {
+  throw new Error(`unreachable variant${context ? ` in ${context}` : ''}: ${JSON.stringify(value) ?? String(value)}`)
+}
+
+/** 深度冻结（跳过 AbortSignal，它是请求的取消通道）。 */
+export function deepFreeze(value) {
+  const seen = new WeakSet()
+  const pending = [value]
+  while (pending.length) {
+    const node = pending.pop()
+    if (node === null || typeof node !== 'object' || node instanceof AbortSignal || seen.has(node)) continue
+    seen.add(node)
+    Object.freeze(node)
+    for (const key of Object.keys(node)) pending.push(node[key])
+  }
+  return value
+}
+
+export const boundContextSummary = (summary) => (summary.length <= CONTEXT_SUMMARY_MAX_CHARS ? summary : `${summary.slice(0, CONTEXT_SUMMARY_MAX_CHARS - 1)}…`)
+
+export function callConfigEquals(a, b) {
+  if (a.provider !== b.provider || a.model !== b.model || a.reasoningEffort !== b.reasoningEffort || a.temperature !== b.temperature || a.maxTokens !== b.maxTokens) return false
+  if (a.stop === undefined || b.stop === undefined) return a.stop === b.stop
+  return a.stop.length === b.stop.length && a.stop.every((item, index) => item === b.stop[index])
+}
+
+/** Codex++ 里没有 dsh 的 agent 循环：请求都不是它组装的。 */
+const AGENT_LOOP_REQUESTS = new WeakSet()
+export const markAgentLoopRequest = (request) => (AGENT_LOOP_REQUESTS.add(request), request)
+export const isAgentLoopRequest = (request) => AGENT_LOOP_REQUESTS.has(request)
+
+export const APP_IDENTITY = Object.freeze({ product: 'deepseek-harness', version: '0.0.0-codexpp', url: 'https://github.com/deepseek-ai/deepseek-harness-sdk' })
+export const userAgent = (identity = APP_IDENTITY) => `${identity.product}/${identity.version} (+${identity.url})`
+export const attributionHeaders = (identity = APP_IDENTITY) => ({ 'user-agent': userAgent(identity) })
+
+const LEGAL_API_KEY = /^[\x21-\x7e]+$/
+export function normalizeApiKey(raw) {
+  const value = String(raw ?? '').trim()
+  if (!value) return { ok: false, reason: 'empty' }
+  if (!LEGAL_API_KEY.test(value)) return { ok: false, reason: 'illegalCharacters' }
+  return { ok: true, value }
+}
+export function assertUsableApiKey(raw, pkg, ref) {
+  const checked = normalizeApiKey(raw)
+  if (checked.ok) return checked.value
+  throw new LlmError(`${pkg}: the API key resolved from ${ref} is ${checked.reason === 'empty' ? 'blank' : 'not a valid header value'}`, INVALID_CREDENTIAL_CODE)
+}
+
+const DEFAULT_RETRYABLE_CODES = Object.freeze([EMPTY_RESPONSE_CODE, 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'])
+/** 供应商的重试策略：补默认值并冻结（Codex++ 不替插件执行它，只让构造供应商的代码照常跑通）。 */
+export function resolveRetryPolicy(config, path = 'retryPolicy') {
+  const backoff = Object.freeze({ initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0.1, ...(config?.backoff ?? {}) })
+  if (config === undefined || config.mode === 'normal') {
+    return Object.freeze({ mode: 'normal', maxRetries: config?.maxRetries ?? 2, retryableCodes: config?.retryableCodes ?? DEFAULT_RETRYABLE_CODES, ...backoff })
+  }
+  if (config.mode === 'always') return Object.freeze({ mode: 'always', ...backoff })
+  throw new Error(`${path}.mode must be "normal" or "always"`)
+}
+export const RetryPolicySchema = undefined
+
+/** 供应商适配器基类：插件继承它实现 stream，经 ctx.llm.registerAdapter(providers, adapter) 注册。 */
+export class LlmAdapter {
+  providerInfo(provider) {
+    return { id: provider, name: provider }
+  }
+  providerRetryPolicy(_provider) {}
+  listModels(_provider) {
+    return Promise.resolve([])
+  }
+  resolveModel(provider, model, _signal) {
+    return Promise.resolve({ provider, id: model, name: model })
+  }
 }

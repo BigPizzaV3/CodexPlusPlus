@@ -1832,3 +1832,133 @@ fn extension_upgrade_host_must_be_loopback() {
         assert!(!host_is_loopback(host), "{host}");
     }
 }
+
+/// 生态实测（手动跑，默认忽略）：按列表从 npm 真实导入一批 dsh 包，逐个记下导入结果与分析报告。
+///
+/// - `DSH_SURVEY_LIST`：JSON 数组，npm 包名；`DSH_SURVEY_OUT`：结果目录（每个包一个 JSON，已有的跳过）；
+/// - `DSH_SURVEY_NODE`：可选，替代 node 的可执行文件。分析会执行插件代码，批量跑第三方包时应指向一个
+///   把 node 放进沙箱的包装脚本（macOS 上用 sandbox-exec 禁网、只允许写结果目录）；
+/// - `DSH_SURVEY_JOBS`：并行数，默认 8。
+///
+/// `cargo test -p codex-plus-core --test all dsh_plugins::dsh_ecosystem_survey -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn dsh_ecosystem_survey() {
+    let (Ok(list), Ok(out)) = (std::env::var("DSH_SURVEY_LIST"), std::env::var("DSH_SURVEY_OUT")) else {
+        eprintln!("需要 DSH_SURVEY_LIST 与 DSH_SURVEY_OUT");
+        return;
+    };
+    let mut toolchain = Toolchain::detect();
+    if let Ok(node) = std::env::var("DSH_SURVEY_NODE") {
+        toolchain.node = Some(PathBuf::from(node));
+    }
+    let names: Vec<String> = serde_json::from_str(&std::fs::read_to_string(list).unwrap()).unwrap();
+    let out = PathBuf::from(out);
+    std::fs::create_dir_all(&out).unwrap();
+    let jobs = std::env::var("DSH_SURVEY_JOBS").ok().and_then(|value| value.parse().ok()).unwrap_or(8usize);
+    let queue = std::sync::Mutex::new(names.into_iter());
+    std::thread::scope(|scope| {
+        for worker in 0..jobs {
+            let (queue, out, toolchain) = (&queue, &out, &toolchain);
+            scope.spawn(move || {
+                let state = out.join(format!(".state-{worker}"));
+                let plugins = DshPlugins::new(&state);
+                loop {
+                    let Some(name) = queue.lock().unwrap().next() else { break };
+                    let file = out.join(format!("{}.json", name.replace('@', "").replace('/', "__")));
+                    if file.exists() {
+                        continue;
+                    }
+                    let started = std::time::Instant::now();
+                    let source = PluginSource::Npm { spec: name.clone(), registry: None };
+                    let result = match plugins.import(&source, toolchain) {
+                        Ok(record) => json!({ "name": name, "stage": "ok", "report": record.report }),
+                        Err(error) => json!({ "name": name, "stage": "import", "error": format!("{error:#}") }),
+                    };
+                    let mut result = result;
+                    result["secs"] = json!(started.elapsed().as_secs_f64());
+                    std::fs::write(&file, serde_json::to_vec(&result).unwrap()).unwrap();
+                    eprintln!("[survey] {name}: {}", result["stage"]);
+                }
+            });
+        }
+    });
+}
+
+/// 生态实测里卡得多的写法（见 dsh_ecosystem_survey）：cordis timer 的 interval / throttle、
+/// llm.registerAdapter(providers, LlmAdapter 子类)、dsh-llm 的品牌 id 与纯函数导出。
+#[test]
+fn dsh_common_ecosystem_idioms_load_and_run() {
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("compat-plugin")), &toolchain).unwrap();
+    // 用到 llm 服务按设计是 partial（附一条「Codex 自己的请求不经过它」的说明），不是失败。
+    let compat = row(&record.report, "dsh-compat-plugin");
+    assert_eq!(compat["status"], "partial", "{}", record.report);
+    assert!(compat["reasons"].as_array().unwrap().is_empty(), "{}", record.report);
+    let responses = serve(&plugins, &toolchain, &[call(1, "compat_probe", json!({}))]);
+    let text = responses[0]["result"]["content"][0]["text"].as_str().unwrap_or_else(|| panic!("{responses:?}"));
+    let probe: Value = serde_json::from_str(text).unwrap_or_else(|_| panic!("{text}"));
+    assert_eq!(probe["ticked"], true, "timer.interval 在跑：{probe}");
+    assert_eq!(probe["throttled"], 1, "throttle 一秒内只跑一次：{probe}");
+    assert_eq!(probe["text"], "echo:hi", "registerAdapter 注册的供应商接管 ctx.llm.stream：{probe}");
+    assert_eq!(probe["models"], json!(["echo-1"]));
+    assert_eq!(probe["providers"], json!(["Codex（经 Codex++）", "Echo"]));
+    assert_eq!(probe["ids"], json!(["c1", "high"]));
+    assert_eq!(probe["never"], "unreachable variant in probe: \"x\"");
+    assert_eq!(probe["userAgent"], true);
+    assert_eq!(probe["maxRetries"], 2);
+    assert_eq!(probe["frozen"], true);
+    assert_eq!(probe["loop"], false);
+    assert_eq!(probe["replace"], "function");
+    assert_eq!(probe["fiberId"], "dsh-compat-plugin", "ctx.fiber.entry.options.id 是本行的 id：{probe}");
+    assert_eq!(probe["isContext"], false, "宿主的 ctx 不是完整的 Cordis 上下文，Context.is 认 false：{probe}");
+    assert_eq!(probe["receipts"], "function");
+}
+
+/// 装依赖时：没发布到 npm 的依赖（多为 dsh 宿主自带的包）与只在作者工作区有效的写法（workspace:）挪成 peer、不装，
+/// 别的依赖照装、包照常导入，报告里说明跳过了什么；写成 peer 的、或没声明但代码里引用的 dsh 纯工具包从 npm 装真包。
+#[cfg(unix)]
+#[test]
+fn dsh_npm_import_skips_unpublished_dependencies_and_installs_dsh_utilities() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(mut toolchain) = toolchain() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("src/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("package.json"), r#"{"name":"dsh-deps-demo","version":"1.0.0","type":"module","main":"index.js",
+        "dependencies":{"left-pad":"1.3.0","@deepseek-ai/dsh-compact":"^0.1.0","local-thing":"workspace:*"},
+        "peerDependencies":{"@deepseek-ai/dsh-tools":"*","@deepseek-ai/dsh-home-paths":"workspace:~"},
+        "devDependencies":{"@deepseek-ai/dsh-home-paths":">=0.0.1-rc.3 <0.2.0","typescript":"^5.6.0"}}"#).unwrap();
+    std::fs::write(package.join("index.js"), "import { defineTool } from '@deepseek-ai/dsh-tools'\nimport { defaultDshHome } from '@deepseek-ai/dsh-home-paths'\nimport '@deepseek-ai/dsh-util-values'\nexport const name = 'deps'\nexport const inject = ['tools']\nexport function apply(ctx) {\n  ctx.tools.register(defineTool({ name: 'deps_home', description: 'home', parameters: {}, output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] }, async execute() { return defaultDshHome() } }))\n}\n").unwrap();
+    let log = temp.path().join("npm-args.log");
+    let fake = temp.path().join("npm");
+    // 假 npm：package.json 里还有 dsh-compact 就按 npm 的样子报 404；否则把 dependencies 逐个「装」进 node_modules
+    // （同时在 devDependencies 里的按 --omit=dev 跳过，同真 npm）。
+    std::fs::write(&fake, format!(
+        "#!{}\nconst {{ appendFileSync, mkdirSync, readFileSync, writeFileSync }} = require('fs')\nconst {{ execFileSync }} = require('child_process')\nconst args = process.argv.slice(2)\nif (args[0] === 'pack') {{\n  const dest = args[args.indexOf('--pack-destination') + 1]\n  execFileSync('tar', ['-czf', dest + '/dsh-deps-demo-1.0.0.tgz', '-C', {src}, 'package'])\n  process.stdout.write(JSON.stringify([{{ filename: 'dsh-deps-demo-1.0.0.tgz' }}]))\n  process.exit(0)\n}}\nconst manifest = JSON.parse(readFileSync('package.json', 'utf8'))\nconst deps = manifest.dependencies || {{}}\nconst dev = manifest.devDependencies || {{}}\nappendFileSync({log}, JSON.stringify(deps) + '\\n')\nif (deps['@deepseek-ai/dsh-compact']) {{\n  process.stderr.write(\"npm error code E404\\nnpm error 404 Not Found - GET https://registry.npmjs.org/@deepseek-ai%2fdsh-compact - Not found\\nnpm error 404\\n\")\n  process.exit(1)\n}}\nfor (const name of Object.keys(deps).filter((name) => !dev[name])) {{\n  mkdirSync('node_modules/' + name, {{ recursive: true }})\n  writeFileSync('node_modules/' + name + '/package.json', JSON.stringify({{ name, type: 'module', main: 'index.js' }}))\n  writeFileSync('node_modules/' + name + '/index.js', name === '@deepseek-ai/dsh-home-paths' ? \"export const defaultDshHome = () => '/fake/.dsh'\\n\" : '')\n}}\n",
+        toolchain.node.as_ref().unwrap().display(),
+        src = json!(temp.path().join("src").to_string_lossy()),
+        log = json!(log.to_string_lossy()),
+    )).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    toolchain.npm = Some(fake);
+
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&dsh_plugins::parse_source("dsh-deps-demo@1.0.0").unwrap(), &toolchain).unwrap();
+    let installs: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(installs.len(), 2, "404 之后挪走那个依赖重装一次：{installs:?}");
+    assert_eq!(
+        installs[1],
+        json!({"left-pad": "1.3.0", "@deepseek-ai/dsh-home-paths": "latest", "@deepseek-ai/dsh-util-values": "latest"}),
+        "workspace: 写法的依赖不装；peer 里的、没声明但代码里引用的 dsh 纯工具包都装 latest",
+    );
+    assert_eq!(row(&record.report, "dsh-deps-demo")["status"], "compatible", "{}", record.report);
+    let diagnostics = record.report["diagnostics"].to_string();
+    assert!(diagnostics.contains("依赖 @deepseek-ai/dsh-compact 没有安装"), "{diagnostics}");
+    assert!(diagnostics.contains("依赖 local-thing 没有安装"), "{diagnostics}");
+    let responses = serve(&plugins, &toolchain, &[call(1, "deps_home", json!({}))]);
+    assert_eq!(responses[0]["result"]["content"][0]["text"], "/fake/.dsh", "{responses:?}");
+}

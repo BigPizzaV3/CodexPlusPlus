@@ -323,3 +323,43 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 - **会话镜像里的模型流式内容与推理**：要让每个回复流都经过常驻进程（每个事件一次本地往返），只为镜像付出的延迟不值得；镜像只记每轮最后一条回复。
 - **`subprocess` 的 PTY、`web` 的联网搜索**：宿主不装依赖（PTY 需要原生模块），Codex 的联网搜索不对插件开放。
 - **前端 `inputTriggers`、`store` / `conversation` / `uiSession` 的大部分 hooks**：`/` 与 `@` 菜单归 Codex 自己；这些前端服务绑定 dsh Web 客户端自己的状态树。
+
+## 15. 生态实测（2026-11-01）
+
+**方法**：npm 上带 `dsh` 字段（`dsh.bundle` / `dsh.client`）的包共 730 个（`@deepseek-ai` 官方 59 个、第三方 671 个）。
+官方全测，第三方随机抽 160 个（固定种子），共 219 个，走产品里真实的导入路径（`DshPlugins::import`：`npm pack` →
+装依赖 → 宿主分析）。分析会执行插件代码，批量跑时把 node 换成 macOS `sandbox-exec` 包装（禁网、只允许写结果目录）。
+复现：`dsh_plugins::dsh_ecosystem_survey`（`#[ignore]`，环境变量见测试注释）。
+
+**修复前 → 修复后**（同一批样本）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 导入成功 | 192 | 213 |
+| 整包可用（每一行插件、前端都能用） | 89（41%） | 130（59%） |
+| 部分可用 | 56 | 54 |
+| 完全不可用 / 导入失败 | 71 | 31 |
+| 前端插件实际加载 | 106 / 139 | 152 / 156 |
+
+官方 59 个：整包可用 40、部分可用 10、不可用 6、导入失败 3；第三方 160 个：整包可用 90、部分可用 44、不可用 19、
+没有可加载内容 4、导入失败 3。
+
+**这轮修的**（按卡住的包数排序）：
+
+- 装依赖：npm 即使 `--omit=dev` 也会先解析 dev 依赖树，dsh 插件常把宿主包写进 dev（含没发布的 `dsh-compact` 等），整个安装 404。
+  导入副本去掉 `devDependencies`；直接依赖里 npm 上没有的、版本写成 `workspace:` / `link:` 的挪成 peer 不装，报告里逐个说明。
+- dsh 自己的纯工具包（`packages/util` 与 typert 协议包，见 `DSH_UTILITY_PACKAGES`）：写成 peer、或根本没声明但代码里 import 的，
+  导入时从 npm 装真包，不再判为「依赖 dsh 运行时」。
+- 前端插件入口上限 240 KiB → 4 MiB（打包后的前端插件常在 0.3~3 MiB；配套拓展包按这个上限写页面脚本）。
+- 替身补齐：dsh-llm 的 `LlmAdapter` 基类、品牌 id（`CallId` / `ReasoningEffortId` …）、`assertNever`、`deepFreeze`、`attributionHeaders`、
+  `resolveRetryPolicy` 等纯函数；`llm.registerAdapter(providers, adapter)` 改成 dsh 的签名（带 `replace`）；cordis timer 的
+  `interval` / `timeout` / `throttle` / `debounce`；`ctx.fiber.entry.options.id`；`Context.is`（宿主 ctx 认 false，调用方跳过 Cordis 内部操作）；
+  `commands.registerFileReceiptResolver`（登记但不会被调用）。
+
+**剩下的**：
+
+- 依赖 dsh 运行时（多数）：`dsh-agent` / `dsh-agent-preset`、`loader`、`cmdlineArgs`、`sandbox` / `sandboxPolicy`、`settings`、`toolCatalog`、
+  `agentPresets`、`sessionPersistence`、`httpServer` 等——建在 dsh 自己的 agent 循环、命令行、沙箱与设置上，Codex 的这一层不在 Codex++ 手里。
+- 作者打包问题：依赖没声明或没发布、包里没有构建产物、传递依赖里写着 `link:` / `workspace:`、MCP 行缺 `command`。
+- 只在实测沙箱里失败（9 行）：插件直接写 `~/.dsh/...` 或开调试端口，真实导入时不受影响。
+- 3 个前端插件入口超过 4 MiB（4.8~22 MiB），不加载。

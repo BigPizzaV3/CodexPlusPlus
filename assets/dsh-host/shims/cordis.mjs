@@ -11,6 +11,13 @@ export class Context {
   /** Cordis 的 Context.isolate 等符号：插件偶尔用来读作用域，这里只给出占位。 */
   static isolate = Symbol.for('cordis.isolate')
   static current = Symbol.for('cordis.current')
+  /**
+   * 是不是完整的 Cordis 上下文。宿主给插件的 ctx 只模拟了插件用得到的部分（没有 root.reflect、accessor 等内部结构），
+   * 认成 false：调用方（如 dsh-typert-protocol）据此跳过对 Cordis 内部的操作。
+   */
+  static is(value) {
+    return value instanceof Context
+  }
 }
 
 export class Service {

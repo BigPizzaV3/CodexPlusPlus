@@ -608,6 +608,8 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                     .collect(),
                 files,
                 assets,
+                // 对话造拓展守住默认的单文件上限。
+                max_file_bytes: None,
             })?;
             let key = user_scripts::extension_package_key(&arguments.id);
             let mut result = reload_and_report(creator, &key).await?;

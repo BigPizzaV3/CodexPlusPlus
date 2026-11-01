@@ -717,7 +717,7 @@ export function createLlm() {
   return {
     stream(options = {}) {
       const adapter = adapterFor(options.provider)
-      if (adapter && typeof adapter.stream === 'function') return adapter.stream(options)
+      if (adapter) return adapter.stream(options)
       return (async function* () {
         const model = options.provider && options.model && !String(options.model).includes('/') && options.provider !== 'codex'
           ? `${options.provider}/${options.model}`
@@ -809,17 +809,17 @@ export function createLlm() {
       })()
     },
     listProviders() {
-      return [{ id: 'codex', name: 'Codex（经 Codex++）' }, ...[...adapters.values()].map((adapter) => ({ id: adapter.id, name: String(adapter.name ?? adapter.id) }))]
+      return [{ id: 'codex', name: 'Codex（经 Codex++）' }, ...[...adapters.values()].map((adapter) => ({ id: adapter.id, name: adapter.name }))]
     },
     async listModels(provider) {
       const adapter = adapterFor(provider)
-      if (adapter && typeof adapter.listModels === 'function') return adapter.listModels()
+      if (adapter) return adapter.listModels()
       const listed = await hostCall('llm', 'listModels', {})
       return (listed?.models ?? []).map((model) => ({ provider: 'codex', id: String(model?.id ?? model), name: String(model?.name ?? model?.id ?? model) }))
     },
     async resolveModelInfo(provider, model) {
       const adapter = adapterFor(provider)
-      if (adapter && typeof adapter.resolveModelInfo === 'function') return adapter.resolveModelInfo(model)
+      if (adapter) return adapter.resolveModel(model)
       return { provider, model, contextWindow: undefined }
     },
     resolveCallConfig(config) {
@@ -829,15 +829,50 @@ export function createLlm() {
      * 插件注册模型供应商：ctx.llm.stream({ provider }) 对得上时直接用它的 stream（同一个宿主进程里）。
      * Codex 自己的模型请求不经过它——要给 Codex 加供应商，请在 Codex++ 拓展清单里声明 providers。
      */
-    registerAdapter(adapter) {
-      const id = String(adapter?.id ?? adapter?.provider ?? '')
-      if (!id || typeof adapter?.stream !== 'function') throw new TypeError('registerAdapter 需要 { id, stream(options) }')
-      if (id === 'codex') throw new Error('provider codex 由 Codex++ 提供，不能顶替')
-      const entry = { ...adapter, id }
-      adapters.set(id, entry)
-      return () => {
-        if (adapters.get(id) === entry) adapters.delete(id)
+    // dsh 的写法：registerAdapter(providers, adapter)，adapter 是 LlmAdapter 子类（providerInfo / listModels /
+    // resolveModel / stream(options)）；返回的撤销函数带 replace(next) 换一组 provider。也认早期的 { id, stream } 单对象写法。
+    registerAdapter(providers, adapter) {
+      if (!Array.isArray(providers)) {
+        adapter = providers
+        providers = [String(adapter?.id ?? adapter?.provider ?? '')]
       }
+      if (typeof adapter?.stream !== 'function') throw new TypeError('registerAdapter(providers, adapter)：adapter 需要 stream(options)')
+      const owned = new Set()
+      const commit = (list) => {
+        if (!list.length) throw new Error('an adapter must register at least one provider')
+        for (const provider of list) {
+          if (!provider) throw new Error('adapter provider names must be non-empty')
+          if (provider === 'codex') throw new Error('provider codex 由 Codex++ 提供，不能顶替')
+          if (adapters.has(provider) && !owned.has(provider)) throw new Error(`an adapter for provider "${provider}" is already registered`)
+        }
+        for (const provider of owned) adapters.delete(provider)
+        owned.clear()
+        for (const provider of list) {
+          const info = typeof adapter.providerInfo === 'function' ? adapter.providerInfo(provider) : undefined
+          adapters.set(provider, {
+            id: provider,
+            name: String(info?.name ?? adapter.name ?? provider),
+            stream: (options) => adapter.stream(options),
+            listModels: async () => (typeof adapter.listModels === 'function' ? adapter.listModels(provider) : []),
+            resolveModel: async (model) => (typeof adapter.resolveModel === 'function'
+              ? adapter.resolveModel(provider, model)
+              : typeof adapter.resolveModelInfo === 'function' ? adapter.resolveModelInfo(model) : { provider, id: model, name: model }),
+          })
+          owned.add(provider)
+        }
+      }
+      commit(providers.map(String))
+      let released = false
+      const dispose = () => {
+        released = true
+        for (const provider of owned) adapters.delete(provider)
+        owned.clear()
+      }
+      dispose.replace = (next) => {
+        if (released) throw new Error('a disposed adapter registration cannot replace its routes')
+        commit((next ?? []).map(String))
+      }
+      return dispose
     },
     registerConfigurableProviders() {
       return () => {}

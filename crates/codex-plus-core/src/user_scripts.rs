@@ -775,19 +775,21 @@ impl UserScriptManager {
         if asset_total > EXTENSION_ASSET_MAX_TOTAL_BYTES {
             anyhow::bail!("资源总量超过 {} KiB", EXTENSION_ASSET_MAX_TOTAL_BYTES / 1024);
         }
+        let max_file = write.max_file_bytes.unwrap_or(EXTENSION_WRITE_MAX_FILE_BYTES);
+        let max_total = EXTENSION_WRITE_MAX_TOTAL_BYTES.max(max_file.saturating_mul(2));
         let mut total = 0usize;
         for (path, content) in &write.files {
             validate_package_relative_path(path)?;
             if path.eq_ignore_ascii_case(EXTENSION_MANIFEST_FILE) {
                 anyhow::bail!("{EXTENSION_MANIFEST_FILE} 由清单参数生成，不能直接写");
             }
-            if content.len() > EXTENSION_WRITE_MAX_FILE_BYTES {
-                anyhow::bail!("{path} 超过单文件上限 {} KiB", EXTENSION_WRITE_MAX_FILE_BYTES / 1024);
+            if content.len() > max_file {
+                anyhow::bail!("{path} 超过单文件上限 {} KiB", max_file / 1024);
             }
             total += content.len();
         }
-        if total > EXTENSION_WRITE_MAX_TOTAL_BYTES {
-            anyhow::bail!("文件总量超过 {} KiB", EXTENSION_WRITE_MAX_TOTAL_BYTES / 1024);
+        if total > max_total {
+            anyhow::bail!("文件总量超过 {} KiB", max_total / 1024);
         }
         // 没指定页面入口时：有 renderer.js 就用它；只声明 hooks 的拓展可以没有页面入口。
         let renderer = if !write.renderer.is_empty() {
@@ -1773,6 +1775,9 @@ pub struct ExtensionWrite {
     pub files: BTreeMap<String, String>,
     /// 二进制资源：包内路径 → 本机源文件，按字节复制（图片、音频、字体）。
     pub assets: BTreeMap<String, PathBuf>,
+    /// 单个文本文件的上限，默认（None）是对话造拓展的 256 KiB。Codex++ 自己生成的包（dsh 配套拓展包里
+    /// 夹着前端插件的打包产物）可以放宽；文本文件总量上限随之放宽到它的 2 倍（至少 1 MiB）。
+    pub max_file_bytes: Option<usize>,
 }
 
 const EXTENSION_WRITE_MAX_FILES: usize = 32;
