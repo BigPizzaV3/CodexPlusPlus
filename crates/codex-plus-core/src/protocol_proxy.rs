@@ -3505,9 +3505,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         // 装箱：整条代理请求的 future 很大，debug 构建下内联在栈上会把常驻 helper 的线程栈撑爆。
         .scope(
             std::cell::RefCell::new(Vec::new()),
-            Box::pin(open_responses_proxy_request_with_extensions(
-                body, settings, original_user_agent, request_path, beta_features, session_headers, live_request_id, forced,
-            )),
+            crate::extension_gateway::REQUEST_SESSION.scope(
+                std::cell::RefCell::new(String::new()),
+                Box::pin(open_responses_proxy_request_with_extensions(
+                    body, settings, original_user_agent, request_path, beta_features, session_headers, live_request_id, forced,
+                )),
+            ),
         )
         .await
 }
@@ -3526,6 +3529,9 @@ async fn open_responses_proxy_request_with_extensions(
     // 拓展的网关请求中间件：在 Codex++ 自己的转换之前改写原始 Responses 请求，每个请求只跑一次
     // （失败重试不再重跑）。没有拓展声明时零开销。
     let mut request_json: Value = serde_json::from_str(body)?;
+    if let Some(session) = request_json.get("prompt_cache_key").and_then(Value::as_str) {
+        crate::extension_gateway::set_request_session(session);
+    }
     if let Err(reason) = crate::extension_gateway::apply_request(&mut request_json, request_path).await {
         // 拓展拒绝了这一步：不发给模型、也不进失败重试，直接回一个 Codex 能显示原因的错误。
         return extension_rejected_response(&reason);
@@ -3687,10 +3693,25 @@ async fn open_responses_proxy_request_once(
     } else {
         let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
         let mut relays = vec![relay.clone()];
-        relays.extend(crate::relay_rotation::fallback_relays_after(
-            &settings, &relay.id,
-        )?);
-        (relay, relays)
+        // 拓展用 gateway.replaces 关掉了内置轮换的失败切换：只用选中的这一个。
+        if !crate::extension_gateway::builtin_replaced("builtin:relay-rotation") {
+            relays.extend(crate::relay_rotation::fallback_relays_after(
+                &settings, &relay.id,
+            )?);
+        }
+        // 拓展网关中间件的 route 段：按拓展给的顺序重排 / 筛选候选供应商。
+        let candidates: Vec<Value> = relays
+            .iter()
+            .map(|item| json!({ "id": item.id, "name": item.name, "protocol": item.protocol }))
+            .collect();
+        let route_context = json!({ "model": source_model, "conversationId": conversation_id_from_responses_request(&request_json) });
+        if let Some(order) = crate::extension_gateway::route_order(&candidates, route_context).await {
+            relays = order
+                .iter()
+                .filter_map(|id| relays.iter().find(|item| &item.id == id).cloned())
+                .collect();
+        }
+        (relays[0].clone(), relays)
     };
     debug_assert_eq!(
         relays.first().map(|item| item.id.as_str()),

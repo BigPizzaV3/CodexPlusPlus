@@ -438,9 +438,13 @@ Codex++ 自己在发请求前也会做几件事（本地压缩、第三方推理
 - `stage`：`request`（默认）在内置环节之前改原始 Responses 请求；`upstream` 在内置环节之后改真正发给上游的请求体，
   第二个参数多给 `stage: "upstream"`、`wireApi`（`responses` / `chat` / `anthropic`…）、`relay: { id, name }`、`model`、
   `attempt`（换候选重发时每次都跑，请求体按候选不同）。`upstream` 段同样可以 `{ reject }`、加请求头。
+- `stage: "route"`：中转轮换按规则选出候选供应商之后调用，收到 `{ model, conversationId, candidates: [{ id, name, protocol }] }`，
+  返回重排 / 删减后的同形对象或 `{ order: ["供应商 id", …] }`，按这个顺序尝试（认不得的 id 忽略，一个都不认得时照原顺序）。
+  只作用于中转轮换；聚合模型、显式模型路由、网关模式的 Key 池不经过这里。
 - `order`：同一段里越小越先，相同时按拓展 key 顺序。
 - `replaces`：关掉的内置环节，可选 `builtin:local-compaction`（本地压缩）、`builtin:reasoning-collapse`（第三方推理折叠）、
-  `builtin:exec-adapt`（exec 工具适配）。拓展启用时生效，停用后恢复。路由、协议转换、鉴权不能关。
+  `builtin:exec-adapt`（exec 工具适配）、`builtin:relay-rotation`（轮换失败后自动换下一个供应商；关掉后只用选中的那一个，
+  配合 route 段自己决定顺序）。拓展启用时生效，停用后恢复。协议转换、鉴权不能关。
 
 ### 网关响应流中间件
 

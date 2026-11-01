@@ -317,3 +317,23 @@ async fn request_stages_order_and_builtin_replaces() {
     apply_upstream_request_with(&manager, &mut upstream, "/v1/responses", json!({"stage": "upstream", "wireApi": "chat", "relay": {"id": "r1"}})).await.unwrap();
     assert_eq!(upstream["seen"], "upstream:chat:r1");
 }
+
+/// route 段：拓展给的候选供应商顺序（可删减），认不得的 id 丢掉，一个都不认得时照原顺序。
+#[tokio::test]
+async fn route_middlewares_reorder_candidate_relays() {
+    use codex_plus_core::extension_gateway::route_order_with_manager;
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        eprintln!("跳过：本机没有 Node");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "router", json!({ "request": [{ "script": "gateway/route.mjs", "stage": "route" }], "replaces": ["builtin:relay-rotation"] }),
+        &[("gateway/route.mjs", r#"export default (body, context) => (context.stage === "route" && body.model === "m-cheap" ? { order: ["b", "zzz"] } : { ...body, candidates: [...body.candidates].reverse() });"#)]);
+    let candidates = vec![json!({"id": "a"}), json!({"id": "b"}), json!({"id": "c"})];
+    assert_eq!(route_order_with_manager(&manager, &candidates, json!({"model": "m-cheap"})).await, Some(vec!["b".to_string()]));
+    assert_eq!(route_order_with_manager(&manager, &candidates, json!({"model": "m"})).await, Some(vec!["c".to_string(), "b".to_string(), "a".to_string()]));
+    assert_eq!(manager.enabled_gateway_replaces().unwrap(), vec![("router".to_string(), "builtin:relay-rotation".to_string())]);
+    manager.set_script_enabled("user:router", false).unwrap();
+    assert_eq!(route_order_with_manager(&manager, &candidates, json!({"model": "m"})).await, None);
+}

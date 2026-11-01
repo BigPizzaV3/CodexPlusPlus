@@ -247,6 +247,7 @@ const TRANSLATE = {
       return {}
     }
     await host.serial('agent/turn-stopping', [{ agent, turn: agent.session.turn, signal }])
+    await host.parallel('workspace/session-stop', [{ sessionId: agent.session.id }])
     // ctx.goals：目标还在推进就要求再走一轮。
     const nudge = host.goals?.nudge(agent)
     const text = [messagesText(sink.steer), nudge].filter(Boolean).join('\n\n')
@@ -632,18 +633,64 @@ async function streamFor(host, message) {
 
 /** 网关失败重试：agent/request-error 返回 { kind: 'retry' } 就重发。 */
 async function errorFor(host, error) {
+  // 网关带上了出错请求所属的会话：认出 agent，先发 agent/error（只通知），再问 agent/request-error 要不要重试。
+  const agent = error?.session ? host.agentRegistry.get(error.session) : undefined
+  const failure = { message: String(error?.json?.error?.message ?? error?.body ?? '').slice(0, 2000), code: String(error?.json?.error?.code ?? error?.status ?? 'ERROR'), status: error?.status }
+  if (agent) host.emitEvent('agent/error', [{ agent, turn: agent.session.turn, step: 1, error: failure }])
   if (!host.hasListeners('agent/request-error')) return null
   const controller = new AbortController()
-  const failure = { message: String(error?.json?.error?.message ?? error?.body ?? '').slice(0, 2000), code: String(error?.json?.error?.code ?? error?.status ?? 'ERROR'), status: error?.status }
-  const action = await host.waterfall('agent/request-error', [{ agent: undefined, turn: 0, step: 1, provider: 'codex', failure, retryPolicy: undefined, signal: controller.signal }], async () => undefined)
+  const action = await host.waterfall('agent/request-error', [{ agent, turn: agent?.session.turn ?? 0, step: 1, provider: 'codex', failure, retryPolicy: undefined, signal: controller.signal }], async () => undefined)
   controller.abort()
   return action?.kind === 'retry' ? { retry: true, delayMs: Number(action.delayMs) || 1000 } : null
 }
 
 /** /webhook/<kind> 的请求 → dsh 的 delivery，交给插件的 webhook 规则。 */
+/**
+ * ctx.webServer 注册的网页路由：后台交来的 { path, method, headers, body } 包成 Node 风格的 req / res 交给处理器，
+ * 收集 res 写出的状态、头与内容。
+ */
+async function webRouteFor(host, request = {}) {
+  const path = String(request.path ?? '/').replace(/^\/ext\/[^/]+/, '') || '/'
+  const route = host.webRoutes.get(path.split('?')[0]) ?? (host.webFallback ? { handler: host.webFallback } : undefined)
+  if (!route) return { status: 404, body: `没有插件处理 ${path}` }
+  const body = request.body === undefined || request.body === null ? '' : String(request.body)
+  const req = {
+    method: String(request.method ?? 'GET'),
+    url: path,
+    headers: Object.fromEntries(Object.entries(request.headers ?? {}).map(([key, value]) => [key.toLowerCase(), value])),
+    async *[Symbol.asyncIterator]() {
+      if (body) yield Buffer.from(body)
+    },
+  }
+  const reply = { status: 200, headers: {}, chunks: [] }
+  await new Promise((resolve, reject) => {
+    const res = {
+      statusCode: 200,
+      setHeader: (name, value) => { reply.headers[String(name).toLowerCase()] = String(value) },
+      getHeader: (name) => reply.headers[String(name).toLowerCase()],
+      writeHead(status, headers = {}) {
+        res.statusCode = status
+        for (const [name, value] of Object.entries(headers)) res.setHeader(name, value)
+        return res
+      },
+      write(chunk) {
+        reply.chunks.push(Buffer.from(chunk))
+        return true
+      },
+      end(chunk) {
+        if (chunk !== undefined) res.write(chunk)
+        reply.status = res.statusCode
+        resolve()
+      },
+    }
+    Promise.resolve(route.handler(req, res)).catch(reject)
+  })
+  return { status: reply.status, headers: reply.headers, body: Buffer.concat(reply.chunks).toString('utf8') }
+}
+
 async function webhookFor(host, request = {}) {
   const match = /\/webhook\/(.+)$/.exec(String(request.path ?? ''))
-  if (!match) return { status: 404, body: '路径要写成 /webhook/<kind>' }
+  if (!match) return webRouteFor(host, request)
   let event = request.json
   if (event === undefined) {
     try {

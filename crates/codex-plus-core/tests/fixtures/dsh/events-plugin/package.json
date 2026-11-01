@@ -1,0 +1,8 @@
+{
+  "name": "dsh-events-demo",
+  "version": "0.1.0",
+  "description": "演示补上的零碎事件：agent/error、workspace/session-stop、goal/changed、domain/changed、credentials 写入",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*" }
+}

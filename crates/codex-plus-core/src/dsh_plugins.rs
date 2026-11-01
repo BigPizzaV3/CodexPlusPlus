@@ -140,6 +140,10 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-plan-mode",
     "@deepseek-ai/dsh-goal",
     "@deepseek-ai/dsh-subagent",
+    "@deepseek-ai/dsh-attachment",
+    "@deepseek-ai/dsh-file-reference",
+    "@deepseek-ai/dsh-host-webserver",
+    "@deepseek-ai/dsh-mcp-resources",
 ];
 
 /// 插件来源。

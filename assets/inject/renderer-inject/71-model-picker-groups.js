@@ -1105,7 +1105,8 @@
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
       codexPlusModelPickerScan();
-      codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
+      // 内置拓展「模型分组」停用 / 被顶替时，扫描清理完就停下轮询；装回来时由它的 sync 重新开始。
+      if (!globalThis?.__codexPlusBuiltinInactive?.has("model-picker-groups")) codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
     }, delay);
   }
 

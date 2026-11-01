@@ -1353,3 +1353,84 @@ async fn dsh_runtime_stand_ins_plan_mode_goals_and_fs_intents() {
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
 }
+
+/// 补上的零碎事件：goal/changed、domain/changed、credentials 写入后的事件、workspace/session-activity（服务里跑），
+/// workspace/session-stop（Stop 钩子）与 agent/error（网关失败重试带上会话）。
+#[tokio::test]
+async fn dsh_remaining_events_are_dispatched() {
+    use codex_plus_core::extension_hooks::dispatch;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(scripts.path().join("builtin"), scripts.path().join("user"), scripts.path().join("user_scripts.json"));
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("events-plugin")), &toolchain).unwrap();
+    let plan = dsh_plugins::report_bridge(&record.report);
+    assert!(plan.gateway_error && plan.hooks.iter().any(|hook| hook == "Stop"), "{plan:?}");
+
+    let responses = serve(&plugins, &toolchain, &[call(1, "probe_events", json!({}))]);
+    let probe: Value = serde_json::from_str(responses[0]["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(probe, json!({
+        "seen": ["goal:create", "goal:complete", "domain:items:a:put", "domain:items:a:delete", "cred:TOKEN_X"],
+        "source": "stored",
+        "activity": [{ "kind": "working", "sessionId": "g1" }],
+    }), "{responses:?}");
+
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    dispatch(&manager, "Stop", json!({"session_id": "w1", "stop_hook_active": false})).await.unwrap();
+    let dir = scripts.path().join("user/dsh-dsh-events-demo");
+    let script = format!(
+        "const {{ default: fail }} = await import({}); await fail({{ status: 500, body: 'boom', json: {{ error: {{ code: 'upstream_down' }} }}, session: 'w1' }}); const {{ default: create }} = await import({}); process.stdout.write(JSON.stringify(await create().command({{ name: 'seen', rawInput: '', sessionId: 'w1' }}))); process.exit(0)",
+        json!(url_of(&dir.join("gateway/error.mjs"))), json!(url_of(&dir.join("backend/main.mjs")))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    let seen: Value = serde_json::from_str(result["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(seen, json!(["stop:w1", "error:w1:upstream_down"]), "{}", String::from_utf8_lossy(&output.stderr));
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+/// 网页路由（webServer → 配套拓展包后台的 HTTP）、MCP 资源（dsh 插件 MCP 的 resources/*）、附件与文件引用。
+#[tokio::test]
+async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(scripts.path().join("builtin"), scripts.path().join("user"), scripts.path().join("user_scripts.json"));
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("web-plugin")), &toolchain).unwrap();
+    assert!(dsh_plugins::report_bridge(&record.report).webhook, "webServer 路由要挂后台 HTTP");
+
+    let responses = serve(&plugins, &toolchain, &[
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "resources/read", "params": {"uri": "dsh-notes+note://readme"}}),
+        call(4, "probe_files", json!({})),
+    ]);
+    assert!(responses[0]["result"]["capabilities"]["resources"].is_object(), "{:?}", responses[0]);
+    assert_eq!(responses[1]["result"]["resources"][0]["uri"], "dsh-notes+note://readme");
+    assert_eq!(responses[2]["result"]["contents"][0]["text"], "content of note://readme");
+    assert_eq!(responses[2]["result"]["contents"][0]["uri"], "dsh-notes+note://readme");
+    let probe: Value = serde_json::from_str(responses[3]["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(probe, json!({ "bytes": 3, "rejected": true, "refs": [{ "path": "notes/readme.md", "kind": "file" }] }), "{responses:?}");
+
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    let dir = scripts.path().join("user/dsh-dsh-web-demo");
+    let script = format!(
+        "const {{ default: create }} = await import({}); const reply = await create().http({{ path: '/ext/dsh-dsh-web-demo/hello', method: 'POST', headers: {{}}, body: 'there' }}); const missing = await create().http({{ path: '/ext/dsh-dsh-web-demo/nope', method: 'GET', headers: {{}} }}); process.stdout.write(JSON.stringify({{ reply, missing: missing.status }})); process.exit(0)",
+        json!(url_of(&dir.join("backend/main.mjs")))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    assert_eq!(result["reply"], json!({ "status": 201, "headers": { "content-type": "text/plain" }, "body": "hi POST there" }), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(result["missing"], 404);
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}

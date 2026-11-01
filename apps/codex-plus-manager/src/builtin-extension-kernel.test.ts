@@ -58,6 +58,11 @@ test("内置拓展装上时登记扫描步骤、挂打字特效监听；停用�
   api.sync();
   assert.ok(calls.includes("typing:install"));
   assert.ok(api.steps().has("dream-skin") && api.steps().has("side-chat-save") && api.steps().has("agent-pet"));
+  assert.ok(api.steps().has("dictation") && api.steps().has("plugin-market-unlock"));
+  assert.equal(api.steps().get("turn-rewind").phase, "light", "轮次回退跟着轻量扫描");
+  calls.length = 0;
+  api.runSteps("light");
+  assert.ok(!calls.includes("dream:refresh"), "轻量扫描只跑 light 步骤");
   calls.length = 0;
   api.runSteps();
   assert.ok(calls.includes("dream:refresh"), "扫描循环经登记的步骤刷新梦皮");

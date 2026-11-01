@@ -112,6 +112,20 @@ tokio::task_local! {
     pub static EXTENSION_HEADERS: std::cell::RefCell<Vec<(String, String)>>;
 }
 
+tokio::task_local! {
+    /// 当前请求所属的 Codex 会话（请求体里的 prompt_cache_key）：失败中间件据此告诉拓展是哪个会话出错。
+    pub static REQUEST_SESSION: std::cell::RefCell<String>;
+}
+
+/// 协议代理解析出请求体后记下会话 id（不在请求的 future 里时什么也不做）。
+pub fn set_request_session(session: &str) {
+    let _ = REQUEST_SESSION.try_with(|current| *current.borrow_mut() = session.to_string());
+}
+
+fn request_session() -> String {
+    REQUEST_SESSION.try_with(|current| current.borrow().clone()).unwrap_or_default()
+}
+
 /// 当前请求上拓展加的请求头。
 pub fn extension_headers() -> Vec<(String, String)> {
     EXTENSION_HEADERS.try_with(|headers| headers.borrow().clone()).unwrap_or_default()
@@ -187,6 +201,43 @@ pub async fn apply_upstream_request(body: &mut Value, request_path: &str, contex
         return Ok(());
     }
     apply_middlewares(&middlewares, body, request_path, context).await
+}
+
+/// route 段：轮换按规则选出候选供应商后，交给拓展重排 / 筛选。中间件收到 `{ model, conversationId, candidates: [{ id, name, protocol }] }`，
+/// 返回同形对象（`candidates` 换成想要的顺序、可以删掉一些）或 `{ order: ["id", …] }`。返回认得的 id 顺序；
+/// 没有中间件、出错或结果里一个认得的都没有时返回 `None`（照原顺序）。
+pub async fn route_order(candidates: &[Value], context: Value) -> Option<Vec<String>> {
+    if already_applied() {
+        return None;
+    }
+    let middlewares = stage_middlewares(&cached_middlewares(), "route");
+    route_order_with(&middlewares, candidates, context).await
+}
+
+pub async fn route_order_with_manager(manager: &UserScriptManager, candidates: &[Value], context: Value) -> Option<Vec<String>> {
+    let middlewares = stage_middlewares(&manager.enabled_gateway_middlewares().unwrap_or_default(), "route");
+    route_order_with(&middlewares, candidates, context).await
+}
+
+async fn route_order_with(middlewares: &[(String, ExtensionGatewayMiddleware)], candidates: &[Value], context: Value) -> Option<Vec<String>> {
+    if middlewares.is_empty() || candidates.is_empty() {
+        return None;
+    }
+    let mut body = json!({ "candidates": candidates });
+    if let (Some(target), Some(extra)) = (body.as_object_mut(), context.as_object()) {
+        for (key, value) in extra {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    apply_middlewares(middlewares, &mut body, "route", json!({ "stage": "route" })).await.ok()?;
+    let known: Vec<&str> = candidates.iter().filter_map(|item| item.get("id").and_then(Value::as_str)).collect();
+    let picked: Vec<String> = match body.get("order").and_then(Value::as_array) {
+        Some(order) => order.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        None => body["candidates"].as_array().into_iter().flatten().filter_map(|item| item.get("id").and_then(Value::as_str)).map(str::to_string).collect(),
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let order: Vec<String> = picked.into_iter().filter(|id| known.contains(&id.as_str()) && seen.insert(id.clone())).collect();
+    (!order.is_empty()).then_some(order)
 }
 
 pub async fn apply_upstream_request_with(manager: &UserScriptManager, body: &mut Value, request_path: &str, context: Value) -> Result<(), String> {
@@ -526,6 +577,7 @@ pub async fn decide_retry_for(
         "json": serde_json::from_slice::<Value>(body).unwrap_or(Value::Null),
         "path": request_path,
         "attempt": attempt,
+        "session": request_session(),
     });
     let node = crate::extension_node::require_node().ok()?;
     let input = json!({

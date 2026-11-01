@@ -32,8 +32,8 @@
       // 大肥鱼（96-whale-widget.js）是桌宠的一种类型，跟着这个内置拓展一起扫描、一起撤下。
       { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusPetKinds(), scan: () => syncCodexPlusPetKinds(), apply: codexPlusAgentPetExtension },
       { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
-      { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
-      { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
+      { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation(), scan: () => installCodexPlusDictation() },
+      { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind(), scan: () => syncCodexPlusTurnRewind(), phase: "light" },
       // 打字特效的全局监听只在拓展装上时挂，卸下时摘掉。
       { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects(), apply: (ctx) => ctx.effect(() => {
         installCodexPlusTypingEffects();
@@ -44,9 +44,10 @@
       { id: "capacity-auto-retry", name: "容量不足自动重试" },
       { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.(), apply: codexPlusProxyStatusExtension },
       { id: "session-share", name: "会话分享", sync: () => installSessionShareButton() },
-      { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.scan?.() },
+      // 自带轮询：停用时扫描清理完就停，sync 在装上时重新开始轮询。
+      { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.sync?.() },
       { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin(), scan: () => refreshDreamSkin() },
-      { id: "plugin-market-unlock", name: "插件市场解锁" },
+      { id: "plugin-market-unlock", name: "插件市场解锁", scan: () => installCodexPluginMarketplacePatches() },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
       // 以下几项的开关都经 codexPlusSettings() 读（停用时对应设置项读成关），切换后补一轮扫描让界面跟上。
@@ -153,7 +154,7 @@
                 inactive.add(definition.id);
                 codexPlusRunBuiltinSync(definition);
               });
-              if (typeof definition.scan === "function") ctx.effect(() => registerCodexPlusScanStep(definition.id, definition.scan));
+              if (typeof definition.scan === "function") ctx.effect(() => registerCodexPlusScanStep(definition.id, definition.scan, definition.phase));
               if (typeof definition.apply === "function") definition.apply(ctx);
               codexPlusRunBuiltinSync(definition);
             },
