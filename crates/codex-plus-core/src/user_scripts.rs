@@ -170,6 +170,8 @@ pub struct UserScriptManager {
     config_lock: Arc<Mutex<()>>,
     /// 后台设置文件。内置拓展里有对应设置字段的，启停就读写这里（见 [`Self::with_settings_path`]）。
     settings_path: Option<PathBuf>,
+    /// 随 Codex++ 发布的官方拓展包所在目录（来源 `bundled`），见 [`crate::bundled_extensions`]。
+    bundled_dir: Option<PathBuf>,
 }
 
 impl UserScriptManager {
@@ -184,7 +186,29 @@ impl UserScriptManager {
             config_path: config_path.into(),
             config_lock: Arc::new(Mutex::new(())),
             settings_path: None,
+            bundled_dir: None,
         }
+    }
+
+    /// 指定官方拓展包目录（来源 `bundled`，脚本 key 为 `bundled:<目录名>`）。只扫描，不在这里写文件。
+    pub fn with_bundled_dir(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.bundled_dir = Some(directory.into());
+        self
+    }
+
+    /// 原来的内置桌宠改成了官方拓展包「Agent 桌宠」：第一次见到它时，把设置里的 `agentPet` 与
+    /// `codexAppWhaleBalance*` 换算成它的配置，启停也照原来的开关。已经迁移过（配置或开关里有它）就不再动。
+    pub fn migrate_bundled_agent_pet(&self, settings: &crate::settings::BackendSettings) -> anyhow::Result<bool> {
+        let key = crate::bundled_extensions::AGENT_PET_KEY;
+        let _guard = self.config_lock.lock().unwrap();
+        let mut config = self.load_config_unlocked();
+        if config.configs.contains_key(key) || config.scripts.contains_key(key) {
+            return Ok(false);
+        }
+        config.configs.insert(key.to_string(), crate::bundled_extensions::agent_pet_config_from_settings(settings));
+        config.scripts.insert(key.to_string(), settings.agent_pet.enabled_for("codex"));
+        self.save_config_unlocked(&config)?;
+        Ok(true)
     }
 
     /// 指定后台设置文件：有设置字段的内置拓展（会话删除、粘贴修复……）启停时读写它，
@@ -1016,6 +1040,20 @@ impl UserScriptManager {
             .collect())
     }
 
+    /// 有没有启用中、清单无误的拓展包在 `permissions.routes` 里声明了这条路由（用户脚本总开关关着时没有）。
+    pub fn route_declared(&self, route: &str) -> bool {
+        let config = self.load_config();
+        if !config.enabled {
+            return false;
+        }
+        self.scan_script_files(&config).is_ok_and(|scripts| {
+            scripts.into_iter().any(|script| {
+                script.enabled
+                    && script.package.is_some_and(|package| package.error.is_none() && package.routes.iter().any(|item| item == route))
+            })
+        })
+    }
+
     /// 声明了 `dsh` 的拓展包：(脚本 key, 拓展 id, dsh 插件目录, 是否启用, 版本)。不合法的包跳过。
     pub fn extension_dsh_plugins(&self) -> anyhow::Result<Vec<(String, String, PathBuf, bool, String)>> {
         let config = self.load_config();
@@ -1245,6 +1283,9 @@ impl UserScriptManager {
         })?;
         let mut scripts = Vec::new();
         self.append_scripts("builtin", &self.builtin_dir, config, &mut scripts)?;
+        if let Some(bundled) = &self.bundled_dir {
+            self.append_scripts(crate::bundled_extensions::BUNDLED_SOURCE, bundled, config, &mut scripts)?;
+        }
         self.append_scripts("user", &self.user_dir, config, &mut scripts)?;
         Ok(scripts)
     }
@@ -1579,8 +1620,28 @@ pub fn default_user_script_manager() -> UserScriptManager {
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
         .map(|path| path.join("user_scripts"))
         .unwrap_or_else(|| PathBuf::from("user_scripts"));
-    UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
+    let bundled_dir = config_dir.join("bundled_extensions");
+    let manager = UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
         .with_settings_path(crate::paths::default_settings_path())
+        .with_bundled_dir(bundled_dir.clone());
+    // 每个进程第一次用到时写出官方拓展包、迁移旧的内置桌宠设置；失败只记日志，不影响别的拓展。
+    static BUNDLED_READY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    BUNDLED_READY.get_or_init(|| {
+        if let Err(error) = crate::bundled_extensions::materialize(&bundled_dir) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bundled_extensions.materialize_failed",
+                json!({ "error": format!("{error:#}") }),
+            );
+        }
+        let settings = crate::settings::SettingsStore::default().load().unwrap_or_default();
+        if let Err(error) = manager.migrate_bundled_agent_pet(&settings) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bundled_extensions.agent_pet_migration_failed",
+                json!({ "error": format!("{error:#}") }),
+            );
+        }
+    });
+    manager
 }
 
 /// 拓展声明的一条 Codex 钩子（codexpp.json 的 `hooks.<事件>[]`）。

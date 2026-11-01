@@ -70,9 +70,9 @@ fn builtins_with_a_setting_use_that_setting_as_their_switch() {
     assert_eq!(builtin(&manager, "session-delete")["enabled"], false);
 
     // 嵌套字段与下拉型。
-    manager.set_script_enabled("builtin:agent-pet", true).unwrap();
-    assert_eq!(settings(temp.path())["agentPet"]["enabled"], true);
-    assert_eq!(builtin(&manager, "agent-pet")["enabled"], true);
+    manager.set_script_enabled("builtin:dictation", true).unwrap();
+    assert_eq!(settings(temp.path())["dictation"]["enabled"], true);
+    assert_eq!(builtin(&manager, "dictation")["enabled"], true);
     manager.set_script_enabled("builtin:typing-effects", true).unwrap();
     assert_eq!(settings(temp.path())["codexAppTypingEffect"], "rainbow");
     assert_eq!(builtin(&manager, "typing-effects")["enabled"], true);
@@ -101,13 +101,13 @@ fn stale_disable_flags_for_setting_backed_builtins_are_ignored_and_cleared() {
 fn enabled_package_with_replaces_takes_over_a_builtin() {
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(temp.path());
-    write_package(temp.path(), "my-pet", json!({ "id": "my-pet", "renderer": "renderer.js", "replaces": ["builtin:agent-pet", "usage-statusline"] }));
+    write_package(temp.path(), "my-pet", json!({ "id": "my-pet", "renderer": "renderer.js", "replaces": ["builtin:dictation", "usage-statusline"] }));
     let state = manager.builtin_extension_state().unwrap();
-    assert_eq!(state["replacedBy"]["agent-pet"], "user:my-pet");
+    assert_eq!(state["replacedBy"]["dictation"], "user:my-pet");
     assert_eq!(state["replacedBy"]["usage-statusline"], "user:my-pet");
     let inventory = manager.inventory().unwrap();
     let package = inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == "user:my-pet").cloned().unwrap();
-    assert_eq!(package["package"]["replaces"], json!(["agent-pet", "usage-statusline"]));
+    assert_eq!(package["package"]["replaces"], json!(["dictation", "usage-statusline"]));
 
     // 顶替者停用后内置的回来。
     manager.set_script_enabled("user:my-pet", false).unwrap();

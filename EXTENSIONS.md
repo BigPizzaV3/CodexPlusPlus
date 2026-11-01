@@ -251,7 +251,10 @@ codexPlus.extension((ctx) => {
 ```
 
 - 已转发的事件：`codex/thread/started`、`codex/turn/started`、`codex/turn/completed`、`codex/item/started`、
-  `codex/item/completed`、`codex/item/agentMessage/delta`、`codex/error`；处理器参数是通知的原样 `params` 和 `{ method }`。
+  `codex/item/completed`、`codex/item/agentMessage/delta`、`codex/error`，以及用量与等待用户的 `codex/thread/tokenUsage/updated`、
+  `codex/item/tool/requestUserInput`、`codex/item/commandExecution/requestApproval`、`codex/item/fileChange/requestApproval`、
+  `codex/item/permissions/requestApproval`、`codex/mcpServer/elicitation/request`、`codex/serverRequest/resolved`、
+  `codex/item/tool/userInputAnswered`、`codex/item/approval/responded`；处理器参数是通知的原样 `params` 和 `{ method }`。
   **新版 Codex 的通知不再经过页面，这些事件收不到**；要跟踪会话进展请用下面「会话历史」里的 `session/event` / `agent/status`。
 - `codex/request` 的值是 `{ method, params }`，只能改 `params`，改 `method` 无效。没有任何中间件时请求原样发出。
   新版 Codex 的请求经页面与宿主进程之间的 RPC 发出，Codex++ 在这一层拦截，中间件可以返回 Promise，
@@ -790,11 +793,11 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
 （`crates/codex-plus-core/assets/enhancement-settings.json`）列出它们，每项一个开关。页面里跑的内置功能各是一个
 内置拓展实例（`scriptKey` 为 `builtin:<id>`），和第三方拓展走同一套生命周期，在 `extensions/changed` 里也能看到。
 
-- **每项只有一个开关**。有对应设置项的（会话删除、粘贴修复、梦皮、桌宠……），开关就是那个设置项，默认值也跟着它；
+- **每项只有一个开关**。有对应设置项的（会话删除、粘贴修复、梦皮、语音听写……），开关就是那个设置项，默认值也跟着它；
   没有设置项的（请求状态条、模型分组、多开身份提示、会话标题中间件）启停记在用户脚本配置的 `scripts["builtin:<id>"]` 里。
   子选项（删除不再确认、建议直接发送、重试间隔、对话宽度……）作为所属内置拓展的参数，开关打开后在它下面显示。
 - 「启用内置拓展」总开关关闭时暂停全部内置拓展；「独立模式」里的补丁不受它控制。
-- 页面里跑的内置拓展每个都只是一个 `apply(ctx)`，只用公开的 ctx 接口：Agent 桌宠挂在 `overlay` 插槽给的容器里、
+- 页面里跑的内置拓展每个都只是一个 `apply(ctx)`，只用公开的 ctx 接口：多开身份提示挂在 `overlay` 插槽给的容器里、
   用量状态栏在 `composer.below`、请求状态条在 `composer.above`，侧聊保存挂在 `codex/exchange` 中间件上，
   粘贴修复的监听经 `ctx.listen` 挂上；Codex 重建界面后要补回去的（语音听写、轮次回退、梦皮、会话 ID 角标、
   滚动位置恢复、对话宽度、已删会话的行过滤……）经 `ctx.onScan` 登记扫描步骤；跟着设置走的订阅 `settings/loaded`、`settings/changed`。
@@ -807,7 +810,7 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
 - 拓展包在清单里声明 `replaces` 即可顶替内置功能，它启用时内置的让位、停用时内置的回来：
 
 ```json
-{ "id": "my-pet", "renderer": "renderer.js", "replaces": ["agent-pet"] }
+{ "id": "my-status", "renderer": "renderer.js", "replaces": ["usage-statusline"] }
 ```
 
   在 Codex++ 后台生效的内置拓展（原生 Fast 强制解锁、原生输入预测、模型白名单解锁、强制中文界面、背景图、第三方推理折叠、
@@ -824,6 +827,11 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
   | 桌宠跟随鼠标 | 路由 `/system/cursor-position`（系统鼠标位置）+ `/cdp/evaluate` 往 `avatar-overlay` 页面推坐标 |
 
   只有「官方额度解锁」不能顶替：它只在关闭增强时生效，那时拓展根本不加载。
+- **官方拓展包**：随 Codex++ 一起发布、来源为 `bundled` 的拓展包（脚本 key `bundled:<目录名>`），嵌在程序里，第一次用到时写到
+  `<配置目录>/bundled_extensions/` 下，之后和别的拓展包一样扫描、启停、热重载，可以停用、不能删除。目前有「Agent 桌宠」
+  （`bundled:agent-pet`，源码在 `assets/extensions/agent-pet/`）：原来的内置桌宠与大肥鱼整体改成了它，页面代码只用公开接口，
+  数据服务是白名单路由 `/agent-pet/image`、`/agent-pet/sound`、`/whale/media`、`/whale/full`、`/whale/history`、`/whale/session`
+  ——这些路由只在有启用中的拓展在清单里声明了它们时才干活，供应商 Key 只在 Codex++ 里用。可以照着它写自己的桌宠。
 - `codexPlus.builtins()` 返回 `[{ id, name, active, disabled, replacedBy }]`：`active` 表示内置拓展实例在用（没停用、没被顶替）；
   有设置项的内置拓展，功能本身是否打开还看那个设置项。「多开身份提示」完全用公开接口（`overlay` 插槽）写成，
   可以当作写法参考；「会话标题中间件」是 `ctx.intercept("session/title", (value, next) => …)` 链：会话首轮结束后以
@@ -1281,6 +1289,11 @@ try {
 
 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。拓展实例上同名 `ctx.currentSessionId()`；斜杠命令的
 `run(args, context)` 里也有 `context.sessionId`。
+
+### `codexPlus.currentSession()`
+
+当前打开的会话 `{ id, title, hostId, remote }`：`hostId` 是会话所在主机（本机为 `"local"`），`remote` 为真时是远程 / SSH 会话
+（本机会话日志里没有它的用量）。
 
 ### `codexPlus.registerNavEntry(definition, options?)`
 

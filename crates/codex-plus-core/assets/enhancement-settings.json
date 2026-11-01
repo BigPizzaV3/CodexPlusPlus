@@ -376,13 +376,6 @@
   ],
   "builtins": [
     {
-      "id": "agent-pet",
-      "title": "Agent 桌宠",
-      "description": "窗口里可拖动的小角色，按下压扁、松开回弹并播放音效",
-      "group": "pet",
-      "setting": "agentPet.enabled"
-    },
-    {
       "id": "dictation",
       "title": "语音听写",
       "description": "输入框旁的麦克风按钮，录音转写成文字",

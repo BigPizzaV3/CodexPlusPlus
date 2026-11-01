@@ -662,6 +662,16 @@
       "item/completed",
       "item/agentMessage/delta",
       "error",
+      // 用量与等待用户的通知（Agent 桌宠拓展的大肥鱼用它显示本轮用量、等待审批 / 提问）。
+      "thread/tokenUsage/updated",
+      "item/tool/requestUserInput",
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/permissions/requestApproval",
+      "mcpServer/elicitation/request",
+      "serverRequest/resolved",
+      "item/tool/userInputAnswered",
+      "item/approval/responded",
     ];
     try {
       const current = window.__codexPlusExtensionEventBridge;

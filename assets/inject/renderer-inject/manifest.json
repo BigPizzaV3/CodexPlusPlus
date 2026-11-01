@@ -128,12 +128,12 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 416
+      "lines": 433
     },
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1338
+      "lines": 1348
     },
     {
       "name": "91-extension-rpc.js",
@@ -176,19 +176,9 @@
       "lines": 682
     },
     {
-      "name": "96-whale-compat.js",
-      "description": "大肥鱼（完整鲸鱼挂件）：Codex 宿主与私有桥接适配",
-      "lines": 533
-    },
-    {
-      "name": "96-whale-widget.js",
-      "description": "大肥鱼：按 Agent 桌宠类型挂载 / 卸载完整引擎",
-      "lines": 73
-    },
-    {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 527
+      "lines": 504
     },
     {
       "name": "96-paste-fix.js",
@@ -199,11 +189,6 @@
       "name": "96-dsh-client.js",
       "description": "dsh 前端插件运行时：用 Codex 的 React 渲染 dsh 插槽组件，映射到 Codex++ 的界面插槽",
       "lines": 1065
-    },
-    {
-      "name": "97-agent-pet.js",
-      "description": "Agent 桌宠：可拖动角色、按压压扁回弹与按压音效",
-      "lines": 355
     },
     {
       "name": "98-scan-schedule.js",

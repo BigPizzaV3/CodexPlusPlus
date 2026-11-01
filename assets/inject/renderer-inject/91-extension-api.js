@@ -51,6 +51,14 @@
     "/system/cursor-position",
     // 只读：最近已完成的模型请求（模型、耗时、供应商、token、成败），写「请求提示」这类功能用。
     "/request-log/recent",
+    // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。
+    // 只有启用中的拓展在清单里声明了才干活；供应商 Key 只在 Codex++ 里用。
+    "/agent-pet/image",
+    "/agent-pet/sound",
+    "/whale/media",
+    "/whale/full",
+    "/whale/history",
+    "/whale/session",
   ]);
 
   /** 单次调用的默认超时，略短于桥接自身的 26s，让拓展先拿到可读的错误。 */
@@ -269,6 +277,15 @@
       /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
       currentSessionId() {
         return codexPlusCurrentSessionId();
+      },
+      /**
+       * 当前打开的 Codex 会话：{ id, title, hostId, remote }。hostId 是会话所在的主机（本机为 "local"），
+       * remote 表示远程 / SSH 会话（本机会话日志里没有它的用量）。没有会话时 id 为空串。
+       */
+      currentSession() {
+        const ref = typeof currentSessionRef === "function" ? currentSessionRef() || {} : {};
+        const hostId = String(ref.host_id || "local");
+        return Object.freeze({ id: String(ref.session_id || ""), title: String(ref.title || ""), hostId, remote: hostId !== "local" });
       },
 
       /** 内置拓展的现状：[{ id, name, active, disabled, replacedBy }]。见 96-builtin-extensions.js。 */

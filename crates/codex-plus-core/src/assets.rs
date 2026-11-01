@@ -37,23 +37,11 @@ pub fn agent_pet_sounds() -> Value {
     Value::Object(values)
 }
 
-fn agent_pet_sounds_json() -> String {
-    agent_pet_sounds().to_string()
-}
-
-fn agent_pet_sounds_script() -> String {
-    format!(
-        "window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = {};",
-        agent_pet_sounds_json()
-    )
-}
-
 /// 大肥鱼（旧版 DeepSeek 鲸鱼挂件）的角色图、音效与动图，来自上游原样素材，
-/// 许可范围见 `assets/inject/upstream/whale-widget/PROVENANCE.md`。
+/// 许可范围见 `assets/inject/upstream/whale-widget/PROVENANCE.md`。引擎随 Agent 桌宠拓展包发布
+/// （见 [`crate::bundled_extensions`]），素材经路由 `/whale/media` 交给它（`bubble-money1.gif` 超过拓展包单个资源的上限）。
 const WHALE_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/whale-widget/DSniang1.png");
-const WHALE_RUNTIME: &str =
-    include_str!("../../../assets/inject/upstream/whale-widget/full-widget-codex.js");
 const WHALE_MEDIA: &[(&str, &str, &[u8])] = &[
     ("DSniang1.png", "image/png", WHALE_DEFAULT_IMAGE),
     (
@@ -108,24 +96,17 @@ pub fn whale_default_image_data_uri() -> String {
     image_data_uri("image/png", WHALE_DEFAULT_IMAGE)
 }
 
-fn whale_assets_json() -> String {
-    let values: serde_json::Map<String, Value> = WHALE_MEDIA
+/// 大肥鱼的内嵌素材：`{ status, image, assets: { 文件名: data URI } }`，路由 `/whale/media` 原样返回。
+pub fn whale_media() -> Value {
+    let assets: serde_json::Map<String, Value> = WHALE_MEDIA
         .iter()
         .map(|(name, mime, bytes)| ((*name).to_string(), json!(image_data_uri(mime, bytes))))
         .collect();
-    Value::Object(values).to_string()
-}
-
-fn whale_runtime_script() -> String {
-    // 直接注入函数声明；完整引擎使用词法宿主，不要求 renderer 开放 unsafe-eval。
-    // 与旧版一致始终内嵌：在管理器里切到大肥鱼后几秒内生效，不用重启 Codex。
-    format!(
-        "window.__CODEX_PLUS_WHALE_IMAGE__ = {};\nwindow.__CODEX_PLUS_WHALE_ASSETS__ = {};\nwindow.__CODEX_PLUS_WHALE_ENGINE__ = function(window,document,fetch,localStorage,setTimeout,clearTimeout,setInterval,clearInterval,requestAnimationFrame,cancelAnimationFrame,MutationObserver,ResizeObserver,AudioContext,webkitAudioContext,Image,Audio) {{\n{}\n}};\n",
-        serde_json::to_string(&image_data_uri("image/png", WHALE_DEFAULT_IMAGE))
-            .expect("whale image should serialize"),
-        whale_assets_json(),
-        WHALE_RUNTIME
-    )
+    json!({
+        "status": "ok",
+        "image": image_data_uri("image/png", WHALE_DEFAULT_IMAGE),
+        "assets": assets,
+    })
 }
 
 #[cfg(windows)]
@@ -655,9 +636,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&hide_official_usage_alert)
             .expect("usage alert config should serialize"),
         format!(
-            "{}\n{}\n{}\n{}\n{}",
-            agent_pet_sounds_script(),
-            whale_runtime_script(),
+            "{}\n{}\n{}",
             include_str!("../../../assets/inject/composer-readiness.js"),
             format!(
                 "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});\n{}\nwindow.__codexPlusNativePredictions.runtime.update({});",
@@ -873,21 +852,19 @@ mod tests {
     }
 
     #[test]
-    fn whale_character_is_embedded_for_offline_and_live_enable() {
+    fn pet_media_is_not_embedded_in_the_injection_script() {
+        // 桌宠与大肥鱼改成了 Agent 桌宠拓展：引擎随拓展包发布，素材经 /whale/media 取，注入脚本不再带它们。
         let script = injection_script(57321);
-        let prefix = "window.__CODEX_PLUS_WHALE_IMAGE__ = ";
-        let value = script.split_once(prefix).unwrap().1.lines().next().unwrap();
-        let uri: String = serde_json::from_str(value.trim_end_matches(';')).unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(uri.strip_prefix("data:image/png;base64,").unwrap())
-            .unwrap();
-        assert_eq!(bytes, WHALE_DEFAULT_IMAGE);
-        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        assert!(!script.contains("__CODEX_PLUS_WHALE_ENGINE__"));
+        assert!(!script.contains("__CODEX_PLUS_WHALE_ASSETS__"));
+        assert!(!script.contains("__CODEX_PLUS_AGENT_PET_SOUNDS__"));
     }
 
     #[test]
     fn whale_media_preserves_original_audio_and_animation_bytes() {
-        let values: Value = serde_json::from_str(&whale_assets_json()).unwrap();
+        let media = whale_media();
+        assert_eq!(media["status"], "ok");
+        let values = &media["assets"];
         assert_eq!(values.as_object().unwrap().len(), 10);
         for (name, mime, expected) in WHALE_MEDIA {
             let uri = values[*name].as_str().unwrap();
@@ -897,44 +874,14 @@ mod tests {
                 .unwrap();
             assert_eq!(&decoded, expected);
         }
-        let script = whale_runtime_script();
-        assert!(script.contains("window.__CODEX_PLUS_WHALE_ENGINE__ = function("));
-        assert!(!script.contains("new Function("));
+        let image = base64::engine::general_purpose::STANDARD
+            .decode(media["image"].as_str().unwrap().strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        assert_eq!(image, WHALE_DEFAULT_IMAGE);
         // 桌宠按压音与大肥鱼内置音效是同一份原样素材。
         let sounds = agent_pet_sounds();
         assert_eq!(sounds["duck"]["press"], values["Ya1.mp3"]);
         assert_eq!(sounds["fx1"]["release"], values["D2.mp3"]);
-    }
-
-    #[test]
-    fn agent_pet_sounds_are_embedded_byte_for_byte() {
-        let script = injection_script(57321);
-        let prefix = "window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = ";
-        let value = script.split_once(prefix).unwrap().1.lines().next().unwrap();
-        let sounds: Value = serde_json::from_str(value.trim_end_matches(';')).unwrap();
-        assert_eq!(sounds.as_object().unwrap().len(), 2);
-        let decode = |uri: &Value| {
-            base64::engine::general_purpose::STANDARD
-                .decode(uri.as_str().unwrap().strip_prefix("data:audio/mpeg;base64,").unwrap())
-                .unwrap()
-        };
-        let expected: [(&str, &[u8], &[u8]); 2] = [
-            (
-                "duck",
-                include_bytes!("../../../assets/inject/agent-pet/sounds/Ya1.mp3"),
-                include_bytes!("../../../assets/inject/agent-pet/sounds/Ya2.mp3"),
-            ),
-            (
-                "fx1",
-                include_bytes!("../../../assets/inject/agent-pet/sounds/D1.mp3"),
-                include_bytes!("../../../assets/inject/agent-pet/sounds/D2.mp3"),
-            ),
-        ];
-        for (name, press, release) in expected {
-            assert!(!press.is_empty() && !release.is_empty());
-            assert_eq!(decode(&sounds[name]["press"]), press, "{name} press");
-            assert_eq!(decode(&sounds[name]["release"]), release, "{name} release");
-        }
     }
 
     #[test]

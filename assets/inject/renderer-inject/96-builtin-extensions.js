@@ -29,8 +29,7 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      // 大肥鱼（96-whale-widget.js）是桌宠的一种类型，跟着这个内置拓展一起扫描、一起撤下。
-      { id: "agent-pet", name: "Agent 桌宠", apply: codexPlusAgentPetExtension },
+      // Agent 桌宠（含大肥鱼）已改成随 Codex++ 发布的官方拓展包（bundled:agent-pet），不再是内置拓展。
       { id: "usage-statusline", name: "用量状态栏", apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", apply: codexPlusDictationExtension },
       { id: "turn-rewind", name: "轮次回退", apply: codexPlusTurnRewindExtension },
@@ -71,11 +70,6 @@
       { id: "standalone-quota-unlock", name: "官方额度解锁" },
       { id: "image-overlay", name: "背景图" },
     ];
-  }
-
-  function syncCodexPlusPetKinds() {
-    syncCodexPlusAgentPet();
-    if (typeof syncCodexPlusWhaleWidget === "function") syncCodexPlusWhaleWidget();
   }
 
   /** 下发的停用 / 顶替状态：{ disabled: [id], replacedBy: { id: 拓展 key } }。 */
@@ -189,23 +183,6 @@
       run();
       return run;
     });
-  }
-
-  /** Agent 桌宠：经公开的 overlay 插槽拿容器，桌宠挂在里面（拖动、按压的逻辑在 97-agent-pet.js）。 */
-  function codexPlusAgentPetExtension(ctx) {
-    ctx.registerSlot({
-      slot: "overlay",
-      order: 10,
-      render: ({ container }) => {
-        codexPlusAgentPet.host = container;
-        runScanStep(syncCodexPlusAgentPet);
-        return () => {
-          if (codexPlusAgentPet.host === container) codexPlusAgentPet.host = null;
-          runScanStep(syncCodexPlusAgentPet);
-        };
-      },
-    });
-    codexPlusAlignWith(ctx, syncCodexPlusPetKinds, { settings: "heartbeat", scan: "deferred" });
   }
 
   /** 用量状态栏：经公开的 composer.below 插槽拿每个输入框下方的容器，状态栏放进当前输入框的那个。 */

@@ -26,6 +26,7 @@ mod api_quota_gate;
 mod auto_takeover_live;
 mod bridge_routes;
 mod builtin_extensions;
+mod bundled_extensions;
 mod capacity_auto_retry_settings;
 mod cdp_bridge;
 mod codex_app_state;

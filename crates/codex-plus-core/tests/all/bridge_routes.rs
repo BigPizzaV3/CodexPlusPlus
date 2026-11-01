@@ -10,7 +10,7 @@ use codex_plus_core::routes::{
     CoreRuntimeService, evaluate_extension_cdp, handle_bridge_request,
 };
 use codex_plus_core::agent_pet;
-use codex_plus_core::settings::{AgentPetSettings, BackendSettings};
+use codex_plus_core::settings::{BackendSettings};
 use codex_plus_core::status::StatusStore;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -132,71 +132,50 @@ async fn thread_usage_live_route_returns_recent_token_events() {
 }
 
 #[tokio::test]
-async fn whale_routes_require_agent_pet_to_select_the_whale_widget() {
-    // 桌宠关闭、选了简单桌宠、或没勾选 Codex：大肥鱼路由一律不可用。
-    for pet in [
-        AgentPetSettings::default(),
-        AgentPetSettings {
-            enabled: true,
-            ..AgentPetSettings::default()
-        },
-        AgentPetSettings {
-            enabled: false,
-            ..AgentPetSettings::whale_widget()
-        },
-        AgentPetSettings {
-            agents: Vec::new(),
-            ..AgentPetSettings::whale_widget()
-        },
-    ] {
-        let settings = BackendSettings {
-            agent_pet: pet,
-            ..BackendSettings::default()
-        };
-        let ctx = BridgeContext::new(
-            Arc::new(FakeSettings::with_settings(settings)),
-            Arc::new(FakeRuntime::default()),
-            Arc::new(FakeData),
-        );
-        for route in ["/whale/balance", "/whale/session", "/whale/history"] {
-            let result =
-                handle_bridge_request(ctx.clone(), route, json!({"session_id":"s1"})).await;
-            assert_eq!(result["status"], "disabled", "{route}");
-        }
-        let result = handle_bridge_request(
-            ctx,
-            "/whale/full",
-            json!({"path":"/dsh-whale/size.json","method":"PUT","body":{"scale":1.5}}),
-        )
-        .await;
-        assert_eq!(result["status"], 403);
-    }
-    let settings = BackendSettings {
-        agent_pet: AgentPetSettings::whale_widget(),
-        // 与其他 Agent 桌宠一样，不受「Codex 增强」总开关影响。
-        enhancements_enabled: false,
-        ..BackendSettings::default()
-    };
+async fn whale_routes_only_work_while_an_extension_declares_them() {
+    // 桌宠改成了 Agent 桌宠拓展：没有启用中的拓展声明这些路由时一律不可用（不扫会话日志、不查余额、不读写图库）。
     let ctx = BridgeContext::new(
-        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeSettings::default()),
         Arc::new(FakeRuntime::default()),
         Arc::new(FakeData),
     );
-    let result =
-        handle_bridge_request(ctx.clone(), "/whale/session", json!({"session_id":"s1"})).await;
+    for route in ["/whale/balance", "/whale/session", "/whale/history", "/whale/media"] {
+        let result = handle_bridge_request(ctx.clone(), route, json!({"session_id":"s1"})).await;
+        assert_eq!(result["status"], "disabled", "{route}");
+    }
+    let result = handle_bridge_request(
+        ctx,
+        "/whale/full",
+        json!({"path":"/dsh-whale/size.json","method":"PUT","body":{"scale":1.5}}),
+    )
+    .await;
+    assert_eq!(result["status"], 403);
+
+    // 声明了：与原来的内置大肥鱼一样可用，不看设置里的 agentPet，也不受「Codex 增强」总开关影响。
+    let settings = BackendSettings { enhancements_enabled: false, ..BackendSettings::default() };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings).declaring_pet_routes()),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData),
+    );
+    let result = handle_bridge_request(ctx.clone(), "/whale/session", json!({"session_id":"s1"})).await;
     assert_eq!(result["status"], "ok");
     assert_eq!(result["sessionId"], "s1");
-    let result = handle_bridge_request(ctx, "/whale/balance", json!({})).await;
+    let result = handle_bridge_request(ctx.clone(), "/whale/balance", json!({})).await;
     assert_eq!(result["status"], "unsupported");
     assert!(result["balances"].as_array().unwrap().is_empty());
+    // 余额设置来自拓展配置（请求里的 balance）：关掉余额查询就不再查。
+    let result = handle_bridge_request(ctx.clone(), "/whale/balance", json!({"balance": {"protocol": "off"}})).await;
+    assert_eq!(result["status"], "disabled");
+    let media = handle_bridge_request(ctx, "/whale/media", json!({})).await;
+    assert_eq!(media["status"], "ok");
+    assert!(media["image"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    assert_eq!(media["assets"].as_object().unwrap().len(), 10);
 }
 
 #[tokio::test]
 async fn whale_local_statistics_toggle_stops_both_current_and_machine_log_routes() {
-    let service = Arc::new(FakeSettings::with_settings(BackendSettings {
-        agent_pet: AgentPetSettings::whale_widget(),
-        ..BackendSettings::default()
-    }));
+    let service = Arc::new(FakeSettings::default().declaring_pet_routes());
     let path = service.whale_ledger_path();
     let ctx = BridgeContext::new(
         service,
@@ -226,53 +205,30 @@ async fn whale_local_statistics_toggle_stops_both_current_and_machine_log_routes
     assert_eq!(result["body"]["codexStatsOn"], false);
 }
 
-#[tokio::test]
-async fn simple_pet_routes_are_disabled_while_the_whale_widget_is_selected() {
-    // 两种桌宠互斥：选了大肥鱼时简单桌宠的图片与音效路由都返回 disabled，不联网。
-    let (ctx, _) = agent_pet_context(AgentPetSettings::whale_widget());
-    for route in ["/agent-pet/image", "/agent-pet/sound"] {
-        let result = handle_bridge_request(ctx.clone(), route, json!({})).await;
-        assert_eq!(result, json!({"status": "disabled"}), "{route}");
-    }
-}
-
-fn agent_pet_context(pet: AgentPetSettings) -> (BridgeContext, std::path::PathBuf) {
-    let service = Arc::new(FakeSettings::with_settings(BackendSettings {
-        agent_pet: pet,
-        ..BackendSettings::default()
-    }));
+fn agent_pet_context() -> (BridgeContext, std::path::PathBuf, std::path::PathBuf) {
+    let service = Arc::new(FakeSettings::default().declaring_pet_routes());
     let cache_dir = service.agent_pet_cache_dir();
+    let custom_dir = service.agent_pet_custom_dir();
     let ctx = BridgeContext::new(
         service,
         Arc::new(FakeRuntime::default()),
         Arc::new(FakeData),
     );
-    (ctx, cache_dir)
+    (ctx, cache_dir, custom_dir)
 }
 
 #[tokio::test]
-async fn agent_pet_image_is_disabled_until_enabled_for_codex() {
-    for pet in [
-        AgentPetSettings::default(),
-        AgentPetSettings {
-            enabled: true,
-            agents: Vec::new(),
-            ..AgentPetSettings::default()
-        },
-    ] {
-        let (ctx, _) = agent_pet_context(pet);
-        let result = handle_bridge_request(ctx, "/agent-pet/image", json!({})).await;
-        assert_eq!(result, json!({"status": "disabled"}));
+async fn agent_pet_routes_are_disabled_until_an_extension_declares_them() {
+    let ctx = test_context();
+    for route in ["/agent-pet/image", "/agent-pet/sound"] {
+        let result = handle_bridge_request(ctx.clone(), route, json!({"image": "fox"})).await;
+        assert_eq!(result, json!({"status": "disabled"}), "{route}");
     }
 }
 
 #[tokio::test]
 async fn agent_pet_image_returns_cached_data_uri_without_network() {
-    let (ctx, cache_dir) = agent_pet_context(AgentPetSettings {
-        enabled: true,
-        image: "fox".into(),
-        ..AgentPetSettings::default()
-    });
+    let (ctx, cache_dir, _) = agent_pet_context();
     // 预先放好缓存：路由命中缓存就不会联网。
     let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
     let url = agent_pet::builtin_image_url("fox", agent_pet::CDN_HOSTS[0]).unwrap();
@@ -282,72 +238,45 @@ async fn agent_pet_image_returns_cached_data_uri_without_network() {
         png,
     )
     .unwrap();
-    // payload 被忽略，图片只按当前设置选择。
-    let result = handle_bridge_request(ctx, "/agent-pet/image", json!({"image": "cat"})).await;
+    // 图片按拓展配置（请求参数）选择。
+    let result = handle_bridge_request(ctx.clone(), "/agent-pet/image", json!({"image": "fox"})).await;
     assert_eq!(result["status"], "ok", "{result}");
     assert_eq!(result["id"], "fox");
-    assert!(
-        result["image"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/png;base64,")
-    );
+    assert!(result["image"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    // 不认识的图库 id 按原来的设置规则回落到默认图片，不会拿去拼下载地址。
+    let result = handle_bridge_request(ctx, "/agent-pet/image", json!({"image": "../../etc"})).await;
+    assert_eq!(result["id"], agent_pet::DEFAULT_IMAGE_ID);
 }
 
 #[tokio::test]
 async fn agent_pet_image_reports_invalid_custom_url() {
-    let (ctx, _) = agent_pet_context(AgentPetSettings {
-        enabled: true,
-        image: "custom".into(),
-        custom_image_url: "http://example.com/pet.png".into(),
-        ..AgentPetSettings::default()
-    });
-    let result = handle_bridge_request(ctx, "/agent-pet/image", json!({})).await;
+    let (ctx, _, _) = agent_pet_context();
+    let result = handle_bridge_request(
+        ctx,
+        "/agent-pet/image",
+        json!({"image": "custom", "customImageUrl": "http://example.com/pet.png"}),
+    )
+    .await;
     assert_eq!(result["status"], "failed");
-    assert!(
-        result["message"].as_str().unwrap().contains("https://"),
-        "{result}"
-    );
+    assert!(result["message"].as_str().unwrap().contains("https://"), "{result}");
 }
 
 #[tokio::test]
-async fn agent_pet_sound_serves_imported_custom_files() {
-    let service = Arc::new(FakeSettings::default());
-    let custom_dir = service.agent_pet_custom_dir();
+async fn agent_pet_sound_serves_imported_custom_files_and_reports_missing_ones() {
+    let (ctx, _, custom_dir) = agent_pet_context();
     let press = agent_pet::import_custom_sound("press", b"OggS\0\x02", &custom_dir).unwrap();
-    *service.settings.lock().unwrap() = BackendSettings {
-        agent_pet: AgentPetSettings {
-            enabled: true,
-            sound_set: "custom".into(),
-            custom_sound_press: press.clone(),
-            ..AgentPetSettings::default()
-        },
-        ..BackendSettings::default()
-    };
-    let ctx = BridgeContext::new(
-        service,
-        Arc::new(FakeRuntime::default()),
-        Arc::new(FakeData),
-    );
-    let result = handle_bridge_request(ctx, "/agent-pet/sound", json!({})).await;
+    let result = handle_bridge_request(
+        ctx.clone(),
+        "/agent-pet/sound",
+        json!({"soundSet": "custom", "customSoundPress": press}),
+    )
+    .await;
     assert_eq!(result["status"], "ok", "{result}");
     assert_eq!(result["key"], format!("custom:{press}:"));
     assert!(result["press"].as_str().unwrap().starts_with("data:audio/ogg;base64,"));
     assert!(result["release"].is_null());
-}
 
-#[tokio::test]
-async fn agent_pet_sound_is_disabled_until_enabled_and_reports_missing_files() {
-    let (ctx, _) = agent_pet_context(AgentPetSettings::default());
-    let result = handle_bridge_request(ctx, "/agent-pet/sound", json!({})).await;
-    assert_eq!(result, json!({"status": "disabled"}));
-
-    let (ctx, _) = agent_pet_context(AgentPetSettings {
-        enabled: true,
-        sound_set: "custom".into(),
-        ..AgentPetSettings::default()
-    });
-    let result = handle_bridge_request(ctx, "/agent-pet/sound", json!({})).await;
+    let result = handle_bridge_request(ctx, "/agent-pet/sound", json!({"soundSet": "custom"})).await;
     assert_eq!(result["status"], "failed");
     assert!(result["message"].as_str().unwrap().contains("还没有选择"), "{result}");
 }
@@ -1476,6 +1405,8 @@ struct FakeSettings {
     settings: Mutex<BackendSettings>,
     codex_app_version: Mutex<String>,
     agent_pet_cache: tempfile::TempDir,
+    /// 当作有启用中的拓展（Agent 桌宠）声明了桌宠 / 大肥鱼的数据路由。
+    pet_routes_declared: bool,
 }
 
 impl Default for FakeSettings {
@@ -1484,6 +1415,7 @@ impl Default for FakeSettings {
             settings: Mutex::new(BackendSettings::default()),
             codex_app_version: Mutex::new(String::new()),
             agent_pet_cache: tempfile::TempDir::new().unwrap(),
+            pet_routes_declared: false,
         }
     }
 }
@@ -1492,17 +1424,20 @@ impl FakeSettings {
     fn with_settings(settings: BackendSettings) -> Self {
         Self {
             settings: Mutex::new(settings),
-            codex_app_version: Mutex::new(String::new()),
-            agent_pet_cache: tempfile::TempDir::new().unwrap(),
+            ..Self::default()
         }
     }
 
     fn with_codex_app_version(version: &str) -> Self {
         Self {
-            settings: Mutex::new(BackendSettings::default()),
             codex_app_version: Mutex::new(version.to_string()),
-            agent_pet_cache: tempfile::TempDir::new().unwrap(),
+            ..Self::default()
         }
+    }
+
+    fn declaring_pet_routes(mut self) -> Self {
+        self.pet_routes_declared = true;
+        self
     }
 }
 
@@ -1516,6 +1451,9 @@ impl BridgeSettingsService for FakeSettings {
     }
     fn whale_ledger_path(&self) -> std::path::PathBuf {
         self.agent_pet_cache.path().join("whale.sqlite3")
+    }
+    fn extension_route_declared(&self, _route: &str) -> bool {
+        self.pet_routes_declared
     }
     async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
         Ok(self.settings.lock().unwrap().clone())

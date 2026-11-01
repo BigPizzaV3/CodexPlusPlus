@@ -105,7 +105,7 @@ test("内置拓展装上时登记扫描步骤、挂打字特效监听；停用�
   const { api, calls, known, stepOwners } = harness();
   api.sync();
   assert.ok(calls.includes("typing:install"));
-  for (const id of ["dream-skin", "side-chat-save", "agent-pet", "dictation", "plugin-market-unlock", "session-delete", "thread-id-badge", "conversation-view"]) {
+  for (const id of ["dream-skin", "side-chat-save", "dictation", "plugin-market-unlock", "session-delete", "thread-id-badge", "conversation-view"]) {
     assert.ok(stepOwners().has(`builtin:${id}`), `${id} 经 ctx.onScan 登记扫描步骤`);
   }
   assert.deepEqual(stepOwners().get("builtin:turn-rewind"), ["light"], "轮次回退跟着轻量扫描");
