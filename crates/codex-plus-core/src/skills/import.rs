@@ -1,9 +1,17 @@
 //! 第三方 Skill 的导入预览、重复匹配和显式覆盖保护。
 use super::*;
 
+#[derive(Clone)]
 pub(super) struct SkillTargetSnapshot {
     pub token: String,
     pub directory_hashes: Vec<Option<String>>,
+}
+
+type TargetSnapshots = BTreeMap<String, Result<SkillTargetSnapshot, String>>;
+
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOT_HASH_COUNTS: std::cell::RefCell<BTreeMap<PathBuf, usize>> = Default::default();
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +67,7 @@ impl SkillsManager {
         self.prepare_managed_skills_unlocked()?;
         let _guard = self.state_lock.lock().unwrap();
         let state = self.load_state_checked_unlocked()?;
+        let mut snapshots = TargetSnapshots::new();
         let mut result = Vec::new();
         for (id, path) in candidates {
             let origin = origins.get(id);
@@ -85,7 +94,13 @@ impl SkillsManager {
                 (candidate.name, candidate.description) =
                     read_skill_manifest(&path.join(SKILL_MANIFEST_FILE), id);
                 candidate.matches = self
-                    .import_matches_unlocked(&state, id, &candidate.name, &candidate.source_hash)
+                    .import_matches_with_snapshots_unlocked(
+                        &state,
+                        id,
+                        &candidate.name,
+                        &candidate.source_hash,
+                        &mut snapshots,
+                    )
                     .context("检查已有 Skill 冲突失败")?;
                 if let Some(origin) =
                     origin.and_then(|item| known_repository_origin(&item.repo_key, &item.repo_path))
@@ -111,7 +126,8 @@ impl SkillsManager {
                                 },
                                 reasons: vec!["origin".into()],
                                 snapshot: self
-                                    .import_target_snapshot_unlocked(&state, target)
+                                    .cached_import_target_snapshot(&state, target, &mut snapshots)
+                                    .map(|snapshot| snapshot.token)
                                     .with_context(|| format!("无法比较已有 Skill：{target}"))?,
                             });
                         }
@@ -362,6 +378,9 @@ impl SkillsManager {
                     } else {
                         &b"external"[..]
                     });
+                    #[cfg(test)]
+                    SNAPSHOT_HASH_COUNTS
+                        .with(|counts| *counts.borrow_mut().entry(path.clone()).or_default() += 1);
                     let directory_hash = skill_directory_hash(&path)?;
                     hash.update(directory_hash.as_bytes());
                     directory_hashes.push(Some(directory_hash));
@@ -386,6 +405,39 @@ impl SkillsManager {
         id: &str,
         name: &str,
         source_hash: &str,
+    ) -> anyhow::Result<Vec<SkillImportMatch>> {
+        self.import_matches_with_snapshots_unlocked(
+            state,
+            id,
+            name,
+            source_hash,
+            &mut TargetSnapshots::new(),
+        )
+    }
+
+    fn cached_import_target_snapshot(
+        &self,
+        state: &SkillsState,
+        id: &str,
+        snapshots: &mut TargetSnapshots,
+    ) -> anyhow::Result<SkillTargetSnapshot> {
+        snapshots
+            .entry(id.to_string())
+            .or_insert_with(|| {
+                self.import_target_snapshot_details_unlocked(state, id)
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .clone()
+            .map_err(anyhow::Error::msg)
+    }
+
+    fn import_matches_with_snapshots_unlocked(
+        &self,
+        state: &SkillsState,
+        id: &str,
+        name: &str,
+        source_hash: &str,
+        snapshots: &mut TargetSnapshots,
     ) -> anyhow::Result<Vec<SkillImportMatch>> {
         let mut existing: BTreeMap<String, String> = state
             .installed
@@ -424,7 +476,7 @@ impl SkillsManager {
                 reasons.push("name".into());
             }
             let snapshot = self
-                .import_target_snapshot_details_unlocked(state, &target)
+                .cached_import_target_snapshot(state, &target, snapshots)
                 .with_context(|| format!("无法比较已有 Skill：{target}"))?;
             if snapshot
                 .directory_hashes
@@ -483,6 +535,126 @@ mod tests {
             format!("---\nname: {name}\n---\n{body}"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn preview_reuses_target_hashes_and_preserves_all_match_reasons() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent_root = temp.path().join("agent");
+        let manager = SkillsManager::new(
+            temp.path().join("library"),
+            temp.path().join("backups"),
+            temp.path().join("state.json"),
+            temp.path().join("home"),
+        )
+        .with_agent_dirs(vec![("claude".into(), agent_root.clone())]);
+        let original = temp.path().join("original");
+        write_skill(&original, "Original", "original");
+        let origin = crate::ccs_import::CcsSkillOrigin {
+            repo_key: "owner/repo@main".into(),
+            repo_path: "skills/one".into(),
+        };
+        manager
+            .import_directory_with_source(
+                "existing",
+                "existing",
+                &original,
+                "cc-switch",
+                Some(&origin),
+                None,
+                None,
+            )
+            .unwrap();
+        manager.set_enabled("existing", true).unwrap();
+        manager.set_enabled_for("claude", "existing", true).unwrap();
+        write_skill(&agent_root.join("existing"), "Agent Copy", "agent content");
+        let inputs = [
+            ("existing", "Different", "id content"),
+            ("by-name", "Original", "name content"),
+            ("by-content", "Agent Copy", "agent content"),
+            ("by-origin", "Other", "origin content"),
+            ("batch-a", "Batch", "same"),
+            ("batch-b", "Batch", "same"),
+        ];
+        let candidates: Vec<_> = inputs
+            .iter()
+            .map(|(id, name, body)| {
+                let path = temp.path().join(format!("incoming-{id}"));
+                write_skill(&path, name, body);
+                (id.to_string(), path)
+            })
+            .collect();
+        let origins = BTreeMap::from([("by-origin".into(), origin)]);
+        SNAPSHOT_HASH_COUNTS.with(|counts| counts.borrow_mut().clear());
+        let preview = manager.preview_skill_import(&candidates, &origins).unwrap();
+        for (index, reason) in [(0, "id"), (1, "name"), (2, "content"), (3, "origin")] {
+            assert!(preview[index].error.is_none(), "{:?}", preview[index].error);
+            assert!(
+                preview[index]
+                    .matches
+                    .iter()
+                    .any(|item| item.id == "existing" && item.reasons.iter().any(|r| r == reason))
+            );
+        }
+        assert_eq!(preview[4].duplicate_candidates, vec!["batch-b"]);
+        assert_eq!(preview[5].duplicate_candidates, vec!["batch-a"]);
+        SNAPSHOT_HASH_COUNTS.with(|counts| {
+            let counts = counts.borrow();
+            for path in [
+                manager.source_dir.join("existing"),
+                manager.linked_dir().join("existing"),
+                agent_root.join("existing"),
+            ] {
+                assert_eq!(counts.get(&path), Some(&1), "{}", path.display());
+            }
+        });
+        write_skill(&agent_root.join("existing"), "Changed", "changed");
+        let again = manager.preview_skill_import(&candidates, &origins).unwrap();
+        assert!(
+            !again[2]
+                .matches
+                .iter()
+                .any(|item| item.id == "existing" && item.reasons.iter().any(|r| r == "content"))
+        );
+    }
+
+    #[test]
+    fn preview_reuses_failed_target_comparison_without_treating_it_as_absent() {
+        let (temp, manager) = fixture();
+        let original = temp.path().join("original");
+        write_skill(&original, "Original", "original");
+        manager
+            .import_from_local_directory("existing", &original)
+            .unwrap();
+        add_oversized_file(&manager.source_dir.join("existing"));
+        let candidates: Vec<_> = ["first", "second"]
+            .iter()
+            .map(|id| {
+                let path = temp.path().join(id);
+                write_skill(&path, id, id);
+                (id.to_string(), path)
+            })
+            .collect();
+        SNAPSHOT_HASH_COUNTS.with(|counts| counts.borrow_mut().clear());
+        let preview = manager
+            .preview_skill_import(&candidates, &BTreeMap::new())
+            .unwrap();
+        for candidate in &preview {
+            let error = candidate.error.as_ref().unwrap();
+            assert!(error.contains("existing") && error.contains("256 MiB"));
+        }
+        SNAPSHOT_HASH_COUNTS.with(|counts| {
+            assert_eq!(
+                counts.borrow().get(&manager.source_dir.join("existing")),
+                Some(&1)
+            )
+        });
+        let selections: Vec<_> = preview.iter().map(selection).collect();
+        let (count, errors) = manager
+            .apply_skill_import(&candidates, &BTreeMap::new(), "local", &selections)
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(errors.len(), 2);
     }
 
     fn selection(candidate: &SkillImportCandidate) -> SkillImportSelection {
