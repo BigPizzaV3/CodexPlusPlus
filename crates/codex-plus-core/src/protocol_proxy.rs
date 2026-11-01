@@ -3674,6 +3674,8 @@ async fn open_responses_proxy_request_once(
     if aggregate_model.is_none()
         && model_route.is_none()
         && forced.is_none()
+        // 拓展用 gateway.replaces 关掉了目录外模型映射：模型名原样转发，映射由拓展在 request 段自己做。
+        && !crate::extension_gateway::builtin_replaced("builtin:unlisted-model-mapping")
         && let Some(replacement) = unlisted_model_replacement(&settings, &source_model)
     {
         log_unlisted_model_mapping(&source_model, &replacement);
@@ -3724,7 +3726,10 @@ async fn open_responses_proxy_request_once(
     // 网关模式（#2802）：上游 429 不在这里对同一个 Key 退避重发——那只会让同一个 Key 在限流中
     // 再挨几次、拖住换 Key；交给网关去冷却这个 Key、换下一个，或都在冷却时等最早恢复的那个。
     let gateway_forced = forced.is_some();
-    let mut auto_retry = if forced.as_ref().is_some_and(|forced| !forced.auto_retry) {
+    // 拓展用 gateway.replaces 关掉了「请求避震」：上游错误原样交回，要不要重发交给拓展的 gateway.error。
+    let mut auto_retry = if forced.as_ref().is_some_and(|forced| !forced.auto_retry)
+        || crate::extension_gateway::builtin_replaced("builtin:auto-retry")
+    {
         None
     } else {
         ProxyAutoRetry::from_settings(&settings)
@@ -3918,9 +3923,11 @@ async fn open_responses_proxy_request_once(
         let via_gateway = relay.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
         // 别家签发的加密内容（#2777）：只在发往真实上游时处理（网关那一跳由网关自己处理）；
         // 「严格推理历史」的约定是认证失败不降级，开着时不动。
+        // 拓展用 gateway.replaces 关掉 builtin:foreign-reasoning 时同样不动：加密项原样发出，拒收也不重发。
         let foreign_reasoning_handled = wire_api == UpstreamWireApi::Responses
             && !via_gateway
-            && !relay.strict_responses_reasoning;
+            && !relay.strict_responses_reasoning
+            && !crate::extension_gateway::builtin_replaced("builtin:foreign-reasoning");
         // 被拒记忆按「供应商 + 这次实际使用的 Key / 账号」分开记（网关展开的 Key 候选、本地代理选中的 Key 都在
         // relay.api_key 里；官方登录成员按账号）。
         let foreign_scope = foreign_reasoning_scope(&relay, official_credential.as_ref());

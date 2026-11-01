@@ -288,7 +288,7 @@ async fn open_candidates(
                         Some(class.label()),
                         upstream.status_code(),
                     );
-                    let failover = key_pool::record_failure(&candidate.key, &class, Instant::now());
+                    let failover = record_key_failure(&candidate.key, &class);
                     // 失败也算「试过了」：速度优先的组不再把它当没测过的排第一。
                     crate::gateway::speed::record_failure(
                         &candidate.relay.id,
@@ -308,11 +308,7 @@ async fn open_candidates(
                 Err(AttemptError::Fatal(error)) => return Err(error),
                 Err(AttemptError::Transport(error)) => {
                     recorder.step(candidate, "transport", Some("server_error"), None);
-                    key_pool::record_failure(
-                        &candidate.key,
-                        &FailureClass::ServerError,
-                        Instant::now(),
-                    );
+                    record_key_failure(&candidate.key, &FailureClass::ServerError);
                     crate::gateway::speed::record_failure(
                         &candidate.relay.id,
                         &candidate.upstream_model,
@@ -362,6 +358,25 @@ async fn open_candidates(
         pending = deferred;
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("网关的所有上游都失败了")))
+}
+
+/// 把一次失败记进 Key 池，返回要不要换下一个候选。
+///
+/// 拓展用 `gateway.replaces` 关掉 `builtin:key-cooldown` 时 429 / 额度耗尽不再让 Key 冷却，
+/// 关掉 `builtin:key-breaker` 时 5xx / 连接失败不再计入供应商熔断；换不换下一个候选照旧按分类定，
+/// 要不要避开这个 Key / 供应商由拓展在 route 段自己决定。
+fn record_key_failure(key: &key_pool::KeyRef, class: &FailureClass) -> bool {
+    let replaced = match class {
+        FailureClass::RateLimited { .. } | FailureClass::QuotaExhausted { .. } => {
+            crate::extension_gateway::builtin_replaced("builtin:key-cooldown")
+        }
+        FailureClass::ServerError => crate::extension_gateway::builtin_replaced("builtin:key-breaker"),
+        _ => false,
+    };
+    if replaced {
+        return class.should_failover();
+    }
+    key_pool::record_failure(key, class, Instant::now())
 }
 
 /// 所有 Key 都在冷却时，最早恢复的那个最多等这么久（#2802）。

@@ -1470,8 +1470,25 @@ pub struct ExtensionGatewayMiddleware {
     pub order: i64,
 }
 
-/// 拓展能用 `gateway.replaces` 关掉的 Codex++ 内置网关环节（关掉后拓展自己在 upstream 段里实现）。
-pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &["builtin:local-compaction", "builtin:reasoning-collapse", "builtin:exec-adapt", "builtin:relay-rotation", "builtin:gateway-failover"];
+/// 拓展能用 `gateway.replaces` 关掉的 Codex++ 内置网关环节（关掉后拓展自己在 request / route / upstream /
+/// error 段里实现）。凭据与鉴权头、协议转换、官方登录 / ChatGPT 后端整理、请求日志与用量这类不开放，
+/// 原因见 EXTENSIONS.md「网关中间件」一节。
+pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &[
+    "builtin:local-compaction",
+    "builtin:reasoning-collapse",
+    "builtin:exec-adapt",
+    "builtin:relay-rotation",
+    "builtin:gateway-failover",
+    // 本地代理（中转与网关两种模式都经过）：
+    "builtin:auto-retry",
+    "builtin:foreign-reasoning",
+    "builtin:unlisted-model-mapping",
+    // 网关模式：
+    "builtin:key-cooldown",
+    "builtin:key-breaker",
+    "builtin:local-rate-limit",
+    "builtin:title-model",
+];
 
 /// 网关请求中间件的超时上限（秒）：它挡在每一次模型请求前面，不能太久。
 pub const EXTENSION_GATEWAY_MAX_TIMEOUT_SECS: u64 = 10;

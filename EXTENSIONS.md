@@ -464,7 +464,22 @@ Codex++ 自己在发请求前也会做几件事（本地压缩、第三方推理
 - `replaces`：关掉的内置环节，可选 `builtin:local-compaction`（本地压缩）、`builtin:reasoning-collapse`（第三方推理折叠）、
   `builtin:exec-adapt`（exec 工具适配）、`builtin:relay-rotation`（轮换失败后自动换下一个供应商；关掉后只用选中的那一个，
   配合 route 段自己决定顺序）、`builtin:gateway-failover`（网关模式里一个候选失败后换下一个；关掉后只试排第一的那个）。
-  拓展启用时生效，停用后恢复。协议转换、鉴权不能关。
+  本地代理（中转与网关两种模式都经过）里还能关：
+  - `builtin:auto-retry`：「请求避震」。关掉后上游错误原样交回，不再退避重发；要不要重试交给 `gateway.error`。
+  - `builtin:foreign-reasoning`：别家签发的加密推理内容的剥离与拒收后重发。关掉后加密项原样发出，被拒也不重发。
+  - `builtin:unlisted-model-mapping`：目录外模型名映射到默认模型。关掉后模型名原样转发，映射在 request 段自己做。
+
+  网关模式里还能关：
+  - `builtin:key-cooldown`：429 / 额度耗尽后让 Key 冷却。关掉后不再冷却，已在冷却的 Key 也照常当候选（排在可用的后面）。
+  - `builtin:key-breaker`：供应商连续 5xx / 连接失败后熔断。关掉后不再计入熔断，已熔断的供应商也照常当候选。
+  - `builtin:local-rate-limit`：Key 的本地 RPM / 并发限速。关掉后不再按名额排队或跳过。
+  - `builtin:title-model`：起名请求改发到绑定里设的起名模型。关掉后起名请求照原模型路由。
+
+  关掉冷却 / 熔断 / 限速后，换不换下一个候选仍按失败分类定（配合 `builtin:gateway-failover` 一起关就只试第一个）；
+  要避开哪些 Key、供应商由拓展在 route 段自己筛。拓展启用时生效，停用后恢复。
+
+  不能关的：协议转换、凭据与鉴权头、官方登录 / ChatGPT 后端的请求整理、请求日志与用量统计——这些关掉后请求要么发不出去、
+  要么账号被上游拒收，要么用量和计费对不上，拓展在 upstream 段也补不回来。
 
 ### 网关响应流中间件
 

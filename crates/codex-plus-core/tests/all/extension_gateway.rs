@@ -318,6 +318,33 @@ async fn request_stages_order_and_builtin_replaces() {
     assert_eq!(upstream["seen"], "upstream:chat:r1");
 }
 
+/// 本地代理与网关模式新开放的内置环节都能写进 gateway.replaces；凭据 / 协议转换这类仍不认。
+#[test]
+fn replaces_accepts_proxy_and_gateway_builtin_segments() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let opened = [
+        "builtin:auto-retry",
+        "builtin:foreign-reasoning",
+        "builtin:unlisted-model-mapping",
+        "builtin:key-cooldown",
+        "builtin:key-breaker",
+        "builtin:local-rate-limit",
+        "builtin:title-model",
+    ];
+    write_package(&temp, "takeover", json!({ "request": [{ "script": "gateway/a.mjs" }], "replaces": opened }),
+        &[("gateway/a.mjs", "export default () => null")]);
+    write_package(&temp, "bad-auth", json!({ "replaces": ["builtin:auth-header"] }), &[]);
+    let inventory = manager.inventory().unwrap();
+    let find = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).unwrap().clone();
+    assert_eq!(find("user:takeover")["error"], "", "{}", find("user:takeover"));
+    assert_eq!(find("user:takeover")["package"]["gatewayReplaces"], json!(opened));
+    assert!(find("user:bad-auth")["error"].as_str().unwrap().contains("builtin:key-cooldown"));
+    let replaces = manager.enabled_gateway_replaces().unwrap();
+    assert_eq!(replaces.len(), opened.len());
+    assert!(replaces.iter().all(|(key, _)| key == "takeover"));
+}
+
 /// route 段：拓展给的候选供应商顺序（可删减），认不得的 id 丢掉，一个都不认得时照原顺序。
 #[tokio::test]
 async fn route_middlewares_reorder_candidate_relays() {

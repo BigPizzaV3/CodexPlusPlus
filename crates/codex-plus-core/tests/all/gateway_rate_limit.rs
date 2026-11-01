@@ -435,3 +435,104 @@ async fn multi_key_429_still_switches_to_the_next_key() {
     assert_eq!(seen.lock().unwrap().last().unwrap(), "sk-rl-multi-b");
     assert_eq!(seen.lock().unwrap().len(), 3);
 }
+
+// ---------------------------------------------------------------------------------------------
+// 拓展用 gateway.replaces 关掉内置环节（builtin:key-cooldown / key-breaker / auto-retry）。
+// 用 with_replaced_segments 把「被关掉的环节」固定在这个 future 里，不读本机的拓展目录。
+// ---------------------------------------------------------------------------------------------
+
+use codex_plus_core::extension_gateway::{with_replaced_segments, with_replaced_segments_sync};
+
+/// 关掉 builtin:key-cooldown：429 不再让 Key 冷却，已经在冷却的 Key 也照常当候选、请求照发上游。
+#[tokio::test]
+async fn replaced_key_cooldown_keeps_rate_limited_keys_in_play() {
+    let segments = ["builtin:key-cooldown"];
+    let (base, seen) = mock_upstream(Arc::new(|_, hit| {
+        if hit == 1 {
+            rate_limited(&[("retry-after", "60")])
+        } else {
+            ok()
+        }
+    }))
+    .await;
+    let gateway = gateway(vec![provider("rl-replaced-cooldown", &base, &["a"])]);
+    // 关掉前：429 让唯一的 Key 冷却 60 秒，路由计划里没有候选（之后会本地回 429，不打上游）。
+    let first = send(&BackendSettings::default(), &plan(&gateway)).await;
+    assert_eq!(status(&first), Some(429));
+    assert!(cooling_ms("rl-replaced-cooldown").is_some(), "关掉前 429 让 Key 冷却");
+    assert!(plan(&gateway).candidates.is_empty());
+    // 关掉后：冷却中的 Key 照常是候选，请求打到上游。
+    let plan_off = with_replaced_segments_sync(&segments, || plan(&gateway));
+    assert_eq!(plan_off.candidates.len(), 1, "冷却中的 Key 照常当候选");
+    let second = with_replaced_segments(&segments, send(&BackendSettings::default(), &plan_off)).await;
+    assert_eq!(status(&second), Some(200));
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // 关掉后再遇到 429：Key 不冷却，下一次（即使不再关掉）照样是候选。
+    let (base, seen) = mock_upstream(Arc::new(|_, _| rate_limited(&[("retry-after", "60")]))).await;
+    let gateway = self::gateway(vec![provider("rl-replaced-cooldown-b", &base, &["a"])]);
+    let plan_off = with_replaced_segments_sync(&segments, || plan(&gateway));
+    let outcome = with_replaced_segments(&segments, send(&BackendSettings::default(), &plan_off)).await;
+    assert_eq!(status(&outcome), Some(429), "上游的 429 原样交回");
+    assert_eq!(cooling_ms("rl-replaced-cooldown-b"), None, "关掉后 429 不让 Key 冷却");
+    assert_eq!(plan(&gateway).candidates.len(), 1);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+/// 关掉 builtin:key-breaker：连续 5xx 不计入熔断，出错的供应商一直排在候选里；
+/// 已经熔断的供应商在关掉后也照常放行。
+#[tokio::test]
+async fn replaced_key_breaker_keeps_failing_provider_in_play() {
+    let segments = ["builtin:key-breaker"];
+    let (bad, bad_seen) = mock_upstream(Arc::new(|_, _| server_error())).await;
+    let (good, good_seen) = mock_upstream(Arc::new(|_, _| ok())).await;
+    let gateway = gateway(vec![
+        provider("rl-replaced-breaker-a", &bad, &["a"]),
+        provider("rl-replaced-breaker-b", &good, &["a"]),
+    ]);
+    let settings = BackendSettings::default();
+    // 关掉后：3 次 5xx 都先打第一家、再换第二家，第一家不熔断。
+    for _ in 0..3 {
+        let plan = with_replaced_segments_sync(&segments, || plan(&gateway));
+        let outcome = with_replaced_segments(&segments, send(&settings, &plan)).await;
+        assert_eq!(status(&outcome), Some(200));
+    }
+    assert_eq!(bad_seen.lock().unwrap().len(), 3);
+    assert!(
+        !key_pool::breaker_open("rl-replaced-breaker-a", Instant::now()),
+        "关掉后连续 5xx 不熔断"
+    );
+    // 关掉前：同样 3 次 5xx 就熔断，之后路由计划里只剩第二家。
+    for _ in 0..3 {
+        assert_eq!(status(&send(&settings, &plan(&gateway)).await), Some(200));
+    }
+    assert!(key_pool::breaker_open("rl-replaced-breaker-a", Instant::now()));
+    let ids = |plan: &RoutePlan| {
+        plan.candidates
+            .iter()
+            .map(|candidate| candidate.relay.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&plan(&gateway)), vec!["rl-replaced-breaker-b"]);
+    // 熔断已打开时再关掉：熔断中的第一家照常排在前面。
+    let plan_off = with_replaced_segments_sync(&segments, || plan(&gateway));
+    assert_eq!(ids(&plan_off), vec!["rl-replaced-breaker-a", "rl-replaced-breaker-b"]);
+    assert_eq!(good_seen.lock().unwrap().len(), 6);
+}
+
+/// 关掉 builtin:auto-retry：「请求避震」勾了 500 也不再重发，上游的错误原样交回（重试交给拓展的 gateway.error）。
+#[tokio::test]
+async fn replaced_auto_retry_returns_the_upstream_error_without_retrying() {
+    let flaky = || -> Responder { Arc::new(|_, hit| if hit == 1 { server_error() } else { ok() }) };
+    // 关掉前：500 后退避重发一次就成功。
+    let (base, seen) = mock_upstream(flaky()).await;
+    let gateway = gateway(vec![provider("rl-replaced-retry-on", &base, &["a"])]);
+    assert_eq!(status(&send(&retrying_settings(), &plan(&gateway)).await), Some(200));
+    assert_eq!(seen.lock().unwrap().len(), 2, "请求避震重发了一次");
+    // 关掉后：只打上游一次，500 原样交回。
+    let (base, seen) = mock_upstream(flaky()).await;
+    let gateway = self::gateway(vec![provider("rl-replaced-retry-off", &base, &["a"])]);
+    let outcome = with_replaced_segments(&["builtin:auto-retry"], send(&retrying_settings(), &plan(&gateway))).await;
+    assert_eq!(status(&outcome), Some(500));
+    assert_eq!(seen.lock().unwrap().len(), 1, "关掉后不重发");
+}

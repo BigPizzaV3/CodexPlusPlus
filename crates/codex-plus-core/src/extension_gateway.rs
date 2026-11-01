@@ -84,8 +84,28 @@ fn stage_middlewares(list: &[(String, ExtensionGatewayMiddleware)], stage: &str)
 
 static REPLACES_CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<(String, String)>)>> = std::sync::Mutex::new(None);
 
+tokio::task_local! {
+    /// 在这个 future 里固定「被关掉的内置环节」清单，不再读启用中的拓展（测试用；生产路径不设）。
+    static REPLACED_OVERRIDE: Vec<String>;
+}
+
+/// 在 `future` 里把被 `gateway.replaces` 关掉的内置环节固定成 `segments`（只影响这个 future，不碰进程级状态）。
+pub async fn with_replaced_segments<F: std::future::Future>(segments: &[&str], future: F) -> F::Output {
+    REPLACED_OVERRIDE
+        .scope(segments.iter().map(|name| name.to_string()).collect(), future)
+        .await
+}
+
+/// 同 [`with_replaced_segments`]，用于同步调用（例如解析网关路由计划）。
+pub fn with_replaced_segments_sync<R>(segments: &[&str], f: impl FnOnce() -> R) -> R {
+    REPLACED_OVERRIDE.sync_scope(segments.iter().map(|name| name.to_string()).collect(), f)
+}
+
 /// 内置网关环节（[`crate::user_scripts::BUILTIN_GATEWAY_SEGMENTS`]）是否被启用中的拓展用 `gateway.replaces` 关掉。
 pub fn builtin_replaced(segment: &str) -> bool {
+    if let Ok(replaced) = REPLACED_OVERRIDE.try_with(|list| list.iter().any(|name| name == segment)) {
+        return replaced;
+    }
     let mut cache = REPLACES_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let fresh = cache.as_ref().is_some_and(|(at, _)| at.elapsed() < MIDDLEWARE_CACHE_TTL);
     if !fresh {
