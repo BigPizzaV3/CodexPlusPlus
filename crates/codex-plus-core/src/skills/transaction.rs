@@ -653,11 +653,7 @@ mod tests {
                 actual.independent_library_migrated,
                 expected.independent_library_migrated
             );
-            assert_eq!(actual.installed.len(), 1);
-            assert_eq!(
-                actual.installed["alpha"].local_baseline_hash,
-                super::super::skill_directory_hash(&target).unwrap()
-            );
+            assert_eq!(actual.installed, expected.installed);
         } else {
             assert_eq!(reopened.load_state(), expected);
         }
@@ -758,7 +754,8 @@ mod tests {
     fn launch_gate_rejects_failed_legacy_migration_before_action() {
         let temp = tempfile::tempdir().unwrap();
         let legacy = temp.path().join("legacy");
-        std::fs::write(&legacy, b"not a directory").unwrap();
+        std::fs::create_dir_all(legacy.join("alpha")).unwrap();
+        std::fs::write(legacy.join("alpha/user-data"), b"keep this").unwrap();
         let manager = SkillsManager::new(
             temp.path().join("library"),
             temp.path().join("backups"),
@@ -766,12 +763,20 @@ mod tests {
             temp.path().join("home"),
         )
         .with_legacy_source_dir(&legacy);
+        std::fs::write(
+            &manager.state_path,
+            r#"{"repos":[],"installed":{"alpha":{"id":"alpha"}}}"#,
+        )
+        .unwrap();
         let mut stopped_or_started = false;
         if let Ok(_guard) = manager.lock_recovered_transactions() {
             stopped_or_started = true;
         }
         assert!(!stopped_or_started);
-        assert_eq!(std::fs::read(&legacy).unwrap(), b"not a directory");
+        assert_eq!(
+            std::fs::read(legacy.join("alpha/user-data")).unwrap(),
+            b"keep this"
+        );
         assert!(!manager.load_state().independent_library_migrated);
         assert!(manager.operation_lock.try_lock().is_ok());
     }

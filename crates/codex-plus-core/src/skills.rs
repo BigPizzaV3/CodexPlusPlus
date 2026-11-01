@@ -243,17 +243,6 @@ enum LegacyUpdateState {
     Unknown,
 }
 
-#[derive(Debug)]
-struct LocalSkillStageError(anyhow::Error);
-
-impl std::fmt::Display for LocalSkillStageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "无法暂存本地 Skill：{:#}", self.0)
-    }
-}
-
-impl std::error::Error for LocalSkillStageError {}
-
 fn legacy_update_state(
     installed: &InstalledSkill,
     source: &Path,
@@ -490,8 +479,7 @@ impl SkillsManager {
             "Skill 目录不能包含受控源目录"
         );
         let operation = uuid::Uuid::new_v4().to_string();
-        self.stage_skill_copy(&operation, 0, &SkillPlace::Library, &candidate, false)
-            .map_err(LocalSkillStageError)?;
+        self.stage_skill_copy(&operation, 0, &SkillPlace::Library, &candidate, false)?;
         let baseline =
             skill_directory_hash(&self.transaction_stage(&operation, 0, &SkillPlace::Library)?)?;
         let (name, description) = read_skill_manifest(&candidate.join(SKILL_MANIFEST_FILE), id);
@@ -556,25 +544,7 @@ impl SkillsManager {
         if let Some(legacy) = &self.legacy_source_dir {
             if !self.load_state().independent_library_migrated {
                 migration_pending = true;
-                let mut ids: std::collections::BTreeSet<String> =
-                    self.load_state().installed.into_keys().collect();
-                match std::fs::read_dir(legacy) {
-                    Ok(entries) => {
-                        for entry in entries {
-                            let entry = entry?;
-                            if let Some(id) =
-                                entry.file_name().to_str().filter(|id| !id.starts_with('.'))
-                            {
-                                if entry.path().join(SKILL_MANIFEST_FILE).is_file() {
-                                    ids.insert(id.to_string());
-                                }
-                            }
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error).context("旧 Skill 库无法读取，未完成迁移"),
-                }
-                for id in ids {
+                for id in self.load_state().installed.into_keys() {
                     validate_skill_id(&id)?;
                     let old = legacy.join(&id);
                     let destination = self.source_dir.join(&id);
@@ -582,12 +552,16 @@ impl SkillsManager {
                         continue;
                     }
                     if !old.join(SKILL_MANIFEST_FILE).is_file() {
-                        anyhow::ensure!(
-                            std::fs::symlink_metadata(&old).is_err(),
-                            "旧 Skill 管理目录无法读取，未完成迁移：{}",
-                            old.display()
-                        );
-                        continue;
+                        match std::fs::symlink_metadata(&old) {
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                            Err(error) => {
+                                return Err(error).context("旧 Skill 管理目录无法读取，未完成迁移");
+                            }
+                            Ok(_) => anyhow::bail!(
+                                "旧 Skill 管理目录无法读取，未完成迁移：{}",
+                                old.display()
+                            ),
+                        }
                     }
                     let operation = uuid::Uuid::new_v4().to_string();
                     self.stage_skill_copy(&operation, 0, &SkillPlace::Library, &old, false)?;
@@ -605,38 +579,8 @@ impl SkillsManager {
                 }
             }
         }
-        // 旧版未登记的 Codex 自建 Skill 和孤立管理库目录也需要纳入独立库。
-        let mut registered: std::collections::BTreeSet<_> =
-            self.load_state().installed.into_keys().collect();
+        // 未登记的外部 Skill 只读展示，不在启动或刷新时自动纳入管理库。
         std::fs::create_dir_all(&self.source_dir)?;
-        for skill in self.list_local_skills() {
-            if registered.insert(skill.id.clone()) {
-                let local = self.linked_dir().join(&skill.id);
-                if let Err(error) = self.ensure_managed_source(&skill.id) {
-                    if !is_managed_copy(&local) && error.is::<LocalSkillStageError>() {
-                        let _ = crate::diagnostic_log::append_diagnostic_log(
-                            "skills.local_adoption_skipped",
-                            serde_json::json!({ "id": skill.id, "message": format!("{error:#}") }),
-                        );
-                        continue;
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        for (id, _) in scan_skill_dirs(&self.source_dir) {
-            if registered.insert(id.clone()) {
-                self.ensure_managed_source(&id)?;
-            }
-        }
-        // 老版本可能用复制标记把其它 Agent 的副本作为唯一剩余目录。
-        for (_, root) in &self.agent_dirs {
-            for (id, _) in scan_skill_dirs(root) {
-                if is_managed_copy(&root.join(&id)) && registered.insert(id.clone()) {
-                    self.ensure_managed_source(&id)?;
-                }
-            }
-        }
         let state = self.load_state();
         for id in state.installed.keys() {
             validate_skill_id(id)?;
@@ -1243,7 +1187,8 @@ impl SkillsManager {
             if !entry.installed {
                 continue;
             }
-            entry.managed = self.source_dir.join(&entry.id).is_dir();
+            entry.managed = state.installed.contains_key(&entry.id)
+                && self.source_dir.join(&entry.id).is_dir();
             if entry.managed && !entry.bundled {
                 entry.codex_conflict = self.codex_copy_conflict(&entry.id).unwrap_or(true);
             }
@@ -3569,6 +3514,79 @@ mod tests {
     }
 
     #[test]
+    fn unregistered_codex_skill_is_only_listed_until_explicitly_enabled_elsewhere() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let codex = manager.linked_dir().join("custom");
+        write_skill(&codex, "user content");
+
+        for _ in 0..2 {
+            manager.prepare_managed_skills().unwrap();
+            let entries = manager.local_inventory();
+            let custom = entry(&entries, "custom");
+            assert!(custom.enabled);
+            assert!(!custom.managed);
+            assert!(!manager.load_state().installed.contains_key("custom"));
+            assert!(!manager.source_dir.join("custom").exists());
+            assert_eq!(
+                std::fs::read_to_string(codex.join("SKILL.md")).unwrap(),
+                "user content"
+            );
+        }
+
+        manager.set_enabled_for("claude", "custom", true).unwrap();
+        assert!(manager.load_state().installed.contains_key("custom"));
+        assert_eq!(
+            std::fs::read_to_string(manager.source_dir.join("custom/SKILL.md")).unwrap(),
+            "user content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("claude-skills/custom/SKILL.md")).unwrap(),
+            "user content"
+        );
+    }
+
+    #[test]
+    fn preparation_does_not_adopt_unregistered_legacy_library_or_agent_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp).with_legacy_source_dir(temp.path().join("legacy"));
+        let legacy = temp.path().join("legacy/old");
+        let library = manager.source_dir.join("orphan");
+        let codex = manager.linked_dir().join("orphan");
+        let agent = temp.path().join("claude-skills/marked");
+        write_skill(&legacy, "legacy user content");
+        write_skill(&library, "orphan library content");
+        write_skill(&codex, "codex user content");
+        write_skill(&agent, "agent user content");
+        std::fs::write(agent.join(MANAGED_COPY_MARKER), "").unwrap();
+
+        manager.prepare_managed_skills().unwrap();
+        manager.prepare_managed_skills().unwrap();
+
+        let state = manager.load_state();
+        for id in ["old", "orphan", "marked"] {
+            assert!(!state.installed.contains_key(id));
+        }
+        assert!(!manager.source_dir.join("old").exists());
+        assert!(!manager.source_dir.join("marked").exists());
+        assert_eq!(
+            std::fs::read_to_string(legacy.join("SKILL.md")).unwrap(),
+            "legacy user content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(library.join("SKILL.md")).unwrap(),
+            "orphan library content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(agent.join("SKILL.md")).unwrap(),
+            "agent user content"
+        );
+        let entries = manager.local_inventory();
+        assert!(!entry(&entries, "orphan").managed);
+        assert!(!entry(&entries, "marked").managed);
+    }
+
+    #[test]
     fn agent_own_skill_can_be_disabled_without_losing_its_contents() {
         let temp = tempfile::tempdir().unwrap();
         let manager = multi_agent_manager(&temp);
@@ -5314,6 +5332,11 @@ mod tests {
         let manager = manager(&temp).with_legacy_source_dir(temp.path().join("legacy"));
         let codex = manager.linked_dir().join("alpha");
         make_junction(&codex, &legacy);
+        std::fs::write(
+            &manager.state_path,
+            r#"{"repos":[],"installed":{"alpha":{"id":"alpha"}}}"#,
+        )
+        .unwrap();
 
         let guard = manager.lock_recovered_transactions().unwrap();
         assert!(manager.load_state().independent_library_migrated);
@@ -5339,6 +5362,27 @@ mod tests {
         );
         drop(guard);
         assert!(manager.operation_lock.try_lock().is_ok());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn unregistered_legacy_junction_is_not_migrated_on_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("legacy/alpha");
+        write_skill(&legacy, "user content");
+        let manager = manager(&temp).with_legacy_source_dir(temp.path().join("legacy"));
+        let codex = manager.linked_dir().join("alpha");
+        make_junction(&codex, &legacy);
+
+        let guard = manager.lock_recovered_transactions().unwrap();
+        assert!(!manager.load_state().installed.contains_key("alpha"));
+        assert!(!manager.source_dir.join("alpha").exists());
+        assert_eq!(
+            codex.canonicalize().unwrap(),
+            legacy.canonicalize().unwrap()
+        );
+        assert!(!entry(&manager.local_inventory(), "alpha").managed);
+        drop(guard);
     }
 
     #[test]
@@ -5523,7 +5567,7 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn unmanaged_codex_junction_stays_linked_after_adoption() {
+    fn unmanaged_codex_junction_stays_unregistered_on_preparation() {
         let temp = tempfile::tempdir().unwrap();
         let manager = manager(&temp);
         let external = temp.path().join("external/custom");
@@ -5534,7 +5578,7 @@ mod tests {
         manager.prepare_managed_skills().unwrap();
         manager.prepare_managed_skills().unwrap();
 
-        assert!(manager.load_state().installed.contains_key("custom"));
+        assert!(!manager.load_state().installed.contains_key("custom"));
         assert!(
             std::fs::symlink_metadata(&codex)
                 .unwrap()
@@ -5550,10 +5594,8 @@ mod tests {
             std::fs::read_to_string(codex.join("SKILL.md")).unwrap(),
             "edited externally"
         );
-        assert_eq!(
-            std::fs::read_to_string(manager.source_dir.join("custom/SKILL.md")).unwrap(),
-            "original"
-        );
+        assert!(!manager.source_dir.join("custom").exists());
+        assert!(!entry(&manager.local_inventory(), "custom").managed);
     }
 
     #[test]
@@ -5634,7 +5676,7 @@ mod tests {
         let state = manager.load_state();
         assert!(!state.installed.contains_key("linked"));
         assert!(!state.installed.contains_key("oversized"));
-        assert!(state.installed.contains_key("healthy"));
+        assert!(!state.installed.contains_key("healthy"));
         assert!(
             std::fs::symlink_metadata(linked.join("nested"))
                 .unwrap()
@@ -5653,10 +5695,7 @@ mod tests {
         );
         assert!(!manager.source_dir.join("linked").exists());
         assert!(!manager.source_dir.join("oversized").exists());
-        assert_eq!(
-            std::fs::read_to_string(manager.source_dir.join("healthy/SKILL.md")).unwrap(),
-            "healthy original"
-        );
+        assert!(!manager.source_dir.join("healthy").exists());
         assert!(
             manager
                 .local_inventory()
@@ -5673,7 +5712,7 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn managed_codex_copy_with_internal_link_still_fails_preparation() {
+    fn unregistered_codex_copy_marker_does_not_trigger_adoption() {
         let temp = tempfile::tempdir().unwrap();
         let manager = manager(&temp);
         let codex = manager.linked_dir().join("managed");
@@ -5683,9 +5722,10 @@ mod tests {
         std::fs::write(codex.join(MANAGED_COPY_MARKER), "").unwrap();
         make_junction(&codex.join("nested"), &external);
 
-        let error = manager.prepare_managed_skills().unwrap_err();
+        manager.prepare_managed_skills().unwrap();
 
-        assert!(format!("{error:#}").contains("符号链接"));
+        assert!(!manager.load_state().installed.contains_key("managed"));
+        assert!(!entry(&manager.local_inventory(), "managed").managed);
         assert!(!manager.source_dir.join("managed").exists());
         assert!(codex.join("nested/SKILL.md").is_file());
     }

@@ -578,6 +578,7 @@ mod tests {
             std::fs::write(path.join("extra.txt"), "user data").unwrap();
         }
         manager.prepare_managed_skills().unwrap();
+        manager.ensure_managed_source("alpha").unwrap();
         let _state = manager.state_lock.lock().unwrap();
         let mut state = manager.load_state_checked_unlocked().unwrap();
         let item = state.installed.get_mut("alpha").unwrap();
@@ -1165,6 +1166,7 @@ mod tests {
         installed_with_origin(&manager, &repo);
         write_skill(&manager.source_dir.join("beta"), "---\nname: Beta\n---\n");
         manager.prepare_managed_skills().unwrap();
+        manager.ensure_managed_source("beta").unwrap();
         let hash = skill_git_tree_hash(&manager.source_dir.join("alpha")).unwrap();
         let remote = vec![remote(&repo, "new/alpha", "Alpha", &hash)];
         let preview = manager
@@ -1598,7 +1600,8 @@ mod tests {
             0
         );
         assert_eq!(std::fs::read(&manager.state_path).unwrap(), after_deletion);
-        assert!(manager.load_state().installed["alpha"].repo_key.is_empty());
+        assert!(!manager.load_state().installed.contains_key("alpha"));
+        assert!(!manager.source_dir.join("alpha").exists());
     }
 
     #[test]

@@ -809,7 +809,10 @@ mod tests {
             let content =
                 std::fs::read_to_string(manager.source_dir.join("alpha/SKILL.md")).unwrap();
             assert!(content.contains(if conflict { "keep this" } else { "new content" }));
-            assert!(manager.load_state().installed.contains_key("alpha"));
+            assert_eq!(
+                manager.load_state().installed.contains_key("alpha"),
+                !conflict
+            );
             assert!(!manager.linked_dir().join("alpha").exists());
         }
     }
