@@ -317,7 +317,14 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     let operation: PendingSkillBatchOperation = { groupKey: group.key, agent, enabled, skillIds: targets.map((skill) => skill.id), settledSkillIds: [], owner: batchOwner.current };
     skillBatchRegistry.add(operation);
     let completed = 0;
+    let failed = 0;
     const errors: string[] = [];
+    const recordFailure = (skill: Skill, reason: string) => {
+      failed++;
+      if (errors.length >= 3) return;
+      const detail = `${skill.name || skill.id}：${reason}`;
+      errors.push(detail.length > 240 ? `${detail.slice(0, 239).replace(/[\uD800-\uDBFF]$/, "")}…` : detail);
+    };
     try {
       for (const skill of targets) {
         try {
@@ -333,8 +340,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
             });
           } else if (mounted.current) void reloadLocal();
           if (ok(result)) completed++;
-          else errors.push(`${skill.name || skill.id}：${result.message}`);
-        } catch (error) { errors.push(`${skill.name || skill.id}：${String(error)}`); }
+          else recordFailure(skill, result.message);
+        } catch (error) { recordFailure(skill, String(error)); }
         finally {
           const previous = operation;
           operation = { ...operation, settledSkillIds: [...operation.settledSkillIds, skill.id] };
@@ -346,7 +353,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       if (mounted.current) void reloadLocal();
     }
     const message = tf("已批量{0} {1} 个 Skill", [enabled ? t("启用") : t("停用"), completed]);
-    await notify("Skills", errors.length ? `${message}；${errors.join("；")}` : message, errors.length ? "failed" : "ok");
+    await notify("Skills", failed ? `${message}；${tf("{0} 个 Skill 失败", [failed])}：${errors.join("；")}` : message, failed ? "failed" : "ok");
   };
   const saveRepo = async (repo: Repo, previousKey?: string) => {
     setBusy(true);
