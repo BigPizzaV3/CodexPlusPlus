@@ -21,6 +21,8 @@ const AGENT_PET_PET: &str = include_str!("../../../assets/extensions/agent-pet/p
 const AGENT_PET_WHALE_COMPAT: &str = include_str!("../../../assets/extensions/agent-pet/whale-compat.js");
 const AGENT_PET_WHALE: &str = include_str!("../../../assets/extensions/agent-pet/whale.js");
 const AGENT_PET_MAIN: &str = include_str!("../../../assets/extensions/agent-pet/main.js");
+/// 「拓展」详情页「细节」页签显示的说明。
+const AGENT_PET_README: &str = include_str!("../../../assets/extensions/agent-pet/README.md");
 /// 设置界面：Codex 里经 renderer 加载，管理器里内联进 settings.html（沙箱页面拿不到包里的其他文件）。
 const AGENT_PET_SETTINGS: &str = include_str!("../../../assets/extensions/agent-pet/settings.js");
 const AGENT_PET_SETTINGS_PAGE: &str = include_str!("../../../assets/extensions/agent-pet/settings-page.js");
@@ -58,6 +60,7 @@ pub fn agent_pet_files() -> Vec<(&'static str, Vec<u8>)> {
         ("settings.js", AGENT_PET_SETTINGS.as_bytes().to_vec()),
         ("settings.html", agent_pet_settings_html().into_bytes()),
         ("main.js", AGENT_PET_MAIN.as_bytes().to_vec()),
+        ("README.md", AGENT_PET_README.as_bytes().to_vec()),
     ];
     files.extend(AGENT_PET_SOUNDS.iter().map(|(path, bytes)| (*path, bytes.to_vec())));
     files

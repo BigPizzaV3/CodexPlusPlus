@@ -262,7 +262,8 @@ test("设置界面在拓展包里：Codex 详情页经 ctx.registerSettingsPanel
 
 test("Codex 「拓展」详情页挂拓展的设置面板：重画时搬回同一个节点，保存走 set-config 并原地生效", () => {
   const detail = injectFragment("40-backend-settings.js");
-  assert.match(detail, /\$\{isInstalled && local && typeof renderCodexPlusSettingsPanelSlot === "function" \? renderCodexPlusSettingsPanelSlot\(local\) : ""\}/);
+  // 设置面板挂在详情的「设置」页签里（41-extension-detail.js）。
+  assert.match(injectFragment("41-extension-detail.js"), /if \(panel && local\.enabled\) \{\s*return `<div class="codex-plus-extensions-detail-settings-host" data-codex-plus-settings-panel=/);
   assert.match(detail, /detail\.innerHTML = renderCodexPlusExtensionsDetail\(\);[\s\S]{0,120}mountCodexPlusSettingsPanel\(detail\);/);
   assert.match(detail, /slot\.replaceWith\(mounted\.node\);/);
   assert.match(detail, /postJson\("\/user-scripts\/set-config", \{ key, values:/);

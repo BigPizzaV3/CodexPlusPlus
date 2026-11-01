@@ -437,6 +437,41 @@ impl UserScriptManager {
         let html = fs::read_to_string(&path).with_context(|| format!("读取 {} 失败", path.display()))?;
         Ok((package.name.clone().unwrap_or_else(|| package.id.clone()), html))
     }
+    /// 拓展的 README（Codex「拓展」详情页的「细节」页签）：包目录里的 README，优先中文版；单文件脚本没有 README。
+    /// 回 `{status, markdown, file, truncated, assets}`。`assets` 是正文里引用到的包内 `assets/` 资源（路径 → data URL），
+    /// 页面据此显示相对路径的图片；清单有误的包也照样给 README，方便看说明排查。
+    pub fn extension_readme(&self, key: &str) -> anyhow::Result<Value> {
+        let config = self.load_config();
+        let script = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .with_context(|| format!("没有找到拓展 {key}"))?;
+        let package = script.package.as_ref();
+        let Some(path) = package.and_then(|package| package.root.as_deref()).and_then(find_extension_readme) else {
+            return Ok(json!({ "status": "ok", "markdown": "", "file": "", "truncated": false, "assets": {} }));
+        };
+        let bytes = fs::read(&path).with_context(|| format!("读取 {} 失败", path.display()))?;
+        let truncated = bytes.len() > EXTENSION_README_MAX_BYTES;
+        let markdown = String::from_utf8_lossy(&bytes[..bytes.len().min(EXTENSION_README_MAX_BYTES)]).into_owned();
+        let assets = package
+            .map(|package| {
+                package
+                    .assets
+                    .iter()
+                    .filter(|(relative, _)| markdown.contains(relative.as_str()))
+                    .map(|(relative, url)| (relative.clone(), Value::String(url.clone())))
+                    .collect::<Map<String, Value>>()
+            })
+            .unwrap_or_default();
+        Ok(json!({
+            "status": "ok",
+            "markdown": markdown,
+            "file": path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+            "truncated": truncated,
+            "assets": assets,
+        }))
+    }
     /// 清单无误的拓展包（不论启停）。
     fn extension_package(&self, key: &str) -> anyhow::Result<ExtensionPackage> {
         let config = self.load_config();
@@ -1557,6 +1592,24 @@ pub fn mask_secret_config(schema: &Value, config: &Value) -> Value {
     )
 }
 
+/// README 最多读这么多字节，超出的截断（页面上提示）。
+const EXTENSION_README_MAX_BYTES: usize = 512 * 1024;
+/// 按这个顺序找 README（不分大小写）：中文版优先，其次通用版。
+const EXTENSION_README_NAMES: &[&str] = &["readme.zh-cn.md", "readme.zh.md", "readme.md", "readme.markdown", "readme"];
+
+/// 包目录里的 README 文件（只看包根目录，不跟随符号链接）。
+fn find_extension_readme(root: &std::path::Path) -> Option<PathBuf> {
+    let files = fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| (entry.file_name().to_string_lossy().to_lowercase(), entry.path()))
+        .collect::<Vec<_>>();
+    EXTENSION_README_NAMES
+        .iter()
+        .find_map(|name| files.iter().find(|(file, _)| file == name).map(|(_, path)| path.clone()))
+}
+
 /// 生效配置：每个声明的键取已存且合法的值，否则取默认值（对象按子字段合并）。
 fn resolve_extension_config(schema: &[ExtensionConfigField], stored: Option<&Map<String, Value>>) -> Value {
     let mut resolved = Map::new();
@@ -1858,6 +1911,7 @@ impl ExtensionPackage {
             "description": self.description,
             "engine": self.engine,
             "routes": self.routes,
+            "renderer": self.renderer.len(),
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
             "gatewayRequest": self.gateway_request.len(),
             "gatewayReplaces": self.gateway_replaces,
@@ -1879,6 +1933,7 @@ impl ExtensionPackage {
             "replaces": self.replaces,
             "dsh": self.dsh.is_some(),
             "settingsPage": self.settings_page.is_some(),
+            "readme": self.root.as_deref().and_then(find_extension_readme).is_some(),
             "managerPage": self.manager_page.as_ref().map(|page| json!({
                 "title": page.title,
                 "nav": page.nav,

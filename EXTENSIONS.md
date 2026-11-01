@@ -315,7 +315,7 @@ codexPlus.extension((ctx) => {
 
 ### 拓展配置
 
-拓展包可以在清单里声明配置项，Codex++ 管理器会自动生成设置表单（拓展列表里的「设置」）：
+拓展包可以在清单里声明配置项，Codex++ 管理器（拓展列表里的「设置」）和 Codex「拓展」页面详情的「设置」页签都会自动生成设置表单：
 
 ```json
 {
@@ -341,7 +341,8 @@ codexPlus.extension((ctx) => {
 - 修改：管理器表单保存后自动热重载；对话造拓展可用 `codexpp_extension_configure` 改值。只接受声明过的键，类型不符即报错。
 - 自己画设置界面：表单不够用时（图库、试听、预览……），清单写 `"settings": { "page": "settings.html" }`，管理器里「设置」
   打开这个页面（和[管理器面板](#管理器面板)同一套沙箱与 `codexPlusManager` 接口，拓展停用时也能打开）；Codex 里
-  「拓展」页面选中这个拓展时，详情下方显示 `ctx.registerSettingsPanel({ render({ container, config, saveConfig }) })` 画的面板，
+  「拓展」页面选中这个拓展时，详情的「设置」页签显示 `ctx.registerSettingsPanel({ render({ container, config, saveConfig }) })` 画的面板
+  （拓展停用、面板还没登记时退回按清单生成的通用表单），
   `saveConfig(values)` 只存本拓展声明过的项、回生效配置，可返回清理函数。两边想用同一份界面，就把界面写成一个函数，
   页面脚本里调一次、设置页里内联一份（官方的 Agent 桌宠拓展就是这样，见 `assets/extensions/agent-pet/settings.js`）。
 - 不重载地接住新配置：`ctx.onConfigUpdate((next, prev) => { 应用 next; return true; })`。管理器保存后先问页面，这个拓展的
@@ -1129,6 +1130,12 @@ user_scripts/
 | `tools` | 给模型的工具声明，见上文「给模型加工具」 |
 | `config` | 配置项声明，见上文「拓展配置」 |
 | `permissions.routes` | `ctx.call` 能调的路由，需在[路由白名单](#后端调用与路由白名单)内。这是声明约束而不是安全边界 |
+
+包根目录放一个 `README.md`（也认 `README.zh-CN.md` / `README.zh.md`，中文版优先，不分大小写），Codex「拓展」页面的详情
+就会在「细节」页签里显示它，形态对齐 VS Code 的扩展详情：「细节」是 README，「设置」是设置面板或通用表单，「功能」列出清单里
+接管的能力（工具、钩子、网关、后台、Skills……），右侧栏是标识符、版本、来源与链接。README 支持常用 Markdown（标题、列表、
+任务列表、引用、代码块、表格、链接、图片），原始 HTML 当文字显示；链接只放行 http(s) / mailto / 页内锚点，图片只放行 https
+与包内 `assets/` 下的文件（写相对路径，如 `![截图](assets/shot.png)`）。最多读前 512 KB。
 
 清单不合法（JSON 错误、入口越出包目录、版本不兼容等）时包不注入，管理页显示「加载失败」和原因。
 未知字段会被忽略，后续版本会在清单里增加更多能力面。拓展包是文件夹，管理页不提供删除按钮，请在目录里手动移除。

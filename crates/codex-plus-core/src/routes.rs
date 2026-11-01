@@ -160,6 +160,10 @@ pub trait BridgeRuntimeService: Send + Sync {
         let config = crate::user_scripts::default_user_script_manager().set_extension_config(&key, &values)?;
         Ok(json!({ "status": "ok", "config": config }))
     }
+    /// 拓展的 README（Codex 里「拓展」详情页的「细节」页签用），见 [`crate::user_scripts::UserScriptManager::extension_readme`]。
+    async fn extension_readme(&self, key: String) -> anyhow::Result<Value> {
+        crate::user_scripts::default_user_script_manager().extension_readme(&key)
+    }
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn load_user_scripts(&self) -> anyhow::Result<Value> {
         self.user_script_inventory().await
@@ -414,6 +418,18 @@ pub async fn handle_bridge_request(
                 Ok(json!({ "status": "failed", "message": "拓展 key 不能为空" }))
             } else {
                 match ctx.runtime.set_extension_config(key, values).await {
+                    Ok(value) => Ok(value),
+                    Err(error) => Ok(json!({ "status": "failed", "message": format!("{error:#}") })),
+                }
+            }
+        }
+        // Codex++ 内部用：「拓展」详情页「细节」页签读拓展的 README。只读，不进拓展路由白名单。
+        "/user-scripts/readme" => {
+            let key = payload.get("key").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            if key.is_empty() {
+                Ok(json!({ "status": "failed", "message": "拓展 key 不能为空" }))
+            } else {
+                match ctx.runtime.extension_readme(key).await {
                     Ok(value) => Ok(value),
                     Err(error) => Ok(json!({ "status": "failed", "message": format!("{error:#}") })),
                 }
@@ -800,6 +816,13 @@ impl BridgeRuntimeService for CoreRuntimeService {
                 user_scripts.inventory()
             }
             None => Ok(empty_user_script_inventory()),
+        }
+    }
+
+    async fn extension_readme(&self, key: String) -> anyhow::Result<Value> {
+        match &self.user_scripts {
+            Some(user_scripts) => user_scripts.extension_readme(&key),
+            None => anyhow::bail!("没有找到拓展 {key}"),
         }
     }
 

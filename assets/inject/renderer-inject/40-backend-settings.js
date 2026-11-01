@@ -269,12 +269,13 @@
     return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
   }
 
-  // 使用已安装 Lucide Search / RotateCw / Plus / ArrowLeft 的 ISC 图标路径。
+  // 使用已安装 Lucide Search / RotateCw / Plus / ArrowLeft / Settings 的 ISC 图标路径。
   const codexPlusDiscoveryIcons = {
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
     refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg>',
     back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7M19 12H5"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
   };
 
   /** 原生风格侧栏：浏览入口和已安装拓展的单行名称。 */
@@ -434,7 +435,7 @@
     const name = marketItem?.name || local?.name || sel.key;
     const version = marketItem?.version || local?.version || "";
     const author = marketItem?.author || "";
-    const description = marketItem?.description || local?.description || "";
+    const description = marketItem?.description || local?.description || local?.package?.description || "";
     const tags = marketItem?.tags || [];
     const requirements = marketItem?.requirements || [];
     const limitations = marketItem?.limitations || [];
@@ -443,10 +444,11 @@
     const updateAvailable = isInstalled && marketItem && version && local?.version && local.version !== version;
 
     // 详情沿用列表的内容宽度，管理操作保持独立。
+    const sourceLabel = local ? (typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(local) : local.source === "builtin" ? "内置" : "用户") : "";
     const publisherLine = [
       author ? escapeHtml(author) : "",
       version ? `v${escapeHtml(version)}` : "",
-      local ? `${typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(local) : local.source === "builtin" ? "内置" : "用户"} · ${escapeHtml(userScriptStatusLabel(local.status))}` : "",
+      local ? `${escapeHtml(sourceLabel)} · ${escapeHtml(userScriptStatusLabel(local.status))}` : "",
     ].filter(Boolean).join('<span class="codex-plus-extensions-detail-sep">·</span>');
 
     const actions = [];
@@ -458,14 +460,27 @@
       if (local?.source === "user") {
         actions.push(`<button type="button" class="codex-plus-extensions-detail-button" data-codex-extensions-uninstall="${escapeHtml(local.key)}">卸载</button>`);
       }
+      // 和 VS Code 一样，头部的齿轮直达「设置」页签。
+      if (typeof codexPlusExtensionHasSettings === "function" && codexPlusExtensionHasSettings(local)) {
+        actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-gear" data-codex-extensions-tab="settings" title="设置" aria-label="${escapeHtml(name)} 的设置">${codexPlusDiscoveryIcons.settings}</button>`);
+      }
     } else if (marketItem) {
       actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-market-install="${escapeHtml(marketItem.id)}">安装</button>`);
     }
 
-    // 使用要求与限制保留为独立正文分区。
+    // 页签（细节 / 设置 / 功能）与右侧栏见 41-extension-detail.js；测试单独切出这段执行时退回到简单正文。
     const list = (title, items) => items.length
       ? `<div class="codex-plus-extensions-detail-section"><div class="codex-plus-extensions-detail-section-title">${escapeHtml(title)}</div><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
       : "";
+    const body = typeof renderCodexPlusExtensionDetailTabs === "function"
+      ? renderCodexPlusExtensionDetailTabs({ local, marketItem, sourceLabel })
+      : `<div class="codex-plus-extensions-detail-body">
+        ${tags.length ? `<div class="codex-plus-extensions-detail-tags">${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
+        ${list("使用要求", requirements)}
+        ${list("已知限制", limitations)}
+        ${homepage ? `<div class="codex-plus-extensions-detail-link"><a href="${escapeHtml(homepage)}" target="_blank" rel="noreferrer">${escapeHtml(homepage)}</a></div>` : ""}
+        ${local?.error ? `<div class="codex-plus-extensions-detail-error">${escapeHtml(local.error)}</div>` : ""}
+      </div>`;
 
     return `
       <button type="button" class="codex-plus-extensions-back" data-codex-extensions-browse="${codexPlusExtensionsFilter}" aria-label="返回拓展列表">${codexPlusDiscoveryIcons.back}<span>返回拓展列表</span></button>
@@ -474,19 +489,12 @@
         <div class="codex-plus-extensions-detail-heading">
           <div class="codex-plus-extensions-detail-title">${escapeHtml(name)}</div>
           ${publisherLine ? `<div class="codex-plus-extensions-detail-meta">${publisherLine}</div>` : ""}
+          ${description ? `<div class="codex-plus-extensions-detail-description">${escapeHtml(description)}</div>` : ""}
           ${updateAvailable ? `<div class="codex-plus-extensions-detail-update">有新版本 v${escapeHtml(version)} 可更新</div>` : ""}
         </div>
         <div class="codex-plus-extensions-detail-actions">${actions.join("")}</div>
       </div>
-      <div class="codex-plus-extensions-detail-body">
-        ${description ? `<div class="codex-plus-extensions-detail-description">${escapeHtml(description)}</div>` : ""}
-        ${tags.length ? `<div class="codex-plus-extensions-detail-tags">${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
-        ${list("使用要求", requirements)}
-        ${list("已知限制", limitations)}
-        ${homepage ? `<div class="codex-plus-extensions-detail-link"><a href="${escapeHtml(homepage)}" target="_blank" rel="noreferrer">${escapeHtml(homepage)}</a></div>` : ""}
-        ${local?.error ? `<div class="codex-plus-extensions-detail-error">${escapeHtml(local.error)}</div>` : ""}
-        ${isInstalled && local && typeof renderCodexPlusSettingsPanelSlot === "function" ? renderCodexPlusSettingsPanelSlot(local) : ""}
-      </div>
+      ${body}
     `;
   }
 
@@ -495,20 +503,6 @@
     if (script?.source === "builtin") return "内置";
     if (script?.source === "bundled") return "官方";
     return script?.market_id ? "市场" : "用户";
-  }
-
-  /**
-   * 详情下方的设置区：拓展登记了设置面板（ctx.registerSettingsPanel）就留一个挂载点，由 mountCodexPlusSettingsPanel 交给拓展画；
-   * 有配置但没在运行（停用、未加载）时提示先启用。
-   */
-  function renderCodexPlusSettingsPanelSlot(local) {
-    const panel = typeof codexPlusSettingsPanelFor === "function" ? codexPlusSettingsPanelFor(local.key) : null;
-    const hasSettings = !!(local.package?.settingsPage || local.package?.configSchema?.length);
-    if (!panel && !hasSettings) return "";
-    const body = panel && local.enabled
-      ? `<div class="codex-plus-extensions-detail-settings-host" data-codex-plus-settings-panel="${escapeHtml(local.key)}" ${codexPlusExtensionConstants.extensionAttribute}="${escapeHtml(local.key)}"></div>`
-      : `<div class="codex-plus-extensions-detail-settings-hint">${local.enabled ? "这个拓展加载后可以在这里修改设置。" : "启用这个拓展后可以在这里修改设置。"}</div>`;
-    return `<div class="codex-plus-extensions-detail-section codex-plus-extensions-detail-settings"><div class="codex-plus-extensions-detail-section-title">设置</div>${body}</div>`;
   }
 
   /**
@@ -1782,6 +1776,7 @@
     }, true);
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (typeof handleCodexPlusExtensionConfigChange === "function" && handleCodexPlusExtensionConfigChange(target)) return;
       const typingEffectSelect = target?.closest("[data-codex-plus-typing-effect]");
       if (typingEffectSelect) {
         if (!typingEffectSelect.disabled && ["off", "rainbow", "fireworks", "stars"].includes(typingEffectSelect.value)) {
@@ -1811,6 +1806,8 @@
       // 拓展注册的菜单项。放在最前面是因为它的判定完全基于自己的 data 属性，
       // 与下面那些内置分支不会重叠；万一将来重叠，也应当由拓展优先拿到。
       if (handleCodexPlusExtensionMenuClick(target)) return;
+      // 拓展详情的页签、设置表单开关、README 页内锚点。
+      if (typeof handleCodexPlusExtensionDetailClick === "function" && handleCodexPlusExtensionDetailClick(target, event)) return;
       const typingEffectTrigger = target?.closest("[data-codex-plus-typing-effect-trigger]");
       if (typingEffectTrigger) {
         const menu = overlay.querySelector("[data-codex-plus-typing-effect-menu]");
@@ -1938,6 +1935,8 @@
       }
       const extensionsRefresh = target?.closest("[data-codex-market-refresh]");
       if (extensionsRefresh) {
+        // 顺带丢掉 README 缓存：改过的 README 重新打开详情就能看到。
+        if (typeof clearCodexPlusExtensionReadmes === "function") clearCodexPlusExtensionReadmes();
         void loadScriptMarket(true);
         return;
       }
@@ -1952,6 +1951,7 @@
       if (extensionsSelect) {
         const [kind, ...rest] = extensionsSelect.getAttribute("data-codex-extensions-select").split(":");
         codexPlusExtensionsSelected = { kind, key: rest.join(":") };
+        if (typeof resetCodexPlusExtensionsDetailTab === "function") resetCodexPlusExtensionsDetailTab();
         refreshCodexPlusExtensionsView();
         overlay.querySelector(".codex-plus-extensions-back")?.focus({ preventScroll: true });
         return;

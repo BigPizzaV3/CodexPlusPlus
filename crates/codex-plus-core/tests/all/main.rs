@@ -106,6 +106,7 @@ mod extension_gateway;
 mod extension_history;
 mod extension_providers;
 mod extension_publish;
+mod extension_readme;
 mod extension_semver;
 mod extension_tool_pipeline;
 mod extension_hooks;

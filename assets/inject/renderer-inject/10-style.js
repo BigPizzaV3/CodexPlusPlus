@@ -1769,6 +1769,86 @@
         color: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary));
       }
       .codex-plus-discovery .codex-plus-extensions-detail-link a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); }
+      /* 详情页签与两栏（对齐 VS Code 扩展详情）：左边细节 / 设置 / 功能，右边安装与市场信息。 */
+      .codex-plus-discovery .codex-plus-extensions-detail { max-width: 1120px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-heading .codex-plus-extensions-detail-description { margin-top: 6px; }
+      .codex-plus-extensions-detail-gear { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 0; }
+      .codex-plus-extensions-detail-gear svg { width: 16px; height: 16px; }
+      .codex-plus-extensions-detail-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-extensions-detail-tabs button {
+        margin-bottom: -1px; padding: 8px 2px; border: 0; border-bottom: 2px solid transparent; background: transparent;
+        color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; line-height: 20px; cursor: pointer;
+      }
+      .codex-plus-extensions-detail-tabs button:hover { color: var(--codex-plus-text); }
+      .codex-plus-extensions-detail-tabs button[aria-selected="true"] { border-bottom-color: var(--codex-plus-switch-on, #3485ff); color: var(--codex-plus-text); }
+      .codex-plus-extensions-detail-columns { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 32px; padding-top: 20px; }
+      .codex-plus-extensions-detail-main { min-width: 0; }
+      .codex-plus-extensions-detail-tabpanel[hidden] { display: none !important; }
+      .codex-plus-extensions-readme-hint { color: var(--codex-plus-text-tertiary); font-size: 13px; line-height: 20px; }
+      .codex-plus-extensions-detail-aside { min-width: 0; font-size: 12px; line-height: 18px; color: var(--codex-plus-text-secondary); }
+      .codex-plus-extensions-detail-aside section { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-extensions-detail-aside section:last-child { border-bottom: 0; }
+      .codex-plus-extensions-detail-aside h3 { margin: 0 0 8px; color: var(--codex-plus-text); font-size: 13px; font-weight: 600; }
+      .codex-plus-extensions-detail-aside dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+      .codex-plus-extensions-detail-aside dt { color: var(--codex-plus-text-tertiary); }
+      .codex-plus-extensions-detail-aside dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+      .codex-plus-extensions-aside-links { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+      .codex-plus-extensions-detail-aside a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); text-decoration: none; }
+      .codex-plus-extensions-detail-aside a:hover { text-decoration: underline; }
+      .codex-plus-extensions-detail-aside .codex-plus-extensions-detail-tags { margin-top: 0; }
+      .codex-plus-extensions-features { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 20px; }
+      .codex-plus-extensions-features th, .codex-plus-extensions-features td { padding: 8px 0; border-bottom: 1px solid var(--codex-plus-border-subtle); text-align: left; vertical-align: top; }
+      .codex-plus-extensions-features th { width: 160px; padding-right: 16px; color: var(--codex-plus-text-secondary); font-weight: 500; }
+      .codex-plus-extensions-features td { color: var(--codex-plus-text); overflow-wrap: anywhere; }
+      /* 通用设置表单（按清单 config 生成）。 */
+      .codex-plus-ext-config { display: grid; gap: 2px; }
+      .codex-plus-extensions-detail-settings-hint + .codex-plus-ext-config { margin-top: 12px; }
+      .codex-plus-ext-config-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 260px); align-items: center; gap: 8px 24px; padding: 10px 0; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-ext-config-row[data-wide="true"] { grid-template-columns: minmax(0, 1fr); }
+      .codex-plus-ext-config-label label { color: var(--codex-plus-text); font-size: 13px; font-weight: 500; line-height: 20px; }
+      .codex-plus-ext-config-description { color: var(--codex-plus-text-tertiary); font-size: 12px; line-height: 18px; }
+      .codex-plus-ext-config-control { display: flex; justify-content: flex-end; min-width: 0; }
+      .codex-plus-ext-config-row[data-wide="true"] .codex-plus-ext-config-control { justify-content: stretch; }
+      .codex-plus-ext-config-input {
+        width: 100%; box-sizing: border-box; min-height: 30px; padding: 5px 8px; border: 1px solid var(--codex-plus-border); border-radius: 6px;
+        background: var(--codex-plus-bg-secondary, transparent); color: var(--codex-plus-text); font: inherit; font-size: 13px; line-height: 18px;
+      }
+      textarea.codex-plus-ext-config-input { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      .codex-plus-ext-config-input:focus { outline: 2px solid var(--codex-plus-switch-on, #3485ff); outline-offset: -1px; }
+      .codex-plus-ext-config-status { min-height: 18px; padding-top: 8px; color: var(--codex-plus-text-tertiary); font-size: 12px; }
+      .codex-plus-ext-config-status[data-kind="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-ext-config-status[data-kind="error"] { color: var(--codex-plus-danger); }
+      /* README 的 Markdown 正文。 */
+      .codex-plus-markdown { color: var(--codex-plus-text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
+      .codex-plus-markdown > :first-child { margin-top: 0; }
+      .codex-plus-markdown h1, .codex-plus-markdown h2, .codex-plus-markdown h3, .codex-plus-markdown h4, .codex-plus-markdown h5, .codex-plus-markdown h6 { margin: 1.4em 0 .6em; font-weight: 600; line-height: 1.3; }
+      .codex-plus-markdown h1 { font-size: 24px; padding-bottom: .3em; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown h2 { font-size: 19px; padding-bottom: .3em; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown h3 { font-size: 16px; }
+      .codex-plus-markdown h4, .codex-plus-markdown h5, .codex-plus-markdown h6 { font-size: 14px; }
+      .codex-plus-markdown p, .codex-plus-markdown ul, .codex-plus-markdown ol, .codex-plus-markdown blockquote, .codex-plus-markdown pre, .codex-plus-markdown .codex-plus-markdown-table { margin: 0 0 12px; }
+      /* Codex 自己的样式把列表符号清掉了，这里补回。 */
+      .codex-plus-markdown ul, .codex-plus-markdown ol { padding-left: 22px; }
+      .codex-plus-markdown ul { list-style: disc; }
+      .codex-plus-markdown ul ul { list-style: circle; }
+      .codex-plus-markdown ol { list-style: decimal; }
+      .codex-plus-markdown li { display: list-item; }
+      .codex-plus-markdown li + li { margin-top: 2px; }
+      .codex-plus-markdown li > ul, .codex-plus-markdown li > ol { margin: 2px 0 0; }
+      .codex-plus-markdown li.codex-plus-markdown-task { list-style: none; margin-left: -20px; }
+      .codex-plus-markdown li.codex-plus-markdown-task input { margin: 0 6px 0 0; vertical-align: -1px; }
+      .codex-plus-markdown a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); text-decoration: none; }
+      .codex-plus-markdown a:hover { text-decoration: underline; }
+      .codex-plus-markdown code { padding: 1px 5px; border-radius: 4px; background: var(--codex-plus-bg-hover); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
+      .codex-plus-markdown pre { overflow: auto; padding: 12px 14px; border-radius: 8px; background: var(--codex-plus-bg-hover); line-height: 1.5; }
+      .codex-plus-markdown pre code { padding: 0; background: transparent; font-size: 12px; white-space: pre; }
+      .codex-plus-markdown blockquote { padding: 0 0 0 12px; border-left: 3px solid var(--codex-plus-border); color: var(--codex-plus-text-secondary); }
+      .codex-plus-markdown hr { height: 1px; margin: 20px 0; border: 0; background: var(--codex-plus-border-subtle); }
+      .codex-plus-markdown img { max-width: 100%; vertical-align: middle; }
+      .codex-plus-markdown .codex-plus-markdown-table { overflow-x: auto; }
+      .codex-plus-markdown table { border-collapse: collapse; font-size: 13px; }
+      .codex-plus-markdown th, .codex-plus-markdown td { padding: 6px 12px; border: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown th { background: var(--codex-plus-bg-hover); font-weight: 600; }
       .codex-plus-discovery .codex-plus-toggle { flex: 0 0 32px; width: 32px; height: 20px; min-height: 20px; box-sizing: border-box; padding: 2px; background: var(--codex-plus-switch-off, #3a3a3a); cursor: pointer; }
       .codex-plus-discovery .codex-plus-toggle span { width: 16px; height: 16px; background: var(--codex-plus-switch-thumb, #fff); }
       .codex-plus-discovery .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on, #3485ff); }
@@ -1822,6 +1902,7 @@
         .codex-plus-discovery-toolbar { flex-basis: 100%; }
         .codex-plus-discovery .codex-plus-extensions-detail-head { flex-wrap: wrap; }
         .codex-plus-discovery .codex-plus-extensions-detail-actions { flex-basis: 100%; }
+        .codex-plus-extensions-detail-columns { grid-template-columns: minmax(0, 1fr); }
       }
       @container codex-plus-discovery (max-width: 600px) {
         .codex-plus-extensions-grid,
