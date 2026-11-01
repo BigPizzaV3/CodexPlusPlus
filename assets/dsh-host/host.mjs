@@ -661,6 +661,8 @@ export class Host {
     /** path → route、兜底处理：插件经 ctx.webServer 注册的网页路由。 */
     this.webRoutes = new Map()
     this.webFallback = undefined
+    /** path → route：插件经 ctx.webServer.registerUpgrade 注册的协议升级（WebSocket）处理器。 */
+    this.webUpgrades = new Map()
     /** server → provider：插件经 ctx.mcpResources 注册的 MCP 资源。 */
     this.mcpResources = new Map()
     const emit = (event, args) => this.emitEvent(event, args)
@@ -1534,9 +1536,17 @@ export class Host {
             if (host.webFallback === handler) host.webFallback = undefined
           })
         },
-        registerUpgrade() {
-          note('webServer.registerUpgrade（WebSocket 升级）在 Codex++ 里不可用')
-          return () => {}
+        // WebSocket 等协议升级：Codex++ 本地代理把 /ext/<配套拓展>/<路径> 的升级请求原样转到常驻进程里的 Node http 服务，
+        // 处理器拿到真的 IncomingMessage 与 socket（同 dsh 的 node:http upgrade 事件）。
+        registerUpgrade(route) {
+          if (!route || typeof route.handler !== 'function') return () => {}
+          const path = `/${String(route.path ?? '').replace(/^\/+/, '')}`
+          if (host.webUpgrades.has(path)) throw new Error(`webserver: duplicate upgrade route "${path}"`)
+          mapTo(WEBHOOK_TARGET)
+          host.webUpgrades.set(path, route)
+          return track(() => {
+            if (host.webUpgrades.get(path) === route) host.webUpgrades.delete(path)
+          })
         },
         tapIndex: () => () => {},
         applyIndexTaps: (html) => html,

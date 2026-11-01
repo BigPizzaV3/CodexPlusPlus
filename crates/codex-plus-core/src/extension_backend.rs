@@ -764,6 +764,83 @@ pub async fn route_http_with(manager: &UserScriptManager, method: &str, raw_path
     }
 }
 
+/// 请求是不是 WebSocket 升级（`Connection: Upgrade` + `Upgrade: websocket`）。
+pub fn is_websocket_upgrade(raw_headers: &str) -> bool {
+    let header = |name: &str| {
+        raw_headers.lines().skip(1).filter_map(|line| line.split_once(':')).find(|(key, _)| key.trim().eq_ignore_ascii_case(name)).map(|(_, value)| value.trim().to_ascii_lowercase())
+    };
+    header("upgrade").is_some_and(|value| value == "websocket")
+        && header("connection").is_some_and(|value| value.split(',').any(|item| item.trim() == "upgrade"))
+}
+
+/// 拓展 HTTP 路由上的协议升级（dsh 的 `webServer.registerUpgrade`）：后台的 `upgrade(request)` 给出一个本机 socket
+/// （常驻进程里的 Node http 服务）后，把原始升级请求原样转过去，之后两边字节对拷，协议协商与帧都由插件自己的处理器负责。
+/// 网页发来的升级只接受同源（Origin 与 Host 一致，即页面本身由这条拓展路由提供）。连接结束才返回。
+pub async fn route_upgrade(stream: &mut tokio::net::TcpStream, raw_path: &str, raw_headers: &str, raw_head: &[u8]) -> anyhow::Result<()> {
+    route_upgrade_with(&crate::user_scripts::default_user_script_manager(), stream, raw_path, raw_headers, raw_head).await
+}
+
+pub async fn route_upgrade_with(
+    manager: &UserScriptManager,
+    stream: &mut tokio::net::TcpStream,
+    raw_path: &str,
+    raw_headers: &str,
+    raw_head: &[u8],
+) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    async fn refuse(stream: &mut tokio::net::TcpStream, status: &str, message: &str) -> anyhow::Result<()> {
+        let body = json!({ "error": message }).to_string();
+        let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        stream.write_all(response.as_bytes()).await?;
+        stream.shutdown().await?;
+        Ok(())
+    }
+    let header = |name: &str| raw_headers.lines().skip(1).filter_map(|line| line.split_once(':')).find(|(key, _)| key.trim().eq_ignore_ascii_case(name)).map(|(_, value)| value.trim().to_string());
+    // 同源才放行：页面本身由拓展路由提供时 Origin 就是 http://<Host>。
+    if let Some(origin) = header("origin").filter(|origin| !origin.is_empty()) {
+        let host = header("host").unwrap_or_default();
+        let same = reqwest::Url::parse(&origin).ok().is_some_and(|url| url.host_str().is_some_and(|name| format!("{name}{}", url.port().map(|port| format!(":{port}")).unwrap_or_default()) == host));
+        if !same {
+            return refuse(stream, "403 Forbidden", "extension upgrades only accept same-origin pages").await;
+        }
+    }
+    let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
+    let Some(rest) = path.strip_prefix("/ext/") else {
+        return refuse(stream, "404 Not Found", "not found").await;
+    };
+    let (id, sub) = rest.split_once('/').map(|(id, sub)| (id, format!("/{sub}"))).unwrap_or((rest, "/".to_string()));
+    if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+        return refuse(stream, "404 Not Found", "not found").await;
+    }
+    let key = crate::user_scripts::extension_package_key(id);
+    if !manager.extension_backend_http(&key) {
+        return refuse(stream, "404 Not Found", &format!("extension {id} does not serve HTTP")).await;
+    }
+    let headers = raw_headers
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), Value::String(value.trim().to_string())))
+        .collect::<serde_json::Map<_, _>>();
+    let reply = match call(manager, &key, "upgrade", json!({ "path": sub, "query": query, "headers": headers }), DEFAULT_CALL_TIMEOUT, None).await {
+        Ok(reply) => reply,
+        Err(error) => return refuse(stream, "502 Bad Gateway", &format!("{error:#}")).await,
+    };
+    let Some(socket) = reply.get("socket").and_then(Value::as_str).filter(|path| !path.is_empty()) else {
+        let message = reply.get("error").and_then(Value::as_str).unwrap_or("no upgrade handler for this path");
+        return refuse(stream, "404 Not Found", message).await;
+    };
+    let mut head = raw_head.to_vec();
+    head.extend_from_slice(b"\r\n\r\n");
+    #[cfg(unix)]
+    let mut upstream = tokio::net::UnixStream::connect(socket).await.with_context(|| format!("连不上拓展的升级服务 {socket}"))?;
+    #[cfg(windows)]
+    let mut upstream = tokio::net::windows::named_pipe::ClientOptions::new().open(socket).with_context(|| format!("连不上拓展的升级服务 {socket}"))?;
+    upstream.write_all(&head).await?;
+    let _ = tokio::io::copy_bidirectional(stream, &mut upstream).await;
+    Ok(())
+}
+
 /// 定时任务调度：每分钟给声明了 schedules 的拓展后台发一次 `__tick`（没起就先起），到点与否由后台按本机时区判断。
 /// 只在托管后台的进程（启动器）里起一次。
 pub fn start_scheduler() {

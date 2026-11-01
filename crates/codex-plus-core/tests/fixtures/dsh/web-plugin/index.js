@@ -1,4 +1,5 @@
 // 按 dsh 写法用到 webServer、mcpResources、attachments、fileReferences。
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -15,6 +16,22 @@ export function apply(ctx) {
     for await (const chunk of req) body += chunk
     res.writeHead(201, { 'content-type': 'text/plain' })
     res.end(`hi ${req.method} ${body}`)
+  } })
+  // 最小的 WebSocket 服务端（插件自己负责协议）：握手后先发一条问候，再把收到的第一条文本回显回去。
+  ctx.webServer.registerUpgrade({ path: '/ws', handler(req, socket) {
+    const accept = createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64')
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`)
+    const frame = (text) => {
+      const payload = Buffer.from(text)
+      return Buffer.concat([Buffer.from([0x81, payload.length]), payload])
+    }
+    socket.write(frame(`hello ${req.url}`))
+    socket.once('data', (data) => {
+      const length = data[1] & 0x7f
+      const mask = data.subarray(2, 6)
+      const text = Buffer.from(data.subarray(6, 6 + length).map((byte, index) => byte ^ mask[index % 4])).toString()
+      socket.write(frame(`echo:${text}`))
+    })
   } })
   ctx.mcpResources.register('notes', {
     async request(request) {

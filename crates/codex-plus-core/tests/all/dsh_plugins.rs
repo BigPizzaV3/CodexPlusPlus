@@ -1492,6 +1492,49 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
     assert_eq!(result["reply"], json!({ "status": 201, "headers": { "content-type": "text/plain" }, "body": "hi POST there" }), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(result["missing"], 404);
 
+    // WebSocket 升级：Codex++ 本地代理的 /ext/<配套拓展>/ws 原样转到常驻进程里的 Node http 服务，插件自己的处理器完成握手与收发。
+    {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server_manager = manager.clone();
+        let server = tokio::spawn(async move {
+            let mut handled = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let server_manager = server_manager.clone();
+                handled.push(tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        stream.read_exact(&mut byte).await.unwrap();
+                        head.push(byte[0]);
+                    }
+                    head.truncate(head.len() - 4);
+                    let text = String::from_utf8_lossy(&head).to_string();
+                    let path = text.lines().next().unwrap().split_whitespace().nth(1).unwrap().to_string();
+                    codex_plus_core::extension_backend::route_upgrade_with(&server_manager, &mut stream, &path, &text, &head).await.unwrap();
+                }));
+            }
+            for task in handled {
+                task.await.unwrap();
+            }
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).await.unwrap();
+        let hello = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next()).await.expect("等问候超时").unwrap().unwrap();
+        assert_eq!(hello.into_text().unwrap().as_str(), "hello /ws");
+        socket.send(tokio_tungstenite::tungstenite::Message::Text("ping".into())).await.unwrap();
+        let echo = socket.next().await.unwrap().unwrap();
+        assert_eq!(echo.into_text().unwrap().as_str(), "echo:ping");
+        drop(socket);
+        // 别的网页（Origin 与 Host 不同）发来的升级被拒绝。
+        let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
+        request.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
+        assert!(tokio_tungstenite::connect_async(request).await.is_err());
+        server.await.unwrap();
+    }
+
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
 }

@@ -28,6 +28,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createServer as createHttpServer } from 'node:http'
 import { createConnection, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -694,6 +695,61 @@ async function webRouteFor(host, request = {}) {
   return { status: reply.status, headers: reply.headers, body: Buffer.concat(reply.chunks).toString('utf8') }
 }
 
+/** 常驻进程里接协议升级的本机 socket（与控制 socket 区分开）。 */
+function upgradeSocketPath(configPath) {
+  const control = socketPath(configPath)
+  return process.platform === 'win32' ? `${control}-upgrade` : control.replace(/\.sock$/, '-upgrade.sock')
+}
+
+/**
+ * webServer.registerUpgrade 的落点：常驻进程里起一个只听本机 socket 的 Node http 服务，Codex++ 本地代理把
+ * /ext/<配套拓展>/<路径> 的升级请求原样写进来，'upgrade' 事件按路径（去掉 /ext/<配套拓展> 前缀）交给插件的处理器。
+ * 返回给 Rust 的是 socket 路径；路径没有处理器时返回 error。
+ */
+async function upgradeFor(host, configPath, request = {}) {
+  const path = String(request.path ?? '/').split('?')[0] || '/'
+  if (!host.webUpgrades.has(path)) return { error: `没有插件处理 ${path} 的协议升级` }
+  if (!host.upgradeServer) {
+    const socket = upgradeSocketPath(configPath)
+    const sockets = new Set()
+    const server = createHttpServer((_req, res) => {
+      res.writeHead(426, { connection: 'close' })
+      res.end()
+    })
+    server.on('upgrade', (req, socket, head) => {
+      const url = String(req.url ?? '/').replace(/^\/ext\/[^/?]+/, '') || '/'
+      const route = host.webUpgrades.get(new URL(url, 'http://codexpp.local').pathname)
+      if (!route) {
+        socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+        return
+      }
+      req.url = url
+      sockets.add(socket)
+      socket.on('close', () => sockets.delete(socket))
+      // http 服务的连接默认半开：客户端断开后这边也收尾，否则代理那头的对拷一直等着。
+      socket.on('end', () => socket.end())
+      Promise.resolve(route.handler(req, socket, head)).catch((error) => {
+        console.error(`[dsh-bridge] 协议升级处理器失败：${errorText(error)}`)
+        socket.destroy()
+      })
+    })
+    if (process.platform !== 'win32') {
+      try {
+        unlinkSync(socket)
+      } catch {}
+    }
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socket, () => {
+        server.off('error', reject)
+        resolve()
+      })
+    })
+    host.upgradeServer = { server, socket, sockets }
+  }
+  return { socket: host.upgradeServer.socket }
+}
+
 async function webhookFor(host, request = {}) {
   const match = /\/webhook\/(.+)$/.exec(String(request.path ?? ''))
   if (!match) return webRouteFor(host, request)
@@ -974,6 +1030,15 @@ async function runDaemon(configPath) {
     closing = true
     clearTimeout(idle)
     server.close()
+    if (host.upgradeServer) {
+      for (const socket of host.upgradeServer.sockets) socket.destroy()
+      host.upgradeServer.server.close()
+      if (process.platform !== 'win32') {
+        try {
+          unlinkSync(host.upgradeServer.socket)
+        } catch {}
+      }
+    }
     if (process.platform !== 'win32') {
       try {
         unlinkSync(path)
@@ -987,7 +1052,8 @@ async function runDaemon(configPath) {
   }
   const touch = () => {
     clearTimeout(idle)
-    idle = setTimeout(shutdown, DAEMON_IDLE_MS)
+    // 还有升级后的长连接（WebSocket）开着就不算空闲。
+    idle = setTimeout(() => (host.upgradeServer?.sockets.size ? touch() : shutdown()), DAEMON_IDLE_MS)
   }
   const handle = async (message) => {
     if (message?.kind === 'ping') return { ok: true }
@@ -1012,6 +1078,7 @@ async function runDaemon(configPath) {
     if (message.kind === 'rpc-close') return { output: host.closeRpcStream(message.request) }
     if (message.kind === 'webhook') return { output: await webhookFor(host, message.request) }
     if (message.kind === 'bus') return { output: await busDispatch(host, message) }
+    if (message.kind === 'upgrade') return { output: await upgradeFor(host, configPath, message.request) }
     return { error: `不认识的请求 ${message.kind}` }
   }
   server.on('connection', (socket) => {
@@ -1265,6 +1332,17 @@ export async function runWebhook(config, request) {
   const plugin = readPlugin(config)
   if (!plugin || !mappedRows(plugin, 'webhook').length) return { status: 503, body: '插件已停用' }
   return handle(config, plugin, mappedRows(plugin), { kind: 'webhook', request }, (host) => webhookFor(host, request))
+}
+
+/** 协议升级入口（配套拓展包的后台调用，Rust 拿到 socket 后把升级请求原样转过去）：返回 { socket } 或 { error }。只经常驻进程。 */
+export async function runUpgrade(config, request) {
+  const plugin = readPlugin(config)
+  if (!plugin || !mappedRows(plugin, 'webhook').length) return { error: '插件已停用' }
+  try {
+    return (await viaDaemon(config, plugin, { kind: 'upgrade', request: request ?? {} })).output ?? { error: '常驻进程没有回复' }
+  } catch (error) {
+    return { error: errorText(error) }
+  }
 }
 
 /** 页面斜杠命令入口（配套拓展包的后台调用）：返回 dsh 的 CommandResult。 */
