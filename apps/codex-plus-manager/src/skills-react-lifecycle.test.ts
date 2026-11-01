@@ -16,9 +16,9 @@ try {
   playwright = require(browserRoot || "playwright");
 } catch { /* Optional integration test dependencies. */ }
 
-test("real SkillsPage keeps batch protection and refreshes after remount", { skip: !esbuild || !playwright || !browserExecutable }, async () => {
+async function buildSkillsPageBundle() {
   const sourceDir = dirname(fileURLToPath(import.meta.url));
-  const bundle = await esbuild!.build({
+  return esbuild!.build({
     stdin: { resolveDir: sourceDir, sourcefile: "skills-lifecycle-entry.tsx", loader: "tsx", contents: `
       import React from 'react';
       import { createRoot } from 'react-dom/client';
@@ -39,6 +39,10 @@ test("real SkillsPage keeps batch protection and refreshes after remount", { ski
         : "export const open = async () => null; export const save = async () => null; export const message = async () => {}; export const ask = async () => false; export const confirm = async () => false;" }));
     } }],
   });
+}
+
+test("real SkillsPage keeps batch protection and refreshes after remount", { skip: !esbuild || !playwright || !browserExecutable }, async () => {
+  const bundle = await buildSkillsPageBundle();
   const browser = await playwright.chromium.launch({ executablePath: browserExecutable, headless: true });
   try {
     const page = await browser.newPage();
@@ -91,6 +95,61 @@ test("real SkillsPage keeps batch protection and refreshes after remount", { ski
     assert.equal(await page.evaluate(() => (window as any).fixture.calls.filter((call: any) => call.command === "list_installed_skills").length), ownerLoads);
     await page.evaluate(() => (window as any).fixture.pending.shift()());
     await page.waitForFunction((previous: number) => (window as any).fixture.calls.filter((call: any) => call.command === "list_installed_skills").length === previous + 1, ownerLoads);
+    assert.deepEqual(errors, []);
+    await page.evaluate(() => (window as any).unmountPage());
+  } finally { await browser.close(); }
+});
+
+test("real import drawer resets incomplete comparison confirmation after rechecking", { skip: !esbuild || !playwright || !browserExecutable }, async () => {
+  const bundle = await buildSkillsPageBundle();
+  const browser = await playwright.chromium.launch({ executablePath: browserExecutable, headless: true });
+  try {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error: Error) => errors.push(error.message));
+    await page.route("http://skills-fixture.invalid/", (route: any) => route.fulfill({ status: 200, contentType: "text/html", body: '<div data-topbar-actions></div><div id="root"></div>' }));
+    await page.goto("http://skills-fixture.invalid/");
+    await page.evaluate(() => {
+      const w = window as any;
+      w.fixture = { calls: [] as any[], previewCount: 0 };
+      w.fixtureInvoke = async (command: string, args: any) => {
+        w.fixture.calls.push({ command, args });
+        if (command === "list_installed_skills" || command === "apply_skill_import") return {
+          status: "ok", message: "ok", skills: [], repos: [], pendingImportedRepos: [],
+          repositorySkills: [], repoCounts: {}, repoErrors: [], skillsDir: "", codexSkillsDir: "",
+        };
+        if (command === "preview_skill_import") return {
+          status: "ok", message: "ok", warning: "", candidates: [{
+            id: "incoming", name: "Incoming", description: "", sourceHash: "source", repoKey: "", repoPath: "",
+            matches: [], duplicateCandidates: [], error: null,
+            incompleteTargets: [{ id: "existing", name: "Existing", error: "unreadable", fingerprint: `snapshot-${++w.fixture.previewCount}` }],
+          }],
+        };
+        throw new Error(`unexpected command: ${command}`);
+      };
+    });
+    await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    await page.evaluate(() => (window as any).mountPage());
+    await page.getByRole("button", { name: "从 cc-switch 导入" }).click();
+    const drawer = page.getByRole("dialog", { name: "选择要导入的 Skills" });
+    const confirmation = drawer.getByLabel("我已了解比较不完整，仍要导入此项");
+    const submit = drawer.getByRole("button", { name: "导入所选 1 项" });
+    await confirmation.waitFor();
+    assert.equal(await submit.isDisabled(), true);
+    await confirmation.check();
+    assert.equal(await submit.isEnabled(), true);
+    await drawer.getByRole("button", { name: "重新检查" }).click();
+    await page.waitForFunction(() => (window as any).fixture.previewCount === 2);
+    await page.waitForFunction(() => {
+      const checkbox = document.querySelector('.mg-skill-import-row .mg-warning input') as HTMLInputElement | null;
+      return checkbox && !checkbox.checked;
+    });
+    assert.equal(await submit.isDisabled(), true);
+    await confirmation.check();
+    await submit.click();
+    await page.waitForFunction(() => (window as any).fixture.calls.some((call: any) => call.command === "apply_skill_import"));
+    const call = await page.evaluate(() => (window as any).fixture.calls.find((item: any) => item.command === "apply_skill_import"));
+    assert.deepEqual(call.args.incompleteConfirmations, { incoming: [{ id: "existing", name: "Existing", error: "unreadable", fingerprint: "snapshot-2" }] });
     assert.deepEqual(errors, []);
     await page.evaluate(() => (window as any).unmountPage());
   } finally { await browser.close(); }
