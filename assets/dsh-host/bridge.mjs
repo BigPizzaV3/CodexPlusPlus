@@ -82,6 +82,12 @@ function dataDirOf(plugin) {
   return plugin.registryPath ? join(dirname(plugin.registryPath), 'data', String(plugin.id).replace(/[^\w.-]/g, '_')) : undefined
 }
 
+/** 提供服务的行（Service 子类插件、ctx.set）：被映射的行可能 inject 它们，常驻进程里要一并加载。 */
+function providerRows(plugin) {
+  const disabled = new Set(plugin.disabledRows ?? [])
+  return (plugin.report?.rows ?? []).filter((row) => !disabled.has(row.id) && (row.provides?.length || row.kind === 'service')).map((row) => row.id)
+}
+
 async function loadHost(plugin, rows, { persistent = false } = {}) {
   const dataDir = dataDirOf(plugin)
   // 临时加载（常驻进程起不来）时不落盘镜像，免得和常驻进程写同一个文件。
@@ -89,7 +95,7 @@ async function loadHost(plugin, rows, { persistent = false } = {}) {
   await host.loadPackage(plugin.root, plugin.id, {
     disabledRows: plugin.disabledRows,
     configs: plugin.configs,
-    onlyRows: rows,
+    onlyRows: Array.isArray(rows) ? [...new Set([...rows, ...providerRows(plugin)])] : rows,
     skipSkills: true,
     dataDir,
   })

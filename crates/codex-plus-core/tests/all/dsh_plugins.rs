@@ -331,7 +331,7 @@ echo.inject = ['tools']
 }
 
 #[test]
-fn dsh_service_class_and_client_plugins_are_reported_incompatible() {
+fn dsh_service_class_without_name_and_client_plugins_are_reported() {
     let Some(toolchain) = toolchain() else { return };
     let source = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -350,9 +350,50 @@ fn dsh_service_class_and_client_plugins_are_reported_incompatible() {
         .import(&local_source(source.path()), &toolchain)
         .unwrap();
     assert_eq!(record.report["client"], true);
+    // Service 子类现在按 Cordis 语义实例化；没用 super(ctx, 名字) 登记服务名的提醒一句。
     let store = row(&record.report, "dsh-store");
-    assert_eq!(store["status"], "incompatible");
+    assert_eq!(store["status"], "partial", "{store}");
     assert_eq!(store["kind"], "service");
+    assert!(store["notes"].to_string().contains("没有用 super(ctx, 名字) 登记服务名"), "{store}");
+}
+
+/// Service 子类插件：实例化后作为服务给同一个包里的插件 inject（消费方写在前面也行）；行上的 isolate 让组里拿到私有实例，
+/// ctx.isolate / ctx.set 给出作用域服务；钩子常驻进程只映射消费方时也会把提供方一并加载。
+#[tokio::test]
+async fn dsh_service_class_plugins_provide_services_with_isolate() {
+    use codex_plus_core::extension_hooks::dispatch;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(scripts.path().join("builtin"), scripts.path().join("user"), scripts.path().join("user_scripts.json"));
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("service-bundle")), &toolchain).unwrap();
+    let counter = row(&record.report, "counter");
+    assert_eq!((counter["kind"].as_str(), counter["status"].as_str()), (Some("service"), Some("compatible")), "{counter}");
+    assert_eq!(counter["provides"], json!(["counter"]));
+    for id in ["consumer", "scoped-consumer", "scoped-counter", "memo"] {
+        let item = row(&record.report, id);
+        assert!(item["status"] == "compatible" || item["status"] == "partial", "{id}：{item}");
+    }
+
+    let responses = serve(&plugins, &toolchain, &[
+        call(1, "count_next", json!({})),
+        call(2, "count_next", json!({})),
+        call(3, "count_scoped", json!({})),
+        call(4, "memo_probe", json!({})),
+    ]);
+    let text = |index: usize| responses[index]["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string();
+    assert_eq!((text(0), text(1), text(2)), ("1".to_string(), "2".to_string(), "101".to_string()), "{responses:?}");
+    assert_eq!(serde_json::from_str::<Value>(&text(3)).unwrap(), json!({"outer": "outer", "inner": "inner", "viaGet": "outer"}));
+
+    // 钩子常驻进程：只有消费方映射到 PreToolUse，提供方也要加载，否则 inject 不满足。
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    let denied = dispatch(&manager, "PreToolUse", json!({"session_id": "s1", "tool_name": "counter_probe", "tool_input": {}})).await.unwrap();
+    assert!(denied["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap_or_default().ends_with("counter=1"), "{denied}");
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
 }
 
 #[test]
@@ -1262,7 +1303,7 @@ fn dsh_llm_stand_in_passes_tools_and_splits_tool_calls() {
 }
 
 /// bundle patch 的完整语义：按 id 覆盖字段、`{ id, insert }` 插进组、include 文件与它自己的 patches、
-/// name 对不上的覆盖跳过、`!!js` 只认字面量与 env。
+/// name 对不上的覆盖跳过、`!!js` 在 vm 里求值完整表达式（ctx / env，超时按启用处理并诊断，结果按真假判停用）。
 #[test]
 fn dsh_bundle_patch_semantics_match_dsh() {
     let Some(toolchain) = toolchain() else { return };
@@ -1280,9 +1321,13 @@ fn dsh_bundle_patch_semantics_match_dsh() {
         owned("b", "compatible", &["say_bee"]),
         owned("c", "disabled", &[]),
         owned("d", "compatible", &["say_dee_loud"]),
+        owned("e", "compatible", &["say_e-2-function-true"]),
+        owned("f", "compatible", &["say_123"]),
+        owned("g", "disabled", &[]),
     ], "{}", record.report);
     let diagnostics = record.report["diagnostics"].to_string();
     assert!(diagnostics.contains("name 对不上"), "{diagnostics}");
+    assert!(diagnostics.contains("插件行 f 的 disabled 表达式 !!js") && diagnostics.contains("timed out"), "{diagnostics}");
 }
 
 /// 插件市场索引（格式 1）：npm 与 git 来源翻成导入能用的来源字符串，取最新版本，认不出的跳过。

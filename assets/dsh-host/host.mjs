@@ -16,6 +16,7 @@ import { register } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { runInNewContext } from 'node:vm'
 import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
 import {
@@ -24,8 +25,15 @@ import {
   createWorkspaceRegistry,
 } from './services.mjs'
 
-const HOST_VERSION = '5'
+const HOST_VERSION = '6'
 const HOST_DIR = dirname(fileURLToPath(import.meta.url))
+/** 替身 Service 构造时经这个符号把自己登记到 ctx（与 shims/cordis.mjs 一致）。 */
+const PROVIDE = Symbol.for('codexpp.dsh.provide')
+/** Cordis Service 的生命周期符号（与 shims/cordis.mjs 的 Service.init / Service.dispose 一致）。 */
+const SERVICE_INIT = Symbol.for('cordis.service.init')
+const SERVICE_DISPOSE = Symbol.for('cordis.service.dispose')
+/** ctx 上的这些名字是宿主自己的能力（工具、提示词……），插件提供的同名服务不能顶替它们。 */
+const CORE_CONTEXT_KEYS = new Set(['tools', 'systemPrompt', 'skills', 'commands', 'connection', 'logger', 'timer'])
 const SHIMS = {
   '@deepseek-ai/dsh-tools': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-tools.mjs')).href,
   '@deepseek-ai/schemastery': pathToFileURL(join(HOST_DIR, 'shims', 'schemastery.mjs')).href,
@@ -265,24 +273,75 @@ function resolveRowModule(row, root, pkg) {
 /** include 行：把另一个 YAML / JSON 条目文件（包内）的内容当作一组子行，带上它自己的 patches。 */
 const INCLUDE_MODULES = new Set(['cordis:include', '@deepseek-ai/cordis-plugin-include'])
 
-/**
- * `!!js` 表达式只做有限求值，不执行任意代码：字面量 true / false，以及 `env.X`、`process.env.X`（可带 `!`）。
- * 求不出时返回 undefined。
- */
-function evalTagged(value) {
-  if (!value || typeof value !== 'object' || typeof value.tag !== 'string') return value
-  // YAML 里常写成 !!js "true"：去掉一层引号。
-  const expression = String(value.value ?? '').trim().replace(/^(["'])(.*)\1$/, '$2').trim()
-  if (expression === 'true' || expression === 'false') return expression === 'true'
-  const match = /^(!?)\s*(?:process\.)?env\.([A-Za-z_][\w]*)$/.exec(expression)
-  if (match) {
-    const set = Boolean(process.env[match[2]]) && !['0', 'false', ''].includes(String(process.env[match[2]]).toLowerCase())
-    return match[1] ? !set : set
+/** Cordis 条目 YAML 的表达式标签。 */
+const JS_TAGS = new Set(['!!js', '!js', 'tag:yaml.org,2002:js'])
+/** 单个 `!!js` 表达式的求值上限（插件代码本身就在宿主进程无沙箱运行，这里只防死循环卡住分析）。 */
+const EXPRESSION_TIMEOUT_MS = 1000
+
+/** 标签值的原文：YAML 里常写成 `!!js "expr"`，去掉一层引号。 */
+function taggedText(value) {
+  const raw = String(value?.value ?? '').trim()
+  if (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2) {
+    try {
+      return String(JSON.parse(raw))
+    } catch {}
   }
-  return undefined
+  return raw.replace(/^(["'])([\s\S]*)\1$/, '$2').trim()
 }
 
-function collectRows(entries, baseDir, diagnostics, out, parentDisabled = false, depth = 0) {
+/**
+ * 求一个带标签的 YAML 值，返回 `{ value }` 或 `{ error }`。
+ * `!!js` 照 Cordis Loader 的写法在 Node `vm` 里求值完整表达式：能用 `ctx`（本包的服务，如 `ctx.webStartup.port ?? 3080`、
+ * `ctx.dshHomePath('x')`）、`env` / `process.env` 与 JS 内置对象；插件代码本来就在宿主进程无沙箱运行，
+ * 求值 patch 表达式不额外扩大权限，只加超时。YAML 的 `!!str` / `!!int` / `!!float` / `!!bool` / `!!null` 按类型转换。
+ */
+function evalTagged(value, scope = {}) {
+  if (!value || typeof value !== 'object' || typeof value.tag !== 'string') return { value }
+  const text = taggedText(value)
+  switch (value.tag) {
+    case '!!str':
+      return { value: text }
+    case '!!int':
+    case '!!float': {
+      const number = Number(text)
+      return Number.isFinite(number) ? { value: value.tag === '!!int' ? Math.trunc(number) : number } : { error: `${text} 不是数字` }
+    }
+    case '!!bool':
+      return /^(true|false)$/i.test(text) ? { value: text.toLowerCase() === 'true' } : { error: `${text} 不是布尔值` }
+    case '!!null':
+      return { value: null }
+    default:
+      break
+  }
+  if (!JS_TAGS.has(value.tag)) return { error: `不认识的 YAML 标签 ${value.tag}` }
+  if (!text) return { error: '表达式是空的' }
+  try {
+    // 换行放在括号前：表达式末尾的 `// 注释` 不会吃掉右括号。
+    const result = runInNewContext(`(${text}\n)`, expressionScope(scope), { timeout: EXPRESSION_TIMEOUT_MS, filename: 'cordis-patch-expression.js' })
+    return { value: result }
+  } catch (error) {
+    return { error: errorText(error) }
+  }
+}
+
+/** `!!js` 表达式能看到的名字：ctx（本包的服务视图）、env、精简的 process。 */
+function expressionScope({ ctx } = {}) {
+  return {
+    ctx: ctx ?? {},
+    env: process.env,
+    process: Object.freeze({ env: process.env, platform: process.platform, arch: process.arch, version: process.version, versions: process.versions, cwd: () => process.cwd() }),
+  }
+}
+
+/** 求 patch 行 / 配置里的标签值；求不出时记一条诊断并返回 fallback。 */
+function resolveTagged(value, scope, report, fallback) {
+  const { value: result, error } = evalTagged(value, scope)
+  if (error === undefined) return result
+  report(`表达式 ${value.tag} ${taggedText(value)} 求值失败：${error}`)
+  return fallback
+}
+
+function collectRows(entries, baseDir, diagnostics, out, parentDisabled = false, depth = 0, scope = {}, parentIsolate = {}) {
   for (const row of entries ?? []) {
     if (!row || typeof row !== 'object' || typeof row.name !== 'string') {
       diagnostics.push('patch 中有缺少 name 的插件行，已跳过')
@@ -290,20 +349,35 @@ function collectRows(entries, baseDir, diagnostics, out, parentDisabled = false,
     }
     let disabledValue = row.disabled
     if (disabledValue && typeof disabledValue === 'object') {
-      disabledValue = evalTagged(disabledValue)
-      if (disabledValue === undefined) diagnostics.push(`插件行 ${row.id ?? row.name} 的 disabled 表达式求不出来，按启用处理`)
+      // Cordis Loader 把求值结果按真假处理（其余真值也算停用）。
+      disabledValue = resolveTagged(disabledValue, scope, (text) => diagnostics.push(`插件行 ${row.id ?? row.name} 的 disabled ${text}，按启用处理`), false)
     }
-    const disabled = parentDisabled || disabledValue === true
+    const disabled = parentDisabled || Boolean(disabledValue)
+    // Cordis 的 isolate：`{ 服务名: true | '标签' }`。true 给这一行（组则整组）一个私有作用域，字符串是同名标签共享的作用域。
+    const isolate = { ...parentIsolate, ...isolateOf(row, diagnostics) }
     if (row.name === GROUP_MODULE || row.group === true) {
-      collectRows(Array.isArray(row.config) ? row.config : [], baseDir, diagnostics, out, disabled, depth)
+      collectRows(Array.isArray(row.config) ? row.config : [], baseDir, diagnostics, out, disabled, depth, scope, isolate)
       continue
     }
     if (INCLUDE_MODULES.has(row.name)) {
-      collectRows(readIncludedRows(row, baseDir, diagnostics, depth), baseDir, diagnostics, out, disabled, depth + 1)
+      collectRows(readIncludedRows(row, baseDir, diagnostics, depth), baseDir, diagnostics, out, disabled, depth + 1, scope, isolate)
       continue
     }
-    out.push({ id: String(row.id ?? row.name), name: row.name, config: row.config ?? undefined, disabled, baseDir })
+    out.push({ id: String(row.id ?? row.name), name: row.name, config: row.config ?? undefined, disabled, baseDir, isolate })
   }
+}
+
+/** 行上的 isolate 声明 → `{ 服务名: 作用域键 }`。true 的作用域以这一行的 id 区分，字符串按标签共享。 */
+function isolateOf(row, diagnostics) {
+  const spec = row.isolate
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return {}
+  const out = {}
+  for (const [name, value] of Object.entries(spec)) {
+    if (value === true) out[name] = `entry:${String(row.id ?? row.name)}`
+    else if (typeof value === 'string' && value) out[name] = `label:${value}`
+    else diagnostics.push(`插件行 ${row.id ?? row.name} 的 isolate.${name} 只能是 true 或标签字符串，已忽略`)
+  }
+  return out
 }
 
 /** 读 include 行指向的条目文件：只认包内路径，最多嵌套 4 层；文件里的条目再应用 include 自己的 patches。 */
@@ -381,23 +455,17 @@ function applyEntryPatches(data, patches, diagnostics) {
   return entries
 }
 
-function resolveTaggedConfig(value) {
+const isTaggedNode = (value) => Boolean(value) && typeof value === 'object' && typeof value.tag === 'string' && 'value' in value && Object.keys(value).length === 2
+
+/** 配置里的标签值逐个求值（同 Cordis 在 apply 前解开配置里的表达式）；求不出的保留原样并经 report 说明。 */
+function resolveTaggedConfig(value, scope = {}, report = () => {}) {
   if (!value || typeof value !== 'object') return value
-  if (typeof value.tag === 'string' && 'value' in value && Object.keys(value).length === 2) {
-    const resolved = evalTagged(value)
-    return resolved === undefined ? value : resolved
-  }
-  if (Array.isArray(value)) return value.map(resolveTaggedConfig)
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveTaggedConfig(item)]))
+  if (isTaggedNode(value)) return resolveTagged(value, scope, report, value)
+  if (Array.isArray(value)) return value.map((item) => resolveTaggedConfig(item, scope, report))
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveTaggedConfig(item, scope, report)]))
 }
 
-function hasTaggedValue(value) {
-  if (!value || typeof value !== 'object') return false
-  if (typeof value.tag === 'string' && 'value' in value && Object.keys(value).length === 2) return true
-  return Object.values(value).some(hasTaggedValue)
-}
-
-function readBundleRows(root, pkg, diagnostics) {
+function readBundleRows(root, pkg, diagnostics, scope = {}) {
   const patchField = pkg.dsh?.bundle?.patch
   const patches = Array.isArray(patchField) ? patchField : [patchField]
   const rows = []
@@ -421,7 +489,7 @@ function readBundleRows(root, pkg, diagnostics) {
     entries = applyEntryPatches(entries, Array.isArray(document) ? document : [], diagnostics)
     baseDir = dirname(path)
   }
-  collectRows(entries, baseDir, diagnostics, rows)
+  collectRows(entries, baseDir, diagnostics, rows, false, 0, scope)
   return rows
 }
 
@@ -451,7 +519,7 @@ function pluginFromModule(module) {
     return { name: module.name, inject: module.inject, Config: module.Config, apply: module.apply }
   }
   const fallback = module.default
-  if (isClass(fallback)) return { serviceClass: true, name: fallback.name }
+  if (isClass(fallback)) return { serviceClass: fallback, name: fallback.name, inject: fallback.inject, Config: fallback.Config }
   if (typeof fallback === 'function') {
     return { name: fallback.name, inject: fallback.inject, Config: fallback.Config, apply: fallback }
   }
@@ -600,6 +668,68 @@ export class Host {
     this.schedules = undefined
     this.agentRegistry = new AgentRegistry({ mirror: this.mirror, emit, serial: (event, args) => this.serial(event, args) })
     this.shared = undefined
+    /**
+     * 插件提供的服务（Service 子类插件、ctx.set / ctx.provide）：作用域键 → 服务名 → { instance }。
+     * 作用域键是 'global'，或行上 isolate 声明 / ctx.isolate 给出的私有键（Cordis 的 isolate 语义）。
+     */
+    this.realms = new Map()
+    this.isolateSeq = 0
+  }
+
+  /** 服务名在一组 isolate 声明下落在哪个作用域。 */
+  realmKey(name, isolate) {
+    return isolate?.[name] ?? 'global'
+  }
+
+  /** 插件提供的服务实例（按 isolate 找作用域）；没有返回 undefined。 */
+  findService(name, isolate) {
+    return this.realms.get(this.realmKey(name, isolate))?.get(name)?.instance
+  }
+
+  /** 服务是否可用：宿主替身，或同一个宿主里有插件提供了它。 */
+  serviceAvailable(name, isolate) {
+    return SUPPORTED_SERVICES.has(name) || this.findService(name, isolate) !== undefined
+  }
+
+  /** 登记插件提供的服务，返回撤销函数（撤销时恢复被它顶替的旧实现）。发 internal/service 同 Cordis。 */
+  provideService(name, instance, isolate) {
+    const key = this.realmKey(name, isolate)
+    if (!this.realms.has(key)) this.realms.set(key, new Map())
+    const realm = this.realms.get(key)
+    const previous = realm.get(name)
+    const entry = { instance }
+    realm.set(name, entry)
+    queueMicrotask(() => this.emitEvent('internal/service', [name]))
+    return () => {
+      if (realm.get(name) !== entry) return
+      if (previous) realm.set(name, previous)
+      else realm.delete(name)
+      queueMicrotask(() => this.emitEvent('internal/service', [name]))
+    }
+  }
+
+  /**
+   * 按 Cordis 语义实例化 Service 子类：`new Class(ctx, config)`，构造函数里 `super(ctx, name)` 经替身 Service 登记服务；
+   * 随后跑 `[Service.init]()`（可返回 / yield 撤销函数），没有就跑 `start()`；卸载时调 `[Service.dispose]()` 或 `stop()`。
+   */
+  async instantiateService(ServiceClass, ctx, config, track) {
+    const instance = new ServiceClass(ctx, config)
+    const init = instance?.[SERVICE_INIT]
+    if (typeof init === 'function') {
+      const result = init.call(instance)
+      if (result && typeof result[Symbol.asyncIterator] === 'function') {
+        for await (const dispose of result) if (typeof dispose === 'function') track(dispose)
+      } else if (result && typeof result[Symbol.iterator] === 'function' && typeof result.next === 'function') {
+        for (const dispose of result) if (typeof dispose === 'function') track(dispose)
+      } else {
+        const dispose = await result
+        if (typeof dispose === 'function') track(dispose)
+      }
+    } else if (typeof instance?.start === 'function') {
+      await instance.start()
+    }
+    track(() => (typeof instance?.[SERVICE_DISPOSE] === 'function' ? instance[SERVICE_DISPOSE]() : instance?.stop?.()))
+    return instance
   }
 
   /** 所有插件共用的替身服务（按需建）。credentials / storageDomain 按插件建，见 createContext。 */
@@ -724,6 +854,24 @@ export class Host {
       sessionTelemetry: createSessionTelemetry(),
     }
     return this.shared
+  }
+
+  /**
+   * `!!js` 表达式里的 `ctx`：按名字取本包已提供的服务（含 Service 子类插件提供的、按行的 isolate 作用域），
+   * 再取宿主替身服务；`ctx.dshHomePath(...)` 指到插件的数据目录（dsh 里是 Harness home）。
+   */
+  expressionContext(row) {
+    const host = this
+    return new Proxy({}, {
+      get(_target, key) {
+        if (typeof key !== 'string') return undefined
+        if (key === 'dshHomePath') return (...parts) => join(host.dataDir ?? join(HOST_DIR, '..', 'data'), ...parts.map(String))
+        const provided = host.findService(key, row?.isolate)
+        if (provided !== undefined) return provided
+        return SUPPORTED_SERVICES.has(key) ? host.sharedServices()[key] : undefined
+      },
+      has: (_target, key) => typeof key === 'string' && (key === 'dshHomePath' || SUPPORTED_SERVICES.has(key) || host.findService(key, row?.isolate) !== undefined),
+    })
   }
 
   /** 执行插件注册的斜杠命令；没有这个命令返回 undefined。handler 抛错收敛成 error 结果（同 dsh）。 */
@@ -1314,10 +1462,10 @@ export class Host {
           return track(shared.sessionProjections.onChanged(listener))
         },
       },
-      /** 可选依赖的激活写法：服务都在就立刻以子 ctx 调用（Codex++ 里服务不会中途出现或消失）。 */
+      /** 可选依赖的激活写法：服务都在就立刻以子 ctx 调用（宿主替身不会中途出现或消失；插件提供的服务先于消费方加载）。 */
       inject(names, callback) {
         const list = Array.isArray(names) ? names : Object.keys(names ?? {})
-        const missing = list.filter((name) => !SUPPORTED_SERVICES.has(name))
+        const missing = list.filter((name) => !host.serviceAvailable(name, state.isolate))
         if (missing.length > 0) {
           note(`ctx.inject 里的 ${missing.join(', ')} 在 Codex++ 里没有，这一段不会生效`)
           return () => {}
@@ -1401,10 +1549,36 @@ export class Host {
         return host.waterfallSync(event, rest, next)
       },
       get(name) {
+        const provided = host.findService(String(name), state.isolate)
+        if (provided !== undefined) return provided
         if (!SUPPORTED_SERVICES.has(name)) return undefined
         if (MIRROR_SERVICES.has(name)) mapTo(MIRROR_TARGET)
         if (name === 'schedule') mapTo(SCHEDULE_TARGET)
         return proxy[name]
+      },
+      /** Cordis 的 ctx.set(name, value)：把一个值作为服务提供给同一个宿主里的其它插件（随本插件卸载撤销）。 */
+      set(name, value) {
+        if (typeof name !== 'string' || !name) throw new TypeError('ctx.set 需要服务名')
+        state.provides?.push(name)
+        return track(host.provideService(name, value, state.isolate))
+      },
+      /** Cordis 的 ctx.provide(name, value?)：声明服务；给了值就同 ctx.set。 */
+      provide(name, value) {
+        if (value === undefined) return () => {}
+        return base.set(name, value)
+      },
+      /**
+       * Cordis 的 ctx.isolate(name, label?)：返回一个子 ctx，其中 name 这个服务落在私有作用域（给了 label 就是同名标签共享的作用域），
+       * 在子 ctx 里提供或 inject 的 name 与外面互不可见。
+       */
+      isolate(name, label) {
+        const key = typeof label === 'string' && label ? `label:${label}` : `scope:${++host.isolateSeq}`
+        return host.createContext({ ...state, isolate: { ...(state.isolate ?? {}), [String(name)]: key } })
+      },
+      /** 替身 Service 的构造函数经这里登记服务（`super(ctx, name)`）。 */
+      [PROVIDE](name, instance) {
+        state.provides?.push(name)
+        track(host.provideService(name, instance, state.isolate))
       },
       async plugin(plugin, config) {
         return host.applyPlugin(plugin, config, state)
@@ -1412,6 +1586,11 @@ export class Host {
     }
     const proxy = new Proxy(base, {
       get(target, key) {
+        // 插件提供的服务可以顶替宿主替身（同 Cordis：后提供的生效），但不顶替 ctx 自己的方法与核心能力。
+        if (typeof key === 'string' && !CORE_CONTEXT_KEYS.has(key) && (!(key in target) || SUPPORTED_SERVICES.has(key))) {
+          const provided = host.findService(key, state.isolate)
+          if (provided !== undefined) return provided
+        }
         if (key in target) return target[key]
         if (typeof key === 'symbol' || key === 'then' || key === 'toJSON') return undefined
         note(`访问了 ctx.${String(key)}，Codex++ 不提供这个服务`)
@@ -1422,21 +1601,32 @@ export class Host {
   }
 
   async applyPlugin(plugin, config, parentState) {
-    const normalized = typeof plugin === 'function' && !isClass(plugin)
-      ? { name: plugin.name, inject: plugin.inject, Config: plugin.Config, apply: plugin }
-      : plugin
-    if (!normalized || typeof normalized.apply !== 'function') throw new Error('ctx.plugin 只支持带 apply 的插件')
+    const serviceClass = isClass(plugin) ? plugin : undefined
+    const normalized = serviceClass
+      ? { name: serviceClass.name, inject: serviceClass.inject, Config: serviceClass.Config }
+      : typeof plugin === 'function'
+        ? { name: plugin.name, inject: plugin.inject, Config: plugin.Config, apply: plugin }
+        : plugin
+    if (!serviceClass && (!normalized || typeof normalized.apply !== 'function')) throw new Error('ctx.plugin 需要带 apply 的插件或 Service 子类')
     const inject = normalizeInject(normalized.inject)
-    const missing = inject.required.filter((name) => !SUPPORTED_SERVICES.has(name))
+    const missing = inject.required.filter((name) => !this.serviceAvailable(name, parentState.isolate))
     if (missing.length > 0) throw new Error(`子插件依赖 Codex++ 不提供的服务：${missing.join(', ')}`)
     const resolvedConfig = typeof normalized.Config === 'function' ? normalized.Config(config ?? {}) : config
-    const ctx = this.createContext({ ...parentState, config: resolvedConfig })
+    const state = { ...parentState, config: resolvedConfig }
+    const ctx = this.createContext(state)
+    if (serviceClass) {
+      await this.instantiateService(serviceClass, ctx, resolvedConfig, (dispose) => state.disposers.push(dispose))
+      return undefined
+    }
     await normalized.apply(ctx, resolvedConfig)
     return undefined
   }
 
-  /** 加载一行插件，返回该行的兼容性记录。 */
-  async loadRow(row, root, pkg, packageKey) {
+  /**
+   * 加载一行插件，返回该行的兼容性记录。`options.defer` 为真时，必需的服务还没人提供就返回 `{ deferred }`，
+   * 由 loadPackage 在别的行加载后重试。
+   */
+  async loadRow(row, root, pkg, packageKey, options = {}) {
     const record = {
       id: row.id,
       module: row.name,
@@ -1502,21 +1692,18 @@ export class Host {
       record.reasons.push('模块没有导出 apply，不是 dsh 插件')
       return record
     }
-    if (plugin.serviceClass) {
-      record.status = 'incompatible'
-      record.kind = 'service'
-      record.reasons.push(`${plugin.name || '该模块'} 是 Service 子类，给其他 dsh 插件提供服务，Codex 里没有消费者`)
-      return record
-    }
+    if (plugin.serviceClass) record.kind = 'service'
     const inject = normalizeInject(plugin.inject)
     record.inject = inject
-    const missing = inject.required.filter((name) => !SUPPORTED_SERVICES.has(name))
+    const missing = inject.required.filter((name) => !this.serviceAvailable(name, row.isolate))
     if (missing.length > 0) {
+      // 依赖可能由同一个包里后面的行（Service 子类插件）提供：先跳过，等别的行加载完再试（同 Cordis 等服务就绪再 apply）。
+      if (options.defer) return { deferred: missing }
       record.status = 'incompatible'
-      record.reasons.push(`依赖 Codex++ 不提供的服务：${missing.join(', ')}（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）`)
+      record.reasons.push(`依赖 Codex++ 不提供、包里也没有插件提供的服务：${missing.join(', ')}（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）`)
       return record
     }
-    const optionalMissing = inject.optional.filter((name) => !SUPPORTED_SERVICES.has(name))
+    const optionalMissing = inject.optional.filter((name) => !this.serviceAvailable(name, row.isolate))
     if (optionalMissing.length > 0) record.notes.push(`可选服务 ${optionalMissing.join(', ')} 不可用`)
     // 依赖会话 / agent / 投影的插件要会话镜像：配套拓展包会挂上把 Codex 钩子翻成 dsh 会话日志的那几个钩子。
     // 只声明 sessions 的插件多半只是 get 一下会话读 cwd，不值得为它在每次工具调用上起钩子；用到 agent / 投影才挂。
@@ -1544,9 +1731,8 @@ export class Host {
       subagents: 'ctx.subagents 新建一个 Codex 会话跑子任务并等它结束，不是 Codex 原生的子 agent 树',
     }
     for (const name of [...inject.required, ...inject.optional]) if (mirrorNotes[name]) record.notes.push(mirrorNotes[name])
-    // 配置里的 !!js：能有限求值的（字面量、env）换成值，其余保留原样并说明。
-    let config = resolveTaggedConfig(row.config ?? {})
-    if (hasTaggedValue(config)) record.notes.push('配置里的 !!js 表达式只认 true / false 与 env.X，其余不会求值')
+    // 配置里的 !!js：在 apply 前按 Cordis 的写法求值（能用本包已提供的服务）；求不出的保留原样并说明。
+    let config = resolveTaggedConfig(row.config ?? {}, { ctx: this.expressionContext(row) }, (text) => record.notes.push(`配置里的${text}`))
     // 配置 schema 给管理器生成表单：先记下来，配置不合法（比如缺必填项）时用户才有地方填。
     if (plugin.Config && typeof plugin.Config.toJSON === 'function') {
       try {
@@ -1576,15 +1762,25 @@ export class Host {
       commands: record.commands,
       // 插件自己的数据（storageDomain 的 JSON 文件）放这里；分析进程不给，只在内存里。
       dataDir: this.dataDir ? join(this.dataDir, row.id.replace(/[^\w.-]/g, '_')) : undefined,
+      // 行上的 isolate 声明（Cordis 作用域服务）与本行提供的服务名。
+      isolate: row.isolate ?? {},
+      provides: [],
     }
     try {
       const ctx = this.createContext(state)
-      await withTimeout(Promise.resolve(plugin.apply(ctx, config)), APPLY_TIMEOUT_MS, `apply 超过 ${APPLY_TIMEOUT_MS / 1000} 秒未完成`)
+      const running = plugin.serviceClass
+        ? this.instantiateService(plugin.serviceClass, ctx, config, (dispose) => state.disposers.push(dispose))
+        : Promise.resolve(plugin.apply(ctx, config))
+      await withTimeout(running, APPLY_TIMEOUT_MS, `${plugin.serviceClass ? '服务启动' : 'apply'} 超过 ${APPLY_TIMEOUT_MS / 1000} 秒未完成`)
       await Promise.all(state.pending)
     } catch (error) {
       record.status = 'error'
-      record.reasons.push(`apply 失败：${errorText(error)}`)
+      record.reasons.push(`${plugin.serviceClass ? '服务启动' : 'apply'} 失败：${errorText(error)}`)
       return record
+    }
+    if (state.provides.length) record.provides = [...new Set(state.provides)]
+    if (plugin.serviceClass && !record.provides?.length) {
+      record.notes.push(`${plugin.name || '该模块'} 是 Service 子类，但构造时没有用 super(ctx, 名字) 登记服务名，别的插件拿不到它`)
     }
     record.tools = record.tools.map((name) => {
       const def = this.tools.get(name)?.def
@@ -1604,10 +1800,17 @@ export class Host {
       record.skills.push(skill)
     }
     if (record.notes.length > 0) record.status = 'partial'
-    if (record.skills.length > 0 && record.tools.length === 0 && record.mappings.length === 0) {
+    if (record.provides?.length) {
+      // 说明它提供了什么，不算部分兼容。
+      const scoped = record.provides.filter((name) => state.isolate[name])
+      record.notes.push(`提供服务 ${record.provides.join(', ')}：同一个包里的插件可以 inject${scoped.length ? `（${scoped.join(', ')} 按 isolate 只在声明的作用域里可见）` : ''}；别的包拿不到（服务对象不能跨进程）`)
+    }
+    if (record.kind === 'service') {
+      // Service 子类插件只提供服务，没有工具是正常的。
+    } else if (record.skills.length > 0 && record.tools.length === 0 && record.mappings.length === 0) {
       record.kind = 'skills'
       if (record.status === 'compatible') record.status = 'skills'
-    } else if (record.tools.length === 0 && record.mappings.length === 0 && record.status !== 'partial') {
+    } else if (record.tools.length === 0 && record.mappings.length === 0 && record.status !== 'partial' && !record.provides?.length) {
       record.notes.push('加载成功，但没有注册任何工具')
     }
     return record
@@ -1665,7 +1868,7 @@ export class Host {
     let rows
     if (pkg.dsh?.bundle?.patch) {
       report.kind = 'bundle'
-      rows = readBundleRows(root, pkg, report.diagnostics)
+      rows = readBundleRows(root, pkg, report.diagnostics, { ctx: this.expressionContext() })
     } else {
       const entry = packageEntry(root, pkg)
       rows = entry && existsSync(entry) ? [{ id: pkg.name ?? 'plugin', name: pkg.name ?? entry, config: undefined, disabled: false, baseDir: root }] : []
@@ -1682,8 +1885,26 @@ export class Host {
       if (override && typeof override === 'object' && !Array.isArray(override)) {
         row.config = { ...(row.config && typeof row.config === 'object' ? row.config : {}), ...override }
       }
-      report.rows.push(await this.loadRow(row, root, pkg, packageKey))
     }
+    // 依赖插件提供的服务（Service 子类行）的行先跳过，别的行加载完再试，直到没有进展（Cordis 也是服务就绪才 apply）。
+    const records = new Array(rows.length)
+    let queue = rows.map((row, index) => ({ row, index }))
+    for (let progress = true; queue.length && progress;) {
+      progress = false
+      const waiting = []
+      for (const item of queue) {
+        const record = await this.loadRow(item.row, root, pkg, packageKey, { defer: true })
+        if (record.deferred) {
+          waiting.push(item)
+          continue
+        }
+        records[item.index] = record
+        progress = true
+      }
+      queue = waiting
+    }
+    for (const item of queue) records[item.index] = await this.loadRow(item.row, root, pkg, packageKey)
+    report.rows.push(...records)
     report.bridge = this.bridgeSummary(report.rows)
     if (report.clientEntry) {
       // 前端半边拿包自己那一行的配置（含管理器里的覆盖）；bundle 没有同名行时用第一行。
