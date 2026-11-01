@@ -56,7 +56,9 @@ fn builtins_with_a_setting_use_that_setting_as_their_switch() {
     // 默认值跟着设置走：粘贴修复默认关、会话删除默认开。
     assert_eq!(builtin(&manager, "paste-fix")["enabled"], false);
     assert_eq!(builtin(&manager, "paste-fix")["setting"], "codexAppPasteFix");
-    assert_eq!(builtin(&manager, "paste-fix")["restartRequired"], true);
+    // 粘贴监听随内置拓展装卸、开关每次粘贴时现查，改设置不必重启；强制中文仍要重启。
+    assert_eq!(builtin(&manager, "paste-fix")["restartRequired"], false);
+    assert_eq!(builtin(&manager, "force-chinese-locale")["restartRequired"], true);
     assert_eq!(builtin(&manager, "session-delete")["enabled"], true);
     assert_eq!(builtin(&manager, "session-delete")["params"], json!(["codexAppSessionDeleteSkipConfirm"]));
 

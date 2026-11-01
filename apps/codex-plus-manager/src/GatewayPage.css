@@ -2332,6 +2332,22 @@ span.gw-avatar[data-size] {
   fill: currentColor;
 }
 
+/* Agent 自带的模型：直连厂商、不经 Codex++，和池里的模型一眼区分开。 */
+.gw-portal .gw-mp-direct {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  padding: 0 6px;
+  border: 1px solid var(--gw-line);
+  border-radius: 5px;
+  color: var(--gw-mute);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .gw-portal .gw-mp-check {
   flex: none;
   color: hsl(var(--primary));

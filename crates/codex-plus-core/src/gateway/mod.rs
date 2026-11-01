@@ -19,7 +19,8 @@
 //! - [`chat_inbound`] / [`chat_outbound`]：OpenAI Chat Completions 客户端的协议转换；
 //! - [`gemini_inbound`] / [`gemini_outbound`]：Gemini API 客户端（如 Gemini CLI）的协议转换；
 //! - [`server`]：HTTP 入口；[`agents`]：Codex / Claude / Grok 之外的通用 Agent（规格表 + 统一的接入与还原）；
-//! - [`apply`]：开启 / 关闭时改写 Agent 配置；[`restore`]：接入前配置的存档与断开时的还原。
+//! - [`apply`]：开启 / 关闭时改写 Agent 配置；[`restore`]：接入前配置的存档与断开时的还原；
+//! - [`own_models`]：Agent 自带的模型（不经网关直连厂商），选中即断开网关。
 
 pub mod accounts;
 pub mod agents;
@@ -39,6 +40,7 @@ pub mod key_pool;
 pub mod meta_sync;
 pub mod model_sync;
 pub mod opencode;
+pub mod own_models;
 pub mod pipeline;
 pub mod probe;
 pub mod quota;

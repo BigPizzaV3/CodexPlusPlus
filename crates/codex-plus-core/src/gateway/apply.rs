@@ -313,7 +313,7 @@ fn begin_stash(
     Ok(stash::load_stash(path))
 }
 
-fn claude_stash_path(ctx: &ApplyContext) -> PathBuf {
+pub(crate) fn claude_stash_path(ctx: &ApplyContext) -> PathBuf {
     ctx.backup_root.join("claude-before-gateway.json")
 }
 
@@ -1475,7 +1475,7 @@ fn forget_gateway(
 }
 
 /// Agent 的配置现在还指向网关（不看 gateway.json 里的绑定）。
-fn agent_points_at_gateway(ctx: &ApplyContext, agent: &ToolId) -> bool {
+pub(crate) fn agent_points_at_gateway(ctx: &ApplyContext, agent: &ToolId) -> bool {
     match agent {
         ToolId::Codex => ctx
             .settings

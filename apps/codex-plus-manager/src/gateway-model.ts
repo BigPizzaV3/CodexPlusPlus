@@ -162,7 +162,13 @@ export type GatewayAgentView = {
   models: string[];
   /** 开着网关、但配置已被别的工具改掉：认得出的工具名与现在连的地址。 */
   drift?: { by?: string | null; endpoint: string } | null;
+  /** Agent 自带的模型：用它自己的登录或 Key 直连厂商，不经 Codex++；选中即断开网关。 */
+  ownModels?: OwnModels | null;
 };
+
+export type OwnModel = { id: string; label: string };
+/** `vendor`：直连的对象（OpenAI、Anthropic、直连模式的供应商名）；`current`：没接入时 Agent 现在用的模型。 */
+export type OwnModels = { vendor: string; models: OwnModel[]; current: string };
 
 export type KeyHealthView = {
   relayId: string;
@@ -548,6 +554,8 @@ export type PickerItem = {
   sub: string;
   avatar: string;
   custom?: boolean;
+  /** Agent 自带的模型：直连的对象（不经 Codex++）。 */
+  direct?: string;
 };
 
 export type PickerSection = { key: string; title: string; avatar: string; items: PickerItem[] };
@@ -619,6 +627,17 @@ export function pickerSections(
     });
   }
   return sections;
+}
+
+/** 模型下拉里 Agent 自带模型那一组（排在池里的模型后面）：按查询词筛，没有时为 null。 */
+export function ownPickerSection(own: OwnModels | null | undefined, rawQuery: string, avatar: (name: string) => string): PickerSection | null {
+  if (!own || !own.models.length) return null;
+  const query = rawQuery.trim().toLowerCase();
+  const vendorHit = matches(query, own.vendor);
+  const items = own.models
+    .filter((model) => vendorHit || matches(query, model.id, model.label))
+    .map((model) => ({ model: model.id, label: model.label, sub: model.label === model.id ? "" : model.id, avatar: avatar(own.vendor), direct: own.vendor }));
+  return items.length ? { key: "own", title: own.vendor, avatar: avatar(own.vendor), items } : null;
 }
 
 /** `auto`：多家都有的模型的裸名，按池顺序在这几家之间自动切换（`sub` 是这几家，按尝试顺序）。 */

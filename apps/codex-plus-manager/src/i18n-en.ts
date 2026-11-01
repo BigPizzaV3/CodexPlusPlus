@@ -40,6 +40,8 @@ export const EN_PLAIN: Record<string, string> = {
   "多开身份提示": "Instance identity badge",
   "多开实例顶部显示实例名（用公开拓展接口写成）": "Shows the instance name at the top of extra Codex instances (written with the public extension API)",
   "会话标题中间件": "Session title middleware",
+  "微信会话同步": "WeChat session sync",
+  "微信里发起的会话及时出现在 Codex 桌面会话列表，并归到对应项目": "Makes sessions started from WeChat show up in the Codex desktop session list under the right project",
   "首轮结束后按拓展的 session/title 中间件改会话标题": "Renames a session after its first turn using extensions' session/title middleware",
   "外观": "Appearance",
   "Codex 窗口的主题、背景图与多开标识。": "Themes, background image and instance badge for the Codex window.",
@@ -1207,8 +1209,8 @@ export const EN_PLAIN: Record<string, string> = {
   "主页": "Homepage",
   "主题和启动参数": "Theme and launch arguments",
   "从 GitHub 静态清单加载": "Loaded from the static GitHub manifest",
-  "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。":
-    "Keeps only plain text when pasting rich text (e.g. from Word) into the Codex composer, avoiding it being treated as an image/file attachment. Requires restarting Codex.",
+  "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。":
+    "Keeps only plain text when pasting rich text (e.g. from Word) into the Codex composer, avoiding it being treated as an image/file attachment.",
   "从上游获取": "Fetch from upstream",
   "从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。":
     "Pull models from environment variables and config.toml's /v1/models and add them to the model list.",
@@ -1548,6 +1550,10 @@ export const EN_PLAIN: Record<string, string> = {
   "添加供应商时自动加入": "Auto-join new providers",
   "自定义模型 ID": "Custom model ID",
   "用默认（不经 Codex++）": "Use default (bypass Codex++)",
+  "直连，不经 Codex++": "Direct, not via Codex++",
+  "断开并直连": "Disconnect and go direct",
+  "切换模型": "Switch model",
+  "切换失败": "Switch failed",
   "断开并还原配置": "Disconnect & restore config",
   "登录订阅，或添加厂商 API、中转站的 Key。所有接入的 Agent 共用这里的供应商。": "Sign in to a subscription, or add API keys from vendors or relays. Every connected agent shares these providers.",
   "供应商池还是空的": "The provider pool is empty",
@@ -3018,6 +3024,9 @@ export const EN_TEMPLATE: Record<string, string> = {
   "预览缺少比较结果，请更新后重新检查。": "The preview is missing comparison results. Update and check again.",
   "已选 {0} 项": "{0} selected",
   "关联所选 {0} 项": "Link {0} selected",
+  "{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。": "{0} asks {1} for this model itself, with its own sign-in or key, not through Codex++. Picking it disconnects Codex++ and restores the settings from before.",
+  "改用 {0} 自带的 {1}？{0} 会断开 Codex++、还原接入前的设置，用自己的登录或 Key 直连 {2}。": "Switch to {0}'s own {1}? {0} disconnects from Codex++, its earlier settings are restored, and it asks {2} directly with its own sign-in or key.",
+  "{0} 自带的模型，直连 {1}，不经 Codex++": "{0}'s own model, straight to {1}, not through Codex++",
   // 内置拓展
   "已被 {0} 顶替": "Replaced by {0}",
   // 使用模式：只管理 Codex 时的单 Agent 文案
@@ -3714,6 +3723,7 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^仓库已验证并添加，发现 (\d+) 个 Skill。$/, "Repository validated and added; found $1 skills."],
   [/^仓库验证失败，未保存：(.+)$/, "Repository validation failed; nothing was saved: $1"],
   [/^仓库已验证并保存，发现 (\d+) 个 Skill。$/, "Repository validated and saved; found $1 skills."],
+  [/^(.+?) 已改用自带的 (.+?)，直连、不经 Codex\+\+，新开的会话生效。$/, "$1 now uses its own $2, directly, not through Codex++. New sessions pick it up."],
   [/^已同步模型：新增 (\d+) 个：(.+?)；移除 (\d+) 个：(.+)。$/, "Models synced. Added $1: $2. Removed $3: $4."],
   [/^已同步模型：新增 (\d+) 个：(.+)。$/, "Models synced. Added $1: $2."],
   [/^已同步模型：移除 (\d+) 个：(.+)。$/, "Models synced. Removed $1: $2."],

@@ -258,7 +258,22 @@ codexPlus.extension((ctx) => {
 - 一条用户消息会同时备好 `turn/start` 和 `turn/steer` 两份候选（会话空闲时发前者，正在回复时发后者），
   中间件会各收到一次，要改写用户输入就两种都处理。新会话的首条消息按 `turn/start` 交给中间件，
   它的 `params` 还带着建会话用的字段（`cwd`、`workspaceRoots` 等），没有 `threadId`。
-- 两者都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
+- 要在请求**前后**都做事（拿到 app-server 的返回值）用 `codex/exchange`：值是 `{ method, params, hostId, send }`，
+  中间件换掉 `send` 包住原请求，链尾调用最终的 `send()`。内置拓展「侧聊保存」就挂在这里（临时旁支分叉时记下主历史）：
+
+  ```js
+  ctx.intercept("codex/exchange", (exchange, next) => next({
+    ...exchange,
+    send: async () => {
+      const result = await exchange.send();
+      if (exchange.method === "thread/fork") ctx.toast(`已分叉：${result?.thread?.id ?? ""}`);
+      return result;
+    },
+  }));
+  ```
+
+  它挂在 app-server 客户端的 sendRequest 补丁上，覆盖范围与该补丁一致；`send` 抛错会原样抛给 Codex，包装时自己兜住。
+- 这几项都直接面向 Codex 的内部协议，字段随 Codex 版本可能变化，拓展要容错。
 
 ### 步骤准入与模型请求
 
@@ -730,6 +745,8 @@ codexPlus.extension((ctx) => {
 - `@`（提及）、`$`（技能）、`/`（命令）是 Codex 自己的触发符，拓展注册会报错。
 - 输入触发在光标前是「触发符 + 查询词」（触发符前是开头或空白、查询词里没有空白）时弹出，↑↓ 选、回车 / Tab 确认、Esc 关。
 - 主题切换时发 `theme/change` 事件；拓展装上 / 卸下后合并发一次 `extensions/changed`（`{ extensions: [{ id, scriptKey, version }] }`）。
+- 每次从 Codex++ 读到设置（启动时、之后每次心跳）发 `settings/loaded`（`{ reason: "startup" | "heartbeat" }`）。
+  内置拓展（桌宠、打字特效、容量重试、梦皮、对话宽度、消息导航条、微信会话同步）都靠订阅它跟上设置变化。
 
 ### 内置拓展与顶替
 
@@ -742,7 +759,9 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
   子选项（删除不再确认、建议直接发送、重试间隔、对话宽度……）作为所属内置拓展的参数，开关打开后在它下面显示。
 - 「启用内置拓展」总开关关闭时暂停全部内置拓展；「独立模式」里的补丁不受它控制。
 - 能用公开接口表达的部分就用公开接口写：Agent 桌宠挂在 `overlay` 插槽给的容器里、用量状态栏在 `composer.below`、
-  请求状态条在 `composer.above`，多开身份提示与会话标题中间件整个是公开接口写成的。其余内置功能要改 Codex 自己的界面
+  请求状态条在 `composer.above`，侧聊保存挂在 `codex/exchange` 中间件上，粘贴修复的监听经 `ctx.listen` 挂上，
+  跟着设置走的内置拓展订阅 `settings/loaded`，多开身份提示与会话标题中间件整个是公开接口写成的。
+  Codex++ 读设置的地方不再逐个点名功能，内置拓展卸下时它的监听、中间件、定时器都跟着撤掉；同页重复注入时先卸下上一份注入装上的实例。其余内置功能要改 Codex 自己的界面
   （原生菜单、原生重试按钮、原生会话管理器），这类「改 Codex 原生界面」的能力刻意不开放给拓展（见「尚未开放的接口」）。
 - 拓展包在清单里声明 `replaces` 即可顶替内置功能，它启用时内置的让位、停用时内置的回来：
 
