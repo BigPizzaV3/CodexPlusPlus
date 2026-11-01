@@ -445,7 +445,7 @@ pub fn locate_node() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let mut candidates = Vec::new();
+    let mut candidates: Vec<PathBuf> = Vec::new();
     #[cfg(target_os = "macos")]
     {
         candidates.push(PathBuf::from(
