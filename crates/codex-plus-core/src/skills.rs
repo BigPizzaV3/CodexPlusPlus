@@ -1333,7 +1333,7 @@ impl SkillsManager {
         let staged =
             self.stage_skill_import(id, external_dir, import_source, origin, expected_source)?;
         let operation = self.lock_operation()?;
-        self.commit_staged_import_unlocked(&operation, staged, expected_target)
+        self.commit_staged_import_unlocked(&operation, staged, expected_target, None)
     }
 
     fn stage_skill_import(
@@ -1427,6 +1427,7 @@ impl SkillsManager {
         operation: &std::sync::MutexGuard<'_, ()>,
         (staging, installed): (PathBuf, InstalledSkill),
         expected_target: Option<&str>,
+        confirmed_incomplete: Option<&[import::SkillImportIncompleteTarget]>,
     ) -> anyhow::Result<SkillsState> {
         self.commit_staged_skill_unlocked(
             operation,
@@ -1438,6 +1439,7 @@ impl SkillsManager {
             false,
             expected_target,
             None,
+            confirmed_incomplete,
         )
     }
 
@@ -1464,6 +1466,7 @@ impl SkillsManager {
             require_existing,
             expected_target,
             expected_update,
+            None,
         )
     }
 
@@ -1478,6 +1481,7 @@ impl SkillsManager {
         require_existing: bool,
         expected_target: Option<&str>,
         expected_update: Option<&str>,
+        confirmed_incomplete: Option<&[import::SkillImportIncompleteTarget]>,
     ) -> anyhow::Result<SkillsState> {
         let unverified_cc_switch_import =
             installed.import_source == "cc-switch" && !installed.repo_path.is_empty();
@@ -1534,8 +1538,14 @@ impl SkillsManager {
             if !installed.import_source.is_empty() {
                 let hash = skill_directory_hash(staging)?;
                 anyhow::ensure!(
-                    self.import_matches_unlocked(&state, &id, &installed.name, &hash)?
-                        .is_empty(),
+                    self.import_matches_unlocked(
+                        &state,
+                        &id,
+                        &installed.name,
+                        &hash,
+                        confirmed_incomplete,
+                    )?
+                    .is_empty(),
                     "发现同名或内容重复的 Skill，请先预览并选择是否覆盖"
                 );
             }
@@ -1981,6 +1991,7 @@ impl SkillsManager {
             false,
             true,
             false,
+            None,
             None,
             None,
         )?;

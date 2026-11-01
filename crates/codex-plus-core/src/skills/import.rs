@@ -12,6 +12,14 @@ type TargetSnapshots = BTreeMap<String, Result<SkillTargetSnapshot, String>>;
 #[cfg(test)]
 thread_local! {
     static SNAPSHOT_HASH_COUNTS: std::cell::RefCell<BTreeMap<PathBuf, usize>> = Default::default();
+    static SOURCE_HASH_COUNTS: std::cell::RefCell<BTreeMap<PathBuf, usize>> = Default::default();
+}
+
+fn import_source_hash(path: &Path) -> anyhow::Result<String> {
+    #[cfg(test)]
+    SOURCE_HASH_COUNTS
+        .with(|counts| *counts.borrow_mut().entry(path.to_path_buf()).or_default() += 1);
+    skill_directory_hash(path)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,7 +109,7 @@ impl SkillsManager {
                     path.join(SKILL_MANIFEST_FILE).is_file(),
                     "{id} 没有 SKILL.md"
                 );
-                candidate.source_hash = skill_directory_hash(path).context("检查导入源失败")?;
+                candidate.source_hash = import_source_hash(path).context("检查导入源失败")?;
                 (candidate.name, candidate.description) =
                     read_skill_manifest(&path.join(SKILL_MANIFEST_FILE), id);
                 candidate.matches = self
@@ -180,6 +188,46 @@ impl SkillsManager {
         Ok(result)
     }
 
+    fn preview_selected_candidate_unlocked(
+        &self,
+        operation: &std::sync::MutexGuard<'_, ()>,
+        candidate: &(String, PathBuf),
+        selected: &[(String, PathBuf)],
+        origins: &BTreeMap<String, crate::ccs_import::CcsSkillOrigin>,
+    ) -> anyhow::Result<SkillImportCandidate> {
+        let mut current = self
+            .preview_skill_import_unlocked(operation, std::slice::from_ref(candidate), origins)?
+            .into_iter()
+            .next()
+            .expect("one candidate");
+        if current.error.is_some() {
+            return Ok(current);
+        }
+        let current_origin = known_repository_origin(&current.repo_key, &current.repo_path);
+        for (id, path) in selected {
+            if *id == current.id
+                || validate_skill_id(id).is_err()
+                || !path.join(SKILL_MANIFEST_FILE).is_file()
+            {
+                continue;
+            }
+            let Ok(hash) = import_source_hash(path) else {
+                continue;
+            };
+            let (name, _) = read_skill_manifest(&path.join(SKILL_MANIFEST_FILE), id);
+            let other_origin = origins
+                .get(id)
+                .and_then(|origin| known_repository_origin(&origin.repo_key, &origin.repo_path));
+            if same_name(&name, &current.name)
+                || hash == current.source_hash
+                || (current_origin.is_some() && current_origin == other_origin)
+            {
+                current.duplicate_candidates.push(id.clone());
+            }
+        }
+        Ok(current)
+    }
+
     pub fn apply_skill_import(
         &self,
         candidates: &[(String, PathBuf)],
@@ -209,7 +257,6 @@ impl SkillsManager {
             "不支持的导入渠道"
         );
         let operation = self.lock_operation()?;
-        let preview = self.preview_skill_import_unlocked(&operation, candidates, origins)?;
         let mut selected_ids = std::collections::BTreeSet::new();
         let mut target_ids = std::collections::BTreeSet::new();
         let mut protected_targets = std::collections::BTreeSet::new();
@@ -227,6 +274,13 @@ impl SkillsManager {
                 protected_targets.insert(target.to_lowercase());
             }
         }
+        let selected_candidates: Vec<_> = candidates
+            .iter()
+            .filter(|(id, _)| selected_ids.contains(id))
+            .cloned()
+            .collect();
+        let preview =
+            self.preview_skill_import_unlocked(&operation, &selected_candidates, origins)?;
         let mut imported = 0;
         let mut errors = Vec::new();
         for selection in selections {
@@ -301,28 +355,28 @@ impl SkillsManager {
                 ));
                 continue;
             }
-            let path = &candidates
+            let input = candidates
                 .iter()
                 .find(|(id, _)| id == &selection.id)
-                .expect("preview candidate")
-                .1;
-            let current = match self.preview_skill_import_unlocked(&operation, candidates, origins)
-            {
+                .expect("preview candidate");
+            let path = &input.1;
+            let current = match self.preview_selected_candidate_unlocked(
+                &operation,
+                input,
+                &selected_candidates,
+                origins,
+            ) {
                 Ok(current) => current,
                 Err(error) => {
                     errors.push(format!("{}：重新检查失败：{error:#}", selection.id));
                     continue;
                 }
             };
-            let current = current
-                .iter()
-                .find(|item| item.id == selection.id)
-                .expect("unchanged candidate list");
             if let Some(error) = &current.error {
                 errors.push(format!("{}：重新检查失败：{}", selection.id, error));
                 continue;
             }
-            if !incomplete_targets_confirmed(current, confirmations.get(&selection.id)) {
+            if !incomplete_targets_confirmed(&current, confirmations.get(&selection.id)) {
                 errors.push(format!(
                     "{}：无法比较的已有 Skill 已变化，请重新预览",
                     selection.id
@@ -377,16 +431,16 @@ impl SkillsManager {
             );
             match staged.and_then(|staged| {
                 let checked = (|| -> anyhow::Result<()> {
-                    let refreshed =
-                        self.preview_skill_import_unlocked(&operation, candidates, origins)?;
-                    let latest = refreshed
-                        .iter()
-                        .find(|item| item.id == selection.id)
-                        .context("导入项已不存在")?;
+                    let latest = self.preview_selected_candidate_unlocked(
+                        &operation,
+                        input,
+                        &selected_candidates,
+                        origins,
+                    )?;
                     anyhow::ensure!(
                         latest.error.is_none()
                             && incomplete_targets_confirmed(
-                                latest,
+                                &latest,
                                 confirmations.get(&selection.id)
                             ),
                         "无法比较的已有 Skill 已变化，请重新预览"
@@ -417,7 +471,12 @@ impl SkillsManager {
                     let _ = remove_link(&staged.0);
                     return Err(error);
                 }
-                self.commit_staged_import_unlocked(&operation, staged, snapshot)
+                self.commit_staged_import_unlocked(
+                    &operation,
+                    staged,
+                    snapshot,
+                    confirmations.get(&selection.id).map(Vec::as_slice),
+                )
             }) {
                 Ok(_) => imported += 1,
                 Err(error) => errors.push(format!("{}：{error:#}", selection.id)),
@@ -489,15 +548,25 @@ impl SkillsManager {
         id: &str,
         name: &str,
         source_hash: &str,
+        confirmed_incomplete: Option<&[SkillImportIncompleteTarget]>,
     ) -> anyhow::Result<Vec<SkillImportMatch>> {
-        self.import_matches_with_snapshots_unlocked(
+        let mut incomplete = Vec::new();
+        let matches = self.import_matches_with_snapshots_unlocked(
             state,
             id,
             name,
             source_hash,
             &mut TargetSnapshots::new(),
-            &mut Vec::new(),
-        )
+            &mut incomplete,
+        )?;
+        anyhow::ensure!(
+            match confirmed_incomplete {
+                Some(confirmed) => !confirmed.is_empty() && confirmed == incomplete,
+                None => incomplete.is_empty(),
+            },
+            "无法比较已有 Skill，请先预览并确认"
+        );
+        Ok(matches)
     }
 
     fn cached_import_target_snapshot(
@@ -854,6 +923,11 @@ mod tests {
         manager
             .import_from_local_directory("existing", &original)
             .unwrap();
+        let another = temp.path().join("another");
+        write_skill(&another, "Another", "other");
+        manager
+            .import_from_local_directory("another", &another)
+            .unwrap();
         add_oversized_file(&manager.source_dir.join("existing"));
         let candidates = vec![("new".into(), incoming)];
         let preview = manager
@@ -913,11 +987,6 @@ mod tests {
             .preview_skill_import(&candidates, &BTreeMap::new())
             .unwrap();
         let confirmed = BTreeMap::from([("new".into(), preview[0].incomplete_targets.clone())]);
-        let another = temp.path().join("another");
-        write_skill(&another, "Another", "other");
-        manager
-            .import_from_local_directory("another", &another)
-            .unwrap();
         add_oversized_file(&manager.source_dir.join("another"));
         let (count, _) = manager
             .apply_skill_import_with_confirmations(
@@ -964,6 +1033,137 @@ mod tests {
                 .unwrap()
                 .contains("old")
         );
+    }
+
+    #[test]
+    fn direct_import_apis_reject_unconfirmed_incomplete_comparisons() {
+        let (temp, manager) = fixture();
+        let original = temp.path().join("original");
+        let local = temp.path().join("local-incoming");
+        let cc = temp.path().join("cc-incoming");
+        write_skill(&original, "Existing", "keep");
+        write_skill(&local, "Local", "new local");
+        write_skill(&cc, "Ccs", "new ccs");
+        manager
+            .import_from_local_directory("existing", &original)
+            .unwrap();
+        add_oversized_file(&manager.source_dir.join("existing"));
+        for (id, result) in [
+            (
+                "local-new",
+                manager.import_from_local_directory("local-new", &local),
+            ),
+            ("cc-new", manager.import_from_directory("cc-new", &cc)),
+        ] {
+            assert!(format!("{:#}", result.unwrap_err()).contains("无法比较已有 Skill"));
+            assert!(!manager.source_dir.join(id).exists());
+        }
+        assert!(
+            std::fs::read_to_string(manager.source_dir.join("existing/SKILL.md"))
+                .unwrap()
+                .contains("keep")
+        );
+    }
+
+    #[test]
+    fn batch_rechecks_only_selected_sources() {
+        let (temp, manager) = fixture();
+        let candidates: Vec<_> = ["one", "two", "three", "four"]
+            .iter()
+            .map(|id| {
+                let path = temp.path().join(id);
+                write_skill(&path, id, id);
+                (id.to_string(), path)
+            })
+            .collect();
+        let preview = manager
+            .preview_skill_import(&candidates, &BTreeMap::new())
+            .unwrap();
+        SOURCE_HASH_COUNTS.with(|counts| counts.borrow_mut().clear());
+        let (count, errors) = manager
+            .apply_skill_import(
+                &candidates,
+                &BTreeMap::new(),
+                "local",
+                &[selection(&preview[0])],
+            )
+            .unwrap();
+        assert_eq!(count, 1, "{errors:?}");
+        SOURCE_HASH_COUNTS.with(|counts| {
+            let counts = counts.borrow();
+            assert_eq!(counts.get(&candidates[0].1), Some(&3));
+            for (_, path) in &candidates[1..] {
+                assert!(!counts.contains_key(path));
+            }
+        });
+    }
+
+    #[test]
+    fn changed_selected_source_is_detected_during_candidate_recheck() {
+        let (temp, manager) = fixture();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        write_skill(&first, "First", "one");
+        write_skill(&second, "Second", "two");
+        let candidates = vec![("first".into(), first), ("second".into(), second.clone())];
+        let before = manager
+            .preview_skill_import(&candidates, &BTreeMap::new())
+            .unwrap();
+        assert!(before[0].duplicate_candidates.is_empty());
+        write_skill(&second, "First", "different");
+        let operation = manager.lock_operation().unwrap();
+        let current = manager
+            .preview_selected_candidate_unlocked(
+                &operation,
+                &candidates[0],
+                &candidates,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        assert_eq!(current.duplicate_candidates, vec!["second"]);
+    }
+
+    #[test]
+    fn commit_rechecks_confirmed_incomplete_targets_after_staging() {
+        let (temp, manager) = fixture();
+        let original = temp.path().join("original");
+        let incoming = temp.path().join("incoming");
+        write_skill(&original, "Existing", "keep");
+        write_skill(&incoming, "Incoming", "new");
+        manager
+            .import_from_local_directory("existing", &original)
+            .unwrap();
+        add_oversized_file(&manager.source_dir.join("existing"));
+        let candidates = vec![("new".into(), incoming.clone())];
+        let preview = manager
+            .preview_skill_import(&candidates, &BTreeMap::new())
+            .unwrap();
+        let staged = manager
+            .stage_skill_import(
+                "new",
+                &incoming,
+                "local",
+                None,
+                Some(&preview[0].source_hash),
+            )
+            .unwrap();
+        let file = manager.source_dir.join("existing/oversized.bin");
+        let len = std::fs::metadata(&file).unwrap().len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_len(len + 1)
+            .unwrap();
+        let operation = manager.lock_operation().unwrap();
+        let result = manager.commit_staged_import_unlocked(
+            &operation,
+            staged,
+            None,
+            Some(&preview[0].incomplete_targets),
+        );
+        assert!(result.is_err());
+        assert!(!manager.source_dir.join("new").exists());
     }
 
     fn selection(candidate: &SkillImportCandidate) -> SkillImportSelection {
