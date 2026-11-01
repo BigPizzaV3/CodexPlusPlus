@@ -5,7 +5,8 @@
     const report = (event, data) => {
       void ctx.call("/diagnostics/log", { event, data }).catch(() => {});
     };
-    const apply = async () => {
+    // 内核先调 onConfigUpdate、再把 ctx.config 换成新值，所以改设置时把 next 传进来。
+    const apply = async (config = ctx.config) => {
       const current = ++generation;
       let dataUrl = "";
       try {
@@ -16,12 +17,12 @@
       }
       // 读图期间又改了设置或拓展已卸下：交给更新的那一次。
       if (current !== generation || ctx.disposed) return;
-      const opacity = Number(ctx.config.opacity);
+      const opacity = Number(config.opacity);
       installCodexPlusImageOverlay({
         enabled: !!dataUrl,
         dataUrl,
         opacity: Number.isFinite(opacity) ? opacity / 100 : 0.35,
-        fitMode: ctx.config.fitMode,
+        fitMode: config.fitMode,
       }, report);
     };
     const whenReady = () => {
@@ -38,8 +39,8 @@
         installCodexPlusImageOverlay({ enabled: false });
       };
     });
-    ctx.onConfigUpdate(() => {
-      void apply();
+    ctx.onConfigUpdate((next) => {
+      void apply(next);
       return true;
     });
   });

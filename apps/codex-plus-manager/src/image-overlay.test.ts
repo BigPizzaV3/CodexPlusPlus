@@ -93,7 +93,9 @@ it("is no longer part of the core injection; the extension loads, reapplies and 
   assert.doesNotMatch(renderer, /function installCodexPlusImageOverlay|__CODEX_PLUS_IMAGE_OVERLAY__|scheduleCodexPlusImageOverlay/);
   // 图片只经声明过的读图路由拿；改设置原地重铺；卸下时以 enabled:false 再调一次做清理。
   assert.match(main, /ctx\.call\("\/image-overlay\/image", \{\}\)/);
-  assert.match(main, /ctx\.onConfigUpdate\(\(\) => \{\n\s+void apply\(\);\n\s+return true;/);
+  // 内核先调 onConfigUpdate 再换 ctx.config：改设置时用 next，不读旧的 ctx.config。
+  assert.match(main, /ctx\.onConfigUpdate\(\(next\) => \{\n\s+void apply\(next\);\n\s+return true;/);
+  assert.match(main, /const opacity = Number\(config\.opacity\);/);
   assert.match(main, /installCodexPlusImageOverlay\(\{ enabled: false \}\)/);
   // 读图期间又改了设置或已卸下时丢弃旧结果，不会把旧图铺回去。
   assert.match(main, /if \(current !== generation \|\| ctx\.disposed\) return;/);
