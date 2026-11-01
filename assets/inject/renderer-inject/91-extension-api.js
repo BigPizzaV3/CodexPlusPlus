@@ -39,7 +39,6 @@
    */
   const codexPlusExtensionRoutes = new Set([
     "/diagnostics/log",
-    "/session/export",
     "/thread-usage-history",
     "/archived-thread",
     "/export-markdown",

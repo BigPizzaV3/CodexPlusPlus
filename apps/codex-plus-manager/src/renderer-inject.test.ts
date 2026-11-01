@@ -907,8 +907,9 @@ describe("renderer injection header compatibility", () => {
 
   it("does not install a session sharing button after sharing is retired", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    assert.doesNotMatch(renderer, /\n\s*installSessionShareButton\(\);/);
-    assert.doesNotMatch(renderer, /\n\s*installSessionShareImportListener\(\);/);
+    // 后端的 /share/create、/session/export 早已删除，页面里的按钮、导入监听与开关一起下线。
+    assert.doesNotMatch(renderer, /function (?:installSessionShareButton|createSessionShare|installSessionShareImportListener)\(/);
+    assert.doesNotMatch(renderer, /codexAppSessionShare|"\/session\/export"/);
   });
 
   it("removes the legacy Codex++ top-bar entry", async () => {
@@ -3439,7 +3440,7 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     assert.match(sections[0].rows[0].control, /data-codex-backend-status="true"/);
     // 能映射到本页 key 的走 setCodexPlusSetting，其余直接写后端字段。
     assert.match(html, /data-codex-plus-setting="stepwise"/);
-    assert.match(html, /data-codex-plus-setting="sessionShare"/);
+    assert.match(html, /data-codex-plus-setting="markdownExport"/);
     assert.match(html, /data-codex-backend-setting="providerSyncEnabled"/);
     assert.match(html, /data-codex-plus-capacity-retry-interval="true" min="0" max="600"/);
     assert.match(html, /data-codex-plus-conversation-view-width="true" min="320" max="4000" step="10" type="number" value="900"/);
@@ -3875,11 +3876,11 @@ describe("拓展运行时内核", () => {
     assert.equal(ctx.id, "pkg");
     assert.equal(ctx.manifest.id, "pkg");
     await ctx.call("/diagnostics/log", {});
-    await assert.rejects(ctx.call("/session/export", {}), /未在 codexpp\.json 声明路由权限/);
+    await assert.rejects(ctx.call("/thread-usage-history", {}), /未在 codexpp\.json 声明路由权限/);
     assert.deepEqual(k.calls, ["/diagnostics/log"]);
     const script = await kernel();
-    await script.create(() => {}).call("/session/export", {});
-    assert.deepEqual(script.calls, ["/session/export"]);
+    await script.create(() => {}).call("/thread-usage-history", {});
+    assert.deepEqual(script.calls, ["/thread-usage-history"]);
   });
 
   it("apply 同步抛错时回滚已做的注册并抛给调用方；异步失败也回滚", async () => {

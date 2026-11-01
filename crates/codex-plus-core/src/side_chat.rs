@@ -33,7 +33,7 @@ fn local_only(payload: &Value) -> anyhow::Result<()> {
 pub fn source_snapshot(home: &Path, payload: &Value) -> anyhow::Result<Value> {
     local_only(payload)?;
     let source_id = uuid(payload, "source_id")?;
-    let (_, bytes) = crate::session_share::read_rollout(home, &source_id, None)?;
+    let (_, bytes) = crate::rollout_file::read_rollout(home, &source_id, None)?;
     let source_ref = json!({
         "byte_length": bytes.len(), "sha256": format!("{:x}", Sha256::digest(&bytes)),
         "last_turn_id": payload.get("last_turn_id"), "before_turn_id": payload.get("before_turn_id"),
@@ -91,7 +91,7 @@ fn read_source_rows(home: &Path, source_id: &str, payload: &Value) -> anyhow::Re
         .filter(|length| *length > 0)
         .context("主历史读取位置无效")?;
     let expected = text(reference, "sha256")?;
-    let (_, bytes) = crate::session_share::read_rollout(home, source_id, Some(length))?;
+    let (_, bytes) = crate::rollout_file::read_rollout(home, source_id, Some(length))?;
     if bytes.len() as u64 != length || format!("{:x}", Sha256::digest(&bytes)) != expected {
         bail!("主会话历史已被改写或截断，无法还原创建旁支时的内容；原旁支已保留");
     }
@@ -250,7 +250,7 @@ pub fn save(home: &Path, payload: &Value) -> anyhow::Result<Value> {
         .join(&filename_time[..4])
         .join(&filename_time[5..7])
         .join(&filename_time[8..10]);
-    let path = crate::session_share::write_rollout(
+    let path = crate::rollout_file::write_rollout(
         &directory,
         &format!("rollout-{filename_time}-{save_id}.jsonl"),
         &content,

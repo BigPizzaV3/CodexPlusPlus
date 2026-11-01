@@ -620,7 +620,7 @@ const demoBuiltins = [
   ["turn-rewind", "轮次回退", true, "user:pomodoro_timer"], ["typing-effects", "打字特效", true, null],
   ["side-chat-save", "侧聊保存", true, null], ["history-turn-recovery", "历史轮次补全", true, null],
   ["capacity-auto-retry", "容量不足自动重试", true, null], ["proxy-request-status", "请求状态条", true, null],
-  ["session-share", "会话分享", true, null], ["model-picker-groups", "模型分组", true, null],
+  ["model-picker-groups", "模型分组", true, null],
   ["dream-skin", "梦皮主题", true, null], ["plugin-market-unlock", "插件市场解锁", true, null],
   ["instance-identity", "多开身份提示", true, null], ["session-title-hook", "会话标题中间件", true, null],
 ].map(([id, name, enabled, replacedBy]) => ({ id, key: `builtin:${id}`, name, description: "", enabled, replacedBy }));

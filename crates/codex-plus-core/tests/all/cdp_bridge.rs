@@ -3026,8 +3026,8 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
         .split_once("function showToast(message, options = {})")
         .expect("undo toast should exist")
         .1
-        .split_once("function shareBase64Url")
-        .expect("undo toast should end before sharing helpers")
+        .split_once("function visibleElement")
+        .expect("undo toast should end before visibility helper")
         .0;
 
     assert!(refresh.contains("loadOptionalCodexAppModule(\"app-server-manager-signals-\")"));

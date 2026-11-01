@@ -163,31 +163,6 @@
         background: var(--color-token-bg-secondary, transparent);
         color: var(--color-token-text-primary, inherit);
       }
-      .${sessionShareButtonClass} {
-        position: static;
-        flex: 0 0 auto;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-        margin-left: 2px;
-        z-index: 2147483001;
-        min-height: var(--height-button-composer, 32px);
-        border-radius: var(--border-radius-lg, 8px);
-        font: inherit;
-        font-size: 13px;
-        line-height: 18px;
-        cursor: pointer;
-        box-shadow: none;
-      }
-      .${sessionShareButtonClass}:hover,
-      .${sessionShareButtonClass}:focus-visible {
-        background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover));
-        color: var(--color-token-text-primary, var(--codex-plus-text));
-        outline: none;
-      }
-      .${sessionShareButtonClass}[aria-busy="true"] {
-        cursor: wait;
-        opacity: .65;
-      }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} {
         opacity: 1;
         pointer-events: auto;
@@ -1194,11 +1169,6 @@
       .codex-session-more-menu-item { border-radius: var(--border-radius-sm, 6px); font-family: inherit; }
       .codex-session-more-menu-item:hover,
       .codex-session-more-menu-item:focus-visible { background: var(--codex-plus-bg-hover); }
-      .${sessionShareButtonClass}:hover,
-      .${sessionShareButtonClass}:focus-visible {
-        background: var(--codex-plus-bg-hover);
-        color: var(--codex-plus-text);
-      }
       .${actionTooltipClass} {
         border-color: var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
@@ -1878,11 +1848,11 @@
 
   function defaultCodexPlusSettings() {
     // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、agent-pet、
-    // session-share-runtime…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
+    // backend-settings-sync…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1892,7 +1862,6 @@
     sessionDeleteSkipConfirm: "codexAppSessionDeleteSkipConfirm",
     sideChatSave: "codexAppSideChatSave",
     markdownExport: "codexAppMarkdownExport",
-    sessionShare: "codexAppSessionShare",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
@@ -1960,7 +1929,6 @@
         sessionDelete: false,
         sessionDeleteSkipConfirm: false,
         markdownExport: false,
-        sessionShare: false,
         sideChatSave: false,
         pasteFix: false,
         typingEffect: "off",

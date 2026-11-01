@@ -455,7 +455,6 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppSessionDeleteSkipConfirm: boolean;
   codexAppSideChatSave: boolean;
   codexAppMarkdownExport: boolean;
-  codexAppSessionShare: boolean;
   codexAppUsageStatusLine: boolean;
   codexAppProxyRequestStatus: boolean;
   codexAppPasteFix: boolean;
@@ -1544,7 +1543,6 @@ const defaultSettings: BackendSettings = {
   codexAppSessionDeleteSkipConfirm: false,
   codexAppSideChatSave: false,
   codexAppMarkdownExport: true,
-  codexAppSessionShare: true,
   codexAppUsageStatusLine: true,
   codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,

@@ -215,7 +215,6 @@ test("改了设置（settings/changed）时跟着设置走的内置拓展立即�
   (globalThis as any).__codexPlusScanSteps = undefined;
   (globalThis as any).__codexPlusBuiltinInactive = undefined;
   const { api, calls, known, emit } = harness();
-  known.installSessionShareButton = () => calls.push("share:install");
   known.syncStepwisePanel = () => calls.push("stepwise:sync");
   known.syncCodexPlusTurnRewind = () => calls.push("rewind:sync");
   (known.window as any).__codexStepwisePanel = { loadSettings: async () => { calls.push("stepwise:load"); } };
@@ -223,13 +222,13 @@ test("改了设置（settings/changed）时跟着设置走的内置拓展立即�
   calls.length = 0;
   emit("settings/loaded", { reason: "heartbeat" });
   assert.ok(calls.includes("capacity:sync") && calls.includes("dream:refresh"), "心跳叫醒对齐便宜的功能");
-  assert.ok(!calls.includes("share:install") && !calls.includes("stepwise:sync") && !calls.includes("rewind:sync"), "心跳不叫醒只跟改动走的功能");
+  assert.ok(!calls.includes("stepwise:sync") && !calls.includes("rewind:sync"), "心跳不叫醒只跟改动走的功能");
   calls.length = 0;
   emit("settings/loaded", { reason: "startup" });
-  for (const call of ["share:install", "stepwise:sync", "rewind:sync", "capacity:sync"]) assert.ok(calls.includes(call), call);
+  for (const call of ["stepwise:sync", "rewind:sync", "capacity:sync"]) assert.ok(calls.includes(call), call);
   calls.length = 0;
   emit("settings/changed", { key: "codexAppTurnRewind", value: true, persisted: false });
-  for (const call of ["rewind:sync", "capacity:sync", "share:install"]) assert.ok(calls.includes(call), call);
+  for (const call of ["rewind:sync", "capacity:sync"]) assert.ok(calls.includes(call), call);
   assert.ok(!calls.includes("stepwise:load"), "还没写进后端时不让悬浮球重读设置");
   calls.length = 0;
   emit("settings/changed", { key: "codexAppAnswerOutlineEnabled", value: true, persisted: true });

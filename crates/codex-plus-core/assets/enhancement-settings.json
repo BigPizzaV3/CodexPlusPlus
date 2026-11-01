@@ -176,15 +176,6 @@
       "surfaces": ["manager", "codex"]
     },
     {
-      "key": "codexAppSessionShare",
-      "builtin": "session-share",
-      "group": "chat",
-      "control": "bool",
-      "title": "分享会话按钮",
-      "description": "在当前会话工具栏显示分享按钮，关闭后立即隐藏。",
-      "surfaces": ["manager", "codex"]
-    },
-    {
       "key": "codexAppPasteFix",
       "builtin": "paste-fix",
       "group": "chat",

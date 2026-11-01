@@ -39,7 +39,6 @@
       { id: "history-turn-recovery", name: "历史轮次补全" },
       { id: "capacity-auto-retry", name: "容量不足自动重试", apply: codexPlusCapacityAutoRetryExtension },
       { id: "proxy-request-status", name: "请求状态条", apply: codexPlusProxyStatusExtension },
-      { id: "session-share", name: "会话分享", apply: codexPlusSessionShareExtension },
       { id: "model-picker-groups", name: "模型分组", apply: codexPlusModelPickerGroupsExtension },
       { id: "dream-skin", name: "梦皮主题", apply: codexPlusDreamSkinExtension },
       { id: "plugin-market-unlock", name: "插件市场解锁", apply: codexPlusPluginMarketUnlockExtension },
@@ -252,11 +251,6 @@
   /** 容量不足自动重试：轮询定时器装上时按设置启动，改设置即启停，卸下时清掉定时器与浮标。 */
   function codexPlusCapacityAutoRetryExtension(ctx) {
     codexPlusAlignWith(ctx, syncCodexPlusCapacityAutoRetry, { settings: "heartbeat" });
-  }
-
-  /** 会话分享：顶栏的「分享会话」按钮。 */
-  function codexPlusSessionShareExtension(ctx) {
-    codexPlusAlignWith(ctx, installSessionShareButton, { settings: true });
   }
 
   /** 模型分组：模型菜单的轮询随拓展装上开始；卸下时扫描一次清理分组、停下轮询。 */

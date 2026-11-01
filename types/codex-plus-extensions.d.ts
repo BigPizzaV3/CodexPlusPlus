@@ -15,7 +15,6 @@ type CodexPlusToastType = "info" | "success" | "warn" | "error";
 /** 当前开放给拓展调用的后端路由。新增路由需在接口层显式决定。 */
 type CodexPlusExtensionRoute =
   | "/diagnostics/log"
-  | "/session/export"
   | "/thread-usage-history"
   | "/archived-thread"
   | "/export-markdown"

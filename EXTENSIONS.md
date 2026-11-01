@@ -37,10 +37,10 @@ window.codexPlus
 ```js
 // 1. 会话行的「更多操作」菜单里加一项
 window.codexPlus.registerRowAction({
-  label: "导出为 CSV",
+  label: "导出 Markdown",
   icon: "⇩",
   onActivate: ({ session_id }) => {
-    window.codexPlus.call("/session/export", { session_id })
+    window.codexPlus.call("/export-markdown", { session_id })
       .then(() => window.codexPlus.toast("导出完成", { type: "success" }))
       .catch((error) => window.codexPlus.toast(`导出失败：${error.message}`, { type: "error" }));
   },
@@ -1375,7 +1375,7 @@ try {
 脚本**初始化期间的同步错误**会被 Codex++ 自动捕获并显示在管理页；但 `await` 之后的**异步错误不会**——这类错误要用这个方法上报，否则脚本在管理页会一直显示正常，实际已经死了。
 
 ```js
-window.codexPlus.call("/session/export", { session_id })
+window.codexPlus.call("/thread-usage-history", { session_id })
   .catch((error) => window.codexPlus.fail(error));
 ```
 
@@ -1388,7 +1388,6 @@ window.codexPlus.call("/session/export", { session_id })
 | 路由 | 用途 |
 | --- | --- |
 | `/diagnostics/log` | 写一条诊断日志 |
-| `/session/export` | 导出会话内容 |
 | `/thread-usage-history` | 读会话用量历史 |
 | `/archived-thread` | 读归档会话 |
 | `/export-markdown` | 导出 Markdown |
@@ -1398,7 +1397,7 @@ window.codexPlus.call("/session/export", { session_id })
 | `/system/cursor-position` | 系统鼠标位置 `{ x, y }`（与 `window.screenX` 同一坐标系，只读；Windows、macOS） |
 | `/request-log/recent` | 最近已完成的模型请求 `{ entries }`，按开始时间倒序；`limit` 默认 20、最多 100。每条有 `id`、`model` / `upstreamModel`、`relayName`、`durationMs`、`success`、`statusCode`、`usage.inputTokens` / `outputTokens`、`timestampMs` 等（只读，与托盘「实时请求」同源） |
 
-**写能力没有开放**：`/settings/set`、`/delete`、`/undo`、`/share/create` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
+**写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
 
 `/cdp/evaluate` 是显式开放的底层注入能力，用来把脚本打进宠物 overlay 这类独立窗口。它**不是**任意 CDP 协议：只能 `Runtime.evaluate`，只能打到 `app://-/index.html` 的 Codex 页面，返回值里也不带 WebSocket URL。调用时必须提供 `kind` 或 `target_id` 其一：
 
