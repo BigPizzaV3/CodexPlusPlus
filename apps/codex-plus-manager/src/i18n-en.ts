@@ -1562,6 +1562,8 @@ export const EN_PLAIN: Record<string, string> = {
   "直连，不经 Codex++": "Direct, not via Codex++",
   "断开并直连": "Disconnect and go direct",
   "切换模型": "Switch model",
+  "自带模型": "Own models",
+  "保存自带模型的显示设置": "Save own-model display setting",
   "切换失败": "Switch failed",
   "断开并还原配置": "Disconnect & restore config",
   "登录订阅，或添加厂商 API、中转站的 Key。所有接入的 Agent 共用这里的供应商。": "Sign in to a subscription, or add API keys from vendors or relays. Every connected agent shares these providers.",
@@ -2996,6 +2998,9 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "{0} 用自己的登录或 Key 直接向 {1} 要的模型，不经 Codex++。关掉后模型下拉只列网关的模型；{0} 现在用着的那个照样显示。": "Models {0} asks {1} for itself, with its own sign-in or key, not through Codex++. Off: the model picker lists the gateway's models alone; the one {0} is on still shows.",
+  "在模型下拉里显示 {0} 自带的模型": "Show {0}'s own models in the model picker",
+  "直连 {0} · {1} 个": "Direct to {0} · {1}",
   "{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。": "{0} asks {1} for this model itself, with its own sign-in or key, not through Codex++. Picking it disconnects Codex++ and restores the settings from before.",
   "改用 {0} 自带的 {1}？{0} 会断开 Codex++、还原接入前的设置，用自己的登录或 Key 直连 {2}。": "Switch to {0}'s own {1}? {0} disconnects from Codex++, its earlier settings are restored, and it asks {2} directly with its own sign-in or key.",
   "{0} 自带的模型，直连 {1}，不经 Codex++": "{0}'s own model, straight to {1}, not through Codex++",
@@ -3540,6 +3545,8 @@ export const EN_BACKEND: Record<string, string> = {
   "模型列表没有变化。": "The model list did not change.",
   "要跳过的版本号为空。": "The version to skip is empty.",
   "生图选项已保存。": "Image option saved.",
+  "自带模型的显示设置已保存。": "Own-model display setting saved.",
+  "保存自带模型的显示设置失败": "Failed to save the own-model display setting",
   "保存生图选项失败": "Failed to save image option",
   "生图模型已保存。": "Image model saved.",
   "保存生图模型失败": "Failed to save image model",

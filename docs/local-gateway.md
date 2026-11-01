@@ -104,7 +104,8 @@ Agent 打开「接入」后，池里所有打开的供应商的模型和所有�
   Codex 列断开后会回到的直连供应商的模型（官方登录读 `models_cache.json`，记为 OpenAI；别的供应商读它的模型列表），
   Claude Code 列 opus / sonnet / haiku 等别名（直连 Anthropic，或用户自己配的 `ANTHROPIC_BASE_URL`）。
   选中 = 断开并还原，再把模型写进 Agent 自己的配置（Codex `config.toml` 根上的 `model`，Claude Code `settings.json`
-  的 `model`，供应商写了 `ANTHROPIC_MODEL` 时一起改）；接入着时先确认。托盘面板的下拉同样列出。展开后逐行显示：在 Agent 里怎么切模型、模型列表（可挑选供应商）、Claude 档位、其它选项、
+  的 `model`，供应商写了 `ANTHROPIC_MODEL` 时一起改）；接入着时先确认。托盘面板的下拉同样列出。
+  展开后的「自带模型」开关可以不列这一组（存在 gateway.json 的 `hideOwnModels`），Agent 现在用着的那个照样显示。展开后逐行显示：在 Agent 里怎么切模型、模型列表（可挑选供应商）、Claude 档位、其它选项、
   改动的配置文件（可在访达中查看）和「断开并还原」。
 - **供应商**：网关池里的供应商一行一个，可拖动排序、开关、展开看模型和 Key 状态、编辑、删除；下面是「添加供应商」目录：
   订阅、供应商（厂商 API）、中转、本机四组内置预设，「导入…」从直连模式复制。

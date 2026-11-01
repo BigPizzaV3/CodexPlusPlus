@@ -54,6 +54,7 @@ import {
   type ProviderBalance,
   type UsageSummary,
   maskAccountName,
+  visibleOwnModels,
 } from "./gateway-model";
 import { AGENT_ICONS, APP_LOGO_URL, AutoTag, Avatar, AgentIcon, ModelViewGlyph } from "./gateway-ui";
 import { HubTopology } from "./HubOverview";
@@ -925,7 +926,7 @@ function PanelAgentRow({
             setOpen(false);
             void onRun("use_gateway_own_model", { agent: agent.agent, model: item.model });
           }}
-          own={agent.ownModels}
+          own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
           selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}

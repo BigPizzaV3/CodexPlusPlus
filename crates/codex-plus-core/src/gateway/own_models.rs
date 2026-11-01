@@ -44,6 +44,23 @@ pub struct OwnModels {
     pub current: String,
 }
 
+/// 模型下拉里列不列这个 Agent 的自带模型（gateway.json 的 `hideOwnModels`）。
+/// 关掉后下拉只列池里的模型；Agent 现在用着的那个自带模型照样显示，不会凭空消失。
+pub fn set_shown(
+    store: &crate::gateway::store::GatewayStore,
+    agent: &ToolId,
+    shown: bool,
+) -> anyhow::Result<GatewaySettings> {
+    let (gateway, ()) = store.update(|gateway| {
+        gateway.hide_own_models.retain(|id| id != agent.as_str());
+        if !shown {
+            gateway.hide_own_models.push(agent.as_str().to_string());
+        }
+        Ok(())
+    })?;
+    Ok(gateway)
+}
+
 /// Claude Code 自己认的模型别名，与它 `/model` 菜单一致。
 const CLAUDE_ALIASES: &[(&str, &str)] = &[
     ("opus", "Opus"),

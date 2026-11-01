@@ -620,6 +620,18 @@ pub fn save_gateway_image_inline(
     respond("生图选项已保存。", "保存生图选项失败", result)
 }
 
+/// 模型下拉里列不列这个 Agent 自带的模型（直连，不经 Codex++）。
+#[tauri::command]
+pub fn save_gateway_own_models_shown(
+    agent: String,
+    shown: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent).and_then(|agent| {
+        codex_plus_core::gateway::own_models::set_shown(&GatewayStore::default(), &agent, shown)
+    });
+    respond("自带模型的显示设置已保存。", "保存自带模型的显示设置失败", result)
+}
+
 /// 供应商各模型内置的思考等级（编辑思考等级时当作没改过的显示值）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

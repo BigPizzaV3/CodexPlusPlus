@@ -1,7 +1,7 @@
 //! Agent 自带的模型（直连，不经 Codex++）：列出哪些、直连的是谁，选中后断开网关并写进 Agent 自己的配置。
 
 use codex_plus_core::gateway::apply::{ApplyContext, ProviderInput, create_provider, enable_binding};
-use codex_plus_core::gateway::own_models::{own_models, use_own_model};
+use codex_plus_core::gateway::own_models::{own_models, set_shown, use_own_model};
 use codex_plus_core::gateway::store::{AgentBinding, GatewayStore};
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use codex_plus_core::tools::ToolId;
@@ -230,4 +230,24 @@ fn agents_without_own_models_are_refused() {
     assert!(use_own_model(ctx, &BackendSettings::default(), &ToolId::Claude, "  ").is_err());
     // Codex 直连模式里没有供应商：断开后无处可回，不列。
     assert_eq!(own_models(ctx, &ToolId::Codex, None), None);
+}
+
+#[test]
+fn own_model_switch_is_per_agent_and_saved_in_the_gateway_store() {
+    let fixture = fixture(57416);
+    let ctx = &fixture.ctx;
+    assert!(ctx.gateway.load().unwrap().shows_own_models_for(&ToolId::Codex), "默认列出");
+
+    set_shown(&ctx.gateway, &ToolId::Codex, false).unwrap();
+    set_shown(&ctx.gateway, &ToolId::Codex, false).unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    assert!(!gateway.shows_own_models_for(&ToolId::Codex));
+    assert!(gateway.shows_own_models_for(&ToolId::Claude), "只关 Codex 的");
+    assert_eq!(gateway.hide_own_models, ["codex"], "重复关不重复记");
+    let raw: Value = read_json(&fixture._temp.path().join("state").join("gateway.json"));
+    assert_eq!(raw["hideOwnModels"], json!(["codex"]));
+
+    set_shown(&ctx.gateway, &ToolId::Codex, true).unwrap();
+    let raw: Value = read_json(&fixture._temp.path().join("state").join("gateway.json"));
+    assert!(raw.get("hideOwnModels").is_none(), "都列时不落盘");
 }

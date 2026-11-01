@@ -540,6 +540,9 @@ pub struct GatewaySettings {
     /// 生图结果只给链接时原样转发、不下载成图片数据的 Agent（默认都转，见 [`Self::inline_image_urls_for`]）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_keep_urls: Vec<String>,
+    /// 模型下拉里不列自带模型（直连，不经 Codex++）的 Agent（默认都列，见 [`Self::shows_own_models_for`]）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide_own_models: Vec<String>,
     /// 旧版的全局生图模型，读的时候迁移给 Codex（见 [`read_store`]），之后不再写。
     #[serde(default, skip_serializing)]
     pub image_model: String,
@@ -573,6 +576,7 @@ impl Default for GatewaySettings {
             favorite_models: Vec::new(),
             image_models: BTreeMap::new(),
             image_keep_urls: Vec::new(),
+            hide_own_models: Vec::new(),
             image_model: String::new(),
             app_version: String::new(),
             extra: Map::new(),
@@ -598,6 +602,11 @@ impl GatewaySettings {
     /// 这个 Agent 的生图结果只给链接时，要不要下载下来补成 `b64_json`。
     pub fn inline_image_urls_for(&self, agent: &ToolId) -> bool {
         !self.image_keep_urls.iter().any(|id| id == agent.as_str())
+    }
+
+    /// 这个 Agent 的模型下拉里要不要列它自带的模型。
+    pub fn shows_own_models_for(&self, agent: &ToolId) -> bool {
+        !self.hide_own_models.iter().any(|id| id == agent.as_str())
     }
 
     pub fn group(&self, id: &str) -> Option<&GatewayGroup> {
