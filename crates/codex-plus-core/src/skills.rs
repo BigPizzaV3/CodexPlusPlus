@@ -1345,7 +1345,7 @@ impl SkillsManager {
         import_source: &str,
         origin: Option<&crate::ccs_import::CcsSkillOrigin>,
         expected_source: Option<&str>,
-    ) -> anyhow::Result<(PathBuf, InstalledSkill)> {
+    ) -> anyhow::Result<(PathBuf, InstalledSkill, String)> {
         validate_skill_id(id)?;
         if import_source == LOCAL_IMPORT_REPO_KEY {
             // Codex 的 skills 目录本来就会被扫描显示；从这里「导入」会把原目录挪进备份，反而让它从 Codex 消失。
@@ -1426,13 +1426,14 @@ impl SkillsManager {
                 content_hash,
                 installed_at: current_unix_timestamp_string(),
             },
+            source_hash,
         ))
     }
 
     fn commit_staged_import_unlocked(
         &self,
         operation: &std::sync::MutexGuard<'_, ()>,
-        (staging, installed): (PathBuf, InstalledSkill),
+        (staging, installed, source_hash): (PathBuf, InstalledSkill, String),
         expected_target: Option<&str>,
         confirmed_incomplete: Option<&[import::SkillImportIncompleteTarget]>,
     ) -> anyhow::Result<SkillsState> {
@@ -1447,6 +1448,7 @@ impl SkillsManager {
             expected_target,
             None,
             confirmed_incomplete,
+            Some(&source_hash),
         )
     }
 
@@ -1474,6 +1476,7 @@ impl SkillsManager {
             expected_target,
             expected_update,
             None,
+            None,
         )
     }
 
@@ -1489,6 +1492,7 @@ impl SkillsManager {
         expected_target: Option<&str>,
         expected_update: Option<&str>,
         confirmed_incomplete: Option<&[import::SkillImportIncompleteTarget]>,
+        expected_staging: Option<&str>,
     ) -> anyhow::Result<SkillsState> {
         let unverified_cc_switch_import =
             installed.import_source == "cc-switch" && !installed.repo_path.is_empty();
@@ -1599,10 +1603,17 @@ impl SkillsManager {
         };
         let previous_hash = snapshot.directory_hashes[0].clone();
         let operation = uuid::Uuid::new_v4().to_string();
+        let staging_hash = skill_directory_hash(staging)?;
+        if let Some(expected) = expected_staging {
+            anyhow::ensure!(
+                staging_hash == expected,
+                "导入暂存内容已变化，请重新预览"
+            );
+        }
         installed.local_baseline_hash = if unverified_cc_switch_import {
             UNVERIFIED_CC_SWITCH_BASELINE.to_string()
         } else {
-            skill_directory_hash(staging)?
+            staging_hash
         };
         let library_stage = self.transaction_stage(&operation, 0, &SkillPlace::Library)?;
         std::fs::rename(staging, &library_stage)?;
@@ -1998,6 +2009,7 @@ impl SkillsManager {
             false,
             true,
             false,
+            None,
             None,
             None,
             None,

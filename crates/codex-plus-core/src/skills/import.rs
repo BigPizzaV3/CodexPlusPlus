@@ -863,6 +863,25 @@ mod tests {
     }
 
     #[test]
+    fn staged_import_rejects_modified_staging_before_commit() {
+        let (temp, manager) = fixture();
+        let source = temp.path().join("source");
+        write_skill(&source, "Original", "confirmed content");
+        let expected = skill_directory_hash(&source).unwrap();
+        let staged = manager
+            .stage_skill_import("incoming", &source, "local", None, Some(&expected))
+            .unwrap();
+        write_skill(&staged.0, "Changed", "unconfirmed content");
+        let operation = manager.lock_operation().unwrap();
+        let error = manager
+            .commit_staged_import_unlocked(&operation, staged, None, None)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("导入暂存内容已变化"));
+        assert!(!manager.source_dir.join("incoming").exists());
+        assert_eq!(read_skill_manifest(&source.join("SKILL.md"), "").0, "Original");
+    }
+
+    #[test]
     fn preview_reuses_target_hashes_and_preserves_all_match_reasons() {
         let temp = tempfile::tempdir().unwrap();
         let agent_root = temp.path().join("agent");
