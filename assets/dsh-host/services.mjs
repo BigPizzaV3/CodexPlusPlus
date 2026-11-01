@@ -13,7 +13,7 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -1568,29 +1568,125 @@ export function createWebhookRuntime() {
 }
 
 // ---------------------------------------------------------------------------
-// jobs：后台任务登记处（进程内）
+// jobs：后台任务登记处（跨进程）
 // ---------------------------------------------------------------------------
 
-export function createJobs(emit) {
+/** 跨进程共享的任务快照里最多带多少输出（尾部）。 */
+const JOB_SNAPSHOT_OUTPUT = 64 * 1024
+const JOB_POLL_MS = 300
+
+/** 进程是否还在（任务快照里记着跑它的进程）。 */
+function processAlive(pid) {
+  try {
+    process.kill(Number(pid), 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
+
+/**
+ * dsh 的 jobs：任务在启动它的进程里跑；`dir`（所有插件、所有 Codex++ 起的 Node 进程共用）里写每个任务的快照，
+ * 别的进程（MCP 进程、各包的常驻进程）的 list / get / read / wait 读快照，kill 写一个停止请求文件，由跑任务的进程接手。
+ * 不给 dir 时只在当前进程里登记。
+ */
+export function createJobs(emit, { dir } = {}) {
   const jobs = new Map()
   const listeners = new Set()
+  const view = (job) => ({
+    id: job.id, kind: job.kind, label: job.label, owner: job.owner, status: job.status, progress: job.progress,
+    detail: job.detail, startedAt: job.startedAt, finishedAt: job.finishedAt, output: { total: job.outputTotal ?? job.output.length, earliest: 0 },
+  })
+  const snapshotPath = (id) => (dir ? join(dir, `${String(id).replace(/[^\w.-]/g, '_')}.json`) : undefined)
+  const killPath = (id) => (dir ? join(dir, `${String(id).replace(/[^\w.-]/g, '_')}.kill`) : undefined)
+  const writeTimers = new Map()
+  const writeSnapshot = (job) => {
+    const path = snapshotPath(job.id)
+    if (!path) return
+    try {
+      mkdirSync(dir, { recursive: true })
+      const temp = `${path}.${process.pid}.tmp`
+      writeFileSync(temp, JSON.stringify({ view: view(job), output: job.output.slice(-JOB_SNAPSHOT_OUTPUT), outputTotal: job.output.length, result: job.result ?? null, pid: process.pid }))
+      renameSync(temp, path)
+    } catch {}
+  }
+  // 输出追加很频繁：快照写入合并到 100ms 一次。
+  const scheduleWrite = (job) => {
+    if (!dir || writeTimers.has(job.id)) return
+    const timer = setTimeout(() => {
+      writeTimers.delete(job.id)
+      writeSnapshot(job)
+    }, 100)
+    timer.unref?.()
+    writeTimers.set(job.id, timer)
+  }
   const publish = (job) => {
+    writeSnapshot(job)
     for (const listener of listeners) {
       try { listener(view(job)) } catch {}
     }
     emit?.('jobs/change', [view(job)])
   }
-  const view = (job) => ({
-    id: job.id, kind: job.kind, label: job.label, owner: job.owner, status: job.status, progress: job.progress,
-    detail: job.detail, startedAt: job.startedAt, finishedAt: job.finishedAt, output: { total: job.output.length, earliest: 0 },
-  })
+  /** 别的进程的任务快照；跑它的进程已经退出却还标着 running 的，按失败处理。 */
+  const readSnapshot = (id) => {
+    const path = snapshotPath(id)
+    if (!path || !existsSync(path)) return undefined
+    try {
+      const snapshot = JSON.parse(readFileSync(path, 'utf8'))
+      if (snapshot?.view?.status === 'running' && snapshot.pid !== process.pid && !processAlive(snapshot.pid)) {
+        snapshot.view = { ...snapshot.view, status: 'failed', detail: '跑这个任务的进程已经退出' }
+      }
+      return snapshot
+    } catch {
+      return undefined
+    }
+  }
+  const remoteIds = () => {
+    if (!dir || !existsSync(dir)) return []
+    try {
+      return readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -5)).filter((id) => !jobs.has(id))
+    } catch {
+      return []
+    }
+  }
+  const allowed = (owner, caller) => !caller || !owner || caller === owner
   const find = (id, caller) => {
     const job = jobs.get(id)
-    if (!job) throw new Error(`没有后台任务 ${id}`)
-    if (caller && job.owner && caller !== job.owner) throw new Error(`后台任务 ${id} 不属于 ${caller}`)
-    return job
+    if (job) {
+      if (!allowed(job.owner, caller)) throw new Error(`后台任务 ${id} 不属于 ${caller}`)
+      return { local: job }
+    }
+    const snapshot = readSnapshot(id)
+    if (!snapshot) throw new Error(`没有后台任务 ${id}`)
+    if (!allowed(snapshot.view?.owner, caller)) throw new Error(`后台任务 ${id} 不属于 ${caller}`)
+    return { snapshot }
   }
-  return {
+  // 别的进程发来的停止请求：本进程有任务在跑时每 300ms 看一次。
+  let watcher
+  const watchKills = () => {
+    if (!dir || watcher) return
+    watcher = setInterval(() => {
+      let running = 0
+      for (const job of jobs.values()) {
+        if (job.status !== 'running') continue
+        running += 1
+        const path = killPath(job.id)
+        if (!existsSync(path)) continue
+        let reason
+        try {
+          reason = readFileSync(path, 'utf8') || undefined
+          unlinkSync(path)
+        } catch {}
+        service.kill(job.id, undefined, reason)
+      }
+      if (!running) {
+        clearInterval(watcher)
+        watcher = undefined
+      }
+    }, JOB_POLL_MS)
+    watcher.unref?.()
+  }
+  const service = {
     start({ kind, label, owner, outputLimitBytes = 1024 * 1024, run } = {}) {
       if (typeof run !== 'function') throw new TypeError('jobs.start 需要 run(job)')
       const job = { id: randomUUID(), kind: String(kind ?? 'job'), label: String(label ?? ''), owner, status: 'running', progress: undefined, detail: undefined, startedAt: Date.now(), finishedAt: undefined, output: '', result: undefined }
@@ -1599,6 +1695,7 @@ export function createJobs(emit) {
         id: job.id,
         append(text) {
           job.output = `${job.output}${String(text ?? '')}`.slice(-outputLimitBytes)
+          scheduleWrite(job)
         },
         updateProgress(line) {
           job.progress = String(line ?? '')
@@ -1619,34 +1716,70 @@ export function createJobs(emit) {
         publish(job)
       })
       publish(job)
+      watchKills()
       return job.id
     },
-    list: (caller) => [...jobs.values()].filter((job) => !caller || !job.owner || job.owner === caller).map(view),
-    get: (id, caller) => view(find(id, caller)),
+    list(caller) {
+      const local = [...jobs.values()].filter((job) => allowed(job.owner, caller)).map(view)
+      const remote = remoteIds().map(readSnapshot).filter((snapshot) => snapshot?.view && allowed(snapshot.view.owner, caller)).map((snapshot) => snapshot.view)
+      return [...local, ...remote]
+    },
+    get: (id, caller) => {
+      const found = find(id, caller)
+      return found.local ? view(found.local) : found.snapshot.view
+    },
     read: (id, caller) => {
-      const job = find(id, caller)
-      return { chunks: job.output ? [{ text: job.output }] : [], lossy: false, result: job.result, job: view(job) }
+      const found = find(id, caller)
+      if (found.local) return { chunks: found.local.output ? [{ text: found.local.output }] : [], lossy: false, result: found.local.result, job: view(found.local) }
+      const { snapshot } = found
+      return { chunks: snapshot.output ? [{ text: snapshot.output }] : [], lossy: snapshot.outputTotal > snapshot.output.length, result: snapshot.result ?? undefined, job: snapshot.view }
     },
     readAt(id, from, caller) {
-      const job = find(id, caller)
-      return { chunks: [{ text: job.output.slice(Number(from) || 0) }], lossy: false, job: view(job) }
+      const found = find(id, caller)
+      if (found.local) return { chunks: [{ text: found.local.output.slice(Number(from) || 0) }], lossy: false, job: view(found.local) }
+      const { snapshot } = found
+      const offset = snapshot.outputTotal - snapshot.output.length
+      const start = Math.max(0, (Number(from) || 0) - offset)
+      return { chunks: [{ text: snapshot.output.slice(start) }], lossy: (Number(from) || 0) < offset, job: snapshot.view }
     },
     kill(id, caller, reason) {
-      const job = find(id, caller)
-      if (job.status !== 'running') return 'already-finished'
-      job.status = 'stopping'
-      try { job.cancel?.(reason) } catch {}
-      publish(job)
+      const found = find(id, caller)
+      if (found.local) {
+        const job = found.local
+        if (job.status !== 'running') return 'already-finished'
+        job.status = 'stopping'
+        try { job.cancel?.(reason) } catch {}
+        publish(job)
+        return 'requested'
+      }
+      if (found.snapshot.view.status !== 'running') return 'already-finished'
+      // 任务在别的进程里：写停止请求，由跑它的进程接手。
+      try {
+        writeFileSync(killPath(id), String(reason ?? ''))
+      } catch {}
       return 'requested'
     },
     async wait(id, timeoutMs, caller, signal) {
-      const job = find(id, caller)
-      await Promise.race([job.done, new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(timeoutMs) || 0))), new Promise((resolve) => signal?.addEventListener?.('abort', resolve, { once: true }))])
-      return view(job)
+      const found = find(id, caller)
+      const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0)
+      if (found.local) {
+        await Promise.race([found.local.done, new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))), new Promise((resolve) => signal?.addEventListener?.('abort', resolve, { once: true }))])
+        return view(found.local)
+      }
+      for (;;) {
+        const snapshot = readSnapshot(id) ?? found.snapshot
+        if (snapshot.view.status !== 'running' || Date.now() >= deadline || signal?.aborted) return snapshot.view
+        await new Promise((resolve) => setTimeout(resolve, Math.min(JOB_POLL_MS, Math.max(0, deadline - Date.now()))))
+      }
     },
     remove(id, caller) {
-      find(id, caller)
+      const found = find(id, caller)
       jobs.delete(id)
+      if (found.local || found.snapshot) {
+        try {
+          unlinkSync(snapshotPath(id))
+        } catch {}
+      }
     },
     events: {
       subscribe(filter, listener) {
@@ -1655,6 +1788,7 @@ export function createJobs(emit) {
       },
     },
   }
+  return service
 }
 
 // ---------------------------------------------------------------------------

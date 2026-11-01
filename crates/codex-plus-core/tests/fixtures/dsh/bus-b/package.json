@@ -1,0 +1,8 @@
+{
+  "name": "dsh-bus-b",
+  "version": "0.1.0",
+  "description": "插件间事件跨包：只有监听器的包（没有工具、钩子与命令）",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*" }
+}

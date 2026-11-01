@@ -1535,3 +1535,59 @@ fn dsh_npm_import_uses_custom_registry_for_pack_and_install() {
     let saved = plugins.load().unwrap();
     assert!(matches!(&saved.plugins[0].source, PluginSource::Npm { registry: Some(registry), .. } if registry == "https://npm.acme.dev/"));
 }
+
+/// 插件间事件跨包：dsh-bus-a 的命令在它的常驻进程里 emit / serial / waterfall / parallel / bail，只有监听器的 dsh-bus-b
+/// （配套拓展包只有标记文件）在自己的常驻进程里收到，语义与包内一致；waterfall 的 next 回到发起方的链尾。
+/// jobs 跨进程：常驻进程里起的任务，MCP 进程里看得到输出、能停掉并等到结束。
+#[test]
+fn dsh_events_cross_packages_and_jobs_cross_processes() {
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(scripts.path().join("builtin"), scripts.path().join("user"), scripts.path().join("user_scripts.json"));
+    let plugins = DshPlugins::new(state.path());
+    let a = plugins.import(&local_source(&fixture("bus-a")), &toolchain).unwrap();
+    let b = plugins.import(&local_source(&fixture("bus-b")), &toolchain).unwrap();
+    let listens = row(&b.report, "dsh-bus-b")["listens"].clone();
+    assert_eq!(listens, json!(["demo/note", "demo/ask", "demo/flow", "demo/sync", "demo/bail", "demo/seen"]), "{}", b.report);
+    let plan = dsh_plugins::report_bridge(&b.report);
+    assert!(plan.events && plan.hooks.is_empty() && plan.commands.is_empty(), "{plan:?}");
+    for record in [&a, &b] {
+        let companion = plugins.sync_companion(&manager, &record.id).unwrap();
+        assert_eq!(companion["manifestError"], Value::Null, "{companion}");
+    }
+    assert!(scripts.path().join("user/dsh-dsh-bus-b/dsh-bridge.json").is_file());
+
+    let backend = url_of(&scripts.path().join("user/dsh-dsh-bus-a/backend/main.mjs"));
+    let command = |name: &str| {
+        let script = format!(
+            "const {{ default: create }} = await import({}); process.stdout.write(JSON.stringify(await create().command({{ name: {}, rawInput: '', sessionId: 'b1' }}))); process.exit(0)",
+            json!(backend), json!(name)
+        );
+        let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+        assert_eq!(result["kind"], "success", "{result} {}", String::from_utf8_lossy(&output.stderr));
+        result["text"].as_str().unwrap_or_default().to_string()
+    };
+    let ping: Value = serde_json::from_str(&command("ping")).unwrap();
+    assert_eq!(ping, json!({
+        "answer": "b answers q",
+        "flow": { "trail": ["a", "b", "end"] },
+        "bailed": 20,
+        "seen": ["note:from-a", "sync:x"],
+    }));
+
+    // jobs：任务在 dsh-bus-a 的常驻进程里跑，MCP 进程里读到输出、停掉它。
+    command("job-start");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let responses = serve(&plugins, &toolchain, &[call(1, "jobs_probe", json!({}))]);
+    let probe: Value = serde_json::from_str(responses[0]["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(probe, json!({ "found": true, "before": "running", "output": true, "kill": "requested", "after": "killed" }), "{responses:?}");
+
+    for record in [&a, &b] {
+        plugins.set_enabled(&record.id, false).unwrap();
+        plugins.sync_companion(&manager, &record.id).unwrap();
+    }
+}

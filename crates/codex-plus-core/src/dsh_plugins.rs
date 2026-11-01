@@ -1309,6 +1309,8 @@ pub struct BridgePlan {
     pub schedule: bool,
     /// 插件注册了 webhook 规则：后台开 /ext/<配套拓展>/webhook/<kind>。
     pub webhook: bool,
+    /// 插件监听插件之间的自定义事件：别的包 emit 时经常驻进程转过来，要有配套拓展包（标记文件）才找得到它。
+    pub events: bool,
     /// dsh 前端插件（dsh.client）的入口文件与包名：夹上胶水作为配套拓展包的页面脚本。
     pub client: Option<BridgeClient>,
 }
@@ -1341,6 +1343,7 @@ impl BridgePlan {
             && !self.connection
             && !self.schedule
             && !self.webhook
+            && !self.events
             && self.client.is_none()
     }
 }
@@ -1411,6 +1414,7 @@ pub fn report_bridge(report: &Value) -> BridgePlan {
             .unwrap_or(false),
         schedule: bridge.and_then(|bridge| bridge.get("schedule")).and_then(Value::as_bool).unwrap_or(false),
         webhook: bridge.and_then(|bridge| bridge.get("webhook")).and_then(Value::as_bool).unwrap_or(false),
+        events: bridge.and_then(|bridge| bridge.get("events")).and_then(Value::as_bool).unwrap_or(false),
         client: bridge.and_then(|bridge| bridge.get("client")).and_then(|client| {
             Some(BridgeClient {
                 entry: PathBuf::from(client.get("entry")?.as_str()?),
@@ -1554,7 +1558,8 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         renderer.push(COMPANION_RENDERER_SCRIPT.to_string());
     }
     let mut extra = serde_json::Map::new();
-    let backend = if !plan.commands.is_empty() || plan.connection || plan.schedule || plan.webhook {
+    // 只监听插件间事件的包也挂后台脚本：拓展清单至少要声明一种入口；后台按需才启动，不常驻。
+    let backend = if !plan.commands.is_empty() || plan.connection || plan.schedule || plan.webhook || plan.events {
         files.insert(
             COMPANION_BACKEND_SCRIPT.to_string(),
             format!(
@@ -1590,6 +1595,9 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
     }
     if plan.webhook {
         targets.push("webhook".to_string());
+    }
+    if plan.events {
+        targets.push("插件间事件".to_string());
     }
     if !plan.commands.is_empty() {
         targets.push(format!("命令 {}", plan.commands.iter().map(|command| format!("/{}", command.name)).collect::<Vec<_>>().join(" ")));

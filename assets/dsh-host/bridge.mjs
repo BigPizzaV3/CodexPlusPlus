@@ -736,6 +736,148 @@ function socketPath(configPath) {
   return process.platform === 'win32' ? `\\\\.\\pipe\\codexpp-dsh-${hash}` : join(tmpdir(), `codexpp-dsh-${hash}.sock`)
 }
 
+// ---------------------------------------------------------------------------
+// 插件间事件跨包转发
+// ---------------------------------------------------------------------------
+
+/** 跨包事件的单次往返上限（waterfall 会嵌套：别的包的监听器调 next 再回到本包）。 */
+const BUS_TIMEOUT_MS = 30 * 1000
+/** 注册表里「谁听哪些事件」的缓存时间。 */
+const BUS_CACHE_MS = 2000
+
+/** 配套拓展包目录名（与 Rust 的 dsh_plugins::companion_id 一致）。 */
+const companionDir = (id) => `dsh-${id}`.slice(0, 64)
+
+/** 跨进程只能传 JSON：函数、循环引用丢掉（与 dsh 里跨 Peer 的事件一样只认可序列化的数据）。 */
+function toWire(value) {
+  if (value === undefined) return undefined
+  try {
+    return JSON.parse(JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? String(item) : item)))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 常驻进程之间的事件总线：插件 ctx.emit / parallel / serial / bail / waterfall 一个自定义事件时，本包的监听器照常派发，
+ * 再经本地 socket 交给别的包（各自的常驻进程，没起就按需起）里听这个事件的插件，语义与包内一致：
+ * - emit：发出去不等；parallel：并发等全部；serial / bail：本包没人给出结果时按注册表顺序问别的包，取第一个非 undefined；
+ * - waterfall：本包的监听器在前，链尾依次交给别的包的监听器；它们调 next() 时经 socket 回到发起方继续，最后才是调用方的 next。
+ * 参数与结果按 JSON 传；每次往返有超时，别的包出错或超时按「无意见」继续。
+ * MCP 进程不挂总线：所有包的工具在同一个进程里，事件本来就直接派发。
+ */
+function createEventBus(configPath, self) {
+  const extensionsDir = dirname(dirname(configPath))
+  let cache = { at: 0, peers: [] }
+  const peers = () => {
+    if (Date.now() - cache.at < BUS_CACHE_MS) return cache.peers
+    let registry = { plugins: [] }
+    try {
+      registry = JSON.parse(readFileSync(self.registryPath, 'utf8'))
+    } catch {}
+    const found = []
+    for (const plugin of registry.plugins ?? []) {
+      if (!plugin || plugin.id === self.id || plugin.enabled === false) continue
+      const disabled = new Set(plugin.disabledRows ?? [])
+      const listens = new Set((plugin.report?.rows ?? []).filter((row) => !disabled.has(row.id) && row.enabled !== false).flatMap((row) => row.listens ?? []))
+      if (!listens.size) continue
+      const config = join(extensionsDir, companionDir(plugin.id), 'dsh-bridge.json')
+      if (existsSync(config)) found.push({ id: plugin.id, config, listens })
+    }
+    cache = { at: Date.now(), peers: found }
+    return found
+  }
+  const peersOf = (event) => peers().filter((peer) => peer.listens.has(event))
+  const send = async (peer, message) => {
+    const plugin = readPlugin(peer.config)
+    if (!plugin) return {}
+    const reply = await viaDaemon(peer.config, plugin, { kind: 'bus', origin: configPath, ...message }, BUS_TIMEOUT_MS)
+    return reply.output ?? {}
+  }
+  const warn = (peer, event, error) => console.error(`[dsh-bridge] 事件 ${event} 交给 ${peer.id} 失败：${errorText(error)}`)
+  /** waterfall 的续接：别的包的监听器调 next() 时按 token 回到这里接着跑链。 */
+  const continuations = new Map()
+  return {
+    listened: (event) => peersOf(event).length > 0,
+    emit(event, args) {
+      const wire = toWire(args)
+      for (const peer of peersOf(event)) void send(peer, { mode: 'emit', event, args: wire }).catch((error) => warn(peer, event, error))
+    },
+    async parallel(event, args) {
+      const wire = toWire(args)
+      await Promise.all(peersOf(event).map((peer) => send(peer, { mode: 'parallel', event, args: wire }).catch((error) => warn(peer, event, error))))
+    },
+    async serial(event, args, mode = 'serial') {
+      const wire = toWire(args)
+      for (const peer of peersOf(event)) {
+        try {
+          const reply = await send(peer, { mode, event, args: wire })
+          if (reply.value !== undefined) return reply.value
+        } catch (error) {
+          warn(peer, event, error)
+        }
+      }
+      return undefined
+    },
+    async waterfall(event, args, fallback) {
+      const list = peersOf(event)
+      const wire = toWire(args)
+      const run = async (index) => {
+        if (index >= list.length) return fallback()
+        let continued
+        const proceed = () => (continued ??= run(index + 1))
+        const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+        continuations.set(token, proceed)
+        try {
+          return (await send(list[index], { mode: 'waterfall', event, args: wire, token })).value
+        } catch (error) {
+          warn(list[index], event, error)
+          return proceed()
+        } finally {
+          continuations.delete(token)
+        }
+      }
+      return run(0)
+    },
+    /** 别的包的监听器调了 next()：接着跑发起方这边的链。 */
+    async next(token) {
+      const proceed = continuations.get(String(token))
+      if (!proceed) throw new Error('事件链已经结束')
+      return { value: toWire(await proceed()) }
+    },
+  }
+}
+
+/** 收到别的包转来的事件：只派发给本包的监听器（不再往外转），结果按 JSON 交回。 */
+async function busDispatch(host, message) {
+  const event = String(message.event ?? '')
+  const args = Array.isArray(message.args) ? message.args : []
+  const next = message.mode === 'waterfall' && message.origin && message.token
+    ? async () => (await exchange(socketPath(message.origin), { kind: 'bus-next', token: message.token }, BUS_TIMEOUT_MS)).output?.value
+    : () => undefined
+  let value
+  switch (message.mode) {
+    case 'emit':
+      host.emitEvent(event, args)
+      break
+    case 'parallel':
+      await host.parallel(event, args)
+      break
+    case 'serial':
+      value = await host.serial(event, args)
+      break
+    case 'bail':
+      value = await host.bail(event, args)
+      break
+    case 'waterfall':
+      value = await host.waterfallSync(event, args, next)
+      break
+    default:
+      throw new Error(`不认识的事件派发方式 ${message.mode}`)
+  }
+  return { value: toWire(value) }
+}
+
 /** 发一帧（JSON 一行）并等回复。连不上时抛出 code 为 ENOENT / ECONNREFUSED 的错误。 */
 function exchange(path, message, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -783,7 +925,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 const unreachable = (error) => ['ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE'].includes(error?.code)
 
 /** 经常驻进程处理一条请求；返回 { output }。常驻进程起不来时抛出 { unreachable: true } 的错误。 */
-async function viaDaemon(configPath, plugin, request) {
+async function viaDaemon(configPath, plugin, request, timeoutMs = DAEMON_REPLY_TIMEOUT_MS) {
   const path = socketPath(configPath)
   const message = { ...request, version: versionOf(plugin) }
   let started = false
@@ -791,7 +933,7 @@ async function viaDaemon(configPath, plugin, request) {
   for (;;) {
     let reply
     try {
-      reply = await exchange(path, message, DAEMON_REPLY_TIMEOUT_MS)
+      reply = await exchange(path, message, timeoutMs)
     } catch (error) {
       if (!unreachable(error)) throw error
       if (!started) {
@@ -821,6 +963,8 @@ async function runDaemon(configPath) {
   const rows = mappedRows(plugin)
   if (rows.length === 0) return
   const host = await loadHost(plugin, rows, { persistent: true })
+  // 插件间自定义事件转给别的包的常驻进程。
+  host.bus = createEventBus(configPath, plugin)
   const path = socketPath(configPath)
   let idle
   let closing = false
@@ -847,6 +991,8 @@ async function runDaemon(configPath) {
   }
   const handle = async (message) => {
     if (message?.kind === 'ping') return { ok: true }
+    // 别的包的监听器调 next() 回到本进程续接事件链：发起方不知道本进程的版本号，放在版本检查前。
+    if (message?.kind === 'bus-next') return { output: await host.bus.next(message.token) }
     if (message?.version !== version) {
       setImmediate(shutdown)
       return { restart: true }
@@ -861,6 +1007,7 @@ async function runDaemon(configPath) {
     if (message.kind === 'fetch') return { output: await host.fetchRoute(message.request) }
     if (message.kind === 'rpc') return { output: await host.runRpc(message.request) }
     if (message.kind === 'webhook') return { output: await webhookFor(host, message.request) }
+    if (message.kind === 'bus') return { output: await busDispatch(host, message) }
     return { error: `不认识的请求 ${message.kind}` }
   }
   server.on('connection', (socket) => {

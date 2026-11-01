@@ -129,6 +129,8 @@ export const CONNECTION_TARGET = 'connection'
 export const SCHEDULE_TARGET = 'schedule'
 /** 注册了 webhook 规则的行：配套拓展包开 /ext/<拓展>/webhook/<kind> 路由。 */
 export const WEBHOOK_TARGET = 'webhook'
+/** 监听插件之间自定义事件的行：别的包的插件 emit 时，经常驻进程之间的本地 socket 转过来（见 bridge.mjs）。 */
+export const EVENTS_TARGET = 'events'
 /** 需要会话镜像（钩子常驻进程把 Codex 钩子翻成 dsh 会话日志）的行，映射到这个目标。 */
 export const MIRROR_TARGET = 'mirror'
 /** 系统提示词片段的映射目标：经网关中间件追加到每次模型请求的 instructions。 */
@@ -838,7 +840,8 @@ export class Host {
       web: createWeb(),
       userQuestions: createUserQuestions((event, args, fallback) => host.waterfall(event, args, fallback)),
       approval: createApproval((event, args, fallback) => host.waterfall(event, args, fallback)),
-      jobs: createJobs((event, args) => host.emitEvent(event, args)),
+      // 任务快照放在所有插件共用的 data/.jobs（插件 id 不能以 . 开头，不会撞上），别的进程也看得到、停得了。
+      jobs: createJobs((event, args) => host.emitEvent(event, args), { dir: host.dataDir ? join(dirname(host.dataDir), '.jobs') : undefined }),
       workspaceRegistry: Object.assign(createWorkspaceRegistry(), {
         /** dsh 的 workspace/session-activity：问插件这个会话正在做什么（waterfall），没人答时为空。 */
         activity: (request = {}) => host.waterfall('workspace/session-activity', [request], async () => []),
@@ -1500,8 +1503,10 @@ export class Host {
         } else if (AGENT_LIFECYCLE_EVENTS.has(event) || event.startsWith('agent/inbox/')) {
           // 由常驻进程里的会话镜像与 agent 替身派发（退出时落盘、cancel、排消息……）。
           mapTo(MIRROR_TARGET)
-        } else if (!HOST_EMITTED_EVENTS.has(event) && event !== 'ready' && event !== 'dispose') {
-          note(`事件 ${String(event)} Codex 里不会触发，只有同一个包里的其它插件 emit 时才会收到`)
+        } else if (!HOST_EMITTED_EVENTS.has(event) && event !== 'ready' && event !== 'dispose' && !String(event).startsWith('internal/')) {
+          // 插件之间的自定义事件：同一个包里直接派发；别的包的插件 emit 时经常驻进程之间的本地 socket 转过来。
+          if (state.listens && !state.listens.includes(event)) state.listens.push(String(event))
+          mapTo(EVENTS_TARGET)
         }
         const list = host.listeners.get(event) ?? []
         const entry = { listener, state }
@@ -1521,7 +1526,8 @@ export class Host {
         })
         return dispose
       },
-      // 插件之间的事件：同一个宿主进程（同一个包）里的监听器共享一张表，按 Cordis 的五种语义派发。
+      // 插件之间的事件：同一个宿主进程（同一个包）里的监听器共享一张表，按 Cordis 的五种语义派发；
+      // 常驻进程里还经 host.bus 转给别的包（各自的常驻进程）里听这个事件的插件，语义见 bridge.mjs 的 createEventBus。
       // 第一个参数不是字符串时按 Cordis 的 thisArg 写法跳过。
       off(event, listener) {
         const current = host.listeners.get(event) ?? []
@@ -1530,23 +1536,31 @@ export class Host {
       emit(...args) {
         const [event, rest] = eventArgs(args)
         host.emitEvent(event, rest)
+        host.bus?.emit(event, rest)
       },
       async parallel(...args) {
         const [event, rest] = eventArgs(args)
-        await host.parallel(event, rest)
+        await Promise.all([host.parallel(event, rest), host.bus?.parallel(event, rest)])
       },
       async serial(...args) {
         const [event, rest] = eventArgs(args)
-        return host.serial(event, rest)
+        const local = await host.serial(event, rest)
+        if (local !== undefined || !host.bus?.listened(event)) return local
+        return host.bus.serial(event, rest)
       },
+      /** 同步的 bail：本包没人给出结果、别的包有人听时，返回别的包的结果的 Promise（跨进程做不到同步）。 */
       bail(...args) {
         const [event, rest] = eventArgs(args)
-        return host.bail(event, rest)
+        const local = host.bail(event, rest)
+        if (local !== undefined || !host.bus?.listened(event)) return local
+        return host.bus.serial(event, rest, 'bail')
       },
+      /** waterfall：本包的监听器在前，链尾依次交给别的包的监听器（每个都能调 next 回到链上），最后才是调用方的 next。 */
       waterfall(...args) {
         const [event, rest] = eventArgs(args)
         const next = typeof rest[rest.length - 1] === 'function' ? rest.pop() : () => undefined
-        return host.waterfallSync(event, rest, next)
+        const tail = host.bus?.listened(event) ? () => host.bus.waterfall(event, rest, next) : next
+        return host.waterfallSync(event, rest, tail)
       },
       get(name) {
         const provided = host.findService(String(name), state.isolate)
@@ -1721,7 +1735,7 @@ export class Host {
       shell: 'ctx.shell 用本机 shell 执行，不做沙箱',
       schedule: 'ctx.schedule 到点经 Codex++ 往 Codex 会话里发起一轮（每分钟检查一次，需要 Codex++ 在运行）',
       webhookRuntime: 'webhook 规则经 Codex++ 本地代理的 /ext/<配套拓展>/webhook/<kind> 接收，不校验签名',
-      jobs: 'ctx.jobs 只在当前进程里登记，不跨进程',
+      jobs: 'ctx.jobs 的任务在启动它的进程里跑，别的进程（MCP / 常驻进程）能看到、等待、停止它；任务变化事件只在本进程里发',
       workspaceRegistry: 'ctx.workspaceRegistry 由 Codex 会话的工作目录归出来，只读',
       subprocess: 'ctx.subprocess 不提供 PTY 终端',
       web: 'ctx.web 只有 fetch，没有联网搜索',
@@ -1765,6 +1779,8 @@ export class Host {
       // 行上的 isolate 声明（Cordis 作用域服务）与本行提供的服务名。
       isolate: row.isolate ?? {},
       provides: [],
+      // 本行监听的插件间自定义事件（别的包 emit 时转过来）。
+      listens: [],
     }
     try {
       const ctx = this.createContext(state)
@@ -1779,6 +1795,7 @@ export class Host {
       return record
     }
     if (state.provides.length) record.provides = [...new Set(state.provides)]
+    if (state.listens.length) record.listens = [...new Set(state.listens)]
     if (plugin.serviceClass && !record.provides?.length) {
       record.notes.push(`${plugin.name || '该模块'} 是 Service 子类，但构造时没有用 super(ctx, 名字) 登记服务名，别的插件拿不到它`)
     }
@@ -1983,6 +2000,8 @@ export class Host {
       connection: targets.has(CONNECTION_TARGET),
       schedule: targets.has(SCHEDULE_TARGET),
       webhook: targets.has(WEBHOOK_TARGET),
+      // 监听插件间自定义事件：要有配套拓展包（标记文件与常驻进程），别的包才能把事件转过来。
+      events: targets.has(EVENTS_TARGET),
       commands,
     }
   }
