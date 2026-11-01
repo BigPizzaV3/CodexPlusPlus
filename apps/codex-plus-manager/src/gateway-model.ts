@@ -46,6 +46,8 @@ export type GatewaySettings = {
   autoModels?: boolean;
   /** 多家都有的模型在 Codex 里名字后面带不带「（供应商）」（旧版后端没有，视为带）。 */
   modelSuffix?: boolean;
+  /** 发现本机已登录的订阅账号，供应商页提示导入（旧版后端没有，视为关）。 */
+  localLoginDiscovery?: boolean;
   /** 模型收藏（管理器模型下拉里的星标），Codex 的选择器里也显示。 */
   favoriteModels?: string[];
   /** 各 Agent 的生图模型（键是 Agent id）：没有或空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */
@@ -146,6 +148,8 @@ export type SpeedView = { relayId: string; model: string; ms: number; samples: n
 /** 私有接口订阅的登录方式。 */
 export type SubscriptionLoginMethod = "browser" | "deviceCode" | "importLocal" | "paste";
 export type SubscriptionView = { id: string; name: string; methods: SubscriptionLoginMethod[]; note: string };
+/** 本机官方客户端已登录、还没进池的订阅账号（`scan_gateway_local_logins`）；`account` 登录文件里没有时为空。 */
+export type LocalLogin = { id: string; name: string; account: string };
 /** 开始登录的结果：要打开的网址、验证码、说明，以及原样传回去的状态。 */
 export type SubscriptionLoginStart = { openUrl?: string; userCode?: string; message: string; state: unknown };
 

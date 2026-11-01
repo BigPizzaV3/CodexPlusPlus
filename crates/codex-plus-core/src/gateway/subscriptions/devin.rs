@@ -986,6 +986,10 @@ impl Subscription for Devin {
         "需要 Devin 账号（免费额度只能用 SWE 系列模型，其它模型要 Pro / Teams 订阅）；可在浏览器登录，或先在终端运行 devin auth login 再导入。"
     }
 
+    fn detect_local(&self) -> Option<String> {
+        read_local().ok().map(|_| String::new())
+    }
+
     async fn begin_login(
         &self,
         _http: &reqwest::Client,

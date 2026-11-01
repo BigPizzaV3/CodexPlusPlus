@@ -390,6 +390,8 @@ pub fn run() {
             gateway_commands::save_gateway_own_models_shown,
             gateway_commands::rotate_gateway_token,
             gateway_commands::save_gateway_model_suffix,
+            gateway_commands::save_gateway_local_login_discovery,
+            gateway_commands::scan_gateway_local_logins,
             gateway_commands::save_gateway_auto_group,
             gateway_commands::save_gateway_auto_models,
             gateway_commands::save_gateway_favorites,

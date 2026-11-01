@@ -39,6 +39,7 @@ import {
   keyLabel,
   type ImportCandidate,
   type ImportSource,
+  type LocalLogin,
   type SubscriptionLoginMethod,
   type SubscriptionLoginStart,
   type SubscriptionView,
@@ -189,7 +190,11 @@ export function ProvidersView({
     window.addEventListener("pointercancel", finish);
   };
 
-  const { login, pending: loginPending, dialog: loginDialog } = useAccountLogin(payload, run, notify);
+  const { login, importLocal, pending: loginPending, dialog: loginDialog } = useAccountLogin(payload, run, notify);
+  const localLogins = useLocalLogins(payload?.gateway.localLoginDiscovery === true, pool.map((entry) => entry.id).join("\n"));
+  // 本次打开页面里点过关闭就不再显示（下次进来、或池子变了扫出新的还会提示）。
+  const [localDismissed, setLocalDismissed] = useState("");
+  const localKey = localLogins.map((item) => `${item.id}:${item.account}`).join("\n");
   // 编辑弹窗里打开的上下文窗口弹窗：按编辑中的模型列表列出（null 表示没打开）。
   const [formWindows, setFormWindows] = useState<string[] | null>(null);
   // 编辑中的供应商取最新数据（窗口刚保存过，弹窗里要显示新的）。
@@ -230,6 +235,9 @@ export function ProvidersView({
           </button>
         ) : null}
       </div>
+      {localLogins.length && localDismissed !== localKey ? (
+        <LocalLoginsCard busy={busy !== null} found={localLogins} onDismiss={() => setLocalDismissed(localKey)} onImport={importLocal} pending={loginPending} />
+      ) : null}
       {pool.length && view === "models" ? (
         <ModelMatrix
           onOpenProvider={(id) => {
@@ -423,7 +431,56 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
   ) : pending ? (
     <LoginPendingBar label={accountLabel(payload, pending)} onCancel={cancel} />
   ) : null;
-  return { login, pending, dialog };
+  /** 直接导入本机已登录的订阅（供应商页的「发现本机登录」提示用），不再弹登录方式选择。 */
+  const importLocal = (id: string) => {
+    const item = payload?.subscriptions?.find((entry) => entry.id === id);
+    if (item) void loginSubscription(item, "importLocal", "");
+  };
+  return { login, importLocal, pending, dialog };
+}
+
+/** 本机已登录、还没进池的订阅账号：开关开着时扫描一次，池子变了再扫。 */
+function useLocalLogins(enabled: boolean, poolKey: string) {
+  const [found, setFound] = useState<LocalLogin[]>([]);
+  useEffect(() => {
+    if (!enabled) {
+      setFound([]);
+      return;
+    }
+    let alive = true;
+    invoke<{ status: string; payload?: LocalLogin[] }>("scan_gateway_local_logins")
+      .then((result) => { if (alive) setFound(result.status === "ok" ? result.payload ?? [] : []); })
+      .catch(() => { if (alive) setFound([]); });
+    return () => { alive = false; };
+  }, [enabled, poolKey]);
+  return found;
+}
+
+function LocalLoginsCard({ found, busy, pending, onImport, onDismiss }: { found: LocalLogin[]; busy: boolean; pending: string | null; onImport: (id: string) => void; onDismiss: () => void }) {
+  return (
+    <div className="gw-card">
+      <div className="gw-setting-row">
+        <div>
+          <strong>{tf("发现本机已登录的 {0} 个订阅账号", [found.length])}</strong>
+          <small>{t("来自这些官方客户端的登录文件，导入时复制一份登录凭据进网关。不想看到这条提示，可以在「网关」页关掉「发现本机已登录的订阅账号」。")}</small>
+        </div>
+        <span />
+        <button aria-label={t("关闭")} className="gw-icon-button" onClick={onDismiss} type="button"><X className="h-4 w-4" /></button>
+      </div>
+      {found.map((item) => (
+        <div className="gw-setting-row" key={`${item.id}:${item.account}`}>
+          <div>
+            <strong>{maskAccountName(item.name)}</strong>
+            <small>{item.account ? maskAccountName(item.account) : t("本机官方客户端已登录")}</small>
+          </div>
+          <span />
+          <button className="gw-text-button strong" disabled={busy || pending !== null} onClick={() => onImport(item.id)} type="button">
+            {pending === `sub:${item.id}` ? t("导入中…") : t("导入")}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** 「添加供应商」整套流程：目录弹窗 → 填写表单或订阅登录，顶部可选给哪些 Agent 用。

@@ -146,6 +146,10 @@ impl Subscription for Gemini {
         "用 Gemini CLI 的 Google 登录调用 Gemini Code Assist。Google 已停止为个人账号提供服务，只有 Code Assist Standard / Enterprise 可用，且需要 Google Cloud 项目 id：选「粘贴凭据」填入项目 id（如 my-project-123）会带着它走浏览器登录；也可以粘贴 refresh token 或 oauth_creds.json 内容（可加 project=项目id）。导入本机 Gemini CLI 登录时项目读 ~/.gemini/.env 的 GOOGLE_CLOUD_PROJECT。"
     }
 
+    fn detect_local(&self) -> Option<String> {
+        import_from_dir(&gemini_dir()?).ok().map(|credentials| credentials.email)
+    }
+
     async fn begin_login(
         &self,
         _http: &reqwest::Client,

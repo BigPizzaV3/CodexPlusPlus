@@ -1271,6 +1271,11 @@ impl Subscription for CommandCode {
         "需要 Command Code 付费套餐（Pro / GOAT / Max / Ultra / Go / Teams Pro），可用 commandcode login 登录后导入，或粘贴 API Key。"
     }
 
+    fn detect_local(&self) -> Option<String> {
+        let value = editor_kit::read_json_file(&cli_auth_path()).ok()?;
+        parse_cli_auth(&value).ok().map(|(_, user)| user)
+    }
+
     async fn begin_login(
         &self,
         _http: &reqwest::Client,

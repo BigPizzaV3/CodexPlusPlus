@@ -799,6 +799,12 @@ impl Subscription for Factory {
         "需要 Factory（Droid）付费订阅；可用设备码登录，或先在 Droid 里登录后导入，也可粘贴 fk- 开头的 API Key。"
     }
 
+    fn detect_local(&self) -> Option<String> {
+        // 只认 droid 的登录文件，不把环境变量里的 FACTORY_API_KEY 当成登录。
+        let value = oauth::read_local_json(&factory_dir().join("auth.json")).ok()?;
+        parse_droid_auth(&value).ok().map(|_| String::new())
+    }
+
     async fn begin_login(
         &self,
         http: &reqwest::Client,

@@ -126,6 +126,12 @@ pub trait Subscription: Send + Sync {
         ""
     }
 
+    /// 「发现本机登录」：本机官方客户端已经登录时返回账号名（登录文件里没有账号名时为空串），没登录为 None。
+    /// 只读登录文件，不读钥匙串（会弹系统授权框）、不联网；真正导入仍走 `ImportLocal`。
+    fn detect_local(&self) -> Option<String> {
+        None
+    }
+
     /// 开始登录。`input` 是粘贴的内容（`Paste`）或空。`Paste` / `ImportLocal` 可以直接在
     /// `state` 里放好凭据，由 `finish_login` 校验后返回。
     async fn begin_login(
@@ -191,6 +197,62 @@ pub fn views() -> Vec<SubscriptionView> {
             name: item.name().to_string(),
             methods: item.login_methods().to_vec(),
             note: item.note().to_string(),
+        })
+        .collect()
+}
+
+/// 本机已经登录、还没加进网关池的订阅账号（供应商页提示导入用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalLogin {
+    /// 订阅 id。
+    pub id: String,
+    pub name: String,
+    /// 账号名（邮箱 / 用户名）；登录文件里没有时为空。
+    pub account: String,
+}
+
+/// 扫一遍本机各家官方客户端的登录（只读文件），去掉池里已经有的。
+pub fn pending_local_logins(pool: &[RelayProfile]) -> Vec<LocalLogin> {
+    let detected = all()
+        .iter()
+        .filter_map(|item| {
+            item.detect_local().map(|account| LocalLogin {
+                id: item.id().to_string(),
+                name: item.name().to_string(),
+                account,
+            })
+        })
+        .collect();
+    not_in_pool(detected, pool)
+}
+
+/// 池里已有的不再提示：有账号名的按账号名比（不分大小写）；登录文件里没有账号名的，池里有这家任意账号就算有。
+fn not_in_pool(detected: Vec<LocalLogin>, pool: &[RelayProfile]) -> Vec<LocalLogin> {
+    let pooled: Vec<(String, String)> = pool
+        .iter()
+        .filter_map(|relay| {
+            let value: Value = serde_json::from_str(&relay.auth_contents).ok()?;
+            let id = value
+                .get(ACCOUNT_KIND_FIELD)?
+                .as_str()?
+                .strip_prefix(KIND_PREFIX)?
+                .to_string();
+            let account = value
+                .get("account")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_lowercase();
+            Some((id, account))
+        })
+        .collect();
+    detected
+        .into_iter()
+        .filter(|login| {
+            let account = login.account.to_lowercase();
+            !pooled
+                .iter()
+                .any(|(id, pooled)| *id == login.id && (account.is_empty() || *pooled == account))
         })
         .collect()
 }
@@ -277,6 +339,50 @@ mod tests {
             );
             assert!(!item.login_methods().is_empty(), "{} 没有登录方式", item.id());
         }
+    }
+
+    fn pooled(id: &str, account: &str) -> RelayProfile {
+        RelayProfile {
+            auth_contents: json!({
+                ACCOUNT_KIND_FIELD: format!("{KIND_PREFIX}{id}"),
+                "account": account,
+                "credentials": {},
+            })
+            .to_string(),
+            ..RelayProfile::default()
+        }
+    }
+
+    fn found(id: &str, account: &str) -> LocalLogin {
+        LocalLogin {
+            id: id.to_string(),
+            name: id.to_string(),
+            account: account.to_string(),
+        }
+    }
+
+    #[test]
+    fn local_logins_already_in_pool_are_not_offered() {
+        let pool = vec![
+            pooled("kiro", "a@example.com"),
+            pooled("gemini", "Me@Example.com"),
+        ];
+        let left = not_in_pool(
+            vec![
+                // 登录文件里没有账号名：池里有这家就不提示。
+                found("kiro", ""),
+                // 同一账号，大小写不同。
+                found("gemini", "me@example.com"),
+                // 同一家的另一个账号照样提示。
+                found("gemini", "other@example.com"),
+                found("cursor", ""),
+            ],
+            &pool,
+        );
+        assert_eq!(
+            left,
+            vec![found("gemini", "other@example.com"), found("cursor", "")]
+        );
     }
 
     #[test]

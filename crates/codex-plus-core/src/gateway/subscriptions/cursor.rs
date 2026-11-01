@@ -1930,6 +1930,15 @@ impl Subscription for Cursor {
         "需要 Cursor 账号（Pro / Business 等付费套餐才有足量的高级模型）：可在浏览器里登录，或先在 Cursor / cursor-agent 里登录后导入，也可粘贴 Cursor API Key。"
     }
 
+    fn detect_local(&self) -> Option<String> {
+        // 不读钥匙串：先看编辑器的 state.vscdb，再看 cursor-agent 的 auth.json。
+        if let Some(credentials) = read_ide() {
+            return Some(text_of(&credentials, "account").unwrap_or_default().to_string());
+        }
+        let value = editor_kit::read_json_file(&agent_auth_file()).ok()?;
+        parse_agent_auth(&value).map(|_| String::new())
+    }
+
     async fn begin_login(
         &self,
         _http: &reqwest::Client,

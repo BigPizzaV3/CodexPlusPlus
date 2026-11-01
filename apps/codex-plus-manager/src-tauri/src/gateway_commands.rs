@@ -566,6 +566,41 @@ pub fn save_gateway_auto_models(enabled: bool) -> CommandResult<Option<GatewayPa
     )
 }
 
+/// 「发现本机已登录的订阅账号」开关。关着时不读各家官方客户端的登录文件。
+#[tauri::command]
+pub fn save_gateway_local_login_discovery(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
+    let result = GatewayStore::default().update(|gateway| {
+        gateway.local_login_discovery = enabled;
+        Ok(())
+    });
+    respond("网关选项已保存。", "保存网关选项失败", result)
+}
+
+/// 本机已登录、还没进池的订阅账号（供应商页提示导入）。开关关着时不扫描，返回空。
+/// 单独一条命令、不放进 [`GatewayPayload`]：读 sqlite / 登录文件不便宜，payload 每次改动都会重建。
+#[tauri::command]
+pub async fn scan_gateway_local_logins()
+-> CommandResult<Vec<codex_plus_core::gateway::subscriptions::LocalLogin>> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        let gateway = GatewayStore::default().load()?;
+        if !gateway.local_login_discovery {
+            return Ok(Vec::new());
+        }
+        let pool: Vec<RelayProfile> = gateway
+            .providers
+            .into_iter()
+            .map(|provider| provider.relay)
+            .collect();
+        anyhow::Ok(codex_plus_core::gateway::subscriptions::pending_local_logins(&pool))
+    })
+    .await;
+    match result {
+        Ok(Ok(found)) => ok("", found),
+        Ok(Err(error)) => failed(&format!("扫描本机登录失败：{error:#}"), Vec::new()),
+        Err(error) => failed(&format!("扫描本机登录失败：{error}"), Vec::new()),
+    }
+}
+
 /// 「模型名后带供应商」：多家都有的模型在 Codex 的模型列表和输入框里名字后面带不带「（供应商）」。
 #[tauri::command]
 pub fn save_gateway_model_suffix(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
