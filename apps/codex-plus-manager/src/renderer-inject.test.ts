@@ -1564,6 +1564,23 @@ return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () 
     assert.match(failed.toasts[0], /Codex 页面尚未连接/);
   });
 
+  it("rebuilds nav entries left by an earlier injection so their stale handlers stop opening the old page", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const reusable = (generation: number, latest: number, node: Record<string, unknown>) => new Function("window", "node", `
+const codexPlusBackendGeneration = ${generation};
+${segment(renderer, "  function codexPlusNavEntryReusable(", "  function createCodexPlusRailButton(")}
+return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest }, node) as boolean;
+    // 本代建的按钮照常沿用。
+    assert.equal(reusable(2, 2, { __codexPlusGeneration: 2 }), true);
+    // 最新一代遇到上一代（或更早不带代次）的按钮：重建，换上新闭包。
+    assert.equal(reusable(2, 2, { __codexPlusGeneration: 1 }), false);
+    assert.equal(reusable(2, 2, {}), false);
+    // 旧代还在跑也不去动新代的按钮，两代不会来回抢。
+    assert.equal(reusable(1, 2, { __codexPlusGeneration: 2 }), true);
+    // 两处按 id 复用入口的地方都要过这道检查。
+    assert.equal(renderer.match(/\|\| !codexPlusNavEntryReusable\(wrapper\)\)/g)?.length, 2);
+  });
+
   it("filters installed and market entries, escapes their data and keeps actions outside selection buttons", async () => {
     const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
     const scripts = [

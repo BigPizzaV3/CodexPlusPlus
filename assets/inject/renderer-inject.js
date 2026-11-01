@@ -8712,10 +8712,11 @@
     }
     let wrapper = document.getElementById(codexPlusSidebarNavId);
     const parent = insertionButton?.parentElement || navigation;
-    if (!wrapper || wrapper.parentElement !== parent) {
+    if (!wrapper || wrapper.parentElement !== parent || !codexPlusNavEntryReusable(wrapper)) {
       wrapper?.remove();
       wrapper = document.createElement("div");
       wrapper.id = codexPlusSidebarNavId;
+      wrapper.__codexPlusGeneration = codexPlusBackendGeneration;
       wrapper.dataset.codexPlusSidebarNav = "true";
       const button = (insertionButton || document.createElement("button")).cloneNode(true);
       if (!(button instanceof HTMLElement)) return;
@@ -8784,9 +8785,23 @@
     }) || null;
   }
 
+  /**
+   * 入口按钮能否沿用。
+   *
+   * 同页重复注入（Codex++ 重启 / 升级而 Codex 没重启）时，上一次注入建的入口按钮还在，
+   * 按钮上绑的是旧闭包：点「拓展」打开的仍是旧版页面，里面的开关也走旧逻辑。
+   * 按钮记下建它的注入代次；最新一代遇到别代的按钮就重建。旧代即便还在跑也不重建，
+   * 免得两代来回抢同一个 id。
+   */
+  function codexPlusNavEntryReusable(node) {
+    return node.__codexPlusGeneration === codexPlusBackendGeneration
+      || codexPlusBackendGeneration !== window.__codexPlusBackendGeneration;
+  }
+
   function createCodexPlusRailButton({ id, template, label, iconMarkup, withStatus, onActivate }) {
     const wrapper = document.createElement("div");
     wrapper.id = id;
+    wrapper.__codexPlusGeneration = codexPlusBackendGeneration;
     wrapper.dataset.codexPlusRail = id === codexPlusRailExtensionsId ? "extensions" : "home";
     // 模板拿不到时不回退到旧模式，而是自建一个按钮：rail 上 destination 可能在
     // 登录态/接口就绪前还是空的，那只是暂时状态，不该让入口整个消失。
@@ -9003,7 +9018,7 @@
     let cursor = anchor;
     specs.forEach((spec) => {
       let wrapper = document.getElementById(spec.id);
-      if (!wrapper || wrapper.parentElement !== host) {
+      if (!wrapper || wrapper.parentElement !== host || !codexPlusNavEntryReusable(wrapper)) {
         wrapper?.remove();
         wrapper = createCodexPlusRailButton({ ...spec, template });
         if (!wrapper) return;
