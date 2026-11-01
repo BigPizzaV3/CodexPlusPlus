@@ -688,3 +688,86 @@ async fn write_copies_large_text_files_and_passes_instances_and_dsh() {
         assert!(error && message.as_str().unwrap().contains(expected), "{path}: {message}");
     }
 }
+
+/// 取消接入：本工具条目置为 `enabled = false`，用户字段与别的 MCP 不动，重新接入后恢复启用。
+#[test]
+fn disconnect_disables_only_owned_entry_and_reconnect_restores_it() {
+    use codex_plus_core::extension_creator::{LEGACY_MCP_FLAG, LEGACY_SERVER_ID, SERVER_ID, SPEC};
+    use codex_plus_core::managed_mcp;
+
+    let home = tempfile::tempdir().unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let state = home.path().join("state");
+    let config_path = home.path().join("config.toml");
+    fs::write(&config_path, "[mcp_servers.other]\ncommand = 'x'\n").unwrap();
+
+    // 没接入过：取消接入什么都不写。
+    let receipt = managed_mcp::disable(&SPEC, home.path(), &executable, &state).unwrap();
+    assert!(!receipt.changed);
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), "[mcp_servers.other]\ncommand = 'x'\n");
+
+    managed_mcp::install(&SPEC, home.path(), &executable, &state).unwrap();
+    // 用户在条目上自加的字段要跨取消/重新接入保留。
+    let with_user_field = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("enabled = true", "enabled = true\nstartup_timeout_sec = 30");
+    fs::write(&config_path, with_user_field).unwrap();
+
+    let receipt = managed_mcp::disable(&SPEC, home.path(), &executable, &state).unwrap();
+    assert!(receipt.changed);
+    assert!(receipt.status.disabled);
+    assert!(!receipt.status.registered);
+    let doc: toml_edit::DocumentMut = fs::read_to_string(&config_path).unwrap().parse().unwrap();
+    assert_eq!(doc["mcp_servers"][SERVER_ID]["enabled"].as_bool(), Some(false));
+    assert_eq!(doc["mcp_servers"][SERVER_ID]["startup_timeout_sec"].as_integer(), Some(30));
+    assert_eq!(doc["mcp_servers"]["other"]["command"].as_str(), Some("x"));
+    // 重复取消不再写文件。
+    assert!(!managed_mcp::disable(&SPEC, home.path(), &executable, &state).unwrap().changed);
+
+    let receipt = managed_mcp::install(&SPEC, home.path(), &executable, &state).unwrap();
+    assert!(receipt.status.registered);
+    assert!(!receipt.status.disabled);
+    let doc: toml_edit::DocumentMut = fs::read_to_string(&config_path).unwrap().parse().unwrap();
+    assert_eq!(doc["mcp_servers"][SERVER_ID]["enabled"].as_bool(), Some(true));
+    assert_eq!(doc["mcp_servers"][SERVER_ID]["startup_timeout_sec"].as_integer(), Some(30));
+
+    // 纯转换：旧名条目归本工具所有也一并停用；别人的同名条目不碰。
+    let legacy = format!(
+        "[mcp_servers.{LEGACY_SERVER_ID}]\ncommand = 'x'\nargs = ['{LEGACY_MCP_FLAG}']\n\n[mcp_servers.{SERVER_ID}]\ncommand = 'other'\nargs = ['--x']\n"
+    );
+    let disabled: toml_edit::DocumentMut =
+        managed_mcp::disable_managed_context(&SPEC, &legacy).unwrap().parse().unwrap();
+    assert_eq!(disabled["mcp_servers"][LEGACY_SERVER_ID]["enabled"].as_bool(), Some(false));
+    assert!(disabled["mcp_servers"][SERVER_ID].get("enabled").is_none());
+    assert_eq!(managed_mcp::disable_managed_context(&SPEC, "model = 'x'\n").unwrap(), "model = 'x'\n");
+}
+
+/// 托管上下文里已停用的条目经切换供应商的 apply 流程合并后，不会在 live 配置里复活
+/// （apply 流程把停用条目整条移出 live），托管上下文仍能认出「已取消接入」。
+#[test]
+fn disabled_managed_context_survives_the_relay_apply_path() {
+    use codex_plus_core::extension_creator::{SERVER_ID, SPEC};
+    use codex_plus_core::managed_mcp;
+
+    let home = tempfile::tempdir().unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let state = home.path().join("state");
+    let managed = managed_mcp::upsert_managed_context(&SPEC, "", &executable, &state).unwrap();
+    let managed = managed_mcp::disable_managed_context(&SPEC, &managed).unwrap();
+    codex_plus_core::relay_config::apply_relay_files_to_home_with_context(
+        home.path(),
+        "model = \"second\"\n",
+        "{}",
+        &managed,
+        "",
+        "",
+    )
+    .unwrap();
+    let status = managed_mcp::status(&SPEC, home.path(), &executable, &state).unwrap();
+    assert!(!status.registered);
+    let live = fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert!(!live.contains(SERVER_ID));
+    assert!(managed_mcp::disabled_in_context(&SPEC, &managed));
+    let enabled = managed_mcp::upsert_managed_context(&SPEC, &managed, &executable, &state).unwrap();
+    assert!(!managed_mcp::disabled_in_context(&SPEC, &enabled));
+}

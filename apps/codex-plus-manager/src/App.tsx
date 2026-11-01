@@ -16939,7 +16939,7 @@ function localScriptStateLabel(state: LocalScriptState): { label: string; hint: 
 }
 
 type ExtensionCreatorStatus = {
-  status: "connected" | "not_connected" | "conflict";
+  status: "connected" | "not_connected" | "disconnected" | "conflict";
   message: string;
   configPath?: string;
   extensionsDirectory?: string;
@@ -16969,17 +16969,17 @@ function ExtensionsHero() {
 
 function ExtensionCreatorCard() {
   const [state, setState] = useState<ExtensionCreatorStatus | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"connect" | "disconnect" | null>(null);
   const [error, setError] = useState("");
-  const request = async (action: "status" | "connect") => {
-    setBusy(true);
+  const request = async (action: "status" | "connect" | "disconnect") => {
+    setBusy(action === "status" ? null : action);
     setError("");
     try {
       setState(await invoke<ExtensionCreatorStatus>("extension_creator_request", { action }));
     } catch (failure) {
       setError(String(failure));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
   useEffect(() => {
@@ -16987,7 +16987,8 @@ function ExtensionCreatorCard() {
   }, []);
   const connected = state?.status === "connected";
   const hint = error || (connected
-    ? t("新开一个 Codex 对话，说「帮我做个拓展：…」即可")
+    ? t("新开一个 Codex 对话，说「帮我做个拓展：…」即可；不造拓展时可取消接入，省下工具说明占用的上下文")
+    : state?.status === "disconnected" ? t("已取消接入，新开的 Codex 对话不再加载拓展创作工具；要造拓展时再接入")
     : state?.status === "conflict" ? state.message : t("在 Codex 对话里描述需求，agent 直接写出拓展并热重载"));
   return (
     <div className="extension-creator-card" data-status={state?.status ?? "loading"} data-error={error ? "true" : undefined}>
@@ -16999,9 +17000,13 @@ function ExtensionCreatorCard() {
         </div>
         <div className="extension-creator-hint" title={state?.extensionsDirectory}>{hint}</div>
       </div>
-      {connected ? null : (
-        <Button disabled={busy || !state || state.status === "conflict"} onClick={() => void request("connect")} size="sm">
-          {busy ? t("接入中…") : t("接入 Codex")}
+      {connected ? (
+        <Button disabled={busy !== null} onClick={() => void request("disconnect")} size="sm" variant="outline">
+          {busy === "disconnect" ? t("取消中…") : t("取消接入")}
+        </Button>
+      ) : (
+        <Button disabled={busy !== null || !state || state.status === "conflict"} onClick={() => void request("connect")} size="sm">
+          {busy === "connect" ? t("接入中…") : t("接入 Codex")}
         </Button>
       )}
     </div>

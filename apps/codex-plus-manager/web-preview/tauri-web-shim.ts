@@ -771,7 +771,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "set_extension_config": return settingsResult() as T;
     case "reload_user_scripts": return settingsResult() as T;
     case "extension_creator_request": return {
-      status: args.action === "connect" ? "connected" : "not_connected",
+      status: args.action === "connect" ? "connected" : args.action === "disconnect" ? "disconnected" : "not_connected",
       message: "", configPath: "~/.codex/config.toml", extensionsDirectory: "~/.config/Codex++/user_scripts",
     } as T;
     // 社区拓展演示数据：一个带钩子与后台的、一个只有页面脚本且已安装的、一个需要新版 Codex++ 的。
