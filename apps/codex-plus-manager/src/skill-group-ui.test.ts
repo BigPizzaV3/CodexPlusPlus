@@ -118,6 +118,8 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     return select;
   };
   const rowElements = (groupKey: string, repoKey: string, id: string) => {
+    const head = groupHead(groupKey);
+    if (!head.props["aria-expanded"]) { head.props.onClick(); render(); }
     const children: Element[] = [];
     collect(group(groupKey).children[0]("handle"), children);
     const row = children.find((node) => node.type === "div" && node.props.className === "mg-matrix-row" && node.props.key === skillIdentityKey({ repoKey, id }));
@@ -126,14 +128,103 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     collect(row, result);
     return result;
   };
+  const groupHead = (key: string) => {
+    const children: Element[] = [];
+    collect(group(key).children[0]("handle"), children);
+    const head = children.find((node) => node.props?.className === "mg-group-head");
+    assert.ok(head);
+    return head;
+  };
   const sort = () => find((node) => node.type === "button" && String(node.props["aria-label"] || "").startsWith("按名称排序"));
   const order = () => elements.filter((node) => node.type === "SortableSkillGroup").map((node) => node.props.group.key);
   const selectTab = (name: string) => { find((node) => node.type === "button" && node.children.includes(name)).props.onClick(); render(); };
   const drag = (from: string, to: string) => { find((node) => node.type === "DndContext").props.onDragEnd({ active: { id: from }, over: { id: to } }); render(); };
   const savedState = () => JSON.parse(storage.get("codex-plus-plus.skill-groups.v1")!);
   const unmount = () => { for (const cleanup of cleanups.values()) cleanup(); cleanups.clear(); };
-  return { render, unmount, find, group, groupButton, groupSelect, rowElements, sort, order, selectTab, drag, savedState, prompts, storage, server, registry, calls, requests, notices, hooks };
+  return { render, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, drag, savedState, prompts, storage, server, registry, calls, requests, notices, hooks };
 }
+
+test("installed groups default closed and preserve interactions as new groups load", async () => {
+  const ui = createHarness(JSON.stringify({ names: ["Manual"] }));
+  ui.render();
+  assert.equal(ui.find((node) => node.type === "button" && node.children.includes("已安装")).props["data-active"], true);
+  assert.equal(ui.groupHead("custom:Manual").props["aria-expanded"], false);
+  ui.groupHead("custom:Manual").props.onClick(); ui.render();
+  await tick(); ui.render();
+  assert.equal(ui.groupHead("custom:Manual").props["aria-expanded"], true);
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
+  ui.prompts.push("Renamed");
+  await ui.groupButton("custom:Manual", "重命名").props.onClick(); ui.render();
+  assert.equal(ui.groupHead("custom:Renamed").props["aria-expanded"], true);
+  ui.find((node) => node.type === "Button" && node.children.includes("全部展开")).props.onClick(); ui.render();
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
+  ui.server.skills.push(skill("later", "later/repo@main"));
+  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  await tick(); ui.render();
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
+  assert.equal(ui.groupHead("repo:later/repo").props["aria-expanded"], false);
+  ui.find((node) => node.type === "Button" && node.children.includes("全部折叠")).props.onClick(); ui.render();
+  assert.equal(ui.groupHead("custom:Renamed").props["aria-expanded"], false);
+  ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
+  ui.find((node) => node.type === "SearchField").props.onChange(""); ui.render();
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
+  ui.selectTab("发现"); ui.selectTab("已安装");
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
+  const reopened = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"));
+  reopened.render(); await tick(); reopened.render();
+  assert.equal(reopened.find((node) => node.type === "button" && node.children.includes("已安装")).props["data-active"], true);
+  assert.equal(reopened.groupHead("custom:Renamed").props["aria-expanded"], false);
+});
+
+test("collapsing search results preserves hidden groups' open and closed states", async () => {
+  const ui = createHarness(JSON.stringify({ names: ["Manual"] }));
+  ui.server.skills.push(skill("alpha-two", "b/repo@main"));
+  ui.render(); await tick(); ui.render();
+  ui.groupHead("custom:Manual").props.onClick(); ui.render();
+  ui.groupHead("repo:a/repo").props.onClick(); ui.render();
+  assert.equal(ui.groupHead("repo:z/repo").props["aria-expanded"], false);
+  ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
+  assert.deepEqual(ui.order(), ["repo:a/repo", "repo:b/repo"]);
+  ui.find((node) => node.type === "Button" && node.children.includes("全部折叠")).props.onClick(); ui.render();
+  ui.find((node) => node.type === "SearchField").props.onChange(""); ui.render();
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
+  assert.equal(ui.groupHead("repo:b/repo").props["aria-expanded"], false);
+  assert.equal(ui.groupHead("repo:z/repo").props["aria-expanded"], false);
+  assert.equal(ui.groupHead("custom:Manual").props["aria-expanded"], true);
+});
+
+test("collapsed installed groups support per-agent batch enable and disable", async () => {
+  const ui = createHarness();
+  ui.server.skills = [skill("alpha", "a/repo@main"), { ...skill("beta", "a/repo@main"), agents: ["claude"] }, skill("zeta", "z/repo@main")];
+  ui.render(); await tick(); ui.render();
+  assert.equal(ui.find((node) => node.type === "button" && node.children.includes("已安装")).props["data-active"], true);
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
+  ui.hooks.mutation = async (command, args) => {
+    assert.equal(command, "set_skill_enabled_for");
+    const item = ui.server.skills.find((entry) => entry.id === args.id)!;
+    item.agents = item.agents.filter((agent) => agent !== args.agent);
+    if (args.enabled) item.agents.push(String(args.agent));
+    item.enabled = item.agents.includes("codex");
+    return structuredClone(ui.server);
+  };
+  ui.groupSelect("repo:a/repo", "codex").props.onChange(true);
+  for (let index = 0; index < 20 && ui.registry.getSnapshot().length; index++) await tick();
+  await tick(); ui.render();
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
+  assert.deepEqual(ui.server.skills.map((item) => item.agents), [["codex"], ["claude", "codex"], []]);
+  ui.groupSelect("repo:a/repo", "codex").props.onChange(false);
+  for (let index = 0; index < 20 && ui.registry.getSnapshot().length; index++) await tick();
+  await tick(); ui.render();
+  assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
+  assert.deepEqual(ui.server.skills.map((item) => item.agents), [[], ["claude"], []]);
+  assert.deepEqual(ui.requests.filter((request) => request.command === "set_skill_enabled_for")
+    .map(({ args }) => [args.agent, args.id, args.enabled]), [
+    ["codex", "alpha", true], ["codex", "beta", true],
+    ["codex", "alpha", false], ["codex", "beta", false],
+  ]);
+  ui.unmount();
+});
 
 test("batch selection queues other writes and summarizes a large set of failures", async () => {
   const ui = createHarness();

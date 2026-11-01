@@ -214,7 +214,7 @@ function GroupAgentSelect({ group, agent, busy, operations, onChange }: { group:
 export function SkillsPage({ notify }: { notify: Notify }) {
   const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>({ version: 0, value: null });
   const data = dataState.value;
-  const [tab, setTab] = useState<"discover" | "installed">("discover");
+  const [tab, setTab] = useState<"discover" | "installed">("installed");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const batchOperations = useSyncExternalStore(skillBatchRegistry.subscribe, skillBatchRegistry.getSnapshot, skillBatchRegistry.getSnapshot);
@@ -228,7 +228,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
   const focus = useAgentFocus();
   const agentColumns: McpAgentId[] = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [storedGroups] = useState(() => readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY)));
   const [customGroupNames, setCustomGroupNames] = useState<string[]>(storedGroups.names);
   const [customGroupAssignments, setCustomGroupAssignments] = useState<Record<string, string>>(storedGroups.assignments);
@@ -435,7 +435,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     setAssignmentsByIdentity((old) => Object.fromEntries(Object.entries(old).map(([key, group]) => [key,
       group === customSkillGroupKey(oldName) ? customSkillGroupKey(normalized) : group])));
     setGroupOrder((old) => old.map((key) => key === customSkillGroupKey(oldName) ? customSkillGroupKey(normalized) : key));
-    setCollapsedGroups((old) => {
+    setExpandedGroups((old) => {
       const next = new Set(old);
       if (next.delete(customSkillGroupKey(oldName))) next.add(customSkillGroupKey(normalized));
       return next;
@@ -449,6 +449,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     setAssignmentsByIdentity((old) => Object.fromEntries(Object.entries(old).map(([key, group]) => [key,
       group === customSkillGroupKey(name) ? "" : group])));
     setGroupOrder((old) => old.filter((key) => key !== customSkillGroupKey(name)));
+    setExpandedGroups((old) => { const next = new Set(old); next.delete(customSkillGroupKey(name)); return next; });
   };
   const assignSkillGroup = (skill: Skill, group: string) => {
     setAssignmentsByIdentity((old) => ({ ...old, [skillIdentityKey(skill)]: group ? customSkillGroupKey(group) : "" }));
@@ -521,8 +522,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
             setGroupSortDirection(direction);
           }}>{groupSortDirection === "asc" ? <ArrowDownAZ size={17}/> : groupSortDirection === "desc" ? <ArrowDownZA size={17}/> : <ArrowDownUp size={17}/>}</button>
         {groups.length > 1 ? <>
-          <Button onClick={() => setCollapsedGroups(new Set(groups.map((group) => group.key)))}>{t("全部折叠")}</Button>
-          <Button onClick={() => setCollapsedGroups(new Set())}>{t("全部展开")}</Button>
+          <Button onClick={() => setExpandedGroups((old) => { const next = new Set(old); groups.forEach((group) => next.delete(group.key)); return next; })}>{t("全部折叠")}</Button>
+          <Button onClick={() => setExpandedGroups(new Set(allGroups.map((group) => group.key)))}>{t("全部展开")}</Button>
         </> : null}
       </div>
     </div>
@@ -532,12 +533,12 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         {!groups.length ? <div className="mg-empty"><h2>{loading ? t("正在扫描…") : t("没有匹配的 Skill")}</h2></div> :
           <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
             <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
-          const collapsed = collapsedGroups.has(group.key) && !query.trim();
+          const collapsed = !expandedGroups.has(group.key) && !query.trim();
           const allGroupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
           const movable = group.kind === "repo" || group.kind === "custom";
           return <SortableSkillGroup group={group} key={group.key} disabled={!movable || !!query.trim() || busy || loading}>{(handle) => <>
             <div className="mg-skill-group-row">
-              <div className="mg-skill-group-name">{handle}<button type="button" className="mg-group-head" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((old) => { const next = new Set(old); next.has(group.key) ? next.delete(group.key) : next.add(group.key); return next; })}>
+              <div className="mg-skill-group-name">{handle}<button type="button" className="mg-group-head" aria-expanded={!collapsed} onClick={() => setExpandedGroups((old) => { const next = new Set(old); next.has(group.key) ? next.delete(group.key) : next.add(group.key); return next; })}>
                 <ChevronDown size={15} className={collapsed ? "mg-chevron-collapsed" : ""}/><strong title={group.label}>{group.label}</strong><small>{group.items.length} {t("个 Skill")}</small>
               </button></div>
               <span className="mg-skill-batch-label">{t("全选")}</span>
