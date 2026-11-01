@@ -6277,6 +6277,21 @@ pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>)
     }
 }
 
+/// 保存配置后先试着在 Codex 页面里原地生效（拓展用 ctx.onConfigUpdate 接住时不必热重载）。返回 "applied" 或 "reload"。
+#[tauri::command]
+pub async fn update_extension_config_live(key: String) -> Result<String, String> {
+    let debug_port = StatusStore::default()
+        .load_latest()
+        .ok()
+        .flatten()
+        .and_then(|status| status.debug_port)
+        .unwrap_or_else(default_debug_port);
+    let manager = default_user_script_manager();
+    Ok(codex_plus_core::user_scripts::update_live_config(debug_port, &manager, key.trim())
+        .await
+        .unwrap_or_else(|_| "reload".to_string()))
+}
+
 #[tauri::command]
 pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();

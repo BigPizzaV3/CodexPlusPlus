@@ -133,7 +133,7 @@
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1272
+      "lines": 1315
     },
     {
       "name": "91-extension-rpc.js",

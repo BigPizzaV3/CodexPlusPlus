@@ -335,6 +335,8 @@ codexPlus.extension((ctx) => {
 - 读取：页面代码用 `ctx.config`；钩子、网关中间件、工具脚本用第二个参数的 `context.config`。都是生效配置
   （默认值叠加已保存且类型正确的值）的只读快照。
 - 修改：管理器表单保存后自动热重载；对话造拓展可用 `codexpp_extension_configure` 改值。只接受声明过的键，类型不符即报错。
+- 不重载地接住新配置：`ctx.onConfigUpdate((next, prev) => { 应用 next; return true; })`。管理器保存后先问页面，这个拓展的
+  每个实例都返回 `true` 时 `ctx.config` 原地换成新值，不再热重载；有一个实例没接（没注册或返回别的）就照常整体热重载。
 - 多实例：清单写 `"instances": [{ "id": "work", "name": "工作", "config": { "label": "工作区" } }, { "id": "home" }]`，
   页面脚本按实例各应用一次，`ctx.config` 是生效配置叠上该实例的 `config`，`ctx.instance` 为 `{ id, name }`，
   `ctx.id` 变成 `<拓展 id>#<实例 id>`，注册项的 `id` 与 `ctx.storage` 也按实例分开。实例最多 16 个，`config` 只能写清单 `config`
@@ -455,11 +457,13 @@ Codex++ 自己在发请求前也会做几件事（本地压缩、第三方推理
   `attempt`（换候选重发时每次都跑，请求体按候选不同）。`upstream` 段同样可以 `{ reject }`、加请求头。
 - `stage: "route"`：中转轮换按规则选出候选供应商之后调用，收到 `{ model, conversationId, candidates: [{ id, name, protocol }] }`，
   返回重排 / 删减后的同形对象或 `{ order: ["供应商 id", …] }`，按这个顺序尝试（认不得的 id 忽略，一个都不认得时照原顺序）。
-  只作用于中转轮换；聚合模型、显式模型路由、网关模式的 Key 池不经过这里。
+  网关模式的候选（供应商 + Key）同样经过这里，`candidates` 每项是 `{ id: "<供应商>#<序号>", provider, name, model }`，
+  上下文多给 `agent`。只有一个候选时不调用；聚合模型、显式模型路由不经过这里。
 - `order`：同一段里越小越先，相同时按拓展 key 顺序。
 - `replaces`：关掉的内置环节，可选 `builtin:local-compaction`（本地压缩）、`builtin:reasoning-collapse`（第三方推理折叠）、
   `builtin:exec-adapt`（exec 工具适配）、`builtin:relay-rotation`（轮换失败后自动换下一个供应商；关掉后只用选中的那一个，
-  配合 route 段自己决定顺序）。拓展启用时生效，停用后恢复。协议转换、鉴权不能关。
+  配合 route 段自己决定顺序）、`builtin:gateway-failover`（网关模式里一个候选失败后换下一个；关掉后只试排第一的那个）。
+  拓展启用时生效，停用后恢复。协议转换、鉴权不能关。
 
 ### 网关响应流中间件
 

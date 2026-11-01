@@ -629,7 +629,7 @@
   function scanDeferred() {
     // 内置拓展登记的扫描步骤（桌宠与大肥鱼、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
     runCodexPlusScanSteps();
-    refreshThreadIdBadges();
+    // 会话行的操作按钮组、归档页的行按钮是删除、导出与第三方拓展 rowAction 共用的宿主，留在内核里扫描。
     // 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
     runScanStep(filterDeletedSessionRows);
     sessionRows().forEach(tryAttachButton);

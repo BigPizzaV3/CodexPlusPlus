@@ -562,6 +562,11 @@ interface CodexPlusExtensionContext {
   readonly config: Readonly<Record<string, unknown>>;
   /** 清单 `instances` 里的哪一份；没声明实例时为 null。 */
   readonly instance: { id: string; name: string } | null;
+  /**
+   * 配置原地更新：管理器保存配置后先问这里，handler 返回 true 表示接住了（ctx.config 换成新值、不重载）；
+   * 这个拓展只要有一个实例没接，就照常整体热重载。
+   */
+  onConfigUpdate(handler: (next: Readonly<Record<string, unknown>>, previous: Readonly<Record<string, unknown>>) => boolean): CodexPlusDispose;
   /** 包内 assets/ 资源（图片、音频、字体）的 data URL；找不到返回空串。 */
   asset(path: string): string;
   /** 多语言（随实例卸载自动撤销登记）。 */

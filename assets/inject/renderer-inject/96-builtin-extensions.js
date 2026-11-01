@@ -56,7 +56,7 @@
       // 以下几项的开关都经 codexPlusSettings() 读（停用时对应设置项读成关），切换后补一轮扫描让界面跟上。
       { id: "session-delete", name: "会话删除", sync: () => scheduleDeferredScan() },
       { id: "markdown-export", name: "Markdown 导出", sync: () => scheduleDeferredScan() },
-      { id: "thread-id-badge", name: "会话 ID 角标", sync: () => scheduleDeferredScan() },
+      { id: "thread-id-badge", name: "会话 ID 角标", sync: () => refreshThreadIdBadges(), scan: () => refreshThreadIdBadges() },
       {
         id: "thread-scroll-restore",
         name: "滚动位置恢复",

@@ -2020,7 +2020,9 @@ export function App() {
     setSettings(result);
     showResultNotice(t("本地拓展"), result);
     if (!isSuccessStatus(result.status)) return false;
-    await reloadUserScripts();
+    // 拓展用 ctx.onConfigUpdate 接住新配置时原地生效，不必整体热重载。
+    const live = await call<string>("update_extension_config_live", { key }).catch(() => "reload");
+    if (live !== "applied") await reloadUserScripts();
     return true;
   };
 

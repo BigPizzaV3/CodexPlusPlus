@@ -33,6 +33,22 @@ pub async fn reload_live_scripts(
     reload_scripts_at(websocket, manager).await
 }
 
+/// 拓展配置改了以后先试着原地生效：页面里这个拓展的所有实例都用 `ctx.onConfigUpdate` 接住新配置时返回 `"applied"`，
+/// 不必整体热重载；任何一个实例没接（或页面不支持）时返回 `"reload"`，由调用方照常热重载。
+pub async fn update_live_config(debug_port: u16, manager: &UserScriptManager, key: &str) -> anyhow::Result<String> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = live_runtime_target(&targets)?;
+    let websocket = target.web_socket_debugger_url.as_deref().context("Codex renderer has no WebSocket URL")?;
+    let config = manager.effective_extension_config(key)?;
+    let expression = format!(
+        "(() => {{ const runtime = window.__codexPlusUserScripts; return typeof runtime?.updateConfig === \"function\" ? runtime.updateConfig({}, {}) : \"reload\"; }})()",
+        serde_json::to_string(key)?,
+        config
+    );
+    let response = crate::bridge::evaluate_script(websocket, &expression).await?;
+    Ok(response.pointer("/result/result/value").and_then(Value::as_str).unwrap_or("reload").to_string())
+}
+
 pub async fn reload_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
@@ -397,6 +413,18 @@ impl UserScriptManager {
         latest.configs.insert(key.to_string(), stored.clone());
         self.save_config_unlocked(&latest)?;
         Ok(resolve_extension_config(&package.config_schema, Some(&stored)))
+    }
+
+    /// 一个拓展包的生效配置（默认值叠加已保存且类型正确的值）。
+    pub fn effective_extension_config(&self, key: &str) -> anyhow::Result<Value> {
+        let config = self.load_config();
+        let package = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .and_then(|script| script.package)
+            .with_context(|| format!("没有找到拓展包 {key}"))?;
+        Ok(resolve_extension_config(&package.config_schema, config.configs.get(key)))
     }
 
     /// 对话里改配置：只覆盖给出的键，其余沿用已存值；secret 项传回打码值时保留原值。
@@ -1402,7 +1430,7 @@ pub struct ExtensionGatewayMiddleware {
 }
 
 /// 拓展能用 `gateway.replaces` 关掉的 Codex++ 内置网关环节（关掉后拓展自己在 upstream 段里实现）。
-pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &["builtin:local-compaction", "builtin:reasoning-collapse", "builtin:exec-adapt", "builtin:relay-rotation"];
+pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &["builtin:local-compaction", "builtin:reasoning-collapse", "builtin:exec-adapt", "builtin:relay-rotation", "builtin:gateway-failover"];
 
 /// 网关请求中间件的超时上限（秒）：它挡在每一次模型请求前面，不能太久。
 pub const EXTENSION_GATEWAY_MAX_TIMEOUT_SECS: u64 = 10;

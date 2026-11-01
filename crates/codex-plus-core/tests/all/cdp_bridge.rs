@@ -2842,7 +2842,8 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
     assert!(script.contains("if (threadIdBadgeActive)"));
     assert!(script.contains("function refreshThreadIdBadges()"));
     assert!(script.contains("uuidV7TimestampMs(sessionId)"));
-    assert!(script.contains("refreshThreadIdBadges();"));
+    // 由内置拓展「会话 ID 角标」登记成扫描步骤（停用时 sync 一次把角标撤掉）。
+    assert!(script.contains(r#"{ id: "thread-id-badge", name: "会话 ID 角标", sync: () => refreshThreadIdBadges(), scan: () => refreshThreadIdBadges() }"#));
 }
 
 #[test]
