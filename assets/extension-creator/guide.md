@@ -37,7 +37,7 @@ codexPlus.extension((ctx) => {
 | --- | --- |
 | `ctx.registerPage({ title, render }, { navLabel, icon })` | 整页视图并自动配图标栏入口。`render({ container, close })` **每次打开都会重新调用**，每次都从空白重建 `container` 的内容，不要缓存 DOM |
 | `ctx.registerMenuItem(def)` | Codex++ 菜单「主页」面板的一行。开关形态：`{ label, description, toggleValue: () => bool, onChange: (next) => {} }`；按钮形态：`{ label, description, buttonLabel, onActivate: ({ close }) => {} }` |
-| `ctx.registerRowAction({ label, icon, onActivate })` | 会话行「更多操作」里的一项，`onActivate({ row, session_id, close })` |
+| `ctx.registerRowAction({ label, icon, onActivate })` | 会话行「更多操作」里的一项，`onActivate({ row, session_id, title, archived, resolve, close })`。加 `placement: "inline"` 画成行上常驻的图标按钮（套原生按钮外观）；加 `surfaces: ["sidebar", "archived"]` 同时出现在归档页的行上（归档页的行未必有会话 id，用 `await resolve()` 取）。Codex++ 自带的「删除」「导出」就是这样注册的 |
 | `ctx.registerComposerAction({ label, icon, onActivate })` | 输入区（发送按钮那一行）的图标按钮，`onActivate({ editor, insertText, close })`，`insertText(text)` 往输入框插字。比自己往输入区塞节点稳，Codex 改结构由 Codex++ 适配 |
 | `ctx.registerMessageAction({ label, icon, roles, visible(message), onActivate({ message }) })` | 每条对话消息操作行（复制、编辑按钮旁）的图标按钮。`message = { role, id, turnId, conversationId, text, element }`，`roles` 取 `"user"` / `"assistant"` |
 | `ctx.registerMessageDecoration({ roles, render({ message, container }) })` | 消息正文下方的一块内容，往 `container` 里画；流式输出时会清空重画。要给消息加标记、摘要、翻译用这个，不要自己往消息里塞节点 |
@@ -48,7 +48,9 @@ codexPlus.extension((ctx) => {
 | `ctx.intercept("codex/request", ({ method, params }, next) => next({ method, params: 新params }))` | 改写发往 Codex 的请求（例如 `turn/start` 时给用户输入加前缀）。必须同步返回，只能改 params；不改就原样 `next(value)` |
 | `ctx.storage.get(key, 默认值) / set(key, value) / remove(key)` | 按拓展隔离的本地存储，值按 JSON 存取 |
 | `ctx.registerNavEntry({ label, icon, onActivate })` | 只要一个图标栏按钮、不要整页时用 |
-| `ctx.effect(() => cleanupFn)` | 任意副作用（MutationObserver、插入的 DOM、patch 的函数），返回撤销函数 |
+| `ctx.onScan(() => {…}, { phase })` | Codex 界面变了（切会话、侧栏或输入框重建）时调用，按帧合并、页面隐藏时不跑。要「Codex 重建后把自己的东西补回去」用它，**不用自己开 MutationObserver**。`phase: "light"` 每次变化都跑（回调要很便宜），默认 `"deferred"` 跟完整扫描。返回的撤销函数带 `run()` 立即跑一次 |
+| `ctx.on("settings/loaded", ({ reason }) => …)` / `ctx.on("settings/changed", ({ key, value, persisted }) => …)` | 读到 Codex++ 设置（启动、每 5 秒心跳）/ 用户在 Codex 页面里改了一项设置时。要跟着 Codex++ 设置开关走的拓展订阅这两个 |
+| `ctx.effect(() => cleanupFn)` | 任意副作用（插入的 DOM、patch 的函数），返回撤销函数 |
 | `ctx.listen(target, type, handler, options)` | 自动撤销的事件监听 |
 | `ctx.setInterval / ctx.setTimeout` | 自动清理的定时器。**返回值是撤销函数（调用它即取消），不是定时器 id**，不能交给 `clearTimeout` |
 | `ctx.asset("assets/pet.png")` | 包内资源（图片、音频、字体）的 data URL，直接给 `img.src` / CSS `url()`；写法见「图片、音频等资源」 |
@@ -71,8 +73,8 @@ codexPlus.extension((ctx) => {
 - **外观改动优先纯 CSS**：注入一个 `<style>` 隐藏原图标、用 `::before` / `::after` 放新内容、改颜色尺寸。
   不动 Codex 的节点，React 重绘也不会冲掉，停用拓展时移除 `<style>` 即恢复原样。
 - **要加节点时**：插在目标旁边而不是替换它（替换会断掉 Codex 绑在节点上的事件），节点带 `data-codex-plus-ext`；
-  目标可能晚出现或被重建（例如发送按钮只在输入框有文字时出现），用 `ctx.effect` 里的 `MutationObserver`
-  监听并在撤销函数里 `disconnect()`。
+  目标可能晚出现或被重建（例如发送按钮只在输入框有文字时出现），用 `ctx.onScan` 在每次界面变化后检查、
+  缺了就补（先查有没有自己的节点，有就不动），撤销时用 `ctx.effect` 返回的函数把节点移除。
 - **找不到目标就什么都不做**，不要抛错卡住；改完用 `codexpp_extension_screenshot` 截图确认。
 - 查不到元素时可能是它还没出现：告诉用户需要的状态（例如「先打开设置页」），再查一次。
 - **输入区右下角的主按钮是一个会变的槽位**：发送（有字、空闲）/ 排队（有字、运行中）/ 停止（无字、运行中）/
@@ -208,6 +210,18 @@ export default (error) => (error.status === 429 && error.attempt < 2 ? { retry: 
 - 返回 `{ retry: true, delayMs }`（或 `{ kind: "retry" }`）即重发同一请求；返回 `{ kind: "fallback", model: "备用模型" }` 即换模型重发；
   最多 3 次，间隔最多 10 秒。
 - 网关请求中间件想加请求头时写第二个参数的 `headers`（`context.headers["x-trace"] = "1"`），鉴权类头会被忽略。
+
+## 关掉 Codex++ 网关的内置环节（gateway.replaces）
+
+拓展要自己接管某一步时，在 `gateway` 参数里写 `"replaces": ["builtin:…"]`，拓展启用时关掉那个内置环节、停用后恢复：
+
+- 两种模式都经过：`builtin:auto-retry`（请求避震，关掉后上游错误原样交回，重试交给 `gateway.error`）、
+  `builtin:foreign-reasoning`（别家加密推理内容的处理）、`builtin:unlisted-model-mapping`（目录外模型名映射）、
+  `builtin:local-compaction`（本地压缩）、`builtin:reasoning-collapse`、`builtin:exec-adapt`、`builtin:relay-rotation`（失败换下一个供应商）。
+- 网关模式：`builtin:gateway-failover`（候选失败换下一个）、`builtin:key-cooldown`（429 后 Key 冷却）、
+  `builtin:key-breaker`（供应商熔断）、`builtin:local-rate-limit`（Key 的 RPM / 并发限速）、`builtin:title-model`（起名请求改发起名模型）。
+- 关掉冷却 / 熔断后，在冷却的 Key 照常当候选（排在可用的后面），要避开谁在 `route` 段的中间件里自己筛。
+- 协议转换、凭据与鉴权头、请求日志与用量不能关。只在用户明确要接管这一步时才关，并告诉用户关掉了什么。
 
 ## 工具管道（改工具参数、代为执行、改工具结果）
 
@@ -381,6 +395,35 @@ ctx.backend.on("tick", ({ count }) => ctx.toast(`第 ${count} 分钟`));
 - `emit(event, payload)` 推给页面的 `ctx.backend.on(event, handler)`（`"*"` 收全部）；`on` 不会启动后台。
 - 后台以用户权限运行、没有沙箱，只做用户要求的事。
 
+## 管理器面板（拓展在 Codex++ 管理器里的界面）
+
+要做统计、批量操作、比设置表单更复杂的配置界面时，在 `codexpp_extension_write` 的 `manager` 参数里写
+`{ "page": "manager.html", "title": "面板标题" }`，页面放在 `files` 里。用户在 Codex++ 管理器「本地拓展」里
+这一行的「…」菜单点「打开面板」，面板展开在这一行下面。页面里用 `window.codexPlusManager`：
+
+```html
+<p>共 <b id="count">…</b> 条</p>
+<script>
+  const api = window.codexPlusManager;
+  api.backend.call("stats").then(({ count }) => { document.getElementById("count").textContent = count; });
+  api.onTheme((theme) => document.body.classList.toggle("dark", theme === "dark"));
+</script>
+```
+
+- 能用的只有：`config.get()` / `config.set(values)` / `config.onChange(fn)`（本拓展配置，只能写声明过的项）、
+  `backend.call(method, params)`（本拓展的常驻后台，要同时声明 `backend`）、`asset(path)`（本拓展 assets/ 的 data URL）、
+  `toast(text)`、`theme()` / `onTheme(fn)`。都返回 Promise。
+- 页面在沙箱 iframe 里：**不能联网、不能加载外部或包内其它文件**，脚本和样式写在页面里；图片用 `asset()` 取；
+  要联网或读写本机文件就放进常驻后台，经 `backend.call` 调。页面最大 1 MiB。
+- 没法用 `codexpp_extension_screenshot` 看管理器（它只截 Codex 页面），写好后让用户打开面板看看。
+
+## 顶替 Codex++ 内置功能
+
+Codex++ 自带的功能都是内置拓展（会话删除、Markdown 导出、语音听写、用量状态栏、桌宠……）。用户想换掉某个内置功能的
+做法时，在 `codexpp_extension_write` 的 `replaces` 参数里写内置拓展 id（如 `["usage-statusline"]`）：你的拓展启用时
+那个内置拓展让位，停用时它回来。内置拓展能做的你都能用同样的 ctx 接口做（`onScan`、`registerSlot`、
+`registerRowAction`、`settings/changed`……）；它的数据有的作为服务提供（`inject: ["codexpp.usage"]`），自己画界面即可。
+
 ## 工具连接断开时
 
 `codexpp_extension_*` 工具报 `Transport closed` 说明拓展服务断开了（通常是 Codex++ 刚更新或重启过），这个对话
@@ -400,7 +443,7 @@ ctx.backend.on("tick", ({ count }) => ctx.toast(`第 ${count} 分钟`));
   返回的撤销函数（见下面示例），否则每开一次页面就多一个空转的定时器。
 - 需要记住用户设置就用 `ctx.storage`（自动按拓展隔离）。
 - Codex 自己的 DOM 结构随版本变化，没有稳定性承诺。依赖它时要容错（找不到元素就静默跳过），并用
-  `MutationObserver` 等待元素出现，而不是假设它已经在。
+  `ctx.onScan` 在界面变化后再找，而不是假设它已经在。
 - 不要读取或外发用户的密钥、配置、会话内容，除非用户明确要求且清楚后果。不要请求任意网络地址，除非这就是用户要的功能。
 
 ## 示例：图标栏番茄钟

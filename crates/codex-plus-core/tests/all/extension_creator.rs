@@ -579,3 +579,46 @@ fn package_instances_are_validated_and_reach_the_page() {
     let bundle = creator.manager.build_initial_bundle().unwrap();
     assert!(bundle.contains(r#""instances":[{"config":{"label":"工作区"},"id":"work","name":"工作"},{"config":{},"id":"home","name":"home"}]"#), "页面清单带上实例");
 }
+
+#[tokio::test]
+async fn write_passes_manager_panel_and_replaces_into_the_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let creator = creator(&temp);
+    let (error, written) = call(
+        &creator,
+        "codexpp_extension_write",
+        json!({
+            "id": "my-usage", "name": "我的用量",
+            "renderer": "renderer.js",
+            "replaces": ["usage-statusline"],
+            "manager": {"page": "manager.html", "title": "用量面板"},
+            "files": [
+                {"path": "renderer.js", "content": "codexPlus.extension((ctx) => {});"},
+                {"path": "manager.html", "content": "<p>面板</p>"}
+            ]
+        }),
+    )
+    .await;
+    assert!(!error, "{written}");
+    assert!(written["written"]["manifestError"].is_null(), "{written}");
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("user/my-usage/codexpp.json")).unwrap()).unwrap();
+    assert_eq!(manifest["replaces"], json!(["usage-statusline"]), "顶替内置拓展的声明写进清单");
+    assert_eq!(manifest["manager"], json!({"page": "manager.html", "title": "用量面板"}), "管理器面板的声明写进清单");
+    let (title, html) = creator.manager.extension_manager_page("user:my-usage").unwrap();
+    assert_eq!((title.as_str(), html.as_str()), ("用量面板", "<p>面板</p>"));
+}
+
+#[tokio::test]
+async fn guide_covers_the_public_extension_surface() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_, guide) = call(&creator(&temp), "codexpp_extension_guide", json!({})).await;
+    let guide = guide["guide"].as_str().unwrap();
+    // 写入工具的参数说明里引用到的指南小节，指南里都要有。
+    for section in ["## 管理器面板", "## 顶替 Codex++ 内置功能", "## 关掉 Codex++ 网关的内置环节"] {
+        assert!(guide.contains(section), "指南缺少「{section}」");
+    }
+    for api in ["ctx.onScan", "settings/changed", "placement: \"inline\"", "window.codexPlusManager", "builtin:key-cooldown"] {
+        assert!(guide.contains(api), "指南没写 {api}");
+    }
+    assert!(!guide.contains('\u{fffd}'), "指南里有乱码");
+}

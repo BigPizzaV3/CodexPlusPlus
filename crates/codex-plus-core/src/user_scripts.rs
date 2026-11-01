@@ -895,7 +895,7 @@ impl UserScriptManager {
             manifest["providers"] = providers.clone();
         }
         for (key, item) in &write.extra {
-            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources") {
+            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources" | "manager" | "replaces") {
                 manifest[key.as_str()] = item.clone();
             }
         }
