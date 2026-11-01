@@ -81,7 +81,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
   for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
-    "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "GripVertical"]) context[name] = name;
+    "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "GripVertical"]) context[name] = name;
   vm.createContext(context);
   vm.runInContext(code, context);
   const collect = (node: any, result: Element[]) => {
@@ -103,6 +103,13 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     return result;
   };
   const group = (key: string) => find((node) => node.type === "SortableSkillGroup" && node.props.group.key === key);
+  const groupHead = (key: string) => {
+    const children: Element[] = [];
+    collect(group(key).children[0]("handle"), children);
+    const button = children.find((node) => node.type === "button" && node.props.className === "mg-group-head");
+    assert.ok(button);
+    return button;
+  };
   const groupButton = (key: string, text: string) => {
     const children: Element[] = [];
     collect(group(key).children[0]("handle"), children);
@@ -128,13 +135,6 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     collect(row, result);
     return result;
   };
-  const groupHead = (key: string) => {
-    const children: Element[] = [];
-    collect(group(key).children[0]("handle"), children);
-    const head = children.find((node) => node.props?.className === "mg-group-head");
-    assert.ok(head);
-    return head;
-  };
   const sort = () => find((node) => node.type === "button" && String(node.props["aria-label"] || "").startsWith("按名称排序"));
   const order = () => elements.filter((node) => node.type === "SortableSkillGroup").map((node) => node.props.group.key);
   const selectTab = (name: string) => { find((node) => node.type === "button" && node.children.includes(name)).props.onClick(); render(); };
@@ -156,14 +156,14 @@ test("installed groups default closed and preserve interactions as new groups lo
   ui.prompts.push("Renamed");
   await ui.groupButton("custom:Manual", "重命名").props.onClick(); ui.render();
   assert.equal(ui.groupHead("custom:Renamed").props["aria-expanded"], true);
-  ui.find((node) => node.type === "Button" && node.children.includes("全部展开")).props.onClick(); ui.render();
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "全部展开").props.onClick(); ui.render();
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
   ui.server.skills.push(skill("later", "later/repo@main"));
   ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
   await tick(); ui.render();
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
   assert.equal(ui.groupHead("repo:later/repo").props["aria-expanded"], false);
-  ui.find((node) => node.type === "Button" && node.children.includes("全部折叠")).props.onClick(); ui.render();
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "全部折叠").props.onClick(); ui.render();
   assert.equal(ui.groupHead("custom:Renamed").props["aria-expanded"], false);
   ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
@@ -186,7 +186,7 @@ test("collapsing search results preserves hidden groups' open and closed states"
   assert.equal(ui.groupHead("repo:z/repo").props["aria-expanded"], false);
   ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
   assert.deepEqual(ui.order(), ["repo:a/repo", "repo:b/repo"]);
-  ui.find((node) => node.type === "Button" && node.children.includes("全部折叠")).props.onClick(); ui.render();
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "全部折叠").props.onClick(); ui.render();
   ui.find((node) => node.type === "SearchField").props.onChange(""); ui.render();
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
   assert.equal(ui.groupHead("repo:b/repo").props["aria-expanded"], false);
@@ -224,6 +224,21 @@ test("collapsed installed groups support per-agent batch enable and disable", as
     ["codex", "alpha", false], ["codex", "beta", false],
   ]);
   ui.unmount();
+});
+
+test("group toolbar icons retain accessible labels and fold or expand groups", async () => {
+  const ui = createHarness();
+  ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
+  const control = (label: string) => ui.find((node) => node.type === "button" && node.props["aria-label"] === label);
+  for (const [label, icon] of [["新建分组", "FolderPlus"], ["全部折叠", "ChevronsUp"], ["全部展开", "ChevronsDown"]]) {
+    const button = control(label);
+    assert.equal(button.props.title, label);
+    assert.equal(button.children[0].type, icon);
+  }
+  control("全部折叠").props.onClick(); ui.render();
+  for (const key of ui.order()) assert.equal(ui.groupHead(key).props["aria-expanded"], false);
+  control("全部展开").props.onClick(); ui.render();
+  for (const key of ui.order()) assert.equal(ui.groupHead(key).props["aria-expanded"], true);
 });
 
 test("batch selection queues other writes and summarizes a large set of failures", async () => {
@@ -479,7 +494,7 @@ test("empty custom groups show immediately in both tabs and survive reload", asy
   ui.render(); await tick(); ui.render();
   assert.ok(ui.order().includes("custom:Empty"));
   ui.prompts.push("New");
-  await ui.find((node) => node.type === "Button" && node.children.includes("新建分组")).props.onClick();
+  await ui.find((node) => node.type === "button" && node.props["aria-label"] === "新建分组").props.onClick();
   ui.render();
   assert.ok(ui.order().includes("custom:New"));
   assert.deepEqual(ui.savedState().future, { keep: true });
@@ -534,7 +549,7 @@ test("an active name direction also sorts groups created after restoring it", as
   const ui = createHarness(JSON.stringify({ names: ["middle"], assignments: {}, sortDirection: "desc" }));
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
   ui.prompts.push("zzzz");
-  await ui.find((node) => node.type === "Button" && node.children.includes("新建分组")).props.onClick();
+  await ui.find((node) => node.type === "button" && node.props["aria-label"] === "新建分组").props.onClick();
   ui.render();
   assert.deepEqual(ui.order().slice(0, 3), ["builtin", "user", "custom:zzzz"]);
   assert.equal(ui.savedState().sortDirection, "desc");
