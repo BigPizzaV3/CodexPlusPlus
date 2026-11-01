@@ -2924,7 +2924,7 @@ export const EN_PLAIN: Record<string, string> = {
   "选择 dsh 插件包目录（含 package.json）": "Choose a dsh plugin package directory (with package.json)",
   "导入 dsh（deepseek-harness）插件：工具插件经 Codex++ 托管的 MCP 在 Codex 里调用，skill 导入 Codex Skills，MCP 配置可一键复制导入；系统提示词与工具前后、回合前后的事件经自动生成的配套拓展转成网关 instructions 与 Codex 钩子。依赖 dsh agent 循环、会话或模型服务的插件无法在 Codex 里运行，会逐项说明原因。": "Import dsh (deepseek-harness) plugins: tool plugins run in Codex through an MCP server managed by Codex++, skills go into Codex Skills, and MCP configs can be copied and imported; system prompts and tool/turn events become gateway instructions and Codex hooks through a generated companion extension. Plugins that need the dsh agent loop, sessions or model services cannot run in Codex; the reason is shown for each one.",
   "插件来源": "Plugin source",
-  "npm 包名（如 @scope/dsh-tool-x）、git 地址（可加 #分支&path:子目录）或本地目录绝对路径": "npm package (e.g. @scope/dsh-tool-x), git URL (optionally #branch&path:subdir) or absolute local directory",
+  "npm 包名（如 @scope/dsh-tool-x，可加 #registry:地址）、git 地址（可加 #分支&path:子目录）或本地目录绝对路径": "npm package (e.g. @scope/dsh-tool-x, optionally #registry:URL), git URL (optionally #branch&path:subdir) or absolute local directory",
   "本地目录": "Local directory",
   "没有找到 Node 运行时：请安装 Codex App（自带 Node）或 Node.js 后再导入。": "No Node runtime found: install the Codex app (ships with Node) or Node.js, then import again.",
   "未找到 npm：只能导入本地目录，或不需要额外依赖的 git 仓库。": "npm not found: you can only import local directories, or git repositories without extra dependencies.",

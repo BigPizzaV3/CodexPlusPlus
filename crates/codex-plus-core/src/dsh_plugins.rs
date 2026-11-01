@@ -152,8 +152,13 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
 pub enum PluginSource {
     /// 本地目录，原地链接（同 dsh 的 `link:`），不复制。
     Local { path: String },
-    /// npm 包 spec，如 `@scope/name@1.2.3`。
-    Npm { spec: String },
+    /// npm 包 spec，如 `@scope/name@1.2.3`；`registry` 是自定义 npm registry（同 dsh 市场索引的
+    /// `source.registry`），下载包与安装依赖都用它。
+    Npm {
+        spec: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        registry: Option<String>,
+    },
     /// git 仓库，可指定分支/标签与包所在子目录。
     Git {
         url: String,
@@ -223,9 +228,10 @@ pub struct MarketEntry {
     pub title: String,
     pub description: String,
     pub version: String,
-    /// 交给 [`parse_source`] 的字符串：npm 是 `name@version`，git 是 `url#commit&path:子目录`。
+    /// 交给 [`parse_source`] 的字符串：npm 是 `name@version`（自定义 registry 时加 `#registry:<地址>`），
+    /// git 是 `url#commit&path:子目录`。
     pub source: String,
-    /// 来源里 Codex++ 不支持、被忽略的部分（如自定义 npm registry）。
+    /// 来源里 Codex++ 不支持、被忽略的部分；目前都支持，留作兼容（总是 `None`）。
     pub note: Option<String>,
 }
 
@@ -246,8 +252,12 @@ pub fn parse_market_index(index: &Value) -> anyhow::Result<Vec<MarketEntry>> {
             Some("npm") => {
                 let package = source.get("name").and_then(Value::as_str).unwrap_or(&name);
                 let spec = if version.is_empty() { package.to_string() } else { format!("{package}@{version}") };
-                let note = source.get("registry").and_then(Value::as_str).map(|registry| format!("索引指定了 npm registry {registry}，Codex++ 用本机 npm 的默认 registry"));
-                (spec, note)
+                // 自定义 registry 随来源字符串带上，导入时 npm pack / install 都用它。
+                let spec = match source.get("registry").and_then(Value::as_str).map(str::trim).filter(|registry| !registry.is_empty()) {
+                    Some(registry) => format!("{spec}#registry:{registry}"),
+                    None => spec,
+                };
+                (spec, None)
             }
             Some("git") => {
                 let url = text(source, "url");
@@ -362,13 +372,29 @@ pub fn parse_source(input: &str) -> anyhow::Result<PluginSource> {
             path,
         });
     }
+    // npm 包可在 `#registry:<地址>` 里指定自定义 registry（同 dsh 市场索引的 source.registry）。
+    let (spec, registry) = match text.split_once("#registry:") {
+        Some((spec, registry)) => (spec.trim(), Some(validate_registry(registry)?)),
+        None => (text, None),
+    };
     let allowed = |c: char| c.is_ascii_alphanumeric() || "@/._~^<>=*|+-".contains(c);
-    if text.starts_with('-') || text.starts_with('.') || !text.chars().all(allowed) {
+    if spec.is_empty() || spec.starts_with('-') || spec.starts_with('.') || !spec.chars().all(allowed) {
         bail!("无法识别的来源：npm 包名只能包含字母、数字与 @/._-，本地目录请用绝对路径");
     }
     Ok(PluginSource::Npm {
-        spec: text.to_string(),
+        spec: spec.to_string(),
+        registry,
     })
+}
+
+/// 自定义 npm registry 只认 http(s) 地址（作为 `--registry` 的值交给 npm，不能是别的选项）。
+fn validate_registry(raw: &str) -> anyhow::Result<String> {
+    let text = raw.trim();
+    let url = reqwest::Url::parse(text).map_err(|_| anyhow::anyhow!("npm registry 必须是 http(s) 地址"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() || text.chars().any(char::is_whitespace) {
+        bail!("npm registry 必须是 http(s) 地址");
+    }
+    Ok(text.to_string())
 }
 
 fn validate_relative_subdir(sub: &str) -> anyhow::Result<String> {
@@ -724,7 +750,7 @@ impl DshPlugins {
                 }
                 (directory, false)
             }
-            PluginSource::Npm { spec } => (fetch_npm(spec, toolchain, staging)?, true),
+            PluginSource::Npm { spec, registry } => (fetch_npm(spec, registry.as_deref(), toolchain, staging)?, true),
             PluginSource::Git {
                 url,
                 reference,
@@ -749,7 +775,11 @@ impl DshPlugins {
         let id = id_override.map(str::to_string).unwrap_or_else(|| plugin_id_from_name(&name));
         validate_plugin_id(&id)?;
         if managed && needs_dependency_install(&package) {
-            install_dependencies(&fetched, toolchain)?;
+            let registry = match source {
+                PluginSource::Npm { registry, .. } => registry.as_deref(),
+                _ => None,
+            };
+            install_dependencies(&fetched, registry, toolchain)?;
         }
         let mut registry = self.load()?;
         let previous = registry.plugins.iter().position(|plugin| plugin.id == id);
@@ -953,8 +983,8 @@ fn npm_command(toolchain: &Toolchain, directory: &Path) -> anyhow::Result<Comman
     Ok(command)
 }
 
-/// `npm pack` 只下载 tarball，不执行任何脚本；随后用 tar 解包。
-fn fetch_npm(spec: &str, toolchain: &Toolchain, staging: &Path) -> anyhow::Result<PathBuf> {
+/// `npm pack` 只下载 tarball，不执行任何脚本；随后用 tar 解包。`registry` 是自定义 npm registry。
+fn fetch_npm(spec: &str, registry: Option<&str>, toolchain: &Toolchain, staging: &Path) -> anyhow::Result<PathBuf> {
     let download = staging.join("download");
     std::fs::create_dir_all(&download)?;
     let mut command = npm_command(toolchain, &download)?;
@@ -964,6 +994,9 @@ fn fetch_npm(spec: &str, toolchain: &Toolchain, staging: &Path) -> anyhow::Resul
         .arg("--json")
         .arg("--pack-destination")
         .arg(&download);
+    if let Some(registry) = registry {
+        command.arg("--registry").arg(registry);
+    }
     let output = run_with_timeout(command, FETCH_TIMEOUT, &format!("下载 npm 包 {spec}"))?;
     let listing: Value = serde_json::from_slice(&output.stdout)
         .ok()
@@ -1093,7 +1126,8 @@ fn copy_dir_filtered(from: &Path, to: &Path) -> anyhow::Result<()> {
 }
 
 /// 安装包的 `dependencies`：peer（dsh 宿主包）不装，交给兼容宿主；不执行安装脚本。
-fn install_dependencies(directory: &Path, toolchain: &Toolchain) -> anyhow::Result<()> {
+/// 包来自自定义 registry 时依赖也从它装（同 dsh 安装组合包时整次安装用同一个 registry）。
+fn install_dependencies(directory: &Path, registry: Option<&str>, toolchain: &Toolchain) -> anyhow::Result<()> {
     let mut command = npm_command(toolchain, directory)?;
     command.args([
         "install",
@@ -1105,6 +1139,9 @@ fn install_dependencies(directory: &Path, toolchain: &Toolchain) -> anyhow::Resu
         "--no-fund",
         "--no-package-lock",
     ]);
+    if let Some(registry) = registry {
+        command.arg("--registry").arg(registry);
+    }
     run_with_timeout(command, INSTALL_TIMEOUT, "安装插件依赖").map(|_| ())
 }
 

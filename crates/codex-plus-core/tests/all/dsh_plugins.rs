@@ -87,9 +87,20 @@ fn dsh_parse_source_recognizes_local_npm_and_git() {
     assert_eq!(
         dsh_plugins::parse_source(" @deepseek-ai/dsh-tool-todo@0.2.0 ").unwrap(),
         PluginSource::Npm {
-            spec: "@deepseek-ai/dsh-tool-todo@0.2.0".to_string()
+            spec: "@deepseek-ai/dsh-tool-todo@0.2.0".to_string(),
+            registry: None,
         }
     );
+    // 自定义 registry：`#registry:<http(s) 地址>`；别的写法拒绝，不能借它注入 npm 选项。
+    assert_eq!(
+        dsh_plugins::parse_source("@acme/dsh-x@1.0.0#registry:https://npm.acme.dev/").unwrap(),
+        PluginSource::Npm {
+            spec: "@acme/dsh-x@1.0.0".to_string(),
+            registry: Some("https://npm.acme.dev/".to_string()),
+        }
+    );
+    assert!(dsh_plugins::parse_source("dsh-x#registry:--userconfig=/tmp/x").is_err());
+    assert!(dsh_plugins::parse_source("dsh-x#registry:file:///etc").is_err());
     assert_eq!(
         dsh_plugins::parse_source("git+https://github.com/acme/tools.git#v1&path:packages/greet")
             .unwrap(),
@@ -1291,9 +1302,14 @@ fn dsh_market_index_entries_become_import_sources() {
         ]
     })).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].source, "@scope/dsh-tool-a@0.2.0");
+    // 自定义 registry 随来源带上，导入时用它。
+    assert_eq!(entries[0].source, "@scope/dsh-tool-a@0.2.0#registry:https://npm.example.com");
     assert_eq!(entries[0].title, "工具 A");
-    assert!(entries[0].note.as_deref().unwrap().contains("npm.example.com"));
+    assert_eq!(entries[0].note, None);
+    assert_eq!(
+        dsh_plugins::parse_source(&entries[0].source).unwrap(),
+        PluginSource::Npm { spec: "@scope/dsh-tool-a@0.2.0".to_string(), registry: Some("https://npm.example.com".to_string()) }
+    );
     assert_eq!(entries[1].source, "https://github.com/x/y.git#abc123&path:packages/b");
     assert!(matches!(dsh_plugins::parse_source(&entries[1].source).unwrap(), PluginSource::Git { reference: Some(ref commit), path: Some(ref path), .. } if commit == "abc123" && path == "packages/b"));
     assert!(dsh_plugins::parse_market_index(&json!({ "format": 2, "plugins": [] })).is_err());
@@ -1433,4 +1449,44 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
 
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+/// 自定义 npm registry：`npm pack` 与依赖安装都带上 `--registry`（假的 npm 记下参数并造出 tarball）。
+#[cfg(unix)]
+#[test]
+fn dsh_npm_import_uses_custom_registry_for_pack_and_install() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(mut toolchain) = toolchain() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("src/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("package.json"), r#"{"name":"dsh-reg-demo","version":"1.0.0","type":"module","main":"index.js","dependencies":{"left-pad":"1.3.0"},"peerDependencies":{"@deepseek-ai/dsh-tools":"*"}}"#).unwrap();
+    std::fs::write(package.join("index.js"), "import { defineTool } from '@deepseek-ai/dsh-tools'\nexport const name = 'reg'\nexport const inject = ['tools']\nexport function apply(ctx) {\n  ctx.tools.register(defineTool({ name: 'reg_ping', description: 'ping', parameters: {}, output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] }, async execute() { return 'pong' } }))\n}\n").unwrap();
+    let log = temp.path().join("npm-args.log");
+    let fake = temp.path().join("npm");
+    std::fs::write(&fake, format!(
+        "#!{}\nconst {{ appendFileSync, mkdirSync }} = require('fs')\nconst {{ execFileSync }} = require('child_process')\nconst args = process.argv.slice(2)\nappendFileSync({}, JSON.stringify(args) + '\\n')\nif (args[0] === 'pack') {{\n  const dest = args[args.indexOf('--pack-destination') + 1]\n  execFileSync('tar', ['-czf', dest + '/dsh-reg-demo-1.0.0.tgz', '-C', {}, 'package'])\n  process.stdout.write(JSON.stringify([{{ filename: 'dsh-reg-demo-1.0.0.tgz' }}]))\n}} else {{\n  mkdirSync('node_modules/left-pad', {{ recursive: true }})\n}}\n",
+        toolchain.node.as_ref().unwrap().display(),
+        json!(log.to_string_lossy()),
+        json!(temp.path().join("src").to_string_lossy()),
+    )).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    toolchain.npm = Some(fake);
+
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let source = dsh_plugins::parse_source("dsh-reg-demo@1.0.0#registry:https://npm.acme.dev/").unwrap();
+    let record = plugins.import(&source, &toolchain).unwrap();
+    assert_eq!(row(&record.report, "dsh-reg-demo")["tools"][0]["name"], "reg_ping", "{}", record.report);
+    let calls: Vec<Vec<String>> = std::fs::read_to_string(&log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[0][0], "pack");
+    assert_eq!(calls[1][0], "install");
+    for call in &calls {
+        let at = call.iter().position(|arg| arg == "--registry").unwrap_or_else(|| panic!("缺少 --registry：{call:?}"));
+        assert_eq!(call[at + 1], "https://npm.acme.dev/");
+    }
+    // 注册表里记着 registry，重新导入 / 更新时沿用。
+    let saved = plugins.load().unwrap();
+    assert!(matches!(&saved.plugins[0].source, PluginSource::Npm { registry: Some(registry), .. } if registry == "https://npm.acme.dev/"));
 }
