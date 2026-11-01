@@ -45,7 +45,8 @@ const AGENT_PET_SETTINGS_HTML: &str = include_str!("../../../assets/extensions/a
 const AGENT_PET_SETTINGS_PLACEHOLDER: &str = "/*__AGENT_PET_SETTINGS_SCRIPTS__*/";
 /// 大肥鱼的上游引擎（原样保留，许可见 `assets/inject/upstream/whale-widget/PROVENANCE.md`）。
 const WHALE_ENGINE: &str = include_str!("../../../assets/inject/upstream/whale-widget/full-widget-codex.js");
-const AGENT_PET_SOUNDS: &[(&str, &[u8])] = &[
+const AGENT_PET_ASSETS: &[(&str, &[u8])] = &[
+    ("assets/icon.svg", include_bytes!("../../../assets/extensions/agent-pet/assets/icon.svg")),
     ("assets/sounds/Ya1.mp3", include_bytes!("../../../assets/inject/agent-pet/sounds/Ya1.mp3")),
     ("assets/sounds/Ya2.mp3", include_bytes!("../../../assets/inject/agent-pet/sounds/Ya2.mp3")),
     ("assets/sounds/D1.mp3", include_bytes!("../../../assets/inject/agent-pet/sounds/D1.mp3")),
@@ -77,7 +78,7 @@ pub fn agent_pet_files() -> Vec<(&'static str, Vec<u8>)> {
         ("main.js", AGENT_PET_MAIN.as_bytes().to_vec()),
         ("README.md", AGENT_PET_README.as_bytes().to_vec()),
     ];
-    files.extend(AGENT_PET_SOUNDS.iter().map(|(path, bytes)| (*path, bytes.to_vec())));
+    files.extend(AGENT_PET_ASSETS.iter().map(|(path, bytes)| (*path, bytes.to_vec())));
     files
 }
 

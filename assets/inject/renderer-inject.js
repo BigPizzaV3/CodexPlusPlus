@@ -5404,7 +5404,7 @@
       const marketItem = codexPlusExtensionMarketItem(entry);
       return `
         <button type="button" class="codex-plus-page-nav-item codex-plus-extensions-nav-entry" data-codex-extensions-select="installed:${escapeHtml(entry.key)}" data-active="${String(selected)}" title="${escapeHtml(entry.name)}" aria-label="${escapeHtml(entry.name)}">
-          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon)}</span>
+          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon || entry.script?.package?.icon)}</span>
           <span class="codex-plus-page-nav-item-text"><span class="codex-plus-page-nav-item-name">${escapeHtml(entry.name)}</span></span>
           <span class="codex-plus-page-nav-item-state" data-state="${entry.enabled ? "on" : "off"}" title="${entry.enabled ? "已启用" : "已禁用"}"></span>
         </button>
@@ -5438,7 +5438,7 @@
       return `
         <article class="codex-plus-extension-card">
           <button type="button" class="codex-plus-extension-card-select" data-codex-extensions-select="${select}" aria-label="查看 ${escapeHtml(entry.name)}">
-            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(item?.icon)}</span>
+            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(item?.icon || entry.script?.package?.icon)}</span>
             <span class="codex-plus-extension-card-copy">
               <span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>
               <span class="codex-plus-extension-card-description">${escapeHtml(description)}</span>
@@ -5514,7 +5514,8 @@
   }
 
   /**
-   * 条目图标：市场清单给了 `icon` 就用它，否则回退 VSCode 的默认扩展字形。
+   * 条目图标：市场清单的 `icon`，或拓展包清单 codexpp.json 的 `icon`（后台已换成 data URL / https 地址）；
+   * 都没有就回退 VSCode 的默认扩展字形。
    *
    * 回退是必须的——清单里的老条目没有这个字段，而且 icon 指的是外链，
    * 加载失败时若不兜底就会留一块空白。失败替换交给委托监听（见 handleExtensionIconError），
@@ -5602,7 +5603,7 @@
     return `
       <button type="button" class="codex-plus-extensions-back" data-codex-extensions-browse="${codexPlusExtensionsFilter}" aria-label="返回拓展列表">${codexPlusDiscoveryIcons.back}<span>返回拓展列表</span></button>
       <div class="codex-plus-extensions-detail-head">
-        <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon)}</div>
+        <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon || local?.package?.icon)}</div>
         <div class="codex-plus-extensions-detail-heading">
           <div class="codex-plus-extensions-detail-title">${escapeHtml(name)}</div>
           ${publisherLine ? `<div class="codex-plus-extensions-detail-meta">${publisherLine}</div>` : ""}

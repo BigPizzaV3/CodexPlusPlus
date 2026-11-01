@@ -1458,6 +1458,8 @@ struct ExtensionPackage {
     name: Option<String>,
     version: String,
     description: String,
+    /// 图标（codexpp.json 的 `icon`）：包内 `assets/` 下的图片，或 https 地址。见 [`ExtensionPackage::icon_url`]。
+    icon: Option<String>,
     engine: u64,
     routes: Vec<String>,
     renderer: Vec<PathBuf>,
@@ -1933,11 +1935,27 @@ pub const EXTENSION_HOOK_EVENTS: &[&str] = &[
 pub const EXTENSION_HOOK_MAX_TIMEOUT_SECS: u64 = 100;
 
 impl ExtensionPackage {
+    /// 页面能直接用的图标地址：https 地址原样给；包内路径（写不写 `assets/` 前缀都认）换成 `assets/` 里那张图的 data URL。
+    /// 找不到、不是图片、超出资源大小上限都当没有图标，界面回退默认字形。
+    fn icon_url(&self) -> Option<String> {
+        let icon = self.icon.as_deref()?;
+        if icon.starts_with("https://") {
+            return Some(icon.to_string());
+        }
+        let normalized = icon.trim_start_matches("./");
+        let normalized = normalized.strip_prefix("assets/").unwrap_or(normalized);
+        self.assets
+            .get(&format!("assets/{normalized}"))
+            .filter(|url| url.starts_with("data:image/"))
+            .cloned()
+    }
+
     fn summary(&self) -> Value {
         json!({
             "id": self.id,
             "version": self.version,
             "description": self.description,
+            "icon": self.icon_url(),
             "engine": self.engine,
             "routes": self.routes,
             "renderer": self.renderer.len(),
@@ -2214,6 +2232,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         name: None,
         version: String::new(),
         description: String::new(),
+        icon: None,
         engine: EXTENSION_API_VERSION,
         routes: Vec::new(),
         renderer: Vec::new(),
@@ -2391,6 +2410,7 @@ fn parse_extension_manifest(
     package.name = string_field(&raw, "name");
     package.version = string_field(&raw, "version").unwrap_or_default();
     package.description = string_field(&raw, "description").unwrap_or_default();
+    package.icon = string_field(&raw, "icon").map(|icon| icon.trim().to_string()).filter(|icon| !icon.is_empty());
     package.id = string_field(&raw, "id").unwrap_or_default();
     if package.id.is_empty()
         || !package

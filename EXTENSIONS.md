@@ -1129,6 +1129,7 @@ user_scripts/
 | --- | --- |
 | `id` | 必填，只能包含字母、数字、`-`、`_` |
 | `name` / `version` / `description` | 管理页展示用 |
+| `icon` | 图标：包内 `assets/` 下的图片（png / jpg / gif / webp / svg / ico / avif，如 `"assets/icon.svg"`），或 https 地址。显示在 Codex「拓展」页面的侧栏、列表和详情头部；找不到或不是图片时用默认图标 |
 | `engines.codexpp` | 整数：需要的 `apiVersion`；字符串：对 Codex++ 版本的 semver 范围（如 `"^2.1"`、`">=2.1.0 <3"`、`"2.x"`、`"1.0 - 2.5"`、`"^1 \|\| ^2"`）。不满足时不加载并在管理页显示原因 |
 | `renderer` | 字符串或数组，必须是包内相对路径；按顺序拼进同一个作用域执行。只声明 `hooks` 的拓展可以省略 |
 | `hooks` | Codex 钩子声明，见上文「Codex 钩子」 |

@@ -1,4 +1,4 @@
-//! 拓展的 README（Codex「拓展」详情页的「细节」页签）：找文件、中文优先、截断、正文引用到的包内资源。
+//! 拓展的 README（Codex「拓展」详情页的「细节」页签）：找文件、中文优先、截断、正文引用到的包内资源；以及清单里的图标。
 
 use codex_plus_core::bundled_extensions::{AGENT_PET_KEY, materialize};
 use codex_plus_core::user_scripts::UserScriptManager;
@@ -86,4 +86,39 @@ fn bundled_agent_pet_ships_a_readme() {
     assert_eq!(script(&manager, AGENT_PET_KEY)["package"]["readme"], true);
     let readme = manager.extension_readme(AGENT_PET_KEY).unwrap();
     assert!(readme["markdown"].as_str().unwrap().starts_with("# Agent 桌宠"));
+}
+
+#[test]
+fn package_icon_resolves_to_an_asset_data_url_or_https_and_ignores_the_rest() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let icon = |id: &str, value: Value, files: &[(&str, &[u8])]| {
+        let dir = temp.path().join("user").join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("codexpp.json"), json!({"id": id, "renderer": "main.js", "icon": value}).to_string()).unwrap();
+        fs::write(dir.join("main.js"), "").unwrap();
+        for (name, content) in files {
+            let path = dir.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        script(&manager, &format!("user:{id}"))["package"]["icon"].clone()
+    };
+    let svg: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#;
+    assert!(icon("a", json!("assets/icon.svg"), &[("assets/icon.svg", svg)]).as_str().unwrap().starts_with("data:image/svg+xml;base64,"));
+    assert!(icon("b", json!("./icon.svg"), &[("assets/icon.svg", svg)]).as_str().unwrap().starts_with("data:image/svg+xml;base64,"), "不写 assets/ 前缀也认");
+    assert_eq!(icon("c", json!("https://cdn.test/i.png"), &[]), "https://cdn.test/i.png");
+    assert_eq!(icon("d", json!("http://cdn.test/i.png"), &[]), Value::Null, "只认 https");
+    assert_eq!(icon("e", json!("assets/missing.png"), &[]), Value::Null);
+    assert_eq!(icon("f", json!("assets/click.mp3"), &[("assets/click.mp3", b"ID3")]), Value::Null, "不是图片不当图标");
+    assert_eq!(icon("g", json!(""), &[]), Value::Null);
+}
+
+#[test]
+fn bundled_agent_pet_has_an_icon() {
+    let temp = tempfile::tempdir().unwrap();
+    materialize(&temp.path().join("bundled")).unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("user_scripts.json"))
+        .with_bundled_dir(temp.path().join("bundled"));
+    assert!(script(&manager, AGENT_PET_KEY)["package"]["icon"].as_str().unwrap().starts_with("data:image/svg+xml;base64,"));
 }

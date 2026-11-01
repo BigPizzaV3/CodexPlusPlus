@@ -263,3 +263,12 @@ test("单文件脚本和市场条目只有「细节」；切页签只改显隐�
   rt.resetCodexPlusExtensionsDetailTab();
   assert.equal(rt.tab(), "readme");
 });
+
+test("拓展包清单里的图标用在侧栏、卡片和详情头部，市场图标优先", () => {
+  const list = readFileSync(new URL("../../../assets/inject/renderer-inject/40-backend-settings.js", import.meta.url), "utf8");
+  assert.match(list, /codex-plus-page-nav-item-icon" aria-hidden="true">\$\{extensionIconMarkup\(marketItem\?\.icon \|\| entry\.script\?\.package\?\.icon\)\}/);
+  assert.match(list, /codex-plus-extension-card-icon" aria-hidden="true">\$\{extensionIconMarkup\(item\?\.icon \|\| entry\.script\?\.package\?\.icon\)\}/);
+  assert.match(list, /codex-plus-extensions-detail-icon" aria-hidden="true">\$\{extensionIconMarkup\(marketItem\?\.icon \|\| local\?\.package\?\.icon\)\}/);
+  const manifest = JSON.parse(readFileSync(new URL("../../../assets/extensions/agent-pet/codexpp.json", import.meta.url), "utf8"));
+  assert.equal(manifest.icon, "assets/icon.svg");
+});
