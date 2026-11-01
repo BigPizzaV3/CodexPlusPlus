@@ -1878,6 +1878,7 @@ export const EN_PLAIN: Record<string, string> = {
   "该组没有可启用的 Skill": "This group has no Skills to enable",
   "该组没有可停用的 Skill": "This group has no Skills to disable",
   "已批量{0} {1} 个 Skill": "Batch {0} {1} skill(s)",
+  "{0} 个 Skill 失败": "{0} skill(s) failed",
   "新建 Skill 分组": "Create Skill group",
   "重命名 Skill 分组": "Rename Skill group",
   "删除分组“{0}”？其中的 Skill 将回到来源分组。": "Delete group “{0}”? Its Skills will return to their source groups.",

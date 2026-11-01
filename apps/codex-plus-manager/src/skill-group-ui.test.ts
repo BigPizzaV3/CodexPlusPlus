@@ -4,10 +4,12 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
 type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean };
 type FixtureRepo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
+type FixtureServer = { status: string; message: string; skills: FixtureSkill[]; repos: FixtureRepo[]; repositorySkills: FixtureSkill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string };
 
 const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
 const file = ts.createSourceFile("ManagementExtra.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -21,14 +23,19 @@ const skill = (id: string, repoKey: string, bundled = false): FixtureSkill => ({
   installed: true, enabled: false, bundled, updateAvailable: false, agents: [], managed: true });
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function createHarness(saved = "{}") {
+function createHarness(saved = "{}", shared?: { server: FixtureServer; registry: SkillBatchRegistry }) {
   const slots: any[] = [];
   const effects: Array<() => void> = [];
+  const cleanups = new Map<number, () => void>();
   const storage = new Map([["codex-plus-plus.skill-groups.v1", saved]]);
   const prompts: Array<string | null> = [];
   const calls: string[] = [];
-  const server = { status: "ok", message: "ok", skills: [skill("builtin", "", true), skill("alpha", "a/repo@main"), skill("zeta", "z/repo@main")],
+  const requests: Array<{ command: string; args: Record<string, unknown> }> = [];
+  const notices: Array<{ title: string; message: string; status: string }> = [];
+  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any> } = {};
+  const server = shared?.server ?? { status: "ok", message: "ok", skills: [skill("builtin", "", true), skill("alpha", "a/repo@main"), skill("zeta", "z/repo@main")],
     repos: [] as FixtureRepo[], repositorySkills: [], repoCounts: {} as Record<string, number>, repoErrors: [], skillsDir: "", codexSkillsDir: "" };
+  const registry = shared?.registry ?? new SkillBatchRegistry();
   let cursor = 0;
   let elements: Element[] = [];
   const context: Record<string, any> = {
@@ -41,17 +48,26 @@ function createHarness(saved = "{}") {
     useEffect: (run: () => void, deps?: any[]) => {
       const index = cursor++;
       const previous = slots[index] as any[] | undefined;
-      if (!previous || !deps || deps.some((value, position) => !Object.is(value, previous[position]))) effects.push(run);
+      if (!previous || !deps || deps.some((value, position) => !Object.is(value, previous[position]))) effects.push(() => {
+        cleanups.get(index)?.();
+        const cleanup = run();
+        if (typeof cleanup === "function") cleanups.set(index, cleanup);
+        else cleanups.delete(index);
+      });
       slots[index] = deps;
     },
     useMemo: (run: () => any) => run(), useDeferredValue: (value: any) => value, startTransition: (run: () => void) => run(),
+    useRef: (value: any) => { const index = cursor++; return slots[index] ??= { current: value }; },
+    useSyncExternalStore: (_subscribe: any, snapshot: () => any) => { cursor++; return snapshot(); },
     useSensors: (...values: any[]) => values, useSensor: () => null, PointerSensor: "pointer", KeyboardSensor: "keyboard",
     sortableKeyboardCoordinates: null, closestCenter: null, verticalListSortingStrategy: null,
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
-    invoke: async (command: string) => {
+    invoke: async (command: string, args: Record<string, unknown> = {}) => {
       calls.push(command);
-      if (command !== "list_installed_skills" && command !== "refresh_skill_catalog") throw new Error(`Unexpected command: ${command}`);
-      return structuredClone(server);
+      requests.push({ command, args });
+      if (command === "list_installed_skills" || command === "refresh_skill_catalog") return structuredClone(server);
+      if (hooks.mutation) return hooks.mutation(command, args);
+      throw new Error(`Unexpected command: ${command}`);
     },
     ok: (result: { status: string }) => result.status === "ok", SKILL_GROUP_STORAGE_KEY: "codex-plus-plus.skill-groups.v1",
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
@@ -61,9 +77,10 @@ function createHarness(saved = "{}") {
     repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
     // 使用模式会隐藏部分 Agent 列；这里按全部 Agent 渲染。
     agentVisible: () => true, useAgentFocus: () => "all",
+    mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillBatchRegistry: registry,
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
-  for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "DndContext", "SortableContext",
+  for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
     "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "GripVertical"]) context[name] = name;
   vm.createContext(context);
   vm.runInContext(code, context);
@@ -77,7 +94,7 @@ function createHarness(saved = "{}") {
   };
   const render = () => {
     cursor = 0; elements = []; effects.length = 0;
-    collect(context.exports.SkillsPage({ notify: async () => {} }), elements);
+    collect(context.exports.SkillsPage({ notify: async (title: string, message: string, status: string) => { notices.push({ title, message, status }); } }), elements);
     effects.splice(0).forEach((run) => run());
   };
   const find = (predicate: (node: Element) => boolean) => {
@@ -93,6 +110,13 @@ function createHarness(saved = "{}") {
     assert.ok(button);
     return button;
   };
+  const groupSelect = (key: string, agent: string) => {
+    const children: Element[] = [];
+    collect(group(key).children[0]("handle"), children);
+    const select = children.find((node) => node.type === "GroupAgentSelect" && node.props.agent === agent);
+    assert.ok(select);
+    return select;
+  };
   const rowElements = (groupKey: string, repoKey: string, id: string) => {
     const children: Element[] = [];
     collect(group(groupKey).children[0]("handle"), children);
@@ -107,8 +131,84 @@ function createHarness(saved = "{}") {
   const selectTab = (name: string) => { find((node) => node.type === "button" && node.children.includes(name)).props.onClick(); render(); };
   const drag = (from: string, to: string) => { find((node) => node.type === "DndContext").props.onDragEnd({ active: { id: from }, over: { id: to } }); render(); };
   const savedState = () => JSON.parse(storage.get("codex-plus-plus.skill-groups.v1")!);
-  return { render, find, group, groupButton, rowElements, sort, order, selectTab, drag, savedState, prompts, storage, server, calls };
+  const unmount = () => { for (const cleanup of cleanups.values()) cleanup(); cleanups.clear(); };
+  return { render, unmount, find, group, groupButton, groupSelect, rowElements, sort, order, selectTab, drag, savedState, prompts, storage, server, registry, calls, requests, notices, hooks };
 }
+
+test("batch selection queues other writes and summarizes a large set of failures", async () => {
+  const ui = createHarness();
+  ui.server.skills = ["alpha", "beta", "gamma", "delta", "epsilon"].map((id) => skill(id, "a/repo@main"));
+  ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
+  let release!: () => void;
+  ui.hooks.mutation = async (command, args) => {
+    if (command === "import_ccs_skills") return structuredClone(ui.server);
+    assert.equal(command, "set_skill_enabled_for");
+    if (args.id === "alpha") {
+      await new Promise<void>((resolve) => { release = resolve; });
+      const item = ui.server.skills.find((entry) => entry.id === "alpha")!;
+      item.enabled = true;
+      item.agents = ["codex"];
+      return structuredClone(ui.server);
+    }
+    if (args.id === "gamma") throw new Error("gamma failed");
+    return { ...structuredClone(ui.server), status: "error", message: `${args.id} failed ${"x".repeat(300)}` };
+  };
+  ui.groupSelect("repo:a/repo", "codex").props.onChange(true);
+  await tick(); ui.render();
+  assert.equal(ui.groupSelect("repo:a/repo", "codex").props.busy, true);
+  assert.equal(ui.groupSelect("repo:a/repo", "claude").props.busy, false);
+  const importButton = ui.find((node) => node.type === "Button" && node.children.includes("从 cc-switch 导入"));
+  assert.notEqual(importButton.props.disabled, true);
+  importButton.props.onClick();
+  await tick();
+  assert.equal(ui.requests.some((request) => request.command === "import_ccs_skills"), false);
+  release();
+  for (let i = 0; i < 20 && !ui.notices.some((notice) => notice.status === "failed"); i++) await tick();
+  const mutations = ui.requests.filter((request) => request.command === "set_skill_enabled_for" || request.command === "import_ccs_skills");
+  assert.equal(mutations[0].args.id, "alpha");
+  assert.equal(mutations[1].command, "import_ccs_skills");
+  assert.deepEqual(mutations.filter((request) => request.command === "set_skill_enabled_for").map((request) => request.args.id),
+    ["alpha", "beta", "gamma", "delta", "epsilon"]);
+  const failure = ui.notices.find((notice) => notice.status === "failed");
+  assert.ok(failure);
+  assert.match(failure.message, /已批量启用 1 个 Skill；4 个 Skill 失败/);
+  assert.match(failure.message, /beta.*gamma.*delta/);
+  assert.doesNotMatch(failure.message, /epsilon/);
+  assert.ok(failure.message.length < 800);
+});
+
+test("filtered batch survives page remount and changes only visible Skills", async () => {
+  const ui = createHarness();
+  ui.server.skills = [skill("alpha", "a/repo@main"), skill("beta", "a/repo@main")];
+  ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
+  ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
+  let release!: () => void;
+  ui.hooks.mutation = async (command, args) => {
+    assert.equal(command, "set_skill_enabled_for");
+    assert.equal(args.id, "alpha");
+    await new Promise<void>((resolve) => { release = resolve; });
+    ui.server.skills[0].enabled = true;
+    ui.server.skills[0].agents = ["codex"];
+    return structuredClone(ui.server);
+  };
+  ui.groupSelect("repo:a/repo", "codex").props.onChange(true);
+  await tick();
+  ui.unmount();
+  const reopened = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"), { server: ui.server, registry: ui.registry });
+  reopened.render(); await tick(); reopened.render(); reopened.selectTab("已安装");
+  assert.equal(reopened.groupSelect("repo:a/repo", "codex").props.busy, true);
+  assert.equal(reopened.groupSelect("repo:a/repo", "claude").props.busy, false);
+  release();
+  for (let i = 0; i < 20 && ui.registry.getSnapshot().length; i++) await tick();
+  await tick(); reopened.render();
+  assert.equal(reopened.groupSelect("repo:a/repo", "codex").props.busy, false);
+  const alpha = reopened.rowElements("repo:a/repo", "a/repo@main", "alpha").find((node) => node.type === "MatrixCell" && node.props.agent === "codex");
+  const beta = reopened.rowElements("repo:a/repo", "a/repo@main", "beta").find((node) => node.type === "MatrixCell" && node.props.agent === "codex");
+  assert.equal(alpha?.props.enabled, true);
+  assert.equal(beta?.props.enabled, false);
+  assert.deepEqual(ui.requests.filter((request) => request.command === "set_skill_enabled_for").map((request) => request.args.id), ["alpha"]);
+  reopened.unmount();
+});
 
 test("shared IDs support independent choices while retaining legacy assignments and bundled protection", async () => {
   const ui = createHarness(JSON.stringify({ names: ["Manual", "Other"], assignments: { shared: "Manual" }, future: "keep" }));
