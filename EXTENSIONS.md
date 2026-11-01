@@ -851,7 +851,10 @@ codexPlus.extension((ctx) => {
 
 `dsh-plugin/` 是包内一个带 `package.json` 的目录（单个插件或 bundle 都行）。拓展启用时 Codex++ 把它作为 dsh 插件导入
 （id 为 `ext-<拓展 id>`）并生成配套拓展包，拓展停用时一起停用、删除时一起移除；插件目录或拓展版本变了会重新分析。
-支持情况见 `docs/plans/2026-10-30-dsh-plugin-import-design.md`。
+包里的 `Service` 子类插件会实例化并提供给同包插件 `inject`（支持行上的 `isolate` 与 `ctx.isolate`）；插件之间的自定义事件
+（`ctx.emit` / `serial` / `waterfall` …）跨包也能收到；包导出的 `./typert` 会自动登记，前端半边用 `ctx.remote.<namespace>.<method>()` 调；
+`ctx.webServer.registerUpgrade` 注册的 WebSocket 经 `/ext/dsh-<插件>/<路径>` 可用（只接受同源页面）。
+支持情况见 `docs/plans/2026-10-30-dsh-plugin-import-design.md`（第 14 节是最新一期）。
 
 ### 拓展间服务
 
