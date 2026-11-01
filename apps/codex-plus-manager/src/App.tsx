@@ -9027,7 +9027,21 @@ function BuiltinExtensionCardView({
   const selectOptions = item?.control === "select" ? (item.options ?? []).filter((option) => option.value !== (item.builtinOff ?? "off")) : [];
   return (
     <div className="builtin-card" data-builtin-id={card.id}>
-      {control}
+      {target ? (
+        // 「设置」做成开关卡内、开关左侧的齿轮，不再单占一行。
+        <div className="builtin-card-head has-settings">
+          {control}
+          <button
+            type="button"
+            className="builtin-card-settings"
+            title={t("设置")}
+            aria-label={tf("{0} 设置", [t(entry?.title ?? item?.title ?? card.id)])}
+            onClick={() => onOpenSettings(target)}
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        </div>
+      ) : control}
       {state?.replacedBy ? (
         <small className="builtin-card-note">{tf("已被 {0} 顶替", [state.replacedBy.replace(/^user:/, "")])}</small>
       ) : null}
@@ -9046,11 +9060,6 @@ function BuiltinExtensionCardView({
             <EnhancementSettingControl key={param.key} item={param} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
           ))}
         </div>
-      ) : null}
-      {target ? (
-        <button type="button" className="builtin-card-settings" onClick={() => onOpenSettings(target)}>
-          {t("设置")}
-        </button>
       ) : null}
     </div>
   );

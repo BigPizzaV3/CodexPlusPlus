@@ -3747,18 +3747,36 @@ details.relay-fold[open] > .relay-fold-body {
   font-size: 12px;
 }
 
+/* 有单独配置页的卡：齿轮叠在开关左侧，开关卡加宽列间距给它让位。 */
+.builtin-card-head {
+  position: relative;
+  min-width: 0;
+}
+
+.builtin-card-head.has-settings > .feature-toggle {
+  column-gap: 54px;
+}
+
 .builtin-card-settings {
-  justify-self: start;
+  position: absolute;
+  top: 50%;
+  right: 60px;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
   border: 0;
+  border-radius: 6px;
   background: none;
   cursor: pointer;
-  padding: 0 4px;
-  color: hsl(var(--primary));
-  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  transform: translateY(-50%);
 }
 
 .builtin-card-settings:hover {
-  text-decoration: underline;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
 }
 
 .feature-toggle strong,
