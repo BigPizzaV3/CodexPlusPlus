@@ -255,10 +255,16 @@ test("拓展卸下时桌宠撤掉，之后再同步也不挂回来", () => {
   assert.equal(f.body.children.length, 0);
 });
 
-test("管理器：Agent 桌宠是官方拓展，设置页从本地拓展那一行打开，不再单占侧栏入口；设置写进桌宠拓展的配置", () => {
+test("管理器：Agent 桌宠是官方拓展，完整设置界面在本地拓展那一行下面展开，不再单占侧栏入口；设置写进桌宠拓展的配置", () => {
   assert.doesNotMatch(app, /const toolNavigationRoutes: Route\[\] = \[[^\]]*"agentPet"/);
   assert.match(app, /const navParentRoute: Partial<Record<Route, Route>> = \{ agentPet: "userScripts" \}/);
-  assert.match(app, /onOpenSettings=\{script\.key === AGENT_PET_EXTENSION_KEY \? onOpenAgentPet : undefined\}/);
+  // 「设置」展开的是原来的桌宠界面（图库、滑块、音效、预览），不是通用配置表单。
+  assert.match(app, /renderSettings=\{script\.key === AGENT_PET_EXTENSION_KEY \? \(\) => <AgentPetExtensionScreen embedded inventory=\{inventory\} actions=\{actions\} \/> : undefined\}/);
+  assert.match(app, /configOpen && configSchema\.length && !renderSettings \? \(\s*<ExtensionConfigForm/);
+  // 嵌入时启停交给那一行的开关：不进保存快照，也不再调 setUserScriptEnabled。
+  assert.match(app, /enabled: embedded \? null : state\.pet\.enabled/);
+  assert.match(app, /configSaved && !embedded && previous\.enabled !== draft\.pet\.enabled/);
+  assert.match(page, /\{embedded \? null : <PageHeader /);
   assert.match(app, /route === "agentPet" \? <AgentPetExtensionScreen /);
   assert.match(app, /setExtensionConfig\(AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig\(draft\), \{ silent: true \}\)/);
   assert.match(page, /invoke<CatalogEntry\[\]>\("agent_pet_catalog"\)/);

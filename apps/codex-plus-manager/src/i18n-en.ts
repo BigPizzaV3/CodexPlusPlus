@@ -100,6 +100,8 @@ export const EN_PLAIN: Record<string, string> = {
   "金额倍率必须是大于 0 且不超过 1e12 的有限数值。": "Amount scale must be a finite number greater than 0 and no larger than 1e12.",
   "在 Agent 窗口里放一个可拖动的小角色，点一下压扁回弹，带按压音效": "A draggable little character in your agent window that squishes when clicked, with press sounds",
   "显示 Agent 桌宠": "Show agent pet",
+  "改动几秒内同步到 Codex，不用重启。": "Changes reach Codex within seconds, no restart needed.",
+  "桌宠拓展已关闭，打开这一行的开关后才会在 Codex 里显示。": "The pet extension is off. Turn on the switch in this row to show it in Codex.",
   "在 Agent 窗口里放一个可拖动的小角色，点一下会被压扁再弹回来。改动几秒内同步到 Codex，不用重启。": "Put a draggable little character in your agent window that squishes and bounces back when clicked. Changes reach Codex within seconds, no restart needed.",
   "显示在": "Show in",
   "目前只支持 Codex，其他 Agent 后续接入。": "Only Codex is supported for now; other agents are coming.",

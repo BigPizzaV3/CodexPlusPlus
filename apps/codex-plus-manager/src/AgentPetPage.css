@@ -4,6 +4,12 @@
   gap: 12px;
 }
 
+/* 嵌在「本地拓展」那一行下方展开，和通用设置表单同一块底色 */
+.agent-pet-page.is-embedded {
+  padding: 12px 14px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.35);
+}
 .agent-pet-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -5062,7 +5062,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} onOpenAgentPet={() => void navigate("agentPet")} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
@@ -8954,8 +8954,11 @@ const BUILTIN_SETTINGS_TARGETS: Record<string, BuiltinSettingsTarget> = {
 
 /// 「Agent 桌宠」页：桌宠是官方拓展包 `bundled:agent-pet`，设置存在它的配置里、开关就是它的启停。
 /// 界面沿用 AgentPetPage；改动防抖后写进拓展配置，Codex 里的桌宠用 onConfigUpdate 原地生效。
-function AgentPetExtensionScreen({ inventory, actions }: { inventory: UserScriptInventory | undefined; actions: Actions }) {
+/// embedded：展开在「本地拓展」桌宠那一行下面，启停交给那一行的开关，这里只管配置。
+function AgentPetExtensionScreen({ inventory, actions, embedded = false }: { inventory: UserScriptInventory | undefined; actions: Actions; embedded?: boolean }) {
   const script = inventory?.scripts?.find((item) => item.key === AGENT_PET_EXTENSION_KEY);
+  // 嵌入时启停不进快照，免得行开关改了之后这里拿旧值又写回去。
+  const snapshotOf = (state: AgentPetExtensionState) => JSON.stringify({ enabled: embedded ? null : state.pet.enabled, config: agentPetExtensionConfig(state) });
   const [draft, setDraft] = useState<AgentPetExtensionState | null>(null);
   const [status, setStatus] = useState<AutoSaveState>({ state: "idle" });
   const saved = useRef<string>("");
@@ -8965,12 +8968,12 @@ function AgentPetExtensionScreen({ inventory, actions }: { inventory: UserScript
   useEffect(() => {
     if (!script || draft) return;
     const initial = agentPetStateFromExtension(script.package?.config, script.enabled);
-    saved.current = JSON.stringify({ enabled: initial.pet.enabled, config: agentPetExtensionConfig(initial) });
+    saved.current = snapshotOf(initial);
     setDraft(initial);
   }, [script, draft]);
   useEffect(() => {
     if (!draft) return;
-    const snapshot = JSON.stringify({ enabled: draft.pet.enabled, config: agentPetExtensionConfig(draft) });
+    const snapshot = snapshotOf(draft);
     if (snapshot === saved.current) return;
     const issue = agentPetValidationMessage(agentPetSettingsIssue(draft.pet))
       || whaleBalanceValidationMessage(whaleBalanceSettingsIssue(draft.whale, isAgentPetWhaleWidgetActive(draft.pet)));
@@ -8984,7 +8987,7 @@ function AgentPetExtensionScreen({ inventory, actions }: { inventory: UserScript
         setStatus({ state: "saving" });
         const previous = JSON.parse(saved.current || "{}") as { enabled?: boolean };
         const configSaved = await actionsRef.current.setExtensionConfig(AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig(draft), { silent: true });
-        if (configSaved && previous.enabled !== draft.pet.enabled) await actionsRef.current.setUserScriptEnabled(AGENT_PET_EXTENSION_KEY, draft.pet.enabled);
+        if (configSaved && !embedded && previous.enabled !== draft.pet.enabled) await actionsRef.current.setUserScriptEnabled(AGENT_PET_EXTENSION_KEY, draft.pet.enabled);
         if (configSaved) {
           saved.current = snapshot;
           setStatus({ state: "saved" });
@@ -9001,14 +9004,15 @@ function AgentPetExtensionScreen({ inventory, actions }: { inventory: UserScript
   if (!draft) return null;
   return (
     <>
-      {inventory?.enabled === false ? (
+      {!embedded && inventory?.enabled === false ? (
         <div className="extension-page-banner">
           <span>{t("「启用本地拓展」整体开关关着，桌宠不会在 Codex 里显示。")}</span>
           <Button size="sm" variant="ghost" onClick={() => void actions.setUserScriptsEnabled(true)}>{t("启用本地拓展")}</Button>
         </div>
       ) : null}
       <AgentPetPage
-        settings={draft.pet}
+        embedded={embedded}
+        settings={embedded ? { ...draft.pet, enabled: script.enabled } : draft.pet}
         onChange={(pet) => setDraft((current) => (current ? { ...current, pet } : current))}
         whaleBalance={draft.whale}
         onWhaleBalanceChange={(patch) => setDraft((current) => (current ? { ...current, whale: { ...current.whale, ...patch } } : current))}
@@ -10267,7 +10271,7 @@ function dreamSkinStateLabel(state: "pass" | "warning" | "fail" | "not_running")
   return t("Codex 未运行或不可连接");
 }
 
-function UserScriptsScreen({ settings, market, onOpenBuiltins, onOpenAgentPet, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; onOpenAgentPet: () => void; actions: Actions }) {
+function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; actions: Actions }) {
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
     if (reloading) return;
@@ -10491,7 +10495,7 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, onOpenAgentPet, a
       ) : (
         <Panel>
           <div className="table">
-            {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} onOpenSettings={script.key === AGENT_PET_EXTENSION_KEY ? onOpenAgentPet : undefined} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
+            {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} renderSettings={script.key === AGENT_PET_EXTENSION_KEY ? () => <AgentPetExtensionScreen embedded inventory={inventory} actions={actions} /> : undefined} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
           </div>
           {inventory?.builtins?.length ? <BuiltinExtensionsSummary builtins={inventory.builtins} onOpen={onOpenBuiltins} /> : null}
         </Panel>
@@ -17050,12 +17054,12 @@ function BuiltinExtensionsSummary({ builtins, onOpen }: { builtins: BuiltinExten
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
 /// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
 /// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
-function ScriptRow({ script, globalEnabled, actions, onOpenSettings }: {
+function ScriptRow({ script, globalEnabled, actions, renderSettings }: {
   script: NonNullable<UserScriptInventory["scripts"]>[number];
   globalEnabled: boolean;
   actions: Actions;
-  /** 有专门设置页的拓展（Agent 桌宠）：「设置」跳到那一页，不展开通用的配置表单。 */
-  onOpenSettings?: () => void;
+  /** 有专门设置界面的拓展（Agent 桌宠）：「设置」在行下面展开它，而不是通用的配置表单。 */
+  renderSettings?: () => ReactNode;
 }) {
   const isPackage = script.kind === "package";
   const source = script.market_id
@@ -17144,7 +17148,7 @@ function ScriptRow({ script, globalEnabled, actions, onOpenSettings }: {
               </MenuItem>
             ) : null}
             {configSchema.length ? (
-              <MenuItem onClick={() => (onOpenSettings ? onOpenSettings() : setConfigOpen((open) => !open))}>
+              <MenuItem onClick={() => setConfigOpen((open) => !open)}>
                 <span className="user-script-menu-item"><Settings className="h-4 w-4" />{configOpen ? t("收起设置") : t("设置")}</span>
               </MenuItem>
             ) : null}
@@ -17173,7 +17177,8 @@ function ScriptRow({ script, globalEnabled, actions, onOpenSettings }: {
         onToast={(message) => actions.showExtensionNotice(managerPage.title || displayName, message)}
       />
     ) : null}
-    {configOpen && configSchema.length ? (
+    {configOpen && configSchema.length && renderSettings ? renderSettings() : null}
+    {configOpen && configSchema.length && !renderSettings ? (
       <ExtensionConfigForm
         fields={configSchema}
         values={script.package?.config ?? {}}
