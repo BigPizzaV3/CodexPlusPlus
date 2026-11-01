@@ -2,6 +2,66 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mergeSkillAgentResult, skillBatchHasPending, skillBatchState, skillBatchTargets, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
+test("pending uninstall reserves its ID across observers until released", () => {
+  const registry = new SkillBatchRegistry();
+  assert.equal(registry.reserveUninstall("alpha"), true);
+  assert.equal(registry.reserveUninstall("alpha"), false);
+  assert.equal(registry.enqueueUpdate("alpha", "update_skill", async () => {}), false);
+  assert.equal(registry.getUpdates()[0].command, "uninstall_skill");
+  registry.releaseUninstall("alpha");
+  assert.equal(registry.getUpdates().length, 0);
+  assert.equal(registry.reserveUninstall("alpha"), true);
+  registry.releaseUninstall("alpha");
+});
+
+test("one queue wave aggregates bounded failure details and exact totals", async () => {
+  const registry = new SkillBatchRegistry();
+  const reports: Array<{ completed: number; failed: number; details: string[] }> = [];
+  for (const id of ["one", "two", "three", "four", "five"]) {
+    registry.enqueueUpdate(id, id === "five" ? "install_skill" : "update_skill", async () => {
+      registry.recordUpdateOutcome(id, { success: id === "five", message: "x".repeat(500) }, (result) => reports.push(result));
+    });
+  }
+  await registry.run(async () => {});
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].completed, 1);
+  assert.equal(reports[0].failed, 4);
+  assert.equal(reports[0].details.length, 3);
+  assert.ok(reports[0].details.every((detail) => detail.length <= 240));
+  assert.match(reports[0].details[0], /^one：/);
+  assert.equal(registry.getFailures()?.count, 4);
+  registry.enqueueUpdate("six", "update_skill", async () => registry.recordUpdateOutcome("six", { success: true, message: "ok" }, () => {}));
+  await registry.run(async () => {});
+  assert.equal(registry.getFailures()?.count, 4);
+  registry.clearFailures();
+  assert.equal(registry.getFailures(), null);
+  registry.enqueueUpdate("seven", "update_skill", async () => registry.recordUpdateOutcome("seven", { success: false, message: "later" }, () => {}));
+  await registry.run(async () => {});
+  assert.deepEqual(registry.getFailures(), { count: 1, details: [{ id: "seven", message: "later" }] });
+  registry.enqueueUpdate("seven", "update_skill", async () => registry.recordUpdateOutcome("seven", { success: false, message: "new" }, () => {}));
+  await registry.run(async () => {});
+  assert.deepEqual(registry.getFailures(), { count: 2, details: [{ id: "seven", message: "new" }] });
+});
+
+test("updates queue with agent work, reject duplicates and continue after failure", async () => {
+  const registry = new SkillBatchRegistry();
+  const calls: string[] = [];
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const agent = registry.run(async () => { calls.push("agent"); await blocked; });
+  assert.equal(registry.enqueueUpdate("one", "update_skill", async () => { calls.push("one"); throw new Error("failed"); }), true);
+  assert.equal(registry.enqueueUpdate("one", "install_skill", async () => {}), false);
+  assert.equal(registry.enqueueUpdate("two", "install_skill", async () => { calls.push("two"); }), true);
+  await Promise.resolve();
+  assert.deepEqual(calls, ["agent"]);
+  assert.deepEqual(registry.getUpdates().map((item) => item.state), ["queued", "queued"]);
+  release();
+  await agent;
+  await registry.run(async () => {});
+  assert.deepEqual(calls, ["agent", "one", "two"]);
+  assert.equal(registry.getUpdates().length, 0);
+});
+
 test("batch state and targets only include installed mutable Skills for the requested Agent", () => {
   const items = [
     { id: "a", installed: true, bundled: false, enabled: true, agents: ["codex", "claude"] },

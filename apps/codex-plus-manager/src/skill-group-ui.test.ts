@@ -32,7 +32,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const calls: string[] = [];
   const requests: Array<{ command: string; args: Record<string, unknown> }> = [];
   const notices: Array<{ title: string; message: string; status: string }> = [];
-  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any> } = {};
+  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any> } = {};
   const server = shared?.server ?? { status: "ok", message: "ok", skills: [skill("builtin", "", true), skill("alpha", "a/repo@main"), skill("zeta", "z/repo@main")],
     repos: [] as FixtureRepo[], repositorySkills: [], repoCounts: {} as Record<string, number>, repoErrors: [], skillsDir: "", codexSkillsDir: "" };
   const registry = shared?.registry ?? new SkillBatchRegistry();
@@ -65,7 +65,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     invoke: async (command: string, args: Record<string, unknown> = {}) => {
       calls.push(command);
       requests.push({ command, args });
-      if (command === "list_installed_skills" || command === "refresh_skill_catalog") return structuredClone(server);
+      if (command === "list_installed_skills" || command === "refresh_skill_catalog") return hooks.list ? hooks.list(command) : structuredClone(server);
       if (hooks.mutation) return hooks.mutation(command, args);
       throw new Error(`Unexpected command: ${command}`);
     },
@@ -81,7 +81,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
   for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
-    "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "GripVertical"]) context[name] = name;
+    "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   vm.runInContext(code, context);
   const collect = (node: any, result: Element[]) => {
@@ -239,6 +239,39 @@ test("group toolbar icons retain accessible labels and fold or expand groups", a
   for (const key of ui.order()) assert.equal(ui.groupHead(key).props["aria-expanded"], false);
   control("全部展开").props.onClick(); ui.render();
   for (const key of ui.order()) assert.equal(ui.groupHead(key).props["aria-expanded"], true);
+});
+
+test("queued updates survive remount and invalidate an older list response", async () => {
+  const ui = createHarness();
+  ui.server.skills = [skill("alpha", "a/repo@main"), skill("beta", "a/repo@main")];
+  ui.server.skills.forEach((item) => { item.updateAvailable = true; });
+  ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
+  let finish!: () => void;
+  ui.hooks.mutation = async (_command, args) => {
+    if (args.id === "alpha") await new Promise<void>((resolve) => { finish = resolve; });
+    const item = ui.server.skills.find((entry) => entry.id === args.id)!;
+    item.updateAvailable = false;
+    return structuredClone(ui.server);
+  };
+  const button = (id: string, label: string) => ui.rowElements("repo:a/repo", "a/repo@main", id).find((node) => node.type === "Button" && node.children.includes(label))!;
+  button("alpha", "更新").props.onClick();
+  button("beta", "更新").props.onClick();
+  await tick(); ui.render();
+  assert.equal(button("alpha", "更新中").props.disabled, true);
+  assert.equal(button("beta", "排队中").props.disabled, true);
+  ui.unmount();
+  const reopened = createHarness("{}", { server: ui.server, registry: ui.registry });
+  let oldList!: (value: any) => void;
+  const stale = structuredClone(ui.server);
+  reopened.hooks.list = (command) => command === "list_installed_skills" ? new Promise((resolve) => { oldList = resolve; }) : Promise.resolve(structuredClone(ui.server));
+  reopened.render(); await tick();
+  reopened.hooks.list = undefined;
+  finish();
+  for (let i = 0; i < 20 && ui.registry.getUpdates().length; i++) await tick();
+  oldList(stale);
+  await tick(); await tick(); reopened.render(); reopened.selectTab("已安装");
+  assert.equal(reopened.rowElements("repo:a/repo", "a/repo@main", "alpha").some((node) => node.type === "Button" && node.children.includes("更新")), false);
+  assert.deepEqual(ui.requests.filter((entry) => entry.command === "update_skill").map((entry) => entry.args.id), ["alpha", "beta"]);
 });
 
 test("batch selection queues other writes and summarizes a large set of failures", async () => {

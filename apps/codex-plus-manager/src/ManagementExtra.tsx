@@ -4,7 +4,7 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronsDown, ChevronsUp, Copy, Edit3, ExternalLink, FolderOpen, FolderPlus, GripVertical, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronsDown, ChevronsUp, CloudDownload, Copy, Edit3, ExternalLink, FolderOpen, FolderPlus, GripVertical, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
@@ -55,11 +55,11 @@ function repoUrl(skill: Skill) {
   if (parts.length < 2) return "";
   return `https://github.com/${parts.join("/")}${skill.repoPath ? `/tree/${skill.repoKey.split("@")[1]?.split(":")[0] || "main"}/${skill.repoPath}` : ""}`;
 }
-function SkillRepoDrawer({ repos, catalog, counts, initialKey, busy, onClose, onSave, onDelete, onInspect, onOpenUrl, onOpenSkill, onRun }: {
+function SkillRepoDrawer({ repos, catalog, counts, initialKey, busy, updates, onClose, onSave, onDelete, onInspect, onOpenUrl, onOpenSkill, onRun }: {
   repos: Repo[]; catalog: Skill[]; counts: Record<string, number>; initialKey: string | null; busy: boolean; onClose: () => void;
   onSave: (repo: Repo, previousKey?: string) => Promise<boolean>; onDelete: (repo: Repo) => void;
   onInspect: (repo: Repo) => Promise<RepoInspection>; onOpenUrl: (url: string) => void;
-  onOpenSkill: (skill: Skill) => void; onRun: (command: string, args: Record<string, unknown>) => void;
+  updates: ReturnType<SkillBatchRegistry["getUpdates"]>; onOpenSkill: (skill: Skill) => void; onRun: (command: "install_skill", args: { repoKey: string; id: string }) => void;
 }) {
   const [draft, setDraft] = useState<Repo>({ owner: "", name: "", branch: "main", subdir: "", enabled: true });
   const [input, setInput] = useState("");
@@ -146,7 +146,11 @@ function SkillRepoDrawer({ repos, catalog, counts, initialKey, busy, onClose, on
         <SearchBox value={query} onChange={setQuery} placeholder={t("搜索此仓库的 Skills")} />
         <SkillListViewport className="mg-repo-results" items={filtered} rowHeight={64} resetKey={`${activeKey}:${deferredQuery}`} busy={scanning}
           empty={<p className="mg-muted" role="status">{scanning ? t("正在扫描…") : count ? t("没有匹配的 Skill") : t("暂无 Skills")}</p>}
-          renderRow={(s) => <div className="mg-repo-skill" key={s.repoKey + ":" + s.id}><button type="button" className="mg-skill-name" onClick={() => onOpenSkill(s)}><strong>{s.name || s.id}</strong><small title={s.description}>{s.description || s.repoPath}</small></button><div className="mg-repo-skill-actions"><Button onClick={() => onOpenSkill(s)}>{t("详情")}</Button><div className="mg-repo-install-slot">{repos.some((r) => repoKey(r) === s.repoKey) && (s.installed ? <span className="mg-repo-install-state">{t("已安装")}</span> : <Button primary disabled={busy} onClick={() => onRun("install_skill", { repoKey: s.repoKey, id: s.id })}>{t("安装")}</Button>)}</div></div></div>} />
+          renderRow={(s) => {
+            const pending = updates.find((item) => item.id === s.id);
+            const state = pending && pending.repoKey !== s.repoKey ? t("同 ID 操作中") : pending ? t(pending.state === "running" ? "安装中" : "排队中") : t("安装");
+            return <div className="mg-repo-skill" key={skillIdentityKey(s)}><button type="button" className="mg-skill-name" onClick={() => onOpenSkill(s)}><strong>{s.name || s.id}</strong><small title={s.description}>{s.description || s.repoPath}</small></button><div className="mg-repo-skill-actions"><Button onClick={() => onOpenSkill(s)}>{t("详情")}</Button><div className="mg-repo-install-slot">{repos.some((r) => repoKey(r) === s.repoKey) && (s.installed ? <span className="mg-repo-install-state">{t("已安装")}</span> : <span title={pending ? state : undefined}><Button primary disabled={Boolean(pending)} onClick={() => onRun("install_skill", { repoKey: s.repoKey, id: s.id })}>{state}</Button></span>)}</div></div></div>;
+          }} />
       </> : <p className="mg-muted">{t("还没有添加仓库。")}</p>}
     </section>
     {formOpen && <div className="mg-repo-form" ref={editorRef} role="region" aria-label={editing ? t("编辑仓库") : t("添加仓库")}
@@ -218,6 +222,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const batchOperations = useSyncExternalStore(skillBatchRegistry.subscribe, skillBatchRegistry.getSnapshot, skillBatchRegistry.getSnapshot);
+  const updates = useSyncExternalStore(skillBatchRegistry.subscribeUpdates, skillBatchRegistry.getUpdates, skillBatchRegistry.getUpdates);
+  const updateFailures = useSyncExternalStore(skillBatchRegistry.subscribeFailures, skillBatchRegistry.getFailures, skillBatchRegistry.getFailures);
   const batchOwner = useRef(Symbol("skills-page"));
   const mounted = useRef(false);
   const dataRequest = useRef(0);
@@ -287,6 +293,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     if (mounted.current && owner !== batchOwner.current) void reloadLocal();
   }), []);
   const run = async (command: string, args: Record<string, unknown>) => {
+    const uninstallId = command === "uninstall_skill" && typeof args.id === "string" ? args.id : null;
+    if (uninstallId && !skillBatchRegistry.reserveUninstall(uninstallId)) return false;
     setBusy(true);
     try {
       const r = await skillBatchRegistry.run(async () => {
@@ -303,8 +311,40 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       await notify("Skills", String(e), "failed");
       return false;
     } finally {
+      if (uninstallId) skillBatchRegistry.releaseUninstall(uninstallId);
       setBusy(false);
     }
+  };
+  const queueUpdate = (command: "install_skill" | "update_skill", args: { repoKey: string; id: string }) => {
+    return skillBatchRegistry.enqueueUpdate(args.id, command, async () => {
+      let outcome: { success: boolean; message: string };
+      try {
+        if (command === "update_skill") {
+          const checkRequest = ++dataRequest.current;
+          const current = await invoke<SkillPayload>("list_installed_skills");
+          if (!ok(current)) throw new Error(current.message);
+          if (!current.skills.some((skill) => skill.id === args.id && skill.repoKey === args.repoKey && skill.installed && !skill.bundled)) {
+            applyCurrentPayload(checkRequest, current);
+            throw new Error(t("Skill 已卸载或来源已变更，已跳过更新"));
+          }
+        }
+        const request = ++dataRequest.current;
+        const result = await invoke<SkillPayload>(command, args);
+        applyCurrentPayload(request, result);
+        outcome = { success: ok(result), message: result.message };
+      } catch (error) {
+        outcome = { success: false, message: String(error) };
+      } finally {
+        skillBatchRegistry.notifySettled(batchOwner.current);
+      }
+      skillBatchRegistry.recordUpdateOutcome(args.id, outcome, (summary) => {
+        const message = tf("已完成 {0} 个 Skill 操作", [summary.completed]);
+        void notify("Skills", summary.failed ? `${message}；${tf("{0} 个 Skill 失败", [summary.failed])}：${summary.details.join("；")}` : message, summary.failed ? "failed" : "ok");
+      });
+    }, args.repoKey);
+  };
+  const queueGroupUpdates = (skills: Skill[]) => {
+    for (const skill of skills) queueUpdate("update_skill", { repoKey: skill.repoKey, id: skill.id });
   };
   const runBatch = async (group: SkillGroup<Skill>, agent: McpAgentId, enabled: boolean) => {
     const groupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
@@ -464,6 +504,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const agentCount = (agent: McpAgentId) => (data?.skills || []).filter((s) => s.installed && skillAgents(s).includes(agent)).length;
   // 与 MCP 页同一张表：名称 | 来源 | 每个 Agent 一列勾选 | 操作。分组、详情、卸载收进行末的「更多」菜单。
   const renderSkillRow = (s: Skill) => {
+    const update = s.bundled ? undefined : updates.find((item) => item.id === s.id);
     // 只卸载 Codex++ 管理的或 Codex 目录里的；Claude / Grok 自己目录里的 Skill 不动。
     const canUninstall = s.installed && !s.bundled && (s.managed || skillAgents(s).includes("codex") || s.agents === undefined);
     const assignment = skillGroupAssignment(s, customGroupNames, customGroupAssignments, assignmentsByIdentity);
@@ -481,8 +522,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         hint={!s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : undefined}
         onToggle={() => void run("set_skill_enabled_for", { agent, id: s.id, enabled: !skillAgents(s).includes(agent) })} />)}
       <div className="mg-row-actions">
-        {!s.installed && !s.bundled ? <Button primary onClick={() => void run("install_skill", { repoKey: s.repoKey, id: s.id })} disabled={busy}>{t("安装")}</Button> : null}
-        {s.installed && s.updateAvailable ? <Button onClick={() => void run("update_skill", { repoKey: s.repoKey, id: s.id })} disabled={busy}>{t("更新")}</Button> : null}
+        {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button primary onClick={() => { queueUpdate("install_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("安装")}</Button> : s.installed && s.updateAvailable ? <Button onClick={() => { queueUpdate("update_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("更新")}</Button> : null}
         <Menu>
           <MenuItem onClick={() => setDetail(s)}>{t("查看详情")}</MenuItem>
           {!s.bundled && customGroupNames.length ? <>
@@ -490,7 +530,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
             <MenuItem checked={!assignment} onClick={() => assignSkillGroup(s, "")}>{t("按来源")}</MenuItem>
             {customGroupNames.map((group) => <MenuItem checked={assignment === customSkillGroupKey(group)} key={group} onClick={() => assignSkillGroup(s, group)}>{group}</MenuItem>)}
           </> : null}
-          {canUninstall ? <MenuItem danger disabled={busy} onClick={() => void run("uninstall_skill", { id: s.id })}>{t("卸载")}</MenuItem> : null}
+          {canUninstall ? <MenuItem danger disabled={busy || Boolean(update)} onClick={() => void run("uninstall_skill", { id: s.id })}>{t("卸载")}</MenuItem> : null}
         </Menu>
       </div>
     </div>;
@@ -531,6 +571,11 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       </div>
     </div>
     <div className="mg-content">
+      {updateFailures && <section className="mg-skill-failures" role="region" aria-label={t("Skill 操作失败摘要")}>
+        <div className="mg-skill-failures-head"><strong role="status" aria-live="polite">{tf("{0} 次 Skill 操作失败", [updateFailures.count])}</strong>
+          <button type="button" className="mg-icon-button" aria-label={t("关闭 Skill 失败摘要")} title={t("关闭 Skill 失败摘要")} onClick={skillBatchRegistry.clearFailures}><X size={16}/></button></div>
+        <ul tabIndex={0} aria-label={t("失败的 Skill 列表")}>{updateFailures.details.map((detail) => <li key={detail.id}><strong>{detail.id}</strong>：{detail.message}</li>)}</ul>
+      </section>}
       <div className="mg-matrix mg-agent-matrix mg-skill-matrix" aria-busy={loading} data-columns={agentColumns.length}>
         <div className="mg-matrix-head"><span>{t("技能")}</span><span>{t("来源")}</span>{agentColumns.map((agent) => <AgentColumn agent={agent} count={agentCount(agent)} key={agent} title={data?.agentSkillsDirs?.[agent]} />)}<span className="mg-actions-label">{t("操作")}</span></div>
         {!groups.length ? <div className="mg-empty"><h2>{loading ? t("正在扫描…") : t("没有匹配的 Skill")}</h2></div> :
@@ -538,6 +583,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
             <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
           const collapsed = !expandedGroups.has(group.key) && !query.trim();
           const allGroupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
+          const updateTargets = allGroupItems.filter((skill) => skill.installed && !skill.bundled && skill.updateAvailable && !updates.some((item) => item.id === skill.id));
+          const pendingUpdates = allGroupItems.filter((skill) => skill.installed && !skill.bundled && updates.some((item) => item.command === "update_skill" && item.id === skill.id && item.repoKey === skill.repoKey)).length;
+          const hasUpdates = pendingUpdates > 0 || allGroupItems.some((skill) => skill.installed && !skill.bundled && skill.updateAvailable);
+          const updateLabel = `${group.label} · ${tf("更新组内可更新 Skill（{0}）", [updateTargets.length])}${pendingUpdates ? ` · ${tf("进行中或排队 {0} 项", [pendingUpdates])}` : ""}`;
           const movable = group.kind === "repo" || group.kind === "custom";
           return <SortableSkillGroup group={group} key={group.key} disabled={!movable || !!query.trim() || busy || loading}>{(handle) => <>
             <div className="mg-skill-group-row">
@@ -549,6 +598,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
                 busy={busy || skillBatchHasPending(batchOperations, allGroupItems, agent)} operations={batchOperations}
                 onChange={(enabled) => void runBatch(group, agent, enabled)}/>)}
               <div className="mg-row-actions">
+                {hasUpdates && <button type="button" className="mg-icon-button" aria-label={updateLabel} title={updateLabel} disabled={!updateTargets.length}
+                  onClick={() => queueGroupUpdates(updateTargets)}><CloudDownload size={15}/></button>}
                 {group.kind === "custom" ? <><Button disabled={busy} onClick={() => renameCustomGroup(group.label)}>{t("重命名")}</Button><Button disabled={busy} onClick={() => deleteCustomGroup(group.label)}>{t("删除分组")}</Button></> : null}
               </div>
             </div>
@@ -558,7 +609,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       </div>
       {data?.repoErrors?.length ? <div className="mg-notice mg-warning">{data.repoErrors.map((e) => <p key={e}>{e}</p>)}</div> : null}
     </div>
-    {repoOpen && <SkillRepoDrawer repos={data?.repos || []} catalog={data?.repositorySkills || []} counts={data?.repoCounts || {}} initialKey={repoSelection} busy={busy} onClose={() => setRepoOpen(false)} onSave={saveRepo} onDelete={(r) => void deleteRepo(r)} onInspect={inspectRepo} onOpenUrl={(url) => void openUrl(url)} onOpenSkill={setDetail} onRun={(cmd, args) => void run(cmd, args)} />}
+    {repoOpen && <SkillRepoDrawer repos={data?.repos || []} catalog={data?.repositorySkills || []} counts={data?.repoCounts || {}} initialKey={repoSelection} busy={busy} updates={updates} onClose={() => setRepoOpen(false)} onSave={saveRepo} onDelete={(r) => void deleteRepo(r)} onInspect={inspectRepo} onOpenUrl={(url) => void openUrl(url)} onOpenSkill={setDetail} onRun={(command, args) => { queueUpdate(command, args); }} />}
     {detail && <SkillDetailDrawer skill={detail} count={data?.repoCounts?.[detail.repoKey]} onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(detail.repoKey)} />}
   </div>;
 }
