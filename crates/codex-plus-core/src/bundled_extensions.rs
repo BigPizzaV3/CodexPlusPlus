@@ -21,6 +21,11 @@ const AGENT_PET_PET: &str = include_str!("../../../assets/extensions/agent-pet/p
 const AGENT_PET_WHALE_COMPAT: &str = include_str!("../../../assets/extensions/agent-pet/whale-compat.js");
 const AGENT_PET_WHALE: &str = include_str!("../../../assets/extensions/agent-pet/whale.js");
 const AGENT_PET_MAIN: &str = include_str!("../../../assets/extensions/agent-pet/main.js");
+/// 设置界面：Codex 里经 renderer 加载，管理器里内联进 settings.html（沙箱页面拿不到包里的其他文件）。
+const AGENT_PET_SETTINGS: &str = include_str!("../../../assets/extensions/agent-pet/settings.js");
+const AGENT_PET_SETTINGS_PAGE: &str = include_str!("../../../assets/extensions/agent-pet/settings-page.js");
+const AGENT_PET_SETTINGS_HTML: &str = include_str!("../../../assets/extensions/agent-pet/settings.html");
+const AGENT_PET_SETTINGS_PLACEHOLDER: &str = "/*__AGENT_PET_SETTINGS_SCRIPTS__*/";
 /// 大肥鱼的上游引擎（原样保留，许可见 `assets/inject/upstream/whale-widget/PROVENANCE.md`）。
 const WHALE_ENGINE: &str = include_str!("../../../assets/inject/upstream/whale-widget/full-widget-codex.js");
 const AGENT_PET_SOUNDS: &[(&str, &[u8])] = &[
@@ -38,6 +43,10 @@ fn whale_engine_source() -> String {
     )
 }
 
+/// 管理器里的设置页：模板里的占位换成设置界面与管理器适配脚本。
+pub fn agent_pet_settings_html() -> String {
+    AGENT_PET_SETTINGS_HTML.replace(AGENT_PET_SETTINGS_PLACEHOLDER, &format!("{AGENT_PET_SETTINGS}\n{AGENT_PET_SETTINGS_PAGE}"))
+}
 /// Agent 桌宠拓展包的全部文件：(包内相对路径, 内容)。
 pub fn agent_pet_files() -> Vec<(&'static str, Vec<u8>)> {
     let mut files = vec![
@@ -46,6 +55,8 @@ pub fn agent_pet_files() -> Vec<(&'static str, Vec<u8>)> {
         ("whale-compat.js", AGENT_PET_WHALE_COMPAT.as_bytes().to_vec()),
         ("whale-engine.js", whale_engine_source().into_bytes()),
         ("whale.js", AGENT_PET_WHALE.as_bytes().to_vec()),
+        ("settings.js", AGENT_PET_SETTINGS.as_bytes().to_vec()),
+        ("settings.html", agent_pet_settings_html().into_bytes()),
         ("main.js", AGENT_PET_MAIN.as_bytes().to_vec()),
     ];
     files.extend(AGENT_PET_SOUNDS.iter().map(|(path, bytes)| (*path, bytes.to_vec())));

@@ -357,7 +357,11 @@
     const body = document.querySelector("[data-codex-plus-page-nav-body]");
     if (body) body.innerHTML = renderCodexPlusExtensionsNav();
     const detail = document.querySelector("[data-codex-plus-extensions-detail]");
-    if (detail) detail.innerHTML = renderCodexPlusExtensionsDetail();
+    if (detail) {
+      detail.innerHTML = renderCodexPlusExtensionsDetail();
+      // typeof 守卫：测试会把这段单独切出来执行，那时设置面板的宿主不在作用域里。
+      if (typeof mountCodexPlusSettingsPanel === "function") mountCodexPlusSettingsPanel(detail);
+    }
     if (focused) {
       Array.from(detail?.querySelectorAll("[data-codex-user-script-key]") || [])
         .find((button) => button.getAttribute("data-codex-user-script-key") === focused)?.focus({ preventScroll: true });
@@ -442,7 +446,7 @@
     const publisherLine = [
       author ? escapeHtml(author) : "",
       version ? `v${escapeHtml(version)}` : "",
-      local ? `${local.source === "builtin" ? "内置" : "用户"} · ${escapeHtml(userScriptStatusLabel(local.status))}` : "",
+      local ? `${typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(local) : local.source === "builtin" ? "内置" : "用户"} · ${escapeHtml(userScriptStatusLabel(local.status))}` : "",
     ].filter(Boolean).join('<span class="codex-plus-extensions-detail-sep">·</span>');
 
     const actions = [];
@@ -481,8 +485,81 @@
         ${list("已知限制", limitations)}
         ${homepage ? `<div class="codex-plus-extensions-detail-link"><a href="${escapeHtml(homepage)}" target="_blank" rel="noreferrer">${escapeHtml(homepage)}</a></div>` : ""}
         ${local?.error ? `<div class="codex-plus-extensions-detail-error">${escapeHtml(local.error)}</div>` : ""}
+        ${isInstalled && local && typeof renderCodexPlusSettingsPanelSlot === "function" ? renderCodexPlusSettingsPanelSlot(local) : ""}
       </div>
     `;
+  }
+
+  /** 来源标签：内置 / 官方（随 Codex++ 发布的拓展包）/ 市场 / 用户。 */
+  function codexPlusScriptSourceLabel(script) {
+    if (script?.source === "builtin") return "内置";
+    if (script?.source === "bundled") return "官方";
+    return script?.market_id ? "市场" : "用户";
+  }
+
+  /**
+   * 详情下方的设置区：拓展登记了设置面板（ctx.registerSettingsPanel）就留一个挂载点，由 mountCodexPlusSettingsPanel 交给拓展画；
+   * 有配置但没在运行（停用、未加载）时提示先启用。
+   */
+  function renderCodexPlusSettingsPanelSlot(local) {
+    const panel = typeof codexPlusSettingsPanelFor === "function" ? codexPlusSettingsPanelFor(local.key) : null;
+    const hasSettings = !!(local.package?.settingsPage || local.package?.configSchema?.length);
+    if (!panel && !hasSettings) return "";
+    const body = panel && local.enabled
+      ? `<div class="codex-plus-extensions-detail-settings-host" data-codex-plus-settings-panel="${escapeHtml(local.key)}" ${codexPlusExtensionConstants.extensionAttribute}="${escapeHtml(local.key)}"></div>`
+      : `<div class="codex-plus-extensions-detail-settings-hint">${local.enabled ? "这个拓展加载后可以在这里修改设置。" : "启用这个拓展后可以在这里修改设置。"}</div>`;
+    return `<div class="codex-plus-extensions-detail-section codex-plus-extensions-detail-settings"><div class="codex-plus-extensions-detail-section-title">设置</div>${body}</div>`;
+  }
+
+  /**
+   * 正挂着的拓展设置面板 { key, node, cleanup }。详情区重画（innerHTML）时把同一个节点搬回新的挂载点，
+   * 面板里的状态（滚动、正在输入的内容、加载好的预览）不丢；换了拓展或没有挂载点时才清理。
+   */
+  let codexPlusMountedSettingsPanel = null;
+
+  function unmountCodexPlusSettingsPanel() {
+    const mounted = codexPlusMountedSettingsPanel;
+    codexPlusMountedSettingsPanel = null;
+    if (!mounted) return;
+    if (typeof mounted.cleanup === "function") runCodexPlusExtensionCallback(mounted.key, "settingsPanel.cleanup", mounted.cleanup);
+    mounted.node.remove();
+  }
+
+  function mountCodexPlusSettingsPanel(root) {
+    const slot = root?.querySelector?.("[data-codex-plus-settings-panel]");
+    const key = slot?.getAttribute("data-codex-plus-settings-panel") || "";
+    const mounted = codexPlusMountedSettingsPanel;
+    if (mounted && slot && mounted.key === key && mounted.panel === codexPlusSettingsPanelFor(key)) {
+      slot.replaceWith(mounted.node);
+      return;
+    }
+    unmountCodexPlusSettingsPanel();
+    const panel = slot && typeof codexPlusSettingsPanelFor === "function" ? codexPlusSettingsPanelFor(key) : null;
+    if (!panel) return;
+    const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
+    const config = local?.package?.config || window.__codexPlusUserScripts?.scripts?.[key]?.manifest?.config || {};
+    const saveConfig = (values) => saveCodexPlusExtensionConfig(key, values);
+    const result = runCodexPlusExtensionCallback(key, "settingsPanel.render", () => panel.render({ container: slot, config: { ...config }, saveConfig }));
+    codexPlusMountedSettingsPanel = { key, node: slot, panel, cleanup: result.ok ? result.value : null };
+  }
+
+  /** 拓展设置面板保存配置：后台只收清单里声明过的项；拓展用 onConfigUpdate 接住时原地生效，否则整体热重载。 */
+  async function saveCodexPlusExtensionConfig(key, values) {
+    const result = await postJson("/user-scripts/set-config", { key, values: values && typeof values === "object" ? values : {} });
+    if (!result || result.status !== "ok") throw new Error(result?.message || "拓展配置没有保存");
+    const config = result.config && typeof result.config === "object" ? result.config : {};
+    const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
+    if (local?.package) local.package.config = config;
+    const applied = window.__codexPlusUserScripts?.updateConfig?.(key, config);
+    if (applied !== "applied") await reloadUserScriptsAfterChange();
+    return config;
+  }
+
+  /** 注册表里某个拓展的设置面板变了（热重载、启停）：正显示着它就重画详情。 */
+  function codexPlusSettingsPanelChanged(key) {
+    if (codexPlusMountedSettingsPanel?.key !== key && !(codexPlusExtensionsSelected?.kind === "installed" && codexPlusExtensionsSelected.key === key)) return;
+    if (codexPlusMountedSettingsPanel?.key === key) unmountCodexPlusSettingsPanel();
+    if (typeof refreshCodexPlusExtensionsView === "function") refreshCodexPlusExtensionsView();
   }
 
   /** 卸载用户脚本：删文件 + 清记录，然后刷新两侧。 */
@@ -680,7 +757,7 @@
       kind: "installed",
       key: script.key,
       name: marketById.get(script.market_id)?.name || script.name || script.key,
-      meta: `${script.source === "builtin" ? "内置" : script.market_id ? "市场" : "用户"} · ${userScriptStatusLabel(script.status)}`,
+      meta: `${typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(script) : script.source === "builtin" ? "内置" : script.market_id ? "市场" : "用户"} · ${userScriptStatusLabel(script.status)}`,
       enabled: !!script.enabled,
       script,
     }));
@@ -1678,6 +1755,7 @@
       <div id="codex-plus-typing-effect-menu" class="codex-plus-dropdown-menu" data-codex-plus-typing-effect-menu="true" role="listbox" hidden></div>
     `;
     syncCodexPlusTypingEffectMenu(overlay);
+    if (typeof mountCodexPlusSettingsPanel === "function") mountCodexPlusSettingsPanel(overlay.querySelector("[data-codex-plus-extensions-detail]"));
     overlay.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting], .codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       button.setAttribute("role", "switch");
       button.setAttribute("aria-checked", "false");
@@ -1972,6 +2050,7 @@
     window.__codexPlusPageLayoutObserver = null;
     window.__codexPlusPageLayoutTargets = null;
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
+    if (typeof unmountCodexPlusSettingsPanel === "function") unmountCodexPlusSettingsPanel();
     setCodexPlusSidebarNavActive(false);
     restoreCodexPlusPageBackButton();
   }

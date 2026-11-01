@@ -13607,7 +13607,7 @@ button.side-item:hover {
    能力排成一行小标签。窄屏沿用全局 .table-row 的单列堆叠。 */
 /* 右侧「版本 · 状态 · 开关 · 更多」贴右排：开关和「更多」离右边距离固定，各行仍对齐 */
 .shell .user-script-row {
-  grid-template-columns: minmax(160px, 1fr) auto auto 30px;
+  grid-template-columns: minmax(160px, 1fr) auto auto 64px;
   column-gap: 12px;
   align-items: center;
 }
@@ -13624,6 +13624,7 @@ button.side-item:hover {
 .shell .user-script-row .script-row-actions {
   flex-wrap: nowrap;
   justify-content: flex-end;
+  gap: 4px;
 }
 @media (max-width: 860px) {
   .shell .user-script-row {
@@ -13640,6 +13641,10 @@ button.side-item:hover {
 /* 「更多」菜单：触发按钮用弱化色，菜单项带图标 */
 .shell .user-script-row .mg-icon-button {
   color: hsl(var(--muted-foreground));
+}
+.shell .user-script-row .mg-icon-button[data-active] {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
 }
 .shell .user-script-row .mg-icon-button:hover {
   color: hsl(var(--foreground));

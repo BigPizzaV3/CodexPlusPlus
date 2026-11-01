@@ -142,14 +142,6 @@ fn whale_settings(mut settings: BackendSettings, payload: &Value) -> BackendSett
     settings
 }
 
-/// 图片桌宠的图片 / 音效参数：来自 Agent 桌宠拓展的配置，按原来的设置规则校验（图库 id、音效组、自定义文件名）。
-fn pet_settings(payload: &Value) -> crate::settings::AgentPetSettings {
-    let mut pet = crate::settings::AgentPetSettings::from_json_lenient(payload);
-    pet.enabled = true;
-    pet.kind = crate::settings::AGENT_PET_KIND_IMAGE.to_string();
-    pet.agents = vec!["codex".to_string()];
-    pet
-}
 
 #[async_trait]
 pub trait BridgeRuntimeService: Send + Sync {
@@ -163,6 +155,11 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value>;
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value>;
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value>;
+    /// 保存一个拓展包的配置（Codex 里「拓展」详情页的设置面板用），回 `{status, config}`，config 是生效配置。
+    async fn set_extension_config(&self, key: String, values: serde_json::Map<String, Value>) -> anyhow::Result<Value> {
+        let config = crate::user_scripts::default_user_script_manager().set_extension_config(&key, &values)?;
+        Ok(json!({ "status": "ok", "config": config }))
+    }
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn load_user_scripts(&self) -> anyhow::Result<Value> {
         self.user_script_inventory().await
@@ -408,6 +405,20 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.runtime.delete_user_script(key).await
         }
+        // Codex++ 内部用：「拓展」详情页里拓展自己的设置面板保存配置。只写这一个拓展清单里声明过的配置项，
+        // 不进拓展路由白名单（拓展经 ctx.registerSettingsPanel 拿到的 saveConfig 只能存它自己的）。
+        "/user-scripts/set-config" => {
+            let key = payload.get("key").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            let values = payload.get("values").and_then(Value::as_object).cloned().unwrap_or_default();
+            if key.is_empty() {
+                Ok(json!({ "status": "failed", "message": "拓展 key 不能为空" }))
+            } else {
+                match ctx.runtime.set_extension_config(key, values).await {
+                    Ok(value) => Ok(value),
+                    Err(error) => Ok(json!({ "status": "failed", "message": format!("{error:#}") })),
+                }
+            }
+        }
         "/user-scripts/load" => ctx.runtime.load_user_scripts().await,
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/cdp/targets" => ctx.runtime.cdp_targets().await,
@@ -550,60 +561,17 @@ pub async fn handle_bridge_request(
             Ok(_) => Ok(json!({"status": "disabled"})),
             Err(_) => Ok(json!({"status": "unavailable", "message": "无法读取挂件设置"})),
         },
-        // 图片桌宠（Agent 桌宠拓展）的图片与音效：参数来自拓展配置，按原来的设置规则校验；
+        // Agent 桌宠拓展的数据路由（图库、图片、音效、导入自定义音效）：参数来自拓展配置，按原来的设置规则校验；
         // 下载走 Codex++ 的地址校验（只 https、拦截本机地址）与缓存。只有启用中的拓展声明了它才干活。
-        "/agent-pet/image" => match ctx.settings.get_settings().await {
-            Ok(_) if ctx.settings.extension_route_declared(path) => {
-                let pet = pet_settings(&payload);
-                match crate::agent_pet::load_image(
-                    &pet.image,
-                    &pet.custom_image_url,
-                    &ctx.settings.agent_pet_cache_dir(),
-                )
-                .await
-                {
-                    Ok(image) => Ok(json!({
-                        "status": "ok",
-                        "image": image.data_uri,
-                        "id": pet.image,
-                    })),
-                    Err(error) => Ok(json!({"status": "failed", "message": format!("{error:#}")})),
-                }
+        "/agent-pet/catalog" | "/agent-pet/image" | "/agent-pet/sound" | "/agent-pet/import-sound" => {
+            if ctx.settings.extension_route_declared(path) {
+                Ok(crate::agent_pet::route(path, &payload, &ctx.settings.agent_pet_cache_dir(), &ctx.settings.agent_pet_custom_dir())
+                    .await
+                    .unwrap_or_else(|| json!({"status": "failed", "message": "未知的桌宠路由"})))
+            } else {
+                Ok(json!({"status": "disabled"}))
             }
-            Ok(_) => Ok(json!({"status": "disabled"})),
-            Err(error) => Ok(json!({
-                "status": "failed",
-                "message": format!("无法读取 Agent 桌宠设置：{error}"),
-            })),
-        },
-        // 同上。内嵌音效组随拓展包的 assets/ 下发，这里只服务下载组和自定义组。
-        "/agent-pet/sound" => match ctx.settings.get_settings().await {
-            Ok(_) if ctx.settings.extension_route_declared(path) => {
-                let pet = pet_settings(&payload);
-                match crate::agent_pet::load_sound(
-                    &pet.sound_set,
-                    &pet.custom_sound_press,
-                    &pet.custom_sound_release,
-                    &ctx.settings.agent_pet_cache_dir(),
-                    &ctx.settings.agent_pet_custom_dir(),
-                )
-                .await
-                {
-                    Ok(sound) => Ok(json!({
-                        "status": "ok",
-                        "key": sound.key,
-                        "press": sound.press,
-                        "release": sound.release,
-                    })),
-                    Err(error) => Ok(json!({"status": "failed", "message": format!("{error:#}")})),
-                }
-            }
-            Ok(_) => Ok(json!({"status": "disabled"})),
-            Err(error) => Ok(json!({
-                "status": "failed",
-                "message": format!("无法读取 Agent 桌宠设置：{error}"),
-            })),
-        },
+        }
         "/archived-thread" => {
             let title = payload
                 .get("title")

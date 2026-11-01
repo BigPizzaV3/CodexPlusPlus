@@ -430,13 +430,52 @@ impl UserScriptManager {
         Ok((title, html))
     }
 
-    /// 拓展包 `assets/` 里的资源（data URL），给管理器面板的 `codexPlusManager.asset(path)`。
-    pub fn extension_asset(&self, key: &str, path: &str) -> anyhow::Result<String> {
+    /// 拓展自己的设置页（`settings.page`）的 HTML。拓展停用时也能打开：设置不依赖它正在运行。
+    pub fn extension_settings_page(&self, key: &str) -> anyhow::Result<(String, String)> {
+        let package = self.extension_package(key)?;
+        let path = package.settings_page.clone().with_context(|| format!("拓展 {key} 没有声明设置页（settings.page）"))?;
+        let html = fs::read_to_string(&path).with_context(|| format!("读取 {} 失败", path.display()))?;
+        Ok((package.name.clone().unwrap_or_else(|| package.id.clone()), html))
+    }
+    /// 清单无误的拓展包（不论启停）。
+    fn extension_package(&self, key: &str) -> anyhow::Result<ExtensionPackage> {
         let config = self.load_config();
         let package = self
             .scan_script_files(&config)?
             .into_iter()
-            .find(|script| script.key == key && script.enabled)
+            .find(|script| script.key == key)
+            .and_then(|script| script.package)
+            .with_context(|| format!("没有找到拓展包 {key}"))?;
+        if let Some(error) = &package.error {
+            anyhow::bail!("拓展包清单有误：{error}");
+        }
+        Ok(package)
+    }
+    /// 拓展的设置页 / 管理器面板经 `codexPlusManager.call(route, payload)` 调数据路由：
+    /// 只认 [`EXTENSION_PAGE_ROUTES`] 里的、且这个拓展在清单 `permissions.routes` 里声明过的。
+    pub async fn extension_page_route(&self, key: &str, route: &str, payload: &Value) -> anyhow::Result<Value> {
+        if !EXTENSION_PAGE_ROUTES.contains(&route) {
+            anyhow::bail!("设置页不能调用路由 {route}");
+        }
+        let package = self.extension_package(key)?;
+        if !package.routes.iter().any(|item| item == route) {
+            anyhow::bail!("拓展没有在清单 permissions.routes 里声明 {route}");
+        }
+        crate::agent_pet::route(route, payload, &crate::agent_pet::default_cache_dir(), &crate::agent_pet::default_custom_dir())
+            .await
+            .with_context(|| format!("设置页不能调用路由 {route}"))
+    }
+    /// 拓展包 `assets/` 里的资源（data URL），给管理器面板的 `codexPlusManager.asset(path)`。
+    pub fn extension_asset(&self, key: &str, path: &str) -> anyhow::Result<String> {
+        self.extension_asset_for(key, path, true)
+    }
+    /// 同上；`require_enabled` 为 false 时停用的拓展也能取（它的设置页用）。
+    pub fn extension_asset_for(&self, key: &str, path: &str, require_enabled: bool) -> anyhow::Result<String> {
+        let config = self.load_config();
+        let package = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key && (script.enabled || !require_enabled))
             .and_then(|script| script.package)
             .with_context(|| format!("没有找到已启用的拓展包 {key}"))?;
         let normalized = path.trim().trim_start_matches("./");
@@ -1408,6 +1447,8 @@ struct ExtensionPackage {
     dsh: Option<PathBuf>,
     /// 管理器里的拓展面板（codexpp.json 的 `manager`）：包内 HTML 文件、标题、侧栏入口、顶替的管理器页面、可读的数据。
     manager_page: Option<ExtensionManagerPage>,
+    /// 拓展自己的设置页（codexpp.json 的 `settings.page`）：管理器里「设置」打开它，代替通用配置表单。
+    settings_page: Option<PathBuf>,
     /// 页面最早期脚本（codexpp.json 的 `preload`），见 [`crate::extension_launch`]。
     preload: crate::extension_launch::ExtensionPreload,
     /// 启动前后（codexpp.json 的 `launch`），见 [`crate::extension_launch`]。
@@ -1837,6 +1878,7 @@ impl ExtensionPackage {
             "codex": self.codex.summary(),
             "replaces": self.replaces,
             "dsh": self.dsh.is_some(),
+            "settingsPage": self.settings_page.is_some(),
             "managerPage": self.manager_page.as_ref().map(|page| json!({
                 "title": page.title,
                 "nav": page.nav,
@@ -2112,6 +2154,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         replaces: Vec::new(),
         dsh: None,
         manager_page: None,
+        settings_page: None,
         preload: Default::default(),
         launch: Default::default(),
         root: None,
@@ -2132,8 +2175,10 @@ const EXTENSION_MANAGER_PAGE_MAX_BYTES: u64 = 1024 * 1024;
 pub const MANAGER_REPLACEABLE_PAGES: &[&str] = &[
     "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog",
     "overview", "relay", "multiLaunch", "relayEnvironment", "claude", "sessions", "context", "skills", "weixin",
-    "dreamSkin", "pluginMarket", "recommendations", "agentCache", "agentCollaboration", "computerUse", "agentPet",
+    "dreamSkin", "pluginMarket", "recommendations", "agentCache", "agentCollaboration", "computerUse",
 ];
+/// 拓展的设置页 / 管理器面板经 `codexPlusManager.call(route, payload)` 能调的数据路由（还要清单声明）。
+pub const EXTENSION_PAGE_ROUTES: &[&str] = &crate::agent_pet::ROUTES;
 /// 拓展页面经 `codexPlusManager.data(name, params)` 能读的管理器数据（都是只读、不含凭据）。
 pub const MANAGER_DATA_SOURCES: &[&str] = &["requestFlow", "requestLogs", "gatewayUsage", "localSessions"];
 /// 拓展页面的侧栏分组。
@@ -2154,6 +2199,41 @@ struct ExtensionManagerPage {
     data: Vec<String>,
 }
 
+/// 包内的 HTML 页面：必须在包目录内、是 .html 文件、不超过 1 MiB。`field` 只用于报错。
+fn resolve_package_html(root: &std::path::Path, page: &str, field: &str) -> anyhow::Result<PathBuf> {
+    let path = root
+        .join(page)
+        .canonicalize()
+        .with_context(|| format!("{field} 指向的文件不存在：{page}"))?;
+    if !path.starts_with(root) {
+        anyhow::bail!("{field} 必须在拓展包目录内：{page}");
+    }
+    let is_html = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"));
+    if !path.is_file() || !is_html {
+        anyhow::bail!("{field} 必须是 .html 文件：{page}");
+    }
+    if fs::metadata(&path)?.len() > EXTENSION_MANAGER_PAGE_MAX_BYTES {
+        anyhow::bail!("{field} 超过 1 MiB：{page}（图片等资源放进 assets/，在页面里用 codexPlusManager.asset() 取）");
+    }
+    Ok(path)
+}
+/// 解析 `settings: { page }`：拓展自己的设置页，和 manager.page 一样放进沙箱 iframe、用同一套 codexPlusManager 接口。
+fn parse_extension_settings_page(root: &std::path::Path, raw: &Map<String, Value>) -> anyhow::Result<Option<PathBuf>> {
+    let Some(settings) = raw.get("settings") else {
+        return Ok(None);
+    };
+    let page = settings
+        .as_object()
+        .and_then(|settings| settings.get("page"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|page| !page.is_empty())
+        .context("settings 必须是对象且带 page，如 {\"page\": \"settings.html\"}")?;
+    resolve_package_html(root, page, "settings.page").map(Some)
+}
 /// 解析 `manager: { page, title, nav, icon, replaces, data }`：页面必须是包内存在的 .html 文件，不超过 1 MiB。
 fn parse_extension_manager_page(
     root: &std::path::Path,
@@ -2172,23 +2252,7 @@ fn parse_extension_manager_page(
         .map(str::trim)
         .filter(|page| !page.is_empty())
         .context("manager.page 必填：包内的 HTML 文件路径")?;
-    let path = root
-        .join(page)
-        .canonicalize()
-        .with_context(|| format!("manager.page 指向的文件不存在：{page}"))?;
-    if !path.starts_with(root) {
-        anyhow::bail!("manager.page 必须在拓展包目录内：{page}");
-    }
-    let is_html = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"));
-    if !path.is_file() || !is_html {
-        anyhow::bail!("manager.page 必须是 .html 文件：{page}");
-    }
-    if fs::metadata(&path)?.len() > EXTENSION_MANAGER_PAGE_MAX_BYTES {
-        anyhow::bail!("manager.page 超过 1 MiB：{page}（图片等资源放进 assets/，在页面里用 codexPlusManager.asset() 取）");
-    }
+    let path = resolve_package_html(root, page, "manager.page")?;
     let title = manager
         .get("title")
         .and_then(Value::as_str)
@@ -2303,6 +2367,7 @@ fn parse_extension_manifest(
     package.preload = crate::extension_launch::parse_preload(&root, raw.get("preload"))?;
     package.launch = crate::extension_launch::parse_launch(&root, raw.get("launch"))?;
     package.manager_page = parse_extension_manager_page(&root, &raw, package.name.as_deref().unwrap_or(&package.id))?;
+    package.settings_page = parse_extension_settings_page(&root, &raw)?;
     package.renderer = entries
         .iter()
         .map(|entry| resolve_package_entry(&root, entry))

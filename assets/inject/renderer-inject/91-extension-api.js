@@ -52,8 +52,10 @@
     "/request-log/recent",
     // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。
     // 只有启用中的拓展在清单里声明了才干活；供应商 Key 只在 Codex++ 里用。
+    "/agent-pet/catalog",
     "/agent-pet/image",
     "/agent-pet/sound",
+    "/agent-pet/import-sound",
     "/whale/media",
     "/whale/full",
     "/whale/history",
@@ -377,6 +379,14 @@
       /** Codex 设置页左侧导航末尾加一项，点开是 render({ container, close }) 画的页面。 */
       registerSettingsSection(definition, options = {}) {
         return codexPlusRegisterSettingsSection(definition, options);
+      },
+
+      /**
+       * 「拓展」页面里本拓展详情下方的设置面板（每个拓展一个）：render({ container, config, saveConfig }) 每次打开详情都调用，
+       * 可返回清理函数。saveConfig(values) 只存本拓展清单 config 里声明过的项，回生效配置。
+       */
+      registerSettingsPanel(definition, options = {}) {
+        return codexPlusRegisterSettingsPanel(definition, options);
       },
 
       /** 在会话行「更多操作」里加一项。 */

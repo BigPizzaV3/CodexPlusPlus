@@ -397,6 +397,65 @@ pub fn default_cache_dir() -> PathBuf {
     crate::paths::default_app_state_dir().join("agent-pet-cache")
 }
 
+/// Agent 桌宠拓展用的数据路由。Codex 页面里经桥接调用（拓展白名单 + 清单声明），
+/// 管理器里拓展的设置页经 `extension_page_call` 调用（同样要清单声明）。
+pub const ROUTES: [&str; 4] = ["/agent-pet/catalog", "/agent-pet/image", "/agent-pet/sound", "/agent-pet/import-sound"];
+
+/// 图片 / 音效参数来自拓展配置，按原来的设置规则校验（图库 id、音效组、自定义文件名）。
+fn route_pet_settings(payload: &serde_json::Value) -> crate::settings::AgentPetSettings {
+    let mut pet = crate::settings::AgentPetSettings::from_json_lenient(payload);
+    pet.enabled = true;
+    pet.kind = crate::settings::AGENT_PET_KIND_IMAGE.to_string();
+    pet.agents = vec!["codex".to_string()];
+    pet
+}
+
+/// 处理一条桌宠数据路由；不是 [`ROUTES`] 里的路径返回 `None`。失败一律回 `{status:"failed", message}`。
+///
+/// - `/agent-pet/catalog`：图库、可下载音效组、大肥鱼的角色图（设置页用）；
+/// - `/agent-pet/image`：`{ image, customImageUrl }` → 图片 data URI（下载走地址校验与缓存）；
+/// - `/agent-pet/sound`：`{ soundSet, customSoundPress, customSoundRelease }` → 下载组 / 自定义组的音效；
+/// - `/agent-pet/import-sound`：`{ slot, data }`（音频的 base64）→ 复制进自定义音效目录，回文件名。
+pub async fn route(path: &str, payload: &serde_json::Value, cache_dir: &Path, custom_dir: &Path) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let failed = |error: anyhow::Error| json!({ "status": "failed", "message": format!("{error:#}") });
+    Some(match path {
+        "/agent-pet/catalog" => json!({
+            "status": "ok",
+            "images": catalog(),
+            "sounds": sound_catalog(),
+            "whaleImage": crate::assets::whale_default_image_data_uri(),
+        }),
+        "/agent-pet/image" => {
+            let pet = route_pet_settings(payload);
+            match load_image(&pet.image, &pet.custom_image_url, cache_dir).await {
+                Ok(image) => json!({ "status": "ok", "image": image.data_uri, "id": pet.image }),
+                Err(error) => failed(error),
+            }
+        }
+        "/agent-pet/sound" => {
+            let pet = route_pet_settings(payload);
+            match load_sound(&pet.sound_set, &pet.custom_sound_press, &pet.custom_sound_release, cache_dir, custom_dir).await {
+                Ok(sound) => json!({ "status": "ok", "key": sound.key, "press": sound.press, "release": sound.release }),
+                Err(error) => failed(error),
+            }
+        }
+        "/agent-pet/import-sound" => {
+            let slot = payload.get("slot").and_then(serde_json::Value::as_str).unwrap_or_default();
+            let data = payload.get("data").and_then(serde_json::Value::as_str).unwrap_or_default();
+            let result = base64::engine::general_purpose::STANDARD
+                .decode(data.trim())
+                .map_err(|_| anyhow::anyhow!("音频数据编码无效"))
+                .and_then(|bytes| import_custom_sound(slot, &bytes, custom_dir));
+            match result {
+                Ok(file) => json!({ "status": "ok", "file": file }),
+                Err(error) => failed(error),
+            }
+        }
+        _ => return None,
+    })
+}
+
 /// 设置里是否为指定 Agent 开启了桌宠。
 pub fn enabled_for(settings: &crate::settings::AgentPetSettings, agent: &str) -> bool {
     settings.enabled_for(agent)

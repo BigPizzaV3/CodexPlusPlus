@@ -1,5 +1,5 @@
 //! 随 Codex++ 发布的官方拓展包（来源 `bundled`）：Agent 桌宠从内置功能改成了拓展包。
-use codex_plus_core::bundled_extensions::{AGENT_PET_KEY, agent_pet_files, materialize};
+use codex_plus_core::bundled_extensions::{AGENT_PET_KEY, agent_pet_files, agent_pet_settings_html, materialize};
 use codex_plus_core::settings::{AgentPetSettings, BackendSettings};
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -124,4 +124,46 @@ fn bundled_packages_cannot_be_deleted() {
     let manager = manager(temp.path());
     assert!(manager.delete_user_script(AGENT_PET_KEY).is_err());
     assert!(temp.path().join("bundled/agent-pet/codexpp.json").exists());
+}
+
+#[test]
+fn agent_pet_settings_page_inlines_the_shared_settings_ui_and_opens_while_disabled() {
+    let html = agent_pet_settings_html();
+    assert!(!html.contains("/*__AGENT_PET_SETTINGS_SCRIPTS__*/"), "占位要换掉");
+    assert!(html.contains("function createCodexPlusAgentPetSettings(container, host)"));
+    assert!(html.contains("manager.call(route, payload)"));
+    let temp = tempfile::tempdir().unwrap();
+    materialize(&temp.path().join("bundled")).unwrap();
+    let manager = manager(temp.path());
+    let pet = script(&manager, AGENT_PET_KEY);
+    assert_eq!(pet["package"]["settingsPage"], true, "{pet}");
+    // 设置不依赖拓展正在运行：停用时也能打开设置页、取包里的音效。
+    manager.set_script_enabled(AGENT_PET_KEY, false).unwrap();
+    let (title, page) = manager.extension_settings_page(AGENT_PET_KEY).unwrap();
+    assert_eq!(title, "Agent 桌宠");
+    assert_eq!(page, html);
+    assert!(manager.extension_asset_for(AGENT_PET_KEY, "assets/sounds/Ya1.mp3", false).unwrap().starts_with("data:audio/mpeg;base64,"));
+    assert!(manager.extension_asset(AGENT_PET_KEY, "assets/sounds/Ya1.mp3").is_err(), "管理器面板仍要求启用");
+}
+
+#[tokio::test]
+async fn settings_pages_only_call_declared_extension_page_routes() {
+    let temp = tempfile::tempdir().unwrap();
+    materialize(&temp.path().join("bundled")).unwrap();
+    let manager = manager(temp.path());
+    let catalog = manager.extension_page_route(AGENT_PET_KEY, "/agent-pet/catalog", &json!({})).await.unwrap();
+    assert_eq!(catalog["status"], "ok");
+    assert_eq!(catalog["images"][0]["id"], "whale");
+    assert!(catalog["sounds"].as_array().is_some_and(|sounds| !sounds.is_empty()));
+    assert!(catalog["whaleImage"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    // 不开放给拓展页面的路由、没声明的路由都不行。
+    for route in ["/whale/full", "/settings/set", "/user-scripts/set-config"] {
+        let error = manager.extension_page_route(AGENT_PET_KEY, route, &json!({})).await.unwrap_err().to_string();
+        assert!(error.contains("不能调用路由"), "{route}: {error}");
+    }
+    std::fs::create_dir_all(temp.path().join("user/other")).unwrap();
+    std::fs::write(temp.path().join("user/other/codexpp.json"), r#"{"id":"other","renderer":["main.js"],"engines":{"codexpp":1}}"#).unwrap();
+    std::fs::write(temp.path().join("user/other/main.js"), "").unwrap();
+    let error = manager.extension_page_route("user:other", "/agent-pet/catalog", &json!({})).await.unwrap_err().to_string();
+    assert!(error.contains("没有在清单 permissions.routes 里声明"), "{error}");
 }

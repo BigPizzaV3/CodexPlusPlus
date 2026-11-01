@@ -4,9 +4,10 @@
   "version": "1.0.0",
   "description": "Codex 窗口里可拖动的小角色：图片桌宠按下压扁、松开回弹并播放音效；大肥鱼显示用量、余额与泡泡。",
   "engines": { "codexpp": 1 },
-  "renderer": ["pet.js", "whale-compat.js", "whale-engine.js", "whale.js", "main.js"],
+  "renderer": ["pet.js", "whale-compat.js", "whale-engine.js", "whale.js", "settings.js", "main.js"],
+  "settings": { "page": "settings.html" },
   "permissions": {
-    "routes": ["/diagnostics/log", "/agent-pet/image", "/agent-pet/sound", "/whale/media", "/whale/full", "/whale/history", "/whale/session"]
+    "routes": ["/diagnostics/log", "/agent-pet/catalog", "/agent-pet/image", "/agent-pet/sound", "/agent-pet/import-sound", "/whale/media", "/whale/full", "/whale/history", "/whale/session"]
   },
   "config": {
     "kind": { "type": "select", "title": "类型", "options": [{ "value": "image", "label": "图片桌宠" }, { "value": "whaleWidget", "label": "大肥鱼" }], "default": "image" },

@@ -2,7 +2,6 @@ mod agent_collaboration_commands;
 mod extension_creator_commands;
 mod agent_launch_commands;
 mod agent_mcp_commands;
-mod agent_pet_commands;
 mod auto_takeover;
 pub mod commands;
 mod computer_use_commands;
@@ -381,13 +380,6 @@ pub fn run() {
             commands::test_vlm,
             provider_lookup_commands::fetch_provider_models,
             provider_lookup_commands::lookup_model_prices,
-            agent_pet_commands::agent_pet_catalog,
-            agent_pet_commands::agent_pet_image,
-            agent_pet_commands::agent_pet_sounds,
-            agent_pet_commands::agent_pet_sound_catalog,
-            agent_pet_commands::agent_pet_sound,
-            agent_pet_commands::agent_pet_import_sound,
-            agent_pet_commands::agent_pet_whale_image,
             agent_launch_commands::open_agent_terminal,
             agent_mcp_commands::load_agent_mcp,
             agent_mcp_commands::save_agent_mcp,
@@ -524,6 +516,7 @@ pub fn run() {
             commands::update_extension_config_live,
             commands::extension_manager_page,
             commands::extension_manager_asset,
+            commands::extension_page_call,
             commands::extension_manager_backend_call,
             commands::delete_user_script,
             commands::refresh_skill_catalog,

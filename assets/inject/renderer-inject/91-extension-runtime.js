@@ -1154,6 +1154,9 @@
       registerFloatingTab(definition, itemOptions) {
         return track(codexPlusRegisterFloatingTab(definition, registerOptions(itemOptions)));
       },
+      registerSettingsPanel(definition, itemOptions) {
+        return track(codexPlusRegisterSettingsPanel(definition, registerOptions(itemOptions)));
+      },
       registerToolView(definition, itemOptions) {
         const view = codexPlusRegisterToolView(definition, registerOptions(itemOptions));
         const handle = track(view);

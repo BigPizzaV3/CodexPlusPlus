@@ -339,6 +339,11 @@ codexPlus.extension((ctx) => {
 - 读取：页面代码用 `ctx.config`；钩子、网关中间件、工具脚本用第二个参数的 `context.config`。都是生效配置
   （默认值叠加已保存且类型正确的值）的只读快照。
 - 修改：管理器表单保存后自动热重载；对话造拓展可用 `codexpp_extension_configure` 改值。只接受声明过的键，类型不符即报错。
+- 自己画设置界面：表单不够用时（图库、试听、预览……），清单写 `"settings": { "page": "settings.html" }`，管理器里「设置」
+  打开这个页面（和[管理器面板](#管理器面板)同一套沙箱与 `codexPlusManager` 接口，拓展停用时也能打开）；Codex 里
+  「拓展」页面选中这个拓展时，详情下方显示 `ctx.registerSettingsPanel({ render({ container, config, saveConfig }) })` 画的面板，
+  `saveConfig(values)` 只存本拓展声明过的项、回生效配置，可返回清理函数。两边想用同一份界面，就把界面写成一个函数，
+  页面脚本里调一次、设置页里内联一份（官方的 Agent 桌宠拓展就是这样，见 `assets/extensions/agent-pet/settings.js`）。
 - 不重载地接住新配置：`ctx.onConfigUpdate((next, prev) => { 应用 next; return true; })`。管理器保存后先问页面，这个拓展的
   每个实例都返回 `true` 时 `ctx.config` 原地换成新值，不再热重载；有一个实例没接（没注册或返回别的）就照常整体热重载。
 - 多实例：清单写 `"instances": [{ "id": "work", "name": "工作", "config": { "label": "工作区" } }, { "id": "home" }]`，
@@ -830,8 +835,9 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
 - **官方拓展包**：随 Codex++ 一起发布、来源为 `bundled` 的拓展包（脚本 key `bundled:<目录名>`），嵌在程序里，第一次用到时写到
   `<配置目录>/bundled_extensions/` 下，之后和别的拓展包一样扫描、启停、热重载，可以停用、不能删除。目前有「Agent 桌宠」
   （`bundled:agent-pet`，源码在 `assets/extensions/agent-pet/`）：原来的内置桌宠与大肥鱼整体改成了它，页面代码只用公开接口，
-  数据服务是白名单路由 `/agent-pet/image`、`/agent-pet/sound`、`/whale/media`、`/whale/full`、`/whale/history`、`/whale/session`
-  ——这些路由只在有启用中的拓展在清单里声明了它们时才干活，供应商 Key 只在 Codex++ 里用。可以照着它写自己的桌宠。
+  数据服务是白名单路由 `/agent-pet/catalog`、`/agent-pet/image`、`/agent-pet/sound`、`/agent-pet/import-sound`、`/whale/media`、
+  `/whale/full`、`/whale/history`、`/whale/session`——这些路由只在有启用中的拓展在清单里声明了它们时才干活，供应商 Key 只在 Codex++ 里用。
+  它的设置界面也在包里（`settings.js`），Codex「拓展」详情页和管理器「设置」用的是同一份。可以照着它写自己的桌宠。
 - `codexPlus.builtins()` 返回 `[{ id, name, active, disabled, replacedBy }]`：`active` 表示内置拓展实例在用（没停用、没被顶替）；
   有设置项的内置拓展，功能本身是否打开还看那个设置项。「多开身份提示」完全用公开接口（`overlay` 插槽）写成，
   可以当作写法参考；「会话标题中间件」是 `ctx.intercept("session/title", (value, next) => …)` 链：会话首轮结束后以
@@ -1047,6 +1053,7 @@ codexPlus.extension((ctx) => {
 | `theme()` / `onTheme(fn)` | 管理器当前是 `dark` 还是 `light`；`<html data-theme>` 也会跟着设好 |
 | `data(name, params)` | 读清单 `manager.data` 里声明过的只读管理器数据（见下） |
 | `navigate(target)` | 跳到管理器的另一个页面 |
+| `call(route, payload)` | 调本拓展清单 `permissions.routes` 声明过、且开放给拓展页面的 Codex++ 数据路由（目前是 `/agent-pet/*`） |
 
 - 页面放在**沙箱 iframe** 里，只允许脚本：拿不到管理器页面与它的接口，不能弹窗、不能跳转顶层页面。
 - 页面**不能联网**，也不能加载包外的文件（CSP `default-src 'none'`）：脚本、样式写在页面里，图片等资源用 `asset()` 取，
@@ -1066,7 +1073,7 @@ codexPlus.extension((ctx) => {
   `messages`、`paw`、`git-branch`、`wrench`、`settings`、`code`、`layers`，其余用默认图标。
 - `replaces`：顶替的管理器页面（路由 id：`hub`、`gatewayProviders`、`gateway`、`gatewayRouting`、`gatewayUsage`、`gatewaySettings`、
   `requestLog`、`overview`、`relay`、`multiLaunch`、`relayEnvironment`、`claude`、`sessions`、`context`、`skills`、`weixin`、`dreamSkin`、
-  `pluginMarket`、`recommendations`、`agentCache`、`agentCollaboration`、`computerUse`、`agentPet`）。打开这些页面时显示拓展页面，
+  `pluginMarket`、`recommendations`、`agentCache`、`agentCollaboration`、`computerUse`）。打开这些页面时显示拓展页面，
   上方有「查看内置页面」随时切回。「万物皆拓展」「内置拓展」「设置」三页是停用拓展的入口，不能顶替。
 - `data`：页面经 `codexPlusManager.data(name, params)` 能读的只读数据，要先在这里声明：`requestFlow`（最近的请求，`{ limit }`）、
   `requestLogs`（请求日志，`{ limit, sinceMs, agent, relayId, model }`）、`gatewayUsage`（用量统计，`{ range }`）、
@@ -1395,6 +1402,7 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/cdp/targets` | 列出可注入的 Codex 页面（`main` / `avatar-overlay` / `quick-chat`） |
 | `/cdp/evaluate` | 在匹配的 Codex 页面执行 JS 表达式 |
 | `/system/cursor-position` | 系统鼠标位置 `{ x, y }`（与 `window.screenX` 同一坐标系，只读；Windows、macOS） |
+| `/agent-pet/catalog`、`/agent-pet/image`、`/agent-pet/sound`、`/agent-pet/import-sound` | Agent 桌宠的图库、图片、音效与导入自定义音效（拓展要在清单 `permissions.routes` 里声明，且启用中才干活） |
 | `/request-log/recent` | 最近已完成的模型请求 `{ entries }`，按开始时间倒序；`limit` 默认 20、最多 100。每条有 `id`、`model` / `upstreamModel`、`relayName`、`durationMs`、`success`、`statusCode`、`usage.inputTokens` / `outputTokens`、`timestampMs` 等（只读，与托盘「实时请求」同源） |
 
 **写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。

@@ -171,10 +171,7 @@ import {
   type EnhancementSettingItem,
 } from "./enhancement-catalog";
 import { DEFAULT_AUTO_COMPACT_PERCENT, autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
-import { agentPetSettingsIssue, defaultAgentPetSettings, isAgentPetWhaleWidgetActive, normalizeAgentPetSettings, type AgentPetIssue, type AgentPetSettings } from "./agent-pet-settings";
-import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceSettings } from "./whale-settings";
-import { AgentPetPage } from "./AgentPetPage";
-import { AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig, agentPetStateFromExtension, type AgentPetExtensionState } from "./agent-pet-extension";
+import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, type WhaleBalanceSettings } from "./whale-settings";
 import {
   applyDictationPreset,
   defaultDictationSettings,
@@ -427,8 +424,8 @@ type MultiLaunchInstancesResult = CommandResult<{
 /** 顶层的 `codexAppWhaleBalance*` 是大肥鱼（Agent 桌宠类型之一）的余额配置。 */
 type BackendSettings = WhaleBalanceSettings & {
   revision?: string;
-  /** Agent 桌宠（与 Rust `agent_pet` 对应）。 */
-  agentPet: AgentPetSettings;
+  /** 旧版内置桌宠的设置（与 Rust `agent_pet` 对应）。桌宠已改成拓展、设置在拓展配置里，这里只原样带回给后端。 */
+  agentPet?: unknown;
   codexAppPath: string;
   /** 自动接管官方 App（与 Rust `codex_app_auto_takeover` 对应）。 */
   codexAppAutoTakeover: boolean;
@@ -748,6 +745,8 @@ type UserScriptInventory = {
       codex?: { skills?: string[]; agents?: string[]; mcpServers?: string[]; instructions?: boolean; prompts?: string[]; resources?: string[] };
       /** 管理器面板（codexpp.json 的 manager）：可以进侧栏（nav）、顶替内置页面（replaces）、读只读数据（data）。 */
       managerPage?: ManagerPageSummary | null;
+      /** 拓展自己的设置页（codexpp.json 的 settings.page），「设置」打开它而不是通用表单。 */
+      settingsPage?: boolean;
     } | null;
     enabled: boolean;
     status: string;
@@ -1375,7 +1374,7 @@ type ToolId = string;
 /** Codex++ 自己的 logo：与应用图标（src-tauri/icons/icon.png）同一张图。 */
 const APP_LOGO_URL = new URL("./assets/codex-plus-logo.png", import.meta.url).href;
 
-type Route = "overview" | "relay" | "multiLaunch" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "agentPet" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings" | "extension";
+type Route = "overview" | "relay" | "multiLaunch" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings" | "extension";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -1412,8 +1411,6 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // 跨客户端协作属于应用级能力，各工具下共用同一组任务。
   { id: "agentCollaboration", get label() { return t("Agent 协作"); }, icon: GitBranch, badge: "实验" },
   { id: "computerUse", get label() { return t("Computer Use"); }, icon: MousePointerClick, badge: "实验" },
-  // 桌宠服务所有 Agent（目前只接入了 Codex），与具体 Agent 无关，放在「工具」里。
-  { id: "agentPet", get label() { return t("Agent 桌宠"); }, icon: PawPrint },
   // 网关：任意 Agent 经 Codex++ 接入任意供应商，与具体 Agent 无关，是应用级页面。
   { id: "hub", get label() { return t("总览"); }, icon: Waypoints },
   // 先有供应商，再接 Agent；路由是进阶设置，放在 Agent 接入之后。
@@ -1456,7 +1453,7 @@ const lastAgentRoute = new Map<string, Route>();
  * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
  * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
  */
-const globalNavigationRoutes: Route[] = ["extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
+const globalNavigationRoutes: Route[] = ["extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
 /** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
 const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
@@ -1465,10 +1462,7 @@ const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "ses
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
-// Agent 桌宠是官方拓展包，设置页从「万物皆拓展 → 本地拓展」里它那一行的「设置」打开，不再单占侧栏入口。
 const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentCollaboration", "agentCache"];
-/** 不在侧栏、挂在别的入口下的页面：侧栏高亮与面包屑跟着上级入口。 */
-const navParentRoute: Partial<Record<Route, Route>> = { agentPet: "userScripts" };
 /**
  * 只在管理其他 Agent 时才有用的页面：只管理 Codex 时不进侧栏和命令面板。
  * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
@@ -1519,7 +1513,6 @@ const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), las
 
 const defaultSettings: BackendSettings = {
   ...defaultWhaleBalanceSettings(),
-  agentPet: defaultAgentPetSettings(),
   codexAppPath: "",
   codexAppAutoTakeover: false,
   codexAppAutoTakeoverWhenActive: "defer",
@@ -3285,11 +3278,6 @@ export function App() {
 
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
-    const petIssue = agentPetSaveIssue(next);
-    if (petIssue) {
-      showNotice(t("Agent 桌宠"), petIssue, "failed");
-      return;
-    }
     const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(next.dictation));
     if (dictationIssue) {
       showNotice(t("语音输入"), dictationIssue, "failed");
@@ -3309,11 +3297,6 @@ export function App() {
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
     const normalized = normalizeSettings(next);
-    const petIssue = agentPetSaveIssue(normalized);
-    if (petIssue) {
-      showNotice(t("Agent 桌宠"), petIssue, "failed");
-      return null;
-    }
     const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(normalized.dictation));
     if (dictationIssue) {
       showNotice(t("语音输入"), dictationIssue, "failed");
@@ -3338,8 +3321,7 @@ export function App() {
   /// 草稿仍是「有修改」，由页面下一轮再存。
   const autoSaveSettings = async (snapshot: BackendSettings): Promise<AutoSaveOutcome> => {
     const normalized = normalizeSettings(snapshot);
-    const issue = agentPetSaveIssue(normalized)
-      || dictationSettingsValidationMessage(dictationSettingsIssue(normalized.dictation));
+    const issue = dictationSettingsValidationMessage(dictationSettingsIssue(normalized.dictation));
     if (issue) return { status: "invalid", message: issue };
     try {
       const result = await call<SettingsResult>("save_settings", { settings: normalized });
@@ -4792,7 +4774,7 @@ export function App() {
   }, [agentFocus, settings]);
 
   const isGatewayPage = gatewayNavigationRoutes.includes(route);
-  const crumbGroup = navParentRoute[route] ? routeTitle(navParentRoute[route]!) : isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
+  const crumbGroup = isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
   // ⌘K：页面、各 Agent 的页面和常用操作。非当前 Agent 的页面会先切到那个 Agent。
   const paletteCommands: PaletteCommand[] = [];
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
@@ -5066,7 +5048,6 @@ export function App() {
           {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "agentCollaboration" ? <AgentCollaborationPage /> : null}
           {route === "computerUse" ? <ComputerUsePage /> : null}
-          {route === "agentPet" ? <AgentPetExtensionScreen inventory={settings?.user_scripts} actions={actions} /> : null}
           {/* 置顶推荐位只放在网关总览一处，内容与「推荐内容」页同源；各 Agent 的概览不再重复。 */}
           {route === "hub" ? <SponsorBoard ads={ads} actions={actions} /> : null}
           {route === "hub" ? (
@@ -8325,24 +8306,6 @@ function envConflictSourceLabel(source: string): string {
   return source || t("环境变量");
 }
 
-function agentPetValidationMessage(issue: AgentPetIssue | null): string | null {
-  if (issue === "customUrl") return t("自定义图片地址无效，请填写 https:// 开头的图片地址。");
-  return null;
-}
-
-function whaleBalanceValidationMessage(issue: WhaleBalanceIssue | null): string | null {
-  if (issue === "path") return t("请填写供应商同域下的余额接口路径，不包含网址、查询参数或片段。");
-  if (issue === "field") return t("请填写余额字段路径，例如 data.balance 或 data.accounts[0].balance。");
-  if (issue === "currency") return t("币种请使用三位代码，例如 USD 或 CNY。");
-  if (issue === "scale") return t("金额倍率必须是大于 0 且不超过 1e12 的有限数值。");
-  return null;
-}
-
-/** 保存前校验 Agent 桌宠：简单桌宠的自定义图片地址；选了大肥鱼时校验它的自定义余额接口。 */
-function agentPetSaveIssue(settings: BackendSettings): string | null {
-  return agentPetValidationMessage(agentPetSettingsIssue(settings.agentPet))
-    || whaleBalanceValidationMessage(whaleBalanceSettingsIssue(settings, isAgentPetWhaleWidgetActive(settings.agentPet)));
-}
 
 type DictationLocalModelState = {
   phase: string;
@@ -8949,77 +8912,6 @@ const BUILTIN_SETTINGS_TARGETS: Record<string, BuiltinSettingsTarget> = {
   "dream-skin": { route: "dreamSkin" },
   "image-overlay": { route: "agentSettings" },
 };
-
-/// 「Agent 桌宠」页：桌宠是官方拓展包 `bundled:agent-pet`，设置存在它的配置里、开关就是它的启停。
-/// 界面沿用 AgentPetPage；改动防抖后写进拓展配置，Codex 里的桌宠用 onConfigUpdate 原地生效。
-/// embedded：展开在「本地拓展」桌宠那一行下面，启停交给那一行的开关，这里只管配置。
-function AgentPetExtensionScreen({ inventory, actions, embedded = false }: { inventory: UserScriptInventory | undefined; actions: Actions; embedded?: boolean }) {
-  const script = inventory?.scripts?.find((item) => item.key === AGENT_PET_EXTENSION_KEY);
-  // 嵌入时启停不进快照，免得行开关改了之后这里拿旧值又写回去。
-  const snapshotOf = (state: AgentPetExtensionState) => JSON.stringify({ enabled: embedded ? null : state.pet.enabled, config: agentPetExtensionConfig(state) });
-  const [draft, setDraft] = useState<AgentPetExtensionState | null>(null);
-  const [status, setStatus] = useState<AutoSaveState>({ state: "idle" });
-  const saved = useRef<string>("");
-  const actionsRef = useRef(actions);
-  actionsRef.current = actions;
-  // 只在第一次拿到拓展时取它的配置；之后以页面上的草稿为准，免得刷新清单时盖掉正在改的内容。
-  useEffect(() => {
-    if (!script || draft) return;
-    const initial = agentPetStateFromExtension(script.package?.config, script.enabled);
-    saved.current = snapshotOf(initial);
-    setDraft(initial);
-  }, [script, draft]);
-  useEffect(() => {
-    if (!draft) return;
-    const snapshot = snapshotOf(draft);
-    if (snapshot === saved.current) return;
-    const issue = agentPetValidationMessage(agentPetSettingsIssue(draft.pet))
-      || whaleBalanceValidationMessage(whaleBalanceSettingsIssue(draft.whale, isAgentPetWhaleWidgetActive(draft.pet)));
-    if (issue) {
-      setStatus({ state: "invalid", message: issue, retry: () => {} });
-      return;
-    }
-    setStatus({ state: "pending" });
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        setStatus({ state: "saving" });
-        const previous = JSON.parse(saved.current || "{}") as { enabled?: boolean };
-        const configSaved = await actionsRef.current.setExtensionConfig(AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig(draft), { silent: true });
-        if (configSaved && !embedded && previous.enabled !== draft.pet.enabled) await actionsRef.current.setUserScriptEnabled(AGENT_PET_EXTENSION_KEY, draft.pet.enabled);
-        if (configSaved) {
-          saved.current = snapshot;
-          setStatus({ state: "saved" });
-        } else {
-          setStatus({ state: "failed", message: t("桌宠设置没有保存"), retry: () => setDraft((current) => (current ? { ...current } : current)) });
-        }
-      })();
-    }, 600);
-    return () => window.clearTimeout(timer);
-  }, [draft]);
-  if (!script) {
-    return <div className="empty">{t("没有找到 Agent 桌宠拓展。它随 Codex++ 一起安装，请重启 Codex++ 后再打开这一页。")}</div>;
-  }
-  if (!draft) return null;
-  return (
-    <>
-      {!embedded && inventory?.enabled === false ? (
-        <div className="extension-page-banner">
-          <span>{t("「启用本地拓展」整体开关关着，桌宠不会在 Codex 里显示。")}</span>
-          <Button size="sm" variant="ghost" onClick={() => void actions.setUserScriptsEnabled(true)}>{t("启用本地拓展")}</Button>
-        </div>
-      ) : null}
-      <AgentPetPage
-        embedded={embedded}
-        settings={embedded ? { ...draft.pet, enabled: script.enabled } : draft.pet}
-        onChange={(pet) => setDraft((current) => (current ? { ...current, pet } : current))}
-        whaleBalance={draft.whale}
-        onWhaleBalanceChange={(patch) => setDraft((current) => (current ? { ...current, whale: { ...current.whale, ...patch } } : current))}
-        whaleBalanceIssue={whaleBalanceValidationMessage(whaleBalanceSettingsIssue(draft.whale, isAgentPetWhaleWidgetActive(draft.pet)))}
-        autoSave={<div className="enhance-save-actions settings-autosave"><AutoSaveStatus state={status} /></div>}
-      />
-    </>
-  );
-}
 
 /// 一个内置拓展的卡片：开关（就是对应的设置项；没有设置项的记在用户脚本配置里）、
 /// 被拓展顶替时的提示、打开后显示的子选项、有单独配置页的「设置」入口。
@@ -10489,7 +10381,7 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
       ) : (
         <Panel>
           <div className="table">
-            {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} renderSettings={script.key === AGENT_PET_EXTENSION_KEY ? () => <AgentPetExtensionScreen embedded inventory={inventory} actions={actions} /> : undefined} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
+            {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
           </div>
           {inventory?.builtins?.length ? <BuiltinExtensionsSummary builtins={inventory.builtins} onOpen={onOpenBuiltins} /> : null}
         </Panel>
@@ -16677,7 +16569,7 @@ function AppSidebar({
     const item = routes.find((candidate) => candidate.id === routeId);
     if (!item) return null;
     const Icon = item.icon;
-    const selected = route === item.id || navAliasRoute[route] === item.id || navParentRoute[route] === item.id;
+    const selected = route === item.id || navAliasRoute[route] === item.id;
     // 单 Agent 模式：「Agent 接入」只管这一个 Agent，叫「Codex 接入」这样更直白。
     const label = soloAgent && item.id === "gateway" ? tf("{0} 接入", [agentName(soloAgent)]) : item.label;
     return (
@@ -17048,13 +16940,7 @@ function BuiltinExtensionsSummary({ builtins, onOpen }: { builtins: BuiltinExten
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
 /// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
 /// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
-function ScriptRow({ script, globalEnabled, actions, renderSettings }: {
-  script: NonNullable<UserScriptInventory["scripts"]>[number];
-  globalEnabled: boolean;
-  actions: Actions;
-  /** 有专门设置界面的拓展（Agent 桌宠）：「设置」在行下面展开它，而不是通用的配置表单。 */
-  renderSettings?: () => ReactNode;
-}) {
+function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; actions: Actions }) {
   const isPackage = script.kind === "package";
   const source = script.market_id
     ? tf("市场 · {0}", [script.version || t("未知版本")])
@@ -17067,6 +16953,9 @@ function ScriptRow({ script, globalEnabled, actions, renderSettings }: {
   const { label, hint } = localScriptStateLabel(state);
   const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
   const configSchema = script.package?.configSchema ?? [];
+  // 拓展自己的设置页（settings.page）优先，没有时用按清单 config 生成的通用表单。
+  const settingsPage = !!script.package?.settingsPage;
+  const hasSettings = settingsPage || configSchema.length > 0;
   const [configOpen, setConfigOpen] = useState(false);
   // 拓展自己的管理器面板（manager.page），启用时才能打开。
   const managerPage = script.enabled ? script.package?.managerPage ?? null : null;
@@ -17134,16 +17023,24 @@ function ScriptRow({ script, globalEnabled, actions, renderSettings }: {
         <span className="user-script-state-label" data-state={state} title={stateHint}>{label}</span>
       </div>
       <div className="script-row-actions">
-        {configSchema.length || canPublish || canDelete || managerPage ? (
+        {hasSettings ? (
+          <button
+            type="button"
+            className="mg-icon-button"
+            title={configOpen ? t("收起设置") : t("设置")}
+            aria-label={tf("{0} 设置", [displayName])}
+            aria-expanded={configOpen}
+            data-active={configOpen || undefined}
+            onClick={() => setConfigOpen((open) => !open)}
+          >
+            <Settings size={16} />
+          </button>
+        ) : null}
+        {canPublish || canDelete || managerPage ? (
           <Menu label={tf("{0} 的更多操作", [displayName])}>
             {managerPage ? (
               <MenuItem onClick={() => setPanelOpen((open) => !open)}>
                 <span className="user-script-menu-item"><AppWindow className="h-4 w-4" />{panelOpen ? t("收起面板") : t("打开面板")}</span>
-              </MenuItem>
-            ) : null}
-            {configSchema.length ? (
-              <MenuItem onClick={() => setConfigOpen((open) => !open)}>
-                <span className="user-script-menu-item"><Settings className="h-4 w-4" />{configOpen ? t("收起设置") : t("设置")}</span>
               </MenuItem>
             ) : null}
             {canPublish ? (
@@ -17171,8 +17068,16 @@ function ScriptRow({ script, globalEnabled, actions, renderSettings }: {
         onToast={(message) => actions.showExtensionNotice(managerPage.title || displayName, message)}
       />
     ) : null}
-    {configOpen && configSchema.length && renderSettings ? renderSettings() : null}
-    {configOpen && configSchema.length && !renderSettings ? (
+    {configOpen && settingsPage ? (
+      <ExtensionManagerPanel
+        kind="settings"
+        scriptKey={script.key}
+        config={script.package?.config ?? {}}
+        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values, { silent: true })}
+        onToast={(message) => actions.showExtensionNotice(displayName, message)}
+      />
+    ) : null}
+    {configOpen && !settingsPage && configSchema.length ? (
       <ExtensionConfigForm
         fields={configSchema}
         values={script.package?.config ?? {}}
@@ -17283,7 +17188,6 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
     agentCollaboration: t("连接 Codex、DeepSeek Harness 与 Claude Code，派发任务并查看结果。"),
     computerUse: t("复用 Codex 的 Computer Use，通过 MCP 接给 Claude Code、Claude Desktop 与 Codex。"),
-    agentPet: t("在 Agent 窗口里放一个可拖动的小角色，点一下压扁回弹，带按压音效"),
     hub: t("任意 Agent 经 Codex++ 接入任意供应商：谁在用、走哪家、是否健康，一屏看全"),
     gateway: t("选择哪些 Agent 经 Codex++ 网关接入，以及它们默认用哪个模型"),
     gatewayProviders: t("所有接入的 Agent 共用的供应商池，支持多 Key 轮换"),
@@ -18059,8 +17963,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...defaultSettings,
     ...settings,
     ...normalizeWhaleBalanceSettings(settings),
-    // 旧版「Codex 用量挂件」开着、还没有桌宠设置的用户，升级后桌宠开启并选中大肥鱼。
-    agentPet: normalizeAgentPetSettings(settings.agentPet, (settings as { codexAppWhaleWidgetEnabled?: unknown }).codexAppWhaleWidgetEnabled === true),
     ccsDbPath: (settings.ccsDbPath || "").trim(),
     weixinConnectReasoningEffort: (settings.weixinConnectReasoningEffort || "").trim(),
     weixinConnectProjectId: (settings.weixinConnectProjectId || "").trim(),

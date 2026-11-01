@@ -10,8 +10,9 @@ import {
   type ManagerTheme,
 } from "./extension-manager-bridge";
 
-/// 拓展的管理器面板：拓展包 `manager.page` 的 HTML 放进沙箱 iframe，经 postMessage 只调本拓展的配置、后台、资源。
-export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast, dataSources = [], onNavigate, fullPage = false }: {
+/// 拓展的管理器面板：拓展包 `manager.page`（或设置页 `settings.page`）的 HTML 放进沙箱 iframe，
+/// 经 postMessage 只调本拓展的配置、后台、资源和清单声明过的数据路由。
+export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast, dataSources = [], onNavigate, fullPage = false, kind = "manager" }: {
   scriptKey: string;
   config: Record<string, unknown>;
   onSaveConfig: (values: Record<string, unknown>) => Promise<boolean>;
@@ -22,6 +23,8 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
   onNavigate?: (target: string) => boolean;
   /** 作为整页（侧栏入口、顶替内置页面）显示：高度至少占满内容区。 */
   fullPage?: boolean;
+  /** "settings"：拓展自己的设置页（拓展停用时也能打开）。 */
+  kind?: "manager" | "settings";
 }) {
   const frame = useRef<HTMLIFrameElement | null>(null);
   const [page, setPage] = useState<{ title: string; html: string } | null>(null);
@@ -35,11 +38,11 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
   useEffect(() => {
     let cancelled = false;
     setError("");
-    invoke<{ title: string; html: string }>("extension_manager_page", { key: scriptKey })
+    invoke<{ title: string; html: string }>("extension_manager_page", { key: scriptKey, kind })
       .then((result) => { if (!cancelled) setPage(result); })
       .catch((reason) => { if (!cancelled) setError(String(reason)); });
     return () => { cancelled = true; };
-  }, [scriptKey]);
+  }, [scriptKey, kind]);
 
   // 主题跟着管理器外壳（.shell.dark）走，变了推给面板页。
   useEffect(() => {
@@ -70,7 +73,7 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
         config: () => latest.current.config,
         saveConfig: (values) => latest.current.onSaveConfig(values),
         backendCall: (method, params) => invoke("extension_manager_backend_call", { key: scriptKey, method, params }),
-        asset: (path) => invoke<string>("extension_manager_asset", { key: scriptKey, path }),
+        asset: (path) => invoke<string>("extension_manager_asset", { key: scriptKey, path, kind }),
         toast: (message) => latest.current.onToast(message),
         resize: (next) => setHeight(next),
         theme: () => latest.current.theme,
@@ -80,11 +83,12 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
           return invoke(source.command, source.args(params));
         },
         navigate: (next) => latest.current.onNavigate?.(next) ?? false,
+        call: (route, payload) => invoke("extension_page_call", { key: scriptKey, route, payload }),
       }).then((reply) => target.postMessage(reply, "*"));
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [scriptKey]);
+  }, [scriptKey, kind]);
 
   // srcdoc 只随页面内容变（主题变化经消息推送），否则每次换主题都会重载面板。
   const srcdoc = useMemo(() => (page ? managerPanelSrcdoc(page.html, latest.current.theme) : ""), [page]);

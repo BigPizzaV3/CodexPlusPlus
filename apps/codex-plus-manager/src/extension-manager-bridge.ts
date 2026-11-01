@@ -2,7 +2,8 @@
  * 拓展的管理器面板（codexpp.json 的 `manager.page`）：拓展自己的 HTML 放进沙箱 iframe（只给 allow-scripts，
  * 没有同源、弹窗、顶层跳转），页面里拿不到 Tauri 接口，也不能联网（下面的 CSP）；只能经 postMessage 调
  * 宿主开放的几样：本拓展的配置、本拓展的常驻后台、本拓展 assets/ 里的资源、提示条、主题，
- * 以及清单 `manager.data` 声明过的只读管理器数据（`data`）和跳到管理器别的页面（`navigate`）。
+ * 以及清单 `manager.data` 声明过的只读管理器数据（`data`）、跳到管理器别的页面（`navigate`），
+ * 和清单 `permissions.routes` 声明过、开放给拓展页面的 Codex++ 数据路由（`call`，例如桌宠的图库与音效）。
  *
  * 消息格式：页面 → 宿主 `{ __codexPlusManager: 1, id, method, params }`，宿主 → 页面
  * `{ __codexPlusManager: 1, id, ok, value | error }`；宿主主动推的事件 `{ __codexPlusManager: 1, event, value }`。
@@ -22,6 +23,8 @@ export type ManagerBridgeDeps = {
   data?(name: string, params: Record<string, unknown>): Promise<unknown>;
   /** 跳到管理器的另一个页面（路由 id，或 ext:<拓展 key> 打开另一个拓展页面）。 */
   navigate?(target: string): boolean;
+  /** 调本拓展清单声明过的数据路由；没给时 call 方法不可用。 */
+  call?(route: string, payload: Record<string, unknown>): Promise<unknown>;
 };
 
 export type ManagerRequest = { __codexPlusManager: 1; id: number; method: string; params?: unknown };
@@ -81,6 +84,12 @@ export async function handleManagerRequest(request: ManagerRequest, deps: Manage
         if (!deps.data) return fail("这个面板不能读管理器数据");
         return reply(await deps.data(name, record(params.params)));
       }
+      case "call": {
+        const route = typeof params.route === "string" ? params.route.trim() : "";
+        if (!route) return fail("call 需要路由");
+        if (!deps.call) return fail("这个面板不能调用路由");
+        return reply(await deps.call(route, record(params.payload)));
+      }
       case "navigate": {
         const target = typeof params.target === "string" ? params.target.trim() : "";
         if (!target || !deps.navigate) return fail("navigate 需要页面名");
@@ -138,6 +147,7 @@ export const MANAGER_PANEL_BOOTSTRAP = `(() => {
     onTheme: on("theme"),
     data: (name, params) => request("data", { name, params }),
     navigate: (target) => request("navigate", { target }),
+    call: (route, payload) => request("call", { route, payload }),
   });
   const report = () => request("resize", { height: document.documentElement.scrollHeight }).catch(() => {});
   addEventListener("load", report);

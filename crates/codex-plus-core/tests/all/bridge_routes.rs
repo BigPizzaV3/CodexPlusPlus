@@ -42,8 +42,11 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/whale/session", json!({"session_id": "s1"})),
         ("/whale/history", json!({})),
         ("/whale/full", json!({"path":"/dsh-whale/size.json"})),
+        ("/agent-pet/catalog", json!({})),
         ("/agent-pet/image", json!({})),
         ("/agent-pet/sound", json!({})),
+        ("/agent-pet/import-sound", json!({})),
+        ("/user-scripts/set-config", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
         (
@@ -220,7 +223,7 @@ fn agent_pet_context() -> (BridgeContext, std::path::PathBuf, std::path::PathBuf
 #[tokio::test]
 async fn agent_pet_routes_are_disabled_until_an_extension_declares_them() {
     let ctx = test_context();
-    for route in ["/agent-pet/image", "/agent-pet/sound"] {
+    for route in ["/agent-pet/catalog", "/agent-pet/image", "/agent-pet/sound", "/agent-pet/import-sound"] {
         let result = handle_bridge_request(ctx.clone(), route, json!({"image": "fox"})).await;
         assert_eq!(result, json!({"status": "disabled"}), "{route}");
     }
@@ -279,6 +282,27 @@ async fn agent_pet_sound_serves_imported_custom_files_and_reports_missing_ones()
     let result = handle_bridge_request(ctx, "/agent-pet/sound", json!({"soundSet": "custom"})).await;
     assert_eq!(result["status"], "failed");
     assert!(result["message"].as_str().unwrap().contains("还没有选择"), "{result}");
+}
+
+#[tokio::test]
+async fn agent_pet_catalog_and_import_sound_serve_the_settings_ui() {
+    let (ctx, _, custom_dir) = agent_pet_context();
+    let catalog = handle_bridge_request(ctx.clone(), "/agent-pet/catalog", json!({})).await;
+    assert_eq!(catalog["status"], "ok", "{catalog}");
+    assert_eq!(catalog["images"].as_array().unwrap().len(), agent_pet::catalog().len());
+    assert!(catalog["whaleImage"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    use base64::Engine;
+    let wav = base64::engine::general_purpose::STANDARD.encode(b"RIFF\x24\0\0\0WAVEfmt ");
+    let result = handle_bridge_request(ctx.clone(), "/agent-pet/import-sound", json!({"slot": "press", "data": wav})).await;
+    assert_eq!(result["status"], "ok", "{result}");
+    let file = result["file"].as_str().unwrap();
+    assert!(file.starts_with("press-") && file.ends_with(".wav"), "{file}");
+    assert!(custom_dir.join(file).is_file());
+    let text = base64::engine::general_purpose::STANDARD.encode(b"<html></html>");
+    for payload in [json!({"slot": "press", "data": text}), json!({"slot": "press", "data": "!!"}), json!({"slot": "other", "data": wav})] {
+        let result = handle_bridge_request(ctx.clone(), "/agent-pet/import-sound", payload.clone()).await;
+        assert_eq!(result["status"], "failed", "{payload}");
+    }
 }
 
 #[tokio::test]
