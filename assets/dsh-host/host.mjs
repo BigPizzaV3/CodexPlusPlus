@@ -20,11 +20,11 @@ import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
 import {
   AgentRegistry, MIRROR_SERVICES, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
-  createApproval, createGoals, createPlanMode, createSubagents, PLAN_MODE_WRITE_TOOLS, createSessionTelemetry, createSessionTitle, createShellEnv, createSpillStore, createStorage, createTokenMeter, createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
+  createApproval, createAttachments, createFileReferences, createGoals, createPlanMode, createSubagents, PLAN_MODE_WRITE_TOOLS, createSessionTelemetry, createSessionTitle, createShellEnv, createSpillStore, createStorage, createTokenMeter, createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
   createWorkspaceRegistry,
 } from './services.mjs'
 
-const HOST_VERSION = '4'
+const HOST_VERSION = '5'
 const HOST_DIR = dirname(fileURLToPath(import.meta.url))
 const SHIMS = {
   '@deepseek-ai/dsh-tools': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-tools.mjs')).href,
@@ -53,6 +53,10 @@ const SHIMS = {
   '@deepseek-ai/dsh-plan-mode': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-goal': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-subagent': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-attachment': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-file-reference': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-host-webserver': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-mcp-resources': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
 }
 /**
  * 能映射到 Codex 钩子的 dsh 事件。监听器由配套拓展包的钩子脚本经 bridge.mjs 调用，
@@ -67,6 +71,7 @@ export const EVENT_HOOKS = {
   'subagent/start': 'SubagentStart',
   'subagent/end': 'SubagentStop',
   'approval/request': 'PermissionRequest',
+  'workspace/session-stop': 'Stop',
 }
 /**
  * 由会话镜像派发的事件：钩子常驻进程把 Codex 钩子翻成 dsh 会话日志，再按 dsh 的语义发这些事件。
@@ -76,6 +81,7 @@ export const MIRROR_EVENTS = new Set(['session/event', 'session/created', 'agent
 export const MIRROR_HOOKS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'PreCompact', 'PostCompact']
 /** 能对上 Codex++ 网关中间件的事件：agent/request 改模型 / 推理强度，agent/request-error 决定重试。 */
 export const GATEWAY_EVENTS = {
+  'agent/error': 'error',
   'agent/request': 'step',
   'system-prompt/assemble': 'instructions',
   'agent/request-error': 'error',
@@ -95,7 +101,8 @@ const AGENT_LIFECYCLE_EVENTS = new Set(['session/flush', 'session/disposed', 'ag
 export const TOOL_EXECUTE_EVENT = 'tools/execute'
 /** 宿主自己会发的注册变化事件：监听它们不提示「不会触发」。 */
 const HOST_EMITTED_EVENTS = new Set([
-  'tools/change', 'skills/change', 'commands/change', 'system-prompt/change', 'schedule/changed', 'credentials/changed', 'domain/changed',
+  'tools/change', 'skills/change', 'commands/change', 'system-prompt/change', 'schedule/changed', 'domain/changed',
+  'credentials/reference-updated', 'credentials/record-updated', 'goal/changed', 'workspace/session-activity',
   // 宿主的 fs 服务在写 / 改 / 读时发（只管插件自己经 ctx.fs 的读写，管不到 Codex 的工具）。
   'fs/write-intent', 'fs/edit-intent', 'fs/observed',
   'subagent/start', 'subagent/end',
@@ -580,6 +587,11 @@ export class Host {
     /** channel → handler、拦截器：插件经 ctx.connection.rpc 注册，前端半边的 rpc.call 转过来。 */
     this.rpcHandlers = new Map()
     this.rpcInterceptors = []
+    /** path → route、兜底处理：插件经 ctx.webServer 注册的网页路由。 */
+    this.webRoutes = new Map()
+    this.webFallback = undefined
+    /** server → provider：插件经 ctx.mcpResources 注册的 MCP 资源。 */
+    this.mcpResources = new Map()
     const emit = (event, args) => this.emitEvent(event, args)
     this.mirror = new SessionMirror({ dataDir: options.mirrorDir, emit })
     /** 插件经 ctx.webhookRuntime 注册的规则（配套拓展包的后台把 /webhook/<kind> 请求转过来）。 */
@@ -697,11 +709,15 @@ export class Host {
       userQuestions: createUserQuestions((event, args, fallback) => host.waterfall(event, args, fallback)),
       approval: createApproval((event, args, fallback) => host.waterfall(event, args, fallback)),
       jobs: createJobs((event, args) => host.emitEvent(event, args)),
-      workspaceRegistry: createWorkspaceRegistry(),
+      workspaceRegistry: Object.assign(createWorkspaceRegistry(), {
+        /** dsh 的 workspace/session-activity：问插件这个会话正在做什么（waterfall），没人答时为空。 */
+        activity: (request = {}) => host.waterfall('workspace/session-activity', [request], async () => []),
+      }),
       agentDefaultModel: Object.freeze({ provider: 'codex', model: undefined, reasoningEffort: undefined }),
       shellEnv: createShellEnv(),
+      fileReferences: createFileReferences(),
       planMode: (host.planMode ??= createPlanMode()),
-      goals: (host.goals ??= createGoals()),
+      goals: (host.goals ??= createGoals({ emit: (event, args) => host.emitEvent(event, args) })),
       subagents: createSubagents({ emit: (event, args) => host.emitEvent(event, args) }),
       sessionTitle: createSessionTitle(),
       tokenMeter: createTokenMeter(),
@@ -1028,12 +1044,52 @@ export class Host {
     const changed = (event) => queueMicrotask(() => host.emitEvent(event, []))
     const shared = this.sharedServices()
     host.schedules ??= createSchedule(host.dataDir, (event, args) => host.emitEvent(event, args))
-    const storageDomain = createStorageDomain(state.dataDir)
+    const storageDomain = createStorageDomain(state.dataDir, (event, args) => host.emitEvent(event, args))
     const pluginServices = {
-      credentials: createCredentials(state.config),
+      credentials: createCredentials(state.config, { dataDir: state.dataDir, emit: (event, args) => host.emitEvent(event, args) }),
       storageDomain,
       storage: createStorage(storageDomain),
       spillStore: createSpillStore(state.dataDir),
+      attachments: createAttachments(state.dataDir),
+      // 网页路由（dsh 的 webServer）：挂到配套拓展包后台的 /ext/<配套拓展>/<路径>，经 Codex++ 本地代理接收。
+      webServer: {
+        register(route) {
+          if (!route || typeof route.handler !== 'function') return () => {}
+          mapTo(WEBHOOK_TARGET)
+          const path = `/${String(route.path ?? '').replace(/^\/+/, '')}`
+          host.webRoutes.set(path, route)
+          return track(() => {
+            if (host.webRoutes.get(path) === route) host.webRoutes.delete(path)
+          })
+        },
+        registerFallback(handler) {
+          if (typeof handler !== 'function') return () => {}
+          mapTo(WEBHOOK_TARGET)
+          host.webFallback = handler
+          return track(() => {
+            if (host.webFallback === handler) host.webFallback = undefined
+          })
+        },
+        registerUpgrade() {
+          note('webServer.registerUpgrade（WebSocket 升级）在 Codex++ 里不可用')
+          return () => {}
+        },
+        tapIndex: () => () => {},
+        applyIndexTaps: (html) => html,
+        collectIndexInjections: () => [],
+        renderIndex: (html) => html,
+      },
+      // MCP 资源（dsh 的 mcpResources）：经 Codex++ 托管的 dsh 插件 MCP 的 resources/* 暴露给 Codex。
+      mcpResources: {
+        register(server, provider) {
+          if (!provider || typeof provider.request !== 'function') return () => {}
+          const key = String(server)
+          host.mcpResources.set(key, provider)
+          return track(() => {
+            if (host.mcpResources.get(key) === provider) host.mcpResources.delete(key)
+          })
+        },
+      },
       schedule: host.schedules,
       webhookRuntime: {
         ...host.webhooks,
@@ -1840,7 +1896,7 @@ async function serve(registryPath) {
         const instructions = host.instructions()
         reply(id, {
           protocolVersion: typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-06-18',
-          capabilities: { tools: { listChanged: false } },
+          capabilities: { tools: { listChanged: false }, ...(host.mcpResources.size ? { resources: { listChanged: false } } : {}) },
           serverInfo: { name: 'codex-plus-dsh', version: HOST_VERSION },
           ...(instructions ? { instructions } : {}),
         })
@@ -1849,6 +1905,38 @@ async function serve(registryPath) {
       case 'ping':
         reply(id, {})
         return
+      case 'resources/list':
+      case 'resources/templates/list': {
+        // 各插件登记的资源合在一起；URI 前面加上 server，读的时候据此找回提供方。
+        const listKey = method === 'resources/list' ? 'resources' : 'resourceTemplates'
+        const uriKey = method === 'resources/list' ? 'uri' : 'uriTemplate'
+        const items = []
+        for (const [server, provider] of host.mcpResources) {
+          try {
+            const result = await provider.request({ method }, { name: 'resources', callId: `codexpp-${String(id)}` })
+            for (const item of result?.[listKey] ?? []) items.push({ ...item, [uriKey]: `dsh-${server}+${item[uriKey]}` })
+          } catch (error) {
+            console.error(`[dsh-host] ${server} 的 ${method} 失败：${errorText(error)}`)
+          }
+        }
+        reply(id, { [listKey]: items })
+        return
+      }
+      case 'resources/read': {
+        const match = /^dsh-([^+]+)\+(.+)$/.exec(String(params?.uri ?? ''))
+        const provider = match && host.mcpResources.get(match[1])
+        if (!provider) {
+          fail(id, -32602, `未知资源：${params?.uri}`)
+          return
+        }
+        try {
+          const result = await provider.request({ method: 'resources/read', uri: match[2] }, { name: 'resources', callId: `codexpp-${String(id)}` })
+          reply(id, { contents: (result?.contents ?? []).map((item) => ({ ...item, uri: params.uri })) })
+        } catch (error) {
+          fail(id, -32603, errorText(error))
+        }
+        return
+      }
       case 'tools/list':
         reply(id, {
           tools: [...host.tools.values()].filter(({ def }) => host.toolVisible(def.name)).map(({ def }) => ({

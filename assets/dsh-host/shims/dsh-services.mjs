@@ -1,6 +1,6 @@
 // 第二批替身服务对应的 dsh 包：插件多半只 import 里面的品牌构造函数、错误类或抽象类（实例由宿主经 ctx 提供）。
 // dsh-spill、dsh-user-approval、dsh-session-title、dsh-token-meter、dsh-shell-env、dsh-storage、dsh-session-telemetry、
-// dsh-plan-mode、dsh-goal、dsh-subagent 的替身都从这里导出。
+// dsh-plan-mode、dsh-goal、dsh-subagent、dsh-attachment、dsh-file-reference、dsh-host-webserver、dsh-mcp-resources 的替身都从这里导出。
 
 const brand = (value) => String(value)
 
@@ -24,6 +24,18 @@ export class SessionTelemetryBackend extends HostProvided {}
 export class PlanModeController extends HostProvided {}
 export class GoalService extends HostProvided {}
 export class SubagentRuntime extends HostProvided {}
+export class AttachmentStore extends HostProvided {}
+export class FileReferenceService extends HostProvided {}
+export class WebServer extends HostProvided {}
+export class McpResourceRuntime extends HostProvided {}
+
+export class AttachmentError extends Error {
+  constructor(message, code = 'ATTACHMENT_ERROR') {
+    super(message)
+    this.name = 'AttachmentError'
+    this.code = code
+  }
+}
 
 export class SessionTitleInvalidError extends Error {
   constructor(message = '会话标题不合法') {

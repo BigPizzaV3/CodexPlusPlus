@@ -30,6 +30,7 @@ export const SUPPORTED_SERVICES = new Set([
   'connection', 'schedule', 'webhookRuntime', 'jobs', 'workspaceRegistry', 'approval',
   'storage', 'spillStore', 'shellEnv', 'sessionTitle', 'tokenMeter', 'sessionTelemetry',
   'planMode', 'goals', 'subagents',
+  'attachments', 'fileReferences', 'webServer', 'mcpResources',
 ])
 
 /** 只在钩子常驻进程里才「活」的服务：MCP 进程里拿得到，但没有会话事件流入。 */
@@ -1139,14 +1140,39 @@ export function createWeb() {
 }
 
 /** ctx.credentials：引用的是环境变量，取值先看插件配置里同名的键，再看进程环境。 */
-export function createCredentials(config) {
+/**
+ * 凭据（dsh 的 credentials）：先看插件自己存的（set 写在插件数据目录的 credentials.json，权限 600），
+ * 再看插件配置里同名的键，最后看环境变量。写入后发 credentials/reference-updated 与 credentials/record-updated。
+ */
+export function createCredentials(config, { dataDir, emit = () => {} } = {}) {
+  const path = dataDir ? join(dataDir, 'credentials.json') : undefined
+  const readStore = () => {
+    if (!path || !existsSync(path)) return {}
+    try {
+      return JSON.parse(readFileSync(path, 'utf8'))
+    } catch {
+      return {}
+    }
+  }
+  const writeStore = (store) => {
+    if (!path) throw new Error('凭据需要插件数据目录（只在 Codex++ 起的插件进程里可写）')
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(store), { mode: 0o600 })
+  }
+  const nameOf = (ref) => (typeof ref === 'string' ? ref : ref?.name ?? ref?.key)
   const lookup = (ref) => {
-    const name = typeof ref === 'string' ? ref : ref?.name
+    const name = nameOf(ref)
     if (!name) return undefined
+    const stored = readStore()[name]
+    if (typeof stored === 'string' && stored) return { value: stored, source: 'stored' }
     const fromConfig = config && typeof config === 'object' ? config[name] : undefined
     if (typeof fromConfig === 'string' && fromConfig) return { value: fromConfig, source: 'config' }
     if (typeof process.env[name] === 'string' && process.env[name]) return { value: process.env[name], source: 'env' }
     return undefined
+  }
+  const changed = (ref, name) => {
+    emit('credentials/reference-updated', [typeof ref === 'object' && ref ? ref : { name }])
+    emit('credentials/record-updated', [name])
   }
   return {
     async resolve(ref) {
@@ -1154,25 +1180,34 @@ export function createCredentials(config) {
     },
     async describe(ref) {
       const found = lookup(ref)
-      return { configured: Boolean(found), source: found?.source, writable: false }
+      return { configured: Boolean(found), source: found?.source, writable: Boolean(path) }
     },
-    async set() {
-      throw new Error('Codex++ 里不能写 dsh 凭据；请在 dsh 插件的配置里填写，或设置环境变量')
+    async set(ref, value) {
+      const name = nameOf(ref)
+      if (!name) throw new Error('凭据需要 name')
+      writeStore({ ...readStore(), [name]: String(value ?? '') })
+      changed(ref, name)
     },
-    async unset() {
-      throw new Error('Codex++ 里不能写 dsh 凭据')
+    async unset(ref) {
+      const name = nameOf(ref)
+      const store = readStore()
+      if (!name || !(name in store)) return
+      delete store[name]
+      writeStore(store)
+      changed(ref, name)
     },
-    async readRecord() {
-      return undefined
+    async readRecord(key) {
+      const value = readStore()[nameOf(key)]
+      return typeof value === 'string' ? { key: nameOf(key), configured: true } : undefined
     },
     async listRecords() {
-      return []
+      return Object.keys(readStore()).map((key) => ({ key, configured: true }))
     },
   }
 }
 
 /** ctx.storageDomain：每个领域一个 JSON 文件（插件数据目录下），表常驻内存。 */
-export function createStorageDomain(dataDir) {
+export function createStorageDomain(dataDir, emit = () => {}) {
   const open = new Map()
   return {
     async open(spec) {
@@ -1227,11 +1262,15 @@ export function createStorageDomain(dataDir) {
               live()
               map.set(keyOf(key), value)
               await save()
+              emit('domain/changed', [{ domain: name, table: tableName, key: keyOf(key), operation: 'put', value }])
             },
             async delete(key) {
               live()
               const removed = map.delete(keyOf(key))
-              if (removed) await save()
+              if (removed) {
+                await save()
+                emit('domain/changed', [{ domain: name, table: tableName, key: keyOf(key), operation: 'delete' }])
+              }
               return removed
             },
             async update(key, update) {
@@ -1239,6 +1278,7 @@ export function createStorageDomain(dataDir) {
               const next = update(map.get(keyOf(key)))
               map.set(keyOf(key), next)
               await save()
+              emit('domain/changed', [{ domain: name, table: tableName, key: keyOf(key), operation: 'put', value: next }])
               return next
             },
           }
@@ -1811,17 +1851,19 @@ export function createPlanMode() {
  * 目标（dsh 的 goals）：按 agent 记一个目标。目标处于 active 时，Codex 每轮要停下（Stop 钩子）就要求它继续推进，
  * 直到插件 complete / block / pause / clear，或连续推进次数到上限（默认 8 次，避免停不下来）。
  */
-export function createGoals({ maxRounds = 8 } = {}) {
+export function createGoals({ maxRounds = 8, emit = () => {} } = {}) {
   const goals = new WeakMap()
+  const announce = (agent, operation, goal) => emit('goal/changed', [{ agent, change: { kind: 'goal/change', version: 1, operation, ...(operation === 'clear' ? { cleared: { id: goal?.id } } : { goal: freeze({ ...goal }) }) } }])
   const view = (goal) => (goal ? freeze({ ...goal }) : undefined)
   const require = (agent) => {
     const goal = goals.get(agent)
     if (!goal) throw new Error('这个 agent 没有目标')
     return goal
   }
-  const set = (agent, patch) => {
+  const set = (agent, patch, operation = 'edit') => {
     const goal = { ...require(agent), ...patch, updatedAt: Date.now() }
     goals.set(agent, goal)
+    announce(agent, operation, goal)
     return view(goal)
   }
   return {
@@ -1831,13 +1873,14 @@ export function createGoals({ maxRounds = 8 } = {}) {
       if (!objective) throw new Error('目标需要 objective')
       const goal = { id: randomUUID(), objective, status: 'active', rounds: 0, createdAt: Date.now(), updatedAt: Date.now() }
       goals.set(agent, goal)
+      announce(agent, 'create', goal)
       return view(goal)
     },
     edit: (agent, _ref, request = {}) => set(agent, request.objective ? { objective: String(request.objective) } : {}),
-    pause: (agent) => set(agent, { status: 'paused' }),
-    resume: (agent) => set(agent, { status: 'active', rounds: 0 }),
-    complete: (agent) => set(agent, { status: 'complete' }),
-    block: (agent, _ref, reason) => set(agent, { status: 'blocked', reason: typeof reason === 'string' ? reason : reason?.text ?? '' }),
+    pause: (agent) => set(agent, { status: 'paused' }, 'pause'),
+    resume: (agent) => set(agent, { status: 'active', rounds: 0 }, 'resume'),
+    complete: (agent) => set(agent, { status: 'complete' }, 'complete'),
+    block: (agent, _ref, reason) => set(agent, { status: 'blocked', reason: typeof reason === 'string' ? reason : reason?.text ?? '' }, 'block'),
     disarm(agent) {
       const goal = goals.get(agent)
       goals.delete(agent)
@@ -1846,6 +1889,7 @@ export function createGoals({ maxRounds = 8 } = {}) {
     clear(agent) {
       const goal = require(agent)
       goals.delete(agent)
+      announce(agent, 'clear', goal)
       return { id: goal.id }
     },
     /** Stop 钩子里调用：目标还在推进且没到上限时给出要求继续的话，否则 undefined。 */
@@ -1929,4 +1973,114 @@ export function createSubagents({ emit = () => {}, pollMs = 1500, timeoutMs = 15
     },
   }
   return service
+}
+
+// ---------------------------------------------------------------------------
+// 附件、文件引用：本机实现
+// ---------------------------------------------------------------------------
+
+export class AttachmentError extends Error {
+  constructor(message, code = 'ATTACHMENT_ERROR') {
+    super(message)
+    this.name = 'AttachmentError'
+    this.code = code
+  }
+}
+
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
+/** 附件（dsh 的 attachments）：存在插件数据目录的 attachments/ 下，引用里带 id、类型与大小。 */
+export function createAttachments(dataDir) {
+  const root = dataDir ? join(dataDir, 'attachments') : undefined
+  const pathOf = (id) => {
+    if (!root) throw new AttachmentError('附件需要插件数据目录（只在 Codex++ 起的插件进程里可用）', 'NO_STORE')
+    if (!/^[\w-]+$/.test(String(id))) throw new AttachmentError(`附件 id 不合法：${id}`, 'INVALID_ID')
+    return join(root, String(id))
+  }
+  const store = async (data, meta) => {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data ?? [])
+    if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new AttachmentError('附件超过 20 MiB', 'TOO_LARGE')
+    const id = randomUUID()
+    mkdirSync(root ?? pathOf('x'), { recursive: true })
+    await writeFile(pathOf(id), bytes)
+    await writeFile(`${pathOf(id)}.json`, JSON.stringify(meta))
+    return { attachmentId: id, bytes: bytes.byteLength, ...meta }
+  }
+  const service = {
+    async validateImage(input) {
+      if (!IMAGE_TYPES.has(input?.mediaType)) throw new AttachmentError(`不支持的图片类型 ${input?.mediaType}`, 'UNSUPPORTED_TYPE')
+      if ((input?.data?.byteLength ?? 0) > MAX_ATTACHMENT_BYTES) throw new AttachmentError('图片超过 20 MiB', 'TOO_LARGE')
+    },
+    async saveImage(input) {
+      await service.validateImage(input)
+      return store(input.data, { kind: 'image', mediaType: input.mediaType, ...(input.name ? { name: input.name } : {}) })
+    },
+    async saveImages(inputs) {
+      return Promise.all((inputs ?? []).map((input) => service.saveImage(input)))
+    },
+    async readImage(ref) {
+      return { ref, data: new Uint8Array(await readFile(pathOf(ref.attachmentId))) }
+    },
+    async readImageRequest(ref) {
+      const { data } = await service.readImage(ref)
+      return { mediaType: ref.mediaType, data: Buffer.from(data).toString('base64') }
+    },
+    async saveFile(input) {
+      return store(input?.data, { kind: 'file', name: String(input?.name ?? 'file'), ...(input?.mediaType ? { mediaType: input.mediaType } : {}) })
+    },
+    async saveFileStream(input) {
+      const chunks = []
+      for await (const chunk of input?.stream ?? []) chunks.push(Buffer.from(chunk))
+      return service.saveFile({ ...input, data: new Uint8Array(Buffer.concat(chunks)) })
+    },
+    async admitEncodedFile(input) {
+      return service.saveFile({ name: input?.name, mediaType: input?.mediaType, data: new Uint8Array(Buffer.from(String(input?.data ?? ''), 'base64')) })
+    },
+    async admitPromptContent(content) {
+      return [...(content ?? [])]
+    },
+    async *readFileStream(ref) {
+      yield new Uint8Array(await readFile(pathOf(ref.attachmentId)))
+    },
+    imageHostPath: (ref) => (root ? pathOf(ref.attachmentId) : undefined),
+    fileHostPath: (ref) => (root ? pathOf(ref.attachmentId) : undefined),
+    isAttachmentError: (error) => error instanceof AttachmentError,
+  }
+  return service
+}
+
+/**
+ * 文件引用（dsh 的 fileReferences）：在 agent 的工作目录（没有就是进程目录）下按名字找文件，
+ * 跳过 node_modules / .git 等，最多扫 4 层、2000 项。
+ */
+export function createFileReferences() {
+  const SKIP = new Set(['node_modules', '.git', 'dist', 'target', '.next', '.venv', '__pycache__'])
+  return {
+    async list(agent, query, signal) {
+      const base = agent?.session?.cwd || process.cwd()
+      const needle = String(query ?? '').toLowerCase()
+      const found = []
+      let visited = 0
+      const walk = async (dir, depth) => {
+        if (depth > 4 || visited > 2000 || found.length >= 50 || signal?.aborted) return
+        let entries
+        try {
+          entries = await readdir(dir, { withFileTypes: true })
+        } catch {
+          return
+        }
+        for (const entry of entries) {
+          if (visited++ > 2000 || found.length >= 50) return
+          if (SKIP.has(entry.name) || entry.name.startsWith('.')) continue
+          const full = join(dir, entry.name)
+          const rel = full.slice(base.length + 1)
+          if (!needle || rel.toLowerCase().includes(needle)) found.push({ path: rel, kind: entry.isDirectory() ? 'directory' : 'file' })
+          if (entry.isDirectory()) await walk(full, depth + 1)
+        }
+      }
+      await walk(base, 0)
+      return found
+    },
+  }
 }

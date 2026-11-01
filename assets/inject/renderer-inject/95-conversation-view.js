@@ -186,7 +186,8 @@
   }
 
   function scanLightweight() {
-    if (typeof syncCodexPlusTurnRewind === "function") runScanStep(syncCodexPlusTurnRewind);
+    // 轻量扫描里的内置拓展步骤（轮次回退……），同样由内置拓展登记。
+    runCodexPlusScanSteps("light");
     installStyle();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();
@@ -603,7 +604,8 @@
     };
   }
 
-  function scanDeferred() {
+  /** 插件市场解锁的补丁（内置拓展「插件市场解锁」登记成扫描步骤；补丁撤不掉，停用后刷新页面才完全恢复）。 */
+  function installCodexPluginMarketplacePatches() {
     if (codexPluginMarketplacePatchEnabled()) {
       const pluginUnlockStrategy = codexPluginUnlockStrategy();
       const settings = codexPlusSettings();
@@ -622,6 +624,9 @@
         }
       }
     }
+  }
+
+  function scanDeferred() {
     // 内置拓展登记的扫描步骤（桌宠与大肥鱼、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
     runCodexPlusScanSteps();
     refreshThreadIdBadges();
@@ -642,16 +647,24 @@
     return globalThis.__codexPlusScanSteps;
   }
 
-  function registerCodexPlusScanStep(id, step) {
+  /** phase：deferred（默认，跟着完整扫描）或 light（跟着轻量扫描）。 */
+  function registerCodexPlusScanStep(id, step, phase = "deferred") {
     const steps = codexPlusScanSteps();
-    steps.set(id, step);
+    const entry = { step, phase };
+    steps.set(id, entry);
     return () => {
-      if (steps.get(id) === step) steps.delete(id);
+      if (steps.get(id) === entry) steps.delete(id);
     };
   }
 
-  function runCodexPlusScanSteps() {
-    for (const step of [...codexPlusScanSteps().values()]) runScanStep(step);
+  function runCodexPlusScanSteps(phase = "deferred") {
+    for (const entry of [...codexPlusScanSteps().values()]) if (entry.phase === phase) runScanStep(entry.step);
+  }
+
+  /** 只跑某个内置拓展登记的步骤（它没装上时什么也不做）。 */
+  function runCodexPlusScanStep(id) {
+    const entry = codexPlusScanSteps().get(id);
+    if (entry) runScanStep(entry.step);
   }
 
   function runScanStep(step) {

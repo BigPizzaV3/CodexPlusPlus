@@ -1391,8 +1391,9 @@ pub struct ExtensionGatewayMiddleware {
     pub timeout_secs: u64,
     /// 所属拓展的生效配置，作为 context.config 交给脚本。
     pub config: Value,
-    /// 请求中间件跑在哪一段：`request`（默认，Codex++ 自己的转换之前，改原始 Responses 请求）或
-    /// `upstream`（Codex++ 的压缩、路由、协议转换之后，改真正发给上游的请求体）。
+    /// 请求中间件跑在哪一段：`request`（默认，Codex++ 自己的转换之前，改原始 Responses 请求）、
+    /// `upstream`（Codex++ 的压缩、路由、协议转换之后，改真正发给上游的请求体）或
+    /// `route`（轮换选好候选供应商之后，按拓展给的顺序重排 / 筛选候选）。
     #[serde(default)]
     pub stage: String,
     /// 同一段里的先后：越小越先，相同时按拓展顺序。
@@ -1401,7 +1402,7 @@ pub struct ExtensionGatewayMiddleware {
 }
 
 /// 拓展能用 `gateway.replaces` 关掉的 Codex++ 内置网关环节（关掉后拓展自己在 upstream 段里实现）。
-pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &["builtin:local-compaction", "builtin:reasoning-collapse", "builtin:exec-adapt"];
+pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &["builtin:local-compaction", "builtin:reasoning-collapse", "builtin:exec-adapt", "builtin:relay-rotation"];
 
 /// 网关请求中间件的超时上限（秒）：它挡在每一次模型请求前面，不能太久。
 pub const EXTENSION_GATEWAY_MAX_TIMEOUT_SECS: u64 = 10;
@@ -2273,7 +2274,8 @@ fn parse_gateway_middlewares(
                 let stage = match item.get("stage").and_then(Value::as_str) {
                     None | Some("request") => "request",
                     Some("upstream") if kind == "request" => "upstream",
-                    Some(other) => anyhow::bail!("gateway.{kind} 的 stage 只能是 request 或 upstream（只有 request 中间件能用 upstream），不认识 {other}"),
+                    Some("route") if kind == "request" => "route",
+                    Some(other) => anyhow::bail!("gateway.{kind} 的 stage 只能是 request、upstream 或 route（只有 request 中间件能用后两种），不认识 {other}"),
                 };
                 let order = match item.get("order") {
                     None => 0,

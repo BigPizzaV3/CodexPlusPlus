@@ -6431,9 +6431,9 @@
     serviceTierDispatcherPatchPromise = patch();
   }
 
-  // 保留旧调用入口，语音能力由独立的 opt-in 控件提供。
+  // 保留旧调用入口，语音能力由独立的 opt-in 控件提供（内置拓展「语音听写」登记的步骤）。
   function installDictationSupportPatch() {
-    installCodexPlusDictation();
+    if (typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("dictation");
   }
 
   const codexAppServerPreparationTimeoutMs = 2000;
@@ -6487,7 +6487,8 @@
     }
     // 设置已加载成功；语音 UI 的异常不应使 provider/Fast 刷新误判为失败。
     // service-tier harness 在 70 分片提前返回，尚未初始化 93 分片的录音状态。
-    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__) runScanStep(installCodexPlusDictation);
+    // 语音听写由内置拓展「语音听写」登记成扫描步骤；它停用 / 被顶替时这里什么也不做。
+    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__ && typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("dictation");
     return true;
   }
   // 原生准备会话时会读取本地配置；该 fetch 没有默认超时，丢失响应会同时
@@ -14181,7 +14182,8 @@
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
       codexPlusModelPickerScan();
-      codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
+      // 内置拓展「模型分组」停用 / 被顶替时，扫描清理完就停下轮询；装回来时由它的 sync 重新开始。
+      if (!globalThis?.__codexPlusBuiltinInactive?.has("model-picker-groups")) codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
     }, delay);
   }
 
@@ -24168,7 +24170,8 @@
   }
 
   function scanLightweight() {
-    if (typeof syncCodexPlusTurnRewind === "function") runScanStep(syncCodexPlusTurnRewind);
+    // 轻量扫描里的内置拓展步骤（轮次回退……），同样由内置拓展登记。
+    runCodexPlusScanSteps("light");
     installStyle();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();
@@ -24585,7 +24588,8 @@
     };
   }
 
-  function scanDeferred() {
+  /** 插件市场解锁的补丁（内置拓展「插件市场解锁」登记成扫描步骤；补丁撤不掉，停用后刷新页面才完全恢复）。 */
+  function installCodexPluginMarketplacePatches() {
     if (codexPluginMarketplacePatchEnabled()) {
       const pluginUnlockStrategy = codexPluginUnlockStrategy();
       const settings = codexPlusSettings();
@@ -24604,6 +24608,9 @@
         }
       }
     }
+  }
+
+  function scanDeferred() {
     // 内置拓展登记的扫描步骤（桌宠与大肥鱼、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
     runCodexPlusScanSteps();
     refreshThreadIdBadges();
@@ -24624,16 +24631,24 @@
     return globalThis.__codexPlusScanSteps;
   }
 
-  function registerCodexPlusScanStep(id, step) {
+  /** phase：deferred（默认，跟着完整扫描）或 light（跟着轻量扫描）。 */
+  function registerCodexPlusScanStep(id, step, phase = "deferred") {
     const steps = codexPlusScanSteps();
-    steps.set(id, step);
+    const entry = { step, phase };
+    steps.set(id, entry);
     return () => {
-      if (steps.get(id) === step) steps.delete(id);
+      if (steps.get(id) === entry) steps.delete(id);
     };
   }
 
-  function runCodexPlusScanSteps() {
-    for (const step of [...codexPlusScanSteps().values()]) runScanStep(step);
+  function runCodexPlusScanSteps(phase = "deferred") {
+    for (const entry of [...codexPlusScanSteps().values()]) if (entry.phase === phase) runScanStep(entry.step);
+  }
+
+  /** 只跑某个内置拓展登记的步骤（它没装上时什么也不做）。 */
+  function runCodexPlusScanStep(id) {
+    const entry = codexPlusScanSteps().get(id);
+    if (entry) runScanStep(entry.step);
   }
 
   function runScanStep(step) {
@@ -25295,8 +25310,8 @@
       // 大肥鱼（96-whale-widget.js）是桌宠的一种类型，跟着这个内置拓展一起扫描、一起撤下。
       { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusPetKinds(), scan: () => syncCodexPlusPetKinds(), apply: codexPlusAgentPetExtension },
       { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
-      { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
-      { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
+      { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation(), scan: () => installCodexPlusDictation() },
+      { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind(), scan: () => syncCodexPlusTurnRewind(), phase: "light" },
       // 打字特效的全局监听只在拓展装上时挂，卸下时摘掉。
       { id: "typing-effects", name: "打字特效", sync: () => syncCodexPlusTypingEffects(), apply: (ctx) => ctx.effect(() => {
         installCodexPlusTypingEffects();
@@ -25307,9 +25322,10 @@
       { id: "capacity-auto-retry", name: "容量不足自动重试" },
       { id: "proxy-request-status", name: "请求状态条", sync: () => window.__codexPlusProxyRequestStatusRuntime?.refresh?.(), apply: codexPlusProxyStatusExtension },
       { id: "session-share", name: "会话分享", sync: () => installSessionShareButton() },
-      { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.scan?.() },
+      // 自带轮询：停用时扫描清理完就停，sync 在装上时重新开始轮询。
+      { id: "model-picker-groups", name: "模型分组", sync: () => window.__codexPlusModelPickerGroupsRuntime?.sync?.() },
       { id: "dream-skin", name: "梦皮主题", sync: () => refreshDreamSkin(), scan: () => refreshDreamSkin() },
-      { id: "plugin-market-unlock", name: "插件市场解锁" },
+      { id: "plugin-market-unlock", name: "插件市场解锁", scan: () => installCodexPluginMarketplacePatches() },
       { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
       { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
       // 以下几项的开关都经 codexPlusSettings() 读（停用时对应设置项读成关），切换后补一轮扫描让界面跟上。
@@ -25416,7 +25432,7 @@
                 inactive.add(definition.id);
                 codexPlusRunBuiltinSync(definition);
               });
-              if (typeof definition.scan === "function") ctx.effect(() => registerCodexPlusScanStep(definition.id, definition.scan));
+              if (typeof definition.scan === "function") ctx.effect(() => registerCodexPlusScanStep(definition.id, definition.scan, definition.phase));
               if (typeof definition.apply === "function") definition.apply(ctx);
               codexPlusRunBuiltinSync(definition);
             },

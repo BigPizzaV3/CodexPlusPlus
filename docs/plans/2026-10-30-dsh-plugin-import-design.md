@@ -262,5 +262,21 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 | `subagents` | `start` / `prompt` 新建一个 Codex 会话跑子任务并等它结束，发 `subagent/start` / `subagent/end`；`interrupt`、`sendMessage`、`listChildren` 可用 | 不是 Codex 原生子 agent 树；provider 只有 codex |
 | `fs/write-intent` / `fs/edit-intent` / `fs/observed` | 宿主的 fs 服务写 / 改前先问插件，读到 / 确认不存在时发观察 | 只管插件自己经 `ctx.fs` 的读写，管不到 Codex 的工具 |
 
-仍未做（原因）：`workflowEngine`、`ptcRuntime`（dsh 自己的工作流 DSL 与执行环境，建在它的 agent 循环上）、typert 类型化 RPC（依赖 zod schema 注册与 dsh Web 客户端的 remote；前后端通信可用 `connection.rpc`）、`mcpResources`（Codex 自己连 MCP 读资源）、`webServer`（webhook 路由已覆盖收请求的场景）、Service 类与 Cordis 的 isolate。
+仍未做（原因）：`workflowEngine`、`ptcRuntime`（dsh 自己的工作流 DSL 与执行环境，建在它的 agent 循环上）、typert 类型化 RPC（依赖 zod schema 注册与 dsh Web 客户端的 remote；前后端通信可用 `connection.rpc`）、Service 类与 Cordis 的 isolate。（`mcpResources`、`webServer` 见第 12 节。）
+
+## 12. 第七期：零碎事件、附件 / 文件引用 / 网页路由 / MCP 资源（2026-11-01）
+
+| dsh 能力 | 落点 | 差别 |
+|---|---|---|
+| `agent/error` | 经 Codex++ 代理的请求失败时，网关失败重试带上请求所属会话（`prompt_cache_key`），先发 `agent/error` 再问 `agent/request-error`（后者现在也拿得到 agent） | 只对经代理的请求生效 |
+| `workspace/session-stop` / `workspace/session-activity` | 前者在 Stop 钩子里发；后者经 `ctx.workspaceRegistry.activity()` 跑 waterfall | |
+| `goal/changed` | `ctx.goals` 每次创建 / 编辑 / 暂停 / 恢复 / 完成 / 阻塞 / 清除时发 | |
+| `domain/changed` | `ctx.storageDomain` 的 put / delete / update 后发 | |
+| `credentials/reference-updated` / `record-updated` | `ctx.credentials.set / unset` 可写了（插件数据目录的 credentials.json，权限 600），写入后发；读取顺序：插件存的 → 插件配置 → 环境变量 | |
+| `attachments` | 存在插件数据目录的 attachments/，图片类型与 20 MiB 上限校验，`readImageRequest` 给出 base64 | |
+| `fileReferences` | 在 agent 的工作目录下按名字找文件（4 层、2000 项、跳过 node_modules / .git 等） | |
+| `webServer` | `register` / `registerFallback` 的路由挂到配套拓展包后台 HTTP（`/ext/<配套拓展>/<路径>`），处理器拿到 Node 风格的 req / res | 没有 WebSocket 升级；首页注入相关方法是空操作 |
+| `mcpResources` | 插件登记的资源经 dsh 插件 MCP 的 `resources/list`、`resources/templates/list`、`resources/read` 暴露给 Codex，URI 前加 `dsh-<server>+` | |
+
+另外：拓展网关中间件新增 `stage: "route"`（轮换选好候选供应商后重排 / 筛选），`gateway.replaces` 可关 `builtin:relay-rotation`（不再自动换下一个供应商）。内置拓展「语音听写」「轮次回退」「插件市场解锁」的工作改由拓展登记的扫描步骤做，「模型分组」停用后不再轮询。
 
