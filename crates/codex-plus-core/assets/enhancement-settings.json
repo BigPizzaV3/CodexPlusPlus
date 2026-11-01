@@ -259,24 +259,6 @@
       "surfaces": ["manager", "codex"]
     },
     {
-      "key": "codexAppUsageStatusLine",
-      "builtin": "usage-statusline",
-      "group": "chat",
-      "control": "bool",
-      "title": "用量状态栏",
-      "description": "在输入框下方显示输出吞吐、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。",
-      "surfaces": ["manager", "codex"]
-    },
-    {
-      "key": "codexAppProxyRequestStatus",
-      "builtin": "proxy-request-status",
-      "group": "chat",
-      "control": "bool",
-      "title": "请求状态条",
-      "description": "请求经 Codex++ 网关或本地代理时，在输入框上方显示正在请求、等待返回、重试和生成进度。关闭后不再显示，也不再查询请求状态。",
-      "surfaces": ["manager", "codex"]
-    },
-    {
       "key": "codexAppActivityOverlayRight",
       "builtin": "activity-overlay-right",
       "group": "pet",

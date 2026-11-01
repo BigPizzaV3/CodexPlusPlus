@@ -3,10 +3,12 @@
 //! 包的文件嵌在程序里，第一次用到用户脚本管理器时写到配置目录的 `bundled_extensions/` 下（内容没变不重写），
 //! 之后和别的拓展包一样被扫描、启停、热重载。用户不能删，可以停用。
 //!
-//! 目前有三个，都是原来的内置功能整体改成的拓展，页面逻辑只用公开拓展接口：
+//! 目前有五个，都是原来的内置功能整体改成的拓展，页面逻辑只用公开拓展接口：
 //! - 「Agent 桌宠」（`agent-pet`）：图片桌宠 + 大肥鱼；Codex++ 核心只留数据服务（图片 / 音效下载、大肥鱼的余额、用量与图库）。
 //! - 「打字特效」（`typing-effects`）：纯页面功能，不用任何后端路由。
 //! - 「背景图」（`image-overlay`）：核心只留读图路由 `/image-overlay/image`（只读本拓展配置里的那张本机图片）。
+//! - 「用量状态栏」（`usage-statusline`）：取数走拓展白名单里的只读路由 `/thread-usage-live`。
+//! - 「请求状态条」（`proxy-request-status`）：取数走拓展白名单里的只读路由 `/proxy-status`。
 use std::path::Path;
 
 use anyhow::Context;
@@ -23,6 +25,24 @@ pub const TYPING_EFFECTS_KEY: &str = "bundled:typing-effects";
 /// 背景图拓展包。
 pub const IMAGE_OVERLAY_DIR: &str = "image-overlay";
 pub const IMAGE_OVERLAY_KEY: &str = "bundled:image-overlay";
+/// 用量状态栏拓展包。
+pub const USAGE_STATUSLINE_DIR: &str = "usage-statusline";
+pub const USAGE_STATUSLINE_KEY: &str = "bundled:usage-statusline";
+/// 请求状态条拓展包。
+pub const PROXY_REQUEST_STATUS_DIR: &str = "proxy-request-status";
+pub const PROXY_REQUEST_STATUS_KEY: &str = "bundled:proxy-request-status";
+
+/// 改成官方拓展包的内置拓展：(原内置拓展 id, 接替它的官方拓展包 key)。第三方拓展包清单里
+/// `replaces` 写原 id 仍然有效，它启用时对应的官方拓展包让位（见 `UserScriptManager` 的扫描）。
+pub const RETIRED_BUILTINS: &[(&str, &str)] = &[
+    ("usage-statusline", USAGE_STATUSLINE_KEY),
+    ("proxy-request-status", PROXY_REQUEST_STATUS_KEY),
+];
+
+/// 原内置拓展 id 现在由哪个官方拓展包接替。
+pub fn retired_builtin_key(id: &str) -> Option<&'static str> {
+    RETIRED_BUILTINS.iter().find(|(retired, _)| *retired == id).map(|(_, key)| *key)
+}
 
 const TYPING_EFFECTS_MANIFEST: &str = include_str!("../../../assets/extensions/typing-effects/codexpp.json");
 const TYPING_EFFECTS_ENGINE: &str = include_str!("../../../assets/extensions/typing-effects/effects.js");
@@ -30,6 +50,12 @@ const TYPING_EFFECTS_MAIN: &str = include_str!("../../../assets/extensions/typin
 const IMAGE_OVERLAY_MANIFEST: &str = include_str!("../../../assets/extensions/image-overlay/codexpp.json");
 const IMAGE_OVERLAY_ENGINE: &str = include_str!("../../../assets/extensions/image-overlay/overlay.js");
 const IMAGE_OVERLAY_MAIN: &str = include_str!("../../../assets/extensions/image-overlay/main.js");
+const USAGE_STATUSLINE_MANIFEST: &str = include_str!("../../../assets/extensions/usage-statusline/codexpp.json");
+const USAGE_STATUSLINE_ENGINE: &str = include_str!("../../../assets/extensions/usage-statusline/statusline.js");
+const USAGE_STATUSLINE_MAIN: &str = include_str!("../../../assets/extensions/usage-statusline/main.js");
+const PROXY_REQUEST_STATUS_MANIFEST: &str = include_str!("../../../assets/extensions/proxy-request-status/codexpp.json");
+const PROXY_REQUEST_STATUS_ENGINE: &str = include_str!("../../../assets/extensions/proxy-request-status/status.js");
+const PROXY_REQUEST_STATUS_MAIN: &str = include_str!("../../../assets/extensions/proxy-request-status/main.js");
 
 const AGENT_PET_MANIFEST: &str = include_str!("../../../assets/extensions/agent-pet/codexpp.json");
 const AGENT_PET_PET: &str = include_str!("../../../assets/extensions/agent-pet/pet.js");
@@ -100,12 +126,32 @@ pub fn image_overlay_files() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+/// 用量状态栏拓展包的全部文件。
+pub fn usage_statusline_files() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("codexpp.json", USAGE_STATUSLINE_MANIFEST.as_bytes().to_vec()),
+        ("statusline.js", USAGE_STATUSLINE_ENGINE.as_bytes().to_vec()),
+        ("main.js", USAGE_STATUSLINE_MAIN.as_bytes().to_vec()),
+    ]
+}
+
+/// 请求状态条拓展包的全部文件。
+pub fn proxy_request_status_files() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("codexpp.json", PROXY_REQUEST_STATUS_MANIFEST.as_bytes().to_vec()),
+        ("status.js", PROXY_REQUEST_STATUS_ENGINE.as_bytes().to_vec()),
+        ("main.js", PROXY_REQUEST_STATUS_MAIN.as_bytes().to_vec()),
+    ]
+}
+
 /// 全部官方拓展包：(目录名, 包内文件)。
 pub fn packages() -> Vec<(&'static str, Vec<(&'static str, Vec<u8>)>)> {
     vec![
         (AGENT_PET_DIR, agent_pet_files()),
         (TYPING_EFFECTS_DIR, typing_effects_files()),
         (IMAGE_OVERLAY_DIR, image_overlay_files()),
+        (USAGE_STATUSLINE_DIR, usage_statusline_files()),
+        (PROXY_REQUEST_STATUS_DIR, proxy_request_status_files()),
     ]
 }
 
@@ -169,6 +215,16 @@ pub fn image_overlay_migration(settings: &crate::settings::BackendSettings) -> (
         "fitMode": settings.codex_app_image_overlay_fit_mode,
     });
     (value.as_object().cloned().unwrap_or_default(), enabled)
+}
+
+/// 原来的用量状态栏开关（`codexAppUsageStatusLine`，默认开）换算成用量状态栏拓展的 (配置, 是否启用)。没有配置项。
+pub fn usage_statusline_migration(settings: &crate::settings::BackendSettings) -> (Map<String, Value>, bool) {
+    (Map::new(), settings.codex_app_usage_status_line)
+}
+
+/// 原来的请求状态条开关（`codexAppProxyRequestStatus`，默认开）换算成请求状态条拓展的 (配置, 是否启用)。没有配置项。
+pub fn proxy_request_status_migration(settings: &crate::settings::BackendSettings) -> (Map<String, Value>, bool) {
+    (Map::new(), settings.codex_app_proxy_request_status)
 }
 
 /// 背景图最大读多大：图片整张以 data URI 经桥接交给页面，过大的图会拖慢 Codex。

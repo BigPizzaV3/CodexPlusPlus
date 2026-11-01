@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-// 内置拓展挂在拓展内核上：扫描步骤由拓展登记、卸下即撤；打字特效的全局监听随拓展装卸；内置数据作为服务提供。
+// 内置拓展挂在拓展内核上：扫描步骤由拓展登记、卸下即撤。
+// 用量状态栏、请求状态条的数据服务改由官方拓展包提供，见 status-bar-packages.test.ts。
 const read = (name: string) => readFileSync(new URL(`../../../assets/inject/renderer-inject/${name}`, import.meta.url), "utf8");
 const builtins = read("96-builtin-extensions.js");
 const scan = read("95-conversation-view.js");
@@ -64,11 +65,6 @@ function harness(windowState: Record<string, unknown> = {}) {
     syncCodexPlusCapacityAutoRetry: () => calls.push("capacity:sync"),
     syncWeixinDesktopThreads: async () => { calls.push("weixin:sync"); },
     codexPlusSettings: () => ({ conversationView: false }),
-    codexPlusUsageState: { cache: new Map([["t1", [{ total_tokens: 10 }]]]) },
-    codexPlusUsageSnapshot: (events: unknown[] | undefined) => (events ? { events: events.length } : null),
-    codexPlusProxyStatusState: { requests: [{ id: "r1" }] },
-    codexPlusProxyStatusPostWithTimeout: async () => ({ status: "ok", requests: [{ id: "r2" }] }),
-    codexPlusCurrentSessionId: () => "t1",
   };
   // 其余被引用的功能函数一律当作无副作用的桩。
   const scope = new Proxy(known, {
@@ -120,17 +116,6 @@ test("内置拓展装上时登记扫描步骤；停用后撤掉", () => {
   calls.length = 0;
   api.runSteps();
   assert.ok(!calls.includes("dream:refresh"));
-});
-
-test("内置数据作为服务提供，界面那一层被顶替也能拿到", async () => {
-  (globalThis as any).__codexPlusScanSteps = undefined;
-  const { api, services } = harness();
-  api.sync();
-  assert.equal(services.get("codexpp.usage")?.owner, "builtin");
-  assert.deepEqual(services.get("codexpp.usage")?.value.cached(), { events: 1 }, "默认取当前会话");
-  assert.equal(services.get("codexpp.usage")?.value.cached("nope"), null);
-  assert.deepEqual(services.get("codexpp.proxyStatus")?.value.requests(), [{ id: "r1" }]);
-  assert.deepEqual(await services.get("codexpp.proxyStatus")?.value.fetch(), [{ id: "r2" }]);
 });
 
 test("读到设置后由内置拓展经 settings/loaded 自己刷新；停用后不再收到", () => {

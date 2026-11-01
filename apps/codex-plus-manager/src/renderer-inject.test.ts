@@ -2744,8 +2744,12 @@ describe("拓展接口层", () => {
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
     assert.ok(routes.includes("/request-log/recent"), "只读的最近请求日志应开放给拓展");
-    for (const forbidden of ["/proxy-status"]) {
-      assert.ok(!routes.includes(forbidden), `${forbidden} 只给内置状态条用`);
+    for (const route of ["/proxy-status", "/thread-usage-live", "/backend/status", "/settings/public", "/model-catalog/public"]) {
+      assert.ok(routes.includes(route), `只读的 ${route} 应开放给拓展`);
+    }
+    // 原始模型目录带供应商地址与本机路径，拓展只能拿 /model-catalog/public 的脱敏版本。
+    for (const forbidden of ["/codex-model-catalog", "/codex-config-model"]) {
+      assert.ok(!routes.includes(forbidden), `${forbidden} 不应开放给拓展`);
     }
   });
 

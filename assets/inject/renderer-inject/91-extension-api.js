@@ -50,6 +50,16 @@
     "/system/cursor-position",
     // 只读：最近已完成的模型请求（模型、耗时、供应商、token、成败），写「请求提示」这类功能用。
     "/request-log/recent",
+    // 只读：进行中的模型请求（阶段、首字耗时、重试），与内置请求状态条同源。
+    "/proxy-status",
+    // 只读：当前会话最近的 token 事件（读 rollout 尾部，可秒级轮询），与内置用量状态栏同源。
+    "/thread-usage-live",
+    // 只读：Codex++ 版本与连接状态。
+    "/backend/status",
+    // 只读：设置的公开子集（当前供应商的名称、模式、模型、上下文窗口），不含地址、Key 与配置内容。
+    "/settings/public",
+    // 只读：模型目录（模型列表与每模型元数据，含上下文窗口），去掉了来源地址与本机路径。
+    "/model-catalog/public",
     // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。
     // 只有启用中的拓展在清单里声明了才干活；供应商 Key 只在 Codex++ 里用。
     "/agent-pet/catalog",

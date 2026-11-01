@@ -29,15 +29,14 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      // Agent 桌宠（含大肥鱼）已改成随 Codex++ 发布的官方拓展包（bundled:agent-pet），不再是内置拓展。
-      { id: "usage-statusline", name: "用量状态栏", apply: codexPlusUsageStatusLineExtension },
+      // Agent 桌宠（含大肥鱼）、用量状态栏、请求状态条已改成随 Codex++ 发布的官方拓展包（bundled:agent-pet、
+      // bundled:usage-statusline、bundled:proxy-request-status），不再是内置拓展。
       { id: "dictation", name: "语音听写", apply: codexPlusDictationExtension },
       { id: "turn-rewind", name: "轮次回退", apply: codexPlusTurnRewindExtension },
       { id: "side-chat-save", name: "侧聊保存", apply: codexPlusSideChatSaveExtension },
       // 由 Rust 经 CDP 驱动，页面侧只登记；被顶替时 Rust 侧不再补载，顶替它的拓展订阅 codexpp/session-index-repaired 自己做。
       { id: "history-turn-recovery", name: "历史轮次补全" },
       { id: "capacity-auto-retry", name: "容量不足自动重试", apply: codexPlusCapacityAutoRetryExtension },
-      { id: "proxy-request-status", name: "请求状态条", apply: codexPlusProxyStatusExtension },
       { id: "model-picker-groups", name: "模型分组", apply: codexPlusModelPickerGroupsExtension },
       { id: "dream-skin", name: "梦皮主题", apply: codexPlusDreamSkinExtension },
       { id: "plugin-market-unlock", name: "插件市场解锁", apply: codexPlusPluginMarketUnlockExtension },
@@ -86,33 +85,11 @@
   });
   const codexPlusBuiltinExtensionHandles = window.__codexPlusBuiltinExtensionHandles = new Map();
 
-  /**
-   * 内置功能的数据作为服务提供（不随界面那一层的内置拓展装卸）：用 replaces 顶替用量状态栏、请求状态条的拓展
-   * 也能 inject 这些数据，自己画界面。
-   *   codexpp.usage：cached(threadId) → { speed, cache, context, stale, modelContextWindow } | null（状态栏取过数据的会话）
-   *   codexpp.proxyStatus：requests() → 最近一次轮询到的代理请求；fetch() → 立即问一次 Codex++
-   */
-  function installCodexPlusBuiltinDataServices() {
-    if (codexPlusServices.has("codexpp.usage")) return;
-    codexPlusProvideService("codexpp.usage", Object.freeze({
-      cached: (threadId) => codexPlusUsageSnapshot(codexPlusUsageState.cache.get(String(threadId || codexPlusCurrentSessionId()))),
-    }), "builtin");
-    codexPlusProvideService("codexpp.proxyStatus", Object.freeze({
-      requests: () => [...(codexPlusProxyStatusState.requests ?? [])],
-      async fetch() {
-        const result = await codexPlusProxyStatusPostWithTimeout();
-        return result?.status === "ok" && Array.isArray(result.requests) ? result.requests : [];
-      },
-    }), "builtin");
-  }
+  // 用量状态栏、请求状态条的数据服务 codexpp.usage / codexpp.proxyStatus 改由对应的官方拓展包提供
+  // （assets/extensions/usage-statusline、proxy-request-status）。
 
   /** 按下发状态装上 / 卸下内置拓展。重复调用只处理有变化的项。 */
   function syncCodexPlusBuiltinExtensions() {
-    try {
-      installCodexPlusBuiltinDataServices();
-    } catch (error) {
-      codexPlusMarkExtensionFailure("builtin:data-services", String(error?.stack || error?.message || error));
-    }
     const inactive = codexPlusBuiltinInactiveIds();
     const state = codexPlusBuiltinExtensionState();
     for (const definition of codexPlusBuiltinExtensionCatalog()) {
@@ -179,50 +156,6 @@
     ctx.effect(() => {
       run();
       return run;
-    });
-  }
-
-  /** 用量状态栏：经公开的 composer.below 插槽拿每个输入框下方的容器，状态栏放进当前输入框的那个。 */
-  function codexPlusUsageStatusLineExtension(ctx) {
-    codexPlusUsageState.slotHosts ||= new Set();
-    ctx.registerSlot({
-      slot: "composer.below",
-      order: 0,
-      render: ({ container }) => {
-        codexPlusUsageState.slotHosts.add(container);
-        window.__codexPlusUsageStatusLineRuntime?.sync?.();
-        return () => {
-          codexPlusUsageState.slotHosts.delete(container);
-          if (codexPlusUsageState.node?.parentElement === container) codexPlusUsageState.node.remove();
-          window.__codexPlusUsageStatusLineRuntime?.sync?.();
-        };
-      },
-    });
-    ctx.effect(() => {
-      startCodexPlusUsageStatusLine();
-      return () => stopCodexPlusUsageStatusLine();
-    });
-    codexPlusAlignWith(ctx, () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), { settings: true });
-  }
-
-  /** 请求状态条：经公开的 composer.above 插槽拿每个输入框上方的容器。 */
-  function codexPlusProxyStatusExtension(ctx) {
-    codexPlusProxyStatusState.slotHosts ||= new Set();
-    ctx.registerSlot({
-      slot: "composer.above",
-      order: 0,
-      render: ({ container }) => {
-        codexPlusProxyStatusState.slotHosts.add(container);
-        window.__codexPlusProxyRequestStatusRuntime?.refresh?.();
-        return () => {
-          codexPlusProxyStatusState.slotHosts.delete(container);
-          if (codexPlusProxyStatusState.node?.parentElement === container) codexPlusProxyStatusState.node.remove();
-        };
-      },
-    });
-    ctx.effect(() => {
-      startCodexPlusProxyStatus();
-      return () => stopCodexPlusProxyStatus();
     });
   }
 

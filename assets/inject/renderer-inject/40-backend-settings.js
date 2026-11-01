@@ -13,12 +13,55 @@
   }
 
   /**
-   * 读到后端设置（启动或心跳）后发公开事件 `settings/loaded`，参数 `{ reason: "startup" | "heartbeat" }`。
+   * 读到后端设置（启动或心跳）后发公开事件 `settings/loaded`，参数 `{ reason: "startup" | "heartbeat", changedKeys? }`。
    * 内置拓展与第三方拓展都经 ctx.on 订阅，拓展卸下时订阅跟着撤掉。
    * typeof 守卫：本分片会被切片到不带拓展内核的沙箱里执行。
    */
-  function emitCodexPlusSettingsLoaded(reason) {
-    if (typeof codexPlusEmitExtensionEvent === "function") codexPlusEmitExtensionEvent("settings/loaded", [{ reason }]);
+  function emitCodexPlusSettingsLoaded(reason, changedKeys) {
+    if (typeof codexPlusEmitExtensionEvent !== "function") return;
+    // 心跳带上这次变了的字段名（管理器里改的设置靠它识别）；启动时第一次读到设置不带。
+    const detail = Array.isArray(changedKeys) ? { reason, changedKeys } : { reason };
+    codexPlusEmitExtensionEvent("settings/loaded", [detail]);
+  }
+
+  /** 两份设置之间值变了的顶层字段名。只给名字不给值，免得经事件把设置内容交给拓展。 */
+  function codexPlusChangedBackendSettingKeys(previous, next) {
+    const keys = new Set([...Object.keys(previous || {}), ...Object.keys(next || {})]);
+    const changed = [];
+    for (const key of keys) {
+      let before;
+      let after;
+      try {
+        before = JSON.stringify(previous?.[key]);
+        after = JSON.stringify(next?.[key]);
+      } catch {
+        continue;
+      }
+      if (before !== after) changed.push(key);
+    }
+    return changed;
+  }
+
+  /**
+   * 供应商相关的公开事件，比较前后两份设置里 Codex++ 下发的 activeRelayProfilePublic / modelCatalogFingerprint：
+   *   - `relayProfile/switched`：({ previous, profile })，当前供应商换了
+   *   - `modelCatalog/changed`：({ profile })，决定模型目录的字段变了（模型列表、每模型窗口 / 压缩 / 元数据、换供应商……），
+   *     新目录用 /model-catalog/public 取
+   * profile 形状同 /settings/public 的 activeProfile。页面里改的立即发，管理器里改的经心跳发；第一次读到设置时不发。
+   */
+  function emitCodexPlusRelaySettingsEvents(previous, next) {
+    if (typeof codexPlusEmitExtensionEvent !== "function") return;
+    const before = previous?.activeRelayProfilePublic;
+    const after = next?.activeRelayProfilePublic;
+    if (!before || !after) return;
+    if (before.id !== after.id) {
+      codexPlusEmitExtensionEvent("relayProfile/switched", [{ previous: { ...before }, profile: { ...after } }]);
+    }
+    const beforeFingerprint = previous?.modelCatalogFingerprint;
+    const afterFingerprint = next?.modelCatalogFingerprint;
+    if (beforeFingerprint && afterFingerprint && beforeFingerprint !== afterFingerprint) {
+      codexPlusEmitExtensionEvent("modelCatalog/changed", [{ profile: { ...after } }]);
+    }
   }
 
   /**
@@ -56,15 +99,28 @@
   }
 
   let syncBackendSettingsInFlight = false;
+  /** 已读到过的后端设置（对象引用，之后的写入都换新对象，不会改到它）；还没读到过时为 null。 */
+  function codexPlusBackendSettingsSnapshot() {
+    if (typeof codexPlusBackendSettingsLoaded === "undefined" || codexPlusBackendSettingsLoaded !== true) return null;
+    return typeof codexPlusBackendSettings === "object" && codexPlusBackendSettings ? codexPlusBackendSettings : null;
+  }
+
   async function syncBackendSettingsFromHeartbeat() {
     if (syncBackendSettingsInFlight) return;
     syncBackendSettingsInFlight = true;
     try {
+      // 记下读之前的设置：loadBackendSettingsState 换成新对象，旧引用里还是上一次的值。
+      // 下面的 typeof 守卫：本段会被切片到只给了少量依赖的沙箱里测。
+      const previous = codexPlusBackendSettingsSnapshot();
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
+        const next = previous ? codexPlusBackendSettingsSnapshot() : null;
         // 启动期读取全部失败时，心跳是之后唯一的设置来源；跟着设置走的功能（含梦皮 #2680、对话宽度）由内置拓展订阅。
-        emitCodexPlusSettingsLoaded("heartbeat");
+        emitCodexPlusSettingsLoaded("heartbeat", previous && next && typeof codexPlusChangedBackendSettingKeys === "function"
+          ? codexPlusChangedBackendSettingKeys(previous, next)
+          : undefined);
+        if (previous && next && typeof emitCodexPlusRelaySettingsEvents === "function") emitCodexPlusRelaySettingsEvents(previous, next);
         // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
         syncCodexPlusBackendToggleButtons();
         renderCodexPlusMenu();
@@ -76,6 +132,7 @@
 
   async function setBackendSetting(key, value) {
     const seq = ++codexPlusBackendSettingsSeq;
+    const previous = typeof codexPlusBackendSettingsSnapshot === "function" ? codexPlusBackendSettingsSnapshot() : null;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
     codexPlusBackendSettingsLoaded = true;
     if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, false);
@@ -95,6 +152,7 @@
           nativePredictionsLocalApiConfigured: codexPlusBackendSettings.nativePredictionsLocalApiConfigured === true,
         });
         if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, true);
+        if (previous && typeof emitCodexPlusRelaySettingsEvents === "function") emitCodexPlusRelaySettingsEvents(previous, codexPlusBackendSettings);
       }
     } finally {
       refreshCodexPlusBackendToggles();

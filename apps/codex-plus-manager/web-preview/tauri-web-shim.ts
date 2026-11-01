@@ -611,10 +611,10 @@ const demoClaudeEnhance = {
 
 // 本地拓展演示数据：一个单文件脚本、一个已加载的拓展包、一个清单有误的拓展包。
 const demoBuiltins = [
-  ["agent-pet", "Agent 桌宠", true, null], ["usage-statusline", "用量状态栏", true, null], ["dictation", "语音听写", false, null],
+  ["agent-pet", "Agent 桌宠", true, null], ["dictation", "语音听写", false, null],
   ["turn-rewind", "轮次回退", true, "user:pomodoro_timer"],
   ["side-chat-save", "侧聊保存", true, null], ["history-turn-recovery", "历史轮次补全", true, null],
-  ["capacity-auto-retry", "容量不足自动重试", true, null], ["proxy-request-status", "请求状态条", true, null],
+  ["capacity-auto-retry", "容量不足自动重试", true, null],
   ["model-picker-groups", "模型分组", true, null],
   ["dream-skin", "梦皮主题", true, null], ["plugin-market-unlock", "插件市场解锁", true, null],
   ["instance-identity", "多开身份提示", true, null], ["session-title-hook", "会话标题中间件", true, null],

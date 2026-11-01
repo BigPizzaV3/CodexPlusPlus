@@ -184,3 +184,116 @@ fn image_route_is_declared_only_while_the_extension_is_enabled() {
     manager.set_script_enabled(IMAGE_OVERLAY_KEY, true).unwrap();
     assert!(manager.route_declared("/image-overlay/image"));
 }
+
+// ---- 用量状态栏、请求状态条：也从内置拓展改成了官方拓展包 ----
+
+use codex_plus_core::bundled_extensions::{
+    PROXY_REQUEST_STATUS_KEY, USAGE_STATUSLINE_KEY, proxy_request_status_files, usage_statusline_files,
+};
+
+#[test]
+fn status_bar_packages_are_valid_and_only_use_public_interfaces() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = ready(temp.path());
+    let api = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/inject/renderer-inject/91-extension-api.js")).unwrap();
+    for (key, id, route) in [
+        (USAGE_STATUSLINE_KEY, "usage-statusline", "/thread-usage-live"),
+        (PROXY_REQUEST_STATUS_KEY, "proxy-request-status", "/proxy-status"),
+    ] {
+        let item = script(&manager, key);
+        assert_eq!(item["error"], "", "{item}");
+        assert_eq!(item["source"], "bundled");
+        assert_eq!(item["package"]["id"], id);
+        let routes = item["package"]["routes"].as_array().unwrap();
+        assert!(routes.iter().any(|item| item == route), "{id} 要在清单里声明 {route}");
+        // 声明的路由都在拓展路由白名单里。
+        for route in routes {
+            assert!(api.contains(&format!("\"{}\"", route.as_str().unwrap())), "{route} 不在拓展路由白名单里");
+        }
+    }
+    for (path, content) in usage_statusline_files().into_iter().chain(proxy_request_status_files()) {
+        if !path.ends_with(".js") {
+            continue;
+        }
+        let source = String::from_utf8(content).unwrap();
+        for private in [
+            "postJson(",
+            "codexPlusSettings(",
+            "codexPlusBackendSettings",
+            "__codexPlusBuiltinInactive",
+            "registerCodexPlusExtensionSelector",
+            "sendCodexPlusDiagnostic",
+            "recordCodexPlusBridgeFailure",
+            "currentSessionRef",
+            "visibleElement(",
+            "runScanStep",
+            "__codexSessionDeleteBridge",
+            "__CODEX_PLUS_",
+        ] {
+            assert!(!source.contains(private), "{path} 还在用 {private}");
+        }
+    }
+    // 不再是内置拓展：设置清单与内置拓展目录里都没有它们。
+    for id in ["usage-statusline", "proxy-request-status"] {
+        assert!(codex_plus_core::settings_catalog::builtin_extension_def(id).is_none(), "{id} 还在内置拓展目录里");
+    }
+}
+
+#[test]
+fn old_status_bar_switches_migrate_once() {
+    // 默认都是开的：老用户升级后照旧显示。
+    let temp = tempfile::tempdir().unwrap();
+    let manager = ready(temp.path());
+    manager.migrate_bundled_builtins(&BackendSettings::default()).unwrap();
+    assert_eq!(script(&manager, USAGE_STATUSLINE_KEY)["enabled"], true);
+    assert_eq!(script(&manager, PROXY_REQUEST_STATUS_KEY)["enabled"], true);
+
+    // 原来关掉的：迁移成停用；迁移过之后改旧字段不再影响。
+    let other = tempfile::tempdir().unwrap();
+    let manager = ready(other.path());
+    let off = BackendSettings {
+        codex_app_usage_status_line: false,
+        codex_app_proxy_request_status: false,
+        ..BackendSettings::default()
+    };
+    manager.migrate_bundled_builtins(&off).unwrap();
+    assert_eq!(script(&manager, USAGE_STATUSLINE_KEY)["enabled"], false);
+    assert_eq!(script(&manager, PROXY_REQUEST_STATUS_KEY)["enabled"], false);
+    manager.migrate_bundled_builtins(&BackendSettings::default()).unwrap();
+    assert_eq!(script(&manager, USAGE_STATUSLINE_KEY)["enabled"], false, "迁移只做一次");
+    // 停用时不声明路由，Codex++ 不替它干活。
+    assert!(!manager.route_declared("/thread-usage-live"));
+    manager.set_script_enabled(USAGE_STATUSLINE_KEY, true).unwrap();
+    assert!(manager.route_declared("/thread-usage-live"));
+}
+
+#[test]
+fn replacing_a_retired_builtin_id_makes_the_bundled_package_yield() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = ready(temp.path());
+    manager.migrate_bundled_builtins(&BackendSettings::default()).unwrap();
+    // 之前按文档写的 replaces: ["usage-statusline"] 仍然合法。
+    let dir = temp.path().join("user").join("my-bar");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("codexpp.json"),
+        json!({ "id": "my-bar", "renderer": "main.js", "replaces": ["usage-statusline"] }).to_string(),
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.js"), "").unwrap();
+
+    let mine = script(&manager, "user:my-bar");
+    assert_eq!(mine["error"], "", "{mine}");
+    assert_eq!(mine["package"]["replaces"], json!(["usage-statusline"]));
+    let bundled = script(&manager, USAGE_STATUSLINE_KEY);
+    assert_eq!(bundled["enabled"], false, "顶替它的拓展启用时官方拓展包让位");
+    assert_eq!(bundled["status"], "disabled");
+    assert_eq!(bundled["replacedBy"], "user:my-bar");
+    assert_eq!(script(&manager, PROXY_REQUEST_STATUS_KEY)["enabled"], true, "没被顶替的不受影响");
+
+    // 顶替它的拓展停用后，官方拓展包回来。
+    manager.set_script_enabled("user:my-bar", false).unwrap();
+    let bundled = script(&manager, USAGE_STATUSLINE_KEY);
+    assert_eq!(bundled["enabled"], true);
+    assert!(bundled["replacedBy"].is_null());
+}

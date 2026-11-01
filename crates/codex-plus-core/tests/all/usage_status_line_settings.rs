@@ -6,6 +6,9 @@
 //
 // 这里还多守一件事：这个开关默认是**开**的，老 settings.json 里没有这个键时必须补
 // true，而不是跟着 bool 的 Default 变成 false。
+//
+// 用量状态栏、请求状态条已改成官方拓展包；这两个字段留作迁移来源（第一次见到拓展包时按它们决定启停，
+// 见 bundled_builtins.rs），所以默认值仍然要对。
 use codex_plus_core::settings::{BackendSettings, SettingsStore};
 use serde_json::json;
 

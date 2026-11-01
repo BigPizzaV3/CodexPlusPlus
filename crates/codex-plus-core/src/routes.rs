@@ -262,7 +262,7 @@ pub trait BridgeDataService: Send + Sync {
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
     /// Codex 输入框下方状态栏的轻量用量快照：只给最近的 token 事件，不返回全量历史。
-    /// 内置状态栏专用，不进第三方拓展路由白名单。
+    /// 内置状态栏和拓展（路由白名单里的只读项）共用。
     async fn thread_usage_live(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "本机用量快照暂不可用", "events": []}))
     }
@@ -377,6 +377,14 @@ pub async fn handle_bridge_request(
         }
         // 只读：设置项清单（标题、说明、分组等），注入页据此生成设置行。
         "/settings/catalog" => crate::settings_catalog::enhancement_settings_catalog(),
+        // 开放给拓展的设置只读子集：当前供应商的名称、模式、模型与上下文窗口。整份设置（/settings/get）仍不开放。
+        "/settings/public" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                let codex_app_version = ctx.settings.codex_app_version().await.unwrap_or_default();
+                Ok(public_settings_value(&settings, codex_app_version))
+            }
+            Err(error) => Err(error),
+        },
         "/user-scripts/list" => {
             ctx.runtime
                 .user_script_inventory_with_runtime_status(payload.clone())
@@ -467,6 +475,8 @@ pub async fn handle_bridge_request(
             ctx.settings.get_settings().await,
         ),
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
+        // 开放给拓展的模型目录：只给模型列表与每模型元数据（含上下文窗口），去掉来源地址、config 路径。
+        "/model-catalog/public" => ctx.runtime.codex_model_catalog().await.map(public_model_catalog_value),
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/llm-proxy" => llm_proxy_value(payload.clone()).await,
         "/ads" => ctx.runtime.ads().await,
@@ -1053,6 +1063,9 @@ fn settings_payload_value(
     );
     settings.dictation = crate::dictation::effective_settings(&settings);
     let native_fast = crate::native_fast::runtime_settings(&settings);
+    // 页面心跳比较这两项，发拓展事件 relayProfile/switched、modelCatalog/changed（见 40-backend-settings.js）。
+    let active_relay_profile_public = public_active_relay_profile(&settings);
+    let catalog_fingerprint = model_catalog_fingerprint(&settings);
     let mut value = serde_json::to_value(settings)?;
     fn remove_named_keys(value: &mut Value) {
         match value {
@@ -1100,6 +1113,8 @@ fn settings_payload_value(
             "codexAppVersion".to_string(),
             Value::String(codex_app_version),
         );
+        object.insert("activeRelayProfilePublic".to_string(), active_relay_profile_public);
+        object.insert("modelCatalogFingerprint".to_string(), Value::String(catalog_fingerprint));
         object.insert(
             "nativeFastLocalApiConfigured".to_string(),
             Value::Bool(native_fast.native_fast_local_api_configured),
@@ -1111,6 +1126,88 @@ fn settings_payload_value(
         );
     }
     Ok(value)
+}
+
+/// 当前供应商里拓展能看的部分（`/settings/public` 与设置载荷的 `activeRelayProfilePublic` 共用）。
+/// 只有名称、模式、模型和窗口这类展示用字段：不含地址、Key、config.toml / auth.json 内容。
+fn public_active_relay_profile(settings: &BackendSettings) -> Value {
+    let profile = settings.active_relay_profile();
+    json!({
+        "id": profile.id,
+        "name": profile.name,
+        "relayMode": profile.relay_mode,
+        "protocol": profile.protocol,
+        "model": crate::relay_config::relay_profile_model(&profile),
+        "contextWindow": profile.context_window,
+        "autoCompactLimit": profile.auto_compact_limit,
+        "aggregate": settings.active_aggregate_relay_profile().is_some(),
+    })
+}
+
+/// 当前供应商的模型目录指纹：决定 Codex 模型目录的字段（模型列表、每模型窗口 / 压缩 / 元数据、聚合成员、换供应商）
+/// 变了它就变。页面比较前后两次的值发 `modelCatalog/changed`；只用来判断「变没变」，不承诺跨版本稳定。
+fn model_catalog_fingerprint(settings: &BackendSettings) -> String {
+    use std::hash::{Hash, Hasher};
+    let profile = settings.active_relay_profile();
+    let aggregate = settings
+        .active_aggregate_relay_profile()
+        .and_then(|aggregate| serde_json::to_string(&aggregate).ok())
+        .unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (
+        settings.relay_profiles_enabled,
+        profile.id.as_str(),
+        profile.name.as_str(),
+        crate::relay_config::relay_profile_model(&profile),
+        profile.model_list.as_str(),
+        profile.model_windows.as_str(),
+        profile.model_auto_compact.as_str(),
+        profile.model_metadata.as_str(),
+        profile.context_window.as_str(),
+        profile.auto_compact_limit.as_str(),
+        aggregate,
+    )
+        .hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// `/settings/public`：拓展可读的设置子集。
+fn public_settings_value(settings: &BackendSettings, codex_app_version: String) -> Value {
+    json!({
+        "status": "ok",
+        "codexPlusVersion": crate::version::VERSION,
+        "codexAppVersion": codex_app_version,
+        "enhancementsEnabled": settings.enhancements_enabled,
+        "relayProfilesEnabled": settings.relay_profiles_enabled,
+        "activeProfile": public_active_relay_profile(settings),
+        "modelCatalogFingerprint": model_catalog_fingerprint(settings),
+    })
+}
+
+/// `/model-catalog/public` 保留的字段。`sources`（带供应商地址）、`path`（本机 config 路径）、`responses_api` 不给拓展。
+const PUBLIC_MODEL_CATALOG_KEYS: &[&str] = &[
+    "status",
+    "message",
+    "service_tier",
+    "model",
+    "model_provider",
+    "codex_model_provider",
+    "provider_name",
+    "default_model",
+    "models",
+    "modelMetadata",
+];
+
+fn public_model_catalog_value(catalog: Value) -> Value {
+    let mut public = serde_json::Map::new();
+    if let Some(object) = catalog.as_object() {
+        for key in PUBLIC_MODEL_CATALOG_KEYS {
+            if let Some(value) = object.get(*key) {
+                public.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+    Value::Object(public)
 }
 
 fn managed_session_connection(settings: &BackendSettings) -> Value {

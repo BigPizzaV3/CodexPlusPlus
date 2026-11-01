@@ -444,10 +444,13 @@ ctx.backend.on("tick", ({ count }) => ctx.toast(`第 ${count} 分钟`));
 
 ## 顶替 Codex++ 内置功能
 
-Codex++ 自带的功能都是内置拓展（会话删除、Markdown 导出、语音听写、用量状态栏……）。用户想换掉某个内置功能的
-做法时，在 `codexpp_extension_write` 的 `replaces` 参数里写内置拓展 id（如 `["usage-statusline"]`）：你的拓展启用时
+Codex++ 自带的功能都是内置拓展（会话删除、Markdown 导出、语音听写、模型分组……）。用户想换掉某个内置功能的
+做法时，在 `codexpp_extension_write` 的 `replaces` 参数里写内置拓展 id（如 `["model-picker-groups"]`）：你的拓展启用时
 那个内置拓展让位，停用时它回来。内置拓展能做的你都能用同样的 ctx 接口做（`onScan`、`registerSlot`、
-`registerRowAction`、`settings/changed`……）；它的数据有的作为服务提供（`inject: ["codexpp.usage"]`），自己画界面即可。
+`registerRowAction`、`settings/changed`……）。
+用量状态栏、请求状态条已改成官方拓展包，`replaces` 里写 `usage-statusline` / `proxy-request-status` 时让位的是对应的官方拓展包；
+它们的数据作为服务提供（`inject: ["codexpp.usage"]`、`["codexpp.proxyStatus"]`），也可以直接调白名单路由
+`/thread-usage-live`、`/proxy-status`，自己画界面即可。
 
 ## 赶在 Codex 之前（preload）与启动前后（launch）
 

@@ -20,7 +20,12 @@ type CodexPlusExtensionRoute =
   | "/export-markdown"
   | "/user-scripts/list"
   | "/cdp/targets"
-  | "/cdp/evaluate";
+  | "/cdp/evaluate"
+  | "/proxy-status"
+  | "/thread-usage-live"
+  | "/backend/status"
+  | "/settings/public"
+  | "/model-catalog/public";
 
 interface CodexPlusToastOptions {
   type?: CodexPlusToastType;
@@ -629,7 +634,7 @@ interface CodexPlusExtensionContext {
   /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
   currentSessionId(): string;
 
-  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`、`settings/loaded`（`{ reason: "startup" | "heartbeat" }`）、`settings/changed`（`{ key, value, persisted }`）。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
+  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`、`settings/loaded`（`{ reason: "startup" | "heartbeat", changedKeys? }`，心跳时 changedKeys 是这次变了的设置字段名）、`settings/changed`（`{ key, value, persisted }`）、`relayProfile/switched`（`{ previous, profile }`）、`modelCatalog/changed`（`{ profile }`，profile 形状同 `/settings/public` 的 activeProfile）。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;
   emit(event: string, ...args: unknown[]): void;
 

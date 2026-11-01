@@ -206,12 +206,16 @@ impl UserScriptManager {
         )
     }
 
-    /// 原来的打字特效、背景图也改成了官方拓展包：第一次见到时按旧设置写入配置与启停，迁移过就不再动。
+    /// 原来的打字特效、背景图、用量状态栏、请求状态条也改成了官方拓展包：第一次见到时按旧设置写入配置与启停，迁移过就不再动。
     pub fn migrate_bundled_builtins(&self, settings: &crate::settings::BackendSettings) -> anyhow::Result<()> {
         let (config, enabled) = crate::bundled_extensions::typing_effects_migration(settings);
         self.migrate_bundled(crate::bundled_extensions::TYPING_EFFECTS_KEY, config, enabled)?;
         let (config, enabled) = crate::bundled_extensions::image_overlay_migration(settings);
         self.migrate_bundled(crate::bundled_extensions::IMAGE_OVERLAY_KEY, config, enabled)?;
+        let (config, enabled) = crate::bundled_extensions::usage_statusline_migration(settings);
+        self.migrate_bundled(crate::bundled_extensions::USAGE_STATUSLINE_KEY, config, enabled)?;
+        let (config, enabled) = crate::bundled_extensions::proxy_request_status_migration(settings);
+        self.migrate_bundled(crate::bundled_extensions::PROXY_REQUEST_STATUS_KEY, config, enabled)?;
         Ok(())
     }
 
@@ -1376,6 +1380,7 @@ impl UserScriptManager {
                     "kind": if script.package.is_some() { "package" } else { "script" },
                     "package": script.package.as_ref().map(|package| package.summary()),
                     "enabled": script.enabled,
+                    "replacedBy": script.replaced_by,
                     "status": status,
                     "error": error,
                     "market_id": market.as_ref().map(|item| item.id.as_str()).unwrap_or(""),
@@ -1401,6 +1406,30 @@ impl UserScriptManager {
             self.append_scripts(crate::bundled_extensions::BUNDLED_SOURCE, bundled, config, &mut scripts)?;
         }
         self.append_scripts("user", &self.user_dir, config, &mut scripts)?;
+        // 第三方拓展包的 replaces 写了改成官方拓展包的原内置拓展 id（如 usage-statusline）：
+        // 它启用时对应的官方拓展包让位，停用时回来，和顶替内置拓展的效果一致。
+        if config.enabled {
+            let takeovers = scripts
+                .iter()
+                .filter(|script| script.enabled && script.source != crate::bundled_extensions::BUNDLED_SOURCE)
+                .filter_map(|script| {
+                    let package = script.package.as_ref().filter(|package| package.error.is_none())?;
+                    Some((script.key.clone(), package))
+                })
+                .flat_map(|(key, package)| {
+                    package
+                        .replaces
+                        .iter()
+                        .filter_map(move |id| crate::bundled_extensions::retired_builtin_key(id).map(|bundled| (bundled, key.clone())))
+                })
+                .collect::<Vec<_>>();
+            for (bundled, replacer) in takeovers {
+                if let Some(script) = scripts.iter_mut().find(|script| script.key == bundled && script.replaced_by.is_none()) {
+                    script.enabled = false;
+                    script.replaced_by = Some(replacer);
+                }
+            }
+        }
         Ok(scripts)
     }
 
@@ -1455,6 +1484,7 @@ impl UserScriptManager {
                 source: source.to_string(),
                 path,
                 package,
+                replaced_by: None,
             });
         }
         Ok(())
@@ -1469,6 +1499,8 @@ struct UserScriptFile {
     path: PathBuf,
     enabled: bool,
     package: Option<ExtensionPackage>,
+    /// 官方拓展包被哪个启用中的拓展包顶替（那个包的 `replaces` 写了它接替的原内置拓展 id）；顶替时 `enabled` 为 false。
+    replaced_by: Option<String>,
 }
 
 /// 一个拓展包：目录 + `codexpp.json`。
@@ -1766,7 +1798,7 @@ pub fn default_user_script_manager() -> UserScriptManager {
     let manager = UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
         .with_settings_path(crate::paths::default_settings_path())
         .with_bundled_dir(bundled_dir.clone());
-    // 每个进程第一次用到时写出官方拓展包、迁移旧的内置桌宠 / 打字特效 / 背景图设置；失败只记日志，不影响别的拓展。
+    // 每个进程第一次用到时写出官方拓展包、迁移旧的内置桌宠 / 打字特效 / 背景图 / 用量状态栏 / 请求状态条设置；失败只记日志，不影响别的拓展。
     static BUNDLED_READY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     BUNDLED_READY.get_or_init(|| {
         if let Err(error) = crate::bundled_extensions::materialize(&bundled_dir) {
@@ -2598,6 +2630,13 @@ fn parse_extension_replaces(value: Option<&Value>) -> anyhow::Result<Vec<String>
     for item in items {
         let id = item.as_str().context("replaces 只能是内置拓展 id 的字符串数组")?;
         let id = id.strip_prefix("builtin:").unwrap_or(id);
+        // 改成官方拓展包的内置拓展：原 id 仍可写，启用时让对应的官方拓展包让位。
+        if crate::bundled_extensions::retired_builtin_key(id).is_some() {
+            if !replaces.iter().any(|existing| existing == id) {
+                replaces.push(id.to_string());
+            }
+            continue;
+        }
         let Some(def) = crate::settings_catalog::builtin_extension_def(id) else {
             let known = crate::settings_catalog::builtin_extension_defs()
                 .iter()

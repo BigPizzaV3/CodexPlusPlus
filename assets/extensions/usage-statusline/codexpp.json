@@ -1,0 +1,11 @@
+{
+  "id": "usage-statusline",
+  "name": "用量状态栏",
+  "version": "1.0.0",
+  "description": "在输入框下方显示输出吞吐、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。",
+  "engines": { "codexpp": 1 },
+  "renderer": ["statusline.js", "main.js"],
+  "permissions": {
+    "routes": ["/thread-usage-live", "/diagnostics/log"]
+  }
+}

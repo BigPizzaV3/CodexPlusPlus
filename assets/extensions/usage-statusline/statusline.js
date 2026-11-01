@@ -11,14 +11,22 @@
    * 真实会话的 rollout 可以到几百 MB，状态栏按秒级轮询扛不住。这里走
    * `/thread-usage-live`，宿主只读文件尾部。
    *
-   * 节点挂在输入卡片（[data-composer-surface-variant]）之后、同一父容器内，也就是
-   * 「输入框下方、卡片外」。旧版 Codex 没有这个属性，退回旧类名或输入框所在的 form，
-   * 会话 id 退回侧边栏当前行 + 地址栏，挂不上时写诊断日志（issue #2753）。
+   * 节点放进公开插槽 composer.below 给的容器（输入框下方、卡片外）；没有插槽容器时紧跟在
+   * 输入卡片（[data-composer-surface-variant]）之后。旧版 Codex 没有这个属性，退回旧类名或输入框所在的 form，
+   * 会话 id 退回 Codex++ 认的当前会话，挂不上时写诊断日志（issue #2753）。
    * 节点带 data-codex-plus-ext，扫描调度器会把它排除在
    * 自喂循环之外（issue #1960）。
+   *
+   * 这是官方拓展包「用量状态栏」的引擎：只用公开接口，后端调用、诊断、当前会话都由 main.js 经
+   * codexPlusUsageHost 传进来（ctx.call / codexPlus.currentSession）。
    */
-  registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-usage-statusline"]');
-  window.__codexPlusUsageStatusLineRuntime?.dispose?.();
+  const codexPlusUsageOwner = "usage-statusline";
+  /** main.js 在拓展装上时填好：调清单里声明的路由、写诊断日志、取 Codex++ 认的当前会话 id。 */
+  const codexPlusUsageHost = {
+    call: () => Promise.reject(new Error("用量状态栏还没装上")),
+    diagnose: () => {},
+    legacySessionId: () => "",
+  };
 
   const codexPlusUsageStatusLineId = "codex-plus-usage-statusline";
   const codexPlusUsageStyleId = "codex-plus-usage-statusline-style";
@@ -34,7 +42,8 @@
   const codexPlusUsageFailureLimit = 5;
 
   const codexPlusUsageState = {
-    disposed: false,
+    /** 拓展装着时为 true：观察与轮询只在这期间跑。 */
+    running: false,
     timer: 0,
     node: null,
     parts: null,
@@ -48,7 +57,15 @@
     modernDom: false,
     /** 已经写过的诊断原因，每个页面生命周期一条只记一次。 */
     diagnosed: new Set(),
+    /** composer.below 插槽给的容器（每个输入框一个），由 main.js 增删。 */
+    slotHosts: new Set(),
   };
+
+  function codexPlusUsageVisible(node) {
+    if (!(node instanceof Element)) return false;
+    const rect = node.getBoundingClientRect?.();
+    return !!rect && rect.width > 0 && rect.height > 0;
+  }
 
   const codexPlusUsageSvgNs = "http://www.w3.org/2000/svg";
 
@@ -89,7 +106,7 @@
     if (document.getElementById(codexPlusUsageStyleId)) return;
     const style = document.createElement("style");
     style.id = codexPlusUsageStyleId;
-    style.dataset.codexPlusExt = "builtin-usage-statusline";
+    style.dataset.codexPlusExt = codexPlusUsageOwner;
     style.textContent = `
       /* 颜色只用一层透明度：主题的 --color-token-text-secondary 本身就是 65% 透明，
          再叠容器 opacity 会掉到 0.3 出头，实测在 #141414 上几乎看不清。
@@ -199,7 +216,7 @@
   function codexPlusUsageComposerCard() {
     let fallback = null;
     for (const card of document.querySelectorAll(codexPlusUsageCardSelector)) {
-      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
+      if (!codexPlusUsageVisible(card) || card.closest('[data-codex-plus-ext]')) continue;
       fallback = card;
       // 首页可能同时挂着多个 composer 外壳；带真实输入框的那个才是当前会话。
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "surface-variant" };
@@ -210,20 +227,20 @@
     }
     if (codexPlusUsageState.modernDom) return null;
     for (const card of document.querySelectorAll(codexPlusUsageLegacyCardSelector)) {
-      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
+      if (!codexPlusUsageVisible(card) || card.closest('[data-codex-plus-ext]')) continue;
       // 旧版类名也可能挂在装饰容器上，必须真的包着输入框才算。
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "legacy-chrome" };
     }
     // 有 composer 根标记、没有旧类名的过渡版本：根节点包着输入框时就挂在根上。
     for (const card of document.querySelectorAll("[data-codex-composer-root]")) {
-      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
+      if (!codexPlusUsageVisible(card) || card.closest('[data-codex-plus-ext]')) continue;
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "composer-root" };
     }
     // 类名也对不上时按输入框本身找：取 ProseMirror 所在的 form。
     for (const editor of document.querySelectorAll('.ProseMirror[contenteditable="true"]')) {
-      if (!visibleElement(editor) || editor.closest('[data-codex-plus-ext], [role="dialog"]')) continue;
+      if (!codexPlusUsageVisible(editor) || editor.closest('[data-codex-plus-ext], [role="dialog"]')) continue;
       const form = editor.closest("form");
-      if (form && visibleElement(form)) return { card: form, source: "editor-form" };
+      if (form && codexPlusUsageVisible(form)) return { card: form, source: "editor-form" };
     }
     return null;
   }
@@ -235,13 +252,12 @@
   }
 
   /**
-   * 旧版 Codex 的当前会话：侧边栏当前行 + 地址栏（currentSessionRef，删除 / 导出也靠它
-   * 认当前会话）。测试沙箱里没有这个函数，按缺失处理。
+   * 旧版 Codex 的当前会话：Codex++ 认的当前会话（侧边栏当前行 + 地址栏，删除 / 导出也靠它），
+   * 由 main.js 经 codexPlus.currentSession() 提供。
    */
   function codexPlusUsageLegacyThreadId() {
-    if (typeof currentSessionRef !== "function") return "";
     try {
-      return currentSessionRef()?.session_id || "";
+      return String(codexPlusUsageHost.legacySessionId() || "");
     } catch (_) {
       return "";
     }
@@ -298,7 +314,7 @@
     if (seen.has(fullKey) || seen.size >= codexPlusUsageDiagnosticLimit) return;
     seen.add(fullKey);
     try {
-      Promise.resolve(sendCodexPlusDiagnostic(event, detail)).catch(() => {});
+      Promise.resolve(codexPlusUsageHost.diagnose(event, detail)).catch(() => {});
     } catch (_) {
       // 诊断失败不能影响状态栏本身。
     }
@@ -322,13 +338,13 @@
       editors: count('.ProseMirror[contenteditable="true"]'),
       sidebarRows: count("[data-app-action-sidebar-thread-id]"),
       sidebarSelected: count('[data-app-action-sidebar-thread-selected="true"]'),
-      locationHasThread: typeof locationThreadId === "function" ? !!locationThreadId() : null,
+      currentSessionKnown: !!codexPlusUsageLegacyThreadId(),
     };
   }
 
   function codexPlusUsageVisibleEditor() {
     return [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')]
-      .some((editor) => visibleElement(editor) && !editor.closest("[data-codex-plus-ext]"));
+      .some((editor) => codexPlusUsageVisible(editor) && !editor.closest("[data-codex-plus-ext]"));
   }
 
   /**
@@ -371,8 +387,8 @@
   }
 
   /**
-   * 状态栏放在哪：内置拓展经公开的 composer.below 插槽登记了容器时放进卡片所在输入框的那个容器
-   * （见 96-builtin-extensions.js），否则（单独运行本分片、旧版页面）紧跟在输入卡片后面。
+   * 状态栏放在哪：main.js 经公开的 composer.below 插槽登记了容器时放进卡片所在输入框的那个容器，
+   * 否则（插槽还没画出来、旧版页面）紧跟在输入卡片后面。
    */
   function codexPlusUsageSlotHost(card) {
     const root = card?.closest?.("[data-codex-composer-root]");
@@ -397,7 +413,7 @@
     if (!node) {
       node = document.createElement("div");
       node.id = codexPlusUsageStatusLineId;
-      node.setAttribute("data-codex-plus-ext", "builtin-usage-statusline");
+      node.setAttribute("data-codex-plus-ext", codexPlusUsageOwner);
       node.setAttribute("role", "status");
       codexPlusUsageState.node = node;
     }
@@ -546,16 +562,14 @@
   }
 
   function codexPlusUsageSchedule(delay) {
-    if (codexPlusUsageState.disposed) return;
+    if (!codexPlusUsageState.running) return;
     clearTimeout(codexPlusUsageState.timer);
     codexPlusUsageState.timer = window.setTimeout(codexPlusUsageTick, delay);
   }
 
+  /** 开关就是拓展本身：拓展启用（装上）时显示，停用 / 卸下时撤掉。 */
   function codexPlusUsageEnabled() {
-    return !codexPlusUsageState.disposed
-      && codexPlusBackendSettingsLoaded
-      && codexPlusSettings().usageStatusLine === true
-      && !globalThis.__codexPlusBuiltinInactive?.has("usage-statusline");
+    return codexPlusUsageState.running;
   }
 
   /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */
@@ -629,7 +643,8 @@
     if (codexPlusUsageState.inFlight) return null;
     codexPlusUsageState.inFlight = true;
     try {
-      const result = await postJson("/thread-usage-live", { session_id: threadId });
+      // ctx.call 遇到 status: "failed" 会 reject，和桥接出错一样按失败计数。
+      const result = await codexPlusUsageHost.call("/thread-usage-live", { session_id: threadId });
       codexPlusUsageState.failures = 0;
       if (result?.status !== "ok" || !Array.isArray(result.events)) {
         // 栏位照样显示占位符；这里只把宿主给的原因记一次，便于区分「没挂上」和「没数据」。
@@ -648,7 +663,7 @@
   }
 
   async function codexPlusUsageTick() {
-    if (codexPlusUsageState.disposed) return;
+    if (!codexPlusUsageState.running) return;
     if (!codexPlusUsageEnabled()) {
       codexPlusUsageHide();
       codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
@@ -675,13 +690,13 @@
     } catch (error) {
       if (codexPlusUsageState.threadId === threadId) codexPlusUsageState.failures += 1;
       if (codexPlusUsageState.failures === codexPlusUsageFailureLimit) {
-        sendCodexPlusDiagnostic("usage_statusline_bridge_failed", {
+        codexPlusUsageHost.diagnose("usage_statusline_bridge_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         });
       }
     }
-    if (codexPlusUsageState.disposed) return;
+    if (!codexPlusUsageState.running) return;
     codexPlusUsageRemember(threadId, events);
     const current = codexPlusUsageSyncPlacement();
     if (!current || current.threadId !== threadId) {
@@ -707,43 +722,34 @@
   }
 
   /**
-   * 观察与轮询随内置拓展「用量状态栏」装卸（96-builtin-extensions.js）：装上时开始，卸下时停下并摘掉状态栏，
-   * 没装着时什么也不跑。
+   * 观察与轮询随拓展装卸（main.js 的 ctx.effect）：装上时开始，停用 / 热重载时停下并摘掉状态栏与样式，
+   * 没装着时什么也不跑。热重载会重新执行本文件，旧实例的状态随旧作用域丢掉。
    */
   function startCodexPlusUsageStatusLine() {
-    if (codexPlusUsageState.disposed) return;
+    if (codexPlusUsageState.running) return;
+    codexPlusUsageState.running = true;
+    codexPlusUsageInstallStyle();
     if (!codexPlusUsageState.observer) codexPlusUsageObserve();
     codexPlusUsageSyncPlacement();
     codexPlusUsageSchedule(600);
   }
 
+  /** 立即重新挂载、取一次数（插槽容器变了时由 main.js 调）。 */
+  function syncCodexPlusUsageStatusLine() {
+    codexPlusUsageSchedule(0);
+  }
+
   function stopCodexPlusUsageStatusLine() {
+    codexPlusUsageState.running = false;
     clearTimeout(codexPlusUsageState.timer);
     codexPlusUsageState.timer = 0;
     codexPlusUsageState.observer?.disconnect();
     codexPlusUsageState.observer = null;
+    // 把节点整个摘掉：留一个隐藏节点等于每次重载多挂一个。
     codexPlusUsageState.node?.remove();
     codexPlusUsageState.node = null;
     codexPlusUsageState.parts = null;
     codexPlusUsageState.lastFingerprint = "";
+    codexPlusUsageState.cache.clear();
+    document.getElementById(codexPlusUsageStyleId)?.remove();
   }
-
-  codexPlusUsageInstallStyle();
-  window.__codexPlusUsageStatusLineRuntime = {
-    version: 2,
-    sync: () => codexPlusUsageSchedule(0),
-    dispose() {
-      codexPlusUsageState.disposed = true;
-      clearTimeout(codexPlusUsageState.timer);
-      codexPlusUsageState.timer = 0;
-      codexPlusUsageState.observer?.disconnect();
-      codexPlusUsageState.cache.clear();
-      // 卸载时把节点整个摘掉：注入会被重跑，留一个隐藏节点等于每次重注入多挂一个。
-      codexPlusUsageState.node?.remove();
-      codexPlusUsageState.node = null;
-      codexPlusUsageState.parts = null;
-      codexPlusUsageState.lastFingerprint = "";
-      globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ = undefined;
-    },
-  };
-  globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ = () => codexPlusUsageSchedule(0);

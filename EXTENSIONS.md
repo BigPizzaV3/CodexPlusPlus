@@ -790,7 +790,11 @@ codexPlus.extension((ctx) => {
 - `@`（提及）、`$`（技能）、`/`（命令）是 Codex 自己的触发符，拓展注册会报错。
 - 输入触发在光标前是「触发符 + 查询词」（触发符前是开头或空白、查询词里没有空白）时弹出，↑↓ 选、回车 / Tab 确认、Esc 关。
 - 主题切换时发 `theme/change` 事件；拓展装上 / 卸下后合并发一次 `extensions/changed`（`{ extensions: [{ id, scriptKey, version }] }`）。
-- 每次从 Codex++ 读到设置（启动时、之后每次心跳）发 `settings/loaded`（`{ reason: "startup" | "heartbeat" }`）。
+- 每次从 Codex++ 读到设置（启动时、之后每次心跳）发 `settings/loaded`（`{ reason: "startup" | "heartbeat", changedKeys? }`）。
+  心跳时 `changedKeys` 是这次值变了的设置字段名（只有名字没有值，空数组表示没变），管理器里改的设置靠它识别；启动时不带。
+- 当前供应商换了发 `relayProfile/switched`（`{ previous, profile }`）；决定模型目录的字段变了（模型列表、每模型窗口 / 自动压缩 /
+  元数据、聚合成员、换供应商）发 `modelCatalog/changed`（`{ profile }`），新目录用 `/model-catalog/public` 取。
+  `profile` 形状同 `/settings/public` 的 `activeProfile`。页面里改的立即发，管理器里改的经心跳（约 5 秒）发；第一次读到设置时不发。
 - 在 Codex 页面里改了一项 Codex++ 设置后发 `settings/changed`（`{ key, value, persisted }`）：`key` 是改动的设置字段
   （存在 Codex++ 后端的用后端字段名，如 `codexAppCapacityAutoRetry`），先按新值发一次 `persisted: false`（这时读设置已是新值），
   写进后端后再发一次 `persisted: true`。管理器里改的设置经心跳的 `settings/loaded` 过来。
@@ -803,24 +807,27 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
 内置拓展实例（`scriptKey` 为 `builtin:<id>`），和第三方拓展走同一套生命周期，在 `extensions/changed` 里也能看到。
 
 - **每项只有一个开关**。有对应设置项的（会话删除、粘贴修复、梦皮、语音听写……），开关就是那个设置项，默认值也跟着它；
-  没有设置项的（请求状态条、模型分组、多开身份提示、会话标题中间件）启停记在用户脚本配置的 `scripts["builtin:<id>"]` 里。
+  没有设置项的（模型分组、多开身份提示、会话标题中间件）启停记在用户脚本配置的 `scripts["builtin:<id>"]` 里。
   子选项（删除不再确认、建议直接发送、重试间隔、对话宽度……）作为所属内置拓展的参数，开关打开后在它下面显示。
 - 「启用内置拓展」总开关关闭时暂停全部内置拓展；「独立模式」里的补丁不受它控制。
-- 页面里跑的内置拓展每个都只是一个 `apply(ctx)`，只用公开的 ctx 接口：多开身份提示挂在 `overlay` 插槽给的容器里、
-  用量状态栏在 `composer.below`、请求状态条在 `composer.above`，侧聊保存挂在 `codex/exchange` 中间件上，
+- 页面里跑的内置拓展每个都只是一个 `apply(ctx)`，只用公开的 ctx 接口：多开身份提示挂在 `overlay` 插槽给的容器里，
+  侧聊保存挂在 `codex/exchange` 中间件上，
   粘贴修复的监听经 `ctx.listen` 挂上；Codex 重建界面后要补回去的（语音听写、轮次回退、梦皮、会话 ID 角标、
   滚动位置恢复、对话宽度、已删会话的行过滤……）经 `ctx.onScan` 登记扫描步骤；跟着设置走的订阅 `settings/loaded`、`settings/changed`。
   它们的共同写法是「装上时对齐一次、卸下时再对齐一次（这时功能读到的已是停用，自己撤下）」，第三方顶替时照抄即可。
   Codex++ 的扫描循环与读写设置的地方不再点名功能，内置拓展卸下时它的监听、中间件、扫描步骤、定时器都跟着撤掉；
   同页重复注入时先卸下上一份注入装上的实例。会话删除、Markdown 导出也是经 `registerRowAction` 注册的会话行操作
   （删除是 `placement: "inline"`，导出带 `surfaces: ["sidebar", "archived"]`），内核只是按注册项画按钮组的宿主；
-  用量状态栏、请求状态条的轮询、语音听写的快捷键监听都在内置拓展装上时才开始，没装着时什么也不跑。
+  语音听写的快捷键监听在内置拓展装上时才开始，没装着时什么也不跑。
   「改 Codex 原生界面」的能力（原生菜单、原生重试按钮、原生会话管理器）刻意不开放给拓展（见「尚未开放的接口」）。
 - 拓展包在清单里声明 `replaces` 即可顶替内置功能，它启用时内置的让位、停用时内置的回来：
 
 ```json
-{ "id": "my-status", "renderer": "renderer.js", "replaces": ["usage-statusline"] }
+{ "id": "my-groups", "renderer": "renderer.js", "replaces": ["model-picker-groups"] }
 ```
+
+  已经改成官方拓展包的原内置拓展（`usage-statusline`、`proxy-request-status`）仍可写进 `replaces`：
+  你的拓展启用时对应的官方拓展包让位（管理器里显示停用、`replacedBy` 是你的拓展），停用时它回来。
 
   在 Codex++ 后台生效的内置拓展（原生 Fast 强制解锁、原生输入预测、模型白名单解锁、强制中文界面、第三方推理折叠、
   纯 API 禁用 Work 视图、原生浏览器请求标识兼容、历史轮次补全、桌宠跟随鼠标）同样能顶替：被顶替时 Codex++ 后台把它们的设置项
@@ -845,6 +852,9 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
   打字特效是纯页面功能，不用任何路由；背景图的图片经白名单路由 `/image-overlay/image` 读，这条路由只读背景图拓展自己配置里的
   那张本机图片、不接受页面传入的路径，同样只在有启用中的拓展声明了它时才干活。原来的打字特效、背景图设置在第一次用到时换算成
   它们的配置，启停照旧。
+  「用量状态栏」（`bundled:usage-statusline`）与「请求状态条」（`bundled:proxy-request-status`）也在 `assets/extensions/` 下：
+  分别经白名单路由 `/thread-usage-live`、`/proxy-status` 取数，挂在 `composer.below`、`composer.above` 插槽里，并提供
+  `codexpp.usage`、`codexpp.proxyStatus` 服务。原来的「用量状态栏」「请求状态条」开关在第一次用到时换算成它们的启停（默认都开）。
 - `codexPlus.builtins()` 返回 `[{ id, name, active, disabled, replacedBy }]`：`active` 表示内置拓展实例在用（没停用、没被顶替）；
   有设置项的内置拓展，功能本身是否打开还看那个设置项。「多开身份提示」完全用公开接口（`overlay` 插槽）写成，
   可以当作写法参考；「会话标题中间件」是 `ctx.intercept("session/title", (value, next) => …)` 链：会话首轮结束后以
@@ -944,8 +954,9 @@ codexPlus.extension({ inject: ["metrics"], apply(ctx) { ctx.metrics.record("open
 - 可选依赖：`inject` 用对象写法 `{ metrics: { required: false } }`，缺了照样应用，`ctx.metrics` 为 `undefined`；
   提供方出现、消失或被替换时同样重新应用。也可以不写进 `inject`，用到时 `ctx.get(name)`（不存在为 `undefined`）。
 - `ctx.inject(deps, apply)`：子作用域，只让依赖某服务的那部分挂起 / 重建。
-- 内置服务：`sessionQuery`、`locale`；内置功能的数据也是服务：`codexpp.usage`（`cached(threadId?)` 取用量状态栏算好的速度、缓存命中、上下文占用）、
-  `codexpp.proxyStatus`（`requests()` 最近的代理请求、`fetch()` 立即问一次），用 `replaces` 顶替这些内置界面的拓展照样能 inject。`codexPlus.services()` 列出当前已提供的服务与提供方。
+- 内置服务：`sessionQuery`、`locale`；官方拓展包的数据也是服务：`codexpp.usage`（用量状态栏提供，`cached(threadId?)` 取它算好的速度、缓存命中、上下文占用）、
+  `codexpp.proxyStatus`（请求状态条提供，`requests()` 最近的代理请求、`fetch()` 立即问一次）。这两个服务随提供它的拓展包启停，
+  要自己画界面又不想依赖它们，可以直接调白名单路由 `/thread-usage-live`、`/proxy-status`。`codexPlus.services()` 列出当前已提供的服务与提供方。
 
 #### 后台提供的服务（跨进程）
 
@@ -1449,6 +1460,11 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/system/cursor-position` | 系统鼠标位置 `{ x, y }`（与 `window.screenX` 同一坐标系，只读；Windows、macOS） |
 | `/agent-pet/catalog`、`/agent-pet/image`、`/agent-pet/sound`、`/agent-pet/import-sound` | Agent 桌宠的图库、图片、音效与导入自定义音效（拓展要在清单 `permissions.routes` 里声明，且启用中才干活） |
 | `/request-log/recent` | 最近已完成的模型请求 `{ entries }`，按开始时间倒序；`limit` 默认 20、最多 100。每条有 `id`、`model` / `upstreamModel`、`relayName`、`durationMs`、`success`、`statusCode`、`usage.inputTokens` / `outputTokens`、`timestampMs` 等（只读，与托盘「实时请求」同源） |
+| `/proxy-status` | 进行中的模型请求 `{ requests }`，每条有 `id`、`model`、`threadId`、`relayName`、`startedAtMs`、`phase`、`firstTokenMs`、`attempts`、`autoRetries`、`retryReasons`、`estimatedOutputTokens`（只读，与官方拓展包「请求状态条」同源） |
+| `/thread-usage-live` | 会话最近的 token 事件 `{ session_id, events }`，参数同 `/thread-usage-history`。只读 rollout 尾部，可以秒级轮询（只读，与官方拓展包「用量状态栏」同源） |
+| `/backend/status` | Codex++ 版本与连接状态 `{ status, message, version }`（只读） |
+| `/settings/public` | 设置的公开子集：`codexPlusVersion`、`codexAppVersion`、`enhancementsEnabled`、`relayProfilesEnabled`、`modelCatalogFingerprint`，以及 `activeProfile { id, name, relayMode, protocol, model, contextWindow, autoCompactLimit, aggregate }`。不含地址、Key 与 config / auth 内容（只读） |
+| `/model-catalog/public` | 当前供应商的模型目录：`models`、`modelMetadata`（每模型的 `contextWindow` 等）、`model`、`default_model`、`provider_name`、`model_provider`、`service_tier`。去掉了来源地址与本机路径（只读） |
 
 **写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
 
