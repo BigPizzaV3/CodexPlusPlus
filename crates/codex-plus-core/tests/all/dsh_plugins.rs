@@ -1510,7 +1510,7 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
         let server_manager = manager.clone();
         let server = tokio::spawn(async move {
             let mut handled = Vec::new();
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let server_manager = server_manager.clone();
                 handled.push(tokio::spawn(async move {
@@ -1540,6 +1540,11 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
         // 别的网页（Origin 与 Host 不同）发来的升级被拒绝。
         let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
         request.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
+        assert!(tokio_tungstenite::connect_async(request).await.is_err());
+        // DNS 重绑定：恶意域名解析到 127.0.0.1 时 Origin 与 Host 都是那个域名，同源检查拦不住，要靠 Host 必须是回环地址。
+        let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
+        request.headers_mut().insert("host", format!("evil.example:{port}").parse().unwrap());
+        request.headers_mut().insert("origin", format!("http://evil.example:{port}").parse().unwrap());
         assert!(tokio_tungstenite::connect_async(request).await.is_err());
         server.await.unwrap();
     }
@@ -1805,4 +1810,16 @@ async fn dsh_tool_when_defer_context_and_live_observation() {
 
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
+}
+
+/// 拓展路由的 WebSocket 升级只接受回环地址的 Host（挡 DNS 重绑定）。
+#[test]
+fn extension_upgrade_host_must_be_loopback() {
+    use codex_plus_core::extension_backend::host_is_loopback;
+    for host in ["127.0.0.1:57321", "localhost:57321", "LOCALHOST", "[::1]:57321", "127.0.0.1"] {
+        assert!(host_is_loopback(host), "{host}");
+    }
+    for host in ["evil.example:57321", "127.0.0.1.evil.example", "", "[::2]:1", "localhost.evil:80"] {
+        assert!(!host_is_loopback(host), "{host}");
+    }
 }

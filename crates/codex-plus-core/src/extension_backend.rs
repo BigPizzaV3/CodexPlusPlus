@@ -773,6 +773,17 @@ pub fn is_websocket_upgrade(raw_headers: &str) -> bool {
         && header("connection").is_some_and(|value| value.split(',').any(|item| item.trim() == "upgrade"))
 }
 
+/// `Host` 头是不是本机回环地址（127.0.0.1 / localhost / [::1]，可带端口）。
+pub fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split_once(']').map(|(name, _)| name).unwrap_or("")
+    } else {
+        host.rsplit_once(':').filter(|(_, port)| port.chars().all(|ch| ch.is_ascii_digit())).map(|(name, _)| name).unwrap_or(&host)
+    };
+    matches!(name, "127.0.0.1" | "localhost" | "::1")
+}
+
 /// 拓展 HTTP 路由上的协议升级（dsh 的 `webServer.registerUpgrade`）：后台的 `upgrade(request)` 给出一个本机 socket
 /// （常驻进程里的 Node http 服务）后，把原始升级请求原样转过去，之后两边字节对拷，协议协商与帧都由插件自己的处理器负责。
 /// 网页发来的升级只接受同源（Origin 与 Host 一致，即页面本身由这条拓展路由提供）。连接结束才返回。
@@ -796,6 +807,10 @@ pub async fn route_upgrade_with(
         Ok(())
     }
     let header = |name: &str| raw_headers.lines().skip(1).filter_map(|line| line.split_once(':')).find(|(key, _)| key.trim().eq_ignore_ascii_case(name)).map(|(_, value)| value.trim().to_string());
+    // Host 必须是本机回环地址：挡住 DNS 重绑定（恶意域名解析到 127.0.0.1 时 Origin 与 Host 都是那个域名，同源检查拦不住）。
+    if !host_is_loopback(&header("host").unwrap_or_default()) {
+        return refuse(stream, "403 Forbidden", "extension upgrades only accept loopback hosts").await;
+    }
     // 同源才放行：页面本身由拓展路由提供时 Origin 就是 http://<Host>。
     if let Some(origin) = header("origin").filter(|origin| !origin.is_empty()) {
         let host = header("host").unwrap_or_default();
