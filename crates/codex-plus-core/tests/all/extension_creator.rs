@@ -588,7 +588,21 @@ fn package_instances_are_validated_and_reach_the_page() {
     assert!(error("user:undeclared").contains("没有在清单 config 里声明"));
     assert!(error("user:bad-id").contains("只能是"));
     let bundle = creator.manager.build_initial_bundle().unwrap();
-    assert!(bundle.contains(r#""instances":[{"config":{"label":"工作区"},"id":"work","name":"工作"},{"config":{},"id":"home","name":"home"}]"#), "页面清单带上实例");
+    // 按 JSON 结构比较：serde_json 开不开 preserve_order（Linux 上随工作区依赖打开）键顺序不同。
+    let start = bundle.find(r#""instances":["#).expect("页面清单带上实例") + r#""instances":"#.len();
+    let instances: serde_json::Value = serde_json::Deserializer::from_str(&bundle[start..])
+        .into_iter::<serde_json::Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        instances,
+        json!([
+            { "config": { "label": "工作区" }, "id": "work", "name": "工作" },
+            { "config": {}, "id": "home", "name": "home" },
+        ]),
+        "页面清单带上实例"
+    );
 }
 
 #[tokio::test]
