@@ -87,6 +87,17 @@ async fn mcp_handshake_lists_tools_and_ignores_notifications() {
     );
     // 没有删除工具：删除留给用户自己。
     assert!(!names.iter().any(|name| name.contains("delete") || name.contains("remove")));
+    // write 工具的 gateway 说明列出所有可关的内置环节，agent 造拓展时才看得到。
+    let write = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "codexpp_extension_write")
+        .unwrap();
+    let gateway = write["inputSchema"]["properties"]["gateway"]["description"].as_str().unwrap();
+    for segment in codex_plus_core::user_scripts::BUILTIN_GATEWAY_SEGMENTS {
+        assert!(gateway.contains(segment), "{segment}: {gateway}");
+    }
     // 页面查看与截图只读；没连 Codex 时如实报错，不伪造结果。
     for tool in ["codexpp_extension_inspect", "codexpp_extension_screenshot"] {
         let (error, message) = call(&creator, tool, json!({})).await;
