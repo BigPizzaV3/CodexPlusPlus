@@ -175,7 +175,7 @@ test("完整市场与公开市场同 id 的安装状态保持独立", async () =
   assert.equal(f.ui.catalog("full").plugins[0].installed, false);
   f.ui.state.source = "full"; f.ui.render();
   assert.equal(f.nodes.get("[data-codex-plugin-source-note]").hidden, false);
-  assert.match(f.nodes.get("[data-codex-plugin-source-note]").textContent, /GitHub 私有仓库访问权限/);
+  assert.match(f.nodes.get("[data-codex-plugin-source-note]").textContent, /收录全部插件/);
   f.ui.state.source = "public"; f.ui.render();
   assert.equal(f.nodes.get("[data-codex-plugin-source-note]").hidden, true);
 });

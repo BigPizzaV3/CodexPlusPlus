@@ -39,10 +39,11 @@ impl Source {
                 repository: "BigPizzaV3/CodexPlusPlusPluginCache",
                 private: false,
             }),
+            // 完整库已改为公开仓库（#2804）：和公开库一样匿名拉取，不需要 gh 登录。
             "full" => Ok(Self {
                 id: "full",
                 repository: "BigPizzaV3/CodexPlusPlusFullPluginCache",
-                private: true,
+                private: false,
             }),
             _ => bail!("未知插件市场来源，请选择 public 或 full"),
         }
@@ -339,8 +340,14 @@ async fn command_output(
 }
 
 async fn fetch_index(source: Source) -> anyhow::Result<Vec<u8>> {
-    let url = format!(
+    let raw = format!(
         "https://raw.githubusercontent.com/{}/main/plugin-index.json",
+        source.repository
+    );
+    // raw.githubusercontent.com 在部分网络里连不上，但 api.github.com 可达（#2804）：
+    // 再匿名走 contents 接口取一次原文。
+    let api = format!(
+        "https://api.github.com/repos/{}/contents/plugin-index.json?ref=main",
         source.repository
     );
     // 插件索引走 GitHub raw，和更新检查一样必须尊重系统代理，否则在需要代理的
@@ -351,22 +358,11 @@ async fn fetch_index(source: Source) -> anyhow::Result<Vec<u8>> {
         INDEX_TIMEOUT,
     )
     .context("无法建立插件市场连接")?;
-    match client.get(&url).send().await {
-        Ok(mut response) if response.status().is_success() => {
-            if response.content_length().unwrap_or_default() > MAX_INDEX_BYTES as u64 {
-                bail!("插件索引超过 8 MiB 限制");
-            }
-            let mut bytes = Vec::new();
-            while let Some(chunk) = response.chunk().await.context("无法读取插件索引")? {
-                if bytes.len() + chunk.len() > MAX_INDEX_BYTES {
-                    bail!("插件索引超过 8 MiB 限制");
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-            return Ok(bytes);
-        }
-        _ if source.private => {}
-        _ => bail!("无法获取公开插件市场索引，请检查网络或稍后重试"),
+    if let Some(bytes) = fetch_index_over_http(&client, &[&raw, &api]).await? {
+        return Ok(bytes);
+    }
+    if !source.private {
+        bail!("无法获取插件市场索引，请检查网络或稍后重试");
     }
     let endpoint = format!(
         "repos/{}/contents/plugin-index.json?ref=main",
@@ -384,6 +380,44 @@ async fn fetch_index(source: Source) -> anyhow::Result<Vec<u8>> {
         "完整市场需要 GitHub 仓库访问权限；请先安装 gh 并运行 gh auth login",
     )
     .await
+}
+
+/// 依次匿名请求各地址，返回第一个取到的索引；都取不到时返回 `None`。超过大小上限直接报错。
+async fn fetch_index_over_http(
+    client: &reqwest::Client,
+    urls: &[&str],
+) -> anyhow::Result<Option<Vec<u8>>> {
+    'urls: for url in urls {
+        let Ok(mut response) = client
+            .get(*url)
+            .header(reqwest::header::ACCEPT, "application/vnd.github.raw+json")
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        if response.content_length().unwrap_or_default() > MAX_INDEX_BYTES as u64 {
+            bail!("插件索引超过 8 MiB 限制");
+        }
+        let mut bytes = Vec::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if bytes.len() + chunk.len() > MAX_INDEX_BYTES {
+                        bail!("插件索引超过 8 MiB 限制");
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => return Ok(Some(bytes)),
+                // 读到一半断开：换下一个地址再试。
+                Err(_) => continue 'urls,
+            }
+        }
+    }
+    Ok(None)
 }
 
 async fn load_index(
@@ -660,7 +694,7 @@ impl GitFailure {
                 "完整市场仓库访问未授权，请运行 gh auth login 并确认该账号具有仓库访问权限"
             }
             Self::Access => {
-                "公开市场仓库访问被拒绝，请检查仓库可用性或网络访问限制；公开市场不需要 gh 登录"
+                "插件市场仓库访问被拒绝，请检查仓库可用性或网络访问限制；插件市场不需要 gh 登录"
             }
             Self::LocalPermission => {
                 "Git 无法读写本地插件缓存或配置，请检查目录权限、磁盘空间及安全软件拦截"
@@ -1633,7 +1667,7 @@ fn native_summary(
 fn native_market(home: &Path, source: Source, plugins: Vec<Value>) -> Value {
     json!({
         "name": virtual_market_name(source), "path": virtual_market_path(home, source).to_string_lossy(),
-        "interface": { "displayName": if source.private { "Codex 插件市场 · 完整库" } else { "Codex 插件市场 · 公开库" } },
+        "interface": { "displayName": if source.id == "full" { "Codex 插件市场 · 完整库" } else { "Codex 插件市场 · 公开库" } },
         "plugins": plugins,
     })
 }
@@ -2018,6 +2052,59 @@ pub async fn native_request(home: &Path, method: &str, params: Value) -> anyhow:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_market_is_public_and_keeps_its_name() {
+        // 完整库已公开（#2804）：不再要求 gh 登录，界面名称仍是「完整库」。
+        let full = Source::parse("full").unwrap();
+        assert!(!full.private);
+        let market = native_market(Path::new("/tmp/home"), full, Vec::new());
+        assert_eq!(market["interface"]["displayName"], "Codex 插件市场 · 完整库");
+        let public = native_market(Path::new("/tmp/home"), Source::parse("public").unwrap(), Vec::new());
+        assert_eq!(public["interface"]["displayName"], "Codex 插件市场 · 公开库");
+    }
+
+    #[tokio::test]
+    async fn index_falls_back_to_github_api_when_raw_is_unreachable() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // raw.githubusercontent.com 连不上、api.github.com 可达（#2804）：换 contents 接口取原文。
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/raw/plugin-index.json"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/x/contents/plugin-index.json"))
+            .and(header("accept", "application/vnd.github.raw+json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"plugins\":[]}"))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let raw = format!("{}/raw/plugin-index.json", server.uri());
+        let api = format!("{}/repos/x/contents/plugin-index.json", server.uri());
+
+        let bytes = fetch_index_over_http(&client, &[&raw, &api]).await.unwrap();
+        assert_eq!(bytes.as_deref(), Some(&b"{\"plugins\":[]}"[..]));
+        // 匿名请求：不带任何凭据。
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests.iter().all(|request| !request.headers.contains_key("authorization")));
+
+        // 两个地址都取不到：交给调用方报错。
+        let missing = format!("{}/missing", server.uri());
+        assert_eq!(fetch_index_over_http(&client, &[&raw, &missing]).await.unwrap(), None);
+
+        // 超过大小上限直接报错，不再试下一个地址。
+        let large = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b' '; MAX_INDEX_BYTES + 1]))
+            .mount(&large)
+            .await;
+        let error = fetch_index_over_http(&client, &[&large.uri(), &api]).await.unwrap_err();
+        assert!(error.to_string().contains("8 MiB"), "{error:#}");
+    }
 
     #[test]
     fn git_proxy_and_credentials_are_ephemeral_while_hooks_and_templates_stay_isolated() {

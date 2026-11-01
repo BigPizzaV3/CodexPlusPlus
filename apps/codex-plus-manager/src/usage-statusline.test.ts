@@ -411,9 +411,11 @@ function composerSandbox(table: Record<string, unknown[]>) {
       "codexPlusUsageEditorSelector", "codexPlusUsageComposerCard"].map(declaration),
     "return { state: codexPlusUsageState, find: codexPlusUsageComposerCard };",
   ].join("\n");
+  // 逗号分隔的选择器按各部分合并，和浏览器一致（否则组合选择器永远命中不到，测不出误判）。
+  const all = (selector: string) => table[selector] || selector.split(/,\s*/).flatMap((part) => table[part] || []);
   const documentStub = {
-    querySelectorAll: (selector: string) => table[selector] || [],
-    querySelector: (selector: string) => (table[selector] || [])[0] || null,
+    querySelectorAll: all,
+    querySelector: (selector: string) => all(selector)[0] || null,
   };
   return new Function("document", "visibleElement", source)(
     documentStub, (element: { visible?: boolean }) => element?.visible !== false,
@@ -444,12 +446,29 @@ test("旧版 Codex 没有 data-composer-surface-variant 时退回旧类名与输
 
   // 新版 Codex 停在没有输入卡片的页面：不能退回旧版兜底，把别处的 form 当输入框。
   const modernPage = composerSandbox({
-    "[data-composer-surface-variant], [data-codex-composer-root]": [fakeElement()],
+    "[data-composer-surface-variant]": [fakeElement({ visible: false })],
     '.ProseMirror[contenteditable="true"]': [editor],
   });
   assert.equal(modernPage.find(), null);
   assert.equal(modernPage.state.modernDom, true);
   assert.equal(composerSandbox({}).find(), null);
+});
+
+test("旧版 Codex 已有 composer 根标记、还没有新版卡片标记时仍走旧版兜底（#2753 Intel Mac 日志）", () => {
+  // 日志：surfaceVariant=0、composerRoot=1、legacyChrome=1、editors=1。
+  const root = fakeElement({ editor: true });
+  const chrome = fakeElement({ editor: true, root });
+  const page = composerSandbox({
+    "[data-codex-composer-root]": [root],
+    '.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]': [chrome],
+  });
+  assert.deepEqual(page.find(), { card: chrome, source: "legacy-chrome" });
+  assert.equal(page.state.modernDom, false, "只有根标记不算新版");
+
+  // 没有旧类名时挂在包着输入框的根节点上。
+  assert.deepEqual(composerSandbox({ "[data-codex-composer-root]": [root] }).find(), { card: root, source: "composer-root" });
+  // 根节点没包输入框（例如装饰容器）不算。
+  assert.equal(composerSandbox({ "[data-codex-composer-root]": [fakeElement()] }).find(), null);
 });
 
 test("旧版 Codex 的 composer 没有根标记与会话标识时，会话退回侧边栏当前行 + 地址栏（#2753）", () => {

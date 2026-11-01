@@ -300,9 +300,15 @@
 .mg-skill-matrix .mg-skill-source .mg-link-button { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
 .mg-skill-matrix .mg-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; }
 .mg-skill-matrix .mg-skill-group-row { display:flex; align-items:center; gap:8px; min-height:36px; padding:0 12px 0 8px; border-bottom:1px solid hsl(var(--border)); background:hsl(var(--muted) / .5); }
-.mg-skill-matrix .mg-skill-group-row .mg-group-head { flex:1; height:36px; padding:0 4px; border:0; background:transparent; }
-.mg-skill-matrix .mg-skill-group-row .mg-row-actions { display:flex; gap:4px; }
+.mg-skill-matrix .mg-skill-group-row .mg-group-head { flex:1; min-width:0; height:36px; padding:0 4px; border:0; background:transparent; }
+.mg-skill-matrix .mg-skill-group-row .mg-group-head strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mg-skill-matrix .mg-skill-group-row .mg-group-head small { flex:none; white-space:nowrap; }
+.mg-skill-matrix .mg-skill-group-row .mg-row-actions { display:flex; flex:none; gap:4px; }
 .mg-skill-matrix .mg-skill-group-row .mg-button { height:24px; padding:0 8px; font-size:12px; }
+.mg-skill-matrix .mg-skill-drag, .mg-skill-matrix .mg-skill-drag-placeholder { flex:none; width:24px; height:24px; }
+.mg-skill-matrix .mg-skill-drag { cursor:grab; touch-action:none; color:hsl(var(--muted-foreground)); }
+.mg-skill-matrix .mg-skill-drag:active { cursor:grabbing; }
+.mg-skill-matrix .mg-skill-group[data-dragging="true"] { opacity:.75; z-index:2; }
 .mg-menu .mg-menu-label { padding:6px 7px 3px; font-size:11px; color:hsl(var(--muted-foreground)); }
 .mg-menu button[aria-checked="true"]::after { content:"✓"; float:right; color:hsl(var(--brand-accent)); }
 .mg-skill-matrix .mg-skill-group { margin:0; }

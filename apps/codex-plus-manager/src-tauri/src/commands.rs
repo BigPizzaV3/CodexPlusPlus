@@ -320,6 +320,7 @@ struct WeixinQrSession {
 struct WeixinRuntime {
     stop: Arc<AtomicBool>,
     codex_path: codex_plus_core::connect::WeixinCodexPath,
+    outbound: codex_plus_core::connect::outbound::OutboundPolicy,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1876,16 +1877,32 @@ fn terminate_multi_worker(
     #[cfg(windows)]
     {
         // 创建身份、精确参数与 exe 均验证后，使用同一句柄终止，不再按 PID taskkill。
-        let terminated = codex_plus_core::multi_worker::terminate_verified_worker(
+        let result = codex_plus_core::multi_worker::terminate_verified_worker(
             pid,
             options_path,
             worker_birth_id,
-        )?;
-        if !terminated {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "manager.multi_worker_stop_skipped",
-                json!({ "pid": pid, "reason": "identity_unverified" }),
-            );
+        );
+        match result {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.multi_worker_stop_skipped",
+                    json!({ "pid": pid, "reason": "identity_unverified" }),
+                );
+            }
+            Err(error) => {
+                // 多开停止调用方会故意忽略清理错误；这里先写诊断，避免身份冲突或
+                // 查询失败只表现为“停掉了”，却没有留下跳过依据。
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.multi_worker_stop_skipped",
+                    json!({
+                        "pid": pid,
+                        "reason": "verification_error",
+                        "message": format!("{error:#}"),
+                    }),
+                );
+                return Err(error);
+            }
         }
     }
     #[cfg(not(any(unix, windows)))]
@@ -2007,14 +2024,21 @@ pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
         let _ = codex_plus_launcher::shutdown();
         return Ok(());
     };
-    while tauri::async_runtime::block_on(
-        codex_plus_core::multi_worker::codex_instance_identity_matches(&identity),
-    )
-    .unwrap_or(false)
-    {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    codex_plus_launcher::shutdown()
+    #[cfg(windows)]
+    let lifetime = codex_plus_core::multi_worker::wait_for_codex_instance_exit(&identity);
+    #[cfg(not(windows))]
+    let lifetime = {
+        while tauri::async_runtime::block_on(
+            codex_plus_core::multi_worker::codex_instance_identity_matches(&identity),
+        )
+        .unwrap_or(false)
+        {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+    let cleanup = codex_plus_launcher::shutdown();
+    lifetime.and(cleanup)
 }
 
 /// 多开实例启动结果文件名（与 `worker-options.json` 同目录）。
@@ -3368,12 +3392,57 @@ pub async fn weixin_connect_qr_status() -> CommandResult<WeixinQrPayload> {
 }
 
 #[tauri::command]
+pub async fn weixin_connect_catalog() -> Value {
+    codex_plus_core::model_catalog::read_codex_model_catalog().await
+}
+
+#[tauri::command]
+pub async fn weixin_connect_projects(
+    codex_path: Option<String>,
+    work_dir: Option<String>,
+) -> Result<Value, String> {
+    let settings = SettingsStore::default()
+        .load()
+        .map_err(|error| format!("读取微信连接设置失败：{error}"))?;
+    let executable = codex_path.unwrap_or(settings.weixin_connect_codex_path);
+    let work_dir = work_dir.unwrap_or(settings.weixin_connect_work_dir);
+    let work_dir = if work_dir.trim().is_empty() {
+        std::env::current_dir().map_err(|error| format!("无法读取当前工作目录：{error}"))?
+    } else {
+        PathBuf::from(work_dir.trim())
+    };
+    codex_plus_core::connect::projects::list_projects(executable.trim().to_string(), work_dir)
+        .await
+        .map_err(|error| format!("读取微信连接项目失败：{error:#}"))
+}
+
+#[tauri::command]
 pub fn weixin_connect_status() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
     let status = weixin_status()
         .lock()
         .map(|status| status.clone())
         .unwrap_or_default();
     ok("微信连接状态已读取。", status)
+}
+
+#[tauri::command]
+pub fn weixin_connect_reset_session(peer_id: String, account_id: String) -> Result<(), String> {
+    let settings = SettingsStore::default()
+        .load()
+        .map_err(|error| error.to_string())?;
+    if settings.weixin_connect_account_id.trim() != account_id.trim() {
+        return Err("账号设置尚未保存，请保存后重试".to_string());
+    }
+    let peer = peer_id.trim();
+    if peer.is_empty() {
+        return Err("请填写需要重置的微信联系人 ID".to_string());
+    }
+    codex_plus_core::connect::controls::SessionOptionsStore::for_peer(
+        &settings.weixin_connect_account_id,
+        peer,
+    )
+    .request_reset()
+    .map_err(|error| format!("保存重置请求失败：{error}"))
 }
 
 #[tauri::command]
@@ -3404,10 +3473,12 @@ pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinCo
     let stopping = weixin_runtime()
         .lock()
         .ok()
-        .and_then(|runtime| runtime.as_ref().map(|runtime| Arc::clone(&runtime.stop)))
-        .map(|stop| {
-            stop.store(true, Ordering::SeqCst);
-            true
+        .and_then(|runtime| {
+            runtime.as_ref().map(|runtime| {
+                runtime.stop.store(true, Ordering::SeqCst);
+                runtime.outbound.set(false, "", "");
+                true
+            })
         })
         .unwrap_or(false);
     let store = SettingsStore::default();
@@ -3571,9 +3642,12 @@ fn spawn_weixin_connect(
         token: settings.weixin_connect_token,
         account_id: settings.weixin_connect_account_id,
         allow_from: settings.weixin_connect_allow_from,
+        allow_outbound_attachments: settings.weixin_connect_allow_outbound_attachments,
         route_tag: settings.weixin_connect_route_tag,
         work_dir: settings.weixin_connect_work_dir,
         model: settings.weixin_connect_model,
+        reasoning_effort: settings.weixin_connect_reasoning_effort,
+        project_id: settings.weixin_connect_project_id,
         sandbox: settings.weixin_connect_sandbox,
         codex_path: settings.weixin_connect_codex_path,
     }
@@ -3589,9 +3663,11 @@ fn spawn_weixin_connect(
         anyhow::bail!("微信连接已在运行或正在停止");
     }
     let codex_path = codex_plus_core::connect::WeixinCodexPath::new(&config.codex_path);
+    let outbound = SettingsStore::default().weixin_outbound_policy(&config, Arc::clone(&stop))?;
     *runtime = Some(WeixinRuntime {
         stop: Arc::clone(&stop),
         codex_path: codex_path.clone(),
+        outbound: outbound.clone(),
     });
     drop(runtime);
     let status = weixin_status();
@@ -3604,11 +3680,12 @@ fn spawn_weixin_connect(
     let task_status = Arc::clone(&status);
     let task_stop = Arc::clone(&stop);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = codex_plus_core::connect::run_weixin_connect_with_codex_path(
+        if let Err(error) = codex_plus_core::connect::run_weixin_connect_with_outbound(
             config,
             stop,
             Arc::clone(&task_status),
             codex_path,
+            outbound,
         )
         .await
             && let Ok(mut current) = task_status.lock()
@@ -3769,6 +3846,19 @@ pub fn save_settings(
     };
     let store = SettingsStore::default();
     let previous = store.load().unwrap_or_default();
+    if let Err(error) = codex_plus_core::connect::outbound::validate_settings_change(&previous, &settings) {
+        return failed(
+            &error.to_string(),
+            SettingsPayload {
+                revision: settings.settings_revision.clone(),
+                settings,
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts: user_script_inventory(),
+            },
+        );
+    }
     let dream_skin_enabled = settings.enhancements_enabled && settings.codex_app_dream_skin_enabled;
     if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
         dream_skin_enabled,
@@ -3796,6 +3886,13 @@ pub fn save_settings(
                 && let Some(runtime) = runtime.as_ref()
             {
                 runtime.codex_path.set(&settings.weixin_connect_codex_path);
+                runtime.codex_path.set_defaults(codex_plus_core::connect::SessionDefaults {
+                    model: settings.weixin_connect_model.clone(),
+                    reasoning_effort: settings.weixin_connect_reasoning_effort.clone(),
+                    project_id: settings.weixin_connect_project_id.clone(),
+                    work_dir: settings.weixin_connect_work_dir.clone(),
+                    sandbox: settings.weixin_connect_sandbox.clone(),
+                });
             }
             // 自动接管是常驻行为，保存后立刻生效，不必重启管理器。
             crate::auto_takeover::apply_enabled(settings.codex_app_auto_takeover);
@@ -6380,6 +6477,10 @@ pub async fn update_skill(repo_key: String, id: String) -> CommandResult<SkillsP
     install_or_update_skill(&repo_key, &id, "Skill 已更新。", "更新 Skill 失败").await
 }
 
+fn skill_install_failure_message(failure_prefix: &str, error: &anyhow::Error) -> String {
+    format!("{failure_prefix}：{error:#}")
+}
+
 async fn install_or_update_skill(
     repo_key: &str,
     id: &str,
@@ -6403,7 +6504,7 @@ async fn install_or_update_skill(
         }
         Err(error) => {
             return failed(
-                &format!("{failure_prefix}：{error}"),
+                &skill_install_failure_message(failure_prefix, &error),
                 current_skills_payload(&manager),
             );
         }
@@ -6441,7 +6542,7 @@ async fn install_or_update_skill(
         Ok(bytes) => bytes,
         Err(error) => {
             return failed(
-                &format!("{failure_prefix}：{error}"),
+                &skill_install_failure_message(failure_prefix, &error),
                 current_skills_payload(&manager),
             );
         }
@@ -6449,7 +6550,7 @@ async fn install_or_update_skill(
     match manager.install_from_zip(&skill, &zip) {
         Ok(_) => ok(success_message, current_skills_payload(&manager)),
         Err(error) => failed(
-            &format!("{failure_prefix}：{error}"),
+            &skill_install_failure_message(failure_prefix, &error),
             current_skills_payload(&manager),
         ),
     }
@@ -9868,6 +9969,17 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn skill_install_failure_message_preserves_the_error_chain() {
+        let error = anyhow::anyhow!("root cause")
+            .context("download context")
+            .context("repository context");
+        assert_eq!(
+            skill_install_failure_message("update failed", &error),
+            "update failed：repository context: download context: root cause"
+        );
+    }
 
     #[test]
     fn skills_payload_hides_disabled_repository_catalog() {

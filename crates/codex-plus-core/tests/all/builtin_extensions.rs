@@ -34,19 +34,19 @@ fn builtins_without_a_setting_are_enabled_by_default_and_can_be_disabled() {
     let manager = manager(temp.path());
     let builtins = manager.builtin_extensions().unwrap();
     assert_eq!(builtins.as_array().unwrap().len(), builtin_extension_defs().len());
-    assert_eq!(builtin(&manager, "proxy-request-status")["enabled"], true);
-    assert_eq!(builtin(&manager, "proxy-request-status")["setting"], Value::Null);
+    assert_eq!(builtin(&manager, "session-title-hook")["enabled"], true);
+    assert_eq!(builtin(&manager, "session-title-hook")["setting"], Value::Null);
 
-    manager.set_script_enabled("builtin:proxy-request-status", false).unwrap();
+    manager.set_script_enabled("builtin:session-title-hook", false).unwrap();
     let state = manager.builtin_extension_state().unwrap();
-    assert_eq!(state["disabled"], json!(["proxy-request-status"]));
-    assert_eq!(builtin(&manager, "proxy-request-status")["enabled"], false);
+    assert_eq!(state["disabled"], json!(["session-title-hook"]));
+    assert_eq!(builtin(&manager, "session-title-hook")["enabled"], false);
 
     // 状态总随注入包下发，用户脚本总开关关着也一样（页面据此卸下内置功能）。
     manager.set_global_enabled(false).unwrap();
     let bundle = manager.build_enabled_bundle().unwrap();
     assert!(bundle.contains("window.__codexPlusBuiltinExtensionState"), "{bundle}");
-    assert!(bundle.contains("\"proxy-request-status\""));
+    assert!(bundle.contains("\"session-title-hook\""));
 }
 
 #[test]
@@ -140,9 +140,9 @@ fn backend_builtins_cannot_be_replaced() {
 fn builtin_extension_active_follows_disable_and_replaces() {
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(temp.path());
-    assert!(manager.builtin_extension_active("proxy-request-status"));
-    manager.set_script_enabled("builtin:proxy-request-status", false).unwrap();
-    assert!(!manager.builtin_extension_active("proxy-request-status"));
+    assert!(manager.builtin_extension_active("session-title-hook"));
+    manager.set_script_enabled("builtin:session-title-hook", false).unwrap();
+    assert!(!manager.builtin_extension_active("session-title-hook"));
     assert!(manager.builtin_extension_active("paste-fix"));
     write_package(temp.path(), "my-paste", json!({ "id": "my-paste", "renderer": "renderer.js", "replaces": ["paste-fix"] }));
     assert!(!manager.builtin_extension_active("paste-fix"));

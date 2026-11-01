@@ -29,7 +29,8 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet(), scan: () => syncCodexPlusAgentPet(), apply: codexPlusAgentPetExtension },
+      // 大肥鱼（96-whale-widget.js）是桌宠的一种类型，跟着这个内置拓展一起扫描、一起撤下。
+      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusPetKinds(), scan: () => syncCodexPlusPetKinds(), apply: codexPlusAgentPetExtension },
       { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
       { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
@@ -87,6 +88,11 @@
       { id: "standalone-quota-unlock", name: "官方额度解锁" },
       { id: "image-overlay", name: "背景图" },
     ];
+  }
+
+  function syncCodexPlusPetKinds() {
+    syncCodexPlusAgentPet();
+    if (typeof syncCodexPlusWhaleWidget === "function") syncCodexPlusWhaleWidget();
   }
 
   /** 下发的停用 / 顶替状态：{ disabled: [id], replacedBy: { id: 拓展 key } }。 */

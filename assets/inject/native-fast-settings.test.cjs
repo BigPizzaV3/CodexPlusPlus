@@ -69,6 +69,37 @@ async function runNativeFastSettingsTests() {
   await context.setBackendSetting("codexAppNativeFastUnlock", true);
   await context.setBackendSetting("enhancementsEnabled", false);
   assert.equal(runtime.allow("local", null), false, "增强总开关关闭后立即停止放行");
+  runNativeFastStatusTests();
+}
+
+// 设置页的自检状态：补丁是否真的打进当前 Codex，失败时带上原因码。
+function runNativeFastStatusTests() {
+  const node = { textContent: "", hidden: true, dataset: {} };
+  const window = {};
+  const settings = { enhancementsEnabled: true, codexAppNativeFastUnlock: true };
+  const context = vm.createContext({
+    window, codexPlusBackendSettings: settings,
+    document: { querySelectorAll: (selector) => selector === "[data-codex-plus-native-fast-status]" ? [node] : [] },
+  });
+  vm.runInContext(`${extract("40-backend-settings.js", "codexPlusNativeFastStatusText")}\n${extract("40-backend-settings.js", "syncCodexPlusNativeFastStatus")}`, context);
+  const sync = () => { context.syncCodexPlusNativeFastStatus(); return { text: node.textContent, hidden: node.hidden, failed: node.dataset.failed }; };
+
+  assert.deepEqual(sync(), { text: "", hidden: true, failed: "false" }, "还没打补丁（未重启）时不显示");
+  window.__codexPlusNativeFastCompiled = "v1";
+  window.__codexPlusNativeFastPatchState = "patched";
+  assert.deepEqual(sync(), { text: "已生效：当前 Codex 版本已适配。", hidden: false, failed: "false" });
+  delete window.__codexPlusNativeFastCompiled;
+  window.__codexPlusNativeFastPatchState = "failed";
+  window.__codexPlusNativeFastFailureReason = "app-initial:incomplete-gates";
+  const failed = sync();
+  assert.equal(failed.hidden, false);
+  assert.equal(failed.failed, "true");
+  assert.match(failed.text, /暂未适配.*（app-initial:incomplete-gates）.*bridge\.native_module_patch_prepared/);
+  settings.codexAppNativeFastUnlock = false;
+  assert.deepEqual(sync(), { text: "", hidden: true, failed: "false" }, "关闭开关后不显示状态");
+  settings.codexAppNativeFastUnlock = true;
+  settings.enhancementsEnabled = false;
+  assert.equal(sync().hidden, true, "增强总开关关闭后不显示状态");
 }
 
 module.exports = runNativeFastSettingsTests;

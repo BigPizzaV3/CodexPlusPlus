@@ -681,6 +681,18 @@ async fn fetch_models_from_source_with_timeout(
     source: &ModelSource,
     timeout: std::time::Duration,
 ) -> (Vec<String>, Value) {
+    let (models, status, _) = fetch_models_payload_from_source(client, source, timeout).await;
+    (models, status)
+}
+
+/// 拉一次模型列表，除了模型名和状态，还带回解析好的响应体（拿到模型时才有），
+/// 供「从上游同步上下文窗口 / 思考等级」读模型元数据（#2807）。请求、超时、错误判定与
+/// [`fetch_models_from_source_with_timeout`] 完全相同，不另发请求。
+async fn fetch_models_payload_from_source(
+    client: &reqwest::Client,
+    source: &ModelSource,
+    timeout: std::time::Duration,
+) -> (Vec<String>, Value, Option<Value>) {
     let mut endpoint = models_endpoint(&source.base_url);
     if source.anthropic && !endpoint.is_empty() {
         // Anthropic 的 /v1/models 默认一页 20 条，一次取满（上限 1000）。
@@ -699,7 +711,7 @@ async fn fetch_models_from_source_with_timeout(
         safe_source["status"] = json!("failed");
         safe_source["message"] = json!("Missing base URL");
         safe_source["models"] = json!(0);
-        return (Vec::new(), safe_source);
+        return (Vec::new(), safe_source, None);
     }
 
     let mut request = client
@@ -730,15 +742,29 @@ async fn fetch_models_from_source_with_timeout(
     })
     .await
     {
-        Err(_elapsed) => failed_source(
-            safe_source,
-            format!(
-                "上游 {} 秒内未返回模型列表（已超时中断）",
-                timeout.as_secs()
-            ),
-        ),
-        Ok(Err(error)) => failed_source(safe_source, error.to_string()),
-        Ok(Ok((status_code, body))) => interpret_models_response(status_code, &body, safe_source),
+        Err(_elapsed) => {
+            let (models, status) = failed_source(
+                safe_source,
+                format!(
+                    "上游 {} 秒内未返回模型列表（已超时中断）",
+                    timeout.as_secs()
+                ),
+            );
+            (models, status, None)
+        }
+        Ok(Err(error)) => {
+            let (models, status) = failed_source(safe_source, error.to_string());
+            (models, status, None)
+        }
+        Ok(Ok((status_code, body))) => {
+            let (models, status) = interpret_models_response(status_code, &body, safe_source);
+            let payload = if models.is_empty() {
+                None
+            } else {
+                serde_json::from_str::<Value>(body.trim()).ok()
+            };
+            (models, status, payload)
+        }
     }
 }
 
@@ -887,6 +913,45 @@ pub async fn fetch_relay_profile_model_ids(
     if crate::official_login::member_uses_official_login_transport(profile) {
         return fetch_official_login_model_ids(profile).await;
     }
+    let source = relay_profile_model_source(profile)?;
+    let endpoint = models_endpoint(&source.base_url);
+    let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, &profile)?;
+    let (models, status) = fetch_models_from_source(&client, &source).await;
+    if models.is_empty() {
+        let message = status
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("上游没有返回可用模型");
+        anyhow::bail!("{message}");
+    }
+    Ok((models, endpoint))
+}
+
+/// 拉供应商的 `/models`，返回整个响应体（模型名之外还有上游给的上下文窗口、思考等级等元数据，#2807）。
+/// 请求方式（代理、超时、请求头、Anthropic 分页）与 [`fetch_relay_profile_model_ids`] 相同；
+/// 官方登录供应商走的是官方目录，不在这里处理。没拿到模型时报错。
+pub async fn fetch_relay_profile_models_payload(profile: &RelayProfile) -> anyhow::Result<Value> {
+    if crate::official_login::member_uses_official_login_transport(profile) {
+        anyhow::bail!("官方登录供应商的模型目录由官方提供，不需要从上游同步");
+    }
+    let source = relay_profile_model_source(profile)?;
+    let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, profile)?;
+    let (models, status, payload) =
+        fetch_models_payload_from_source(&client, &source, MODELS_FETCH_TIMEOUT).await;
+    match payload {
+        Some(payload) if !models.is_empty() => Ok(payload),
+        _ => {
+            let message = status
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("上游没有返回可用模型");
+            anyhow::bail!("{message}");
+        }
+    }
+}
+
+/// 供应商拉模型列表用的来源（地址、Key、自定义请求头、协议）。官方登录供应商缺凭据、地址为空时报错。
+fn relay_profile_model_source(profile: &RelayProfile) -> anyhow::Result<ModelSource> {
     if crate::official_login::is_official_login_profile(profile)
         && profile.base_url.trim().is_empty()
     {
@@ -915,17 +980,7 @@ pub async fn fetch_relay_profile_model_ids(
     if source.base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");
     }
-    let endpoint = models_endpoint(&source.base_url);
-    let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, &profile)?;
-    let (models, status) = fetch_models_from_source(&client, &source).await;
-    if models.is_empty() {
-        let message = status
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("上游没有返回可用模型");
-        anyhow::bail!("{message}");
-    }
-    Ok((models, endpoint))
+    Ok(source)
 }
 
 /// 官方模型目录的客户端版本参数；与 Codex CLI 的取值保持一致。

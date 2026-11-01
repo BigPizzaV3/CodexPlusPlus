@@ -298,6 +298,34 @@ check("native footer occludes transcript below the composer", async page => {
   zero(work, ["composerReads", "filterNodes", "layerWrites"]);
 });
 
+// #2813：侧栏打开时原生 footer 带 translate:-154px；transform 祖先会让 fixed 背景退化为元素局部坐标。
+for (const transform of ["translate:-154px", "translate:0", "transform:translateX(0)"])
+check(`footer wallpaper stays viewport aligned under ${transform}`, async page => {
+  await html(page, '#frame{position:relative;width:600px;height:500px;margin-left:154px}' +
+    '#thread{height:500px;overflow:auto}#transcript{height:1000px;background:#dc2832}' +
+    '#footer{position:absolute;bottom:0;left:20px;right:20px;height:150px;z-index:20;pointer-events:none}' +
+    '#surface{position:absolute;inset:0;background:#303030}',
+    '<div id="frame"><div id="thread" class="thread-scroll-container"><div id="transcript"></div>' +
+    `<div id="footer" data-thread-scroll-footer style="${transform}"><div id="surface" aria-hidden="true"></div></div></div></div>`);
+  await configure(page, { dataUrl: assets.pattern });
+  const attachment = () => page.$eval("#surface", node => getComputedStyle(node, "::after").backgroundAttachment);
+  // 视口里图案左半在 x<400；按 footer 自身盒子拉伸时，380/420 两点至少一处会翻色。
+  const aligned = async label => {
+    const frame = await shot(page);
+    near(pixel(frame, 380, 430), [78, 56, 46], label + " left half");
+    near(pixel(frame, 420, 430), [46, 54, 78], label + " right half");
+  };
+  assert.equal(await attachment(), "scroll");
+  await aligned(transform);
+  await page.$eval("#footer", node => { node.style.cssText = ""; }); await settle(page);
+  assert.equal(await attachment(), "fixed", "untransformed footer keeps the fixed wallpaper path");
+  await aligned("restored");
+  await page.$eval("#footer", node => { node.style.cssText = "transition:translate .1s linear;translate:-154px"; });
+  await page.waitForTimeout(300);
+  assert.equal(await attachment(), "scroll", "sidebar translate transition refreshes after it ends");
+  await aligned("after sidebar transition");
+});
+
 check("bottom aligned submenu retains its native placement transform", async page => {
   await html(page, '#wrapper{position:fixed;top:530px;left:20px;transform:translateX(10px)}' +
     '#submenu{width:240px;height:240px;background:#303030;transform:translateY(calc(32px + 8px - 100%))}',

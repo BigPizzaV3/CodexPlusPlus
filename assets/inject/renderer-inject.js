@@ -612,6 +612,10 @@
     const scopeKeys = new Map();
     const footers = new Map();
     const themeInputs = new Map();
+    // 受变换影响的壁纸表面：待重算集合、当前按视口换算的集合、为其挂的 ResizeObserver（表面 -> 记录节点）。
+    const paintsDirty = new Set();
+    const geometryPaints = new Set();
+    const paintObservers = new Map();
     let geometryDirty = true;
     const originalAttributes = new Map();
     const stats = { frames: 0, rectReads: 0, styleReads: 0, queries: 0, maskWrites: 0, layerWrites: 0 };
@@ -635,6 +639,26 @@
     const computed = (node, pseudo) => { stats.styleReads++; return getComputedStyle(node, pseudo); };
     const bounds = node => { stats.rectReads++; return node.getBoundingClientRect(); };
     const queryAll = (node, selector) => { stats.queries++; return node.querySelectorAll(selector); };
+    // 按 CSS Transforms 规范，自身或祖先带变换时 background-attachment:fixed 退化为元素局部坐标；
+    // Chromium 里 translate:0、scale:1、will-change:transform 同样会触发（#2813：侧栏打开时 footer 带 translate）。
+    const transformedStyle = paint => [paint.transform, paint.translate, paint.scale, paint.rotate]
+      .some(value => value && value !== "none") || /transform|translate|scale|rotate/.test(paint.willChange || "");
+    // 全局壁纸层在视口里的绘制矩形，与 overlay 的 background-size / background-position 等价。
+    const wallpaperRect = (mode, width, height, imageWidth, imageHeight) => {
+      if (mode === "stretch") return [0, 0, width, height];
+      if (!imageWidth || !imageHeight) return null;
+      if (mode === "tile") return [0, 0, imageWidth, imageHeight];
+      const scale = mode === "fill" ? Math.max(width / imageWidth, height / imageHeight)
+        : mode === "fit" ? Math.min(width / imageWidth, height / imageHeight) : 1;
+      return [(width - imageWidth * scale) / 2, (height - imageHeight * scale) / 2, imageWidth * scale, imageHeight * scale];
+    };
+    // 把视口坐标的壁纸矩形换算到背景定位区域（视口原点 originX/originY，祖先缩放 sx/sy）的局部坐标。
+    const localWallpaper = (wall, originX, originY, sx, sy) => {
+      const px = value => `${Math.round(value * 1000) / 1000 || 0}px`;
+      return { size: `${px(wall[2] / sx)} ${px(wall[3] / sy)}`,
+        position: `${px((wall[0] - originX) / sx)} ${px((wall[1] - originY) / sy)}` };
+    };
+    const layoutScale = (size, layout) => !layout || Math.abs(size - layout) <= 1 ? 1 : size / layout;
     const scopeKey = node => [node.getAttribute("class"), ...[
       "position", "z-index", "isolation", "contain", "transform", "translate", "scale", "rotate",
       "will-change", "overflow", "overflow-x", "overflow-y", "animation", "transition",
@@ -806,39 +830,129 @@
     };
     const nativeSurfacePaint = surface => ({ id: ++nextControl, surface,
       pseudo: ["after", "before"].find(pseudo => ["none", "normal"].includes(computed(surface, `::${pseudo}`).content)) });
+    // 未受变换影响时沿用 fixed；受影响时 paint.geometry 记录每个绘制目标按视口换算出的尺寸与偏移。
+    const wallRule = paint => {
+      const image = JSON.stringify(resource.imageSource);
+      const selector = `[${paintAttribute}="${paint.ruleId}"]`;
+      if (paint.tints) return paint.tints.map(([pseudo, tint]) => {
+        const geometry = paint.geometry?.get(pseudo);
+        return `${selector}${pseudo}{background-image:linear-gradient(${tint},${tint}),url(${image})!important;background-size:auto,${geometry?.size || fitStyles.size}!important;background-position:0 0,${geometry?.position || fitStyles.position}!important;background-repeat:no-repeat,${fitStyles.repeat}!important;background-attachment:${geometry ? "scroll" : "fixed"}!important;}`;
+      }).join("\n");
+      const pseudo = `::${paint.pseudo}`;
+      const geometry = paint.geometry?.get(pseudo);
+      return `${selector}${pseudo}{background-image:url(${image});${geometry
+        ? `background-attachment:scroll!important;background-size:${geometry.size}!important;background-position:${geometry.position}!important;` : ""}}`;
+    };
+    const measurePaint = paint => {
+      const surface = paint.surface;
+      const geometry = new Map();
+      const wall = wallpaperRect(fitMode, innerWidth, innerHeight, resource.width, resource.height);
+      if (!wall || !surface.isConnected) return geometry;
+      const surfaceStyle = computed(surface);
+      // 绘制用的伪元素以表面为包含块时才能换算；否则保持 fixed，与改动前一致。
+      const containing = surfaceStyle.position !== "static" || transformedStyle(surfaceStyle);
+      const box = bounds(surface);
+      const sx = layoutScale(box.width, surface.offsetWidth), sy = layoutScale(box.height, surface.offsetHeight);
+      for (const pseudo of paint.tints ? paint.tints.map(([target]) => target) : [`::${paint.pseudo}`]) {
+        let x = surface.clientLeft, y = surface.clientTop;
+        if (pseudo) {
+          if (!containing) continue;
+          const own = computed(surface, pseudo);
+          const left = parseFloat(own.left), top = parseFloat(own.top);
+          if (own.position !== "absolute" || !Number.isFinite(left) || !Number.isFinite(top)) continue;
+          x += left + (parseFloat(own.borderLeftWidth) || 0);
+          y += top + (parseFloat(own.borderTopWidth) || 0);
+        }
+        geometry.set(pseudo, localWallpaper(wall, box.left + x * sx, box.top + y * sy, sx, sy));
+      }
+      return geometry;
+    };
+    const releasePaintGeometry = (node, paint) => {
+      geometryPaints.delete(node);
+      if (!paint) return;
+      paint.geometry = null;
+      const surface = paint.surface;
+      if (paintObservers.get(surface) !== node) return;
+      paintObservers.delete(surface);
+      if (!controls.has(surface) && ![...footers.values()].some(footer => footer.scroller === surface))
+        resizeObserver.unobserve(surface);
+    };
+    // 祖先样式变化（class/style 突变、过渡/动画结束）后，只标记待查，统一在 render 里读样式。
+    const invalidatePaintChains = target => {
+      let found = false;
+      for (const node of paintedNodes) {
+        const paint = records.get(node)?.paint;
+        if (!paint || target !== paint.surface && !target.contains(paint.surface)) continue;
+        paint.chainDirty = true;
+        paintsDirty.add(node);
+        found = true;
+      }
+      return found;
+    };
+    const refreshPaints = () => {
+      const nodes = geometryDirty ? new Set([...paintsDirty, ...geometryPaints]) : paintsDirty;
+      for (const node of nodes) {
+        const record = records.get(node);
+        const paint = record?.paint;
+        if (!paint || !paintedNodes.has(node) || !paint.surface.isConnected) continue;
+        if (paint.chainDirty) {
+          paint.chainDirty = false;
+          paint.transformed = false;
+          for (let parent = paint.surface; parent; parent = parent === root ? null : parent.parentElement)
+            if (transformedStyle(computed(parent))) { paint.transformed = true; break; }
+        }
+        const geometry = paint.transformed ? measurePaint(paint) : null;
+        if (geometry?.size) {
+          paint.geometry = geometry;
+          geometryPaints.add(node);
+          if (!paintObservers.has(paint.surface)) {
+            paintObservers.set(paint.surface, node);
+            resizeObserver.observe(paint.surface);
+          }
+        } else releasePaintGeometry(node, paint);
+        const rule = wallRule(paint);
+        if (record.wallRule !== rule) { record.wallRule = rule; writeRules(); }
+      }
+      paintsDirty.clear();
+    };
     const registerPaint = (node, paint = records.get(node).paint || nativeSurfacePaint(node)) => {
-      const previous = records.get(node).paint;
-      if (previous && previous.surface !== paint.surface) unmark(previous.surface, paintAttribute);
-      records.get(node).paint = paint;
+      const record = records.get(node);
+      const previous = record.paint;
+      if (previous && previous.surface !== paint.surface) {
+        unmark(previous.surface, paintAttribute);
+        releasePaintGeometry(node, previous);
+      }
+      record.paint = paint;
       if (node.matches(headerSelector)) {
         unmark(paint.surface, paintAttribute);
-        const id = `background-${paint.id}`;
+        paint.ruleId = `background-${paint.id}`;
         // Paint only existing opaque backing, including native top-edge extensions.
         // Transparent headers already see the single global wallpaper underneath.
-        records.get(node).wallRule = ["", "::before", "::after"].map(pseudo => {
+        paint.tints = ["", "::before", "::after"].map(pseudo => {
           const native = computed(paint.surface, pseudo || undefined);
           const color = native.backgroundColor;
-          if (color === "transparent" || color.startsWith("rgba(") || color.includes("/") || native.backgroundImage !== "none") return "";
-          const tint = `color-mix(in srgb, ${color} ${(1 - opacity) * 100}%, transparent)`;
-          return `[${paintAttribute}="${id}"]${pseudo}{background-image:linear-gradient(${tint},${tint}),url(${JSON.stringify(resource.imageSource)})!important;background-size:auto,${fitStyles.size}!important;background-position:0 0,${fitStyles.position}!important;background-repeat:no-repeat,${fitStyles.repeat}!important;background-attachment:fixed!important;}`;
-        }).join("\n");
-        mark(paint.surface, paintAttribute, id);
-        paintedNodes.add(node);
-        writeRules();
-        return;
-      }
-      // Leave a surface's two native pseudo-elements intact when both are used.
-      if (!paint.pseudo) {
+          if (color === "transparent" || color.startsWith("rgba(") || color.includes("/") || native.backgroundImage !== "none") return null;
+          return [pseudo, `color-mix(in srgb, ${color} ${(1 - opacity) * 100}%, transparent)`];
+        }).filter(Boolean);
+        mark(paint.surface, paintAttribute, paint.ruleId);
+      } else if (!paint.pseudo) {
+        // Leave a surface's two native pseudo-elements intact when both are used.
         unmark(paint.surface, paintAttribute);
         paintedNodes.delete(node);
-        records.get(node).wallRule = "";
+        releasePaintGeometry(node, paint);
+        record.wallRule = "";
         writeRules();
         return;
+      } else {
+        paint.ruleId = (paint.pseudo === "before" ? "before-" : "") + paint.id;
+        paint.tints = null;
+        mark(paint.surface, paintAttribute, paint.ruleId);
       }
-      const id = (paint.pseudo === "before" ? "before-" : "") + paint.id;
-      records.get(node).wallRule = `[${paintAttribute}="${id}"]::${paint.pseudo}{background-image:url(${JSON.stringify(resource.imageSource)});}`;
-      mark(paint.surface, paintAttribute, id);
       paintedNodes.add(node);
+      record.wallRule = wallRule(paint);
+      paint.chainDirty = true;
+      paintsDirty.add(node);
+      schedule();
       writeRules();
     };
     const removeWithin = (registry, tree, remove, includeRoot = true) => {
@@ -967,7 +1081,8 @@
       footers.delete(footer);
       unmark(footer, footerAttribute);
       if (![...footers.values()].some(other => other.scroller === record.scroller) &&
-        !records.has(record.scroller) && !controls.has(record.scroller)) resizeObserver.unobserve(record.scroller);
+        !records.has(record.scroller) && !controls.has(record.scroller) && !paintObservers.has(record.scroller))
+        resizeObserver.unobserve(record.scroller);
     };
     const addFooter = footer => {
       if (owned(footer) || inactivePanel(footer) || footer.closest(reviewHeaderSelector)) return;
@@ -1064,7 +1179,9 @@
         if (control) control.box = null;
         const record = records.get(target);
         if (record) record.box = null;
-        changed ||= !!(control || record);
+        const painted = paintObservers.get(target);
+        if (painted) paintsDirty.add(painted);
+        changed ||= !!(control || record || painted);
       }
       if (changed && !previewVisible) schedule();
     });
@@ -1075,7 +1192,7 @@
       unmark(node, topControlAttribute);
       if (!records.has(node)) {
         intersectionObserver.unobserve(node);
-        resizeObserver.unobserve(node);
+        if (!paintObservers.has(node)) resizeObserver.unobserve(node);
       }
       visibleControls.delete(node);
       activeControls.delete(node);
@@ -1084,6 +1201,8 @@
     };
     const removeMedia = (node, record) => {
       release(record);
+      releasePaintGeometry(node, record.paint);
+      paintsDirty.delete(node);
       record.paint?.filter?.remove();
       unmark(node, mediaAttribute);
       unmark(record.paint?.surface || node, paintAttribute);
@@ -1251,6 +1370,8 @@
         if (previewVisible) {
           continue;
         }
+        // 祖先 class/style 变化可能加上或撤掉 translate（如侧栏开合），重新判断其下壁纸表面。
+        if (invalidatePaintChains(node)) changed = true;
         if (footers.has(node) || node.matches(footerSelector)) {
           const footer = footers.get(node);
           if (footer) removeFooter(node, footer);
@@ -1517,8 +1638,15 @@
       raf = 0;
       if (disposed || document.hidden) return;
       stats.frames++;
+      const previewWasVisible = previewVisible;
       previewVisible = isPreviewOpen();
       if (previewVisible) return;
+      // 预览期间跳过的祖先变化，在预览关闭后补查一次。
+      if (previewWasVisible) for (const node of paintedNodes) {
+        const paint = records.get(node)?.paint;
+        if (paint) { paint.chainDirty = true; paintsDirty.add(node); }
+      }
+      if (paintsDirty.size || geometryDirty && geometryPaints.size) refreshPaints();
       const media = [...visibleMedia].filter(node => node.isConnected && !records.get(node)?.nativeBoundary &&
         !inactivePanel(node) &&
         !node.matches(composerSelector) && !node.matches(browserSelector) && !node.matches(reviewHeaderSelector) &&
@@ -1621,10 +1749,27 @@
       control.box = null;
       schedule();
     };
+    // 侧栏开合等带过渡的 translate 在结束时才落定；不逐帧跟随，只在结束后重算一次。
+    const onPaintMotionEnd = event => {
+      const target = event.target;
+      if (target?.nodeType !== 1 || previewVisible || owned(target)) return;
+      if (invalidatePaintChains(target)) schedule();
+    };
     const onScroll = event => {
       if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
       if (previewVisible) return;
       const target = event.target;
+      // 只有按视口换算的表面需要跟随滚动重算；沿用 fixed 的表面不受影响，无额外开销。
+      if (geometryPaints.size) {
+        let moved = false;
+        for (const node of geometryPaints) {
+          const surface = records.get(node)?.paint?.surface;
+          if (!surface || !(target === document || target?.contains?.(surface))) continue;
+          paintsDirty.add(node);
+          moved = true;
+        }
+        if (moved) schedule();
+      }
       if (!target || target === document || target === document.documentElement ||
         target === document.body || target === document.scrollingElement) {
         if (activeControls.size) schedule(true);
@@ -1680,6 +1825,9 @@
       [document, "toggle", schedule, true],
       [document, "transitionend", onControlMotionEnd, true],
       [document, "animationend", onControlMotionEnd, true],
+      [document, "transitionend", onPaintMotionEnd, true],
+      [document, "transitioncancel", onPaintMotionEnd, true],
+      [document, "animationend", onPaintMotionEnd, true],
     ];
     window.__codexPlusImageOverlayCleanup = (keepResource = false) => {
       if (disposed) return;
@@ -1697,7 +1845,8 @@
       image.onload = null;
       image.onerror = null;
       for (const collection of [records, scopes, browserPortals, controls, popups, visibleMedia,
-        visibleControls, activeControls, paintedNodes, viewers, scopeKeys, footers, themeInputs]) collection.clear();
+        visibleControls, activeControls, paintedNodes, viewers, scopeKeys, footers, themeInputs,
+        paintsDirty, geometryPaints, paintObservers]) collection.clear();
       finishReady(false);
       if (!keepResource && resource) {
         if (resource.blobUrl) URL.revokeObjectURL(resource.blobUrl);
@@ -1724,6 +1873,8 @@
         attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement"] });
       for (const [target, event, handler, capture] of events)
         target.addEventListener(event, handler, { capture, passive: true });
+      // 首次扫描登记的壁纸表面已排了一帧；这里同步渲染，撤掉重复的那一帧。
+      if (raf) cancelAnimationFrame(raf);
       render();
       finishReady(true);
       sendCodexPlusDiagnostic("image_overlay_installed", { opacity, fitMode, sourceKind: source.startsWith("data:") ? "data-uri" : "unknown" });
@@ -2965,6 +3116,7 @@
       .codex-plus-row:first-child { border-top: 0; }
       .codex-plus-row-title { font-weight: 550; line-height: 1.35; }
       .codex-plus-row-description { margin-top: 2px; color: #a1a1aa; font-size: 13px; line-height: 1.4; }
+      .codex-plus-row-description[data-codex-plus-native-fast-status][data-failed="true"] { color: #f59e0b; }
       .codex-plus-model-compat-warning { margin-top: 6px; color: #fbbf24; font-size: 13px; line-height: 1.45; }
       .codex-plus-toggle {
         width: 42px;
@@ -3860,7 +4012,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -3882,6 +4034,7 @@
     stepwise: "codexAppStepwiseEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
     usageStatusLine: "codexAppUsageStatusLine",
+    proxyRequestStatus: "codexAppProxyRequestStatus",
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
@@ -3953,6 +4106,7 @@
         stepwise: false,
         answerOutline: false,
         usageStatusLine: false,
+        proxyRequestStatus: false,
         capacityAutoRetry: false,
         turnRewind: false,
         capacityAutoRetryMaxAttempts: 15,
@@ -6403,6 +6557,83 @@
     window.addEventListener("message", incoming, true);
     window.__codexPlusConfigReadDeadline = runtime;
   }
+  // 原生 Fork 的放置检查（#2826）：getForkCapabilities().readPlacement 要先读两个门控
+  // sidebarCustomSectionsEnabled / useAppServerCustomSections，任一为 undefined 就返回
+  // not-ready / execution-config-loading。后者来自 Statsig，Windows 上不登录账号（纯 API Key）
+  // 时 Statsig 客户端一直不就绪，Fork 就永远失败：弹窗关闭、不产生新会话、没有任何提示。
+  //
+  // 这两个门控只决定「新会话放进哪个自定义侧栏分组」，而自定义分组需要账号；
+  // 所以只在没有账号时把读不到的值按原生缺省 false 处理，登录用户保持原生行为。
+  const codexForkPlacementGateKeys = new Set(["sidebarCustomSectionsEnabled", "useAppServerCustomSections"]);
+  const codexForkReadinessState = window.__codexPlusForkReadinessState
+    || (window.__codexPlusForkReadinessState = { installing: null, patched: false, reported: false });
+
+  function codexForkPlacementSettings(settings) {
+    return new Proxy(settings, {
+      get(target, property) {
+        if (property === "read") {
+          return (key, ...rest) => {
+            const value = target.read(key, ...rest);
+            if (value !== undefined || !codexForkPlacementGateKeys.has(key)) return value;
+            if (!codexForkReadinessState.reported) {
+              codexForkReadinessState.reported = true;
+              try { sendCodexPlusDiagnostic("fork_placement_gate_fallback", { key }); } catch {}
+            }
+            return false;
+          };
+        }
+        // 方法绑回原对象：私有状态、getter 都按原对象读取。
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  function codexForkReadinessFallbackActive(manager) {
+    if (typeof codexPlusBackendSettings !== "undefined" && codexPlusBackendSettings?.enhancementsEnabled === false) return false;
+    try {
+      if (typeof manager?.settings?.read !== "function") return false;
+      return manager.runtime?.accountId?.() == null;
+    } catch {
+      return false;
+    }
+  }
+
+  function patchCodexForkCapabilities(prototype) {
+    const original = prototype?.getForkCapabilities;
+    if (typeof original !== "function") return false;
+    if (original.__codexPlusForkReadiness === true) return true;
+    const patched = function getForkCapabilities(...args) {
+      if (!codexForkReadinessFallbackActive(this)) return original.apply(this, args);
+      // 不改实例字段：以原实例为原型，只把 settings 换成兜底视图，其余字段照常读取。
+      const receiver = Object.create(this, { settings: { value: codexForkPlacementSettings(this.settings) } });
+      return original.apply(receiver, args);
+    };
+    Object.defineProperty(patched, "__codexPlusForkReadiness", { value: true });
+    Object.defineProperty(patched, "__codexPlusOriginal", { value: original });
+    prototype.getForkCapabilities = patched;
+    return true;
+  }
+
+  function installCodexForkReadinessFallback(attempt = 0) {
+    if (codexForkReadinessState.patched || codexForkReadinessState.installing) return codexForkReadinessState.installing;
+    codexForkReadinessState.installing = (async () => {
+      const module = await loadOptionalCodexAppModule("app-initial-");
+      let patched = false;
+      for (const value of Object.values(module || {})) {
+        if (typeof value !== "function" || typeof value.prototype?.getForkCapabilities !== "function") continue;
+        patched = patchCodexForkCapabilities(value.prototype) || patched;
+      }
+      return patched;
+    })().catch(() => false).then((patched) => {
+      codexForkReadinessState.installing = null;
+      codexForkReadinessState.patched = patched;
+      // 模块可能还没加载完；有限次退避重试，找不到就静默放弃（原生行为不变）。
+      if (!patched && attempt < 5) window.setTimeout(() => void installCodexForkReadinessFallback(attempt + 1), 2000 * (attempt + 1));
+      return patched;
+    });
+    return codexForkReadinessState.installing;
+  }
   async function loadBackendSettings() {
     const loaded = await loadBackendSettingsState();
     if (loaded && codexRemoteSessionProviderOverrideEnabled()) {
@@ -6410,8 +6641,10 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
+    if (loaded) void syncWeixinDesktopThreads();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
     if (loaded && typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
+    if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
     // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
     // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
     if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
@@ -6456,8 +6689,10 @@
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
+        void syncWeixinDesktopThreads();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
+        if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
         if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
         // 启动期读取全部失败时，心跳是之后唯一的设置来源；读到就补一次皮肤（#2680）。
         if (typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
@@ -6523,6 +6758,7 @@
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
+    if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
     renderCodexPlusMenu();
     scan();
   }
@@ -7784,6 +8020,30 @@
       const description = item ? codexPlusSettingsCatalogDescription(item) : "";
       if (item && node.textContent !== description) node.textContent = description;
     });
+    syncCodexPlusNativeFastStatus();
+  }
+
+  // 原生 Fast 的自检结果：补丁是否真的打进了当前 Codex。Codex 更新后结构变了时，
+  // 用户在这里就能看到「暂未适配」和原因，不用再猜按钮为什么不见了。
+  function codexPlusNativeFastStatusText() {
+    if (codexPlusBackendSettings.enhancementsEnabled === false || codexPlusBackendSettings.codexAppNativeFastUnlock !== true) return "";
+    const state = window.__codexPlusNativeFastPatchState;
+    if (window.__codexPlusNativeFastCompiled === "v1" || state === "patched") return "已生效：当前 Codex 版本已适配。";
+    if (state === "failed" || state === "unsupported") {
+      const reason = String(window.__codexPlusNativeFastFailureReason || window.__codexPlusNativeFastModuleDiagnostics?.reason || "").slice(0, 120);
+      return `当前 Codex 版本暂未适配，Fast 开关不会出现${reason ? `（${reason}）` : ""}。请把 codex-plus.log 里 bridge.native_module_patch_prepared 那一行反馈给我们。`;
+    }
+    return "";
+  }
+
+  function syncCodexPlusNativeFastStatus() {
+    document.querySelectorAll("[data-codex-plus-native-fast-status]").forEach((node) => {
+      const text = codexPlusNativeFastStatusText();
+      const failed = String(!!text && !text.startsWith("已生效"));
+      if (node.textContent !== text) node.textContent = text;
+      if (node.hidden !== !text) node.hidden = !text;
+      if (node.dataset.failed !== failed) node.dataset.failed = failed;
+    });
   }
 
   // 与管理器增强页一致：「（实验）」从标题里拿出来做成小标签；说明里写了要重启 Codex 的，标题旁加「需重启」。
@@ -7821,7 +8081,7 @@
     const param = options.param ? " data-codex-plus-builtin-param=\"true\"" : "";
     return `
                 <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}"${builtin}${param}>
-                  <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div></div>
+                  <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div>${item.key === "codexAppNativeFastUnlock" ? '<div class="codex-plus-row-description" data-codex-plus-native-fast-status="true" role="status" hidden></div>' : ""}</div>
                   ${control}
                 </div>`;
   }
@@ -9375,9 +9635,15 @@
   function clearPluginMarketplaceQueryCache() {
     clearPluginMarketplaceRemoteCatalogUnavailable();
     try {
-      const queryClient = window.__REACT_QUERY_CLIENT__ || window.__codexQueryClient;
+      // 新版 Codex 不再把 queryClient 挂到 window 上：从 React 树里找（与官方用量共用，找到后缓存）。
+      // 插件列表、搜索、详情的查询键都以 `plugins` 开头，按前缀一起失效。
+      const explicit = window.__REACT_QUERY_CLIENT__ || window.__codexQueryClient;
+      const queryClient = explicit && typeof explicit.invalidateQueries === "function" ? explicit : findCodexQueryClient();
       if (queryClient && typeof queryClient.invalidateQueries === "function") {
-        queryClient.invalidateQueries({ queryKey: ["plugins"] });
+        Promise.resolve(queryClient.invalidateQueries({ queryKey: ["plugins"] })).catch(() => {});
+      } else if (!window.__codexPlusPluginQueryClientMissingReported) {
+        window.__codexPlusPluginQueryClientMissingReported = true;
+        sendCodexPlusDiagnostic("plugin_marketplace_query_client_missing", {});
       }
     } catch {
     }
@@ -10933,7 +11199,7 @@
     const sourceNote = panel.querySelector("[data-codex-plugin-source-note]");
     if (sourceNote) {
       sourceNote.hidden = state.source !== "full";
-      sourceNote.textContent = "完整市场需要 GitHub 私有仓库访问权限。请使用有权限的账号执行 gh auth login 后刷新目录。";
+      sourceNote.textContent = "完整市场收录全部插件，索引较大，首次加载可能需要几秒。";
     }
     const status = panel.querySelector("[data-codex-plugin-market-status]");
     if (status) status.textContent = catalog.loading ? "正在加载插件目录…" : catalog.message || `${catalog.plugins.length.toLocaleString()} 个插件${catalog.cached ? " · 使用缓存目录" : ""}`;
@@ -13832,6 +14098,58 @@
    * 为什么还要轮询：React 复用行节点时不会产生 childList 变更，只靠 MutationObserver
    * 会漏掉"标签变了"这种情况。600ms 一次、且只在菜单开着时跑，开销可以忽略。
    */
+  /**
+   * 模型菜单开着却认不出来时（#2753：旧版 Codex 上分组不出现），记一次结构快照，
+   * 好据此补上旧版的识别规则。只在页面上真有一个装着目录里模型的原生单选菜单时记，
+   * 每个页面最多一次；只记标记数量和结构特征，不记模型名等文本。
+   */
+  function codexPlusModelPickerReportUnrecognized() {
+    const state = codexPlusModelPickerGroupsState;
+    if (state.unrecognizedReported) return;
+    let exact = null;
+    for (const menu of document.querySelectorAll('[role="menu"]')) {
+      if (!visibleElement(menu) || menu.closest("[data-codex-plus-ext]")) continue;
+      const radios = [...menu.querySelectorAll('[role="menuitemradio"]')];
+      if (radios.length < 2) continue;
+      // 先过廉价的 DOM 条件，真有候选菜单时才建目录映射（扫描每 600ms 一次）。
+      exact ||= codexPlusModelPickerCatalogExactMap();
+      if (!exact.size) return;
+      const known = radios.filter((row) => {
+        const text = (row.textContent || "").replace(/\s+/g, " ").trim();
+        return exact.has(`raw\u0000${text}`) || exact.has(codexPlusModelPickerNormalizeLoose(text));
+      }).length;
+      if (!known) continue;
+      state.unrecognizedReported = true;
+      const count = (selector) => {
+        try { return menu.querySelectorAll(selector).length; } catch (_) { return -1; }
+      };
+      const modulePrefixes = new Set();
+      for (const node of [menu, ...menu.querySelectorAll("[class]")].slice(0, 400)) {
+        for (const token of String(node.getAttribute("class") || "").split(/\s+/)) {
+          const match = /^_([A-Za-z]+)_/.exec(token);
+          if (match) modulePrefixes.add(match[1]);
+        }
+      }
+      const dataAttributes = (node) => (node ? [...node.attributes].map((item) => item.name).filter((name) => name.startsWith("data-")) : []);
+      try {
+        Promise.resolve(sendCodexPlusDiagnostic("model_picker_groups_menu_unrecognized", {
+          radios: radios.length,
+          catalogMatches: known,
+          pickerView: document.querySelectorAll("[data-model-picker-view]").length,
+          modelList: count('[class*="_ModelList_"]'),
+          rowContent: count("[data-menu-row-content]"),
+          flex1: count("span.flex-1, span[class*='flex-1']"),
+          menuData: dataAttributes(menu),
+          rowData: dataAttributes(radios[0]),
+          modulePrefixes: [...modulePrefixes].slice(0, 16),
+        })).catch(() => {});
+      } catch (_) {
+        // 诊断失败不能影响原生菜单。
+      }
+      return;
+    }
+  }
+
   function codexPlusModelPickerScan() {
     const state = codexPlusModelPickerGroupsState;
     if (state.disposed) return;
@@ -13839,6 +14157,7 @@
     const menu = globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups") ? null : codexPlusModelPickerMenu();
     const list = menu ? codexPlusModelPickerList(menu) : null;
     if (!list) {
+      codexPlusModelPickerReportUnrecognized();
       if (state.activeList) {
         codexPlusModelPickerClear(state.activeList);
         state.activeList = null;
@@ -15475,8 +15794,12 @@
   /**
    * 找输入卡片，返回 `{ card, source }`；source 记录走的是哪条路径，写进诊断日志。
    *
-   * 旧版兜底只在页面从没出现过新版标记时启用：新版 Codex 停在设置页等没有 composer 的
+   * 旧版兜底只在页面从没出现过新版输入卡片标记时启用：新版 Codex 停在设置页等没有 composer 的
    * 页面时，不能把别处的 form 当成输入框。
+   *
+   * 「新版」只认 data-composer-surface-variant：部分旧版 Codex 已经有 data-codex-composer-root，
+   * 却还没有新版卡片标记（#2753 的 Intel Mac 日志：composerRoot=1、surfaceVariant=0），
+   * 把根标记也算作新版会让旧版永远走不到兜底。
    */
   function codexPlusUsageComposerCard() {
     let fallback = null;
@@ -15487,8 +15810,7 @@
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "surface-variant" };
     }
     if (fallback) return { card: fallback, source: "surface-variant" };
-    if (!codexPlusUsageState.modernDom
-      && document.querySelector(`${codexPlusUsageCardSelector}, [data-codex-composer-root]`)) {
+    if (!codexPlusUsageState.modernDom && document.querySelector(codexPlusUsageCardSelector)) {
       codexPlusUsageState.modernDom = true;
     }
     if (codexPlusUsageState.modernDom) return null;
@@ -15496,6 +15818,11 @@
       if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
       // 旧版类名也可能挂在装饰容器上，必须真的包着输入框才算。
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "legacy-chrome" };
+    }
+    // 有 composer 根标记、没有旧类名的过渡版本：根节点包着输入框时就挂在根上。
+    for (const card of document.querySelectorAll("[data-codex-composer-root]")) {
+      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
+      if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "composer-root" };
     }
     // 类名也对不上时按输入框本身找：取 ProseMirror 所在的 form。
     for (const editor of document.querySelectorAll('.ProseMirror[contenteditable="true"]')) {
@@ -16035,6 +16362,12 @@
     failures: 0,
   };
 
+  // 设置开关（#2824）：关闭时不显示、不轮询；切回开启后下一轮轮询自动接上。
+  // 设置开关与内置拓展「请求状态条」都开着才显示、才轮询。
+  function codexPlusProxyStatusEnabled() {
+    return codexPlusSettings().proxyRequestStatus !== false && !globalThis?.__codexPlusBuiltinInactive?.has("proxy-request-status");
+  }
+
   function codexPlusProxyStatusVisibleElement(element) {
     if (!element?.isConnected) return false;
     const rect = element.getBoundingClientRect();
@@ -16158,7 +16491,7 @@
   }
 
   function codexPlusProxyStatusRender() {
-    if (!!globalThis.__codexPlusBuiltinInactive?.has("proxy-request-status")) {
+    if (!codexPlusProxyStatusEnabled()) {
       codexPlusProxyStatusHide();
       return;
     }
@@ -16252,7 +16585,12 @@
 
   async function codexPlusProxyStatusRefresh() {
     if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
-    if (document.hidden || !!globalThis.__codexPlusBuiltinInactive?.has("proxy-request-status")) return;
+    if (document.hidden) return;
+    if (!codexPlusProxyStatusEnabled()) {
+      codexPlusProxyStatusState.requests = [];
+      codexPlusProxyStatusHide();
+      return;
+    }
     codexPlusProxyStatusState.inFlight = true;
     try {
       const result = await codexPlusProxyStatusPostWithTimeout();
@@ -17506,6 +17844,119 @@
     window.__codexPlusSideChatTest = { send: sendCodexSideChatNativeRequest, turns: sideChatTurns,
       ready: sideChatSaveReady, source: sideChatSavedSource, verify: verifySavedSideChat, title: sideChatForkTitle,
       save: saveSideChat, refresh: refreshSideChatSaveButtons, tabs: sideChatTabs, state: sideChatSaveState };
+  }
+  // 微信写入与桌面目录使用不同的 app-server；只通知同 home/SQLite 的持久线程。
+  // 复用设置心跳，重注入沿用已处理版本，不另起计时器或扫描 DOM。
+  const weixinDesktopSync = window.__codexPlusWeixinDesktopSync ||= {
+    revisions: new Map(), flight: null, services: null, retryAt: 0,
+  };
+  weixinDesktopSync.retries ||= new Map();
+
+  async function syncWeixinThreadProject(services, entry) {
+    const project = entry.project;
+    if (!project) return;
+    if (!Array.isArray(project.rootPaths) || !project.rootPaths.length
+        || project.rootPaths.some((root) => typeof root !== "string" || !root)
+        || typeof project.name !== "string" || !project.name.trim()
+        || typeof project.id !== "string") throw Error("微信项目记录无效");
+    const normalize = (root) => {
+      const path = root.replace(/\\/g, "/").replace(/^\/\/\?\//, "").replace(/\/+$/, "") || "/";
+      return /^(?:[a-z]:|\/\/)/i.test(path) ? path.toLowerCase() : path;
+    };
+    const home = normalize(await services.executionPaths.readCodexHome("local"));
+    const readMappings = async () => {
+      const mappings = await weixinDesktopSync.readState(weixinDesktopSync.keys.APP_SERVER_PROJECT_ID_BY_LEGACY_PROJECT_ID_BY_HOST);
+      const partitions = Object.entries(mappings || {}).filter(([identity]) =>
+        identity.startsWith("local:") && normalize(identity.slice(6)) === home);
+      if (partitions.length > 1) throw Error("微信项目的实例归属不唯一");
+      return partitions[0]?.[1] || {};
+    };
+    const projects = await services.projects.getLocalProjects();
+    const mappings = await readMappings();
+    const matches = Object.entries(mappings).filter(([id, serverId]) =>
+      serverId === project.id && Object.hasOwn(projects, id));
+    if (matches.length !== 1) throw Error("微信项目的桌面归属暂不可确认");
+    const assignments = await weixinDesktopSync.readState(weixinDesktopSync.keys.THREAD_PROJECT_ASSIGNMENTS);
+    if (assignments != null && (typeof assignments !== "object" || Array.isArray(assignments)))
+      throw Error("原生线程归属暂不可读");
+    if (assignments?.[entry.threadId] != null) return;
+    // 部分更新保留并发出现的非空归属；只修复注册前被标为无项目的线程。
+    await services.threadProjectAssignments.setProjectless({ threadId: entry.threadId, projectless: false });
+    await services.threadProjectAssignments.assignIfUnassigned([{
+      threadId: entry.threadId, hostId: "local", projectless: false,
+      assignment: { projectKind: "local", projectId: matches[0][0] },
+    }]);
+  }
+
+  async function syncWeixinDesktopThreads() {
+    const entries = codexPlusBackendSettings.weixinDesktopSync;
+    const now = Date.now();
+    if (!codexPlusBackendSettingsLoaded || !Array.isArray(entries)
+        || entries.length > 128 || weixinDesktopSync.flight || now < weixinDesktopSync.retryAt) return;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const currentIds = new Set(entries.map((entry) => entry?.threadId));
+    for (const records of [weixinDesktopSync.revisions, weixinDesktopSync.retries]) {
+      for (const id of records.keys()) {
+        if (!currentIds.has(id)) records.delete(id);
+      }
+    }
+    const pending = entries.filter((entry) => {
+      const retry = weixinDesktopSync.retries.get(entry?.threadId);
+      return uuid.test(entry?.threadId) && uuid.test(entry?.revision)
+        && weixinDesktopSync.revisions.get(entry.threadId) !== entry.revision
+        && (retry?.revision !== entry.revision || now >= retry.retryAt);
+    }).map((entry) => ({ ...entry }));
+    if (!pending.length) return;
+    weixinDesktopSync.flight = (async () => {
+      try {
+        if (!weixinDesktopSync.services) {
+          const module = await loadOptionalCodexAppModule("app-shared-");
+          // 导出名随打包变化；只接受拥有明确服务能力的唯一原生服务集合。
+          const services = Object.values(module || {}).filter((value) => value && typeof value === "object"
+            && Object.hasOwn(value, "localThreadCatalog")
+            && typeof value.localThreadCatalog?.notifyThread === "function"
+            && typeof value.localThreadCatalog?.readEntries === "function"
+            && typeof value.projects?.getLocalProjects === "function"
+            && typeof value.executionPaths?.readCodexHome === "function"
+            && typeof value.threadProjectAssignments?.setProjectless === "function"
+            && typeof value.threadProjectAssignments?.assignIfUnassigned === "function");
+          const keys = Object.values(module || {}).filter((value) => value && typeof value === "object"
+            && typeof value.APP_SERVER_PROJECT_ID_BY_LEGACY_PROJECT_ID_BY_HOST === "string"
+            && typeof value.THREAD_PROJECT_ASSIGNMENTS === "string");
+          const clients = Object.values(module || {}).filter((value) => typeof value === "function"
+            && Object.hasOwn(value, "prototype") && Object.hasOwn(value, "getInstance")
+            && typeof value.getInstance === "function"
+            && ["post", "sendRequest", "onFetchResponse", "cancelStream"]
+              .every((method) => typeof value.prototype?.[method] === "function"));
+          if (services.length !== 1 || keys.length !== 1 || clients.length !== 1)
+            throw Error("原生会话目录暂不可用");
+          // 直接使用原生请求客户端；不按函数源码中的读写关键字猜测调用器。
+          weixinDesktopSync.readState = async (key) => {
+            const response = await clients[0].getInstance().post("vscode://codex/get-global-state", JSON.stringify({ key }));
+            if (!response?.body || !Object.hasOwn(response.body, "value")) throw Error("原生状态暂不可读");
+            return response.body.value;
+          };
+          weixinDesktopSync.services = services[0];
+          weixinDesktopSync.keys = keys[0];
+        }
+        for (const entry of pending) {
+          try {
+            await syncWeixinThreadProject(weixinDesktopSync.services, entry);
+            await weixinDesktopSync.services.localThreadCatalog.notifyThread({ hostId: "local", threadId: entry.threadId }, "update");
+            weixinDesktopSync.revisions.set(entry.threadId, entry.revision);
+            weixinDesktopSync.retries.delete(entry.threadId);
+          } catch {
+            weixinDesktopSync.retries.set(entry.threadId, { revision: entry.revision, retryAt: Date.now() + 30000 });
+          }
+        }
+      } catch {
+        // 桌面启动或升级期间可能没有 catalog；下一次心跳退避重试，不重载页面。
+        weixinDesktopSync.services = null;
+        weixinDesktopSync.retryAt = Date.now() + 30000;
+      }
+    })();
+    try { await weixinDesktopSync.flight; }
+    finally { weixinDesktopSync.flight = null; }
   }
   function syncActionGroupsLayout(force = false) {
     syncActionGroupLayouts(sessionRows().map(row => ({
@@ -24153,7 +24604,7 @@
         }
       }
     }
-    // 内置拓展登记的扫描步骤（桌宠、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
+    // 内置拓展登记的扫描步骤（桌宠与大肥鱼、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
     runCodexPlusScanSteps();
     refreshThreadIdBadges();
     // 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
@@ -24204,6 +24655,612 @@
     runScanStep(scanLightweight);
     scheduleDeferredScan();
   }
+  // 完整上游引擎的词法宿主：不替换页面全局 API；挂件关闭时释放所有副作用。
+  const codexPlusWhaleFullStoragePrefix = "codexPlus.whale.full.v1.";
+  function codexPlusWhaleFullNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+  function codexPlusWhaleFullBuiltin(url) {
+    let parsed;
+    try { parsed = new URL(String(url), "https://codex-whale.invalid"); } catch { return ""; }
+    const path = parsed.pathname, id = parsed.searchParams.get("id"), set = parsed.searchParams.get("set");
+    const aliases = { "/dsh-whale/image.png": "DSniang1.png", "/dsh-whale/rua.gif": "rua.gif" };
+    const fragments = { ya1: "Ya1.mp3", ya2: "Ya2.mp3", d1: "D1.mp3", d2: "D2.mp3", exp_orb: "minecraft-exp-orb.wav", end_a: "task-end-a.wav", taskEnd: "task-end-a.wav" };
+    let file = aliases[path];
+    if (path === "/dsh-whale/audio-fragment.wav") file = fragments[id];
+    if (path === "/dsh-whale/bubble-img.png") file = ({ bimg_petpet: "bubble-petpet.gif", bimg_money1: "bubble-money1.gif" })[id];
+    if (/^\/dsh-whale\/sound\/(press|release)\.mp3$/.test(path) && (!set || set === "duck" || set === "fx1")) file = fragments[(set === "fx1" ? "d" : "ya") + (path.includes("press") ? "1" : "2")];
+    if (path === "/dsh-whale/role-image.png" && id === "default") file = "DSniang1.png";
+    return file ? window.__CODEX_PLUS_WHALE_ASSETS__?.[file] || (file === "DSniang1.png" ? window.__CODEX_PLUS_WHALE_IMAGE__ : "") || "" : "";
+  }
+
+  function codexPlusWhaleFullDataResponse(source) {
+    // 直接读取本地内嵌字节，避免 fetch(data:) 受到宿主 connect-src 限制。
+    const match = /^data:((?:audio|image)\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(source);
+    if (!match) throw new Error("不支持的本地媒体数据");
+    const bytes = Uint8Array.from(atob(match[2]), (character) => character.charCodeAt(0));
+    return new Response(bytes, { status: 200, headers: { "Content-Type": match[1] } });
+  }
+
+  function createCodexPlusWhaleFullRuntime() {
+    const state = { disposed: false, paused: document.hidden === true, timers: new Map(), rafs: new Map(), observers: new Set(), nodes: new Set(), listeners: [], audio: new Set(), pending: new Set(), media: new Map(), objectUrls: new Set(), subscriptions: [], dispatcher: null, sessionId: "", session: null, sessionAt: 0, sessionPending: null, history: null, historyAt: 0, historyPrices: "", historyPending: null, models: [], relayProfiles: [], turn: null, completed: new Set(), seq: 0, pendingWait: null, completion: null, controls: null, serial: 0 };
+    const isolated = Object.create(null);
+    const wrappedMedia = new WeakSet();
+    const storage = {
+      getItem(key) { return localStorage.getItem(codexPlusWhaleFullStoragePrefix + key); },
+      setItem(key, value) { return localStorage.setItem(codexPlusWhaleFullStoragePrefix + key, String(value)); },
+      removeItem(key) { return localStorage.removeItem(codexPlusWhaleFullStoragePrefix + key); },
+    };
+    try { state.seq = Math.max(0, Number(storage.getItem("dshw-last-seq")) || 0); } catch {}
+    state.initialSeq = state.seq;
+    state.priceRevision = 0;
+    state.statRevision = 0;
+    const active = () => !state.disposed;
+    function listen(target, name, callback, options) {
+      const wrapped = typeof callback === "function" ? function (event) { if (active()) callback.call(target, event); } : { handleEvent(event) { if (active()) callback?.handleEvent?.(event); } };
+      target.addEventListener(name, wrapped, options);
+      state.listeners.push({ target, name, callback, wrapped, options });
+    }
+    function unlisten(target, name, callback, options) {
+      for (let i = state.listeners.length - 1; i >= 0; i--) {
+        const entry = state.listeners[i];
+        if (entry.target === target && entry.name === name && entry.callback === callback) {
+          target.removeEventListener(name, entry.wrapped, options ?? entry.options); state.listeners.splice(i, 1);
+        }
+      }
+    }
+    function arm(id, timer) {
+      if (!active() || state.paused) return;
+      timer.native = setTimeout(() => {
+        if (!state.timers.has(id) || !active() || state.paused) return;
+        timer.native = null;
+        if (!timer.repeat) state.timers.delete(id);
+        try { timer.callback(...timer.args); } finally { if (timer.repeat && state.timers.has(id)) arm(id, timer); }
+      }, timer.delay);
+    }
+    function schedule(callback, delay, repeat, args) {
+      if (!active() || typeof callback !== "function") return 0;
+      const id = ++state.serial, timer = { callback, delay: Math.max(0, Number(delay) || 0), repeat, args, native: null };
+      state.timers.set(id, timer); arm(id, timer); return id;
+    }
+    function clearTimer(id) { const timer = state.timers.get(id); if (timer?.native !== null) clearTimeout(timer?.native); state.timers.delete(id); }
+    function raf(callback) {
+      if (!active()) return 0;
+      const id = ++state.serial, frame = { callback, native: null };
+      state.rafs.set(id, frame);
+      if (!state.paused) frame.native = requestAnimationFrame((time) => { state.rafs.delete(id); if (active() && !state.paused) callback(time); });
+      return id;
+    }
+    function cancelRaf(id) { const frame = state.rafs.get(id); if (frame?.native !== null) cancelAnimationFrame(frame?.native); state.rafs.delete(id); }
+    function trackedObserver(Native) {
+      if (typeof Native !== "function") return undefined;
+      return class {
+        constructor(callback) { this.records = []; this.native = new Native((entries, observer) => { if (active() && !state.paused) callback(entries, this); }); state.observers.add(this); }
+        observe(target, options) { this.records.push([target, options]); if (active() && !state.paused) this.native.observe(target, options); }
+        disconnect() { this.native.disconnect(); this.records = []; }
+        takeRecords() { return this.native.takeRecords?.() || []; }
+      };
+    }
+    function trackedAudioContext(options) {
+      const Native = window.AudioContext || window.webkitAudioContext;
+      if (!Native || !active()) throw new Error("音频不可用");
+      const audio = new Native(options); state.audio.add(audio); return audio;
+    }
+    trackedAudioContext.prototype = (window.AudioContext || window.webkitAudioContext)?.prototype || Object.prototype;
+    function bridge(path, payload) {
+      if (!active() || state.paused) return Promise.reject(new Error("挂件已暂停"));
+      return new Promise((resolve, reject) => {
+        let done = false;
+        const finish = (error, value) => { if (done) return; done = true; clearTimeout(timer); state.pending.delete(cancel); error ? reject(error) : resolve(value); };
+        const cancel = () => finish(new Error("挂件请求已取消"));
+        const timer = setTimeout(() => finish(new Error("挂件请求超时")), 45000);
+        state.pending.add(cancel);
+        Promise.resolve(postJson(path, payload)).then((value) => finish(active() ? null : new Error("挂件已关闭"), value), (error) => finish(error));
+      });
+    }
+    function context() {
+      const ref = currentSessionRef() || {}, id = String(ref.session_id || ""), host = String(ref.host_id || "local");
+      if (id !== state.sessionId || host !== state.sessionHost) {
+        state.sessionId = id; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.turn = null; state.pendingWait = null; state.lastTurnResult = null; state.lastTurnPending = null;
+      }
+      state.sessionHost = host; state.sessionRef = ref; state.remote = host !== "local";
+      return id;
+    }
+    function observe(turn, baseline = false) {
+      if (!turn?.id) return;
+      const previous = state.turn;
+      if (!baseline && previous?.id === turn.id && previous.status === "running" && turn.status === "completed" && !state.completed.has(turn.id)) {
+        state.seq += 1; state.completed.add(turn.id);
+        if (state.completed.size > 128) state.completed.delete(state.completed.values().next().value);
+      }
+      if (baseline && turn.status === "completed") state.completed.add(turn.id);
+      state.turn = { id: turn.id, status: turn.status, usage: turn.usage || null };
+    }
+    function setStatsEnabled(value) {
+      const enabled = value !== false;
+      if (state.codexStatsOn === enabled) return;
+      state.codexStatsOn = enabled; state.statRevision += 1;
+      state.history = null; state.historyAt = 0; state.historyPending = null; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.lastTurnResult = null; state.lastTurnPending = null;
+    }
+    async function session() {
+      const id = context();
+      if (!id) return null;
+      if (state.codexStatsOn === false || state.remote) return { status: "ok", sessionId: id, title: state.sessionRef?.title || "", lastTurn: state.turn, total: state.nativeUsage?.total || null, today: null, rateLimits: [] };
+      if (state.session && Date.now() - state.sessionAt < 5000) return state.session;
+      if (state.sessionPending) return state.sessionPending;
+      const baseline = !state.session && !state.turn;
+      const statRevision = state.statRevision;
+      const pending = bridge("/whale/session", { ...state.sessionRef, session_id: id }).then((data) => {
+        if (!active() || context() !== id || statRevision !== state.statRevision || state.codexStatsOn === false || state.remote) return null;
+        state.session = data; state.sessionAt = Date.now();
+        if (data?.status === "ok" && !(Date.now() - (state.nativeTurnAt || 0) < 10000 && state.turn?.id === data.lastTurn?.id && state.turn.status === "completed" && data.lastTurn.status === "running")) observe(data.lastTurn, baseline);
+        return data;
+      }).finally(() => { if (state.sessionPending === pending) state.sessionPending = null; });
+      state.sessionPending = pending; return pending;
+    }
+    function prices() {
+      const result = [];
+      for (const model of state.models) {
+        const price = model.price;
+        if (!price || ![price.hit, price.miss, price.out].every((value) => value !== "" && codexPlusWhaleFullNumber(value) !== null)) continue;
+        const matchIds = model.matchIds?.length ? model.matchIds : [model.id];
+        const currency = String(price.cur || "USD").toUpperCase(), rate = currency === "CNY" ? 1 : codexPlusWhaleFullNumber(price.rate);
+        if (!(rate > 0) || !["CNY", "USD"].includes(currency)) continue;
+        // 匹配交给数据层：精确匹配优先，其次最长的大小写不敏感子串。
+        for (const id of matchIds) result.push({ model: id, currency: "CNY", input: Number(price.miss) * rate, cachedInput: Number(price.hit) * rate, output: Number(price.out) * rate });
+      }
+      return result;
+    }
+    function pricingFingerprint() { return JSON.stringify(state.models.map((model) => ({ id: model.id, price: model.price, matchIds: model.matchIds }))); }
+    async function history(force = false) {
+      if (state.codexStatsOn === false) return { status: "disabled", complete: false, codex: { ok: false, disabled: true } };
+      const quote = prices(), fingerprint = JSON.stringify(quote);
+      if (!force && state.history && state.historyPrices === fingerprint && Date.now() - state.historyAt < 60000) return state.history;
+      if (state.historyPending) return state.historyPending;
+      const revision = state.priceRevision, statRevision = state.statRevision;
+      const pending = bridge("/whale/history", { period: "all", page: 1, pageSize: 500, prices: quote }).then((data) => {
+        if (statRevision !== state.statRevision || state.codexStatsOn === false) return { status: "disabled", complete: false, codex: { ok: false, disabled: true } };
+        if (active() && revision !== state.priceRevision) return history(true);
+        if (active()) { state.history = data; state.historyAt = Date.now(); state.historyPrices = fingerprint; } return data;
+      }).finally(() => { if (state.historyPending === pending) state.historyPending = null; });
+      state.historyPending = pending; return pending;
+    }
+    const toTokens = (period) => {
+      if (state.codexStatsOn === false) return "—";
+      const value = state.history?.periods?.[period]?.usage?.totalTokens ?? state.history?.machineSummary?.[({ today: "todayTokens", month: "monthTokens", all: "totalTokens" })[period]];
+      const number = codexPlusWhaleFullNumber(value);
+      if (number === null) return "—";
+      return number.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+    };
+    function codexModel(model, summary) {
+      const data = summary?.codex || summary?.machineSummary || {};
+      const total = (period) => codexPlusWhaleFullNumber(summary?.periods?.[period]?.usage?.totalTokens);
+      const limits = state.session?.rateLimits || summary?.rateLimits || [];
+      const windows = limits.filter((entry) => entry.resetAt == null || Number(entry.resetAt) * 1000 > Date.now()).map((entry, index) => ({ usedPct: entry.usedPercent, windowMinutes: entry.windowMinutes || (index === 0 ? 300 : 10080), resetAt: entry.resetAt == null ? null : Number(entry.resetAt) * 1000 }));
+      return { ...model, codex: { ...data, ok: summary?.status === "ok" || summary?.status === "partial" || data.ok === true, complete: summary?.complete === true, deferred: summary?.complete === false ? Math.max(1, summary?.scan?.deferred || 1) : 0, todayTokens: total("today") ?? data.todayTokens, monthTokens: total("month") ?? data.monthTokens, totalTokens: total("all") ?? data.totalTokens, sessions: summary?.scan?.sessions ?? data.sessions ?? 0, days7: data.days7 || (summary?.days || []).slice(-7).map((day) => ({ date: day.date, tokens: day.usage?.totalTokens })), windows: data.windows || { primary: windows[0] || null, secondary: windows[1] || null } }, planSupport: windows.length > 0, plan: windows.length ? { ok: true, usedPct: windows[0].usedPct, remainPct: windows[0].usedPct == null ? null : 100 - windows[0].usedPct, windows: windows.map((entry, index) => ({ id: index === 0 ? "rolling" : "weekly", key: index === 0 ? "rolling" : "weekly", label: index === 0 ? "5h" : "周", usedPct: entry.usedPct, remainPct: entry.usedPct == null ? null : 100 - entry.usedPct, resetAt: entry.resetAt })) } : model.plan };
+    }
+    function subscribe() {
+      const dispatcher = window.__codexPlusRemoteSessionRecoveryDispatcher;
+      if (state.dispatcher === dispatcher && state.onEvent) return;
+      for (const unsubscribe of state.subscriptions.splice(0)) { try { unsubscribe(); } catch {} }
+      state.dispatcher = dispatcher;
+      const onEvent = (payload, method) => {
+        if (!active() || state.paused) return;
+        const data = payload?.params || payload || {}, turn = data.turn || data;
+        const thread = String(data.threadId || data.thread_id || data.conversationId || "").replace(/^local:/, "");
+        if (!thread || thread !== context().replace(/^local:/, "")) return;
+        if (method === "thread/tokenUsage/updated") {
+          state.nativeUsage = data.tokenUsage || null;
+          if (state.turn && data.tokenUsage?.last) state.turn.usage = data.tokenUsage.last;
+        } else if (["serverRequest/resolved", "item/tool/userInputAnswered", "item/approval/responded", "item/completed"].includes(method)) {
+          const id = String(data.requestId || data.itemId || data.item?.id || data.id || "");
+          if (state.pendingWait && (id === state.pendingWait.id || id === state.pendingWait.itemId)) { state.pendingWait = null; void state.controls?.pollWaitState?.(); }
+        } else if (method === "turn/started" || method === "turn/completed") {
+          const id = turn.id || data.turnId;
+          observe({ id, status: method === "turn/started" ? "running" : ({ failed: "failed", interrupted: "aborted", aborted: "aborted" })[turn.status] || "completed", usage: turn.usage });
+          state.nativeTurnAt = Date.now();
+          state.pendingWait = null;
+          state.sessionAt = 0;
+          void state.controls?.pollLastTurn?.();
+        } else {
+          state.pendingWait = { id: String(payload?.id || data.requestId || data.itemId || data.id || ""), itemId: String(data.itemId || ""), kind: method.includes("requestUserInput") || method === "mcpServer/elicitation/request" ? "question" : "approval" };
+          void state.controls?.pollWaitState?.();
+        }
+      };
+      state.onEvent = onEvent;
+      if (!dispatcher?.subscribe) return;
+      for (const method of ["turn/started", "turn/completed", "thread/tokenUsage/updated", "item/tool/requestUserInput", "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "mcpServer/elicitation/request", "serverRequest/resolved", "item/tool/userInputAnswered", "item/approval/responded", "item/completed"]) {
+        try { const remove = dispatcher.subscribe(method, (payload) => onEvent(payload, method)); if (typeof remove === "function") state.subscriptions.push(remove); } catch {}
+      }
+    }
+    function nativeEnvelope(value, depth = 0) {
+      if (!active() || state.paused || !value || typeof value !== "object" || depth > 4) return;
+      if (typeof value.method === "string" && /^(turn\/(started|completed)|thread\/tokenUsage\/updated|item\/(tool\/requestUserInput|commandExecution\/requestApproval|fileChange\/requestApproval|permissions\/requestApproval|completed)|mcpServer\/elicitation\/request|serverRequest\/resolved)$/.test(value.method)) state.onEvent?.(value, value.method);
+      if (value.id != null && (Object.hasOwn(value, "result") || Object.hasOwn(value, "error") || Object.hasOwn(value, "response")) && String(value.id) === state.pendingWait?.id) {
+        state.pendingWait = null; void state.controls?.pollWaitState?.();
+      }
+      for (const key of ["message", "request", "payload", "data", "notification"]) if (value[key] && typeof value[key] === "object") nativeEnvelope(value[key], depth + 1);
+    }
+    async function lastTurn() {
+      await session().catch(() => null);
+      if (state.lastTurnResult?.body?.seq === state.seq) return state.lastTurnResult;
+      if (state.lastTurnPending) return state.lastTurnPending;
+      const seq = state.seq;
+      const turn = state.turn?.status === "completed" ? state.turn : null;
+      let amount = null, currency = null, usage = turn?.usage || state.session?.lastTurn?.usage || null;
+      if (turn && seq > state.initialSeq && prices().length && state.codexStatsOn !== false && !state.remote) {
+        const pending = (async () => {
+        const details = await bridge("/whale/history", { period: "all", sessionId: context().replace(/^local:/, ""), turnId: turn.id, page: 1, pageSize: 500, prices: prices() }).catch(() => null);
+        const totals = {};
+        for (const record of details?.records || []) {
+          if (record.turnId !== turn.id || !record.estimatedCost) continue;
+          const cost = record.estimatedCost; totals[cost.currency] = (totals[cost.currency] || 0) + cost.amount;
+        }
+        const currencies = Object.keys(totals);
+        if (currencies.length === 1) { currency = currencies[0]; amount = totals[currency]; }
+        const result = { status: 200, body: { ok: true, seq, turn, amount, currency, usage, estimated: amount !== null } };
+        if (active() && state.seq === seq) state.lastTurnResult = result;
+        return result;
+        })().finally(() => { if (state.lastTurnPending === pending) state.lastTurnPending = null; });
+        state.lastTurnPending = pending; return pending;
+      }
+      const result = { status: 200, body: { ok: true, seq, turn, amount, currency, usage, estimated: amount !== null } };
+      state.lastTurnResult = result; return result;
+    }
+    async function compatibilityJson(path, method, query, body) {
+      subscribe();
+      if (path === "/dsh-whale/size.json" && method === "GET" && state.startupConfig) return { status: 200, body: state.startupConfig };
+      if (path === "/dsh-whale/last-turn.json") {
+        return lastTurn();
+      }
+      if (path === "/dsh-whale/wait.json") {
+        const data = await session().catch(() => null);
+        return { status: 200, body: { ok: true, sessionName: data?.sessionName || data?.title || state.sessionRef?.title || "", pending: data?.pending || state.pendingWait || null } };
+      }
+      const response = await bridge("/whale/full", { path, method, query, body });
+      if (path === "/dsh-whale/size.json" && method === "PUT" && response?.status === 200) {
+        setStatsEnabled(body.codexStatsOn);
+      }
+      if (path === "/dsh-whale/api-models.json" && response?.body?.ok) {
+        state.relayProfiles = response.body.relayProfiles || state.relayProfiles;
+        setStatsEnabled(response.body.codexStatsOn);
+        const previous = pricingFingerprint();
+        state.models = response.body.models || state.models;
+        if (pricingFingerprint() !== previous) { state.priceRevision += 1; state.history = null; state.historyAt = 0; state.historyPending = null; state.lastTurnResult = null; state.lastTurnPending = null; }
+        if (method === "GET") {
+          const statsOn = response.body.codexStatsOn !== false;
+          const summary = statsOn ? await history().catch(() => null) : null;
+          response.body.models = (response.body.models || []).map((model) => model.id === "codex" ? statsOn ? codexModel(model, summary) : { ...model, codex: { ok: false, disabled: true } } : model);
+        }
+        state.models = response.body.models || state.models;
+      }
+      if (path === "/dsh-whale/usage-records.json" && method === "GET") {
+        state.recordsAccountBase = JSON.parse(JSON.stringify(response.body));
+        const data = await history().catch(() => null);
+        response.body = mergeRecords(response.body, data);
+      }
+      return response;
+    }
+    function mergeRecords(base, data) {
+      if (!data?.today || !data?.days7 || !data?.all) return base;
+      const merge = (account, local) => ({ ...local, ...account, modelTotal: local?.modelTotal, models: local?.models || [], estimatedCosts: local?.estimatedCosts, unpricedRecords: local?.unpricedRecords });
+      const mergeDays = (account, local) => { const days = new Map((local || []).map((day) => [day.date, day])); for (const day of account || []) days.set(day.date, merge(day, days.get(day.date))); return [...days.values()].sort((a, b) => a.date.localeCompare(b.date)); };
+      return { ...base, today: merge(base?.today, data.today), days7: mergeDays(base?.days7, data.days7), all: { ...base?.all, days: mergeDays(base?.all?.days, data.all.days), events: data.all.events || [] }, complete: data.complete, historyPagination: data.pagination, historyArchive: data.archive, ok: true };
+    }
+    const nativeFetch = window.fetch?.bind(window) || globalThis.fetch;
+    function responseOf(result) {
+      if (result?.data) {
+        const bytes = Uint8Array.from(atob(result.data), (c) => c.charCodeAt(0));
+        return new Response(bytes, { status: result.status || 200, headers: { "Content-Type": result.mimeType || "application/octet-stream" } });
+      }
+      return new Response(JSON.stringify(result?.body ?? null), { status: result?.status || 200, headers: { "Content-Type": "application/json" } });
+    }
+    async function fetchCompat(value, options = {}) {
+      if (!active() || state.paused) throw new Error("挂件已暂停");
+      const raw = String(value), builtin = codexPlusWhaleFullBuiltin(raw);
+      if (builtin) return codexPlusWhaleFullDataResponse(builtin);
+      const parsed = new URL(raw, "https://codex-whale.invalid");
+      if (parsed.origin !== "https://codex-whale.invalid" || !parsed.pathname.startsWith("/dsh-whale/")) {
+        // 上游只有本机资源 fetch；用户显式配置的超链接通过 window.open。
+        if (raw.startsWith("data:")) return codexPlusWhaleFullDataResponse(raw);
+        if (raw.startsWith("blob:")) return nativeFetch(raw, options);
+        throw new Error("挂件资源只允许本机桥接");
+      }
+      const method = String(options.method || "GET").toUpperCase();
+      const query = Object.fromEntries(parsed.searchParams.entries());
+      let body = {};
+      if (options.body) { try { body = JSON.parse(options.body); } catch { throw new Error("无效挂件请求"); } }
+      if (options.signal?.aborted) throw new Error("挂件请求已取消");
+      const result = await compatibilityJson(parsed.pathname, method, query, body);
+      if (!active() || options.signal?.aborted) throw new Error("挂件请求已取消");
+      if (result?.builtinFragmentId) {
+        const uri = codexPlusWhaleFullBuiltin("/dsh-whale/audio-fragment.wav?id=" + encodeURIComponent(result.builtinFragmentId));
+        if (!uri) throw new Error("内置音频缺失");
+        return nativeFetch(uri);
+      }
+      return responseOf(result);
+    }
+    async function resolveMedia(path) {
+      const builtin = codexPlusWhaleFullBuiltin(path); if (builtin) return builtin;
+      if (state.media.has(path)) return state.media.get(path);
+      const pending = (async () => {
+      const result = await fetchCompat(path);
+      if (!result.ok) throw new Error("素材加载失败");
+      const blob = await result.blob();
+      if (!active()) throw new Error("挂件已关闭");
+      const objectUrl = URL.createObjectURL(blob); state.objectUrls.add(objectUrl); state.media.set(path, objectUrl); return objectUrl;
+      })().catch((error) => { if (state.media.get(path) === pending) state.media.delete(path); throw error; });
+      state.media.set(path, pending); return pending;
+    }
+    function mediaNode(node) {
+      if (wrappedMedia.has(node)) return node;
+      wrappedMedia.add(node);
+      let proto = node, descriptor;
+      while (proto && !descriptor) { descriptor = Object.getOwnPropertyDescriptor(proto, "src"); proto = Object.getPrototypeOf(proto); }
+      let revision = 0;
+      const set = (value) => { if (descriptor?.set) descriptor.set.call(node, value); else node.setAttribute("src", value); };
+      try { Object.defineProperty(node, "src", { configurable: true, get() { return descriptor?.get ? descriptor.get.call(node) : node.getAttribute("src") || ""; }, set(value) {
+        const rev = ++revision, raw = String(value || "");
+        if (!raw.startsWith("/dsh-whale/")) { if (!raw || /^(data:image\/(png|jpeg|webp|gif|avif);|data:audio\/|blob:)/i.test(raw)) set(raw); return; }
+        const builtin = codexPlusWhaleFullBuiltin(raw);
+        if (builtin) { set(builtin); return; }
+        void resolveMedia(raw).then((url) => { if (active() && rev === revision) set(url); }).catch(() => { if (active() && rev === revision) node.dispatchEvent?.(new Event("error")); });
+      } }); } catch {}
+      return node;
+    }
+    function mark(node) {
+      if (!active()) throw new Error("挂件已关闭");
+      if (!node) return node;
+      node.setAttribute?.("data-codex-plus-ext", "whale-widget");
+      if (["IMG", "AUDIO", "VIDEO", "SOURCE"].includes(node.tagName)) mediaNode(node);
+      return node;
+    }
+    const head = new Proxy(document.head, { get(target, key) {
+      if (["appendChild", "insertBefore", "append", "prepend", "replaceChildren"].includes(key)) return (...args) => { if (!active()) return args[0]; for (const node of args) if (node?.nodeType || node?.tagName) state.nodes.add(node); return target[key](...args); };
+      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const doc = new Proxy(document, { get(target, key) {
+      if (key === "head") return head;
+      if (key === "createElement") return (...args) => mark(target.createElement(...args));
+      if (key === "createElementNS") return (...args) => mark(target.createElementNS(...args));
+      if (key === "addEventListener") return (name, callback, options) => listen(target, name, callback, options);
+      if (key === "removeEventListener") return (name, callback, options) => unlisten(target, name, callback, options);
+      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const win = new Proxy(window, { get(target, key) {
+      if (key === "__codexPlusWhaleHost") return host;
+      if (typeof key === "string" && (key.startsWith("__dsh") || key === "dshwRegisterMask")) return isolated[key];
+      if (key === "document") return doc;
+      if (key === "localStorage") return storage;
+      if (key === "Image") return image;
+      if (key === "Audio") return audio;
+      if (key === "AudioContext" || key === "webkitAudioContext") return window.AudioContext || window.webkitAudioContext ? trackedAudioContext : undefined;
+      if (key === "addEventListener") return (name, callback, options) => listen(target, name, callback, options);
+      if (key === "removeEventListener") return (name, callback, options) => unlisten(target, name, callback, options);
+      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+    }, set(target, key, value) { if (typeof key === "string" && (key.startsWith("__dsh") || key === "dshwRegisterMask")) { isolated[key] = value; return true; } return Reflect.set(target, key, value, target); } });
+    function image(width, height) { return mark(new window.Image(width, height)); }
+    image.prototype = window.Image?.prototype || Object.prototype;
+    function audio(url) { const node = mark(new window.Audio()); if (url) node.src = url; return node; }
+    audio.prototype = window.Audio?.prototype || Object.prototype;
+    const host = {
+      active, state, tokens: toTokens,
+      attach(node) { if (active()) state.nodes.add(node); },
+      detach(node) { state.nodes.delete(node); },
+      initialSound() { return state.startupConfig?.sound !== false; },
+      complete(data, show) { state.completion = data; show(data.amount); },
+      completionCost(amount) {
+        const completion = state.completion;
+        if (amount == null) return completion?.usage?.totalTokens == null ? "用量暂不可用" : Number(completion.usage.totalTokens).toLocaleString("zh-CN") + " tokens";
+        return Number(amount).toLocaleString("zh-CN", { maximumFractionDigits: 6 }) + " " + (completion?.currency || "") + "（估算）";
+      },
+      completionModules(modules) {
+        const unknown = state.completion?.amount == null;
+        return modules.map((module) => module.type === "text" ? { ...module, text: String(module.text).replace("上一轮对话消耗:", unknown ? "Codex 任务完成" : "上一轮费用估算:").replace(/^¥\s*/, "") } : module).concat(unknown ? [{ type: "text", text: "未配置单价，费用未知", size: 2, color: "#9fb0d9" }] : []);
+      },
+      recordsPager(body, data, render) {
+        const pagination = data.historyPagination;
+        if (!pagination) return;
+        const area = mark(document.createElement("div")); area.className = "dshwv-usage-hint"; area.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px";
+        const page = pagination.page || 1, pages = Math.max(1, pagination.pages || 1);
+        const label = mark(document.createElement("span")); label.textContent = `明细第 ${page} / ${pages} 页 · 共 ${pagination.total || 0} 条${data.complete === false ? " · 正在统计" : ""}`; area.appendChild(label);
+        const input = mark(document.createElement("input")); input.type = "search"; input.placeholder = "搜索全部明细：日期或模型"; input.value = state.recordsSearch || ""; input.className = "dshwv-colnat"; input.style.width = "100%"; area.appendChild(input);
+        const request = async (next) => {
+          state.recordsRevision = (state.recordsRevision || 0) + 1;
+          const revision = state.recordsRevision, priceRevision = state.priceRevision;
+          const result = await bridge("/whale/history", { period: "all", page: next, pageSize: pagination.pageSize || 500, search: input.value, prices: prices() }).catch(() => null);
+          if (!active() || !body.isConnected || revision !== state.recordsRevision || priceRevision !== state.priceRevision || !result) return;
+          state.recordsSearch = input.value; render(mergeRecords(state.recordsAccountBase, result));
+        };
+        for (const [text, next, disabled] of [["上一页", page - 1, page <= 1], ["下一页", page + 1, page >= pages]]) {
+          const button = mark(document.createElement("button")); button.type = "button"; button.textContent = text; button.className = "dshwv-snapbtn dshwv-snapbtn-no"; button.disabled = disabled; button.addEventListener("click", () => { void request(next); }); area.appendChild(button);
+        }
+        const search = mark(document.createElement("button")); search.type = "button"; search.textContent = "搜索"; search.className = "dshwv-snapbtn dshwv-snapbtn-ok"; search.addEventListener("click", () => { void request(1); }); area.appendChild(search); input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void request(1); } });
+        if (data.historyArchive?.detailRetentionDays) { const note = mark(document.createElement("span")); note.textContent = `明细保留 ${data.historyArchive.detailRetentionDays} 天；更早用量保留在日汇总中。`; note.style.width = "100%"; area.appendChild(note); }
+        body.appendChild(area);
+      },
+      fail(error) { state.initializationError = error?.name || "Error"; console.warn("[Codex++] 完整鲸鱼初始化失败", state.initializationError); },
+      bind(controls) { state.controls = controls; subscribe(); },
+      defaultBubbleItems(items) {
+        const copy = JSON.parse(JSON.stringify(items));
+        if (copy[0]?.modules) copy[0].modules = [
+          { type: "text", text: "Codex 本机用量", size: 8, bold: true },
+          { type: "today", modelId: "codex", size: 20, rgb: "indigo", tpl: "{tokens_today}" },
+          { type: "today", modelId: "codex", size: 4, color: "#9fb0d9", tpl: "今日 tokens · 近7天 {tokens_week}" },
+          { type: "balance", modelId: "current-provider", size: 3, tpl: "供应商余额 {balance}" },
+          { type: "session", size: 3, tpl: "{session}", len: 20 },
+        ];
+        return copy;
+      },
+      profileSelect(selected) {
+        const select = mark(document.createElement("select")); select.className = "dshwv-colnat";
+        const profiles = state.relayProfiles.length ? state.relayProfiles : [{ id: selected || "", name: selected || "当前供应商" }];
+        for (const profile of profiles) { const option = mark(document.createElement("option")); option.value = profile.id; option.textContent = profile.name || profile.id; select.appendChild(option); }
+        select.value = selected || profiles[0]?.id || ""; return select;
+      },
+    };
+    const mutation = trackedObserver(window.MutationObserver), resize = trackedObserver(window.ResizeObserver);
+    const environment = [win, doc, fetchCompat, storage, (fn, ms, ...args) => schedule(fn, ms, false, args), clearTimer, (fn, ms, ...args) => schedule(fn, ms, true, args), clearTimer, raf, cancelRaf, mutation, resize, trackedAudioContext, trackedAudioContext, image, audio];
+    async function initialize() {
+      const configuration = await bridge("/whale/full", { path: "/dsh-whale/size.json", method: "GET", query: {}, body: {} });
+      if (configuration?.status !== 200 || !configuration.body) throw new Error("完整挂件设置读取失败");
+      state.startupConfig = configuration.body;
+      setStatsEnabled(configuration.body.codexStatsOn);
+      let legacy;
+      try { legacy = JSON.parse(localStorage.getItem("codexPlus.whaleWidget.v1") || "null"); } catch {}
+      if (!legacy || storage.getItem("legacy-migrated") === "1") return;
+      if (configuration.body.hasSavedConfig === true) { storage.setItem("legacy-migrated", "1"); return; }
+      // 只迁移用户实际保存过的旧偏好；保存失败保留旧数据并允许下次重试。
+      const send = async (path, method, body) => {
+        const result = await bridge("/whale/full", { path: "/dsh-whale/" + path, method, query: {}, body });
+        if (result?.status !== 200 || result.body?.ok === false) throw new Error("旧挂件偏好迁移失败");
+        return result.body;
+      };
+      if (typeof legacy.image === "string" && /^data:image\/(png|jpeg|webp|gif);base64,/.test(legacy.image) && legacy.image.length <= 1400000) {
+        const roles = await send("roles.json", "GET", {});
+        let imported = (roles.roles || []).find((role) => role.name === "原挂件角色");
+        if (!imported) {
+          const result = await send("roles.json", "POST", { name: "原挂件角色", image: legacy.image, format: legacy.image.startsWith("data:image/gif;") ? "gif" : "png" });
+          imported = (result.roles || []).find((role) => role.name === "原挂件角色");
+        }
+        if (imported?.id) storage.setItem("dshw-role", imported.id);
+      }
+      if (typeof legacy.phrase === "string" && legacy.phrase.trim()) {
+        const config = await send("bubble.json", "GET", {});
+        if (!config.config?.items?.length) await send("bubble.json", "POST", { v: 1, tapAdvance: false, lib: [], items: [{ kind: "custom", modules: [{ type: "text", text: legacy.phrase.slice(0, 120), size: 8 }, { type: "today", modelId: "codex", size: 12, tpl: "今日 {tokens_today} tokens" }] }] });
+      }
+      const limits = Object.values(legacy.thresholds || {}).find((value) => value && typeof value === "object");
+      if (limits) {
+        const patch = { models: { "current-provider": {} } };
+        if (codexPlusWhaleFullNumber(limits.low) > 0) patch.models["current-provider"].alert = { on: true, below: Number(limits.low) };
+        if (codexPlusWhaleFullNumber(limits.budget) > 0) patch.models["current-provider"].budget = { on: true, amount: Number(limits.budget) };
+        await send("usage-settings.json", "PUT", patch);
+      }
+      const base = Math.max(122, Math.min(250, Math.min(window.innerWidth || 1024, window.innerHeight || 768) * 0.28));
+      const config = { ...configuration.body, sound: legacy.sound === true, turnCostOn: legacy.completion !== false };
+      if (codexPlusWhaleFullNumber(legacy.size) > 0) config.scale = Math.min(2.5, Math.max(0.6, Number(legacy.size) / (base * 0.5945)));
+      if (codexPlusWhaleFullNumber(legacy.x) !== null && codexPlusWhaleFullNumber(legacy.y) !== null) {
+        const fullSize = base * (config.scale || 1.5), right = Math.max(0, (window.innerWidth || 1024) - Number(legacy.x) - Number(legacy.size || 88)), bottom = Math.max(0, (window.innerHeight || 768) - Number(legacy.y) - Number(legacy.size || 88));
+        storage.setItem("dshw-pos", JSON.stringify({ v: 2, hAnchor: legacy.x < (window.innerWidth || 1024) / 2 ? "left" : "right", hDist: legacy.x < (window.innerWidth || 1024) / 2 ? Math.max(0, legacy.x - fullSize * 0.4055) : right, vAnchor: legacy.y < (window.innerHeight || 768) / 2 ? "top" : "bottom", vDist: legacy.y < (window.innerHeight || 768) / 2 ? Math.max(0, legacy.y - fullSize * 0.4055) : bottom }));
+      }
+      if (legacy.snap === false) storage.setItem("dshw-snap", JSON.stringify({ v: 3, mode: "off" }));
+      const result = await send("size.json", "PUT", config); state.startupConfig = { ...config, ...result, hasSavedConfig: true };
+      storage.setItem("legacy-migrated", "1");
+    }
+    function pause(paused) {
+      if (state.paused === paused || !active()) return;
+      state.paused = paused;
+      if (paused) {
+        for (const timer of state.timers.values()) { if (timer.native !== null) clearTimeout(timer.native); timer.native = null; }
+        for (const frame of state.rafs.values()) { if (frame.native !== null) cancelAnimationFrame(frame.native); frame.native = null; }
+        for (const observer of state.observers) observer.native.disconnect();
+        for (const cancel of [...state.pending]) cancel();
+        for (const audio of state.audio) { try { void audio.suspend?.().catch?.(() => {}); } catch {} }
+        state.turn = null; state.sessionAt = 0; state.pendingWait = null;
+      } else {
+        for (const [id, timer] of state.timers) arm(id, timer);
+        for (const [id, frame] of state.rafs) frame.native = requestAnimationFrame((time) => { state.rafs.delete(id); if (active() && !state.paused) frame.callback(time); });
+        for (const observer of state.observers) for (const [target, options] of observer.records) observer.native.observe(target, options);
+        context(); subscribe(); void state.controls?.refresh?.(false);
+      }
+    }
+    function dispose() {
+      if (state.disposed) return; state.disposed = true;
+      for (const id of [...state.timers.keys()]) clearTimer(id);
+      for (const id of [...state.rafs.keys()]) cancelRaf(id);
+      for (const observer of state.observers) observer.disconnect(); state.observers.clear();
+      for (const entry of state.listeners.splice(0)) entry.target.removeEventListener(entry.name, entry.wrapped, entry.options);
+      for (const unsubscribe of state.subscriptions.splice(0)) { try { unsubscribe(); } catch {} }
+      for (const cancel of [...state.pending]) cancel();
+      for (const context of state.audio) { try { void context.close?.().catch?.(() => {}); } catch {} } state.audio.clear();
+      for (const node of state.nodes) { if (node.parentNode) node.parentNode.removeChild(node); } state.nodes.clear();
+      for (const url of state.objectUrls) URL.revokeObjectURL(url); state.objectUrls.clear(); state.media.clear();
+      state.controls = null;
+    }
+    listen(document, "visibilitychange", () => pause(document.hidden === true));
+    listen(window, "message", (event) => {
+      if (event.source !== window || (event.origin && event.origin !== "null" && event.origin !== window.location?.origin)) return;
+      nativeEnvelope(event.data);
+    }, true);
+    listen(window, "codex-message-from-view", (event) => nativeEnvelope(event.detail), true);
+    // 设置迁移和首次读取在异步等待中也要记录短任务，绑定原 UI 后统一由 seq 消费。
+    subscribe();
+    return { state, environment, host, active, pause, dispose, initialize, fetch: fetchCompat, context, session, history, observe, subscribe, nativeEnvelope, prices };
+  }
+  // 完整版鲸鱼（大肥鱼）由上游原始引擎 + Codex 数据适配层组成；默认关闭。
+  // 它是「Agent 桌宠」的一种类型：后端 `agentPet` 开启、勾选了 Codex 且类型为 whaleWidget 时才挂载，
+  // 与 97-agent-pet.js 的简单桌宠互斥（那边在选中大肥鱼时不挂载）。
+  window.__codexPlusWhaleWidgetRuntime?.dispose?.();
+  const codexPlusWhaleState = { disposed: false, runtime: null, profile: "", missingSource: false, failedUntil: 0, notice: null };
+  function codexPlusWhaleSelected() {
+    const pet = codexPlusBackendSettings?.agentPet;
+    return Boolean(pet && typeof pet === "object" && pet.enabled === true && pet.kind === "whaleWidget"
+      && (!Array.isArray(pet.agents) || pet.agents.includes("codex")));
+  }
+  function codexPlusWhaleEnabled() {
+    // 大肥鱼是 Agent 桌宠的一种类型：跟着内置拓展「Agent 桌宠」停用 / 被顶替。
+    return !codexPlusWhaleState.disposed && codexPlusBackendSettingsLoaded && codexPlusWhaleSelected()
+      && !globalThis?.__codexPlusBuiltinInactive?.has("agent-pet");
+  }
+  function codexPlusWhaleStop() {
+    codexPlusWhaleState.runtime?.dispose();
+    codexPlusWhaleState.runtime = null;
+    codexPlusWhaleState.notice?.remove(); codexPlusWhaleState.notice = null;
+  }
+  function codexPlusWhaleInitializationFailed(runtime) {
+    runtime?.dispose(); codexPlusWhaleState.runtime = null; codexPlusWhaleState.failedUntil = Date.now() + 10000;
+    if (codexPlusWhaleState.notice) return;
+    const notice = document.createElement("div"); notice.setAttribute("data-codex-plus-ext", "whale-widget"); notice.setAttribute("role", "status");
+    notice.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:2147483600;max-width:320px;padding:12px;border-radius:10px;background:#fff5ec;color:#7c3218;font:12px/1.6 system-ui;box-shadow:0 3px 16px #0002";
+    notice.textContent = "鲸鱼挂件暂时无法加载，10 秒后自动重试。可在 Codex++「Agent 桌宠」页关闭后重新开启。";
+    document.body.appendChild(notice); codexPlusWhaleState.notice = notice;
+  }
+  function codexPlusWhaleProfileFingerprint() {
+    const profile = codexRemoteSessionActiveProfile?.();
+    const settings = codexPlusBackendSettings || {};
+    return JSON.stringify([profile?.id || "", profile?.relayMode || "", settings.codexAppWhaleBalanceProtocol,
+      settings.codexAppWhaleBalancePath, settings.codexAppWhaleBalanceField, settings.codexAppWhaleBalanceCurrency,
+      settings.codexAppWhaleBalanceScale]);
+  }
+  function syncCodexPlusWhaleWidget() {
+    if (!codexPlusWhaleEnabled()) { codexPlusWhaleStop(); codexPlusWhaleState.failedUntil = 0; return; }
+    const profile = codexPlusWhaleProfileFingerprint();
+    if (codexPlusWhaleState.profile !== profile) { codexPlusWhaleStop(); codexPlusWhaleState.failedUntil = 0; }
+    codexPlusWhaleState.profile = profile;
+    if (codexPlusWhaleState.runtime) {
+      codexPlusWhaleState.runtime.context();
+      codexPlusWhaleState.runtime.subscribe();
+      codexPlusWhaleState.runtime.pause(document.hidden === true);
+      return;
+    }
+    // 隐藏窗口等恢复可见后再挂载，不在后台构造音频或轮询会话日志。
+    if (document.hidden) return;
+    if (Date.now() < codexPlusWhaleState.failedUntil) return;
+    if (typeof window.__CODEX_PLUS_WHALE_ENGINE__ !== "function") {
+      if (!codexPlusWhaleState.missingSource) console.warn("[Codex++] 完整鲸鱼运行时未随启动器加载，请重新构建启动器。");
+      codexPlusWhaleState.missingSource = true; codexPlusWhaleInitializationFailed(null); return;
+    }
+    const runtime = createCodexPlusWhaleFullRuntime();
+    codexPlusWhaleState.runtime = runtime;
+    registerCodexPlusExtensionSelector("[data-codex-plus-ext=whale-widget]");
+    void runtime.initialize().then(() => {
+      if (runtime.active() && codexPlusWhaleState.runtime === runtime && codexPlusWhaleEnabled()) {
+        window.__CODEX_PLUS_WHALE_ENGINE__(...runtime.environment);
+        if (runtime.state.initializationError || !runtime.state.controls) throw new Error("完整鲸鱼初始化未完成");
+        codexPlusWhaleState.notice?.remove(); codexPlusWhaleState.notice = null;
+      }
+    }).catch((error) => {
+      if (!runtime.active()) return;
+      if (codexPlusWhaleState.runtime === runtime) codexPlusWhaleInitializationFailed(runtime);
+    });
+  }
+  window.__codexPlusWhaleWidgetRuntime = {
+    version: 3,
+    sync: syncCodexPlusWhaleWidget,
+    dispose() { codexPlusWhaleStop(); codexPlusWhaleState.disposed = true; },
+    get state() { return codexPlusWhaleState.runtime?.state || null; },
+  };
   /**
    * 内置拓展：Codex++ 自带的功能也挂在拓展内核上，和第三方拓展走同一套生命周期
    * （没有特权功能：自带的也能单独停用、被别的拓展顶替）。
@@ -24235,7 +25292,8 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusAgentPet(), scan: () => syncCodexPlusAgentPet(), apply: codexPlusAgentPetExtension },
+      // 大肥鱼（96-whale-widget.js）是桌宠的一种类型，跟着这个内置拓展一起扫描、一起撤下。
+      { id: "agent-pet", name: "Agent 桌宠", sync: () => syncCodexPlusPetKinds(), scan: () => syncCodexPlusPetKinds(), apply: codexPlusAgentPetExtension },
       { id: "usage-statusline", name: "用量状态栏", sync: () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", sync: () => installCodexPlusDictation() },
       { id: "turn-rewind", name: "轮次回退", sync: () => syncCodexPlusTurnRewind() },
@@ -24293,6 +25351,11 @@
       { id: "standalone-quota-unlock", name: "官方额度解锁" },
       { id: "image-overlay", name: "背景图" },
     ];
+  }
+
+  function syncCodexPlusPetKinds() {
+    syncCodexPlusAgentPet();
+    if (typeof syncCodexPlusWhaleWidget === "function") syncCodexPlusWhaleWidget();
   }
 
   /** 下发的停用 / 顶替状态：{ disabled: [id], replacedBy: { id: 拓展 key } }。 */
@@ -25308,6 +26371,7 @@
   // 内嵌的两组音效随启动器注入（window.__CODEX_PLUS_AGENT_PET_SOUNDS__）；下载音效组和用户导入的自定义音效
   // 经桥接 `/agent-pet/sound` 取 data URI。一律直接从字节解码，不依赖 fetch(data:)。
   // 设置读后端的 `agentPet`，与「Codex 增强」总开关无关；目前只有 Codex 一个 Agent。
+  // `agentPet.kind` 为 whaleWidget（大肥鱼）时这里不挂载，由 96-whale-widget.js 显示完整鲸鱼挂件。
   window.__codexPlusAgentPetRuntime?.dispose?.();
   const codexPlusAgentPetPositionKey = "codexPlus.agentPet.position.v1";
   const codexPlusAgentPetSquash = "scaleY(0.88) scaleX(1.05)";
@@ -25344,6 +26408,8 @@
     const volume = Number(raw.volume);
     return {
       enabled: raw.enabled === true,
+      // `whaleWidget` 表示选了大肥鱼（完整鲸鱼挂件，见 96-whale-widget.js），其余都按简单桌宠处理。
+      kind: raw.kind === "whaleWidget" ? "whaleWidget" : "image",
       agents: Array.isArray(raw.agents) ? raw.agents : ["codex"],
       image: typeof raw.image === "string" ? raw.image : "whale",
       customImageUrl: typeof raw.customImageUrl === "string" ? raw.customImageUrl : "",
@@ -25356,9 +26422,10 @@
     };
   }
 
+  // 选了大肥鱼时简单桌宠不挂载：两者互斥，同一时间只显示一个。
   function codexPlusAgentPetActive(settings) {
-    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.agents.includes("codex")
-      && !globalThis.__codexPlusBuiltinInactive?.has("agent-pet");
+    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.kind !== "whaleWidget"
+      && settings.agents.includes("codex") && !globalThis.__codexPlusBuiltinInactive?.has("agent-pet");
   }
 
   function readCodexPlusAgentPetPosition() {
@@ -25891,8 +26958,9 @@
     }, 250);
   })();
   installCodexConfigReadDeadline();
+  void installCodexForkReadinessFallback();
   installCodexPlusForceChineseLocale();
-  // 打字特效、桌宠由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
+  // 打字特效、桌宠（含大肥鱼）由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);

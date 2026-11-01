@@ -8,6 +8,7 @@ use serde::Serialize;
 use codex_plus_core::gateway::activity::{self, ActivitySnapshot};
 use codex_plus_core::gateway::apply::{self, ApplyContext, GroupInput, ProviderInput};
 use codex_plus_core::gateway::key_pool::{self, PoolSnapshot};
+use codex_plus_core::gateway::meta_sync;
 use codex_plus_core::gateway::model_sync;
 use codex_plus_core::gateway::store::{
     AgentBinding, GatewayGroup, GatewaySettings, GatewayStore, KeyRotationMode, new_client_token,
@@ -968,6 +969,62 @@ pub fn apply_gateway_provider_models_sync(
         autofill_prices(Some(id));
     }
     respond(&message, "从上游同步模型失败", result)
+}
+
+/// 「从上游同步上下文窗口 / 思考等级」的第一步（#2807）：拉上游 `/models`，读每个模型的元数据，
+/// 返回和现有设置的差异供用户勾选，不改任何数据。
+#[tauri::command]
+pub async fn preview_gateway_provider_meta_sync(
+    id: String,
+) -> CommandResult<Option<meta_sync::MetaSyncPreview>> {
+    match meta_sync::preview_provider_meta(&GatewayStore::default(), &id).await {
+        Ok(preview) => ok(
+            &format!(
+                "上游有 {} 个模型：上下文窗口有 {} 处不同，思考等级有 {} 处不同。",
+                preview.upstream_models,
+                preview.windows.len(),
+                preview.reasoning.len()
+            ),
+            Some(preview),
+        ),
+        Err(error) => failed(&format!("读取上游模型资料失败：{error:#}"), None),
+    }
+}
+
+/// 第二步：只写用户勾选的上下文窗口；窗口写在 Agent 的模型资料里，存完重写 Agent 配置。
+#[tauri::command]
+pub fn apply_gateway_provider_windows_sync(
+    id: String,
+    picks: Vec<meta_sync::WindowPick>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = refresh_agents(meta_sync::apply_window_sync(
+        &GatewayStore::default(),
+        &id,
+        &picks,
+    ));
+    let message = match &result {
+        Ok((_, written)) => format!("已从上游同步 {written} 个模型的上下文窗口。"),
+        Err(_) => String::new(),
+    };
+    respond(&message, "同步上下文窗口失败", result)
+}
+
+/// 第二步：只写用户勾选的思考等级；写进模型资料，存完重写 Agent 配置。
+#[tauri::command]
+pub fn apply_gateway_provider_reasoning_sync(
+    id: String,
+    picks: Vec<meta_sync::ReasoningPick>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = refresh_agents(meta_sync::apply_reasoning_sync(
+        &GatewayStore::default(),
+        &id,
+        &picks,
+    ));
+    let message = match &result {
+        Ok((_, written)) => format!("已从上游同步 {written} 个模型的思考等级。"),
+        Err(_) => String::new(),
+    };
+    respond(&message, "同步思考等级失败", result)
 }
 
 /// 「从上游同步」的结果提示：新增、移除各几个（列出模型名），都没有就说列表没变。

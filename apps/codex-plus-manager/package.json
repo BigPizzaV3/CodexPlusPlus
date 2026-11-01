@@ -8,7 +8,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test \"src/*.test.ts\"",
+    "test": "node --test \"src/*.test.ts\" ../../scripts/tests/weixin-desktop-sync.test.cjs",
     "vite:dev": "vite --host 127.0.0.1 --port 1420",
     "vite:build": "vite build"
   },

@@ -975,6 +975,27 @@ mod runtime {
         }
     }
 
+    /// 持锁期间删掉安装目录里的更新锁文件（#2774：更新完成后 `.codex-plus-update.lock` 一直留在
+    /// 「应用程序」里）。只删和手里这把锁是同一个文件的普通文件；同路径已被换成别的文件或链接时不动。
+    /// 删除后锁仍随 `lock` 一起持有到函数返回，期间别的进程打开同路径会新建文件、拿到的是另一把锁，
+    /// 所以只在不再需要互斥的收尾时调用。
+    fn remove_held_install_lock(root: &Path, lock: &File) {
+        use std::os::unix::fs::MetadataExt;
+        let lock_path = root.join(".codex-plus-update.lock");
+        let (Ok(on_disk), Ok(held)) = (fs::symlink_metadata(&lock_path), lock.metadata()) else {
+            return;
+        };
+        if !on_disk.file_type().is_file() || on_disk.dev() != held.dev() || on_disk.ino() != held.ino() {
+            return;
+        }
+        if let Err(error) = fs::remove_file(&lock_path) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "update.macos.lock_cleanup_skipped",
+                serde_json::json!({"installRoot":root,"message":format!("{error:#}")}),
+            );
+        }
+    }
+
     fn log_cleanup_outcomes(outcomes: Vec<(PathBuf, Result<(), String>)>) {
         for (path, result) in outcomes {
             let (event, message) = match result {
@@ -1026,7 +1047,7 @@ mod runtime {
         if !legacy_transaction_scan_allowed(root, home.as_deref()) {
             return pending;
         }
-        let Some(_lock) = lock_install_root(root) else {
+        let Some(lock) = lock_install_root(root) else {
             return true;
         };
         match cleanup_stale_transactions(root, now) {
@@ -1040,6 +1061,10 @@ mod runtime {
                     serde_json::json!({"installRoot":root,"message":format!("{error:#}")}),
                 );
             }
+        }
+        // 拿到了锁说明没有更新在进行：以前的 helper 留下的锁文件一并收掉（#2774）。
+        if let Some(lock) = &lock {
+            remove_held_install_lock(root, lock);
         }
         pending
     }
@@ -1175,7 +1200,7 @@ mod runtime {
             .open(lock_path)?;
         fs2::FileExt::try_lock_exclusive(&lock).context("本安装目录已有另一个更新在进行")?;
         let mut approved = false;
-        let result = (|| -> anyhow::Result<()> {
+        let outcome = (|| -> anyhow::Result<()> {
             let mount = plan.transaction.join("mount");
             fs::create_dir(&mount)?;
             let attached = checked(
@@ -1202,9 +1227,21 @@ mod runtime {
             replace_bundles(&NativeOps, &plan)?;
             Ok(())
         })();
-        match result {
+        let result = finish_update(&plan, outcome, approved);
+        // 更新已结束（成功或失败）：持锁删掉锁文件，不在「应用程序」里留下 .codex-plus-update.lock（#2774）。
+        remove_held_install_lock(&plan.install_root, &lock);
+        result
+    }
+
+    /// 更新结果收尾：写状态、成功时重开新版并删事务目录，失败时视情况重开旧版。
+    fn finish_update(
+        plan: &UpdatePlan,
+        outcome: anyhow::Result<()>,
+        approved: bool,
+    ) -> anyhow::Result<()> {
+        match outcome {
             Ok(()) => {
-                write_state(&plan, "installed", "Codex++.app 已安装")?;
+                write_state(plan, "installed", "Codex++.app 已安装")?;
                 let restarted = open_bundle(&plan.install_root.join(BUNDLES[0].name));
                 if let Err(error) = &restarted {
                     let _ = write_state(
@@ -1233,6 +1270,47 @@ mod runtime {
                 Err(error)
             }
         }
+    }
+
+    /// 更新锁文件的收尾（#2774）：拿到锁才删、只删手里这把锁对应的普通文件。
+    #[cfg(test)]
+    pub(super) fn install_lock_cleanup_smoke(root: &Path) -> anyhow::Result<()> {
+        let lock_path = root.join(".codex-plus-update.lock");
+        // 没有更新在进行：拿到锁后删掉以前留下的锁文件。
+        fs::write(&lock_path, "")?;
+        let held = lock_install_root(root).context("锁不该被占用")?.context("锁文件应存在")?;
+        remove_held_install_lock(root, &held);
+        drop(held);
+        anyhow::ensure!(!lock_path.exists(), "拿到锁后应删掉锁文件");
+        // 锁文件不存在时也不创建。
+        anyhow::ensure!(matches!(lock_install_root(root), Some(None)), "不存在时不创建");
+        anyhow::ensure!(!lock_path.exists());
+
+        // 另一个更新正持有锁：拿不到锁，不删。
+        fs::write(&lock_path, "")?;
+        let other = OpenOptions::new().read(true).write(true).open(&lock_path)?;
+        fs2::FileExt::try_lock_exclusive(&other)?;
+        anyhow::ensure!(lock_install_root(root).is_none(), "被占用时拿不到锁");
+        anyhow::ensure!(lock_path.exists(), "被占用时不能删");
+        drop(other);
+
+        // 持锁期间同路径被换成别的文件：不删新文件。
+        let held = lock_install_root(root).context("锁不该被占用")?.context("锁文件应存在")?;
+        fs::rename(&lock_path, root.join("moved.lock"))?;
+        fs::write(&lock_path, "new")?;
+        remove_held_install_lock(root, &held);
+        anyhow::ensure!(fs::read_to_string(&lock_path)? == "new", "换过的文件不能删");
+        fs::remove_file(&lock_path)?;
+        fs::remove_file(root.join("moved.lock"))?;
+
+        // 锁文件是符号链接：不当锁用，也不删。
+        let target = root.join("target.lock");
+        fs::write(&target, "")?;
+        std::os::unix::fs::symlink(&target, &lock_path)?;
+        anyhow::ensure!(lock_install_root(root).is_none(), "符号链接不当锁用");
+        anyhow::ensure!(fs::symlink_metadata(&lock_path)?.file_type().is_symlink(), "符号链接不能删");
+        anyhow::ensure!(target.exists(), "链接目标不能删");
+        Ok(())
     }
 
     #[cfg(test)]
@@ -2417,6 +2495,13 @@ mod tests {
     fn macos_update_pipe_deadline_is_bounded_when_own_fixture_inherits_pipe() {
         let temp = tempfile::tempdir().unwrap();
         runtime::pipe_deadline_smoke(temp.path()).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn install_lock_file_is_removed_only_while_held() {
+        let temp = tempfile::tempdir().unwrap();
+        runtime::install_lock_cleanup_smoke(temp.path()).unwrap();
     }
 
     #[cfg(target_os = "macos")]

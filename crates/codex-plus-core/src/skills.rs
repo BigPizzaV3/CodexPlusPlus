@@ -1332,7 +1332,7 @@ fn zip_entry_relative_path(name: &str) -> Option<PathBuf> {
 /// 从仓库 zip 里只解出 `repo_path` 这一棵子树。
 ///
 /// GitHub 的 zip 统一带一层 `repo-ref/` 前缀，`zip_entry_relative_path` 会剥掉它
-/// 并同时挡住路径逃逸。符号链接条目一律拒绝——与 codex 内置 skill-installer 的
+/// 并同时挡住路径逃逸。目标子树中的符号链接条目一律拒绝——与 codex 内置 skill-installer 的
 /// `_validate_skill` 一致，避免装进来的 skill 指到仓库外面。
 pub fn extract_skill_subtree(
     zip_bytes: &[u8],
@@ -1352,9 +1352,6 @@ pub fn extract_skill_subtree(
         let mut file = archive
             .by_index(index)
             .with_context(|| format!("读取压缩包条目 {index} 失败"))?;
-        if file.is_symlink() {
-            anyhow::bail!("skill 中不允许包含符号链接：{}", file.name());
-        }
         let Some(relative) = zip_entry_relative_path(file.name()) else {
             continue;
         };
@@ -1366,6 +1363,11 @@ pub fn extract_skill_subtree(
             .filter_map(|component| component.as_os_str().to_str())
             .collect::<Vec<_>>()
             .join("/");
+        if file.is_symlink()
+            && (repo_path == "." || relative == repo_path || relative.starts_with(&prefix))
+        {
+            anyhow::bail!("skill 中不允许包含符号链接：{}", file.name());
+        }
         let Some(inner) = relative.strip_prefix(prefix.as_str()) else {
             continue;
         };
@@ -2302,6 +2304,41 @@ mod tests {
         assert!(destination.join("SKILL.md").is_file());
         assert!(destination.join("scripts").join("run.py").is_file());
         assert!(!destination.join("beta").exists());
+    }
+
+    #[test]
+    fn extraction_rejects_only_symlinks_in_the_selected_subtree() {
+        let mut buffer = Cursor::new(Vec::<u8>::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buffer);
+            let options = zip::write::SimpleFileOptions::default();
+            writer
+                .start_file("kit-main/alpha/SKILL.md", options)
+                .unwrap();
+            writer.write_all(b"alpha").unwrap();
+            writer
+                .start_file("kit-main/beta/SKILL.md", options)
+                .unwrap();
+            writer.write_all(b"beta").unwrap();
+            writer
+                .add_symlink("kit-main/beta/link", "../../outside", options)
+                .unwrap();
+            writer
+                .add_symlink("kit-main/alpha-other", "../../outside", options)
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        let zip = buffer.into_inner();
+        let temp = tempfile::tempdir().unwrap();
+
+        extract_skill_subtree(&zip, "alpha", &temp.path().join("alpha")).unwrap();
+        assert!(temp.path().join("alpha/SKILL.md").is_file());
+        assert!(!temp.path().join("alpha/alpha-other").exists());
+        for path in ["beta", ".", "alpha-other"] {
+            let error =
+                extract_skill_subtree(&zip, path, &temp.path().join("rejected")).unwrap_err();
+            assert!(error.to_string().contains("符号链接"));
+        }
     }
 
     #[test]

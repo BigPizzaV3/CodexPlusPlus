@@ -139,7 +139,11 @@ jobs:
     # 单个通用包（universal）同时支持 Intel 与 Apple Silicon，
     # 用户不必再自己判断架构，Release 也只多一个而不是两个产物。
     name: macOS DMG (universal)
-    runs-on: macos-14
+    # macos-14 镜像 2026-11-02 退役，期间还有计划性停机（任务分配 runner 前就被取消）。
+    runs-on: macos-15
+    env:
+      # 与 Info.plist 的 LSMinimumSystemVersion 一致，不随 runner 的 SDK 抬高 C 依赖的最低系统版本。
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4

@@ -314,6 +314,15 @@
       "surfaces": ["manager", "codex"]
     },
     {
+      "key": "codexAppProxyRequestStatus",
+      "builtin": "proxy-request-status",
+      "group": "chat",
+      "control": "bool",
+      "title": "请求状态条",
+      "description": "请求经 Codex++ 网关或本地代理时，在输入框上方显示正在请求、等待返回、重试和生成进度。关闭后不再显示，也不再查询请求状态。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
       "key": "codexAppActivityOverlayRight",
       "builtin": "activity-overlay-right",
       "group": "pet",
@@ -387,12 +396,6 @@
       "description": "输入框旁的麦克风按钮，录音转写成文字",
       "group": "chat",
       "setting": "dictation.enabled"
-    },
-    {
-      "id": "proxy-request-status",
-      "title": "请求状态条",
-      "description": "输入框上方显示经 Codex++ 代理的请求进行到哪一步",
-      "group": "chat"
     },
     {
       "id": "session-title-hook",

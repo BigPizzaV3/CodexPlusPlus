@@ -50,6 +50,8 @@ import { ProviderWindowsDialog, windowSummary, withUnlistedWindows } from "./Pro
 import { ProviderReasoningDialog, reasoningSummary } from "./ProviderReasoningDialog";
 import { ProviderModelsDialog } from "./ProviderModelsDialog";
 import { ProviderSyncDialog } from "./ProviderSyncDialog";
+import { ProviderMetaSyncDialog } from "./ProviderMetaSyncDialog";
+import type { MetaSyncKind } from "./provider-meta-sync-model";
 import { ProviderKeyList } from "./ProviderKeyList";
 import { ProviderTestDialog } from "./ProviderTestDialog";
 import { gatewayJump } from "./gateway-store";
@@ -567,6 +569,15 @@ function PoolRow({
   const saveWindows = async (modelWindows: Record<string, number>, fallback: number | null) => {
     if (await run(`windows:${entry.id}`, "save_gateway_provider_windows", { id: entry.id, windows: modelWindows, fallback }, t("保存上下文窗口"))) setWindowsOpen(false);
   };
+  // 从上游同步上下文窗口 / 思考等级（#2807）：先列差异，勾选后才写入。订阅账号的模型接口不带这些资料。
+  const [metaSync, setMetaSync] = useState<MetaSyncKind | null>(null);
+  const metaSyncable = !entry.account && entry.models.length > 0;
+  const applyWindowsSync = async (picks: Array<{ model: string; window: number }>) => {
+    if (await run(`windows-sync:${entry.id}`, "apply_gateway_provider_windows_sync", { id: entry.id, picks }, t("从上游同步上下文窗口"))) setMetaSync(null);
+  };
+  const applyReasoningSync = async (picks: Array<{ model: string; levels: string[]; defaultLevel: string | null }>) => {
+    if (await run(`reasoning-sync:${entry.id}`, "apply_gateway_provider_reasoning_sync", { id: entry.id, picks }, t("从上游同步思考等级"))) setMetaSync(null);
+  };
   const newModels = entry.upstreamNew?.length ?? 0;
   const [syncOpen, setSyncOpen] = useState(false);
   const applySync = async (remove: string[], add: string[]) => {
@@ -761,6 +772,14 @@ function PoolRow({
             <div className="gw-detail-value gw-chip-row">
               <span className={windows ? undefined : "gw-muted"}>{windows || t("未填写，用模型自带资料")}</span>
               <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑上下文窗口")} onClick={() => setWindowsOpen(true)} />
+              {metaSyncable ? (
+                <MetaSyncButton
+                  busy={busy}
+                  busyKey={`windows-sync:${entry.id}`}
+                  onClick={() => setMetaSync("windows")}
+                  title={t("读取上游 /models 返回的上下文窗口，先列出差异，勾选后再写入")}
+                />
+              ) : null}
             </div>
           </div>
           <div className="gw-detail-row">
@@ -768,6 +787,14 @@ function PoolRow({
             <div className="gw-detail-value gw-chip-row">
               <span className={reasoning ? undefined : "gw-muted"}>{reasoning || t("按内置资料")}</span>
               <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑思考等级")} onClick={() => setReasoningOpen(true)} />
+              {metaSyncable ? (
+                <MetaSyncButton
+                  busy={busy}
+                  busyKey={`reasoning-sync:${entry.id}`}
+                  onClick={() => setMetaSync("reasoning")}
+                  title={t("读取上游 /models 返回的思考等级，先列出差异，勾选后再写入")}
+                />
+              ) : null}
             </div>
           </div>
           <div className="gw-detail-row">
@@ -816,6 +843,16 @@ function PoolRow({
         </div>
       ) : null}
       {testKey !== undefined ? <ProviderTestDialog entry={entry} keyId={testKey} onClose={() => setTestKey(undefined)} /> : null}
+      {metaSync ? (
+        <ProviderMetaSyncDialog
+          busy={busy !== null}
+          entry={entry}
+          kind={metaSync}
+          onApplyReasoning={(picks) => void applyReasoningSync(picks)}
+          onApplyWindows={(picks) => void applyWindowsSync(picks)}
+          onCancel={() => setMetaSync(null)}
+        />
+      ) : null}
       {syncOpen ? (
         <ProviderSyncDialog busy={busy !== null} entry={entry} onApply={(remove, add) => void applySync(remove, add)} onCancel={() => setSyncOpen(false)} />
       ) : null}
@@ -850,6 +887,16 @@ function PoolRow({
         />
       ) : null}
     </div>
+  );
+}
+
+/** 详情里「上下文窗口」「思考等级」的「从上游同步」（#2807）。 */
+function MetaSyncButton({ busy, busyKey, title, onClick }: { busy: string | null; busyKey: string; title: string; onClick: () => void }) {
+  return (
+    <button className="gw-text-button gw-sync-button" disabled={busy !== null} onClick={onClick} title={title} type="button">
+      <RefreshCw className={busy === busyKey ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+      {t("从上游同步")}
+    </button>
   );
 }
 

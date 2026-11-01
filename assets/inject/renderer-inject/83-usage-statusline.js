@@ -189,8 +189,12 @@
   /**
    * 找输入卡片，返回 `{ card, source }`；source 记录走的是哪条路径，写进诊断日志。
    *
-   * 旧版兜底只在页面从没出现过新版标记时启用：新版 Codex 停在设置页等没有 composer 的
+   * 旧版兜底只在页面从没出现过新版输入卡片标记时启用：新版 Codex 停在设置页等没有 composer 的
    * 页面时，不能把别处的 form 当成输入框。
+   *
+   * 「新版」只认 data-composer-surface-variant：部分旧版 Codex 已经有 data-codex-composer-root，
+   * 却还没有新版卡片标记（#2753 的 Intel Mac 日志：composerRoot=1、surfaceVariant=0），
+   * 把根标记也算作新版会让旧版永远走不到兜底。
    */
   function codexPlusUsageComposerCard() {
     let fallback = null;
@@ -201,8 +205,7 @@
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "surface-variant" };
     }
     if (fallback) return { card: fallback, source: "surface-variant" };
-    if (!codexPlusUsageState.modernDom
-      && document.querySelector(`${codexPlusUsageCardSelector}, [data-codex-composer-root]`)) {
+    if (!codexPlusUsageState.modernDom && document.querySelector(codexPlusUsageCardSelector)) {
       codexPlusUsageState.modernDom = true;
     }
     if (codexPlusUsageState.modernDom) return null;
@@ -210,6 +213,11 @@
       if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
       // 旧版类名也可能挂在装饰容器上，必须真的包着输入框才算。
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "legacy-chrome" };
+    }
+    // 有 composer 根标记、没有旧类名的过渡版本：根节点包着输入框时就挂在根上。
+    for (const card of document.querySelectorAll("[data-codex-composer-root]")) {
+      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
+      if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "composer-root" };
     }
     // 类名也对不上时按输入框本身找：取 ProseMirror 所在的 form。
     for (const editor of document.querySelectorAll('.ProseMirror[contenteditable="true"]')) {

@@ -27,6 +27,12 @@
     failures: 0,
   };
 
+  // 设置开关（#2824）：关闭时不显示、不轮询；切回开启后下一轮轮询自动接上。
+  // 设置开关与内置拓展「请求状态条」都开着才显示、才轮询。
+  function codexPlusProxyStatusEnabled() {
+    return codexPlusSettings().proxyRequestStatus !== false && !globalThis?.__codexPlusBuiltinInactive?.has("proxy-request-status");
+  }
+
   function codexPlusProxyStatusVisibleElement(element) {
     if (!element?.isConnected) return false;
     const rect = element.getBoundingClientRect();
@@ -150,7 +156,7 @@
   }
 
   function codexPlusProxyStatusRender() {
-    if (!!globalThis.__codexPlusBuiltinInactive?.has("proxy-request-status")) {
+    if (!codexPlusProxyStatusEnabled()) {
       codexPlusProxyStatusHide();
       return;
     }
@@ -244,7 +250,12 @@
 
   async function codexPlusProxyStatusRefresh() {
     if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
-    if (document.hidden || !!globalThis.__codexPlusBuiltinInactive?.has("proxy-request-status")) return;
+    if (document.hidden) return;
+    if (!codexPlusProxyStatusEnabled()) {
+      codexPlusProxyStatusState.requests = [];
+      codexPlusProxyStatusHide();
+      return;
+    }
     codexPlusProxyStatusState.inFlight = true;
     try {
       const result = await codexPlusProxyStatusPostWithTimeout();

@@ -12,6 +12,7 @@
 //! - [`activity`]：路由动态（最近一次请求怎么走的、计数），供界面实时展示；
 //! - [`images`]：生图请求（`/images/generations`、`/images/edits`）发给哪家；
 //! - [`model_sync`]：重新拉上游模型、补公开价格、定期检查新模型；
+//! - [`meta_sync`]：从上游 `/models` 的元数据同步上下文窗口和思考等级（先列差异，确认后写入）；
 //! - [`usage`]：按天汇总的用量统计；[`balance`]：供应商余额；[`sessions`]：各 Agent 的本地会话；
 //! - [`pipeline`]：候选循环；[`probe`]：供应商池的「测试」（单发一条短请求，不计入路由与统计）；
 //! - [`anthropic_inbound`] / [`anthropic_outbound`]：Claude Code 的协议转换；
@@ -35,6 +36,7 @@ pub mod gemini_inbound;
 pub mod gemini_outbound;
 pub mod images;
 pub mod key_pool;
+pub mod meta_sync;
 pub mod model_sync;
 pub mod opencode;
 pub mod pipeline;

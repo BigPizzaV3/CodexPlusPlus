@@ -22,6 +22,10 @@ const MODULES_LIMIT: usize = 48 * 1024 * 1024;
 /// 入口块：执行完成标记、启动重载探针都以它为准。
 const ENTRY_PREFIX: &str = "app-initial-";
 const FAST_PREFIXES: &[&str] = &[ENTRY_PREFIX];
+/// import map 模式下补丁块可以是任意本地资产：Fast 按内容认块，换名后也能找到（文件名仍须是安全字符）。
+const ANY_MODULE: &[&str] = &[""];
+/// 入口块的执行完成标记；入口按它认，不再按文件名。
+const MODULE_COMPLETION_MARKER: &str = "window.__codexPlusNativeFastCompiled=\"v1\";";
 const PREDICTIONS_PREFIXES: &[&str] = &[
     ENTRY_PREFIX,
     "composer-content-",
@@ -33,6 +37,8 @@ const PREDICTIONS_PREFIXES: &[&str] = &[
 struct InterceptorState {
     script_id: Option<String>,
     fetch_attempted: bool,
+    /// 补丁准备失败的原因码（如 `app-initial:incomplete-gates`），写进页面供设置页显示。
+    failure_reason: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -118,6 +124,7 @@ pub(super) async fn install(
     if let Err(error) = initialized {
         if bridge_generation_is_current(&generation) {
             publish_patch_state(&mut session, "failed").await;
+            publish_failure_reason(&mut session, state.failure_reason.as_deref()).await;
         }
         cleanup(&mut session, &generation, &state).await;
         if !bridge_generation_is_current(&generation) {
@@ -184,6 +191,14 @@ async fn initialize_module(
             "rewriters": value.pointer("/diagnostics/rewriters").cloned().unwrap_or(Value::Null),
         }),
     );
+    if value["ok"] != true {
+        // Fast 的原因最具体；没有时用整体原因。只取脚本自己产生的原因码，限长。
+        state.failure_reason = value
+            .pointer("/diagnostics/rewriters/fast")
+            .or_else(|| value.pointer("/diagnostics/reason"))
+            .and_then(Value::as_str)
+            .map(|reason| reason.chars().take(120).collect());
+    }
     anyhow::ensure!(value["ok"] == true, "当前 Codex 资产不支持原生模块补丁");
     let modules = value["modules"]
         .as_array()
@@ -196,13 +211,13 @@ async fn initialize_module(
             .as_str()
             .context("native module URL is missing")?;
         anyhow::ensure!(
-            is_local_asset(url, PREDICTIONS_PREFIXES),
+            is_local_asset(url, ANY_MODULE),
             "native module must be a local asset"
         );
-        has_entry |= is_local_asset(url, FAST_PREFIXES);
         let source = module["patchedSource"]
             .as_str()
             .context("native module source is missing")?;
+        has_entry |= source.contains(MODULE_COMPLETION_MARKER);
         anyhow::ensure!(source.len() <= SOURCE_LIMIT, "native module is too large");
         total += source.len();
     }
@@ -498,6 +513,15 @@ async fn publish_patch_state(session: &mut Session, state: &str) {
     let _ = evaluate(session, &expression).await;
 }
 
+/// Codex 设置页「原生 Fast 强制解锁」下面显示适配失败的原因。
+async fn publish_failure_reason(session: &mut Session, reason: Option<&str>) {
+    let expression = format!(
+        "window.__codexPlusNativeFastFailureReason={}",
+        json!(reason.unwrap_or("unknown"))
+    );
+    let _ = evaluate(session, &expression).await;
+}
+
 async fn patch_response(
     session: &mut Session,
     request_id: &str,
@@ -672,7 +696,8 @@ mod tests {
                                 }
                                 json!({"result":{"value":if prepared {
                                     json!({"ok":true,"modules":[
-                                        {"url":"app://-/assets/app-initial-test.js","patchedSource":"patched-module"},
+                                        // Fast 按内容认块：入口可以不叫 app-initial，按完成标记认。
+                                        {"url":"app://-/assets/app-boot-test.js","patchedSource":"patched-module;window.__codexPlusNativeFastCompiled=\"v1\";"},
                                         {"url":"app://-/assets/composer-content-test.js","patchedSource":"patched-lazy"}
                                     ],"diagnostics":{"reason":"modules-prepared","rewriters":{"fast":"patched","predictions":"patched"}}})
                                 } else {json!({"ok":false,"modules":[],"diagnostics":{"reason":"unsupported","rewriters":{"predictions":"composer-content:incomplete-structure"}}})}}})
@@ -712,6 +737,12 @@ mod tests {
             assert_eq!(result.is_ok(), prepared && !superseded);
             assert_eq!(state.script_id.is_some(), prepared && !superseded);
             assert!(!state.fetch_attempted);
+            // 准备失败时记下原因码，供设置页显示；没有 Fast 原因时用整体原因。
+            if !prepared && !superseded {
+                assert_eq!(state.failure_reason.as_deref(), Some("unsupported"));
+            } else {
+                assert_eq!(state.failure_reason, None);
+            }
             session.close().await;
             release_bridge_generation(&generation);
             let commands = server.await.unwrap();
@@ -722,7 +753,8 @@ mod tests {
             if let Some(registration) = registration {
                 let source = registration["params"]["source"].as_str().unwrap();
                 assert!(source.contains("installModules([{"));
-                assert!(source.contains("\"patchedSource\":\"patched-module\""));
+                assert!(source.contains("\"url\":\"app://-/assets/app-boot-test.js\""));
+                assert!(source.contains("\"patchedSource\":\"patched-module;"));
                 assert!(source.contains("\"url\":\"app://-/assets/composer-content-test.js\""));
                 assert!(
                     source.contains(
@@ -994,6 +1026,24 @@ mod tests {
             PREDICTIONS_PREFIXES
         );
         assert!(module_settings(false, false, false).prefixes().is_empty());
+        // import map 模式按内容认块：任意本地资产都可以是补丁块，但仍只限本机 /assets 下的安全文件名。
+        for url in [
+            "app://-/assets/app-boot-a1.js",
+            "app://-/assets/renamed_entry-B2c.js?v=1",
+        ] {
+            assert!(is_local_asset(url, ANY_MODULE), "{url}");
+        }
+        for url in [
+            "https://example.com/assets/app-boot-a1.js",
+            "file://remote/assets/app-boot-a1.js",
+            "app://-/scripts/app-boot-a1.js",
+            "app://-/assets/.js",
+            "app://-/assets/a/b.js",
+            "app://-/assets/app boot.js",
+            "app://-/assets/app-boot.css",
+        ] {
+            assert!(!is_local_asset(url, ANY_MODULE), "{url}");
+        }
         for url in [
             "https://example.com/assets/app-initial-a.js",
             "file://remote/assets/app-initial-a.js",

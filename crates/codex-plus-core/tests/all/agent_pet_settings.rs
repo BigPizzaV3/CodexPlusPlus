@@ -21,6 +21,7 @@ fn agent_pet_defaults_serialize_as_camel_case() {
         serde_json::to_value(&settings).unwrap()["agentPet"],
         json!({
             "enabled": false,
+            "kind": "image",
             "agents": ["codex"],
             "image": "whale",
             "customImageUrl": "",
@@ -44,6 +45,7 @@ fn agent_pet_round_trips_through_settings_store() {
     let mut settings = store.load().unwrap();
     settings.agent_pet = AgentPetSettings {
         enabled: true,
+        kind: "image".into(),
         agents: vec!["codex".into()],
         image: "custom".into(),
         custom_image_url: "https://example.com/pet.webp".into(),
@@ -143,7 +145,7 @@ fn agent_pet_partial_update_merges_and_normalizes() {
 }
 
 #[test]
-fn legacy_widget_switch_migrates_to_agent_pet() {
+fn legacy_widget_switch_migrates_to_whale_widget_pet() {
     let legacy = json!({
         "codexAppWhaleWidgetEnabled": true,
         "codexAppWhaleBalanceProtocol": "custom",
@@ -153,40 +155,108 @@ fn legacy_widget_switch_migrates_to_agent_pet() {
         "codexAppWhaleBalanceScale": 0.5,
     });
 
-    // 读取：开着旧开关、没有 agentPet → 桌宠开启，其余字段为默认值。
+    // 读取：开着旧开关、没有 agentPet → 桌宠开启且类型为大肥鱼，余额配置原样保留。
     let (_temp, path, store) = store_with(legacy.clone());
     let loaded = store.load().unwrap();
-    assert_eq!(
-        loaded.agent_pet,
-        AgentPetSettings {
-            enabled: true,
-            ..AgentPetSettings::default()
-        }
-    );
-    // 整体保存：旧键全部消失，agentPet 写出。
+    assert_eq!(loaded.agent_pet, AgentPetSettings::whale_widget());
+    assert!(loaded.agent_pet.whale_widget_active());
+    assert!(!loaded.agent_pet.image_pet_active());
+    assert!(codex_plus_core::whale::enabled(&loaded));
+    assert_eq!(loaded.codex_app_whale_balance_protocol, "custom");
+    assert_eq!(loaded.codex_app_whale_balance_path, "/api/balance");
+    assert_eq!(loaded.codex_app_whale_balance_currency, "CNY");
+    assert_eq!(loaded.codex_app_whale_balance_scale, 0.5);
+    // 整体保存：只有旧开关消失，余额配置保留，agentPet 写出。
     store.save(&loaded).unwrap();
     let after_save = saved(&path);
-    for key in [
-        "codexAppWhaleWidgetEnabled",
-        "codexAppWhaleBalanceProtocol",
-        "codexAppWhaleBalancePath",
-        "codexAppWhaleBalanceField",
-        "codexAppWhaleBalanceCurrency",
-        "codexAppWhaleBalanceScale",
-    ] {
-        assert!(after_save.get(key).is_none(), "{key} should be dropped");
-    }
+    assert!(after_save.get("codexAppWhaleWidgetEnabled").is_none());
+    assert_eq!(after_save["codexAppWhaleBalanceProtocol"], "custom");
+    assert_eq!(after_save["codexAppWhaleBalanceField"], "data.balance");
+    assert_eq!(after_save["codexAppWhaleBalanceScale"], 0.5);
     assert_eq!(after_save["agentPet"]["enabled"], true);
+    assert_eq!(after_save["agentPet"]["kind"], "whaleWidget");
+    // 迁移只发生一次：再读一遍结果不变。
+    assert_eq!(store.load().unwrap().agent_pet, AgentPetSettings::whale_widget());
 
-    // 局部更新路径同样迁移并清理旧键。
+    // 局部更新路径同样迁移，并清理旧开关。
     let (_temp, path, store) = store_with(legacy);
     let updated = store.update(json!({"codexAppThreadIdBadge": true})).unwrap();
-    assert!(updated.agent_pet.enabled);
+    assert!(updated.agent_pet.whale_widget_active());
     let after_update = saved(&path);
     assert!(after_update.get("codexAppWhaleWidgetEnabled").is_none());
-    assert!(after_update.get("codexAppWhaleBalanceScale").is_none());
+    assert_eq!(after_update["codexAppWhaleBalanceScale"], 0.5);
     assert_eq!(after_update["agentPet"]["enabled"], true);
+    assert_eq!(after_update["agentPet"]["kind"], "whaleWidget");
     assert_eq!(after_update["agentPet"]["image"], "whale");
+}
+
+#[test]
+fn agent_pet_without_kind_keeps_the_simple_pet() {
+    // 升级到简单桌宠之后才有 agentPet 的用户没有 kind：保持现状，仍是简单桌宠。
+    let (_temp, _path, store) = store_with(json!({
+        "agentPet": {"enabled": true, "image": "fox", "size": 150},
+    }));
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded.agent_pet.kind, "image");
+    assert_eq!(loaded.agent_pet.image, "fox");
+    assert!(loaded.agent_pet.image_pet_active());
+    assert!(!loaded.agent_pet.whale_widget_active());
+    assert!(!codex_plus_core::whale::enabled(&loaded));
+    let updated = store.update(json!({"codexAppThreadIdBadge": true})).unwrap();
+    assert_eq!(updated.agent_pet, loaded.agent_pet);
+}
+
+#[test]
+fn agent_pet_kind_is_exclusive_and_normalized() {
+    // 未知类型、类型写错都回落到简单桌宠，不会意外加载完整挂件。
+    for kind in [json!("dragon"), json!(""), json!(1), json!(null), json!(" whaleWidget ")] {
+        let pet: AgentPetSettings =
+            serde_json::from_value(json!({"enabled": true, "kind": kind.clone()})).unwrap();
+        let expected = if kind == json!(" whaleWidget ") { "whaleWidget" } else { "image" };
+        assert_eq!(pet.kind, expected, "{kind}");
+    }
+    // 两种类型互斥：同一份设置里最多一个处于显示状态。
+    for (enabled, kind, agents, image, whale) in [
+        (true, "image", vec!["codex"], true, false),
+        (true, "whaleWidget", vec!["codex"], false, true),
+        (false, "whaleWidget", vec!["codex"], false, false),
+        (true, "whaleWidget", vec![], false, false),
+        (false, "image", vec!["codex"], false, false),
+    ] {
+        let pet = AgentPetSettings {
+            enabled,
+            kind: kind.into(),
+            agents: agents.into_iter().map(String::from).collect(),
+            ..AgentPetSettings::default()
+        };
+        assert_eq!(pet.image_pet_active(), image, "{kind} {enabled}");
+        assert_eq!(pet.whale_widget_active(), whale, "{kind} {enabled}");
+        assert!(!(pet.image_pet_active() && pet.whale_widget_active()));
+        let settings = BackendSettings {
+            agent_pet: pet,
+            ..BackendSettings::default()
+        };
+        assert_eq!(codex_plus_core::whale::enabled(&settings), whale);
+    }
+}
+
+#[test]
+fn agent_pet_kind_partial_update_switches_without_losing_image_choice() {
+    let (_temp, path, store) = store_with(json!({}));
+    store
+        .update(json!({"agentPet": {"enabled": true, "image": "fox"}}))
+        .unwrap();
+    let whale = store
+        .update(json!({"agentPet": {"kind": "whaleWidget"}}))
+        .unwrap();
+    assert!(whale.agent_pet.whale_widget_active());
+    assert_eq!(whale.agent_pet.image, "fox", "切到大肥鱼不丢简单桌宠的图片选择");
+    assert_eq!(saved(&path)["agentPet"]["kind"], "whaleWidget");
+    let back = store.update(json!({"agentPet": {"kind": "image"}})).unwrap();
+    assert!(back.agent_pet.image_pet_active());
+    assert_eq!(back.agent_pet.image, "fox");
+    let bogus = store.update(json!({"agentPet": {"kind": "bogus"}})).unwrap();
+    assert_eq!(bogus.agent_pet.kind, "image");
 }
 
 #[test]
@@ -198,8 +268,10 @@ fn legacy_widget_switch_does_not_override_existing_agent_pet() {
     let loaded = store.load().unwrap();
     assert!(!loaded.agent_pet.enabled);
     assert_eq!(loaded.agent_pet.image, "cat");
+    assert_eq!(loaded.agent_pet.kind, "image");
     let updated = store.update(json!({})).unwrap();
     assert!(!updated.agent_pet.enabled);
+    assert_eq!(updated.agent_pet.kind, "image");
 
     // 旧开关关着时不迁移。
     let (_temp, _path, store) = store_with(json!({"codexAppWhaleWidgetEnabled": false}));

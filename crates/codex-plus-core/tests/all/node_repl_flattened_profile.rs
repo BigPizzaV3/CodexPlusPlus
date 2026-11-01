@@ -47,7 +47,20 @@ CODEX_HOME = 'C:\Users\shizi\.codex'
 #[test]
 fn flattened_profile_must_be_repaired_from_live() {
     let temp = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("config.toml"), LIVE).unwrap();
+    // 写盘时会去掉 command 已不存在的 node_repl（#2583），夹具里的 `C:\` 换成临时目录，
+    // 并真实创建 live 的 node_repl.exe，保证各平台上都按「程序存在」处理。
+    let root = format!("{}\\", temp.path().join("fs").display());
+    let live = LIVE.replace(r"C:\", &root);
+    let command = live
+        .parse::<toml::Value>()
+        .unwrap()["mcp_servers"]["node_repl"]["command"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let command = std::path::Path::new(&command);
+    fs::create_dir_all(command.parent().unwrap()).unwrap();
+    fs::write(command, b"").unwrap();
+    fs::write(temp.path().join("config.toml"), &live).unwrap();
     fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
 
     let profile = RelayProfile {
@@ -55,7 +68,7 @@ fn flattened_profile_must_be_repaired_from_live() {
         name: "test".to_string(),
         relay_mode: RelayMode::PureApi,
         use_common_config: true,
-        config_contents: FLATTENED_PROFILE.to_string(),
+        config_contents: FLATTENED_PROFILE.replace(r"C:\", &root),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
         ..RelayProfile::default()
     };

@@ -1136,6 +1136,7 @@ mod tests {
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
             newapi_access: None,
+            upstream_meta: Default::default(),
             relay: RelayProfile {
                 id: id.to_string(),
                 name: id.to_string(),

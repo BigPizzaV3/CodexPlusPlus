@@ -38,6 +38,10 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/manager/open", json!({})),
         ("/manager/open-transient", json!({})),
         ("/backend/status", json!({})),
+        ("/whale/balance", json!({})),
+        ("/whale/session", json!({"session_id": "s1"})),
+        ("/whale/history", json!({})),
+        ("/whale/full", json!({"path":"/dsh-whale/size.json"})),
         ("/agent-pet/image", json!({})),
         ("/agent-pet/sound", json!({})),
         ("/codex-model-catalog", json!({})),
@@ -124,6 +128,111 @@ async fn thread_usage_live_route_returns_recent_token_events() {
     assert_eq!(result["session_id"], "s1");
     assert_eq!(result["events"][0]["cached_input_tokens"], json!(900));
     assert_eq!(result["events"][0]["context_window"], json!(258400));
+}
+
+#[tokio::test]
+async fn whale_routes_require_agent_pet_to_select_the_whale_widget() {
+    // 桌宠关闭、选了简单桌宠、或没勾选 Codex：大肥鱼路由一律不可用。
+    for pet in [
+        AgentPetSettings::default(),
+        AgentPetSettings {
+            enabled: true,
+            ..AgentPetSettings::default()
+        },
+        AgentPetSettings {
+            enabled: false,
+            ..AgentPetSettings::whale_widget()
+        },
+        AgentPetSettings {
+            agents: Vec::new(),
+            ..AgentPetSettings::whale_widget()
+        },
+    ] {
+        let settings = BackendSettings {
+            agent_pet: pet,
+            ..BackendSettings::default()
+        };
+        let ctx = BridgeContext::new(
+            Arc::new(FakeSettings::with_settings(settings)),
+            Arc::new(FakeRuntime::default()),
+            Arc::new(FakeData),
+        );
+        for route in ["/whale/balance", "/whale/session", "/whale/history"] {
+            let result =
+                handle_bridge_request(ctx.clone(), route, json!({"session_id":"s1"})).await;
+            assert_eq!(result["status"], "disabled", "{route}");
+        }
+        let result = handle_bridge_request(
+            ctx,
+            "/whale/full",
+            json!({"path":"/dsh-whale/size.json","method":"PUT","body":{"scale":1.5}}),
+        )
+        .await;
+        assert_eq!(result["status"], 403);
+    }
+    let settings = BackendSettings {
+        agent_pet: AgentPetSettings::whale_widget(),
+        // 与其他 Agent 桌宠一样，不受「Codex 增强」总开关影响。
+        enhancements_enabled: false,
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData),
+    );
+    let result =
+        handle_bridge_request(ctx.clone(), "/whale/session", json!({"session_id":"s1"})).await;
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["sessionId"], "s1");
+    let result = handle_bridge_request(ctx, "/whale/balance", json!({})).await;
+    assert_eq!(result["status"], "unsupported");
+    assert!(result["balances"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn whale_local_statistics_toggle_stops_both_current_and_machine_log_routes() {
+    let service = Arc::new(FakeSettings::with_settings(BackendSettings {
+        agent_pet: AgentPetSettings::whale_widget(),
+        ..BackendSettings::default()
+    }));
+    let path = service.whale_ledger_path();
+    let ctx = BridgeContext::new(
+        service,
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData),
+    );
+    let history = handle_bridge_request(ctx.clone(), "/whale/history", json!({})).await;
+    assert_eq!(history["status"], "ok");
+    let result = handle_bridge_request(
+        ctx.clone(),
+        "/whale/full",
+        json!({"path":"/dsh-whale/size.json","method":"PUT","body":{"codexStatsOn":false}}),
+    )
+    .await;
+    assert_eq!(result["status"], 200);
+    assert!(path.exists());
+    for route in ["/whale/session", "/whale/history"] {
+        let result = handle_bridge_request(ctx.clone(), route, json!({"session_id":"s1"})).await;
+        assert_eq!(result["status"], "disabled");
+    }
+    let result = handle_bridge_request(
+        ctx,
+        "/whale/full",
+        json!({"path":"/dsh-whale/api-models.json"}),
+    )
+    .await;
+    assert_eq!(result["body"]["codexStatsOn"], false);
+}
+
+#[tokio::test]
+async fn simple_pet_routes_are_disabled_while_the_whale_widget_is_selected() {
+    // 两种桌宠互斥：选了大肥鱼时简单桌宠的图片与音效路由都返回 disabled，不联网。
+    let (ctx, _) = agent_pet_context(AgentPetSettings::whale_widget());
+    for route in ["/agent-pet/image", "/agent-pet/sound"] {
+        let result = handle_bridge_request(ctx.clone(), route, json!({})).await;
+        assert_eq!(result, json!({"status": "disabled"}), "{route}");
+    }
 }
 
 fn agent_pet_context(pet: AgentPetSettings) -> (BridgeContext, std::path::PathBuf) {
@@ -1362,6 +1471,9 @@ impl BridgeSettingsService for FakeSettings {
     fn agent_pet_custom_dir(&self) -> std::path::PathBuf {
         self.agent_pet_cache.path().join("agent-pet-custom")
     }
+    fn whale_ledger_path(&self) -> std::path::PathBuf {
+        self.agent_pet_cache.path().join("whale.sqlite3")
+    }
     async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
         Ok(self.settings.lock().unwrap().clone())
     }
@@ -1512,6 +1624,13 @@ impl Default for FakeData {
 
 #[async_trait]
 impl BridgeDataService for FakeData {
+    async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"ok","complete":true,"models":[],"days":[],"records":[]}))
+    }
+    async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "sessionId": session.session_id}))
+    }
+
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         Ok(DeleteResult {
             status: DeleteStatus::LocalDeleted,

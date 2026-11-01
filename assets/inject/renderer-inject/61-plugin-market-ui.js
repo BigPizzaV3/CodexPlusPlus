@@ -87,7 +87,7 @@
     const sourceNote = panel.querySelector("[data-codex-plugin-source-note]");
     if (sourceNote) {
       sourceNote.hidden = state.source !== "full";
-      sourceNote.textContent = "完整市场需要 GitHub 私有仓库访问权限。请使用有权限的账号执行 gh auth login 后刷新目录。";
+      sourceNote.textContent = "完整市场收录全部插件，索引较大，首次加载可能需要几秒。";
     }
     const status = panel.querySelector("[data-codex-plugin-market-status]");
     if (status) status.textContent = catalog.loading ? "正在加载插件目录…" : catalog.message || `${catalog.plugins.length.toLocaleString()} 个插件${catalog.cached ? " · 使用缓存目录" : ""}`;

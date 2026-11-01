@@ -47,6 +47,7 @@ const demoSettings = {
   codexAppSessionDeleteSkipConfirm: false,
   codexAppMarkdownExport: true,
   codexAppUsageStatusLine: true,
+  codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
   codexAppTypingEffect: "off",
@@ -193,8 +194,14 @@ const demoSettings = {
   relayTestModel: "gpt-5.4-mini",
   tools: {},
   activeTool: "codex",
+  codexAppWhaleBalanceProtocol: "auto",
+  codexAppWhaleBalancePath: "",
+  codexAppWhaleBalanceField: "",
+  codexAppWhaleBalanceCurrency: "USD",
+  codexAppWhaleBalanceScale: 1,
   agentPet: {
     enabled: false,
+    kind: "image",
     agents: ["codex"],
     image: "whale",
     customImageUrl: "",
@@ -632,6 +639,8 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     ] as T;
     case "agent_pet_sound": return { status: "failed", message: "网页预览不提供音效下载" } as T;
     case "agent_pet_import_sound": return { status: "ok", file: `${String(args.slot ?? "press")}-0123456789abcdef.mp3` } as T;
+    // 网页预览不内嵌大肥鱼素材，页面会显示占位。
+    case "agent_pet_whale_image": return "" as T;
     case "agent_pet_image": return agentPetPreviewImage(String(args.image ?? ""), String(args.customImageUrl ?? "")) as T;
     case "lookup_model_prices": return ok({ source: "models.dev", fetchedAtMs: Date.now(), prices: ((args.models as string[]) ?? []).map((model) => ({ model, price: { providerId: "anthropic", providerName: "Anthropic", modelId: model, currency: "USD", input: 3, cachedInput: 0.3, output: 15, context: 200000 } })) }) as T;
     case "list_installed_skills":

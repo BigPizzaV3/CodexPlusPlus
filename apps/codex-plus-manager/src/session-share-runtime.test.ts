@@ -184,8 +184,10 @@ test("the in-app share toggle persists a backend update rather than a temporary 
 test("backend refresh synchronizes share immediately and skips failed heartbeat reads", async () => {
   const source = fragment("40-backend-settings.js");
   let loaded = true, installs = 0, toggleSyncs = 0;
+  let weixinSyncs = 0;
   const context = vm.createContext({ codexPlusSettings: () => ({ conversationView: false }),
     loadBackendSettingsState: async () => loaded, syncOfficialUsagePolicy: () => {},
+    syncWeixinDesktopThreads: async () => { weixinSyncs += 1; },
     syncCodexPlusTypingEffects: () => {}, renderCodexPlusMenu: () => {}, refreshConversationView: () => {},
     installSessionShareButton: () => { installs += 1; }, runScanStep: (fn: () => void) => fn(),
     syncCodexPlusBackendToggleButtons: () => { toggleSyncs += 1; },
@@ -195,7 +197,9 @@ test("backend refresh synchronizes share immediately and skips failed heartbeat 
   vm.runInContext(source.slice(start, end), context);
   // 心跳读到设置后同步设置页开关（管理器里改的值实时反映到 Codex）；读取失败不动。
   await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 0); assert.equal(toggleSyncs, 1);
+  assert.equal(weixinSyncs, 1);
   loaded = false; await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 0); assert.equal(toggleSyncs, 1);
+  assert.equal(weixinSyncs, 1, "failed reads do not synchronize Weixin threads");
 });
 
 test("optimistic backend writes immediately clean up sharing before their response arrives", async () => {

@@ -189,3 +189,50 @@ it("在 Codex++ 里收藏的模型在选择器行尾画星标，取消收藏或�
   assert.match(source, /star\.setAttribute\("data-codex-plus-ext", codexPlusModelPickerGroupsExtMark\)/);
   assert.match(source, /content\.querySelector\(`\.\$\{codexPlusModelPickerFavoriteClass\}`\)\?\.remove\(\)/);
 });
+
+it("菜单认不出时记一次结构诊断：只在真有目录里的模型时记，不带模型名（#2753）", async () => {
+  const source = await readShard();
+  const body = source.match(/^  function codexPlusModelPickerReportUnrecognized\(\) \{[^]*?^  \}/m)?.[0];
+  assert.ok(body, "诊断函数必须存在");
+  const element = (attributes: Record<string, string>, text = "", children: unknown[] = []) => ({
+    textContent: text,
+    attributes: Object.entries(attributes).map(([name, value]) => ({ name, value })),
+    getAttribute: (name: string) => attributes[name] ?? null,
+    closest: () => null,
+    querySelectorAll: (selector: string) => (selector === '[role="menuitemradio"]' ? children : selector === "[class]" ? children : []),
+  });
+  const radios = [
+    element({ role: "menuitemradio", "data-state": "checked", class: "_Row_abc" }, "GPT-6 Sol（官方）"),
+    element({ role: "menuitemradio", class: "_Row_abc" }, "DeepSeek-V4-Pro（DeepSeek）"),
+  ];
+  const run = (menus: unknown[], catalog: Map<string, unknown>) => {
+    const sent: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    const state: Record<string, unknown> = {};
+    const report = new Function(
+      "document", "codexPlusModelPickerGroupsState", "codexPlusModelPickerCatalogExactMap",
+      "codexPlusModelPickerNormalizeLoose", "visibleElement", "sendCodexPlusDiagnostic",
+      `${body}\nreturn codexPlusModelPickerReportUnrecognized;`,
+    )(
+      { querySelectorAll: (selector: string) => (selector === '[role="menu"]' ? menus : []) },
+      state, () => catalog, (value: string) => value.toLowerCase(), () => true,
+      (event: string, detail: Record<string, unknown>) => { sent.push({ event, detail }); },
+    );
+    report();
+    report();
+    return sent;
+  };
+  const catalog = new Map([["gpt-6 sol（官方）", {}]]);
+  const menu = element({ role: "menu", "data-side": "top", "data-state": "open", class: "_Menu_x1" }, "", radios);
+
+  const sent = run([menu], catalog);
+  assert.equal(sent.length, 1, "每个页面只记一次");
+  assert.equal(sent[0].event, "model_picker_groups_menu_unrecognized");
+  assert.equal(sent[0].detail.radios, 2);
+  assert.equal(sent[0].detail.catalogMatches, 1);
+  assert.deepEqual(sent[0].detail.menuData, ["data-side", "data-state"]);
+  assert.deepEqual(sent[0].detail.modulePrefixes, ["Menu", "Row"]);
+  assert.doesNotMatch(JSON.stringify(sent[0].detail), /GPT|DeepSeek|官方/, "诊断里不能有模型名");
+
+  assert.equal(run([menu], new Map()).length, 0, "目录里没有对应模型（例如别的单选菜单）时不记");
+  assert.equal(run([element({ role: "menu" }, "", radios.slice(0, 1))], catalog).length, 0, "只有一个选项的菜单不记");
+});

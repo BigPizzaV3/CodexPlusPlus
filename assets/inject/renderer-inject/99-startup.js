@@ -1,6 +1,7 @@
   installCodexConfigReadDeadline();
+  void installCodexForkReadinessFallback();
   installCodexPlusForceChineseLocale();
-  // 打字特效、桌宠由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
+  // 打字特效、桌宠（含大肥鱼）由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);

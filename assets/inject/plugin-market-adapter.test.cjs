@@ -401,3 +401,27 @@ test("plugin/search 走 MCP 消息传输时也合并索引结果", async () => {
   const reply = f.delivered.find((event) => event.data?.message?.id === "plugin/search:1").data;
   assert.deepEqual(pluginNames(reply.message.result), ["gmail", "mail-tool"]);
 });
+
+test("装完插件刷新原生插件列表：新版 Codex 没有全局 queryClient 时从 React 树找到并按 plugins 前缀失效", () => {
+  const conversation = readFileSync(`${root}/95-conversation-view.js`, "utf8");
+  const clear = native.slice(native.indexOf("  function clearPluginMarketplaceQueryCache("), native.indexOf("  function installPluginMarketplaceBridgePatch("));
+  const finder = conversation.slice(conversation.indexOf("  function looksLikeQueryClient("), conversation.indexOf("  function mainRateLimitQueries("));
+  const invalidated = [], diagnostics = [];
+  const client = { getQueryCache() { return {}; }, setQueryData() {}, invalidateQueries(filters) { invalidated.push(filters.queryKey); return Promise.resolve(); } };
+  // React 根容器 → QueryClientProvider（props.client），没有 window.__REACT_QUERY_CLIENT__。
+  const rootNode = { "__reactContainer$x": { stateNode: { current: { child: { memoizedProps: {}, sibling: { memoizedProps: { client } } } } } } };
+  const run = (documentRoot) => {
+    const context = {
+      window: {}, document: { getElementById: () => documentRoot, body: null, documentElement: null },
+      clearPluginMarketplaceRemoteCatalogUnavailable() {},
+      sendCodexPlusDiagnostic(event) { diagnostics.push(event); },
+    };
+    vm.runInNewContext(`${finder}\n${clear}\nclearPluginMarketplaceQueryCache(); clearPluginMarketplaceQueryCache();`, context);
+  };
+  run(rootNode);
+  assert.deepEqual(JSON.parse(JSON.stringify(invalidated)), [["plugins"], ["plugins"]]);
+  assert.deepEqual(diagnostics, []);
+  // 找不到时只报一次诊断，不抛错。
+  run(null);
+  assert.deepEqual(diagnostics, ["plugin_marketplace_query_client_missing"]);
+});
