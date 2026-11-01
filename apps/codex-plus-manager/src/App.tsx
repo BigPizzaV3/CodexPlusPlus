@@ -121,6 +121,7 @@ import { CommunityExtensionsPanel, type CommunitySort } from "./CommunityExtensi
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
 import { ExtensionPublishDialog } from "./ExtensionPublishDialog";
+import { MyPublishedPanel } from "./MyPublishedPanel";
 import { SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
@@ -10224,7 +10225,7 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
   const [communitySearch, setCommunitySearch] = useState("");
   const [communitySort, setCommunitySort] = useState<CommunitySort>("stars");
   // 市场脚本 / 本地脚本放在同一块里切换，不再上下堆三张卡片。
-  const [pane, setPane] = useState<"market" | "community" | "local" | "dsh">("market");
+  const [pane, setPane] = useState<"market" | "community" | "local" | "mine" | "dsh">("market");
   const filteredMarketScripts = useMemo(() => {
     const query = marketSearch.trim().toLocaleLowerCase();
     if (!query) return marketScripts;
@@ -10334,6 +10335,9 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
           <button aria-selected={pane === "local"} data-active={pane === "local"} onClick={() => setPane("local")} role="tab" type="button">
             {t("本地拓展")}<span>{scripts.length}</span>
           </button>
+          <button aria-selected={pane === "mine"} data-active={pane === "mine"} onClick={() => setPane("mine")} role="tab" type="button">
+            {t("我发布的")}
+          </button>
           <button aria-selected={pane === "dsh"} data-active={pane === "dsh"} onClick={() => setPane("dsh")} role="tab" type="button">
             {t("dsh 插件")}
           </button>
@@ -10418,6 +10422,8 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
         </>
       ) : pane === "community" ? (
         <CommunityExtensionsPanel onCurated={actions.refreshScriptMarket} search={communitySearch} sort={communitySort} view={marketView} onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+      ) : pane === "mine" ? (
+        <MyPublishedPanel onOpenUrl={(url) => void actions.openExternalUrl(url)} />
       ) : pane === "dsh" ? (
         <DshPluginsPanel />
       ) : (

@@ -1,6 +1,8 @@
-//! 管理器「本地拓展 → 发布到 GitHub」：发布前检查、版本号 +1、发布。鉴权全部交给本机 gh。
+//! 管理器「本地拓展 → 发布到 GitHub」：发布前检查、版本号 +1、发布；
+//! 「我发布的」：列出、下架、重新上架、删除仓库。鉴权全部交给本机 gh。
 
 use anyhow::Context;
+use codex_plus_core::extension_discovery::CommunityStore;
 use codex_plus_core::extension_publish::{self, PublishOptions, Publisher};
 use codex_plus_core::user_scripts::default_user_scripts_config_dir;
 use serde_json::{Value, json};
@@ -22,6 +24,25 @@ pub async fn extension_publish_request(app: tauri::AppHandle, action: String, pa
 fn handle(app: &tauri::AppHandle, action: &str, payload: &Value) -> anyhow::Result<Value> {
     let manager = crate::commands::default_user_script_manager();
     let config_dir = default_user_scripts_config_dir();
+    // 「我发布的」：按仓库操作，不需要拓展 id。只能动当前 gh 账号名下的仓库（core 里校验）。
+    match action {
+        "mine" => return Publisher::new(&config_dir)?.list_published(),
+        "unlist" | "relist" | "deleteRepo" => {
+            let repo = payload.get("repo").and_then(Value::as_str).filter(|repo| !repo.is_empty()).context("缺少仓库")?;
+            let publisher = Publisher::new(&config_dir)?;
+            match action {
+                "unlist" => publisher.unlist(repo)?,
+                "relist" => publisher.relist(repo)?,
+                _ => publisher.delete_repo(repo)?,
+            }
+            // 下架 / 删除后社区栏立刻不再显示，不等 10 分钟的列表缓存。
+            if action != "relist" {
+                let _ = CommunityStore::new(&config_dir).forget_repo(repo);
+            }
+            return Ok(json!({ "ok": true }));
+        }
+        _ => {}
+    }
     let id = payload.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).context("缺少拓展 id")?;
     match action {
         "check" => check(&manager, &config_dir, id),

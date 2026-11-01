@@ -565,6 +565,19 @@ impl CommunityStore {
         crate::settings::atomic_write(&self.config_dir.join(CACHE_FILE), serde_json::to_vec(cache)?.as_slice())
     }
 
+    /// 作者下架或删除了某个仓库：直接从缓存里拿掉，社区栏不用等缓存过期（GitHub 搜索索引也有延迟）。
+    pub fn forget_repo(&self, repo: &str) -> anyhow::Result<()> {
+        let Some(mut cache) = self.load_cache() else {
+            return Ok(());
+        };
+        let before = cache.entries.len();
+        cache.entries.retain(|entry| !entry.repo.eq_ignore_ascii_case(repo));
+        if cache.entries.len() != before {
+            self.save_cache(&cache)?;
+        }
+        Ok(())
+    }
+
     /// 社区栏列表。缓存未过期且不强制刷新时不联网；搜索失败时退回上次的缓存。
     pub async fn list(&self, endpoints: &Endpoints, manager: &UserScriptManager, force: bool) -> Value {
         self.list_filtered(endpoints, manager, force, &CuratedFilter::default()).await

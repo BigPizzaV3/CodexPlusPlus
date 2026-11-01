@@ -93,3 +93,6 @@
 .shell .ext-card-fact-tag { color:hsl(var(--muted-foreground)); }
 .shell .community-ext-installed[data-highlight] { color:hsl(var(--primary)); }
 .shell .community-ext-card.ext-card[data-dimmed] { opacity:.65; }
+/* 「我发布的」：上架状态徽标、删除仓库按钮用错误色 */
+.shell .community-ext-badge.is-listed { background:hsl(var(--status-success, 142 60% 36%) / .12); color:hsl(var(--status-success, 142 60% 36%)); }
+.shell .my-published-delete { color:hsl(var(--status-error, 0 72% 51%)); }
