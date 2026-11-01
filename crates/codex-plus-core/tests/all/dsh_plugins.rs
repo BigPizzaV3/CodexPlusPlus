@@ -719,6 +719,15 @@ async fn dsh_events_and_system_prompt_run_through_companion_extension() {
     assert_eq!(rejected["decision"], "block", "{rejected}");
     let enriched = dispatch(&manager, "UserPromptSubmit", json!({"prompt": "hello"})).await.unwrap();
     assert_eq!(enriched["hookSpecificOutput"]["additionalContext"], "policy-demo: remember the house rules", "{enriched}");
+    // 改写用户原话：钩子做不到，记下来；经代理的请求里那条用户消息换成插件给的（打码后的原话 + 新增的提醒），不再重复成补充上下文。
+    let redacted = dispatch(&manager, "UserPromptSubmit", json!({"session_id": "r9", "prompt": "my secret-token abc123 please"})).await.unwrap();
+    assert!(!redacted.to_string().contains("abc123") && !redacted.to_string().contains("house rules"), "{redacted}");
+    let mut rewritten = json!({"model": "gpt-x", "prompt_cache_key": "r9", "input": [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "my secret-token abc123 please"}]},
+    ]});
+    apply_request_with(&manager, &mut rewritten, "/v1/responses").await;
+    let texts: Vec<&str> = rewritten["input"].as_array().unwrap().iter().map(|item| item["content"][0]["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, ["my secret-token [redacted] please", "policy-demo: remember the house rules"], "{rewritten}");
     // Stop：steer → block；已经多走过一轮（stop_hook_active）时不再拦。
     let stop = dispatch(&manager, "Stop", json!({"stop_hook_active": false})).await.unwrap();
     assert_eq!(stop["decision"], "block", "{stop}");

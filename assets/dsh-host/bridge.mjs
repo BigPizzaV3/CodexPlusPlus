@@ -245,7 +245,15 @@ const TRANSLATE = {
       agent.setStatus('idle')
       return { decision: 'block', reason: '这条输入被 dsh 插件拒绝' }
     }
-    const added = (decision?.messages ?? []).filter((message) => message !== original && message?.id !== original.id)
+    const messages = Array.isArray(decision?.messages) ? decision.messages : [original]
+    const isOriginal = (message) => message === original || message?.id === original.id
+    const added = messages.filter((message) => !isOriginal(message))
+    if (!messages.some(isOriginal) && agent.session?.id) {
+      // 插件删掉或改写了用户原话：钩子做不到，记下来，经 Codex++ 代理的请求里把这条用户消息换成插件给的消息
+      // （官方直连的请求不经代理，原话照旧）。新增的消息随替换一起进 input，不再重复成补充上下文。
+      rememberPromptRewrite(host, agent.session.id, String(payload?.prompt ?? ''), added.map(messageText).map((text) => text.trim()).filter(Boolean))
+      return withContext('UserPromptSubmit', {}, sinkContexts(sink))
+    }
     return withContext('UserPromptSubmit', {}, [messagesText(added), ...sinkContexts(sink)])
   },
 
@@ -403,6 +411,47 @@ function postDecisions(host) {
   return host.postDecisions
 }
 
+// ---- agent/pre-step 改写的用户原话 ----
+
+const MAX_PROMPT_REWRITES = 200
+
+/** 按会话记下「原话 → 替换的消息」，落盘在镜像目录，常驻进程重启后历史请求里的改写照旧。 */
+function promptRewrites(host) {
+  if (host.promptRewrites) return host.promptRewrites
+  const path = host.mirror.dataDir ? join(host.mirror.dataDir, 'prompt-rewrites.json') : undefined
+  let map = new Map()
+  if (path && existsSync(path)) {
+    try {
+      map = new Map(Object.entries(JSON.parse(readFileSync(path, 'utf8'))))
+    } catch {
+      map = new Map()
+    }
+  }
+  host.promptRewrites = { path, map }
+  return host.promptRewrites
+}
+
+function rememberPromptRewrite(host, sessionId, original, replacement) {
+  if (!original) return
+  const store = promptRewrites(host)
+  const list = (store.map.get(sessionId) ?? []).filter((item) => item.original !== original)
+  list.push({ original, replacement })
+  store.map.set(sessionId, list.slice(-MAX_PROMPT_REWRITES))
+  if (!store.path) return
+  try {
+    mkdirSync(dirname(store.path), { recursive: true })
+    writeFileSync(store.path, JSON.stringify(Object.fromEntries(store.map)))
+  } catch (error) {
+    console.error(`[dsh-bridge] 用户原话改写记录写入失败：${errorText(error)}`)
+  }
+}
+
+/** 一条 Responses 用户消息的文字。 */
+function userMessageText(item) {
+  if (typeof item?.content === 'string') return item.content
+  return (Array.isArray(item?.content) ? item.content : []).map((part) => (typeof part?.text === 'string' ? part.text : '')).join('')
+}
+
 /** 本轮（最后一条用户消息之后）的工具调用与结果，给没经过钩子的结果补跑 tools/post-execute。 */
 function currentTurnItems(input) {
   let start = 0
@@ -464,6 +513,22 @@ async function stepFor(host, body, context = {}) {
         return outputText(item.output) === text ? item : { ...item, output: text }
       })
       if (replaced.some((item, index) => item !== input[index])) {
+        input = replaced
+        changed = true
+      }
+    }
+    // 2b. agent/pre-step 删掉或改写的用户原话：每次请求都带着整段历史，所以每次都换。
+    const rewrites = promptRewrites(host).map.get(sessionId)
+    if (rewrites?.length) {
+      let rewritten = false
+      const replaced = input.flatMap((item) => {
+        if (item?.role !== 'user' || (item.type !== undefined && item.type !== 'message')) return [item]
+        const rule = rewrites.find((entry) => entry.original === userMessageText(item))
+        if (!rule) return [item]
+        rewritten = true
+        return rule.replacement.map((text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }))
+      })
+      if (rewritten) {
         input = replaced
         changed = true
       }
