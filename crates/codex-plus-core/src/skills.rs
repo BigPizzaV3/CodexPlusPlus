@@ -1342,6 +1342,20 @@ impl SkillsManager {
         expected_source: Option<&str>,
         expected_target: Option<&str>,
     ) -> anyhow::Result<SkillsState> {
+        let staged =
+            self.stage_skill_import(id, external_dir, import_source, origin, expected_source)?;
+        let operation = self.operation_lock.lock().unwrap();
+        self.commit_staged_import_unlocked(&operation, staged, expected_target)
+    }
+
+    fn stage_skill_import(
+        &self,
+        id: &str,
+        external_dir: &Path,
+        import_source: &str,
+        origin: Option<&crate::ccs_import::CcsSkillOrigin>,
+        expected_source: Option<&str>,
+    ) -> anyhow::Result<(PathBuf, InstalledSkill)> {
         validate_skill_id(id)?;
         if import_source == LOCAL_IMPORT_REPO_KEY {
             // Codex 的 skills 目录本来就会被扫描显示；从这里「导入」会把原目录挪进备份，反而让它从 Codex 消失。
@@ -1400,8 +1414,8 @@ impl SkillsManager {
         } else {
             String::new()
         };
-        self.commit_staged_skill(
-            &staging,
+        Ok((
+            staging,
             InstalledSkill {
                 id: id.to_string(),
                 name,
@@ -1417,6 +1431,19 @@ impl SkillsManager {
                 content_hash,
                 installed_at: current_unix_timestamp_string(),
             },
+        ))
+    }
+
+    fn commit_staged_import_unlocked(
+        &self,
+        operation: &std::sync::MutexGuard<'_, ()>,
+        (staging, installed): (PathBuf, InstalledSkill),
+        expected_target: Option<&str>,
+    ) -> anyhow::Result<SkillsState> {
+        self.commit_staged_skill_unlocked(
+            operation,
+            &staging,
+            installed,
             false,
             expected_target.is_some(),
             expected_target.is_none(),
@@ -1430,6 +1457,32 @@ impl SkillsManager {
     fn commit_staged_skill(
         &self,
         staging: &Path,
+        installed: InstalledSkill,
+        enabled: bool,
+        preserve_enabled: bool,
+        require_empty: bool,
+        require_existing: bool,
+        expected_target: Option<&str>,
+        expected_update: Option<&str>,
+    ) -> anyhow::Result<SkillsState> {
+        let operation = self.operation_lock.lock().unwrap();
+        self.commit_staged_skill_unlocked(
+            &operation,
+            staging,
+            installed,
+            enabled,
+            preserve_enabled,
+            require_empty,
+            require_existing,
+            expected_target,
+            expected_update,
+        )
+    }
+
+    fn commit_staged_skill_unlocked(
+        &self,
+        _operation: &std::sync::MutexGuard<'_, ()>,
+        staging: &Path,
         mut installed: InstalledSkill,
         enabled: bool,
         preserve_enabled: bool,
@@ -1440,7 +1493,6 @@ impl SkillsManager {
     ) -> anyhow::Result<SkillsState> {
         let unverified_cc_switch_import =
             installed.import_source == "cc-switch" && !installed.repo_path.is_empty();
-        let _operation = self.operation_lock.lock().unwrap();
         self.prepare_managed_skills_unlocked()?;
         let id = installed.id.clone();
         let destination = self.source_dir.join(&id);

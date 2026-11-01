@@ -46,8 +46,17 @@ impl SkillsManager {
         candidates: &[(String, PathBuf)],
         origins: &BTreeMap<String, crate::ccs_import::CcsSkillOrigin>,
     ) -> anyhow::Result<Vec<SkillImportCandidate>> {
-        self.prepare_managed_skills()?;
-        let _operation = self.operation_lock.lock().unwrap();
+        let operation = self.operation_lock.lock().unwrap();
+        self.preview_skill_import_unlocked(&operation, candidates, origins)
+    }
+
+    fn preview_skill_import_unlocked(
+        &self,
+        _operation: &std::sync::MutexGuard<'_, ()>,
+        candidates: &[(String, PathBuf)],
+        origins: &BTreeMap<String, crate::ccs_import::CcsSkillOrigin>,
+    ) -> anyhow::Result<Vec<SkillImportCandidate>> {
+        self.prepare_managed_skills_unlocked()?;
         let _guard = self.state_lock.lock().unwrap();
         let state = self.load_state_checked_unlocked()?;
         let mut result = Vec::new();
@@ -154,11 +163,8 @@ impl SkillsManager {
             matches!(import_source, LOCAL_IMPORT_REPO_KEY | "cc-switch"),
             "不支持的导入渠道"
         );
-        let _operation = self.operation_lock.lock().unwrap();
-        // 外层持有共享操作锁；临时克隆只在本次导入内使用，避免现有方法重复获取同一把锁。
-        let mut manager = self.clone();
-        manager.operation_lock = Arc::new(Mutex::new(()));
-        let preview = manager.preview_skill_import(candidates, origins)?;
+        let operation = self.operation_lock.lock().unwrap();
+        let preview = self.preview_skill_import_unlocked(&operation, candidates, origins)?;
         let mut selected_ids = std::collections::BTreeSet::new();
         let mut target_ids = std::collections::BTreeSet::new();
         let mut protected_targets = std::collections::BTreeSet::new();
@@ -248,7 +254,8 @@ impl SkillsManager {
                 .find(|(id, _)| id == &selection.id)
                 .expect("preview candidate")
                 .1;
-            let current = match manager.preview_skill_import(candidates, origins) {
+            let current = match self.preview_skill_import_unlocked(&operation, candidates, origins)
+            {
                 Ok(current) => current,
                 Err(error) => {
                     errors.push(format!("{}：重新检查失败：{error:#}", selection.id));
@@ -302,15 +309,16 @@ impl SkillsManager {
                 errors.push(format!("{}：重复项已变化，请重新预览", selection.id));
                 continue;
             }
-            match manager.import_directory_with_source(
-                &candidate.id,
+            let staged = self.stage_skill_import(
                 target,
                 path,
                 import_source,
                 origins.get(&candidate.id),
                 Some(&selection.source_hash),
-                snapshot,
-            ) {
+            );
+            match staged
+                .and_then(|staged| self.commit_staged_import_unlocked(&operation, staged, snapshot))
+            {
                 Ok(_) => imported += 1,
                 Err(error) => errors.push(format!("{}：{error:#}", selection.id)),
             }
@@ -488,11 +496,150 @@ mod tests {
         }
     }
 
+    fn while_launch_guard_is_held<T: Send + 'static>(
+        manager: &SkillsManager,
+        run: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let guard = manager.lock_recovered_transactions().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _ = done_tx.send(run());
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let early = done_rx.recv_timeout(std::time::Duration::from_millis(150));
+        drop(guard);
+        let (completed_early, result) = match early {
+            Ok(result) => (true, result),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (
+                false,
+                done_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("operation did not complete after releasing the launch guard"),
+            ),
+            Err(error) => panic!("worker failed before releasing the launch guard: {error}"),
+        };
+        worker.join().unwrap();
+        assert!(!completed_early, "operation bypassed the shared lock");
+        result
+    }
+
     fn add_oversized_file(dir: &Path) {
         std::fs::File::create(dir.join("oversized.bin"))
             .unwrap()
             .set_len(256 * 1024 * 1024 + 1)
             .unwrap();
+    }
+
+    #[test]
+    fn import_preview_and_apply_wait_for_the_shared_launch_guard() {
+        for import_source in ["local", "cc-switch"] {
+            let (temp, manager) = fixture();
+            let other = SkillsManager::new(
+                manager.source_dir.clone(),
+                manager.backups_dir.clone(),
+                manager.state_path.clone(),
+                manager.codex_home.clone(),
+            );
+            assert!(Arc::ptr_eq(&manager.operation_lock, &other.operation_lock));
+            let incoming = temp.path().join("incoming");
+            write_skill(&incoming, "Alpha", "content");
+            let candidates = vec![("alpha".into(), incoming)];
+            let origins = if import_source == "cc-switch" {
+                BTreeMap::from([(
+                    "alpha".into(),
+                    crate::ccs_import::CcsSkillOrigin {
+                        repo_key: "owner/repo@main".into(),
+                        repo_path: "skills/alpha".into(),
+                    },
+                )])
+            } else {
+                BTreeMap::new()
+            };
+            let preview_manager = other.clone();
+            let preview_candidates = candidates.clone();
+            let preview_origins = origins.clone();
+            let preview = while_launch_guard_is_held(&manager, move || {
+                preview_manager.preview_skill_import(&preview_candidates, &preview_origins)
+            })
+            .unwrap();
+            assert!(preview[0].error.is_none());
+            assert!(preview[0].matches.is_empty());
+            let chosen = selection(&preview[0]);
+            let result = while_launch_guard_is_held(&manager, move || {
+                other.apply_skill_import(&candidates, &origins, import_source, &[chosen])
+            })
+            .unwrap();
+            assert_eq!(result.0, 1);
+            assert!(result.1.is_empty());
+            let state = manager.load_state();
+            assert_eq!(state.installed["alpha"].import_source, import_source);
+            assert!(manager.source_dir.join("alpha/SKILL.md").is_file());
+            assert!(!manager.linked_dir().join("alpha").exists());
+        }
+    }
+
+    #[test]
+    fn direct_import_stages_outside_the_lock_and_rechecks_the_target() {
+        for conflict in [false, true] {
+            let (temp, manager) = fixture();
+            let incoming = temp.path().join("incoming");
+            write_skill(&incoming, "Incoming", "new content");
+            let guard = manager.lock_recovered_transactions().unwrap();
+            let worker_manager = manager.clone();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let _ =
+                    done_tx.send(worker_manager.import_from_local_directory("alpha", &incoming));
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let staged = loop {
+                let staged = std::fs::read_dir(&manager.source_dir)
+                    .unwrap()
+                    .flatten()
+                    .any(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".import-alpha-")
+                            && entry.path().join(SKILL_MANIFEST_FILE).is_file()
+                    });
+                if staged || worker.is_finished() || std::time::Instant::now() >= deadline {
+                    break staged;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            if staged && conflict {
+                write_skill(&manager.source_dir.join("alpha"), "Existing", "keep this");
+            }
+            let early = done_rx.try_recv();
+            drop(guard);
+            let (completed_early, result) = match early {
+                Ok(result) => (true, result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => (
+                    false,
+                    done_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .expect("direct import did not finish after releasing the guard"),
+                ),
+                Err(error) => panic!("direct import worker failed: {error}"),
+            };
+            worker.join().unwrap();
+            assert!(
+                staged,
+                "direct import did not stage while the lock was held"
+            );
+            assert!(!completed_early, "direct import bypassed the shared lock");
+            assert_eq!(result.is_err(), conflict);
+            let content =
+                std::fs::read_to_string(manager.source_dir.join("alpha/SKILL.md")).unwrap();
+            assert!(content.contains(if conflict { "keep this" } else { "new content" }));
+            assert!(manager.load_state().installed.contains_key("alpha"));
+            assert!(!manager.linked_dir().join("alpha").exists());
+        }
     }
 
     #[test]
