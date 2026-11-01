@@ -311,6 +311,8 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 | `sessionQuery.observeSession` | 会话在本进程的镜像里时给 `source: 'live'` 的切面（带投影的当前值），否则从 Codex 会话记录读 `prepared` 切面；`cursor` 为最后一个事件的 seq | 与 dsh 一样是切面，之后的变化用 `session/event` / `sessionProjections.onChanged` 跟 |
 | `agent/pre-step` 删改用户原话 | UserPromptSubmit 钩子里记下「原话 → 插件给的消息」（落盘），经 Codex++ 代理的请求里每次都把那条用户消息换掉 | 官方直连的请求不经代理，原话照旧 |
 
+第九期之后，Codex++ 自己这一侧也补齐了：Rust 侧生效的内置功能可被拓展顶替（新增 `preload` / `launch` 两个时机），网关的请求转换、鉴权头、官方整理、请求日志都可由拓展接管，管理器页面可由拓展贡献与顶替，见 `2026-10-30-codexpp-extension-system-design.md`「补齐剩余差距」。
+
 判定做不到的（原因）：
 
 - **替换 Codex 的 agent 循环与会话存储、`workflowEngine` / `ptcRuntime`、`setLocale`**：内核不在 Codex++ 手里（任务明确不做）。

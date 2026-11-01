@@ -27,15 +27,19 @@ let changed = false;
 let rejected = null;
 const errors = [];
 // 中间件可以往 context.headers 里加请求头（发给上游时附上）；鉴权类的头由 Codex++ 过滤掉。
+// 关掉了 builtin:auth-headers 的拓展（item.credential）加的头另记一份，鉴权头只认它们给的。
 const headers = {};
+const authHeaders = {};
 for (const item of input.middlewares) {
   let timer;
+  const own = {};
   try {
     const module = await import(pathToFileURL(item.script).href);
     const fn = typeof module.default === "function" ? module.default : module.request;
     if (typeof fn !== "function") { errors.push({ id: item.id, error: `${item.script} 没有默认导出函数` }); continue; }
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超时（${item.timeoutMs / 1000} 秒）`)), item.timeoutMs); });
-    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { ...(input.context ?? {}), path: input.path, extension: item.id, config: item.config ?? {}, step: input.step, headers })), timeout]);
+    const extra = item.credential ? { credential: item.credential } : {};
+    const next = await Promise.race([Promise.resolve(fn(structuredClone(body), { ...(input.context ?? {}), ...extra, path: input.path, extension: item.id, config: item.config ?? {}, step: input.step, headers: own })), timeout]);
     // { reject: "原因" }：这一步不发给模型，Codex 收到带原因的错误。后面的中间件不再跑。
     if (next && typeof next === "object" && !Array.isArray(next) && typeof next.reject === "string" && Object.keys(next).length === 1) {
       rejected = { id: item.id, reason: next.reject };
@@ -46,9 +50,10 @@ for (const item of input.middlewares) {
     errors.push({ id: item.id, error: String(error?.stack || error?.message || error) });
   } finally {
     clearTimeout(timer);
+    Object.assign(item.credential ? authHeaders : headers, own);
   }
 }
-process.stdout.write(JSON.stringify({ body, changed, errors, rejected, headers }));
+process.stdout.write(JSON.stringify({ body, changed, errors, rejected, headers, authHeaders }));
 "#;
 
 /// 启用中的中间件清单缓存。每次模型请求都要查一遍，扫目录、读清单不能每次都做；
@@ -176,6 +181,38 @@ pub fn allowed_headers(raw: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
+/// 关掉了 `builtin:auth-headers` 的拓展在 upstream 段给的头：鉴权头（Authorization、x-api-key、api-key、Cookie……）
+/// 也认，传输头（Host、内容长度 / 类型、连接）与 Codex++ 自己的标记仍不认。
+pub fn allowed_auth_headers(raw: &Value) -> Vec<(String, String)> {
+    const BLOCKED: &[&str] = &["host", "content-length", "content-type", "transfer-encoding", "connection"];
+    raw.as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, value)| {
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.as_str()?.to_string();
+            let valid = !name.is_empty() && name.len() <= 64 && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') && value.len() <= 8192 && !value.contains(['\r', '\n']);
+            (valid && !BLOCKED.contains(&name.as_str()) && name != EXTENSIONS_APPLIED_HEADER).then_some((name, value))
+        })
+        .take(32)
+        .collect()
+}
+
+/// 启用中、关掉了某个内置网关环节的拓展 id（测试固定了被关掉的环节时，按全部拓展都关掉算）。
+fn replacing_extensions(segment: &str) -> Option<Vec<String>> {
+    if let Ok(replaced) = REPLACED_OVERRIDE.try_with(|list| list.iter().any(|name| name == segment)) {
+        return replaced.then(Vec::new);
+    }
+    builtin_replaced(segment).then(|| {
+        REPLACES_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|(_, list)| list.iter().filter(|(_, name)| name == segment).map(|(id, _)| id.clone()).collect())
+            .unwrap_or_default()
+    })
+}
+
 /// 原始请求头里是否带了「已跑过拓展中间件」的标记。
 pub fn headers_mark_applied(raw_headers: &str) -> bool {
     raw_headers.lines().skip(1).any(|line| {
@@ -197,7 +234,7 @@ pub async fn apply_request(request: &mut Value, request_path: &str) -> Result<()
     if middlewares.is_empty() {
         return Ok(());
     }
-    apply_middlewares(&middlewares, request, request_path, Value::Null).await
+    apply_middlewares(&middlewares, request, request_path, Value::Null, None).await
 }
 
 pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value, request_path: &str) -> Result<(), String> {
@@ -207,7 +244,7 @@ pub async fn apply_request_with(manager: &UserScriptManager, request: &mut Value
     if middlewares.is_empty() {
         return Ok(());
     }
-    apply_middlewares(&middlewares, request, request_path, Value::Null).await
+    apply_middlewares(&middlewares, request, request_path, Value::Null, None).await
 }
 
 /// upstream 段：Codex++ 自己的压缩、路由、协议转换之后，改真正发给上游的请求体（`context` 带上
@@ -220,7 +257,8 @@ pub async fn apply_upstream_request(body: &mut Value, request_path: &str, contex
     if middlewares.is_empty() {
         return Ok(());
     }
-    apply_middlewares(&middlewares, body, request_path, context).await
+    let owners = replacing_extensions("builtin:auth-headers");
+    apply_middlewares(&middlewares, body, request_path, context, owners).await
 }
 
 /// route 段：轮换按规则选出候选供应商后，交给拓展重排 / 筛选。中间件收到 `{ model, conversationId, candidates: [{ id, name, protocol }] }`，
@@ -250,7 +288,7 @@ async fn route_order_with(middlewares: &[(String, ExtensionGatewayMiddleware)], 
             target.insert(key.clone(), value.clone());
         }
     }
-    apply_middlewares(middlewares, &mut body, "route", json!({ "stage": "route" })).await.ok()?;
+    apply_middlewares(middlewares, &mut body, "route", json!({ "stage": "route" }), None).await.ok()?;
     let known: Vec<&str> = candidates.iter().filter_map(|item| item.get("id").and_then(Value::as_str)).collect();
     let picked: Vec<String> = match body.get("order").and_then(Value::as_array) {
         Some(order) => order.iter().filter_map(Value::as_str).map(str::to_string).collect(),
@@ -266,7 +304,15 @@ pub async fn apply_upstream_request_with(manager: &UserScriptManager, body: &mut
     if middlewares.is_empty() {
         return Ok(());
     }
-    apply_middlewares(&middlewares, body, request_path, context).await
+    // 鉴权凭据只交给这个清单里关掉了 builtin:auth-headers 的拓展。
+    let owners: Vec<String> = manager
+        .enabled_gateway_replaces()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, name)| name == "builtin:auth-headers")
+        .map(|(id, _)| id)
+        .collect();
+    apply_middlewares(&middlewares, body, request_path, context, (!owners.is_empty()).then_some(owners)).await
 }
 
 /// 这一步在本轮里是第几步：最后一条用户消息之后已有几个工具结果，再加 1。
@@ -636,9 +682,15 @@ pub async fn decide_retry_for(
     }
 }
 
-async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str, context: Value) -> Result<(), String> {
+/// `credential_owners`：upstream 段带来的这个候选的 Key（上下文里的 `__credential`）能交给哪些拓展——
+/// 关掉了 builtin:auth-headers 的那些（空表示全部，只在测试固定被关掉的环节时）；`None` 时谁都不给。
+async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)], request: &mut Value, request_path: &str, mut context: Value, credential_owners: Option<Vec<String>>) -> Result<(), String> {
     let upstream_stage = !context.is_null();
-    match run_chain(middlewares, request, request_path, context).await {
+    let credential = context
+        .as_object_mut()
+        .and_then(|map| map.remove("__credential"))
+        .filter(|_| credential_owners.is_some());
+    match run_chain(middlewares, request, request_path, context, credential.as_ref().zip(credential_owners.as_deref())).await {
         Ok(result) => {
             if let Some(rejected) = result.get("rejected").filter(|value| value.is_object()) {
                 let reason = rejected.get("reason").and_then(Value::as_str).unwrap_or("拓展拒绝了这一步").to_string();
@@ -660,6 +712,9 @@ async fn apply_middlewares(middlewares: &[(String, ExtensionGatewayMiddleware)],
             // upstream 段加的请求头接在 request 段的后面。
             let mut headers = if upstream_stage { extension_headers() } else { Vec::new() };
             headers.extend(allowed_headers(&result["headers"]));
+            if credential.is_some() {
+                headers.extend(allowed_auth_headers(&result["authHeaders"]));
+            }
             set_extension_headers(headers);
             Ok(())
         }
@@ -678,6 +733,8 @@ async fn run_chain(
     request: &Value,
     request_path: &str,
     context: Value,
+    // (凭据, 能拿到它的拓展 id；空表示全部，测试固定被关掉的环节时)
+    credential: Option<(&Value, &[String])>,
 ) -> anyhow::Result<Value> {
     let node = crate::extension_node::require_node()?;
     let input = json!({
@@ -685,12 +742,20 @@ async fn run_chain(
         "body": request,
         "context": context,
         "step": request_step(request),
-        "middlewares": middlewares.iter().map(|(id, item)| json!({
-            "id": id,
-            "script": item.script,
-            "timeoutMs": item.timeout_secs * 1000,
-            "config": item.config,
-        })).collect::<Vec<_>>(),
+        "middlewares": middlewares.iter().map(|(id, item)| {
+            let mut entry = json!({
+                "id": id,
+                "script": item.script,
+                "timeoutMs": item.timeout_secs * 1000,
+                "config": item.config,
+            });
+            if let Some((credential, owners)) = credential
+                && (owners.is_empty() || owners.iter().any(|owner| owner == id))
+            {
+                entry["credential"] = credential.clone();
+            }
+            entry
+        }).collect::<Vec<_>>(),
     });
     let limit = Duration::from_secs(middlewares.iter().map(|(_, item)| item.timeout_secs).sum::<u64>() + 2).min(CHAIN_LIMIT);
     crate::extension_node::run_runner(&node, RUNNER, &input, limit).await

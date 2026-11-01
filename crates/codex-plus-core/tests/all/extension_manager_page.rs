@@ -35,7 +35,8 @@ fn manager_page_alone_is_a_valid_package_and_is_served_with_its_assets() {
     );
     let item = script(&manager, "user:panel");
     assert_eq!(item["error"], "", "只声明 manager 也是合法的拓展包");
-    assert_eq!(item["package"]["managerPage"], json!({"title": "我的面板"}));
+    assert_eq!(item["package"]["managerPage"]["title"], "我的面板");
+    assert_eq!(item["package"]["managerPage"]["nav"], Value::Null, "没写 nav 时不进侧栏");
     let (title, html) = manager.extension_manager_page("user:panel").unwrap();
     assert_eq!(title, "我的面板");
     assert!(html.contains("<body>hi</body>"));
@@ -52,7 +53,7 @@ fn manager_page_title_defaults_to_the_package_name() {
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(&temp);
     write_package(&temp, "named", json!({"id": "named", "name": "带名字", "renderer": "main.js", "manager": {"page": "panel.html"}}), &[("main.js", b""), ("panel.html", b"<p>x</p>")]);
-    assert_eq!(script(&manager, "user:named")["package"]["managerPage"], json!({"title": "带名字"}));
+    assert_eq!(script(&manager, "user:named")["package"]["managerPage"]["title"], "带名字");
 }
 
 #[test]
@@ -86,4 +87,36 @@ fn disabled_extensions_do_not_serve_their_manager_page() {
     manager.set_script_enabled("user:off", false).unwrap();
     assert!(manager.extension_manager_page("user:off").unwrap_err().to_string().contains("已停用"));
     assert!(manager.extension_asset("user:off", "a.png").is_err());
+}
+
+/// 拓展页面可以进侧栏（nav）、顶替管理器的内置页面（replaces）、声明能读的只读数据（data）；名字都要认得。
+#[test]
+fn manager_pages_declare_nav_replacements_and_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(
+        &temp,
+        "usage",
+        json!({ "id": "usage", "name": "用量看板", "manager": { "page": "page.html", "nav": "management", "icon": "bar-chart", "replaces": ["gatewayUsage", "requestLog"], "data": ["requestLogs", "gatewayUsage"] } }),
+        &[("page.html", b"<p>hi</p>")],
+    );
+    write_package(&temp, "nav-true", json!({ "id": "nav-true", "manager": { "page": "page.html", "nav": true } }), &[("page.html", b"<p>hi</p>")]);
+    let page = &script(&manager, "user:usage")["package"]["managerPage"];
+    assert_eq!(page["nav"], "management");
+    assert_eq!(page["icon"], "bar-chart");
+    assert_eq!(page["replaces"], json!(["gatewayUsage", "requestLog"]));
+    assert_eq!(page["data"], json!(["requestLogs", "gatewayUsage"]));
+    assert_eq!(script(&manager, "user:nav-true")["package"]["managerPage"]["nav"], "management");
+
+    // 「万物皆拓展」「设置」这类是停用拓展的入口，不能顶替；不认识的数据名、分组也报错。
+    for (id, manager_field, needle) in [
+        ("no-self", json!({ "page": "page.html", "replaces": ["userScripts"] }), "userScripts"),
+        ("no-settings", json!({ "page": "page.html", "replaces": ["settings"] }), "settings"),
+        ("bad-data", json!({ "page": "page.html", "data": ["relayKeys"] }), "relayKeys"),
+        ("bad-nav", json!({ "page": "page.html", "nav": "sidebar" }), "manager.nav"),
+    ] {
+        write_package(&temp, id, json!({ "id": id, "manager": manager_field }), &[("page.html", b"<p>hi</p>")]);
+        let error = script(&manager, &format!("user:{id}"))["error"].as_str().unwrap().to_string();
+        assert!(error.contains(needle), "{id}: {error}");
+    }
 }

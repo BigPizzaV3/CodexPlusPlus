@@ -221,10 +221,13 @@ async fn open_candidates(
             let candidate = &prepared;
             let busy = recorder.begin(candidate);
             let started = Instant::now();
+            // Anthropic → Anthropic 原生直通不经过拓展的 upstream 段：拓展关掉了 builtin:auth-headers 时
+            // 改走协议代理链路，鉴权头才由拓展给。
             let native = request
                 .anthropic
                 .as_ref()
-                .filter(|_| candidate.relay.protocol == RelayProtocol::AnthropicMessages);
+                .filter(|_| candidate.relay.protocol == RelayProtocol::AnthropicMessages)
+                .filter(|_| !crate::extension_gateway::builtin_replaced("builtin:auth-headers"));
             let attempt = match native {
                 Some(passthrough) => {
                     trace.wire_api = "AnthropicMessages".to_string();
@@ -567,9 +570,19 @@ async fn attempt_pipeline(
     }
     // ChatGPT 订阅后端只服务 Codex 自己的客户端：请求体、请求头都整理成 Codex CLI 发的样子。
     let chatgpt = crate::official_login::member_uses_official_login_transport(&candidate.relay);
+    // 拓展用 gateway.replaces 关掉 builtin:official-shaping：请求体、UA 与版本头不再整理成 Codex CLI 的样子，
+    // 由拓展在 upstream 段自己整理（上下文里 official 为 true）；会话头与官方凭据仍由 Codex++ 处理。
+    let shaping = !crate::extension_gateway::builtin_replaced("builtin:official-shaping");
     let mut relay = candidate.relay.clone();
     let mut cache_key = String::new();
-    if chatgpt {
+    if chatgpt && !shaping {
+        body["model"] = Value::String(candidate.upstream_model.clone());
+        cache_key = body
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+    } else if chatgpt {
         let home = crate::codex_home::default_codex_home_dir();
         let prompt = crate::gateway::chatgpt_backend::codex_prompt_from_cache(
             &home,
@@ -608,7 +621,9 @@ async fn attempt_pipeline(
             == Some("chatgpt-api");
     if chatgpt_api {
         body["model"] = Value::String(candidate.upstream_model.clone());
-        crate::gateway::chatgpt_backend::adapt_api_request(&mut body);
+        if shaping {
+            crate::gateway::chatgpt_backend::adapt_api_request(&mut body);
+        }
         cache_key = body
             .get("prompt_cache_key")
             .and_then(Value::as_str)

@@ -63,7 +63,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1219
+      "lines": 1220
     },
     {
       "name": "71-model-picker-groups.js",
@@ -128,12 +128,12 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 412
+      "lines": 414
     },
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1329
+      "lines": 1338
     },
     {
       "name": "91-extension-rpc.js",
@@ -188,7 +188,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 526
+      "lines": 527
     },
     {
       "name": "96-paste-fix.js",

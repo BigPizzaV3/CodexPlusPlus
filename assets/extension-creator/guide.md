@@ -221,7 +221,8 @@ export default (error) => (error.status === 429 && error.attempt < 2 ? { retry: 
 - 网关模式：`builtin:gateway-failover`（候选失败换下一个）、`builtin:key-cooldown`（429 后 Key 冷却）、
   `builtin:key-breaker`（供应商熔断）、`builtin:local-rate-limit`（Key 的 RPM / 并发限速）、`builtin:title-model`（起名请求改发起名模型）。
 - 关掉冷却 / 熔断后，在冷却的 Key 照常当候选（排在可用的后面），要避开谁在 `route` 段的中间件里自己筛。
-- 协议转换、凭据与鉴权头、请求日志与用量不能关。只在用户明确要接管这一步时才关，并告诉用户关掉了什么。
+- 也能关请求转换 `builtin:request-conversion`（upstream 段拿到 Responses 形状的请求体，自己转成上游协议；响应仍由 Codex++ 转回）、鉴权头 `builtin:auth-headers`（只有声明它的拓展在 upstream 段拿到 `context.credential.apiKey`，自己往 `context.headers` 写鉴权头）、官方整理 `builtin:official-shaping`、请求日志与用量 `builtin:request-log`（关掉后不记日志、不计用量）。
+- 只在用户明确要接管这一步时才关，并告诉用户关掉了什么；关掉鉴权头意味着拓展脚本会拿到 Key，要提醒用户。
 
 ## 工具管道（改工具参数、代为执行、改工具结果）
 
@@ -410,6 +411,7 @@ ctx.backend.on("tick", ({ count }) => ctx.toast(`第 ${count} 分钟`));
 </script>
 ```
 
+- `manager` 里再写 `"nav": "management"`（或 `gateway` / `tools`）就进管理器侧栏、整页打开；`"replaces": ["gatewayUsage"]` 顶替管理器的内置页面（上方有「查看内置页面」可切回；「万物皆拓展」「内置拓展」「设置」不能顶替）；`"data": ["requestLogs"]` 后能用 `codexPlusManager.data("requestLogs", { limit })` 读只读数据（`requestFlow` / `requestLogs` / `gatewayUsage` / `localSessions`），`codexPlusManager.navigate("hub")` 跳到别的页面。
 - 能用的只有：`config.get()` / `config.set(values)` / `config.onChange(fn)`（本拓展配置，只能写声明过的项）、
   `backend.call(method, params)`（本拓展的常驻后台，要同时声明 `backend`）、`asset(path)`（本拓展 assets/ 的 data URL）、
   `toast(text)`、`theme()` / `onTheme(fn)`。都返回 Promise。
@@ -423,6 +425,11 @@ Codex++ 自带的功能都是内置拓展（会话删除、Markdown 导出、语
 做法时，在 `codexpp_extension_write` 的 `replaces` 参数里写内置拓展 id（如 `["usage-statusline"]`）：你的拓展启用时
 那个内置拓展让位，停用时它回来。内置拓展能做的你都能用同样的 ctx 接口做（`onScan`、`registerSlot`、
 `registerRowAction`、`settings/changed`……）；它的数据有的作为服务提供（`inject: ["codexpp.usage"]`），自己画界面即可。
+
+## 赶在 Codex 之前（preload）与启动前后（launch）
+
+要在 Codex 自己的脚本之前改页面（改写 Codex 模块、强制语言）时，用写入工具的 `preload` 参数：`{ "scripts": ["preload/patch.js"], "reloadOnLaunch": true }`。脚本在每份新文档最早执行，拿不到 `codexPlus`，只能读 `codexPlusPreload`（`{ id, key, config }`）；改了要重启 Codex。
+要在启动 Codex 之前 / 退出之后做事（改 Codex 的本地状态文件、恢复补丁）或追加启动参数时，用 `launch` 参数：`{ "args": ["--lang=zh-CN"], "before": "launch/before.mjs", "after": "launch/after.mjs" }`，脚本默认导出 `(context) => …`，拿到 `codexHome`、`stateDir`、`appDir`、`config`。顶替 Rust 侧的内置功能（原生 Fast 解锁、强制中文、Work 视图……）就用这两个。
 
 ## 工具连接断开时
 

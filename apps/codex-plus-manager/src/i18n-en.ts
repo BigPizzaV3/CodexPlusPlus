@@ -2996,6 +2996,11 @@ export const EN_PLAIN: Record<string, string> = {
   "收起面板": "Close panel",
   "正在加载面板…": "Loading panel…",
   "面板加载失败：": "Failed to load the panel: ",
+  "拓展页面": "Extension page",
+  "由拓展提供的页面": "A page provided by an extension",
+  "查看内置页面": "Show built-in page",
+  "使用拓展页面": "Use extension page",
+  "这个拓展页面已经停用或不存在。": "This extension page is disabled or no longer exists.",
   "拓展已安装并启用。": "Extension installed and enabled. ",
   "拓展已安装，尚未启用，可在「本地拓展」里启用。": "Extension installed but not enabled; enable it under Local extensions. ",
   "Codex 配置里新增了「Codex++ 拓展钩子」，请在 Codex 的 Hooks 设置里信任一次，新开对话生效。": "“Codex++ extension hooks” was added to the Codex config. Trust it once in Codex's Hooks settings; it applies to new conversations.",
@@ -3554,6 +3559,9 @@ export const EN_TEMPLATE: Record<string, string> = {
   "需要拓展 API v{0}，请先更新 Codex++": "Needs extension API v{0}; update Codex++ first",
   "默认分支 {0}": "Default branch {0}",
   "Codex 钩子配置未能同步：{0}": "Could not sync Codex hooks config: {0}",
+  "此页由拓展「{0}」提供": "This page is provided by the extension \"{0}\"",
+  "由拓展 {0} 提供": "Provided by the extension {0}",
+  "拓展「{0}」提供了这一页的替代页面": "The extension \"{0}\" provides a replacement for this page",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated

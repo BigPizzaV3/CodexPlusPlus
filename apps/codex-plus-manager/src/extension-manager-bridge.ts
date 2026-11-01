@@ -1,7 +1,8 @@
 /**
  * 拓展的管理器面板（codexpp.json 的 `manager.page`）：拓展自己的 HTML 放进沙箱 iframe（只给 allow-scripts，
  * 没有同源、弹窗、顶层跳转），页面里拿不到 Tauri 接口，也不能联网（下面的 CSP）；只能经 postMessage 调
- * 宿主开放的几样：本拓展的配置、本拓展的常驻后台、本拓展 assets/ 里的资源、提示条、主题。
+ * 宿主开放的几样：本拓展的配置、本拓展的常驻后台、本拓展 assets/ 里的资源、提示条、主题，
+ * 以及清单 `manager.data` 声明过的只读管理器数据（`data`）和跳到管理器别的页面（`navigate`）。
  *
  * 消息格式：页面 → 宿主 `{ __codexPlusManager: 1, id, method, params }`，宿主 → 页面
  * `{ __codexPlusManager: 1, id, ok, value | error }`；宿主主动推的事件 `{ __codexPlusManager: 1, event, value }`。
@@ -17,6 +18,10 @@ export type ManagerBridgeDeps = {
   toast(message: string): void;
   resize(height: number): void;
   theme(): ManagerTheme;
+  /** 清单 manager.data 声明过的只读数据；没给时 data 方法不可用。 */
+  data?(name: string, params: Record<string, unknown>): Promise<unknown>;
+  /** 跳到管理器的另一个页面（路由 id，或 ext:<拓展 key> 打开另一个拓展页面）。 */
+  navigate?(target: string): boolean;
 };
 
 export type ManagerRequest = { __codexPlusManager: 1; id: number; method: string; params?: unknown };
@@ -70,6 +75,18 @@ export async function handleManagerRequest(request: ManagerRequest, deps: Manage
       }
       case "theme":
         return reply(deps.theme());
+      case "data": {
+        const name = typeof params.name === "string" ? params.name : "";
+        if (!name) return fail("data 需要数据名");
+        if (!deps.data) return fail("这个面板不能读管理器数据");
+        return reply(await deps.data(name, record(params.params)));
+      }
+      case "navigate": {
+        const target = typeof params.target === "string" ? params.target.trim() : "";
+        if (!target || !deps.navigate) return fail("navigate 需要页面名");
+        if (!deps.navigate(target)) return fail(`没有这个页面：${target}`);
+        return reply(null);
+      }
       default:
         return fail(`不支持的方法：${request.method}`);
     }
@@ -119,6 +136,8 @@ export const MANAGER_PANEL_BOOTSTRAP = `(() => {
     toast: (message) => request("toast", { message }),
     theme: () => request("theme"),
     onTheme: on("theme"),
+    data: (name, params) => request("data", { name, params }),
+    navigate: (target) => request("navigate", { target }),
   });
   const report = () => request("resize", { height: document.documentElement.scrollHeight }).catch(() => {});
   addEventListener("load", report);

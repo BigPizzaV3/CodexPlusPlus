@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
+import { MANAGER_DATA_SOURCES } from "./extension-manager-pages";
 import {
   handleManagerRequest,
   isManagerRequest,
@@ -10,11 +11,17 @@ import {
 } from "./extension-manager-bridge";
 
 /// 拓展的管理器面板：拓展包 `manager.page` 的 HTML 放进沙箱 iframe，经 postMessage 只调本拓展的配置、后台、资源。
-export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast }: {
+export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast, dataSources = [], onNavigate, fullPage = false }: {
   scriptKey: string;
   config: Record<string, unknown>;
   onSaveConfig: (values: Record<string, unknown>) => Promise<boolean>;
   onToast: (message: string) => void;
+  /** 清单 manager.data 声明过的数据名。 */
+  dataSources?: string[];
+  /** 页面里的 codexPlusManager.navigate(target)；返回是否认得这个页面。 */
+  onNavigate?: (target: string) => boolean;
+  /** 作为整页（侧栏入口、顶替内置页面）显示：高度至少占满内容区。 */
+  fullPage?: boolean;
 }) {
   const frame = useRef<HTMLIFrameElement | null>(null);
   const [page, setPage] = useState<{ title: string; html: string } | null>(null);
@@ -22,8 +29,8 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
   const [height, setHeight] = useState(240);
   const [theme, setTheme] = useState<ManagerTheme>(() => (document.querySelector(".shell")?.classList.contains("dark") ? "dark" : "light"));
   // 回调里读最新的配置与回调，不随每次渲染重挂监听。
-  const latest = useRef({ config, onSaveConfig, onToast, theme });
-  latest.current = { config, onSaveConfig, onToast, theme };
+  const latest = useRef({ config, onSaveConfig, onToast, theme, dataSources, onNavigate });
+  latest.current = { config, onSaveConfig, onToast, theme, dataSources, onNavigate };
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +74,12 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
         toast: (message) => latest.current.onToast(message),
         resize: (next) => setHeight(next),
         theme: () => latest.current.theme,
+        data: async (name, params) => {
+          const source = MANAGER_DATA_SOURCES[name];
+          if (!source || !latest.current.dataSources.includes(name)) throw new Error(`清单 manager.data 没有声明 ${name}`);
+          return invoke(source.command, source.args(params));
+        },
+        navigate: (next) => latest.current.onNavigate?.(next) ?? false,
       }).then((reply) => target.postMessage(reply, "*"));
     };
     window.addEventListener("message", onMessage);
@@ -79,14 +92,14 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
   if (error) return <div className="extension-manager-panel is-error" role="alert">{t("面板加载失败：")}{error}</div>;
   if (!page) return <div className="extension-manager-panel is-loading">{t("正在加载面板…")}</div>;
   return (
-    <div className="extension-manager-panel">
+    <div className={`extension-manager-panel${fullPage ? " is-full-page" : ""}`}>
       <iframe
         ref={frame}
         title={page.title}
         // 只给脚本：没有 allow-same-origin，页面拿不到 Tauri 接口与宿主页面；没有弹窗、顶层跳转。
         sandbox="allow-scripts allow-forms"
         srcDoc={srcdoc}
-        style={{ width: "100%", height: Math.max(MANAGER_PANEL_MIN_HEIGHT, height), border: 0, display: "block" }}
+        style={{ width: "100%", height: Math.max(fullPage ? 480 : MANAGER_PANEL_MIN_HEIGHT, height), border: 0, display: "block" }}
       />
     </div>
   );

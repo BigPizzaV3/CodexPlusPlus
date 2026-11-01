@@ -3602,7 +3602,8 @@ async fn open_responses_proxy_request_once(
     // 拓展可以用 gateway.replaces 关掉内置的推理折叠、本地压缩、exec 适配，自己在 upstream 段里做。
     set_message_phase_fill(
         settings.codex_app_third_party_reasoning_collapse
-            && !crate::extension_gateway::builtin_replaced("builtin:reasoning-collapse"),
+            && !crate::extension_gateway::builtin_replaced("builtin:reasoning-collapse")
+            && !crate::builtin_takeover::replaced("reasoning-collapse"),
     );
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
@@ -3991,13 +3992,25 @@ async fn open_responses_proxy_request_once(
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
         // 拓展网关中间件的 upstream 段：Codex++ 自己的压缩、路由、协议转换之后，改真正发给这个上游的请求体。
         // 换候选重发时每次都跑（候选不同，请求体也不同）。拒绝时同 request 段，直接回带原因的错误。
-        let upstream_context = json!({
+        let mut upstream_context = json!({
             "stage": "upstream",
             "wireApi": wire_api,
-            "relay": { "id": relay.id, "name": relay.name },
+            "relay": { "id": relay.id, "name": relay.name, "protocol": relay.protocol },
             "model": upstream_body.get("model").cloned().unwrap_or(Value::Null),
             "attempt": attempt + 1,
+            "endpoint": endpoint,
+            "official": official_member,
+            // 请求体是否还是 Responses 形状（拓展关掉了 builtin:request-conversion）。
+            "requestConversion": if crate::extension_gateway::builtin_replaced("builtin:request-conversion") { "extension" } else { "builtin" },
         });
+        // 拓展关掉 builtin:auth-headers 时由它自己设鉴权头：这一个候选的 Key 只交给声明了它的拓展的中间件
+        // （见 extension_gateway::apply_middlewares），官方登录成员与转给本机网关的这一跳仍由 Codex++ 认证。
+        if !official_member
+            && !via_gateway
+            && crate::extension_gateway::builtin_replaced("builtin:auth-headers")
+        {
+            upstream_context["__credential"] = json!({ "apiKey": relay.api_key.trim(), "protocol": relay.protocol });
+        }
         if let Err(reason) = crate::extension_gateway::apply_upstream_request(&mut upstream_body, request_path, upstream_context)
         .await
         {
@@ -5826,7 +5839,12 @@ async fn upstream_request_parts(
             json!({ "relayId": relay.id }),
         );
     }
+    // 拓展用 gateway.replaces 关掉 builtin:request-conversion：请求体保持 Responses 形状交给 upstream 段，
+    // 由拓展转成上游协议（端点仍按供应商协议选；响应仍由 Codex++ 按上游协议转回 Responses）。
+    let request_conversion =
+        !crate::extension_gateway::builtin_replaced("builtin:request-conversion");
     let mut body = match relay.protocol {
+        _ if !request_conversion => request_json,
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
             request_json,
@@ -5840,14 +5858,18 @@ async fn upstream_request_parts(
             )?
         }
     };
-    if relay.protocol == RelayProtocol::ChatCompletions
+    if request_conversion
+        && relay.protocol == RelayProtocol::ChatCompletions
         && prompt_prefix_stabilizer_enabled(relay)
     {
         stabilize_chat_prompt_prefix(&mut body);
     }
     if reasoning_mode == "omit" {
         strip_reasoning_parameters(&mut body);
-    } else if reasoning_mode == "passthrough" && relay.protocol == RelayProtocol::ChatCompletions {
+    } else if request_conversion
+        && reasoning_mode == "passthrough"
+        && relay.protocol == RelayProtocol::ChatCompletions
+    {
         strip_reasoning_parameters(&mut body);
         if let Some(effort) = requested_effort { body["reasoning_effort"] = effort; }
     }
@@ -5859,8 +5881,10 @@ async fn upstream_request_parts(
         // （`tools` 为空），所以官方成员的每个压缩请求都会被拒。
         // 这里只对「完全没有声明工具」的官方登录请求自动补齐：补完 tool_choice 会被
         // 置为 none（模型不能真正调用搜索），带工具的普通轮次保持原样。
+        // 拓展用 gateway.replaces 关掉 builtin:official-shaping 时不自动补，由拓展在 upstream 段整理。
         let official_auto_repair = official_base.is_some()
             && !legacy_compact_path
+            && !crate::extension_gateway::builtin_replaced("builtin:official-shaping")
             && request_declares_no_tools(&body);
         let opt_in_repair = relay.web_search_history_compat_enabled() && !legacy_compact_path;
         if (opt_in_repair || official_auto_repair) && ensure_web_search_tool_for_history(&mut body)
@@ -6099,6 +6123,13 @@ fn upstream_request_builder(
         .header(reqwest::header::CONTENT_TYPE, "application/json");
     builder = match official_credential {
         Some(credential) => with_official_login_auth(builder, relay, credential),
+        // 拓展关掉了 builtin:auth-headers：只带供应商自定义头，鉴权头由拓展的 upstream 段给。
+        // 转给 Codex++ 本机网关的这一跳仍带网关令牌，否则网关会拒收。
+        None if !is_local_protocol_proxy_base_url(endpoint)
+            && crate::extension_gateway::builtin_replaced("builtin:auth-headers") =>
+        {
+            crate::relay_headers::apply_headers(builder, &relay.custom_headers)
+        }
         None => with_relay_auth(builder, relay),
     };
     if is_stream {

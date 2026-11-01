@@ -830,9 +830,8 @@ async fn run_app_server_client_capture(
     generation: BridgeGeneration,
     force: bool,
 ) -> anyhow::Result<()> {
-    let settings = crate::settings::SettingsStore::default()
-        .load()
-        .unwrap_or_default();
+    // 模型白名单解锁被拓展顶替时按「关」处理（会话删除仍可能需要捕获）。
+    let settings = crate::builtin_takeover::load_effective_settings().unwrap_or_default();
     if !force && !settings.codex_app_model_whitelist_unlock && !settings.codex_app_session_delete {
         return Ok(());
     }
@@ -1096,8 +1095,7 @@ pub async fn install_bridge(
     let generation = next_bridge_generation(websocket_url);
     session = session.with_generation(generation.clone());
     let mut registered_script_ids = Vec::new();
-    let native_modules_requested = crate::settings::SettingsStore::default()
-        .load()
+    let native_modules_requested = crate::builtin_takeover::load_effective_settings()
         .is_ok_and(|settings| crate::native_predictions::native_modules_requested(&settings));
 
     let install_result: anyhow::Result<()> = async {

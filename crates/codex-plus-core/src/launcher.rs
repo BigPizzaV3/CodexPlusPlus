@@ -268,6 +268,9 @@ pub struct LaunchHandle {
     status_started_at_ms: u64,
     helper_started: bool,
     isolated_quota_gate: Option<Arc<IsolatedQuotaGateRuntime>>,
+    /// 启用中拓展的启动前后声明：Codex 退出后跑 `launch.after`。
+    extension_launches: Vec<(String, Value, crate::extension_launch::ExtensionLaunch)>,
+    extension_launch_context: crate::extension_launch::LaunchContext,
     hooks: Arc<dyn LaunchHooks>,
 }
 
@@ -341,6 +344,7 @@ impl LaunchHandle {
             self.hooks.shutdown_helper(self.helper_port).await;
         }
         self.hooks.stop_native_browser_compatibility().await;
+        crate::extension_launch::run_scripts("after", &self.extension_launch_context, &self.extension_launches).await;
         let (status, message) = match &result {
             Ok(()) => (
                 "stopped",
@@ -458,6 +462,18 @@ pub trait LaunchHooks: Send + Sync {
     }
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()>;
     /// 原生模块补丁（Fast、输入预测）需要在启动时重载一次页面才能生效。
+    /// 被拓展顶替的内置拓展按「关」处理后的设置（见 [`crate::builtin_takeover`]）。测试用的钩子原样返回。
+    fn effective_settings(&self, settings: BackendSettings) -> BackendSettings {
+        settings
+    }
+    /// 启用中拓展的启动前后声明（codexpp.json 的 `launch`）。测试用的钩子没有。
+    fn extension_launches(&self) -> Vec<(String, Value, crate::extension_launch::ExtensionLaunch)> {
+        Vec::new()
+    }
+    /// 有拓展的页面最早期脚本要求启动后重载一次时，整页重载并等页面就绪。
+    async fn reload_for_extension_preloads(&self, _debug_port: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn apply_native_module_patches_on_launch(&self, _debug_port: u16) -> anyhow::Result<()> {
         Ok(())
     }
@@ -848,7 +864,8 @@ where
     let hooks = hooks.into_launch_hooks();
     let mut debug_port = hooks.select_debug_port(options.debug_port);
     let mut helper_port = hooks.select_helper_port(options.helper_port);
-    let settings = hooks.load_settings().await?;
+    // 被拓展顶替的内置拓展（原生 Fast、强制中文、Work 视图、原生浏览器兼容……）在这次启动里按「关」处理。
+    let settings = hooks.effective_settings(hooks.load_settings().await?);
     // 请求体上限必须在 helper 绑定端口、开始接收请求前生效；环境变量优先级更高，
     // 由 configured_http_body_bytes 统一处理。
     set_http_body_limit_bytes(settings.helper_max_request_body_bytes());
@@ -1020,6 +1037,18 @@ where
             timeline.mark("helper_listening", 65);
         }
 
+        // 拓展的启动前脚本与追加的启动参数（codexpp.json 的 `launch`）。
+        let extension_launches = hooks.extension_launches();
+        let extension_launch_context = crate::extension_launch::LaunchContext {
+            codex_home: home.clone(),
+            state_dir: hooks.state_dir(),
+            app_dir: app_dir.clone(),
+        };
+        if !extension_launches.is_empty() {
+            timeline.mark("extension_launch_before", 68);
+            crate::extension_launch::run_scripts("before", &extension_launch_context, &extension_launches).await;
+        }
+        let launch_args = crate::extension_launch::merged_launch_args(&settings.codex_extra_args, &extension_launches);
         timeline.mark("launch_codex", 70);
         // 启动 Codex 之前清一遍选择器残留：换过模型目录之后，
         // 「最近使用」里会留着上一个目录的模型 ID，用户点到就是必然 400 的模型。
@@ -1033,7 +1062,7 @@ where
                 &app_dir,
                 debug_port,
                 &settings,
-                &settings.codex_extra_args,
+                &launch_args,
                 &LaunchInstance::from_options(&options),
             )
             .await?;
@@ -1056,6 +1085,12 @@ where
                 {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "launcher.native_module_patch_failed",
+                        serde_json::json!({ "message": error.to_string() }),
+                    );
+                }
+                if let Err(error) = hooks.reload_for_extension_preloads(debug_port).await {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.extension_preload_reload_failed",
                         serde_json::json!({ "message": error.to_string() }),
                     );
                 }
@@ -1111,6 +1146,8 @@ where
             status_started_at_ms,
             helper_started,
             isolated_quota_gate,
+            extension_launches,
+            extension_launch_context,
             hooks: Arc::clone(&hooks),
         })
     }
@@ -1681,6 +1718,22 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn apply_native_module_patches_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
         apply_native_module_patches_on_launch(debug_port).await
+    }
+
+    fn effective_settings(&self, settings: BackendSettings) -> BackendSettings {
+        crate::builtin_takeover::mask_settings(settings)
+    }
+
+    fn extension_launches(&self) -> Vec<(String, Value, crate::extension_launch::ExtensionLaunch)> {
+        crate::user_scripts::default_user_script_manager().enabled_launches().unwrap_or_default()
+    }
+
+    async fn reload_for_extension_preloads(&self, debug_port: u16) -> anyhow::Result<()> {
+        let (_, reload) = crate::user_scripts::default_user_script_manager().enabled_preloads()?;
+        if reload {
+            reload_page_for_extension_preloads(debug_port).await?;
+        }
+        Ok(())
     }
 
     async fn capture_injected_launch_identity(&self, debug_port: u16) {
@@ -2478,7 +2531,7 @@ fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
             "helper.overlay_image_not_found",
         )
     };
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = crate::builtin_takeover::mask_settings(SettingsStore::default().load().unwrap_or_default());
     if !settings.codex_app_image_overlay_enabled {
         return not_found();
     }
@@ -2539,6 +2592,12 @@ fn dream_skin_image_response() -> (String, Vec<u8>, String, &'static str) {
         ),
         Err(_) => not_found(),
     }
+}
+
+/// 系统鼠标的逻辑坐标（与 Electron 的 window.screenX/screenY 同一坐标系）。拓展经 `/system/cursor-position` 读，
+/// 用来写出与「桌宠跟随鼠标」等价的功能。只支持 Windows 与 macOS。
+pub fn cursor_position() -> anyhow::Result<(i32, i32)> {
+    logical_cursor_position()
 }
 
 fn logical_cursor_position() -> anyhow::Result<(i32, i32)> {
@@ -2725,6 +2784,8 @@ impl ProxyRequestLog {
         thread_id: Option<String>,
         silent: bool,
     ) -> Self {
+        // 拓展用 gateway.replaces 关掉 builtin:request-log：这次请求不进请求日志与用量统计，由拓展自己记。
+        let silent = silent || crate::extension_gateway::builtin_replaced("builtin:request-log");
         let started_at_ms = current_time_ms();
         let model = request
             .and_then(|request| request.get("model"))
@@ -5882,8 +5943,15 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         .web_socket_debugger_url
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let script = crate::assets::injection_script_with_settings(helper_port, &settings);
+    let settings = crate::builtin_takeover::mask_settings(SettingsStore::default().load().unwrap_or_default());
+    let mut scripts = vec![crate::assets::injection_script_with_settings(helper_port, &settings)];
+    // 拓展的页面最早期脚本（codexpp.json 的 `preload`）：增强开着时随新文档脚本一起登记，在 Codex 自己的脚本之前执行。
+    if settings.enhancements_enabled
+        && let Ok((entries, _)) = crate::user_scripts::default_user_script_manager().enabled_preloads()
+        && let Some(preload) = crate::extension_launch::preload_document_script(&entries)
+    {
+        scripts.push(preload);
+    }
     let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
         debug_port,
         StatusStore::default(),
@@ -5897,9 +5965,34 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
                 async move { Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await) },
             )
         }),
-        &[script],
+        &scripts,
     )
     .await
+}
+
+/// 拓展的页面最早期脚本要赶在第一份文档的 Codex 脚本之前：启动后整页重载一次，等页面就绪。
+async fn reload_page_for_extension_preloads(debug_port: u16) -> anyhow::Result<()> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+    crate::bridge::send_cdp_command(websocket_url, "Page.reload", serde_json::json!({})).await?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if let Ok(result) = crate::bridge::evaluate_script(websocket_url, "document.readyState").await
+            && result.pointer("/result/result/value").and_then(Value::as_str) == Some("complete")
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.extension_preload_reloaded",
+                serde_json::json!({ "debug_port": debug_port }),
+            );
+            return Ok(());
+        }
+    }
+    anyhow::bail!("拓展 preload 重载后页面 30 秒内没有就绪")
 }
 
 // 仅在用户启动 Codex 的流程里重载一次；心跳重注入不重载正在使用的页面。
@@ -6002,7 +6095,7 @@ fn pet_real_mouse_enabled() -> bool {
     let settings = SettingsStore::default().load().unwrap_or_default();
     settings.enhancements_enabled
         && settings.codex_app_pet_real_mouse_look
-        && crate::user_scripts::default_user_script_manager().builtin_extension_active("pet-real-mouse")
+        && !crate::builtin_takeover::replaced("pet-real-mouse")
 }
 
 async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {

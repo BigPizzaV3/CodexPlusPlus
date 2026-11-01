@@ -101,6 +101,7 @@ import {
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
 import { PRESETS, type ProviderPreset } from "./presets";
 import { createPortal } from "react-dom";
+import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
@@ -744,8 +745,8 @@ type UserScriptInventory = {
       locales?: Record<string, { title?: string | null; description?: string | null }>;
       http?: boolean; schedules?: Array<{ method: string; everyMinutes?: number | null; at?: string | null }>;
       codex?: { skills?: string[]; agents?: string[]; mcpServers?: string[]; instructions?: boolean; prompts?: string[]; resources?: string[] };
-      /** 管理器面板（codexpp.json 的 manager.page）。 */
-      managerPage?: { title: string } | null;
+      /** 管理器面板（codexpp.json 的 manager）：可以进侧栏（nav）、顶替内置页面（replaces）、读只读数据（data）。 */
+      managerPage?: ManagerPageSummary | null;
     } | null;
     enabled: boolean;
     status: string;
@@ -1373,7 +1374,7 @@ type ToolId = string;
 /** Codex++ 自己的 logo：与应用图标（src-tauri/icons/icon.png）同一张图。 */
 const APP_LOGO_URL = new URL("./assets/codex-plus-logo.png", import.meta.url).href;
 
-type Route = "overview" | "relay" | "multiLaunch" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "agentPet" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings";
+type Route = "overview" | "relay" | "multiLaunch" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "agentPet" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings" | "extension";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -1428,6 +1429,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "agentSettings", get label() { return t("设置"); }, icon: Settings, tool: "codex" },
   { id: "relayEnvironment", get label() { return t("旧版代理设置"); }, icon: ShieldCheck, tool: "codex" },
   { id: "requestLog", get label() { return t("请求日志"); }, icon: List },
+  // 拓展贡献的管理器页面（codexpp.json 的 manager.nav）：侧栏入口按拓展列出，这里只是它们共用的路由。
+  { id: "extension", get label() { return t("拓展页面"); }, icon: AppWindow },
 ];
 
 /**
@@ -1452,7 +1455,7 @@ const lastAgentRoute = new Map<string, Route>();
  * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
  * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
  */
-const globalNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
+const globalNavigationRoutes: Route[] = ["extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
 /** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
 const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
@@ -1713,6 +1716,10 @@ export function App() {
   const dreamSkinPendingActionRef = useRef<(() => void) | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** 正在看的拓展页面（route === "extension" 时）。 */
+  const [extensionPageKey, setExtensionPageKey] = useState<string | null>(null);
+  /** 被拓展顶替、但用户点了「查看内置页面」的路由。 */
+  const [builtinPagesShown, setBuiltinPagesShown] = useState<Set<string>>(() => new Set());
   const [tourOpen, setTourOpen] = useState(() => initialTourOpen());
   // 使用模式（只管理 Codex / 全部功能）：没问过就先问，问完再进首次引导（引导按模式换说法）。
   const agentFocus = useAgentFocus();
@@ -4658,6 +4665,58 @@ export function App() {
     }),
     [route, launchForm, settingsForm, settings, overview, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, getLanguage()],
   );
+  // 拓展贡献的管理器页面：侧栏入口与对内置页面的顶替（见 extension-manager-pages.ts）。
+  const extensionPages = useMemo(() => managerExtensionPages(settings?.user_scripts), [settings?.user_scripts]);
+  const pageOverrides = useMemo(() => managerPageOverrides(extensionPages), [extensionPages]);
+  const openExtensionPage = (key: string) => {
+    setExtensionPageKey(key);
+    void navigate("extension");
+  };
+  /** 拓展页面里 codexPlusManager.navigate(target)：内置页面的路由 id，或 ext:<拓展 key>。 */
+  const navigateFromExtension = (target: string): boolean => {
+    if (target.startsWith("ext:")) {
+      const key = target.slice(4);
+      if (!extensionPages.some((page) => page.key === key)) return false;
+      openExtensionPage(key);
+      return true;
+    }
+    if (target === "extension" || !routes.some((item) => item.id === target)) return false;
+    void navigate(target as Route);
+    return true;
+  };
+  const activeExtensionPage = route === "extension" ? extensionPages.find((page) => page.key === extensionPageKey) ?? null : null;
+  const overridingPage = route !== "extension" && !builtinPagesShown.has(route) ? pageOverrides[route] ?? null : null;
+  const shownExtensionPage = activeExtensionPage ?? overridingPage;
+  const renderExtensionPage = (page: ManagerExtensionPage) => {
+    const script = settings?.user_scripts?.scripts?.find((item) => item.key === page.key);
+    return (
+      <ExtensionManagerPanel
+        key={page.key}
+        scriptKey={page.key}
+        config={script?.package?.config ?? {}}
+        onSaveConfig={(values) => actions.setExtensionConfig(page.key, values)}
+        onToast={(message) => actions.showExtensionNotice(page.title, message)}
+        dataSources={page.data}
+        onNavigate={navigateFromExtension}
+        fullPage
+      />
+    );
+  };
+  // 被顶替的页面：上方说明由哪个拓展提供，可以切回内置页面；切回后也能再换回拓展页面。
+  const extensionPageView = shownExtensionPage ? (
+    <div className="extension-page-host">
+      {overridingPage ? (
+        <div className="extension-page-banner">
+          <span>{tf("此页由拓展「{0}」提供", [overridingPage.title])}</span>
+          <Button size="sm" variant="ghost" onClick={() => setBuiltinPagesShown((current) => new Set(current).add(route))}>{t("查看内置页面")}</Button>
+        </div>
+      ) : null}
+      {renderExtensionPage(shownExtensionPage)}
+    </div>
+  ) : route === "extension" ? (
+    <div className="empty">{t("这个拓展页面已经停用或不存在。")}</div>
+  ) : null;
+  const restorableOverride = route !== "extension" && builtinPagesShown.has(route) ? pageOverrides[route] ?? null : null;
   const isGlobalPage = globalNavigationRoutes.includes(route);
   const isManagementScreen = route === "relay" || route === "multiLaunch" || route === "sessions" || route === "context" || route === "skills";
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
@@ -4746,6 +4805,14 @@ export function App() {
     agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
   }
   [...toolNavigationRoutes, "settings" as Route].forEach((routeId) => pushCommand(routeCommand(routeId, t("工具"), () => void navigate(routeId))));
+  extensionPages.filter((page) => page.nav).forEach((page) => paletteCommands.push({
+    id: `extension:${page.key}`,
+    group: t("拓展"),
+    label: page.title,
+    keywords: `extension ${page.key}`,
+    icon: <AppWindow className="h-4 w-4" />,
+    run: () => openExtensionPage(page.key),
+  }));
   paletteCommands.push(
     {
       id: "action:codex",
@@ -4771,6 +4838,9 @@ export function App() {
         version={overview?.current_version ?? update?.currentVersion ?? ""}
         onOpenAgent={(toolId, destination) => void switchTool(toolId, destination ?? agentEntryRoute(toolId))}
         onNavigate={(next) => void navigate(next)}
+        extensionPages={extensionPages}
+        activeExtensionKey={route === "extension" ? extensionPageKey : null}
+        onOpenExtensionPage={openExtensionPage}
         onToggleTheme={actions.toggleTheme}
         onOpenPalette={() => setPaletteOpen(true)}
         pendingUpdateVersion={update?.updateAvailable && update.latestVersion ? update.latestVersion : null}
@@ -4786,10 +4856,12 @@ export function App() {
             <div className="topbar-title">
               <span className="topbar-crumb">{crumbGroup}</span>
               <ChevronRight aria-hidden="true" className="topbar-crumb-sep" />
-              <h1>{route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : soloAgent && route === "gateway" ? tf("{0} 接入", [agentName(soloAgent)]) : routeTitle(navAliasRoute[route] ?? route)}</h1>
+              <h1>{route === "extension" ? activeExtensionPage?.title ?? t("拓展页面") : route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : soloAgent && route === "gateway" ? tf("{0} 接入", [agentName(soloAgent)]) : routeTitle(navAliasRoute[route] ?? route)}</h1>
             </div>
             <p>
-              {route === "agentSettings"
+              {route === "extension"
+                ? tf("由拓展 {0} 提供", [String(extensionPageKey ?? "").replace(/^user:/, "")])
+                : route === "agentSettings"
                 ? tf("只作用于 {0}；界面主题、配置备份等整体设置在侧栏底部的齿轮里。", [activeToolName])
                 : routeSubtitle(navAliasRoute[route] ?? route, soloAgent)}
             </p>
@@ -4807,6 +4879,13 @@ export function App() {
           key={route}
         >
           <AgentPageTabs activeTool={activeTool} focus={agentFocus} onNavigate={(next) => void navigate(next)} route={route} />
+          {restorableOverride ? (
+            <div className="extension-page-banner">
+              <span>{tf("拓展「{0}」提供了这一页的替代页面", [restorableOverride.title])}</span>
+              <Button size="sm" variant="ghost" onClick={() => setBuiltinPagesShown((current) => { const next = new Set(current); next.delete(route); return next; })}>{t("使用拓展页面")}</Button>
+            </div>
+          ) : null}
+          {extensionPageView ?? (<>
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
@@ -5076,6 +5155,7 @@ export function App() {
               </div>
             </div>
           ) : null}
+          </>)}
         </section>
       </main>
       {updatePrompt ? (
@@ -16463,7 +16543,14 @@ function AppSidebar({
   codexRun,
   soloAgent,
   focus,
+  extensionPages = [],
+  activeExtensionKey = null,
+  onOpenExtensionPage,
 }: {
+  /** 拓展贡献的管理器页面：声明了 manager.nav 的放进对应分组。 */
+  extensionPages?: ManagerExtensionPage[];
+  activeExtensionKey?: string | null;
+  onOpenExtensionPage?: (key: string) => void;
   /** 单 Agent 模式下的那个 Agent：侧栏不再出现「接入更多 Agent」的入口和多 Agent 工具。 */
   soloAgent: string | null;
   /** 使用模式：只用增强功能时没有网关分组，顶部状态卡不讲网关，Agent 行不画接入状态点。 */
@@ -16535,6 +16622,25 @@ function AppSidebar({
     );
   };
 
+  const renderExtensionItems = (group: ManagerNavGroup) => managerNavPages(extensionPages, group).map((page) => {
+    const Icon = managerPageIcon(page.icon);
+    const selected = activeExtensionKey === page.key;
+    return (
+      <button
+        aria-current={selected ? "page" : undefined}
+        className={`side-item ${selected ? "active" : ""}`}
+        data-extension-page={page.key}
+        key={page.key}
+        onClick={() => onOpenExtensionPage?.(page.key)}
+        title={page.title}
+        type="button"
+      >
+        <Icon aria-hidden="true" className="side-item-icon" />
+        <span className="side-item-label">{page.title}</span>
+      </button>
+    );
+  });
+
   const groupLabel = (key: string, label: string, aside?: ReactNode) => (
     <div className="side-group-label">
       <button aria-expanded={!collapsed.includes(key)} onClick={() => toggleGroup(key)} type="button">
@@ -16575,7 +16681,7 @@ function AppSidebar({
         {enhanceOnly ? null : (
           <section className={`side-group ${collapsed.includes("gateway") ? "collapsed" : ""}`}>
             {groupLabel("gateway", t("网关"))}
-            <div className="side-group-items">{gatewayNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+            <div className="side-group-items">{gatewayNavigationRoutes.map((routeId) => renderItem(routeId))}{renderExtensionItems("gateway")}</div>
           </section>
         )}
 
@@ -16641,12 +16747,12 @@ function AppSidebar({
 
         <section className={`side-group ${collapsed.includes("management") ? "collapsed" : ""}`} data-tour="management">
           {groupLabel("management", t("全局管理"))}
-          <div className="side-group-items">{visibleRoutes(focus, managementNavigationRoutes).map((routeId) => renderItem(routeId))}</div>
+          <div className="side-group-items">{visibleRoutes(focus, managementNavigationRoutes).map((routeId) => renderItem(routeId))}{renderExtensionItems("management")}</div>
         </section>
 
         <section className={`side-group ${collapsed.includes("tools") ? "collapsed" : ""}`}>
           {groupLabel("tools", t("工具"))}
-          <div className="side-group-items">{visibleRoutes(focus, toolNavigationRoutes).map((routeId) => renderItem(routeId))}</div>
+          <div className="side-group-items">{visibleRoutes(focus, toolNavigationRoutes).map((routeId) => renderItem(routeId))}{renderExtensionItems("tools")}</div>
         </section>
       </nav>
 
@@ -16693,6 +16799,16 @@ function AppSidebar({
       </footer>
     </aside>
   );
+}
+
+/** 拓展页面的侧栏图标（清单 manager.icon）：只认这几个名字，其余用默认图标。 */
+const MANAGER_PAGE_ICONS: Record<string, LucideIcon> = {
+  "app-window": AppWindow, "bar-chart": BarChart3, list: List, server: Server, store: Store, palette: Palette,
+  network: Network, book: BookOpen, waypoints: Waypoints, plug: Plug, split: Split, messages: MessagesSquare,
+  paw: PawPrint, "git-branch": GitBranch, wrench: Wrench, settings: Settings, code: FileCode2, layers: Layers3,
+};
+function managerPageIcon(name: string | null): LucideIcon {
+  return (name && MANAGER_PAGE_ICONS[name]) || AppWindow;
 }
 
 function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
@@ -17091,6 +17207,7 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题、配置文件、版本更新与日志诊断，不随 Agent 变化"),
     agentSettings: t("当前 Agent 的专属设置"),
+    extension: t("由拓展提供的页面"),
   };
   return subtitles[route];
 }

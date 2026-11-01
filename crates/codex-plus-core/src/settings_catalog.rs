@@ -37,7 +37,8 @@ pub struct BuiltinExtensionDef {
     pub platforms: Vec<String>,
     /// 受增强总开关控制（独立模式补丁不受）。
     pub master_gated: bool,
-    /// 能否被拓展包的 `replaces` 顶替。在 Rust 侧（启动、注入、本地代理）生效的功能不查顶替状态，清单里标 false。
+    /// 能否被拓展包的 `replaces` 顶替。Rust 侧（启动、注入、本地代理）生效的功能经 `builtin_takeover` 按顶替状态让位；
+    /// 只有拓展根本不加载时才生效的功能（独立模式的官方额度解锁）标 false。
     pub replaceable: bool,
     /// 归在这个拓展下的子选项（清单里 `parent` 指向它的设置项 key）。
     pub params: Vec<String>,

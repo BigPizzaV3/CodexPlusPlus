@@ -350,7 +350,9 @@ fn tool_definitions() -> Value {
                     "resources": {"type": "array", "description": "只读资源，例如 [{\"name\": \"规范\", \"file\": \"docs/style.md\"}]：经 Codex++ 拓展 MCP 提供给模型读取"},
                     "instructions": {"type": "string", "description": "全局指令：包内 .md 路径或文字，合并进 ~/.codex/AGENTS.md 里 Codex++ 托管的一段（官方直连也生效）"},
                     "replaces": {"type": "array", "items": {"type": "string"}, "description": "顶替的内置拓展 id，例如 [\"usage-statusline\"]：本拓展启用时这些内置拓展让位、停用时回来。写法见指南「顶替 Codex++ 内置功能」"},
-                    "manager": {"type": "object", "description": "管理器面板，例如 {\"page\": \"manager.html\", \"title\": \"统计\"}：管理器「本地拓展」里这一行的菜单出现「打开面板」，页面放在沙箱 iframe 里，经 window.codexPlusManager 读写本拓展配置、调本拓展后台（backend.call）、取 assets 资源；页面不能联网，资源要内联或用 asset()。写法见指南「管理器面板」"},
+                    "manager": {"type": "object", "description": "管理器面板，例如 {\"page\": \"manager.html\", \"title\": \"统计\"}：管理器「本地拓展」里这一行的菜单出现「打开面板」；nav 放进侧栏分组（gateway / management / tools），replaces 顶替管理器的内置页面，data 声明能经 codexPlusManager.data() 读的只读数据。页面放在沙箱 iframe 里，经 window.codexPlusManager 读写本拓展配置、调本拓展后台（backend.call）、取 assets 资源；页面不能联网，资源要内联或用 asset()。写法见指南「管理器面板」"},
+                    "preload": {"type": ["object", "array", "string"], "description": "页面最早期脚本，例如 {\"scripts\": [\"preload/patch.js\"], \"reloadOnLaunch\": true}：在 Codex 自己的脚本之前执行（拿不到 codexPlus，只读 codexPlusPreload），改了要重启 Codex。写法见指南「页面最早期脚本与启动前后」"},
+                    "launch": {"type": "object", "description": "启动前后，例如 {\"args\": [\"--lang=zh-CN\"], \"before\": \"launch/before.mjs\", \"after\": \"launch/after.mjs\"}：args 追加到 Codex 启动参数，before / after 在启动 Codex 之前、退出之后跑 Node 脚本（默认导出函数，拿到 codexHome、stateDir、config）"},
                     "backend": {"type": "object", "description": "常驻后台声明，例如 {\"script\": \"backend/main.mjs\"}；脚本默认导出 async (ctx) => ({ 方法 })，页面用 ctx.backend.call / on 调用。写法见指南「常驻后台」"},
                     "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
                     "tools": {"type": "array", "description": "给模型用的工具声明，例如 [{\"name\": \"lookup\", \"description\": \"…\", \"inputSchema\": {\"type\": \"object\", \"properties\": {…}}, \"script\": \"tools/lookup.mjs\", \"timeout\": 30}]；写法见指南「给模型加工具」", "items": {"type": "object"}},
@@ -449,6 +451,10 @@ struct WriteArguments {
     resources: Option<Value>,
     #[serde(default)]
     manager: Option<Value>,
+    #[serde(default)]
+    preload: Option<Value>,
+    #[serde(default)]
+    launch: Option<Value>,
     #[serde(default)]
     replaces: Option<Value>,
     #[serde(deserialize_with = "file_list")]
@@ -601,6 +607,8 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                     ("prompts", arguments.prompts),
                     ("resources", arguments.resources),
                     ("manager", arguments.manager),
+                    ("preload", arguments.preload),
+                    ("launch", arguments.launch),
                     ("replaces", arguments.replaces),
                 ]
                     .into_iter()

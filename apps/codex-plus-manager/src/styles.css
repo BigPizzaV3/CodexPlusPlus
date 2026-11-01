@@ -13672,6 +13672,27 @@ button.side-item:hover {
 .shell .extension-manager-panel.is-error {
   color: hsl(var(--status-error));
 }
+/* 拓展贡献的管理器页面（侧栏入口、顶替内置页面）：面板占满内容区宽度。 */
+.shell .extension-page-host {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.shell .extension-manager-panel.is-full-page {
+  margin: 0;
+}
+.shell .extension-page-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 8px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
 .shell .user-script-row .mg-menu .mg-danger {
   color: hsl(var(--status-error));
 }

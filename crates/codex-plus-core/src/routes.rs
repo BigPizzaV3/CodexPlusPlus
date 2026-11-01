@@ -354,6 +354,9 @@ pub async fn handle_bridge_request(
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/cdp/targets" => ctx.runtime.cdp_targets().await,
         "/cdp/evaluate" => ctx.runtime.cdp_evaluate(payload.clone()).await,
+        // 系统鼠标位置：拓展写「桌宠跟随鼠标」这类功能用（页面里拿不到窗口外的鼠标）。只读。
+        "/system/cursor-position" => crate::launcher::cursor_position()
+            .map(|(x, y)| json!({ "status": "ok", "x": x, "y": y })),
         // Codex++ 内部用：拓展要改写发往 app-server 的请求时补开客户端捕获。不进拓展路由白名单。
         "/extensions/request-capture" => ctx.runtime.request_app_server_client_capture().await,
         // 拓展常驻后台：页面侧 ctx.backend 用。进程由处理桥接的这个进程托管，与具体运行时无关。
