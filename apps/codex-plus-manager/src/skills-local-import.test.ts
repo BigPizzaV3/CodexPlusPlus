@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { EN_PLAIN, EN_TEMPLATE } from "./i18n-en.ts";
 
 // 本地和 cc-switch 导入先预览重复项，再由用户显式选择覆盖。
 const extra = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
@@ -44,6 +45,13 @@ test("incomplete comparisons require per-item confirmation and submit the previe
   assert.match(legacy, /manager\.preview_skill_import\(&candidates, &origins\)/);
   assert.match(legacy, /manager\.apply_skill_import\(&candidates, &origins, "local", &selections\)/);
   assert.doesNotMatch(legacy, /import_from_local_directory/);
+});
+
+test("import preview strings have English translations in the correct dictionary", () => {
+  const drawer = extra.slice(extra.indexOf("function SkillImportDrawer"), extra.indexOf("function SortableSkillGroup"));
+  for (const [, kind, key] of drawer.matchAll(/\b(t|tf)\("([^"]+)"/g)) {
+    assert.ok((kind === "t" ? EN_PLAIN : EN_TEMPLATE)[key], `missing English translation: ${key}`);
+  }
 });
 
 test("manager resumes Codex only after Skill recovery succeeds", () => {

@@ -5,6 +5,20 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "选择要导入的 Skills": "Choose skills to import",
+  "重新检查": "Check again",
+  "覆盖时会同步已启用的 Agent 副本，并保留原版本备份。": "Overwriting updates enabled agent copies and keeps a backup of the original version.",
+  "选择无重复项": "Select items without duplicates",
+  "选择全部含覆盖": "Select all, including overwrites",
+  "所选导入项互相重复，请只保留其中一个。": "Selected import items duplicate one another. Keep only one.",
+  "多个导入项不能覆盖同一个已有 Skill。": "Multiple imports cannot overwrite the same existing skill.",
+  "请为每个重复项选择要覆盖的 Skill。": "Choose an existing skill to overwrite for each duplicate.",
+  "覆盖已有": "Overwrite existing",
+  "选择覆盖目标": "Choose overwrite target",
+  "导入清单中重复": "Duplicate in import list",
+  "部分已有 Skill 无法比较，可能存在未发现的重复项：": "Some existing skills could not be compared; duplicates may have been missed:",
+  "我已了解比较不完整，仍要导入此项": "I understand the comparison is incomplete and want to import this item",
+  "预览缺少比较结果，请更新后重新检查。": "The preview is missing comparison results. Update and check again.",
   // 内置拓展
   "模型分组": "Model grouping",
   "模型选择器里按供应商分组折叠": "Groups models by provider in the model picker, with collapsible groups",
@@ -3015,13 +3029,12 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "导入所选 {0} 项": "Import {0} selected",
+  "共 {0} 项，已选 {1} 项": "{0} items, {1} selected",
   "正在检查仓库 {0}/{1}": "Checking repositories {0}/{1}",
   "已检查 {0} 个仓库，{1} 个 Skill 有候选来源": "Checked {0} repositories; {1} skills have candidate sources",
   "{0} 个仓库检查失败": "{0} repository checks failed",
   "{0} 项无法比较": "{0} items could not be compared",
-  "部分已有 Skill 无法比较，可能存在未发现的重复项：": "Some existing skills could not be compared; duplicates may have been missed:",
-  "我已了解比较不完整，仍要导入此项": "I understand the comparison is incomplete and want to import this item",
-  "预览缺少比较结果，请更新后重新检查。": "The preview is missing comparison results. Update and check again.",
   "已选 {0} 项": "{0} selected",
   "关联所选 {0} 项": "Link {0} selected",
   "{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。": "{0} asks {1} for this model itself, with its own sign-in or key, not through Codex++. Picking it disconnects Codex++ and restores the settings from before.",
