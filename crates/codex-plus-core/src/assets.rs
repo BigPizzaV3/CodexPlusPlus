@@ -596,7 +596,6 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         .and_then(|value| serde_json::to_string(value).ok())
         .map(|value| format!("window.__CODEX_PLUS_INSTANCE_LABEL__ = {value};\n"))
         .unwrap_or_default();
-    let image_overlay = image_overlay_config(helper_port, settings);
     let dream_skin_art = dream_skin_art_data_uri(settings);
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
     let dream_skin_theme = &settings.codex_app_dream_skin_theme_config;
@@ -617,12 +616,11 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             ""
         };
     format!(
-        "{}window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
+        "{}window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
         instance_identity,
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         serde_json::to_string(DIAGNOSTIC_BUILD_ID).expect("build id should serialize"),
-        serde_json::to_string(&image_overlay).expect("image overlay config should serialize"),
         serde_json::to_string(dream_skin_platform()).expect("dream skin platform should serialize"),
         serde_json::to_string(DREAM_SKIN_RENDERER_REVISION)
             .expect("dream skin renderer revision should serialize"),
@@ -693,28 +691,6 @@ fn dream_skin_content_signature(value: &[u8]) -> String {
     format!("{}-{hash:x}", value.len())
 }
 
-pub fn image_overlay_config(helper_port: u16, settings: &BackendSettings) -> Value {
-    let has_path = !settings.codex_app_image_overlay_path.trim().is_empty();
-    let enabled = settings.codex_app_image_overlay_enabled && has_path;
-    let data_url = if enabled {
-        image_file_data_uri(Path::new(settings.codex_app_image_overlay_path.trim()))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    json!({
-        "enabled": enabled && !data_url.is_empty(),
-        "opacity": f64::from(settings.codex_app_image_overlay_opacity.clamp(1, 100)) / 100.0,
-        "fitMode": settings.codex_app_image_overlay_fit_mode.as_str(),
-        "dataUrl": data_url,
-        "imageUrl": if enabled && !data_url.is_empty() {
-            format!("http://127.0.0.1:{helper_port}/overlay/image")
-        } else {
-            String::new()
-        },
-    })
-}
-
 pub fn paste_fix_enabled_config(settings: &BackendSettings) -> Value {
     json!({ "enabled": settings.codex_app_paste_fix })
 }
@@ -726,7 +702,7 @@ fn image_data_uri(mime_type: &str, bytes: &[u8]) -> String {
     )
 }
 
-fn image_file_data_uri(path: &Path) -> Option<String> {
+pub(crate) fn image_file_data_uri(path: &Path) -> Option<String> {
     let mime_type = image_content_type(path)?;
     let bytes = std::fs::read(path).ok()?;
     Some(image_data_uri(mime_type, &bytes))
@@ -935,30 +911,5 @@ mod tests {
         assert!(wallpaper_rules.contains("[data-app-shell-titlebar=\"true\"]"));
         assert!(wallpaper_rules.contains("#codex-plus-usage-statusline"));
         assert!(wallpaper_rules.contains(".codex-token-usage-badge"));
-    }
-
-    #[test]
-    fn image_overlay_config_includes_fit_mode() {
-        let settings = BackendSettings {
-            codex_app_image_overlay_fit_mode: "fill".to_string(),
-            ..BackendSettings::default()
-        };
-        let config = image_overlay_config(57321, &settings);
-
-        assert_eq!(config["fitMode"].as_str(), Some("fill"));
-    }
-
-    #[test]
-    fn image_overlay_config_clears_endpoint_when_asset_is_unavailable() {
-        let settings = BackendSettings {
-            codex_app_image_overlay_enabled: true,
-            codex_app_image_overlay_path: "C:\\missing\\overlay.png".to_string(),
-            ..BackendSettings::default()
-        };
-        let config = image_overlay_config(57321, &settings);
-
-        assert_eq!(config["enabled"], false);
-        assert_eq!(config["dataUrl"], "");
-        assert_eq!(config["imageUrl"], "");
     }
 }

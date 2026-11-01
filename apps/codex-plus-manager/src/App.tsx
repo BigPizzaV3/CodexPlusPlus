@@ -456,7 +456,6 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppProxyRequestStatus: boolean;
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
-  codexAppTypingEffect: TypingEffect;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
@@ -500,10 +499,6 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppStepwiseMaxInputChars: number;
   codexAppStepwiseMaxOutputTokens: number;
   codexAppStepwiseTimeoutMs: number;
-  codexAppImageOverlayEnabled: boolean;
-  codexAppImageOverlayPath: string;
-  codexAppImageOverlayOpacity: number;
-  codexAppImageOverlayFitMode: ImageOverlayFitMode;
   codexAppDreamSkinEnabled: boolean;
   codexAppDreamSkinPaused: boolean;
   codexAppDreamSkinTheme: string;
@@ -567,8 +562,6 @@ type ToolsResult = {
   activeTool: string;
 };
 
-type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
-type TypingEffect = "off" | "rainbow" | "fireworks" | "stars";
 
 export type RelayProfile = {
   id: string;
@@ -1422,7 +1415,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "maintenance", get label() { return t("安装维护"); }, icon: Wrench, tool: "codex" },
   { id: "about", get label() { return t("关于"); }, icon: Info },
   { id: "settings", get label() { return t("整体设置"); }, icon: Settings },
-  // Agent 专属设置：目前只有 Codex 有专属选项（图片覆盖层、启动参数）。
+  // Agent 专属设置：目前只有 Codex 有专属选项（启动参数等）。
   // Claude / Grok 没有独立设置项，原来那页只有一个跳回各自主页的按钮，所以不再给它们显示。
   { id: "agentSettings", get label() { return t("设置"); }, icon: Settings, tool: "codex" },
   { id: "relayEnvironment", get label() { return t("旧版代理设置"); }, icon: ShieldCheck, tool: "codex" },
@@ -1540,7 +1533,6 @@ const defaultSettings: BackendSettings = {
   codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
-  codexAppTypingEffect: "off",
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
@@ -1576,10 +1568,6 @@ const defaultSettings: BackendSettings = {
   codexAppStepwiseMaxInputChars: 6000,
   codexAppStepwiseMaxOutputTokens: 500,
   codexAppStepwiseTimeoutMs: 8000,
-  codexAppImageOverlayEnabled: false,
-  codexAppImageOverlayPath: "",
-  codexAppImageOverlayOpacity: 35,
-  codexAppImageOverlayFitMode: "fit",
   codexAppDreamSkinEnabled: false,
   codexAppDreamSkinPaused: false,
   codexAppDreamSkinTheme: "pink",
@@ -3473,15 +3461,6 @@ export function App() {
     }
   };
 
-  const resetImageOverlaySettings = async () => {
-    const result = await run(() => call<SettingsResult>("reset_image_overlay_settings"));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showNotice(t("图片覆盖层"), result.message, result.status);
-    }
-  };
-
   const refreshAds = async (silent = false) => {
     const result = await run(() => call<AdsResult>("load_ads"));
     if (result) {
@@ -4458,7 +4437,6 @@ export function App() {
       importSettings,
       chooseSettingsPath,
       resetSettingsPath,
-      resetImageOverlaySettings,
       chooseCodexAppPath: async (mode: "folder" | "file") => {
         let selected: unknown;
         try {
@@ -4495,28 +4473,6 @@ export function App() {
           setLaunchForm((current) => ({ ...current, appPath: "" }));
           showNotice(t("Codex 应用路径"), t("已清除保存路径，后续启动会回到自动探测。"), result.status);
           await refreshOverview(true);
-        }
-      },
-      chooseImageOverlayPath: async () => {
-        let selected: unknown;
-        try {
-          selected = await open({
-            directory: false,
-            multiple: false,
-            title: t("选择覆盖图片"),
-            filters: [{ name: t("图片"), extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }],
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          showNotice(t("图片覆盖层"), tf("打开选择器失败：{0}", [message]), "failed");
-          return;
-        }
-        if (typeof selected === "string" && selected.trim()) {
-          setSettingsForm((current) => ({
-            ...current,
-            codexAppImageOverlayEnabled: true,
-            codexAppImageOverlayPath: selected.trim(),
-          }));
         }
       },
       chooseDreamSkinImagePath: chooseDreamSkinDraftImage,
@@ -5391,10 +5347,8 @@ type Actions = {
   importSettings: () => Promise<void>;
   chooseSettingsPath: () => Promise<void>;
   resetSettingsPath: () => Promise<void>;
-  resetImageOverlaySettings: () => Promise<void>;
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
-  chooseImageOverlayPath: () => Promise<void>;
   chooseDreamSkinImagePath: () => Promise<void>;
   resetDreamSkinImage: () => Promise<void>;
   resetDreamSkinTheme: () => Promise<void>;
@@ -8910,7 +8864,6 @@ const BUILTIN_SETTINGS_TARGETS: Record<string, BuiltinSettingsTarget> = {
   stepwise: { tab: "stepwise" },
   "answer-outline": { tab: "stepwise" },
   "dream-skin": { route: "dreamSkin" },
-  "image-overlay": { route: "agentSettings" },
 };
 
 /// 一个内置拓展的卡片：开关（就是对应的设置项；没有设置项的记在用户脚本配置里）、
@@ -11164,7 +11117,7 @@ function AboutScreen({
 /// Agent 专属设置页。
 ///
 /// 入口在侧栏各 Agent 自己的菜单里，只放跟随该 Agent 的选项：
-/// - **Codex**：图片覆盖层、额外启动参数
+/// - **Codex**：额外启动参数
 /// - **Grok / Claude**：供应商与模型在各自页面里管理，这里给出跳转
 ///
 /// 应用级选项（主题、配置备份、配置文件路径）在最左侧齿轮的「设置」里，
@@ -11184,76 +11137,6 @@ function AgentSettingsScreen({
     <div className="settings-page">
       <SettingsAutoSave dirty={dirty} form={form} actions={actions} />
       <>
-        <Panel id="codex-settings-overlay">
-          <SwitchPanelHead
-            checked={form.codexAppImageOverlayEnabled}
-            detail={t("在当前 Codex 会话上叠加一张背景图")}
-            label={t("启用 Codex 图片覆盖层")}
-            onChange={(checked) => onFormChange({ ...form, codexAppImageOverlayEnabled: checked })}
-            title={t("Codex 图片覆盖层")}
-          />
-          <CardContent className="settings-content setting-rows">
-            {form.codexAppImageOverlayEnabled ? (
-              <>
-                <SettingRow title={t("覆盖图片")} description={t("支持 png / jpg / webp / gif / bmp。")}>
-                  <div className="setting-inline">
-                    <Input
-                      value={form.codexAppImageOverlayPath}
-                      onChange={(event) => onFormChange({ ...form, codexAppImageOverlayPath: event.currentTarget.value })}
-                      placeholder={t("选择 png / jpg / webp / gif / bmp")}
-                    />
-                    <Button variant="secondary" onClick={() => void actions.chooseImageOverlayPath()}>
-                      {t("选择图片")}
-                    </Button>
-                  </div>
-                </SettingRow>
-                <SettingRow title={t("透明度")} description={t("数值越大，背景图越明显。")}>
-                  <div className="setting-inline setting-range">
-                    <Input
-                      min={1}
-                      max={100}
-                      type="range"
-                      value={form.codexAppImageOverlayOpacity}
-                      onChange={(event) =>
-                        onFormChange({
-                          ...form,
-                          codexAppImageOverlayOpacity: clampNumber(Number(event.currentTarget.value), 1, 100),
-                        })
-                      }
-                    />
-                    <span className="setting-range-value">{form.codexAppImageOverlayOpacity}%</span>
-                  </div>
-                </SettingRow>
-                <SettingRow title={t("背景适配方式")} description={t("图片和窗口比例不一致时如何铺放。")}>
-                  <AppSelect
-                    value={form.codexAppImageOverlayFitMode}
-                    onChange={(value) =>
-                      onFormChange({
-                        ...form,
-                        codexAppImageOverlayFitMode: value,
-                      })
-                    }
-                    options={[
-                      { value: "fill", label: t("填充") },
-                      { value: "fit", label: t("适应") },
-                      { value: "stretch", label: t("拉伸") },
-                      { value: "tile", label: t("平铺") },
-                      { value: "center", label: t("居中") },
-                    ]}
-                  />
-                </SettingRow>
-                <SettingRow title={t("恢复默认")} description={t("清除图片，并把透明度、适配方式恢复为默认值。")}>
-                  <Button variant="secondary" onClick={() => void actions.resetImageOverlaySettings()}>
-                    {t("重置背景")}
-                  </Button>
-                </SettingRow>
-              </>
-            ) : (
-              <p className="setting-footnote">{t("已关闭：Codex 会话不叠加背景图。")}</p>
-            )}
-          </CardContent>
-        </Panel>
-
         <Panel id="codex-settings-launch-args">
           <CardHead title={t("Codex 启动参数")} detail={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
           <CardContent className="settings-content setting-rows">
@@ -11441,7 +11324,7 @@ function GlobalSettingsScreen({
           <div className="global-setting-row">
             <div className="global-setting-copy">
               <strong>{t("Codex 专属设置")}</strong>
-              <span>{t("图片覆盖层、启动参数等只作用于 Codex 的选项，在 Codex 菜单的「设置」里。")}</span>
+              <span>{t("启动参数等只作用于 Codex 的选项，在 Codex 菜单的「设置」里。")}</span>
             </div>
             <div className="global-setting-actions">
               <Button size="sm" variant="secondary" onClick={onOpenAgentSettings}>{t("打开 Codex 设置")}</Button>
@@ -15327,7 +15210,6 @@ function AppSettingsFocus({ focus, onDone }: { focus: string | null; onDone: () 
 /** 设置页（含安装维护）左侧目录的分组，id 对应各张卡片。 */
 function codexSettingsSections() {
   return [
-    { id: "codex-settings-overlay", label: t("图片覆盖层") },
     { id: "codex-settings-launch-args", label: t("启动参数") },
     { id: "codex-settings-check", label: t("检查与修复") },
     { id: "codex-settings-startup", label: t("开机启动") },
@@ -17894,10 +17776,6 @@ function healthItems(overview: OverviewResult | null): Array<{ title: string; st
 }
 
 
-function normalizeTypingEffect(value: unknown): TypingEffect {
-  return value === "rainbow" || value === "fireworks" || value === "stars" ? value : "off";
-}
-
 function normalizeSettings(settings: BackendSettings): BackendSettings {
   const backendAggregates = new Map(
     (settings.aggregateRelayProfiles ?? []).map((aggregate) => [aggregate.id, aggregate] as const),
@@ -17967,7 +17845,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     weixinConnectReasoningEffort: (settings.weixinConnectReasoningEffort || "").trim(),
     weixinConnectProjectId: (settings.weixinConnectProjectId || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
-    codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     protocolProxyAutoRetry: settings.protocolProxyAutoRetry !== false,
     // 默认关闭（opt-in），只有显式开启才生效。
@@ -17983,8 +17860,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     protocolProxyAutoRetryIntervalSeconds: clampNumber(settings.protocolProxyAutoRetryIntervalSeconds ?? 2, 0, 30),
     protocolProxyAutoRetryStatusCodes: normalizeRetryStatusCodes(settings.protocolProxyAutoRetryStatusCodes),
     helperMaxRequestBodyMib: clampNumber(settings.helperMaxRequestBodyMib ?? 128, 32, 512),
-    codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
-    codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
     codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,
     codexAppDreamSkinThemeConfig: normalizeDreamSkinTheme(settings.codexAppDreamSkinThemeConfig),
     codexAppDreamSkinImagePath: (settings.codexAppDreamSkinImagePath || "").trim(),
@@ -18047,12 +17922,6 @@ function normalizeStepwiseGenerationMode(value: StepwiseGenerationMode | undefin
 function parsePort(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : fallback;
-}
-
-function normalizeImageOverlayFitMode(value: string | undefined): ImageOverlayFitMode {
-  return value === "fill" || value === "fit" || value === "stretch" || value === "tile" || value === "center"
-    ? value
-    : "fit";
 }
 
 function codexExtraArgsToInput(args: string[] | undefined) {

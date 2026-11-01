@@ -50,7 +50,6 @@ const demoSettings = {
   codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
-  codexAppTypingEffect: "off",
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
@@ -80,10 +79,6 @@ const demoSettings = {
   codexAppStepwiseMaxInputChars: 6000,
   codexAppStepwiseMaxOutputTokens: 500,
   codexAppStepwiseTimeoutMs: 8000,
-  codexAppImageOverlayEnabled: false,
-  codexAppImageOverlayPath: "",
-  codexAppImageOverlayOpacity: 35,
-  codexAppImageOverlayFitMode: "fit",
   codexAppDreamSkinEnabled: false,
   codexAppDreamSkinPaused: false,
   codexAppDreamSkinTheme: "pink",
@@ -617,7 +612,7 @@ const demoClaudeEnhance = {
 // 本地拓展演示数据：一个单文件脚本、一个已加载的拓展包、一个清单有误的拓展包。
 const demoBuiltins = [
   ["agent-pet", "Agent 桌宠", true, null], ["usage-statusline", "用量状态栏", true, null], ["dictation", "语音听写", false, null],
-  ["turn-rewind", "轮次回退", true, "user:pomodoro_timer"], ["typing-effects", "打字特效", true, null],
+  ["turn-rewind", "轮次回退", true, "user:pomodoro_timer"],
   ["side-chat-save", "侧聊保存", true, null], ["history-turn-recovery", "历史轮次补全", true, null],
   ["capacity-auto-retry", "容量不足自动重试", true, null], ["proxy-request-status", "请求状态条", true, null],
   ["model-picker-groups", "模型分组", true, null],

@@ -1,0 +1,35 @@
+{
+  "id": "image-overlay",
+  "name": "背景图",
+  "version": "1.0.0",
+  "description": "在 Codex 窗口里铺一张本机图片作为背景，可调透明度与铺放方式。",
+  "engines": { "codexpp": 1 },
+  "renderer": ["overlay.js", "main.js"],
+  "permissions": {
+    "routes": ["/diagnostics/log", "/image-overlay/image"]
+  },
+  "config": {
+    "imagePath": {
+      "type": "string",
+      "format": "file",
+      "title": "图片",
+      "description": "本机图片文件，支持 png / jpg / webp / gif / bmp。",
+      "extensions": ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
+      "default": ""
+    },
+    "opacity": { "type": "number", "title": "透明度（%）", "description": "数值越大，背景图越明显。", "min": 1, "max": 100, "default": 35 },
+    "fitMode": {
+      "type": "select",
+      "title": "背景适配方式",
+      "description": "图片和窗口比例不一致时如何铺放。",
+      "options": [
+        { "value": "fill", "label": "填充" },
+        { "value": "fit", "label": "适应" },
+        { "value": "stretch", "label": "拉伸" },
+        { "value": "tile", "label": "平铺" },
+        { "value": "center", "label": "居中" }
+      ],
+      "default": "fit"
+    }
+  }
+}

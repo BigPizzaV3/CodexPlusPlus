@@ -1007,15 +1007,6 @@
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
-      .codex-plus-typing-effect-select {
-        flex-shrink: 0;
-        align-self: center;
-        min-width: 112px;
-        height: 32px;
-        padding: 0 8px;
-        font-size: 13px;
-      }
-      .codex-plus-typing-effect-select:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -1241,7 +1232,6 @@
       .codex-plus-toggle span { background: var(--color-token-bg-primary, #fff); box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.16)); }
       .codex-plus-toggle[data-enabled="true"] { background: var(--color-background-primary-solid, var(--color-background-success-solid, #10a37f)); }
       .codex-plus-width-input,
-      .codex-plus-typing-effect-select,
       .codex-plus-form-field input {
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-lg, 8px);
@@ -1250,7 +1240,6 @@
         font-family: inherit;
       }
       .codex-plus-width-input:focus,
-      .codex-plus-typing-effect-select:focus,
       .codex-plus-form-field input:focus { border-color: var(--codex-plus-focus); outline: 2px solid color-mix(in srgb, var(--codex-plus-focus) 25%, transparent); outline-offset: 0; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
@@ -1415,8 +1404,7 @@
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button,
-      .codex-plus-settings .codex-plus-width-input,
-      .codex-plus-settings .codex-plus-typing-effect-select {
+      .codex-plus-settings .codex-plus-width-input {
         box-sizing: border-box;
         min-height: 32px;
         border: 1px solid var(--codex-plus-border);
@@ -1427,89 +1415,7 @@
         font-size: 13px;
         line-height: 18px;
       }
-      .codex-plus-settings .codex-plus-width-input,
-      .codex-plus-settings .codex-plus-typing-effect-select { height: 32px; }
-      .codex-plus-settings .codex-plus-width-input { width: 72px; min-width: 48px; }
-      .codex-plus-settings .codex-plus-typing-effect-select { min-width: 0; }
-      .codex-plus-settings .codex-plus-typing-effect-select[hidden] { display: none; }
-      .codex-plus-settings .codex-plus-dropdown-trigger {
-        display: inline-flex;
-        flex: 0 0 auto;
-        align-items: center;
-        align-self: center;
-        justify-content: space-between;
-        gap: 8px;
-        height: 28px;
-        min-width: 112px;
-        box-sizing: border-box;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 8px;
-        padding: 3px 10px;
-        background: var(--codex-plus-bg-secondary);
-        color: var(--codex-plus-text);
-        font: inherit;
-        font-size: 13px;
-        line-height: 20px;
-        cursor: pointer;
-      }
-      .codex-plus-settings .codex-plus-dropdown-trigger > svg {
-        flex: 0 0 16px;
-        width: 16px;
-        height: 16px;
-        color: var(--codex-plus-text-secondary);
-      }
-      .codex-plus-settings .codex-plus-dropdown-trigger:hover:not(:disabled),
-      .codex-plus-settings .codex-plus-dropdown-trigger[aria-expanded="true"] { background: var(--codex-plus-bg-hover); }
-      .codex-plus-settings .codex-plus-dropdown-trigger:disabled { cursor: not-allowed; opacity: .55; }
-      /* 菜单挂在 overlay 上，避免设置卡片或滚动容器裁切。 */
-      .codex-plus-dropdown-menu {
-        position: absolute;
-        z-index: 2;
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        width: 220px;
-        max-width: calc(100% - 16px);
-        box-sizing: border-box;
-        padding: 6px;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 14px;
-        background: var(--codex-plus-bg-elevated);
-        color: var(--codex-plus-text);
-        font-family: inherit;
-        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
-      }
-      .codex-plus-dropdown-menu[hidden] { display: none; }
-      .codex-plus-dropdown-option {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        width: 100%;
-        min-height: 28px;
-        box-sizing: border-box;
-        border: 0;
-        border-radius: 8px;
-        padding: 4px 12px;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        font-size: 14px;
-        line-height: 20px;
-        text-align: left;
-        cursor: pointer;
-      }
-      .codex-plus-dropdown-option > svg {
-        flex: 0 0 16px;
-        width: 16px;
-        height: 16px;
-        visibility: hidden;
-      }
-      .codex-plus-dropdown-option[aria-selected="true"] > svg { visibility: visible; }
-      .codex-plus-dropdown-option:hover,
-      .codex-plus-dropdown-option:focus-visible {
-        background: var(--codex-plus-bg-hover);
-        outline: none;
-      }
+      .codex-plus-settings .codex-plus-width-input { height: 32px; width: 72px; min-width: 48px; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button { white-space: normal; overflow-wrap: anywhere; }
       .codex-plus-settings .codex-plus-action-button:hover,
@@ -1931,12 +1837,12 @@
   }
 
   function defaultCodexPlusSettings() {
-    // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、agent-pet、
+    // capacityAutoRetry* 必须写成字面量：多个测试（agent-pet、
     // backend-settings-sync…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1961,7 +1867,6 @@
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
-    typingEffect: "codexAppTypingEffect",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
     dreamSkinThemeConfig: "codexAppDreamSkinThemeConfig",
@@ -2015,7 +1920,6 @@
         markdownExport: false,
         sideChatSave: false,
         pasteFix: false,
-        typingEffect: "off",
         threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,

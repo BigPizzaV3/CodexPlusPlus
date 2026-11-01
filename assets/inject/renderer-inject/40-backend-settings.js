@@ -918,7 +918,6 @@
   }
 
   function selectCodexPlusTab(tab) {
-    closeCodexPlusTypingEffectDropdown();
     // 归一化后再比对：panel 用的是 extensions，而旧调用点仍传 userScripts，
     // 不统一就会两边都对不上、所有 panel 全被隐藏。
     const normalized = codexPlusModalTab(tab);
@@ -1259,79 +1258,6 @@
     return "home";
   }
 
-  let codexPlusTypingEffectDropdownCleanup = null;
-
-  /** 保留 select 的值与 change 契约，只替换原生系统菜单的呈现。 */
-  function syncCodexPlusTypingEffectDropdown(select) {
-    const overlay = select.closest(".codex-plus-modal-overlay, .codex-plus-page-overlay");
-    const trigger = overlay?.querySelector("[data-codex-plus-typing-effect-trigger]");
-    if (!trigger) return;
-    trigger.disabled = select.disabled;
-    const label = trigger.querySelector("[data-codex-plus-dropdown-label]");
-    if (label) label.textContent = select.selectedOptions[0]?.textContent || "关闭";
-    overlay.querySelectorAll("[data-codex-plus-typing-effect-option]").forEach((option) => {
-      const selected = option.dataset.codexPlusTypingEffectOption === select.value;
-      option.setAttribute("aria-selected", String(selected));
-      option.tabIndex = selected ? 0 : -1;
-    });
-    if (select.disabled) closeCodexPlusTypingEffectDropdown();
-  }
-
-  function closeCodexPlusTypingEffectDropdown(restoreFocus = false) {
-    const menu = document.querySelector("[data-codex-plus-typing-effect-menu]");
-    const trigger = menu?.parentElement?.querySelector("[data-codex-plus-typing-effect-trigger]");
-    if (menu) menu.hidden = true;
-    trigger?.setAttribute("aria-expanded", "false");
-    codexPlusTypingEffectDropdownCleanup?.();
-    codexPlusTypingEffectDropdownCleanup = null;
-    if (restoreFocus && trigger?.isConnected && !trigger.disabled) trigger.focus();
-  }
-
-  function openCodexPlusTypingEffectDropdown(overlay, last = false) {
-    const select = overlay.querySelector("[data-codex-plus-typing-effect]");
-    const trigger = overlay.querySelector("[data-codex-plus-typing-effect-trigger]");
-    const menu = overlay.querySelector("[data-codex-plus-typing-effect-menu]");
-    if (!select || select.disabled || !trigger || !menu) return;
-    closeCodexPlusTypingEffectDropdown();
-    syncCodexPlusTypingEffectDropdown(select);
-    menu.hidden = false;
-    trigger.setAttribute("aria-expanded", "true");
-    // 菜单直接挂 overlay，避开滚动内容的裁剪；坐标换算与页面缩放保持同源。
-    const frame = overlay.getBoundingClientRect();
-    const anchor = trigger.getBoundingClientRect();
-    const zoom = codexPlusWindowZoom();
-    const width = frame.width / zoom;
-    const height = frame.height / zoom;
-    menu.style.maxHeight = `${Math.max(0, height - 16)}px`;
-    const left = (anchor.right - frame.left) / zoom - menu.offsetWidth;
-    const below = (anchor.bottom - frame.top) / zoom + 4;
-    const above = (anchor.top - frame.top) / zoom - menu.offsetHeight - 4;
-    const top = below + menu.offsetHeight > height - 8 && above >= 8 ? above : below;
-    menu.style.left = `${Math.max(8, Math.min(left, width - menu.offsetWidth - 8))}px`;
-    menu.style.top = `${Math.max(8, Math.min(top, height - menu.offsetHeight - 8))}px`;
-    const options = Array.from(menu.querySelectorAll("[role=option]"));
-    const focused = last ? options[options.length - 1] : options.find((option) => option.getAttribute("aria-selected") === "true") || options[0];
-    focused?.focus({ preventScroll: true });
-    const controller = new AbortController();
-    const close = () => closeCodexPlusTypingEffectDropdown();
-    document.addEventListener("pointerdown", (event) => {
-      if (!menu.contains(event.target) && !trigger.contains(event.target)) close();
-    }, { capture: true, signal: controller.signal });
-    overlay.addEventListener("scroll", (event) => {
-      if (!menu.contains(event.target)) close();
-    }, { capture: true, signal: controller.signal });
-    window.addEventListener("resize", close, { signal: controller.signal });
-    window.addEventListener("blur", close, { signal: controller.signal });
-    const observer = new MutationObserver(() => {
-      if (!overlay.isConnected) close();
-    });
-    observer.observe(document.body, { childList: true });
-    codexPlusTypingEffectDropdownCleanup = () => {
-      controller.abort();
-      observer.disconnect();
-    };
-  }
-
   // ── 设置项清单 ──────────────────────────────────────────────────────────────
   // 设置页里每个开关的标题、说明、分组都来自后端 /settings/catalog，
   // 与管理器「Codex → 内置拓展」页 import 的是同一份 JSON（crates/codex-plus-core/assets/enhancement-settings.json）。
@@ -1427,34 +1353,6 @@
     return `<input class="codex-plus-width-input" ${attribute}="true" min="${min}" max="${max}" step="${step}" type="number" value="${value}" title="${escapeHtml(input.hint || input.label || "")}" aria-label="${label}">`;
   }
 
-  /** 打字特效沿用自绘下拉：隐藏的 select 保留 change 契约，选项文案来自清单。 */
-  function renderCodexPlusTypingEffectControl(item) {
-    const title = escapeHtml(item.title);
-    const options = Array.isArray(item.options) ? item.options : [];
-    return `
-                  <select class="codex-plus-typing-effect-select" data-codex-plus-typing-effect="true" aria-label="${title}" hidden aria-hidden="true" tabindex="-1">
-                    ${options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}
-                  </select>
-                  <button type="button" class="codex-plus-dropdown-trigger" data-codex-plus-typing-effect-trigger="true" aria-label="${title}" aria-haspopup="listbox" aria-expanded="false" aria-controls="codex-plus-typing-effect-menu">
-                    <span data-codex-plus-dropdown-label="true">${escapeHtml(options[0]?.label || "")}</span>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-                  </button>`;
-  }
-
-  /** 下拉菜单挂在 overlay 根部（避开滚动裁剪），选项同样按清单生成。 */
-  function syncCodexPlusTypingEffectMenu(overlay) {
-    const menu = overlay?.querySelector("[data-codex-plus-typing-effect-menu]");
-    if (!menu) return;
-    const item = codexPlusSettingsCatalog?.items.find((candidate) => candidate.key === "codexAppTypingEffect");
-    const options = Array.isArray(item?.options) ? item.options : [];
-    menu.setAttribute("aria-label", item?.title || "");
-    menu.innerHTML = options.map((option) => `
-          <button type="button" class="codex-plus-dropdown-option" data-codex-plus-typing-effect-option="${escapeHtml(option.value)}" role="option" aria-selected="false" tabindex="-1">
-            <span>${escapeHtml(option.label)}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-          </button>
-        `).join("");
-  }
-
   /** 清单 key 是 BackendSettings 字段；能映射到本页设置 key 的走 setCodexPlusSetting（带即时副作用）。 */
   function codexPlusLocalSettingKey(backendKey) {
     return Object.keys(codexPlusBackendSettingMap).find((key) => codexPlusBackendSettingMap[key] === backendKey) || "";
@@ -1516,9 +1414,7 @@
   function renderCodexPlusSettingsCatalogRow(item, options = {}) {
     const title = escapeHtml(item.title);
     let control = "";
-    if (item.key === "codexAppTypingEffect" && item.control === "select") {
-      control = renderCodexPlusTypingEffectControl(item);
-    } else if (item.control === "bool") {
+    if (item.control === "bool") {
       const localKey = codexPlusLocalSettingKey(item.key);
       const binding = localKey ? `data-codex-plus-setting="${escapeHtml(localKey)}"` : `data-codex-backend-setting="${escapeHtml(item.key)}"`;
       const toggle = `<button type="button" class="codex-plus-toggle" ${binding} role="switch" aria-checked="false" aria-label="${title}"><span></span></button>`;
@@ -1653,7 +1549,6 @@
       const retryFocused = !!document.activeElement?.closest?.("[data-codex-plus-settings-catalog-retry]");
       panel.querySelectorAll("[data-codex-plus-settings-catalog]").forEach((node) => node.remove());
       anchor.insertAdjacentHTML("beforebegin", renderCodexPlusSettingsCatalogSections());
-      syncCodexPlusTypingEffectMenu(panel.closest(".codex-plus-modal-overlay, .codex-plus-page-overlay"));
       if (retryFocused) {
         panel.querySelector("[data-codex-plus-settings-catalog-retry], [data-codex-plus-settings-catalog] .codex-plus-toggle")?.focus({ preventScroll: true });
       }
@@ -1746,9 +1641,7 @@
           </div>
         </div>
       </div>
-      <div id="codex-plus-typing-effect-menu" class="codex-plus-dropdown-menu" data-codex-plus-typing-effect-menu="true" role="listbox" hidden></div>
     `;
-    syncCodexPlusTypingEffectMenu(overlay);
     if (typeof mountCodexPlusSettingsPanel === "function") mountCodexPlusSettingsPanel(overlay.querySelector("[data-codex-plus-extensions-detail]"));
     overlay.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting], .codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       button.setAttribute("role", "switch");
@@ -1777,13 +1670,6 @@
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (typeof handleCodexPlusExtensionConfigChange === "function" && handleCodexPlusExtensionConfigChange(target)) return;
-      const typingEffectSelect = target?.closest("[data-codex-plus-typing-effect]");
-      if (typingEffectSelect) {
-        if (!typingEffectSelect.disabled && ["off", "rainbow", "fireworks", "stars"].includes(typingEffectSelect.value)) {
-          setCodexPlusSetting("typingEffect", typingEffectSelect.value);
-        }
-        return;
-      }
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
         const width = normalizeConversationViewWidth(widthInput.value);
@@ -1808,26 +1694,6 @@
       if (handleCodexPlusExtensionMenuClick(target)) return;
       // 拓展详情的页签、设置表单开关、README 页内锚点。
       if (typeof handleCodexPlusExtensionDetailClick === "function" && handleCodexPlusExtensionDetailClick(target, event)) return;
-      const typingEffectTrigger = target?.closest("[data-codex-plus-typing-effect-trigger]");
-      if (typingEffectTrigger) {
-        const menu = overlay.querySelector("[data-codex-plus-typing-effect-menu]");
-        if (menu?.hidden) openCodexPlusTypingEffectDropdown(overlay);
-        else closeCodexPlusTypingEffectDropdown();
-        return;
-      }
-      const typingEffectOption = target?.closest("[data-codex-plus-typing-effect-option]");
-      if (typingEffectOption) {
-        const select = overlay.querySelector("[data-codex-plus-typing-effect]");
-        if (select && !select.disabled) {
-          const value = typingEffectOption.dataset.codexPlusTypingEffectOption;
-          if (select.value !== value) {
-            select.value = value;
-            select.dispatchEvent(new Event("change", { bubbles: true }));
-          }
-        }
-        closeCodexPlusTypingEffectDropdown(true);
-        return;
-      }
       const extensionsBrowse = target?.closest("[data-codex-extensions-browse]");
       if (extensionsBrowse) {
         codexPlusExtensionsFilter = extensionsBrowse.dataset.codexExtensionsBrowse === "installed" ? "installed" : "market";
@@ -1976,32 +1842,6 @@
         return;
       }
     }, true);
-    overlay.addEventListener("keydown", (event) => {
-      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target?.closest("[data-codex-plus-typing-effect-trigger]") && ["ArrowDown", "ArrowUp"].includes(event.key)) {
-        event.preventDefault();
-        openCodexPlusTypingEffectDropdown(overlay, event.key === "ArrowUp");
-        return;
-      }
-      const menu = target?.closest("[data-codex-plus-typing-effect-menu]");
-      if (!menu || menu.hidden) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeCodexPlusTypingEffectDropdown(true);
-      } else if (event.key === "Tab") {
-        // 回到触发器后让浏览器处理 Tab，焦点会自然进入下一项而不会停在隐藏菜单里。
-        closeCodexPlusTypingEffectDropdown(true);
-      } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-        event.preventDefault();
-        const options = Array.from(menu.querySelectorAll("[role=option]"));
-        const current = options.indexOf(document.activeElement);
-        const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
-          : (current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
-        options.forEach((option, index) => { option.tabIndex = index === next ? 0 : -1; });
-        options[next]?.focus({ preventScroll: true });
-      }
-    }, true);
     // 图标加载失败的回退：error 不冒泡，只能捕获阶段委托。
     overlay.addEventListener("error", handleExtensionIconError, true);
     document.body.appendChild(overlay);
@@ -2043,7 +1883,6 @@
   function closeCodexPlusPage() {
     clearTimeout(window.__codexPlusPageNavigationCloseTimer);
     window.__codexPlusPageNavigationCloseTimer = null;
-    closeCodexPlusTypingEffectDropdown();
     window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
     window.__codexPlusPageResizeHandler = null;
     window.__codexPlusPageLayoutObserver?.disconnect();

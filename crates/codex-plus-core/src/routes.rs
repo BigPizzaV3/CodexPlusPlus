@@ -588,6 +588,19 @@ pub async fn handle_bridge_request(
                 Ok(json!({"status": "disabled"}))
             }
         }
+        // 背景图拓展的读图路由：只读这个拓展配置里的那张本机图片（页面拿不到本机文件）。
+        // 只有启用中的拓展在清单里声明了它才干活。
+        "/image-overlay/image" => {
+            if ctx.settings.extension_route_declared(path) {
+                tokio::task::spawn_blocking(|| {
+                    crate::bundled_extensions::image_overlay_image(&crate::user_scripts::default_user_script_manager())
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))
+            } else {
+                Ok(json!({"status": "disabled", "dataUrl": ""}))
+            }
+        }
         "/archived-thread" => {
             let title = payload
                 .get("title")

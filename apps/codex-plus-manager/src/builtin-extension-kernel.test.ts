@@ -60,8 +60,6 @@ function harness(windowState: Record<string, unknown> = {}) {
       handles.push(handle);
       return handle;
     },
-    installCodexPlusTypingEffects: () => calls.push("typing:install"),
-    uninstallCodexPlusTypingEffects: () => calls.push("typing:uninstall"),
     refreshDreamSkin: () => calls.push("dream:refresh"),
     syncCodexPlusCapacityAutoRetry: () => calls.push("capacity:sync"),
     syncWeixinDesktopThreads: async () => { calls.push("weixin:sync"); },
@@ -99,12 +97,11 @@ function harness(windowState: Record<string, unknown> = {}) {
   return { api, calls, services, known, listeners, interceptors, domListeners, emit, chain, stepOwners };
 }
 
-test("内置拓展装上时登记扫描步骤、挂打字特效监听；停用后撤掉", () => {
+test("内置拓展装上时登记扫描步骤；停用后撤掉", () => {
   (globalThis as any).__codexPlusScanSteps = undefined;
   (globalThis as any).__codexPlusBuiltinInactive = undefined;
   const { api, calls, known, stepOwners } = harness();
   api.sync();
-  assert.ok(calls.includes("typing:install"));
   for (const id of ["dream-skin", "side-chat-save", "dictation", "plugin-market-unlock", "session-delete", "thread-id-badge", "conversation-view"]) {
     assert.ok(stepOwners().has(`builtin:${id}`), `${id} 经 ctx.onScan 登记扫描步骤`);
   }
@@ -116,11 +113,10 @@ test("内置拓展装上时登记扫描步骤、挂打字特效监听；停用�
   calls.length = 0;
   api.runSteps();
   assert.ok(calls.includes("dream:refresh"), "扫描循环经登记的步骤刷新梦皮");
-  (known.window as any).__codexPlusBuiltinExtensionState = { disabled: ["dream-skin", "typing-effects"], replacedBy: {} };
+  (known.window as any).__codexPlusBuiltinExtensionState = { disabled: ["dream-skin"], replacedBy: {} };
   calls.length = 0;
   api.sync();
   assert.ok(!stepOwners().has("builtin:dream-skin"), "停用后扫描不再点名它");
-  assert.ok(calls.includes("typing:uninstall"), "停用后摘掉打字特效的全局监听");
   calls.length = 0;
   api.runSteps();
   assert.ok(!calls.includes("dream:refresh"));

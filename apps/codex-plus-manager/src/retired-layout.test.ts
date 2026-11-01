@@ -30,14 +30,14 @@ function fixture() {
 test("retired layout preferences are hidden while existing local enhancement choices remain intact", () => {
   const { context, stored } = fixture();
   const oldPreferences = JSON.stringify({
-    customLayout: true, conversationView: true, answerOutline: true, typingEffect: "stars",
+    customLayout: true, conversationView: true, answerOutline: true, threadIdBadge: true,
     nativeMenuPlacement: false, threadScrollRestore: true,
   });
   stored.set("settings", oldPreferences);
   const settings = context.codexPlusSettings();
   assert.equal("customLayout" in settings, false);
   assert.equal(settings.conversationView, true); assert.equal(settings.answerOutline, true);
-  assert.equal(settings.typingEffect, "stars"); assert.equal(settings.nativeMenuPlacement, false);
+  assert.equal(settings.threadIdBadge, true); assert.equal(settings.nativeMenuPlacement, false);
   assert.equal(settings.threadScrollRestore, true);
   assert.equal(stored.get("settings"), oldPreferences, "reading preferences must not rewrite other saved choices");
 });
@@ -45,15 +45,15 @@ test("retired layout preferences are hidden while existing local enhancement cho
 test("a stale backend layout flag cannot reappear during partial updates to retained enhancements", async () => {
   const { context, stored, writes } = fixture();
   stored.set("settings", JSON.stringify({ customLayout: true, conversationView: true, answerOutline: true }));
-  context.codexPlusBackendSettings = { enhancementsEnabled: true, codexAppCustomLayoutEnabled: true, codexAppTypingEffect: "stars" };
+  context.codexPlusBackendSettings = { enhancementsEnabled: true, codexAppCustomLayoutEnabled: true, codexAppMarkdownExport: false };
   assert.equal("customLayout" in context.codexPlusSettings(), false);
   context.setCodexPlusSetting("threadIdBadge", true);
-  context.setCodexPlusSetting("typingEffect", "rainbow");
+  context.setCodexPlusSetting("markdownExport", true);
   await Promise.resolve();
-  assert.deepEqual(writes, [["codexAppThreadIdBadge", true], ["codexAppTypingEffect", "rainbow"]]);
+  assert.deepEqual(writes, [["codexAppThreadIdBadge", true], ["codexAppMarkdownExport", true]]);
   const settings = context.codexPlusSettings();
   assert.equal("customLayout" in settings, false);
-  assert.equal(settings.threadIdBadge, true); assert.equal(settings.typingEffect, "rainbow");
+  assert.equal(settings.threadIdBadge, true); assert.equal(settings.markdownExport, true);
   assert.equal(settings.conversationView, true); assert.equal(settings.answerOutline, true);
   assert.equal(JSON.parse(stored.get("settings")!).conversationView, true);
   assert.equal(JSON.parse(stored.get("settings")!).answerOutline, true);

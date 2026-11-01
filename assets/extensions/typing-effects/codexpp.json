@@ -1,0 +1,20 @@
+{
+  "id": "typing-effects",
+  "name": "打字特效",
+  "version": "1.0.0",
+  "description": "在 Codex 输入框里打字时，从光标处放出彩虹、烟花或星光粒子。只看原生输入事件，不改输入内容；系统开了「减少动态效果」时不显示。",
+  "engines": { "codexpp": 1 },
+  "renderer": ["effects.js", "main.js"],
+  "config": {
+    "effect": {
+      "type": "select",
+      "title": "特效",
+      "options": [
+        { "value": "rainbow", "label": "彩虹" },
+        { "value": "fireworks", "label": "烟花" },
+        { "value": "stars", "label": "星光" }
+      ],
+      "default": "rainbow"
+    }
+  }
+}

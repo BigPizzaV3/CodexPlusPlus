@@ -199,14 +199,31 @@ impl UserScriptManager {
     /// 原来的内置桌宠改成了官方拓展包「Agent 桌宠」：第一次见到它时，把设置里的 `agentPet` 与
     /// `codexAppWhaleBalance*` 换算成它的配置，启停也照原来的开关。已经迁移过（配置或开关里有它）就不再动。
     pub fn migrate_bundled_agent_pet(&self, settings: &crate::settings::BackendSettings) -> anyhow::Result<bool> {
-        let key = crate::bundled_extensions::AGENT_PET_KEY;
+        self.migrate_bundled(
+            crate::bundled_extensions::AGENT_PET_KEY,
+            crate::bundled_extensions::agent_pet_config_from_settings(settings),
+            settings.agent_pet.enabled_for("codex"),
+        )
+    }
+
+    /// 原来的打字特效、背景图也改成了官方拓展包：第一次见到时按旧设置写入配置与启停，迁移过就不再动。
+    pub fn migrate_bundled_builtins(&self, settings: &crate::settings::BackendSettings) -> anyhow::Result<()> {
+        let (config, enabled) = crate::bundled_extensions::typing_effects_migration(settings);
+        self.migrate_bundled(crate::bundled_extensions::TYPING_EFFECTS_KEY, config, enabled)?;
+        let (config, enabled) = crate::bundled_extensions::image_overlay_migration(settings);
+        self.migrate_bundled(crate::bundled_extensions::IMAGE_OVERLAY_KEY, config, enabled)?;
+        Ok(())
+    }
+
+    /// 官方拓展包的一次性迁移：配置与开关里都还没有它时写入；返回是否写了。
+    fn migrate_bundled(&self, key: &str, values: Map<String, Value>, enabled: bool) -> anyhow::Result<bool> {
         let _guard = self.config_lock.lock().unwrap();
         let mut config = self.load_config_unlocked();
         if config.configs.contains_key(key) || config.scripts.contains_key(key) {
             return Ok(false);
         }
-        config.configs.insert(key.to_string(), crate::bundled_extensions::agent_pet_config_from_settings(settings));
-        config.scripts.insert(key.to_string(), settings.agent_pet.enabled_for("codex"));
+        config.configs.insert(key.to_string(), values);
+        config.scripts.insert(key.to_string(), enabled);
         self.save_config_unlocked(&config)?;
         Ok(true)
     }
@@ -1522,6 +1539,12 @@ pub struct ExtensionConfigField {
     /// object 的子字段。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub properties: Vec<ExtensionConfigField>,
+    /// string 的输入方式：`file` 表示本机文件路径，管理器显示「选择…」按钮。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// `format: "file"` 时选择器只列这些扩展名（不带点）；空表示不限。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<String>,
 }
 
 impl ExtensionConfigField {
@@ -1718,7 +1741,7 @@ pub fn default_user_script_manager() -> UserScriptManager {
     let manager = UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
         .with_settings_path(crate::paths::default_settings_path())
         .with_bundled_dir(bundled_dir.clone());
-    // 每个进程第一次用到时写出官方拓展包、迁移旧的内置桌宠设置；失败只记日志，不影响别的拓展。
+    // 每个进程第一次用到时写出官方拓展包、迁移旧的内置桌宠 / 打字特效 / 背景图设置；失败只记日志，不影响别的拓展。
     static BUNDLED_READY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     BUNDLED_READY.get_or_init(|| {
         if let Err(error) = crate::bundled_extensions::materialize(&bundled_dir) {
@@ -1731,6 +1754,12 @@ pub fn default_user_script_manager() -> UserScriptManager {
         if let Err(error) = manager.migrate_bundled_agent_pet(&settings) {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bundled_extensions.agent_pet_migration_failed",
+                json!({ "error": format!("{error:#}") }),
+            );
+        }
+        if let Err(error) = manager.migrate_bundled_builtins(&settings) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bundled_extensions.builtin_migration_failed",
                 json!({ "error": format!("{error:#}") }),
             );
         }
@@ -2891,6 +2920,24 @@ fn parse_config_field(key: &str, path: &str, field: &Value, depth: usize) -> any
     } else {
         Vec::new()
     };
+    let format = match field.get("format") {
+        None => None,
+        Some(Value::String(format)) if format == "file" && kind == "string" => Some(format.clone()),
+        Some(_) => anyhow::bail!("{path}.format 目前只支持 \"file\"，且只能用在 string 上"),
+    };
+    let extensions = match field.get("extensions") {
+        None => Vec::new(),
+        Some(Value::Array(items)) if format.is_some() && items.len() <= 20 => items
+            .iter()
+            .map(|item| match item.as_str() {
+                Some(name) if !name.is_empty() && name.len() <= 10 && name.chars().all(|ch| ch.is_ascii_alphanumeric()) => {
+                    Ok(name.to_ascii_lowercase())
+                }
+                _ => anyhow::bail!("{path}.extensions 的每一项是不带点的扩展名，如 \"png\""),
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        Some(_) => anyhow::bail!("{path}.extensions 只能和 format: \"file\" 一起用，最多 20 项"),
+    };
     let mut result = ExtensionConfigField {
         key: key.to_string(),
         kind: kind.clone(),
@@ -2903,6 +2950,8 @@ fn parse_config_field(key: &str, path: &str, field: &Value, depth: usize) -> any
         max: bound("max")?,
         items,
         properties,
+        format,
+        extensions,
     };
     result.default = match kind.as_str() {
         // 对象的默认值由子字段默认值组成；清单里写的 default 只用来覆盖其中的键。

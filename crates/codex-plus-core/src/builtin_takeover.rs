@@ -74,7 +74,6 @@ pub const RUST_SIDE_BUILTINS: &[&str] = &[
     "force-chinese-locale",
     "history-turn-recovery",
     "pet-real-mouse",
-    "image-overlay",
 ];
 
 fn switch_off(settings: &mut BackendSettings, id: &str) {
@@ -88,7 +87,6 @@ fn switch_off(settings: &mut BackendSettings, id: &str) {
         "force-chinese-locale" => settings.codex_app_force_chinese_locale = false,
         "history-turn-recovery" => settings.codex_app_history_turn_recovery = false,
         "pet-real-mouse" => settings.codex_app_pet_real_mouse_look = false,
-        "image-overlay" => settings.codex_app_image_overlay_enabled = false,
         _ => {}
     }
 }

@@ -216,35 +216,6 @@
       ]
     },
     {
-      "key": "codexAppTypingEffect",
-      "builtin": "typing-effects",
-      "group": "chat",
-      "control": "select",
-      "title": "打字特效（彩虹 P）",
-      "description": "在 Codex 输入框的光标附近显示特效；系统减少动态效果时暂停。",
-      "options": [
-        {
-          "value": "off",
-          "label": "关闭"
-        },
-        {
-          "value": "rainbow",
-          "label": "彩虹粒子"
-        },
-        {
-          "value": "fireworks",
-          "label": "烟花"
-        },
-        {
-          "value": "stars",
-          "label": "星光"
-        }
-      ],
-      "surfaces": ["manager", "codex"],
-      "builtinOn": "rainbow",
-      "builtinOff": "off"
-    },
-    {
       "key": "codexAppThreadIdBadge",
       "builtin": "thread-id-badge",
       "group": "chat",
@@ -391,13 +362,6 @@
       "description": "Codex 窗口的梦皮主题与壁纸",
       "group": "appearance",
       "setting": "codexAppDreamSkinEnabled"
-    },
-    {
-      "id": "image-overlay",
-      "title": "背景图",
-      "description": "在 Codex 窗口上叠一层自定义背景图。",
-      "group": "appearance",
-      "setting": "codexAppImageOverlayEnabled"
     },
     {
       "id": "instance-identity",

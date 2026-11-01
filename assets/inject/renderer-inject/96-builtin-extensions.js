@@ -33,7 +33,6 @@
       { id: "usage-statusline", name: "用量状态栏", apply: codexPlusUsageStatusLineExtension },
       { id: "dictation", name: "语音听写", apply: codexPlusDictationExtension },
       { id: "turn-rewind", name: "轮次回退", apply: codexPlusTurnRewindExtension },
-      { id: "typing-effects", name: "打字特效", apply: codexPlusTypingEffectsExtension },
       { id: "side-chat-save", name: "侧聊保存", apply: codexPlusSideChatSaveExtension },
       // 由 Rust 经 CDP 驱动，页面侧只登记；被顶替时 Rust 侧不再补载，顶替它的拓展订阅 codexpp/session-index-repaired 自己做。
       { id: "history-turn-recovery", name: "历史轮次补全" },
@@ -67,7 +66,6 @@
       { id: "force-chinese-locale", name: "强制中文界面" },
       { id: "native-browser-identification", name: "原生 Edge / Chrome 请求标识兼容" },
       { id: "standalone-quota-unlock", name: "官方额度解锁" },
-      { id: "image-overlay", name: "背景图" },
     ];
   }
 
@@ -226,15 +224,6 @@
       startCodexPlusProxyStatus();
       return () => stopCodexPlusProxyStatus();
     });
-  }
-
-  /** 打字特效：全局输入监听随拓展装卸，模式跟着设置对齐。 */
-  function codexPlusTypingEffectsExtension(ctx) {
-    ctx.effect(() => {
-      installCodexPlusTypingEffects();
-      return () => uninstallCodexPlusTypingEffects();
-    });
-    codexPlusAlignWith(ctx, syncCodexPlusTypingEffects, { settings: "heartbeat" });
   }
 
   /** 语音听写：输入框 footer 会重建，入口跟着页面扫描补；卸下时撤掉入口并取消进行中的录音。 */

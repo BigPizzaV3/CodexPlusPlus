@@ -334,6 +334,9 @@ codexPlus.extension((ctx) => {
   32 项。没给 `default` 时取空串 / 0（有 `min` 取 `min`）/ false / 第一个选项 / 空数组；对象的默认值由子字段默认值组成，
   清单里的 `default` 只覆盖其中的键。`secret` 只影响界面（密码框），值仍以明文存在本机 `user_scripts.json` 的 `configs` 里。
 - `title` / `description` 可以是字符串，也可以是 `{ "zh": "…", "en": "…" }`，管理器按界面语言显示。
+- 本机文件路径：`string` 加 `"format": "file"`，管理器表单在输入框旁给「选择文件」按钮（系统对话框）；`"extensions": ["png", "jpg"]`
+  限定可选的扩展名（不带点，最多 20 个，只能和 `format: "file"` 一起用）。值仍是普通字符串，页面拿不到本机文件，要读内容
+  得经 Codex++ 的路由或常驻后台（背景图拓展就是这样，见 `assets/extensions/image-overlay/`）。
 - 嵌套示例：`"proxy": { "type": "object", "properties": { "host": { "type": "string" }, "port": { "type": "number", "min": 1, "max": 65535 } } }`，
   `"words": { "type": "array", "items": { "type": "string" } }`。保存时对象可以只给部分键（其余取默认），未声明的键会被拒绝。
 - 读取：页面代码用 `ctx.config`；钩子、网关中间件、工具脚本用第二个参数的 `context.config`。都是生效配置
@@ -819,7 +822,7 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
 { "id": "my-status", "renderer": "renderer.js", "replaces": ["usage-statusline"] }
 ```
 
-  在 Codex++ 后台生效的内置拓展（原生 Fast 强制解锁、原生输入预测、模型白名单解锁、强制中文界面、背景图、第三方推理折叠、
+  在 Codex++ 后台生效的内置拓展（原生 Fast 强制解锁、原生输入预测、模型白名单解锁、强制中文界面、第三方推理折叠、
   纯 API 禁用 Work 视图、原生浏览器请求标识兼容、历史轮次补全、桌宠跟随鼠标）同样能顶替：被顶替时 Codex++ 后台把它们的设置项
   按「关」处理（多数要重启 Codex 才完全生效），顶替它们的拓展用下面这些接口写出等价功能：
 
@@ -828,7 +831,6 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
   | 原生 Fast 解锁、原生输入预测、强制中文、模型白名单解锁 | `preload`（在 Codex 自己的脚本之前执行，配 `reloadOnLaunch: true`），见「页面最早期脚本与启动前后」 |
   | 纯 API 禁用 Work 视图、原生浏览器请求标识兼容 | `launch.before` / `launch.after`（启动 Codex 之前 / 退出之后跑 Node 脚本）、`launch.args` |
   | 第三方推理折叠 | 网关响应流中间件 |
-  | 背景图 | `overlay` 插槽 + `assets/` |
   | 历史轮次补全 | 订阅公开事件 `codexpp/session-index-repaired`（顶替后，会话索引修复结束时发，`{ aborted, checkedAtMs }`） |
   | 桌宠跟随鼠标 | 路由 `/system/cursor-position`（系统鼠标位置）+ `/cdp/evaluate` 往 `avatar-overlay` 页面推坐标 |
 
@@ -839,6 +841,10 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
   数据服务是白名单路由 `/agent-pet/catalog`、`/agent-pet/image`、`/agent-pet/sound`、`/agent-pet/import-sound`、`/whale/media`、
   `/whale/full`、`/whale/history`、`/whale/session`——这些路由只在有启用中的拓展在清单里声明了它们时才干活，供应商 Key 只在 Codex++ 里用。
   它的设置界面也在包里（`settings.js`），Codex「拓展」详情页和管理器「设置」用的是同一份。可以照着它写自己的桌宠。
+  另有「打字特效」（`bundled:typing-effects`）与「背景图」（`bundled:image-overlay`），源码在 `assets/extensions/` 下：
+  打字特效是纯页面功能，不用任何路由；背景图的图片经白名单路由 `/image-overlay/image` 读，这条路由只读背景图拓展自己配置里的
+  那张本机图片、不接受页面传入的路径，同样只在有启用中的拓展声明了它时才干活。原来的打字特效、背景图设置在第一次用到时换算成
+  它们的配置，启停照旧。
 - `codexPlus.builtins()` 返回 `[{ id, name, active, disabled, replacedBy }]`：`active` 表示内置拓展实例在用（没停用、没被顶替）；
   有设置项的内置拓展，功能本身是否打开还看那个设置项。「多开身份提示」完全用公开接口（`overlay` 插槽）写成，
   可以当作写法参考；「会话标题中间件」是 `ctx.intercept("session/title", (value, next) => …)` 链：会话首轮结束后以
