@@ -3468,6 +3468,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "更新中": "Updating",
   "卸载排队中": "Uninstall queued",
   "Skill 已卸载或来源已变更，已跳过更新": "Skill was uninstalled or its source changed; update skipped",
+  "跳过 {0} 个已在操作中的 Skill": "Skipped {0} Skill(s) already in progress",
   "已更新 {0} 个 Skill": "Updated {0} Skills",
   "已完成 {0} 个 Skill 操作": "Completed {0} Skill operations",
   "Skill 操作失败摘要": "Skill operation failure summary",

@@ -340,11 +340,13 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       skillBatchRegistry.recordUpdateOutcome(args.id, outcome, (summary) => {
         const message = tf("已完成 {0} 个 Skill 操作", [summary.completed]);
         void notify("Skills", summary.failed ? `${message}；${tf("{0} 个 Skill 失败", [summary.failed])}：${summary.details.join("；")}` : message, summary.failed ? "failed" : "ok");
-      });
+      }, args.repoKey);
     }, args.repoKey);
   };
   const queueGroupUpdates = (skills: Skill[]) => {
-    for (const skill of skills) queueUpdate("update_skill", { repoKey: skill.repoKey, id: skill.id });
+    let skipped = 0;
+    for (const skill of skills) if (!queueUpdate("update_skill", { repoKey: skill.repoKey, id: skill.id })) skipped++;
+    if (skipped) void notify("Skills", tf("跳过 {0} 个已在操作中的 Skill", [skipped]), "ok");
   };
   const runBatch = async (group: SkillGroup<Skill>, agent: McpAgentId, enabled: boolean) => {
     const groupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
@@ -574,7 +576,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       {updateFailures && <section className="mg-skill-failures" role="region" aria-label={t("Skill 操作失败摘要")}>
         <div className="mg-skill-failures-head"><strong role="status" aria-live="polite">{tf("{0} 次 Skill 操作失败", [updateFailures.count])}</strong>
           <button type="button" className="mg-icon-button" aria-label={t("关闭 Skill 失败摘要")} title={t("关闭 Skill 失败摘要")} onClick={skillBatchRegistry.clearFailures}><X size={16}/></button></div>
-        <ul tabIndex={0} aria-label={t("失败的 Skill 列表")}>{updateFailures.details.map((detail) => <li key={detail.id}><strong>{detail.id}</strong>：{detail.message}</li>)}</ul>
+        <ul tabIndex={0} aria-label={t("失败的 Skill 列表")}>{updateFailures.details.map((detail) => <li key={JSON.stringify([detail.repoKey, detail.id])}><span>{detail.repoKey}</span> · <strong>{detail.id}</strong>：{detail.message}</li>)}</ul>
       </section>}
       <div className="mg-matrix mg-agent-matrix mg-skill-matrix" aria-busy={loading} data-columns={agentColumns.length}>
         <div className="mg-matrix-head"><span>{t("技能")}</span><span>{t("来源")}</span>{agentColumns.map((agent) => <AgentColumn agent={agent} count={agentCount(agent)} key={agent} title={data?.agentSkillsDirs?.[agent]} />)}<span className="mg-actions-label">{t("操作")}</span></div>
@@ -583,7 +585,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
             <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
           const collapsed = !expandedGroups.has(group.key) && !query.trim();
           const allGroupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
-          const updateTargets = allGroupItems.filter((skill) => skill.installed && !skill.bundled && skill.updateAvailable && !updates.some((item) => item.id === skill.id));
+          const updateTargets = allGroupItems.filter((skill) => skill.installed && !skill.bundled && skill.updateAvailable);
           const pendingUpdates = allGroupItems.filter((skill) => skill.installed && !skill.bundled && updates.some((item) => item.command === "update_skill" && item.id === skill.id && item.repoKey === skill.repoKey)).length;
           const hasUpdates = pendingUpdates > 0 || allGroupItems.some((skill) => skill.installed && !skill.bundled && skill.updateAvailable);
           const updateLabel = `${group.label} · ${tf("更新组内可更新 Skill（{0}）", [updateTargets.length])}${pendingUpdates ? ` · ${tf("进行中或排队 {0} 项", [pendingUpdates])}` : ""}`;
