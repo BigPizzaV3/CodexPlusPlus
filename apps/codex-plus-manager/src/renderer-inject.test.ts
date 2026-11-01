@@ -1535,6 +1535,35 @@ return {
     };
   }
 
+  it("hot-reloads user scripts after toggling or uninstalling so the page actually drops them", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const harness = new Function("bridge", `
+const calls = [], toasts = [];
+let codexPlusExtensionsSelected = { kind: "installed", key: "user:pomodoro" };
+const postJson = async (path, payload) => { calls.push(path); return bridge(path, payload); };
+const loadUserScripts = async (path = "/user-scripts/list", payload = {}) => { await postJson(path, payload); };
+const showToast = (message) => toasts.push(message);
+const refreshCodexPlusExtensionsView = () => calls.push("refresh");
+${segment(renderer, "  async function uninstallUserScript(", "  /** 左面板的导航项。")}
+return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () => codexPlusExtensionsSelected };`);
+    const ok = harness(async (path: string) => (path === "/user-scripts/delete" ? {} : { scripts: [] }));
+    await ok.setUserScriptEnabled("user:pomodoro", false);
+    assert.deepEqual(ok.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.deepEqual(ok.toasts, []);
+
+    const uninstall = harness(async () => ({ scripts: [] }));
+    await uninstall.uninstallUserScript("user:pomodoro");
+    assert.deepEqual(uninstall.calls, ["/user-scripts/delete", "/user-scripts/reload", "/user-scripts/list", "refresh"]);
+    assert.equal(uninstall.selected(), null);
+
+    // 页面没连上时重载失败：提示用户，清单照样刷新，开关状态不至于错。
+    const failed = harness(async (path: string) => (path === "/user-scripts/reload" ? { status: "failed", message: "Codex 页面尚未连接" } : { scripts: [] }));
+    await failed.setUserScriptEnabled("user:pomodoro", true);
+    assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.equal(failed.toasts.length, 1);
+    assert.match(failed.toasts[0], /Codex 页面尚未连接/);
+  });
+
   it("filters installed and market entries, escapes their data and keeps actions outside selection buttons", async () => {
     const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
     const scripts = [

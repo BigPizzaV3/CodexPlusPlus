@@ -736,7 +736,10 @@ impl BridgeRuntimeService for CoreRuntimeService {
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
         match &self.user_scripts {
             Some(user_scripts) => {
-                user_scripts.set_script_enabled(&key, enabled)?;
+                let result = user_scripts.set_script_enabled(&key, enabled);
+                // 与管理器一致：拓展带的钩子 / Codex 资产跟着启停写回 Codex 配置。
+                crate::extension_hooks::sync_default(user_scripts);
+                result?;
                 user_scripts.inventory()
             }
             None => Ok(empty_user_script_inventory()),
@@ -746,7 +749,9 @@ impl BridgeRuntimeService for CoreRuntimeService {
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
         match &self.user_scripts {
             Some(user_scripts) => {
-                user_scripts.delete_user_script(&key)?;
+                let result = user_scripts.delete_user_script(&key);
+                crate::extension_hooks::sync_default(user_scripts);
+                result?;
                 user_scripts.inventory()
             }
             None => Ok(empty_user_script_inventory()),

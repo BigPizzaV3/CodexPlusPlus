@@ -7121,8 +7121,27 @@
     if (codexPlusExtensionsSelected?.kind === "installed" && codexPlusExtensionsSelected.key === key) {
       codexPlusExtensionsSelected = null;
     }
-    await loadUserScripts();
+    await reloadUserScriptsAfterChange();
     refreshCodexPlusExtensionsView();
+  }
+
+  /** 启停用户脚本：写开关后热重载，页面里的实例才会真的卸下 / 装上。 */
+  async function setUserScriptEnabled(key, enabled) {
+    if (!key) return;
+    await loadUserScripts("/user-scripts/set-script-enabled", { key, enabled });
+    await reloadUserScriptsAfterChange();
+  }
+
+  /**
+   * 启停 / 卸载之后热重载用户脚本（与管理器的启停流程一致）。
+   *
+   * 只改开关不会动已经跑起来的拓展实例：不重载的话关掉的拓展界面还挂着，
+   * 打开的拓展也要等下次启动才装上。重载失败时仍刷新清单，开关状态至少准确。
+   */
+  async function reloadUserScriptsAfterChange() {
+    const result = await postJson("/user-scripts/reload", {});
+    if (!result?.scripts) showToast(`拓展重载失败：${result?.message || "未知错误"}，重启 Codex 后生效`, { type: "error" });
+    await loadUserScripts();
   }
 
   /** 左面板的导航项。Codex++ 页面切分组，「拓展」页面列脚本。 */
@@ -8452,7 +8471,10 @@
       }
       const userScriptToggle = target?.closest("[data-codex-user-script-key]");
       if (userScriptToggle) {
-        loadUserScripts("/user-scripts/set-script-enabled", { key: userScriptToggle.getAttribute("data-codex-user-script-key"), enabled: userScriptToggle.dataset.enabled !== "true" });
+        if (userScriptToggle.dataset.pending === "true") return;
+        userScriptToggle.dataset.pending = "true";
+        void setUserScriptEnabled(userScriptToggle.getAttribute("data-codex-user-script-key"), userScriptToggle.dataset.enabled !== "true")
+          .finally(() => { userScriptToggle.dataset.pending = "false"; });
         return;
       }
       // 市场条目的「安装」。id 挂在行/按钮上，点按钮才算。
