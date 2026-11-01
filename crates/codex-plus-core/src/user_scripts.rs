@@ -385,6 +385,45 @@ impl UserScriptManager {
     }
 
     /// 保存一个拓展包的配置：只接受清单 schema 里声明的键，类型不符即报错。返回生效配置。
+    /// 管理器面板：拓展包声明的 `manager.page` 的标题与 HTML 内容（拓展没启用或清单有误时报错）。
+    pub fn extension_manager_page(&self, key: &str) -> anyhow::Result<(String, String)> {
+        let config = self.load_config();
+        let script = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .with_context(|| format!("没有找到拓展包 {key}"))?;
+        if !script.enabled {
+            anyhow::bail!("拓展已停用");
+        }
+        let package = script.package.with_context(|| format!("{key} 不是拓展包"))?;
+        if let Some(error) = &package.error {
+            anyhow::bail!("拓展包清单有误：{error}");
+        }
+        let (path, title) = package.manager_page.with_context(|| format!("拓展 {key} 没有声明管理器面板（manager.page）"))?;
+        let html = fs::read_to_string(&path).with_context(|| format!("读取 {} 失败", path.display()))?;
+        Ok((title, html))
+    }
+
+    /// 拓展包 `assets/` 里的资源（data URL），给管理器面板的 `codexPlusManager.asset(path)`。
+    pub fn extension_asset(&self, key: &str, path: &str) -> anyhow::Result<String> {
+        let config = self.load_config();
+        let package = self
+            .scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key && script.enabled)
+            .and_then(|script| script.package)
+            .with_context(|| format!("没有找到已启用的拓展包 {key}"))?;
+        let normalized = path.trim().trim_start_matches("./");
+        let normalized = normalized.strip_prefix("assets/").unwrap_or(normalized);
+        // 资源按包内路径登记（assets/<文件>）；写不写 assets/ 前缀都认。
+        package
+            .assets
+            .get(&format!("assets/{normalized}"))
+            .cloned()
+            .with_context(|| format!("拓展包里没有资源 {path}"))
+    }
+
     pub fn set_extension_config(&self, key: &str, values: &Map<String, Value>) -> anyhow::Result<Value> {
         let config = self.load_config();
         let package = self
@@ -1275,6 +1314,8 @@ struct ExtensionPackage {
     replaces: Vec<String>,
     /// 包内按 dsh 插件写法写的插件目录（codexpp.json 的 `dsh`）：启用时由 dsh 兼容宿主运行。
     dsh: Option<PathBuf>,
+    /// 管理器里的拓展面板（codexpp.json 的 `manager.page` / `manager.title`）：包内 HTML 文件与标题。
+    manager_page: Option<(PathBuf, String)>,
     /// 包目录（绝对路径）。
     root: Option<PathBuf>,
     /// 生效配置：schema 默认值叠加 user_scripts.json 里存的值。扫描时算好。
@@ -1658,6 +1699,7 @@ impl ExtensionPackage {
             "codex": self.codex.summary(),
             "replaces": self.replaces,
             "dsh": self.dsh.is_some(),
+            "managerPage": self.manager_page.as_ref().map(|(_, title)| json!({ "title": title })),
             "config": self.config,
             "assets": self.assets.keys().collect::<Vec<_>>(),
             "skippedAssets": self.skipped_assets,
@@ -1909,6 +1951,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         codex: Default::default(),
         replaces: Vec::new(),
         dsh: None,
+        manager_page: None,
         root: None,
         config: json!({}),
         error: None,
@@ -1917,6 +1960,54 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         package.error = Some(error.to_string());
     }
     package
+}
+
+/// 管理器面板页的大小上限：页面整份读进 iframe 的 srcdoc，资源另经 `asset()` 取。
+const EXTENSION_MANAGER_PAGE_MAX_BYTES: u64 = 1024 * 1024;
+
+/// 解析 `manager: { page, title }`：页面必须是包内存在的 .html 文件，不超过 1 MiB。
+fn parse_extension_manager_page(
+    root: &std::path::Path,
+    raw: &Map<String, Value>,
+    default_title: &str,
+) -> anyhow::Result<Option<(PathBuf, String)>> {
+    let Some(manager) = raw.get("manager") else {
+        return Ok(None);
+    };
+    let Value::Object(manager) = manager else {
+        anyhow::bail!("manager 必须是对象，如 {{\"page\": \"manager.html\"}}");
+    };
+    let page = manager
+        .get("page")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|page| !page.is_empty())
+        .context("manager.page 必填：包内的 HTML 文件路径")?;
+    let path = root
+        .join(page)
+        .canonicalize()
+        .with_context(|| format!("manager.page 指向的文件不存在：{page}"))?;
+    if !path.starts_with(root) {
+        anyhow::bail!("manager.page 必须在拓展包目录内：{page}");
+    }
+    let is_html = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"));
+    if !path.is_file() || !is_html {
+        anyhow::bail!("manager.page 必须是 .html 文件：{page}");
+    }
+    if fs::metadata(&path)?.len() > EXTENSION_MANAGER_PAGE_MAX_BYTES {
+        anyhow::bail!("manager.page 超过 1 MiB：{page}（图片等资源放进 assets/，在页面里用 codexPlusManager.asset() 取）");
+    }
+    let title = manager
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(default_title)
+        .to_string();
+    Ok(Some((path, title)))
 }
 
 fn parse_extension_manifest(
@@ -1977,6 +2068,7 @@ fn parse_extension_manifest(
     let gateway_declared = raw.get("gateway").is_some();
     let tools_declared = raw.get("tools").is_some_and(|tools| tools.as_array().is_some_and(|list| !list.is_empty()));
     let backend_declared = raw.get("backend").is_some();
+    let manager_declared = raw.get("manager").is_some();
     let pipeline_declared = raw.get("toolPipeline").is_some();
     let providers_declared = raw.get("providers").is_some_and(|value| value.as_array().is_some_and(|list| !list.is_empty()));
     let root = directory
@@ -1984,9 +2076,10 @@ fn parse_extension_manifest(
         .with_context(|| format!("无法解析拓展目录 {}", directory.display()))?;
     package.root = Some(root.clone());
     package.codex = crate::extension_codex::parse(&root, &raw)?;
-    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && package.codex.is_empty() {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、skills、agents、mcpServers 或 instructions");
+    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && !manager_declared && package.codex.is_empty() {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、manager、skills、agents、mcpServers 或 instructions");
     }
+    package.manager_page = parse_extension_manager_page(&root, &raw, package.name.as_deref().unwrap_or(&package.id))?;
     package.renderer = entries
         .iter()
         .map(|entry| resolve_package_entry(&root, entry))

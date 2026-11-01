@@ -338,6 +338,7 @@ fn tool_definitions() -> Value {
                     "prompts": {"type": "array", "description": "提示词模板，例如 [{\"name\": \"review\", \"description\": \"审查\", \"arguments\": [{\"name\": \"focus\"}], \"template\": \"prompts/review.md\"}]：模板里写 {{focus}}，经 Codex++ 拓展 MCP 提供"},
                     "resources": {"type": "array", "description": "只读资源，例如 [{\"name\": \"规范\", \"file\": \"docs/style.md\"}]：经 Codex++ 拓展 MCP 提供给模型读取"},
                     "instructions": {"type": "string", "description": "全局指令：包内 .md 路径或文字，合并进 ~/.codex/AGENTS.md 里 Codex++ 托管的一段（官方直连也生效）"},
+                    "manager": {"type": "object", "description": "管理器面板，例如 {\"page\": \"manager.html\", \"title\": \"统计\"}：管理器「本地拓展」里这一行的菜单出现「打开面板」，页面放在沙箱 iframe 里，经 window.codexPlusManager 读写本拓展配置、调本拓展后台（backend.call）、取 assets 资源；页面不能联网，资源要内联或用 asset()。写法见指南「管理器面板」"},
                     "backend": {"type": "object", "description": "常驻后台声明，例如 {\"script\": \"backend/main.mjs\"}；脚本默认导出 async (ctx) => ({ 方法 })，页面用 ctx.backend.call / on 调用。写法见指南「常驻后台」"},
                     "config": {"type": "object", "description": "配置项声明，例如 {\"minutes\": {\"type\": \"number\", \"title\": \"时长（分钟）\", \"default\": 25}}；type 可选 string / number / boolean / select（配 options）。用户可在管理器里改，脚本里读 ctx.config / context.config"},
                     "tools": {"type": "array", "description": "给模型用的工具声明，例如 [{\"name\": \"lookup\", \"description\": \"…\", \"inputSchema\": {\"type\": \"object\", \"properties\": {…}}, \"script\": \"tools/lookup.mjs\", \"timeout\": 30}]；写法见指南「给模型加工具」", "items": {"type": "object"}},
@@ -434,6 +435,8 @@ struct WriteArguments {
     prompts: Option<Value>,
     #[serde(default)]
     resources: Option<Value>,
+    #[serde(default)]
+    manager: Option<Value>,
     #[serde(deserialize_with = "file_list")]
     files: Vec<WriteFile>,
 }
@@ -583,6 +586,7 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                     ("schedules", arguments.schedules),
                     ("prompts", arguments.prompts),
                     ("resources", arguments.resources),
+                    ("manager", arguments.manager),
                 ]
                     .into_iter()
                     .filter_map(|(key, item)| item.map(|item| (key.to_string(), item)))

@@ -13655,6 +13655,23 @@ button.side-item:hover {
   align-items: center;
   gap: 8px;
 }
+/* 拓展的管理器面板（manager.page）：展开在拓展行下面，iframe 高度由页面上报。 */
+.shell .extension-manager-panel {
+  margin: 4px 12px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  overflow: hidden;
+  background: hsl(var(--background));
+}
+.shell .extension-manager-panel.is-loading,
+.shell .extension-manager-panel.is-error {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: hsl(var(--muted-foreground));
+}
+.shell .extension-manager-panel.is-error {
+  color: hsl(var(--status-error));
+}
 .shell .user-script-row .mg-menu .mg-danger {
   color: hsl(var(--status-error));
 }

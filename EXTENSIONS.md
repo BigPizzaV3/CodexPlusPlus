@@ -941,6 +941,42 @@ codexPlus.extension((ctx) => {
 - `emit(event, payload)` 进有界队列（每个后台保留最近 200 条），页面 `ctx.backend.on` 以长轮询取走；`on` 不会启动后台。
 - 后台以你的用户权限运行、没有沙箱。只启用你信任的拓展。
 
+### 管理器面板
+
+拓展可以在 Codex++ 管理器里有自己的一块界面（统计、批量操作、比设置表单更复杂的配置）。清单里声明 `manager`：
+
+```json
+{ "id": "notes", "name": "便签", "backend": { "script": "backend/main.mjs" }, "manager": { "page": "manager.html", "title": "便签统计" } }
+```
+
+管理器「本地拓展」里这一行的「…」菜单会出现「打开面板」，面板就展开在这一行下面。页面里有 `window.codexPlusManager`：
+
+```html
+<!-- manager.html：脚本、样式都内联 -->
+<p>共 <b id="count">…</b> 条</p>
+<button id="clear">清空</button>
+<script>
+  const api = window.codexPlusManager;
+  api.backend.call("stats").then(({ count }) => { document.getElementById("count").textContent = count; });
+  document.getElementById("clear").onclick = async () => { await api.backend.call("clear"); api.toast("已清空"); };
+  api.onTheme((theme) => document.body.classList.toggle("dark", theme === "dark"));
+</script>
+```
+
+| `codexPlusManager` 成员 | 说明 |
+| --- | --- |
+| `config.get()` / `config.set(values)` / `config.onChange(fn)` | 读写本拓展的配置（只能写清单 `config` 里声明过的项，类型要对）；保存后和设置表单一样热更新到 Codex 页面 |
+| `backend.call(method, params)` | 调本拓展的常驻后台（`backend.script` 导出的方法），超时 30 秒 |
+| `asset(path)` | 本拓展 `assets/` 里资源的 data URL |
+| `toast(text)` | 在管理器里弹一条提示 |
+| `theme()` / `onTheme(fn)` | 管理器当前是 `dark` 还是 `light`；`<html data-theme>` 也会跟着设好 |
+
+- 页面放在**沙箱 iframe** 里，只允许脚本：拿不到管理器页面与它的接口，不能弹窗、不能跳转顶层页面。
+- 页面**不能联网**，也不能加载包外的文件（CSP `default-src 'none'`）：脚本、样式写在页面里，图片等资源用 `asset()` 取，
+  要访问网络或本机文件就放进常驻后台，经 `backend.call` 调。
+- `page` 必须是包内的 .html 文件，最大 1 MiB；`title` 不填用拓展名。拓展停用时面板打不开。
+- 也可以只声明 `manager`（不带页面脚本）：纯管理器工具类的拓展。
+
 ### 资源文件
 
 拓展包里的图片、音频、字体放在 `assets/` 下，页面代码用 `ctx.asset(path)` 取 data URL：

@@ -6264,6 +6264,39 @@ pub fn set_user_scripts_skip_next_start(skip: bool) -> CommandResult<SettingsPay
     }
 }
 
+/// 拓展的管理器面板（codexpp.json 的 `manager.page`）：标题与 HTML，由前端放进沙箱 iframe。
+#[tauri::command]
+pub fn extension_manager_page(key: String) -> Result<Value, String> {
+    default_user_script_manager()
+        .extension_manager_page(key.trim())
+        .map(|(title, html)| serde_json::json!({ "title": title, "html": html }))
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// 管理器面板的 `codexPlusManager.asset(path)`：只读本拓展包 assets/ 里的资源。
+#[tauri::command]
+pub fn extension_manager_asset(key: String, path: String) -> Result<String, String> {
+    default_user_script_manager()
+        .extension_asset(key.trim(), &path)
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// 管理器面板的 `codexPlusManager.backend.call(method, params)`：只调本拓展自己的常驻后台。
+#[tauri::command]
+pub async fn extension_manager_backend_call(key: String, method: String, params: Value) -> Result<Value, String> {
+    let manager = default_user_script_manager();
+    codex_plus_core::extension_backend::call(
+        &manager,
+        key.trim(),
+        method.trim(),
+        params,
+        std::time::Duration::from_secs(30),
+        Some("manager"),
+    )
+    .await
+    .map_err(|error| format!("{error:#}"))
+}
+
 /// 保存拓展包的配置（清单 config 里声明的项）。页面侧要热重载后才读到新值，由前端随后触发。
 #[tauri::command]
 pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>) -> CommandResult<SettingsPayload> {

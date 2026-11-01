@@ -656,6 +656,27 @@ interface CodexPlusExtensionContext {
   dispose(): void;
 }
 
+/** 管理器面板（codexpp.json 的 manager.page）里的接口：只能操作本拓展自己的配置、后台与资源。 */
+interface CodexPlusManagerPanelApi {
+  config: {
+    get(): Promise<Record<string, unknown>>;
+    /** 只能写清单 config 里声明过的项；保存后返回最新配置。 */
+    set(values: Record<string, unknown>): Promise<Record<string, unknown>>;
+    onChange(handler: (config: Record<string, unknown>) => void): () => void;
+  };
+  backend: {
+    /** 调本拓展常驻后台导出的方法，超时 30 秒。 */
+    call<T = unknown>(method: string, params?: unknown): Promise<T>;
+  };
+  /** 本拓展 assets/ 里资源的 data URL。 */
+  asset(path: string): Promise<string>;
+  toast(message: string): Promise<null>;
+  theme(): Promise<"dark" | "light">;
+  onTheme(handler: (theme: "dark" | "light") => void): () => void;
+}
+
 interface Window {
   codexPlus: CodexPlusExtensionApi;
+  /** 只在管理器面板页里存在。 */
+  codexPlusManager?: CodexPlusManagerPanelApi;
 }

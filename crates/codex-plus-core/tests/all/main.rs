@@ -37,6 +37,7 @@ mod extension_codex;
 mod extension_curation;
 mod extension_llm;
 mod extension_discovery;
+mod extension_manager_page;
 mod dream_skin;
 mod dream_skin_library;
 mod dream_skin_market;

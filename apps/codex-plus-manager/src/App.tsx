@@ -124,6 +124,7 @@ import { SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
+import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
@@ -743,6 +744,8 @@ type UserScriptInventory = {
       locales?: Record<string, { title?: string | null; description?: string | null }>;
       http?: boolean; schedules?: Array<{ method: string; everyMinutes?: number | null; at?: string | null }>;
       codex?: { skills?: string[]; agents?: string[]; mcpServers?: string[]; instructions?: boolean; prompts?: string[]; resources?: string[] };
+      /** 管理器面板（codexpp.json 的 manager.page）。 */
+      managerPage?: { title: string } | null;
     } | null;
     enabled: boolean;
     status: string;
@@ -2025,6 +2028,9 @@ export function App() {
     if (live !== "applied") await reloadUserScripts();
     return true;
   };
+
+  /// 拓展管理器面板里的 codexPlusManager.toast()：用拓展名作标题的普通提示。
+  const showExtensionNotice = (title: string, message: string) => showNotice(title, message, "ok");
 
   /// 启停单个拓展后热重载，Codex 页面才会真的装上 / 卸下它（与整体开关、保存配置一致）。
   const setUserScriptEnabled = async (key: string, enabled: boolean) => {
@@ -4601,6 +4607,7 @@ export function App() {
       setUserScriptsSkipNextStart,
       setUserScriptEnabled,
       setExtensionConfig,
+      showExtensionNotice,
       deleteUserScript,
       refreshLocalSessions,
       listProjectSessions,
@@ -5375,6 +5382,7 @@ type Actions = {
   setUserScriptsSkipNextStart: (skip: boolean) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   setExtensionConfig: (key: string, values: Record<string, unknown>) => Promise<boolean>;
+  showExtensionNotice: (title: string, message: string) => void;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
   listProjectSessions: (cwd: string) => Promise<LocalSession[]>;
@@ -16858,6 +16866,9 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
   const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
   const configSchema = script.package?.configSchema ?? [];
   const [configOpen, setConfigOpen] = useState(false);
+  // 拓展自己的管理器面板（manager.page），启用时才能打开。
+  const managerPage = script.enabled ? script.package?.managerPage ?? null : null;
+  const [panelOpen, setPanelOpen] = useState(false);
   // 用户自己的拓展包可以一键发布到 GitHub（单文件脚本、内置拓展没有这个入口）。
   const canPublish = isPackage && script.source === "user" && !!script.package?.id;
   const [publishOpen, setPublishOpen] = useState(false);
@@ -16921,8 +16932,13 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         <span className="user-script-state-label" data-state={state} title={stateHint}>{label}</span>
       </div>
       <div className="script-row-actions">
-        {configSchema.length || canPublish || canDelete ? (
+        {configSchema.length || canPublish || canDelete || managerPage ? (
           <Menu label={tf("{0} 的更多操作", [displayName])}>
+            {managerPage ? (
+              <MenuItem onClick={() => setPanelOpen((open) => !open)}>
+                <span className="user-script-menu-item"><AppWindow className="h-4 w-4" />{panelOpen ? t("收起面板") : t("打开面板")}</span>
+              </MenuItem>
+            ) : null}
             {configSchema.length ? (
               <MenuItem onClick={() => setConfigOpen((open) => !open)}>
                 <span className="user-script-menu-item"><Settings className="h-4 w-4" />{configOpen ? t("收起设置") : t("设置")}</span>
@@ -16944,6 +16960,14 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
     </div>
     {publishOpen && script.package?.id ? (
       <ExtensionPublishDialog id={script.package.id} onClose={() => setPublishOpen(false)} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+    ) : null}
+    {panelOpen && managerPage ? (
+      <ExtensionManagerPanel
+        scriptKey={script.key}
+        config={script.package?.config ?? {}}
+        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values)}
+        onToast={(message) => actions.showExtensionNotice(managerPage.title || displayName, message)}
+      />
     ) : null}
     {configOpen && configSchema.length ? (
       <ExtensionConfigForm
