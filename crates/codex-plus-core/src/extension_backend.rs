@@ -151,8 +151,18 @@ struct Backend {
     _child: tokio::process::Child,
 }
 
+/// 在跑的后台，按 [`slot`] 登记：同一进程里不同拓展目录的同名拓展各起各的，停一个目录的后台也不波及别的目录。
 static BACKENDS: std::sync::LazyLock<Mutex<HashMap<String, Backend>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 后台的登记键：拓展目录（以它的配置文件定位）+ 拓展 key。
+fn slot(manager: &UserScriptManager, key: &str) -> String {
+    format!("{}{key}", slot_prefix(manager))
+}
+
+fn slot_prefix(manager: &UserScriptManager) -> String {
+    format!("{}\u{0}", manager.config_path().display())
+}
 static EVENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// 拓展后台的可写数据目录：`<用户脚本配置目录>/extension-data/<拓展 id>`。
@@ -547,6 +557,7 @@ async fn ensure_started(
     declared: (String, PathBuf, Value),
     wanted: &str,
 ) -> anyhow::Result<()> {
+    let key = &slot(manager, key);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         {
@@ -606,12 +617,13 @@ pub async fn call(
     let declared = match declared_backend(manager, key) {
         Ok(declared) => declared,
         Err(error) => {
-            BACKENDS.lock().await.remove(key);
+            BACKENDS.lock().await.remove(&slot(manager, key));
             return Err(error);
         }
     };
     let wanted = fingerprint(&declared.1, &declared.2);
     ensure_started(manager, key, declared, &wanted).await?;
+    let key = &slot(manager, key);
     let receiver = {
         let mut backends = BACKENDS.lock().await;
         let Some(backend) = backends.get_mut(key) else {
@@ -650,7 +662,8 @@ pub async fn call(
 }
 
 /// 取走 `since` 之后的事件；没有就最多等 `wait`。后台没起时直接返回空（不为取事件而启动后台）。
-pub async fn events(key: &str, since: u64, wait: Duration) -> Value {
+pub async fn events(manager: &UserScriptManager, key: &str, since: u64, wait: Duration) -> Value {
+    let key = &slot(manager, key);
     let wait = wait.min(MAX_EVENT_WAIT);
     let deadline = tokio::time::Instant::now() + wait;
     loop {
@@ -680,20 +693,22 @@ pub async fn events(key: &str, since: u64, wait: Duration) -> Value {
 }
 
 /// 后台队列里最新事件的序号；后台没起时为 None。
-async fn latest_seq(key: &str) -> Option<u64> {
-    let queue = BACKENDS.lock().await.get(key)?.events.clone();
+async fn latest_seq(manager: &UserScriptManager, key: &str) -> Option<u64> {
+    let queue = BACKENDS.lock().await.get(&slot(manager, key))?.events.clone();
     let last = queue.lock().await.back().map(|(seq, _)| *seq).unwrap_or(0);
     Some(last)
 }
 
-/// 停掉全部后台（页面加载、热重载拓展时调用）。进程随 Child 释放被杀掉。
-pub async fn stop_all() {
-    BACKENDS.lock().await.clear();
+/// 停掉这个拓展目录的全部后台（页面加载、热重载拓展时调用）。进程随 Child 释放被杀掉。
+pub async fn stop_all(manager: &UserScriptManager) {
+    let prefix = slot_prefix(manager);
+    BACKENDS.lock().await.retain(|slot, _| !slot.starts_with(&prefix));
 }
 
 /// 停掉一个拓展的后台。给了 `instance` 时，只在最近一次调用也来自它时才停：
 /// 热重载时旧实例的 stop 可能晚于新实例的首次调用到达，不能把新后台停了。返回是否停掉。
-pub async fn stop(key: &str, instance: Option<&str>) -> bool {
+pub async fn stop(manager: &UserScriptManager, key: &str, instance: Option<&str>) -> bool {
+    let key = &slot(manager, key);
     let mut backends = BACKENDS.lock().await;
     let matches = match (backends.get(key), instance) {
         (None, _) => false,
@@ -923,7 +938,8 @@ pub async fn route_call(payload: &Value) -> anyhow::Result<Value> {
 /// 桥接路由 `/extensions/backend/stop`：`{ key, instance? }`，页面上的拓展实例卸载时发。
 pub async fn route_stop(payload: &Value) -> anyhow::Result<Value> {
     let key = payload.get("key").and_then(Value::as_str).context("缺少拓展 key")?;
-    let stopped = stop(key, payload.get("instance").and_then(Value::as_str)).await;
+    let manager = crate::user_scripts::default_user_script_manager();
+    let stopped = stop(&manager, key, payload.get("instance").and_then(Value::as_str)).await;
     Ok(json!({ "status": "ok", "stopped": stopped }))
 }
 
@@ -931,8 +947,9 @@ pub async fn route_stop(payload: &Value) -> anyhow::Result<Value> {
 /// `since: "latest"` 用于刚开始订阅：后台已在跑时从队尾开始，不把订阅前的旧事件重放给新页面实例。
 pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
     let key = payload.get("key").and_then(Value::as_str).context("缺少拓展 key")?;
+    let manager = crate::user_scripts::default_user_script_manager();
     if payload.get("since").and_then(Value::as_str) == Some("latest") {
-        return Ok(match latest_seq(key).await {
+        return Ok(match latest_seq(&manager, key).await {
             Some(next) => json!({ "status": "ok", "events": [], "next": next, "running": true }),
             None => json!({ "status": "ok", "events": [], "next": 0, "running": false }),
         });
@@ -943,7 +960,7 @@ pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
         .and_then(Value::as_u64)
         .map(Duration::from_millis)
         .unwrap_or(MAX_EVENT_WAIT);
-    let mut result = events(key, since, wait).await;
+    let mut result = events(&manager, key, since, wait).await;
     result["status"] = json!("ok");
     Ok(result)
 }

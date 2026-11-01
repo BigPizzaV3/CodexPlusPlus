@@ -48,6 +48,8 @@ const DAEMON_IDLE_MS = 20 * 60 * 1000
 /** 常驻进程定期检查配置文件是否还在（插件移除、测试目录清理后自行退出）。 */
 const DAEMON_CHECK_MS = 30 * 1000
 const DAEMON_START_TIMEOUT_MS = 5000
+/** 探测常驻进程是否在听：单次 ping 的等待上限。 */
+const DAEMON_PING_TIMEOUT_MS = 1000
 const DAEMON_REPLY_TIMEOUT_MS = 60 * 1000
 const MAX_FRAME_BYTES = 8 * 1024 * 1024
 
@@ -1065,29 +1067,56 @@ function startDaemon(configPath) {
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 const unreachable = (error) => ['ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE'].includes(error?.code)
 
+const ping = (path) => exchange(path, { kind: 'ping', version: '' }, DAEMON_PING_TIMEOUT_MS)
+
+/**
+ * 本进程正在拉起的常驻进程：socket 路径 → 等它应答的 Promise。
+ * 同一进程里同时发往一个还没起来的常驻进程的请求共用这一次拉起、排队等它，就绪后按排队顺序依次连上。
+ * 各自轮询的话，先发的请求（比如不等结果的 emit）可能比后发的晚到，还会一次拉起好几个常驻进程互相抢 socket。
+ */
+const pendingStarts = new Map()
+
+/** 拉起常驻进程（本进程里同一路径同一时刻只拉一次），等到它应答 ping 或过了 deadline。 */
+function daemonStarted(configPath, path, deadline) {
+  let started = pendingStarts.get(path)
+  if (!started) {
+    started = (async () => {
+      startDaemon(configPath)
+      for (;;) {
+        await sleep(50)
+        try {
+          await ping(path)
+          return
+        } catch (error) {
+          // 连上了但回得慢、或者到点了：交给调用方自己的请求去重试或报错。
+          if (!unreachable(error) || Date.now() > deadline) return
+        }
+      }
+    })().finally(() => pendingStarts.delete(path))
+    pendingStarts.set(path, started)
+  }
+  return started
+}
+
 /** 经常驻进程处理一条请求；返回 { output }。常驻进程起不来时抛出 { unreachable: true } 的错误。 */
 async function viaDaemon(configPath, plugin, request, timeoutMs = DAEMON_REPLY_TIMEOUT_MS) {
   const path = socketPath(configPath)
   const message = { ...request, version: versionOf(plugin) }
-  let started = false
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS
   for (;;) {
+    // 本进程正在拉起它：排在先来的请求后面，不抢先连。
+    if (pendingStarts.has(path)) await pendingStarts.get(path)
     let reply
     try {
       reply = await exchange(path, message, timeoutMs)
     } catch (error) {
       if (!unreachable(error)) throw error
-      if (!started) {
-        startDaemon(configPath)
-        started = true
-      }
       if (Date.now() > deadline) throw Object.assign(new Error('dsh 插件常驻进程没有启动'), { unreachable: true })
-      await sleep(50)
+      await daemonStarted(configPath, path, deadline)
       continue
     }
     if (reply?.restart) {
       // 旧进程正在退出；等它让出 socket 再起新的。
-      started = false
       if (Date.now() > deadline) throw Object.assign(new Error('dsh 插件常驻进程没有重启'), { unreachable: true })
       await sleep(50)
       continue
@@ -1095,6 +1124,23 @@ async function viaDaemon(configPath, plugin, request, timeoutMs = DAEMON_REPLY_T
     if (reply?.error) throw new Error(reply.error)
     return reply ?? { output: null }
   }
+}
+
+/**
+ * socket 那头有没有常驻进程在听。一次连不上不算数：另一个常驻进程可能刚绑定了路径、还没开始监听
+ * （机器忙时两步之间会被调度出去），这时把文件当残留清掉，它就成了谁也连不上的孤儿，插件状态分成两份。
+ */
+async function daemonListening(path) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (attempt > 0) await sleep(100)
+    try {
+      await ping(path)
+      return true
+    } catch {
+      // 再问一次。
+    }
+  }
+  return false
 }
 
 async function runDaemon(configPath) {
@@ -1196,14 +1242,18 @@ async function runDaemon(configPath) {
   try {
     await listen()
   } catch (error) {
-    if (error?.code !== 'EADDRINUSE' || process.platform === 'win32') throw error
+    // 两个进程同时绑定同一路径时，macOS 上后到的可能报 EEXIST 而不是 EADDRINUSE。
+    if (!['EADDRINUSE', 'EEXIST'].includes(error?.code) || process.platform === 'win32') throw error
     // 有人在听就让给它；是崩溃留下的 socket 文件就清掉重来。
-    const alive = await exchange(path, { kind: 'ping', version: '' }, 1000).then(() => true, () => false)
-    if (alive) {
+    if (await daemonListening(path)) {
       await host.dispose()
       return
     }
-    unlinkSync(path)
+    try {
+      unlinkSync(path)
+    } catch {
+      // 已被别的进程清理。
+    }
     await listen()
   }
   touch()

@@ -54,7 +54,7 @@ pub async fn reload_scripts_at(
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
     // 拓展重载后旧后台的方法表、配置都过期了：先全部停掉，下次调用按新代码重起。
-    crate::extension_backend::stop_all().await;
+    crate::extension_backend::stop_all(manager).await;
     apply_scripts_at(websocket, manager, &manager.build_reload_bundle()?).await
 }
 
@@ -63,7 +63,7 @@ pub async fn load_scripts_at(
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
     // 页面重新加载：上一个页面的后台不再有人用。
-    crate::extension_backend::stop_all().await;
+    crate::extension_backend::stop_all(manager).await;
     apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?).await
 }
 
