@@ -174,6 +174,7 @@ import { DEFAULT_AUTO_COMPACT_PERCENT, autoCompactOptions, normalizeAutoCompactP
 import { agentPetSettingsIssue, defaultAgentPetSettings, isAgentPetWhaleWidgetActive, normalizeAgentPetSettings, type AgentPetIssue, type AgentPetSettings } from "./agent-pet-settings";
 import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceSettings } from "./whale-settings";
 import { AgentPetPage } from "./AgentPetPage";
+import { AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig, agentPetStateFromExtension, type AgentPetExtensionState } from "./agent-pet-extension";
 import {
   applyDictationPreset,
   defaultDictationSettings,
@@ -1989,12 +1990,12 @@ export function App() {
     return result;
   };
 
-  const reloadUserScripts = async () => {
+  const reloadUserScripts = async (silent = false) => {
     const result = await run(() => call<SettingsResult>("reload_user_scripts"));
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地拓展"), result);
+      showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
     }
   };
 
@@ -2025,15 +2026,16 @@ export function App() {
   };
 
   /// 保存拓展配置后热重载，页面侧的 ctx.config 才会读到新值。
-  const setExtensionConfig = async (key: string, values: Record<string, unknown>) => {
+  const setExtensionConfig = async (key: string, values: Record<string, unknown>, options: { silent?: boolean } = {}) => {
     const result = await run(() => call<SettingsResult>("set_extension_config", { key, values }));
     if (!result) return false;
     setSettings(result);
-    showResultNotice(t("本地拓展"), result);
+    // 自动保存（Agent 桌宠页）成功时不弹提示，失败照常提示。
+    showResultNotice(t("本地拓展"), result, { silentSuccess: options.silent === true });
     if (!isSuccessStatus(result.status)) return false;
     // 拓展用 ctx.onConfigUpdate 接住新配置时原地生效，不必整体热重载。
     const live = await call<string>("update_extension_config_live", { key }).catch(() => "reload");
-    if (live !== "applied") await reloadUserScripts();
+    if (live !== "applied") await reloadUserScripts(options.silent === true);
     return true;
   };
 
@@ -5063,16 +5065,7 @@ export function App() {
           {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "agentCollaboration" ? <AgentCollaborationPage /> : null}
           {route === "computerUse" ? <ComputerUsePage /> : null}
-          {route === "agentPet" ? (
-            <AgentPetPage
-              settings={settingsForm.agentPet}
-              onChange={(agentPet) => setSettingsForm((current) => ({ ...current, agentPet }))}
-              whaleBalance={settingsForm}
-              onWhaleBalanceChange={(patch) => setSettingsForm((current) => ({ ...current, ...patch }))}
-              whaleBalanceIssue={whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalizeWhaleBalanceSettings(settingsForm), isAgentPetWhaleWidgetActive(settingsForm.agentPet)))}
-              autoSave={<SettingsAutoSave dirty={settingsDirty} form={settingsForm} actions={actions} />}
-            />
-          ) : null}
+          {route === "agentPet" ? <AgentPetExtensionScreen inventory={settings?.user_scripts} actions={actions} /> : null}
           {/* 置顶推荐位只放在网关总览一处，内容与「推荐内容」页同源；各 Agent 的概览不再重复。 */}
           {route === "hub" ? <SponsorBoard ads={ads} actions={actions} /> : null}
           {route === "hub" ? (
@@ -5462,7 +5455,7 @@ type Actions = {
   setUserScriptsEnabled: (enabled: boolean) => Promise<void>;
   setUserScriptsSkipNextStart: (skip: boolean) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
-  setExtensionConfig: (key: string, values: Record<string, unknown>) => Promise<boolean>;
+  setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean }) => Promise<boolean>;
   showExtensionNotice: (title: string, message: string) => void;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
@@ -8952,10 +8945,76 @@ const BUILTIN_SETTINGS_TARGETS: Record<string, BuiltinSettingsTarget> = {
   dictation: { tab: "dictation" },
   stepwise: { tab: "stepwise" },
   "answer-outline": { tab: "stepwise" },
-  "agent-pet": { route: "agentPet" },
   "dream-skin": { route: "dreamSkin" },
   "image-overlay": { route: "agentSettings" },
 };
+
+/// 「Agent 桌宠」页：桌宠是官方拓展包 `bundled:agent-pet`，设置存在它的配置里、开关就是它的启停。
+/// 界面沿用 AgentPetPage；改动防抖后写进拓展配置，Codex 里的桌宠用 onConfigUpdate 原地生效。
+function AgentPetExtensionScreen({ inventory, actions }: { inventory: UserScriptInventory | undefined; actions: Actions }) {
+  const script = inventory?.scripts?.find((item) => item.key === AGENT_PET_EXTENSION_KEY);
+  const [draft, setDraft] = useState<AgentPetExtensionState | null>(null);
+  const [status, setStatus] = useState<AutoSaveState>({ state: "idle" });
+  const saved = useRef<string>("");
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
+  // 只在第一次拿到拓展时取它的配置；之后以页面上的草稿为准，免得刷新清单时盖掉正在改的内容。
+  useEffect(() => {
+    if (!script || draft) return;
+    const initial = agentPetStateFromExtension(script.package?.config, script.enabled);
+    saved.current = JSON.stringify({ enabled: initial.pet.enabled, config: agentPetExtensionConfig(initial) });
+    setDraft(initial);
+  }, [script, draft]);
+  useEffect(() => {
+    if (!draft) return;
+    const snapshot = JSON.stringify({ enabled: draft.pet.enabled, config: agentPetExtensionConfig(draft) });
+    if (snapshot === saved.current) return;
+    const issue = agentPetValidationMessage(agentPetSettingsIssue(draft.pet))
+      || whaleBalanceValidationMessage(whaleBalanceSettingsIssue(draft.whale, isAgentPetWhaleWidgetActive(draft.pet)));
+    if (issue) {
+      setStatus({ state: "invalid", message: issue, retry: () => {} });
+      return;
+    }
+    setStatus({ state: "pending" });
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setStatus({ state: "saving" });
+        const previous = JSON.parse(saved.current || "{}") as { enabled?: boolean };
+        const configSaved = await actionsRef.current.setExtensionConfig(AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig(draft), { silent: true });
+        if (configSaved && previous.enabled !== draft.pet.enabled) await actionsRef.current.setUserScriptEnabled(AGENT_PET_EXTENSION_KEY, draft.pet.enabled);
+        if (configSaved) {
+          saved.current = snapshot;
+          setStatus({ state: "saved" });
+        } else {
+          setStatus({ state: "failed", message: t("桌宠设置没有保存"), retry: () => setDraft((current) => (current ? { ...current } : current)) });
+        }
+      })();
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [draft]);
+  if (!script) {
+    return <div className="empty">{t("没有找到 Agent 桌宠拓展。它随 Codex++ 一起安装，请重启 Codex++ 后再打开这一页。")}</div>;
+  }
+  if (!draft) return null;
+  return (
+    <>
+      {inventory?.enabled === false ? (
+        <div className="extension-page-banner">
+          <span>{t("「启用本地拓展」整体开关关着，桌宠不会在 Codex 里显示。")}</span>
+          <Button size="sm" variant="ghost" onClick={() => void actions.setUserScriptsEnabled(true)}>{t("启用本地拓展")}</Button>
+        </div>
+      ) : null}
+      <AgentPetPage
+        settings={draft.pet}
+        onChange={(pet) => setDraft((current) => (current ? { ...current, pet } : current))}
+        whaleBalance={draft.whale}
+        onWhaleBalanceChange={(patch) => setDraft((current) => (current ? { ...current, whale: { ...current.whale, ...patch } } : current))}
+        whaleBalanceIssue={whaleBalanceValidationMessage(whaleBalanceSettingsIssue(draft.whale, isAgentPetWhaleWidgetActive(draft.pet)))}
+        autoSave={<div className="enhance-save-actions settings-autosave"><AutoSaveStatus state={status} /></div>}
+      />
+    </>
+  );
+}
 
 /// 一个内置拓展的卡片：开关（就是对应的设置项；没有设置项的记在用户脚本配置里）、
 /// 被拓展顶替时的提示、打开后显示的子选项、有单独配置页的「设置」入口。
