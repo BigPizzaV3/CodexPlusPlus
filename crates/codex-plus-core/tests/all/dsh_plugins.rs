@@ -1743,3 +1743,57 @@ process.exit(0)
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
 }
+
+/// 工具的 registerOptions.when：MCP 调用时判断（没有 agent），经代理的每一步请求里按 agent 判断，不满足就从 tools 去掉；
+/// exec.deferContext 的上下文并进工具结果；sessionQuery.observeSession 对镜像里的会话给 live 切面。
+#[tokio::test]
+async fn dsh_tool_when_defer_context_and_live_observation() {
+    use codex_plus_core::extension_gateway::apply_request_with;
+    use codex_plus_core::extension_hooks::dispatch;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let scripts = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(scripts.path().join("builtin"), scripts.path().join("user"), scripts.path().join("user_scripts.json"));
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("tool-extras")), &toolchain).unwrap();
+    assert!(dsh_plugins::report_bridge(&record.report).gateway_step, "when 要在每一步的请求里判断");
+
+    let responses = serve(&plugins, &toolchain, &[call(1, "gated", json!({})), call(2, "deferring", json!({}))]);
+    assert_eq!(responses[0]["result"]["isError"], true, "{responses:?}");
+    assert!(responses[0]["result"]["content"][0]["text"].as_str().unwrap().contains("when 条件不满足"));
+    let deferred: Vec<&str> = responses[1]["result"]["content"].as_array().unwrap().iter().map(|block| block["text"].as_str().unwrap()).collect();
+    assert_eq!(deferred, ["done", "remember the deferred note"]);
+
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    let tools = json!([
+        {"type": "function", "name": "mcp__codex_plus_dsh__gated"},
+        {"type": "function", "name": "mcp__codex_plus_dsh__deferring"},
+        {"type": "function", "name": "exec_command"},
+    ]);
+    let input = json!([{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]);
+    let mut allowed = json!({"model": "gpt-x", "prompt_cache_key": "allowed", "tools": tools, "input": input});
+    apply_request_with(&manager, &mut allowed, "/v1/responses").await;
+    assert_eq!(allowed["tools"].as_array().unwrap().len(), 3, "{allowed}");
+    let mut other = json!({"model": "gpt-x", "prompt_cache_key": "other", "tools": tools, "input": input});
+    apply_request_with(&manager, &mut other, "/v1/responses").await;
+    let names: Vec<&str> = other["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["mcp__codex_plus_dsh__deferring", "exec_command"], "{other}");
+
+    // 会话 allowed 经钩子进了镜像：observeSession 给 live 切面。
+    dispatch(&manager, "UserPromptSubmit", json!({"session_id": "allowed", "prompt": "hello"})).await.unwrap();
+    let script = format!(
+        "const {{ default: create }} = await import({}); process.stdout.write(JSON.stringify(await create().command({{ name: 'observe', rawInput: '', sessionId: 'allowed' }}))); process.exit(0)",
+        json!(url_of(&scripts.path().join("user/dsh-dsh-tool-extras/backend/main.mjs")))
+    );
+    let output = Command::new(toolchain.node.as_ref().unwrap()).args(["--input-type=module", "-e", &script]).output().unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    let observed: Value = serde_json::from_str(result["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(observed["source"], "live", "{result} {}", String::from_utf8_lossy(&output.stderr));
+    assert!(observed["types"].as_array().unwrap().iter().any(|item| item == "user/message"), "{observed}");
+    assert_eq!(observed["cursor"].as_i64().unwrap() + 1, observed["types"].as_array().unwrap().len() as i64);
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+}

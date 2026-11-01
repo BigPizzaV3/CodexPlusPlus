@@ -1,0 +1,8 @@
+{
+  "name": "dsh-tool-extras",
+  "version": "0.1.0",
+  "description": "工具的 registerOptions.when 与 exec.deferContext；sessionQuery.observeSession 的 live 切面",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*" }
+}

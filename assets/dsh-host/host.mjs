@@ -21,7 +21,7 @@ import { runInNewContext } from 'node:vm'
 import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
 import {
-  AgentRegistry, MIRROR_SERVICES, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
+  AgentRegistry, MIRROR_SERVICES, messageText, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
   createApproval, createAttachments, createFileReferences, createGoals, createPlanMode, createSubagents, PLAN_MODE_WRITE_TOOLS, createSessionTelemetry, createSessionTitle, createShellEnv, createSpillStore, createStorage, createTokenMeter, createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
   createWorkspaceRegistry,
 } from './services.mjs'
@@ -1422,6 +1422,7 @@ export class Host {
     const args = input.arguments ?? {}
     const controller = new AbortController()
     const signal = input.signal ?? controller.signal
+    const deferred = []
     const exec = {
       callId,
       rootCallId: String(input.rootCallId ?? callId),
@@ -1430,12 +1431,17 @@ export class Host {
       signal,
       agent: input.agent,
       token: Symbol('codexpp.tool'),
-      deferContext() {},
+      // dsh 把推迟的上下文接在这次工具结果之后：这里并进结果内容，模型紧跟着结果就能看到。
+      deferContext(message) {
+        if (message) deferred.push(message)
+      },
+      // 结束本轮要靠 dsh 自己的 agent 循环；Codex 的循环不在宿主手里，空操作。
       concludeTurn() {},
     }
     const failure = (message) => Object.freeze({ isError: true, error: { kind: 'error', message }, content: [{ type: 'text', text: message }] })
     const entry = this.tools.get(name)
     if (!entry || !this.toolVisible(name)) return failure(`未知工具：${name}`)
+    if (entry.when && !(await this.toolActive(entry, input.agent, { provider: 'codex', model: input.model }, signal))) return failure(`工具 ${name} 现在不可用（when 条件不满足）`)
     const denied = this.guardReason(exec)
     if (denied) return failure(denied)
     const body = async () => {
@@ -1455,8 +1461,23 @@ export class Host {
       result = failure(errorText(error))
     }
     if (!result || typeof result !== 'object' || !Array.isArray(result.content)) result = failure('tools/execute 监听器没有返回工具结果')
+    if (deferred.length) {
+      const extra = deferred.map(messageText).map((text) => text.trim()).filter(Boolean).map((text) => ({ type: 'text', text }))
+      if (extra.length) result = Object.freeze({ ...result, content: [...result.content, ...extra] })
+    }
     this.emitEvent('tools/result', [exec, result])
     return result
+  }
+
+  /** 工具的 registerOptions.when 是否满足；判断出错视为可用（不挡住模型请求与工具调用）。 */
+  async toolActive(entry, agent, modelSelection, signal) {
+    if (!entry?.when) return true
+    try {
+      return Boolean(await entry.when({ agent, modelSelection: Object.freeze({ ...modelSelection }), signal: signal ?? new AbortController().signal }))
+    } catch (error) {
+      console.error(`[dsh-host] 工具 ${entry.def?.name} 的 when 判断失败，按可用处理：${errorText(error)}`)
+      return true
+    }
   }
 
   /** 按 Cordis bail 语义派发：同步依次调用，返回第一个非 undefined 的结果。 */
@@ -1660,8 +1681,13 @@ export class Host {
           if (host.tools.has(definition.name)) {
             throw new Error(`tool "${definition.name}" is already registered`)
           }
-          if (options && typeof options.when === 'function') note('工具的 when 条件依赖 dsh 的 agent，Codex 里视为始终可用')
-          host.tools.set(definition.name, { def: definition, pluginKey: state.key })
+          // registerOptions.when：经 Codex++ 代理的每一步请求里按 agent 判断（不满足就从请求的 tools 去掉），MCP 调用时也判断一次。
+          const when = options && typeof options.when === 'function' ? options.when : undefined
+          if (when) {
+            mapTo('gateway:step')
+            note('工具的 when 条件在经 Codex++ 代理的请求里按 agent 判断（不满足就不给模型看）；MCP 进程里没有 agent，按无 agent 判断一次，判断出错视为可用')
+          }
+          host.tools.set(definition.name, { def: definition, pluginKey: state.key, when })
           state.tools.push(definition.name)
           changed('tools/change')
           return track(() => {

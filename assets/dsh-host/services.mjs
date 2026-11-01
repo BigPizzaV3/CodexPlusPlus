@@ -643,19 +643,38 @@ export function createSessionQuery(mirror) {
     async traceSession(id) {
       return { sessionId: String(id), lineage: [String(id)] }
     },
-    async observeSession(id) {
+    /**
+     * dsh 的 observeSession 是某一时刻的切面：会话在本进程的镜像里（钩子常驻进程正跟着它）时给 live 切面，
+     * 带上投影的当前值；否则从 Codex 的会话记录读一份 prepared 切面。之后的变化用 sessionProjections.onChanged / session/event 跟。
+     */
+    async observeSession(id, options = {}) {
+      const live = mirror?.sessions.get(String(id))
+      if (live) {
+        const events = freeze([...live.events])
+        const keys = [...(mirror.projections?.keys() ?? [])]
+        const observation = {
+          source: 'live',
+          header: live.header,
+          inheritedEventCount: 0,
+          events,
+          cursor: events.length ? events[events.length - 1].seq : -1,
+          ...(options?.projectionMode === 'none' || !keys.length ? {} : { projections: { asOfSeq: events.length ? events[events.length - 1].seq : -1, values: Object.fromEntries(keys.map((key) => [key, mirror.stateOf(live, key)])) } }),
+          retain: () => observation,
+          [Symbol.dispose]() {},
+        }
+        return observation
+      }
       const read = await readSession(id)
-      return {
+      const observation = {
         source: 'prepared',
         header: read.session,
         inheritedEventCount: 0,
         events: read.events,
-        cursor: read.events.length,
-        retain() {
-          return this
-        },
+        cursor: read.events.length ? read.events[read.events.length - 1].seq : -1,
+        retain: () => observation,
         [Symbol.dispose]() {},
       }
+      return observation
     },
     async searchSessions({ query: text, limit, cursor } = {}) {
       const page = await query('searchSessions', { query: String(text ?? ''), limit, cursor })

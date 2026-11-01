@@ -156,6 +156,11 @@ function makeExec(payload, agent, signal) {
     agent,
     signal,
     token: Symbol('codexpp.hook'),
+    // 代为执行 Codex 的工具时推迟的上下文：并进这次钩子的 additionalContext。
+    deferContext(message) {
+      if (message) sinks.getStore()?.inject.push(message)
+    },
+    concludeTurn() {},
   }
 }
 
@@ -498,6 +503,21 @@ async function stepFor(host, body, context = {}) {
         const name = requestToolName(tool)
         return !name || host.toolVisible(name)
       })
+      if (kept.length !== next.tools.length) {
+        next = { ...next, tools: kept }
+        changed = true
+      }
+    }
+    // 6. 插件工具的 registerOptions.when：按这一步的 agent 与模型判断，不满足就不给模型看（同 dsh 每步解析工具集）。
+    if (Array.isArray(next.tools) && [...host.tools.values()].some((entry) => entry.when)) {
+      const model = String(next.model ?? '')
+      const slash = model.indexOf('/')
+      const selection = { provider: slash > 0 ? model.slice(0, slash) : 'codex', model, reasoningEffort: next.reasoning?.effort }
+      const kept = []
+      for (const tool of next.tools) {
+        const entry = host.tools.get(requestToolName(tool))
+        if (!entry?.when || await host.toolActive(entry, agent, selection, controller.signal)) kept.push(tool)
+      }
       if (kept.length !== next.tools.length) {
         next = { ...next, tools: kept }
         changed = true
