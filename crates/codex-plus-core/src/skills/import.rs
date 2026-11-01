@@ -475,9 +475,11 @@ impl SkillsManager {
             if same_name(name, &existing_name) {
                 reasons.push("name".into());
             }
-            let snapshot = self
-                .cached_import_target_snapshot(state, &target, snapshots)
-                .with_context(|| format!("无法比较已有 Skill：{target}"))?;
+            let snapshot = match self.cached_import_target_snapshot(state, &target, snapshots) {
+                Ok(snapshot) => snapshot,
+                Err(_) if reasons.is_empty() => continue,
+                Err(error) => return Err(error.context(format!("无法比较已有 Skill：{target}"))),
+            };
             if snapshot
                 .directory_hashes
                 .iter()
@@ -619,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_reuses_failed_target_comparison_without_treating_it_as_absent() {
+    fn preview_skips_unrelated_failed_comparisons_but_blocks_known_conflicts() {
         let (temp, manager) = fixture();
         let original = temp.path().join("original");
         write_skill(&original, "Original", "original");
@@ -627,11 +629,11 @@ mod tests {
             .import_from_local_directory("existing", &original)
             .unwrap();
         add_oversized_file(&manager.source_dir.join("existing"));
-        let candidates: Vec<_> = ["first", "second"]
+        let candidates: Vec<_> = ["first", "second", "existing", "same-name"]
             .iter()
             .map(|id| {
                 let path = temp.path().join(id);
-                write_skill(&path, id, id);
+                write_skill(&path, if *id == "same-name" { "Original" } else { id }, id);
                 (id.to_string(), path)
             })
             .collect();
@@ -639,7 +641,10 @@ mod tests {
         let preview = manager
             .preview_skill_import(&candidates, &BTreeMap::new())
             .unwrap();
-        for candidate in &preview {
+        for candidate in &preview[..2] {
+            assert!(candidate.error.is_none());
+        }
+        for candidate in &preview[2..] {
             let error = candidate.error.as_ref().unwrap();
             assert!(error.contains("existing") && error.contains("256 MiB"));
         }
@@ -653,8 +658,13 @@ mod tests {
         let (count, errors) = manager
             .apply_skill_import(&candidates, &BTreeMap::new(), "local", &selections)
             .unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(count, 2);
         assert_eq!(errors.len(), 2);
+        assert!(
+            std::fs::read_to_string(manager.source_dir.join("existing/SKILL.md"))
+                .unwrap()
+                .contains("original")
+        );
     }
 
     fn selection(candidate: &SkillImportCandidate) -> SkillImportSelection {
@@ -666,6 +676,46 @@ mod tests {
             target_id: None,
             target_snapshot: None,
         }
+    }
+
+    #[test]
+    fn failed_origin_match_is_not_skipped() {
+        let (temp, manager) = fixture();
+        let original = temp.path().join("original");
+        let incoming = temp.path().join("incoming");
+        write_skill(&original, "Original", "original");
+        write_skill(&incoming, "Different", "incoming");
+        let origin = crate::ccs_import::CcsSkillOrigin {
+            repo_key: "owner/repo@main".into(),
+            repo_path: "skills/shared".into(),
+        };
+        manager
+            .import_directory_with_source(
+                "existing",
+                "existing",
+                &original,
+                "cc-switch",
+                Some(&origin),
+                None,
+                None,
+            )
+            .unwrap();
+        add_oversized_file(&manager.source_dir.join("existing"));
+        let candidates = vec![("new".into(), incoming)];
+        let origins = BTreeMap::from([("new".into(), origin)]);
+        let preview = manager.preview_skill_import(&candidates, &origins).unwrap();
+        assert!(preview[0].error.as_ref().unwrap().contains("existing"));
+        let (count, errors) = manager
+            .apply_skill_import(
+                &candidates,
+                &origins,
+                "cc-switch",
+                &[selection(&preview[0])],
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(errors.len(), 1);
+        assert!(!manager.source_dir.join("new").exists());
     }
 
     fn while_launch_guard_is_held<T: Send + 'static>(
@@ -899,7 +949,7 @@ mod tests {
         let original = temp.path().join("original");
         let incoming = temp.path().join("incoming");
         write_skill(&original, "Original", "original");
-        write_skill(&incoming, "Unrelated", "incoming");
+        write_skill(&incoming, "Original", "incoming");
         manager
             .import_from_local_directory("existing", &original)
             .unwrap();
@@ -909,7 +959,7 @@ mod tests {
             .preview_skill_import(&candidates, &BTreeMap::new())
             .unwrap();
         assert!(before[0].error.is_none());
-        assert!(before[0].matches.is_empty());
+        assert_eq!(before[0].matches.len(), 1);
         add_oversized_file(&agent_root.join("existing"));
         let preview = manager
             .preview_skill_import(&candidates, &BTreeMap::new())
@@ -956,7 +1006,7 @@ mod tests {
         let good = bundle.join("good");
         write_skill(&original, "Existing", "original");
         write_skill(&bad, "Bad", "unsafe");
-        write_skill(&good, "Good", "safe");
+        write_skill(&good, "Existing", "safe");
         manager
             .import_from_local_directory("existing", &original)
             .unwrap();
@@ -992,8 +1042,10 @@ mod tests {
             .unwrap();
         assert!(repaired[0].error.as_ref().unwrap().contains("导入源"));
         assert!(repaired[1].error.is_none());
-        assert!(repaired[1].matches.is_empty());
-        let selections: Vec<_> = repaired.iter().map(selection).collect();
+        assert_eq!(repaired[1].matches.len(), 1);
+        let mut selections: Vec<_> = repaired.iter().map(selection).collect();
+        selections[1].target_id = Some(repaired[1].matches[0].id.clone());
+        selections[1].target_snapshot = Some(repaired[1].matches[0].snapshot.clone());
         let (count, errors) = manager
             .apply_skill_import(&candidates, &BTreeMap::new(), "local", &selections)
             .unwrap();
@@ -1001,11 +1053,11 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("bad") && errors[0].contains("256 MiB"));
         assert!(!manager.source_dir.join("bad").exists());
-        assert!(manager.source_dir.join("good/SKILL.md").is_file());
+        assert!(manager.source_dir.join("existing/SKILL.md").is_file());
         assert!(
             std::fs::read_to_string(manager.source_dir.join("existing/SKILL.md"))
                 .unwrap()
-                .contains("original")
+                .contains("safe")
         );
     }
 
