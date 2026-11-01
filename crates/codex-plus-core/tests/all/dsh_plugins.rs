@@ -1774,11 +1774,20 @@ async fn dsh_tool_when_defer_context_and_live_observation() {
     let record = plugins.import(&local_source(&fixture("tool-extras")), &toolchain).unwrap();
     assert!(dsh_plugins::report_bridge(&record.report).gateway_step, "when 要在每一步的请求里判断");
 
-    let responses = serve(&plugins, &toolchain, &[call(1, "gated", json!({})), call(2, "deferring", json!({}))]);
+    let responses = serve(&plugins, &toolchain, &[call(1, "gated", json!({})), call(2, "deferring", json!({})), call(3, "snapshot", json!({})), call(4, "missing", json!({}))]);
     assert_eq!(responses[0]["result"]["isError"], true, "{responses:?}");
     assert!(responses[0]["result"]["content"][0]["text"].as_str().unwrap().contains("when 条件不满足"));
     let deferred: Vec<&str> = responses[1]["result"]["content"].as_array().unwrap().iter().map(|block| block["text"].as_str().unwrap()).collect();
     assert_eq!(deferred, ["done", "remember the deferred note"]);
+    // dsh 的图片块只带附件引用：从插件的附件服务读出字节，作为真图片交给 Codex。
+    let snapshot = &responses[2]["result"]["content"];
+    assert_eq!(snapshot[0]["text"], "here it is", "{snapshot}");
+    assert_eq!(snapshot[1]["type"], "image", "{snapshot}");
+    assert_eq!(snapshot[1]["mimeType"], "image/png");
+    assert!(snapshot[1]["data"].as_str().unwrap().starts_with("iVBORw0KGgo"), "{snapshot}");
+    let missing = &responses[3]["result"]["content"][0];
+    assert_eq!(missing["type"], "text", "{missing}");
+    assert!(missing["text"].as_str().unwrap().contains("附件 nope 读取失败"), "{missing}");
 
     plugins.sync_companion(&manager, &record.id).unwrap();
     let tools = json!([

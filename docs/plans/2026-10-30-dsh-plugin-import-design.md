@@ -37,6 +37,8 @@ dsh 的 agent 循环、会话存储、LLM 服务都不在 Codex App 里，所以
 
 ## 3. 支持矩阵
 
+> 本表是**当前状态**（2026-11-01 第九期之后重写）。首期判为不兼容、后来各期补上的，都已按现状改写；每期的细节与差别见第 8~14 节。
+
 | dsh 插件类别 | 判定依据 | 在 Codex++ 的落点 | 结论 |
 |---|---|---|---|
 | 工具插件（`inject` 只含 `tools` / `systemPrompt` / `logger` / `timer`） | 加载后 `ctx.tools.register` 出工具 | 兼容宿主进程内运行，经托管 MCP `codex_plus_dsh` 暴露为 Codex 工具 | **完全兼容**（工具调用、参数 schema、render、超时、取消） |
@@ -44,13 +46,14 @@ dsh 的 agent 循环、会话存储、LLM 服务都不在 Codex App 里，所以
 | 监听 `tools/pre-execute` / `tools/post-execute` / `agent/pre-step` / `agent/turn-stopping` 的插件（策略、守卫类，如 `dsh-repeat-tool-reminder`） | `ctx.on` 这四个事件 | 配套拓展包声明对应的 Codex 钩子 PreToolUse / PostToolUse / UserPromptSubmit / Stop，钩子脚本经 `bridge.mjs` 派发给插件的监听器，把 dsh 的决定翻译成钩子输出（见 4.1） | **完全兼容**（拦截、补上下文、拒绝输入、要求继续）；dsh 决定里 Codex 钩子表达不了的部分忽略（见 4.1）；需要用户在 Codex 里信任一次「Codex++ 拓展钩子」 |
 | 监听其它 dsh 事件 | `ctx.on` | 见第 8、9、14 节：大部分已有落点（会话镜像、网关、钩子、插件间事件总线，第九期起跨包互通） | 首期**不生效**；现状以第 8、9、14 节为准 |
 | 工具插件用 `registerOptions.when`、`exec.agent`、`exec.deferContext`、`exec.concludeTurn`、`presentCall/presentResult` | 运行时调用 | 第九期：`when` 在经代理的每一步请求里按 agent 判断、MCP 调用时也判断；`deferContext` 并进工具结果（见第 14 节） | **部分兼容**：MCP 进程里 `exec.agent` 为空（Codex 的 MCP 调用不带会话）；`concludeTurn` 空操作；展示钩子忽略 |
-| 工具 render 出的图片块 | `type: 'image'`（引用 dsh 会话附件） | — | **不兼容**：附件存储属于 dsh 会话，转成文字占位 |
+| 工具 render 出的图片块 | `{ type: 'image', attachment }`（引用附件）或直接带 `data` | 引用的附件从这个插件的附件服务（数据目录 `attachments/`）读出字节，作为 MCP 图片内容交给 Codex | **兼容**；附件不在这个插件的数据目录里（例如别的插件存的）时退成文字说明 |
 | skill 包（`SKILL.md` 文件，或经 `ctx.skills.register` / `registerProvider` 在代码里注册） | 包内扫描到 `SKILL.md`；或加载插件时截取 `ctx.skills` 的注册（宿主提供 `skills` 服务与 `@deepseek-ai/dsh-skill` 替身），依赖包里的 skill 也能拿到；bundle 行引用的依赖包里现成的 `SKILL.md` 也会扫描（最多 64 个，不跟软链，指向包外的依赖不扫） | 代码注册的写成 `SKILL.md` 目录（带上资源目录里的文件），与文件形式的一起复制进 Codex++ 的 Skills 源目录并启用到 Codex | **完全兼容**（内容层面）；skill 文档里写死的 dsh 专属路径/工具名需要用户自行判断 |
 | MCP 配置行（`dsh-mcp-client`） | patch 行 `name` 为 `@deepseek-ai/dsh-mcp-client` | 生成标准 `mcpServers` JSON，交给现有「导入 MCP」流程写入 Codex | **完全兼容**（stdio / streamable-http）；`reconnect`、`toolCallTimeoutMs` 等 dsh 专属字段丢弃 |
 | `cordis:group` 行 | patch 行 | 展开子行逐一判定 | 按子行 |
-| 依赖 agent 循环 / 会话 / LLM / 子 agent / 工作流 / shell / 工作目录服务的插件（`agents`、`sessions`、`sessionProjections`、`llm`、`subagents`、`workflowEngine`、`shell`、`workingDirectory` 等服务…） | `inject` 必需项含不支持的服务，或导入了宿主没有替身的 dsh 运行时包（如 `@deepseek-ai/dsh-agent-loop`），或用到替身之外的导出（`@deepseek-ai/dsh-llm` 只替身了 `createUserMessage` 等构造消息的函数，`@deepseek-ai/dsh-system-prompt` 只替身了片段名常量与渲染函数） | 无 | **不兼容**：Codex App 的 agent 循环、会话存储与模型调用不在 Codex++ 手里，不加载并列出缺的服务 / 导出 |
+| 依赖会话、agent、LLM、命令、文件 / shell / 子进程、审批、计划模式、子 agent 等运行时服务的插件 | `inject` 的服务 | 宿主提供替身（`assets/dsh-host/services.mjs` 的 `SUPPORTED_SERVICES`）：会话与 agent 落在钩子驱动的会话镜像上，`llm` 经 Codex++ 协议代理，`fs` / `shell` / `subprocess` / `web` 是本机 Node 实现，其余见第 8~14 节 | **兼容（近似）**：跑模型的仍是 Codex 自己的循环，替身做不到的调用时说明原因（例如 `agent.cancel`、PTY、联网搜索） |
+| 依赖 dsh 自己运行时的插件（`workflowEngine`、`ptcRuntime`、`sandboxPolicy` 等，或导入了宿主没有替身的 dsh 运行时包，如 `@deepseek-ai/dsh-agent-loop`） | `inject` 必需项不在替身列表，或解析不到的 `@deepseek-ai/dsh-*` 导入 | 无 | **不兼容**：建在 dsh 自己的 agent 循环与会话存储上，Codex 的这一层不在 Codex++ 手里；不加载并列出缺的服务 / 导出 |
 | `Service` 子类插件 | 默认导出为 class | 第九期：按 Cordis 语义实例化，作为服务给同一个包里的插件 `inject`（支持 isolate，见第 14 节） | **兼容**（同包内）：服务对象不能跨进程，别的包拿不到 |
-| 前端 slot 插件（`dsh.client`） | `package.json` 有 `dsh.client` | 理论上落在 renderer 层（`codexPlus.extension`），但 slot、store、React 组件树都不同 | **不兼容（需移植）**：给出说明，建议改写为 Codex++ 拓展包 |
+| 前端插件（`dsh.client`） | `package.json` 有 `dsh.client` | 页面运行时 `96-dsh-client.js`：用 Codex 页面自己的 React 渲染组件，dsh 插槽映射到 Codex++ 的插槽，对不上的作为子插槽；`connection` / `sessions` / `shortcuts` / `commandUi` / `theme` / `locale` / `remote` 等前端服务都有替身 | **兼容**：`inputTriggers`（`/` 与 `@` 菜单归 Codex）、dsh Web 客户端自己的 store / conversation / uiSession hooks、`setLocale` 不可用 |
 | bundle patch 里的 `!!js` 表达式、overlay、`remove`/`update` 操作 | YAML 标签 / 操作名 | 第六期起按 dsh 的 patch 语义处理；第九期起 `!!js` 在 Node `vm` 里求值完整表达式（见第 14 节） | **兼容** |
 | 引用 dsh 官方内置模块的行（`@deepseek-ai/dsh-*`，未随包安装） | 解析不到模块 | — | **不兼容**：多为 Codex 已自带的能力或依赖 agent 循环 |
 

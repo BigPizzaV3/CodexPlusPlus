@@ -1448,7 +1448,9 @@ export class Host {
       try {
         const timeout = entry.def.timeoutMs
         const value = await withTimeout(Promise.resolve(entry.def.execute(exec.arguments, exec)), timeout, `工具执行超过 ${timeout} ms`)
-        return Object.freeze({ isError: false, value: value ?? null, content: renderValue(entry.def, exec.arguments, value) })
+        // 图片块引用的附件存在这个插件的数据目录里：读出字节，作为真图片交给 Codex。
+        const content = await renderValue(entry.def, exec.arguments, value, this.pluginAttachments?.get(entry.pluginKey))
+        return Object.freeze({ isError: false, value: value ?? null, content })
       } catch (error) {
         controller.abort()
         return failure(errorText(error))
@@ -1537,7 +1539,7 @@ export class Host {
       storageDomain,
       storage: createStorage(storageDomain),
       spillStore: createSpillStore(state.dataDir),
-      attachments: createAttachments(state.dataDir),
+      attachments: (host.pluginAttachments ??= new Map()).set(state.key, createAttachments(state.dataDir)).get(state.key),
       // 网页路由（dsh 的 webServer）：挂到配套拓展包后台的 /ext/<配套拓展>/<路径>，经 Codex++ 本地代理接收。
       webServer: {
         register(route) {
@@ -2484,15 +2486,29 @@ function withTimeout(promise, ms, message) {
 // MCP 服务
 // ---------------------------------------------------------------------------
 
-/** dsh 内容块 → MCP 内容块。图片引用的是 dsh 会话附件，Codex 里拿不到。 */
-function toMcpContent(blocks) {
+/**
+ * dsh 内容块 → MCP 内容块。dsh 的图片块是 `{ type: 'image', attachment: { attachmentId, mediaType } }`，
+ * 字节在附件服务里：给了 `attachments`（产出这个结果的插件的附件服务）就读出来作为真图片，读不到再退成文字说明。
+ */
+async function toMcpContent(blocks, attachments) {
   const content = []
   for (const block of Array.isArray(blocks) ? blocks : []) {
     if (block?.type === 'text' && typeof block.text === 'string') content.push({ type: 'text', text: block.text })
     else if (block?.type === 'image' && typeof block.data === 'string') {
       content.push({ type: 'image', data: block.data, mimeType: block.mimeType ?? 'image/png' })
-    } else if (block?.type === 'image') content.push({ type: 'text', text: '[图片：引用 dsh 会话附件，Codex 中不可用]' })
-    else if (block !== undefined) content.push({ type: 'text', text: JSON.stringify(block) })
+    } else if (block?.type === 'image') {
+      const ref = block.attachment
+      let image
+      if (ref?.attachmentId && attachments) {
+        try {
+          const request = await attachments.readImageRequest(ref)
+          image = { type: 'image', data: request.data, mimeType: ref.mediaType ?? 'image/png' }
+        } catch (error) {
+          image = { type: 'text', text: `[图片：附件 ${ref.attachmentId} 读取失败：${errorText(error)}]` }
+        }
+      }
+      content.push(image ?? { type: 'text', text: '[图片：附件不在这个插件的数据目录里，Codex 中不可用]' })
+    } else if (block !== undefined) content.push({ type: 'text', text: JSON.stringify(block) })
   }
   return content
 }
@@ -2510,9 +2526,9 @@ function toolParameters(def) {
   return def.parameters && typeof def.parameters === 'object' ? def.parameters : { type: 'object', properties: {} }
 }
 
-function renderValue(def, args, value) {
+async function renderValue(def, args, value, attachments) {
   try {
-    return toMcpContent(def.output.render(args, value))
+    return await toMcpContent(await def.output.render(args, value), attachments)
   } catch (error) {
     return [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, undefined, 2) ?? '' }, { type: 'text', text: `（render 失败：${errorText(error)}）` }]
   }
@@ -2616,7 +2632,7 @@ async function serve(registryPath) {
         running.set(id, controller)
         try {
           const result = await host.executeTool({ callId: `codexpp-${String(id)}`, name, arguments: params?.arguments ?? {}, signal: controller.signal })
-          reply(id, { content: toMcpContent(result.content), isError: result.isError === true })
+          reply(id, { content: await toMcpContent(result.content), isError: result.isError === true })
         } finally {
           running.delete(id)
         }
