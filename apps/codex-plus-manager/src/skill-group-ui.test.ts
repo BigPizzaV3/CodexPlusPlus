@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { skillAgents, skillBatchHasPending, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
 type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean };
@@ -45,6 +46,8 @@ function createHarness(saved = "{}") {
       slots[index] = deps;
     },
     useMemo: (run: () => any) => run(), useDeferredValue: (value: any) => value, startTransition: (run: () => void) => run(),
+    useRef: (value: any) => { const index = cursor++; return slots[index] ??= { current: value }; },
+    useSyncExternalStore: (_subscribe: any, snapshot: () => any) => { cursor++; return snapshot(); },
     useSensors: (...values: any[]) => values, useSensor: () => null, PointerSensor: "pointer", KeyboardSensor: "keyboard",
     sortableKeyboardCoordinates: null, closestCenter: null, verticalListSortingStrategy: null,
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
@@ -61,9 +64,10 @@ function createHarness(saved = "{}") {
     repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
     // 使用模式会隐藏部分 Agent 列；这里按全部 Agent 渲染。
     agentVisible: () => true, useAgentFocus: () => "all",
+    skillAgents, skillBatchHasPending, skillBatchRegistry: new SkillBatchRegistry(),
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
-  for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "DndContext", "SortableContext",
+  for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
     "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "GripVertical"]) context[name] = name;
   vm.createContext(context);
   vm.runInContext(code, context);

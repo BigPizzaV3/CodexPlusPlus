@@ -295,15 +295,26 @@
 .mg-push { margin-left:auto; }
 .mg-toolbar-actions { display:flex; align-items:center; gap:6px; }
 .mg-agent-matrix.mg-skill-matrix .mg-matrix-head,
-.mg-agent-matrix.mg-skill-matrix .mg-matrix-row { grid-template-columns:minmax(0,1fr) 150px repeat(var(--mg-agent-columns,3),84px) 120px; }
+.mg-agent-matrix.mg-skill-matrix .mg-matrix-row,
+.mg-skill-matrix .mg-skill-group-row { grid-template-columns:minmax(180px,1fr) 116px repeat(var(--mg-agent-columns,3),76px) 120px; min-width:var(--mg-skill-min-width,684px); }
+.mg-agent-matrix.mg-skill-matrix[data-columns="1"] { --mg-skill-min-width:532px; }
+.mg-agent-matrix.mg-skill-matrix[data-columns="2"] { --mg-skill-min-width:608px; }
+.mg-agent-matrix.mg-skill-matrix { overflow:auto; }
 .mg-skill-matrix .mg-row-main { width:100%; cursor:pointer; }
 .mg-skill-matrix .mg-skill-source { min-width:0; padding-right:12px; }
 .mg-skill-matrix .mg-skill-source .mg-link-button { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
 .mg-skill-matrix .mg-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; }
-.mg-skill-matrix .mg-skill-group-row { display:flex; align-items:center; gap:8px; min-height:36px; padding:0 12px 0 8px; border-bottom:1px solid hsl(var(--border)); background:hsl(var(--muted) / .5); }
+.mg-skill-matrix .mg-skill-group-row { display:grid; align-items:center; gap:0; min-height:40px; padding:0 12px 0 16px; border-bottom:1px solid hsl(var(--border)); background:hsl(var(--muted) / .5); }
+.mg-skill-matrix .mg-skill-group-name { display:flex; align-items:center; min-width:0; }
 .mg-skill-matrix .mg-skill-group-row .mg-group-head { flex:1; min-width:0; height:36px; padding:0 4px; border:0; background:transparent; }
 .mg-skill-matrix .mg-skill-group-row .mg-group-head strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.mg-skill-matrix .mg-skill-group-row .mg-group-head small { flex:none; white-space:nowrap; }
+.mg-skill-matrix .mg-skill-group-row .mg-group-head small { flex:none; margin-left:auto; white-space:nowrap; font-size:11px; }
+.mg-skill-matrix .mg-skill-batch-label { justify-self:end; padding-right:8px; font-size:11px; color:hsl(var(--muted-foreground)); }
+.mg-skill-matrix .mg-skill-batch-cell { display:flex; justify-content:center; align-items:center; height:32px; }
+.mg-skill-matrix .mg-skill-batch-cell input { width:15px; height:15px; margin:0; accent-color:hsl(var(--primary)); cursor:pointer; }
+.mg-skill-matrix .mg-skill-batch-cell input:disabled { cursor:not-allowed; opacity:.45; }
+.mg-skill-matrix .mg-cell:disabled { cursor:not-allowed; }
+.mg-skill-matrix .mg-cell:disabled > span[data-on="true"] { background:hsl(var(--muted-foreground) / .42); border-color:transparent; box-shadow:none; }
 .mg-skill-matrix .mg-skill-group-row .mg-row-actions { display:flex; flex:none; gap:4px; }
 .mg-skill-matrix .mg-skill-group-row .mg-button { height:24px; padding:0 8px; font-size:12px; }
 .mg-skill-matrix .mg-skill-drag, .mg-skill-matrix .mg-skill-drag-placeholder { flex:none; width:24px; height:24px; }

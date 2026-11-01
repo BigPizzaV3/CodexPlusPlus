@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -16,6 +16,7 @@ import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
 import { SkillListViewport } from "./SkillListViewport";
 import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
+import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
 import { TopbarActions } from "./TopbarActions";
 
 type Result = { status: string; message: string };
@@ -29,6 +30,7 @@ type Repo = { owner: string; name: string; branch: string; subdir: string; enabl
 type SkillPayload = Result & { skills: Skill[]; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string> };
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
 const SKILL_GROUP_STORAGE_KEY = "codex-plus-plus.skill-groups.v1";
+const skillBatchRegistry = new SkillBatchRegistry();
 const ok = (r: Result) => r.status === "ok";
 function Button({ children, onClick, disabled, primary }: { children: ReactNode; onClick: () => void; disabled?: boolean; primary?: boolean }) { return <button type="button" className={"mg-button " + (primary ? "mg-primary" : "")} onClick={onClick} disabled={disabled}>{children}</button>; }
 function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) { return <div className="mg-search"><Search size={14} /><input aria-label={placeholder} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></div>; }
@@ -188,11 +190,37 @@ function SortableSkillGroup({ group, disabled, children }: { group: SkillGroup<S
   return <section className="mg-skill-group" ref={setNodeRef} data-dragging={isDragging}
     style={{ transform: CSS.Transform.toString(transform), transition }}>{children(handle)}</section>;
 }
+function GroupAgentSelect({ group, agent, busy, operations, onChange }: { group: SkillGroup<Skill>; agent: McpAgentId; busy: boolean; operations: PendingSkillBatchOperation[]; onChange: (enabled: boolean) => void }) {
+  const pendingById = new Map<string, boolean>();
+  for (const operation of operations) {
+    if (operation.agent !== agent) continue;
+    const settled = new Set(operation.settledSkillIds);
+    for (const id of operation.skillIds) if (!settled.has(id)) pendingById.set(id, operation.enabled);
+  }
+  const state = skillBatchState(group.items.map((skill) => {
+    const pending = pendingById.get(skill.id);
+    if (pending === undefined) return skill;
+    const agents = skillAgents(skill).filter((value) => value !== agent);
+    if (pending) agents.push(agent);
+    return { ...skill, agents };
+  }), agent);
+  const name = agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : "Grok";
+  return <label className="mg-skill-batch-cell" title={`${group.label} · ${name} · ${t("全选")}`}>
+    <input type="checkbox" aria-label={`${group.label} · ${name} · ${t("全选")}`} checked={state.checked}
+      ref={(element) => { if (element) element.indeterminate = state.mixed; }} disabled={busy || !state.total}
+      onChange={(event) => onChange(event.target.checked)} />
+  </label>;
+}
 export function SkillsPage({ notify }: { notify: Notify }) {
-  const [data, setData] = useState<SkillPayload | null>(null);
+  const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>({ version: 0, value: null });
+  const data = dataState.value;
   const [tab, setTab] = useState<"discover" | "installed">("discover");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
+  const batchOperations = useSyncExternalStore(skillBatchRegistry.subscribe, skillBatchRegistry.getSnapshot, skillBatchRegistry.getSnapshot);
+  const batchOwner = useRef(Symbol("skills-page"));
+  const mounted = useRef(false);
+  const dataRequest = useRef(0);
   const [repoOpen, setRepoOpen] = useState(false);
   const [detail, setDetail] = useState<Skill | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
@@ -216,11 +244,29 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+  const reloadLocal = async () => {
+    const request = ++dataRequest.current;
+    try {
+      const result = await invoke<SkillPayload>("list_installed_skills");
+      if (!mounted.current || request !== dataRequest.current) return;
+      startTransition(() => setDataState((current) => mounted.current && request === dataRequest.current && request >= current.version
+        ? { version: request, value: result } : current));
+    } catch (error) {
+      if (mounted.current) await notify("Skills", String(error), "failed");
+    }
+  };
+  const applyCurrentPayload = (request: number, payload: SkillPayload) => {
+    if (!mounted.current) return;
+    if (request !== dataRequest.current) { void reloadLocal(); return; }
+    setDataState((current) => mounted.current && request === dataRequest.current && request >= current.version
+      ? { version: request, value: payload } : current);
+  };
   const load = async (command = "refresh_skill_catalog") => {
     setLoading(true);
+    const request = ++dataRequest.current;
     try {
       const r = await invoke<SkillPayload>(command);
-      startTransition(() => setData(r));
+      startTransition(() => applyCurrentPayload(request, r));
       if (!ok(r)) await notify("Skills", r.message, "failed");
     } catch (e) {
       await notify("Skills", String(e), "failed");
@@ -230,17 +276,27 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   };
   useEffect(() => {
     let active = true;
+    mounted.current = true;
     void (async () => {
       await load("list_installed_skills");
       if (active) await load();
     })();
-    return () => { active = false; };
+    return () => { active = false; mounted.current = false; dataRequest.current++; };
   }, []);
+  useEffect(() => skillBatchRegistry.subscribeSettled((owner) => {
+    if (mounted.current && owner !== batchOwner.current) void reloadLocal();
+  }), []);
   const run = async (command: string, args: Record<string, unknown>) => {
     setBusy(true);
     try {
-      const r = await invoke<SkillPayload>(command, args);
-      setData(r);
+      const r = await skillBatchRegistry.run(async () => {
+        try {
+          const request = ++dataRequest.current;
+          const result = await invoke<SkillPayload>(command, args);
+          applyCurrentPayload(request, result);
+          return result;
+        } finally { skillBatchRegistry.notifySettled(batchOwner.current); }
+      });
       await notify("Skills", r.message, ok(r) ? "ok" : "failed");
       return ok(r);
     } catch (e) {
@@ -250,36 +306,59 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       setBusy(false);
     }
   };
-  const runBatch = async (skills: Skill[], enabled: boolean) => {
-    const targets = skills.filter((skill) => skill.installed && !skill.bundled && skill.enabled !== enabled);
+  const runBatch = async (group: SkillGroup<Skill>, agent: McpAgentId, enabled: boolean) => {
+    const groupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
+    if (skillBatchHasPending(skillBatchRegistry.getSnapshot(), groupItems, agent)) return;
+    const targets = skillBatchTargets(group.items, agent, enabled);
     if (!targets.length) {
       await notify("Skills", enabled ? t("该组没有可启用的 Skill") : t("该组没有可停用的 Skill"), "ok");
       return;
     }
-    setBusy(true);
-    let latest: SkillPayload | null = null;
+    let operation: PendingSkillBatchOperation = { groupKey: group.key, agent, enabled, skillIds: targets.map((skill) => skill.id), settledSkillIds: [], owner: batchOwner.current };
+    skillBatchRegistry.add(operation);
+    let completed = 0;
+    const errors: string[] = [];
     try {
       for (const skill of targets) {
-        latest = await invoke<SkillPayload>("set_skill_enabled", { id: skill.id, enabled });
-        if (!ok(latest)) break;
+        try {
+          const { request, result } = await skillBatchRegistry.run(async () => {
+            const request = ++dataRequest.current;
+            const result = await invoke<SkillPayload>("set_skill_enabled_for", { agent, id: skill.id, enabled });
+            return { request, result };
+          });
+          if (mounted.current && request === dataRequest.current) {
+            setDataState((current) => {
+              if (!mounted.current || request < current.version || !current.value || !result.skills) return current;
+              return { version: request, value: { ...current.value, skills: mergeSkillAgentResult(current.value.skills, result.skills, skill.id, agent) } };
+            });
+          } else if (mounted.current) void reloadLocal();
+          if (ok(result)) completed++;
+          else errors.push(`${skill.name || skill.id}：${result.message}`);
+        } catch (error) { errors.push(`${skill.name || skill.id}：${String(error)}`); }
+        finally {
+          const previous = operation;
+          operation = { ...operation, settledSkillIds: [...operation.settledSkillIds, skill.id] };
+          skillBatchRegistry.replace(previous, operation);
+        }
       }
-      if (latest) setData(latest);
-      const failed = latest ? !ok(latest) : false;
-      const message = failed && latest
-        ? latest.message
-        : tf("已批量{0} {1} 个 Skill", [enabled ? t("启用") : t("停用"), targets.length]);
-      await notify("Skills", message, failed ? "failed" : "ok");
-    } catch (e) {
-      await notify("Skills", String(e), "failed");
     } finally {
-      setBusy(false);
+      skillBatchRegistry.remove(operation);
+      if (mounted.current) void reloadLocal();
     }
+    const message = tf("已批量{0} {1} 个 Skill", [enabled ? t("启用") : t("停用"), completed]);
+    await notify("Skills", errors.length ? `${message}；${errors.join("；")}` : message, errors.length ? "failed" : "ok");
   };
   const saveRepo = async (repo: Repo, previousKey?: string) => {
     setBusy(true);
     try {
-      const result = await invoke<SkillPayload>("upsert_skill_repo", { repo, previousKey });
-      setData(result);
+      const result = await skillBatchRegistry.run(async () => {
+        try {
+          const request = ++dataRequest.current;
+          const result = await invoke<SkillPayload>("upsert_skill_repo", { repo, previousKey });
+          applyCurrentPayload(request, result);
+          return result;
+        } finally { skillBatchRegistry.notifySettled(batchOwner.current); }
+      });
       if (!ok(result)) await notify("Skills", result.message, "failed");
       return ok(result);
     } catch (error) {
@@ -306,10 +385,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const deleteRepo = async (repo: Repo) => { await run("delete_skill_repo", { key: repoKey(repo) }); };
   const inspectRepo = async (repo: Repo) => {
     const result = await invoke<RepoInspection>("inspect_skill_repo", { repo });
-    if (ok(result)) {
-      const payload = await invoke<SkillPayload>("list_installed_skills");
-      startTransition(() => setData(payload));
-    }
+    if (ok(result)) await reloadLocal();
     return result;
   };
   const openRepo = (key: string) => { setRepoSelection(key); setDetail(null); setRepoOpen(true); };
@@ -377,7 +453,6 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     setGroupOrder(moveSkillGroup(allGroups, String(active.id), String(over.id)));
     setGroupSortDirection(null);
   };
-  const skillAgents = (s: Skill) => s.agents ?? (s.enabled ? ["codex"] : []);
   const agentCount = (agent: McpAgentId) => (data?.skills || []).filter((s) => s.installed && skillAgents(s).includes(agent)).length;
   // 与 MCP 页同一张表：名称 | 来源 | 每个 Agent 一列勾选 | 操作。分组、详情、卸载收进行末的「更多」菜单。
   const renderSkillRow = (s: Skill) => {
@@ -394,7 +469,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       </div>
       {agentColumns.map((agent) => <MatrixCell agent={agent} key={agent} name={s.name || s.id}
         enabled={s.installed && skillAgents(s).includes(agent)}
-        disabled={busy || !s.installed || s.bundled}
+        disabled={busy || !s.installed || s.bundled || skillBatchHasPending(batchOperations, [s], agent)}
         hint={!s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : undefined}
         onToggle={() => void run("set_skill_enabled_for", { agent, id: s.id, enabled: !skillAgents(s).includes(agent) })} />)}
       <div className="mg-row-actions">
@@ -451,17 +526,19 @@ export function SkillsPage({ notify }: { notify: Notify }) {
           <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
             <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
           const collapsed = collapsedGroups.has(group.key) && !query.trim();
-          const canBatch = group.items.some((skill) => skill.installed && !skill.bundled);
+          const allGroupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
           const movable = group.kind === "repo" || group.kind === "custom";
           return <SortableSkillGroup group={group} key={group.key} disabled={!movable || !!query.trim() || busy || loading}>{(handle) => <>
             <div className="mg-skill-group-row">
-              {handle}
-              <button type="button" className="mg-group-head" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((old) => { const next = new Set(old); next.has(group.key) ? next.delete(group.key) : next.add(group.key); return next; })}>
+              <div className="mg-skill-group-name">{handle}<button type="button" className="mg-group-head" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((old) => { const next = new Set(old); next.has(group.key) ? next.delete(group.key) : next.add(group.key); return next; })}>
                 <ChevronDown size={15} className={collapsed ? "mg-chevron-collapsed" : ""}/><strong title={group.label}>{group.label}</strong><small>{group.items.length} {t("个 Skill")}</small>
-              </button>
+              </button></div>
+              <span className="mg-skill-batch-label">{t("全选")}</span>
+              {agentColumns.map((agent) => <GroupAgentSelect group={group} agent={agent} key={agent}
+                busy={busy || skillBatchHasPending(batchOperations, allGroupItems, agent)} operations={batchOperations}
+                onChange={(enabled) => void runBatch(group, agent, enabled)}/>)}
               <div className="mg-row-actions">
                 {group.kind === "custom" ? <><Button disabled={busy} onClick={() => renameCustomGroup(group.label)}>{t("重命名")}</Button><Button disabled={busy} onClick={() => deleteCustomGroup(group.label)}>{t("删除分组")}</Button></> : null}
-                {canBatch ? <><Button disabled={busy} onClick={() => void runBatch(group.items, true)}>{t("全部启用")}</Button><Button disabled={busy} onClick={() => void runBatch(group.items, false)}>{t("全部停用")}</Button></> : null}
               </div>
             </div>
             {!collapsed ? group.items.map(renderSkillRow) : null}
