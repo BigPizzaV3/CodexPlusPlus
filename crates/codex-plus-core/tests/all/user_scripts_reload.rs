@@ -186,3 +186,158 @@ assert.equal(emptyWindow.legacy, undefined);
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+fn write_package(root: &std::path::Path, dir: &str, manifest: serde_json::Value) {
+    let package = root.join(dir);
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("codexpp.json"), manifest.to_string()).unwrap();
+}
+
+#[test]
+fn extension_packages_are_scanned_bundled_and_exposed_with_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    fs::write(user.join("plain.js"), "window.plain = true;").unwrap();
+    write_package(
+        &user,
+        "hello",
+        json!({
+            "id": "hello", "name": "Hello 拓展", "version": "0.2.0", "description": "示例",
+            "engines": {"codexpp": 1},
+            "renderer": ["a.js", "lib/b.js"],
+            "permissions": {"routes": ["/diagnostics/log"]},
+            "future": {"unknown": true}
+        }),
+    );
+    fs::write(user.join("hello/a.js"), "window.order = ['a'];").unwrap();
+    fs::create_dir_all(user.join("hello/lib")).unwrap();
+    fs::write(user.join("hello/lib/b.js"), "window.order.push('b');").unwrap();
+    // 没有清单的目录不是拓展包。
+    fs::create_dir_all(user.join("notes")).unwrap();
+    fs::write(user.join("notes/readme.js"), "window.notes = true;").unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        &user,
+        temp.path().join("config.json"),
+    );
+
+    let inventory = manager.inventory().unwrap();
+    let scripts = inventory["scripts"].as_array().unwrap();
+    assert_eq!(scripts.len(), 2);
+    let package = scripts.iter().find(|item| item["key"] == "user:hello").unwrap();
+    assert_eq!(package["kind"], "package");
+    assert_eq!(package["name"], "Hello 拓展");
+    assert_eq!(package["status"], "not_loaded");
+    assert_eq!(package["package"]["id"], "hello");
+    assert_eq!(package["package"]["version"], "0.2.0");
+    assert_eq!(package["package"]["routes"], json!(["/diagnostics/log"]));
+    // 市场版本号只给市场脚本用，包的版本走 package.version，避免误判「可更新」。
+    assert_eq!(package["version"], "");
+    let plain = scripts.iter().find(|item| item["key"] == "user:plain.js").unwrap();
+    assert_eq!(plain["kind"], "script");
+    assert!(plain["package"].is_null());
+
+    let bundle = manager.build_initial_bundle().unwrap();
+    assert!(!bundle.contains("window.notes"));
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(
+            r#"
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const window = { location: { href: 'app://-/index.html' }, electronBridge: {} };
+window.top = window.self = window;
+const status = JSON.parse(vm.runInContext(process.argv[1], vm.createContext({ window, process, console })));
+assert.equal(JSON.stringify(window.order), '["a","b"]'); // vm 里的数组跨 realm，按文本比较
+assert.equal(window.plain, true);
+const record = status.scripts['user:hello'];
+assert.equal(record.status, 'loaded');
+assert.equal(record.manifest.id, 'hello');
+assert.deepEqual(record.manifest.permissions.routes, ['/diagnostics/log']);
+assert.equal(record.manifest.engines.codexpp, 1);
+assert.equal(record.manifest.future, undefined, '清单只下发白名单字段');
+assert.equal(status.scripts['user:plain.js'].manifest, null);
+"#,
+        )
+        .arg(&bundle)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    manager.set_script_enabled("user:hello", false).unwrap();
+    assert!(!manager.build_enabled_bundle().unwrap().contains("window.order"));
+    // 包是目录，删除接口只删单文件，拒绝并保留目录。
+    manager.set_script_enabled("user:hello", true).unwrap();
+    let error = manager.delete_user_script("user:hello").unwrap_err();
+    assert!(error.to_string().contains("拓展包"));
+    assert!(user.join("hello/codexpp.json").exists());
+}
+
+#[test]
+fn invalid_or_incompatible_extension_packages_report_failure_and_are_not_injected() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    let outside = temp.path().join("outside.js");
+    fs::create_dir_all(&user).unwrap();
+    fs::write(&outside, "window.escaped = true;").unwrap();
+    let cases = [
+        ("future", json!({"id": "future", "engines": {"codexpp": 99}, "renderer": "a.js"}), "需要拓展 API v99"),
+        ("escape", json!({"id": "escape", "renderer": "../../outside.js"}), "包内的相对路径"),
+        ("absolute", json!({"id": "absolute", "renderer": outside.to_string_lossy()}), "包内的相对路径"),
+        ("missing", json!({"id": "missing", "renderer": "nope.js"}), "不存在"),
+        ("noentry", json!({"id": "noentry"}), "renderer 入口"),
+        ("badid", json!({"id": "bad id", "renderer": "a.js"}), "id 必填"),
+        ("badroutes", json!({"id": "badroutes", "renderer": "a.js", "permissions": {"routes": "/x"}}), "permissions.routes"),
+    ];
+    for (dir, manifest, _) in &cases {
+        write_package(&user, dir, manifest.clone());
+        fs::write(user.join(dir).join("a.js"), format!("window.loaded_{dir} = true;")).unwrap();
+    }
+    fs::create_dir_all(user.join("broken")).unwrap();
+    fs::write(user.join("broken/codexpp.json"), "{ not json").unwrap();
+    #[cfg(unix)]
+    {
+        write_package(&user, "symlink", json!({"id": "symlink", "renderer": "link.js"}));
+        std::os::unix::fs::symlink(&outside, user.join("symlink/link.js")).unwrap();
+    }
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        &user,
+        temp.path().join("config.json"),
+    );
+
+    let inventory = manager.inventory().unwrap();
+    let find = |key: &str| {
+        inventory["scripts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["key"] == key)
+            .cloned()
+            .unwrap_or_else(|| panic!("缺少 {key}"))
+    };
+    for (dir, _, message) in &cases {
+        let item = find(&format!("user:{dir}"));
+        assert_eq!(item["status"], "failed", "{dir}");
+        assert!(item["error"].as_str().unwrap().contains(message), "{dir}: {}", item["error"]);
+    }
+    assert!(find("user:broken")["error"].as_str().unwrap().contains("不是合法的 JSON"));
+    #[cfg(unix)]
+    assert!(find("user:symlink")["error"].as_str().unwrap().contains("包内的文件"));
+    // 停用后状态回到 disabled，不再显示清单错误。
+    manager.set_script_enabled("user:future", false).unwrap();
+    let disabled = manager.inventory().unwrap();
+    let future = disabled["scripts"].as_array().unwrap().iter().find(|item| item["key"] == "user:future").unwrap().clone();
+    assert_eq!(future["status"], "disabled");
+    assert_eq!(future["error"], "");
+
+    let bundle = manager.build_enabled_bundle().unwrap();
+    assert!(!bundle.contains("window.loaded_"));
+    assert!(!bundle.contains("window.escaped"));
+}

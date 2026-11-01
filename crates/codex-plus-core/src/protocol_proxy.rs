@@ -2061,6 +2061,11 @@ pub async fn send_upstream_request_with_header_timeout(
     request: reqwest::RequestBuilder,
     timeout: Duration,
 ) -> anyhow::Result<reqwest::Response> {
+    // 拓展网关中间件加的请求头（只在模型请求的那次 future 里有）。
+    let mut request = request;
+    for (name, value) in crate::extension_gateway::extension_headers() {
+        request = request.header(name, value);
+    }
     // RequestBuilder 只有在 body 可克隆时才能重试；不可克隆时保持单次请求。
     let retry_source = request.try_clone();
     let mut pending = Some(request);
@@ -3481,6 +3486,10 @@ pub async fn open_responses_proxy_request_for_relay(
     .await
 }
 
+/// 拓展的失败重试（gateway.error）最多让同一个请求重发几次。
+const EXTENSION_RETRY_LIMIT: usize = 3;
+
+#[allow(clippy::too_many_arguments)]
 async fn open_responses_proxy_request_with_settings_and_user_agent(
     body: &str,
     settings: crate::settings::BackendSettings,
@@ -3491,7 +3500,111 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     live_request_id: Option<&str>,
     forced: Option<ForcedRelay>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    set_message_phase_fill(settings.codex_app_third_party_reasoning_collapse);
+    // 拓展中间件加的请求头只在这一次请求里有效。
+    crate::extension_gateway::EXTENSION_HEADERS
+        // 装箱：整条代理请求的 future 很大，debug 构建下内联在栈上会把常驻 helper 的线程栈撑爆。
+        .scope(
+            std::cell::RefCell::new(Vec::new()),
+            crate::extension_gateway::REQUEST_SESSION.scope(
+                std::cell::RefCell::new(String::new()),
+                Box::pin(open_responses_proxy_request_with_extensions(
+                    body, settings, original_user_agent, request_path, beta_features, session_headers, live_request_id, forced,
+                )),
+            ),
+        )
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn open_responses_proxy_request_with_extensions(
+    body: &str,
+    settings: crate::settings::BackendSettings,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+    beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
+    live_request_id: Option<&str>,
+    forced: Option<ForcedRelay>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    // 拓展的网关请求中间件：在 Codex++ 自己的转换之前改写原始 Responses 请求，每个请求只跑一次
+    // （失败重试不再重跑）。没有拓展声明时零开销。
+    let mut request_json: Value = serde_json::from_str(body)?;
+    if let Some(session) = request_json.get("prompt_cache_key").and_then(Value::as_str) {
+        crate::extension_gateway::set_request_session(session);
+    }
+    if let Err(reason) = crate::extension_gateway::apply_request(&mut request_json, request_path).await {
+        // 拓展拒绝了这一步：不发给模型、也不进失败重试，直接回一个 Codex 能显示原因的错误。
+        return extension_rejected_response(&reason);
+    }
+    let mut body = request_json.to_string();
+    let mut attempt = 0;
+    loop {
+        let mut response = Box::pin(open_responses_proxy_request_once(
+            &body,
+            settings.clone(),
+            original_user_agent,
+            request_path,
+            beta_features,
+            session_headers,
+            live_request_id,
+            forced.clone(),
+        ))
+        .await?;
+        if response.is_success() || attempt >= EXTENSION_RETRY_LIMIT {
+            return Ok(response);
+        }
+        // 拓展说要重试就按它给的间隔重发，要降级就换模型重发；没有拓展声明 gateway.error 时直接返回，零开销。
+        match crate::extension_gateway::decide_retry(&mut response, request_path, attempt).await {
+            Some(decision) => {
+                attempt += 1;
+                if let Some(model) = decision.model {
+                    request_json["model"] = json!(model);
+                    body = request_json.to_string();
+                }
+                tokio::time::sleep(decision.delay).await;
+            }
+            None => return Ok(response),
+        }
+    }
+}
+
+/// 拓展网关中间件拒绝了这一步：回一个 Codex 能显示原因的 400 错误。
+fn extension_rejected_response(reason: &str) -> anyhow::Result<UpstreamProxyResponse> {
+    Ok(UpstreamProxyResponse {
+        status_code: 400,
+        content_type: "application/json".to_string(),
+        is_stream: false,
+        wire_api: UpstreamWireApi::Responses,
+        compaction: false,
+        native_compaction_passthrough: false,
+        buffered_body: Some(serde_json::to_vec(&json!({
+            "error": { "type": "invalid_request_error", "code": "extension_rejected", "message": reason }
+        }))?),
+        stream_prefix: Vec::new(),
+        request_trace: None,
+        exec_adapted: false,
+        exec_outcome: None,
+        response: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn open_responses_proxy_request_once(
+    body: &str,
+    settings: crate::settings::BackendSettings,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+    beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
+    live_request_id: Option<&str>,
+    forced: Option<ForcedRelay>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    // 拓展可以用 gateway.replaces 关掉内置的推理折叠、本地压缩、exec 适配，自己在 upstream 段里做。
+    set_message_phase_fill(
+        settings.codex_app_third_party_reasoning_collapse
+            && !crate::extension_gateway::builtin_replaced("builtin:reasoning-collapse")
+            && !crate::builtin_takeover::replaced("reasoning-collapse"),
+    );
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
     let local_compaction_request = !is_responses_compact_proxy_path(request_path)
@@ -3562,6 +3675,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     if aggregate_model.is_none()
         && model_route.is_none()
         && forced.is_none()
+        // 拓展用 gateway.replaces 关掉了目录外模型映射：模型名原样转发，映射由拓展在 request 段自己做。
+        && !crate::extension_gateway::builtin_replaced("builtin:unlisted-model-mapping")
         && let Some(replacement) = unlisted_model_replacement(&settings, &source_model)
     {
         log_unlisted_model_mapping(&source_model, &replacement);
@@ -3581,10 +3696,25 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     } else {
         let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
         let mut relays = vec![relay.clone()];
-        relays.extend(crate::relay_rotation::fallback_relays_after(
-            &settings, &relay.id,
-        )?);
-        (relay, relays)
+        // 拓展用 gateway.replaces 关掉了内置轮换的失败切换：只用选中的这一个。
+        if !crate::extension_gateway::builtin_replaced("builtin:relay-rotation") {
+            relays.extend(crate::relay_rotation::fallback_relays_after(
+                &settings, &relay.id,
+            )?);
+        }
+        // 拓展网关中间件的 route 段：按拓展给的顺序重排 / 筛选候选供应商。
+        let candidates: Vec<Value> = relays
+            .iter()
+            .map(|item| json!({ "id": item.id, "name": item.name, "protocol": item.protocol }))
+            .collect();
+        let route_context = json!({ "model": source_model, "conversationId": conversation_id_from_responses_request(&request_json) });
+        if let Some(order) = crate::extension_gateway::route_order(&candidates, route_context).await {
+            relays = order
+                .iter()
+                .filter_map(|id| relays.iter().find(|item| &item.id == id).cloned())
+                .collect();
+        }
+        (relays[0].clone(), relays)
     };
     debug_assert_eq!(
         relays.first().map(|item| item.id.as_str()),
@@ -3597,7 +3727,10 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     // 网关模式（#2802）：上游 429 不在这里对同一个 Key 退避重发——那只会让同一个 Key 在限流中
     // 再挨几次、拖住换 Key；交给网关去冷却这个 Key、换下一个，或都在冷却时等最早恢复的那个。
     let gateway_forced = forced.is_some();
-    let mut auto_retry = if forced.as_ref().is_some_and(|forced| !forced.auto_retry) {
+    // 拓展用 gateway.replaces 关掉了「请求避震」：上游错误原样交回，要不要重发交给拓展的 gateway.error。
+    let mut auto_retry = if forced.as_ref().is_some_and(|forced| !forced.auto_retry)
+        || crate::extension_gateway::builtin_replaced("builtin:auto-retry")
+    {
         None
     } else {
         ProxyAutoRetry::from_settings(&settings)
@@ -3683,8 +3816,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         {
             logical_body["model"] = json!(model);
         }
-        let experimental_local_compaction =
-            local_compaction_request && relay.local_compaction_prompt_at_end_enabled();
+        let experimental_local_compaction = local_compaction_request
+            && relay.local_compaction_prompt_at_end_enabled()
+            && !crate::extension_gateway::builtin_replaced("builtin:local-compaction");
         let cache_key = relay.local_compaction_prompt_at_end_enabled()
             .then(|| local_compaction::key(&relay, &logical_body, session_headers))
             .flatten();
@@ -3786,13 +3920,18 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        if let Some(id) = live_request_id {
+            crate::request_log::update_running_route(id, &request_trace, is_stream);
+        }
         // Codex 托管的网关供应商：这一跳的上游就是本机网关，它自己按候选控制超时。
         let via_gateway = relay.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
         // 别家签发的加密内容（#2777）：只在发往真实上游时处理（网关那一跳由网关自己处理）；
         // 「严格推理历史」的约定是认证失败不降级，开着时不动。
+        // 拓展用 gateway.replaces 关掉 builtin:foreign-reasoning 时同样不动：加密项原样发出，拒收也不重发。
         let foreign_reasoning_handled = wire_api == UpstreamWireApi::Responses
             && !via_gateway
-            && !relay.strict_responses_reasoning;
+            && !relay.strict_responses_reasoning
+            && !crate::extension_gateway::builtin_replaced("builtin:foreign-reasoning");
         // 被拒记忆按「供应商 + 这次实际使用的 Key / 账号」分开记（网关展开的 Key 候选、本地代理选中的 Key 都在
         // relay.api_key 里；官方登录成员按账号）。
         let foreign_scope = foreign_reasoning_scope(&relay, official_credential.as_ref());
@@ -3852,7 +3991,34 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             && !xai_upstream
             && !is_compaction_request
             && !experimental_local_compaction
+            && !crate::extension_gateway::builtin_replaced("builtin:exec-adapt")
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
+        // 拓展网关中间件的 upstream 段：Codex++ 自己的压缩、路由、协议转换之后，改真正发给这个上游的请求体。
+        // 换候选重发时每次都跑（候选不同，请求体也不同）。拒绝时同 request 段，直接回带原因的错误。
+        let mut upstream_context = json!({
+            "stage": "upstream",
+            "wireApi": wire_api,
+            "relay": { "id": relay.id, "name": relay.name, "protocol": relay.protocol },
+            "model": upstream_body.get("model").cloned().unwrap_or(Value::Null),
+            "attempt": attempt + 1,
+            "endpoint": endpoint,
+            "official": official_member,
+            // 请求体是否还是 Responses 形状（拓展关掉了 builtin:request-conversion）。
+            "requestConversion": if crate::extension_gateway::builtin_replaced("builtin:request-conversion") { "extension" } else { "builtin" },
+        });
+        // 拓展关掉 builtin:auth-headers 时由它自己设鉴权头：这一个候选的 Key 只交给声明了它的拓展的中间件
+        // （见 extension_gateway::apply_middlewares），官方登录成员与转给本机网关的这一跳仍由 Codex++ 认证。
+        if !official_member
+            && !via_gateway
+            && crate::extension_gateway::builtin_replaced("builtin:auth-headers")
+        {
+            upstream_context["__credential"] = json!({ "apiKey": relay.api_key.trim(), "protocol": relay.protocol });
+        }
+        if let Err(reason) = crate::extension_gateway::apply_upstream_request(&mut upstream_body, request_path, upstream_context)
+        .await
+        {
+            return Ok(extension_rejected_response(&reason)?);
+        }
         let mut key = None;
         let mut exec_adapted = forced_adapted;
         let send = async {
@@ -5676,7 +5842,12 @@ async fn upstream_request_parts(
             json!({ "relayId": relay.id }),
         );
     }
+    // 拓展用 gateway.replaces 关掉 builtin:request-conversion：请求体保持 Responses 形状交给 upstream 段，
+    // 由拓展转成上游协议（端点仍按供应商协议选；响应仍由 Codex++ 按上游协议转回 Responses）。
+    let request_conversion =
+        !crate::extension_gateway::builtin_replaced("builtin:request-conversion");
     let mut body = match relay.protocol {
+        _ if !request_conversion => request_json,
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
             request_json,
@@ -5690,14 +5861,18 @@ async fn upstream_request_parts(
             )?
         }
     };
-    if relay.protocol == RelayProtocol::ChatCompletions
+    if request_conversion
+        && relay.protocol == RelayProtocol::ChatCompletions
         && prompt_prefix_stabilizer_enabled(relay)
     {
         stabilize_chat_prompt_prefix(&mut body);
     }
     if reasoning_mode == "omit" {
         strip_reasoning_parameters(&mut body);
-    } else if reasoning_mode == "passthrough" && relay.protocol == RelayProtocol::ChatCompletions {
+    } else if request_conversion
+        && reasoning_mode == "passthrough"
+        && relay.protocol == RelayProtocol::ChatCompletions
+    {
         strip_reasoning_parameters(&mut body);
         if let Some(effort) = requested_effort { body["reasoning_effort"] = effort; }
     }
@@ -5709,8 +5884,10 @@ async fn upstream_request_parts(
         // （`tools` 为空），所以官方成员的每个压缩请求都会被拒。
         // 这里只对「完全没有声明工具」的官方登录请求自动补齐：补完 tool_choice 会被
         // 置为 none（模型不能真正调用搜索），带工具的普通轮次保持原样。
+        // 拓展用 gateway.replaces 关掉 builtin:official-shaping 时不自动补，由拓展在 upstream 段整理。
         let official_auto_repair = official_base.is_some()
             && !legacy_compact_path
+            && !crate::extension_gateway::builtin_replaced("builtin:official-shaping")
             && request_declares_no_tools(&body);
         let opt_in_repair = relay.web_search_history_compat_enabled() && !legacy_compact_path;
         if (opt_in_repair || official_auto_repair) && ensure_web_search_tool_for_history(&mut body)
@@ -5859,6 +6036,11 @@ fn build_responses_upstream_request(
         official_credential,
     );
     builder = with_client_session_headers(builder, relay, session_headers);
+    // 转给 Codex++ 自己的本机网关时打上标记：这一层已经跑过拓展的网关中间件，网关那层不再跑一遍。
+    // 只发往本机回环地址，外部中转站看不到这个头。
+    if is_local_protocol_proxy_base_url(endpoint) {
+        builder = builder.header(crate::extension_gateway::EXTENSIONS_APPLIED_HEADER, "1");
+    }
     if relay.protocol == crate::settings::RelayProtocol::AnthropicMessages {
         // 1M 上下文 / Claude Code 身份都靠 anthropic-beta 表达；用户显式配了该头就不插手。
         let has_custom_beta = relay
@@ -5944,6 +6126,13 @@ fn upstream_request_builder(
         .header(reqwest::header::CONTENT_TYPE, "application/json");
     builder = match official_credential {
         Some(credential) => with_official_login_auth(builder, relay, credential),
+        // 拓展关掉了 builtin:auth-headers：只带供应商自定义头，鉴权头由拓展的 upstream 段给。
+        // 转给 Codex++ 本机网关的这一跳仍带网关令牌，否则网关会拒收。
+        None if !is_local_protocol_proxy_base_url(endpoint)
+            && crate::extension_gateway::builtin_replaced("builtin:auth-headers") =>
+        {
+            crate::relay_headers::apply_headers(builder, &relay.custom_headers)
+        }
         None => with_relay_auth(builder, relay),
     };
     if is_stream {

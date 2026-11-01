@@ -385,10 +385,6 @@
   const zedRemoteButtonClass = "codex-zed-remote-button";
   const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";
   const sessionShareButtonClass = "codex-session-share-button";
-  const sessionShareButtonVersion = "1";
-  const codexPlusShareBaseUrl = "https://share.codexpp.cc";
-  const codexPlusShareFallbackBaseUrl = "https://codexpp-share.pages.dev";
-  const codexPlusShareMaxCharacters = 900000;
   const zedRemoteToastClass = "codex-zed-remote-toast";
   const upstreamWorktreeDialogClass = "codex-upstream-worktree-dialog";
   const upstreamBranchOptionAttribute = "data-codex-upstream-branch-option";
@@ -431,7 +427,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "27";
+  const codexAppServerModelRequestPatchVersion = "28";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -1939,7 +1935,6 @@
     conversationViewContentAnchor: "[data-thread-user-message-navigation-content]",
     conversationViewFooter: "[data-thread-scroll-footer]",
   };
-  const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
   /**
    * 拓展注册中心。
    *
@@ -1962,6 +1957,16 @@
     navEntries: new Map(),
     pages: new Map(),
     menuItems: new Map(),
+    composerActions: new Map(),
+    commands: new Map(),
+    messageActions: new Map(),
+    messageDecorations: new Map(),
+    sidePanels: new Map(),
+    slots: new Map(),
+    inputTriggers: new Map(),
+    shortcuts: new Map(),
+    themes: new Map(),
+    floatingTabs: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
@@ -2038,14 +2043,16 @@
       throw new Error(`拓展项总数已达上限 ${codexPlusExtensionGlobalLimit}`);
     }
     // 每个类别至少要有一个可调用的钩子，否则注册进来也渲染不出东西。
-    // 菜单项的开关形态是 onChange，页面/入口是 render，其余是 onActivate。
-    const callbacks = ["render", "onActivate", "onChange", "onCleanup"];
-    if (definition && !callbacks.some((name) => typeof definition[name] === "function")) {
+    // 菜单项的开关形态是 onChange，页面/入口是 render，斜杠命令与快捷键是 run，输入触发是 items，其余是 onActivate。
+    // 主题是纯样式，没有回调。
+    const callbacks = ["render", "onActivate", "onChange", "onCleanup", "run", "items"];
+    if (definition && kind !== "theme" && !callbacks.some((name) => typeof definition[name] === "function")) {
       throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
     }
     const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;
-    // 内置项占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
-    const normalized = { ...definition, kind, id, order: Math.max(1000, order), scriptKey };
+    // 内置项（内置拓展，scriptKey 为 builtin:*）占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
+    const minOrder = String(scriptKey || "").startsWith("builtin:") ? 0 : 1000;
+    const normalized = { ...definition, kind, id, order: Math.max(minOrder, order), scriptKey };
     registry.set(id, normalized);
     codexPlusRegistryDiagnostics(kind, "register", id, scriptKey);
     return () => {
@@ -2281,31 +2288,6 @@
         border-color: var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
         background: var(--color-token-bg-secondary, transparent);
         color: var(--color-token-text-primary, inherit);
-      }
-      .${sessionShareButtonClass} {
-        position: static;
-        flex: 0 0 auto;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-        margin-left: 2px;
-        z-index: 2147483001;
-        min-height: var(--height-button-composer, 32px);
-        border-radius: var(--border-radius-lg, 8px);
-        font: inherit;
-        font-size: 13px;
-        line-height: 18px;
-        cursor: pointer;
-        box-shadow: none;
-      }
-      .${sessionShareButtonClass}:hover,
-      .${sessionShareButtonClass}:focus-visible {
-        background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover));
-        color: var(--color-token-text-primary, var(--codex-plus-text));
-        outline: none;
-      }
-      .${sessionShareButtonClass}[aria-busy="true"] {
-        cursor: wait;
-        opacity: .65;
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} {
         opacity: 1;
@@ -2643,7 +2625,27 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      /* 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。 */
+      /* 图标栏按钮提示的兜底外观：找不到原生提示样式类时使用，数值量自原生提示。 */
+      .codex-plus-rail-tooltip-fallback {
+        max-width: 320px;
+        padding: 5px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 20px;
+        background: rgb(45, 45, 45);
+        box-shadow: rgba(15, 23, 42, 0.2) 0 8px 18px 0;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 430;
+        line-height: 18px;
+        letter-spacing: -0.15px;
+        white-space: nowrap;
+      }
+      /*
+       * 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。
+       * 新版 Codex 还把弹出层挂在一个 z-60 的固定视口容器里（zoom-adjusted-viewport），
+       * 只提升里面的节点逃不出这个堆叠上下文，所以直接父容器也一起提升。
+       */
+      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [data-radix-popper-content-wrapper]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="tooltip"]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="menu"]:not(.${codexPlusPageClass} *),
@@ -3293,11 +3295,6 @@
       .codex-session-more-menu-item { border-radius: var(--border-radius-sm, 6px); font-family: inherit; }
       .codex-session-more-menu-item:hover,
       .codex-session-more-menu-item:focus-visible { background: var(--codex-plus-bg-hover); }
-      .${sessionShareButtonClass}:hover,
-      .${sessionShareButtonClass}:focus-visible {
-        background: var(--codex-plus-bg-hover);
-        color: var(--codex-plus-text);
-      }
       .${actionTooltipClass} {
         border-color: var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
@@ -3473,6 +3470,12 @@
         line-height: 20px;
       }
       .codex-plus-settings .codex-plus-row[hidden] { display: none; }
+      /* 内置拓展的子选项缩进挂在所属拓展下面；被顶替时的小字用警示色。 */
+      .codex-plus-settings .codex-plus-row[data-codex-plus-builtin-param] { padding-left: 20px; }
+      .codex-plus-settings .codex-plus-row-description[data-codex-builtin-replaced]::after {
+        content: " · " attr(data-codex-builtin-replaced);
+        color: var(--color-token-text-warning, #d97706);
+      }
       .codex-plus-settings .codex-plus-row > :first-child {
         flex: 1 1 auto;
         min-width: 0;
@@ -3734,6 +3737,7 @@
         line-height: 20px;
         overflow-wrap: anywhere;
       }
+      .codex-plus-discovery-description strong { color: var(--codex-plus-text); font-weight: 650; }
       .codex-plus-discovery-toolbar { display: flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; }
       .codex-plus-discovery-search {
         display: flex;
@@ -3970,11 +3974,11 @@
 
   function defaultCodexPlusSettings() {
     // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、agent-pet、
-    // session-share-runtime…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
+    // backend-settings-sync…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -3984,7 +3988,6 @@
     sessionDeleteSkipConfirm: "codexAppSessionDeleteSkipConfirm",
     sideChatSave: "codexAppSideChatSave",
     markdownExport: "codexAppMarkdownExport",
-    sessionShare: "codexAppSessionShare",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
@@ -3996,6 +3999,7 @@
     stepwise: "codexAppStepwiseEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
     usageStatusLine: "codexAppUsageStatusLine",
+    proxyRequestStatus: "codexAppProxyRequestStatus",
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
@@ -4018,7 +4022,32 @@
     return settings;
   }
 
-  function codexPlusSettings() {
+  /**
+   * 功能侧读到的设置：设置项开着、且对应的内置拓展在用（没停用、没被顶替）才算开。
+   * 设置页的开关要显示 / 切换用户自己存的值，传 { ignoreBuiltins: true }。
+   * 映射写在函数里：多个测试把本函数单独切片到沙箱里执行。
+   */
+  function codexPlusSettings(options) {
+    const withBuiltins = (settings) => {
+      const inactive = globalThis.__codexPlusBuiltinInactive;
+      if (options?.ignoreBuiltins || !inactive?.size) return settings;
+      const builtinSettings = {
+        sessionDelete: "session-delete",
+        markdownExport: "markdown-export",
+        threadIdBadge: "thread-id-badge",
+        threadScrollRestore: "thread-scroll-restore",
+        conversationView: "conversation-view",
+        activityOverlayRight: "activity-overlay-right",
+        pasteFix: "paste-fix",
+        stepwise: "stepwise",
+        answerOutline: "answer-outline",
+        petRealMouseLook: "pet-real-mouse",
+      };
+      Object.entries(builtinSettings).forEach(([key, id]) => {
+        if (inactive.has(id)) settings[key] = false;
+      });
+      return settings;
+    };
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
         pluginMarketplaceUnlock: false,
@@ -4026,7 +4055,6 @@
         sessionDelete: false,
         sessionDeleteSkipConfirm: false,
         markdownExport: false,
-        sessionShare: false,
         sideChatSave: false,
         pasteFix: false,
         typingEffect: "off",
@@ -4042,6 +4070,7 @@
         stepwise: false,
         answerOutline: false,
         usageStatusLine: false,
+        proxyRequestStatus: false,
         capacityAutoRetry: false,
         turnRewind: false,
         capacityAutoRetryMaxAttempts: 15,
@@ -4056,10 +4085,10 @@
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       delete settings.customLayout;
       delete settings.serviceTierControls;
-      return settings;
+      return withBuiltins(settings);
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
-      return settings;
+      return withBuiltins(settings);
     }
   }
 
@@ -4787,7 +4816,7 @@
     const settings = codexPlusSettings();
     const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
     const action = dreamSkinRefreshAction({
-      enabled: !!settings.dreamSkinEnabled,
+      enabled: !!settings.dreamSkinEnabled && !globalThis.__codexPlusBuiltinInactive?.has("dream-skin"),
       paused: !!settings.dreamSkinPaused,
       backendLoaded: !!codexPlusBackendSettingsLoaded,
       externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
@@ -4833,16 +4862,8 @@
   function setCodexPlusSetting(key, value) {
     const backendKey = codexPlusBackendSettingMap[key];
     if (backendKey) {
-      if (key === "stepwise") syncStepwisePanel(value);
-      if (key === "answerOutline") syncStepwisePanel(undefined, value);
-      void setBackendSetting(backendKey, value).then(() => {
-        if (key === "stepwise" || key === "answerOutline") {
-          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel());
-        }
-        // 容量错误自动重试：开关落库后立即启停轮询，不必等下一次心跳。
-        if (key === "capacityAutoRetry") syncCodexPlusCapacityAutoRetry();
-        if (key === "turnRewind") syncCodexPlusTurnRewind();
-      }).catch(() => {
+      // 跟着开关走的功能由各自的内置拓展订阅 setBackendSetting 发的 settings/changed，这里不点名。
+      void setBackendSetting(backendKey, value).catch(() => {
         void loadBackendSettings();
       });
       return;
@@ -4855,20 +4876,22 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
-    if (key === "threadScrollRestore" && !value) {
-      clearTimeout(window.__codexThreadScrollSaveTimer);
-      window.__codexThreadScrollSaveTimer = null;
-      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
-      (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollRestoreTimers = [];
-      (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollSyncTimers = [];
-      window.__codexThreadScrollRuntime = null;
-    }
-    if (key === "stepwise") syncStepwisePanel(value);
+    if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, true);
     renderCodexPlusMenu();
     scan();
+  }
+
+  /** 滚动位置恢复关掉时（设置关、或内置拓展停用）撤掉排着的保存 / 恢复定时器，作废进行中的轮次。 */
+  function stopThreadScrollRestore() {
+    clearTimeout(window.__codexThreadScrollSaveTimer);
+    window.__codexThreadScrollSaveTimer = null;
+    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollRestoreTimers = [];
+    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollSyncTimers = [];
+    window.__codexThreadScrollRuntime = null;
   }
 
   function syncStepwisePanel(
@@ -4917,7 +4940,7 @@
     setCodexPlusSetting("conversationViewMaxWidth", width);
   }
   function renderCodexPlusMenu() {
-    const settings = codexPlusSettings();
+    const settings = codexPlusSettings({ ignoreBuiltins: true });
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
       const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;
@@ -5517,7 +5540,12 @@
   }
   // 服务等级由 Codex 原生控件决定；此兼容入口仅负责供应商适配。
   function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
-    return applyCodexRemoteSessionProviderOverride(method, params);
+    // 所有发往 app-server 的请求都经过这里：先做 Codex++ 自己的改写，再交给拓展的 codex/request 中间件。
+    // typeof 守卫：测试会单独执行本分片，那时拓展内核不在作用域里。
+    const patched = applyCodexRemoteSessionProviderOverride(method, params);
+    return typeof codexPlusApplyExtensionRequestMiddleware === "function"
+      ? codexPlusApplyExtensionRequestMiddleware(method, patched)
+      : patched;
   }
 
   function codexRemoteSessionActiveProfile() {
@@ -6129,6 +6157,8 @@
 
   function installCodexRemoteSessionDispatcherSubscription(dispatcher, assetPrefix = "") {
     if (!dispatcher || typeof dispatcher.subscribe !== "function") return false;
+    // 拓展的会话事件也挂在同一个分发器上（幂等，分发器不变时不重复订阅）。
+    if (typeof installCodexExtensionEventBridge === "function") installCodexExtensionEventBridge(dispatcher);
     if (window.__codexPlusRemoteSessionRecoveryDispatcher === dispatcher
         && window.__codexPlusRemoteSessionRecoveryDispatcherVersion === codexRemoteSessionRecoveryVersion) {
       return true;
@@ -6356,9 +6386,9 @@
     serviceTierDispatcherPatchPromise = patch();
   }
 
-  // 保留旧调用入口，语音能力由独立的 opt-in 控件提供。
+  // 保留旧调用入口，语音能力由独立的 opt-in 控件提供（内置拓展「语音听写」登记的步骤）。
   function installDictationSupportPatch() {
-    installCodexPlusDictation();
+    if (typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("builtin:dictation");
   }
 
   const codexAppServerPreparationTimeoutMs = 2000;
@@ -6412,7 +6442,8 @@
     }
     // 设置已加载成功；语音 UI 的异常不应使 provider/Fast 刷新误判为失败。
     // service-tier harness 在 70 分片提前返回，尚未初始化 93 分片的录音状态。
-    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__) runScanStep(installCodexPlusDictation);
+    // 语音听写由内置拓展「语音听写」登记成扫描步骤；它停用 / 被顶替时这里什么也不做。
+    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__ && typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("builtin:dictation");
     return true;
   }
   // 原生准备会话时会读取本地配置；该 fetch 没有默认超时，丢失响应会同时
@@ -6482,6 +6513,83 @@
     window.addEventListener("message", incoming, true);
     window.__codexPlusConfigReadDeadline = runtime;
   }
+  // 原生 Fork 的放置检查（#2826）：getForkCapabilities().readPlacement 要先读两个门控
+  // sidebarCustomSectionsEnabled / useAppServerCustomSections，任一为 undefined 就返回
+  // not-ready / execution-config-loading。后者来自 Statsig，Windows 上不登录账号（纯 API Key）
+  // 时 Statsig 客户端一直不就绪，Fork 就永远失败：弹窗关闭、不产生新会话、没有任何提示。
+  //
+  // 这两个门控只决定「新会话放进哪个自定义侧栏分组」，而自定义分组需要账号；
+  // 所以只在没有账号时把读不到的值按原生缺省 false 处理，登录用户保持原生行为。
+  const codexForkPlacementGateKeys = new Set(["sidebarCustomSectionsEnabled", "useAppServerCustomSections"]);
+  const codexForkReadinessState = window.__codexPlusForkReadinessState
+    || (window.__codexPlusForkReadinessState = { installing: null, patched: false, reported: false });
+
+  function codexForkPlacementSettings(settings) {
+    return new Proxy(settings, {
+      get(target, property) {
+        if (property === "read") {
+          return (key, ...rest) => {
+            const value = target.read(key, ...rest);
+            if (value !== undefined || !codexForkPlacementGateKeys.has(key)) return value;
+            if (!codexForkReadinessState.reported) {
+              codexForkReadinessState.reported = true;
+              try { sendCodexPlusDiagnostic("fork_placement_gate_fallback", { key }); } catch {}
+            }
+            return false;
+          };
+        }
+        // 方法绑回原对象：私有状态、getter 都按原对象读取。
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  function codexForkReadinessFallbackActive(manager) {
+    if (typeof codexPlusBackendSettings !== "undefined" && codexPlusBackendSettings?.enhancementsEnabled === false) return false;
+    try {
+      if (typeof manager?.settings?.read !== "function") return false;
+      return manager.runtime?.accountId?.() == null;
+    } catch {
+      return false;
+    }
+  }
+
+  function patchCodexForkCapabilities(prototype) {
+    const original = prototype?.getForkCapabilities;
+    if (typeof original !== "function") return false;
+    if (original.__codexPlusForkReadiness === true) return true;
+    const patched = function getForkCapabilities(...args) {
+      if (!codexForkReadinessFallbackActive(this)) return original.apply(this, args);
+      // 不改实例字段：以原实例为原型，只把 settings 换成兜底视图，其余字段照常读取。
+      const receiver = Object.create(this, { settings: { value: codexForkPlacementSettings(this.settings) } });
+      return original.apply(receiver, args);
+    };
+    Object.defineProperty(patched, "__codexPlusForkReadiness", { value: true });
+    Object.defineProperty(patched, "__codexPlusOriginal", { value: original });
+    prototype.getForkCapabilities = patched;
+    return true;
+  }
+
+  function installCodexForkReadinessFallback(attempt = 0) {
+    if (codexForkReadinessState.patched || codexForkReadinessState.installing) return codexForkReadinessState.installing;
+    codexForkReadinessState.installing = (async () => {
+      const module = await loadOptionalCodexAppModule("app-initial-");
+      let patched = false;
+      for (const value of Object.values(module || {})) {
+        if (typeof value !== "function" || typeof value.prototype?.getForkCapabilities !== "function") continue;
+        patched = patchCodexForkCapabilities(value.prototype) || patched;
+      }
+      return patched;
+    })().catch(() => false).then((patched) => {
+      codexForkReadinessState.installing = null;
+      codexForkReadinessState.patched = patched;
+      // 模块可能还没加载完；有限次退避重试，找不到就静默放弃（原生行为不变）。
+      if (!patched && attempt < 5) window.setTimeout(() => void installCodexForkReadinessFallback(attempt + 1), 2000 * (attempt + 1));
+      return patched;
+    });
+    return codexForkReadinessState.installing;
+  }
   async function loadBackendSettings() {
     const loaded = await loadBackendSettingsState();
     if (loaded && codexRemoteSessionProviderOverrideEnabled()) {
@@ -6489,18 +6597,30 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
-    if (loaded) runScanStep(syncCodexPlusTypingEffects);
-    if (loaded && typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-    if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
-    // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
-    if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
     // 后端可用后预取设置项清单，首次打开设置页时不必再等一次请求。
     if (loaded && typeof loadCodexPlusSettingsCatalog === "function") void loadCodexPlusSettingsCatalog();
-    // 读到设置后立即补一次皮肤，不等下一轮 DOM 变更触发扫描（#2680）。
-    if (loaded && typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
-    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+    // 跟着设置走的功能（打字特效、桌宠、容量重试、梦皮 #2680、微信同步……）由各自的内置拓展订阅。
+    if (loaded) emitCodexPlusSettingsLoaded("startup");
     return loaded;
+  }
+
+  /**
+   * 读到后端设置（启动或心跳）后发公开事件 `settings/loaded`，参数 `{ reason: "startup" | "heartbeat" }`。
+   * 内置拓展与第三方拓展都经 ctx.on 订阅，拓展卸下时订阅跟着撤掉。
+   * typeof 守卫：本分片会被切片到不带拓展内核的沙箱里执行。
+   */
+  function emitCodexPlusSettingsLoaded(reason) {
+    if (typeof codexPlusEmitExtensionEvent === "function") codexPlusEmitExtensionEvent("settings/loaded", [{ reason }]);
+  }
+
+  /**
+   * 在 Codex 页面里改了一项设置后发公开事件 `settings/changed`，参数 `{ key, value, persisted }`：
+   * key 是改动的设置字段（存在 Codex++ 后端的用后端字段名，如 codexAppCapacityAutoRetry；只存页面本地的用页面键名）；
+   * 先按新值发一次 persisted: false（这时读设置已是新值），写进后端后再发一次 persisted: true。
+   * 跟着设置走的内置拓展订阅它，内核不再逐个点名功能。
+   */
+  function emitCodexPlusSettingsChanged(key, value, persisted) {
+    if (typeof codexPlusEmitExtensionEvent === "function") codexPlusEmitExtensionEvent("settings/changed", [{ key, value, persisted: persisted === true }]);
   }
 
   /**
@@ -6532,23 +6652,14 @@
     if (syncBackendSettingsInFlight) return;
     syncBackendSettingsInFlight = true;
     try {
-      const previousConversationView = !!codexPlusSettings().conversationView;
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
-        runScanStep(syncCodexPlusTypingEffects);
-        if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-        if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-        if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
-        // 启动期读取全部失败时，心跳是之后唯一的设置来源；读到就补一次皮肤（#2680）。
-        if (typeof refreshDreamSkin === "function") runScanStep(refreshDreamSkin);
-        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+        // 启动期读取全部失败时，心跳是之后唯一的设置来源；跟着设置走的功能（含梦皮 #2680、对话宽度）由内置拓展订阅。
+        emitCodexPlusSettingsLoaded("heartbeat");
         // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
         syncCodexPlusBackendToggleButtons();
         renderCodexPlusMenu();
-        if (previousConversationView !== !!codexPlusSettings().conversationView) {
-          refreshConversationView();
-        }
       }
     } finally {
       syncBackendSettingsInFlight = false;
@@ -6559,7 +6670,7 @@
     const seq = ++codexPlusBackendSettingsSeq;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
     codexPlusBackendSettingsLoaded = true;
-    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+    if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, false);
     refreshCodexPlusBackendToggles();
     try {
       const settings = await postJson("/settings/set", { [key]: value });
@@ -6575,7 +6686,7 @@
           codexAppNativePredictions: codexPlusBackendSettings.codexAppNativePredictions === true,
           nativePredictionsLocalApiConfigured: codexPlusBackendSettings.nativePredictionsLocalApiConfigured === true,
         });
-        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+        if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, true);
       }
     } finally {
       refreshCodexPlusBackendToggles();
@@ -6597,14 +6708,9 @@
     syncCodexPlusSettingsCatalogDescriptions();
   }
 
+  /** 刷新设置页的开关与菜单。跟着设置走的功能由内置拓展订阅 settings/loaded、settings/changed 自己对齐，这里不点名。 */
   function refreshCodexPlusBackendToggles() {
-    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
-    globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__?.();
     syncCodexPlusBackendToggleButtons();
-    syncStepwisePanel();
-    runScanStep(syncCodexPlusTypingEffects);
-    if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-    if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
     renderCodexPlusMenu();
     scan();
   }
@@ -6978,8 +7084,27 @@
     if (codexPlusExtensionsSelected?.kind === "installed" && codexPlusExtensionsSelected.key === key) {
       codexPlusExtensionsSelected = null;
     }
-    await loadUserScripts();
+    await reloadUserScriptsAfterChange();
     refreshCodexPlusExtensionsView();
+  }
+
+  /** 启停用户脚本：写开关后热重载，页面里的实例才会真的卸下 / 装上。 */
+  async function setUserScriptEnabled(key, enabled) {
+    if (!key) return;
+    await loadUserScripts("/user-scripts/set-script-enabled", { key, enabled });
+    await reloadUserScriptsAfterChange();
+  }
+
+  /**
+   * 启停 / 卸载之后热重载用户脚本（与管理器的启停流程一致）。
+   *
+   * 只改开关不会动已经跑起来的拓展实例：不重载的话关掉的拓展界面还挂着，
+   * 打开的拓展也要等下次启动才装上。重载失败时仍刷新清单，开关状态至少准确。
+   */
+  async function reloadUserScriptsAfterChange() {
+    const result = await postJson("/user-scripts/reload", {});
+    if (!result?.scripts) showToast(`拓展重载失败：${result?.message || "未知错误"}，重启 Codex 后生效`, { type: "error" });
+    await loadUserScripts();
   }
 
   /** 左面板的导航项。Codex++ 页面切分组，「拓展」页面列脚本。 */
@@ -7036,8 +7161,12 @@
     return "Codex++";
   }
 
-  /** 左面板内容随当前分组刷新（切 tab 后调用）。 */
-  function refreshCodexPlusPageNav(tab) {
+  /**
+   * 左面板内容随当前分组刷新（切 tab 后调用）。
+   * 不传 tab 时按页面当前分组重画：拓展注册 / 撤销后的统一刷新（codexPlusRefreshExtensionHostsNow）不带参数，
+   * 落到 home 会把「拓展」页的左面板换成 Codex++ 主页的导航，启停一个拓展就回不到列表。
+   */
+  function refreshCodexPlusPageNav(tab = codexPlusModalTab(document.querySelector(".codex-plus-modal-content")?.dataset.codexPlusActiveTab)) {
     const body = document.querySelector("[data-codex-plus-page-nav-body]");
     if (!body) return;
     const title = document.querySelector(".codex-plus-page-nav-title");
@@ -7065,6 +7194,7 @@
       codexPlusUserScripts = result;
       codexPlusUserScriptsLoaded = true;
       renderUserScripts();
+      syncCodexPlusBuiltinExtensionToggles();
       // 已安装状态变了，市场的「已安装/有更新」标记也要跟着刷新。
       if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
     }
@@ -7725,7 +7855,9 @@
 
   // ── 设置项清单 ──────────────────────────────────────────────────────────────
   // 设置页里每个开关的标题、说明、分组都来自后端 /settings/catalog，
-  // 与管理器「Codex → 增强」页 import 的是同一份 JSON（crates/codex-plus-core/assets/enhancement-settings.json）。
+  // 与管理器「Codex → 内置拓展」页 import 的是同一份 JSON（crates/codex-plus-core/assets/enhancement-settings.json）。
+  // 每个功能是一个内置拓展：开关就是它对应的设置项，子选项（清单里 parent 指向它）缩进排在它下面；
+  // 没有设置项的内置拓展（清单顶层 builtins）经 /user-scripts/set-script-enabled 启停。
   // 这里不写任何一份设置文案：拿不到清单时只显示原因与重试，绝不退回写死的副本。
   let codexPlusSettingsCatalog = null;
   // idle / loading / failed / ok。idle 与 loading 渲染相同的“正在读取”。
@@ -7737,7 +7869,9 @@
     const groups = value.groups.filter((group) => group && typeof group.id === "string" && typeof group.title === "string");
     const items = value.items.filter((item) => item && typeof item.key === "string" && typeof item.group === "string"
       && typeof item.title === "string" && Array.isArray(item.surfaces));
-    return groups.length && items.length ? { groups, items } : null;
+    const builtins = (Array.isArray(value.builtins) ? value.builtins : []).filter((entry) => entry && typeof entry.id === "string"
+      && typeof entry.group === "string" && typeof entry.title === "string");
+    return groups.length && items.length ? { groups, items, builtins } : null;
   }
 
   function codexPlusSettingsCatalogItemVisible(item) {
@@ -7895,12 +8029,12 @@
     const experimental = codexPlusExperimentalTitle.test(item.title);
     const tags = [
       experimental ? '<em class="codex-plus-feature-tag" data-tone="experimental">实验</em>' : "",
-      codexPlusRestartHint.test(description) ? '<em class="codex-plus-feature-tag">需重启</em>' : "",
+      item.restart === true || codexPlusRestartHint.test(description) ? '<em class="codex-plus-feature-tag">需重启</em>' : "",
     ].join("");
     return escapeHtml(experimental ? item.title.replace(codexPlusExperimentalTitle, "") : item.title) + tags;
   }
 
-  function renderCodexPlusSettingsCatalogRow(item) {
+  function renderCodexPlusSettingsCatalogRow(item, options = {}) {
     const title = escapeHtml(item.title);
     let control = "";
     if (item.key === "codexAppTypingEffect" && item.control === "select") {
@@ -7918,11 +8052,85 @@
     const rawDescription = codexPlusSettingsCatalogDescription(item);
     const description = escapeHtml(rawDescription);
     const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
+    const builtin = item.builtin ? ` data-codex-plus-builtin="${escapeHtml(item.builtin)}"` : "";
+    const param = options.param ? " data-codex-plus-builtin-param=\"true\"" : "";
     return `
-                <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}">
+                <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}"${builtin}${param}>
                   <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div>${item.key === "codexAppNativeFastUnlock" ? '<div class="codex-plus-row-description" data-codex-plus-native-fast-status="true" role="status" hidden></div>' : ""}</div>
                   ${control}
                 </div>`;
+  }
+
+  /**
+   * 清单顶层的内置拓展（桌宠、听写、梦皮……）：设置字段是本页认识的顶层字段就照常绑定设置；
+   * 嵌套字段或没有设置字段的，开关走 /user-scripts/set-script-enabled（后台按清单写设置或记在用户脚本配置里）。
+   */
+  function renderCodexPlusBuiltinEntryRow(entry) {
+    const title = escapeHtml(entry.title);
+    const setting = typeof entry.setting === "string" && !entry.setting.includes(".") ? entry.setting : "";
+    const localKey = setting ? codexPlusLocalSettingKey(setting) : "";
+    const binding = localKey ? `data-codex-plus-setting="${escapeHtml(localKey)}"`
+      : setting ? `data-codex-backend-setting="${escapeHtml(setting)}"`
+        : `data-codex-builtin-extension="${escapeHtml(entry.id)}"`;
+    return `
+                <div class="codex-plus-row" data-codex-plus-builtin="${escapeHtml(entry.id)}">
+                  <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(entry, entry.description || "")}</div><div class="codex-plus-row-description">${escapeHtml(entry.description || "")}</div></div>
+                  <button type="button" class="codex-plus-toggle" ${binding} role="switch" aria-checked="false" aria-label="${title}"><span></span></button>
+                </div>`;
+  }
+
+  /** 一组里的行：不属于任何内置拓展的设置（总开关等）在前，然后每个内置拓展一行、子选项紧跟其后。 */
+  function renderCodexPlusSettingsGroupRows(catalog, group) {
+    const visible = (item) => item.group === group.id && codexPlusSettingsCatalogItemVisible(item);
+    const params = (id) => catalog.items.filter((item) => item.parent === id && codexPlusSettingsCatalogItemVisible(item))
+      .map((item) => renderCodexPlusSettingsCatalogRow(item, { param: true }));
+    return [
+      ...catalog.items.filter((item) => visible(item) && !item.builtin && !item.parent).map((item) => renderCodexPlusSettingsCatalogRow(item)),
+      ...catalog.items.filter((item) => visible(item) && item.builtin)
+        .flatMap((item) => [renderCodexPlusSettingsCatalogRow(item), ...params(item.builtin)]),
+      ...(catalog.builtins || []).filter((entry) => entry.group === group.id)
+        .flatMap((entry) => [renderCodexPlusBuiltinEntryRow(entry), ...params(entry.id)]),
+    ].filter(Boolean);
+  }
+
+  /**
+   * 内置拓展开关（走用户脚本配置的那几个）与「已被顶替」提示，按后台给的内置拓展现状同步。
+   * 提示写在说明元素的 data-codex-builtin-replaced 上，由样式接在说明后面显示。
+   */
+  function syncCodexPlusBuiltinExtensionToggles() {
+    const builtins = new Map((codexPlusUserScripts.builtins || []).map((builtin) => [builtin.id, builtin]));
+    document.querySelectorAll(".codex-plus-toggle[data-codex-builtin-extension]").forEach((button) => {
+      const builtin = builtins.get(button.getAttribute("data-codex-builtin-extension"));
+      const enabled = String(builtin ? !!builtin.enabled : true);
+      button.dataset.pending = String(!builtin);
+      if (button.dataset.enabled === enabled) return;
+      button.dataset.enabled = enabled;
+      button.setAttribute("aria-checked", enabled);
+    });
+    document.querySelectorAll(".codex-plus-row[data-codex-plus-builtin]").forEach((row) => {
+      const replacedBy = builtins.get(row.getAttribute("data-codex-plus-builtin"))?.replacedBy;
+      const text = replacedBy ? `已被 ${String(replacedBy).replace(/^user:/, "")} 顶替` : "";
+      const description = row.querySelector(".codex-plus-row-description");
+      if (!description) return;
+      if (text) description.setAttribute("data-codex-builtin-replaced", text);
+      else description.removeAttribute("data-codex-builtin-replaced");
+    });
+  }
+
+  /** 页面里切换一个内置拓展：后台写设置或用户脚本配置，回来后同步页面里的停用状态与设置。 */
+  async function setCodexPlusBuiltinExtensionEnabled(id, enabled) {
+    await loadUserScripts("/user-scripts/set-script-enabled", { key: `builtin:${id}`, enabled });
+    const builtins = codexPlusUserScripts.builtins || [];
+    if (builtins.length) {
+      window.__codexPlusBuiltinExtensionState = {
+        disabled: builtins.filter((builtin) => !builtin.setting && !builtin.enabled).map((builtin) => builtin.id),
+        replacedBy: Object.fromEntries(builtins.filter((builtin) => builtin.replacedBy).map((builtin) => [builtin.id, builtin.replacedBy])),
+      };
+      try { window.__codexPlusSyncBuiltinExtensions?.(); } catch {}
+    }
+    // 有设置字段的（桌宠、听写）后台改的是设置，重新读一次让功能跟上。
+    await loadBackendSettings();
+    syncCodexPlusBuiltinExtensionToggles();
   }
 
   /** 设置页主体：清单就绪时按分组生成，否则显示读取中 / 读取失败与重试。 */
@@ -7947,11 +8155,10 @@
     // 清单没有这一组时退到 chat 组，再不行放第一组，保证总能看到。
     const ambientGroupId = ["stepwise", "chat"].find((id) => catalog.groups.some((group) => group.id === id))
       || catalog.groups[0]?.id;
+    // typeof 守卫：测试会把这段单独切出来执行，那时用户脚本状态不在作用域里。
+    if (typeof codexPlusUserScriptsLoaded !== "undefined" && !codexPlusUserScriptsLoaded) void loadUserScripts();
     return catalog.groups.map((group, index) => {
-      const rows = catalog.items
-        .filter((item) => item.group === group.id && codexPlusSettingsCatalogItemVisible(item))
-        .map(renderCodexPlusSettingsCatalogRow)
-        .filter(Boolean);
+      const rows = renderCodexPlusSettingsGroupRows(catalog, group);
       if (group.id === ambientGroupId) rows.push(renderCodexAmbientSuggestionsRow());
       if (index === 0) rows.unshift(renderCodexPlusBackendStatusRow());
       return rows.length ? renderCodexPlusSettingsSection(group.title, rows.join("")) : "";
@@ -7977,6 +8184,7 @@
     renderBackendStatus();
     refreshCodexPlusBackendToggles();
     syncCodexAmbientSuggestionsToggles();
+    syncCodexPlusBuiltinExtensionToggles();
   }
 
   function openCodexPlusModal(options = {}) {
@@ -8039,7 +8247,7 @@
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
             <div class="codex-plus-discovery codex-plus-extensions-page">
               <div class="codex-plus-discovery-header">
-                <div><h1 class="codex-plus-discovery-title">拓展</h1><p class="codex-plus-discovery-description">为 Codex 添加更多增强功能。</p></div>
+                <div><h1 class="codex-plus-discovery-title">拓展</h1><p class="codex-plus-discovery-description"><strong>万物皆拓展</strong>：界面、命令、模型工具、钩子、网关与后台都能由拓展接管，在对话里说一句就能造一个。</p></div>
                 <div class="codex-plus-discovery-toolbar">
                   <label class="codex-plus-discovery-search">${codexPlusDiscoveryIcons.search}<input type="search" data-codex-extensions-search="true" aria-label="搜索拓展" placeholder="搜索拓展" value="${escapeHtml(codexPlusExtensionsQuery)}" spellcheck="false" /></label>
                   <button type="button" class="codex-plus-discovery-icon-button" data-codex-market-refresh="true" title="刷新拓展" aria-label="刷新拓展">${codexPlusDiscoveryIcons.refresh}</button>
@@ -8222,9 +8430,18 @@
         window.open(issueUrl, "_blank");
         return;
       }
+      const builtinToggle = target?.closest("[data-codex-builtin-extension]");
+      if (builtinToggle) {
+        if (builtinToggle.dataset.pending === "true") return;
+        void setCodexPlusBuiltinExtensionEnabled(builtinToggle.getAttribute("data-codex-builtin-extension"), builtinToggle.dataset.enabled !== "true");
+        return;
+      }
       const userScriptToggle = target?.closest("[data-codex-user-script-key]");
       if (userScriptToggle) {
-        loadUserScripts("/user-scripts/set-script-enabled", { key: userScriptToggle.getAttribute("data-codex-user-script-key"), enabled: userScriptToggle.dataset.enabled !== "true" });
+        if (userScriptToggle.dataset.pending === "true") return;
+        userScriptToggle.dataset.pending = "true";
+        void setUserScriptEnabled(userScriptToggle.getAttribute("data-codex-user-script-key"), userScriptToggle.dataset.enabled !== "true")
+          .finally(() => { userScriptToggle.dataset.pending = "false"; });
         return;
       }
       // 市场条目的「安装」。id 挂在行/按钮上，点按钮才算。
@@ -8263,7 +8480,7 @@
       if (toggle) {
         if (toggle.disabled || toggle.dataset.pending === "true") return;
         const key = toggle.getAttribute("data-codex-plus-setting");
-        setCodexPlusSetting(key, !codexPlusSettings()[key]);
+        setCodexPlusSetting(key, !codexPlusSettings({ ignoreBuiltins: true })[key]);
         return;
       }
       const backendToggle = target?.closest("[data-codex-backend-setting]");
@@ -8462,10 +8679,11 @@
     }
     let wrapper = document.getElementById(codexPlusSidebarNavId);
     const parent = insertionButton?.parentElement || navigation;
-    if (!wrapper || wrapper.parentElement !== parent) {
+    if (!wrapper || wrapper.parentElement !== parent || !codexPlusNavEntryReusable(wrapper)) {
       wrapper?.remove();
       wrapper = document.createElement("div");
       wrapper.id = codexPlusSidebarNavId;
+      wrapper.__codexPlusGeneration = codexPlusBackendGeneration;
       wrapper.dataset.codexPlusSidebarNav = "true";
       const button = (insertionButton || document.createElement("button")).cloneNode(true);
       if (!(button instanceof HTMLElement)) return;
@@ -8534,9 +8752,23 @@
     }) || null;
   }
 
+  /**
+   * 入口按钮能否沿用。
+   *
+   * 同页重复注入（Codex++ 重启 / 升级而 Codex 没重启）时，上一次注入建的入口按钮还在，
+   * 按钮上绑的是旧闭包：点「拓展」打开的仍是旧版页面，里面的开关也走旧逻辑。
+   * 按钮记下建它的注入代次；最新一代遇到别代的按钮就重建。旧代即便还在跑也不重建，
+   * 免得两代来回抢同一个 id。
+   */
+  function codexPlusNavEntryReusable(node) {
+    return node.__codexPlusGeneration === codexPlusBackendGeneration
+      || codexPlusBackendGeneration !== window.__codexPlusBackendGeneration;
+  }
+
   function createCodexPlusRailButton({ id, template, label, iconMarkup, withStatus, onActivate }) {
     const wrapper = document.createElement("div");
     wrapper.id = id;
+    wrapper.__codexPlusGeneration = codexPlusBackendGeneration;
     wrapper.dataset.codexPlusRail = id === codexPlusRailExtensionsId ? "extensions" : "home";
     // 模板拿不到时不回退到旧模式，而是自建一个按钮：rail 上 destination 可能在
     // 登录态/接口就绪前还是空的，那只是暂时状态，不该让入口整个消失。
@@ -8558,7 +8790,9 @@
     button.removeAttribute("data-selected");
     button.removeAttribute("aria-current");
     button.setAttribute("aria-label", label);
-    button.setAttribute("title", label);
+    // 不用 title：那会弹出系统自带的提示框，样式和位置都和原生按钮不一样。
+    button.removeAttribute("title");
+    attachCodexPlusRailTooltip(button, label);
     button.textContent = "";
     // 原生 rail 按钮是纯图标，没有文字标签，所以只放图标 + 状态点。
     button.innerHTML = `<span class="codex-plus-rail-icon" aria-hidden="true">${iconMarkup}</span>`
@@ -8572,6 +8806,134 @@
     }, true);
     wrapper.appendChild(button);
     return wrapper;
+  }
+
+  /**
+   * 图标栏按钮的悬浮提示，外观与行为对齐原生按钮。
+   *
+   * 原生按钮的提示由 React（Radix Tooltip）渲染，我们复制出来的按钮接不上它，
+   * 所以自己画：直接复用原生提示的样式类（深浅主题、版本更新都跟着走），找不到时
+   * 用量出来的数值兜底。位置与时机照原生：按钮右侧 2px、垂直居中；悬停约 150ms
+   * 出现，在相邻按钮间移动时（300ms 内）立即出现；按下、移出、失焦即消失。
+   */
+  const codexPlusRailTooltipDelayMs = 150;
+  const codexPlusRailTooltipSkipDelayMs = 300;
+  const codexPlusRailTooltipSideOffset = 2;
+  const codexPlusComposerTooltipSideOffset = 6;
+  let codexPlusRailTooltipTimer = null;
+  let codexPlusRailTooltipHiddenAt = 0;
+  let codexPlusRailTooltipOwner = null;
+  let codexPlusNativeTooltipClassCache;
+
+  /**
+   * 原生提示的样式类名带构建哈希（如 _Tooltip_11i4f_2），每个版本都可能变，只能运行时找。
+   * 它独有一条 `[data-side="bottom"][data-default-side-offset="true"]` 变体，用来和
+   * 其它同名前缀的组件区分开。规则可能嵌在 @layer / @supports 里，要递归找。
+   */
+  function codexPlusNativeTooltipClass(sheets = document.styleSheets) {
+    if (codexPlusNativeTooltipClassCache !== undefined) return codexPlusNativeTooltipClassCache;
+    const signature = /^\.(_Tooltip_[\w-]+)\[data-side="bottom"\]\[data-default-side-offset="true"\]$/;
+    let found = "";
+    const walk = (rules) => {
+      for (const rule of rules || []) {
+        if (found) return;
+        const match = signature.exec(rule.selectorText || "");
+        if (match) found = match[1];
+        else if (rule.cssRules) walk(rule.cssRules);
+      }
+    };
+    for (const sheet of sheets || []) {
+      try {
+        walk(sheet.cssRules);
+      } catch {}
+      if (found) break;
+    }
+    // 只缓存找到的结果：样式表可能晚于第一次悬停才加载完。
+    if (found) codexPlusNativeTooltipClassCache = found;
+    return found;
+  }
+
+  function hideCodexPlusRailTooltip() {
+    clearTimeout(codexPlusRailTooltipTimer);
+    codexPlusRailTooltipTimer = null;
+    const node = document.getElementById("codex-plus-rail-tooltip");
+    if (node) {
+      node.remove();
+      codexPlusRailTooltipHiddenAt = Date.now();
+    }
+    codexPlusRailTooltipOwner = null;
+  }
+
+  function showCodexPlusRailTooltip(button, label, side = "right") {
+    if (!button.isConnected || codexPlusRailTooltipOwner !== button) return;
+    document.getElementById("codex-plus-rail-tooltip")?.remove();
+    const nativeClass = codexPlusNativeTooltipClass();
+    const zoom = codexPlusWindowZoom();
+    const wrapper = document.createElement("div");
+    wrapper.id = "codex-plus-rail-tooltip";
+    markCodexPlusExtensionNode(wrapper, "builtin-rail-tooltip");
+    // 挂在 body 下、不在 Codex 的缩放容器里，所以自己套上界面缩放，坐标相应除回去。
+    wrapper.style.cssText = `position:fixed;left:0;top:0;z-index:2147483645;pointer-events:none;zoom:${zoom};`;
+    const tip = document.createElement("div");
+    tip.setAttribute("role", "tooltip");
+    tip.className = nativeClass || "codex-plus-rail-tooltip-fallback";
+    Object.assign(tip.dataset, { side, align: "center", state: "delayed-open", gutterSize: "md", defaultSideOffset: "true", clickable: "false" });
+    tip.textContent = label;
+    wrapper.appendChild(tip);
+    document.body.appendChild(wrapper);
+    const anchor = button.getBoundingClientRect();
+    const box = tip.getBoundingClientRect();
+    // 图标栏的提示在右侧，输入区按钮的提示在上方，标题栏与消息操作行的在下方（与原生对应位置的按钮一致）。
+    // 上下方向的提示按窗口宽度收进来：贴着窗口右边的按钮不能把提示挤出窗外。
+    const vertical = side === "top" || side === "bottom";
+    const left = vertical
+      ? Math.min(Math.max(4, anchor.left + (anchor.width - box.width) / 2), window.innerWidth - box.width - 4) / zoom
+      : (anchor.right + codexPlusRailTooltipSideOffset) / zoom;
+    const top = side === "top"
+      ? (anchor.top - box.height - codexPlusComposerTooltipSideOffset) / zoom
+      : side === "bottom"
+        ? (anchor.bottom + codexPlusComposerTooltipSideOffset) / zoom
+        : (anchor.top + (anchor.height - box.height) / 2) / zoom;
+    wrapper.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+    button.setAttribute("aria-describedby", wrapper.id);
+  }
+
+  /**
+   * 窗口失焦、滚动时收起提示。按钮所在的 rail 被 Codex 重建时不会再收到 pointerleave，
+   * 这两个全局时机兜底。同页重复注入时先摘掉旧监听。
+   */
+  function installCodexPlusRailTooltipDismiss() {
+    if (window.__codexPlusRailTooltipDismiss === hideCodexPlusRailTooltip) return;
+    window.removeEventListener("blur", window.__codexPlusRailTooltipDismiss);
+    document.removeEventListener("scroll", window.__codexPlusRailTooltipDismiss, true);
+    window.__codexPlusRailTooltipDismiss = hideCodexPlusRailTooltip;
+    window.addEventListener("blur", hideCodexPlusRailTooltip);
+    document.addEventListener("scroll", hideCodexPlusRailTooltip, true);
+  }
+
+  function attachCodexPlusRailTooltip(button, label, side = "right") {
+    installCodexPlusRailTooltipDismiss();
+    const open = () => {
+      clearTimeout(codexPlusRailTooltipTimer);
+      codexPlusRailTooltipOwner = button;
+      const instant = Date.now() - codexPlusRailTooltipHiddenAt < codexPlusRailTooltipSkipDelayMs
+        || !!document.getElementById("codex-plus-rail-tooltip");
+      if (instant) showCodexPlusRailTooltip(button, label, side);
+      else codexPlusRailTooltipTimer = setTimeout(() => showCodexPlusRailTooltip(button, label, side), codexPlusRailTooltipDelayMs);
+    };
+    const close = () => {
+      if (codexPlusRailTooltipOwner !== button) return;
+      button.removeAttribute("aria-describedby");
+      hideCodexPlusRailTooltip();
+    };
+    button.addEventListener("pointerenter", open);
+    button.addEventListener("pointerleave", close);
+    button.addEventListener("focus", () => {
+      if (button.matches?.(":focus-visible")) open();
+    });
+    button.addEventListener("blur", close);
+    // 按下就收起，和原生一致；点击后页面切换，提示不该留在原处。
+    button.addEventListener("pointerdown", close);
   }
 
   /**
@@ -8623,7 +8985,7 @@
     let cursor = anchor;
     specs.forEach((spec) => {
       let wrapper = document.getElementById(spec.id);
-      if (!wrapper || wrapper.parentElement !== host) {
+      if (!wrapper || wrapper.parentElement !== host || !codexPlusNavEntryReusable(wrapper)) {
         wrapper?.remove();
         wrapper = createCodexPlusRailButton({ ...spec, template });
         if (!wrapper) return;
@@ -8651,6 +9013,10 @@
     document.getElementById(codexPlusSidebarPluginMarketId)?.remove();
     if (installCodexPlusRailNavigation()) {
       detachCodexPlusSidebarNavigation();
+      // 拓展入口跟着内置入口一起补。冷启动时内置入口常由启动补扫装上，那条路径
+      // 不走完整 scan；拓展入口若只在 scan 里补，页面空闲时会一直缺失。
+      // 内部靠 id 幂等，每轮调用不会重复插入。
+      refreshCodexPlusRailNavigation();
       return;
     }
     removeCodexPlusRailNavigation();
@@ -9430,7 +9796,8 @@
   }
 
   function codexPluginMarketplacePatchEnabled() {
-    return codexPlusBackendSettingsLoaded && !!codexPlusSettings().pluginMarketplaceUnlock;
+    return codexPlusBackendSettingsLoaded && !!codexPlusSettings().pluginMarketplaceUnlock
+      && !globalThis.__codexPlusBuiltinInactive?.has("plugin-market-unlock");
   }
 
   let cachedSessionRows = [];
@@ -11585,7 +11952,8 @@
   }
 
   function codexPlusModelUnlockEnabled() {
-    return !!codexPlusSettings().modelWhitelistUnlock;
+    // 被拓展顶替时让位（停用集合由 96-builtin-extensions.js 按下发的顶替状态维护）。
+    return !!codexPlusSettings().modelWhitelistUnlock && !globalThis.__codexPlusBuiltinInactive?.has("model-whitelist-unlock");
   }
 
   function codexPlusModelNames() {
@@ -12242,7 +12610,7 @@
       const managedTurn = await sendCodexManagedSessionTurn(client, originalSendRequest,
         String(method || ""), nextParams, options, modelContextRefresh);
       if (managedTurn) return managedTurn.result;
-      const result = await sendAppServerRequestWithSideChat(client, method, nextParams,
+      const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest(method, nextParams, options));
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
@@ -12266,9 +12634,20 @@
     return true;
   }
 
-  function sendAppServerRequestWithSideChat(client, method, params, send) {
-    return typeof sendCodexSideChatNativeRequest === "function"
-      ? sendCodexSideChatNativeRequest(client, method, params, send) : send();
+  /**
+   * `codex/exchange` 中间件链：包住一次发往 app-server 的请求。值是 `{ method, params, hostId, send }`，
+   * 中间件用 `next({ ...exchange, send: 新的 send })` 在原请求前后做事（内置拓展「侧聊保存」就挂在这里），
+   * 链尾调用最终的 send。没有中间件时直接发，不多一层 Promise。
+   * 内核分片还没初始化（页面早期、只抽前面分片的测试）时读中间件表会落进暂时性死区，按没有中间件处理。
+   */
+  async function sendAppServerRequestThroughExchange(client, method, params, send) {
+    let wanted = false;
+    try {
+      wanted = codexPlusExtensionInterceptors.has("codex/exchange");
+    } catch {}
+    if (!wanted) return send();
+    const exchange = await codexPlusRunWaterfall("codex/exchange", { method, params, hostId: client.hostId, send });
+    return typeof exchange?.send === "function" ? exchange.send() : send();
   }
 
   // issue #2177：Codex 26.908 把 AppServerRequestClient 类藏进模块闭包且不再导出，
@@ -12306,8 +12685,12 @@
   const codexAppServerClientBundleHints = ["app-shared-", "app-initial-", "app-main-", "chatg"];
   const codexAppServerClientAssetFetchLimit = 24;
 
+  // 已经拉过全文、确认不含类定义的资产。重试时只看新出现的候选，
+  // 不会因为多试几轮就把同一批大文件反复 fetch（#1960 / #2330 的教训）。
+  const codexAppServerClientCheckedUrls = new Set();
+
   function codexAppServerClientAssetCandidateUrls() {
-    const urls = codexAppAssetCandidateUrls();
+    const urls = codexAppAssetCandidateUrls().filter((url) => !codexAppServerClientCheckedUrls.has(url));
     const rank = (url) => {
       const name = (url.split("/").pop() || "").toLowerCase();
       const hint = codexAppServerClientBundleHints.findIndex((part) => name.includes(part));
@@ -12328,7 +12711,7 @@
     // 先走廉价的 asset loader（有 30s 失败冷却与重试上限），脚本里已经内联了
     // asset 名时能直接命中，省掉整轮 fetch；不可用就退回到全量文本匹配。
     const hinted = resolveCodexAppServerClientHintedUrl();
-    const ordered = hinted
+    const ordered = hinted && !codexAppServerClientCheckedUrls.has(hinted)
       ? [hinted, ...urls.filter((url) => url !== hinted)]
       : urls;
     for (const url of ordered) {
@@ -12337,8 +12720,9 @@
         if (!text) continue;
         const location = locateCodexAppServerClientBreakpoint(text);
         if (location) return { urls, hit: { url, location } };
+        codexAppServerClientCheckedUrls.add(url);
       } catch {
-        // 单个 asset 拉取失败不影响其余候选，继续下一个。
+        // 单个 asset 拉取失败不影响其余候选，继续下一个；没记成已检查，下一轮还会再试。
       }
     }
     return { urls, hit: null };
@@ -12354,19 +12738,37 @@
     return "";
   }
 
-    let codexAppServerClientCaptureStarted = false;
+  // 定位常常跑在类所在的资产「可见」之前：Codex 26.10xx 由 app-main 静态 import app-initial，
+  // 开了 Fast 时 import map 又把它指向 Blob，资源记录里没有原 URL（缓冲区 250 条也早就满了），
+  // 要等 Fast 模块执行完置上 __codexPlusNativeFastCompiled 才能拿到。之前首轮只看到 5 个候选、
+  // 报 anchor_missing 后本页再也不试，launcher 等不到坐标就放弃捕获，依赖原型补丁的功能全部失效。
+  // 所以未命中时按退避重试；总时长控制在 launcher 90s 的坐标等待窗口之内。
+  const codexAppServerClientCaptureRetryDelaysMs = [1000, 2000, 4000, 8000, 15000, 15000, 15000];
+  let codexAppServerClientCaptureStarted = false;
+  let codexAppServerClientCaptureAttempts = 0;
   async function installCodexAppServerClientCapture() {
     if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture) return;
     codexAppServerClientCaptureStarted = true;
+    codexAppServerClientCaptureAttempts += 1;
     try {
       if (typeof fetch !== "function") return;
       const { urls, hit } = await locateCodexAppServerClientInAssets();
       if (!hit) {
+        const retryDelay = codexAppServerClientCaptureRetryDelaysMs[codexAppServerClientCaptureAttempts - 1];
+        if (retryDelay !== undefined) {
+          window.setTimeout(() => {
+            codexAppServerClientCaptureStarted = false;
+            void installCodexAppServerClientCapture().catch(() => {});
+          }, retryDelay);
+          return;
+        }
         // 区分「一个候选资产都没有」和「有资产但没有类定义」：
         // 前者是页面还没加载完，后者才是 Codex 真的改了产物形状。
         sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
-          reason: urls.length === 0 ? "asset_url_missing" : "anchor_missing",
+          reason: urls.length === 0 && codexAppServerClientCheckedUrls.size === 0 ? "asset_url_missing" : "anchor_missing",
           candidateCount: urls.length,
+          checkedCount: codexAppServerClientCheckedUrls.size,
+          attempts: codexAppServerClientCaptureAttempts,
         });
         return;
       }
@@ -12376,6 +12778,7 @@
         lineNumber: hit.location.lineNumber,
         columnNumber: hit.location.columnNumber,
         asset: (hit.url.split("/").pop() || "").split("?")[0],
+        attempts: codexAppServerClientCaptureAttempts,
       });
     } catch (error) {
       codexAppServerClientCaptureStarted = false;
@@ -12391,7 +12794,8 @@
     const wanted = codexPlusModelUnlockEnabled()
       || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-      || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave;
+      || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
+      || (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware());
     if (!wanted) return false;
     const klass = window.__codexPlusAppServerClientClass;
     if (!klass || typeof klass !== "function" || !klass.prototype) return false;
@@ -12441,6 +12845,8 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      // 拓展的 codex/request 中间件不在这里跑：新版 Codex 的部分请求（如 turn/start）绕过 sendRequest，
+      // 直接 enqueueRequest → createRequest，所以统一挂在下面的 createRequest 上，每个请求只经过一次。
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
         providerParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
@@ -12453,7 +12859,7 @@
       const managedTurn = await sendCodexManagedSessionTurn(client, originalSendRequest.bind(client),
         String(method || ""), nextParams, options, modelContextRefresh);
       if (managedTurn) return managedTurn.result;
-      const result = await sendAppServerRequestWithSideChat(client, method, nextParams,
+      const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest.call(client, method, nextParams, options));
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
@@ -12465,6 +12871,20 @@
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client));
     };
+    // 所有请求最终都经 createRequest(method, params, options) 组装：拓展的 codex/request 中间件挂在这里。
+    // createRequest 是同步的，与 codex/request 的契约一致（中间件同步返回，返回 Promise 视为出错并放行）。
+    if (typeof proto.createRequest === "function") {
+      const originalCreateRequest = proto.__codexPlusOriginalCreateRequest || proto.createRequest;
+      proto.__codexPlusOriginalCreateRequest = originalCreateRequest;
+      proto.createRequest = function codexPlusPatchedCreateRequest(method, params, ...rest) {
+        let nextParams = params;
+        if (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware()
+            && typeof codexPlusApplyExtensionRequestMiddleware === "function") {
+          nextParams = codexPlusApplyExtensionRequestMiddleware(String(method || ""), params);
+        }
+        return originalCreateRequest.call(this, method, nextParams, ...rest);
+      };
+    }
     if (typeof proto.prewarmThreadStart === "function") {
       const originalPrewarmThreadStart = proto.__codexPlusServiceTierOriginalPrewarmThreadStart
         || proto.prewarmThreadStart;
@@ -12583,12 +13003,20 @@
   }
 
   function ensureCodexModelWhitelistInstalls() {
+    const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
+      && codexPlusExtensionWantsRequestMiddleware();
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-          || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave) {
+          || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
+          || extensionWantsRequests) {
       installAppServerModelRequestPatch();
       void installCodexAppServerClientCapture().catch(() => {});
+    }
+    // 启动器平时只在模型解锁 / 会话删除开启时捕获客户端类；只有拓展需要时，请它按需补开（每页一次）。
+    if (extensionWantsRequests && !window.__codexPlusAppServerClientClass && !window.__codexPlusExtensionRequestCaptureAsked) {
+      window.__codexPlusExtensionRequestCaptureAsked = true;
+      void postJson("/extensions/request-capture", {}).catch(() => {});
     }
     void installDictationSupportPatch();
     if (!codexPlusModelUnlockEnabled()) return;
@@ -13730,8 +14158,9 @@
   function codexPlusModelPickerScan() {
     const state = codexPlusModelPickerGroupsState;
     if (state.disposed) return;
-    const menu = codexPlusModelPickerMenu();
-    const list = codexPlusModelPickerList(menu);
+    // 内置拓展「模型分组」停用时当作没有列表：已分组的列表还原。
+    const menu = globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups") ? null : codexPlusModelPickerMenu();
+    const list = menu ? codexPlusModelPickerList(menu) : null;
     if (!list) {
       codexPlusModelPickerReportUnrecognized();
       if (state.activeList) {
@@ -13757,12 +14186,13 @@
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
       codexPlusModelPickerScan();
-      codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
+      // 内置拓展「模型分组」停用 / 被顶替时，扫描清理完就停下轮询；装回来时由它重新开始。
+      if (!globalThis?.__codexPlusBuiltinInactive?.has("model-picker-groups")) codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
     }, delay);
   }
 
   codexPlusModelPickerInstallStyle();
-  codexPlusModelPickerSchedule(300);
+  // 轮询由内置拓展「模型分组」装上时启动（96-builtin-extensions.js），这里不再自启。
   window.__codexPlusModelPickerGroupsRuntime = {
     version: 1,
     sync: () => codexPlusModelPickerSchedule(0),
@@ -13948,293 +14378,6 @@
     layoutCodexPlusToasts();
     setTimeout(() => dismissCodexPlusToast(toast), codexPlusToastLifetimeMs);
     return () => dismissCodexPlusToast(toast);
-  }
-
-  function shareBase64Url(bytes) {
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  }
-
-  function shareTextFromElement(element) {
-    const clone = element.cloneNode(true);
-    clone.querySelectorAll?.("button, textarea, input, select, [contenteditable='true'], .codex-delete-toast, .codex-plus-modal-overlay, .codex-plus-page-overlay, .codex-session-share-button").forEach((node) => node.remove());
-    return String(clone.innerText || clone.textContent || "").replace(/\u00a0/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  }
-
-  function sessionShareMarkdown() {
-    const ref = currentSessionRef();
-    if (!ref.session_id) return { ref, markdown: "" };
-    const root = conversationRoot();
-    if (!root) return { ref, markdown: "" };
-    const authored = Array.from(root.querySelectorAll("[data-message-author-role]"));
-    const knownTurns = Array.from(root.querySelectorAll([
-      '[data-testid="conversation-turn"]',
-      '[data-testid*="message"]',
-      '[data-message-content]',
-      'main .prose',
-      '[class*="message-bubble"]',
-      '[class*="MessageBubble"]',
-      '[class*="user-message"]',
-      '[class*="UserMessage"]',
-    ].join(",")));
-    const turns = authored.length ? authored : knownTurns;
-    const seen = new Set();
-    const messages = turns.map((node) => {
-      if (!(node instanceof HTMLElement) || seen.has(node)) return "";
-      if (node.parentElement?.closest?.('[data-message-author-role], [data-testid="conversation-turn"]')) return "";
-      seen.add(node);
-      const text = shareTextFromElement(node);
-      if (!text) return "";
-      const role = String(node.getAttribute("data-message-author-role") || "").toLowerCase();
-      const label = role === "user" ? "用户" : role === "assistant" ? "助手" : "消息";
-      return { role: role === "user" || role === "assistant" ? role : "message", label, text };
-    }).filter(Boolean);
-    const title = String(ref.title || document.querySelector(selectors.threadTitle)?.textContent || "未命名会话").replace(/\s+/g, " ").trim();
-    let content = messages.map((message) => `### ${message.label}\n\n${message.text}`).join("\n\n");
-    if (!content) {
-      const fallback = root.cloneNode(true);
-      fallback.querySelectorAll?.([
-        ".composer-footer", ".composer-surface-chrome", "form", "header", "nav", "aside",
-        "button", "textarea", "input", "select", "[contenteditable='true']",
-        ".codex-delete-toast", ".codex-plus-modal-overlay", ".codex-plus-page-overlay",
-        ".codex-session-share-button",
-      ].join(",")).forEach((node) => node.remove());
-      content = String(fallback.innerText || fallback.textContent || "")
-        .replace(/\u00a0/g, " ")
-        .replace(/[ \t]+\n/g, "\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
-      if (content) messages.push({ role: "message", label: "会话", text: content });
-    }
-    const markdown = `# ${title || "未命名会话"}\n\n- 会话 ID：\`${ref.session_id}\`\n\n${content}`.slice(0, codexPlusShareMaxCharacters);
-    return {
-      ref,
-      markdown: content ? markdown : "",
-      session: content ? {
-        version: 1,
-        kind: "codex-session",
-        session_id: ref.session_id,
-        title: title || "未命名会话",
-        messages: messages.map(({ role, text }) => ({ role, text })),
-      } : null,
-    };
-  }
-
-  async function encryptSessionShare(value) {
-    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
-    const exportedKey = await crypto.subtle.exportKey("raw", key);
-    return {
-      key: shareBase64Url(new Uint8Array(exportedKey)),
-      encrypted: {
-        v: 1,
-        iv: shareBase64Url(iv),
-        ciphertext: shareBase64Url(new Uint8Array(ciphertext)),
-      },
-    };
-  }
-
-  async function createSessionShare() {
-    const { ref, markdown, session } = sessionShareMarkdown();
-    if (!ref.session_id) {
-      showToast("当前页面还没有可分享的会话", null);
-      return;
-    }
-    if (!markdown || !session) {
-      showToast("当前会话还没有可分享的消息", null);
-      return;
-    }
-    const shareWindow = window.open("about:blank", "_blank");
-    const button = document.querySelector(`.${sessionShareButtonClass}`);
-    if (button) {
-      button.disabled = true;
-      button.setAttribute("aria-busy", "true");
-      button.textContent = "正在创建…";
-    }
-    try {
-      let shareDocument = session;
-      const nativeSession = await postJson("/session/export", {
-        session_id: ref.session_id,
-        title: session.title,
-      });
-      if (nativeSession?.status !== "ok" || nativeSession.kind !== "codex-rollout" || typeof nativeSession.content !== "string") {
-        throw new Error(nativeSession?.message || "无法读取完整 Codex 会话文件");
-      }
-      shareDocument = { ...nativeSession, title: session.title };
-      const encrypted = await encryptSessionShare(JSON.stringify(shareDocument));
-      const payload = { ttl: 604800, encrypted: encrypted.encrypted };
-      let result;
-      let baseUrl = codexPlusShareBaseUrl;
-      try {
-        result = await postJson("/share/create", payload);
-        if (result?.id) {
-          baseUrl = codexPlusShareBaseUrl;
-        } else if (result?.status !== "failed") {
-          throw new Error(result?.message || "创建分享失败");
-        }
-      } catch (_) {
-        result = null;
-      }
-      if (!result?.id) {
-        let response;
-        try {
-          response = await fetch(`${baseUrl}/api/shares`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        } catch (_) {
-          baseUrl = codexPlusShareFallbackBaseUrl;
-          response = await fetch(`${baseUrl}/api/shares`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        }
-        result = await response.json().catch(() => ({}));
-        if (!response.ok || !result.id) throw new Error(result.error || `创建分享失败（HTTP ${response.status}）`);
-      }
-      const shareUrl = `${baseUrl}/?s=${encodeURIComponent(result.id)}#k=${encrypted.key}`;
-      try {
-        await navigator.clipboard.writeText(shareUrl);
-      } catch (_) {
-        const input = document.createElement("input");
-        input.value = shareUrl;
-        input.style.position = "fixed";
-        input.style.opacity = "0";
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand("copy");
-        input.remove();
-      }
-      showToast("会话分享链接已复制", null);
-      if (shareWindow && !shareWindow.closed) shareWindow.location.href = shareUrl;
-    } catch (error) {
-      if (shareWindow && !shareWindow.closed) shareWindow.close();
-      showToast(error?.message || "创建分享失败，请稍后重试", null);
-    } finally {
-      if (button) {
-        button.disabled = false;
-        button.removeAttribute("aria-busy");
-        button.textContent = "分享会话";
-      }
-    }
-  }
-
-  function sessionSharePlacement() {
-    // 会话操作锚点唯一时才挂载，不能把右侧审查/浏览器的 header 当作会话栏。
-    const headerSelector = 'header, [data-app-shell-header-edge-scroll], [class*="_Header_"]';
-    const anchors = Array.from(document.querySelectorAll('[data-testid="app-shell-header-context-menu-surface"]'))
-      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]'));
-    if (anchors.length !== 1) return null;
-    const header = anchors[0].closest(headerSelector);
-    if (!(header instanceof HTMLElement) || !visibleElement(header)) return null;
-    const nativeShare = Array.from(header.querySelectorAll('button[aria-label="Share"], button[aria-label="分享"], button[aria-label*="Share"], button[aria-label*="分享"]'))
-      .find((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && !node.classList.contains(sessionShareButtonClass) && node.closest(headerSelector) === header);
-    const nativeGroup = nativeShare?.closest?.(".ms-auto");
-    if (nativeGroup && header.contains(nativeGroup)) return nativeGroup;
-    const groups = Array.from(header.querySelectorAll(".ms-auto"))
-      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && node.closest(headerSelector) === header);
-    return groups.length === 1 ? groups[0] : null;
-  }
-
-  function installSessionShareButton() {
-    const existing = document.querySelectorAll(`.${sessionShareButtonClass}`);
-    const ref = currentSessionRef();
-    const actionGroup = codexPlusSettings().sessionShare && ref.session_id ? sessionSharePlacement() : null;
-    if (!(actionGroup instanceof HTMLElement)) {
-      existing.forEach((button) => button.remove());
-      return;
-    }
-    let button = existing[0];
-    existing.forEach((node) => { if (node !== button) node.remove(); });
-    if (!button) {
-      button = document.createElement("button");
-      button.type = "button";
-      button.className = `${sessionShareButtonClass} ${headerContextButtonClass}`;
-      button.textContent = "分享会话";
-      button.setAttribute("aria-label", "分享当前会话");
-      button.setAttribute("data-codex-plus-ext", "session-share");
-      button.dataset.codexSessionShareVersion = sessionShareButtonVersion;
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void createSessionShare();
-      }, true);
-    }
-    button.setAttribute("data-codex-plus-ext", "session-share");
-    button.style.position = "static";
-    button.style.pointerEvents = "auto";
-    button.style.webkitAppRegion = "no-drag";
-    button.style.marginLeft = "";
-    // 宿主重建时才搬动，避免每轮扫描再次触发 DOM mutation（issue #1960）。
-    if (button.parentElement !== actionGroup) actionGroup.appendChild(button);
-  }
-
-  function sessionImportMarkdown(session) {
-    const title = String(session?.title || "未命名会话").trim() || "未命名会话";
-    const messages = Array.isArray(session?.messages) ? session.messages : [];
-    const body = messages.map((message) => {
-      const role = message?.role === "user" ? "用户" : message?.role === "assistant" ? "助手" : "消息";
-      const text = String(message?.text || "").trim();
-      return text ? `### ${role}\n\n${text}` : "";
-    }).filter(Boolean).join("\n\n");
-    return `# ${title}\n\n${body}`.trim();
-  }
-
-  function importSharedSessionIntoNewChat(session) {
-    if (session?.kind === "codex-rollout" && typeof session.content === "string") {
-      void postJson("/session/import", session).then((result) => {
-        if (result?.status !== "ok") {
-          showToast(result?.message || "原生会话导入失败", null);
-          return;
-        }
-        void refreshRecentConversationsForHost();
-        showToast("已导入完整 Codex 会话", null);
-      }).catch((error) => showToast(error?.message || "原生会话导入失败", null));
-      return;
-    }
-    const markdown = sessionImportMarkdown(session);
-    if (!markdown) {
-      showToast("分享内容为空，无法导入", null);
-      return;
-    }
-    const newChat = Array.from(document.querySelectorAll("button")).find((button) => {
-      if (!visibleElement(button) || isExtensionUiNode(button)) return false;
-      const text = String(button.textContent || "").replace(/\s+/g, " ").trim();
-      const label = button.getAttribute("aria-label") || "";
-      return /^(新对话|New chat)$/i.test(text) || /^(新对话|New chat)$/i.test(label);
-    });
-    if (newChat instanceof HTMLElement) newChat.click();
-    const deadline = Date.now() + 5000;
-    const fill = () => {
-      const editor = Array.from(document.querySelectorAll("textarea, [contenteditable='true']"))
-        .filter((node) => visibleElement(node))
-        .at(-1);
-      if (!(editor instanceof HTMLElement)) {
-        if (Date.now() < deadline) window.setTimeout(fill, 100);
-        else showToast("无法找到 Codex 输入框，请手动打开新对话后重试", null);
-        return;
-      }
-      editor.focus();
-      if (editor instanceof HTMLTextAreaElement) {
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-        setter?.call(editor, markdown);
-        editor.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        document.execCommand("insertText", false, markdown);
-        editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: markdown }));
-      }
-      showToast("已导入完整会话内容，请发送以继续", null);
-    };
-    window.setTimeout(fill, newChat ? 350 : 0);
-  }
-
-  function installSessionShareImportListener() {
-    window.removeEventListener("message", window.__codexSessionShareImportHandler);
-    window.__codexSessionShareImportHandler = (event) => {
-      if (!/^(https:\/\/share\.codexpp\.cc|https:\/\/codexpp-share\.pages\.dev)$/.test(event.origin || "") || event.data?.type !== "codexpp-import-session") return;
-      const session = event.data?.session;
-      if (!session || !["codex-session", "codex-rollout"].includes(session.kind)) return;
-      if (session.kind === "codex-session" && !Array.isArray(session.messages)) return;
-      if (session.kind === "codex-rollout" && typeof session.content !== "string") return;
-      importSharedSessionIntoNewChat(session);
-    };
-    window.addEventListener("message", window.__codexSessionShareImportHandler);
   }
 
   function visibleElement(node) {
@@ -14551,7 +14694,7 @@
         const rect = button.getBoundingClientRect();
         const label = button.getAttribute("aria-label") || "";
         const text = (button.textContent || "").trim();
-        if (button.classList.contains(buttonClass) || button.classList.contains(exportButtonClass) || label === "归档对话" || label === "置顶对话") return false;
+        if (button.hasAttribute("data-codex-plus-row-action") || label === "归档对话" || label === "置顶对话") return false;
         return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
       });
       row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
@@ -14803,7 +14946,7 @@
   }
 
   function capacityAutoRetryEnabled() {
-    return capacityAutoRetrySettings().capacityAutoRetry === true;
+    return capacityAutoRetrySettings().capacityAutoRetry === true && !globalThis.__codexPlusBuiltinInactive?.has("capacity-auto-retry");
   }
 
   function capacityAutoRetryMaxAttempts() {
@@ -15089,8 +15232,7 @@
     intervalSeconds: capacityAutoRetryIntervalSeconds,
     maxAttempts: capacityAutoRetryMaxAttempts,
   };
-
-  syncCodexPlusCapacityAutoRetry();
+  // 轮询由内置拓展「容量不足自动重试」装上时启动（96-builtin-extensions.js），这里不再自启。
   /**
    * Codex 启动壳自救。
    *
@@ -15549,11 +15691,30 @@
     codexPlusUsageDiagnoseOnce("usage_statusline_data_partial", missing.join(","), { missing, events: events.length });
   }
 
+  /**
+   * 状态栏放在哪：内置拓展经公开的 composer.below 插槽登记了容器时放进卡片所在输入框的那个容器
+   * （见 96-builtin-extensions.js），否则（单独运行本分片、旧版页面）紧跟在输入卡片后面。
+   */
+  function codexPlusUsageSlotHost(card) {
+    const root = card?.closest?.("[data-codex-composer-root]");
+    if (!root) return null;
+    for (const container of codexPlusUsageState.slotHosts || []) {
+      if (container.isConnected && root.contains(container)) return container;
+    }
+    return null;
+  }
+
+  function codexPlusUsageNodePlaced(node, card) {
+    if (!node?.isConnected) return false;
+    const host = codexPlusUsageSlotHost(card);
+    return host ? node.parentElement === host : node.previousElementSibling === card;
+  }
+
   function codexPlusUsageEnsureNode(card) {
     const host = card?.parentElement;
     if (!host) return null;
     let node = codexPlusUsageState.node;
-    if (node?.isConnected && node.previousElementSibling === card) return node;
+    if (codexPlusUsageNodePlaced(node, card)) return node;
     if (!node) {
       node = document.createElement("div");
       node.id = codexPlusUsageStatusLineId;
@@ -15561,7 +15722,9 @@
       node.setAttribute("role", "status");
       codexPlusUsageState.node = node;
     }
-    card.insertAdjacentElement("afterend", node);
+    const slotHost = codexPlusUsageSlotHost(card);
+    if (slotHost) slotHost.appendChild(node);
+    else card.insertAdjacentElement("afterend", node);
     return node;
   }
 
@@ -15712,7 +15875,8 @@
   function codexPlusUsageEnabled() {
     return !codexPlusUsageState.disposed
       && codexPlusBackendSettingsLoaded
-      && codexPlusSettings().usageStatusLine === true;
+      && codexPlusSettings().usageStatusLine === true
+      && !globalThis.__codexPlusBuiltinInactive?.has("usage-statusline");
   }
 
   /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */
@@ -15730,7 +15894,7 @@
     }
     const changed = codexPlusUsageState.threadId !== threadId
       || !codexPlusUsageState.node?.isConnected
-      || codexPlusUsageState.node.previousElementSibling !== card;
+      || !codexPlusUsageNodePlaced(codexPlusUsageState.node, card);
     const node = codexPlusUsageEnsureNode(card);
     if (!node) return null;
     if (changed) {
@@ -15863,10 +16027,29 @@
     codexPlusUsageSchedule(codexPlusUsageWarmupIntervalMs);
   }
 
+  /**
+   * 观察与轮询随内置拓展「用量状态栏」装卸（96-builtin-extensions.js）：装上时开始，卸下时停下并摘掉状态栏，
+   * 没装着时什么也不跑。
+   */
+  function startCodexPlusUsageStatusLine() {
+    if (codexPlusUsageState.disposed) return;
+    if (!codexPlusUsageState.observer) codexPlusUsageObserve();
+    codexPlusUsageSyncPlacement();
+    codexPlusUsageSchedule(600);
+  }
+
+  function stopCodexPlusUsageStatusLine() {
+    clearTimeout(codexPlusUsageState.timer);
+    codexPlusUsageState.timer = 0;
+    codexPlusUsageState.observer?.disconnect();
+    codexPlusUsageState.observer = null;
+    codexPlusUsageState.node?.remove();
+    codexPlusUsageState.node = null;
+    codexPlusUsageState.parts = null;
+    codexPlusUsageState.lastFingerprint = "";
+  }
+
   codexPlusUsageInstallStyle();
-  codexPlusUsageObserve();
-  codexPlusUsageSyncPlacement();
-  codexPlusUsageSchedule(600);
   window.__codexPlusUsageStatusLineRuntime = {
     version: 2,
     sync: () => codexPlusUsageSchedule(0),
@@ -15913,6 +16096,12 @@
     inFlight: false,
     failures: 0,
   };
+
+  // 设置开关（#2824）：关闭时不显示、不轮询；切回开启后下一轮轮询自动接上。
+  // 设置开关与内置拓展「请求状态条」都开着才显示、才轮询。
+  function codexPlusProxyStatusEnabled() {
+    return codexPlusSettings().proxyRequestStatus !== false && !globalThis?.__codexPlusBuiltinInactive?.has("proxy-request-status");
+  }
 
   function codexPlusProxyStatusVisibleElement(element) {
     if (!element?.isConnected) return false;
@@ -16005,6 +16194,9 @@
     // 放进只包住输入框的 relative 容器里，插在卡片前会跑到输入框内部。
     const anchor = card?.closest("[data-codex-composer-root]") || card;
     if (!anchor?.parentElement) return null;
+    // 内置拓展经公开的 composer.above 插槽登记了容器（见 96-builtin-extensions.js）：放进紧挨着这个输入框的那个。
+    const slotHost = [...(codexPlusProxyStatusState.slotHosts || [])]
+      .find((container) => container.isConnected && container.closest("[data-codex-plus-ui-slot]")?.nextElementSibling === anchor);
     let node = codexPlusProxyStatusState.node;
     if (!node) {
       node = document.createElement("div");
@@ -16013,7 +16205,9 @@
       node.setAttribute("role", "status");
       codexPlusProxyStatusState.node = node;
     }
-    if (!node.isConnected || node.nextElementSibling !== anchor) {
+    if (slotHost) {
+      if (node.parentElement !== slotHost) slotHost.appendChild(node);
+    } else if (!node.isConnected || node.nextElementSibling !== anchor) {
       anchor.insertAdjacentElement("beforebegin", node);
     }
     return node;
@@ -16032,6 +16226,10 @@
   }
 
   function codexPlusProxyStatusRender() {
+    if (!codexPlusProxyStatusEnabled()) {
+      codexPlusProxyStatusHide();
+      return;
+    }
     const card = codexPlusProxyStatusComposerCard();
     const threadId = card ? codexPlusProxyStatusThreadId(card) : "";
     // 首页/新会话没有当前会话 id：不能把“没有会话”当成“不过滤”，
@@ -16123,6 +16321,11 @@
   async function codexPlusProxyStatusRefresh() {
     if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
     if (document.hidden) return;
+    if (!codexPlusProxyStatusEnabled()) {
+      codexPlusProxyStatusState.requests = [];
+      codexPlusProxyStatusHide();
+      return;
+    }
     codexPlusProxyStatusState.inFlight = true;
     try {
       const result = await codexPlusProxyStatusPostWithTimeout();
@@ -16142,17 +16345,30 @@
     if (!codexPlusProxyStatusState.disposed) codexPlusProxyStatusRender();
   }
 
-  codexPlusProxyStatusInstallStyle();
-  codexPlusProxyStatusRender();
-  codexPlusProxyStatusState.pollTimer = window.setInterval(
-    () => void codexPlusProxyStatusRefresh(),
-    codexPlusProxyStatusPollMs,
-  );
-  codexPlusProxyStatusState.tickTimer = window.setInterval(() => {
-    codexPlusProxyStatusState.nowMs = Date.now();
+  /** 轮询与倒计时随内置拓展「请求状态条」装卸（96-builtin-extensions.js）：没装着时不轮询。 */
+  function startCodexPlusProxyStatus() {
+    if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.pollTimer) return;
     codexPlusProxyStatusRender();
-  }, codexPlusProxyStatusTickMs);
-  void codexPlusProxyStatusRefresh();
+    codexPlusProxyStatusState.pollTimer = window.setInterval(
+      () => void codexPlusProxyStatusRefresh(),
+      codexPlusProxyStatusPollMs,
+    );
+    codexPlusProxyStatusState.tickTimer = window.setInterval(() => {
+      codexPlusProxyStatusState.nowMs = Date.now();
+      codexPlusProxyStatusRender();
+    }, codexPlusProxyStatusTickMs);
+    void codexPlusProxyStatusRefresh();
+  }
+
+  function stopCodexPlusProxyStatus() {
+    window.clearInterval(codexPlusProxyStatusState.pollTimer);
+    window.clearInterval(codexPlusProxyStatusState.tickTimer);
+    codexPlusProxyStatusState.pollTimer = 0;
+    codexPlusProxyStatusState.tickTimer = 0;
+    codexPlusProxyStatusHide();
+  }
+
+  codexPlusProxyStatusInstallStyle();
 
   window.__codexPlusProxyRequestStatusRuntime = {
     refresh: codexPlusProxyStatusRefresh,
@@ -16177,7 +16393,8 @@
 
   function historyTurnRecoveryEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
-      && codexPlusBackendSettings.codexAppHistoryTurnRecovery === true;
+      && codexPlusBackendSettings.codexAppHistoryTurnRecovery === true
+      && !globalThis.__codexPlusBuiltinInactive?.has("history-turn-recovery");
   }
 
   function historyTurnRecoveryTarget() {
@@ -16721,7 +16938,8 @@
   const codexPlusTurnRewind = window.__codexPlusTurnRewind
     || (window.__codexPlusTurnRewind = createCodexPlusTurnRewindController(window));
   function codexPlusTurnRewindEnabled() {
-    return codexPlusBackendSettingsLoaded === true && codexPlusSettings().turnRewind === true;
+    return codexPlusBackendSettingsLoaded === true && codexPlusSettings().turnRewind === true
+      && !globalThis.__codexPlusBuiltinInactive?.has("turn-rewind");
   }
   codexPlusTurnRewind.setEnabledCheck(codexPlusTurnRewindEnabled);
   // 仅接入消息菜单，不改原生模块、安装目录或对第三方拓展开放写 RPC。
@@ -17050,7 +17268,7 @@
   document.querySelectorAll(sideChatSaveSelector).forEach(button => button.remove());
 
   function sideChatSaveEnabled() {
-    return codexPlusSettings().sideChatSave === true;
+    return codexPlusSettings().sideChatSave === true && !globalThis.__codexPlusBuiltinInactive?.has("side-chat-save");
   }
 
   async function sideChatSource(sourceId, boundary = {}) {
@@ -17061,7 +17279,19 @@
     return result;
   }
 
-  // 两种原生客户端补丁共用此入口，避免再包装一层 sendRequest 原型。
+  /**
+   * 内置拓展「侧聊保存」：经公开的 `codex/exchange` 中间件包住 app-server 请求，临时旁支分叉时记下主历史；
+   * 保存按钮跟着页面扫描（ctx.onScan）维护。拓展卸下时中间件跟着撤掉，旁支请求原样发出，按钮撤下。
+   */
+  function codexPlusSideChatSaveExtension(ctx) {
+    ctx.intercept("codex/exchange", (exchange, next) => next({
+      ...exchange,
+      send: () => sendCodexSideChatNativeRequest(exchange, exchange.method, exchange.params, exchange.send),
+    }));
+    codexPlusAlignWith(ctx, refreshSideChatSaveButtons, { scan: "deferred" });
+  }
+
+  // client 只用到 hostId（中间件传的是 exchange 本身）。
   async function sendCodexSideChatNativeRequest(client, method, params, send) {
     if (client.hostId !== "local") return send();
     if (method === "thread/stop" || method === "thread/unsubscribe") {
@@ -17375,6 +17605,119 @@
       ready: sideChatSaveReady, source: sideChatSavedSource, verify: verifySavedSideChat, title: sideChatForkTitle,
       save: saveSideChat, refresh: refreshSideChatSaveButtons, tabs: sideChatTabs, state: sideChatSaveState };
   }
+  // 微信写入与桌面目录使用不同的 app-server；只通知同 home/SQLite 的持久线程。
+  // 复用设置心跳，重注入沿用已处理版本，不另起计时器或扫描 DOM。
+  const weixinDesktopSync = window.__codexPlusWeixinDesktopSync ||= {
+    revisions: new Map(), flight: null, services: null, retryAt: 0,
+  };
+  weixinDesktopSync.retries ||= new Map();
+
+  async function syncWeixinThreadProject(services, entry) {
+    const project = entry.project;
+    if (!project) return;
+    if (!Array.isArray(project.rootPaths) || !project.rootPaths.length
+        || project.rootPaths.some((root) => typeof root !== "string" || !root)
+        || typeof project.name !== "string" || !project.name.trim()
+        || typeof project.id !== "string") throw Error("微信项目记录无效");
+    const normalize = (root) => {
+      const path = root.replace(/\\/g, "/").replace(/^\/\/\?\//, "").replace(/\/+$/, "") || "/";
+      return /^(?:[a-z]:|\/\/)/i.test(path) ? path.toLowerCase() : path;
+    };
+    const home = normalize(await services.executionPaths.readCodexHome("local"));
+    const readMappings = async () => {
+      const mappings = await weixinDesktopSync.readState(weixinDesktopSync.keys.APP_SERVER_PROJECT_ID_BY_LEGACY_PROJECT_ID_BY_HOST);
+      const partitions = Object.entries(mappings || {}).filter(([identity]) =>
+        identity.startsWith("local:") && normalize(identity.slice(6)) === home);
+      if (partitions.length > 1) throw Error("微信项目的实例归属不唯一");
+      return partitions[0]?.[1] || {};
+    };
+    const projects = await services.projects.getLocalProjects();
+    const mappings = await readMappings();
+    const matches = Object.entries(mappings).filter(([id, serverId]) =>
+      serverId === project.id && Object.hasOwn(projects, id));
+    if (matches.length !== 1) throw Error("微信项目的桌面归属暂不可确认");
+    const assignments = await weixinDesktopSync.readState(weixinDesktopSync.keys.THREAD_PROJECT_ASSIGNMENTS);
+    if (assignments != null && (typeof assignments !== "object" || Array.isArray(assignments)))
+      throw Error("原生线程归属暂不可读");
+    if (assignments?.[entry.threadId] != null) return;
+    // 部分更新保留并发出现的非空归属；只修复注册前被标为无项目的线程。
+    await services.threadProjectAssignments.setProjectless({ threadId: entry.threadId, projectless: false });
+    await services.threadProjectAssignments.assignIfUnassigned([{
+      threadId: entry.threadId, hostId: "local", projectless: false,
+      assignment: { projectKind: "local", projectId: matches[0][0] },
+    }]);
+  }
+
+  async function syncWeixinDesktopThreads() {
+    const entries = codexPlusBackendSettings.weixinDesktopSync;
+    const now = Date.now();
+    if (!codexPlusBackendSettingsLoaded || !Array.isArray(entries)
+        || entries.length > 128 || weixinDesktopSync.flight || now < weixinDesktopSync.retryAt) return;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const currentIds = new Set(entries.map((entry) => entry?.threadId));
+    for (const records of [weixinDesktopSync.revisions, weixinDesktopSync.retries]) {
+      for (const id of records.keys()) {
+        if (!currentIds.has(id)) records.delete(id);
+      }
+    }
+    const pending = entries.filter((entry) => {
+      const retry = weixinDesktopSync.retries.get(entry?.threadId);
+      return uuid.test(entry?.threadId) && uuid.test(entry?.revision)
+        && weixinDesktopSync.revisions.get(entry.threadId) !== entry.revision
+        && (retry?.revision !== entry.revision || now >= retry.retryAt);
+    }).map((entry) => ({ ...entry }));
+    if (!pending.length) return;
+    weixinDesktopSync.flight = (async () => {
+      try {
+        if (!weixinDesktopSync.services) {
+          const module = await loadOptionalCodexAppModule("app-shared-");
+          // 导出名随打包变化；只接受拥有明确服务能力的唯一原生服务集合。
+          const services = Object.values(module || {}).filter((value) => value && typeof value === "object"
+            && Object.hasOwn(value, "localThreadCatalog")
+            && typeof value.localThreadCatalog?.notifyThread === "function"
+            && typeof value.localThreadCatalog?.readEntries === "function"
+            && typeof value.projects?.getLocalProjects === "function"
+            && typeof value.executionPaths?.readCodexHome === "function"
+            && typeof value.threadProjectAssignments?.setProjectless === "function"
+            && typeof value.threadProjectAssignments?.assignIfUnassigned === "function");
+          const keys = Object.values(module || {}).filter((value) => value && typeof value === "object"
+            && typeof value.APP_SERVER_PROJECT_ID_BY_LEGACY_PROJECT_ID_BY_HOST === "string"
+            && typeof value.THREAD_PROJECT_ASSIGNMENTS === "string");
+          const clients = Object.values(module || {}).filter((value) => typeof value === "function"
+            && Object.hasOwn(value, "prototype") && Object.hasOwn(value, "getInstance")
+            && typeof value.getInstance === "function"
+            && ["post", "sendRequest", "onFetchResponse", "cancelStream"]
+              .every((method) => typeof value.prototype?.[method] === "function"));
+          if (services.length !== 1 || keys.length !== 1 || clients.length !== 1)
+            throw Error("原生会话目录暂不可用");
+          // 直接使用原生请求客户端；不按函数源码中的读写关键字猜测调用器。
+          weixinDesktopSync.readState = async (key) => {
+            const response = await clients[0].getInstance().post("vscode://codex/get-global-state", JSON.stringify({ key }));
+            if (!response?.body || !Object.hasOwn(response.body, "value")) throw Error("原生状态暂不可读");
+            return response.body.value;
+          };
+          weixinDesktopSync.services = services[0];
+          weixinDesktopSync.keys = keys[0];
+        }
+        for (const entry of pending) {
+          try {
+            await syncWeixinThreadProject(weixinDesktopSync.services, entry);
+            await weixinDesktopSync.services.localThreadCatalog.notifyThread({ hostId: "local", threadId: entry.threadId }, "update");
+            weixinDesktopSync.revisions.set(entry.threadId, entry.revision);
+            weixinDesktopSync.retries.delete(entry.threadId);
+          } catch {
+            weixinDesktopSync.retries.set(entry.threadId, { revision: entry.revision, retryAt: Date.now() + 30000 });
+          }
+        }
+      } catch {
+        // 桌面启动或升级期间可能没有 catalog；下一次心跳退避重试，不重载页面。
+        weixinDesktopSync.services = null;
+        weixinDesktopSync.retryAt = Date.now() + 30000;
+      }
+    })();
+    try { await weixinDesktopSync.flight; }
+    finally { weixinDesktopSync.flight = null; }
+  }
   function syncActionGroupsLayout(force = false) {
     syncActionGroupLayouts(sessionRows().map(row => ({
       row, group: actionGroupFromRow(row),
@@ -17398,6 +17741,14 @@
   function disposeSessionMoreMenu(menu) {
     closeSessionMoreMenu(menu);
     menu.__codexSessionMoreCleanup?.();
+    // 拓展用 render 自己画的菜单项（例如 dsh 前端插件的 React 组件）：菜单拆掉时一并卸载。
+    menu.querySelectorAll?.("[data-codex-plus-extension-item]").forEach((item) => {
+      const cleanup = item.__codexPlusRowActionCleanup;
+      item.__codexPlusRowActionCleanup = null;
+      if (typeof cleanup === "function") {
+        try { cleanup(); } catch {}
+      }
+    });
     const group = menu.__codexSessionMoreGroup;
     if (group?.__codexSessionMoreMenu === menu) group.__codexSessionMoreMenu = null;
     menu.__codexSessionMoreCleanup = null;
@@ -17406,9 +17757,14 @@
     menu.remove();
   }
 
+  /** 按钮组记下的行内操作有没有缺（React 重建、克隆替换时可能丢）。 */
+  function sessionInlineActionsMissing(group) {
+    return String(group.dataset?.codexInlineActionKey || "").split("|").filter(Boolean)
+      .some((id) => !group.querySelector(`[data-codex-plus-row-action="${id}"]`));
+  }
+
   function pruneSessionMoreMenus(removedMenus = []) {
     let needsScan = false;
-    const needsDelete = codexPlusSettings().sessionDelete;
     // 菜单挂在 body 下，不会随 React 会话行一起卸载；复用现有观察器及时释放。
     const menus = new Set([...document.querySelectorAll(`.${moreMenuClass}`), ...removedMenus]);
     menus.forEach((menu) => {
@@ -17416,7 +17772,7 @@
       const group = menu.__codexSessionMoreGroup;
       if (!menu.isConnected || !row?.isConnected || !group?.isConnected || !row.contains(group)
           || !group.querySelector(`.${moreButtonClass}`)
-          || (needsDelete && !group.querySelector(`.${buttonClass}`))) {
+          || sessionInlineActionsMissing(group)) {
         if (row?.isConnected) needsScan = true;
         disposeSessionMoreMenu(menu);
       }
@@ -17428,7 +17784,7 @@
     let relevantRemoval = false;
     const removedMenus = new Set();
     const menuSelector = `.${moreMenuClass}`;
-    const actionSelector = `.${actionGroupClass}, .${moreButtonClass}, .${buttonClass}, ${menuSelector}`;
+    const actionSelector = `.${actionGroupClass}, .${moreButtonClass}, [data-codex-plus-row-action], ${menuSelector}`;
     for (const mutation of mutations || []) {
       for (const node of mutation.removedNodes) {
         if (node.nodeType !== 1 || (!node.matches(actionSelector) && !node.querySelector(actionSelector))) continue;
@@ -17696,45 +18052,60 @@
   }
 
   /**
-   * 会话行「…」菜单要放哪些项。返回空串表示没有任何菜单项，此时不渲染「…」按钮。
-   * 内置只剩 Markdown 导出；其余来自拓展注册的会话行操作（增强总开关关闭时不显示）。
-   * 返回值同时用作菜单指纹：项变了（开关切换、拓展注册 / 注销）就整组重建。
+   * 会话行操作（ctx.registerRowAction / codexPlus.registerRowAction）：placement 为 "inline" 的画成行上常驻的图标按钮，
+   * 其余进「…」菜单；surfaces 默认只在侧栏，含 "archived" 的也画在归档页的行上。内置的删除、导出也是这样注册的
+   * （见 96-builtin-extensions.js），这里只是宿主。增强总开关关闭时都不显示。
    */
-  function sessionMoreMenuKey(settings) {
-    const rowActions = codexPlusBackendSettings.enhancementsEnabled !== false
-      ? codexPlusExtensionItems(codexPlusRegistry.rowActions)
-      : [];
-    return [
-      ...(settings.markdownExport ? ["export"] : []),
-      ...rowActions.map((item) => `ext:${item.id}`),
-    ].join("|");
+  function sessionRowActionItems(surface = "sidebar") {
+    if (codexPlusBackendSettings.enhancementsEnabled === false) return [];
+    return codexPlusExtensionItems(codexPlusRegistry.rowActions)
+      .filter((item) => (Array.isArray(item.surfaces) && item.surfaces.length ? item.surfaces : ["sidebar"]).includes(surface));
+  }
+
+  /** 行内按钮的图标：SVG 原样用，其余当文字字形。 */
+  function sessionRowActionIconMarkup(icon) {
+    const text = String(icon ?? "").trim();
+    if (/^<svg[\s>]/i.test(text)) return text;
+    const glyph = (text || "◇").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]);
+    return `<span class="codex-session-action-glyph">${glyph}</span>`;
+  }
+
+  /** 拓展行操作的回调参数。归档页的行未必读得到会话 id，resolve() 必要时问 Codex++ 按标题找。 */
+  function sessionRowActionContext(row, extra = {}) {
+    const archived = extra.archived === true;
+    const ref = archived ? archivedRefFromRow(row) : sessionRefFromRow(row);
+    return {
+      row,
+      session_id: ref.session_id,
+      title: ref.title || row.getAttribute?.("data-app-action-sidebar-thread-title") || "",
+      archived,
+      resolve: () => (archived ? resolveArchivedThread(row) : Promise.resolve(sessionRefFromRow(row))),
+      close: () => closeSessionMoreMenus(),
+      ...extra,
+    };
   }
 
   function attachButton(row) {
-    const settings = codexPlusSettings();
-    const moreMenuKey = sessionMoreMenuKey(settings);
+    const items = sessionRowActionItems();
+    const inlineItems = items.filter((item) => item.placement === "inline");
+    // 菜单指纹：项变了（拓展注册 / 注销）就整组重建；空串表示没有菜单项，不渲染「…」按钮。
+    const moreMenuKey = items.filter((item) => item.placement !== "inline").map((item) => `ext:${item.id}`).join("|");
+    const inlineKey = inlineItems.map((item) => item.id).join("|");
     const needsMoreMenu = !!moreMenuKey;
-    if (!settings.sessionDelete && !needsMoreMenu) {
+    if (!inlineItems.length && !needsMoreMenu) {
       removeActionGroups(row);
       row.dataset.codexDeleteRow = "false";
       return;
     }
     const existingGroup = actionGroupFromRow(row);
-    const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
     const existingMoreButton = existingGroup?.querySelector(`.${moreButtonClass}`);
-    const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
-    const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
-    const hasUnexpectedMore = !needsMoreMenu && !!existingMoreButton;
-    const hasUnexpectedExport = !!existingExportButton;
-    const missingDelete = settings.sessionDelete && !existingDeleteButton;
-    const missingMore = needsMoreMenu && !existingMoreButton;
-    const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
+    const inlineReady = existingGroup?.dataset.codexInlineActionKey === inlineKey && !sessionInlineActionsMissing(existingGroup);
     const existingMenu = existingGroup?.__codexSessionMoreMenu;
     const menuReady = !needsMoreMenu || (existingMenu?.isConnected
       && existingMenu.__codexSessionMoreRow === row && existingMenu.__codexSessionMoreGroup === existingGroup
       && existingGroup.dataset.codexMoreMenuKey === moreMenuKey);
-    if (groupReady && deleteReady && menuReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !missingDelete && !missingMore) {
+    if (groupReady && inlineReady && menuReady && needsMoreMenu === !!existingMoreButton) {
       return;
     }
     removeActionGroups(row);
@@ -17747,6 +18118,7 @@
     group.setAttribute("data-codex-plus-ext", "session-actions");
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
     group.dataset.codexMoreMenuKey = moreMenuKey;
+    group.dataset.codexInlineActionKey = inlineKey;
     if (needsMoreMenu) {
       const moreButton = document.createElement("button");
       moreButton.type = "button";
@@ -17760,18 +18132,9 @@
       moreMenu.setAttribute("data-codex-plus-ext", "session-more-menu");
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
-      if (settings.markdownExport) {
-        moreMenu.appendChild(createSessionMoreMenuItem("导出", "⇩", (event) => {
-          stopActionButtonEvent(row, moreButton, event);
-          closeSessionMoreMenus();
-          exportMarkdown(ref);
-        }));
-      }
-      // 拓展注册的会话行操作追加在内置项之后。注册 / 注销会改变 moreMenuKey，
+      // 会话行操作按注册顺序（order）追加。注册 / 注销会改变 moreMenuKey，
       // 触发整组重建并重新走一遍这里，所以拓展项不会因为重建而丢失。
-      if (codexPlusBackendSettings.enhancementsEnabled !== false) {
-        appendCodexPlusExtensionRowActions(moreMenu, row, moreButton);
-      }
+      appendCodexPlusExtensionRowActions(moreMenu, row, moreButton);
       const openMoreMenu = (event) => {
         stopActionButtonEvent(row, moreButton, event);
         hideActionButtonTooltip();
@@ -17789,18 +18152,28 @@
       document.body.appendChild(moreMenu);
       installSessionMoreMenuAutoClose(row, moreMenu);
     }
-    if (settings.sessionDelete) {
-      const deleteButton = document.createElement("button");
-      deleteButton.type = "button";
-      deleteButton.className = `${actionButtonClass} ${buttonClass}`;
-      deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      configureSvgActionButton(deleteButton, "删除", trashIconSvg());
-      applyNativeSessionActionStyle(deleteButton);
-      const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, sessionRefFromRow(row), event);
-      installActionButtonEvents(row, deleteButton, openDeleteConfirm);
-      group.appendChild(deleteButton);
-      setTimeout(() => refreshActionButton(deleteButton, row, openDeleteConfirm), 0);
-    }
+    inlineItems.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      // 拓展自己的类名在套原生样式之前加上，换原生类名时一并保留。
+      button.className = [actionButtonClass, ...String(item.className || "").split(/\s+/).filter(Boolean)].join(" ");
+      button.setAttribute("data-codex-plus-row-action", item.id);
+      const label = String(item.label || item.id);
+      configureSvgActionButton(button, label, sessionRowActionIconMarkup(item.icon));
+      if (typeof item.onMount === "function") {
+        runCodexPlusExtensionCallback(item.scriptKey, "rowAction.onMount", () => item.onMount({ button, row, session_id: ref.session_id }));
+      }
+      applyNativeSessionActionStyle(button);
+      const activate = (event) => {
+        stopActionButtonEvent(row, button, event);
+        if (typeof item.onActivate !== "function") return;
+        runCodexPlusExtensionCallback(item.scriptKey, "rowAction.onActivate", () =>
+          item.onActivate(sessionRowActionContext(row, { button, event })));
+      };
+      installActionButtonEvents(row, button, activate);
+      group.appendChild(button);
+      setTimeout(() => refreshActionButton(button, row, activate), 0);
+    });
     row.appendChild(group);
     // 先套上原生按钮外观再量布局，避免尺寸在测量后才变化。
     syncNativeSessionActionStyle(row);
@@ -17868,37 +18241,35 @@
     event.stopImmediatePropagation?.();
   }
 
+  /** 归档页的行：surfaces 含 "archived" 的会话行操作画成「取消归档」旁的文字按钮。 */
   function attachArchivedPageDeleteButton(row) {
-    const settings = codexPlusSettings();
+    const items = sessionRowActionItems("archived");
     row.querySelectorAll("[data-codex-archive-row-action]").forEach((button) => button.remove());
     row.dataset.codexArchiveDeleteRow = "false";
-    if (!settings.sessionDelete && !settings.markdownExport) return;
+    if (!items.length) return;
     const unarchiveButton = Array.from(row.querySelectorAll("button")).find((button) => (button.textContent || "").trim() === "取消归档");
     if (!unarchiveButton) return;
     row.dataset.codexArchiveDeleteRow = "true";
     row.dataset.codexArchiveRowActionsVersion = codexArchiveRowActionsVersion;
     let insertionPoint = unarchiveButton;
-    if (settings.markdownExport) {
-      const exportButton = document.createElement("button");
-      exportButton.type = "button";
-      exportButton.className = `codex-archive-delete-all codex-archive-row-button ${exportButtonClass}`;
-      exportButton.dataset.codexArchiveRowAction = "export";
-      exportButton.textContent = "导出";
+    items.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = ["codex-archive-delete-all", "codex-archive-row-button", ...String(item.className || "").split(/\s+/).filter(Boolean)].join(" ");
+      button.dataset.codexArchiveRowAction = item.id;
+      button.textContent = String(item.label || item.id);
       ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
-        exportButton.addEventListener(eventName, stopArchivedButtonEvent, true);
+        button.addEventListener(eventName, stopArchivedButtonEvent, true);
       });
-      exportButton.addEventListener("click", async (event) => {
+      button.addEventListener("click", (event) => {
         stopArchivedButtonEvent(event);
-        const ref = await resolveArchivedThread(row);
-        if (!ref.session_id) {
-          showToast("导出失败：未找到归档会话 ID", null);
-          return;
-        }
-        await exportMarkdown(ref);
+        if (typeof item.onActivate !== "function") return;
+        runCodexPlusExtensionCallback(item.scriptKey, "rowAction.onActivate", () =>
+          item.onActivate(sessionRowActionContext(row, { archived: true, button, event })));
       }, true);
-      insertionPoint.insertAdjacentElement("afterend", exportButton);
-      insertionPoint = exportButton;
-    }
+      insertionPoint.insertAdjacentElement("afterend", button);
+      insertionPoint = button;
+    });
   }
 
   function conversationRoot() {
@@ -18454,7 +18825,7 @@
    * 不读 DOM；实际挂载发生在 99-tail 之前，那时所有依赖函数都已可用。
    */
   const codexPlusExtensionApiVersion = 1;
-  const codexPlusExtensionAdapterVersion = "1.1.0";
+  const codexPlusExtensionAdapterVersion = "1.2.0";
 
   /** 类名与属性契约。一旦发布不再更名，新增用新名字。 */
   const codexPlusExtensionConstants = {
@@ -18478,7 +18849,6 @@
    */
   const codexPlusExtensionRoutes = new Set([
     "/diagnostics/log",
-    "/session/export",
     "/thread-usage-history",
     "/archived-thread",
     "/export-markdown",
@@ -18486,6 +18856,18 @@
     // 显式开放：给拓展注入 overlay 等独立 Codex 页面，不暴露任意 CDP 方法。
     "/cdp/targets",
     "/cdp/evaluate",
+    // 只读：系统鼠标位置，写「桌宠跟随鼠标」这类功能用。
+    "/system/cursor-position",
+    // 只读：最近已完成的模型请求（模型、耗时、供应商、token、成败），写「请求提示」这类功能用。
+    "/request-log/recent",
+    // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。
+    // 只有启用中的拓展在清单里声明了才干活；供应商 Key 只在 Codex++ 里用。
+    "/agent-pet/image",
+    "/agent-pet/sound",
+    "/whale/media",
+    "/whale/full",
+    "/whale/history",
+    "/whale/session",
   ]);
 
   /** 单次调用的默认超时，略短于桥接自身的 26s，让拓展先拿到可读的错误。 */
@@ -18566,9 +18948,29 @@
    * 所以逐项 try/catch，任何一个不存在或抛错都不影响其余。
    */
   function codexPlusRefreshExtensionHosts() {
+    codexPlusRefreshExtensionHostsNow();
+    scheduleCodexPlusExtensionHostsCatchUp();
+  }
+
+  /**
+   * 页面刚加载时拓展往往先于 Codex 的界面注册：注册那一刻输入框、侧栏、顶栏还没渲染，立即刷新没有地方挂。
+   * 首页静止时扫描也不会再跑，所以注册 / 撤销后再在 0.5、2、5 秒各补刷一次。连续注册共用同一组定时器；
+   * 各刷新按指纹幂等，界面没变时不动 DOM。
+   */
+  let codexPlusExtensionHostsCatchUpTimers = [];
+  function scheduleCodexPlusExtensionHostsCatchUp() {
+    for (const timer of codexPlusExtensionHostsCatchUpTimers) clearTimeout(timer);
+    codexPlusExtensionHostsCatchUpTimers = [500, 2000, 5000].map((delay) => setTimeout(codexPlusRefreshExtensionHostsNow, delay));
+  }
+
+  function codexPlusRefreshExtensionHostsNow() {
     for (const refresh of [
       refreshCodexPlusPageNav,
       refreshCodexPlusRailNavigation,
+      refreshCodexPlusComposerActions,
+      refreshCodexPlusMessageSlots,
+      refreshCodexPlusSidePanels,
+      refreshCodexPlusUiSlots,
       refreshExtensionSessionRows,
       refreshCodexPlusExtensionMenu,
     ]) {
@@ -18605,7 +19007,45 @@
         // 重建（或摘掉）这一行的按钮组，不用等下一次扫描。
         tryAttachButton(row);
       });
+      archivedPageRows().forEach(attachArchivedPageDeleteButton);
     } catch {}
+  }
+
+  /**
+   * 注册一个整页视图，并自动配一个图标栏入口。
+   *
+   * 内置的三个页面（Codex++ / 拓展 / 推荐内容）都是「rail 入口 + 整页」的形态，
+   * 第三方页面沿用同一种形态，用户才不会在弹窗里找入口。抽成独立函数是因为
+   * codexPlus.registerPage 与插件内核的 ctx.registerPage 共用这一套逻辑。
+   */
+  function codexPlusRegisterExtensionPage(definition, options = {}) {
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const pageId = `${scriptKey}:page:${options.id || codexPlusExtensionIdSeed()}`;
+    const disposePage = registerCodexPlusExtension("page", codexPlusRegistry.pages, pageId, definition, scriptKey);
+    // 入口与页面成对存在：页面没了，入口也该消失，否则点了没有任何反应。
+    const entry = {
+      ...definition,
+      label: options.navLabel || definition.navLabel || definition.title || pageId,
+      icon: options.icon || definition.icon,
+      pageId,
+      order: Math.max(1000, Number.isFinite(options.order) ? Number(options.order) : 0),
+    };
+    const navId = `${scriptKey}:navEntry:${pageId}`;
+    let disposeNav = null;
+    try {
+      // options.nav === false：只要页面、不要图标栏入口（例如从 Codex 设置页里打开的拓展分区）。
+      if (options.nav !== false) disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
+    } catch {
+      // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
+    }
+    codexPlusRefreshExtensionHosts();
+    return () => {
+      try {
+        disposeNav?.();
+      } catch {}
+      disposePage();
+      codexPlusRefreshExtensionHosts();
+    };
   }
 
   /**
@@ -18621,7 +19061,45 @@
       constants: codexPlusExtensionConstants,
       // 用 getter 而不是快照：脚本初始化结束后再读也能拿到自己的 key。
       get script() {
-        return { key: codexPlusCurrentExtensionScriptKey() };
+        const key = codexPlusCurrentExtensionScriptKey();
+        return { key, manifest: codexPlusExtensionManifest(key) };
+      },
+
+      /** 创建一个拓展实例：ctx 上的注册都随实例卸载自动撤销，见 91-extension-runtime.js。 */
+      extension: codexPlusCreateExtension,
+      /** 早期名称。已有拓展（包括对话里生成的）在用，保留为别名。 */
+      plugin: codexPlusCreateExtension,
+
+      /** 当前已提供的服务：[{ name, owner }]。取值请在拓展里 inject 或 ctx.get。 */
+      services() {
+        return [...codexPlusServices.entries()].map(([name, entry]) => ({ name, owner: entry.owner }));
+      },
+
+      /**
+       * 在拓展实例里运行 dsh 前端插件（由 Codex++ 生成的 dsh 配套拓展包调用）：modules 是截住的
+       * __ModuleLoader__.load 参数，dsh 插槽映射到 Codex++ 的插槽，见 96-dsh-client.js。
+       */
+      dshClient(ctx, modules, options) {
+        return codexPlusRunDshClient(ctx, modules, options);
+      },
+
+      /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+      currentSessionId() {
+        return codexPlusCurrentSessionId();
+      },
+      /**
+       * 当前打开的 Codex 会话：{ id, title, hostId, remote }。hostId 是会话所在的主机（本机为 "local"），
+       * remote 表示远程 / SSH 会话（本机会话日志里没有它的用量）。没有会话时 id 为空串。
+       */
+      currentSession() {
+        const ref = typeof currentSessionRef === "function" ? currentSessionRef() || {} : {};
+        const hostId = String(ref.host_id || "local");
+        return Object.freeze({ id: String(ref.session_id || ""), title: String(ref.title || ""), hostId, remote: hostId !== "local" });
+      },
+
+      /** 内置拓展的现状：[{ id, name, active, disabled, replacedBy }]。见 96-builtin-extensions.js。 */
+      builtins() {
+        return codexPlusBuiltinExtensionList();
       },
 
       /** 显示提示。type: info | success | warn | error */
@@ -18635,6 +19113,81 @@
 
       /** 调用后端白名单路由，失败时 reject。 */
       call: codexPlusExtensionCall,
+
+      /**
+       * 注册斜杠命令：在输入框输入「/name 参数」回车时调用 run(args, { editor, insertText, setText, toast })，
+       * 输入框随后清空；输入「/」时在输入框上方提示匹配的拓展命令，Tab 补全。
+       */
+      registerCommand(definition, options = {}) {
+        return codexPlusRegisterExtensionCommand(definition, options);
+      },
+
+      /**
+       * 在输入区（发送按钮所在那一行）加一个图标按钮。
+       * onActivate({ editor, insertText, close }) 中 insertText(text) 把文字插入当前输入框。
+       */
+      registerComposerAction(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, options);
+      },
+
+      /**
+       * 在每条对话消息的操作行（复制、编辑按钮旁）加一个图标按钮。
+       * roles 限定 "user" / "assistant"；visible(message) 返回 false 时这条消息不显示；
+       * onActivate({ message, close }) 里 message = { role, id, turnId, conversationId, text, element }。
+       */
+      registerMessageAction(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("messageAction", codexPlusRegistry.messageActions, definition, options);
+      },
+
+      /**
+       * 在每条对话消息的正文下方挂一块内容：render({ message, container }) 往 container 里画。
+       * 消息文字变化（流式输出）时会清空 container 重新调用；container 留空则不占位。
+       */
+      registerMessageDecoration(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("messageDecoration", codexPlusRegistry.messageDecorations, definition, options);
+      },
+
+      /**
+       * 注册右侧面板：顶栏右侧出现一个开关按钮，打开时 Codex 主区域往左让出面板宽度。
+       * render({ container, close }) 每次打开都调用，可返回清理函数（关闭时调用）。
+       * 返回的撤销函数上带 open() / close() / toggle()。
+       */
+      registerSidePanel(definition, options = {}) {
+        return codexPlusRegisterExtensionSidePanel(definition, options);
+      },
+
+      /**
+       * 往 Codex 界面的固定位置放内容：slot 为 composer.above、thread.top、thread.bottom、sidebar.top、
+       * sidebar.bottom、titlebar。render({ container, slot }) 在容器新建时调用（Codex 重建 DOM 后会再调），
+       * 可返回清理函数。返回的撤销函数上带 refresh() 强制重画。
+       */
+      registerInputTrigger(definition, options = {}) {
+        return codexPlusRegisterInputTrigger(definition, options);
+      },
+      registerShortcut(definition, options = {}) {
+        return codexPlusRegisterShortcut(definition, options);
+      },
+      registerTheme(definition, options = {}) {
+        return codexPlusRegisterTheme(definition, options);
+      },
+      ask(question) {
+        return codexPlusAsk(question);
+      },
+      registerSlot(definition, options = {}) {
+        return codexPlusRegisterExtensionSlot(definition, options);
+      },
+      /** 右下角悬浮球面板里加一个页签：render({ container, close })，可返回清理函数。 */
+      registerFloatingTab(definition, options = {}) {
+        return codexPlusRegisterFloatingTab(definition, options);
+      },
+      /** 对话里的工具调用 / 命令条目末尾挂内容：tools / kinds 过滤，render({ container, call })。 */
+      registerToolView(definition, options = {}) {
+        return codexPlusRegisterToolView(definition, options);
+      },
+      /** Codex 设置页左侧导航末尾加一项，点开是 render({ container, close }) 画的页面。 */
+      registerSettingsSection(definition, options = {}) {
+        return codexPlusRegisterSettingsSection(definition, options);
+      },
 
       /** 在会话行「更多操作」里加一项。 */
       registerRowAction(definition, options = {}) {
@@ -18670,32 +19223,7 @@
        * render 每次打开都被重新调用，不要缓存 DOM（见本文件顶部的生命周期约定）。
        */
       registerPage(definition, options = {}) {
-        const scriptKey = codexPlusCurrentExtensionScriptKey(options);
-        const pageId = `${scriptKey}:page:${options.id || codexPlusExtensionIdSeed()}`;
-        const disposePage = registerCodexPlusExtension("page", codexPlusRegistry.pages, pageId, definition, scriptKey);
-        // 入口与页面成对存在：页面没了，入口也该消失，否则点了没有任何反应。
-        const entry = {
-          ...definition,
-          label: options.navLabel || definition.navLabel || definition.title || pageId,
-          icon: options.icon || definition.icon,
-          pageId,
-          order: Math.max(1000, Number.isFinite(options.order) ? Number(options.order) : 0),
-        };
-        const navId = `${scriptKey}:navEntry:${pageId}`;
-        let disposeNav = null;
-        try {
-          disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
-        } catch {
-          // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
-        }
-        codexPlusRefreshExtensionHosts();
-        return () => {
-          try {
-            disposeNav?.();
-          } catch {}
-          disposePage();
-          codexPlusRefreshExtensionHosts();
-        };
+        return codexPlusRegisterExtensionPage(definition, options);
       },
 
       /** 注册清理函数，热重载时逆序执行。 */
@@ -18712,6 +19240,1786 @@
       },
     };
   }
+  /**
+   * 拓展运行时内核：codexPlus.extension(apply)
+   *
+   * 在 register* 之上加一层「拓展实例」：ctx 上的每一次注册（UI 项、事件监听、
+   * 中间件、DOM 监听、定时器、自定义副作用）都绑定到实例的寿命上，卸载时按注册
+   * 逆序自动撤销。拓展作者不必再自己维护 dispose 列表，热重载也不会残留旧实例。
+   *
+   * 两种拓展间耦合方式：
+   *   - 事件：ctx.on / ctx.emit，一对多通知，处理器抛错互不影响
+   *   - waterfall：ctx.intercept / ctx.waterfall，中间件链，handler(value, next)
+   *     调 next(v) 交给下一个，不调即短路；没有中间件时原样返回
+   *
+   * 宿主后续会在协议层、界面层的关键点调用 codexPlusRunWaterfall /
+   * codexPlusEmitExtensionEvent，拓展用同一套 ctx 接口挂上去。设计见
+   * docs/plans/2026-10-30-codexpp-extension-system-design.md。
+   *
+   * 和 91-extension-api.js 一样只做定义、不读 DOM，挂载在 99-startup。
+   */
+
+  /** 事件名 → 监听者集合。监听者带 scriptKey，出错时记到对应脚本。 */
+  const codexPlusExtensionListeners = new Map();
+  /** 中间件链名 → 中间件数组，按 order、再按注册先后排序。 */
+  const codexPlusExtensionInterceptors = new Map();
+  let codexPlusExtensionInterceptorSeq = 0;
+  /** 存活的拓展实例，供诊断查看。 */
+  const codexPlusExtensionInstances = new Set();
+
+  /**
+   * 拓展间服务。名字是一个扁平命名空间：ctx.provide(name, value) 提供，声明了 inject 的拓展
+   * 在依赖齐全时才应用；提供者卸载或被替换时，依赖方先卸载、回到挂起，提供者回来后自动
+   * 重新应用。内置服务（如 sessionQuery）由 Codex++ 提供，归属为 "builtin"。
+   */
+  const codexPlusServices = new Map();
+  let codexPlusServiceSeq = 0;
+  /** 等待依赖或依赖服务的拓展（生命周期句柄），服务变化时逐个复查。 */
+  const codexPlusServiceFibers = new Set();
+  const codexPlusServiceNamePattern = /^[A-Za-z][\w.-]{0,63}$/;
+
+  function codexPlusNormalizeInject(inject) {
+    if (!inject) return [];
+    const names = Array.isArray(inject) ? inject : typeof inject === "object" ? Object.keys(inject) : [inject];
+    return [...new Set(names.map(String).filter((name) => codexPlusServiceNamePattern.test(name)))];
+  }
+
+  /** 必需依赖：对象写法里 { name: { required: false } } 是可选依赖，缺了也应用，变了照样重载。 */
+  function codexPlusRequiredInject(inject) {
+    if (!inject || Array.isArray(inject) || typeof inject !== "object") return codexPlusNormalizeInject(inject);
+    return codexPlusNormalizeInject(Object.keys(inject).filter((name) => inject[name]?.required !== false));
+  }
+
+  /**
+   * 管理器保存拓展配置后先调这里：这个拓展的所有实例都接住新配置时返回 "applied"，否则 "reload"（由管理器整体热重载）。
+   * 多实例时每份叠上自己实例的配置。
+   */
+  function codexPlusUpdateExtensionConfig(scriptKey, nextConfig) {
+    const instances = [...codexPlusExtensionInstances].filter((ctx) => ctx.scriptKey === scriptKey && !ctx.disposed);
+    if (!instances.length) return "reload";
+    for (const ctx of instances) {
+      const merged = ctx.instance ? { ...nextConfig, ...(ctx.manifest?.instance?.config ?? ctx.manifest?.instances?.find?.((item) => item.id === ctx.instance.id)?.config ?? {}) } : nextConfig;
+      if (!ctx.__tryConfigUpdate(merged)) return "reload";
+    }
+    const script = window.__codexPlusUserScripts?.scripts?.[scriptKey];
+    if (script?.manifest) script.manifest = { ...script.manifest, config: nextConfig };
+    return "applied";
+  }
+  if (typeof window !== "undefined") {
+    window.__codexPlusUserScripts ||= { scripts: {} };
+    window.__codexPlusUserScripts.updateConfig = codexPlusUpdateExtensionConfig;
+  }
+
+  function codexPlusServiceChanged() {
+    for (const fiber of [...codexPlusServiceFibers]) {
+      try {
+        fiber.check();
+      } catch {}
+    }
+  }
+
+  function codexPlusProvideService(name, value, owner) {
+    if (!codexPlusServiceNamePattern.test(String(name))) throw new Error(`服务名不合法：${name}`);
+    const existing = codexPlusServices.get(name);
+    if (existing) throw new Error(`服务 ${name} 已由 ${existing.owner || "其它拓展"} 提供`);
+    const entry = { value, owner, token: ++codexPlusServiceSeq };
+    codexPlusServices.set(name, entry);
+    codexPlusServiceChanged();
+    return () => {
+      if (codexPlusServices.get(name) !== entry) return;
+      codexPlusServices.delete(name);
+      codexPlusServiceChanged();
+    };
+  }
+
+  /** 内置的只读会话查询服务：方法名与参数对齐会话查询接口，经桥接转到 Codex++。 */
+  function codexPlusSessionQueryService() {
+    const invoke = (method, params) => {
+      const bridge = window.__codexSessionDeleteBridge;
+      if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
+      return Promise.resolve(bridge("/extensions/history", { method, params: params ?? null })).then((result) => {
+        if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${method} 调用失败`);
+        return result?.result;
+      });
+    };
+    const withId = (method) => (id, options) => invoke(method, { id, options: options ?? {} });
+    const readSession = (id) => invoke("readSession", { id });
+    const readEventsSince = (query) => invoke("readEventsSince", query ?? {});
+    return Object.freeze({
+      listSessions: (options) => invoke("listSessions", options ?? {}),
+      filterSessions: (filters) => invoke("filterSessions", filters ?? {}),
+      readSession,
+      readTitle: (id) => invoke("readTitle", { id }),
+      listEvents: withId("listEvents"),
+      filterEvents: withId("filterEvents"),
+      readEvent: (query) => invoke("readEvent", query ?? {}),
+      readEventsSince,
+      searchSessions: (query) => invoke("searchSessions", query ?? {}),
+      searchEvents: (query) => invoke("searchEvents", query ?? {}),
+      /** 把会话事件日志折叠成状态：apply(state, event) 返回新状态（返回 undefined 视为不变）。 */
+      async project(id, { init, apply } = {}) {
+        if (typeof apply !== "function") throw new Error("project 需要 apply(state, event)");
+        const { events } = await readSession(id);
+        let state = typeof init === "function" ? init() : init;
+        for (const event of events) {
+          const next = apply(state, event);
+          if (next !== undefined) state = next;
+        }
+        return state;
+      },
+      /**
+       * 订阅会话的新事件：按 intervalMs（默认 2 秒）增量读取，handler(event) 逐条收到。
+       * 默认从当前末尾开始（不回放历史），fromSeq 指定起点。返回撤销函数。
+       */
+      /** 订阅全部会话的新事件：handler(event, { sessionId })，返回撤销函数。等同 ctx.on("session/event")。 */
+      observeAll(handler) {
+        if (typeof handler !== "function") throw new Error("observeAll 需要 handler(event, { sessionId })");
+        const listener = { handler, scriptKey: "builtin:sessionQuery" };
+        if (!codexPlusExtensionListeners.has("session/event")) codexPlusExtensionListeners.set("session/event", new Set());
+        codexPlusExtensionListeners.get("session/event").add(listener);
+        codexPlusEnsureSessionWatcher();
+        return () => {
+          const listeners = codexPlusExtensionListeners.get("session/event");
+          listeners?.delete(listener);
+          if (listeners && !listeners.size) codexPlusExtensionListeners.delete("session/event");
+        };
+      },
+      observeSession(id, handler, options = {}) {
+        if (typeof handler !== "function") throw new Error("observeSession 需要 handler(event)");
+        let stopped = false;
+        let next = Number.isFinite(options.fromSeq) ? Number(options.fromSeq) : null;
+        let timer = null;
+        const interval = Math.max(500, Number(options.intervalMs) || 2000);
+        const tick = async () => {
+          if (stopped) return;
+          try {
+            if (next === null) {
+              const tail = await invoke("listEvents", { id, options: { fromEnd: true, limit: 1 } });
+              next = tail.length ? tail[0].seq + 1 : 0;
+            } else {
+              const events = await readEventsSince({ sessionId: id, seq: next, limit: 200 });
+              for (const event of events) {
+                if (stopped) return;
+                next = event.seq + 1;
+                try { handler(event); } catch {}
+              }
+            }
+          } catch {}
+          if (!stopped) timer = setTimeout(tick, interval);
+        };
+        void tick();
+        return () => {
+          stopped = true;
+          clearTimeout(timer);
+        };
+      },
+    });
+  }
+
+  /**
+   * 会话写入：经 Codex 自己的 AppServerManager 调 app-server。
+   *
+   * 新版 Codex 在页面里用 `scope.get(管理器原子).forHost(hostId).sendRequest(method, params)` 发请求；原子是入口
+   * 模块的一个导出（名字随构建变），这里按「scope.get 出来的值带 forHost」把它找出来并缓存。scope 取自任意
+   * 带 React fiber 的界面节点，每次调用现取（界面重建后旧 scope 会失效）。只开放下面几个方法，不开放删除等。
+   */
+  const codexPlusSessionMethods = {
+    list: "thread/list",
+    create: "thread/start",
+    fork: "thread/fork",
+    rename: "thread/name/set",
+    append: "thread/inject_items",
+    startTurn: "turn/start",
+    steer: "turn/steer",
+    interrupt: "turn/interrupt",
+    compact: "thread/compact/start",
+  };
+  let codexPlusManagerAtom = null;
+
+  function codexPlusFindAppScope() {
+    const candidates = document.querySelectorAll("[data-app-action-sidebar-thread-id], [data-codex-composer-root], main, aside");
+    for (const node of candidates) {
+      const key = Object.getOwnPropertyNames(node).find((name) => name.startsWith("__reactFiber$"));
+      let fiber = key ? node[key] : null;
+      for (let depth = 0; fiber && depth < 40; depth += 1, fiber = fiber.return) {
+        let hook = fiber.memoizedState;
+        for (let index = 0; hook && index < 64; index += 1, hook = hook.next) {
+          const scope = hook.memoizedState?.current;
+          if (scope && typeof scope.get === "function" && scope.node) return scope;
+        }
+      }
+    }
+    return null;
+  }
+
+  async function codexPlusAppServerClient(hostId = "local") {
+    const scope = codexPlusFindAppScope();
+    if (!scope) throw new Error("Codex 界面还没准备好，稍后再试");
+    const managerFrom = (atom) => {
+      try {
+        const manager = scope.get(atom);
+        return manager && typeof manager.forHost === "function" ? manager : null;
+      } catch {
+        return null;
+      }
+    };
+    let manager = codexPlusManagerAtom ? managerFrom(codexPlusManagerAtom) : null;
+    if (!manager) {
+      const module = await loadOptionalCodexAppModule("app-initial-");
+      for (const value of Object.values(module || {})) {
+        if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
+        manager = managerFrom(value);
+        if (manager) {
+          codexPlusManagerAtom = value;
+          break;
+        }
+      }
+    }
+    if (!manager) throw new Error("没有找到 Codex 的 app-server 连接（Codex 版本不兼容）");
+    return manager.forHost(hostId);
+  }
+
+  /** 把 append 的条目整理成 app-server 的 ResponseItem：字符串当作用户消息，{ role, text } 按角色转成消息。 */
+  function codexPlusSessionItem(entry) {
+    if (typeof entry === "string") return { type: "message", role: "user", content: [{ type: "input_text", text: entry }] };
+    if (entry && typeof entry === "object" && typeof entry.type === "string") return entry;
+    const role = entry?.role === "assistant" || entry?.role === "developer" ? entry.role : "user";
+    return { type: "message", role, content: [{ type: role === "assistant" ? "output_text" : "input_text", text: String(entry?.text ?? "") }] };
+  }
+
+  /** 按方法名调用会话写入；params 形状见 codexPlusSessionsService。也给 Codex++ 进程经 CDP 调（后台、工具）。 */
+  async function codexPlusSessionsCall(name, params = {}) {
+    const method = codexPlusSessionMethods[name];
+    if (!method) throw new Error(`会话服务没有方法 ${name}`);
+    const client = await codexPlusAppServerClient(params.hostId || "local");
+    switch (name) {
+      case "list":
+        return client.sendRequest(method, { limit: params.limit ?? 50, ...(params.cursor ? { cursor: params.cursor } : {}), ...(params.archived ? { archived: true } : {}) });
+      case "fork":
+        return (await client.sendRequest(method, { threadId: String(params.id), ...(params.options || {}) }))?.thread ?? null;
+      case "append": {
+        const items = (Array.isArray(params.items) ? params.items : [params.items]).map(codexPlusSessionItem);
+        await client.sendRequest(method, { threadId: String(params.id), items });
+        return { appended: items.length };
+      }
+      case "startTurn": {
+        const input = typeof params.input === "string" ? [{ type: "text", text: params.input }] : params.input;
+        if (!Array.isArray(input) || !input.length) throw new Error("startTurn 需要输入文字");
+        return (await client.sendRequest(method, { threadId: String(params.id), input, ...(params.options || {}) }))?.turn ?? null;
+      }
+      case "interrupt": {
+        // 没给 turnId 时取会话里正在跑的那一轮（dsh 的 agent.cancel 只知道会话）。
+        let turnId = String(params.turnId || "");
+        if (!turnId) {
+          const read = await client.sendRequest("thread/read", { threadId: String(params.id), includeTurns: true });
+          const turns = Array.isArray(read?.thread?.turns) ? read.thread.turns : [];
+          const running = [...turns].reverse().find((turn) => /^in[_-]?progress$/i.test(String(turn?.status?.type ?? turn?.status ?? "")));
+          turnId = String(running?.id ?? "");
+          if (!turnId) return { interrupted: false, reason: "会话里没有正在进行的一轮" };
+        }
+        return client.sendRequest(method, { threadId: String(params.id), turnId });
+      }
+      case "create":
+        // 新建会话；给了 input 时紧接着发起第一轮。
+        {
+          const thread = (await client.sendRequest(method, { ...(params.options || {}) }))?.thread ?? null;
+          if (thread?.id && params.input) {
+            const turn = await codexPlusSessionsCall("startTurn", { id: thread.id, input: params.input, hostId: params.hostId });
+            return { thread, turn };
+          }
+          return { thread, turn: null };
+        }
+      case "rename":
+        if (!String(params.name || "").trim()) throw new Error("rename 需要新名字");
+        return client.sendRequest(method, { threadId: String(params.id), name: String(params.name).trim() });
+      case "steer": {
+        // 会话正忙时往当前这一轮插话。
+        const input = typeof params.input === "string" ? [{ type: "text", text: params.input }] : params.input;
+        if (!Array.isArray(input) || !input.length) throw new Error("steer 需要输入文字");
+        return client.sendRequest(method, { threadId: String(params.id), input, ...(params.turnId ? { expectedTurnId: String(params.turnId) } : {}) });
+      }
+      case "compact":
+        return client.sendRequest(method, { threadId: String(params.id) });
+      default:
+        throw new Error(`会话服务没有方法 ${name}`);
+    }
+  }
+
+  /** 内置的会话写入服务（inject: ["sessions"]）：新建、分叉、改名、追加条目、发起 / 插话 / 中断一轮、压缩。读请用 sessionQuery。 */
+  function codexPlusSessionsService() {
+    return Object.freeze({
+      list: (options = {}) => codexPlusSessionsCall("list", options),
+      create: (input, options) => codexPlusSessionsCall("create", { input, options }),
+      fork: (id, options) => codexPlusSessionsCall("fork", { id, options }),
+      rename: (id, name) => codexPlusSessionsCall("rename", { id, name }),
+      append: (id, items) => codexPlusSessionsCall("append", { id, items }),
+      startTurn: (id, input, options) => codexPlusSessionsCall("startTurn", { id, input, options }),
+      steer: (id, input, turnId) => codexPlusSessionsCall("steer", { id, input, turnId }),
+      interrupt: (id, turnId) => codexPlusSessionsCall("interrupt", { id, turnId }),
+      compact: (id) => codexPlusSessionsCall("compact", { id }),
+    });
+  }
+
+  function installCodexPlusBuiltinServices() {
+    window.__codexPlusSessionsCall = codexPlusSessionsCall;
+    // 后台、工具、钩子经 CDP 调：window.__codexPlusUiCall("ask", 参数)。
+    window.__codexPlusUiCall = (name, params) => {
+      if (name === "ask") return codexPlusAsk(params || {});
+      if (name === "toast") return showToast(String(params?.message ?? ""), params?.options || {}), true;
+      throw new Error(`界面服务没有方法 ${name}`);
+    };
+    if (!codexPlusServices.has("themes") && typeof codexPlusThemesService === "function") codexPlusProvideService("themes", codexPlusThemesService(), "builtin");
+    if (!codexPlusServices.has("sessions")) codexPlusProvideService("sessions", codexPlusSessionsService(), "builtin");
+    if (!codexPlusServices.has("sessionQuery")) codexPlusProvideService("sessionQuery", codexPlusSessionQueryService(), "builtin");
+    // 全局的多语言服务：写成 inject: ["locale"] 的拓展也能用（ctx.locale 是按实例自动撤销的同一套接口）。
+    if (!codexPlusServices.has("locale")) {
+      codexPlusProvideService("locale", Object.freeze({
+        get current() {
+          return codexPlusCurrentLocale();
+        },
+        register(ns, langOrDicts, dict) {
+          if (typeof langOrDicts === "string") return codexPlusRegisterLocale(String(ns), langOrDicts, dict);
+          const disposers = Object.entries(langOrDicts || {}).map(([lang, value]) => codexPlusRegisterLocale(String(ns), lang, value));
+          return () => disposers.forEach((dispose) => dispose());
+        },
+        bind: (ns) => (key, params) => codexPlusTranslate(String(ns), key, params),
+        resolve: codexPlusResolveText,
+      }), "builtin");
+    }
+    installCodexPlusLocaleWatcher();
+    window.__codexPlusSyncBackendServices = syncCodexPlusBackendServices;
+    syncCodexPlusBackendServices();
+  }
+
+  /**
+   * 拓展后台声明的服务（codexpp.json 的 backend.provides）：登记成页面服务，值是一个代理，
+   * 调用任意方法都经桥接转给提供方后台（没起就先起）。清单随注入包下发，热重载时增删。
+   * 页面里已有同名服务时以页面的为准。
+   */
+  const codexPlusBackendServiceEntries = new Map();
+
+  function codexPlusBackendServiceProxy(name) {
+    return new Proxy({}, {
+      get: (_, method) => (typeof method !== "string" || method === "then") ? undefined : (...args) => {
+        const bridge = window.__codexSessionDeleteBridge;
+        if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
+        return Promise.resolve(bridge("/extensions/services/call", { name, method, args })).then((result) => {
+          if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${name}.${method} 调用失败`);
+          return result?.result;
+        });
+      },
+    });
+  }
+
+  function syncCodexPlusBackendServices() {
+    const list = Array.isArray(window.__codexPlusBackendServices) ? window.__codexPlusBackendServices : [];
+    const wanted = new Map(
+      list
+        .filter((item) => item && codexPlusServiceNamePattern.test(String(item.name)))
+        .map((item) => [String(item.name), String(item.key || "")]),
+    );
+    for (const [name, entry] of [...codexPlusBackendServiceEntries]) {
+      if (wanted.get(name) === entry.key) continue;
+      codexPlusBackendServiceEntries.delete(name);
+      entry.dispose();
+    }
+    for (const [name, key] of wanted) {
+      if (codexPlusBackendServiceEntries.has(name) || codexPlusServices.has(name)) continue;
+      try {
+        const dispose = codexPlusProvideService(name, codexPlusBackendServiceProxy(name), `backend:${key}`);
+        codexPlusBackendServiceEntries.set(name, { key, dispose });
+      } catch {}
+    }
+  }
+
+  /**
+   * 多语言：词条按命名空间登记（同一命名空间可多次登记，后登记的优先）。查找顺序：当前语言 →
+   * 主语言（zh-CN → zh）→ en，先在指定命名空间，再在 common；都没有就返回 key 本身。
+   * 占位符写成 {name}。拓展包 locale/<语言>.json 自动登记到「拓展 id」命名空间。
+   */
+  const codexPlusLocaleEntries = new Map();
+  const codexPlusFallbackLocale = "en";
+
+  function codexPlusCurrentLocale() {
+    const raw = (typeof document !== "undefined" && document.documentElement?.lang) || globalThis.navigator?.language || codexPlusFallbackLocale;
+    return String(raw).trim() || codexPlusFallbackLocale;
+  }
+
+  function codexPlusLocaleChain(locale = codexPlusCurrentLocale()) {
+    const exact = String(locale);
+    const primary = exact.split(/[-_]/)[0].toLowerCase();
+    return [...new Set([exact, exact.toLowerCase(), primary, codexPlusFallbackLocale])];
+  }
+
+  function codexPlusRegisterLocale(ns, lang, dict) {
+    if (!dict || typeof dict !== "object") throw new Error(`词条必须是对象：${ns}/${lang}`);
+    const entry = { lang: String(lang), dict };
+    if (!codexPlusLocaleEntries.has(ns)) codexPlusLocaleEntries.set(ns, []);
+    codexPlusLocaleEntries.get(ns).unshift(entry);
+    return () => {
+      const list = codexPlusLocaleEntries.get(ns) || [];
+      const index = list.indexOf(entry);
+      if (index >= 0) list.splice(index, 1);
+      if (!list.length) codexPlusLocaleEntries.delete(ns);
+    };
+  }
+
+  function codexPlusLocaleLookup(dict, key) {
+    if (typeof dict[key] === "string") return dict[key];
+    let node = dict;
+    for (const part of String(key).split(".")) {
+      if (!node || typeof node !== "object") return undefined;
+      node = node[part];
+    }
+    return typeof node === "string" ? node : undefined;
+  }
+
+  function codexPlusTranslate(ns, key, params) {
+    const chain = codexPlusLocaleChain();
+    let text;
+    for (const space of [ns, "common"]) {
+      const list = codexPlusLocaleEntries.get(space);
+      if (!list) continue;
+      for (const lang of chain) {
+        for (const entry of list) {
+          if (entry.lang.toLowerCase() !== lang.toLowerCase()) continue;
+          text = codexPlusLocaleLookup(entry.dict, key);
+          if (text !== undefined) break;
+        }
+        if (text !== undefined) break;
+      }
+      if (text !== undefined) break;
+    }
+    if (text === undefined) text = String(key);
+    if (!params || typeof params !== "object") return text;
+    return text.replace(/\{(\w+)\}/g, (match, name) => (params[name] === undefined ? match : String(params[name])));
+  }
+
+  /** 解析 { en, zh, ... } 形式的多语言文本；本身是字符串就原样返回。 */
+  function codexPlusResolveText(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value !== "object") return String(value);
+    for (const lang of codexPlusLocaleChain()) {
+      const hit = Object.keys(value).find((key) => key.toLowerCase() === lang.toLowerCase());
+      if (hit && typeof value[hit] === "string") return value[hit];
+    }
+    const first = Object.values(value).find((item) => typeof item === "string");
+    return first ?? "";
+  }
+
+  /** 页面语言变化时广播 locale/change（参数 { locale }）。 */
+  let codexPlusLocaleWatcherInstalled = false;
+  function installCodexPlusLocaleWatcher() {
+    if (codexPlusLocaleWatcherInstalled || typeof MutationObserver !== "function" || !document?.documentElement) return;
+    codexPlusLocaleWatcherInstalled = true;
+    let last = codexPlusCurrentLocale();
+    new MutationObserver(() => {
+      const next = codexPlusCurrentLocale();
+      if (next === last) return;
+      last = next;
+      codexPlusEmitExtensionEvent("locale/change", [{ locale: next }]);
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
+  }
+
+  /** 拓展包的清单（Rust 侧写进脚本状态记录）；单文件脚本没有清单。 */
+  function codexPlusExtensionManifest(scriptKey) {
+    const manifest = window.__codexPlusUserScripts?.scripts?.[scriptKey]?.manifest;
+    if (!manifest || typeof manifest !== "object") return null;
+    // 给拓展一份副本，避免它改到状态记录里的原件。
+    try {
+      return JSON.parse(JSON.stringify(manifest));
+    } catch {
+      return null;
+    }
+  }
+
+  function codexPlusIsThenable(value) {
+    return !!value && typeof value.then === "function";
+  }
+
+  /**
+   * 全部会话的事件流：有拓展监听 `session/event` / `agent/status` 时，按会话更新时间增量读 rollout，
+   * 把新事件逐条发出去。新版 Codex 的通知不经过页面，rollout 是页面能拿到的唯一完整来源。
+   *   - `session/event`：(event, { sessionId })，event 形状同 sessionQuery 的事件日志
+   *   - `agent/status`：({ sessionId, status: "running" | "idle" | "aborted", turn, reason? })
+   *   - 更细的通知（agent 只是 { id, session: { id } } 描述，没有 steer / inject）：
+   *     `tools/result`：(exec { callId, name, arguments }, result { isError: false, content })，工具结果写进会话时；
+   *     `agent/created`：({ agent, source: "startup" })，观察开始后新出现的会话；
+   *     `agent/error`：({ agent, turn, error })，一轮被中止（turn/aborted）时
+   * 没人监听时自动停；监听开始前已有的事件不重放，之后新建的会话从头发。
+   */
+  const codexPlusSessionWatchEvents = ["session/event", "agent/status", "tools/result", "agent/created", "agent/error"];
+  let codexPlusSessionWatcher = null;
+
+  function codexPlusWantsSessionWatch() {
+    return codexPlusSessionWatchEvents.some((event) => codexPlusExtensionListeners.get(event)?.size);
+  }
+
+  function codexPlusSessionStatusOf(event) {
+    if (event.type === "turn/start") return { status: "running", turn: event.data?.turn };
+    if (event.type === "turn/complete") return { status: "idle", turn: event.data?.turn };
+    if (event.type === "turn/aborted") return { status: "aborted", turn: event.data?.turn, reason: event.data?.reason ?? null };
+    return null;
+  }
+
+  function codexPlusEnsureSessionWatcher() {
+    if (codexPlusSessionWatcher || !codexPlusWantsSessionWatch()) return;
+    const query = codexPlusSessionQueryService();
+    const cursors = new Map();
+    // callId → { name, arguments }：tools/result 要带上调用时的工具名与参数。
+    const calls = new Map();
+    let primed = false;
+    const tick = async () => {
+      if (!codexPlusWantsSessionWatch()) {
+        codexPlusSessionWatcher = null;
+        return;
+      }
+      try {
+        const sessions = await query.listSessions({ limit: 20 });
+        for (const [index, session] of (sessions || []).entries()) {
+          let cursor = cursors.get(session.id);
+          if (!cursor) {
+            if (primed) codexPlusEmitExtensionEvent("agent/created", [{ agent: codexPlusAgentDescriptor(session.id), source: "startup" }]);
+            let next = 0;
+            if (!primed) {
+              const tail = await query.listEvents(session.id, { fromEnd: true, limit: 1 }).catch(() => []);
+              next = tail.length ? tail[0].seq + 1 : 0;
+            }
+            cursor = { updatedAt: primed ? null : session.updatedAt, next };
+            cursors.set(session.id, cursor);
+            if (!primed) continue;
+          }
+          // 最近的几个会话每轮都看（更新时间精度只到秒），其余按更新时间变化再读。
+          if (index >= 3 && cursor.updatedAt === session.updatedAt) continue;
+          cursor.updatedAt = session.updatedAt;
+          const events = await query.readEventsSince({ sessionId: session.id, seq: cursor.next, limit: 200 }).catch(() => []);
+          for (const event of events || []) {
+            cursor.next = event.seq + 1;
+            codexPlusEmitExtensionEvent("session/event", [event, { sessionId: session.id }]);
+            const status = codexPlusSessionStatusOf(event);
+            if (status) codexPlusEmitExtensionEvent("agent/status", [{ sessionId: session.id, ...status }]);
+            codexPlusEmitSessionNotices(session.id, event, calls);
+          }
+        }
+        primed = true;
+      } catch {}
+      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 5000 : 1500);
+    };
+    codexPlusSessionWatcher = setTimeout(tick, 0);
+  }
+
+  /** 页面通知里的 agent 描述：只有会话 id，不能往会话里插话。 */
+  function codexPlusAgentDescriptor(sessionId) {
+    return Object.freeze({ id: sessionId, session: Object.freeze({ id: sessionId }) });
+  }
+
+  /** 会话事件 → tools/result、agent/error 通知。calls 记着工具调用，工具结果到了再配对。 */
+  function codexPlusEmitSessionNotices(sessionId, event, calls) {
+    if (event.type === "tool/call") {
+      calls.set(event.data?.callId, { name: event.data?.name ?? "", arguments: event.data?.input ?? "" });
+      if (calls.size > 500) calls.delete(calls.keys().next().value);
+      return;
+    }
+    if (event.type === "tool/result" && codexPlusExtensionListeners.get("tools/result")?.size) {
+      const call = calls.get(event.data?.callId) || {};
+      let parsed = call.arguments;
+      try { parsed = typeof call.arguments === "string" ? JSON.parse(call.arguments) : call.arguments; } catch {}
+      const agent = codexPlusAgentDescriptor(sessionId);
+      codexPlusEmitExtensionEvent("tools/result", [
+        { callId: event.data?.callId ?? "", name: call.name ?? "", arguments: parsed, agent },
+        { isError: false, value: event.data?.output ?? "", content: [{ type: "text", text: String(event.data?.output ?? "") }] },
+      ]);
+      return;
+    }
+    if (event.type === "turn/aborted") {
+      codexPlusEmitExtensionEvent("agent/error", [{ agent: codexPlusAgentDescriptor(sessionId), turn: event.data?.turn, error: new Error(String(event.data?.reason ?? "aborted")) }]);
+    }
+  }
+
+  /**
+   * Codex++ 后台经 CDP 发给拓展的公开事件（只认 codexpp/ 前缀），例如会话索引修复结束的
+   * `codexpp/session-index-repaired`。拓展用 ctx.on 订阅。
+   */
+  window.__codexPlusEmitHostEvent = (event, payload) => {
+    if (typeof event !== "string" || !event.startsWith("codexpp/")) return false;
+    codexPlusEmitExtensionEvent(event, [payload]);
+    return true;
+  };
+  /** 通知所有监听者。逐个隔离：一个处理器抛错不影响其余。 */
+  function codexPlusEmitExtensionEvent(event, args = []) {
+    const listeners = codexPlusExtensionListeners.get(event);
+    if (!listeners) return;
+    for (const listener of [...listeners]) {
+      runCodexPlusExtensionCallback(listener.scriptKey, `on:${event}`, () => listener.handler(...args));
+    }
+  }
+
+  /**
+   * 跑一条中间件链。
+   *
+   * 中间件可以是异步的：返回 Promise 时整条链的结果也是 Promise。中间件抛错（或
+   * reject）时跳过它——若它已经调过 next，沿用下游的结果，避免下游被执行两次。
+   */
+  function codexPlusRunWaterfall(name, value) {
+    const chain = [...(codexPlusExtensionInterceptors.get(name) || [])];
+    const step = (index, current) => {
+      if (index >= chain.length) return current;
+      const item = chain[index];
+      let called = false;
+      let downstream;
+      const next = (nextValue = current) => {
+        called = true;
+        downstream = step(index + 1, nextValue);
+        return downstream;
+      };
+      const recover = () => (called ? downstream : step(index + 1, current));
+      const outcome = runCodexPlusExtensionCallback(item.scriptKey, `intercept:${name}`, () => item.handler(current, next));
+      if (!outcome.ok) return recover();
+      if (codexPlusIsThenable(outcome.value)) {
+        return Promise.resolve(outcome.value).catch((error) => {
+          codexPlusMarkExtensionFailure(item.scriptKey, `intercept:${name}: ${String(error?.stack || error?.message || error)}`);
+          return recover();
+        });
+      }
+      return outcome.value;
+    };
+    return step(0, value);
+  }
+
+  /**
+   * Codex 会话事件：把 app-server 推给页面的通知转成拓展事件 `codex/<method>`。
+   *
+   * 复用 30-service-tier 找到的通知分发器（dispatcher.subscribe），只订阅一组固定的通知；
+   * 没有拓展监听时 emit 只是一次 Map 查找。分发器换了（Codex 重建客户端）就重新订阅。
+   */
+  function installCodexExtensionEventBridge(dispatcher) {
+    if (!dispatcher || typeof dispatcher.subscribe !== "function") return false;
+    // 列表放在函数里：本函数可能在内核分片的常量初始化之前被调用（测试单独执行前面的分片），
+    // 顶层 const 会落进暂时性死区。
+    const events = [
+      "thread/started",
+      "turn/started",
+      "turn/completed",
+      "item/started",
+      "item/completed",
+      "item/agentMessage/delta",
+      "error",
+      // 用量与等待用户的通知（Agent 桌宠拓展的大肥鱼用它显示本轮用量、等待审批 / 提问）。
+      "thread/tokenUsage/updated",
+      "item/tool/requestUserInput",
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/permissions/requestApproval",
+      "mcpServer/elicitation/request",
+      "serverRequest/resolved",
+      "item/tool/userInputAnswered",
+      "item/approval/responded",
+    ];
+    try {
+      const current = window.__codexPlusExtensionEventBridge;
+      if (current?.dispatcher === dispatcher) return true;
+      try {
+        current?.unsubscribe?.();
+      } catch {}
+      const unsubscribers = events.map((method) => {
+        try {
+          return dispatcher.subscribe(method, (params) => {
+            // 转发失败（例如内核尚未初始化）不能影响 Codex 自己的通知处理。
+            try {
+              codexPlusEmitExtensionEvent(`codex/${method}`, [params, { method }]);
+            } catch {}
+          });
+        } catch {
+          return null;
+        }
+      });
+      window.__codexPlusExtensionEventBridge = {
+        dispatcher,
+        unsubscribe: () => unsubscribers.forEach((unsubscribe) => {
+          try {
+            if (typeof unsubscribe === "function") unsubscribe();
+          } catch {}
+        }),
+      };
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 发往 Codex app-server 的请求中间件：`codex/request` 链，值为 `{ method, params }`。
+   *
+   * 两个接入点：新版 Codex 的请求走 app-server 客户端 sendRequest（异步，见
+   * codexPlusApplyExtensionRequestMiddlewareAsync）；旧的消息分发路径走这里，是同步的，
+   * 中间件返回 Promise 时视为出错并原样放行。没有中间件时原样返回同一个对象，
+   * 调用方靠对象身份判断「是否改过」。method 不允许改。
+   */
+  function codexPlusApplyExtensionRequestMiddleware(method, params) {
+    try {
+      if (!codexPlusExtensionInterceptors.has("codex/request")) return params;
+      const result = codexPlusRunWaterfall("codex/request", { method, params });
+      if (codexPlusIsThenable(result)) {
+        Promise.resolve(result).catch(() => {});
+        codexPlusMarkExtensionFailure("", "codex/request 中间件必须同步返回，本次请求已原样发出");
+        return params;
+      }
+      return result && typeof result === "object" && result.params !== undefined ? result.params : params;
+    } catch {
+      // 页面早期（内核尚未初始化）或中间件整体失败时，绝不能挡住 Codex 自己的请求。
+      return params;
+    }
+  }
+
+  /** 有拓展挂了 codex/request 中间件：需要 app-server 客户端补丁（以及它依赖的类捕获）。 */
+  function codexPlusExtensionWantsRequestMiddleware() {
+    try {
+      return codexPlusExtensionInterceptors.has("codex/request");
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 异步版：app-server 客户端的 sendRequest 本身是异步的，这里允许中间件返回 Promise。
+   * 出错或超时（5 秒）一律原样放行，绝不能让 Codex 自己的请求卡住。
+   */
+  async function codexPlusApplyExtensionRequestMiddlewareAsync(method, params) {
+    if (!codexPlusExtensionWantsRequestMiddleware()) return params;
+    try {
+      const result = await Promise.race([
+        Promise.resolve(codexPlusRunWaterfall("codex/request", { method, params })),
+        new Promise((resolve) => setTimeout(() => resolve(null), 5000)),
+      ]);
+      return result && typeof result === "object" && result.params !== undefined ? result.params : params;
+    } catch {
+      return params;
+    }
+  }
+
+  /**
+   * 创建一个拓展实例并执行 apply(ctx)。
+   *
+   * definition 可以是 apply 函数本身，也可以是 { id, apply }。apply 同步抛错时
+   * 先回滚它已经做过的注册，再把错误抛给调用方——脚本初始化期间调用的话，
+   * wrap_script 会把该脚本标成 failed。异步 apply reject 时同样回滚并上报。
+   *
+   * 必须在脚本同步初始化期间调用才能接上热重载：此时内核向用户脚本运行时登记
+   * 一个清理函数，重载前整体卸载。之后（await 之后）创建的实例只能靠 ctx.dispose()。
+   */
+  function codexPlusCreateExtension(definition, options = {}) {
+    const apply = typeof definition === "function" ? definition : definition?.apply;
+    if (typeof apply !== "function") throw new Error("拓展必须提供 apply(ctx) 函数");
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const packageManifest = codexPlusExtensionManifest(scriptKey);
+    // 清单声明了 instances：同一个拓展按实例各应用一次（同 dsh 同一插件开多份），配置是包配置叠上实例配置。
+    const instances = Array.isArray(packageManifest?.instances) ? packageManifest.instances : [];
+    if (instances.length && !options.instance) {
+      const handles = instances.map((instance) => codexPlusCreateExtension(definition, { ...options, scriptKey, instance }));
+      return handles[0];
+    }
+    const instance = options.instance ?? null;
+    const manifest = instance
+      ? { ...packageManifest, instance: { id: String(instance.id), name: instance.name ?? String(instance.id) }, config: { ...(packageManifest?.config ?? {}), ...(instance.config ?? {}) } }
+      : packageManifest;
+    const baseId = String(
+      (typeof definition === "object" && definition?.id) || options.id || packageManifest?.id || scriptKey || "anonymous",
+    );
+    const extensionId = instance ? `${baseId}#${instance.id}` : baseId;
+    const rawInject = (typeof definition === "object" && definition?.inject) || options.inject;
+    const inject = codexPlusNormalizeInject(rawInject);
+    const required = codexPlusRequiredInject(rawInject);
+    const runtime = window.__codexPlusUserScripts;
+    const reloadable = !!scriptKey && runtime?.currentKey === scriptKey && typeof runtime.registerCleanup === "function";
+    if (!inject.length) {
+      const ctx = codexPlusInstantiateExtension({ apply, scriptKey, manifest, extensionId, inject });
+      if (reloadable) runtime.registerCleanup(() => ctx.dispose());
+      return ctx;
+    }
+    const fiber = codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject, required });
+    if (reloadable) runtime.registerCleanup(() => fiber.dispose());
+    return fiber;
+  }
+
+  /**
+   * 声明了 inject 的拓展：依赖齐全才创建实例；依赖消失或换了提供者就卸载实例、回到挂起，
+   * 提供者回来再重新应用。返回的句柄可以随时 dispose。
+   */
+  function codexPlusCreateExtensionFiber({ apply, scriptKey, manifest, extensionId, inject, required = inject }) {
+    let tokens = "";
+    // apply 里提供服务会触发全体复查，又回到这个句柄：正在检查时只记下「需要再查一次」。
+    let checking = false;
+    let recheck = false;
+    const fiber = {
+      id: extensionId,
+      scriptKey,
+      inject: [...inject],
+      state: "pending",
+      ctx: null,
+      check() {
+        if (fiber.state === "disposed") return;
+        if (checking) {
+          recheck = true;
+          return;
+        }
+        checking = true;
+        try {
+          fiber.update();
+        } finally {
+          checking = false;
+        }
+        if (recheck) {
+          recheck = false;
+          fiber.check();
+        }
+      },
+      update() {
+        const ready = required.every((name) => codexPlusServices.has(name));
+        const current = inject.map((name) => codexPlusServices.get(name)?.token ?? "").join("|");
+        if (fiber.ctx && (!ready || current !== tokens)) {
+          const ctx = fiber.ctx;
+          fiber.ctx = null;
+          fiber.state = "pending";
+          ctx.dispose();
+        }
+        if (!fiber.ctx && ready && fiber.state !== "disposed") {
+          tokens = current;
+          fiber.state = "active";
+          try {
+            fiber.ctx = codexPlusInstantiateExtension({ apply, scriptKey, manifest, extensionId, inject, fiber });
+          } catch (error) {
+            fiber.state = "failed";
+            codexPlusMarkExtensionFailure(scriptKey, `${extensionId}: ${String(error?.stack || error?.message || error)}`);
+          }
+        }
+      },
+      dispose() {
+        if (fiber.state === "disposed") return;
+        fiber.state = "disposed";
+        codexPlusServiceFibers.delete(fiber);
+        const ctx = fiber.ctx;
+        fiber.ctx = null;
+        ctx?.dispose();
+      },
+    };
+    codexPlusServiceFibers.add(fiber);
+    fiber.check();
+    return fiber;
+  }
+
+  /** 创建并应用一个拓展实例。inject 里的服务挂到 ctx 上；fiber 是它所属的生命周期句柄（可无）。 */
+  function codexPlusInstantiateExtension({ apply, scriptKey, manifest, extensionId, inject = [], fiber = null }) {
+    const disposers = [];
+    let disposed = false;
+
+    /** 登记一个撤销函数，返回「提前撤销」。实例已卸载时立刻执行。 */
+    const track = (dispose) => {
+      if (typeof dispose !== "function") return () => {};
+      let active = true;
+      const entry = () => {
+        if (!active) return;
+        active = false;
+        dispose();
+      };
+      if (disposed) {
+        runCodexPlusExtensionCallback(scriptKey, `${extensionId}.dispose`, entry);
+        return () => {};
+      }
+      disposers.push(entry);
+      return () => {
+        const index = disposers.indexOf(entry);
+        if (index >= 0) disposers.splice(index, 1);
+        entry();
+      };
+    };
+
+    // 多实例时注册项的 id 带上实例 id，同一个拓展的几份不会互相顶掉。
+    const instanceId = manifest?.instance?.id;
+    const registerOptions = (itemOptions) => ({
+      ...(itemOptions || {}),
+      ...(instanceId && itemOptions?.id ? { id: `${itemOptions.id}@${instanceId}` } : {}),
+      scriptKey,
+    });
+    // 按拓展隔离的本地存储：键名自动带拓展 id 前缀，值按 JSON 存取。
+    const storagePrefix = `codexpp:ext:${extensionId}:`;
+    const storage = {
+      get(key, fallback = null) {
+        try {
+          const raw = localStorage.getItem(storagePrefix + key);
+          return raw === null ? fallback : JSON.parse(raw);
+        } catch {
+          return fallback;
+        }
+      },
+      set(key, value) {
+        localStorage.setItem(storagePrefix + key, JSON.stringify(value));
+      },
+      remove(key) {
+        localStorage.removeItem(storagePrefix + key);
+      },
+      keys() {
+        const out = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (key?.startsWith(storagePrefix)) out.push(key.slice(storagePrefix.length));
+        }
+        return out;
+      },
+    };
+    const info = { id: extensionId, scriptKey };
+    const readyHandlers = new Set();
+    let applied = false;
+    const locale = Object.freeze({
+      /** 当前语言 id（取 Codex 页面的 lang，如 zh-CN）。 */
+      get current() {
+        return codexPlusCurrentLocale();
+      },
+      /** register(ns, { zh: {...}, en: {...} }) 或 register(ns, "zh", {...})；随实例卸载撤销。 */
+      register(ns, langOrDicts, dict) {
+        const space = String(ns || extensionId);
+        if (typeof langOrDicts === "string") return track(codexPlusRegisterLocale(space, langOrDicts, dict));
+        const disposers = Object.entries(langOrDicts || {}).map(([lang, value]) => codexPlusRegisterLocale(space, lang, value));
+        return track(() => disposers.forEach((dispose) => dispose()));
+      },
+      /** 绑定命名空间，返回 t(key, params)。 */
+      bind(ns) {
+        const space = String(ns || extensionId);
+        return (key, params) => codexPlusTranslate(space, key, params);
+      },
+      /** 在本拓展的命名空间里翻译（包内 locale/*.json 已自动登记在这里）。 */
+      t(key, params) {
+        return codexPlusTranslate(extensionId, key, params);
+      },
+      /** 解析 { en, zh, ... } 形式的多语言文本。 */
+      resolve: codexPlusResolveText,
+    });
+
+    // 生效配置（清单 config 默认值叠加用户在管理器 / 对话里设置的值）。改配置会热重载拓展，这里是只读快照。
+    let config = Object.freeze({ ...(manifest?.config && typeof manifest.config === "object" ? manifest.config : {}) });
+    const configHandlers = new Set();
+    // 常驻后台：call 调方法（首次调用时 Codex++ 启动后台进程），on 订阅后台 emit 的事件（长轮询，
+    // 随实例卸载停止；on 本身不启动后台）。走内部桥接路由，不经拓展路由白名单，key 固定为本脚本。
+    // 用过后台的实例卸载时通知 Codex++ 停掉它；带实例标识，热重载时不会误停新实例拉起的后台。
+    const backendHandlers = new Map();
+    const backendInstance = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    let backendPolling = false;
+    let backendStopTracked = false;
+    const trackBackendStop = () => {
+      if (backendStopTracked) return;
+      backendStopTracked = true;
+      track(() => {
+        void backendBridge("/extensions/backend/stop", {}).catch(() => {});
+      });
+    };
+    const backendBridge = (path, payload) => {
+      const bridge = window.__codexSessionDeleteBridge;
+      if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
+      return Promise.resolve(bridge(path, { key: scriptKey, instance: backendInstance, ...payload })).then((result) => {
+        if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${path} 调用失败`);
+        return result;
+      });
+    };
+    const pollBackendEvents = async () => {
+      if (backendPolling) return;
+      backendPolling = true;
+      // 首次订阅从队尾开始：后台已在跑时，订阅前的旧事件不重放给这个页面实例。
+      let since = "latest";
+      try {
+        while (!disposed && backendHandlers.size) {
+          let result;
+          try {
+            result = await backendBridge("/extensions/backend/events", { since, waitMs: since === "latest" ? 0 : 20000 });
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            continue;
+          }
+          for (const item of result.events || []) {
+            for (const name of [item.event, "*"]) {
+              for (const handler of [...(backendHandlers.get(name) || [])]) {
+                runCodexPlusExtensionCallback(scriptKey, `backend.on:${item.event}`, () => handler(item.payload, { event: item.event }));
+              }
+            }
+          }
+          since = Number(result.next) || (since === "latest" ? 0 : since);
+          // 后台还没起：稍后再看，不空转。
+          if (!result.running) await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+      } finally {
+        backendPolling = false;
+      }
+    };
+    // 调模型：经 Codex++ 协议代理用当前供应商（不跑拓展网关中间件）。
+    const llm = Object.freeze({
+      complete(options) {
+        const payload = typeof options === "string" ? { input: options } : options ?? {};
+        return backendBridge("/extensions/llm/complete", payload).then((result) => result.result);
+      },
+      listModels: () => backendBridge("/extensions/llm/models", {}).then((result) => result.result),
+    });
+    const backend = {
+      call(method, params = null, callOptions = {}) {
+        const timeoutMs = Number.isFinite(callOptions.timeout) ? Number(callOptions.timeout) : undefined;
+        trackBackendStop();
+        return backendBridge("/extensions/backend/call", { method: String(method), params, timeoutMs }).then((result) => result.result);
+      },
+      on(event, handler) {
+        if (typeof handler !== "function") throw new Error("后台事件处理器必须是函数");
+        const name = String(event);
+        if (!backendHandlers.has(name)) backendHandlers.set(name, new Set());
+        backendHandlers.get(name).add(handler);
+        void pollBackendEvents();
+        return track(() => {
+          const set = backendHandlers.get(name);
+          set?.delete(handler);
+          if (set && !set.size) backendHandlers.delete(name);
+        });
+      },
+    };
+    const ctx = {
+      id: extensionId,
+      scriptKey,
+      manifest,
+      /** 清单 instances 里的哪一份（{ id, name }）；没声明实例时为 null。 */
+      instance: manifest?.instance ?? null,
+      get config() {
+        return config;
+      },
+      /**
+       * 配置原地更新：handler(新配置, 旧配置) 返回 true 表示接住了（ctx.config 换成新值，不重载）；
+       * 这个拓展只要有一个实例没接，就照常整体热重载（同 Cordis 的 internal/update 否决重启）。
+       */
+      onConfigUpdate(handler) {
+        if (typeof handler !== "function") throw new Error("onConfigUpdate 需要一个函数");
+        configHandlers.add(handler);
+        return track(() => configHandlers.delete(handler));
+      },
+      /** 内核用：问本实例能否原地接住新配置。 */
+      __tryConfigUpdate(next) {
+        if (!configHandlers.size) return false;
+        const frozen = Object.freeze({ ...(next && typeof next === "object" ? next : {}) });
+        for (const handler of [...configHandlers]) {
+          const result = runCodexPlusExtensionCallback(scriptKey, `${extensionId}.onConfigUpdate`, () => handler(frozen, config));
+          if (!result.ok || result.value !== true) return false;
+        }
+        config = frozen;
+        return true;
+      },
+      backend,
+      llm,
+      get themes() {
+        return codexPlusServices.get("themes")?.value;
+      },
+      get disposed() {
+        return disposed;
+      },
+      storage,
+
+      locale,
+
+      /**
+       * 包内资源的地址（data URL），可直接给 img.src / audio.src / CSS url()。资源放在包的 assets/ 下，
+       * 例如 ctx.asset("assets/pet.png")；找不到时返回空串（单文件脚本没有资源）。
+       */
+      asset(path) {
+        const key = String(path || "").replace(/^\.?\//, "");
+        const assets = manifest?.assets && typeof manifest.assets === "object" ? manifest.assets : {};
+        return assets[key] || assets[`assets/${key}`] || "";
+      },
+
+      /** 提供一个服务（扁平命名空间，重名抛错）；随实例卸载撤销，依赖它的拓展随之卸载。 */
+      provide(name, value) {
+        return track(codexPlusProvideService(String(name), value, scriptKey || extensionId));
+      },
+      /** 取一个服务，不存在时返回 undefined（可选依赖用这个；必需依赖请在 inject 里声明）。 */
+      get(name) {
+        return codexPlusServices.get(String(name))?.value;
+      },
+      /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
+      inject(deps, apply) {
+        if (typeof apply !== "function") throw new Error("inject 需要 apply(ctx) 函数");
+        const child = codexPlusCreateExtensionFiber({
+          apply, scriptKey, manifest, extensionId, inject: codexPlusNormalizeInject(deps), required: codexPlusRequiredInject(deps),
+        });
+        track(() => child.dispose());
+        return child;
+      },
+
+      /** 立即执行 fn；它返回的函数在卸载时调用。 */
+      effect(fn) {
+        if (typeof fn !== "function") throw new Error("effect 需要一个函数");
+        const result = fn();
+        if (!codexPlusIsThenable(result)) return track(result);
+        // 异步 effect：等它给出撤销函数；实例先卸载了就在拿到时立刻撤销。
+        let cancelled = false;
+        let dispose = null;
+        Promise.resolve(result).then((value) => {
+          if (typeof value !== "function") return;
+          if (cancelled) runCodexPlusExtensionCallback(scriptKey, `${extensionId}.dispose`, value);
+          else dispose = value;
+        }, (error) => ctx.fail(error));
+        return track(() => {
+          cancelled = true;
+          dispose?.();
+        });
+      },
+
+      registerRowAction(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("rowAction", codexPlusRegistry.rowActions, definition, registerOptions(itemOptions)));
+      },
+      registerNavEntry(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("navEntry", codexPlusRegistry.navEntries, definition, registerOptions(itemOptions)));
+      },
+      registerMenuItem(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("menuItem", codexPlusRegistry.menuItems, definition, registerOptions(itemOptions)));
+      },
+      registerPage(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionPage(definition, registerOptions(itemOptions)));
+      },
+      registerCommand(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionCommand(definition, registerOptions(itemOptions)));
+      },
+      registerComposerAction(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("composerAction", codexPlusRegistry.composerActions, definition, registerOptions(itemOptions)));
+      },
+      registerMessageAction(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("messageAction", codexPlusRegistry.messageActions, definition, registerOptions(itemOptions)));
+      },
+      registerMessageDecoration(definition, itemOptions) {
+        return track(codexPlusRegisterExtensionItem("messageDecoration", codexPlusRegistry.messageDecorations, definition, registerOptions(itemOptions)));
+      },
+      registerSlot(definition, itemOptions) {
+        const slot = codexPlusRegisterExtensionSlot(definition, registerOptions(itemOptions));
+        const handle = track(slot);
+        handle.refresh = slot.refresh;
+        return handle;
+      },
+      registerFloatingTab(definition, itemOptions) {
+        return track(codexPlusRegisterFloatingTab(definition, registerOptions(itemOptions)));
+      },
+      registerToolView(definition, itemOptions) {
+        const view = codexPlusRegisterToolView(definition, registerOptions(itemOptions));
+        const handle = track(view);
+        handle.refresh = view.refresh;
+        return handle;
+      },
+      registerSettingsSection(definition, itemOptions) {
+        return track(codexPlusRegisterSettingsSection(definition, registerOptions(itemOptions)));
+      },
+      registerInputTrigger(definition, itemOptions) {
+        return track(codexPlusRegisterInputTrigger(definition, registerOptions(itemOptions)));
+      },
+      registerShortcut(definition, itemOptions) {
+        return track(codexPlusRegisterShortcut(definition, registerOptions(itemOptions)));
+      },
+      registerTheme(definition, itemOptions) {
+        return track(codexPlusRegisterTheme(definition, registerOptions(itemOptions)));
+      },
+      /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
+      currentSessionId() {
+        return codexPlusCurrentSessionId();
+      },
+      /** 弹对话框问用户，返回 { value, text }；取消为 null。 */
+      ask(question) {
+        return codexPlusAsk(question);
+      },
+      registerSidePanel(definition, itemOptions) {
+        const panel = codexPlusRegisterExtensionSidePanel(definition, registerOptions(itemOptions));
+        const handle = track(panel);
+        handle.open = panel.open;
+        handle.close = panel.close;
+        handle.toggle = panel.toggle;
+        return handle;
+      },
+
+      on(event, handler) {
+        if (typeof event !== "string" || !event) throw new Error("事件名不能为空");
+        if (typeof handler !== "function") throw new Error("事件处理器必须是函数");
+        // ready / dispose 只属于本实例（同 Cordis）：ready 在 apply（含异步部分）完成后触发，dispose 随卸载。
+        if (event === "ready") {
+          if (applied) {
+            queueMicrotask(() => !disposed && runCodexPlusExtensionCallback(scriptKey, `${extensionId}.ready`, handler));
+            return () => {};
+          }
+          readyHandlers.add(handler);
+          return track(() => readyHandlers.delete(handler));
+        }
+        if (event === "dispose") return track(() => runCodexPlusExtensionCallback(scriptKey, `${extensionId}.dispose`, handler));
+        const listener = { handler, scriptKey };
+        if (!codexPlusExtensionListeners.has(event)) codexPlusExtensionListeners.set(event, new Set());
+        codexPlusExtensionListeners.get(event).add(listener);
+        if (codexPlusSessionWatchEvents.includes(event)) codexPlusEnsureSessionWatcher();
+        return track(() => {
+          const listeners = codexPlusExtensionListeners.get(event);
+          listeners?.delete(listener);
+          if (listeners && !listeners.size) codexPlusExtensionListeners.delete(event);
+        });
+      },
+      emit(event, ...args) {
+        codexPlusEmitExtensionEvent(event, args);
+      },
+
+      intercept(name, handler, interceptOptions = {}) {
+        if (typeof name !== "string" || !name) throw new Error("中间件链名不能为空");
+        if (typeof handler !== "function") throw new Error("中间件必须是函数");
+        const item = {
+          handler,
+          scriptKey,
+          order: Number.isFinite(interceptOptions.order) ? Number(interceptOptions.order) : 0,
+          seq: ++codexPlusExtensionInterceptorSeq,
+        };
+        const chain = [...(codexPlusExtensionInterceptors.get(name) || []), item];
+        chain.sort((left, right) => left.order - right.order || left.seq - right.seq);
+        codexPlusExtensionInterceptors.set(name, chain);
+        return track(() => {
+          const rest = (codexPlusExtensionInterceptors.get(name) || []).filter((entry) => entry !== item);
+          if (rest.length) codexPlusExtensionInterceptors.set(name, rest);
+          else codexPlusExtensionInterceptors.delete(name);
+        });
+      },
+      waterfall(name, value) {
+        return codexPlusRunWaterfall(name, value);
+      },
+
+      listen(target, type, handler, listenOptions) {
+        if (!target || typeof target.addEventListener !== "function") throw new Error("listen 的目标必须支持 addEventListener");
+        target.addEventListener(type, handler, listenOptions);
+        return track(() => target.removeEventListener(type, handler, listenOptions));
+      },
+      setTimeout(handler, delay, ...args) {
+        let timer = null;
+        const revoke = track(() => window.clearTimeout(timer));
+        timer = window.setTimeout(() => {
+          revoke();
+          runCodexPlusExtensionCallback(scriptKey, `${extensionId}.setTimeout`, () => handler(...args));
+        }, delay);
+        return revoke;
+      },
+      setInterval(handler, delay, ...args) {
+        const timer = window.setInterval(() => {
+          runCodexPlusExtensionCallback(scriptKey, `${extensionId}.setInterval`, () => handler(...args));
+        }, delay);
+        return track(() => window.clearInterval(timer));
+      },
+      /**
+       * 跟着 Codex++ 的页面扫描跑：Codex 的界面变了（会话切换、侧栏重建、输入框重建……）时调用 handler，
+       * 按帧合并、页面隐藏时不跑。phase：deferred（默认，完整扫描）或 light（每次变化都跑的轻量扫描，handler 要便宜）。
+       * handler 插进页面的节点必须带 data-codex-plus-ext 属性，否则会触发自喂扫描循环。返回的撤销函数带 run()：立即跑一次。
+       */
+      onScan(handler, scanOptions = {}) {
+        if (typeof handler !== "function") throw new Error("onScan 需要一个函数");
+        const step = () => runCodexPlusExtensionCallback(scriptKey, `${extensionId}.onScan`, handler);
+        const revoke = track(registerCodexPlusScanStep(scriptKey, step, scanOptions?.phase));
+        revoke.run = () => {
+          if (!disposed) step();
+        };
+        return revoke;
+      },
+
+      /**
+       * 调后端路由。拓展包只能调清单 permissions.routes 声明过的路由；单文件脚本
+       * 没有清单，沿用全局白名单。这是声明约束而非安全边界：拓展与页面同权。
+       */
+      call(route, payload, callOptions) {
+        if (manifest) {
+          const routes = Array.isArray(manifest.permissions?.routes) ? manifest.permissions.routes : [];
+          if (!routes.includes(route)) {
+            return Promise.reject(new Error(`拓展 ${extensionId} 未在 codexpp.json 声明路由权限：${route}`));
+          }
+        }
+        return codexPlusExtensionCall(route, payload, callOptions);
+      },
+      toast(message, toastOptions) {
+        return runCodexPlusExtensionCallback(scriptKey, `${extensionId}.toast`, () => showToast(String(message ?? ""), toastOptions || {}));
+      },
+      fail(error) {
+        codexPlusMarkExtensionFailure(scriptKey, `${extensionId}: ${String(error?.stack || error?.message || error)}`);
+      },
+
+      /** 卸载：按注册逆序撤销，单项撤销抛错只记录、不中断其余撤销。 */
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        for (const entry of disposers.splice(0).reverse()) {
+          runCodexPlusExtensionCallback(scriptKey, `${extensionId}.dispose`, entry);
+        }
+        codexPlusExtensionInstances.delete(ctx);
+        codexPlusEmitExtensionEvent("extension/dispose", [info]);
+        if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
+      },
+    };
+
+    // 拓展包自带的 locale/<语言>.json 登记到本拓展的命名空间。
+    if (manifest?.locales && typeof manifest.locales === "object") {
+      for (const [lang, dict] of Object.entries(manifest.locales)) {
+        if (dict && typeof dict === "object") track(codexPlusRegisterLocale(extensionId, lang, dict));
+      }
+    }
+    // 声明过的服务挂到 ctx 上（读的是当前提供者的值；换了提供者时整个实例会被重建）。
+    for (const name of inject) {
+      if (Object.prototype.hasOwnProperty.call(ctx, name)) continue;
+      Object.defineProperty(ctx, name, { enumerable: true, get: () => codexPlusServices.get(name)?.value });
+    }
+    if (fiber) Object.defineProperty(ctx, "fiber", { value: fiber });
+    codexPlusExtensionInstances.add(ctx);
+
+    let result;
+    try {
+      result = apply(ctx);
+    } catch (error) {
+      ctx.dispose();
+      throw error;
+    }
+    // apply 完成（异步 apply 等它 resolve）后才算应用好：发 extension/apply，再调本实例的 ready 监听器。
+    const settle = () => {
+      if (disposed) return;
+      applied = true;
+      codexPlusEmitExtensionEvent("extension/apply", [info]);
+      if (typeof scheduleCodexPlusExtensionsChanged === "function") scheduleCodexPlusExtensionsChanged();
+      for (const handler of [...readyHandlers]) runCodexPlusExtensionCallback(scriptKey, `${extensionId}.ready`, handler);
+      readyHandlers.clear();
+    };
+    if (codexPlusIsThenable(result)) {
+      Promise.resolve(result).then(settle, (error) => {
+        ctx.fail(error);
+        ctx.dispose();
+      });
+    } else {
+      settle();
+    }
+    return ctx;
+  }
+  /**
+   * 拓展的 RPC 层拦截点：`agent/pre-step`、`agent/request` 和 `codex/request`。
+   *
+   * 新版 Codex 把 app-server manager 搬进了宿主进程，页面经 MessagePort 用 capnweb 协议调它，
+   * 页面里已经没有发 turn/start 的请求客户端（见 70-model-catalog 的类捕获，只剩旧路径）。
+   * 页面能看到的只有 RPC 帧，所以在 MessagePort.prototype.postMessage 上按帧拦截：
+   *
+   *   - `["push", ["pipeline", id, ["sendRequest"], [method, params, opts]]]`：manager 的通用请求，
+   *     走 `codex/request`。
+   *   - `["push", ["pipeline", id, ["startConversation"], [params, callbacks]]]`：新会话的首轮，
+   *     params 里带 input / collaborationMode，按 turn/start 处理。
+   *   - `["resolve", exportId, { start: { request }, steer, resume, … }]`：宿主发起轮次前回调页面要参数，
+   *     `start.request` 就是 turn/start 的原样参数，`steer` 是会话忙时改走 turn/steer 的候选。
+   *
+   * capnweb 的 import id 按 push 顺序隐式分配，所以改写某一帧要等中间件时，同一端口后面的帧
+   * 必须排队、按原顺序发出。没有拓展挂这些拦截点时一律同步放行，零开销。
+   *
+   * 语义（`ctx.on(name, async (params, next) => …)`，先 `await next()` 拿下游决定再改）：
+   *   - `agent/pre-step`：params `{ agent, turn, step, messages, signal }`，决定是
+   *     `{ kind: "enter", messages }` 或 `{ kind: "reject", reason? }`。拒绝时这一轮不发出。
+   *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
+   * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
+   */
+  const codexPlusRpcInterceptorVersion = 1;
+  const codexPlusRpcMiddlewareTimeoutMs = 5000;
+  const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
+  const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
+  const codexPlusRpcPortQueues = new WeakMap();
+  const codexPlusRpcTurnCache = new Map();
+  const codexPlusRpcTurnCacheLimit = 64;
+
+  function codexPlusRpcIsPlainObject(value) {
+    if (!value || typeof value !== "object") return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+  }
+
+  /** capnweb 值 → 普通 JS 值。数组编码成 `[[…]]`；其它数组是带标签的值（导出的回调、错误等），原样包起来不给改。 */
+  function codexPlusRpcDecode(value) {
+    if (Array.isArray(value)) {
+      if (value.length === 1 && Array.isArray(value[0])) return value[0].map(codexPlusRpcDecode);
+      return { [codexPlusRpcOpaque]: value };
+    }
+    if (codexPlusRpcIsPlainObject(value)) {
+      const out = {};
+      for (const key of Object.keys(value)) out[key] = codexPlusRpcDecode(value[key]);
+      return out;
+    }
+    return value;
+  }
+
+  function codexPlusRpcEncode(value) {
+    if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, codexPlusRpcOpaque)) {
+      return value[codexPlusRpcOpaque];
+    }
+    if (Array.isArray(value)) return [value.map(codexPlusRpcEncode)];
+    if (codexPlusRpcIsPlainObject(value)) {
+      const out = {};
+      for (const key of Object.keys(value)) out[key] = codexPlusRpcEncode(value[key]);
+      return out;
+    }
+    return value;
+  }
+
+  function codexPlusRpcHasListeners(name) {
+    try {
+      return !!codexPlusExtensionListeners.get(name)?.size;
+    } catch {
+      return false;
+    }
+  }
+
+  function codexPlusRpcWantsRequestChain() {
+    try {
+      return codexPlusExtensionInterceptors.has("codex/request");
+    } catch {
+      return false;
+    }
+  }
+
+  function codexPlusRpcWantsTurnHooks() {
+    return codexPlusRpcHasListeners("agent/pre-step")
+      || codexPlusRpcHasListeners("agent/request")
+      || codexPlusRpcWantsRequestChain();
+  }
+
+  /**
+   * 可等待下游的 waterfall：监听器按注册顺序 `handler(params, next)`，`next()` 不带参数、返回下游决定，
+   * 链尾是 fallback。另外做了出错隔离：监听器抛错或 reject 时记到该拓展名下，按调用 next() 处理，
+   * 不能因为一个拓展挡住 Codex 发消息。返回 undefined 也按 next() 处理。
+   */
+  function codexPlusRunListenerWaterfall(name, params, fallback) {
+    const chain = [...(codexPlusExtensionListeners.get(name) || [])];
+    const step = (index) => {
+      if (index >= chain.length) return Promise.resolve().then(fallback);
+      const item = chain[index];
+      let downstream = null;
+      const next = () => (downstream ||= step(index + 1));
+      const outcome = runCodexPlusExtensionCallback(item.scriptKey, `on:${name}`, () => item.handler(params, next));
+      if (!outcome.ok) return next();
+      return Promise.resolve(outcome.value).then(
+        (value) => (value === undefined ? next() : value),
+        (error) => {
+          codexPlusMarkExtensionFailure(item.scriptKey, `on:${name}: ${String(error?.stack || error?.message || error)}`);
+          return next();
+        },
+      );
+    };
+    return step(0);
+  }
+
+  /** Codex 的 input 条目 → 拓展看到的用户消息。非文本条目（图片、提及等）原样放进 content，改写回去时保留。 */
+  function codexPlusRpcInputToMessages(input, id) {
+    const content = (Array.isArray(input) ? input : []).map((item) => {
+      if (item?.type !== "text") return { ...item };
+      const part = { type: "text", text: String(item.text ?? "") };
+      Object.defineProperty(part, codexPlusRpcSourceItem, { value: item });
+      return part;
+    });
+    return [{ role: "user", id: String(id || ""), source: { kind: "user" }, content }];
+  }
+
+  /** 拓展消息 → Codex 的 input 条目。文本没改的条目沿用原条目（保留 text_elements 等标注）。 */
+  function codexPlusRpcMessagesToInput(messages) {
+    const items = [];
+    for (const message of Array.isArray(messages) ? messages : []) {
+      const content = typeof message?.content === "string"
+        ? [{ type: "text", text: message.content }]
+        : Array.isArray(message?.content) ? message.content : [];
+      for (const part of content) {
+        if (!part || typeof part !== "object") continue;
+        if (part.type !== "text") {
+          items.push({ ...part });
+          continue;
+        }
+        const text = String(part.text ?? "");
+        const source = part[codexPlusRpcSourceItem];
+        items.push(source && source.text === text ? source : { type: "text", text, text_elements: [] });
+      }
+    }
+    return items;
+  }
+
+  function codexPlusRpcSplitModel(model) {
+    const id = typeof model === "string" ? model : "";
+    const slash = id.indexOf("/");
+    return slash > 0 ? { provider: id.slice(0, slash), base: id.slice(slash + 1) } : { provider: undefined, base: id };
+  }
+
+  /**
+   * 对一条用户消息跑 `agent/pre-step` 与 `agent/request`。
+   * 返回 { reject } 或 { input, model, reasoningEffort }（没变的字段为 undefined）。
+   */
+  async function codexPlusRpcRunTurnHooks({ messageId, conversationId, input, settings, signal }) {
+    const agent = Object.freeze({
+      id: String(conversationId || messageId || ""),
+      session: Object.freeze({ id: String(conversationId || "") }),
+    });
+    const result = {};
+    if (codexPlusRpcHasListeners("agent/pre-step")) {
+      const messages = codexPlusRpcInputToMessages(input, messageId);
+      const decision = await codexPlusRunListenerWaterfall(
+        "agent/pre-step",
+        { agent, turn: undefined, step: 1, messages, signal, conversationId },
+        () => ({ kind: "enter", messages }),
+      );
+      if (decision?.kind === "reject") return { reject: String(decision.reason || "已被拓展拦截") };
+      if (decision?.kind === "enter" && Array.isArray(decision.messages) && decision.messages !== messages) {
+        result.input = codexPlusRpcMessagesToInput(decision.messages);
+      }
+    }
+    if (codexPlusRpcHasListeners("agent/request")) {
+      const { provider, base } = codexPlusRpcSplitModel(settings?.model);
+      const seed = Object.freeze({
+        provider,
+        model: typeof settings?.model === "string" ? settings.model : undefined,
+        reasoningEffort: settings?.reasoning_effort ?? undefined,
+      });
+      const config = await codexPlusRunListenerWaterfall(
+        "agent/request",
+        { agent, turn: undefined, step: 1, signal, conversationId },
+        () => seed,
+      );
+      if (config && typeof config === "object" && config !== seed) {
+        if (typeof config.model === "string" && config.model && config.model !== seed.model) {
+          result.model = config.model;
+        } else if (typeof config.provider === "string" && config.provider && config.provider !== provider && base) {
+          // 只换了供应商：沿用 Codex++ 的「供应商/模型」写法拼回去。
+          result.model = `${config.provider}/${base}`;
+        }
+        if (typeof config.reasoningEffort === "string" && config.reasoningEffort !== seed.reasoningEffort) {
+          result.reasoningEffort = config.reasoningEffort;
+        }
+      }
+    }
+    return result;
+  }
+
+  /** 同一条用户消息的多个候选帧共用一次 hooks 结果。 */
+  function codexPlusRpcTurnHooksOnce(key, run) {
+    if (!key) return run();
+    const cached = codexPlusRpcTurnCache.get(key);
+    if (cached) return cached;
+    const pending = run();
+    codexPlusRpcTurnCache.set(key, pending);
+    while (codexPlusRpcTurnCache.size > codexPlusRpcTurnCacheLimit) {
+      codexPlusRpcTurnCache.delete(codexPlusRpcTurnCache.keys().next().value);
+    }
+    return pending;
+  }
+
+  function codexPlusRpcApplySettings(holder, outcome) {
+    const settings = holder?.collaborationMode?.settings;
+    if (!codexPlusRpcIsPlainObject(settings)) return;
+    if (outcome.model !== undefined) settings.model = outcome.model;
+    if (outcome.reasoningEffort !== undefined) settings.reasoning_effort = outcome.reasoningEffort;
+  }
+
+  /** 跑 `codex/request` 链；返回新的 params，没改返回原对象。 */
+  async function codexPlusRpcRunRequestChain(method, params) {
+    if (!codexPlusRpcWantsRequestChain()) return params;
+    const result = await codexPlusRunWaterfall("codex/request", { method, params });
+    return result && typeof result === "object" && result.params !== undefined ? result.params : params;
+  }
+
+  function codexPlusRpcRejectNotice(reason) {
+    try {
+      if (typeof showToast === "function") showToast(reason, { type: "warn" });
+    } catch {}
+  }
+
+  /**
+   * 处理一轮对话的参数（就地改 decoded 里的对象）。
+   * carriers：[{ method, params, conversationId }]，第一个用来取 input；settings 是本轮的模型设置
+   * （缺省取第一个 carrier 的）。settingsHolders：需要同步模型设置的对象（resume 等）。返回 { reject } 或 {}。
+   */
+  async function codexPlusRpcProcessTurn({ messageId, carriers, settings, settingsHolders, signal }) {
+    const primary = carriers[0];
+    const outcome = await codexPlusRpcTurnHooksOnce(messageId, () => codexPlusRpcRunTurnHooks({
+      messageId,
+      conversationId: primary.conversationId,
+      input: primary.params.input,
+      settings: settings || primary.params.collaborationMode?.settings,
+      signal,
+    }));
+    if (outcome.reject) return outcome;
+    for (const carrier of carriers) {
+      if (outcome.input) carrier.params.input = outcome.input.map((item) => (codexPlusRpcIsPlainObject(item) ? { ...item } : item));
+      codexPlusRpcApplySettings(carrier.params, outcome);
+      if (outcome.model !== undefined && carrier.params.model != null) carrier.params.model = outcome.model;
+      if (outcome.reasoningEffort !== undefined && carrier.params.effort != null) carrier.params.effort = outcome.reasoningEffort;
+    }
+    for (const holder of settingsHolders) codexPlusRpcApplySettings(holder, outcome);
+    for (const carrier of carriers) {
+      const next = await codexPlusRpcRunRequestChain(carrier.method, carrier.params);
+      if (next !== carrier.params && codexPlusRpcIsPlainObject(next)) carrier.replace(next);
+    }
+    return {};
+  }
+
+  function codexPlusRpcPlanSendRequest(frame) {
+    const expr = frame[1];
+    const args = expr[3];
+    const method = args[0];
+    if (typeof method !== "string" || !codexPlusRpcWantsRequestChain()) return null;
+    return async () => {
+      const params = codexPlusRpcDecode(args[1]);
+      const next = await codexPlusRpcRunRequestChain(method, params);
+      if (next === params) return null;
+      return ["push", [...expr.slice(0, 3), [method, codexPlusRpcEncode(next), ...args.slice(2)], ...expr.slice(4)], ...frame.slice(2)];
+    };
+  }
+
+  function codexPlusRpcPlanStartConversation(frame) {
+    const expr = frame[1];
+    const args = expr[3];
+    if (!codexPlusRpcIsPlainObject(args[0]) || !Array.isArray(args[0].input) || !codexPlusRpcWantsTurnHooks()) return null;
+    return async (signal) => {
+      let params = codexPlusRpcDecode(args[0]);
+      const outcome = await codexPlusRpcProcessTurn({
+        messageId: params.clientUserMessageId,
+        carriers: [{ method: "turn/start", params, conversationId: undefined, replace: (next) => { params = next; } }],
+        settingsHolders: [],
+        signal,
+      });
+      if (outcome.reject) {
+        codexPlusRpcRejectNotice(outcome.reject);
+        // push 帧不能丢（会打乱 import id），改成调一个不存在的方法，让这次调用以错误结束。
+        return ["push", ["pipeline", expr[1], ["__codexPlusRejectedByExtension"], []], ...frame.slice(2)];
+      }
+      return ["push", [...expr.slice(0, 3), [codexPlusRpcEncode(params), ...args.slice(1)], ...expr.slice(4)], ...frame.slice(2)];
+    };
+  }
+
+  function codexPlusRpcPlanResolve(frame) {
+    const value = frame[2];
+    if (!codexPlusRpcIsPlainObject(value) || !codexPlusRpcWantsTurnHooks()) return null;
+    const hasStart = codexPlusRpcIsPlainObject(value.start?.request) && Array.isArray(value.start.request.input);
+    const hasSteer = codexPlusRpcIsPlainObject(value.steer) && Array.isArray(value.steer.input);
+    if (!hasStart && !hasSteer) return null;
+    return async (signal) => {
+      const decoded = codexPlusRpcDecode(value);
+      const conversationId = decoded.conversationId;
+      const carriers = [];
+      if (hasStart) {
+        carriers.push({
+          method: "turn/start",
+          params: decoded.start.request,
+          conversationId,
+          replace: (next) => { decoded.start.request = next; },
+        });
+      }
+      if (hasSteer) {
+        carriers.push({
+          method: "turn/steer",
+          params: decoded.steer,
+          conversationId,
+          replace: (next) => { decoded.steer = next; },
+        });
+      }
+      const messageId = decoded.start?.request?.clientUserMessageId || decoded.steer?.clientUserMessageId;
+      const outcome = await codexPlusRpcProcessTurn({
+        messageId,
+        carriers,
+        // 宿主常先只要 steer 候选（不带模型设置），这时从 resume 取，免得缓存下一份空配置。
+        settings: decoded.start?.request?.collaborationMode?.settings || decoded.resume?.collaborationMode?.settings,
+        settingsHolders: [decoded.resume].filter(Boolean),
+        signal,
+      });
+      if (outcome.reject) {
+        codexPlusRpcRejectNotice(outcome.reject);
+        return ["reject", frame[1], ["error", "Error", outcome.reject]];
+      }
+      return ["resolve", frame[1], codexPlusRpcEncode(decoded), ...frame.slice(3)];
+    };
+  }
+
+  /** 判断一帧要不要拦。返回 null（同步放行）或 async (signal) => 新帧 | null。 */
+  function codexPlusRpcPlanFrame(frame) {
+    if (!Array.isArray(frame)) return null;
+    if (frame[0] === "push") {
+      const expr = frame[1];
+      if (!Array.isArray(expr) || expr[0] !== "pipeline" || !Array.isArray(expr[2]) || expr[2].length !== 1 || !Array.isArray(expr[3])) {
+        return null;
+      }
+      if (expr[2][0] === "sendRequest") return codexPlusRpcPlanSendRequest(frame);
+      if (expr[2][0] === "startConversation") return codexPlusRpcPlanStartConversation(frame);
+      return null;
+    }
+    if (frame[0] === "resolve" && typeof frame[1] === "number" && frame.length > 2) return codexPlusRpcPlanResolve(frame);
+    return null;
+  }
+
+  /** 带超时地跑一个改写计划；超时或出错返回 null（原样发出），同时 abort 交给拓展的 signal。 */
+  async function codexPlusRpcRunPlan(plan) {
+    const controller = new AbortController();
+    let timer = null;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => plan(controller.signal)),
+        new Promise((resolve) => {
+          timer = setTimeout(() => {
+            controller.abort(new Error("Codex++ 拓展中间件超时"));
+            resolve(null);
+          }, codexPlusRpcMiddlewareTimeoutMs);
+        }),
+      ]);
+    } catch (error) {
+      codexPlusMarkExtensionFailure("", `rpc 拦截失败，已原样发出：${String(error?.message || error)}`);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** 某个端口开始等中间件：之后的帧全部排队，按原顺序逐个处理、发出。 */
+  async function codexPlusRpcDrainPort(port, original, first) {
+    const state = { queue: [] };
+    codexPlusRpcPortQueues.set(port, state);
+    try {
+      let entry = first;
+      while (entry) {
+        const [message, rest, plan] = entry;
+        const replaced = plan ? await codexPlusRpcRunPlan(plan) : null;
+        try {
+          original.call(port, replaced || message, ...rest);
+        } catch (error) {
+          // 已经是异步发送，异常没法还给调用方；记下来，后面的帧照常发。
+          codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`);
+        }
+        const queued = state.queue.shift();
+        if (!queued) break;
+        let nextPlan = null;
+        try {
+          nextPlan = codexPlusRpcPlanFrame(queued[0]);
+        } catch {}
+        entry = [queued[0], queued[1], nextPlan];
+      }
+    } finally {
+      codexPlusRpcPortQueues.delete(port);
+    }
+  }
+
+  function installCodexPlusRpcFrameInterceptor() {
+    const proto = window.MessagePort?.prototype;
+    if (!proto || typeof proto.postMessage !== "function") return false;
+    const installed = window.__codexPlusRpcFrameInterceptor;
+    if (installed?.version >= codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) return true;
+    // 重复注入时包原生的那个，不叠层。
+    const original = installed?.original || proto.postMessage;
+    const patched = function codexPlusRpcPostMessage(message, ...rest) {
+      const state = codexPlusRpcPortQueues.get(this);
+      if (state) {
+        state.queue.push([message, rest]);
+        return undefined;
+      }
+      let plan = null;
+      try {
+        plan = codexPlusRpcPlanFrame(message);
+      } catch {}
+      if (!plan) return original.call(this, message, ...rest);
+      void codexPlusRpcDrainPort(this, original, [message, rest, plan]);
+      return undefined;
+    };
+    proto.postMessage = patched;
+    window.__codexPlusRpcFrameInterceptor = { version: codexPlusRpcInterceptorVersion, original, patched };
+    return true;
+  }
+
+  try {
+    installCodexPlusRpcFrameInterceptor();
+  } catch {}
   /**
    * 拓展宿主：把注册中心里的第三方项渲染出来。
    *
@@ -18948,6 +21256,255 @@
   }
 
   /**
+   * 输入区按钮插槽：拓展用 registerComposerAction 注册的按钮，插在输入区 footer 里。
+   *
+   * footer 的选择沿用听写入口那套打分（同一输入框只挂一份、优先包含输入框和发送按钮的
+   * footer），Codex 改结构时两边一起修。按注册表指纹决定是否重建，避免每轮扫描都改 DOM。
+   */
+  function codexPlusComposerActionHosts() {
+    const hosts = new Map();
+    document.querySelectorAll(".composer-footer, [data-composer-footer-responsive]").forEach((footer) => {
+      if (!visibleElement(footer) || isExtensionUiNode(footer)) return;
+      const scope = codexPlusDictationScope(footer);
+      const editor = scope && codexPlusDictationEditor(scope);
+      if (!editor) return;
+      const score = codexPlusDictationFooterScore(footer, editor);
+      const current = hosts.get(editor);
+      if (!current || score >= current.score) hosts.set(editor, { footer, editor, score });
+    });
+    return [...hosts.values()];
+  }
+
+  /** 把文字插入输入框：先聚焦，再走浏览器的 insertText，让编辑器自己处理撤销栈与状态。 */
+  function codexPlusInsertComposerText(editor, text) {
+    if (!editor || typeof text !== "string" || !text) return false;
+    editor.focus();
+    return document.execCommand("insertText", false, text);
+  }
+
+  function refreshCodexPlusComposerActions() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.composerActions);
+    const hosts = items.length ? codexPlusComposerActionHosts() : [];
+    const hostFooters = new Set(hosts.map((host) => host.footer));
+    document.querySelectorAll("[data-codex-plus-composer-actions]").forEach((node) => {
+      if (!hostFooters.has(node.parentElement)) node.remove();
+    });
+    if (!items.length) return;
+    if (!document.getElementById("codex-plus-composer-actions-style")) {
+      const style = document.createElement("style");
+      style.id = "codex-plus-composer-actions-style";
+      markCodexPlusExtensionNode(style, "builtin-composer-actions");
+      style.textContent = `[data-codex-plus-composer-actions]{display:inline-flex;align-items:center;gap:2px;margin-inline:2px}
+        .codex-plus-composer-action{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--color-token-text-primary,currentColor);opacity:.9;cursor:pointer;font-size:15px;line-height:1}
+        .codex-plus-composer-action:hover{background:color-mix(in srgb,currentColor 12%,transparent);opacity:1}
+        .codex-plus-composer-action:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+        .codex-plus-composer-action svg{width:16px;height:16px}`;
+      document.head.append(style);
+    }
+    const renderKey = items.map((item) => `${item.id}|${item.label || ""}|${item.icon || ""}`).join("\n");
+    for (const { footer, editor } of hosts) {
+      let root = [...footer.children].find((node) => node.hasAttribute?.("data-codex-plus-composer-actions"));
+      if (!root) {
+        root = document.createElement("div");
+        root.setAttribute("data-codex-plus-composer-actions", "");
+        markCodexPlusExtensionNode(root, "builtin-composer-actions");
+        // 放在听写入口前面；没有听写入口就追加在末尾。
+        const dictation = [...footer.children].find((node) => node.hasAttribute?.("data-dictation-controls"));
+        footer.insertBefore(root, dictation || null);
+      }
+      root.__codexPlusComposerEditor = editor;
+      if (root.dataset.renderKey === renderKey) continue;
+      root.dataset.renderKey = renderKey;
+      root.textContent = "";
+      for (const item of items) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "codex-plus-composer-action";
+        button.setAttribute("aria-label", item.label || item.id);
+        markCodexPlusExtensionNode(button, item.scriptKey);
+        button.innerHTML = codexPlusExtensionIconMarkup(item);
+        attachCodexPlusRailTooltip(button, item.label || item.id, "top");
+        // 按下时不抢走输入框焦点，否则插入文字会落在别处。
+        button.addEventListener("pointerdown", (event) => event.preventDefault());
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const target = root.__codexPlusComposerEditor;
+          runCodexPlusExtensionCallback(item.scriptKey, "composerAction.onActivate", () => item.onActivate?.({
+            editor: target,
+            insertText: (text) => codexPlusInsertComposerText(target, text),
+            close: () => hideCodexPlusRailTooltip(),
+          }));
+        });
+        root.appendChild(button);
+      }
+    }
+  }
+
+  /**
+   * 斜杠命令：拓展用 registerCommand 注册，在 Codex 输入框里「/name 参数」回车触发。
+   *
+   * 键盘监听挂在 document 的捕获阶段，先于输入框自己的处理；只拦截「整段输入恰好是一条已注册
+   * 拓展命令」的回车，其它输入（包括 Codex 自己的斜杠命令）原样放行。命令名按注册表查，
+   * 同名时先注册的生效。提示浮层带拓展标记，不触发扫描自喂。
+   */
+  const codexPlusCommandPattern = /^\/([A-Za-z0-9][\w-]*)(?:\s+([\s\S]*))?$/;
+
+  function codexPlusRegisterExtensionCommand(definition, options = {}) {
+    const name = String(definition?.name || "").trim();
+    if (!/^[A-Za-z0-9][\w-]{0,31}$/.test(name)) throw new Error("命令名只能是字母、数字、_、-，最长 32 个字符");
+    if (typeof definition?.run !== "function") throw new Error(`命令 /${name} 必须提供 run(args, context)`);
+    const dispose = codexPlusRegisterExtensionItem("command", codexPlusRegistry.commands, { ...definition, name }, { ...options, id: options.id || `cmd-${name}` });
+    installCodexPlusCommandHandlers();
+    return dispose;
+  }
+
+  /** 当前打开的 Codex 会话 id（首页、新对话还没有 id 时为空串）。 */
+  function codexPlusCurrentSessionId() {
+    try {
+      const fromRow = normalizedCodexThreadUuid(currentSessionRef()?.session_id);
+      if (fromRow) return fromRow;
+    } catch {}
+    // 侧栏收起或当前会话不在列表里时，取可见输入框上方标着的会话 id（多个标签页只认看得见的那个）。
+    const marked = [...document.querySelectorAll("[data-above-composer-conversation-id]")]
+      // 这个标记节点本身常是空的（empty:hidden），按它所在输入框是否可见判断。
+      .find((node) => node.closest("[data-codex-composer-root]")?.getBoundingClientRect().width > 0);
+    return normalizedCodexThreadUuid(marked?.getAttribute("data-above-composer-conversation-id")) || "";
+  }
+
+  function codexPlusFindExtensionCommand(name) {
+    return codexPlusExtensionItems(codexPlusRegistry.commands).find((item) => item.name === name) || null;
+  }
+
+  function codexPlusComposerEditorFrom(target) {
+    const editor = target?.closest?.("[data-codex-composer], .ProseMirror, [contenteditable=true]");
+    return editor && !isExtensionUiNode(editor) ? editor : null;
+  }
+
+  function codexPlusClearComposer(editor) {
+    editor.focus();
+    document.execCommand("selectAll");
+    document.execCommand("delete");
+  }
+
+  function hideCodexPlusCommandHints() {
+    document.getElementById("codex-plus-command-hints")?.remove();
+  }
+
+  /** 输入「/前缀」时在输入框上方列出匹配的拓展命令。 */
+  function showCodexPlusCommandHints(editor, prefix) {
+    const matches = codexPlusExtensionItems(codexPlusRegistry.commands)
+      .filter((item) => item.name.startsWith(prefix))
+      .slice(0, 8);
+    if (!matches.length) {
+      hideCodexPlusCommandHints();
+      return;
+    }
+    let panel = document.getElementById("codex-plus-command-hints");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "codex-plus-command-hints";
+      panel.setAttribute("role", "listbox");
+      markCodexPlusExtensionNode(panel, "builtin-commands");
+      document.body.appendChild(panel);
+    }
+    panel.textContent = "";
+    for (const item of matches) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "codex-plus-command-hint";
+      row.setAttribute("role", "option");
+      row.innerHTML = `<strong>/${escapeHtml(item.name)}</strong><span>${escapeHtml(item.description || "")}</span>`;
+      row.addEventListener("pointerdown", (event) => event.preventDefault());
+      row.addEventListener("click", () => {
+        codexPlusClearComposer(editor);
+        document.execCommand("insertText", false, `/${item.name} `);
+        hideCodexPlusCommandHints();
+      });
+      panel.appendChild(row);
+    }
+    const rect = editor.getBoundingClientRect();
+    panel.style.left = `${Math.round(rect.left)}px`;
+    panel.style.bottom = `${Math.round(window.innerHeight - rect.top + 8)}px`;
+    panel.style.minWidth = `${Math.round(Math.min(rect.width, 420))}px`;
+  }
+
+  // 「已装过」记在本份注入代码里，不记在 window 上：重建后新代码注入到没刷新的页面时，
+  // window 上的标记是旧代码留下的，照它跳过就只剩读旧注册表的旧监听器。旧监听器按 window 上存的引用摘掉。
+  let codexPlusCommandHandlersInstalled = false;
+
+  function installCodexPlusCommandHandlers() {
+    if (codexPlusCommandHandlersInstalled) return;
+    codexPlusCommandHandlersInstalled = true;
+    if (!document.getElementById("codex-plus-command-hints-style")) {
+      const style = document.createElement("style");
+      style.id = "codex-plus-command-hints-style";
+      markCodexPlusExtensionNode(style, "builtin-commands");
+      style.textContent = `#codex-plus-command-hints{position:fixed;z-index:2147483645;display:flex;flex-direction:column;gap:2px;padding:6px;border-radius:12px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);background:var(--color-token-main-surface-primary,var(--codex-plus-bg-elevated,#262626));color:var(--color-token-text-primary,var(--codex-plus-text,#eee));box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:13px}
+        .codex-plus-command-hint{display:flex;gap:10px;align-items:baseline;padding:6px 10px;border:0;border-radius:8px;background:transparent;color:inherit;text-align:left;cursor:pointer}
+        .codex-plus-command-hint:hover,.codex-plus-command-hint:focus-visible{background:color-mix(in srgb,currentColor 10%,transparent)}
+        .codex-plus-command-hint span{opacity:.65}`;
+      document.head.append(style);
+    }
+    const onKeyDown = (event) => {
+      if (event.isComposing) return;
+      const editor = codexPlusComposerEditorFrom(event.target);
+      if (!editor) return;
+      const text = (editor.innerText || "").trim();
+      if (event.key === "Escape") {
+        hideCodexPlusCommandHints();
+        return;
+      }
+      if (event.key === "Tab" && document.getElementById("codex-plus-command-hints") && /^\/[\w-]*$/.test(text)) {
+        const first = codexPlusExtensionItems(codexPlusRegistry.commands).find((item) => item.name.startsWith(text.slice(1)));
+        if (!first) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        codexPlusClearComposer(editor);
+        document.execCommand("insertText", false, `/${first.name} `);
+        hideCodexPlusCommandHints();
+        return;
+      }
+      if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+      const match = codexPlusCommandPattern.exec(text);
+      const command = match && codexPlusFindExtensionCommand(match[1]);
+      if (!command) return;
+      // 是拓展命令：不让 Codex 把它当消息发出去。
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      hideCodexPlusCommandHints();
+      codexPlusClearComposer(editor);
+      const result = runCodexPlusExtensionCallback(command.scriptKey, `command./${command.name}`, () => command.run(match[2] || "", {
+        editor,
+        insertText: (value) => codexPlusInsertComposerText(editor, value),
+        setText: (value) => {
+          codexPlusClearComposer(editor);
+          return codexPlusInsertComposerText(editor, value);
+        },
+        toast: (message, toastOptions) => showToast(String(message ?? ""), toastOptions || {}),
+        sessionId: codexPlusCurrentSessionId(),
+      }));
+      if (result.ok && result.value && typeof result.value.then === "function") {
+        result.value.catch((error) => codexPlusMarkExtensionFailure(command.scriptKey, `command./${command.name}: ${String(error?.stack || error?.message || error)}`));
+      }
+    };
+    const onInput = (event) => {
+      const editor = codexPlusComposerEditorFrom(event.target);
+      if (!editor) return;
+      const text = (editor.innerText || "").trim();
+      const prefix = /^\/([\w-]*)$/.exec(text);
+      if (prefix && codexPlusRegistry.commands.size) showCodexPlusCommandHints(editor, prefix[1]);
+      else hideCodexPlusCommandHints();
+    };
+    document.removeEventListener("keydown", window.__codexPlusCommandKeyHandler, true);
+    document.removeEventListener("input", window.__codexPlusCommandInputHandler, true);
+    window.__codexPlusCommandKeyHandler = onKeyDown;
+    window.__codexPlusCommandInputHandler = onInput;
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("input", onInput, true);
+  }
+
+  /**
    * 拓展注册的菜单项。
    *
    * 接入方式是「在 home 面板末尾追加一块」而不是把内置的一百多行模板拆成数组——
@@ -19015,24 +21572,1265 @@
    * 所以样式与内置项一致；点击后关闭菜单再执行回调。
    */
   function appendCodexPlusExtensionRowActions(moreMenu, row, moreButton) {
-    const items = codexPlusExtensionItems(codexPlusRegistry.rowActions);
+    const items = sessionRowActionItems().filter((item) => item.placement !== "inline");
     if (!items.length) return;
     items.forEach((definition) => {
+      // 自绘项：render({ container, session_id, title, close }) 往菜单里的一个容器画（返回的清理函数在菜单拆掉时调用）。
+      if (typeof definition.render === "function") {
+        const item = document.createElement("div");
+        item.className = "codex-session-more-menu-custom";
+        item.dataset.codexPlusExtensionItem = definition.id;
+        markCodexPlusExtensionNode(item, definition.scriptKey);
+        moreMenu.appendChild(item);
+        const ref = sessionRefFromRow(row);
+        const result = runCodexPlusExtensionCallback(definition.scriptKey, "rowAction.render", () => definition.render({
+          container: item,
+          row,
+          session_id: ref.session_id,
+          title: ref.title || row.getAttribute("data-app-action-sidebar-thread-title") || "",
+          close: () => closeSessionMoreMenus(),
+        }));
+        if (result.ok && typeof result.value === "function") item.__codexPlusRowActionCleanup = result.value;
+        return;
+      }
       const item = createSessionMoreMenuItem(definition.label || definition.id, definition.icon || "◇", (event) => {
         stopActionButtonEvent(row, moreButton, event);
         closeSessionMoreMenus();
         runCodexPlusExtensionCallback(definition.scriptKey, "rowAction.onActivate", () =>
-          definition.onActivate({
-            row,
-            session_id: sessionRefFromRow(row).session_id,
-            close: () => closeSessionMoreMenus(),
-          }));
+          definition.onActivate(sessionRowActionContext(row, { event })));
       });
       // 加分隔线：拓展项与内置项在语义上没有关联，挨着排会让人以为是一组。
       item.dataset.codexPlusExtensionItem = definition.id;
       markCodexPlusExtensionNode(item, definition.scriptKey);
       moreMenu.appendChild(item);
     });
+  }
+  /**
+   * 消息插槽与侧边面板。
+   *
+   * 拓展用 registerMessageAction 往每条对话消息的操作行里加按钮，用 registerMessageDecoration
+   * 在消息正文下方挂一块自己的内容，用 registerSidePanel 在顶栏加一个开关、在右侧开一个抽屉。
+   *
+   * 消息节点由 Codex 虚拟化渲染、随滚动与流式输出反复重建，所以这里不缓存任何消息 DOM：每次
+   * 刷新都按选择器重新找消息，缺了就补。普通扫描刻意不理会对话内容的变化（流式输出时会扫爆），
+   * 所以只在有消息插槽注册时，单独给对话滚动区挂一个去抖观察器；注册项清空时摘掉。
+   */
+  const codexPlusMessageSlotAttribute = "data-codex-plus-message-slot";
+  const codexPlusMessageSlotRefreshDelayMs = 300;
+
+  /** 当前页面上的对话消息：助手消息是带标注目标的消息组，用户消息是带锚点的消息单元。 */
+  function codexPlusMessageNodes() {
+    const result = [];
+    document.querySelectorAll("[data-response-annotation-target]").forEach((node) => {
+      if (isExtensionUiNode(node) || !node.querySelector(':scope > [data-conversation-role="assistant"]')) return;
+      result.push({ role: "assistant", node });
+    });
+    document.querySelectorAll("[data-local-conversation-user-anchor]").forEach((node) => {
+      if (!isExtensionUiNode(node)) result.push({ role: "user", node });
+    });
+    return result;
+  }
+
+  /** 交给拓展的消息信息。每次现取，不要缓存：同一条消息的文字在流式输出时会变。 */
+  function codexPlusMessageInfo(role, node) {
+    const unitKey = (node.closest("[data-content-search-unit-key]") || node).getAttribute("data-content-search-unit-key") || "";
+    const body = role === "assistant"
+      ? node.querySelector('[data-markdown-text-style="assistant-message"]') || node.querySelector('[class*="MarkdownRoot"]')
+      : node.querySelector("[data-user-message-bubble]");
+    const conversationId = node.getAttribute("data-response-annotation-conversation")
+      || node.closest(".thread-scroll-container")?.querySelector("[data-response-annotation-conversation]")?.getAttribute("data-response-annotation-conversation")
+      || "";
+    return {
+      role,
+      id: (role === "assistant" && node.getAttribute("data-response-annotation-target")) || unitKey,
+      turnId: unitKey.split(":")[0] || "",
+      conversationId,
+      text: String(body?.textContent || "").trim(),
+      element: node,
+    };
+  }
+
+  /** 一条消息上插槽的挂载位置：操作按钮进原生操作行，装饰放在正文与操作行之间。 */
+  function codexPlusMessageSlotHosts(role, node) {
+    if (role === "assistant") {
+      const actionRow = node.querySelector(":scope > .turn-action-controls");
+      return { decorationParent: node, decorationBefore: actionRow, actionParent: actionRow?.firstElementChild || null };
+    }
+    const group = node.querySelector('[class*="group/user-message"]');
+    const bubble = group?.querySelector(":scope > [data-user-message-bubble]");
+    const actionRow = group?.querySelector(":scope > .flex-row-reverse");
+    return {
+      decorationParent: group || null,
+      decorationBefore: bubble?.nextElementSibling || null,
+      actionParent: actionRow?.querySelector(":scope > .isolate") || actionRow || null,
+    };
+  }
+
+  function codexPlusMessageItemApplies(item, info) {
+    const roles = typeof item.roles === "string" ? [item.roles] : item.roles;
+    if (Array.isArray(roles) && roles.length && !roles.includes(info.role)) return false;
+    if (typeof item.visible !== "function") return true;
+    const result = runCodexPlusExtensionCallback(item.scriptKey, "message.visible", () => item.visible(info));
+    return result.ok && result.value !== false;
+  }
+
+  function codexPlusMessageSlotChild(parent, slot) {
+    return [...parent.children].find((child) => child.getAttribute?.(codexPlusMessageSlotAttribute) === slot) || null;
+  }
+
+  function codexPlusRenderMessageActions(parent, role, items, info) {
+    let root = codexPlusMessageSlotChild(parent, "actions");
+    const visible = items.filter((item) => codexPlusMessageItemApplies(item, info));
+    if (!visible.length) {
+      root?.remove();
+      return;
+    }
+    const renderKey = visible.map((item) => `${item.id}|${item.label || ""}|${item.icon || ""}`).join("\n");
+    if (root?.dataset.renderKey === renderKey) return;
+    if (!root) {
+      root = document.createElement("span");
+      root.setAttribute(codexPlusMessageSlotAttribute, "actions");
+      markCodexPlusExtensionNode(root, "builtin-message-slots");
+      parent.appendChild(root);
+    }
+    root.dataset.renderKey = renderKey;
+    root.textContent = "";
+    // 借原生按钮的类名，悬停、尺寸、显隐都和复制 / 编辑按钮一致。
+    const nativeClass = parent.querySelector(`button:not([${codexPlusExtensionConstants.extensionAttribute}])`)?.className || "";
+    for (const item of visible) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `${nativeClass} codex-plus-message-action`.trim();
+      button.setAttribute("aria-label", item.label || item.id);
+      markCodexPlusExtensionNode(button, item.scriptKey);
+      button.innerHTML = codexPlusExtensionIconMarkup(item);
+      attachCodexPlusRailTooltip(button, item.label || item.id, "bottom");
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const node = button.closest(role === "assistant" ? "[data-response-annotation-target]" : "[data-local-conversation-user-anchor]");
+        if (!node) return;
+        runCodexPlusExtensionCallback(item.scriptKey, "messageAction.onActivate", () => item.onActivate?.({
+          message: codexPlusMessageInfo(role, node),
+          close: () => hideCodexPlusRailTooltip(),
+        }));
+      });
+      root.appendChild(button);
+    }
+  }
+
+  function codexPlusRenderMessageDecorations(hosts, role, items, info) {
+    const parent = hosts.decorationParent;
+    if (!parent) return;
+    let root = codexPlusMessageSlotChild(parent, "decorations");
+    const applicable = items.filter((item) => codexPlusMessageItemApplies(item, info));
+    if (!applicable.length) {
+      root?.remove();
+      return;
+    }
+    // 文字变了（流式输出、编辑后重发）才重画；只比长度和结尾，避免每轮都拼整段字符串。
+    const renderKey = `${applicable.map((item) => item.id).join("\n")}|${info.id}|${info.text.length}|${info.text.slice(-32)}`;
+    if (!root) {
+      root = document.createElement("div");
+      root.className = "codex-plus-message-decorations";
+      root.dataset.role = role;
+      root.setAttribute(codexPlusMessageSlotAttribute, "decorations");
+      markCodexPlusExtensionNode(root, "builtin-message-slots");
+    }
+    // React 重排后操作行可能跑到装饰前面：每次都校正位置（位置已对时不动 DOM）。
+    const before = hosts.decorationBefore && hosts.decorationBefore !== root && hosts.decorationBefore.parentElement === parent
+      ? hosts.decorationBefore
+      : null;
+    if (root.parentElement !== parent || (before ? root.nextElementSibling !== before : parent.lastElementChild !== root)) {
+      parent.insertBefore(root, before);
+    }
+    if (root.dataset.renderKey === renderKey) return;
+    root.dataset.renderKey = renderKey;
+    root.textContent = "";
+    for (const item of applicable) {
+      const container = document.createElement("div");
+      container.className = "codex-plus-message-decoration";
+      markCodexPlusExtensionNode(container, item.scriptKey);
+      root.appendChild(container);
+      runCodexPlusExtensionCallback(item.scriptKey, "messageDecoration.render", () => item.render({ message: info, container }));
+    }
+  }
+
+  function installCodexPlusSlotStyle() {
+    if (document.getElementById("codex-plus-slot-style")) return;
+    const style = document.createElement("style");
+    style.id = "codex-plus-slot-style";
+    markCodexPlusExtensionNode(style, "builtin-message-slots");
+    style.textContent = `[data-codex-plus-message-slot="actions"]{display:contents}
+      .codex-plus-message-action .codex-plus-ext-icon,.codex-plus-message-action svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
+      .codex-plus-message-decorations{display:flex;flex-direction:column;gap:6px;margin-top:8px;min-width:0}
+      .codex-plus-message-decorations[data-role="user"]{align-self:flex-end;align-items:flex-end;max-width:var(--user-chat-width,100%)}
+      .codex-plus-message-decoration:empty,.codex-plus-message-decorations:has(> .codex-plus-message-decoration:empty:only-child){display:none}
+      html[data-codex-plus-side-panel-open] main[data-app-shell-main-surface]{margin-right:var(--codex-plus-side-panel-width,360px)!important}
+      .codex-plus-side-panel{position:fixed;right:0;bottom:0;top:var(--codex-plus-side-panel-top,44px);width:var(--codex-plus-side-panel-width,360px);z-index:40;display:flex;flex-direction:column;min-height:0;background:var(--color-token-main-surface-primary,var(--color-token-bg-primary,Canvas));color:var(--color-token-text-primary,CanvasText);border-left:1px solid var(--color-token-border-light,color-mix(in srgb,currentColor 12%,transparent))}
+      .codex-plus-side-panel-header{display:flex;align-items:center;gap:8px;height:40px;padding:0 8px 0 14px;flex:none;border-bottom:1px solid var(--color-token-border-light,color-mix(in srgb,currentColor 10%,transparent))}
+      .codex-plus-side-panel-title{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .codex-plus-side-panel-close{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0;border-radius:8px;background:transparent;color:var(--color-token-text-secondary,currentColor);cursor:pointer}
+      .codex-plus-side-panel-close:hover{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 10%,transparent))}
+      .codex-plus-side-panel-body{flex:1;min-height:0;overflow:auto;padding:12px 14px}
+      .codex-plus-side-panel-toggle .codex-plus-ext-icon,.codex-plus-side-panel-toggle svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
+      .codex-plus-side-panel-toggle[aria-pressed="true"]{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 12%,transparent))}
+      .codex-plus-ui-slot{display:flex;flex-direction:column;gap:6px;min-width:0}
+      .codex-plus-ui-slot:not(:has(.codex-plus-ui-slot-item:not(:empty):not(:has(> [data-hidden="true"]:only-child)))){display:none}
+      .codex-plus-ui-slot-item:has(> [data-hidden="true"]:only-child){display:none}
+      .codex-plus-ui-slot-item:empty{display:none}
+      [data-codex-plus-ui-slot="composer.above"]{margin:0 0 8px}
+      [data-codex-plus-ui-slot="thread.top"],[data-codex-plus-ui-slot="thread.bottom"]{width:min(100%,var(--thread-content-max-width,768px));margin:12px auto;padding:0 16px;box-sizing:border-box}
+      [data-codex-plus-ui-slot="sidebar.top"],[data-codex-plus-ui-slot="sidebar.bottom"]{padding:6px 8px}
+      [data-codex-plus-ui-slot="titlebar"]{display:contents}
+      [data-codex-plus-ui-slot="titlebar"] .codex-plus-ui-slot-item{display:contents}
+      [data-codex-plus-ui-slot="turn.after"]{margin-top:6px}
+      [data-codex-plus-ui-slot="sessionRow.prefix"],[data-codex-plus-ui-slot="sessionRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
+      [data-codex-plus-ui-slot="sessionRow.prefix"]{margin-right:4px}
+      [data-codex-plus-ui-slot="sessionRow.suffix"]{margin-left:4px}
+      [data-codex-plus-ui-slot="composer.left"],[data-codex-plus-ui-slot="composer.right"],[data-codex-plus-ui-slot="header.title"],[data-codex-plus-ui-slot="sidebar.section"],[data-codex-plus-ui-slot="projectRow.suffix"]{flex-direction:row;align-items:center;flex:none;gap:4px}
+      [data-codex-plus-ui-slot="composer.right"]{margin-right:4px}
+      [data-codex-plus-ui-slot="composer.model"]{flex-direction:row;align-items:center;flex:none;gap:4px;margin-left:2px}
+      [data-codex-plus-ui-slot="settings.nav"]{gap:2px}
+      .codex-plus-settings-nav-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:0;cursor:pointer}
+      [data-codex-plus-ui-slot="header.title"]{margin-left:6px}
+      [data-codex-plus-ui-slot="composer.below"]{margin:6px 0 0}
+      [data-codex-plus-ui-slot="home.above"]{margin:0 0 10px}
+      [data-codex-plus-ui-slot="approval"]{padding:0 16px 12px}
+      [data-codex-plus-ui-slot="activity.after"]{margin:4px 0 2px}
+      [data-codex-plus-ui-slot="overlay"]{position:fixed;inset:0;z-index:2147483600;pointer-events:none}
+      [data-codex-plus-ui-slot="overlay"] .codex-plus-ui-slot-item>*{pointer-events:auto}`;
+    document.head.append(style);
+  }
+
+  let codexPlusMessageSlotsRendered = false;
+  let codexPlusMessageObserver = null;
+  let codexPlusMessageObserverTargets = [];
+  let codexPlusMessageRefreshTimer = 0;
+
+  function scheduleCodexPlusMessageSlotsRefresh() {
+    if (codexPlusMessageRefreshTimer) return;
+    codexPlusMessageRefreshTimer = setTimeout(() => {
+      codexPlusMessageRefreshTimer = 0;
+      refreshCodexPlusMessageSlots();
+      // 对话区里的界面插槽（每轮末尾、对话顶部 / 底部）也跟着对话内容走：切会话、新一轮出现时补上。
+      if (codexPlusHasThreadUiSlots()) refreshCodexPlusUiSlots();
+    }, codexPlusMessageSlotRefreshDelayMs);
+  }
+
+  /** 只是我们自己的节点在变就不理，否则「写入 → 观察到 → 再写入」会自喂（issue #1960）。 */
+  function codexPlusMutationIsOurs(mutation) {
+    const own = (node) => isCodexPlusExtensionNode(node?.nodeType === 1 ? node : node?.parentElement);
+    if (own(mutation.target)) return true;
+    const changed = [...mutation.addedNodes, ...mutation.removedNodes];
+    return changed.length > 0 && changed.every((node) => node.nodeType === 1 && isCodexPlusExtensionNode(node));
+  }
+
+  /** Codex 的多个标签页各有一个对话滚动区（非当前的隐藏着），全部观察：切标签时不漏。 */
+  function syncCodexPlusMessageObserver(active) {
+    const targets = active ? [...document.querySelectorAll(".thread-scroll-container")] : [];
+    if (targets.length === codexPlusMessageObserverTargets.length && targets.every((node, index) => node === codexPlusMessageObserverTargets[index])) return;
+    codexPlusMessageObserver?.disconnect();
+    codexPlusMessageObserverTargets = targets;
+    if (!targets.length) return;
+    codexPlusMessageObserver ||= new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => !codexPlusMutationIsOurs(mutation))) scheduleCodexPlusMessageSlotsRefresh();
+    });
+    for (const target of targets) codexPlusMessageObserver.observe(target, { childList: true, subtree: true, characterData: true });
+  }
+
+  /** 有没有挂在对话区里的界面插槽：它们和消息插槽共用对话区的观察器。 */
+  function codexPlusHasThreadUiSlots() {
+    return codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => ["thread.top", "thread.bottom", "turn.after", "composer.above", "approval", "activity.after"].includes(item.slot));
+  }
+
+  function refreshCodexPlusMessageSlots() {
+    const actions = codexPlusExtensionItems(codexPlusRegistry.messageActions);
+    const decorations = codexPlusExtensionItems(codexPlusRegistry.messageDecorations);
+    const active = actions.length > 0 || decorations.length > 0;
+    syncCodexPlusMessageObserver(active || codexPlusHasThreadUiSlots());
+    if (!active) {
+      if (codexPlusMessageSlotsRendered) {
+        document.querySelectorAll(`[${codexPlusMessageSlotAttribute}]`).forEach((node) => node.remove());
+        codexPlusMessageSlotsRendered = false;
+      }
+      return;
+    }
+    installCodexPlusSlotStyle();
+    codexPlusMessageSlotsRendered = true;
+    for (const { role, node } of codexPlusMessageNodes()) {
+      const info = codexPlusMessageInfo(role, node);
+      const hosts = codexPlusMessageSlotHosts(role, node);
+      if (hosts.actionParent) codexPlusRenderMessageActions(hosts.actionParent, role, actions, info);
+      codexPlusRenderMessageDecorations(hosts, role, decorations, info);
+    }
+  }
+
+  /**
+   * 侧边面板：同一时间只开一个。面板挂在 body 上（不进 React 管的树），打开时给 html 打标记，
+   * 由样式把 Codex 主区域往左让出面板宽度。开关按钮放在标题栏右上角「新建标签页」按钮前面
+   * （首页和会话页都有）；找不到时退到会话顶栏右侧按钮组的最前面。
+   */
+  let codexPlusOpenSidePanelState = null;
+
+  function codexPlusSidePanelToolbar() {
+    const layoutToggle = [...document.querySelectorAll("button[data-app-shell-workspace-layout-toggle]")].find((node) => visibleElement(node));
+    const wrapper = layoutToggle?.parentElement;
+    if (wrapper?.parentElement) return { host: wrapper.parentElement, before: wrapper, sample: layoutToggle };
+    const cluster = [...document.querySelectorAll("[data-app-shell-header-toolbar] > .ms-auto")].find((node) => visibleElement(node));
+    if (!cluster) return null;
+    return { host: cluster, before: cluster.firstChild, sample: cluster.querySelector(`button:not([${codexPlusExtensionConstants.extensionAttribute}])`) };
+  }
+
+  function codexPlusSidePanelWidth(definition) {
+    const width = Number(definition?.width);
+    return Number.isFinite(width) ? Math.min(720, Math.max(240, Math.round(width))) : 360;
+  }
+
+  /** 面板从主区域顶边开始，不盖住顶栏（开关按钮就在顶栏里）。隐藏标签页的 main 尺寸为 0，跳过。 */
+  function syncCodexPlusSidePanelTop() {
+    const main = [...document.querySelectorAll("main[data-app-shell-main-surface]")].find((node) => node.getBoundingClientRect().width > 0);
+    const toolbar = document.querySelector("[data-app-shell-header-toolbar]");
+    const top = main
+      ? Math.max(0, Math.round(main.getBoundingClientRect().top))
+      : toolbar ? Math.round(toolbar.getBoundingClientRect().bottom) : 44;
+    document.documentElement.style.setProperty("--codex-plus-side-panel-top", `${top}px`);
+  }
+
+  function closeCodexPlusSidePanel() {
+    const state = codexPlusOpenSidePanelState;
+    if (!state) return false;
+    codexPlusOpenSidePanelState = null;
+    if (typeof state.cleanup === "function") {
+      runCodexPlusExtensionCallback(state.scriptKey, "sidePanel.cleanup", state.cleanup);
+    }
+    state.panel.remove();
+    delete document.documentElement.dataset.codexPlusSidePanelOpen;
+    document.documentElement.style.removeProperty("--codex-plus-side-panel-width");
+    refreshCodexPlusSidePanels();
+    return true;
+  }
+
+  function openCodexPlusSidePanel(id) {
+    const definition = codexPlusRegistry.sidePanels.get(id);
+    if (!definition) return false;
+    if (codexPlusOpenSidePanelState?.id === id) return true;
+    closeCodexPlusSidePanel();
+    installCodexPlusSlotStyle();
+    const title = String(definition.title || definition.label || id);
+    const panel = document.createElement("aside");
+    panel.className = "codex-plus-side-panel";
+    panel.dataset.codexPlusSidePanel = id;
+    panel.setAttribute("role", "complementary");
+    panel.setAttribute("aria-label", title);
+    markCodexPlusExtensionNode(panel, definition.scriptKey);
+    panel.innerHTML = `<div class="codex-plus-side-panel-header"><span class="codex-plus-side-panel-title">${escapeHtml(title)}</span><button type="button" class="codex-plus-side-panel-close" aria-label="关闭"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><div class="codex-plus-side-panel-body"></div>`;
+    panel.querySelector(".codex-plus-side-panel-close").addEventListener("click", () => closeCodexPlusSidePanel());
+    document.documentElement.style.setProperty("--codex-plus-side-panel-width", `${codexPlusSidePanelWidth(definition)}px`);
+    document.documentElement.dataset.codexPlusSidePanelOpen = "true";
+    syncCodexPlusSidePanelTop();
+    document.body.appendChild(panel);
+    const state = { id, scriptKey: definition.scriptKey, panel, cleanup: null };
+    codexPlusOpenSidePanelState = state;
+    const container = panel.querySelector(".codex-plus-side-panel-body");
+    const result = runCodexPlusExtensionCallback(definition.scriptKey, "sidePanel.render", () => definition.render({
+      container,
+      close: () => {
+        if (codexPlusOpenSidePanelState === state) closeCodexPlusSidePanel();
+      },
+    }));
+    if (result.ok && typeof result.value === "function") state.cleanup = result.value;
+    refreshCodexPlusSidePanels();
+    return true;
+  }
+
+  function toggleCodexPlusSidePanel(id) {
+    return codexPlusOpenSidePanelState?.id === id ? closeCodexPlusSidePanel() : openCodexPlusSidePanel(id);
+  }
+
+  function refreshCodexPlusSidePanels() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.sidePanels);
+    const openId = codexPlusOpenSidePanelState?.id || "";
+    // 面板的注册被撤销（拓展卸载、热重载）时一并关掉。
+    if (openId && !codexPlusRegistry.sidePanels.has(openId)) {
+      closeCodexPlusSidePanel();
+      return;
+    }
+    // 面板被别的代码摘掉了（例如 body 被整体重建）：重新挂回去，内容仍是拓展上次画的。
+    if (openId && !codexPlusOpenSidePanelState.panel.isConnected) document.body.appendChild(codexPlusOpenSidePanelState.panel);
+    if (openId) syncCodexPlusSidePanelTop();
+    const toolbar = items.length ? codexPlusSidePanelToolbar() : null;
+    document.querySelectorAll("[data-codex-plus-side-panel-toggles]").forEach((node) => {
+      if (node.parentElement !== toolbar?.host) node.remove();
+    });
+    if (!toolbar) return;
+    installCodexPlusSlotStyle();
+    let root = [...toolbar.host.children].find((node) => node.hasAttribute?.("data-codex-plus-side-panel-toggles"));
+    if (!root) {
+      root = document.createElement("div");
+      root.style.display = "contents";
+      root.setAttribute("data-codex-plus-side-panel-toggles", "");
+      markCodexPlusExtensionNode(root, "builtin-side-panels");
+      toolbar.host.insertBefore(root, toolbar.before && toolbar.before.parentElement === toolbar.host ? toolbar.before : null);
+    }
+    const renderKey = `${openId}\n${items.map((item) => `${item.id}|${item.title || ""}|${item.icon || ""}`).join("\n")}`;
+    if (root.dataset.renderKey === renderKey) return;
+    root.dataset.renderKey = renderKey;
+    root.textContent = "";
+    const nativeClass = toolbar.sample?.className || "";
+    for (const item of items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `${nativeClass} codex-plus-side-panel-toggle`.trim();
+      const label = String(item.title || item.label || item.id);
+      button.setAttribute("aria-label", label);
+      button.setAttribute("aria-pressed", item.id === openId ? "true" : "false");
+      markCodexPlusExtensionNode(button, item.scriptKey);
+      button.innerHTML = codexPlusExtensionIconMarkup(item);
+      attachCodexPlusRailTooltip(button, label, "bottom");
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        hideCodexPlusRailTooltip();
+        toggleCodexPlusSidePanel(item.id);
+      });
+      root.appendChild(button);
+    }
+  }
+
+  /** 注册侧边面板；返回的撤销函数上带 open / close，拓展可以自己控制开合。 */
+  function codexPlusRegisterExtensionSidePanel(definition, options = {}) {
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = `${scriptKey}:sidePanel:${options.id || codexPlusExtensionIdSeed()}`;
+    const dispose = registerCodexPlusExtension("sidePanel", codexPlusRegistry.sidePanels, id, definition, scriptKey);
+    codexPlusRefreshExtensionHosts();
+    const handle = () => {
+      dispose();
+      codexPlusRefreshExtensionHosts();
+    };
+    handle.open = () => openCodexPlusSidePanel(id);
+    handle.close = () => (codexPlusOpenSidePanelState?.id === id ? closeCodexPlusSidePanel() : false);
+    handle.toggle = () => toggleCodexPlusSidePanel(id);
+    return handle;
+  }
+
+  /**
+   * 通用界面插槽：拓展用 registerSlot({ slot, render }) 往 Codex 界面的固定位置放自己的内容。
+   *
+   * 位置：composer.above（输入框上方）、thread.top / thread.bottom（对话区顶部 / 底部）、
+   * sidebar.top / sidebar.bottom（左侧栏列表顶部 / 底部）、titlebar（标题栏右侧按钮组）、
+   * turn.after（每一轮对话的末尾，render 收到 turnKey）、sessionRow.prefix / sessionRow.suffix
+   * （侧栏每个会话行标题前 / 后，render 收到 sessionId、title）、overlay（铺满窗口的浮层，默认不挡点击）、
+   * activity.after（对话里每个活动条目——命令、工具 / 子 agent 调用、出错、推理——的末尾，render 收到
+   * kind、itemIds、text；条目在 Codex 折叠的「用时 Ns」里，展开后才渲染）、
+   * composer.left / composer.right（输入框底栏左侧按钮组末尾 / 右侧按钮组开头）、composer.below（输入框下方）、
+   * home.above（新对话首页输入框上方）、header.title（顶栏标题后面）、approval（审批卡片底部，render 收到 kind）、
+   * projectRow.suffix（侧栏项目行名称后，render 收到 projectId、label）、sidebar.section（侧栏分组标题右侧，
+   * render 收到 section）。
+   * 每个位置一个带拓展标记的宿主节点，里面每个注册项一个容器；容器新建时调用 render（DOM 会随 Codex 重建，
+   * 重建后会再调一次），render 返回的函数在该项被撤下时调用。注册返回的句柄带 refresh() 主动重画。
+   */
+  const codexPlusUiSlotNames = [
+    "composer.above", "composer.below", "composer.left", "composer.right", "composer.model", "home.above", "settings.nav",
+    "thread.top", "thread.bottom", "turn.after", "header.title", "titlebar", "approval",
+    "sidebar.top", "sidebar.bottom", "sidebar.section", "sessionRow.prefix", "sessionRow.suffix", "projectRow.suffix",
+    "overlay",
+    "activity.after",
+  ];
+  const codexPlusUiSlotVersions = new Map();
+
+  function codexPlusUiSlotAnchors(slot) {
+    const visible = (selector) => [...document.querySelectorAll(selector)].filter((node) => visibleElement(node) && !isExtensionUiNode(node));
+    switch (slot) {
+      // place：start（最前）、end（最后），或一个兄弟节点（放在它前面）。
+      case "composer.above":
+        return visible("[data-codex-composer-root]").map((node) => ({ parent: node.parentElement, place: node }));
+      case "thread.top":
+      case "thread.bottom":
+        // 对话内容层的末尾是一个给输入框让位的粘底空白层；底部插槽放在它前面，紧跟最后一条消息。
+        return visible(".thread-scroll-container").map((scroll) => scroll.firstElementChild).filter(Boolean)
+          .map((content) => ({
+            parent: content,
+            place: slot === "thread.top"
+              ? "start"
+              : [...content.children].find((child) => child.classList.contains("sticky") && !isExtensionUiNode(child)) || "end",
+          }));
+      case "sidebar.top":
+      case "sidebar.bottom":
+        return visible("[data-app-action-sidebar-scroll]")
+          .map((list) => ({ parent: list, place: slot === "sidebar.top" ? "start" : "end" }));
+      case "turn.after":
+        // 每一轮的容器带 data-turn-key（虚拟列表只渲染可见的几轮）。
+        return visible(".thread-scroll-container [data-turn-key]")
+          .map((turn) => ({ parent: turn, place: "end", info: { turnKey: turn.getAttribute("data-turn-key") || "" } }));
+      case "sessionRow.prefix":
+      case "sessionRow.suffix":
+        return visible("[data-app-action-sidebar-thread-row]").flatMap((row) => {
+          const title = row.querySelector("[data-thread-title-trigger]");
+          if (!title?.parentElement) return [];
+          const info = {
+            sessionId: String(row.getAttribute("data-app-action-sidebar-thread-id") || "").replace(/^local:/, ""),
+            title: row.getAttribute("data-app-action-sidebar-thread-title") || "",
+          };
+          const next = title.nextElementSibling;
+          return [{ parent: title.parentElement, place: slot === "sessionRow.prefix" ? title : (next && !isExtensionUiNode(next) ? next : "end"), info }];
+        });
+      case "composer.below":
+        return visible("[data-codex-composer-root]").map((node) => ({ parent: node, place: "end" }));
+      case "composer.left":
+        // 底栏左侧按钮组（添加内容、权限……）：「添加内容」按钮所在的那一行 flex。
+        return visible("[data-composer-footer-responsive]")
+          .map((footer) => {
+            // 只认带「添加内容 / 权限」的那一行；首页顶上的工作区栏（项目、运行位置）也带导航目标，不算。
+            const row = footer.querySelector('[data-composer-navigation-target="add-context"], [data-composer-navigation-target="permissions"]')?.closest("div.flex");
+            return row && footer.contains(row) ? row : null;
+          })
+          .filter(Boolean)
+          .map((row) => ({ parent: row, place: "end" }));
+      case "composer.right":
+        // 底栏右侧按钮组（听写、发送）：放在最前面。
+        return visible('[data-composer-footer-responsive] > [class*="col-start-3"]')
+          .map((group) => group.querySelector(":scope div.shrink-0.items-center"))
+          .filter(Boolean)
+          .map((row) => ({ parent: row, place: "start" }));
+      case "composer.model": {
+        // 模型 / 推理强度选择按钮后面。
+        // 按钮外面包着一层提示用的 span，挂在包着它的那一行 flex 里、紧跟在这一项后面。
+        return visible('[data-composer-navigation-target="reasoning"]').flatMap((button) => {
+          const row = button.parentElement?.closest("div.flex");
+          if (!row) return [];
+          const item = [...row.children].find((child) => child.contains(button));
+          const next = item?.nextElementSibling;
+          return [{ parent: row, place: next && !isExtensionUiNode(next) ? next : "end" }];
+        });
+      }
+      case "settings.nav": {
+        // Codex 设置页左侧导航（各项带 data-settings-panel-slug）的末尾；sampleClass 是原生导航项的类名，可以借来对齐样式。
+        const items = visible("[data-settings-panel-slug]");
+        if (!items.length) return [];
+        let list = items[0].parentElement;
+        while (list && !items.every((item) => list.contains(item))) list = list.parentElement;
+        if (!list) return [];
+        return [{ parent: list, place: "end", info: { sampleClass: items[0].className || "" } }];
+      }
+      case "home.above":
+        return visible('[data-codex-composer-root][data-composer-placement="home"]').map((node) => ({ parent: node.parentElement, place: node }));
+      case "header.title":
+        return visible("[data-app-shell-titlebar-content]").map((node) => ({ parent: node, place: "end" }));
+      case "approval":
+        return visible("[data-codex-approval-surface]").map((card) => ({
+          parent: card,
+          place: "end",
+          info: { kind: card.tagName === "FORM" || card.querySelector("form") ? "form" : "card" },
+        }));
+      case "sidebar.section":
+        return visible("[data-app-action-sidebar-section]").flatMap((section) => {
+          const actions = section.querySelector(':scope [class*="nav-section-title"] > div.shrink-0');
+          return actions ? [{ parent: actions, place: "start", info: { section: section.getAttribute("data-app-action-sidebar-section-heading") || "" } }] : [];
+        });
+      case "projectRow.suffix":
+        return visible("[data-app-action-sidebar-project-row]").flatMap((row) => {
+          const label = row.querySelector("[data-marquee-text]")?.parentElement;
+          if (!label?.parentElement) return [];
+          return [{
+            parent: label.parentElement,
+            place: label.nextElementSibling && !isExtensionUiNode(label.nextElementSibling) ? label.nextElementSibling : "end",
+            info: {
+              projectId: row.getAttribute("data-app-action-sidebar-project-id") || "",
+              label: row.getAttribute("data-app-action-sidebar-project-label") || "",
+            },
+          }];
+        });
+      case "overlay":
+        return document.body ? [{ parent: document.body, place: "end" }] : [];
+      case "activity.after":
+        // 活动条目带 data-local-conversation-item-target-ids（空格分隔的条目 id，前缀即类型）；挂在条目自己里面的末尾。
+        return visible(".thread-scroll-container [data-local-conversation-item-target-ids]").map((item) => {
+          const itemIds = String(item.getAttribute("data-local-conversation-item-target-ids") || "").split(/\s+/).filter(Boolean);
+          return { parent: item, place: "end", info: { kind: codexPlusActivityKind(itemIds[0] || ""), itemIds, text: (item.innerText || "").trim().slice(0, 300) } };
+        });
+      case "titlebar": {
+        const toolbar = codexPlusSidePanelToolbar();
+        if (!toolbar) return [];
+        return [{ parent: toolbar.host, place: toolbar.before && toolbar.before.parentElement === toolbar.host ? toolbar.before : "end" }];
+      }
+      default:
+        return [];
+    }
+  }
+
+  /** 活动条目 id 的前缀 → 类型。 */
+  function codexPlusActivityKind(id) {
+    if (/^exec-/.test(id)) return "command";
+    if (/^turn-error-/.test(id)) return "error";
+    if (/plan/i.test(id)) return "plan";
+    if (/reason/i.test(id)) return "reasoning";
+    if (/patch|file-?change/i.test(id)) return "fileChange";
+    if (/^call_|^fc_|tool|mcp/i.test(id)) return "toolCall";
+    return "other";
+  }
+
+  function codexPlusRunSlotCleanup(node) {
+    const cleanup = node.__codexPlusSlotCleanup;
+    node.__codexPlusSlotCleanup = null;
+    if (typeof cleanup === "function") runCodexPlusExtensionCallback(node.dataset.scriptKey || "", "slot.cleanup", cleanup);
+  }
+
+  let codexPlusUiSlotsRendered = false;
+
+  function refreshCodexPlusUiSlots() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.slots);
+    if (!items.length) {
+      if (codexPlusUiSlotsRendered) {
+        document.querySelectorAll("[data-codex-plus-ui-slot]").forEach((host) => {
+          host.querySelectorAll("[data-codex-plus-slot-item]").forEach(codexPlusRunSlotCleanup);
+          host.remove();
+        });
+        codexPlusUiSlotsRendered = false;
+      }
+      return;
+    }
+    codexPlusUiSlotsRendered = true;
+    installCodexPlusSlotStyle();
+    for (const slot of codexPlusUiSlotNames) {
+      const slotItems = items.filter((item) => item.slot === slot);
+      const anchors = slotItems.length ? codexPlusUiSlotAnchors(slot) : [];
+      const parents = new Set(anchors.map((anchor) => anchor.parent));
+      document.querySelectorAll(`[data-codex-plus-ui-slot="${slot}"]`).forEach((host) => {
+        if (parents.has(host.parentElement)) return;
+        host.querySelectorAll("[data-codex-plus-slot-item]").forEach(codexPlusRunSlotCleanup);
+        host.remove();
+      });
+      for (const { parent, place, info } of anchors) {
+        if (!parent) continue;
+        let host = [...parent.children].find((node) => node.getAttribute?.("data-codex-plus-ui-slot") === slot);
+        if (!host) {
+          host = document.createElement("div");
+          host.className = "codex-plus-ui-slot";
+          host.setAttribute("data-codex-plus-ui-slot", slot);
+          markCodexPlusExtensionNode(host, "builtin-ui-slots");
+        }
+        // 位置不对（Codex 重排了兄弟节点）时挪回去；位置已对时不动 DOM。
+        if (place === "start") {
+          if (parent.firstChild !== host) parent.insertBefore(host, parent.firstChild);
+        } else if (place === "end" || !place || place.parentElement !== parent) {
+          if (parent.lastChild !== host) parent.appendChild(host);
+        } else if (host.nextSibling !== place) {
+          parent.insertBefore(host, place);
+        }
+        const wanted = new Set(slotItems.map((item) => item.id));
+        for (const child of [...host.children]) {
+          if (!wanted.has(child.dataset.slotItemId)) {
+            codexPlusRunSlotCleanup(child);
+            child.remove();
+          }
+        }
+        // 按注册顺序就位：只在顺序不对时挪动，已就位的节点不碰（挪动会让里面的输入框失焦）。
+        let previous = null;
+        const placeAfterPrevious = (container) => {
+          const expected = previous ? previous.nextElementSibling : host.firstElementChild;
+          if (expected !== container) host.insertBefore(container, expected);
+          previous = container;
+        };
+        for (const item of slotItems) {
+          const version = String(codexPlusUiSlotVersions.get(item.id) || 0);
+          let container = [...host.children].find((child) => child.dataset.slotItemId === item.id);
+          // 同一个宿主换了归属（会话行被复用给别的会话）时整项重画。
+          const infoKey = info ? JSON.stringify(info) : "";
+          if (container && container.dataset.slotVersion === version && (container.__codexPlusSlotInfo ?? "") === infoKey) {
+            placeAfterPrevious(container);
+            continue;
+          }
+          if (container) {
+            codexPlusRunSlotCleanup(container);
+            container.textContent = "";
+          } else {
+            container = document.createElement("div");
+            container.className = "codex-plus-ui-slot-item";
+            container.setAttribute("data-codex-plus-slot-item", "");
+            container.dataset.slotItemId = item.id;
+            container.dataset.scriptKey = item.scriptKey;
+            markCodexPlusExtensionNode(container, item.scriptKey);
+          }
+          container.dataset.slotVersion = version;
+          container.__codexPlusSlotInfo = infoKey;
+          placeAfterPrevious(container);
+          const result = runCodexPlusExtensionCallback(item.scriptKey, "slot.render", () => item.render({ container, slot, ...(info || {}) }));
+          if (result.ok && typeof result.value === "function") container.__codexPlusSlotCleanup = result.value;
+        }
+      }
+    }
+  }
+
+  /** 注册界面插槽；返回的撤销函数上带 refresh()，强制所有位置重画该项。 */
+  function codexPlusRegisterExtensionSlot(definition, options = {}) {
+    if (!codexPlusUiSlotNames.includes(definition?.slot)) {
+      throw new Error(`未知的插槽位置 ${definition?.slot}，可用：${codexPlusUiSlotNames.join("、")}`);
+    }
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = `${scriptKey}:slot:${options.id || codexPlusExtensionIdSeed()}`;
+    const dispose = registerCodexPlusExtension("slot", codexPlusRegistry.slots, id, definition, scriptKey);
+    codexPlusRefreshExtensionHosts();
+    const handle = () => {
+      dispose();
+      codexPlusUiSlotVersions.delete(id);
+      codexPlusRefreshExtensionHosts();
+    };
+    handle.refresh = () => {
+      codexPlusUiSlotVersions.set(id, (codexPlusUiSlotVersions.get(id) || 0) + 1);
+      refreshCodexPlusUiSlots();
+    };
+    return handle;
+  }
+  /**
+   * 拓展的输入触发、快捷键、主题与向用户提问。
+   *
+   * - 输入触发：registerInputTrigger({ trigger: "#", items(query) => [{ label, description?, insert }] })。
+   *   @、$、/ 是 Codex 自己的提及与命令，不让拓展占用。
+   *   输入框里光标前是「触发符 + 查询词」时弹出候选，选中后把这一段换成 insert。
+   * - 快捷键：registerShortcut({ key: "Mod+Shift+K", run, allowInInput? })。Mod 在 macOS 是 ⌘，其余是 Ctrl。
+   * - 主题：registerTheme({ id, name, variables: { "--x": "值" }, css })，同一时间只有一个生效，选择记在本机。
+   * - 提问：codexPlusAsk({ title, message, options?, input? }) → 用户的回答，取消时为 null。后台经 CDP 也能调。
+   */
+
+  // ---------------------------------------------------------------- 输入触发
+  const codexPlusTriggerPattern = /^[#%&~!^:+][\w-]{0,7}$/;
+  /** Codex 自己占用的触发符：@ 提及文件 / 应用，$ 提及技能，/ 是斜杠命令。拓展抢这些只会和原生菜单打架。 */
+  const codexPlusReservedTriggers = /^[@$/]/;
+  let codexPlusTriggerState = null;
+
+  // 「已装过」记在本份注入代码里（见 installCodexPlusCommandHandlers 的说明）。
+  let codexPlusInputTriggerHandlersInstalled = false;
+  let codexPlusShortcutHandlerInstalled = false;
+
+  function codexPlusRegisterInputTrigger(definition, options = {}) {
+    const trigger = String(definition?.trigger || "");
+    if (codexPlusReservedTriggers.test(trigger)) throw new Error(`触发符 ${trigger[0]} 是 Codex 自己在用的（@ 提及、$ 技能、/ 命令），换一个，例如 "#"`);
+    if (!codexPlusTriggerPattern.test(trigger)) throw new Error("trigger 是一个符号开头的短前缀，例如 \"#\"、\"%\"、\"#issue\"");
+    if (typeof definition?.items !== "function") throw new Error(`输入触发 ${trigger} 需要 items(query) 返回候选`);
+    const dispose = codexPlusRegisterExtensionItem("inputTrigger", codexPlusRegistry.inputTriggers, { ...definition, trigger }, options);
+    installCodexPlusInputTriggerHandlers();
+    return dispose;
+  }
+
+  /** 光标前的文字（只看光标所在的文本节点，够用且不受富文本结构影响）。 */
+  function codexPlusTextBeforeCaret(editor) {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !selection.isCollapsed) return null;
+    const node = selection.anchorNode;
+    if (!node || !editor.contains(node) || node.nodeType !== Node.TEXT_NODE) return null;
+    return node.textContent.slice(0, selection.anchorOffset);
+  }
+
+  function codexPlusMatchInputTrigger(before) {
+    let best = null;
+    for (const item of codexPlusExtensionItems(codexPlusRegistry.inputTriggers)) {
+      const index = before.lastIndexOf(item.trigger);
+      if (index < 0 || (index > 0 && !/\s/.test(before[index - 1]))) continue;
+      const query = before.slice(index + item.trigger.length);
+      if (/\s/.test(query) || query.length > 64) continue;
+      if (!best || index > best.index || (index === best.index && item.trigger.length > best.item.trigger.length)) best = { item, index, query };
+    }
+    return best;
+  }
+
+  function hideCodexPlusTriggerHints() {
+    codexPlusTriggerState = null;
+    document.getElementById("codex-plus-input-trigger-hints")?.remove();
+  }
+
+  function codexPlusAcceptTrigger(choice) {
+    const state = codexPlusTriggerState;
+    if (!state || !choice) return;
+    const { editor, match } = state;
+    hideCodexPlusTriggerHints();
+    editor.focus();
+    const selection = window.getSelection();
+    const length = match.item.trigger.length + match.query.length;
+    for (let index = 0; index < length; index += 1) selection.modify("extend", "backward", "character");
+    document.execCommand("insertText", false, String(choice.insert ?? choice.label ?? ""));
+    if (typeof choice.onSelect === "function") runCodexPlusExtensionCallback(match.item.scriptKey, "inputTrigger.onSelect", () => choice.onSelect());
+  }
+
+  function renderCodexPlusTriggerHints() {
+    const state = codexPlusTriggerState;
+    if (!state) return;
+    if (!state.items.length) {
+      document.getElementById("codex-plus-input-trigger-hints")?.remove();
+      return;
+    }
+    let panel = document.getElementById("codex-plus-input-trigger-hints");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "codex-plus-input-trigger-hints";
+      panel.className = "codex-plus-hint-panel";
+      panel.setAttribute("role", "listbox");
+      markCodexPlusExtensionNode(panel, "builtin-input-triggers");
+      document.body.appendChild(panel);
+    }
+    panel.textContent = "";
+    state.items.forEach((choice, index) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "codex-plus-command-hint";
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", String(index === state.active));
+      row.innerHTML = `<strong>${escapeHtml(String(choice.label ?? choice.insert ?? ""))}</strong><span>${escapeHtml(String(choice.description || ""))}</span>`;
+      row.addEventListener("pointerdown", (event) => event.preventDefault());
+      row.addEventListener("click", () => codexPlusAcceptTrigger(choice));
+      panel.appendChild(row);
+    });
+    const rect = state.editor.getBoundingClientRect();
+    panel.style.left = `${Math.round(rect.left)}px`;
+    panel.style.bottom = `${Math.round(window.innerHeight - rect.top + 8)}px`;
+    panel.style.minWidth = `${Math.round(Math.min(rect.width, 420))}px`;
+  }
+
+  async function updateCodexPlusTriggerHints(editor) {
+    const before = codexPlusTextBeforeCaret(editor);
+    const match = before === null ? null : codexPlusMatchInputTrigger(before);
+    if (!match) {
+      hideCodexPlusTriggerHints();
+      return;
+    }
+    const token = Symbol("trigger");
+    codexPlusTriggerState = { editor, match, items: codexPlusTriggerState?.items || [], active: 0, token };
+    const result = runCodexPlusExtensionCallback(match.item.scriptKey, `inputTrigger.items:${match.item.trigger}`, () => match.item.items(match.query, { editor }));
+    if (!result.ok) return hideCodexPlusTriggerHints();
+    let items;
+    try {
+      items = await result.value;
+    } catch (error) {
+      codexPlusMarkExtensionFailure(match.item.scriptKey, `inputTrigger.items: ${String(error?.stack || error?.message || error)}`);
+      return hideCodexPlusTriggerHints();
+    }
+    // 等候选期间用户又输入了：以最新一次为准。
+    if (codexPlusTriggerState?.token !== token) return;
+    codexPlusTriggerState.items = (Array.isArray(items) ? items : []).filter((choice) => choice && typeof choice === "object").slice(0, 12);
+    renderCodexPlusTriggerHints();
+  }
+
+  function installCodexPlusInputTriggerHandlers() {
+    // 共用命令提示的样式（命令提示的处理器同时装上也无妨：没有命令时它什么都不做）。
+    installCodexPlusCommandHandlers();
+    if (!document.getElementById("codex-plus-input-trigger-style")) {
+      const style = document.createElement("style");
+      style.id = "codex-plus-input-trigger-style";
+      markCodexPlusExtensionNode(style, "builtin-input-triggers");
+      style.textContent = `#codex-plus-input-trigger-hints{position:fixed;z-index:2147483645;display:flex;flex-direction:column;gap:2px;max-height:min(360px,50vh);overflow:auto;padding:6px;border-radius:12px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);background:var(--color-token-main-surface-primary,var(--codex-plus-bg-elevated,#262626));color:var(--color-token-text-primary,var(--codex-plus-text,#eee));box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:13px}
+        #codex-plus-input-trigger-hints .codex-plus-command-hint[aria-selected="true"]{background:color-mix(in srgb,currentColor 12%,transparent)}`;
+      document.head.append(style);
+    }
+    if (codexPlusInputTriggerHandlersInstalled) return;
+    codexPlusInputTriggerHandlersInstalled = true;
+    const onInput = (event) => {
+      if (!codexPlusRegistry.inputTriggers.size) return;
+      const editor = codexPlusComposerEditorFrom(event.target);
+      if (editor) void updateCodexPlusTriggerHints(editor);
+    };
+    const onKeyDown = (event) => {
+      const state = codexPlusTriggerState;
+      if (!state || !state.items.length || event.isComposing) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        hideCodexPlusTriggerHints();
+      } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        state.active = (state.active + step + state.items.length) % state.items.length;
+        renderCodexPlusTriggerHints();
+      } else if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        codexPlusAcceptTrigger(state.items[state.active]);
+      }
+    };
+    const onFocusOut = (event) => {
+      if (codexPlusTriggerState && event.target === codexPlusTriggerState.editor) setTimeout(() => {
+        if (codexPlusTriggerState && !codexPlusTriggerState.editor.contains(document.activeElement)) hideCodexPlusTriggerHints();
+      }, 150);
+    };
+    const previous = window.__codexPlusInputTriggerHandlers;
+    if (previous) {
+      document.removeEventListener("input", previous.onInput, true);
+      document.removeEventListener("keydown", previous.onKeyDown, true);
+      document.removeEventListener("focusout", previous.onFocusOut, true);
+    }
+    window.__codexPlusInputTriggerHandlers = { onInput, onKeyDown, onFocusOut };
+    document.addEventListener("input", onInput, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("focusout", onFocusOut, true);
+  }
+
+  // ---------------------------------------------------------------- 快捷键
+  const codexPlusIsMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+
+  /** "Mod+Shift+K" → { mod, ctrl, meta, shift, alt, key }；key 按 event.key 小写比较。 */
+  function codexPlusParseShortcut(text) {
+    const parts = String(text || "").split("+").map((part) => part.trim()).filter(Boolean);
+    const spec = { ctrl: false, meta: false, shift: false, alt: false, key: "" };
+    for (const part of parts) {
+      const lower = part.toLowerCase();
+      if (lower === "mod") spec[codexPlusIsMac ? "meta" : "ctrl"] = true;
+      else if (lower === "ctrl" || lower === "control") spec.ctrl = true;
+      else if (lower === "cmd" || lower === "meta" || lower === "command") spec.meta = true;
+      else if (lower === "shift") spec.shift = true;
+      else if (lower === "alt" || lower === "option") spec.alt = true;
+      else if (spec.key) throw new Error(`快捷键 ${text} 只能有一个主键`);
+      else spec.key = lower === "space" ? " " : lower;
+    }
+    if (!spec.key) throw new Error(`快捷键 ${text} 缺少主键`);
+    if (!spec.ctrl && !spec.meta && !spec.alt && !/^f\d{1,2}$/.test(spec.key)) throw new Error(`快捷键 ${text} 需要带 Mod / Ctrl / Alt（或用 F1~F12），免得吞掉普通输入`);
+    return spec;
+  }
+
+  function codexPlusShortcutMatches(spec, event) {
+    const key = String(event.key || "").toLowerCase();
+    const code = String(event.code || "").toLowerCase();
+    const sameKey = key === spec.key || code === `key${spec.key}` || code === `digit${spec.key}`;
+    return sameKey && event.ctrlKey === spec.ctrl && event.metaKey === spec.meta && event.shiftKey === spec.shift && event.altKey === spec.alt;
+  }
+
+  function codexPlusRegisterShortcut(definition, options = {}) {
+    if (typeof definition?.run !== "function") throw new Error("快捷键需要 run()");
+    const spec = codexPlusParseShortcut(definition.key);
+    const dispose = codexPlusRegisterExtensionItem("shortcut", codexPlusRegistry.shortcuts, { ...definition, spec }, options);
+    if (!codexPlusShortcutHandlerInstalled) {
+      codexPlusShortcutHandlerInstalled = true;
+      document.removeEventListener("keydown", window.__codexPlusShortcutHandler, true);
+      window.__codexPlusShortcutHandler = (event) => {
+        if (event.isComposing || !codexPlusRegistry.shortcuts.size) return;
+        const inInput = !!event.target?.closest?.("input, textarea, [contenteditable=true]");
+        const item = codexPlusExtensionItems(codexPlusRegistry.shortcuts)
+          .find((candidate) => codexPlusShortcutMatches(candidate.spec, event) && (!inInput || candidate.allowInInput !== false));
+        if (!item) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const result = runCodexPlusExtensionCallback(item.scriptKey, `shortcut:${item.key}`, () => item.run({ event }));
+        if (result.ok && codexPlusIsThenable(result.value)) {
+          result.value.catch((error) => codexPlusMarkExtensionFailure(item.scriptKey, `shortcut:${item.key}: ${String(error?.stack || error?.message || error)}`));
+        }
+      };
+      document.addEventListener("keydown", window.__codexPlusShortcutHandler, true);
+    }
+    return dispose;
+  }
+
+  // ---------------------------------------------------------------- 主题
+  const codexPlusThemeStorageKey = "codexPlusExtensionTheme";
+
+  function codexPlusCurrentThemeId() {
+    try {
+      return localStorage.getItem(codexPlusThemeStorageKey) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function codexPlusThemeCss(theme) {
+    const variables = Object.entries(theme.variables || {})
+      .filter(([name]) => /^--[\w-]+$/.test(name))
+      .map(([name, value]) => `${name}:${String(value).replace(/[;{}]/g, "")}`)
+      .join(";");
+    return `${variables ? `:root{${variables}}\n` : ""}${typeof theme.css === "string" ? theme.css : ""}`;
+  }
+
+  /** 把记住的主题画上去；主题没注册（拓展停用）时撤掉样式但保留选择，拓展回来后自动恢复。 */
+  function applyCodexPlusTheme() {
+    const id = codexPlusCurrentThemeId();
+    const theme = id ? codexPlusExtensionItems(codexPlusRegistry.themes).find((item) => item.themeId === id) : null;
+    let style = document.getElementById("codex-plus-extension-theme");
+    if (!theme) {
+      style?.remove();
+      document.documentElement.removeAttribute("data-codex-plus-theme");
+      return;
+    }
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "codex-plus-extension-theme";
+      markCodexPlusExtensionNode(style, theme.scriptKey);
+      document.head.append(style);
+    }
+    const css = codexPlusThemeCss(theme);
+    if (style.textContent !== css) style.textContent = css;
+    document.documentElement.setAttribute("data-codex-plus-theme", id);
+  }
+
+  function codexPlusRegisterTheme(definition, options = {}) {
+    const themeId = String(definition?.id || "").trim();
+    if (!/^[\w-]{1,48}$/.test(themeId)) throw new Error("主题 id 只能是字母、数字、_、-");
+    if (!definition.variables && typeof definition.css !== "string") throw new Error(`主题 ${themeId} 需要 variables 或 css`);
+    const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || `theme-${themeId}` });
+    applyCodexPlusTheme();
+    return () => {
+      dispose();
+      applyCodexPlusTheme();
+    };
+  }
+
+  /** 内置的主题服务（inject: ["themes"]，ctx.themes 同一套）：列出、切换、当前。 */
+  function codexPlusThemesService() {
+    return Object.freeze({
+      list: () => codexPlusExtensionItems(codexPlusRegistry.themes).map((item) => ({ id: item.themeId, name: codexPlusResolveText(item.name), extension: item.scriptKey })),
+      get current() {
+        return codexPlusCurrentThemeId() || null;
+      },
+      apply(id) {
+        const next = id ? String(id) : "";
+        if (next && !codexPlusExtensionItems(codexPlusRegistry.themes).some((item) => item.themeId === next)) throw new Error(`没有主题 ${next}`);
+        try {
+          if (next) localStorage.setItem(codexPlusThemeStorageKey, next);
+          else localStorage.removeItem(codexPlusThemeStorageKey);
+        } catch {}
+        applyCodexPlusTheme();
+        codexPlusEmitExtensionEvent("theme/change", [{ id: next || null }]);
+        return next || null;
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------- 向用户提问
+  /**
+   * 弹一个对话框问用户：options 给按钮（字符串或 { value, label }），input 给输入框（{ placeholder, default, multiline }）。
+   * 返回 { value, text }；用户关掉或超时返回 null。同一时间只显示一个，后来的排队。
+   */
+  let codexPlusAskQueue = Promise.resolve();
+
+  function codexPlusAsk(question = {}) {
+    const run = () => new Promise((resolve) => {
+      const options = (Array.isArray(question.options) && question.options.length ? question.options : [{ value: "ok", label: "确定" }])
+        .slice(0, 6)
+        .map((option) => (typeof option === "object" && option ? { value: option.value ?? option.label, label: String(option.label ?? option.value) } : { value: option, label: String(option) }));
+      const overlay = document.createElement("div");
+      overlay.className = "codex-plus-ask-overlay";
+      markCodexPlusExtensionNode(overlay, "builtin-ask");
+      const input = question.input
+        ? (question.input.multiline ? `<textarea class="codex-plus-ask-input" rows="4"></textarea>` : `<input class="codex-plus-ask-input" type="text">`)
+        : "";
+      overlay.innerHTML = `<div class="codex-plus-ask" role="dialog" aria-modal="true">
+        <div class="codex-plus-ask-title">${escapeHtml(String(codexPlusResolveText(question.title) || "拓展想问你"))}</div>
+        ${question.message ? `<div class="codex-plus-ask-message">${escapeHtml(String(codexPlusResolveText(question.message)))}</div>` : ""}
+        ${input}
+        <div class="codex-plus-ask-actions">
+          <button type="button" class="codex-plus-ask-cancel">取消</button>
+          ${options.map((option, index) => `<button type="button" class="codex-plus-ask-option" data-index="${index}">${escapeHtml(option.label)}</button>`).join("")}
+        </div></div>`;
+      const field = overlay.querySelector(".codex-plus-ask-input");
+      if (field) {
+        field.value = String(question.input.default ?? "");
+        field.placeholder = String(question.input.placeholder ?? "");
+      }
+      let timer = null;
+      const finish = (answer) => {
+        clearTimeout(timer);
+        overlay.remove();
+        document.removeEventListener("keydown", onKey, true);
+        resolve(answer);
+      };
+      const onKey = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          finish(null);
+        } else if (event.key === "Enter" && !event.shiftKey && (!field || field.tagName === "INPUT")) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          finish({ value: options[options.length - 1].value, text: field ? field.value : null });
+        }
+      };
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay || event.target.closest(".codex-plus-ask-cancel")) return finish(null);
+        const button = event.target.closest(".codex-plus-ask-option");
+        if (button) finish({ value: options[Number(button.dataset.index)].value, text: field ? field.value : null });
+      });
+      document.addEventListener("keydown", onKey, true);
+      installCodexPlusAskStyle();
+      document.body.appendChild(overlay);
+      (field || overlay.querySelector(".codex-plus-ask-option:last-child"))?.focus();
+      const timeoutMs = Number(question.timeoutMs);
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) timer = setTimeout(() => finish(null), timeoutMs);
+    });
+    const answer = codexPlusAskQueue.then(run, run);
+    codexPlusAskQueue = answer.catch(() => null);
+    return answer;
+  }
+
+  function installCodexPlusAskStyle() {
+    if (document.getElementById("codex-plus-ask-style")) return;
+    const style = document.createElement("style");
+    style.id = "codex-plus-ask-style";
+    markCodexPlusExtensionNode(style, "builtin-ask");
+    style.textContent = `.codex-plus-ask-overlay{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.35)}
+      .codex-plus-ask{width:min(440px,calc(100vw - 48px));display:flex;flex-direction:column;gap:12px;padding:18px;border-radius:14px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);background:var(--color-token-main-surface-primary,var(--codex-plus-bg-elevated,#262626));color:var(--color-token-text-primary,var(--codex-plus-text,#eee));box-shadow:0 16px 48px rgba(0,0,0,.35);font-size:13px}
+      .codex-plus-ask-title{font-size:15px;font-weight:600}
+      .codex-plus-ask-message{white-space:pre-wrap;opacity:.8;line-height:1.5}
+      .codex-plus-ask-input{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);background:transparent;color:inherit;font:inherit;resize:vertical}
+      .codex-plus-ask-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px}
+      .codex-plus-ask-actions button{padding:6px 14px;border-radius:8px;border:1px solid color-mix(in srgb,currentColor 16%,transparent);background:transparent;color:inherit;cursor:pointer;font:inherit}
+      .codex-plus-ask-actions .codex-plus-ask-option:last-child{background:var(--color-token-text-primary,#eee);color:var(--color-token-main-surface-primary,#111);border-color:transparent}`;
+    document.head.append(style);
+  }
+
+  // ---------------------------------------------------------------- 拓展变更事件
+  /** 拓展装上 / 卸下后合并成一次 `extensions/changed`（热重载时一批拓展会连续变动）。 */
+  let codexPlusExtensionsChangedTimer = null;
+
+  function scheduleCodexPlusExtensionsChanged() {
+    clearTimeout(codexPlusExtensionsChangedTimer);
+    codexPlusExtensionsChangedTimer = setTimeout(() => {
+      const extensions = [...codexPlusExtensionInstances].map((instance) => ({ id: instance.id, scriptKey: instance.scriptKey, version: instance.manifest?.version ?? null }));
+      codexPlusEmitExtensionEvent("extensions/changed", [{ extensions }]);
+    }, 300);
+  }
+  /**
+   * 更多视图接口：悬浮球页签、工具调用视图、Codex 设置页分区。
+   *
+   * - registerFloatingTab：右下角悬浮球面板里加一个页签（悬浮球的「下一步建议」或「回答大纲」至少开着一个时可见）。
+   *   悬浮球是单独注入的脚本，这里把注册项同步到 window.__codexPlusFloatingTabs，再请它重画。
+   * - registerToolView：对话里的工具调用 / 命令条目末尾挂一块自己的内容（在 activity.after 插槽上），
+   *   按工具名或条目类型匹配；render 收到的 call 带工具名、参数、结果（从会话日志里按调用 id 找）。
+   * - registerSettingsSection：Codex 设置页左侧导航末尾加一项，点开是拓展自己画的页面。
+   */
+
+  // ---------------------------------------------------------------- 悬浮球页签
+  function syncCodexPlusFloatingTabs() {
+    const tabs = new Map();
+    for (const item of codexPlusExtensionItems(codexPlusRegistry.floatingTabs)) {
+      tabs.set(item.id, {
+        id: item.id,
+        title: String(item.title || item.label || item.id),
+        icon: item.icon,
+        scriptKey: item.scriptKey,
+        render: (context) => {
+          const result = runCodexPlusExtensionCallback(item.scriptKey, "floatingTab.render", () => item.render(context));
+          return result.ok ? result.value : undefined;
+        },
+        fail: (error) => codexPlusMarkExtensionFailure(item.scriptKey, `floatingTab: ${String(error?.stack || error?.message || error)}`),
+      });
+    }
+    window.__codexPlusFloatingTabs = tabs;
+    try {
+      window.__codexStepwisePanel?.renderFloat?.({ preserveMorph: true });
+    } catch {}
+  }
+
+  function codexPlusRegisterFloatingTab(definition, options = {}) {
+    if (typeof definition?.render !== "function") throw new Error("悬浮球页签需要 render({ container, close })");
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = `${scriptKey}:floatingTab:${options.id || codexPlusExtensionIdSeed()}`;
+    const dispose = registerCodexPlusExtension("floatingTab", codexPlusRegistry.floatingTabs, id, definition, scriptKey);
+    syncCodexPlusFloatingTabs();
+    return () => {
+      dispose();
+      syncCodexPlusFloatingTabs();
+    };
+  }
+
+  // ---------------------------------------------------------------- 工具调用视图
+  /** 会话的工具调用表（调用 id → 工具名、参数、结果），读一次缓存 3 秒。 */
+  const codexPlusToolCallCache = new Map();
+
+  function codexPlusToolCalls(sessionId) {
+    const cached = codexPlusToolCallCache.get(sessionId);
+    if (cached && Date.now() - cached.at < 3000) return cached.promise;
+    const promise = (async () => {
+      const query = codexPlusServices.get("sessionQuery")?.value;
+      if (!query || !sessionId) return new Map();
+      const { events } = await query.readSession(sessionId);
+      const calls = new Map();
+      for (const event of events || []) {
+        if (event.type === "tool/call") {
+          let input = event.data?.input;
+          try { input = typeof input === "string" ? JSON.parse(input) : input; } catch {}
+          calls.set(event.data?.callId, { callId: event.data?.callId, name: event.data?.name || "", input, output: null });
+        } else if (event.type === "tool/result" && calls.has(event.data?.callId)) {
+          calls.get(event.data.callId).output = event.data?.output ?? null;
+        }
+      }
+      return calls;
+    })();
+    codexPlusToolCallCache.set(sessionId, { at: Date.now(), promise });
+    if (codexPlusToolCallCache.size > 8) codexPlusToolCallCache.delete(codexPlusToolCallCache.keys().next().value);
+    promise.catch(() => codexPlusToolCallCache.delete(sessionId));
+    return promise;
+  }
+
+  /** 条目 id 里带着调用 id（命令条目是 exec-<调用 id>）：按包含关系找。 */
+  function codexPlusFindToolCall(calls, itemIds) {
+    for (const itemId of itemIds || []) {
+      if (calls.has(itemId)) return calls.get(itemId);
+      for (const [callId, call] of calls) if (callId && itemId.includes(callId)) return call;
+    }
+    return null;
+  }
+
+  function codexPlusToolViewMatches(definition, call) {
+    const kinds = definition.kinds ? [].concat(definition.kinds) : null;
+    if (kinds && !kinds.includes(call.kind)) return false;
+    const tools = definition.tools ? [].concat(definition.tools) : null;
+    if (!tools) return true;
+    return tools.some((pattern) => pattern instanceof RegExp ? pattern.test(call.name) : String(pattern) === call.name || new RegExp(`^(?:${pattern})$`).test(call.name));
+  }
+
+  function codexPlusRegisterToolView(definition, options = {}) {
+    if (typeof definition?.render !== "function") throw new Error("工具调用视图需要 render({ container, call })");
+    return codexPlusRegisterExtensionSlot({
+      slot: "activity.after",
+      order: definition.order,
+      render: ({ container, kind, itemIds, text }) => {
+        let cleanup = null;
+        let cancelled = false;
+        const sessionId = codexPlusCurrentSessionId();
+        const base = { kind, itemIds, text, sessionId, callId: null, name: "", input: null, output: null };
+        const draw = (call) => {
+          if (cancelled || !codexPlusToolViewMatches(definition, call)) return;
+          const result = runCodexPlusExtensionCallback(options.scriptKey || codexPlusCurrentExtensionScriptKey(options), "toolView.render", () => definition.render({ container, call }));
+          if (result.ok && typeof result.value === "function") cleanup = result.value;
+        };
+        if (!definition.tools && !definition.resolve) draw(base);
+        else {
+          codexPlusToolCalls(sessionId).then((calls) => {
+            const found = codexPlusFindToolCall(calls, itemIds);
+            draw(found ? { ...base, ...found, kind } : base);
+          }).catch(() => draw(base));
+        }
+        return () => {
+          cancelled = true;
+          if (typeof cleanup === "function") cleanup();
+        };
+      },
+    }, options);
+  }
+
+  // ---------------------------------------------------------------- Codex 设置页分区
+  function codexPlusRegisterSettingsSection(definition, options = {}) {
+    if (typeof definition?.render !== "function") throw new Error("设置分区需要 render({ container, close })");
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = options.id || codexPlusExtensionIdSeed();
+    const disposePage = codexPlusRegisterExtensionPage(definition, { ...options, scriptKey, id: `settings-${id}`, nav: false });
+    const pageId = `${scriptKey}:page:settings-${id}`;
+    const title = String(definition.title || id);
+    const disposeSlot = codexPlusRegisterExtensionSlot({
+      slot: "settings.nav",
+      order: definition.order,
+      render: ({ container, sampleClass }) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `${sampleClass || ""} codex-plus-settings-nav-item`.trim();
+        button.innerHTML = `${codexPlusExtensionIconMarkup(definition)}<span>${escapeHtml(title)}</span>`;
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openCodexPlusExtensionPage(pageId);
+        });
+        container.appendChild(button);
+      },
+    }, { scriptKey, id: `settings-nav-${id}` });
+    return () => {
+      disposeSlot();
+      disposePage();
+    };
   }
   // API Key 听写使用独立的 ASR 服务。新版原生 capability / app-host RPC 是只读的，
   // 因此入口与录音由 CPP 管理，识别结果通过原生编辑器事务回填，保持草稿和附件。
@@ -19048,7 +22846,8 @@
 
   function codexPlusDictationEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
-      && codexPlusBackendSettings.dictation?.enabled === true;
+      && codexPlusBackendSettings.dictation?.enabled === true
+      && !globalThis.__codexPlusBuiltinInactive?.has("dictation");
   }
 
   function codexPlusDictationEditor(scope) {
@@ -19627,7 +23426,7 @@
       void startCodexPlusDictation(null);
     }
   };
-  document.addEventListener("keydown", codexPlusDictationKeyHandler, true);
+  // 快捷键监听随内置拓展「语音听写」装卸（96-builtin-extensions.js 里经 ctx.listen 挂上）。
   const codexPlusDictationDispose = () => {
     cancelCodexPlusDictation();
     document.removeEventListener("keydown", codexPlusDictationKeyHandler, true);
@@ -19651,6 +23450,7 @@
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-typing-effects"]');
 
   function codexPlusTypingEffectMode() {
+    if (!!globalThis.__codexPlusBuiltinInactive?.has("typing-effects")) return "off";
     const value = codexPlusSettings().typingEffect;
     return ["rainbow", "fireworks", "stars"].includes(value) ? value : "off";
   }
@@ -20002,6 +23802,22 @@
     if (event.target === state.editor || event.target === state.composition?.editor) clearCodexPlusTypingEffects();
   }
 
+  /** 摘掉打字特效的全局监听（内置拓展卸下时）。 */
+  function uninstallCodexPlusTypingEffects() {
+    const state = codexPlusTypingEffects;
+    if (!state.installed) return;
+    state.installed = false;
+    document.removeEventListener("input", codexPlusTypingEffectInput, true);
+    document.removeEventListener("compositionstart", codexPlusTypingEffectCompositionStart, true);
+    document.removeEventListener("compositionend", codexPlusTypingEffectCompositionEnd, true);
+    document.removeEventListener("focusout", codexPlusTypingEffectFocusOut, true);
+    document.removeEventListener("visibilitychange", syncCodexPlusTypingEffects);
+    window.removeEventListener("blur", clearCodexPlusTypingEffects);
+    window.removeEventListener("resize", clearCodexPlusTypingEffects);
+    state.media?.removeEventListener?.("change", syncCodexPlusTypingEffects);
+    clearCodexPlusTypingEffects();
+  }
+
   function installCodexPlusTypingEffects() {
     const state = codexPlusTypingEffects;
     if (state.disposed) return;
@@ -20225,7 +24041,8 @@
   }
 
   function scanLightweight() {
-    if (typeof syncCodexPlusTurnRewind === "function") runScanStep(syncCodexPlusTurnRewind);
+    // 轻量扫描里的拓展步骤（轮次回退、滚动位置恢复……），同样经 ctx.onScan 登记。
+    runCodexPlusScanSteps("light");
     installStyle();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();
@@ -20236,19 +24053,16 @@
         "existing-renderer"
       );
     }
+    // 拓展注册的图标栏入口也在这里补（见 installCodexPlusNavigationEntries）。
     installCodexPlusNavigationEntries();
-    // 拓展注册的图标栏入口与内置入口走同一条刷新路径：rail 渲染晚于注入，
-    // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
-    refreshCodexPlusRailNavigation();
+    // 输入区 footer 会随会话切换、首页与对话页切换而重建，拓展的输入区按钮每轮补一次（按指纹幂等）。
+    refreshCodexPlusComposerActions();
+    // 消息插槽与侧边面板：消息、顶栏都会重建，按指纹幂等补齐；对话内容变化由插槽自己的观察器跟。
+    refreshCodexPlusMessageSlots();
+    refreshCodexPlusSidePanels();
+    refreshCodexPlusUiSlots();
     installCodexPlusPageNavigationCloseHandler();
     scheduleBackendHeartbeat();
-    installDeleteButtonEventDelegation();
-    updateThreadScrollHandlers();
-    installThreadScrollProgrammaticScrollGuard();
-    installThreadScrollNavigationCapture();
-    installThreadScrollUserIntentCapture();
-    installThreadScrollRouteHooks();
-    scheduleThreadScrollSync(true);
   }
 
   // 当前供应商是模型聚合时，按成员判断是否等同于「官登混入 Key」（#2704）：
@@ -20638,7 +24452,8 @@
     };
   }
 
-  function scanDeferred() {
+  /** 插件市场解锁的补丁（内置拓展「插件市场解锁」登记成扫描步骤；补丁撤不掉，停用后刷新页面才完全恢复）。 */
+  function installCodexPluginMarketplacePatches() {
     if (codexPluginMarketplacePatchEnabled()) {
       const pluginUnlockStrategy = codexPluginUnlockStrategy();
       const settings = codexPlusSettings();
@@ -20657,20 +24472,48 @@
         }
       }
     }
-    if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
-    if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    refreshDreamSkin();
-    refreshThreadIdBadges();
-    // 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）。
-    runScanStep(filterDeletedSessionRows);
+  }
+
+  function scanDeferred() {
+    // 内置拓展登记的扫描步骤（桌宠与大肥鱼、梦皮、侧聊保存……）：拓展卸下时步骤跟着撤掉，不再由扫描循环直接点名调用。
+    // 已删会话的行过滤（会话删除）、对话宽度、滚动位置恢复也都是内置拓展经公开的 ctx.onScan 登记的步骤。
+    runCodexPlusScanSteps();
+    // 会话行的操作按钮组、归档页的行按钮是删除、导出与第三方拓展 rowAction 共用的宿主，留在内核里扫描。
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
-    refreshConversationView();
-    refreshSideChatSaveButtons();
     removeLegacyCodexServiceTierBadges();
-    scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
+  }
+
+  /**
+   * 扫描步骤登记处：登记号 → { step, phase, owner }。拓展经公开的 ctx.onScan 登记（内置拓展也一样），卸下时撤销；
+   * owner 是登记它的拓展（scriptKey，如 builtin:dictation），runCodexPlusScanStep 按 owner 点名跑。
+   */
+  function codexPlusScanSteps() {
+    globalThis.__codexPlusScanSteps ??= new Map();
+    return globalThis.__codexPlusScanSteps;
+  }
+
+  /** phase：deferred（默认，跟着完整扫描）或 light（跟着轻量扫描）。返回撤销函数。 */
+  function registerCodexPlusScanStep(owner, step, phase = "deferred") {
+    const steps = codexPlusScanSteps();
+    globalThis.__codexPlusScanStepSeq = (globalThis.__codexPlusScanStepSeq || 0) + 1;
+    const id = `${owner}#${globalThis.__codexPlusScanStepSeq}`;
+    const entry = { step, phase: phase === "light" ? "light" : "deferred", owner: String(owner) };
+    steps.set(id, entry);
+    return () => {
+      if (steps.get(id) === entry) steps.delete(id);
+    };
+  }
+
+  function runCodexPlusScanSteps(phase = "deferred") {
+    for (const entry of [...codexPlusScanSteps().values()]) if (entry.phase === phase) runScanStep(entry.step);
+  }
+
+  /** 只跑某个拓展登记的步骤（它没装上时什么也不做）。 */
+  function runCodexPlusScanStep(owner) {
+    for (const entry of [...codexPlusScanSteps().values()]) if (entry.owner === owner) runScanStep(entry.step);
   }
 
   function runScanStep(step) {
@@ -20692,958 +24535,1610 @@
     runScanStep(scanLightweight);
     scheduleDeferredScan();
   }
-  // 完整上游引擎的词法宿主：不替换页面全局 API；挂件关闭时释放所有副作用。
-  const codexPlusWhaleFullStoragePrefix = "codexPlus.whale.full.v1.";
-  function codexPlusWhaleFullNumber(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : null;
-  }
-  function codexPlusWhaleFullBuiltin(url) {
-    let parsed;
-    try { parsed = new URL(String(url), "https://codex-whale.invalid"); } catch { return ""; }
-    const path = parsed.pathname, id = parsed.searchParams.get("id"), set = parsed.searchParams.get("set");
-    const aliases = { "/dsh-whale/image.png": "DSniang1.png", "/dsh-whale/rua.gif": "rua.gif" };
-    const fragments = { ya1: "Ya1.mp3", ya2: "Ya2.mp3", d1: "D1.mp3", d2: "D2.mp3", exp_orb: "minecraft-exp-orb.wav", end_a: "task-end-a.wav", taskEnd: "task-end-a.wav" };
-    let file = aliases[path];
-    if (path === "/dsh-whale/audio-fragment.wav") file = fragments[id];
-    if (path === "/dsh-whale/bubble-img.png") file = ({ bimg_petpet: "bubble-petpet.gif", bimg_money1: "bubble-money1.gif" })[id];
-    if (/^\/dsh-whale\/sound\/(press|release)\.mp3$/.test(path) && (!set || set === "duck" || set === "fx1")) file = fragments[(set === "fx1" ? "d" : "ya") + (path.includes("press") ? "1" : "2")];
-    if (path === "/dsh-whale/role-image.png" && id === "default") file = "DSniang1.png";
-    return file ? window.__CODEX_PLUS_WHALE_ASSETS__?.[file] || (file === "DSniang1.png" ? window.__CODEX_PLUS_WHALE_IMAGE__ : "") || "" : "";
-  }
-
-  function codexPlusWhaleFullDataResponse(source) {
-    // 直接读取本地内嵌字节，避免 fetch(data:) 受到宿主 connect-src 限制。
-    const match = /^data:((?:audio|image)\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(source);
-    if (!match) throw new Error("不支持的本地媒体数据");
-    const bytes = Uint8Array.from(atob(match[2]), (character) => character.charCodeAt(0));
-    return new Response(bytes, { status: 200, headers: { "Content-Type": match[1] } });
+  /**
+   * 内置拓展：Codex++ 自带的功能也挂在拓展内核上，和第三方拓展走同一套生命周期
+   * （没有特权功能：自带的也能单独停用、被别的拓展顶替）。
+   *
+   *   - 每个内置功能是一个拓展实例（scriptKey = builtin:<id>）：实例在时功能可用，卸载时功能撤下；
+   *   - 管理器「内置拓展」里可以单独停用（用户脚本配置里 scripts["builtin:<id>"] = false）；
+   *   - 第三方拓展包在 codexpp.json 里声明 `replaces: ["<id>"]`，它启用时对应的内置拓展让位；
+   *   - 功能自己的设置开关（如「Agent 桌宠」）照旧生效：内置拓展是外面一层，两者都开功能才出现。
+   *
+   * 停用 / 顶替状态由 Codex++ 随用户脚本注入包下发（window.__codexPlusBuiltinExtensionState），
+   * 热重载时更新。功能的开关检查在注入早期（本分片执行前）、以及只抽单个分片的测试里也会被调用，所以只记
+   * 「停用的」：globalThis.__codexPlusBuiltinInactive 里没有的 id 都算启用，功能侧写成
+   * `!globalThis.__codexPlusBuiltinInactive?.has("<id>")`。实例卸载时加进集合，装上时移出。
+   */
+  function codexPlusBuiltinInactiveIds() {
+    if (!(globalThis.__codexPlusBuiltinInactive instanceof Set)) globalThis.__codexPlusBuiltinInactive = new Set();
+    return globalThis.__codexPlusBuiltinInactive;
   }
 
-  function createCodexPlusWhaleFullRuntime() {
-    const state = { disposed: false, paused: document.hidden === true, timers: new Map(), rafs: new Map(), observers: new Set(), nodes: new Set(), listeners: [], audio: new Set(), pending: new Set(), media: new Map(), objectUrls: new Set(), subscriptions: [], dispatcher: null, sessionId: "", session: null, sessionAt: 0, sessionPending: null, history: null, historyAt: 0, historyPrices: "", historyPending: null, models: [], relayProfiles: [], turn: null, completed: new Set(), seq: 0, pendingWait: null, completion: null, controls: null, serial: 0 };
-    const isolated = Object.create(null);
-    const wrappedMedia = new WeakSet();
-    const storage = {
-      getItem(key) { return localStorage.getItem(codexPlusWhaleFullStoragePrefix + key); },
-      setItem(key, value) { return localStorage.setItem(codexPlusWhaleFullStoragePrefix + key, String(value)); },
-      removeItem(key) { return localStorage.removeItem(codexPlusWhaleFullStoragePrefix + key); },
-    };
-    try { state.seq = Math.max(0, Number(storage.getItem("dshw-last-seq")) || 0); } catch {}
-    state.initialSeq = state.seq;
-    state.priceRevision = 0;
-    state.statRevision = 0;
-    const active = () => !state.disposed;
-    function listen(target, name, callback, options) {
-      const wrapped = typeof callback === "function" ? function (event) { if (active()) callback.call(target, event); } : { handleEvent(event) { if (active()) callback?.handleEvent?.(event); } };
-      target.addEventListener(name, wrapped, options);
-      state.listeners.push({ target, name, callback, wrapped, options });
-    }
-    function unlisten(target, name, callback, options) {
-      for (let i = state.listeners.length - 1; i >= 0; i--) {
-        const entry = state.listeners[i];
-        if (entry.target === target && entry.name === name && entry.callback === callback) {
-          target.removeEventListener(name, entry.wrapped, options ?? entry.options); state.listeners.splice(i, 1);
-        }
-      }
-    }
-    function arm(id, timer) {
-      if (!active() || state.paused) return;
-      timer.native = setTimeout(() => {
-        if (!state.timers.has(id) || !active() || state.paused) return;
-        timer.native = null;
-        if (!timer.repeat) state.timers.delete(id);
-        try { timer.callback(...timer.args); } finally { if (timer.repeat && state.timers.has(id)) arm(id, timer); }
-      }, timer.delay);
-    }
-    function schedule(callback, delay, repeat, args) {
-      if (!active() || typeof callback !== "function") return 0;
-      const id = ++state.serial, timer = { callback, delay: Math.max(0, Number(delay) || 0), repeat, args, native: null };
-      state.timers.set(id, timer); arm(id, timer); return id;
-    }
-    function clearTimer(id) { const timer = state.timers.get(id); if (timer?.native !== null) clearTimeout(timer?.native); state.timers.delete(id); }
-    function raf(callback) {
-      if (!active()) return 0;
-      const id = ++state.serial, frame = { callback, native: null };
-      state.rafs.set(id, frame);
-      if (!state.paused) frame.native = requestAnimationFrame((time) => { state.rafs.delete(id); if (active() && !state.paused) callback(time); });
-      return id;
-    }
-    function cancelRaf(id) { const frame = state.rafs.get(id); if (frame?.native !== null) cancelAnimationFrame(frame?.native); state.rafs.delete(id); }
-    function trackedObserver(Native) {
-      if (typeof Native !== "function") return undefined;
-      return class {
-        constructor(callback) { this.records = []; this.native = new Native((entries, observer) => { if (active() && !state.paused) callback(entries, this); }); state.observers.add(this); }
-        observe(target, options) { this.records.push([target, options]); if (active() && !state.paused) this.native.observe(target, options); }
-        disconnect() { this.native.disconnect(); this.records = []; }
-        takeRecords() { return this.native.takeRecords?.() || []; }
-      };
-    }
-    function trackedAudioContext(options) {
-      const Native = window.AudioContext || window.webkitAudioContext;
-      if (!Native || !active()) throw new Error("音频不可用");
-      const audio = new Native(options); state.audio.add(audio); return audio;
-    }
-    trackedAudioContext.prototype = (window.AudioContext || window.webkitAudioContext)?.prototype || Object.prototype;
-    function bridge(path, payload) {
-      if (!active() || state.paused) return Promise.reject(new Error("挂件已暂停"));
-      return new Promise((resolve, reject) => {
-        let done = false;
-        const finish = (error, value) => { if (done) return; done = true; clearTimeout(timer); state.pending.delete(cancel); error ? reject(error) : resolve(value); };
-        const cancel = () => finish(new Error("挂件请求已取消"));
-        const timer = setTimeout(() => finish(new Error("挂件请求超时")), 45000);
-        state.pending.add(cancel);
-        Promise.resolve(postJson(path, payload)).then((value) => finish(active() ? null : new Error("挂件已关闭"), value), (error) => finish(error));
-      });
-    }
-    function context() {
-      const ref = currentSessionRef() || {}, id = String(ref.session_id || ""), host = String(ref.host_id || "local");
-      if (id !== state.sessionId || host !== state.sessionHost) {
-        state.sessionId = id; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.turn = null; state.pendingWait = null; state.lastTurnResult = null; state.lastTurnPending = null;
-      }
-      state.sessionHost = host; state.sessionRef = ref; state.remote = host !== "local";
-      return id;
-    }
-    function observe(turn, baseline = false) {
-      if (!turn?.id) return;
-      const previous = state.turn;
-      if (!baseline && previous?.id === turn.id && previous.status === "running" && turn.status === "completed" && !state.completed.has(turn.id)) {
-        state.seq += 1; state.completed.add(turn.id);
-        if (state.completed.size > 128) state.completed.delete(state.completed.values().next().value);
-      }
-      if (baseline && turn.status === "completed") state.completed.add(turn.id);
-      state.turn = { id: turn.id, status: turn.status, usage: turn.usage || null };
-    }
-    function setStatsEnabled(value) {
-      const enabled = value !== false;
-      if (state.codexStatsOn === enabled) return;
-      state.codexStatsOn = enabled; state.statRevision += 1;
-      state.history = null; state.historyAt = 0; state.historyPending = null; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.lastTurnResult = null; state.lastTurnPending = null;
-    }
-    async function session() {
-      const id = context();
-      if (!id) return null;
-      if (state.codexStatsOn === false || state.remote) return { status: "ok", sessionId: id, title: state.sessionRef?.title || "", lastTurn: state.turn, total: state.nativeUsage?.total || null, today: null, rateLimits: [] };
-      if (state.session && Date.now() - state.sessionAt < 5000) return state.session;
-      if (state.sessionPending) return state.sessionPending;
-      const baseline = !state.session && !state.turn;
-      const statRevision = state.statRevision;
-      const pending = bridge("/whale/session", { ...state.sessionRef, session_id: id }).then((data) => {
-        if (!active() || context() !== id || statRevision !== state.statRevision || state.codexStatsOn === false || state.remote) return null;
-        state.session = data; state.sessionAt = Date.now();
-        if (data?.status === "ok" && !(Date.now() - (state.nativeTurnAt || 0) < 10000 && state.turn?.id === data.lastTurn?.id && state.turn.status === "completed" && data.lastTurn.status === "running")) observe(data.lastTurn, baseline);
-        return data;
-      }).finally(() => { if (state.sessionPending === pending) state.sessionPending = null; });
-      state.sessionPending = pending; return pending;
-    }
-    function prices() {
-      const result = [];
-      for (const model of state.models) {
-        const price = model.price;
-        if (!price || ![price.hit, price.miss, price.out].every((value) => value !== "" && codexPlusWhaleFullNumber(value) !== null)) continue;
-        const matchIds = model.matchIds?.length ? model.matchIds : [model.id];
-        const currency = String(price.cur || "USD").toUpperCase(), rate = currency === "CNY" ? 1 : codexPlusWhaleFullNumber(price.rate);
-        if (!(rate > 0) || !["CNY", "USD"].includes(currency)) continue;
-        // 匹配交给数据层：精确匹配优先，其次最长的大小写不敏感子串。
-        for (const id of matchIds) result.push({ model: id, currency: "CNY", input: Number(price.miss) * rate, cachedInput: Number(price.hit) * rate, output: Number(price.out) * rate });
-      }
-      return result;
-    }
-    function pricingFingerprint() { return JSON.stringify(state.models.map((model) => ({ id: model.id, price: model.price, matchIds: model.matchIds }))); }
-    async function history(force = false) {
-      if (state.codexStatsOn === false) return { status: "disabled", complete: false, codex: { ok: false, disabled: true } };
-      const quote = prices(), fingerprint = JSON.stringify(quote);
-      if (!force && state.history && state.historyPrices === fingerprint && Date.now() - state.historyAt < 60000) return state.history;
-      if (state.historyPending) return state.historyPending;
-      const revision = state.priceRevision, statRevision = state.statRevision;
-      const pending = bridge("/whale/history", { period: "all", page: 1, pageSize: 500, prices: quote }).then((data) => {
-        if (statRevision !== state.statRevision || state.codexStatsOn === false) return { status: "disabled", complete: false, codex: { ok: false, disabled: true } };
-        if (active() && revision !== state.priceRevision) return history(true);
-        if (active()) { state.history = data; state.historyAt = Date.now(); state.historyPrices = fingerprint; } return data;
-      }).finally(() => { if (state.historyPending === pending) state.historyPending = null; });
-      state.historyPending = pending; return pending;
-    }
-    const toTokens = (period) => {
-      if (state.codexStatsOn === false) return "—";
-      const value = state.history?.periods?.[period]?.usage?.totalTokens ?? state.history?.machineSummary?.[({ today: "todayTokens", month: "monthTokens", all: "totalTokens" })[period]];
-      const number = codexPlusWhaleFullNumber(value);
-      if (number === null) return "—";
-      return number.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
-    };
-    function codexModel(model, summary) {
-      const data = summary?.codex || summary?.machineSummary || {};
-      const total = (period) => codexPlusWhaleFullNumber(summary?.periods?.[period]?.usage?.totalTokens);
-      const limits = state.session?.rateLimits || summary?.rateLimits || [];
-      const windows = limits.filter((entry) => entry.resetAt == null || Number(entry.resetAt) * 1000 > Date.now()).map((entry, index) => ({ usedPct: entry.usedPercent, windowMinutes: entry.windowMinutes || (index === 0 ? 300 : 10080), resetAt: entry.resetAt == null ? null : Number(entry.resetAt) * 1000 }));
-      return { ...model, codex: { ...data, ok: summary?.status === "ok" || summary?.status === "partial" || data.ok === true, complete: summary?.complete === true, deferred: summary?.complete === false ? Math.max(1, summary?.scan?.deferred || 1) : 0, todayTokens: total("today") ?? data.todayTokens, monthTokens: total("month") ?? data.monthTokens, totalTokens: total("all") ?? data.totalTokens, sessions: summary?.scan?.sessions ?? data.sessions ?? 0, days7: data.days7 || (summary?.days || []).slice(-7).map((day) => ({ date: day.date, tokens: day.usage?.totalTokens })), windows: data.windows || { primary: windows[0] || null, secondary: windows[1] || null } }, planSupport: windows.length > 0, plan: windows.length ? { ok: true, usedPct: windows[0].usedPct, remainPct: windows[0].usedPct == null ? null : 100 - windows[0].usedPct, windows: windows.map((entry, index) => ({ id: index === 0 ? "rolling" : "weekly", key: index === 0 ? "rolling" : "weekly", label: index === 0 ? "5h" : "周", usedPct: entry.usedPct, remainPct: entry.usedPct == null ? null : 100 - entry.usedPct, resetAt: entry.resetAt })) } : model.plan };
-    }
-    function subscribe() {
-      const dispatcher = window.__codexPlusRemoteSessionRecoveryDispatcher;
-      if (state.dispatcher === dispatcher && state.onEvent) return;
-      for (const unsubscribe of state.subscriptions.splice(0)) { try { unsubscribe(); } catch {} }
-      state.dispatcher = dispatcher;
-      const onEvent = (payload, method) => {
-        if (!active() || state.paused) return;
-        const data = payload?.params || payload || {}, turn = data.turn || data;
-        const thread = String(data.threadId || data.thread_id || data.conversationId || "").replace(/^local:/, "");
-        if (!thread || thread !== context().replace(/^local:/, "")) return;
-        if (method === "thread/tokenUsage/updated") {
-          state.nativeUsage = data.tokenUsage || null;
-          if (state.turn && data.tokenUsage?.last) state.turn.usage = data.tokenUsage.last;
-        } else if (["serverRequest/resolved", "item/tool/userInputAnswered", "item/approval/responded", "item/completed"].includes(method)) {
-          const id = String(data.requestId || data.itemId || data.item?.id || data.id || "");
-          if (state.pendingWait && (id === state.pendingWait.id || id === state.pendingWait.itemId)) { state.pendingWait = null; void state.controls?.pollWaitState?.(); }
-        } else if (method === "turn/started" || method === "turn/completed") {
-          const id = turn.id || data.turnId;
-          observe({ id, status: method === "turn/started" ? "running" : ({ failed: "failed", interrupted: "aborted", aborted: "aborted" })[turn.status] || "completed", usage: turn.usage });
-          state.nativeTurnAt = Date.now();
-          state.pendingWait = null;
-          state.sessionAt = 0;
-          void state.controls?.pollLastTurn?.();
-        } else {
-          state.pendingWait = { id: String(payload?.id || data.requestId || data.itemId || data.id || ""), itemId: String(data.itemId || ""), kind: method.includes("requestUserInput") || method === "mcpServer/elicitation/request" ? "question" : "approval" };
-          void state.controls?.pollWaitState?.();
-        }
-      };
-      state.onEvent = onEvent;
-      if (!dispatcher?.subscribe) return;
-      for (const method of ["turn/started", "turn/completed", "thread/tokenUsage/updated", "item/tool/requestUserInput", "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "mcpServer/elicitation/request", "serverRequest/resolved", "item/tool/userInputAnswered", "item/approval/responded", "item/completed"]) {
-        try { const remove = dispatcher.subscribe(method, (payload) => onEvent(payload, method)); if (typeof remove === "function") state.subscriptions.push(remove); } catch {}
-      }
-    }
-    function nativeEnvelope(value, depth = 0) {
-      if (!active() || state.paused || !value || typeof value !== "object" || depth > 4) return;
-      if (typeof value.method === "string" && /^(turn\/(started|completed)|thread\/tokenUsage\/updated|item\/(tool\/requestUserInput|commandExecution\/requestApproval|fileChange\/requestApproval|permissions\/requestApproval|completed)|mcpServer\/elicitation\/request|serverRequest\/resolved)$/.test(value.method)) state.onEvent?.(value, value.method);
-      if (value.id != null && (Object.hasOwn(value, "result") || Object.hasOwn(value, "error") || Object.hasOwn(value, "response")) && String(value.id) === state.pendingWait?.id) {
-        state.pendingWait = null; void state.controls?.pollWaitState?.();
-      }
-      for (const key of ["message", "request", "payload", "data", "notification"]) if (value[key] && typeof value[key] === "object") nativeEnvelope(value[key], depth + 1);
-    }
-    async function lastTurn() {
-      await session().catch(() => null);
-      if (state.lastTurnResult?.body?.seq === state.seq) return state.lastTurnResult;
-      if (state.lastTurnPending) return state.lastTurnPending;
-      const seq = state.seq;
-      const turn = state.turn?.status === "completed" ? state.turn : null;
-      let amount = null, currency = null, usage = turn?.usage || state.session?.lastTurn?.usage || null;
-      if (turn && seq > state.initialSeq && prices().length && state.codexStatsOn !== false && !state.remote) {
-        const pending = (async () => {
-        const details = await bridge("/whale/history", { period: "all", sessionId: context().replace(/^local:/, ""), turnId: turn.id, page: 1, pageSize: 500, prices: prices() }).catch(() => null);
-        const totals = {};
-        for (const record of details?.records || []) {
-          if (record.turnId !== turn.id || !record.estimatedCost) continue;
-          const cost = record.estimatedCost; totals[cost.currency] = (totals[cost.currency] || 0) + cost.amount;
-        }
-        const currencies = Object.keys(totals);
-        if (currencies.length === 1) { currency = currencies[0]; amount = totals[currency]; }
-        const result = { status: 200, body: { ok: true, seq, turn, amount, currency, usage, estimated: amount !== null } };
-        if (active() && state.seq === seq) state.lastTurnResult = result;
-        return result;
-        })().finally(() => { if (state.lastTurnPending === pending) state.lastTurnPending = null; });
-        state.lastTurnPending = pending; return pending;
-      }
-      const result = { status: 200, body: { ok: true, seq, turn, amount, currency, usage, estimated: amount !== null } };
-      state.lastTurnResult = result; return result;
-    }
-    async function compatibilityJson(path, method, query, body) {
-      subscribe();
-      if (path === "/dsh-whale/size.json" && method === "GET" && state.startupConfig) return { status: 200, body: state.startupConfig };
-      if (path === "/dsh-whale/last-turn.json") {
-        return lastTurn();
-      }
-      if (path === "/dsh-whale/wait.json") {
-        const data = await session().catch(() => null);
-        return { status: 200, body: { ok: true, sessionName: data?.sessionName || data?.title || state.sessionRef?.title || "", pending: data?.pending || state.pendingWait || null } };
-      }
-      const response = await bridge("/whale/full", { path, method, query, body });
-      if (path === "/dsh-whale/size.json" && method === "PUT" && response?.status === 200) {
-        setStatsEnabled(body.codexStatsOn);
-      }
-      if (path === "/dsh-whale/api-models.json" && response?.body?.ok) {
-        state.relayProfiles = response.body.relayProfiles || state.relayProfiles;
-        setStatsEnabled(response.body.codexStatsOn);
-        const previous = pricingFingerprint();
-        state.models = response.body.models || state.models;
-        if (pricingFingerprint() !== previous) { state.priceRevision += 1; state.history = null; state.historyAt = 0; state.historyPending = null; state.lastTurnResult = null; state.lastTurnPending = null; }
-        if (method === "GET") {
-          const statsOn = response.body.codexStatsOn !== false;
-          const summary = statsOn ? await history().catch(() => null) : null;
-          response.body.models = (response.body.models || []).map((model) => model.id === "codex" ? statsOn ? codexModel(model, summary) : { ...model, codex: { ok: false, disabled: true } } : model);
-        }
-        state.models = response.body.models || state.models;
-      }
-      if (path === "/dsh-whale/usage-records.json" && method === "GET") {
-        state.recordsAccountBase = JSON.parse(JSON.stringify(response.body));
-        const data = await history().catch(() => null);
-        response.body = mergeRecords(response.body, data);
-      }
-      return response;
-    }
-    function mergeRecords(base, data) {
-      if (!data?.today || !data?.days7 || !data?.all) return base;
-      const merge = (account, local) => ({ ...local, ...account, modelTotal: local?.modelTotal, models: local?.models || [], estimatedCosts: local?.estimatedCosts, unpricedRecords: local?.unpricedRecords });
-      const mergeDays = (account, local) => { const days = new Map((local || []).map((day) => [day.date, day])); for (const day of account || []) days.set(day.date, merge(day, days.get(day.date))); return [...days.values()].sort((a, b) => a.date.localeCompare(b.date)); };
-      return { ...base, today: merge(base?.today, data.today), days7: mergeDays(base?.days7, data.days7), all: { ...base?.all, days: mergeDays(base?.all?.days, data.all.days), events: data.all.events || [] }, complete: data.complete, historyPagination: data.pagination, historyArchive: data.archive, ok: true };
-    }
-    const nativeFetch = window.fetch?.bind(window) || globalThis.fetch;
-    function responseOf(result) {
-      if (result?.data) {
-        const bytes = Uint8Array.from(atob(result.data), (c) => c.charCodeAt(0));
-        return new Response(bytes, { status: result.status || 200, headers: { "Content-Type": result.mimeType || "application/octet-stream" } });
-      }
-      return new Response(JSON.stringify(result?.body ?? null), { status: result?.status || 200, headers: { "Content-Type": "application/json" } });
-    }
-    async function fetchCompat(value, options = {}) {
-      if (!active() || state.paused) throw new Error("挂件已暂停");
-      const raw = String(value), builtin = codexPlusWhaleFullBuiltin(raw);
-      if (builtin) return codexPlusWhaleFullDataResponse(builtin);
-      const parsed = new URL(raw, "https://codex-whale.invalid");
-      if (parsed.origin !== "https://codex-whale.invalid" || !parsed.pathname.startsWith("/dsh-whale/")) {
-        // 上游只有本机资源 fetch；用户显式配置的超链接通过 window.open。
-        if (raw.startsWith("data:")) return codexPlusWhaleFullDataResponse(raw);
-        if (raw.startsWith("blob:")) return nativeFetch(raw, options);
-        throw new Error("挂件资源只允许本机桥接");
-      }
-      const method = String(options.method || "GET").toUpperCase();
-      const query = Object.fromEntries(parsed.searchParams.entries());
-      let body = {};
-      if (options.body) { try { body = JSON.parse(options.body); } catch { throw new Error("无效挂件请求"); } }
-      if (options.signal?.aborted) throw new Error("挂件请求已取消");
-      const result = await compatibilityJson(parsed.pathname, method, query, body);
-      if (!active() || options.signal?.aborted) throw new Error("挂件请求已取消");
-      if (result?.builtinFragmentId) {
-        const uri = codexPlusWhaleFullBuiltin("/dsh-whale/audio-fragment.wav?id=" + encodeURIComponent(result.builtinFragmentId));
-        if (!uri) throw new Error("内置音频缺失");
-        return nativeFetch(uri);
-      }
-      return responseOf(result);
-    }
-    async function resolveMedia(path) {
-      const builtin = codexPlusWhaleFullBuiltin(path); if (builtin) return builtin;
-      if (state.media.has(path)) return state.media.get(path);
-      const pending = (async () => {
-      const result = await fetchCompat(path);
-      if (!result.ok) throw new Error("素材加载失败");
-      const blob = await result.blob();
-      if (!active()) throw new Error("挂件已关闭");
-      const objectUrl = URL.createObjectURL(blob); state.objectUrls.add(objectUrl); state.media.set(path, objectUrl); return objectUrl;
-      })().catch((error) => { if (state.media.get(path) === pending) state.media.delete(path); throw error; });
-      state.media.set(path, pending); return pending;
-    }
-    function mediaNode(node) {
-      if (wrappedMedia.has(node)) return node;
-      wrappedMedia.add(node);
-      let proto = node, descriptor;
-      while (proto && !descriptor) { descriptor = Object.getOwnPropertyDescriptor(proto, "src"); proto = Object.getPrototypeOf(proto); }
-      let revision = 0;
-      const set = (value) => { if (descriptor?.set) descriptor.set.call(node, value); else node.setAttribute("src", value); };
-      try { Object.defineProperty(node, "src", { configurable: true, get() { return descriptor?.get ? descriptor.get.call(node) : node.getAttribute("src") || ""; }, set(value) {
-        const rev = ++revision, raw = String(value || "");
-        if (!raw.startsWith("/dsh-whale/")) { if (!raw || /^(data:image\/(png|jpeg|webp|gif|avif);|data:audio\/|blob:)/i.test(raw)) set(raw); return; }
-        const builtin = codexPlusWhaleFullBuiltin(raw);
-        if (builtin) { set(builtin); return; }
-        void resolveMedia(raw).then((url) => { if (active() && rev === revision) set(url); }).catch(() => { if (active() && rev === revision) node.dispatchEvent?.(new Event("error")); });
-      } }); } catch {}
-      return node;
-    }
-    function mark(node) {
-      if (!active()) throw new Error("挂件已关闭");
-      if (!node) return node;
-      node.setAttribute?.("data-codex-plus-ext", "whale-widget");
-      if (["IMG", "AUDIO", "VIDEO", "SOURCE"].includes(node.tagName)) mediaNode(node);
-      return node;
-    }
-    const head = new Proxy(document.head, { get(target, key) {
-      if (["appendChild", "insertBefore", "append", "prepend", "replaceChildren"].includes(key)) return (...args) => { if (!active()) return args[0]; for (const node of args) if (node?.nodeType || node?.tagName) state.nodes.add(node); return target[key](...args); };
-      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
-    } });
-    const doc = new Proxy(document, { get(target, key) {
-      if (key === "head") return head;
-      if (key === "createElement") return (...args) => mark(target.createElement(...args));
-      if (key === "createElementNS") return (...args) => mark(target.createElementNS(...args));
-      if (key === "addEventListener") return (name, callback, options) => listen(target, name, callback, options);
-      if (key === "removeEventListener") return (name, callback, options) => unlisten(target, name, callback, options);
-      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
-    } });
-    const win = new Proxy(window, { get(target, key) {
-      if (key === "__codexPlusWhaleHost") return host;
-      if (typeof key === "string" && (key.startsWith("__dsh") || key === "dshwRegisterMask")) return isolated[key];
-      if (key === "document") return doc;
-      if (key === "localStorage") return storage;
-      if (key === "Image") return image;
-      if (key === "Audio") return audio;
-      if (key === "AudioContext" || key === "webkitAudioContext") return window.AudioContext || window.webkitAudioContext ? trackedAudioContext : undefined;
-      if (key === "addEventListener") return (name, callback, options) => listen(target, name, callback, options);
-      if (key === "removeEventListener") return (name, callback, options) => unlisten(target, name, callback, options);
-      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
-    }, set(target, key, value) { if (typeof key === "string" && (key.startsWith("__dsh") || key === "dshwRegisterMask")) { isolated[key] = value; return true; } return Reflect.set(target, key, value, target); } });
-    function image(width, height) { return mark(new window.Image(width, height)); }
-    image.prototype = window.Image?.prototype || Object.prototype;
-    function audio(url) { const node = mark(new window.Audio()); if (url) node.src = url; return node; }
-    audio.prototype = window.Audio?.prototype || Object.prototype;
-    const host = {
-      active, state, tokens: toTokens,
-      attach(node) { if (active()) state.nodes.add(node); },
-      detach(node) { state.nodes.delete(node); },
-      initialSound() { return state.startupConfig?.sound !== false; },
-      complete(data, show) { state.completion = data; show(data.amount); },
-      completionCost(amount) {
-        const completion = state.completion;
-        if (amount == null) return completion?.usage?.totalTokens == null ? "用量暂不可用" : Number(completion.usage.totalTokens).toLocaleString("zh-CN") + " tokens";
-        return Number(amount).toLocaleString("zh-CN", { maximumFractionDigits: 6 }) + " " + (completion?.currency || "") + "（估算）";
-      },
-      completionModules(modules) {
-        const unknown = state.completion?.amount == null;
-        return modules.map((module) => module.type === "text" ? { ...module, text: String(module.text).replace("上一轮对话消耗:", unknown ? "Codex 任务完成" : "上一轮费用估算:").replace(/^¥\s*/, "") } : module).concat(unknown ? [{ type: "text", text: "未配置单价，费用未知", size: 2, color: "#9fb0d9" }] : []);
-      },
-      recordsPager(body, data, render) {
-        const pagination = data.historyPagination;
-        if (!pagination) return;
-        const area = mark(document.createElement("div")); area.className = "dshwv-usage-hint"; area.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px";
-        const page = pagination.page || 1, pages = Math.max(1, pagination.pages || 1);
-        const label = mark(document.createElement("span")); label.textContent = `明细第 ${page} / ${pages} 页 · 共 ${pagination.total || 0} 条${data.complete === false ? " · 正在统计" : ""}`; area.appendChild(label);
-        const input = mark(document.createElement("input")); input.type = "search"; input.placeholder = "搜索全部明细：日期或模型"; input.value = state.recordsSearch || ""; input.className = "dshwv-colnat"; input.style.width = "100%"; area.appendChild(input);
-        const request = async (next) => {
-          state.recordsRevision = (state.recordsRevision || 0) + 1;
-          const revision = state.recordsRevision, priceRevision = state.priceRevision;
-          const result = await bridge("/whale/history", { period: "all", page: next, pageSize: pagination.pageSize || 500, search: input.value, prices: prices() }).catch(() => null);
-          if (!active() || !body.isConnected || revision !== state.recordsRevision || priceRevision !== state.priceRevision || !result) return;
-          state.recordsSearch = input.value; render(mergeRecords(state.recordsAccountBase, result));
-        };
-        for (const [text, next, disabled] of [["上一页", page - 1, page <= 1], ["下一页", page + 1, page >= pages]]) {
-          const button = mark(document.createElement("button")); button.type = "button"; button.textContent = text; button.className = "dshwv-snapbtn dshwv-snapbtn-no"; button.disabled = disabled; button.addEventListener("click", () => { void request(next); }); area.appendChild(button);
-        }
-        const search = mark(document.createElement("button")); search.type = "button"; search.textContent = "搜索"; search.className = "dshwv-snapbtn dshwv-snapbtn-ok"; search.addEventListener("click", () => { void request(1); }); area.appendChild(search); input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void request(1); } });
-        if (data.historyArchive?.detailRetentionDays) { const note = mark(document.createElement("span")); note.textContent = `明细保留 ${data.historyArchive.detailRetentionDays} 天；更早用量保留在日汇总中。`; note.style.width = "100%"; area.appendChild(note); }
-        body.appendChild(area);
-      },
-      fail(error) { state.initializationError = error?.name || "Error"; console.warn("[Codex++] 完整鲸鱼初始化失败", state.initializationError); },
-      bind(controls) { state.controls = controls; subscribe(); },
-      defaultBubbleItems(items) {
-        const copy = JSON.parse(JSON.stringify(items));
-        if (copy[0]?.modules) copy[0].modules = [
-          { type: "text", text: "Codex 本机用量", size: 8, bold: true },
-          { type: "today", modelId: "codex", size: 20, rgb: "indigo", tpl: "{tokens_today}" },
-          { type: "today", modelId: "codex", size: 4, color: "#9fb0d9", tpl: "今日 tokens · 近7天 {tokens_week}" },
-          { type: "balance", modelId: "current-provider", size: 3, tpl: "供应商余额 {balance}" },
-          { type: "session", size: 3, tpl: "{session}", len: 20 },
-        ];
-        return copy;
-      },
-      profileSelect(selected) {
-        const select = mark(document.createElement("select")); select.className = "dshwv-colnat";
-        const profiles = state.relayProfiles.length ? state.relayProfiles : [{ id: selected || "", name: selected || "当前供应商" }];
-        for (const profile of profiles) { const option = mark(document.createElement("option")); option.value = profile.id; option.textContent = profile.name || profile.id; select.appendChild(option); }
-        select.value = selected || profiles[0]?.id || ""; return select;
-      },
-    };
-    const mutation = trackedObserver(window.MutationObserver), resize = trackedObserver(window.ResizeObserver);
-    const environment = [win, doc, fetchCompat, storage, (fn, ms, ...args) => schedule(fn, ms, false, args), clearTimer, (fn, ms, ...args) => schedule(fn, ms, true, args), clearTimer, raf, cancelRaf, mutation, resize, trackedAudioContext, trackedAudioContext, image, audio];
-    async function initialize() {
-      const configuration = await bridge("/whale/full", { path: "/dsh-whale/size.json", method: "GET", query: {}, body: {} });
-      if (configuration?.status !== 200 || !configuration.body) throw new Error("完整挂件设置读取失败");
-      state.startupConfig = configuration.body;
-      setStatsEnabled(configuration.body.codexStatsOn);
-      let legacy;
-      try { legacy = JSON.parse(localStorage.getItem("codexPlus.whaleWidget.v1") || "null"); } catch {}
-      if (!legacy || storage.getItem("legacy-migrated") === "1") return;
-      if (configuration.body.hasSavedConfig === true) { storage.setItem("legacy-migrated", "1"); return; }
-      // 只迁移用户实际保存过的旧偏好；保存失败保留旧数据并允许下次重试。
-      const send = async (path, method, body) => {
-        const result = await bridge("/whale/full", { path: "/dsh-whale/" + path, method, query: {}, body });
-        if (result?.status !== 200 || result.body?.ok === false) throw new Error("旧挂件偏好迁移失败");
-        return result.body;
-      };
-      if (typeof legacy.image === "string" && /^data:image\/(png|jpeg|webp|gif);base64,/.test(legacy.image) && legacy.image.length <= 1400000) {
-        const roles = await send("roles.json", "GET", {});
-        let imported = (roles.roles || []).find((role) => role.name === "原挂件角色");
-        if (!imported) {
-          const result = await send("roles.json", "POST", { name: "原挂件角色", image: legacy.image, format: legacy.image.startsWith("data:image/gif;") ? "gif" : "png" });
-          imported = (result.roles || []).find((role) => role.name === "原挂件角色");
-        }
-        if (imported?.id) storage.setItem("dshw-role", imported.id);
-      }
-      if (typeof legacy.phrase === "string" && legacy.phrase.trim()) {
-        const config = await send("bubble.json", "GET", {});
-        if (!config.config?.items?.length) await send("bubble.json", "POST", { v: 1, tapAdvance: false, lib: [], items: [{ kind: "custom", modules: [{ type: "text", text: legacy.phrase.slice(0, 120), size: 8 }, { type: "today", modelId: "codex", size: 12, tpl: "今日 {tokens_today} tokens" }] }] });
-      }
-      const limits = Object.values(legacy.thresholds || {}).find((value) => value && typeof value === "object");
-      if (limits) {
-        const patch = { models: { "current-provider": {} } };
-        if (codexPlusWhaleFullNumber(limits.low) > 0) patch.models["current-provider"].alert = { on: true, below: Number(limits.low) };
-        if (codexPlusWhaleFullNumber(limits.budget) > 0) patch.models["current-provider"].budget = { on: true, amount: Number(limits.budget) };
-        await send("usage-settings.json", "PUT", patch);
-      }
-      const base = Math.max(122, Math.min(250, Math.min(window.innerWidth || 1024, window.innerHeight || 768) * 0.28));
-      const config = { ...configuration.body, sound: legacy.sound === true, turnCostOn: legacy.completion !== false };
-      if (codexPlusWhaleFullNumber(legacy.size) > 0) config.scale = Math.min(2.5, Math.max(0.6, Number(legacy.size) / (base * 0.5945)));
-      if (codexPlusWhaleFullNumber(legacy.x) !== null && codexPlusWhaleFullNumber(legacy.y) !== null) {
-        const fullSize = base * (config.scale || 1.5), right = Math.max(0, (window.innerWidth || 1024) - Number(legacy.x) - Number(legacy.size || 88)), bottom = Math.max(0, (window.innerHeight || 768) - Number(legacy.y) - Number(legacy.size || 88));
-        storage.setItem("dshw-pos", JSON.stringify({ v: 2, hAnchor: legacy.x < (window.innerWidth || 1024) / 2 ? "left" : "right", hDist: legacy.x < (window.innerWidth || 1024) / 2 ? Math.max(0, legacy.x - fullSize * 0.4055) : right, vAnchor: legacy.y < (window.innerHeight || 768) / 2 ? "top" : "bottom", vDist: legacy.y < (window.innerHeight || 768) / 2 ? Math.max(0, legacy.y - fullSize * 0.4055) : bottom }));
-      }
-      if (legacy.snap === false) storage.setItem("dshw-snap", JSON.stringify({ v: 3, mode: "off" }));
-      const result = await send("size.json", "PUT", config); state.startupConfig = { ...config, ...result, hasSavedConfig: true };
-      storage.setItem("legacy-migrated", "1");
-    }
-    function pause(paused) {
-      if (state.paused === paused || !active()) return;
-      state.paused = paused;
-      if (paused) {
-        for (const timer of state.timers.values()) { if (timer.native !== null) clearTimeout(timer.native); timer.native = null; }
-        for (const frame of state.rafs.values()) { if (frame.native !== null) cancelAnimationFrame(frame.native); frame.native = null; }
-        for (const observer of state.observers) observer.native.disconnect();
-        for (const cancel of [...state.pending]) cancel();
-        for (const audio of state.audio) { try { void audio.suspend?.().catch?.(() => {}); } catch {} }
-        state.turn = null; state.sessionAt = 0; state.pendingWait = null;
-      } else {
-        for (const [id, timer] of state.timers) arm(id, timer);
-        for (const [id, frame] of state.rafs) frame.native = requestAnimationFrame((time) => { state.rafs.delete(id); if (active() && !state.paused) frame.callback(time); });
-        for (const observer of state.observers) for (const [target, options] of observer.records) observer.native.observe(target, options);
-        context(); subscribe(); void state.controls?.refresh?.(false);
-      }
-    }
-    function dispose() {
-      if (state.disposed) return; state.disposed = true;
-      for (const id of [...state.timers.keys()]) clearTimer(id);
-      for (const id of [...state.rafs.keys()]) cancelRaf(id);
-      for (const observer of state.observers) observer.disconnect(); state.observers.clear();
-      for (const entry of state.listeners.splice(0)) entry.target.removeEventListener(entry.name, entry.wrapped, entry.options);
-      for (const unsubscribe of state.subscriptions.splice(0)) { try { unsubscribe(); } catch {} }
-      for (const cancel of [...state.pending]) cancel();
-      for (const context of state.audio) { try { void context.close?.().catch?.(() => {}); } catch {} } state.audio.clear();
-      for (const node of state.nodes) { if (node.parentNode) node.parentNode.removeChild(node); } state.nodes.clear();
-      for (const url of state.objectUrls) URL.revokeObjectURL(url); state.objectUrls.clear(); state.media.clear();
-      state.controls = null;
-    }
-    listen(document, "visibilitychange", () => pause(document.hidden === true));
-    listen(window, "message", (event) => {
-      if (event.source !== window || (event.origin && event.origin !== "null" && event.origin !== window.location?.origin)) return;
-      nativeEnvelope(event.data);
-    }, true);
-    listen(window, "codex-message-from-view", (event) => nativeEnvelope(event.detail), true);
-    // 设置迁移和首次读取在异步等待中也要记录短任务，绑定原 UI 后统一由 seq 消费。
-    subscribe();
-    return { state, environment, host, active, pause, dispose, initialize, fetch: fetchCompat, context, session, history, observe, subscribe, nativeEnvelope, prices };
+  /** 内置拓展是否在用（没被停用、没被顶替）。 */
+  function codexPlusBuiltinExtensionActive(id) {
+    return !globalThis.__codexPlusBuiltinInactive?.has(id);
   }
-  // 完整版鲸鱼（大肥鱼）由上游原始引擎 + Codex 数据适配层组成；默认关闭。
-  // 它是「Agent 桌宠」的一种类型：后端 `agentPet` 开启、勾选了 Codex 且类型为 whaleWidget 时才挂载，
-  // 与 97-agent-pet.js 的简单桌宠互斥（那边在选中大肥鱼时不挂载）。
-  window.__codexPlusWhaleWidgetRuntime?.dispose?.();
-  const codexPlusWhaleState = { disposed: false, runtime: null, profile: "", missingSource: false, failedUntil: 0, notice: null };
-  function codexPlusWhaleSelected() {
-    const pet = codexPlusBackendSettings?.agentPet;
-    return Boolean(pet && typeof pet === "object" && pet.enabled === true && pet.kind === "whaleWidget"
-      && (!Array.isArray(pet.agents) || pet.agents.includes("codex")));
-  }
-  function codexPlusWhaleEnabled() {
-    return !codexPlusWhaleState.disposed && codexPlusBackendSettingsLoaded && codexPlusWhaleSelected();
-  }
-  function codexPlusWhaleStop() {
-    codexPlusWhaleState.runtime?.dispose();
-    codexPlusWhaleState.runtime = null;
-    codexPlusWhaleState.notice?.remove(); codexPlusWhaleState.notice = null;
-  }
-  function codexPlusWhaleInitializationFailed(runtime) {
-    runtime?.dispose(); codexPlusWhaleState.runtime = null; codexPlusWhaleState.failedUntil = Date.now() + 10000;
-    if (codexPlusWhaleState.notice) return;
-    const notice = document.createElement("div"); notice.setAttribute("data-codex-plus-ext", "whale-widget"); notice.setAttribute("role", "status");
-    notice.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:2147483600;max-width:320px;padding:12px;border-radius:10px;background:#fff5ec;color:#7c3218;font:12px/1.6 system-ui;box-shadow:0 3px 16px #0002";
-    notice.textContent = "鲸鱼挂件暂时无法加载，10 秒后自动重试。可在 Codex++「Agent 桌宠」页关闭后重新开启。";
-    document.body.appendChild(notice); codexPlusWhaleState.notice = notice;
-  }
-  function codexPlusWhaleProfileFingerprint() {
-    const profile = codexRemoteSessionActiveProfile?.();
-    const settings = codexPlusBackendSettings || {};
-    return JSON.stringify([profile?.id || "", profile?.relayMode || "", settings.codexAppWhaleBalanceProtocol,
-      settings.codexAppWhaleBalancePath, settings.codexAppWhaleBalanceField, settings.codexAppWhaleBalanceCurrency,
-      settings.codexAppWhaleBalanceScale]);
-  }
-  function syncCodexPlusWhaleWidget() {
-    if (!codexPlusWhaleEnabled()) { codexPlusWhaleStop(); codexPlusWhaleState.failedUntil = 0; return; }
-    const profile = codexPlusWhaleProfileFingerprint();
-    if (codexPlusWhaleState.profile !== profile) { codexPlusWhaleStop(); codexPlusWhaleState.failedUntil = 0; }
-    codexPlusWhaleState.profile = profile;
-    if (codexPlusWhaleState.runtime) {
-      codexPlusWhaleState.runtime.context();
-      codexPlusWhaleState.runtime.subscribe();
-      codexPlusWhaleState.runtime.pause(document.hidden === true);
-      return;
-    }
-    // 隐藏窗口等恢复可见后再挂载，不在后台构造音频或轮询会话日志。
-    if (document.hidden) return;
-    if (Date.now() < codexPlusWhaleState.failedUntil) return;
-    if (typeof window.__CODEX_PLUS_WHALE_ENGINE__ !== "function") {
-      if (!codexPlusWhaleState.missingSource) console.warn("[Codex++] 完整鲸鱼运行时未随启动器加载，请重新构建启动器。");
-      codexPlusWhaleState.missingSource = true; codexPlusWhaleInitializationFailed(null); return;
-    }
-    const runtime = createCodexPlusWhaleFullRuntime();
-    codexPlusWhaleState.runtime = runtime;
-    registerCodexPlusExtensionSelector("[data-codex-plus-ext=whale-widget]");
-    void runtime.initialize().then(() => {
-      if (runtime.active() && codexPlusWhaleState.runtime === runtime && codexPlusWhaleEnabled()) {
-        window.__CODEX_PLUS_WHALE_ENGINE__(...runtime.environment);
-        if (runtime.state.initializationError || !runtime.state.controls) throw new Error("完整鲸鱼初始化未完成");
-        codexPlusWhaleState.notice?.remove(); codexPlusWhaleState.notice = null;
-      }
-    }).catch((error) => {
-      if (!runtime.active()) return;
-      if (codexPlusWhaleState.runtime === runtime) codexPlusWhaleInitializationFailed(runtime);
-    });
-  }
-  window.__codexPlusWhaleWidgetRuntime = {
-    version: 3,
-    sync: syncCodexPlusWhaleWidget,
-    dispose() { codexPlusWhaleStop(); codexPlusWhaleState.disposed = true; },
-    get state() { return codexPlusWhaleState.runtime?.state || null; },
-  };
-  // Agent 桌宠：Codex 窗口里一个可拖动的小角色，按下以底边为支点压扁、松开回弹，并播放按压 / 松开音。
-  // 图片不随应用打包：经桥接 `/agent-pet/image` 由后端联网下载、缓存后以 data URI 返回。
-  // 内嵌的两组音效随启动器注入（window.__CODEX_PLUS_AGENT_PET_SOUNDS__）；下载音效组和用户导入的自定义音效
-  // 经桥接 `/agent-pet/sound` 取 data URI。一律直接从字节解码，不依赖 fetch(data:)。
-  // 设置读后端的 `agentPet`，与「Codex 增强」总开关无关；目前只有 Codex 一个 Agent。
-  // `agentPet.kind` 为 whaleWidget（大肥鱼）时这里不挂载，由 96-whale-widget.js 显示完整鲸鱼挂件。
-  window.__codexPlusAgentPetRuntime?.dispose?.();
-  const codexPlusAgentPetPositionKey = "codexPlus.agentPet.position.v1";
-  const codexPlusAgentPetSquash = "scaleY(0.88) scaleX(1.05)";
-  // 点按时松开音提前进场的毫秒数，与按压音末尾轻微交叠，听感更「黏」。
-  const codexPlusAgentPetReleaseLeadMs = 40;
-  const codexPlusAgentPet = {
-    disposed: false,
-    root: null,
-    body: null,
-    image: null,
-    imageKey: "",
-    imageRequest: 0,
-    retryAt: 0,
-    failureLogged: false,
-    audio: null,
-    buffers: new Map(),
-    soundKey: "",
-    soundRequest: 0,
-    soundRetryAt: 0,
-    soundFailureLogged: false,
-    press: null,
-    drag: null,
-    cleanup: [],
-  };
 
-  function codexPlusAgentPetSettings() {
-    if (!codexPlusBackendSettingsLoaded) return null;
-    const raw = codexPlusBackendSettings?.agentPet;
-    if (!raw || typeof raw !== "object") return null;
-    const size = Number(raw.size);
-    const volume = Number(raw.volume);
+  /**
+   * 内置拓展清单：每一项只有 apply(ctx)，和第三方拓展一样只用公开的 ctx 接口（onScan、on、effect、registerSlot……），
+   * 装上即生效、卸下时登记的东西自动撤销。管理器里的名字与说明在 Rust 侧 BUILTIN_EXTENSIONS 维护，两边 id 要一致。
+   * 没有 apply 的几项由 Rust 侧（启动器、注入、本地代理）或独立运行时按停用状态生效，页面侧只登记。
+   */
+  function codexPlusBuiltinExtensionCatalog() {
+    return [
+      // Agent 桌宠（含大肥鱼）已改成随 Codex++ 发布的官方拓展包（bundled:agent-pet），不再是内置拓展。
+      { id: "usage-statusline", name: "用量状态栏", apply: codexPlusUsageStatusLineExtension },
+      { id: "dictation", name: "语音听写", apply: codexPlusDictationExtension },
+      { id: "turn-rewind", name: "轮次回退", apply: codexPlusTurnRewindExtension },
+      { id: "typing-effects", name: "打字特效", apply: codexPlusTypingEffectsExtension },
+      { id: "side-chat-save", name: "侧聊保存", apply: codexPlusSideChatSaveExtension },
+      // 由 Rust 经 CDP 驱动，页面侧只登记；被顶替时 Rust 侧不再补载，顶替它的拓展订阅 codexpp/session-index-repaired 自己做。
+      { id: "history-turn-recovery", name: "历史轮次补全" },
+      { id: "capacity-auto-retry", name: "容量不足自动重试", apply: codexPlusCapacityAutoRetryExtension },
+      { id: "proxy-request-status", name: "请求状态条", apply: codexPlusProxyStatusExtension },
+      { id: "model-picker-groups", name: "模型分组", apply: codexPlusModelPickerGroupsExtension },
+      { id: "dream-skin", name: "梦皮主题", apply: codexPlusDreamSkinExtension },
+      { id: "plugin-market-unlock", name: "插件市场解锁", apply: codexPlusPluginMarketUnlockExtension },
+      { id: "instance-identity", name: "多开身份提示", apply: codexPlusInstanceIdentityExtension },
+      { id: "session-title-hook", name: "会话标题中间件", apply: codexPlusSessionTitleExtension },
+      { id: "session-delete", name: "会话删除", apply: codexPlusSessionDeleteExtension },
+      { id: "markdown-export", name: "Markdown 导出", apply: codexPlusMarkdownExportExtension },
+      { id: "thread-id-badge", name: "会话 ID 角标", apply: codexPlusThreadIdBadgeExtension },
+      { id: "thread-scroll-restore", name: "滚动位置恢复", apply: codexPlusThreadScrollRestoreExtension },
+      { id: "conversation-view", name: "对话宽度", apply: codexPlusConversationViewExtension },
+      { id: "activity-overlay-right", name: "消息导航条靠右", apply: codexPlusActivityOverlayExtension },
+      { id: "paste-fix", name: "粘贴修复", apply: codexPlusPasteFixExtension },
+      { id: "weixin-desktop-sync", name: "微信会话同步", apply: codexPlusWeixinDesktopSyncExtension },
+      // 悬浮球是独立运行时，自己按停用集合判断；这两项让它在装卸、改设置时重新算一次。
+      { id: "stepwise", name: "下一步建议", apply: codexPlusStepwiseExtension },
+      { id: "answer-outline", name: "回答大纲", apply: codexPlusStepwiseExtension },
+      // 启动器每 5 秒按内置拓展状态决定是否驱动，页面侧无事可做。等价写法：/system/cursor-position + /cdp/evaluate。
+      { id: "pet-real-mouse", name: "桌宠跟随鼠标" },
+      // 以下由 Rust 侧（启动、注入、本地代理）按设置项生效，多数要重启 Codex，页面侧只登记。被顶替时 Rust 侧按
+      // 「关」处理（builtin_takeover），顶替它的拓展用 preload（页面最早期脚本）、launch（启动前后）、网关中间件写等价功能。
+      { id: "model-whitelist-unlock", name: "模型白名单解锁" },
+      { id: "native-fast-unlock", name: "原生 Fast 强制解锁" },
+      { id: "native-predictions", name: "原生输入预测" },
+      { id: "reasoning-collapse", name: "第三方模型回答完自动折叠过程" },
+      { id: "disable-work-view", name: "纯 API 模式禁用 Work 视图" },
+      { id: "force-chinese-locale", name: "强制中文界面" },
+      { id: "native-browser-identification", name: "原生 Edge / Chrome 请求标识兼容" },
+      { id: "standalone-quota-unlock", name: "官方额度解锁" },
+      { id: "image-overlay", name: "背景图" },
+    ];
+  }
+
+  /** 下发的停用 / 顶替状态：{ disabled: [id], replacedBy: { id: 拓展 key } }。 */
+  function codexPlusBuiltinExtensionState() {
+    const state = window.__codexPlusBuiltinExtensionState;
     return {
-      enabled: raw.enabled === true,
-      // `whaleWidget` 表示选了大肥鱼（完整鲸鱼挂件，见 96-whale-widget.js），其余都按简单桌宠处理。
-      kind: raw.kind === "whaleWidget" ? "whaleWidget" : "image",
-      agents: Array.isArray(raw.agents) ? raw.agents : ["codex"],
-      image: typeof raw.image === "string" ? raw.image : "whale",
-      customImageUrl: typeof raw.customImageUrl === "string" ? raw.customImageUrl : "",
-      size: Number.isFinite(size) ? Math.min(240, Math.max(64, size)) : 112,
-      soundEnabled: raw.soundEnabled !== false,
-      soundSet: typeof raw.soundSet === "string" && raw.soundSet ? raw.soundSet : "duck",
-      customSoundPress: typeof raw.customSoundPress === "string" ? raw.customSoundPress : "",
-      customSoundRelease: typeof raw.customSoundRelease === "string" ? raw.customSoundRelease : "",
-      volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0.6,
+      disabled: new Set(Array.isArray(state?.disabled) ? state.disabled.map(String) : []),
+      replacedBy: state?.replacedBy && typeof state.replacedBy === "object" ? state.replacedBy : {},
     };
   }
 
-  // 选了大肥鱼时简单桌宠不挂载：两者互斥，同一时间只显示一个。
-  function codexPlusAgentPetActive(settings) {
-    return !codexPlusAgentPet.disposed && Boolean(settings?.enabled) && settings.kind !== "whaleWidget"
-      && settings.agents.includes("codex");
-  }
-
-  function readCodexPlusAgentPetPosition() {
+  // 同页重复注入：先卸下上一份注入包装上的内置拓展（它们的监听、中间件、扫描步骤挂在旧内核上，新内核看不到）。
+  window.__codexPlusBuiltinExtensionHandles?.forEach((handle) => {
     try {
-      const value = JSON.parse(localStorage.getItem(codexPlusAgentPetPositionKey) || "null");
-      if (value && Number.isFinite(value.right) && Number.isFinite(value.bottom)) return value;
+      handle.dispose();
     } catch {}
-    // 默认在右下角、输入框上方。
-    return { right: 28, bottom: 132 };
+  });
+  const codexPlusBuiltinExtensionHandles = window.__codexPlusBuiltinExtensionHandles = new Map();
+
+  /**
+   * 内置功能的数据作为服务提供（不随界面那一层的内置拓展装卸）：用 replaces 顶替用量状态栏、请求状态条的拓展
+   * 也能 inject 这些数据，自己画界面。
+   *   codexpp.usage：cached(threadId) → { speed, cache, context, stale, modelContextWindow } | null（状态栏取过数据的会话）
+   *   codexpp.proxyStatus：requests() → 最近一次轮询到的代理请求；fetch() → 立即问一次 Codex++
+   */
+  function installCodexPlusBuiltinDataServices() {
+    if (codexPlusServices.has("codexpp.usage")) return;
+    codexPlusProvideService("codexpp.usage", Object.freeze({
+      cached: (threadId) => codexPlusUsageSnapshot(codexPlusUsageState.cache.get(String(threadId || codexPlusCurrentSessionId()))),
+    }), "builtin");
+    codexPlusProvideService("codexpp.proxyStatus", Object.freeze({
+      requests: () => [...(codexPlusProxyStatusState.requests ?? [])],
+      async fetch() {
+        const result = await codexPlusProxyStatusPostWithTimeout();
+        return result?.status === "ok" && Array.isArray(result.requests) ? result.requests : [];
+      },
+    }), "builtin");
   }
 
-  function writeCodexPlusAgentPetPosition(position) {
-    try { localStorage.setItem(codexPlusAgentPetPositionKey, JSON.stringify(position)); } catch {}
-  }
-
-  // 以右下角为基准记位置：窗口缩放时桌宠跟着右下角走，再夹回可视区。
-  function placeCodexPlusAgentPet(position) {
-    const root = codexPlusAgentPet.root;
-    if (!root) return;
-    const size = root.offsetWidth || 112;
-    const maxRight = Math.max(0, window.innerWidth - size);
-    const maxBottom = Math.max(0, window.innerHeight - size);
-    const right = Math.min(maxRight, Math.max(0, position.right));
-    const bottom = Math.min(maxBottom, Math.max(0, position.bottom));
-    root.style.right = `${right}px`;
-    root.style.bottom = `${bottom}px`;
-    return { right, bottom };
-  }
-
-  function codexPlusAgentPetAudioContext() {
-    if (codexPlusAgentPet.audio) return codexPlusAgentPet.audio;
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (typeof AudioContextClass !== "function") return null;
-    try { codexPlusAgentPet.audio = new AudioContextClass(); } catch { return null; }
-    return codexPlusAgentPet.audio;
-  }
-
-  function decodeCodexPlusAgentPetSound(context, dataUri) {
-    const comma = typeof dataUri === "string" ? dataUri.indexOf(",") : -1;
-    if (comma < 0) return Promise.resolve(null);
+  /** 按下发状态装上 / 卸下内置拓展。重复调用只处理有变化的项。 */
+  function syncCodexPlusBuiltinExtensions() {
     try {
-      const binary = atob(dataUri.slice(comma + 1));
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-      return context.decodeAudioData(bytes.buffer).catch(() => null);
-    } catch {
-      return Promise.resolve(null);
+      installCodexPlusBuiltinDataServices();
+    } catch (error) {
+      codexPlusMarkExtensionFailure("builtin:data-services", String(error?.stack || error?.message || error));
+    }
+    const inactive = codexPlusBuiltinInactiveIds();
+    const state = codexPlusBuiltinExtensionState();
+    for (const definition of codexPlusBuiltinExtensionCatalog()) {
+      const wanted = !state.disabled.has(definition.id) && !state.replacedBy[definition.id];
+      const handle = codexPlusBuiltinExtensionHandles.get(definition.id);
+      if (wanted && !handle) {
+        try {
+          const ctx = codexPlusCreateExtension({
+            id: `builtin:${definition.id}`,
+            apply(ctx) {
+              // 停用集合是功能侧「这个内置拓展装着没有」的读数：装上前移出；卸下时最先记回（最后登记、最先撤销），
+              // 功能自己的撤销步骤（再对齐一次）读到的就是停用。
+              inactive.delete(definition.id);
+              try {
+                if (typeof definition.apply === "function") definition.apply(ctx);
+              } finally {
+                ctx.effect(() => () => inactive.add(definition.id));
+              }
+            },
+          }, { scriptKey: `builtin:${definition.id}` });
+          codexPlusBuiltinExtensionHandles.set(definition.id, ctx);
+        } catch (error) {
+          inactive.add(definition.id);
+          codexPlusMarkExtensionFailure(`builtin:${definition.id}`, String(error?.stack || error?.message || error));
+        }
+      } else if (!wanted && handle) {
+        codexPlusBuiltinExtensionHandles.delete(definition.id);
+        handle.dispose();
+      } else if (!wanted && !inactive.has(definition.id)) {
+        // 还没装上过（注入早期按默认启用跑着）：直接记成停用，补一轮扫描让按停用集合判断的功能撤下。
+        inactive.add(definition.id);
+        scheduleDeferredScan();
+      }
     }
   }
 
-  // 与后端 `agent_pet::load_sound` 返回的 key 同一规则：自定义音效带文件名，换了文件就重新取。
-  function codexPlusAgentPetSoundKey(settings) {
-    return settings.soundSet === "custom"
-      ? `custom:${settings.customSoundPress}:${settings.customSoundRelease}`
-      : settings.soundSet;
+  /** 内置拓展的现状：给 codexPlus.builtins() 与诊断用。 */
+  function codexPlusBuiltinExtensionList() {
+    const state = codexPlusBuiltinExtensionState();
+    return codexPlusBuiltinExtensionCatalog().map(({ id, name }) => ({
+      id,
+      name,
+      active: codexPlusBuiltinExtensionActive(id),
+      disabled: state.disabled.has(id),
+      replacedBy: state.replacedBy[id] || null,
+    }));
   }
 
-  function decodeCodexPlusAgentPetSounds(context, key, sounds) {
-    for (const slot of ["press", "release"]) {
-      const bufferKey = `${key}:${slot}`;
-      if (codexPlusAgentPet.buffers.has(bufferKey) || !sounds?.[slot]) continue;
-      codexPlusAgentPet.buffers.set(bufferKey, null);
-      void decodeCodexPlusAgentPetSound(context, sounds[slot]).then((buffer) => {
-        if (buffer) codexPlusAgentPet.buffers.set(bufferKey, buffer);
-        else codexPlusAgentPet.buffers.delete(bufferKey);
+  /**
+   * 「按开关对齐」的内置功能共用的写法，只用公开 ctx 接口（第三方拓展照抄即可）：
+   * 装上时对齐一次，卸下时再对齐一次（这时已记成停用，功能自己撤下）；scan：跟着页面扫描对齐（"deferred" | "light"）。
+   * settings：true 在启动读到设置、页面里改了设置（settings/changed）时对齐；"heartbeat" 另外每次心跳读到设置
+   * （含管理器里改的）都对齐，只给对齐很便宜、又要跟上管理器改动的功能用。
+   */
+  function codexPlusAlignWith(ctx, align, { settings = false, scan = null } = {}) {
+    const run = () => runScanStep(align);
+    if (scan) ctx.onScan(align, { phase: scan });
+    if (settings) {
+      ctx.on("settings/loaded", (load) => {
+        if (settings === "heartbeat" || load?.reason !== "heartbeat") run();
       });
+      ctx.on("settings/changed", run);
     }
-  }
-
-  // 下载 / 自定义音效：向后端要一次，失败 30 秒后再试。
-  function requestCodexPlusAgentPetSounds(context, key) {
-    if (codexPlusAgentPet.soundKey === key) return;
-    if (Date.now() < codexPlusAgentPet.soundRetryAt) return;
-    codexPlusAgentPet.soundKey = key;
-    const request = ++codexPlusAgentPet.soundRequest;
-    void Promise.resolve(postJson("/agent-pet/sound", {})).then((result) => {
-      if (request !== codexPlusAgentPet.soundRequest || codexPlusAgentPet.audio !== context) return;
-      if (result?.status !== "ok" || typeof result.key !== "string") {
-        throw new Error(result?.message || result?.status || "音效不可用");
-      }
-      codexPlusAgentPet.soundRetryAt = 0;
-      codexPlusAgentPet.soundFailureLogged = false;
-      decodeCodexPlusAgentPetSounds(context, result.key, result);
-    }).catch((error) => {
-      if (request !== codexPlusAgentPet.soundRequest) return;
-      codexPlusAgentPet.soundKey = "";
-      codexPlusAgentPet.soundRetryAt = Date.now() + 30000;
-      if (!codexPlusAgentPet.soundFailureLogged) {
-        codexPlusAgentPet.soundFailureLogged = true;
-        void sendCodexPlusDiagnostic("agent_pet_sound_failed", { message: String(error?.message || error) });
-      }
+    ctx.effect(() => {
+      run();
+      return run;
     });
   }
 
-  // 预解码一组按压 / 松开音；起播走同步路径，手感才贴手。
-  function warmCodexPlusAgentPetSounds(settings) {
-    const context = codexPlusAgentPetAudioContext();
-    if (!context) return;
-    const embedded = window.__CODEX_PLUS_AGENT_PET_SOUNDS__?.[settings.soundSet];
-    if (embedded) decodeCodexPlusAgentPetSounds(context, settings.soundSet, embedded);
-    else requestCodexPlusAgentPetSounds(context, codexPlusAgentPetSoundKey(settings));
+  /** 用量状态栏：经公开的 composer.below 插槽拿每个输入框下方的容器，状态栏放进当前输入框的那个。 */
+  function codexPlusUsageStatusLineExtension(ctx) {
+    codexPlusUsageState.slotHosts ||= new Set();
+    ctx.registerSlot({
+      slot: "composer.below",
+      order: 0,
+      render: ({ container }) => {
+        codexPlusUsageState.slotHosts.add(container);
+        window.__codexPlusUsageStatusLineRuntime?.sync?.();
+        return () => {
+          codexPlusUsageState.slotHosts.delete(container);
+          if (codexPlusUsageState.node?.parentElement === container) codexPlusUsageState.node.remove();
+          window.__codexPlusUsageStatusLineRuntime?.sync?.();
+        };
+      },
+    });
+    ctx.effect(() => {
+      startCodexPlusUsageStatusLine();
+      return () => stopCodexPlusUsageStatusLine();
+    });
+    codexPlusAlignWith(ctx, () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), { settings: true });
   }
 
-  function playCodexPlusAgentPetSound(settings, slot, delaySeconds = 0) {
-    const context = codexPlusAgentPet.audio;
-    const buffer = codexPlusAgentPet.buffers.get(`${codexPlusAgentPetSoundKey(settings)}:${slot}`);
-    if (!context || !buffer || settings.volume <= 0) return null;
+  /** 请求状态条：经公开的 composer.above 插槽拿每个输入框上方的容器。 */
+  function codexPlusProxyStatusExtension(ctx) {
+    codexPlusProxyStatusState.slotHosts ||= new Set();
+    ctx.registerSlot({
+      slot: "composer.above",
+      order: 0,
+      render: ({ container }) => {
+        codexPlusProxyStatusState.slotHosts.add(container);
+        window.__codexPlusProxyRequestStatusRuntime?.refresh?.();
+        return () => {
+          codexPlusProxyStatusState.slotHosts.delete(container);
+          if (codexPlusProxyStatusState.node?.parentElement === container) codexPlusProxyStatusState.node.remove();
+        };
+      },
+    });
+    ctx.effect(() => {
+      startCodexPlusProxyStatus();
+      return () => stopCodexPlusProxyStatus();
+    });
+  }
+
+  /** 打字特效：全局输入监听随拓展装卸，模式跟着设置对齐。 */
+  function codexPlusTypingEffectsExtension(ctx) {
+    ctx.effect(() => {
+      installCodexPlusTypingEffects();
+      return () => uninstallCodexPlusTypingEffects();
+    });
+    codexPlusAlignWith(ctx, syncCodexPlusTypingEffects, { settings: "heartbeat" });
+  }
+
+  /** 语音听写：输入框 footer 会重建，入口跟着页面扫描补；卸下时撤掉入口并取消进行中的录音。 */
+  function codexPlusDictationExtension(ctx) {
+    ctx.listen(document, "keydown", codexPlusDictationKeyHandler, true);
+    codexPlusAlignWith(ctx, installCodexPlusDictation, { scan: "deferred" });
+  }
+
+  /** 轮次回退：菜单项跟着轻量扫描补，开关改了立即启停。 */
+  function codexPlusTurnRewindExtension(ctx) {
+    codexPlusAlignWith(ctx, syncCodexPlusTurnRewind, { scan: "light", settings: true });
+  }
+
+  /** 容量不足自动重试：轮询定时器装上时按设置启动，改设置即启停，卸下时清掉定时器与浮标。 */
+  function codexPlusCapacityAutoRetryExtension(ctx) {
+    codexPlusAlignWith(ctx, syncCodexPlusCapacityAutoRetry, { settings: "heartbeat" });
+  }
+
+  /** 模型分组：模型菜单的轮询随拓展装上开始；卸下时扫描一次清理分组、停下轮询。 */
+  function codexPlusModelPickerGroupsExtension(ctx) {
+    codexPlusAlignWith(ctx, () => window.__codexPlusModelPickerGroupsRuntime?.sync?.());
+  }
+
+  /** 梦皮主题：主界面重建时补皮肤，设置变了就重装或清理。 */
+  function codexPlusDreamSkinExtension(ctx) {
+    codexPlusAlignWith(ctx, refreshDreamSkin, { settings: "heartbeat", scan: "deferred" });
+  }
+
+  /** 插件市场解锁：补丁装上后撤不掉，停用后刷新页面才完全恢复。 */
+  function codexPlusPluginMarketUnlockExtension(ctx) {
+    ctx.onScan(installCodexPluginMarketplacePatches);
+  }
+
+  /**
+   * 按设置开关注册 / 撤销一项会话行操作（只用公开 ctx 接口）：读到、改了设置时重新判断，开着就注册、关了就撤销。
+   */
+  function codexPlusRowActionWhen(ctx, enabled, definition) {
+    let dispose = null;
+    const sync = () => {
+      const wanted = !!enabled();
+      if (wanted && !dispose) dispose = ctx.registerRowAction(definition, { id: definition.id });
+      else if (!wanted && dispose) {
+        dispose();
+        dispose = null;
+      }
+    };
+    ctx.on("settings/loaded", () => runScanStep(sync));
+    ctx.on("settings/changed", () => runScanStep(sync));
+    sync();
+  }
+
+  /**
+   * 会话删除：会话行上常驻的删除按钮（公开的行内会话行操作），确认、删除、撤销都在 80-session-share.js；
+   * 侧栏重建（如折叠再展开项目分组）时把已删会话重新藏起来（#2671）；点击走文档级委托（按钮会被克隆替换）。
+   */
+  function codexPlusSessionDeleteExtension(ctx) {
+    ctx.onScan(filterDeletedSessionRows);
+    ctx.effect(() => {
+      installDeleteButtonEventDelegation();
+      return () => {
+        document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
+        window.__codexSessionDeleteDocumentDeleteHandler = null;
+      };
+    });
+    codexPlusRowActionWhen(ctx, () => codexPlusSettings().sessionDelete, {
+      id: "session-delete",
+      placement: "inline",
+      label: "删除",
+      icon: trashIconSvg(),
+      className: buttonClass,
+      order: 10,
+      onMount: ({ button }) => {
+        button.dataset.codexDeleteVersion = codexDeleteVersion;
+      },
+      onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event),
+    });
+  }
+
+  /** Markdown 导出：会话行「…」菜单与归档页行上的「导出」（公开的会话行操作，归档页的行按标题解析会话 id）。 */
+  function codexPlusMarkdownExportExtension(ctx) {
+    codexPlusRowActionWhen(ctx, () => codexPlusSettings().markdownExport, {
+      id: "markdown-export",
+      label: "导出",
+      icon: "⇩",
+      className: exportButtonClass,
+      surfaces: ["sidebar", "archived"],
+      order: 10,
+      onActivate: async ({ archived, resolve, row }) => {
+        const ref = archived ? await resolve() : sessionRefFromRow(row);
+        if (!ref?.session_id) {
+          showToast("导出失败：未找到归档会话 ID", null);
+          return;
+        }
+        await exportMarkdown(ref);
+      },
+    });
+  }
+
+  /** 会话 ID 角标。 */
+  function codexPlusThreadIdBadgeExtension(ctx) {
+    codexPlusAlignWith(ctx, refreshThreadIdBadges, { scan: "deferred" });
+  }
+
+  /**
+   * 滚动位置恢复：滚动、导航、路由钩子跟着轻量扫描补（钩子按设置判断，关着时不动），
+   * 完整扫描时同步一次位置；关掉（改设置或卸下）时撤掉排着的保存 / 恢复定时器。
+   */
+  function codexPlusThreadScrollRestoreExtension(ctx) {
+    ctx.onScan(() => {
+      updateThreadScrollHandlers();
+      installThreadScrollProgrammaticScrollGuard();
+      installThreadScrollNavigationCapture();
+      installThreadScrollUserIntentCapture();
+      installThreadScrollRouteHooks();
+      scheduleThreadScrollSync(true);
+    }, { phase: "light" });
+    ctx.onScan(() => scheduleThreadScrollSync());
+    const stopWhenOff = () => {
+      if (!codexPlusSettings().threadScrollRestore) stopThreadScrollRestore();
+    };
+    ctx.on("settings/changed", () => runScanStep(stopWhenOff));
+    codexPlusAlignWith(ctx, () => {
+      stopWhenOff();
+      scheduleDeferredScan();
+    });
+  }
+
+  /**
+   * 对话宽度：完整扫描、窗口缩放时对齐对话区宽度；Codex++ 设置变了（管理器里改、心跳同步过来）且开关有变化时立即重算。
+   */
+  function codexPlusConversationViewExtension(ctx) {
+    ctx.onScan(refreshConversationView);
+    let resizeFrame = 0;
+    ctx.listen(window, "resize", () => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => runScanStep(refreshConversationView));
+    });
+    ctx.effect(() => () => cancelAnimationFrame(resizeFrame));
+    let previous = !!codexPlusSettings().conversationView;
+    ctx.on("settings/loaded", () => {
+      const current = !!codexPlusSettings().conversationView;
+      if (current === previous) return;
+      previous = current;
+      runScanStep(refreshConversationView);
+    });
+    codexPlusAlignWith(ctx, () => {
+      refreshConversationViewControls();
+      refreshConversationView();
+    });
+  }
+
+  /** 消息导航条靠右：按设置切换页面根节点上的属性。 */
+  function codexPlusActivityOverlayExtension(ctx) {
+    codexPlusAlignWith(ctx, () => globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.(), { settings: "heartbeat" });
+  }
+
+  /** 微信会话同步：微信写入的会话通知桌面目录，读到设置（含心跳）时按设置里的待同步清单跑一次。 */
+  function codexPlusWeixinDesktopSyncExtension(ctx) {
+    ctx.on("settings/loaded", () => void syncWeixinDesktopThreads());
+  }
+
+  /**
+   * 下一步建议 / 回答大纲：悬浮球是独立运行时，这里在装卸、读到 / 改了设置时让它按当前设置重新算一次；
+   * 开关写进后端后让它重读自己的设置。两个内置拓展共用这一份，各自只管自己的开关。
+   */
+  function codexPlusStepwiseExtension(ctx) {
+    const backendKey = ctx.id === "builtin:answer-outline" ? "codexAppAnswerOutlineEnabled" : "codexAppStepwiseEnabled";
+    codexPlusAlignWith(ctx, () => syncStepwisePanel(), { settings: true });
+    ctx.on("settings/changed", (change) => {
+      if (change?.key !== backendKey || change.persisted !== true) return;
+      Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel());
+    });
+  }
+
+  /**
+   * 多开身份提示：完全用公开拓展接口写的内置拓展（overlay 插槽），示范内置功能与第三方拓展同一种写法。
+   * 启动器在独立 Codex 实例注入前设置 window.__CODEX_PLUS_INSTANCE_LABEL__（或兼容的 __CODEX_PLUS_INSTANCE_ID__）；
+   * 普通主实例没有这些值，不注册任何东西。
+   */
+  function codexPlusInstanceIdentityExtension(ctx) {
+    const raw = window.__CODEX_PLUS_INSTANCE_LABEL__ || window.__CODEX_PLUS_INSTANCE_ID__;
+    const label = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!label) return;
+    ctx.registerSlot({
+      slot: "overlay",
+      order: 0,
+      render: ({ container }) => {
+        const node = document.createElement("div");
+        node.id = "codex-plus-instance-identity";
+        node.setAttribute("role", "status");
+        node.setAttribute("aria-label", `当前 Codex++ 多开身份：${label}`);
+        node.style.cssText = [
+          "position:fixed",
+          "top:8px",
+          "left:50%",
+          "transform:translateX(-50%)",
+          "pointer-events:none",
+          "user-select:none",
+          "box-sizing:border-box",
+          "max-width:min(80vw,640px)",
+          "overflow:hidden",
+          "text-overflow:ellipsis",
+          "white-space:nowrap",
+          "padding:3px 10px",
+          "border:1px solid color-mix(in srgb,currentColor 22%,transparent)",
+          "border-radius:999px",
+          "background:color-mix(in srgb,var(--color-token-bg-primary,#202020) 88%,transparent)",
+          "color:var(--color-token-text-secondary,rgba(210,210,220,.9))",
+          "font:11px/16px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
+          "letter-spacing:.02em",
+          "opacity:.86",
+        ].join(";");
+        node.textContent = `Codex++ 多开 · ${label}`;
+        container.appendChild(node);
+      },
+    });
+  }
+
+  /**
+   * 会话标题中间件：会话第一轮结束后，若有拓展挂了 `session/title` 中间件，
+   * 以 { sessionId, title, firstMessage, lastMessage } 跑一遍链，结果的 title 与原标题不同就改名。
+   * 每个会话只处理一次（本页面生命周期内）；没有中间件时什么也不做，也不启动会话观察。
+   */
+  function codexPlusSessionTitleExtension(ctx) {
+    const handled = new Set();
+    const firstMessages = new Map();
+    let watching = null;
+    const sync = () => {
+      const wanted = codexPlusExtensionInterceptors.has("session/title");
+      if (wanted && !watching) {
+        watching = ctx.on("session/event", (event, { sessionId }) => {
+          if (event?.type === "user/message" && !firstMessages.has(sessionId)) firstMessages.set(sessionId, String(event.data?.text ?? ""));
+          if (event?.type !== "turn/complete" || handled.has(sessionId)) return;
+          handled.add(sessionId);
+          void codexPlusRunSessionTitle(sessionId, firstMessages.get(sessionId) ?? "", String(event.data?.lastMessage ?? ""));
+        });
+      } else if (!wanted && watching) {
+        watching();
+        watching = null;
+      }
+    };
+    ctx.on("extensions/changed", sync);
+    ctx.setTimeout(sync, 0);
+  }
+
+  async function codexPlusRunSessionTitle(sessionId, firstMessage, lastMessage) {
+    const query = codexPlusServices.get("sessionQuery")?.value;
+    const sessions = codexPlusServices.get("sessions")?.value;
+    if (!query || !sessions) return;
     try {
-      if (context.state === "suspended") void context.resume();
-      const source = context.createBufferSource();
-      const gain = context.createGain();
-      gain.gain.value = settings.volume;
-      source.buffer = buffer;
-      source.connect(gain).connect(context.destination);
-      const startAt = context.currentTime + Math.max(0, delaySeconds);
-      source.start(startAt);
-      return { source, startAt, duration: buffer.duration };
-    } catch {
-      return null;
+      const title = String((await query.readTitle(sessionId)) ?? "");
+      const result = await Promise.race([
+        Promise.resolve(codexPlusRunWaterfall("session/title", { sessionId, title, firstMessage, lastMessage })),
+        new Promise((resolve) => setTimeout(() => resolve(null), 30000)),
+      ]);
+      const next = String(result?.title ?? "").trim();
+      if (next && next !== title) await sessions.rename(sessionId, next.slice(0, 120));
+    } catch (error) {
+      codexPlusMarkExtensionFailure("builtin:session-title-hook", String(error?.stack || error?.message || error));
     }
   }
+  /**
+   * 内置拓展「粘贴修复」：在 document 捕获阶段拦截 paste，text/plain 非空时阻止默认行为并用
+   * execCommand('insertText') 插入纯文本，避免 Codex 把 Word 复制的内容识别为附件。
+   *
+   * 监听经 ctx.listen 挂上，拓展停用 / 被顶替时随卸载摘掉；热重注入时旧实例先卸载，不会重复挂。
+   * 开关：读到后端设置前按启动时注入的 window.__CODEX_PLUS_PASTE_FIX__（settings.codexAppPasteFix），
+   * 读到之后按设置项 pasteFix，所以改设置不必重启 Codex。
+   */
+  // 超过这个长度就不再拦截，交回 Codex 原生的「超长文本转附件」逻辑。
+  // 否则整段长文本会被 insertText 直接塞进输入框，造成渲染层卡死（issue #1931）。
+  const codexPlusPasteFixMaxInlineLength = 20000;
 
-  function stopCodexPlusAgentPetSound(playing) {
-    try { playing?.source?.stop(); } catch {}
+  function codexPlusPasteFixEnabled() {
+    return codexPlusBackendSettingsLoaded
+      ? codexPlusSettings().pasteFix === true
+      : window.__CODEX_PLUS_PASTE_FIX__?.enabled === true;
   }
 
-  function pressCodexPlusAgentPet() {
-    const settings = codexPlusAgentPetSettings();
-    codexPlusAgentPet.body.style.transform = codexPlusAgentPetSquash;
-    stopCodexPlusAgentPetSound(codexPlusAgentPet.press?.release);
-    codexPlusAgentPet.press = { sound: null, release: null };
-    if (!settings?.soundEnabled) return;
-    // 首次按下才建音频上下文（需要用户手势），这次按压的音若还没解码好就静音，下一次就有了。
-    warmCodexPlusAgentPetSounds(settings);
-    codexPlusAgentPet.press.sound = playCodexPlusAgentPetSound(settings, "press");
-  }
-
-  function releaseCodexPlusAgentPet() {
-    const settings = codexPlusAgentPetSettings();
-    codexPlusAgentPet.body.style.transform = "";
-    const press = codexPlusAgentPet.press;
-    if (!press || !settings?.soundEnabled) return;
-    // 点按：松开音排到按压音结束前一点点；按住超过按压音时长：立即播放。
-    let delay = 0;
-    if (press.sound && codexPlusAgentPet.audio) {
-      const end = press.sound.startAt + press.sound.duration - codexPlusAgentPetReleaseLeadMs / 1000;
-      delay = Math.max(0, end - codexPlusAgentPet.audio.currentTime);
-    }
-    press.release = playCodexPlusAgentPetSound(settings, "release", delay);
-  }
-
-  function mountCodexPlusAgentPet(settings) {
-    const root = document.createElement("div");
-    root.setAttribute("data-codex-plus-ext", "agent-pet");
-    root.setAttribute("role", "img");
-    root.setAttribute("aria-label", "Agent 桌宠");
-    root.style.cssText = "position:fixed;z-index:2147483000;display:none;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab;";
-    const body = document.createElement("div");
-    body.setAttribute("data-codex-plus-ext", "agent-pet");
-    // 与管理器里的预览同一组参数：底边为支点，松开时带一点过冲回弹。
-    body.style.cssText = "width:100%;height:100%;transform-origin:50% 100%;transition:transform .22s cubic-bezier(.34,1.56,.64,1);";
-    const image = document.createElement("img");
-    image.setAttribute("data-codex-plus-ext", "agent-pet");
-    image.alt = "";
-    image.draggable = false;
-    image.style.cssText = "width:100%;height:100%;object-fit:contain;pointer-events:none;filter:drop-shadow(0 4px 8px rgba(0,0,0,.18));";
-    body.appendChild(image);
-    root.appendChild(body);
-    document.body.appendChild(root);
-    codexPlusAgentPet.root = root;
-    codexPlusAgentPet.body = body;
-    codexPlusAgentPet.image = image;
-    registerCodexPlusExtensionSelector("[data-codex-plus-ext=agent-pet]");
-
-    const onPointerDown = (event) => {
-      if (event.button !== 0 && event.pointerType === "mouse") return;
-      event.preventDefault();
-      try { root.setPointerCapture(event.pointerId); } catch {}
-      const current = readCodexPlusAgentPetPosition();
-      codexPlusAgentPet.drag = { id: event.pointerId, x: event.clientX, y: event.clientY, start: current, moved: false };
-      root.style.cursor = "grabbing";
-      pressCodexPlusAgentPet();
-    };
-    const onPointerMove = (event) => {
-      const drag = codexPlusAgentPet.drag;
-      if (!drag || drag.id !== event.pointerId) return;
-      const dx = event.clientX - drag.x;
-      const dy = event.clientY - drag.y;
-      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-      drag.moved = true;
-      drag.position = placeCodexPlusAgentPet({ right: drag.start.right - dx, bottom: drag.start.bottom - dy });
-    };
-    const onPointerEnd = (event) => {
-      const drag = codexPlusAgentPet.drag;
-      if (!drag || drag.id !== event.pointerId) return;
-      codexPlusAgentPet.drag = null;
-      root.style.cursor = "grab";
-      if (drag.moved && drag.position) writeCodexPlusAgentPetPosition(drag.position);
-      releaseCodexPlusAgentPet();
-    };
-    const onResize = () => placeCodexPlusAgentPet(readCodexPlusAgentPetPosition());
-    root.addEventListener("pointerdown", onPointerDown);
-    root.addEventListener("pointermove", onPointerMove);
-    root.addEventListener("pointerup", onPointerEnd);
-    root.addEventListener("pointercancel", onPointerEnd);
-    root.addEventListener("contextmenu", (event) => event.preventDefault());
-    window.addEventListener("resize", onResize);
-    codexPlusAgentPet.cleanup.push(() => window.removeEventListener("resize", onResize));
-    applyCodexPlusAgentPetSize(settings);
-  }
-
-  function applyCodexPlusAgentPetSize(settings) {
-    const root = codexPlusAgentPet.root;
-    if (!root) return;
-    const size = `${settings.size}px`;
-    if (root.style.width !== size) {
-      root.style.width = size;
-      root.style.height = size;
-      placeCodexPlusAgentPet(readCodexPlusAgentPetPosition());
-    }
-  }
-
-  function unmountCodexPlusAgentPet() {
-    codexPlusAgentPet.cleanup.splice(0).forEach((cleanup) => cleanup());
-    codexPlusAgentPet.root?.remove();
-    codexPlusAgentPet.root = null;
-    codexPlusAgentPet.body = null;
-    codexPlusAgentPet.image = null;
-    codexPlusAgentPet.imageKey = "";
-    codexPlusAgentPet.imageRequest += 1;
-    codexPlusAgentPet.drag = null;
-    codexPlusAgentPet.press = null;
-    try { void codexPlusAgentPet.audio?.close(); } catch {}
-    codexPlusAgentPet.audio = null;
-    codexPlusAgentPet.buffers.clear();
-    codexPlusAgentPet.soundKey = "";
-    codexPlusAgentPet.soundRequest += 1;
-  }
-
-  function loadCodexPlusAgentPetImage(settings) {
-    const key = settings.image === "custom" ? `custom:${settings.customImageUrl}` : settings.image;
-    if (codexPlusAgentPet.imageKey === key) return;
-    if (Date.now() < codexPlusAgentPet.retryAt) return;
-    codexPlusAgentPet.imageKey = key;
-    const request = ++codexPlusAgentPet.imageRequest;
-    void Promise.resolve(postJson("/agent-pet/image", {})).then((result) => {
-      if (request !== codexPlusAgentPet.imageRequest || !codexPlusAgentPet.image) return;
-      if (result?.status !== "ok" || typeof result.image !== "string" || !result.image.startsWith("data:image/")) {
-        throw new Error(result?.message || result?.status || "图片不可用");
-      }
-      codexPlusAgentPet.image.src = result.image;
-      codexPlusAgentPet.root.style.display = "block";
-      codexPlusAgentPet.retryAt = 0;
-      codexPlusAgentPet.failureLogged = false;
-      placeCodexPlusAgentPet(readCodexPlusAgentPetPosition());
-    }).catch((error) => {
-      if (request !== codexPlusAgentPet.imageRequest) return;
-      // 下载失败（离线、地址失效）：30 秒后再试，期间不显示空白框。
-      codexPlusAgentPet.imageKey = "";
-      codexPlusAgentPet.retryAt = Date.now() + 30000;
-      if (!codexPlusAgentPet.failureLogged) {
-        codexPlusAgentPet.failureLogged = true;
-        void sendCodexPlusDiagnostic("agent_pet_image_failed", { message: String(error?.message || error) });
-      }
-    });
-  }
-
-  function syncCodexPlusAgentPet() {
-    const settings = codexPlusAgentPetSettings();
-    if (!codexPlusAgentPetActive(settings)) {
-      if (codexPlusAgentPet.root) unmountCodexPlusAgentPet();
-      codexPlusAgentPet.retryAt = 0;
+  function codexPlusPasteFixHandler(event) {
+    if (!codexPlusPasteFixEnabled()) return;
+    const text = event.clipboardData?.getData("text/plain");
+    if (typeof text !== "string" || text.length === 0) return;
+    // 长文本放行：让 Codex 自己决定是否转成附件
+    if (text.length > codexPlusPasteFixMaxInlineLength) {
+      console.log("[PasteFix]", `text too long (${text.length} chars); letting Codex handle it`);
       return;
     }
-    if (!document.body) return;
-    if (!codexPlusAgentPet.root || !codexPlusAgentPet.root.isConnected) {
-      if (codexPlusAgentPet.root) unmountCodexPlusAgentPet();
-      mountCodexPlusAgentPet(settings);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    let ok = false;
+    try {
+      ok = document.execCommand("insertText", false, text);
+    } catch (error) {
+      console.warn("[PasteFix]", "execCommand threw:", error && error.message);
     }
-    applyCodexPlusAgentPetSize(settings);
-    // 挂载后就预解码当前音效组（上下文此时可能是 suspended，按下时再 resume），第一次按压也有声音。
-    if (settings.soundEnabled) warmCodexPlusAgentPetSounds(settings);
-    loadCodexPlusAgentPetImage(settings);
+    if (!ok) console.warn("[PasteFix]", "execCommand failed; please paste again");
   }
 
-  window.__codexPlusAgentPetRuntime = {
-    version: 1,
-    sync: syncCodexPlusAgentPet,
-    dispose() { unmountCodexPlusAgentPet(); codexPlusAgentPet.disposed = true; },
-    get state() { return { mounted: Boolean(codexPlusAgentPet.root), imageKey: codexPlusAgentPet.imageKey, dragging: Boolean(codexPlusAgentPet.drag) }; },
+  function codexPlusPasteFixExtension(ctx) {
+    ctx.listen(document, "paste", codexPlusPasteFixHandler, { capture: true });
+  }
+  /**
+   * dsh 前端（client）插件的运行时：codexPlus.dshClient(ctx, modules, options)。
+   *
+   * dsh 的前端插件是懒 CJS 工厂（window.__ModuleLoader__.load({ id, factory })），factory(require) 返回
+   * { inject, apply(ctx) }，apply 里用 ctx.slots.register(options, Component) 往 dsh Web 客户端的 React 插槽里放组件。
+   * Codex 的页面也是 React（19），这里把 Codex 自己的 React / ReactDOM 交给插件的 require，再把 dsh 插槽一一对到
+   * Codex++ 的界面插槽：组件用 createRoot 渲染进插槽容器，随拓展实例卸载。对不上的插槽不显示，记一条失败说明。
+   *
+   * 配套拓展包把插件的 client.js 夹在两段胶水之间：前一段截住 __ModuleLoader__.load 并给 fetch 换成经后台转给插件
+   * 宿主半边（ctx.connection.fetch 注册的路由）的版本，后一段调这里。设计见 docs/plans/2026-10-30-dsh-plugin-import-design.md。
+   */
+
+  let codexPlusReactModulesPromise = null;
+
+  /**
+   * 找 Codex 页面里的 React、ReactDOM、react-dom/client、jsx-runtime。打包器把 CJS 依赖做成惰性 getter
+   * （`()=>(t||(e((t={exports:{}}).exports,t,t.exports),e=null),t.exports)`）导出，调用它就拿到模块本身；
+   * 这些 getter 只做一次初始化、之后返回缓存，调用没有副作用。
+   */
+  function loadCodexPlusReactModules() {
+    codexPlusReactModulesPromise ||= (async () => {
+      const getter = /^\(\)=>\(\w\|\|\(\w\(\(\w=\{exports:\{\}\}\)\.exports,\w,\w\.exports\),\w=null\),\w\.exports\)$/;
+      const urls = codexAppAssetCandidateUrls().filter((url) => /\.js(\?|$)/.test(url));
+      urls.sort((left, right) => Number(right.includes("app-shared")) - Number(left.includes("app-shared")));
+      const found = {};
+      for (const url of urls) {
+        let module;
+        try {
+          module = await import(url);
+        } catch {
+          continue;
+        }
+        for (const value of Object.values(module)) {
+          if (typeof value !== "function") continue;
+          let source = "";
+          try {
+            source = Function.prototype.toString.call(value);
+          } catch {}
+          if (!getter.test(source)) continue;
+          let exports;
+          try {
+            exports = value();
+          } catch {
+            continue;
+          }
+          if (!exports || (typeof exports !== "object" && typeof exports !== "function")) continue;
+          if (!found.react && typeof exports.createElement === "function" && typeof exports.useState === "function") found.react = exports;
+          else if (!found.reactDomClient && typeof exports.createRoot === "function") found.reactDomClient = exports;
+          else if (!found.reactDom && typeof exports.createPortal === "function" && typeof exports.flushSync === "function") found.reactDom = exports;
+          else if (!found.jsxRuntime && typeof exports.jsx === "function" && typeof exports.jsxs === "function") found.jsxRuntime = exports;
+        }
+        if (found.react && found.reactDomClient && found.reactDom && found.jsxRuntime) return found;
+      }
+      if (!found.react || !found.reactDomClient) throw new Error("没有在 Codex 页面里找到 React（Codex 版本不兼容）");
+      return found;
+    })();
+    codexPlusReactModulesPromise.catch(() => {
+      codexPlusReactModulesPromise = null;
+    });
+    return codexPlusReactModulesPromise;
+  }
+
+  /**
+   * dsh 插槽 → Codex++ 位置。kind：slot（界面插槽）、rowAction（会话行「更多」菜单的自绘项）、
+   * message（助手消息下方）、page（整页，带图标栏入口）。
+   */
+  const codexPlusDshSlotMap = {
+    "shell.overlay": { kind: "slot", slot: "overlay" },
+    "sidebar.workspaces.session.menu.item": { kind: "rowAction" },
+    "sidebar.workspaces.session.row.action": { kind: "slot", slot: "sessionRow.suffix" },
+    "sidebar.session.row.leading": { kind: "slot", slot: "sessionRow.prefix" },
+    "sidebar.footer.action": { kind: "slot", slot: "sidebar.bottom" },
+    "conversation.chat.turnTail": { kind: "slot", slot: "turn.after" },
+    "conversation.input.left": { kind: "slot", slot: "composer.left" },
+    "conversation.input.right": { kind: "slot", slot: "composer.right" },
+    "conversation.input.dock": { kind: "slot", slot: "composer.above" },
+    "conversation.input.overlay": { kind: "slot", slot: "composer.above" },
+    "conversation.composer.dock": { kind: "slot", slot: "composer.below" },
+    "conversation.session.header.actions": { kind: "slot", slot: "header.title" },
+    "conversation.session.header.utilities": { kind: "slot", slot: "titlebar" },
+    "conversation.session.header.corner": { kind: "slot", slot: "titlebar" },
+    // 右侧栏的页签（如 dsh 的终端、文件、文档预览）：Codex 里放进悬浮球面板的页签。
+    "sidebar.right.pane.tab": { kind: "floating" },
+    "conversation.chat.assistant-actions": { kind: "message" },
+    "conversation.input.model": { kind: "slot", slot: "composer.model" },
+    "tool.call.toolview": { kind: "toolView" },
+    "conversation.plan-review.actions": { kind: "toolView", kinds: ["plan"] },
+    "settings.section": { kind: "settings" },
+    "settings.general.item": { kind: "settings" },
+    "settings.plugins.tab": { kind: "settings" },
+    "sidebar.panellist": { kind: "page" },
+    "conversation.approval.detail": { kind: "slot", slot: "approval" },
+    "conversation.input.activity": { kind: "slot", slot: "activity.after" },
+    "conversation.hero.workspace": { kind: "slot", slot: "home.above" },
+    "conversation.hero.agentPreset": { kind: "slot", slot: "home.above" },
+    "conversation.hero.brand.mark": { kind: "slot", slot: "home.above" },
+    "conversation.view": { kind: "slot", slot: "thread.top" },
+    "main.conversation": { kind: "slot", slot: "thread.top" },
+    "conversation.header": { kind: "slot", slot: "header.title" },
+    "conversation.header.leading": { kind: "slot", slot: "header.title" },
+    "conversation.session.header": { kind: "slot", slot: "header.title" },
+    "conversation.session.header.lineage": { kind: "slot", slot: "header.title" },
+    "sidebar.session.row.hover": { kind: "slot", slot: "sessionRow.suffix" },
+    "shell.quota-notice": { kind: "slot", slot: "overlay" },
+    // 右侧栏的会话面板：Codex 里放进顶栏开关打开的侧边面板。
+    "rightbar.session": { kind: "sidePanel" },
+    "tool.view.cordis": { kind: "toolView" },
   };
+
+  /** dsh 快捷键绑定（{ code, modifiers }）→ Codex++ 的 "Mod+Shift+K" 写法；认不出时返回空串。 */
+  function codexPlusDshShortcutKey(binding) {
+    if (!binding || typeof binding.code !== "string" || binding.secondCode) return "";
+    const names = { primary: "Mod", control: "Ctrl", alt: "Alt", shift: "Shift", meta: "Meta" };
+    const modifiers = (Array.isArray(binding.modifiers) ? binding.modifiers : []).map((item) => names[item]).filter(Boolean);
+    const code = binding.code;
+    const key = /^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? code.slice(5) : /^F\d{1,2}$/.test(code) ? code
+      : ({ Comma: ",", Period: ".", Slash: "/", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Minus: "-", Equal: "=", Backquote: "`", Space: "Space", Enter: "Enter", Escape: "Escape" })[code];
+    return key ? [...modifiers, key].join("+") : "";
+  }
+
+  /**
+   * dsh 绑定的规范形（同 dsh 的 normalizeBinding）：primary 在 macOS 是 meta、别处是 control，修饰键去重排序；
+   * secondCode 是与 code 同时按住的第二个键（双键组合，不分先后）。认不出的键返回 null。
+   */
+  function codexPlusDshNormalizeBinding(binding, mac) {
+    if (!binding || typeof binding.code !== "string") return null;
+    const valid = (code) => /^(Key[A-Z]|Digit[0-9]|F([1-9]|1[0-9]|2[0-4]))$/.test(code)
+      || ["Slash", "Comma", "Period", "Backslash", "Backquote", "Minus", "Equal", "BracketLeft", "BracketRight", "Semicolon", "Quote", "Enter", "Escape", "Space", "Tab", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(code);
+    const codes = [binding.code, ...(typeof binding.secondCode === "string" ? [binding.secondCode] : [])].sort();
+    if (!codes.every(valid) || (codes.length === 2 && codes[0] === codes[1])) return null;
+    const modifiers = new Set((Array.isArray(binding.modifiers) ? binding.modifiers : []).map((item) => (item === "primary" ? (mac ? "meta" : "control") : item)));
+    return { code: codes[0], ...(codes[1] ? { secondCode: codes[1] } : {}), modifiers: ["control", "alt", "shift", "meta"].filter((item) => modifiers.has(item)) };
+  }
+
+  /** 规范绑定的键帽文字（双键组合两个键挨着写）。 */
+  function codexPlusDshBindingKeys(normalized, mac) {
+    if (!normalized) return [];
+    const names = { Slash: "/", Comma: ",", Period: ".", Backslash: "\\", Backquote: "`", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Semicolon: ";", Quote: "'", Escape: "Esc", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→" };
+    const key = (code) => names[code] ?? code.replace(/^(Key|Digit)/, "");
+    const symbols = mac ? { control: "⌃", alt: "⌥", shift: "⇧", meta: "⌘" } : { control: "Ctrl", alt: "Alt", shift: "Shift", meta: "Meta" };
+    return [...normalized.modifiers.map((item) => symbols[item]), key(normalized.code), ...(normalized.secondCode ? [key(normalized.secondCode)] : [])];
+  }
+
+  /**
+   * 所有 dsh 前端插件的插槽登记（跨包共享）。对得上 Codex++ 位置的插槽直接渲染进去；对不上的作为「子插槽」，
+   * 由别的 dsh 组件经 renderSlot / renderSlotChain 渲染（dsh 的复合组件就是这样拼起来的）；factory 经 renderFactorySlot。
+   */
+  const codexPlusDshSlotEntries = new Map();
+  const codexPlusDshFactories = new Map();
+  const codexPlusDshSlotListeners = new Set();
+  /** 被 renderSlot / renderSlotChain 请求过的插槽名：对不上 Codex++ 位置、也没人渲染的才算「不会显示」。 */
+  const codexPlusDshRequestedSlots = new Set();
+  let codexPlusDshSlotRevision = 0;
+
+  function codexPlusDshSlotsChanged() {
+    codexPlusDshSlotRevision += 1;
+    for (const listener of [...codexPlusDshSlotListeners]) {
+      try { listener(); } catch {}
+    }
+  }
+
+  function codexPlusDshAddSlotEntry(entry) {
+    if (!codexPlusDshSlotEntries.has(entry.name)) codexPlusDshSlotEntries.set(entry.name, new Set());
+    codexPlusDshSlotEntries.get(entry.name).add(entry);
+    codexPlusDshSlotsChanged();
+    return () => {
+      codexPlusDshSlotEntries.get(entry.name)?.delete(entry);
+      codexPlusDshSlotsChanged();
+    };
+  }
+
+  function codexPlusDshEntriesOf(name) {
+    return [...(codexPlusDshSlotEntries.get(name) ?? [])].sort((left, right) => left.order - right.order);
+  }
+
+  /** 一个可订阅的快照（dsh 的 ObservableSnapshot），给 useSyncExternalStore 用。 */
+  function codexPlusDshSnapshotStore(initial, start) {
+    let value = initial;
+    const listeners = new Set();
+    let stop = null;
+    return {
+      getSnapshot: () => value,
+      subscribe(listener) {
+        listeners.add(listener);
+        if (listeners.size === 1 && typeof start === "function") stop = start((next) => {
+          value = next;
+          for (const item of [...listeners]) {
+            try { item(); } catch {}
+          }
+        });
+        return () => {
+          listeners.delete(listener);
+          if (!listeners.size && typeof stop === "function") {
+            stop();
+            stop = null;
+          }
+        };
+      },
+      set(next) {
+        value = next;
+        for (const item of [...listeners]) {
+          try { item(); } catch {}
+        }
+      },
+    };
+  }
+
+  async function codexPlusRunDshClient(ctx, modules, options = {}) {
+    const packageName = String(options.packageName || ctx.id);
+    const libs = await loadCodexPlusReactModules();
+    if (ctx.disposed) return;
+    const { react: React, reactDomClient } = libs;
+    const fail = (message) => ctx.fail(new Error(`[dsh ${packageName}] ${message}`));
+
+    // ---- 客户端服务 ----
+    const sessionQuery = codexPlusServices.get("sessionQuery")?.value;
+    const sessionsWrite = codexPlusServices.get("sessions")?.value;
+    const emptyList = { ids: [], byId: {}, phase: "loading", projectionsBySession: {} };
+    const toList = (records) => {
+      const byId = {};
+      for (const record of records || []) {
+        byId[record.id] = { sessionId: record.id, agentAvailable: true, updatedAt: Number(record.updatedAt) || 0, running: false, blank: false, cwd: record.cwd || undefined, title: record.title || "" };
+      }
+      return { ids: Object.keys(byId), byId, phase: "ready", projectionsBySession: {} };
+    };
+    const refreshList = async () => {
+      if (!sessionQuery) return;
+      try {
+        sessionList.set(toList(await sessionQuery.listSessions({ limit: 100 })));
+      } catch (error) {
+        fail(`读取会话列表失败：${error?.message || error}`);
+      }
+    };
+    const sessionList = codexPlusDshSnapshotStore(emptyList, () => {
+      void refreshList();
+      const timer = setInterval(() => void refreshList(), 15000);
+      return () => clearInterval(timer);
+    });
+    const workspaceList = codexPlusDshSnapshotStore({ items: [], archivedSessionIds: [], pinnedSessionIds: [] });
+    const clientSessions = {
+      list: sessionList,
+      refresh: refreshList,
+      async create({ cwd } = {}) {
+        const result = await sessionsWrite?.create(undefined, cwd ? { cwd } : {});
+        return result?.thread?.id;
+      },
+      async fork({ sessionId } = {}) {
+        return (await sessionsWrite?.fork(sessionId))?.id;
+      },
+      retainInfo: () => undefined,
+    };
+    // 当前会话：轮询 Codex 当前打开的会话 id（切会话没有事件可听），变了才通知订阅者。
+    const selection = codexPlusDshSnapshotStore({ sessionId: codexPlusCurrentSessionId() || undefined }, (set) => {
+      let last = codexPlusCurrentSessionId() || undefined;
+      const timer = setInterval(() => {
+        const next = codexPlusCurrentSessionId() || undefined;
+        if (next !== last) {
+          last = next;
+          set({ sessionId: next });
+        }
+      }, 800);
+      return () => clearInterval(timer);
+    });
+    const uiWorkspace = { selection, clearMain() {} };
+    // 会话运行状态：拓展内核的 agent/status（running / idle / aborted）按会话记下来，给 useSessionStatus。
+    // 有组件订阅时才听（agent/status 会让内核起会话轮询）。
+    const statuses = codexPlusDshSnapshotStore({}, (set) => ctx.on("agent/status", (payload) => {
+      const id = payload?.sessionId ?? payload?.agent?.session?.id;
+      if (!id) return;
+      set({ ...statuses.getSnapshot(), [id]: payload.status === "running" ? "running" : "idle" });
+    }));
+    // 前端半边连插件宿主半边：rpc.call 经配套拓展包的后台转给插件经 ctx.connection.rpc 注册的处理器。
+    const connectionState = codexPlusDshSnapshotStore({ kind: "connected" });
+    const connection = {
+      hostname: globalThis.location?.hostname ?? "localhost",
+      isLoopback: true,
+      generation: codexPlusDshSnapshotStore({ id: 1 }),
+      state: connectionState,
+      rpc: {
+        async call(channel, endpoint, payload) {
+          try {
+            const result = await ctx.backend.call("rpc", { channel, endpoint, payload }, { timeout: 120000 });
+            if (result?.ok && Array.isArray(result.attachments)) {
+              // 附件按 path 放回 value 里（字节经 JSON 往返时是 base64）。
+              const value = structuredClone(result.value);
+              for (const { path, base64 } of result.attachments) {
+                const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+                let cursor = value;
+                for (const step of path.slice(0, -1)) cursor = cursor?.[step];
+                if (cursor && path.length) cursor[path[path.length - 1]] = bytes;
+              }
+              return { ok: true, value };
+            }
+            return result ?? { ok: false, error: { code: "EMPTY", message: "插件没有返回结果", details: {} } };
+          } catch (error) {
+            return { ok: false, error: { code: "TRANSPORT", message: String(error?.message || error), details: {} } };
+          }
+        },
+        /**
+         * 流式调用（如 typert 的 stream 方法）：后台在插件常驻进程里打开流，这里分批拉取；uplink 的值逐个送上去。
+         * signal 取消或迭代提前结束时关掉流。
+         */
+        open(channel, endpoint, payload, signal, uplink) {
+          return (async function* () {
+            const opened = await ctx.backend.call("rpcOpen", { channel, endpoint, payload }, { timeout: 120000 });
+            if (!opened?.ok) {
+              const failure = opened?.error || { code: "EMPTY", message: "插件没有打开这个流" };
+              throw Object.assign(new Error(failure.message), { code: failure.code, details: failure.details });
+            }
+            const id = opened.id;
+            let closed = false;
+            const close = () => {
+              if (closed) return;
+              closed = true;
+              ctx.backend.call("rpcClose", { id }).catch(() => {});
+            };
+            signal?.addEventListener?.("abort", close, { once: true });
+            if (uplink && typeof uplink[Symbol.asyncIterator] === "function") {
+              void (async () => {
+                for await (const item of uplink) {
+                  if (closed) return;
+                  await ctx.backend.call("rpcPush", { id, items: [item] });
+                }
+                if (!closed) await ctx.backend.call("rpcPush", { id, items: [], end: true });
+              })().catch(() => {});
+            }
+            try {
+              while (!closed) {
+                const batch = await ctx.backend.call("rpcPull", { id, waitMs: 1000 }, { timeout: 30000 });
+                for (const item of batch?.items || []) yield item;
+                if (batch?.error) throw Object.assign(new Error(batch.error.message), { code: batch.error.code, details: batch.error.details });
+                if (batch?.done) {
+                  closed = true;
+                  return;
+                }
+              }
+            } finally {
+              signal?.removeEventListener?.("abort", close);
+              close();
+            }
+          })();
+        },
+      },
+      reconnect() {},
+      registerGenerationSource: () => () => {},
+      start: () => ({ stop() {} }),
+      stop() {},
+    };
+    let localeSnapshot = { id: ctx.locale.current, revision: 0 };
+    const localeService = {
+      register(ns, langOrDicts, dict) {
+        return ctx.locale.register(String(ns), langOrDicts, dict);
+      },
+      bind: (ns) => ctx.locale.bind(String(ns)),
+      getLocale: () => ({ id: ctx.locale.current }),
+      getSnapshot: () => localeSnapshot,
+      subscribe: (listener) => ctx.on("locale/change", () => {
+        localeSnapshot = { id: ctx.locale.current, revision: localeSnapshot.revision + 1 };
+        listener();
+      }),
+      resolveText: ctx.locale.resolve,
+      // 界面语言跟着 Codex 走，插件不能改；记一条说明。
+      setLocale(id) {
+        if (id && id !== ctx.locale.current) fail(`setLocale(${id}) 不生效：界面语言跟随 Codex 的设置`);
+      },
+    };
+
+    // dsh 的快捷键命令 → Codex++ 快捷键：取默认绑定（macOS 优先按平台挑），按下时问命令的 resolve。
+    // 单键（加修饰键）的绑定交给 Codex++ 的快捷键；双键组合（secondCode：两个键同时按住）与固定序列的输入
+    // （registerFixed / observeFixedInput，如 `g g`，插件自己按 stopSequenceMs 判断）由这里的键盘监听处理，同 dsh 的 installKeyboard。
+    const mac = Boolean(codexPlusIsMacPlatform);
+    const chordCommands = new Map();
+    const fixedListeners = new Set();
+    const shortcutCatalog = codexPlusDshSnapshotStore([]);
+    const fixedCatalog = codexPlusDshSnapshotStore([]);
+    const catalogRows = new Map();
+    const fixedRows = new Map();
+    const refreshCatalog = () => shortcutCatalog.set([...catalogRows.values()]);
+    const refreshFixed = () => fixedCatalog.set([...fixedRows.values()]);
+    let keyboard = null;
+    const shortcutContext = (event) => {
+      const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+      const element = path.find((item) => item && typeof item.closest === "function") ?? event?.target ?? document.activeElement ?? null;
+      const closest = (selector) => (element && typeof element.closest === "function" ? element.closest(selector) : null);
+      const region = closest(".xterm") ? "terminal" : closest("input, textarea, select, [contenteditable=\"true\"], [contenteditable=\"\"]") ? "editable" : "page";
+      const dialogs = typeof document.querySelectorAll === "function" ? document.querySelectorAll("[role=dialog][aria-modal=true], dialog[open]") : [];
+      const top = dialogs[dialogs.length - 1];
+      return { source: "keyboard", region, modal: top ? top.dataset?.shortcutModal ?? "other" : null, target: element };
+    };
+    const installKeyboard = () => {
+      if (keyboard || typeof document.addEventListener !== "function") return;
+      const held = new Set();
+      const modifierCodes = /^(Shift|Control|Alt|Meta|OS)(Left|Right)?$/;
+      const reset = () => {
+        for (const listener of [...fixedListeners]) {
+          try { listener({ type: "reset" }); } catch {}
+        }
+      };
+      const keydown = (event) => {
+        if (!event || typeof event.code !== "string" || modifierCodes.test(event.code)) return;
+        const others = [...held].filter((code) => code !== event.code);
+        held.add(event.code);
+        const composing = Boolean(event.isComposing) || event.key === "Process" || event.key === "Dead";
+        const gesture = {
+          code: event.code, ...(others.length === 1 ? { secondCode: others[0] } : {}),
+          control: Boolean(event.ctrlKey), alt: Boolean(event.altKey), shift: Boolean(event.shiftKey), meta: Boolean(event.metaKey),
+          repeat: Boolean(event.repeat), composing, defaultPrevented: Boolean(event.defaultPrevented),
+        };
+        const context = shortcutContext(event);
+        const consume = () => event.preventDefault?.();
+        for (const listener of [...fixedListeners]) {
+          try { listener({ type: "keydown", gesture, context, consume }); } catch (error) { fail(`固定按键输入的监听器出错：${error?.message || error}`); }
+        }
+        if (gesture.repeat || composing || !gesture.secondCode) return;
+        const pair = [gesture.code, gesture.secondCode].sort().join("+");
+        for (const { command, binding } of chordCommands.values()) {
+          if ([binding.code, binding.secondCode].join("+") !== pair) continue;
+          if (!["control", "alt", "shift", "meta"].every((item) => gesture[item] === binding.modifiers.includes(item))) continue;
+          if (Array.isArray(command.regions) && command.regions.length && !command.regions.includes(context.region)) continue;
+          if (context.modal !== null && !(Array.isArray(command.modals) && command.modals.includes(context.modal))) continue;
+          const resolution = command.resolve?.(context);
+          if (resolution?.status === "handled") {
+            consume();
+            resolution.run();
+            return;
+          }
+        }
+      };
+      const keyup = (event) => {
+        if (event && typeof event.code === "string") held.delete(event.code);
+      };
+      const blur = () => {
+        held.clear();
+        reset();
+      };
+      document.addEventListener("keydown", keydown);
+      document.addEventListener("keyup", keyup, true);
+      for (const type of ["compositionstart", "compositionend", "focusin", "pointerdown"]) document.addEventListener(type, reset, true);
+      globalThis.addEventListener?.("blur", blur);
+      keyboard = () => {
+        document.removeEventListener?.("keydown", keydown);
+        document.removeEventListener?.("keyup", keyup, true);
+        for (const type of ["compositionstart", "compositionend", "focusin", "pointerdown"]) document.removeEventListener?.(type, reset, true);
+        globalThis.removeEventListener?.("blur", blur);
+        keyboard = null;
+      };
+      ctx.effect(() => () => keyboard?.());
+    };
+    const shortcutsService = {
+      runtime: "web",
+      platform: mac ? "macos" : "windows",
+      // dsh 的默认值（固定序列两次按键之间的最长间隔，插件按它判断序列是否作废）。
+      stopSequenceMs: 500,
+      catalog: shortcutCatalog,
+      config: codexPlusDshSnapshotStore({}),
+      fixedCatalog,
+      register(command) {
+        const defaults = command?.defaults || {};
+        const binding = Object.entries(defaults).find(([profile]) => profile === `web:${mac ? "macos" : "windows"}` || profile.endsWith(`:${mac ? "mac" : "windows"}`) || profile.endsWith(`:${mac ? "macos" : "windows"}`))?.[1] ?? Object.values(defaults)[0];
+        const normalized = codexPlusDshNormalizeBinding(binding, mac);
+        const id = String(command?.id || "");
+        const label = typeof command?.label === "function" ? command.label() : id;
+        catalogRows.set(id, { id, label, aliases: command?.aliases ?? [], keys: codexPlusDshBindingKeys(normalized, mac), aria: normalized && !normalized.secondCode ? codexPlusDshShortcutKey(binding) : undefined, binding: normalized, modified: false, conflicts: [], issue: normalized ? null : "unsupported-key" });
+        refreshCatalog();
+        const removeRow = () => {
+          catalogRows.delete(id);
+          refreshCatalog();
+        };
+        if (normalized?.secondCode) {
+          // 双键组合：Codex++ 的快捷键只认一个键，由这里的键盘监听匹配。
+          const entry = { command, binding: normalized };
+          chordCommands.set(id, entry);
+          installKeyboard();
+          return () => {
+            if (chordCommands.get(id) === entry) chordCommands.delete(id);
+            removeRow();
+          };
+        }
+        const key = codexPlusDshShortcutKey(binding);
+        if (!key) {
+          fail(`快捷键命令 ${id || "?"} 的默认绑定 Codex 里表达不了，没有注册`);
+          return removeRow;
+        }
+        try {
+          const dispose = ctx.registerShortcut({
+            key,
+            description: label,
+            run: ({ event }) => {
+              const resolution = command.resolve?.({ source: "keyboard", region: "page", modal: null, target: event?.target ?? null });
+              if (resolution?.status === "handled") resolution.run();
+            },
+          });
+          return () => {
+            dispose?.();
+            removeRow();
+          };
+        } catch (error) {
+          fail(`快捷键 ${key} 注册失败：${error?.message || error}`);
+          return removeRow;
+        }
+      },
+      // 固定按键动作（含序列的每一步）：只进目录给界面展示；真正的输入由插件经 observeFixedInput 自己判断。
+      registerFixed(command) {
+        const id = String(command?.id || "");
+        const bindings = (Array.isArray(command?.bindings) ? command.bindings : []).map((binding) => codexPlusDshNormalizeBinding(binding, mac)).filter(Boolean);
+        fixedRows.set(id, { id, label: typeof command?.label === "function" ? command.label() : id, keys: Array.isArray(command?.keys) ? command.keys : [], bindings, group: command?.group ?? "application" });
+        refreshFixed();
+        return () => {
+          fixedRows.delete(id);
+          refreshFixed();
+        };
+      },
+      observeFixedInput(listener) {
+        if (typeof listener !== "function") return () => {};
+        fixedListeners.add(listener);
+        installKeyboard();
+        return () => fixedListeners.delete(listener);
+      },
+      describeBinding: (binding) => {
+        const normalized = codexPlusDshNormalizeBinding(binding, mac);
+        return { keys: codexPlusDshBindingKeys(normalized, mac), aria: normalized && !normalized.secondCode ? codexPlusDshShortcutKey(binding) : undefined };
+      },
+      edit: async () => ({ ok: false, reason: "Codex++ 里快捷键在拓展里改" }),
+      recording: async () => {},
+      closeWindow: async () => {},
+    };
+    // dsh 的命令面板贡献 → Codex 输入框里的斜杠命令：action 直接跑；popupSelect 先列选项让用户挑。
+    const commandUi = {
+      register(contribution) {
+        const name = String(contribution?.name || "");
+        const ui = contribution?.ui;
+        if (!name || !ui) return () => {};
+        const session = () => ({ sessionId: codexPlusCurrentSessionId() || undefined });
+        try {
+          return ctx.registerCommand({
+            name,
+            description: typeof contribution.description === "function" ? contribution.description() : (typeof contribution.label === "function" ? contribution.label() : ""),
+            async run(_args, { toast }) {
+              if (typeof contribution.available === "function" && !contribution.available(session())) {
+                toast(`/${name} 现在不可用`, { type: "warning" });
+                return;
+              }
+              if (ui.kind === "action") return ui.run(session());
+              if (ui.kind !== "popupSelect") return;
+              const controller = new AbortController();
+              const options = await ui.options(session(), controller.signal);
+              if (!options?.length) {
+                toast(ui.searchLabels?.().empty || "没有可选项", { type: "info" });
+                return;
+              }
+              const picked = await ctx.ask({
+                title: typeof contribution.label === "function" ? contribution.label() : `/${name}`,
+                options: options.slice(0, 12).map((option) => ({ value: option.id, label: option.badge ? `${option.label}（${option.badge}）` : option.label })),
+              });
+              const option = options.find((item) => item.id === picked?.value);
+              if (option) await ui.onSelect(option, session());
+            },
+          });
+        } catch (error) {
+          fail(`命令 /${name} 注册失败：${error?.message || error}`);
+          return () => {};
+        }
+      },
+      decorate: () => () => {},
+      dismiss() {},
+      popupFor: () => undefined,
+    };
+    // dsh 主题（tokens）→ Codex++ 主题：token 名写成 CSS 变量；切换走 codexPlus.themes。
+    const themeService = {
+      getTheme: () => ({ preference: "system", fontSize: 14, active: { id: codexPlusThemesService().current || "default", colorScheme: document.documentElement.classList.contains("dark") ? "dark" : "light", tokens: {} }, themes: [], revision: 0 }),
+      exportInspectTokens: () => [],
+      setTheme: (id) => codexPlusThemesService().apply(String(id)),
+      setFontSize() {},
+      register(definition) {
+        if (!definition?.id) return () => {};
+        const variables = {};
+        for (const [name, value] of Object.entries(definition.tokens || {})) variables[name.startsWith("--") ? name : `--${name}`] = String(value);
+        return ctx.registerTheme({ id: String(definition.id), name: String(definition.id), variables });
+      },
+      overrideTokens: () => () => {},
+    };
+    // dsh 的 / 与 @ 菜单在 Codex 里归 Codex 自己：输入触发源注册不进去，记一条说明但不挡插件加载。
+    const inputTriggers = new Proxy({}, {
+      get: (_target, key) => (key === "then" ? undefined : (...args) => {
+        if (key === "register" || key === "registerSource") fail(`输入触发源 ${args[0]?.trigger || ""}${args[0]?.name || ""} 用的是 Codex 自己的 / 或 @ 菜单，Codex++ 不接管，不会出现`);
+        return () => {};
+      }),
+    });
+
+    // ---- 渲染 ----
+    class Boundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { failed: false };
+      }
+      static getDerivedStateFromError() {
+        return { failed: true };
+      }
+      componentDidCatch(error) {
+        fail(`组件出错：${error?.stack || error?.message || error}`);
+      }
+      render() {
+        return this.state.failed ? null : this.props.children;
+      }
+    }
+    const mount = (container, Component, props) => {
+      const root = reactDomClient.createRoot(container);
+      root.render(React.createElement(Boundary, null, React.createElement(Component, props)));
+      // React 不允许在渲染过程中同步卸载另一棵树：挪到微任务里。
+      return () => queueMicrotask(() => {
+        try { root.unmount(); } catch {}
+      });
+    };
+    // 子插槽与 factory 的渲染：订阅跨包登记表，登记变化时重画；每个条目各自的错误边界。
+    const useSlotRevision = () => React.useSyncExternalStore((listener) => {
+      codexPlusDshSlotListeners.add(listener);
+      return () => codexPlusDshSlotListeners.delete(listener);
+    }, () => codexPlusDshSlotRevision);
+    const SlotOutlet = ({ name, owner, opts, chain }) => {
+      useSlotRevision();
+      codexPlusDshRequestedSlots.add(name);
+      let entries = codexPlusDshEntriesOf(name);
+      if (opts?.entryKey !== undefined) entries = entries.filter((entry) => entry.key === String(opts.entryKey));
+      if (opts?.only !== undefined) entries = entries.filter((entry) => entry.id === String(opts.only) || entry.key === String(opts.only));
+      if (chain) {
+        for (const entry of entries) {
+          let matched = null;
+          try {
+            matched = typeof entry.select === "function" ? entry.select(owner) : owner;
+          } catch (error) {
+            entry.fail(`插槽 ${name} 的 select 出错：${error?.message || error}`);
+          }
+          if (matched !== null && matched !== undefined) return entry.element({ ...owner, matched });
+        }
+        return opts?.fallback ?? null;
+      }
+      if (!entries.length) return opts?.fallback ?? null;
+      return React.createElement(React.Fragment, null, ...entries.map((entry) => entry.element({ ...owner }, entry.id)));
+    };
+    const renderSlot = (name, owner = {}, opts = {}) => React.createElement(SlotOutlet, { name: String(name), owner, opts });
+    const renderSlotChain = (name, owner = {}, opts = {}) => React.createElement(SlotOutlet, { name: String(name), owner, opts, chain: true });
+    const renderFactorySlot = (name, props = {}, options = {}) => {
+      const FactoryOutlet = () => {
+        useSlotRevision();
+        const factory = codexPlusDshFactories.get(String(name));
+        if (!factory) return options.fallback ?? null;
+        return factory.element({
+          ...props,
+          useFactorySlot: (slot, fallback) => options.slots?.[slot] ?? factory.localSlots?.[slot] ?? fallback,
+        });
+      };
+      return React.createElement(FactoryOutlet);
+    };
+    const SessionProvider = ({ children }) => children ?? null;
+    const standardProps = (sessionId) => ({
+      renderSlot,
+      renderSlotChain,
+      SessionProvider,
+      sessionId,
+      useSessions: () => React.useSyncExternalStore(sessionList.subscribe, sessionList.getSnapshot),
+      useSession: (selector) => {
+        const list = React.useSyncExternalStore(sessionList.subscribe, sessionList.getSnapshot);
+        const session = sessionId ? list.byId[sessionId] : undefined;
+        return typeof selector === "function" ? selector(session) : session;
+      },
+      useSessionStatus: (id) => {
+        const map = React.useSyncExternalStore(statuses.subscribe, statuses.getSnapshot);
+        return map[id ?? sessionId] ?? "idle";
+      },
+      useWorkspaces: () => React.useSyncExternalStore(workspaceList.subscribe, workspaceList.getSnapshot),
+      usePanelInfo: () => ({ visible: true }),
+      useProjection: () => undefined,
+      renderFactorySlot,
+    });
+    // 本包登记的、对不上 Codex++ 位置的插槽：全部 apply 后过一会儿还没有任何组件渲染它，才记「不会显示」。
+    const unmappedNames = new Set();
+
+    let anonymous = 0;
+    const register = (options = {}, Component) => {
+      const name = String(options?.name || "");
+      const target = codexPlusDshSlotMap[name];
+      if (typeof Component !== "function" && typeof Component !== "object") {
+        fail(`插槽 ${name} 注册的不是 React 组件`);
+        return () => {};
+      }
+      const t = options.locale ? ctx.locale.bind(String(options.locale)) : (key) => key;
+      let face = {};
+      if (typeof options.inject === "function") {
+        try {
+          const raw = options.inject() || {};
+          const { hooks, ...rest } = raw;
+          face = { ...rest };
+          for (const [key, hook] of Object.entries(hooks || {})) face[`use${key[0].toUpperCase()}${key.slice(1)}`] = hook;
+        } catch (error) {
+          fail(`插槽 ${name} 的 inject 出错：${error?.message || error}`);
+        }
+      }
+      const order = Number.isFinite(options.order) ? Number(options.order) : 0;
+      const props = (extra) => ({ ...standardProps(extra.sessionId ?? (codexPlusCurrentSessionId() || undefined)), t, ...face, ...extra });
+      const label = typeof options.label === "function" ? options.label() : String(options.label || options.id || packageName);
+      const id = `dsh-${name}-${options.id || options.key || ++anonymous}`;
+      // 先登记进跨包登记表：父组件的 renderSlot 能渲染它；对得上 Codex++ 位置的再挂到那里。
+      const entry = {
+        id,
+        name,
+        key: options.key !== undefined ? String(options.key) : undefined,
+        order,
+        select: options.select,
+        fail,
+        element: (extra, key) => React.createElement(Boundary, { key }, React.createElement(Component, props(extra))),
+      };
+      const unregister = ctx.effect(() => codexPlusDshAddSlotEntry(entry));
+      if (!target) {
+        unmappedNames.add(name);
+        return unregister;
+      }
+      const dispose = mapToCodex(target, { name, Component, options, order, props, label, id });
+      return () => {
+        unregister();
+        dispose?.();
+      };
+    };
+    const mapToCodex = (target, { name, Component, options, order, props, label, id }) => {
+      switch (target.kind) {
+        case "slot":
+          return ctx.registerSlot({
+            slot: target.slot,
+            order,
+            render: ({ container, sessionId, title, turnKey }) => mount(container, Component, props({
+              ...(sessionId ? { sessionId, displayTitle: title } : {}),
+              ...(turnKey ? { turn: { key: turnKey }, seq: 0, openFile: () => {} } : {}),
+              wide: true,
+            })),
+          }, { id });
+        case "rowAction":
+          return ctx.registerRowAction({
+            label,
+            order,
+            render: ({ container, session_id, title, close }) => mount(container, Component, props({
+              sessionId: session_id,
+              displayTitle: title,
+              useMenuOpenState: () => [true, (open) => {
+                if (!open) close();
+              }],
+            })),
+          }, { id });
+        case "message":
+          return ctx.registerMessageDecoration({
+            roles: ["assistant"],
+            order,
+            render: ({ message, container }) => mount(container, Component, props({ messageId: message.id, sessionId: message.conversationId || undefined })),
+          }, { id });
+        case "toolView":
+          // keyed 插槽按工具名分派（key 就是工具名）；计划评审按条目类型。
+          return ctx.registerToolView({
+            ...(options.key ? { tools: [String(options.key)] } : {}),
+            ...(target.kinds ? { kinds: target.kinds } : {}),
+            order,
+            render: ({ container, call }) => mount(container, Component, props({
+              sessionId: call.sessionId || undefined,
+              callId: call.callId,
+              toolName: call.name,
+              phase: "result",
+              block: { type: "tool-call", id: call.callId, name: call.name, arguments: JSON.stringify(call.input ?? {}), result: call.output },
+              useDisclosure: () => [true, () => {}],
+              openFile: () => {},
+            })),
+          }, { id });
+        case "settings":
+          return ctx.registerSettingsSection({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ close: close || (() => {}) })),
+          }, { id });
+        case "sidePanel":
+          return ctx.registerSidePanel({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ close })),
+          }, { id });
+        case "floating":
+          return ctx.registerFloatingTab({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ dismiss: close, tab: { id } })),
+          }, { id });
+        case "page":
+          return ctx.registerPage({
+            title: label,
+            render: ({ container, close }) => mount(container, Component, props({ close: close || (() => {}) })),
+          }, { id, navLabel: label });
+        default:
+          return () => {};
+      }
+    };
+    const slots = {
+      register,
+      // Codex++ 的插槽一开始就都在：立刻执行，回调返回的撤销函数随拓展卸载。
+      inject(key, callback) {
+        let result;
+        try {
+          result = callback();
+        } catch (error) {
+          fail(`插槽 ${key} 的注册出错：${error?.message || error}`);
+          return () => {};
+        }
+        const disposers = typeof result === "function" ? [result] : result && typeof result[Symbol.iterator] === "function" ? [...result] : [];
+        return ctx.effect(() => () => disposers.forEach((dispose) => {
+          try { dispose?.(); } catch {}
+        }));
+      },
+      entries: () => [...codexPlusDshSlotEntries.values()].flatMap((set) => [...set]).map(({ id, name, key, order }) => ({ id, name, key, order })),
+      entriesOfSlot: (key) => codexPlusDshEntriesOf(String(key)).map(({ id, name, key: entryKey, order }) => ({ id, name, key: entryKey, order })),
+      spec: (key) => (codexPlusDshSlotMap[key] || codexPlusDshSlotEntries.has(String(key)) ? { key } : undefined),
+      snapshot: () => ({ revision: codexPlusDshSlotRevision }),
+      onEntryError: () => () => {},
+      subscribe(listener) {
+        codexPlusDshSlotListeners.add(listener);
+        return ctx.effect(() => () => codexPlusDshSlotListeners.delete(listener));
+      },
+      // factory：别的插件经 renderFactorySlot(name, props, { slots }) 渲染，useFactorySlot 取局部子插槽。
+      registerFactory(options = {}, Component) {
+        const name = String(options?.name || "");
+        if (!name || (typeof Component !== "function" && typeof Component !== "object")) return () => {};
+        let face = {};
+        try {
+          const raw = typeof options.inject === "function" ? options.inject() || {} : {};
+          const { hooks, ...rest } = raw;
+          face = { ...rest };
+          for (const [key, hook] of Object.entries(hooks || {})) face[`use${key[0].toUpperCase()}${key.slice(1)}`] = hook;
+        } catch (error) {
+          fail(`factory ${name} 的 inject 出错：${error?.message || error}`);
+        }
+        const t = options.locale ? ctx.locale.bind(String(options.locale)) : (key) => key;
+        let store;
+        try {
+          store = typeof options.store === "function" ? options.store() : options.store;
+        } catch {}
+        const factory = {
+          localSlots: options.slots && typeof options.slots === "object" ? {} : undefined,
+          element: (extra) => React.createElement(Boundary, null, React.createElement(Component, {
+            ...standardProps(codexPlusCurrentSessionId() || undefined), t, store, ...face, ...extra,
+          })),
+        };
+        codexPlusDshFactories.set(name, factory);
+        codexPlusDshSlotsChanged();
+        return ctx.effect(() => () => {
+          if (codexPlusDshFactories.get(name) === factory) codexPlusDshFactories.delete(name);
+          codexPlusDshSlotsChanged();
+        });
+      },
+    };
+    // typert 的前端半边（dsh 的 ctx.remote）：ctx.remote.<namespace>.<method>(...) 经 connection.rpc 的 /api 通道调宿主半边
+    // 登记的类型化方法；stream 方法返回可迭代的句柄（send / end / dispose）。描述清单向宿主要一次，$mount 可以再补。
+    const remoteNamespaces = {};
+    const remoteFailure = (result) => Object.assign(new Error(result?.error?.message || "调用失败"), { code: result?.error?.code, details: result?.error?.details });
+    const remotePayload = (descriptor, args) => {
+      if (!descriptor?.parameters) return { positional: args };
+      const named = {};
+      descriptor.parameters.forEach((parameter, index) => {
+        if (args[index] !== undefined || !parameter.optional) named[parameter.wire] = args[index];
+      });
+      return { args: named };
+    };
+    const remoteMethod = (namespace, method, descriptor) => {
+      const endpoint = `${namespace}/${method}`;
+      if (descriptor?.mode !== "stream") {
+        return async (...args) => {
+          const result = await connection.rpc.call("/api", endpoint, remotePayload(descriptor, args));
+          if (!result?.ok) throw remoteFailure(result);
+          return result.value;
+        };
+      }
+      return (...args) => {
+        const controller = new AbortController();
+        const queue = [];
+        let wake = null;
+        let ended = false;
+        const resume = () => {
+          const next = wake;
+          wake = null;
+          next?.();
+        };
+        const uplink = descriptor.uplink ? (async function* () {
+          for (;;) {
+            if (queue.length) {
+              yield queue.shift();
+              continue;
+            }
+            if (ended || controller.signal.aborted) return;
+            await new Promise((done) => { wake = done; });
+          }
+        })() : undefined;
+        const items = connection.rpc.open("/api", endpoint, remotePayload(descriptor, args), controller.signal, uplink);
+        return {
+          [Symbol.asyncIterator]: () => items[Symbol.asyncIterator](),
+          send(item) {
+            queue.push(item);
+            resume();
+          },
+          end() {
+            ended = true;
+            resume();
+          },
+          dispose() {
+            controller.abort();
+            ended = true;
+            resume();
+          },
+        };
+      };
+    };
+    const addRemoteDescriptor = (descriptor) => {
+      if (!descriptor?.namespace || !descriptor?.method) return;
+      const namespace = (remoteNamespaces[descriptor.namespace] ||= {});
+      namespace[descriptor.method] = remoteMethod(descriptor.namespace, descriptor.method, {
+        mode: descriptor.mode,
+        uplink: Boolean(descriptor.uplink),
+        parameters: (descriptor.parameters || []).map((parameter) => ({ wire: parameter.wire, optional: Boolean(parameter.optional || parameter.acceptsUndefined) })),
+      });
+      services[`remote.${descriptor.namespace}`] = namespace;
+    };
+    const remote = new Proxy({
+      async $mount(contribution) {
+        for (const descriptor of contribution?.descriptors || []) addRemoteDescriptor(descriptor);
+        return async () => {};
+      },
+      // 宿主转发的事件：对上 Codex++ 拓展内核的同名事件（agent/status 等）。
+      $on: (event, listener) => ctx.on(String(event), listener),
+    }, {
+      get(target, key) {
+        if (key in target) return target[key];
+        if (typeof key !== "string" || key === "then") return undefined;
+        // 没有描述的 namespace 也能调：按位置传参，由宿主半边按它登记的描述对上参数。
+        return remoteNamespaces[key] || new Proxy({}, {
+          get: (_inner, method) => (typeof method === "string" && method !== "then" ? remoteMethod(key, method) : undefined),
+        });
+      },
+    });
+
+    const services = {
+      slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace,
+      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers, connection, remote,
+    };
+    // Cordis 的 ready / dispose 只对本插件包：ready 在全部 apply 跑完后发，dispose 随拓展卸载。
+    const readyHandlers = [];
+    let ready = false;
+    const clientCtx = new Proxy({
+      get: (name) => services[name],
+      effect(callback) {
+        const result = callback();
+        if (typeof result === "function") return ctx.effect(() => result);
+        if (result && typeof result.next === "function") {
+          // generator effect：yield 出来的撤销函数随拓展卸载。
+          const disposers = [];
+          for (let step = result.next(); !step.done; step = result.next()) if (typeof step.value === "function") disposers.push(step.value);
+          return ctx.effect(() => () => disposers.reverse().forEach((dispose) => {
+            try { dispose(); } catch {}
+          }));
+        }
+        return () => {};
+      },
+      on(event, handler) {
+        if (event === "ready") {
+          if (ready) queueMicrotask(() => handler());
+          else readyHandlers.push(handler);
+          return () => {
+            const index = readyHandlers.indexOf(handler);
+            if (index >= 0) readyHandlers.splice(index, 1);
+          };
+        }
+        if (event === "dispose") return ctx.effect(() => handler);
+        return ctx.on(String(event), handler);
+      },
+      emit: (event, ...args) => ctx.emit(String(event), ...args),
+      // 可选依赖的激活写法：依赖都在才调用；Codex 里没有的服务不调用，也不算错（Cordis 同样只是不激活）。
+      inject(names, callback) {
+        const list = Array.isArray(names) ? names : Object.keys(names || {});
+        const missing = list.filter((item) => !(item in services));
+        if (missing.length) {
+          console.info(`[dsh ${packageName}] ctx.inject 的 ${missing.join("、")} 在 Codex 里没有，这一段不激活`);
+          return () => {};
+        }
+        return clientCtx.effect(() => callback(clientCtx));
+      },
+      setTimeout: (handler, delay) => ctx.setTimeout(handler, delay),
+      setInterval: (handler, delay) => ctx.setInterval(handler, delay),
+      logger: Object.assign((scope) => console.info.bind(console, `[dsh ${packageName}:${scope}]`), {
+        info: console.info.bind(console, `[dsh ${packageName}]`),
+        warn: console.warn.bind(console, `[dsh ${packageName}]`),
+        error: console.error.bind(console, `[dsh ${packageName}]`),
+        debug: () => {},
+      }),
+    }, {
+      get(target, key) {
+        if (key in target) return target[key];
+        if (typeof key === "string" && key in services) return services[key];
+        return undefined;
+      },
+    });
+
+    const builtinModules = {
+      react: React,
+      "react/jsx-runtime": libs.jsxRuntime,
+      "react/jsx-dev-runtime": libs.jsxRuntime,
+      "react-dom": libs.reactDom,
+      "react-dom/client": reactDomClient,
+    };
+    const require = (name) => {
+      if (name in builtinModules && builtinModules[name]) return builtinModules[name];
+      throw new Error(`dsh 前端插件 require 了 ${name}，Codex++ 只提供 React 与 ReactDOM`);
+    };
+    // 先求出各模块的插件对象：要用 remote 的话先向宿主半边要一次 typert 描述，remote.<namespace> 才能被 inject。
+    const loaded = [];
+    for (const entry of Array.isArray(modules) ? modules : []) {
+      try {
+        const exported = entry?.factory?.(require);
+        loaded.push({ entry, plugin: exported?.default && typeof exported.default.apply === "function" ? exported.default : exported });
+      } catch (error) {
+        fail(`加载 ${entry?.id || packageName} 失败：${error?.message || error}`);
+      }
+    }
+    const injectNames = (plugin) => (Array.isArray(plugin?.inject) ? plugin.inject : Object.keys(plugin?.inject || {})).map(String);
+    if (loaded.some(({ plugin }) => injectNames(plugin).some((name) => name === "remote" || name.startsWith("remote.")))) {
+      try {
+        const listed = await connection.rpc.call("/api", "$codexpp/typert-descriptors", null);
+        if (listed?.ok) for (const descriptor of listed.value || []) addRemoteDescriptor(descriptor);
+      } catch {}
+    }
+    for (const { entry, plugin } of loaded) {
+      if (ctx.disposed) return;
+      const apply = typeof plugin === "function" ? plugin : plugin?.apply;
+      if (typeof apply !== "function") {
+        fail(`${entry?.id || packageName} 没有导出 apply`);
+        continue;
+      }
+      // inject 的对象写法里 { name: { required: false } } 是可选依赖：缺了照样加载。
+      const inject = Array.isArray(plugin?.inject)
+        ? plugin.inject
+        : Object.entries(plugin?.inject || {}).filter(([, spec]) => spec?.required !== false).map(([name]) => name);
+      const missing = inject.filter((name) => !(name in services));
+      if (missing.length) {
+        fail(`${entry?.id || packageName} 依赖 ${missing.join("、")}，Codex 里没有这些前端服务，不加载`);
+        continue;
+      }
+      try {
+        await apply(clientCtx, options.config ?? {});
+      } catch (error) {
+        fail(`${entry?.id || packageName} 的 apply 出错：${error?.stack || error?.message || error}`);
+      }
+    }
+    if (ctx.disposed) return;
+    ready = true;
+    // 对不上 Codex++ 位置的插槽：给页面一点时间画出父组件，仍没人渲染才记一条说明。
+    if (unmappedNames.size) {
+      ctx.setTimeout(() => {
+        const orphaned = [...unmappedNames].filter((name) => !codexPlusDshRequestedSlots.has(name));
+        if (orphaned.length) fail(`插槽 ${orphaned.join("、")} 在 Codex 里没有对应位置，也没有别的 dsh 组件渲染它，不会显示`);
+      }, 3000);
+    }
+    for (const handler of readyHandlers.splice(0)) {
+      try {
+        await handler();
+      } catch (error) {
+        fail(`ready 监听器出错：${error?.message || error}`);
+      }
+    }
+  }
   window.__codexPlusScanScheduleCleanup?.();
   clearTimeout(window.__codexSessionDeleteScanTimer);
   cancelAnimationFrame(window.__codexSessionDeleteDeferredRaf);
@@ -21685,6 +26180,10 @@
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
       'nav[data-app-navigation-rail]',
+      // 审批卡片出现时补上拓展的 approval 插槽。
+      "[data-codex-approval-surface]",
+      // Codex 设置页导航出现时补上 settings.nav 插槽。
+      "[data-settings-panel-slug]",
       ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
     ].join(", ");
   }
@@ -21869,86 +26368,18 @@
 
     installStyle();
     sync();
+    // 之后由内置拓展「消息导航条靠右」在装卸、读到 / 改了设置时调用（96-builtin-extensions.js），这里不再自己轮询。
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__ = sync;
-    let attempts = 0;
-    const timer = window.setInterval(() => {
-      sync();
-      if (++attempts >= 60 && codexPlusBackendSettingsLoaded) window.clearInterval(timer);
-    }, 250);
   })();
-  /**
-   * 多开实例身份提示。
-   *
-   * 启动器会在独立 Codex 实例的 renderer 注入前设置
-   * `window.__CODEX_PLUS_INSTANCE_LABEL__`（或兼容用的
-   * `window.__CODEX_PLUS_INSTANCE_ID__`）。普通主实例没有这些值，因此不会
-   * 渲染提示。节点带有扩展归属标记，避免被扫描调度器当成 Codex 原生节点
-   * 触发自喂循环；也不占用公开的 window.codexPlus API 名称。
-   */
-  function installCodexPlusInstanceIdentity() {
-    const raw = window.__CODEX_PLUS_INSTANCE_LABEL__ || window.__CODEX_PLUS_INSTANCE_ID__;
-    const label = String(raw || "").replace(/\s+/g, " ").trim();
-    if (!label) return;
-    const mount = () => {
-      if (!document.body) return false;
-      let node = document.getElementById("codex-plus-instance-identity");
-      if (!node) {
-        node = document.createElement("div");
-        node.id = "codex-plus-instance-identity";
-        node.setAttribute("data-codex-plus-ext", "instance-identity");
-        node.setAttribute("role", "status");
-        node.style.cssText = [
-          "position:fixed",
-          "top:8px",
-          "left:50%",
-          "transform:translateX(-50%)",
-          "z-index:2147483600",
-          "pointer-events:none",
-          "user-select:none",
-          "box-sizing:border-box",
-          "max-width:min(80vw,640px)",
-          "overflow:hidden",
-          "text-overflow:ellipsis",
-          "white-space:nowrap",
-          "padding:3px 10px",
-          "border:1px solid color-mix(in srgb,currentColor 22%,transparent)",
-          "border-radius:999px",
-          "background:color-mix(in srgb,var(--color-token-bg-primary,#202020) 88%,transparent)",
-          "color:var(--color-token-text-secondary,rgba(210,210,220,.9))",
-          "font:11px/16px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
-          "letter-spacing:.02em",
-          "opacity:.86",
-        ].join(";");
-        document.body.appendChild(node);
-      }
-      node.textContent = `Codex++ 多开 · ${label}`;
-      node.setAttribute("aria-label", `当前 Codex++ 多开身份：${label}`);
-      return true;
-    };
-    if (mount()) return;
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", mount, { once: true });
-    } else {
-      const observer = new MutationObserver(() => {
-        if (mount()) observer.disconnect();
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-      setTimeout(() => observer.disconnect(), 10000);
-    }
-  }
-
   installCodexConfigReadDeadline();
+  void installCodexForkReadinessFallback();
   installCodexPlusForceChineseLocale();
-  installCodexPlusInstanceIdentity();
-  runScanStep(installCodexPlusTypingEffects);
-  runScanStep(syncCodexPlusWhaleWidget);
-  runScanStep(syncCodexPlusAgentPet);
+  // 打字特效、桌宠（含大肥鱼）由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);
     codexPlusResizeRafId = requestAnimationFrame(() => {
       syncActionGroupsLayout(true);
-      runScanStep(refreshConversationView);
     });
   };
   window.addEventListener("resize", window.__codexPlusResizeHandler);
@@ -21975,56 +26406,13 @@
   // 对外接口层在此刻挂载：此时所有分片都已执行完毕，闭包里的函数全部就绪。
   // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
+  installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
+  // 内置功能挂到拓展内核上（见 96-builtin-extensions.js）。旧版直接挂在 body 上的多开身份提示先摘掉，
+  // 现在由内置拓展经 overlay 插槽画。用户脚本注入包下发停用 / 顶替状态后会再调一次。
+  document.querySelector('body > #codex-plus-instance-identity[data-codex-plus-ext="instance-identity"]')?.remove();
+  window.__codexPlusSyncBuiltinExtensions = syncCodexPlusBuiltinExtensions;
+  syncCodexPlusBuiltinExtensions();
 })();
 
 // === 粘贴修复 (CodexPlusPlus 页面增强) ===
-// 控制开关：window.__CODEX_PLUS_PASTE_FIX__ = { enabled: <bool> }
-// 由 CodexPlusPlus 在启动时根据 settings.codexAppPasteFix 注入。
-// 关闭时不进入 if 体，行为与原 Codex 完全一致；开启时在 document 捕获阶段
-// 拦截 paste，若 text/plain 非空则阻止默认行为并调用 execCommand('insertText')
-// 插入纯文本，避免 Codex 把 Word 复制的内容识别为附件。
-// SENTINEL 保证多次执行（页面刷新、脚本重注入）只装一次 handler。
-if (window.__CODEX_PLUS_PASTE_FIX__ && window.__CODEX_PLUS_PASTE_FIX__.enabled === true) {
-  (() => {
-    const SENTINEL = '__codexPasteFixInstalled__';
-    if (window[SENTINEL]) return;
-    window[SENTINEL] = true;
-
-    const TAG = '[PasteFix]';
-
-    // 超过这个长度就不再拦截，交回 Codex 原生的「超长文本转附件」逻辑。
-    // 否则整段长文本会被 insertText 直接塞进输入框，造成渲染层卡死（issue #1931）。
-    const MAX_INLINE_LENGTH = 20000;
-
-    const handler = (e) => {
-      const cd = e.clipboardData;
-      if (!cd) return;
-
-      const text = cd.getData('text/plain');
-      if (typeof text !== 'string' || text.length === 0) return;
-
-      // 长文本放行：让 Codex 自己决定是否转成附件
-      if (text.length > MAX_INLINE_LENGTH) {
-        console.log(TAG, `text too long (${text.length} chars); letting Codex handle it`);
-        return;
-      }
-
-      e.preventDefault();
-      e.stopImmediatePropagation();
-
-      let ok = false;
-      try {
-        ok = document.execCommand('insertText', false, text);
-      } catch (err) {
-        console.warn(TAG, 'execCommand threw:', err && err.message);
-      }
-      if (!ok) {
-        console.warn(TAG, 'execCommand failed; please paste again');
-      }
-    };
-
-    document.addEventListener('paste', handler, { capture: true });
-    console.log(TAG, 'paste handler installed (capture phase)');
-  })();
-}

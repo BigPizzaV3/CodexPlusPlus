@@ -1,0 +1,50 @@
+- insert:
+    - id: group
+      name: cordis:group
+      config:
+        - id: a
+          name: ./say.js
+          config:
+            word: one
+    - id: inc
+      name: cordis:include
+      config:
+        path: ./extra.yml
+        patches:
+          - id: c
+            disabled: true
+# 按 id 覆盖：a 的配置整段换掉
+- id: a
+  config:
+    word: two
+# 插进已有的组；disabled 用环境变量表达式（没设置 → 启用）
+- id: group
+  insert:
+    - id: b
+      name: ./say.js
+      disabled: !!js env.CODEXPP_PATCH_FIXTURE_OFF
+      config:
+        word: bee
+# name 对不上的覆盖被跳过
+- id: b
+  name: ./other.js
+  disabled: true
+# 完整的 !!js 表达式：在 vm 里求值，能用 ctx（本包的服务）、env / process.env
+- insert:
+    - id: e
+      name: ./say.js
+      disabled: !!js "process.env.CODEXPP_PATCH_FIXTURE_OFF === 'yes' || 1 > 2"
+      config:
+        word: !!js "['e', 1 + 1, typeof ctx.llm.stream, ctx.dshHomePath('x').endsWith('x')].join('-')"
+    # 死循环的表达式超时，按启用处理并给出诊断；!!str 按字符串
+    - id: f
+      name: ./say.js
+      disabled: !!js "(() => { while (true) {} })()"
+      config:
+        word: !!str 123
+    # 求值为真即停用（Cordis 按真假处理，不要求是 true）
+    - id: g
+      name: ./say.js
+      disabled: !!js "'yes'"
+      config:
+        word: gee

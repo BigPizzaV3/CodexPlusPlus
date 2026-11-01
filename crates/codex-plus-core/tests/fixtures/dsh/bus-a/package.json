@@ -1,0 +1,8 @@
+{
+  "name": "dsh-bus-a",
+  "version": "0.1.0",
+  "description": "插件间事件跨包：发起方（命令里 emit / serial / waterfall / parallel / bail），并在常驻进程里起一个后台任务",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*" }
+}

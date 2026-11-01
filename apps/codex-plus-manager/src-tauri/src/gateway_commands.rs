@@ -82,12 +82,16 @@ pub struct GatewayAgentView {
     pub version: Option<String>,
     /// 开启网关时改写的配置文件，界面上展示给用户。
     pub config_path: String,
+    /// 通用 Agent：在 Agent 里怎么切模型、接入后要不要重启等提示。
+    pub hint: String,
     pub enabled: bool,
     pub base_url: String,
     pub default_model: String,
     pub models: Vec<String>,
     /// 开着网关、但配置已被别的工具改掉（请求不再经过 Codex++）。
     pub drift: Option<codex_plus_core::gateway::drift::Drift>,
+    /// Agent 自带的模型（用它自己的登录或 Key 直连厂商，不经 Codex++）；没有时为 None。
+    pub own_models: Option<codex_plus_core::gateway::own_models::OwnModels>,
 }
 
 /// 界面上的自动组：组本身 + 是否隐藏 + 有没有改过设置。
@@ -126,6 +130,8 @@ pub struct GatewayPayload {
     pub speeds: Vec<codex_plus_core::gateway::speed::SpeedView>,
     /// 可复制进网关的直连模式供应商。
     pub codex_providers: Vec<GatewayPoolEntry>,
+    /// 能在网关里登录的私有接口订阅（Cursor、Kiro 等）。
+    pub subscriptions: Vec<codex_plus_core::gateway::subscriptions::SubscriptionView>,
     pub claude_providers: Vec<GatewaySourceEntry>,
     pub grok_profiles: Vec<GatewaySourceEntry>,
     /// OpenCode 自己保存的 OpenCode Go / Zen Key（不含 Key 本身）。
@@ -142,6 +148,19 @@ pub struct GatewayPayload {
 
 const GATEWAY_AGENTS: &[ToolId] = &[ToolId::Codex, ToolId::Claude, ToolId::Grok];
 
+/// 界面上列出的 Agent：三个内置的，加上本机装了（或已经接入过）的通用 Agent。
+fn listed_agents(gateway: &GatewaySettings) -> Vec<ToolId> {
+    let env = codex_plus_core::gateway::agents::AgentEnv::current();
+    let mut agents = GATEWAY_AGENTS.to_vec();
+    for spec in codex_plus_core::gateway::agents::all() {
+        let connected = gateway.bindings.get(spec.id).is_some_and(|binding| binding.enabled);
+        if connected || codex_plus_core::gateway::agents::installed(spec, &env) {
+            agents.push(ToolId::Unknown(spec.id.to_string()));
+        }
+    }
+    agents
+}
+
 fn port() -> u16 {
     codex_plus_core::resident_helper::resident_helper_port()
         .unwrap_or_else(codex_plus_core::protocol_proxy::protocol_proxy_port)
@@ -153,7 +172,7 @@ fn context() -> ApplyContext {
 
 fn parse_agent(agent: &str) -> anyhow::Result<ToolId> {
     let agent = ToolId::parse(agent);
-    if !GATEWAY_AGENTS.contains(&agent) {
+    if !GATEWAY_AGENTS.contains(&agent) && !codex_plus_core::gateway::agents::is_generic(&agent) {
         anyhow::bail!("{} 不支持网关模式", agent.as_str());
     }
     Ok(agent)
@@ -264,7 +283,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         })
         .collect();
     let drift_ctx = ApplyContext::default_paths(port);
-    let agents = GATEWAY_AGENTS
+    let agents = listed_agents(&gateway)
         .iter()
         .map(|agent| {
             let binding = gateway.binding(agent);
@@ -272,7 +291,10 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 agent: agent.as_str().to_string(),
                 name: codex_plus_core::tools::tool_display_name(agent).to_string(),
                 version: agent_version(agent),
-                config_path: agent_config_path(agent).to_string(),
+                config_path: agent_config_path(agent),
+                hint: codex_plus_core::gateway::agents::spec(agent.as_str())
+                    .map(|spec| spec.hint.to_string())
+                    .unwrap_or_default(),
                 enabled: binding.is_some_and(|binding| binding.enabled),
                 base_url: apply::gateway_base_url(port, agent),
                 default_model: binding
@@ -282,6 +304,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 drift: binding
                     .filter(|binding| binding.enabled)
                     .and_then(|_| codex_plus_core::gateway::drift::check(&drift_ctx, agent)),
+                own_models: codex_plus_core::gateway::own_models::own_models(
+                    &drift_ctx, agent, binding,
+                ),
             }
         })
         .collect();
@@ -346,6 +371,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         activity: activity::snapshot(),
         speeds: codex_plus_core::gateway::speed::snapshot(),
         codex_providers,
+        subscriptions: codex_plus_core::gateway::subscriptions::views(),
         claude_providers,
         grok_profiles,
         opencode_keys: codex_plus_core::gateway::opencode::load_stored_keys()
@@ -465,6 +491,25 @@ pub fn disable_gateway_binding(agent: String) -> CommandResult<Option<GatewayPay
     )
 }
 
+/// 选 Agent 自带的模型：接入着就断开并还原，再把模型写进 Agent 自己的配置（直连，不经 Codex++）。
+#[tauri::command]
+pub fn use_gateway_own_model(
+    agent: String,
+    model: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = (|| {
+        let agent = parse_agent(&agent)?;
+        let settings = SettingsStore::default().load()?;
+        codex_plus_core::gateway::own_models::use_own_model(&context(), &settings, &agent, &model)
+    })();
+    let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
+    respond(
+        &format!("{name} 已改用自带的 {}，直连、不经 Codex++，新开的会话生效。", model.trim()),
+        "切换失败",
+        result,
+    )
+}
+
 /// 给 Agent 换一个新的本地 token（旧 token 立即失效）；开着的绑定同步重写配置。
 #[tauri::command]
 pub fn rotate_gateway_token(agent: String) -> CommandResult<Option<GatewayPayload>> {
@@ -573,6 +618,18 @@ pub fn save_gateway_image_inline(
         })
     });
     respond("生图选项已保存。", "保存生图选项失败", result)
+}
+
+/// 模型下拉里列不列这个 Agent 自带的模型（直连，不经 Codex++）。
+#[tauri::command]
+pub fn save_gateway_own_models_shown(
+    agent: String,
+    shown: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent).and_then(|agent| {
+        codex_plus_core::gateway::own_models::set_shown(&GatewayStore::default(), &agent, shown)
+    });
+    respond("自带模型的显示设置已保存。", "保存自带模型的显示设置失败", result)
 }
 
 /// 供应商各模型内置的思考等级（编辑思考等级时当作没改过的显示值）。
@@ -1370,12 +1427,11 @@ pub fn delete_gateway_group(id: String) -> CommandResult<Option<GatewayPayload>>
 pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let relative = agent_config_path(&agent).trim_start_matches("~/");
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("找不到用户目录"))?;
-        let path = home.join(relative);
+        let env = codex_plus_core::gateway::agents::AgentEnv::current();
+        let path = match codex_plus_core::gateway::agents::spec(agent.as_str()) {
+            Some(spec) => (spec.config_path)(&env),
+            None => env.expand(&agent_config_path(&agent)),
+        };
         if !path.exists() {
             anyhow::bail!("{} 还不存在", path.display());
         }
@@ -1398,11 +1454,21 @@ pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<Gatewa
     respond("已在文件管理器中显示。", "打开失败", result)
 }
 
-fn agent_config_path(agent: &ToolId) -> &'static str {
+fn agent_config_path(agent: &ToolId) -> String {
     match agent {
-        ToolId::Claude => "~/.claude/settings.json",
-        ToolId::Grok => "~/.grok/config.toml",
-        _ => "",
+        // Codex 的配置目录跟着 CODEX_HOME 走；以前漏了它，详情里「改动了」后面是空的，「查看」也打不开。
+        ToolId::Codex => codex_plus_core::gateway::agents::AgentEnv::current().display(
+            &codex_plus_core::relay_config::default_codex_home_dir().join("config.toml"),
+        ),
+        ToolId::Claude => "~/.claude/settings.json".to_string(),
+        ToolId::Grok => "~/.grok/config.toml".to_string(),
+        other => match codex_plus_core::gateway::agents::spec(other.as_str()) {
+            Some(spec) => {
+                let env = codex_plus_core::gateway::agents::AgentEnv::current();
+                env.display(&(spec.config_path)(&env))
+            }
+            None => String::new(),
+        },
     }
 }
 
@@ -1415,7 +1481,12 @@ fn agent_version(agent: &ToolId) -> Option<String> {
     let versions = VERSIONS.get_or_init(Mutex::default);
     PROBE.call_once(|| {
         std::thread::spawn(|| {
-            for (agent, binary) in [("claude", "claude"), ("grok", "grok")] {
+            let env = codex_plus_core::gateway::agents::AgentEnv::current();
+            let generic = codex_plus_core::gateway::agents::all()
+                .iter()
+                .filter(|spec| !spec.binary.is_empty() && env.has_binary(spec.binary))
+                .map(|spec| (spec.id, spec.binary));
+            for (agent, binary) in [("claude", "claude"), ("grok", "grok")].into_iter().chain(generic) {
                 if let Some(version) = probe_cli_version(binary) {
                     let mut guard = VERSIONS
                         .get_or_init(Mutex::default)
@@ -2002,6 +2073,69 @@ pub async fn login_gateway_chatgpt_api(
             accounts::chatgpt_api_relay(&account, &models),
             "chatgpt-api",
             "subject",
+            skip_agents.as_deref(),
+        )
+    })
+    .await;
+    login_response(outcome)
+}
+
+/// 私有接口订阅（Cursor、Kiro 等）登录第一步：按选的方式开始登录。要打开的网址在这里打开，
+/// 设备码、说明和完成登录要用的状态返回给界面，界面接着调 [`finish_gateway_subscription_login`]。
+#[tauri::command]
+pub async fn start_gateway_subscription_login(
+    kind: String,
+    method: codex_plus_core::gateway::subscriptions::LoginMethod,
+    input: Option<String>,
+) -> CommandResult<Option<codex_plus_core::gateway::subscriptions::LoginStart>> {
+    use codex_plus_core::gateway::subscriptions;
+    let Some(item) = subscriptions::get(&kind) else {
+        return failed(&format!("不认识的订阅 {kind}"), None);
+    };
+    let result = async {
+        let http = codex_plus_core::http_client::proxied_client("")?;
+        item.begin_login(&http, method, input.as_deref().unwrap_or_default())
+            .await
+    }
+    .await;
+    match result {
+        Ok(start) => {
+            if let Some(url) = &start.open_url {
+                open_in_browser(url);
+            }
+            let message = if start.message.is_empty() {
+                "请在浏览器里完成登录。".to_string()
+            } else {
+                start.message.clone()
+            };
+            ok(&message, Some(start))
+        }
+        Err(error) => failed(&format!("登录失败：{error:#}"), None),
+    }
+}
+
+/// 私有接口订阅登录第二步：等用户完成登录（或校验粘贴 / 导入的凭据），读模型，加进网关池。
+/// 同一个账号已在池里时只换凭据。
+#[tauri::command]
+pub async fn finish_gateway_subscription_login(
+    kind: String,
+    start: codex_plus_core::gateway::subscriptions::LoginStart,
+    skip_agents: Option<Vec<String>>,
+) -> CommandResult<Option<GatewayPayload>> {
+    use codex_plus_core::gateway::subscriptions;
+    let outcome = cancellable_login(async move {
+        let item = subscriptions::get(&kind)
+            .ok_or_else(|| anyhow::anyhow!("不认识的订阅 {kind}"))?;
+        let http = codex_plus_core::http_client::proxied_client("")?;
+        let done = item.finish_login(&http, &start).await?;
+        let models = item
+            .models(&http, &done.credentials)
+            .await
+            .unwrap_or_default();
+        add_account_provider(
+            subscriptions::relay_for(item, &done, &models),
+            &format!("{}{}", subscriptions::KIND_PREFIX, item.id()),
+            "account",
             skip_agents.as_deref(),
         )
     })

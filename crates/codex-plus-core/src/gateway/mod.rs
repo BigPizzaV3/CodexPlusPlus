@@ -7,6 +7,7 @@
 //! - [`store`]：`gateway.json`，各 Agent 的绑定；
 //! - [`route`]：绑定 → 模型 → 候选上游；
 //! - [`key_pool`]：多 Key 冷却与熔断；[`accounts`]：在网关里登录订阅账号；
+//! - [`subscriptions`]：私有接口订阅（Cursor、Kiro 等）包成本地 Chat Completions 上游（`/sub/<供应商>`）；
 //! - [`quota`]：订阅账号的剩余额度；[`speed`]：各上游的响应速度（模型组「额度优先」「速度优先」用）；
 //! - [`activity`]：路由动态（最近一次请求怎么走的、计数），供界面实时展示；
 //! - [`images`]：生图请求（`/images/generations`、`/images/edits`）发给哪家；
@@ -15,22 +16,31 @@
 //! - [`usage`]：按天汇总的用量统计；[`balance`]：供应商余额；[`sessions`]：各 Agent 的本地会话；
 //! - [`pipeline`]：候选循环；[`probe`]：供应商池的「测试」（单发一条短请求，不计入路由与统计）；
 //! - [`anthropic_inbound`] / [`anthropic_outbound`]：Claude Code 的协议转换；
-//! - [`server`]：HTTP 入口；
-//! - [`apply`]：开启 / 关闭时改写 Agent 配置；[`restore`]：接入前配置的存档与断开时的还原。
+//! - [`chat_inbound`] / [`chat_outbound`]：OpenAI Chat Completions 客户端的协议转换；
+//! - [`gemini_inbound`] / [`gemini_outbound`]：Gemini API 客户端（如 Gemini CLI）的协议转换；
+//! - [`server`]：HTTP 入口；[`agents`]：Codex / Claude / Grok 之外的通用 Agent（规格表 + 统一的接入与还原）；
+//! - [`apply`]：开启 / 关闭时改写 Agent 配置；[`restore`]：接入前配置的存档与断开时的还原；
+//! - [`own_models`]：Agent 自带的模型（不经网关直连厂商），选中即断开网关。
 
 pub mod accounts;
+pub mod agents;
 pub mod activity;
 pub mod anthropic_inbound;
 pub mod anthropic_outbound;
 pub mod apply;
 pub mod balance;
+pub mod chat_inbound;
+pub mod chat_outbound;
 pub mod chatgpt_backend;
 pub mod drift;
+pub mod gemini_inbound;
+pub mod gemini_outbound;
 pub mod images;
 pub mod key_pool;
 pub mod meta_sync;
 pub mod model_sync;
 pub mod opencode;
+pub mod own_models;
 pub mod pipeline;
 pub mod probe;
 pub mod quota;
@@ -41,6 +51,7 @@ pub mod sessions;
 pub mod speed;
 pub mod store;
 mod subagent_models;
+pub mod subscriptions;
 pub mod usage;
 
 /// helper 收到的路径是否归网关处理。

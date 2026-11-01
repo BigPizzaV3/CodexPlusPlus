@@ -1,6 +1,11 @@
   // 服务等级由 Codex 原生控件决定；此兼容入口仅负责供应商适配。
   function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
-    return applyCodexRemoteSessionProviderOverride(method, params);
+    // 所有发往 app-server 的请求都经过这里：先做 Codex++ 自己的改写，再交给拓展的 codex/request 中间件。
+    // typeof 守卫：测试会单独执行本分片，那时拓展内核不在作用域里。
+    const patched = applyCodexRemoteSessionProviderOverride(method, params);
+    return typeof codexPlusApplyExtensionRequestMiddleware === "function"
+      ? codexPlusApplyExtensionRequestMiddleware(method, patched)
+      : patched;
   }
 
   function codexRemoteSessionActiveProfile() {
@@ -612,6 +617,8 @@
 
   function installCodexRemoteSessionDispatcherSubscription(dispatcher, assetPrefix = "") {
     if (!dispatcher || typeof dispatcher.subscribe !== "function") return false;
+    // 拓展的会话事件也挂在同一个分发器上（幂等，分发器不变时不重复订阅）。
+    if (typeof installCodexExtensionEventBridge === "function") installCodexExtensionEventBridge(dispatcher);
     if (window.__codexPlusRemoteSessionRecoveryDispatcher === dispatcher
         && window.__codexPlusRemoteSessionRecoveryDispatcherVersion === codexRemoteSessionRecoveryVersion) {
       return true;
@@ -839,9 +846,9 @@
     serviceTierDispatcherPatchPromise = patch();
   }
 
-  // 保留旧调用入口，语音能力由独立的 opt-in 控件提供。
+  // 保留旧调用入口，语音能力由独立的 opt-in 控件提供（内置拓展「语音听写」登记的步骤）。
   function installDictationSupportPatch() {
-    installCodexPlusDictation();
+    if (typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("builtin:dictation");
   }
 
   const codexAppServerPreparationTimeoutMs = 2000;
@@ -895,6 +902,7 @@
     }
     // 设置已加载成功；语音 UI 的异常不应使 provider/Fast 刷新误判为失败。
     // service-tier harness 在 70 分片提前返回，尚未初始化 93 分片的录音状态。
-    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__) runScanStep(installCodexPlusDictation);
+    // 语音听写由内置拓展「语音听写」登记成扫描步骤；它停用 / 被顶替时这里什么也不做。
+    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__ && typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("builtin:dictation");
     return true;
   }

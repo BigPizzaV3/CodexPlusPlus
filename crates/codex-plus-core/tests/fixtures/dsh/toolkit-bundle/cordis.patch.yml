@@ -1,0 +1,7 @@
+- insert:
+    - id: emitter
+      name: ./emitter.js
+    - id: listener
+      name: ./listener.js
+      config:
+        prefix: pong

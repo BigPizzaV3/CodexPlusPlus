@@ -54,8 +54,9 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
   const context = vm.createContext({
     codexPlusSettings: () => ({ conversationView: false }),
     loadBackendSettingsState: async () => loads,
-    syncOfficialUsagePolicy: () => {}, refreshConversationView: () => {},
-    syncCodexPlusTypingEffects: () => { syncs += 1; },
+    syncOfficialUsagePolicy: () => {},
+    // 打字特效的内置拓展订阅 settings/loaded（96-builtin-extensions.js）；这里只数事件。
+    emitCodexPlusSettingsLoaded: (reason: string) => { if (reason === "heartbeat") syncs += 1; },
     renderCodexPlusMenu: () => { renders += 1; }, runScanStep: (fn: () => void) => fn(), syncCodexPlusBackendToggleButtons: () => {},
   });
   const source = fragment("40-backend-settings.js");

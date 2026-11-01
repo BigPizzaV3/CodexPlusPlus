@@ -1,0 +1,8 @@
+{
+  "name": "dsh-runtime-demo",
+  "version": "0.1.0",
+  "description": "演示近似实现的运行时服务：计划模式、目标、fs 的写意图与观察、子 agent 服务",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*", "@deepseek-ai/dsh-plan-mode": "*" }
+}

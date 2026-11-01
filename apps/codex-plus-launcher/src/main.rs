@@ -1704,12 +1704,17 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
-        self.user_scripts.set_script_enabled(&key, enabled)?;
+        let result = self.user_scripts.set_script_enabled(&key, enabled);
+        // 与管理器一致：拓展带的钩子 / Codex 资产跟着启停写回 Codex 配置。
+        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
+        result?;
         self.user_scripts.inventory()
     }
 
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
-        self.user_scripts.delete_user_script(&key)?;
+        let result = self.user_scripts.delete_user_script(&key);
+        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
+        result?;
         self.user_scripts.inventory()
     }
 
@@ -1741,6 +1746,17 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     async fn cdp_evaluate(&self, payload: Value) -> anyhow::Result<Value> {
         let debug_port = *self.debug_port.lock().unwrap();
         codex_plus_core::routes::evaluate_extension_cdp(debug_port, &payload).await
+    }
+
+    async fn request_app_server_client_capture(&self) -> anyhow::Result<Value> {
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        let started = codex_plus_core::bridge::request_app_server_client_capture(&websocket_url);
+        Ok(serde_json::json!({ "status": "ok", "started": started }))
     }
 
     async fn script_market_list(&self) -> anyhow::Result<Value> {
@@ -1912,28 +1928,8 @@ fn open_url(url: &str) -> anyhow::Result<()> {
 }
 
 fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = default_user_scripts_config_dir();
-    UserScriptManager::new(
-        builtin_user_scripts_dir(),
-        config_dir.join("user_scripts"),
-        config_dir.join("user_scripts.json"),
-    )
-}
-
-fn default_user_scripts_config_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
-        }
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
-            return home.join("AppData").join("Roaming").join("Codex++");
-        }
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
+    // 目录算法统一在 core，管理器、本地代理、钩子分发共用同一份。
+    codex_plus_core::user_scripts::default_user_script_manager()
 }
 
 #[cfg(test)]
@@ -2867,10 +2863,3 @@ mod tests {
     }
 }
 
-fn builtin_user_scripts_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("user_scripts"))
-        .unwrap_or_else(|| PathBuf::from("user_scripts"))
-}

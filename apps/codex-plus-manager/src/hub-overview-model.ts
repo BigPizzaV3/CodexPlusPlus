@@ -1,5 +1,6 @@
 /** 网关总览（Agent → Codex++ → 供应商池）的纯数据整理，页面只负责画。 */
 import {
+  glanceAgents,
   maskAccountName,
   memberStatus,
   modelDisplay,
@@ -9,6 +10,7 @@ import {
   type RouteRecordView,
   type UsageCounts,
 } from "./gateway-model.ts";
+import { flowAgent, flowStatus, type FlowEntry } from "./request-flow-model.ts";
 
 /** 拓扑图左列的一个 Agent。Codex 没接入网关时走直连模式，不经网关的供应商池。 */
 export type HubAgentNode = {
@@ -54,7 +56,7 @@ export function hubAgents(payload: GatewayPayload | null, codex: CodexSummary): 
   const nodes: HubAgentNode[] = codexViaGateway
     ? []
     : [{ id: "codex", name: "Codex", enabled: false, direct: true, detail: maskAccountName(codex.providerName ?? ""), requests: 0, live: false }];
-  for (const agent of payload?.agents ?? []) {
+  for (const agent of glanceAgents(payload?.agents)) {
     if (agent.agent === "codex" && !codexViaGateway) continue;
     const binding = payload?.gateway.bindings[agent.agent];
     const stats = activity.find((item) => item.agent === agent.agent);
@@ -135,6 +137,26 @@ function feedItem(agent: string, record: RouteRecordView): HubFeedItem {
     result: rerouted ? "rerouted" : record.result,
     finishedAtMs: record.finishedAtMs,
   };
+}
+
+/** 网关记下的「最后一次路由」和请求日志里那条请求的结束时间最多差这么多，才算同一条。 */
+const ROUTE_MATCH_MS = 5_000;
+
+/**
+ * 总览「最近请求」里哪几条能展开看路由经过：网关为每个 Agent 记着最后一次路由，
+ * 对应日志里这个 Agent 最近一次结束的请求（结束时间对得上才算）。返回 请求 id → 路由记录。
+ */
+export function routeRecordsByEntry(payload: GatewayPayload | null, entries: FlowEntry[]): Map<string, RouteRecordView> {
+  const records = new Map<string, RouteRecordView>();
+  for (const agent of payload?.activity?.agents ?? []) {
+    const record = agent.last;
+    if (!record) continue;
+    const entry = entries
+      .filter((item) => flowAgent(item) === agent.agent && flowStatus(item) !== "running")
+      .sort((left, right) => right.timestampMs - left.timestampMs)[0];
+    if (entry && Math.abs(entry.timestampMs - record.finishedAtMs) <= ROUTE_MATCH_MS) records.set(entry.id, record);
+  }
+  return records;
 }
 
 /** hub 卡片上的四个数：请求、换上游、冷却中的 Key、熔断中的供应商。 */

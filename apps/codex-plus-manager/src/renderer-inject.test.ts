@@ -24,10 +24,11 @@ describe("session more menu lifecycle", () => {
       const button = { expanded: "true", setAttribute: (_: string, value: string) => { button.expanded = value; } };
       const deleteButton = { dataset: { codexDeleteVersion: "7" } };
       const group = {
-        ...events(), isConnected: true, hasDelete: true, dataset: { codexActionGroupVersion: "7", codexMoreMenuKey: "export" },
+        ...events(), isConnected: true, hasDelete: true,
+        dataset: { codexActionGroupVersion: "7", codexMoreMenuKey: "ext:export", codexInlineActionKey: "delete" },
         __codexSessionMoreMenu: null as unknown,
         querySelector: (selector: string) => selector === ".more-button" ? button
-          : selector === ".delete-button" && group.hasDelete ? deleteButton : null,
+          : selector === '[data-codex-plus-row-action="delete"]' && group.hasDelete ? deleteButton : null,
         matches: () => false, remove: () => { group.isConnected = false; },
       };
       const row = {
@@ -64,7 +65,9 @@ describe("session more menu lifecycle", () => {
       () => ({ sessionDelete: true, markdownExport: true }), { enhancementsEnabled: true },
       "more-menu", "more-button", "delete-button", "actions", "export-button", "7", "7",
       (row: { querySelectorAll: () => unknown[] }) => row.querySelectorAll()[0], () => ({}),
-      { rowActions: new Map() }, (registry: Map<string, unknown>) => [...registry.values()],
+      // 内置的删除（行内按钮）与导出（菜单项）都是注册进来的会话行操作。
+      { rowActions: new Map([["export", { id: "export", label: "导出" }], ["delete", { id: "delete", label: "删除", placement: "inline" }]]) },
+      (registry: Map<string, unknown>) => [...registry.values()],
     );
     return {
       ...api, timers, menuQueries: () => menuQueries,
@@ -313,6 +316,7 @@ describe("session row action buttons", () => {
     querySelector(selector: string) { return this.querySelectorAll(selector)[0] ?? null; }
   }
 
+  /** 内置拓展「会话删除」「Markdown 导出」开着时注册的会话行操作（见 96-builtin-extensions.js）。 */
   async function runtime(settings: { sessionDelete: boolean; markdownExport: boolean }) {
     const source = await readFile(
       new URL("../../../assets/inject/renderer-inject/90-action-groups.js", import.meta.url), "utf8",
@@ -323,13 +327,14 @@ describe("session row action buttons", () => {
       createElement: (tag: string) => new FakeElement(tag),
       querySelectorAll: (selector: string) => body.querySelectorAll(selector),
     };
-    const registry = { rowActions: new Map<string, { id: string; label: string; order: number }>() };
+    const registry = { rowActions: new Map<string, { id: string; label: string; order: number; placement?: string; icon?: string; className?: string }>() };
     const api = new Function("document", "window", "HTMLElement", "codexPlusSettings", "codexPlusBackendSettings",
       "moreMenuClass", "moreButtonClass", "buttonClass", "actionGroupClass", "exportButtonClass", "actionButtonClass",
       "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
       "codexPlusRegistry", "codexPlusExtensionItems", "appendCodexPlusExtensionRowActions", "syncActionGroupLayout",
+      "runCodexPlusExtensionCallback", "releaseDeleteFocus", "actionTooltipClass",
       `${source.split("  function tryAttachButton(row)")[0]}
-       return { attachButton };`,
+       return { attachButton, trashIconSvg };`,
     )(
       document, { setTimeout: () => 0, clearTimeout: () => {}, requestAnimationFrame: () => 0 }, FakeElement,
       () => settings, { enhancementsEnabled: true },
@@ -337,11 +342,20 @@ describe("session row action buttons", () => {
       (row: FakeElement) => row.querySelector(".actions"), () => ({ session_id: "thread-1" }),
       registry, (map: Map<string, { order: number }>) => [...map.values()].sort((a, b) => a.order - b.order),
       (menu: FakeElement) => registry.rowActions.forEach((item) => {
+        if (item.placement === "inline") return;
         const node = menu.appendChild(new FakeElement("button"));
-        node.text = item.label;
+        node.text = `${item.icon ?? ""}${item.label}`;
       }),
       () => {},
+      (_key: string, _label: string, callback: () => unknown) => ({ ok: true, value: callback() }),
+      () => {}, "action-tooltip",
     );
+    if (settings.markdownExport) registry.rowActions.set("builtin:markdown-export", { id: "builtin:markdown-export", label: "导出", icon: "⇩", order: 10 });
+    if (settings.sessionDelete) {
+      registry.rowActions.set("builtin:session-delete", {
+        id: "builtin:session-delete", label: "删除", icon: api.trashIconSvg(), placement: "inline", className: "delete-button", order: 10,
+      });
+    }
     const row = body.appendChild(new FakeElement("div"));
     return { ...api, body, row, registry };
   }
@@ -374,11 +388,37 @@ describe("session row action buttons", () => {
     api.attachButton(api.row);
     assert.ok(api.row.querySelector(".more-button"), "a registered row action brings the … button back");
     assert.deepEqual(api.body.querySelector(".more-menu")?.children.map((item: { textContent: string }) => item.textContent), ["拓展操作"]);
-    api.registry.rowActions.clear();
+    api.registry.rowActions.delete("script:rowAction:a");
     api.attachButton(api.row);
     assert.equal(api.row.querySelector(".more-button"), null, "disposing the last row action removes it again");
     assert.equal(api.body.querySelector(".more-menu"), null, "its detached menu is disposed as well");
     assert.ok(api.row.querySelector(".delete-button"));
+  });
+
+  it("renders inline row actions from the registry with their own class, glyph and activation context", async () => {
+    const api = await runtime({ sessionDelete: true, markdownExport: false });
+    const activations: Array<{ session_id: string; archived: boolean; title: string }> = [];
+    api.registry.rowActions.set("user:pin:rowAction:star", {
+      id: "user:pin:rowAction:star", label: "收藏", icon: "★", placement: "inline", className: "my-star", order: 1000,
+      onActivate: (context: { session_id: string; archived: boolean; title: string }) => activations.push(context),
+    } as never);
+    api.attachButton(api.row);
+    const group = api.row.querySelector(".actions")!;
+    assert.equal(group.dataset.codexInlineActionKey, "builtin:session-delete|user:pin:rowAction:star", "行内按钮按 order 排，内置的删除在前");
+    assert.equal(group.querySelector(".more-button"), null, "只有行内操作时不出「…」");
+    const star = group.querySelector('[data-codex-plus-row-action="user:pin:rowAction:star"]')!;
+    assert.equal(star.className, "action-button my-star");
+    assert.equal(star.getAttribute("aria-label"), "收藏");
+    assert.equal(star.textContent, "★");
+    const event = { preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} };
+    (star.listeners.get("click") as (event: unknown) => void)(event);
+    assert.equal(activations.length, 1);
+    assert.equal(activations[0].session_id, "thread-1");
+    assert.equal(activations[0].archived, false);
+    // 行内按钮被 React 摘掉时整组按指纹重建。
+    star.remove();
+    api.attachButton(api.row);
+    assert.ok(api.row.querySelector('[data-codex-plus-row-action="user:pin:rowAction:star"]'));
   });
 
   it("dresses the delete button in the native pin/archive button classes and data attributes", async () => {
@@ -465,6 +505,103 @@ it("keeps background-resume scan scheduling bounded and independent of retired f
   assert.match(scan, /if \(document\.hidden\)/);
   assert.match(scan, /scheduleDeferredScan\(\)/);
   assert.doesNotMatch(scan, /requestAnimationFrame/);
+});
+
+describe("app-server client capture locating", () => {
+  const marker = "AppServerRequestClient is missing a message dispatcher";
+  // 与 Codex 26.10xx 的产物同形：类在 app-initial 里，sendRequest 首句就是 marker。
+  const classSource = "var a=1;\nfYt=class{hostId;async sendRequest(e,t,n){if(this.dispatchMessage==null)"
+    + `throw Error(\`${marker}\`);return this.enqueueRequest(e,t,n)}}`;
+
+  async function runtime(assets: Record<string, string>) {
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8",
+    );
+    const section = source.slice(source.indexOf("  // issue #2177"),
+      source.indexOf("    function installCodexAppServerClientPrototypePatch()"));
+    assert.ok(section.includes("async function installCodexAppServerClientCapture()"));
+    const visible: string[] = [];
+    const fetched: string[] = [];
+    const diagnostics: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    const timers: Array<{ delay: number; callback: () => void }> = [];
+    const window: Record<string, unknown> = {
+      setTimeout: (callback: () => void, delay: number) => { timers.push({ delay, callback }); return timers.length; },
+    };
+    const api = new Function("window", "fetch", "codexAppAssetCandidateUrls", "codexAppAssetUrl",
+      "sendCodexPlusDiagnostic", "codexAppServerClientCaptureMarker", "codexAppServerClientCaptureAnchor",
+      `${section}\nreturn { installCodexAppServerClientCapture };`,
+    )(
+      window,
+      async (url: string) => {
+        fetched.push(url);
+        return { ok: url in assets, text: async () => assets[url] || "" };
+      },
+      () => visible.slice(),
+      (part: string) => visible.find((url) => url.includes(part)) || "",
+      (event: string, detail: Record<string, unknown>) => diagnostics.push({ event, detail }),
+      marker,
+      "async sendRequest(",
+    );
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    async function fireTimer() {
+      const timer = timers.shift();
+      assert.ok(timer, "expected a pending retry");
+      timer.callback();
+      await flush();
+      return timer.delay;
+    }
+    return { api, window, visible, fetched, diagnostics, timers, fireTimer, flush };
+  }
+
+  it("retries until the class asset becomes visible and does not refetch checked assets", async () => {
+    const shared = "app://-/assets/app-shared-1.js";
+    const initial = "app://-/assets/app-initial-2.js";
+    const env = await runtime({ [shared]: "export const x=1;", [initial]: classSource });
+    // 首轮 Fast 模块还没执行完，只看得到入口与 modulepreload 的 app-shared。
+    env.visible.push("app://-/assets/index-0.js", shared);
+    await env.api.installCodexAppServerClientCapture();
+    assert.equal(env.window.__codexPlusAppServerClientCapture, undefined);
+    assert.equal(env.diagnostics.length, 0, "a miss that will be retried is not reported as a failure");
+    assert.equal(env.timers.length, 1);
+
+    env.visible.push(initial);
+    assert.equal(await env.fireTimer(), 1000);
+    assert.deepEqual(env.window.__codexPlusAppServerClientCapture, {
+      urlRegex: "app://-/assets/app-initial-2\\.js", lineNumber: 1, columnNumber: 41,
+    });
+    assert.equal(env.fetched.filter((url) => url === shared).length, 1);
+    assert.equal(env.diagnostics.at(-1)?.event, "app_server_client_capture_located");
+    assert.equal(env.diagnostics.at(-1)?.detail.attempts, 2);
+    assert.equal(env.timers.length, 0);
+    // 已定位后再被扫描调用不会重新拉取。
+    const fetchCount = env.fetched.length;
+    await env.api.installCodexAppServerClientCapture();
+    assert.equal(env.fetched.length, fetchCount);
+  });
+
+  it("still finds the class in app-shared on the first pass for older Codex builds", async () => {
+    const shared = "app://-/assets/app-shared-9.js";
+    const env = await runtime({ [shared]: classSource });
+    env.visible.push(shared);
+    await env.api.installCodexAppServerClientCapture();
+    assert.equal((env.window.__codexPlusAppServerClientCapture as { lineNumber: number }).lineNumber, 1);
+    assert.equal(env.timers.length, 0);
+  });
+
+  it("reports one failure after the bounded retries run out", async () => {
+    const shared = "app://-/assets/app-shared-1.js";
+    const env = await runtime({ [shared]: "export const x=1;" });
+    env.visible.push(shared);
+    await env.api.installCodexAppServerClientCapture();
+    const delays: number[] = [];
+    while (env.timers.length) delays.push(await env.fireTimer());
+    assert.ok(delays.reduce((sum, delay) => sum + delay, 0) < 90000, "retries finish inside the launcher wait window");
+    assert.equal(env.fetched.length, 1);
+    assert.deepEqual(env.diagnostics, [{
+      event: "app_server_client_capture_locate_failed",
+      detail: { reason: "anchor_missing", candidateCount: 0, checkedCount: 1, attempts: delays.length + 1 },
+    }]);
+  });
 });
 
 it("groups aggregate models by exact member identity instead of bare model name", async () => {
@@ -770,8 +907,9 @@ describe("renderer injection header compatibility", () => {
 
   it("does not install a session sharing button after sharing is retired", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    assert.doesNotMatch(renderer, /\n\s*installSessionShareButton\(\);/);
-    assert.doesNotMatch(renderer, /\n\s*installSessionShareImportListener\(\);/);
+    // 后端的 /share/create、/session/export 早已删除，页面里的按钮、导入监听与开关一起下线。
+    assert.doesNotMatch(renderer, /function (?:installSessionShareButton|createSessionShare|installSessionShareImportListener)\(/);
+    assert.doesNotMatch(renderer, /codexAppSessionShare|"\/session\/export"/);
   });
 
   it("removes the legacy Codex++ top-bar entry", async () => {
@@ -834,7 +972,9 @@ describe("renderer injection header compatibility", () => {
 
     assert.match(renderer, /function installCodexPlusNavigationEntries\(\)/);
     // 两条路径互斥：有 rail 就移除旧入口，没有就移除 rail 入口。
-    assert.match(renderer, /if \(installCodexPlusRailNavigation\(\)\) \{\s*detachCodexPlusSidebarNavigation\(\);\s*return;\s*\}/);
+    // rail 分支同时补画拓展入口：冷启动时内置入口常由启动补扫装上，它只调这个函数，
+    // 拓展入口若不在这里补，页面空闲时会一直缺失（实测复现过）。
+    assert.match(renderer, /if \(installCodexPlusRailNavigation\(\)\) \{\s*detachCodexPlusSidebarNavigation\(\);[\s\S]{0,300}?refreshCodexPlusRailNavigation\(\);\s*return;\s*\}/);
     assert.match(renderer, /removeCodexPlusRailNavigation\(\);\s*installCodexPlusSidebarNavigation\(\);/);
     assert.match(renderer, /function detachCodexPlusSidebarNavigation\(\)/);
     // 启动补扫要认两条路径任意一条已装上。
@@ -859,7 +999,7 @@ describe("renderer injection header compatibility", () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /function installCodexPlusPageLayout\(overlay, tab\)/);
-    assert.match(renderer, /function refreshCodexPlusPageNav\(tab\)/);
+    assert.match(renderer, /function refreshCodexPlusPageNav\(tab = /);
     assert.match(renderer, /function renderCodexPlusPageNavItems\(tab\)/);
     // 三栏容器是 createElement + className 赋值的，不是 markup 字面量。
     assert.match(renderer, /layout\.className = "codex-plus-page-layout"/);
@@ -1120,7 +1260,8 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     const html = page.sections() + template.slice(template.indexOf('<section class="codex-plus-settings-section" aria-label="工具与关于"'));
     const sections = Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g));
     const expectedGroups = catalog.groups
-      .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex")))
+      .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex"))
+        || catalog.builtins.some((entry: { group: string }) => entry.group === group.id))
       .map((group: { title: string }) => group.title);
     assert.deepEqual(sections.map((match) => match[1]), [...expectedGroups, "工具与关于"]);
     for (const [, title, contents] of sections) {
@@ -1394,6 +1535,74 @@ return {
       configure: (scripts: Record<string, unknown>[], market: Record<string, unknown>[], options?: Record<string, unknown>) => void;
     };
   }
+
+  it("hot-reloads user scripts after toggling or uninstalling so the page actually drops them", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const harness = new Function("bridge", `
+const calls = [], toasts = [];
+let codexPlusExtensionsSelected = { kind: "installed", key: "user:pomodoro" };
+const postJson = async (path, payload) => { calls.push(path); return bridge(path, payload); };
+const loadUserScripts = async (path = "/user-scripts/list", payload = {}) => { await postJson(path, payload); };
+const showToast = (message) => toasts.push(message);
+const refreshCodexPlusExtensionsView = () => calls.push("refresh");
+${segment(renderer, "  async function uninstallUserScript(", "  /** 左面板的导航项。")}
+return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () => codexPlusExtensionsSelected };`);
+    const ok = harness(async (path: string) => (path === "/user-scripts/delete" ? {} : { scripts: [] }));
+    await ok.setUserScriptEnabled("user:pomodoro", false);
+    assert.deepEqual(ok.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.deepEqual(ok.toasts, []);
+
+    const uninstall = harness(async () => ({ scripts: [] }));
+    await uninstall.uninstallUserScript("user:pomodoro");
+    assert.deepEqual(uninstall.calls, ["/user-scripts/delete", "/user-scripts/reload", "/user-scripts/list", "refresh"]);
+    assert.equal(uninstall.selected(), null);
+
+    // 页面没连上时重载失败：提示用户，清单照样刷新，开关状态不至于错。
+    const failed = harness(async (path: string) => (path === "/user-scripts/reload" ? { status: "failed", message: "Codex 页面尚未连接" } : { scripts: [] }));
+    await failed.setUserScriptEnabled("user:pomodoro", true);
+    assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.equal(failed.toasts.length, 1);
+    assert.match(failed.toasts[0], /Codex 页面尚未连接/);
+  });
+
+  it("keeps the 拓展 page nav when extension hosts refresh it without a tab", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const pageNav = (activeTab: string) => new Function("activeTab", `
+const codexPlusExtensionsTab = "extensions";
+const title = { textContent: "拓展" }, body = { innerHTML: "" };
+const document = { querySelector: (selector) => ({
+  "[data-codex-plus-page-nav-body]": body,
+  ".codex-plus-page-nav-title": title,
+  ".codex-plus-modal-content": { dataset: { codexPlusActiveTab: activeTab } },
+})[selector] };
+const renderCodexPlusPageNavItems = (tab) => "items:" + tab;
+${segment(renderer, "  function codexPlusModalTab(", "  let codexPlusTypingEffectDropdownCleanup")}
+${segment(renderer, "  function refreshCodexPlusPageNav(", "  /**\n   * 脚本清单变化后同步左面板")}
+refreshCodexPlusPageNav();
+return { title: title.textContent, body: body.innerHTML };`)(activeTab) as { title: string; body: string };
+    // 拓展注册 / 撤销后统一刷新不带 tab：拓展页仍是拓展列表，不能换成 Codex++ 主页导航。
+    assert.deepEqual(pageNav("extensions"), { title: "拓展", body: "items:extensions" });
+    assert.deepEqual(pageNav("home"), { title: "Codex++", body: "items:home" });
+    // 统一刷新确实是无参调用，这条默认值才有意义。
+    assert.match(renderer, /for \(const refresh of \[\s*refreshCodexPlusPageNav,/);
+  });
+
+  it("rebuilds nav entries left by an earlier injection so their stale handlers stop opening the old page", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const reusable = (generation: number, latest: number, node: Record<string, unknown>) => new Function("window", "node", `
+const codexPlusBackendGeneration = ${generation};
+${segment(renderer, "  function codexPlusNavEntryReusable(", "  function createCodexPlusRailButton(")}
+return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest }, node) as boolean;
+    // 本代建的按钮照常沿用。
+    assert.equal(reusable(2, 2, { __codexPlusGeneration: 2 }), true);
+    // 最新一代遇到上一代（或更早不带代次）的按钮：重建，换上新闭包。
+    assert.equal(reusable(2, 2, { __codexPlusGeneration: 1 }), false);
+    assert.equal(reusable(2, 2, {}), false);
+    // 旧代还在跑也不去动新代的按钮，两代不会来回抢。
+    assert.equal(reusable(1, 2, { __codexPlusGeneration: 2 }), true);
+    // 两处按 id 复用入口的地方都要过这道检查。
+    assert.equal(renderer.match(/\|\| !codexPlusNavEntryReusable\(wrapper\)\)/g)?.length, 2);
+  });
 
   it("filters installed and market entries, escapes their data and keeps actions outside selection buttons", async () => {
     const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
@@ -2537,6 +2746,11 @@ return { codexPlusRegistry, registerCodexPlusExtension, registerCodexPlusExtensi
     // 传入的 5 被抬到 1000：内置项永远排在拓展项之前。
     assert.deepEqual(items.map((item) => item.id), ["builtin:a", "ext:b"]);
     assert.equal(items[1].order, 1000);
+    // 内置拓展（scriptKey 为 builtin:*）经公开接口注册时可以用 0~999，排在第三方前面。
+    runtime.register("rowAction", runtime.registry.rowActions, "builtin:session-delete:rowAction:x", { order: 10, onActivate() {} }, "builtin:session-delete");
+    const ordered = runtime.items(runtime.registry.rowActions);
+    assert.equal(ordered[0].id, "builtin:session-delete:rowAction:x");
+    assert.equal(ordered[0].order, 10);
   });
 
   it("按脚本配额限制注册数量，超出时抛错", async () => {
@@ -2641,6 +2855,10 @@ describe("拓展接口层", () => {
     assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
+    assert.ok(routes.includes("/request-log/recent"), "只读的最近请求日志应开放给拓展");
+    for (const forbidden of ["/proxy-status"]) {
+      assert.ok(!routes.includes(forbidden), `${forbidden} 只给内置状态条用`);
+    }
   });
 
   it("接口对象在 IIFE 收尾前挂载", async () => {
@@ -3122,8 +3340,20 @@ describe("Codex++ 设置页按设置项清单生成", () => {
   type CatalogItem = {
     key: string; group: string; control: string; title: string; description: string; descriptionWhenEnhancementsOn?: string;
     surfaces: string[]; platforms?: string[]; codexInputs?: Array<{ id: string; label: string; hint?: string }>;
+    builtin?: string; parent?: string; restart?: boolean;
   };
-  type Catalog = { groups: Array<{ id: string; title: string; description?: string }>; items: CatalogItem[] };
+  type BuiltinEntry = { id: string; group: string; title: string; description: string; setting?: string };
+  type Catalog = { groups: Array<{ id: string; title: string; description?: string }>; items: CatalogItem[]; builtins: BuiltinEntry[] };
+  /** 设置页一组里的行序：不属于内置拓展的设置在前，然后每个内置拓展一行、子选项紧跟其后。 */
+  const groupOrder = (catalog: Catalog, groupId: string, visible: (item: CatalogItem) => boolean) => {
+    const params = (id: string) => catalog.items.filter((item) => item.parent === id && visible(item));
+    const inGroup = catalog.items.filter((item) => item.group === groupId && visible(item));
+    return [
+      ...inGroup.filter((item) => !item.builtin && !item.parent),
+      ...inGroup.filter((item) => item.builtin).flatMap((item) => [item, ...params(item.builtin!)]),
+      ...catalog.builtins.filter((entry) => entry.group === groupId).flatMap((entry) => params(entry.id)),
+    ];
+  };
   const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
   const readCatalog = async (): Promise<Catalog> => JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
   const visibleOn = (platform: string) => (item: CatalogItem) => item.surfaces.includes("codex")
@@ -3161,8 +3391,25 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     // #686：「上下文感知建议」直接读写 Codex 自己的设置，不在清单里，单独校验。
     const ambientKey = "codexAppAmbientSuggestions";
     const rows = sections.flatMap((section) => section.rows.filter((row) => row.key && row.key !== ambientKey));
-    const expected = catalog.groups.flatMap((group) => catalog.items.filter((item) => item.group === group.id && visibleOn("macos")(item)));
+    const expected = catalog.groups.flatMap((group) => groupOrder(catalog, group.id, visibleOn("macos")));
     assert.deepEqual(rows.map((row) => row.key), expected.map((item) => item.key));
+    // 子选项缩进挂在所属内置拓展下面；内置拓展行带 id。
+    for (const item of expected.filter((candidate) => candidate.parent)) {
+      assert.match(html, new RegExp(`data-codex-plus-setting-row="${item.key}"[^>]*data-codex-plus-builtin-param="true"`), `${item.key} 是子选项`);
+    }
+    for (const item of expected.filter((candidate) => candidate.builtin)) {
+      assert.match(html, new RegExp(`data-codex-plus-setting-row="${item.key}" data-codex-plus-builtin="${item.builtin}"`));
+    }
+    // 清单顶层的内置拓展各一行：本页认识的顶层设置照常绑定，其余经用户脚本配置启停。
+    for (const entry of catalog.builtins) {
+      const row = html.match(new RegExp(`<div class="codex-plus-row" data-codex-plus-builtin="${entry.id}">[\\s\\S]*?</button>`))?.[0];
+      assert.ok(row, `${entry.id} 缺一行`);
+      assert.ok(row.includes(`aria-label="${entry.title}"`));
+      if (!entry.setting || entry.setting.includes(".")) assert.match(row, new RegExp(`data-codex-builtin-extension="${entry.id}"`));
+      else assert.doesNotMatch(row, /data-codex-builtin-extension=/);
+    }
+    assert.match(html, /data-codex-plus-builtin="dream-skin">[\s\S]*?data-codex-plus-setting="dreamSkinEnabled"/);
+    assert.match(html, /data-codex-plus-builtin="image-overlay">[\s\S]*?data-codex-backend-setting="codexAppImageOverlayEnabled"/);
     const ambientSection = sections.find((section) => section.rows.some((row) => row.key === ambientKey));
     assert.equal(ambientSection?.title, catalog.groups.find((group) => group.id === "stepwise")!.title, "上下文感知建议应在 stepwise 组");
     const ambientRow = ambientSection!.rows.find((row) => row.key === ambientKey)!;
@@ -3177,7 +3424,7 @@ describe("Codex++ 设置页按设置项清单生成", () => {
       assert.equal(section.title, catalog.groups.find((group) => group.id === item.group)!.title);
       // 与管理器一致：「（实验）」改成小标签，说明里要求重启的加「需重启」。
       const experimental = /\s*(?:（实验性?）|\(experimental\))$/i;
-      const needsRestart = /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i.test(item.descriptionWhenEnhancementsOn ?? item.description);
+      const needsRestart = item.restart === true || /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i.test(item.descriptionWhenEnhancementsOn ?? item.description);
       assert.equal(row.title, item.title.replace(experimental, ""));
       assert.deepEqual(row.tags, [...(experimental.test(item.title) ? ["实验"] : []), ...(needsRestart ? ["需重启"] : [])], `${item.key} 标签`);
       assert.equal(row.description, item.descriptionWhenEnhancementsOn ?? item.description);
@@ -3193,7 +3440,7 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     assert.match(sections[0].rows[0].control, /data-codex-backend-status="true"/);
     // 能映射到本页 key 的走 setCodexPlusSetting，其余直接写后端字段。
     assert.match(html, /data-codex-plus-setting="stepwise"/);
-    assert.match(html, /data-codex-plus-setting="sessionShare"/);
+    assert.match(html, /data-codex-plus-setting="markdownExport"/);
     assert.match(html, /data-codex-backend-setting="providerSyncEnabled"/);
     assert.match(html, /data-codex-plus-capacity-retry-interval="true" min="0" max="600"/);
     assert.match(html, /data-codex-plus-conversation-view-width="true" min="320" max="4000" step="10" type="number" value="900"/);
@@ -3388,5 +3635,1070 @@ return {
     await api.set(true);
     assert.equal(stored["ambient-suggestions-enabled"], true);
     assert.deepEqual(stateCalls.map((call) => call.method), ["get-setting", "set-setting"]);
+  });
+});
+
+/**
+ * 插件运行时内核（91-extension-runtime.js）。
+ *
+ * 内核承诺「ctx 上的注册随实例卸载自动撤销」，这是热重载不残留旧实例的前提；
+ * waterfall 的短路、出错跳过语义是宿主后续挂协议中间件的基础，都要守住。
+ */
+describe("拓展运行时内核", () => {
+  async function kernel(options: { scriptKey?: string; manifest?: unknown; initializing?: boolean } = {}) {
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/91-extension-runtime.js", import.meta.url), "utf8",
+    );
+    const scriptKey = options.scriptKey ?? "user:demo";
+    const cleanups: Array<() => void> = [];
+    const failures: Array<{ scriptKey: string; message: string }> = [];
+    const registered: Array<{ kind: string; scriptKey: string; disposed: boolean }> = [];
+    const calls: string[] = [];
+    const toasts: string[] = [];
+    const timers = new Map<number, () => void>();
+    let timerId = 0;
+    const window = {
+      __codexPlusUserScripts: {
+        currentKey: options.initializing === false ? null : scriptKey,
+        scripts: { [scriptKey]: { manifest: options.manifest ?? null } },
+        registerCleanup: (fn: () => void) => cleanups.push(fn),
+      },
+      setTimeout: (fn: () => void) => { const id = ++timerId; timers.set(id, fn); return id; },
+      clearTimeout: (id: number) => timers.delete(id),
+      setInterval: (fn: () => void) => { const id = ++timerId; timers.set(id, fn); return id; },
+      clearInterval: (id: number) => timers.delete(id),
+    };
+    const register = (kind: string, itemOptions: { scriptKey: string }) => {
+      const item = { kind, scriptKey: itemOptions.scriptKey, disposed: false };
+      registered.push(item);
+      return () => { item.disposed = true; };
+    };
+    const store = new Map<string, string>();
+    const localStorage = {
+      get length() { return store.size; },
+      key: (index: number) => [...store.keys()][index] ?? null,
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, String(value)); },
+      removeItem: (key: string) => { store.delete(key); },
+    };
+    const api = new Function(
+      "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
+      `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices, sessionItem: codexPlusSessionItem, sessionsCall: codexPlusSessionsCall };`,
+    )(
+      window,
+      (key: string, label: string, callback: () => unknown) => {
+        try {
+          return { ok: true, value: callback() };
+        } catch (error) {
+          failures.push({ scriptKey: key, message: `${label}: ${(error as Error).message}` });
+          return { ok: false, error: String(error) };
+        }
+      },
+      (key: string, message: string) => failures.push({ scriptKey: key, message }),
+      (itemOptions?: { scriptKey?: string }) => itemOptions?.scriptKey || window.__codexPlusUserScripts.currentKey || "",
+      (kind: string, _registry: unknown, _definition: unknown, itemOptions: { scriptKey: string }) => register(kind, itemOptions),
+      (_definition: unknown, itemOptions: { scriptKey: string }) => register("page", itemOptions),
+      (_definition: unknown, itemOptions: { scriptKey: string }) => {
+        const dispose = register("sidePanel", itemOptions) as (() => void) & { open?: () => boolean; close?: () => boolean; toggle?: () => boolean };
+        dispose.open = () => { calls.push("sidePanel.open"); return true; };
+        dispose.close = () => { calls.push("sidePanel.close"); return true; };
+        dispose.toggle = () => true;
+        return dispose;
+      },
+      (_definition: unknown, itemOptions: { scriptKey: string }) => {
+        const dispose = register("slot", itemOptions) as (() => void) & { refresh?: () => void };
+        dispose.refresh = () => { calls.push("slot.refresh"); };
+        return dispose;
+      },
+      { rowActions: new Map(), navEntries: new Map(), menuItems: new Map(), composerActions: new Map() },
+      (route: string) => { calls.push(route); return Promise.resolve({ status: "ok" }); },
+      (message: string) => toasts.push(message),
+      localStorage,
+    ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown>;
+      bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any;
+      services: Map<string, { value: unknown; owner: string }>; installBuiltins: () => void;
+      sessionItem: (entry: unknown) => any; sessionsCall: (name: string, params?: unknown) => Promise<unknown> };
+    return { ...api, window, cleanups, failures, registered, calls, toasts, timers, store };
+  }
+
+  it("卸载时按注册逆序撤销全部副作用，归属绑定到当前脚本", async () => {
+    const k = await kernel();
+    const order: string[] = [];
+    const listeners: string[] = [];
+    const target = {
+      addEventListener: (type: string) => listeners.push(`+${type}`),
+      removeEventListener: (type: string) => listeners.push(`-${type}`),
+    };
+    const ctx = k.create((ctx: any) => {
+      ctx.effect(() => () => order.push("first"));
+      ctx.registerPage({ title: "页" });
+      ctx.registerRowAction({ onActivate() {} });
+      ctx.listen(target, "focus", () => {});
+      ctx.setInterval(() => {}, 1000);
+      ctx.effect(() => () => order.push("last"));
+    });
+    assert.equal(ctx.id, "user:demo");
+    assert.deepEqual(k.registered.map((item) => [item.kind, item.scriptKey]), [["page", "user:demo"], ["rowAction", "user:demo"]]);
+    assert.equal(k.timers.size, 1);
+    // 同步初始化期间创建：已登记到用户脚本运行时，热重载时整体卸载。
+    assert.equal(k.cleanups.length, 1);
+    k.cleanups[0]();
+    assert.deepEqual(order, ["last", "first"]);
+    assert.ok(k.registered.every((item) => item.disposed));
+    assert.deepEqual(listeners, ["+focus", "-focus"]);
+    assert.equal(k.timers.size, 0);
+    assert.equal(ctx.disposed, true);
+    assert.equal(k.instances.size, 0);
+    ctx.dispose();
+    assert.deepEqual(order, ["last", "first"], "重复卸载不再执行撤销");
+    // 卸载后的注册立刻撤销，不会泄漏。
+    let late = false;
+    ctx.effect(() => () => { late = true; });
+    assert.equal(late, true);
+  });
+
+  it("ctx.onScan 把扫描步骤登记在拓展名下，run() 立即跑一次，抛错只记在拓展名下，卸载时撤销", async () => {
+    const k = await kernel();
+    const steps = new Map<number, { owner: string; step: () => void; phase?: string }>();
+    let seq = 0;
+    (globalThis as any).registerCodexPlusScanStep = (owner: string, step: () => void, phase?: string) => {
+      const id = ++seq;
+      steps.set(id, { owner, step, phase });
+      return () => steps.delete(id);
+    };
+    try {
+      let runs = 0;
+      let handle: any;
+      const ctx = k.create((ctx: any) => {
+        handle = ctx.onScan(() => { runs += 1; }, { phase: "light" });
+        ctx.onScan(() => { throw new Error("坏步骤"); });
+      });
+      assert.deepEqual([...steps.values()].map((entry) => [entry.owner, entry.phase]), [["user:demo", "light"], ["user:demo", undefined]]);
+      handle.run();
+      assert.equal(runs, 1);
+      for (const entry of steps.values()) entry.step();
+      assert.equal(runs, 2);
+      assert.ok(k.failures.some((failure) => failure.scriptKey === "user:demo" && /onScan: 坏步骤/.test(failure.message)));
+      assert.throws(() => ctx.onScan("不是函数"), /onScan 需要一个函数/);
+      ctx.dispose();
+      assert.equal(steps.size, 0, "卸载时扫描步骤撤掉");
+      handle.run();
+      assert.equal(runs, 2, "卸载后 run() 不再执行");
+    } finally {
+      delete (globalThis as any).registerCodexPlusScanStep;
+    }
+  });
+
+  it("提前撤销只撤销那一项；撤销抛错不中断其余撤销", async () => {
+    const k = await kernel();
+    const order: string[] = [];
+    const ctx = k.create((ctx: any) => {
+      ctx.effect(() => () => order.push("a"));
+      const revoke = ctx.effect(() => () => order.push("b"));
+      ctx.effect(() => () => { throw new Error("坏撤销"); });
+      revoke();
+    });
+    assert.deepEqual(order, ["b"]);
+    ctx.dispose();
+    assert.deepEqual(order, ["b", "a"]);
+    assert.match(k.failures[0].message, /坏撤销/);
+  });
+
+  it("await 之后创建的实例不登记热重载清理", async () => {
+    const k = await kernel({ initializing: false });
+    const ctx = k.create({ id: "late", apply() {} }, { scriptKey: "user:demo" });
+    assert.equal(ctx.id, "late");
+    assert.equal(k.cleanups.length, 0);
+  });
+
+  it("事件总线：处理器互相隔离，卸载后不再收到；广播生命周期事件", async () => {
+    const k = await kernel();
+    const seen: string[] = [];
+    const lifecycle: string[] = [];
+    k.create((ctx: any) => {
+      ctx.on("extension/apply", (info: { id: string }) => lifecycle.push(`apply:${info.id}`));
+      ctx.on("extension/dispose", (info: { id: string }) => lifecycle.push(`dispose:${info.id}`));
+    }, { id: "observer" });
+    const emitter = k.create((ctx: any) => {
+      ctx.on("ping", () => { throw new Error("坏处理器"); });
+      ctx.on("ping", (value: string) => seen.push(value));
+    }, { id: "emitter" });
+    emitter.emit("ping", "1");
+    assert.deepEqual(seen, ["1"]);
+    assert.equal(k.failures.length, 1);
+    emitter.dispose();
+    k.emit("ping", ["2"]);
+    assert.deepEqual(seen, ["1"]);
+    // apply 事件在 apply 返回后广播，拓展自己也能收到。
+    assert.deepEqual(lifecycle, ["apply:observer", "apply:emitter", "dispose:emitter"]);
+  });
+
+  it("waterfall：按 order 串联、可短路、出错跳过且下游只执行一次", async () => {
+    const k = await kernel();
+    assert.equal(k.waterfall("greet", "hi"), "hi", "没有中间件时原样返回");
+    let downstreamRuns = 0;
+    const ctx = k.create((ctx: any) => {
+      ctx.intercept("greet", (value: string, next: (v: string) => string) => next(`${value}!`), { order: 10 });
+      ctx.intercept("greet", (value: string, next: (v: string) => string) => next(`<${value}>`), { order: -1 });
+      ctx.intercept("greet", (value: string) => { downstreamRuns++; return `${value}#`; }, { order: 20 });
+    });
+    assert.equal(ctx.waterfall("greet", "hi"), "<hi>!#");
+    const short = k.create((ctx: any) => ctx.intercept("greet", () => "stop", { order: -5 }));
+    assert.equal(k.waterfall("greet", "hi"), "stop");
+    short.dispose();
+    const broken = k.create((ctx: any) => {
+      ctx.intercept("greet", () => { throw new Error("前置出错"); }, { order: -9 });
+      ctx.intercept("greet", (value: string, next: (v: string) => string) => { next(value); throw new Error("后置出错"); }, { order: 15 });
+    });
+    downstreamRuns = 0;
+    assert.equal(k.waterfall("greet", "hi"), "<hi>!#");
+    assert.equal(downstreamRuns, 1, "已调过 next 的中间件出错时沿用下游结果");
+    assert.equal(k.failures.length, 2);
+    broken.dispose();
+    ctx.dispose();
+    assert.equal(k.waterfall("greet", "hi"), "hi");
+  });
+
+  it("waterfall：异步中间件 reject 时跳过它", async () => {
+    const k = await kernel();
+    k.create((ctx: any) => {
+      ctx.intercept("load", async () => { throw new Error("异步出错"); });
+      ctx.intercept("load", async (value: number, next: (v: number) => unknown) => next(value + 1), { order: 5 });
+    });
+    assert.equal(await k.waterfall("load", 1), 2);
+    assert.match(k.failures[0].message, /异步出错/);
+  });
+
+  it("拓展包只能调清单声明的路由，单文件脚本沿用全局白名单", async () => {
+    const k = await kernel({ manifest: { id: "pkg", permissions: { routes: ["/diagnostics/log"] } } });
+    const ctx = k.create(() => {});
+    assert.equal(ctx.id, "pkg");
+    assert.equal(ctx.manifest.id, "pkg");
+    await ctx.call("/diagnostics/log", {});
+    await assert.rejects(ctx.call("/thread-usage-history", {}), /未在 codexpp\.json 声明路由权限/);
+    assert.deepEqual(k.calls, ["/diagnostics/log"]);
+    const script = await kernel();
+    await script.create(() => {}).call("/thread-usage-history", {});
+    assert.deepEqual(script.calls, ["/thread-usage-history"]);
+  });
+
+  it("apply 同步抛错时回滚已做的注册并抛给调用方；异步失败也回滚", async () => {
+    const k = await kernel();
+    assert.throws(() => k.create((ctx: any) => {
+      ctx.registerPage({ title: "半成品" });
+      throw new Error("初始化失败");
+    }), /初始化失败/);
+    assert.equal(k.registered[0].disposed, true);
+    assert.equal(k.instances.size, 0);
+    const ctx = k.create(async (ctx: any) => {
+      ctx.registerMenuItem({ onActivate() {} });
+      await Promise.resolve();
+      throw new Error("异步初始化失败");
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(ctx.disposed, true);
+    assert.equal(k.registered[1].disposed, true);
+    assert.match(k.failures.at(-1)!.message, /异步初始化失败/);
+  });
+
+  it("codex/request 中间件：没挂时原样返回同一对象；能改 params；异步或抛错时放行", async () => {
+    const k = await kernel();
+    const params = { input: [{ type: "text", text: "你好" }] };
+    assert.equal(k.requestMiddleware("turn/start", params), params, "没有中间件时必须是同一个对象");
+    const ctx = k.create((ctx: any) => ctx.intercept("codex/request", (value: any, next: (v: any) => any) =>
+      next(value.method === "turn/start" ? { ...value, method: "evil", params: { ...value.params, prefixed: true } } : value)));
+    const changed = k.requestMiddleware("turn/start", params);
+    assert.notEqual(changed, params);
+    assert.equal(changed.prefixed, true);
+    assert.equal(k.requestMiddleware("thread/start", params), params, "其它请求不受影响");
+    ctx.dispose();
+    k.create((ctx: any) => ctx.intercept("codex/request", async (value: any) => value));
+    assert.equal(k.requestMiddleware("turn/start", params), params, "异步中间件被放行");
+    assert.equal(k.requestMiddleware("x", undefined), undefined);
+  });
+
+  it("会话事件桥：订阅固定通知并转成 codex/<method>，换分发器时退订旧的", async () => {
+    const k = await kernel();
+    const makeDispatcher = () => {
+      const handlers = new Map<string, (params: unknown) => void>();
+      let unsubscribed = 0;
+      return { handlers, unsubscribed: () => unsubscribed,
+        subscribe: (method: string, handler: (params: unknown) => void) => { handlers.set(method, handler); return () => { unsubscribed++; }; } };
+    };
+    const first = makeDispatcher();
+    assert.equal(k.bridge(first), true);
+    assert.equal(k.bridge(first), true, "同一个分发器幂等");
+    assert.ok(first.handlers.has("turn/completed") && first.handlers.has("item/completed"));
+    const seen: unknown[] = [];
+    k.create((ctx: any) => ctx.on("codex/turn/completed", (params: unknown, meta: unknown) => seen.push([params, meta])));
+    first.handlers.get("turn/completed")!({ turn: { status: "completed" } });
+    assert.deepEqual(seen, [[{ turn: { status: "completed" } }, { method: "turn/completed" }]]);
+    const second = makeDispatcher();
+    k.bridge(second);
+    assert.equal(first.unsubscribed(), first.handlers.size, "旧分发器的订阅全部退掉");
+    assert.equal(k.bridge(null), false);
+  });
+
+  it("ctx.storage 按拓展 id 隔离，值按 JSON 存取", async () => {
+    const k = await kernel({ manifest: { id: "pkg-a" } });
+    const ctx = k.create(() => {});
+    ctx.storage.set("count", 3);
+    ctx.storage.set("list", [1, 2]);
+    assert.equal(ctx.storage.get("count"), 3);
+    assert.deepEqual(ctx.storage.get("list"), [1, 2]);
+    assert.equal(ctx.storage.get("missing", "fallback"), "fallback");
+    assert.deepEqual([...k.store.keys()], ["codexpp:ext:pkg-a:count", "codexpp:ext:pkg-a:list"]);
+    assert.deepEqual(ctx.storage.keys().sort(), ["count", "list"]);
+    ctx.storage.remove("count");
+    assert.equal(ctx.storage.get("count"), null);
+  });
+
+  it("ctx.backend：call 走桥接带上本脚本 key，on 长轮询分发事件，卸载后停止", async () => {
+    const k = await kernel({ scriptKey: "user:pkg-b" });
+    const requests: Array<[string, any]> = [];
+    let eventsServed = 0;
+    let release: (() => void) | null = null;
+    (k.window as any).__codexSessionDeleteBridge = (path: string, payload: any) => {
+      requests.push([path, payload]);
+      if (path === "/extensions/backend/call") {
+        return Promise.resolve(payload.method === "boom" ? { status: "failed", message: "后台坏了" } : { status: "ok", result: { echo: payload.params } });
+      }
+      eventsServed++;
+      if (eventsServed === 1) return Promise.resolve({ status: "ok", running: true, next: 2, events: [{ seq: 2, event: "tick", payload: { n: 1 } }] });
+      return new Promise((resolve) => { release = () => resolve({ status: "ok", running: true, next: 2, events: [] }); });
+    };
+    const seen: unknown[] = [];
+    const ctx = k.create(() => {});
+    assert.deepEqual(await ctx.backend.call("add", { x: 1 }, { timeout: 5000 }), { echo: { x: 1 } });
+    const instance = requests[0][1].instance;
+    assert.match(instance, /^[a-z0-9]+-[a-z0-9]+$/);
+    assert.deepEqual(requests[0], ["/extensions/backend/call", { key: "user:pkg-b", instance, method: "add", params: { x: 1 }, timeoutMs: 5000 }]);
+    await assert.rejects(ctx.backend.call("boom"), /后台坏了/);
+    ctx.backend.on("tick", (payload: unknown, meta: unknown) => seen.push(["tick", payload, meta]));
+    ctx.backend.on("*", (payload: unknown) => seen.push(["*", payload]));
+    for (let i = 0; i < 5 && eventsServed < 2; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(seen, [["tick", { n: 1 }, { event: "tick" }], ["*", { n: 1 }]]);
+    const polls = requests.filter(([path]) => path === "/extensions/backend/events");
+    assert.equal(polls.length, 2, "两个订阅共用一条轮询");
+    assert.deepEqual(polls[1][1], { key: "user:pkg-b", instance, since: 2, waitMs: 20000 });
+    ctx.dispose();
+    release!();
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(requests.filter(([path]) => path === "/extensions/backend/events").length, 2, "卸载后不再轮询");
+    assert.deepEqual(requests.filter(([path]) => path === "/extensions/backend/stop"), [["/extensions/backend/stop", { key: "user:pkg-b", instance }]], "用过后台的实例卸载时通知停止");
+  });
+
+  it("消息按钮、消息装饰、侧边面板随实例卸载撤销；面板句柄带 open / close", async () => {
+    const k = await kernel();
+    let panel: any;
+    const ctx = k.create((ctx: any) => {
+      ctx.registerMessageAction({ label: "朗读", onActivate() {} });
+      ctx.registerMessageDecoration({ roles: ["assistant"], render() {} });
+      panel = ctx.registerSidePanel({ title: "笔记", render() {} });
+    });
+    assert.deepEqual(k.registered.map((item) => item.kind), ["messageAction", "messageDecoration", "sidePanel"]);
+    assert.ok(k.registered.every((item) => item.scriptKey === "user:demo"));
+    assert.equal(panel.open(), true);
+    assert.equal(panel.close(), true);
+    assert.deepEqual(k.calls, ["sidePanel.open", "sidePanel.close"]);
+    ctx.dispose();
+    assert.ok(k.registered.every((item) => item.disposed), "卸载时三项都撤销");
+  });
+
+  it("ctx.registerSlot 随实例卸载撤销，句柄带 refresh；未知位置报错", async () => {
+    const k = await kernel();
+    let slot: any;
+    const ctx = k.create((ctx: any) => { slot = ctx.registerSlot({ slot: "composer.above", render() {} }); });
+    assert.equal(k.registered.at(-1)?.kind, "slot");
+    slot.refresh();
+    assert.deepEqual(k.calls, ["slot.refresh"]);
+    ctx.dispose();
+    assert.equal(k.registered.at(-1)?.disposed, true);
+    const source = await readFile(new URL("../../../assets/inject/renderer-inject/92-extension-slots.js", import.meta.url), "utf8");
+    assert.match(source, /未知的插槽位置/);
+    for (const name of ["composer.above", "thread.top", "thread.bottom", "sidebar.top", "sidebar.bottom", "titlebar"]) {
+      assert.ok(source.includes(`"${name}"`), name);
+    }
+  });
+
+  it("插槽节点都带拓展标记，消息观察器排除自己的写入，扫描每轮补齐插槽", async () => {
+    const slots = await readFile(new URL("../../../assets/inject/renderer-inject/92-extension-slots.js", import.meta.url), "utf8");
+    const scan = await readFile(new URL("../../../assets/inject/renderer-inject/95-conversation-view.js", import.meta.url), "utf8");
+    for (const created of slots.matchAll(/const (\w+) = document\.createElement\("(?:span|div|button|aside|style)"\);/g)) {
+      assert.match(slots, new RegExp(`markCodexPlusExtensionNode\\(${created[1]},`), `${created[1]} 没有拓展标记，会触发扫描自喂`);
+    }
+    assert.match(slots, /function codexPlusMutationIsOurs/);
+    assert.match(slots, /if \(mutations\.some\(\(mutation\) => !codexPlusMutationIsOurs\(mutation\)\)\)/);
+    assert.match(scan, /refreshCodexPlusMessageSlots\(\);\n\s+refreshCodexPlusSidePanels\(\);/);
+  });
+
+  it("服务：inject 的拓展等依赖齐全才应用，提供者卸载即卸载、换提供者后重新应用", async () => {
+    const k = await kernel();
+    const seen: string[] = [];
+    const consumer = k.create({
+      inject: ["metrics"],
+      apply(ctx: any) {
+        seen.push(`apply:${ctx.metrics.name}`);
+        ctx.effect(() => () => seen.push("dispose"));
+      },
+    });
+    assert.equal(consumer.state, "pending", "依赖没到时挂起，不报错");
+    assert.deepEqual(seen, []);
+    const first = k.create((ctx: any) => { ctx.provide("metrics", { name: "一号" }); });
+    assert.equal(consumer.state, "active");
+    assert.deepEqual(seen, ["apply:一号"]);
+    assert.equal(k.services.get("metrics")?.owner, "user:demo");
+    assert.throws(() => k.create((ctx: any) => ctx.provide("metrics", {})), /已由 user:demo 提供/);
+    first.dispose();
+    assert.equal(consumer.state, "pending");
+    assert.deepEqual(seen, ["apply:一号", "dispose"], "提供者卸载，依赖方随之卸载");
+    k.create((ctx: any) => { ctx.provide("metrics", { name: "二号" }); });
+    assert.deepEqual(seen, ["apply:一号", "dispose", "apply:二号"], "提供者回来后自动重新应用");
+    consumer.dispose();
+    assert.equal(consumer.state, "disposed");
+    assert.deepEqual(seen.at(-1), "dispose");
+  });
+
+  it("服务：ctx.get 做可选依赖，ctx.inject 开子作用域，apply 里提供服务不会重复应用", async () => {
+    const k = await kernel();
+    let child = 0;
+    const ctx = k.create((ctx: any) => {
+      assert.equal(ctx.get("cache"), undefined, "可选依赖不存在时为 undefined");
+      ctx.inject(["cache"], (sub: any) => { child += 1; assert.equal(sub.cache.size, 0); });
+    });
+    assert.equal(child, 0);
+    // 依赖方自己在 apply 里提供另一个服务：触发复查也只应用一次。
+    let applied = 0;
+    k.create({ inject: ["cache"], apply(sub: any) { applied += 1; sub.provide("derived", 1); } });
+    k.create((provider: any) => provider.provide("cache", new Map()));
+    assert.equal(child, 1);
+    assert.equal(applied, 1, "重入时不重复应用");
+    assert.equal(ctx.get("derived"), 1);
+    assert.throws(() => ctx.provide("bad name", 1), /服务名不合法/);
+  });
+
+  it("服务：inject 对象写法的 required:false 是可选依赖，缺了也应用、提供方出现时重新应用", async () => {
+    const k = await kernel();
+    const seen: string[] = [];
+    const consumer = k.create({
+      inject: { metrics: { required: false }, store: true },
+      apply(ctx: any) { seen.push(`apply:${ctx.metrics?.name ?? "无"}`); },
+    });
+    assert.equal(consumer.state, "pending", "必需依赖 store 没到");
+    k.create((ctx: any) => ctx.provide("store", {}));
+    assert.deepEqual(seen, ["apply:无"], "可选依赖缺了照样应用");
+    const provider = k.create((ctx: any) => ctx.provide("metrics", { name: "一号" }));
+    assert.deepEqual(seen, ["apply:无", "apply:一号"], "可选依赖出现时重新应用");
+    provider.dispose();
+    assert.deepEqual(seen.at(-1), "apply:无", "可选依赖消失时退回无依赖的应用");
+    assert.equal(consumer.state, "active");
+  });
+
+  it("ready 在 apply（含异步部分）完成后调用，extension/apply 随后广播；异步 effect 卸载时也撤销", async () => {
+    const k = await kernel();
+    const seen: string[] = [];
+    k.create((ctx: any) => ctx.on("extension/apply", ({ id }: any) => id === "late" && seen.push("broadcast")));
+    let release: () => void = () => {};
+    const ctx = k.create({
+      id: "late",
+      async apply(ctx: any) {
+        ctx.on("ready", () => seen.push("ready"));
+        ctx.on("dispose", () => seen.push("dispose-event"));
+        ctx.effect(async () => () => seen.push("async-dispose"));
+        await new Promise<void>((done) => { release = done; });
+        seen.push("applied");
+      },
+    });
+    assert.deepEqual(seen, [], "apply 没完成前不算应用好");
+    release();
+    await new Promise((done) => setTimeout(done, 0));
+    assert.deepEqual(seen, ["applied", "broadcast", "ready"]);
+    let late = 0;
+    ctx.on("ready", () => { late += 1; });
+    await Promise.resolve();
+    assert.equal(late, 1, "已经 ready 时注册的监听器立即调用");
+    ctx.dispose();
+    const after: string[] = seen;
+    assert.ok(after.includes("async-dispose") && after.includes("dispose-event"), after.join(","));
+  });
+
+  it("清单声明 instances 时按实例各应用一次：配置叠上实例配置，id 与注册项都带实例", async () => {
+    const k = await kernel({ manifest: { id: "multi", config: { label: "默认", size: 1 }, instances: [{ id: "work", name: "工作", config: { label: "工作区" } }, { id: "home", name: "home", config: {} }] } });
+    const seen: string[] = [];
+    k.create((ctx: any) => {
+      seen.push(`${ctx.id}|${ctx.instance?.id}|${ctx.config.label}|${ctx.config.size}`);
+      ctx.registerPage({ title: ctx.config.label, render() {} }, { id: "main" });
+    });
+    assert.deepEqual(seen, ["multi#work|work|工作区|1", "multi#home|home|默认|1"]);
+    assert.equal(k.registered.filter((item: any) => item.kind === "page" && !item.disposed).length, 2, "两份的页面互不顶掉");
+  });
+
+  it("配置原地更新：实例都用 onConfigUpdate 接住时不重载，任何一个没接就整体热重载", async () => {
+    const k = await kernel({ manifest: { id: "cfg", config: { size: 1 } } });
+    const seen: string[] = [];
+    const ctx = k.create((ctx: any) => {
+      ctx.onConfigUpdate((next: any, prev: any) => { seen.push(`${prev.size}->${next.size}`); return true; });
+    });
+    const update = (k.window as any).__codexPlusUserScripts.updateConfig;
+    assert.equal(update("user:demo", { size: 2 }), "applied");
+    assert.equal(ctx.config.size, 2, "ctx.config 换成新值");
+    assert.deepEqual(seen, ["1->2"]);
+    assert.equal((k.window as any).__codexPlusUserScripts.scripts["user:demo"].manifest.config.size, 2, "之后新建的实例也读到新配置");
+    k.create(() => {});
+    assert.equal(update("user:demo", { size: 3 }), "reload", "有实例没接就整体热重载");
+    assert.equal(update("user:nobody", { size: 3 }), "reload");
+  });
+
+  it("内置 sessionQuery 服务：方法名对齐会话查询，参数经桥接转给 /extensions/history", async () => {
+    const k = await kernel();
+    const requests: Array<[string, any]> = [];
+    (k.window as any).__codexSessionDeleteBridge = (path: string, payload: any) => {
+      requests.push([path, payload]);
+      return Promise.resolve(payload.method === "readTitle" ? { status: "failed", message: "没有找到会话" } : { status: "ok", result: [payload.method] });
+    };
+    k.installBuiltins();
+    assert.equal(k.services.get("sessionQuery")?.owner, "builtin");
+    let query: any;
+    k.create({ inject: ["sessionQuery"], apply(ctx: any) { query = ctx.sessionQuery; } });
+    assert.deepEqual(await query.listSessions({ limit: 5 }), ["listSessions"]);
+    await query.listEvents("t-1", { types: ["user/message"] });
+    await query.searchSessions({ query: "bug" });
+    await assert.rejects(query.readTitle("x"), /没有找到会话/);
+    assert.deepEqual(requests.map(([path, payload]) => [path, payload.method, payload.params]), [
+      ["/extensions/history", "listSessions", { limit: 5 }],
+      ["/extensions/history", "listEvents", { id: "t-1", options: { types: ["user/message"] } }],
+      ["/extensions/history", "searchSessions", { query: "bug" }],
+      ["/extensions/history", "readTitle", { id: "x" }],
+    ]);
+    assert.ok(Object.isFrozen(query));
+  });
+
+  it("sessionQuery.project 折叠事件；observeSession 从末尾开始增量推送，撤销后停止", async () => {
+    const k = await kernel();
+    const log = [{ type: "user/message", seq: 0, data: { text: "a" } }, { type: "assistant/message", seq: 1, data: { text: "bb" } }];
+    const calls: string[] = [];
+    (k.window as any).__codexSessionDeleteBridge = (_path: string, payload: any) => {
+      calls.push(payload.method);
+      if (payload.method === "readSession") return Promise.resolve({ status: "ok", result: { session: {}, events: log } });
+      if (payload.method === "listEvents") return Promise.resolve({ status: "ok", result: [log.at(-1)] });
+      if (payload.method === "readEventsSince") return Promise.resolve({ status: "ok", result: log.filter((event) => event.seq >= payload.params.seq) });
+      return Promise.resolve({ status: "ok", result: null });
+    };
+    k.installBuiltins();
+    const query: any = k.services.get("sessionQuery")!.value;
+    const total = await query.project("t-1", { init: () => ({ chars: 0 }), apply: (state: any, event: any) => ({ chars: state.chars + event.data.text.length }) });
+    assert.deepEqual(total, { chars: 3 });
+    await assert.rejects(query.project("t-1", {}), /apply/);
+
+    const seen: number[] = [];
+    const stop = query.observeSession("t-1", (event: any) => seen.push(event.seq), { intervalMs: 500 });
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+    await flush();
+    assert.deepEqual(seen, [], "默认从末尾开始，不回放历史");
+    log.push({ type: "user/message", seq: 2, data: { text: "ccc" } });
+    await new Promise((resolve) => setTimeout(resolve, 560));
+    assert.deepEqual(seen, [2], "新事件增量推送");
+    stop();
+    log.push({ type: "assistant/message", seq: 3, data: { text: "d" } });
+    await new Promise((resolve) => setTimeout(resolve, 560));
+    assert.deepEqual(seen, [2], "撤销后不再推送");
+  });
+
+  it("后台服务：注入包下发的清单登记成页面服务，方法经桥接调用，清单变化时增删", async () => {
+    const k = await kernel();
+    const requests: any[] = [];
+    (k.window as any).__codexSessionDeleteBridge = (path: string, payload: any) => {
+      requests.push([path, payload]);
+      return Promise.resolve(payload.method === "fail" ? { status: "failed", message: "后台报错" } : { status: "ok", result: payload.args.length });
+    };
+    (k.window as any).__codexPlusBackendServices = [{ name: "metrics", key: "user:stats" }, { name: "bad name", key: "user:x" }];
+    k.installBuiltins();
+    assert.equal(k.services.get("metrics")?.owner, "backend:user:stats");
+    assert.equal(k.services.has("bad name"), false);
+    let metrics: any;
+    const fiber = k.create({ inject: ["metrics"], apply(ctx: any) { metrics = ctx.metrics; } });
+    assert.equal(fiber.state, "active");
+    assert.equal(await metrics.record("a", 1), 2);
+    assert.deepEqual(requests[0], ["/extensions/services/call", { name: "metrics", method: "record", args: ["a", 1] }]);
+    await assert.rejects(metrics.fail(), /后台报错/);
+    assert.equal(metrics.then, undefined, "代理不是 thenable，可以直接 await 拿到");
+    (k.window as any).__codexPlusBackendServices = [];
+    (k.window as any).__codexPlusSyncBackendServices();
+    assert.equal(k.services.has("metrics"), false);
+    assert.equal(fiber.state, "pending", "提供方撤掉，依赖方回到挂起");
+  });
+
+  it("codex/request 中间件挂在 createRequest 上：turn/start 绕过 sendRequest 也经过，且每个请求只跑一次", async () => {
+    const source = await readFile(new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8");
+    const patch = source.match(/proto\.createRequest = function codexPlusPatchedCreateRequest\(method, params, \.\.\.rest\) \{[\s\S]*?\n      \};/);
+    assert.ok(patch, "createRequest 补丁不在");
+    assert.match(patch![0], /codexPlusApplyExtensionRequestMiddleware\(String\(method \|\| ""\), params\)/);
+    assert.match(patch![0], /originalCreateRequest\.call\(this, method, nextParams, \.\.\.rest\)/);
+    const send = source.match(/proto\.sendRequest = async function codexPlusModelPatchedSendRequest[\s\S]*?\n    \};/);
+    assert.ok(send);
+    assert.doesNotMatch(send![0], /codexPlusApplyExtensionRequestMiddleware/, "sendRequest 里不能再跑一次");
+  });
+
+  it("内置 sessions 服务：append 条目规整成 ResponseItem，只开放新建 / 分叉 / 改名 / 追加 / 发起 / 插话 / 中断 / 压缩 / 列表", async () => {
+    const k = await kernel();
+    k.installBuiltins();
+    const sessions: any = k.services.get("sessions")?.value;
+    assert.equal(k.services.get("sessions")?.owner, "builtin");
+    assert.deepEqual(Object.keys(sessions).sort(), ["append", "compact", "create", "fork", "interrupt", "list", "rename", "startTurn", "steer"]);
+    assert.ok(Object.isFrozen(sessions));
+    assert.deepEqual(k.sessionItem("你好"), { type: "message", role: "user", content: [{ type: "input_text", text: "你好" }] });
+    assert.deepEqual(k.sessionItem({ role: "assistant", text: "好的" }), { type: "message", role: "assistant", content: [{ type: "output_text", text: "好的" }] });
+    assert.deepEqual(k.sessionItem({ role: "system", text: "x" }).role, "user", "未知角色按用户消息处理");
+    const raw = { type: "function_call_output", call_id: "c1", output: "ok" };
+    assert.equal(k.sessionItem(raw), raw, "已经是 ResponseItem 的原样保留");
+    await assert.rejects(k.sessionsCall("delete", { id: "x" }), /没有方法 delete/);
+  });
+
+  it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {
+    const k = await kernel({ manifest: { id: "greeter", locales: { en: { meta: { title: "Greeter" }, hi: "Hello {name}" }, fr: { hi: "Bonjour {name}" } } } });
+    const ctx = k.create(() => {});
+    // 测试环境的语言是 Node 的 navigator.language（en-US）：zh 词条不会被选中。
+    assert.match(ctx.locale.current, /^en/);
+    assert.equal(ctx.locale.t("hi", { name: "Ada" }), "Hello Ada", "包内 locale 登记在拓展 id 命名空间");
+    assert.equal(ctx.locale.t("meta.title"), "Greeter", "点号路径取嵌套词条");
+    const dispose = ctx.locale.register("menu", { zh: { open: "打开" }, en: { open: "Open {what}", nested: { deep: "Deep" } } });
+    const t = ctx.locale.bind("menu");
+    assert.equal(t("open", { what: "file" }), "Open file");
+    assert.equal(t("open"), "Open {what}", "缺参数时保留占位符");
+    assert.equal(t("nested.deep"), "Deep");
+    assert.equal(t("missing.key"), "missing.key", "都没有就返回 key");
+    ctx.locale.register("common", "en", { cancel: "Cancel" });
+    assert.equal(t("cancel"), "Cancel", "回退到 common 命名空间");
+    dispose();
+    assert.equal(t("open"), "open", "撤销登记后词条消失");
+    assert.equal(ctx.locale.resolve({ zh: "你好", en: "Hello" }), "Hello");
+    assert.equal(ctx.locale.resolve("原样"), "原样");
+    ctx.dispose();
+    assert.equal(k.create(() => {}).locale.t("hi"), "Hello {name}", "新实例重新登记包内词条");
+  });
+
+  it("内置 locale 服务：写成 inject: [\"locale\"] 的拓展也能用", async () => {
+    const k = await kernel();
+    k.installBuiltins();
+    let t: any;
+    const fiber = k.create({ inject: ["locale"], apply(ctx: any) {
+      ctx.locale.register("demo", { en: { ok: "OK" }, zh: { ok: "好" } });
+      t = ctx.locale.bind("demo");
+    } });
+    assert.equal(fiber.state, "active");
+    assert.equal(t("ok"), "OK");
+    assert.equal(k.services.get("locale")?.owner, "builtin");
+  });
+
+  it("ctx.asset：按包内路径取资源的 data URL，可省略 assets/ 前缀，找不到返回空串", async () => {
+    const k = await kernel({ manifest: { id: "pet", assets: { "assets/pet.png": "data:image/png;base64,AAAA" } } });
+    const ctx = k.create(() => {});
+    assert.equal(ctx.asset("assets/pet.png"), "data:image/png;base64,AAAA");
+    assert.equal(ctx.asset("./assets/pet.png"), "data:image/png;base64,AAAA");
+    assert.equal(ctx.asset("pet.png"), "data:image/png;base64,AAAA");
+    assert.equal(ctx.asset("assets/missing.png"), "");
+    assert.equal((await kernel()).create(() => {}).asset("assets/pet.png"), "", "单文件脚本没有资源");
+  });
+
+  it("一次性定时器触发后自行注销，不留在撤销列表里", async () => {
+    const k = await kernel();
+    let fired = 0;
+    const ctx = k.create((ctx: any) => ctx.setTimeout(() => { fired++; }, 10));
+    const [[id, run]] = [...k.timers.entries()];
+    k.timers.delete(id);
+    run();
+    assert.equal(fired, 1);
+    ctx.dispose();
+    assert.equal(fired, 1);
+  });
+
+  it("对外接口挂出 extension 入口并把清单放进 script", async () => {
+    const api = await readFile(new URL("../../../assets/inject/renderer-inject/91-extension-api.js", import.meta.url), "utf8");
+    assert.match(api, /extension: codexPlusCreateExtension,/);
+    // 早期名称保留为别名，已有拓展不受影响。
+    assert.match(api, /plugin: codexPlusCreateExtension,/);
+    assert.match(api, /return \{ key, manifest: codexPlusExtensionManifest\(key\) \};/);
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    assert.ok(renderer.indexOf("function codexPlusCreateExtension(") < renderer.indexOf("window.codexPlus = buildCodexPlusExtensionApi();"));
+  });
+});
+
+describe("功能页与原生弹出层的层级", () => {
+  it("页面打开时连同弹出层的直接父容器一起提升，原生 tooltip 不被页面盖住", async () => {
+    const style = await readFile(new URL("../../../assets/inject/renderer-inject/10-style.js", import.meta.url), "utf8");
+    // 新版 Codex 把 tooltip 挂在 z-60 的固定视口容器里，只提升子节点逃不出该堆叠上下文（实测复现过）。
+    assert.match(style, /html\[data-codex-plus-page-open\] div:has\(> \[data-radix-popper-content-wrapper\], > \[role="tooltip"\], > \[role="menu"\]\):not\(\.\$\{codexPlusPageClass\} \*\),/);
+    const page = Number(/z-index: (\d+);\s*display: block;\s*background: var\(--codex-plus-bg-primary/.exec(style)?.[1]);
+    const lifted = Number(/\.app-header-tint \{\s*z-index: (\d+) !important;/.exec(style)?.[1]);
+    assert.ok(page > 0 && lifted > page, "提升后的弹出层必须高于功能页");
+  });
+});
+
+describe("图标栏按钮的悬浮提示", () => {
+  async function source() {
+    return readFile(new URL("../../../assets/inject/renderer-inject/40-backend-settings.js", import.meta.url), "utf8");
+  }
+  async function finder() {
+    const text = await source();
+    const start = text.indexOf("  let codexPlusNativeTooltipClassCache;");
+    const end = text.indexOf("  function hideCodexPlusRailTooltip()");
+    assert.ok(start >= 0 && end > start, "找不到原生提示样式类的查找函数");
+    return new Function("document", `${text.slice(start, end)}\nreturn codexPlusNativeTooltipClass;`)({ styleSheets: [] }) as (sheets: unknown[]) => string;
+  }
+
+  it("按独有的变体规则找出原生提示样式类，规则嵌在分组里也能找到", async () => {
+    const find = await finder();
+    const sheets = [
+      { get cssRules(): never { throw new Error("跨域样式表不可读"); } },
+      { cssRules: [{ selectorText: "._Tooltip_453y_1" }, { cssRules: [
+        { selectorText: "._Tooltip_11i4f_2" },
+        { selectorText: '._Tooltip_11i4f_2[data-side="bottom"][data-default-side-offset="true"]' },
+      ] }] },
+    ];
+    assert.equal(find(sheets), "_Tooltip_11i4f_2");
+  });
+
+  it("找不到时返回空串（走兜底样式），且不缓存失败结果", async () => {
+    const find = await finder();
+    assert.equal(find([{ cssRules: [{ selectorText: "._Tooltip_453y_1" }] }]), "");
+    assert.equal(find([{ cssRules: [{ selectorText: '._Tooltip_ab_9[data-side="bottom"][data-default-side-offset="true"]' }] }]), "_Tooltip_ab_9");
+    // 找到后缓存，之后样式表变化不再重扫。
+    assert.equal(find([]), "_Tooltip_ab_9");
+  });
+
+  it("按钮不用 title（会弹系统提示），改挂自绘提示；兜底样式与提升层级齐全", async () => {
+    const text = await source();
+    const create = text.slice(text.indexOf("  function createCodexPlusRailButton("), text.indexOf("  const codexPlusRailTooltipDelayMs"));
+    assert.doesNotMatch(create, /setAttribute\("title"/);
+    assert.match(create, /button\.removeAttribute\("title"\);\s*attachCodexPlusRailTooltip\(button, label\);/);
+    assert.match(text, /markCodexPlusExtensionNode\(wrapper, "builtin-rail-tooltip"\)/, "提示节点必须带拓展标记，否则触发扫描自喂循环");
+    const style = await readFile(new URL("../../../assets/inject/renderer-inject/10-style.js", import.meta.url), "utf8");
+    assert.match(style, /\.codex-plus-rail-tooltip-fallback \{/);
+  });
+});
+
+describe("extension rpc frame interception", () => {
+  type Frame = unknown[];
+  type Handler = (...args: any[]) => any;
+
+  async function runtime() {
+    const rpc = await readFile(
+      new URL("../../../assets/inject/renderer-inject/91-extension-rpc.js", import.meta.url), "utf8",
+    );
+    const kernel = await readFile(
+      new URL("../../../assets/inject/renderer-inject/91-extension-runtime.js", import.meta.url), "utf8",
+    );
+    // 用真实的 codex/request 链实现，保证两边语义一致。
+    const waterfall = kernel.slice(kernel.indexOf("  function codexPlusIsThenable(value)"),
+      kernel.indexOf("  /** 通知所有监听者"))
+      + kernel.slice(kernel.indexOf("  function codexPlusRunWaterfall(name, value)"),
+        kernel.indexOf("  /**\n   * Codex 会话事件"));
+    assert.ok(waterfall.includes("function codexPlusRunWaterfall"));
+    const sent: Frame[] = [];
+    const toasts: string[] = [];
+    const failures: string[] = [];
+    class MessagePort {}
+    (MessagePort.prototype as any).postMessage = function (message: Frame) { sent.push(message); };
+    const window: Record<string, unknown> = { MessagePort };
+    const listeners = new Map<string, Set<{ handler: Handler; scriptKey: string }>>();
+    const interceptors = new Map<string, Array<{ handler: Handler; scriptKey: string; order: number; seq: number }>>();
+    const api = new Function("window", "codexPlusExtensionListeners", "codexPlusExtensionInterceptors",
+      "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "showToast",
+      `${waterfall}\n${rpc}\nreturn { codexPlusRpcDecode, codexPlusRpcEncode };`,
+    )(
+      window, listeners, interceptors,
+      (_key: string, label: string, callback: () => unknown) => {
+        try {
+          return { ok: true, value: callback() };
+        } catch (error) {
+          failures.push(`${label}: ${(error as Error).message}`);
+          return { ok: false, error };
+        }
+      },
+      (_key: string, message: string) => failures.push(message),
+      (message: string) => toasts.push(message),
+    );
+    let seq = 0;
+    const on = (name: string, handler: Handler) => {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      listeners.get(name)!.add({ handler, scriptKey: "probe" });
+    };
+    const intercept = (name: string, handler: Handler) => {
+      interceptors.set(name, [...(interceptors.get(name) || []), { handler, scriptKey: "probe", order: 0, seq: ++seq }]);
+    };
+    const port = new MessagePort() as { postMessage: (frame: Frame) => void };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    return { api, window, sent, toasts, failures, on, intercept, port, settle };
+  }
+
+  const settings = { model: "jojocodemax/gpt-6.1-sol", reasoning_effort: "high", developer_instructions: null };
+  const userText = { type: "text", text: "REQTEST hi\n", text_elements: [[{ start: 0, end: 7 }]] };
+  // 宿主发起轮次前回调页面要参数：start.request 即 turn/start 参数，steer 是会话忙时的候选。
+  function turnResolve(exportId: number, messageId = "m-1"): Frame {
+    return ["resolve", exportId, {
+      conversationId: "thread-1",
+      resume: { conversationId: "thread-1", model: null, collaborationMode: { mode: "default", settings: { ...settings } } },
+      steer: { input: [[{ ...userText }]], clientUserMessageId: messageId, restoreMessage: { text: "REQTEST hi" } },
+      start: {
+        request: {
+          threadId: "thread-1", clientUserMessageId: messageId, input: [[{ ...userText }]], model: null, effort: null,
+          collaborationMode: { mode: "default", settings: { ...settings } },
+        },
+        context: { onRequestDispatched: ["export", -799] },
+      },
+    }];
+  }
+
+  it("passes frames through synchronously when no extension listens", async () => {
+    const env = await runtime();
+    const frame = turnResolve(7);
+    env.port.postMessage(frame);
+    assert.equal(env.sent.length, 1);
+    assert.equal(env.sent[0], frame, "the original frame object goes out untouched");
+  });
+
+  it("round-trips capnweb values and keeps tagged values opaque", async () => {
+    const env = await runtime();
+    const encoded = { list: [["a", [["b"]]]], cb: ["export", -3], empty: [[]], n: null };
+    const decoded = env.api.codexPlusRpcDecode(encoded);
+    assert.deepEqual(decoded.list, ["a", ["b"]]);
+    assert.deepEqual(decoded.empty, []);
+    assert.deepEqual(Object.keys(decoded.cb), [], "tagged tuples are not exposed as plain data");
+    assert.deepEqual(env.api.codexPlusRpcEncode(decoded), encoded);
+  });
+
+  it("runs dsh agent/pre-step once per user message and rewrites both turn candidates", async () => {
+    const env = await runtime();
+    const seen: Array<{ method: string; text: string }> = [];
+    let preSteps = 0;
+    env.on("agent/pre-step", async ({ agent, step, messages }: any, next: () => Promise<any>) => {
+      preSteps += 1;
+      assert.equal(agent.session.id, "thread-1");
+      assert.equal(step, 1);
+      assert.equal(messages[0].role, "user");
+      assert.equal(messages[0].content[0].text, "REQTEST hi\n");
+      const decision = await next();
+      return { ...decision, messages: [...decision.messages, { role: "user", content: [{ type: "text", text: "[time]" }] }] };
+    });
+    env.intercept("codex/request", (value: any, next: (v: unknown) => unknown) => {
+      seen.push({ method: value.method, text: value.params.input.map((item: any) => item.text).join("|") });
+      return next(value);
+    });
+    env.port.postMessage(turnResolve(7));
+    const later: Frame = ["push", ["pipeline", -4, ["markRead"], ["thread-1"]]];
+    env.port.postMessage(later);
+    assert.equal(env.sent.length, 0, "frames after a pending rewrite wait for it");
+    await env.settle();
+    assert.equal(env.sent.length, 2);
+    assert.equal(env.sent[1], later, "queued frames keep their order");
+    const value = (env.sent[0] as any)[2];
+    assert.equal(env.sent[0][0], "resolve");
+    assert.equal(env.sent[0][1], 7);
+    for (const input of [value.start.request.input, value.steer.input]) {
+      assert.equal(input.length, 1, "arrays stay capnweb-encoded");
+      assert.deepEqual(input[0][0], userText, "unchanged text keeps its text_elements");
+      assert.deepEqual(input[0][1], { type: "text", text: "[time]", text_elements: [[]] });
+    }
+    assert.deepEqual(value.start.context.onRequestDispatched, ["export", -799]);
+    assert.deepEqual(seen, [
+      { method: "turn/start", text: "REQTEST hi\n|[time]" },
+      { method: "turn/steer", text: "REQTEST hi\n|[time]" },
+    ]);
+
+    // 同一条消息的另一份候选帧复用上面的决定，不再跑 pre-step。
+    env.port.postMessage(turnResolve(8));
+    await env.settle();
+    assert.equal(preSteps, 1);
+    assert.equal((env.sent[2] as any)[2].start.request.input[0].length, 2);
+  });
+
+  it("applies dsh agent/request model and effort to every settings holder", async () => {
+    const env = await runtime();
+    env.on("agent/request", async (_params: unknown, next: () => Promise<any>) => {
+      const config = await next();
+      assert.deepEqual(config, { provider: "jojocodemax", model: "jojocodemax/gpt-6.1-sol", reasoningEffort: "high" });
+      return { ...config, model: "other/gpt-5", reasoningEffort: "low" };
+    });
+    env.port.postMessage(turnResolve(9));
+    await env.settle();
+    const value = (env.sent[0] as any)[2];
+    for (const holder of [value.start.request, value.resume]) {
+      assert.equal(holder.collaborationMode.settings.model, "other/gpt-5");
+      assert.equal(holder.collaborationMode.settings.reasoning_effort, "low");
+    }
+    assert.equal(value.start.request.model, null, "explicit null overrides stay null");
+  });
+
+  it("reads model settings from resume when the host first asks for the steer candidate only", async () => {
+    const env = await runtime();
+    const configs: unknown[] = [];
+    env.on("agent/request", async (_params: unknown, next: () => Promise<any>) => {
+      const config = await next();
+      configs.push(config);
+      return { ...config, reasoningEffort: "low" };
+    });
+    const steerOnly = turnResolve(12, "m-3") as any;
+    delete steerOnly[2].start;
+    env.port.postMessage(steerOnly);
+    env.port.postMessage(turnResolve(13, "m-3"));
+    await env.settle();
+    assert.deepEqual(configs, [{ provider: "jojocodemax", model: "jojocodemax/gpt-6.1-sol", reasoningEffort: "high" }]);
+    assert.equal((env.sent[0] as any)[2].resume.collaborationMode.settings.reasoning_effort, "low");
+    assert.equal((env.sent[1] as any)[2].start.request.collaborationMode.settings.reasoning_effort, "low");
+  });
+
+  it("turns a pre-step rejection into a capnweb reject frame", async () => {
+    const env = await runtime();
+    env.on("agent/pre-step", () => ({ kind: "reject", reason: "blocked by policy" }));
+    env.port.postMessage(turnResolve(10));
+    await env.settle();
+    assert.deepEqual(env.sent[0], ["reject", 10, ["error", "Error", "blocked by policy"]]);
+    assert.deepEqual(env.toasts, ["blocked by policy"]);
+  });
+
+  it("treats the first turn of a new conversation as turn/start", async () => {
+    const env = await runtime();
+    env.intercept("codex/request", (value: any, next: (v: unknown) => unknown) => {
+      if (value.method !== "turn/start") return next(value);
+      return next({ ...value, params: { ...value.params, input: [{ type: "text", text: "（中文）" }, ...value.params.input] } });
+    });
+    const callbacks = { onSettled: ["export", -688] };
+    env.port.postMessage(["push", ["pipeline", -188, ["startConversation"], [{
+      input: [[{ ...userText }]], clientUserMessageId: "m-2", collaborationMode: { mode: "default", settings: { ...settings } },
+    }, callbacks]]]);
+    await env.settle();
+    const [, expr] = env.sent[0] as [string, any[]];
+    assert.deepEqual(expr.slice(0, 3), ["pipeline", -188, ["startConversation"]]);
+    assert.deepEqual(expr[3][0].input, [[{ type: "text", text: "（中文）" }, userText]]);
+    assert.equal(expr[3][1], callbacks, "exported callbacks are forwarded as-is");
+  });
+
+  it("keeps the push id sequence when a new conversation is rejected", async () => {
+    const env = await runtime();
+    env.on("agent/pre-step", async () => ({ kind: "reject" }));
+    env.port.postMessage(["push", ["pipeline", -188, ["startConversation"], [{ input: [[{ ...userText }]] }, {}]]]);
+    await env.settle();
+    assert.deepEqual(env.sent[0], ["push", ["pipeline", -188, ["__codexPlusRejectedByExtension"], []]]);
+  });
+
+  it("routes manager sendRequest calls through codex/request", async () => {
+    const env = await runtime();
+    env.intercept("codex/request", (value: any, next: (v: unknown) => unknown) =>
+      next(value.method === "hooks/list" ? { ...value, params: { cwds: [...value.params.cwds, "/extra"] } } : value));
+    const untouched: Frame = ["push", ["pipeline", -188, ["sendRequest"], ["config/read", { cwd: null }, { priority: "critical" }]]];
+    env.port.postMessage(["push", ["pipeline", -188, ["sendRequest"], ["hooks/list", { cwds: [["/a"]] }]]]);
+    env.port.postMessage(untouched);
+    await env.settle();
+    assert.deepEqual(env.sent[0], ["push", ["pipeline", -188, ["sendRequest"], ["hooks/list", { cwds: [["/a", "/extra"]] }]]]);
+    assert.equal(env.sent[1], untouched, "a request the chain did not change goes out as the same object");
+  });
+
+  it("skips a throwing listener instead of blocking the turn", async () => {
+    const env = await runtime();
+    env.on("agent/pre-step", () => { throw new Error("boom"); });
+    const frame = turnResolve(11);
+    env.port.postMessage(frame);
+    await env.settle();
+    assert.equal(env.sent.length, 1);
+    assert.deepEqual((env.sent[0] as any)[2].start.request.input, (frame as any)[2].start.request.input);
+    assert.ok(env.failures.some((message) => message.includes("boom")));
+  });
+});
+
+describe("拓展输入触发、快捷键与主题", () => {
+  async function extras(platform = "MacIntel") {
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/92-extension-extras.js", import.meta.url), "utf8",
+    );
+    const registry = { inputTriggers: new Map(), shortcuts: new Map(), themes: new Map() };
+    const emitted: unknown[] = [];
+    const styles = new Map<string, { id: string; textContent: string; remove: () => void }>();
+    const rootAttributes = new Map<string, string>();
+    const document = {
+      getElementById: (id: string) => styles.get(id) ?? null,
+      createElement: () => {
+        const node = { id: "", textContent: "", remove: () => styles.delete(node.id) };
+        return node;
+      },
+      head: { append: (node: { id: string; textContent: string; remove: () => void }) => styles.set(node.id, node) },
+      documentElement: {
+        setAttribute: (name: string, value: string) => rootAttributes.set(name, value),
+        removeAttribute: (name: string) => rootAttributes.delete(name),
+      },
+      addEventListener: () => {},
+    };
+    const store = new Map<string, string>();
+    const localStorage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => store.set(key, value), removeItem: (key: string) => store.delete(key) };
+    const api = new Function(
+      "document", "localStorage", "navigator", "window", "codexPlusRegistry", "codexPlusExtensionItems", "codexPlusRegisterExtensionItem",
+      "markCodexPlusExtensionNode", "codexPlusEmitExtensionEvent", "codexPlusResolveText", "installCodexPlusCommandHandlers",
+      `${source}\nreturn { parse: codexPlusParseShortcut, matches: codexPlusShortcutMatches, match: codexPlusMatchInputTrigger, registerTheme: codexPlusRegisterTheme, themes: codexPlusThemesService(), registerTrigger: codexPlusRegisterInputTrigger };`,
+    )(
+      document, localStorage, { platform }, {},
+      registry,
+      (map: Map<string, unknown>) => [...map.values()],
+      (kind: string, map: Map<string, unknown>, definition: Record<string, unknown>, options: { id?: string }) => {
+        const id = `user:demo:${kind}:${options.id ?? map.size}`;
+        map.set(id, { ...definition, id, scriptKey: "user:demo" });
+        return () => map.delete(id);
+      },
+      () => {},
+      (event: string, args: unknown[]) => emitted.push([event, ...args]),
+      (value: unknown) => value,
+      () => {},
+    );
+    return { api, registry, styles, rootAttributes, store, emitted };
+  }
+
+  it("快捷键：Mod 在 macOS 是 ⌘，要求带修饰键", async () => {
+    const { api } = await extras("MacIntel");
+    const spec = api.parse("Mod+Shift+K");
+    assert.deepEqual(spec, { ctrl: false, meta: true, shift: true, alt: false, key: "k" });
+    assert.equal(api.matches(spec, { key: "K", code: "KeyK", metaKey: true, shiftKey: true, ctrlKey: false, altKey: false }), true);
+    assert.equal(api.matches(spec, { key: "k", code: "KeyK", metaKey: true, shiftKey: false, ctrlKey: false, altKey: false }), false);
+    assert.throws(() => api.parse("K"), /需要带 Mod/);
+    assert.throws(() => api.parse("Mod+K+J"), /只能有一个主键/);
+    assert.ok(api.parse("F5"), "功能键可以不带修饰键");
+    const { api: windows } = await extras("Win32");
+    assert.equal(windows.parse("Mod+K").ctrl, true);
+  });
+
+  it("输入触发：取光标前最近的触发符，查询词里有空白就不算", async () => {
+    const { api, registry } = await extras();
+    api.registerTrigger({ trigger: "%", items: () => [] });
+    api.registerTrigger({ trigger: "#", items: () => [] });
+    assert.equal(api.match("请看 %rea").query, "rea");
+    assert.equal(api.match("请看 %rea").item.trigger, "%");
+    assert.equal(api.match("a%b"), null, "触发符前要是开头或空白");
+    assert.equal(api.match("%foo bar"), null, "已经输完一个词");
+    assert.equal(api.match("%x #iss").item.trigger, "#");
+    assert.equal(registry.inputTriggers.size, 2);
+    assert.throws(() => api.registerTrigger({ trigger: "abc", items: () => [] }), /符号开头/);
+    for (const reserved of ["@", "$", "/", "@me"]) {
+      assert.throws(() => api.registerTrigger({ trigger: reserved, items: () => [] }), /Codex 自己在用/, reserved);
+    }
+  });
+
+  it("主题：选中的主题生效并记住，拓展卸下后撤掉样式、回来自动恢复", async () => {
+    const { api, styles, rootAttributes, store, emitted } = await extras();
+    const dispose = api.registerTheme({ id: "sepia", name: "复古", variables: { "--color-token-main-surface-primary": "#f4ecd8", "bad name": "x" }, css: "body{letter-spacing:.01em}" });
+    assert.deepEqual(api.themes.list().map((theme: { id: string }) => theme.id), ["sepia"]);
+    assert.equal(api.themes.current, null);
+    api.themes.apply("sepia");
+    assert.equal(store.get("codexPlusExtensionTheme"), "sepia");
+    const css = styles.get("codex-plus-extension-theme")!.textContent;
+    assert.match(css, /:root\{--color-token-main-surface-primary:#f4ecd8\}/);
+    assert.doesNotMatch(css, /bad name/);
+    assert.equal(rootAttributes.get("data-codex-plus-theme"), "sepia");
+    assert.deepEqual(emitted.at(-1), ["theme/change", { id: "sepia" }]);
+    dispose();
+    assert.equal(styles.has("codex-plus-extension-theme"), false);
+    assert.equal(store.get("codexPlusExtensionTheme"), "sepia", "选择保留");
+    api.registerTheme({ id: "sepia", css: "body{}" });
+    assert.equal(rootAttributes.get("data-codex-plus-theme"), "sepia");
+    assert.throws(() => api.themes.apply("missing"), /没有主题/);
+    api.themes.apply(null);
+    assert.equal(styles.has("codex-plus-extension-theme"), false);
   });
 });

@@ -18,8 +18,9 @@ fn retired_layout_flag_is_ignored_without_affecting_other_enhancements() {
     assert!(!settings.agent_pet.enabled);
     assert_eq!(settings.codex_app_typing_effect, "stars");
     assert!(settings.codex_app_thread_id_badge);
-    assert!(!settings.codex_app_session_share);
     let serialized = serde_json::to_value(settings).unwrap();
+    // 会话分享已下线（后端早已没有 /share/create），旧开关读入后丢弃。
+    assert!(serialized.get("codexAppSessionShare").is_none());
     assert!(serialized.get("codexAppCustomLayoutEnabled").is_none());
     assert_eq!(serialized["codexAppConversationView"], true);
     assert!(serialized.get("codexAppWhaleWidgetEnabled").is_none());
@@ -38,6 +39,7 @@ fn saving_old_settings_and_partial_updates_never_reintroduce_the_retired_flag() 
             "codexAppWhaleWidgetEnabled": true,
             "codexAppTypingEffect": "stars",
             "codexAppThreadIdBadge": true,
+            "codexAppSessionShare": true,
         }))
         .unwrap(),
     )
@@ -49,6 +51,7 @@ fn saving_old_settings_and_partial_updates_never_reintroduce_the_retired_flag() 
     let saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert!(saved.get("codexAppCustomLayoutEnabled").is_none());
+    assert!(saved.get("codexAppSessionShare").is_none());
     assert!(saved.get("codexAppWhaleWidgetEnabled").is_none());
     assert_eq!(saved["agentPet"]["enabled"], true);
     let updated = store

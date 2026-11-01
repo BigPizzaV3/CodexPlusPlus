@@ -37,6 +37,8 @@ import {
 import { AgentPetSoundPlayer, type AgentPetSoundSources } from "./agent-pet-sound";
 import type { WhaleBalanceProtocol, WhaleBalanceSettings } from "./whale-settings";
 import { t, tf } from "./i18n";
+import { agentVisible, singleAgent } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import "./AgentPetPage.css";
 
 type CatalogEntry = { id: string; name: string; credit?: string };
@@ -80,7 +82,7 @@ async function loadImage(image: string, customImageUrl = ""): Promise<PreviewSta
   }
 }
 
-export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWhaleBalanceChange, whaleBalanceIssue = null }: {
+export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWhaleBalanceChange, whaleBalanceIssue = null, embedded = false }: {
   settings: AgentPetSettings;
   onChange: (next: AgentPetSettings) => void;
   /** 自动保存状态，由主界面提供（与其他设置页同一套保存逻辑）。 */
@@ -90,8 +92,13 @@ export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWha
   onWhaleBalanceChange: (patch: Partial<WhaleBalanceSettings>) => void;
   /** 余额配置的校验提示，由主界面按保存时同一规则算出。 */
   whaleBalanceIssue?: string | null;
+  /** 嵌在「本地拓展」那一行下面展开：不要页头和「显示 Agent 桌宠」总开关（启停就是那一行的开关）。 */
+  embedded?: boolean;
 }) {
   const update = (patch: Partial<AgentPetSettings>) => onChange({ ...settings, ...patch });
+  // 只管理 Codex 时桌宠只会出现在 Codex 里，不用再选「显示在」。
+  const focus = useAgentFocus();
+  const codexOnly = singleAgent(focus) === "codex";
   const isWhale = settings.kind === AGENT_PET_KIND_WHALE_WIDGET;
   // 大肥鱼的角色图随应用内嵌，由后端交给页面预览。
   const [whaleImage, setWhaleImage] = useState<PreviewState | null>(null);
@@ -272,9 +279,14 @@ export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWha
   const failedIds = Object.entries(previews).filter(([, value]) => value.state === "failed").map(([id]) => id);
 
   return (
-    <div className="settings-page agent-pet-page">
-      <PageHeader icon={<PawPrint className="h-4 w-4" />} title={t("Agent 桌宠")} />
-      <div className="agent-pet-toolbar">
+    <div className={embedded ? "agent-pet-page is-embedded" : "settings-page agent-pet-page"}>
+      {embedded ? null : <PageHeader icon={<PawPrint className="h-4 w-4" />} title={t("Agent 桌宠")} />}
+      {embedded ? (
+        <div className="agent-pet-toolbar">
+          <small className="agent-pet-muted">{settings.enabled ? t("改动几秒内同步到 Codex，不用重启。") : t("桌宠拓展已关闭，打开这一行的开关后才会在 Codex 里显示。")}</small>
+          {autoSave}
+        </div>
+      ) : <div className="agent-pet-toolbar">
         <label className="feature-toggle agent-pet-master">
           <input
             checked={settings.enabled}
@@ -288,17 +300,17 @@ export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWha
           <span aria-hidden="true" className="toggle-switch-visual"><span className="toggle-switch-thumb" /></span>
         </label>
         {autoSave}
-      </div>
+      </div>}
 
       <div className={`agent-pet-layout ${settings.enabled ? "" : "is-off"}`}>
         <div className="agent-pet-main">
-          <section className="feature-group">
+          {codexOnly ? null : <section className="feature-group">
             <div className="feature-group-head">
               <strong>{t("显示在")}</strong>
               <small>{t("目前只支持 Codex，其他 Agent 后续接入。")}</small>
             </div>
             <div className="agent-pet-agents" role="group" aria-label={t("显示在")}>
-              {agentOptions.map((option) => {
+              {agentOptions.filter((option) => agentVisible(focus, option.id)).map((option) => {
                 const supported = AGENT_PET_SUPPORTED_AGENTS.includes(option.id);
                 const checked = supported && settings.agents.includes(option.id);
                 return (
@@ -315,7 +327,7 @@ export function AgentPetPage({ settings, onChange, autoSave, whaleBalance, onWha
                 );
               })}
             </div>
-          </section>
+          </section>}
 
           <section className="feature-group">
             <div className="feature-group-head">

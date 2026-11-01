@@ -15,7 +15,7 @@ const clientPatch = native.slice(native.indexOf("  function patchPluginMarketpla
 const transportPatch = native.slice(native.indexOf("  function installPluginMarketplaceBridgePatch("), native.indexOf("  const pluginMarketplaceRequestPatchMaxMisses"));
 const prototypePatch = model.slice(model.indexOf("    function installCodexAppServerClientPrototypePatch("), model.indexOf("  const appServerModelRequestPatchMaxMisses"));
 // 原型补丁里经旁支保存（#2660）包装原生请求；辅助函数定义在截取范围外，需要一并带上。
-const sideChatSend = model.slice(model.indexOf("  function sendAppServerRequestWithSideChat("), model.indexOf("  // issue #2177："));
+const sideChatSend = model.slice(model.indexOf("  async function sendAppServerRequestThroughExchange("), model.indexOf("  // issue #2177："));
 const flush = async () => { await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setImmediate(resolve)); };
 const sentinel = (source = "public") => `/fixture/.tmp/codex-plus-plugin-market/virtual-${source}/.agents/plugins/marketplace.json`;
 const managedSummary = { name: "sample", id: "sample@codex-plus-plugin-market-123456789abc", codexPlusIndexId: "original-id", installed: false };
@@ -64,6 +64,8 @@ function fixture(handler, { enabled = true } = {}) {
     codexPlusSettings: () => ({ serviceTierControls: false }),
     codexRemoteSessionProviderRequestMethod: () => false, codexRemoteSessionProviderOverrideEnabled: () => false,
     applyCodexRemoteSessionProviderOverride: (_, params) => params, applyCodexServiceTierRequestOnly: (_, params) => params,
+    // 拓展的 codex/request 中间件：这里没有拓展，原样放行。
+    codexPlusApplyExtensionRequestMiddlewareAsync: async (_, params) => params, codexPlusExtensionWantsRequestMiddleware: () => false,
     refreshCodexThreadModelBeforeTurn: async () => null,
     codexThreadModelRequestState: () => ({ threadId: "", model: "" }),
     NativeClient,

@@ -11,6 +11,8 @@ import { t, tf } from "./i18n";
 import { agentAccessState, agentUsageStats, recentAgentRequests, type DashboardRequest } from "./agent-dashboard-model";
 import { AgentGlyph, useGatewayPayload } from "./HubOverview";
 import { formatElapsed, formatTokens, modelDisplay, relativeTime, shortPath, type AgentSessionView, type UsageSummary } from "./gateway-model";
+import { providersHidden } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 import "./AgentDashboard.css";
 
 export type DashboardAgent = "codex" | "claude" | "grok";
@@ -58,6 +60,8 @@ export function AgentDashboard({
   const [skillCount, setSkillCount] = useState<number | null>(null);
   const [launching, setLaunching] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  // 只用增强功能：供应商交给别的工具，不显示接入状态、调用统计和最近请求，只留会话、MCP、Skills。
+  const enhanceOnly = providersHidden(useAgentFocus());
 
   useEffect(() => {
     let cancelled = false;
@@ -110,14 +114,19 @@ export function AgentDashboard({
     }
   };
 
-  const heroStatus: DashboardStatus = status ?? {
+  const heroStatus: DashboardStatus = enhanceOnly ? { tone: "direct", text: t("供应商由其他工具管理") } : status ?? {
     tone: access,
     text: access === "gateway" ? (model ? tf("经 Codex++ 网关 · {0}", [model]) : t("经 Codex++ 网关"))
       : access === "drift" ? (view?.drift?.by ? tf("配置被 {0} 改掉了，没有经过网关", [view.drift.by]) : t("配置被别的工具改掉了，没有经过网关"))
         : access === "direct" ? t("未接入网关 · 用它自己的设置")
           : t("读取中…"),
   };
-  const heroActions = actions ?? (
+  const heroActions = enhanceOnly ? (agent === "codex" ? null : (
+    <button className="agent-dash-button" disabled={launching} onClick={() => void launch()} type="button">
+      {launching ? <Loader2 aria-hidden="true" className="agent-dash-spin" size={13} /> : <Play aria-hidden="true" size={13} />}
+      {t("在终端启动")}
+    </button>
+  )) : actions ?? (
     <>
       <button className="agent-dash-button" data-primary={access === "direct" || access === "drift" ? "true" : undefined} onClick={() => onNavigate("gateway")} type="button">
         {access === "gateway" ? t("管理接入") : access === "drift" ? t("重新接入") : t("接入网关")}
@@ -147,16 +156,16 @@ export function AgentDashboard({
         <div className="agent-dash-actions">{heroActions}</div>
       </section>
 
-      <dl className="agent-dash-stats">
+      {enhanceOnly ? null : <dl className="agent-dash-stats">
         {statItems.map((item) => (
           <div key={item.label}>
             <dt>{item.label}</dt>
             <dd data-mono={item.mono === false ? "false" : undefined} data-tone={item.tone} title={typeof item.value === "string" ? item.value : undefined}>{item.value}</dd>
           </div>
         ))}
-      </dl>
+      </dl>}
 
-      <div className="agent-dash-grid">
+      <div className="agent-dash-grid" data-single={enhanceOnly ? "true" : undefined}>
         <section className="agent-dash-card">
           <header>
             <h3>{t("最近会话")}</h3>
@@ -182,7 +191,7 @@ export function AgentDashboard({
           )}
         </section>
 
-        <section className="agent-dash-card">
+        {enhanceOnly ? null : <section className="agent-dash-card">
           <header>
             <h3>{t("最近请求")}</h3>
             <button onClick={() => onOpenList("requestLog", agent)} type="button">{t("请求日志")}<ArrowUpRight aria-hidden="true" size={13} /></button>
@@ -209,7 +218,7 @@ export function AgentDashboard({
               ))}
             </ul>
           )}
-        </section>
+        </section>}
       </div>
 
       <footer className="agent-dash-foot">

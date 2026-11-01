@@ -131,7 +131,9 @@ pub fn tool_display_name(id: &ToolId) -> &'static str {
         ToolId::Codex => TOOL_CODEX_NAME,
         ToolId::Grok => TOOL_GROK_NAME,
         ToolId::Claude => TOOL_CLAUDE_NAME,
-        ToolId::Unknown(_) => "未知工具",
+        ToolId::Unknown(id) => crate::gateway::agents::spec(id)
+            .map(|spec| spec.name)
+            .unwrap_or("未知工具"),
     }
 }
 

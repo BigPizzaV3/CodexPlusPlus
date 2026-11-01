@@ -1077,8 +1077,9 @@
   function codexPlusModelPickerScan() {
     const state = codexPlusModelPickerGroupsState;
     if (state.disposed) return;
-    const menu = codexPlusModelPickerMenu();
-    const list = codexPlusModelPickerList(menu);
+    // 内置拓展「模型分组」停用时当作没有列表：已分组的列表还原。
+    const menu = globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups") ? null : codexPlusModelPickerMenu();
+    const list = menu ? codexPlusModelPickerList(menu) : null;
     if (!list) {
       codexPlusModelPickerReportUnrecognized();
       if (state.activeList) {
@@ -1104,12 +1105,13 @@
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
       codexPlusModelPickerScan();
-      codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
+      // 内置拓展「模型分组」停用 / 被顶替时，扫描清理完就停下轮询；装回来时由它重新开始。
+      if (!globalThis?.__codexPlusBuiltinInactive?.has("model-picker-groups")) codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
     }, delay);
   }
 
   codexPlusModelPickerInstallStyle();
-  codexPlusModelPickerSchedule(300);
+  // 轮询由内置拓展「模型分组」装上时启动（96-builtin-extensions.js），这里不再自启。
   window.__codexPlusModelPickerGroupsRuntime = {
     version: 1,
     sync: () => codexPlusModelPickerSchedule(0),

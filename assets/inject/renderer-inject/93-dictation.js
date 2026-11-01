@@ -12,7 +12,8 @@
 
   function codexPlusDictationEnabled() {
     return codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false
-      && codexPlusBackendSettings.dictation?.enabled === true;
+      && codexPlusBackendSettings.dictation?.enabled === true
+      && !globalThis.__codexPlusBuiltinInactive?.has("dictation");
   }
 
   function codexPlusDictationEditor(scope) {
@@ -591,7 +592,7 @@
       void startCodexPlusDictation(null);
     }
   };
-  document.addEventListener("keydown", codexPlusDictationKeyHandler, true);
+  // 快捷键监听随内置拓展「语音听写」装卸（96-builtin-extensions.js 里经 ctx.listen 挂上）。
   const codexPlusDictationDispose = () => {
     cancelCodexPlusDictation();
     document.removeEventListener("keydown", codexPlusDictationKeyHandler, true);

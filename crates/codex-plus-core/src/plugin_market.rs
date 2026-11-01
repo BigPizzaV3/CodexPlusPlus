@@ -786,16 +786,30 @@ async fn git_output(
         .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(crate::windows_create_no_window());
-    let mut child = command.spawn().map_err(|error| {
-        anyhow::anyhow!(
-            match error.kind() {
-                std::io::ErrorKind::NotFound => GitFailure::Missing,
-                std::io::ErrorKind::PermissionDenied => GitFailure::LocalPermission,
-                _ => GitFailure::Other,
+    // Linux 上刚写完的可执行文件可能还被并发 fork 出的子进程短暂持有写句柄，exec 会报
+    // ETXTBSY（ExecutableFileBusy）；这只是瞬时状态，稍等重试几次。
+    let mut busy_retries = 0_u64;
+    let mut child = loop {
+        match command.spawn() {
+            Ok(child) => break child,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && busy_retries < 5 =>
+            {
+                busy_retries += 1;
+                tokio::time::sleep(Duration::from_millis(20 * busy_retries)).await;
             }
-            .message(private)
-        )
-    })?;
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    match error.kind() {
+                        std::io::ErrorKind::NotFound => GitFailure::Missing,
+                        std::io::ErrorKind::PermissionDenied => GitFailure::LocalPermission,
+                        _ => GitFailure::Other,
+                    }
+                    .message(private)
+                ));
+            }
+        }
+    };
     let mut stdout = child.stdout.take().context("无法读取 Git 输出")?;
     let mut stderr = child.stderr.take().context("无法读取 Git 错误分类")?;
     tokio::time::timeout(GIT_TIMEOUT, async {

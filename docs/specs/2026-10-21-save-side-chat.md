@@ -14,8 +14,8 @@
 
 - `85-side-chat-save.js`：创建旁支前记录主历史的读取位置和校验值，全文留在后端；保存时从原生会话缓存读取完整旁支记录，不从页面文字拼接。复用原生请求补丁，避免再次包裹客户端原型。
 - `side_chat.rs`：保留主历史的原生模型和显示记录，追加旁支对应记录，重新生成连续 ordinal。主会话尚未完成的 turn 和工具调用仅在副本中结束。
-- `session_share.rs::write_rollout`：复用导入器的原子写入逻辑，先写完整临时文件，再发布到原生 `sessions/YYYY/MM/DD/rollout-<时间>-<UUID>.jsonl` 路径。新会话使用独立 UUID；相同保存请求可重试，内容不同不覆盖已有文件。
-- `session_share.rs::read_rollout`：保存和分享仅共用文件定位、读取。分享仍按原有 16 MiB 上限处理；本地保存不继承分享限制。主历史不通过桥接或 HTTP 请求往返页面，不受这些通道的消息大小限制。
+- `rollout_file.rs::write_rollout`：复用导入器的原子写入逻辑，先写完整临时文件，再发布到原生 `sessions/YYYY/MM/DD/rollout-<时间>-<UUID>.jsonl` 路径。新会话使用独立 UUID；相同保存请求可重试，内容不同不覆盖已有文件。
+- `rollout_file.rs::read_rollout`：保存和分享仅共用文件定位、读取。分享仍按原有 16 MiB 上限处理；本地保存不继承分享限制。主历史不通过桥接或 HTTP 请求往返页面，不受这些通道的消息大小限制。
 - 原生 `thread/resume` 负责恢复、登记索引和权限。保存接口不直接写 SQLite，不采用旧导入器固定的 `approval_mode=never` 等字段。
 - 原生 `thread/read` 核对旁支的 turn、状态和每个显示项后才提示成功。恢复失败再次点击时复用已经写入的文件。
 - 保存时读取主会话的项目归属，经原生 `saveThreadProjectAssignment`（旧接口为 `threadWorkspaceStorage.setProjectAssignment`）登记新会话，并校验项目 ID 后才刷新列表、打开新会话和关闭原旁支。不按项目名称或目录推测归属；同名同目录的项目仍按 ID 区分。登记失败保留旁支，重试复用已写文件。

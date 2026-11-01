@@ -221,9 +221,31 @@ pub fn finish_request(entry: &RequestLogEntry) {
 /// 更新进行中请求的快照（例如上游地址/首字耗时在请求结束前就已知）。
 pub fn update_running(entry: &RequestLogEntry) {
     if let Ok(mut live) = live_requests().lock()
-        && live.contains_key(&entry.id)
+        && let Some(current) = live.get_mut(&entry.id)
     {
-        live.insert(entry.id.clone(), entry.clone());
+        let mut updated = entry.clone();
+        // 预读/转发会直接发布进度，调用方持有的快照可能尚未同步，不能将其清掉。
+        updated.first_token_ms = current.first_token_ms.or(updated.first_token_ms);
+        updated.estimated_output_tokens = current
+            .estimated_output_tokens
+            .or(updated.estimated_output_tokens);
+        if current.first_token_ms.is_some() {
+            updated.phase = current.phase.clone();
+        }
+        *current = updated;
+    }
+}
+
+/// 选定真实上游后只更新路由；不触碰预读/转发已发布的首字、阶段和输出估算。
+pub(crate) fn update_running_route(id: &str, trace: &RequestTrace, stream: bool) {
+    if let Ok(mut live) = live_requests().lock()
+        && let Some(entry) = live.get_mut(id)
+    {
+        entry.relay_id = trace.relay_id.clone();
+        entry.relay_name = trace.relay_name.clone();
+        entry.upstream_model = trace.upstream_model.clone();
+        entry.wire_api = trace.wire_api.clone();
+        entry.stream = stream;
     }
 }
 
@@ -469,6 +491,56 @@ pub fn read_request_logs_at(path: &Path, limit: usize) -> std::io::Result<Vec<Re
                 entries.pop_front();
             }
         }
+    }
+    Ok(entries.into_iter().rev().collect())
+}
+
+/// 实时请求流只读日志末尾这么多字节，够放几百条记录。
+const RECENT_TAIL_BYTES: u64 = 256 * 1024;
+
+/// 读取最近 `limit` 条请求日志（含正在进行的请求），按开始时间倒序返回。
+/// 给托盘、总览这种每秒轮询的实时请求流用：只读文件末尾，不每次解析整个日志。
+pub fn read_recent_request_logs(limit: usize) -> std::io::Result<Vec<RequestLogEntry>> {
+    let mut entries = read_recent_request_logs_at(&request_log_path(), limit)?;
+    entries.extend(running_requests());
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.started_at_ms));
+    entries.truncate(limit);
+    Ok(entries)
+}
+
+/// 只读日志文件末尾一段；末尾凑不够 `limit` 条时退回整文件读取。
+pub fn read_recent_request_logs_at(path: &Path, limit: usize) -> std::io::Result<Vec<RequestLogEntry>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let start = file.metadata()?.len().saturating_sub(RECENT_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = text.lines();
+    // 从文件中间开始读时，第一行多半被截断，丢掉。
+    if start > 0 {
+        lines.next();
+    }
+    let mut entries = VecDeque::with_capacity(limit.min(1024));
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<RequestLogEntry>(line) {
+            entries.push_back(entry);
+            if entries.len() > limit {
+                entries.pop_front();
+            }
+        }
+    }
+    if start > 0 && entries.len() < limit {
+        return read_request_logs_at(path, limit);
     }
     Ok(entries.into_iter().rev().collect())
 }
@@ -722,6 +794,106 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].state.as_deref(), Some("success"));
 
+        set_request_log_path_for_tests(None);
+    }
+
+    #[test]
+    fn live_route_and_snapshot_updates_preserve_stream_progress() {
+        let _guard = request_log_test_guard();
+        let mut running = entry("live-route-progress");
+        running.first_token_ms = None;
+        running.phase = Some("requesting".to_string());
+        start_request(&running);
+        let mut trace = RequestTrace {
+            relay_id: "selected-relay".to_string(),
+            relay_name: "Selected relay".to_string(),
+            upstream_model: "real-model".to_string(),
+            wire_api: "responses".to_string(),
+            ..Default::default()
+        };
+        update_running_route(&running.id, &trace, true);
+        let selected = running_requests().into_iter().find(|row| row.id == running.id).unwrap();
+        assert_eq!(selected.relay_id, trace.relay_id);
+        assert_eq!(selected.relay_name, trace.relay_name);
+        assert_eq!(selected.upstream_model, trace.upstream_model);
+        assert_eq!(selected.wire_api, trace.wire_api);
+        assert!(selected.stream);
+        assert!(selected.first_token_ms.is_none());
+        assert_eq!(selected.phase.as_deref(), Some("requesting"));
+
+        update_running_first_token(&running.id);
+        update_running_output_estimate(&running.id, 42);
+        update_running_retry(&running.id, 2, 1, vec!["overload".to_string()]);
+        trace.relay_id = "fallback-relay".to_string();
+        update_running_route(&running.id, &trace, true);
+        let generating = running_requests().into_iter().find(|row| row.id == running.id).unwrap();
+        assert_eq!(generating.relay_id, "fallback-relay");
+        assert_eq!(generating.phase.as_deref(), Some("generating"));
+        assert_eq!(generating.estimated_output_tokens, Some(42));
+        assert_eq!(generating.attempts, 2);
+        assert_eq!(generating.auto_retries, 1);
+        assert_eq!(generating.retry_reasons, vec!["overload"]);
+
+        // record_upstream 的本地快照仍没有预读期间的生成进度。
+        running.relay_id = trace.relay_id;
+        update_running(&running);
+        let updated = running_requests().into_iter().find(|row| row.id == running.id).unwrap();
+        assert_eq!(updated.first_token_ms, generating.first_token_ms);
+        assert!(updated.first_token_ms.is_some());
+        assert_eq!(updated.phase.as_deref(), Some("generating"));
+        assert_eq!(updated.estimated_output_tokens, Some(42));
+        live_requests().lock().unwrap().remove(&running.id);
+        update_running_route(&running.id, &RequestTrace::default(), false);
+        assert!(!running_requests().iter().any(|row| row.id == running.id));
+    }
+
+    #[test]
+    fn recent_logs_read_only_the_tail_and_match_full_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(REQUEST_LOG_FILE);
+        assert!(read_recent_request_logs_at(&path, 5).unwrap().is_empty());
+
+        // 每条约 8KB，60 条超过末尾窗口（256KB），走「从中间开始读」的分支。
+        let padding = "x".repeat(8 * 1024);
+        for index in 0..60 {
+            let mut item = entry(&format!("tail-{index}"));
+            item.relay_name = format!("{padding}-{index}");
+            append_request_log_at(&path, &item).unwrap();
+        }
+        let recent = read_recent_request_logs_at(&path, 5).unwrap();
+        let ids: Vec<&str> = recent.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["tail-59", "tail-58", "tail-57", "tail-56", "tail-55"]);
+
+        // 末尾窗口凑不够时退回整文件读取，结果和完整读取一致。
+        let many = read_recent_request_logs_at(&path, 50).unwrap();
+        let full = read_request_logs_at(&path, 50).unwrap();
+        assert_eq!(
+            many.iter().map(|item| &item.id).collect::<Vec<_>>(),
+            full.iter().map(|item| &item.id).collect::<Vec<_>>()
+        );
+        assert_eq!(many.len(), 50);
+    }
+
+    #[test]
+    fn recent_logs_include_running_requests() {
+        let _guard = request_log_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(REQUEST_LOG_FILE);
+        set_request_log_path_for_tests(Some(path.clone()));
+
+        let mut done = entry("flow-done");
+        done.started_at_ms = 100;
+        append_request_log_at(&path, &done).unwrap();
+        let mut running = entry("flow-live");
+        running.started_at_ms = 200;
+        running.state = Some("running".to_string());
+        start_request(&running);
+
+        let recent = read_recent_request_logs(10).unwrap();
+        assert_eq!(recent[0].id, "flow-live");
+        assert_eq!(recent[1].id, "flow-done");
+
+        finish_request(&running);
         set_request_log_path_for_tests(None);
     }
 

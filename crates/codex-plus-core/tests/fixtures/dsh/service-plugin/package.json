@@ -1,0 +1,8 @@
+{
+  "name": "dsh-service-demo",
+  "version": "0.1.0",
+  "description": "演示第二批替身服务：审批、提问 waterfall、提示词组装、镜像里的助手回复、spill / tokenMeter / storage",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*", "@deepseek-ai/dsh-spill": "*" }
+}

@@ -10,6 +10,12 @@ const ok = <T extends Record<string, unknown>>(payload: T = {} as T): CommandRes
   ...payload,
 });
 
+// 预览语言：`?lang=en` 时演示数据里的中文名换成英文，官网英文页的截图与在线体验不夹中文。
+const previewEnglish = (() => {
+  try { return window.localStorage.getItem("codex-plus-lang") === "en"; } catch { return false; }
+})();
+const L = (zh: string, en: string) => (previewEnglish ? en : zh);
+
 const demoSettings = {
   revision: "web-preview",
   codexAppPath: "/Applications/Codex.app",
@@ -41,6 +47,7 @@ const demoSettings = {
   codexAppSessionDeleteSkipConfirm: false,
   codexAppMarkdownExport: true,
   codexAppUsageStatusLine: true,
+  codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
   codexAppTypingEffect: "off",
@@ -97,7 +104,7 @@ const demoSettings = {
   relayApiKey: "",
   relayProfiles: [{
     id: "default",
-    name: "默认中转",
+    name: L("默认中转", "Default relay"),
     model: "deepseek-v4-pro[1M]",
     baseUrl: "https://api.deepseek.com/v1",
     upstreamBaseUrl: "https://api.deepseek.com/v1",
@@ -138,7 +145,7 @@ const demoSettings = {
     anthropicThinkingMode: "",
   }, {
     id: "sub2api-demo",
-    name: "sub2api 中转（演示）",
+    name: L("sub2api 中转（演示）", "sub2api relay (demo)"),
     model: "deepseek-v4-pro[1M]",
     baseUrl: "https://sub2api.example.com/v1",
     upstreamBaseUrl: "https://sub2api.example.com/v1",
@@ -270,15 +277,16 @@ const overview = ok({
 
 const tools = ok({
   tools: [
-    { id: "codex", name: "Codex", homeDir: "~/.codex", switchable: true, active: true, activeRelayName: "默认中转", relayCount: 3 },
+    { id: "codex", name: "Codex", homeDir: "~/.codex", switchable: true, active: true, activeRelayName: L("默认中转", "Default relay"), relayCount: 3 },
     { id: "grok", name: "Grok", homeDir: "~/.grok", switchable: false, active: false, activeRelayName: null, relayCount: 0 },
     { id: "claude", name: "Claude Code", homeDir: "~/.claude", switchable: true, active: false, activeRelayName: null, relayCount: 0 },
   ],
   activeTool: "codex",
 });
 
-// 网关演示数据：Claude Code 已接入、Grok 未接入，池里三家供应商，其中一家有 Key 在冷却。
-const gatewayBinding = (model: string) => ({
+// 网关演示数据：Codex 与 Claude Code 已接入、Grok 未接入；池里有订阅账号、官方 API 和中转站，
+// 一家有 Key 在冷却，另有两个自建组与两个自动组，看总览连线、供应商池和路由页的完整样子。
+const gatewayBinding = (model: string, extra: Partial<Record<string, unknown>> = {}) => ({
   enabled: true,
   model,
   extraModels: [],
@@ -286,26 +294,72 @@ const gatewayBinding = (model: string) => ({
   unknownModel: "mapToDefault",
   claudeEnableEffort: false,
   token: "demo",
+  ...extra,
 });
+const price = (input: number, cachedInput: number, output: number, currency = "CNY") => ({ currency, input, cachedInput, output });
+const demoKeys = (...masked: string[]) => masked.map((value, index) => ({ id: `k${index + 1}`, masked: value }));
+const minutesLater = (minutes: number) => Date.now() + minutes * 60_000;
 const gateway = ok({
-  gateway: { version: 1, bindings: { claude: gatewayBinding("deepseek-v4-pro") }, keyPolicy: { mode: "sticky" }, restoreOnExit: true },
+  gateway: {
+    version: 1,
+    bindings: {
+      codex: gatewayBinding("group/coding"),
+      claude: gatewayBinding("deepseek-v4-pro", { claudeRoles: { opus: "chatgpt-pro/gpt-5.5", sonnet: "deepseek-v4-pro", haiku: "deepseek-v4-flash", subagent: "" } }),
+    },
+    keyPolicy: { mode: "sticky" },
+    restoreOnExit: true,
+    autoModels: true,
+    favoriteModels: ["gpt-5.5", "deepseek-v4-pro"],
+  },
   port: 63130,
   helperRunning: true,
   pool: [
-    { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", protocol: "chatCompletions", official: true, models: ["deepseek-v4-pro", "deepseek-v4-flash"], keyCount: 3 },
-    { id: "kimi", name: "Kimi", baseUrl: "https://api.moonshot.cn/v1", protocol: "chatCompletions", official: true, models: ["kimi-k2-turbo"], keyCount: 2 },
-    { id: "zhipu", name: "智谱 GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", protocol: "chatCompletions", official: true, models: ["glm-5"], keyCount: 1 },
-    { id: "sub2api-pool", name: "sub2api 站点（演示）", baseUrl: "https://sub2api.example.com", protocol: "responses", official: false, models: ["gpt-5.5"], keyCount: 1 },
-    { id: "newapi-pool", name: "new-api 站点（演示）", baseUrl: "https://newapi.example.com/v1", protocol: "chatCompletions", official: false, models: ["claude-sonnet-5-5"], keyCount: 1 },
+    { id: "chatgpt-pro", name: L("ChatGPT 订阅", "ChatGPT subscription"), baseUrl: "https://chatgpt.com/backend-api/codex", protocol: "responses", official: true, account: "chatgpt", plan: "ChatGPT Pro", models: ["gpt-5.5", "gpt-5.4-mini"], imageModels: ["gpt-image-2"], keyCount: 0, quota: { windows: [{ windowMinutes: 300, usedPercent: 23, resetsAtMs: minutesLater(170) }, { windowMinutes: 10080, usedPercent: 41, resetsAtMs: minutesLater(3 * 1440) }], updatedAtMs: Date.now() - 60_000 } },
+    { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", protocol: "chatCompletions", official: true, models: ["deepseek-v4-pro", "deepseek-v4-flash"], keyCount: 3, keys: demoKeys("sk-7f2a…e91c", "sk-03bd…4a77", "sk-c5e0…1b2f"), balanceApi: true, modelPrices: { "deepseek-v4-pro": price(4, 0.4, 16), "deepseek-v4-flash": price(1, 0.1, 2) }, modelWindows: { "deepseek-v4-pro": 1_000_000 } },
+    { id: "kimi", name: "Kimi", baseUrl: "https://api.moonshot.cn/v1", protocol: "chatCompletions", official: true, models: ["kimi-k2-turbo"], keyCount: 2, keys: demoKeys("sk-kM9q…20xe", "sk-kQ1v…77ad"), balanceApi: true, price: price(4, 1, 16) },
+    { id: "zhipu", name: L("智谱 GLM", "Zhipu GLM"), baseUrl: "https://open.bigmodel.cn/api/paas/v4", protocol: "chatCompletions", official: true, models: ["glm-5"], keyCount: 1, keys: demoKeys("4e1f…a9d3"), price: price(4, 0.8, 16) },
+    { id: "sub2api-pool", name: L("sub2api 站点（演示）", "sub2api relay (demo)"), baseUrl: "https://sub2api.example.com", protocol: "responses", official: false, models: ["gpt-5.5", "deepseek-v4-pro"], keyCount: 1, keys: demoKeys("sk-s2a…8c1d") },
+    { id: "newapi-pool", name: L("new-api 站点（演示）", "new-api relay (demo)"), baseUrl: "https://newapi.example.com/v1", protocol: "chatCompletions", official: false, models: ["claude-sonnet-5-5", "kimi-k2-turbo"], keyCount: 1, keys: demoKeys("sk-na…3f0e") },
   ],
-  groups: [],
+  groups: [
+    { id: "coding", name: L("主力编程", "Main coding"), mode: "inOrder", sticky: "cache", members: [{ model: "chatgpt-pro/gpt-5.5", weight: 1 }, { model: "sub2api-pool/gpt-5.5", weight: 1 }, { model: "deepseek/deepseek-v4-pro", weight: 1 }] },
+    { id: "budget", name: L("便宜轮换", "Budget rotation"), mode: "rotate", sticky: "session", members: [{ model: "deepseek/deepseek-v4-flash", weight: 2 }, { model: "zhipu/glm-5", weight: 1 }, { model: "kimi/kimi-k2-turbo", weight: 1 }] },
+  ],
+  autoGroups: [
+    { id: "auto:gpt-5.5", name: "gpt-5.5", mode: "usage", sticky: "cache", members: [{ model: "chatgpt-pro/gpt-5.5", weight: 1 }, { model: "sub2api-pool/gpt-5.5", weight: 1 }], hidden: false, customized: true },
+    { id: "auto:deepseek-v4-pro", name: "deepseek-v4-pro", mode: "inOrder", sticky: "cache", members: [{ model: "deepseek/deepseek-v4-pro", weight: 1 }, { model: "sub2api-pool/deepseek-v4-pro", weight: 1 }], hidden: false, customized: false },
+    { id: "auto:kimi-k2-turbo", name: "kimi-k2-turbo", mode: "inOrder", sticky: "cache", members: [{ model: "kimi/kimi-k2-turbo", weight: 1 }, { model: "newapi-pool/kimi-k2-turbo", weight: 1 }], hidden: false, customized: false },
+  ],
   agents: [
-    { agent: "claude", name: "Claude Code", enabled: true, baseUrl: "http://127.0.0.1:63130/claude", defaultModel: "deepseek-v4-pro", models: [] },
+    { agent: "codex", name: "Codex", version: "26.1029", enabled: true, baseUrl: "http://127.0.0.1:63130/codex", defaultModel: "group/coding", models: [] },
+    { agent: "claude", name: "Claude Code", version: "2.3.1", enabled: true, baseUrl: "http://127.0.0.1:63130/claude", defaultModel: "deepseek-v4-pro", models: [] },
     { agent: "grok", name: "Grok", enabled: false, baseUrl: "http://127.0.0.1:63130/grok", defaultModel: "", models: [] },
   ],
   health: { keys: [{ relayId: "zhipu", keyId: "k1", state: "cooling", remainingMs: 42000 }], providers: [] },
+  speeds: [
+    { relayId: "chatgpt-pro", model: "gpt-5.5", ms: 820, samples: 40 },
+    { relayId: "sub2api-pool", model: "gpt-5.5", ms: 1240, samples: 12 },
+    { relayId: "deepseek", model: "deepseek-v4-pro", ms: 1650, samples: 88 },
+    { relayId: "kimi", model: "kimi-k2-turbo", ms: 1100, samples: 30 },
+  ],
   activity: {
     agents: [{
+      agent: "codex",
+      requests: 512,
+      rerouted: 9,
+      errors: 2,
+      inFlight: ["gpt-5.5"],
+      last: {
+        requestedModel: "group/coding",
+        model: "gpt-5.5",
+        groupId: "coding",
+        planned: [{ relayId: "chatgpt-pro", relayName: "ChatGPT Pro", model: "gpt-5.5" }],
+        steps: [{ relayId: "chatgpt-pro", relayName: "ChatGPT Pro", keyId: "account", model: "gpt-5.5", outcome: "answered", elapsedMs: 4200 }],
+        result: "answered",
+        finishedAtMs: Date.now() - 4000,
+        elapsedMs: 4200,
+      },
+    }, {
       agent: "claude",
       requests: 396,
       rerouted: 14,
@@ -322,6 +376,8 @@ const gateway = ok({
       },
     }],
   },
+  imageOptions: [{ id: "chatgpt-pro/gpt-image-2", providerId: "chatgpt-pro", providerName: "ChatGPT Pro", model: "gpt-image-2", vendorPicks: true }],
+  imageAuto: { id: "chatgpt-pro/gpt-image-2", providerId: "chatgpt-pro", providerName: "ChatGPT Pro", model: "gpt-image-2", vendorPicks: true },
   // 导入弹窗演示数据：带品牌图标的、只显示首字母的都有，看头像是否保持固定尺寸。
   codexProviders: [
     { id: "hj", name: "哈基米 国模", protocol: "responses", baseUrl: "https://api.biuapi.com" },
@@ -331,16 +387,128 @@ const gateway = ok({
   claudeProviders: [{ id: "official", name: "Claude Official" }],
   grokProfiles: [],
 });
-const usageCounts = (calls: number, errors = 0) => ({ calls, errors, inputTokens: calls * 9000, outputTokens: calls * 700, cachedTokens: calls * 5600, reasoningTokens: 0 });
+const usageCounts = (calls: number, errors = 0) => ({ calls, errors, inputTokens: calls * 9000, outputTokens: calls * 700, cachedTokens: calls * 5600, reasoningTokens: calls * 180 });
 const gatewayUsage = ok({
-  totals: usageCounts(396, 5),
+  totals: usageCounts(908, 8),
   // 近 7 天，用来看用量图表的悬停效果
-  days: [120, 260, 90, 310, 180, 40, 396].map((calls, index) => ({ date: new Date(Date.now() - (6 - index) * 86_400_000).toISOString().slice(0, 10), ...usageCounts(calls, index === 3 ? 4 : 0) })),
-  byAgent: [{ key: "claude", label: "claude", ...usageCounts(396, 5) }],
-  byProvider: [{ key: "deepseek", label: "DeepSeek", ...usageCounts(281, 2) }, { key: "kimi", label: "Kimi", ...usageCounts(115, 3) }],
-  byModel: [],
-  costs: [{ currency: "CNY", amount: 12.84 }],
+  days: [320, 610, 240, 760, 450, 130, 908].map((calls, index) => ({ date: new Date(Date.now() - (6 - index) * 86_400_000).toISOString().slice(0, 10), ...usageCounts(calls, index === 3 ? 4 : 0) })),
+  byAgent: [{ key: "codex", label: "codex", ...usageCounts(512, 3) }, { key: "claude", label: "claude", ...usageCounts(396, 5) }],
+  byProvider: [
+    { key: "chatgpt-pro", label: "ChatGPT Pro", ...usageCounts(402, 1) },
+    { key: "deepseek", label: "DeepSeek", ...usageCounts(281, 2), costs: [{ currency: "CNY", amount: 21.6 }] },
+    { key: "kimi", label: "Kimi", ...usageCounts(115, 3), costs: [{ currency: "CNY", amount: 8.9 }] },
+    { key: "sub2api-pool", label: L("sub2api 站点（演示）", "sub2api relay (demo)"), ...usageCounts(110, 2) },
+  ],
+  byModel: [
+    { key: "gpt-5.5", label: "gpt-5.5", ...usageCounts(512, 3) },
+    { key: "deepseek-v4-pro", label: "deepseek-v4-pro", ...usageCounts(238, 2), costs: [{ currency: "CNY", amount: 19.4 }] },
+    { key: "kimi-k2-turbo", label: "kimi-k2-turbo", ...usageCounts(115, 3), costs: [{ currency: "CNY", amount: 8.9 }] },
+    { key: "deepseek-v4-flash", label: "deepseek-v4-flash", ...usageCounts(43, 0), costs: [{ currency: "CNY", amount: 2.2 }] },
+  ],
+  costs: [{ currency: "CNY", amount: 30.5 }],
 });
+
+// 请求日志演示数据：两个 Agent、成功 / 自动重试 / 失败 / 进行中各有，token、缓存与费用都填上。
+const demoRequest = (index: number, minutesAgo: number, fields: Record<string, unknown>) => ({
+  id: `r${index}`,
+  timestampMs: Date.now() - minutesAgo * 60_000,
+  startedAtMs: Date.now() - minutesAgo * 60_000,
+  method: "POST",
+  statusCode: 200,
+  success: true,
+  stream: true,
+  attempts: 1,
+  autoRetries: 0,
+  state: null,
+  ...fields,
+});
+const codexRequest = { agent: "codex", path: "/v1/responses", wireApi: "responses" };
+const claudeRequest = { agent: "claude", path: "/v1/messages", wireApi: "chat" };
+const demoRequestLogs = () => [
+  demoRequest(1, 0, { ...codexRequest, state: "running", model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "chatgpt-pro", relayName: "ChatGPT Pro", durationMs: 0, firstTokenMs: 760, estimatedOutputTokens: 412, threadTitle: L("重构网关的路由面板", "Refactor the gateway routing panel") }),
+  demoRequest(2, 0.5, { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "chatgpt-pro", relayName: "ChatGPT Pro", durationMs: 18_400, firstTokenMs: 820, usage: { inputTokens: 86_420, outputTokens: 2_310, cachedTokens: 84_992, reasoningTokens: 640 }, cacheHitRatio: 0.983, threadTitle: L("重构网关的路由面板", "Refactor the gateway routing panel") }),
+  demoRequest(3, 1, { ...claudeRequest, model: "claude-sonnet-4-5", upstreamModel: "deepseek-v4-pro", relayId: "deepseek", relayName: "DeepSeek", durationMs: 6_200, firstTokenMs: 1_480, usage: { inputTokens: 52_130, outputTokens: 1_204, cachedTokens: 49_920 }, cacheHitRatio: 0.958, cost: { currency: "CNY", amount: 0.043 } }),
+  demoRequest(4, 2, { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "sub2api-pool", relayName: L("sub2api 站点（演示）", "sub2api relay (demo)"), durationMs: 21_900, firstTokenMs: 3_900, attempts: 2, autoRetries: 1, retryReasons: ["429 Too Many Requests"], attemptDetails: [{ attempt: 1, code: "429", message: "rate limited" }], usage: { inputTokens: 84_000, outputTokens: 1_880, cachedTokens: 81_408 }, cacheHitRatio: 0.969, threadTitle: L("重构网关的路由面板", "Refactor the gateway routing panel") }),
+  demoRequest(5, 4, { ...claudeRequest, model: "claude-opus-4-5", upstreamModel: "kimi-k2-turbo", relayId: "kimi", relayName: "Kimi", durationMs: 3_100, firstTokenMs: 940, usage: { inputTokens: 31_800, outputTokens: 690, cachedTokens: 28_672 }, cacheHitRatio: 0.902, cost: { currency: "CNY", amount: 0.031 } }),
+  demoRequest(6, 6, { ...claudeRequest, model: "claude-haiku-4-5", upstreamModel: "glm-5", relayId: "zhipu", relayName: L("智谱 GLM", "Zhipu GLM"), durationMs: 900, statusCode: 429, success: false, error: L("上游限流（429），Key 冷却 42 秒，已换下一家", "Upstream rate limited (429); key cooling for 42s, moved to the next provider") }),
+  demoRequest(7, 9, { ...codexRequest, model: "deepseek-v4-flash", upstreamModel: "deepseek-v4-flash", relayId: "deepseek", relayName: "DeepSeek", durationMs: 2_400, firstTokenMs: 610, usage: { inputTokens: 12_400, outputTokens: 380, cachedTokens: 11_264 }, cacheHitRatio: 0.908, cost: { currency: "CNY", amount: 0.003 }, threadTitle: L("给会话起名", "Name the conversation") }),
+  demoRequest(8, 14, { ...claudeRequest, model: "claude-sonnet-4-5", upstreamModel: "deepseek-v4-pro", relayId: "deepseek", relayName: "DeepSeek", durationMs: 9_800, firstTokenMs: 1_620, usage: { inputTokens: 48_900, outputTokens: 2_040, cachedTokens: 46_080 }, cacheHitRatio: 0.942, cost: { currency: "CNY", amount: 0.052 } }),
+  demoRequest(9, 21, { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "chatgpt-pro", relayName: "ChatGPT Pro", durationMs: 14_200, firstTokenMs: 790, usage: { inputTokens: 71_300, outputTokens: 1_560, cachedTokens: 70_144, reasoningTokens: 420 }, cacheHitRatio: 0.984, threadTitle: L("修复托盘余额显示", "Fix tray balance display") }),
+  demoRequest(10, 33, { ...claudeRequest, model: "claude-sonnet-4-5", upstreamModel: "claude-sonnet-5-5", relayId: "newapi-pool", relayName: L("new-api 站点（演示）", "new-api relay (demo)"), durationMs: 7_300, firstTokenMs: 1_210, usage: { inputTokens: 39_400, outputTokens: 1_120, cachedTokens: 36_864 }, cacheHitRatio: 0.936 }),
+];
+
+// 实时请求流演示（托盘「流量」页签、总览拓扑图）：在演示日志之上每隔一两秒「发出」一条请求，
+// 几秒后答完（偶尔失败），光点据此来回走。
+const demoFlowTemplates = [
+  { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "chatgpt-pro", relayName: "ChatGPT Pro" },
+  { ...claudeRequest, model: "claude-sonnet-4-5", upstreamModel: "deepseek-v4-pro", relayId: "deepseek", relayName: "DeepSeek" },
+  { ...claudeRequest, model: "claude-opus-4-5", upstreamModel: "kimi-k2-turbo", relayId: "kimi", relayName: "Kimi" },
+  { ...codexRequest, model: "gpt-5.5", upstreamModel: "gpt-5.5", relayId: "sub2api-pool", relayName: L("sub2api 站点（演示）", "sub2api relay (demo)") },
+];
+const demoFlow = { live: [] as Array<Record<string, unknown> & { finishAt: number }>, nextAt: 0, seq: 0 };
+const flowPreviewStartedAt = Date.now();
+const demoRequestFlow = (limit: number) => {
+  const now = Date.now();
+  // 确定性预览：空列表 → 未选路由 → 等待 → 响应 → 结束，覆盖真实日志的分阶段更新。
+  const scenario = new URLSearchParams(window.location.search).get("flowPreview");
+  if (scenario) {
+    const params = new URLSearchParams(window.location.search);
+    const startedAtMs = Number(params.get("flowStart")) || flowPreviewStartedAt;
+    const finished = scenario === "done" || scenario === "error";
+    const generating = scenario === "generating" || scenario === "mixed";
+    const history = [
+      { ...demoRequest(9997, 5, demoFlowTemplates[0]), id: "flow-history-ok", durationMs: 3600, usage: { inputTokens: 25000, outputTokens: 244 }, state: "success", success: true },
+      { ...demoRequest(9998, 6, { ...demoFlowTemplates[0], relayId: "jojo", relayName: "jojocodemax" }),
+        id: "flow-history-error", durationMs: 1200, state: "failed", success: false, statusCode: 429, error: "模拟历史请求：上游限流（429）" },
+    ];
+    if (scenario === "idle") return history;
+    const active = { ...demoRequest(9999, 0, demoFlowTemplates[0]), id: "flow-preview", startedAtMs,
+      state: finished ? (scenario === "error" ? "failed" : "success") : "running",
+      phase: generating ? "generating" : "waiting", firstTokenMs: generating || finished ? 1200 : null,
+      estimatedOutputTokens: generating ? Math.floor((now - startedAtMs) / 90) : null,
+      usage: finished && scenario !== "error" ? { inputTokens: 25000, outputTokens: 244 } : null,
+      durationMs: finished ? 8000 : 0, timestampMs: finished ? startedAtMs + 8000 : now,
+      relayId: scenario === "unrouted" ? "" : "chatgpt-pro", relayName: scenario === "unrouted" ? "" : "ChatGPT Pro",
+      error: scenario === "error" ? "模拟请求：上游返回 HTTP 500" : null,
+      success: scenario === "done", statusCode: scenario === "error" ? 500 : 200 };
+    const concurrent = scenario === "mixed" ? [{ ...active, id: "flow-preview-parallel", phase: "waiting",
+      firstTokenMs: null, estimatedOutputTokens: null, relayId: "jojo", relayName: "jojocodemax" }] : [];
+    return [active, ...concurrent, ...history].slice(0, limit);
+  }
+  if (now >= demoFlow.nextAt) {
+    const template = demoFlowTemplates[demoFlow.seq % demoFlowTemplates.length];
+    demoFlow.seq += 1;
+    demoFlow.live.unshift({ ...demoRequest(1000 + demoFlow.seq, 0, template), id: `flow-${demoFlow.seq}`, state: "running", success: false, durationMs: 0, finishAt: now + 1500 + Math.random() * 3500 });
+    demoFlow.nextAt = now + 1200 + Math.random() * 2400;
+  }
+  for (const entry of demoFlow.live) {
+    if (entry.state !== "running" || now < entry.finishAt) continue;
+    const failed = demoFlow.seq % 7 === 0;
+    const durationMs = now - (entry.startedAtMs as number);
+    const outputTokens = Math.round(durationMs * (0.2 + Math.random() * 0.4));
+    Object.assign(entry, {
+      state: failed ? "failed" : "success",
+      success: !failed,
+      statusCode: failed ? 429 : 200,
+      error: failed ? L("上游限流（429）", "Upstream rate limited (429)") : null,
+      timestampMs: now,
+      durationMs,
+      firstTokenMs: 600,
+      usage: failed ? null : { inputTokens: 40_000 + Math.round(Math.random() * 160_000), outputTokens },
+    });
+  }
+  demoFlow.live = demoFlow.live.slice(0, 40);
+  const base = demoRequestLogs().filter((entry) => entry.state !== "running");
+  return [...demoFlow.live, ...base].slice(0, limit);
+};
+
+// 会话页演示数据：Codex 的本地会话与 Claude Code / Grok 的会话放在一起。
+const demoCodexSessions = () => [
+  { id: "c1", title: L("重构网关的路由面板", "Refactor the gateway routing panel"), cwd: "/Users/demo/Projects/codex-plus", modelProvider: "codex_plus_gateway", archived: false, updatedAtMs: Date.now() - 30_000, rolloutPath: "", dbPath: "" },
+  { id: "c2", title: L("修复托盘余额显示", "Fix tray balance display"), cwd: "/Users/demo/Projects/codex-plus", modelProvider: "codex_plus_gateway", archived: false, updatedAtMs: Date.now() - 21 * 60_000, rolloutPath: "", dbPath: "" },
+  { id: "c3", title: L("写一份发布说明", "Draft the release notes"), cwd: "/Users/demo/Projects/website", modelProvider: "codex_plus_gateway", archived: false, updatedAtMs: Date.now() - 3 * 3_600_000, rolloutPath: "", dbPath: "" },
+  { id: "c4", title: L("把 CSV 导入脚本改成流式读取", "Stream the CSV import script"), cwd: "/Users/demo/Projects/data-tools", modelProvider: "deepseek", archived: false, updatedAtMs: Date.now() - 26 * 3_600_000, rolloutPath: "", dbPath: "" },
+];
 
 // 缓存清理演示数据：三个应用、各类目录，数字取自一台常用机器的量级。
 const cacheGroup = (id: string, app: string, kind: string, totalMiB: number, eligibleMiB: number, files: number) => ({
@@ -416,7 +584,69 @@ const demoAgentMcp: Record<string, unknown> = {
   ] },
 };
 
-const settingsResult = () => ok({ revision: "web-preview", settings: demoSettings, settings_path: "演示模式", user_scripts: { enabled: true, skip_next_start: false, scripts: [] } });
+// Computer Use 各客户端的接入状态。
+const demoComputerUseTarget = (id: string, label: string, configPath: string, registered: boolean) =>
+  ({ id, label, configPath, registered, state: registered ? "registered" : "missing", message: "" });
+const demoComputerUseTargets = () => ({
+  claudeCode: demoComputerUseTarget("claudeCode", "Claude Code", "~/.claude.json", true),
+  claudeDesktop: demoComputerUseTarget("claudeDesktop", "Claude Desktop", "~/Library/Application Support/Claude/claude_desktop_config.json", false),
+  dsh: demoComputerUseTarget("dsh", "DeepSeek Harness", "~/.dsh/config.toml", true),
+  zcode: demoComputerUseTarget("zcode", "ZCode", "~/.zcode/mcp.json", false),
+  workBuddy: demoComputerUseTarget("workBuddy", "WorkBuddy AI", "~/.workbuddy/mcp.json", false),
+});
+const demoClaudeEnhance = {
+  supported: true,
+  sourceApp: "/Applications/Claude.app",
+  copyApp: "~/Applications/Claude (Codex++).app",
+  sourceVersion: "1.3.12",
+  copyVersion: "1.3.12",
+  prepared: true,
+  needsRebuild: false,
+  running: false,
+  nodeAvailable: true,
+  pythonAvailable: true,
+  shellLocale: "zh-CN",
+  catalogEntries: 2864,
+  voiceInput: false,
+  localization: true,
+  computerUse: true,
+  computerUseSupported: true,
+  bashTimeout: { enabled: false, defaultEnabled: false, defaultSeconds: 120, maxEnabled: false, maxSeconds: 600 },
+};
+
+// 本地拓展演示数据：一个单文件脚本、一个已加载的拓展包、一个清单有误的拓展包。
+const demoBuiltins = [
+  ["agent-pet", "Agent 桌宠", true, null], ["usage-statusline", "用量状态栏", true, null], ["dictation", "语音听写", false, null],
+  ["turn-rewind", "轮次回退", true, "user:pomodoro_timer"], ["typing-effects", "打字特效", true, null],
+  ["side-chat-save", "侧聊保存", true, null], ["history-turn-recovery", "历史轮次补全", true, null],
+  ["capacity-auto-retry", "容量不足自动重试", true, null], ["proxy-request-status", "请求状态条", true, null],
+  ["model-picker-groups", "模型分组", true, null],
+  ["dream-skin", "梦皮主题", true, null], ["plugin-market-unlock", "插件市场解锁", true, null],
+  ["instance-identity", "多开身份提示", true, null], ["session-title-hook", "会话标题中间件", true, null],
+].map(([id, name, enabled, replacedBy]) => ({ id, key: `builtin:${id}`, name, description: "", enabled, replacedBy }));
+const demoUserScripts = { enabled: true, skip_next_start: false, builtins: demoBuiltins, scripts: [
+  { key: "user:copy-title.js", name: "copy-title.js", source: "user", kind: "script", package: null, enabled: true, status: "loaded", error: "" },
+  { key: "user:pomodoro_timer", name: "番茄钟", source: "user", kind: "package", enabled: true, status: "loaded", error: "",
+    package: { id: "pomodoro_timer", version: "0.1.0", description: "在左侧图标栏提供可持久化的 25 分钟番茄钟", engine: 1, routes: [],
+      hookEvents: ["Stop"], tools: ["remaining"],
+      configSchema: [
+        { key: "minutes", type: "number", title: "专注时长（分钟）", description: "每个番茄钟的长度", default: 25, options: [], secret: false },
+        { key: "sound", type: "boolean", title: "结束时提示音", description: "", default: true, options: [], secret: false },
+        { key: "theme", type: "select", title: "配色", description: "", default: "red", options: [{ value: "red", label: "番茄红" }, { value: "green", label: "薄荷绿" }], secret: false },
+        { key: "note", type: "text", title: { zh: "结束提示语", en: "Finish message" }, description: "", default: "休息一下\n喝口水", options: [], secret: false },
+        { key: "tags", type: "array", title: "标签", description: "", default: ["工作"], options: [], secret: false,
+          items: { key: "", type: "string", title: "", description: "", default: "", options: [], secret: false } },
+        { key: "webhook", type: "object", title: { zh: "结束时通知", en: "Webhook" }, description: "番茄钟结束时发一个请求", default: { url: "", retry: 1 }, options: [], secret: false,
+          properties: [
+            { key: "url", type: "string", title: "地址", description: "", default: "", options: [], secret: false },
+            { key: "retry", type: "number", title: "重试次数", description: "", default: 1, options: [], secret: false, min: 0, max: 5 },
+          ] },
+      ],
+      config: { minutes: 25, sound: true, theme: "red", note: "休息一下\n喝口水", tags: ["工作"], webhook: { url: "", retry: 1 } } } },
+  { key: "user:future-ext", name: "未来拓展", source: "user", kind: "package", enabled: true, status: "failed",
+    error: "需要拓展 API v2，当前 Codex++ 提供 v1，请升级 Codex++", package: { id: "future-ext", version: "1.0.0", description: "", engine: 2, routes: [] } },
+] };
+const settingsResult = () => ok({ revision: "web-preview", settings: demoSettings, settings_path: "演示模式", user_scripts: demoUserScripts });
 
 export async function invoke<T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   switch (command) {
@@ -448,15 +678,14 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "load_gateway_usage": return gatewayUsage as T;
     // Agent 概览仪表板的演示数据
     case "list_agent_sessions": return ok({ sessions: args.agent === "claude" ? [
-      { agent: "claude", id: "s1", title: "重新设计当前程序的 UI", cwd: "/Users/demo/Desktop/CodexPlusPlus", updatedAtMs: Date.now() - 60_000 },
-      { agent: "claude", id: "s2", title: "审查 GitHub 全部 issue 和 PR", cwd: "/Users/demo/Desktop/CodexPlusPlus", updatedAtMs: Date.now() - 20_000 },
-      { agent: "claude", id: "s3", title: "帮我清理一点电脑垃圾", cwd: "/Users/demo", updatedAtMs: Date.now() - 57 * 60_000 },
+      { agent: "claude", id: "s1", title: L("重新设计当前程序的 UI", "Redesign the app UI"), cwd: "/Users/demo/Projects/codex-plus", updatedAtMs: Date.now() - 60_000 },
+      { agent: "claude", id: "s2", title: L("审查 GitHub 全部 issue 和 PR", "Review all GitHub issues and PRs"), cwd: "/Users/demo/Projects/codex-plus", updatedAtMs: Date.now() - 20_000 },
+      { agent: "claude", id: "s3", title: L("帮我清理一点电脑垃圾", "Clean up some disk space"), cwd: "/Users/demo", updatedAtMs: Date.now() - 57 * 60_000 },
+    ] : args.agent === "grok" ? [
+      { agent: "grok", id: "g1", title: L("解释这段正则", "Explain this regex"), cwd: "/Users/demo/Projects/data-tools", updatedAtMs: Date.now() - 5 * 3_600_000 },
     ] : [] }) as T;
-    case "load_request_logs": return ok({ entries: [
-      { id: "r1", agent: "claude", timestampMs: Date.now() - 30_000, startedAtMs: 0, durationMs: 1800, success: true, model: "claude-sonnet-4-5", upstreamModel: "deepseek-v4-pro", relayName: "DeepSeek", state: null },
-      { id: "r2", agent: "claude", timestampMs: Date.now() - 90_000, startedAtMs: 0, durationMs: 3100, success: true, model: "claude-opus-4-5", upstreamModel: "kimi-k2", relayName: "Kimi", state: null },
-      { id: "r3", agent: "claude", timestampMs: Date.now() - 240_000, startedAtMs: 0, durationMs: 900, success: false, model: "claude-haiku-4-5", upstreamModel: "glm-4.6", relayName: "智谱 GLM", state: null },
-    ] }) as T;
+    case "load_request_logs": return ok({ entries: demoRequestLogs() }) as T;
+    case "load_request_flow": return ok({ entries: demoRequestFlow(Number(args.limit) || 30) }) as T;
     case "startup_options": return ok({ showUpdate: false }) as T;
     case "consume_pending_manager_navigation": return null as T;
     case "load_overview": return overview as T;
@@ -490,11 +719,26 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { id: "relay-balance", name: "Codex Relay Balance", description: "通用中转站余额与模型用量监控，支持自动读取或手动填写接口、日期范围、Token 明细和实际扣费倍率。", version: "0.3.7", author: "Codex++ Community", tags: ["codex", "relay", "balance", "usage", "quota"], homepage: "https://github.com/demo/relay-balance", script_url: "", installed: false, installedVersion: "", updateAvailable: false },
       { id: "model-matrix", name: "Codex Model Matrix", description: "紧凑且适配主题的 Codex 模型选择器，配备可拖动吸附的推理强度滑块。", version: "1.0.0", author: "lx", tags: ["codex", "models", "reasoning"], homepage: "https://github.com/demo/model-matrix", script_url: "", installed: true, installedVersion: "1.0.0", updateAvailable: false },
       { id: "context-meter", name: "Codex Context Used Meter", description: "在 Codex App 对话界面显示当前会话上下文余量。", version: "101", author: "Minghou-Lei", tags: ["context", "tokens"], homepage: "", script_url: "", installed: false, installedVersion: "", updateAvailable: false },
-    ] }, user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
+    ], packages: [
+      { kind: "package", id: "session-search", name: L("会话搜索", "Session search"), description: L("在侧边栏搜索全部历史会话，回车跳到命中的那一轮。", "Search all past sessions from the sidebar and jump to the matching turn."), version: "1.0.0", author: "Codex++", tags: ["history"], homepage: "", icon: "", updatedAt: "2026-10-30", repo: "BigPizzaV3/codexpp-session-search", tag: "v1.0.0", sha: "9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a", official: true, channel: "official", installed: false, installedVersion: "", installedSha: "", updateAvailable: false },
+      { kind: "package", id: "word-guard", name: L("命令守卫", "Command guard"), description: L("拦截危险的 shell 命令，并给出更安全的替代写法。", "Block dangerous shell commands and suggest safer alternatives."), version: "1.2.0", author: "alice", tags: ["hooks"], homepage: "", icon: "", updatedAt: "2026-10-28", repo: "alice/codexpp-word-guard", tag: "v1.2.0", sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", official: false, channel: "curated", installed: true, installedVersion: "1.1.0", installedSha: "0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a9c1e", updateAvailable: true },
+    ], blockedInstalled: [] }, user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
     case "load_ccs_providers": return ok({ providers: [] }) as T;
     case "weixin_connect_status": return ok({ state: "disconnected", message: "演示模式", accountId: "", hasToken: false, lastPeerId: "", lastMessageAtMs: 0, processedMessages: 0 }) as T;
     case "load_local_sessions":
-    case "list_local_sessions": return ok({ dbPath: "演示模式", dbPaths: [], sessions: [], offset: 0, limit: 50, hasMore: false, totalCount: 0 }) as T;
+    case "list_local_sessions": return ok({ dbPath: "演示模式", dbPaths: [], sessions: demoCodexSessions(), offset: 0, limit: 50, hasMore: false, totalCount: 4 }) as T;
+    // 多开演示数据：主 Codex 与两个供应商身份的实例都在运行。
+    case "list_codex_multi_instances": return ok({ instances: [
+      { instanceId: "main", label: L("主 Codex", "Main Codex"), isMain: true, pid: 31877, debugPort: 9229, status: "running", running: true, startedAtMs: Date.now() - 2 * 3_600_000 },
+      { instanceId: "relay-default", profileId: "default", profileName: L("默认中转", "Default relay"), pid: 34301, debugPort: 9631, helperPort: 9632, status: "running", running: true, startedAtMs: Date.now() - 40 * 60_000 },
+      { instanceId: "relay-sub2api", profileId: "sub2api-demo", profileName: L("sub2api 中转（演示）", "sub2api relay (demo)"), pid: 33911, debugPort: 9697, helperPort: 9698, status: "running", running: true, startedAtMs: Date.now() - 12 * 60_000 },
+    ] }) as T;
+    // Computer Use 演示数据：找到了 ChatGPT.app，Claude Code 与 DeepSeek Harness 已接入（Claude Desktop 用增强版自带的那份）。
+    case "computer_use_status": return ok({ runtimeFound: true, appPath: "/Applications/ChatGPT.app", packageVersion: "1.2026.300", targets: demoComputerUseTargets() }) as T;
+    case "computer_use_browser_extension_status": return { installed: true, storeUrl: "" } as T;
+    case "computer_use_approval_get": return ok({ mode: "auto", cuMode: "js", pip: true, approvals: [], lastClient: { name: "claude-code", version: "2.3.1", at: Date.now() - 120_000 } }) as T;
+    // Claude 增强演示数据：增强版已制作，开了界面汉化与 Computer Use。
+    case "claude_localization_status": return ok(demoClaudeEnhance) as T;
     case "load_relay_environment":
     case "check_relay_environment": return ok({ clashVergeTun: { enabled: false, configPath: null }, proxyEnvironment: { variables: [] }, codexEnvFile: { exists: false, path: "" } }) as T;
     // 中转站识别：演示供应商按地址返回 sub2api（倍率 + 钱包余额）或 new-api（分组倍率 + Key 额度），其余识别不出。
@@ -524,6 +768,72 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       }) as T;
       return ok({ platform: null, rate: null, usage: null, detail: "演示模式" }) as T;
     }
+    case "set_extension_config": return settingsResult() as T;
+    case "reload_user_scripts": return settingsResult() as T;
+    case "extension_creator_request": return {
+      status: args.action === "connect" ? "connected" : args.action === "disconnect" ? "disconnected" : "not_connected",
+      message: "", configPath: "~/.codex/config.toml", extensionsDirectory: "~/.config/Codex++/user_scripts",
+    } as T;
+    // 社区拓展演示数据：一个带钩子与后台的、一个只有页面脚本且已安装的、一个需要新版 Codex++ 的。
+    case "extension_publish_request": {
+      const report = { id: args.payload?.id, name: L("字数统计", "Word count"), version: args.action === "bump" ? "1.0.1" : "1.0.0", description: L("统计输入框字数", "Count characters"), errors: [], warnings: [L("没有 README，发布时会按清单生成一份", "No README; one will be generated from the manifest")], secrets: [], files: 4, bytes: 5120, hasReadme: false, hasLicense: false, publishedRepo: null, suggestedRepoName: `codexpp-${args.payload?.id}`, gh: { ready: true, account: "demo-user" } };
+      if (args.action === "publish") return { ok: true, repo: `demo-user/codexpp-${args.payload?.id}`, url: "https://github.com/", version: "1.0.0", steps: ["发布前检查", "确认 GitHub 账号", "确认 git 身份", "创建仓库", "初始化工作副本", "整理文件", "提交", "打标签", "推送", "创建 release", "添加 topic"].map((step) => ({ step, ok: true, output: "" })) } as T;
+      return report as T;
+    }
+    case "extension_community_request": {
+      const perms = (extra: Record<string, unknown> = {}) => ({ backend: null, hooks: [], gatewayRequest: 0, gatewayResponse: 0, tools: [], routes: [], renderer: ["main.js"], ...extra });
+      const entry = (repo: string, extra: Record<string, unknown>) => ({
+        repo, url: `https://github.com/${repo}`, owner: repo.split("/")[0], ownerAvatar: "", description: "", stars: 0, license: "MIT",
+        pushedAt: "2026-10-28T09:00:00Z", id: repo.split("/")[1], name: repo.split("/")[1], version: "1.0.0", author: "", homepage: "",
+        icon: "", keywords: [], engine: 1, compatible: true, permissions: perms(), installed: null, ...extra,
+      });
+      if (args.action === "prepare" || args.action === "preparePackage") return {
+        channel: args.action === "preparePackage" ? "curated" : "community",
+        token: "demo", repo: args.payload?.repo ?? "alice/codexpp-word-guard", id: "word-guard", name: L("命令守卫", "Command guard"), version: "1.2.0", tag: "v1.2.0",
+        sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", fromDefaultBranch: false, fromAsset: true,
+        permissions: perms({ backend: "backend/main.mjs", hooks: [{ event: "PreToolUse", matcher: "^Bash$" }], gatewayRequest: 1, tools: ["guard_status"], routes: ["/settings/get"] }),
+        conflict: null,
+      } as T;
+      if (args.action === "install") return { hooks: true, hooksAdded: true } as T;
+      if (args.action === "discard") return {} as T;
+      return {
+        enabled: true, fetchedAt: Math.floor(Date.now() / 1000) - 180, stale: false, problems: [], message: "",
+        entries: [
+          entry("alice/word-guard", { name: L("命令守卫", "Command guard"), stars: 128, version: "1.3.0", description: L("拦下危险的 shell 命令，并在后台记录审计日志。", "Blocks dangerous shell commands and keeps an audit log."), permissions: perms({ backend: "backend/main.mjs", hooks: [{ event: "PreToolUse", matcher: "^Bash$" }], gatewayRequest: 1, tools: ["guard_status"] }) }),
+          entry("bob/word-count", { name: L("字数统计", "Word count"), stars: 37, description: L("在输入框旁显示字数。", "Shows a word count next to the composer."), installed: { version: "1.0.0", tag: "v1.0.0", sha: "1111111", fromDefaultBranch: false } }),
+          entry("carol/future-panel", { name: L("实验面板", "Experimental panel"), stars: 5, engine: 2, compatible: false, description: L("需要下一版拓展 API。", "Needs the next extension API.") }),
+        ],
+      } as T;
+    }
+    // dsh 插件演示数据：一个按教程写的组合包（工具 + skill + MCP 行 + 不兼容行）。
+    case "dsh_plugins_request": if (args.action === "browse_index") return {
+      entries: [
+        { name: "@deepseek-ai/dsh-persona", title: L("人设", "Persona"), description: L("给模型加一段人设提示词", "Adds a persona prompt"), version: "0.2.0", source: "@deepseek-ai/dsh-persona@0.2.0", note: null },
+        { name: "dsh-git-demo", title: "Git demo", description: L("从 git 仓库导入", "Imported from git"), version: "1.0.0", source: "https://github.com/x/y.git#abc123&path:packages/demo", note: null },
+      ],
+    } as T; else return {
+      message: "",
+      plugins: [{
+        id: "dsh-greet-bundle", name: "dsh-greet-bundle", version: "0.1.0",
+        source: { type: "npm", spec: "dsh-greet-bundle" }, root: "", managed: true, enabled: true,
+        disabledRows: [], configs: { greet: { greeting: "Hi there" } }, importedSkills: ["greet-skill"], toolCount: 1,
+        mcpJson: JSON.stringify({ mcpServers: { demo: { command: "npx", args: ["-y", "@modelcontextprotocol/server-everything"] } } }, null, 2),
+        companion: { id: "dsh-dsh-greet-bundle", hooks: ["PreToolUse", "Stop"], instructions: true, staticPrompt: true, installed: true, enabled: true, scriptsEnabled: true },
+        report: {
+          kind: "bundle", title: L("问候工具", "Greeting tools"), description: L("给 dsh 用的问候工具。", "Greeting tools for dsh."), client: false, diagnostics: [],
+          skills: [{ name: "greet-skill", description: "How to greet people politely." }],
+          rows: [
+            { id: "greet", module: "dsh-greet-bundle", status: "compatible", kind: "plugin", reasons: [], notes: [], mappings: ["instructions", "PreToolUse", "Stop"], tools: [{ name: "greet", description: "Greet someone by name." }],
+              configSchema: { type: "object", dict: { greeting: { type: "string", meta: { default: "Hello", description: L("问候语", "Greeting") } }, punctuation: { type: "union", list: [{ type: "const", value: "!" }, { type: "const", value: "." }], meta: { default: "!" } }, times: { type: "number", meta: { default: 1, min: 1, max: 5 } } } } },
+            { id: "session-tool", module: "./session.js", status: "incompatible", kind: "plugin", reasons: [L("依赖 Codex++ 不提供的服务：sessions（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）", "Needs services Codex++ does not provide: sessions")], notes: [], tools: [] },
+            { id: "demo-mcp", module: "@deepseek-ai/dsh-mcp-client", status: "compatible", kind: "mcp", reasons: [], notes: [L("MCP 配置可导入 Codex；reconnect、toolCallTimeoutMs 等 dsh 专属字段会被丢弃", "The MCP config can be imported into Codex; dsh-only fields are dropped")], tools: [] },
+          ],
+        },
+      }],
+      integration: { status: "registered", registered: true, message: "" },
+      toolchain: { node: "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node", npm: "/usr/local/bin/npm", git: "/usr/bin/git" },
+      pluginDir: "",
+    } as T;
     default: return ok() as T;
   }
 }

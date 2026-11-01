@@ -22,7 +22,7 @@ test("整体设置只放应用级选项，Agent 设置承担工具级选项", ()
     assert.ok(global.includes(`t("${copy}")`), `整体设置应包含 ${copy}`);
   }
   assert.doesNotMatch(global, /Codex 供应商设置|Codex 图片覆盖层|Codex 启动参数/);
-  for (const action of ["actions.toggleTheme", "actions.exportSettings", "actions.importSettings"]) {
+  for (const action of ["actions.setThemePreference", "actions.exportSettings", "actions.importSettings"]) {
     assert.ok(global.includes(action), `整体设置应保留 ${action}`);
     assert.ok(!agent.includes(action), `Agent 设置不应包含 ${action}`);
   }
@@ -60,11 +60,28 @@ test("Computer Use 放在侧栏「工具」组，不再出现在每个 Agent 的
   assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /gatewayNavigationRoutes\.map/);
-  assert.match(sidebar, /toolNavigationRoutes\.map/);
+  assert.match(sidebar, /visibleRoutes\(focus, toolNavigationRoutes\)\.map/);
+  // 只管理 Codex 时不显示：Codex 自带 Computer Use，这一页接入的是其他客户端。
+  assert.match(globalNavigation, /const multiAgentRoutes = new Set<Route>\(\["agentCollaboration", "computerUse"\]\);/);
 });
 
 test("Agent 设置标题跟随当前 Agent，整体设置标题固定", () => {
   const entry = functionSource("App");
-  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : routeTitle\(navAliasRoute\[route\] \?\? route\)/);
+  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : soloAgent && route === "gateway" \? tf\("\{0\} 接入", \[agentName\(soloAgent\)\]\) : routeTitle\(navAliasRoute\[route\] \?\? route\)/);
   assert.match(entry, /const activeToolName = toolEntries\.find/);
+});
+
+test("只用增强功能：隐藏供应商、网关、用量相关页面，停在隐藏页面时回到落脚页，读到设置后才关掉配置切换总开关", () => {
+  const helpers = text.slice(text.indexOf("const multiAgentRoutes"), text.indexOf("function agentFocusDescription"));
+  assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "relayEnvironment", "multiLaunch"\]\);/);
+  assert.match(helpers, /providersHidden\(focus\) && providerRoutes\.has\(routeId\)/);
+  // 侧栏、页签、命令面板都按同一条规则过滤。
+  assert.match(functionSource("AppSidebar"), /enhanceOnly \? null : \(\s*<section className=\{`side-group \$\{collapsed\.includes\("gateway"\)/);
+  assert.match(functionSource("AgentPageTabs"), /visibleRoutes\(focus, entry\.routes\)/);
+  assert.match(text, /if \(!item \|\| !routeVisible\(agentFocus, routeId\)\) return null;/);
+  // 启动默认停在网关总览：模式不让看就回落脚页。
+  assert.match(text, /if \(!routeVisible\(agentFocus, route\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "overview"\);/);
+  // 总开关只在设置读到之后关，且用读到的设置改，不拿启动时的默认表单去盖。
+  assert.match(text, /if \(!settings \|\| !settings\.settings\.relayProfilesEnabled \|\| relayOffRequested\.current\) return;/);
+  assert.match(text, /saveSettingsValue\(\{ \.\.\.settings\.settings, relayProfilesEnabled: false \}, true\)/);
 });

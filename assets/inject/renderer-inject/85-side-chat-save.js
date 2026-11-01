@@ -6,7 +6,7 @@
   document.querySelectorAll(sideChatSaveSelector).forEach(button => button.remove());
 
   function sideChatSaveEnabled() {
-    return codexPlusSettings().sideChatSave === true;
+    return codexPlusSettings().sideChatSave === true && !globalThis.__codexPlusBuiltinInactive?.has("side-chat-save");
   }
 
   async function sideChatSource(sourceId, boundary = {}) {
@@ -17,7 +17,19 @@
     return result;
   }
 
-  // 两种原生客户端补丁共用此入口，避免再包装一层 sendRequest 原型。
+  /**
+   * 内置拓展「侧聊保存」：经公开的 `codex/exchange` 中间件包住 app-server 请求，临时旁支分叉时记下主历史；
+   * 保存按钮跟着页面扫描（ctx.onScan）维护。拓展卸下时中间件跟着撤掉，旁支请求原样发出，按钮撤下。
+   */
+  function codexPlusSideChatSaveExtension(ctx) {
+    ctx.intercept("codex/exchange", (exchange, next) => next({
+      ...exchange,
+      send: () => sendCodexSideChatNativeRequest(exchange, exchange.method, exchange.params, exchange.send),
+    }));
+    codexPlusAlignWith(ctx, refreshSideChatSaveButtons, { scan: "deferred" });
+  }
+
+  // client 只用到 hostId（中间件传的是 exchange 本身）。
   async function sendCodexSideChatNativeRequest(client, method, params, send) {
     if (client.hostId !== "local") return send();
     if (method === "thread/stop" || method === "thread/unsubscribe") {

@@ -150,3 +150,104 @@
     transition: none;
   }
 }
+
+/* 「你用哪些 Agent」问卷：和引导共用卡片样式，选项是一列可勾选的行。 */
+.tour-card.agent-focus-card {
+  top: 50%;
+  left: 50%;
+  width: 440px;
+  transform: translate(-50%, -50%);
+}
+
+.tour-actions.agent-focus-actions {
+  justify-content: flex-end;
+}
+
+.tour-card p.agent-focus-warning {
+  margin: -4px 0 14px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: hsl(var(--warning, 38 92% 50%) / 0.12);
+  color: hsl(var(--foreground));
+  font-size: 11.5px;
+}
+
+.agent-focus-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.agent-focus-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-focus-option:hover {
+  background: hsl(var(--accent));
+}
+
+.agent-focus-option[data-checked="true"] {
+  border-color: hsl(var(--brand-accent));
+}
+
+.agent-focus-option:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.agent-focus-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+}
+
+.agent-focus-icon .hub-agent-glyph {
+  width: 18px;
+  height: 18px;
+}
+
+.agent-focus-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-focus-text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agent-focus-text small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.agent-focus-check {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 50%;
+}
+
+.agent-focus-option[data-checked="true"] .agent-focus-check {
+  border-color: hsl(var(--brand-accent));
+  background: hsl(var(--brand-accent));
+  color: hsl(var(--primary-foreground));
+}

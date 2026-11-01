@@ -3725,6 +3725,60 @@ details.relay-fold[open] > .relay-fold-body {
   opacity: 0.58;
 }
 
+/* 内置拓展卡片：开关卡在上，打开后子选项缩进挂在下面，有单独配置页的给「设置」入口。 */
+.builtin-card {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.builtin-card-params {
+  display: grid;
+  gap: 6px;
+  margin-left: 8px;
+  border-left: 2px solid hsl(var(--border));
+  padding-left: 10px;
+}
+
+.builtin-card-note {
+  padding: 0 4px;
+  color: hsl(var(--status-warning));
+  font-size: 12px;
+}
+
+/* 有单独配置页的卡：齿轮叠在开关左侧，开关卡加宽列间距给它让位。 */
+.builtin-card-head {
+  position: relative;
+  min-width: 0;
+}
+
+.builtin-card-head.has-settings > .feature-toggle {
+  column-gap: 54px;
+}
+
+.builtin-card-settings {
+  position: absolute;
+  top: 50%;
+  right: 60px;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  color: hsl(var(--muted-foreground));
+  transform: translateY(-50%);
+}
+
+.builtin-card-settings:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
 .feature-toggle strong,
 .feature-toggle small {
   display: block;
@@ -8694,22 +8748,6 @@ select {
   flex: 0 0 auto;
 }
 
-.session-share-import {
-  display: flex;
-  grid-column: 1 / -1;
-  gap: 8px;
-  align-items: center;
-}
-
-.session-share-import .input {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.session-share-import .button {
-  flex: 0 0 auto;
-}
-
 .session-repair-progress {
   margin-top: 12px;
 }
@@ -8763,10 +8801,6 @@ select {
   }
 
   .session-repair-actions {
-    grid-column: auto;
-  }
-
-  .session-share-import {
     grid-column: auto;
   }
 
@@ -13361,11 +13395,11 @@ button.side-item:hover {
   font-size: 15px;
   font-weight: 600;
 }
-.shell .weixin-connect-page .weixin-connect-form :is(.weixin-path-row button, select) {
+.shell .weixin-connect-page .weixin-connect-form :is(.weixin-path-row button, .app-select-trigger) {
   height: 32px;
   min-height: 32px;
 }
-.shell .weixin-connect-page .weixin-connect-form .weixin-path-row button[title] {
+.shell .weixin-connect-page .weixin-connect-form .weixin-path-row > button[title] {
   width: 32px;
 }
 
@@ -13389,6 +13423,112 @@ button.side-item:hover {
   margin-left: auto;
   color: hsl(var(--muted-foreground));
   font-size: 12px;
+}
+/* 拓展页理念横幅：大标题 + 一句说明 + 能力标签，与下方卡片同宽同圆角 */
+.shell .extensions-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid hsl(var(--primary) / 0.25);
+  border-radius: 10px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, hsl(var(--primary) / 0.14), transparent 60%),
+    hsl(var(--card));
+}
+.shell .extensions-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.shell .extensions-hero-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: hsl(var(--foreground));
+}
+.shell .extensions-hero-lead {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: hsl(var(--muted-foreground));
+}
+.shell .extensions-hero-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.shell .extensions-hero-capabilities li {
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  line-height: 22px;
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+}
+/* 对话造拓展：图标 + 标题/说明 + 右侧操作，与上方状态条同宽同圆角 */
+.shell .extension-creator-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+}
+.shell .extension-creator-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.12);
+}
+.shell .extension-creator-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.shell .extension-creator-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.shell .extension-creator-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.shell .extension-creator-badge {
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  color: hsl(var(--status-success));
+  background: hsl(var(--status-success) / 0.12);
+}
+.shell .extension-creator-hint {
+  overflow: hidden;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell .extension-creator-card[data-error="true"] .extension-creator-hint {
+  color: hsl(var(--status-error));
+  white-space: normal;
 }
 .shell .user-scripts-page .script-market-toolbar {
   display: flex;
@@ -13435,6 +13575,219 @@ button.side-item:hover {
   width: auto;
   min-width: 112px;
 }
+/* 本地拓展列表：全局 .table-row 没有左右内边距，放进带边框的 Panel 里会贴边 */
+.shell .user-script-row {
+  padding: 9px 14px;
+}
+.shell .user-script-row:last-child {
+  border-bottom: 0;
+}
+.shell .user-script-row .user-script-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.shell .user-script-row .user-script-name strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell .user-script-row .user-script-name small {
+  overflow: hidden;
+  font-size: 11.5px;
+  color: hsl(var(--muted-foreground));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 本地拓展行：每行是独立网格，操作列必须定宽（一行最多两个图标），否则图标多的行会把中间两列挤偏；
+   能力排成一行小标签。窄屏沿用全局 .table-row 的单列堆叠。 */
+/* 右侧「版本 · 状态 · 开关 · 更多」贴右排：开关和「更多」离右边距离固定，各行仍对齐 */
+.shell .user-script-row {
+  grid-template-columns: minmax(160px, 1fr) auto auto 30px;
+  column-gap: 12px;
+  align-items: center;
+}
+.shell .user-script-row > span {
+  text-align: right;
+  white-space: nowrap;
+}
+.shell .user-script-row .user-script-state {
+  justify-content: flex-end;
+}
+.shell .user-script-row .user-script-state-label {
+  order: -1;
+}
+.shell .user-script-row .script-row-actions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+@media (max-width: 860px) {
+  .shell .user-script-row {
+    grid-template-columns: 1fr;
+  }
+  .shell .user-script-row > span {
+    text-align: left;
+  }
+  .shell .user-script-row .user-script-state,
+  .shell .user-script-row .script-row-actions {
+    justify-content: flex-start;
+  }
+}
+/* 「更多」菜单：触发按钮用弱化色，菜单项带图标 */
+.shell .user-script-row .mg-icon-button {
+  color: hsl(var(--muted-foreground));
+}
+.shell .user-script-row .mg-icon-button:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
+}
+.shell .user-script-row .mg-menu {
+  min-width: 160px;
+}
+.shell .user-script-row .user-script-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 拓展的管理器面板（manager.page）：展开在拓展行下面，iframe 高度由页面上报。 */
+.shell .extension-manager-panel {
+  margin: 4px 12px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  overflow: hidden;
+  background: hsl(var(--background));
+}
+.shell .extension-manager-panel.is-loading,
+.shell .extension-manager-panel.is-error {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: hsl(var(--muted-foreground));
+}
+.shell .extension-manager-panel.is-error {
+  color: hsl(var(--status-error));
+}
+/* 拓展贡献的管理器页面（侧栏入口、顶替内置页面）：面板占满内容区宽度。 */
+.shell .extension-page-host {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.shell .extension-manager-panel.is-full-page {
+  margin: 0;
+}
+.shell .extension-page-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 8px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.shell .user-script-row .mg-menu .mg-danger {
+  color: hsl(var(--status-error));
+}
+.shell .user-script-row .user-script-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+.shell .user-script-row .user-script-tag {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+}
+.shell .user-script-row .user-script-tag[data-tone="warn"] {
+  color: hsl(var(--status-warning));
+  background: hsl(var(--status-warning) / 0.12);
+}
+/* 拓展设置表单：展开在拓展行下方 */
+.shell .extension-config-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.35);
+}
+.shell .extension-config-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 13px;
+}
+.shell .extension-config-field small {
+  grid-column: 2;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+.shell .extension-config-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* 对象型配置：一组带标题的子字段 */
+.shell .extension-config-group {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  min-width: 0;
+}
+.shell .extension-config-group > legend {
+  padding: 0 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.shell .extension-config-group > small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+.shell .extension-config-textarea {
+  width: 100%;
+  min-height: 72px;
+  padding: 6px 8px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 6px;
+  background: hsl(var(--background));
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.shell .extension-config-array {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  min-width: 0;
+}
+.shell .extension-config-array-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.shell .extension-config-array-item > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 /* 本地脚本状态列：开关 + 加载状态标记 */
 .shell .user-script-row .user-script-state {
   display: flex;
@@ -13455,6 +13808,29 @@ button.side-item:hover {
 }
 .shell .user-script-row .user-script-state-label[data-state="globalOff"] {
   color: hsl(var(--status-warning));
+}
+.shell .user-script-row .user-script-state-label[data-state="replaced"] {
+  color: hsl(var(--status-warning));
+}
+/* 内置拓展入口：本地拓展列表下面一行，左边个数说明，右边「管理内置拓展」。 */
+.shell .builtin-extensions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  border-top: 1px solid hsl(var(--border));
+  padding: 10px 4px 0;
+}
+.shell .builtin-extensions-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.shell .builtin-extensions-title small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
 }
 
 /* ── 皮肤管理：顶部压成一条细栏；主题页签按内容宽度；主题卡片缩小、一行放更多 ── */

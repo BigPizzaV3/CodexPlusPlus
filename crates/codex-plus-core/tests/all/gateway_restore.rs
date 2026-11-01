@@ -32,6 +32,7 @@ fn fixture(port: u16) -> Fixture {
         settings: codex_plus_core::settings::SettingsStore::new(state.join("settings.json")),
         backup_root: state.join("backups"),
         port,
+        agent_env: codex_plus_core::gateway::agents::AgentEnv::at(temp.path().join("home")),
     };
     std::fs::create_dir_all(&ctx.claude.claude_home).unwrap();
     std::fs::create_dir_all(&ctx.grok_home).unwrap();

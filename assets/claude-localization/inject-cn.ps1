@@ -10,9 +10,14 @@ $deadline = (Get-Date).AddSeconds(45)
 $target = $null
 while ((Get-Date) -lt $deadline -and -not $target) {
   try { $target = Invoke-RestMethod "http://127.0.0.1:$port/json/list" -TimeoutSec 2 | Where-Object { $_.type -eq 'node' } | Select-Object -First 1 } catch {}
+  # 进程已经退出就不用再等满 45 秒（#2818）。
+  if (-not $target -and $proc.HasExited) { break }
   if (-not $target) { Start-Sleep -Milliseconds 500 }
 }
-if (-not $target) { throw 'Claude inspector 没有启动；此 Windows 版本可能禁用了 Electron 调试参数' }
+if (-not $target) {
+  $why = $(if ($proc.HasExited) { "Claude 在调试端口就绪前就退出了（退出码 $($proc.ExitCode)）" } else { '45 秒内没有等到 Claude 调试端口' })
+  throw "Claude inspector 没有启动：$why（$app，端口 127.0.0.1:$port）。常见原因是启动的 Claude 关闭了 Electron 调试开关（EnableNodeCliInspectArguments fuse），或 Claude 已在后台运行把启动请求转交给了旧进程。请在任务管理器里结束所有 Claude 进程，再在 Codex++「Claude 增强」里点「制作增强版 / 更新副本」重新制作副本后启动；仍失败请在 issue 中附上 operation.log。"
+}
 
 $ws = [Net.WebSockets.ClientWebSocket]::new()
 $ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()

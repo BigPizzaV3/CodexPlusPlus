@@ -311,6 +311,7 @@
     activeTab: "next",
     returnTab: "next",
     viewOrder: readViewOrder(),
+    extensionViewCleanup: null,
     position: null,
     width: readPanelWidth(),
     height: readPanelHeight(),
@@ -404,8 +405,10 @@
       && generation === state.runtimeGeneration;
   }
 
+  // 内置拓展「stepwise」/「answer-outline」停用或被顶替时（页面里的 __codexPlusBuiltinInactive 集合），
+  // 设置开着也不启用；悬浮球与主注入跑在同一个页面里，直接读同一个集合。
   function stepwiseEnabled(settings = state.settings) {
-    return settings?.enabled === true;
+    return settings?.enabled === true && !globalThis.__codexPlusBuiltinInactive?.has("stepwise");
   }
 
   function normalizeGenerationMode(value) {
@@ -417,15 +420,31 @@
   }
 
   function outlineEnabled(settings = state.settings) {
-    return settings?.answerOutlineEnabled === true;
+    return settings?.answerOutlineEnabled === true && !globalThis.__codexPlusBuiltinInactive?.has("answer-outline");
   }
 
   function runtimeEnabled(settings = state.settings) {
     return stepwiseEnabled(settings) || outlineEnabled(settings);
   }
 
+  /** 拓展注册的悬浮球页签（codexPlus.registerFloatingTab），排在内置页签后面；id 形如 ext:<注册 id>。 */
+  function extensionTabs() {
+    const registry = window.__codexPlusFloatingTabs;
+    return registry instanceof Map ? [...registry.values()] : [];
+  }
+
+  function extensionTabIds() {
+    return extensionTabs().map((tab) => `ext:${tab.id}`);
+  }
+
+  function extensionTab(view) {
+    return typeof view === "string" && view.startsWith("ext:")
+      ? extensionTabs().find((tab) => `ext:${tab.id}` === view) || null
+      : null;
+  }
+
   function enabledViewOrder() {
-    return state.viewOrder.filter((tab) => tab === "next" ? stepwiseEnabled() : outlineEnabled());
+    return [...state.viewOrder.filter((tab) => tab === "next" ? stepwiseEnabled() : outlineEnabled()), ...extensionTabIds()];
   }
 
   function viewNavigationOrder() {
@@ -445,6 +464,7 @@
 
   function normalizeActiveTab(tab = state.activeTab) {
     if (tab === "settings") return "settings";
+    if (extensionTab(tab)) return tab;
     if (tab === "next" && stepwiseEnabled()) return "next";
     if (tab === "outline" && outlineEnabled()) return "outline";
     if (stepwiseEnabled()) return "next";

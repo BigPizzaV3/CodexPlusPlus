@@ -91,7 +91,8 @@
   }
 
   function codexPlusModelUnlockEnabled() {
-    return !!codexPlusSettings().modelWhitelistUnlock;
+    // 被拓展顶替时让位（停用集合由 96-builtin-extensions.js 按下发的顶替状态维护）。
+    return !!codexPlusSettings().modelWhitelistUnlock && !globalThis.__codexPlusBuiltinInactive?.has("model-whitelist-unlock");
   }
 
   function codexPlusModelNames() {
@@ -748,7 +749,7 @@
       const managedTurn = await sendCodexManagedSessionTurn(client, originalSendRequest,
         String(method || ""), nextParams, options, modelContextRefresh);
       if (managedTurn) return managedTurn.result;
-      const result = await sendAppServerRequestWithSideChat(client, method, nextParams,
+      const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest(method, nextParams, options));
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
@@ -772,9 +773,20 @@
     return true;
   }
 
-  function sendAppServerRequestWithSideChat(client, method, params, send) {
-    return typeof sendCodexSideChatNativeRequest === "function"
-      ? sendCodexSideChatNativeRequest(client, method, params, send) : send();
+  /**
+   * `codex/exchange` 中间件链：包住一次发往 app-server 的请求。值是 `{ method, params, hostId, send }`，
+   * 中间件用 `next({ ...exchange, send: 新的 send })` 在原请求前后做事（内置拓展「侧聊保存」就挂在这里），
+   * 链尾调用最终的 send。没有中间件时直接发，不多一层 Promise。
+   * 内核分片还没初始化（页面早期、只抽前面分片的测试）时读中间件表会落进暂时性死区，按没有中间件处理。
+   */
+  async function sendAppServerRequestThroughExchange(client, method, params, send) {
+    let wanted = false;
+    try {
+      wanted = codexPlusExtensionInterceptors.has("codex/exchange");
+    } catch {}
+    if (!wanted) return send();
+    const exchange = await codexPlusRunWaterfall("codex/exchange", { method, params, hostId: client.hostId, send });
+    return typeof exchange?.send === "function" ? exchange.send() : send();
   }
 
   // issue #2177：Codex 26.908 把 AppServerRequestClient 类藏进模块闭包且不再导出，
@@ -812,8 +824,12 @@
   const codexAppServerClientBundleHints = ["app-shared-", "app-initial-", "app-main-", "chatg"];
   const codexAppServerClientAssetFetchLimit = 24;
 
+  // 已经拉过全文、确认不含类定义的资产。重试时只看新出现的候选，
+  // 不会因为多试几轮就把同一批大文件反复 fetch（#1960 / #2330 的教训）。
+  const codexAppServerClientCheckedUrls = new Set();
+
   function codexAppServerClientAssetCandidateUrls() {
-    const urls = codexAppAssetCandidateUrls();
+    const urls = codexAppAssetCandidateUrls().filter((url) => !codexAppServerClientCheckedUrls.has(url));
     const rank = (url) => {
       const name = (url.split("/").pop() || "").toLowerCase();
       const hint = codexAppServerClientBundleHints.findIndex((part) => name.includes(part));
@@ -834,7 +850,7 @@
     // 先走廉价的 asset loader（有 30s 失败冷却与重试上限），脚本里已经内联了
     // asset 名时能直接命中，省掉整轮 fetch；不可用就退回到全量文本匹配。
     const hinted = resolveCodexAppServerClientHintedUrl();
-    const ordered = hinted
+    const ordered = hinted && !codexAppServerClientCheckedUrls.has(hinted)
       ? [hinted, ...urls.filter((url) => url !== hinted)]
       : urls;
     for (const url of ordered) {
@@ -843,8 +859,9 @@
         if (!text) continue;
         const location = locateCodexAppServerClientBreakpoint(text);
         if (location) return { urls, hit: { url, location } };
+        codexAppServerClientCheckedUrls.add(url);
       } catch {
-        // 单个 asset 拉取失败不影响其余候选，继续下一个。
+        // 单个 asset 拉取失败不影响其余候选，继续下一个；没记成已检查，下一轮还会再试。
       }
     }
     return { urls, hit: null };
@@ -860,19 +877,37 @@
     return "";
   }
 
-    let codexAppServerClientCaptureStarted = false;
+  // 定位常常跑在类所在的资产「可见」之前：Codex 26.10xx 由 app-main 静态 import app-initial，
+  // 开了 Fast 时 import map 又把它指向 Blob，资源记录里没有原 URL（缓冲区 250 条也早就满了），
+  // 要等 Fast 模块执行完置上 __codexPlusNativeFastCompiled 才能拿到。之前首轮只看到 5 个候选、
+  // 报 anchor_missing 后本页再也不试，launcher 等不到坐标就放弃捕获，依赖原型补丁的功能全部失效。
+  // 所以未命中时按退避重试；总时长控制在 launcher 90s 的坐标等待窗口之内。
+  const codexAppServerClientCaptureRetryDelaysMs = [1000, 2000, 4000, 8000, 15000, 15000, 15000];
+  let codexAppServerClientCaptureStarted = false;
+  let codexAppServerClientCaptureAttempts = 0;
   async function installCodexAppServerClientCapture() {
     if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture) return;
     codexAppServerClientCaptureStarted = true;
+    codexAppServerClientCaptureAttempts += 1;
     try {
       if (typeof fetch !== "function") return;
       const { urls, hit } = await locateCodexAppServerClientInAssets();
       if (!hit) {
+        const retryDelay = codexAppServerClientCaptureRetryDelaysMs[codexAppServerClientCaptureAttempts - 1];
+        if (retryDelay !== undefined) {
+          window.setTimeout(() => {
+            codexAppServerClientCaptureStarted = false;
+            void installCodexAppServerClientCapture().catch(() => {});
+          }, retryDelay);
+          return;
+        }
         // 区分「一个候选资产都没有」和「有资产但没有类定义」：
         // 前者是页面还没加载完，后者才是 Codex 真的改了产物形状。
         sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
-          reason: urls.length === 0 ? "asset_url_missing" : "anchor_missing",
+          reason: urls.length === 0 && codexAppServerClientCheckedUrls.size === 0 ? "asset_url_missing" : "anchor_missing",
           candidateCount: urls.length,
+          checkedCount: codexAppServerClientCheckedUrls.size,
+          attempts: codexAppServerClientCaptureAttempts,
         });
         return;
       }
@@ -882,6 +917,7 @@
         lineNumber: hit.location.lineNumber,
         columnNumber: hit.location.columnNumber,
         asset: (hit.url.split("/").pop() || "").split("?")[0],
+        attempts: codexAppServerClientCaptureAttempts,
       });
     } catch (error) {
       codexAppServerClientCaptureStarted = false;
@@ -897,7 +933,8 @@
     const wanted = codexPlusModelUnlockEnabled()
       || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-      || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave;
+      || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
+      || (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware());
     if (!wanted) return false;
     const klass = window.__codexPlusAppServerClientClass;
     if (!klass || typeof klass !== "function" || !klass.prototype) return false;
@@ -947,6 +984,8 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      // 拓展的 codex/request 中间件不在这里跑：新版 Codex 的部分请求（如 turn/start）绕过 sendRequest，
+      // 直接 enqueueRequest → createRequest，所以统一挂在下面的 createRequest 上，每个请求只经过一次。
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
         providerParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
@@ -959,7 +998,7 @@
       const managedTurn = await sendCodexManagedSessionTurn(client, originalSendRequest.bind(client),
         String(method || ""), nextParams, options, modelContextRefresh);
       if (managedTurn) return managedTurn.result;
-      const result = await sendAppServerRequestWithSideChat(client, method, nextParams,
+      const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest.call(client, method, nextParams, options));
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
@@ -971,6 +1010,20 @@
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client));
     };
+    // 所有请求最终都经 createRequest(method, params, options) 组装：拓展的 codex/request 中间件挂在这里。
+    // createRequest 是同步的，与 codex/request 的契约一致（中间件同步返回，返回 Promise 视为出错并放行）。
+    if (typeof proto.createRequest === "function") {
+      const originalCreateRequest = proto.__codexPlusOriginalCreateRequest || proto.createRequest;
+      proto.__codexPlusOriginalCreateRequest = originalCreateRequest;
+      proto.createRequest = function codexPlusPatchedCreateRequest(method, params, ...rest) {
+        let nextParams = params;
+        if (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware()
+            && typeof codexPlusApplyExtensionRequestMiddleware === "function") {
+          nextParams = codexPlusApplyExtensionRequestMiddleware(String(method || ""), params);
+        }
+        return originalCreateRequest.call(this, method, nextParams, ...rest);
+      };
+    }
     if (typeof proto.prewarmThreadStart === "function") {
       const originalPrewarmThreadStart = proto.__codexPlusServiceTierOriginalPrewarmThreadStart
         || proto.prewarmThreadStart;
@@ -1089,12 +1142,20 @@
   }
 
   function ensureCodexModelWhitelistInstalls() {
+    const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
+      && codexPlusExtensionWantsRequestMiddleware();
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-          || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave) {
+          || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
+          || extensionWantsRequests) {
       installAppServerModelRequestPatch();
       void installCodexAppServerClientCapture().catch(() => {});
+    }
+    // 启动器平时只在模型解锁 / 会话删除开启时捕获客户端类；只有拓展需要时，请它按需补开（每页一次）。
+    if (extensionWantsRequests && !window.__codexPlusAppServerClientClass && !window.__codexPlusExtensionRequestCaptureAsked) {
+      window.__codexPlusExtensionRequestCaptureAsked = true;
+      void postJson("/extensions/request-capture", {}).catch(() => {});
     }
     void installDictationSupportPatch();
     if (!codexPlusModelUnlockEnabled()) return;

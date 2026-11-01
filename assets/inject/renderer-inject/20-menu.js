@@ -1,5 +1,5 @@
   function renderCodexPlusMenu() {
-    const settings = codexPlusSettings();
+    const settings = codexPlusSettings({ ignoreBuiltins: true });
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
       const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;

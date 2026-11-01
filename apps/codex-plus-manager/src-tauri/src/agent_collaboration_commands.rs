@@ -38,7 +38,13 @@ pub async fn agent_collaboration_request(
                     None
                 }
                 "connect_codex" => {
-                    connect_codex(&SettingsStore::default(), &home, &executable, &state_dir)?;
+                    connect_codex(
+                        &integration::SPEC,
+                        &SettingsStore::default(),
+                        &home,
+                        &executable,
+                        &state_dir,
+                    )?;
                     None
                 }
                 "save_config" => {
@@ -145,32 +151,71 @@ fn require_owned_registration(
     Ok(())
 }
 
-/// 只更新协作 MCP 这一条。使用既有局部更新 API，保留其他设置与供应商数据。
-fn connect_codex(
+/// 只更新指定托管 MCP 这一条。使用既有局部更新 API，保留其他设置与供应商数据。
+/// 协作 MCP 与插件创作 MCP 共用这套「托管上下文 + live 配置」两段提交与回滚。
+pub(crate) fn connect_codex(
+    spec: &codex_plus_core::managed_mcp::ManagedMcp,
     settings_store: &SettingsStore,
     home: &Path,
     executable: &Path,
     state_dir: &Path,
 ) -> anyhow::Result<()> {
-    let registration = integration::status(home, executable, state_dir)?;
+    let registration = codex_plus_core::managed_mcp::status(spec, home, executable, state_dir)?;
     if registration.status == "conflict" {
-        bail!("同名协作 MCP 属于其他配置，未覆盖");
+        bail!("同名{}属于其他配置，未覆盖", spec.label);
     }
+    commit_managed_change(
+        spec,
+        settings_store,
+        "接入",
+        |contents| {
+            codex_plus_core::managed_mcp::upsert_managed_context(spec, contents, executable, state_dir)
+        },
+        || codex_plus_core::managed_mcp::install(spec, home, executable, state_dir).map(|_| ()),
+    )
+}
+
+/// 取消接入：托管上下文与 live 配置里本工具的条目都置为 `enabled = false`（切换供应商重写配置时
+/// 也不会被重新启用）。条目归属不符时什么都不改。
+pub(crate) fn disconnect_codex(
+    spec: &codex_plus_core::managed_mcp::ManagedMcp,
+    settings_store: &SettingsStore,
+    home: &Path,
+    executable: &Path,
+    state_dir: &Path,
+) -> anyhow::Result<()> {
+    commit_managed_change(
+        spec,
+        settings_store,
+        "取消接入",
+        |contents| codex_plus_core::managed_mcp::disable_managed_context(spec, contents),
+        || codex_plus_core::managed_mcp::disable(spec, home, executable, state_dir).map(|_| ()),
+    )
+}
+
+/// 两段提交：先写 Codex++ 托管上下文，再写 Codex live 配置；live 失败时只回滚本次写入的上下文。
+fn commit_managed_change(
+    spec: &codex_plus_core::managed_mcp::ManagedMcp,
+    settings_store: &SettingsStore,
+    verb: &str,
+    transform: impl FnOnce(&str) -> anyhow::Result<String>,
+    commit_live: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let settings = settings_store
         .load()
-        .context("无法读取 Codex++ 托管配置，未接入")?;
+        .with_context(|| format!("无法读取 Codex++ 托管配置，未{verb}"))?;
     let before = settings.relay_context_config_contents.clone();
-    let updated = integration::upsert_managed_context(&before, executable, state_dir)?;
+    let updated = transform(&before)?;
     let changed = updated != before;
     let mut committed_context = updated.clone();
     if changed {
         let committed = settings_store
             .update(context_patch(&settings, &updated)?)
-            .context("无法保存子 Agent 托管配置，未修改 Codex live 配置")?;
+            .with_context(|| format!("无法保存{}托管配置，未修改 Codex live 配置", spec.label))?;
         // 设置存储会归一化 TOML，以实际提交结果作为回滚的比较基准。
         committed_context = committed.relay_context_config_contents;
     }
-    if let Err(error) = integration::install(home, executable, state_dir) {
+    if let Err(error) = commit_live() {
         if changed {
             // 重新读取，恢复的仅是本次写入的上下文字段，不能覆盖期间的其他设置变化。
             let rollback = (|| -> anyhow::Result<()> {
@@ -183,10 +228,10 @@ fn connect_codex(
                     .map(|_| ())
             })();
             if rollback.is_err() {
-                bail!("接入 Codex 失败：{error}；托管配置未能恢复，请刷新 MCP 设置后检查");
+                bail!("{verb} Codex 失败：{error}；托管配置未能恢复，请刷新 MCP 设置后检查");
             }
         }
-        return Err(error).context("子 Agent 接入失败，托管配置已保持原状");
+        return Err(error).with_context(|| format!("{}{verb}失败，托管配置已保持原状", spec.label));
     }
     Ok(())
 }
@@ -314,7 +359,7 @@ mod tests {
             serde_json::to_vec(&raw).unwrap(),
         )
         .unwrap();
-        connect_codex(&settings, &home, &executable, &state_dir).unwrap();
+        connect_codex(&integration::SPEC, &settings, &home, &executable, &state_dir).unwrap();
         let managed = settings.load().unwrap().relay_context_config_contents;
         assert!(managed.contains("codex_plus_collaboration"));
         assert!(managed.contains("--codex-plus-agent-mcp"));
@@ -322,7 +367,7 @@ mod tests {
             registration_view(&home, &executable, &state_dir)["status"],
             "connected"
         );
-        connect_codex(&settings, &home, &executable, &state_dir).unwrap();
+        connect_codex(&integration::SPEC, &settings, &home, &executable, &state_dir).unwrap();
         assert_eq!(
             settings.load().unwrap().relay_context_config_contents,
             managed
@@ -389,6 +434,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, home.join(".codex-plus-agent-mcp.lock")).unwrap();
         assert!(
             connect_codex(
+                &integration::SPEC,
                 &settings,
                 &home,
                 &std::env::current_exe().unwrap(),

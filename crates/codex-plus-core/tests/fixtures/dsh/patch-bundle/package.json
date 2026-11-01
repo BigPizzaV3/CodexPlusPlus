@@ -1,0 +1,8 @@
+{
+  "name": "dsh-patch-bundle",
+  "version": "0.1.0",
+  "description": "演示 bundle patch 的完整语义：按 id 覆盖、插进组、include 文件与它的 patches、在 vm 里求值的 !!js",
+  "type": "module",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*" }
+}

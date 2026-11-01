@@ -89,7 +89,9 @@ function fixture() {
       postJson: async () => ({ enhancementsEnabled: true, activeRelayCodexProvider: "deepseek", dictation: { enabled: false } }),
       installCodexPlusDictation: () => { installations += 1; throw Error("dictation UI unavailable"); },
     });
-    vm.runInContext(`${scanSource.slice(scanStart, scanEnd)}\n${loaderSource}`, context);
+    // 语音听写由内置拓展登记成扫描步骤：这里按「已装上」模拟它的登记。
+    const registeredStep = 'function runCodexPlusScanStep(id) { if (id === "builtin:dictation") runScanStep(installCodexPlusDictation); }';
+    vm.runInContext(`${scanSource.slice(scanStart, scanEnd)}\n${loaderSource}\n${registeredStep}`, context);
     assert.equal(await context.loadBackendSettingsState(), true, "UI installation failure must not invalidate successfully loaded provider settings");
     assert.equal(context.codexPlusBackendSettingsLoaded, true);
     assert.equal(context.codexPlusBackendSettings.activeRelayCodexProvider, "deepseek");

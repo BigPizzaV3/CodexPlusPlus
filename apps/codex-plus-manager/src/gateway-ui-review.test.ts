@@ -110,7 +110,7 @@ test("总览：读取中、空池、全部关闭分开显示；最近请求没�
   const hub = read("HubOverview.tsx");
   assert.match(hub, /poolState === "loading" \? <p className="hub-empty">\{t\("读取中…"\)\}<\/p>/);
   assert.match(hub, /poolState === "allOff"/);
-  assert.match(hub, /: t\("正在读取网关状态…"\)/);
+  assert.match(hub, /\? t\("正在读取网关状态…"\)/);
   const matrix = read("GatewayModelMatrix.tsx");
   assert.match(matrix, /\{!payload \? <div className="gw-empty">\{t\("正在读取…"\)\}<\/div> : null\}/);
   assert.match(matrix, /payload\.pool\.length \? t\("供应商都已关闭"\)/);
@@ -223,7 +223,7 @@ test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思
 test("用量与请求日志并成一页：两个页签各是一条路由，统计表点一行跳到请求并筛选", () => {
   const app = read("App.tsx");
   assert.match(app, /route === "gatewayUsage" \|\| route === "requestLog" \? <UsageTabs onChange=\{\(next\) => void navigate\(next\)\} value=\{route\} \/> : null/);
-  assert.match(app, /const selected = route === item\.id \|\| navAliasRoute\[route\] === item\.id;/, "在请求页签时侧栏「用量」也是选中");
+  assert.match(app, /const selected = route === item\.id \|\| navAliasRoute\[route\] === item\.id \|\| navParentRoute\[route\] === item\.id;/, "在请求页签时侧栏「用量」也是选中；挂在别的入口下的页面跟着上级入口选中");
   assert.match(app, /useEffect\(\(\) => onOpenRequestLog\(\(focus\) => \{/);
   assert.match(read("GatewayUsage.tsx"), /onClick=\{\(\) => openRequestLog\(split === "agent"/);
   assert.match(read("GatewayUsage.tsx"), /\{ relayId: group\.key, relayLabel: maskAccountName\(group\.label\), range \}/, "按供应商 id 精确筛，时间段跟着统计页");

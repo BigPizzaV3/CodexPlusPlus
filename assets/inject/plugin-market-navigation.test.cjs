@@ -68,8 +68,10 @@ function fixture(layout = "sidebar") {
   const anchor = nav.appendChild(new Element("button", { "data-sidebar-destination": "builtin:home", "aria-label": "Home" }));
   const sidebarAnchor = nav.appendChild(new Element("div", { id: "codex-plus-sidebar-nav" }));
   const calls = [];
+  let railRefreshes = 0;
   const extension = node => !!node?.closest('[data-codex-plus-ext], [data-codex-plus-rail], .registered-extension');
-  const context = vm.createContext({ document, window: {}, Element, HTMLElement: Element,
+  // 注入代次：入口按钮记下建它的代次，同一代复用、更新一代遇到旧代按钮就重建（40-backend-settings.js）。
+  const context = vm.createContext({ document, window: { __codexPlusBackendGeneration: 1 }, codexPlusBackendGeneration: 1, Element, HTMLElement: Element,
     codexPlusSidebarPluginMarketId: "codex-plus-sidebar-plugin-market", codexPlusRailPluginMarketId: "codex-plus-rail-plugin-market",
     codexPlusSidebarNavId: "codex-plus-sidebar-nav", codexPlusMenuId: "codex-plus-menu", codexPlusPageClass: "codex-plus-page",
     codexPlusRailNavId: "codex-plus-rail-nav", codexPlusRailExtensionsId: "codex-plus-rail-extensions", codexPlusRailSponsorId: "codex-plus-rail-sponsor",
@@ -78,6 +80,9 @@ function fixture(layout = "sidebar") {
     codexPlusBackendStatus: { status: "ok" }, codexPlusActiveEntry: () => "", setCodexPlusSidebarNavActive() {},
     closeCodexPlusPage() {}, closeCodexPlusPageAfterNativeNavigation() {}, clearPluginMarketplaceQueryCache() {},
     openCodexPlusPage() {}, openCodexPlusExtensions() {}, openCodexPlusSponsor() {},
+    // 拓展的图标栏入口随内置入口一起补画，这里只记次数。
+    refreshCodexPlusRailNavigation: () => { railRefreshes += 1; },
+    attachCodexPlusRailTooltip() {},
     markCodexPlusExtensionNode: (node, owner) => node.setAttribute("data-codex-plus-ext", owner),
     isExtensionUiNode: extension,
     visibleElement: node => node.isConnected && node.visible,
@@ -88,7 +93,7 @@ function fixture(layout = "sidebar") {
   });
   const functions = [
     extract(adapter, "codexPlusNativePluginNavigationEntry"), extract(adapter, "openCodexPlusNativePluginMarket"),
-    ...["codexPlusRailTemplateButton", "codexPlusRailPrimaryAnchor", "createCodexPlusRailButton", "installCodexPlusRailNavigation", "installCodexPlusSidebarNavigation", "detachCodexPlusSidebarNavigation", "removeCodexPlusRailNavigation"].map(name => extract(navigation, name)),
+    ...["codexPlusRailTemplateButton", "codexPlusRailPrimaryAnchor", "createCodexPlusRailButton", "installCodexPlusRailNavigation", "installCodexPlusSidebarNavigation", "detachCodexPlusSidebarNavigation", "removeCodexPlusRailNavigation", "codexPlusNavEntryReusable"].map(name => extract(navigation, name)),
     extract(entryNavigation, "installCodexPlusNavigationEntries"),
     ...["scanRelevantSelector", "nodeSelfOrAncestorMatchesScanRelevance", "isScanRelevantNode", "isChatContentMutation", "shouldScheduleScan"].map(name => extract(scheduler, name)),
   ].join("\n");
@@ -104,7 +109,7 @@ function fixture(layout = "sidebar") {
     wrapper.appendChild(new Element("button", { "aria-label": "Codex 插件市场" }));
     return wrapper;
   };
-  return { document, nav, context, calls, install, fallback, native, legacy };
+  return { document, nav, context, calls, install, fallback, native, legacy, railRefreshes: () => railRefreshes };
 }
 
 for (const layout of ["sidebar", "rail"]) {
@@ -183,6 +188,7 @@ test("classic navigation without destination attributes recognizes Chinese and E
 
 test("native rail mutations schedule reconciliation while owned fallback writes stay ignored", () => {
   const f = fixture("rail"); f.install();
+  assert.equal(f.railRefreshes(), 1, "装上内置 rail 入口时一并补画拓展入口");
   const stale = f.legacy();
   assert.equal(f.context.shouldScheduleScan([{ target: f.nav, addedNodes: [stale], removedNodes: [] }]), false);
   f.install(); assert.equal(stale.isConnected, false);

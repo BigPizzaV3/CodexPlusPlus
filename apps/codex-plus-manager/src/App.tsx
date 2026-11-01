@@ -95,11 +95,13 @@ import {
   TriangleAlert,
   CircleX,
   X,
+  Upload,
   type LucideIcon,
 } from "lucide-react";
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
 import { PRESETS, type ProviderPreset } from "./presets";
 import { createPortal } from "react-dom";
+import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
@@ -114,9 +116,17 @@ import { AgentCachePanel } from "./agent-cache";
 import { rebaseSettingsEdits } from "./settings-rebase";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
+import { DshPluginsPanel } from "./DshPluginsPanel";
+import { CommunityExtensionsPanel, type CommunitySort } from "./CommunityExtensionsPanel";
+import { ExtensionCard, githubAvatar } from "./ExtensionCard";
+import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
+import { ExtensionPublishDialog } from "./ExtensionPublishDialog";
+import { MyPublishedPanel } from "./MyPublishedPanel";
 import { SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
+import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
+import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
@@ -131,6 +141,9 @@ import { agentTabGroups, agentTarget } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
+import { AgentFocusDialog } from "./AgentFocusDialog";
+import { agentVisible, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
+import { needAgentFocusPrompt, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { shouldShowTour, TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
@@ -139,25 +152,29 @@ import { PluginMarketScreen } from "./PluginMarketScreen";
 import { defaultMarketSort, localScriptState, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
 import { ReleaseNotes } from "./ReleaseNotes";
 import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
-import { McpPage, PageHeader } from "./ManagementPages";
+import { McpPage, Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { SkillsPage } from "./ManagementExtra";
 import { ProjectSessionPage } from "./ProjectSessionPage";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import {
+  builtinSettingValue,
   enhancementGroup,
   enhancementGroupAnchorId,
   enhancementItem,
   enhancementPlatformFromUserAgent,
   isEnhancementItemMasterGated,
-  managerGeneralGroups,
-  managerGroupItems,
+  managerBuiltinCards,
+  managerBuiltinGroups,
   managerStandaloneGroup,
+  withBuiltinSetting,
+  type BuiltinExtensionCard,
   type EnhancementSettingItem,
 } from "./enhancement-catalog";
 import { DEFAULT_AUTO_COMPACT_PERCENT, autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
 import { agentPetSettingsIssue, defaultAgentPetSettings, isAgentPetWhaleWidgetActive, normalizeAgentPetSettings, type AgentPetIssue, type AgentPetSettings } from "./agent-pet-settings";
 import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceSettings } from "./whale-settings";
 import { AgentPetPage } from "./AgentPetPage";
+import { AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig, agentPetStateFromExtension, type AgentPetExtensionState } from "./agent-pet-extension";
 import {
   applyDictationPreset,
   defaultDictationSettings,
@@ -288,6 +305,16 @@ import {
 } from "./dream-skin";
 import { subscribeLanguage, getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import { vlmTestTranslation } from "./vlm-test-translation";
+import {
+  applyResolvedTheme,
+  loadThemePreference,
+  resolveTheme,
+  storeThemePreference,
+  systemPrefersDark,
+  toggledThemePreference,
+  watchSystemTheme,
+  type ThemePreference,
+} from "./theme-mode";
 import {
   multiLaunchInstanceFailure,
   multiLaunchInstanceLabel as formatMultiLaunchInstanceLabel,
@@ -428,8 +455,8 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppSessionDeleteSkipConfirm: boolean;
   codexAppSideChatSave: boolean;
   codexAppMarkdownExport: boolean;
-  codexAppSessionShare: boolean;
   codexAppUsageStatusLine: boolean;
+  codexAppProxyRequestStatus: boolean;
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
   codexAppTypingEffect: TypingEffect;
@@ -495,6 +522,8 @@ type BackendSettings = WhaleBalanceSettings & {
   weixinConnectRouteTag: string;
   weixinConnectWorkDir: string;
   weixinConnectModel: string;
+  weixinConnectReasoningEffort: string;
+  weixinConnectProjectId: string;
   weixinConnectSandbox: "read-only" | "workspace-write" | "danger-full-access";
   weixinConnectCodexPath: string;
   relayBaseUrl: string;
@@ -683,13 +712,43 @@ const emptyContextSelection = (): RelayContextSelection => ({
   plugins: [],
 });
 
+
+type BuiltinExtension = {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  group?: string;
+  enabled: boolean;
+  replacedBy?: string | null;
+  /** 启停读写的设置字段；没有时启停记在用户脚本配置里。 */
+  setting?: string | null;
+  params?: string[];
+  restartRequired?: boolean;
+  replaceable?: boolean;
+};
+
 type UserScriptInventory = {
   enabled?: boolean;
   skip_next_start?: boolean;
+  builtins?: BuiltinExtension[];
   scripts?: Array<{
     key: string;
     name: string;
     source: string;
+    kind?: "script" | "package";
+    package?: {
+      id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
+      configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>; backend?: boolean;
+      gatewayRequest?: number; gatewayResponse?: number; gatewayError?: number; services?: string[];
+      providers?: Array<{ id: string; name: string; models: string[] }>;
+      toolPipeline?: { preExecute?: number; execute?: number; postExecute?: number }; skippedAssets?: string[];
+      locales?: Record<string, { title?: string | null; description?: string | null }>;
+      http?: boolean; schedules?: Array<{ method: string; everyMinutes?: number | null; at?: string | null }>;
+      codex?: { skills?: string[]; agents?: string[]; mcpServers?: string[]; instructions?: boolean; prompts?: string[]; resources?: string[] };
+      /** 管理器面板（codexpp.json 的 manager）：可以进侧栏（nav）、顶替内置页面（replaces）、读只读数据（data）。 */
+      managerPage?: ManagerPageSummary | null;
+    } | null;
     enabled: boolean;
     status: string;
     error: string;
@@ -790,6 +849,22 @@ type WeixinQrResult = CommandResult<{
   linkedUserId: string;
   hasToken: boolean;
 }>;
+
+type WeixinConnectCatalog = {
+  status: string;
+  message?: string;
+  model?: string;
+  default_model?: string;
+  models: string[];
+  modelMetadata?: Record<string, {
+    displayName?: string;
+    supportedReasoningEfforts?: { reasoningEffort: string; description?: string }[];
+  }>;
+};
+
+type WeixinConnectProjects = {
+  projects: { id: string; name: string; roots?: { path: string }[] }[];
+};
 
 type DesktopCodexCliResult = CommandResult<{
   path: string | null;
@@ -1203,6 +1278,8 @@ type ScriptMarketItem = {
   tags: string[];
   homepage: string;
   script_url: string;
+  /// 可选图标地址，清单多数条目没有。
+  icon?: string;
   /// 该脚本最近更新时间（ISO），清单逐条提供；老清单没有时为空（#2781）。
   updatedAt?: string;
   installed: boolean;
@@ -1217,6 +1294,9 @@ type ScriptMarketResult = CommandResult<{
     indexUrl: string;
     updatedAt: string;
     scripts: ScriptMarketItem[];
+    /** 精选拓展包（含官方），锁定到审核过的提交。老版本后端没有这个字段。 */
+    packages?: CuratedPackage[];
+    blockedInstalled?: BlockedInstall[];
   };
   user_scripts: UserScriptInventory;
 }>;
@@ -1295,7 +1375,7 @@ type ToolId = string;
 /** Codex++ 自己的 logo：与应用图标（src-tauri/icons/icon.png）同一张图。 */
 const APP_LOGO_URL = new URL("./assets/codex-plus-logo.png", import.meta.url).href;
 
-type Route = "overview" | "relay" | "multiLaunch" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "agentPet" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings";
+type Route = "overview" | "relay" | "multiLaunch" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "agentPet" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings" | "extension";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -1320,9 +1400,11 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "context", label: "MCP", icon: Network },
   { id: "skills", label: "Skills", icon: BookOpen },
   { id: "weixin", get label() { return t("微信连接"); }, icon: ScanLine, tool: "codex" },
-  { id: "enhance", get label() { return t("增强"); }, icon: Hammer, tool: "codex" },
+  { id: "enhance", get label() { return t("内置拓展"); }, icon: Hammer, tool: "codex" },
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
-  { id: "userScripts", get label() { return t("脚本"); }, icon: FileCode2, tool: "codex" },
+  // 拓展注入的是 Codex 页面（tool 保持 codex，顶栏才有重启 Codex），但入口放在侧栏「全局管理」，
+  // 和 MCP、Skills 并列，不藏在 Codex 的页签里。
+  { id: "userScripts", get label() { return t("万物皆拓展"); }, icon: FileCode2, tool: "codex" },
   { id: "pluginMarket", get label() { return t("插件市场"); }, icon: Store, tool: "codex" },
   { id: "recommendations", get label() { return t("推荐内容"); }, icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
@@ -1348,6 +1430,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "agentSettings", get label() { return t("设置"); }, icon: Settings, tool: "codex" },
   { id: "relayEnvironment", get label() { return t("旧版代理设置"); }, icon: ShieldCheck, tool: "codex" },
   { id: "requestLog", get label() { return t("请求日志"); }, icon: List },
+  // 拓展贡献的管理器页面（codexpp.json 的 manager.nav）：侧栏入口按拓展列出，这里只是它们共用的路由。
+  { id: "extension", get label() { return t("拓展页面"); }, icon: AppWindow },
 ];
 
 /**
@@ -1357,7 +1441,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ id: string; routes: Route[] }> = [
   { id: "overview", routes: ["overview"] },
   { id: "providers", routes: ["relay", "relayEnvironment", "multiLaunch"] },
-  { id: "enhance", routes: ["claude", "enhance", "dreamSkin", "userScripts", "pluginMarket", "weixin"] },
+  { id: "enhance", routes: ["claude", "enhance", "dreamSkin", "pluginMarket", "weixin"] },
   // 安装维护并进了设置页（排在设置下方），不再单独占一个页签；"maintenance" 路由保留为设置页的别名。
   { id: "settings", routes: ["agentSettings"] },
 ];
@@ -1372,16 +1456,39 @@ const lastAgentRoute = new Map<string, Route>();
  * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
  * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
  */
-const globalNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
+const globalNavigationRoutes: Route[] = ["extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentPet", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
 /** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
 const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
-/** 侧栏「全局管理」分组：同时管理所有 Agent 的请求日志、会话、MCP 与 Skills。 */
-const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "context", "skills"];
+/** 侧栏「全局管理」分组：万物皆拓展置顶，其后是用量、会话、MCP、Skills。 */
+const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "sessions", "context", "skills"];
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
-const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentPet", "agentCollaboration", "agentCache"];
+// Agent 桌宠是官方拓展包，设置页从「万物皆拓展 → 本地拓展」里它那一行的「设置」打开，不再单占侧栏入口。
+const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentCollaboration", "agentCache"];
+/** 不在侧栏、挂在别的入口下的页面：侧栏高亮与面包屑跟着上级入口。 */
+const navParentRoute: Partial<Record<Route, Route>> = { agentPet: "userScripts" };
+/**
+ * 只在管理其他 Agent 时才有用的页面：只管理 Codex 时不进侧栏和命令面板。
+ * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
+ */
+const multiAgentRoutes = new Set<Route>(["agentCollaboration", "computerUse"]);
+/**
+ * 和供应商有关的页面：只用增强功能（供应商交给别的工具）时全部隐藏。
+ * 网关一整组、用量与请求日志、旧版供应商配置 / 代理设置，以及按供应商多开。
+ */
+const providerRoutes = new Set<Route>(["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "relayEnvironment", "multiLaunch"]);
+/** 当前使用模式下这一页是否显示：侧栏、页签、命令面板都按它过滤，停在隐藏页面上时自动离开。 */
+const routeVisible = (focus: AgentFocus, routeId: Route) =>
+  !(singleAgent(focus) && multiAgentRoutes.has(routeId)) && !(providersHidden(focus) && providerRoutes.has(routeId));
+const visibleRoutes = (focus: AgentFocus, list: Route[]) => list.filter((routeId) => routeVisible(focus, routeId));
+/** 设置页里「使用模式」一行的说明。 */
+function agentFocusDescription(focus: AgentFocus): string {
+  if (focus === "codex") return t("只管理 Codex：Claude Code、Grok 等其他 Agent 的内容已隐藏，网关只给 Codex 用。已接入网关的其他 Agent 照常工作。");
+  if (focus === "enhance") return t("只用增强功能：供应商、网关和用量已隐藏，供应商配置切换已关闭，Codex++ 不再改 Codex 的 config.toml / auth.json。");
+  return t("全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 或只用增强功能的话，可以切换模式隐藏用不到的内容。");
+}
 /** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
 const gatewayTabByRoute: Partial<Record<Route, GatewayTab>> = {
   gateway: "agents",
@@ -1398,6 +1505,14 @@ const gatewayRouteByTab = { ...Object.fromEntries(Object.entries(gatewayTabByRou
  * 要么不接入、照它自己的配置文件直连。
  */
 const agentHomeRoute: Record<string, Route> = { codex: "overview", claude: "claude", grok: "overview" };
+/**
+ * 侧栏 Agent 列表里不显示的工具。Grok 在 Codex++ 里没有专属的增强页面，只经网关接入，
+ * 在「Agent 接入」里管理；请求日志、MCP 等跨 Agent 的页面照常支持它。
+ */
+const hiddenSidebarTools = new Set<string>(["grok"]);
+/** 上次停在被隐藏的工具上时回到 Codex，免得侧栏没有任何 Agent 处于选中态。 */
+const visibleActiveTool = (toolId: string | null | undefined) =>
+  toolId && !hiddenSidebarTools.has(toolId) ? toolId : "codex";
 /** 轻量检查 Codex 进程是否还在的间隔（只在管理器窗口可见时查）。 */
 const codexRunningPollMs = 5_000;
 const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "overview");
@@ -1428,8 +1543,8 @@ const defaultSettings: BackendSettings = {
   codexAppSessionDeleteSkipConfirm: false,
   codexAppSideChatSave: false,
   codexAppMarkdownExport: true,
-  codexAppSessionShare: true,
   codexAppUsageStatusLine: true,
+  codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
   codexAppTypingEffect: "off",
@@ -1487,6 +1602,8 @@ const defaultSettings: BackendSettings = {
   weixinConnectRouteTag: "",
   weixinConnectWorkDir: "",
   weixinConnectModel: "",
+  weixinConnectReasoningEffort: "",
+  weixinConnectProjectId: "",
   weixinConnectSandbox: "read-only",
   weixinConnectCodexPath: "",
   relayBaseUrl: "",
@@ -1541,7 +1658,9 @@ const defaultSettings: BackendSettings = {
 
 export function App() {
   useSyncExternalStore(subscribeLanguage, getLanguage, getLanguage);
-  const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => loadThemePreference());
+  const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
+  const theme: Theme = resolveTheme(themePreference, systemDark);
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
   /** 合并后的「设置」页里要滚到的分组（原来跳「关于」的地方滚到版本与更新、日志）。 */
   const [settingsFocus, setSettingsFocus] = useState<string | null>(() => initialSettingsFocus());
@@ -1600,7 +1719,18 @@ export function App() {
   const dreamSkinPendingActionRef = useRef<(() => void) | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** 正在看的拓展页面（route === "extension" 时）。 */
+  const [extensionPageKey, setExtensionPageKey] = useState<string | null>(null);
+  /** 被拓展顶替、但用户点了「查看内置页面」的路由。 */
+  const [builtinPagesShown, setBuiltinPagesShown] = useState<Set<string>>(() => new Set());
   const [tourOpen, setTourOpen] = useState(() => initialTourOpen());
+  // 使用模式（只管理 Codex / 全部功能）：没问过就先问，问完再进首次引导（引导按模式换说法）。
+  const agentFocus = useAgentFocus();
+  const [agentFocusOpen, setAgentFocusOpen] = useState(needAgentFocusPrompt);
+  const closeAgentFocus = useCallback((mode: FocusMode) => {
+    saveAgentFocus(mode);
+    setAgentFocusOpen(false);
+  }, []);
   const closeTour = useCallback(() => {
     // 看完或跳过都记下来，下次不再自动弹出；设置页里可以重新打开。
     try { window.localStorage.setItem(TOUR_STORAGE_KEY, String(TOUR_VERSION)); } catch { /* 存不了就只影响本次 */ }
@@ -1713,8 +1843,8 @@ export function App() {
   const refreshTools = async (silent = true) => {
     const result = await run(() => call<ToolsResult>("list_tools"));
     if (result) {
-      setToolEntries(result.tools ?? []);
-      setActiveTool(result.activeTool || "codex");
+      setToolEntries((result.tools ?? []).filter((tool) => !hiddenSidebarTools.has(tool.id)));
+      setActiveTool(visibleActiveTool(result.activeTool));
       if (!silent) showResultNotice(t("工具列表"), result, { silentSuccess: true });
     }
     return result;
@@ -1804,7 +1934,7 @@ export function App() {
       const normalized = normalizeSettings(result.settings);
       setSettingsForm(normalized);
       // 侧栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
-      setActiveTool(normalized.activeTool || "codex");
+      setActiveTool(visibleActiveTool(normalized.activeTool));
       setLaunchForm((current) => ({
         ...current,
         appPath: current.appPath || result.settings.codexAppPath || "",
@@ -1848,7 +1978,7 @@ export function App() {
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("脚本"), result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("拓展"), result, { silentSuccess: true });
     }
   };
 
@@ -1861,12 +1991,12 @@ export function App() {
     return result;
   };
 
-  const reloadUserScripts = async () => {
+  const reloadUserScripts = async (silent = false) => {
     const result = await run(() => call<SettingsResult>("reload_user_scripts"));
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
+      showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
     }
   };
 
@@ -1875,7 +2005,7 @@ export function App() {
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      showResultNotice(t("脚本"), result);
+      showResultNotice(t("拓展"), result);
     }
   };
 
@@ -1884,7 +2014,7 @@ export function App() {
     if (!result) return;
     setSettings(result);
     setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-    showResultNotice(t("本地脚本"), result);
+    showResultNotice(t("本地拓展"), result);
     if (isSuccessStatus(result.status)) await reloadUserScripts();
   };
 
@@ -1893,15 +2023,34 @@ export function App() {
     if (!result) return;
     setSettings(result);
     setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-    showResultNotice(t("本地脚本"), result);
+    showResultNotice(t("本地拓展"), result);
   };
 
+  /// 保存拓展配置后热重载，页面侧的 ctx.config 才会读到新值。
+  const setExtensionConfig = async (key: string, values: Record<string, unknown>, options: { silent?: boolean } = {}) => {
+    const result = await run(() => call<SettingsResult>("set_extension_config", { key, values }));
+    if (!result) return false;
+    setSettings(result);
+    // 自动保存（Agent 桌宠页）成功时不弹提示，失败照常提示。
+    showResultNotice(t("本地拓展"), result, { silentSuccess: options.silent === true });
+    if (!isSuccessStatus(result.status)) return false;
+    // 拓展用 ctx.onConfigUpdate 接住新配置时原地生效，不必整体热重载。
+    const live = await call<string>("update_extension_config_live", { key }).catch(() => "reload");
+    if (live !== "applied") await reloadUserScripts(options.silent === true);
+    return true;
+  };
+
+  /// 拓展管理器面板里的 codexPlusManager.toast()：用拓展名作标题的普通提示。
+  const showExtensionNotice = (title: string, message: string) => showNotice(title, message, "ok");
+
+  /// 启停单个拓展后热重载，Codex 页面才会真的装上 / 卸下它（与整体开关、保存配置一致）。
   const setUserScriptEnabled = async (key: string, enabled: boolean) => {
     const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled }));
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
+      if (isSuccessStatus(result.status)) await reloadUserScripts();
+      else showResultNotice(t("本地拓展"), result);
       await refreshUserScriptInventory();
     }
   };
@@ -1914,7 +2063,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
+      showResultNotice(t("本地拓展"), result);
       await refreshUserScriptInventory();
     }
   };
@@ -3152,7 +3301,9 @@ export function App() {
         setSettings(result);
         setSettingsForm(normalizeSettings(result.settings));
       }
-      showNotice(t("设置保存"), result.message, result.status);
+      showNotice(t("设置保存"), route === "weixin" && result.status === "ok"
+        ? t("已保存，下一条微信消息生效。")
+        : result.message, result.status);
     }
   };
 
@@ -4158,11 +4309,15 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [route]);
 
+  useEffect(() => watchSystemTheme(setSystemDark), []);
+
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
-    document.documentElement.classList.toggle("light", theme === "light");
-    window.localStorage.setItem("codex-plus-theme", theme);
+    applyResolvedTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    storeThemePreference(themePreference);
+  }, [themePreference]);
 
   useEffect(() => {
     const refresh = () => { void refreshOverview(true); };
@@ -4462,6 +4617,8 @@ export function App() {
       setUserScriptsEnabled,
       setUserScriptsSkipNextStart,
       setUserScriptEnabled,
+      setExtensionConfig,
+      showExtensionNotice,
       deleteUserScript,
       refreshLocalSessions,
       listProjectSessions,
@@ -4507,10 +4664,63 @@ export function App() {
       refreshAutoTakeover: () => refreshAutoTakeover(false),
       takeOverNow: () => runAutoTakeoverCommand("take_over_codex_now"),
       pauseAutoTakeover: () => runAutoTakeoverCommand("pause_auto_takeover_for_instance"),
-      toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+      toggleTheme: () => setThemePreference(toggledThemePreference(theme)),
+      setThemePreference,
     }),
     [route, launchForm, settingsForm, settings, overview, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, getLanguage()],
   );
+  // 拓展贡献的管理器页面：侧栏入口与对内置页面的顶替（见 extension-manager-pages.ts）。
+  const extensionPages = useMemo(() => managerExtensionPages(settings?.user_scripts), [settings?.user_scripts]);
+  const pageOverrides = useMemo(() => managerPageOverrides(extensionPages), [extensionPages]);
+  const openExtensionPage = (key: string) => {
+    setExtensionPageKey(key);
+    void navigate("extension");
+  };
+  /** 拓展页面里 codexPlusManager.navigate(target)：内置页面的路由 id，或 ext:<拓展 key>。 */
+  const navigateFromExtension = (target: string): boolean => {
+    if (target.startsWith("ext:")) {
+      const key = target.slice(4);
+      if (!extensionPages.some((page) => page.key === key)) return false;
+      openExtensionPage(key);
+      return true;
+    }
+    if (target === "extension" || !routes.some((item) => item.id === target)) return false;
+    void navigate(target as Route);
+    return true;
+  };
+  const activeExtensionPage = route === "extension" ? extensionPages.find((page) => page.key === extensionPageKey) ?? null : null;
+  const overridingPage = route !== "extension" && !builtinPagesShown.has(route) ? pageOverrides[route] ?? null : null;
+  const shownExtensionPage = activeExtensionPage ?? overridingPage;
+  const renderExtensionPage = (page: ManagerExtensionPage) => {
+    const script = settings?.user_scripts?.scripts?.find((item) => item.key === page.key);
+    return (
+      <ExtensionManagerPanel
+        key={page.key}
+        scriptKey={page.key}
+        config={script?.package?.config ?? {}}
+        onSaveConfig={(values) => actions.setExtensionConfig(page.key, values)}
+        onToast={(message) => actions.showExtensionNotice(page.title, message)}
+        dataSources={page.data}
+        onNavigate={navigateFromExtension}
+        fullPage
+      />
+    );
+  };
+  // 被顶替的页面：上方说明由哪个拓展提供，可以切回内置页面；切回后也能再换回拓展页面。
+  const extensionPageView = shownExtensionPage ? (
+    <div className="extension-page-host">
+      {overridingPage ? (
+        <div className="extension-page-banner">
+          <span>{tf("此页由拓展「{0}」提供", [overridingPage.title])}</span>
+          <Button size="sm" variant="ghost" onClick={() => setBuiltinPagesShown((current) => new Set(current).add(route))}>{t("查看内置页面")}</Button>
+        </div>
+      ) : null}
+      {renderExtensionPage(shownExtensionPage)}
+    </div>
+  ) : route === "extension" ? (
+    <div className="empty">{t("这个拓展页面已经停用或不存在。")}</div>
+  ) : null;
+  const restorableOverride = route !== "extension" && builtinPagesShown.has(route) ? pageOverrides[route] ?? null : null;
   const isGlobalPage = globalNavigationRoutes.includes(route);
   const isManagementScreen = route === "relay" || route === "multiLaunch" || route === "sessions" || route === "context" || route === "skills";
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
@@ -4548,14 +4758,46 @@ export function App() {
   // 网关、全局管理、工具类页面和 Claude Code / Grok 的页面都不算（Codex++ 不只服务 Codex）。
   const onCodexPage = routeTool(route) === "codex" || (route === "overview" && activeTool === "codex");
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
+  // 没勾选的 Agent 不进侧栏和命令面板；只影响显示，它的配置和网关接入照旧。
+  const shownTools = toolEntries.filter((entry) => agentVisible(agentFocus, entry.id));
+  const soloAgent = singleAgent(agentFocus);
+  const shownSessionTab: SessionTab = soloAgent === "codex" ? "codex" : sessionTab;
+  // 侧栏聚焦的 Agent 被隐藏了：换到第一个还显示的 Agent，免得停在一个看不见的 Agent 的页面上。
+  const fallbackTool = shownTools.find((entry) => entry.switchable)?.id;
+  useEffect(() => {
+    if (agentFocus && fallbackTool && !agentVisible(agentFocus, activeTool)) void switchTool(fallbackTool);
+    // switchTool 每次渲染都是新函数，只在选择或聚焦变化时检查。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentFocus, activeTool, fallbackTool]);
+  // 停在当前模式下隐藏的页面上（启动默认的网关总览、托盘跳过来的请求日志等）：回到当前 Agent 的落脚页。
+  useEffect(() => {
+    if (!routeVisible(agentFocus, route)) void navigate(agentHomeRoute[activeTool] ?? "overview");
+    // navigate 每次渲染都是新函数，只在模式或页面变化时检查。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentFocus, route, activeTool]);
+  // 只用增强功能：供应商交给别的工具，关掉供应商配置切换总开关，Codex++ 不再写 config.toml / auth.json。
+  // 等设置真正读到再改（启动时表单还是默认值，直接保存会盖掉用户的设置）；切回别的模式时不自动打开。
+  const relayOffRequested = useRef(false);
+  useEffect(() => {
+    if (agentFocus !== "enhance") {
+      relayOffRequested.current = false;
+      return;
+    }
+    if (!settings || !settings.settings.relayProfilesEnabled || relayOffRequested.current) return;
+    relayOffRequested.current = true;
+    void saveSettingsValue({ ...settings.settings, relayProfilesEnabled: false }, true).then((saved) => {
+      if (saved) showNotice(t("只用增强功能"), t("已关闭供应商配置切换：Codex++ 不再改 Codex 的 config.toml / auth.json。需要时可以在「全部功能」模式的供应商页重新打开。"), "ok");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentFocus, settings]);
 
   const isGatewayPage = gatewayNavigationRoutes.includes(route);
-  const crumbGroup = isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
+  const crumbGroup = navParentRoute[route] ? routeTitle(navParentRoute[route]!) : isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
   // ⌘K：页面、各 Agent 的页面和常用操作。非当前 Agent 的页面会先切到那个 Agent。
   const paletteCommands: PaletteCommand[] = [];
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
     const item = routes.find((candidate) => candidate.id === routeId);
-    if (!item) return null;
+    if (!item || !routeVisible(agentFocus, routeId)) return null;
     const Icon = item.icon;
     return { id: `${group}:${routeId}`, group, label: item.label, keywords: `${routeId} ${keywords}`, icon: <Icon className="h-4 w-4" />, run };
   };
@@ -4563,10 +4805,18 @@ export function App() {
   gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("网关"), () => void navigate(routeId), "gateway")));
   managementNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("全局管理"), () => void navigate(routeId))));
   pushCommand(routeCommand("requestLog", t("全局管理"), () => void navigate("requestLog"), "usage requests"));
-  for (const tool of toolEntries.filter((entry) => entry.switchable)) {
+  for (const tool of shownTools.filter((entry) => entry.switchable)) {
     agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
   }
   [...toolNavigationRoutes, "settings" as Route].forEach((routeId) => pushCommand(routeCommand(routeId, t("工具"), () => void navigate(routeId))));
+  extensionPages.filter((page) => page.nav).forEach((page) => paletteCommands.push({
+    id: `extension:${page.key}`,
+    group: t("拓展"),
+    label: page.title,
+    keywords: `extension ${page.key}`,
+    icon: <AppWindow className="h-4 w-4" />,
+    run: () => openExtensionPage(page.key),
+  }));
   paletteCommands.push(
     {
       id: "action:codex",
@@ -4583,13 +4833,18 @@ export function App() {
   return (
     <div className={`shell ${theme}`}>
       <AppSidebar
-        tools={toolEntries}
+        tools={shownTools}
+        soloAgent={soloAgent}
+        focus={agentFocus}
         activeTool={activeTool}
         route={route}
         theme={theme}
         version={overview?.current_version ?? update?.currentVersion ?? ""}
         onOpenAgent={(toolId, destination) => void switchTool(toolId, destination ?? agentEntryRoute(toolId))}
         onNavigate={(next) => void navigate(next)}
+        extensionPages={extensionPages}
+        activeExtensionKey={route === "extension" ? extensionPageKey : null}
+        onOpenExtensionPage={openExtensionPage}
         onToggleTheme={actions.toggleTheme}
         onOpenPalette={() => setPaletteOpen(true)}
         pendingUpdateVersion={update?.updateAvailable && update.latestVersion ? update.latestVersion : null}
@@ -4597,19 +4852,22 @@ export function App() {
         codexRun={{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch.unavailableReason, onStart: codexLaunch.onLaunch, onStop: () => void actions.stopCodex() }}
       />
       <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
-      {tourOpen ? <OnboardingTour onClose={closeTour} /> : null}
+      {agentFocusOpen ? <AgentFocusDialog initial={agentFocus} onDone={closeAgentFocus} /> : null}
+      {tourOpen && !agentFocusOpen ? <OnboardingTour focus={agentFocus} onClose={closeTour} /> : null}
       <main className="workspace">
         <header className="topbar" key={`topbar-${route}`}>
           <div className="topbar-heading">
             <div className="topbar-title">
               <span className="topbar-crumb">{crumbGroup}</span>
               <ChevronRight aria-hidden="true" className="topbar-crumb-sep" />
-              <h1>{route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : routeTitle(navAliasRoute[route] ?? route)}</h1>
+              <h1>{route === "extension" ? activeExtensionPage?.title ?? t("拓展页面") : route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : soloAgent && route === "gateway" ? tf("{0} 接入", [agentName(soloAgent)]) : routeTitle(navAliasRoute[route] ?? route)}</h1>
             </div>
             <p>
-              {route === "agentSettings"
+              {route === "extension"
+                ? tf("由拓展 {0} 提供", [String(extensionPageKey ?? "").replace(/^user:/, "")])
+                : route === "agentSettings"
                 ? tf("只作用于 {0}；界面主题、配置备份等整体设置在侧栏底部的齿轮里。", [activeToolName])
-                : routeSubtitle(navAliasRoute[route] ?? route)}
+                : routeSubtitle(navAliasRoute[route] ?? route, soloAgent)}
             </p>
           </div>
           <div className="topbar-actions">
@@ -4624,7 +4882,14 @@ export function App() {
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
           key={route}
         >
-          <AgentPageTabs activeTool={activeTool} onNavigate={(next) => void navigate(next)} route={route} />
+          <AgentPageTabs activeTool={activeTool} focus={agentFocus} onNavigate={(next) => void navigate(next)} route={route} />
+          {restorableOverride ? (
+            <div className="extension-page-banner">
+              <span>{tf("拓展「{0}」提供了这一页的替代页面", [restorableOverride.title])}</span>
+              <Button size="sm" variant="ghost" onClick={() => setBuiltinPagesShown((current) => { const next = new Set(current); next.delete(route); return next; })}>{t("使用拓展页面")}</Button>
+            </div>
+          ) : null}
+          {extensionPageView ?? (<>
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
@@ -4694,15 +4959,16 @@ export function App() {
             />
           ) : null}
           {route === "claude" ? <ClaudeLocalizationScreen /> : null}
-          {route === "sessions" ? <SessionAgentTabs onChange={setSessionTab} value={sessionTab} /> : null}
-          {route === "sessions" && sessionTab !== "codex" ? (
+          {/* 只管理 Codex 时没有 Agent 页签，直接是 Codex 的完整会话管理。 */}
+          {route === "sessions" && !soloAgent ? <SessionAgentTabs onChange={setSessionTab} value={sessionTab} /> : null}
+          {route === "sessions" && shownSessionTab !== "codex" ? (
             <div className="mg-page gateway-page">
               <div className="mg-content gw-content">
-                <SessionsView agent={sessionTab} notify={actions.showMessage} />
+                <SessionsView agent={shownSessionTab} notify={actions.showMessage} />
               </div>
             </div>
           ) : null}
-          {route === "sessions" && sessionTab === "codex" ? (
+          {route === "sessions" && shownSessionTab === "codex" ? (
             <ProjectSessionPage
               sessions={localSessions}
               onRefresh={async (offset) => { await actions.refreshLocalSessions(false, offset ?? 0); }}
@@ -4767,6 +5033,8 @@ export function App() {
               onTabChange={setEnhancementTab}
               form={settingsForm}
               onFormChange={setSettingsForm}
+              builtins={settings?.user_scripts?.builtins ?? []}
+              onNavigate={(target) => void navigate(target)}
               actions={actions}
             />
           ) : null}
@@ -4792,22 +5060,13 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "agentCollaboration" ? <AgentCollaborationPage /> : null}
           {route === "computerUse" ? <ComputerUsePage /> : null}
-          {route === "agentPet" ? (
-            <AgentPetPage
-              settings={settingsForm.agentPet}
-              onChange={(agentPet) => setSettingsForm((current) => ({ ...current, agentPet }))}
-              whaleBalance={settingsForm}
-              onWhaleBalanceChange={(patch) => setSettingsForm((current) => ({ ...current, ...patch }))}
-              whaleBalanceIssue={whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalizeWhaleBalanceSettings(settingsForm), isAgentPetWhaleWidgetActive(settingsForm.agentPet)))}
-              autoSave={<SettingsAutoSave dirty={settingsDirty} form={settingsForm} actions={actions} />}
-            />
-          ) : null}
+          {route === "agentPet" ? <AgentPetExtensionScreen inventory={settings?.user_scripts} actions={actions} /> : null}
           {/* 置顶推荐位只放在网关总览一处，内容与「推荐内容」页同源；各 Agent 的概览不再重复。 */}
           {route === "hub" ? <SponsorBoard ads={ads} actions={actions} /> : null}
           {route === "hub" ? (
@@ -4865,10 +5124,13 @@ export function App() {
                 <AppSettingsFocus focus={settingsFocus} onDone={() => setSettingsFocus(null)} />
                 <GlobalSettingsScreen
                   onOpenTour={() => setTourOpen(true)}
+                  agentFocus={agentFocus}
+                  onOpenAgentFocus={() => setAgentFocusOpen(true)}
                   dirty={settingsDirty}
                   form={settingsForm}
                   settings={settings}
                   theme={theme}
+                  themePreference={themePreference}
                   actions={actions}
                   onOpenAgentSettings={() => void (async () => {
                     if (activeTool !== "codex") await switchTool("codex");
@@ -4888,6 +5150,7 @@ export function App() {
               </div>
             </div>
           ) : null}
+          </>)}
         </section>
       </main>
       {updatePrompt ? (
@@ -5193,6 +5456,8 @@ type Actions = {
   setUserScriptsEnabled: (enabled: boolean) => Promise<void>;
   setUserScriptsSkipNextStart: (skip: boolean) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
+  setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean }) => Promise<boolean>;
+  showExtensionNotice: (title: string, message: string) => void;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
   listProjectSessions: (cwd: string) => Promise<LocalSession[]>;
@@ -5239,6 +5504,7 @@ type Actions = {
   takeOverNow: () => Promise<void>;
   pauseAutoTakeover: () => Promise<void>;
   toggleTheme: () => void;
+  setThemePreference: (preference: ThemePreference) => void;
   checkHealth: () => Promise<void>;
 };
 
@@ -5412,6 +5678,100 @@ function WeixinConnectScreen({
   onCopyQr: (url: string) => void;
 }) {
   const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [catalog, setCatalog] = useState<WeixinConnectCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState("");
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const [projects, setProjects] = useState<WeixinConnectProjects | null>(null);
+  const [projectsError, setProjectsError] = useState("");
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsRevision, setProjectsRevision] = useState(0);
+  const [resetPeerId, setResetPeerId] = useState("");
+  const [resetPending, setResetPending] = useState(false);
+  const [resetMessage, setResetMessage] = useState("");
+
+  useEffect(() => {
+    let disposed = false;
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      setCatalogLoading(true);
+      try {
+        const result = await invoke<WeixinConnectCatalog>("weixin_connect_catalog");
+        if (disposed) return;
+        if (result.status === "failed" || !Array.isArray(result.models)) {
+          throw new Error(result.message || t("读取模型目录失败。"));
+        }
+        setCatalog(result);
+        setCatalogError("");
+      } catch (error) {
+        if (!disposed) setCatalogError(String(error));
+      } finally {
+        inFlight = false;
+        if (!disposed) setCatalogLoading(false);
+      }
+    };
+    void refresh();
+    return () => {
+      disposed = true;
+    };
+  }, [catalogRevision]);
+
+  const projectCodexPath = form.weixinConnectCodexPath.trim();
+  const projectWorkDir = form.weixinConnectWorkDir.trim();
+  useEffect(() => {
+    let disposed = false;
+    let inFlight = false;
+    setProjects(null);
+    setProjectsError("");
+    if (!projectsRevision && !form.weixinConnectProjectId) {
+      setProjectsLoading(false);
+      return;
+    }
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      setProjectsLoading(true);
+      try {
+        const result = await invoke<WeixinConnectProjects>("weixin_connect_projects", {
+          codexPath: projectCodexPath,
+          workDir: projectWorkDir,
+        });
+        if (disposed) return;
+        if (!Array.isArray(result.projects)) throw new Error(t("读取项目列表失败。"));
+        setProjects(result);
+        setProjectsError("");
+      } catch (error) {
+        if (!disposed) setProjectsError(String(error));
+      } finally {
+        inFlight = false;
+        if (!disposed) setProjectsLoading(false);
+      }
+    };
+    // 输入目录或 CLI 路径时稍等，避免每个按键都启动一次项目查询。
+    const initialTimer = window.setTimeout(() => void refresh(), 350);
+    return () => {
+      disposed = true;
+      window.clearTimeout(initialTimer);
+    };
+  }, [projectCodexPath, projectWorkDir, projectsRevision]);
+
+  const models = catalog?.models ?? [];
+  const inheritedModel = catalog?.model || catalog?.default_model || "";
+  const effectiveModel = form.weixinConnectModel || inheritedModel;
+  const reasoningEfforts = Array.from(new Set(
+    (catalog?.modelMetadata?.[effectiveModel]?.supportedReasoningEfforts ?? [])
+      .map((entry) => entry.reasoningEffort)
+      .filter(Boolean),
+  ));
+  const modelUnavailable = Boolean(catalog && !catalogError && form.weixinConnectModel
+    && !models.includes(form.weixinConnectModel));
+  const reasoningUnavailable = Boolean(catalog && !catalogError && form.weixinConnectReasoningEffort
+    && !reasoningEfforts.includes(form.weixinConnectReasoningEffort));
+  const projectOptions = projects?.projects ?? [];
+  const projectUnavailable = Boolean(projects && !projectsError && form.weixinConnectProjectId
+    && !projectOptions.some((project) => project.id === form.weixinConnectProjectId));
   const workDirOptions = useMemo(
     () => Array.from(new Set(sessions.map((session) => session.cwd.trim()).filter(Boolean))).sort(),
     [sessions],
@@ -5628,14 +5988,95 @@ function WeixinConnectScreen({
                 />
                 <small className="weixin-field-hint">{t("选择后自动带入该会话的工作目录，微信联系人仍保持独立会话。")}</small>
               </label>
-              <label className="field">
+              <label aria-invalid={modelUnavailable || Boolean(catalogError)} className="field">
                 <span>{t("模型")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectModel: event.target.value })}
-                  placeholder={t("留空时使用 Codex 当前默认模型")}
-                  value={form.weixinConnectModel}
+                <div className="weixin-path-row">
+                  <AppSelect
+                    ariaLabel={t("模型")}
+                    onChange={(next) => onFormChange({ ...form, weixinConnectModel: next })}
+                    options={[
+                      { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${inheritedModel})` : ""}` },
+                      ...(form.weixinConnectModel && !models.includes(form.weixinConnectModel) ? [{
+                        value: form.weixinConnectModel,
+                        label: `${form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
+                      }] : []),
+                      ...models.map((model) => ({ value: model, label: catalog?.modelMetadata?.[model]?.displayName || model })),
+                    ]}
+                    value={form.weixinConnectModel}
+                  />
+                  <Button aria-label={t("刷新模型目录")} disabled={catalogLoading} onClick={() => setCatalogRevision((value) => value + 1)} size="icon" title={t("刷新模型目录")} type="button" variant="outline">
+                    <RefreshCw className={`h-4 w-4${catalogLoading ? " animate-spin" : ""}`} />
+                  </Button>
+                </div>
+                {catalogError ? <small className="weixin-field-hint request-log-error" role="alert">{catalogError}</small> : null}
+                {modelUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前模型已不在可用模型目录中，请重新选择。")}</small> : null}
+                {catalog && !catalogError && !models.length ? <small className="weixin-field-hint" role="status">{t("当前没有可用模型，请检查供应商配置。")}</small> : null}
+              </label>
+              <label aria-invalid={reasoningUnavailable} className="field">
+                <span>{t("推理强度")}</span>
+                <AppSelect
+                  ariaLabel={t("推理强度")}
+                  onChange={(next) => onFormChange({ ...form, weixinConnectReasoningEffort: next })}
+                  options={[
+                    { value: "", label: t("继承 Codex 推理强度") },
+                    ...(form.weixinConnectReasoningEffort && !reasoningEfforts.includes(form.weixinConnectReasoningEffort) ? [{
+                      value: form.weixinConnectReasoningEffort,
+                      label: `${form.weixinConnectReasoningEffort} (${reasoningUnavailable ? t("不可用") : t("当前值")})`,
+                    }] : []),
+                    ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
+                  ]}
+                  value={form.weixinConnectReasoningEffort}
                 />
+                {reasoningUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前模型不支持已选推理强度，请重新选择或继承。")}</small> : null}
+              </label>
+              <label aria-invalid={projectUnavailable || Boolean(projectsError)} className="field">
+                <span>{t("新会话项目")}</span>
+                <div className="weixin-path-row">
+                  <AppSelect
+                    ariaLabel={t("新会话项目")}
+                    onChange={(id) => {
+                      const selected = projectOptions.find((project) => project.id === id);
+                      onFormChange({
+                        ...form,
+                        weixinConnectProjectId: id,
+                        weixinConnectWorkDir: selected?.roots?.[0]?.path || form.weixinConnectWorkDir,
+                      });
+                    }}
+                    options={[
+                      { value: "", label: t("不归属项目") },
+                      ...(form.weixinConnectProjectId && !projectOptions.some((project) => project.id === form.weixinConnectProjectId) ? [{
+                        value: form.weixinConnectProjectId,
+                        label: `${form.weixinConnectProjectId} (${projectUnavailable ? t("不可用") : t("当前值")})`,
+                      }] : []),
+                      ...projectOptions.map((project) => ({ value: project.id, label: project.name || project.id })),
+                    ]}
+                    value={form.weixinConnectProjectId}
+                  />
+                  <Button aria-label={t("刷新项目")} disabled={projectsLoading} onClick={() => setProjectsRevision((value) => value + 1)} size="icon" title={t("刷新项目")} type="button" variant="outline">
+                    <RefreshCw className={`h-4 w-4${projectsLoading ? " animate-spin" : ""}`} />
+                  </Button>
+                </div>
+                {projectsError ? <small className="weixin-field-hint request-log-error" role="alert">{projectsError}</small> : null}
+                {projectUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前项目已不在项目列表中，请重新选择。")}</small> : null}
+              </label>
+              <label className="field">
+                <span>{t("重置联系人会话")}</span>
+                <div className="weixin-path-row">
+                  <Input aria-label={t("需要重置的联系人 ID")} placeholder={status?.lastPeerId || t("联系人 ID")} value={resetPeerId} onChange={(event) => setResetPeerId(event.target.value)} />
+                  <Button aria-label={t("重置该联系人会话")} title={t("重置该联系人会话，下一条消息生效并保留原历史")} size="icon" variant="outline" type="button" disabled={resetPending || !resetPeerId.trim()} onClick={async () => {
+                    setResetPending(true);
+                    setResetMessage("");
+                    try {
+                      await invoke("weixin_connect_reset_session", { peerId: resetPeerId.trim(), accountId: form.weixinConnectAccountId.trim() });
+                      setResetMessage(t("已保存重置请求，下一条消息开启新会话，原历史保留。"));
+                    } catch (error) {
+                      setResetMessage(String(error));
+                    } finally {
+                      setResetPending(false);
+                    }
+                  }}><RefreshCw className={`h-4 w-4${resetPending ? " animate-spin" : ""}`} /></Button>
+                </div>
+                {resetMessage ? <small className="weixin-field-hint" role="status">{resetMessage}</small> : null}
               </label>
               <label className="field">
                 <span>{t("沙箱权限")}</span>
@@ -6362,6 +6803,9 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   const [filter, setFilter] = useState<"all" | "running" | "success" | "failed" | "retried">("all");
   const [sessionFilter, setSessionFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState<"all" | "codex" | "claude" | "grok">(initialAgent);
+  // 只管理 Codex 时固定看 Codex 的请求，不出现 Agent 筛选。
+  const codexOnly = singleAgent(useAgentFocus()) === "codex";
+  const agentScope = codexOnly ? "codex" : agentFilter;
   // 初始过滤只用一次：之后从侧栏进来仍是「全部」。
   useEffect(() => { if (initialAgent !== "all" || Object.keys(initialFocus).length) onConsumeInitialAgent?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -6380,7 +6824,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   const filterArgs = {
     limit: REQUEST_LOG_LIMIT,
     sinceMs: sinceMs ?? null,
-    agent: agentFilter === "all" ? null : agentFilter,
+    agent: agentScope === "all" ? null : agentScope,
     relayId: relayFilter?.id ?? null,
     model: modelFilter || null,
   };
@@ -6412,7 +6856,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, agentFilter, relayFilter?.id, modelFilter]);
+  }, [range, agentScope, relayFilter?.id, modelFilter]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -6478,7 +6922,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
       if (filter === "success" && (running || !entry.success)) return false;
       if (filter === "failed" && (running || entry.success)) return false;
       if (filter === "retried" && entry.autoRetries === 0 && entry.attempts <= 1) return false;
-      if (agentFilter !== "all" && requestLogAgent(entry) !== agentFilter) return false;
+      if (agentScope !== "all" && requestLogAgent(entry) !== agentScope) return false;
       const threadId = (entry.threadId ?? "").trim();
       if (sessionFilter === "__none__") {
         if (threadId) return false;
@@ -6499,7 +6943,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         .toLowerCase()
         .includes(needle);
     });
-  }, [entries, filter, query, sessionFilter, agentFilter]);
+  }, [entries, filter, query, sessionFilter, agentScope]);
 
   return (
     <Panel className="request-log-panel">
@@ -6514,7 +6958,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </div>
-          <AppSelect
+          {codexOnly ? null : <AppSelect
             ariaLabel={t("按 Agent 筛选")}
             className="request-log-select"
             menuWidth={160}
@@ -6527,7 +6971,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
             ] as AppSelectOption<typeof agentFilter>[]}
             size="sm"
             value={agentFilter}
-          />
+          />}
           <AppSelect
             ariaLabel={t("时间段")}
             className="request-log-select"
@@ -8120,11 +8564,7 @@ function StepwiseSettingsPanel({ form, onFormChange, actions }: {
       <CardHead title={t(group.title)} detail={t(group.description ?? "")} />
       <CardContent className="settings-content">
         <div className="settings-block stepwise-settings-block" id={ENHANCEMENT_SECTION_IDS.stepwise}>
-          <div className="enhance-service-toggles">
-            {managerGroupItems(group.id, enhancementPlatform).map((item) => (
-              <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={form.enhancementsEnabled} />
-            ))}
-          </div>
+          {/* 「下一步建议」「回答大纲」的开关与「建议直接发送」在「内置拓展」标签的卡片里，这里只放共用的连接设置。 */}
           <div className="stepwise-settings-section">{t("连接")}</div>
           <div className="form-row">
             <Field label="Base URL">
@@ -8334,6 +8774,8 @@ function EnhanceScreen({
   onTabChange,
   form,
   onFormChange,
+  builtins,
+  onNavigate,
   actions,
 }: {
   dirty: boolean;
@@ -8341,6 +8783,9 @@ function EnhanceScreen({
   onTabChange: (tab: EnhancementTab) => void;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
+  /** 后台给的内置拓展现状（顶替、没有设置字段的启停）。 */
+  builtins: BuiltinExtension[];
+  onNavigate: (route: Route) => void;
   actions: Actions;
 }) {
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
@@ -8369,8 +8814,27 @@ function EnhanceScreen({
     }
     return <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />;
   };
+  const builtinStates = new Map(builtins.map((builtin) => [builtin.id, builtin]));
+  // 有单独配置页的内置拓展：卡片上给「设置」入口。
+  const openBuiltinSettings = (target: BuiltinSettingsTarget) => {
+    if (target.tab) onTabChange(target.tab);
+    else if (target.route) onNavigate(target.route);
+  };
+  const renderBuiltin = (card: BuiltinExtensionCard) => (
+    <BuiltinExtensionCardView
+      key={card.id}
+      card={card}
+      form={form}
+      onFormChange={onFormChange}
+      masterEnabled={masterEnabled}
+      state={builtinStates.get(card.id)}
+      renderSetting={renderSetting}
+      onOpenSettings={openBuiltinSettings}
+      actions={actions}
+    />
+  );
   const tabs: Array<{ value: EnhancementTab; label: string }> = [
-    { value: "general", label: t("常用增强") },
+    { value: "general", label: t("内置拓展") },
     { value: "dictation", label: t("语音输入") },
     { value: "stepwise", label: t(enhancementGroup("stepwise").title) },
   ];
@@ -8380,7 +8844,7 @@ function EnhanceScreen({
   };
   // 「常用增强」页里的分组，显示在左侧目录的页签下面，点了滚到对应分组。
   // 分组按清单顺序列出，独立模式排最后；锚点 id 由清单分组 id 生成，保持稳定。
-  const generalSections = [...managerGeneralGroups(), managerStandaloneGroup()]
+  const generalSections = [...managerBuiltinGroups(), managerStandaloneGroup()]
     .map((group) => ({ id: enhancementGroupAnchorId(group), label: t(group.title) }));
   return (
     <div className="settings-page enhance-page sectioned-page">
@@ -8438,17 +8902,13 @@ function EnhanceScreen({
           <CardContent className="enhance-content">
             <div className="enhance-feature-groups">
               {/* 关闭增强时这组是唯一仍会生效的补丁，因此提到最前面；开启增强时它排在最后。 */}
-              {masterEnabled ? null : (
-                <StandaloneModeGroup form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
-              )}
-              {managerGeneralGroups().map((group) => (
+              {masterEnabled ? null : <StandaloneModeGroup renderBuiltin={renderBuiltin} />}
+              {managerBuiltinGroups().map((group) => (
                 <FeatureGroup key={group.id} id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
-                  {managerGroupItems(group.id, enhancementPlatform).map(renderSetting)}
+                  {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
                 </FeatureGroup>
               ))}
-              {masterEnabled ? (
-                <StandaloneModeGroup form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
-              ) : null}
+              {masterEnabled ? <StandaloneModeGroup renderBuiltin={renderBuiltin} /> : null}
             </div>
             <div className="hint-line enhance-footer-hint">
               <Info className="h-4 w-4" />
@@ -8468,24 +8928,205 @@ function EnhanceScreen({
   );
 }
 
-// 增强总开关关闭后仍生效的独立补丁。不受总开关禁用，所以不放进 FeatureGroup 的
-// masterEnabled 门控里；位置在该页「常用增强」标签内，关闭增强时提到最前面。
-function StandaloneModeGroup({
-  form,
-  onFormChange,
-  masterEnabled,
-}: {
-  form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
-  masterEnabled: boolean;
-}) {
+// 总开关关闭后仍生效的独立补丁。卡片照常经 EnhancementSettingControl 渲染，清单里 masterGated: false，
+// 不随总开关禁用；位置在「内置拓展」标签内，关闭总开关时提到最前面。
+function StandaloneModeGroup({ renderBuiltin }: { renderBuiltin: (card: BuiltinExtensionCard) => ReactNode }) {
   const group = managerStandaloneGroup();
   return (
     <FeatureGroup id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
-      {managerGroupItems(group.id, enhancementPlatform).map((item) => (
-        <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
-      ))}
+      {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
     </FeatureGroup>
+  );
+}
+
+type BuiltinSettingsTarget = { tab?: EnhancementTab; route?: Route };
+
+/** 有单独配置页的内置拓展：卡片上的「设置」去哪里。 */
+const BUILTIN_SETTINGS_TARGETS: Record<string, BuiltinSettingsTarget> = {
+  dictation: { tab: "dictation" },
+  stepwise: { tab: "stepwise" },
+  "answer-outline": { tab: "stepwise" },
+  "dream-skin": { route: "dreamSkin" },
+  "image-overlay": { route: "agentSettings" },
+};
+
+/// 「Agent 桌宠」页：桌宠是官方拓展包 `bundled:agent-pet`，设置存在它的配置里、开关就是它的启停。
+/// 界面沿用 AgentPetPage；改动防抖后写进拓展配置，Codex 里的桌宠用 onConfigUpdate 原地生效。
+/// embedded：展开在「本地拓展」桌宠那一行下面，启停交给那一行的开关，这里只管配置。
+function AgentPetExtensionScreen({ inventory, actions, embedded = false }: { inventory: UserScriptInventory | undefined; actions: Actions; embedded?: boolean }) {
+  const script = inventory?.scripts?.find((item) => item.key === AGENT_PET_EXTENSION_KEY);
+  // 嵌入时启停不进快照，免得行开关改了之后这里拿旧值又写回去。
+  const snapshotOf = (state: AgentPetExtensionState) => JSON.stringify({ enabled: embedded ? null : state.pet.enabled, config: agentPetExtensionConfig(state) });
+  const [draft, setDraft] = useState<AgentPetExtensionState | null>(null);
+  const [status, setStatus] = useState<AutoSaveState>({ state: "idle" });
+  const saved = useRef<string>("");
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
+  // 只在第一次拿到拓展时取它的配置；之后以页面上的草稿为准，免得刷新清单时盖掉正在改的内容。
+  useEffect(() => {
+    if (!script || draft) return;
+    const initial = agentPetStateFromExtension(script.package?.config, script.enabled);
+    saved.current = snapshotOf(initial);
+    setDraft(initial);
+  }, [script, draft]);
+  useEffect(() => {
+    if (!draft) return;
+    const snapshot = snapshotOf(draft);
+    if (snapshot === saved.current) return;
+    const issue = agentPetValidationMessage(agentPetSettingsIssue(draft.pet))
+      || whaleBalanceValidationMessage(whaleBalanceSettingsIssue(draft.whale, isAgentPetWhaleWidgetActive(draft.pet)));
+    if (issue) {
+      setStatus({ state: "invalid", message: issue, retry: () => {} });
+      return;
+    }
+    setStatus({ state: "pending" });
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setStatus({ state: "saving" });
+        const previous = JSON.parse(saved.current || "{}") as { enabled?: boolean };
+        const configSaved = await actionsRef.current.setExtensionConfig(AGENT_PET_EXTENSION_KEY, agentPetExtensionConfig(draft), { silent: true });
+        if (configSaved && !embedded && previous.enabled !== draft.pet.enabled) await actionsRef.current.setUserScriptEnabled(AGENT_PET_EXTENSION_KEY, draft.pet.enabled);
+        if (configSaved) {
+          saved.current = snapshot;
+          setStatus({ state: "saved" });
+        } else {
+          setStatus({ state: "failed", message: t("桌宠设置没有保存"), retry: () => setDraft((current) => (current ? { ...current } : current)) });
+        }
+      })();
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [draft]);
+  if (!script) {
+    return <div className="empty">{t("没有找到 Agent 桌宠拓展。它随 Codex++ 一起安装，请重启 Codex++ 后再打开这一页。")}</div>;
+  }
+  if (!draft) return null;
+  return (
+    <>
+      {!embedded && inventory?.enabled === false ? (
+        <div className="extension-page-banner">
+          <span>{t("「启用本地拓展」整体开关关着，桌宠不会在 Codex 里显示。")}</span>
+          <Button size="sm" variant="ghost" onClick={() => void actions.setUserScriptsEnabled(true)}>{t("启用本地拓展")}</Button>
+        </div>
+      ) : null}
+      <AgentPetPage
+        embedded={embedded}
+        settings={embedded ? { ...draft.pet, enabled: script.enabled } : draft.pet}
+        onChange={(pet) => setDraft((current) => (current ? { ...current, pet } : current))}
+        whaleBalance={draft.whale}
+        onWhaleBalanceChange={(patch) => setDraft((current) => (current ? { ...current, whale: { ...current.whale, ...patch } } : current))}
+        whaleBalanceIssue={whaleBalanceValidationMessage(whaleBalanceSettingsIssue(draft.whale, isAgentPetWhaleWidgetActive(draft.pet)))}
+        autoSave={<div className="enhance-save-actions settings-autosave"><AutoSaveStatus state={status} /></div>}
+      />
+    </>
+  );
+}
+
+/// 一个内置拓展的卡片：开关（就是对应的设置项；没有设置项的记在用户脚本配置里）、
+/// 被拓展顶替时的提示、打开后显示的子选项、有单独配置页的「设置」入口。
+function BuiltinExtensionCardView({
+  card,
+  form,
+  onFormChange,
+  masterEnabled,
+  state,
+  renderSetting,
+  onOpenSettings,
+  actions,
+}: {
+  card: BuiltinExtensionCard;
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  masterEnabled: boolean;
+  state?: BuiltinExtension;
+  renderSetting: (item: EnhancementSettingItem) => ReactNode;
+  onOpenSettings: (target: BuiltinSettingsTarget) => void;
+  actions: Actions;
+}) {
+  const { item, entry } = card;
+  const gated = item ? isEnhancementItemMasterGated(item) : true;
+  const disabled = gated && !masterEnabled;
+  let on: boolean;
+  let control: ReactNode;
+  if (item?.control === "select") {
+    // 下拉型（打字特效）：开关写 builtinOn / builtinOff，样式在打开后作为参数选。
+    const key = item.key as keyof BackendSettings;
+    const value = String(form[key] ?? "");
+    on = value !== "" && value !== (item.builtinOff ?? "off");
+    control = (
+      <FeatureToggle
+        title={t(item.title)}
+        detail={t(item.description)}
+        checked={on}
+        disabled={disabled}
+        onChange={(checked) => onFormChange({ ...form, [key]: checked ? item.builtinOn ?? "" : item.builtinOff ?? "off" })}
+      />
+    );
+  } else if (item) {
+    on = form[item.key as keyof BackendSettings] === true;
+    control = renderSetting(item);
+  } else if (entry?.setting) {
+    const setting = entry.setting;
+    on = builtinSettingValue(form, setting) === true;
+    control = (
+      <FeatureToggle
+        title={t(entry.title)}
+        detail={t(entry.description)}
+        checked={on}
+        disabled={disabled}
+        onChange={(checked) => onFormChange(withBuiltinSetting(form, setting, checked))}
+      />
+    );
+  } else {
+    on = state?.enabled ?? true;
+    control = (
+      <FeatureToggle
+        title={t(entry?.title ?? card.id)}
+        detail={t(entry?.description ?? "")}
+        checked={on}
+        disabled={disabled}
+        onChange={(checked) => void actions.setUserScriptEnabled(`builtin:${card.id}`, checked)}
+      />
+    );
+  }
+  const target = BUILTIN_SETTINGS_TARGETS[card.id];
+  const selectOptions = item?.control === "select" ? (item.options ?? []).filter((option) => option.value !== (item.builtinOff ?? "off")) : [];
+  return (
+    <div className="builtin-card" data-builtin-id={card.id}>
+      {target ? (
+        // 「设置」做成开关卡内、开关左侧的齿轮，不再单占一行。
+        <div className="builtin-card-head has-settings">
+          {control}
+          <button
+            type="button"
+            className="builtin-card-settings"
+            title={t("设置")}
+            aria-label={tf("{0} 设置", [t(entry?.title ?? item?.title ?? card.id)])}
+            onClick={() => onOpenSettings(target)}
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        </div>
+      ) : control}
+      {state?.replacedBy ? (
+        <small className="builtin-card-note">{tf("已被 {0} 顶替", [state.replacedBy.replace(/^user:/, "")])}</small>
+      ) : null}
+      {on && (card.params.length || selectOptions.length) ? (
+        <div className="builtin-card-params">
+          {item?.control === "select" ? (
+            <AppSelect<string>
+              ariaLabel={t(item.title)}
+              value={String(form[item.key as keyof BackendSettings] ?? "")}
+              disabled={disabled}
+              onChange={(value) => onFormChange({ ...form, [item.key]: value })}
+              options={selectOptions.map((option) => ({ value: option.value, label: t(option.label) }))}
+            />
+          ) : null}
+          {card.params.map((param) => (
+            <EnhancementSettingControl key={param.key} item={param} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -9628,7 +10269,7 @@ function dreamSkinStateLabel(state: "pass" | "warning" | "fail" | "not_running")
   return t("Codex 未运行或不可连接");
 }
 
-function UserScriptsScreen({ settings, market, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; actions: Actions }) {
+function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; actions: Actions }) {
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
     if (reloading) return;
@@ -9642,10 +10283,13 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   const inventory = settings?.user_scripts;
   const scripts = inventory?.scripts ?? [];
   const marketScripts = market?.market.scripts ?? [];
+  const marketPackages = market?.market.packages ?? [];
   const [marketSearch, setMarketSearch] = useState("");
   const [marketView, setMarketView] = useState<"grid" | "list">("grid");
+  const [communitySearch, setCommunitySearch] = useState("");
+  const [communitySort, setCommunitySort] = useState<CommunitySort>("stars");
   // 市场脚本 / 本地脚本放在同一块里切换，不再上下堆三张卡片。
-  const [pane, setPane] = useState<"market" | "local">("market");
+  const [pane, setPane] = useState<"market" | "community" | "local" | "mine" | "dsh">("market");
   const filteredMarketScripts = useMemo(() => {
     const query = marketSearch.trim().toLocaleLowerCase();
     if (!query) return marketScripts;
@@ -9684,6 +10328,19 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
     return map;
   }, [scripts]);
   const localEnabled = inventory?.enabled !== false;
+  // 精选与社区栏共用的排版切换。
+  const viewToggle = (
+    <div className="script-market-view-toggle" role="group" aria-label={t("拓展排版")}>
+      <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
+        <LayoutGrid className="h-4 w-4" />
+        {t("板块")}
+      </Button>
+      <Button aria-pressed={marketView === "list"} onClick={() => setMarketView("list")} size="sm" variant={marketView === "list" ? "secondary" : "ghost"}>
+        <List className="h-4 w-4" />
+        {t("列表")}
+      </Button>
+    </div>
+  );
   return (
     <div className="tp-page user-scripts-page">
       <TopbarActions>
@@ -9691,65 +10348,76 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           <ExternalLink />
           {t("投稿")}
         </Button>
-        <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地脚本及开关；旧脚本可能需要刷新 Codex 页面")}>
+        <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")}>
           <RefreshCw className={reloading ? "animate-spin" : ""} />
-          {t("热重载脚本")}
+          {t("热重载拓展")}
         </Button>
         <Button onClick={() => void (async () => { await actions.refreshScriptMarket(); await actions.refreshCurrent(); })()} size="sm" variant="secondary">
           <RefreshCw />
           {t("刷新")}
         </Button>
       </TopbarActions>
+      <ExtensionsHero />
       {/* 状态条：两个整体开关 + 一行摘要，代替原来四行「键：值」的统计卡。 */}
       <div className="user-scripts-strip">
-        <label className="relay-bare-switch user-scripts-switch" title={t("整体开关不改变单个脚本的启停设置")}>
+        <label className="relay-bare-switch user-scripts-switch" title={t("整体开关不改变单个拓展的启停设置")}>
           <input
-            aria-label={t("启用本地脚本")}
+            aria-label={t("启用本地拓展")}
             checked={localEnabled}
             disabled={!inventory}
             onChange={() => void actions.setUserScriptsEnabled(!localEnabled)}
             type="checkbox"
           />
           <ToggleVisual />
-          <span>{t("启用本地脚本")}</span>
+          <span>{t("启用本地拓展")}</span>
         </label>
-        <label className="relay-bare-switch user-scripts-switch" title={t("脚本导致黑屏或卡死时，下一次启动先跳过脚本；脚本启停设置不会改变")}>
+        <label className="relay-bare-switch user-scripts-switch" title={t("拓展导致黑屏或卡死时，下一次启动先跳过拓展；各拓展的启停设置不会改变")}>
           <input
-            aria-label={t("下次启动跳过脚本")}
+            aria-label={t("下次启动跳过拓展")}
             checked={Boolean(inventory?.skip_next_start)}
             disabled={!inventory}
             onChange={() => void actions.setUserScriptsSkipNextStart(!inventory?.skip_next_start)}
             type="checkbox"
           />
           <ToggleVisual />
-          <span>{t("下次启动跳过脚本")}</span>
+          <span>{t("下次启动跳过拓展")}</span>
         </label>
         <span className="user-scripts-summary">
-          {tf("{0} 个市场脚本，已安装 {1} 个", [marketScripts.length, installedCount])}
+          {tf("拓展市场 {0} 个，已安装 {1} 个", [marketScripts.length, installedCount])}
           {market?.market.updatedAt ? ` · ${tf("清单更新于 {0}", [formatMarketUpdatedAt(market.market.updatedAt)])}` : market ? ` · ${market.market.message}` : ` · ${t("尚未刷新")}`}
         </span>
       </div>
+      <ExtensionCreatorCard />
       <div className="script-market-toolbar">
-        <div className="mg-segmented user-scripts-panes" role="tablist" aria-label={t("脚本")}>
+        <div className="mg-segmented user-scripts-panes" role="tablist" aria-label={t("拓展")}>
           <button aria-selected={pane === "market"} data-active={pane === "market"} onClick={() => setPane("market")} role="tab" type="button">
-            {t("市场脚本")}<span>{marketScripts.length}</span>
+            {t("精选")}<span>{marketScripts.length + marketPackages.length}</span>
+          </button>
+          <button aria-selected={pane === "community"} data-active={pane === "community"} onClick={() => setPane("community")} role="tab" type="button">
+            {t("社区拓展")}
           </button>
           <button aria-selected={pane === "local"} data-active={pane === "local"} onClick={() => setPane("local")} role="tab" type="button">
-            {t("本地脚本")}<span>{scripts.length}</span>
+            {t("本地拓展")}<span>{scripts.length}</span>
+          </button>
+          <button aria-selected={pane === "mine"} data-active={pane === "mine"} onClick={() => setPane("mine")} role="tab" type="button">
+            {t("我发布的")}
+          </button>
+          <button aria-selected={pane === "dsh"} data-active={pane === "dsh"} onClick={() => setPane("dsh")} role="tab" type="button">
+            {t("dsh 插件")}
           </button>
         </div>
         {pane === "market" ? <>
           <div className="script-market-search">
             <Search className="h-4 w-4" />
             <Input
-              aria-label={t("搜索市场脚本")}
+              aria-label={t("搜索拓展市场")}
               onChange={(event) => setMarketSearch(event.currentTarget.value)}
               placeholder={t("搜索名称、作者、描述或标签")}
               value={marketSearch}
             />
           </div>
           <AppSelect
-            ariaLabel={t("市场脚本排序")}
+            ariaLabel={t("拓展市场排序")}
             className="script-market-sort"
             onChange={(value) => setMarketSortChoice(value)}
             options={[
@@ -9757,51 +10425,77 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
               {
                 value: "updated",
                 label: t("最近更新"),
-                title: hasMarketUpdateTimes ? undefined : t("市场清单暂未提供脚本更新时间"),
+                title: hasMarketUpdateTimes ? undefined : t("市场清单暂未提供更新时间"),
               },
               { value: "name", label: t("名称") },
             ]}
             size="sm"
-            title={t("市场脚本排序")}
+            title={t("拓展市场排序")}
             value={marketSort}
           />
-          <div className="script-market-view-toggle" role="group" aria-label={t("脚本排版")}>
-            <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
-              <LayoutGrid className="h-4 w-4" />
-              {t("板块")}
-            </Button>
-            <Button aria-pressed={marketView === "list"} onClick={() => setMarketView("list")} size="sm" variant={marketView === "list" ? "secondary" : "ghost"}>
-              <List className="h-4 w-4" />
-              {t("列表")}
-            </Button>
+          {viewToggle}
+        </> : pane === "community" ? <>
+          {/* 和精选栏同一套搜索 / 排序 / 排版控件。 */}
+          <div className="script-market-search">
+            <Search className="h-4 w-4" />
+            <Input
+              aria-label={t("搜索社区拓展")}
+              onChange={(event) => setCommunitySearch(event.currentTarget.value)}
+              placeholder={t("搜索名称、仓库、作者或描述")}
+              value={communitySearch}
+            />
           </div>
-        </> : <span className="user-scripts-summary">{t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")}</span>}
+          <AppSelect
+            ariaLabel={t("社区拓展排序")}
+            className="script-market-sort"
+            onChange={(value) => setCommunitySort(value)}
+            options={[
+              { value: "stars", label: t("星数") },
+              { value: "updated", label: t("最近更新") },
+              { value: "name", label: t("名称") },
+            ]}
+            size="sm"
+            title={t("社区拓展排序")}
+            value={communitySort}
+          />
+          {viewToggle}
+        </> : pane === "local" ? <span className="user-scripts-summary">{t("内置、手动安装、市场安装和对话生成的拓展；可在这里启停，单文件脚本可删除")}</span> : null}
       </div>
       {pane === "market" ? (
-        marketScripts.length ? (
-          filteredMarketScripts.length ? (
-            <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
-              {sortedMarketScripts.map((script) => (
-                <MarketScriptCard
-                  actions={actions}
-                  installedKey={installedKeyByMarketId.get(script.id)}
-                  key={script.id}
-                  script={script}
-                  view={marketView}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="empty">{t("没有匹配的市场脚本。")}</div>
-          )
-        ) : (
-          <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新市场加载远程脚本。")}</div>
-        )
+        <>
+        <CuratedPackagesSection
+          blockedInstalled={market?.market.blockedInstalled ?? []}
+          emptyText={market?.status === "failed" ? market.message : t("点击刷新加载拓展市场。")}
+          hasScripts={marketScripts.length > 0}
+          onInstalled={async () => { await actions.reloadUserScripts(); await actions.refreshScriptMarket(); }}
+          onOpenUrl={(url) => void actions.openExternalUrl(url)}
+          packages={marketPackages}
+          search={marketSearch}
+          view={marketView}
+        >
+          {sortedMarketScripts.map((script) => (
+            <MarketScriptCard
+              actions={actions}
+              installedKey={installedKeyByMarketId.get(script.id)}
+              key={script.id}
+              script={script}
+              view={marketView}
+            />
+          ))}
+        </CuratedPackagesSection>
+        </>
+      ) : pane === "community" ? (
+        <CommunityExtensionsPanel onCurated={actions.refreshScriptMarket} search={communitySearch} sort={communitySort} view={marketView} onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+      ) : pane === "mine" ? (
+        <MyPublishedPanel onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+      ) : pane === "dsh" ? (
+        <DshPluginsPanel />
       ) : (
         <Panel>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
+            {scripts.length ? [...scripts].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} renderSettings={script.key === AGENT_PET_EXTENSION_KEY ? () => <AgentPetExtensionScreen embedded inventory={inventory} actions={actions} /> : undefined} />) : <div className="empty">{t("还没有本地拓展。")}</div>}
           </div>
+          {inventory?.builtins?.length ? <BuiltinExtensionsSummary builtins={inventory.builtins} onOpen={onOpenBuiltins} /> : null}
         </Panel>
       )}
     </div>
@@ -10765,15 +11459,21 @@ function GlobalSettingsScreen({
   form,
   settings,
   theme,
+  themePreference,
   actions,
   onOpenAgentSettings,
   onOpenTour,
+  agentFocus,
+  onOpenAgentFocus,
 }: {
   onOpenTour: () => void;
+  agentFocus: AgentFocus;
+  onOpenAgentFocus: () => void;
   dirty: boolean;
   form: BackendSettings;
   settings: SettingsResult | null;
   theme: Theme;
+  themePreference: ThemePreference;
   actions: Actions;
   onOpenAgentSettings: () => void;
 }) {
@@ -10790,10 +11490,28 @@ function GlobalSettingsScreen({
           <div className="global-setting-row">
             <div className="global-setting-copy">
               <strong>{t("界面主题")}</strong>
-              <span>{t("当前为")}{theme === "dark" ? t("深色") : t("浅色")}{t("模式。")}</span>
+              <span>{themePreference === "system"
+                ? `${t("跟随系统外观，当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`
+                : `${t("当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`}</span>
             </div>
             <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
+              <div aria-label={t("界面主题")} className="segmented" role="group">
+                {([
+                  ["system", t("跟随系统")],
+                  ["light", t("浅色")],
+                  ["dark", t("深色")],
+                ] as const).map(([value, label]) => (
+                  <button
+                    aria-pressed={themePreference === value}
+                    className={themePreference === value ? "active" : ""}
+                    key={value}
+                    onClick={() => actions.setThemePreference(value)}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
           <div className="global-setting-row">
@@ -10812,6 +11530,15 @@ function GlobalSettingsScreen({
             </div>
             <div className="global-setting-actions">
               <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("关闭窗口后释放界面内存")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
+            </div>
+          </div>
+          <div className="global-setting-row">
+            <div className="global-setting-copy">
+              <strong>{t("使用模式")}</strong>
+              <span>{agentFocusDescription(agentFocus)}</span>
+            </div>
+            <div className="global-setting-actions">
+              <Button size="sm" variant="secondary" onClick={onOpenAgentFocus}>{t("修改")}</Button>
             </div>
           </div>
           <div className="global-setting-row">
@@ -11213,73 +11940,64 @@ function MarketScriptCard({
 }) {
   // 「未安装」是默认状态：满屏同一个徽标只是噪音，只给已安装 / 可更新打标。
   const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : null;
-  // 标签最多露 3 个，其余收成「+N」，否则卡片被撑成高低不齐的两三行。
-  const visibleTags = script.tags.slice(0, 3);
-  const hiddenTags = script.tags.slice(3);
   const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
   const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
   const updatedTime = parseMarketTime(script.updatedAt);
+  // 头像：清单给的图标，否则主页仓库作者的 GitHub 头像；主页就是市场仓库时退回名字首字，免得全是同一个头像。
+  const homepageRepo = isGitHubHomepage ? script.homepage.replace(/^https?:\/\/github\.com\//, "").split(/[/?#]/).slice(0, 2).join("/") : "";
+  const icon = script.icon || (homepageRepo && !SCRIPT_MARKET_REPOSITORY_URL.includes(homepageRepo) ? githubAvatar(homepageRepo) : "");
+  const updatedText = updatedTime !== null ? tf("{0}更新", [formatRelativeAge(updatedTime)]) : "";
   return (
-    <div className="script-market-card" data-view={view}>
-      <div className="script-market-title">
-        <div>
-          <strong>{script.name}</strong>
-          <span>
-            {script.author || t("未知作者")} · v{script.version}
-            {updatedTime !== null ? (
-              <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>
-                {" · "}{tf("{0}更新", [formatRelativeAge(updatedTime)])}
-              </time>
-            ) : null}
-          </span>
-        </div>
-        {status ? <UiBadge className="script-market-status" variant={script.updateAvailable ? "default" : "secondary"}>{status}</UiBadge> : null}
-      </div>
-      <p className="script-market-description">{script.description || t("暂无描述。")}</p>
-      {/* 没有标签就不渲染空容器：空容器会让被拉伸的卡片在描述下露出半行（见 .script-market-card 样式注释）。 */}
-      {script.tags.length ? <div className="script-market-tags">
-        {visibleTags.map((tag) => (
-          <span className="script-market-tag" key={tag}>{tag}</span>
-        ))}
-        {hiddenTags.length ? (
-          <span className="script-market-tag script-market-tag-more" title={hiddenTags.join("、")}>+{hiddenTags.length}</span>
-        ) : null}
-      </div> : null}
-      <div className="script-market-actions">
-        <Button onClick={() => void actions.installMarketScript(script.id)} size="sm">
+    <ExtensionCard
+      description={script.description}
+      facts={
+        <>
+          <span>{script.author || t("未知作者")}</span>
+          <span>v{script.version}</span>
+          {updatedTime !== null ? <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>{updatedText}</time> : null}
+        </>
+      }
+      icon={icon}
+      link={
+        script.homepage
+          ? {
+            url: script.homepage,
+            text: homepageRepo || t("主页"),
+            title: githubSupportLabel,
+            button: isGitHubHomepage ? <><Star className="h-4 w-4" />Star<ExternalLink className="h-3 w-3" /></> : <><ExternalLink className="h-4 w-4" />{t("主页")}</>,
+          }
+          : null
+      }
+      meta={
+        <>
+          {script.author || t("未知作者")} · v{script.version}
+          {updatedTime !== null ? (
+            <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>
+              {" · "}{updatedText}
+            </time>
+          ) : null}
+        </>
+      }
+      name={script.name}
+      onOpenUrl={(url) => void actions.openExternalUrl(url)}
+      primary={
+        <Button onClick={() => void actions.installMarketScript(script.id)} size="sm" variant={view === "list" && script.installed && !script.updateAvailable ? "ghost" : view === "list" ? "secondary" : "default"}>
           <Download className="h-4 w-4" />
           {script.updateAvailable ? t("更新") : script.installed ? t("重新安装") : t("安装")}
         </Button>
-        {script.homepage ? (
-          <Button
-            aria-label={githubSupportLabel}
-            onClick={() => void actions.openExternalUrl(script.homepage)}
-            size="sm"
-            title={githubSupportLabel}
-            variant="secondary"
-          >
-            {isGitHubHomepage ? (
-              <>
-                <Star className="h-4 w-4" />
-                Star
-                <ExternalLink className="h-3 w-3" />
-              </>
-            ) : (
-              <>
-                <ExternalLink className="h-4 w-4" />
-                {t("主页")}
-              </>
-            )}
-          </Button>
-        ) : null}
-        {installedKey ? (
-          <Button onClick={() => void actions.deleteUserScript(installedKey)} size="sm" variant="outline">
+      }
+      secondary={
+        installedKey ? (
+          <Button onClick={() => void actions.deleteUserScript(installedKey)} size="sm" variant={view === "list" ? "ghost" : "outline"}>
             <Trash2 className="h-4 w-4" />
             {t("卸载")}
           </Button>
-        ) : null}
-      </div>
-    </div>
+        ) : null
+      }
+      status={status ? { text: status, highlight: script.updateAvailable } : null}
+      tags={script.tags}
+      view={view}
+    />
   );
 }
 
@@ -15860,9 +16578,12 @@ function loadCollapsedGroups(): string[] {
  * 当前 Agent 的全部页面：内容区顶部一排页签，分组（概览 / 供应商 / 增强 / 设置）之间用细线隔开。
  * 网关、全局管理、工具这些通用页面不显示；只有一个页面的 Agent 也不显示。
  */
-function AgentPageTabs({ route, activeTool, onNavigate }: { route: Route; activeTool: ToolId; onNavigate: (route: Route) => void }) {
+function AgentPageTabs({ route, activeTool, focus, onNavigate }: { route: Route; activeTool: ToolId; focus: AgentFocus; onNavigate: (route: Route) => void }) {
   if (globalNavigationRoutes.includes(route)) return null;
-  const groups = agentTabGroups(navigationSections, routeTool, activeTool);
+  // 当前使用模式下隐藏的页面（如只用增强功能时的供应商、多开）不出现在页签里；整组都隐藏就去掉这一组。
+  const groups = agentTabGroups(navigationSections, routeTool, activeTool)
+    .map((entry) => ({ ...entry, routes: visibleRoutes(focus, entry.routes) }))
+    .filter((entry) => entry.routes.length > 0);
   if (groups.reduce((count, entry) => count + entry.routes.length, 0) < 2) return null;
   return (
     <nav aria-label={t("Agent 页面")} className="tp-tabs agent-page-tabs" role="tablist">
@@ -15899,7 +16620,20 @@ function AppSidebar({
   pendingUpdateVersion,
   onOpenUpdate,
   codexRun,
+  soloAgent,
+  focus,
+  extensionPages = [],
+  activeExtensionKey = null,
+  onOpenExtensionPage,
 }: {
+  /** 拓展贡献的管理器页面：声明了 manager.nav 的放进对应分组。 */
+  extensionPages?: ManagerExtensionPage[];
+  activeExtensionKey?: string | null;
+  onOpenExtensionPage?: (key: string) => void;
+  /** 单 Agent 模式下的那个 Agent：侧栏不再出现「接入更多 Agent」的入口和多 Agent 工具。 */
+  soloAgent: string | null;
+  /** 使用模式：只用增强功能时没有网关分组，顶部状态卡不讲网关，Agent 行不画接入状态点。 */
+  focus: AgentFocus;
   /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。
       unavailableReason 非空（如没找到 Codex 应用）时播放键置灰，悬停显示原因。 */
   codexRun: { running: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void };
@@ -15931,6 +16665,7 @@ function AppSidebar({
     });
   };
   const onGlobalPage = globalNavigationRoutes.includes(route);
+  const enhanceOnly = providersHidden(focus);
   const languageLabel = getLanguage() === "en" ? t("切换到中文") : t("切换到英文");
   const themeLabel = theme === "dark" ? t("切换到浅色") : t("切换到深色");
   const connectedAgents = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
@@ -15946,7 +16681,9 @@ function AppSidebar({
     const item = routes.find((candidate) => candidate.id === routeId);
     if (!item) return null;
     const Icon = item.icon;
-    const selected = route === item.id || navAliasRoute[route] === item.id;
+    const selected = route === item.id || navAliasRoute[route] === item.id || navParentRoute[route] === item.id;
+    // 单 Agent 模式：「Agent 接入」只管这一个 Agent，叫「Codex 接入」这样更直白。
+    const label = soloAgent && item.id === "gateway" ? tf("{0} 接入", [agentName(soloAgent)]) : item.label;
     return (
       <button
         aria-current={selected ? "page" : undefined}
@@ -15954,15 +16691,34 @@ function AppSidebar({
         data-tour={`nav-${item.id}`}
         key={item.id}
         onClick={() => onNavigate(item.id)}
-        title={item.label}
+        title={label}
         type="button"
       >
         <Icon aria-hidden="true" className="side-item-icon" />
-        <span className="side-item-label">{item.label}</span>
+        <span className="side-item-label">{label}</span>
         {item.badge ? <span className="side-item-badge">{t(item.badge)}</span> : null}
       </button>
     );
   };
+
+  const renderExtensionItems = (group: ManagerNavGroup) => managerNavPages(extensionPages, group).map((page) => {
+    const Icon = managerPageIcon(page.icon);
+    const selected = activeExtensionKey === page.key;
+    return (
+      <button
+        aria-current={selected ? "page" : undefined}
+        className={`side-item ${selected ? "active" : ""}`}
+        data-extension-page={page.key}
+        key={page.key}
+        onClick={() => onOpenExtensionPage?.(page.key)}
+        title={page.title}
+        type="button"
+      >
+        <Icon aria-hidden="true" className="side-item-icon" />
+        <span className="side-item-label">{page.title}</span>
+      </button>
+    );
+  });
 
   const groupLabel = (key: string, label: string, aside?: ReactNode) => (
     <div className="side-group-label">
@@ -15976,13 +16732,24 @@ function AppSidebar({
 
   return (
     <aside className="side">
-      <button className={`side-hub ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
-        <img alt="" draggable={false} src={APP_LOGO_URL} />
-        <span className="side-hub-text">
-          <strong>Codex++</strong>
-          <small><i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />{gatewayState}</small>
-        </span>
-      </button>
+      {/* 只用增强功能时没有网关：顶部卡片只是应用名，点一下回到概览。 */}
+      {enhanceOnly ? (
+        <button className="side-hub" onClick={() => onNavigate("overview")} title={t("概览")} type="button">
+          <img alt="" draggable={false} src={APP_LOGO_URL} />
+          <span className="side-hub-text">
+            <strong>Codex++</strong>
+            <small>{t("只用增强功能")}</small>
+          </span>
+        </button>
+      ) : (
+        <button className={`side-hub ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
+          <img alt="" draggable={false} src={APP_LOGO_URL} />
+          <span className="side-hub-text">
+            <strong>Codex++</strong>
+            <small><i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />{gatewayState}</small>
+          </span>
+        </button>
+      )}
       <button className="side-search" data-tour="palette" onClick={onOpenPalette} type="button">
         <Search aria-hidden="true" className="side-item-icon" />
         <span>{t("快速跳转")}</span>
@@ -15990,18 +16757,22 @@ function AppSidebar({
       </button>
 
       <nav aria-label={t("主导航")} className="side-nav">
-        <section className={`side-group ${collapsed.includes("gateway") ? "collapsed" : ""}`}>
-          {groupLabel("gateway", t("网关"))}
-          <div className="side-group-items">{gatewayNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
-        </section>
+        {enhanceOnly ? null : (
+          <section className={`side-group ${collapsed.includes("gateway") ? "collapsed" : ""}`}>
+            {groupLabel("gateway", t("网关"))}
+            <div className="side-group-items">{gatewayNavigationRoutes.map((routeId) => renderItem(routeId))}{renderExtensionItems("gateway")}</div>
+          </section>
+        )}
 
         <section className={`side-group ${collapsed.includes("agents") ? "collapsed" : ""}`} data-tour="agents">
           {groupLabel(
             "agents",
             "Agent",
-            <button aria-label={t("接入 Agent")} className="side-group-add" onClick={() => onNavigate("gateway")} title={t("接入 Agent")} type="button">
-              <Plus aria-hidden="true" />
-            </button>,
+            soloAgent || enhanceOnly ? undefined : (
+              <button aria-label={t("接入 Agent")} className="side-group-add" onClick={() => onNavigate("gateway")} title={t("接入 Agent")} type="button">
+                <Plus aria-hidden="true" />
+              </button>
+            ),
           )}
           <div className="side-group-items">
             {/* 每个 Agent 一行，始终都在；点一下切到它，回到上次看的页面（没有就是落脚页）。它的页面都在内容区顶部的页签里。 */}
@@ -16031,7 +16802,7 @@ function AppSidebar({
                   >
                     <AgentGlyph agent={tool.id} className="side-item-icon" />
                     <span className="side-item-label">{tool.name}</span>
-                    <i aria-hidden="true" className="side-dot side-agent-dot" data-tone={access.tone} />
+                    {enhanceOnly ? null : <i aria-hidden="true" className="side-dot side-agent-dot" data-tone={access.tone} />}
                   </button>
                   {tool.id === "codex" && tool.switchable ? (
                     <button
@@ -16055,12 +16826,12 @@ function AppSidebar({
 
         <section className={`side-group ${collapsed.includes("management") ? "collapsed" : ""}`} data-tour="management">
           {groupLabel("management", t("全局管理"))}
-          <div className="side-group-items">{managementNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+          <div className="side-group-items">{visibleRoutes(focus, managementNavigationRoutes).map((routeId) => renderItem(routeId))}{renderExtensionItems("management")}</div>
         </section>
 
         <section className={`side-group ${collapsed.includes("tools") ? "collapsed" : ""}`}>
           {groupLabel("tools", t("工具"))}
-          <div className="side-group-items">{toolNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+          <div className="side-group-items">{visibleRoutes(focus, toolNavigationRoutes).map((routeId) => renderItem(routeId))}{renderExtensionItems("tools")}</div>
         </section>
       </nav>
 
@@ -16109,6 +16880,16 @@ function AppSidebar({
   );
 }
 
+/** 拓展页面的侧栏图标（清单 manager.icon）：只认这几个名字，其余用默认图标。 */
+const MANAGER_PAGE_ICONS: Record<string, LucideIcon> = {
+  "app-window": AppWindow, "bar-chart": BarChart3, list: List, server: Server, store: Store, palette: Palette,
+  network: Network, book: BookOpen, waypoints: Waypoints, plug: Plug, split: Split, messages: MessagesSquare,
+  paw: PawPrint, "git-branch": GitBranch, wrench: Wrench, settings: Settings, code: FileCode2, layers: Layers3,
+};
+function managerPageIcon(name: string | null): LucideIcon {
+  return (name && MANAGER_PAGE_ICONS[name]) || AppWindow;
+}
+
 function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
   return (
     <Label className={`field ${className}`}>
@@ -16145,35 +16926,207 @@ function Metric({ label, value }: { label: string; value: string }) {
 function localScriptStateLabel(state: LocalScriptState): { label: string; hint: string } {
   switch (state) {
     case "off":
-      return { label: t("已关闭"), hint: t("该脚本已关闭，不会注入 Codex") };
+      return { label: t("已关闭"), hint: t("该拓展已关闭，不会注入 Codex") };
     case "globalOff":
-      return { label: t("整体已关闭"), hint: t("脚本开着，但「启用本地脚本」整体开关关着，暂不注入") };
+      return { label: t("整体已关闭"), hint: t("拓展开着，但「启用本地拓展」整体开关关着，暂不注入") };
     case "loaded":
       return { label: t("已加载"), hint: t("已在 Codex 里运行") };
     case "loading":
       return { label: t("加载中"), hint: t("正在 Codex 里加载") };
     case "failed":
-      return { label: t("加载失败"), hint: t("脚本在 Codex 里运行出错") };
+      return { label: t("加载失败"), hint: t("拓展在 Codex 里运行出错") };
     case "notLoaded":
-      return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载脚本") };
+      return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载拓展") };
   }
+}
+
+type ExtensionCreatorStatus = {
+  status: "connected" | "not_connected" | "disconnected" | "conflict";
+  message: string;
+  configPath?: string;
+  extensionsDirectory?: string;
+};
+
+/// 「对话造拓展」：把拓展创作 MCP 接入 Codex 后，用户在 Codex 对话里描述需求，agent 直接写出拓展并热重载。
+/// 拓展页顶部的理念横幅：Codex++ 的增强能力都以拓展的形式开放，标签列出拓展能改到的地方。
+const extensionCapabilities = [
+  "界面与页面", "斜杠命令", "消息与面板", "模型工具", "Codex 钩子", "网关中间件", "常驻后台", "会话历史", "拓展间服务", "多语言",
+] as const;
+
+function ExtensionsHero() {
+  return (
+    <section className="extensions-hero" aria-label={t("万物皆拓展")}>
+      <div className="extensions-hero-text">
+        <h2 className="extensions-hero-title">{t("万物皆拓展")}</h2>
+        <p className="extensions-hero-lead">
+          {t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")}
+        </p>
+      </div>
+      <ul className="extensions-hero-capabilities">
+        {extensionCapabilities.map((label) => <li key={label}>{t(label)}</li>)}
+      </ul>
+    </section>
+  );
+}
+
+function ExtensionCreatorCard() {
+  const [state, setState] = useState<ExtensionCreatorStatus | null>(null);
+  const [busy, setBusy] = useState<"connect" | "disconnect" | null>(null);
+  const [error, setError] = useState("");
+  const request = async (action: "status" | "connect" | "disconnect") => {
+    setBusy(action === "status" ? null : action);
+    setError("");
+    try {
+      setState(await invoke<ExtensionCreatorStatus>("extension_creator_request", { action }));
+    } catch (failure) {
+      setError(String(failure));
+    } finally {
+      setBusy(null);
+    }
+  };
+  useEffect(() => {
+    void request("status");
+  }, []);
+  const connected = state?.status === "connected";
+  const hint = error || (connected
+    ? t("新开一个 Codex 对话，说「帮我做个拓展：…」即可；不造拓展时可取消接入，省下工具说明占用的上下文")
+    : state?.status === "disconnected" ? t("已取消接入，新开的 Codex 对话不再加载拓展创作工具；要造拓展时再接入")
+    : state?.status === "conflict" ? state.message : t("在 Codex 对话里描述需求，agent 直接写出拓展并热重载"));
+  return (
+    <div className="extension-creator-card" data-status={state?.status ?? "loading"} data-error={error ? "true" : undefined}>
+      <span className="extension-creator-icon" aria-hidden="true"><Sparkles /></span>
+      <div className="extension-creator-text">
+        <div className="extension-creator-title">
+          {t("对话造拓展")}
+          {connected ? <span className="extension-creator-badge">{t("已接入 Codex")}</span> : null}
+        </div>
+        <div className="extension-creator-hint" title={state?.extensionsDirectory}>{hint}</div>
+      </div>
+      {connected ? (
+        <Button disabled={busy !== null} onClick={() => void request("disconnect")} size="sm" variant="outline">
+          {busy === "disconnect" ? t("取消中…") : t("取消接入")}
+        </Button>
+      ) : (
+        <Button disabled={busy !== null || !state || state.status === "conflict"} onClick={() => void request("connect")} size="sm">
+          {busy === "connect" ? t("接入中…") : t("接入 Codex")}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/// 拓展包 locale/<语言>.json 里的本地化名称与描述：先找当前界面语言，再找 en，最后用清单原值。
+function localizedPackageText(
+  locales: Record<string, { title?: string | null; description?: string | null }> | undefined,
+  field: "title" | "description",
+  fallback: string,
+): string {
+  if (!locales) return fallback;
+  for (const lang of [getLanguage(), "en"]) {
+    const hit = Object.keys(locales).find((key) => key.toLowerCase() === lang || key.toLowerCase().startsWith(`${lang}-`));
+    const value = hit ? locales[hit]?.[field] : null;
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return fallback;
+}
+
+/// 本地拓展列表底部的内置拓展入口：Codex++ 自带的功能都是内置拓展，开关与参数统一在「内置拓展」页管理，
+/// 这里只给个数和被顶替的项，免得两处各有一套开关。
+function BuiltinExtensionsSummary({ builtins, onOpen }: { builtins: BuiltinExtension[]; onOpen: () => void }) {
+  const enabled = builtins.filter((builtin) => builtin.enabled && !builtin.replacedBy).length;
+  const replaced = builtins.filter((builtin) => builtin.replacedBy);
+  return (
+    <div className="builtin-extensions">
+      <div className="builtin-extensions-title">
+        <strong>{t("内置拓展")}</strong>
+        <small>
+          {tf("Codex++ 自带的功能都是内置拓展：已启用 {0} / 共 {1} 项。可以被声明 replaces 的拓展顶替。", [String(enabled), String(builtins.length)])}
+          {replaced.length ? ` ${tf("已被顶替：{0}", [replaced.map((builtin) => `${t(builtin.name)} → ${String(builtin.replacedBy).replace(/^user:/, "")}`).join("、")])}` : ""}
+        </small>
+      </div>
+      <Button size="sm" variant="secondary" onClick={onOpen}>{t("管理内置拓展")}</Button>
+    </div>
+  );
 }
 
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
 /// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
 /// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
-function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; actions: Actions }) {
-  const source = script.market_id ? tf("市场 · {0}", [script.version || t("未知版本")]) : script.source === "builtin" ? t("内置") : t("用户");
-  const canDelete = script.source === "user";
+function ScriptRow({ script, globalEnabled, actions, renderSettings }: {
+  script: NonNullable<UserScriptInventory["scripts"]>[number];
+  globalEnabled: boolean;
+  actions: Actions;
+  /** 有专门设置界面的拓展（Agent 桌宠）：「设置」在行下面展开它，而不是通用的配置表单。 */
+  renderSettings?: () => ReactNode;
+}) {
+  const isPackage = script.kind === "package";
+  const source = script.market_id
+    ? tf("市场 · {0}", [script.version || t("未知版本")])
+    : isPackage
+      ? tf("拓展包 · {0}", [script.package?.version || t("未知版本")])
+      : script.source === "builtin" ? t("内置") : t("用户");
+  // 拓展包是文件夹，后端只删单文件，这里不给删除按钮。
+  const canDelete = script.source === "user" && !isPackage;
   const state = localScriptState(script, globalEnabled);
   const { label, hint } = localScriptStateLabel(state);
   const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
+  const configSchema = script.package?.configSchema ?? [];
+  const [configOpen, setConfigOpen] = useState(false);
+  // 拓展自己的管理器面板（manager.page），启用时才能打开。
+  const managerPage = script.enabled ? script.package?.managerPage ?? null : null;
+  const [panelOpen, setPanelOpen] = useState(false);
+  // 用户自己的拓展包可以一键发布到 GitHub（单文件脚本、内置拓展没有这个入口）。
+  const canPublish = isPackage && script.source === "user" && !!script.package?.id;
+  const [publishOpen, setPublishOpen] = useState(false);
+  const displayName = localizedPackageText(script.package?.locales, "title", script.name);
+  const displayDescription = localizedPackageText(script.package?.locales, "description", script.package?.description ?? "");
+  // 拓展声明的能力，排成一行小标签；警示类（资源超限）用警告色。
+  const pkg = script.package;
+  const joined = (parts: unknown[]) => parts.filter((part): part is string => typeof part === "string" && part !== "").join("、");
+  type CapabilityTag = { text: string; tone?: "warn"; title?: string };
+  const capabilityCandidates: Array<CapabilityTag | null> = [
+    pkg?.hookEvents?.length ? { text: tf("Codex 钩子：{0}", [pkg.hookEvents.join("、")]) } : null,
+    pkg?.tools?.length ? { text: tf("模型工具：{0}", [pkg.tools.join("、")]) } : null,
+    pkg?.backend ? { text: t("常驻后台") } : null,
+    pkg?.services?.length ? { text: tf("提供服务：{0}", [pkg.services.join("、")]) } : null,
+    pkg?.providers?.length ? { text: tf("模型供应商：{0}", [pkg.providers.map((provider) => provider.name || provider.id).join("、")]) } : null,
+    pkg?.toolPipeline && (pkg.toolPipeline.preExecute || pkg.toolPipeline.execute || pkg.toolPipeline.postExecute)
+      ? { text: tf("工具管道：{0}", [joined([pkg.toolPipeline.preExecute && t("改参数"), pkg.toolPipeline.execute && t("代为执行"), pkg.toolPipeline.postExecute && t("改结果")])]) }
+      : null,
+    pkg?.gatewayRequest || pkg?.gatewayResponse || pkg?.gatewayError
+      ? { text: tf("网关中间件：{0}", [joined([!!pkg.gatewayRequest && t("请求"), !!pkg.gatewayResponse && t("响应流"), !!pkg.gatewayError && t("失败重试")])]) }
+      : null,
+    pkg?.codex?.skills?.length ? { text: tf("技能：{0}", [pkg.codex.skills.join("、")]) } : null,
+    pkg?.codex?.agents?.length ? { text: tf("子 agent：{0}", [pkg.codex.agents.join("、")]) } : null,
+    pkg?.codex?.mcpServers?.length ? { text: tf("MCP 服务器：{0}", [pkg.codex.mcpServers.join("、")]) } : null,
+    pkg?.codex?.instructions ? { text: t("全局指令") } : null,
+    pkg?.codex?.prompts?.length || pkg?.codex?.resources?.length
+      ? { text: tf("提示词 / 资源：{0}", [[...(pkg.codex.prompts ?? []), ...(pkg.codex.resources ?? [])].join("、")]) }
+      : null,
+    pkg?.schedules?.length ? { text: tf("定时任务：{0}", [pkg.schedules.map((item) => item.at ? `${item.method} ${item.at}` : tf("{0} 每 {1} 分钟", [item.method, String(item.everyMinutes ?? "")])).join("、")]) } : null,
+    pkg?.http ? { text: tf("HTTP 路由：/ext/{0}/", [pkg.id]) } : null,
+    pkg?.skippedAssets?.length
+      ? { text: tf("资源超出大小上限未加载：{0}", [pkg.skippedAssets.join("、")]), tone: "warn" as const, title: pkg.skippedAssets.join("\n") }
+      : null,
+  ];
+  const capabilityTags = capabilityCandidates.filter((tag): tag is CapabilityTag => tag !== null);
   return (
+    <>
     <div className="table-row user-script-row">
-      <span>{script.name}</span>
+      <div className="user-script-name">
+        <strong>{displayName}</strong>
+        {displayDescription ? <small title={displayDescription}>{displayDescription}</small> : null}
+        {capabilityTags.length ? (
+          <div className="user-script-tags">
+            {capabilityTags.map((tag) => (
+              <span className="user-script-tag" data-tone={tag.tone} key={tag.text} title={tag.title ?? tag.text}>{tag.text}</span>
+            ))}
+          </div>
+        ) : null}
+      </div>
       <span>{source}</span>
       <div className="user-script-state">
-        <label className="relay-bare-switch" title={script.enabled ? t("关闭该脚本") : t("启用该脚本")}>
+        <label className="relay-bare-switch" title={script.enabled ? t("关闭该拓展") : t("启用该拓展")}>
           <input
             aria-label={tf("启用 {0}", [script.name])}
             checked={script.enabled}
@@ -16185,14 +17138,55 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
         <span className="user-script-state-label" data-state={state} title={stateHint}>{label}</span>
       </div>
       <div className="script-row-actions">
-        {canDelete ? (
-          <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
-            <Trash2 className="h-4 w-4" />
-            {t("删除")}
-          </Button>
+        {configSchema.length || canPublish || canDelete || managerPage ? (
+          <Menu label={tf("{0} 的更多操作", [displayName])}>
+            {managerPage ? (
+              <MenuItem onClick={() => setPanelOpen((open) => !open)}>
+                <span className="user-script-menu-item"><AppWindow className="h-4 w-4" />{panelOpen ? t("收起面板") : t("打开面板")}</span>
+              </MenuItem>
+            ) : null}
+            {configSchema.length ? (
+              <MenuItem onClick={() => setConfigOpen((open) => !open)}>
+                <span className="user-script-menu-item"><Settings className="h-4 w-4" />{configOpen ? t("收起设置") : t("设置")}</span>
+              </MenuItem>
+            ) : null}
+            {canPublish ? (
+              <MenuItem onClick={() => setPublishOpen(true)}>
+                <span className="user-script-menu-item"><Upload className="h-4 w-4" />{t("发布到 GitHub")}</span>
+              </MenuItem>
+            ) : null}
+            {canDelete ? (
+              <MenuItem danger onClick={() => void actions.deleteUserScript(script.key)}>
+                <span className="user-script-menu-item"><Trash2 className="h-4 w-4" />{t("删除")}</span>
+              </MenuItem>
+            ) : null}
+          </Menu>
         ) : null}
       </div>
     </div>
+    {publishOpen && script.package?.id ? (
+      <ExtensionPublishDialog id={script.package.id} onClose={() => setPublishOpen(false)} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+    ) : null}
+    {panelOpen && managerPage ? (
+      <ExtensionManagerPanel
+        scriptKey={script.key}
+        config={script.package?.config ?? {}}
+        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values)}
+        onToast={(message) => actions.showExtensionNotice(managerPage.title || displayName, message)}
+      />
+    ) : null}
+    {configOpen && configSchema.length && renderSettings ? renderSettings() : null}
+    {configOpen && configSchema.length && !renderSettings ? (
+      <ExtensionConfigForm
+        fields={configSchema}
+        values={script.package?.config ?? {}}
+        onCancel={() => setConfigOpen(false)}
+        onSave={async (values) => {
+          if (await actions.setExtensionConfig(script.key, values)) setConfigOpen(false);
+        }}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -16270,7 +17264,10 @@ function routeTitle(route: Route) {
   return routes.find((item) => item.id === route)?.label ?? t("概览");
 }
 
-function routeSubtitle(route: Route) {
+/** 页面副标题；只管理 Codex（soloAgent）时网关两页不讲「任意 Agent」。 */
+function routeSubtitle(route: Route, soloAgent: string | null = null) {
+  if (soloAgent && route === "hub") return tf("{0} 经 Codex++ 接入任意供应商：走哪家、是否健康，一屏看全", [agentName(soloAgent)]);
+  if (soloAgent && route === "gateway") return tf("让 {0} 经 Codex++ 网关接入供应商池，并选它默认用的模型", [agentName(soloAgent)]);
   const subtitles: Record<Route, string> = {
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
@@ -16284,7 +17281,7 @@ function routeSubtitle(route: Route) {
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("管理常用功能、语音输入与下一步建议。"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
-    userScripts: t("内置和用户自定义脚本清单"),
+    userScripts: t("万物皆拓展：内置、市场和自己做的拓展"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("来自 Codex++ 广告源的推荐，点卡片在浏览器里打开"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
@@ -16301,6 +17298,7 @@ function routeSubtitle(route: Route) {
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题、配置文件、版本更新与日志诊断，不随 Agent 变化"),
     agentSettings: t("当前 Agent 的专属设置"),
+    extension: t("由拓展提供的页面"),
   };
   return subtitles[route];
 }
@@ -17068,6 +18066,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     // 旧版「Codex 用量挂件」开着、还没有桌宠设置的用户，升级后桌宠开启并选中大肥鱼。
     agentPet: normalizeAgentPetSettings(settings.agentPet, (settings as { codexAppWhaleWidgetEnabled?: unknown }).codexAppWhaleWidgetEnabled === true),
     ccsDbPath: (settings.ccsDbPath || "").trim(),
+    weixinConnectReasoningEffort: (settings.weixinConnectReasoningEffort || "").trim(),
+    weixinConnectProjectId: (settings.weixinConnectProjectId || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
@@ -18748,11 +19748,6 @@ function formatDuration(startedAtMs: number): string {
 function stringifyError(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
-}
-
-function loadInitialTheme(): Theme {
-  if (typeof window === "undefined") return "dark";
-  return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
 }
 
 /** 启动落在网关「总览」：Agent 概览跟着上次点的 Agent 走，落在那里像是停在了某个 Agent 里。 */

@@ -112,6 +112,33 @@
   fill: hsl(var(--brand-accent));
 }
 
+/* 只有真实进行中的请求才亮起；等待时去程，收到输出后反向回流。 */
+.hub-links path[data-busy="true"] {
+  stroke: hsl(var(--brand-accent) / 0.28);
+  stroke-dasharray: none;
+}
+
+/* 连线两端的小圆点；有请求在进行时变成强调色。 */
+.hub-links .hub-port {
+  fill: hsl(var(--muted-foreground) / 0.55);
+  stroke: hsl(var(--card));
+  stroke-width: 1.5;
+}
+
+.hub-links .hub-port[data-busy="true"] {
+  fill: hsl(var(--brand-accent));
+}
+
+/* 单一强调色表示流量，拖尾形状表示方向；成功/失败只留在请求列表。 */
+.hub-links .hub-stream-dot {
+  fill: hsl(var(--brand-accent));
+  filter: drop-shadow(0 0 2px hsl(var(--brand-accent) / 0.45));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-streams { display: none; }
+}
+
 .hub-col {
   display: grid;
   gap: 8px;
@@ -170,6 +197,19 @@
   background: currentColor;
   -webkit-mask: var(--hub-icon) center / contain no-repeat;
   mask: var(--hub-icon) center / contain no-repeat;
+}
+
+/* 彩色图标（<img>）与首字母：沿用各处 .hub-agent-glyph 的尺寸，不要遮罩和底色。 */
+.hub-agent-glyph.hub-agent-glyph-plain {
+  background: none;
+  -webkit-mask: none;
+  mask: none;
+  object-fit: contain;
+}
+
+.hub-agent-glyph.gw-agent-letter {
+  display: inline-grid;
+  background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
 .hub-node-text {
@@ -344,27 +384,30 @@
   gap: 16px;
 }
 
-.hub-feed {
+/* 总览「最近请求」：真实请求列表，行内容的样式在 RequestFlow.css。 */
+.hub-flow-list {
+  max-height: 440px;
   margin: 0;
+  overflow-y: auto;
   padding: 0 0 6px;
   list-style: none;
 }
 
-.hub-feed > li {
+.hub-flow-list > li {
   border-top: 1px solid hsl(var(--border));
 }
 
-.hub-feed > li:first-child {
+.hub-flow-list > li:first-child {
   border-top: 0;
 }
 
-.shell .hub-feed-row {
+.shell .hub-flow-toggle {
   display: grid;
-  grid-template-columns: 120px minmax(0, 1fr) auto auto 14px;
-  align-items: center;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  align-items: start;
+  gap: 10px;
   width: 100%;
-  padding: 8px 16px;
+  padding: 9px 16px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -373,24 +416,25 @@
   cursor: pointer;
 }
 
-.shell .hub-feed-row:disabled {
+.shell .hub-flow-toggle:disabled {
   cursor: default;
 }
 
-.shell .hub-feed-row:not(:disabled):hover {
+.shell .hub-flow-toggle:not(:disabled):hover {
   background: hsl(var(--muted) / 0.4);
 }
 
 .shell .hub-feed-chevron {
+  margin-top: 2px;
   color: hsl(var(--muted-foreground) / 0.7);
   transition: transform 0.15s ease;
 }
 
-.shell .hub-feed-row:disabled .hub-feed-chevron {
+.shell .hub-flow-toggle:disabled .hub-feed-chevron {
   visibility: hidden;
 }
 
-.shell .hub-feed > li[data-open="true"] .hub-feed-chevron {
+.shell .hub-flow-list > li[data-open="true"] .hub-feed-chevron {
   transform: rotate(180deg);
 }
 
@@ -436,65 +480,6 @@
 
 .shell .hub-feed-trace li[data-tone="fail"]::before {
   background: hsl(var(--status-error));
-}
-
-.hub-feed-agent {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  white-space: nowrap;
-}
-
-.hub-feed-route {
-  overflow: hidden;
-  color: hsl(var(--muted-foreground));
-  font-family: var(--font-mono);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.hub-feed-route i {
-  margin: 0 6px;
-  font-style: normal;
-  opacity: 0.6;
-}
-
-.hub-feed-route b {
-  color: hsl(var(--foreground));
-  font-weight: 500;
-}
-
-.hub-feed-ms {
-  color: hsl(var(--muted-foreground));
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.hub-badge {
-  padding: 1px 8px;
-  border-radius: 99px;
-  background: hsl(var(--status-success) / 0.12);
-  color: hsl(var(--status-success));
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.hub-badge[data-result="rerouted"],
-.hub-badge[data-result="cooling"] {
-  background: hsl(var(--status-warning) / 0.12);
-  color: hsl(var(--status-warning));
-}
-
-.hub-badge[data-result="failed"] {
-  background: hsl(var(--status-error) / 0.12);
-  color: hsl(var(--status-error));
-}
-
-.hub-badge[data-result="busy"] {
-  background: hsl(var(--brand-accent) / 0.14);
-  color: hsl(var(--brand-accent));
 }
 
 .hub-stats {
@@ -585,4 +570,150 @@
 .shell .hub-node-import {
   border-color: hsl(var(--primary) / 0.45);
   color: hsl(var(--primary));
+}
+
+/* ── 网关总览的紧凑拓扑：节点一行一个、中枢缩小，同一屏能放下更多 Agent 和供应商。
+   只作用于总览（className 传入），Computer Use 页的拓扑保持原样。 ── */
+
+.hub-topology.hub-topology-compact {
+  grid-template-columns: minmax(180px, 1fr) minmax(190px, 230px) minmax(180px, 1fr);
+  gap: 0 clamp(28px, 4vw, 56px);
+  padding: 12px 14px;
+}
+
+.hub-topology-compact .hub-col {
+  gap: 4px;
+}
+
+.hub-topology-compact .hub-col-head {
+  padding: 0 4px 2px;
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-node {
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 8px;
+}
+
+.hub-topology-compact .hub-node-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.hub-topology-compact .hub-node-icon .hub-agent-glyph {
+  width: 14px;
+  height: 14px;
+}
+
+/* 名字和副信息同排：名字优先，副信息（模型 / Key 数）跟在后面，放不下就省略。 */
+.hub-topology-compact .hub-node-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hub-topology-compact .hub-node-text strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.hub-topology-compact .hub-node-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-topology-compact .hub-node-text small {
+  flex: 1 1 0;
+  min-width: 24px;
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-node-num {
+  font-size: 11.5px;
+}
+
+.hub-topology-compact .hub-node-ghost {
+  min-height: 28px;
+  padding: 2px 8px;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.hub-topology-compact .hub-node-ghost svg {
+  width: 13px;
+  height: 13px;
+}
+
+.hub-topology-compact .hub-empty {
+  padding: 4px 4px 6px;
+}
+
+.hub-topology-compact .hub-core {
+  max-width: 230px;
+  padding: 12px 12px 10px;
+  border-radius: 12px;
+  box-shadow: 0 0 0 4px hsl(var(--brand-accent) / 0.05), var(--shadow-sm);
+}
+
+.hub-topology-compact .hub-core-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: left;
+}
+
+.hub-topology-compact .hub-core-head img {
+  margin: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+.hub-topology-compact .hub-core-head strong {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.25;
+}
+
+.hub-topology-compact .hub-addr {
+  font-size: 10.5px;
+}
+
+.hub-topology-compact .hub-caps {
+  display: block;
+  margin: 8px 0 0;
+  color: hsl(var(--muted-foreground) / 0.85);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.hub-topology-compact .hub-core dl {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.hub-topology-compact .hub-core dt {
+  font-size: 10px;
+}
+
+.hub-topology-compact .hub-core dd {
+  font-size: 13px;
+}
+
+@media (max-width: 1080px) {
+  .hub-topology.hub-topology-compact {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 16px;
+  }
+
+  .hub-topology-compact .hub-core {
+    max-width: none;
+  }
 }

@@ -1,0 +1,8 @@
+{
+  "name": "dsh-service-bundle",
+  "version": "0.1.0",
+  "description": "Service 子类插件给同一个包里的插件提供服务；行上的 isolate 与 ctx.isolate 给出作用域服务",
+  "type": "module",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": { "@deepseek-ai/cordis": "*", "@deepseek-ai/dsh-tools": "*" }
+}

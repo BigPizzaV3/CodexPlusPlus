@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdout, Command};
 
-use super::outbound::{AttachmentCalls, OutboundPermit, attachment_tool_spec};
+use super::outbound::{ATTACHMENT_TOOL, AttachmentCalls, OutboundPermit, attachment_tool_spec};
 use super::weixin::WeixinClient;
 
 pub(super) struct WeixinReplyChannel<'a> {
@@ -23,12 +23,34 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// app-server 起不来时保留多少行 stderr 用于报错。
 const STDERR_TAIL_LINES: usize = 8;
 const TURN_TIMEOUT: Duration = Duration::from_secs(600);
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_PENDING_TURN_MESSAGES: usize = 256;
+
+#[derive(Debug)]
+struct RpcFailure {
+    code: i64,
+    message: String,
+}
+
+impl std::fmt::Display for RpcFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "RPC {}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for RpcFailure {}
+
+pub struct SessionControlChannel<'a> {
+    pub options_store: &'a super::controls::SessionOptionsStore,
+    pub defaults: &'a super::controls::SessionOptions,
+}
 
 #[derive(Debug, Clone)]
 pub struct AppServerConfig {
     pub executable: String,
     pub work_dir: PathBuf,
     pub model: String,
+    pub reasoning_effort: String,
     pub sandbox: String,
 }
 
@@ -48,11 +70,14 @@ pub struct AppServerTurnResult {
 
 pub struct CodexAppServer {
     child: Child,
-    stdin: tokio::process::ChildStdin,
+    stdin: Option<tokio::process::ChildStdin>,
     stdout: Lines<BufReader<ChildStdout>>,
     next_id: u64,
     running: bool,
+    named_permissions: bool,
     config: AppServerConfig,
+    #[cfg(test)]
+    test_catalog: Option<Value>,
 }
 
 fn turn_params(
@@ -209,12 +234,14 @@ fn spawn_failure_hint(executable: &str, kind: std::io::ErrorKind) -> &'static st
 }
 
 impl CodexAppServer {
-    pub async fn start(config: AppServerConfig) -> anyhow::Result<Self> {
+    pub async fn start(mut config: AppServerConfig) -> anyhow::Result<Self> {
+        config.work_dir = std::path::absolute(&config.work_dir).context("无法解析微信工作目录")?;
         let executable = resolve_startup_executable(config.executable.trim());
         validate_codex_executable(&executable)?;
         let mut command = Command::new(&executable);
         command
             .arg("app-server")
+            .env_remove("CODEX_APP_TOOLS_PIPE_PATH")
             .current_dir(&config.work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -264,11 +291,14 @@ impl CodexAppServer {
 
         let mut server = Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout: BufReader::new(stdout).lines(),
             next_id: 1,
             running: true,
+            named_permissions: false,
             config,
+            #[cfg(test)]
+            test_catalog: None,
         };
         if let Err(error) = server.initialize().await {
             let detail = collect_stderr_tail(&stderr_tail);
@@ -285,8 +315,17 @@ impl CodexAppServer {
         self.running
     }
 
+    pub fn set_session_config(&mut self, config: &AppServerConfig) {
+        self.config = config.clone();
+    }
+
+    pub async fn api_request(&mut self, method: &str, params: Value) -> anyhow::Result<Value> {
+        self.request(method, params, Duration::from_secs(3)).await
+    }
+
     pub async fn prepare_thread(&mut self, thread_id: Option<&str>) -> anyhow::Result<String> {
-        self.prepare_thread_with_attachments(thread_id, false).await
+        self.prepare_thread_in_project_with_attachments(thread_id, None, false)
+            .await
     }
 
     pub(super) async fn prepare_thread_with_attachments(
@@ -294,20 +333,76 @@ impl CodexAppServer {
         thread_id: Option<&str>,
         enabled: bool,
     ) -> anyhow::Result<String> {
+        self.prepare_thread_in_project_with_attachments(thread_id, None, enabled)
+            .await
+    }
+
+    pub async fn prepare_thread_in_project(
+        &mut self,
+        thread_id: Option<&str>,
+        project_id: Option<&str>,
+    ) -> anyhow::Result<String> {
+        self.prepare_thread_in_project_with_attachments(thread_id, project_id, false)
+            .await
+    }
+
+    pub(super) async fn prepare_thread_in_project_with_attachments(
+        &mut self,
+        thread_id: Option<&str>,
+        project_id: Option<&str>,
+        allow_attachments: bool,
+    ) -> anyhow::Result<String> {
+        self.negotiate_permissions().await?;
         let mut params = self.thread_params();
         let method = if let Some(thread_id) = thread_id.filter(|id| !id.trim().is_empty()) {
             params["threadId"] = Value::String(thread_id.trim().to_string());
-            params["persistExtendedHistory"] = Value::Bool(true);
+            params.as_object_mut().unwrap().remove("dynamicTools");
             "thread/resume"
         } else {
-            if enabled {
-                params["dynamicTools"] = json!([attachment_tool_spec()]);
+            if allow_attachments {
+                params["dynamicTools"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(attachment_tool_spec());
+            }
+            if let Some(project_id) = project_id {
+                params["projectId"] = json!(project_id);
             }
             "thread/start"
         };
-        let result = self.request(method, params, REQUEST_TIMEOUT).await?;
-        extract_thread_id(&result)
-            .with_context(|| format!("Codex app-server {method} 未返回 thread id"))
+        let result = match self.request(method, params.clone(), REQUEST_TIMEOUT).await {
+            Err(error)
+                if method == "thread/start"
+                    && error
+                        .downcast_ref::<RpcFailure>()
+                        .is_some_and(|failure| failure.code == -32602) =>
+            {
+                params.as_object_mut().unwrap().remove("projectId");
+                params.as_object_mut().unwrap().remove("dynamicTools");
+                self.request(method, params, REQUEST_TIMEOUT).await?
+            }
+            Err(error)
+                if method == "thread/resume"
+                    && error.downcast_ref::<RpcFailure>().is_some_and(|failure| {
+                        failure.message.contains("already has an active writer")
+                    }) =>
+            {
+                bail!(
+                    "原会话正由其他应用占用，请先在该应用中关闭会话；若仍占用则退出该应用后重新发送。\
+                     原会话映射已保留，未启动新回合"
+                );
+            }
+            result => result?,
+        };
+        verify_sandbox_policy(&result, &self.config.sandbox)?;
+        let result_id = extract_thread_id(&result)
+            .with_context(|| format!("Codex app-server {method} 未返回 thread id"))?;
+        if let Some(expected) = thread_id.filter(|id| !id.trim().is_empty())
+            && result_id != expected.trim()
+        {
+            bail!("Codex app-server 恢复了不同的线程，原会话映射已保留");
+        }
+        Ok(result_id)
     }
 
     pub async fn run_turn(
@@ -335,16 +430,58 @@ impl CodexAppServer {
         image_paths: &[PathBuf],
         channel: Option<WeixinReplyChannel<'_>>,
     ) -> anyhow::Result<AppServerTurnResult> {
+        self.run_turn_with_reply_and_controls(thread_id, prompt, image_paths, channel, None)
+            .await
+    }
+
+    pub async fn run_turn_with_controls(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        channel: Option<SessionControlChannel<'_>>,
+    ) -> anyhow::Result<AppServerTurnResult> {
+        self.run_turn_with_images_and_controls(thread_id, prompt, &[], channel)
+            .await
+    }
+
+    pub async fn run_turn_with_images_and_controls(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        image_paths: &[PathBuf],
+        channel: Option<SessionControlChannel<'_>>,
+    ) -> anyhow::Result<AppServerTurnResult> {
+        self.run_turn_with_reply_and_controls(thread_id, prompt, image_paths, None, channel)
+            .await
+    }
+
+    pub(super) async fn run_turn_with_reply_and_controls(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        image_paths: &[PathBuf],
+        reply_channel: Option<WeixinReplyChannel<'_>>,
+        session_channel: Option<SessionControlChannel<'_>>,
+    ) -> anyhow::Result<AppServerTurnResult> {
         let mut calls = AttachmentCalls::new(
-            channel
+            reply_channel
                 .as_ref()
                 .map(|channel| channel.peer)
                 .unwrap_or_default(),
             thread_id,
-            channel.as_ref().and_then(|channel| channel.permit.clone()),
+            reply_channel
+                .as_ref()
+                .and_then(|channel| channel.permit.clone()),
         );
         let id = self.take_request_id();
-        let params = turn_params(&self.config, thread_id, prompt, image_paths);
+        let mut params = turn_params(&self.config, thread_id, prompt, image_paths);
+        params["cwd"] = json!(self.config.work_dir);
+        if !self.config.reasoning_effort.is_empty() {
+            params["effort"] = json!(self.config.reasoning_effort);
+        }
+        if self.named_permissions {
+            params["permissions"] = json!(permission_profile(&self.config.sandbox));
+        }
         self.write_json(&json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -354,6 +491,9 @@ impl CodexAppServer {
         .await?;
 
         let mut response_received = false;
+        let mut turn_id = String::new();
+        let mut pending_messages = VecDeque::new();
+        let mut session_results = HashMap::new();
         let mut turn_completed = false;
         let mut reply_parts = Vec::new();
         let mut model = self.config.model.trim().to_string();
@@ -364,26 +504,26 @@ impl CodexAppServer {
             if remaining.is_zero() {
                 bail!("等待 Codex 回复超时");
             }
-            let message = self.read_message(remaining).await?;
-            if is_server_request(&message) {
-                if message["method"] == "item/tool/call"
-                    && let Some(channel) = channel.as_ref()
-                {
-                    self.handle_attachment_tool(&message, channel, &mut calls)
-                        .await?;
-                } else {
-                    self.reject_server_request(&message).await?;
+            let message = if response_received {
+                match pending_messages.pop_front() {
+                    Some(message) => message,
+                    None => self.read_message(remaining).await?,
                 }
-                continue;
-            }
+            } else {
+                self.read_message(remaining).await?
+            };
             if response_id(&message) == Some(id) {
                 if let Some(error) = rpc_error(&message) {
                     bail!("Codex turn/start 失败：{error}");
                 }
                 let result = message.get("result").cloned().unwrap_or(Value::Null);
                 calls.turn = extract_turn_id(&result);
+                turn_id = calls.turn.clone().unwrap_or_default();
                 if calls.turn.is_none() {
-                    eprintln!("[weixin] turn/start 未返回回合 ID，附件调用将被拒绝");
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "weixin.turn_start.missing_turn_id",
+                        json!({ "request_id": id }),
+                    );
                 }
                 if model.is_empty() {
                     model = extract_model(&result).unwrap_or_default();
@@ -394,7 +534,43 @@ impl CodexAppServer {
                 response_received = true;
                 continue;
             }
-
+            if !response_received {
+                if pending_messages.len() >= MAX_PENDING_TURN_MESSAGES {
+                    bail!("Codex turn/start 响应前的消息数量超过限制");
+                }
+                pending_messages.push_back(message);
+                continue;
+            }
+            if is_server_request(&message) {
+                if message["method"] == "item/tool/call"
+                    && !turn_id.is_empty()
+                    && message_belongs_to_turn(&message, thread_id, &turn_id)
+                {
+                    match (
+                        message["params"]["tool"].as_str(),
+                        reply_channel.as_ref(),
+                        session_channel.as_ref(),
+                    ) {
+                        (Some(ATTACHMENT_TOOL), Some(channel), _) => {
+                            self.handle_attachment_tool(&message, channel, &mut calls)
+                                .await?;
+                        }
+                        (Some("weixin_session_settings"), _, Some(channel)) => {
+                            self.handle_session_tool(
+                                &message,
+                                thread_id,
+                                channel,
+                                &mut session_results,
+                            )
+                            .await?;
+                        }
+                        _ => self.reject_server_request(&message).await?,
+                    }
+                } else {
+                    self.reject_server_request(&message).await?;
+                }
+                continue;
+            }
             if !notification_matches_turn(&message, thread_id, calls.turn.as_deref()) {
                 continue;
             }
@@ -414,8 +590,13 @@ impl CodexAppServer {
                         }
                     }
                 }
-                Some("turn/completed") => turn_completed = true,
-                Some("thread/status/changed") if thread_status_is_idle(&message) => {
+                Some("turn/completed") => {
+                    if matches!(
+                        message["params"]["turn"]["status"].as_str(),
+                        Some("failed" | "interrupted")
+                    ) {
+                        bail!("Codex 处理失败：{}", message["params"]["turn"]["error"]);
+                    }
                     turn_completed = true;
                 }
                 Some("error") => {
@@ -473,11 +654,49 @@ impl CodexAppServer {
             .await
     }
 
+    pub async fn run_turn_and_release(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        channel: Option<SessionControlChannel<'_>>,
+    ) -> anyhow::Result<AppServerTurnResult> {
+        self.run_turn_with_images_and_release(thread_id, prompt, &[], None, channel)
+            .await
+    }
+
+    pub(super) async fn run_turn_with_images_and_release(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        image_paths: &[PathBuf],
+        reply_channel: Option<WeixinReplyChannel<'_>>,
+        channel: Option<SessionControlChannel<'_>>,
+    ) -> anyhow::Result<AppServerTurnResult> {
+        let result = self
+            .run_turn_with_reply_and_controls(
+                thread_id,
+                prompt,
+                image_paths,
+                reply_channel,
+                channel,
+            )
+            .await;
+        // unsubscribe 不保证释放跨进程写租约；仅退出本连接创建的独立 peer。
+        self.close().await;
+        result
+    }
+
     pub async fn close(&mut self) {
         self.running = false;
-        let _ = self.stdin.shutdown().await;
-        let _ = self.child.start_kill();
-        let _ = self.child.wait().await;
+        // ChildStdin::shutdown 在 Windows 上不关闭句柄，必须 drop 才能送达 EOF。
+        drop(self.stdin.take());
+        if !matches!(
+            tokio::time::timeout(CLOSE_TIMEOUT, self.child.wait()).await,
+            Ok(Ok(_))
+        ) {
+            let _ = self.child.start_kill();
+            let _ = self.child.wait().await;
+        }
     }
 
     async fn initialize(&mut self) -> anyhow::Result<()> {
@@ -512,18 +731,121 @@ impl CodexAppServer {
         .await
     }
 
+    async fn negotiate_permissions(&mut self) -> anyhow::Result<()> {
+        self.named_permissions = false;
+        if let Some(result) = self
+            .request_optional(
+                "permissionProfile/list",
+                json!({"cwd":self.config.work_dir}),
+                REQUEST_TIMEOUT,
+            )
+            .await?
+        {
+            let expected = permission_profile(&self.config.sandbox);
+            let profiles = result["data"]
+                .as_array()
+                .context("未返回可确认的权限配置列表")?;
+            if !profiles
+                .iter()
+                .any(|profile| profile["id"] == expected && profile["allowed"] == true)
+            {
+                bail!("Codex app-server 不允许微信连接请求的权限配置：{expected}");
+            }
+            self.named_permissions = true;
+        }
+        Ok(())
+    }
+
     fn thread_params(&self) -> Value {
         let mut params = json!({
             "cwd": self.config.work_dir.to_string_lossy(),
             "experimentalRawEvents": false,
-            "persistExtendedHistory": false,
+            "historyMode": "legacy",
+            "ephemeral": false,
             "approvalPolicy": "never",
-            "sandbox": normalize_sandbox(&self.config.sandbox)
+            "sandbox": normalize_sandbox(&self.config.sandbox),
+            "dynamicTools": [super::controls::session_tool_spec()]
         });
         if !self.config.model.trim().is_empty() {
             params["model"] = Value::String(self.config.model.trim().to_string());
         }
+        if !self.config.reasoning_effort.is_empty() {
+            params["config"] = json!({"model_reasoning_effort":self.config.reasoning_effort});
+        }
+        if self.named_permissions {
+            params.as_object_mut().unwrap().remove("sandbox");
+            params["permissions"] = json!(permission_profile(&self.config.sandbox));
+            params["runtimeWorkspaceRoots"] = json!([self.config.work_dir]);
+        }
         params
+    }
+
+    async fn handle_session_tool(
+        &mut self,
+        message: &Value,
+        thread_id: &str,
+        channel: &SessionControlChannel<'_>,
+        results: &mut HashMap<String, Value>,
+    ) -> anyhow::Result<()> {
+        let call_id = message["params"]["callId"]
+            .as_str()
+            .filter(|id| !id.is_empty());
+        let valid = message["params"]["tool"] == "weixin_session_settings"
+            && message["params"]["namespace"].is_null()
+            && message["params"]["threadId"] == thread_id;
+        if valid && let Some(cached) = call_id.and_then(|id| results.get(id)) {
+            return self
+                .write_json(&json!({"jsonrpc":"2.0","id":message["id"],"result":cached}))
+                .await;
+        }
+        let result = async {
+            if !valid || call_id.is_none() {
+                bail!("设置工具不属于当前微信会话");
+            }
+            let args = message["params"]["arguments"].as_object().context("设置参数必须是对象")?;
+            if args.keys().any(|key| !["action","model","reasoningEffort"].contains(&key.as_str())) {
+                bail!("不支持的设置参数");
+            }
+            #[cfg(test)]
+            let catalog = match &self.test_catalog {
+                Some(catalog) => catalog.clone(),
+                None => crate::model_catalog::read_codex_model_catalog().await,
+            };
+            #[cfg(not(test))]
+            let catalog = crate::model_catalog::read_codex_model_catalog().await;
+            let mut next = channel.options_store.load()?;
+            match args.get("action").and_then(Value::as_str) {
+                Some("set") => {
+                    next = super::controls::updated_options(&catalog, channel.defaults, &next, args)?;
+                    channel.options_store.save(next.clone())?;
+                }
+                Some("get") => {}
+                Some("reset") => {
+                    channel.options_store.request_reset()?;
+                    next = channel.options_store.load()?;
+                }
+                _ => bail!("未知设置操作"),
+            }
+            Ok::<_, anyhow::Error>(json!({
+                "currentTurn":{"model":self.config.model,"reasoningEffort":self.config.reasoning_effort},
+                "savedOverrides":next,"appliesFrom":"next-message",
+                "connectionDefaults":channel.defaults,
+                "models":catalog["models"],"modelMetadata":catalog["modelMetadata"]
+            }))
+        }.await;
+        let result = match result {
+            Ok(value) => {
+                json!({"success":true,"contentItems":[{"type":"inputText","text":value.to_string()}]})
+            }
+            Err(error) => {
+                json!({"success":false,"contentItems":[{"type":"inputText","text":error.to_string()}]})
+            }
+        };
+        if valid && let Some(id) = call_id {
+            results.insert(id.to_string(), result.clone());
+        }
+        self.write_json(&json!({"jsonrpc":"2.0","id":message["id"],"result":result}))
+            .await
     }
 
     async fn request(
@@ -532,6 +854,17 @@ impl CodexAppServer {
         params: Value,
         timeout: Duration,
     ) -> anyhow::Result<Value> {
+        self.request_optional(method, params, timeout)
+            .await?
+            .with_context(|| format!("Codex app-server 不支持 {method}"))
+    }
+
+    async fn request_optional(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<Value>> {
         let id = self.take_request_id();
         self.write_json(&json!({
             "jsonrpc": "2.0",
@@ -554,10 +887,27 @@ impl CodexAppServer {
             if response_id(&message) != Some(id) {
                 continue;
             }
-            if let Some(error) = rpc_error(&message) {
-                bail!("Codex app-server {method} 失败：{error}");
+            let code = message["error"]["code"].as_i64();
+            let unknown_method = code == Some(-32600)
+                && message["error"]["message"].as_str().is_some_and(|error| {
+                    let error = error.strip_prefix("Invalid request: ").unwrap_or(error);
+                    ["unknown variant", "unknown method"].iter().any(|kind| {
+                        ['`', '\'', '"'].iter().any(|quote| {
+                            error.starts_with(&format!("{kind} {quote}{method}{quote}"))
+                        })
+                    })
+                });
+            if code == Some(-32601) || unknown_method {
+                return Ok(None);
             }
-            return Ok(message.get("result").cloned().unwrap_or(Value::Null));
+            if let Some(error) = rpc_error(&message) {
+                return Err(RpcFailure {
+                    code: message["error"]["code"].as_i64().unwrap_or_default(),
+                    message: format!("Codex app-server {method} 失败：{error}"),
+                }
+                .into());
+            }
+            return Ok(Some(message.get("result").cloned().unwrap_or(Value::Null)));
         }
     }
 
@@ -627,11 +977,15 @@ impl CodexAppServer {
     async fn write_json(&mut self, value: &Value) -> anyhow::Result<()> {
         let mut bytes = serde_json::to_vec(value)?;
         bytes.push(b'\n');
-        self.stdin
+        let stdin = self
+            .stdin
+            .as_mut()
+            .context("Codex app-server stdin 已关闭")?;
+        stdin
             .write_all(&bytes)
             .await
             .context("写入 Codex app-server 失败")?;
-        self.stdin.flush().await?;
+        stdin.flush().await?;
         Ok(())
     }
 
@@ -650,20 +1004,6 @@ fn attachment_result(result: anyhow::Result<()>) -> Value {
     json!({"success": success, "contentItems": [{"type": "inputText", "text": text}]})
 }
 
-fn notification_matches_turn(message: &Value, thread: &str, turn: Option<&str>) -> bool {
-    let params = &message["params"];
-    if params["threadId"]
-        .as_str()
-        .is_some_and(|actual| actual != thread)
-    {
-        return false;
-    }
-    let actual_turn = params["turnId"]
-        .as_str()
-        .or_else(|| params["turn"]["id"].as_str());
-    !turn.is_some_and(|expected| actual_turn.is_some_and(|actual| actual != expected))
-}
-
 impl Drop for CodexAppServer {
     fn drop(&mut self) {
         if self.running {
@@ -677,6 +1017,43 @@ fn normalize_sandbox(value: &str) -> &'static str {
         "workspace-write" => "workspace-write",
         "danger-full-access" => "danger-full-access",
         _ => "read-only",
+    }
+}
+
+fn permission_profile(sandbox: &str) -> &'static str {
+    match normalize_sandbox(sandbox) {
+        "workspace-write" => ":workspace",
+        "danger-full-access" => ":danger-full-access",
+        _ => ":read-only",
+    }
+}
+
+fn verify_sandbox_policy(result: &Value, expected: &str) -> anyhow::Result<()> {
+    let actual = match result["sandbox"]["type"].as_str() {
+        Some("readOnly" | "read-only") => "read-only",
+        Some("workspaceWrite" | "workspace-write") => "workspace-write",
+        Some("dangerFullAccess" | "danger-full-access") => "danger-full-access",
+        _ => bail!("Codex app-server 未确认微信会话权限"),
+    };
+    if actual != normalize_sandbox(expected) {
+        bail!("Codex app-server 返回的权限与微信连接设置不符");
+    }
+    Ok(())
+}
+
+fn message_belongs_to_turn(message: &Value, thread_id: &str, turn_id: &str) -> bool {
+    let params = &message["params"];
+    params["threadId"].as_str() == Some(thread_id)
+        && params["turnId"]
+            .as_str()
+            .or_else(|| params["turn"]["id"].as_str())
+            == Some(turn_id)
+}
+
+fn notification_matches_turn(message: &Value, thread_id: &str, turn_id: Option<&str>) -> bool {
+    match turn_id {
+        Some(turn_id) => message_belongs_to_turn(message, thread_id, turn_id),
+        None => message["params"]["threadId"].as_str() == Some(thread_id),
     }
 }
 
@@ -782,15 +1159,6 @@ fn extract_completed_agent_text(message: &Value) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
-fn thread_status_is_idle(message: &Value) -> bool {
-    message
-        .get("params")
-        .and_then(|params| params.get("status"))
-        .and_then(|status| status.get("type").or(Some(status)))
-        .and_then(Value::as_str)
-        == Some("idle")
-}
-
 fn deep_string(value: Option<&Value>, keys: &[&str]) -> Option<String> {
     let value = value?;
     if let Some(text) = value.as_str() {
@@ -827,6 +1195,7 @@ mod tests {
             executable: "unused".into(),
             work_dir: PathBuf::from("workspace"),
             model: " existing-model ".into(),
+            reasoning_effort: String::new(),
             sandbox: "read-only".into(),
         };
         let images = [
@@ -866,7 +1235,9 @@ mod tests {
         let Ok(mode) = std::env::var("CODEX_PLUS_W2_STDIO_FIXTURE_MODE") else {
             return;
         };
-        let enabled = mode == "enabled";
+        let missing_turn = mode == "missing-turn" || mode == "missing-turn-id";
+        let enabled = mode == "enabled" || mode == "combined" || missing_turn;
+        let with_controls = mode == "combined" || mode == "missing-turn";
         let emit = |value: Value| {
             println!("{value}");
             std::io::Write::flush(&mut std::io::stdout()).unwrap();
@@ -885,38 +1256,83 @@ mod tests {
             match message["method"].as_str() {
                 Some("initialize") => emit(json!({"id": message["id"], "result": {}})),
                 Some("initialized") => {}
+                Some("permissionProfile/list") => emit(json!({
+                    "id": message["id"],
+                    "error": {"code": -32601, "message": "unsupported"}
+                })),
                 Some("thread/start") => {
-                    assert_eq!(message["params"]["dynamicTools"].is_array(), enabled);
-                    if enabled {
-                        assert_eq!(
-                            message["params"]["dynamicTools"][0]["name"],
-                            super::super::outbound::ATTACHMENT_TOOL
-                        );
+                    let tools = message["params"]["dynamicTools"].as_array().unwrap();
+                    assert_eq!(tools.len(), if enabled { 2 } else { 1 });
+                    assert!(
+                        tools
+                            .iter()
+                            .any(|tool| tool["name"] == "weixin_session_settings")
+                    );
+                    assert_eq!(
+                        tools.iter().any(|tool| tool["name"] == ATTACHMENT_TOOL),
+                        enabled
+                    );
+                    if with_controls {
+                        assert_eq!(message["params"]["projectId"], "project-1");
                     }
-                    emit(json!({"id": message["id"], "result": {"thread": {"id": "thread"}}}));
+                    emit(json!({"id": message["id"], "result": {
+                        "thread": {"id": "thread"}, "sandbox": {"type": "readOnly"}
+                    }}));
                 }
                 Some("thread/resume") => {
                     assert!(message["params"].get("dynamicTools").is_none());
-                    emit(json!({"id": message["id"], "result": {"thread": {"id": "thread"}}}));
+                    emit(json!({"id": message["id"], "result": {
+                        "thread": {"id": "thread"}, "sandbox": {"type": "readOnly"}
+                    }}));
                 }
                 Some("turn/start") => {
-                    emit(json!({"id": message["id"], "result": {"turn": {"id": "turn"}}}));
+                    if with_controls {
+                        assert_eq!(message["params"]["model"], "fixture");
+                        assert_eq!(message["params"]["effort"], "high");
+                        emit(
+                            json!({"id": "settings", "method": "item/tool/call", "params": {
+                                "threadId": "thread", "turnId": "turn", "callId": "call",
+                                "tool": "weixin_session_settings", "namespace": null,
+                                "arguments": {"action": "set", "reasoningEffort": "low"}
+                            }}),
+                        );
+                    }
                     emit(
-                        json!({"method": "turn/completed", "params": {"threadId": "thread", "turn": {"id": "old-turn", "status": "completed"}}}),
+                        json!({"id": message["id"], "result": if missing_turn { json!({}) } else { json!({"turn": {"id": "turn"}}) }}),
                     );
+                    if !missing_turn {
+                        emit(
+                            json!({"method": "turn/completed", "params": {"threadId": "thread", "turn": {"id": "old-turn", "status": "completed"}}}),
+                        );
+                    }
                     emit(tool("stale", "old-turn"));
                 }
                 None => match message["id"].as_str().unwrap() {
+                    "settings" => {
+                        assert!(with_controls);
+                        assert_eq!(message["result"]["success"], !missing_turn);
+                        if missing_turn {
+                            continue;
+                        }
+                        let result: Value = serde_json::from_str(
+                            message["result"]["contentItems"][0]["text"]
+                                .as_str()
+                                .unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(result["currentTurn"]["reasoningEffort"], "high");
+                        assert_eq!(result["savedOverrides"]["reasoningEffort"], "low");
+                    }
                     "stale" => {
                         assert_eq!(message["result"]["success"], false);
                         emit(tool("first", "turn"));
                     }
                     "first" => {
-                        assert_eq!(message["result"]["success"], enabled);
+                        assert_eq!(message["result"]["success"], enabled && !missing_turn);
                         emit(tool("repeat", "turn"));
                     }
                     "repeat" => {
-                        assert_eq!(message["result"]["success"], enabled);
+                        assert_eq!(message["result"]["success"], enabled && !missing_turn);
                         emit(
                             json!({"method": "item/completed", "params": {"threadId": "thread", "turnId": "turn", "item": {"type": "agentMessage", "text": "done"}}}),
                         );
@@ -931,8 +1347,391 @@ mod tests {
         }
     }
 
+    fn fixture_server(root: &Path, mode: &str) -> CodexAppServer {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "connect::app_server::tests::session_stdio_fixture",
+                "--nocapture",
+            ])
+            .env("CODEX_PLUS_SESSION_FIXTURE", mode)
+            .env("CODEX_PLUS_SESSION_FIXTURE_ROOT", root)
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+        let mut child = command.spawn().unwrap();
+        CodexAppServer {
+            stdin: child.stdin.take(),
+            stdout: BufReader::new(child.stdout.take().unwrap()).lines(),
+            child,
+            next_id: 1,
+            running: true,
+            named_permissions: false,
+            config: AppServerConfig {
+                executable: String::new(),
+                work_dir: root.to_owned(),
+                model: "fixture".into(),
+                reasoning_effort: "high".into(),
+                sandbox: "read-only".into(),
+            },
+            test_catalog: Some(json!({"models":["fixture"],"modelMetadata":{
+                "fixture":{"supportedReasoningEfforts":["low","high"]}
+            }})),
+        }
+    }
+
+    #[test]
+    fn session_stdio_fixture() {
+        use std::io::{BufRead, Write};
+        let Ok(mode) = std::env::var("CODEX_PLUS_SESSION_FIXTURE") else {
+            return;
+        };
+        let emit = |value: Value| {
+            println!("{value}");
+            std::io::stdout().flush().unwrap();
+        };
+        let tool = |id: &str, turn: &str, namespace: Option<&str>, args: Value| {
+            emit(json!({"id":id,"method":"item/tool/call","params":{
+                "threadId":"original","turnId":turn,"callId":id,
+                "tool":"weixin_session_settings","namespace":namespace,"arguments":args
+            }}));
+        };
+        let complete = |turn: &str| {
+            emit(json!({"method":"item/completed","params":{
+                "threadId":"other","turnId":turn,"item":{"type":"agentMessage","text":"FOREIGN"}
+            }}));
+            emit(json!({"method":"item/completed","params":{
+                "threadId":"original","turnId":turn,"item":{"type":"agentMessage","text":"checked"}
+            }}));
+            emit(json!({"method":"turn/completed","params":{
+                "threadId":"original","turn":{"id":turn,"status":"completed"}
+            }}));
+        };
+        let mut turns = 0;
+        let mut seen_set = false;
+        for line in std::io::stdin().lock().lines() {
+            let message: Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let id = message["id"].clone();
+            let params = &message["params"];
+            match message["method"].as_str() {
+                Some("initialize") => emit(json!({"id":id,"result":{}})),
+                Some("initialized") => {}
+                Some("permissionProfile/list") => {
+                    if let Some(case) = mode.strip_prefix("optional-permissions-") {
+                        let error = match case {
+                            "unknown-variant" => "Invalid request: unknown variant `permissionProfile/list`, expected one of `initialize`, `thread/start`, `thread/resume`, `turn/start`",
+                            "unknown-method" => "Invalid request: unknown method `permissionProfile/list`",
+                            "unknown-method-unprefixed" => "unknown method \"permissionProfile/list\"",
+                            "invalid-request" => "Invalid request: missing field `cwd`",
+                            "invalid-variant" => "Invalid request: unknown variant `invalid`, expected `read-only` or `workspace-write`",
+                            "invalid-method" => "Invalid request: unknown method `another/method`",
+                            "invalid-nested-message" => "Invalid request: invalid cwd: unknown method `permissionProfile/list`",
+                            "invalid-active-writer" => "thread original already has an active writer",
+                            _ => panic!("Unexpected permission fixture: {case}"),
+                        };
+                        emit(json!({"id":id,"error":{"code":-32600,"message":error}}));
+                    } else if mode == "legacy" || mode.starts_with("optional-") {
+                        emit(json!({"id":id,"error":{"code":-32601,"message":"unsupported"}}));
+                    } else {
+                        emit(json!({"id":id,"result":{"data":[
+                            {"id":":read-only","allowed":true},
+                            {"id":":workspace","allowed":true}
+                        ]}}));
+                    }
+                }
+                Some("thread/start") => {
+                    assert_ne!(mode, "resume-failed", "恢复失败不能新建线程");
+                    if mode == "optional-reject-start" && params.get("projectId").is_some() {
+                        emit(
+                            json!({"id":id,"error":{"code":-32602,"message":"projectId unsupported"}}),
+                        );
+                        continue;
+                    }
+                    if mode.starts_with("optional-") {
+                        assert!(params.get("projectId").is_none());
+                    } else {
+                        assert_eq!(params["projectId"], "project-1");
+                    }
+                    if mode != "optional-reject-start" {
+                        assert_eq!(params["dynamicTools"].as_array().unwrap().len(), 1);
+                        assert_eq!(params["dynamicTools"][0]["name"], "weixin_session_settings");
+                    }
+                    assert_eq!(params["config"]["model_reasoning_effort"], "high");
+                    emit(json!({"id":id,"result":{"thread":{"id":"original"},
+                        "sandbox":{"type":"readOnly"}}}));
+                }
+                Some("thread/resume") => {
+                    if mode == "release-busy" {
+                        emit(json!({"id":id,"error":{"code":-32600,
+                            "message":"thread original already has an active writer"}}));
+                        continue;
+                    }
+                    if mode == "resume-failed" {
+                        emit(
+                            json!({"id":id,"error":{"code":-32000,"message":"thread unavailable"}}),
+                        );
+                        continue;
+                    }
+                    assert_eq!(params["threadId"], "original");
+                    assert!(params.get("dynamicTools").is_none());
+                    if mode != "legacy" && !mode.starts_with("optional-") {
+                        assert_eq!(params["runtimeWorkspaceRoots"].as_array().unwrap().len(), 1);
+                    }
+                    let result_id = if mode == "wrong-id" {
+                        "replacement"
+                    } else {
+                        "original"
+                    };
+                    let sandbox = if mode == "wrong-scope" {
+                        "dangerFullAccess"
+                    } else if turns > 0 {
+                        "workspaceWrite"
+                    } else {
+                        "readOnly"
+                    };
+                    emit(
+                        json!({"id":id,"result":{"thread":{"id":result_id},"sandbox":{"type":sandbox}}}),
+                    );
+                }
+                Some("turn/start") => {
+                    assert_ne!(mode, "release-busy", "占用中的原线程不能开始回合");
+                    if mode == "release-images" {
+                        assert_eq!(params["input"][1]["type"], "localImage");
+                        assert!(
+                            params["input"][1]["path"]
+                                .as_str()
+                                .unwrap()
+                                .ends_with("fixture.png")
+                        );
+                    }
+                    turns += 1;
+                    let turn = format!("t{turns}");
+                    assert_eq!(params["model"], "fixture");
+                    assert_eq!(params["effort"], if turns == 1 { "high" } else { "low" });
+                    if mode != "legacy" && !mode.starts_with("optional-") {
+                        assert_eq!(
+                            params["permissions"],
+                            if turns == 1 {
+                                ":read-only"
+                            } else {
+                                ":workspace"
+                            }
+                        );
+                    }
+                    // 工具可能先于 turn/start 响应抵达，必须等待身份确认再执行。
+                    if turns == 1 && mode == "settings" {
+                        tool(
+                            "set",
+                            &turn,
+                            None,
+                            json!({"action":"set","reasoningEffort":"low"}),
+                        );
+                    }
+                    emit(json!({"id":id,"result":{"turn":{"id":turn}}}));
+                    if mode.starts_with("release-") {
+                        let root = std::env::var_os("CODEX_PLUS_SESSION_FIXTURE_ROOT").unwrap();
+                        std::fs::write(Path::new(&root).join("active"), "active").unwrap();
+                        std::thread::sleep(Duration::from_millis(200));
+                        if mode == "release-failed" {
+                            emit(json!({"method":"turn/completed","params":{
+                                "threadId":"original","turn":{"id":turn,"status":"failed",
+                                "error":{"message":"fixture failure"}}
+                            }}));
+                            continue;
+                        }
+                    }
+                    if turns > 1 || mode != "settings" {
+                        complete(&turn);
+                    }
+                }
+                Some(
+                    "project/read"
+                    | "project/list"
+                    | "thread/metadata/update"
+                    | "config/read"
+                    | "model/list",
+                ) if mode == "optional-unavailable" => {
+                    emit(json!({"id":id,"error":{"code":-32601,"message":"unsupported"}}));
+                }
+                None => match id.as_str() {
+                    Some("set") => {
+                        assert_eq!(message["result"]["success"], true);
+                        let result: Value = serde_json::from_str(
+                            message["result"]["contentItems"][0]["text"]
+                                .as_str()
+                                .unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(result["currentTurn"]["reasoningEffort"], "high");
+                        assert_eq!(result["savedOverrides"]["reasoningEffort"], "low");
+                        if !seen_set {
+                            seen_set = true;
+                            tool(
+                                "foreign",
+                                "old-turn",
+                                None,
+                                json!({"action":"set","reasoningEffort":"high"}),
+                            );
+                        }
+                    }
+                    Some("foreign") => {
+                        assert_eq!(message["result"]["success"], false);
+                        tool(
+                            "namespace",
+                            "t1",
+                            Some("other"),
+                            json!({"action":"set","reasoningEffort":"high"}),
+                        );
+                    }
+                    Some("namespace") => {
+                        assert_eq!(message["result"]["success"], false);
+                        tool(
+                            "invalid",
+                            "t1",
+                            None,
+                            json!({"action":"set","model":"unknown"}),
+                        );
+                    }
+                    Some("invalid") => {
+                        assert_eq!(message["result"]["success"], false);
+                        // 同 callId 的重放必须返回首个结果，不能再次写入。
+                        tool(
+                            "set",
+                            "t1",
+                            None,
+                            json!({"action":"set","reasoningEffort":"high"}),
+                        );
+                        tool("get", "t1", None, json!({"action":"get"}));
+                    }
+                    Some("get") => {
+                        assert_eq!(message["result"]["success"], true);
+                        complete("t1");
+                    }
+                    _ => panic!("Unexpected response: {message}"),
+                },
+                _ => panic!("Unexpected request: {message}"),
+            }
+        }
+        if mode.starts_with("release-") {
+            let root = std::env::var_os("CODEX_PLUS_SESSION_FIXTURE_ROOT").unwrap();
+            std::fs::write(Path::new(&root).join("exited"), "stdin EOF").unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_peer_exits_after_completed_or_failed_turn_without_unsubscribe_rpc() {
+        for mode in ["release-current", "release-failed"] {
+            let root = tempfile::tempdir().unwrap();
+            let mut server = fixture_server(root.path(), mode);
+            server.initialize().await.unwrap();
+            let thread = server.prepare_thread(Some("original")).await.unwrap();
+            let monitor = async {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                while !root.path().join("active").exists() {
+                    assert!(tokio::time::Instant::now() < deadline);
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                assert!(!root.path().join("exited").exists());
+            };
+            let (result, ()) = tokio::join!(
+                server.run_turn_and_release(&thread, "local fixture only", None),
+                monitor
+            );
+            assert_eq!(result.is_err(), mode == "release-failed");
+            assert!(!server.is_running());
+            assert!(server.child.try_wait().unwrap().unwrap().success());
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("exited")).unwrap(),
+                "stdin EOF"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_peer_releases_without_requiring_new_rpcs() {
+        let root = tempfile::tempdir().unwrap();
+        let mut server = fixture_server(root.path(), "legacy");
+        server.initialize().await.unwrap();
+        let thread = server.prepare_thread(Some("original")).await.unwrap();
+        assert_eq!(
+            server
+                .run_turn_and_release(&thread, "legacy", None)
+                .await
+                .unwrap()
+                .reply,
+            "checked"
+        );
+        assert!(!server.is_running());
+        assert!(server.child.try_wait().unwrap().unwrap().success());
+    }
+
+    #[tokio::test]
+    async fn images_and_session_controls_share_the_releasing_turn() {
+        use super::super::controls::{SessionOptions, SessionOptionsStore};
+        let root = tempfile::tempdir().unwrap();
+        let store = SessionOptionsStore::test_store(root.path().join("settings.json"), "peer");
+        let defaults = SessionOptions::default();
+        let mut server = fixture_server(root.path(), "release-images");
+        server.initialize().await.unwrap();
+        let thread = server.prepare_thread(Some("original")).await.unwrap();
+        let result = server
+            .run_turn_with_images_and_release(
+                &thread,
+                "caption",
+                &[root.path().join("fixture.png")],
+                None,
+                Some(SessionControlChannel {
+                    options_store: &store,
+                    defaults: &defaults,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.reply, "checked");
+        assert!(server.child.try_wait().unwrap().unwrap().success());
+    }
+
+    #[tokio::test]
+    async fn next_owned_peer_resumes_the_original_thread() {
+        let root = tempfile::tempdir().unwrap();
+        for _ in 0..2 {
+            let mut server = fixture_server(root.path(), "release-current");
+            server.initialize().await.unwrap();
+            let thread = server.prepare_thread(Some("original")).await.unwrap();
+            assert_eq!(thread, "original");
+            assert_eq!(
+                server
+                    .run_turn_and_release(&thread, "next message", None)
+                    .await
+                    .unwrap()
+                    .reply,
+                "checked"
+            );
+            assert!(server.child.try_wait().unwrap().unwrap().success());
+        }
+    }
+
+    #[tokio::test]
+    async fn external_writer_is_not_reset_replaced_or_started() {
+        let root = tempfile::tempdir().unwrap();
+        let mut server = fixture_server(root.path(), "release-busy");
+        server.initialize().await.unwrap();
+        let error = server.prepare_thread(Some("original")).await.unwrap_err();
+        assert!(error.to_string().contains("其他应用占用"));
+        assert!(error.to_string().contains("原会话映射已保留，未启动新回合"));
+        assert!(!root.path().join("active").exists());
+        server.close().await;
+        assert!(server.child.try_wait().unwrap().unwrap().success());
+    }
+
     #[tokio::test]
     async fn outbound_stdio_registers_only_when_enabled_and_sends_each_call_once() {
+        use super::super::controls::{SessionOptions, SessionOptionsStore};
         use super::super::outbound::OutboundPolicy;
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
@@ -940,10 +1739,20 @@ mod tests {
         };
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("result.txt"), b"result").unwrap();
-        for enabled in [false, true] {
+        let missing_turn_id = std::env::var_os("CODEX_PLUS_W2_MISSING_TURN_ID").is_some();
+        for (mode, enabled, with_controls) in [
+            ("disabled", false, false),
+            ("enabled", true, false),
+            ("combined", true, true),
+            ("missing-turn", true, true),
+            ("missing-turn-id", true, false),
+        ] {
+            if missing_turn_id && mode != "missing-turn-id" {
+                continue;
+            }
             let api = MockServer::start().await;
             let cdn = MockServer::start().await;
-            let count = if enabled { 1 } else { 0 };
+            let count = if enabled && !mode.starts_with("missing-turn") { 1 } else { 0 };
             Mock::given(method("POST"))
                 .and(path("/ilink/bot/getuploadurl"))
                 .respond_with(
@@ -978,10 +1787,7 @@ mod tests {
                     "connect::app_server::tests::outbound_stdio_fixture",
                     "--nocapture",
                 ])
-                .env(
-                    "CODEX_PLUS_W2_STDIO_FIXTURE_MODE",
-                    if enabled { "enabled" } else { "disabled" },
-                )
+                .env("CODEX_PLUS_W2_STDIO_FIXTURE_MODE", mode)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -993,43 +1799,379 @@ mod tests {
             let stdout = child.stdout.take().unwrap();
             let mut server = CodexAppServer {
                 child,
-                stdin,
+                stdin: Some(stdin),
                 stdout: BufReader::new(stdout).lines(),
                 next_id: 1,
                 running: true,
+                named_permissions: false,
                 config: AppServerConfig {
                     executable: String::new(),
                     work_dir: workspace.path().to_path_buf(),
-                    model: String::new(),
+                    model: if with_controls {
+                        "fixture".into()
+                    } else {
+                        String::new()
+                    },
+                    reasoning_effort: if with_controls {
+                        "high".into()
+                    } else {
+                        String::new()
+                    },
                     sandbox: "read-only".into(),
                 },
+                test_catalog: Some(json!({"models":["fixture"],"modelMetadata":{
+                    "fixture":{"supportedReasoningEfforts":["low","high"]}
+                }})),
+            };
+            let options_store = SessionOptionsStore::test_store(
+                workspace.path().join(format!("settings-{mode}.json")),
+                "peer",
+            );
+            let defaults = SessionOptions {
+                model: "fixture".into(),
+                reasoning_effort: "high".into(),
+                reset_request: None,
             };
             let result = tokio::time::timeout(Duration::from_secs(15), async {
                 server.initialize().await?;
-                let thread = server
-                    .prepare_thread_with_attachments(None, enabled)
-                    .await?;
+                let thread = if with_controls {
+                    server
+                        .prepare_thread_in_project_with_attachments(
+                            None,
+                            Some("project-1"),
+                            enabled,
+                        )
+                        .await?
+                } else {
+                    server
+                        .prepare_thread_with_attachments(None, enabled)
+                        .await?
+                };
                 server
                     .prepare_thread_with_attachments(Some(&thread), enabled)
                     .await?;
-                server
-                    .run_turn_with_reply(
-                        &thread,
-                        "send",
-                        &[],
-                        Some(WeixinReplyChannel {
-                            client: &client,
-                            peer: "peer",
-                            context_token: "context",
-                            permit: policy.permit("peer").ok(),
-                        }),
-                    )
-                    .await
+                let reply_channel = Some(WeixinReplyChannel {
+                    client: &client,
+                    peer: "peer",
+                    context_token: "private context token",
+                    permit: policy.permit("peer").ok(),
+                });
+                if with_controls {
+                    server
+                        .run_turn_with_reply_and_controls(
+                            &thread,
+                            "send private prompt",
+                            &[],
+                            reply_channel,
+                            Some(SessionControlChannel {
+                                options_store: &options_store,
+                                defaults: &defaults,
+                            }),
+                        )
+                        .await
+                } else {
+                    server
+                        .run_turn_with_reply(&thread, "send private prompt", &[], reply_channel)
+                        .await
+                }
             })
             .await;
             server.close().await;
             assert_eq!(result.unwrap().unwrap().reply, "done");
+            if with_controls {
+                assert_eq!(
+                    options_store.load().unwrap().reasoning_effort,
+                    if mode == "missing-turn" { "" } else { "low" }
+                );
+                assert_eq!(server.config.reasoning_effort, "high");
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn optional_permissions_unknown_methods_fall_back_to_legacy_sandbox() {
+        let root = tempfile::tempdir().unwrap();
+        for mode in [
+            "optional-unavailable",
+            "optional-permissions-unknown-variant",
+            "optional-permissions-unknown-method",
+            "optional-permissions-unknown-method-unprefixed",
+        ] {
+            let mut server = fixture_server(root.path(), mode);
+            server.initialize().await.unwrap();
+            server.named_permissions = true;
+            let thread = server.prepare_thread(None).await.unwrap();
+            assert_eq!(thread, "original");
+            assert!(!server.named_permissions, "{mode}");
+            let params = server.thread_params();
+            assert_eq!(params["sandbox"], "read-only");
+            assert!(params.get("permissions").is_none());
+            assert!(params.get("runtimeWorkspaceRoots").is_none());
+            assert_eq!(server.prepare_thread(Some(&thread)).await.unwrap(), thread);
+            assert_eq!(
+                server.run_turn(&thread, "basic text").await.unwrap().reply,
+                "checked"
+            );
+            server.close().await;
+            assert!(server.child.try_wait().unwrap().unwrap().success());
+        }
+    }
+
+    #[tokio::test]
+    async fn optional_permissions_invalid_requests_are_not_downgraded() {
+        let root = tempfile::tempdir().unwrap();
+        for (mode, expected) in [
+            ("optional-permissions-invalid-request", "missing field `cwd`"),
+            (
+                "optional-permissions-invalid-variant",
+                "unknown variant `invalid`",
+            ),
+            (
+                "optional-permissions-invalid-method",
+                "unknown method `another/method`",
+            ),
+            (
+                "optional-permissions-invalid-nested-message",
+                "invalid cwd: unknown method `permissionProfile/list`",
+            ),
+            (
+                "optional-permissions-invalid-active-writer",
+                "already has an active writer",
+            ),
+        ] {
+            let mut server = fixture_server(root.path(), mode);
+            server.initialize().await.unwrap();
+            let error = server.prepare_thread(None).await.unwrap_err();
+            let failure = error.downcast_ref::<RpcFailure>().unwrap();
+            assert_eq!(failure.code, -32600, "{mode}");
+            assert!(failure.message.contains(expected), "{mode}: {error}");
+            server.close().await;
+            assert!(server.child.try_wait().unwrap().unwrap().success());
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_project_read_failure_preserves_contact_mapping() {
+        use std::sync::atomic::AtomicBool;
+
+        use super::super::{
+            outbound::OutboundPolicy,
+            session_store::{ConnectSessionStore, ConnectState},
+            weixin::{WeixinClient, WeixinMessage},
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let account = format!(
+            "project-read-{}",
+            root.path().file_name().unwrap().to_string_lossy()
+        );
+        let store = ConnectSessionStore::default_for_account(&account);
+        let mut state = ConnectState::default();
+        state
+            .thread_ids
+            .insert("other".into(), "other-history".into());
+        store.save(&state).unwrap();
+        let original = state.clone();
+        let api = wiremock::MockServer::start().await;
+        let client = WeixinClient::new(&api.uri(), "fixture", "").unwrap();
+        let message: WeixinMessage = serde_json::from_value(json!({
+            "from_user_id":"peer", "context_token":"context"
+        }))
+        .unwrap();
+        let policy = OutboundPolicy::new(false, "peer", root.path().to_str().unwrap());
+        let mut server = fixture_server(root.path(), "optional-unavailable");
+        server.initialize().await.unwrap();
+        let config = server.config.clone();
+        let mut server = Some(server);
+        let result = super::super::process_weixin_message(
+            &client,
+            &config,
+            &mut server,
+            &mut state,
+            &message,
+            "new project message",
+            &AtomicBool::new(false),
+            &policy,
+            &account,
+            "selected",
+            true,
+        )
+        .await;
+        server.as_mut().unwrap().close().await;
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("读取所选工作项目失败"), "{error:#}");
+        assert_eq!(error.root_cause().to_string(), "Codex app-server 不支持 project/read");
+        assert_eq!(state, original);
+        assert_eq!(store.load().unwrap(), original);
+        assert!(api.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn optional_project_rpcs_do_not_block_basic_threads_or_resume_originals() {
+        let root = tempfile::tempdir().unwrap();
+        for mode in [
+            "optional-unavailable",
+            "optional-reject-start",
+            "resume-failed",
+        ] {
+            let mut server = fixture_server(root.path(), mode);
+            server.initialize().await.unwrap();
+            match mode {
+                "optional-unavailable" => {
+                    assert!(
+                        super::super::projects::resolve_project(&mut server, "")
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
+                    assert!(
+                        super::super::projects::resolve_project(&mut server, "selected")
+                            .await
+                            .is_err()
+                    );
+                    assert!(
+                        super::super::projects::read_projects(&mut server)
+                            .await
+                            .is_err()
+                    );
+                    assert!(
+                        server
+                            .api_request("thread/metadata/update", json!({}))
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(server.prepare_thread(None).await.unwrap(), "original");
+                    assert_eq!(
+                        server
+                            .run_turn("original", "basic text")
+                            .await
+                            .unwrap()
+                            .reply,
+                        "checked"
+                    );
+                }
+                "optional-reject-start" => {
+                    assert_eq!(
+                        server
+                            .prepare_thread_in_project(None, Some("selected"))
+                            .await
+                            .unwrap(),
+                        "original"
+                    );
+                }
+                _ => {
+                    assert!(server.prepare_thread(Some("original")).await.is_err());
+                    assert!(server.is_running());
+                }
+            }
+            server.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn settings_tool_is_scoped_persistent_and_applies_on_next_turn() {
+        use super::super::controls::{SessionOptions, SessionOptionsStore};
+        let root = tempfile::tempdir().unwrap();
+        let store = SessionOptionsStore::test_store(root.path().join("settings.json"), "peer-a");
+        let other = SessionOptionsStore::test_store(root.path().join("settings.json"), "peer-b");
+        let mut server = fixture_server(root.path(), "settings");
+        let defaults = SessionOptions {
+            model: "fixture".into(),
+            reasoning_effort: "high".into(),
+            reset_request: None,
+        };
+        let result = async {
+            server.initialize().await?;
+            let thread = server
+                .prepare_thread_in_project(None, Some("project-1"))
+                .await?;
+            let first = server
+                .run_turn_with_controls(
+                    &thread,
+                    "set low",
+                    Some(SessionControlChannel {
+                        options_store: &store,
+                        defaults: &defaults,
+                    }),
+                )
+                .await?;
+            assert_eq!(first.reply, "checked");
+            assert_eq!(server.config.reasoning_effort, "high");
+            assert_eq!(store.load()?.reasoning_effort, "low");
+            assert_eq!(other.load()?, SessionOptions::default());
+            let mut next = server.config.clone();
+            next.reasoning_effort = store.load()?.with_defaults(&defaults).reasoning_effort;
+            next.sandbox = "workspace-write".into();
+            server.set_session_config(&next);
+            assert_eq!(server.prepare_thread(Some(&thread)).await?, thread);
+            assert_eq!(server.run_turn(&thread, "next").await?.reply, "checked");
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        server.close().await;
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resumed_thread_cannot_change_identity_or_sandbox_silently() {
+        let root = tempfile::tempdir().unwrap();
+        for mode in ["wrong-id", "wrong-scope", "legacy"] {
+            let mut server = fixture_server(root.path(), mode);
+            server.initialize().await.unwrap();
+            let result = server.prepare_thread(Some("original")).await;
+            server.close().await;
+            if mode == "legacy" {
+                assert_eq!(result.unwrap(), "original");
+            } else {
+                assert!(result.is_err(), "{mode}");
+            }
+        }
+    }
+
+    #[test]
+    fn missing_turn_id_is_persistently_logged_without_user_content() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "connect::app_server::tests::outbound_stdio_registers_only_when_enabled_and_sends_each_call_once",
+        ]);
+        command.env("CODEX_PLUS_W2_MISSING_TURN_ID", "1");
+        for (name, directory) in [
+            ("CODEX_PLUS_STATE_DIR", "state"),
+            ("CODEX_HOME", "home"),
+            ("CODEX_SQLITE_HOME", "sqlite"),
+            ("APPDATA", "appdata"),
+        ] {
+            command.env(name, root.path().join(directory));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(crate::windows_create_no_window());
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let log = std::fs::read_to_string(state.join("codex-plus.log")).unwrap();
+        let records: Vec<Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let record = records
+            .iter()
+            .find(|record| record["event"] == "weixin.turn_start.missing_turn_id")
+            .unwrap();
+        assert!(record["detail"]["request_id"].as_u64().is_some());
+        assert_eq!(record["detail"].as_object().unwrap().len(), 1);
+        assert!(!log.contains("private prompt"));
+        assert!(!log.contains("private context token"));
     }
 
     #[cfg(windows)]

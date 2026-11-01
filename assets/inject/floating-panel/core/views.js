@@ -24,6 +24,15 @@
   }
 
   function viewTabHtml(view) {
+    const extension = extensionTab(view);
+    if (extension) {
+      const active = state.activeTab === view;
+      const label = escapeAttr(extension.title || extension.id);
+      const icon = typeof extension.icon === "string" && extension.icon.trim().startsWith("<svg")
+        ? extension.icon
+        : `<span class="csw-ext-glyph" aria-hidden="true">${escapeHtml(extension.icon || "◇")}</span>`;
+      return `<button class="csw-icon" type="button" data-view="${escapeAttr(view)}" data-reorderable="false" data-active="${active}" role="tab" aria-selected="${active}" title="${label}" aria-label="${label}" data-codex-plus-ext="${escapeAttr(extension.scriptKey || "floating-tab")}">${icon}</button>`;
+    }
     const isNext = view === "next";
     const active = state.activeTab === view;
     return `<button class="csw-icon" type="button" data-view="${view}" data-reorderable="true" data-active="${active}" role="tab" aria-selected="${active}" title="${isNext ? "下一步建议" : "回答大纲"}" aria-label="${isNext ? "下一步建议" : "回答大纲"}">${iconSvg(isNext ? "next" : "outline")}</button>`;
@@ -143,6 +152,7 @@
   }
 
   function refreshControlState() {
+    if (extensionTab(state.activeTab)) return { blocked: false, title: "刷新" };
     if (state.activeTab === "settings") {
       return { blocked: false, title: "重新读取设置" };
     }
@@ -155,6 +165,7 @@
   }
 
   function refreshCurrentView() {
+    if (extensionTab(state.activeTab)) return renderFloat();
     if (state.activeTab === "settings") return reloadSettings();
     if (state.activeTab === "outline") return refreshOutline();
     if (!stepwiseEnabled()) return;
@@ -214,6 +225,13 @@
     const tone = statusToneForView(expression);
     const paneCue = activePaneCue();
     const viewTabs = enabledViewOrder().map(viewTabHtml).join("");
+    // 拓展页签的内容由拓展自己画：换掉面板内容前先让上一次的 render 收尾。
+    const previousCleanup = state.extensionViewCleanup;
+    state.extensionViewCleanup = null;
+    if (typeof previousCleanup === "function") {
+      try { previousCleanup(); } catch {}
+    }
+    const extension = extensionTab(state.activeTab);
     state.panel.innerHTML = `
       <div class="csw-head">
         <div class="csw-head-side csw-head-left">
@@ -230,7 +248,7 @@
         </div>
       </div>
       <div class="csw-body" data-view-body="${state.activeTab}">
-        <div class="csw-mouth-stage" data-mouth-stage="${state.activeTab}">${state.activeTab === "settings" ? settingsHtml() : state.activeTab === "outline" ? outlineHtml() : nextHtml()}</div>
+        <div class="csw-mouth-stage" data-mouth-stage="${escapeAttr(state.activeTab)}">${extension ? `<div class="csw-ext-view" data-codex-plus-ext="${escapeAttr(extension.scriptKey || "floating-tab")}"></div>` : state.activeTab === "settings" ? settingsHtml() : state.activeTab === "outline" ? outlineHtml() : nextHtml()}</div>
       </div>
     `;
     if (state.activeTab === "outline") alignOutlineNestedText();
@@ -257,7 +275,16 @@
     state.panel.querySelector("[data-action='theme']")?.addEventListener("click", toggleCodexTheme);
     applyMaterial({ animate: false });
 
-    if (state.activeTab === "settings") attachSettingsEvents();
+    if (extension) {
+      const container = state.panel.querySelector(".csw-ext-view");
+      try {
+        const cleanup = container && extension.render({ container, close: () => setOpen(false, "panel") });
+        if (typeof cleanup === "function") state.extensionViewCleanup = cleanup;
+      } catch (error) {
+        if (container) container.textContent = String(error?.message || error);
+        try { extension.fail?.(error); } catch {}
+      }
+    } else if (state.activeTab === "settings") attachSettingsEvents();
     else if (state.activeTab === "outline") attachOutlineEvents();
     else attachNextEvents();
     installViewTabReorder();

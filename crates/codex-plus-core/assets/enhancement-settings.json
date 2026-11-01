@@ -30,6 +30,12 @@
       "managerTab": "stepwise"
     },
     {
+      "id": "appearance",
+      "title": "外观",
+      "description": "Codex 窗口的主题、背景图与多开标识。",
+      "managerTab": "general"
+    },
+    {
       "id": "standalone",
       "title": "独立模式",
       "description": "增强总开关关闭后仍会生效的补丁。",
@@ -42,8 +48,8 @@
       "key": "enhancementsEnabled",
       "group": "core",
       "control": "bool",
-      "title": "启用 Codex增强",
-      "description": "关闭后暂停增强功能，服务配置会保留。",
+      "title": "启用内置拓展",
+      "description": "关闭后暂停全部内置拓展（独立模式里的补丁除外），服务配置会保留。",
       "masterGated": false,
       "surfaces": ["manager", "codex"]
     },
@@ -58,15 +64,18 @@
     },
     {
       "key": "codexAppNativeBrowserRequireIdentification",
+      "builtin": "native-browser-identification",
       "group": "plugins",
       "control": "bool",
       "title": "原生 Edge / Chrome 请求标识兼容（实验）",
       "description": "此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。",
       "platforms": ["windows"],
-      "surfaces": ["manager"]
+      "surfaces": ["manager"],
+      "restart": true
     },
     {
       "key": "codexAppPluginMarketplaceUnlock",
+      "builtin": "plugin-market-unlock",
       "group": "plugins",
       "control": "bool",
       "title": "插件市场解锁",
@@ -75,6 +84,7 @@
     },
     {
       "key": "codexAppModelWhitelistUnlock",
+      "builtin": "model-whitelist-unlock",
       "group": "plugins",
       "control": "bool",
       "title": "模型白名单解锁",
@@ -83,22 +93,27 @@
     },
     {
       "key": "codexAppNativeFastUnlock",
+      "builtin": "native-fast-unlock",
       "group": "plugins",
       "control": "bool",
       "title": "原生 Fast 强制解锁",
       "description": "纯 API Key 模式恢复原生 Fast 开关；重新启动 Codex 后生效，实际支持与计费由供应商决定。",
-      "surfaces": ["manager", "codex"]
+      "surfaces": ["manager", "codex"],
+      "restart": true
     },
     {
       "key": "codexAppNativePredictions",
+      "builtin": "native-predictions",
       "group": "plugins",
       "control": "bool",
       "title": "原生输入预测（实验）",
       "description": "实验功能，默认关闭。在 Codex 原生输入框显示下一句灰字预测，按 Tab 接受为可编辑草稿，不会自动发送。仅对使用 API Key / 自定义供应商的本机对话生效；每个回合结束都会用当前供应商额外请求一次，消耗该供应商额度。ChatGPT 登录与远程 / SSH / 云端对话保持原样。重新启动 Codex 后生效。",
-      "surfaces": ["manager", "codex"]
+      "surfaces": ["manager", "codex"],
+      "restart": true
     },
     {
       "key": "codexAppThirdPartyReasoningCollapse",
+      "builtin": "reasoning-collapse",
       "group": "plugins",
       "control": "bool",
       "title": "第三方模型回答完自动折叠过程",
@@ -107,6 +122,7 @@
     },
     {
       "key": "codexAppSessionDelete",
+      "builtin": "session-delete",
       "group": "chat",
       "control": "bool",
       "title": "会话删除",
@@ -115,6 +131,7 @@
     },
     {
       "key": "codexAppSessionDeleteSkipConfirm",
+      "parent": "session-delete",
       "group": "chat",
       "control": "bool",
       "title": "删除会话时不再确认",
@@ -123,6 +140,7 @@
     },
     {
       "key": "codexAppSideChatSave",
+      "builtin": "side-chat-save",
       "group": "chat",
       "control": "bool",
       "title": "旁支保存",
@@ -131,6 +149,7 @@
     },
     {
       "key": "codexAppTurnRewind",
+      "builtin": "turn-rewind",
       "group": "chat",
       "control": "bool",
       "title": "轮次回退（实验性）",
@@ -139,14 +158,17 @@
     },
     {
       "key": "codexAppDisableWorkView",
+      "builtin": "disable-work-view",
       "group": "chat",
       "control": "bool",
       "title": "纯 API 模式禁用 Work 视图",
       "description": "Work 视图要求 ChatGPT 账号身份，纯 API Key 下发送消息会报 Work browser access requires an authenticated account。开启后每次启动 Codex 前把详情模式写回 Codex；重新启动 Codex 后生效。",
-      "surfaces": ["manager", "codex"]
+      "surfaces": ["manager", "codex"],
+      "restart": true
     },
     {
       "key": "codexAppMarkdownExport",
+      "builtin": "markdown-export",
       "group": "chat",
       "control": "bool",
       "title": "Markdown 导出",
@@ -154,57 +176,77 @@
       "surfaces": ["manager", "codex"]
     },
     {
-      "key": "codexAppSessionShare",
-      "group": "chat",
-      "control": "bool",
-      "title": "分享会话按钮",
-      "description": "在当前会话工具栏显示分享按钮，关闭后立即隐藏。",
-      "surfaces": ["manager", "codex"]
-    },
-    {
       "key": "codexAppPasteFix",
+      "builtin": "paste-fix",
       "group": "chat",
       "control": "bool",
       "title": "粘贴修复",
-      "description": "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。",
+      "description": "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。",
       "surfaces": ["manager", "codex"]
     },
     {
       "key": "codexAppForceChineseLocale",
+      "builtin": "force-chinese-locale",
       "group": "chat",
       "control": "bool",
       "title": "强制中文界面",
       "description": "强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。",
-      "surfaces": ["manager", "codex"]
+      "surfaces": ["manager", "codex"],
+      "restart": true
     },
     {
       "key": "codexAppCapacityAutoRetry",
+      "builtin": "capacity-auto-retry",
       "group": "chat",
       "control": "bool",
       "title": "容量错误自动重试",
       "description": "模型容量不足（Selected model is at capacity）时自动点「重试」。Codex 原生只会自动重试 4 次且带 10/30/120/300 秒倒计时，之后只剩手动按钮；开启后由 Codex++ 立刻接管，原生倒计时也不等。",
       "surfaces": ["manager", "codex"],
       "codexInputs": [
-        { "id": "capacityAutoRetryIntervalSeconds", "label": "重试间隔（秒）", "hint": "重试间隔（秒），0 表示立刻重试" },
-        { "id": "capacityAutoRetryMaxAttempts", "label": "最大自动重试次数", "hint": "最大自动重试次数" }
+        {
+          "id": "capacityAutoRetryIntervalSeconds",
+          "label": "重试间隔（秒）",
+          "hint": "重试间隔（秒），0 表示立刻重试"
+        },
+        {
+          "id": "capacityAutoRetryMaxAttempts",
+          "label": "最大自动重试次数",
+          "hint": "最大自动重试次数"
+        }
       ]
     },
     {
       "key": "codexAppTypingEffect",
+      "builtin": "typing-effects",
       "group": "chat",
       "control": "select",
       "title": "打字特效（彩虹 P）",
       "description": "在 Codex 输入框的光标附近显示特效；系统减少动态效果时暂停。",
       "options": [
-        { "value": "off", "label": "关闭" },
-        { "value": "rainbow", "label": "彩虹粒子" },
-        { "value": "fireworks", "label": "烟花" },
-        { "value": "stars", "label": "星光" }
+        {
+          "value": "off",
+          "label": "关闭"
+        },
+        {
+          "value": "rainbow",
+          "label": "彩虹粒子"
+        },
+        {
+          "value": "fireworks",
+          "label": "烟花"
+        },
+        {
+          "value": "stars",
+          "label": "星光"
+        }
       ],
-      "surfaces": ["manager", "codex"]
+      "surfaces": ["manager", "codex"],
+      "builtinOn": "rainbow",
+      "builtinOff": "off"
     },
     {
       "key": "codexAppThreadIdBadge",
+      "builtin": "thread-id-badge",
       "group": "chat",
       "control": "bool",
       "title": "会话 ID 标识",
@@ -213,17 +255,23 @@
     },
     {
       "key": "codexAppConversationView",
+      "builtin": "conversation-view",
       "group": "chat",
       "control": "bool",
       "title": "对话居中宽度",
       "description": "把主对话和输入框限制到固定最大宽度，适合大屏阅读。",
       "surfaces": ["manager", "codex"],
       "codexInputs": [
-        { "id": "conversationViewMaxWidth", "label": "对话最大宽度（像素）", "hint": "对话最大宽度（像素）" }
+        {
+          "id": "conversationViewMaxWidth",
+          "label": "对话最大宽度（像素）",
+          "hint": "对话最大宽度（像素）"
+        }
       ]
     },
     {
       "key": "codexAppThreadScrollRestore",
+      "builtin": "thread-scroll-restore",
       "group": "chat",
       "control": "bool",
       "title": "切换对话保留位置",
@@ -232,6 +280,7 @@
     },
     {
       "key": "codexAppHistoryTurnRecovery",
+      "builtin": "history-turn-recovery",
       "group": "chat",
       "control": "bool",
       "title": "历史轮次补载（实验）",
@@ -240,6 +289,7 @@
     },
     {
       "key": "codexAppUsageStatusLine",
+      "builtin": "usage-statusline",
       "group": "chat",
       "control": "bool",
       "title": "用量状态栏",
@@ -247,7 +297,17 @@
       "surfaces": ["manager", "codex"]
     },
     {
+      "key": "codexAppProxyRequestStatus",
+      "builtin": "proxy-request-status",
+      "group": "chat",
+      "control": "bool",
+      "title": "请求状态条",
+      "description": "请求经 Codex++ 网关或本地代理时，在输入框上方显示正在请求、等待返回、重试和生成进度。关闭后不再显示，也不再查询请求状态。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
       "key": "codexAppActivityOverlayRight",
+      "builtin": "activity-overlay-right",
       "group": "pet",
       "control": "bool",
       "title": "活动进度条右侧布局",
@@ -256,6 +316,7 @@
     },
     {
       "key": "codexAppPetRealMouseLook",
+      "builtin": "pet-real-mouse",
       "group": "pet",
       "control": "bool",
       "title": "桌宠跟随真实鼠标",
@@ -265,6 +326,7 @@
     },
     {
       "key": "codexAppStepwiseEnabled",
+      "builtin": "stepwise",
       "group": "stepwise",
       "control": "bool",
       "title": "下一步建议",
@@ -273,6 +335,7 @@
     },
     {
       "key": "codexAppAnswerOutlineEnabled",
+      "builtin": "answer-outline",
       "group": "stepwise",
       "control": "bool",
       "title": "回答大纲",
@@ -281,6 +344,7 @@
     },
     {
       "key": "codexAppStepwiseDirectSend",
+      "parent": "stepwise",
       "group": "stepwise",
       "control": "bool",
       "title": "建议直接发送",
@@ -289,13 +353,63 @@
     },
     {
       "key": "codexAppStandaloneQuotaUnlock",
+      "builtin": "standalone-quota-unlock",
+      "replaceable": false,
       "group": "standalone",
       "control": "bool",
       "title": "官方额度解锁",
       "description": "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。",
       "descriptionWhenEnhancementsOn": "增强开启时此能力已自动生效；此开关只在关闭增强后生效。",
       "masterGated": false,
-      "surfaces": ["manager", "codex"]
+      "surfaces": ["manager", "codex"],
+      "restart": true
+    }
+  ],
+  "builtins": [
+    {
+      "id": "dictation",
+      "title": "语音听写",
+      "description": "输入框旁的麦克风按钮，录音转写成文字",
+      "group": "chat",
+      "setting": "dictation.enabled"
+    },
+    {
+      "id": "session-title-hook",
+      "title": "会话标题中间件",
+      "description": "首轮结束后按拓展的 session/title 中间件改会话标题",
+      "group": "chat"
+    },
+    {
+      "id": "model-picker-groups",
+      "title": "模型分组",
+      "description": "模型选择器里按供应商分组折叠",
+      "group": "plugins"
+    },
+    {
+      "id": "dream-skin",
+      "title": "梦皮主题",
+      "description": "Codex 窗口的梦皮主题与壁纸",
+      "group": "appearance",
+      "setting": "codexAppDreamSkinEnabled"
+    },
+    {
+      "id": "image-overlay",
+      "title": "背景图",
+      "description": "在 Codex 窗口上叠一层自定义背景图。",
+      "group": "appearance",
+      "setting": "codexAppImageOverlayEnabled"
+    },
+    {
+      "id": "instance-identity",
+      "title": "多开身份提示",
+      "description": "多开实例顶部显示实例名（用公开拓展接口写成）",
+      "group": "appearance"
+    },
+    {
+      "id": "weixin-desktop-sync",
+      "title": "微信会话同步",
+      "description": "微信里发起的会话及时出现在 Codex 桌面会话列表，并归到对应项目",
+      "group": "chat"
     }
   ]
 }

@@ -11,6 +11,7 @@
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-typing-effects"]');
 
   function codexPlusTypingEffectMode() {
+    if (!!globalThis.__codexPlusBuiltinInactive?.has("typing-effects")) return "off";
     const value = codexPlusSettings().typingEffect;
     return ["rainbow", "fireworks", "stars"].includes(value) ? value : "off";
   }
@@ -360,6 +361,22 @@
   function codexPlusTypingEffectFocusOut(event) {
     const state = codexPlusTypingEffects;
     if (event.target === state.editor || event.target === state.composition?.editor) clearCodexPlusTypingEffects();
+  }
+
+  /** 摘掉打字特效的全局监听（内置拓展卸下时）。 */
+  function uninstallCodexPlusTypingEffects() {
+    const state = codexPlusTypingEffects;
+    if (!state.installed) return;
+    state.installed = false;
+    document.removeEventListener("input", codexPlusTypingEffectInput, true);
+    document.removeEventListener("compositionstart", codexPlusTypingEffectCompositionStart, true);
+    document.removeEventListener("compositionend", codexPlusTypingEffectCompositionEnd, true);
+    document.removeEventListener("focusout", codexPlusTypingEffectFocusOut, true);
+    document.removeEventListener("visibilitychange", syncCodexPlusTypingEffects);
+    window.removeEventListener("blur", clearCodexPlusTypingEffects);
+    window.removeEventListener("resize", clearCodexPlusTypingEffects);
+    state.media?.removeEventListener?.("change", syncCodexPlusTypingEffects);
+    clearCodexPlusTypingEffects();
   }
 
   function installCodexPlusTypingEffects() {

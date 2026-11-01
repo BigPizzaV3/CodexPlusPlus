@@ -163,31 +163,6 @@
         background: var(--color-token-bg-secondary, transparent);
         color: var(--color-token-text-primary, inherit);
       }
-      .${sessionShareButtonClass} {
-        position: static;
-        flex: 0 0 auto;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-        margin-left: 2px;
-        z-index: 2147483001;
-        min-height: var(--height-button-composer, 32px);
-        border-radius: var(--border-radius-lg, 8px);
-        font: inherit;
-        font-size: 13px;
-        line-height: 18px;
-        cursor: pointer;
-        box-shadow: none;
-      }
-      .${sessionShareButtonClass}:hover,
-      .${sessionShareButtonClass}:focus-visible {
-        background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover));
-        color: var(--color-token-text-primary, var(--codex-plus-text));
-        outline: none;
-      }
-      .${sessionShareButtonClass}[aria-busy="true"] {
-        cursor: wait;
-        opacity: .65;
-      }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} {
         opacity: 1;
         pointer-events: auto;
@@ -524,7 +499,27 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      /* 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。 */
+      /* 图标栏按钮提示的兜底外观：找不到原生提示样式类时使用，数值量自原生提示。 */
+      .codex-plus-rail-tooltip-fallback {
+        max-width: 320px;
+        padding: 5px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 20px;
+        background: rgb(45, 45, 45);
+        box-shadow: rgba(15, 23, 42, 0.2) 0 8px 18px 0;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 430;
+        line-height: 18px;
+        letter-spacing: -0.15px;
+        white-space: nowrap;
+      }
+      /*
+       * 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。
+       * 新版 Codex 还把弹出层挂在一个 z-60 的固定视口容器里（zoom-adjusted-viewport），
+       * 只提升里面的节点逃不出这个堆叠上下文，所以直接父容器也一起提升。
+       */
+      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [data-radix-popper-content-wrapper]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="tooltip"]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="menu"]:not(.${codexPlusPageClass} *),
@@ -1174,11 +1169,6 @@
       .codex-session-more-menu-item { border-radius: var(--border-radius-sm, 6px); font-family: inherit; }
       .codex-session-more-menu-item:hover,
       .codex-session-more-menu-item:focus-visible { background: var(--codex-plus-bg-hover); }
-      .${sessionShareButtonClass}:hover,
-      .${sessionShareButtonClass}:focus-visible {
-        background: var(--codex-plus-bg-hover);
-        color: var(--codex-plus-text);
-      }
       .${actionTooltipClass} {
         border-color: var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
@@ -1354,6 +1344,12 @@
         line-height: 20px;
       }
       .codex-plus-settings .codex-plus-row[hidden] { display: none; }
+      /* 内置拓展的子选项缩进挂在所属拓展下面；被顶替时的小字用警示色。 */
+      .codex-plus-settings .codex-plus-row[data-codex-plus-builtin-param] { padding-left: 20px; }
+      .codex-plus-settings .codex-plus-row-description[data-codex-builtin-replaced]::after {
+        content: " · " attr(data-codex-builtin-replaced);
+        color: var(--color-token-text-warning, #d97706);
+      }
       .codex-plus-settings .codex-plus-row > :first-child {
         flex: 1 1 auto;
         min-width: 0;
@@ -1615,6 +1611,7 @@
         line-height: 20px;
         overflow-wrap: anywhere;
       }
+      .codex-plus-discovery-description strong { color: var(--codex-plus-text); font-weight: 650; }
       .codex-plus-discovery-toolbar { display: flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; }
       .codex-plus-discovery-search {
         display: flex;
@@ -1851,11 +1848,11 @@
 
   function defaultCodexPlusSettings() {
     // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、agent-pet、
-    // session-share-runtime…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
+    // backend-settings-sync…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1865,7 +1862,6 @@
     sessionDeleteSkipConfirm: "codexAppSessionDeleteSkipConfirm",
     sideChatSave: "codexAppSideChatSave",
     markdownExport: "codexAppMarkdownExport",
-    sessionShare: "codexAppSessionShare",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
@@ -1877,6 +1873,7 @@
     stepwise: "codexAppStepwiseEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
     usageStatusLine: "codexAppUsageStatusLine",
+    proxyRequestStatus: "codexAppProxyRequestStatus",
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
@@ -1899,7 +1896,32 @@
     return settings;
   }
 
-  function codexPlusSettings() {
+  /**
+   * 功能侧读到的设置：设置项开着、且对应的内置拓展在用（没停用、没被顶替）才算开。
+   * 设置页的开关要显示 / 切换用户自己存的值，传 { ignoreBuiltins: true }。
+   * 映射写在函数里：多个测试把本函数单独切片到沙箱里执行。
+   */
+  function codexPlusSettings(options) {
+    const withBuiltins = (settings) => {
+      const inactive = globalThis.__codexPlusBuiltinInactive;
+      if (options?.ignoreBuiltins || !inactive?.size) return settings;
+      const builtinSettings = {
+        sessionDelete: "session-delete",
+        markdownExport: "markdown-export",
+        threadIdBadge: "thread-id-badge",
+        threadScrollRestore: "thread-scroll-restore",
+        conversationView: "conversation-view",
+        activityOverlayRight: "activity-overlay-right",
+        pasteFix: "paste-fix",
+        stepwise: "stepwise",
+        answerOutline: "answer-outline",
+        petRealMouseLook: "pet-real-mouse",
+      };
+      Object.entries(builtinSettings).forEach(([key, id]) => {
+        if (inactive.has(id)) settings[key] = false;
+      });
+      return settings;
+    };
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
         pluginMarketplaceUnlock: false,
@@ -1907,7 +1929,6 @@
         sessionDelete: false,
         sessionDeleteSkipConfirm: false,
         markdownExport: false,
-        sessionShare: false,
         sideChatSave: false,
         pasteFix: false,
         typingEffect: "off",
@@ -1923,6 +1944,7 @@
         stepwise: false,
         answerOutline: false,
         usageStatusLine: false,
+        proxyRequestStatus: false,
         capacityAutoRetry: false,
         turnRewind: false,
         capacityAutoRetryMaxAttempts: 15,
@@ -1937,10 +1959,10 @@
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       delete settings.customLayout;
       delete settings.serviceTierControls;
-      return settings;
+      return withBuiltins(settings);
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
-      return settings;
+      return withBuiltins(settings);
     }
   }
 
@@ -2668,7 +2690,7 @@
     const settings = codexPlusSettings();
     const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
     const action = dreamSkinRefreshAction({
-      enabled: !!settings.dreamSkinEnabled,
+      enabled: !!settings.dreamSkinEnabled && !globalThis.__codexPlusBuiltinInactive?.has("dream-skin"),
       paused: !!settings.dreamSkinPaused,
       backendLoaded: !!codexPlusBackendSettingsLoaded,
       externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
@@ -2714,16 +2736,8 @@
   function setCodexPlusSetting(key, value) {
     const backendKey = codexPlusBackendSettingMap[key];
     if (backendKey) {
-      if (key === "stepwise") syncStepwisePanel(value);
-      if (key === "answerOutline") syncStepwisePanel(undefined, value);
-      void setBackendSetting(backendKey, value).then(() => {
-        if (key === "stepwise" || key === "answerOutline") {
-          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel());
-        }
-        // 容量错误自动重试：开关落库后立即启停轮询，不必等下一次心跳。
-        if (key === "capacityAutoRetry") syncCodexPlusCapacityAutoRetry();
-        if (key === "turnRewind") syncCodexPlusTurnRewind();
-      }).catch(() => {
+      // 跟着开关走的功能由各自的内置拓展订阅 setBackendSetting 发的 settings/changed，这里不点名。
+      void setBackendSetting(backendKey, value).catch(() => {
         void loadBackendSettings();
       });
       return;
@@ -2736,20 +2750,22 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
-    if (key === "threadScrollRestore" && !value) {
-      clearTimeout(window.__codexThreadScrollSaveTimer);
-      window.__codexThreadScrollSaveTimer = null;
-      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
-      (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollRestoreTimers = [];
-      (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollSyncTimers = [];
-      window.__codexThreadScrollRuntime = null;
-    }
-    if (key === "stepwise") syncStepwisePanel(value);
+    if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, true);
     renderCodexPlusMenu();
     scan();
+  }
+
+  /** 滚动位置恢复关掉时（设置关、或内置拓展停用）撤掉排着的保存 / 恢复定时器，作废进行中的轮次。 */
+  function stopThreadScrollRestore() {
+    clearTimeout(window.__codexThreadScrollSaveTimer);
+    window.__codexThreadScrollSaveTimer = null;
+    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollRestoreTimers = [];
+    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollSyncTimers = [];
+    window.__codexThreadScrollRuntime = null;
   }
 
   function syncStepwisePanel(

@@ -29,6 +29,8 @@ import { successRate } from "./hub-overview-model";
 import { openRequestLog } from "./UsageTabs";
 import { TopbarActions } from "./TopbarActions";
 import { cachedProviderBalances, loadProviderBalances, subscribeProviderBalances } from "./provider-balances";
+import { singleAgent } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 
 const memo: { range: UsageRange; summary: UsageSummary | null } = { range: "30d", summary: null };
 
@@ -39,6 +41,8 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
   const [balances, setBalances] = useState<ProviderBalance[] | null>(cachedProviderBalances().balances);
   const [loadingBalances, setLoadingBalances] = useState(false);
   const [split, setSplit] = useState<"provider" | "model" | "agent">("provider");
+  // 只管理 Codex 时不按 Agent 拆分：没有占比条，也没有「按 Agent」页签。
+  const codexOnly = singleAgent(useAgentFocus()) === "codex";
 
   // 每次读取的序号：快速切换范围时，先发出的请求可能后回来，只认最后一次的结果。
   const latest = useRef(0);
@@ -171,14 +175,14 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
 
       <div className="gw-card gw-chart-card">
         <UsageChart summary={summary} />
-        {summary && summary.byAgent.length > 0 ? <AgentShare groups={summary.byAgent} /> : null}
+        {!codexOnly && summary && summary.byAgent.length > 0 ? <AgentShare groups={summary.byAgent} /> : null}
       </div>
 
       <div className="gw-section-label">
         <span>{t("明细")}</span>
         <div className="gw-section-aside">
           <nav className="gw-tabs gw-split-tabs" role="tablist">
-            {([["provider", t("按供应商")], ["model", t("按模型")], ["agent", t("按 Agent")]] as const).map(([id, label]) => (
+            {([["provider", t("按供应商")], ["model", t("按模型")], ["agent", t("按 Agent")]] as const).filter(([id]) => !codexOnly || id !== "agent").map(([id, label]) => (
               <button aria-selected={split === id} data-active={split === id} key={id} onClick={() => setSplit(id)} role="tab" type="button">{label}</button>
             ))}
           </nav>
