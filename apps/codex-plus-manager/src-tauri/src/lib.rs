@@ -387,6 +387,7 @@ pub fn run() {
             gateway_commands::load_gateway,
             gateway_commands::save_gateway_binding,
             gateway_commands::preview_gateway_disconnect,
+            gateway_commands::preview_gateway_agent_config_diff,
             gateway_commands::disable_gateway_binding,
             gateway_commands::use_gateway_own_model,
             gateway_commands::save_gateway_own_models_shown,
