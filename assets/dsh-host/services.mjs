@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
+import { dirname, isAbsolute, join, resolve as resolvePath, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { hostCall, hostCallStream } from './host-call.mjs'
 import { FsError } from './shims/dsh-fs.mjs'
@@ -2300,6 +2300,9 @@ export function createAttachments(dataDir) {
  */
 export function createFileReferences() {
   const SKIP = new Set(['node_modules', '.git', 'dist', 'target', '.next', '.venv', '__pycache__'])
+  // 对外报的路径统一成正斜杠：Windows 上 join 出来是反斜杠，和 `@notes/readme.md` 这种引用写法对不上，
+  // 插件拿去拼提示词、往上报引用都会带出两套分隔符。
+  const toPosix = (value) => (sep === '\\' ? value.split('\\').join('/') : value)
   return {
     async list(agent, query, signal) {
       const base = agent?.session?.cwd || process.cwd()
@@ -2318,7 +2321,7 @@ export function createFileReferences() {
           if (visited++ > 2000 || found.length >= 50) return
           if (SKIP.has(entry.name) || entry.name.startsWith('.')) continue
           const full = join(dir, entry.name)
-          const rel = full.slice(base.length + 1)
+          const rel = toPosix(full.slice(base.length + 1))
           if (!needle || rel.toLowerCase().includes(needle)) found.push({ path: rel, kind: entry.isDirectory() ? 'directory' : 'file' })
           if (entry.isDirectory()) await walk(full, depth + 1)
         }
