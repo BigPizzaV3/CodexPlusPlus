@@ -17,8 +17,8 @@ export function apply(ctx) {
     res.writeHead(201, { 'content-type': 'text/plain' })
     res.end(`hi ${req.method} ${body}`)
   } })
-  // 最小的 WebSocket 服务端（插件自己负责协议）：握手后先发一条问候，再把收到的第一条文本回显回去。
-  ctx.webServer.registerUpgrade({ path: '/ws', handler(req, socket) {
+  // 最小的 WebSocket 服务端：分别覆盖客户端断开与上游主动关闭。
+  const upgrade = (req, socket) => {
     const accept = createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64')
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`)
     const frame = (text) => {
@@ -26,13 +26,19 @@ export function apply(ctx) {
       return Buffer.concat([Buffer.from([0x81, payload.length]), payload])
     }
     socket.write(frame(`hello ${req.url}`))
+    if (req.url === '/ws-close') {
+      socket.end(Buffer.from([0x88, 0x00]))
+      return
+    }
     socket.once('data', (data) => {
       const length = data[1] & 0x7f
       const mask = data.subarray(2, 6)
       const text = Buffer.from(data.subarray(6, 6 + length).map((byte, index) => byte ^ mask[index % 4])).toString()
       socket.write(frame(`echo:${text}`))
     })
-  } })
+  }
+  ctx.webServer.registerUpgrade({ path: '/ws', handler: upgrade })
+  ctx.webServer.registerUpgrade({ path: '/ws-close', handler: upgrade })
   ctx.mcpResources.register('notes', {
     async request(request) {
       if (request.method === 'resources/list') return { resources: [{ uri: 'note://readme', name: 'readme', mimeType: 'text/markdown' }] }

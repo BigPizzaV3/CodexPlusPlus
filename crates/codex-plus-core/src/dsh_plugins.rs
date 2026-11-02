@@ -594,6 +594,20 @@ pub fn locate_program(name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// 去掉 Windows canonicalize 带上的 `\\?\` verbatim 前缀（`\\?\UNC\` 换回 `\\`）。
+/// 交给 Node 的插件根目录使用普通路径，避免与依赖扫描得到的路径混用两种表示。
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        // 只处理盘符路径；`\\?\Volume{...}` 之类去掉前缀就不是合法路径了。
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// 子进程的 PATH：npm 是 Node 脚本，需要能找到 node。
 fn child_path(toolchain: &Toolchain) -> OsString {
     let mut dirs = Vec::new();
@@ -816,6 +830,7 @@ impl DshPlugins {
             PluginSource::Local { path } => {
                 let directory = Path::new(path)
                     .canonicalize()
+                    .map(|directory| strip_verbatim_prefix(&directory))
                     .with_context(|| format!("目录不存在：{path}"))?;
                 if !directory.join("package.json").is_file() {
                     bail!("{} 下没有 package.json，不是 dsh 插件包", directory.display());
@@ -2096,4 +2111,18 @@ pub fn run_mcp(args: &[OsString]) -> anyhow::Result<i32> {
     }
     let status = command.status().context("无法启动 dsh 插件宿主")?;
     Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_prefix_is_stripped_for_drive_and_unc_paths() {
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\D:\a\plugin")), PathBuf::from(r"D:\a\plugin"));
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\p")), PathBuf::from(r"\\server\share\p"));
+        // 非盘符的 verbatim 路径与普通路径原样保留。
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\Volume{x}\p")), PathBuf::from(r"\\?\Volume{x}\p"));
+        assert_eq!(strip_verbatim_prefix(Path::new("/tmp/plugin")), PathBuf::from("/tmp/plugin"));
+    }
 }

@@ -1511,58 +1511,85 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
     assert_eq!(result["missing"], 404);
 
     // WebSocket 升级：Codex++ 本地代理的 /ext/<配套拓展>/ws 原样转到常驻进程里的 Node http 服务，插件自己的处理器完成握手与收发。
-    {
-        use futures_util::{SinkExt, StreamExt};
+    crate::common::with_extension_backend_cleanup(&[&manager], async {
+        use futures_util::{FutureExt, SinkExt, StreamExt};
+        use std::panic::AssertUnwindSafe;
+        use std::time::Duration;
         use tokio::io::AsyncReadExt;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server_manager = manager.clone();
-        let server = tokio::spawn(async move {
-            let mut handled = Vec::new();
-            for _ in 0..3 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let server_manager = server_manager.clone();
-                handled.push(tokio::spawn(async move {
-                    let mut head = Vec::new();
-                    let mut byte = [0_u8; 1];
-                    while !head.ends_with(b"\r\n\r\n") {
-                        stream.read_exact(&mut byte).await.unwrap();
-                        head.push(byte[0]);
+        use tokio::time::timeout;
+
+        let mut handled = tokio::task::JoinSet::new();
+        let outcome = AssertUnwindSafe(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let step_timeout = Duration::from_secs(10);
+            let server = async {
+                for _ in 0..4 {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let server_manager = manager.clone();
+                    handled.spawn(async move {
+                        let mut head = Vec::new();
+                        let mut byte = [0_u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") {
+                            stream.read_exact(&mut byte).await.unwrap();
+                            head.push(byte[0]);
+                        }
+                        head.truncate(head.len() - 4);
+                        let text = String::from_utf8_lossy(&head).to_string();
+                        let path = text.lines().next().unwrap().split_whitespace().nth(1).unwrap().to_string();
+                        codex_plus_core::extension_backend::route_upgrade_with(&server_manager, &mut stream, &path, &text, &head).await.unwrap();
+                    });
+                }
+                timeout(step_timeout, async {
+                    while let Some(result) = handled.join_next().await {
+                        result.unwrap();
                     }
-                    head.truncate(head.len() - 4);
-                    let text = String::from_utf8_lossy(&head).to_string();
-                    let path = text.lines().next().unwrap().split_whitespace().nth(1).unwrap().to_string();
-                    codex_plus_core::extension_backend::route_upgrade_with(&server_manager, &mut stream, &path, &text, &head).await.unwrap();
-                }));
-            }
-            for task in handled {
-                task.await.unwrap();
-            }
-        });
-        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).await.unwrap();
-        let hello = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next()).await.expect("等问候超时").unwrap().unwrap();
-        assert_eq!(hello.into_text().unwrap().as_str(), "hello /ws");
-        socket.send(tokio_tungstenite::tungstenite::Message::Text("ping".into())).await.unwrap();
-        let echo = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next()).await.expect("等回显超时").unwrap().unwrap();
-        assert_eq!(echo.into_text().unwrap().as_str(), "echo:ping");
-        drop(socket);
-        // 别的网页（Origin 与 Host 不同）发来的升级被拒绝。
-        let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
-        request.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
-        match tokio::time::timeout(std::time::Duration::from_secs(10), tokio_tungstenite::connect_async(request)).await {
-            Ok(Err(_)) => {}
-            other => panic!("跨源升级要立刻被拒，不能挂住：{other:?}"),
+                }).await.expect("服务端收尾超时");
+            };
+            let client = async {
+                let (mut socket, _) = timeout(step_timeout, tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")))
+                    .await.expect("连接升级服务超时").unwrap();
+                let hello = timeout(step_timeout, socket.next()).await.expect("等问候超时").unwrap().unwrap();
+                assert_eq!(hello.into_text().unwrap().as_str(), "hello /ws");
+                timeout(step_timeout, socket.send(tokio_tungstenite::tungstenite::Message::Text("ping".into())))
+                    .await.expect("发送消息超时").unwrap();
+                let echo = timeout(step_timeout, socket.next()).await.expect("等回显超时").unwrap().unwrap();
+                assert_eq!(echo.into_text().unwrap().as_str(), "echo:ping");
+                drop(socket);
+
+                // 别的网页（Origin 与 Host 不同）发来的升级被拒绝。
+                let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
+                request.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
+                match timeout(step_timeout, tokio_tungstenite::connect_async(request)).await {
+                    Ok(Err(_)) => {}
+                    other => panic!("跨源升级要立刻被拒，不能挂住：{other:?}"),
+                }
+                // 同源的恶意域名也不能绕过 Host 必须是回环地址的检查。
+                let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
+                request.headers_mut().insert("host", format!("evil.example:{port}").parse().unwrap());
+                request.headers_mut().insert("origin", format!("http://evil.example:{port}").parse().unwrap());
+                match timeout(step_timeout, tokio_tungstenite::connect_async(request)).await {
+                    Ok(Err(_)) => {}
+                    other => panic!("Host 非回环的升级要立刻被拒，不能挂住：{other:?}"),
+                }
+
+                let (mut socket, _) = timeout(step_timeout, tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws-close")))
+                    .await.expect("连接主动关闭的升级服务超时").unwrap();
+                let hello = timeout(step_timeout, socket.next()).await.expect("等关闭前问候超时").unwrap().unwrap();
+                assert_eq!(hello.into_text().unwrap().as_str(), "hello /ws-close");
+                let closed = timeout(step_timeout, socket.next()).await.expect("等上游关闭超时").unwrap().unwrap();
+                assert!(closed.is_close(), "上游主动关闭必须传回客户端：{closed:?}");
+                drop(socket);
+            };
+            timeout(Duration::from_secs(60), async { tokio::join!(server, client); })
+                .await.expect("WebSocket 用例整体超时");
+        }).catch_unwind().await;
+        // 先等转发任务退出，再由外层清理后台，避免迟到的任务重新拉起子进程。
+        handled.shutdown().await;
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
         }
-        // DNS 重绑定：恶意域名解析到 127.0.0.1 时 Origin 与 Host 都是那个域名，同源检查拦不住，要靠 Host 必须是回环地址。
-        let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
-        request.headers_mut().insert("host", format!("evil.example:{port}").parse().unwrap());
-        request.headers_mut().insert("origin", format!("http://evil.example:{port}").parse().unwrap());
-        match tokio::time::timeout(std::time::Duration::from_secs(10), tokio_tungstenite::connect_async(request)).await {
-            Ok(Err(_)) => {}
-            other => panic!("Host 非回环的升级要立刻被拒，不能挂住：{other:?}"),
-        }
-        tokio::time::timeout(std::time::Duration::from_secs(10), server).await.expect("服务端收尾超时").unwrap();
-    }
+    }).await;
 
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
@@ -2081,4 +2108,131 @@ fn dsh_npm_import_installs_utility_peers_of_installed_packages() {
     assert_eq!(row(&record.report, "dsh-peer-demo")["status"], "compatible", "{}", record.report);
     let responses = serve(&plugins, &toolchain, &[call(1, "peer_budget", json!({}))]);
     assert_eq!(responses[0]["result"]["content"][0]["text"], "2147483647", "{responses:?}");
+}
+
+/// Windows 的长短路径、大小写与 verbatim 别名跨 Node 进程共享同一份插件内存，不同配置仍隔离。
+#[cfg(windows)]
+#[test]
+fn dsh_windows_config_path_aliases_share_daemon_state() {
+    use codex_plus_core::user_scripts::UserScriptManager;
+    use std::io::Write;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    let Some(toolchain) = toolchain() else { return };
+    let temp = tempfile::Builder::new().prefix("Codex Dsh path aliases ").tempdir().unwrap();
+    let plugins = DshPlugins::new(&temp.path().join("state"));
+    let record = plugins.import(&local_source(&fixture("events-plugin")), &toolchain).unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        temp.path().join("user_scripts.json"),
+    );
+    let other_manager = UserScriptManager::new(
+        temp.path().join("other/builtin"),
+        temp.path().join("other/user"),
+        temp.path().join("other/user_scripts.json"),
+    );
+    for manager in [&manager, &other_manager] {
+        let companion = plugins.sync_companion(manager, &record.id).unwrap();
+        assert_eq!(companion["manifestError"], Value::Null, "{companion}");
+    }
+
+    let config = temp.path().join("user/dsh-dsh-events-demo/dsh-bridge.json");
+    let other_config = temp.path().join("other/user/dsh-dsh-events-demo/dsh-bridge.json");
+    let verbatim = config.canonicalize().unwrap();
+    let verbatim_text = verbatim.to_string_lossy();
+    let canonical = PathBuf::from(
+        if let Some(unc) = verbatim_text.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{unc}")
+        } else {
+            verbatim_text.strip_prefix(r"\\?\").unwrap_or(&verbatim_text).to_string()
+        },
+    );
+    let mut aliases = vec![
+        ("tempdir", config.clone()),
+        ("canonical", canonical.clone()),
+        ("verbatim", verbatim.clone()),
+    ];
+    let changed_case = PathBuf::from(canonical.to_string_lossy().to_ascii_uppercase());
+    if changed_case.canonicalize().is_ok_and(|path| path == verbatim) {
+        aliases.push(("case", changed_case));
+    } else {
+        eprintln!("当前目录区分大小写，跳过大小写别名场景");
+    }
+
+    let input: Vec<u16> = verbatim.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut output = vec![0_u16; 32768];
+    let length = unsafe {
+        GetShortPathNameW(windows::core::PCWSTR(input.as_ptr()), Some(&mut output))
+    } as usize;
+    assert!(
+        length > 0 && length < output.len(),
+        "无法读取配置短路径：{}",
+        std::io::Error::last_os_error(),
+    );
+    let short = PathBuf::from(std::ffi::OsString::from_wide(&output[..length]));
+    if short != verbatim {
+        aliases.push(("short", short));
+    } else {
+        eprintln!("当前文件系统未提供 8.3 别名，跳过短路径别名场景");
+    }
+
+    let bridge_url = url_of(&plugins.ensure_host().unwrap().with_file_name("bridge.mjs"));
+    // 每次调用都新起 Node，避免测试进程自己的模块缓存掩盖常驻进程被路径别名分开的情况。
+    let invoke = |config: &Path, event: Option<&str>| -> Value {
+        let script = format!(
+            r#"const exit = process.exit.bind(process)
+const timer = setTimeout(() => {{ console.error('DSH path alias request timed out'); exit(1) }}, 30000)
+try {{
+  const {{ realpathSync }} = await import('node:fs')
+  const config = {config}
+  console.error(JSON.stringify({{ config, realpath: realpathSync(config), native: realpathSync.native(config) }}))
+  const bridge = await import({bridge})
+  const event = {event}
+  const result = event === null
+    ? await bridge.runCommand(config, 'seen', '', 'path-alias')
+    : await bridge.runHook(config, 'Stop', {{ session_id: event, stop_hook_active: false }})
+  clearTimeout(timer)
+  process.stdout.write(JSON.stringify(result), () => exit(0))
+}} catch (error) {{
+  console.error(error?.stack || error)
+  exit(1)
+}}"#,
+            config = json!(config.to_string_lossy()),
+            bridge = json!(bridge_url),
+            event = json!(event),
+        );
+        let output = Command::new(toolchain.node.as_ref().unwrap())
+            .args(["--input-type=module", "-e", &script])
+            .output()
+            .unwrap();
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        // 成功时也保留路径对照，避免被 libtest 的输出捕获隐藏。
+        std::io::stderr().write_all(diagnostics.as_bytes()).unwrap();
+        assert!(output.status.success(), "路径别名调用失败：{diagnostics}");
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!("路径别名调用未返回 JSON：{error}；{diagnostics}")
+        })
+    };
+    let seen = |config: &Path| -> Value {
+        let result = invoke(config, None);
+        assert_eq!(result["kind"], "success", "{result}");
+        serde_json::from_str(result["text"].as_str().unwrap()).unwrap()
+    };
+    let mut expected = Vec::new();
+    for (index, (name, alias)) in aliases.iter().enumerate() {
+        invoke(alias, Some(name));
+        expected.push(format!("stop:{name}"));
+        let query_alias = &aliases[(index + 1) % aliases.len()].1;
+        assert_eq!(seen(query_alias), json!(expected), "{name} 写入后从其他别名读取");
+    }
+    assert_eq!(seen(&other_config), json!([]), "不同配置不能借用已有插件的内存");
+    invoke(&other_config, Some("other"));
+    assert_eq!(seen(&other_config), json!(["stop:other"]));
+    assert_eq!(seen(&config), json!(expected), "不同配置的事件不能串入当前实例");
+
+    plugins.set_enabled(&record.id, false).unwrap();
+    plugins.sync_companion(&manager, &record.id).unwrap();
+    plugins.sync_companion(&other_manager, &record.id).unwrap();
 }

@@ -867,8 +867,84 @@ pub async fn route_upgrade_with(
     #[cfg(windows)]
     let mut upstream = tokio::net::windows::named_pipe::ClientOptions::new().open(socket).with_context(|| format!("连不上拓展的升级服务 {socket}"))?;
     upstream.write_all(&head).await?;
+    #[cfg(unix)]
     let _ = tokio::io::copy_bidirectional(stream, &mut upstream).await;
+    #[cfg(windows)]
+    {
+        let result = copy_upgrade_until_eof(stream, &mut upstream, Duration::from_secs(5)).await;
+        drop(upstream);
+        result.context("拓展升级连接转发失败")?;
+    }
     Ok(())
+}
+
+/// Windows 命名管道的 shutdown 不会发送 EOF；任一端结束后停止新读取，排空已读缓冲再释放管道。
+#[cfg(any(windows, test))]
+async fn copy_upgrade_until_eof<A, B>(
+    first: &mut A,
+    second: &mut B,
+    drain_timeout: Duration,
+) -> std::io::Result<(u64, u64)>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (stop, mut stopped) = tokio::sync::watch::channel(false);
+    let (first_read, first_write) = tokio::io::split(first);
+    let (second_read, second_write) = tokio::io::split(second);
+    let forward_stopped = stopped.clone();
+    let reverse_stopped = stopped.clone();
+    let transfers = async move {
+        let (forward, reverse) = tokio::join!(
+            copy_upgrade_direction(first_read, second_write, stop.clone(), forward_stopped),
+            copy_upgrade_direction(second_read, first_write, stop, reverse_stopped),
+        );
+        Ok::<_, std::io::Error>((forward?, reverse?))
+    };
+    tokio::pin!(transfers);
+    tokio::select! {
+        result = &mut transfers => result,
+        _ = stopped.changed() => {
+            // 只限制断开后的排空；正常 WebSocket 可以一直保持连接。
+            tokio::time::timeout(drain_timeout, &mut transfers).await.map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "拓展升级连接收尾超时，缓冲未能全部写出")
+            })?
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+async fn copy_upgrade_direction<R, W>(
+    mut reader: R,
+    mut writer: W,
+    stop: tokio::sync::watch::Sender<bool>,
+    mut stopped: tokio::sync::watch::Receiver<bool>,
+) -> std::io::Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let result = async {
+        let mut buffer = [0_u8; 8 * 1024];
+        let mut copied = 0;
+        loop {
+            let count = tokio::select! {
+                biased;
+                _ = stopped.changed() => break,
+                count = reader.read(&mut buffer) => count?,
+            };
+            if count == 0 {
+                break;
+            }
+            // read 可取消，write_all 不可取消：另一方向结束也不能静默丢掉已读的数据。
+            writer.write_all(&buffer[..count]).await?;
+            copied += count as u64;
+        }
+        Ok(copied)
+    }.await;
+    stop.send_replace(true);
+    result
 }
 
 /// 定时任务调度：每分钟给声明了 schedules 的拓展后台发一次 `__tick`（没起就先起），到点与否由后台按本机时区判断。
@@ -963,4 +1039,185 @@ pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
     let mut result = events(&manager, key, since, wait).await;
     result["status"] = json!("ok");
     Ok(result)
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::copy_upgrade_until_eof;
+    use std::io;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+    use tokio::sync::Notify;
+
+    /// 模拟命名管道：shutdown 成功返回，但另一端不会因此收到 EOF。
+    struct PipeLikeStream {
+        inner: DuplexStream,
+        read_signal: Option<Arc<Notify>>,
+        fail_writes: bool,
+    }
+
+    impl AsyncRead for PipeLikeStream {
+        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buffer: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+            let previous = buffer.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buffer);
+            if matches!(result, Poll::Ready(Ok(()))) && buffer.filled().len() > previous {
+                if let Some(signal) = &self.read_signal {
+                    signal.notify_one();
+                }
+            }
+            result
+        }
+    }
+
+    impl AsyncWrite for PipeLikeStream {
+        fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buffer: &[u8]) -> Poll<io::Result<usize>> {
+            if self.fail_writes {
+                return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "测试写入失败")));
+            }
+            Pin::new(&mut self.inner).poll_write(cx, buffer)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_stops_on_either_eof_without_pipe_shutdown() {
+        for close_client in [true, false] {
+            let (mut client, mut relay_client) = tokio::io::duplex(64);
+            let (mut peer, pipe) = tokio::io::duplex(64);
+            let relay = async move {
+                let mut pipe = PipeLikeStream { inner: pipe, read_signal: None, fail_writes: false };
+                copy_upgrade_until_eof(&mut relay_client, &mut pipe, Duration::from_secs(1)).await
+            };
+            let exchange = async {
+                client.write_all(b"request").await.unwrap();
+                let mut request = [0; 7];
+                peer.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"request");
+                if close_client {
+                    client.shutdown().await.unwrap();
+                    assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+                } else {
+                    peer.shutdown().await.unwrap();
+                    assert_eq!(client.read(&mut [0]).await.unwrap(), 0);
+                }
+            };
+            let (copied, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(relay, exchange)
+            }).await.expect("任一端 EOF 后都应释放管道");
+            assert_eq!(copied.unwrap(), (7, 0));
+        }
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_preserves_large_simultaneous_transfers() {
+        let forward: Vec<_> = (0..96 * 1024).map(|index| (index % 251) as u8).collect();
+        let reverse: Vec<_> = (0..80 * 1024).map(|index| (index % 239) as u8).collect();
+        let (mut client, mut relay_client) = tokio::io::duplex(31);
+        let (mut peer, pipe) = tokio::io::duplex(47);
+        let relay = async move {
+            let mut pipe = PipeLikeStream { inner: pipe, read_signal: None, fail_writes: false };
+            copy_upgrade_until_eof(&mut relay_client, &mut pipe, Duration::from_secs(1)).await
+        };
+        let client_exchange = async {
+            {
+                let (mut reader, mut writer) = tokio::io::split(&mut client);
+                let mut received = vec![0; reverse.len()];
+                let (written, read) = tokio::join!(writer.write_all(&forward), reader.read_exact(&mut received));
+                written.unwrap();
+                read.unwrap();
+                assert_eq!(received, reverse);
+            }
+            client.shutdown().await.unwrap();
+        };
+        let peer_exchange = async {
+            let (mut reader, mut writer) = tokio::io::split(&mut peer);
+            let mut received = vec![0; forward.len()];
+            let (written, read) = tokio::join!(writer.write_all(&reverse), reader.read_exact(&mut received));
+            written.unwrap();
+            read.unwrap();
+            assert_eq!(received, forward);
+        };
+        let (copied, (), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(relay, client_exchange, peer_exchange)
+        }).await.expect("双向背压不能互相卡住");
+        assert_eq!(copied.unwrap(), (forward.len() as u64, reverse.len() as u64));
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_drains_a_read_buffer_after_other_direction_eof() {
+        let payload = vec![0x5a; 4096];
+        let read_signal = Arc::new(Notify::new());
+        let (mut client, mut relay_client) = tokio::io::duplex(8);
+        let (mut peer, pipe) = tokio::io::duplex(8192);
+        let signal = read_signal.clone();
+        let relay = async move {
+            let mut pipe = PipeLikeStream { inner: pipe, read_signal: Some(signal), fail_writes: false };
+            copy_upgrade_until_eof(&mut relay_client, &mut pipe, Duration::from_secs(1)).await
+        };
+        let exchange = async {
+            peer.write_all(&payload).await.unwrap();
+            read_signal.notified().await;
+            client.shutdown().await.unwrap();
+            tokio::task::yield_now().await;
+            let mut received = vec![0; payload.len()];
+            client.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, payload, "停止信号不能取消已经开始的 write_all");
+        };
+        let (copied, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(relay, exchange)
+        }).await.expect("接收端恢复读取后应排空缓冲");
+        assert_eq!(copied.unwrap(), (0, payload.len() as u64));
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_timeout_only_bounds_draining() {
+        let drain_timeout = Duration::from_millis(50);
+        let read_signal = Arc::new(Notify::new());
+        let (mut client, mut relay_client) = tokio::io::duplex(8);
+        let (mut peer, pipe) = tokio::io::duplex(8192);
+        let signal = read_signal.clone();
+        let relay = async move {
+            let mut pipe = PipeLikeStream { inner: pipe, read_signal: Some(signal), fail_writes: false };
+            copy_upgrade_until_eof(&mut relay_client, &mut pipe, drain_timeout).await
+        };
+        let exchange = async {
+            // 活跃连接的空闲时间可以超过收尾期限；只有 EOF 后才开始计时。
+            tokio::time::sleep(drain_timeout * 2).await;
+            peer.write_all(&[0x5a; 4096]).await.unwrap();
+            read_signal.notified().await;
+            client.shutdown().await.unwrap();
+            // 不读回传内容，让另一个方向的 write_all 保持背压。
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(relay, exchange)
+        }).await.expect("无法排空时必须有界结束");
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("缓冲未能全部写出"));
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_write_failure_stops_the_other_reader() {
+        let (mut client, mut relay_client) = tokio::io::duplex(64);
+        let (_peer, pipe) = tokio::io::duplex(64);
+        let mut pipe = PipeLikeStream { inner: pipe, read_signal: None, fail_writes: true };
+        let relay = copy_upgrade_until_eof(&mut relay_client, &mut pipe, Duration::from_secs(1));
+        let exchange = async {
+            client.write_all(b"request").await.unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(relay, exchange)
+        }).await.expect("写入失败后不能留下另一个方向的读取");
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
 }
