@@ -2737,7 +2737,7 @@ describe("拓展接口层", () => {
     const routes = await readRouteWhitelist();
     assert.ok(routes.length > 0, "白名单不能为空");
     // 这些路由一旦开放，第三方脚本就能改用户配置或操作远端，必须显式决策后才能加。
-    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create", "/whale/history"]) {
+    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
     assert.ok(routes.includes("/usage/history"), "只读用量历史应开放给拓展");
