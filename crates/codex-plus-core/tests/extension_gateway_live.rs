@@ -1,7 +1,7 @@
 //! 拓展网关能力走真实请求链路：经协议代理打到本机模拟上游，验证请求中间件加请求头、
 //! 失败中间件换模型降级、拓展供应商从上游 /models 拉模型列表。
 //!
-//! 单独成一个测试程序：要改 XDG_CONFIG_HOME 指向临时拓展目录，而网关中间件清单是进程级缓存，
+//! 单独成一个测试程序：要改平台配置目录环境变量，而网关中间件清单是进程级缓存，
 //! 和 tests/all 里其它跑代理请求的用例同进程会互相读到对方的缓存。
 
 use codex_plus_core::gateway::store::GatewaySettings;
@@ -64,14 +64,23 @@ async fn gateway_extensions_on_the_real_request_path() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
+    let config_home_env = if cfg!(windows) { "APPDATA" } else { "XDG_CONFIG_HOME" };
     // SAFETY: 本测试程序只有这一个用例，没有别的线程在读环境变量。
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", temp.path()) };
+    unsafe {
+        std::env::set_var(config_home_env, temp.path());
+        std::env::set_var(codex_plus_core::paths::STATE_DIR_ENV, temp.path().join("state"));
+    }
+    let root = temp.path().join("Codex++");
+    assert_eq!(
+        codex_plus_core::user_scripts::default_user_scripts_config_dir(),
+        root,
+        "拓展必须从测试临时目录加载",
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let seen: Seen = Arc::default();
     tokio::spawn(serve(listener, seen.clone()));
 
-    let root = temp.path().join("Codex++");
     let dir = root.join("user_scripts/live");
     std::fs::create_dir_all(dir.join("gateway")).unwrap();
     std::fs::write(root.join("user_scripts.json"), json!({ "enabled": true, "scripts": {} }).to_string()).unwrap();
