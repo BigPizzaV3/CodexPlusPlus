@@ -94,7 +94,10 @@ it("is no longer part of the core injection; the extension loads, reapplies and 
   // 图片只经声明过的读图路由拿；改设置原地重铺；卸下时以 enabled:false 再调一次做清理。
   assert.match(main, /ctx\.call\("\/image-overlay\/image", \{\}\)/);
   // 内核先调 onConfigUpdate 再换 ctx.config：改设置时用 next，不读旧的 ctx.config。
-  assert.match(main, /ctx\.onConfigUpdate\(\(next\) => \{\n\s+void apply\(next\);\n\s+return true;/);
+  // 两种 checkout 换行都要保留完整的热更新调用顺序断言。
+  for (const eol of ["\n", "\r\n"]) {
+    assert.match(main.replace(/\r?\n/g, eol), /ctx\.onConfigUpdate\(\(next\) => \{\r?\n\s+void apply\(next\);\r?\n\s+return true;/);
+  }
   assert.match(main, /const opacity = Number\(config\.opacity\);/);
   assert.match(main, /installCodexPlusImageOverlay\(\{ enabled: false \}\)/);
   // 读图期间又改了设置或已卸下时丢弃旧结果，不会把旧图铺回去。

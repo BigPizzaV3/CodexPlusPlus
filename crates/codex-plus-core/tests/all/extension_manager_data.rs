@@ -48,12 +48,14 @@ fn gateway() -> GatewaySettings {
 }
 
 fn keys(value: &Value, expected: &[&str]) {
-    let actual = value
+    let mut actual = value
         .as_object()
         .unwrap()
         .keys()
         .map(String::as_str)
         .collect::<Vec<_>>();
+    // 白名单比较完整的字段集合，不依赖 serde_json 是否保留插入顺序。
+    actual.sort_unstable();
     let mut expected = expected.to_vec();
     expected.sort_unstable();
     assert_eq!(actual, expected);
