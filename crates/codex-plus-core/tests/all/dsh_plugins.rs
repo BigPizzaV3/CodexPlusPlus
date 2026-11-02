@@ -1551,6 +1551,7 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
 
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
+    codex_plus_core::extension_backend::stop_all(&manager).await;
 }
 
 /// 自定义 npm registry：`npm pack` 与依赖安装都带上 `--registry`（假的 npm 记下参数并造出 tarball）。
