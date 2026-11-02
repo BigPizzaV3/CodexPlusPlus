@@ -1183,6 +1183,23 @@ impl ResponseFilter {
         out
     }
 
+    /// 把本会话用的常驻 worker 从全局槽位撤下（槽位里已是别的 worker 时不动）。
+    /// 生产里 worker 随进程常驻；测试每个用例各有一个 tokio 运行时，Windows 上子进程 stdout 的读走阻塞线程池，
+    /// 运行时销毁要等那次读返回，读又要等子进程退出，所以收尾时撤下槽位，让最后一个引用丢掉后被 kill_on_drop 杀掉。
+    #[doc(hidden)]
+    pub async fn release_worker(&self) {
+        let mut slot = RESPONSE_WORKER.lock().await;
+        if slot.as_ref().is_some_and(|(_, worker)| std::sync::Arc::ptr_eq(worker, &self.worker)) {
+            *slot = None;
+        }
+    }
+
+    /// 全局槽位里现在有没有常驻 worker，供测试断言 `release_worker` 的行为。
+    #[doc(hidden)]
+    pub async fn worker_installed() -> bool {
+        RESPONSE_WORKER.lock().await.is_some()
+    }
+
     async fn process_block(&mut self, block: &[u8]) -> Vec<u8> {
         let text = String::from_utf8_lossy(block).replace("\r\n", "\n");
         let mut event_name = None;
