@@ -3338,6 +3338,8 @@
     return enabled && !paused ? "install" : "cleanup";
   }
 
+  let dreamSkinCleanupRoot = null;
+
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
     const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
@@ -3348,21 +3350,23 @@
       externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
       runtimeInstalled: !!runtimeState,
     });
-    if (action === "ensure" || action === "install") ensureDreamSkinMainSurface();
-    if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
-      if (action === "cleanup") {
+    if (action === "cleanup") {
+      const root = document.documentElement;
+      // 首次仍清旧残留；关闭后不再每轮扫描全页，新运行时或根节点出现时重新清理。
+      if (!root || dreamSkinCleanupRoot !== root || runtimeState) {
         cleanupDreamSkin();
-      } else {
-        const state = runtimeState;
-        state?.ensure?.();
-        ensureDreamSkinCompanion(
-          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
-        );
+        dreamSkinCleanupRoot = root;
       }
       return;
     }
-    if (!settings.dreamSkinEnabled || settings.dreamSkinPaused) {
-      cleanupDreamSkin();
+    dreamSkinCleanupRoot = null;
+    if (action === "ensure" || action === "install") ensureDreamSkinMainSurface();
+    if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
+      const state = runtimeState;
+      state?.ensure?.();
+      ensureDreamSkinCompanion(
+        window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
+      );
       return;
     }
     installDreamSkin(settings);
@@ -20066,6 +20070,8 @@
     "activity.after",
   ];
   const codexPlusUiSlotVersions = new Map();
+  // 只为资源撤销保留挂载记录；渲染位置仍现查 DOM，不复用这些节点。
+  const codexPlusUiSlotCleanups = new Map();
 
   function codexPlusUiSlotAnchors(slot) {
     const visible = (selector) => [...document.querySelectorAll(selector)].filter((node) => visibleElement(node) && !isExtensionUiNode(node));
@@ -20201,12 +20207,46 @@
   function codexPlusRunSlotCleanup(node) {
     const cleanup = node.__codexPlusSlotCleanup;
     node.__codexPlusSlotCleanup = null;
+    codexPlusUiSlotCleanups.delete(node);
+    delete node.dataset.slotVersion;
+    delete node.__codexPlusSlotInfo;
     if (typeof cleanup === "function") runCodexPlusExtensionCallback(node.dataset.scriptKey || "", "slot.cleanup", cleanup);
+  }
+
+  /** 共用主观察器的移除记录；同批移动已重新连接的节点不清理。 */
+  function pruneRemovedCodexPlusUiSlots(mutations) {
+    if (!codexPlusUiSlotsRendered && !codexPlusUiSlotCleanups.size) return false;
+    const repairs = new Map();
+    for (const mutation of mutations || []) {
+      for (const node of mutation.removedNodes || []) {
+        if (node.nodeType !== 1 || node.isConnected) continue;
+        const containers = node.matches?.("[data-codex-plus-slot-item]") ? [node] : [];
+        containers.push(...node.querySelectorAll("[data-codex-plus-slot-item]"));
+        containers.forEach(codexPlusRunSlotCleanup);
+        // 原生只删了插槽、锚点还在时补回；整块页面离开不为旧插槽另排扫描。
+        const parent = mutation.target;
+        if (!parent?.isConnected) continue;
+        const slot = node.getAttribute("data-codex-plus-ui-slot")
+          || (node.matches?.("[data-codex-plus-slot-item]") && parent.getAttribute("data-codex-plus-ui-slot"));
+        if (slot) {
+          if (!repairs.has(slot)) repairs.set(slot, new Set());
+          repairs.get(slot).add(node.hasAttribute("data-codex-plus-ui-slot") ? parent : parent.parentElement);
+        }
+      }
+    }
+    for (const [slot, parents] of repairs) {
+      if (!codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => item.slot === slot)) continue;
+      if (codexPlusUiSlotAnchors(slot).some((anchor) => parents.has(anchor.parent))) return true;
+    }
+    return false;
   }
 
   let codexPlusUiSlotsRendered = false;
 
   function refreshCodexPlusUiSlots() {
+    for (const [node, item] of [...codexPlusUiSlotCleanups]) {
+      if (!node.isConnected || codexPlusRegistry.slots.get(item.id) !== item) codexPlusRunSlotCleanup(node);
+    }
     const items = codexPlusExtensionItems(codexPlusRegistry.slots);
     if (!items.length) {
       if (codexPlusUiSlotsRendered) {
@@ -20284,7 +20324,23 @@
           container.__codexPlusSlotInfo = infoKey;
           placeAfterPrevious(container);
           const result = runCodexPlusExtensionCallback(item.scriptKey, "slot.render", () => item.render({ container, slot, ...(info || {}) }));
-          if (result.ok && typeof result.value === "function") container.__codexPlusSlotCleanup = result.value;
+          if (result.ok && typeof result.value === "function") {
+            // 新注入可经旧节点撤销资源；包装器必须摘掉原闭包的记录，且重入只执行一次。
+            const release = result.value;
+            let cleaned = false;
+            const cleanup = () => {
+              if (cleaned) return;
+              cleaned = true;
+              codexPlusUiSlotCleanups.delete(container);
+              delete container.dataset.slotVersion;
+              delete container.__codexPlusSlotInfo;
+              if (container.__codexPlusSlotCleanup === cleanup) container.__codexPlusSlotCleanup = null;
+              release();
+            };
+            container.__codexPlusSlotCleanup = cleanup;
+            codexPlusUiSlotCleanups.set(container, item);
+            if (!container.isConnected || codexPlusRegistry.slots.get(item.id) !== item) codexPlusRunSlotCleanup(container);
+          }
         }
       }
     }
@@ -23810,12 +23866,13 @@
   }
 
   function scheduleScan(mutations) {
-    // 隐藏页面和已排队的扫描也要清理，不能让孤立菜单等待下一次可见扫描。
+    // 隐藏页面和已排队的扫描也要回收已脱离的菜单、插槽，不能等下次可见扫描。
     const sessionActionsNeedScan = pruneRemovedSessionActions(mutations);
+    const slotsNeedScan = pruneRemovedCodexPlusUiSlots(mutations);
     window.__codexSessionDeleteLastMutations = mutations;
     if (window.__codexSessionDeleteScanPending) return;
-    // 原生页面可能只移除带归属标记的按钮组；所属行仍在时需要补回操作入口。
-    if (!sessionActionsNeedScan && !shouldScheduleScan(mutations)) return;
+    // 原生页面可能只移除带归属标记的按钮组或插槽；宿主仍在时需要补回。
+    if (!sessionActionsNeedScan && !slotsNeedScan && !shouldScheduleScan(mutations)) return;
     window.__codexSessionDeleteScanPending = true;
     if (document.hidden) return;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);
