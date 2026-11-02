@@ -459,13 +459,17 @@ fn native_quota_bootstrap_script() -> String {
       const seq = ++sequence;
       clearTimeout(timer);
       timer = setTimeout(() => {
-        if (seq === sequence) window.__codexPlusApiQuotaGate.installNative(null);
+        if (seq === sequence && !window.__codexPlusNativeQuotaRuntime) {
+          window.__codexPlusApiQuotaGate.installNative(null);
+        }
       }, 5000);
       try {
         window.codexPlusNativeQuotaSettings(JSON.stringify({ sequence: seq }));
       } catch {
         clearTimeout(timer);
-        window.__codexPlusApiQuotaGate.installNative(null);
+        if (!window.__codexPlusNativeQuotaRuntime) {
+          window.__codexPlusApiQuotaGate.installNative(null);
+        }
       }
     },
     accept(seq, settings) {
@@ -562,9 +566,13 @@ async fn install_isolated_api_quota_gate_target_url(
     let mut registered_scripts = Vec::new();
     let mut binding_added = false;
     let mut pending_registration = None;
+    let mut session_shutdown = false;
     let result = tokio::select! {
         biased;
-        _ = shutdown.wait_for(|stop| *stop) => Ok(()),
+        _ = shutdown.wait_for(|stop| *stop) => {
+            session_shutdown = true;
+            Ok(())
+        },
         result = async {
             session.send_command(next_message_id(), "Runtime.enable", json!({})).await?;
             binding_added = true;
@@ -592,45 +600,48 @@ async fn install_isolated_api_quota_gate_target_url(
             serve_native_quota_settings(&mut session).await
         } => result,
     };
-    // 取消只终止工作 future，随后有界清理同一条 CDP 连接，不再探测或绑定新实例。
-    let _ = tokio::time::timeout(Duration::from_secs(2), async {
-        // 取消可能发生在注册已送达、但返回标识尚未收到时；先回收这份回复。
-        if let Some(id) = pending_registration {
-            if let Ok(Ok(reply)) = tokio::time::timeout(
-                Duration::from_millis(500),
-                session.wait_for_id(id, "Page.addScriptToEvaluateOnNewDocument".to_string()),
-            )
-            .await
-            {
-                if let Some(identifier) =
-                    reply.pointer("/result/identifier").and_then(Value::as_str)
+    // 仅在会话明确收到 shutdown（管理器关闭或会话停止）时清理页面；普通断线重试保持前端策略存活。
+    if session_shutdown {
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            if let Some(id) = pending_registration {
+                if let Ok(Ok(reply)) = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    session.wait_for_id(id, "Page.addScriptToEvaluateOnNewDocument".to_string()),
+                )
+                .await
                 {
-                    registered_scripts.push(identifier.to_string());
+                    if let Some(identifier) =
+                        reply.pointer("/result/identifier").and_then(Value::as_str)
+                    {
+                        registered_scripts.push(identifier.to_string());
+                    }
                 }
             }
-        }
-        session.remove_registered_scripts(&registered_scripts).await;
-        if !registered_scripts.is_empty() {
-            let _ = session
-                .send_command_without_wait(
-                    next_message_id(),
-                    "Runtime.evaluate",
-                    runtime_evaluate_params("window.__codexPlusNativeQuotaBootstrap?.dispose()"),
-                )
-                .await;
-        }
-        if binding_added {
-            let _ = session
-                .send_command_without_wait(
-                    next_message_id(),
-                    "Runtime.removeBinding",
-                    json!({ "name": NATIVE_QUOTA_SETTINGS_BINDING }),
-                )
-                .await;
-        }
+            session.remove_registered_scripts(&registered_scripts).await;
+            if !registered_scripts.is_empty() {
+                let _ = session
+                    .send_command_without_wait(
+                        next_message_id(),
+                        "Runtime.evaluate",
+                        runtime_evaluate_params("window.__codexPlusNativeQuotaBootstrap?.dispose()"),
+                    )
+                    .await;
+            }
+            if binding_added {
+                let _ = session
+                    .send_command_without_wait(
+                        next_message_id(),
+                        "Runtime.removeBinding",
+                        json!({ "name": NATIVE_QUOTA_SETTINGS_BINDING }),
+                    )
+                    .await;
+            }
+            session.close().await;
+        })
+        .await;
+    } else {
         session.close().await;
-    })
-    .await;
+    }
     result
 }
 
