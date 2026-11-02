@@ -149,6 +149,26 @@ pub async fn claude_localization_set_voice_input(enabled: bool) -> CommandResult
 }
 
 #[tauri::command]
+pub async fn claude_localization_set_extensions(enabled: bool) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_extensions_enabled(enabled)
+    })
+    .await
+    {
+        Ok(Ok(status)) => ok(
+            if enabled {
+                "Claude 拓展已开启，重启增强版后应用。"
+            } else {
+                "Claude 拓展已关闭，重启增强版后应用。"
+            },
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn claude_localization_set_localization(enabled: bool) -> CommandResult<Value> {
     match tauri::async_runtime::spawn_blocking(move || {
         codex_plus_core::claude_localization::set_localization(enabled)

@@ -52,6 +52,7 @@ lines.on("line", async (line) => {
         if (!create) throw new Error(`${message.script} 没有默认导出函数`);
         methods = await create({
           extension: message.extension,
+          ...(message.host ? { host: message.host } : {}),
           config: message.config ?? {},
           dataDir: message.dataDir,
           emit: (event, payload) => write({ event: String(event), payload: payload ?? null }),
@@ -151,6 +152,12 @@ struct Backend {
     _child: tokio::process::Child,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackendHost {
+    Codex,
+    ClaudeDesktop,
+}
+
 /// 在跑的后台，按 [`slot`] 登记：同一进程里不同拓展目录的同名拓展各起各的，停一个目录的后台也不波及别的目录。
 static BACKENDS: std::sync::LazyLock<Mutex<HashMap<String, Backend>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -163,16 +170,26 @@ fn slot(manager: &UserScriptManager, key: &str) -> String {
 fn slot_prefix(manager: &UserScriptManager) -> String {
     format!("{}\u{0}", manager.config_path().display())
 }
+
+fn host_slot(manager: &UserScriptManager, key: &str, host: BackendHost) -> String {
+    match host {
+        BackendHost::Codex => slot(manager, key),
+        BackendHost::ClaudeDesktop => format!("claudeDesktop\u{0}{}", slot(manager, key)),
+    }
+}
 static EVENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// 拓展后台的可写数据目录：`<用户脚本配置目录>/extension-data/<拓展 id>`。
-fn data_dir(manager: &UserScriptManager, extension: &str) -> PathBuf {
+/// 两个宿主使用同级独立目录，避免 Claude 与合法的 Codex 拓展 id 碰撞。
+fn data_dir(manager: &UserScriptManager, extension: &str, host: BackendHost) -> PathBuf {
     manager
         .user_dir()
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| manager.user_dir().to_path_buf())
-        .join("extension-data")
+        .join(match host {
+            BackendHost::Codex => "extension-data",
+            BackendHost::ClaudeDesktop => "claude-extension-data",
+        })
         .join(extension)
 }
 
@@ -187,10 +204,14 @@ fn fingerprint(script: &std::path::Path, config: &Value) -> String {
     format!("{}|{modified}|{config}", script.display())
 }
 
-async fn spawn(manager: &UserScriptManager, (extension, script, config): (String, PathBuf, Value)) -> anyhow::Result<Backend> {
+async fn spawn(
+    manager: &UserScriptManager,
+    (extension, script, config): (String, PathBuf, Value),
+    host: BackendHost,
+) -> anyhow::Result<Backend> {
     let fingerprint = fingerprint(&script, &config);
     let node = crate::extension_node::require_node()?;
-    let data = data_dir(manager, &extension);
+    let data = data_dir(manager, &extension, host);
     std::fs::create_dir_all(&data).with_context(|| format!("无法创建拓展数据目录 {}", data.display()))?;
     let mut command = tokio::process::Command::new(node);
     command
@@ -200,14 +221,22 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    set_host_exe_env(&mut command);
+    match host {
+        BackendHost::Codex => set_host_exe_env(&mut command),
+        BackendHost::ClaudeDesktop => {
+            command.env_remove(HOST_EXE_ENV);
+        }
+    }
     // Windows 上不能闪出黑色终端窗口。
     #[cfg(windows)]
     command.creation_flags(crate::windows_create_no_window());
     let mut child = command.spawn().context("无法启动拓展后台")?;
     let stdin = Arc::new(Mutex::new(child.stdin.take().context("拓展后台没有 stdin")?));
     let stdout = child.stdout.take().context("拓展后台没有 stdout")?;
-    let init = json!({ "script": script, "extension": extension, "config": config, "dataDir": data });
+    let mut init = json!({ "script": script, "extension": extension, "config": config, "dataDir": data });
+    if host == BackendHost::ClaudeDesktop {
+        init["host"] = json!("claudeDesktop");
+    }
     {
         let mut writer = stdin.lock().await;
         writer.write_all(format!("{init}\n").as_bytes()).await?;
@@ -237,7 +266,12 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
                     let host_stdin = host_stdin.clone();
                     let host_manager = host_manager.clone();
                     tokio::spawn(async move {
-                        let reply = match host_call(&message, &host_manager).await {
+                        let result = if host == BackendHost::ClaudeDesktop {
+                            Err(anyhow::anyhow!("Claude Desktop 后台未开放 Codex 宿主调用"))
+                        } else {
+                            host_call(&message, &host_manager).await
+                        };
+                        let reply = match result {
                             Ok(result) => json!({ "hostReply": host_id, "result": result }),
                             Err(error) => json!({ "hostReply": host_id, "error": format!("{error:#}") }),
                         };
@@ -556,8 +590,9 @@ async fn ensure_started(
     key: &str,
     declared: (String, PathBuf, Value),
     wanted: &str,
+    host: BackendHost,
 ) -> anyhow::Result<()> {
-    let key = &slot(manager, key);
+    let key = &host_slot(manager, key, host);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         {
@@ -583,7 +618,7 @@ async fn ensure_started(
         };
         if starter {
             let _guard = StartingGuard { key: key.to_string(), notify };
-            let backend = spawn(manager, declared).await?;
+            let backend = spawn(manager, declared, host).await?;
             BACKENDS.lock().await.insert(key.to_string(), backend);
             return Ok(());
         }
@@ -610,20 +645,47 @@ pub async fn call(
     timeout: Duration,
     instance: Option<&str>,
 ) -> anyhow::Result<Value> {
+    call_for_host(manager, key, method, params, timeout, instance, BackendHost::Codex).await
+}
+
+/// Claude Mods 只调用清单显式声明的方法，后台进程、状态目录和宿主权限均与 Codex 分开。
+pub(crate) async fn call_claude(
+    manager: &UserScriptManager,
+    key: &str,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+    instance: Option<&str>,
+) -> anyhow::Result<Value> {
+    call_for_host(manager, key, method, params, timeout, instance, BackendHost::ClaudeDesktop).await
+}
+
+async fn call_for_host(
+    manager: &UserScriptManager,
+    key: &str,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+    instance: Option<&str>,
+    host: BackendHost,
+) -> anyhow::Result<Value> {
     if method.is_empty() || method.len() > 128 {
         anyhow::bail!("方法名无效");
     }
     // 扫描拓展目录在锁外做；拓展已停用就停掉还在跑的后台。
-    let declared = match declared_backend(manager, key) {
+    let declared = match match host {
+        BackendHost::Codex => declared_backend(manager, key),
+        BackendHost::ClaudeDesktop => manager.enabled_claude_extension_backend(key, method),
+    } {
         Ok(declared) => declared,
         Err(error) => {
-            BACKENDS.lock().await.remove(&slot(manager, key));
+            BACKENDS.lock().await.remove(&host_slot(manager, key, host));
             return Err(error);
         }
     };
     let wanted = fingerprint(&declared.1, &declared.2);
-    ensure_started(manager, key, declared, &wanted).await?;
-    let key = &slot(manager, key);
+    ensure_started(manager, key, declared, &wanted, host).await?;
+    let key = &host_slot(manager, key, host);
     let receiver = {
         let mut backends = BACKENDS.lock().await;
         let Some(backend) = backends.get_mut(key) else {
@@ -657,7 +719,12 @@ pub async fn call(
             anyhow::bail!("{error}")
         }
         Ok(Err(_)) => anyhow::bail!("拓展后台没有回应"),
-        Err(_) => anyhow::bail!("调用 {method} 超时"),
+        Err(_) => {
+            if host == BackendHost::ClaudeDesktop {
+                BACKENDS.lock().await.remove(key);
+            }
+            anyhow::bail!("调用 {method} 超时");
+        }
     }
 }
 
@@ -703,6 +770,16 @@ async fn latest_seq(manager: &UserScriptManager, key: &str) -> Option<u64> {
 pub async fn stop_all(manager: &UserScriptManager) {
     let prefix = slot_prefix(manager);
     BACKENDS.lock().await.retain(|slot, _| !slot.starts_with(&prefix));
+}
+
+/// Claude MCP 断开时只停止它托管的后台，不影响 Codex 页面的后台。
+pub async fn stop_all_claude(manager: &UserScriptManager) {
+    let prefix = format!("claudeDesktop\u{0}{}", slot_prefix(manager));
+    BACKENDS.lock().await.retain(|slot, _| !slot.starts_with(&prefix));
+}
+
+pub(crate) async fn stop_claude(manager: &UserScriptManager, key: &str) {
+    BACKENDS.lock().await.remove(&host_slot(manager, key, BackendHost::ClaudeDesktop));
 }
 
 /// 停掉一个拓展的后台。给了 `instance` 时，只在最近一次调用也来自它时才停：

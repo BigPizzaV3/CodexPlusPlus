@@ -102,7 +102,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ready = {
   status: "ok", supported: true, prepared: true, needsRebuild: false,
   running: false, nodeAvailable: true, sourceVersion: "1.2.3", copyVersion: "1.2.3",
-  catalogEntries: 1234, localization: true, voiceInput: true, computerUse: false,
+  catalogEntries: 1234, localization: true, voiceInput: true, extensions: false, computerUse: false,
   bashTimeout: { enabled: false, defaultEnabled: true, defaultSeconds: 120, maxEnabled: true, maxSeconds: 1800 },
 };
 
@@ -200,6 +200,25 @@ test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开�
   const page = quiet.render();
   assert.equal(warning(page), false, "未接入时不应显示冲突提醒");
   assert.ok(text(page).includes("二选一"), "仍保留一句二选一的说明");
+});
+
+test("Claude 拓展默认关闭，成功后同步状态，保存失败时保留上次选择", async () => {
+  const screen = harness({ status: ready, autoDetected: true });
+  const toggle = () => inputs(screen.render()).find((input) => input.props["aria-label"] === "万物皆拓展")!;
+  assert.equal(toggle().props.checked, false);
+  toggle().props.onChange({ currentTarget: { checked: true } });
+  assert.equal(screen.calls[0].command, "claude_localization_set_extensions");
+  assert.equal((screen.calls[0].args[0] as { enabled: boolean }).enabled, true);
+  assert.equal(toggle().props.disabled, true, "保存中不应重复切换");
+  screen.calls[0].resolve({ ...ready, extensions: true });
+  await tick();
+  assert.equal(toggle().props.checked, true);
+  toggle().props.onChange({ currentTarget: { checked: false } });
+  screen.calls[1].resolve({ status: "failed", message: "保存失败", data: {} });
+  await tick();
+  assert.equal(toggle().props.checked, true, "失败不能用空 data 覆盖有效状态");
+  assert.match(text(screen.render()), /保存失败/);
+  assert.equal(toggle().props.disabled, false);
 });
 
 test("Bash 时间限制可分别修改默认值和最大值", async () => {

@@ -348,6 +348,7 @@ pub fn run() {
             commands::claude_localization_bash_timeout_status,
             commands::claude_localization_action,
             commands::claude_localization_set_voice_input,
+            commands::claude_localization_set_extensions,
             commands::claude_localization_set_localization,
             commands::claude_localization_set_computer_use,
             commands::claude_localization_set_bash_timeout,

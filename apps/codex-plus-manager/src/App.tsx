@@ -137,7 +137,7 @@ import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWa
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
-import { agentTabGroups, agentTarget } from "./page-groups";
+import { agentTabGroups, agentTarget, pageVisibleForTool } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
@@ -736,6 +736,7 @@ type UserScriptInventory = {
       locales?: Record<string, { title?: string | null; description?: string | null }>;
       http?: boolean; schedules?: Array<{ method: string; everyMinutes?: number | null; at?: string | null }>;
       codex?: { skills?: string[]; agents?: string[]; mcpServers?: string[]; instructions?: boolean; prompts?: string[]; resources?: string[] };
+      claudeDesktop?: Record<string, unknown> | null;
       /** 管理器面板（codexpp.json 的 manager）：可以进侧栏（nav）、顶替内置页面（replaces）、读只读数据（data）。 */
       managerPage?: ManagerPageSummary | null;
       /** 拓展自己的设置页（codexpp.json 的 settings.page），「设置」打开它而不是通用表单。 */
@@ -1377,11 +1378,12 @@ const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
  *
  * - `"codex"` / `"grok"`：这一页只属于某个工具，切到别的工具时隐藏。
  *   绝大部分功能（会话、MCP、皮肤、脚本市场、安装维护…）都是 Codex 专属的。
- * - 不写 `tool`：与工具无关的应用级页面（设置、关于），任何工具下都显示。
+ * - `tools`：共享页面的可见 Agent；保留 `tool` 供原有顶栏行为使用。
+ * - 不写 `tool` / `tools`：与工具无关的应用级页面（设置、关于），任何工具下都显示。
  *
  * 新增页面时**必须**想清楚归属：默认可见会让 Codex 专属功能在 Grok 下露出来。
  */
-const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string }> = [
+const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string; tools?: readonly string[] }> = [
   // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
   { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
   { id: "relay", get label() { return t("旧版供应商配置"); }, icon: KeyRound, tool: "codex" },
@@ -1394,9 +1396,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "weixin", get label() { return t("微信连接"); }, icon: ScanLine, tool: "codex" },
   { id: "enhance", get label() { return t("内置拓展"); }, icon: Hammer, tool: "codex" },
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
-  // 拓展注入的是 Codex 页面（tool 保持 codex，顶栏才有重启 Codex），但入口放在侧栏「全局管理」，
-  // 和 MCP、Skills 并列，不藏在 Codex 的页签里。
-  { id: "userScripts", get label() { return t("万物皆拓展"); }, icon: FileCode2, tool: "codex" },
+  // Codex / Claude 共用拓展管理入口；tool 保留 codex，让 Codex 下的顶栏继续提供重启。
+  { id: "userScripts", get label() { return t("万物皆拓展"); }, icon: FileCode2, tool: "codex", tools: ["codex", "claude"] },
   { id: "pluginMarket", get label() { return t("插件市场"); }, icon: Store, tool: "codex" },
   { id: "recommendations", get label() { return t("推荐内容"); }, icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
@@ -1852,7 +1853,7 @@ export function App() {
     // 供应商页是跟着工具走的，切工具后如果当前页不属于新工具就跳到它自己的页。
     // 设置页也只属于 Codex，同样按这条规则跳走。
     const currentRoute = routes.find((candidate) => candidate.id === route);
-    if (currentRoute?.tool && currentRoute.tool !== toolId) {
+    if (!pageVisibleForTool(currentRoute, toolId)) {
       setRoute(agentHomeRoute[toolId] ?? "overview");
     }
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
@@ -4692,9 +4693,8 @@ export function App() {
     onLaunch: () => void actions.launch(),
     onRestart: () => void actions.restart(),
   };
-  // 当前页面属于 Codex：routes 里 tool 为 codex 的页面，以及当前 Agent 是 Codex 时的 Agent 概览。
-  // 网关、全局管理、工具类页面和 Claude Code / Grok 的页面都不算（Codex++ 不只服务 Codex）。
-  const onCodexPage = routeTool(route) === "codex" || (route === "overview" && activeTool === "codex");
+  // Codex 专属页面与 Codex 概览提供启动入口；共享的拓展管理页只在当前 Agent 为 Codex 时提供。
+  const onCodexPage = (routeTool(route) === "codex" && (route !== "userScripts" || activeTool === "codex")) || (route === "overview" && activeTool === "codex");
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
   // 没勾选的 Agent 不进侧栏和命令面板；只影响显示，它的配置和网关接入照旧。
   const shownTools = toolEntries.filter((entry) => agentVisible(agentFocus, entry.id));
@@ -4710,6 +4710,8 @@ export function App() {
   // 停在当前模式下隐藏的页面上（启动默认的网关总览、托盘跳过来的请求日志等）：回到当前 Agent 的落脚页。
   useEffect(() => {
     if (!routeVisible(agentFocus, route)) void navigate(agentHomeRoute[activeTool] ?? "overview");
+    const currentRoute = routes.find((candidate) => candidate.id === route);
+    if (currentRoute?.tools && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "overview");
     // navigate 每次渲染都是新函数，只在模式或页面变化时检查。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentFocus, route, activeTool]);
@@ -4736,6 +4738,7 @@ export function App() {
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
     const item = routes.find((candidate) => candidate.id === routeId);
     if (!item || !routeVisible(agentFocus, routeId)) return null;
+    if (item.tools && !pageVisibleForTool(item, activeTool)) return null;
     const Icon = item.icon;
     return { id: `${group}:${routeId}`, group, label: item.label, keywords: `${routeId} ${keywords}`, icon: <Icon className="h-4 w-4" />, run };
   };
@@ -15694,6 +15697,7 @@ type ClaudeLocalizationStatus = {
   catalogEntries: number;
   voiceInput: boolean;
   localization: boolean;
+  extensions: boolean;
   computerUse: boolean;
   /** 当前平台能否真正应用 Computer Use；Windows 为 false（#2673）。 */
   computerUseSupported: boolean;
@@ -15843,6 +15847,22 @@ function ClaudeLocalizationScreen() {
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
       accept(result);
+    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  };
+  const toggleExtensions = async (enabled: boolean) => {
+    if (pending.current) return;
+    pending.current = true;
+    statusGeneration.current++;
+    setBusy("extensions"); setError(null);
+    try {
+      accept(await invoke<CommandResult<ClaudeLocalizationStatus>>(
+        "claude_localization_set_extensions",
+        { enabled },
+      ));
     } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
     finally {
       pending.current = false;
@@ -16101,6 +16121,20 @@ function ClaudeLocalizationScreen() {
               <span>
                 <strong>{t("语音输入")}</strong>
                 <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            <label className="switch-row compact">
+              <input
+                aria-label={t("万物皆拓展")}
+                checked={Boolean(s?.extensions)}
+                disabled={busy !== null || !s?.supported}
+                onChange={(event) => void toggleExtensions(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("万物皆拓展")}</strong>
+                <small>{t("加载声明适配 Claude Code 的拓展，重启增强版后应用。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -16449,7 +16483,7 @@ function AppSidebar({
 
   const renderItem = (routeId: Route) => {
     const item = routes.find((candidate) => candidate.id === routeId);
-    if (!item) return null;
+    if (!item || (item.tools && !pageVisibleForTool(item, activeTool))) return null;
     const Icon = item.icon;
     const selected = route === item.id || navAliasRoute[route] === item.id;
     // 单 Agent 模式：「Agent 接入」只管这一个 Agent，叫「Codex 接入」这样更直白。
@@ -16852,6 +16886,7 @@ function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<Use
   const joined = (parts: unknown[]) => parts.filter((part): part is string => typeof part === "string" && part !== "").join("、");
   type CapabilityTag = { text: string; tone?: "warn"; title?: string };
   const capabilityCandidates: Array<CapabilityTag | null> = [
+    pkg?.claudeDesktop ? { text: "Claude Code" } : null,
     pkg?.hookEvents?.length ? { text: tf("Codex 钩子：{0}", [pkg.hookEvents.join("、")]) } : null,
     pkg?.tools?.length ? { text: tf("模型工具：{0}", [pkg.tools.join("、")]) } : null,
     pkg?.backend ? { text: t("常驻后台") } : null,

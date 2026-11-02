@@ -90,7 +90,7 @@ test("启动 Codex 一眼可见：Codex 页面顶栏最右侧一个主按钮，�
   assert.match(button, /variant="default"/);
   // 顶栏：只在 Codex 的页面里、排在页面操作挂载点之后。Codex++ 不只服务 Codex，
   // 网关、全局管理、工具类页面和 Claude Code / Grok 的页面都不放。
-  assert.match(entry, /const onCodexPage = routeTool\(route\) === "codex" \|\| \(route === "overview" && activeTool === "codex"\);/);
+  assert.match(entry, /const onCodexPage = \(routeTool\(route\) === "codex" && \(route !== "userScripts" \|\| activeTool === "codex"\)\) \|\| \(route === "overview" && activeTool === "codex"\);/);
   assert.match(
     entry,
     /<div className="topbar-page-actions" data-topbar-actions \/>\n[\s\S]{0,400}\{onCodexPage \? <CodexLaunchButton className="topbar-codex-launch" size="sm" state=\{codexLaunch\} \/> : null\}/,

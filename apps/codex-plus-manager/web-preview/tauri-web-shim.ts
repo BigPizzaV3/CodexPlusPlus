@@ -604,6 +604,7 @@ const demoClaudeEnhance = {
   catalogEntries: 2864,
   voiceInput: false,
   localization: true,
+  extensions: false,
   computerUse: true,
   computerUseSupported: true,
   bashTimeout: { enabled: false, defaultEnabled: false, defaultSeconds: 120, maxEnabled: false, maxSeconds: 600 },
@@ -734,6 +735,10 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "computer_use_approval_get": return ok({ mode: "auto", cuMode: "js", pip: true, approvals: [], lastClient: { name: "claude-code", version: "2.3.1", at: Date.now() - 120_000 } }) as T;
     // Claude 增强演示数据：增强版已制作，开了界面汉化与 Computer Use。
     case "claude_localization_status": return ok(demoClaudeEnhance) as T;
+    case "claude_localization_set_extensions": {
+      demoClaudeEnhance.extensions = Boolean(args.enabled);
+      return ok(demoClaudeEnhance) as T;
+    }
     case "load_relay_environment":
     case "check_relay_environment": return ok({ clashVergeTun: { enabled: false, configPath: null }, proxyEnvironment: { variables: [] }, codexEnvFile: { exists: false, path: "" } }) as T;
     // 中转站识别：演示供应商按地址返回 sub2api（倍率 + 钱包余额）或 new-api（分组倍率 + Key 额度），其余识别不出。
