@@ -666,6 +666,9 @@
   }
 
   function roleFromMessageLabel(label) {
+    // Codex 的读屏标签会随版本和语言变化，优先使用消息的语义角色。
+    const role = label?.getAttribute?.("data-conversation-role");
+    if (role === "user" || role === "assistant") return role;
     const text = normalizeText(label?.textContent || "");
     if (/^(你说|you said|user)\s*[:：]?$/i.test(text)) return "user";
     if (/^(ChatGPT|assistant|codex)(?:\s+说|\s+said)?\s*[:：]?$/i.test(text)) return "assistant";
