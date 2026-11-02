@@ -38,12 +38,19 @@ codexPlus.extension((ctx) => {
   pet.title = "喂一口；拖动移动";
   const frame = node("span", "rice-maid-pet-frame");
   frame.setAttribute("aria-hidden", "true");
-  const image = node("img", "rice-maid-pet-sheet");
-  image.alt = "";
-  image.draggable = false;
-  image.src = ctx.asset("assets/rice-maid-sheet.png");
-  frame.append(image);
-  pet.append(frame);
+  const motion = node("span", "rice-maid-pet-motion");
+  const spriteUrl = ctx.asset("assets/rice-maid-sheet.png");
+  const images = Array.from({ length: 4 }, (_, index) => {
+    const image = node("img", "rice-maid-pet-sheet");
+    image.dataset.sprite = String(index);
+    image.alt = "";
+    image.draggable = false;
+    image.src = spriteUrl;
+    frame.append(image);
+    return image;
+  });
+  motion.append(frame);
+  pet.append(motion);
   const bubble = node("span", "rice-maid-pet-bubble");
   bubble.textContent = "啊呜";
   bubble.setAttribute("aria-hidden", "true");
@@ -67,24 +74,39 @@ codexPlus.extension((ctx) => {
       outline: 2px solid var(--codex-plus-text, #c9d9f9);
     }
     #${ROOT_ID}[data-dragging="true"] .rice-maid-pet-body { cursor: grabbing; }
+    #${ROOT_ID} .rice-maid-pet-motion {
+      display: block; position: absolute; inset: 0;
+      pointer-events: none; transform-origin: 50% 94%;
+      animation: rice-maid-pet-breathe 3.8s ease-in-out infinite;
+    }
     #${ROOT_ID} .rice-maid-pet-frame {
       display: block; position: absolute; inset: 0; overflow: hidden;
       pointer-events: none; transform-origin: 50% 94%;
-      animation: rice-maid-pet-breathe 3.8s ease-in-out infinite;
     }
     #${ROOT_ID} .rice-maid-pet-sheet {
       display: block; position: absolute; width: 400%; height: 201.408451%;
       max-width: none; max-height: none; left: -92.1875%; top: 3.521127%;
       pointer-events: none; object-fit: fill; user-select: none;
+      opacity: 0; transition: opacity 100ms ease-in-out;
+      will-change: opacity;
     }
-    #${ROOT_ID}[data-frame="1"] .rice-maid-pet-sheet { left: -209.375%; }
-    #${ROOT_ID}[data-frame="2"] .rice-maid-pet-sheet { top: -96.830986%; }
-    #${ROOT_ID}[data-frame="3"] .rice-maid-pet-sheet { left: -209.375%; top: -96.830986%; }
+    #${ROOT_ID} .rice-maid-pet-sheet[data-sprite="1"] { left: -209.375%; }
+    #${ROOT_ID} .rice-maid-pet-sheet[data-sprite="2"] { top: -96.830986%; }
+    #${ROOT_ID} .rice-maid-pet-sheet[data-sprite="3"] { left: -209.375%; top: -96.830986%; }
+    #${ROOT_ID}[data-frame="0"] .rice-maid-pet-sheet[data-sprite="0"],
+    #${ROOT_ID}[data-frame="1"] .rice-maid-pet-sheet[data-sprite="1"],
+    #${ROOT_ID}[data-frame="2"] .rice-maid-pet-sheet[data-sprite="2"],
+    #${ROOT_ID}[data-frame="3"] .rice-maid-pet-sheet[data-sprite="3"] {
+      opacity: 1;
+    }
     #${ROOT_ID}[data-phase="eating"] .rice-maid-pet-frame {
-      animation: rice-maid-pet-munch 0.28s ease-in-out infinite;
+      animation: rice-maid-pet-eat 1.08s ease-in-out both;
+    }
+    #${ROOT_ID}[data-dragging="true"] .rice-maid-pet-motion {
+      animation-play-state: paused;
     }
     #${ROOT_ID}[data-dragging="true"] .rice-maid-pet-frame {
-      animation: none; transform: rotate(-3deg);
+      animation: none;
     }
     #${ROOT_ID} .rice-maid-pet-bubble {
       position: absolute; left: 50%; top: 6%; transform: translate(-50%, -50%);
@@ -92,18 +114,24 @@ codexPlus.extension((ctx) => {
       border-radius: 8px; background: var(--codex-plus-bg-elevated, #fff);
       color: var(--codex-plus-text, #17202d); font: 500 12px/18px system-ui, sans-serif;
       letter-spacing: 0; white-space: nowrap; opacity: 0; pointer-events: none;
+      transition: opacity 120ms ease-in-out;
     }
     #${ROOT_ID}[data-phase="eating"] .rice-maid-pet-bubble { opacity: 1; }
     @keyframes rice-maid-pet-breathe {
       0%, 100% { transform: translateY(0); }
       50% { transform: translateY(-2px); }
     }
-    @keyframes rice-maid-pet-munch {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-1px) rotate(0.5deg); }
+    @keyframes rice-maid-pet-eat {
+      0%, 100% { transform: translateY(0) rotate(0); }
+      28% { transform: translateY(-1.5px) rotate(-0.35deg); }
+      55% { transform: translateY(-0.5px) rotate(0.2deg); }
+      76% { transform: translateY(-1px) rotate(-0.15deg); }
     }
     @media (prefers-reduced-motion: reduce) {
+      #${ROOT_ID} .rice-maid-pet-motion,
       #${ROOT_ID} .rice-maid-pet-frame { animation: none !important; }
+      #${ROOT_ID} .rice-maid-pet-sheet,
+      #${ROOT_ID} .rice-maid-pet-bubble { transition: none !important; }
     }
   `;
 
@@ -156,7 +184,7 @@ codexPlus.extension((ctx) => {
 
   function playNext() {
     if (busy || !visible || !queued || document.hidden || disposed) return;
-    queued -= 1;
+    queued = 0;
     busy = true;
     root.dataset.phase = "eating";
     root.dataset.frame = "1";
@@ -170,10 +198,10 @@ codexPlus.extension((ctx) => {
           later(() => {
             busy = false;
             playNext();
-          }, 140);
-        }, 650);
-      }, 360);
-    }, 320);
+          }, 120);
+        }, 500);
+      }, 320);
+    }, 260);
   }
 
   function feed(amount = 1) {
@@ -182,9 +210,16 @@ codexPlus.extension((ctx) => {
     ctx.storage.set("bites", bites);
     updateLabel();
     if (visible && !document.hidden) {
-      queued = Math.min(Number.MAX_SAFE_INTEGER, queued + amount);
+      // 请求数完整保留，视觉上只补一口，避免突发请求积压成长队。
+      queued = 1;
       playNext();
     }
+  }
+
+  function feedManual() {
+    // 连点不打断当前动作，也不排队；下一口完成后即可再次响应。
+    if (busy) return;
+    feed();
   }
 
   // epoch 区分后台重启；计数差值补齐并发请求，也避免快照和推送重复喂饭。
@@ -262,7 +297,7 @@ codexPlus.extension((ctx) => {
       event.preventDefault();
       return;
     }
-    feed();
+    feedManual();
   });
   ctx.listen(pet, "keydown", (event) => {
     const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
@@ -272,11 +307,15 @@ codexPlus.extension((ctx) => {
     const step = event.shiftKey ? 24 : 8;
     place({ x: position.x + direction[0] * step, y: position.y + direction[1] * step }, true);
   });
-  ctx.listen(image, "load", () => { root.dataset.imageReady = "true"; });
-  ctx.listen(image, "error", () => {
-    root.dataset.imageReady = "false";
-    ctx.fail(new Error("米饭桌宠素材加载失败"));
-  });
+  for (const image of images) {
+    ctx.listen(image, "load", () => {
+      root.dataset.imageReady = String(images.every((item) => item.complete && item.naturalWidth > 0));
+    });
+    ctx.listen(image, "error", () => {
+      root.dataset.imageReady = "false";
+      ctx.fail(new Error("米饭桌宠素材加载失败"));
+    });
+  }
   ctx.listen(window, "resize", () => {
     finishDrag();
     place(position, true);
@@ -309,7 +348,7 @@ codexPlus.extension((ctx) => {
       visible = true;
       root.hidden = false;
       ctx.storage.set("visible", true);
-      feed();
+      feedManual();
       close();
     },
   });

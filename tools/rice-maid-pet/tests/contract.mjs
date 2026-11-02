@@ -373,7 +373,7 @@ function assertInside(harness) {
   assert.ok(top + height <= harness.window.innerHeight + 1e-8, "pet must fit viewport height");
 }
 
-await check("renderer queues one four-frame animation per new request", async () => {
+await check("renderer counts every request but caps a burst at two four-frame animations", async () => {
   const harness = rendererHarness();
   await flush();
   assert.equal(harness.root.dataset.bites, "0");
@@ -383,20 +383,106 @@ await check("renderer queues one four-frame animation per new request", async ()
   harness.bite({ epoch: "first", count: 2 });
   assert.equal(harness.root.dataset.bites, "3");
   assert.equal(harness.root.dataset.frame, "1");
-  await harness.advance(320);
+  await harness.advance(260);
   assert.equal(harness.root.dataset.frame, "2");
-  await harness.advance(360);
+  await harness.advance(320);
   assert.equal(harness.root.dataset.frame, "3");
-  await harness.advance(650);
+  await harness.advance(500);
   assert.equal(harness.root.dataset.frame, "0");
-  await harness.advance(140 + 1470 * 2);
+  assert.equal(harness.root.dataset.phase, "idle");
+  await harness.advance(119);
+  assert.equal(harness.root.dataset.frame, "0");
+  await harness.advance(1);
+  assert.equal(harness.root.dataset.frame, "1");
+  await harness.advance(1200);
   assert.deepEqual(
     harness.root.dataHistory.filter(({ key }) => key === "frame").map(({ value }) => value),
-    ["0", "1", "2", "3", "0", "1", "2", "3", "0", "1", "2", "3", "0"],
+    ["0", "1", "2", "3", "0", "1", "2", "3", "0"],
   );
   assert.equal(harness.root.dataset.phase, "idle");
   assert.equal(harness.storage.get("bites"), 3);
   assert.match(harness.pet.getAttribute("aria-label"), /3/);
+  harness.dispose();
+});
+
+await check("rapid clicking and menu feeding never pile up manual bites", async () => {
+  const harness = rendererHarness();
+  await flush();
+  const feedMenu = harness.menus.find((menu) => menu.label === "喂一口米饭");
+  assert.ok(feedMenu);
+  const phases = [0, 260, 580, 1080, 1199];
+  let now = 0;
+  let menuCloses = 0;
+  for (const time of phases) {
+    await harness.advance(time - now);
+    now = time;
+    for (let click = 0; click < 100; click += 1) {
+      harness.dispatch(harness.pet, "click");
+      feedMenu.onActivate({ close: () => { menuCloses += 1; } });
+    }
+    assert.equal(harness.storage.get("bites"), 1);
+    assert.ok(harness.timers.size <= 2, "only one frame timer and one sync timer may be active");
+  }
+  assert.equal(menuCloses, 500);
+  await harness.advance(1200 - now);
+  assert.equal(harness.root.dataset.frame, "0");
+  assert.equal(harness.root.dataset.phase, "idle");
+  assert.equal(harness.timers.size, 1);
+  harness.dispatch(harness.pet, "click");
+  assert.equal(harness.root.dataset.bites, "2");
+  assert.equal(harness.root.dataset.frame, "1");
+  await harness.advance(1200);
+  assert.deepEqual(
+    harness.root.dataHistory.filter(({ key }) => key === "frame").map(({ value }) => value),
+    ["0", "1", "2", "3", "0", "1", "2", "3", "0"],
+  );
+  harness.dispose();
+});
+
+await check("manual bites and request bursts coexist with one pending visual cycle", async () => {
+  const harness = rendererHarness();
+  await flush();
+  harness.dispatch(harness.pet, "click");
+  harness.bite({ epoch: "first", count: 1 });
+  harness.bite({ epoch: "first", count: 3 });
+  for (let index = 0; index < 40; index += 1) harness.dispatch(harness.pet, "click");
+  assert.equal(harness.root.dataset.bites, "4");
+  assert.equal(harness.root.dataset.requestCount, "3");
+  await harness.advance(1200);
+  assert.equal(harness.root.dataset.frame, "1", "the pending request cycle starts after cooldown");
+  harness.bite({ epoch: "first", count: 10 });
+  for (let index = 0; index < 40; index += 1) harness.dispatch(harness.pet, "click");
+  assert.equal(harness.root.dataset.bites, "11");
+  await harness.advance(1200);
+  assert.equal(harness.root.dataset.frame, "1", "later requests coalesce into one final pending cycle");
+  await harness.advance(1200);
+  assert.equal(harness.root.dataset.phase, "idle");
+  assert.equal(harness.root.dataset.frame, "0");
+  assert.equal(harness.timers.size, 1);
+  assert.deepEqual(
+    harness.root.dataHistory.filter(({ key }) => key === "frame").map(({ value }) => value),
+    ["0", "1", "2", "3", "0", "1", "2", "3", "0", "1", "2", "3", "0"],
+  );
+  harness.dispose();
+});
+
+await check("cooldown is still busy and cannot be extended by rapid manual input", async () => {
+  const harness = rendererHarness();
+  await flush();
+  harness.dispatch(harness.pet, "click");
+  await harness.advance(1080);
+  assert.equal(harness.root.dataset.phase, "idle");
+  assert.equal(harness.root.dataset.frame, "0");
+  for (let index = 0; index < 100; index += 1) harness.dispatch(harness.pet, "click");
+  assert.equal(harness.root.dataset.bites, "1");
+  await harness.advance(119);
+  harness.dispatch(harness.pet, "click");
+  assert.equal(harness.root.dataset.bites, "1");
+  await harness.advance(1);
+  assert.equal(harness.timers.size, 1);
+  harness.dispatch(harness.pet, "click");
+  assert.equal(harness.root.dataset.bites, "2");
+  assert.equal(harness.root.dataset.frame, "1");
   harness.dispose();
 });
 
@@ -607,7 +693,7 @@ await check("sprite crops exclude the adjacent row and preserve the full sheet r
   assert.ok(Math.abs(logicalHeight - 568) < 1e-6);
   assert.ok(Math.abs(percent(sheet, "height") * logicalHeight - 1144) < 1e-5);
   assert.equal(percent(sheet, "width") * 512, 2048);
-  const lowerRule = css.match(/\[data-frame="2"\]\s+\.rice-maid-pet-sheet\s*\{([^}]+)\}/)?.[1];
+  const lowerRule = css.match(/\.rice-maid-pet-sheet\[data-sprite="2"\]\s*\{([^}]+)\}/)?.[1];
   assert.ok(lowerRule);
   const upperTop = -percent(sheet, "top") * logicalHeight;
   const lowerTop = -percent(lowerRule, "top") * logicalHeight;
@@ -618,5 +704,31 @@ await check("sprite crops exclude the adjacent row and preserve the full sheet r
   assert.ok(lowerTop >= 550 - 1e-5);
   assert.ok(lowerTop + logicalHeight <= 1144);
   assert.equal(-percent(sheet, "left") * 512, 472);
+  harness.dispose();
+});
+
+await check("four immutable sprite layers crossfade while motion plays a single eat cycle", () => {
+  const harness = rendererHarness();
+  const images = harness.created.filter((element) => element.tagName === "IMG");
+  assert.equal(images.length, 4);
+  assert.deepEqual(images.map((image) => image.dataset.sprite), ["0", "1", "2", "3"]);
+  assert.equal(new Set(images.map((image) => image.src)).size, 1);
+  assert.ok(images.every((image) => image.parentNode?.className === "rice-maid-pet-frame"));
+  const frame = images[0].parentNode;
+  assert.equal(frame.parentNode?.className, "rice-maid-pet-motion");
+  const css = harness.created.find((element) => element.tagName === "STYLE").textContent;
+  assert.match(css, /\.rice-maid-pet-sheet\s*\{[^}]*opacity:\s*0;\s*transition:\s*opacity 100ms ease-in-out/s);
+  for (let index = 0; index < 4; index += 1) {
+    assert.match(css, new RegExp(`\\[data-frame="${index}"\\] \\.rice-maid-pet-sheet\\[data-sprite="${index}"\\]`));
+  }
+  assert.match(css, /\.rice-maid-pet-sheet\[data-sprite="1"\]\s*\{\s*left:/);
+  assert.match(css, /\.rice-maid-pet-sheet\[data-sprite="2"\]\s*\{\s*top:/);
+  assert.match(css, /\.rice-maid-pet-sheet\[data-sprite="3"\]\s*\{\s*left:[^}]*top:/);
+  assert.doesNotMatch(css, /\[data-frame="\d"\][^{]*\{[^}]*(?:left|top):/);
+  assert.match(css, /\.rice-maid-pet-motion\s*\{[^}]*animation:\s*rice-maid-pet-breathe 3\.8s ease-in-out infinite/s);
+  assert.match(css, /\[data-phase="eating"\] \.rice-maid-pet-frame\s*\{[^}]*animation:\s*rice-maid-pet-eat 1\.08s ease-in-out both/s);
+  assert.match(css, /\.rice-maid-pet-bubble\s*\{[^}]*transition:\s*opacity 120ms ease-in-out/s);
+  assert.doesNotMatch(css, /rice-maid-pet-munch|rice-maid-pet-eat [^;]*infinite/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?rice-maid-pet-motion,[\s\S]*?rice-maid-pet-frame\s*\{\s*animation:\s*none !important;[\s\S]*?rice-maid-pet-sheet,[\s\S]*?rice-maid-pet-bubble\s*\{\s*transition:\s*none !important;/);
   harness.dispose();
 });
