@@ -65,7 +65,8 @@ fn skills_agents_mcp_servers_and_instructions_sync_into_codex_home() {
     assert!(config.contains("server.mjs") && config.contains("KEY = \"k-1\""), "占位符展开：{config}");
     assert!(config.contains("command = \"user-owned\"") && !config.contains("example.com/mcp"), "同名的用户条目不覆盖：{config}");
     assert_eq!(report["conflicts"], json!(["mcp_servers.kit-weather"]));
-    let role_file = config.split("config_file = \"").nth(1).unwrap().split('"').next().unwrap();
+    let config_doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+    let role_file = config_doc["agents"]["kit-reviewer"]["config_file"].as_str().unwrap();
     let role = fs::read_to_string(role_file).unwrap();
     assert!(role.contains("model = \"gpt-5\"") && role.contains("model_reasoning_effort = \"high\"") && role.contains("你是审查员。"), "{role}");
     let agents_md = fs::read_to_string(home.join("AGENTS.md")).unwrap();

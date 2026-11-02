@@ -2422,7 +2422,8 @@ export class Host {
     const scanned = scanSkills(root, budget)
     let realRoot
     try {
-      realRoot = realpathSync(root)
+      // Windows 的 \\?\ 扩展路径需走原生解析，避免依赖目录被误判为不可读。
+      realRoot = realpathSync.native(root)
     } catch {
       realRoot = root
     }
@@ -2430,7 +2431,7 @@ export class Host {
       // 依赖包必须真的在本包目录里；软链到包外（如 pnpm store、别的 checkout）不扫，避免读到包外的文件。
       let real
       try {
-        real = realpathSync(directory)
+        real = realpathSync.native(directory)
       } catch {
         continue
       }

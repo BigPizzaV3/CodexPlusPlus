@@ -78,11 +78,10 @@ fn call(id: u64, name: &str, arguments: Value) -> Value {
 
 #[test]
 fn dsh_parse_source_recognizes_local_npm_and_git() {
+    let path = std::env::temp_dir().join("plugin").to_string_lossy().into_owned();
     assert_eq!(
-        dsh_plugins::parse_source("/tmp/plugin").unwrap(),
-        PluginSource::Local {
-            path: "/tmp/plugin".to_string()
-        }
+        dsh_plugins::parse_source(&path).unwrap(),
+        PluginSource::Local { path }
     );
     assert_eq!(
         dsh_plugins::parse_source(" @deepseek-ai/dsh-tool-todo@0.2.0 ").unwrap(),
@@ -450,12 +449,7 @@ process.stdout.write(JSON.stringify(doc))"#,
 
 fn url_from_path(path: &Path) -> String {
     let path = path.canonicalize().unwrap();
-    let text = path.to_string_lossy().replace('\\', "/");
-    if text.starts_with('/') {
-        format!("file://{text}")
-    } else {
-        format!("file:///{text}")
-    }
+    reqwest::Url::from_file_path(path).unwrap().to_string()
 }
 
 /// 联网：从 npm 导入真实发布的 dsh 工具插件，填配置后经 MCP 调用。
@@ -1104,8 +1098,7 @@ fn extension_package_can_carry_a_dsh_plugin() {
 }
 
 fn url_of(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
-    if text.starts_with('/') { format!("file://{text}") } else { format!("file:///{text}") }
+    reqwest::Url::from_file_path(path).unwrap().to_string()
 }
 
 /// 只注册工具的插件不生成配套拓展包；替身缺的导出判为不兼容而不是加载失败。
@@ -1495,7 +1488,7 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
     assert_eq!(responses[2]["result"]["contents"][0]["text"], "content of note://readme");
     assert_eq!(responses[2]["result"]["contents"][0]["uri"], "dsh-notes+note://readme");
     let probe: Value = serde_json::from_str(responses[3]["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
-    assert_eq!(probe, json!({ "bytes": 3, "rejected": true, "refs": [{ "path": "notes/readme.md", "kind": "file" }] }), "{responses:?}");
+    assert_eq!(probe, json!({ "bytes": 3, "rejected": true, "refs": [{ "path": Path::new("notes").join("readme.md"), "kind": "file" }] }), "{responses:?}");
 
     plugins.sync_companion(&manager, &record.id).unwrap();
     let dir = scripts.path().join("user/dsh-dsh-web-demo");
