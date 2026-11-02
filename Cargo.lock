@@ -515,6 +515,7 @@ dependencies = [
  "toml 0.8.2",
  "uuid",
  "windows 0.58.0",
+ "zstd",
 ]
 
 [[package]]

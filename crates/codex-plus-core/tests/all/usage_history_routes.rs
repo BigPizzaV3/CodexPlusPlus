@@ -24,8 +24,11 @@ impl BridgeSettingsService for MockSettings {
             ..BackendSettings::default()
         })
     }
-    async fn set_settings(&self, _: Value) -> anyhow::Result<BackendSettings> {
-        panic!("read-only route must not write settings")
+    async fn set_settings(&self, value: Value) -> anyhow::Result<BackendSettings> {
+        Ok(BackendSettings {
+            usage_history_enabled: value["usageHistoryEnabled"].as_bool().unwrap_or(false),
+            ..BackendSettings::default()
+        })
     }
 }
 
@@ -146,6 +149,24 @@ async fn enabled_usage_history_forwards_original_payload_without_clearing() {
     );
     assert_eq!(*data.queries.lock().unwrap(), vec![payload]);
     assert_eq!(data.clears.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn saving_disabled_setting_clears_without_waiting_for_another_query() {
+    let _state = crate::common::IsolatedTestState::new();
+    let (ctx, data) = context(Some(true));
+    handle_bridge_request(ctx, "/settings/set", json!({"usageHistoryEnabled":false})).await;
+    assert_eq!(data.clears.load(Ordering::SeqCst), 1);
+    assert!(data.queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn saving_enabled_setting_does_not_create_or_clear_an_index() {
+    let _state = crate::common::IsolatedTestState::new();
+    let (ctx, data) = context(Some(true));
+    handle_bridge_request(ctx, "/settings/set", json!({"usageHistoryEnabled":true})).await;
+    assert_eq!(data.clears.load(Ordering::SeqCst), 0);
+    assert!(data.queries.lock().unwrap().is_empty());
 }
 
 #[test]

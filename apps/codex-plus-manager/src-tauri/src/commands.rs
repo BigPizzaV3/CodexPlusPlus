@@ -3882,6 +3882,9 @@ pub fn save_settings(
         &settings,
     ) {
         Ok(_) => {
+            if !settings.usage_history_enabled {
+                codex_plus_launcher::clear_usage_history();
+            }
             if let Ok(runtime) = weixin_runtime().lock()
                 && let Some(runtime) = runtime.as_ref()
             {
