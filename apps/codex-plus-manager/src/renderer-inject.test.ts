@@ -1277,118 +1277,6 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     assert.match(css, /\.codex-plus-settings\s+\.codex-plus-row\[hidden\]\s*\{\s*display:\s*none\s*;/);
   });
 
-  it("synchronizes the typing-effect dropdown label, selection and disabled state", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    const start = renderer.indexOf("  function syncCodexPlusTypingEffectDropdown(");
-    const end = renderer.indexOf("  function openCodexPlusTypingEffectDropdown(", start);
-    assert.ok(start >= 0 && end > start);
-    const label = { textContent: "" };
-    const triggerAttributes: Record<string, string> = { "aria-expanded": "true" };
-    const trigger = {
-      disabled: false,
-      querySelector: () => label,
-      setAttribute: (name: string, value: string) => { triggerAttributes[name] = value; },
-    };
-    const options = ["off", "rainbow", "fireworks", "stars"].map((value) => {
-      const attributes: Record<string, string> = {};
-      return {
-        attributes,
-        dataset: { codexPlusTypingEffectOption: value },
-        tabIndex: -1,
-        setAttribute: (name: string, next: string) => { attributes[name] = next; },
-      };
-    });
-    const overlay = { querySelector: () => trigger, querySelectorAll: () => options };
-    const menu = { hidden: false, parentElement: overlay };
-    const select = { value: "rainbow", disabled: false, selectedOptions: [{ textContent: "彩虹粒子" }], closest: () => overlay };
-    let cleanups = 0;
-    const sync = new Function("document", "cleanup",
-      `let codexPlusTypingEffectDropdownCleanup = cleanup;\n${renderer.slice(start, end)}\nreturn syncCodexPlusTypingEffectDropdown;`,
-    )({ querySelector: () => menu }, () => { cleanups += 1; }) as (control: typeof select) => void;
-    sync(select);
-    assert.equal(label.textContent, "彩虹粒子");
-    assert.equal(trigger.disabled, false);
-    assert.equal(menu.hidden, false);
-    for (const option of options) {
-      const selected = option.dataset.codexPlusTypingEffectOption === "rainbow";
-      assert.equal(option.attributes["aria-selected"], String(selected));
-      assert.equal(option.tabIndex, selected ? 0 : -1);
-    }
-    select.value = "off";
-    select.selectedOptions = [];
-    sync(select);
-    assert.equal(label.textContent, "关闭");
-    for (const option of options) {
-      const selected = option.dataset.codexPlusTypingEffectOption === "off";
-      assert.equal(option.attributes["aria-selected"], String(selected));
-      assert.equal(option.tabIndex, selected ? 0 : -1);
-    }
-    select.disabled = true;
-    sync(select);
-    assert.equal(trigger.disabled, true);
-    assert.equal(menu.hidden, true);
-    assert.equal(triggerAttributes["aria-expanded"], "false");
-    assert.equal(cleanups, 1, "disabling an open menu removes its document listeners");
-    sync(select);
-    assert.equal(cleanups, 1, "menu cleanup is consumed once");
-  });
-
-  it("saves dropdown selections through the existing hidden select change contract", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
-    const page = await settingsCatalogRuntime(async () => catalog);
-    await page.load();
-    const selectMarkup = page.sections().match(/<select[^>]*data-codex-plus-typing-effect="true"[^>]*>[\s\S]*?<\/select>/)?.[0];
-    assert.ok(selectMarkup, "the select data attribute remains available to existing change handling");
-    assert.match(selectMarkup, /\bhidden\b/);
-    assert.match(selectMarkup, /aria-hidden="true"/);
-    assert.deepEqual(Array.from(selectMarkup.matchAll(/<option value="([^"]+)"/g), (match) => match[1]), ["off", "rainbow", "fireworks", "stars"]);
-    const changeStart = renderer.indexOf('      const typingEffectSelect = target?.closest("[data-codex-plus-typing-effect]");');
-    const changeEnd = renderer.indexOf("      const widthInput", changeStart);
-    const optionStart = renderer.indexOf('      const typingEffectOption = target?.closest("[data-codex-plus-typing-effect-option]");');
-    const optionEnd = renderer.indexOf("      // 左面板", optionStart);
-    assert.ok(changeStart >= 0 && changeEnd > changeStart && optionStart >= 0 && optionEnd > optionStart);
-    const saves: Array<{ key: string; value: string }> = [];
-    const events: Array<{ type: string; bubbles: boolean }> = [];
-    const onChange = new Function("target", "setCodexPlusSetting", renderer.slice(changeStart, changeEnd));
-    const select: { value: string; disabled: boolean; dispatchEvent: (event: { type: string; bubbles: boolean }) => void } = {
-      value: "off", disabled: false,
-      dispatchEvent(event) {
-        events.push(event);
-        onChange({ closest: () => select }, (key: string, value: string) => { saves.push({ key, value }); });
-      },
-    };
-    const option = { dataset: { codexPlusTypingEffectOption: "stars" } };
-    let focusRestores = 0;
-    const choose = new Function("target", "overlay", "Event", "closeCodexPlusTypingEffectDropdown", renderer.slice(optionStart, optionEnd));
-    const click = () => choose(
-      { closest: () => option }, { querySelector: () => select },
-      class {
-        type: string;
-        bubbles: boolean;
-        constructor(type: string, options: { bubbles: boolean }) {
-          this.type = type;
-          this.bubbles = options.bubbles;
-        }
-      },
-      (restore: boolean) => { if (restore) focusRestores += 1; },
-    );
-    click();
-    assert.equal(select.value, "stars");
-    assert.equal(events.length, 1);
-    assert.equal(events[0].type, "change");
-    assert.equal(events[0].bubbles, true);
-    assert.deepEqual(saves, [{ key: "typingEffect", value: "stars" }]);
-    click();
-    assert.equal(events.length, 1, "selecting the current value does not save again");
-    select.disabled = true;
-    option.dataset.codexPlusTypingEffectOption = "rainbow";
-    click();
-    assert.equal(select.value, "stars");
-    assert.equal(events.length, 1, "disabled selections cannot change the saved setting");
-    assert.equal(focusRestores, 3);
-  });
-
   it("rewrites official usage status at the cache boundary instead of scanning alerts", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const scanStart = renderer.indexOf("  function scanLightweight()");
@@ -1576,7 +1464,7 @@ const document = { querySelector: (selector) => ({
   ".codex-plus-modal-content": { dataset: { codexPlusActiveTab: activeTab } },
 })[selector] };
 const renderCodexPlusPageNavItems = (tab) => "items:" + tab;
-${segment(renderer, "  function codexPlusModalTab(", "  let codexPlusTypingEffectDropdownCleanup")}
+${segment(renderer, "  function codexPlusModalTab(", "  // ── 设置项清单")}
 ${segment(renderer, "  function refreshCodexPlusPageNav(", "  /**\n   * 脚本清单变化后同步左面板")}
 refreshCodexPlusPageNav();
 return { title: title.textContent, body: body.innerHTML };`)(activeTab) as { title: string; body: string };
@@ -2856,8 +2744,12 @@ describe("拓展接口层", () => {
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
     assert.ok(routes.includes("/request-log/recent"), "只读的最近请求日志应开放给拓展");
-    for (const forbidden of ["/proxy-status"]) {
-      assert.ok(!routes.includes(forbidden), `${forbidden} 只给内置状态条用`);
+    for (const route of ["/proxy-status", "/thread-usage-live", "/backend/status", "/settings/public", "/model-catalog/public"]) {
+      assert.ok(routes.includes(route), `只读的 ${route} 应开放给拓展`);
+    }
+    // 原始模型目录带供应商地址与本机路径，拓展只能拿 /model-catalog/public 的脱敏版本。
+    for (const forbidden of ["/codex-model-catalog", "/codex-config-model"]) {
+      assert.ok(!routes.includes(forbidden), `${forbidden} 不应开放给拓展`);
     }
   });
 
@@ -2911,8 +2803,8 @@ describe("拓展菜单项", () => {
     const source = await readFile(settingsPath, "utf8");
     const handler = source.indexOf('overlay.addEventListener("click"');
     assert.ok(handler > 0, "找不到点击委托");
-    const end = source.indexOf('overlay.addEventListener("keydown"', handler);
-    assert.ok(end > handler, "找不到点击委托之后的键盘委托");
+    const end = source.indexOf('overlay.addEventListener("error"', handler);
+    assert.ok(end > handler, "找不到点击委托之后的图标加载失败委托");
     const body = source.slice(handler, end);
     const extIdx = body.indexOf("handleCodexPlusExtensionMenuClick(target)");
     const devtoolsIdx = body.indexOf("data-codex-open-devtools");
@@ -3409,7 +3301,6 @@ describe("Codex++ 设置页按设置项清单生成", () => {
       else assert.doesNotMatch(row, /data-codex-builtin-extension=/);
     }
     assert.match(html, /data-codex-plus-builtin="dream-skin">[\s\S]*?data-codex-plus-setting="dreamSkinEnabled"/);
-    assert.match(html, /data-codex-plus-builtin="image-overlay">[\s\S]*?data-codex-backend-setting="codexAppImageOverlayEnabled"/);
     const ambientSection = sections.find((section) => section.rows.some((row) => row.key === ambientKey));
     assert.equal(ambientSection?.title, catalog.groups.find((group) => group.id === "stepwise")!.title, "上下文感知建议应在 stepwise 组");
     const ambientRow = ambientSection!.rows.find((row) => row.key === ambientKey)!;

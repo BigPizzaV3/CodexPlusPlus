@@ -16,9 +16,11 @@ import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
 
-const fragmentDir = path.resolve(import.meta.dirname, "../../../assets/inject/renderer-inject");
-const shardSource = readFileSync(path.join(fragmentDir, "83-usage-statusline.js"), "utf8");
-const shard = ts.createSourceFile("83-usage-statusline.js", shardSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+// 用量状态栏是官方拓展包（assets/extensions/usage-statusline）；引擎在 statusline.js，
+// 后端调用、诊断与 Codex++ 认的当前会话由 main.js 经 codexPlusUsageHost 传入。
+const packageDir = path.resolve(import.meta.dirname, "../../../assets/extensions/usage-statusline");
+const shardSource = readFileSync(path.join(packageDir, "statusline.js"), "utf8");
+const shard = ts.createSourceFile("statusline.js", shardSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 
 /** 按名字取分片里的顶层声明源码；找不到就直接失败，避免锚点漂移后静默跳过。 */
 function declaration(name: string): string {
@@ -43,6 +45,9 @@ const sandboxSource = [
   declaration("codexPlusUsageTurnCache"),
   declaration("codexPlusUsageSnapshot"),
   declaration("codexPlusUsageValidThreadId"),
+  declaration("codexPlusUsageHost"),
+  // 测试给的 currentSessionRef 相当于 main.js 里的 codexPlus.currentSession()。
+  "if (typeof currentSessionRef === \"function\") codexPlusUsageHost.legacySessionId = () => currentSessionRef()?.session_id || \"\";",
   declaration("codexPlusUsageLegacyThreadId"),
   declaration("codexPlusUsageResolveThread"),
   declaration("codexPlusUsageThreadId"),
@@ -290,13 +295,15 @@ function lifecycle() {
       "codexPlusUsagePercent", "codexPlusUsageLatestTurn", "codexPlusUsageMaxIntervalSeconds", "codexPlusUsageRate", "codexPlusUsageTurnCache", "codexPlusUsageSnapshot",
       "codexPlusUsageHide", "codexPlusUsageShow", "codexPlusUsageSyncPlacement", "codexPlusUsageSlotHost", "codexPlusUsageNodePlaced",
       "codexPlusUsageDiagnosticLimit", "codexPlusUsageDiagnoseOnce", "codexPlusUsageNoteDataGaps",
-      "codexPlusUsageRemember", "codexPlusUsageRefresh", "codexPlusUsageTick"].map(declaration),
+      "codexPlusUsageRemember", "codexPlusUsageRefresh", "codexPlusUsageTick", "codexPlusUsageHost"].map(declaration),
+    // main.js 装上时做的事：接上后端调用与诊断，标记为运行中。
+    "codexPlusUsageHost.call = hostCall; codexPlusUsageHost.diagnose = hostDiagnose; codexPlusUsageState.running = true;",
     "return { state: codexPlusUsageState, sync: codexPlusUsageSyncPlacement, tick: codexPlusUsageTick, remember: codexPlusUsageRemember };",
   ].join("\n");
   const diagnostics: Array<{ event: string; detail: any }> = [];
   const runtime = new Function("document", "codexPlusUsageEnabled", "codexPlusUsageComposerCard",
     "codexPlusUsageResolveThread", "codexPlusUsageReportPlacement", "codexPlusUsageEnsureNode", "codexPlusUsageRender",
-    "codexPlusUsageSchedule", "postJson", "sendCodexPlusDiagnostic", source)(
+    "codexPlusUsageSchedule", "hostCall", "hostDiagnose", source)(
     { hidden: false }, () => true, () => ({ card: current.card, source: "surface-variant" }),
     () => ({ id: current.id, source: current.id ? "composer" : "", reason: current.id ? "" : "home", placement: "" }),
     () => {},
@@ -417,7 +424,7 @@ function composerSandbox(table: Record<string, unknown[]>) {
     querySelectorAll: all,
     querySelector: (selector: string) => all(selector)[0] || null,
   };
-  return new Function("document", "visibleElement", source)(
+  return new Function("document", "codexPlusUsageVisible", source)(
     documentStub, (element: { visible?: boolean }) => element?.visible !== false,
   );
 }
@@ -482,7 +489,7 @@ test("旧版 Codex 的 composer 没有根标记与会话标识时，会话退回
   );
   assert.equal(withRef("").codexPlusUsageResolveThread(legacyCard).reason, "no-thread-id");
   assert.equal(withRef("local:client-new-thread:dac7b41a").codexPlusUsageThreadId(legacyCard), "");
-  // 测试沙箱里没有 currentSessionRef：按缺失处理，不能抛错。
+  // 拿不到 Codex++ 认的当前会话：按缺失处理，不能抛错。
   assert.equal(sandbox(Date.now()).codexPlusUsageResolveThread(legacyCard).reason, "no-thread-id");
 
   const rooted = (placement: string) => fakeElement({
@@ -499,11 +506,12 @@ function reportSandbox(table: Record<string, unknown[]> = {}) {
   const source = [
     ...["codexPlusUsageState", "codexPlusUsageCardSelector", "codexPlusUsageDiagnosticLimit",
       "codexPlusUsageDiagnoseOnce", "codexPlusUsageDomProbe", "codexPlusUsageVisibleEditor",
-      "codexPlusUsageReportPlacement"].map(declaration),
+      "codexPlusUsageReportPlacement", "codexPlusUsageHost", "codexPlusUsageLegacyThreadId"].map(declaration),
+    "codexPlusUsageHost.diagnose = hostDiagnose;",
     "return { report: codexPlusUsageReportPlacement };",
   ].join("\n");
   const documentStub = { querySelectorAll: (selector: string) => table[selector] || [] };
-  const runtime = new Function("document", "visibleElement", "sendCodexPlusDiagnostic", source)(
+  const runtime = new Function("document", "codexPlusUsageVisible", "hostDiagnose", source)(
     documentStub, () => true, (event: string, detail: any) => sent.push({ event, detail }),
   );
   return { ...runtime, sent };

@@ -54,6 +54,8 @@ pub fn thinking_enabled(request: &Value) -> bool {
 }
 
 /// 推理强度：优先 `output_config.effort`，其次按 `thinking.budget_tokens` 估算。
+///
+/// `xhigh` / `max` 原样保留，发给哪家时再由 [`fit_reasoning_effort`] 套到那个模型实有的档位。
 fn reasoning_effort(request: &Value) -> Option<&'static str> {
     if let Some(effort) = request
         .pointer("/output_config/effort")
@@ -62,7 +64,9 @@ fn reasoning_effort(request: &Value) -> Option<&'static str> {
         return Some(match effort.trim() {
             "low" => "low",
             "medium" => "medium",
-            "high" | "max" | "xhigh" => "high",
+            "high" => "high",
+            "xhigh" => "xhigh",
+            "max" => "max",
             _ => "medium",
         });
     }
@@ -78,6 +82,38 @@ fn reasoning_effort(request: &Value) -> Option<&'static str> {
         Some(_) => "high",
         None => "medium",
     })
+}
+
+/// 把 Claude 系客户端的档位套到上游模型实有的档位：取排序上最近的一档，平局取高的。
+///
+/// Claude Desktop / Claude Code 只发 low…max 五档，而 GPT 系常见 `minimal`、到 `xhigh` 为止；
+/// 原样透传会被上游拒绝。`none` 只在请求本身就是它时才选（不替用户关掉思考），
+/// `ultra` 不是 API 档位（Codex 的 Ultra 按 max 发）。
+///
+/// 没有档位资料时沿用旧做法：`xhigh` / `max` 归到 `high`（大多数上游都认）；认不出的档位原样。
+pub fn fit_reasoning_effort(wanted: &str, levels: &[String]) -> String {
+    const ORDER: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let rank = |level: &str| ORDER.iter().position(|known| *known == level);
+    let wanted = if wanted == "ultra" { "max" } else { wanted };
+    let Some(at) = rank(wanted) else {
+        return wanted.to_string();
+    };
+    if levels.is_empty() {
+        return match wanted {
+            "xhigh" | "max" => "high".to_string(),
+            other => other.to_string(),
+        };
+    }
+    if levels.iter().any(|level| level == wanted) {
+        return wanted.to_string();
+    }
+    levels
+        .iter()
+        .filter(|level| level.as_str() != "none")
+        .filter_map(|level| rank(level).map(|position| (position as i64, level)))
+        .min_by_key(|(position, _)| ((position - at as i64).abs(), -position))
+        .map(|(_, level)| level.clone())
+        .unwrap_or_else(|| wanted.to_string())
 }
 
 fn system_text(system: &Value) -> String {
@@ -665,15 +701,45 @@ mod tests {
                 json!({ "thinking": { "type": "adaptive" } }),
                 Some("medium"),
             ),
+            // xhigh / max 原样保留，不再压成 high；到哪家再按它的档位套。
             (
                 json!({ "output_config": { "effort": "max" } }),
-                Some("high"),
+                Some("max"),
+            ),
+            (
+                json!({ "output_config": { "effort": "xhigh" } }),
+                Some("xhigh"),
             ),
             (json!({ "thinking": { "type": "disabled" } }), None),
             (json!({}), None),
         ] {
             assert_eq!(reasoning_effort(&request), expected, "{request}");
         }
+    }
+
+    #[test]
+    fn fit_reasoning_effort_picks_nearest_level_tie_goes_up() {
+        let levels = |items: &[&str]| items.iter().map(|item| item.to_string()).collect::<Vec<_>>();
+        let gpt = levels(&["minimal", "low", "medium", "high", "xhigh"]);
+        assert_eq!(fit_reasoning_effort("max", &gpt), "xhigh");
+        assert_eq!(fit_reasoning_effort("xhigh", &gpt), "xhigh");
+        assert_eq!(fit_reasoning_effort("low", &gpt), "low");
+        // 只到 high 的模型：Extra / Max 都落在 high。
+        let to_high = levels(&["low", "medium", "high"]);
+        assert_eq!(fit_reasoning_effort("xhigh", &to_high), "high");
+        assert_eq!(fit_reasoning_effort("max", &to_high), "high");
+        // 平局取高的：medium 在 low 与 high 中间。
+        assert_eq!(fit_reasoning_effort("medium", &levels(&["low", "high"])), "high");
+        // none 不会被自动选上。
+        assert_eq!(fit_reasoning_effort("low", &levels(&["none", "high"])), "high");
+        // ultra 按 max 套。
+        assert_eq!(fit_reasoning_effort("ultra", &gpt), "xhigh");
+        // 没有档位资料：沿用旧做法，xhigh / max 归 high，其余原样。
+        assert_eq!(fit_reasoning_effort("max", &[]), "high");
+        assert_eq!(fit_reasoning_effort("xhigh", &[]), "high");
+        assert_eq!(fit_reasoning_effort("low", &[]), "low");
+        // 认不出的档位：原样。
+        assert_eq!(fit_reasoning_effort("turbo", &gpt), "turbo");
     }
 
     #[test]

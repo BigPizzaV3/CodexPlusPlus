@@ -2124,6 +2124,9 @@ span.gw-avatar[data-size] {
 
 .gw-portal .gw-mp-top {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: none;
+  min-width: 0;
   gap: 8px;
   padding: 10px 10px 8px;
   border-bottom: 1px solid var(--gw-line);
@@ -2167,12 +2170,26 @@ span.gw-avatar[data-size] {
 .gw-portal .gw-mp-filters {
   display: flex;
   gap: 6px;
+  min-width: 0;
   overflow-x: auto;
-  scrollbar-width: none;
+  padding-bottom: 6px;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
+/* 显式绘制轨道和滑块，让普通鼠标也能发现并拖到后面的供应商。 */
 .gw-portal .gw-mp-filters::-webkit-scrollbar {
-  display: none;
+  height: 8px;
+}
+
+.gw-portal .gw-mp-filters::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: var(--gw-soft);
+}
+
+.gw-portal .gw-mp-filters::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--gw-mute);
 }
 
 .gw-portal .gw-mp-filters button {

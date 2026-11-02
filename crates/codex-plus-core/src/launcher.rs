@@ -2433,17 +2433,6 @@ pub(crate) async fn handle_helper_connection_on(
             "application/json; charset=utf-8".to_string(),
             "helper.diagnostics_log_ok",
         )
-    } else if path == "/overlay/image" && matches!(method, "GET" | "OPTIONS") {
-        if method == "OPTIONS" {
-            (
-                "200 OK".to_string(),
-                Vec::new(),
-                "application/octet-stream".to_string(),
-                "helper.overlay_image_options",
-            )
-        } else {
-            overlay_image_response()
-        }
     } else if path == "/dream-skin/image" && matches!(method, "GET" | "OPTIONS") {
         if method == "OPTIONS" {
             (
@@ -2516,41 +2505,6 @@ pub(crate) fn decode_protocol_proxy_request_body(
 
     String::from_utf8(decoded)
         .map_err(|error| anyhow::anyhow!("Responses 请求体不是 UTF-8：{error}"))
-}
-
-fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
-    let not_found = || {
-        (
-            "404 Not Found".to_string(),
-            serde_json::to_vec(&serde_json::json!({
-                "status": "failed",
-                "message": "图片覆盖层未启用或图片不可用"
-            }))
-            .unwrap_or_default(),
-            "application/json; charset=utf-8".to_string(),
-            "helper.overlay_image_not_found",
-        )
-    };
-    let settings = crate::builtin_takeover::mask_settings(SettingsStore::default().load().unwrap_or_default());
-    if !settings.codex_app_image_overlay_enabled {
-        return not_found();
-    }
-    let image_path = PathBuf::from(settings.codex_app_image_overlay_path.trim());
-    if image_path.as_os_str().is_empty() || !image_path.is_file() {
-        return not_found();
-    }
-    let Some(content_type) = overlay_image_content_type(&image_path) else {
-        return not_found();
-    };
-    match std::fs::read(&image_path) {
-        Ok(bytes) => (
-            "200 OK".to_string(),
-            bytes,
-            content_type.to_string(),
-            "helper.overlay_image_ok",
-        ),
-        Err(_) => not_found(),
-    }
 }
 
 fn dream_skin_image_response() -> (String, Vec<u8>, String, &'static str) {

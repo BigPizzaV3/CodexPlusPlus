@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-// 内置拓展挂在拓展内核上：扫描步骤由拓展登记、卸下即撤；打字特效的全局监听随拓展装卸；内置数据作为服务提供。
+// 内置拓展挂在拓展内核上：扫描步骤由拓展登记、卸下即撤。
+// 用量状态栏、请求状态条的数据服务改由官方拓展包提供，见 status-bar-packages.test.ts。
 const read = (name: string) => readFileSync(new URL(`../../../assets/inject/renderer-inject/${name}`, import.meta.url), "utf8");
 const builtins = read("96-builtin-extensions.js");
 const scan = read("95-conversation-view.js");
@@ -60,17 +61,10 @@ function harness(windowState: Record<string, unknown> = {}) {
       handles.push(handle);
       return handle;
     },
-    installCodexPlusTypingEffects: () => calls.push("typing:install"),
-    uninstallCodexPlusTypingEffects: () => calls.push("typing:uninstall"),
     refreshDreamSkin: () => calls.push("dream:refresh"),
     syncCodexPlusCapacityAutoRetry: () => calls.push("capacity:sync"),
     syncWeixinDesktopThreads: async () => { calls.push("weixin:sync"); },
     codexPlusSettings: () => ({ conversationView: false }),
-    codexPlusUsageState: { cache: new Map([["t1", [{ total_tokens: 10 }]]]) },
-    codexPlusUsageSnapshot: (events: unknown[] | undefined) => (events ? { events: events.length } : null),
-    codexPlusProxyStatusState: { requests: [{ id: "r1" }] },
-    codexPlusProxyStatusPostWithTimeout: async () => ({ status: "ok", requests: [{ id: "r2" }] }),
-    codexPlusCurrentSessionId: () => "t1",
   };
   // 其余被引用的功能函数一律当作无副作用的桩。
   const scope = new Proxy(known, {
@@ -99,12 +93,11 @@ function harness(windowState: Record<string, unknown> = {}) {
   return { api, calls, services, known, listeners, interceptors, domListeners, emit, chain, stepOwners };
 }
 
-test("内置拓展装上时登记扫描步骤、挂打字特效监听；停用后撤掉", () => {
+test("内置拓展装上时登记扫描步骤；停用后撤掉", () => {
   (globalThis as any).__codexPlusScanSteps = undefined;
   (globalThis as any).__codexPlusBuiltinInactive = undefined;
   const { api, calls, known, stepOwners } = harness();
   api.sync();
-  assert.ok(calls.includes("typing:install"));
   for (const id of ["dream-skin", "side-chat-save", "dictation", "plugin-market-unlock", "session-delete", "thread-id-badge", "conversation-view"]) {
     assert.ok(stepOwners().has(`builtin:${id}`), `${id} 经 ctx.onScan 登记扫描步骤`);
   }
@@ -116,25 +109,13 @@ test("内置拓展装上时登记扫描步骤、挂打字特效监听；停用�
   calls.length = 0;
   api.runSteps();
   assert.ok(calls.includes("dream:refresh"), "扫描循环经登记的步骤刷新梦皮");
-  (known.window as any).__codexPlusBuiltinExtensionState = { disabled: ["dream-skin", "typing-effects"], replacedBy: {} };
+  (known.window as any).__codexPlusBuiltinExtensionState = { disabled: ["dream-skin"], replacedBy: {} };
   calls.length = 0;
   api.sync();
   assert.ok(!stepOwners().has("builtin:dream-skin"), "停用后扫描不再点名它");
-  assert.ok(calls.includes("typing:uninstall"), "停用后摘掉打字特效的全局监听");
   calls.length = 0;
   api.runSteps();
   assert.ok(!calls.includes("dream:refresh"));
-});
-
-test("内置数据作为服务提供，界面那一层被顶替也能拿到", async () => {
-  (globalThis as any).__codexPlusScanSteps = undefined;
-  const { api, services } = harness();
-  api.sync();
-  assert.equal(services.get("codexpp.usage")?.owner, "builtin");
-  assert.deepEqual(services.get("codexpp.usage")?.value.cached(), { events: 1 }, "默认取当前会话");
-  assert.equal(services.get("codexpp.usage")?.value.cached("nope"), null);
-  assert.deepEqual(services.get("codexpp.proxyStatus")?.value.requests(), [{ id: "r1" }]);
-  assert.deepEqual(await services.get("codexpp.proxyStatus")?.value.fetch(), [{ id: "r2" }]);
 });
 
 test("读到设置后由内置拓展经 settings/loaded 自己刷新；停用后不再收到", () => {

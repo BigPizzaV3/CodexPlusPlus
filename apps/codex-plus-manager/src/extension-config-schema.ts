@@ -13,6 +13,10 @@ export type ExtensionConfigField = {
   max?: number;
   items?: ExtensionConfigField;
   properties?: ExtensionConfigField[];
+  /** string 的输入方式：file 表示本机文件路径，表单旁边给一个「选择…」按钮。 */
+  format?: "file";
+  /** format 为 file 时选择器只列这些扩展名（不带点）；缺省不限。 */
+  extensions?: string[];
 };
 
 /** Schemastery 的 toJSON（dsh 插件的 Config）。 */

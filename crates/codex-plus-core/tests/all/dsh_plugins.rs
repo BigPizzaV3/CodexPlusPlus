@@ -921,6 +921,8 @@ fn dsh_client_plugin_gets_renderer_glue_and_routed_fetch() {
 /// llm/stream 改写回复流（文字增量与收尾里的完整文本都换成插件的）、agent/assistant-stream 观察到每一帧。
 #[tokio::test]
 async fn dsh_stream_events_rewrite_the_response_stream() {
+    // 响应 worker 槽位是进程级的，与 extension_gateway 的用例共用同一把锁。
+    let _state = crate::common::global_state_lock();
     use codex_plus_core::extension_gateway::ResponseFilter;
     use codex_plus_core::user_scripts::UserScriptManager;
 
@@ -954,6 +956,8 @@ async fn dsh_stream_events_rewrite_the_response_stream() {
     let mut filter = ResponseFilter::start_with(&middlewares, "/v1/responses", Some(&request)).await.expect("应建立会话");
     let mut out = filter.push(&bytes).await;
     out.extend(filter.finish().await);
+    // 撤下全局 worker 槽位，免得 Windows 上运行时销毁卡在子进程管道的阻塞读上。
+    filter.release_worker().await;
     let text = String::from_utf8_lossy(&out).to_string();
     let parsed: Vec<Value> = text.split("\n\n").filter_map(|block| block.lines().find_map(|line| line.strip_prefix("data: "))).filter_map(|data| serde_json::from_str(data).ok()).collect();
     let deltas: String = parsed.iter().filter(|event| event["type"] == "response.output_text.delta").map(|event| event["delta"].as_str().unwrap().to_string()).collect();

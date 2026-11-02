@@ -110,6 +110,7 @@ pub mod extension_creator;
 pub mod extension_gateway;
 pub mod extension_history;
 pub mod extension_llm;
+pub mod extension_manager_data;
 pub mod extension_publish;
 pub mod extension_hooks;
 pub mod extension_node;

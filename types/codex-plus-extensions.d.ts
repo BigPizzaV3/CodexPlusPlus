@@ -20,7 +20,12 @@ type CodexPlusExtensionRoute =
   | "/export-markdown"
   | "/user-scripts/list"
   | "/cdp/targets"
-  | "/cdp/evaluate";
+  | "/cdp/evaluate"
+  | "/proxy-status"
+  | "/thread-usage-live"
+  | "/backend/status"
+  | "/settings/public"
+  | "/model-catalog/public";
 
 interface CodexPlusToastOptions {
   type?: CodexPlusToastType;
@@ -629,7 +634,7 @@ interface CodexPlusExtensionContext {
   /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
   currentSessionId(): string;
 
-  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`、`settings/loaded`（`{ reason: "startup" | "heartbeat" }`）、`settings/changed`（`{ key, value, persisted }`）。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
+  /** 拓展间事件；内置还有 `session/event`、`agent/status`、`theme/change`、`extensions/changed`、`settings/loaded`（`{ reason: "startup" | "heartbeat", changedKeys? }`，心跳时 changedKeys 是这次变了的设置字段名）、`settings/changed`（`{ key, value, persisted }`）、`relayProfile/switched`（`{ previous, profile }`）、`modelCatalog/changed`（`{ profile }`，profile 形状同 `/settings/public` 的 activeProfile）。`codex/*` 是 Codex 会话事件（见 CodexPlusCodexEvent）。内核广播 `extension/apply`、`extension/dispose`，参数为 `{ id, scriptKey }`。`ready` / `dispose` 只属于本实例：apply 完成后 / 卸载时调用。 */
   on(event: string, handler: (...args: any[]) => void): CodexPlusDispose;
   emit(event: string, ...args: unknown[]): void;
 
@@ -655,7 +660,51 @@ interface CodexPlusExtensionContext {
   dispose(): void;
 }
 
-/** 管理器面板（codexpp.json 的 manager.page）里的接口：只能操作本拓展自己的配置、后台与资源。 */
+/** 管理器新增只读数据的返回结构；不包含供应商地址、凭据、磁盘路径或任务内容。 */
+interface CodexPlusManagerPublicData {
+  gatewayProviders: { providers: Array<{
+    id: string; name: string; enabled: boolean; protocol: string; models: string[];
+    modelWindows: Record<string, number>; contextWindow: number | null;
+    keyRpm: number | null; keyConcurrency: number | null;
+    price: CodexPlusManagerModelPrice | null; modelPrices: Record<string, CodexPlusManagerModelPrice>;
+  }> };
+  gatewayRouting: {
+    groups: CodexPlusManagerRouteGroup[];
+    autoGroups: Array<{ group: CodexPlusManagerRouteGroup; hidden: boolean; customized: boolean }>;
+  };
+  gatewayHealth: {
+    scope: "managerProcess";
+    providers: Array<{ relayId: string; breakerOpen: boolean; remainingMs: number | null; consecutiveErrors: number }>;
+    speeds: Array<{ relayId: string; model: string; ms: number; samples: number }>;
+    agents: Array<{ agent: string; requests: number; rerouted: number; errors: number; inFlight: string[] }>;
+  };
+  gatewayQuota: {
+    scope: "managerProcess"; cachedOnly: true;
+    providers: Array<{ id: string; name: string; quota: null | {
+      windows: Array<{ windowMinutes: number | null; usedPercent: number; resetsAtMs: number | null }>;
+      updatedAtMs: number;
+    } }>;
+  };
+  installedSkills: { skills: Array<{
+    id: string; name: string; enabled: boolean; bundled: boolean; managed: boolean; agents: string[]; contentHash: string;
+  }> };
+  /** 仅 Codex++ 市场托管的插件，不是全部 Codex 插件。 */
+  installedPlugins: { plugins: Array<{ id: string; name: string; version: string; source: "public" | "full"; enabled: boolean }> };
+  /** 已落盘快照，不刷新租约，不读取未 checkpoint 的 WAL。 */
+  agentCollaboration: {
+    enabled: boolean;
+    agents: Array<{ id: string; name: string; enabled: boolean; model: string; maxConcurrentTasks: number }>;
+    tasks: Array<{ id: string; agentId: string; status: string; createdAtMs: number; updatedAtMs: number; cancelRequested: boolean }>;
+    total: number;
+  };
+}
+interface CodexPlusManagerModelPrice { currency: string; input: number; cachedInput: number; output: number }
+interface CodexPlusManagerRouteGroup {
+  id: string; name: string; mode: string; sticky: string;
+  members: Array<{ model: string; weight: number }>; hideMembers: boolean; pick: string;
+}
+
+/** 管理器面板接口：本拓展的配置、后台、资源，以及清单声明过的只读公共数据。 */
 interface CodexPlusManagerPanelApi {
   config: {
     get(): Promise<Record<string, unknown>>;
@@ -673,6 +722,7 @@ interface CodexPlusManagerPanelApi {
   theme(): Promise<"dark" | "light">;
   onTheme(handler: (theme: "dark" | "light") => void): () => void;
   /** 读清单 `manager.data` 里声明过的只读管理器数据。 */
+  data<K extends keyof CodexPlusManagerPublicData>(name: K, params?: Record<string, unknown>): Promise<CodexPlusManagerPublicData[K]>;
   data(name: "requestFlow" | "requestLogs" | "gatewayUsage" | "localSessions", params?: Record<string, unknown>): Promise<unknown>;
   /** 跳到管理器的另一个页面：路由 id（如 "hub"），或 "ext:<拓展 key>" 打开另一个拓展页面。 */
   navigate(target: string): Promise<null>;

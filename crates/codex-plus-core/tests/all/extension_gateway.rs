@@ -84,6 +84,8 @@ fn parse_sse(bytes: &[u8]) -> Vec<String> {
 }
 
 async fn run_filter(manager: &UserScriptManager, chunks: &[&[u8]]) -> Vec<u8> {
+    // 响应 worker 槽位是进程级的，并行的用例会互相换掉它：整段持锁，到 release_worker 才放。
+    let _state = crate::common::global_state_lock();
     let middlewares = manager.enabled_gateway_response_middlewares().unwrap();
     let request = json!({"model": "gpt", "input": [{"role": "user", "content": [{"type": "input_text", "text": "最后一句"}]}]});
     let mut filter = codex_plus_core::extension_gateway::ResponseFilter::start_with(&middlewares, "/v1/responses", Some(&request))
@@ -94,6 +96,8 @@ async fn run_filter(manager: &UserScriptManager, chunks: &[&[u8]]) -> Vec<u8> {
         out.extend(filter.push(chunk).await);
     }
     out.extend(filter.finish().await);
+    // 撤下全局 worker 槽位，免得 Windows 上运行时销毁卡在子进程管道的阻塞读上。
+    filter.release_worker().await;
     out
 }
 
@@ -176,6 +180,30 @@ export default async function* (context, next) {
     let raw = String::from_utf8(run_filter(&manager, &[&source]).await).unwrap();
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert_eq!(parse_sse(raw.as_bytes()), ["response.created:", "response.output_text.delta:a", "response.completed:"]);
+}
+
+#[tokio::test]
+async fn releasing_a_filter_leaves_a_newer_worker_in_the_slot() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    use codex_plus_core::extension_gateway::ResponseFilter;
+    let _state = crate::common::global_state_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let pass = "export default (context, next) => next();";
+    write_package(&temp, "a-pass", json!({"response": [{"script": "gateway/a.mjs"}]}), &[("gateway/a.mjs", pass)]);
+    let first = manager.enabled_gateway_response_middlewares().unwrap();
+    let older = ResponseFilter::start_with(&first, "/v1/responses", None).await.expect("应建立会话");
+    // 多一个中间件，worker 的指纹变了：槽位换成新的 worker。
+    write_package(&temp, "b-pass", json!({"response": [{"script": "gateway/b.mjs"}]}), &[("gateway/b.mjs", pass)]);
+    let second = manager.enabled_gateway_response_middlewares().unwrap();
+    let newer = ResponseFilter::start_with(&second, "/v1/responses", None).await.expect("应建立会话");
+
+    older.release_worker().await;
+    assert!(ResponseFilter::worker_installed().await, "槽位里是更新的 worker，旧过滤器收尾不能把它撤掉");
+    newer.release_worker().await;
+    assert!(!ResponseFilter::worker_installed().await, "自己的 worker 收尾时应撤下");
 }
 
 #[tokio::test]

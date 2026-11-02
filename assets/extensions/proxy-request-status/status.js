@@ -5,11 +5,16 @@
    *   requesting（正在请求）、waiting（等待上游返回）、
    *   retrying（正在重试 ×N）、generating（正在生成，可带输出 token 估算）。
    *
-   * 节点挂在输入卡片之前、同一父容器内（输入框上方），空闲时 display:none，
-   * 不占位；带 data-codex-plus-ext 让扫描调度器排除自喂循环。
+   * 节点放进公开插槽 composer.above 给的容器（输入框上方）；没有插槽容器时挂在输入框之前，
+   * 空闲时 display:none，不占位；带 data-codex-plus-ext 让扫描调度器排除自喂循环。
+   *
+   * 这是官方拓展包「请求状态条」的引擎：只用公开接口，后端调用由 main.js 经 codexPlusProxyStatusHost 传进来（ctx.call）。
    */
-  registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-proxy-request-status"]');
-  window.__codexPlusProxyRequestStatusRuntime?.dispose?.();
+  const codexPlusProxyStatusOwner = "proxy-request-status";
+  /** main.js 在拓展装上时填好：调清单里声明的 /proxy-status。 */
+  const codexPlusProxyStatusHost = {
+    call: () => Promise.reject(new Error("请求状态条还没装上")),
+  };
 
   const codexPlusProxyStatusId = "codex-plus-proxy-request-status";
   const codexPlusProxyStatusStyleId = "codex-plus-proxy-request-status-style";
@@ -17,7 +22,8 @@
   const codexPlusProxyStatusTickMs = 500;
 
   const codexPlusProxyStatusState = {
-    disposed: false,
+    /** 拓展装着时为 true：轮询只在这期间跑。 */
+    running: false,
     pollTimer: 0,
     tickTimer: 0,
     node: null,
@@ -25,12 +31,13 @@
     nowMs: Date.now(),
     inFlight: false,
     failures: 0,
+    /** composer.above 插槽给的容器（每个输入框一个），由 main.js 增删。 */
+    slotHosts: new Set(),
   };
 
-  // 设置开关（#2824）：关闭时不显示、不轮询；切回开启后下一轮轮询自动接上。
-  // 设置开关与内置拓展「请求状态条」都开着才显示、才轮询。
+  // 开关就是拓展本身（#2824）：停用后不显示、不轮询；重新启用后装上即接上。
   function codexPlusProxyStatusEnabled() {
-    return codexPlusSettings().proxyRequestStatus !== false && !globalThis?.__codexPlusBuiltinInactive?.has("proxy-request-status");
+    return codexPlusProxyStatusState.running;
   }
 
   function codexPlusProxyStatusVisibleElement(element) {
@@ -103,7 +110,7 @@
     if (document.getElementById(codexPlusProxyStatusStyleId)) return;
     const style = document.createElement("style");
     style.id = codexPlusProxyStatusStyleId;
-    style.dataset.codexPlusExt = "builtin-proxy-request-status";
+    style.dataset.codexPlusExt = codexPlusProxyStatusOwner;
     style.textContent = `
       #${codexPlusProxyStatusId}{display:flex;align-items:center;justify-content:flex-end;gap:8px;box-sizing:border-box;width:100%;margin:0 0 6px;padding:0 12px;font-size:12px;line-height:17px;color:var(--color-token-text-secondary,rgba(205,205,215,.95));color:color-mix(in srgb,var(--color-token-text-primary,#dfdfdf) 82%,transparent);user-select:none;cursor:default}
       #${codexPlusProxyStatusId}[data-hidden="true"]{display:none}
@@ -124,14 +131,14 @@
     // 放进只包住输入框的 relative 容器里，插在卡片前会跑到输入框内部。
     const anchor = card?.closest("[data-codex-composer-root]") || card;
     if (!anchor?.parentElement) return null;
-    // 内置拓展经公开的 composer.above 插槽登记了容器（见 96-builtin-extensions.js）：放进紧挨着这个输入框的那个。
-    const slotHost = [...(codexPlusProxyStatusState.slotHosts || [])]
+    // main.js 经公开的 composer.above 插槽登记了容器：放进紧挨着这个输入框的那个。
+    const slotHost = [...codexPlusProxyStatusState.slotHosts]
       .find((container) => container.isConnected && container.closest("[data-codex-plus-ui-slot]")?.nextElementSibling === anchor);
     let node = codexPlusProxyStatusState.node;
     if (!node) {
       node = document.createElement("div");
       node.id = codexPlusProxyStatusId;
-      node.setAttribute("data-codex-plus-ext", "builtin-proxy-request-status");
+      node.setAttribute("data-codex-plus-ext", codexPlusProxyStatusOwner);
       node.setAttribute("role", "status");
       codexPlusProxyStatusState.node = node;
     }
@@ -229,55 +236,37 @@
     }
   }
 
-  async function codexPlusProxyStatusPostWithTimeout() {
-    // 桥接挂死时 __codexSessionDeleteBridge 的 Promise 可能永远不 settle。
-    // 不设超时会让 inFlight 永久为 true，状态条从此不再刷新（只能重启恢复）。
-    let timer = 0;
-    try {
-      return await Promise.race([
-        postJson("/proxy-status", {}),
-        new Promise((resolve) => {
-          timer = window.setTimeout(
-            () => resolve({ status: "failed", message: "桥接请求超时", timeout: true }),
-            2500,
-          );
-        }),
-      ]);
-    } finally {
-      window.clearTimeout(timer);
-    }
+  /**
+   * 问一次 Codex++：返回最近的代理请求，出错或超时时 reject。
+   * 桥接挂死时请求的 Promise 可能永远不 settle；ctx.call 的超时让 inFlight 不会永久为 true（否则状态条从此不再刷新）。
+   */
+  async function codexPlusProxyStatusFetch() {
+    const result = await codexPlusProxyStatusHost.call("/proxy-status", {}, { timeout: 2500 });
+    if (result?.status !== "ok" || !Array.isArray(result.requests)) throw new Error(String(result?.message || "proxy-status 返回无效"));
+    return result.requests;
   }
 
   async function codexPlusProxyStatusRefresh() {
-    if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
+    if (!codexPlusProxyStatusState.running || codexPlusProxyStatusState.inFlight) return;
     if (document.hidden) return;
-    if (!codexPlusProxyStatusEnabled()) {
-      codexPlusProxyStatusState.requests = [];
-      codexPlusProxyStatusHide();
-      return;
-    }
     codexPlusProxyStatusState.inFlight = true;
     try {
-      const result = await codexPlusProxyStatusPostWithTimeout();
-      if (result?.status === "ok" && Array.isArray(result.requests)) {
-        codexPlusProxyStatusState.requests = result.requests;
-        codexPlusProxyStatusState.failures = 0;
-      } else if (result?.timeout) {
-        // 让看门狗把桥接判定为失效并重注入；桥恢复后下一轮轮询自动接上。
-        recordCodexPlusBridgeFailure();
-        throw new Error("proxy-status bridge timeout");
-      }
+      codexPlusProxyStatusState.requests = await codexPlusProxyStatusFetch();
+      codexPlusProxyStatusState.failures = 0;
     } catch {
+      // 超时或失败沿用上一次的结果；桥接自己的看门狗负责判定失效与重注入。
       codexPlusProxyStatusState.failures += 1;
     } finally {
       codexPlusProxyStatusState.inFlight = false;
     }
-    if (!codexPlusProxyStatusState.disposed) codexPlusProxyStatusRender();
+    if (codexPlusProxyStatusState.running) codexPlusProxyStatusRender();
   }
 
-  /** 轮询与倒计时随内置拓展「请求状态条」装卸（96-builtin-extensions.js）：没装着时不轮询。 */
+  /** 轮询与倒计时随拓展装卸（main.js 的 ctx.effect）：没装着时不轮询。 */
   function startCodexPlusProxyStatus() {
-    if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.pollTimer) return;
+    if (codexPlusProxyStatusState.running) return;
+    codexPlusProxyStatusState.running = true;
+    codexPlusProxyStatusInstallStyle();
     codexPlusProxyStatusRender();
     codexPlusProxyStatusState.pollTimer = window.setInterval(
       () => void codexPlusProxyStatusRefresh(),
@@ -290,24 +279,15 @@
     void codexPlusProxyStatusRefresh();
   }
 
+  /** 停用 / 热重载：停掉轮询，摘掉状态条与样式（留一个隐藏节点等于每次重载多挂一个）。 */
   function stopCodexPlusProxyStatus() {
+    codexPlusProxyStatusState.running = false;
     window.clearInterval(codexPlusProxyStatusState.pollTimer);
     window.clearInterval(codexPlusProxyStatusState.tickTimer);
     codexPlusProxyStatusState.pollTimer = 0;
     codexPlusProxyStatusState.tickTimer = 0;
-    codexPlusProxyStatusHide();
+    codexPlusProxyStatusState.requests = [];
+    codexPlusProxyStatusState.node?.remove();
+    codexPlusProxyStatusState.node = null;
+    document.getElementById(codexPlusProxyStatusStyleId)?.remove();
   }
-
-  codexPlusProxyStatusInstallStyle();
-
-  window.__codexPlusProxyRequestStatusRuntime = {
-    refresh: codexPlusProxyStatusRefresh,
-    dispose() {
-      codexPlusProxyStatusState.disposed = true;
-      window.clearInterval(codexPlusProxyStatusState.pollTimer);
-      window.clearInterval(codexPlusProxyStatusState.tickTimer);
-      codexPlusProxyStatusState.node?.remove();
-      codexPlusProxyStatusState.node = null;
-      document.getElementById(codexPlusProxyStatusStyleId)?.remove();
-    },
-  };

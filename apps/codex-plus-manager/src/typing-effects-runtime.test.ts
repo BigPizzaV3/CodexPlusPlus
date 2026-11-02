@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 
-const source = readFileSync(new URL("../../../assets/inject/renderer-inject/94-typing-effects.js", import.meta.url), "utf8");
+// 打字特效是官方拓展包（assets/extensions/typing-effects）；引擎在 effects.js，特效样式由 main.js 从拓展配置传入。
+const source = readFileSync(new URL("../../../assets/extensions/typing-effects/effects.js", import.meta.url), "utf8");
 type Listener = (event: Record<string, unknown>) => void;
 
 function fixture(initialMode = "rainbow") {
@@ -36,7 +37,6 @@ function fixture(initialMode = "rainbow") {
     parentElement: FakeElement | null = null;
     textContent = "";
     disabled = false;
-    extension = false;
     rect = { left: 100, top: 200, width: 240, height: 100, right: 340, bottom: 300 };
     offsetWidth = 240;
     offsetHeight = 100;
@@ -131,9 +131,8 @@ function fixture(initialMode = "rainbow") {
     getSelection: () => selection,
     addEventListener(name: string, handler: Listener) { add(windowListeners, name, handler); },
     removeEventListener(name: string, handler: Listener) { remove(windowListeners, name, handler); },
-    __codexPlusTypingEffectsRuntime: undefined as { dispose(): void } | undefined,
     testApi: undefined as unknown as {
-      install(): void; sync(): void; caret(editor: FakeElement): { x: number; y: number };
+      install(): void; uninstall(): void; sync(): void; caret(editor: FakeElement): { x: number; y: number };
       state: { particles: { x: number; y: number; star: boolean }[]; canvas: FakeElement | null; composition: unknown };
     },
   };
@@ -145,17 +144,14 @@ function fixture(initialMode = "rainbow") {
       borderTopWidth: "1px", borderBottomWidth: "1px", borderLeftWidth: "1px", borderRightWidth: "1px",
       ...node.style,
     }),
-    codexPlusSettings: () => settings,
-    visibleElement: (node: FakeElement) => node.rect.width > 0 && node.rect.height > 0,
-    isExtensionUiNode: (node: FakeElement) => node.extension || !!node.closest("[data-codex-plus-ext]"),
-    registerCodexPlusExtensionSelector: (selector: string) => { assert.equal(selector, '[data-codex-plus-ext="builtin-typing-effects"]'); },
+    typingSettings: settings,
     performance: { now: () => now },
     requestAnimationFrame: (handler: (time: number) => void) => { frames.set(++frameId, handler); return frameId; },
     cancelAnimationFrame: (id: number) => frames.delete(id),
     queueMicrotask: (callback: () => void) => microtasks.push(callback),
   });
   const load = () => {
-    runInContext(`(function() { ${source}\nwindow.testApi = { install: installCodexPlusTypingEffects, sync: syncCodexPlusTypingEffects, caret: codexPlusTypingEffectCaret, state: codexPlusTypingEffects }; })();`, context);
+    runInContext(`(function() { ${source}\nwindow.testApi = createCodexPlusTypingEffects(() => typingSettings.typingEffect); })();`, context);
     return window.testApi;
   };
   const dispatch = (name: string, extra: Record<string, unknown> = {}, target: FakeElement = document.activeElement) => {
@@ -211,8 +207,8 @@ test("typing effects are opt-in and ignore non-typing edits outside the native c
     assert.equal(f.created.length, 0, JSON.stringify(event));
   }
   const f = fixture();
-  f.editor.extension = true; f.insert("extension");
-  f.editor.extension = false; delete f.composer.attrs["data-codex-composer-root"]; f.insert("outside");
+  f.editor.setAttribute("data-codex-plus-ext", "other-script"); f.insert("extension");
+  delete f.editor.attrs["data-codex-plus-ext"]; delete f.composer.attrs["data-codex-composer-root"]; f.insert("outside");
   assert.equal(f.created.length, 0);
 });
 
@@ -283,7 +279,7 @@ test("all effects originate at the caret, preserve editing state, and only anima
     assert.equal(f.document.activeElement, f.editor);
     assert.equal(f.editor.children.length, 0);
     assert.equal(f.api.state.canvas?.attrs["aria-hidden"], "true");
-    assert.equal(f.api.state.canvas?.attrs["data-codex-plus-ext"], "builtin-typing-effects");
+    assert.equal(f.api.state.canvas?.attrs["data-codex-plus-ext"], "typing-effects");
     assert.equal(f.api.state.canvas?.style.pointerEvents, "none");
     assert.equal(f.body.children.length, 1, "offscreen mirror is removed after reading the caret");
     f.frame();
@@ -645,15 +641,16 @@ test("pending IME caret retries are bounded and cancelled when the runtime is cl
   assert.equal(unresolved.f.frames.size, 0, "an unavailable caret must not keep an idle animation loop alive");
   assert.equal(unresolved.f.api.state.particles.length, 0);
 
-  for (const reason of ["off", "focus", "window-blur", "hidden", "reduced", "reinjection", "dispose"]) {
+  for (const reason of ["off", "focus", "window-blur", "hidden", "reduced", "reload", "disable"]) {
     const { f, editor } = pending();
     if (reason === "off") { f.settings.typingEffect = "off"; f.api.sync(); }
     if (reason === "focus") f.dispatch("focusout", {}, editor);
     if (reason === "window-blur") f.windowEvent("blur");
     if (reason === "hidden") { f.document.hidden = true; f.dispatch("visibilitychange"); }
     if (reason === "reduced") f.reduced(true);
-    if (reason === "reinjection") f.load().install();
-    if (reason === "dispose") f.window.__codexPlusTypingEffectsRuntime?.dispose();
+    // 热重载：内核先卸下旧实例再装新实例；停用：只卸下。
+    if (reason === "reload") { f.api.uninstall(); f.load().install(); }
+    if (reason === "disable") f.api.uninstall();
     assert.equal(f.frames.size, 0, reason);
     assert.equal(f.api.state.particles.length, 0, reason);
     assert.equal(f.api.state.canvas, null, reason);
@@ -698,21 +695,25 @@ test("off, focus loss, visibility and reduced motion clear effects immediately",
   assert.equal(f.api.state.particles.length, 16);
 });
 
-test("reinstallation and reinjection do not accumulate delegated listeners or old animation frames", () => {
+test("reinstallation and extension reload do not accumulate delegated listeners or old animation frames", () => {
   const f = fixture(); f.insert("a");
   for (let index = 0; index < 3; index++) f.api.install();
   assert.equal(f.documentListeners.get("input")?.size, 1);
   const oldCanvas = f.api.state.canvas;
-  const replacement = f.load();
-  replacement.sync(); replacement.install();
+  // 拓展热重载：内核先卸下旧实例（ctx.effect 的撤销 → uninstall），再装上新实例。
+  f.api.uninstall();
   assert.equal(oldCanvas?.isConnected, false);
   assert.equal(f.frames.size, 0);
+  assert.equal(f.documentListeners.get("input")?.size, 0);
+  assert.equal(f.mediaListeners.size, 0);
+  const replacement = f.load();
+  replacement.install();
   assert.equal(f.documentListeners.get("input")?.size, 1);
   assert.equal(f.windowListeners.get("blur")?.size, 1);
   assert.equal(f.mediaListeners.size, 1);
   f.insert("b");
   assert.equal(replacement.state.particles.length, 16);
-  f.window.__codexPlusTypingEffectsRuntime?.dispose();
+  replacement.uninstall();
   assert.equal(f.documentListeners.get("input")?.size, 0);
   assert.equal(f.mediaListeners.size, 0);
   assert.equal(f.frames.size, 0);

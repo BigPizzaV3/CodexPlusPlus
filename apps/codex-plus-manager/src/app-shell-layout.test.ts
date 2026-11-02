@@ -244,7 +244,7 @@ test("安装维护并进设置页：设置分组只有一个页面，设置页�
   // 合并后的设置页用左侧分类目录，目录里的每一项都对应一张卡片。
   assert.match(app, /<PageSectionNav label=\{t\("设置分类"\)\} sections=\{codexSettingsSections\(\)\} \/>/);
   const ids = [...text.slice(text.indexOf("function codexSettingsSections"), text.indexOf("const EXPERIMENTAL_TITLE")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
-  assert.ok(ids.length >= 7);
+  assert.ok(ids.length >= 6);
   for (const id of ids) assert.match(text, new RegExp(`<Panel id="${id}">`));
   assert.ok(app.indexOf("<AgentSettingsScreen") < app.indexOf("<MaintenanceScreen"), "设置在上、安装维护在下");
 });

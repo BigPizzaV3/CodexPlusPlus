@@ -10,7 +10,7 @@ use codex_plus_core::routes::{
     CoreRuntimeService, evaluate_extension_cdp, handle_bridge_request,
 };
 use codex_plus_core::agent_pet;
-use codex_plus_core::settings::{BackendSettings};
+use codex_plus_core::settings::{BackendSettings, RelayProfile};
 use codex_plus_core::status::StatusStore;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -34,6 +34,8 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/settings/get", json!({})),
         ("/settings/set", json!({"providerSyncEnabled": true})),
         ("/settings/catalog", json!({})),
+        ("/settings/public", json!({})),
+        ("/model-catalog/public", json!({})),
         ("/user-scripts/list", json!({})),
         ("/user-scripts/set-enabled", json!({"enabled": false})),
         (
@@ -143,6 +145,117 @@ async fn thread_usage_live_route_returns_recent_token_events() {
     assert_eq!(result["session_id"], "s1");
     assert_eq!(result["events"][0]["cached_input_tokens"], json!(900));
     assert_eq!(result["events"][0]["context_window"], json!(258400));
+}
+
+fn settings_with_secret_profile(model_list: &str) -> BackendSettings {
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles = vec![RelayProfile {
+        id: "p1".to_string(),
+        name: "Relay".to_string(),
+        base_url: "https://secret-relay.example/v1".to_string(),
+        upstream_base_url: "https://secret-relay.example/v1".to_string(),
+        api_key: "sk-secret-key".to_string(),
+        config_contents: "model = \"deepseek-v4-pro\"\nexperimental_bearer_token = \"sk-secret-key\"\n".to_string(),
+        auth_contents: "{\"OPENAI_API_KEY\":\"sk-secret-key\"}".to_string(),
+        context_window: "1000000".to_string(),
+        auto_compact_limit: "900000".to_string(),
+        model_list: model_list.to_string(),
+        ..RelayProfile::default()
+    }];
+    settings.active_relay_id = "p1".to_string();
+    settings
+}
+
+#[tokio::test]
+async fn public_settings_route_exposes_active_profile_without_secrets() {
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings_with_secret_profile("deepseek-v4-pro[1M]"))),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/public", json!({})).await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["codexPlusVersion"], json!(codex_plus_core::version::VERSION));
+    assert_eq!(result["activeProfile"]["id"], "p1");
+    assert_eq!(result["activeProfile"]["name"], "Relay");
+    assert_eq!(result["activeProfile"]["model"], "deepseek-v4-pro");
+    assert_eq!(result["activeProfile"]["contextWindow"], "1000000");
+    assert_eq!(result["activeProfile"]["autoCompactLimit"], "900000");
+    assert!(result["modelCatalogFingerprint"].as_str().is_some_and(|value| !value.is_empty()));
+    // 地址、Key、config / auth 内容一概不给拓展。
+    let text = result.to_string();
+    assert!(!text.contains("secret"), "{text}");
+    assert!(result.get("relayProfiles").is_none());
+}
+
+#[tokio::test]
+async fn settings_payload_fingerprint_follows_model_catalog_fields() {
+    let read = |model_list: &str| {
+        let ctx = BridgeContext::new(
+            Arc::new(FakeSettings::with_settings(settings_with_secret_profile(model_list))),
+            Arc::new(FakeRuntime::default()),
+            Arc::new(FakeData::default()),
+        );
+        async move { handle_bridge_request(ctx, "/settings/get", json!({})).await }
+    };
+    let first = read("deepseek-v4-pro[1M]").await;
+    let same = read("deepseek-v4-pro[1M]").await;
+    let changed = read("deepseek-v4-pro[1M]\ndeepseek-v4-flash").await;
+
+    // 页面心跳比较这两项发 relayProfile/switched、modelCatalog/changed。
+    assert_eq!(first["activeRelayProfilePublic"]["id"], "p1");
+    assert!(first["activeRelayProfilePublic"].get("baseUrl").is_none());
+    assert_eq!(first["modelCatalogFingerprint"], same["modelCatalogFingerprint"]);
+    assert_ne!(first["modelCatalogFingerprint"], changed["modelCatalogFingerprint"]);
+}
+
+#[tokio::test]
+async fn public_model_catalog_route_drops_sources_and_paths() {
+    struct CatalogRuntime(FakeRuntime);
+    #[async_trait]
+    impl BridgeRuntimeService for CatalogRuntime {
+        async fn user_script_inventory(&self) -> anyhow::Result<Value> { self.0.user_script_inventory().await }
+        async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value> { self.0.set_user_scripts_enabled(enabled).await }
+        async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> { self.0.set_user_script_enabled(key, enabled).await }
+        async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> { self.0.delete_user_script(key).await }
+        async fn reload_user_scripts(&self) -> anyhow::Result<Value> { self.0.reload_user_scripts().await }
+        async fn open_devtools(&self) -> anyhow::Result<Value> { self.0.open_devtools().await }
+        async fn open_manager(&self, payload: Value) -> anyhow::Result<Value> { self.0.open_manager(payload).await }
+        async fn backend_status(&self) -> anyhow::Result<Value> { self.0.backend_status().await }
+        async fn ads(&self) -> anyhow::Result<Value> { self.0.ads().await }
+        async fn codex_model_catalog(&self) -> anyhow::Result<Value> {
+            Ok(json!({
+                "status": "ok",
+                "path": "/Users/someone/.codex/config.toml",
+                "model": "deepseek-v4-pro",
+                "default_model": "deepseek-v4-pro",
+                "model_provider": "p1",
+                "provider_name": "Relay",
+                "service_tier": "",
+                "models": ["deepseek-v4-pro"],
+                "modelMetadata": {"deepseek-v4-pro": {"contextWindow": 1_000_000}},
+                "sources": [{"base_url": "https://secret-relay.example/v1"}],
+                "responses_api": {"status": "unknown"}
+            }))
+        }
+    }
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::default()),
+        Arc::new(CatalogRuntime(FakeRuntime::default())),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/model-catalog/public", json!({})).await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["models"], json!(["deepseek-v4-pro"]));
+    assert_eq!(result["modelMetadata"]["deepseek-v4-pro"]["contextWindow"], json!(1_000_000));
+    assert!(result.get("sources").is_none());
+    assert!(result.get("path").is_none());
+    assert!(result.get("responses_api").is_none());
+    assert!(!result.to_string().contains("secret"));
 }
 
 #[tokio::test]

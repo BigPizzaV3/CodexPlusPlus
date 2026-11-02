@@ -483,7 +483,8 @@ fn pet_real_mouse_stop_script_retires_existing_runtime() {
 }
 
 #[test]
-fn injection_script_exposes_image_overlay_config() {
+fn injection_script_no_longer_carries_the_image_overlay() {
+    // 背景图改成了官方拓展包：图片由拓展经 /image-overlay/image 读，注入脚本里不再带配置、图片与引擎。
     let temp = tempfile::tempdir().unwrap();
     let image_path = temp.path().join("overlay.png");
     std::fs::write(
@@ -496,18 +497,14 @@ fn injection_script_exposes_image_overlay_config() {
     let settings = codex_plus_core::settings::BackendSettings {
         codex_app_image_overlay_enabled: true,
         codex_app_image_overlay_path: image_path.to_string_lossy().to_string(),
-        codex_app_image_overlay_opacity: 42,
-        codex_app_image_overlay_fit_mode: "fill".to_string(),
         ..Default::default()
     };
     let script = assets::injection_script_with_settings(57321, &settings);
 
-    assert!(script.contains("window.__CODEX_PLUS_IMAGE_OVERLAY__"));
-    assert!(script.contains("\"enabled\":true"));
-    assert!(script.contains("\"opacity\":0.42"));
-    assert!(script.contains("\"fitMode\":\"fill\""));
-    assert!(script.contains("\"dataUrl\":\"data:image/png;base64,"));
-    assert!(script.contains("http://127.0.0.1:57321/overlay/image"));
+    assert!(!script.contains("__CODEX_PLUS_IMAGE_OVERLAY__"));
+    assert!(!script.contains("data:image/png;base64,iVBORw0KGgo"));
+    assert!(!script.contains("/overlay/image"));
+    assert!(!script.contains("function installCodexPlusImageOverlay"));
 }
 
 #[test]
@@ -809,16 +806,23 @@ process.exit(0);
 }
 
 #[test]
-fn injection_script_installs_image_overlay_from_data_uri() {
-    let script = assets::injection_script(57321);
+fn image_overlay_extension_installs_from_data_uri() {
+    // 背景图引擎在官方拓展包里（assets/extensions/image-overlay/overlay.js），不再进注入脚本。
+    let script = String::from_utf8(
+        codex_plus_core::bundled_extensions::image_overlay_files()
+            .into_iter()
+            .find(|(path, _)| *path == "overlay.js")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
 
     assert!(script.contains("typeof config.dataUrl === \"string\""));
     assert!(script.contains("overlay.id = codexPlusImageOverlayId"));
     let overlay_script = script
-        .split("function installCodexPlusImageOverlay()")
+        .split("function installCodexPlusImageOverlay(config = {}, report = null)")
         .nth(1)
-        .and_then(|body| body.split("function scheduleCodexPlusImageOverlay()").next())
-        .expect("image overlay entry point should be embedded");
+        .expect("image overlay entry point should be in the extension engine");
     assert!(overlay_script.contains("data-codex-plus-image-native"));
     assert!(overlay_script.contains("root.insertBefore(overlay, document.body"));
     assert!(!overlay_script.contains("maskImage"));
@@ -2827,7 +2831,9 @@ fn injection_script_heartbeat_syncs_backend_settings() {
     assert!(script.contains("syncBackendSettingsInFlight"));
     assert!(script.contains("void syncBackendSettingsFromHeartbeat();"));
     // 跟着设置走的功能由内置拓展订阅 settings/loaded（对话宽度开关变了就重算宽度）。
-    assert!(script.contains("emitCodexPlusSettingsLoaded(\"heartbeat\")"));
+    // 心跳还带上变了的设置字段名，并比较供应商发 relayProfile/switched、modelCatalog/changed。
+    assert!(script.contains("emitCodexPlusSettingsLoaded(\"heartbeat\", "));
+    assert!(script.contains("emitCodexPlusRelaySettingsEvents(previous, next)"));
     assert!(script.contains("function codexPlusConversationViewExtension"));
     assert!(script.contains("runScanStep(refreshConversationView);"));
 }
@@ -2908,39 +2914,24 @@ fn injection_script_uses_an_icon_for_idle_dictation() {
 }
 
 #[test]
-fn injection_script_exposes_the_usage_status_line() {
+fn usage_status_line_and_proxy_request_status_left_the_injection_script() {
     let script = assets::injection_script(57321);
 
-    // 开关接线：默认值 → 后端映射。
-    assert!(script.contains("usageStatusLine: true"));
-    assert!(script.contains("usageStatusLine: \"codexAppUsageStatusLine\""));
-    assert!(script.contains("usageStatusLine: false"));
-
-    // 数据源走尾部快照路由，不能退回按秒整读历史的 /thread-usage-history。
-    assert!(script.contains("postJson(\"/thread-usage-live\""));
-    assert!(script.contains("data-above-composer-conversation-id"));
-    assert!(script.contains("data-composer-surface-variant"));
-    // 插进 DOM 的节点必须带归属标记，否则会触发自喂扫描循环（issue #1960）。
-    assert!(script.contains("data-codex-plus-ext\", \"builtin-usage-statusline\""));
-    assert!(script.contains("registerCodexPlusExtensionSelector"));
-    // 设置面板里的开关要能立刻生效，不用等下一拍轮询。
-    assert!(script.contains("__CODEX_PLUS_USAGE_STATUSLINE_SYNC__"));
-}
-
-#[test]
-fn injection_script_gates_the_proxy_request_status_bar() {
-    let script = assets::injection_script(57321);
-
-    // 开关接线（#2824）：默认开 → 后端映射 → 增强总开关关闭时一并关。
-    assert!(script.contains("proxyRequestStatus: true"));
-    assert!(script.contains("proxyRequestStatus: \"codexAppProxyRequestStatus\""));
-    assert!(script.contains("proxyRequestStatus: false"));
-    // 关闭时渲染和轮询都要先过开关，不能只藏节点还在每 1.2 秒打 /proxy-status。
-    assert!(script.contains("function codexPlusProxyStatusEnabled()"));
-    assert_eq!(
-        script.matches("if (!codexPlusProxyStatusEnabled())").count(),
-        2
-    );
+    // 两者已改成官方拓展包（assets/extensions/usage-statusline、proxy-request-status），见 bundled_builtins.rs；
+    // 注入脚本里不再有它们的代码、设置开关和内置拓展项，也不再自己轮询 /thread-usage-live、/proxy-status。
+    for gone in [
+        "codexPlusUsageState",
+        "codexPlusProxyStatusState",
+        "usageStatusLine:",
+        "proxyRequestStatus:",
+        "__CODEX_PLUS_USAGE_STATUSLINE_SYNC__",
+        "postJson(\"/thread-usage-live\"",
+        "postJson(\"/proxy-status\"",
+        "id: \"usage-statusline\"",
+        "id: \"proxy-request-status\"",
+    ] {
+        assert!(!script.contains(gone), "注入脚本里还有 {gone}");
+    }
 }
 
 #[test]

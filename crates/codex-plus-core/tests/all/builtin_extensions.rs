@@ -69,15 +69,10 @@ fn builtins_with_a_setting_use_that_setting_as_their_switch() {
     assert_eq!(settings(temp.path())["codexAppSessionDelete"], false);
     assert_eq!(builtin(&manager, "session-delete")["enabled"], false);
 
-    // 嵌套字段与下拉型。
+    // 嵌套字段。
     manager.set_script_enabled("builtin:dictation", true).unwrap();
     assert_eq!(settings(temp.path())["dictation"]["enabled"], true);
     assert_eq!(builtin(&manager, "dictation")["enabled"], true);
-    manager.set_script_enabled("builtin:typing-effects", true).unwrap();
-    assert_eq!(settings(temp.path())["codexAppTypingEffect"], "rainbow");
-    assert_eq!(builtin(&manager, "typing-effects")["enabled"], true);
-    manager.set_script_enabled("builtin:typing-effects", false).unwrap();
-    assert_eq!(settings(temp.path())["codexAppTypingEffect"], "off");
 
     // 有设置字段的不进下发的停用集合，功能自己读设置；也不在用户脚本配置里另记一份。
     let state = manager.builtin_extension_state().unwrap();
@@ -152,11 +147,11 @@ fn replaced_rust_side_builtins_are_switched_off_in_effective_settings() {
     settings.codex_app_native_fast_unlock = true;
     settings.codex_app_force_chinese_locale = true;
     settings.codex_app_model_whitelist_unlock = true;
-    settings.codex_app_image_overlay_enabled = true;
-    let replaced: std::collections::BTreeSet<String> = ["native-fast-unlock", "image-overlay"].iter().map(|id| id.to_string()).collect();
+    settings.codex_app_native_predictions = true;
+    let replaced: std::collections::BTreeSet<String> = ["native-fast-unlock", "native-predictions"].iter().map(|id| id.to_string()).collect();
     let masked = mask_settings_with(settings.clone(), &replaced);
     assert!(!masked.codex_app_native_fast_unlock);
-    assert!(!masked.codex_app_image_overlay_enabled);
+    assert!(!masked.codex_app_native_predictions);
     assert!(masked.codex_app_force_chinese_locale, "没被顶替的保持原值");
     assert!(masked.codex_app_model_whitelist_unlock);
     settings.enhancements_enabled = false;

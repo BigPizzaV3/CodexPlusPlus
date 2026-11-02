@@ -391,7 +391,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "35";
+  const codexDeleteStyleVersion = "37";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -441,7 +441,6 @@
   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
   const codexThreadScrollListenerVersion = "4";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
-  const codexPlusImageOverlayId = "codex-plus-image-overlay";
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
   const codexPlusDreamSkinRevision = String(window.__CODEX_PLUS_DREAM_SKIN_REVISION__ || "1");
@@ -453,1464 +452,6 @@
   window.__codexThreadScrollSyncTimers = [];
   window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
 
-  function installCodexPlusImageOverlay() {
-    const config = window.__CODEX_PLUS_IMAGE_OVERLAY__ || {};
-    const source = typeof config.dataUrl === "string" ? config.dataUrl : "";
-    const cached = window.__codexPlusImageOverlayResource;
-    const configuredOpacity = Number(config.opacity);
-    const opacity = Number.isFinite(configuredOpacity)
-      ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
-    const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
-      ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 30 && cached.ready && cached.source === source);
-    if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
-      document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
-    window.__codexPlusImageOverlayGeometryCleanup?.();
-    window.__codexPlusImageOverlayGeometryCleanup = null;
-    window.__codexPlusImageOverlayCleanup?.(reuse);
-    window.__codexPlusImageOverlayCleanup = null;
-    document.getElementById(codexPlusImageOverlayId)?.remove();
-    const root = document.documentElement;
-    window.__codexPlusImageOverlayReady = Promise.resolve(false);
-    if (!config.enabled || !source || !root) return;
-
-    const fitStyles = {
-      fill: { size: "cover", position: "center center", repeat: "no-repeat" },
-      fit: { size: "contain", position: "center center", repeat: "no-repeat" },
-      stretch: { size: "100% 100%", position: "center center", repeat: "no-repeat" },
-      tile: { size: "auto", position: "left top", repeat: "repeat" },
-      center: { size: "auto", position: "center center", repeat: "no-repeat" },
-    }[fitMode];
-    const viewerSelector = [
-      '[role="dialog"]:has([data-testid="image-preview-dismiss-area"])',
-      '[data-testid="image-preview-editor"]',
-      '[data-testid="image-preview-dismiss-area"]',
-      '.codex-dialog-overlay[class*="_imageOverlay_"]',
-      '.codex-dialog:has([data-image-preview-toolbar])',
-      '.codex-dialog:has([data-image-preview-composer])',
-      "[data-browser-sidebar-webview]",
-      "[data-browser-sidebar-toolbar]",
-    ].join(", ");
-    const toolbarSelector = "[data-browser-sidebar-toolbar]";
-    const browserSelector = `[data-browser-sidebar-webview], ${toolbarSelector}`;
-    const sidebarSelector = "aside.app-shell-left-panel, [data-app-action-sidebar-scroll], nav[data-app-navigation-rail]";
-    const sidebarRowSelector = "[data-app-action-sidebar-thread-row], [data-app-action-sidebar-project-row]";
-    const pageSelector = ".codex-plus-page-overlay";
-    const timelineSelector = "[data-app-action-timeline-scroll], .thread-scroll-container";
-    const reviewHeaderSelector = '[class~="group/turn-diff-header"]';
-    const rightPanelSelector = '[data-app-shell-focus-area="right-panel"]';
-    const inactivePanel = node => node.closest?.(
-      `${rightPanelSelector}[inert], ${rightPanelSelector}[aria-hidden="true"]`);
-    const mediaSelector = `img, video, canvas, ${viewerSelector}, ${reviewHeaderSelector}`;
-    const nativeRangeSelector = 'input[type="range"], [role="slider"]';
-    const composerSelector = '[class*="_ComposerLayoutRoot_"]';
-    const headerSelector = '[data-app-shell-header-layout], [data-sticky][class*="_shell_"], .sticky.z-30.bg-surface';
-    const editorSelector = '[contenteditable="true"], .ProseMirror';
-    const composerOverlaySelector = "[data-composer-overlay-floating-ui]";
-    const diffPreviewSelector = '[data-testid="diff-preview-scroll"]';
-    const controlSelector = 'button, [role="button"], input, textarea, select, a';
-    const mediaAttribute = "data-codex-plus-image-native";
-    const scopeAttribute = "data-codex-plus-image-scope";
-    const containmentAttribute = "data-codex-plus-image-contain";
-    const browserPortalAttribute = "data-codex-plus-image-browser-portal";
-    const popupMaterialAttribute = "data-codex-plus-image-popup-material";
-    const popupBoundaryAttribute = "data-codex-plus-image-popup-boundary";
-    const popupPortalAttribute = "data-codex-plus-image-popup-portal";
-    const popupPortalSelector = ".fixed.inset-0.pointer-events-none.zoom-adjusted-viewport.contain-layout";
-    const controlAttribute = "data-codex-plus-image-control";
-    const paintAttribute = "data-codex-plus-image-paint";
-    const topControlAttribute = "data-codex-plus-image-top-control";
-    const footerAttribute = "data-codex-plus-image-footer-gutter";
-    const footerSelector = "[data-thread-scroll-footer]";
-    const topControlSelector = [
-      '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]',
-      "[data-radix-popper-content-wrapper]", '[data-slot="popover-content"]', "[popover]", composerOverlaySelector,
-    ].join(", ");
-    // Extensions keep their own layers; their full-page shell is the one wallpaper surface.
-    const owned = node => !!node?.closest?.('[data-codex-plus-ext]') && !node.matches(pageSelector);
-    const wallpaperLayer = 1000;
-    const overlay = document.createElement("div");
-    overlay.id = codexPlusImageOverlayId;
-    overlay.setAttribute("aria-hidden", "true");
-    overlay.setAttribute("data-codex-plus-ext", "image-overlay");
-    Object.assign(overlay.style, {
-      position: "fixed", inset: "0", width: "100vw", height: "100vh",
-      opacity: String(opacity), pointerEvents: "none", zIndex: String(wallpaperLayer),
-      userSelect: "none", backgroundSize: fitStyles.size,
-      backgroundPosition: fitStyles.position, backgroundRepeat: fitStyles.repeat,
-      transition: "none", animation: "none",
-    });
-    const style = document.createElement("style");
-    style.setAttribute("data-codex-plus-ext", "image-overlay");
-    const nativeRules = `
-      [${scopeAttribute}] { isolation:auto!important;z-index:auto!important;will-change:auto!important; }
-      [${browserPortalAttribute}] { z-index:${wallpaperLayer + 1}!important; }
-      [${scopeAttribute}^="identity"] { transform:none!important; }
-      [${scopeAttribute}="identity-flow"] { position:relative!important; }
-      [${containmentAttribute}] { contain:none!important; }
-      [${containmentAttribute}^="flow"] { position:relative!important; }
-      [${containmentAttribute}$="-clip"] { overflow:clip!important; }
-      [${mediaAttribute}]:where(:not([${mediaAttribute}="review"], [${mediaAttribute}="composer"], [${mediaAttribute}="page"])) { z-index:${wallpaperLayer}!important; }
-      [${mediaAttribute}="flow"], [${mediaAttribute}="island-flow"] { position:relative!important; }
-      [${mediaAttribute}="viewer"] { z-index:${wallpaperLayer + 3}!important; }
-      [${mediaAttribute}="footer"] { z-index:${wallpaperLayer + 1}!important; }
-      [${mediaAttribute}^="header"] { z-index:${wallpaperLayer + 1}!important; }
-      [${mediaAttribute}="header-flow"] { position:relative!important; }
-      [${mediaAttribute}^="header"][class~="after:bg-linear-to-b"][class~="after:from-surface"][class~="after:to-transparent"]::after { background-image:none!important; }
-      ${composerSelector} .top-full [data-composer-placement="home"].bg-background-composer-action-bar { background:none!important; }
-      [${mediaAttribute}="page"], [${mediaAttribute}="composer"] { isolation:isolate!important; }
-      [${mediaAttribute}="composer"]:not([${mediaAttribute}="footer"] *) { z-index:${wallpaperLayer + 1}!important; }
-      [${mediaAttribute}^="toolbar"] { background:none!important;box-shadow:none!important;filter:none!important;backdrop-filter:none!important; }
-      [${mediaAttribute}="toolbar-flow"] { position:relative!important; }
-      ${timelineSelector} { overscroll-behavior-y:none!important; }
-      [${popupMaterialAttribute}] { background-image:none!important;filter:none!important;backdrop-filter:none!important; }
-      [${paintAttribute}] { isolation:isolate!important; }
-      [${paintAttribute}]:not([${paintAttribute}^="before-"], [${paintAttribute}^="background-"])::after, [${paintAttribute}^="before-"]::before {
-        content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
-        corner-shape:inherit;z-index:-1;opacity:${opacity};
-        background-size:${fitStyles.size};background-position:${fitStyles.position};
-        background-repeat:${fitStyles.repeat};background-attachment:fixed;
-      }
-      [${controlAttribute}] { z-index:${wallpaperLayer}!important; }
-      [${topControlAttribute}] { z-index:${wallpaperLayer + 2}!important; }
-      [${popupPortalAttribute}] { z-index:${wallpaperLayer + 2}!important; }
-      [${topControlAttribute}="flow"] { position:relative!important; }
-    `;
-    const ns = "http://www.w3.org/2000/svg";
-    const svgNode = (tag, attributes = {}) => {
-      const node = document.createElementNS(ns, tag);
-      for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
-      return node;
-    };
-    const svg = svgNode("svg", { width: 0, height: 0, "aria-hidden": "true", "data-codex-plus-ext": "image-overlay" });
-    Object.assign(svg.style, { position: "fixed", width: "0", height: "0", pointerEvents: "none" });
-    const defs = svgNode("defs");
-    svg.appendChild(defs);
-    let resource = reuse ? cached : null;
-    let disposed = false;
-    let raf = 0;
-    let nextControl = 0;
-    let nextSource = 0;
-    let previewVisible = false;
-    let sidebarScrollUntil = 0;
-    let finishReady;
-    const image = new Image();
-    const records = new Map();
-    const scopes = new Map();
-    const browserPortals = new Map();
-    const controls = new Map();
-    const popups = new Map();
-    const visibleMedia = new Set();
-    const visibleControls = new Set();
-    const activeControls = new Set();
-    const paintedNodes = new Set();
-    const viewers = new Set();
-    const scopeKeys = new Map();
-    const footers = new Map();
-    const themeInputs = new Map();
-    // 受变换影响的壁纸表面：待重算集合、当前按视口换算的集合、为其挂的 ResizeObserver（表面 -> 记录节点）。
-    const paintsDirty = new Set();
-    const geometryPaints = new Set();
-    const paintObservers = new Map();
-    let geometryDirty = true;
-    const originalAttributes = new Map();
-    const stats = { frames: 0, rectReads: 0, styleReads: 0, queries: 0, maskWrites: 0, layerWrites: 0 };
-    window.__codexPlusImageOverlayStats = stats;
-    window.__codexPlusImageOverlayReady = new Promise(resolve => { finishReady = resolve; });
-    const mark = (node, name, value) => {
-      let attributes = originalAttributes.get(node);
-      if (!attributes) originalAttributes.set(node, attributes = new Map());
-      if (!attributes.has(name)) attributes.set(name, node.getAttribute(name));
-      if (node.getAttribute(name) !== value) node.setAttribute(name, value);
-    };
-    const unmark = (node, name) => {
-      const attributes = originalAttributes.get(node);
-      if (!attributes?.has(name)) return;
-      const previous = attributes.get(name);
-      if (previous === null) node.removeAttribute(name);
-      else node.setAttribute(name, previous);
-      attributes.delete(name);
-      if (!attributes.size) originalAttributes.delete(node);
-    };
-    const computed = (node, pseudo) => { stats.styleReads++; return getComputedStyle(node, pseudo); };
-    const bounds = node => { stats.rectReads++; return node.getBoundingClientRect(); };
-    const queryAll = (node, selector) => { stats.queries++; return node.querySelectorAll(selector); };
-    // 按 CSS Transforms 规范，自身或祖先带变换时 background-attachment:fixed 退化为元素局部坐标；
-    // Chromium 里 translate:0、scale:1、will-change:transform 同样会触发（#2813：侧栏打开时 footer 带 translate）。
-    const transformedStyle = paint => [paint.transform, paint.translate, paint.scale, paint.rotate]
-      .some(value => value && value !== "none") || /transform|translate|scale|rotate/.test(paint.willChange || "");
-    // 全局壁纸层在视口里的绘制矩形，与 overlay 的 background-size / background-position 等价。
-    const wallpaperRect = (mode, width, height, imageWidth, imageHeight) => {
-      if (mode === "stretch") return [0, 0, width, height];
-      if (!imageWidth || !imageHeight) return null;
-      if (mode === "tile") return [0, 0, imageWidth, imageHeight];
-      const scale = mode === "fill" ? Math.max(width / imageWidth, height / imageHeight)
-        : mode === "fit" ? Math.min(width / imageWidth, height / imageHeight) : 1;
-      return [(width - imageWidth * scale) / 2, (height - imageHeight * scale) / 2, imageWidth * scale, imageHeight * scale];
-    };
-    // 把视口坐标的壁纸矩形换算到背景定位区域（视口原点 originX/originY，祖先缩放 sx/sy）的局部坐标。
-    const localWallpaper = (wall, originX, originY, sx, sy) => {
-      const px = value => `${Math.round(value * 1000) / 1000 || 0}px`;
-      return { size: `${px(wall[2] / sx)} ${px(wall[3] / sy)}`,
-        position: `${px((wall[0] - originX) / sx)} ${px((wall[1] - originY) / sy)}` };
-    };
-    const layoutScale = (size, layout) => !layout || Math.abs(size - layout) <= 1 ? 1 : size / layout;
-    const scopeKey = node => [node.getAttribute("class"), ...[
-      "position", "z-index", "isolation", "contain", "transform", "translate", "scale", "rotate",
-      "will-change", "overflow", "overflow-x", "overflow-y", "animation", "transition",
-    ].map(name => node.style.getPropertyValue(name))].join("|");
-    const themeKey = node => [
-      [...node.classList].filter(name => node !== root ||
-        !/^_(?:active|opening|closing)_[a-zA-Z0-9]+_\d+$/.test(name)).sort().join(" "),
-      [...node.style].filter(name => node !== root || name !== "--image-preview-thumbnail-radius")
-        .sort().map(name => `${name}:${node.style.getPropertyValue(name)}:${node.style.getPropertyPriority(name)}`).join(";"),
-    ].join("|");
-    const viewerKey = node => [node.hidden, node.getAttribute("class"), node.getAttribute("role"),
-      node.getAttribute("data-testid"),
-      node.style.display, node.style.visibility, node.style.contentVisibility].join("|");
-    const release = record => {
-      if (record.browserPortal) {
-        const count = browserPortals.get(record.browserPortal) - 1;
-        if (count) browserPortals.set(record.browserPortal, count);
-        else {
-          browserPortals.delete(record.browserPortal);
-          unmark(record.browserPortal, browserPortalAttribute);
-        }
-      }
-      for (const ancestor of record.ancestors) {
-        const count = scopes.get(ancestor) - 1;
-        if (count) scopes.set(ancestor, count);
-        else {
-          scopes.delete(ancestor);
-          scopeKeys.delete(ancestor);
-          unmark(ancestor, scopeAttribute);
-          unmark(ancestor, containmentAttribute);
-        }
-      }
-    };
-    const refreshScope = node => {
-      unmark(node, scopeAttribute);
-      unmark(node, containmentAttribute);
-      const originalStyle = computed(node);
-      if (originalStyle.contain.includes("paint")) {
-        const flow = originalStyle.position === "static" ? "flow" : "positioned";
-        const clip = originalStyle.overflowX === "visible" && originalStyle.overflowY === "visible" ? "-clip" : "";
-        mark(node, containmentAttribute, flow + clip);
-      }
-      const transform = originalStyle.transform;
-      const identity = transform !== "none" && new DOMMatrix(transform).isIdentity &&
-        !node.getAnimations().some(animation => animation.playState === "running");
-      mark(node, scopeAttribute, identity ? originalStyle.position === "static" ? "identity-flow" : "identity" : "stack");
-      scopeKeys.set(node, scopeKey(node));
-    };
-    const nativeKind = node => node.matches(reviewHeaderSelector) ? "review" :
-      node.matches(toolbarSelector) ? computed(node).position === "static" ? "toolbar-flow" : "toolbar" :
-      node.matches(pageSelector) ? "page" : node.matches(composerSelector) ? "composer" :
-      node.matches(headerSelector) ? computed(node).position === "static" ? "header-flow" : "header" :
-      node.matches(footerSelector) ? "footer" :
-      node.matches(viewerSelector) && !node.matches("[data-browser-sidebar-webview]") ? "viewer" :
-      records.get(node)?.mediaIsland ? computed(node).position === "static" ? "island-flow" : "island" :
-      computed(node).position === "static" ? "flow" : "positioned";
-    const add = node => {
-      if (owned(node) || inactivePanel(node) || node.closest(editorSelector)) return;
-      const previous = records.get(node);
-      if (!node.matches(viewerSelector) && node.closest(viewerSelector) ||
-        !node.matches(reviewHeaderSelector) && node.closest(reviewHeaderSelector)) {
-        if (previous) removeMedia(node, previous);
-        return;
-      }
-      const nativeBoundary = node.parentElement?.closest(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${pageSelector}, ${composerSelector}, ${footerSelector}, ${headerSelector}`);
-      if (nativeBoundary && !node.matches(`${composerSelector}, ${headerSelector}`)) {
-        if (previous) removeMedia(node, previous);
-        return;
-      }
-      if (node.matches("img, video, canvas")) {
-        let host = node;
-        // Keep an icon's badges and overlapping logo stack in native DOM order.
-        for (let parent = node.parentElement; parent && parent !== document.body && !owned(parent) &&
-          !parent.matches(`${topControlSelector}, ${controlSelector}`) && !parent.textContent.trim(); parent = parent.parentElement) {
-          const children = [...parent.children];
-          const sameBox = parent.offsetWidth > 0 && parent.offsetWidth === host.offsetWidth && parent.offsetHeight === host.offsetHeight;
-          const stack = children.length > 1 && children.every(child => child.matches("img,svg") || child.querySelector("img,svg")) &&
-            ["flex", "inline-flex"].includes(computed(parent).display) &&
-            parent.offsetWidth <= children.reduce((sum, child) => sum + child.offsetWidth, 0) &&
-            parent.offsetHeight <= Math.max(...children.map(child => child.offsetHeight));
-          if (!sameBox && !stack) break;
-          host = parent;
-        }
-        if (host !== node) {
-          if (previous) removeMedia(node, previous);
-          removeWithin(records, host, removeMedia, false);
-          removeWithin(controls, host, removeControl);
-          add(host);
-          const record = records.get(host);
-          if (record) {
-            record.mediaIsland = true;
-            unmark(host, mediaAttribute);
-            mark(host, mediaAttribute, nativeKind(host));
-          }
-          return;
-        }
-      }
-      let browserPortal = node.matches(browserSelector) ? node.closest("[data-embedded-frame-host-root]") : null;
-      if (node.matches(browserSelector)) {
-        for (let parent = node.parentElement; !browserPortal && parent && parent !== root; parent = parent.parentElement) {
-          const paint = computed(parent);
-          if (paint.position === "fixed" && paint.pointerEvents === "none") { browserPortal = parent; break; }
-        }
-      }
-      const ancestors = [];
-      for (let parent = nativeBoundary || node.matches(reviewHeaderSelector) ||
-        node.matches(viewerSelector) && !node.matches(browserSelector)
-        ? null : browserPortal ? browserPortal.parentElement : node.parentElement; parent && parent !== root && !parent.matches(pageSelector) &&
-          parent !== nativeBoundary; parent = parent.parentElement) {
-        ancestors.push(parent);
-      }
-      if (previous?.parent === node.parentElement && previous.browserPortal === browserPortal && previous.nativeBoundary === nativeBoundary &&
-        previous.ancestors.length === ancestors.length &&
-        ancestors.every((parent, index) => previous.ancestors[index] === parent)) return;
-      if (previous) release(previous);
-      for (const parent of ancestors) {
-        const count = scopes.get(parent) || 0;
-        scopes.set(parent, count + 1);
-        if (!count) refreshScope(parent);
-      }
-      if (browserPortal) {
-        browserPortals.set(browserPortal, (browserPortals.get(browserPortal) || 0) + 1);
-        mark(browserPortal, browserPortalAttribute, "");
-      }
-      records.set(node, { ...previous, parent: node.parentElement, ancestors, browserPortal, nativeBoundary, box: null });
-      unmark(node, mediaAttribute);
-      mark(node, mediaAttribute, nativeKind(node));
-      if (node.getAttribute(mediaAttribute) === "viewer") {
-        viewers.add(node);
-        records.get(node).viewerKey = viewerKey(node);
-      } else viewers.delete(node);
-      if (nativeBoundary || node.matches(`${browserSelector}, ${reviewHeaderSelector}, ${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`)) {
-        intersectionObserver.unobserve(node);
-        visibleMedia.delete(node);
-      } else if (!previous || previous.nativeBoundary) intersectionObserver.observe(node);
-      stats.layerWrites++;
-    };
-    const addControl = (node, origin = null) => {
-      if (owned(node) || inactivePanel(node) || node.closest(reviewHeaderSelector) ||
-        node.matches(nativeRangeSelector) || node.closest(browserSelector) ||
-        node.closest(sidebarSelector) || node.closest(pageSelector) || node.closest(viewerSelector) ||
-        node.closest(topControlSelector) || node.closest(`[${popupBoundaryAttribute}]`) ||
-        node.closest(`${composerSelector}, ${footerSelector}, ${editorSelector}, [${mediaAttribute}^="island"], ${headerSelector}`)) {
-        const previous = controls.get(node);
-        if (previous) removeControl(node, previous);
-        return;
-      }
-      let record = controls.get(node);
-      if (!record) {
-        record = { id: ++nextControl, origin, box: null, paintDirty: false,
-          filter: null, backdrop: null, rule: "", key: "", backdropKey: "" };
-        controls.set(node, record);
-        intersectionObserver.observe(node);
-        resizeObserver.observe(node);
-      }
-      return record;
-    };
-    const controlSurface = node => {
-      let surface = node;
-      for (let parent = node.parentElement; parent && parent !== root && !scopes.has(parent); parent = parent.parentElement) {
-        if (parent.querySelector(mediaSelector)) break;
-        const paint = computed(parent);
-        if (paint.zIndex !== "auto" || paint.transform !== "none" ||
-          paint.filter !== "none" || paint.backdropFilter !== "none" ||
-          paint.isolation === "isolate" || Number(paint.opacity) < 1)
-          surface = parent;
-      }
-      return surface;
-    };
-    const nativeSurfacePaint = surface => ({ id: ++nextControl, surface,
-      pseudo: ["after", "before"].find(pseudo => ["none", "normal"].includes(computed(surface, `::${pseudo}`).content)) });
-    // 未受变换影响时沿用 fixed；受影响时 paint.geometry 记录每个绘制目标按视口换算出的尺寸与偏移。
-    const wallRule = paint => {
-      const image = JSON.stringify(resource.imageSource);
-      const selector = `[${paintAttribute}="${paint.ruleId}"]`;
-      if (paint.tints) return paint.tints.map(([pseudo, tint]) => {
-        const geometry = paint.geometry?.get(pseudo);
-        return `${selector}${pseudo}{background-image:linear-gradient(${tint},${tint}),url(${image})!important;background-size:auto,${geometry?.size || fitStyles.size}!important;background-position:0 0,${geometry?.position || fitStyles.position}!important;background-repeat:no-repeat,${fitStyles.repeat}!important;background-attachment:${geometry ? "scroll" : "fixed"}!important;}`;
-      }).join("\n");
-      const pseudo = `::${paint.pseudo}`;
-      const geometry = paint.geometry?.get(pseudo);
-      return `${selector}${pseudo}{background-image:url(${image});${geometry
-        ? `background-attachment:scroll!important;background-size:${geometry.size}!important;background-position:${geometry.position}!important;` : ""}}`;
-    };
-    const measurePaint = paint => {
-      const surface = paint.surface;
-      const geometry = new Map();
-      const wall = wallpaperRect(fitMode, innerWidth, innerHeight, resource.width, resource.height);
-      if (!wall || !surface.isConnected) return geometry;
-      const surfaceStyle = computed(surface);
-      // 绘制用的伪元素以表面为包含块时才能换算；否则保持 fixed，与改动前一致。
-      const containing = surfaceStyle.position !== "static" || transformedStyle(surfaceStyle);
-      const box = bounds(surface);
-      const sx = layoutScale(box.width, surface.offsetWidth), sy = layoutScale(box.height, surface.offsetHeight);
-      for (const pseudo of paint.tints ? paint.tints.map(([target]) => target) : [`::${paint.pseudo}`]) {
-        let x = surface.clientLeft, y = surface.clientTop;
-        if (pseudo) {
-          if (!containing) continue;
-          const own = computed(surface, pseudo);
-          const left = parseFloat(own.left), top = parseFloat(own.top);
-          if (own.position !== "absolute" || !Number.isFinite(left) || !Number.isFinite(top)) continue;
-          x += left + (parseFloat(own.borderLeftWidth) || 0);
-          y += top + (parseFloat(own.borderTopWidth) || 0);
-        }
-        geometry.set(pseudo, localWallpaper(wall, box.left + x * sx, box.top + y * sy, sx, sy));
-      }
-      return geometry;
-    };
-    const releasePaintGeometry = (node, paint) => {
-      geometryPaints.delete(node);
-      if (!paint) return;
-      paint.geometry = null;
-      const surface = paint.surface;
-      if (paintObservers.get(surface) !== node) return;
-      paintObservers.delete(surface);
-      if (!controls.has(surface) && ![...footers.values()].some(footer => footer.scroller === surface))
-        resizeObserver.unobserve(surface);
-    };
-    // 祖先样式变化（class/style 突变、过渡/动画结束）后，只标记待查，统一在 render 里读样式。
-    const invalidatePaintChains = target => {
-      let found = false;
-      for (const node of paintedNodes) {
-        const paint = records.get(node)?.paint;
-        if (!paint || target !== paint.surface && !target.contains(paint.surface)) continue;
-        paint.chainDirty = true;
-        paintsDirty.add(node);
-        found = true;
-      }
-      return found;
-    };
-    const refreshPaints = () => {
-      const nodes = geometryDirty ? new Set([...paintsDirty, ...geometryPaints]) : paintsDirty;
-      for (const node of nodes) {
-        const record = records.get(node);
-        const paint = record?.paint;
-        if (!paint || !paintedNodes.has(node) || !paint.surface.isConnected) continue;
-        if (paint.chainDirty) {
-          paint.chainDirty = false;
-          paint.transformed = false;
-          for (let parent = paint.surface; parent; parent = parent === root ? null : parent.parentElement)
-            if (transformedStyle(computed(parent))) { paint.transformed = true; break; }
-        }
-        const geometry = paint.transformed ? measurePaint(paint) : null;
-        if (geometry?.size) {
-          paint.geometry = geometry;
-          geometryPaints.add(node);
-          if (!paintObservers.has(paint.surface)) {
-            paintObservers.set(paint.surface, node);
-            resizeObserver.observe(paint.surface);
-          }
-        } else releasePaintGeometry(node, paint);
-        const rule = wallRule(paint);
-        if (record.wallRule !== rule) { record.wallRule = rule; writeRules(); }
-      }
-      paintsDirty.clear();
-    };
-    const registerPaint = (node, paint = records.get(node).paint || nativeSurfacePaint(node)) => {
-      const record = records.get(node);
-      const previous = record.paint;
-      if (previous && previous.surface !== paint.surface) {
-        unmark(previous.surface, paintAttribute);
-        releasePaintGeometry(node, previous);
-      }
-      record.paint = paint;
-      if (node.matches(headerSelector)) {
-        unmark(paint.surface, paintAttribute);
-        paint.ruleId = `background-${paint.id}`;
-        // Paint only existing opaque backing, including native top-edge extensions.
-        // Transparent headers already see the single global wallpaper underneath.
-        paint.tints = ["", "::before", "::after"].map(pseudo => {
-          const native = computed(paint.surface, pseudo || undefined);
-          const color = native.backgroundColor;
-          if (color === "transparent" || color.startsWith("rgba(") || color.includes("/") || native.backgroundImage !== "none") return null;
-          return [pseudo, `color-mix(in srgb, ${color} ${(1 - opacity) * 100}%, transparent)`];
-        }).filter(Boolean);
-        mark(paint.surface, paintAttribute, paint.ruleId);
-      } else if (!paint.pseudo) {
-        // Leave a surface's two native pseudo-elements intact when both are used.
-        unmark(paint.surface, paintAttribute);
-        paintedNodes.delete(node);
-        releasePaintGeometry(node, paint);
-        record.wallRule = "";
-        writeRules();
-        return;
-      } else {
-        paint.ruleId = (paint.pseudo === "before" ? "before-" : "") + paint.id;
-        paint.tints = null;
-        mark(paint.surface, paintAttribute, paint.ruleId);
-      }
-      paintedNodes.add(node);
-      record.wallRule = wallRule(paint);
-      paint.chainDirty = true;
-      paintsDirty.add(node);
-      schedule();
-      writeRules();
-    };
-    const removeWithin = (registry, tree, remove, includeRoot = true) => {
-      for (const [node, record] of registry)
-        if ((includeRoot || node !== tree) && tree.contains(node)) remove(node, record);
-    };
-    const popupBackgroundKey = node => Array.from(node.style)
-      .filter(name => name.startsWith("background") || name === "color")
-      .sort().map(name => `${name}:${node.style.getPropertyValue(name)}:${node.style.getPropertyPriority(name)}`).join(";");
-    const addComposer = node => {
-      if (owned(node) || inactivePanel(node) || node.closest(viewerSelector)) return;
-      // Paint below the native children. Never annotate editor-owned node views.
-      const surface = node.matches('[data-composer-utility-bar-variant="home"]')
-        ? node.querySelector('[class*="_ComposerLayoutBody_"]') || node : node;
-      let surfacePaint = records.get(node)?.paint;
-      if (!surfacePaint) {
-        unmark(node, mediaAttribute);
-        surfacePaint = nativeSurfacePaint(surface);
-      }
-      add(node);
-      registerPaint(node, surfacePaint);
-    };
-    const addPopupSurface = (boundary, surface) => {
-      if (owned(surface) || inactivePanel(surface) || surface.closest(reviewHeaderSelector) ||
-        surface.closest(viewerSelector) || surface.closest(pageSelector)) return;
-      const previous = popups.get(surface);
-      if (previous?.boundary === boundary) return;
-      if (previous) removePopup(surface, previous);
-      removeWithin(controls, boundary, removeControl);
-      const paint = computed(surface);
-      const record = { boundary, portal: boundary.closest(popupPortalSelector), owner: surface.closest(composerOverlaySelector) || boundary,
-        id: ++nextControl, backgroundKey: popupBackgroundKey(surface),
-        nativeBackground: paint.backgroundColor,
-        className: surface.getAttribute("class"), rule: "" };
-      // Only the background is translucent; native contents and positioning stay intact.
-      record.rule = `[${popupMaterialAttribute}="${record.id}"]{background-color:color-mix(in srgb, ${paint.backgroundColor} ${(1 - opacity) * 100}%, transparent)!important;}`;
-      popups.set(surface, record);
-      // Native tooltips share a fixed portal; lifting only its children cannot clear the composer.
-      if (record.portal) mark(record.portal, popupPortalAttribute, "");
-      mark(boundary, popupBoundaryAttribute, "");
-      mark(boundary, topControlAttribute, computed(boundary).position === "static" ? "flow" : "positioned");
-      mark(surface, popupMaterialAttribute, String(record.id));
-      queryAll(boundary, mediaSelector).forEach(add);
-      writeRules();
-    };
-    const refreshPopupTheme = () => {
-      for (const [surface, popup] of popups) {
-        unmark(surface, popupMaterialAttribute);
-        const background = computed(surface).backgroundColor;
-        mark(surface, popupMaterialAttribute, String(popup.id));
-        if (background === popup.nativeBackground) continue;
-        popup.nativeBackground = background;
-        popup.rule = `[${popupMaterialAttribute}="${popup.id}"]{background-color:color-mix(in srgb, ${background} ${(1 - opacity) * 100}%, transparent)!important;}`;
-      }
-      writeRules();
-    };
-    const addDiffPreview = scroll => {
-      const surface = scroll.parentElement;
-      const tooltip = scroll.closest('[class~="group/diff-preview"]');
-      if (!surface || !tooltip || owned(scroll)) return;
-      addPopupSurface(tooltip.closest("[data-radix-popper-content-wrapper]") || tooltip, surface);
-    };
-    const addNativePopup = node => {
-      if (owned(node) || node.closest(viewerSelector) || node.closest(pageSelector)) return;
-      const composerOverlay = node.matches(composerOverlaySelector);
-      const parent = node.parentElement;
-      // The roleless composer menu uses a translated positioning wrapper.
-      const boundary = composerOverlay && parent?.childElementCount === 1 &&
-        ["fixed", "absolute"].includes(computed(parent).position)
-        ? parent : node.closest("[data-radix-popper-content-wrapper]") || node;
-      if (popups.has(boundary)) return;
-      if (node === boundary && [...popups.values()].some(popup => popup.boundary === boundary)) return;
-      const surface = composerOverlay ? node.firstElementChild :
-        node.matches("[data-radix-popper-content-wrapper]") &&
-        computed(node).backgroundColor === "rgba(0, 0, 0, 0)"
-        ? node.querySelector(topControlSelector) : node;
-      if (!surface) return;
-      addPopupSurface(boundary, surface);
-    };
-    const isPopupSurface = surface => surface.matches(topControlSelector) ||
-      surface.closest(`[class~="group/diff-preview"], ${composerOverlaySelector}`);
-    const removePopup = (surface, record) => {
-      popups.delete(surface);
-      unmark(surface, popupMaterialAttribute);
-      if (record.portal && ![...popups.values()].some(other => other.portal === record.portal))
-        unmark(record.portal, popupPortalAttribute);
-      if (![...popups.values()].some(other => other.boundary === record.boundary)) {
-        unmark(record.boundary, popupBoundaryAttribute);
-        unmark(record.boundary, topControlAttribute);
-      }
-    };
-    const addPage = node => {
-      removeWithin(popups, node, removePopup);
-      removeWithin(controls, node, removeControl);
-      removeWithin(records, node, removeMedia, false);
-      add(node);
-      registerPaint(node);
-    };
-    const addHeader = node => {
-      if (owned(node) || inactivePanel(node) || node.closest(`${viewerSelector}, ${editorSelector}`)) return;
-      removeWithin(controls, node, removeControl);
-      removeWithin(records, node, removeMedia, false);
-      add(node);
-      registerPaint(node);
-    };
-    const updateFooter = (footer, record) => {
-      const scroller = record.scroller;
-      const parent = footer.offsetParent;
-      if (!parent) return false;
-      let left = 0, right = 0;
-      // The native footer is absolute in the outer frame, not in the scroller.
-      if (parent !== scroller) {
-        const scrollBox = bounds(scroller), parentBox = bounds(parent);
-        const scale = parentBox.width / (parent.offsetWidth || parentBox.width);
-        const scrollScale = scrollBox.width / (scroller.offsetWidth || scrollBox.width);
-        const origin = parentBox.left + parent.clientLeft * scale;
-        left = Math.max(0, (scrollBox.left + scroller.clientLeft * scrollScale - origin) / scale);
-        right = Math.max(0, parent.clientWidth - left - scroller.clientWidth * scrollScale / scale);
-      }
-      const rule = `[${footerAttribute}="${record.id}"]{left:${left}px!important;right:${right}px!important;}`;
-      if (record.rule === rule) return false;
-      record.rule = rule;
-      return true;
-    };
-    const removeFooter = (footer, record) => {
-      footers.delete(footer);
-      unmark(footer, footerAttribute);
-      if (![...footers.values()].some(other => other.scroller === record.scroller) &&
-        !records.has(record.scroller) && !controls.has(record.scroller) && !paintObservers.has(record.scroller))
-        resizeObserver.unobserve(record.scroller);
-    };
-    const addFooter = footer => {
-      if (owned(footer) || inactivePanel(footer) || footer.closest(reviewHeaderSelector)) return;
-      add(footer);
-      const surface = footer.querySelector(':scope > [aria-hidden="true"]');
-      if (surface && records.get(footer)?.paint?.surface !== surface) registerPaint(footer, nativeSurfacePaint(surface));
-      const scroller = footer.closest(timelineSelector);
-      if (!scroller) return;
-      const previous = footers.get(footer);
-      if (previous?.scroller === scroller) {
-        if (updateFooter(footer, previous)) writeRules();
-        return;
-      }
-      if (previous) removeFooter(footer, previous);
-      const paint = computed(footer);
-      // Only the full-width native footer can cover the scrollbar gutter.
-      if (!["absolute", "fixed"].includes(paint.position) ||
-        paint.left !== "0px" || paint.right !== "0px") return;
-      const record = { id: ++nextControl, scroller, rule: "" };
-      footers.set(footer, record);
-      mark(footer, footerAttribute, String(record.id));
-      updateFooter(footer, record);
-      resizeObserver.observe(scroller);
-      writeRules();
-    };
-    const addReviewHeader = node => {
-      removeWithin(popups, node, removePopup);
-      removeWithin(controls, node, removeControl);
-      removeWithin(records, node, removeMedia, false);
-      add(node);
-    };
-    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, footerSelector, headerSelector,
-      diffPreviewSelector, topControlSelector].join(", ");
-    const visit = node => {
-      if (node?.nodeType !== 1 || !node.isConnected || owned(node) || inactivePanel(node) ||
-        node.closest(editorSelector)) return;
-      if (node.matches(browserSelector)) { add(node); return; }
-      if (node.closest(browserSelector)) return;
-      const targets = [node, ...(node.childElementCount ? queryAll(node, discoverySelector) : [])]
-        .filter(target => !inactivePanel(target));
-      // Establish native boundaries before registering their media descendants.
-      for (const target of targets) if (target.matches(pageSelector)) addPage(target);
-      for (const target of targets) if (target.matches(footerSelector)) addFooter(target);
-      for (const target of targets) if (target.matches(composerSelector)) addComposer(target);
-      for (const target of targets) if (target.matches(headerSelector)) addHeader(target);
-      for (const target of targets) if (target.matches(reviewHeaderSelector)) addReviewHeader(target);
-      for (const target of targets) {
-        if (target.matches(diffPreviewSelector)) addDiffPreview(target);
-        if (target.matches(topControlSelector)) addNativePopup(target);
-      }
-      for (const target of targets) {
-        if (target.matches(mediaSelector)) add(target);
-        if (target.matches(controlSelector)) addControl(target);
-      }
-      const popup = node.closest(topControlSelector);
-      if (popup && popup !== node) {
-        if (popup.matches(viewerSelector)) add(popup);
-        else addNativePopup(popup);
-      }
-      if (node.parentElement?.matches(footerSelector)) addFooter(node.parentElement);
-    };
-    const intersectionObserver = new IntersectionObserver(entries => {
-      let changed = false;
-      const regions = new Set();
-      for (const entry of entries) {
-        if (inactivePanel(entry.target)) continue;
-        if (records.has(entry.target)) {
-          if (records.get(entry.target).nativeBoundary || entry.target.matches(browserSelector) || entry.target.matches(reviewHeaderSelector)) {
-            visibleMedia.delete(entry.target);
-            continue;
-          }
-          records.get(entry.target).box = null;
-          if (entry.isIntersecting) visibleMedia.add(entry.target);
-          else visibleMedia.delete(entry.target);
-          const region = entry.target.closest(`${timelineSelector}, ${composerSelector}, ${sidebarSelector}`);
-          if (region) regions.add(region);
-        }
-        if (controls.has(entry.target)) {
-          controls.get(entry.target).box = null;
-          if (entry.isIntersecting) visibleControls.add(entry.target);
-          else visibleControls.delete(entry.target);
-        }
-        changed ||= records.has(entry.target) || controls.has(entry.target);
-      }
-      for (const region of regions) invalidateRegion(region, false);
-      if (changed && !previewVisible) schedule();
-    });
-    const resizeObserver = new ResizeObserver(entries => {
-      let changed = false;
-      for (const { target } of entries) {
-        for (const [footer, record] of footers)
-          if (record.scroller === target && updateFooter(footer, record)) writeRules();
-        const control = controls.get(target);
-        if (control) control.box = null;
-        const record = records.get(target);
-        if (record) record.box = null;
-        const painted = paintObservers.get(target);
-        if (painted) paintsDirty.add(painted);
-        changed ||= !!(control || record || painted);
-      }
-      if (changed && !previewVisible) schedule();
-    });
-    const removeControl = (node, control) => {
-      control.filter?.remove();
-      control.backdrop?.remove();
-      unmark(node, controlAttribute);
-      unmark(node, topControlAttribute);
-      if (!records.has(node)) {
-        intersectionObserver.unobserve(node);
-        if (!paintObservers.has(node)) resizeObserver.unobserve(node);
-      }
-      visibleControls.delete(node);
-      activeControls.delete(node);
-      controls.delete(node);
-      stats.layerWrites++;
-    };
-    const removeMedia = (node, record) => {
-      release(record);
-      releasePaintGeometry(node, record.paint);
-      paintsDirty.delete(node);
-      record.paint?.filter?.remove();
-      unmark(node, mediaAttribute);
-      unmark(record.paint?.surface || node, paintAttribute);
-      if (!controls.has(node)) {
-        intersectionObserver.unobserve(node);
-        resizeObserver.unobserve(node);
-      }
-      visibleMedia.delete(node);
-      viewers.delete(node);
-      paintedNodes.delete(node);
-      records.delete(node);
-      stats.layerWrites++;
-    };
-    const prune = () => {
-      for (const [footer, record] of footers) {
-        if (footer.isConnected && !inactivePanel(footer) && !footer.closest(reviewHeaderSelector) &&
-          record.scroller.isConnected && record.scroller.contains(footer)) continue;
-        removeFooter(footer, record);
-      }
-      for (const [surface, popup] of popups) {
-        if (surface.isConnected && !inactivePanel(surface) && !surface.closest(reviewHeaderSelector) &&
-          popup.boundary.isConnected && popup.boundary.contains(surface) &&
-          !surface.closest(viewerSelector) && !surface.closest(pageSelector) &&
-          isPopupSurface(surface)) continue;
-        removePopup(surface, popup);
-      }
-      for (const [node, record] of records) {
-        if (node.isConnected && !inactivePanel(node) &&
-          (node.matches(viewerSelector) || !node.closest(viewerSelector)) &&
-          (node.matches(reviewHeaderSelector) || !node.closest(reviewHeaderSelector)) &&
-          (node.matches(mediaSelector) || node.matches(`${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`) ||
-            record.mediaIsland && node.querySelector("img, video, canvas"))) {
-          if (record.nativeBoundary &&
-            !record.nativeBoundary.matches(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], ${pageSelector}, ${footerSelector}, ${composerSelector}, ${headerSelector}`)) add(node);
-          continue;
-        }
-        removeMedia(node, record);
-        if (node.isConnected && !node.closest(viewerSelector)) visit(node);
-      }
-      for (const [node, control] of controls) {
-        if (node.isConnected && !inactivePanel(node) && !node.closest(reviewHeaderSelector) &&
-          !node.closest(viewerSelector) && (node.matches(controlSelector) ||
-          control.origin?.isConnected && node.contains(control.origin))) continue;
-        removeControl(node, control);
-      }
-    };
-    const retireTree = tree => {
-      removeWithin(popups, tree, removePopup);
-      removeWithin(controls, tree, removeControl);
-      removeWithin(records, tree, removeMedia);
-      removeWithin(footers, tree, removeFooter);
-    };
-    const mutationObserver = new MutationObserver(mutations => {
-      let changed = false;
-      let pruneNeeded = false;
-      const added = new Set();
-      const attributes = new Set();
-      const semanticAttributes = new Set();
-      const panels = new Set();
-      const movedInactive = new Set();
-      for (const mutation of mutations) {
-        if (owned(mutation.target) || mutation.target.closest?.(editorSelector)) continue;
-        if (mutation.type === "childList") {
-          for (const node of mutation.removedNodes)
-            if (node.nodeType === 1 && node.isConnected && inactivePanel(node)) movedInactive.add(node);
-        }
-        if (mutation.type === "attributes" && mutation.target.matches(rightPanelSelector) &&
-          ["inert", "aria-hidden", "data-app-shell-focus-area"].includes(mutation.attributeName)) {
-          panels.add(mutation.target);
-          continue;
-        }
-        if (inactivePanel(mutation.target)) continue;
-        if (mutation.type === "attributes" && mutation.attributeName === "data-composer-overlay-floating-ui") {
-          for (const [surface, popup] of popups)
-            if (popup.owner === mutation.target) removePopup(surface, popup);
-          added.add(mutation.target);
-          changed = true;
-          pruneNeeded = true;
-          continue;
-        }
-        if (mutation.type === "childList") {
-          if (mutation.target.closest?.(browserSelector)) continue;
-          const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
-          if (!nodes.some(node => node.nodeType === 1 && !owned(node))) continue;
-          pruneNeeded = true;
-          for (const node of mutation.addedNodes)
-            if (node.nodeType === 1 && node.isConnected && !owned(node)) added.add(node);
-          if ([...mutation.removedNodes].some(node =>
-            node.nodeType === 1 && !owned(node) && (node.matches(`[${mediaAttribute}],[${controlAttribute}],[${footerAttribute}]`) ||
-              node.querySelector(`[${mediaAttribute}],[${controlAttribute}],[${popupMaterialAttribute}],[${footerAttribute}]`) ||
-              node.matches(`[${popupMaterialAttribute}]`)))) changed = true;
-        } else {
-          attributes.add(mutation.target);
-          if (mutation.attributeName !== "style") semanticAttributes.add(mutation.target);
-        }
-      }
-      const before = stats.layerWrites;
-      const count = records.size + controls.size + popups.size;
-      for (const tree of movedInactive) { retireTree(tree); changed = true; }
-      for (const panel of panels) {
-        if (inactivePanel(panel)) retireTree(panel);
-        else visit(panel);
-        changed = true;
-      }
-      for (const node of added) {
-        let parent = node.parentElement;
-        while (parent && !added.has(parent)) parent = parent.parentElement;
-        if (!parent) visit(node);
-      }
-      changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
-      for (const node of attributes) {
-        if (!node.isConnected || inactivePanel(node)) continue;
-        if (node.closest?.(browserSelector) && !node.matches(browserSelector)) continue;
-        // Native hosts and painted surfaces own their animated geometry.
-        if (node.matches(`${browserSelector}, ${headerSelector}`) && records.has(node) && !semanticAttributes.has(node)) continue;
-        if (node === root || node === document.body) {
-          const key = themeKey(node);
-          if (themeInputs.get(node) !== key) {
-            themeInputs.set(node, key);
-            refreshPopupTheme();
-            for (const surface of paintedNodes) if (surface.matches(headerSelector)) registerPaint(surface);
-          }
-        }
-        if (viewers.has(node)) {
-          const record = records.get(node);
-          if (!node.matches(viewerSelector)) {
-            removeMedia(node, record);
-            visit(node);
-            changed = true;
-            pruneNeeded = true;
-            continue;
-          }
-          const key = viewerKey(node);
-          if (record.viewerKey === key) continue;
-          record.viewerKey = key;
-          changed ||= isPreviewOpen() !== previewVisible;
-          continue;
-        } else if (node.closest(viewerSelector) && !node.matches(browserSelector)) continue;
-        if ([...viewers].some(viewer => node.contains(viewer)))
-          changed ||= isPreviewOpen() !== previewVisible;
-        pruneNeeded ||= semanticAttributes.has(node);
-        if (node.matches(pageSelector) && !records.get(node)?.paint) visit(node);
-        if (node.matches(headerSelector) && (!records.get(node)?.paint || semanticAttributes.has(node))) { addHeader(node); changed = true; }
-        if (node.matches(reviewHeaderSelector)) { addReviewHeader(node); continue; }
-        const popup = popups.get(node);
-        if (popup && !node.closest(viewerSelector) && !node.closest(pageSelector) &&
-          isPopupSurface(node)) {
-          const key = popupBackgroundKey(node);
-          const className = node.getAttribute("class");
-          if (key !== popup.backgroundKey || className !== popup.className) {
-            const boundary = popup.boundary;
-            removePopup(node, popup);
-            addPopupSurface(boundary, node);
-            changed = true;
-          }
-          continue;
-        }
-        if (popup) { removePopup(node, popup); visit(node); changed = true; }
-        if (node.matches(topControlSelector)) {
-          const count = popups.size;
-          addNativePopup(node);
-          changed ||= popups.size !== count;
-        }
-        if (node.closest(`[${popupBoundaryAttribute}]`) && !records.has(node) && !scopes.has(node)) continue;
-        if (previewVisible) {
-          continue;
-        }
-        // 祖先 class/style 变化可能加上或撤掉 translate（如侧栏开合），重新判断其下壁纸表面。
-        if (invalidatePaintChains(node)) changed = true;
-        if (footers.has(node) || node.matches(footerSelector)) {
-          const footer = footers.get(node);
-          if (footer) removeFooter(node, footer);
-          if (node.matches(footerSelector)) addFooter(node);
-          if (footer) writeRules();
-        }
-        if (records.has(node)) {
-          records.get(node).box = null;
-          unmark(node, mediaAttribute);
-          add(node);
-          if (!records.has(node)) { changed = true; continue; }
-          mark(node, mediaAttribute, nativeKind(node));
-          if (records.get(node).nativeBoundary) continue;
-        } else {
-          if (node.matches(mediaSelector)) add(node);
-          if (node.matches(controlSelector)) addControl(node);
-          if (!scopes.has(node) && !controls.has(node) && !records.has(node)) continue;
-        }
-        if (scopes.has(node)) {
-          if (scopeKeys.get(node) !== scopeKey(node)) {
-            refreshScope(node);
-            geometryDirty = true;
-            pruneNeeded = true;
-            changed = true;
-          } else changed = invalidateRegion(node.closest(sidebarSelector) ? document.body : node, false) || changed;
-          if (!records.has(node) && !controls.has(node)) continue;
-        }
-        const control = controls.get(node);
-        if (control) { control.box = null; control.surface = null; control.candidate = undefined; }
-        if (control) control.paintDirty = true;
-        changed = true;
-      }
-      changed ||= stats.layerWrites !== before;
-      if (pruneNeeded && [...viewers].some(node => !node.isConnected || !node.matches(viewerSelector)))
-        changed = true;
-      if (changed) {
-        if (pruneNeeded) prune();
-        if (isPreviewOpen() !== previewVisible) {
-          if (raf) cancelAnimationFrame(raf);
-          render();
-        } else schedule();
-      }
-    });
-    const isPreviewOpen = () => [...viewers].some(node =>
-      node.isConnected && node.matches(viewerSelector) && node.checkVisibility({ checkVisibilityCSS: true }));
-    const inViewport = box => box.width > 0 && box.height > 0 && box.right > 0 &&
-      box.bottom > 0 && box.left < innerWidth && box.top < innerHeight;
-    const overlap = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-    const wallpaperInput = (box, sx, sy) => {
-      const width = innerWidth / sx, height = innerHeight / sy;
-      if (fitMode === "tile") {
-        const key = `${innerWidth}|${innerHeight}`;
-        if (resource.tileInputKey !== key) {
-          if (resource.tileInputUrl) URL.revokeObjectURL(resource.tileInputUrl);
-          const tiled = svgNode("svg", { width: innerWidth, height: innerHeight });
-          const pattern = svgNode("pattern", { id: "wall", patternUnits: "userSpaceOnUse",
-            width: resource.width, height: resource.height });
-          pattern.appendChild(svgNode("image", { href: source, width: resource.width, height: resource.height }));
-          const patterns = svgNode("defs");
-          patterns.appendChild(pattern);
-          tiled.append(patterns, svgNode("rect", { width: innerWidth, height: innerHeight, fill: "url(#wall)" }));
-          resource.tileInputUrl = URL.createObjectURL(new Blob(
-            [new XMLSerializer().serializeToString(tiled)], { type: "image/svg+xml" }));
-          resource.tileInputKey = key;
-        }
-        return { href: resource.tileInputUrl, x: -box.x / sx, y: -box.y / sy,
-          width, height, preserveAspectRatio: "none", result: "wall" };
-      }
-      let x = -box.x / sx, y = -box.y / sy, w = width, h = height;
-      let aspect = fitMode === "fill" ? "xMidYMid slice" : fitMode === "fit" ? "xMidYMid meet" : "none";
-      if (fitMode === "center") {
-        w = resource.width / sx;
-        h = resource.height / sy;
-        x += (width - w) / 2;
-        y += (height - h) / 2;
-      }
-      return { href: resource.imageSource, x, y, width: w, height: h, preserveAspectRatio: aspect, result: "wall" };
-    };
-    const backdropInput = (item, box, sx, sy, index) => {
-      const target = item.node, paint = computed(target), mediaBox = item.box;
-      const x = (mediaBox.x - box.x) / sx, y = (mediaBox.y - box.y) / sy;
-      const width = mediaBox.width / sx, height = mediaBox.height / sy;
-      const input = `media-${index}`, shape = `shape-${index}`;
-      const clipped = `clipped-${index}`, painted = `painted-${index}`;
-      const primitives = [];
-      if (target instanceof HTMLImageElement && target.complete && target.naturalWidth) {
-        const sourceUrl = target.currentSrc || target.src;
-        const mediaRecord = records.get(target);
-        if (mediaRecord.sourceUrl !== sourceUrl || mediaRecord.sourceWidth !== target.naturalWidth ||
-          mediaRecord.sourceHeight !== target.naturalHeight) {
-          mediaRecord.sourceUrl = sourceUrl;
-          mediaRecord.sourceWidth = target.naturalWidth;
-          mediaRecord.sourceHeight = target.naturalHeight;
-          mediaRecord.inputRevision = ++nextSource;
-          mediaRecord.inputSource = sourceUrl;
-          if (sourceUrl.startsWith("data:image/")) {
-            const sourceSvg = svgNode("svg", { width: target.naturalWidth, height: target.naturalHeight });
-            sourceSvg.appendChild(svgNode("image", { href: sourceUrl,
-              width: target.naturalWidth, height: target.naturalHeight, preserveAspectRatio: "none" }));
-            mediaRecord.inputSource = "data:" + "image/svg+xml;charset=utf-8," +
-              encodeURIComponent(new XMLSerializer().serializeToString(sourceSvg));
-          }
-        }
-        let w = width, h = height, left = x, top = y;
-        const mediaScaleX = mediaBox.width / (target.offsetWidth || mediaBox.width);
-        const mediaScaleY = mediaBox.height / (target.offsetHeight || mediaBox.height);
-        const naturalWidth = target.naturalWidth * mediaScaleX / sx;
-        const naturalHeight = target.naturalHeight * mediaScaleY / sy;
-        const fit = paint.objectFit;
-        if (fit !== "fill") {
-          let scale = fit === "cover" ? Math.max(width / naturalWidth, height / naturalHeight)
-            : fit === "none" ? 1 : Math.min(width / naturalWidth, height / naturalHeight);
-          if (fit === "scale-down") scale = Math.min(1, scale);
-          w = naturalWidth * scale;
-          h = naturalHeight * scale;
-          const positions = paint.objectPosition.split(/\s+/);
-          const offset = (value, available) => value?.endsWith("%")
-            ? available * parseFloat(value) / 100 : parseFloat(value) || 0;
-          left += offset(positions[0], width - w);
-          top += offset(positions[1] || positions[0], height - h);
-        }
-        primitives.push(["feImage", { href: mediaRecord.inputSource,
-          x: left, y: top, width: w, height: h, preserveAspectRatio: "none", result: input }]);
-      } else {
-        // Opaque live surfaces use the existing backdrop pixels, never a capture.
-        primitives.push(["feComposite", { in: "SourceGraphic", in2: "SourceGraphic",
-          operator: "in", result: input }]);
-      }
-      const radius = paint.borderTopLeftRadius.split(/\s+/);
-      const length = (value, size, scale) => value?.endsWith("%")
-        ? size * parseFloat(value) / 100 : (parseFloat(value) || 0) / scale;
-      const rx = Math.min(width / 2, length(radius[0], width, sx));
-      const ry = Math.min(height / 2, length(radius[1] || radius[0], height, sy));
-      const clip = `<svg xmlns="${ns}" width="${width}" height="${height}"><rect width="${width}" height="${height}" rx="${rx}" ry="${ry}" fill="white"/></svg>`;
-      primitives.push(
-        ["feImage", { href: `data:image/svg+xml,${encodeURIComponent(clip)}`,
-          x, y, width, height, preserveAspectRatio: "none", result: shape }],
-        ["feComposite", { in: input, in2: shape, operator: "in", result: clipped }],
-      );
-      if (Number(paint.opacity) !== 1) primitives.push(["feColorMatrix", {
-        in: clipped, type: "matrix", values: `1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 ${paint.opacity} 0`, result: painted,
-      }]);
-      return { primitives, input: Number(paint.opacity) === 1 ? clipped : painted, key: [x, y, width, height,
-        records.get(target).inputRevision || 0, paint.objectFit,
-        paint.objectPosition, paint.borderTopLeftRadius, paint.opacity].join("|") };
-    };
-    const restoreBackdrop = (record, box, sx, sy, mediaBoxes) => {
-      if (record.nativeBackdrop === "none" || opacity === 1) return "";
-      const padding = (record.nativeBackdrop.match(/[\d.]+px/g) || [])
-        .reduce((sum, value) => sum + parseFloat(value) * 3, 0);
-      const area = { left: box.left - padding * sx, right: box.right + padding * sx,
-        top: box.top - padding * sy, bottom: box.bottom + padding * sy };
-      const inputs = mediaBoxes.filter(item => overlap(area, item.box))
-        .map((item, index) => backdropInput(item, box, sx, sy, index));
-      const key = [box.x, box.y, box.width, box.height, sx, sy, innerWidth, innerHeight,
-        record.nativeBackdrop, ...inputs.map(input => input.key)].join("|");
-      const id = `${codexPlusImageOverlayId}-backdrop-${record.id}`;
-      if (!record.backdrop) {
-        record.backdrop = svgNode("filter", { id, filterUnits: "userSpaceOnUse", "color-interpolation-filters": "sRGB" });
-        defs.appendChild(record.backdrop);
-      }
-      if (key !== record.backdropKey) {
-        record.backdropKey = key;
-        const primitives = [svgNode("feImage", wallpaperInput(box, sx, sy))];
-        let compensation = "wall";
-        for (const [index, { primitives: sourcePrimitives, input }] of inputs.entries()) {
-          const next = `compensation-${index}`;
-          primitives.push(...sourcePrimitives.map(([tag, attributes]) => svgNode(tag, attributes)),
-            svgNode("feComposite", { in: compensation, in2: input, operator: "out", result: "wallOutside" }),
-            svgNode("feComposite", { in: input, in2: "wall", operator: "in", result: "mediaInside" }),
-            svgNode("feComposite", { in: "wallOutside", in2: "mediaInside", operator: "arithmetic",
-              k2: 1, k3: 1, result: next }),
-          );
-          compensation = next;
-        }
-        // Premultiplied subtraction also restores alpha. Unpremultiplication
-        // recovers the original backdrop without a divide or a backing layer.
-        primitives.push(
-          svgNode("feComposite", { in: "SourceGraphic", in2: compensation, operator: "arithmetic",
-            k2: 1, k3: -opacity, result: "restored" }),
-          svgNode("feColorMatrix", { in: "restored", type: "matrix",
-            values: "1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1" }),
-        );
-        record.backdrop.setAttribute("x", String(-padding));
-        record.backdrop.setAttribute("y", String(-padding));
-        record.backdrop.setAttribute("width", String(box.width / sx + padding * 2));
-        record.backdrop.setAttribute("height", String(box.height / sy + padding * 2));
-        record.backdrop.replaceChildren(...primitives);
-      }
-      return `backdrop-filter:url("#${id}") ${record.nativeBackdrop}!important;`;
-    };
-    const activateTint = (record, node) => {
-      mark(node, controlAttribute, String(record.id));
-      if (node.matches(topControlSelector) || node.closest(topControlSelector) || node.querySelector(topControlSelector))
-        mark(node, topControlAttribute, "");
-      else unmark(node, topControlAttribute);
-    };
-    const createTint = (record, node, box, nativeFilter, mediaBoxes) => {
-      const sx = box.width / (node.offsetWidth || box.width);
-      const sy = box.height / (node.offsetHeight || box.height);
-      const backdropRule = restoreBackdrop(record, box, sx, sy, mediaBoxes);
-      const key = [box.x, box.y, box.width, box.height, innerWidth, innerHeight, sx, sy,
-        nativeFilter, record.nativePosition, record.nativeShadow, record.nativeBackdrop, record.backdropKey].join("|");
-      if (record.key === key) {
-        if (!record.rule && record.cachedRule) {
-          record.rule = record.cachedRule;
-          activateTint(record, node);
-          stats.layerWrites++;
-        }
-        return;
-      }
-      record.key = key;
-      const id = `${codexPlusImageOverlayId}-control-${record.id}`;
-      if (!record.filter) {
-        record.filter = svgNode("filter", { id, filterUnits: "userSpaceOnUse", "color-interpolation-filters": "sRGB" });
-        defs.appendChild(record.filter);
-        record.filter.append(
-          svgNode("feImage", wallpaperInput(box, sx, sy)),
-          svgNode("feColorMatrix", { in: "wall", type: "matrix",
-            values: `1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 ${opacity} 0`, result: "tint" }),
-          svgNode("feComposite", { in: "SourceGraphic", in2: "tint", operator: "out", result: "ordinary" }),
-          svgNode("feComposite", { in: "tint", in2: "SourceAlpha", operator: "in", result: "wallInk" }),
-          svgNode("feComposite", { in: "ordinary", in2: "wallInk", operator: "arithmetic", k2: 1, k3: 1 }),
-        );
-      } else {
-        const input = record.filter.firstElementChild;
-        for (const [name, value] of Object.entries(wallpaperInput(box, sx, sy)))
-          if (input.getAttribute(name) !== String(value)) input.setAttribute(name, String(value));
-      }
-      let padding = 0;
-      for (const shadow of record.nativeShadow.replace(/\([^)]*\)/g, "").split(",")) {
-        if (shadow.includes("inset")) continue;
-        const [dx = 0, dy = 0, blur = 0, spread = 0] = (shadow.match(/-?[\d.]+px/g) || []).map(parseFloat);
-        padding = Math.max(padding, Math.max(Math.abs(dx), Math.abs(dy)) + blur * 2 + Math.abs(spread));
-      }
-      padding += (nativeFilter.match(/-?[\d.]+px/g) || []).reduce((sum, value) => sum + Math.abs(parseFloat(value)) * 3, 0);
-      for (const [name, value] of Object.entries({ x: -padding, y: -padding,
-        width: box.width / sx + padding * 2, height: box.height / sy + padding * 2 }))
-        if (record.filter.getAttribute(name) !== String(value)) record.filter.setAttribute(name, String(value));
-      // Tint the control's own ink, preserving alpha. This composes once over
-      // an already-tinted backdrop; it does not create a media backing region.
-      record.rule = `[${controlAttribute}="${record.id}"]{${record.nativePosition === "static" ? "position:relative!important;" : ""}${backdropRule}filter:${nativeFilter === "none" ? "" : `${nativeFilter} `}url("#${id}")!important;}`;
-      record.cachedRule = record.rule;
-      activateTint(record, node);
-      stats.layerWrites++;
-    };
-    let lastRules = null;
-    let rulesQueued = false;
-    const writeRules = () => {
-      if (rulesQueued || disposed) return;
-      rulesQueued = true;
-      // Commit once per mutation batch, before the browser paints.
-      queueMicrotask(() => { rulesQueued = false; if (!disposed) flushRules(); });
-    };
-    const flushRules = () => {
-      const rules = nativeRules + [...footers.values()].map(record => record.rule).join("\n") +
-        [...paintedNodes].map(node => records.get(node))
-        .map(record => record.wallRule).join("\n") +
-        [...activeControls].map(node => controls.get(node).rule).concat([...popups.values()].map(record => record.rule))
-          .filter(Boolean).join("\n");
-      if (rules !== lastRules) { style.textContent = rules; lastRules = rules; }
-    };
-    const render = () => {
-      raf = 0;
-      if (disposed || document.hidden) return;
-      stats.frames++;
-      const previewWasVisible = previewVisible;
-      previewVisible = isPreviewOpen();
-      if (previewVisible) return;
-      // 预览期间跳过的祖先变化，在预览关闭后补查一次。
-      if (previewWasVisible) for (const node of paintedNodes) {
-        const paint = records.get(node)?.paint;
-        if (paint) { paint.chainDirty = true; paintsDirty.add(node); }
-      }
-      if (paintsDirty.size || geometryDirty && geometryPaints.size) refreshPaints();
-      const media = [...visibleMedia].filter(node => node.isConnected && !records.get(node)?.nativeBoundary &&
-        !inactivePanel(node) &&
-        !node.matches(composerSelector) && !node.matches(browserSelector) && !node.matches(reviewHeaderSelector) &&
-        node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
-      const mediaBoxes = new Map();
-      const mediaGroups = new Map();
-      const measureMedia = composer => {
-        if (mediaGroups.has(composer)) return mediaGroups.get(composer);
-        const group = media.filter(target => !composer || composer.contains(target)).map(target => {
-        if (!mediaBoxes.has(target)) {
-          const item = records.get(target);
-          mediaBoxes.set(target, { node: target, box: !geometryDirty && item.box ? item.box : (item.box = bounds(target)) });
-        }
-        return mediaBoxes.get(target);
-        }).filter(item => inViewport(item.box));
-        mediaGroups.set(composer, group);
-        return group;
-      };
-      const candidates = new Set([...visibleControls, ...activeControls]);
-      for (const node of candidates) {
-        const record = controls.get(node);
-        if (!record) continue;
-        const composer = node.closest(composerSelector);
-        let active = !inactivePanel(node) && visibleControls.has(node) && !node.closest(viewerSelector) &&
-          !node.parentElement?.closest(`[${controlAttribute}]`) &&
-          !records.has(node) && !node.querySelector(mediaSelector) &&
-          node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) &&
-          (composer
-            ? media.some(target => composer.contains(target) && !node.contains(target))
-            : media.length);
-        const current = record.rule;
-        if (active) {
-          if (record.candidate === undefined) {
-            const surface = controlSurface(node);
-            record.surface = surface;
-            const paint = computed(surface);
-            record.candidate = paint.position === "absolute" || paint.position === "fixed" ||
-              paint.zIndex !== "auto";
-          }
-          active = record.candidate;
-        }
-        if (active) {
-          const box = !geometryDirty && record.box ? record.box : (record.box = bounds(node));
-          active = inViewport(box);
-          if (active) {
-            active = measureMedia(composer).some(item =>
-              !node.contains(item.node) && overlap(box, item.box));
-            if (active) {
-              if (record.surface && !record.surface.contains(node)) record.surface = null;
-              const surface = record.surface ||= controlSurface(node);
-              if (surface !== node) {
-                if (addControl(surface, node)) {
-                  visibleControls.add(surface);
-                  candidates.add(surface);
-                }
-                active = false;
-              }
-            }
-            if (active) {
-              let originalStyle = null;
-              if (!current || record.paintDirty) {
-                if (current) unmark(node, controlAttribute);
-                originalStyle = computed(node);
-                if (current) mark(node, controlAttribute, String(record.id));
-                record.paintDirty = false;
-              }
-              const baseFilter = originalStyle?.filter || record.nativeFilter;
-              if (originalStyle) {
-                record.nativePosition = originalStyle.position;
-                record.nativeShadow = originalStyle.boxShadow;
-                record.nativeBackdrop = originalStyle.backdropFilter;
-              }
-              record.nativeFilter = baseFilter;
-              createTint(record, node, box, baseFilter,
-                record.nativeBackdrop === "none" ? [] : measureMedia(composer));
-            }
-          }
-        }
-        if (!active && current) {
-          record.rule = "";
-          unmark(node, controlAttribute);
-          unmark(node, topControlAttribute);
-          stats.layerWrites++;
-        }
-        if (record.rule) activeControls.add(node);
-        else activeControls.delete(node);
-      }
-      writeRules();
-      geometryDirty = false;
-    };
-    function schedule(geometry = false) {
-      geometryDirty ||= geometry === true;
-      if (!disposed && !document.hidden && !raf) raf = requestAnimationFrame(render);
-    }
-    const onControlMotionEnd = event => {
-      const node = event.target?.closest?.(`[${controlAttribute}]`);
-      const control = controls.get(node);
-      if (!control?.rule) return;
-      control.paintDirty = true;
-      control.box = null;
-      schedule();
-    };
-    // 侧栏开合等带过渡的 translate 在结束时才落定；不逐帧跟随，只在结束后重算一次。
-    const onPaintMotionEnd = event => {
-      const target = event.target;
-      if (target?.nodeType !== 1 || previewVisible || owned(target)) return;
-      if (invalidatePaintChains(target)) schedule();
-    };
-    const onScroll = event => {
-      if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
-      if (previewVisible) return;
-      const target = event.target;
-      // 只有按视口换算的表面需要跟随滚动重算；沿用 fixed 的表面不受影响，无额外开销。
-      if (geometryPaints.size) {
-        let moved = false;
-        for (const node of geometryPaints) {
-          const surface = records.get(node)?.paint?.surface;
-          if (!surface || !(target === document || target?.contains?.(surface))) continue;
-          paintsDirty.add(node);
-          moved = true;
-        }
-        if (moved) schedule();
-      }
-      if (!target || target === document || target === document.documentElement ||
-        target === document.body || target === document.scrollingElement) {
-        if (activeControls.size) schedule(true);
-        else invalidateRegion(document.body, false);
-        return;
-      }
-      if (target.closest?.(browserSelector)) return;
-      invalidateRegion(target, activeControls.size > 0);
-    };
-    const invalidateRegion = (target, redraw = true) => {
-      let changed = false;
-      for (const node of new Set([...visibleMedia, ...visibleControls, ...activeControls])) {
-        if (!target.contains?.(node)) continue;
-        const record = records.get(node);
-        const control = controls.get(node);
-        if (record) record.box = null;
-        if (control) control.box = null;
-        changed = true;
-      }
-      if (changed && redraw) schedule();
-      return changed;
-    };
-    const onSidebarWheel = event => {
-      if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
-    };
-    const onSidebarHover = event => {
-      if (performance.now() >= sidebarScrollUntil || event.buttons || event.pointerType === "touch") return;
-      if (event.target?.closest?.(sidebarRowSelector)?.closest(sidebarSelector))
-        event.stopImmediatePropagation();
-    };
-    const events = [
-      [document, "visibilitychange", () => {
-        if (document.hidden) {
-          if (raf) cancelAnimationFrame(raf);
-          raf = 0;
-        } else schedule(true);
-      }, false],
-      [document, "scroll", onScroll, true],
-      [document, "wheel", onSidebarWheel, true],
-      [document, "pointerover", onSidebarHover, true],
-      [document, "pointermove", onSidebarHover, true],
-      [document, "mouseover", onSidebarHover, true],
-      [document, "mousemove", onSidebarHover, true],
-      [document, "pointerdown", () => { sidebarScrollUntil = 0; }, true],
-      [window, "resize", () => schedule(true), false],
-      [document, "load", event => {
-        const record = records.get(event.target);
-        if (!record || record.nativeBoundary || event.target.matches(browserSelector)) return;
-        const region = event.target.closest(`${timelineSelector}, ${composerSelector}, ${sidebarSelector}`);
-        if (region) invalidateRegion(region);
-        else schedule(true);
-      }, true],
-      [document, "toggle", schedule, true],
-      [document, "transitionend", onControlMotionEnd, true],
-      [document, "animationend", onControlMotionEnd, true],
-      [document, "transitionend", onPaintMotionEnd, true],
-      [document, "transitioncancel", onPaintMotionEnd, true],
-      [document, "animationend", onPaintMotionEnd, true],
-    ];
-    window.__codexPlusImageOverlayCleanup = (keepResource = false) => {
-      if (disposed) return;
-      disposed = true;
-      if (raf) cancelAnimationFrame(raf);
-      mutationObserver.disconnect();
-      resizeObserver.disconnect();
-      intersectionObserver.disconnect();
-      for (const [target, event, handler, capture] of events) target.removeEventListener(event, handler, capture);
-      for (const [node, attributes] of [...originalAttributes])
-        for (const name of [...attributes.keys()]) unmark(node, name);
-      overlay.remove();
-      style.remove();
-      svg.remove();
-      image.onload = null;
-      image.onerror = null;
-      for (const collection of [records, scopes, browserPortals, controls, popups, visibleMedia,
-        visibleControls, activeControls, paintedNodes, viewers, scopeKeys, footers, themeInputs,
-        paintsDirty, geometryPaints, paintObservers]) collection.clear();
-      finishReady(false);
-      if (!keepResource && resource) {
-        if (resource.blobUrl) URL.revokeObjectURL(resource.blobUrl);
-        if (resource.tileInputUrl) URL.revokeObjectURL(resource.tileInputUrl);
-        if (window.__codexPlusImageOverlayResource === resource) window.__codexPlusImageOverlayResource = null;
-        if (window.__codexPlusImageOverlayBlobUrl === resource.blobUrl) window.__codexPlusImageOverlayBlobUrl = "";
-      }
-    };
-    const install = () => {
-      if (disposed) return;
-      resource.ready = true;
-      resource.opacity = opacity;
-      resource.fitMode = fitMode;
-      resource.width ||= image.naturalWidth;
-      resource.height ||= image.naturalHeight;
-      overlay.style.backgroundImage = `url(${JSON.stringify(resource.imageSource)})`;
-      style.textContent = nativeRules;
-      root.append(style, svg);
-      root.insertBefore(overlay, document.body || root.firstChild);
-      visit(root);
-      themeInputs.set(root, themeKey(root));
-      if (document.body) themeInputs.set(document.body, themeKey(document.body));
-      mutationObserver.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement"] });
-      for (const [target, event, handler, capture] of events)
-        target.addEventListener(event, handler, { capture, passive: true });
-      // 首次扫描登记的壁纸表面已排了一帧；这里同步渲染，撤掉重复的那一帧。
-      if (raf) cancelAnimationFrame(raf);
-      render();
-      finishReady(true);
-      sendCodexPlusDiagnostic("image_overlay_installed", { opacity, fitMode, sourceKind: source.startsWith("data:") ? "data-uri" : "unknown" });
-    };
-    if (resource) install();
-    else {
-      let blobUrl = "";
-      const data = source.match(/^data:([^;,]+);base64,([\s\S]*)$/);
-      if (data) {
-        const decoded = atob(data[2]);
-        const bytes = new Uint8Array(decoded.length);
-        for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
-        blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
-      }
-      resource = { version: 30, source, blobUrl, imageSource: blobUrl || source };
-      window.__codexPlusImageOverlayResource = resource;
-      window.__codexPlusImageOverlayBlobUrl = blobUrl;
-      image.onload = install;
-      image.onerror = () => { if (!disposed) window.__codexPlusImageOverlayCleanup?.(); };
-      image.src = resource.imageSource;
-    }
-  }
-
-  function scheduleCodexPlusImageOverlay() {
-    window.__codexPlusImageOverlayReadyCleanup?.();
-    window.__codexPlusImageOverlayReadyCleanup = null;
-    if (document.readyState === "loading") {
-      const onReady = () => {
-        window.__codexPlusImageOverlayReadyCleanup = null;
-        installCodexPlusImageOverlay();
-      };
-      document.addEventListener("DOMContentLoaded", onReady, { once: true });
-      window.__codexPlusImageOverlayReadyCleanup = () =>
-        document.removeEventListener("DOMContentLoaded", onReady);
-      return;
-    }
-    installCodexPlusImageOverlay();
-  }
-
-  scheduleCodexPlusImageOverlay();
   window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   ["__codexPlusHtmlCenteredThreadWidth", "__codexPlusViewportCenteredThreadWidth", "__codexPlusBoundedThreadCenter"].forEach((key) => {
     try {
@@ -3134,15 +1675,6 @@
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
-      .codex-plus-typing-effect-select {
-        flex-shrink: 0;
-        align-self: center;
-        min-width: 112px;
-        height: 32px;
-        padding: 0 8px;
-        font-size: 13px;
-      }
-      .codex-plus-typing-effect-select:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -3368,7 +1900,6 @@
       .codex-plus-toggle span { background: var(--color-token-bg-primary, #fff); box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.16)); }
       .codex-plus-toggle[data-enabled="true"] { background: var(--color-background-primary-solid, var(--color-background-success-solid, #10a37f)); }
       .codex-plus-width-input,
-      .codex-plus-typing-effect-select,
       .codex-plus-form-field input {
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-lg, 8px);
@@ -3377,7 +1908,6 @@
         font-family: inherit;
       }
       .codex-plus-width-input:focus,
-      .codex-plus-typing-effect-select:focus,
       .codex-plus-form-field input:focus { border-color: var(--codex-plus-focus); outline: 2px solid color-mix(in srgb, var(--codex-plus-focus) 25%, transparent); outline-offset: 0; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
@@ -3542,8 +2072,7 @@
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button,
-      .codex-plus-settings .codex-plus-width-input,
-      .codex-plus-settings .codex-plus-typing-effect-select {
+      .codex-plus-settings .codex-plus-width-input {
         box-sizing: border-box;
         min-height: 32px;
         border: 1px solid var(--codex-plus-border);
@@ -3554,89 +2083,7 @@
         font-size: 13px;
         line-height: 18px;
       }
-      .codex-plus-settings .codex-plus-width-input,
-      .codex-plus-settings .codex-plus-typing-effect-select { height: 32px; }
-      .codex-plus-settings .codex-plus-width-input { width: 72px; min-width: 48px; }
-      .codex-plus-settings .codex-plus-typing-effect-select { min-width: 0; }
-      .codex-plus-settings .codex-plus-typing-effect-select[hidden] { display: none; }
-      .codex-plus-settings .codex-plus-dropdown-trigger {
-        display: inline-flex;
-        flex: 0 0 auto;
-        align-items: center;
-        align-self: center;
-        justify-content: space-between;
-        gap: 8px;
-        height: 28px;
-        min-width: 112px;
-        box-sizing: border-box;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 8px;
-        padding: 3px 10px;
-        background: var(--codex-plus-bg-secondary);
-        color: var(--codex-plus-text);
-        font: inherit;
-        font-size: 13px;
-        line-height: 20px;
-        cursor: pointer;
-      }
-      .codex-plus-settings .codex-plus-dropdown-trigger > svg {
-        flex: 0 0 16px;
-        width: 16px;
-        height: 16px;
-        color: var(--codex-plus-text-secondary);
-      }
-      .codex-plus-settings .codex-plus-dropdown-trigger:hover:not(:disabled),
-      .codex-plus-settings .codex-plus-dropdown-trigger[aria-expanded="true"] { background: var(--codex-plus-bg-hover); }
-      .codex-plus-settings .codex-plus-dropdown-trigger:disabled { cursor: not-allowed; opacity: .55; }
-      /* 菜单挂在 overlay 上，避免设置卡片或滚动容器裁切。 */
-      .codex-plus-dropdown-menu {
-        position: absolute;
-        z-index: 2;
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        width: 220px;
-        max-width: calc(100% - 16px);
-        box-sizing: border-box;
-        padding: 6px;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 14px;
-        background: var(--codex-plus-bg-elevated);
-        color: var(--codex-plus-text);
-        font-family: inherit;
-        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
-      }
-      .codex-plus-dropdown-menu[hidden] { display: none; }
-      .codex-plus-dropdown-option {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        width: 100%;
-        min-height: 28px;
-        box-sizing: border-box;
-        border: 0;
-        border-radius: 8px;
-        padding: 4px 12px;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        font-size: 14px;
-        line-height: 20px;
-        text-align: left;
-        cursor: pointer;
-      }
-      .codex-plus-dropdown-option > svg {
-        flex: 0 0 16px;
-        width: 16px;
-        height: 16px;
-        visibility: hidden;
-      }
-      .codex-plus-dropdown-option[aria-selected="true"] > svg { visibility: visible; }
-      .codex-plus-dropdown-option:hover,
-      .codex-plus-dropdown-option:focus-visible {
-        background: var(--codex-plus-bg-hover);
-        outline: none;
-      }
+      .codex-plus-settings .codex-plus-width-input { height: 32px; width: 72px; min-width: 48px; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button { white-space: normal; overflow-wrap: anywhere; }
       .codex-plus-settings .codex-plus-action-button:hover,
@@ -3896,6 +2343,86 @@
         color: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary));
       }
       .codex-plus-discovery .codex-plus-extensions-detail-link a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); }
+      /* 详情页签与两栏（对齐 VS Code 扩展详情）：左边细节 / 设置 / 功能，右边安装与市场信息。 */
+      .codex-plus-discovery .codex-plus-extensions-detail { max-width: 1120px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-heading .codex-plus-extensions-detail-description { margin-top: 6px; }
+      .codex-plus-extensions-detail-gear { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 0; }
+      .codex-plus-extensions-detail-gear svg { width: 16px; height: 16px; }
+      .codex-plus-extensions-detail-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-extensions-detail-tabs button {
+        margin-bottom: -1px; padding: 8px 2px; border: 0; border-bottom: 2px solid transparent; background: transparent;
+        color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; line-height: 20px; cursor: pointer;
+      }
+      .codex-plus-extensions-detail-tabs button:hover { color: var(--codex-plus-text); }
+      .codex-plus-extensions-detail-tabs button[aria-selected="true"] { border-bottom-color: var(--codex-plus-switch-on, #3485ff); color: var(--codex-plus-text); }
+      .codex-plus-extensions-detail-columns { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 32px; padding-top: 20px; }
+      .codex-plus-extensions-detail-main { min-width: 0; }
+      .codex-plus-extensions-detail-tabpanel[hidden] { display: none !important; }
+      .codex-plus-extensions-readme-hint { color: var(--codex-plus-text-tertiary); font-size: 13px; line-height: 20px; }
+      .codex-plus-extensions-detail-aside { min-width: 0; font-size: 12px; line-height: 18px; color: var(--codex-plus-text-secondary); }
+      .codex-plus-extensions-detail-aside section { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-extensions-detail-aside section:last-child { border-bottom: 0; }
+      .codex-plus-extensions-detail-aside h3 { margin: 0 0 8px; color: var(--codex-plus-text); font-size: 13px; font-weight: 600; }
+      .codex-plus-extensions-detail-aside dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+      .codex-plus-extensions-detail-aside dt { color: var(--codex-plus-text-tertiary); }
+      .codex-plus-extensions-detail-aside dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+      .codex-plus-extensions-aside-links { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+      .codex-plus-extensions-detail-aside a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); text-decoration: none; }
+      .codex-plus-extensions-detail-aside a:hover { text-decoration: underline; }
+      .codex-plus-extensions-detail-aside .codex-plus-extensions-detail-tags { margin-top: 0; }
+      .codex-plus-extensions-features { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 20px; }
+      .codex-plus-extensions-features th, .codex-plus-extensions-features td { padding: 8px 0; border-bottom: 1px solid var(--codex-plus-border-subtle); text-align: left; vertical-align: top; }
+      .codex-plus-extensions-features th { width: 160px; padding-right: 16px; color: var(--codex-plus-text-secondary); font-weight: 500; }
+      .codex-plus-extensions-features td { color: var(--codex-plus-text); overflow-wrap: anywhere; }
+      /* 通用设置表单（按清单 config 生成）。 */
+      .codex-plus-ext-config { display: grid; gap: 2px; }
+      .codex-plus-extensions-detail-settings-hint + .codex-plus-ext-config { margin-top: 12px; }
+      .codex-plus-ext-config-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 260px); align-items: center; gap: 8px 24px; padding: 10px 0; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-ext-config-row[data-wide="true"] { grid-template-columns: minmax(0, 1fr); }
+      .codex-plus-ext-config-label label { color: var(--codex-plus-text); font-size: 13px; font-weight: 500; line-height: 20px; }
+      .codex-plus-ext-config-description { color: var(--codex-plus-text-tertiary); font-size: 12px; line-height: 18px; }
+      .codex-plus-ext-config-control { display: flex; justify-content: flex-end; min-width: 0; }
+      .codex-plus-ext-config-row[data-wide="true"] .codex-plus-ext-config-control { justify-content: stretch; }
+      .codex-plus-ext-config-input {
+        width: 100%; box-sizing: border-box; min-height: 30px; padding: 5px 8px; border: 1px solid var(--codex-plus-border); border-radius: 6px;
+        background: var(--codex-plus-bg-secondary, transparent); color: var(--codex-plus-text); font: inherit; font-size: 13px; line-height: 18px;
+      }
+      textarea.codex-plus-ext-config-input { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      .codex-plus-ext-config-input:focus { outline: 2px solid var(--codex-plus-switch-on, #3485ff); outline-offset: -1px; }
+      .codex-plus-ext-config-status { min-height: 18px; padding-top: 8px; color: var(--codex-plus-text-tertiary); font-size: 12px; }
+      .codex-plus-ext-config-status[data-kind="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-ext-config-status[data-kind="error"] { color: var(--codex-plus-danger); }
+      /* README 的 Markdown 正文。 */
+      .codex-plus-markdown { color: var(--codex-plus-text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
+      .codex-plus-markdown > :first-child { margin-top: 0; }
+      .codex-plus-markdown h1, .codex-plus-markdown h2, .codex-plus-markdown h3, .codex-plus-markdown h4, .codex-plus-markdown h5, .codex-plus-markdown h6 { margin: 1.4em 0 .6em; font-weight: 600; line-height: 1.3; }
+      .codex-plus-markdown h1 { font-size: 24px; padding-bottom: .3em; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown h2 { font-size: 19px; padding-bottom: .3em; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown h3 { font-size: 16px; }
+      .codex-plus-markdown h4, .codex-plus-markdown h5, .codex-plus-markdown h6 { font-size: 14px; }
+      .codex-plus-markdown p, .codex-plus-markdown ul, .codex-plus-markdown ol, .codex-plus-markdown blockquote, .codex-plus-markdown pre, .codex-plus-markdown .codex-plus-markdown-table { margin: 0 0 12px; }
+      /* Codex 自己的样式把列表符号清掉了，这里补回。 */
+      .codex-plus-markdown ul, .codex-plus-markdown ol { padding-left: 22px; }
+      .codex-plus-markdown ul { list-style: disc; }
+      .codex-plus-markdown ul ul { list-style: circle; }
+      .codex-plus-markdown ol { list-style: decimal; }
+      .codex-plus-markdown li { display: list-item; }
+      .codex-plus-markdown li + li { margin-top: 2px; }
+      .codex-plus-markdown li > ul, .codex-plus-markdown li > ol { margin: 2px 0 0; }
+      .codex-plus-markdown li.codex-plus-markdown-task { list-style: none; margin-left: -20px; }
+      .codex-plus-markdown li.codex-plus-markdown-task input { margin: 0 6px 0 0; vertical-align: -1px; }
+      .codex-plus-markdown a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); text-decoration: none; }
+      .codex-plus-markdown a:hover { text-decoration: underline; }
+      .codex-plus-markdown code { padding: 1px 5px; border-radius: 4px; background: var(--codex-plus-bg-hover); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
+      .codex-plus-markdown pre { overflow: auto; padding: 12px 14px; border-radius: 8px; background: var(--codex-plus-bg-hover); line-height: 1.5; }
+      .codex-plus-markdown pre code { padding: 0; background: transparent; font-size: 12px; white-space: pre; }
+      .codex-plus-markdown blockquote { padding: 0 0 0 12px; border-left: 3px solid var(--codex-plus-border); color: var(--codex-plus-text-secondary); }
+      .codex-plus-markdown hr { height: 1px; margin: 20px 0; border: 0; background: var(--codex-plus-border-subtle); }
+      .codex-plus-markdown img { max-width: 100%; vertical-align: middle; }
+      .codex-plus-markdown .codex-plus-markdown-table { overflow-x: auto; }
+      .codex-plus-markdown table { border-collapse: collapse; font-size: 13px; }
+      .codex-plus-markdown th, .codex-plus-markdown td { padding: 6px 12px; border: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown th { background: var(--codex-plus-bg-hover); font-weight: 600; }
       .codex-plus-discovery .codex-plus-toggle { flex: 0 0 32px; width: 32px; height: 20px; min-height: 20px; box-sizing: border-box; padding: 2px; background: var(--codex-plus-switch-off, #3a3a3a); cursor: pointer; }
       .codex-plus-discovery .codex-plus-toggle span { width: 16px; height: 16px; background: var(--codex-plus-switch-thumb, #fff); }
       .codex-plus-discovery .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on, #3485ff); }
@@ -3949,6 +2476,7 @@
         .codex-plus-discovery-toolbar { flex-basis: 100%; }
         .codex-plus-discovery .codex-plus-extensions-detail-head { flex-wrap: wrap; }
         .codex-plus-discovery .codex-plus-extensions-detail-actions { flex-basis: 100%; }
+        .codex-plus-extensions-detail-columns { grid-template-columns: minmax(0, 1fr); }
       }
       @container codex-plus-discovery (max-width: 600px) {
         .codex-plus-extensions-grid,
@@ -3977,12 +2505,12 @@
   }
 
   function defaultCodexPlusSettings() {
-    // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、agent-pet、
+    // capacityAutoRetry* 必须写成字面量：多个测试（agent-pet、
     // backend-settings-sync…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -4002,12 +2530,9 @@
     activityOverlayRight: "codexAppActivityOverlayRight",
     stepwise: "codexAppStepwiseEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
-    usageStatusLine: "codexAppUsageStatusLine",
-    proxyRequestStatus: "codexAppProxyRequestStatus",
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
-    typingEffect: "codexAppTypingEffect",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
     dreamSkinThemeConfig: "codexAppDreamSkinThemeConfig",
@@ -4061,7 +2586,6 @@
         markdownExport: false,
         sideChatSave: false,
         pasteFix: false,
-        typingEffect: "off",
         threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
@@ -4073,8 +2597,6 @@
         activityOverlayRight: false,
         stepwise: false,
         answerOutline: false,
-        usageStatusLine: false,
-        proxyRequestStatus: false,
         capacityAutoRetry: false,
         turnRewind: false,
         capacityAutoRetryMaxAttempts: 15,
@@ -4955,11 +3477,6 @@
     });
     refreshConversationViewControls();
     if (typeof syncCodexAmbientSuggestionsToggles === "function") syncCodexAmbientSuggestionsToggles();
-    document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
-      select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
-      select.disabled = !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.enhancementsEnabled === false;
-      if (typeof syncCodexPlusTypingEffectDropdown === "function") syncCodexPlusTypingEffectDropdown(select);
-    });
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, codexAppVersion: "" };
@@ -6731,12 +5248,55 @@
   }
 
   /**
-   * 读到后端设置（启动或心跳）后发公开事件 `settings/loaded`，参数 `{ reason: "startup" | "heartbeat" }`。
+   * 读到后端设置（启动或心跳）后发公开事件 `settings/loaded`，参数 `{ reason: "startup" | "heartbeat", changedKeys? }`。
    * 内置拓展与第三方拓展都经 ctx.on 订阅，拓展卸下时订阅跟着撤掉。
    * typeof 守卫：本分片会被切片到不带拓展内核的沙箱里执行。
    */
-  function emitCodexPlusSettingsLoaded(reason) {
-    if (typeof codexPlusEmitExtensionEvent === "function") codexPlusEmitExtensionEvent("settings/loaded", [{ reason }]);
+  function emitCodexPlusSettingsLoaded(reason, changedKeys) {
+    if (typeof codexPlusEmitExtensionEvent !== "function") return;
+    // 心跳带上这次变了的字段名（管理器里改的设置靠它识别）；启动时第一次读到设置不带。
+    const detail = Array.isArray(changedKeys) ? { reason, changedKeys } : { reason };
+    codexPlusEmitExtensionEvent("settings/loaded", [detail]);
+  }
+
+  /** 两份设置之间值变了的顶层字段名。只给名字不给值，免得经事件把设置内容交给拓展。 */
+  function codexPlusChangedBackendSettingKeys(previous, next) {
+    const keys = new Set([...Object.keys(previous || {}), ...Object.keys(next || {})]);
+    const changed = [];
+    for (const key of keys) {
+      let before;
+      let after;
+      try {
+        before = JSON.stringify(previous?.[key]);
+        after = JSON.stringify(next?.[key]);
+      } catch {
+        continue;
+      }
+      if (before !== after) changed.push(key);
+    }
+    return changed;
+  }
+
+  /**
+   * 供应商相关的公开事件，比较前后两份设置里 Codex++ 下发的 activeRelayProfilePublic / modelCatalogFingerprint：
+   *   - `relayProfile/switched`：({ previous, profile })，当前供应商换了
+   *   - `modelCatalog/changed`：({ profile })，决定模型目录的字段变了（模型列表、每模型窗口 / 压缩 / 元数据、换供应商……），
+   *     新目录用 /model-catalog/public 取
+   * profile 形状同 /settings/public 的 activeProfile。页面里改的立即发，管理器里改的经心跳发；第一次读到设置时不发。
+   */
+  function emitCodexPlusRelaySettingsEvents(previous, next) {
+    if (typeof codexPlusEmitExtensionEvent !== "function") return;
+    const before = previous?.activeRelayProfilePublic;
+    const after = next?.activeRelayProfilePublic;
+    if (!before || !after) return;
+    if (before.id !== after.id) {
+      codexPlusEmitExtensionEvent("relayProfile/switched", [{ previous: { ...before }, profile: { ...after } }]);
+    }
+    const beforeFingerprint = previous?.modelCatalogFingerprint;
+    const afterFingerprint = next?.modelCatalogFingerprint;
+    if (beforeFingerprint && afterFingerprint && beforeFingerprint !== afterFingerprint) {
+      codexPlusEmitExtensionEvent("modelCatalog/changed", [{ profile: { ...after } }]);
+    }
   }
 
   /**
@@ -6774,15 +5334,28 @@
   }
 
   let syncBackendSettingsInFlight = false;
+  /** 已读到过的后端设置（对象引用，之后的写入都换新对象，不会改到它）；还没读到过时为 null。 */
+  function codexPlusBackendSettingsSnapshot() {
+    if (typeof codexPlusBackendSettingsLoaded === "undefined" || codexPlusBackendSettingsLoaded !== true) return null;
+    return typeof codexPlusBackendSettings === "object" && codexPlusBackendSettings ? codexPlusBackendSettings : null;
+  }
+
   async function syncBackendSettingsFromHeartbeat() {
     if (syncBackendSettingsInFlight) return;
     syncBackendSettingsInFlight = true;
     try {
+      // 记下读之前的设置：loadBackendSettingsState 换成新对象，旧引用里还是上一次的值。
+      // 下面的 typeof 守卫：本段会被切片到只给了少量依赖的沙箱里测。
+      const previous = codexPlusBackendSettingsSnapshot();
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
+        const next = previous ? codexPlusBackendSettingsSnapshot() : null;
         // 启动期读取全部失败时，心跳是之后唯一的设置来源；跟着设置走的功能（含梦皮 #2680、对话宽度）由内置拓展订阅。
-        emitCodexPlusSettingsLoaded("heartbeat");
+        emitCodexPlusSettingsLoaded("heartbeat", previous && next && typeof codexPlusChangedBackendSettingKeys === "function"
+          ? codexPlusChangedBackendSettingKeys(previous, next)
+          : undefined);
+        if (previous && next && typeof emitCodexPlusRelaySettingsEvents === "function") emitCodexPlusRelaySettingsEvents(previous, next);
         // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
         syncCodexPlusBackendToggleButtons();
         renderCodexPlusMenu();
@@ -6794,6 +5367,7 @@
 
   async function setBackendSetting(key, value) {
     const seq = ++codexPlusBackendSettingsSeq;
+    const previous = typeof codexPlusBackendSettingsSnapshot === "function" ? codexPlusBackendSettingsSnapshot() : null;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
     codexPlusBackendSettingsLoaded = true;
     if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, false);
@@ -6813,6 +5387,7 @@
           nativePredictionsLocalApiConfigured: codexPlusBackendSettings.nativePredictionsLocalApiConfigured === true,
         });
         if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, true);
+        if (previous && typeof emitCodexPlusRelaySettingsEvents === "function") emitCodexPlusRelaySettingsEvents(previous, codexPlusBackendSettings);
       }
     } finally {
       refreshCodexPlusBackendToggles();
@@ -6987,12 +5562,13 @@
     return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
   }
 
-  // 使用已安装 Lucide Search / RotateCw / Plus / ArrowLeft 的 ISC 图标路径。
+  // 使用已安装 Lucide Search / RotateCw / Plus / ArrowLeft / Settings 的 ISC 图标路径。
   const codexPlusDiscoveryIcons = {
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
     refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg>',
     back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7M19 12H5"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
   };
 
   /** 原生风格侧栏：浏览入口和已安装拓展的单行名称。 */
@@ -7004,7 +5580,7 @@
       const marketItem = codexPlusExtensionMarketItem(entry);
       return `
         <button type="button" class="codex-plus-page-nav-item codex-plus-extensions-nav-entry" data-codex-extensions-select="installed:${escapeHtml(entry.key)}" data-active="${String(selected)}" title="${escapeHtml(entry.name)}" aria-label="${escapeHtml(entry.name)}">
-          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon)}</span>
+          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon || entry.script?.package?.icon)}</span>
           <span class="codex-plus-page-nav-item-text"><span class="codex-plus-page-nav-item-name">${escapeHtml(entry.name)}</span></span>
           <span class="codex-plus-page-nav-item-state" data-state="${entry.enabled ? "on" : "off"}" title="${entry.enabled ? "已启用" : "已禁用"}"></span>
         </button>
@@ -7038,7 +5614,7 @@
       return `
         <article class="codex-plus-extension-card">
           <button type="button" class="codex-plus-extension-card-select" data-codex-extensions-select="${select}" aria-label="查看 ${escapeHtml(entry.name)}">
-            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(item?.icon)}</span>
+            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(item?.icon || entry.script?.package?.icon)}</span>
             <span class="codex-plus-extension-card-copy">
               <span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>
               <span class="codex-plus-extension-card-description">${escapeHtml(description)}</span>
@@ -7114,7 +5690,8 @@
   }
 
   /**
-   * 条目图标：市场清单给了 `icon` 就用它，否则回退 VSCode 的默认扩展字形。
+   * 条目图标：市场清单的 `icon`，或拓展包清单 codexpp.json 的 `icon`（后台已换成 data URL / https 地址）；
+   * 都没有就回退 VSCode 的默认扩展字形。
    *
    * 回退是必须的——清单里的老条目没有这个字段，而且 icon 指的是外链，
    * 加载失败时若不兜底就会留一块空白。失败替换交给委托监听（见 handleExtensionIconError），
@@ -7152,7 +5729,7 @@
     const name = marketItem?.name || local?.name || sel.key;
     const version = marketItem?.version || local?.version || "";
     const author = marketItem?.author || "";
-    const description = marketItem?.description || local?.description || "";
+    const description = marketItem?.description || local?.description || local?.package?.description || "";
     const tags = marketItem?.tags || [];
     const requirements = marketItem?.requirements || [];
     const limitations = marketItem?.limitations || [];
@@ -7161,10 +5738,11 @@
     const updateAvailable = isInstalled && marketItem && version && local?.version && local.version !== version;
 
     // 详情沿用列表的内容宽度，管理操作保持独立。
+    const sourceLabel = local ? (typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(local) : local.source === "builtin" ? "内置" : "用户") : "";
     const publisherLine = [
       author ? escapeHtml(author) : "",
       version ? `v${escapeHtml(version)}` : "",
-      local ? `${typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(local) : local.source === "builtin" ? "内置" : "用户"} · ${escapeHtml(userScriptStatusLabel(local.status))}` : "",
+      local ? `${escapeHtml(sourceLabel)} · ${escapeHtml(userScriptStatusLabel(local.status))}` : "",
     ].filter(Boolean).join('<span class="codex-plus-extensions-detail-sep">·</span>');
 
     const actions = [];
@@ -7176,35 +5754,41 @@
       if (local?.source === "user") {
         actions.push(`<button type="button" class="codex-plus-extensions-detail-button" data-codex-extensions-uninstall="${escapeHtml(local.key)}">卸载</button>`);
       }
+      // 和 VS Code 一样，头部的齿轮直达「设置」页签。
+      if (typeof codexPlusExtensionHasSettings === "function" && codexPlusExtensionHasSettings(local)) {
+        actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-gear" data-codex-extensions-tab="settings" title="设置" aria-label="${escapeHtml(name)} 的设置">${codexPlusDiscoveryIcons.settings}</button>`);
+      }
     } else if (marketItem) {
       actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-market-install="${escapeHtml(marketItem.id)}">安装</button>`);
     }
 
-    // 使用要求与限制保留为独立正文分区。
+    // 页签（细节 / 设置 / 功能）与右侧栏见 41-extension-detail.js；测试单独切出这段执行时退回到简单正文。
     const list = (title, items) => items.length
       ? `<div class="codex-plus-extensions-detail-section"><div class="codex-plus-extensions-detail-section-title">${escapeHtml(title)}</div><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
       : "";
-
-    return `
-      <button type="button" class="codex-plus-extensions-back" data-codex-extensions-browse="${codexPlusExtensionsFilter}" aria-label="返回拓展列表">${codexPlusDiscoveryIcons.back}<span>返回拓展列表</span></button>
-      <div class="codex-plus-extensions-detail-head">
-        <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon)}</div>
-        <div class="codex-plus-extensions-detail-heading">
-          <div class="codex-plus-extensions-detail-title">${escapeHtml(name)}</div>
-          ${publisherLine ? `<div class="codex-plus-extensions-detail-meta">${publisherLine}</div>` : ""}
-          ${updateAvailable ? `<div class="codex-plus-extensions-detail-update">有新版本 v${escapeHtml(version)} 可更新</div>` : ""}
-        </div>
-        <div class="codex-plus-extensions-detail-actions">${actions.join("")}</div>
-      </div>
-      <div class="codex-plus-extensions-detail-body">
-        ${description ? `<div class="codex-plus-extensions-detail-description">${escapeHtml(description)}</div>` : ""}
+    const body = typeof renderCodexPlusExtensionDetailTabs === "function"
+      ? renderCodexPlusExtensionDetailTabs({ local, marketItem, sourceLabel })
+      : `<div class="codex-plus-extensions-detail-body">
         ${tags.length ? `<div class="codex-plus-extensions-detail-tags">${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
         ${list("使用要求", requirements)}
         ${list("已知限制", limitations)}
         ${homepage ? `<div class="codex-plus-extensions-detail-link"><a href="${escapeHtml(homepage)}" target="_blank" rel="noreferrer">${escapeHtml(homepage)}</a></div>` : ""}
         ${local?.error ? `<div class="codex-plus-extensions-detail-error">${escapeHtml(local.error)}</div>` : ""}
-        ${isInstalled && local && typeof renderCodexPlusSettingsPanelSlot === "function" ? renderCodexPlusSettingsPanelSlot(local) : ""}
+      </div>`;
+
+    return `
+      <button type="button" class="codex-plus-extensions-back" data-codex-extensions-browse="${codexPlusExtensionsFilter}" aria-label="返回拓展列表">${codexPlusDiscoveryIcons.back}<span>返回拓展列表</span></button>
+      <div class="codex-plus-extensions-detail-head">
+        <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon || local?.package?.icon)}</div>
+        <div class="codex-plus-extensions-detail-heading">
+          <div class="codex-plus-extensions-detail-title">${escapeHtml(name)}</div>
+          ${publisherLine ? `<div class="codex-plus-extensions-detail-meta">${publisherLine}</div>` : ""}
+          ${description ? `<div class="codex-plus-extensions-detail-description">${escapeHtml(description)}</div>` : ""}
+          ${updateAvailable ? `<div class="codex-plus-extensions-detail-update">有新版本 v${escapeHtml(version)} 可更新</div>` : ""}
+        </div>
+        <div class="codex-plus-extensions-detail-actions">${actions.join("")}</div>
       </div>
+      ${body}
     `;
   }
 
@@ -7213,20 +5797,6 @@
     if (script?.source === "builtin") return "内置";
     if (script?.source === "bundled") return "官方";
     return script?.market_id ? "市场" : "用户";
-  }
-
-  /**
-   * 详情下方的设置区：拓展登记了设置面板（ctx.registerSettingsPanel）就留一个挂载点，由 mountCodexPlusSettingsPanel 交给拓展画；
-   * 有配置但没在运行（停用、未加载）时提示先启用。
-   */
-  function renderCodexPlusSettingsPanelSlot(local) {
-    const panel = typeof codexPlusSettingsPanelFor === "function" ? codexPlusSettingsPanelFor(local.key) : null;
-    const hasSettings = !!(local.package?.settingsPage || local.package?.configSchema?.length);
-    if (!panel && !hasSettings) return "";
-    const body = panel && local.enabled
-      ? `<div class="codex-plus-extensions-detail-settings-host" data-codex-plus-settings-panel="${escapeHtml(local.key)}" ${codexPlusExtensionConstants.extensionAttribute}="${escapeHtml(local.key)}"></div>`
-      : `<div class="codex-plus-extensions-detail-settings-hint">${local.enabled ? "这个拓展加载后可以在这里修改设置。" : "启用这个拓展后可以在这里修改设置。"}</div>`;
-    return `<div class="codex-plus-extensions-detail-section codex-plus-extensions-detail-settings"><div class="codex-plus-extensions-detail-section-title">设置</div>${body}</div>`;
   }
 
   /**
@@ -7642,7 +6212,6 @@
   }
 
   function selectCodexPlusTab(tab) {
-    closeCodexPlusTypingEffectDropdown();
     // 归一化后再比对：panel 用的是 extensions，而旧调用点仍传 userScripts，
     // 不统一就会两边都对不上、所有 panel 全被隐藏。
     const normalized = codexPlusModalTab(tab);
@@ -7983,79 +6552,6 @@
     return "home";
   }
 
-  let codexPlusTypingEffectDropdownCleanup = null;
-
-  /** 保留 select 的值与 change 契约，只替换原生系统菜单的呈现。 */
-  function syncCodexPlusTypingEffectDropdown(select) {
-    const overlay = select.closest(".codex-plus-modal-overlay, .codex-plus-page-overlay");
-    const trigger = overlay?.querySelector("[data-codex-plus-typing-effect-trigger]");
-    if (!trigger) return;
-    trigger.disabled = select.disabled;
-    const label = trigger.querySelector("[data-codex-plus-dropdown-label]");
-    if (label) label.textContent = select.selectedOptions[0]?.textContent || "关闭";
-    overlay.querySelectorAll("[data-codex-plus-typing-effect-option]").forEach((option) => {
-      const selected = option.dataset.codexPlusTypingEffectOption === select.value;
-      option.setAttribute("aria-selected", String(selected));
-      option.tabIndex = selected ? 0 : -1;
-    });
-    if (select.disabled) closeCodexPlusTypingEffectDropdown();
-  }
-
-  function closeCodexPlusTypingEffectDropdown(restoreFocus = false) {
-    const menu = document.querySelector("[data-codex-plus-typing-effect-menu]");
-    const trigger = menu?.parentElement?.querySelector("[data-codex-plus-typing-effect-trigger]");
-    if (menu) menu.hidden = true;
-    trigger?.setAttribute("aria-expanded", "false");
-    codexPlusTypingEffectDropdownCleanup?.();
-    codexPlusTypingEffectDropdownCleanup = null;
-    if (restoreFocus && trigger?.isConnected && !trigger.disabled) trigger.focus();
-  }
-
-  function openCodexPlusTypingEffectDropdown(overlay, last = false) {
-    const select = overlay.querySelector("[data-codex-plus-typing-effect]");
-    const trigger = overlay.querySelector("[data-codex-plus-typing-effect-trigger]");
-    const menu = overlay.querySelector("[data-codex-plus-typing-effect-menu]");
-    if (!select || select.disabled || !trigger || !menu) return;
-    closeCodexPlusTypingEffectDropdown();
-    syncCodexPlusTypingEffectDropdown(select);
-    menu.hidden = false;
-    trigger.setAttribute("aria-expanded", "true");
-    // 菜单直接挂 overlay，避开滚动内容的裁剪；坐标换算与页面缩放保持同源。
-    const frame = overlay.getBoundingClientRect();
-    const anchor = trigger.getBoundingClientRect();
-    const zoom = codexPlusWindowZoom();
-    const width = frame.width / zoom;
-    const height = frame.height / zoom;
-    menu.style.maxHeight = `${Math.max(0, height - 16)}px`;
-    const left = (anchor.right - frame.left) / zoom - menu.offsetWidth;
-    const below = (anchor.bottom - frame.top) / zoom + 4;
-    const above = (anchor.top - frame.top) / zoom - menu.offsetHeight - 4;
-    const top = below + menu.offsetHeight > height - 8 && above >= 8 ? above : below;
-    menu.style.left = `${Math.max(8, Math.min(left, width - menu.offsetWidth - 8))}px`;
-    menu.style.top = `${Math.max(8, Math.min(top, height - menu.offsetHeight - 8))}px`;
-    const options = Array.from(menu.querySelectorAll("[role=option]"));
-    const focused = last ? options[options.length - 1] : options.find((option) => option.getAttribute("aria-selected") === "true") || options[0];
-    focused?.focus({ preventScroll: true });
-    const controller = new AbortController();
-    const close = () => closeCodexPlusTypingEffectDropdown();
-    document.addEventListener("pointerdown", (event) => {
-      if (!menu.contains(event.target) && !trigger.contains(event.target)) close();
-    }, { capture: true, signal: controller.signal });
-    overlay.addEventListener("scroll", (event) => {
-      if (!menu.contains(event.target)) close();
-    }, { capture: true, signal: controller.signal });
-    window.addEventListener("resize", close, { signal: controller.signal });
-    window.addEventListener("blur", close, { signal: controller.signal });
-    const observer = new MutationObserver(() => {
-      if (!overlay.isConnected) close();
-    });
-    observer.observe(document.body, { childList: true });
-    codexPlusTypingEffectDropdownCleanup = () => {
-      controller.abort();
-      observer.disconnect();
-    };
-  }
-
   // ── 设置项清单 ──────────────────────────────────────────────────────────────
   // 设置页里每个开关的标题、说明、分组都来自后端 /settings/catalog，
   // 与管理器「Codex → 内置拓展」页 import 的是同一份 JSON（crates/codex-plus-core/assets/enhancement-settings.json）。
@@ -8151,34 +6647,6 @@
     return `<input class="codex-plus-width-input" ${attribute}="true" min="${min}" max="${max}" step="${step}" type="number" value="${value}" title="${escapeHtml(input.hint || input.label || "")}" aria-label="${label}">`;
   }
 
-  /** 打字特效沿用自绘下拉：隐藏的 select 保留 change 契约，选项文案来自清单。 */
-  function renderCodexPlusTypingEffectControl(item) {
-    const title = escapeHtml(item.title);
-    const options = Array.isArray(item.options) ? item.options : [];
-    return `
-                  <select class="codex-plus-typing-effect-select" data-codex-plus-typing-effect="true" aria-label="${title}" hidden aria-hidden="true" tabindex="-1">
-                    ${options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}
-                  </select>
-                  <button type="button" class="codex-plus-dropdown-trigger" data-codex-plus-typing-effect-trigger="true" aria-label="${title}" aria-haspopup="listbox" aria-expanded="false" aria-controls="codex-plus-typing-effect-menu">
-                    <span data-codex-plus-dropdown-label="true">${escapeHtml(options[0]?.label || "")}</span>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-                  </button>`;
-  }
-
-  /** 下拉菜单挂在 overlay 根部（避开滚动裁剪），选项同样按清单生成。 */
-  function syncCodexPlusTypingEffectMenu(overlay) {
-    const menu = overlay?.querySelector("[data-codex-plus-typing-effect-menu]");
-    if (!menu) return;
-    const item = codexPlusSettingsCatalog?.items.find((candidate) => candidate.key === "codexAppTypingEffect");
-    const options = Array.isArray(item?.options) ? item.options : [];
-    menu.setAttribute("aria-label", item?.title || "");
-    menu.innerHTML = options.map((option) => `
-          <button type="button" class="codex-plus-dropdown-option" data-codex-plus-typing-effect-option="${escapeHtml(option.value)}" role="option" aria-selected="false" tabindex="-1">
-            <span>${escapeHtml(option.label)}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-          </button>
-        `).join("");
-  }
-
   /** 清单 key 是 BackendSettings 字段；能映射到本页设置 key 的走 setCodexPlusSetting（带即时副作用）。 */
   function codexPlusLocalSettingKey(backendKey) {
     return Object.keys(codexPlusBackendSettingMap).find((key) => codexPlusBackendSettingMap[key] === backendKey) || "";
@@ -8240,9 +6708,7 @@
   function renderCodexPlusSettingsCatalogRow(item, options = {}) {
     const title = escapeHtml(item.title);
     let control = "";
-    if (item.key === "codexAppTypingEffect" && item.control === "select") {
-      control = renderCodexPlusTypingEffectControl(item);
-    } else if (item.control === "bool") {
+    if (item.control === "bool") {
       const localKey = codexPlusLocalSettingKey(item.key);
       const binding = localKey ? `data-codex-plus-setting="${escapeHtml(localKey)}"` : `data-codex-backend-setting="${escapeHtml(item.key)}"`;
       const toggle = `<button type="button" class="codex-plus-toggle" ${binding} role="switch" aria-checked="false" aria-label="${title}"><span></span></button>`;
@@ -8377,7 +6843,6 @@
       const retryFocused = !!document.activeElement?.closest?.("[data-codex-plus-settings-catalog-retry]");
       panel.querySelectorAll("[data-codex-plus-settings-catalog]").forEach((node) => node.remove());
       anchor.insertAdjacentHTML("beforebegin", renderCodexPlusSettingsCatalogSections());
-      syncCodexPlusTypingEffectMenu(panel.closest(".codex-plus-modal-overlay, .codex-plus-page-overlay"));
       if (retryFocused) {
         panel.querySelector("[data-codex-plus-settings-catalog-retry], [data-codex-plus-settings-catalog] .codex-plus-toggle")?.focus({ preventScroll: true });
       }
@@ -8470,9 +6935,7 @@
           </div>
         </div>
       </div>
-      <div id="codex-plus-typing-effect-menu" class="codex-plus-dropdown-menu" data-codex-plus-typing-effect-menu="true" role="listbox" hidden></div>
     `;
-    syncCodexPlusTypingEffectMenu(overlay);
     if (typeof mountCodexPlusSettingsPanel === "function") mountCodexPlusSettingsPanel(overlay.querySelector("[data-codex-plus-extensions-detail]"));
     overlay.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting], .codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       button.setAttribute("role", "switch");
@@ -8500,13 +6963,7 @@
     }, true);
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      const typingEffectSelect = target?.closest("[data-codex-plus-typing-effect]");
-      if (typingEffectSelect) {
-        if (!typingEffectSelect.disabled && ["off", "rainbow", "fireworks", "stars"].includes(typingEffectSelect.value)) {
-          setCodexPlusSetting("typingEffect", typingEffectSelect.value);
-        }
-        return;
-      }
+      if (typeof handleCodexPlusExtensionConfigChange === "function" && handleCodexPlusExtensionConfigChange(target)) return;
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
         const width = normalizeConversationViewWidth(widthInput.value);
@@ -8529,26 +6986,8 @@
       // 拓展注册的菜单项。放在最前面是因为它的判定完全基于自己的 data 属性，
       // 与下面那些内置分支不会重叠；万一将来重叠，也应当由拓展优先拿到。
       if (handleCodexPlusExtensionMenuClick(target)) return;
-      const typingEffectTrigger = target?.closest("[data-codex-plus-typing-effect-trigger]");
-      if (typingEffectTrigger) {
-        const menu = overlay.querySelector("[data-codex-plus-typing-effect-menu]");
-        if (menu?.hidden) openCodexPlusTypingEffectDropdown(overlay);
-        else closeCodexPlusTypingEffectDropdown();
-        return;
-      }
-      const typingEffectOption = target?.closest("[data-codex-plus-typing-effect-option]");
-      if (typingEffectOption) {
-        const select = overlay.querySelector("[data-codex-plus-typing-effect]");
-        if (select && !select.disabled) {
-          const value = typingEffectOption.dataset.codexPlusTypingEffectOption;
-          if (select.value !== value) {
-            select.value = value;
-            select.dispatchEvent(new Event("change", { bubbles: true }));
-          }
-        }
-        closeCodexPlusTypingEffectDropdown(true);
-        return;
-      }
+      // 拓展详情的页签、设置表单开关、README 页内锚点。
+      if (typeof handleCodexPlusExtensionDetailClick === "function" && handleCodexPlusExtensionDetailClick(target, event)) return;
       const extensionsBrowse = target?.closest("[data-codex-extensions-browse]");
       if (extensionsBrowse) {
         codexPlusExtensionsFilter = extensionsBrowse.dataset.codexExtensionsBrowse === "installed" ? "installed" : "market";
@@ -8656,6 +7095,8 @@
       }
       const extensionsRefresh = target?.closest("[data-codex-market-refresh]");
       if (extensionsRefresh) {
+        // 顺带丢掉 README 缓存：改过的 README 重新打开详情就能看到。
+        if (typeof clearCodexPlusExtensionReadmes === "function") clearCodexPlusExtensionReadmes();
         void loadScriptMarket(true);
         return;
       }
@@ -8670,6 +7111,7 @@
       if (extensionsSelect) {
         const [kind, ...rest] = extensionsSelect.getAttribute("data-codex-extensions-select").split(":");
         codexPlusExtensionsSelected = { kind, key: rest.join(":") };
+        if (typeof resetCodexPlusExtensionsDetailTab === "function") resetCodexPlusExtensionsDetailTab();
         refreshCodexPlusExtensionsView();
         overlay.querySelector(".codex-plus-extensions-back")?.focus({ preventScroll: true });
         return;
@@ -8692,32 +7134,6 @@
         const key = backendToggle.getAttribute("data-codex-backend-setting");
         setBackendSetting(key, !codexPlusBackendSettings[key]);
         return;
-      }
-    }, true);
-    overlay.addEventListener("keydown", (event) => {
-      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target?.closest("[data-codex-plus-typing-effect-trigger]") && ["ArrowDown", "ArrowUp"].includes(event.key)) {
-        event.preventDefault();
-        openCodexPlusTypingEffectDropdown(overlay, event.key === "ArrowUp");
-        return;
-      }
-      const menu = target?.closest("[data-codex-plus-typing-effect-menu]");
-      if (!menu || menu.hidden) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeCodexPlusTypingEffectDropdown(true);
-      } else if (event.key === "Tab") {
-        // 回到触发器后让浏览器处理 Tab，焦点会自然进入下一项而不会停在隐藏菜单里。
-        closeCodexPlusTypingEffectDropdown(true);
-      } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-        event.preventDefault();
-        const options = Array.from(menu.querySelectorAll("[role=option]"));
-        const current = options.indexOf(document.activeElement);
-        const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
-          : (current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
-        options.forEach((option, index) => { option.tabIndex = index === next ? 0 : -1; });
-        options[next]?.focus({ preventScroll: true });
       }
     }, true);
     // 图标加载失败的回退：error 不冒泡，只能捕获阶段委托。
@@ -8761,7 +7177,6 @@
   function closeCodexPlusPage() {
     clearTimeout(window.__codexPlusPageNavigationCloseTimer);
     window.__codexPlusPageNavigationCloseTimer = null;
-    closeCodexPlusTypingEffectDropdown();
     window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
     window.__codexPlusPageResizeHandler = null;
     window.__codexPlusPageLayoutObserver?.disconnect();
@@ -9212,6 +7627,561 @@
   }
 
   /** 图标栏存在时走它，否则回退到旧版宽面板侧边栏入口。两条路径互斥，不会重复出现。 */
+  // 拓展详情页的主体（形态对齐 VS Code 的扩展详情）：「细节」显示拓展自己的 README，「设置」显示拓展登记的设置面板
+  // 或按清单 config 生成的表单，「功能」列出拓展接管了哪些能力；右侧栏是安装与市场信息。
+  // 头部（图标、名称、开关、卸载）仍在 renderCodexPlusExtensionsDetail 里，这里只管头部下面的部分。
+
+  /** 详情当前页签：readme / settings / features。换选中项时回到「细节」。 */
+  let codexPlusExtensionsDetailTab = "readme";
+  /** README 缓存：`<key>@<版本>` → { state: loading | ok | failed, markdown, assets, truncated, message }。 */
+  const codexPlusExtensionReadmes = new Map();
+
+  function resetCodexPlusExtensionsDetailTab() {
+    codexPlusExtensionsDetailTab = "readme";
+  }
+
+  /** 「刷新」时清掉 README 缓存，改过的 README 下次打开重新读。 */
+  function clearCodexPlusExtensionReadmes() {
+    codexPlusExtensionReadmes.clear();
+  }
+
+  function codexPlusExtensionReadmeCacheKey(local) {
+    return `${local.key}@${local.package?.version || ""}`;
+  }
+
+  async function loadCodexPlusExtensionReadme(local) {
+    const cacheKey = codexPlusExtensionReadmeCacheKey(local);
+    if (codexPlusExtensionReadmes.has(cacheKey)) return;
+    codexPlusExtensionReadmes.set(cacheKey, { state: "loading" });
+    let entry;
+    try {
+      const result = await postJson("/user-scripts/readme", { key: local.key });
+      entry = result?.status === "ok"
+        ? { state: "ok", markdown: String(result.markdown || ""), assets: result.assets && typeof result.assets === "object" ? result.assets : {}, truncated: !!result.truncated }
+        : { state: "failed", message: result?.message || "README 读取失败" };
+    } catch (error) {
+      entry = { state: "failed", message: String(error?.message || error || "README 读取失败") };
+    }
+    codexPlusExtensionReadmes.set(cacheKey, entry);
+    // 只换 README 那一块，不重画整个详情：设置面板、滚动位置都不动。
+    document.querySelectorAll("[data-codex-extensions-readme]").forEach((node) => {
+      if (node.getAttribute("data-codex-extensions-readme") === local.key) node.innerHTML = renderCodexPlusExtensionReadmeBody(local, entry);
+    });
+  }
+
+  /** 「细节」页签：有 README 显示 README；没有就显示市场清单里的使用要求、已知限制。 */
+  function renderCodexPlusExtensionReadmeBody(local, entry) {
+    if (!entry || entry.state === "loading") return '<div class="codex-plus-extensions-readme-hint" role="status">正在读取 README…</div>';
+    if (entry.state === "failed") return `<div class="codex-plus-extensions-detail-error">${escapeHtml(entry.message)}</div>`;
+    if (!entry.markdown.trim()) return "";
+    const truncated = entry.truncated ? '<div class="codex-plus-extensions-readme-hint">README 太长，只显示了前 512 KB。</div>' : "";
+    return `<div class="codex-plus-markdown">${renderCodexPlusMarkdown(entry.markdown, { assets: entry.assets })}</div>${truncated}`;
+  }
+
+  function renderCodexPlusExtensionDetailsTab(local, marketItem) {
+    const list = (title, items) => items?.length
+      ? `<div class="codex-plus-extensions-detail-section"><div class="codex-plus-extensions-detail-section-title">${escapeHtml(title)}</div><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
+      : "";
+    const facts = `${list("使用要求", marketItem?.requirements)}${list("已知限制", marketItem?.limitations)}`;
+    if (local?.package?.readme) {
+      const entry = codexPlusExtensionReadmes.get(codexPlusExtensionReadmeCacheKey(local));
+      if (!entry) void loadCodexPlusExtensionReadme(local);
+      return `<div data-codex-extensions-readme="${escapeHtml(local.key)}">${renderCodexPlusExtensionReadmeBody(local, entry)}</div>${facts}`;
+    }
+    const empty = local
+      ? local.kind === "package" ? "这个拓展没有提供 README。在拓展包目录里放一个 README.md，就会显示在这里。" : "单文件脚本没有 README，说明见上方简介。"
+      : "";
+    return facts || `<div class="codex-plus-extensions-readme-hint">${escapeHtml(empty || "这个拓展没有更多说明。")}</div>`;
+  }
+
+  /** 多语言文本（字符串或 `{ "zh-CN", zh, en }`）取中文优先。 */
+  function codexPlusExtensionText(value) {
+    if (value && typeof value === "object") {
+      return value["zh-CN"] || value.zh || value.en || Object.values(value).find((item) => typeof item === "string") || "";
+    }
+    return value == null ? "" : String(value);
+  }
+
+  /** 拓展有没有可设置的内容：登记了设置面板、声明了设置页或 config。 */
+  function codexPlusExtensionHasSettings(local) {
+    if (!local || local.kind !== "package") return false;
+    const panel = typeof codexPlusSettingsPanelFor === "function" ? codexPlusSettingsPanelFor(local.key) : null;
+    return !!(panel || local.package?.settingsPage || local.package?.configSchema?.length);
+  }
+
+  /**
+   * 「设置」页签：拓展在运行且登记了设置面板（ctx.registerSettingsPanel）就留挂载点给它画；
+   * 否则按清单 config 生成表单（停用的拓展也能改），声明了自己的设置界面的再提示一句启用后能看到。
+   */
+  function renderCodexPlusExtensionSettingsTab(local) {
+    const panel = typeof codexPlusSettingsPanelFor === "function" ? codexPlusSettingsPanelFor(local.key) : null;
+    if (panel && local.enabled) {
+      return `<div class="codex-plus-extensions-detail-settings-host" data-codex-plus-settings-panel="${escapeHtml(local.key)}" ${codexPlusExtensionConstants.extensionAttribute}="${escapeHtml(local.key)}"></div>`;
+    }
+    const ownUi = panel || local.package?.settingsPage;
+    const hint = ownUi
+      ? `<div class="codex-plus-extensions-detail-settings-hint">${local.enabled ? "这个拓展加载后，这里会显示它自己的设置界面。" : "启用这个拓展后，这里会显示它自己的设置界面。"}${local.package?.configSchema?.length ? "下面是按清单生成的通用设置。" : ""}</div>`
+      : "";
+    return `${hint}${local.package?.configSchema?.length ? renderCodexPlusExtensionConfigForm(local) : ""}`;
+  }
+
+  /** 按清单 config 生成的设置表单。改一项就把整份配置存回去（后台按整份覆盖）。 */
+  function renderCodexPlusExtensionConfigForm(local) {
+    const config = local.package?.config && typeof local.package.config === "object" ? local.package.config : {};
+    const rows = (local.package?.configSchema || []).map((field, index) => {
+      const id = `codex-plus-ext-config-${index}`;
+      const value = config[field.key] !== undefined ? config[field.key] : field.default;
+      const attrs = `id="${id}" data-codex-ext-config-field="${escapeHtml(field.key)}" data-codex-ext-config-type="${escapeHtml(field.type)}"`;
+      let control;
+      if (field.type === "boolean") {
+        control = `<button type="button" class="codex-plus-toggle" ${attrs} data-enabled="${String(value === true)}" role="switch" aria-checked="${String(value === true)}"><span></span></button>`;
+      } else if (field.type === "select") {
+        const options = (field.options || []).map((option) => {
+          const raw = JSON.stringify(option?.value ?? null);
+          const selected = raw === JSON.stringify(value ?? null) ? " selected" : "";
+          return `<option value="${escapeHtml(raw)}"${selected}>${escapeHtml(codexPlusExtensionText(option?.label) || String(option?.value ?? ""))}</option>`;
+        }).join("");
+        control = `<select class="codex-plus-ext-config-input" ${attrs}>${options}</select>`;
+      } else if (field.type === "number") {
+        const min = field.min == null ? "" : ` min="${escapeHtml(field.min)}"`;
+        const max = field.max == null ? "" : ` max="${escapeHtml(field.max)}"`;
+        control = `<input type="number" step="any" class="codex-plus-ext-config-input codex-plus-ext-config-number" ${attrs}${min}${max} value="${escapeHtml(value ?? "")}" />`;
+      } else if (field.type === "text") {
+        control = `<textarea class="codex-plus-ext-config-input" rows="4" spellcheck="false" ${attrs}>${escapeHtml(value ?? "")}</textarea>`;
+      } else if (field.type === "array" || field.type === "object") {
+        control = `<textarea class="codex-plus-ext-config-input codex-plus-ext-config-json" rows="6" spellcheck="false" ${attrs}>${escapeHtml(JSON.stringify(value ?? (field.type === "array" ? [] : {}), null, 2))}</textarea>`;
+      } else {
+        control = `<input type="${field.secret ? "password" : "text"}" autocomplete="off" spellcheck="false" class="codex-plus-ext-config-input" ${attrs} value="${escapeHtml(value ?? "")}" />`;
+      }
+      const description = codexPlusExtensionText(field.description);
+      const wide = ["text", "array", "object"].includes(field.type);
+      return `
+        <div class="codex-plus-ext-config-row" data-wide="${String(wide)}">
+          <div class="codex-plus-ext-config-label">
+            <label for="${id}">${escapeHtml(codexPlusExtensionText(field.title) || field.key)}</label>
+            ${description ? `<div class="codex-plus-ext-config-description">${escapeHtml(description)}</div>` : ""}
+            ${field.type === "array" || field.type === "object" ? '<div class="codex-plus-ext-config-description">JSON 格式，失焦后保存。</div>' : ""}
+          </div>
+          <div class="codex-plus-ext-config-control">${control}</div>
+        </div>
+      `;
+    }).join("");
+    return `<div class="codex-plus-ext-config" data-codex-ext-config="${escapeHtml(local.key)}">${rows}<div class="codex-plus-ext-config-status" role="status" data-codex-ext-config-status="true"></div></div>`;
+  }
+
+  /** 从控件读出新值；读不出（数字不合法、JSON 写错）时抛错给状态行显示。 */
+  function codexPlusExtensionConfigValue(control) {
+    const type = control.getAttribute("data-codex-ext-config-type");
+    if (type === "boolean") return control.getAttribute("data-enabled") !== "true";
+    if (type === "select") return JSON.parse(control.value);
+    if (type === "number") {
+      if (control.value.trim() === "" || !Number.isFinite(Number(control.value))) throw new Error("请填一个数字");
+      return Number(control.value);
+    }
+    if (type === "array" || type === "object") {
+      let value;
+      try {
+        value = JSON.parse(control.value || (type === "array" ? "[]" : "{}"));
+      } catch {
+        throw new Error("JSON 格式不对");
+      }
+      if (type === "array" ? !Array.isArray(value) : !value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(type === "array" ? "要填一个 JSON 数组" : "要填一个 JSON 对象");
+      }
+      return value;
+    }
+    return control.value;
+  }
+
+  async function saveCodexPlusExtensionConfigField(control) {
+    const form = control.closest("[data-codex-ext-config]");
+    const key = form?.getAttribute("data-codex-ext-config") || "";
+    const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
+    const status = form?.querySelector("[data-codex-ext-config-status]");
+    if (!local || !status) return;
+    const setStatus = (text, kind) => {
+      status.textContent = text;
+      status.dataset.kind = kind;
+    };
+    let value;
+    try {
+      value = codexPlusExtensionConfigValue(control);
+    } catch (error) {
+      setStatus(error.message, "error");
+      return;
+    }
+    const field = control.getAttribute("data-codex-ext-config-field");
+    const next = { ...(local.package?.config || {}), [field]: value };
+    if (control.getAttribute("data-codex-ext-config-type") === "boolean") {
+      control.setAttribute("data-enabled", String(value));
+      control.setAttribute("aria-checked", String(value));
+    }
+    setStatus("正在保存…", "pending");
+    try {
+      await saveCodexPlusExtensionConfig(key, next);
+      setStatus("已保存", "ok");
+    } catch (error) {
+      setStatus(String(error?.message || error), "error");
+    }
+  }
+
+  /** 「功能」页签：拓展清单里声明接管的能力（对应 VS Code 的 Feature Contributions）。 */
+  function codexPlusExtensionFeatures(local) {
+    const pkg = local?.package;
+    if (!pkg) return [];
+    const names = (items) => (Array.isArray(items) ? items : []).map((item) => (typeof item === "string" ? item : item?.name || item?.id || "")).filter(Boolean);
+    const rows = [];
+    const add = (label, value) => {
+      if (Array.isArray(value) ? value.length : value) rows.push([label, Array.isArray(value) ? value.join("、") : String(value)]);
+    };
+    add("页面脚本", pkg.renderer ? `${pkg.renderer} 个文件` : "");
+    add("模型工具", names(pkg.tools));
+    add("Codex 钩子", names(pkg.hookEvents));
+    const pipeline = pkg.toolPipeline || {};
+    add("工具调用管线", [
+      pipeline.preExecute ? `执行前 ${pipeline.preExecute} 个` : "",
+      pipeline.execute ? `接管执行 ${pipeline.execute} 个` : "",
+      pipeline.postExecute ? `结果改写 ${pipeline.postExecute} 个` : "",
+    ].filter(Boolean));
+    add("网关中间件", [
+      pkg.gatewayRequest ? `请求 ${pkg.gatewayRequest} 个` : "",
+      pkg.gatewayResponse ? `响应流 ${pkg.gatewayResponse} 个` : "",
+      pkg.gatewayError ? `失败重试 ${pkg.gatewayError} 个` : "",
+    ].filter(Boolean));
+    add("关掉的内置网关环节", names(pkg.gatewayReplaces));
+    add("模型供应商", (pkg.providers || []).map((provider) => provider?.name || provider?.id).filter(Boolean));
+    add("常驻后台", pkg.backend ? [pkg.http ? "后台脚本（处理 HTTP 请求）" : "后台脚本"] : []);
+    add("提供的服务", names(pkg.services));
+    add("定时任务", (pkg.schedules || []).length ? `${pkg.schedules.length} 个` : "");
+    const codex = pkg.codex || {};
+    add("Skills", names(codex.skills));
+    add("子 Agent", names(codex.agents));
+    add("MCP 服务器", names(codex.mcpServers));
+    add("提示词", names(codex.prompts));
+    add("全局指令", codex.instructions ? "有" : "");
+    add("顶替的内置拓展", names(pkg.replaces));
+    add("管理器面板", pkg.managerPage ? [pkg.managerPage.title || "面板"] : []);
+    add("页面最早期脚本", pkg.preload?.scripts ? `${pkg.preload.scripts} 个` : "");
+    add("启动前后", [
+      pkg.launch?.before ? "启动前脚本" : "",
+      pkg.launch?.after ? "退出后脚本" : "",
+      pkg.launch?.args?.length ? `启动参数 ${pkg.launch.args.join(" ")}` : "",
+    ].filter(Boolean));
+    add("dsh 插件", pkg.dsh ? "有" : "");
+    add("设置项", (pkg.configSchema || []).map((field) => codexPlusExtensionText(field.title) || field.key));
+    add("可调用的数据路由", names(pkg.routes));
+    return rows;
+  }
+
+  function renderCodexPlusExtensionFeaturesTab(rows) {
+    return `<table class="codex-plus-extensions-features"><tbody>${rows.map(([label, value]) => `<tr><th scope="row">${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>`;
+  }
+
+  /** 右侧栏：安装信息、市场信息、链接、标签。 */
+  function renderCodexPlusExtensionAside(local, marketItem, sourceLabel) {
+    const table = (title, rows) => {
+      const shown = rows.filter(([, value]) => value);
+      return shown.length
+        ? `<section><h3>${escapeHtml(title)}</h3><dl>${shown.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl></section>`
+        : "";
+    };
+    const install = local ? table("安装", [
+      ["标识符", local.key],
+      ["版本", local.package?.version || local.version || ""],
+      ["来源", sourceLabel],
+      ["状态", userScriptStatusLabel(local.status)],
+    ]) : "";
+    const market = marketItem ? table("市场", [
+      ["作者", marketItem.author || ""],
+      ["最新版本", marketItem.version ? `v${marketItem.version}` : ""],
+      ["更新时间", marketItem.updated_at || ""],
+    ]) : "";
+    const links = [
+      [marketItem?.homepage || local?.homepage, "主页"],
+      [local?.source_url || marketItem?.script_url, "源文件"],
+    ].filter(([url]) => /^https?:\/\//i.test(String(url || "")));
+    const resources = links.length
+      ? `<section><h3>资源</h3><ul class="codex-plus-extensions-aside-links">${links.map(([url, label]) => `<li><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a></li>`).join("")}</ul></section>`
+      : "";
+    const tags = marketItem?.tags?.length
+      ? `<section><h3>标签</h3><div class="codex-plus-extensions-detail-tags">${marketItem.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div></section>`
+      : "";
+    return `${install}${market}${resources}${tags}`;
+  }
+
+  /** 头部下面的部分：页签 + 内容 + 右侧栏。 */
+  function renderCodexPlusExtensionDetailTabs({ local, marketItem, sourceLabel }) {
+    const tabs = [{ id: "readme", label: "细节" }];
+    if (codexPlusExtensionHasSettings(local)) tabs.push({ id: "settings", label: "设置" });
+    const features = codexPlusExtensionFeatures(local);
+    if (features.length) tabs.push({ id: "features", label: "功能" });
+    const active = tabs.some((tab) => tab.id === codexPlusExtensionsDetailTab) ? codexPlusExtensionsDetailTab : "readme";
+    const body = (id) => {
+      if (id === "settings") return renderCodexPlusExtensionSettingsTab(local);
+      if (id === "features") return renderCodexPlusExtensionFeaturesTab(features);
+      return renderCodexPlusExtensionDetailsTab(local, marketItem);
+    };
+    const aside = renderCodexPlusExtensionAside(local, marketItem, sourceLabel);
+    return `
+      <div class="codex-plus-extensions-detail-tabs" role="tablist" aria-label="拓展详情">
+        ${tabs.map((tab) => `<button type="button" role="tab" id="codex-plus-extensions-tab-${tab.id}" aria-controls="codex-plus-extensions-tabpanel-${tab.id}" aria-selected="${String(tab.id === active)}" data-codex-extensions-tab="${tab.id}">${tab.label}</button>`).join("")}
+      </div>
+      <div class="codex-plus-extensions-detail-columns">
+        <div class="codex-plus-extensions-detail-main">
+          ${tabs.map((tab) => `<div class="codex-plus-extensions-detail-tabpanel" role="tabpanel" id="codex-plus-extensions-tabpanel-${tab.id}" aria-labelledby="codex-plus-extensions-tab-${tab.id}" data-codex-extensions-tabpanel="${tab.id}"${tab.id === active ? "" : " hidden"}>${body(tab.id)}</div>`).join("")}
+          ${local?.error ? `<div class="codex-plus-extensions-detail-error">${escapeHtml(local.error)}</div>` : ""}
+        </div>
+        ${aside ? `<aside class="codex-plus-extensions-detail-aside">${aside}</aside>` : ""}
+      </div>
+    `;
+  }
+
+  /** 切页签只改显隐，不重画：设置面板与 README 都留在原地。 */
+  function selectCodexPlusExtensionsDetailTab(root, tab) {
+    const tabs = Array.from(root?.querySelectorAll?.("[data-codex-extensions-tab]") || []).filter((button) => button.getAttribute("role") === "tab");
+    if (!tabs.some((button) => button.getAttribute("data-codex-extensions-tab") === tab)) return false;
+    codexPlusExtensionsDetailTab = tab;
+    tabs.forEach((button) => button.setAttribute("aria-selected", String(button.getAttribute("data-codex-extensions-tab") === tab)));
+    root.querySelectorAll("[data-codex-extensions-tabpanel]").forEach((panel) => {
+      panel.hidden = panel.getAttribute("data-codex-extensions-tabpanel") !== tab;
+    });
+    return true;
+  }
+
+  /** 详情里的点击：页签、头部的「设置」、配置开关、README 里的页内锚点。处理了返回 true。 */
+  function handleCodexPlusExtensionDetailClick(target, event) {
+    const tabButton = target?.closest?.("[data-codex-extensions-tab]");
+    if (tabButton) {
+      const root = tabButton.closest("[data-codex-plus-extensions-detail]");
+      selectCodexPlusExtensionsDetailTab(root, tabButton.getAttribute("data-codex-extensions-tab"));
+      if (tabButton.getAttribute("role") !== "tab") root?.querySelector(".codex-plus-extensions-detail-tabs")?.scrollIntoView?.({ block: "nearest" });
+      return true;
+    }
+    const toggle = target?.closest?.('[data-codex-ext-config-type="boolean"]');
+    if (toggle) {
+      void saveCodexPlusExtensionConfigField(toggle);
+      return true;
+    }
+    const anchor = target?.closest?.("[data-codex-plus-md-anchor]");
+    if (anchor) {
+      // 不能让页内锚点改 Codex 页面的地址，自己滚到 README 里对应的标题。
+      event?.preventDefault?.();
+      const id = `codex-plus-md-${anchor.getAttribute("data-codex-plus-md-anchor")}`;
+      const heading = Array.from(anchor.closest(".codex-plus-markdown")?.querySelectorAll("[id]") || []).find((node) => node.id === id);
+      heading?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      return true;
+    }
+    return false;
+  }
+
+  /** 配置表单里输入框 / 下拉 / 文本框的 change（失焦或回车）就保存。 */
+  function handleCodexPlusExtensionConfigChange(target) {
+    const control = target?.closest?.("[data-codex-ext-config-field]");
+    if (!control || control.getAttribute("data-codex-ext-config-type") === "boolean") return false;
+    void saveCodexPlusExtensionConfigField(control);
+    return true;
+  }
+
+  /**
+   * 拓展 README 的 Markdown 渲染。原样先转义，原始 HTML 一律当文字显示（HTML 注释直接去掉）；
+   * 链接只放行 http(s)、mailto 和页内锚点，图片只放行 https、常见图片 data URL 和包内 `assets/` 资源
+   * （`options.assets`：后台随 README 给的 路径 → data URL）。覆盖 README 常用语法：标题（含 Setext）、段落、
+   * 无序/有序/任务列表（可嵌套）、引用、围栏/缩进代码块、表格、分隔线，行内代码、粗体、斜体、删除线、链接、图片、自动链接、换行。
+   */
+  function renderCodexPlusMarkdown(source, options = {}) {
+    const assets = options.assets && typeof options.assets === "object" ? options.assets : {};
+    const text = String(source || "").replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?-->/g, "").replace(/\t/g, "    ");
+    const slugs = new Map();
+    const slug = (value) => {
+      const base = String(value).toLowerCase().replace(/<[^>]*>/g, "").replace(/&[a-z#0-9]+;/g, "").trim()
+        .replace(/[^\p{L}\p{N}\s-]/gu, "").replace(/\s+/g, "-") || "section";
+      const count = slugs.get(base) || 0;
+      slugs.set(base, count + 1);
+      return count ? `${base}-${count}` : base;
+    };
+    const safeHref = (url) => {
+      const value = String(url || "").trim();
+      if (/^(https?:|mailto:)/i.test(value)) return { href: value, external: true };
+      if (/^#[^\s]*$/.test(value)) return { anchor: value.slice(1) };
+      return null;
+    };
+    const safeSrc = (url) => {
+      const value = String(url || "").trim();
+      if (/^https:\/\//i.test(value) || /^data:image\/(png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(value)) return value;
+      const relative = value.replace(/^\.?\//, "");
+      return typeof assets[relative] === "string" ? assets[relative] : "";
+    };
+
+    const inline = (raw) => {
+      const stash = [];
+      const keep = (html) => `\u0000${stash.push(html) - 1}\u0000`;
+      let value = String(raw);
+      value = value.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, code) => keep(`<code>${escapeHtml(code.trim())}</code>`));
+      value = value.replace(/\\([\\`*_{}\[\]()#+\-.!|~<>])/g, (_, char) => keep(escapeHtml(char)));
+      value = value.replace(/!\[([^\]]*)\]\(\s*<?((?:[^()\s<>]|\([^()\s]*\))+)>?(?:\s+"([^"]*)")?\s*\)/g, (_, alt, url, title) => {
+        const src = safeSrc(url);
+        if (!src) return keep(escapeHtml(alt));
+        return keep(`<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}"${title ? ` title="${escapeHtml(title)}"` : ""} loading="lazy" />`);
+      });
+      value = value.replace(/<(https?:\/\/[^\s>]+)>/g, (_, url) => keep(`<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`));
+      value = value.replace(/\[((?:[^\[\]]|\[[^\]]*\])+)\]\(\s*<?((?:[^()\s<>]|\([^()\s]*\))+)>?(?:\s+"([^"]*)")?\s*\)/g, (_, label, url) => {
+        const link = safeHref(url);
+        const body = inline(label);
+        if (!link) return keep(body);
+        if (link.anchor !== undefined) return keep(`<a href="#" data-codex-plus-md-anchor="${escapeHtml(link.anchor)}">${body}</a>`);
+        return keep(`<a href="${escapeHtml(link.href)}" target="_blank" rel="noreferrer">${body}</a>`);
+      });
+      value = value.replace(/https?:\/\/[^\s<>()\u0000]+[^\s<>()\u0000.,;:!?'"]/g, (url) => keep(`<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`));
+      value = escapeHtml(value)
+        .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, "<strong>$2</strong>")
+        .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<del>$1</del>")
+        .replace(/\*(?=[^\s*])([\s\S]*?[^\s*])\*/g, "<em>$1</em>")
+        .replace(/(^|[^\p{L}\p{N}_])_(?=\S)([\s\S]*?\S)_(?![\p{L}\p{N}_])/gu, "$1<em>$2</em>")
+        .replace(/(?: {2,}|\\)\n/g, "<br />")
+        .replace(/\n/g, " ");
+      let guard = 0;
+      while (value.includes("\u0000") && guard++ < 50) value = value.replace(/\u0000(\d+)\u0000/g, (_, index) => stash[Number(index)] ?? "");
+      return value;
+    };
+
+    const fenceRe = /^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)/;
+    const headingRe = /^ {0,3}(#{1,6})(?:\s+(.*?))?\s*#*\s*$/;
+    const hrRe = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
+    const listRe = /^( *)([-*+]|\d{1,9}[.)])(?:\s+(.*)|$)/;
+    const quoteRe = /^ {0,3}>/;
+    const tableSepRe = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
+    const leading = (line) => line.match(/^ */)[0].length;
+    const isBlockStart = (line) => fenceRe.test(line) || headingRe.test(line) || hrRe.test(line) || listRe.test(line) || quoteRe.test(line);
+    const splitRow = (line) => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").split(/(?<!\\)\|/).map((cell) => cell.trim());
+
+    const blocks = (lines) => {
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        if (!line.trim()) { i++; continue; }
+        const fence = line.match(fenceRe);
+        if (fence) {
+          const marker = fence[1];
+          const body = [];
+          i++;
+          while (i < lines.length && !new RegExp(`^ {0,3}${marker[0] === "`" ? "`" : "~"}{${marker.length},}\\s*$`).test(lines[i])) body.push(lines[i++]);
+          i++;
+          const lang = fence[2] ? ` data-lang="${escapeHtml(fence[2])}"` : "";
+          out.push(`<pre><code${lang}>${escapeHtml(body.join("\n"))}</code></pre>`);
+          continue;
+        }
+        if (leading(line) >= 4) {
+          const body = [];
+          while (i < lines.length && (leading(lines[i]) >= 4 || !lines[i].trim())) body.push(lines[i++].slice(4));
+          while (body.length && !body[body.length - 1].trim()) body.pop();
+          out.push(`<pre><code>${escapeHtml(body.join("\n"))}</code></pre>`);
+          continue;
+        }
+        const heading = line.match(headingRe);
+        if (heading) {
+          const level = heading[1].length;
+          const html = inline(heading[2] || "");
+          out.push(`<h${level} id="codex-plus-md-${escapeHtml(slug(html))}">${html}</h${level}>`);
+          i++;
+          continue;
+        }
+        if (hrRe.test(line)) { out.push("<hr />"); i++; continue; }
+        if (quoteRe.test(line)) {
+          const body = [];
+          while (i < lines.length && lines[i].trim() && (quoteRe.test(lines[i]) || !isBlockStart(lines[i]))) {
+            body.push(lines[i].replace(/^ {0,3}> ?/, ""));
+            i++;
+          }
+          out.push(`<blockquote>${blocks(body)}</blockquote>`);
+          continue;
+        }
+        const list = line.match(listRe);
+        if (list) {
+          const indent = list[1].length;
+          const ordered = /\d/.test(list[2]);
+          const start = ordered ? parseInt(list[2], 10) : 1;
+          const items = [];
+          let loose = false;
+          while (i < lines.length) {
+            if (!lines[i].trim()) {
+              let next = i;
+              while (next < lines.length && !lines[next].trim()) next++;
+              const sibling = lines[next]?.match(listRe);
+              if (!sibling || sibling[1].length !== indent || /\d/.test(sibling[2]) !== ordered) break;
+              loose = true;
+              i = next;
+            }
+            const item = lines[i].match(listRe);
+            if (!item || item[1].length !== indent || /\d/.test(item[2]) !== ordered) break;
+            const contentIndent = item[1].length + item[2].length + 1;
+            const body = [item[3] || ""];
+            i++;
+            while (i < lines.length) {
+              const current = lines[i];
+              if (!current.trim()) {
+                let next = i;
+                while (next < lines.length && !lines[next].trim()) next++;
+                if (next < lines.length && leading(lines[next]) > indent && !(listRe.test(lines[next]) && leading(lines[next]) === indent)) {
+                  body.push("");
+                  loose = true;
+                  i++;
+                  continue;
+                }
+                break;
+              }
+              if (leading(current) > indent) { body.push(current.slice(Math.min(leading(current), contentIndent))); i++; continue; }
+              if (!isBlockStart(current) && !(i + 1 < lines.length && tableSepRe.test(lines[i + 1]) && current.includes("|"))) { body.push(current.trim()); i++; continue; }
+              break;
+            }
+            items.push(body);
+          }
+          const html = items.map((body) => {
+            let first = body[0];
+            let check = "";
+            const task = first.match(/^\[([ xX])\]\s+/);
+            if (task) {
+              check = `<input type="checkbox" disabled${task[1] === " " ? "" : " checked"} /> `;
+              first = first.slice(task[0].length);
+            }
+            let content = blocks([first, ...body.slice(1)]);
+            if (!loose) content = content.replace(/<p>([\s\S]*?)<\/p>/g, "$1");
+            return `<li${task ? ' class="codex-plus-markdown-task"' : ""}>${check}${content}</li>`;
+          }).join("");
+          out.push(ordered ? `<ol${start !== 1 ? ` start="${start}"` : ""}>${html}</ol>` : `<ul>${html}</ul>`);
+          continue;
+        }
+        if (line.includes("|") && i + 1 < lines.length && tableSepRe.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+          const head = splitRow(line);
+          const aligns = splitRow(lines[i + 1]).map((cell) => (cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : cell.startsWith(":") ? "left" : ""));
+          i += 2;
+          const rows = [];
+          while (i < lines.length && lines[i].trim() && lines[i].includes("|")) rows.push(splitRow(lines[i++]));
+          const cell = (tag, value, index) => `<${tag}${aligns[index] ? ` style="text-align:${aligns[index]}"` : ""}>${inline(value || "")}</${tag}>`;
+          out.push(`<div class="codex-plus-markdown-table"><table><thead><tr>${head.map((value, index) => cell("th", value, index)).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${head.map((_, index) => cell("td", row[index], index)).join("")}</tr>`).join("")}</tbody></table></div>`);
+          continue;
+        }
+        const paragraph = [];
+        while (i < lines.length && lines[i].trim()) {
+          if (paragraph.length && /^ {0,3}(=+|-+)\s*$/.test(lines[i])) break;
+          if (paragraph.length && (isBlockStart(lines[i]) || (lines[i].includes("|") && i + 1 < lines.length && tableSepRe.test(lines[i + 1]) && lines[i + 1].includes("-")))) break;
+          paragraph.push(paragraph.length ? lines[i].replace(/^ +/, "") : lines[i].trim());
+          i++;
+        }
+        const setext = i < lines.length ? lines[i].match(/^ {0,3}(=+|-+)\s*$/) : null;
+        if (setext && paragraph.length) {
+          const level = setext[1][0] === "=" ? 1 : 2;
+          const html = inline(paragraph.join("\n"));
+          out.push(`<h${level} id="codex-plus-md-${escapeHtml(slug(html))}">${html}</h${level}>`);
+          i++;
+          continue;
+        }
+        out.push(`<p>${inline(paragraph.join("\n"))}</p>`);
+      }
+      return out.join("");
+    };
+    return blocks(text.split("\n"));
+  }
   function installCodexPlusNavigationEntries() {
     // 插件入口沿用原生按钮，清理旧注入留下的重复商店入口。
     document.getElementById(codexPlusRailPluginMarketId)?.remove();
@@ -15528,1068 +14498,6 @@
   }
 
   installBootShellRecovery();
-  /**
-   * 输入框下方用量状态栏：输出吞吐 / 缓存命中率 / 上下文占用。
-   *
-   * 数据全部来自 Codex 自己写的 rollout 记录（`event_msg.token_count`），中文档口径
-   * 与 Codex 一致：缓存命中 = cached_input_tokens / input_tokens，上下文占用 =
-   * last_token_usage.total_tokens / model_context_window。这里的 model_context_window
-   * 正是 Codex++ 注入 model_catalog_json 后 Codex 认到的每模型窗口，所以按模型配置
-   * 窗口的功能会直接反映在这一项上。
-   *
-   * 为什么不复用 `/thread-usage-history`：那条路由按会话整读 rollout 并解析全部行，
-   * 真实会话的 rollout 可以到几百 MB，状态栏按秒级轮询扛不住。这里走
-   * `/thread-usage-live`，宿主只读文件尾部。
-   *
-   * 节点挂在输入卡片（[data-composer-surface-variant]）之后、同一父容器内，也就是
-   * 「输入框下方、卡片外」。旧版 Codex 没有这个属性，退回旧类名或输入框所在的 form，
-   * 会话 id 退回侧边栏当前行 + 地址栏，挂不上时写诊断日志（issue #2753）。
-   * 节点带 data-codex-plus-ext，扫描调度器会把它排除在
-   * 自喂循环之外（issue #1960）。
-   */
-  registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-usage-statusline"]');
-  window.__codexPlusUsageStatusLineRuntime?.dispose?.();
-
-  const codexPlusUsageStatusLineId = "codex-plus-usage-statusline";
-  const codexPlusUsageStyleId = "codex-plus-usage-statusline-style";
-  /** 空闲轮询间隔；最近有 token 事件时切到活跃间隔。 */
-  const codexPlusUsageIdleIntervalMs = 5000;
-  /** 本轮在跑（最近有事件）时的间隔。 */
-  const codexPlusUsageActiveIntervalMs = 1200;
-  /** 已经拿到会话、但还没写出第一条 token 事件时的间隔。 */
-  const codexPlusUsageWarmupIntervalMs = 2500;
-  /** 最近一条 token 事件超过这个时间就认为本轮已经结束，速度值转为淡化显示。 */
-  const codexPlusUsageStaleMs = 120000;
-  /** 连续失败到这个次数后停掉轮询，避免桥接不可用时每秒写诊断日志。 */
-  const codexPlusUsageFailureLimit = 5;
-
-  const codexPlusUsageState = {
-    disposed: false,
-    timer: 0,
-    node: null,
-    parts: null,
-    threadId: "",
-    failures: 0,
-    inFlight: false,
-    lastFingerprint: "",
-    cache: new Map(),
-    observer: null,
-    /** 页面里出现过新版 composer 标记后就不再走旧版兜底。 */
-    modernDom: false,
-    /** 已经写过的诊断原因，每个页面生命周期一条只记一次。 */
-    diagnosed: new Set(),
-  };
-
-  const codexPlusUsageSvgNs = "http://www.w3.org/2000/svg";
-
-  /**
-   * 速度项只显示数字，名称和口径放在悬停提示里：这是含首 token 等待和工具执行的
-   * 吞吐，不是纯解码速度，不能再叫「生成速度」（issue #2636）。
-   */
-  function codexPlusUsageText() {
-    const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
-    return language.startsWith("zh")
-      ? {
-        speed: (value) => `${value} tok/s`,
-        cache: (value) => `缓存命中 ${value}`,
-        context: (value) => value,
-        aria: "用量状态栏",
-        separator: "：",
-        comma: "，",
-        speedTitle: (value) => `输出吞吐 ${value} tok/s（本轮输出 token 合计 ÷ 对应耗时合计，含首 token 等待与工具执行，不是纯解码速度）`,
-        cacheTitle: (value) => `缓存命中 ${value}`,
-        contextTitle: (value) => `上下文占用 ${value}`,
-        windowTitle: (value) => `窗口 ${value}`,
-      }
-      : {
-        speed: (value) => `${value} tok/s`,
-        cache: (value) => `cache hit ${value}`,
-        context: (value) => value,
-        aria: "Usage status line",
-        separator: ": ",
-        comma: ", ",
-        speedTitle: (value) => `Output throughput ${value} tok/s (this turn's output tokens ÷ elapsed time, including time to first token and tool runs; not pure decode speed)`,
-        cacheTitle: (value) => `Cache hit ${value}`,
-        contextTitle: (value) => `Context used ${value}`,
-        windowTitle: (value) => `window ${value}`,
-      };
-  }
-
-  function codexPlusUsageInstallStyle() {
-    if (document.getElementById(codexPlusUsageStyleId)) return;
-    const style = document.createElement("style");
-    style.id = codexPlusUsageStyleId;
-    style.dataset.codexPlusExt = "builtin-usage-statusline";
-    style.textContent = `
-      /* 颜色只用一层透明度：主题的 --color-token-text-secondary 本身就是 65% 透明，
-         再叠容器 opacity 会掉到 0.3 出头，实测在 #141414 上几乎看不清。
-         这里以主文字色取 82%，既够亮又略低于输入框文字。 */
-      /* 三项作为一组居中，和 DSH 那条一致；两端对齐会把「上下文占用」甩到最右边，
-         和速度、缓存拉得太开，读起来是两段信息。 */
-      #${codexPlusUsageStatusLineId}{display:flex;align-items:center;justify-content:center;gap:24px;box-sizing:border-box;width:100%;margin:6px 0 0;padding:0 10px;font:inherit;font-size:12px;line-height:17px;color:var(--color-token-text-secondary,rgba(205,205,215,.95));color:color-mix(in srgb,var(--color-token-text-primary,#dfdfdf) 82%,transparent);user-select:none;cursor:default}
-      #${codexPlusUsageStatusLineId}[data-hidden="true"]{display:none}
-      #${codexPlusUsageStatusLineId} .codex-plus-usage-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-variant-numeric:tabular-nums;transition:opacity .2s}
-      #${codexPlusUsageStatusLineId} .codex-plus-usage-value{font-weight:500}
-      #${codexPlusUsageStatusLineId} .codex-plus-usage-item svg{flex:0 0 auto;opacity:.8}
-      /* 本轮结束超过阈值只淡化速度：缓存命中与上下文占用仍然是当前值，不该跟着变灰。 */
-      #${codexPlusUsageStatusLineId}[data-stale="true"] .codex-plus-usage-item[data-usage="speed"]{opacity:.55}
-    `;
-    document.head?.appendChild(style);
-  }
-
-  /** 描边图标，尺寸与颜色都跟随文字，避免在浅色主题下露白。 */
-  function codexPlusUsageIcon(shapes) {
-    const svg = document.createElementNS(codexPlusUsageSvgNs, "svg");
-    svg.setAttribute("viewBox", "0 0 16 16");
-    svg.setAttribute("width", "13");
-    svg.setAttribute("height", "13");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "1.4");
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
-    svg.setAttribute("aria-hidden", "true");
-    const created = shapes.map((shape) => {
-      const node = document.createElementNS(codexPlusUsageSvgNs, shape.tag);
-      Object.entries(shape.attrs).forEach(([key, value]) => node.setAttribute(key, value));
-      svg.appendChild(node);
-      return node;
-    });
-    return { svg, created };
-  }
-
-  /** 上下文用进度环，环长 2πr；r=6 时周长约 37.7。 */
-  const codexPlusUsageRingCircumference = 37.7;
-
-  function codexPlusUsageRingIcon() {
-    const icon = codexPlusUsageIcon([
-      { tag: "circle", attrs: { cx: "8", cy: "8", r: "6", "stroke-opacity": ".3" } },
-      { tag: "circle", attrs: { cx: "8", cy: "8", r: "6", "stroke-dasharray": `0 ${codexPlusUsageRingCircumference}`, transform: "rotate(-90 8 8)" } },
-    ]);
-    return { svg: icon.svg, ring: icon.created[1] };
-  }
-
-  function codexPlusUsageItem(node, key, label, icon) {
-    const item = document.createElement("span");
-    item.className = "codex-plus-usage-item";
-    item.dataset.usage = key;
-    item.appendChild(icon);
-    const value = document.createElement("span");
-    value.className = "codex-plus-usage-value";
-    value.textContent = "--";
-    item.appendChild(value);
-    node.appendChild(item);
-    return { item, value, label };
-  }
-
-  /** DOM 只建一次；之后每轮只改文本与环长，避免每秒重建节点触发扫描。 */
-  function codexPlusUsageBuild(node) {
-    node.textContent = "";
-    const ring = codexPlusUsageRingIcon();
-    const parts = {
-      speed: codexPlusUsageItem(node, "speed", "speed", codexPlusUsageIcon([
-        { tag: "path", attrs: { d: "M2 12.5a6 6 0 0 1 12 0" } },
-        { tag: "path", attrs: { d: "M8 12.5 10.8 8.6" } },
-      ]).svg),
-      cache: codexPlusUsageItem(node, "cache", "cache", codexPlusUsageIcon([
-        { tag: "path", attrs: { d: "M8 2.2c2.5 0 4.5.8 4.5 1.8S10.5 5.8 8 5.8 3.5 5 3.5 4 5.5 2.2 8 2.2Z" } },
-        { tag: "path", attrs: { d: "M3.5 4v8c0 1 2 1.8 4.5 1.8s4.5-.8 4.5-1.8V4" } },
-        { tag: "path", attrs: { d: "M3.5 8c0 1 2 1.8 4.5 1.8S12.5 9 12.5 8" } },
-      ]).svg),
-      context: codexPlusUsageItem(node, "context", "context", ring.svg),
-      ring: ring.ring,
-    };
-    codexPlusUsageState.parts = parts;
-    return parts;
-  }
-
-  /** 当前版本 Codex（26.825 起）的输入卡片。 */
-  const codexPlusUsageCardSelector = "[data-composer-surface-variant]";
-  /**
-   * 旧版 Codex 的输入卡片（issue #2753）：26.825 之前没有 data-composer-surface-variant，
-   * 卡片是 `.composer-surface-chrome`，或带 CSS Modules 类名 `_ComposerLayoutRoot_` 的容器，
-   * 和 Dream Skin 选择器契约里 composer-chrome 的几代写法一致。Intel Mac 拿不到新版
-   * Codex（新版只发 arm64），只能停在旧版，所以这条兜底在 macOS 上最常用到。
-   */
-  const codexPlusUsageLegacyCardSelector = '.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]';
-  const codexPlusUsageEditorSelector = '.ProseMirror[contenteditable="true"], textarea:not(:disabled):not([readonly]), [role="textbox"][contenteditable="true"]';
-  /** 同一页面生命周期内诊断事件的上限，避免 DOM 反复变化时刷屏。 */
-  const codexPlusUsageDiagnosticLimit = 8;
-
-  /**
-   * 找输入卡片，返回 `{ card, source }`；source 记录走的是哪条路径，写进诊断日志。
-   *
-   * 旧版兜底只在页面从没出现过新版输入卡片标记时启用：新版 Codex 停在设置页等没有 composer 的
-   * 页面时，不能把别处的 form 当成输入框。
-   *
-   * 「新版」只认 data-composer-surface-variant：部分旧版 Codex 已经有 data-codex-composer-root，
-   * 却还没有新版卡片标记（#2753 的 Intel Mac 日志：composerRoot=1、surfaceVariant=0），
-   * 把根标记也算作新版会让旧版永远走不到兜底。
-   */
-  function codexPlusUsageComposerCard() {
-    let fallback = null;
-    for (const card of document.querySelectorAll(codexPlusUsageCardSelector)) {
-      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
-      fallback = card;
-      // 首页可能同时挂着多个 composer 外壳；带真实输入框的那个才是当前会话。
-      if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "surface-variant" };
-    }
-    if (fallback) return { card: fallback, source: "surface-variant" };
-    if (!codexPlusUsageState.modernDom && document.querySelector(codexPlusUsageCardSelector)) {
-      codexPlusUsageState.modernDom = true;
-    }
-    if (codexPlusUsageState.modernDom) return null;
-    for (const card of document.querySelectorAll(codexPlusUsageLegacyCardSelector)) {
-      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
-      // 旧版类名也可能挂在装饰容器上，必须真的包着输入框才算。
-      if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "legacy-chrome" };
-    }
-    // 有 composer 根标记、没有旧类名的过渡版本：根节点包着输入框时就挂在根上。
-    for (const card of document.querySelectorAll("[data-codex-composer-root]")) {
-      if (!visibleElement(card) || card.closest('[data-codex-plus-ext]')) continue;
-      if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "composer-root" };
-    }
-    // 类名也对不上时按输入框本身找：取 ProseMirror 所在的 form。
-    for (const editor of document.querySelectorAll('.ProseMirror[contenteditable="true"]')) {
-      if (!visibleElement(editor) || editor.closest('[data-codex-plus-ext], [role="dialog"]')) continue;
-      const form = editor.closest("form");
-      if (form && visibleElement(form)) return { card: form, source: "editor-form" };
-    }
-    return null;
-  }
-
-  function codexPlusUsageValidThreadId(value) {
-    const id = String(value || "").replace(/^local:/, "").trim();
-    if (!id || id === "__proto__" || id === "prototype" || id === "constructor") return "";
-    return /^[A-Za-z0-9_.-]{8,128}$/.test(id) ? id : "";
-  }
-
-  /**
-   * 旧版 Codex 的当前会话：侧边栏当前行 + 地址栏（currentSessionRef，删除 / 导出也靠它
-   * 认当前会话）。测试沙箱里没有这个函数，按缺失处理。
-   */
-  function codexPlusUsageLegacyThreadId() {
-    if (typeof currentSessionRef !== "function") return "";
-    try {
-      return currentSessionRef()?.session_id || "";
-    } catch (_) {
-      return "";
-    }
-  }
-
-  /**
-   * 当前会话，返回 `{ id, source, reason, placement }`；拿不到 id 时 reason 说明原因。
-   *
-   * `[data-above-composer-conversation-id]` 是 Codex 自己挂在 composer 上的会话标识，
-   * 比侧边栏选中行更贴近「这个输入框属于哪个会话」。侧边栏只作兜底，而且**只在
-   * placement=thread 时用**：首页/新会话草稿的 composer 是 placement=home，此时侧边栏
-   * 仍选中着上一个 thread，兜底会把上一个会话的读数挂到新会话上。
-   * 新会话草稿的 id 形如 `local:client-new-thread:<uuid>`，还没有 rollout，直接当作无会话。
-   *
-   * 旧版 Codex 的 composer 上既没有 data-codex-composer-root / data-composer-placement，
-   * 也没有会话标识（issue #2753），这时 placement 为空，退回侧边栏当前行 + 地址栏。
-   */
-  function codexPlusUsageResolveThread(card) {
-    const none = (reason, placement = "") => ({ id: "", source: "", reason, placement });
-    if (!card) return none("no-card");
-    const composerRoot = card.closest?.("[data-codex-composer-root]") || null;
-    const placement = String(composerRoot?.getAttribute("data-composer-placement") || "");
-    const fromComposer = composerRoot
-      ?.querySelector("[data-above-composer-conversation-id]")
-      ?.getAttribute("data-above-composer-conversation-id");
-    if (fromComposer) {
-      const id = codexPlusUsageValidThreadId(fromComposer);
-      if (id) return { id, source: "composer", reason: "", placement };
-      return none(/client-new-thread:/i.test(fromComposer) ? "draft" : "invalid-id", placement);
-    }
-    if (placement === "home") return none("home", placement);
-    if (placement === "thread") {
-      const fromSidebar = codexPlusUsageValidThreadId(document
-        .querySelector('[data-app-action-sidebar-thread-selected="true"][data-app-action-sidebar-thread-id]')
-        ?.getAttribute("data-app-action-sidebar-thread-id"));
-      if (fromSidebar) return { id: fromSidebar, source: "sidebar", reason: "", placement };
-    } else if (placement) {
-      // 其它显式 placement（侧边对话等）不认侧边栏，和原来的行为一致。
-      return none("other-placement", placement.slice(0, 32));
-    }
-    const legacy = codexPlusUsageValidThreadId(codexPlusUsageLegacyThreadId());
-    if (legacy) return { id: legacy, source: "legacy", reason: "", placement };
-    return none("no-thread-id", placement);
-  }
-
-  function codexPlusUsageThreadId(card) {
-    return codexPlusUsageResolveThread(card).id;
-  }
-
-  /** 同一原因每个页面生命周期只记一次。 */
-  function codexPlusUsageDiagnoseOnce(event, key, detail) {
-    const seen = codexPlusUsageState.diagnosed;
-    const fullKey = `${event}:${key}`;
-    if (seen.has(fullKey) || seen.size >= codexPlusUsageDiagnosticLimit) return;
-    seen.add(fullKey);
-    try {
-      Promise.resolve(sendCodexPlusDiagnostic(event, detail)).catch(() => {});
-    } catch (_) {
-      // 诊断失败不能影响状态栏本身。
-    }
-  }
-
-  /** 挂载失败时的 DOM 快照：只记数量和布尔值，不记会话 id 与内容。 */
-  function codexPlusUsageDomProbe() {
-    const count = (selector) => {
-      try {
-        return document.querySelectorAll(selector).length;
-      } catch (_) {
-        return -1;
-      }
-    };
-    return {
-      surfaceVariant: count(codexPlusUsageCardSelector),
-      composerRoot: count("[data-codex-composer-root]"),
-      conversationMarker: count("[data-above-composer-conversation-id]"),
-      legacyChrome: count(".composer-surface-chrome"),
-      layoutRoot: count('[class*="_ComposerLayoutRoot_"]'),
-      editors: count('.ProseMirror[contenteditable="true"]'),
-      sidebarRows: count("[data-app-action-sidebar-thread-id]"),
-      sidebarSelected: count('[data-app-action-sidebar-thread-selected="true"]'),
-      locationHasThread: typeof locationThreadId === "function" ? !!locationThreadId() : null,
-    };
-  }
-
-  function codexPlusUsageVisibleEditor() {
-    return [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')]
-      .some((editor) => visibleElement(editor) && !editor.closest("[data-codex-plus-ext]"));
-  }
-
-  /**
-   * 把挂载结果写进诊断日志（issue #2753：同样设置 Windows 有、Mac 没有，用户侧无从排查）。
-   *   - 页面上有输入框却找不到卡片、或找到卡片却认不出会话 → usage_statusline_mount_missing；
-   *   - 走了旧版兜底才挂上 → usage_statusline_fallback_mount，方便确认用户是旧版 Codex。
-   * 首页、新会话草稿、没有输入框的页面本来就不显示，不记。
-   */
-  function codexPlusUsageReportPlacement(found, thread) {
-    let event = "";
-    let detail = null;
-    if (!found) {
-      if (!codexPlusUsageVisibleEditor()) return;
-      event = "usage_statusline_mount_missing";
-      detail = { reason: "no-composer-card" };
-    } else if (!thread?.id) {
-      const reason = thread?.reason || "no-thread-id";
-      if (reason === "home" || reason === "draft") return;
-      event = "usage_statusline_mount_missing";
-      detail = { reason, card: found.source, placement: thread?.placement || "" };
-    } else if (found.source !== "surface-variant" || thread.source === "legacy") {
-      event = "usage_statusline_fallback_mount";
-      detail = { card: found.source, thread: thread.source };
-    } else {
-      return;
-    }
-    codexPlusUsageDiagnoseOnce(event, Object.values(detail).join("|"), { ...detail, dom: codexPlusUsageDomProbe() });
-  }
-
-  /** 旧版 Codex 的 rollout 可能缺窗口或轮 id：照样显示（对应项为 --），只记一次缺了什么。 */
-  function codexPlusUsageNoteDataGaps(events) {
-    if (!Array.isArray(events) || !events.length) return;
-    const latest = events[events.length - 1] || {};
-    const missing = [];
-    if (!(Number(latest.context_window) > 0)) missing.push("context_window");
-    if (!events.some((item) => typeof item?.turn_id === "string" && item.turn_id)) missing.push("turn_id");
-    if (!events.some((item) => Number.isFinite(Date.parse(item?.t)))) missing.push("t");
-    if (!missing.length) return;
-    codexPlusUsageDiagnoseOnce("usage_statusline_data_partial", missing.join(","), { missing, events: events.length });
-  }
-
-  /**
-   * 状态栏放在哪：内置拓展经公开的 composer.below 插槽登记了容器时放进卡片所在输入框的那个容器
-   * （见 96-builtin-extensions.js），否则（单独运行本分片、旧版页面）紧跟在输入卡片后面。
-   */
-  function codexPlusUsageSlotHost(card) {
-    const root = card?.closest?.("[data-codex-composer-root]");
-    if (!root) return null;
-    for (const container of codexPlusUsageState.slotHosts || []) {
-      if (container.isConnected && root.contains(container)) return container;
-    }
-    return null;
-  }
-
-  function codexPlusUsageNodePlaced(node, card) {
-    if (!node?.isConnected) return false;
-    const host = codexPlusUsageSlotHost(card);
-    return host ? node.parentElement === host : node.previousElementSibling === card;
-  }
-
-  function codexPlusUsageEnsureNode(card) {
-    const host = card?.parentElement;
-    if (!host) return null;
-    let node = codexPlusUsageState.node;
-    if (codexPlusUsageNodePlaced(node, card)) return node;
-    if (!node) {
-      node = document.createElement("div");
-      node.id = codexPlusUsageStatusLineId;
-      node.setAttribute("data-codex-plus-ext", "builtin-usage-statusline");
-      node.setAttribute("role", "status");
-      codexPlusUsageState.node = node;
-    }
-    const slotHost = codexPlusUsageSlotHost(card);
-    if (slotHost) slotHost.appendChild(node);
-    else card.insertAdjacentElement("afterend", node);
-    return node;
-  }
-
-  function codexPlusUsageHide() {
-    const node = codexPlusUsageState.node;
-    if (node) {
-      // 只切属性、不摘节点：新会话在第一条 token 事件写出前会反复走空数据路径，
-      // 每秒增删一次节点既浪费又会让 Codex 的 MutationObserver 空转。
-      node.dataset.hidden = "true";
-    }
-    codexPlusUsageState.lastFingerprint = "";
-  }
-
-  function codexPlusUsageShow(node) {
-    if (node.dataset.hidden !== "true") return;
-    node.dataset.hidden = "false";
-    codexPlusUsageState.lastFingerprint = "";
-  }
-
-  function codexPlusUsagePercent(numerator, denominator) {
-    if (!(denominator > 0) || !(numerator >= 0)) return null;
-    return Math.min(100, Math.max(0, (numerator / denominator) * 100));
-  }
-
-  /**
-   * 只取真实 turn_id 对应的最近一轮。total_token_usage 是会话累计，不会在换轮时
-   * 清零；旧记录或尾部截断缺少轮边界时只用最后一次调用，避免把前几轮混进来。
-   */
-  function codexPlusUsageLatestTurn(events) {
-    if (!Array.isArray(events) || !events.length) return [];
-    let start = events.length - 1;
-    const turnId = events[start].turn_id;
-    if (typeof turnId === "string" && turnId) {
-      while (start > 0 && events[start - 1].turn_id === turnId) start -= 1;
-    }
-    return events.slice(start);
-  }
-
-  /** 同一轮的多次模型调用按输入 token 加权，不能直接平均各次百分比。 */
-  function codexPlusUsageTurnCache(events) {
-    const segment = codexPlusUsageLatestTurn(events);
-    let input = 0;
-    let cached = 0;
-    for (const event of segment) {
-      const currentInput = Number(event.input_tokens) || 0;
-      const currentCached = Number(event.cached_input_tokens) || 0;
-      if (currentInput > 0) {
-        input += currentInput;
-        cached += Math.max(0, Math.min(currentCached, currentInput));
-      }
-    }
-    return input > 0 ? codexPlusUsagePercent(cached, input) : null;
-  }
-
-  /** 单个区间超过这个时长就当作长停顿（等审批、挂起、断线重连），不计入吞吐。 */
-  const codexPlusUsageMaxIntervalSeconds = 120;
-
-  /**
-   * 输出吞吐（token/s），issue #2636。
-   *
-   * Codex 只在每次模型调用结束时写一条 token_count，拿不到首个 token 的时间，事件
-   * 间隔里同时包含首 token 等待、解码和工具执行，所以这里只能给「吞吐」，不能叫
-   * 生成速度 / 解码速度，界面上也按这个口径命名。
-   *
-   * 口径：本轮各区间的输出 token 求和 ÷ 对应时长求和。不能对各区间速率等权平均：
-   * 工具步骤输出少、耗时长，最终回答输出多、耗时短，等权平均会让几十 token 的工具
-   * 步骤和上千 token 的回答同样有分量（issue 的算例：10.46 / 14.11 / 109.83 等权得
-   * 44.8，按总量是 1781 / 54.293 ≈ 32.8）。
-   *
-   * 不合格的区间整段剔除（分子分母一起剔）：累计输出没增长（重复记录 / 非单调）、
-   * 间隔过短（同一批写入）、间隔过长（中间停了很久）。没有合格区间时返回 null，
-   * 界面显示 `--`。turn_output_tokens 是历史字段名，实际为会话累计输出，需用真实
-   * 轮 id 切段。
-   */
-  function codexPlusUsageRate(events) {
-    const segment = codexPlusUsageLatestTurn(events);
-    let tokens = 0;
-    let seconds = 0;
-    for (let index = 1; index < segment.length; index += 1) {
-      const previous = segment[index - 1];
-      const current = segment[index];
-      const previousOutput = Number(previous.turn_output_tokens) || 0;
-      const currentOutput = Number(current.turn_output_tokens) || 0;
-      if (currentOutput <= previousOutput) continue;
-      const startedAt = Date.parse(previous.t);
-      const endedAt = Date.parse(current.t);
-      const interval = (endedAt - startedAt) / 1000;
-      if (!(interval >= 0.5) || interval > codexPlusUsageMaxIntervalSeconds) continue;
-      tokens += currentOutput - previousOutput;
-      seconds += interval;
-    }
-    return seconds > 0 ? tokens / seconds : null;
-  }
-
-  function codexPlusUsageSnapshot(events) {
-    if (!Array.isArray(events) || !events.length) return null;
-    const latest = events[events.length - 1];
-    const observedAt = Date.parse(latest.t);
-    return {
-      speed: codexPlusUsageRate(events),
-      cache: codexPlusUsageTurnCache(events),
-      context: codexPlusUsagePercent(Number(latest.total_tokens), Number(latest.context_window)),
-      stale: Number.isFinite(observedAt) ? Date.now() - observedAt > codexPlusUsageStaleMs : false,
-      modelContextWindow: Number(latest.context_window) || 0,
-    };
-  }
-
-  /** `snapshot` 为 null 时渲染占位符：会话已确定但还没有第一条 token 事件。 */
-  function codexPlusUsageRender(snapshot) {
-    const node = codexPlusUsageState.node;
-    if (!node?.isConnected) return;
-    const parts = codexPlusUsageState.parts || codexPlusUsageBuild(node);
-    const text = codexPlusUsageText();
-    const format = (value) => (value === null || value === undefined || Number.isNaN(value) ? "--" : value);
-    const speed = snapshot?.speed == null ? "--" : String(Math.max(0, Math.round(snapshot.speed)));
-    const cache = snapshot?.cache == null ? "--" : `${snapshot.cache.toFixed(1)}%`;
-    const context = snapshot?.context == null ? "--" : `${Math.round(snapshot.context)}%`;
-    const stale = snapshot?.stale === true;
-    const contextWindow = snapshot?.modelContextWindow || 0;
-    // 指纹一样就不写 DOM：每秒一次无意义赋值会让 Codex 的 MutationObserver 空转。
-    const fingerprint = [speed, cache, context, stale, contextWindow].join("|");
-    if (fingerprint === codexPlusUsageState.lastFingerprint) return;
-    codexPlusUsageState.lastFingerprint = fingerprint;
-
-    parts.speed.value.textContent = text.speed(speed);
-    parts.cache.value.textContent = text.cache(cache);
-    parts.context.value.textContent = text.context(context);
-    if (parts.ring) {
-      const filled = snapshot?.context == null ? 0 : (snapshot.context / 100) * codexPlusUsageRingCircumference;
-      parts.ring.setAttribute("stroke-dasharray", `${filled.toFixed(2)} ${codexPlusUsageRingCircumference}`);
-    }
-    node.dataset.stale = String(stale);
-    node.setAttribute("title", [
-      text.speedTitle(format(speed)),
-      text.cacheTitle(format(cache)),
-      text.contextTitle(format(context)),
-      contextWindow > 0 ? text.windowTitle(contextWindow) : "",
-    ].filter(Boolean).join(" · "));
-    node.setAttribute("aria-label", `${text.aria}${text.separator}${[text.speedTitle(speed), text.cache(cache), context].join(text.comma)}`);
-  }
-
-  function codexPlusUsageSchedule(delay) {
-    if (codexPlusUsageState.disposed) return;
-    clearTimeout(codexPlusUsageState.timer);
-    codexPlusUsageState.timer = window.setTimeout(codexPlusUsageTick, delay);
-  }
-
-  function codexPlusUsageEnabled() {
-    return !codexPlusUsageState.disposed
-      && codexPlusBackendSettingsLoaded
-      && codexPlusSettings().usageStatusLine === true
-      && !globalThis.__codexPlusBuiltinInactive?.has("usage-statusline");
-  }
-
-  /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */
-  function codexPlusUsageSyncPlacement() {
-    const enabled = codexPlusUsageEnabled();
-    const found = enabled ? codexPlusUsageComposerCard() : null;
-    const card = found?.card || null;
-    const thread = codexPlusUsageResolveThread(card);
-    if (enabled) codexPlusUsageReportPlacement(found, thread);
-    const threadId = thread.id;
-    if (!card || !threadId) {
-      codexPlusUsageHide();
-      codexPlusUsageState.threadId = "";
-      return null;
-    }
-    const changed = codexPlusUsageState.threadId !== threadId
-      || !codexPlusUsageState.node?.isConnected
-      || !codexPlusUsageNodePlaced(codexPlusUsageState.node, card);
-    const node = codexPlusUsageEnsureNode(card);
-    if (!node) return null;
-    if (changed) {
-      codexPlusUsageState.threadId = threadId;
-      codexPlusUsageState.failures = 0;
-      codexPlusUsageState.lastFingerprint = "";
-    }
-    codexPlusUsageShow(node);
-    codexPlusUsageRender(codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId)));
-    return { card, threadId, changed };
-  }
-
-  function codexPlusUsageRemember(threadId, events) {
-    if (!events?.length) return;
-    codexPlusUsageState.cache.delete(threadId);
-    codexPlusUsageState.cache.set(threadId, events.slice(-24));
-    if (codexPlusUsageState.cache.size > 32) {
-      codexPlusUsageState.cache.delete(codexPlusUsageState.cache.keys().next().value);
-    }
-  }
-
-  /** 只观察输入框结构和会话标识，忽略状态栏自身的写入，避免自喂循环。 */
-  function codexPlusUsageObserve() {
-    if (!document.body || typeof MutationObserver !== "function") return;
-    // 旧版 Codex 没有前三个标记，输入框结构变化只能靠旧类名感知（issue #2753）。
-    const selector = `[data-codex-composer-root], ${codexPlusUsageCardSelector}, [data-above-composer-conversation-id], ${codexPlusUsageLegacyCardSelector}`;
-    codexPlusUsageState.observer = new MutationObserver((records) => {
-      const relevant = records.some((record) => {
-        if (record.target?.closest?.("[data-codex-plus-ext]")) return false;
-        if (record.type === "attributes") return true;
-        return [...record.addedNodes, ...record.removedNodes].some((node) =>
-          node.nodeType === 1 && !node.matches?.("[data-codex-plus-ext]")
-          && (node.matches?.(selector) || node.querySelector?.(selector)));
-      });
-      if (!relevant) return;
-      const placement = codexPlusUsageSyncPlacement();
-      if (placement?.changed) codexPlusUsageSchedule(0);
-    });
-    codexPlusUsageState.observer.observe(document.body, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: [
-        "data-above-composer-conversation-id", "data-composer-placement",
-        "data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-id",
-        // 旧版侧边栏用 active / aria-current 标当前行。
-        "data-app-action-sidebar-thread-active", "aria-current",
-      ],
-    });
-  }
-
-  async function codexPlusUsageRefresh(threadId) {
-    if (codexPlusUsageState.inFlight) return null;
-    codexPlusUsageState.inFlight = true;
-    try {
-      const result = await postJson("/thread-usage-live", { session_id: threadId });
-      codexPlusUsageState.failures = 0;
-      if (result?.status !== "ok" || !Array.isArray(result.events)) {
-        // 栏位照样显示占位符；这里只把宿主给的原因记一次，便于区分「没挂上」和「没数据」。
-        const status = String(result?.status || "invalid").slice(0, 32);
-        codexPlusUsageDiagnoseOnce("usage_statusline_data_unavailable", status, {
-          status,
-          message: String(result?.message || "").slice(0, 200),
-        });
-        return null;
-      }
-      codexPlusUsageNoteDataGaps(result.events);
-      return result.events;
-    } finally {
-      codexPlusUsageState.inFlight = false;
-    }
-  }
-
-  async function codexPlusUsageTick() {
-    if (codexPlusUsageState.disposed) return;
-    if (!codexPlusUsageEnabled()) {
-      codexPlusUsageHide();
-      codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
-      return;
-    }
-    // 页面不可见时不拉数据，但保留轮询，切回来下一拍就会刷新。
-    if (document.hidden) {
-      codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
-      return;
-    }
-    const placement = codexPlusUsageSyncPlacement();
-    if (!placement) {
-      codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
-      return;
-    }
-    const { threadId } = placement;
-    if (codexPlusUsageState.inFlight) {
-      codexPlusUsageSchedule(codexPlusUsageActiveIntervalMs);
-      return;
-    }
-    let events = null;
-    try {
-      events = await codexPlusUsageRefresh(threadId);
-    } catch (error) {
-      if (codexPlusUsageState.threadId === threadId) codexPlusUsageState.failures += 1;
-      if (codexPlusUsageState.failures === codexPlusUsageFailureLimit) {
-        sendCodexPlusDiagnostic("usage_statusline_bridge_failed", {
-          errorName: error?.name || "",
-          errorMessage: error?.message || String(error),
-        });
-      }
-    }
-    if (codexPlusUsageState.disposed) return;
-    codexPlusUsageRemember(threadId, events);
-    const current = codexPlusUsageSyncPlacement();
-    if (!current || current.threadId !== threadId) {
-      codexPlusUsageSchedule(current ? 0 : codexPlusUsageIdleIntervalMs);
-      return;
-    }
-    const snapshot = codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId));
-    if (snapshot) {
-      codexPlusUsageRender(snapshot);
-      // 刚有事件说明本轮在跑，加密轮询；本轮已经结束就拉长间隔。
-      codexPlusUsageSchedule(snapshot.stale ? codexPlusUsageIdleIntervalMs : codexPlusUsageActiveIntervalMs);
-      return;
-    }
-    if (codexPlusUsageState.failures >= codexPlusUsageFailureLimit) {
-      // 桥接连续失败仍保留栏位与最近读数，只降低取数频率。
-      codexPlusUsageSchedule(30000);
-      return;
-    }
-    // 会话已经确定、只是还没写出 token 事件（新会话第一轮）：先显示占位符，
-    // 用较慢的间隔等第一条数据，避免空转。
-    codexPlusUsageRender(null);
-    codexPlusUsageSchedule(codexPlusUsageWarmupIntervalMs);
-  }
-
-  /**
-   * 观察与轮询随内置拓展「用量状态栏」装卸（96-builtin-extensions.js）：装上时开始，卸下时停下并摘掉状态栏，
-   * 没装着时什么也不跑。
-   */
-  function startCodexPlusUsageStatusLine() {
-    if (codexPlusUsageState.disposed) return;
-    if (!codexPlusUsageState.observer) codexPlusUsageObserve();
-    codexPlusUsageSyncPlacement();
-    codexPlusUsageSchedule(600);
-  }
-
-  function stopCodexPlusUsageStatusLine() {
-    clearTimeout(codexPlusUsageState.timer);
-    codexPlusUsageState.timer = 0;
-    codexPlusUsageState.observer?.disconnect();
-    codexPlusUsageState.observer = null;
-    codexPlusUsageState.node?.remove();
-    codexPlusUsageState.node = null;
-    codexPlusUsageState.parts = null;
-    codexPlusUsageState.lastFingerprint = "";
-  }
-
-  codexPlusUsageInstallStyle();
-  window.__codexPlusUsageStatusLineRuntime = {
-    version: 2,
-    sync: () => codexPlusUsageSchedule(0),
-    dispose() {
-      codexPlusUsageState.disposed = true;
-      clearTimeout(codexPlusUsageState.timer);
-      codexPlusUsageState.timer = 0;
-      codexPlusUsageState.observer?.disconnect();
-      codexPlusUsageState.cache.clear();
-      // 卸载时把节点整个摘掉：注入会被重跑，留一个隐藏节点等于每次重注入多挂一个。
-      codexPlusUsageState.node?.remove();
-      codexPlusUsageState.node = null;
-      codexPlusUsageState.parts = null;
-      codexPlusUsageState.lastFingerprint = "";
-      globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ = undefined;
-    },
-  };
-  globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ = () => codexPlusUsageSchedule(0);
-  /**
-   * 输入框上方的「请求避震」状态条：直接显示当前代理请求走到了哪一步。
-   *
-   * 状态由代理侧 `/proxy-status` 路由提供（POST），阶段包括：
-   *   requesting（正在请求）、waiting（等待上游返回）、
-   *   retrying（正在重试 ×N）、generating（正在生成，可带输出 token 估算）。
-   *
-   * 节点挂在输入卡片之前、同一父容器内（输入框上方），空闲时 display:none，
-   * 不占位；带 data-codex-plus-ext 让扫描调度器排除自喂循环。
-   */
-  registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-proxy-request-status"]');
-  window.__codexPlusProxyRequestStatusRuntime?.dispose?.();
-
-  const codexPlusProxyStatusId = "codex-plus-proxy-request-status";
-  const codexPlusProxyStatusStyleId = "codex-plus-proxy-request-status-style";
-  const codexPlusProxyStatusPollMs = 1200;
-  const codexPlusProxyStatusTickMs = 500;
-
-  const codexPlusProxyStatusState = {
-    disposed: false,
-    pollTimer: 0,
-    tickTimer: 0,
-    node: null,
-    requests: [],
-    nowMs: Date.now(),
-    inFlight: false,
-    failures: 0,
-  };
-
-  // 设置开关（#2824）：关闭时不显示、不轮询；切回开启后下一轮轮询自动接上。
-  // 设置开关与内置拓展「请求状态条」都开着才显示、才轮询。
-  function codexPlusProxyStatusEnabled() {
-    return codexPlusSettings().proxyRequestStatus !== false && !globalThis?.__codexPlusBuiltinInactive?.has("proxy-request-status");
-  }
-
-  function codexPlusProxyStatusVisibleElement(element) {
-    if (!element?.isConnected) return false;
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-
-  function codexPlusProxyStatusComposerCard() {
-    const cards = [...document.querySelectorAll("[data-composer-surface-variant]")];
-    let fallback = null;
-    for (const card of cards) {
-      if (!codexPlusProxyStatusVisibleElement(card) || card.closest("[data-codex-plus-ext]")) continue;
-      fallback = card;
-      if (card.querySelector('.ProseMirror[contenteditable="true"], textarea:not(:disabled):not([readonly]), [role="textbox"][contenteditable="true"]')) {
-        return card;
-      }
-    }
-    return fallback;
-  }
-
-  /** 当前输入框所属会话 id，用于只显示本会话的请求。 */
-  function codexPlusProxyStatusThreadId(card) {
-    const composerRoot = card?.closest("[data-codex-composer-root]");
-    const placement = composerRoot?.getAttribute("data-composer-placement");
-    // 首页/新会话的输入框也是 composer，但没有会话归属；必须返回空让状态条隐藏，
-    // 不能退化成“显示所有运行中的请求”，否则别的会话的请求会串到这里。
-    if (placement && placement !== "thread") return "";
-    const fromComposer = composerRoot
-      ?.querySelector("[data-above-composer-conversation-id]")
-      ?.getAttribute("data-above-composer-conversation-id");
-    const inThread = composerRoot?.getAttribute("data-composer-placement") === "thread";
-    const fromSidebar = inThread
-      ? document
-        .querySelector('[data-app-action-sidebar-thread-selected="true"][data-app-action-sidebar-thread-id]')
-        ?.getAttribute("data-app-action-sidebar-thread-id")
-      : null;
-    return String(fromComposer || fromSidebar || "").replace(/^local:/, "").trim();
-  }
-
-  function codexPlusProxyStatusNormalizeThreadId(value) {
-    return String(value || "").replace(/^local:/, "").trim();
-  }
-
-  function codexPlusProxyStatusText() {
-    const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
-    const zh = language.startsWith("zh");
-    return zh
-      ? {
-          requesting: "正在请求",
-          waiting: "等待上游返回",
-          retrying: (count) => `正在重试 ×${count}`,
-          generating: "正在生成",
-          fallback: "请求进行中",
-          lastError: "上次",
-          aria: "请求避震状态",
-        }
-      : {
-          requesting: "Requesting",
-          waiting: "Waiting for upstream",
-          retrying: (count) => `Retrying ×${count}`,
-          generating: "Generating",
-          fallback: "Request in progress",
-          lastError: "Last",
-          aria: "Request shock absorption status",
-        };
-  }
-
-  function codexPlusProxyStatusInstallStyle() {
-    if (document.getElementById(codexPlusProxyStatusStyleId)) return;
-    const style = document.createElement("style");
-    style.id = codexPlusProxyStatusStyleId;
-    style.dataset.codexPlusExt = "builtin-proxy-request-status";
-    style.textContent = `
-      #${codexPlusProxyStatusId}{display:flex;align-items:center;justify-content:flex-end;gap:8px;box-sizing:border-box;width:100%;margin:0 0 6px;padding:0 12px;font-size:12px;line-height:17px;color:var(--color-token-text-secondary,rgba(205,205,215,.95));color:color-mix(in srgb,var(--color-token-text-primary,#dfdfdf) 82%,transparent);user-select:none;cursor:default}
-      #${codexPlusProxyStatusId}[data-hidden="true"]{display:none}
-      #${codexPlusProxyStatusId} .codex-plus-proxy-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#f59e0b;box-shadow:0 0 0 0 rgba(245,158,11,.35);animation:codex-plus-proxy-pulse 1.4s ease-out infinite}
-      #${codexPlusProxyStatusId}[data-phase="retrying"] .codex-plus-proxy-dot{background:#f97316}
-      #${codexPlusProxyStatusId}[data-phase="generating"] .codex-plus-proxy-dot{background:#22c55e}
-      #${codexPlusProxyStatusId}[data-phase="waiting"] .codex-plus-proxy-dot{background:#60a5fa}
-      #${codexPlusProxyStatusId} .codex-plus-proxy-phase{font-weight:500;white-space:nowrap}
-      #${codexPlusProxyStatusId} .codex-plus-proxy-meta{opacity:.65;white-space:nowrap;font-variant-numeric:tabular-nums}
-      #${codexPlusProxyStatusId} .codex-plus-proxy-error{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f87171;opacity:.85}
-      @keyframes codex-plus-proxy-pulse{0%{box-shadow:0 0 0 0 rgba(245,158,11,.35)}70%{box-shadow:0 0 0 5px rgba(245,158,11,0)}100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}}
-    `;
-    document.head?.appendChild(style);
-  }
-
-  function codexPlusProxyStatusEnsureNode(card) {
-    // 挂在 composer root 之前，而不是输入卡片之前：切会话时卡片会被 React
-    // 放进只包住输入框的 relative 容器里，插在卡片前会跑到输入框内部。
-    const anchor = card?.closest("[data-codex-composer-root]") || card;
-    if (!anchor?.parentElement) return null;
-    // 内置拓展经公开的 composer.above 插槽登记了容器（见 96-builtin-extensions.js）：放进紧挨着这个输入框的那个。
-    const slotHost = [...(codexPlusProxyStatusState.slotHosts || [])]
-      .find((container) => container.isConnected && container.closest("[data-codex-plus-ui-slot]")?.nextElementSibling === anchor);
-    let node = codexPlusProxyStatusState.node;
-    if (!node) {
-      node = document.createElement("div");
-      node.id = codexPlusProxyStatusId;
-      node.setAttribute("data-codex-plus-ext", "builtin-proxy-request-status");
-      node.setAttribute("role", "status");
-      codexPlusProxyStatusState.node = node;
-    }
-    if (slotHost) {
-      if (node.parentElement !== slotHost) slotHost.appendChild(node);
-    } else if (!node.isConnected || node.nextElementSibling !== anchor) {
-      anchor.insertAdjacentElement("beforebegin", node);
-    }
-    return node;
-  }
-
-  function codexPlusProxyStatusHide() {
-    const node = codexPlusProxyStatusState.node;
-    if (node) node.dataset.hidden = "true";
-  }
-
-  function codexPlusProxyStatusFormatDuration(ms) {
-    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return minutes > 0 ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
-  }
-
-  function codexPlusProxyStatusRender() {
-    if (!codexPlusProxyStatusEnabled()) {
-      codexPlusProxyStatusHide();
-      return;
-    }
-    const card = codexPlusProxyStatusComposerCard();
-    const threadId = card ? codexPlusProxyStatusThreadId(card) : "";
-    // 首页/新会话没有当前会话 id：不能把“没有会话”当成“不过滤”，
-    // 否则会把别的会话里正在运行的请求显示到首页（串会话）。
-    if (!card || !threadId) {
-      codexPlusProxyStatusHide();
-      return;
-    }
-    const visibleRequests = codexPlusProxyStatusState.requests.filter(
-      (item) => codexPlusProxyStatusNormalizeThreadId(item?.threadId) === threadId,
-    );
-    const request = visibleRequests[0];
-    if (!request) {
-      codexPlusProxyStatusHide();
-      return;
-    }
-    const node = codexPlusProxyStatusEnsureNode(card);
-    if (!node) return;
-    const text = codexPlusProxyStatusText();
-    const phase = String(request.phase || "");
-    const retries = Number(request.autoRetries) || 0;
-    const attempts = Number(request.attempts) || 0;
-    let label = text.fallback;
-    if (phase === "requesting") label = text.requesting;
-    else if (phase === "waiting") label = text.waiting;
-    else if (phase === "retrying") label = text.retrying(Math.max(1, retries));
-    else if (phase === "generating") label = text.generating;
-    else if (retries > 0) label = text.retrying(retries);
-
-    const attemptDetails = Array.isArray(request.attemptDetails) ? request.attemptDetails : [];
-    const lastAttempt = attemptDetails.length ? attemptDetails[attemptDetails.length - 1] : null;
-    const lastErrorCode = String(lastAttempt?.code || "").trim();
-    const lastErrorMessage = String(lastAttempt?.message || "").trim();
-    const lastError = lastErrorCode || lastErrorMessage.slice(0, 80);
-
-    const meta = [];
-    if (request.model) meta.push(String(request.model));
-    const startedAtMs = Number(request.startedAtMs) || 0;
-    if (startedAtMs > 0) meta.push(codexPlusProxyStatusFormatDuration(codexPlusProxyStatusState.nowMs - startedAtMs));
-    const estimated = Number(request.estimatedOutputTokens) || 0;
-    if (phase === "generating" && estimated > 0) meta.push(`~${estimated > 999 ? `${(estimated / 1000).toFixed(1)}k` : estimated} tok`);
-    else if (attempts > 1) meta.push(`第 ${attempts} 次`);
-    if (visibleRequests.length > 1) meta.push(`+${visibleRequests.length - 1}`);
-
-    node.dataset.hidden = "false";
-    node.dataset.phase = phase || "requesting";
-    node.setAttribute("aria-label", text.aria);
-    node.replaceChildren();
-    const dot = document.createElement("span");
-    dot.className = "codex-plus-proxy-dot";
-    const phaseNode = document.createElement("span");
-    phaseNode.className = "codex-plus-proxy-phase";
-    phaseNode.textContent = label;
-    node.append(dot, phaseNode);
-    if (meta.length) {
-      const metaNode = document.createElement("span");
-      metaNode.className = "codex-plus-proxy-meta";
-      metaNode.textContent = meta.join(" · ");
-      node.appendChild(metaNode);
-    }
-    if (lastError) {
-      const errorNode = document.createElement("span");
-      errorNode.className = "codex-plus-proxy-error";
-      errorNode.textContent = `${text.lastError} ${lastError}`;
-      errorNode.title = lastErrorMessage || lastErrorCode;
-      node.appendChild(errorNode);
-    }
-  }
-
-  async function codexPlusProxyStatusPostWithTimeout() {
-    // 桥接挂死时 __codexSessionDeleteBridge 的 Promise 可能永远不 settle。
-    // 不设超时会让 inFlight 永久为 true，状态条从此不再刷新（只能重启恢复）。
-    let timer = 0;
-    try {
-      return await Promise.race([
-        postJson("/proxy-status", {}),
-        new Promise((resolve) => {
-          timer = window.setTimeout(
-            () => resolve({ status: "failed", message: "桥接请求超时", timeout: true }),
-            2500,
-          );
-        }),
-      ]);
-    } finally {
-      window.clearTimeout(timer);
-    }
-  }
-
-  async function codexPlusProxyStatusRefresh() {
-    if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.inFlight) return;
-    if (document.hidden) return;
-    if (!codexPlusProxyStatusEnabled()) {
-      codexPlusProxyStatusState.requests = [];
-      codexPlusProxyStatusHide();
-      return;
-    }
-    codexPlusProxyStatusState.inFlight = true;
-    try {
-      const result = await codexPlusProxyStatusPostWithTimeout();
-      if (result?.status === "ok" && Array.isArray(result.requests)) {
-        codexPlusProxyStatusState.requests = result.requests;
-        codexPlusProxyStatusState.failures = 0;
-      } else if (result?.timeout) {
-        // 让看门狗把桥接判定为失效并重注入；桥恢复后下一轮轮询自动接上。
-        recordCodexPlusBridgeFailure();
-        throw new Error("proxy-status bridge timeout");
-      }
-    } catch {
-      codexPlusProxyStatusState.failures += 1;
-    } finally {
-      codexPlusProxyStatusState.inFlight = false;
-    }
-    if (!codexPlusProxyStatusState.disposed) codexPlusProxyStatusRender();
-  }
-
-  /** 轮询与倒计时随内置拓展「请求状态条」装卸（96-builtin-extensions.js）：没装着时不轮询。 */
-  function startCodexPlusProxyStatus() {
-    if (codexPlusProxyStatusState.disposed || codexPlusProxyStatusState.pollTimer) return;
-    codexPlusProxyStatusRender();
-    codexPlusProxyStatusState.pollTimer = window.setInterval(
-      () => void codexPlusProxyStatusRefresh(),
-      codexPlusProxyStatusPollMs,
-    );
-    codexPlusProxyStatusState.tickTimer = window.setInterval(() => {
-      codexPlusProxyStatusState.nowMs = Date.now();
-      codexPlusProxyStatusRender();
-    }, codexPlusProxyStatusTickMs);
-    void codexPlusProxyStatusRefresh();
-  }
-
-  function stopCodexPlusProxyStatus() {
-    window.clearInterval(codexPlusProxyStatusState.pollTimer);
-    window.clearInterval(codexPlusProxyStatusState.tickTimer);
-    codexPlusProxyStatusState.pollTimer = 0;
-    codexPlusProxyStatusState.tickTimer = 0;
-    codexPlusProxyStatusHide();
-  }
-
-  codexPlusProxyStatusInstallStyle();
-
-  window.__codexPlusProxyRequestStatusRuntime = {
-    refresh: codexPlusProxyStatusRefresh,
-    dispose() {
-      codexPlusProxyStatusState.disposed = true;
-      window.clearInterval(codexPlusProxyStatusState.pollTimer);
-      window.clearInterval(codexPlusProxyStatusState.tickTimer);
-      codexPlusProxyStatusState.node?.remove();
-      codexPlusProxyStatusState.node = null;
-      document.getElementById(codexPlusProxyStatusStyleId)?.remove();
-    },
-  };
   // 补齐已经登记的终态轮次；非空或已有用户输入不代表消息分页完整。
   const previousHistoryTurnRecovery = window.__codexPlusHistoryTurnRecoveryRuntime;
   previousHistoryTurnRecovery?.dispose?.();
@@ -19069,6 +16977,16 @@
     "/system/cursor-position",
     // 只读：最近已完成的模型请求（模型、耗时、供应商、token、成败），写「请求提示」这类功能用。
     "/request-log/recent",
+    // 只读：进行中的模型请求（阶段、首字耗时、重试），与内置请求状态条同源。
+    "/proxy-status",
+    // 只读：当前会话最近的 token 事件（读 rollout 尾部，可秒级轮询），与内置用量状态栏同源。
+    "/thread-usage-live",
+    // 只读：Codex++ 版本与连接状态。
+    "/backend/status",
+    // 只读：设置的公开子集（当前供应商的名称、模式、模型、上下文窗口），不含地址、Key 与配置内容。
+    "/settings/public",
+    // 只读：模型目录（模型列表与每模型元数据，含上下文窗口），去掉了来源地址与本机路径。
+    "/model-catalog/public",
     // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。
     // 只有启用中的拓展在清单里声明了才干活；供应商 Key 只在 Codex++ 里用。
     "/agent-pet/catalog",
@@ -19079,6 +16997,8 @@
     "/whale/full",
     "/whale/history",
     "/whale/session",
+    // 背景图（官方拓展包）的读图路由：只读这个拓展配置里的那张本机图片。
+    "/image-overlay/image",
   ]);
 
   /** 单次调用的默认超时，略短于桥接自身的 26s，让拓展先拿到可读的错误。 */
@@ -23684,422 +21604,6 @@
     window.removeEventListener("pagehide", codexPlusDictationDispose);
     codexPlusDictationDispose();
   } };
-  // 特效只观察原生编辑事件；不写输入框、不改选区，也不触发 React 输入事务。
-  window.__codexPlusTypingEffectsRuntime?.dispose?.();
-  const codexPlusTypingEffects = {
-    installed: false, disposed: false, mode: "off", canvas: null, context: null,
-    bounds: null, particles: [], frame: null, frameAt: 0, lastBurstAt: -Infinity,
-    editor: null, composition: null, compositionFrame: null, media: null,
-  };
-  const codexPlusTypingEffectMaxParticles = 180;
-  const codexPlusTypingEffectInterval = 40;
-  const codexPlusTypingEffectOwner = "builtin-typing-effects";
-  registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-typing-effects"]');
-
-  function codexPlusTypingEffectMode() {
-    if (!!globalThis.__codexPlusBuiltinInactive?.has("typing-effects")) return "off";
-    const value = codexPlusSettings().typingEffect;
-    return ["rainbow", "fireworks", "stars"].includes(value) ? value : "off";
-  }
-
-  function clearCodexPlusTypingEffects(resetComposition = true) {
-    const state = codexPlusTypingEffects;
-    if (state.frame !== null) cancelAnimationFrame(state.frame);
-    state.frame = null;
-    state.canvas?.remove();
-    state.canvas = state.context = state.bounds = state.editor = null;
-    if (resetComposition !== false) {
-      state.composition = null;
-      if (state.compositionFrame !== null) cancelAnimationFrame(state.compositionFrame);
-      state.compositionFrame = null;
-    }
-    state.particles.length = 0;
-    state.frameAt = 0;
-    state.lastBurstAt = -Infinity;
-  }
-
-  function syncCodexPlusTypingEffects() {
-    const state = codexPlusTypingEffects;
-    const mode = codexPlusTypingEffectMode();
-    if (state.mode !== mode || mode === "off" || state.media?.matches || document.hidden) clearCodexPlusTypingEffects();
-    state.mode = mode;
-  }
-
-  function codexPlusTypingEffectEditor(target) {
-    const editor = target?.closest?.('.ProseMirror[contenteditable="true"], textarea, [role="textbox"][contenteditable="true"]');
-    if (!editor?.isConnected || editor.matches(':disabled, [readonly], [contenteditable="false"]')
-        || isExtensionUiNode(editor) || editor.closest('[inert], [aria-hidden="true"]') || !visibleElement(editor)) return null;
-    // 新版有明确 composer 标记；旧版必须与 composer-footer 同属一个局部容器。
-    let composer = editor.closest('[data-codex-composer-root], [data-composer-surface-variant]');
-    if (!composer) {
-      let parent = editor.parentElement;
-      for (let depth = 0; parent && parent !== document.body && depth < 4; depth++, parent = parent.parentElement) {
-        if (parent.querySelector?.('.composer-footer')) { composer = parent; break; }
-        if (parent.tagName === "FORM") break;
-      }
-    }
-    return composer && (document.activeElement === editor || editor.contains(document.activeElement)) ? editor : null;
-  }
-
-  function codexPlusTypingEffectText(editor) {
-    return editor instanceof HTMLTextAreaElement ? editor.value : editor.textContent || "";
-  }
-
-  function codexPlusTypingEffectTextareaCaret(editor) {
-    const style = getComputedStyle(editor);
-    const rect = editor.getBoundingClientRect();
-    const width = editor.offsetWidth || rect.width;
-    const height = editor.offsetHeight || rect.height;
-    // 镜像不显示滚动条，须扣除原生 textarea 的滚动条占用，保持实际换行列宽。
-    const mirrorWidth = editor.clientWidth > 0
-      ? editor.clientWidth + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0) : width;
-    const mirror = document.createElement("div");
-    mirror.setAttribute("data-codex-plus-ext", codexPlusTypingEffectOwner);
-    mirror.setAttribute("aria-hidden", "true");
-    // offsetWidth 使用布局尺寸，最终按真实 rect 缩放，兼容编辑器祖先上的 CSS zoom。
-    const properties = ["direction", "fontFamily", "fontSize", "fontWeight", "fontStyle", "fontVariant", "fontStretch",
-      "fontKerning", "fontFeatureSettings", "fontVariationSettings", "lineHeight", "letterSpacing", "wordSpacing", "textTransform", "textIndent", "textAlign", "tabSize", "wordBreak",
-      "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth"];
-    for (const property of properties) mirror.style[property] = style[property];
-    Object.assign(mirror.style, {
-      position: "fixed", left: "-100000px", top: "0", visibility: "hidden", pointerEvents: "none",
-      boxSizing: "border-box", width: `${mirrorWidth}px`, height: "auto", minHeight: "0", maxHeight: "none",
-      borderStyle: "solid", overflow: "hidden", whiteSpace: editor.wrap === "off" ? "pre" : "pre-wrap",
-      overflowWrap: editor.wrap === "off" ? "normal" : "break-word", zoom: "1",
-    });
-    const position = editor.selectionEnd ?? editor.value.length;
-    mirror.textContent = editor.value.slice(0, position);
-    const marker = document.createElement("span");
-    marker.textContent = editor.value.slice(position) || "\u200b";
-    mirror.appendChild(marker);
-    document.body.appendChild(mirror);
-    try {
-      const mirrorRect = mirror.getBoundingClientRect();
-      const markerRect = marker.getClientRects()[0] || marker.getBoundingClientRect();
-      const mirrorScale = mirrorRect.width / mirrorWidth || 1;
-      const scaleX = rect.width / width || 1;
-      const scaleY = rect.height / height || 1;
-      const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.25 || 20;
-      return {
-        x: rect.left + ((markerRect.left - mirrorRect.left) / mirrorScale - editor.scrollLeft) * scaleX,
-        y: rect.top + ((markerRect.top - mirrorRect.top) / mirrorScale - editor.scrollTop + lineHeight * .55) * scaleY,
-      };
-    } finally { mirror.remove(); }
-  }
-
-  function codexPlusTypingEffectCaret(editor) {
-    const box = editor.getBoundingClientRect();
-    let point;
-    if (editor instanceof HTMLTextAreaElement) point = codexPlusTypingEffectTextareaCaret(editor);
-    else {
-      const selection = window.getSelection?.();
-      if (!selection?.rangeCount || !editor.contains(selection.anchorNode) || !editor.contains(selection.focusNode)) return null;
-      const range = selection.getRangeAt(0).cloneRange();
-      range.collapse(false);
-      let rect = range.getClientRects()[0] || range.getBoundingClientRect();
-      let precedingCharacter = false;
-      if (!rect?.height && range.endContainer?.nodeType === 3 && range.endOffset > 0) {
-        range.setStart(range.endContainer, range.endOffset - 1);
-        rect = range.getBoundingClientRect();
-        precedingCharacter = true;
-      }
-      const style = getComputedStyle(editor);
-      const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.25 || 20;
-      if (rect?.height) point = {
-        x: precedingCharacter && style.direction !== "rtl" ? rect.right : rect.left,
-        y: rect.top + rect.height * .55,
-      };
-      else {
-        // 空段落/BR 的 collapsed Range 可能没有几何，使用所在行而非整个 editor 的首行。
-        let node = range.endContainer?.nodeType === 1 ? range.endContainer : range.endContainer?.parentElement;
-        const child = node?.childNodes?.[range.endOffset] || node?.childNodes?.[Math.max(0, range.endOffset - 1)];
-        if (child?.nodeType === 1) node = child;
-        let fallback = box;
-        let fallbackStyle = style;
-        for (let depth = 0; node && editor.contains(node) && depth < 4; depth++, node = node.parentElement) {
-          const nodeRect = node.getBoundingClientRect?.();
-          if (nodeRect?.height > 0) { fallback = nodeRect; fallbackStyle = getComputedStyle(node); break; }
-        }
-        const scaleX = box.width / (editor.offsetWidth || box.width) || 1;
-        const scaleY = box.height / (editor.offsetHeight || box.height) || 1;
-        const fallbackLineHeight = parseFloat(fallbackStyle.lineHeight) || parseFloat(fallbackStyle.fontSize) * 1.25 || lineHeight;
-        point = {
-          x: fallback.left + (parseFloat(fallbackStyle.paddingLeft) || 0) * scaleX,
-          y: fallback.top + ((parseFloat(fallbackStyle.paddingTop) || 0) + fallbackLineHeight * .55) * scaleY,
-        };
-      }
-    }
-    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
-    return { x: Math.max(box.left, Math.min(box.right, point.x)), y: Math.max(box.top, Math.min(box.bottom, point.y)) };
-  }
-
-  function createCodexPlusTypingEffectCanvas() {
-    const state = codexPlusTypingEffects;
-    if (state.canvas?.isConnected) return true;
-    const canvas = document.createElement("canvas");
-    canvas.setAttribute("data-codex-plus-ext", codexPlusTypingEffectOwner);
-    canvas.setAttribute("aria-hidden", "true");
-    Object.assign(canvas.style, {
-      position: "fixed", top: "0", left: "0", width: "100%", height: "100%", pointerEvents: "none",
-      zIndex: "2147483000", background: "transparent",
-    });
-    const context = canvas.getContext("2d");
-    if (!context) return false;
-    document.documentElement.appendChild(canvas);
-    const bounds = canvas.getBoundingClientRect();
-    const ratio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-    canvas.width = Math.max(1, Math.round(bounds.width * ratio));
-    canvas.height = Math.max(1, Math.round(bounds.height * ratio));
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    Object.assign(state, { canvas, context, bounds });
-    return true;
-  }
-
-  function drawCodexPlusTypingEffects(timestamp) {
-    const state = codexPlusTypingEffects;
-    state.frame = null;
-    if (state.disposed || state.mode !== codexPlusTypingEffectMode() || state.media?.matches || document.hidden
-        || !state.editor?.isConnected || codexPlusTypingEffectEditor(document.activeElement) !== state.editor || !state.canvas?.isConnected) {
-      clearCodexPlusTypingEffects(); return;
-    }
-    const elapsed = state.frameAt ? Math.max(0, Math.min(32, timestamp - state.frameAt)) : 16;
-    state.frameAt = timestamp;
-    const context = state.context;
-    context.clearRect(0, 0, state.bounds.width, state.bounds.height);
-    state.particles = state.particles.filter((particle) => {
-      particle.age += elapsed;
-      if (particle.age >= particle.life) return false;
-      particle.x += particle.vx * elapsed / 1000;
-      particle.y += particle.vy * elapsed / 1000;
-      particle.vy += particle.gravity * elapsed / 1000;
-      const alpha = (1 - particle.age / particle.life) ** 1.5;
-      context.save();
-      context.globalAlpha = alpha;
-      context.fillStyle = particle.color;
-      context.translate(particle.x - state.bounds.left, particle.y - state.bounds.top);
-      context.rotate(particle.rotation + particle.age / 700);
-      if (particle.star) {
-        context.beginPath();
-        for (let index = 0; index < 10; index++) {
-          const radius = particle.size * (index % 2 ? .42 : 1);
-          const angle = index * Math.PI / 5 - Math.PI / 2;
-          if (index === 0) context.moveTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
-          else context.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
-        }
-        context.closePath(); context.fill();
-      } else context.fillRect(-particle.size / 2, -particle.size / 2, particle.size, particle.size * 1.7);
-      context.restore();
-      return true;
-    });
-    if (state.particles.length) state.frame = requestAnimationFrame(drawCodexPlusTypingEffects);
-    else clearCodexPlusTypingEffects(false);
-  }
-
-  function emitCodexPlusTypingEffects(editor) {
-    const state = codexPlusTypingEffects;
-    syncCodexPlusTypingEffects();
-    if (state.disposed || state.mode === "off" || state.media?.matches || document.hidden) return false;
-    const now = performance.now();
-    if (now - state.lastBurstAt < codexPlusTypingEffectInterval) return false;
-    const point = codexPlusTypingEffectCaret(editor);
-    if (!point || !createCodexPlusTypingEffectCanvas()) return false;
-    state.lastBurstAt = now;
-    state.editor = editor;
-    const count = state.mode === "fireworks" ? 26 : state.mode === "stars" ? 10 : 16;
-    const available = Math.max(0, codexPlusTypingEffectMaxParticles - state.particles.length);
-    if (!available) return false;
-    const hue = now / 9 % 360;
-    for (let index = 0; index < Math.min(count, available); index++) {
-      const angle = state.mode === "fireworks" ? index / count * Math.PI * 2 : -Math.PI + Math.random() * Math.PI;
-      const speed = state.mode === "fireworks" ? 65 + Math.random() * 100 : 35 + Math.random() * 95;
-      state.particles.push({
-        x: point.x, y: point.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-        gravity: state.mode === "stars" ? 95 : 180, age: 0, life: 420 + Math.random() * 360,
-        size: state.mode === "stars" ? 3 + Math.random() * 3 : 1.5 + Math.random() * 2.2,
-        star: state.mode === "stars", rotation: Math.random() * Math.PI,
-        color: `hsl(${state.mode === "stars" ? 38 + Math.random() * 22 : hue + index * 360 / count} 95% 68%)`,
-      });
-    }
-    if (state.particles.length && state.frame === null) state.frame = requestAnimationFrame(drawCodexPlusTypingEffects);
-    return true;
-  }
-
-  function createCodexPlusTypingEffectComposition(editor, before = codexPlusTypingEffectText(editor)) {
-    return { editor, before, ended: false, emitted: false, lastEmittedText: null, lastInputText: before, sawTrustedInput: false, attempts: 0 };
-  }
-
-  function commitCodexPlusTypingEffectComposition(composition) {
-    const state = codexPlusTypingEffects;
-    if (state.composition !== composition || !composition.data || !composition.trusted
-        || !codexPlusTypingEffectEditor(composition.editor)) return false;
-    const text = codexPlusTypingEffectText(composition.editor);
-    if (composition.emitted && text === composition.committed) return true;
-    // 最终 input 通常紧接组词 input；同一份已绘制文本不重复发射。
-    if (text !== composition.lastEmittedText) {
-      if (text === composition.before || !emitCodexPlusTypingEffects(composition.editor)) return false;
-    }
-    composition.emitted = true;
-    composition.committed = text;
-    composition.lastEmittedText = text;
-    return true;
-  }
-
-  function updateCodexPlusTypingEffectComposition(composition) {
-    const state = codexPlusTypingEffects;
-    if (state.composition !== composition || state.disposed || !codexPlusTypingEffectEditor(composition.editor)) return;
-    let emitted;
-    if (composition.ended) emitted = commitCodexPlusTypingEffectComposition(composition);
-    else {
-      const text = codexPlusTypingEffectText(composition.editor);
-      emitted = text === composition.lastEmittedText || (composition.lastInputData === "" && !composition.backwardDeletion);
-      if (!emitted && (text !== composition.before || composition.backwardDeletion) && emitCodexPlusTypingEffects(composition.editor)) {
-        composition.lastEmittedText = text;
-        emitted = true;
-      }
-    }
-    if (emitted) {
-      if (state.compositionFrame !== null) cancelAnimationFrame(state.compositionFrame);
-      state.compositionFrame = null;
-      composition.attempts = 0;
-    } else if (state.composition === composition && state.compositionFrame === null && composition.attempts < 3) {
-      // 输入法/编辑器可能在事件之后才恢复选区；只做有界补发，不开启常驻扫描。
-      state.compositionFrame = requestAnimationFrame(() => {
-        state.compositionFrame = null;
-        composition.attempts += 1;
-        updateCodexPlusTypingEffectComposition(composition);
-      });
-    }
-  }
-
-  function codexPlusTypingEffectInput(event) {
-    if (event.isTrusted !== true) return;
-    const backwardDeletion = ["deleteContentBackward", "deleteWordBackward", "deleteSoftLineBackward", "deleteHardLineBackward"].includes(event.inputType);
-    if (!backwardDeletion && !["insertText", "insertLineBreak", "insertParagraph", "insertCompositionText", "insertFromComposition"].includes(event.inputType)) return;
-    const editor = codexPlusTypingEffectEditor(event.target);
-    if (!editor) return;
-    const state = codexPlusTypingEffects;
-    let composition = state.composition;
-    const compositionInput = event.isComposing || ["insertCompositionText", "insertFromComposition"].includes(event.inputType);
-    if (compositionInput && (!composition || composition.editor !== editor
-        || (composition.ended && composition.emitted && (event.isComposing || codexPlusTypingEffectText(editor) !== composition.committed)))) {
-      // 部分输入法不会派发 compositionstart，但仍有可信的原生组词 input。
-      if (state.compositionFrame !== null) cancelAnimationFrame(state.compositionFrame);
-      state.compositionFrame = null;
-      composition = state.composition = createCodexPlusTypingEffectComposition(editor, null);
-      if (event.inputType === "insertFromComposition") Object.assign(composition, { ended: true, data: event.data, trusted: true });
-    }
-    if (composition?.editor === editor) {
-      if (backwardDeletion && composition.ended && !event.isComposing) {
-        if (state.compositionFrame !== null) cancelAnimationFrame(state.compositionFrame);
-        state.compositionFrame = null;
-        state.composition = null;
-        emitCodexPlusTypingEffects(editor);
-        return;
-      }
-      if (!composition.ended || !composition.emitted) {
-        const text = codexPlusTypingEffectText(editor);
-        // 输入法退格也可能沿用 insertCompositionText，且清空组词时 data 为空。
-        const shorterPreedit = compositionInput && typeof composition.lastInputText === "string" && text.length < composition.lastInputText.length;
-        Object.assign(composition, {
-          sawTrustedInput: true, lastInputData: event.data, lastInputText: text,
-          backwardDeletion: backwardDeletion || shorterPreedit, attempts: 0,
-        });
-        updateCodexPlusTypingEffectComposition(composition);
-        return;
-      }
-      if (codexPlusTypingEffectText(editor) === composition.committed) return;
-      state.composition = null;
-    }
-    if (event.isComposing || (!backwardDeletion && !["insertText", "insertLineBreak", "insertParagraph"].includes(event.inputType))) return;
-    if (event.inputType === "insertText" && !event.data) return;
-    emitCodexPlusTypingEffects(editor);
-  }
-
-  function codexPlusTypingEffectCompositionStart(event) {
-    if (event.isTrusted !== true) return;
-    syncCodexPlusTypingEffects();
-    if (codexPlusTypingEffects.mode === "off" || codexPlusTypingEffects.media?.matches || document.hidden) return;
-    const editor = codexPlusTypingEffectEditor(event.target);
-    if (editor) {
-      if (codexPlusTypingEffects.compositionFrame !== null) cancelAnimationFrame(codexPlusTypingEffects.compositionFrame);
-      codexPlusTypingEffects.compositionFrame = null;
-      codexPlusTypingEffects.composition = createCodexPlusTypingEffectComposition(editor);
-    }
-  }
-
-  function codexPlusTypingEffectCompositionEnd(event) {
-    const composition = codexPlusTypingEffects.composition;
-    if (!composition || composition.editor !== codexPlusTypingEffectEditor(event.target)) return;
-    // 有些输入法/宿主转发结束事件，isTrusted 为 false；仅接纳之前已观察到的可信组词内容。
-    if (event.isTrusted !== true && (!composition.sawTrustedInput || (event.data && event.data !== composition.lastInputData))) return;
-    if (!event.data) {
-      codexPlusTypingEffects.composition = null;
-      if (codexPlusTypingEffects.compositionFrame !== null) cancelAnimationFrame(codexPlusTypingEffects.compositionFrame);
-      codexPlusTypingEffects.compositionFrame = null;
-      return;
-    }
-    Object.assign(composition, { ended: true, data: event.data, trusted: event.isTrusted === true || composition.sawTrustedInput });
-    queueMicrotask(() => {
-      updateCodexPlusTypingEffectComposition(composition);
-    });
-  }
-
-  function codexPlusTypingEffectFocusOut(event) {
-    const state = codexPlusTypingEffects;
-    if (event.target === state.editor || event.target === state.composition?.editor) clearCodexPlusTypingEffects();
-  }
-
-  /** 摘掉打字特效的全局监听（内置拓展卸下时）。 */
-  function uninstallCodexPlusTypingEffects() {
-    const state = codexPlusTypingEffects;
-    if (!state.installed) return;
-    state.installed = false;
-    document.removeEventListener("input", codexPlusTypingEffectInput, true);
-    document.removeEventListener("compositionstart", codexPlusTypingEffectCompositionStart, true);
-    document.removeEventListener("compositionend", codexPlusTypingEffectCompositionEnd, true);
-    document.removeEventListener("focusout", codexPlusTypingEffectFocusOut, true);
-    document.removeEventListener("visibilitychange", syncCodexPlusTypingEffects);
-    window.removeEventListener("blur", clearCodexPlusTypingEffects);
-    window.removeEventListener("resize", clearCodexPlusTypingEffects);
-    state.media?.removeEventListener?.("change", syncCodexPlusTypingEffects);
-    clearCodexPlusTypingEffects();
-  }
-
-  function installCodexPlusTypingEffects() {
-    const state = codexPlusTypingEffects;
-    if (state.disposed) return;
-    if (!state.installed) {
-      state.installed = true;
-      state.media = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
-      document.addEventListener("input", codexPlusTypingEffectInput, true);
-      document.addEventListener("compositionstart", codexPlusTypingEffectCompositionStart, true);
-      document.addEventListener("compositionend", codexPlusTypingEffectCompositionEnd, true);
-      document.addEventListener("focusout", codexPlusTypingEffectFocusOut, true);
-      document.addEventListener("visibilitychange", syncCodexPlusTypingEffects);
-      window.addEventListener("blur", clearCodexPlusTypingEffects);
-      window.addEventListener("resize", clearCodexPlusTypingEffects);
-      state.media?.addEventListener?.("change", syncCodexPlusTypingEffects);
-    }
-    syncCodexPlusTypingEffects();
-  }
-
-  window.__codexPlusTypingEffectsRuntime = {
-    dispose() {
-      const state = codexPlusTypingEffects;
-      state.disposed = true;
-      clearCodexPlusTypingEffects();
-      if (!state.installed) return;
-      document.removeEventListener("input", codexPlusTypingEffectInput, true);
-      document.removeEventListener("compositionstart", codexPlusTypingEffectCompositionStart, true);
-      document.removeEventListener("compositionend", codexPlusTypingEffectCompositionEnd, true);
-      document.removeEventListener("focusout", codexPlusTypingEffectFocusOut, true);
-      document.removeEventListener("visibilitychange", syncCodexPlusTypingEffects);
-      window.removeEventListener("blur", clearCodexPlusTypingEffects);
-      window.removeEventListener("resize", clearCodexPlusTypingEffects);
-      state.media?.removeEventListener?.("change", syncCodexPlusTypingEffects);
-      state.installed = false;
-    },
-  };
   function ensureConversationViewRuntime() {
     if (conversationViewState.runtimeStarted) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
@@ -24813,16 +22317,14 @@
    */
   function codexPlusBuiltinExtensionCatalog() {
     return [
-      // Agent 桌宠（含大肥鱼）已改成随 Codex++ 发布的官方拓展包（bundled:agent-pet），不再是内置拓展。
-      { id: "usage-statusline", name: "用量状态栏", apply: codexPlusUsageStatusLineExtension },
+      // Agent 桌宠（含大肥鱼）、用量状态栏、请求状态条已改成随 Codex++ 发布的官方拓展包（bundled:agent-pet、
+      // bundled:usage-statusline、bundled:proxy-request-status），不再是内置拓展。
       { id: "dictation", name: "语音听写", apply: codexPlusDictationExtension },
       { id: "turn-rewind", name: "轮次回退", apply: codexPlusTurnRewindExtension },
-      { id: "typing-effects", name: "打字特效", apply: codexPlusTypingEffectsExtension },
       { id: "side-chat-save", name: "侧聊保存", apply: codexPlusSideChatSaveExtension },
       // 由 Rust 经 CDP 驱动，页面侧只登记；被顶替时 Rust 侧不再补载，顶替它的拓展订阅 codexpp/session-index-repaired 自己做。
       { id: "history-turn-recovery", name: "历史轮次补全" },
       { id: "capacity-auto-retry", name: "容量不足自动重试", apply: codexPlusCapacityAutoRetryExtension },
-      { id: "proxy-request-status", name: "请求状态条", apply: codexPlusProxyStatusExtension },
       { id: "model-picker-groups", name: "模型分组", apply: codexPlusModelPickerGroupsExtension },
       { id: "dream-skin", name: "梦皮主题", apply: codexPlusDreamSkinExtension },
       { id: "plugin-market-unlock", name: "插件市场解锁", apply: codexPlusPluginMarketUnlockExtension },
@@ -24851,7 +22353,6 @@
       { id: "force-chinese-locale", name: "强制中文界面" },
       { id: "native-browser-identification", name: "原生 Edge / Chrome 请求标识兼容" },
       { id: "standalone-quota-unlock", name: "官方额度解锁" },
-      { id: "image-overlay", name: "背景图" },
     ];
   }
 
@@ -24872,33 +22373,11 @@
   });
   const codexPlusBuiltinExtensionHandles = window.__codexPlusBuiltinExtensionHandles = new Map();
 
-  /**
-   * 内置功能的数据作为服务提供（不随界面那一层的内置拓展装卸）：用 replaces 顶替用量状态栏、请求状态条的拓展
-   * 也能 inject 这些数据，自己画界面。
-   *   codexpp.usage：cached(threadId) → { speed, cache, context, stale, modelContextWindow } | null（状态栏取过数据的会话）
-   *   codexpp.proxyStatus：requests() → 最近一次轮询到的代理请求；fetch() → 立即问一次 Codex++
-   */
-  function installCodexPlusBuiltinDataServices() {
-    if (codexPlusServices.has("codexpp.usage")) return;
-    codexPlusProvideService("codexpp.usage", Object.freeze({
-      cached: (threadId) => codexPlusUsageSnapshot(codexPlusUsageState.cache.get(String(threadId || codexPlusCurrentSessionId()))),
-    }), "builtin");
-    codexPlusProvideService("codexpp.proxyStatus", Object.freeze({
-      requests: () => [...(codexPlusProxyStatusState.requests ?? [])],
-      async fetch() {
-        const result = await codexPlusProxyStatusPostWithTimeout();
-        return result?.status === "ok" && Array.isArray(result.requests) ? result.requests : [];
-      },
-    }), "builtin");
-  }
+  // 用量状态栏、请求状态条的数据服务 codexpp.usage / codexpp.proxyStatus 改由对应的官方拓展包提供
+  // （assets/extensions/usage-statusline、proxy-request-status）。
 
   /** 按下发状态装上 / 卸下内置拓展。重复调用只处理有变化的项。 */
   function syncCodexPlusBuiltinExtensions() {
-    try {
-      installCodexPlusBuiltinDataServices();
-    } catch (error) {
-      codexPlusMarkExtensionFailure("builtin:data-services", String(error?.stack || error?.message || error));
-    }
     const inactive = codexPlusBuiltinInactiveIds();
     const state = codexPlusBuiltinExtensionState();
     for (const definition of codexPlusBuiltinExtensionCatalog()) {
@@ -24966,59 +22445,6 @@
       run();
       return run;
     });
-  }
-
-  /** 用量状态栏：经公开的 composer.below 插槽拿每个输入框下方的容器，状态栏放进当前输入框的那个。 */
-  function codexPlusUsageStatusLineExtension(ctx) {
-    codexPlusUsageState.slotHosts ||= new Set();
-    ctx.registerSlot({
-      slot: "composer.below",
-      order: 0,
-      render: ({ container }) => {
-        codexPlusUsageState.slotHosts.add(container);
-        window.__codexPlusUsageStatusLineRuntime?.sync?.();
-        return () => {
-          codexPlusUsageState.slotHosts.delete(container);
-          if (codexPlusUsageState.node?.parentElement === container) codexPlusUsageState.node.remove();
-          window.__codexPlusUsageStatusLineRuntime?.sync?.();
-        };
-      },
-    });
-    ctx.effect(() => {
-      startCodexPlusUsageStatusLine();
-      return () => stopCodexPlusUsageStatusLine();
-    });
-    codexPlusAlignWith(ctx, () => window.__codexPlusUsageStatusLineRuntime?.sync?.(), { settings: true });
-  }
-
-  /** 请求状态条：经公开的 composer.above 插槽拿每个输入框上方的容器。 */
-  function codexPlusProxyStatusExtension(ctx) {
-    codexPlusProxyStatusState.slotHosts ||= new Set();
-    ctx.registerSlot({
-      slot: "composer.above",
-      order: 0,
-      render: ({ container }) => {
-        codexPlusProxyStatusState.slotHosts.add(container);
-        window.__codexPlusProxyRequestStatusRuntime?.refresh?.();
-        return () => {
-          codexPlusProxyStatusState.slotHosts.delete(container);
-          if (codexPlusProxyStatusState.node?.parentElement === container) codexPlusProxyStatusState.node.remove();
-        };
-      },
-    });
-    ctx.effect(() => {
-      startCodexPlusProxyStatus();
-      return () => stopCodexPlusProxyStatus();
-    });
-  }
-
-  /** 打字特效：全局输入监听随拓展装卸，模式跟着设置对齐。 */
-  function codexPlusTypingEffectsExtension(ctx) {
-    ctx.effect(() => {
-      installCodexPlusTypingEffects();
-      return () => uninstallCodexPlusTypingEffects();
-    });
-    codexPlusAlignWith(ctx, syncCodexPlusTypingEffects, { settings: "heartbeat" });
   }
 
   /** 语音听写：输入框 footer 会重建，入口跟着页面扫描补；卸下时撤掉入口并取消进行中的录音。 */

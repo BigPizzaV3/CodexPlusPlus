@@ -13777,6 +13777,24 @@ button.side-item:hover {
   font-size: 13px;
   resize: vertical;
 }
+.shell .extension-config-file {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.shell .extension-config-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.shell .extension-config-file-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.shell .extension-config-file-error {
+  color: hsl(var(--destructive));
+  font-size: 11.5px;
+}
 .shell .extension-config-array {
   display: grid;
   gap: 6px;

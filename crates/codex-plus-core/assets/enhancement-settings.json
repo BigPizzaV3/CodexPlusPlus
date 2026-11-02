@@ -216,35 +216,6 @@
       ]
     },
     {
-      "key": "codexAppTypingEffect",
-      "builtin": "typing-effects",
-      "group": "chat",
-      "control": "select",
-      "title": "打字特效（彩虹 P）",
-      "description": "在 Codex 输入框的光标附近显示特效；系统减少动态效果时暂停。",
-      "options": [
-        {
-          "value": "off",
-          "label": "关闭"
-        },
-        {
-          "value": "rainbow",
-          "label": "彩虹粒子"
-        },
-        {
-          "value": "fireworks",
-          "label": "烟花"
-        },
-        {
-          "value": "stars",
-          "label": "星光"
-        }
-      ],
-      "surfaces": ["manager", "codex"],
-      "builtinOn": "rainbow",
-      "builtinOff": "off"
-    },
-    {
       "key": "codexAppThreadIdBadge",
       "builtin": "thread-id-badge",
       "group": "chat",
@@ -285,24 +256,6 @@
       "control": "bool",
       "title": "历史轮次补载（实验）",
       "description": "索引检查后补齐当前会话的历史消息和用时，默认关闭。",
-      "surfaces": ["manager", "codex"]
-    },
-    {
-      "key": "codexAppUsageStatusLine",
-      "builtin": "usage-statusline",
-      "group": "chat",
-      "control": "bool",
-      "title": "用量状态栏",
-      "description": "在输入框下方显示输出吞吐、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。",
-      "surfaces": ["manager", "codex"]
-    },
-    {
-      "key": "codexAppProxyRequestStatus",
-      "builtin": "proxy-request-status",
-      "group": "chat",
-      "control": "bool",
-      "title": "请求状态条",
-      "description": "请求经 Codex++ 网关或本地代理时，在输入框上方显示正在请求、等待返回、重试和生成进度。关闭后不再显示，也不再查询请求状态。",
       "surfaces": ["manager", "codex"]
     },
     {
@@ -391,13 +344,6 @@
       "description": "Codex 窗口的梦皮主题与壁纸",
       "group": "appearance",
       "setting": "codexAppDreamSkinEnabled"
-    },
-    {
-      "id": "image-overlay",
-      "title": "背景图",
-      "description": "在 Codex 窗口上叠一层自定义背景图。",
-      "group": "appearance",
-      "setting": "codexAppImageOverlayEnabled"
     },
     {
       "id": "instance-identity",

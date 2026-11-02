@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
-import { MANAGER_DATA_SOURCES, managerExtensionPages, managerNavPages, managerPageOverrides } from "./extension-manager-pages.ts";
+import { MANAGER_DATA_SOURCES, managerDataRequest, managerExtensionPages, managerNavPages, managerPageOverrides } from "./extension-manager-pages.ts";
 import { handleManagerRequest, MANAGER_PANEL_BOOTSTRAP, type ManagerBridgeDeps } from "./extension-manager-bridge.ts";
 
 const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
@@ -49,6 +49,34 @@ test("拓展页面能读的数据与 Rust 侧清单一致", () => {
   assert.deepEqual(Object.keys(MANAGER_DATA_SOURCES).sort(), rustList("MANAGER_DATA_SOURCES").sort());
   assert.deepEqual(MANAGER_DATA_SOURCES.gatewayUsage.args({}), { range: "today" });
   assert.deepEqual(MANAGER_DATA_SOURCES.localSessions.args({ limit: 5 }), { request: { offset: 0, limit: 5 } });
+});
+
+test("公共数据只走专用只读命令，身份取宿主且不转发任意参数", () => {
+  const names = ["gatewayProviders", "gatewayRouting", "gatewayHealth", "gatewayQuota", "installedSkills", "installedPlugins", "agentCollaboration"];
+  for (const name of names) {
+    const request = managerDataRequest(name, { key: "user:other", name: "settings", command: "delete", path: "/private", refresh: true, limit: 9999 }, names, "user:panel");
+    assert.equal(request.command, "extension_manager_data");
+    assert.deepEqual(request.args, { key: "user:panel", name, params: name === "agentCollaboration" ? { limit: 200 } : {} });
+  }
+  assert.throws(() => managerDataRequest("gatewayProviders", {}, [], "user:panel"), /没有声明/);
+  assert.throws(() => managerDataRequest("settings", {}, ["settings"], "user:panel"), /没有声明/);
+  assert.throws(() => managerDataRequest("toString", {}, ["toString"], "user:panel"), /没有声明/);
+  assert.deepEqual(MANAGER_DATA_SOURCES.agentCollaboration.args({ limit: -10 }), { name: "agentCollaboration", params: { limit: 1 } });
+  assert.deepEqual(MANAGER_DATA_SOURCES.agentCollaboration.args({ limit: 3.7 }), { name: "agentCollaboration", params: { limit: 3 } });
+  assert.deepEqual(MANAGER_DATA_SOURCES.agentCollaboration.args({ limit: Infinity }), { name: "agentCollaboration", params: { limit: 50 } });
+  // 旧四类接口维持既有返回与参数契约。
+  assert.deepEqual(managerDataRequest("gatewayUsage", {}, ["gatewayUsage"], "user:panel"), { command: "load_gateway_usage", args: { range: "today" } });
+});
+
+test("公开数据命令已注册，不调用刷新、安装、协作写快照或序列化完整网关", () => {
+  const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(lib, /commands::extension_manager_data,/);
+  const body = commands.slice(commands.indexOf("pub async fn extension_manager_data("), commands.indexOf("pub async fn extension_manager_backend_call("));
+  assert.match(body, /authorize_manager_data/);
+  assert.match(body, /extension_summary/);
+  assert.match(body, /installed_summary/);
+  assert.doesNotMatch(body, /fetch_balances|refresh_quota|load_gateway\(|agent_collaboration_request|\.snapshot\(\)|set_settings|save_config|to_value\(&gateway\)/);
 });
 
 test("面板桥接的 data / navigate：没给能力或页面不认得时回错误", async () => {

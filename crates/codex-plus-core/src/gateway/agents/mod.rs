@@ -52,6 +52,8 @@ pub struct ModelEntry {
     pub id: String,
     /// 上下文窗口（供应商池里写了的才有）。
     pub context_window: Option<u64>,
+    /// 思考档位（由低到高，模型组取成员的并集）；没有资料时为空。
+    pub reasoning_levels: Vec<String>,
 }
 
 /// 接入一个 Agent 时写配置需要的全部信息。
