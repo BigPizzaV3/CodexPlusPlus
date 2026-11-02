@@ -31,6 +31,7 @@ export const SUPPORTED_SERVICES = new Set([
   'storage', 'spillStore', 'shellEnv', 'sessionTitle', 'tokenMeter', 'sessionTelemetry',
   'planMode', 'goals', 'subagents',
   'attachments', 'fileReferences', 'webServer', 'mcpResources', 'typert',
+  'settings', 'loader', 'sessionPersistence',
 ])
 
 /** 只在钩子常驻进程里才「活」的服务：MCP 进程里拿得到，但没有会话事件流入。 */

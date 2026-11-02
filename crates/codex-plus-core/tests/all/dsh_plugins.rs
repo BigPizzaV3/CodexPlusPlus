@@ -78,11 +78,11 @@ fn call(id: u64, name: &str, arguments: Value) -> Value {
 
 #[test]
 fn dsh_parse_source_recognizes_local_npm_and_git() {
+    // Windows 上 /tmp/plugin 不算绝对路径，用本机真实的绝对路径。
+    let local = std::env::temp_dir().join("plugin").to_string_lossy().into_owned();
     assert_eq!(
-        dsh_plugins::parse_source("/tmp/plugin").unwrap(),
-        PluginSource::Local {
-            path: "/tmp/plugin".to_string()
-        }
+        dsh_plugins::parse_source(&local).unwrap(),
+        PluginSource::Local { path: local.clone() }
     );
     assert_eq!(
         dsh_plugins::parse_source(" @deepseek-ai/dsh-tool-todo@0.2.0 ").unwrap(),
@@ -450,7 +450,9 @@ process.stdout.write(JSON.stringify(doc))"#,
 
 fn url_from_path(path: &Path) -> String {
     let path = path.canonicalize().unwrap();
+    // Windows 的 canonicalize 带 verbatim 前缀（//?/），拼进 file URL 不合法，先去掉。
     let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
     if text.starts_with('/') {
         format!("file://{text}")
     } else {
@@ -618,7 +620,7 @@ fn dsh_skill_files_in_referenced_dependencies_are_scanned_with_limits() {
     write_package(
         &memory,
         "@acme/dsh-memory-skills",
-        "import '@deepseek-ai/dsh-skill-filesystem'\nexport function apply() {}\n",
+        "import '@deepseek-ai/dsh-agent-loop'\nexport function apply() {}\n",
     );
     write_skill(&memory.join("skills/recall"), "recall");
     write_skill(&memory.join("skills/remember"), "remember");
@@ -1935,6 +1937,37 @@ fn dsh_common_ecosystem_idioms_load_and_run() {
         probe["offloaded"],
         "[image omitted to fit request image limits; \"a.png\" (sha256:0123456789abcdef). No local normalized image path is available; ask the user to attach it again if needed.]"
     );
+}
+
+/// 第三方插件常用的几个 dsh 运行时包有替身：settings（带版本冲突，值落在插件数据目录，密钥脱敏）、loader.entries()（fiber 与 ctx.fiber 同一个）、
+/// sessionPersistence.findLog 恒为空（插件不会去删 Codex 的会话目录）、文件系统 skill 提供方、surface 折叠、子 agent 描述快照、模型选择。
+#[test]
+fn dsh_settings_loader_and_runtime_package_stand_ins() {
+    let Some(toolchain) = toolchain() else { return };
+    let state = tempfile::tempdir().unwrap();
+    let plugins = DshPlugins::new(state.path());
+    let record = plugins.import(&local_source(&fixture("settings-plugin")), &toolchain).unwrap();
+    assert_eq!(row(&record.report, "dsh-settings-demo")["status"], "compatible", "{}", record.report);
+    let responses = serve(&plugins, &toolchain, &[call(1, "settings_probe", json!({}))]);
+    let text = responses[0]["result"]["content"][0]["text"].as_str().unwrap_or_else(|| panic!("{responses:?}"));
+    let probe: Value = serde_json::from_str(text).unwrap_or_else(|_| panic!("{text}"));
+    assert_eq!(probe["initial"], json!({}), "初始值取这一行的配置：{probe}");
+    assert_eq!(probe["afterMutate"], json!({ "revision": 2, "value": { "apiKey": "sk-secret", "nested": { "mode": "fast" } } }), "{probe}");
+    assert_eq!(probe["conflict"], "conflict", "版本对不上抛 SettingsConflictError：{probe}");
+    assert_eq!(probe["updated"]["revision"], 3, "{probe}");
+    assert_eq!(probe["updated"]["value"]["mode"], "slow", "{probe}");
+    assert_eq!(probe["redacted"], "********", "{probe}");
+    assert_eq!(probe["ownEntry"]["id"], "dsh-settings-demo", "loader.entries() 里 fiber 同 ctx.fiber 的那一项：{probe}");
+    assert_eq!(probe["ownEntry"]["name"], "string", "{probe}");
+    assert_eq!(probe["findLog"], "", "{probe}");
+    assert_eq!(probe["skills"], json!(["alpha"]), "{probe}");
+    assert_eq!(probe["fold"], json!({ "nodes": [2], "shadowed": [[0, 1]] }), "{probe}");
+    assert_eq!(probe["eligible"], json!([true, false]));
+    assert_eq!(probe["descriptors"][0], json!({ "version": 2, "mode": "continuable", "provider": "p", "label": "l" }), "{probe}");
+    assert_eq!(probe["descriptors"][1], json!({ "version": 2, "mode": "one-shot", "provider": "p" }), "{probe}");
+    assert_eq!(probe["modelSelection"]["registered"], json!(["agent/request", "system-prompt/assemble"]), "{probe}");
+    assert_eq!(probe["modelSelection"]["routed"], json!({ "keep": 1, "provider": "p", "model": "m", "reasoningEffort": "high" }), "选中的模型与强度顶掉继承来的：{probe}");
+    assert_eq!(probe["modelSelection"]["remaining"], json!([]), "{probe}");
 }
 
 /// 插件在模块顶层（或 apply 里）调用 process.exit：宿主不退，这一行报出原因，同包别的行照常加载、工具照常可用。

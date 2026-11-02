@@ -111,6 +111,30 @@ const HOST_FILES: &[(&str, &str)] = &[
         "shims/dsh-client-connection.mjs",
         include_str!("../../../assets/dsh-host/shims/dsh-client-connection.mjs"),
     ),
+    (
+        "shims/dsh-settings.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-settings.mjs"),
+    ),
+    (
+        "shims/dsh-skill-filesystem.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-skill-filesystem.mjs"),
+    ),
+    (
+        "settings-services.mjs",
+        include_str!("../../../assets/dsh-host/settings-services.mjs"),
+    ),
+    (
+        "shims/dsh-session-surface.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-session-surface.mjs"),
+    ),
+    (
+        "shims/dsh-agent.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-agent.mjs"),
+    ),
+    (
+        "shims/dsh-subagent.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-subagent.mjs"),
+    ),
 ];
 
 const REGISTRY_VERSION: u32 = 1;
@@ -189,6 +213,9 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-host-webserver",
     "@deepseek-ai/dsh-mcp-resources",
     "@deepseek-ai/dsh-client-connection",
+    "@deepseek-ai/dsh-settings",
+    "@deepseek-ai/dsh-skill-filesystem",
+    "@deepseek-ai/dsh-agent",
 ];
 
 /// 插件来源。

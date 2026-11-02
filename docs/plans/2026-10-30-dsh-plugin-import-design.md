@@ -326,6 +326,35 @@ Codex 的负载转成 dsh 的事件参数：`tool_name` → `exec.name`（`Bash`
 - **`subprocess` 的 PTY、`web` 的联网搜索**：宿主不装依赖（PTY 需要原生模块），Codex 的联网搜索不对插件开放。
 - **前端 `inputTriggers`、`store` / `conversation` / `uiSession` 的大部分 hooks**：`/` 与 `@` 菜单归 Codex 自己；这些前端服务绑定 dsh Web 客户端自己的状态树。
 
+### 14.1 补充：dshmk 市场「已验证」插件实测补缺口（2026-11-02）
+
+拿 dshmk.com「已验证」页里的 9 个包在沙箱里（禁网、禁写、禁读凭据目录）做导入分析，按报告里的缺口补替身：
+
+| dsh 能力 | 落点 | 差别 |
+|---|---|---|
+| `ctx.settings`（`get` / `describe` / `mutate` / `update` / `configure`）与 `@deepseek-ai/dsh-settings` 的 `SettingsConflictError` | 按插件建，值落在插件数据目录的 `settings/` 下（临时文件加 rename 的原子写），默认命名空间是插件自己那一行的 id，初始值取该行配置；`expectedRevision` 对不上抛 `SettingsConflictError`；`describe({ redactSecrets })` 把名字含 key / token / secret / password 的字符串值遮成 `********` | 与管理器里的拓展配置是两份，管理器改配置不会同步进来；没有 schema 校验与表单生成（`configure` 只记策略） |
+| `ctx.loader`（`entries()` / `ctx.baseUrl` / `await()`） | 宿主记下加载过的行；`options.name` 是这一行引用的模块名（通常是包名），同一行 `ctx.fiber` 与 `entries()` 里的 `fiber` 是同一个对象；`!!js` 表达式里也能读 | 只有只读的 `entries()`，没有 dsh Loader 的重载、增删行 |
+| `ctx.sessionPersistence` | `findLog` 恒返回空串 | 刻意不暴露 Codex 的会话日志：插件（如归档管理）会对 `findLog` 返回路径所在目录整个删除，返回真路径会连同别的会话一起删掉 |
+| `@deepseek-ai/dsh-skill-filesystem` | `FileSystemSkillProvider` 只扫 `customSkillDirs` 里的 `SKILL.md`（最深 3 层） | 不监听目录变化，不扫默认根目录 |
+| `@deepseek-ai/dsh-session/surface`、`dsh-session` 的 `snapshotJsonValue` / `isJsonValue`、`dsh-subagent` 的 `snapshotSubagentDescriptor` / `foldSubagentDescriptor`、`dsh-agent` 的 `installModelSelection` | 照 npm 上已发布包的源码（BSD-3-Clause / MIT）生成，文件头带来源、版本与许可全文 | 只提供这几个导出；`installModelSelection` 挂在宿主 agent 替身的 `on` 上，Codex 自己的请求不走它 |
+| `ctx.typert.getPackage(包, 面)` | 记下 `register` 登记过的清单的「包 / 面」 | 只能回答「是否登记过」 |
+
+9 个包的变化（第 4 轮对第 1 轮）：
+
+| 包 | 之前 | 之后 |
+|---|---|---|
+| `dsh-plugin-hub` | 不兼容（缺 `loader`） | 兼容（21 行全过） |
+| `dsh-reasoning-effort` | 不兼容（缺 `settings`） | 兼容 |
+| `dsh-skills-manager` | 不兼容（缺 `dsh-skill-filesystem`） | 兼容 |
+| `dsh-status-rotator` | 兼容 | 兼容 |
+| `dsh-archive-manager` | 不兼容（缺 `sessionPersistence`） | 部分兼容（只剩近似说明） |
+| `dsh-better-sidebar` | 不兼容（缺 `dsh-settings`、`dsh-session/surface`、`dsh-agent`、`dsh-subagent` 导出） | 部分兼容（侧边对话与子 agent 页仍依赖 dsh 的 agent 循环） |
+| `dsh-cost-meter` | 报错（沙箱禁写 HOME 的误伤，之后是缺 `typert.getPackage`） | 部分兼容 |
+| `dsh-ego-browser` | 部分兼容 | 部分兼容（TUI 才有的可选服务不生效，设计内） |
+| `dsh-free-search` | 不兼容（缺 `dsh-settings`） | 报错：`blocks[toolsLang].tools` 取到 `undefined`。该包 0.9.26 的 `buildBuiltinPromptBlocks` 返回 `{ state, tools, constraints }`，按语言分在每段里面，读 `blocks[语言].tools` 本来就取不到，换到真 dsh 里也会同样报错，是插件自身的问题，不在宿主里绕 |
+
+没有测：`dsh-ios`（要 iOS 模拟器）、`meow-memory`（npm 发布者与卡片上的仓库作者对不上，未核实来源）。这一轮只验证导入分析，不代表装进 Codex 后每个功能都正常。
+
 ## 15. 生态实测（2026-11-01）
 
 **方法**：npm 上带 `dsh` 字段（`dsh.bundle` / `dsh.client`）的包共 730 个（`@deepseek-ai` 官方 59 个、第三方 671 个）。
