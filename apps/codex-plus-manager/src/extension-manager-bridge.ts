@@ -1,6 +1,6 @@
 /**
- * 拓展的管理器面板（codexpp.json 的 `manager.page`）：拓展自己的 HTML 放进沙箱 iframe（只给 allow-scripts，
- * 没有同源、弹窗、顶层跳转），页面里拿不到 Tauri 接口，也不能联网（下面的 CSP）；只能经 postMessage 调
+ * 拓展的管理器面板（codexpp.json 的 `manager.page`）：拓展自己的 HTML 放进沙箱 iframe（允许脚本和表单，
+ * 没有同源、弹窗、顶层跳转），页面里拿不到 Tauri 接口，资源请求与表单外发受下面的 CSP 限制；经 postMessage 调
  * 宿主开放的几样：本拓展的配置、本拓展的常驻后台、本拓展 assets/ 里的资源、提示条、主题，
  * 以及清单 `manager.data` 声明过的只读管理器数据（`data`）、跳到管理器别的页面（`navigate`），
  * 和清单 `permissions.routes` 声明过、开放给拓展页面的 Codex++ 数据路由（`call`，例如桌宠的图库与音效）。
@@ -104,9 +104,11 @@ export async function handleManagerRequest(request: ManagerRequest, deps: Manage
   }
 }
 
-/** 面板页里禁止联网与加载外部资源：资源经 asset() 取 data URL，网络请求交给拓展自己的常驻后台。 */
+/** 资源经 asset() 取 data URL，网络请求交给拓展自己的常驻后台；CSP 不阻止 iframe 自导航，仍须信任拓展作者。 */
 export const MANAGER_PANEL_CSP = [
   "default-src 'none'",
+  "form-action 'none'",
+  "base-uri 'none'",
   "script-src 'unsafe-inline'",
   "style-src 'unsafe-inline'",
   "img-src data: blob:",
@@ -162,7 +164,6 @@ export const MANAGER_PANEL_BOOTSTRAP = `(() => {
 export function managerPanelSrcdoc(html: string, theme: ManagerTheme): string {
   const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${MANAGER_PANEL_CSP}">`
     + `<script>${MANAGER_PANEL_BOOTSTRAP}</script><script>document.documentElement.dataset.theme=${JSON.stringify(theme)}</script>`;
-  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (tag) => `${tag}${head}`);
-  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (tag) => `${tag}<head>${head}</head>`);
-  return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
+  // 可信前缀先于任何拓展字节；重复的 html/head 标签和 HTML 片段交给浏览器解析，不能让注释吞掉 CSP。
+  return `<!doctype html><html><head>${head}${html}</head></html>`;
 }

@@ -676,29 +676,60 @@ fn vscode_group(wiring: &Wiring, vendor: &str) -> Value {
     }
 }
 
-/// 改写 chatLanguageModels.json（JSONC 数组）：去掉旧的 Codex++ 分组，追加新的；
-/// VS Code 自己写进分组的键（如模型的推理强度设置）保留。整份文件按原文还原。
-fn vscode_write_models(path: &Path, group: Value, set: &mut FileSet) -> anyhow::Result<()> {
-    let text = set.raw(path)?;
-    let mut list = match text.as_deref() {
+fn vscode_model_groups(text: Option<&str>) -> anyhow::Result<Vec<Value>> {
+    match text {
         Some(current) if !strip_jsonc(current).trim().is_empty() => {
-            match parse_jsonc(current)
-                .with_context(|| format!("无法解析 {}，为免覆盖没有改动它", path.display()))?
-            {
-                Value::Array(list) => list,
-                _ => bail!("{} 不是 JSON 数组，为免覆盖没有改动它", path.display()),
+            match parse_jsonc(current)? {
+                Value::Array(list) => Ok(list),
+                _ => bail!("模型分组配置不是 JSON 数组，为免覆盖没有改动它"),
             }
         }
-        _ => Vec::new(),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn vscode_group_is_ours(group: &Value) -> bool {
+    group.get("name").and_then(Value::as_str) == Some(PROVIDER_ID)
+        && matches!(
+            group.get("vendor").and_then(Value::as_str),
+            Some(VSCODE_ENDPOINT | VSCODE_OAI)
+        )
+}
+
+/// 旧版按 Raw 保存的也是接入前原文；断开时只还原我们的分组，其它分组沿用当前值。
+pub(super) fn restore_vscode_models(
+    before: Option<&str>,
+    current: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let Some(current) = current else {
+        return Ok(None);
     };
+    let original = vscode_model_groups(before)?;
+    let mut groups = vscode_model_groups(Some(current))?;
+    groups.retain(|group| !vscode_group_is_ours(group));
+    for (index, group) in original.iter().enumerate() {
+        if vscode_group_is_ours(group) {
+            groups.insert(index.min(groups.len()), group.clone());
+        }
+    }
+    if groups == original {
+        return Ok(before.map(str::to_string));
+    }
+    let mut text = serde_json::to_string_pretty(&groups)?;
+    text.push('\n');
+    Ok(Some(text))
+}
+
+/// 改写 chatLanguageModels.json（JSONC 数组）：去掉旧的 Codex++ 分组，追加新的；
+/// VS Code 自己写进分组的键（如模型的推理强度设置）保留。断开只还原 Codex++ 分组。
+fn vscode_write_models(path: &Path, group: Value, set: &mut FileSet) -> anyhow::Result<()> {
+    let text = set.raw(path)?;
+    let mut list = vscode_model_groups(text.as_deref())
+        .with_context(|| format!("无法解析 {}，为免覆盖没有改动它", path.display()))?;
     let vendor = group.get("vendor").cloned();
     let mut kept = Map::new();
     list.retain(|item| {
-        let ours = item.get("name").and_then(Value::as_str) == Some(PROVIDER_ID)
-            && matches!(
-                item.get("vendor").and_then(Value::as_str),
-                Some(VSCODE_ENDPOINT | VSCODE_OAI)
-            );
+        let ours = vscode_group_is_ours(item);
         if ours && item.get("vendor") == vendor.as_ref() {
             kept = item.as_object().cloned().unwrap_or_default();
         }

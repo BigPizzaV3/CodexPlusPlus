@@ -378,7 +378,20 @@ export default () => ({
   ticks() { return ticks; },
 });"#)]);
     with_extension_backend_cleanup(&[&manager], async {
-        let headers = "POST /ext/x HTTP/1.1\r\nContent-Type: application/json\r\n";
+        let headers = "POST /ext/x HTTP/1.1\r\nHost: 127.0.0.1:57321\r\nContent-Type: application/json\r\n";
+        let path = format!("/ext/{id}/text?a=1");
+        for (headers, reason) in [
+            ("GET /ext/x HTTP/1.1\r\n", "缺少 Host 的请求"),
+            ("GET /ext/x HTTP/1.1\r\nHost: evil.example:57321\r\n", "DNS 重绑定的非本机 Host"),
+            ("GET /ext/x HTTP/1.1\r\nHost: 127.0.0.1:57321\r\nOrigin: https://evil.example\r\n", "带 Origin 的网页"),
+            ("GET /ext/x HTTP/1.1\r\nHost: 127.0.0.1:57321\r\nSec-Fetch-Site: cross-site\r\n", "不带 Origin 的跨站资源请求"),
+        ] {
+            assert_eq!(route_http_with(&manager, "GET", &path, headers, b"").await.0, 403, "{reason} 不得调用拓展");
+        }
+        let same_origin = "GET /ext/x HTTP/1.1\r\nHost: localhost:57321\r\nSec-Fetch-Site: same-origin\r\n";
+        assert_eq!(route_http_with(&manager, "GET", &path, same_origin, b"").await.0, 200, "同源页面的 GET 仍可用");
+        let navigation = "GET /ext/x HTTP/1.1\r\nHost: [::1]:57321\r\nSec-Fetch-Site: none\r\n";
+        assert_eq!(route_http_with(&manager, "GET", &path, navigation, b"").await.0, 200, "直接打开本机页面仍可用");
         let (status, kind, body) = route_http_with(&manager, "GET", &format!("/ext/{id}/text?a=1"), headers, b"").await;
         assert_eq!((status, kind.as_str(), body.as_slice()), (200, "text/plain; charset=utf-8", b"hi a=1".as_slice()));
         let (status, _, body) = route_http_with(&manager, "POST", &format!("/ext/{id}/json"), headers, br#"{"x":1}"#).await;

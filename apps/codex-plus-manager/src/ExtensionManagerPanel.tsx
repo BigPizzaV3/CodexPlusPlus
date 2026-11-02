@@ -99,7 +99,7 @@ export function ExtensionManagerPanel({ scriptKey, config, onSaveConfig, onToast
       <iframe
         ref={frame}
         title={page.title}
-        // 只给脚本：没有 allow-same-origin，页面拿不到 Tauri 接口与宿主页面；没有弹窗、顶层跳转。
+        // 允许脚本和表单交互，外发由 CSP 限制；没有同源、弹窗、顶层跳转权限。iframe 自导航仍须信任作者。
         sandbox="allow-scripts allow-forms"
         srcDoc={srcdoc}
         style={{ width: "100%", height: Math.max(fullPage ? 480 : MANAGER_PANEL_MIN_HEIGHT, height), border: 0, display: "block" }}
