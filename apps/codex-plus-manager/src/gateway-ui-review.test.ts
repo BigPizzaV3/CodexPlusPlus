@@ -186,6 +186,21 @@ test("订阅登录不占全局 busy，可取消：关掉验证码弹窗即取消
   }
 });
 
+test("本机订阅导入读取具名 start，再将原始登录状态交给完成命令", () => {
+  const providers = read("GatewayProviders.tsx");
+  const login = providers.slice(providers.indexOf("const loginSubscription = async"), providers.indexOf("/** 登录订阅账号："));
+  assert.match(login, /"start_gateway_subscription_login", \{ kind: item\.id, method, input \}/);
+  assert.match(login, /if \(result\.status !== "ok"\)/);
+  assert.match(login, /if \(!result\.start\)/);
+  assert.match(login, /start = result\.start;/);
+  assert.doesNotMatch(login, /result\.payload/, "CommandResult 把结果摊平，不能再从 payload 取登录状态");
+  assert.match(login, /"finish_gateway_subscription_login", \{ kind: item\.id, start, skipAgents: skip \}/);
+  const preview = read("../web-preview/tauri-web-shim.ts");
+  const shimStart = preview.slice(preview.indexOf('case "start_gateway_subscription_login":'), preview.indexOf('case "finish_gateway_subscription_login":'));
+  assert.match(shimStart, /return ok\(\{ start: \{/);
+  assert.doesNotMatch(shimStart, /payload:/);
+});
+
 test("「挑选」弹层挂在 body 上，紧凑规则用 .gw-portal 前缀", () => {
   assert.match(read("GatewayPage.css"), /\.gw-portal \.gw-select-item \{/);
   assert.doesNotMatch(read("styles.css"), /\.shell \.gw-select-item/);

@@ -653,6 +653,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
   switch (command) {
     case "list_tools": return tools as T;
     case "load_gateway": return gateway as T;
+    case "start_gateway_subscription_login": return ok({ start: { message: "", state: {} } }) as T;
     case "scan_agent_cache": return ok({ report: agentCacheReport }) as T;
     case "fetch_provider_models": return ok({ models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"], endpoint: "https://api.anthropic.com/v1/models" }) as T;
     case "agent_pet_catalog": return [

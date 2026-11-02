@@ -349,12 +349,16 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
     try {
       let start: SubscriptionLoginStart;
       try {
-        const result = await invoke<{ status: string; message: string; payload?: SubscriptionLoginStart | null }>("start_gateway_subscription_login", { kind: item.id, method, input });
-        if (result.status !== "ok" || !result.payload) {
+        const result = await invoke<{ status: string; message: string; start?: SubscriptionLoginStart | null }>("start_gateway_subscription_login", { kind: item.id, method, input });
+        if (result.status !== "ok") {
           await notify(tf("{0}失败", [title]), result.message, "failed");
           return;
         }
-        start = result.payload;
+        if (!result.start) {
+          await notify(tf("{0}失败", [title]), t("登录响应缺少必要状态，请重试。"), "failed");
+          return;
+        }
+        start = result.start;
       } catch (error) {
         await notify(t("调用失败"), String(error), "failed");
         return;

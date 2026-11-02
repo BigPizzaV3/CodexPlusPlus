@@ -2948,6 +2948,7 @@ export const EN_PLAIN: Record<string, string> = {
   "钩子需在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」；每次事件在新进程里加载插件，插件的内存状态不跨事件保留。": "Hooks need “Codex++ extension hooks” trusted in Codex's Hooks settings; each event loads the plugin in a new process, so in-memory plugin state does not carry over between events.",
   // 网关：私有接口订阅与通用 Agent
   "登录失败": "Sign-in failed",
+  "登录响应缺少必要状态，请重试。": "The sign-in response is missing required state. Please try again.",
   "当前版本不支持这个订阅": "This version does not support this subscription",
   "通过模拟官方客户端调用未公开的接口，可能随时失效，也有账号被限制的风险。": "This calls undocumented APIs by acting as the official client. It may stop working at any time, and the account may be restricted.",
   "粘贴 token、Cookie 或导出的登录文件内容": "Paste a token, cookie, or the contents of an exported sign-in file",

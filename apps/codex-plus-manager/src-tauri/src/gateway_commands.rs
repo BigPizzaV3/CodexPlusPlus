@@ -1656,6 +1656,40 @@ mod tests {
         assert_eq!(value["status"], "ok");
         assert_eq!(value["logins"][0]["id"], "kiro");
     }
+
+    #[test]
+    fn subscription_login_start_result_keeps_message_and_state_separate() {
+        use codex_plus_core::gateway::subscriptions::LoginStart;
+
+        let result = crate::commands::ok(
+            "已读取本机登录。",
+            super::SubscriptionLoginStartPayload {
+                start: Some(LoginStart {
+                    message: "开始登录。".into(),
+                    state: serde_json::json!({ "nonce": "test" }),
+                    ..LoginStart::default()
+                }),
+            },
+        );
+        let text = serde_json::to_string(&result).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(text.matches("\"message\":").count(), 2);
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["message"], "已读取本机登录。");
+        assert_eq!(value["start"]["message"], "开始登录。");
+        assert_eq!(value["start"]["state"]["nonce"], "test");
+        assert!(value.get("state").is_none());
+        assert!(value.get("payload").is_none());
+
+        let failed = crate::commands::failed(
+            "登录失败：测试错误",
+            super::SubscriptionLoginStartPayload { start: None },
+        );
+        let value = serde_json::to_value(failed).unwrap();
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["message"], "登录失败：测试错误");
+        assert!(value["start"].is_null());
+    }
 }
 
 /// 用量汇总。`range`：`today` / `7d` / `30d` / `all`。
@@ -2148,15 +2182,23 @@ pub async fn login_gateway_chatgpt_api(
 
 /// 私有接口订阅（Cursor、Kiro 等）登录第一步：按选的方式开始登录。要打开的网址在这里打开，
 /// 设备码、说明和完成登录要用的状态返回给界面，界面接着调 [`finish_gateway_subscription_login`]。
+#[derive(Debug, Serialize)]
+pub struct SubscriptionLoginStartPayload {
+    pub start: Option<codex_plus_core::gateway::subscriptions::LoginStart>,
+}
+
 #[tauri::command]
 pub async fn start_gateway_subscription_login(
     kind: String,
     method: codex_plus_core::gateway::subscriptions::LoginMethod,
     input: Option<String>,
-) -> CommandResult<Option<codex_plus_core::gateway::subscriptions::LoginStart>> {
+) -> CommandResult<SubscriptionLoginStartPayload> {
     use codex_plus_core::gateway::subscriptions;
     let Some(item) = subscriptions::get(&kind) else {
-        return failed(&format!("不认识的订阅 {kind}"), None);
+        return failed(
+            &format!("不认识的订阅 {kind}"),
+            SubscriptionLoginStartPayload { start: None },
+        );
     };
     let result = async {
         let http = codex_plus_core::http_client::proxied_client("")?;
@@ -2174,9 +2216,12 @@ pub async fn start_gateway_subscription_login(
             } else {
                 start.message.clone()
             };
-            ok(&message, Some(start))
+            ok(&message, SubscriptionLoginStartPayload { start: Some(start) })
         }
-        Err(error) => failed(&format!("登录失败：{error:#}"), None),
+        Err(error) => failed(
+            &format!("登录失败：{error:#}"),
+            SubscriptionLoginStartPayload { start: None },
+        ),
     }
 }
 
