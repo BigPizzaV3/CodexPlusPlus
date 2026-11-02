@@ -1546,12 +1546,13 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
         request.headers_mut().insert("host", format!("evil.example:{port}").parse().unwrap());
         request.headers_mut().insert("origin", format!("http://evil.example:{port}").parse().unwrap());
         assert!(tokio_tungstenite::connect_async(request).await.is_err());
+        // 断言完成后先释放本用例后台，再等待代理连接收尾。
+        codex_plus_core::extension_backend::stop_all(&manager).await;
         server.await.unwrap();
     }
 
     plugins.set_enabled(&record.id, false).unwrap();
     plugins.sync_companion(&manager, &record.id).unwrap();
-    codex_plus_core::extension_backend::stop_all(&manager).await;
 }
 
 /// 自定义 npm registry：`npm pack` 与依赖安装都带上 `--registry`（假的 npm 记下参数并造出 tarball）。
