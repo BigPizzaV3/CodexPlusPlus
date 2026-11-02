@@ -163,31 +163,6 @@
         background: var(--color-token-bg-secondary, transparent);
         color: var(--color-token-text-primary, inherit);
       }
-      .${sessionShareButtonClass} {
-        position: static;
-        flex: 0 0 auto;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-        margin-left: 2px;
-        z-index: 2147483001;
-        min-height: var(--height-button-composer, 32px);
-        border-radius: var(--border-radius-lg, 8px);
-        font: inherit;
-        font-size: 13px;
-        line-height: 18px;
-        cursor: pointer;
-        box-shadow: none;
-      }
-      .${sessionShareButtonClass}:hover,
-      .${sessionShareButtonClass}:focus-visible {
-        background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover));
-        color: var(--color-token-text-primary, var(--codex-plus-text));
-        outline: none;
-      }
-      .${sessionShareButtonClass}[aria-busy="true"] {
-        cursor: wait;
-        opacity: .65;
-      }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} {
         opacity: 1;
         pointer-events: auto;
@@ -897,6 +872,9 @@
       }
       .codex-plus-extensions-detail-link { margin-top: 16px; font-size: 13px; }
       .codex-plus-extensions-detail-link a { color: var(--codex-plus-success); word-break: break-all; }
+      .codex-plus-extensions-detail-settings { margin-top: 22px; }
+      .codex-plus-extensions-detail-settings-host { margin-top: 8px; }
+      .codex-plus-extensions-detail-settings-hint { color: var(--codex-plus-text-secondary); font-size: 13px; }
       .codex-plus-extensions-detail-error {
         margin-top: 14px;
         padding: 8px 10px;
@@ -1029,15 +1007,6 @@
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
-      .codex-plus-typing-effect-select {
-        flex-shrink: 0;
-        align-self: center;
-        min-width: 112px;
-        height: 32px;
-        padding: 0 8px;
-        font-size: 13px;
-      }
-      .codex-plus-typing-effect-select:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -1194,11 +1163,6 @@
       .codex-session-more-menu-item { border-radius: var(--border-radius-sm, 6px); font-family: inherit; }
       .codex-session-more-menu-item:hover,
       .codex-session-more-menu-item:focus-visible { background: var(--codex-plus-bg-hover); }
-      .${sessionShareButtonClass}:hover,
-      .${sessionShareButtonClass}:focus-visible {
-        background: var(--codex-plus-bg-hover);
-        color: var(--codex-plus-text);
-      }
       .${actionTooltipClass} {
         border-color: var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
@@ -1268,7 +1232,6 @@
       .codex-plus-toggle span { background: var(--color-token-bg-primary, #fff); box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.16)); }
       .codex-plus-toggle[data-enabled="true"] { background: var(--color-background-primary-solid, var(--color-background-success-solid, #10a37f)); }
       .codex-plus-width-input,
-      .codex-plus-typing-effect-select,
       .codex-plus-form-field input {
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-lg, 8px);
@@ -1277,7 +1240,6 @@
         font-family: inherit;
       }
       .codex-plus-width-input:focus,
-      .codex-plus-typing-effect-select:focus,
       .codex-plus-form-field input:focus { border-color: var(--codex-plus-focus); outline: 2px solid color-mix(in srgb, var(--codex-plus-focus) 25%, transparent); outline-offset: 0; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
@@ -1442,8 +1404,7 @@
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button,
-      .codex-plus-settings .codex-plus-width-input,
-      .codex-plus-settings .codex-plus-typing-effect-select {
+      .codex-plus-settings .codex-plus-width-input {
         box-sizing: border-box;
         min-height: 32px;
         border: 1px solid var(--codex-plus-border);
@@ -1454,89 +1415,7 @@
         font-size: 13px;
         line-height: 18px;
       }
-      .codex-plus-settings .codex-plus-width-input,
-      .codex-plus-settings .codex-plus-typing-effect-select { height: 32px; }
-      .codex-plus-settings .codex-plus-width-input { width: 72px; min-width: 48px; }
-      .codex-plus-settings .codex-plus-typing-effect-select { min-width: 0; }
-      .codex-plus-settings .codex-plus-typing-effect-select[hidden] { display: none; }
-      .codex-plus-settings .codex-plus-dropdown-trigger {
-        display: inline-flex;
-        flex: 0 0 auto;
-        align-items: center;
-        align-self: center;
-        justify-content: space-between;
-        gap: 8px;
-        height: 28px;
-        min-width: 112px;
-        box-sizing: border-box;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 8px;
-        padding: 3px 10px;
-        background: var(--codex-plus-bg-secondary);
-        color: var(--codex-plus-text);
-        font: inherit;
-        font-size: 13px;
-        line-height: 20px;
-        cursor: pointer;
-      }
-      .codex-plus-settings .codex-plus-dropdown-trigger > svg {
-        flex: 0 0 16px;
-        width: 16px;
-        height: 16px;
-        color: var(--codex-plus-text-secondary);
-      }
-      .codex-plus-settings .codex-plus-dropdown-trigger:hover:not(:disabled),
-      .codex-plus-settings .codex-plus-dropdown-trigger[aria-expanded="true"] { background: var(--codex-plus-bg-hover); }
-      .codex-plus-settings .codex-plus-dropdown-trigger:disabled { cursor: not-allowed; opacity: .55; }
-      /* 菜单挂在 overlay 上，避免设置卡片或滚动容器裁切。 */
-      .codex-plus-dropdown-menu {
-        position: absolute;
-        z-index: 2;
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        width: 220px;
-        max-width: calc(100% - 16px);
-        box-sizing: border-box;
-        padding: 6px;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 14px;
-        background: var(--codex-plus-bg-elevated);
-        color: var(--codex-plus-text);
-        font-family: inherit;
-        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
-      }
-      .codex-plus-dropdown-menu[hidden] { display: none; }
-      .codex-plus-dropdown-option {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        width: 100%;
-        min-height: 28px;
-        box-sizing: border-box;
-        border: 0;
-        border-radius: 8px;
-        padding: 4px 12px;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        font-size: 14px;
-        line-height: 20px;
-        text-align: left;
-        cursor: pointer;
-      }
-      .codex-plus-dropdown-option > svg {
-        flex: 0 0 16px;
-        width: 16px;
-        height: 16px;
-        visibility: hidden;
-      }
-      .codex-plus-dropdown-option[aria-selected="true"] > svg { visibility: visible; }
-      .codex-plus-dropdown-option:hover,
-      .codex-plus-dropdown-option:focus-visible {
-        background: var(--codex-plus-bg-hover);
-        outline: none;
-      }
+      .codex-plus-settings .codex-plus-width-input { height: 32px; width: 72px; min-width: 48px; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button { white-space: normal; overflow-wrap: anywhere; }
       .codex-plus-settings .codex-plus-action-button:hover,
@@ -1796,6 +1675,86 @@
         color: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary));
       }
       .codex-plus-discovery .codex-plus-extensions-detail-link a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); }
+      /* 详情页签与两栏（对齐 VS Code 扩展详情）：左边细节 / 设置 / 功能，右边安装与市场信息。 */
+      .codex-plus-discovery .codex-plus-extensions-detail { max-width: 1120px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-heading .codex-plus-extensions-detail-description { margin-top: 6px; }
+      .codex-plus-extensions-detail-gear { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 0; }
+      .codex-plus-extensions-detail-gear svg { width: 16px; height: 16px; }
+      .codex-plus-extensions-detail-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-extensions-detail-tabs button {
+        margin-bottom: -1px; padding: 8px 2px; border: 0; border-bottom: 2px solid transparent; background: transparent;
+        color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; line-height: 20px; cursor: pointer;
+      }
+      .codex-plus-extensions-detail-tabs button:hover { color: var(--codex-plus-text); }
+      .codex-plus-extensions-detail-tabs button[aria-selected="true"] { border-bottom-color: var(--codex-plus-switch-on, #3485ff); color: var(--codex-plus-text); }
+      .codex-plus-extensions-detail-columns { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 32px; padding-top: 20px; }
+      .codex-plus-extensions-detail-main { min-width: 0; }
+      .codex-plus-extensions-detail-tabpanel[hidden] { display: none !important; }
+      .codex-plus-extensions-readme-hint { color: var(--codex-plus-text-tertiary); font-size: 13px; line-height: 20px; }
+      .codex-plus-extensions-detail-aside { min-width: 0; font-size: 12px; line-height: 18px; color: var(--codex-plus-text-secondary); }
+      .codex-plus-extensions-detail-aside section { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-extensions-detail-aside section:last-child { border-bottom: 0; }
+      .codex-plus-extensions-detail-aside h3 { margin: 0 0 8px; color: var(--codex-plus-text); font-size: 13px; font-weight: 600; }
+      .codex-plus-extensions-detail-aside dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+      .codex-plus-extensions-detail-aside dt { color: var(--codex-plus-text-tertiary); }
+      .codex-plus-extensions-detail-aside dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+      .codex-plus-extensions-aside-links { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+      .codex-plus-extensions-detail-aside a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); text-decoration: none; }
+      .codex-plus-extensions-detail-aside a:hover { text-decoration: underline; }
+      .codex-plus-extensions-detail-aside .codex-plus-extensions-detail-tags { margin-top: 0; }
+      .codex-plus-extensions-features { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 20px; }
+      .codex-plus-extensions-features th, .codex-plus-extensions-features td { padding: 8px 0; border-bottom: 1px solid var(--codex-plus-border-subtle); text-align: left; vertical-align: top; }
+      .codex-plus-extensions-features th { width: 160px; padding-right: 16px; color: var(--codex-plus-text-secondary); font-weight: 500; }
+      .codex-plus-extensions-features td { color: var(--codex-plus-text); overflow-wrap: anywhere; }
+      /* 通用设置表单（按清单 config 生成）。 */
+      .codex-plus-ext-config { display: grid; gap: 2px; }
+      .codex-plus-extensions-detail-settings-hint + .codex-plus-ext-config { margin-top: 12px; }
+      .codex-plus-ext-config-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 260px); align-items: center; gap: 8px 24px; padding: 10px 0; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-ext-config-row[data-wide="true"] { grid-template-columns: minmax(0, 1fr); }
+      .codex-plus-ext-config-label label { color: var(--codex-plus-text); font-size: 13px; font-weight: 500; line-height: 20px; }
+      .codex-plus-ext-config-description { color: var(--codex-plus-text-tertiary); font-size: 12px; line-height: 18px; }
+      .codex-plus-ext-config-control { display: flex; justify-content: flex-end; min-width: 0; }
+      .codex-plus-ext-config-row[data-wide="true"] .codex-plus-ext-config-control { justify-content: stretch; }
+      .codex-plus-ext-config-input {
+        width: 100%; box-sizing: border-box; min-height: 30px; padding: 5px 8px; border: 1px solid var(--codex-plus-border); border-radius: 6px;
+        background: var(--codex-plus-bg-secondary, transparent); color: var(--codex-plus-text); font: inherit; font-size: 13px; line-height: 18px;
+      }
+      textarea.codex-plus-ext-config-input { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      .codex-plus-ext-config-input:focus { outline: 2px solid var(--codex-plus-switch-on, #3485ff); outline-offset: -1px; }
+      .codex-plus-ext-config-status { min-height: 18px; padding-top: 8px; color: var(--codex-plus-text-tertiary); font-size: 12px; }
+      .codex-plus-ext-config-status[data-kind="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-ext-config-status[data-kind="error"] { color: var(--codex-plus-danger); }
+      /* README 的 Markdown 正文。 */
+      .codex-plus-markdown { color: var(--codex-plus-text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
+      .codex-plus-markdown > :first-child { margin-top: 0; }
+      .codex-plus-markdown h1, .codex-plus-markdown h2, .codex-plus-markdown h3, .codex-plus-markdown h4, .codex-plus-markdown h5, .codex-plus-markdown h6 { margin: 1.4em 0 .6em; font-weight: 600; line-height: 1.3; }
+      .codex-plus-markdown h1 { font-size: 24px; padding-bottom: .3em; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown h2 { font-size: 19px; padding-bottom: .3em; border-bottom: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown h3 { font-size: 16px; }
+      .codex-plus-markdown h4, .codex-plus-markdown h5, .codex-plus-markdown h6 { font-size: 14px; }
+      .codex-plus-markdown p, .codex-plus-markdown ul, .codex-plus-markdown ol, .codex-plus-markdown blockquote, .codex-plus-markdown pre, .codex-plus-markdown .codex-plus-markdown-table { margin: 0 0 12px; }
+      /* Codex 自己的样式把列表符号清掉了，这里补回。 */
+      .codex-plus-markdown ul, .codex-plus-markdown ol { padding-left: 22px; }
+      .codex-plus-markdown ul { list-style: disc; }
+      .codex-plus-markdown ul ul { list-style: circle; }
+      .codex-plus-markdown ol { list-style: decimal; }
+      .codex-plus-markdown li { display: list-item; }
+      .codex-plus-markdown li + li { margin-top: 2px; }
+      .codex-plus-markdown li > ul, .codex-plus-markdown li > ol { margin: 2px 0 0; }
+      .codex-plus-markdown li.codex-plus-markdown-task { list-style: none; margin-left: -20px; }
+      .codex-plus-markdown li.codex-plus-markdown-task input { margin: 0 6px 0 0; vertical-align: -1px; }
+      .codex-plus-markdown a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); text-decoration: none; }
+      .codex-plus-markdown a:hover { text-decoration: underline; }
+      .codex-plus-markdown code { padding: 1px 5px; border-radius: 4px; background: var(--codex-plus-bg-hover); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
+      .codex-plus-markdown pre { overflow: auto; padding: 12px 14px; border-radius: 8px; background: var(--codex-plus-bg-hover); line-height: 1.5; }
+      .codex-plus-markdown pre code { padding: 0; background: transparent; font-size: 12px; white-space: pre; }
+      .codex-plus-markdown blockquote { padding: 0 0 0 12px; border-left: 3px solid var(--codex-plus-border); color: var(--codex-plus-text-secondary); }
+      .codex-plus-markdown hr { height: 1px; margin: 20px 0; border: 0; background: var(--codex-plus-border-subtle); }
+      .codex-plus-markdown img { max-width: 100%; vertical-align: middle; }
+      .codex-plus-markdown .codex-plus-markdown-table { overflow-x: auto; }
+      .codex-plus-markdown table { border-collapse: collapse; font-size: 13px; }
+      .codex-plus-markdown th, .codex-plus-markdown td { padding: 6px 12px; border: 1px solid var(--codex-plus-border-subtle); }
+      .codex-plus-markdown th { background: var(--codex-plus-bg-hover); font-weight: 600; }
       .codex-plus-discovery .codex-plus-toggle { flex: 0 0 32px; width: 32px; height: 20px; min-height: 20px; box-sizing: border-box; padding: 2px; background: var(--codex-plus-switch-off, #3a3a3a); cursor: pointer; }
       .codex-plus-discovery .codex-plus-toggle span { width: 16px; height: 16px; background: var(--codex-plus-switch-thumb, #fff); }
       .codex-plus-discovery .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on, #3485ff); }
@@ -1849,6 +1808,7 @@
         .codex-plus-discovery-toolbar { flex-basis: 100%; }
         .codex-plus-discovery .codex-plus-extensions-detail-head { flex-wrap: wrap; }
         .codex-plus-discovery .codex-plus-extensions-detail-actions { flex-basis: 100%; }
+        .codex-plus-extensions-detail-columns { grid-template-columns: minmax(0, 1fr); }
       }
       @container codex-plus-discovery (max-width: 600px) {
         .codex-plus-extensions-grid,
@@ -1877,12 +1837,12 @@
   }
 
   function defaultCodexPlusSettings() {
-    // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、agent-pet、
-    // session-share-runtime…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
+    // capacityAutoRetry* 必须写成字面量：多个测试（agent-pet、
+    // backend-settings-sync…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, proxyRequestStatus: true, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1892,7 +1852,6 @@
     sessionDeleteSkipConfirm: "codexAppSessionDeleteSkipConfirm",
     sideChatSave: "codexAppSideChatSave",
     markdownExport: "codexAppMarkdownExport",
-    sessionShare: "codexAppSessionShare",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
@@ -1903,12 +1862,9 @@
     activityOverlayRight: "codexAppActivityOverlayRight",
     stepwise: "codexAppStepwiseEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
-    usageStatusLine: "codexAppUsageStatusLine",
-    proxyRequestStatus: "codexAppProxyRequestStatus",
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
-    typingEffect: "codexAppTypingEffect",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
     dreamSkinThemeConfig: "codexAppDreamSkinThemeConfig",
@@ -1960,10 +1916,8 @@
         sessionDelete: false,
         sessionDeleteSkipConfirm: false,
         markdownExport: false,
-        sessionShare: false,
         sideChatSave: false,
         pasteFix: false,
-        typingEffect: "off",
         threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
@@ -1975,8 +1929,6 @@
         activityOverlayRight: false,
         stepwise: false,
         answerOutline: false,
-        usageStatusLine: false,
-        proxyRequestStatus: false,
         capacityAutoRetry: false,
         turnRewind: false,
         capacityAutoRetryMaxAttempts: 15,
@@ -2768,16 +2720,8 @@
   function setCodexPlusSetting(key, value) {
     const backendKey = codexPlusBackendSettingMap[key];
     if (backendKey) {
-      if (key === "stepwise") syncStepwisePanel(value);
-      if (key === "answerOutline") syncStepwisePanel(undefined, value);
-      void setBackendSetting(backendKey, value).then(() => {
-        if (key === "stepwise" || key === "answerOutline") {
-          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel());
-        }
-        // 容量错误自动重试：开关落库后立即启停轮询，不必等下一次心跳。
-        if (key === "capacityAutoRetry") syncCodexPlusCapacityAutoRetry();
-        if (key === "turnRewind") syncCodexPlusTurnRewind();
-      }).catch(() => {
+      // 跟着开关走的功能由各自的内置拓展订阅 setBackendSetting 发的 settings/changed，这里不点名。
+      void setBackendSetting(backendKey, value).catch(() => {
         void loadBackendSettings();
       });
       return;
@@ -2790,8 +2734,7 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
-    if (key === "threadScrollRestore" && !value) stopThreadScrollRestore();
-    if (key === "stepwise") syncStepwisePanel(value);
+    if (typeof emitCodexPlusSettingsChanged === "function") emitCodexPlusSettingsChanged(key, value, true);
     renderCodexPlusMenu();
     scan();
   }

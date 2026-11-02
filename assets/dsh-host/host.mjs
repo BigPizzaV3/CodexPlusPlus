@@ -11,21 +11,31 @@
 // 能对上 Codex 钩子 / 网关的事件（见 EVENT_HOOKS、GATEWAY_EVENTS）由 Codex++ 生成的配套拓展包转发；
 // 必需依赖里有别的服务时不加载，并在报告里写明缺了什么。
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { register } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { runInNewContext } from 'node:vm'
 import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
+import { createLoader, createSessionPersistence, createSettings } from './settings-services.mjs'
 import {
-  AgentRegistry, MIRROR_SERVICES, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
+  AgentRegistry, MIRROR_SERVICES, messageText, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
   createApproval, createAttachments, createFileReferences, createGoals, createPlanMode, createSubagents, PLAN_MODE_WRITE_TOOLS, createSessionTelemetry, createSessionTitle, createShellEnv, createSpillStore, createStorage, createTokenMeter, createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
   createWorkspaceRegistry,
 } from './services.mjs'
 
-const HOST_VERSION = '5'
+const HOST_VERSION = '6'
 const HOST_DIR = dirname(fileURLToPath(import.meta.url))
+/** 替身 Service 构造时经这个符号把自己登记到 ctx（与 shims/cordis.mjs 一致）。 */
+const PROVIDE = Symbol.for('codexpp.dsh.provide')
+/** Cordis Service 的生命周期符号（与 shims/cordis.mjs 的 Service.init / Service.dispose 一致）。 */
+const SERVICE_INIT = Symbol.for('cordis.service.init')
+const SERVICE_DISPOSE = Symbol.for('cordis.service.dispose')
+/** ctx 上的这些名字是宿主自己的能力（工具、提示词……），插件提供的同名服务不能顶替它们。 */
+const CORE_CONTEXT_KEYS = new Set(['tools', 'systemPrompt', 'skills', 'commands', 'connection', 'logger', 'timer'])
 const SHIMS = {
   '@deepseek-ai/dsh-tools': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-tools.mjs')).href,
   '@deepseek-ai/schemastery': pathToFileURL(join(HOST_DIR, 'shims', 'schemastery.mjs')).href,
@@ -33,6 +43,8 @@ const SHIMS = {
   '@deepseek-ai/dsh-skill': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-skill.mjs')).href,
   '@deepseek-ai/dsh-system-prompt': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-system-prompt.mjs')).href,
   '@deepseek-ai/dsh-llm': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-llm.mjs')).href,
+  // 子路径导出：dsh-llm/message 是根导出里消息构造函数的子集，同一个替身即可。
+  '@deepseek-ai/dsh-llm/message': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-llm.mjs')).href,
   '@deepseek-ai/dsh-session': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-session.mjs')).href,
   '@deepseek-ai/dsh-fs': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-fs.mjs')).href,
   '@deepseek-ai/dsh-credentials': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-credentials.mjs')).href,
@@ -47,16 +59,22 @@ const SHIMS = {
   '@deepseek-ai/dsh-user-approval': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-session-title': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-token-meter': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-token-meter/estimate': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-token-meter-estimate.mjs')).href,
   '@deepseek-ai/dsh-shell-env': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-storage': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-session-telemetry': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-plan-mode': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-goal': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
-  '@deepseek-ai/dsh-subagent': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-subagent': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-subagent.mjs')).href,
   '@deepseek-ai/dsh-attachment': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-file-reference': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-host-webserver': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-mcp-resources': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-client-connection': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-client-connection.mjs')).href,
+  '@deepseek-ai/dsh-settings': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-settings.mjs')).href,
+  '@deepseek-ai/dsh-skill-filesystem': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-skill-filesystem.mjs')).href,
+  '@deepseek-ai/dsh-session/surface': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-session-surface.mjs')).href,
+  '@deepseek-ai/dsh-agent': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-agent.mjs')).href,
 }
 /**
  * 能映射到 Codex 钩子的 dsh 事件。监听器由配套拓展包的钩子脚本经 bridge.mjs 调用，
@@ -121,6 +139,8 @@ export const CONNECTION_TARGET = 'connection'
 export const SCHEDULE_TARGET = 'schedule'
 /** 注册了 webhook 规则的行：配套拓展包开 /ext/<拓展>/webhook/<kind> 路由。 */
 export const WEBHOOK_TARGET = 'webhook'
+/** 监听插件之间自定义事件的行：别的包的插件 emit 时，经常驻进程之间的本地 socket 转过来（见 bridge.mjs）。 */
+export const EVENTS_TARGET = 'events'
 /** 需要会话镜像（钩子常驻进程把 Codex 钩子翻成 dsh 会话日志）的行，映射到这个目标。 */
 export const MIRROR_TARGET = 'mirror'
 /** 系统提示词片段的映射目标：经网关中间件追加到每次模型请求的 instructions。 */
@@ -132,13 +152,23 @@ const MAX_SKILL_SCAN_DEPTH = 4
 /** 一个包（含它引用的依赖包）最多列出多少个 SKILL.md。 */
 const MAX_SCANNED_SKILLS = 64
 const MAX_TEXT_BYTES = 1024 * 1024
-/** 配套拓展包单个文件的上限（与 Codex++ 写拓展包的限制一致，再留出胶水代码的余量）。 */
-const CLIENT_MAX_BYTES = 240 * 1024
+/** dsh 前端插件入口的上限（与 dsh_plugins.rs 的 DSH_CLIENT_MAX_BYTES 一致）：整个夹进配套拓展包的页面脚本。 */
+const CLIENT_MAX_BYTES = 4 * 1024 * 1024
 
 // MCP 帧走 stdout（钩子 / 网关进程里 stdout 是运行器的结果），插件的 console 输出一律改到 stderr。
 const writeStdout = process.stdout.write.bind(process.stdout)
 for (const level of ['log', 'info', 'debug', 'trace']) {
   console[level] = (...args) => console.error(...args)
+}
+
+// 插件代码不能把宿主进程退掉：MCP 进程、常驻进程里同时跑着别的插件，分析时退掉也就没有报告。
+// 宿主自己的进程（inspect / serve / 常驻进程）里把 process.exit 换成抛错（模块顶层调用时这一行加载失败、报出原因），
+// 宿主自己退出用 hostExit。被钩子运行器等当库引入时不换：那些进程跑完要自己调 process.exit。
+export const hostExit = process.exit.bind(process)
+export function guardProcessExit() {
+  process.exit = (code) => {
+    throw new Error(`插件调用了 process.exit(${code ?? ''})：Codex++ 不允许插件退出宿主进程`)
+  }
 }
 
 register(pathToFileURL(join(HOST_DIR, 'loader.mjs')).href, import.meta.url, { data: { shims: SHIMS } })
@@ -265,24 +295,75 @@ function resolveRowModule(row, root, pkg) {
 /** include 行：把另一个 YAML / JSON 条目文件（包内）的内容当作一组子行，带上它自己的 patches。 */
 const INCLUDE_MODULES = new Set(['cordis:include', '@deepseek-ai/cordis-plugin-include'])
 
-/**
- * `!!js` 表达式只做有限求值，不执行任意代码：字面量 true / false，以及 `env.X`、`process.env.X`（可带 `!`）。
- * 求不出时返回 undefined。
- */
-function evalTagged(value) {
-  if (!value || typeof value !== 'object' || typeof value.tag !== 'string') return value
-  // YAML 里常写成 !!js "true"：去掉一层引号。
-  const expression = String(value.value ?? '').trim().replace(/^(["'])(.*)\1$/, '$2').trim()
-  if (expression === 'true' || expression === 'false') return expression === 'true'
-  const match = /^(!?)\s*(?:process\.)?env\.([A-Za-z_][\w]*)$/.exec(expression)
-  if (match) {
-    const set = Boolean(process.env[match[2]]) && !['0', 'false', ''].includes(String(process.env[match[2]]).toLowerCase())
-    return match[1] ? !set : set
+/** Cordis 条目 YAML 的表达式标签。 */
+const JS_TAGS = new Set(['!!js', '!js', 'tag:yaml.org,2002:js'])
+/** 单个 `!!js` 表达式的求值上限（插件代码本身就在宿主进程无沙箱运行，这里只防死循环卡住分析）。 */
+const EXPRESSION_TIMEOUT_MS = 1000
+
+/** 标签值的原文：YAML 里常写成 `!!js "expr"`，去掉一层引号。 */
+function taggedText(value) {
+  const raw = String(value?.value ?? '').trim()
+  if (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2) {
+    try {
+      return String(JSON.parse(raw))
+    } catch {}
   }
-  return undefined
+  return raw.replace(/^(["'])([\s\S]*)\1$/, '$2').trim()
 }
 
-function collectRows(entries, baseDir, diagnostics, out, parentDisabled = false, depth = 0) {
+/**
+ * 求一个带标签的 YAML 值，返回 `{ value }` 或 `{ error }`。
+ * `!!js` 照 Cordis Loader 的写法在 Node `vm` 里求值完整表达式：能用 `ctx`（本包的服务，如 `ctx.webStartup.port ?? 3080`、
+ * `ctx.dshHomePath('x')`）、`env` / `process.env` 与 JS 内置对象；插件代码本来就在宿主进程无沙箱运行，
+ * 求值 patch 表达式不额外扩大权限，只加超时。YAML 的 `!!str` / `!!int` / `!!float` / `!!bool` / `!!null` 按类型转换。
+ */
+function evalTagged(value, scope = {}) {
+  if (!value || typeof value !== 'object' || typeof value.tag !== 'string') return { value }
+  const text = taggedText(value)
+  switch (value.tag) {
+    case '!!str':
+      return { value: text }
+    case '!!int':
+    case '!!float': {
+      const number = Number(text)
+      return Number.isFinite(number) ? { value: value.tag === '!!int' ? Math.trunc(number) : number } : { error: `${text} 不是数字` }
+    }
+    case '!!bool':
+      return /^(true|false)$/i.test(text) ? { value: text.toLowerCase() === 'true' } : { error: `${text} 不是布尔值` }
+    case '!!null':
+      return { value: null }
+    default:
+      break
+  }
+  if (!JS_TAGS.has(value.tag)) return { error: `不认识的 YAML 标签 ${value.tag}` }
+  if (!text) return { error: '表达式是空的' }
+  try {
+    // 换行放在括号前：表达式末尾的 `// 注释` 不会吃掉右括号。
+    const result = runInNewContext(`(${text}\n)`, expressionScope(scope), { timeout: EXPRESSION_TIMEOUT_MS, filename: 'cordis-patch-expression.js' })
+    return { value: result }
+  } catch (error) {
+    return { error: errorText(error) }
+  }
+}
+
+/** `!!js` 表达式能看到的名字：ctx（本包的服务视图）、env、精简的 process。 */
+function expressionScope({ ctx } = {}) {
+  return {
+    ctx: ctx ?? {},
+    env: process.env,
+    process: Object.freeze({ env: process.env, platform: process.platform, arch: process.arch, version: process.version, versions: process.versions, cwd: () => process.cwd() }),
+  }
+}
+
+/** 求 patch 行 / 配置里的标签值；求不出时记一条诊断并返回 fallback。 */
+function resolveTagged(value, scope, report, fallback) {
+  const { value: result, error } = evalTagged(value, scope)
+  if (error === undefined) return result
+  report(`表达式 ${value.tag} ${taggedText(value)} 求值失败：${error}`)
+  return fallback
+}
+
+function collectRows(entries, baseDir, diagnostics, out, parentDisabled = false, depth = 0, scope = {}, parentIsolate = {}) {
   for (const row of entries ?? []) {
     if (!row || typeof row !== 'object' || typeof row.name !== 'string') {
       diagnostics.push('patch 中有缺少 name 的插件行，已跳过')
@@ -290,20 +371,35 @@ function collectRows(entries, baseDir, diagnostics, out, parentDisabled = false,
     }
     let disabledValue = row.disabled
     if (disabledValue && typeof disabledValue === 'object') {
-      disabledValue = evalTagged(disabledValue)
-      if (disabledValue === undefined) diagnostics.push(`插件行 ${row.id ?? row.name} 的 disabled 表达式求不出来，按启用处理`)
+      // Cordis Loader 把求值结果按真假处理（其余真值也算停用）。
+      disabledValue = resolveTagged(disabledValue, scope, (text) => diagnostics.push(`插件行 ${row.id ?? row.name} 的 disabled ${text}，按启用处理`), false)
     }
-    const disabled = parentDisabled || disabledValue === true
+    const disabled = parentDisabled || Boolean(disabledValue)
+    // Cordis 的 isolate：`{ 服务名: true | '标签' }`。true 给这一行（组则整组）一个私有作用域，字符串是同名标签共享的作用域。
+    const isolate = { ...parentIsolate, ...isolateOf(row, diagnostics) }
     if (row.name === GROUP_MODULE || row.group === true) {
-      collectRows(Array.isArray(row.config) ? row.config : [], baseDir, diagnostics, out, disabled, depth)
+      collectRows(Array.isArray(row.config) ? row.config : [], baseDir, diagnostics, out, disabled, depth, scope, isolate)
       continue
     }
     if (INCLUDE_MODULES.has(row.name)) {
-      collectRows(readIncludedRows(row, baseDir, diagnostics, depth), baseDir, diagnostics, out, disabled, depth + 1)
+      collectRows(readIncludedRows(row, baseDir, diagnostics, depth), baseDir, diagnostics, out, disabled, depth + 1, scope, isolate)
       continue
     }
-    out.push({ id: String(row.id ?? row.name), name: row.name, config: row.config ?? undefined, disabled, baseDir })
+    out.push({ id: String(row.id ?? row.name), name: row.name, config: row.config ?? undefined, disabled, baseDir, isolate })
   }
+}
+
+/** 行上的 isolate 声明 → `{ 服务名: 作用域键 }`。true 的作用域以这一行的 id 区分，字符串按标签共享。 */
+function isolateOf(row, diagnostics) {
+  const spec = row.isolate
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return {}
+  const out = {}
+  for (const [name, value] of Object.entries(spec)) {
+    if (value === true) out[name] = `entry:${String(row.id ?? row.name)}`
+    else if (typeof value === 'string' && value) out[name] = `label:${value}`
+    else diagnostics.push(`插件行 ${row.id ?? row.name} 的 isolate.${name} 只能是 true 或标签字符串，已忽略`)
+  }
+  return out
 }
 
 /** 读 include 行指向的条目文件：只认包内路径，最多嵌套 4 层；文件里的条目再应用 include 自己的 patches。 */
@@ -381,23 +477,17 @@ function applyEntryPatches(data, patches, diagnostics) {
   return entries
 }
 
-function resolveTaggedConfig(value) {
+const isTaggedNode = (value) => Boolean(value) && typeof value === 'object' && typeof value.tag === 'string' && 'value' in value && Object.keys(value).length === 2
+
+/** 配置里的标签值逐个求值（同 Cordis 在 apply 前解开配置里的表达式）；求不出的保留原样并经 report 说明。 */
+function resolveTaggedConfig(value, scope = {}, report = () => {}) {
   if (!value || typeof value !== 'object') return value
-  if (typeof value.tag === 'string' && 'value' in value && Object.keys(value).length === 2) {
-    const resolved = evalTagged(value)
-    return resolved === undefined ? value : resolved
-  }
-  if (Array.isArray(value)) return value.map(resolveTaggedConfig)
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveTaggedConfig(item)]))
+  if (isTaggedNode(value)) return resolveTagged(value, scope, report, value)
+  if (Array.isArray(value)) return value.map((item) => resolveTaggedConfig(item, scope, report))
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveTaggedConfig(item, scope, report)]))
 }
 
-function hasTaggedValue(value) {
-  if (!value || typeof value !== 'object') return false
-  if (typeof value.tag === 'string' && 'value' in value && Object.keys(value).length === 2) return true
-  return Object.values(value).some(hasTaggedValue)
-}
-
-function readBundleRows(root, pkg, diagnostics) {
+function readBundleRows(root, pkg, diagnostics, scope = {}) {
   const patchField = pkg.dsh?.bundle?.patch
   const patches = Array.isArray(patchField) ? patchField : [patchField]
   const rows = []
@@ -421,7 +511,7 @@ function readBundleRows(root, pkg, diagnostics) {
     entries = applyEntryPatches(entries, Array.isArray(document) ? document : [], diagnostics)
     baseDir = dirname(path)
   }
-  collectRows(entries, baseDir, diagnostics, rows)
+  collectRows(entries, baseDir, diagnostics, rows, false, 0, scope)
   return rows
 }
 
@@ -451,7 +541,7 @@ function pluginFromModule(module) {
     return { name: module.name, inject: module.inject, Config: module.Config, apply: module.apply }
   }
   const fallback = module.default
-  if (isClass(fallback)) return { serviceClass: true, name: fallback.name }
+  if (isClass(fallback)) return { serviceClass: fallback, name: fallback.name, inject: fallback.inject, Config: fallback.Config }
   if (typeof fallback === 'function') {
     return { name: fallback.name, inject: fallback.inject, Config: fallback.Config, apply: fallback }
   }
@@ -590,6 +680,8 @@ export class Host {
     /** path → route、兜底处理：插件经 ctx.webServer 注册的网页路由。 */
     this.webRoutes = new Map()
     this.webFallback = undefined
+    /** path → route：插件经 ctx.webServer.registerUpgrade 注册的协议升级（WebSocket）处理器。 */
+    this.webUpgrades = new Map()
     /** server → provider：插件经 ctx.mcpResources 注册的 MCP 资源。 */
     this.mcpResources = new Map()
     const emit = (event, args) => this.emitEvent(event, args)
@@ -600,6 +692,100 @@ export class Host {
     this.schedules = undefined
     this.agentRegistry = new AgentRegistry({ mirror: this.mirror, emit, serial: (event, args) => this.serial(event, args) })
     this.shared = undefined
+    /**
+     * 插件提供的服务（Service 子类插件、ctx.set / ctx.provide）：作用域键 → 服务名 → { instance }。
+     * 作用域键是 'global'，或行上 isolate 声明 / ctx.isolate 给出的私有键（Cordis 的 isolate 语义）。
+     */
+    this.realms = new Map()
+    this.isolateSeq = 0
+    /**
+     * typert 类型化 RPC（dsh 的 ctx.typert）：endpoint（`<namespace>/<method>`）→ 调用描述；
+     * 包导出的 `./typert`（生成的 TYPERT 清单）在加载时自动登记，插件也可以 ctx.typert.register。
+     * 前端半边的 ctx.remote.<namespace>.<method>() 经 connection.rpc 的 `/api` 通道调到这里。
+     */
+    this.typertInvocations = new Map()
+    this.typertSeen = new Set()
+    this.typertLookups = new Map()
+    this.typertContexts = new Map()
+    this.typertResources = new Map()
+    this.typertListeners = new Set()
+    this.typertPackages = new Set()
+    /** 正在进行的 typert 调用（dsh 里 Service 方法经 this.ctx.invocation 读到它）。 */
+    this.invocations = new AsyncLocalStorage()
+    /** connection.rpc.open 打开的流：id → 状态（只在常驻进程里，前端经后台分批拉取）。 */
+    this.rpcStreams = new Map()
+  }
+
+  /** 服务名在一组 isolate 声明下落在哪个作用域。 */
+  realmKey(name, isolate) {
+    return isolate?.[name] ?? 'global'
+  }
+
+  /** 插件提供的服务实例（按 isolate 找作用域）；没有返回 undefined。 */
+  findService(name, isolate) {
+    return this.realms.get(this.realmKey(name, isolate))?.get(name)?.instance
+  }
+
+  /** 服务是否可用：宿主替身，或同一个宿主里有插件提供了它。 */
+  serviceAvailable(name, isolate) {
+    return SUPPORTED_SERVICES.has(name) || this.findService(name, isolate) !== undefined
+  }
+
+  /** 登记插件提供的服务，返回撤销函数（撤销时恢复被它顶替的旧实现）。发 internal/service 同 Cordis。 */
+  provideService(name, instance, isolate) {
+    const key = this.realmKey(name, isolate)
+    if (!this.realms.has(key)) this.realms.set(key, new Map())
+    const realm = this.realms.get(key)
+    const previous = realm.get(name)
+    const entry = { instance }
+    realm.set(name, entry)
+    queueMicrotask(() => this.emitEvent('internal/service', [name]))
+    return () => {
+      if (realm.get(name) !== entry) return
+      if (previous) realm.set(name, previous)
+      else realm.delete(name)
+      queueMicrotask(() => this.emitEvent('internal/service', [name]))
+    }
+  }
+
+  /**
+   * 按 Cordis 语义实例化 Service 子类：`new Class(ctx, config)`，构造函数里 `super(ctx, name)` 经替身 Service 登记服务；
+   * 随后跑 `[Service.init]()`（可返回 / yield 撤销函数），没有就跑 `start()`；卸载时调 `[Service.dispose]()` 或 `stop()`。
+   */
+  async instantiateService(ServiceClass, ctx, config, track) {
+    const instance = new ServiceClass(ctx, config)
+    const init = instance?.[SERVICE_INIT]
+    if (typeof init === 'function') {
+      const result = init.call(instance)
+      if (result && typeof result[Symbol.asyncIterator] === 'function') {
+        for await (const dispose of result) if (typeof dispose === 'function') track(dispose)
+      } else if (result && typeof result[Symbol.iterator] === 'function' && typeof result.next === 'function') {
+        for (const dispose of result) if (typeof dispose === 'function') track(dispose)
+      } else {
+        const dispose = await result
+        if (typeof dispose === 'function') track(dispose)
+      }
+    } else if (typeof instance?.start === 'function') {
+      await instance.start()
+    }
+    track(() => (typeof instance?.[SERVICE_DISPOSE] === 'function' ? instance[SERVICE_DISPOSE]() : instance?.stop?.()))
+    return instance
+  }
+
+  /** loader.entries() 的数据：每个加载过的行一项；返回这一行的 fiber（插件比较 entry.fiber === ctx.fiber）。同一行派生的子 ctx 复用它。 */
+  registerLoaderEntry(state) {
+    this.loaderEntries ??= new Map()
+    const existing = this.loaderEntries.get(state.key)
+    if (existing) return existing.fiber
+    const options = { id: state.rowId, name: state.moduleName ?? state.pluginName, config: state.config }
+    const fiber = { entry: { options } }
+    this.loaderEntries.set(state.key, { options, fiber, disabled: false })
+    return fiber
+  }
+
+  /** 宿主级 loader：和每个插件 ctx.loader 读同一份已登记的行。 */
+  hostLoader() {
+    return (this.hostLoaderInstance ??= createLoader({ entries: () => (this.loaderEntries ? this.loaderEntries.values() : []) }))
   }
 
   /** 所有插件共用的替身服务（按需建）。credentials / storageDomain 按插件建，见 createContext。 */
@@ -708,7 +894,8 @@ export class Host {
       web: createWeb(),
       userQuestions: createUserQuestions((event, args, fallback) => host.waterfall(event, args, fallback)),
       approval: createApproval((event, args, fallback) => host.waterfall(event, args, fallback)),
-      jobs: createJobs((event, args) => host.emitEvent(event, args)),
+      // 任务快照放在所有插件共用的 data/.jobs（插件 id 不能以 . 开头，不会撞上），别的进程也看得到、停得了。
+      jobs: createJobs((event, args) => host.emitEvent(event, args), { dir: host.dataDir ? join(dirname(host.dataDir), '.jobs') : undefined }),
       workspaceRegistry: Object.assign(createWorkspaceRegistry(), {
         /** dsh 的 workspace/session-activity：问插件这个会话正在做什么（waterfall），没人答时为空。 */
         activity: (request = {}) => host.waterfall('workspace/session-activity', [request], async () => []),
@@ -724,6 +911,310 @@ export class Host {
       sessionTelemetry: createSessionTelemetry(),
     }
     return this.shared
+  }
+
+  // ---- typert 类型化 RPC ----
+
+  /** 登记一份 typert 清单（生成的 TYPERT：`{ package, face, schemas, invocations }`，或 TypertRemoteContribution 的 descriptors）。 */
+  registerTypert(manifest, owner = {}) {
+    const list = Array.isArray(manifest?.invocations) ? manifest.invocations : Array.isArray(manifest?.descriptors) ? manifest.descriptors : []
+    const added = []
+    for (const descriptor of list) {
+      if (!descriptor || typeof descriptor.namespace !== 'string' || typeof descriptor.method !== 'string') continue
+      const endpoint = `${descriptor.namespace}/${descriptor.method}`
+      if (this.typertInvocations.has(endpoint)) {
+        for (const item of added) this.typertInvocations.delete(item)
+        throw new Error(`typert endpoint ${endpoint} 已经登记过`)
+      }
+      this.typertInvocations.set(endpoint, { descriptor, isolate: owner.isolate })
+      this.typertSeen.add(endpoint)
+      added.push(endpoint)
+    }
+    // 生成的 schema 工厂：按 `<包>#<名字>` 登记，ctx.typert.get(key) 首次读取时建出解析器。
+    const schemaKeys = []
+    for (const schema of Array.isArray(manifest?.schemas) ? manifest.schemas : []) {
+      if (!schema || typeof schema.name !== 'string' || typeof schema.create !== 'function') continue
+      const key = `${String(manifest.package ?? '')}#${schema.name}`
+      this.typertSchemas ??= new Map()
+      this.typertSchemas.set(key, { create: schema.create, value: undefined })
+      schemaKeys.push(key)
+    }
+    if (added.length) this.notifyTypert({ kind: 'local', added })
+    return async () => {
+      for (const endpoint of added) this.typertInvocations.delete(endpoint)
+      for (const key of schemaKeys) this.typertSchemas?.delete(key)
+      if (added.length) this.notifyTypert({ kind: 'local', removed: added })
+    }
+  }
+
+  notifyTypert(change) {
+    for (const listener of [...this.typertListeners]) {
+      try {
+        listener(change)
+      } catch (error) {
+        console.error(`[dsh-host] typert 监听器失败：${errorText(error)}`)
+      }
+    }
+  }
+
+  /** 包导出了 `./typert`（dsh 的 typert-loader 约定）：导入它的 TYPERT 清单并登记，一个包只登记一次。 */
+  async registerTypertExport(directory, owner, track) {
+    if (!directory || this.typertPackages.has(directory)) return false
+    this.typertPackages.add(directory)
+    let pkg
+    try {
+      pkg = readJson(join(directory, 'package.json'))
+    } catch {
+      return false
+    }
+    const exportsField = pkg.exports
+    if (!exportsField || typeof exportsField !== 'object' || Array.isArray(exportsField) || exportsField['./typert'] === undefined) return false
+    const path = packageEntry(directory, pkg, './typert')
+    if (!path || !existsSync(path)) throw new Error(`${pkg.name} 导出了 ./typert，但找不到 ${path ?? '入口'}`)
+    const module = await import(pathToFileURL(path).href)
+    const manifest = module.TYPERT
+    if (!manifest || typeof manifest !== 'object') throw new Error(`${pkg.name} 导出了 ./typert，但模块里没有 TYPERT 清单`)
+    if (manifest.face !== undefined && manifest.face !== 'host') throw new Error(`${pkg.name} 的 TYPERT.face 不是 host`)
+    track(this.registerTypert(manifest, owner))
+    return Array.isArray(manifest.invocations) && manifest.invocations.length > 0
+  }
+
+  /** 按 codec 校验一个边界值：生成的严格 codec 有 create() 给出 zod 解析器；没有 schema 就放行（同 dsh 的 src-json 模式只要求 JSON）。 */
+  static parseWith(codec, value) {
+    const schema = typeof codec?.create === 'function' ? codec.create() : codec?.schema ?? (typeof codec?.parse === 'function' ? codec : undefined)
+    return schema && typeof schema.parse === 'function' ? schema.parse(value) : value
+  }
+
+  /** 调用请求里的参数：dsh 的 `{ args: { 线上字段: 值 } }`，或 Codex++ 前端没有描述时的 `{ positional: [...] }`。 */
+  async typertArguments(endpoint, descriptor, payload) {
+    const parameters = Array.isArray(descriptor.parameters) ? descriptor.parameters : []
+    const named = payload && typeof payload === 'object' && payload.args && typeof payload.args === 'object' ? payload.args : undefined
+    const positional = Array.isArray(payload?.positional) ? payload.positional : undefined
+    if (named) {
+      const unknown = Object.keys(named).filter((key) => !parameters.some((parameter) => parameter.wire === key))
+      if (unknown.length) throw Object.assign(new Error(`typert ${endpoint}：多余的参数 ${unknown.join(', ')}`), { code: 'gateway/arguments-invalid' })
+    }
+    const values = []
+    for (const [index, parameter] of parameters.entries()) {
+      let value = named ? named[parameter.wire] : positional?.[index]
+      if (value === undefined && !parameter.acceptsUndefined && !(named && Object.hasOwn(named, parameter.wire))) {
+        throw Object.assign(new Error(`typert ${endpoint}：缺少参数 ${parameter.wire}`), { code: 'gateway/arguments-invalid' })
+      }
+      try {
+        value = Host.parseWith(parameter.codec, value)
+      } catch (error) {
+        throw Object.assign(new Error(`typert ${endpoint}：参数 ${parameter.wire} 不合法：${errorText(error)}`), { code: 'gateway/arguments-invalid' })
+      }
+      if (parameter.source === 'lookup') {
+        const provider = this.typertLookups.get(String(parameter.lookup))
+        const resolve = typeof provider === 'function' ? provider : provider?.resolve ?? provider?.lookup
+        if (typeof resolve !== 'function') throw Object.assign(new Error(`typert ${endpoint}：没有 ${parameter.lookup} 的查找提供方`), { code: 'gateway/lookup-unavailable' })
+        const resolved = await resolve(value)
+        if (resolved === undefined) throw Object.assign(new Error(`typert ${endpoint}：找不到 ${parameter.lookup} ${JSON.stringify(value)}`), { code: 'gateway/lookup-not-found' })
+        value = resolved
+      }
+      values.push(value)
+    }
+    return values
+  }
+
+  /** 找调用的接收者：direct 是 descriptor.service 这个服务；context 先按线上身份解析出作用域 ctx 再取服务。 */
+  async typertReceiver(endpoint, entry, payload) {
+    const { descriptor } = entry
+    if (descriptor.invocation?.kind === 'context') {
+      const adapter = this.typertContexts.get(String(descriptor.invocation.context))
+      const resolve = typeof adapter === 'function' ? adapter : adapter?.resolve
+      if (typeof resolve !== 'function') throw Object.assign(new Error(`typert ${endpoint}：没有 ${descriptor.invocation.context} 的作用域提供方`), { code: 'gateway/context-unavailable' })
+      const scoped = await resolve(payload?.args?.[descriptor.invocation.wire] ?? payload?.context)
+      if (!scoped) throw Object.assign(new Error(`typert ${endpoint}：作用域不存在`), { code: 'gateway/context-not-found' })
+      return scoped[descriptor.service] ?? scoped
+    }
+    const receiver = this.findService(String(descriptor.service), entry.isolate)
+    if (!receiver) throw Object.assign(new Error(`typert ${endpoint}：服务 ${descriptor.service} 没有提供`), { code: 'gateway/service-unavailable' })
+    return receiver
+  }
+
+  /** 执行一个 typert 调用；stream 方法返回异步迭代器。 */
+  async invokeTypert(endpoint, payload, signal, { stream = false, uplink } = {}) {
+    const entry = this.typertInvocations.get(endpoint)
+    if (!entry) throw Object.assign(new Error(`没有 typert endpoint ${endpoint}`), { code: 'gateway/unknown-endpoint' })
+    const { descriptor } = entry
+    if (Boolean(descriptor.mode === 'stream') !== stream) {
+      throw Object.assign(new Error(`typert ${endpoint} 是${descriptor.mode === 'stream' ? '流式方法，要用 rpc.open' : '一次性方法，要用 rpc.call'}`), { code: 'gateway/binding-invalid' })
+    }
+    const receiver = await this.typertReceiver(endpoint, entry, payload)
+    const name = descriptor.implementation ?? descriptor.method
+    if (typeof receiver?.[name] !== 'function') throw Object.assign(new Error(`typert ${endpoint}：${descriptor.service} 没有方法 ${name}`), { code: 'gateway/binding-invalid' })
+    const args = await this.typertArguments(endpoint, descriptor, payload)
+    if (descriptor.cancellation) args.push(signal)
+    let used = false
+    const invocation = Object.freeze({
+      request: Object.freeze({ namespace: descriptor.namespace, method: descriptor.method, args: payload?.args ?? {} }),
+      service: descriptor.service,
+      peer: Object.freeze({ id: 'codex-plus', principal: { kind: 'owner' }, signal, interactions: 'answer' }),
+      signal,
+      uplink() {
+        if (used) throw new Error('invocation.uplink() 只能取一次')
+        used = true
+        if (!uplink) return (async function* () {})()
+        return descriptor.uplink?.codec
+          ? (async function* () { for await (const item of uplink) yield Host.parseWith(descriptor.uplink.codec, item) })()
+          : uplink
+      },
+    })
+    const result = await this.invocations.run(invocation, () => receiver[name](...args))
+    if (!stream) return Host.parseWith(descriptor.result, result)
+    if (!result || typeof result[Symbol.asyncIterator] !== 'function' && typeof result[Symbol.iterator] !== 'function') {
+      throw Object.assign(new Error(`typert ${endpoint} 是流式方法，但没有返回可迭代对象`), { code: 'gateway/binding-invalid' })
+    }
+    // 异步生成器的函数体在迭代时才跑：每次 next() 都放回这次调用的上下文里，方法里读得到 this.ctx.invocation。
+    const iterator = typeof result[Symbol.asyncIterator] === 'function' ? result[Symbol.asyncIterator]() : result[Symbol.iterator]()
+    const within = (call) => this.invocations.run(invocation, call)
+    return {
+      [Symbol.asyncIterator]() {
+        return this
+      },
+      async next() {
+        const step = await within(() => iterator.next())
+        return step.done ? step : { done: false, value: Host.parseWith(descriptor.result, step.value) }
+      },
+      async return(value) {
+        return (await within(() => iterator.return?.(value))) ?? { done: true, value }
+      },
+    }
+  }
+
+  /** 前端 ctx.remote 用的描述清单（只给出调用需要的字段）。 */
+  typertDescriptors() {
+    return [...this.typertInvocations.values()].map(({ descriptor }) => ({
+      namespace: descriptor.namespace,
+      method: descriptor.method,
+      ...(descriptor.mode === 'stream' ? { mode: 'stream' } : {}),
+      ...(descriptor.uplink ? { uplink: true } : {}),
+      parameters: (descriptor.parameters ?? []).map((parameter) => ({ name: parameter.name, wire: parameter.wire, ...(parameter.acceptsUndefined ? { optional: true } : {}) })),
+      ...(descriptor.description ? { description: String(descriptor.description) } : {}),
+    }))
+  }
+
+  // ---- connection.rpc.open：流式调用（前端经后台分批拉取） ----
+
+  /** 打开一个流：目前只有 typert 的 stream 方法（dsh 里由 Gateway 的 wireStream 承载）。返回 { ok, id } 或失败。 */
+  async openRpcStream({ channel, endpoint, payload } = {}) {
+    const key = String(endpoint ?? '')
+    if (String(channel ?? '') !== '/api' || !this.typertInvocations.has(key)) {
+      return { ok: false, error: { code: 'NOT_FOUND', message: `没有流式 endpoint ${channel} ${key}`, details: {} } }
+    }
+    const controller = new AbortController()
+    const uplinkQueue = []
+    let uplinkWake = null
+    let uplinkEnded = false
+    const uplink = (async function* () {
+      for (;;) {
+        if (uplinkQueue.length) {
+          yield uplinkQueue.shift()
+          continue
+        }
+        if (uplinkEnded || controller.signal.aborted) return
+        await new Promise((resolve) => {
+          uplinkWake = resolve
+        })
+      }
+    })()
+    const id = `rpc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    const state = { items: [], done: false, error: undefined, wake: null, controller, touched: Date.now() }
+    state.push = (items = [], end = false) => {
+      uplinkQueue.push(...items)
+      if (end) uplinkEnded = true
+      const resume = uplinkWake
+      uplinkWake = null
+      resume?.()
+    }
+    const notify = () => {
+      const resume = state.wake
+      state.wake = null
+      resume?.()
+    }
+    let iterator
+    try {
+      iterator = await this.invokeTypert(key, payload, controller.signal, { stream: true, uplink })
+    } catch (error) {
+      return { ok: false, error: { code: String(error?.code ?? 'HANDLER_FAILED'), message: errorText(error), details: {} } }
+    }
+    this.rpcStreams.set(id, state)
+    void (async () => {
+      try {
+        for await (const item of iterator) {
+          if (controller.signal.aborted) break
+          state.items.push(item)
+          notify()
+        }
+      } catch (error) {
+        state.error = { code: String(error?.code ?? 'STREAM_FAILED'), message: errorText(error), details: {} }
+      } finally {
+        state.done = true
+        state.push([], true)
+        notify()
+      }
+    })()
+    return { ok: true, id }
+  }
+
+  /** 取一批流里的值：没有就最多等 waitMs；拿完且结束时给 done（并清掉这个流）。 */
+  async pullRpcStream({ id, waitMs = 1000, max = 256 } = {}) {
+    const state = this.rpcStreams.get(String(id))
+    if (!state) return { items: [], done: true, error: { code: 'NOT_FOUND', message: '流已结束或不存在', details: {} } }
+    state.touched = Date.now()
+    if (!state.items.length && !state.done) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, Math.max(0, Math.min(Number(waitMs) || 0, 25_000)))
+        state.wake = () => {
+          clearTimeout(timer)
+          resolve()
+        }
+      })
+    }
+    const items = state.items.splice(0, Math.max(1, Number(max) || 256))
+    const done = state.done && !state.items.length
+    if (done) this.rpcStreams.delete(String(id))
+    return { items, done, ...(done && state.error ? { error: state.error } : {}) }
+  }
+
+  /** 前端往流里送上行的值（dsh 的 RemoteStream 上行），end 表示上行结束。 */
+  pushRpcStream({ id, items = [], end = false } = {}) {
+    const state = this.rpcStreams.get(String(id))
+    if (!state) return { ok: false }
+    state.push(Array.isArray(items) ? items : [], Boolean(end))
+    return { ok: true }
+  }
+
+  /** 前端放弃这个流：取消调用并清掉。 */
+  closeRpcStream({ id } = {}) {
+    const state = this.rpcStreams.get(String(id))
+    if (!state) return { ok: true }
+    state.controller.abort()
+    this.rpcStreams.delete(String(id))
+    state.push([], true)
+    return { ok: true }
+  }
+
+  /**
+   * `!!js` 表达式里的 `ctx`：按名字取本包已提供的服务（含 Service 子类插件提供的、按行的 isolate 作用域），
+   * 再取宿主替身服务；`ctx.dshHomePath(...)` 指到插件的数据目录（dsh 里是 Harness home）。
+   */
+  expressionContext(row) {
+    const host = this
+    return new Proxy({}, {
+      get(_target, key) {
+        if (typeof key !== 'string') return undefined
+        if (key === 'dshHomePath') return (...parts) => join(host.dataDir ?? join(HOST_DIR, '..', 'data'), ...parts.map(String))
+        const provided = host.findService(key, row?.isolate)
+        if (provided !== undefined) return provided
+        // loader 在 !!js 表达式里读宿主里已登记的行（better-sidebar 的 disabled 表达式用它）；其余按插件建的服务在表达式里不可用。
+        if (key === 'loader') return host.hostLoader()
+        return SUPPORTED_SERVICES.has(key) ? host.sharedServices()[key] : undefined
+      },
+      has: (_target, key) => typeof key === 'string' && (key === 'dshHomePath' || SUPPORTED_SERVICES.has(key) || host.findService(key, row?.isolate) !== undefined),
+    })
   }
 
   /** 执行插件注册的斜杠命令；没有这个命令返回 undefined。handler 抛错收敛成 error 结果（同 dsh）。 */
@@ -772,6 +1263,18 @@ export class Host {
   async runRpc({ channel, endpoint, payload } = {}) {
     const key = String(channel ?? '')
     const target = String(endpoint ?? '')
+    // typert：`/api` 通道上登记过的 endpoint 由宿主按调用描述派发（同 dsh 的 Typert Gateway 拦截 /api）。
+    if (key === '/api' && target === '$codexpp/typert-descriptors') return { ok: true, value: this.typertDescriptors() }
+    if (key === '/api' && this.typertInvocations.has(target)) {
+      const controller = new AbortController()
+      try {
+        return { ok: true, value: (await this.invokeTypert(target, payload, controller.signal)) ?? null }
+      } catch (error) {
+        return { ok: false, error: { code: String(error?.code ?? 'HANDLER_FAILED'), message: errorText(error), details: {} } }
+      } finally {
+        controller.abort()
+      }
+    }
     const interceptor = this.rpcInterceptors.find((item) => item.channel === key && safeMatch(item.matches, target))
     const handler = interceptor?.handler ?? this.rpcHandlers.get(key)
     if (!handler) return { ok: false, error: { code: 'NOT_FOUND', message: `没有插件处理 ${key} ${target}`, details: {} } }
@@ -956,6 +1459,7 @@ export class Host {
     const args = input.arguments ?? {}
     const controller = new AbortController()
     const signal = input.signal ?? controller.signal
+    const deferred = []
     const exec = {
       callId,
       rootCallId: String(input.rootCallId ?? callId),
@@ -964,19 +1468,26 @@ export class Host {
       signal,
       agent: input.agent,
       token: Symbol('codexpp.tool'),
-      deferContext() {},
+      // dsh 把推迟的上下文接在这次工具结果之后：这里并进结果内容，模型紧跟着结果就能看到。
+      deferContext(message) {
+        if (message) deferred.push(message)
+      },
+      // 结束本轮要靠 dsh 自己的 agent 循环；Codex 的循环不在宿主手里，空操作。
       concludeTurn() {},
     }
     const failure = (message) => Object.freeze({ isError: true, error: { kind: 'error', message }, content: [{ type: 'text', text: message }] })
     const entry = this.tools.get(name)
     if (!entry || !this.toolVisible(name)) return failure(`未知工具：${name}`)
+    if (entry.when && !(await this.toolActive(entry, input.agent, { provider: 'codex', model: input.model }, signal))) return failure(`工具 ${name} 现在不可用（when 条件不满足）`)
     const denied = this.guardReason(exec)
     if (denied) return failure(denied)
     const body = async () => {
       try {
         const timeout = entry.def.timeoutMs
         const value = await withTimeout(Promise.resolve(entry.def.execute(exec.arguments, exec)), timeout, `工具执行超过 ${timeout} ms`)
-        return Object.freeze({ isError: false, value: value ?? null, content: renderValue(entry.def, exec.arguments, value) })
+        // 图片块引用的附件存在这个插件的数据目录里：读出字节，作为真图片交给 Codex。
+        const content = await renderValue(entry.def, exec.arguments, value, this.pluginAttachments?.get(entry.pluginKey))
+        return Object.freeze({ isError: false, value: value ?? null, content })
       } catch (error) {
         controller.abort()
         return failure(errorText(error))
@@ -989,8 +1500,23 @@ export class Host {
       result = failure(errorText(error))
     }
     if (!result || typeof result !== 'object' || !Array.isArray(result.content)) result = failure('tools/execute 监听器没有返回工具结果')
+    if (deferred.length) {
+      const extra = deferred.map(messageText).map((text) => text.trim()).filter(Boolean).map((text) => ({ type: 'text', text }))
+      if (extra.length) result = Object.freeze({ ...result, content: [...result.content, ...extra] })
+    }
     this.emitEvent('tools/result', [exec, result])
     return result
+  }
+
+  /** 工具的 registerOptions.when 是否满足；判断出错视为可用（不挡住模型请求与工具调用）。 */
+  async toolActive(entry, agent, modelSelection, signal) {
+    if (!entry?.when) return true
+    try {
+      return Boolean(await entry.when({ agent, modelSelection: Object.freeze({ ...modelSelection }), signal: signal ?? new AbortController().signal }))
+    } catch (error) {
+      console.error(`[dsh-host] 工具 ${entry.def?.name} 的 when 判断失败，按可用处理：${errorText(error)}`)
+      return true
+    }
   }
 
   /** 按 Cordis bail 语义派发：同步依次调用，返回第一个非 undefined 的结果。 */
@@ -1049,8 +1575,12 @@ export class Host {
       credentials: createCredentials(state.config, { dataDir: state.dataDir, emit: (event, args) => host.emitEvent(event, args) }),
       storageDomain,
       storage: createStorage(storageDomain),
+      // settings 落在插件自己的数据目录（初始值取该行配置）；loader 报告宿主里加载过的行；sessionPersistence 不暴露 Codex 的会话日志。
+      settings: createSettings({ dataDir: state.dataDir, rowId: state.rowId, config: state.config, emit: (event, args) => host.emitEvent(event, args) }),
+      loader: createLoader({ entries: () => (host.loaderEntries ? host.loaderEntries.values() : []) }),
+      sessionPersistence: createSessionPersistence(),
       spillStore: createSpillStore(state.dataDir),
-      attachments: createAttachments(state.dataDir),
+      attachments: (host.pluginAttachments ??= new Map()).set(state.key, createAttachments(state.dataDir)).get(state.key),
       // 网页路由（dsh 的 webServer）：挂到配套拓展包后台的 /ext/<配套拓展>/<路径>，经 Codex++ 本地代理接收。
       webServer: {
         register(route) {
@@ -1070,9 +1600,17 @@ export class Host {
             if (host.webFallback === handler) host.webFallback = undefined
           })
         },
-        registerUpgrade() {
-          note('webServer.registerUpgrade（WebSocket 升级）在 Codex++ 里不可用')
-          return () => {}
+        // WebSocket 等协议升级：Codex++ 本地代理把 /ext/<配套拓展>/<路径> 的升级请求原样转到常驻进程里的 Node http 服务，
+        // 处理器拿到真的 IncomingMessage 与 socket（同 dsh 的 node:http upgrade 事件）。
+        registerUpgrade(route) {
+          if (!route || typeof route.handler !== 'function') return () => {}
+          const path = `/${String(route.path ?? '').replace(/^\/+/, '')}`
+          if (host.webUpgrades.has(path)) throw new Error(`webserver: duplicate upgrade route "${path}"`)
+          mapTo(WEBHOOK_TARGET)
+          host.webUpgrades.set(path, route)
+          return track(() => {
+            if (host.webUpgrades.get(path) === route) host.webUpgrades.delete(path)
+          })
         },
         tapIndex: () => () => {},
         applyIndexTaps: (html) => html,
@@ -1090,6 +1628,75 @@ export class Host {
           })
         },
       },
+      // dsh 的 ctx.typert：登记类型化 RPC 方法（生成的 TYPERT 清单或 descriptors），前端 ctx.remote 经 connection.rpc 调过来。
+      typert: (() => {
+        const register = (manifest) => {
+          const registered = host.registerTypert(manifest, { isolate: state.isolate })
+          if (Array.isArray(manifest?.invocations) ? manifest.invocations.length : manifest?.descriptors?.length) mapTo(CONNECTION_TARGET)
+          // 记下已登记的 包/面（cost-meter 等用 ctx.typert.getPackage 判断清单是不是已经登记过）。
+          const faceKey = manifest?.package && manifest?.face ? `${manifest.package}/${manifest.face}` : undefined
+          if (faceKey) (host.typertFaces ??= new Set()).add(faceKey)
+          const dispose = async () => {
+            if (faceKey) host.typertFaces?.delete(faceKey)
+            return registered()
+          }
+          track(dispose)
+          return dispose
+        }
+        const subscribe = (listener) => {
+          host.typertListeners.add(listener)
+          const dispose = async () => {
+            host.typertListeners.delete(listener)
+          }
+          track(dispose)
+          return dispose
+        }
+        const descriptors = {
+          register,
+          get: (endpoint) => host.typertInvocations.get(String(endpoint))?.descriptor,
+          hasSeen: (endpoint) => host.typertSeen.has(String(endpoint)),
+          list: () => [...host.typertInvocations.values()].map((entry) => entry.descriptor),
+          subscribe,
+        }
+        const keyed = (map) => ({
+          register(key, value) {
+            map.set(String(key), value)
+            const dispose = async () => {
+              if (map.get(String(key)) === value) map.delete(String(key))
+            }
+            track(dispose)
+            return dispose
+          },
+          get: (key) => map.get(String(key)),
+          entries: () => [...map.entries()].map(([kind, value]) => ({ kind, ...value })),
+          subscribe,
+        })
+        const lookups = keyed(host.typertLookups)
+        const contexts = keyed(host.typertContexts)
+        const schema = (key) => {
+          const entry = host.typertSchemas?.get(String(key))
+          if (!entry) return undefined
+          entry.value ??= entry.create()
+          return entry.value
+        }
+        return {
+          register,
+          // dsh 的 typert.getPackage(包, 面)：这个包的这一面清单登记过就返回 { package, face }，没有返回 undefined。
+          getPackage: (name, face) => (host.typertFaces?.has(`${name}/${face}`) ? { package: String(name), face: String(face) } : undefined),
+          local: descriptors,
+          remotes: descriptors,
+          lookups: { ...lookups, registerHost: lookups.register, configureHost: lookups.register },
+          contexts: { ...contexts, registerHost: contexts.register, registerClient: () => async () => {} },
+          resources: keyed(host.typertResources),
+          get: schema,
+          resolve(key) {
+            const found = schema(key)
+            if (!found) throw new Error(`typert schema ${key} 不存在`)
+            return found
+          },
+          list: () => [...(host.typertSchemas?.keys() ?? [])],
+        }
+      })(),
       schedule: host.schedules,
       webhookRuntime: {
         ...host.webhooks,
@@ -1110,14 +1717,58 @@ export class Host {
       },
       sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
     }
+    // @cordisjs/plugin-timer 的写法（dsh 插件常用）：timeout / interval 同上；throttle / debounce 返回包装过的函数，
+    // 带 dispose()，插件卸载时一并撤销还没触发的调用。
+    timer.timeout = timer.setTimeout
+    timer.interval = timer.setInterval
+    const deferred = (callback, delay, leading) => {
+      let handle
+      let last = 0
+      let pendingArgs
+      const flush = () => {
+        handle = undefined
+        last = Date.now()
+        const args = pendingArgs
+        pendingArgs = undefined
+        if (args) callback(...args)
+      }
+      const wrapped = (...args) => {
+        if (leading) {
+          const wait = delay - (Date.now() - last)
+          if (wait <= 0 && !handle) {
+            last = Date.now()
+            callback(...args)
+            return
+          }
+          pendingArgs = args
+          handle ??= setTimeout(flush, Math.max(wait, 0))
+          return
+        }
+        pendingArgs = args
+        if (handle) clearTimeout(handle)
+        handle = setTimeout(flush, delay)
+      }
+      wrapped.dispose = track(() => {
+        if (handle) clearTimeout(handle)
+        handle = undefined
+        pendingArgs = undefined
+      })
+      return wrapped
+    }
+    timer.throttle = (callback, delay) => deferred(callback, delay, true)
+    timer.debounce = (callback, delay) => deferred(callback, delay, false)
     const base = {
       name: state.pluginName,
       config: state.config,
+      // Cordis 的 fiber：插件常读 ctx.fiber.entry.options.id 拿自己这一行的 id（当命名空间、存储键）。
+      fiber: host.registerLoaderEntry(state),
       logger,
       timer,
       setTimeout: timer.setTimeout,
       setInterval: timer.setInterval,
       sleep: timer.sleep,
+      throttle: timer.throttle,
+      debounce: timer.debounce,
       tools: {
         register(definition, options = {}) {
           if (!definition || typeof definition.name !== 'string' || typeof definition.execute !== 'function') {
@@ -1126,8 +1777,13 @@ export class Host {
           if (host.tools.has(definition.name)) {
             throw new Error(`tool "${definition.name}" is already registered`)
           }
-          if (options && typeof options.when === 'function') note('工具的 when 条件依赖 dsh 的 agent，Codex 里视为始终可用')
-          host.tools.set(definition.name, { def: definition, pluginKey: state.key })
+          // registerOptions.when：经 Codex++ 代理的每一步请求里按 agent 判断（不满足就从请求的 tools 去掉），MCP 调用时也判断一次。
+          const when = options && typeof options.when === 'function' ? options.when : undefined
+          if (when) {
+            mapTo('gateway:step')
+            note('工具的 when 条件在经 Codex++ 代理的请求里按 agent 判断（不满足就不给模型看）；MCP 进程里没有 agent，按无 agent 判断一次，判断出错视为可用')
+          }
+          host.tools.set(definition.name, { def: definition, pluginKey: state.key, when })
           state.tools.push(definition.name)
           changed('tools/change')
           return track(() => {
@@ -1302,6 +1958,11 @@ export class Host {
             changed('commands/change')
           })
         },
+        // dsh 网页客户端把上传的文件作为「回执」交给命令；Codex 的斜杠命令不带附件，登记了也不会被调用。
+        registerFileReceiptResolver() {
+          note('commands.registerFileReceiptResolver 已登记但不会被调用：Codex 的斜杠命令不带上传文件')
+          return track(() => {})
+        },
       },
       sessionProjections: {
         ...shared.sessionProjections,
@@ -1314,10 +1975,10 @@ export class Host {
           return track(shared.sessionProjections.onChanged(listener))
         },
       },
-      /** 可选依赖的激活写法：服务都在就立刻以子 ctx 调用（Codex++ 里服务不会中途出现或消失）。 */
+      /** 可选依赖的激活写法：服务都在就立刻以子 ctx 调用（宿主替身不会中途出现或消失；插件提供的服务先于消费方加载）。 */
       inject(names, callback) {
         const list = Array.isArray(names) ? names : Object.keys(names ?? {})
-        const missing = list.filter((name) => !SUPPORTED_SERVICES.has(name))
+        const missing = list.filter((name) => !host.serviceAvailable(name, state.isolate))
         if (missing.length > 0) {
           note(`ctx.inject 里的 ${missing.join(', ')} 在 Codex++ 里没有，这一段不会生效`)
           return () => {}
@@ -1352,8 +2013,10 @@ export class Host {
         } else if (AGENT_LIFECYCLE_EVENTS.has(event) || event.startsWith('agent/inbox/')) {
           // 由常驻进程里的会话镜像与 agent 替身派发（退出时落盘、cancel、排消息……）。
           mapTo(MIRROR_TARGET)
-        } else if (!HOST_EMITTED_EVENTS.has(event) && event !== 'ready' && event !== 'dispose') {
-          note(`事件 ${String(event)} Codex 里不会触发，只有同一个包里的其它插件 emit 时才会收到`)
+        } else if (!HOST_EMITTED_EVENTS.has(event) && event !== 'ready' && event !== 'dispose' && !String(event).startsWith('internal/')) {
+          // 插件之间的自定义事件：同一个包里直接派发；别的包的插件 emit 时经常驻进程之间的本地 socket 转过来。
+          if (state.listens && !state.listens.includes(event)) state.listens.push(String(event))
+          mapTo(EVENTS_TARGET)
         }
         const list = host.listeners.get(event) ?? []
         const entry = { listener, state }
@@ -1373,7 +2036,8 @@ export class Host {
         })
         return dispose
       },
-      // 插件之间的事件：同一个宿主进程（同一个包）里的监听器共享一张表，按 Cordis 的五种语义派发。
+      // 插件之间的事件：同一个宿主进程（同一个包）里的监听器共享一张表，按 Cordis 的五种语义派发；
+      // 常驻进程里还经 host.bus 转给别的包（各自的常驻进程）里听这个事件的插件，语义见 bridge.mjs 的 createEventBus。
       // 第一个参数不是字符串时按 Cordis 的 thisArg 写法跳过。
       off(event, listener) {
         const current = host.listeners.get(event) ?? []
@@ -1382,29 +2046,63 @@ export class Host {
       emit(...args) {
         const [event, rest] = eventArgs(args)
         host.emitEvent(event, rest)
+        host.bus?.emit(event, rest)
       },
       async parallel(...args) {
         const [event, rest] = eventArgs(args)
-        await host.parallel(event, rest)
+        await Promise.all([host.parallel(event, rest), host.bus?.parallel(event, rest)])
       },
       async serial(...args) {
         const [event, rest] = eventArgs(args)
-        return host.serial(event, rest)
+        const local = await host.serial(event, rest)
+        if (local !== undefined || !host.bus?.listened(event)) return local
+        return host.bus.serial(event, rest)
       },
+      /** 同步的 bail：本包没人给出结果、别的包有人听时，返回别的包的结果的 Promise（跨进程做不到同步）。 */
       bail(...args) {
         const [event, rest] = eventArgs(args)
-        return host.bail(event, rest)
+        const local = host.bail(event, rest)
+        if (local !== undefined || !host.bus?.listened(event)) return local
+        return host.bus.serial(event, rest, 'bail')
       },
+      /** waterfall：本包的监听器在前，链尾依次交给别的包的监听器（每个都能调 next 回到链上），最后才是调用方的 next。 */
       waterfall(...args) {
         const [event, rest] = eventArgs(args)
         const next = typeof rest[rest.length - 1] === 'function' ? rest.pop() : () => undefined
-        return host.waterfallSync(event, rest, next)
+        const tail = host.bus?.listened(event) ? () => host.bus.waterfall(event, rest, next) : next
+        return host.waterfallSync(event, rest, tail)
       },
       get(name) {
+        const provided = host.findService(String(name), state.isolate)
+        if (provided !== undefined) return provided
         if (!SUPPORTED_SERVICES.has(name)) return undefined
         if (MIRROR_SERVICES.has(name)) mapTo(MIRROR_TARGET)
         if (name === 'schedule') mapTo(SCHEDULE_TARGET)
         return proxy[name]
+      },
+      /** Cordis 的 ctx.set(name, value)：把一个值作为服务提供给同一个宿主里的其它插件（随本插件卸载撤销）。 */
+      set(name, value) {
+        if (typeof name !== 'string' || !name) throw new TypeError('ctx.set 需要服务名')
+        state.provides?.push(name)
+        return track(host.provideService(name, value, state.isolate))
+      },
+      /** Cordis 的 ctx.provide(name, value?)：声明服务；给了值就同 ctx.set。 */
+      provide(name, value) {
+        if (value === undefined) return () => {}
+        return base.set(name, value)
+      },
+      /**
+       * Cordis 的 ctx.isolate(name, label?)：返回一个子 ctx，其中 name 这个服务落在私有作用域（给了 label 就是同名标签共享的作用域），
+       * 在子 ctx 里提供或 inject 的 name 与外面互不可见。
+       */
+      isolate(name, label) {
+        const key = typeof label === 'string' && label ? `label:${label}` : `scope:${++host.isolateSeq}`
+        return host.createContext({ ...state, isolate: { ...(state.isolate ?? {}), [String(name)]: key } })
+      },
+      /** 替身 Service 的构造函数经这里登记服务（`super(ctx, name)`）。 */
+      [PROVIDE](name, instance) {
+        state.provides?.push(name)
+        track(host.provideService(name, instance, state.isolate))
       },
       async plugin(plugin, config) {
         return host.applyPlugin(plugin, config, state)
@@ -1412,7 +2110,14 @@ export class Host {
     }
     const proxy = new Proxy(base, {
       get(target, key) {
+        // 插件提供的服务可以顶替宿主替身（同 Cordis：后提供的生效），但不顶替 ctx 自己的方法与核心能力。
+        if (typeof key === 'string' && !CORE_CONTEXT_KEYS.has(key) && (!(key in target) || SUPPORTED_SERVICES.has(key))) {
+          const provided = host.findService(key, state.isolate)
+          if (provided !== undefined) return provided
+        }
         if (key in target) return target[key]
+        // dsh 的 this.ctx.invocation：正在进行的 typert 调用（不在调用里时为 undefined）。
+        if (key === 'invocation') return host.invocations.getStore()
         if (typeof key === 'symbol' || key === 'then' || key === 'toJSON') return undefined
         note(`访问了 ctx.${String(key)}，Codex++ 不提供这个服务`)
         return undefined
@@ -1422,21 +2127,32 @@ export class Host {
   }
 
   async applyPlugin(plugin, config, parentState) {
-    const normalized = typeof plugin === 'function' && !isClass(plugin)
-      ? { name: plugin.name, inject: plugin.inject, Config: plugin.Config, apply: plugin }
-      : plugin
-    if (!normalized || typeof normalized.apply !== 'function') throw new Error('ctx.plugin 只支持带 apply 的插件')
+    const serviceClass = isClass(plugin) ? plugin : undefined
+    const normalized = serviceClass
+      ? { name: serviceClass.name, inject: serviceClass.inject, Config: serviceClass.Config }
+      : typeof plugin === 'function'
+        ? { name: plugin.name, inject: plugin.inject, Config: plugin.Config, apply: plugin }
+        : plugin
+    if (!serviceClass && (!normalized || typeof normalized.apply !== 'function')) throw new Error('ctx.plugin 需要带 apply 的插件或 Service 子类')
     const inject = normalizeInject(normalized.inject)
-    const missing = inject.required.filter((name) => !SUPPORTED_SERVICES.has(name))
+    const missing = inject.required.filter((name) => !this.serviceAvailable(name, parentState.isolate))
     if (missing.length > 0) throw new Error(`子插件依赖 Codex++ 不提供的服务：${missing.join(', ')}`)
     const resolvedConfig = typeof normalized.Config === 'function' ? normalized.Config(config ?? {}) : config
-    const ctx = this.createContext({ ...parentState, config: resolvedConfig })
+    const state = { ...parentState, config: resolvedConfig }
+    const ctx = this.createContext(state)
+    if (serviceClass) {
+      await this.instantiateService(serviceClass, ctx, resolvedConfig, (dispose) => state.disposers.push(dispose))
+      return undefined
+    }
     await normalized.apply(ctx, resolvedConfig)
     return undefined
   }
 
-  /** 加载一行插件，返回该行的兼容性记录。 */
-  async loadRow(row, root, pkg, packageKey) {
+  /**
+   * 加载一行插件，返回该行的兼容性记录。`options.defer` 为真时，必需的服务还没人提供就返回 `{ deferred }`，
+   * 由 loadPackage 在别的行加载后重试。
+   */
+  async loadRow(row, root, pkg, packageKey, options = {}) {
     const record = {
       id: row.id,
       module: row.name,
@@ -1502,21 +2218,18 @@ export class Host {
       record.reasons.push('模块没有导出 apply，不是 dsh 插件')
       return record
     }
-    if (plugin.serviceClass) {
-      record.status = 'incompatible'
-      record.kind = 'service'
-      record.reasons.push(`${plugin.name || '该模块'} 是 Service 子类，给其他 dsh 插件提供服务，Codex 里没有消费者`)
-      return record
-    }
+    if (plugin.serviceClass) record.kind = 'service'
     const inject = normalizeInject(plugin.inject)
     record.inject = inject
-    const missing = inject.required.filter((name) => !SUPPORTED_SERVICES.has(name))
+    const missing = inject.required.filter((name) => !this.serviceAvailable(name, row.isolate))
     if (missing.length > 0) {
+      // 依赖可能由同一个包里后面的行（Service 子类插件）提供：先跳过，等别的行加载完再试（同 Cordis 等服务就绪再 apply）。
+      if (options.defer) return { deferred: missing }
       record.status = 'incompatible'
-      record.reasons.push(`依赖 Codex++ 不提供的服务：${missing.join(', ')}（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）`)
+      record.reasons.push(`依赖 Codex++ 不提供、包里也没有插件提供的服务：${missing.join(', ')}（属于 dsh 的 agent 循环 / 会话 / 模型等运行时）`)
       return record
     }
-    const optionalMissing = inject.optional.filter((name) => !SUPPORTED_SERVICES.has(name))
+    const optionalMissing = inject.optional.filter((name) => !this.serviceAvailable(name, row.isolate))
     if (optionalMissing.length > 0) record.notes.push(`可选服务 ${optionalMissing.join(', ')} 不可用`)
     // 依赖会话 / agent / 投影的插件要会话镜像：配套拓展包会挂上把 Codex 钩子翻成 dsh 会话日志的那几个钩子。
     // 只声明 sessions 的插件多半只是 get 一下会话读 cwd，不值得为它在每次工具调用上起钩子；用到 agent / 投影才挂。
@@ -1529,12 +2242,12 @@ export class Host {
       sessions: 'ctx.sessions 是 Codex 会话的镜像（由 Codex 钩子事件生成）：没有模型的流式内容与推理，Codex 自己的会话日志请用 sessionQuery',
       agents: 'ctx.agents 里的 agent 是 Codex 会话的替身：steer / inject 在钩子里翻成补充上下文或要求继续，钩子之外经 Codex++ 往会话里插话',
       sessionProjections: 'sessionProjections 在会话镜像上折叠；客户端 useProjection 视图不提供',
-      llm: 'ctx.llm.stream 经 Codex++ 协议代理一次性返回，拆成流式块；不能注册 adapter',
+      llm: 'ctx.llm.stream 经 Codex++ 协议代理边收边吐，工具调用与用量在回复结束时给出；registerAdapter 注册的供应商只给宿主进程里的 ctx.llm 用，Codex 自己的请求不经过它',
       fs: 'ctx.fs 是本机文件系统，不做沙箱与「先读后写」策略',
       shell: 'ctx.shell 用本机 shell 执行，不做沙箱',
       schedule: 'ctx.schedule 到点经 Codex++ 往 Codex 会话里发起一轮（每分钟检查一次，需要 Codex++ 在运行）',
       webhookRuntime: 'webhook 规则经 Codex++ 本地代理的 /ext/<配套拓展>/webhook/<kind> 接收，不校验签名',
-      jobs: 'ctx.jobs 只在当前进程里登记，不跨进程',
+      jobs: 'ctx.jobs 的任务在启动它的进程里跑，别的进程（MCP / 常驻进程）能看到、等待、停止它；任务变化事件只在本进程里发',
       workspaceRegistry: 'ctx.workspaceRegistry 由 Codex 会话的工作目录归出来，只读',
       subprocess: 'ctx.subprocess 不提供 PTY 终端',
       web: 'ctx.web 只有 fetch，没有联网搜索',
@@ -1544,9 +2257,8 @@ export class Host {
       subagents: 'ctx.subagents 新建一个 Codex 会话跑子任务并等它结束，不是 Codex 原生的子 agent 树',
     }
     for (const name of [...inject.required, ...inject.optional]) if (mirrorNotes[name]) record.notes.push(mirrorNotes[name])
-    // 配置里的 !!js：能有限求值的（字面量、env）换成值，其余保留原样并说明。
-    let config = resolveTaggedConfig(row.config ?? {})
-    if (hasTaggedValue(config)) record.notes.push('配置里的 !!js 表达式只认 true / false 与 env.X，其余不会求值')
+    // 配置里的 !!js：在 apply 前按 Cordis 的写法求值（能用本包已提供的服务）；求不出的保留原样并说明。
+    let config = resolveTaggedConfig(row.config ?? {}, { ctx: this.expressionContext(row) }, (text) => record.notes.push(`配置里的${text}`))
     // 配置 schema 给管理器生成表单：先记下来，配置不合法（比如缺必填项）时用户才有地方填。
     if (plugin.Config && typeof plugin.Config.toJSON === 'function') {
       try {
@@ -1564,7 +2276,10 @@ export class Host {
     }
     const state = {
       key: `${packageKey}/${row.id}`,
+      rowId: row.id,
       pluginName: plugin.name ?? row.id,
+      // 这一行引用的模块名（通常是包名）：loader.entries() 的 options.name 用它，插件按包名认自己那一行。
+      moduleName: row.name,
       config,
       tools: record.tools,
       notes: record.notes,
@@ -1576,15 +2291,36 @@ export class Host {
       commands: record.commands,
       // 插件自己的数据（storageDomain 的 JSON 文件）放这里；分析进程不给，只在内存里。
       dataDir: this.dataDir ? join(this.dataDir, row.id.replace(/[^\w.-]/g, '_')) : undefined,
+      // 行上的 isolate 声明（Cordis 作用域服务）与本行提供的服务名。
+      isolate: row.isolate ?? {},
+      provides: [],
+      // 本行监听的插件间自定义事件（别的包 emit 时转过来）。
+      listens: [],
     }
     try {
       const ctx = this.createContext(state)
-      await withTimeout(Promise.resolve(plugin.apply(ctx, config)), APPLY_TIMEOUT_MS, `apply 超过 ${APPLY_TIMEOUT_MS / 1000} 秒未完成`)
+      const running = plugin.serviceClass
+        ? this.instantiateService(plugin.serviceClass, ctx, config, (dispose) => state.disposers.push(dispose))
+        : Promise.resolve(plugin.apply(ctx, config))
+      await withTimeout(running, APPLY_TIMEOUT_MS, `${plugin.serviceClass ? '服务启动' : 'apply'} 超过 ${APPLY_TIMEOUT_MS / 1000} 秒未完成`)
       await Promise.all(state.pending)
     } catch (error) {
       record.status = 'error'
-      record.reasons.push(`apply 失败：${errorText(error)}`)
+      record.reasons.push(`${plugin.serviceClass ? '服务启动' : 'apply'} 失败：${errorText(error)}`)
       return record
+    }
+    if (state.provides.length) record.provides = [...new Set(state.provides)]
+    if (state.listens.length) record.listens = [...new Set(state.listens)]
+    // 包导出了 ./typert（生成的类型化 RPC 清单）：同 dsh 的 typert-loader 自动登记，前端 ctx.remote 就能调。
+    try {
+      if (await this.registerTypertExport(resolved.packageDir ?? root, { isolate: state.isolate }, (dispose) => state.disposers.push(dispose))) {
+        if (!record.mappings.includes(CONNECTION_TARGET)) record.mappings.push(CONNECTION_TARGET)
+      }
+    } catch (error) {
+      record.notes.push(`typert 清单登记失败：${errorText(error)}`)
+    }
+    if (plugin.serviceClass && !record.provides?.length) {
+      record.notes.push(`${plugin.name || '该模块'} 是 Service 子类，但构造时没有用 super(ctx, 名字) 登记服务名，别的插件拿不到它`)
     }
     record.tools = record.tools.map((name) => {
       const def = this.tools.get(name)?.def
@@ -1604,10 +2340,17 @@ export class Host {
       record.skills.push(skill)
     }
     if (record.notes.length > 0) record.status = 'partial'
-    if (record.skills.length > 0 && record.tools.length === 0 && record.mappings.length === 0) {
+    if (record.provides?.length) {
+      // 说明它提供了什么，不算部分兼容。
+      const scoped = record.provides.filter((name) => state.isolate[name])
+      record.notes.push(`提供服务 ${record.provides.join(', ')}：同一个包里的插件可以 inject${scoped.length ? `（${scoped.join(', ')} 按 isolate 只在声明的作用域里可见）` : ''}；别的包拿不到（服务对象不能跨进程）`)
+    }
+    if (record.kind === 'service') {
+      // Service 子类插件只提供服务，没有工具是正常的。
+    } else if (record.skills.length > 0 && record.tools.length === 0 && record.mappings.length === 0) {
       record.kind = 'skills'
       if (record.status === 'compatible') record.status = 'skills'
-    } else if (record.tools.length === 0 && record.mappings.length === 0 && record.status !== 'partial') {
+    } else if (record.tools.length === 0 && record.mappings.length === 0 && record.status !== 'partial' && !record.provides?.length) {
       record.notes.push('加载成功，但没有注册任何工具')
     }
     return record
@@ -1658,14 +2401,14 @@ export class Host {
         report.diagnostics.push(`包含 dsh 前端插件（dsh.client）：在 Codex 页面里用 Codex 的 React 运行，dsh 插槽映射到 Codex++ 的界面插槽；对不上的插槽、dsh 专属的前端服务（store、remote、conversation 等）不可用`)
       } else {
         report.diagnostics.push(entry && existsSync(entry)
-          ? `dsh 前端插件入口超过 ${CLIENT_MAX_BYTES / 1024} KiB，不加载`
+          ? `dsh 前端插件入口超过 ${CLIENT_MAX_BYTES / 1024 / 1024} MiB，不加载`
           : 'package.json 声明了 dsh.client，但没有找到 exports["./client"] 入口')
       }
     }
     let rows
     if (pkg.dsh?.bundle?.patch) {
       report.kind = 'bundle'
-      rows = readBundleRows(root, pkg, report.diagnostics)
+      rows = readBundleRows(root, pkg, report.diagnostics, { ctx: this.expressionContext() })
     } else {
       const entry = packageEntry(root, pkg)
       rows = entry && existsSync(entry) ? [{ id: pkg.name ?? 'plugin', name: pkg.name ?? entry, config: undefined, disabled: false, baseDir: root }] : []
@@ -1682,8 +2425,26 @@ export class Host {
       if (override && typeof override === 'object' && !Array.isArray(override)) {
         row.config = { ...(row.config && typeof row.config === 'object' ? row.config : {}), ...override }
       }
-      report.rows.push(await this.loadRow(row, root, pkg, packageKey))
     }
+    // 依赖插件提供的服务（Service 子类行）的行先跳过，别的行加载完再试，直到没有进展（Cordis 也是服务就绪才 apply）。
+    const records = new Array(rows.length)
+    let queue = rows.map((row, index) => ({ row, index }))
+    for (let progress = true; queue.length && progress;) {
+      progress = false
+      const waiting = []
+      for (const item of queue) {
+        const record = await this.loadRow(item.row, root, pkg, packageKey, { defer: true })
+        if (record.deferred) {
+          waiting.push(item)
+          continue
+        }
+        records[item.index] = record
+        progress = true
+      }
+      queue = waiting
+    }
+    for (const item of queue) records[item.index] = await this.loadRow(item.row, root, pkg, packageKey)
+    report.rows.push(...records)
     report.bridge = this.bridgeSummary(report.rows)
     if (report.clientEntry) {
       // 前端半边拿包自己那一行的配置（含管理器里的覆盖）；bundle 没有同名行时用第一行。
@@ -1762,6 +2523,8 @@ export class Host {
       connection: targets.has(CONNECTION_TARGET),
       schedule: targets.has(SCHEDULE_TARGET),
       webhook: targets.has(WEBHOOK_TARGET),
+      // 监听插件间自定义事件：要有配套拓展包（标记文件与常驻进程），别的包才能把事件转过来。
+      events: targets.has(EVENTS_TARGET),
       commands,
     }
   }
@@ -1825,15 +2588,29 @@ function withTimeout(promise, ms, message) {
 // MCP 服务
 // ---------------------------------------------------------------------------
 
-/** dsh 内容块 → MCP 内容块。图片引用的是 dsh 会话附件，Codex 里拿不到。 */
-function toMcpContent(blocks) {
+/**
+ * dsh 内容块 → MCP 内容块。dsh 的图片块是 `{ type: 'image', attachment: { attachmentId, mediaType } }`，
+ * 字节在附件服务里：给了 `attachments`（产出这个结果的插件的附件服务）就读出来作为真图片，读不到再退成文字说明。
+ */
+async function toMcpContent(blocks, attachments) {
   const content = []
   for (const block of Array.isArray(blocks) ? blocks : []) {
     if (block?.type === 'text' && typeof block.text === 'string') content.push({ type: 'text', text: block.text })
     else if (block?.type === 'image' && typeof block.data === 'string') {
       content.push({ type: 'image', data: block.data, mimeType: block.mimeType ?? 'image/png' })
-    } else if (block?.type === 'image') content.push({ type: 'text', text: '[图片：引用 dsh 会话附件，Codex 中不可用]' })
-    else if (block !== undefined) content.push({ type: 'text', text: JSON.stringify(block) })
+    } else if (block?.type === 'image') {
+      const ref = block.attachment
+      let image
+      if (ref?.attachmentId && attachments) {
+        try {
+          const request = await attachments.readImageRequest(ref)
+          image = { type: 'image', data: request.data, mimeType: ref.mediaType ?? 'image/png' }
+        } catch (error) {
+          image = { type: 'text', text: `[图片：附件 ${ref.attachmentId} 读取失败：${errorText(error)}]` }
+        }
+      }
+      content.push(image ?? { type: 'text', text: '[图片：附件不在这个插件的数据目录里，Codex 中不可用]' })
+    } else if (block !== undefined) content.push({ type: 'text', text: JSON.stringify(block) })
   }
   return content
 }
@@ -1851,9 +2628,9 @@ function toolParameters(def) {
   return def.parameters && typeof def.parameters === 'object' ? def.parameters : { type: 'object', properties: {} }
 }
 
-function renderValue(def, args, value) {
+async function renderValue(def, args, value, attachments) {
   try {
-    return toMcpContent(def.output.render(args, value))
+    return await toMcpContent(await def.output.render(args, value), attachments)
   } catch (error) {
     return [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, undefined, 2) ?? '' }, { type: 'text', text: `（render 失败：${errorText(error)}）` }]
   }
@@ -1957,7 +2734,7 @@ async function serve(registryPath) {
         running.set(id, controller)
         try {
           const result = await host.executeTool({ callId: `codexpp-${String(id)}`, name, arguments: params?.arguments ?? {}, signal: controller.signal })
-          reply(id, { content: toMcpContent(result.content), isError: result.isError === true })
+          reply(id, { content: await toMcpContent(result.content), isError: result.isError === true })
         } finally {
           running.delete(id)
         }
@@ -1986,7 +2763,7 @@ async function serve(registryPath) {
     })
   })
   lines.on('close', () => {
-    void host.dispose().finally(() => process.exit(0))
+    void host.dispose().finally(() => hostExit(0))
   })
 }
 
@@ -2011,19 +2788,21 @@ const [command, target, extra] = isMainModule() ? process.argv.slice(2) : ['libr
 if (command === 'library') {
   // 被 bridge.mjs 引入，不跑命令行入口。
 } else if (command === 'inspect' && target) {
+  guardProcessExit()
   inspect(target, extra).then(
-    () => process.exit(0),
+    () => hostExit(0),
     (error) => {
       console.error(errorText(error))
-      process.exit(1)
+      hostExit(1)
     },
   )
 } else if (command === 'serve' && target) {
+  guardProcessExit()
   serve(target).catch((error) => {
     console.error(errorText(error))
-    process.exit(1)
+    hostExit(1)
   })
 } else {
   console.error('用法：host.mjs inspect <包目录> [选项.json] | host.mjs serve <registry.json>')
-  process.exit(2)
+  hostExit(2)
 }

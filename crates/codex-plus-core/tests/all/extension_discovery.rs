@@ -85,9 +85,13 @@ async fn mount_listing(server: &MockServer, expect_search: u64) {
         .expect(expect_search)
         .mount(server)
         .await;
+    let mut listed_manifest = manifest("word-count", "1.1.0");
+    listed_manifest["engines"] = json!({
+        "codexpp": format!(">={}", codex_plus_core::extension_semver::codexpp_version()),
+    });
     Mock::given(method("GET"))
         .and(path("/raw/alice/codexpp-word-count/main/codexpp.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(manifest("word-count", "1.1.0")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(listed_manifest))
         .mount(server)
         .await;
     Mock::given(method("GET"))
@@ -144,6 +148,27 @@ fn community_entry_reads_manifest_and_flags_newer_engines() {
     assert!(community_entry(repo, "", &bad).is_err());
     bad = manifest("ok", "");
     assert!(community_entry(repo, "", &bad).is_err());
+}
+
+#[test]
+fn community_entry_accepts_semver_ranges_and_preserves_engine_requirement() {
+    let (repos, _) = parse_search_page(&json!({ "items": [search_item("alice/word-count")] })).unwrap();
+    let current = codex_plus_core::extension_semver::codexpp_version();
+    let mut package = manifest("word-count", "1.0.0");
+    for (requirement, compatible) in [(format!(">={current}"), true), (format!("<{current}"), false)] {
+        package["engines"] = json!({ "codexpp": requirement });
+        let entry = community_entry(&repos[0], "", &package).unwrap();
+        assert_eq!(entry.compatible, compatible);
+        let saved = serde_json::to_value(&entry).unwrap();
+        assert_eq!(saved["engine"], requirement);
+        let restored: codex_plus_core::extension_discovery::CommunityEntry =
+            serde_json::from_value(saved).unwrap();
+        assert_eq!(restored, entry, "版本范围经过磁盘缓存后仍保留");
+    }
+    for invalid in [json!("not-a-version"), json!(true), json!({}), json!(-1)] {
+        package["engines"] = json!({ "codexpp": invalid });
+        assert!(community_entry(&repos[0], "", &package).is_err());
+    }
 }
 
 #[test]
@@ -240,6 +265,11 @@ async fn listing_is_cached_and_falls_back_when_github_fails() {
     assert_eq!(stale["entries"], first["entries"]);
     assert!(stale["message"].as_str().unwrap().contains("限流"), "{stale}");
 
+    // 作者下架 / 删除后从缓存里拿掉（大小写不敏感），不用等缓存过期。
+    store.forget_repo("Alice/codexpp-word-count").unwrap();
+    let forgotten = store.list(&endpoints(&down), &manager, false).await;
+    assert!(forgotten["entries"].as_array().unwrap().is_empty(), "{forgotten}");
+
     store.set_enabled(false).unwrap();
     let off = store.list(&endpoints(&down), &manager, true).await;
     assert_eq!(off["enabled"], false);
@@ -251,7 +281,11 @@ async fn installs_release_asset_pinned_to_tag_commit() {
     let root = tempdir().unwrap();
     let server = MockServer::start().await;
     mount_listing(&server, 1).await;
-    let asset = package_zip("", &manifest("word-count", "1.0.0"));
+    let mut release_manifest = manifest("word-count", "1.0.0");
+    release_manifest["engines"] = json!({
+        "codexpp": format!(">={}", codex_plus_core::extension_semver::codexpp_version()),
+    });
+    let asset = package_zip("", &release_manifest);
     let digest = format!("sha256:{:x}", Sha256::digest(&asset));
     Mock::given(method("GET"))
         .and(path("/repos/alice/codexpp-word-count/releases/latest"))
@@ -279,7 +313,9 @@ async fn installs_release_asset_pinned_to_tag_commit() {
     let store = CommunityStore::new(root.path());
     let manager = manager(root.path());
     let endpoints = endpoints(&server);
-    store.list(&endpoints, &manager, false).await;
+    let listing = store.list(&endpoints, &manager, false).await;
+    assert_eq!(listing["entries"][0]["engine"], release_manifest["engines"]["codexpp"]);
+    assert_eq!(listing["entries"][0]["compatible"], true);
 
     // 列表里是默认分支的 1.1.0，实际装的是 release 的 1.0.0：权限按实际版本给。
     let prepared = store.prepare(&endpoints, &manager, "alice/codexpp-word-count").await.unwrap();

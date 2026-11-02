@@ -610,3 +610,104 @@ impl Publisher {
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_secs()).unwrap_or(0)
 }
+
+// ---------------------------------------------------------------------------
+// 「我发布的」：列出、下架、重新上架、删除仓库
+// ---------------------------------------------------------------------------
+
+impl Publisher {
+    /// 当前 gh 账号名下的拓展仓库：带 `codexpp-extension` topic 的（社区栏里能看到），
+    /// 加上本机发布记录里有、但已经下架的（仓库还在，可以重新上架或删除）。
+    pub fn list_published(&self) -> anyhow::Result<Value> {
+        let account = self.account()?;
+        let raw = self.gh(&[
+            "repo", "list", &account, "--limit", "1000", "--json",
+            "nameWithOwner,description,url,pushedAt,stargazerCount,isArchived,visibility,repositoryTopics",
+        ])?;
+        let repos: Vec<Value> = serde_json::from_str(&raw).context("gh repo list 返回的不是 JSON")?;
+        let state = load_publish_state(&self.config_dir);
+        let topic = crate::extension_discovery::TOPIC;
+        let mut entries = repos
+            .iter()
+            .filter_map(|item| {
+                let repo = item.get("nameWithOwner")?.as_str()?.to_string();
+                let listed = item
+                    .get("repositoryTopics")
+                    .and_then(Value::as_array)
+                    .is_some_and(|topics| topics.iter().any(|t| t.get("name").and_then(Value::as_str) == Some(topic)));
+                let record = state.iter().find(|(_, record)| {
+                    record.get("repo").and_then(Value::as_str).is_some_and(|r| r.eq_ignore_ascii_case(&repo))
+                });
+                if !listed && record.is_none() {
+                    return None;
+                }
+                let text = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+                Some(json!({
+                    "repo": repo,
+                    "url": text("url"),
+                    "description": text("description"),
+                    "stars": item.get("stargazerCount").and_then(Value::as_u64).unwrap_or(0),
+                    "pushedAt": text("pushedAt"),
+                    "visibility": text("visibility"),
+                    "archived": item.get("isArchived").and_then(Value::as_bool).unwrap_or(false),
+                    "listed": listed,
+                    "id": record.map(|(id, _)| id.clone()),
+                    "version": record.and_then(|(_, r)| r.get("version").cloned()),
+                    "publishedAt": record.and_then(|(_, r)| r.get("publishedAt").cloned()),
+                }))
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| b["pushedAt"].as_str().cmp(&a["pushedAt"].as_str()));
+        Ok(json!({ "account": account, "entries": entries }))
+    }
+
+    /// 下架：去掉 topic，社区栏不再列出；仓库、release 都保留，可以重新上架。
+    pub fn unlist(&self, repo: &str) -> anyhow::Result<()> {
+        self.own_repo(repo)?;
+        self.gh(&["repo", "edit", repo, "--remove-topic", crate::extension_discovery::TOPIC])?;
+        Ok(())
+    }
+
+    /// 重新上架：加回 topic。
+    pub fn relist(&self, repo: &str) -> anyhow::Result<()> {
+        self.own_repo(repo)?;
+        self.gh(&["repo", "edit", repo, "--add-topic", crate::extension_discovery::TOPIC])?;
+        Ok(())
+    }
+
+    /// 删除 GitHub 仓库（不可恢复），并清掉本机的发布记录。本地拓展包不动。
+    pub fn delete_repo(&self, repo: &str) -> anyhow::Result<()> {
+        self.own_repo(repo)?;
+        if let Err(error) = self.gh(&["repo", "delete", repo, "--yes"]) {
+            let message = format!("{error:#}");
+            if message.contains("delete_repo") {
+                bail!("gh 的令牌没有删除仓库的权限：在终端运行 gh auth refresh -h github.com -s delete_repo 授权后再试");
+            }
+            return Err(error);
+        }
+        let mut state = load_publish_state(&self.config_dir);
+        let before = state.len();
+        state.retain(|_, record| !record.get("repo").and_then(Value::as_str).is_some_and(|r| r.eq_ignore_ascii_case(repo)));
+        if state.len() != before {
+            crate::settings::atomic_write(&self.config_dir.join(PUBLISH_STATE), serde_json::to_string_pretty(&state)?.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// 只能动当前 gh 账号自己名下的仓库。
+    fn own_repo(&self, repo: &str) -> anyhow::Result<()> {
+        let parts = repo.split('/').collect::<Vec<_>>();
+        let valid = parts.len() == 2
+            && parts.iter().all(|part| {
+                !part.is_empty() && *part != "." && *part != ".." && part.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+            });
+        if !valid {
+            bail!("仓库必须写成 owner/repo");
+        }
+        let account = self.account()?;
+        if !parts[0].eq_ignore_ascii_case(&account) {
+            bail!("{repo} 不属于当前 gh 账号 {account}");
+        }
+        Ok(())
+    }
+}

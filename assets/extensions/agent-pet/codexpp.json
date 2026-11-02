@@ -1,0 +1,29 @@
+{
+  "id": "agent-pet",
+  "name": "Agent 桌宠",
+  "version": "1.0.0",
+  "description": "Codex 窗口里可拖动的小角色：图片桌宠按下压扁、松开回弹并播放音效；大肥鱼显示用量、余额与泡泡。",
+  "icon": "assets/icon.svg",
+  "engines": { "codexpp": 1 },
+  "renderer": ["pet.js", "whale-compat.js", "whale-engine.js", "whale.js", "settings.js", "main.js"],
+  "settings": { "page": "settings.html" },
+  "permissions": {
+    "routes": ["/diagnostics/log", "/agent-pet/catalog", "/agent-pet/image", "/agent-pet/sound", "/agent-pet/import-sound", "/whale/media", "/whale/full", "/whale/history", "/whale/session"]
+  },
+  "config": {
+    "kind": { "type": "select", "title": "类型", "options": [{ "value": "image", "label": "图片桌宠" }, { "value": "whaleWidget", "label": "大肥鱼" }], "default": "image" },
+    "image": { "type": "string", "title": "图片", "description": "内置图库 id，或 custom 使用自定义地址", "default": "whale" },
+    "customImageUrl": { "type": "string", "title": "自定义图片地址", "description": "https 地址", "default": "" },
+    "size": { "type": "number", "title": "大小（像素）", "min": 64, "max": 240, "default": 112 },
+    "soundEnabled": { "type": "boolean", "title": "按压音效", "default": true },
+    "soundSet": { "type": "string", "title": "音效组", "description": "duck、fx1、可下载音效组 id，或 custom", "default": "duck" },
+    "customSoundPress": { "type": "string", "title": "自定义按压音", "default": "" },
+    "customSoundRelease": { "type": "string", "title": "自定义松开音", "default": "" },
+    "volume": { "type": "number", "title": "音量", "min": 0, "max": 1, "default": 0.6 },
+    "codexAppWhaleBalanceProtocol": { "type": "select", "title": "大肥鱼余额接口", "options": [{ "value": "auto", "label": "自动" }, { "value": "custom", "label": "自定义" }, { "value": "off", "label": "关闭" }], "default": "auto" },
+    "codexAppWhaleBalancePath": { "type": "string", "title": "自定义余额接口路径", "default": "" },
+    "codexAppWhaleBalanceField": { "type": "string", "title": "余额字段", "default": "" },
+    "codexAppWhaleBalanceCurrency": { "type": "string", "title": "币种", "default": "USD" },
+    "codexAppWhaleBalanceScale": { "type": "number", "title": "换算倍数", "min": 0, "default": 1 }
+  }
+}

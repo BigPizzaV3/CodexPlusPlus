@@ -2,6 +2,7 @@
 //!
 //! 接入流程与协作 MCP 共用 [`crate::agent_collaboration_commands::connect_codex`]：
 //! 先写 Codex++ 托管上下文（切换供应商时不会丢），再原子写 Codex live 配置，失败只回滚本条。
+//! 不造拓展时可以取消接入（条目置为 `enabled = false`），Codex 新对话就不再带上这组工具的说明。
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -18,32 +19,40 @@ pub async fn extension_creator_request(action: String) -> Result<Value, String> 
         let executable = std::env::current_exe().context("无法定位拓展创作 MCP 程序")?;
         let home = codex_plus_core::codex_home::default_codex_home_dir();
         let state_dir = codex_plus_core::paths::default_app_state_dir();
+        let settings = SettingsStore::default();
         match action.as_str() {
             "status" => {}
             "connect" => crate::agent_collaboration_commands::connect_codex(
                 &extension_creator::SPEC,
-                &SettingsStore::default(),
+                &settings,
+                &home,
+                &executable,
+                &state_dir,
+            )?,
+            "disconnect" => crate::agent_collaboration_commands::disconnect_codex(
+                &extension_creator::SPEC,
+                &settings,
                 &home,
                 &executable,
                 &state_dir,
             )?,
             _ => bail!("不支持的拓展创作操作"),
         }
-        Ok(registration_view(&home, &executable, &state_dir))
+        Ok(registration_view(&settings, &home, &executable, &state_dir))
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| format!("{e:#}"))
 }
 
-fn registration_view(home: &Path, executable: &Path, state_dir: &Path) -> Value {
+fn registration_view(settings: &SettingsStore, home: &Path, executable: &Path, state_dir: &Path) -> Value {
     let extensions_directory = crate::commands::default_user_script_manager()
         .user_dir()
         .to_string_lossy()
         .into_owned();
     match managed_mcp::status(&extension_creator::SPEC, home, executable, state_dir) {
         Ok(registration) => json!({
-            "status": if registration.registered { "connected" } else if registration.status == "conflict" { "conflict" } else { "not_connected" },
+            "status": if registration.registered { "connected" } else if registration.status == "conflict" { "conflict" } else if registration.disabled || disabled_in_managed_context(settings) { "disconnected" } else { "not_connected" },
             "message": registration.message,
             "configPath": registration.config_path,
             "extensionsDirectory": extensions_directory,
@@ -54,6 +63,13 @@ fn registration_view(home: &Path, executable: &Path, state_dir: &Path) -> Value 
             "extensionsDirectory": extensions_directory,
         }),
     }
+}
+
+/// 切换供应商后停用条目会被移出 live 配置，「已取消接入」以托管上下文为准。
+fn disabled_in_managed_context(settings: &SettingsStore) -> bool {
+    settings
+        .load()
+        .is_ok_and(|settings| managed_mcp::disabled_in_context(&extension_creator::SPEC, &settings.relay_context_config_contents))
 }
 
 fn state_dir_from_args(args: &[OsString]) -> anyhow::Result<PathBuf> {
@@ -172,5 +188,37 @@ mod tests {
             managed_mcp::upsert_managed_context(&extension_creator::SPEC, &foreign, &executable, &state_dir)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn disconnect_disables_entry_in_managed_and_live_configuration() {
+        use crate::agent_collaboration_commands::{connect_codex, disconnect_codex};
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("codex-home");
+        std::fs::create_dir(&home).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let state_dir = dir.path().join("state");
+        let settings = SettingsStore::new(dir.path().join("settings.json"));
+        let enabled = |contents: &str| -> Option<bool> {
+            let document: toml_edit::DocumentMut = contents.parse().unwrap();
+            document["mcp_servers"][extension_creator::SERVER_ID]["enabled"].as_bool()
+        };
+        let live = || std::fs::read_to_string(home.join("config.toml")).unwrap();
+
+        connect_codex(&extension_creator::SPEC, &settings, &home, &executable, &state_dir).unwrap();
+        assert_eq!(registration_view(&settings, &home, &executable, &state_dir)["status"], "connected");
+
+        disconnect_codex(&extension_creator::SPEC, &settings, &home, &executable, &state_dir).unwrap();
+        assert_eq!(registration_view(&settings, &home, &executable, &state_dir)["status"], "disconnected");
+        assert_eq!(enabled(&settings.load().unwrap().relay_context_config_contents), Some(false));
+        assert_eq!(enabled(&live()), Some(false));
+        // 切换供应商的 apply 流程会把停用条目移出 live；仍应显示「已取消接入」。
+        std::fs::write(home.join("config.toml"), "model = 'x'\n").unwrap();
+        assert_eq!(registration_view(&settings, &home, &executable, &state_dir)["status"], "disconnected");
+
+        connect_codex(&extension_creator::SPEC, &settings, &home, &executable, &state_dir).unwrap();
+        assert_eq!(registration_view(&settings, &home, &executable, &state_dir)["status"], "connected");
+        assert_eq!(enabled(&settings.load().unwrap().relay_context_config_contents), Some(true));
+        assert_eq!(enabled(&live()), Some(true));
     }
 }

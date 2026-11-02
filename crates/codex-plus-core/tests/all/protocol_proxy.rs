@@ -4642,14 +4642,12 @@ async fn upstream_request_returns_when_provider_accepts_but_never_sends_headers(
         tokio::time::sleep(Duration::from_secs(2)).await;
     });
 
+    // 先建好客户端再计时：macOS 上建客户端要经 trustd 读系统根证书，全量并发时可能就要一秒多，不属于被测的超时。
+    let request = upstream_http_client()
+        .unwrap()
+        .get(format!("http://{addr}/v1/models"));
     let started = Instant::now();
-    let result = send_upstream_request_with_header_timeout(
-        upstream_http_client()
-            .unwrap()
-            .get(format!("http://{addr}/v1/models")),
-        Duration::from_millis(100),
-    )
-    .await;
+    let result = send_upstream_request_with_header_timeout(request, Duration::from_millis(100)).await;
 
     assert!(result.is_err());
     // 断言意图：客户端在 header 超时（100ms）后放弃等待，而不是傻等上游那 2 秒。

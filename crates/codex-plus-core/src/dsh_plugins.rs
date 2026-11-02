@@ -103,6 +103,38 @@ const HOST_FILES: &[(&str, &str)] = &[
         "shims/dsh-services.mjs",
         include_str!("../../../assets/dsh-host/shims/dsh-services.mjs"),
     ),
+    (
+        "shims/dsh-token-meter-estimate.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-token-meter-estimate.mjs"),
+    ),
+    (
+        "shims/dsh-client-connection.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-client-connection.mjs"),
+    ),
+    (
+        "shims/dsh-settings.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-settings.mjs"),
+    ),
+    (
+        "shims/dsh-skill-filesystem.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-skill-filesystem.mjs"),
+    ),
+    (
+        "settings-services.mjs",
+        include_str!("../../../assets/dsh-host/settings-services.mjs"),
+    ),
+    (
+        "shims/dsh-session-surface.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-session-surface.mjs"),
+    ),
+    (
+        "shims/dsh-agent.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-agent.mjs"),
+    ),
+    (
+        "shims/dsh-subagent.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-subagent.mjs"),
+    ),
 ];
 
 const REGISTRY_VERSION: u32 = 1;
@@ -112,6 +144,42 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(180);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_SOURCE_LEN: usize = 512;
 const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
+/// dsh 自己的纯工具包（dsh 仓库 `packages/util` 下与 typert 协议包）：发布在 npm 上、只把 cordis 列为 peer，
+/// 不碰 dsh 的 agent 循环与会话。插件把它们写成 peer（指望 dsh 宿主带着）时，导入时照样从 npm 装真包。
+pub const DSH_UTILITY_PACKAGES: &[&str] = &[
+    "@deepseek-ai/dsh-atomic-write",
+    "@deepseek-ai/dsh-brand",
+    "@deepseek-ai/dsh-chunked-list",
+    "@deepseek-ai/dsh-deque",
+    "@deepseek-ai/dsh-home-paths",
+    "@deepseek-ai/dsh-http-proxy",
+    "@deepseek-ai/dsh-launch-environment",
+    "@deepseek-ai/dsh-lazy-require",
+    "@deepseek-ai/dsh-native-command",
+    "@deepseek-ai/dsh-output-retention",
+    "@deepseek-ai/dsh-package-manifest",
+    "@deepseek-ai/dsh-plugin-detail",
+    "@deepseek-ai/dsh-plugin-market-index",
+    "@deepseek-ai/dsh-scope",
+    "@deepseek-ai/dsh-timeout",
+    "@deepseek-ai/dsh-typert-protocol",
+    "@deepseek-ai/dsh-util-code-language",
+    "@deepseek-ai/dsh-util-crypto",
+    "@deepseek-ai/dsh-util-file-drag",
+    "@deepseek-ai/dsh-util-time",
+    "@deepseek-ai/dsh-util-values",
+    "@deepseek-ai/dsh-util-workspace-path",
+    // 只建在替身与上面工具包之上的纯逻辑库：装真包，它 import 的宿主包照常落到替身。
+    "@deepseek-ai/dsh-session-title-llm",
+];
+
+/// package.json 里记下装依赖时跳过的依赖（名字 → 原因），重新分析时也能在报告里说明。
+const SKIPPED_DEPENDENCIES_KEY: &str = "codexPlusSkippedDependencies";
+
+/// dsh 前端插件入口的上限（与 host.mjs 的 CLIENT_MAX_BYTES 一致，测试守住两边）。打包后的前端插件常在 0.3~3 MiB：
+/// 它整个夹进配套拓展包的页面脚本，随 Codex 页面注入一次。
+pub const DSH_CLIENT_MAX_BYTES: usize = 4 * 1024 * 1024;
+
 /// 宿主自己提供的 peer 包（`host.mjs` 的 SHIMS 去掉 schemastery，测试守住两边一致）；只依赖它们时不需要跑 npm install。
 /// schemastery 按 dsh 约定是普通运行时依赖，声明了就装真包，替身只兜底没装的情况。
 pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
@@ -144,6 +212,10 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-file-reference",
     "@deepseek-ai/dsh-host-webserver",
     "@deepseek-ai/dsh-mcp-resources",
+    "@deepseek-ai/dsh-client-connection",
+    "@deepseek-ai/dsh-settings",
+    "@deepseek-ai/dsh-skill-filesystem",
+    "@deepseek-ai/dsh-agent",
 ];
 
 /// 插件来源。
@@ -152,8 +224,13 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
 pub enum PluginSource {
     /// 本地目录，原地链接（同 dsh 的 `link:`），不复制。
     Local { path: String },
-    /// npm 包 spec，如 `@scope/name@1.2.3`。
-    Npm { spec: String },
+    /// npm 包 spec，如 `@scope/name@1.2.3`；`registry` 是自定义 npm registry（同 dsh 市场索引的
+    /// `source.registry`），下载包与安装依赖都用它。
+    Npm {
+        spec: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        registry: Option<String>,
+    },
     /// git 仓库，可指定分支/标签与包所在子目录。
     Git {
         url: String,
@@ -223,9 +300,10 @@ pub struct MarketEntry {
     pub title: String,
     pub description: String,
     pub version: String,
-    /// 交给 [`parse_source`] 的字符串：npm 是 `name@version`，git 是 `url#commit&path:子目录`。
+    /// 交给 [`parse_source`] 的字符串：npm 是 `name@version`（自定义 registry 时加 `#registry:<地址>`），
+    /// git 是 `url#commit&path:子目录`。
     pub source: String,
-    /// 来源里 Codex++ 不支持、被忽略的部分（如自定义 npm registry）。
+    /// 来源里 Codex++ 不支持、被忽略的部分；目前都支持，留作兼容（总是 `None`）。
     pub note: Option<String>,
 }
 
@@ -246,8 +324,12 @@ pub fn parse_market_index(index: &Value) -> anyhow::Result<Vec<MarketEntry>> {
             Some("npm") => {
                 let package = source.get("name").and_then(Value::as_str).unwrap_or(&name);
                 let spec = if version.is_empty() { package.to_string() } else { format!("{package}@{version}") };
-                let note = source.get("registry").and_then(Value::as_str).map(|registry| format!("索引指定了 npm registry {registry}，Codex++ 用本机 npm 的默认 registry"));
-                (spec, note)
+                // 自定义 registry 随来源字符串带上，导入时 npm pack / install 都用它。
+                let spec = match source.get("registry").and_then(Value::as_str).map(str::trim).filter(|registry| !registry.is_empty()) {
+                    Some(registry) => format!("{spec}#registry:{registry}"),
+                    None => spec,
+                };
+                (spec, None)
             }
             Some("git") => {
                 let url = text(source, "url");
@@ -362,13 +444,29 @@ pub fn parse_source(input: &str) -> anyhow::Result<PluginSource> {
             path,
         });
     }
+    // npm 包可在 `#registry:<地址>` 里指定自定义 registry（同 dsh 市场索引的 source.registry）。
+    let (spec, registry) = match text.split_once("#registry:") {
+        Some((spec, registry)) => (spec.trim(), Some(validate_registry(registry)?)),
+        None => (text, None),
+    };
     let allowed = |c: char| c.is_ascii_alphanumeric() || "@/._~^<>=*|+-".contains(c);
-    if text.starts_with('-') || text.starts_with('.') || !text.chars().all(allowed) {
+    if spec.is_empty() || spec.starts_with('-') || spec.starts_with('.') || !spec.chars().all(allowed) {
         bail!("无法识别的来源：npm 包名只能包含字母、数字与 @/._-，本地目录请用绝对路径");
     }
     Ok(PluginSource::Npm {
-        spec: text.to_string(),
+        spec: spec.to_string(),
+        registry,
     })
+}
+
+/// 自定义 npm registry 只认 http(s) 地址（作为 `--registry` 的值交给 npm，不能是别的选项）。
+fn validate_registry(raw: &str) -> anyhow::Result<String> {
+    let text = raw.trim();
+    let url = reqwest::Url::parse(text).map_err(|_| anyhow::anyhow!("npm registry 必须是 http(s) 地址"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() || text.chars().any(char::is_whitespace) {
+        bail!("npm registry 必须是 http(s) 地址");
+    }
+    Ok(text.to_string())
 }
 
 fn validate_relative_subdir(sub: &str) -> anyhow::Result<String> {
@@ -494,6 +592,20 @@ pub fn locate_program(name: &str) -> Option<PathBuf> {
     dirs.into_iter()
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|path| path.is_file())
+}
+
+/// 去掉 Windows canonicalize 带上的 `\\?\` verbatim 前缀（`\\?\UNC\` 换回 `\\`）。
+/// 交给 Node 的插件根目录使用普通路径，避免与依赖扫描得到的路径混用两种表示。
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        // 只处理盘符路径；`\\?\Volume{...}` 之类去掉前缀就不是合法路径了。
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// 子进程的 PATH：npm 是 Node 脚本，需要能找到 node。
@@ -718,13 +830,14 @@ impl DshPlugins {
             PluginSource::Local { path } => {
                 let directory = Path::new(path)
                     .canonicalize()
+                    .map(|directory| strip_verbatim_prefix(&directory))
                     .with_context(|| format!("目录不存在：{path}"))?;
                 if !directory.join("package.json").is_file() {
                     bail!("{} 下没有 package.json，不是 dsh 插件包", directory.display());
                 }
                 (directory, false)
             }
-            PluginSource::Npm { spec } => (fetch_npm(spec, toolchain, staging)?, true),
+            PluginSource::Npm { spec, registry } => (fetch_npm(spec, registry.as_deref(), toolchain, staging)?, true),
             PluginSource::Git {
                 url,
                 reference,
@@ -748,8 +861,12 @@ impl DshPlugins {
             });
         let id = id_override.map(str::to_string).unwrap_or_else(|| plugin_id_from_name(&name));
         validate_plugin_id(&id)?;
-        if managed && needs_dependency_install(&package) {
-            install_dependencies(&fetched, toolchain)?;
+        if managed && needs_dependency_install(&package, &fetched) {
+            let registry = match source {
+                PluginSource::Npm { registry, .. } => registry.as_deref(),
+                _ => None,
+            };
+            install_dependencies(&fetched, registry, toolchain)?;
         }
         let mut registry = self.load()?;
         let previous = registry.plugins.iter().position(|plugin| plugin.id == id);
@@ -923,15 +1040,113 @@ fn read_package_json(directory: &Path) -> anyhow::Result<Value> {
     serde_json::from_str(&text).context("package.json 不是有效 JSON")
 }
 
-fn needs_dependency_install(package: &Value) -> bool {
-    package
-        .get("dependencies")
-        .and_then(Value::as_object)
-        .is_some_and(|dependencies| {
-            dependencies
-                .keys()
-                .any(|name| !HOST_PROVIDED_PACKAGES.contains(&name.as_str()))
-        })
+fn needs_dependency_install(package: &Value, directory: &Path) -> bool {
+    let wants = |key: &str, keep: &dyn Fn(&str) -> bool| {
+        package.get(key).and_then(Value::as_object).is_some_and(|dependencies| dependencies.keys().any(|name| keep(name)))
+    };
+    wants("dependencies", &|name| !HOST_PROVIDED_PACKAGES.contains(&name))
+        || wants("peerDependencies", &|name| DSH_UTILITY_PACKAGES.contains(&name))
+        || !imported_dsh_utilities(directory).is_empty()
+}
+
+/// 装依赖前整理导入副本的 package.json：
+/// - 写成 peer 的 dsh 纯工具包挪进 dependencies 装真包（版本范围写的是 workspace: 之类时装 latest）；
+/// - 发布不了的依赖写法（`workspace:`、`link:`、`catalog:`、指向不存在路径的 `file:`）挪进 peerDependencies，不装。
+/// 返回跳过的依赖（名字 → 原因）。
+fn prepare_dependencies(directory: &Path, package: &mut Value) -> BTreeMap<String, String> {
+    let mut skipped = BTreeMap::new();
+    let Some(object) = package.as_object_mut() else { return skipped };
+    let mut dependencies = object.get("dependencies").and_then(Value::as_object).cloned().unwrap_or_default();
+    let mut peers = object.get("peerDependencies").and_then(Value::as_object).cloned().unwrap_or_default();
+    // 插件常直接 import dsh 纯工具包而不写进 package.json（dsh 宿主本来就带着）：扫一遍包里的脚本补上。
+    for name in imported_dsh_utilities(directory) {
+        if !dependencies.contains_key(name) && !peers.contains_key(name) {
+            dependencies.insert(name.to_string(), Value::String("latest".into()));
+        }
+    }
+    for name in DSH_UTILITY_PACKAGES {
+        if let Some(range) = peers.remove(*name) {
+            let range = range.as_str().filter(|range| !unpublishable_range(directory, range)).unwrap_or("latest").to_string();
+            dependencies.entry(name.to_string()).or_insert(Value::String(range));
+        }
+    }
+    for (name, range) in dependencies.clone() {
+        let Some(text) = range.as_str() else { continue };
+        if unpublishable_range(directory, text) {
+            dependencies.remove(&name);
+            if DSH_UTILITY_PACKAGES.contains(&name.as_str()) {
+                dependencies.insert(name.clone(), Value::String("latest".into()));
+                continue;
+            }
+            peers.insert(name.clone(), range.clone());
+            skipped.insert(name, format!("版本写的是 {text}（只在作者自己的工作区里有效），没有安装"));
+        }
+    }
+    // 导入副本用不到开发依赖，整个去掉：`npm install --omit=dev` 仍会先解析 dev 依赖树（dsh 插件常把宿主包写进 dev
+    // 方便本地编译，其中有没发布的包，解析就报 404），同名的还会让 dependencies 里的那个被当成开发依赖跳过。
+    object.remove("devDependencies");
+    object.insert("dependencies".into(), Value::Object(dependencies));
+    object.insert("peerDependencies".into(), Value::Object(peers));
+    skipped
+}
+
+/// 包里的脚本（不进 node_modules，最多看 2000 个文件、每个 2 MiB 以内）引用到的 dsh 纯工具包。
+fn imported_dsh_utilities(directory: &Path) -> Vec<&'static str> {
+    let mut found = std::collections::BTreeSet::new();
+    let mut stack = vec![directory.to_path_buf()];
+    let mut seen = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                if entry.file_name() != "node_modules" && !entry.file_name().to_string_lossy().starts_with('.') {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let script = path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| matches!(ext, "js" | "mjs" | "cjs"));
+            if !kind.is_file() || !script || entry.metadata().map(|meta| meta.len()).unwrap_or(u64::MAX) > 2 * 1024 * 1024 {
+                continue;
+            }
+            seen += 1;
+            if seen > 2000 {
+                return found.into_iter().collect();
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for name in DSH_UTILITY_PACKAGES {
+                if [format!("'{name}'"), format!("\"{name}\""), format!("'{name}/"), format!("\"{name}/")].iter().any(|quoted| text.contains(quoted.as_str())) {
+                    found.insert(*name);
+                }
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+fn unpublishable_range(directory: &Path, range: &str) -> bool {
+    let range = range.trim();
+    ["workspace:", "link:", "catalog:", "portal:"].iter().any(|prefix| range.starts_with(prefix))
+        || range.strip_prefix("file:").is_some_and(|path| !directory.join(path).exists())
+}
+
+/// npm 报「这个依赖装不上」（404 没发布、没有匹配的版本）时，是哪个包。
+fn unresolvable_dependency(error: &str) -> Option<(String, &'static str)> {
+    let decode = |name: &str| name.replace("%2f", "/").replace("%2F", "/");
+    if error.contains("E404") {
+        let start = error.find("404 Not Found - GET ")? + "404 Not Found - GET ".len();
+        let url = error[start..].split_whitespace().next()?;
+        let name = url.rsplit_once(".org/").map(|(_, name)| name).unwrap_or(url);
+        return Some((decode(name.trim_end_matches(" - Not found")), "npm 上没有这个包（多为 dsh 宿主自带、没有单独发布的包）"));
+    }
+    if error.contains("ETARGET") {
+        let start = error.find("No matching version found for ")? + "No matching version found for ".len();
+        let spec = error[start..].split_whitespace().next()?.trim_end_matches('.');
+        let name = if let Some(rest) = spec.strip_prefix('@') { format!("@{}", rest.split('@').next()?) } else { spec.split('@').next()?.to_string() };
+        return Some((name, "npm 上没有匹配的版本"));
+    }
+    None
 }
 
 fn npm_command(toolchain: &Toolchain, directory: &Path) -> anyhow::Result<Command> {
@@ -953,8 +1168,8 @@ fn npm_command(toolchain: &Toolchain, directory: &Path) -> anyhow::Result<Comman
     Ok(command)
 }
 
-/// `npm pack` 只下载 tarball，不执行任何脚本；随后用 tar 解包。
-fn fetch_npm(spec: &str, toolchain: &Toolchain, staging: &Path) -> anyhow::Result<PathBuf> {
+/// `npm pack` 只下载 tarball，不执行任何脚本；随后用 tar 解包。`registry` 是自定义 npm registry。
+fn fetch_npm(spec: &str, registry: Option<&str>, toolchain: &Toolchain, staging: &Path) -> anyhow::Result<PathBuf> {
     let download = staging.join("download");
     std::fs::create_dir_all(&download)?;
     let mut command = npm_command(toolchain, &download)?;
@@ -964,6 +1179,9 @@ fn fetch_npm(spec: &str, toolchain: &Toolchain, staging: &Path) -> anyhow::Resul
         .arg("--json")
         .arg("--pack-destination")
         .arg(&download);
+    if let Some(registry) = registry {
+        command.arg("--registry").arg(registry);
+    }
     let output = run_with_timeout(command, FETCH_TIMEOUT, &format!("下载 npm 包 {spec}"))?;
     let listing: Value = serde_json::from_slice(&output.stdout)
         .ok()
@@ -1093,7 +1311,89 @@ fn copy_dir_filtered(from: &Path, to: &Path) -> anyhow::Result<()> {
 }
 
 /// 安装包的 `dependencies`：peer（dsh 宿主包）不装，交给兼容宿主；不执行安装脚本。
-fn install_dependencies(directory: &Path, toolchain: &Toolchain) -> anyhow::Result<()> {
+/// 包来自自定义 registry 时依赖也从它装（同 dsh 安装组合包时整次安装用同一个 registry）。
+/// 直接依赖里有装不上的（npm 上没有、版本写法只在作者工作区有效），挪成 peer 后重试：用到它的插件行在分析时
+/// 逐行报出来，别的行照常可用，而不是整个包导入失败。跳过的依赖记进 package.json 的 [`SKIPPED_DEPENDENCIES_KEY`]。
+fn install_dependencies(directory: &Path, registry: Option<&str>, toolchain: &Toolchain) -> anyhow::Result<()> {
+    let mut package = read_package_json(directory)?;
+    let mut skipped = prepare_dependencies(directory, &mut package);
+    let mut attempts = 0;
+    let mut utility_rounds = 0;
+    loop {
+        if let Some(object) = package.as_object_mut() {
+            if skipped.is_empty() {
+                object.remove(SKIPPED_DEPENDENCIES_KEY);
+            } else {
+                object.insert(SKIPPED_DEPENDENCIES_KEY.into(), json!(skipped));
+            }
+        }
+        std::fs::write(directory.join("package.json"), serde_json::to_vec_pretty(&package)?)?;
+        let error = match run_npm_install(directory, registry, toolchain) {
+            Ok(()) => {
+                // 装上的 dsh 包（bundle 行引用的官方模块、纯逻辑库）把工具包写成 peer、指望 dsh 宿主带着：补装后再装一轮。
+                let missing = missing_utility_peers(directory);
+                if missing.is_empty() || utility_rounds >= 2 {
+                    return Ok(());
+                }
+                utility_rounds += 1;
+                if let Some(dependencies) = package.as_object_mut().and_then(|object| {
+                    object.entry("dependencies").or_insert_with(|| json!({})).as_object_mut()
+                }) {
+                    for (name, range) in missing {
+                        dependencies.entry(name).or_insert(Value::String(range));
+                    }
+                }
+                continue;
+            }
+            Err(error) => error,
+        };
+        attempts += 1;
+        let text = format!("{error:#}");
+        let direct = unresolvable_dependency(&text).filter(|(name, _)| {
+            package.pointer(&format!("/dependencies/{}", name.replace('~', "~0").replace('/', "~1"))).is_some()
+        });
+        let Some((name, reason)) = direct.filter(|_| attempts <= 8) else {
+            return Err(error);
+        };
+        if let Some(object) = package.as_object_mut() {
+            let range = object.get_mut("dependencies").and_then(Value::as_object_mut).and_then(|dependencies| dependencies.remove(&name));
+            if let (Some(range), Some(peers)) = (range, object.entry("peerDependencies").or_insert_with(|| json!({})).as_object_mut()) {
+                peers.insert(name.clone(), range);
+            }
+        }
+        skipped.insert(name, reason.to_string());
+    }
+}
+
+/// 已装进 `node_modules` 的包（一层，含 `@scope/`）里，声明为 peer、却没装上的 dsh 工具包（名字 → 版本范围）。
+/// 版本范围是只在作者工作区有效的写法时装 latest。
+fn missing_utility_peers(directory: &Path) -> BTreeMap<String, String> {
+    let modules = directory.join("node_modules");
+    let mut packages = Vec::new();
+    for entry in std::fs::read_dir(&modules).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if entry.file_name().to_string_lossy().starts_with('@') {
+            packages.extend(std::fs::read_dir(&path).into_iter().flatten().flatten().map(|scoped| scoped.path()));
+        } else {
+            packages.push(path);
+        }
+    }
+    let mut missing = BTreeMap::new();
+    for package in packages {
+        let Ok(manifest) = read_package_json(&package) else { continue };
+        let Some(peers) = manifest.get("peerDependencies").and_then(Value::as_object) else { continue };
+        for (name, range) in peers {
+            if !DSH_UTILITY_PACKAGES.contains(&name.as_str()) || modules.join(name).join("package.json").is_file() {
+                continue;
+            }
+            let range = range.as_str().filter(|range| !unpublishable_range(&package, range)).unwrap_or("latest");
+            missing.entry(name.clone()).or_insert_with(|| range.to_string());
+        }
+    }
+    missing
+}
+
+fn run_npm_install(directory: &Path, registry: Option<&str>, toolchain: &Toolchain) -> anyhow::Result<()> {
     let mut command = npm_command(toolchain, directory)?;
     command.args([
         "install",
@@ -1105,6 +1405,9 @@ fn install_dependencies(directory: &Path, toolchain: &Toolchain) -> anyhow::Resu
         "--no-fund",
         "--no-package-lock",
     ]);
+    if let Some(registry) = registry {
+        command.arg("--registry").arg(registry);
+    }
     run_with_timeout(command, INSTALL_TIMEOUT, "安装插件依赖").map(|_| ())
 }
 
@@ -1152,7 +1455,16 @@ fn inspect_package(
         .rev()
         .find(|line| line.trim_start().starts_with('{'))
         .context("插件分析没有输出报告")?;
-    serde_json::from_str(line).context("插件分析报告不是有效 JSON")
+    let mut report: Value = serde_json::from_str(line).context("插件分析报告不是有效 JSON")?;
+    // 装依赖时跳过的依赖：用到它们的行分析时已逐行报出，这里在包级说明原因。
+    if let Some(skipped) = read_package_json(root).ok().and_then(|package| package.get(SKIPPED_DEPENDENCIES_KEY).and_then(Value::as_object).cloned()) {
+        if let Some(diagnostics) = report.get_mut("diagnostics").and_then(Value::as_array_mut) {
+            for (name, reason) in skipped {
+                diagnostics.push(json!(format!("依赖 {name} 没有安装：{}；用到它的插件行不会加载", reason.as_str().unwrap_or(""))));
+            }
+        }
+    }
+    Ok(report)
 }
 
 fn move_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
@@ -1272,6 +1584,8 @@ pub struct BridgePlan {
     pub schedule: bool,
     /// 插件注册了 webhook 规则：后台开 /ext/<配套拓展>/webhook/<kind>。
     pub webhook: bool,
+    /// 插件监听插件之间的自定义事件：别的包 emit 时经常驻进程转过来，要有配套拓展包（标记文件）才找得到它。
+    pub events: bool,
     /// dsh 前端插件（dsh.client）的入口文件与包名：夹上胶水作为配套拓展包的页面脚本。
     pub client: Option<BridgeClient>,
 }
@@ -1304,6 +1618,7 @@ impl BridgePlan {
             && !self.connection
             && !self.schedule
             && !self.webhook
+            && !self.events
             && self.client.is_none()
     }
 }
@@ -1374,6 +1689,7 @@ pub fn report_bridge(report: &Value) -> BridgePlan {
             .unwrap_or(false),
         schedule: bridge.and_then(|bridge| bridge.get("schedule")).and_then(Value::as_bool).unwrap_or(false),
         webhook: bridge.and_then(|bridge| bridge.get("webhook")).and_then(Value::as_bool).unwrap_or(false),
+        events: bridge.and_then(|bridge| bridge.get("events")).and_then(Value::as_bool).unwrap_or(false),
         client: bridge.and_then(|bridge| bridge.get("client")).and_then(|client| {
             Some(BridgeClient {
                 entry: PathBuf::from(client.get("entry")?.as_str()?),
@@ -1517,11 +1833,12 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         renderer.push(COMPANION_RENDERER_SCRIPT.to_string());
     }
     let mut extra = serde_json::Map::new();
-    let backend = if !plan.commands.is_empty() || plan.connection || plan.schedule || plan.webhook {
+    // 只监听插件间事件的包也挂后台脚本：拓展清单至少要声明一种入口；后台按需才启动，不常驻。
+    let backend = if !plan.commands.is_empty() || plan.connection || plan.schedule || plan.webhook || plan.events {
         files.insert(
             COMPANION_BACKEND_SCRIPT.to_string(),
             format!(
-                "{header}// 后台：页面斜杠命令、前端插件的请求、定时任务（每分钟）、webhook，都转给插件。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nconst bridge = () => import({})\n\nexport default () => ({{\n  async command({{ name, rawInput, sessionId }} = {{}}) {{\n    return (await bridge()).runCommand(fileURLToPath(CONFIG), name, rawInput, sessionId)\n  }},\n  async fetch(request = {{}}) {{\n    return (await bridge()).runFetch(fileURLToPath(CONFIG), request)\n  }},\n  async rpc(request = {{}}) {{\n    return (await bridge()).runRpc(fileURLToPath(CONFIG), request)\n  }},\n  async tick() {{\n    return (await bridge()).runTick(fileURLToPath(CONFIG))\n  }},\n  async http(request) {{\n    return (await bridge()).runWebhook(fileURLToPath(CONFIG), request)\n  }},\n}})\n",
+                "{header}// 后台：页面斜杠命令、前端插件的请求、定时任务（每分钟）、webhook，都转给插件。\nimport {{ fileURLToPath }} from 'node:url'\n{config_line}\nconst bridge = () => import({})\n\nexport default () => ({{\n  async command({{ name, rawInput, sessionId }} = {{}}) {{\n    return (await bridge()).runCommand(fileURLToPath(CONFIG), name, rawInput, sessionId)\n  }},\n  async fetch(request = {{}}) {{\n    return (await bridge()).runFetch(fileURLToPath(CONFIG), request)\n  }},\n  async rpc(request = {{}}) {{\n    return (await bridge()).runRpc(fileURLToPath(CONFIG), request)\n  }},\n  async rpcOpen(request = {{}}) {{\n    return (await bridge()).runRpcStream(fileURLToPath(CONFIG), 'open', request)\n  }},\n  async rpcPull(request = {{}}) {{\n    return (await bridge()).runRpcStream(fileURLToPath(CONFIG), 'pull', request)\n  }},\n  async rpcPush(request = {{}}) {{\n    return (await bridge()).runRpcStream(fileURLToPath(CONFIG), 'push', request)\n  }},\n  async rpcClose(request = {{}}) {{\n    return (await bridge()).runRpcStream(fileURLToPath(CONFIG), 'close', request)\n  }},\n  async tick() {{\n    return (await bridge()).runTick(fileURLToPath(CONFIG))\n  }},\n  async http(request) {{\n    return (await bridge()).runWebhook(fileURLToPath(CONFIG), request)\n  }},\n  async upgrade(request) {{\n    return (await bridge()).runUpgrade(fileURLToPath(CONFIG), request)\n  }},\n}})\n",
                 js_string(&bridge_url),
             ),
         );
@@ -1554,6 +1871,9 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
     if plan.webhook {
         targets.push("webhook".to_string());
     }
+    if plan.events {
+        targets.push("插件间事件".to_string());
+    }
     if !plan.commands.is_empty() {
         targets.push(format!("命令 {}", plan.commands.iter().map(|command| format!("/{}", command.name)).collect::<Vec<_>>().join(" ")));
     }
@@ -1578,6 +1898,9 @@ pub fn companion_write(record: &PluginRecord, registry_path: &Path, bridge_path:
         providers: None,
         extra,
         assets: Default::default(),
+        // 页面脚本里夹着前端插件的打包产物（宿主已限制入口不超过 4 MiB），再留出胶水代码的余量。
+        copied_text: Default::default(),
+        max_file_bytes: Some(DSH_CLIENT_MAX_BYTES + 64 * 1024),
     })
 }
 
@@ -1697,12 +2020,14 @@ impl DshPlugins {
         let mut errors = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for (key, extension_id, root, enabled, version) in declared {
+            // 包边界已由清单解析验证；比较时沿用导入记录交给 Node 的路径表示。
+            let root = strip_verbatim_prefix(&root);
             let id = extension_plugin_id(&extension_id);
             seen.insert(id.clone());
             let fingerprint = dsh_fingerprint(&root, &version);
             let existing = registry.plugins.iter().find(|plugin| plugin.id == id);
             let outcome = (|| -> anyhow::Result<bool> {
-                if enabled && existing.is_none_or(|plugin| plugin.owner_fingerprint.as_deref() != Some(fingerprint.as_str()) || plugin.root != root.to_string_lossy()) {
+                if enabled && existing.is_none_or(|plugin| plugin.owner_fingerprint.as_deref() != Some(fingerprint.as_str()) || strip_verbatim_prefix(Path::new(&plugin.root)) != root) {
                     self.import_local_as(&root, &id, toolchain)?;
                     self.update(&id, |record| {
                         record.owner = Some(key.clone());
@@ -1788,4 +2113,18 @@ pub fn run_mcp(args: &[OsString]) -> anyhow::Result<i32> {
     }
     let status = command.status().context("无法启动 dsh 插件宿主")?;
     Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_prefix_is_stripped_for_drive_and_unc_paths() {
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\D:\a\plugin")), PathBuf::from(r"D:\a\plugin"));
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\p")), PathBuf::from(r"\\server\share\p"));
+        // 非盘符的 verbatim 路径与普通路径原样保留。
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\Volume{x}\p")), PathBuf::from(r"\\?\Volume{x}\p"));
+        assert_eq!(strip_verbatim_prefix(Path::new("/tmp/plugin")), PathBuf::from("/tmp/plugin"));
+    }
 }

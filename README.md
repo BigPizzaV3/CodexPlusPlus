@@ -131,10 +131,10 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   <tr>
     <td align="center">
       <a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS">
-        <img src="docs/images/sponsor-dzhsmartai.jpg" alt="DZHsmartAI" width="96">
+        <img src="docs/images/sponsor-dzhsmartai.jpg" alt="ccccccAPI" width="96">
       </a>
     </td>
-    <td><a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS"><strong>DZHsmartAI</strong></a><br>感谢 DZHsmartAI 赞助本项目！DZHsmartAI 量贩式中转站 —— 实惠 Token，一站式接入。DZHsmartAI 是一家专注服务开发者与企业的 AI API 中转站，主打「量贩式」定价：ChatGPT、Claude、Kimi、Grok、Gemini 等主流模型基本全覆盖，一个 API Key、一套兼容 OpenAI 的接口，改一行 base_url 就能自由切换，不用再分别注册、分别充值。目标很朴素：让更多人用上实惠的 Token——不烧钱、不烧心。通过<a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS">此链接注册</a>，即得 1 美元使用额度。</td>
+    <td><a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS"><strong>ccccccAPI</strong></a><br>感谢 ccccccAPI 赞助本项目！ccccccAPI 量贩式中转站 —— 实惠 Token，一站式接入。ccccccAPI 是一家专注服务开发者与企业的 AI API 中转站，主打「量贩式」定价：ChatGPT、Claude、Kimi、Grok、Gemini 等主流模型基本全覆盖，一个 API Key、一套兼容 OpenAI 的接口，改一行 base_url 就能自由切换，不用再分别注册、分别充值。目标很朴素：让更多人用上实惠的 Token——用 ccccccAPI，不烧钱、不烧心。通过<a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS">此链接注册</a>，即得 1 美元使用额度。</td>
   </tr>
 </table>
 

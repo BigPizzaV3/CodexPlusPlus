@@ -91,7 +91,8 @@
   }
 
   function codexPlusModelUnlockEnabled() {
-    return !!codexPlusSettings().modelWhitelistUnlock;
+    // 被拓展顶替时让位（停用集合由 96-builtin-extensions.js 按下发的顶替状态维护）。
+    return !!codexPlusSettings().modelWhitelistUnlock && !globalThis.__codexPlusBuiltinInactive?.has("model-whitelist-unlock");
   }
 
   function codexPlusModelNames() {

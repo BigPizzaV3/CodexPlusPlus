@@ -159,7 +159,8 @@ fn write_goose(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
             doc,
             "providers",
             PROVIDER_ID,
-            Some(&json!({ "enabled": true, "model": wiring.default_model, "configured": true })),
+            // 按字母序写：serde_json 开不开 preserve_order（随平台的依赖而变）写出来都一样。
+            Some(&json!({ "configured": true, "enabled": true, "model": wiring.default_model })),
         );
     } else {
         doc.set("GOOSE_PROVIDER", &json!(PROVIDER_ID));
@@ -360,6 +361,38 @@ fn split_marked(text: &str, path: &Path) -> anyhow::Result<(String, Option<Strin
         );
     }
     Ok((outside, block))
+}
+
+/// 断开只撤销网关的标记块，接入期间新增或改写的用户补丁仍保留。
+pub(super) fn restore_dsh_patch(
+    path: &Path,
+    before: Option<&str>,
+    current: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let (outside, block) = split_marked(current, path)?;
+    let Some(block) = block else {
+        return Ok(Some(current.to_string()));
+    };
+    let (before_outside, before_block) = split_marked(before.unwrap_or_default(), path)?;
+    let mut written_outside = if before.is_none() {
+        DSH_HEAD.to_string()
+    } else {
+        dsh_outside(&before_outside, path)?
+    };
+    if !written_outside.is_empty() && !written_outside.ends_with('\n') {
+        written_outside.push('\n');
+    }
+    if outside == written_outside {
+        return Ok(before.map(str::to_string));
+    }
+    let mut restored = current.replacen(&block, before_block.as_deref().unwrap_or_default(), 1);
+    if before.is_none() {
+        restored = restored.strip_prefix(DSH_HEAD).unwrap_or(&restored).to_string();
+    }
+    Ok(if before.is_none() && restored.is_empty() { None } else { Some(restored) })
 }
 
 // ---------------------------------------------------------------- Reasonix Studio
@@ -1184,10 +1217,113 @@ fn buddy_entry(wiring: &Wiring, id: &str, window: Option<u64>) -> Value {
     })
 }
 
+fn buddy_model_is_ours(entry: &Value) -> bool {
+    entry.get("vendor").and_then(Value::as_str) == Some(PROVIDER_ID)
+}
+
+/// 裸数组的旧 Raw 存档与对象的 JSON 存档都只还原我们拥有的模型。
+pub(super) fn restore_buddy_models(
+    saved: &crate::gateway::restore::FileStash,
+    current: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let original = parse_jsonc(saved.before.as_deref().unwrap_or_default())?;
+    let mut root = parse_jsonc(current)?;
+    let original_models = original
+        .as_array()
+        .or_else(|| original.get("models").and_then(Value::as_array));
+    let models = match &root {
+        Value::Array(models) => Some(models),
+        Value::Object(object) => object.get("models").and_then(Value::as_array),
+        _ => bail!("模型配置不是 JSON 数组或对象，为免覆盖没有改动它"),
+    };
+    let Some(models) = models else {
+        return Ok(Some(current.to_string()));
+    };
+    let written_models = saved
+        .changed
+        .iter()
+        .find(|key| key.path == ["models"])
+        .and_then(|key| key.written.as_ref())
+        .and_then(Value::as_array);
+    let managed_ids: Vec<&Value> = models
+        .iter()
+        .chain(written_models.into_iter().flatten())
+        .filter(|model| buddy_model_is_ours(model))
+        .filter_map(|model| model.get("id"))
+        .collect();
+    let other_ids: Vec<&Value> = models
+        .iter()
+        .filter(|model| !buddy_model_is_ours(model))
+        .filter_map(|model| model.get("id"))
+        .collect();
+    let mut restored_models: Vec<Value> = models
+        .iter()
+        .filter(|model| !buddy_model_is_ours(model))
+        .cloned()
+        .collect();
+    for (index, model) in original_models.into_iter().flatten().enumerate() {
+        if buddy_model_is_ours(model) {
+            restored_models.insert(index.min(restored_models.len()), model.clone());
+        }
+    }
+    let available = root.get("availableModels").and_then(Value::as_array);
+    let written_available = saved
+        .changed
+        .iter()
+        .find(|key| key.path == ["availableModels"])
+        .and_then(|key| key.written.as_ref())
+        .and_then(Value::as_array);
+    let original_available = original.get("availableModels").and_then(Value::as_array);
+    let restored_available = available.zip(written_available).map(|(available, written)| {
+        available
+            .iter()
+            .filter(|id| {
+                // 只移除网关追加且没有其它供应商使用的 ID；不还原整份白名单。
+                !written.contains(id)
+                    || original_available.is_some_and(|original| original.contains(id))
+                    || !managed_ids.contains(id)
+                    || other_ids.contains(id)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    match &mut root {
+        Value::Array(models) => *models = restored_models,
+        Value::Object(object) => {
+            if restored_models.is_empty() && original.get("models").is_none() {
+                object.remove("models");
+            } else {
+                let restored = if restored_models.is_empty() {
+                    original
+                        .get("models")
+                        .filter(|models| !models.is_array())
+                        .cloned()
+                        .unwrap_or_else(|| json!([]))
+                } else {
+                    Value::Array(restored_models)
+                };
+                object.insert("models".to_string(), restored);
+            }
+            if let Some(available) = restored_available {
+                object.insert("availableModels".to_string(), Value::Array(available));
+            }
+        }
+        _ => unreachable!(),
+    }
+    if root == original {
+        return Ok(saved.before.clone());
+    }
+    let mut text = serde_json::to_string_pretty(&root)?;
+    text.push('\n');
+    Ok(Some(text))
+}
+
 /// 把 Codex++ 的模型放进 `models.json`：它可以是裸数组，也可以是 `{"models":[…],"availableModels":[…]}`。
-/// 裸数组只能整份写（框架的 JSON 文档只认对象），断开时整份还原；对象按键改。
+/// 裸数组用 Raw 存档，对象用 JSON 存档；断开时都按模型归属恢复。
 fn write_buddy_models(path: &Path, wiring: &Wiring, set: &mut FileSet) -> anyhow::Result<()> {
-    let is_ours = |entry: &Value| entry.get("vendor").and_then(Value::as_str) == Some(PROVIDER_ID);
     let ours: Vec<Value> = wiring
         .models
         .iter()
@@ -1201,7 +1337,7 @@ fn write_buddy_models(path: &Path, wiring: &Wiring, set: &mut FileSet) -> anyhow
     if let Some(text) = &current
         && let Ok(Value::Array(mut list)) = parse_jsonc(text)
     {
-        list.retain(|entry| !is_ours(entry));
+        list.retain(|entry| !buddy_model_is_ours(entry));
         list.extend(ours);
         let mut text = serde_json::to_string_pretty(&Value::Array(list))?;
         text.push('\n');
@@ -1210,7 +1346,7 @@ fn write_buddy_models(path: &Path, wiring: &Wiring, set: &mut FileSet) -> anyhow
     }
     let root = set.json(path)?;
     let models = array_entry(root, "models");
-    models.retain(|entry| !is_ours(entry));
+    models.retain(|entry| !buddy_model_is_ours(entry));
     models.extend(ours);
     // 有「显示哪些模型」的白名单时，把 Codex++ 的加进去
     if let Some(available) = root
@@ -1783,10 +1919,12 @@ mod tests {
                 ModelEntry {
                     id: "ds/deepseek-chat".to_string(),
                     context_window: Some(128_000),
+                    reasoning_levels: Vec::new(),
                 },
                 ModelEntry {
                     id: "group/daily".to_string(),
                     context_window: None,
+                    reasoning_levels: Vec::new(),
                 },
             ],
         }
@@ -1800,7 +1938,9 @@ mod tests {
     impl Home {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
-            let env = AgentEnv::at(temp.path());
+            // 用例都按 Unix 布局放文件（~/.config、~/.hermes…）；固定成 Linux，
+            // 免得在 Windows 上被解析到 %APPDATA% / %LOCALAPPDATA% 下。
+            let env = AgentEnv::at(temp.path()).with_os(Os::Linux);
             Self { _temp: temp, env }
         }
 
@@ -1986,6 +2126,52 @@ mod tests {
         odd.put(".dsh/cordis.patch.yml", "foo: bar\n");
         let mut set = FileSet::new();
         assert!((DSH.write)(&odd.env, &wiring("dsh"), &mut set).is_err());
+    }
+
+    #[test]
+    fn dsh_restore_keeps_changes_outside_the_gateway_block() {
+        let path = Path::new("cordis.patch.yml");
+        let old = "- id: user-old\n  config:\n    value: old\n";
+        let edited = "- id: user-edited\n  config:\n    value: new\n";
+        let added = "- id: user-added\n";
+        let block = dsh_block(&wiring("dsh"), None);
+        let current = format!("{edited}{block}{added}");
+        assert_eq!(
+            restore_dsh_patch(path, Some(old), Some(&current)).unwrap(),
+            Some(format!("{edited}{added}")),
+        );
+        let created = format!("{DSH_HEAD}{block}{added}");
+        assert_eq!(
+            restore_dsh_patch(path, None, Some(&created)).unwrap(),
+            Some(added.to_string()),
+        );
+        assert_eq!(restore_dsh_patch(path, Some(old), None).unwrap(), None);
+        assert_eq!(
+            restore_dsh_patch(path, Some(old), Some(edited)).unwrap(),
+            Some(edited.to_string()),
+        );
+        assert!(restore_dsh_patch(path, Some(old), Some(DSH_BEGIN_LINE)).is_err());
+    }
+
+    #[test]
+    fn dsh_restore_without_user_edits_recovers_original_bytes() {
+        let path = Path::new("cordis.patch.yml");
+        for before in [None, Some(""), Some("# empty\n[]\n"), Some("- id: user")] {
+            let home = Home::new();
+            if let Some(before) = before {
+                home.put(".dsh/cordis.patch.yml", before);
+            }
+            let files = home.connect(&DSH);
+            let written = &files[".dsh/cordis.patch.yml"];
+            assert_eq!(restore_dsh_patch(path, before, Some(written)).unwrap(), before.map(str::to_string));
+        }
+        let original_block = format!("{DSH_BEGIN_LINE}\n- id: old-gateway\n{DSH_END}\n");
+        let before = format!("- id: old-user\n{original_block}");
+        let current = format!("- id: new-user\n{}- id: later-user\n", dsh_block(&wiring("dsh"), None));
+        assert_eq!(
+            restore_dsh_patch(path, Some(&before), Some(&current)).unwrap(),
+            Some(format!("- id: new-user\n{original_block}- id: later-user\n")),
+        );
     }
 
     #[test]

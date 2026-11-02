@@ -527,6 +527,10 @@ pub struct GatewaySettings {
     /// 关掉时名字后面换成看不见的字符：分组脚本照样能分清是哪一家，界面上只显示模型名。
     #[serde(default = "enabled_by_default")]
     pub model_suffix: bool,
+    /// 发现本机已登录的订阅账号（Kiro、Cursor、Gemini CLI 等官方客户端的登录文件）：
+    /// 开着时供应商页提示可以导入。默认关（opt-in）：关着时不读这些登录文件。
+    #[serde(default)]
+    pub local_login_discovery: bool,
     /// 自动组上改过的设置（键是小写模型名）。没改过的自动组不落盘，跟着供应商池自动变化。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub auto_groups: BTreeMap<String, AutoGroupSettings>,
@@ -572,6 +576,7 @@ impl Default for GatewaySettings {
             lightweight_on_close: false,
             auto_models: true,
             model_suffix: true,
+            local_login_discovery: false,
             auto_groups: BTreeMap::new(),
             favorite_models: Vec::new(),
             image_models: BTreeMap::new(),

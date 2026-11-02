@@ -45,10 +45,6 @@
 
     installStyle();
     sync();
+    // 之后由内置拓展「消息导航条靠右」在装卸、读到 / 改了设置时调用（96-builtin-extensions.js），这里不再自己轮询。
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__ = sync;
-    let attempts = 0;
-    const timer = window.setInterval(() => {
-      sync();
-      if (++attempts >= 60 && codexPlusBackendSettingsLoaded) window.clearInterval(timer);
-    }, 250);
   })();

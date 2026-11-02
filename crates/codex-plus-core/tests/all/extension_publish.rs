@@ -188,6 +188,105 @@ fn publishes_end_to_end_against_a_local_remote() {
     assert!(show("v1.0.1:codexpp.json").contains("\"version\": \"1.0.1\""));
 }
 
+/// 「我发布的」用的假 gh：tester 名下三个仓库，一个上架、一个已下架但本机有发布记录、一个无关仓库；
+/// `repo delete` 对 tester/codexpp-noscope 模拟令牌缺少 delete_repo 权限。
+#[cfg(unix)]
+fn fake_gh_published(dir: &Path, log: &Path) -> std::path::PathBuf {
+    let repos = json!([
+        { "nameWithOwner": "tester/codexpp-listed", "description": "上架中", "url": "https://github.com/tester/codexpp-listed",
+          "pushedAt": "2026-10-01T00:00:00Z", "stargazerCount": 3, "isArchived": false, "visibility": "PUBLIC",
+          "repositoryTopics": [{ "name": "codexpp-extension" }] },
+        { "nameWithOwner": "tester/codexpp-unlisted", "description": "已下架", "url": "https://github.com/tester/codexpp-unlisted",
+          "pushedAt": "2026-11-01T00:00:00Z", "stargazerCount": 0, "isArchived": false, "visibility": "PUBLIC",
+          "repositoryTopics": null },
+        { "nameWithOwner": "tester/dotfiles", "description": "", "url": "https://github.com/tester/dotfiles",
+          "pushedAt": "2026-11-02T00:00:00Z", "stargazerCount": 9, "isArchived": false, "visibility": "PUBLIC",
+          "repositoryTopics": [{ "name": "shell" }] }
+    ]);
+    let script = format!(
+        r#"#!/bin/bash
+echo "$*" >> '{log}'
+case "$1 $2" in
+  "auth status") exit 0;;
+  "api user") echo tester; exit 0;;
+  "repo list") cat <<'JSON'
+{repos}
+JSON
+exit 0;;
+  "repo edit") exit 0;;
+  "repo delete") [ "$3" = tester/codexpp-noscope ] && echo 'HTTP 403: Must have admin rights to Repository. This API operation needs the "delete_repo" scope.' >&2 && exit 1; exit 0;;
+esac
+exit 1
+"#,
+        log = log.display(),
+        repos = repos,
+    );
+    let path = dir.join("gh-published");
+    fs::write(&path, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn lists_unlists_relists_and_deletes_own_published_repos() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let log = root.join("gh.log");
+    fs::write(
+        root.join("extension_publish.json"),
+        serde_json::to_string(&json!({
+            "unlisted": { "repo": "tester/codexpp-unlisted", "version": "0.2.0", "publishedAt": 1 },
+            "listed": { "repo": "tester/codexpp-listed", "version": "1.0.0", "publishedAt": 2 },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let publisher = Publisher {
+        gh: fake_gh_published(root, &log),
+        git: std::path::PathBuf::from("git"),
+        config_dir: root.to_path_buf(),
+        remote_template: String::new(),
+        git_env: Vec::new(),
+    };
+
+    let listing = publisher.list_published().unwrap();
+    assert_eq!(listing["account"], "tester");
+    let entries = listing["entries"].as_array().unwrap();
+    let repos = entries.iter().map(|entry| entry["repo"].as_str().unwrap()).collect::<Vec<_>>();
+    // 没有 topic 也没有发布记录的无关仓库不列出；按更新时间倒序。
+    assert_eq!(repos, ["tester/codexpp-unlisted", "tester/codexpp-listed"]);
+    assert_eq!(entries[0]["listed"], false);
+    assert_eq!(entries[0]["id"], "unlisted");
+    assert_eq!(entries[0]["version"], "0.2.0");
+    assert_eq!(entries[1]["listed"], true);
+    assert_eq!(entries[1]["stars"], 3);
+
+    publisher.unlist("tester/codexpp-listed").unwrap();
+    publisher.relist("tester/codexpp-unlisted").unwrap();
+    let gh_log = fs::read_to_string(&log).unwrap();
+    assert!(gh_log.contains("repo edit tester/codexpp-listed --remove-topic codexpp-extension"), "{gh_log}");
+    assert!(gh_log.contains("repo edit tester/codexpp-unlisted --add-topic codexpp-extension"), "{gh_log}");
+
+    // 只能动自己名下的仓库，格式不对的直接拒绝，都不会调到 gh 的写命令。
+    assert!(publisher.unlist("someone/codexpp-x").unwrap_err().to_string().contains("不属于当前 gh 账号"));
+    assert!(publisher.delete_repo("tester/../x").is_err());
+    assert!(publisher.delete_repo("tester").is_err());
+    assert!(!fs::read_to_string(&log).unwrap().contains("someone/"));
+
+    // 删除仓库后清掉本机发布记录，另一条记录保留。
+    publisher.delete_repo("tester/codexpp-unlisted").unwrap();
+    assert!(fs::read_to_string(&log).unwrap().contains("repo delete tester/codexpp-unlisted --yes"));
+    let state: Value = serde_json::from_str(&fs::read_to_string(root.join("extension_publish.json")).unwrap()).unwrap();
+    assert!(state.get("unlisted").is_none(), "{state}");
+    assert_eq!(state["listed"]["repo"], "tester/codexpp-listed");
+
+    // 令牌缺少 delete_repo 权限：给出授权指引。
+    let error = publisher.delete_repo("tester/codexpp-noscope").unwrap_err().to_string();
+    assert!(error.contains("gh auth refresh -h github.com -s delete_repo"), "{error}");
+}
+
 /// 真实发布：用本机已登录的 gh 发布到 GitHub，再按社区栏的流程从 GitHub 装回来。
 /// 会建公开仓库，只手动跑：`cargo test -p codex-plus-core --test all extension_publish::live -- --ignored --nocapture`
 #[tokio::test]

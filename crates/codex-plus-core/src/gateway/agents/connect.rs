@@ -43,6 +43,7 @@ pub fn wiring(
         .map(|model| ModelEntry {
             context_window: route::model_entry_window(gateway, binding, &model)
                 .or(binding.context_window),
+            reasoning_levels: route::model_entry_reasoning_levels(gateway, binding, &model),
             id: model,
         })
         .collect();
@@ -95,7 +96,31 @@ pub fn restore(ctx: &ApplyContext, spec: &AgentSpec) -> anyhow::Result<()> {
     };
     for (file, record) in &agent_stash.files {
         let current = stash::read_optional(file)?;
-        let restored = files::restored_text(record, current.as_deref())?;
+        let restored = if matches!(spec.id, "vscode" | "vscode-insiders" | "vscodium")
+            && file.file_name().is_some_and(|name| name == "chatLanguageModels.json")
+            && record.format == files::FileFormat::Raw
+        {
+            super::catalog_apps::restore_vscode_models(
+                record.stash.before.as_deref(),
+                current.as_deref(),
+            )?
+        } else if matches!(spec.id, "workbuddy" | "workbuddy-ai" | "codebuddy")
+            && file.file_name().is_some_and(|name| name == "models.json")
+            && matches!(record.format, files::FileFormat::Raw | files::FileFormat::Json)
+        {
+            super::catalog_tools::restore_buddy_models(&record.stash, current.as_deref())?
+        } else if spec.id == "dsh"
+            && file.file_name().is_some_and(|name| name == "cordis.patch.yml")
+            && record.format == files::FileFormat::Raw
+        {
+            super::catalog_tools::restore_dsh_patch(
+                file,
+                record.stash.before.as_deref(),
+                current.as_deref(),
+            )?
+        } else {
+            files::restored_text(record, current.as_deref())?
+        };
         if restored != current {
             files::write_file(file, restored.as_deref())?;
         }

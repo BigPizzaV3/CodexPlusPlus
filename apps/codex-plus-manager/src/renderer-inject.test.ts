@@ -24,10 +24,11 @@ describe("session more menu lifecycle", () => {
       const button = { expanded: "true", setAttribute: (_: string, value: string) => { button.expanded = value; } };
       const deleteButton = { dataset: { codexDeleteVersion: "7" } };
       const group = {
-        ...events(), isConnected: true, hasDelete: true, dataset: { codexActionGroupVersion: "7", codexMoreMenuKey: "export" },
+        ...events(), isConnected: true, hasDelete: true,
+        dataset: { codexActionGroupVersion: "7", codexMoreMenuKey: "ext:export", codexInlineActionKey: "delete" },
         __codexSessionMoreMenu: null as unknown,
         querySelector: (selector: string) => selector === ".more-button" ? button
-          : selector === ".delete-button" && group.hasDelete ? deleteButton : null,
+          : selector === '[data-codex-plus-row-action="delete"]' && group.hasDelete ? deleteButton : null,
         matches: () => false, remove: () => { group.isConnected = false; },
       };
       const row = {
@@ -64,7 +65,9 @@ describe("session more menu lifecycle", () => {
       () => ({ sessionDelete: true, markdownExport: true }), { enhancementsEnabled: true },
       "more-menu", "more-button", "delete-button", "actions", "export-button", "7", "7",
       (row: { querySelectorAll: () => unknown[] }) => row.querySelectorAll()[0], () => ({}),
-      { rowActions: new Map() }, (registry: Map<string, unknown>) => [...registry.values()],
+      // 内置的删除（行内按钮）与导出（菜单项）都是注册进来的会话行操作。
+      { rowActions: new Map([["export", { id: "export", label: "导出" }], ["delete", { id: "delete", label: "删除", placement: "inline" }]]) },
+      (registry: Map<string, unknown>) => [...registry.values()],
     );
     return {
       ...api, timers, menuQueries: () => menuQueries,
@@ -313,6 +316,7 @@ describe("session row action buttons", () => {
     querySelector(selector: string) { return this.querySelectorAll(selector)[0] ?? null; }
   }
 
+  /** 内置拓展「会话删除」「Markdown 导出」开着时注册的会话行操作（见 96-builtin-extensions.js）。 */
   async function runtime(settings: { sessionDelete: boolean; markdownExport: boolean }) {
     const source = await readFile(
       new URL("../../../assets/inject/renderer-inject/90-action-groups.js", import.meta.url), "utf8",
@@ -323,13 +327,14 @@ describe("session row action buttons", () => {
       createElement: (tag: string) => new FakeElement(tag),
       querySelectorAll: (selector: string) => body.querySelectorAll(selector),
     };
-    const registry = { rowActions: new Map<string, { id: string; label: string; order: number }>() };
+    const registry = { rowActions: new Map<string, { id: string; label: string; order: number; placement?: string; icon?: string; className?: string }>() };
     const api = new Function("document", "window", "HTMLElement", "codexPlusSettings", "codexPlusBackendSettings",
       "moreMenuClass", "moreButtonClass", "buttonClass", "actionGroupClass", "exportButtonClass", "actionButtonClass",
       "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
       "codexPlusRegistry", "codexPlusExtensionItems", "appendCodexPlusExtensionRowActions", "syncActionGroupLayout",
+      "runCodexPlusExtensionCallback", "releaseDeleteFocus", "actionTooltipClass",
       `${source.split("  function tryAttachButton(row)")[0]}
-       return { attachButton };`,
+       return { attachButton, trashIconSvg };`,
     )(
       document, { setTimeout: () => 0, clearTimeout: () => {}, requestAnimationFrame: () => 0 }, FakeElement,
       () => settings, { enhancementsEnabled: true },
@@ -337,11 +342,20 @@ describe("session row action buttons", () => {
       (row: FakeElement) => row.querySelector(".actions"), () => ({ session_id: "thread-1" }),
       registry, (map: Map<string, { order: number }>) => [...map.values()].sort((a, b) => a.order - b.order),
       (menu: FakeElement) => registry.rowActions.forEach((item) => {
+        if (item.placement === "inline") return;
         const node = menu.appendChild(new FakeElement("button"));
-        node.text = item.label;
+        node.text = `${item.icon ?? ""}${item.label}`;
       }),
       () => {},
+      (_key: string, _label: string, callback: () => unknown) => ({ ok: true, value: callback() }),
+      () => {}, "action-tooltip",
     );
+    if (settings.markdownExport) registry.rowActions.set("builtin:markdown-export", { id: "builtin:markdown-export", label: "导出", icon: "⇩", order: 10 });
+    if (settings.sessionDelete) {
+      registry.rowActions.set("builtin:session-delete", {
+        id: "builtin:session-delete", label: "删除", icon: api.trashIconSvg(), placement: "inline", className: "delete-button", order: 10,
+      });
+    }
     const row = body.appendChild(new FakeElement("div"));
     return { ...api, body, row, registry };
   }
@@ -374,11 +388,37 @@ describe("session row action buttons", () => {
     api.attachButton(api.row);
     assert.ok(api.row.querySelector(".more-button"), "a registered row action brings the … button back");
     assert.deepEqual(api.body.querySelector(".more-menu")?.children.map((item: { textContent: string }) => item.textContent), ["拓展操作"]);
-    api.registry.rowActions.clear();
+    api.registry.rowActions.delete("script:rowAction:a");
     api.attachButton(api.row);
     assert.equal(api.row.querySelector(".more-button"), null, "disposing the last row action removes it again");
     assert.equal(api.body.querySelector(".more-menu"), null, "its detached menu is disposed as well");
     assert.ok(api.row.querySelector(".delete-button"));
+  });
+
+  it("renders inline row actions from the registry with their own class, glyph and activation context", async () => {
+    const api = await runtime({ sessionDelete: true, markdownExport: false });
+    const activations: Array<{ session_id: string; archived: boolean; title: string }> = [];
+    api.registry.rowActions.set("user:pin:rowAction:star", {
+      id: "user:pin:rowAction:star", label: "收藏", icon: "★", placement: "inline", className: "my-star", order: 1000,
+      onActivate: (context: { session_id: string; archived: boolean; title: string }) => activations.push(context),
+    } as never);
+    api.attachButton(api.row);
+    const group = api.row.querySelector(".actions")!;
+    assert.equal(group.dataset.codexInlineActionKey, "builtin:session-delete|user:pin:rowAction:star", "行内按钮按 order 排，内置的删除在前");
+    assert.equal(group.querySelector(".more-button"), null, "只有行内操作时不出「…」");
+    const star = group.querySelector('[data-codex-plus-row-action="user:pin:rowAction:star"]')!;
+    assert.equal(star.className, "action-button my-star");
+    assert.equal(star.getAttribute("aria-label"), "收藏");
+    assert.equal(star.textContent, "★");
+    const event = { preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} };
+    (star.listeners.get("click") as (event: unknown) => void)(event);
+    assert.equal(activations.length, 1);
+    assert.equal(activations[0].session_id, "thread-1");
+    assert.equal(activations[0].archived, false);
+    // 行内按钮被 React 摘掉时整组按指纹重建。
+    star.remove();
+    api.attachButton(api.row);
+    assert.ok(api.row.querySelector('[data-codex-plus-row-action="user:pin:rowAction:star"]'));
   });
 
   it("dresses the delete button in the native pin/archive button classes and data attributes", async () => {
@@ -867,8 +907,9 @@ describe("renderer injection header compatibility", () => {
 
   it("does not install a session sharing button after sharing is retired", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    assert.doesNotMatch(renderer, /\n\s*installSessionShareButton\(\);/);
-    assert.doesNotMatch(renderer, /\n\s*installSessionShareImportListener\(\);/);
+    // 后端的 /share/create、/session/export 早已删除，页面里的按钮、导入监听与开关一起下线。
+    assert.doesNotMatch(renderer, /function (?:installSessionShareButton|createSessionShare|installSessionShareImportListener)\(/);
+    assert.doesNotMatch(renderer, /codexAppSessionShare|"\/session\/export"/);
   });
 
   it("removes the legacy Codex++ top-bar entry", async () => {
@@ -958,7 +999,7 @@ describe("renderer injection header compatibility", () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /function installCodexPlusPageLayout\(overlay, tab\)/);
-    assert.match(renderer, /function refreshCodexPlusPageNav\(tab\)/);
+    assert.match(renderer, /function refreshCodexPlusPageNav\(tab = /);
     assert.match(renderer, /function renderCodexPlusPageNavItems\(tab\)/);
     // 三栏容器是 createElement + className 赋值的，不是 markup 字面量。
     assert.match(renderer, /layout\.className = "codex-plus-page-layout"/);
@@ -1236,118 +1277,6 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     assert.match(css, /\.codex-plus-settings\s+\.codex-plus-row\[hidden\]\s*\{\s*display:\s*none\s*;/);
   });
 
-  it("synchronizes the typing-effect dropdown label, selection and disabled state", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    const start = renderer.indexOf("  function syncCodexPlusTypingEffectDropdown(");
-    const end = renderer.indexOf("  function openCodexPlusTypingEffectDropdown(", start);
-    assert.ok(start >= 0 && end > start);
-    const label = { textContent: "" };
-    const triggerAttributes: Record<string, string> = { "aria-expanded": "true" };
-    const trigger = {
-      disabled: false,
-      querySelector: () => label,
-      setAttribute: (name: string, value: string) => { triggerAttributes[name] = value; },
-    };
-    const options = ["off", "rainbow", "fireworks", "stars"].map((value) => {
-      const attributes: Record<string, string> = {};
-      return {
-        attributes,
-        dataset: { codexPlusTypingEffectOption: value },
-        tabIndex: -1,
-        setAttribute: (name: string, next: string) => { attributes[name] = next; },
-      };
-    });
-    const overlay = { querySelector: () => trigger, querySelectorAll: () => options };
-    const menu = { hidden: false, parentElement: overlay };
-    const select = { value: "rainbow", disabled: false, selectedOptions: [{ textContent: "彩虹粒子" }], closest: () => overlay };
-    let cleanups = 0;
-    const sync = new Function("document", "cleanup",
-      `let codexPlusTypingEffectDropdownCleanup = cleanup;\n${renderer.slice(start, end)}\nreturn syncCodexPlusTypingEffectDropdown;`,
-    )({ querySelector: () => menu }, () => { cleanups += 1; }) as (control: typeof select) => void;
-    sync(select);
-    assert.equal(label.textContent, "彩虹粒子");
-    assert.equal(trigger.disabled, false);
-    assert.equal(menu.hidden, false);
-    for (const option of options) {
-      const selected = option.dataset.codexPlusTypingEffectOption === "rainbow";
-      assert.equal(option.attributes["aria-selected"], String(selected));
-      assert.equal(option.tabIndex, selected ? 0 : -1);
-    }
-    select.value = "off";
-    select.selectedOptions = [];
-    sync(select);
-    assert.equal(label.textContent, "关闭");
-    for (const option of options) {
-      const selected = option.dataset.codexPlusTypingEffectOption === "off";
-      assert.equal(option.attributes["aria-selected"], String(selected));
-      assert.equal(option.tabIndex, selected ? 0 : -1);
-    }
-    select.disabled = true;
-    sync(select);
-    assert.equal(trigger.disabled, true);
-    assert.equal(menu.hidden, true);
-    assert.equal(triggerAttributes["aria-expanded"], "false");
-    assert.equal(cleanups, 1, "disabling an open menu removes its document listeners");
-    sync(select);
-    assert.equal(cleanups, 1, "menu cleanup is consumed once");
-  });
-
-  it("saves dropdown selections through the existing hidden select change contract", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
-    const page = await settingsCatalogRuntime(async () => catalog);
-    await page.load();
-    const selectMarkup = page.sections().match(/<select[^>]*data-codex-plus-typing-effect="true"[^>]*>[\s\S]*?<\/select>/)?.[0];
-    assert.ok(selectMarkup, "the select data attribute remains available to existing change handling");
-    assert.match(selectMarkup, /\bhidden\b/);
-    assert.match(selectMarkup, /aria-hidden="true"/);
-    assert.deepEqual(Array.from(selectMarkup.matchAll(/<option value="([^"]+)"/g), (match) => match[1]), ["off", "rainbow", "fireworks", "stars"]);
-    const changeStart = renderer.indexOf('      const typingEffectSelect = target?.closest("[data-codex-plus-typing-effect]");');
-    const changeEnd = renderer.indexOf("      const widthInput", changeStart);
-    const optionStart = renderer.indexOf('      const typingEffectOption = target?.closest("[data-codex-plus-typing-effect-option]");');
-    const optionEnd = renderer.indexOf("      // 左面板", optionStart);
-    assert.ok(changeStart >= 0 && changeEnd > changeStart && optionStart >= 0 && optionEnd > optionStart);
-    const saves: Array<{ key: string; value: string }> = [];
-    const events: Array<{ type: string; bubbles: boolean }> = [];
-    const onChange = new Function("target", "setCodexPlusSetting", renderer.slice(changeStart, changeEnd));
-    const select: { value: string; disabled: boolean; dispatchEvent: (event: { type: string; bubbles: boolean }) => void } = {
-      value: "off", disabled: false,
-      dispatchEvent(event) {
-        events.push(event);
-        onChange({ closest: () => select }, (key: string, value: string) => { saves.push({ key, value }); });
-      },
-    };
-    const option = { dataset: { codexPlusTypingEffectOption: "stars" } };
-    let focusRestores = 0;
-    const choose = new Function("target", "overlay", "Event", "closeCodexPlusTypingEffectDropdown", renderer.slice(optionStart, optionEnd));
-    const click = () => choose(
-      { closest: () => option }, { querySelector: () => select },
-      class {
-        type: string;
-        bubbles: boolean;
-        constructor(type: string, options: { bubbles: boolean }) {
-          this.type = type;
-          this.bubbles = options.bubbles;
-        }
-      },
-      (restore: boolean) => { if (restore) focusRestores += 1; },
-    );
-    click();
-    assert.equal(select.value, "stars");
-    assert.equal(events.length, 1);
-    assert.equal(events[0].type, "change");
-    assert.equal(events[0].bubbles, true);
-    assert.deepEqual(saves, [{ key: "typingEffect", value: "stars" }]);
-    click();
-    assert.equal(events.length, 1, "selecting the current value does not save again");
-    select.disabled = true;
-    option.dataset.codexPlusTypingEffectOption = "rainbow";
-    click();
-    assert.equal(select.value, "stars");
-    assert.equal(events.length, 1, "disabled selections cannot change the saved setting");
-    assert.equal(focusRestores, 3);
-  });
-
   it("rewrites official usage status at the cache boundary instead of scanning alerts", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const scanStart = renderer.indexOf("  function scanLightweight()");
@@ -1494,6 +1423,74 @@ return {
       configure: (scripts: Record<string, unknown>[], market: Record<string, unknown>[], options?: Record<string, unknown>) => void;
     };
   }
+
+  it("hot-reloads user scripts after toggling or uninstalling so the page actually drops them", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const harness = new Function("bridge", `
+const calls = [], toasts = [];
+let codexPlusExtensionsSelected = { kind: "installed", key: "user:pomodoro" };
+const postJson = async (path, payload) => { calls.push(path); return bridge(path, payload); };
+const loadUserScripts = async (path = "/user-scripts/list", payload = {}) => { await postJson(path, payload); };
+const showToast = (message) => toasts.push(message);
+const refreshCodexPlusExtensionsView = () => calls.push("refresh");
+${segment(renderer, "  async function uninstallUserScript(", "  /** 左面板的导航项。")}
+return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () => codexPlusExtensionsSelected };`);
+    const ok = harness(async (path: string) => (path === "/user-scripts/delete" ? {} : { scripts: [] }));
+    await ok.setUserScriptEnabled("user:pomodoro", false);
+    assert.deepEqual(ok.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.deepEqual(ok.toasts, []);
+
+    const uninstall = harness(async () => ({ scripts: [] }));
+    await uninstall.uninstallUserScript("user:pomodoro");
+    assert.deepEqual(uninstall.calls, ["/user-scripts/delete", "/user-scripts/reload", "/user-scripts/list", "refresh"]);
+    assert.equal(uninstall.selected(), null);
+
+    // 页面没连上时重载失败：提示用户，清单照样刷新，开关状态不至于错。
+    const failed = harness(async (path: string) => (path === "/user-scripts/reload" ? { status: "failed", message: "Codex 页面尚未连接" } : { scripts: [] }));
+    await failed.setUserScriptEnabled("user:pomodoro", true);
+    assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.equal(failed.toasts.length, 1);
+    assert.match(failed.toasts[0], /Codex 页面尚未连接/);
+  });
+
+  it("keeps the 拓展 page nav when extension hosts refresh it without a tab", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const pageNav = (activeTab: string) => new Function("activeTab", `
+const codexPlusExtensionsTab = "extensions";
+const title = { textContent: "拓展" }, body = { innerHTML: "" };
+const document = { querySelector: (selector) => ({
+  "[data-codex-plus-page-nav-body]": body,
+  ".codex-plus-page-nav-title": title,
+  ".codex-plus-modal-content": { dataset: { codexPlusActiveTab: activeTab } },
+})[selector] };
+const renderCodexPlusPageNavItems = (tab) => "items:" + tab;
+${segment(renderer, "  function codexPlusModalTab(", "  // ── 设置项清单")}
+${segment(renderer, "  function refreshCodexPlusPageNav(", "  /**\n   * 脚本清单变化后同步左面板")}
+refreshCodexPlusPageNav();
+return { title: title.textContent, body: body.innerHTML };`)(activeTab) as { title: string; body: string };
+    // 拓展注册 / 撤销后统一刷新不带 tab：拓展页仍是拓展列表，不能换成 Codex++ 主页导航。
+    assert.deepEqual(pageNav("extensions"), { title: "拓展", body: "items:extensions" });
+    assert.deepEqual(pageNav("home"), { title: "Codex++", body: "items:home" });
+    // 统一刷新确实是无参调用，这条默认值才有意义。
+    assert.match(renderer, /for \(const refresh of \[\s*refreshCodexPlusPageNav,/);
+  });
+
+  it("rebuilds nav entries left by an earlier injection so their stale handlers stop opening the old page", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const reusable = (generation: number, latest: number, node: Record<string, unknown>) => new Function("window", "node", `
+const codexPlusBackendGeneration = ${generation};
+${segment(renderer, "  function codexPlusNavEntryReusable(", "  function createCodexPlusRailButton(")}
+return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest }, node) as boolean;
+    // 本代建的按钮照常沿用。
+    assert.equal(reusable(2, 2, { __codexPlusGeneration: 2 }), true);
+    // 最新一代遇到上一代（或更早不带代次）的按钮：重建，换上新闭包。
+    assert.equal(reusable(2, 2, { __codexPlusGeneration: 1 }), false);
+    assert.equal(reusable(2, 2, {}), false);
+    // 旧代还在跑也不去动新代的按钮，两代不会来回抢。
+    assert.equal(reusable(1, 2, { __codexPlusGeneration: 2 }), true);
+    // 两处按 id 复用入口的地方都要过这道检查。
+    assert.equal(renderer.match(/\|\| !codexPlusNavEntryReusable\(wrapper\)\)/g)?.length, 2);
+  });
 
   it("filters installed and market entries, escapes their data and keeps actions outside selection buttons", async () => {
     const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
@@ -2637,6 +2634,11 @@ return { codexPlusRegistry, registerCodexPlusExtension, registerCodexPlusExtensi
     // 传入的 5 被抬到 1000：内置项永远排在拓展项之前。
     assert.deepEqual(items.map((item) => item.id), ["builtin:a", "ext:b"]);
     assert.equal(items[1].order, 1000);
+    // 内置拓展（scriptKey 为 builtin:*）经公开接口注册时可以用 0~999，排在第三方前面。
+    runtime.register("rowAction", runtime.registry.rowActions, "builtin:session-delete:rowAction:x", { order: 10, onActivate() {} }, "builtin:session-delete");
+    const ordered = runtime.items(runtime.registry.rowActions);
+    assert.equal(ordered[0].id, "builtin:session-delete:rowAction:x");
+    assert.equal(ordered[0].order, 10);
   });
 
   it("按脚本配额限制注册数量，超出时抛错", async () => {
@@ -2742,6 +2744,14 @@ describe("拓展接口层", () => {
     assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
+    assert.ok(routes.includes("/request-log/recent"), "只读的最近请求日志应开放给拓展");
+    for (const route of ["/proxy-status", "/thread-usage-live", "/backend/status", "/settings/public", "/model-catalog/public"]) {
+      assert.ok(routes.includes(route), `只读的 ${route} 应开放给拓展`);
+    }
+    // 原始模型目录带供应商地址与本机路径，拓展只能拿 /model-catalog/public 的脱敏版本。
+    for (const forbidden of ["/codex-model-catalog", "/codex-config-model"]) {
+      assert.ok(!routes.includes(forbidden), `${forbidden} 不应开放给拓展`);
+    }
   });
 
   it("接口对象在 IIFE 收尾前挂载", async () => {
@@ -2794,8 +2804,8 @@ describe("拓展菜单项", () => {
     const source = await readFile(settingsPath, "utf8");
     const handler = source.indexOf('overlay.addEventListener("click"');
     assert.ok(handler > 0, "找不到点击委托");
-    const end = source.indexOf('overlay.addEventListener("keydown"', handler);
-    assert.ok(end > handler, "找不到点击委托之后的键盘委托");
+    const end = source.indexOf('overlay.addEventListener("error"', handler);
+    assert.ok(end > handler, "找不到点击委托之后的图标加载失败委托");
     const body = source.slice(handler, end);
     const extIdx = body.indexOf("handleCodexPlusExtensionMenuClick(target)");
     const devtoolsIdx = body.indexOf("data-codex-open-devtools");
@@ -3292,7 +3302,6 @@ describe("Codex++ 设置页按设置项清单生成", () => {
       else assert.doesNotMatch(row, /data-codex-builtin-extension=/);
     }
     assert.match(html, /data-codex-plus-builtin="dream-skin">[\s\S]*?data-codex-plus-setting="dreamSkinEnabled"/);
-    assert.match(html, /data-codex-plus-builtin="image-overlay">[\s\S]*?data-codex-backend-setting="codexAppImageOverlayEnabled"/);
     const ambientSection = sections.find((section) => section.rows.some((row) => row.key === ambientKey));
     assert.equal(ambientSection?.title, catalog.groups.find((group) => group.id === "stepwise")!.title, "上下文感知建议应在 stepwise 组");
     const ambientRow = ambientSection!.rows.find((row) => row.key === ambientKey)!;
@@ -3323,7 +3332,7 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     assert.match(sections[0].rows[0].control, /data-codex-backend-status="true"/);
     // 能映射到本页 key 的走 setCodexPlusSetting，其余直接写后端字段。
     assert.match(html, /data-codex-plus-setting="stepwise"/);
-    assert.match(html, /data-codex-plus-setting="sessionShare"/);
+    assert.match(html, /data-codex-plus-setting="markdownExport"/);
     assert.match(html, /data-codex-backend-setting="providerSyncEnabled"/);
     assert.match(html, /data-codex-plus-capacity-retry-interval="true" min="0" max="600"/);
     assert.match(html, /data-codex-plus-conversation-view-width="true" min="320" max="4000" step="10" type="number" value="900"/);
@@ -3641,6 +3650,38 @@ describe("拓展运行时内核", () => {
     assert.equal(late, true);
   });
 
+  it("ctx.onScan 把扫描步骤登记在拓展名下，run() 立即跑一次，抛错只记在拓展名下，卸载时撤销", async () => {
+    const k = await kernel();
+    const steps = new Map<number, { owner: string; step: () => void; phase?: string }>();
+    let seq = 0;
+    (globalThis as any).registerCodexPlusScanStep = (owner: string, step: () => void, phase?: string) => {
+      const id = ++seq;
+      steps.set(id, { owner, step, phase });
+      return () => steps.delete(id);
+    };
+    try {
+      let runs = 0;
+      let handle: any;
+      const ctx = k.create((ctx: any) => {
+        handle = ctx.onScan(() => { runs += 1; }, { phase: "light" });
+        ctx.onScan(() => { throw new Error("坏步骤"); });
+      });
+      assert.deepEqual([...steps.values()].map((entry) => [entry.owner, entry.phase]), [["user:demo", "light"], ["user:demo", undefined]]);
+      handle.run();
+      assert.equal(runs, 1);
+      for (const entry of steps.values()) entry.step();
+      assert.equal(runs, 2);
+      assert.ok(k.failures.some((failure) => failure.scriptKey === "user:demo" && /onScan: 坏步骤/.test(failure.message)));
+      assert.throws(() => ctx.onScan("不是函数"), /onScan 需要一个函数/);
+      ctx.dispose();
+      assert.equal(steps.size, 0, "卸载时扫描步骤撤掉");
+      handle.run();
+      assert.equal(runs, 2, "卸载后 run() 不再执行");
+    } finally {
+      delete (globalThis as any).registerCodexPlusScanStep;
+    }
+  });
+
   it("提前撤销只撤销那一项；撤销抛错不中断其余撤销", async () => {
     const k = await kernel();
     const order: string[] = [];
@@ -3727,11 +3768,11 @@ describe("拓展运行时内核", () => {
     assert.equal(ctx.id, "pkg");
     assert.equal(ctx.manifest.id, "pkg");
     await ctx.call("/diagnostics/log", {});
-    await assert.rejects(ctx.call("/session/export", {}), /未在 codexpp\.json 声明路由权限/);
+    await assert.rejects(ctx.call("/thread-usage-history", {}), /未在 codexpp\.json 声明路由权限/);
     assert.deepEqual(k.calls, ["/diagnostics/log"]);
     const script = await kernel();
-    await script.create(() => {}).call("/session/export", {});
-    assert.deepEqual(script.calls, ["/session/export"]);
+    await script.create(() => {}).call("/thread-usage-history", {});
+    assert.deepEqual(script.calls, ["/thread-usage-history"]);
   });
 
   it("apply 同步抛错时回滚已做的注册并抛给调用方；异步失败也回滚", async () => {

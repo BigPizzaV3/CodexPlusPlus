@@ -1,3 +1,5 @@
+import { flowProviderSlot } from "./flow-provider-colors";
+import "./flow-provider-colors.css";
 /**
  * 托盘快捷面板：四个页签——
  * 概览（Codex 状态与启动 / 重启 / 停止、今日速览、常用入口）、
@@ -60,7 +62,7 @@ import { AGENT_ICONS, APP_LOGO_URL, AutoTag, Avatar, AgentIcon, ModelViewGlyph }
 import { HubTopology } from "./HubOverview";
 import type { HubLink } from "./hub-overview-model";
 import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
-import { busyLinks, flowAgent, flowColumns, flowStatus } from "./request-flow-model";
+import { busyLinks, liveFlowRoutes, flowAgent, flowColumns, flowStatus } from "./request-flow-model";
 import {
   activeRelayItem,
   codexEnhanced,
@@ -805,7 +807,7 @@ function GatewayTab({
  */
 function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRoute: (route: TrayRoute) => Promise<void> }) {
   const focus = useAgentFocus();
-  const { entries, pulses, loaded } = useRequestFlow(FLOW_REFRESH_MS);
+  const { entries, loaded } = useRequestFlow(FLOW_REFRESH_MS);
   const visible = entries.filter((entry) => agentVisible(focus, flowAgent(entry)));
   const columns = flowColumns(visible);
   const runningCount = visible.filter((entry) => flowStatus(entry) === "running").length;
@@ -814,10 +816,10 @@ function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRou
     ...columns.agents.map((node) => ({ from: `agent:${node.id}`, to: "hub", tone: "idle" as const, weight: (node.count / maxCount) * 0.4 })),
     ...columns.providers.map((node) => ({ from: "hub", to: `provider:${node.id}`, tone: "idle" as const, weight: (node.count / maxCount) * 0.4 })),
   ];
-  const busyKey = visible.filter((entry) => entry.state === "running").map((entry) => `${entry.id}:${entry.relayId}`).join("|");
-  // busy 只随进行中的请求变化。
+  const busyKey = visible.filter((entry) => entry.state === "running").map((entry) => `${entry.id}:${entry.relayId}:${entry.phase}:${entry.firstTokenMs}:${entry.estimatedOutputTokens}`).join("|");
+  // 连线随真实请求的路由和响应阶段变化。
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const flow = useMemo(() => ({ pulses, busy: busyLinks(visible) }), [pulses, busyKey]);
+  const flow = useMemo(() => ({ busy: busyLinks(visible), routes: liveFlowRoutes(visible) }), [busyKey]);
   const glance = usageGlance(today);
   const now = Date.now();
   return (
@@ -850,7 +852,8 @@ function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRou
             </div>
             <div className="tp-flow-row">
               {columns.providers.map((node) => (
-                <span className="tp-flow-chip" data-live={node.live} data-node={`provider:${node.id}`} key={node.id} title={node.name}>
+                <span className="tp-flow-chip" data-live={node.live} data-node={`provider:${node.id}`} data-flow-provider={flowProviderSlot(node.id)} key={node.id} title={node.name}>
+                  <i className="flow-provider-mark" aria-hidden="true" />
                   <Avatar name={node.name} size="sm" />
                   <span>{node.name}</span>
                 </span>

@@ -736,6 +736,7 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
   const mode = payload.gateway.keyPolicy.mode;
   const restoreOnExit = payload.gateway.restoreOnExit;
   const modelSuffix = payload.gateway.modelSuffix !== false;
+  const localDiscovery = payload.gateway.localLoginDiscovery === true;
   const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
   return (
     <>
@@ -810,6 +811,21 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
             label={t("模型名后带供应商")}
             on={modelSuffix}
             onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
+          />
+        </div>
+        <div className="gw-setting-row">
+          <div>
+            <strong>{t("发现本机已登录的订阅账号")}</strong>
+            <small>{localDiscovery
+              ? t("读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进供应商池。")
+              : t("关着时不读其它客户端的登录文件。打开后，本机已登录的 Kiro、Cursor 等账号会在供应商页提示导入。")}</small>
+          </div>
+          <span />
+          <Switch
+            disabled={busy !== null}
+            label={t("发现本机已登录的订阅账号")}
+            on={localDiscovery}
+            onToggle={() => void run("local-login-discovery", "save_gateway_local_login_discovery", { enabled: !localDiscovery }, t("保存网关选项"), true)}
           />
         </div>
       </div>

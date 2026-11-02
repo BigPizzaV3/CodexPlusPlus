@@ -69,15 +69,10 @@ fn builtins_with_a_setting_use_that_setting_as_their_switch() {
     assert_eq!(settings(temp.path())["codexAppSessionDelete"], false);
     assert_eq!(builtin(&manager, "session-delete")["enabled"], false);
 
-    // 嵌套字段与下拉型。
-    manager.set_script_enabled("builtin:agent-pet", true).unwrap();
-    assert_eq!(settings(temp.path())["agentPet"]["enabled"], true);
-    assert_eq!(builtin(&manager, "agent-pet")["enabled"], true);
-    manager.set_script_enabled("builtin:typing-effects", true).unwrap();
-    assert_eq!(settings(temp.path())["codexAppTypingEffect"], "rainbow");
-    assert_eq!(builtin(&manager, "typing-effects")["enabled"], true);
-    manager.set_script_enabled("builtin:typing-effects", false).unwrap();
-    assert_eq!(settings(temp.path())["codexAppTypingEffect"], "off");
+    // 嵌套字段。
+    manager.set_script_enabled("builtin:dictation", true).unwrap();
+    assert_eq!(settings(temp.path())["dictation"]["enabled"], true);
+    assert_eq!(builtin(&manager, "dictation")["enabled"], true);
 
     // 有设置字段的不进下发的停用集合，功能自己读设置；也不在用户脚本配置里另记一份。
     let state = manager.builtin_extension_state().unwrap();
@@ -101,13 +96,13 @@ fn stale_disable_flags_for_setting_backed_builtins_are_ignored_and_cleared() {
 fn enabled_package_with_replaces_takes_over_a_builtin() {
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(temp.path());
-    write_package(temp.path(), "my-pet", json!({ "id": "my-pet", "renderer": "renderer.js", "replaces": ["builtin:agent-pet", "usage-statusline"] }));
+    write_package(temp.path(), "my-pet", json!({ "id": "my-pet", "renderer": "renderer.js", "replaces": ["builtin:dictation", "usage-statusline"] }));
     let state = manager.builtin_extension_state().unwrap();
-    assert_eq!(state["replacedBy"]["agent-pet"], "user:my-pet");
+    assert_eq!(state["replacedBy"]["dictation"], "user:my-pet");
     assert_eq!(state["replacedBy"]["usage-statusline"], "user:my-pet");
     let inventory = manager.inventory().unwrap();
     let package = inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == "user:my-pet").cloned().unwrap();
-    assert_eq!(package["package"]["replaces"], json!(["agent-pet", "usage-statusline"]));
+    assert_eq!(package["package"]["replaces"], json!(["dictation", "usage-statusline"]));
 
     // 顶替者停用后内置的回来。
     manager.set_script_enabled("user:my-pet", false).unwrap();
@@ -125,17 +120,55 @@ fn replaces_must_name_a_known_builtin() {
     assert_eq!(manager.builtin_extension_state().unwrap()["replacedBy"], json!({}));
 }
 
-/// 在后台生效的内置拓展（不查顶替状态）不能被顶替，免得声明了 replaces 却实际没让位。
+/// Rust 侧生效的内置拓展也能被顶替（Rust 侧经 builtin_takeover 让位）；只有拓展不加载时才生效的官方额度解锁不能。
 #[test]
-fn backend_builtins_cannot_be_replaced() {
+fn rust_side_builtins_can_be_replaced_except_standalone_quota_unlock() {
     let temp = tempfile::tempdir().unwrap();
     let manager = manager(temp.path());
-    assert_eq!(builtin(&manager, "native-fast-unlock")["replaceable"], false);
-    assert_eq!(builtin(&manager, "paste-fix")["replaceable"], true);
-    write_package(temp.path(), "fast", json!({ "id": "fast", "renderer": "renderer.js", "replaces": ["native-fast-unlock"] }));
+    for id in codex_plus_core::builtin_takeover::RUST_SIDE_BUILTINS {
+        assert_eq!(builtin(&manager, id)["replaceable"], true, "{id}");
+    }
+    assert_eq!(builtin(&manager, "standalone-quota-unlock")["replaceable"], false);
+    write_package(temp.path(), "fast", json!({ "id": "fast", "renderer": "renderer.js", "replaces": ["native-fast-unlock", "force-chinese-locale"] }));
+    write_package(temp.path(), "quota", json!({ "id": "quota", "renderer": "renderer.js", "replaces": ["standalone-quota-unlock"] }));
     let inventory = manager.inventory().unwrap();
-    let package = inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == "user:fast").cloned().unwrap();
-    assert!(package["error"].as_str().unwrap().contains("不能被拓展顶替"), "{package}");
+    let find = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).cloned().unwrap();
+    assert_eq!(find("user:fast")["error"], "", "{}", find("user:fast"));
+    assert!(find("user:quota")["error"].as_str().unwrap().contains("不能被拓展顶替"), "{}", find("user:quota"));
+    assert_eq!(manager.builtin_extension_state().unwrap()["replacedBy"]["native-fast-unlock"], "user:fast");
+}
+
+/// 被顶替的 Rust 侧内置拓展按「关」处理；增强总开关关着时不按顶替处理（拓展这时不加载）。
+#[test]
+fn replaced_rust_side_builtins_are_switched_off_in_effective_settings() {
+    use codex_plus_core::builtin_takeover::{RUST_SIDE_BUILTINS, mask_settings_with};
+    let mut settings = codex_plus_core::settings::BackendSettings::default();
+    settings.enhancements_enabled = true;
+    settings.codex_app_native_fast_unlock = true;
+    settings.codex_app_force_chinese_locale = true;
+    settings.codex_app_model_whitelist_unlock = true;
+    settings.codex_app_native_predictions = true;
+    let replaced: std::collections::BTreeSet<String> = ["native-fast-unlock", "native-predictions"].iter().map(|id| id.to_string()).collect();
+    let masked = mask_settings_with(settings.clone(), &replaced);
+    assert!(!masked.codex_app_native_fast_unlock);
+    assert!(!masked.codex_app_native_predictions);
+    assert!(masked.codex_app_force_chinese_locale, "没被顶替的保持原值");
+    assert!(masked.codex_app_model_whitelist_unlock);
+    settings.enhancements_enabled = false;
+    assert!(mask_settings_with(settings, &replaced).codex_app_native_fast_unlock);
+    // 每个 Rust 侧内置拓展都有对应的设置项，且被顶替后读成关。
+    for id in RUST_SIDE_BUILTINS {
+        let def = codex_plus_core::settings_catalog::builtin_extension_def(id).unwrap();
+        let setting = def.setting.clone().expect("Rust 侧内置拓展都有设置项");
+        let mut on = codex_plus_core::settings::BackendSettings::default();
+        on.enhancements_enabled = true;
+        let mut value = serde_json::to_value(&on).unwrap();
+        value[&setting] = json!(true);
+        let on: codex_plus_core::settings::BackendSettings = serde_json::from_value(value).unwrap();
+        let only: std::collections::BTreeSet<String> = [id.to_string()].into();
+        let masked = serde_json::to_value(mask_settings_with(on, &only)).unwrap();
+        assert_eq!(masked[&setting], json!(false), "{id} 被顶替后 {setting} 应读成关");
+    }
 }
 
 #[test]

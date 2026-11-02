@@ -1729,6 +1729,10 @@ impl Subscription for Kiro {
         "需要 Kiro 账号（免费或付费套餐，额度按 Kiro 的规则计）：可先在 Kiro IDE 或 kiro-cli 里登录后导入，或在浏览器里用 Google / GitHub / Builder ID 登录。"
     }
 
+    fn detect_local(&self) -> Option<String> {
+        read_ide().or_else(|_| read_cli()).ok().map(|_| String::new())
+    }
+
     async fn begin_login(
         &self,
         _http: &reqwest::Client,

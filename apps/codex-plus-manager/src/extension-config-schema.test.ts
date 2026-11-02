@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { readFileSync } from "node:fs";
+import { describe, it, test } from "node:test";
 import { schemasteryFields } from "./extension-config-schema.ts";
 
 describe("dsh 插件 Config → 设置表单字段", () => {
@@ -35,4 +36,18 @@ describe("dsh 插件 Config → 设置表单字段", () => {
     assert.deepEqual(schemasteryFields({ type: "string" }), []);
     assert.deepEqual(schemasteryFields({ type: "object", dict: { any: { type: "any" } } }), []);
   });
+});
+
+test("string 字段写 format: file 时表单给路径框和「选择文件」，选择器按 extensions 过滤", () => {
+  const form = readFileSync(new URL("./extension-config-form.tsx", import.meta.url), "utf8");
+  // 本地也覆盖 Windows checkout 的 CRLF，避免只在 CI 暴露换行差异。
+  for (const eol of ["\n", "\r\n"]) {
+    assert.match(form.replace(/\r?\n/g, eol), /if \(field\.type === "string" && field\.format === "file"\) \{\r?\n\s+return <ExtensionConfigFileInput /);
+  }
+  assert.match(form, /filters: extensions \? \[\{ name: title, extensions \}\] : undefined/);
+  assert.match(form, /if \(typeof selected === "string" && selected\.trim\(\)\) onChange\(selected\.trim\(\)\);/);
+  // 背景图拓展就是这么声明图片路径的。
+  const manifest = JSON.parse(readFileSync(new URL("../../../assets/extensions/image-overlay/codexpp.json", import.meta.url), "utf8"));
+  assert.equal(manifest.config.imagePath.format, "file");
+  assert.deepEqual(manifest.config.imagePath.extensions, ["png", "jpg", "jpeg", "webp", "gif", "bmp"]);
 });

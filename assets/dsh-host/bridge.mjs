@@ -28,11 +28,12 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createServer as createHttpServer } from 'node:http'
 import { createConnection, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { EVENT_HOOKS, Host, INSTRUCTIONS_TARGET, MIRROR_HOOKS, MIRROR_TARGET, errorText } from './host.mjs'
+import { EVENT_HOOKS, Host, INSTRUCTIONS_TARGET, MIRROR_HOOKS, MIRROR_TARGET, errorText, guardProcessExit, hostExit } from './host.mjs'
 import { PLAN_MODE_WRITE_TOOLS, createSchedule, messageText } from './services.mjs'
 
 const BRIDGE_FILE = fileURLToPath(import.meta.url)
@@ -47,6 +48,8 @@ const DAEMON_IDLE_MS = 20 * 60 * 1000
 /** 常驻进程定期检查配置文件是否还在（插件移除、测试目录清理后自行退出）。 */
 const DAEMON_CHECK_MS = 30 * 1000
 const DAEMON_START_TIMEOUT_MS = 5000
+/** 探测常驻进程是否在听：单次 ping 的等待上限。 */
+const DAEMON_PING_TIMEOUT_MS = 1000
 const DAEMON_REPLY_TIMEOUT_MS = 60 * 1000
 const MAX_FRAME_BYTES = 8 * 1024 * 1024
 
@@ -82,6 +85,12 @@ function dataDirOf(plugin) {
   return plugin.registryPath ? join(dirname(plugin.registryPath), 'data', String(plugin.id).replace(/[^\w.-]/g, '_')) : undefined
 }
 
+/** 提供服务的行（Service 子类插件、ctx.set）：被映射的行可能 inject 它们，常驻进程里要一并加载。 */
+function providerRows(plugin) {
+  const disabled = new Set(plugin.disabledRows ?? [])
+  return (plugin.report?.rows ?? []).filter((row) => !disabled.has(row.id) && (row.provides?.length || row.kind === 'service')).map((row) => row.id)
+}
+
 async function loadHost(plugin, rows, { persistent = false } = {}) {
   const dataDir = dataDirOf(plugin)
   // 临时加载（常驻进程起不来）时不落盘镜像，免得和常驻进程写同一个文件。
@@ -89,7 +98,7 @@ async function loadHost(plugin, rows, { persistent = false } = {}) {
   await host.loadPackage(plugin.root, plugin.id, {
     disabledRows: plugin.disabledRows,
     configs: plugin.configs,
-    onlyRows: rows,
+    onlyRows: Array.isArray(rows) ? [...new Set([...rows, ...providerRows(plugin)])] : rows,
     skipSkills: true,
     dataDir,
   })
@@ -149,6 +158,11 @@ function makeExec(payload, agent, signal) {
     agent,
     signal,
     token: Symbol('codexpp.hook'),
+    // 代为执行 Codex 的工具时推迟的上下文：并进这次钩子的 additionalContext。
+    deferContext(message) {
+      if (message) sinks.getStore()?.inject.push(message)
+    },
+    concludeTurn() {},
   }
 }
 
@@ -233,7 +247,15 @@ const TRANSLATE = {
       agent.setStatus('idle')
       return { decision: 'block', reason: '这条输入被 dsh 插件拒绝' }
     }
-    const added = (decision?.messages ?? []).filter((message) => message !== original && message?.id !== original.id)
+    const messages = Array.isArray(decision?.messages) ? decision.messages : [original]
+    const isOriginal = (message) => message === original || message?.id === original.id
+    const added = messages.filter((message) => !isOriginal(message))
+    if (!messages.some(isOriginal) && agent.session?.id) {
+      // 插件删掉或改写了用户原话：钩子做不到，记下来，经 Codex++ 代理的请求里把这条用户消息换成插件给的消息
+      // （官方直连的请求不经代理，原话照旧）。新增的消息随替换一起进 input，不再重复成补充上下文。
+      rememberPromptRewrite(host, agent.session.id, String(payload?.prompt ?? ''), added.map(messageText).map((text) => text.trim()).filter(Boolean))
+      return withContext('UserPromptSubmit', {}, sinkContexts(sink))
+    }
     return withContext('UserPromptSubmit', {}, [messagesText(added), ...sinkContexts(sink)])
   },
 
@@ -391,6 +413,47 @@ function postDecisions(host) {
   return host.postDecisions
 }
 
+// ---- agent/pre-step 改写的用户原话 ----
+
+const MAX_PROMPT_REWRITES = 200
+
+/** 按会话记下「原话 → 替换的消息」，落盘在镜像目录，常驻进程重启后历史请求里的改写照旧。 */
+function promptRewrites(host) {
+  if (host.promptRewrites) return host.promptRewrites
+  const path = host.mirror.dataDir ? join(host.mirror.dataDir, 'prompt-rewrites.json') : undefined
+  let map = new Map()
+  if (path && existsSync(path)) {
+    try {
+      map = new Map(Object.entries(JSON.parse(readFileSync(path, 'utf8'))))
+    } catch {
+      map = new Map()
+    }
+  }
+  host.promptRewrites = { path, map }
+  return host.promptRewrites
+}
+
+function rememberPromptRewrite(host, sessionId, original, replacement) {
+  if (!original) return
+  const store = promptRewrites(host)
+  const list = (store.map.get(sessionId) ?? []).filter((item) => item.original !== original)
+  list.push({ original, replacement })
+  store.map.set(sessionId, list.slice(-MAX_PROMPT_REWRITES))
+  if (!store.path) return
+  try {
+    mkdirSync(dirname(store.path), { recursive: true })
+    writeFileSync(store.path, JSON.stringify(Object.fromEntries(store.map)))
+  } catch (error) {
+    console.error(`[dsh-bridge] 用户原话改写记录写入失败：${errorText(error)}`)
+  }
+}
+
+/** 一条 Responses 用户消息的文字。 */
+function userMessageText(item) {
+  if (typeof item?.content === 'string') return item.content
+  return (Array.isArray(item?.content) ? item.content : []).map((part) => (typeof part?.text === 'string' ? part.text : '')).join('')
+}
+
 /** 本轮（最后一条用户消息之后）的工具调用与结果，给没经过钩子的结果补跑 tools/post-execute。 */
 function currentTurnItems(input) {
   let start = 0
@@ -456,6 +519,22 @@ async function stepFor(host, body, context = {}) {
         changed = true
       }
     }
+    // 2b. agent/pre-step 删掉或改写的用户原话：每次请求都带着整段历史，所以每次都换。
+    const rewrites = promptRewrites(host).map.get(sessionId)
+    if (rewrites?.length) {
+      let rewritten = false
+      const replaced = input.flatMap((item) => {
+        if (item?.role !== 'user' || (item.type !== undefined && item.type !== 'message')) return [item]
+        const rule = rewrites.find((entry) => entry.original === userMessageText(item))
+        if (!rule) return [item]
+        rewritten = true
+        return rule.replacement.map((text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }))
+      })
+      if (rewritten) {
+        input = replaced
+        changed = true
+      }
+    }
     // 3. 排下的上下文与按步的 agent/pre-step：第一步已由 UserPromptSubmit 钩子处理过 pre-step，这里只补排下的上下文。
     const pending = agent ? agent.takePending() : []
     let messages = pending
@@ -491,6 +570,21 @@ async function stepFor(host, body, context = {}) {
         const name = requestToolName(tool)
         return !name || host.toolVisible(name)
       })
+      if (kept.length !== next.tools.length) {
+        next = { ...next, tools: kept }
+        changed = true
+      }
+    }
+    // 6. 插件工具的 registerOptions.when：按这一步的 agent 与模型判断，不满足就不给模型看（同 dsh 每步解析工具集）。
+    if (Array.isArray(next.tools) && [...host.tools.values()].some((entry) => entry.when)) {
+      const model = String(next.model ?? '')
+      const slash = model.indexOf('/')
+      const selection = { provider: slash > 0 ? model.slice(0, slash) : 'codex', model, reasoningEffort: next.reasoning?.effort }
+      const kept = []
+      for (const tool of next.tools) {
+        const entry = host.tools.get(requestToolName(tool))
+        if (!entry?.when || await host.toolActive(entry, agent, selection, controller.signal)) kept.push(tool)
+      }
       if (kept.length !== next.tools.length) {
         next = { ...next, tools: kept }
         changed = true
@@ -688,6 +782,61 @@ async function webRouteFor(host, request = {}) {
   return { status: reply.status, headers: reply.headers, body: Buffer.concat(reply.chunks).toString('utf8') }
 }
 
+/** 常驻进程里接协议升级的本机 socket（与控制 socket 区分开）。 */
+function upgradeSocketPath(configPath) {
+  const control = socketPath(configPath)
+  return process.platform === 'win32' ? `${control}-upgrade` : control.replace(/\.sock$/, '-upgrade.sock')
+}
+
+/**
+ * webServer.registerUpgrade 的落点：常驻进程里起一个只听本机 socket 的 Node http 服务，Codex++ 本地代理把
+ * /ext/<配套拓展>/<路径> 的升级请求原样写进来，'upgrade' 事件按路径（去掉 /ext/<配套拓展> 前缀）交给插件的处理器。
+ * 返回给 Rust 的是 socket 路径；路径没有处理器时返回 error。
+ */
+async function upgradeFor(host, configPath, request = {}) {
+  const path = String(request.path ?? '/').split('?')[0] || '/'
+  if (!host.webUpgrades.has(path)) return { error: `没有插件处理 ${path} 的协议升级` }
+  if (!host.upgradeServer) {
+    const socket = upgradeSocketPath(configPath)
+    const sockets = new Set()
+    const server = createHttpServer((_req, res) => {
+      res.writeHead(426, { connection: 'close' })
+      res.end()
+    })
+    server.on('upgrade', (req, socket, head) => {
+      const url = String(req.url ?? '/').replace(/^\/ext\/[^/?]+/, '') || '/'
+      const route = host.webUpgrades.get(new URL(url, 'http://codexpp.local').pathname)
+      if (!route) {
+        socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+        return
+      }
+      req.url = url
+      sockets.add(socket)
+      socket.on('close', () => sockets.delete(socket))
+      // http 服务的连接默认半开：客户端断开后这边也收尾，否则代理那头的对拷一直等着。
+      socket.on('end', () => socket.end())
+      Promise.resolve(route.handler(req, socket, head)).catch((error) => {
+        console.error(`[dsh-bridge] 协议升级处理器失败：${errorText(error)}`)
+        socket.destroy()
+      })
+    })
+    if (process.platform !== 'win32') {
+      try {
+        unlinkSync(socket)
+      } catch {}
+    }
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socket, () => {
+        server.off('error', reject)
+        resolve()
+      })
+    })
+    host.upgradeServer = { server, socket, sockets }
+  }
+  return { socket: host.upgradeServer.socket }
+}
+
 async function webhookFor(host, request = {}) {
   const match = /\/webhook\/(.+)$/.exec(String(request.path ?? ''))
   if (!match) return webRouteFor(host, request)
@@ -722,12 +871,155 @@ async function commandFor(host, { name, rawInput, sessionId }) {
 function socketPath(configPath) {
   let key = configPath
   try {
-    key = realpathSync(configPath)
+    // Windows 的普通 realpath 不展开 8.3 短名；各入口必须按系统解析出的同一路径连接。
+    key = process.platform === 'win32' ? realpathSync.native(configPath) : realpathSync(configPath)
   } catch {
     // 配置不在了也照样算出路径，连接会失败再退回。
   }
   const hash = createHash('sha256').update(`${process.getuid?.() ?? ''}:${key}`).digest('hex').slice(0, 16)
   return process.platform === 'win32' ? `\\\\.\\pipe\\codexpp-dsh-${hash}` : join(tmpdir(), `codexpp-dsh-${hash}.sock`)
+}
+
+// ---------------------------------------------------------------------------
+// 插件间事件跨包转发
+// ---------------------------------------------------------------------------
+
+/** 跨包事件的单次往返上限（waterfall 会嵌套：别的包的监听器调 next 再回到本包）。 */
+const BUS_TIMEOUT_MS = 30 * 1000
+/** 注册表里「谁听哪些事件」的缓存时间。 */
+const BUS_CACHE_MS = 2000
+
+/** 配套拓展包目录名（与 Rust 的 dsh_plugins::companion_id 一致）。 */
+const companionDir = (id) => `dsh-${id}`.slice(0, 64)
+
+/** 跨进程只能传 JSON：函数、循环引用丢掉（与 dsh 里跨 Peer 的事件一样只认可序列化的数据）。 */
+function toWire(value) {
+  if (value === undefined) return undefined
+  try {
+    return JSON.parse(JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? String(item) : item)))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 常驻进程之间的事件总线：插件 ctx.emit / parallel / serial / bail / waterfall 一个自定义事件时，本包的监听器照常派发，
+ * 再经本地 socket 交给别的包（各自的常驻进程，没起就按需起）里听这个事件的插件，语义与包内一致：
+ * - emit：发出去不等；parallel：并发等全部；serial / bail：本包没人给出结果时按注册表顺序问别的包，取第一个非 undefined；
+ * - waterfall：本包的监听器在前，链尾依次交给别的包的监听器；它们调 next() 时经 socket 回到发起方继续，最后才是调用方的 next。
+ * 参数与结果按 JSON 传；每次往返有超时，别的包出错或超时按「无意见」继续。
+ * MCP 进程不挂总线：所有包的工具在同一个进程里，事件本来就直接派发。
+ */
+function createEventBus(configPath, self) {
+  const extensionsDir = dirname(dirname(configPath))
+  let cache = { at: 0, peers: [] }
+  const peers = () => {
+    if (Date.now() - cache.at < BUS_CACHE_MS) return cache.peers
+    let registry = { plugins: [] }
+    try {
+      registry = JSON.parse(readFileSync(self.registryPath, 'utf8'))
+    } catch {}
+    const found = []
+    for (const plugin of registry.plugins ?? []) {
+      if (!plugin || plugin.id === self.id || plugin.enabled === false) continue
+      const disabled = new Set(plugin.disabledRows ?? [])
+      const listens = new Set((plugin.report?.rows ?? []).filter((row) => !disabled.has(row.id) && row.enabled !== false).flatMap((row) => row.listens ?? []))
+      if (!listens.size) continue
+      const config = join(extensionsDir, companionDir(plugin.id), 'dsh-bridge.json')
+      if (existsSync(config)) found.push({ id: plugin.id, config, listens })
+    }
+    cache = { at: Date.now(), peers: found }
+    return found
+  }
+  const peersOf = (event) => peers().filter((peer) => peer.listens.has(event))
+  const send = async (peer, message) => {
+    const plugin = readPlugin(peer.config)
+    if (!plugin) return {}
+    const reply = await viaDaemon(peer.config, plugin, { kind: 'bus', origin: configPath, ...message }, BUS_TIMEOUT_MS)
+    return reply.output ?? {}
+  }
+  const warn = (peer, event, error) => console.error(`[dsh-bridge] 事件 ${event} 交给 ${peer.id} 失败：${errorText(error)}`)
+  /** waterfall 的续接：别的包的监听器调 next() 时按 token 回到这里接着跑链。 */
+  const continuations = new Map()
+  return {
+    listened: (event) => peersOf(event).length > 0,
+    emit(event, args) {
+      const wire = toWire(args)
+      for (const peer of peersOf(event)) void send(peer, { mode: 'emit', event, args: wire }).catch((error) => warn(peer, event, error))
+    },
+    async parallel(event, args) {
+      const wire = toWire(args)
+      await Promise.all(peersOf(event).map((peer) => send(peer, { mode: 'parallel', event, args: wire }).catch((error) => warn(peer, event, error))))
+    },
+    async serial(event, args, mode = 'serial') {
+      const wire = toWire(args)
+      for (const peer of peersOf(event)) {
+        try {
+          const reply = await send(peer, { mode, event, args: wire })
+          if (reply.value !== undefined) return reply.value
+        } catch (error) {
+          warn(peer, event, error)
+        }
+      }
+      return undefined
+    },
+    async waterfall(event, args, fallback) {
+      const list = peersOf(event)
+      const wire = toWire(args)
+      const run = async (index) => {
+        if (index >= list.length) return fallback()
+        let continued
+        const proceed = () => (continued ??= run(index + 1))
+        const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+        continuations.set(token, proceed)
+        try {
+          return (await send(list[index], { mode: 'waterfall', event, args: wire, token })).value
+        } catch (error) {
+          warn(list[index], event, error)
+          return proceed()
+        } finally {
+          continuations.delete(token)
+        }
+      }
+      return run(0)
+    },
+    /** 别的包的监听器调了 next()：接着跑发起方这边的链。 */
+    async next(token) {
+      const proceed = continuations.get(String(token))
+      if (!proceed) throw new Error('事件链已经结束')
+      return { value: toWire(await proceed()) }
+    },
+  }
+}
+
+/** 收到别的包转来的事件：只派发给本包的监听器（不再往外转），结果按 JSON 交回。 */
+async function busDispatch(host, message) {
+  const event = String(message.event ?? '')
+  const args = Array.isArray(message.args) ? message.args : []
+  const next = message.mode === 'waterfall' && message.origin && message.token
+    ? async () => (await exchange(socketPath(message.origin), { kind: 'bus-next', token: message.token }, BUS_TIMEOUT_MS)).output?.value
+    : () => undefined
+  let value
+  switch (message.mode) {
+    case 'emit':
+      host.emitEvent(event, args)
+      break
+    case 'parallel':
+      await host.parallel(event, args)
+      break
+    case 'serial':
+      value = await host.serial(event, args)
+      break
+    case 'bail':
+      value = await host.bail(event, args)
+      break
+    case 'waterfall':
+      value = await host.waterfallSync(event, args, next)
+      break
+    default:
+      throw new Error(`不认识的事件派发方式 ${message.mode}`)
+  }
+  return { value: toWire(value) }
 }
 
 /** 发一帧（JSON 一行）并等回复。连不上时抛出 code 为 ENOENT / ECONNREFUSED 的错误。 */
@@ -776,29 +1068,56 @@ function startDaemon(configPath) {
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 const unreachable = (error) => ['ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE'].includes(error?.code)
 
+const ping = (path) => exchange(path, { kind: 'ping', version: '' }, DAEMON_PING_TIMEOUT_MS)
+
+/**
+ * 本进程正在拉起的常驻进程：socket 路径 → 等它应答的 Promise。
+ * 同一进程里同时发往一个还没起来的常驻进程的请求共用这一次拉起、排队等它，就绪后按排队顺序依次连上。
+ * 各自轮询的话，先发的请求（比如不等结果的 emit）可能比后发的晚到，还会一次拉起好几个常驻进程互相抢 socket。
+ */
+const pendingStarts = new Map()
+
+/** 拉起常驻进程（本进程里同一路径同一时刻只拉一次），等到它应答 ping 或过了 deadline。 */
+function daemonStarted(configPath, path, deadline) {
+  let started = pendingStarts.get(path)
+  if (!started) {
+    started = (async () => {
+      startDaemon(configPath)
+      for (;;) {
+        await sleep(50)
+        try {
+          await ping(path)
+          return
+        } catch (error) {
+          // 连上了但回得慢、或者到点了：交给调用方自己的请求去重试或报错。
+          if (!unreachable(error) || Date.now() > deadline) return
+        }
+      }
+    })().finally(() => pendingStarts.delete(path))
+    pendingStarts.set(path, started)
+  }
+  return started
+}
+
 /** 经常驻进程处理一条请求；返回 { output }。常驻进程起不来时抛出 { unreachable: true } 的错误。 */
-async function viaDaemon(configPath, plugin, request) {
+async function viaDaemon(configPath, plugin, request, timeoutMs = DAEMON_REPLY_TIMEOUT_MS) {
   const path = socketPath(configPath)
   const message = { ...request, version: versionOf(plugin) }
-  let started = false
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS
   for (;;) {
+    // 本进程正在拉起它：排在先来的请求后面，不抢先连。
+    if (pendingStarts.has(path)) await pendingStarts.get(path)
     let reply
     try {
-      reply = await exchange(path, message, DAEMON_REPLY_TIMEOUT_MS)
+      reply = await exchange(path, message, timeoutMs)
     } catch (error) {
       if (!unreachable(error)) throw error
-      if (!started) {
-        startDaemon(configPath)
-        started = true
-      }
       if (Date.now() > deadline) throw Object.assign(new Error('dsh 插件常驻进程没有启动'), { unreachable: true })
-      await sleep(50)
+      await daemonStarted(configPath, path, deadline)
       continue
     }
     if (reply?.restart) {
       // 旧进程正在退出；等它让出 socket 再起新的。
-      started = false
       if (Date.now() > deadline) throw Object.assign(new Error('dsh 插件常驻进程没有重启'), { unreachable: true })
       await sleep(50)
       continue
@@ -808,6 +1127,23 @@ async function viaDaemon(configPath, plugin, request) {
   }
 }
 
+/**
+ * socket 那头有没有常驻进程在听。一次连不上不算数：另一个常驻进程可能刚绑定了路径、还没开始监听
+ * （机器忙时两步之间会被调度出去），这时把文件当残留清掉，它就成了谁也连不上的孤儿，插件状态分成两份。
+ */
+async function daemonListening(path) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (attempt > 0) await sleep(100)
+    try {
+      await ping(path)
+      return true
+    } catch {
+      // 再问一次。
+    }
+  }
+  return false
+}
+
 async function runDaemon(configPath) {
   const plugin = readPlugin(configPath)
   if (!plugin) return
@@ -815,6 +1151,8 @@ async function runDaemon(configPath) {
   const rows = mappedRows(plugin)
   if (rows.length === 0) return
   const host = await loadHost(plugin, rows, { persistent: true })
+  // 插件间自定义事件转给别的包的常驻进程。
+  host.bus = createEventBus(configPath, plugin)
   const path = socketPath(configPath)
   let idle
   let closing = false
@@ -824,6 +1162,15 @@ async function runDaemon(configPath) {
     closing = true
     clearTimeout(idle)
     server.close()
+    if (host.upgradeServer) {
+      for (const socket of host.upgradeServer.sockets) socket.destroy()
+      host.upgradeServer.server.close()
+      if (process.platform !== 'win32') {
+        try {
+          unlinkSync(host.upgradeServer.socket)
+        } catch {}
+      }
+    }
     if (process.platform !== 'win32') {
       try {
         unlinkSync(path)
@@ -833,14 +1180,17 @@ async function runDaemon(configPath) {
     }
     host.mirror.flushAll()
     await host.dispose().catch(() => {})
-    process.exit(0)
+    hostExit(0)
   }
   const touch = () => {
     clearTimeout(idle)
-    idle = setTimeout(shutdown, DAEMON_IDLE_MS)
+    // 还有升级后的长连接（WebSocket）开着就不算空闲。
+    idle = setTimeout(() => (host.upgradeServer?.sockets.size ? touch() : shutdown()), DAEMON_IDLE_MS)
   }
   const handle = async (message) => {
     if (message?.kind === 'ping') return { ok: true }
+    // 别的包的监听器调 next() 回到本进程续接事件链：发起方不知道本进程的版本号，放在版本检查前。
+    if (message?.kind === 'bus-next') return { output: await host.bus.next(message.token) }
     if (message?.version !== version) {
       setImmediate(shutdown)
       return { restart: true }
@@ -854,7 +1204,13 @@ async function runDaemon(configPath) {
     if (message.kind === 'command') return { output: await commandFor(host, message) }
     if (message.kind === 'fetch') return { output: await host.fetchRoute(message.request) }
     if (message.kind === 'rpc') return { output: await host.runRpc(message.request) }
+    if (message.kind === 'rpc-open') return { output: await host.openRpcStream(message.request) }
+    if (message.kind === 'rpc-pull') return { output: await host.pullRpcStream(message.request) }
+    if (message.kind === 'rpc-push') return { output: host.pushRpcStream(message.request) }
+    if (message.kind === 'rpc-close') return { output: host.closeRpcStream(message.request) }
     if (message.kind === 'webhook') return { output: await webhookFor(host, message.request) }
+    if (message.kind === 'bus') return { output: await busDispatch(host, message) }
+    if (message.kind === 'upgrade') return { output: await upgradeFor(host, configPath, message.request) }
     return { error: `不认识的请求 ${message.kind}` }
   }
   server.on('connection', (socket) => {
@@ -887,14 +1243,18 @@ async function runDaemon(configPath) {
   try {
     await listen()
   } catch (error) {
-    if (error?.code !== 'EADDRINUSE' || process.platform === 'win32') throw error
+    // 两个进程同时绑定同一路径时，macOS 上后到的可能报 EEXIST 而不是 EADDRINUSE。
+    if (!['EADDRINUSE', 'EEXIST'].includes(error?.code) || process.platform === 'win32') throw error
     // 有人在听就让给它；是崩溃留下的 socket 文件就清掉重来。
-    const alive = await exchange(path, { kind: 'ping', version: '' }, 1000).then(() => true, () => false)
-    if (alive) {
+    if (await daemonListening(path)) {
       await host.dispose()
       return
     }
-    unlinkSync(path)
+    try {
+      unlinkSync(path)
+    } catch {
+      // 已被别的进程清理。
+    }
     await listen()
   }
   touch()
@@ -1080,6 +1440,22 @@ export async function runRpc(config, request) {
   return handle(config, plugin, mappedRows(plugin), { kind: 'rpc', request }, (host) => host.runRpc(request))
 }
 
+/**
+ * 前端半边的 ctx.connection.rpc.open（流式调用，如 typert 的 stream 方法）：流要跨多次往返保持状态，只经常驻进程。
+ * action：open（{ channel, endpoint, payload } → { ok, id }）、pull（{ id, waitMs } → { items, done, error? }）、
+ * push（{ id, items, end } 上行）、close（{ id }）。
+ */
+export async function runRpcStream(config, action, request) {
+  const plugin = readPlugin(config)
+  if (!plugin || !mappedRows(plugin, 'connection').length) return { ok: false, done: true, items: [], error: { code: 'UNAVAILABLE', message: '插件已停用', details: {} } }
+  if (!['open', 'pull', 'push', 'close'].includes(action)) return { ok: false, error: { code: 'INVALID', message: `不认识的流操作 ${action}`, details: {} } }
+  try {
+    return (await viaDaemon(config, plugin, { kind: `rpc-${action}`, request: request ?? {} }, DAEMON_REPLY_TIMEOUT_MS)).output ?? null
+  } catch (error) {
+    return { ok: false, done: true, items: [], error: { code: error?.unreachable ? 'UNAVAILABLE' : 'TRANSPORT', message: errorText(error), details: {} } }
+  }
+}
+
 /** 定时任务入口（配套拓展包的后台每分钟调一次）：到点的往会话里发起一轮。不需要加载插件。 */
 export async function runTick(config) {
   const plugin = readPlugin(config)
@@ -1092,6 +1468,17 @@ export async function runWebhook(config, request) {
   const plugin = readPlugin(config)
   if (!plugin || !mappedRows(plugin, 'webhook').length) return { status: 503, body: '插件已停用' }
   return handle(config, plugin, mappedRows(plugin), { kind: 'webhook', request }, (host) => webhookFor(host, request))
+}
+
+/** 协议升级入口（配套拓展包的后台调用，Rust 拿到 socket 后把升级请求原样转过去）：返回 { socket } 或 { error }。只经常驻进程。 */
+export async function runUpgrade(config, request) {
+  const plugin = readPlugin(config)
+  if (!plugin || !mappedRows(plugin, 'webhook').length) return { error: '插件已停用' }
+  try {
+    return (await viaDaemon(config, plugin, { kind: 'upgrade', request: request ?? {} })).output ?? { error: '常驻进程没有回复' }
+  } catch (error) {
+    return { error: errorText(error) }
+  }
 }
 
 /** 页面斜杠命令入口（配套拓展包的后台调用）：返回 dsh 的 CommandResult。 */
@@ -1112,8 +1499,9 @@ function isMainModule() {
 }
 
 if (isMainModule() && process.argv[2] === 'daemon' && process.argv[3]) {
+  guardProcessExit()
   runDaemon(process.argv[3]).catch((error) => {
     console.error(`[dsh-bridge] 常驻进程退出：${errorText(error)}`)
-    process.exit(1)
+    hostExit(1)
   })
 }

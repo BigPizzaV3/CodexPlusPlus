@@ -6,6 +6,7 @@
    * - registerToolView：对话里的工具调用 / 命令条目末尾挂一块自己的内容（在 activity.after 插槽上），
    *   按工具名或条目类型匹配；render 收到的 call 带工具名、参数、结果（从会话日志里按调用 id 找）。
    * - registerSettingsSection：Codex 设置页左侧导航末尾加一项，点开是拓展自己画的页面。
+   * - registerSettingsPanel：「拓展」页面里本拓展详情下方的设置面板，由 40-backend-settings.js 挂载。
    */
 
   // ---------------------------------------------------------------- 悬浮球页签
@@ -146,4 +147,28 @@
       disposeSlot();
       disposePage();
     };
+  }
+
+  // ---------------------------------------------------------------- 拓展详情页的设置面板
+  /**
+   * 每个拓展一个设置面板，登记在注册表里（持久）；面板 DOM 由「拓展」详情页每次打开时向拓展要（瞬态）。
+   * 注册 / 撤销时通知详情页：正显示着这个拓展时重画，热重载后看到的是新代码画的面板。
+   */
+  function codexPlusRegisterSettingsPanel(definition, options = {}) {
+    if (typeof definition?.render !== "function") throw new Error("设置面板需要 render({ container, config, saveConfig })");
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const dispose = registerCodexPlusExtension("settingsPanel", codexPlusRegistry.settingsPanels, `${scriptKey}:settingsPanel`, definition, scriptKey);
+    // 详情页宿主在 40-backend-settings.js；单独切出这一段测试时没有它。
+    const changed = () => {
+      if (typeof codexPlusSettingsPanelChanged === "function") codexPlusSettingsPanelChanged(scriptKey);
+    };
+    changed();
+    return () => {
+      dispose();
+      changed();
+    };
+  }
+
+  function codexPlusSettingsPanelFor(scriptKey) {
+    return [...codexPlusRegistry.settingsPanels.values()].find((item) => item.scriptKey === scriptKey) || null;
   }

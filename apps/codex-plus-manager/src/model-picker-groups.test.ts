@@ -3,15 +3,13 @@ import { it } from "node:test";
 import { readFile } from "node:fs/promises";
 
 /**
- * 模型选择器分组折叠（聚合供应商场景）的契约测试。
+ * 模型选择器供应商入口（聚合供应商场景）的契约与行为测试。
  *
- * 这层跑不了真 DOM（仓库的注入层测试都是"读取分片源码 + 断言结构"这种风格，
- * 浏览器行为由 renderer-inject.test.ts 里的静态契约 + 人工/CDP 实测覆盖）。
- * 所以这里钉死三件事：
+ * DOM 相关逻辑用最小替身验证，真实浏览器交互另由实测覆盖。这里钉死三件事：
  *   1. 与后端约定的字段名不能漂（`codex_plus_group` / `codex_plus_group_id`）；
  *   2. 影响别人的行为约束：不搬动 React 管理的行、隐藏原生标签要退出无障碍树、
  *      单供应商不接管、聚合目录里"默认成员"那一组要能看懂；
- *   3. 自己的扫描/清理路径不能漏（否则会闪、会自喂扫描循环）。
+ *   3. 供应商入口与模型列表切换、自检重建和清理不能丢状态或留下隐藏行。
  */
 
 const SHARD_URL = new URL(
@@ -27,7 +25,13 @@ async function readShard() {
   return await readFile(SHARD_URL, "utf8");
 }
 
-it("分组折叠分片在 manifest 里排在模型目录之后、并在组装产物里", async () => {
+function functionSource(source: string, name: string) {
+  const body = source.match(new RegExp(`^  function ${name}\\([^]*?^  \\}`, "m"))?.[0];
+  assert.ok(body, `${name} 必须存在`);
+  return body;
+}
+
+it("供应商入口分片在 manifest 里排在模型目录之后、并在组装产物里", async () => {
   const manifest = JSON.parse(await readFile(MANIFEST_URL, "utf8")) as {
     fragments: Array<{ name: string }>;
   };
@@ -50,7 +54,7 @@ it("分组折叠分片在 manifest 里排在模型目录之后、并在组装产
   assert.match(artifact, /codexPlusModelPickerGroupsRuntime/, "组装产物里要有本分片");
 });
 
-it("分组折叠读的字段名与后端发布一致", async () => {
+it("供应商入口读的字段名与后端发布一致", async () => {
   const source = await readShard();
   // 后端 aggregate_catalog.rs 发布 / model_suffix.rs 放行的两个键。
   assert.match(source, /entry\.codex_plus_group\b/);
@@ -63,7 +67,7 @@ it("不搬动 React 管理的行，只用类名隐藏", async () => {
   assert.doesNotMatch(source, /appendChild\(entry\.row\)|appendChild\(row\)/);
   assert.doesNotMatch(source, /\.row\.remove\(\)/);
   assert.match(source, /codex-plus-model-group-collapsed\{display:none!important\}/);
-  // 折叠状态必须落在行自己的类名上，而不是重排 DOM。
+  // 保留已发布的隐藏类名，导航只控制可见性，不重排 DOM。
   assert.match(source, /classList\.toggle\("codex-plus-model-group-collapsed"/);
 });
 
@@ -86,7 +90,7 @@ it("默认成员的裸名模型归到默认供应商分组，不产生空标题"
   // 分组名解析：优先 codex_plus_group，其次 description 的 "上游 · 供应商"。
   assert.match(source, /const separator = description\.lastIndexOf\(" · "\)/);
   assert.match(source, /codexPlusModelPickerDefaultProviderName/);
-  // 空名兜底成固定 id，避免折叠状态串组。
+  // 空名兜底成固定 id，避免导航串组。
   assert.match(source, /group\.id = "__ungrouped__"/);
 });
 
@@ -103,9 +107,9 @@ it("扫描器自己插的节点都带归属标记，避免自喂扫描循环", a
 
 it("菜单关闭或组件重建后能自愈，不留下清不掉的残留", async () => {
   const source = await readShard();
-  // React 回收兄弟节点后标题会消失，指纹没变也必须重建。
+  // React 回收注入节点后入口会消失，指纹没变也必须重建。
   assert.match(source, /codexPlusModelPickerHeadersIntact/);
-  assert.match(source, /header\.nextElementSibling === first/);
+  assert.match(functionSource(source, "codexPlusModelPickerHeadersIntact"), /codex-plus-model-provider-grid/);
   // 恢复时要摘干净自己加的类名与属性。
   assert.match(source, /row\.removeAttribute\(codexPlusModelPickerGroupAttr\)/);
   assert.match(source, /native\.removeAttribute\("data-codex-plus-ext"\)/);
@@ -120,13 +124,375 @@ it("重注入时与上一个实例交接，不先拆再建造成闪烁", async (
   assert.match(source, /releaseDom\(\)/, "彻底还原要有单独出口");
 });
 
-it("折叠状态按分组 id 持久化，并且有中文文案", async () => {
+it("入口使用独立供应商图标，并通过导航显示模型列表", async () => {
   const source = await readShard();
-  assert.match(source, /codexPlus\.modelPicker\.collapsedGroups\.v1/);
-  assert.match(source, /全部展开/);
-  assert.match(source, /全部折叠/);
-  // 读屏文案要带展开/折叠状态。
+  assert.match(source, /codex-plus-model-provider-grid/);
+  assert.match(source, /codex-plus-model-provider-icon/);
+  assert.match(source, /function codexPlusModelPickerNavigate\(list, groupId\)/);
+  assert.match(source, /function codexPlusModelPickerSyncNavigation\(list, groups\)/);
+  assert.doesNotMatch(source, /全部展开|全部折叠/);
+  // 入口的无障碍名称仍要包含供应商、模型数和默认身份。
   assert.match(source, /groupAria/);
+});
+
+it("只持久化供应商身份，不把当前列表或旧折叠状态带到下一次打开", async () => {
+  const source = await readShard();
+  const state = {
+    providerNames: new Map([["example-model", { name: "供应商 A", parsed: false }]]),
+    defaultGroupId: "provider-a",
+    activeGroupId: "provider-b",
+    collapsed: new Set(["provider-a"]),
+    touched: new Set(["provider-b"]),
+  };
+  let saved: Record<string, unknown> | undefined;
+  const persist = new Function(
+    "window", "codexPlusModelPickerGroupsState", "codexPlusModelPickerGroupsStoreKey",
+    `${functionSource(source, "codexPlusModelPickerPersist")}\nreturn codexPlusModelPickerPersist;`,
+  )(
+    { localStorage: { setItem: (_key: string, value: string) => { saved = JSON.parse(value); } } },
+    state,
+    "test-model-picker",
+  );
+  persist();
+  assert.ok(saved);
+  assert.equal(saved.defaultGroupId, "provider-a");
+  assert.ok(saved.providers);
+  for (const key of ["activeGroupId", "collapsed", "touched"]) {
+    assert.equal(Object.hasOwn(saved, key), false, `${key} 不应跨菜单保存`);
+  }
+});
+
+it("兼容旧身份缓存，但忽略其中的展开状态和导航状态", async () => {
+  const source = await readShard();
+  const state = {
+    stored: false,
+    providerNames: new Map<string, { name: string; parsed: boolean }>(),
+    defaultGroupId: "",
+    activeGroupId: "",
+  };
+  const cached = {
+    defaultGroupId: "provider-a",
+    providers: {
+      first: "供应商 A",
+      second: { name: "供应商 B", parsed: true },
+    },
+    activeGroupId: "provider-b",
+    collapsed: ["provider-a"],
+    touched: ["provider-b"],
+  };
+  const store = new Function(
+    "window", "codexPlusModelPickerGroupsState", "codexPlusModelPickerGroupsStoreKey",
+    `${functionSource(source, "codexPlusModelPickerStore")}\nreturn codexPlusModelPickerStore;`,
+  )(
+    { localStorage: { getItem: () => JSON.stringify(cached) } },
+    state,
+    "test-model-picker",
+  );
+  store();
+  assert.equal(state.activeGroupId, "", "打开菜单仍从供应商入口开始");
+  assert.equal(state.defaultGroupId, "provider-a");
+  assert.deepEqual(state.providerNames.get("first"), { name: "供应商 A", parsed: false });
+  assert.deepEqual(state.providerNames.get("second"), { name: "供应商 B", parsed: true });
+  assert.equal(Object.hasOwn(state, "collapsed"), false);
+  assert.equal(Object.hasOwn(state, "touched"), false);
+});
+
+async function navigationRuntime() {
+  const source = await readShard();
+  let focused = "";
+  const element = (id: string, selected = false) => {
+    const attributes = new Map<string, string>();
+    const classes = new Set<string>();
+    const fields: Record<string, unknown> = {};
+    return {
+      id, attributes, classes, fields,
+      textContent: "", title: "", hidden: false,
+      parentElement: null as unknown,
+      setAttribute: (name: string, value: string) => attributes.set(name, value),
+      querySelector: (selector: string) => fields[selector] ?? null,
+      matches: () => selected,
+      classList: { toggle: (name: string, enabled: boolean) => enabled ? classes.add(name) : classes.delete(name) },
+      focus: () => { focused = id; },
+    };
+  };
+  const headers = new Map(["a", "b"].map((id) => {
+    const header = element(`header-${id}`);
+    header.fields[".codex-plus-model-group-title"] = element(`title-${id}`);
+    header.fields[".codex-plus-model-group-count"] = element(`count-${id}`);
+    return [id, header];
+  }));
+  const grid = element("grid");
+  grid.fields.button = headers.get("a");
+  const toolbar = element("toolbar");
+  const toolbarLabel = element("toolbar-label");
+  toolbar.fields[".codex-plus-model-group-toolbar-label"] = toolbarLabel;
+  toolbar.fields[".codex-plus-model-group-count"] = element("toolbar-count");
+  const list = Object.assign(element("list"), {
+    isConnected: true,
+    scrollTop: 80,
+    querySelector: (selector: string) => {
+      if (selector === ".codex-plus-model-provider-grid") return grid;
+      if (selector === ".codex-plus-model-group-toolbar") return toolbar;
+      if (selector === ".codex-plus-model-group-header") return headers.get("a");
+      const id = selector.match(/^\[data-codex-plus-model-group-id="([^"]*)"\]$/)?.[1];
+      return id ? headers.get(id) ?? null : null;
+    },
+  });
+  const entry = (groupId: string, id: string, selected = false) => {
+    const row = element(id, selected);
+    row.parentElement = list;
+    return { groupId, provider: `供应商 ${groupId.toUpperCase()}`, row, name: id };
+  };
+  let rows = [entry("a", "a-1"), entry("b", "b-1", true), entry("a", "a-2")];
+  let reads = 0;
+  const state = { activeGroupId: "" };
+  const functions = [
+    "codexPlusModelPickerText",
+    "codexPlusModelPickerGroups",
+    "codexPlusModelPickerUniqueGroupIds",
+    "codexPlusModelPickerSelectedRow",
+    "codexPlusModelPickerSyncGroup",
+    "codexPlusModelPickerNavigate",
+    "codexPlusModelPickerSyncNavigation",
+    "cssEscapeValue",
+  ].map((name) => functionSource(source, name)).join("\n");
+  const api = new Function(
+    "document", "navigator", "codexPlusModelPickerGroupsState", "codexPlusModelPickerRows",
+    "codexPlusModelPickerDefaultProviderName", "codexPlusModelPickerDefaultGroupId",
+    "codexPlusModelPickerSyncDefaultBadge", "codexPlusModelPickerGroupAttr", "codexPlusModelPickerGroupIdAttr",
+    `${functions}
+      return {
+        navigate: codexPlusModelPickerNavigate,
+        sync: codexPlusModelPickerSyncNavigation,
+        groups: () => codexPlusModelPickerUniqueGroupIds(codexPlusModelPickerGroups(codexPlusModelPickerRows())),
+      };`,
+  )(
+    { documentElement: { lang: "zh-CN" } }, { language: "zh-CN" }, state,
+    () => { reads++; return rows; }, () => "供应商 A", () => "a", () => {},
+    "data-codex-plus-model-group", "data-codex-plus-model-group-id",
+  );
+  return {
+    api, state, list, grid, toolbar, toolbarLabel, headers, entry,
+    get rows() { return rows; },
+    set rows(value) { rows = value; },
+    get focused() { return focused; },
+    get reads() { return reads; },
+  };
+}
+
+it("从图标进入该供应商的原生模型列表，返回后恢复入口焦点", async () => {
+  const runtime = await navigationRuntime();
+  const { api, state, list, grid, toolbar, toolbarLabel, headers } = runtime;
+  const order = runtime.rows.map((entry) => entry.row);
+  const hidden = () => runtime.rows.map((entry) => entry.row.classes.has("codex-plus-model-group-collapsed"));
+  api.sync(list, api.groups());
+  assert.equal(grid.hidden, false);
+  assert.equal(toolbar.hidden, true);
+  assert.deepEqual(hidden(), [true, true, true], "供应商首页不混入模型行");
+  assert.equal(headers.get("b")?.attributes.get("data-current"), "true", "当前供应商仍有选中标志");
+
+  api.navigate(list, "b");
+  assert.equal(state.activeGroupId, "b");
+  assert.equal(list.attributes.get("data-codex-plus-model-provider-view"), "models");
+  assert.equal(grid.hidden, true);
+  assert.equal(toolbar.hidden, false);
+  assert.equal(toolbarLabel.textContent, "供应商 B");
+  assert.deepEqual(hidden(), [true, false, true]);
+  assert.equal(runtime.focused, "b-1", "进入后聚焦选中模型");
+  assert.equal(list.scrollTop, 0);
+
+  api.navigate(list, "");
+  assert.equal(state.activeGroupId, "");
+  assert.equal(grid.hidden, false);
+  assert.equal(toolbar.hidden, true);
+  assert.equal(runtime.focused, "header-b", "返回原供应商入口");
+  assert.deepEqual(hidden(), [true, true, true]);
+  assert.deepEqual(runtime.rows.map((entry) => entry.row), order, "原生行保持顺序和身份");
+  assert.ok(runtime.rows.every((entry) => entry.row.parentElement === list), "原生行不搬动");
+});
+
+it("导航使用当前行快照，当前供应商被移除时退回入口", async () => {
+  const runtime = await navigationRuntime();
+  const { api, state, list, grid, toolbar } = runtime;
+  api.navigate(list, "b");
+  runtime.rows = [runtime.entry("a", "new-a"), runtime.entry("b", "new-b", true)];
+  api.navigate(list, "b");
+  assert.equal(runtime.focused, "new-b", "React 替换行后不能聚焦旧节点");
+  assert.equal(runtime.rows[1].row.classes.has("codex-plus-model-group-collapsed"), false);
+
+  runtime.rows = [runtime.rows[0]];
+  api.sync(list, api.groups());
+  assert.equal(state.activeGroupId, "");
+  assert.equal(grid.hidden, false);
+  assert.equal(toolbar.hidden, true);
+  assert.equal(runtime.focused, "header-a");
+  assert.equal(runtime.rows[0].row.classes.has("codex-plus-model-group-collapsed"), true);
+
+  const reads = runtime.reads;
+  list.isConnected = false;
+  api.navigate(list, "a");
+  assert.equal(state.activeGroupId, "");
+  assert.equal(runtime.reads, reads, "已关闭的菜单不能再被旧事件操作");
+});
+
+it("同一菜单扫描保留当前供应商，重新打开时回到供应商入口", async () => {
+  const source = await readShard();
+  const firstList = {};
+  const secondList = {};
+  const cleared: unknown[] = [];
+  const observed: unknown[] = [];
+  let disconnected = 0;
+  class Observer {
+    observe(list: unknown) { observed.push(list); }
+    disconnect() { disconnected++; }
+  }
+  const state = { activeList: firstList, activeGroupId: "b", observer: new Observer() };
+  const observe = new Function(
+    "codexPlusModelPickerGroupsState", "codexPlusModelPickerClear", "MutationObserver",
+    "codexPlusModelPickerNeedsRescan", "codexPlusModelPickerScheduleRescan",
+    `${functionSource(source, "codexPlusModelPickerObserveList")}\nreturn codexPlusModelPickerObserveList;`,
+  )(state, (list: unknown) => cleared.push(list), Observer, () => false, () => {});
+  observe(firstList);
+  assert.equal(state.activeGroupId, "b", "轮询不能把用户带回首页");
+  assert.deepEqual(cleared, []);
+
+  observe(secondList);
+  assert.equal(state.activeGroupId, "");
+  assert.equal(state.activeList, secondList);
+  assert.deepEqual(cleared, [firstList]);
+  assert.deepEqual(observed, [secondList]);
+  assert.equal(disconnected, 1);
+
+  state.activeGroupId = "a";
+  observe(secondList);
+  assert.equal(state.activeGroupId, "a");
+  assert.deepEqual(observed, [secondList], "同一个菜单只注册一个观察器");
+});
+
+it("供应商网格支持方向键，模型列表中的 Escape 返回供应商入口", async () => {
+  const source = await readShard();
+  let focused = -1;
+  const buttons = Array.from({ length: 5 }, (_, index) => ({
+    parentElement: {},
+    focus: () => { focused = index; },
+  }));
+  const list = { querySelectorAll: () => buttons };
+  const state = { activeGroupId: "" };
+  const navigated: unknown[] = [];
+  const keydown = new Function(
+    "codexPlusModelPickerGroupsState", "codexPlusModelPickerNavigate", "getComputedStyle",
+    `${functionSource(source, "codexPlusModelPickerNavigationKeydown")}\nreturn codexPlusModelPickerNavigationKeydown;`,
+  )(state, (container: unknown, id: string) => navigated.push([container, id]), () => ({ gridTemplateColumns: "80px 80px 80px" }));
+  const press = (key: string, index: number) => {
+    let prevented = false;
+    let stopped = false;
+    keydown({
+      key, currentTarget: list, target: { closest: () => buttons[index] },
+      preventDefault: () => { prevented = true; }, stopPropagation: () => { stopped = true; },
+    });
+    return { prevented, stopped };
+  };
+  assert.deepEqual(press("ArrowDown", 0), { prevented: true, stopped: true });
+  assert.equal(focused, 3);
+  press("End", 0);
+  assert.equal(focused, 4);
+  press("Home", 4);
+  assert.equal(focused, 0);
+  assert.deepEqual(press("Enter", 0), { prevented: false, stopped: true }, "保留按钮原生激活");
+  state.activeGroupId = "b";
+  assert.deepEqual(press("Escape", 0), { prevented: true, stopped: true });
+  assert.deepEqual(navigated, [[list, ""]]);
+});
+
+it("提前捕获 Escape 只返回当前供应商子页，首页及菜单外按键继续交给原生", async () => {
+  const source = await readShard();
+  const child = {};
+  const outside = {};
+  const list = {
+    isConnected: true,
+    contains: (target: unknown) => target === child || target === list,
+  };
+  const state = { activeGroupId: "b", activeList: list as typeof list | null };
+  const navigated: unknown[] = [];
+  const keydown = new Function(
+    "codexPlusModelPickerGroupsState", "codexPlusModelPickerNavigate",
+    `${functionSource(source, "codexPlusModelPickerEscapeKeydown")}\nreturn codexPlusModelPickerEscapeKeydown;`,
+  )(state, (container: unknown, id: string) => navigated.push([container, id]));
+  const press = (overrides: Record<string, unknown> = {}) => {
+    let prevented = false;
+    let stopped = false;
+    keydown({
+      key: "Escape", isComposing: false, target: child,
+      preventDefault: () => { prevented = true; },
+      stopPropagation: () => { stopped = true; },
+      ...overrides,
+    });
+    return { prevented, stopped };
+  };
+  assert.deepEqual(press(), { prevented: true, stopped: true });
+  assert.deepEqual(navigated, [[list, ""]], "先返回供应商入口，阻止原生关闭弹层");
+  navigated.length = 0;
+  const passthrough = (overrides: Record<string, unknown>, message: string) => {
+    assert.deepEqual(press(overrides), { prevented: false, stopped: false }, message);
+    assert.deepEqual(navigated, [], message);
+  };
+  passthrough({ key: "Enter" }, "其它按键不由全局 Escape 监听处理");
+  passthrough({ isComposing: true }, "输入法组合期间不接管 Escape");
+  passthrough({ target: outside }, "菜单外的 Escape 不受影响");
+  state.activeGroupId = "";
+  passthrough({}, "供应商首页保留原生关闭行为");
+  state.activeGroupId = "b";
+  list.isConnected = false;
+  passthrough({}, "已断开的菜单不能响应旧事件");
+  list.isConnected = true;
+  state.activeList = null;
+  passthrough({}, "没有活动菜单时不拦截 Escape");
+});
+
+it("Escape 在 window 捕获阶段注册，菜单清理和重注入时移除同一监听", async () => {
+  const source = await readShard();
+  assert.match(
+    functionSource(source, "codexPlusModelPickerPatch"),
+    /window\.addEventListener\("keydown", codexPlusModelPickerEscapeKeydown, true\)/,
+    "必须早于 document 捕获阶段的原生关闭监听",
+  );
+  assert.match(
+    functionSource(source, "codexPlusModelPickerClear"),
+    /window\.removeEventListener\("keydown", codexPlusModelPickerEscapeKeydown, true\)/,
+    "关闭菜单和退回单供应商时解除全局监听",
+  );
+  const dispose = source.match(/dispose\(\) \{[\s\S]*?\n    \},/)?.[0];
+  assert.ok(dispose);
+  assert.match(
+    dispose,
+    /window\.removeEventListener\("keydown", codexPlusModelPickerEscapeKeydown, true\)/,
+    "热重注入不能遗留旧实例的 Escape 监听",
+  );
+});
+
+it("重注入复用并更新已有样式，不让新版入口继续使用旧折叠样式", async () => {
+  const source = await readShard();
+  const attributes = new Map<string, string>();
+  const style = {
+    id: "picker-style", isConnected: true, textContent: "old collapsed layout",
+    setAttribute: (name: string, value: string) => attributes.set(name, value),
+  };
+  const install = new Function(
+    "document", "codexPlusModelPickerGroupsStyleId", "codexPlusModelPickerGroupsExtMark",
+    "codexPlusModelPickerNativeLabelClass", "codexPlusModelPickerOwnLabelClass", "codexPlusModelPickerFavoriteClass",
+    `${functionSource(source, "codexPlusModelPickerInstallStyle")}\nreturn codexPlusModelPickerInstallStyle;`,
+  )({
+    getElementById: () => style,
+    createElement: () => { throw new Error("不应创建重复样式"); },
+    head: { appendChild: () => { throw new Error("不应重复挂载已有样式"); } },
+  }, "picker-style", "builtin-model-picker-groups", "native-label", "own-label", "favorite");
+  install();
+  assert.match(style.textContent, /\.codex-plus-model-provider-grid\{display:grid/);
+  assert.match(style.textContent, /\.codex-plus-model-provider-grid\[hidden\]/);
+  assert.equal(attributes.get("data-codex-plus-ext"), "builtin-model-picker-groups");
+  const current = style.textContent;
+  install();
+  assert.equal(style.textContent, current, "重复注入保持同一份样式");
 });
 
 it("默认供应商带「默认」标志，身份来自目录而不是猜名字", async () => {
@@ -141,8 +507,8 @@ it("默认供应商带「默认」标志，身份来自目录而不是猜名字"
   assert.match(source, /defaultBadge: "默认"/);
   // 默认分组在 id 去重改写之前先认出来，且按组内任意一行命中判定。
   assert.match(source, /group\.isDefault = !!defaultGroupId/);
-  // 没有选中模型时优先展开默认供应商。
-  assert.match(source, /keep = groups\.find\(\(group\) => group\.isDefault\)\?\.id/);
+  // 默认身份仅用于标志，不应跳过供应商入口直接进入默认模型列表。
+  assert.doesNotMatch(source, /function codexPlusModelPickerAutoCollapse/);
 });
 
 it("目录条目按别名匹配，且只用它补分组 id、不用它决定显示归属", async () => {
@@ -162,11 +528,12 @@ it("目录条目按别名匹配，且只用它补分组 id、不用它决定显�
   assert.match(source, /group\.entries\.some\(\(entry\) => entry\.groupId === defaultGroupId/);
 });
 
-it("表头右端对齐：标题撑满剩余空间，不靠 auto 外边距推计数", async () => {
+it("供应商名称允许收缩，计数不靠 auto 外边距定位", async () => {
   const source = await readShard();
-  // 回归：用 `margin-left:auto` 把计数推到右边时，多出「默认」徽标的那一行 auto 外边距
-  // 会被吃掉，数字紧跟在徽标后面，与其它行错位。
-  assert.match(source, /codex-plus-model-group-title\{flex:1 1 auto/);
+  const title = source.match(/\.codex-plus-model-group-title\{([^}]+)\}/)?.[1];
+  assert.ok(title, "保留供应商标题的既有类名");
+  assert.match(title, /min-width:0/);
+  assert.match(title, /overflow:hidden/);
   assert.doesNotMatch(
     source,
     /codex-plus-model-group-count\{flex:0 0 auto;margin-left:auto/,

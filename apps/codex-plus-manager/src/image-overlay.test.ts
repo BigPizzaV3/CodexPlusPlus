@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { it } from "node:test";
 
-const source = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-const install = source.match(/^  function installCodexPlusImageOverlay\([^]*?^  \}/m)?.[0];
+// 背景图是官方拓展包（assets/extensions/image-overlay）：引擎在 overlay.js，main.js 按拓展配置调用它。
+const engine = await readFile(new URL("../../../assets/extensions/image-overlay/overlay.js", import.meta.url), "utf8");
+const main = await readFile(new URL("../../../assets/extensions/image-overlay/main.js", import.meta.url), "utf8");
+const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+const install = engine.match(/^  function installCodexPlusImageOverlay\([^]*?^  \}/m)?.[0];
 assert.ok(install);
 
 // Browser suites verify pixels, positioning, lifetimes and bounded work.
@@ -80,6 +83,23 @@ it("preserves overlay opt-in and integration contracts", () => {
   for (const name of ["__codexPlusImageOverlayReady", "__codexPlusImageOverlayCleanup",
     "__codexPlusImageOverlayResource", "__codexPlusImageOverlayStats"]) assert.ok(install.includes(name));
   assert.match(install, /if \(!config\.enabled \|\| !source \|\| !root\) return/);
-  assert.match(install, /sendCodexPlusDiagnostic\("image_overlay_installed"/);
-  assert.doesNotMatch(source, /function installCodexPlusImageOverlayForeground|function codexPlusSettingsGuestWallpaper/);
+  assert.match(install, /report\?\.\("image_overlay_installed"/);
+  assert.doesNotMatch(engine, /function installCodexPlusImageOverlayForeground|function codexPlusSettingsGuestWallpaper/);
+  // 只用公开接口：不再读注入层的全局配置、私有诊断函数。
+  assert.doesNotMatch(engine + main, /__CODEX_PLUS_IMAGE_OVERLAY__|sendCodexPlusDiagnostic/);
+});
+
+it("is no longer part of the core injection; the extension loads, reapplies and removes it", () => {
+  assert.doesNotMatch(renderer, /function installCodexPlusImageOverlay|__CODEX_PLUS_IMAGE_OVERLAY__|scheduleCodexPlusImageOverlay/);
+  // 图片只经声明过的读图路由拿；改设置原地重铺；卸下时以 enabled:false 再调一次做清理。
+  assert.match(main, /ctx\.call\("\/image-overlay\/image", \{\}\)/);
+  // 内核先调 onConfigUpdate 再换 ctx.config：改设置时用 next，不读旧的 ctx.config。
+  // 两种 checkout 换行都要保留完整的热更新调用顺序断言。
+  for (const eol of ["\n", "\r\n"]) {
+    assert.match(main.replace(/\r?\n/g, eol), /ctx\.onConfigUpdate\(\(next\) => \{\r?\n\s+void apply\(next\);\r?\n\s+return true;/);
+  }
+  assert.match(main, /const opacity = Number\(config\.opacity\);/);
+  assert.match(main, /installCodexPlusImageOverlay\(\{ enabled: false \}\)/);
+  // 读图期间又改了设置或已卸下时丢弃旧结果，不会把旧图铺回去。
+  assert.match(main, /if \(current !== generation \|\| ctx\.disposed\) return;/);
 });

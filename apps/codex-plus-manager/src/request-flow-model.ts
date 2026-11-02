@@ -1,7 +1,7 @@
 /**
  * 实时请求流的纯数据逻辑：托盘「流量」页签和总览拓扑图共用。
- * 数据来自 `load_request_flow`（请求日志末尾 + 进行中的请求）；每轮和上一轮对比，
- * 新出现的请求发一颗「去程」光点（Agent → Codex++ → 供应商），请求结束发一颗「回程」光点。
+ * 数据来自 `load_request_flow`（请求日志末尾 + 进行中的请求）；按当前进行中的请求分组，
+ * 沿 Agent → Codex++ → 供应商的完整路线流动，响应反向，结束即停止。
  * 页面只负责画和动画。
  */
 import { maskAccountName } from "./gateway-model.ts";
@@ -20,6 +20,7 @@ export type FlowEntry = {
   statusCode?: number;
   success?: boolean;
   state?: string | null;
+  phase?: string | null;
   attempts?: number;
   firstTokenMs?: number | null;
   estimatedOutputTokens?: number | null;
@@ -39,43 +40,6 @@ export function flowAgent(entry: FlowEntry): string {
   return entry.agent?.trim() || "codex";
 }
 
-/**
- * 一颗光点：out 是去程，back 是回程，round 是一轮之间就开始又结束的请求（先去后回）。
- * `seq` 单调递增，画动画的一方据此判断哪些已经放过。
- */
-export type FlowPulse = { seq: number; agent: string; relayId: string; kind: "out" | "back" | "round"; tone: FlowStatus };
-
-export type FlowSeen = Map<string, FlowStatus>;
-
-/** 一轮最多放这么多颗；面板隐藏后重新出现时积压的请求不全部回放。 */
-export const MAX_PULSES_PER_TICK = 6;
-
-/**
- * 对比上一轮看到的状态，得出这一轮要放的光点。第一轮（`seen` 为 null）只记状态，不回放历史。
- * 光点按请求开始时间从早到晚排，超出上限时留最近的。
- */
-export function diffFlow(seen: FlowSeen | null, entries: FlowEntry[], nextSeq: number): { seen: FlowSeen; pulses: FlowPulse[] } {
-  const next: FlowSeen = new Map();
-  const changes: Array<{ entry: FlowEntry; kind: FlowPulse["kind"]; tone: FlowStatus }> = [];
-  for (const entry of entries) {
-    const status = flowStatus(entry);
-    next.set(entry.id, status);
-    if (!seen) continue;
-    const before = seen.get(entry.id);
-    if (before === undefined) changes.push({ entry, kind: status === "running" ? "out" : "round", tone: status });
-    else if (before === "running" && status !== "running") changes.push({ entry, kind: "back", tone: status });
-  }
-  changes.sort((left, right) => left.entry.startedAtMs - right.entry.startedAtMs);
-  const pulses = changes.slice(-MAX_PULSES_PER_TICK).map((change, index) => ({
-    seq: nextSeq + index,
-    agent: flowAgent(change.entry),
-    relayId: change.entry.relayId ?? "",
-    kind: change.kind,
-    tone: change.tone,
-  }));
-  return { seen: next, pulses };
-}
-
 /** 拓扑图连线的键，和 HubTopology 里的 `${from}>${to}` 一致。 */
 export function agentLinkKey(agent: string): string {
   return `agent:${agent}>hub`;
@@ -88,13 +52,12 @@ export function providerLinkKey(relayId: string): string {
 export type FlowHop = { key: string; reverse: boolean };
 
 /** 光点依次走过的连线；回程倒着走。 */
-export function pulseHops(pulse: Pick<FlowPulse, "agent" | "relayId" | "kind">): FlowHop[] {
+export function pulseHops(pulse: { agent: string; relayId: string; kind: "out" | "back" }): FlowHop[] {
   const out: FlowHop[] = [{ key: agentLinkKey(pulse.agent), reverse: false }];
   if (pulse.relayId) out.push({ key: providerLinkKey(pulse.relayId), reverse: false });
   const back = [...out].reverse().map((hop) => ({ ...hop, reverse: true }));
   if (pulse.kind === "out") return out;
-  if (pulse.kind === "back") return back;
-  return [...out, ...back];
+  return back;
 }
 
 /** 有请求正在进行的连线：画成流动的虚线。 */
@@ -102,6 +65,49 @@ export function busyLinks(entries: FlowEntry[]): Set<string> {
   const keys = new Set<string>();
   for (const entry of entries) {
     if (flowStatus(entry) !== "running") continue;
+    keys.add(agentLinkKey(flowAgent(entry)));
+    if (entry.relayId) keys.add(providerLinkKey(entry.relayId));
+  }
+  return keys;
+}
+
+export type LiveFlowRoute = { key: string; agent: string; relayId: string; reverse: boolean; count: number };
+
+/** 按路线和方向分组，发送和响应可以同时经过同一根连线。完成请求不留动画。 */
+export function liveFlowRoutes(entries: FlowEntry[]): LiveFlowRoute[] {
+  const routes = new Map<string, LiveFlowRoute>();
+  for (const entry of entries) {
+    if (flowStatus(entry) !== "running") continue;
+    const agent = flowAgent(entry);
+    const relayId = entry.relayId ?? "";
+    const reverse = returningLinks([entry]).size > 0;
+    const key = JSON.stringify([agent, relayId, reverse]);
+    const route = routes.get(key) ?? { key, agent, relayId, reverse, count: 0 };
+    route.count += 1;
+    routes.set(key, route);
+  }
+  return [...routes.values()];
+}
+
+/** 在整条路线的累计长度上采样，不在每个节点重置速度或循环。 */
+export function flowRoutePosition(lengths: number[], distance: number): { segment: number; progress: number } | null {
+  if (distance < 0) return null;
+  let start = 0;
+  for (let segment = 0; segment < lengths.length; segment += 1) {
+    const length = lengths[segment];
+    if (length > 0 && distance <= start + length) return { segment, progress: (distance - start) / length };
+    start += length;
+  }
+  return null;
+}
+
+/** 已收到上游首字后，响应沿连线反向流回 Agent。 */
+export function returningLinks(entries: FlowEntry[]): Set<string> {
+  const keys = new Set<string>();
+  for (const entry of entries) {
+    if (flowStatus(entry) !== "running") continue;
+    if (entry.phase === "retrying" || entry.phase === "waiting" || entry.phase === "requesting") continue;
+    if (entry.phase !== "generating" && entry.firstTokenMs == null && (entry.estimatedOutputTokens ?? 0) <= 0) continue;
     keys.add(agentLinkKey(flowAgent(entry)));
     if (entry.relayId) keys.add(providerLinkKey(entry.relayId));
   }

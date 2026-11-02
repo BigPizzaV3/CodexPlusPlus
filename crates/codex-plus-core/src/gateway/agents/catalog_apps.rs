@@ -338,6 +338,76 @@ fn desktop_write_set(dirs: &DesktopDirs, wiring: &Wiring, set: &mut FileSet) -> 
     Ok(())
 }
 
+/// Claude Code 认的模型能力声明：`<模型>=effort,xhigh_effort;<模型>=…`。
+///
+/// Desktop 的 Code 标签页跑的是 Claude Code（读 `~/.claude/settings.json`）。它不认识的模型
+/// （包括我们的 mythos-gw- 别名）默认不发 effort，Desktop 菜单里选了也到不了网关。
+const CLAUDE_CAPS_ENV: &str = "CLAUDE_CODE_MODEL_CAPABILITIES";
+
+/// Claude Code 的设置目录：`$CLAUDE_CONFIG_DIR`，否则 `~/.claude`。
+fn claude_code_settings_path(env: &AgentEnv) -> PathBuf {
+    env.dir_or(&["CLAUDE_CONFIG_DIR"], || env.home_path(".claude"))
+        .join("settings.json")
+}
+
+/// 一个模型在这些档位下对 Claude Code 声明的能力：有档位就是 effort，
+/// 档位达到 xhigh / max 再加 xhigh_effort / max_effort。网关发往上游时会按模型实有档位套，
+/// 所以到 max 的模型也声明 xhigh（Claude Code 的 Ultracode 要 xhigh_effort）。
+fn claude_caps(levels: &[String]) -> Option<String> {
+    let has = |level: &str| levels.iter().any(|known| known == level);
+    if levels.iter().all(|level| level == "none") {
+        return None;
+    }
+    let mut caps = vec!["effort"];
+    if has("xhigh") || has("max") {
+        caps.push("xhigh_effort");
+    }
+    if has("max") {
+        caps.push("max_effort");
+    }
+    Some(caps.join(","))
+}
+
+/// `CLAUDE_CODE_MODEL_CAPABILITIES` 的值：Desktop 交给 Claude Code 的每个有档位的别名。
+/// Claude Code 把模型名去掉 `[1m]` 后整串比较，别名本来就是小写。没有一个带档位时为 None。
+fn desktop_capabilities(wiring: &Wiring) -> Option<String> {
+    let segments: Vec<String> = wiring
+        .models
+        .iter()
+        .filter(|model| !model.id.to_ascii_lowercase().contains("claude"))
+        .filter_map(|model| {
+            let caps = claude_caps(&model.reasoning_levels)?;
+            let alias = crate::gateway::route::claude_desktop_alias(&model.id, true);
+            Some(format!("{alias}={caps}"))
+        })
+        .collect();
+    (!segments.is_empty()).then(|| segments.join(";"))
+}
+
+fn desktop_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Result<()> {
+    for dirs in desktop_sets(env) {
+        desktop_write_set(&dirs, wiring, set)?;
+    }
+    if let Some(caps) = desktop_capabilities(wiring) {
+        let settings = set.json(&claude_code_settings_path(env))?;
+        let env_map = object_entry(settings, "env");
+        // 用户自己写了这个变量（不是我们的别名声明）就不覆盖。
+        let ours = |value: &str| {
+            value.split(';').all(|segment| {
+                segment.trim().is_empty()
+                    || segment
+                        .trim()
+                        .starts_with(crate::gateway::route::CLAUDE_EFFORT_ALIAS_PREFIX)
+            })
+        };
+        let current = env_map.get(CLAUDE_CAPS_ENV).and_then(Value::as_str);
+        if current.is_none_or(ours) {
+            env_map.insert(CLAUDE_CAPS_ENV.to_string(), json!(caps));
+        }
+    }
+    Ok(())
+}
+
 pub const CLAUDE_DESKTOP: AgentSpec = AgentSpec {
     id: "claude-desktop",
     name: "Claude Desktop",
@@ -345,13 +415,8 @@ pub const CLAUDE_DESKTOP: AgentSpec = AgentSpec {
     wire: AgentWire::Anthropic,
     detect: desktop_detect,
     config_path: desktop_path,
-    write: |env, wiring, set| {
-        for dirs in desktop_sets(env) {
-            desktop_write_set(&dirs, wiring, set)?;
-        }
-        Ok(())
-    },
-    hint: "完全退出并重新打开 Claude Desktop 后生效（Code 与 Cowork 走网关，无需 Anthropic 登录）；非 Claude 模型在它的选择器里以真实名字显示（底层 id 是 claude-gw- 开头的别名）",
+    write: desktop_write,
+    hint: "完全退出并重新打开 Claude Desktop 后生效（Code 与 Cowork 走网关，无需 Anthropic 登录）；非 Claude 模型在它的选择器里以真实名字显示（底层 id 是 claude-gw- / mythos-gw- 开头的别名），有思考档位的模型带思考等级菜单，选中的档位按模型实有档位套用",
 };
 
 // ---------------------------------------------------------------- Zed
@@ -611,29 +676,60 @@ fn vscode_group(wiring: &Wiring, vendor: &str) -> Value {
     }
 }
 
-/// 改写 chatLanguageModels.json（JSONC 数组）：去掉旧的 Codex++ 分组，追加新的；
-/// VS Code 自己写进分组的键（如模型的推理强度设置）保留。整份文件按原文还原。
-fn vscode_write_models(path: &Path, group: Value, set: &mut FileSet) -> anyhow::Result<()> {
-    let text = set.raw(path)?;
-    let mut list = match text.as_deref() {
+fn vscode_model_groups(text: Option<&str>) -> anyhow::Result<Vec<Value>> {
+    match text {
         Some(current) if !strip_jsonc(current).trim().is_empty() => {
-            match parse_jsonc(current)
-                .with_context(|| format!("无法解析 {}，为免覆盖没有改动它", path.display()))?
-            {
-                Value::Array(list) => list,
-                _ => bail!("{} 不是 JSON 数组，为免覆盖没有改动它", path.display()),
+            match parse_jsonc(current)? {
+                Value::Array(list) => Ok(list),
+                _ => bail!("模型分组配置不是 JSON 数组，为免覆盖没有改动它"),
             }
         }
-        _ => Vec::new(),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn vscode_group_is_ours(group: &Value) -> bool {
+    group.get("name").and_then(Value::as_str) == Some(PROVIDER_ID)
+        && matches!(
+            group.get("vendor").and_then(Value::as_str),
+            Some(VSCODE_ENDPOINT | VSCODE_OAI)
+        )
+}
+
+/// 旧版按 Raw 保存的也是接入前原文；断开时只还原我们的分组，其它分组沿用当前值。
+pub(super) fn restore_vscode_models(
+    before: Option<&str>,
+    current: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let Some(current) = current else {
+        return Ok(None);
     };
+    let original = vscode_model_groups(before)?;
+    let mut groups = vscode_model_groups(Some(current))?;
+    groups.retain(|group| !vscode_group_is_ours(group));
+    for (index, group) in original.iter().enumerate() {
+        if vscode_group_is_ours(group) {
+            groups.insert(index.min(groups.len()), group.clone());
+        }
+    }
+    if groups == original {
+        return Ok(before.map(str::to_string));
+    }
+    let mut text = serde_json::to_string_pretty(&groups)?;
+    text.push('\n');
+    Ok(Some(text))
+}
+
+/// 改写 chatLanguageModels.json（JSONC 数组）：去掉旧的 Codex++ 分组，追加新的；
+/// VS Code 自己写进分组的键（如模型的推理强度设置）保留。断开只还原 Codex++ 分组。
+fn vscode_write_models(path: &Path, group: Value, set: &mut FileSet) -> anyhow::Result<()> {
+    let text = set.raw(path)?;
+    let mut list = vscode_model_groups(text.as_deref())
+        .with_context(|| format!("无法解析 {}，为免覆盖没有改动它", path.display()))?;
     let vendor = group.get("vendor").cloned();
     let mut kept = Map::new();
     list.retain(|item| {
-        let ours = item.get("name").and_then(Value::as_str) == Some(PROVIDER_ID)
-            && matches!(
-                item.get("vendor").and_then(Value::as_str),
-                Some(VSCODE_ENDPOINT | VSCODE_OAI)
-            );
+        let ours = vscode_group_is_ours(item);
         if ours && item.get("vendor") == vendor.as_ref() {
             kept = item.as_object().cloned().unwrap_or_default();
         }
@@ -1574,10 +1670,12 @@ mod tests {
                 ModelEntry {
                     id: "ds/deepseek-chat".to_string(),
                     context_window: Some(128_000),
+                    reasoning_levels: Vec::new(),
                 },
                 ModelEntry {
                     id: "group/daily".to_string(),
                     context_window: None,
+                    reasoning_levels: Vec::new(),
                 },
             ],
         }
@@ -1641,6 +1739,55 @@ mod tests {
         let three_p = json_of(&files[&base.join("Claude-3p/claude_desktop_config.json")]);
         assert_eq!(three_p["deploymentMode"], "3p");
         assert_eq!(three_p["mcpServers"]["fs"]["command"], "npx");
+    }
+
+    #[test]
+    fn claude_desktop_declares_effort_caps_only_for_aliases_with_levels() {
+        let temp = tempfile::tempdir().unwrap();
+        let env = AgentEnv::at(temp.path()).with_os(Os::Mac);
+        let mut wired = wiring("claude-desktop");
+        wired.models[0].reasoning_levels = ["minimal", "low", "medium", "high", "xhigh"]
+            .iter()
+            .map(|level| level.to_string())
+            .collect();
+        let mut set = FileSet::new();
+        (CLAUDE_DESKTOP.write)(&env, &wired, &mut set).unwrap();
+        let files: std::collections::BTreeMap<PathBuf, String> = set
+            .changes()
+            .unwrap()
+            .into_iter()
+            .map(|change| (change.path, change.after.unwrap_or_default()))
+            .collect();
+        let settings = json_of(&files[&temp.path().join(".claude/settings.json")]);
+        let alias = crate::gateway::route::claude_desktop_alias("ds/deepseek-chat", true);
+        assert!(alias.starts_with("mythos-gw-"));
+        // 没有档位资料的 group/daily 不声明；xhigh 为顶的模型声明 effort 与 xhigh_effort。
+        assert_eq!(
+            settings["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
+            format!("{alias}=effort,xhigh_effort")
+        );
+
+        // 用户自己写的声明不覆盖。
+        let temp = tempfile::tempdir().unwrap();
+        let env = AgentEnv::at(temp.path()).with_os(Os::Mac);
+        write_file(
+            &temp.path().join(".claude/settings.json"),
+            r#"{"env":{"CLAUDE_CODE_MODEL_CAPABILITIES":"my-model=effort"}}"#,
+        );
+        let mut set = FileSet::new();
+        (CLAUDE_DESKTOP.write)(&env, &wired, &mut set).unwrap();
+        let kept = set
+            .changes()
+            .unwrap()
+            .into_iter()
+            .find(|change| change.path == temp.path().join(".claude/settings.json"))
+            .and_then(|change| change.after);
+        if let Some(text) = kept {
+            assert_eq!(
+                json_of(&text)["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
+                "my-model=effort"
+            );
+        }
     }
 
     #[test]
@@ -1913,7 +2060,8 @@ mod tests {
     fn air_runs_opencode_on_gateway_config() {
         let temp = tempfile::tempdir().unwrap();
         let env = AgentEnv::at(temp.path()).with_os(Os::Linux);
-        let dir = temp.path().join(".config/JetBrains/Air");
+        // 逐段拼：Windows 上 join(".config/JetBrains/Air") 会留下混用的分隔符，和实现拼出的字符串对不上。
+        let dir = temp.path().join(".config").join("JetBrains").join("Air");
         write_file(
             &dir.join("acp.json"),
             r#"{"agent_servers":{"Mine":{"command":"x"}}}"#,

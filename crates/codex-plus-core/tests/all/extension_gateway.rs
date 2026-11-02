@@ -84,6 +84,8 @@ fn parse_sse(bytes: &[u8]) -> Vec<String> {
 }
 
 async fn run_filter(manager: &UserScriptManager, chunks: &[&[u8]]) -> Vec<u8> {
+    // 响应 worker 槽位是进程级的，并行的用例会互相换掉它：整段持锁，到 release_worker 才放。
+    let _state = crate::common::global_state_lock();
     let middlewares = manager.enabled_gateway_response_middlewares().unwrap();
     let request = json!({"model": "gpt", "input": [{"role": "user", "content": [{"type": "input_text", "text": "最后一句"}]}]});
     let mut filter = codex_plus_core::extension_gateway::ResponseFilter::start_with(&middlewares, "/v1/responses", Some(&request))
@@ -94,6 +96,8 @@ async fn run_filter(manager: &UserScriptManager, chunks: &[&[u8]]) -> Vec<u8> {
         out.extend(filter.push(chunk).await);
     }
     out.extend(filter.finish().await);
+    // 撤下全局 worker 槽位，免得 Windows 上运行时销毁卡在子进程管道的阻塞读上。
+    filter.release_worker().await;
     out
 }
 
@@ -176,6 +180,30 @@ export default async function* (context, next) {
     let raw = String::from_utf8(run_filter(&manager, &[&source]).await).unwrap();
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert_eq!(parse_sse(raw.as_bytes()), ["response.created:", "response.output_text.delta:a", "response.completed:"]);
+}
+
+#[tokio::test]
+async fn releasing_a_filter_leaves_a_newer_worker_in_the_slot() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    use codex_plus_core::extension_gateway::ResponseFilter;
+    let _state = crate::common::global_state_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let pass = "export default (context, next) => next();";
+    write_package(&temp, "a-pass", json!({"response": [{"script": "gateway/a.mjs"}]}), &[("gateway/a.mjs", pass)]);
+    let first = manager.enabled_gateway_response_middlewares().unwrap();
+    let older = ResponseFilter::start_with(&first, "/v1/responses", None).await.expect("应建立会话");
+    // 多一个中间件，worker 的指纹变了：槽位换成新的 worker。
+    write_package(&temp, "b-pass", json!({"response": [{"script": "gateway/b.mjs"}]}), &[("gateway/b.mjs", pass)]);
+    let second = manager.enabled_gateway_response_middlewares().unwrap();
+    let newer = ResponseFilter::start_with(&second, "/v1/responses", None).await.expect("应建立会话");
+
+    older.release_worker().await;
+    assert!(ResponseFilter::worker_installed().await, "槽位里是更新的 worker，旧过滤器收尾不能把它撤掉");
+    newer.release_worker().await;
+    assert!(!ResponseFilter::worker_installed().await, "自己的 worker 收尾时应撤下");
 }
 
 #[tokio::test]
@@ -318,6 +346,37 @@ async fn request_stages_order_and_builtin_replaces() {
     assert_eq!(upstream["seen"], "upstream:chat:r1");
 }
 
+/// 本地代理与网关模式的内置环节都能写进 gateway.replaces；不认识的名字报错并列出可用的。
+#[test]
+fn replaces_accepts_proxy_and_gateway_builtin_segments() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let opened = [
+        "builtin:auto-retry",
+        "builtin:foreign-reasoning",
+        "builtin:unlisted-model-mapping",
+        "builtin:key-cooldown",
+        "builtin:key-breaker",
+        "builtin:local-rate-limit",
+        "builtin:title-model",
+        "builtin:request-conversion",
+        "builtin:auth-headers",
+        "builtin:official-shaping",
+        "builtin:request-log",
+    ];
+    write_package(&temp, "takeover", json!({ "request": [{ "script": "gateway/a.mjs" }], "replaces": opened }),
+        &[("gateway/a.mjs", "export default () => null")]);
+    write_package(&temp, "bad-auth", json!({ "replaces": ["builtin:auth-header"] }), &[]);
+    let inventory = manager.inventory().unwrap();
+    let find = |key: &str| inventory["scripts"].as_array().unwrap().iter().find(|item| item["key"] == key).unwrap().clone();
+    assert_eq!(find("user:takeover")["error"], "", "{}", find("user:takeover"));
+    assert_eq!(find("user:takeover")["package"]["gatewayReplaces"], json!(opened));
+    assert!(find("user:bad-auth")["error"].as_str().unwrap().contains("builtin:key-cooldown"));
+    let replaces = manager.enabled_gateway_replaces().unwrap();
+    assert_eq!(replaces.len(), opened.len());
+    assert!(replaces.iter().all(|(key, _)| key == "takeover"));
+}
+
 /// route 段：拓展给的候选供应商顺序（可删减），认不得的 id 丢掉，一个都不认得时照原顺序。
 #[tokio::test]
 async fn route_middlewares_reorder_candidate_relays() {
@@ -336,4 +395,34 @@ async fn route_middlewares_reorder_candidate_relays() {
     assert_eq!(manager.enabled_gateway_replaces().unwrap(), vec![("router".to_string(), "builtin:relay-rotation".to_string())]);
     manager.set_script_enabled("user:router", false).unwrap();
     assert_eq!(route_order_with_manager(&manager, &candidates, json!({"model": "m"})).await, None);
+}
+
+/// 关掉 builtin:auth-headers 的拓展在 upstream 段拿到这个候选的 Key，能设鉴权头；别的拓展拿不到 Key，
+/// 设的鉴权头也被丢掉。
+#[tokio::test]
+async fn auth_headers_takeover_gets_the_credential_and_may_set_auth_headers() {
+    use codex_plus_core::extension_gateway::{apply_upstream_request_with, extension_headers, EXTENSION_HEADERS};
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        eprintln!("跳过：本机没有 Node");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "a-auth", json!({ "request": [{ "script": "gateway/up.mjs", "stage": "upstream" }], "replaces": ["builtin:auth-headers"] }),
+        &[("gateway/up.mjs", r#"export default (body, context) => { context.headers.authorization = `Bearer ${context.credential.apiKey}`; context.headers["x-seen"] = "1"; return { ...body, authSaw: context.credential?.apiKey ?? null }; };"#)]);
+    write_package(&temp, "b-other", json!({ "request": [{ "script": "gateway/up.mjs", "stage": "upstream" }] }),
+        &[("gateway/up.mjs", r#"export default (body, context) => { context.headers["x-api-key"] = "stolen"; return { ...body, otherSaw: context.credential?.apiKey ?? null }; };"#)]);
+    let mut body = json!({ "model": "m", "messages": [] });
+    let context = json!({ "stage": "upstream", "wireApi": "chat", "relay": { "id": "r1" }, "__credential": { "apiKey": "sk-test" } });
+    let headers = EXTENSION_HEADERS
+        .scope(std::cell::RefCell::new(Vec::new()), async {
+            apply_upstream_request_with(&manager, &mut body, "/v1/responses", context).await.unwrap();
+            extension_headers()
+        })
+        .await;
+    assert_eq!(body["authSaw"], "sk-test");
+    assert_eq!(body["otherSaw"], serde_json::Value::Null, "没关掉鉴权环节的拓展拿不到 Key");
+    assert!(headers.contains(&("authorization".to_string(), "Bearer sk-test".to_string())), "{headers:?}");
+    assert!(headers.contains(&("x-seen".to_string(), "1".to_string())));
+    assert!(!headers.iter().any(|(name, _)| name == "x-api-key"), "别的拓展设的鉴权头被丢掉：{headers:?}");
 }

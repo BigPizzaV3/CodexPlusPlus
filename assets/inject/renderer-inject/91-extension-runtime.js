@@ -594,6 +594,15 @@
     }
   }
 
+  /**
+   * Codex++ 后台经 CDP 发给拓展的公开事件（只认 codexpp/ 前缀），例如会话索引修复结束的
+   * `codexpp/session-index-repaired`。拓展用 ctx.on 订阅。
+   */
+  window.__codexPlusEmitHostEvent = (event, payload) => {
+    if (typeof event !== "string" || !event.startsWith("codexpp/")) return false;
+    codexPlusEmitExtensionEvent(event, [payload]);
+    return true;
+  };
   /** 通知所有监听者。逐个隔离：一个处理器抛错不影响其余。 */
   function codexPlusEmitExtensionEvent(event, args = []) {
     const listeners = codexPlusExtensionListeners.get(event);
@@ -653,6 +662,16 @@
       "item/completed",
       "item/agentMessage/delta",
       "error",
+      // 用量与等待用户的通知（Agent 桌宠拓展的大肥鱼用它显示本轮用量、等待审批 / 提问）。
+      "thread/tokenUsage/updated",
+      "item/tool/requestUserInput",
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/permissions/requestApproval",
+      "mcpServer/elicitation/request",
+      "serverRequest/resolved",
+      "item/tool/userInputAnswered",
+      "item/approval/responded",
     ];
     try {
       const current = window.__codexPlusExtensionEventBridge;
@@ -1135,6 +1154,9 @@
       registerFloatingTab(definition, itemOptions) {
         return track(codexPlusRegisterFloatingTab(definition, registerOptions(itemOptions)));
       },
+      registerSettingsPanel(definition, itemOptions) {
+        return track(codexPlusRegisterSettingsPanel(definition, registerOptions(itemOptions)));
+      },
       registerToolView(definition, itemOptions) {
         const view = codexPlusRegisterToolView(definition, registerOptions(itemOptions));
         const handle = track(view);
@@ -1238,6 +1260,20 @@
           runCodexPlusExtensionCallback(scriptKey, `${extensionId}.setInterval`, () => handler(...args));
         }, delay);
         return track(() => window.clearInterval(timer));
+      },
+      /**
+       * 跟着 Codex++ 的页面扫描跑：Codex 的界面变了（会话切换、侧栏重建、输入框重建……）时调用 handler，
+       * 按帧合并、页面隐藏时不跑。phase：deferred（默认，完整扫描）或 light（每次变化都跑的轻量扫描，handler 要便宜）。
+       * handler 插进页面的节点必须带 data-codex-plus-ext 属性，否则会触发自喂扫描循环。返回的撤销函数带 run()：立即跑一次。
+       */
+      onScan(handler, scanOptions = {}) {
+        if (typeof handler !== "function") throw new Error("onScan 需要一个函数");
+        const step = () => runCodexPlusExtensionCallback(scriptKey, `${extensionId}.onScan`, handler);
+        const revoke = track(registerCodexPlusScanStep(scriptKey, step, scanOptions?.phase));
+        revoke.run = () => {
+          if (!disposed) step();
+        };
+        return revoke;
       },
 
       /**

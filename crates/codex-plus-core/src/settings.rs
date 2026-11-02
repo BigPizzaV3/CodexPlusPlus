@@ -1104,8 +1104,6 @@ pub struct BackendSettings {
     pub codex_app_side_chat_save: bool,
     #[serde(rename = "codexAppMarkdownExport", default = "default_true")]
     pub codex_app_markdown_export: bool,
-    #[serde(rename = "codexAppSessionShare", default = "default_true")]
-    pub codex_app_session_share: bool,
     // 默认开启：纯展示层状态栏，不改变 Codex 的请求内容与本地数据，误开没有副作用。
     #[serde(rename = "codexAppUsageStatusLine", default = "default_true")]
     pub codex_app_usage_status_line: bool,
@@ -1461,7 +1459,6 @@ impl Default for BackendSettings {
             codex_app_session_delete_skip_confirm: false,
             codex_app_side_chat_save: false,
             codex_app_markdown_export: true,
-            codex_app_session_share: true,
             codex_app_usage_status_line: true,
             usage_history_enabled: false,
             codex_app_proxy_request_status: true,
@@ -2580,6 +2577,7 @@ impl SettingsStore {
             "codexAppNativeMenuLocalization",
             "codexAppServiceTierControls",
             "codexAppCustomLayoutEnabled",
+            "codexAppSessionShare",
         ] {
             raw.remove(key);
         }
@@ -2880,7 +2878,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppSessionDeleteSkipConfirm");
     merge_bool_setting(target, source, "codexAppSideChatSave");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
-    merge_bool_setting(target, source, "codexAppSessionShare");
     merge_bool_setting(target, source, "codexAppUsageStatusLine");
     merge_bool_setting(target, source, "usageHistoryEnabled");
     merge_bool_setting(target, source, "codexAppProxyRequestStatus");
@@ -3525,6 +3522,7 @@ fn preserve_unknown_settings_fields(
         "codexAppServiceTierControls",
         "codexAppCustomLayoutEnabled",
         "codexAppPluginAutoExpand",
+        "codexAppSessionShare",
         "computerUseGuardEnabled",
     ]
     .into_iter()

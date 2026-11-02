@@ -52,6 +52,15 @@ export function apply(ctx, config) {
     return { ...decision, messages: [...decision.messages, note('policy-demo: remember the house rules')] }
   }, { prepend: true })
 
+  // 改写用户原话：带 secret-token 的输入换成打码后的一条（钩子做不到，经 Codex++ 代理的请求里换掉）。
+  ctx.on('agent/pre-step', async (_step, next) => {
+    const decision = await next()
+    if (decision.kind !== 'enter') return decision
+    return { ...decision, messages: decision.messages.map(message => (textOf(message).includes('secret-token')
+      ? createUserMessage({ content: [{ type: 'text', text: textOf(message).replace(/secret-token \S+/, 'secret-token [redacted]') }], source: { kind: 'user' } })
+      : message)) }
+  })
+
   ctx.on('agent/turn-stopping', ({ agent }) => {
     if (config.requireSummary) agent.steer(note('policy-demo: summarize the changes before stopping'))
   })

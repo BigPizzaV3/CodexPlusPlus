@@ -1,0 +1,22 @@
+- insert:
+    # 消费方写在提供方前面：宿主等服务就绪再 apply
+    - id: consumer
+      name: ./consumer.js
+    - id: counter
+      name: ./counter.js
+      config:
+        start: 0
+    # 整组一个私有的 counter：组里的消费方拿到组里的实例，外面看不到
+    - id: scoped
+      name: cordis:group
+      isolate:
+        counter: true
+      config:
+        - id: scoped-counter
+          name: ./counter.js
+          config:
+            start: 100
+        - id: scoped-consumer
+          name: ./scoped.js
+    - id: memo
+      name: ./memo.js

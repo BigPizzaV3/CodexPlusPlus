@@ -44,6 +44,43 @@ export class SessionTitleInvalidError extends Error {
   }
 }
 
+// dsh-session-title 的纯函数：标题清洗（去控制字符、压成一行）与按 UTF-8 字节截断，同 dsh。
+export const SessionTitleProviderId = brand
+const TITLE_CONTROL_PATTERNS = [
+  /(?:\u001B\]|\u009D)(?:(?!\u0007|\u001B\\)[\s\S])*(?:\u0007|\u001B\\|$)/gu,
+  /(?:\u001B\[|\u009B)[0-?]*[ -/]*[@-~]/gu,
+  /\u001B[@-_]/gu,
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/gu,
+  /[\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/gu,
+]
+const cleanTitleText = (input) => TITLE_CONTROL_PATTERNS.reduce((text, pattern) => text.replace(pattern, ''), input).replace(/\s+/gu, ' ').trim()
+function assertPositiveTitleInteger(name, value) {
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`)
+}
+
+export function truncateTitleUtf8(input, maxBytes) {
+  assertPositiveTitleInteger('maxBytes', maxBytes)
+  if (Buffer.byteLength(input, 'utf8') <= maxBytes) return input
+  let used = 0
+  let output = ''
+  for (const character of input) {
+    const bytes = Buffer.byteLength(character, 'utf8')
+    if (used + bytes > maxBytes) break
+    output += character
+    used += bytes
+  }
+  return output
+}
+
+export function normalizeSessionTitle(input, maxBytes) {
+  return truncateTitleUtf8(cleanTitleText(input), maxBytes).trimEnd()
+}
+
+export function fallbackSessionTitle(input, maxWords, maxBytes) {
+  assertPositiveTitleInteger('maxWords', maxWords)
+  return truncateTitleUtf8(cleanTitleText(input).split(' ').filter(Boolean).slice(0, maxWords).join(' '), maxBytes).trimEnd()
+}
+
 /** dsh 里 setApprovalPolicy 写会话事件；Codex++ 的审批策略经 ctx.approval.setPolicy 设置，这里只是兼容导出。 */
 export function setApprovalPolicy() {}
 

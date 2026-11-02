@@ -256,8 +256,13 @@ async fn first_rejected_400_honors_retry_after_before_exec_retry() {
     let _lock = settings_path_test_lock();
     let server = MockServer::start().await;
     let settings = TestSettings::new(&server);
+    // 按服务端收到请求的时刻量间隔：全量并发跑时代理发出第一个请求前的准备就可能超过 1 秒，
+    // 从用例开始计时会把「第一个请求还没到」误判成「重试没等够」。
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    let seen = arrivals.clone();
     Mock::given(method("POST"))
         .respond_with(move |incoming: &Request| {
+            seen.lock().unwrap().push(Instant::now());
             let body = incoming.body_json::<Value>().unwrap();
             if is_custom_exec(&body) {
                 exec_rejection().insert_header("Retry-After", "1")
@@ -271,25 +276,21 @@ async fn first_rejected_400_honors_retry_after_before_exec_retry() {
         .mount(&server)
         .await;
 
-    let started = Instant::now();
-    let result = tokio::time::timeout(
-        Duration::from_secs(1),
+    tokio::time::timeout(
+        Duration::from_secs(10),
         open_responses_proxy_request_with_settings_for_path(
             &request("gpt-5.6-luna").to_string(),
             settings.settings.clone(),
             "/v1/responses",
         ),
     )
-    .await;
+    .await
+    .expect("compatibility retry should finish after Retry-After")
+    .unwrap();
+    let arrivals = arrivals.lock().unwrap().clone();
+    assert_eq!(arrivals.len(), 2, "rejected request plus one compatibility retry");
     assert!(
-        result.is_err(),
-        "compatibility retry must wait for the first 400 Retry-After"
-    );
-    assert!(started.elapsed() >= Duration::from_secs(1));
-    let received = server.received_requests().await.unwrap();
-    assert_eq!(
-        received.len(),
-        1,
+        arrivals[1] - arrivals[0] >= Duration::from_secs(1),
         "the compatibility retry must not be sent during Retry-After"
     );
 }
@@ -341,8 +342,12 @@ async fn past_http_date_allows_exec_retry_without_delay() {
     let _lock = settings_path_test_lock();
     let server = MockServer::start().await;
     let _settings = TestSettings::new(&server);
+    // 同上：只量两次请求之间的间隔，不把代理发出第一个请求前的准备算进去。
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    let seen = arrivals.clone();
     Mock::given(method("POST"))
         .respond_with(move |incoming: &Request| {
+            seen.lock().unwrap().push(Instant::now());
             if is_custom_exec(&incoming.body_json::<Value>().unwrap()) {
                 exec_rejection().insert_header("Retry-After", "Thu, 01 Jan 1970 00:00:00 GMT")
             } else {
@@ -356,12 +361,17 @@ async fn past_http_date_allows_exec_retry_without_delay() {
         .await;
 
     let original = request("past-date-model");
-    let (response, json) = tokio::time::timeout(Duration::from_secs(2), client_response(&original))
+    let (response, json) = tokio::time::timeout(Duration::from_secs(10), client_response(&original))
         .await
-        .expect("past HTTP-date must not postpone the compatibility retry");
+        .expect("compatibility retry should finish");
     assert_eq!(response.status, "200 OK");
     assert_client_exec(&json, PROGRAM, "call_past_date");
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    let arrivals = arrivals.lock().unwrap().clone();
+    assert_eq!(arrivals.len(), 2);
+    assert!(
+        arrivals[1] - arrivals[0] < Duration::from_secs(1),
+        "past HTTP-date must not postpone the compatibility retry"
+    );
 }
 
 #[tokio::test]

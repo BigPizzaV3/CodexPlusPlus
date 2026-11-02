@@ -39,7 +39,6 @@
    */
   const codexPlusExtensionRoutes = new Set([
     "/diagnostics/log",
-    "/session/export",
     "/thread-usage-history",
     "/usage/history",
     "/archived-thread",
@@ -48,6 +47,32 @@
     // 显式开放：给拓展注入 overlay 等独立 Codex 页面，不暴露任意 CDP 方法。
     "/cdp/targets",
     "/cdp/evaluate",
+    // 只读：系统鼠标位置，写「桌宠跟随鼠标」这类功能用。
+    "/system/cursor-position",
+    // 只读：最近已完成的模型请求（模型、耗时、供应商、token、成败），写「请求提示」这类功能用。
+    "/request-log/recent",
+    // 只读：进行中的模型请求（阶段、首字耗时、重试），与内置请求状态条同源。
+    "/proxy-status",
+    // 只读：当前会话最近的 token 事件（读 rollout 尾部，可秒级轮询），与内置用量状态栏同源。
+    "/thread-usage-live",
+    // 只读：Codex++ 版本与连接状态。
+    "/backend/status",
+    // 只读：设置的公开子集（当前供应商的名称、模式、模型、上下文窗口），不含地址、Key 与配置内容。
+    "/settings/public",
+    // 只读：模型目录（模型列表与每模型元数据，含上下文窗口），去掉了来源地址与本机路径。
+    "/model-catalog/public",
+    // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。
+    // 只有启用中的拓展在清单里声明了才干活；供应商 Key 只在 Codex++ 里用。
+    "/agent-pet/catalog",
+    "/agent-pet/image",
+    "/agent-pet/sound",
+    "/agent-pet/import-sound",
+    "/whale/media",
+    "/whale/full",
+    "/whale/history",
+    "/whale/session",
+    // 背景图（官方拓展包）的读图路由：只读这个拓展配置里的那张本机图片。
+    "/image-overlay/image",
   ]);
 
   /** 单次调用的默认超时，略短于桥接自身的 26s，让拓展先拿到可读的错误。 */
@@ -187,6 +212,7 @@
         // 重建（或摘掉）这一行的按钮组，不用等下一次扫描。
         tryAttachButton(row);
       });
+      archivedPageRows().forEach(attachArchivedPageDeleteButton);
     } catch {}
   }
 
@@ -265,6 +291,15 @@
       /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
       currentSessionId() {
         return codexPlusCurrentSessionId();
+      },
+      /**
+       * 当前打开的 Codex 会话：{ id, title, hostId, remote }。hostId 是会话所在的主机（本机为 "local"），
+       * remote 表示远程 / SSH 会话（本机会话日志里没有它的用量）。没有会话时 id 为空串。
+       */
+      currentSession() {
+        const ref = typeof currentSessionRef === "function" ? currentSessionRef() || {} : {};
+        const hostId = String(ref.host_id || "local");
+        return Object.freeze({ id: String(ref.session_id || ""), title: String(ref.title || ""), hostId, remote: hostId !== "local" });
       },
 
       /** 内置拓展的现状：[{ id, name, active, disabled, replacedBy }]。见 96-builtin-extensions.js。 */
@@ -357,6 +392,14 @@
       /** Codex 设置页左侧导航末尾加一项，点开是 render({ container, close }) 画的页面。 */
       registerSettingsSection(definition, options = {}) {
         return codexPlusRegisterSettingsSection(definition, options);
+      },
+
+      /**
+       * 「拓展」页面里本拓展详情下方的设置面板（每个拓展一个）：render({ container, config, saveConfig }) 每次打开详情都调用，
+       * 可返回清理函数。saveConfig(values) 只存本拓展清单 config 里声明过的项，回生效配置。
+       */
+      registerSettingsPanel(definition, options = {}) {
+        return codexPlusRegisterSettingsPanel(definition, options);
       },
 
       /** 在会话行「更多操作」里加一项。 */

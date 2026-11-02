@@ -1,6 +1,6 @@
 # 大肥鱼（Codex 用量挂件）
 
-大肥鱼（DeepSeek 鲸鱼）现在是「Agent 桌宠」的一种类型：在管理器「工具 → Agent 桌宠」打开「显示 Agent 桌宠」，「桌宠类型」选「大肥鱼（DeepSeek 鲸鱼）」即可。它和图库 / 自定义图片的简单桌宠互斥，同一时间只显示一个。Codex 应通过包含此功能的 Codex++ 启动器启动；运行中的新版支持通过设置同步开启、关闭和切换类型，无需重新安装插件。
+大肥鱼（DeepSeek 鲸鱼）现在是「Agent 桌宠」的一种类型（Agent 桌宠是随 Codex++ 发布的官方拓展包，见 [Agent 桌宠](agent-pet.md)）：在管理器「工具 → Agent 桌宠」打开「显示 Agent 桌宠」，「桌宠类型」选「大肥鱼（DeepSeek 鲸鱼）」即可。它和图库 / 自定义图片的简单桌宠互斥，同一时间只显示一个。Codex 应通过包含此功能的 Codex++ 启动器启动；运行中的新版支持通过设置同步开启、关闭和切换类型，无需重新安装插件。
 
 旧版在「Codex 增强 → 常用增强 → 挂件与桌宠」里打开过「Codex 用量挂件」、升级前还没有桌宠设置的用户，升级后桌宠自动开启并选中大肥鱼，余额配置原样保留；已经有桌宠设置的用户保持现状。
 
@@ -57,7 +57,7 @@
 ## 实现与数据
 
 - 挂件界面：上游完整引擎 `assets/inject/upstream/whale-widget/full-widget.js`；适配产物由 `scripts/assemble-whale-runtime.mjs` 生成。`96-whale-compat.js` 提供词法宿主，`96-whale-widget.js` 管理开关与生命周期。
-- 持久开关：`agentPet.enabled` 且 `agentPet.kind` 为 `whaleWidget`（并勾选 Codex），默认关闭；与其他 Agent 桌宠一样不受「Codex 增强」总开关影响。旧的 `codexAppWhaleWidgetEnabled` 只在迁移时读取。余额配置仍是 `codexAppWhaleBalance*`。
+- 持久开关：Agent 桌宠拓展（`bundled:agent-pet`）启用且配置的 `kind` 为 `whaleWidget`，默认关闭。余额配置是这个拓展配置里的 `codexAppWhaleBalance*`，随请求交给 Codex++ 查询。旧的 `agentPet`、`codexAppWhaleBalance*` 设置与 `codexAppWhaleWidgetEnabled` 只在迁移时读取。
 - 内部桥接：`/whale/balance`、`/whale/session`、`/whale/history` 和 `/whale/full`，未加入第三方拓展的路由白名单。
 - 余额账本：Codex++ 设置目录内的 `whale-balance.sqlite3`，按凭据指纹及币种隔离，金额以八位定点数累计。
 - 角色/泡泡图库、音频和挂件设置：本机 SQLite；交互位置及事件去重标记使用当前 Codex 界面的 localStorage，不上传服务器。

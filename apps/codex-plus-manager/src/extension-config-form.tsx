@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getLanguage, t, tf } from "@/i18n";
@@ -103,6 +104,41 @@ function ExtensionConfigFieldRow({ field, value, onChange, idPrefix }: {
   );
 }
 
+/// 本机文件路径（清单里 `format: "file"`）：可以直接填，也可以点「选择…」用系统对话框选。
+function ExtensionConfigFileInput({ field, value, onChange, id, title }: {
+  field: ExtensionConfigField;
+  value: unknown;
+  onChange: (value: unknown) => void;
+  id: string;
+  title: string;
+}) {
+  const [error, setError] = useState("");
+  const choose = async () => {
+    setError("");
+    try {
+      const extensions = field.extensions?.length ? field.extensions : undefined;
+      const selected = await openDialog({
+        directory: false,
+        multiple: false,
+        title,
+        filters: extensions ? [{ name: title, extensions }] : undefined,
+      });
+      if (typeof selected === "string" && selected.trim()) onChange(selected.trim());
+    } catch (reason) {
+      setError(tf("打开选择器失败：{0}", [reason instanceof Error ? reason.message : String(reason)]));
+    }
+  };
+  return (
+    <div className="extension-config-file">
+      <div className="extension-config-file-row">
+        <Input id={id} onChange={(event) => onChange(event.currentTarget.value)} value={String(value ?? "")} />
+        <Button onClick={() => void choose()} size="sm" type="button" variant="secondary">{t("选择文件")}</Button>
+      </div>
+      {error ? <small className="extension-config-file-error">{error}</small> : null}
+    </div>
+  );
+}
+
 /// 单个值的编辑器；数组逐项编辑，可增删。
 function ExtensionConfigEditor({ field, value, onChange, id }: {
   field: ExtensionConfigField;
@@ -163,6 +199,9 @@ function ExtensionConfigEditor({ field, value, onChange, id }: {
         <Button onClick={() => onChange([...items, item.default])} size="sm" type="button" variant="secondary">{t("添加一项")}</Button>
       </div>
     );
+  }
+  if (field.type === "string" && field.format === "file") {
+    return <ExtensionConfigFileInput field={field} id={id} onChange={onChange} title={title} value={value} />;
   }
   return (
     <Input

@@ -119,6 +119,29 @@
   }
 
   /**
+   * dsh 绑定的规范形（同 dsh 的 normalizeBinding）：primary 在 macOS 是 meta、别处是 control，修饰键去重排序；
+   * secondCode 是与 code 同时按住的第二个键（双键组合，不分先后）。认不出的键返回 null。
+   */
+  function codexPlusDshNormalizeBinding(binding, mac) {
+    if (!binding || typeof binding.code !== "string") return null;
+    const valid = (code) => /^(Key[A-Z]|Digit[0-9]|F([1-9]|1[0-9]|2[0-4]))$/.test(code)
+      || ["Slash", "Comma", "Period", "Backslash", "Backquote", "Minus", "Equal", "BracketLeft", "BracketRight", "Semicolon", "Quote", "Enter", "Escape", "Space", "Tab", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(code);
+    const codes = [binding.code, ...(typeof binding.secondCode === "string" ? [binding.secondCode] : [])].sort();
+    if (!codes.every(valid) || (codes.length === 2 && codes[0] === codes[1])) return null;
+    const modifiers = new Set((Array.isArray(binding.modifiers) ? binding.modifiers : []).map((item) => (item === "primary" ? (mac ? "meta" : "control") : item)));
+    return { code: codes[0], ...(codes[1] ? { secondCode: codes[1] } : {}), modifiers: ["control", "alt", "shift", "meta"].filter((item) => modifiers.has(item)) };
+  }
+
+  /** 规范绑定的键帽文字（双键组合两个键挨着写）。 */
+  function codexPlusDshBindingKeys(normalized, mac) {
+    if (!normalized) return [];
+    const names = { Slash: "/", Comma: ",", Period: ".", Backslash: "\\", Backquote: "`", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Semicolon: ";", Quote: "'", Escape: "Esc", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→" };
+    const key = (code) => names[code] ?? code.replace(/^(Key|Digit)/, "");
+    const symbols = mac ? { control: "⌃", alt: "⌥", shift: "⇧", meta: "⌘" } : { control: "Ctrl", alt: "Alt", shift: "Shift", meta: "Meta" };
+    return [...normalized.modifiers.map((item) => symbols[item]), key(normalized.code), ...(normalized.secondCode ? [key(normalized.secondCode)] : [])];
+  }
+
+  /**
    * 所有 dsh 前端插件的插槽登记（跨包共享）。对得上 Codex++ 位置的插槽直接渲染进去；对不上的作为「子插槽」，
    * 由别的 dsh 组件经 renderSlot / renderSlotChain 渲染（dsh 的复合组件就是这样拼起来的）；factory 经 renderFactorySlot。
    */
@@ -273,6 +296,50 @@
             return { ok: false, error: { code: "TRANSPORT", message: String(error?.message || error), details: {} } };
           }
         },
+        /**
+         * 流式调用（如 typert 的 stream 方法）：后台在插件常驻进程里打开流，这里分批拉取；uplink 的值逐个送上去。
+         * signal 取消或迭代提前结束时关掉流。
+         */
+        open(channel, endpoint, payload, signal, uplink) {
+          return (async function* () {
+            const opened = await ctx.backend.call("rpcOpen", { channel, endpoint, payload }, { timeout: 120000 });
+            if (!opened?.ok) {
+              const failure = opened?.error || { code: "EMPTY", message: "插件没有打开这个流" };
+              throw Object.assign(new Error(failure.message), { code: failure.code, details: failure.details });
+            }
+            const id = opened.id;
+            let closed = false;
+            const close = () => {
+              if (closed) return;
+              closed = true;
+              ctx.backend.call("rpcClose", { id }).catch(() => {});
+            };
+            signal?.addEventListener?.("abort", close, { once: true });
+            if (uplink && typeof uplink[Symbol.asyncIterator] === "function") {
+              void (async () => {
+                for await (const item of uplink) {
+                  if (closed) return;
+                  await ctx.backend.call("rpcPush", { id, items: [item] });
+                }
+                if (!closed) await ctx.backend.call("rpcPush", { id, items: [], end: true });
+              })().catch(() => {});
+            }
+            try {
+              while (!closed) {
+                const batch = await ctx.backend.call("rpcPull", { id, waitMs: 1000 }, { timeout: 30000 });
+                for (const item of batch?.items || []) yield item;
+                if (batch?.error) throw Object.assign(new Error(batch.error.message), { code: batch.error.code, details: batch.error.details });
+                if (batch?.done) {
+                  closed = true;
+                  return;
+                }
+              }
+            } finally {
+              signal?.removeEventListener?.("abort", close);
+              close();
+            }
+          })();
+        },
       },
       reconnect() {},
       registerGenerationSource: () => () => {},
@@ -299,39 +366,160 @@
     };
 
     // dsh 的快捷键命令 → Codex++ 快捷键：取默认绑定（macOS 优先按平台挑），按下时问命令的 resolve。
+    // 单键（加修饰键）的绑定交给 Codex++ 的快捷键；双键组合（secondCode：两个键同时按住）与固定序列的输入
+    // （registerFixed / observeFixedInput，如 `g g`，插件自己按 stopSequenceMs 判断）由这里的键盘监听处理，同 dsh 的 installKeyboard。
+    const mac = Boolean(codexPlusIsMacPlatform);
+    const chordCommands = new Map();
+    const fixedListeners = new Set();
+    const shortcutCatalog = codexPlusDshSnapshotStore([]);
+    const fixedCatalog = codexPlusDshSnapshotStore([]);
+    const catalogRows = new Map();
+    const fixedRows = new Map();
+    const refreshCatalog = () => shortcutCatalog.set([...catalogRows.values()]);
+    const refreshFixed = () => fixedCatalog.set([...fixedRows.values()]);
+    let keyboard = null;
+    const shortcutContext = (event) => {
+      const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+      const element = path.find((item) => item && typeof item.closest === "function") ?? event?.target ?? document.activeElement ?? null;
+      const closest = (selector) => (element && typeof element.closest === "function" ? element.closest(selector) : null);
+      const region = closest(".xterm") ? "terminal" : closest("input, textarea, select, [contenteditable=\"true\"], [contenteditable=\"\"]") ? "editable" : "page";
+      const dialogs = typeof document.querySelectorAll === "function" ? document.querySelectorAll("[role=dialog][aria-modal=true], dialog[open]") : [];
+      const top = dialogs[dialogs.length - 1];
+      return { source: "keyboard", region, modal: top ? top.dataset?.shortcutModal ?? "other" : null, target: element };
+    };
+    const installKeyboard = () => {
+      if (keyboard || typeof document.addEventListener !== "function") return;
+      const held = new Set();
+      const modifierCodes = /^(Shift|Control|Alt|Meta|OS)(Left|Right)?$/;
+      const reset = () => {
+        for (const listener of [...fixedListeners]) {
+          try { listener({ type: "reset" }); } catch {}
+        }
+      };
+      const keydown = (event) => {
+        if (!event || typeof event.code !== "string" || modifierCodes.test(event.code)) return;
+        const others = [...held].filter((code) => code !== event.code);
+        held.add(event.code);
+        const composing = Boolean(event.isComposing) || event.key === "Process" || event.key === "Dead";
+        const gesture = {
+          code: event.code, ...(others.length === 1 ? { secondCode: others[0] } : {}),
+          control: Boolean(event.ctrlKey), alt: Boolean(event.altKey), shift: Boolean(event.shiftKey), meta: Boolean(event.metaKey),
+          repeat: Boolean(event.repeat), composing, defaultPrevented: Boolean(event.defaultPrevented),
+        };
+        const context = shortcutContext(event);
+        const consume = () => event.preventDefault?.();
+        for (const listener of [...fixedListeners]) {
+          try { listener({ type: "keydown", gesture, context, consume }); } catch (error) { fail(`固定按键输入的监听器出错：${error?.message || error}`); }
+        }
+        if (gesture.repeat || composing || !gesture.secondCode) return;
+        const pair = [gesture.code, gesture.secondCode].sort().join("+");
+        for (const { command, binding } of chordCommands.values()) {
+          if ([binding.code, binding.secondCode].join("+") !== pair) continue;
+          if (!["control", "alt", "shift", "meta"].every((item) => gesture[item] === binding.modifiers.includes(item))) continue;
+          if (Array.isArray(command.regions) && command.regions.length && !command.regions.includes(context.region)) continue;
+          if (context.modal !== null && !(Array.isArray(command.modals) && command.modals.includes(context.modal))) continue;
+          const resolution = command.resolve?.(context);
+          if (resolution?.status === "handled") {
+            consume();
+            resolution.run();
+            return;
+          }
+        }
+      };
+      const keyup = (event) => {
+        if (event && typeof event.code === "string") held.delete(event.code);
+      };
+      const blur = () => {
+        held.clear();
+        reset();
+      };
+      document.addEventListener("keydown", keydown);
+      document.addEventListener("keyup", keyup, true);
+      for (const type of ["compositionstart", "compositionend", "focusin", "pointerdown"]) document.addEventListener(type, reset, true);
+      globalThis.addEventListener?.("blur", blur);
+      keyboard = () => {
+        document.removeEventListener?.("keydown", keydown);
+        document.removeEventListener?.("keyup", keyup, true);
+        for (const type of ["compositionstart", "compositionend", "focusin", "pointerdown"]) document.removeEventListener?.(type, reset, true);
+        globalThis.removeEventListener?.("blur", blur);
+        keyboard = null;
+      };
+      ctx.effect(() => () => keyboard?.());
+    };
     const shortcutsService = {
       runtime: "web",
-      platform: codexPlusIsMacPlatform ? "mac" : "windows",
-      stopSequenceMs: 1000,
-      catalog: codexPlusDshSnapshotStore([]),
+      platform: mac ? "macos" : "windows",
+      // dsh 的默认值（固定序列两次按键之间的最长间隔，插件按它判断序列是否作废）。
+      stopSequenceMs: 500,
+      catalog: shortcutCatalog,
       config: codexPlusDshSnapshotStore({}),
-      fixedCatalog: codexPlusDshSnapshotStore([]),
+      fixedCatalog,
       register(command) {
         const defaults = command?.defaults || {};
-        const platform = codexPlusIsMacPlatform ? "mac" : "windows";
-        const binding = Object.entries(defaults).find(([profile]) => profile.endsWith(`:${platform}`))?.[1] ?? Object.values(defaults)[0];
+        const binding = Object.entries(defaults).find(([profile]) => profile === `web:${mac ? "macos" : "windows"}` || profile.endsWith(`:${mac ? "mac" : "windows"}`) || profile.endsWith(`:${mac ? "macos" : "windows"}`))?.[1] ?? Object.values(defaults)[0];
+        const normalized = codexPlusDshNormalizeBinding(binding, mac);
+        const id = String(command?.id || "");
+        const label = typeof command?.label === "function" ? command.label() : id;
+        catalogRows.set(id, { id, label, aliases: command?.aliases ?? [], keys: codexPlusDshBindingKeys(normalized, mac), aria: normalized && !normalized.secondCode ? codexPlusDshShortcutKey(binding) : undefined, binding: normalized, modified: false, conflicts: [], issue: normalized ? null : "unsupported-key" });
+        refreshCatalog();
+        const removeRow = () => {
+          catalogRows.delete(id);
+          refreshCatalog();
+        };
+        if (normalized?.secondCode) {
+          // 双键组合：Codex++ 的快捷键只认一个键，由这里的键盘监听匹配。
+          const entry = { command, binding: normalized };
+          chordCommands.set(id, entry);
+          installKeyboard();
+          return () => {
+            if (chordCommands.get(id) === entry) chordCommands.delete(id);
+            removeRow();
+          };
+        }
         const key = codexPlusDshShortcutKey(binding);
         if (!key) {
-          fail(`快捷键命令 ${command?.id || "?"} 的默认绑定 Codex 里表达不了，没有注册`);
-          return () => {};
+          fail(`快捷键命令 ${id || "?"} 的默认绑定 Codex 里表达不了，没有注册`);
+          return removeRow;
         }
         try {
-          return ctx.registerShortcut({
+          const dispose = ctx.registerShortcut({
             key,
-            description: typeof command.label === "function" ? command.label() : String(command.id || ""),
+            description: label,
             run: ({ event }) => {
               const resolution = command.resolve?.({ source: "keyboard", region: "page", modal: null, target: event?.target ?? null });
               if (resolution?.status === "handled") resolution.run();
             },
           });
+          return () => {
+            dispose?.();
+            removeRow();
+          };
         } catch (error) {
           fail(`快捷键 ${key} 注册失败：${error?.message || error}`);
-          return () => {};
+          return removeRow;
         }
       },
-      registerFixed: () => () => {},
-      observeFixedInput: () => () => {},
-      describeBinding: (binding) => ({ keys: codexPlusDshShortcutKey(binding).split("+").filter(Boolean), aria: codexPlusDshShortcutKey(binding) }),
+      // 固定按键动作（含序列的每一步）：只进目录给界面展示；真正的输入由插件经 observeFixedInput 自己判断。
+      registerFixed(command) {
+        const id = String(command?.id || "");
+        const bindings = (Array.isArray(command?.bindings) ? command.bindings : []).map((binding) => codexPlusDshNormalizeBinding(binding, mac)).filter(Boolean);
+        fixedRows.set(id, { id, label: typeof command?.label === "function" ? command.label() : id, keys: Array.isArray(command?.keys) ? command.keys : [], bindings, group: command?.group ?? "application" });
+        refreshFixed();
+        return () => {
+          fixedRows.delete(id);
+          refreshFixed();
+        };
+      },
+      observeFixedInput(listener) {
+        if (typeof listener !== "function") return () => {};
+        fixedListeners.add(listener);
+        installKeyboard();
+        return () => fixedListeners.delete(listener);
+      },
+      describeBinding: (binding) => {
+        const normalized = codexPlusDshNormalizeBinding(binding, mac);
+        return { keys: codexPlusDshBindingKeys(normalized, mac), aria: normalized && !normalized.secondCode ? codexPlusDshShortcutKey(binding) : undefined };
+      },
       edit: async () => ({ ok: false, reason: "Codex++ 里快捷键在拓展里改" }),
       recording: async () => {},
       closeWindow: async () => {},
@@ -659,9 +847,97 @@
         });
       },
     };
+    // typert 的前端半边（dsh 的 ctx.remote）：ctx.remote.<namespace>.<method>(...) 经 connection.rpc 的 /api 通道调宿主半边
+    // 登记的类型化方法；stream 方法返回可迭代的句柄（send / end / dispose）。描述清单向宿主要一次，$mount 可以再补。
+    const remoteNamespaces = {};
+    const remoteFailure = (result) => Object.assign(new Error(result?.error?.message || "调用失败"), { code: result?.error?.code, details: result?.error?.details });
+    const remotePayload = (descriptor, args) => {
+      if (!descriptor?.parameters) return { positional: args };
+      const named = {};
+      descriptor.parameters.forEach((parameter, index) => {
+        if (args[index] !== undefined || !parameter.optional) named[parameter.wire] = args[index];
+      });
+      return { args: named };
+    };
+    const remoteMethod = (namespace, method, descriptor) => {
+      const endpoint = `${namespace}/${method}`;
+      if (descriptor?.mode !== "stream") {
+        return async (...args) => {
+          const result = await connection.rpc.call("/api", endpoint, remotePayload(descriptor, args));
+          if (!result?.ok) throw remoteFailure(result);
+          return result.value;
+        };
+      }
+      return (...args) => {
+        const controller = new AbortController();
+        const queue = [];
+        let wake = null;
+        let ended = false;
+        const resume = () => {
+          const next = wake;
+          wake = null;
+          next?.();
+        };
+        const uplink = descriptor.uplink ? (async function* () {
+          for (;;) {
+            if (queue.length) {
+              yield queue.shift();
+              continue;
+            }
+            if (ended || controller.signal.aborted) return;
+            await new Promise((done) => { wake = done; });
+          }
+        })() : undefined;
+        const items = connection.rpc.open("/api", endpoint, remotePayload(descriptor, args), controller.signal, uplink);
+        return {
+          [Symbol.asyncIterator]: () => items[Symbol.asyncIterator](),
+          send(item) {
+            queue.push(item);
+            resume();
+          },
+          end() {
+            ended = true;
+            resume();
+          },
+          dispose() {
+            controller.abort();
+            ended = true;
+            resume();
+          },
+        };
+      };
+    };
+    const addRemoteDescriptor = (descriptor) => {
+      if (!descriptor?.namespace || !descriptor?.method) return;
+      const namespace = (remoteNamespaces[descriptor.namespace] ||= {});
+      namespace[descriptor.method] = remoteMethod(descriptor.namespace, descriptor.method, {
+        mode: descriptor.mode,
+        uplink: Boolean(descriptor.uplink),
+        parameters: (descriptor.parameters || []).map((parameter) => ({ wire: parameter.wire, optional: Boolean(parameter.optional || parameter.acceptsUndefined) })),
+      });
+      services[`remote.${descriptor.namespace}`] = namespace;
+    };
+    const remote = new Proxy({
+      async $mount(contribution) {
+        for (const descriptor of contribution?.descriptors || []) addRemoteDescriptor(descriptor);
+        return async () => {};
+      },
+      // 宿主转发的事件：对上 Codex++ 拓展内核的同名事件（agent/status 等）。
+      $on: (event, listener) => ctx.on(String(event), listener),
+    }, {
+      get(target, key) {
+        if (key in target) return target[key];
+        if (typeof key !== "string" || key === "then") return undefined;
+        // 没有描述的 namespace 也能调：按位置传参，由宿主半边按它登记的描述对上参数。
+        return remoteNamespaces[key] || new Proxy({}, {
+          get: (_inner, method) => (typeof method === "string" && method !== "then" ? remoteMethod(key, method) : undefined),
+        });
+      },
+    });
+
     const services = {
       slots, locale: localeService, sessions: clientSessions, workspaces: { list: workspaceList }, uiWorkspace,
-      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers, connection,
+      shortcuts: shortcutsService, commandUi, theme: themeService, inputTriggers, connection, remote,
     };
     // Cordis 的 ready / dispose 只对本插件包：ready 在全部 apply 跑完后发，dispose 随拓展卸载。
     const readyHandlers = [];
@@ -731,16 +1007,25 @@
       if (name in builtinModules && builtinModules[name]) return builtinModules[name];
       throw new Error(`dsh 前端插件 require 了 ${name}，Codex++ 只提供 React 与 ReactDOM`);
     };
+    // 先求出各模块的插件对象：要用 remote 的话先向宿主半边要一次 typert 描述，remote.<namespace> 才能被 inject。
+    const loaded = [];
     for (const entry of Array.isArray(modules) ? modules : []) {
-      if (ctx.disposed) return;
-      let plugin;
       try {
         const exported = entry?.factory?.(require);
-        plugin = exported?.default && typeof exported.default.apply === "function" ? exported.default : exported;
+        loaded.push({ entry, plugin: exported?.default && typeof exported.default.apply === "function" ? exported.default : exported });
       } catch (error) {
         fail(`加载 ${entry?.id || packageName} 失败：${error?.message || error}`);
-        continue;
       }
+    }
+    const injectNames = (plugin) => (Array.isArray(plugin?.inject) ? plugin.inject : Object.keys(plugin?.inject || {})).map(String);
+    if (loaded.some(({ plugin }) => injectNames(plugin).some((name) => name === "remote" || name.startsWith("remote.")))) {
+      try {
+        const listed = await connection.rpc.call("/api", "$codexpp/typert-descriptors", null);
+        if (listed?.ok) for (const descriptor of listed.value || []) addRemoteDescriptor(descriptor);
+      } catch {}
+    }
+    for (const { entry, plugin } of loaded) {
+      if (ctx.disposed) return;
       const apply = typeof plugin === "function" ? plugin : plugin?.apply;
       if (typeof apply !== "function") {
         fail(`${entry?.id || packageName} 没有导出 apply`);

@@ -1335,11 +1335,16 @@ async fn handle_models(
             "last_id": models.last()
         }),
         // Claude Desktop 只列 Claude 名字的模型：非 Claude 模型换成数字别名，真实名字放进 display_name。
+        // 有思考档位的用 mythos-gw- 别名，Desktop 才给它出思考等级菜单。
         ToolId::Unknown(id) if id == agents::catalog_apps::CLAUDE_DESKTOP.id => {
+            let binding = gateway.binding(agent);
             let rows: Vec<Value> = models
                 .iter()
                 .map(|model| {
-                    let id = route::claude_alias(model);
+                    let has_effort = binding.is_some_and(|binding| {
+                        !route::model_entry_reasoning_levels(gateway, binding, model).is_empty()
+                    });
+                    let id = route::claude_desktop_alias(model, has_effort);
                     let mut row = json!({
                         "id": id,
                         "object": "model",

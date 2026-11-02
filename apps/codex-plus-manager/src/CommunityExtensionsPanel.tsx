@@ -39,7 +39,7 @@ type Entry = {
   homepage: string;
   icon: string;
   keywords: string[];
-  engine: number;
+  engine: number | string;
   compatible: boolean;
   permissions: Permissions;
   installed: Installed;
@@ -76,6 +76,12 @@ export function request<T>(action: string, payload?: unknown): Promise<T> {
 
 export function errorText(error: unknown): string {
   return typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
+}
+
+function engineWarning(engine: Entry["engine"]): string {
+  return typeof engine === "number"
+    ? tf("需要拓展 API v{0}，请先更新 Codex++", [engine])
+    : tf("需要 Codex++ {0}，当前版本不兼容", [engine]);
 }
 
 /** 按风险从高到低列出声明的能力；空数组表示只是页面脚本以外什么也没有。 */
@@ -247,7 +253,6 @@ export function CommunityExtensionsPanel({
               <ExtensionCard
                 badges={
                   <>
-                    <span className="community-ext-badge is-unreviewed">{t("未审核")}</span>
                     {riskBadges(entry.permissions).map((badge) => <span className="community-ext-badge" key={badge}>{badge}</span>)}
                     {entry.warnings?.length ? <span className="community-ext-badge is-suspicious" title={entry.warnings.join("\n")}>{t("可疑")}</span> : null}
                   </>
@@ -260,7 +265,7 @@ export function CommunityExtensionsPanel({
                     {entry.version ? <span>{tf("默认分支 {0}", [entry.version])}</span> : null}
                     {entry.license ? <span>{entry.license}</span> : null}
                     {entry.pushedAt ? <span>{tf("更新于 {0}", [entry.pushedAt.slice(0, 10)])}</span> : null}
-                    {!entry.compatible ? <span className="community-ext-warning">{tf("需要拓展 API v{0}，请先更新 Codex++", [entry.engine])}</span> : null}
+                    {!entry.compatible ? <span className="community-ext-warning">{engineWarning(entry.engine)}</span> : null}
                   </>
                 }
                 icon={entry.icon || entry.ownerAvatar}
@@ -271,7 +276,7 @@ export function CommunityExtensionsPanel({
                     {entry.author || entry.owner} · v{entry.version}
                     {entry.license ? ` · ${entry.license}` : ""}
                     {entry.pushedAt ? ` · ${tf("更新于 {0}", [entry.pushedAt.slice(0, 10)])}` : ""}
-                    {!entry.compatible ? ` · ${tf("需要拓展 API v{0}，请先更新 Codex++", [entry.engine])}` : ""}
+                    {!entry.compatible ? ` · ${engineWarning(entry.engine)}` : ""}
                   </>
                 }
                 name={entry.name}
