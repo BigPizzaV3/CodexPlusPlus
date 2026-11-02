@@ -43,6 +43,7 @@ pub fn wiring(
         .map(|model| ModelEntry {
             context_window: route::model_entry_window(gateway, binding, &model)
                 .or(binding.context_window),
+            reasoning_levels: route::model_entry_reasoning_levels(gateway, binding, &model),
             id: model,
         })
         .collect();

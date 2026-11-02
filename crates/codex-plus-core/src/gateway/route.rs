@@ -354,6 +354,39 @@ pub fn model_entry_window(
         .min()
 }
 
+/// 某家某个模型支持的思考档位（由低到高）：用户在模型资料里写的优先，其次内置模型资料。
+/// 没有资料时为空。与 Codex 模型目录、管理器的「思考等级」读同一份资料。
+pub fn model_reasoning_levels(relay: &RelayProfile, model: &str) -> Vec<String> {
+    let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    let user = crate::relay_config::parse_model_metadata_map(&relay.model_metadata)
+        .ok()
+        .and_then(|map| map.get(&slug.to_ascii_lowercase()).cloned());
+    let Some(ui) = crate::model_suffix::model_ui_metadata_with_override(&slug, user.as_ref()) else {
+        return Vec::new();
+    };
+    let names: Vec<String> = ui["supportedReasoningEfforts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|level| level["reasoningEffort"].as_str().map(str::to_string))
+        .collect();
+    crate::upstream_model_meta::normalize_levels(&names)
+}
+
+/// Agent 模型列表里一项的思考档位：它会发给的各家档位的并集（由低到高）。
+/// 发到哪家时再按那家的档位套（[`crate::gateway::anthropic_inbound::fit_reasoning_effort`]）。
+pub fn model_entry_reasoning_levels(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Vec<String> {
+    let all: Vec<String> = expand_model(gateway, binding, model, 0, &mut Vec::new(), false)
+        .into_iter()
+        .flat_map(|(relay, upstream)| model_reasoning_levels(&relay, &upstream))
+        .collect();
+    crate::upstream_model_meta::normalize_levels(&all)
+}
+
 /// 模型列表里一项实际会发给哪些（供应商, 上游模型）：模型组按成员展开（不推进轮换位置）。
 pub fn model_entry_members(
     gateway: &GatewaySettings,
@@ -428,20 +461,38 @@ pub fn binding_exposed_models(gateway: &GatewaySettings, binding: &AgentBinding)
 /// 所以别名用「前缀 + 纯数字」，数字拼不出黑名单里的词；真实名字放在 `display_name` 里给选择器显示。
 pub const CLAUDE_ALIAS_PREFIX: &str = "claude-gw-";
 
+/// 有思考档位的非 Claude 模型给 Claude Desktop 用的别名前缀。
+///
+/// Desktop 的思考等级菜单只给它认识的模型出：网关模式下不读 `/v1/models` 里的档位，
+/// 档位表写死在 app.asar 里，其中 `/^(?:claude-)?(?:fable|mythos)(?:-|$)/` 匹配到的 id
+/// 给 low…max 五档（同 magpie 的 `mythos-magpie-<n>`）。`mythos` 也在它的 tier 白名单里，
+/// 列表过滤同样放行；句中不带 haiku / sonnet / opus，小模型选择不受影响。
+/// 数字部分与 [`CLAUDE_ALIAS_PREFIX`] 的一样，两种别名都能还原，旧会话不断。
+pub const CLAUDE_EFFORT_ALIAS_PREFIX: &str = "mythos-gw-";
+
+fn alias_number(model: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(model.as_bytes());
+    let mut head = [0_u8; 8];
+    head.copy_from_slice(&digest[..8]);
+    format!("{:010}", u64::from_be_bytes(head) % 10_000_000_000)
+}
+
 /// Claude Desktop 选择器里这个模型用的 id：名字里带 claude 的原样，其余换成稳定的数字别名
 /// （同一个模型名永远得到同一个别名，网关重启、池子变化都不影响已选的会话）。
 pub fn claude_alias(model: &str) -> String {
     if model.to_ascii_lowercase().contains("claude") {
         return model.to_string();
     }
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(model.as_bytes());
-    let mut head = [0_u8; 8];
-    head.copy_from_slice(&digest[..8]);
-    format!(
-        "{CLAUDE_ALIAS_PREFIX}{:010}",
-        u64::from_be_bytes(head) % 10_000_000_000
-    )
+    format!("{CLAUDE_ALIAS_PREFIX}{}", alias_number(model))
+}
+
+/// 同 [`claude_alias`]，但有思考档位的模型用 [`CLAUDE_EFFORT_ALIAS_PREFIX`]，让 Desktop 给它出思考等级菜单。
+pub fn claude_desktop_alias(model: &str, has_effort: bool) -> String {
+    if model.to_ascii_lowercase().contains("claude") || !has_effort {
+        return claude_alias(model);
+    }
+    format!("{CLAUDE_EFFORT_ALIAS_PREFIX}{}", alias_number(model))
 }
 
 /// 把 Claude Desktop 发来的别名还原成真实模型名；不是别名、或别名对不上这个绑定的任何模型时 None。
@@ -450,15 +501,17 @@ fn claude_alias_target(
     binding: &AgentBinding,
     requested: &str,
 ) -> Option<String> {
-    if !requested
-        .get(..CLAUDE_ALIAS_PREFIX.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(CLAUDE_ALIAS_PREFIX))
-    {
-        return None;
-    }
+    let digits = [CLAUDE_ALIAS_PREFIX, CLAUDE_EFFORT_ALIAS_PREFIX]
+        .iter()
+        .find_map(|prefix| {
+            requested
+                .get(..prefix.len())
+                .filter(|head| head.eq_ignore_ascii_case(prefix))
+                .map(|_| &requested[prefix.len()..])
+        })?;
     binding_exposed_models(gateway, binding)
         .into_iter()
-        .find(|model| claude_alias(model).eq_ignore_ascii_case(requested))
+        .find(|model| alias_number(model) == digits)
 }
 
 /// Codex 起名请求的提示词开头：桌面版首次起名、桌面版定期重新起名、终端版起名。
@@ -1315,6 +1368,25 @@ mod tests {
             routed(&gateway, "claude-gw-0000000000")[0].1,
             "deepseek-v4-pro"
         );
+    }
+
+    /// 有思考档位的模型用 mythos-gw- 别名（Desktop 才出思考等级菜单），旧的 claude-gw- 别名仍能还原。
+    #[test]
+    fn effort_aliases_use_mythos_prefix_and_route_back() {
+        assert_eq!(claude_desktop_alias("claude-test-model", true), "claude-test-model");
+        assert_eq!(claude_desktop_alias("kimi-k3", false), claude_alias("kimi-k3"));
+        let alias = claude_desktop_alias("kimi-k3", true);
+        let digits = alias.strip_prefix(CLAUDE_EFFORT_ALIAS_PREFIX).unwrap();
+        let old = claude_alias("kimi-k3");
+        assert_eq!(digits, old.strip_prefix(CLAUDE_ALIAS_PREFIX).unwrap());
+        let gateway = gateway("deepseek-v4-pro");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        for requested in [alias.to_uppercase(), old] {
+            assert_eq!(
+                effective_model(&gateway, &binding, "deepseek-v4-pro", &requested),
+                "kimi-k3"
+            );
+        }
     }
 
     /// #2703：绑定指定了审批模型时，codex-auto-review 改发到它；没指定时行为不变

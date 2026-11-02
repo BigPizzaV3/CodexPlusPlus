@@ -568,6 +568,17 @@ async fn attempt_pipeline(
     if candidate.relay.protocol == RelayProtocol::Responses {
         anthropic_inbound::strip_unreplayable_reasoning(&mut body);
     }
+    // Claude Desktop / Claude Code 只会发 low…max：套到这家这个模型实有的档位。
+    if request.anthropic.is_some()
+        && let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str)
+    {
+        let levels = crate::gateway::route::model_reasoning_levels(
+            &candidate.relay,
+            &candidate.upstream_model,
+        );
+        body["reasoning"]["effort"] =
+            Value::String(anthropic_inbound::fit_reasoning_effort(effort, &levels));
+    }
     // ChatGPT 订阅后端只服务 Codex 自己的客户端：请求体、请求头都整理成 Codex CLI 发的样子。
     let chatgpt = crate::official_login::member_uses_official_login_transport(&candidate.relay);
     // 拓展用 gateway.replaces 关掉 builtin:official-shaping：请求体、UA 与版本头不再整理成 Codex CLI 的样子，

@@ -1248,10 +1248,12 @@ mod tests {
                 ModelEntry {
                     id: "ds/deepseek-chat".to_string(),
                     context_window: Some(128_000),
+                    reasoning_levels: Vec::new(),
                 },
                 ModelEntry {
                     id: "group/daily".to_string(),
                     context_window: None,
+                    reasoning_levels: Vec::new(),
                 },
             ],
         }
