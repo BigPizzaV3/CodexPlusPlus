@@ -2020,12 +2020,14 @@ impl DshPlugins {
         let mut errors = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for (key, extension_id, root, enabled, version) in declared {
+            // 包边界已由清单解析验证；比较时沿用导入记录交给 Node 的路径表示。
+            let root = strip_verbatim_prefix(&root);
             let id = extension_plugin_id(&extension_id);
             seen.insert(id.clone());
             let fingerprint = dsh_fingerprint(&root, &version);
             let existing = registry.plugins.iter().find(|plugin| plugin.id == id);
             let outcome = (|| -> anyhow::Result<bool> {
-                if enabled && existing.is_none_or(|plugin| plugin.owner_fingerprint.as_deref() != Some(fingerprint.as_str()) || plugin.root != root.to_string_lossy()) {
+                if enabled && existing.is_none_or(|plugin| plugin.owner_fingerprint.as_deref() != Some(fingerprint.as_str()) || strip_verbatim_prefix(Path::new(&plugin.root)) != root) {
                     self.import_local_as(&root, &id, toolchain)?;
                     self.update(&id, |record| {
                         record.owner = Some(key.clone());
