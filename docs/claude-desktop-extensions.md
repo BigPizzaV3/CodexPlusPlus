@@ -57,7 +57,7 @@ Claude 使用独立的后台实例和数据目录，避免与 Codex 运行状态
 
 ## 验证
 
-可导入 [连通测试示例](../tools/claude-extension-demo/README.md)，依次验证按钮、真实回合事件和模型工具共用同一个后台。
+可按说明安装 [连通测试示例](../tools/claude-extension-demo/README.md)，依次验证按钮、真实回合事件和模型工具共用同一个后台。
 
 源码包含 Mods 行为测试、原生 Claude 插件静态校验及离线测试引擎、清单契约测试、后台隔离测试及 Claude 启动环境测试。原生测试不发送模型请求，也不改用户 Claude 配置；未安装支持 Mods 测试的 Claude Code 时跳过这一项。
 

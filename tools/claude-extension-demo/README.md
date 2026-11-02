@@ -2,8 +2,8 @@
 
 这是 opt-in 的最小示例包，不会自动安装。
 
-1. 在 Codex++ 的「万物皆拓展」中导入本目录，并启用。
-2. 在「Claude → 增强」中打开「万物皆拓展」，重新启动增强版 Claude。
+1. 将完整的 `claude-extension-demo` 目录安装到用户脚本目录：macOS 默认为 `~/.config/Codex++/user_scripts/`，Windows 为 `%APPDATA%\Codex++\user_scripts\`。在「万物皆拓展 → 本地拓展」中刷新并启用，整体开关也需开启。
+2. 在「Claude → 增强」中先制作增强版，再打开「万物皆拓展」并启动增强版 Claude；已有增强版时重新启动即可。
 3. 打开 Claude Desktop 的 Code 本地会话，点击输入框上方的「拓展状态」。
 4. 开始一个回合，再点击按钮，应看到 `turn.start`、`turn.complete` 事件。
 5. 可以让 Claude 调用名称包含 `cpx_` 和 `status` 的拓展工具，读取同一个后台状态。

@@ -5001,7 +5001,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen host={activeTool} settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
@@ -10117,7 +10117,8 @@ function dreamSkinStateLabel(state: "pass" | "warning" | "fail" | "not_running")
   return t("Codex 未运行或不可连接");
 }
 
-function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; actions: Actions }) {
+function UserScriptsScreen({ host, settings, market, onOpenBuiltins, actions }: { host: string; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; actions: Actions }) {
+  const codexHost = host === "codex";
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
     if (reloading) return;
@@ -10192,10 +10193,10 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
   return (
     <div className="tp-page user-scripts-page">
       <TopbarActions>
-        <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")}>
+        {codexHost ? <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")}>
           <RefreshCw className={reloading ? "animate-spin" : ""} />
           {t("热重载拓展")}
-        </Button>
+        </Button> : null}
         <Button onClick={() => void (async () => { await actions.refreshScriptMarket(); await actions.refreshCurrent(); })()} size="sm" variant="secondary">
           <RefreshCw />
           {t("刷新")}
@@ -10215,7 +10216,7 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
           <ToggleVisual />
           <span>{t("启用本地拓展")}</span>
         </label>
-        <label className="relay-bare-switch user-scripts-switch" title={t("拓展导致黑屏或卡死时，下一次启动先跳过拓展；各拓展的启停设置不会改变")}>
+        {codexHost ? <label className="relay-bare-switch user-scripts-switch" title={t("拓展导致黑屏或卡死时，下一次启动先跳过拓展；各拓展的启停设置不会改变")}>
           <input
             aria-label={t("下次启动跳过拓展")}
             checked={Boolean(inventory?.skip_next_start)}
@@ -10225,7 +10226,7 @@ function UserScriptsScreen({ settings, market, onOpenBuiltins, actions }: { sett
           />
           <ToggleVisual />
           <span>{t("下次启动跳过拓展")}</span>
-        </label>
+        </label> : null}
         <span className="user-scripts-summary">
           {tf("拓展市场 {0} 个，已安装 {1} 个", [marketScripts.length, installedCount])}
           {market?.market.updatedAt ? ` · ${tf("清单更新于 {0}", [formatMarketUpdatedAt(market.market.updatedAt)])}` : market ? ` · ${market.market.message}` : ` · ${t("尚未刷新")}`}

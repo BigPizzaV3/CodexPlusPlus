@@ -143,3 +143,11 @@ test("只有明确声明 Claude 适配的拓展才显示 Claude Code 宿主标�
   const row = functionSource("ScriptRow");
   assert.match(row, /pkg\?\.claudeDesktop \? \{ text: "Claude Code" \} : null/);
 });
+
+test("Claude 共享拓展页不显示 Codex 专属热重载和下次启动跳过", () => {
+  const screen = functionSource("UserScriptsScreen");
+  assert.match(text, /<UserScriptsScreen host=\{activeTool\}/);
+  assert.match(screen, /const codexHost = host === "codex"/);
+  assert.match(screen, /\{codexHost \? <Button onClick=\{\(\) => void reload\(\)\}/);
+  assert.match(screen, /\{codexHost \? <label[\s\S]*?aria-label=\{t\("下次启动跳过拓展"\)\}/);
+});
