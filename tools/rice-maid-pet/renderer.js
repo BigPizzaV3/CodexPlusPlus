@@ -4,6 +4,7 @@ codexPlus.extension((ctx) => {
   const RATIO = 568 / 512;
   const GAP = 8;
   const TOP = 48;
+  const FRAME_DURATIONS = [100, 100, 120, 100, 100, 180, 100, 100, 160, 100, 100];
   const configuredSize = Number(ctx.config.size);
   const size = Number.isFinite(configuredSize) ? Math.min(280, Math.max(112, configuredSize)) : 192;
   let visible = ctx.storage.get("visible", true) !== false;
@@ -39,16 +40,10 @@ codexPlus.extension((ctx) => {
   const frame = node("span", "rice-maid-pet-frame");
   frame.setAttribute("aria-hidden", "true");
   const motion = node("span", "rice-maid-pet-motion");
-  const spriteUrl = ctx.asset("assets/rice-maid-sheet.png");
-  const images = Array.from({ length: 4 }, (_, index) => {
-    const image = node("img", "rice-maid-pet-sheet");
-    image.dataset.sprite = String(index);
-    image.alt = "";
-    image.draggable = false;
-    image.src = spriteUrl;
-    frame.append(image);
-    return image;
-  });
+  const image = node("img", "rice-maid-pet-sheet");
+  image.alt = "";
+  image.draggable = false;
+  frame.append(image);
   motion.append(frame);
   pet.append(motion);
   const bubble = node("span", "rice-maid-pet-bubble");
@@ -84,23 +79,13 @@ codexPlus.extension((ctx) => {
       pointer-events: none; transform-origin: 50% 94%;
     }
     #${ROOT_ID} .rice-maid-pet-sheet {
-      display: block; position: absolute; width: 400%; height: 201.408451%;
-      max-width: none; max-height: none; left: -92.1875%; top: 3.521127%;
+      display: block; position: absolute; width: 400%; height: 300%;
+      max-width: none; max-height: none; left: 0; top: 0;
       pointer-events: none; object-fit: fill; user-select: none;
-      opacity: 0; transition: opacity 100ms ease-in-out;
-      will-change: opacity;
-    }
-    #${ROOT_ID} .rice-maid-pet-sheet[data-sprite="1"] { left: -209.375%; }
-    #${ROOT_ID} .rice-maid-pet-sheet[data-sprite="2"] { top: -96.830986%; }
-    #${ROOT_ID} .rice-maid-pet-sheet[data-sprite="3"] { left: -209.375%; top: -96.830986%; }
-    #${ROOT_ID}[data-frame="0"] .rice-maid-pet-sheet[data-sprite="0"],
-    #${ROOT_ID}[data-frame="1"] .rice-maid-pet-sheet[data-sprite="1"],
-    #${ROOT_ID}[data-frame="2"] .rice-maid-pet-sheet[data-sprite="2"],
-    #${ROOT_ID}[data-frame="3"] .rice-maid-pet-sheet[data-sprite="3"] {
-      opacity: 1;
+      transform: translate3d(0, 0, 0); will-change: transform;
     }
     #${ROOT_ID}[data-phase="eating"] .rice-maid-pet-frame {
-      animation: rice-maid-pet-eat 1.08s ease-in-out both;
+      animation: rice-maid-pet-eat 1.26s ease-in-out both;
     }
     #${ROOT_ID}[data-dragging="true"] .rice-maid-pet-motion {
       animation-play-state: paused;
@@ -130,7 +115,6 @@ codexPlus.extension((ctx) => {
     @media (prefers-reduced-motion: reduce) {
       #${ROOT_ID} .rice-maid-pet-motion,
       #${ROOT_ID} .rice-maid-pet-frame { animation: none !important; }
-      #${ROOT_ID} .rice-maid-pet-sheet,
       #${ROOT_ID} .rice-maid-pet-bubble { transition: none !important; }
     }
   `;
@@ -166,13 +150,18 @@ codexPlus.extension((ctx) => {
     pet.setAttribute("aria-label", `米饭桌宠，已吃 ${bites} 口`);
   }
 
+  function showFrame(index) {
+    root.dataset.frame = String(index);
+    image.style.transform = `translate3d(-${(index % 4) * 25}%, -${Math.floor(index / 4) * 100 / 3}%, 0)`;
+  }
+
   function clearAnimation() {
     stopFrame?.();
     stopFrame = null;
     queued = 0;
     busy = false;
     root.dataset.phase = "idle";
-    root.dataset.frame = "0";
+    showFrame(0);
   }
 
   function later(fn, delay) {
@@ -187,21 +176,21 @@ codexPlus.extension((ctx) => {
     queued = 0;
     busy = true;
     root.dataset.phase = "eating";
-    root.dataset.frame = "1";
-    later(() => {
-      root.dataset.frame = "2";
-      later(() => {
-        root.dataset.frame = "3";
+    let index = 0;
+    const step = () => {
+      if (index === FRAME_DURATIONS.length) {
+        root.dataset.phase = "idle";
+        showFrame(0);
         later(() => {
-          root.dataset.phase = "idle";
-          root.dataset.frame = "0";
-          later(() => {
-            busy = false;
-            playNext();
-          }, 120);
-        }, 500);
-      }, 320);
-    }, 260);
+          busy = false;
+          playNext();
+        }, 100);
+        return;
+      }
+      showFrame(++index);
+      later(step, FRAME_DURATIONS[index - 1]);
+    };
+    step();
   }
 
   function feed(amount = 1) {
@@ -307,15 +296,12 @@ codexPlus.extension((ctx) => {
     const step = event.shiftKey ? 24 : 8;
     place({ x: position.x + direction[0] * step, y: position.y + direction[1] * step }, true);
   });
-  for (const image of images) {
-    ctx.listen(image, "load", () => {
-      root.dataset.imageReady = String(images.every((item) => item.complete && item.naturalWidth > 0));
-    });
-    ctx.listen(image, "error", () => {
-      root.dataset.imageReady = "false";
-      ctx.fail(new Error("米饭桌宠素材加载失败"));
-    });
-  }
+  ctx.listen(image, "load", () => { root.dataset.imageReady = "true"; });
+  ctx.listen(image, "error", () => {
+    root.dataset.imageReady = "false";
+    ctx.fail(new Error("米饭桌宠素材加载失败"));
+  });
+  image.src = ctx.asset("assets/rice-maid-sequence.webp");
   ctx.listen(window, "resize", () => {
     finishDrag();
     place(position, true);

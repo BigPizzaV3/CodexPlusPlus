@@ -252,7 +252,7 @@ function rendererHarness(options = {}) {
       },
     },
     asset(path) {
-      assert.equal(path, "assets/rice-maid-sheet.png");
+      assert.equal(path, "assets/rice-maid-sequence.webp");
       return "data:image/png;base64,test";
     },
     effect(run) {
@@ -373,7 +373,13 @@ function assertInside(harness) {
   assert.ok(top + height <= harness.window.innerHeight + 1e-8, "pet must fit viewport height");
 }
 
-await check("renderer counts every request but caps a burst at two four-frame animations", async () => {
+const frameDurations = [100, 100, 120, 100, 100, 180, 100, 100, 160, 100, 100];
+const animationMs = frameDurations.reduce((total, duration) => total + duration, 0);
+const cooldownMs = 100;
+const cycleMs = animationMs + cooldownMs;
+const cycleFrames = Array.from({ length: 11 }, (_, index) => String(index + 1)).concat("0");
+
+await check("renderer counts every request but caps a burst at two twelve-frame animations", async () => {
   const harness = rendererHarness();
   await flush();
   assert.equal(harness.root.dataset.bites, "0");
@@ -383,21 +389,20 @@ await check("renderer counts every request but caps a burst at two four-frame an
   harness.bite({ epoch: "first", count: 2 });
   assert.equal(harness.root.dataset.bites, "3");
   assert.equal(harness.root.dataset.frame, "1");
-  await harness.advance(260);
-  assert.equal(harness.root.dataset.frame, "2");
-  await harness.advance(320);
-  assert.equal(harness.root.dataset.frame, "3");
-  await harness.advance(500);
+  for (let index = 0; index < frameDurations.length; index += 1) {
+    await harness.advance(frameDurations[index]);
+    assert.equal(harness.root.dataset.frame, String(index === 10 ? 0 : index + 2));
+  }
   assert.equal(harness.root.dataset.frame, "0");
   assert.equal(harness.root.dataset.phase, "idle");
-  await harness.advance(119);
+  await harness.advance(cooldownMs - 1);
   assert.equal(harness.root.dataset.frame, "0");
   await harness.advance(1);
   assert.equal(harness.root.dataset.frame, "1");
-  await harness.advance(1200);
+  await harness.advance(cycleMs);
   assert.deepEqual(
     harness.root.dataHistory.filter(({ key }) => key === "frame").map(({ value }) => value),
-    ["0", "1", "2", "3", "0", "1", "2", "3", "0"],
+    ["0", ...cycleFrames, ...cycleFrames],
   );
   assert.equal(harness.root.dataset.phase, "idle");
   assert.equal(harness.storage.get("bites"), 3);
@@ -410,7 +415,7 @@ await check("rapid clicking and menu feeding never pile up manual bites", async 
   await flush();
   const feedMenu = harness.menus.find((menu) => menu.label === "喂一口米饭");
   assert.ok(feedMenu);
-  const phases = [0, 260, 580, 1080, 1199];
+  const phases = [0, 100, 520, animationMs, cycleMs - 1];
   let now = 0;
   let menuCloses = 0;
   for (const time of phases) {
@@ -424,17 +429,17 @@ await check("rapid clicking and menu feeding never pile up manual bites", async 
     assert.ok(harness.timers.size <= 2, "only one frame timer and one sync timer may be active");
   }
   assert.equal(menuCloses, 500);
-  await harness.advance(1200 - now);
+  await harness.advance(cycleMs - now);
   assert.equal(harness.root.dataset.frame, "0");
   assert.equal(harness.root.dataset.phase, "idle");
   assert.equal(harness.timers.size, 1);
   harness.dispatch(harness.pet, "click");
   assert.equal(harness.root.dataset.bites, "2");
   assert.equal(harness.root.dataset.frame, "1");
-  await harness.advance(1200);
+  await harness.advance(cycleMs);
   assert.deepEqual(
     harness.root.dataHistory.filter(({ key }) => key === "frame").map(({ value }) => value),
-    ["0", "1", "2", "3", "0", "1", "2", "3", "0"],
+    ["0", ...cycleFrames, ...cycleFrames],
   );
   harness.dispose();
 });
@@ -448,20 +453,20 @@ await check("manual bites and request bursts coexist with one pending visual cyc
   for (let index = 0; index < 40; index += 1) harness.dispatch(harness.pet, "click");
   assert.equal(harness.root.dataset.bites, "4");
   assert.equal(harness.root.dataset.requestCount, "3");
-  await harness.advance(1200);
+  await harness.advance(cycleMs);
   assert.equal(harness.root.dataset.frame, "1", "the pending request cycle starts after cooldown");
   harness.bite({ epoch: "first", count: 10 });
   for (let index = 0; index < 40; index += 1) harness.dispatch(harness.pet, "click");
   assert.equal(harness.root.dataset.bites, "11");
-  await harness.advance(1200);
+  await harness.advance(cycleMs);
   assert.equal(harness.root.dataset.frame, "1", "later requests coalesce into one final pending cycle");
-  await harness.advance(1200);
+  await harness.advance(cycleMs);
   assert.equal(harness.root.dataset.phase, "idle");
   assert.equal(harness.root.dataset.frame, "0");
   assert.equal(harness.timers.size, 1);
   assert.deepEqual(
     harness.root.dataHistory.filter(({ key }) => key === "frame").map(({ value }) => value),
-    ["0", "1", "2", "3", "0", "1", "2", "3", "0", "1", "2", "3", "0"],
+    ["0", ...cycleFrames, ...cycleFrames, ...cycleFrames],
   );
   harness.dispose();
 });
@@ -470,12 +475,12 @@ await check("cooldown is still busy and cannot be extended by rapid manual input
   const harness = rendererHarness();
   await flush();
   harness.dispatch(harness.pet, "click");
-  await harness.advance(1080);
+  await harness.advance(animationMs);
   assert.equal(harness.root.dataset.phase, "idle");
   assert.equal(harness.root.dataset.frame, "0");
   for (let index = 0; index < 100; index += 1) harness.dispatch(harness.pet, "click");
   assert.equal(harness.root.dataset.bites, "1");
-  await harness.advance(119);
+  await harness.advance(cooldownMs - 1);
   harness.dispatch(harness.pet, "click");
   assert.equal(harness.root.dataset.bites, "1");
   await harness.advance(1);
@@ -673,62 +678,55 @@ await check("renderer never observes native DOM or reads conversation and networ
   assert.doesNotMatch(rendererSource, /\bMutationObserver\b|\bsessionQuery\b|\bsessions\b|\bfetch\s*\(|\bXMLHttpRequest\b/);
 });
 
-await check("sprite crops exclude the adjacent row and preserve the full sheet ratio", () => {
-  const asset = readFileSync(new URL("../assets/rice-maid-sheet.png", import.meta.url));
-  assert.deepEqual([...asset.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-  assert.equal(asset.toString("ascii", 12, 16), "IHDR");
-  assert.equal(asset.readUInt32BE(16), 1024);
-  assert.equal(asset.readUInt32BE(20), 572);
-  const harness = rendererHarness();
-  const css = harness.created.find((element) => element.tagName === "STYLE").textContent;
-  const sheet = css.match(/\.rice-maid-pet-sheet\s*\{([\s\S]*?)\}/)?.[1];
-  assert.ok(sheet);
-  const percent = (block, property) => {
-    const match = block.match(new RegExp(`(?:^|[;\\s])${property}:\\s*(-?[\\d.]+)%`));
-    assert.ok(match, `${property} percentage must be explicit`);
-    return Number(match[1]) / 100;
-  };
-  const bounds = harness.bounds();
-  const logicalHeight = bounds.height / bounds.width * 512;
-  assert.ok(Math.abs(logicalHeight - 568) < 1e-6);
-  assert.ok(Math.abs(percent(sheet, "height") * logicalHeight - 1144) < 1e-5);
-  assert.equal(percent(sheet, "width") * 512, 2048);
-  const lowerRule = css.match(/\.rice-maid-pet-sheet\[data-sprite="2"\]\s*\{([^}]+)\}/)?.[1];
-  assert.ok(lowerRule);
-  const upperTop = -percent(sheet, "top") * logicalHeight;
-  const lowerTop = -percent(lowerRule, "top") * logicalHeight;
-  assert.ok(Math.abs(upperTop + 20) < 1e-5);
-  assert.ok(Math.abs(lowerTop - 550) < 1e-5);
-  // 素材的两排在原始 550px 处分开，上一排的裁切不能露出下一排头发。
-  assert.ok(upperTop + logicalHeight < 550);
-  assert.ok(lowerTop >= 550 - 1e-5);
-  assert.ok(lowerTop + logicalHeight <= 1144);
-  assert.equal(-percent(sheet, "left") * 512, 472);
-  harness.dispose();
+await check("twelve-frame RGBA atlas is bounded and retains the original source", () => {
+  const atlas = readFileSync(new URL("../assets/rice-maid-sequence.webp", import.meta.url));
+  assert.equal(atlas.toString("ascii", 0, 4), "RIFF");
+  assert.equal(atlas.readUInt32LE(4) + 8, atlas.length);
+  assert.equal(atlas.toString("ascii", 8, 16), "WEBPVP8X");
+  assert.ok(atlas[20] & 0x10, "atlas must preserve transparency");
+  assert.equal(atlas.readUIntLE(24, 3) + 1, 1024);
+  assert.equal(atlas.readUIntLE(27, 3) + 1, 852);
+  assert.ok(atlas.length < 1024 * 1024, "an extension asset must fit under 1 MiB");
+  const source = readFileSync(new URL("../assets/rice-maid-sheet.png", import.meta.url));
+  assert.deepEqual([...source.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(source.readUInt32BE(16), 1024);
+  assert.equal(source.readUInt32BE(20), 572);
+  assert.ok(atlas.length + source.length < 4 * 1024 * 1024);
 });
 
-await check("four immutable sprite layers crossfade while motion plays a single eat cycle", () => {
+await check("one twelve-frame atlas advances through a stable 4x3 grid without ghosted crossfades", async () => {
   const harness = rendererHarness();
   const images = harness.created.filter((element) => element.tagName === "IMG");
-  assert.equal(images.length, 4);
-  assert.deepEqual(images.map((image) => image.dataset.sprite), ["0", "1", "2", "3"]);
-  assert.equal(new Set(images.map((image) => image.src)).size, 1);
-  assert.ok(images.every((image) => image.parentNode?.className === "rice-maid-pet-frame"));
-  const frame = images[0].parentNode;
+  assert.equal(images.length, 1);
+  const image = images[0];
+  assert.equal(image.parentNode?.className, "rice-maid-pet-frame");
+  const frame = image.parentNode;
   assert.equal(frame.parentNode?.className, "rice-maid-pet-motion");
   const css = harness.created.find((element) => element.tagName === "STYLE").textContent;
-  assert.match(css, /\.rice-maid-pet-sheet\s*\{[^}]*opacity:\s*0;\s*transition:\s*opacity 100ms ease-in-out/s);
-  for (let index = 0; index < 4; index += 1) {
-    assert.match(css, new RegExp(`\\[data-frame="${index}"\\] \\.rice-maid-pet-sheet\\[data-sprite="${index}"\\]`));
-  }
-  assert.match(css, /\.rice-maid-pet-sheet\[data-sprite="1"\]\s*\{\s*left:/);
-  assert.match(css, /\.rice-maid-pet-sheet\[data-sprite="2"\]\s*\{\s*top:/);
-  assert.match(css, /\.rice-maid-pet-sheet\[data-sprite="3"\]\s*\{\s*left:[^}]*top:/);
-  assert.doesNotMatch(css, /\[data-frame="\d"\][^{]*\{[^}]*(?:left|top):/);
+  const sheet = css.match(/\.rice-maid-pet-sheet\s*\{([^}]+)\}/)?.[1];
+  assert.ok(sheet);
+  assert.match(sheet, /width:\s*400%;\s*height:\s*300%/);
+  assert.match(sheet, /left:\s*0;\s*top:\s*0/);
+  assert.match(sheet, /will-change:\s*transform/);
+  assert.doesNotMatch(sheet, /(?:opacity|transition):/);
   assert.match(css, /\.rice-maid-pet-motion\s*\{[^}]*animation:\s*rice-maid-pet-breathe 3\.8s ease-in-out infinite/s);
-  assert.match(css, /\[data-phase="eating"\] \.rice-maid-pet-frame\s*\{[^}]*animation:\s*rice-maid-pet-eat 1\.08s ease-in-out both/s);
+  assert.match(css, /\[data-phase="eating"\] \.rice-maid-pet-frame\s*\{[^}]*animation:\s*rice-maid-pet-eat 1\.26s ease-in-out both/s);
   assert.match(css, /\.rice-maid-pet-bubble\s*\{[^}]*transition:\s*opacity 120ms ease-in-out/s);
   assert.doesNotMatch(css, /rice-maid-pet-munch|rice-maid-pet-eat [^;]*infinite/);
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?rice-maid-pet-motion,[\s\S]*?rice-maid-pet-frame\s*\{\s*animation:\s*none !important;[\s\S]*?rice-maid-pet-sheet,[\s\S]*?rice-maid-pet-bubble\s*\{\s*transition:\s*none !important;/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?rice-maid-pet-motion,[\s\S]*?rice-maid-pet-frame\s*\{\s*animation:\s*none !important;[\s\S]*?rice-maid-pet-bubble\s*\{\s*transition:\s*none !important;/);
+  const assertGridPosition = (index) => {
+    assert.equal(harness.root.dataset.frame, String(index));
+    const match = /^translate3d\((-?[\d.]+)%, (-?[\d.]+)%, 0\)$/.exec(image.style.transform);
+    assert.ok(match);
+    assert.ok(Math.abs(Number(match[1]) + (index % 4) * 25) < 1e-8);
+    assert.ok(Math.abs(Number(match[2]) + Math.floor(index / 4) * 100 / 3) < 1e-8);
+  };
+  harness.dispatch(harness.pet, "click");
+  for (let index = 1; index <= 11; index += 1) {
+    assertGridPosition(index);
+    await harness.advance(frameDurations[index - 1]);
+  }
+  assertGridPosition(0);
+  assert.equal(harness.root.dataset.phase, "idle");
   harness.dispose();
 });
