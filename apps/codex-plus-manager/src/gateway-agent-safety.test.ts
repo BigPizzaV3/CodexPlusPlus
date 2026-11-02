@@ -193,10 +193,15 @@ test("预览失败或无法安全还原时不能提交；刷新可恢复", async
   assert.match(text(tree), /文件无法解析/);
   assert.equal(button(tree, "断开并还原").props.disabled, true);
   button(tree, "重新获取预览").props.onClick();
-  tree = await ready(dialog, { ...preview(), canDisconnect: false });
+  tree = await ready(dialog, { ...preview(), files: [], canDisconnect: false });
   assert.equal(button(tree, "断开并还原").props.disabled, true);
   assert.match(text(tree), /当前无法安全还原/);
+  assert.doesNotMatch(text(tree), /没有需要改写的配置文件/);
   assert.equal(dialog.applies.length, 0);
+  button(tree, "重新获取预览").props.onClick();
+  tree = await ready(dialog, { ...preview(), files: [] });
+  assert.equal(button(tree, "断开并还原").props.disabled, false);
+  assert.match(text(tree), /没有需要改写的配置文件/);
 });
 
 test("确认使用所见token；应用中拦重复操作与关闭，失败后旧token作废", async () => {

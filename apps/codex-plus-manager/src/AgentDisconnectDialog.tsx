@@ -113,7 +113,7 @@ export function AgentDisconnectDialog({
                   )) : t("文件内容无需修改")}</pre>
                 </section>
               ))}
-              {!preview.files.length ? <p className="gw-disconnect-note">{t("没有需要改写的配置文件。")}</p> : null}
+              {preview.canDisconnect && !preview.files.length ? <p className="gw-disconnect-note">{t("没有需要改写的配置文件。")}</p> : null}
               {!preview.canDisconnect ? <p className="gw-disconnect-error" role="alert">{t("当前无法安全还原，请先处理上面的文件问题。")}</p> : null}
             </>
           ) : null}

@@ -337,6 +337,28 @@ fn native_preview(
             return Ok(());
         }
     }
+    if *agent == ToolId::Grok
+        && apply::agent_points_at_gateway(ctx, agent)
+        && sources
+            .files
+            .get(&ctx.backup_root.join("grok-before-gateway.json"))
+            .and_then(Option::as_deref)
+            .and_then(|bytes| serde_json::from_slice::<restore::FileStash>(bytes).ok())
+            .is_none()
+        && settings
+            .tools
+            .get(&ToolId::Grok)
+            .and_then(crate::tools::grok::active_grok_profile)
+            .is_none_or(|profile| {
+                crate::tools::grok::parse_grok_model_list(&profile.model_list).is_empty()
+            })
+    {
+        result.can_disconnect = false;
+        result.warnings.push(
+            "Grok 仍连接网关，但没有可用的恢复存档，当前供应商也没有模型；请在 Grok 供应商页添加并应用一个直连供应商后再断开。".into(),
+        );
+        return Ok(());
+    }
     let sandbox = Sandbox::new()?;
     let copied = sandbox.context(ctx)?;
     for (source, target) in [
@@ -976,6 +998,89 @@ mod tests {
                 result.files[0].diff,
                 field_diff(&path, Some(&current), actual.as_deref())
             );
+        }
+    }
+
+    #[test]
+    fn grok_without_stash_or_direct_models_explains_the_missing_target_without_writing() {
+        for saved in [None, Some("not-json fake-stash-secret")] {
+            let fixture = fixture();
+            let path = fixture.ctx.grok_home.join("config.toml");
+            fs::write(
+                &path,
+                "[model.gateway]\nbase_url = \"http://127.0.0.1:57491/gw/grok/v1\"\napi_key = \"fake-live-secret\"\n",
+            )
+            .unwrap();
+            fixture
+                .ctx
+                .gateway
+                .update(|gateway| {
+                    gateway.bindings.insert("grok".into(), binding());
+                    Ok(())
+                })
+                .unwrap();
+            if let Some(saved) = saved {
+                fs::create_dir_all(&fixture.ctx.backup_root).unwrap();
+                fs::write(
+                    fixture.ctx.backup_root.join("grok-before-gateway.json"),
+                    saved,
+                )
+                .unwrap();
+            }
+            let mut settings = BackendSettings::default();
+            settings.tools.insert(
+                ToolId::Grok,
+                crate::tools::ToolConfig {
+                    relay_profiles: vec![crate::settings::RelayProfile {
+                        id: "empty-models".into(),
+                        model_list: String::new(),
+                        api_key: "fake-profile-secret".into(),
+                        ..crate::settings::RelayProfile::default()
+                    }],
+                    active_relay_id: "empty-models".into(),
+                    ..crate::tools::ToolConfig::default()
+                },
+            );
+            fixture.ctx.settings.save(&settings).unwrap();
+            let before = snapshot(fixture.temp.path());
+            let result = preview(&fixture.ctx, &settings, &ToolId::Grok).unwrap();
+            assert!(!result.can_disconnect);
+            assert!(result.files.is_empty());
+            assert!(result.warnings.iter().any(|warning| {
+                warning.contains("Grok 供应商页添加并应用一个直连供应商")
+            }));
+            assert!(
+                !result
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("隔离预演未能完成"))
+            );
+            let encoded = serde_json::to_string(&result).unwrap();
+            for secret in [
+                "fake-stash-secret",
+                "fake-live-secret",
+                "fake-profile-secret",
+            ] {
+                assert!(!encoded.contains(secret));
+            }
+            assert_eq!(snapshot(fixture.temp.path()), before);
+
+            fs::write(
+                &path,
+                "[model.direct]\nbase_url = \"https://direct.test/v1\"\napi_key = \"fake-live-secret\"\n",
+            )
+            .unwrap();
+            let before = snapshot(fixture.temp.path());
+            let direct = preview(&fixture.ctx, &settings, &ToolId::Grok).unwrap();
+            assert!(direct.can_disconnect);
+            assert!(direct.files.is_empty());
+            assert!(
+                !direct
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("Grok 供应商页添加并应用一个直连供应商"))
+            );
+            assert_eq!(snapshot(fixture.temp.path()), before);
         }
     }
 
