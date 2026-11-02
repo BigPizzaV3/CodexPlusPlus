@@ -1052,6 +1052,56 @@ mod upgrade_tests {
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
     use tokio::sync::Notify;
 
+    #[cfg(windows)]
+    const WINDOWS_RELAY_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[cfg(windows)]
+    async fn windows_stage_timeout<F: std::future::Future>(
+        scenario: &str,
+        stage: &str,
+        future: F,
+    ) -> F::Output {
+        tokio::time::timeout(WINDOWS_RELAY_TIMEOUT, future)
+            .await
+            .unwrap_or_else(|_| panic!("{scenario}: {stage} 在 5 秒内未完成"))
+    }
+
+    #[cfg(windows)]
+    async fn windows_named_pipe_pair() -> (
+        tokio::net::windows::named_pipe::NamedPipeServer,
+        tokio::net::windows::named_pipe::NamedPipeClient,
+    ) {
+        use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
+        let name = format!(r"\\.\pipe\codexplus-upgrade-{}", uuid::Uuid::new_v4());
+        let server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)
+            .expect("创建测试命名管道");
+        let client = ClientOptions::new().open(&name).expect("连接测试命名管道");
+        windows_stage_timeout("命名管道建连", "server.connect", server.connect())
+            .await
+            .expect("命名管道 server.connect 失败");
+        (server, client)
+    }
+
+    #[cfg(windows)]
+    async fn windows_tcp_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
+        use tokio::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定测试 TCP listener");
+        let address = listener.local_addr().expect("读取测试 TCP 地址");
+        let (client, accepted) = windows_stage_timeout("TCP 建连", "connect/accept", async {
+            tokio::join!(TcpStream::connect(address), listener.accept())
+        })
+        .await;
+        let client = client.expect("测试 TCP client.connect 失败");
+        let (relay, _) = accepted.expect("测试 TCP listener.accept 失败");
+        (client, relay)
+    }
+
     /// 模拟命名管道：shutdown 成功返回，但另一端不会因此收到 EOF。
     struct PipeLikeStream {
         inner: DuplexStream,
@@ -1219,5 +1269,134 @@ mod upgrade_tests {
             tokio::join!(relay, exchange)
         }).await.expect("写入失败后不能留下另一个方向的读取");
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn upgrade_relay_windows_tcp_client_drop_closes_named_pipe() {
+        let (mut upstream, mut relay_pipe) = windows_named_pipe_pair().await;
+        let (mut client, mut relay_tcp) = windows_tcp_pair().await;
+        let relay = tokio::spawn(async move {
+            let result =
+                copy_upgrade_until_eof(&mut relay_tcp, &mut relay_pipe, Duration::from_secs(5))
+                    .await;
+            drop(relay_pipe);
+            drop(relay_tcp);
+            result
+        });
+
+        windows_stage_timeout(
+            "TCP client drop",
+            "client -> named pipe 转发",
+            client.write_all(b"request"),
+        )
+        .await
+        .expect("TCP client 写入失败");
+        let mut request = [0; 7];
+        windows_stage_timeout(
+            "TCP client drop",
+            "named pipe 收到 request",
+            upstream.read_exact(&mut request),
+        )
+        .await
+        .expect("命名管道读取 request 失败");
+        assert_eq!(&request, b"request");
+        windows_stage_timeout(
+            "TCP client drop",
+            "named pipe -> client 转发",
+            upstream.write_all(b"response"),
+        )
+        .await
+        .expect("命名管道写入 response 失败");
+        let mut response = [0; 8];
+        windows_stage_timeout(
+            "TCP client drop",
+            "client 收到 response",
+            client.read_exact(&mut response),
+        )
+        .await
+        .expect("TCP client 读取 response 失败");
+        assert_eq!(&response, b"response");
+
+        drop(client);
+        let mut byte = [0];
+        let count = windows_stage_timeout(
+            "TCP client drop",
+            "命名管道观察到 EOF",
+            upstream.read(&mut byte),
+        )
+        .await
+        .expect("命名管道 EOF 读取失败");
+        assert_eq!(
+            count, 0,
+            "TCP client 断开后，relay 应关闭命名管道 client 句柄"
+        );
+        let copied = windows_stage_timeout("TCP client drop", "relay helper 退出", relay)
+            .await
+            .expect("relay task panic");
+        assert_eq!(copied.expect("relay helper 返回 I/O 错误"), (7, 8));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn upgrade_relay_windows_named_pipe_upstream_close_closes_tcp() {
+        let (mut upstream, mut relay_pipe) = windows_named_pipe_pair().await;
+        let (mut client, mut relay_tcp) = windows_tcp_pair().await;
+        let relay = tokio::spawn(async move {
+            let result =
+                copy_upgrade_until_eof(&mut relay_tcp, &mut relay_pipe, Duration::from_secs(5))
+                    .await;
+            drop(relay_pipe);
+            drop(relay_tcp);
+            result
+        });
+
+        windows_stage_timeout(
+            "upstream close",
+            "client -> named pipe 转发",
+            client.write_all(b"request"),
+        )
+        .await
+        .expect("TCP client 写入失败");
+        let mut request = [0; 7];
+        windows_stage_timeout(
+            "upstream close",
+            "named pipe 收到 request",
+            upstream.read_exact(&mut request),
+        )
+        .await
+        .expect("命名管道读取 request 失败");
+        assert_eq!(&request, b"request");
+        windows_stage_timeout(
+            "upstream close",
+            "named pipe -> client 转发",
+            upstream.write_all(b"response"),
+        )
+        .await
+        .expect("命名管道写入 response 失败");
+        let mut response = [0; 8];
+        windows_stage_timeout(
+            "upstream close",
+            "client 收到 response",
+            client.read_exact(&mut response),
+        )
+        .await
+        .expect("TCP client 读取 response 失败");
+        assert_eq!(&response, b"response");
+
+        drop(upstream);
+        let mut byte = [0];
+        let count = windows_stage_timeout(
+            "upstream close",
+            "TCP client 观察到 EOF",
+            client.read(&mut byte),
+        )
+        .await
+        .expect("TCP EOF 读取失败");
+        assert_eq!(count, 0, "命名管道上游关闭后，relay 应关闭 TCP 连接");
+        let copied = windows_stage_timeout("upstream close", "relay helper 退出", relay)
+            .await
+            .expect("relay task panic");
+        assert_eq!(copied.expect("relay helper 返回 I/O 错误"), (7, 8));
     }
 }

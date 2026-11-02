@@ -1524,7 +1524,7 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
             let port = listener.local_addr().unwrap().port();
             let step_timeout = Duration::from_secs(10);
             let server = async {
-                for _ in 0..4 {
+                for index in 0..4 {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let server_manager = manager.clone();
                     handled.spawn(async move {
@@ -1537,14 +1537,11 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
                         head.truncate(head.len() - 4);
                         let text = String::from_utf8_lossy(&head).to_string();
                         let path = text.lines().next().unwrap().split_whitespace().nth(1).unwrap().to_string();
+                        eprintln!("upgrade {index} started: {path}");
                         codex_plus_core::extension_backend::route_upgrade_with(&server_manager, &mut stream, &path, &text, &head).await.unwrap();
+                        eprintln!("upgrade {index} completed: {path}");
                     });
                 }
-                timeout(step_timeout, async {
-                    while let Some(result) = handled.join_next().await {
-                        result.unwrap();
-                    }
-                }).await.expect("服务端收尾超时");
             };
             let client = async {
                 let (mut socket, _) = timeout(step_timeout, tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")))
@@ -1583,6 +1580,12 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
             };
             timeout(Duration::from_secs(60), async { tokio::join!(server, client); })
                 .await.expect("WebSocket 用例整体超时");
+            // 客户端已完成协议交互并释放连接后，才开始计算服务端收尾时间。
+            timeout(step_timeout, async {
+                while let Some(result) = handled.join_next().await {
+                    result.unwrap();
+                }
+            }).await.expect("服务端收尾超时");
         }).catch_unwind().await;
         // 先等转发任务退出，再由外层清理后台，避免迟到的任务重新拉起子进程。
         handled.shutdown().await;
@@ -2187,7 +2190,9 @@ const timer = setTimeout(() => {{ console.error('DSH path alias request timed ou
 try {{
   const {{ realpathSync }} = await import('node:fs')
   const config = {config}
-  console.error(JSON.stringify({{ config, realpath: realpathSync(config), native: realpathSync.native(config) }}))
+  let realpath
+  try {{ realpath = realpathSync(config) }} catch (error) {{ realpath = {{ error: error.code, message: error.message }} }}
+  console.error(JSON.stringify({{ config, realpath, native: realpathSync.native(config) }}))
   const bridge = await import({bridge})
   const event = {event}
   const result = event === null
