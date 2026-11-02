@@ -2,7 +2,7 @@
 
 Claude Desktop 的 **Code 本地会话**通过官方 Claude Code Mods 接入 Codex++ 拓展。第一版支持输入框上方的按钮、模型可调用的后台工具，以及会话和回合事件。Chat、Cowork、远程会话和 DOM 注入不在本次适配范围内。
 
-在「万物皆拓展」顶部切换到 **Claude**，开启「启用 Claude 拓展」，再重新启动增强版 Claude。页面只列出声明 `claudeDesktop` 的本地拓展；Claude 的总开关和每项开关与 Codex 独立，切回 Codex 会保留原来的页签。Claude 总开关默认关闭，与「Claude → 增强」里的「万物皆拓展」开关同步。现有市场还没有宿主兼容声明，因此只在 Codex 下展示。
+在「万物皆拓展」顶部切换到 **Claude**，开启「启用 Claude 拓展」，再重新启动增强版 Claude。页面只列出声明 `claudeDesktop` 的本地拓展；Claude 的总开关和每项开关与 Codex 独立，切回 Codex 会保留原来的页签。Claude 总开关默认关闭，统一在此管理。现有市场还没有宿主兼容声明，因此只在 Codex 下展示。
 
 插件通过本次增强版启动进程的 `CLAUDE_CODE_PLUGIN_DIRS` 加载，不写全局 Claude 设置，也不改 Codex 的拓展接口。管理页不会将 Codex 的加载状态当作 Claude 的运行状态；Claude 已启用的条目标记为「重启后应用」。通用 DOM 脚本运行时尚未接入。
 

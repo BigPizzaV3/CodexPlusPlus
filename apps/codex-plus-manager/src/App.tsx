@@ -15880,24 +15880,6 @@ function ClaudeLocalizationScreen() {
       if (mounted.current) setBusy(null);
     }
   };
-  const toggleExtensions = async (enabled: boolean) => {
-    if (pending.current) return;
-    pending.current = true;
-    statusGeneration.current++;
-    setBusy("extensions"); setError(null);
-    try {
-      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
-        "claude_localization_set_extensions",
-        { enabled },
-      );
-      accept(result);
-      if (result.status === "ok") window.dispatchEvent(new Event(BACKEND_SETTINGS_CHANGED_EVENT));
-    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
-    finally {
-      pending.current = false;
-      if (mounted.current) setBusy(null);
-    }
-  };
   const toggleComputerUse = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
@@ -16150,20 +16132,6 @@ function ClaudeLocalizationScreen() {
               <span>
                 <strong>{t("语音输入")}</strong>
                 <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            <label className="switch-row compact">
-              <input
-                aria-label={t("万物皆拓展")}
-                checked={Boolean(s?.extensions)}
-                disabled={busy !== null || !s?.supported}
-                onChange={(event) => void toggleExtensions(event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("万物皆拓展")}</strong>
-                <small>{t("加载声明适配 Claude Code 的拓展，重启增强版后应用。")}</small>
               </span>
               <ToggleVisual />
             </label>
