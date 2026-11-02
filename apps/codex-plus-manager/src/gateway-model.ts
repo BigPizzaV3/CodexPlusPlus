@@ -268,6 +268,8 @@ export type GatewayPayload = {
   gateway: GatewaySettings;
   port: number;
   helperRunning: boolean;
+  /** Codex 旧版供应商配置总开关；旧版后端没有这个字段。 */
+  relayProfilesEnabled?: boolean;
   /** 网关自己的供应商池（不含 Key）。 */
   pool: GatewayPoolEntry[];
   groups: GatewayGroupEntry[];

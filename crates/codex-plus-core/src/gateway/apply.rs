@@ -1214,7 +1214,7 @@ fn write_codex(
 ) -> anyhow::Result<()> {
     let mut settings = ctx.settings.load()?;
     if !settings.relay_profiles_enabled {
-        bail!("Codex 的供应商配置总开关已关闭，无法接入网关：先在 Codex 设置里打开");
+        bail!("Codex 的供应商配置总开关已关闭，无法接入网关：请在 Codex++ 的「供应商列表」里打开「配置切换」");
     }
     // Codex 在 WSL 里运行：网关额外监听 WSL 网卡，地址写成它（#2773）；拿不到时保持回环。
     let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port).address();

@@ -126,6 +126,8 @@ pub struct GatewayPayload {
     pub gateway: GatewaySettings,
     pub port: u16,
     pub helper_running: bool,
+    /// Codex 旧版供应商配置总开关；网关接入 Codex 时也受此保护。
+    pub relay_profiles_enabled: bool,
     pub pool: Vec<GatewayPoolEntry>,
     pub groups: Vec<GatewayGroup>,
     /// 自动组：池里多家都有的模型各一个（含已隐藏的）。
@@ -394,6 +396,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         gateway,
         port,
         helper_running,
+        relay_profiles_enabled: settings.relay_profiles_enabled,
         pool,
         groups,
         auto_groups,

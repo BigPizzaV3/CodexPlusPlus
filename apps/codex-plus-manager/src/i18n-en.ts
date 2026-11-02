@@ -1729,6 +1729,8 @@ export const EN_PLAIN: Record<string, string> = {
   "配置目录": "Config directory",
   "配置切换": "Config switching",
   "供应商配置切换已关闭：Codex++ 不会写入 Codex 的 config.toml / auth.json，供应商列表已隐藏。需要切换时打开右上角的「配置切换」。": "Provider config switching is off: Codex++ will not write Codex's config.toml / auth.json, and the provider list is hidden. Turn on Config switching at the top right to switch.",
+  "重新开启配置切换只恢复 Codex++ 写入 Codex 配置的能力，不会切换直连供应商或断开当前网关。": "Turning Config switching back on only restores Codex++'s ability to write Codex config. It will not switch providers or disconnect the current gateway.",
+  "供应商配置切换已关闭，Codex++ 无法重新接入 Codex。重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关。": "Provider config switching is off, so Codex++ cannot reconnect Codex. Turning it back on only restores config writes; it will not switch providers or disconnect the current gateway.",
   "已接入，可在该工具页切换供应商。": "Wired up — switch providers on that tool's own page.",
   "尚未接入配置切换。": "Config switching is not wired up yet.",
   "该工具由它自己的页签管理": "This tool is managed on its own tab",
@@ -3166,6 +3168,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "{0} 将恢复接入前的设置，以下为要改回的项。": "{0} will return to its pre-connection settings. The items below will be changed back.",
   "查看 {0} 配置差异": "View {0} configuration diff",
   "{0} 用自己的登录或 Key 直接向 {1} 要的模型，不经 Codex++。关掉后模型下拉只列网关的模型；{0} 现在用着的那个照样显示。": "Models {0} asks {1} for itself, with its own sign-in or key, not through Codex++. Off: the model picker lists the gateway's models alone; the one {0} is on still shows.",
   "在模型下拉里显示 {0} 自带的模型": "Show {0}'s own models in the model picker",

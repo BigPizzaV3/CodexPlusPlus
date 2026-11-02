@@ -306,11 +306,12 @@ test("置顶推荐位只放在网关总览一处，各 Agent 的概览不再重�
   assert.equal((text.match(/<SponsorBoard /g) ?? []).length, 1);
 });
 
-test("Codex 被网关接管时，旧版供应商页的配置切换、添加供应商隐藏（不是置灰），从第三方导入保留（#2801）", () => {
+test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时保留恢复入口（#2801）", () => {
   const screen = functionSource("RelayScreen");
   assert.doesNotMatch(screen, /actions=\{takenOverByGateway \? null : \(/);
-  assert.match(screen, /\{takenOverByGateway \? null : <label\r?\n\s+className="switch-row compact relay-master-switch/);
+  assert.match(screen, /\{!takenOverByGateway \|\| !normalized\.relayProfilesEnabled \? <label\r?\n\s+className="switch-row compact relay-master-switch/);
   assert.match(screen, /\{takenOverByGateway \? null : \(\r?\n\s+<Button\r?\n\s+onClick=\{\(\) => \{ setNewProfileDraft\(null\); setDetailProfileId\(null\); setProviderCatalogOpen\(true\); \}\}/);
+  assert.match(screen, /重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关/);
   // 导入只写旧版供应商列表、不动 Codex 配置，接管期间也要能从 cc-switch 导入。
   const header = screen.slice(screen.indexOf("<PageHeader"), screen.indexOf('<div className="mg-content">'));
   assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<div className="third-party-import"/);

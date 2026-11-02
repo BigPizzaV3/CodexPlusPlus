@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { agentDiagnosticPresentation, connectionFileLabel, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady } from "./gateway-agent-safety.ts";
+import { agentDiagnosticPresentation, canReconnectAgent, connectionFileLabel, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady } from "./gateway-agent-safety.ts";
 import type { GatewayAgentConfigDiff, GatewayAgentDiagnostics, GatewayAgentView, GatewayDisconnectPreview } from "./gateway-model.ts";
 
 const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
@@ -39,6 +39,20 @@ test("无请求只表示待验证；配置、helper、上游失败分别显示�
   assert.equal(agentDiagnosticPresentation({ ...agent(), drift: { endpoint: "http://elsewhere" } }, true).reconnect, true);
   assert.equal(agentDiagnosticPresentation({ ...agent("awaitingTraffic"), drift: { endpoint: "http://old" } }, true).tone, "pending", "新诊断优先于兼容字段");
   assert.equal(agentDiagnosticPresentation({ ...agent("active"), enabled: false }, true).badge, "未接入");
+});
+
+test("供应商配置总开关关闭时只阻止 Codex 重新接入，旧 payload 与其它 Agent 保持兼容", () => {
+  assert.equal(canReconnectAgent({ agent: "codex" }, false), false);
+  assert.equal(canReconnectAgent({ agent: "claude" }, false), true);
+  assert.equal(canReconnectAgent({ agent: "grok" }, false), true);
+  assert.equal(canReconnectAgent({ agent: "codex" }, true), true);
+  assert.equal(canReconnectAgent({ agent: "codex" }), true);
+
+  const agents = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
+  assert.match(agents, /reconnectAllowed \? \([\s\S]*?重新接入[\s\S]*?: \([\s\S]*?供应商配置切换已关闭[\s\S]*?onOpenCodexProviderSettings/);
+  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  assert.match(app, /onOpenCodexProviderSettings=\{\(\) => \{ void switchTool\("codex", "relay"\); \}\}/);
+  assert.match(app, /!takenOverByGateway \|\| !normalized\.relayProfilesEnabled/);
 });
 
 test("预览授权绑定Agent与非空token；文件状态和未知诊断证据不被误标成功", () => {
@@ -189,6 +203,7 @@ test("断开前等待预览；保留字段警告、文件diff与脱敏状态可�
   assert.equal(dialog.applies.length, 0);
   tree = await ready(dialog);
   assert.equal(button(tree, "断开并还原").props.disabled, false);
+  assert.match(text(tree), /OpenCode 将恢复接入前的设置，以下为要改回的项/);
   assert.match(text(tree), /保留接入后修改的字段/);
   assert.match(text(tree), /\/test\/opencode.jsonc/);
   assert.match(text(tree), /敏感值已隐藏/);

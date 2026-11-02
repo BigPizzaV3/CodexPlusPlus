@@ -6,6 +6,11 @@ export type AgentDiagnosticPresentation = {
   reconnect: boolean;
 };
 
+/** 关闭旧版供应商写入开关时，Codex 的重新接入必定失败；旧版 payload 未知时保持原行为。 */
+export function canReconnectAgent(agent: Pick<GatewayAgentView, "agent">, relayProfilesEnabled?: boolean): boolean {
+  return agent.agent !== "codex" || relayProfilesEnabled !== false;
+}
+
 /** 配置已写入和请求已到达是两种证据，不能把没有流量当成绕过网关或接入成功。 */
 export function agentDiagnosticPresentation(agent: GatewayAgentView, helperRunning: boolean): AgentDiagnosticPresentation {
   if (!agent.enabled) return { badge: "未接入", tone: "off", reconnect: false };

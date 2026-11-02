@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, FileDiff, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
-import { agentDiagnosticPresentation, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
+import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
 import {
   agentModels,
   agentPoolProviders,
@@ -45,12 +45,14 @@ export function AgentsView({
   run,
   notify,
   onManage,
+  onOpenCodexProviderSettings,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
   run: Run;
   notify: Notify;
   onManage: () => void;
+  onOpenCodexProviderSettings?: () => void;
 }) {
   // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
   const focus = useAgentFocus();
@@ -67,6 +69,7 @@ export function AgentsView({
       key={agent.agent}
       notify={notify}
       onManage={onManage}
+      onOpenCodexProviderSettings={onOpenCodexProviderSettings}
       onToggleExpand={() => setExpanded(expanded === agent.agent ? null : agent.agent)}
       payload={payload}
       run={run}
@@ -94,6 +97,7 @@ export function AgentConnectDialog({
   run,
   notify,
   onManage,
+  onOpenCodexProviderSettings,
   onClose,
 }: {
   payload: GatewayPayload | null;
@@ -101,6 +105,7 @@ export function AgentConnectDialog({
   run: Run;
   notify: Notify;
   onManage: () => void;
+  onOpenCodexProviderSettings?: () => void;
   onClose: () => void;
 }) {
   // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。
@@ -113,7 +118,7 @@ export function AgentConnectDialog({
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body gw-agent-modal-body">
-          <AgentsView busy={busy} notify={notify} onManage={onManage} payload={payload} run={run} />
+          <AgentsView busy={busy} notify={notify} onManage={onManage} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
         </div>
       </div>
     </div>
@@ -127,6 +132,7 @@ function AgentRow({
   expanded,
   onToggleExpand,
   onManage,
+  onOpenCodexProviderSettings,
   run,
   notify,
 }: {
@@ -136,6 +142,7 @@ function AgentRow({
   expanded: boolean;
   onToggleExpand: () => void;
   onManage: () => void;
+  onOpenCodexProviderSettings?: () => void;
   run: Run;
   notify: Notify;
 }) {
@@ -195,6 +202,7 @@ function AgentRow({
   const drift = connected ? agent.drift ?? null : null;
   const diagnostic = agentDiagnosticPresentation(agent, running);
   const modelCount = agentModels(payload, draft.poolExclude).length;
+  const reconnectAllowed = canReconnectAgent(agent, payload?.relayProfilesEnabled);
   const reconnect = () =>
     run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(draft, binding) }, t("重新接入"));
   const note = diagnostic.reconnect
@@ -230,9 +238,20 @@ function AgentRow({
             ) : null}
             {note ? <span>{note}</span> : null}
             {diagnostic.reconnect ? (
-              <button className="gw-link gw-drift-reconnect" disabled={busy !== null} onClick={() => void reconnect()} type="button">
-                {t("重新接入")}
-              </button>
+              reconnectAllowed ? (
+                <button className="gw-link gw-drift-reconnect" disabled={busy !== null} onClick={() => void reconnect()} type="button">
+                  {t("重新接入")}
+                </button>
+              ) : (
+                <>
+                  <span>{t("供应商配置切换已关闭，在供应商配置页打开后才能切换")}</span>
+                  {onOpenCodexProviderSettings ? (
+                    <button className="gw-link gw-drift-reconnect" onClick={onOpenCodexProviderSettings} type="button">
+                      {t("打开供应商页")}
+                    </button>
+                  ) : null}
+                </>
+              )
             ) : null}
           </small>
         </div>

@@ -116,6 +116,9 @@ export function AgentDisconnectDialog({
           {!readOnly && ownModel ? (
             <p className="gw-disconnect-note">{tf("还原后将选择 {0}，使用 {1} 的登录或 Key 直连。下面仅预览接入配置的还原差异。", [ownModel.label, ownModel.direct || agent.name])}</p>
           ) : null}
+          {!readOnly && !ownModel ? (
+            <p className="gw-disconnect-note">{tf("{0} 将恢复接入前的设置，以下为要改回的项。", [agent.name])}</p>
+          ) : null}
           {loaded.state === "loading" ? (
             <p className="gw-disconnect-note" role="status"><Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />{t(readOnly ? "正在读取配置差异…" : "正在检查文件与还原差异…")}</p>
           ) : null}

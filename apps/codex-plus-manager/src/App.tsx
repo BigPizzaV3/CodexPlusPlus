@@ -5119,6 +5119,7 @@ export function App() {
                 />
               }
               notify={actions.showMessage}
+              onOpenCodexProviderSettings={() => { void switchTool("codex", "relay"); }}
               onTabChange={(tab) => void navigate(gatewayRouteByTab[tab])}
               tab={gatewayTabByRoute[route]}
             />
@@ -7707,12 +7708,14 @@ function RelayScreen({
         actions={(
           <>
             {/* 总开关很少改动：收成标题栏里的小开关，完整说明放在悬停提示里；关闭时下方另有提示条。 */}
-            {/* Codex 被新版网关接管时，旧版的切换、添加都不起作用，直接隐藏；先「断开并还原」。
+            {/* Codex 被新版网关接管时，旧版的切换、添加都不起作用；只有总开关关闭时保留重新开启入口。
                 「从第三方导入」保留（#2801）：导入只写旧版供应商列表、不动 Codex 配置，
                 导进来的供应商可以直接多开，也能在网关「添加供应商 → 导入…」里复制进供应商池。 */}
-            {takenOverByGateway ? null : <label
+            {!takenOverByGateway || !normalized.relayProfilesEnabled ? <label
               className="switch-row compact relay-master-switch relay-master-switch-compact"
-              title={t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
+              title={takenOverByGateway
+                ? t("重新开启配置切换只恢复 Codex++ 写入 Codex 配置的能力，不会切换直连供应商或断开当前网关。")
+                : t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
             >
               <input
                 aria-label={t("启用供应商配置切换")}
@@ -7725,7 +7728,7 @@ function RelayScreen({
               />
               <span>{t("配置切换")}</span>
               <ToggleVisual />
-            </label>}
+            </label> : null}
             <div className="third-party-import" ref={thirdPartyImportTriggerRef}>
               <Button
                 onClick={openThirdPartyImport}
@@ -7842,7 +7845,9 @@ function RelayScreen({
           <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
           {!normalized.relayProfilesEnabled ? (
             <p className="relay-switch-off-note" role="status">
-              {t("供应商配置切换已关闭：Codex++ 不会写入 Codex 的 config.toml / auth.json，供应商列表已隐藏。需要切换时打开右上角的「配置切换」。")}
+              {takenOverByGateway
+                ? t("供应商配置切换已关闭，Codex++ 无法重新接入 Codex。重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关。")
+                : t("供应商配置切换已关闭：Codex++ 不会写入 Codex 的 config.toml / auth.json，供应商列表已隐藏。需要切换时打开右上角的「配置切换」。")}
             </p>
           ) : null}
           {/* Codex 被新版网关接管：旧版列表整块隐藏，断开并还原后恢复（状态与断开按钮在页面顶部）。 */}
