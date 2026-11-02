@@ -72,8 +72,8 @@
     },
     {
       "name": "71-model-picker-groups.js",
-      "description": "原生模型选择器按供应商分组折叠（聚合供应商场景）",
-      "lines": 1179
+      "description": "原生模型选择器供应商图标入口与模型列表导航（聚合供应商场景）",
+      "lines": 1192
     },
     {
       "name": "80-session-share.js",
