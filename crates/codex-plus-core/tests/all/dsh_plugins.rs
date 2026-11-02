@@ -1543,19 +1543,25 @@ async fn dsh_web_routes_mcp_resources_attachments_and_file_references() {
         let hello = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next()).await.expect("等问候超时").unwrap().unwrap();
         assert_eq!(hello.into_text().unwrap().as_str(), "hello /ws");
         socket.send(tokio_tungstenite::tungstenite::Message::Text("ping".into())).await.unwrap();
-        let echo = socket.next().await.unwrap().unwrap();
+        let echo = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next()).await.expect("等回显超时").unwrap().unwrap();
         assert_eq!(echo.into_text().unwrap().as_str(), "echo:ping");
         drop(socket);
         // 别的网页（Origin 与 Host 不同）发来的升级被拒绝。
         let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
         request.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
-        assert!(tokio_tungstenite::connect_async(request).await.is_err());
+        match tokio::time::timeout(std::time::Duration::from_secs(10), tokio_tungstenite::connect_async(request)).await {
+            Ok(Err(_)) => {}
+            other => panic!("跨源升级要立刻被拒，不能挂住：{other:?}"),
+        }
         // DNS 重绑定：恶意域名解析到 127.0.0.1 时 Origin 与 Host 都是那个域名，同源检查拦不住，要靠 Host 必须是回环地址。
         let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://127.0.0.1:{port}/ext/dsh-dsh-web-demo/ws")).unwrap();
         request.headers_mut().insert("host", format!("evil.example:{port}").parse().unwrap());
         request.headers_mut().insert("origin", format!("http://evil.example:{port}").parse().unwrap());
-        assert!(tokio_tungstenite::connect_async(request).await.is_err());
-        server.await.unwrap();
+        match tokio::time::timeout(std::time::Duration::from_secs(10), tokio_tungstenite::connect_async(request)).await {
+            Ok(Err(_)) => {}
+            other => panic!("Host 非回环的升级要立刻被拒，不能挂住：{other:?}"),
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), server).await.expect("服务端收尾超时").unwrap();
     }
 
     plugins.set_enabled(&record.id, false).unwrap();
