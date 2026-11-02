@@ -34,9 +34,10 @@ test("整体设置只放应用级选项，Agent 设置承担工具级选项", ()
   assert.doesNotMatch(agent, /供应商测试模型|relayTestModel/);
 });
 
-test("Agent 设置挂在各 Agent 的侧栏菜单，整体设置留在最左栏", () => {
+test("Codex 设置与整体设置都进齿轮的设置模式，不占 Agent 的页签", () => {
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
-  assert.match(sections, /"agentSettings"/);
+  assert.doesNotMatch(sections, /"agentSettings"/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance",/);
 
   const globalNavigation = text.slice(text.indexOf("const globalNavigationRoutes"), text.indexOf("const defaultSettings"));
   assert.match(globalNavigation, /"settings"/);
@@ -49,7 +50,7 @@ test("设置菜单只属于 Codex，Claude / Grok 不再显示只有跳转按钮
   assert.doesNotMatch(agent, /没有独立设置项|前往 Grok 配置|前往 Claude 增强/);
 });
 
-test("Computer Use 放在侧栏「工具」组，不再出现在每个 Agent 的菜单里", () => {
+test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Agent 的菜单里", () => {
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"computerUse"/);
 
@@ -58,16 +59,18 @@ test("Computer Use 放在侧栏「工具」组，不再出现在每个 Agent 的
   // 「工具」组第一个是推荐内容（用户要求置顶），Computer Use 紧随其后；网关自己一组。
   assert.match(globalNavigation, /const toolNavigationRoutes: Route\[\] = \["recommendations", "computerUse",/);
   assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
-  const sidebar = functionSource("AppSidebar");
-  assert.match(sidebar, /gatewayNavigationRoutes\.map/);
-  assert.match(sidebar, /visibleRoutes\(focus, toolNavigationRoutes\)\.map/);
+  const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
+  assert.match(entries, /\{ key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta"/);
+  assert.match(entries, /entries\.filter\(\(entry\) => routeVisible\(focus, entry\.route\)/);
   // 只管理 Codex 时不显示：Codex 自带 Computer Use，这一页接入的是其他客户端。
   assert.match(globalNavigation, /const multiAgentRoutes = new Set<Route>\(\["agentCollaboration", "computerUse"\]\);/);
 });
 
-test("Agent 设置标题跟随当前 Agent，整体设置标题固定", () => {
+test("标题：设置模式用分类名，Agent 自己的页面用 Agent 名字，其余用页面名", () => {
   const entry = functionSource("App");
-  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : soloAgent && route === "gateway" \? tf\("\{0\} 接入", \[agentName\(soloAgent\)\]\) : routeTitle\(navAliasRoute\[route\] \?\? route\)/);
+  assert.match(entry, /settingsEntryKey\n\s*\? settingsEntries\.find\(\(entry\) => entry\.key === settingsEntryKey\)\?\.label/);
+  assert.match(entry, /onAgentPage\n\s*\? activeToolName/);
+  assert.match(entry, /<h1 title=\{[^\n]*\}>\{pageTitle\}<\/h1>/);
   assert.match(entry, /const activeToolName = toolEntries\.find/);
 });
 
@@ -76,7 +79,7 @@ test("只用增强功能：隐藏供应商页面，配置保存成功后才提�
   assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "relayEnvironment", "multiLaunch"\]\);/);
   assert.match(helpers, /providersHidden\(focus\) && providerRoutes\.has\(routeId\)/);
   // 侧栏、页签、命令面板都按同一条规则过滤。
-  assert.match(functionSource("AppSidebar"), /enhanceOnly \? null : \(\s*<section className=\{`side-group \$\{collapsed\.includes\("gateway"\)/);
+  assert.match(functionSource("AppSidebar"), /const shownPrimary = primary\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
   assert.match(functionSource("AgentPageTabs"), /visibleRoutes\(focus, entry\.routes\)/);
   assert.match(text, /if \(!item \|\| !routeVisible\(agentFocus, routeId\)\) return null;/);
   // 启动默认停在网关总览：模式不让看就回落脚页。

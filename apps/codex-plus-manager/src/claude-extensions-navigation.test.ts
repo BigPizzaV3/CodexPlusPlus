@@ -42,6 +42,7 @@ function functionSource(name: string) {
 const navigationNames = [
   "routes", "routeTool", "globalNavigationRoutes", "gatewayNavigationRoutes", "managementNavigationRoutes",
   "navAliasRoute", "toolNavigationRoutes", "multiAgentRoutes", "providerRoutes", "routeVisible", "visibleRoutes",
+  "settingsModeRoutes", "customizeRoutes",
 ];
 const navigationSource = navigationNames.map((name) => `const ${declaration(name).getText(app)};`).join("\n");
 const icons = [...text.matchAll(/icon: (\w+)/g)].map((match) => match[1]);
@@ -65,7 +66,7 @@ function elementText(node: any): string {
 function harness() {
   const navigations: string[] = [];
   const context = vm.createContext({
-    ...Object.fromEntries([...icons, "ChevronDown", "Search", "Plus", "AgentGlyph", "Loader2", "Square", "Play", "Sun", "Moon", "Languages", "ArrowUp"].map((name) => [name, name])),
+    ...Object.fromEntries([...icons, "ChevronDown", "Search", "Plus", "AgentGlyph", "Loader2", "Square", "Play", "Sun", "Moon", "Languages", "ArrowUp", "ArrowLeft"].map((name) => [name, name])),
     React: { createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
     t: (value: string) => value,
     tf: (value: string, args: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
@@ -109,17 +110,18 @@ test("拓展管理只向 Codex 和 Claude 开放，保留原本 Codex 主归属"
 });
 
 test("实际侧栏在 Claude 下可打开同一拓展管理页，Grok 保持隐藏", () => {
+  // 「自定义」入口在 Codex / Claude 下落到拓展页；其他 Agent 没有拓展页，落到 MCP。
+  const customize = (sidebar: Element) => elements(sidebar).find((node) => node.props["data-nav"] === "customize");
   for (const activeTool of ["codex", "claude", "grok", "opencode"]) {
     const h = harness();
-    const entry = elements(h.sidebar(activeTool)).find((node) => node.props["data-tour"] === "nav-userScripts");
-    assert.equal(Boolean(entry), activeTool === "codex" || activeTool === "claude", activeTool);
-    if (entry) {
-      entry.props.onClick();
-      assert.deepEqual(h.navigations, ["userScripts"]);
-    }
+    const entry = customize(h.sidebar(activeTool));
+    assert.ok(entry, activeTool);
+    entry.props.onClick();
+    assert.deepEqual(h.navigations, [activeTool === "codex" || activeTool === "claude" ? "userScripts" : "context"], activeTool);
   }
   const h = harness();
-  assert.ok(elements(h.sidebar("claude", "enhance")).some((node) => node.props["data-tour"] === "nav-userScripts"));
+  customize(h.sidebar("claude", "enhance"))!.props.onClick();
+  assert.deepEqual(h.navigations, ["userScripts"]);
   assert.equal(agentVisible("codex", "claude"), false, "原来的只管理 Codex 模式仍不显示 Claude");
 });
 
@@ -129,8 +131,9 @@ test("只有显式 tools 限定的入口按宿主过滤，其余全局管理保�
   // 旧入口即使保留主归属，也不因此改变全局管理的可见行为。
   mcp.tool = "codex";
   const entries = elements(h.sidebar("claude"));
-  for (const route of ["context", "skills", "sessions"]) {
-    assert.ok(entries.some((node) => node.props["data-tour"] === `nav-${route}`), route);
+  // MCP、Skills 在「自定义」的胶囊里，会话单独一个入口；都不随宿主隐藏。
+  for (const key of ["customize", "sessions"]) {
+    assert.ok(entries.some((node) => node.props["data-nav"] === key), key);
   }
 });
 
@@ -267,7 +270,7 @@ test("页内宿主切换绑定共享路由并传递当前宿主", () => {
   }
 });
 
-test("拓展页宿主切换遵守只管理 Codex 模式，其余模式保留双宿主", () => {
+test("拓展页宿主切换遵守只管理 Codex 模式（只有一个宿主时不显示切换），其余模式保留双宿主", () => {
   const invocation = text.split("\n").find((line) => line.includes("<UserScriptsScreen"));
   assert.ok(invocation);
   assert.match(invocation, /\bfocus=\{agentFocus\}/);
@@ -278,7 +281,7 @@ test("拓展页宿主切换遵守只管理 Codex 模式，其余模式保留双�
     assert.ok(hero);
     assert.equal(hero.props.focus, focus);
     const controls = elements(h.render("ExtensionsHero", hero.props)).filter((node) => node.type === "button");
-    assert.ok(controls.some((node) => elementText(node).trim() === "Codex"));
+    assert.equal(controls.some((node) => elementText(node).trim() === "Codex"), focus !== "codex");
     const claude = controls.find((node) => elementText(node).trim() === "Claude");
     assert.equal(Boolean(claude), focus !== "codex", String(focus));
     if (claude) {

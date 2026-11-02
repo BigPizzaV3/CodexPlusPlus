@@ -25,6 +25,8 @@ async function start() {
     return;
   }
   const { App } = await import("../src/App");
+  // 和正式版一样，Cursor 风格层在组件样式之后加载。
+  await import("../src/cursor-ui.css");
   createRoot(app).render(<App />);
 }
 

@@ -28,9 +28,9 @@ test("只保留一条侧栏，旧的图标栏和 Agent 子侧栏都已移除", (
   assert.doesNotMatch(styles, /\.app-rail\b|\.tool-chip\b|\.rail-brand\b/);
 });
 
-test("侧栏顶部是网关状态卡，点它进入总览；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
+test("侧栏底部是网关状态卡，点它进入总览；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
   const sidebar = functionSource("AppSidebar");
-  assert.match(sidebar, /className=\{`side-hub[^`]*`\} data-tour="hub" onClick=\{\(\) => onNavigate\("hub"\)\}/);
+  assert.match(sidebar, /className=\{`cx-side-card[^`]*`\} data-tour="hub" onClick=\{\(\) => onNavigate\("hub"\)\}/);
   assert.match(sidebar, /useGatewayPayload\(/);
   assert.match(text, /const agentHomeRoute: Record<string, Route> = \{ codex: "overview", claude: "claude", grok: "overview" \}/);
   assert.match(text, /const agentEntryRoute = \(toolId: ToolId\) => agentTarget\(agentRoutes\(toolId\), lastAgentRoute\.get\(toolId\), agentHomeRoute\[toolId\] \?\? "overview"\)/);
@@ -41,7 +41,8 @@ test("侧栏顶部是网关状态卡，点它进入总览；Agent 点名字回�
 test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后它的全部页面都在内容区顶部的页签里", () => {
   const sidebar = functionSource("AppSidebar");
   // 在网关、全局管理、工具这些通用页面时 Agent 行不显示选中，侧栏同一时间只有一个选中项。
-  assert.match(sidebar, /className=\{`side-item side-agent \$\{current && !onGlobalPage \? "current active" : ""\}`\}/);
+  assert.match(sidebar, /const current = tool\.id === activeTool && !onGlobalPage;/);
+  assert.match(sidebar, /className=\{`cx-side-item \$\{current \? "active" : ""\}`\}/);
   // 状态点表示接入方式而不是运行状态（运行状态在顶栏和 Codex 行的播放 / 停止键上）。
   assert.match(sidebar, /tone: "direct"/);
   const access = sidebar.slice(sidebar.indexOf("const access ="), sidebar.indexOf("return (", sidebar.indexOf("const access =")));
@@ -55,11 +56,13 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(lib, /commands::stop_codex_plus,/);
   // 侧栏不再列当前 Agent 的页面。
   assert.doesNotMatch(sidebar, /agent-pages|navigationSections/);
-  // 页签：概览 / 供应商 / 增强 / 设置 分组用细线隔开，仍按页面的 tool 归属过滤；通用页面不显示。
+  // 胶囊：概览 / 供应商 / 增强 分组用细线隔开，仍按页面的 tool 归属过滤；通用页面和设置模式不显示。
+  // Codex 设置（含安装维护）进了齿轮的设置模式，不再占 Agent 的页签。
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
-  for (const id of ["overview", "providers", "enhance", "settings"]) assert.match(sections, new RegExp(`id: "${id}"`));
+  for (const id of ["overview", "providers", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
+  assert.doesNotMatch(sections, /"agentSettings"/);
   const tabs = functionSource("AgentPageTabs");
-  assert.match(tabs, /if \(globalNavigationRoutes\.includes\(route\)\) return null;/);
+  assert.match(tabs, /if \(globalNavigationRoutes\.includes\(route\) \|\| settingsModeRoutes\.has\(route\)\) return null;/);
   assert.match(tabs, /agentTabGroups\(navigationSections, routeTool, activeTool\)/);
   assert.match(tabs, /className="agent-page-tabs-sep"/);
   assert.match(functionSource("App"), /<AgentPageTabs activeTool=\{activeTool\}/);
@@ -174,7 +177,12 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  assert.match(functionSource("AppSidebar"), /visibleRoutes\(focus, managementNavigationRoutes\)\.map/);
+  // 侧栏主入口：用量（两个页签都算选中）、自定义（拓展 / MCP / Skills 三个胶囊）、会话，都按使用模式过滤。
+  const sidebar = functionSource("AppSidebar");
+  assert.match(sidebar, /match: \["gatewayUsage", "requestLog"\]/);
+  assert.match(sidebar, /match: customizeRoutes/);
+  assert.match(sidebar, /primary\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
+  assert.match(text, /const customizeRoutes: Route\[\] = \["userScripts", "context", "skills"\];/);
   // 网关的会话页并进「会话」：Codex 页签是完整的会话管理，其余页签是多 Agent 会话列表。
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
@@ -238,14 +246,13 @@ test("Agent 页签条不能是滚动容器：否则在 .screen 的 grid 里会�
   assert.match(rules.join("\n"), /flex-wrap:\s*wrap/);
 });
 
-test("安装维护并进设置页：设置分组只有一个页面，设置页下方渲染维护内容，旧路由跳到设置", () => {
-  const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
-  assert.match(sections, /\{ id: "settings", routes: \["agentSettings"\] \}/);
+test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里，设置页下方渲染维护内容，旧路由跳到设置", () => {
   const app = functionSource("App");
   assert.match(app, /const next: Route = target === "maintenance" \? "agentSettings" : target === "about" \? "settings" : target;/);
   assert.match(app, /\{route === "agentSettings" \|\| route === "maintenance" \? \(/);
-  // 合并后的设置页用左侧分类目录，目录里的每一项都对应一张卡片。
-  assert.match(app, /<PageSectionNav label=\{t\("设置分类"\)\} sections=\{codexSettingsSections\(\)\} \/>/);
+  assert.match(text, /\{ key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent"/);
+  // 分类目录交给侧栏，页内不再有左侧目录；分组卡片 id 仍然保留，深链照常。
+  assert.doesNotMatch(app, /sections=\{codexSettingsSections\(\)\}/);
   const ids = [...text.slice(text.indexOf("function codexSettingsSections"), text.indexOf("const EXPERIMENTAL_TITLE")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
   assert.ok(ids.length >= 6);
   for (const id of ids) assert.match(text, new RegExp(`<Panel id="${id}">`));
@@ -258,12 +265,15 @@ test("推荐内容只显示赞助商推荐", () => {
   assert.match(screen, /t\("赞助商推荐"\)/);
 });
 
-test("设置类页面共用左侧分类目录：增强、设置、微信连接；开关列表限宽", () => {
-  for (const page of ["settings-page enhance-page sectioned-page", "settings-page codex-settings-page sectioned-page", "weixin-connect-page sectioned-page"]) {
+test("页内目录收成单列：增强页的页签横排成胶囊、分组锚点不再显示；设置模式内容限宽", () => {
+  for (const page of ["settings-page enhance-page sectioned-page", "settings-page codex-settings-page", "weixin-connect-page sectioned-page"]) {
     assert.ok(text.includes(`className="${page}"`), page);
   }
-  const css = readSource("./styles.css");
-  assert.match(css, /\.shell \.sectioned-page \{[^}]*grid-template-columns:\s*172px minmax\(0, 880px\)/);
+  const layer = readSource("./cursor-ui.css");
+  assert.match(layer, /:root \.shell \.sectioned-page \{\n  display: flex;\n  flex-direction: column;/);
+  assert.match(layer, /:root \.shell \.page-section-nav-list \{\n  display: none;/);
+  assert.match(layer, /:root \.shell \.screen\[data-settings-mode="true"\] > \* \{\n  width: min\(100%, var\(--cx-content-narrow\)\);/);
+  assert.match(text, /className="enhance-tabs tp-tabs cx-pills" role="tablist"/);
   // 「（实验）」和「需重启」从文字里拿出来做成标题旁的小标签。
   const toggle = functionSource("FeatureToggle");
   assert.match(toggle, /EXPERIMENTAL_TITLE\.test\(title\)/);
@@ -373,11 +383,17 @@ test("从 Agent 概览点「全部」「请求日志」：会话页停在这个 
   assert.match(dashboard, /onOpenList\("requestLog", agent\)/);
 });
 
-test("「关于」并进「设置」：侧栏底部只留齿轮，合并页用左侧目录，旧的关于入口滚到版本与更新", () => {
+test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式一个分类一页，旧的关于入口换到版本与更新", () => {
   const sidebar = functionSource("AppSidebar");
-  assert.match(sidebar, /\(\["settings"\] as Route\[\]\)\.map/);
+  assert.match(sidebar, /onClick=\{\(\) => openSettings\("settings", \["app-settings-general"\]\)\}/);
   const app = functionSource("App");
-  assert.match(app, /<PageSectionNav label=\{t\("设置分类"\)\} sections=\{appSettingsSections\(\)\} \/>/);
+  // 只显示侧栏选中分类的卡片；深链到某张卡片时换到它所在的分类。
+  assert.match(app, /settingsSections\.map\(\(id\) => `:not\(#\$\{id\}\)`\)/);
+  assert.match(app, /if \(settingsFocus\) setSettingsSections\(settingsSectionsFor\(settingsFocus\)\);/);
+  const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
+  for (const id of ["app-settings-general", "app-settings-config", "app-settings-update", "app-settings-logs", "app-settings-diagnostics", "app-settings-about"]) {
+    assert.ok(entries.includes(`"${id}"`), `${id} 要归到某个设置分类`);
+  }
   assert.match(app, /if \(target === "about"\) setSettingsFocus\("app-settings-update"\);/);
   assert.ok(app.indexOf("<GlobalSettingsScreen") < app.indexOf("<AboutScreen"));
   const ids = [...text.slice(text.indexOf("function appSettingsSections"), text.indexOf("function AppSettingsFocus")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
@@ -410,7 +426,7 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
   const sidebar = functionSource("AppSidebar");
   for (const match of model.matchAll(/target: "([^"]+)"/g)) {
     const target = match[1];
-    const anchored = target.startsWith("nav-") ? sidebar.includes("data-tour={`nav-${item.id}`}") : sidebar.includes(`data-tour="${target}"`) || (target === "settings" && sidebar.includes("data-tour={routeId}"));
+    const anchored = target.startsWith("nav-") ? sidebar.includes(`tour: "${target}"`) : sidebar.includes(`data-tour="${target}"`) || sidebar.includes(`tour: "${target}"`);
     assert.ok(anchored, `引导目标 ${target} 在侧栏里没有锚点`);
   }
 });

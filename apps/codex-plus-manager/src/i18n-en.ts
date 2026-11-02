@@ -5,6 +5,16 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  // 侧栏与设置模式（Cursor 风格布局）
+  "通用": "General",
+  "日志与诊断": "Logs & Diagnostics",
+  "缓存清理": "Cache Cleanup",
+  "Agent 协作": "Agent Collaboration",
+  "返回": "Back",
+  "搜索设置": "Search Settings",
+  "没有匹配的设置": "No matching settings",
+  "查看更新": "View update",
+  "搜索页面和操作": "Search",
   // 内置拓展
   "模型分组": "Model grouping",
   "模型选择器里按供应商分组折叠": "Groups models by provider in the model picker, with collapsible groups",
@@ -1630,7 +1640,7 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex++ 让任意 Agent（Codex、Claude Code、Grok…）经同一个本地网关接入任意供应商。花半分钟认识一下各个入口。": "Codex++ connects any agent (Codex, Claude Code, Grok…) to any provider through one local gateway. Take half a minute to see where things are.",
   "网关状态": "Gateway status",
   "这里显示本地网关是否在运行和它的端口。点一下打开网关总览：谁在用、走哪家、是否健康，一屏看全。": "Shows whether the local gateway is running and its port. Click to open the gateway overview: who is using it, which provider, and whether it is healthy.",
-  "这里显示本地网关的运行状态和端口。结束导览后，从这里打开总览查看 Agent、供应商和最近请求。": "Shows the local gateway status and port. After the tour, open the overview here to see agents, providers and recent requests.",
+  "侧栏底部显示本地网关的运行状态和端口。结束导览后，点它打开总览查看 Agent、供应商和最近请求。": "The bottom of the sidebar shows the local gateway status and port. After the tour, click it to open the overview with agents, providers and recent requests.",
   "第一步：添加供应商": "Step 1: add providers",
   "在供应商池里添加 API Key，或直接登录 ChatGPT、Copilot 等订阅。所有 Agent 共用这一个池子。": "Add API keys to the provider pool, or sign in to subscriptions such as ChatGPT and Copilot. All agents share this pool.",
   "第二步：接入 Agent": "Step 2: connect agents",
@@ -1638,12 +1648,12 @@ export const EN_PLAIN: Record<string, string> = {
   "为 Agent 选择默认模型，再打开接入开关。接入后，供应商池里的模型会出现在 Agent 自己的模型列表里。": "Choose a default model for the agent, then turn on its connection. Models from the provider pool will appear in the agent's own model list.",
   "每个 Agent 的专属设置": "Per-agent settings",
   "每个 Agent 一行：绿点表示已接入网关。点进去管理它自己的增强、皮肤、插件等；Codex 行的播放键可以直接启动或停止 Codex。": "One row per agent: a green dot means it is connected to the gateway. Open it to manage its own enhancements, skins and plugins; the play button on the Codex row starts or stops Codex.",
-  "每个 Agent 一行，进入后管理它的增强与皮肤。Codex 行的播放键可以启动或停止 Codex；拓展在「万物皆拓展」中统一管理。": "Open an agent to manage its enhancements and skins. The play button on the Codex row starts or stops Codex. Manage extensions under \"Everything is an extension\".",
+  "每个 Agent 一行，进入后它的页面在标题下方的胶囊里。Codex 行的播放键可以启动或停止 Codex。": "One row per agent; open it to find its pages in the pills under the title. The play button on the Codex row starts or stops Codex.",
   "进入 Codex 或 Claude 的增强设置，启用所需功能；Codex 行的播放键可以启动或停止 Codex。": "Open Enhancement settings for Codex or Claude to enable the features you want. The play button on the Codex row starts or stops Codex.",
   "全局管理": "Global management",
   "请求日志、会话、MCP 和 Skills 在这里统一管理，一次覆盖所有 Agent。": "Request logs, sessions, MCP and Skills are managed here for all agents at once.",
-  "从「万物皆拓展」启用内置拓展或安装社区拓展；会话、用量、MCP 和 Skills 也在这里管理。": "Enable built-in extensions or install community extensions under \"Everything is an extension\". Sessions, usage, MCP and Skills are also managed here.",
-  "从「万物皆拓展」启用内置拓展或安装社区拓展；会话、MCP 和 Skills 也在这里管理。": "Enable built-in extensions or install community extensions under \"Everything is an extension\". Sessions, MCP and Skills are also managed here.",
+  "拓展、MCP 和 Skills 都在「自定义」里，用顶部胶囊切换；会话和用量在侧栏上方单独的入口。": "Extensions, MCP and Skills live under Custom, switched with the pills at the top; sessions and usage have their own entries in the sidebar.",
+  "拓展、MCP 和 Skills 都在「自定义」里，用顶部胶囊切换；会话在侧栏上方单独的入口。": "Extensions, MCP and Skills live under Custom, switched with the pills at the top; sessions have their own entry in the sidebar.",
   "随时按 ⌘K 搜索页面和常用操作，不用一层层点。": "Press ⌘K anytime to search pages and common actions.",
   "结束导览后，按 ⌘K 搜索页面和常用操作。": "After the tour, press ⌘K to search pages and common actions.",
   "设置与更新": "Settings & updates",
@@ -3168,6 +3178,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "新版本 {0}": "Version {0} available",
+  "{0} 个 Agent 已接入": "{0} agents connected",
   "{0} 将恢复接入前的设置，以下为要改回的项。": "{0} will return to its pre-connection settings. The items below will be changed back.",
   "查看 {0} 配置差异": "View {0} configuration diff",
   "{0} 用自己的登录或 Key 直接向 {1} 要的模型，不经 Codex++。关掉后模型下拉只列网关的模型；{0} 现在用着的那个照样显示。": "Models {0} asks {1} for itself, with its own sign-in or key, not through Codex++. Off: the model picker lists the gateway's models alone; the one {0} is on still shows.",
