@@ -6244,14 +6244,29 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 }
 
 #[tauri::command]
-pub fn set_user_scripts_enabled(enabled: bool) -> CommandResult<SettingsPayload> {
+pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandResult<SettingsPayload> {
+    let claude = match host.as_deref() {
+        None | Some("codex") => false,
+        Some("claude") => true,
+        Some(_) => return failed("不支持的拓展宿主。", fallback_settings_payload()),
+    };
     let manager = default_user_script_manager();
-    let result = manager.set_global_enabled(enabled);
+    let result = if claude {
+        manager.set_claude_extensions_enabled(enabled)
+    } else {
+        manager.set_global_enabled(enabled).map(|_| ())
+    };
     // 拓展声明的 Codex 钩子跟着拓展开关走：同步 Codex 配置里的分发条目（失败只记日志）。
-    codex_plus_core::extension_hooks::sync_default(&manager);
+    if !claude {
+        codex_plus_core::extension_hooks::sync_default(&manager);
+    }
     match result {
         Ok(_) => settings_payload(
-            if enabled {
+            if claude && enabled {
+                "Claude Desktop 拓展已开启，重新启动增强版 Claude 后加载。"
+            } else if claude {
+                "Claude Desktop 拓展已关闭。"
+            } else if enabled {
                 "本地拓展整体已开启。"
             } else {
                 "本地拓展整体已关闭。"
@@ -6393,17 +6408,32 @@ pub async fn update_extension_config_live(key: String) -> Result<String, String>
 }
 
 #[tauri::command]
-pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
+pub fn set_user_script_enabled(key: String, enabled: bool, host: Option<String>) -> CommandResult<SettingsPayload> {
+    let claude = match host.as_deref() {
+        None | Some("codex") => false,
+        Some("claude") => true,
+        Some(_) => return failed("不支持的拓展宿主。", fallback_settings_payload()),
+    };
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
-    let result = manager.set_script_enabled(trimmed, enabled);
-    codex_plus_core::extension_hooks::sync_default(&manager);
+    let result = if claude {
+        manager.set_claude_script_enabled(trimmed, enabled)
+    } else {
+        manager.set_script_enabled(trimmed, enabled)
+    };
+    if !claude {
+        codex_plus_core::extension_hooks::sync_default(&manager);
+    }
     match result {
         Ok(_) => settings_payload(
-            if enabled {
+            if claude && enabled {
+                "Claude Desktop 拓展已启用，重新启动增强版 Claude 后加载。"
+            } else if claude {
+                "Claude Desktop 拓展已停用。"
+            } else if enabled {
                 "脚本已启用。"
             } else {
                 "脚本已禁用。"

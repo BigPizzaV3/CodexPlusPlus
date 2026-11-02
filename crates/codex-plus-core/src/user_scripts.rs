@@ -127,6 +127,8 @@ fn parse_live_runtime_status_response(response: &Value) -> anyhow::Result<Value>
 pub struct UserScriptConfig {
     pub enabled: bool,
     pub scripts: BTreeMap<String, bool>,
+    /// Claude 的单项开关独立保存；空表也要写入，区分尚未迁移的旧配置。
+    pub claude_scripts: BTreeMap<String, bool>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub skip_next_start: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -141,6 +143,7 @@ impl Default for UserScriptConfig {
         Self {
             enabled: true,
             scripts: BTreeMap::new(),
+            claude_scripts: BTreeMap::new(),
             skip_next_start: false,
             market: BTreeMap::new(),
             configs: BTreeMap::new(),
@@ -264,7 +267,21 @@ impl UserScriptManager {
         let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(&text) else {
             return UserScriptConfig::default();
         };
-        config_from_object(&raw)
+        let mut config = config_from_object(&raw);
+        if !raw.contains_key("claude_scripts") {
+            config.claude_scripts = config.scripts.clone();
+            // 旧版的整体开关也约束 Claude；迁移后保留当时各项的关闭状态。
+            if !config.enabled {
+                if let Ok(scripts) = self.scan_script_files(&config) {
+                    for script in scripts {
+                        if script.package.as_ref().is_some_and(|package| package.claude_desktop.is_some()) {
+                            config.claude_scripts.insert(script.key, false);
+                        }
+                    }
+                }
+            }
+        }
+        config
     }
 
     pub fn save_config(&self, config: &UserScriptConfig) -> anyhow::Result<()> {
@@ -341,6 +358,28 @@ impl UserScriptManager {
         Ok(config)
     }
 
+    /// Claude 只接受显式适配的拓展包；不改 Codex 的单项开关或设置字段。
+    pub fn set_claude_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
+        let _guard = self.config_lock.lock().unwrap();
+        let mut config = self.load_config_unlocked();
+        let script = self.scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .with_context(|| format!("没有找到拓展 {key}"))?;
+        let package = script.package.context("Claude Desktop 只支持显式适配的拓展包")?;
+        if package.claude_desktop.is_none() {
+            anyhow::bail!("拓展没有声明 claudeDesktop");
+        }
+        if enabled {
+            if let Some(error) = package.error {
+                anyhow::bail!("拓展包清单有误：{error}");
+            }
+        }
+        config.claude_scripts.insert(key.to_string(), enabled);
+        self.save_config_unlocked(&config)?;
+        Ok(config)
+    }
+
     pub fn delete_user_script(&self, key: &str) -> anyhow::Result<UserScriptConfig> {
         let Some(file_name) = key.strip_prefix("user:").filter(|value| !value.is_empty()) else {
             anyhow::bail!("only user scripts can be deleted");
@@ -381,6 +420,7 @@ impl UserScriptManager {
         let _guard = self.config_lock.lock().unwrap();
         let mut config = self.load_config_unlocked();
         config.scripts.remove(key);
+        config.claude_scripts.remove(key);
         config.market.remove(key);
         self.save_config_unlocked(&config)?;
         Ok(config)
@@ -663,15 +703,21 @@ impl UserScriptManager {
         self.settings_value().get("claudeAppExtensions").and_then(Value::as_bool).unwrap_or(false)
     }
 
+    pub fn set_claude_extensions_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        let path = self.settings_path.clone().context("没有设置文件，不能切换 Claude Desktop 拓展")?;
+        crate::settings::SettingsStore::new(path).update(json!({ "claudeAppExtensions": enabled }))?;
+        Ok(())
+    }
+
     /// 只下发 Claude Mods 的声明；不包含配置值、后台脚本或其它本机路径。
     pub fn enabled_claude_extensions(&self) -> anyhow::Result<Vec<crate::extension_claude::EnabledClaudeExtension>> {
         let config = self.load_config();
-        if !config.enabled || !self.claude_extensions_enabled() {
+        if !self.claude_extensions_enabled() {
             return Ok(Vec::new());
         }
         Ok(self.scan_script_files(&config)?
             .into_iter()
-            .filter(|script| script.enabled)
+            .filter(|script| config.claude_scripts.get(&script.key).copied().unwrap_or(true))
             .filter_map(|script| {
                 let package = script.package.filter(|package| package.error.is_none())?;
                 Some(crate::extension_claude::EnabledClaudeExtension {
@@ -694,14 +740,11 @@ impl UserScriptManager {
             anyhow::bail!("Claude Desktop 拓展已关闭");
         }
         let config = self.load_config();
-        if !config.enabled {
-            anyhow::bail!("本地拓展整体已关闭");
-        }
         let script = self.scan_script_files(&config)?
             .into_iter()
             .find(|script| script.key == key)
             .with_context(|| format!("没有找到拓展 {key}"))?;
-        if !script.enabled {
+        if !config.claude_scripts.get(key).copied().unwrap_or(true) {
             anyhow::bail!("拓展 {key} 已停用");
         }
         let package = script.package.with_context(|| format!("{key} 不是拓展包"))?;
@@ -1179,6 +1222,7 @@ impl UserScriptManager {
         Ok(json!({
             "builtins": self.builtin_extensions()?,
             "enabled": config.enabled,
+            "claude_enabled": self.claude_extensions_enabled(),
             "skip_next_start": config.skip_next_start,
             "builtin_dir": self.builtin_dir.to_string_lossy(),
             "user_dir": self.user_dir.to_string_lossy(),
@@ -1445,6 +1489,9 @@ impl UserScriptManager {
                     "kind": if script.package.is_some() { "package" } else { "script" },
                     "package": script.package.as_ref().map(|package| package.summary()),
                     "enabled": script.enabled,
+                    "claude_enabled": script.package.as_ref()
+                        .filter(|package| package.claude_desktop.is_some())
+                        .map(|_| config.claude_scripts.get(&script.key).copied().unwrap_or(true)),
                     "replacedBy": script.replaced_by,
                     "status": status,
                     "error": error,
@@ -3333,6 +3380,15 @@ fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
     UserScriptConfig {
         enabled,
         scripts,
+        claude_scripts: raw
+            .get("claude_scripts")
+            .and_then(Value::as_object)
+            .map(|items| {
+                items.iter()
+                    .filter_map(|(key, value)| Some((key.clone(), value.as_bool()?)))
+                    .collect()
+            })
+            .unwrap_or_default(),
         skip_next_start,
         market,
         configs,

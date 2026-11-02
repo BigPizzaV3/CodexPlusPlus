@@ -94,10 +94,83 @@ fn claude_inventory_is_opt_in_and_does_not_add_codex_capabilities() {
     assert!(manager.enabled_extension_backend("user:codex-only").is_ok(), "旧 backend-only 包保持可用");
 
     manager.set_script_enabled("user:shared", false).unwrap();
+    assert_eq!(manager.enabled_claude_extensions().unwrap().len(), 1, "Codex 单项开关不再影响 Claude");
+    manager.set_claude_script_enabled("user:shared", false).unwrap();
     assert!(manager.enabled_claude_extensions().unwrap().is_empty());
-    manager.set_script_enabled("user:shared", true).unwrap();
+    manager.set_claude_script_enabled("user:shared", true).unwrap();
     manager.set_global_enabled(false).unwrap();
+    assert_eq!(manager.enabled_claude_extensions().unwrap().len(), 1, "Codex 总开关不再影响 Claude");
+    manager.set_claude_extensions_enabled(false).unwrap();
     assert!(manager.enabled_claude_extensions().unwrap().is_empty());
+}
+
+#[test]
+fn claude_switches_and_inventory_are_independent_of_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp, true);
+    write_package(&temp, "shared", Some(declaration()), "export default () => ({})");
+    write_package(&temp, "codex-only", None, "export default () => ({})");
+
+    manager.set_claude_script_enabled("user:shared", false).unwrap();
+    let inventory = manager.inventory().unwrap();
+    let shared = inventory["scripts"].as_array().unwrap().iter()
+        .find(|script| script["key"] == "user:shared").unwrap();
+    assert_eq!(inventory["enabled"], true);
+    assert_eq!(inventory["claude_enabled"], true);
+    assert_eq!(shared["enabled"], true);
+    assert_eq!(shared["claude_enabled"], false);
+    assert!(manager.enabled_extension_backend("user:shared").is_ok());
+    assert!(manager.set_claude_script_enabled("user:codex-only", true).is_err());
+    assert!(manager.set_claude_script_enabled("user:missing", true).is_err());
+
+    manager.set_claude_script_enabled("user:shared", true).unwrap();
+    manager.set_script_enabled("user:shared", false).unwrap();
+    manager.set_global_enabled(false).unwrap();
+    assert_eq!(manager.enabled_claude_extensions().unwrap().len(), 1);
+    assert!(manager.enabled_extension_backend("user:shared").is_err());
+    manager.set_claude_extensions_enabled(false).unwrap();
+    manager.set_global_enabled(true).unwrap();
+    manager.set_script_enabled("user:shared", true).unwrap();
+    assert!(manager.enabled_claude_extensions().unwrap().is_empty());
+    assert!(manager.enabled_extension_backend("user:shared").is_ok());
+}
+
+#[test]
+fn legacy_claude_item_switch_is_preserved_when_codex_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp, true);
+    write_package(&temp, "shared", Some(declaration()), "export default () => ({})");
+    fs::write(temp.path().join("user_scripts.json"), json!({
+        "enabled": true,
+        "scripts": {"user:shared": false},
+    }).to_string()).unwrap();
+
+    manager.set_script_enabled("user:shared", true).unwrap();
+    assert!(manager.enabled_extension_backend("user:shared").is_ok());
+    assert!(manager.enabled_claude_extensions().unwrap().is_empty(), "迁移后保留 Claude 原来的关闭状态");
+    manager.set_claude_script_enabled("user:shared", true).unwrap();
+    assert_eq!(manager.enabled_claude_extensions().unwrap().len(), 1);
+    manager.set_script_enabled("user:shared", false).unwrap();
+    assert_eq!(manager.enabled_claude_extensions().unwrap().len(), 1);
+}
+
+#[test]
+fn legacy_global_off_does_not_silently_enable_claude_extensions() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp, true);
+    write_package(&temp, "shared", Some(declaration()), "export default () => ({})");
+    fs::write(temp.path().join("user_scripts.json"), json!({
+        "enabled": false,
+        "scripts": {},
+    }).to_string()).unwrap();
+
+    assert!(manager.enabled_claude_extensions().unwrap().is_empty());
+    manager.set_global_enabled(true).unwrap();
+    assert!(manager.enabled_claude_extensions().unwrap().is_empty());
+    assert!(manager.enabled_extension_backend("user:shared").is_ok());
+    manager.set_claude_script_enabled("user:shared", true).unwrap();
+    manager.set_global_enabled(false).unwrap();
+    assert_eq!(manager.enabled_claude_extensions().unwrap().len(), 1);
 }
 
 #[test]
@@ -214,8 +287,10 @@ export default (ctx) => {
         assert_eq!(place["dataDir"], temp.path().join("claude-extension-data/shared").display().to_string());
         assert!(place["hostError"].as_str().unwrap().contains("未开放 Codex 宿主调用"));
         manager.set_script_enabled("user:shared", false).unwrap();
+        assert_eq!(extension_claude::call(&manager, &claude("add")).await.unwrap(), 4);
+        manager.set_claude_script_enabled("user:shared", false).unwrap();
         assert!(extension_claude::call(&manager, &claude("add")).await.is_err());
-        manager.set_script_enabled("user:shared", true).unwrap();
+        manager.set_claude_script_enabled("user:shared", true).unwrap();
         assert_eq!(extension_claude::call(&manager, &claude("add")).await.unwrap(), 1);
         codex_plus_core::settings::SettingsStore::new(temp.path().join("settings.json"))
             .update(json!({"claudeAppExtensions": false})).unwrap();
