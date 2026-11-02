@@ -4884,3 +4884,89 @@ describe("拓展输入触发、快捷键与主题", () => {
     assert.equal(styles.has("codex-plus-extension-theme"), false);
   });
 });
+
+describe("拓展桥只读轮询合并", () => {
+  // 拓展面板普遍用 setInterval 轮询只读接口，同一 payload 会在几百毫秒内重复打到桥上。
+  // 这里守住合并窗口：窗口内同参只发一次、失败不缓存、不在表里的路由行为不变。
+  type BridgeCall = { route: string; payload: Record<string, unknown> };
+
+  async function harness() {
+    const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
+    const api = await readFile(new URL("91-extension-api.js", fragmentDir), "utf8");
+    const start = api.indexOf("  const codexPlusExtensionRoutes = new Set([");
+    const onceAt = api.indexOf("  function codexPlusExtensionCallOnce(");
+    assert.ok(start >= 0 && onceAt > start, "找不到拓展桥实现");
+    const tailAt = api.indexOf("\n  /**", onceAt);
+    const end = tailAt > onceAt ? tailAt : api.length;
+    const calls: BridgeCall[] = [];
+    let failNext = false;
+    const fakeWindow = {
+      __codexSessionDeleteBridge: (route: string, payload: Record<string, unknown>) => {
+        calls.push({ route, payload });
+        if (failNext) {
+          failNext = false;
+          return Promise.reject(new Error("bridge-boom"));
+        }
+        return Promise.resolve({ status: "ok", seq: calls.length });
+      },
+    };
+    const factory = new Function(
+      "window",
+      `${api.slice(start, end)}
+return { call: codexPlusExtensionCall, routes: codexPlusExtensionRoutes };`,
+    ) as (window: unknown) => {
+      call: (route: string, payload?: Record<string, unknown>) => Promise<unknown>;
+      routes: Set<string>;
+    };
+    const built = factory(fakeWindow);
+    return {
+      call: built.call,
+      routes: built.routes,
+      calls,
+      failNext: () => { failNext = true; },
+    };
+  }
+
+  it("窗口内同参只打一次桥", async () => {
+    const h = await harness();
+    const [first, second] = await Promise.all([
+      h.call("/request-log/recent", { limit: 5 }),
+      h.call("/request-log/recent", { limit: 5 }),
+    ]);
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(first, second);
+  });
+
+  it("参数不同就各打一次", async () => {
+    const h = await harness();
+    await Promise.all([
+      h.call("/request-log/recent", { limit: 5 }),
+      h.call("/request-log/recent", { limit: 9 }),
+    ]);
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("失败不留在合并窗口里，下一次真的重试", async () => {
+    const h = await harness();
+    h.failNext();
+    await assert.rejects(h.call("/thread-usage-live", { session: "s1" }), /bridge-boom/);
+    const ok = await h.call("/thread-usage-live", { session: "s1" });
+    assert.deepEqual(ok, { status: "ok", seq: 2 });
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("未登记窗口的只读路由每次照常发", async () => {
+    const h = await harness();
+    await Promise.all([
+      h.call("/diagnostics/log", { event: "a" }),
+      h.call("/diagnostics/log", { event: "a" }),
+    ]);
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("白名单外的路由仍然拒绝", async () => {
+    const h = await harness();
+    await assert.rejects(h.call("/settings/set", {}), /未开放的路由/);
+    assert.equal(h.calls.length, 0);
+  });
+});

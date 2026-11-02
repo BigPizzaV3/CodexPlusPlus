@@ -1044,10 +1044,11 @@ fn disconnect_disables_only_owned_entry_and_reconnect_restores_it() {
     assert_eq!(fs::read_to_string(&config_path).unwrap(), "[mcp_servers.other]\ncommand = 'x'\n");
 
     managed_mcp::install(&SPEC, home.path(), &executable, &state).unwrap();
-    // 用户在条目上自加的字段要跨取消/重新接入保留。
+    // 用户在条目上自加的字段要跨取消/重新接入保留。接入时已经写好启动超时，
+    // 这里改它的值来模拟用户改动（再插一条同名键会让整份配置解析失败）。
     let with_user_field = fs::read_to_string(&config_path)
         .unwrap()
-        .replace("enabled = true", "enabled = true\nstartup_timeout_sec = 30");
+        .replace("startup_timeout_sec = 120.0", "startup_timeout_sec = 30");
     fs::write(&config_path, with_user_field).unwrap();
 
     let receipt = managed_mcp::disable(&SPEC, home.path(), &executable, &state).unwrap();

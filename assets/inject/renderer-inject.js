@@ -5,6 +5,11 @@
   if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
   const codexPlusIsMacPlatform = /\bMacintosh\b/i.test(navigator.userAgent || "");
+  // 每个注入实例的代际。重新注入会带一整套新的闭包，但旧实例留在页面上的定时器、
+  // 订阅循环还活着，且它们只认自己闭包里的标志位——每注入一次就多叠一套轮询
+  // （实测三份叠起来把 /extensions/history 顶到 544 次/分钟）。所有常驻循环都拿它自检。
+  const codexPlusRuntimeGeneration = (window.__codexPlusRuntimeGeneration || 0) + 1;
+  window.__codexPlusRuntimeGeneration = codexPlusRuntimeGeneration;
 
   function codexPlusStatsigClients() {
     const root = window.__STATSIG__ || globalThis.__STATSIG__;
@@ -5317,6 +5322,8 @@
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
+  /** 上次心跳看到的设置版本；只有它变了才值得再拉一份完整的 /settings/get。 */
+  let codexPlusBackendSettingsRevision = "";
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
   // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
   // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
@@ -5402,7 +5409,17 @@
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
           syncOfficialUsagePolicy();
         }
-        void syncBackendSettingsFromHeartbeat();
+        // 设置没变就不拉 /settings/get：那份 JSON 有 166 KB，五秒一次的编解码本身就够把
+        // 渲染进程主线程切碎。后端在 status 里带上快照版本，这里只比对字符串。
+        // 老后端不带版本（空串）时退回原来的每次全量拉取，行为不变。
+        const revision = typeof nextStatus.settingsRevision === "string" ? nextStatus.settingsRevision : "";
+        const settingsStale = !revision
+          || !codexPlusBackendSettingsLoaded
+          || revision !== codexPlusBackendSettingsRevision;
+        if (settingsStale) {
+          codexPlusBackendSettingsRevision = revision;
+          void syncBackendSettingsFromHeartbeat();
+        }
       } else {
         codexPlusBackendFailureCount += 1;
         sendCodexPlusDiagnostic("backend_check_failed", {
@@ -16896,6 +16913,39 @@
   const codexPlusExtensionCallTimeoutMs = 26000;
 
   /**
+   * 只读轮询路由的合并窗口（毫秒）。
+   *
+   * 拓展面板普遍用 setInterval 轮询这几个只读接口，每个面板各轮一次就是一次独立的桥
+   * 往返，而后端每条请求都要走一遍 JSON 编解码。实测 /request-log/recent 58 次/分钟、
+   * /thread-usage-live 37 次/分钟，几乎全是同一 payload 的重复请求。
+   * 窗口内同参调用复用同一个 Promise：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
+   * 后端与桥的往返次数按窗口长度下降一个量级。
+   */
+  const codexPlusExtensionCoalesceWindowMs = new Map([
+    // 实测这些面板的轮询间隔在 1~1.5 秒，窗口必须比它长才有合并效果；
+    // 对「最近请求 / 实时用量」这类只读展示，两秒的滞后看不出来。
+    ["/request-log/recent", 2000],
+    ["/thread-usage-live", 2000],
+    ["/proxy-status", 2000],
+    ["/backend/status", 2200],
+    ["/thread-usage-history", 3000],
+    ["/settings/public", 5000],
+    ["/model-catalog/public", 30000],
+    ["/cdp/targets", 5000],
+  ]);
+
+  /** route + payload 指纹 → { at, promise }。只在窗口内复用，过期即重发。 */
+  const codexPlusExtensionCallCache = new Map();
+
+  function codexPlusExtensionCallCacheKey(route, payload) {
+    try {
+      return `${route}\u0000${JSON.stringify(payload ?? {})}`;
+    } catch {
+      return "";
+    }
+  }
+
+  /**
    * 调用后端。
    *
    * 直接暴露 __codexSessionDeleteBridge 有三个问题：名字语义错位（它早就不只用于
@@ -16910,6 +16960,24 @@
     if (typeof bridge !== "function") {
       return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
     }
+    const windowMs = codexPlusExtensionCoalesceWindowMs.get(route);
+    const cacheKey = windowMs ? codexPlusExtensionCallCacheKey(route, payload) : "";
+    if (!windowMs || !cacheKey) return codexPlusExtensionCallOnce(route, payload, options, bridge);
+    const now = Date.now();
+    const cached = codexPlusExtensionCallCache.get(cacheKey);
+    if (cached && now - cached.at < windowMs) return cached.promise;
+    const promise = codexPlusExtensionCallOnce(route, payload, options, bridge);
+    const entry = { at: now, promise };
+    codexPlusExtensionCallCache.set(cacheKey, entry);
+    // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
+    promise.catch(() => {
+      if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+    });
+    return promise;
+  }
+
+  /** 真正发起一次桥调用（不做合并）。 */
+  function codexPlusExtensionCallOnce(route, payload, options, bridge) {
     const timeout = Number.isFinite(options.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
     // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
     const request = bridge(route, payload);
@@ -17270,6 +17338,15 @@
       },
     };
   }
+  // 注入代际（00-prelude 在每个实例启动时写入）。重新注入后旧实例留下的常驻循环
+  // 靠它自检并退出，否则每注入一次就多叠一套轮询。测试片段可能只抽这个文件，
+  // 所以对「变量不存在」做一次兜底。
+  const codexPlusInjectionGeneration = typeof codexPlusRuntimeGeneration === "undefined"
+    ? (window.__codexPlusRuntimeGeneration || 0)
+    : codexPlusRuntimeGeneration;
+  const codexPlusInjectionStillCurrent = () =>
+    (window.__codexPlusRuntimeGeneration || 0) === codexPlusInjectionGeneration;
+
   /**
    * 拓展运行时内核：codexPlus.extension(apply)
    *
@@ -17421,6 +17498,12 @@
         let timer = null;
         const interval = Math.max(500, Number(options.intervalMs) || 2000);
         const tick = async () => {
+          // 重新注入后旧实例的订阅循环必须停：它只认自己闭包里的 stopped，
+          // 没人会替它置位，不停就是每次注入多一条永久轮询。
+          if (!stopped && !codexPlusInjectionStillCurrent()) {
+            stopped = true;
+            clearTimeout(timer);
+          }
           if (stopped) return;
           try {
             if (next === null) {
@@ -17794,19 +17877,37 @@
 
   function codexPlusEnsureSessionWatcher() {
     if (codexPlusSessionWatcher || !codexPlusWantsSessionWatch()) return;
+    // 重新注入会带来一整套新的闭包，而旧的 tick 循环还活着、只认自己闭包里的变量，
+    // 于是每注入一次就多叠一套轮询。用注入代际让旧循环发现「已经被接管」后自己收摊。
+    const stillCurrent = codexPlusInjectionStillCurrent;
     const query = codexPlusSessionQueryService();
     const cursors = new Map();
     // callId → { name, arguments }：tools/result 要带上调用时的工具名与参数。
     const calls = new Map();
     let primed = false;
+    // 会话列表的变化比会话内容慢一个量级：每轮都拉一次 listSessions 等于两秒一次全量，
+    // 实测把 /extensions/history 顶到 137 次/分钟。这里缓存列表，每 4 轮刷新一次。
+    let cachedSessions = null;
+    let round = 0;
     const tick = async () => {
+      if (!stillCurrent()) {
+        clearTimeout(codexPlusSessionWatcher);
+        codexPlusSessionWatcher = null;
+        return;
+      }
       if (!codexPlusWantsSessionWatch()) {
         codexPlusSessionWatcher = null;
         return;
       }
       try {
-        const sessions = await query.listSessions({ limit: 20 });
-        for (const [index, session] of (sessions || []).entries()) {
+        if (!cachedSessions || round % 4 === 0) {
+          cachedSessions = await query.listSessions({ limit: 20 });
+        }
+        round += 1;
+        // 只有正在看的会话需要每轮实时读；其余会话按更新时间变化再读（精度到秒）。
+        // 原来对前 3 个会话无条件读，等于每轮固定 3 次桥往返，是空转的大头。
+        const activeId = codexPlusCurrentSessionId();
+        for (const session of cachedSessions || []) {
           let cursor = cursors.get(session.id);
           if (!cursor) {
             if (primed) codexPlusEmitExtensionEvent("agent/created", [{ agent: codexPlusAgentDescriptor(session.id), source: "startup" }]);
@@ -17819,8 +17920,8 @@
             cursors.set(session.id, cursor);
             if (!primed) continue;
           }
-          // 最近的几个会话每轮都看（更新时间精度只到秒），其余按更新时间变化再读。
-          if (index >= 3 && cursor.updatedAt === session.updatedAt) continue;
+          const isActive = Boolean(activeId) && session.id === activeId;
+          if (!isActive && cursor.updatedAt === session.updatedAt) continue;
           cursor.updatedAt = session.updatedAt;
           const events = await query.readEventsSince({ sessionId: session.id, seq: cursor.next, limit: 200 }).catch(() => []);
           for (const event of events || []) {
@@ -17833,7 +17934,8 @@
         }
         primed = true;
       } catch {}
-      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 5000 : 1500);
+      // 后台标签页里没人看，降到一个量级更低的节拍，别在用户切走之后继续占桥。
+      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 30000 : 1500);
     };
     codexPlusSessionWatcher = setTimeout(tick, 0);
   }
