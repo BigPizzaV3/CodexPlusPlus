@@ -141,11 +141,13 @@ import { agentTabGroups, agentTarget, pageVisibleForTool } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
+import { OnboardingSetup } from "./OnboardingSetup";
+import { hasCodexEnhancements, SETUP_STORAGE_KEY, serializeSetupState, shouldShowSetup } from "./onboarding-setup-model";
 import { AgentFocusDialog } from "./AgentFocusDialog";
-import { agentVisible, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
+import { agentVisible, commitAgentFocusSelection, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
 import { needAgentFocusPrompt, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
-import { shouldShowTour, TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
+import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
 import { PluginMarketScreen } from "./PluginMarketScreen";
@@ -1477,8 +1479,8 @@ const routeVisible = (focus: AgentFocus, routeId: Route) =>
 const visibleRoutes = (focus: AgentFocus, list: Route[]) => list.filter((routeId) => routeVisible(focus, routeId));
 /** 设置页里「使用模式」一行的说明。 */
 function agentFocusDescription(focus: AgentFocus): string {
-  if (focus === "codex") return t("只管理 Codex：Claude Code、Grok 等其他 Agent 的内容已隐藏，网关只给 Codex 用。已接入网关的其他 Agent 照常工作。");
-  if (focus === "enhance") return t("只用增强功能：供应商、网关和用量已隐藏，供应商配置切换已关闭，Codex++ 不再改 Codex 的 config.toml / auth.json。");
+  if (focus === "codex") return t("只管理 Codex：隐藏其他 Agent 的界面，已有网关连接保持不变。");
+  if (focus === "enhance") return t("只用增强功能：隐藏供应商、网关和用量，关闭旧版供应商配置切换。已有网关连接仍会运行并管理对应配置。");
   return t("全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 或只用增强功能的话，可以切换模式隐藏用不到的内容。");
 }
 /** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
@@ -1709,14 +1711,19 @@ export function App() {
   const [extensionPageKey, setExtensionPageKey] = useState<string | null>(null);
   /** 被拓展顶替、但用户点了「查看内置页面」的路由。 */
   const [builtinPagesShown, setBuiltinPagesShown] = useState<Set<string>>(() => new Set());
-  const [tourOpen, setTourOpen] = useState(() => initialTourOpen());
+  const [tourOpen, setTourOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(initialSetupOpen);
   // 使用模式（只管理 Codex / 全部功能）：没问过就先问，问完再进首次引导（引导按模式换说法）。
   const agentFocus = useAgentFocus();
   const [agentFocusOpen, setAgentFocusOpen] = useState(needAgentFocusPrompt);
-  const closeAgentFocus = useCallback((mode: FocusMode) => {
-    saveAgentFocus(mode);
+  const cancelAgentFocus = useCallback(() => {
     setAgentFocusOpen(false);
-  }, []);
+    if (!agentFocus) setSetupOpen(false);
+  }, [agentFocus]);
+  const closeSetup = (completed: boolean) => {
+    try { window.localStorage.setItem(SETUP_STORAGE_KEY, serializeSetupState(completed ? "completed" : "dismissed")); } catch { /* 本次窗口内仍可关闭。 */ }
+    setSetupOpen(false);
+  };
   const closeTour = useCallback(() => {
     // 看完或跳过都记下来，下次不再自动弹出；设置页里可以重新打开。
     try { window.localStorage.setItem(TOUR_STORAGE_KEY, String(TOUR_VERSION)); } catch { /* 存不了就只影响本次 */ }
@@ -1731,12 +1738,16 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        if (agentFocusOpen || tourOpen) return;
         setPaletteOpen((open) => !open);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [agentFocusOpen, tourOpen]);
+  useEffect(() => {
+    if (agentFocusOpen || tourOpen) setPaletteOpen(false);
+  }, [agentFocusOpen, tourOpen]);
   const [updatePrompt, setUpdatePrompt] = useState<UpdateResult | null>(null);
   const updateNotifications = useRef(new UpdateNotifications());
   const updateCheckPending = useRef<{ manual: boolean } | null>(null);
@@ -3321,6 +3332,38 @@ export function App() {
     return null;
   };
 
+  const closeAgentFocus = (mode: FocusMode) => commitAgentFocusSelection(mode, {
+    disableRelaySwitching: async () => {
+      // 用最新版本关闭旧配置切换，失败时保留原模式和问卷，不提前隐藏管理入口。
+      const latest = await run(() => call<SettingsResult>("load_settings"));
+      if (!latest || !isSuccessStatus(latest.status)) {
+        if (latest) showNotice(t("设置读取失败"), latest.message, latest.status);
+        return false;
+      }
+      const next = normalizeSettings({ ...latest.settings, relayProfilesEnabled: false });
+      const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+      if (!result || !isSuccessStatus(result.status)) {
+        if (result) showNotice(t("设置保存"), result.message, result.status);
+        return false;
+      }
+      const saved = normalizeSettings(result.settings);
+      const previous = normalizeSettings(settingsRef.current?.settings ?? latest.settings);
+      setSettings(result);
+      // 模式选择只修改这一个开关；其他页面尚未保存的编辑继续保留。
+      setSettingsForm((current) => ({
+        ...rebaseSettingsEdits(normalizeSettings(current), previous, saved),
+        relayProfilesEnabled: false,
+      }));
+      return !saved.relayProfilesEnabled;
+    },
+    commit: (next) => {
+      const firstChoice = agentFocus === null;
+      saveAgentFocus(next);
+      setAgentFocusOpen(false);
+      if (firstChoice) setSetupOpen(true);
+    },
+  });
+
   /// 自动保存：不弹成功提示；校验不过就不保存，把原因交给页面显示，避免输入到一半就弹窗。
   ///
   /// 保存期间用户又改了表单时，保留新草稿、只同步版本号（否则下一次保存会撞版本冲突），
@@ -4732,20 +4775,13 @@ export function App() {
     // navigate 每次渲染都是新函数，只在模式或页面变化时检查。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentFocus, route, activeTool]);
-  // 只用增强功能：供应商交给别的工具，关掉供应商配置切换总开关，Codex++ 不再写 config.toml / auth.json。
-  // 等设置真正读到再改（启动时表单还是默认值，直接保存会盖掉用户的设置）；切回别的模式时不自动打开。
-  const relayOffRequested = useRef(false);
+  // 旧版曾在模式切换后才保存配置；遇到遗留的未保存状态，重新确认并允许用户重试。
+  const focusRepairRequested = useRef(false);
   useEffect(() => {
-    if (agentFocus !== "enhance") {
-      relayOffRequested.current = false;
-      return;
+    if (agentFocus === "enhance" && settings?.settings.relayProfilesEnabled && !focusRepairRequested.current) {
+      focusRepairRequested.current = true;
+      setAgentFocusOpen(true);
     }
-    if (!settings || !settings.settings.relayProfilesEnabled || relayOffRequested.current) return;
-    relayOffRequested.current = true;
-    void saveSettingsValue({ ...settings.settings, relayProfilesEnabled: false }, true).then((saved) => {
-      if (saved) showNotice(t("只用增强功能"), t("已关闭供应商配置切换：Codex++ 不再改 Codex 的 config.toml / auth.json。需要时可以在「全部功能」模式的供应商页重新打开。"), "ok");
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentFocus, settings]);
 
   const isGatewayPage = gatewayNavigationRoutes.includes(route);
@@ -4810,7 +4846,7 @@ export function App() {
         codexRun={{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch.unavailableReason, onStart: codexLaunch.onLaunch, onStop: () => void actions.stopCodex() }}
       />
       <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
-      {agentFocusOpen ? <AgentFocusDialog initial={agentFocus} onDone={closeAgentFocus} /> : null}
+      {agentFocusOpen ? <AgentFocusDialog initial={agentFocus} onDone={closeAgentFocus} onCancel={cancelAgentFocus} /> : null}
       {tourOpen && !agentFocusOpen ? <OnboardingTour focus={agentFocus} onClose={closeTour} /> : null}
       <main className="workspace">
         <header className="topbar" key={`topbar-${route}`}>
@@ -4836,6 +4872,32 @@ export function App() {
             {onCodexPage ? <CodexLaunchButton className="topbar-codex-launch" size="sm" state={codexLaunch} /> : null}
           </div>
         </header>
+        {setupOpen && !agentFocusOpen ? (
+          <OnboardingSetup
+            focus={agentFocus}
+            codexInstalled={overview ? overview.codex_app.status === "found" : null}
+            codexRunning={codexAppRunning}
+            launchPending={launchPending}
+            codexEnhancementsEnabled={hasCodexEnhancements(settings)}
+            notify={actions.showMessage}
+            onChangeMode={() => setAgentFocusOpen(true)}
+            onDismiss={closeSetup}
+            onTour={() => setTourOpen(true)}
+            onNavigate={(target, agent) => { if (agent) void switchTool(agent, target); else void navigate(target); }}
+            onCheckCodex={async () => {
+              const currentApp = await run(() => call<OverviewResult>("load_overview"));
+              const currentSettings = await run(() => call<SettingsResult>("load_settings"));
+              if (!currentApp || !currentSettings || !isSuccessStatus(currentApp.status) || !isSuccessStatus(currentSettings.status)) return false;
+              setOverview(currentApp);
+              const fresh = normalizeSettings(currentSettings.settings);
+              const previous = normalizeSettings(settingsRef.current?.settings ?? currentSettings.settings);
+              setSettings(currentSettings);
+              setSettingsForm((current) => rebaseSettingsEdits(normalizeSettings(current), previous, fresh));
+              return currentApp.codex_app.status === "found" && hasCodexEnhancements(currentSettings);
+            }}
+            onLaunch={() => codexAppRunning ? restart() : launch()}
+          />
+        ) : null}
         <section
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
           key={route}
@@ -5080,7 +5142,7 @@ export function App() {
               <div className="sectioned-body">
                 <AppSettingsFocus focus={settingsFocus} onDone={() => setSettingsFocus(null)} />
                 <GlobalSettingsScreen
-                  onOpenTour={() => setTourOpen(true)}
+                  onOpenTour={() => setSetupOpen(true)}
                   agentFocus={agentFocus}
                   onOpenAgentFocus={() => setAgentFocusOpen(true)}
                   dirty={settingsDirty}
@@ -5110,7 +5172,7 @@ export function App() {
           </>)}
         </section>
       </main>
-      {updatePrompt ? (
+      {updatePrompt && !agentFocusOpen && !tourOpen ? (
         <UpdateDialog
           update={updatePrompt}
           progress={updateInstallProgress}
@@ -11345,7 +11407,7 @@ function GlobalSettingsScreen({
           <div className="global-setting-row">
             <div className="global-setting-copy">
               <strong>{t("新手引导")}</strong>
-              <span>{t("一步步认识网关、供应商池、Agent 接入和各个入口。")}</span>
+              <span>{t("完成配置、验证连接并开始使用，也可以查看各个入口的导览。")}</span>
             </div>
             <div className="global-setting-actions">
               <Button size="sm" variant="secondary" onClick={onOpenTour}>{t("重新打开引导")}</Button>
@@ -19583,14 +19645,14 @@ function loadInitialRoute(): Route {
   return "hub";
 }
 
-/** 首次使用引导：没看过当前版本就自动打开；预览模式（?previewRoute=）不打开。 */
-function initialTourOpen(): boolean {
+/** 新用户自动显示入门清单；看过旧导览的用户可从设置主动重开。 */
+function initialSetupOpen(): boolean {
   if (typeof window === "undefined") return false;
   if (new URLSearchParams(window.location.search).has("previewRoute")) return false;
   try {
-    return shouldShowTour(window.localStorage.getItem(TOUR_STORAGE_KEY));
+    return shouldShowSetup(window.localStorage.getItem(SETUP_STORAGE_KEY), window.localStorage.getItem(TOUR_STORAGE_KEY));
   } catch {
-    return false;
+    return true;
   }
 }
 

@@ -390,13 +390,17 @@ test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
   assert.match(hub, /export function HubTopology\(/);
 });
 
-test("首次使用引导：首次启动自动打开（预览模式除外），看完或跳过都记下版本；设置页可重新打开；每一步的目标在侧栏都有锚点", () => {
+test("首次入门清单与可选导览分开；模式确认后显示清单，旧用户可从设置重开", () => {
   const app = functionSource("App");
   // 使用模式问卷先弹，答完才进引导。
-  assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} \/> : null\}/);
+  assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} onCancel=\{cancelAgentFocus\} \/> : null\}/);
   assert.match(app, /\{tourOpen && !agentFocusOpen \? <OnboardingTour focus=\{agentFocus\} onClose=\{closeTour\} \/> : null\}/);
+  assert.match(app, /setupOpen && !agentFocusOpen \? \(\s*<OnboardingSetup/);
   assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
-  assert.match(functionSource("initialTourOpen"), /has\("previewRoute"\)/);
+  assert.match(functionSource("initialSetupOpen"), /has\("previewRoute"\)/);
+  assert.match(functionSource("initialSetupOpen"), /shouldShowSetup\(/);
+  assert.match(app, /if \(agentFocusOpen \|\| tourOpen\) return;\s*setPaletteOpen/);
+  assert.match(app, /updatePrompt && !agentFocusOpen && !tourOpen/);
   assert.match(functionSource("GlobalSettingsScreen"), /onClick=\{onOpenTour\}/);
   const model = readSource("./onboarding-model.ts");
   const sidebar = functionSource("AppSidebar");

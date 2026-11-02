@@ -12,7 +12,7 @@ export type TourStep = {
   plainTitle?: boolean;
 };
 
-/** 引导版本：步骤大改时加一，老用户会再看到一次。 */
+/** 导览版本；入门清单使用独立记录，不因内容更新打扰已完成引导的用户。 */
 export const TOUR_VERSION = 1;
 export const TOUR_STORAGE_KEY = "codex-plus-plus.onboarding";
 
@@ -26,7 +26,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "hub",
     target: "hub",
     title: "网关状态",
-    body: "这里显示本地网关是否在运行和它的端口。点一下打开网关总览：谁在用、走哪家、是否健康，一屏看全。",
+    body: "这里显示本地网关的运行状态和端口。结束导览后，从这里打开总览查看 Agent、供应商和最近请求。",
   },
   {
     id: "providers",
@@ -38,25 +38,25 @@ export const TOUR_STEPS: TourStep[] = [
     id: "agents-connect",
     target: "nav-gateway",
     title: "第二步：接入 Agent",
-    body: "左侧开关决定哪些 Agent 经网关接入，右侧给它选默认模型；接入后供应商池里的模型会出现在 Agent 自己的模型列表里。",
+    body: "为 Agent 选择默认模型，再打开接入开关。接入后，供应商池里的模型会出现在 Agent 自己的模型列表里。",
   },
   {
     id: "agents",
     target: "agents",
     title: "每个 Agent 的专属设置",
-    body: "每个 Agent 一行：绿点表示已接入网关。点进去管理它自己的增强、皮肤、插件等；Codex 行的播放键可以直接启动或停止 Codex。",
+    body: "每个 Agent 一行，进入后管理它的增强与皮肤。Codex 行的播放键可以启动或停止 Codex；拓展在「万物皆拓展」中统一管理。",
   },
   {
     id: "management",
     target: "management",
     title: "全局管理",
-    body: "请求日志、会话、MCP 和 Skills 在这里统一管理，一次覆盖所有 Agent。",
+    body: "从「万物皆拓展」启用内置拓展或安装社区拓展；会话、用量、MCP 和 Skills 也在这里管理。",
   },
   {
     id: "palette",
     target: "palette",
     title: "快速跳转",
-    body: "随时按 ⌘K 搜索页面和常用操作，不用一层层点。",
+    body: "结束导览后，按 ⌘K 搜索页面和常用操作。",
   },
   {
     id: "settings",
@@ -83,7 +83,7 @@ export function tourSteps(soloName: string | null, enhanceOnly = false): TourSte
     },
     agents: {
       title: "{0} 的专属设置",
-      body: "点进 {0} 管理它自己的增强、皮肤、插件等。想管理别的 Agent，可以在设置里把使用模式切到「全部功能」。",
+      body: "在 {0} 页面管理增强和皮肤，在「万物皆拓展」启用内置拓展或安装社区拓展。其他 Agent 的入口可在设置里切到「全部功能」后显示。",
     },
   };
   return TOUR_STEPS.map((step) => (override[step.id] ? { ...step, ...override[step.id], args: [soloName], plainTitle: !override[step.id].title } : step));
@@ -94,8 +94,8 @@ export function tourSteps(soloName: string | null, enhanceOnly = false): TourSte
  */
 const ENHANCE_OVERRIDES: Record<string, Pick<TourStep, "body">> = {
   welcome: { body: "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下各个入口。" },
-  agents: { body: "每个 Agent 一行，点进去管理它自己的增强、皮肤、插件等；Codex 行的播放键可以直接启动或停止 Codex。" },
-  management: { body: "会话、MCP、Skills 和拓展在这里统一管理，一次覆盖所有 Agent。" },
+  agents: { body: "进入 Codex 或 Claude 的增强设置，启用所需功能；Codex 行的播放键可以启动或停止 Codex。" },
+  management: { body: "从「万物皆拓展」启用内置拓展或安装社区拓展；会话、MCP 和 Skills 也在这里管理。" },
 };
 const ENHANCE_HIDDEN_STEPS = new Set(["hub", "providers", "agents-connect"]);
 const ENHANCE_TOUR_STEPS: TourStep[] = TOUR_STEPS
