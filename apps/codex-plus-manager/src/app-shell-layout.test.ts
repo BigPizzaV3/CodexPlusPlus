@@ -198,7 +198,10 @@ test("请求日志按 Agent 筛选；网关记录带 agent 字段，没有的算
 test("旧版 Codex 供应商配置页顶部：没接入时建议改用新版网关，接入后显示状态并能断开还原", () => {
   const app = functionSource("App");
   assert.match(app, /<LegacyRelayGatewayHint[\s\S]*onOpenGateway=\{\(\) => void navigate\("gatewayProviders"\)\}/);
-  assert.match(app, /invoke<\{ status: string; message: string \}>\("disable_gateway_binding", \{ agent: "codex" \}\)/);
+  assert.match(app, /onDisconnect=\{\(\) => setLegacyDisconnectOpen\(true\)\}/);
+  assert.match(app, /legacyDisconnectOpen \? \(\s*<AgentDisconnectDialog/);
+  assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding", \{ agent: "codex", previewToken \}\)/);
+  assert.doesNotMatch(app, /"disable_gateway_binding", \{ agent: "codex" \}/);
   const hint = functionSource("LegacyRelayGatewayHint");
   assert.match(hint, /t\("建议改用新版网关"\)/);
   assert.match(hint, /form\.activeRelayId === CODEX_GATEWAY_RELAY_ID/);

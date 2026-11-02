@@ -144,6 +144,7 @@ import { OnboardingTour } from "./OnboardingTour";
 import { OnboardingSetup } from "./OnboardingSetup";
 import { hasCodexEnhancements, SETUP_STORAGE_KEY, serializeSetupState, shouldShowSetup } from "./onboarding-setup-model";
 import { AgentFocusDialog } from "./AgentFocusDialog";
+import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentVisible, commitAgentFocusSelection, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
 import { needAgentFocusPrompt, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
@@ -1672,6 +1673,7 @@ export function App() {
   } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
+  const [legacyDisconnectOpen, setLegacyDisconnectOpen] = useState(false);
   // 外部改设置时要拿「上次读到的设置」与当前编辑比对，监听回调里读这个 ref 拿最新值。
   const settingsRef = useRef<SettingsResult | null>(null);
   settingsRef.current = settings;
@@ -4847,6 +4849,24 @@ export function App() {
       />
       <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
       {agentFocusOpen ? <AgentFocusDialog initial={agentFocus} onDone={closeAgentFocus} onCancel={cancelAgentFocus} /> : null}
+      {legacyDisconnectOpen ? (
+        <AgentDisconnectDialog
+          agent={{ agent: "codex", name: "Codex" }}
+          busy={false}
+          onApply={async (previewToken) => {
+            try {
+              const result = await invoke<GatewayResult>("disable_gateway_binding", { agent: "codex", previewToken });
+              await showNotice(result.status === "ok" ? t("已断开网关") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
+              await refreshSettings(true);
+              return result.status === "ok";
+            } catch (error) {
+              await showNotice(t("断开失败"), String(error), "failed");
+              return false;
+            }
+          }}
+          onClose={() => setLegacyDisconnectOpen(false)}
+        />
+      ) : null}
       {tourOpen && !agentFocusOpen ? <OnboardingTour focus={agentFocus} onClose={closeTour} /> : null}
       <main className="workspace">
         <header className="topbar" key={`topbar-${route}`}>
@@ -4929,15 +4949,7 @@ export function App() {
           {route === "relay" ? (
             <LegacyRelayGatewayHint
               form={settingsForm}
-              onDisconnect={async () => {
-                try {
-                  const result = await invoke<{ status: string; message: string }>("disable_gateway_binding", { agent: "codex" });
-                  await showNotice(result.status === "ok" ? t("已断开网关") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
-                } catch (error) {
-                  await showNotice(t("断开失败"), String(error), "failed");
-                }
-                await refreshSettings(true);
-              }}
+              onDisconnect={() => setLegacyDisconnectOpen(true)}
               onManageAgents={() => void navigate("gateway")}
               onOpenGateway={() => void navigate("gatewayProviders")}
             />
@@ -7360,9 +7372,8 @@ function LegacyRelayGatewayHint({
   form: BackendSettings;
   onOpenGateway: () => void;
   onManageAgents: () => void;
-  onDisconnect: () => Promise<void>;
+  onDisconnect: () => void;
 }) {
-  const [disconnecting, setDisconnecting] = useState(false);
   const managed = form.relayProfiles.find((profile) => profile.id === CODEX_GATEWAY_RELAY_ID);
   const onGateway = form.activeRelayId === CODEX_GATEWAY_RELAY_ID;
   // 网关里有没有开着的 Codex 接入记录；读不出 gateway.json 也算没有。
@@ -7381,10 +7392,6 @@ function LegacyRelayGatewayHint({
       cancelled = true;
     };
   }, [onGateway, form.relayProfiles]);
-  const disconnect = () => {
-    setDisconnecting(true);
-    void onDisconnect().finally(() => setDisconnecting(false));
-  };
   if (onGateway && (!managed || bound === false)) {
     return (
       <div className="legacy-gateway-hint" data-state="orphan" role="status">
@@ -7393,8 +7400,8 @@ function LegacyRelayGatewayHint({
           <strong>{t("Codex 还指向网关托管的供应商")}</strong>
           <span>{t("网关里没有 Codex 的接入记录（可能降级后又升级过，或网关状态文件损坏），请求可能连不上。点「切回直连」切回接入前或列表里第一个直连供应商。")}</span>
         </div>
-        <Button disabled={disconnecting} onClick={disconnect} size="sm">
-          {disconnecting ? t("切换中…") : t("切回直连")}
+        <Button onClick={onDisconnect} size="sm">
+          {t("切回直连")}
         </Button>
       </div>
     );
@@ -7419,8 +7426,8 @@ function LegacyRelayGatewayHint({
           {t("管理接入")}
           <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
         </Button>
-        <Button disabled={disconnecting} onClick={disconnect} size="sm" variant="outline">
-          {disconnecting ? t("断开中…") : t("断开并还原")}
+        <Button onClick={onDisconnect} size="sm" variant="outline">
+          {t("断开并还原")}
         </Button>
       </div>
     );

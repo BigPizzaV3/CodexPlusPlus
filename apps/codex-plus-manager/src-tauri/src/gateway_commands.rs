@@ -3,7 +3,11 @@
 //! 网关模式与直连模式完全独立：供应商池、路由组只存在 `gateway.json`；
 //! 直连模式的 Codex / Claude / Grok 供应商只在「导入」时被读取并复制一份。
 
+use anyhow::Context;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use codex_plus_core::gateway::activity::{self, ActivitySnapshot};
 use codex_plus_core::gateway::apply::{self, ApplyContext, GroupInput, ProviderInput};
@@ -85,11 +89,15 @@ pub struct GatewayAgentView {
     /// 通用 Agent：在 Agent 里怎么切模型、接入后要不要重启等提示。
     pub hint: String,
     pub enabled: bool,
+    /// 绑定记录可能已关闭，但原生配置仍由网关管理；直连前仍须确认还原。
+    pub requires_disconnect_preview: bool,
     pub base_url: String,
     pub default_model: String,
     pub models: Vec<String>,
     /// 开着网关、但配置已被别的工具改掉（请求不再经过 Codex++）。
     pub drift: Option<codex_plus_core::gateway::drift::Drift>,
+    /// 配置证据与真实网关流量合并后的诊断。
+    pub diagnostics: Option<codex_plus_core::gateway::diagnostics::AgentDiagnostics>,
     /// Agent 自带的模型（用它自己的登录或 Key 直连厂商，不经 Codex++）；没有时为 None。
     pub own_models: Option<codex_plus_core::gateway::own_models::OwnModels>,
 }
@@ -283,10 +291,13 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         })
         .collect();
     let drift_ctx = ApplyContext::default_paths(port);
+    let helper_running = codex_plus_core::resident_helper::resident_helper_port().is_some();
+    let activity = activity::snapshot();
     let agents = listed_agents(&gateway)
         .iter()
         .map(|agent| {
             let binding = gateway.binding(agent);
+            let enabled = binding.is_some_and(|binding| binding.enabled);
             GatewayAgentView {
                 agent: agent.as_str().to_string(),
                 name: codex_plus_core::tools::tool_display_name(agent).to_string(),
@@ -295,7 +306,14 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 hint: codex_plus_core::gateway::agents::spec(agent.as_str())
                     .map(|spec| spec.hint.to_string())
                     .unwrap_or_default(),
-                enabled: binding.is_some_and(|binding| binding.enabled),
+                enabled,
+                requires_disconnect_preview: enabled
+                    || match agent {
+                        ToolId::Codex => settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID,
+                        ToolId::Claude => claude::current_provider_id(&drift_ctx.claude)
+                            .is_ok_and(|id| id == GATEWAY_PROVIDER_ID),
+                        _ => false,
+                    },
                 base_url: apply::gateway_base_url(port, agent),
                 default_model: binding
                     .map(|binding| apply::resolved_default_model(&gateway, binding))
@@ -303,7 +321,20 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 models: codex_plus_core::gateway::server::exposed_models(&gateway, agent),
                 drift: binding
                     .filter(|binding| binding.enabled)
-                    .and_then(|_| codex_plus_core::gateway::drift::check(&drift_ctx, agent)),
+                    .and_then(|_| codex_plus_core::gateway::drift::check(&drift_ctx, agent))
+                    .map(|mut found| {
+                        found.endpoint =
+                            codex_plus_core::gateway::diagnostics::safe_endpoint(&found.endpoint)
+                                .unwrap_or_default();
+                        found
+                    }),
+                diagnostics: Some(codex_plus_core::gateway::diagnostics::inspect(
+                    &drift_ctx,
+                    agent,
+                    &gateway,
+                    helper_running,
+                    &activity,
+                )),
                 own_models: codex_plus_core::gateway::own_models::own_models(
                     &drift_ctx, agent, binding,
                 ),
@@ -362,13 +393,13 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         image_auto,
         gateway,
         port,
-        helper_running: codex_plus_core::resident_helper::resident_helper_port().is_some(),
+        helper_running,
         pool,
         groups,
         auto_groups,
         agents,
         health: key_pool::snapshot(std::time::Instant::now()),
-        activity: activity::snapshot(),
+        activity,
         speeds: codex_plus_core::gateway::speed::snapshot(),
         codex_providers,
         subscriptions: codex_plus_core::gateway::subscriptions::views(),
@@ -453,6 +484,139 @@ fn load_gateway_blocking() -> CommandResult<Option<GatewayPayload>> {
     }
 }
 
+#[derive(Clone)]
+struct DisconnectPreviewGrant {
+    agent: String,
+    fingerprint: String,
+    expires_at: Instant,
+}
+
+static DISCONNECT_PREVIEWS: OnceLock<Mutex<HashMap<String, DisconnectPreviewGrant>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayDisconnectPreviewPayload {
+    pub preview: Option<codex_plus_core::gateway::disconnect_preview::DisconnectPreview>,
+}
+
+fn disconnect_previews() -> &'static Mutex<HashMap<String, DisconnectPreviewGrant>> {
+    DISCONNECT_PREVIEWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 取得断开预览。token 仅进程内有效，且五分钟后过期。
+#[tauri::command]
+pub async fn preview_gateway_disconnect(
+    agent: String,
+) -> CommandResult<GatewayDisconnectPreviewPayload> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        preview_gateway_disconnect_blocking(&agent)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => failed(
+            "生成断开预览失败，请重新获取。",
+            GatewayDisconnectPreviewPayload { preview: None },
+        ),
+    }
+}
+
+fn preview_gateway_disconnect_blocking(
+    agent: &str,
+) -> CommandResult<GatewayDisconnectPreviewPayload> {
+    let result: anyhow::Result<_> = (|| {
+        let agent = parse_agent(agent)?;
+        let settings = SettingsStore::default().load()?;
+        let mut preview = codex_plus_core::gateway::disconnect_preview::preview(
+            &context(),
+            &settings,
+            &agent,
+        )?;
+        if preview.can_disconnect {
+            let token = new_client_token(&agent);
+            preview.preview_token = token.clone();
+            let mut grants = disconnect_previews()
+                .lock()
+                .map_err(|_| anyhow::anyhow!("断开预览状态不可用"))?;
+            grants.retain(|_, grant| grant.expires_at > Instant::now());
+            if grants.len() >= 128
+                && let Some(oldest) = grants
+                    .iter()
+                    .min_by_key(|(_, grant)| grant.expires_at)
+                    .map(|(token, _)| token.clone())
+            {
+                grants.remove(&oldest);
+            }
+            grants.insert(
+                token,
+                DisconnectPreviewGrant {
+                    agent: agent.as_str().to_string(),
+                    fingerprint: preview.fingerprint.clone(),
+                    expires_at: Instant::now() + Duration::from_secs(300),
+                },
+            );
+        }
+        Ok(preview)
+    })();
+    match result {
+        Ok(preview) => ok(
+            "断开预览已生成。",
+            GatewayDisconnectPreviewPayload {
+                preview: Some(preview),
+            },
+        ),
+        Err(error) => failed(
+            &format!("生成断开预览失败：{error:#}"),
+            GatewayDisconnectPreviewPayload { preview: None },
+        ),
+    }
+}
+
+fn take_disconnect_preview(
+    grants: &mut HashMap<String, DisconnectPreviewGrant>,
+    agent: &ToolId,
+    token: Option<&str>,
+    now: Instant,
+) -> anyhow::Result<DisconnectPreviewGrant> {
+    let token = token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .context("请先查看并确认最新的断开预览")?;
+    let grant = grants
+        .remove(token)
+        .context("断开预览已失效，请重新获取")?;
+    anyhow::ensure!(
+        grant.agent == agent.as_str() && grant.expires_at > now,
+        "断开预览已失效，请重新获取"
+    );
+    Ok(grant)
+}
+
+fn validate_disconnect_preview(
+    agent: &ToolId,
+    token: Option<&str>,
+) -> anyhow::Result<(ApplyContext, BackendSettings)> {
+    let grant = {
+        let mut grants = disconnect_previews()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("断开预览状态不可用"))?;
+        take_disconnect_preview(&mut grants, agent, token, Instant::now())?
+    };
+    let settings = SettingsStore::default().load()?;
+    let ctx = context();
+    let current = codex_plus_core::gateway::disconnect_preview::preview(
+        &ctx,
+        &settings,
+        agent,
+    )?;
+    anyhow::ensure!(
+        current.can_disconnect && current.fingerprint == grant.fingerprint,
+        "配置在预览后发生变化，请重新获取预览"
+    );
+    // 还原复用同一份已校验设置和路径，避免校验后再次读取引入不同的恢复目标。
+    Ok((ctx, settings))
+}
+
 /// 开启或更新一个 Agent 的网关接入：改写它的配置指向网关，并确保常驻 helper 在跑。
 #[tauri::command]
 pub fn save_gateway_binding(
@@ -477,11 +641,14 @@ pub fn save_gateway_binding(
 
 /// 断开一个 Agent，恢复它原来的直连设置。
 #[tauri::command]
-pub fn disable_gateway_binding(agent: String) -> CommandResult<Option<GatewayPayload>> {
+pub fn disable_gateway_binding(
+    agent: String,
+    preview_token: Option<String>,
+) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let settings = SettingsStore::default().load()?;
-        apply::disable_binding(&context(), &settings, &agent)
+        let (ctx, settings) = validate_disconnect_preview(&agent, preview_token.as_deref())?;
+        apply::disable_binding(&ctx, &settings, &agent)
     })();
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
@@ -496,11 +663,27 @@ pub fn disable_gateway_binding(agent: String) -> CommandResult<Option<GatewayPay
 pub fn use_gateway_own_model(
     agent: String,
     model: String,
+    preview_token: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
         let settings = SettingsStore::default().load()?;
-        codex_plus_core::gateway::own_models::use_own_model(&context(), &settings, &agent, &model)
+        let connected = GatewayStore::default()
+            .load()?
+            .binding(&agent)
+            .is_some_and(|binding| binding.enabled);
+        let managed = match agent {
+            ToolId::Codex => settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID,
+            ToolId::Claude => claude::current_provider_id(&ClaudeContext::default_paths())?
+                == GATEWAY_PROVIDER_ID,
+            _ => false,
+        };
+        let (ctx, settings) = if connected || managed || preview_token.is_some() {
+            validate_disconnect_preview(&agent, preview_token.as_deref())?
+        } else {
+            (context(), settings)
+        };
+        codex_plus_core::gateway::own_models::use_own_model(&ctx, &settings, &agent, &model)
     })();
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
@@ -2363,4 +2546,63 @@ pub fn restore_for_uninstall() {
 /// 更新没装成、Codex++ 继续运行：把更新前恢复成直连的 Agent 重新接回网关。
 pub fn undo_restore_for_update() {
     start_from_saved_state();
+}
+
+#[cfg(test)]
+mod disconnect_preview_tests {
+    use super::*;
+
+    fn grant(expires_at: Instant) -> DisconnectPreviewGrant {
+        DisconnectPreviewGrant {
+            agent: "claude".to_string(),
+            fingerprint: "state-fingerprint".to_string(),
+            expires_at,
+        }
+    }
+
+    #[test]
+    fn preview_grants_are_one_time_and_agent_scoped() {
+        let now = Instant::now();
+        let mut grants = HashMap::from([(
+            "preview".to_string(),
+            grant(now + Duration::from_secs(300)),
+        )]);
+        assert!(
+            take_disconnect_preview(&mut grants, &ToolId::Codex, Some("preview"), now).is_err()
+        );
+        assert!(grants.is_empty());
+        grants.insert("preview".to_string(), grant(now + Duration::from_secs(300)));
+        assert_eq!(
+            take_disconnect_preview(&mut grants, &ToolId::Claude, Some("preview"), now)
+                .unwrap()
+                .fingerprint,
+            "state-fingerprint"
+        );
+        assert!(
+            take_disconnect_preview(&mut grants, &ToolId::Claude, Some("preview"), now).is_err()
+        );
+    }
+
+    #[test]
+    fn expired_and_missing_previews_are_rejected() {
+        let now = Instant::now();
+        let mut grants = HashMap::from([("expired".to_string(), grant(now))]);
+        assert!(
+            take_disconnect_preview(&mut grants, &ToolId::Claude, Some("expired"), now).is_err()
+        );
+        assert!(take_disconnect_preview(&mut grants, &ToolId::Claude, None, now).is_err());
+        assert!(take_disconnect_preview(&mut grants, &ToolId::Claude, Some(" "), now).is_err());
+    }
+
+    #[test]
+    fn preview_payload_has_an_explicit_preview_field() {
+        let result = ok(
+            "preview",
+            GatewayDisconnectPreviewPayload { preview: None },
+        );
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["preview"], serde_json::Value::Null);
+        assert!(value.get("preview").is_some());
+    }
 }
