@@ -269,9 +269,14 @@
   color: hsl(var(--status-success));
 }
 
-/* 外部启动、增强脚本未挂载的 Codex：停止按钮染成提醒色。 */
+/* 外部启动、增强脚本未挂载的 Codex：按钮变成提醒色的「重启并挂载」。 */
 :root .shell .cx-side-run[data-unattached="true"]:not(:disabled) {
   color: hsl(var(--status-warning));
+}
+
+/* 重启图标是描边图标，不能沿用播放 / 停止的实心填充。 */
+:root .shell .cx-side-run[data-unattached="true"] svg {
+  fill: none;
 }
 
 :root .shell .cx-side-run:disabled {

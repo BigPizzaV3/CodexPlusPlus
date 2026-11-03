@@ -584,9 +584,14 @@ mod process_identity_tests {
             "  63 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port 9301",
             "  64 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer",
             "  65 /Applications/Codex++.app/Contents/MacOS/CodexPlusPlus",
+            // 包内 CLI 的 bundle id 也在 com.openai.codex.* 下，但它不是桌面主进程。
+            "  66 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server --listen stdio://",
         ];
         let identifiers = |app_dir: &Path| match app_dir.to_string_lossy().as_ref() {
             "/Applications/ChatGPT.app" => Some("com.openai.codex".to_string()),
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app" => {
+                Some("com.openai.codex.cli".to_string())
+            }
             _ => None,
         };
 
@@ -2490,6 +2495,12 @@ fn is_macos_codex_desktop_main_with(
 
     let executable_end = args.find(" -").unwrap_or(args.len());
     let executable = args[..executable_end].trim_end();
+    // 包内 CLI / 工具都在 Contents/Resources 下：`CodexCLI.app` 的 bundle id 是
+    // `com.openai.codex.cli`，会被下面的 bundle id 判据当成桌面主进程；它常驻的
+    // `codex app-server` 不带调试端口，曾让「未挂载」误报。
+    if executable.contains("/Contents/Resources/") {
+        return false;
+    }
     let Some((app_dir, executable_name)) = executable.rsplit_once(".app/Contents/MacOS/") else {
         return false;
     };

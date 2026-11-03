@@ -5031,7 +5031,7 @@ export function App() {
           void navigate(next);
         }}
         onExitSettings={() => void navigate(lastMainRoute.current)}
-        codexRun={{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch.unavailableReason, onStart: codexLaunch.onLaunch, onStop: () => void actions.stopCodex(), unattached: Boolean(overview?.runtime_health?.codex_unattached) }}
+        codexRun={{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch.unavailableReason, onStart: codexLaunch.onLaunch, onStop: () => void actions.stopCodex(), unattached: Boolean(overview?.runtime_health?.codex_unattached), onRestart: () => void actions.restart() }}
       />
       <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
       {agentFocusOpen ? <AgentFocusDialog initial={agentFocus} onDone={closeAgentFocus} onCancel={cancelAgentFocus} /> : null}
@@ -16845,7 +16845,7 @@ function AppSidebar({
   focus: AgentFocus;
   /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。
       unavailableReason 非空（如没找到 Codex 应用）时播放键置灰，悬停显示原因。 */
-  codexRun: { running: boolean; unattached: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void };
+  codexRun: { running: boolean; unattached: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void; onRestart: () => void };
   tools: ToolEntry[];
   activeTool: ToolId;
   route: Route;
@@ -17078,21 +17078,26 @@ function AppSidebar({
                   <span className="cx-side-label">{tool.name}</span>
                   {enhanceOnly ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
                 </button>
-                {tool.id === "codex" && tool.switchable ? (
-                  <button
-                    aria-label={codexRun.running ? t("停止 Codex") : t("启动 Codex")}
-                    className="cx-side-run"
-                    data-running={codexRun.running}
-                    data-unattached={codexRun.running && codexRun.unattached}
-                    data-unavailable={!codexRun.running && Boolean(codexRun.unavailableReason)}
-                    disabled={codexRun.busy || (!codexRun.running && Boolean(codexRun.unavailableReason))}
-                    onClick={codexRun.running ? codexRun.onStop : codexRun.onStart}
-                    title={codexRun.busy ? t("处理中…") : codexRun.running ? (codexRun.unattached ? t("Codex 不是经 Codex++ 启动的，增强脚本未挂载 · 停止后再点启动即可挂载") : t("停止 Codex")) : codexRun.unavailableReason ?? t("启动 Codex")}
-                    type="button"
-                  >
-                    {codexRun.busy ? <Loader2 aria-hidden="true" className="animate-spin" /> : codexRun.running ? <Square aria-hidden="true" /> : <Play aria-hidden="true" />}
-                  </button>
-                ) : null}
+                {tool.id === "codex" && tool.switchable ? (() => {
+                  // 外部启动、没挂载增强脚本的 Codex：按钮直接变成「重启并挂载」，一步到位。
+                  const unattached = codexRun.running && codexRun.unattached;
+                  const label = unattached ? t("重启并挂载") : codexRun.running ? t("停止 Codex") : t("启动 Codex");
+                  return (
+                    <button
+                      aria-label={label}
+                      className="cx-side-run"
+                      data-running={codexRun.running}
+                      data-unattached={unattached}
+                      data-unavailable={!codexRun.running && Boolean(codexRun.unavailableReason)}
+                      disabled={codexRun.busy || (!codexRun.running && Boolean(codexRun.unavailableReason))}
+                      onClick={unattached ? codexRun.onRestart : codexRun.running ? codexRun.onStop : codexRun.onStart}
+                      title={codexRun.busy ? t("处理中…") : unattached ? t("Codex 不是经 Codex++ 启动的，增强脚本未挂载 · 点此重启并挂载") : codexRun.running ? t("停止 Codex") : codexRun.unavailableReason ?? t("启动 Codex")}
+                      type="button"
+                    >
+                      {codexRun.busy ? <Loader2 aria-hidden="true" className="animate-spin" /> : unattached ? <RotateCcw aria-hidden="true" /> : codexRun.running ? <Square aria-hidden="true" /> : <Play aria-hidden="true" />}
+                    </button>
+                  );
+                })() : null}
               </div>
               {/* 当前 Agent 的页面：缩进列在它那一行下面（参照 Cursor 侧栏里仓库下面的会话列表），不再占内容区顶部一排胶囊。 */}
 {current ? (() => {

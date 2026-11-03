@@ -51,8 +51,10 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   const access = sidebar.slice(sidebar.indexOf("const access ="), sidebar.indexOf("return (", sidebar.indexOf("const access =")));
   assert.doesNotMatch(access, /running/);
   // 只有 Codex 行有播放 / 停止：命令行 Agent 没有常驻进程可启停。
-  assert.match(sidebar, /\{tool\.id === "codex" && tool\.switchable \? \(\n\s*<button\n\s*aria-label=\{codexRun\.running \? t\("停止 Codex"\) : t\("启动 Codex"\)\}/);
-  assert.match(sidebar, /onClick=\{codexRun\.running \? codexRun\.onStop : codexRun\.onStart\}/);
+  assert.match(sidebar, /\{tool\.id === "codex" && tool\.switchable \? \(\(\) => \{/);
+  assert.match(sidebar, /const label = unattached \? t\("重启并挂载"\) : codexRun\.running \? t\("停止 Codex"\) : t\("启动 Codex"\);/);
+  assert.match(sidebar, /aria-label=\{label\}/);
+  assert.match(sidebar, /onClick=\{unattached \? codexRun\.onRestart : codexRun\.running \? codexRun\.onStop : codexRun\.onStart\}/);
   // 主动停止写 user_stopped，崩溃检测不把它当成意外停止。
   assert.match(text, /const stoppedByUser = result\.latest_launch\?\.phase === "user_stopped";/);
   const lib = readSource("../src-tauri/src/lib.rs");
@@ -653,7 +655,9 @@ test("外部启动、没挂载增强脚本的 Codex：健康检查提示并给�
   assert.match(overview, /item\.action === "restart" \? \(\n\s+<button className="cx-secondary" onClick=\{\(\) => void actions\.restart\(\)\}/);
   assert.match(functionSource("statusLabel"), /unattached: t\("未挂载"\)/);
   assert.match(functionSource("App"), /unattached: Boolean\(overview\?\.runtime_health\?\.codex_unattached\)/);
-  assert.match(text, /data-unattached=\{codexRun\.running && codexRun\.unattached\}/);
+  assert.match(text, /const unattached = codexRun\.running && codexRun\.unattached;/);
+  assert.match(text, /onClick=\{unattached \? codexRun\.onRestart : codexRun\.running \? codexRun\.onStop : codexRun\.onStart\}/);
+  assert.match(text, /unattached \? <RotateCcw aria-hidden="true" \/>/);
   assert.match(readSource("./cursor-ui.css"), /\.cx-side-run\[data-unattached="true"\]:not\(:disabled\) \{\n  color: hsl\(var\(--status-warning\)\);/);
 });
 
