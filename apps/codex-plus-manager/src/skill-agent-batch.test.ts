@@ -2,6 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mergeSkillAgentResult, skillBatchHasPending, skillBatchState, skillBatchTargets, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+const deferred = () => {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+};
+async function waitForUpdates(registry: SkillBatchRegistry, count = 0) {
+  for (let attempt = 0; registry.getUpdates().length !== count && attempt < 50; attempt++) await tick();
+  assert.equal(registry.getUpdates().length, count);
+}
+
 test("pending uninstall reserves its ID across observers until released", () => {
   const registry = new SkillBatchRegistry();
   assert.equal(registry.reserveUninstall("alpha"), true);
@@ -22,7 +33,7 @@ test("one queue wave aggregates bounded failure details and exact totals", async
       registry.recordUpdateOutcome(id, { success: id === "five", message: "x".repeat(500) }, (result) => reports.push(result));
     });
   }
-  await registry.run(async () => {});
+  await waitForUpdates(registry);
   assert.equal(reports.length, 1);
   assert.equal(reports[0].completed, 1);
   assert.equal(reports[0].failed, 4);
@@ -31,34 +42,210 @@ test("one queue wave aggregates bounded failure details and exact totals", async
   assert.match(reports[0].details[0], /^one：/);
   assert.equal(registry.getFailures()?.count, 4);
   registry.enqueueUpdate("six", "update_skill", async () => registry.recordUpdateOutcome("six", { success: true, message: "ok" }, () => {}));
-  await registry.run(async () => {});
+  await waitForUpdates(registry);
   assert.equal(registry.getFailures()?.count, 4);
   registry.clearFailures();
   assert.equal(registry.getFailures(), null);
   registry.enqueueUpdate("seven", "update_skill", async () => registry.recordUpdateOutcome("seven", { success: false, message: "later" }, () => {}));
-  await registry.run(async () => {});
+  await waitForUpdates(registry);
   assert.deepEqual(registry.getFailures(), { count: 1, details: [{ id: "seven", message: "later" }] });
   registry.enqueueUpdate("seven", "update_skill", async () => registry.recordUpdateOutcome("seven", { success: false, message: "new" }, () => {}));
-  await registry.run(async () => {});
+  await waitForUpdates(registry);
   assert.deepEqual(registry.getFailures(), { count: 2, details: [{ id: "seven", message: "new" }] });
 });
 
-test("updates queue with agent work, reject duplicates and continue after failure", async () => {
+test("a slow update does not block another update or agent work", async () => {
   const registry = new SkillBatchRegistry();
   const calls: string[] = [];
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => { release = resolve; });
-  const agent = registry.run(async () => { calls.push("agent"); await blocked; });
-  assert.equal(registry.enqueueUpdate("one", "update_skill", async () => { calls.push("one"); throw new Error("failed"); }), true);
-  assert.equal(registry.enqueueUpdate("one", "install_skill", async () => {}), false);
-  assert.equal(registry.enqueueUpdate("two", "install_skill", async () => { calls.push("two"); }), true);
-  await Promise.resolve();
-  assert.deepEqual(calls, ["agent"]);
-  assert.deepEqual(registry.getUpdates().map((item) => item.state), ["queued", "queued"]);
-  release();
-  await agent;
-  await registry.run(async () => {});
-  assert.deepEqual(calls, ["agent", "one", "two"]);
+  const blocked = deferred();
+  assert.equal(registry.enqueueUpdate("slow", "update_skill", async () => { calls.push("slow"); await blocked.promise; }, "a/repo@main"), true);
+  assert.equal(registry.enqueueUpdate("slow", "install_skill", async () => {}, "other/repo@main"), false);
+  assert.equal(registry.reserveUninstall("slow"), false);
+  assert.equal(registry.enqueueUpdate("same", "update_skill", async () => { calls.push("same"); }, "a/repo@main"), true);
+  assert.equal(registry.enqueueUpdate("other", "install_skill", async () => { calls.push("other"); }, "b/repo@main"), true);
+  const agent = registry.run(async () => { calls.push("agent"); });
+  try {
+    await tick();
+    assert.deepEqual([...calls], ["slow", "same", "other", "agent"]);
+    await waitForUpdates(registry, 1);
+    assert.deepEqual(registry.getUpdates().map((item) => [item.id, item.state]), [["slow", "running"]]);
+  } finally {
+    blocked.release();
+    await agent;
+    await waitForUpdates(registry);
+  }
+  assert.equal(registry.reserveUninstall("slow"), true);
+  registry.releaseUninstall("slow");
+});
+
+test("a slow agent operation does not block downloads", async () => {
+  const registry = new SkillBatchRegistry();
+  const calls: string[] = [];
+  const blocked = deferred();
+  const agent = registry.run(async () => { calls.push("agent"); await blocked.promise; });
+  registry.enqueueUpdate("download", "update_skill", async () => { calls.push("download"); }, "a/repo@main");
+  try {
+    await tick();
+    assert.deepEqual([...calls], ["agent", "download"]);
+    await waitForUpdates(registry);
+  } finally {
+    blocked.release();
+    await agent;
+    await waitForUpdates(registry);
+  }
+});
+
+test("updates respect total and per-repository limits across branches and subdirectories", async () => {
+  const registry = new SkillBatchRegistry();
+  const started: string[] = [];
+  const gates = new Map<string, ReturnType<typeof deferred>>();
+  let active = 0;
+  let peak = 0;
+  const activeByRepo = new Map<string, number>();
+  const peakByRepo = new Map<string, number>();
+  const enqueue = (id: string, repoKey: string, repo: string) => {
+    const gate = deferred();
+    gates.set(id, gate);
+    assert.equal(registry.enqueueUpdate(id, "update_skill", async () => {
+      started.push(id);
+      active++;
+      peak = Math.max(peak, active);
+      const count = (activeByRepo.get(repo) ?? 0) + 1;
+      activeByRepo.set(repo, count);
+      peakByRepo.set(repo, Math.max(peakByRepo.get(repo) ?? 0, count));
+      await gate.promise;
+      active--;
+      activeByRepo.set(repo, activeByRepo.get(repo)! - 1);
+    }, repoKey), true);
+  };
+  enqueue("a1", "ACME/Kit@main:one", "a");
+  enqueue("a2", "acme/kit@dev:two", "a");
+  enqueue("a3", "acme/kit@main:three", "a");
+  enqueue("a4", "acme/kit@main", "a");
+  enqueue("b1", "other/repo@main", "b");
+  enqueue("b2", "other/repo@main", "b");
+  enqueue("b3", "other/repo@main", "b");
+  enqueue("c1", "third/repo@main", "c");
+  try {
+    await tick();
+    assert.deepEqual([...started], ["a1", "a2", "b1", "b2"]);
+    assert.equal(registry.getUpdates().find((item) => item.id === "a3")?.state, "queued");
+    assert.equal(registry.getUpdates().find((item) => item.id === "c1")?.state, "queued");
+    assert.equal(registry.enqueueUpdate("a3", "install_skill", async () => {}, "third/repo@main"), false);
+    assert.equal(registry.reserveUninstall("a3"), false);
+    gates.get("b1")!.release();
+    await tick();
+    assert.deepEqual([...started], ["a1", "a2", "b1", "b2", "b3"]);
+    gates.get("a1")!.release();
+    await tick();
+    assert.equal(started.at(-1), "a3");
+    gates.get("b2")!.release();
+    await tick();
+    assert.equal(started.at(-1), "c1");
+  } finally {
+    for (const gate of gates.values()) gate.release();
+    await waitForUpdates(registry);
+  }
+  assert.equal(peak, 4);
+  assert.deepEqual([...peakByRepo], [["a", 2], ["b", 2], ["c", 1]]);
+});
+
+test("empty repository keys share a limit without blocking known repositories", async () => {
+  const registry = new SkillBatchRegistry();
+  const gate = deferred();
+  const started: string[] = [];
+  for (const [id, repo] of [["unknown1", ""], ["unknown2", "  "], ["unknown3", ""], ["known", "a/repo@main"]]) {
+    registry.enqueueUpdate(id, "update_skill", async () => { started.push(id); await gate.promise; }, repo);
+  }
+  try {
+    await tick();
+    assert.deepEqual([...started], ["unknown1", "unknown2", "known"]);
+    assert.equal(registry.getUpdates().find((item) => item.id === "unknown3")?.state, "queued");
+  } finally {
+    gate.release();
+    await waitForUpdates(registry);
+  }
+  assert.deepEqual(started, ["unknown1", "unknown2", "known", "unknown3"]);
+});
+
+test("a rejected update releases its slot and reports the complete concurrent wave", async () => {
+  const registry = new SkillBatchRegistry();
+  const blocked = deferred();
+  const calls: string[] = [];
+  const reports: Array<{ completed: number; failed: number; details: string[] }> = [];
+  const report = (summary: { completed: number; failed: number; details: string[] }) => reports.push(summary);
+  registry.enqueueUpdate("slow", "update_skill", async () => {
+    calls.push("slow");
+    await blocked.promise;
+    registry.recordUpdateOutcome("slow", { success: true, message: "ok" }, report);
+  }, "a/repo@main");
+  registry.enqueueUpdate("failed", "update_skill", async () => {
+    calls.push("failed");
+    registry.recordUpdateOutcome("failed", { success: false, message: "timeout" }, report);
+    throw new Error("timeout");
+  }, "a/repo@main");
+  registry.enqueueUpdate("next", "update_skill", async () => {
+    calls.push("next");
+    registry.recordUpdateOutcome("next", { success: true, message: "ok" }, report);
+  }, "a/repo@main");
+  registry.enqueueUpdate("other", "install_skill", async () => {
+    calls.push("other");
+    registry.recordUpdateOutcome("other", { success: true, message: "ok" }, report);
+  }, "b/repo@main");
+  try {
+    await tick();
+    assert.deepEqual([...calls], ["slow", "failed", "other", "next"]);
+    await waitForUpdates(registry, 1);
+    assert.deepEqual(registry.getFailures(), { count: 1, details: [{ id: "failed", message: "timeout" }] });
+    assert.deepEqual(reports, []);
+  } finally {
+    blocked.release();
+    await waitForUpdates(registry);
+  }
+  assert.deepEqual(reports, [{ completed: 3, failed: 1, details: ["failed：timeout"] }]);
+});
+
+test("a synchronous failure releases its slot and does not stop queued updates", async () => {
+  const registry = new SkillBatchRegistry();
+  const gate = deferred();
+  const calls: string[] = [];
+  registry.enqueueUpdate("blocked", "update_skill", async () => { await gate.promise; }, "a/repo@main");
+  registry.enqueueUpdate("failed", "update_skill", () => { calls.push("failed"); throw new Error("failed"); }, "a/repo@main");
+  registry.enqueueUpdate("next", "update_skill", async () => { calls.push("next"); }, "a/repo@main");
+  try {
+    await tick();
+    assert.deepEqual([...calls], ["failed", "next"]);
+  } finally {
+    gate.release();
+    await waitForUpdates(registry);
+  }
+});
+
+test("an unrelated uninstall reservation does not occupy a download slot or delay its summary", async () => {
+  const registry = new SkillBatchRegistry();
+  const reports: Array<{ completed: number; failed: number; details: string[] }> = [];
+  assert.equal(registry.reserveUninstall("removing"), true);
+  assert.equal(registry.enqueueUpdate("removing", "update_skill", async () => {}, "a/repo@main"), false);
+  assert.equal(registry.enqueueUpdate("download", "update_skill", async () => {
+    registry.recordUpdateOutcome("download", { success: true, message: "ok" }, (summary) => reports.push(summary));
+  }, "a/repo@main"), true);
+  await waitForUpdates(registry, 1);
+  assert.deepEqual(registry.getUpdates().map(({ id, command }) => [id, command]), [["removing", "uninstall_skill"]]);
+  assert.deepEqual(reports, [{ completed: 1, failed: 0, details: [] }]);
+  registry.releaseUninstall("removing");
+  assert.equal(registry.getUpdates().length, 0);
+});
+
+test("updates continue after the last observer unsubscribes", async () => {
+  const registry = new SkillBatchRegistry();
+  const gate = deferred();
+  const calls: string[] = [];
+  const unsubscribe = registry.subscribeUpdates(() => calls.push("observed"));
+  registry.enqueueUpdate("a", "update_skill", async () => { await gate.promise; calls.push("completed"); }, "a/repo@main");
+  unsubscribe();
+  gate.release();
+  await waitForUpdates(registry);
+  assert.equal(calls.at(-1), "completed");
   assert.equal(registry.getUpdates().length, 0);
 });
 

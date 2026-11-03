@@ -15,10 +15,12 @@
 //!
 //! Windows 上建软链需要开发者模式或管理员权限，失败时自动回退成复制。
 
-use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Cursor, Read, Seek};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+#[cfg(test)]
+use std::sync::Arc;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,7 @@ const BUNDLED_SKILLS_DIR: &str = ".system";
 pub const LOCAL_IMPORT_REPO_KEY: &str = "local";
 /// 单个仓库 zip 的下载上限。skill 仓库都是纯文本，64 MiB 足够宽松了。
 const REPO_ZIP_DOWNLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+const REPO_ZIP_UNPACKED_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 
 /// 一个 skill 仓库源。`subdir` 为空表示 skill 目录直接放在仓库根下。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +185,119 @@ pub struct SkillBackup {
     pub backed_up_at: String,
 }
 
+/// 下载前的状态快照。公开字段供调用方定位仓库和原安装路径，代次只在本进程有效。
+#[derive(Debug, Clone)]
+pub struct SkillDownloadGuard {
+    pub installed: Option<InstalledSkill>,
+    pub repo: SkillRepo,
+    id: String,
+    install_only: bool,
+    state_path: PathBuf,
+    source_dir: PathBuf,
+    backups_dir: PathBuf,
+    codex_home: PathBuf,
+    agent_dirs: Vec<(String, PathBuf)>,
+    installed_snapshot: Option<InstalledSkill>,
+    repo_snapshot: SkillRepo,
+    contents: SkillContentSnapshot,
+    skill_generation: u64,
+    repo_generation: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SkillContentSnapshot {
+    source: Option<[u8; 32]>,
+    codex_copy: Option<[u8; 32]>,
+}
+
+/// 刷新仓库前捕获的快照；仓库启停也会使它失效。
+#[derive(Debug, Clone)]
+pub struct SkillRepoGuard {
+    pub repo: SkillRepo,
+    state_path: PathBuf,
+    repo_snapshot: SkillRepo,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct SkillsCoordination {
+    generation: u64,
+    skills: BTreeMap<String, u64>,
+    repos: BTreeMap<String, u64>,
+    repo_changes: BTreeMap<String, u64>,
+}
+
+impl SkillsCoordination {
+    fn skill_generation(&self, id: &str) -> u64 {
+        self.skills.iter()
+            .filter(|(other, _)| skill_names_may_alias(other, id))
+            .map(|(_, generation)| *generation)
+            .max()
+            .unwrap_or_default()
+    }
+
+    fn repo_generation(&self, key: &str) -> u64 {
+        self.repos.get(key).copied().unwrap_or_default()
+    }
+
+    fn next_generation(&mut self) -> u64 {
+        self.generation = self.generation.checked_add(1).expect("Skill 代次耗尽");
+        self.generation
+    }
+
+    fn changed_skill(&mut self, id: &str) {
+        let generation = self.next_generation();
+        self.skills.insert(id.to_string(), generation);
+    }
+
+    fn changed_repo(&mut self, key: &str) {
+        let generation = self.next_generation();
+        self.repos.insert(key.to_string(), generation);
+        self.repo_changes.insert(key.to_string(), generation);
+    }
+
+    fn changed_repo_settings(&mut self, key: &str) {
+        let generation = self.next_generation();
+        self.repo_changes.insert(key.to_string(), generation);
+    }
+}
+
+// 不同 state_path 也可能共享源目录或 Agent 目录，因此协调范围是整个进程。
+// 下载、ZIP 校验及提取不持锁；不协调其它进程或绕过 SkillsManager 的直接写入。
+fn skills_coordination() -> MutexGuard<'static, SkillsCoordination> {
+    static COORDINATION: OnceLock<Mutex<SkillsCoordination>> = OnceLock::new();
+    COORDINATION.get_or_init(Mutex::default).lock()
+        .expect("Skill 协调锁中毒，拒绝继续修改")
+}
+
+#[cfg(windows)]
+fn skill_names_may_alias(left: &str, right: &str) -> bool {
+    windows_names_equal(left, right)
+}
+
+#[cfg(windows)]
+fn windows_names_equal(left: &str, right: &str) -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CompareStringOrdinal(
+            left: *const u16, left_len: i32, right: *const u16, right_len: i32, ignore_case: i32,
+        ) -> i32;
+    }
+    let left: Vec<u16> = left.encode_utf16().collect();
+    let right: Vec<u16> = right.encode_utf16().collect();
+    let (Ok(left_len), Ok(right_len)) = (i32::try_from(left.len()), i32::try_from(right.len())) else {
+        return true;
+    };
+    // 返回 0 表示比较失败，此时也按可能冲突处理。
+    let result = unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) };
+    result == 0 || result == 2
+}
+
+#[cfg(not(windows))]
+fn skill_names_may_alias(left: &str, right: &str) -> bool {
+    left == right
+}
+
 #[derive(Debug, Clone)]
 pub struct SkillsManager {
     source_dir: PathBuf,
@@ -190,7 +306,6 @@ pub struct SkillsManager {
     codex_home: PathBuf,
     /// Codex 之外也读 `<dir>/<id>/SKILL.md` 的 Agent：(Agent id, skills 目录)。
     agent_dirs: Vec<(String, PathBuf)>,
-    state_lock: Arc<Mutex<()>>,
 }
 
 impl SkillsManager {
@@ -206,7 +321,6 @@ impl SkillsManager {
             state_path: state_path.into(),
             codex_home: codex_home.into(),
             agent_dirs: Vec::new(),
-            state_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -234,18 +348,24 @@ impl SkillsManager {
     /// 停用只删本工具建的软链；Agent 自己目录里的真实 Skill 不删，报错说明。
     pub fn set_enabled_for(&self, agent: &str, id: &str, enabled: bool) -> anyhow::Result<()> {
         validate_skill_id(id)?;
+        let mut coordination = skills_coordination();
+        self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
         if enabled {
-            self.ensure_managed_source(id)?;
+            self.ensure_managed_source_unlocked(id, &mut coordination)?;
         }
         if agent == "codex" {
-            return self.set_enabled(id, enabled);
+            return self.set_enabled_unlocked(id, enabled, &mut coordination);
         }
         let dir = self.agent_dir(agent)?;
         let link = dir.join(id);
         let metadata = std::fs::symlink_metadata(&link);
         if !enabled {
             return match metadata {
-                Ok(metadata) if metadata.file_type().is_symlink() || is_managed_copy(&link) => remove_link(&link),
+                Ok(metadata) if metadata.file_type().is_symlink() => remove_link(&link),
+                Ok(_) if is_managed_copy(&link) => {
+                    self.backup_directory(id, &link)?;
+                    Ok(())
+                }
                 Ok(_) => anyhow::bail!("{} 是这个 Agent 自己的 Skill，不由 Codex++ 管理，未删除", link.display()),
                 Err(_) => Ok(()),
             };
@@ -261,11 +381,7 @@ impl SkillsManager {
             anyhow::bail!("skill 源目录不存在：{}", source.display());
         }
         std::fs::create_dir_all(&dir).with_context(|| format!("创建 {} 失败", dir.display()))?;
-        if let Err(error) = link_or_copy(&source, &link) {
-            remove_link(&link).context(format!("启用失败且清理未完成：{error:#}"))?;
-            return Err(error);
-        }
-        Ok(())
+        link_or_copy(&source, &link).map(|_| ())
     }
 
     /// 没有受控源时，从 Codex 或其它 Agent 目录里找到这个 Skill 的真实目录，纳入受控源。
@@ -273,7 +389,11 @@ impl SkillsManager {
     /// - 在 Codex 目录里：走一遍「停用 → 启用」，停用会把真实目录复制成受控源（原目录进备份），
     ///   启用再软链回来，Codex 照常可用；
     /// - 只在其它 Agent 目录里：复制一份成受控源，那个 Agent 自己的目录保持不动。
-    fn ensure_managed_source(&self, id: &str) -> anyhow::Result<()> {
+    fn ensure_managed_source_unlocked(
+        &self,
+        id: &str,
+        coordination: &mut SkillsCoordination,
+    ) -> anyhow::Result<()> {
         if self.source_dir.join(id).is_dir() {
             return Ok(());
         }
@@ -282,8 +402,8 @@ impl SkillsManager {
         };
         let codex = self.linked_dir().join(id);
         if physical(&codex) {
-            self.set_enabled(id, false)?;
-            return self.set_enabled(id, true);
+            self.set_enabled_unlocked(id, false, coordination)?;
+            return self.set_enabled_unlocked(id, true, coordination);
         }
         if std::fs::symlink_metadata(&codex).is_ok() {
             // Codex 目录里同名的是别的东西（例如断掉的软链），导入会把它挪进备份；交给用户处理。
@@ -292,7 +412,9 @@ impl SkillsManager {
         for (_, dir) in &self.agent_dirs {
             let candidate = dir.join(id);
             if physical(&candidate) {
-                self.import_from_directory(id, &candidate)?;
+                let (staging, installed) = self.stage_directory_import(id, &candidate, "cc-switch")?;
+                let result = self.commit_staged_skill_unlocked(&staging, installed, false, true, false, false, coordination);
+                result.map_err(|error| retain_staging_context(error, &staging))?;
                 return Ok(());
             }
         }
@@ -309,7 +431,7 @@ impl SkillsManager {
     }
 
     pub fn load_state(&self) -> SkillsState {
-        let _guard = self.state_lock.lock().unwrap();
+        let _guard = skills_coordination();
         self.load_state_unlocked()
     }
 
@@ -320,11 +442,58 @@ impl SkillsManager {
         serde_json::from_str::<SkillsState>(&text).unwrap_or_default()
     }
 
+    fn load_state_checked_unlocked(&self) -> anyhow::Result<SkillsState> {
+        let text = match std::fs::read_to_string(&self.state_path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(SkillsState::default()),
+            Err(error) => return Err(error).context("读取 Skill 状态失败"),
+        };
+        serde_json::from_str::<SkillsState>(&text).context("Skill 状态无法解析")
+    }
+
     fn save_state_unlocked(&self, state: &SkillsState) -> anyhow::Result<()> {
         crate::settings::atomic_write(
             &self.state_path,
             serde_json::to_string_pretty(state)?.as_bytes(),
         )
+    }
+
+    #[cfg(windows)]
+    fn ensure_skill_name_not_aliased(&self, id: &str, state: &SkillsState) -> anyhow::Result<()> {
+        for existing in state.installed.keys() {
+            if existing != id && skill_names_may_alias(existing, id) {
+                anyhow::bail!("Skill 名称可能与现有安装记录冲突：{existing}");
+            }
+        }
+        let mut roots = vec![self.source_dir.clone(), self.linked_dir()];
+        roots.extend(self.agent_dirs.iter().map(|(_, dir)| dir.clone()));
+        for root in roots {
+            let entries = match std::fs::read_dir(&root) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error).with_context(|| format!("读取 {} 失败", root.display())),
+            };
+            let mut exact = false;
+            for entry in entries {
+                let name = entry?.file_name().into_string()
+                    .map_err(|_| anyhow::anyhow!("无法确认 {} 下的 Skill 名称", root.display()))?;
+                if name == id {
+                    exact = true;
+                } else if windows_names_equal(&name, id) {
+                    anyhow::bail!("Skill 名称与现有目录大小写冲突：{name}");
+                }
+            }
+            // 还要检测 8.3 短名称等 read_dir 不会单独列出的别名。
+            if !exact && std::fs::symlink_metadata(root.join(id)).is_ok() {
+                anyhow::bail!("Skill 名称是现有目录的别名：{id}");
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn ensure_skill_name_not_aliased(&self, _id: &str, _state: &SkillsState) -> anyhow::Result<()> {
+        Ok(())
     }
 
     pub fn list_repos(&self) -> Vec<SkillRepo> {
@@ -341,20 +510,22 @@ impl SkillsManager {
         let repo = normalize_repo(repo.clone())?;
         let key = repo.key();
         if previous_key.is_some_and(|previous| previous != key) { return Ok(false); }
-        let _guard = self.state_lock.lock().unwrap();
-        let mut state = self.load_state_unlocked();
+        let mut coordination = skills_coordination();
+        let mut state = self.load_state_checked_unlocked()?;
         let Some(existing) = state.repos.iter_mut().find(|item| item.key() == key) else { return Ok(false) };
         if existing.enabled == repo.enabled { return Ok(false); }
         existing.enabled = repo.enabled;
         self.save_state_unlocked(&state)?;
+        coordination.changed_repo_settings(&key);
         Ok(true)
     }
 
     pub fn save_repo(&self, repo: SkillRepo, previous_key: Option<&str>) -> anyhow::Result<Vec<SkillRepo>> {
         let repo = normalize_repo(repo)?;
-        let _guard = self.state_lock.lock().unwrap();
-        let mut state = self.load_state_unlocked();
+        let mut coordination = skills_coordination();
+        let mut state = self.load_state_checked_unlocked()?;
         let key = repo.key();
+        let existed = state.repos.iter().any(|item| item.key() == key);
         if let Some(previous_key) = previous_key.filter(|previous| *previous != key) {
             if !state.repos.iter().any(|item| item.key() == previous_key) {
                 anyhow::bail!("原仓库已不存在，请刷新后重试");
@@ -369,15 +540,91 @@ impl SkillsManager {
             None => state.repos.push(repo),
         }
         self.save_state_unlocked(&state)?;
+        if let Some(previous_key) = previous_key.filter(|previous| *previous != key) {
+            coordination.changed_repo(previous_key);
+        }
+        if !existed {
+            coordination.changed_repo(&key);
+        } else {
+            coordination.changed_repo_settings(&key);
+        }
         Ok(state.repos)
     }
 
     pub fn delete_repo(&self, key: &str) -> anyhow::Result<Vec<SkillRepo>> {
-        let _guard = self.state_lock.lock().unwrap();
-        let mut state = self.load_state_unlocked();
+        let mut coordination = skills_coordination();
+        let mut state = self.load_state_checked_unlocked()?;
+        let existed = state.repos.iter().any(|repo| repo.key() == key);
         state.repos.retain(|repo| repo.key() != key);
         self.save_state_unlocked(&state)?;
+        if existed {
+            coordination.changed_repo(key);
+        }
         Ok(state.repos)
+    }
+
+    /// 仓库刷新与后续回退必须使用同一份快照，不能只比较 key。
+    pub fn capture_repo_guard(&self, key: &str) -> anyhow::Result<SkillRepoGuard> {
+        let coordination = skills_coordination();
+        let repo = self.load_state_checked_unlocked()?.repos.into_iter()
+            .find(|repo| repo.key() == key)
+            .context("仓库已不存在，请刷新后重试")?;
+        Ok(SkillRepoGuard {
+            repo: repo.clone(),
+            state_path: self.state_path.clone(),
+            repo_snapshot: repo,
+            generation: coordination.repo_changes.get(key).copied().unwrap_or_default(),
+        })
+    }
+
+    /// 只读检查刷新快照；锁只覆盖本地状态读取，不包含网络等待。
+    pub fn repo_guard_is_current(&self, guard: &SkillRepoGuard) -> anyhow::Result<bool> {
+        let coordination = skills_coordination();
+        if guard.repo != guard.repo_snapshot || self.state_path != guard.state_path {
+            return Ok(false);
+        }
+        let state = self.load_state_checked_unlocked()?;
+        Ok(state.repos.iter().any(|repo| repo == &guard.repo_snapshot)
+            && coordination.repo_changes.get(&guard.repo_snapshot.key())
+                .copied().unwrap_or_default() == guard.generation)
+    }
+
+    /// 仅在仓库自抓取以来完全未变时保存 main/master 回退；返回 false 表示已过期或目标已存在。
+    pub fn save_resolved_repo_if_unchanged(
+        &self,
+        guard: &SkillRepoGuard,
+        resolved: SkillRepo,
+    ) -> anyhow::Result<bool> {
+        let resolved = normalize_repo(resolved)?;
+        if guard.repo != guard.repo_snapshot || self.state_path != guard.state_path {
+            anyhow::bail!("仓库快照与当前管理器不匹配");
+        }
+        let original = &guard.repo_snapshot;
+        if resolved.owner != original.owner || resolved.name != original.name
+            || resolved.subdir != original.subdir || resolved.enabled != original.enabled
+            || !matches!(
+                (original.branch.as_str(), resolved.branch.as_str()),
+                ("main", "master") | ("master", "main")
+            )
+        {
+            anyhow::bail!("仓库回退只能切换 main 与 master");
+        }
+        let old_key = original.key();
+        let new_key = resolved.key();
+        let mut coordination = skills_coordination();
+        let mut state = self.load_state_checked_unlocked()?;
+        if coordination.repo_changes.get(&old_key).copied().unwrap_or_default() != guard.generation
+            || !state.repos.iter().any(|repo| repo == original)
+            || state.repos.iter().any(|repo| repo.key() == new_key)
+        {
+            return Ok(false);
+        }
+        let repo = state.repos.iter_mut().find(|repo| repo.key() == old_key).unwrap();
+        *repo = resolved;
+        self.save_state_unlocked(&state)?;
+        coordination.changed_repo(&old_key);
+        coordination.changed_repo(&new_key);
+        Ok(true)
     }
 
     /// 把远端清单和本地状态合并成一份列表。`remote` 传空就是纯本地视图。
@@ -574,6 +821,36 @@ impl SkillsManager {
         repo_key: &str,
     ) -> anyhow::Result<SkillsState> {
         validate_skill_id(id)?;
+        let generation = {
+            let coordination = skills_coordination();
+            self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
+            coordination.skill_generation(id)
+        };
+        let (staging, installed) = self.stage_directory_import(id, external_dir, repo_key)?;
+        let result = self.commit_staged_import_if_unchanged(&staging, installed, generation);
+        result.map_err(|error| retain_staging_context(error, &staging))
+    }
+
+    fn commit_staged_import_if_unchanged(
+        &self,
+        staging: &Path,
+        installed: InstalledSkill,
+        generation: u64,
+    ) -> anyhow::Result<SkillsState> {
+        let mut coordination = skills_coordination();
+        if coordination.skill_generation(&installed.id) != generation {
+            anyhow::bail!("导入期间 Skill 已改变，请重新导入");
+        }
+        self.commit_staged_skill_unlocked(staging, installed, false, true, false, false, &mut coordination)
+    }
+
+    fn stage_directory_import(
+        &self,
+        id: &str,
+        external_dir: &Path,
+        repo_key: &str,
+    ) -> anyhow::Result<(PathBuf, InstalledSkill)> {
+        validate_skill_id(id)?;
         if repo_key == LOCAL_IMPORT_REPO_KEY {
             // Codex 的 skills 目录本来就会被扫描显示；从这里「导入」会把原目录挪进备份，反而让它从 Codex 消失。
             if let Ok(external) = external_dir.canonicalize() {
@@ -593,69 +870,136 @@ impl SkillsManager {
             anyhow::bail!("导入目录不能包含受控源目录");
         }
         let staging = self.source_dir.join(format!(".import-{id}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&staging)
+            .with_context(|| format!("创建 Skill 暂存目录失败：{}", staging.display()))?;
         if let Err(error) = copy_dir_all(external_dir, &staging) {
-            let _ = remove_link(&staging);
-            return Err(error);
+            return Err(retain_staging_context(error, &staging));
         }
         let (name, description) = read_skill_manifest(&manifest, id);
-        self.commit_staged_skill(&staging, InstalledSkill {
+        Ok((staging, InstalledSkill {
             id: id.to_string(), name, description, repo_key: repo_key.to_string(),
             repo_path: String::new(), content_hash: String::new(),
             installed_at: current_unix_timestamp_string(),
-        }, false)
+        }))
     }
 
     /// 目录、链接和安装记录一起提交；失败时恢复两处原内容。
-    fn commit_staged_skill(&self, staging: &Path, installed: InstalledSkill, enabled: bool) -> anyhow::Result<SkillsState> {
+    fn commit_staged_skill_unlocked(
+        &self,
+        staging: &Path,
+        installed: InstalledSkill,
+        enabled: bool,
+        replace_identity: bool,
+        update_agent_copies: bool,
+        require_empty: bool,
+        coordination: &mut SkillsCoordination,
+    ) -> anyhow::Result<SkillsState> {
         let id = installed.id.clone();
         let destination = self.source_dir.join(&id);
-        let _guard = self.state_lock.lock().unwrap();
-        let mut state = self.load_state_unlocked();
+        let mut state = self.load_state_checked_unlocked()?;
+        self.ensure_skill_name_not_aliased(&id, &state)?;
+        let identity_changed = replace_identity || state.installed.get(&id) != Some(&installed);
         state.installed.insert(id.clone(), installed);
         let link = self.linked_dir().join(&id);
-        let mut displaced = Vec::new();
-        let mut published = false;
-        let mut creating_link = false;
-        let result = (|| -> anyhow::Result<()> {
-            // 两处原内容都先保留，成功后仍作为可恢复备份，不覆盖同名用户目录。
-            for original in [&link, &destination] {
-                if std::fs::symlink_metadata(original).is_ok() {
-                    let backup = self.backup_directory(&id, original)?;
-                    displaced.push((original.clone(), backup));
+        let mut agent_copies = Vec::new();
+        if update_agent_copies && require_empty {
+            for (_, dir) in &self.agent_dirs {
+                let copy = dir.join(&id);
+                if is_managed_copy(&copy) {
+                    anyhow::bail!("Agent 已有同名托管 Skill 副本，请先处理：{}", copy.display());
                 }
             }
-            std::fs::rename(&staging, &destination)?;
-            published = true;
+        }
+        if update_agent_copies && !require_empty {
+            let source_digest = skill_directory_digest(&destination)?;
+            for (_, dir) in &self.agent_dirs {
+                let copy = dir.join(&id);
+                if is_managed_copy(&copy) {
+                    let identity = skill_path_identity(&copy)?;
+                    if skill_directory_digest(&copy)? != source_digest
+                        || skill_path_identity(&copy)? != identity
+                    {
+                        anyhow::bail!("Agent 的 Skill 副本与受控源内容不一致，请先停用并备份副本，未更新");
+                    }
+                    agent_copies.push((copy, identity));
+                }
+            }
+        }
+        let mut displaced = Vec::new();
+        let mut published = None;
+        let mut created_links = Vec::new();
+        let result = (|| -> anyhow::Result<()> {
+            // 两处原内容都先保留，成功后仍作为可恢复备份，不覆盖同名用户目录。
+            if !require_empty {
+                for original in [&link, &destination] {
+                    if std::fs::symlink_metadata(original).is_ok() {
+                        let identity = skill_path_identity(original)?;
+                        let backup = self.backup_directory_checked(&id, original, identity)?;
+                        displaced.push((original.clone(), backup, identity));
+                    }
+                }
+            }
+            for (original, identity) in &agent_copies {
+                let backup = self.backup_directory_checked(&id, original, *identity)?;
+                displaced.push((original.clone(), backup, *identity));
+            }
+            let identity = skill_path_identity(staging)?;
+            move_path_no_replace(staging, &destination)?;
+            published = Some(identity);
+            #[cfg(test)]
+            run_source_publication_hook(staging)?;
+            if skill_path_identity(&destination)? != identity {
+                anyhow::bail!("Skill 发布期间源目录发生变化：{}", destination.display());
+            }
             if enabled {
                 std::fs::create_dir_all(self.linked_dir())?;
-                creating_link = true;
-                link_or_copy(&destination, &link)?;
+                let mut published_link = None;
+                let result = link_or_copy_tracked(&destination, &link, &mut published_link);
+                if let Some(identity) = published_link {
+                    created_links.push((link.clone(), identity));
+                }
+                result?;
+            }
+            for (copy, _) in &agent_copies {
+                let mut published_copy = None;
+                let result = link_or_copy_tracked(&destination, copy, &mut published_copy);
+                if let Some(identity) = published_copy {
+                    created_links.push((copy.clone(), identity));
+                }
+                result?;
             }
             self.save_state_unlocked(&state)?;
             Ok(())
         })();
         if let Err(error) = result {
-            let rollback = (|| -> anyhow::Result<()> {
-                if creating_link { remove_link(&link)?; }
-                if published { std::fs::rename(&destination, &staging)?; }
-                for (original, backup) in displaced.iter().rev() {
-                    std::fs::rename(backup, original)?;
+            let mut rollback_errors = Vec::new();
+            let mut recoveries = Vec::new();
+            for (created, identity) in created_links.iter().rev()
+                .map(|(path, identity)| (path, identity))
+                .chain(published.iter().map(|identity| (&destination, identity)))
+            {
+                match recover_published_path(created, *identity) {
+                    Ok(Some(path)) => recoveries.push(path),
+                    Ok(None) => {}
+                    Err(error) => rollback_errors.push(format!("{error:#}")),
                 }
-                Ok(())
-            })();
-            if let Err(rollback_error) = rollback {
-                return Err(error.context(format!("回滚失败，原内容保留在备份目录：{rollback_error:#}")));
             }
-            let _ = remove_link(&staging);
+            for (original, backup, identity) in displaced.iter().rev() {
+                if let Err(error) = restore_skill_backup(backup, original, *identity) {
+                    rollback_errors.push(format!("原内容保留在 {}：{error:#}", backup.display()));
+                }
+            }
+            if !rollback_errors.is_empty() || !recoveries.is_empty() {
+                let paths = recoveries.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("、");
+                return Err(error.context(format!(
+                    "回滚检查：{}；新内容保留位置：{}",
+                    rollback_errors.join("；"), paths
+                )));
+            }
             return Err(error);
         }
-        // 旧安装软链不含独立内容，实体目录备份则必须保留。
-        for (_, backup) in &displaced {
-            if std::fs::symlink_metadata(backup).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-                if let Err(error) = remove_link(backup) {
-                    eprintln!("清理已提交的 Skill 软链备份失败：{error:#}");
-                }
-            }
+        if identity_changed {
+            coordination.changed_skill(&id);
         }
         Ok(state)
     }
@@ -699,33 +1043,161 @@ impl SkillsManager {
         skills
     }
 
-    /// 把一份已下载的仓库 zip 里的某个 skill 子树装到 SSOT，并建立软链。
-    pub fn install_from_zip(
+    /// 在同一把锁下捕获仓库、安装记录及其进程内代次。
+    pub fn capture_download_guard(
+        &self,
+        id: &str,
+        repo_key: &str,
+        install_only: bool,
+    ) -> anyhow::Result<SkillDownloadGuard> {
+        validate_skill_id(id)?;
+        let coordination = skills_coordination();
+        let state = self.load_state_checked_unlocked()?;
+        self.ensure_skill_name_not_aliased(id, &state)?;
+        let repo = state.repos.iter().find(|repo| repo.key() == repo_key)
+            .cloned().context("仓库已不存在，请刷新后重试")?;
+        let installed = state.installed.get(id).cloned();
+        match (&installed, install_only) {
+            (Some(_), true) => anyhow::bail!("Skill 已安装，请使用更新"),
+            (None, false) => anyhow::bail!("Skill 尚未安装，不能更新"),
+            (Some(record), false) if record.id != id || record.repo_key != repo_key
+                || record.repo_path.is_empty() =>
+            {
+                anyhow::bail!("已安装 Skill 的仓库或来源路径不匹配");
+            }
+            (None, true) if std::fs::symlink_metadata(self.source_dir.join(id)).is_ok()
+                || std::fs::symlink_metadata(self.linked_dir().join(id)).is_ok() =>
+            {
+                anyhow::bail!("同名 Skill 目录已存在，不能作为新安装覆盖");
+            }
+            _ => {}
+        }
+        let mut guard = SkillDownloadGuard {
+            installed: installed.clone(),
+            repo: repo.clone(),
+            id: id.to_string(),
+            install_only,
+            state_path: self.state_path.clone(),
+            source_dir: self.source_dir.clone(),
+            backups_dir: self.backups_dir.clone(),
+            codex_home: self.codex_home.clone(),
+            agent_dirs: self.agent_dirs.clone(),
+            installed_snapshot: installed,
+            repo_snapshot: repo,
+            contents: SkillContentSnapshot::default(),
+            skill_generation: coordination.skill_generation(id),
+            repo_generation: coordination.repo_generation(repo_key),
+        };
+        drop(coordination);
+        guard.contents = self.skill_content_snapshot(id)?;
+        let coordination = skills_coordination();
+        self.validate_download_guard_unlocked(&guard, &coordination)?;
+        Ok(guard)
+    }
+
+    fn skill_content_snapshot(&self, id: &str) -> anyhow::Result<SkillContentSnapshot> {
+        let source = self.source_dir.join(id);
+        let link = self.linked_dir().join(id);
+        let source_digest = skill_directory_digest(&source)?;
+        let codex_copy = match std::fs::symlink_metadata(&link) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let linked_target = link.canonicalize().context("无法核实 Codex Skill 软链")?;
+                let source_target = source.canonicalize().context("无法核实 Skill 受控源")?;
+                if linked_target != source_target || source_digest.is_none() {
+                    anyhow::bail!("Codex Skill 软链未指向受控源，无法安全更新");
+                }
+                None
+            }
+            Ok(_) => skill_directory_digest(&link)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).context("读取 Codex Skill 副本失败"),
+        };
+        Ok(SkillContentSnapshot { source: source_digest, codex_copy })
+    }
+
+    fn validate_download_guard_unlocked(
+        &self,
+        guard: &SkillDownloadGuard,
+        coordination: &SkillsCoordination,
+    ) -> anyhow::Result<SkillsState> {
+        if guard.state_path != self.state_path || guard.source_dir != self.source_dir
+            || guard.backups_dir != self.backups_dir || guard.codex_home != self.codex_home
+            || guard.agent_dirs != self.agent_dirs || guard.installed != guard.installed_snapshot
+            || guard.repo != guard.repo_snapshot
+        {
+            anyhow::bail!("下载快照与当前管理器不匹配");
+        }
+        let state = self.load_state_checked_unlocked()?;
+        self.ensure_skill_name_not_aliased(&guard.id, &state)?;
+        let key = guard.repo_snapshot.key();
+        let repo_exists = state.repos.iter().any(|repo| {
+            repo.owner == guard.repo_snapshot.owner
+                && repo.name == guard.repo_snapshot.name
+                && repo.branch == guard.repo_snapshot.branch
+                && repo.subdir == guard.repo_snapshot.subdir
+        });
+        if !repo_exists || coordination.repo_generation(&key) != guard.repo_generation
+            || coordination.skill_generation(&guard.id) != guard.skill_generation
+            || state.installed.get(&guard.id) != guard.installed_snapshot.as_ref()
+        {
+            anyhow::bail!("下载期间仓库或 Skill 安装记录已改变，请重新下载");
+        }
+        if guard.install_only
+            && (std::fs::symlink_metadata(self.source_dir.join(&guard.id)).is_ok()
+                || std::fs::symlink_metadata(self.linked_dir().join(&guard.id)).is_ok())
+        {
+            anyhow::bail!("下载期间出现同名 Skill，不能覆盖");
+        }
+        Ok(state)
+    }
+
+    /// 解压在协调锁外进行；提交时重新检查 guard 并采用当时的启用状态。
+    pub fn install_downloaded_zip_if_unchanged(
         &self,
         skill: &RemoteSkill,
-        zip_bytes: &[u8],
+        zip: &[u8],
+        guard: &SkillDownloadGuard,
     ) -> anyhow::Result<SkillsState> {
-        validate_skill_id(&skill.id)?;
-        if let Some(installed) = self.load_state().installed.get(&skill.id) {
-            if installed.repo_key != skill.repo_key || installed.repo_path != skill.repo_path {
-                anyhow::bail!("同名 Skill 的来源路径不同或旧记录缺少路径，不能覆盖；请先备份卸载原项");
+        if skill.id != guard.id || skill.repo_key != guard.repo_snapshot.key()
+            || guard.installed_snapshot.as_ref().is_some_and(|item| item.repo_path != skill.repo_path)
+        {
+            anyhow::bail!("下载内容与 Skill 快照不匹配");
+        }
+        {
+            let coordination = skills_coordination();
+            self.validate_download_guard_unlocked(guard, &coordination)?;
+        }
+        // 公共 API 也核对同一份 ZIP，避免调用方误传其它版本或路径。
+        let parsed = parse_skills_from_zip(&guard.repo_snapshot, zip, &BTreeMap::new())?;
+        if !parsed.iter().any(|item| item.repo_path == skill.repo_path
+            && item.content_hash == skill.content_hash
+            && (!guard.install_only || item.id == guard.id))
+        {
+            anyhow::bail!("Skill 路径或版本与下载的 ZIP 不匹配");
+        }
+        let staging = self.staging_dir(&guard.id);
+        std::fs::create_dir_all(&self.source_dir)?;
+        std::fs::create_dir(&staging)
+            .with_context(|| format!("创建 Skill 暂存目录失败：{}", staging.display()))?;
+        if let Err(error) = extract_skill_subtree(zip, &skill.repo_path, &staging) {
+            return Err(retain_staging_context(error, &staging));
+        }
+        let result = (|| {
+            // 目录内容扫描不占用操作锁；非受控的跨进程写入仍不能与最后替换原子同步。
+            let current = self.skill_content_snapshot(&guard.id)?;
+            if current.source != guard.contents.source
+                || match (&guard.contents.codex_copy, &current.codex_copy) {
+                    (Some(before), Some(after)) => before != after,
+                    (None, Some(after)) => Some(*after) != guard.contents.source,
+                    _ => false,
+                }
+            {
+                anyhow::bail!("下载期间 Skill 源目录或副本内容已改变，请重新下载");
             }
-        }
-        let enable_after_install = !self.load_state().installed.contains_key(&skill.id)
-            || is_linked(&self.linked_dir().join(&skill.id));
-        let staging = self.staging_dir(&skill.id);
-        if staging.exists() {
-            std::fs::remove_dir_all(&staging)
-                .with_context(|| format!("清理暂存目录失败：{}", staging.display()))?;
-        }
-        let result = extract_skill_subtree(zip_bytes, &skill.repo_path, &staging);
-        if result.is_err() {
-            let _ = std::fs::remove_dir_all(&staging);
-        }
-        result?;
-
-        self.commit_staged_skill(&staging,
-            InstalledSkill {
+            let mut coordination = skills_coordination();
+            self.validate_download_guard_unlocked(guard, &coordination)?;
+            let enabled = guard.install_only || is_linked(&self.linked_dir().join(&guard.id));
+            self.commit_staged_skill_unlocked(&staging, InstalledSkill {
                 id: skill.id.clone(),
                 name: skill.name.clone(),
                 description: skill.description.clone(),
@@ -733,18 +1205,67 @@ impl SkillsManager {
                 repo_path: skill.repo_path.clone(),
                 content_hash: skill.content_hash.clone(),
                 installed_at: current_unix_timestamp_string(),
-            },
-            enable_after_install,
-        )
+            }, enabled, true, true, guard.install_only, &mut coordination)
+        })();
+        result.map_err(|error| retain_staging_context(error, &staging))
+    }
+
+    /// 把一份已下载的仓库 zip 里的某个 skill 子树装到 SSOT，并建立软链。
+    pub fn install_from_zip(
+        &self,
+        skill: &RemoteSkill,
+        zip_bytes: &[u8],
+    ) -> anyhow::Result<SkillsState> {
+        validate_skill_id(&skill.id)?;
+        let staging = self.staging_dir(&skill.id);
+        std::fs::create_dir_all(&self.source_dir)?;
+        std::fs::create_dir(&staging)
+            .with_context(|| format!("创建 Skill 暂存目录失败：{}", staging.display()))?;
+        let result = extract_skill_subtree(zip_bytes, &skill.repo_path, &staging);
+        result.map_err(|error| retain_staging_context(error, &staging))?;
+
+        let result = (|| {
+            let mut coordination = skills_coordination();
+            let state = self.load_state_checked_unlocked()?;
+            self.ensure_skill_name_not_aliased(&skill.id, &state)?;
+            if let Some(installed) = state.installed.get(&skill.id) {
+                if installed.repo_key != skill.repo_key || installed.repo_path != skill.repo_path {
+                    anyhow::bail!("同名 Skill 的来源路径不同或旧记录缺少路径，不能覆盖；请先备份卸载原项");
+                }
+            }
+            let enable_after_install = !state.installed.contains_key(&skill.id)
+                || is_linked(&self.linked_dir().join(&skill.id));
+            self.commit_staged_skill_unlocked(&staging, InstalledSkill {
+                id: skill.id.clone(),
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                repo_key: skill.repo_key.clone(),
+                repo_path: skill.repo_path.clone(),
+                content_hash: skill.content_hash.clone(),
+                installed_at: current_unix_timestamp_string(),
+            }, enable_after_install, true, true, false, &mut coordination)
+        })();
+        result.map_err(|error| retain_staging_context(error, &staging))
     }
 
     /// 启用 = 在 `$CODEX_HOME/skills/` 下建一个指向源目录的软链；停用 = 删掉它。
     pub fn set_enabled(&self, id: &str, enabled: bool) -> anyhow::Result<()> {
         validate_skill_id(id)?;
+        let mut coordination = skills_coordination();
+        self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
+        self.set_enabled_unlocked(id, enabled, &mut coordination)
+    }
+
+    fn set_enabled_unlocked(
+        &self,
+        id: &str,
+        enabled: bool,
+        coordination: &mut SkillsCoordination,
+    ) -> anyhow::Result<()> {
         let source = self.source_dir.join(id);
         let link = self.linked_dir().join(id);
         if !enabled {
-            let state = self.load_state();
+            let state = self.load_state_checked_unlocked()?;
             let physical_copy = std::fs::symlink_metadata(&link)
                 .is_ok_and(|metadata| !metadata.file_type().is_symlink());
             if link.is_dir() && (physical_copy || !source.is_dir() || !state.installed.contains_key(id)) {
@@ -754,10 +1275,18 @@ impl SkillsManager {
                     anyhow::bail!("Skill 目录不能包含受控源目录，未执行停用");
                 }
                 let staging = self.staging_dir(id);
+                std::fs::create_dir(&staging)
+                    .with_context(|| format!("创建 Skill 暂存目录失败：{}", staging.display()))?;
                 if let Err(error) = copy_dir_all(&link, &staging) {
-                    let _ = remove_link(&staging);
-                    return Err(error);
+                    return Err(retain_staging_context(error, &staging));
                 }
+                let contents_changed = match (
+                    skill_directory_digest(&source),
+                    skill_directory_digest(&staging),
+                ) {
+                    (Ok(Some(before)), Ok(Some(after))) => before != after,
+                    _ => true,
+                };
                 let (name, description) = read_skill_manifest(&link.join(SKILL_MANIFEST_FILE), id);
                 let installed = state.installed.get(id).cloned().unwrap_or(InstalledSkill {
                     id: id.to_string(),
@@ -768,7 +1297,9 @@ impl SkillsManager {
                     content_hash: String::new(),
                     installed_at: current_unix_timestamp_string(),
                 });
-                self.commit_staged_skill(&staging, installed, false)?;
+                self.commit_staged_skill_unlocked(
+                    &staging, installed, false, contents_changed, false, false, coordination,
+                ).map_err(|error| retain_staging_context(error, &staging))?;
                 return Ok(());
             }
             return remove_link(&link);
@@ -784,57 +1315,73 @@ impl SkillsManager {
         }
         std::fs::create_dir_all(self.linked_dir())
             .with_context(|| format!("创建 {} 失败", self.linked_dir().display()))?;
-        if let Err(error) = link_or_copy(&source, &link) {
-            remove_link(&link).context(format!("启用失败且清理未完成：{error:#}"))?;
-            return Err(error);
-        }
-        Ok(())
+        link_or_copy(&source, &link).map(|_| ())
     }
 
     /// 卸载：删软链，源目录整体移进备份目录。不做自动轮转删除。
     pub fn uninstall(&self, id: &str) -> anyhow::Result<SkillsState> {
         validate_skill_id(id)?;
-        // 其它 Agent 里指向它的软链先摘掉，源目录移走后它们会变成断链。
+        let mut coordination = skills_coordination();
+        let mut state = self.load_state_checked_unlocked()?;
+        self.ensure_skill_name_not_aliased(id, &state)?;
+        // Agent 托管副本也参与事务，避免删除用户修改或卸载失败后无法回滚。
+        let mut agent_paths = Vec::new();
         for (_, dir) in &self.agent_dirs {
             let link = dir.join(id);
             if std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata.file_type().is_symlink())
                 || is_managed_copy(&link)
             {
-                remove_link(&link)?;
+                let identity = skill_path_identity(&link)?;
+                agent_paths.push((link, identity));
             }
         }
         let link = self.linked_dir().join(id);
         let source = self.source_dir.join(id);
-        let _guard = self.state_lock.lock().unwrap();
-        let mut state = self.load_state_unlocked();
         state.installed.remove(id);
         let mut displaced = Vec::new();
         let result = (|| -> anyhow::Result<()> {
             for original in [&link, &source] {
                 if std::fs::symlink_metadata(original).is_ok() {
-                    let backup = self.backup_directory(id, original)?;
-                    displaced.push((original.clone(), backup));
+                    let identity = skill_path_identity(original)?;
+                    let backup = self.backup_directory_checked(id, original, identity)?;
+                    displaced.push((original.clone(), backup, identity));
                 }
+            }
+            for (original, identity) in &agent_paths {
+                let backup = self.backup_directory_checked(id, original, *identity)?;
+                displaced.push((original.clone(), backup, *identity));
             }
             self.save_state_unlocked(&state)?;
             Ok(())
         })();
         if let Err(error) = result {
-            for (original, backup) in displaced.iter().rev() {
-                if let Err(rollback_error) = std::fs::rename(backup, original) {
-                    return Err(error.context(format!("卸载回滚失败，原内容保留在备份目录：{rollback_error}")));
+            let mut rollback_errors = Vec::new();
+            for (original, backup, identity) in displaced.iter().rev() {
+                if let Err(rollback_error) = restore_skill_backup(backup, original, *identity) {
+                    rollback_errors.push(format!("原内容保留在 {}：{rollback_error:#}", backup.display()));
                 }
+            }
+            if !rollback_errors.is_empty() {
+                return Err(error.context(format!("卸载回滚未完成：{}", rollback_errors.join("；"))));
             }
             return Err(error);
         }
-        for (_, backup) in &displaced {
-            if std::fs::symlink_metadata(backup).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-                if let Err(error) = remove_link(backup) {
-                    eprintln!("清理已卸载的 Skill 软链备份失败：{error:#}");
-                }
-            }
-        }
+        coordination.changed_skill(id);
         Ok(state)
+    }
+
+    fn backup_directory_checked(&self, id: &str, source: &Path, expected: SkillPathIdentity) -> anyhow::Result<PathBuf> {
+        if skill_path_identity(source)? != expected {
+            anyhow::bail!("Skill 路径已被其他内容替换，未备份：{}", source.display());
+        }
+        let backup = self.backup_directory(id, source)?;
+        if skill_path_identity(&backup).ok() != Some(expected) {
+            if let Err(error) = move_path_no_replace(&backup, source) {
+                anyhow::bail!("Skill 备份期间路径发生变化，内容保留在 {}：{error:#}", backup.display());
+            }
+            anyhow::bail!("Skill 备份期间路径发生变化，未覆盖：{}", source.display());
+        }
+        Ok(backup)
     }
 
     fn backup_directory(&self, id: &str, source: &Path) -> anyhow::Result<PathBuf> {
@@ -847,7 +1394,7 @@ impl SkillsManager {
             }
             timestamp += 1;
         };
-        std::fs::rename(source, &backup)
+        move_path_no_replace(source, &backup)
             .with_context(|| format!("备份 {} 到 {} 失败", source.display(), backup.display()))?;
         Ok(backup)
     }
@@ -859,7 +1406,7 @@ impl SkillsManager {
         let mut backups = Vec::new();
         for entry in dir.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_dir()) {
                 continue;
             }
             let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
@@ -882,14 +1429,18 @@ impl SkillsManager {
     /// 从备份恢复：目录移回 SSOT 并重新建链。
     pub fn restore_backup(&self, backup_id: &str) -> anyhow::Result<SkillsState> {
         validate_skill_id(backup_id)?;
+        let mut coordination = skills_coordination();
         let backup = self.backups_dir.join(backup_id);
         if !backup.is_dir() {
             anyhow::bail!("备份不存在：{}", backup.display());
         }
         let (skill_id, _) = split_backup_id(backup_id);
         validate_skill_id(&skill_id)?;
+        let current = self.load_state_checked_unlocked()?;
+        self.ensure_skill_name_not_aliased(&skill_id, &current)?;
         let destination = self.source_dir.join(&skill_id);
-        if std::fs::symlink_metadata(&destination).is_ok()
+        if current.installed.contains_key(&skill_id)
+            || std::fs::symlink_metadata(&destination).is_ok()
             || std::fs::symlink_metadata(self.linked_dir().join(&skill_id)).is_ok()
         {
             anyhow::bail!("{skill_id} 已经装着了，先卸载再从备份恢复");
@@ -897,13 +1448,14 @@ impl SkillsManager {
         std::fs::create_dir_all(&self.source_dir)
             .with_context(|| format!("创建目录失败：{}", self.source_dir.display()))?;
         let staging = self.staging_dir(&skill_id);
+        std::fs::create_dir(&staging)
+            .with_context(|| format!("创建 Skill 暂存目录失败：{}", staging.display()))?;
         if let Err(error) = copy_dir_all(&backup, &staging) {
-            let _ = remove_link(&staging);
-            return Err(error);
+            return Err(retain_staging_context(error, &staging));
         }
         let (name, description) =
             read_skill_manifest(&staging.join(SKILL_MANIFEST_FILE), &skill_id);
-        let state = self.commit_staged_skill(
+        let result = self.commit_staged_skill_unlocked(
             &staging,
             InstalledSkill {
                 id: skill_id.clone(),
@@ -915,7 +1467,12 @@ impl SkillsManager {
                 installed_at: current_unix_timestamp_string(),
             },
             true,
-        )?;
+            true,
+            false,
+            false,
+            &mut coordination,
+        );
+        let state = result.map_err(|error| retain_staging_context(error, &staging))?;
         // 提交前始终保留原备份；提交后清理失败也不撤销已恢复的安装。
         if let Err(error) = remove_link(&backup) {
             eprintln!("清理已恢复的 Skill 备份失败：{error:#}");
@@ -926,6 +1483,7 @@ impl SkillsManager {
     /// 显式删除单个备份。AGENTS.md 禁止批量删除，所以只删指定的这一个。
     pub fn delete_backup(&self, backup_id: &str) -> anyhow::Result<Vec<SkillBackup>> {
         validate_skill_id(backup_id)?;
+        let _guard = skills_coordination();
         let backup = self.backups_dir.join(backup_id);
         if backup.is_dir() {
             std::fs::remove_dir_all(&backup)
@@ -1005,7 +1563,34 @@ fn validate_skill_id(id: &str) -> anyhow::Result<()> {
     if id == "." || id == ".." || id.contains('/') || id.contains('\\') {
         anyhow::bail!("非法的 skill id：{id}");
     }
+    #[cfg(windows)]
+    validate_windows_name(id)?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_name(name: &str) -> anyhow::Result<()> {
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    if name.is_empty() || name.ends_with('.') || name.ends_with(' ') || reserved
+        || name.chars().any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+    {
+        anyhow::bail!("Windows 名称无效或可能是文件别名：{name}");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn resembles_windows_short_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default();
+    let Some((prefix, number)) = stem.rsplit_once('~') else { return false };
+    !prefix.is_empty()
+        && !number.is_empty()
+        && stem.len() <= 8
+        && number.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// 把用户选中的本地目录解析成待导入的 Skill 目录（#511）。
@@ -1157,19 +1742,14 @@ async fn fetch_repo_skills_from_zip(
     parse_skills_from_zip(repo, &bytes, cached)
 }
 
-fn parse_skills_from_zip(
+pub fn parse_skills_from_zip(
     repo: &SkillRepo,
     bytes: &[u8],
     cached: &BTreeMap<String, RemoteSkill>,
 ) -> anyhow::Result<Vec<RemoteSkill>> {
     let mut archive =
         zip::ZipArchive::new(Cursor::new(bytes)).context("skill 仓库压缩包无法解析")?;
-    let root = (0..archive.len())
-        .find_map(|index| {
-            let file = archive.by_index(index).ok()?;
-            file.name().split('/').next().map(str::to_string)
-        })
-        .context("仓库压缩包为空")?;
+    let root = validate_zip_entries(&mut archive, None)?;
     let prefix = if repo.subdir.is_empty() {
         String::new()
     } else {
@@ -1188,12 +1768,10 @@ fn parse_skills_from_zip(
         if relative.is_empty() || file.is_dir() {
             continue;
         }
-        total_size = total_size.saturating_add(file.size());
-        if total_size > 256 * 1024 * 1024 {
-            anyhow::bail!("仓库解压内容超过 256 MiB");
-        }
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents)?;
+        let declared_size = file.size();
+        let contents = read_bounded_zip_entry(
+            &mut file, declared_size, &mut total_size, REPO_ZIP_UNPACKED_LIMIT_BYTES,
+        )?;
         // 与 trees API 的 Git blob ID 保持一致，避免切换传输路径后误报更新。
         let mut hasher = sha1::Sha1::new();
         hasher.update(format!("blob {}\0", contents.len()).as_bytes());
@@ -1313,6 +1891,109 @@ fn read_skill_manifest(manifest: &Path, fallback_id: &str) -> (String, String) {
     }
 }
 
+/// 解析和提取必须看到完全相同的根与路径，拒绝可见的冲突条目及文件别名。
+fn validate_zip_entries<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    target: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut root: Option<String> = None;
+    let mut files = BTreeSet::new();
+    let mut directories = BTreeSet::new();
+    #[cfg(windows)]
+    let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for index in 0..archive.len() {
+        let file = archive.by_index(index)?;
+        let name = file.name();
+        if name.contains('\\') || name.starts_with('/') {
+            anyhow::bail!("仓库压缩包包含不安全路径：{name}");
+        }
+        let parts: Vec<&str> = name.trim_end_matches('/').split('/').collect();
+        if parts.iter().any(|part| part.is_empty() || *part == "." || *part == "..")
+            || name.ends_with("//")
+        {
+            anyhow::bail!("仓库压缩包包含不安全路径：{name}");
+        }
+        if let Some(existing) = &root {
+            if existing.as_str() != parts[0] {
+                anyhow::bail!("仓库压缩包包含多个根目录");
+            }
+        } else {
+            root = Some(parts[0].to_string());
+        }
+        #[cfg(windows)]
+        {
+            let relative = parts[1..].join("/");
+            let inner = match target {
+                Some(".") => relative.as_str(),
+                Some(target) => relative.strip_prefix(&format!("{target}/")).unwrap_or(""),
+                None => "",
+            };
+            let mut parent = String::new();
+            for part in inner.split('/').filter(|part| !part.is_empty()) {
+                validate_windows_name(part)?;
+                if resembles_windows_short_name(part) {
+                    anyhow::bail!("Skill 包含可能冲突的 Windows 短名称：{name}");
+                }
+                let names = children.entry(parent.clone()).or_default();
+                if names.iter().any(|old| old.as_str() != part && windows_names_equal(old, part)) {
+                    anyhow::bail!("仓库压缩包包含大小写冲突的路径：{name}");
+                }
+                if !names.iter().any(|old| old.as_str() == part) {
+                    names.push(part.to_string());
+                }
+                parent.push('/');
+                parent.push_str(part);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = target;
+        if parts.len() == 1 {
+            if !file.is_dir() {
+                anyhow::bail!("仓库压缩包根目录不是目录：{name}");
+            }
+            continue;
+        }
+        let mut path = String::new();
+        for part in &parts[1..parts.len() - 1] {
+            if !path.is_empty() { path.push('/'); }
+            path.push_str(part);
+            if files.contains(&path) {
+                anyhow::bail!("仓库压缩包包含冲突路径：{name}");
+            }
+            directories.insert(path.clone());
+        }
+        if !path.is_empty() { path.push('/'); }
+        path.push_str(parts[parts.len() - 1]);
+        if file.is_dir() {
+            if files.contains(&path) {
+                anyhow::bail!("仓库压缩包包含冲突路径：{name}");
+            }
+            directories.insert(path);
+        } else if directories.contains(&path) || !files.insert(path) {
+            anyhow::bail!("仓库压缩包包含重复或冲突路径：{name}");
+        }
+    }
+    root.context("仓库压缩包为空")
+}
+
+fn read_bounded_zip_entry<R: Read>(
+    reader: &mut R,
+    declared_size: u64,
+    total_size: &mut u64,
+    limit: u64,
+) -> anyhow::Result<Vec<u8>> {
+    if declared_size > limit.saturating_sub(*total_size) {
+        anyhow::bail!("仓库解压内容超过 256 MiB");
+    }
+    let mut contents = Vec::new();
+    reader.take(declared_size.saturating_add(1)).read_to_end(&mut contents)?;
+    if contents.len() as u64 != declared_size {
+        anyhow::bail!("仓库压缩包条目的实际解压大小与声明不符");
+    }
+    *total_size += contents.len() as u64;
+    Ok(contents)
+}
+
 fn zip_entry_relative_path(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     let mut components = path.components();
@@ -1348,7 +2029,9 @@ pub fn extract_skill_subtree(
     let prefix = if repo_path == "." { String::new() } else { format!("{repo_path}/") };
     let mut archive =
         zip::ZipArchive::new(Cursor::new(zip_bytes)).context("skill 仓库压缩包无法解析")?;
+    validate_zip_entries(&mut archive, Some(repo_path))?;
     let mut wrote_manifest = false;
+    let mut total_size = 0;
 
     for index in 0..archive.len() {
         let mut file = archive
@@ -1386,8 +2069,10 @@ pub fn extract_skill_subtree(
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建目录失败：{}", parent.display()))?;
         }
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents)
+        let declared_size = file.size();
+        let contents = read_bounded_zip_entry(
+            &mut file, declared_size, &mut total_size, REPO_ZIP_UNPACKED_LIMIT_BYTES,
+        )
             .with_context(|| format!("读取压缩包条目 {} 失败", file.name()))?;
         std::fs::write(&output_path, contents)
             .with_context(|| format!("写入 {} 失败", output_path.display()))?;
@@ -1641,16 +2326,271 @@ pub async fn download_repo_zip(repo: &SkillRepo) -> anyhow::Result<Vec<u8>> {
 /// 复制回退时放进副本的标记：有它说明这份副本是 Codex++ 建的，停用时可以删。
 const MANAGED_COPY_MARKER: &str = ".codex-plus-managed";
 
-/// 软链优先，失败回退复制。Windows 上建目录软链要开发者模式或管理员权限，
-/// 拿不到就退化成复制——功能一样，只是更新时要重装。
-fn link_or_copy(source: &Path, link: &Path) -> anyhow::Result<()> {
-    if symlink_dir(source, link).is_ok() {
-        return Ok(());
+fn skill_directory_digest(path: &Path) -> anyhow::Result<Option<[u8; 32]>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("读取 {} 失败", path.display())),
+    };
+    if !metadata.is_dir() {
+        anyhow::bail!("Skill 内容不是可安全检查的实体目录：{}", path.display());
     }
-    copy_dir_all(source, link)
-        .with_context(|| format!("复制 skill 到 {} 失败（软链也没建成）", link.display()))?;
-    std::fs::write(link.join(MANAGED_COPY_MARKER), "")
-        .with_context(|| format!("标记 {} 失败", link.display()))
+    fn hash_directory(dir: &Path, hasher: &mut Sha256) -> anyhow::Result<()> {
+        let mut entries = std::fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            if name == MANAGED_COPY_MARKER { continue; }
+            let name = name.to_str().context("Skill 文件名无法安全比较")?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                anyhow::bail!("Skill 包含无法安全比较的符号链接：{}", path.display());
+            }
+            hasher.update((name.len() as u64).to_le_bytes());
+            hasher.update(name.as_bytes());
+            if metadata.is_dir() {
+                hasher.update(b"D");
+                hash_directory(&path, hasher)?;
+                hasher.update(b"E");
+            } else if metadata.is_file() {
+                hasher.update(b"F");
+                hasher.update(metadata.len().to_le_bytes());
+                let mut file = std::fs::File::open(&path)?;
+                let mut buffer = [0u8; 64 * 1024];
+                let mut bytes_read = 0u64;
+                loop {
+                    let count = file.read(&mut buffer)?;
+                    if count == 0 { break; }
+                    bytes_read += count as u64;
+                    hasher.update(&buffer[..count]);
+                }
+                let after = std::fs::metadata(&path)?;
+                if bytes_read != metadata.len() || after.len() != metadata.len()
+                    || after.modified().ok() != metadata.modified().ok()
+                {
+                    anyhow::bail!("读取期间 Skill 文件发生变化：{}", path.display());
+                }
+            } else {
+                anyhow::bail!("Skill 包含无法安全比较的特殊文件：{}", path.display());
+            }
+        }
+        Ok(())
+    }
+    let mut hasher = Sha256::new();
+    hash_directory(path, &mut hasher)?;
+    Ok(Some(hasher.finalize().into()))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SkillPathIdentity {
+    device: u64,
+    file: u64,
+}
+
+fn retain_staging_context(error: anyhow::Error, staging: &Path) -> anyhow::Error {
+    if std::fs::symlink_metadata(staging).is_ok() {
+        error.context(format!("暂存路径仍存在且未自动清理：{}", staging.display()))
+    } else {
+        error
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_PUBLICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path) -> anyhow::Result<()>>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_source_publication_hook(staging: &Path) -> anyhow::Result<()> {
+    SOURCE_PUBLICATION_HOOK.with(|hook| match hook.borrow_mut().take() {
+        Some(hook) => hook(staging),
+        None => Ok(()),
+    })
+}
+
+#[cfg(windows)]
+fn skill_path_identity(path: &Path) -> anyhow::Result<SkillPathIdentity> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+        },
+    };
+
+    let file = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0)
+        .open(path)?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info)? };
+    Ok(SkillPathIdentity {
+        device: info.dwVolumeSerialNumber as u64,
+        file: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+    })
+}
+
+#[cfg(unix)]
+fn skill_path_identity(path: &Path) -> anyhow::Result<SkillPathIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    Ok(SkillPathIdentity { device: metadata.dev(), file: metadata.ino() })
+}
+
+#[cfg(not(any(windows, unix)))]
+fn skill_path_identity(_path: &Path) -> anyhow::Result<SkillPathIdentity> {
+    anyhow::bail!("当前平台不支持核验 Skill 路径身份")
+}
+
+/// 把本次发布的对象移到同卷的恢复位置；身份不符时保留现有路径。
+fn recover_published_path(path: &Path, expected: SkillPathIdentity) -> anyhow::Result<Option<PathBuf>> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    if skill_path_identity(path)? != expected {
+        anyhow::bail!("Skill 路径已被其他内容替换，未移动：{}", path.display());
+    }
+    let parent = path.parent().context("Skill 恢复位置没有父目录")?;
+    let recovery = parent.join(format!(".codex-plus-recovery-{}", uuid::Uuid::new_v4()));
+    move_path_no_replace(path, &recovery)?;
+    if skill_path_identity(&recovery).ok() != Some(expected) {
+        if let Err(error) = move_path_no_replace(&recovery, path) {
+            anyhow::bail!("Skill 路径在回滚期间发生变化，内容保留在 {}：{error:#}", recovery.display());
+        }
+        anyhow::bail!("Skill 路径在回滚期间发生变化，未覆盖：{}", path.display());
+    }
+    Ok(Some(recovery))
+}
+
+fn restore_skill_backup(backup: &Path, original: &Path, expected: SkillPathIdentity) -> anyhow::Result<()> {
+    if skill_path_identity(backup)? != expected {
+        anyhow::bail!("Skill 备份已被其他内容替换，未恢复：{}", backup.display());
+    }
+    move_path_no_replace(backup, original)?;
+    if skill_path_identity(original)? != expected {
+        anyhow::bail!("Skill 恢复期间路径发生变化：{}", original.display());
+    }
+    Ok(())
+}
+
+/// 软链优先，在同目录暂存后以不覆盖现有目录的方式发布。
+fn link_or_copy(source: &Path, link: &Path) -> anyhow::Result<SkillPathIdentity> {
+    let mut published = None;
+    match link_or_copy_tracked(source, link, &mut published) {
+        Ok(identity) => Ok(identity),
+        Err(error) => {
+            if let Some(identity) = published {
+                match recover_published_path(link, identity) {
+                    Ok(Some(path)) => return Err(error.context(format!("未完成的 Skill 内容保留在 {}", path.display()))),
+                    Ok(None) => {}
+                    Err(recovery_error) => return Err(error.context(format!("Skill 回滚未完成：{recovery_error:#}"))),
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+fn link_or_copy_tracked(
+    source: &Path,
+    link: &Path,
+    published: &mut Option<SkillPathIdentity>,
+) -> anyhow::Result<SkillPathIdentity> {
+    let parent = link.parent().context("Skill 启用位置没有父目录")?;
+    let staging = parent.join(format!(".codex-plus-copy-{}", uuid::Uuid::new_v4()));
+    link_or_copy_at(source, link, &staging, published, || Ok(()))
+}
+
+fn link_or_copy_at(
+    source: &Path,
+    link: &Path,
+    staging: &Path,
+    published: &mut Option<SkillPathIdentity>,
+    after_publish: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<SkillPathIdentity> {
+    match std::fs::symlink_metadata(link) {
+        Ok(_) => anyhow::bail!("Skill 启用位置已有其他内容：{}", link.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let mut created_staging = false;
+    let result = (|| -> anyhow::Result<SkillPathIdentity> {
+        if symlink_dir(source, staging).is_ok() {
+            created_staging = true;
+        } else {
+            std::fs::create_dir(&staging)
+                .with_context(|| format!("创建 Skill 副本暂存目录 {} 失败", staging.display()))?;
+            created_staging = true;
+            copy_dir_all(source, staging)?;
+            std::fs::write(staging.join(MANAGED_COPY_MARKER), "")?;
+        }
+        let identity = skill_path_identity(staging)?;
+        move_path_no_replace(staging, link)?;
+        *published = Some(identity);
+        after_publish()?;
+        if skill_path_identity(link)? != identity {
+            anyhow::bail!("Skill 发布期间路径发生变化，未覆盖：{}", link.display());
+        }
+        Ok(identity)
+    })();
+    match result {
+        Err(error) if created_staging && published.is_none() => {
+            Err(error.context(format!("未完成的 Skill 暂存内容保留在 {}", staging.display())))
+        }
+        other => other.with_context(|| format!("发布 Skill 到 {} 失败", link.display())),
+    }
+}
+
+#[cfg(windows)]
+fn move_path_no_replace(source: &Path, target: &Path) -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::MoveFileW;
+
+    // 只解析父目录，避免解析最后一级软链，同时支持 Windows 扩展长度路径。
+    let extended = |path: &Path| -> anyhow::Result<PathBuf> {
+        let name = path.file_name().context("Skill 路径没有文件名")?;
+        let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        Ok(parent.canonicalize()?.join(name))
+    };
+    let source = extended(source)?.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let target = extended(target)?.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    unsafe { MoveFileW(PCWSTR(source.as_ptr()), PCWSTR(target.as_ptr())) }?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn move_path_no_replace(source: &Path, target: &Path) -> anyhow::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let target = CString::new(target.as_os_str().as_bytes())?;
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2, libc::AT_FDCWD, source.as_ptr(),
+            libc::AT_FDCWD, target.as_ptr(), libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) } as libc::c_long;
+    if result != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn move_path_no_replace(_source: &Path, _target: &Path) -> anyhow::Result<()> {
+    anyhow::bail!("当前平台不支持安全发布 Skill 目录")
 }
 
 /// 复制回退建的副本（不是软链，但带标记）。
@@ -1821,7 +2761,9 @@ mod tests {
 
         manager.set_enabled_for("claude", "alpha", true).unwrap();
         let link = temp.path().join("claude-skills/alpha");
-        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        let metadata = std::fs::symlink_metadata(&link).unwrap();
+        assert!(metadata.file_type().is_symlink() || is_managed_copy(&link));
+        assert_eq!(std::fs::read_to_string(link.join(SKILL_MANIFEST_FILE)).unwrap(), "---\nname: Alpha\n---\n");
         let entries = manager.local_inventory();
         assert_eq!(entry(&entries, "alpha").agents, vec!["claude".to_string()]);
         assert!(entry(&entries, "alpha").managed);
@@ -1896,6 +2838,44 @@ mod tests {
         manager.set_enabled_for("grok", "delta", true).unwrap();
         manager.uninstall("delta").unwrap();
         assert!(std::fs::symlink_metadata(temp.path().join("grok-skills/delta")).is_err());
+    }
+
+    #[test]
+    fn uninstall_backs_up_modified_agent_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        write_skill(&temp.path().join("external/alpha"), "original");
+        manager.import_from_directory("alpha", &temp.path().join("external/alpha")).unwrap();
+        let copy = temp.path().join("claude-skills/alpha");
+        copy_dir_all(&manager.source_dir.join("alpha"), &copy).unwrap();
+        std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+        std::fs::write(copy.join(SKILL_MANIFEST_FILE), "agent edit").unwrap();
+
+        manager.uninstall("alpha").unwrap();
+        assert!(!copy.exists());
+        let contents: BTreeSet<_> = manager.list_backups().iter()
+            .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join(SKILL_MANIFEST_FILE)).unwrap())
+            .collect();
+        assert!(contents.contains("original"));
+        assert!(contents.contains("agent edit"));
+    }
+
+    #[test]
+    fn failed_uninstall_preserves_agent_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        write_skill(&temp.path().join("external/alpha"), "original");
+        manager.import_from_directory("alpha", &temp.path().join("external/alpha")).unwrap();
+        let copy = temp.path().join("claude-skills/alpha");
+        copy_dir_all(&manager.source_dir.join("alpha"), &copy).unwrap();
+        std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+        std::fs::write(copy.join(SKILL_MANIFEST_FILE), "agent edit").unwrap();
+        std::fs::write(&manager.backups_dir, "blocked").unwrap();
+
+        assert!(manager.uninstall("alpha").is_err());
+        assert_eq!(std::fs::read_to_string(copy.join(SKILL_MANIFEST_FILE)).unwrap(), "agent edit");
+        assert_eq!(std::fs::read_to_string(manager.source_dir.join("alpha/SKILL.md")).unwrap(), "original");
+        assert!(manager.load_state().installed.contains_key("alpha"));
     }
 
     #[test]
@@ -2060,6 +3040,31 @@ mod tests {
     }
 
     #[test]
+    fn failed_source_publication_preserves_a_recreated_staging_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        SOURCE_PUBLICATION_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(|staging| {
+                write_skill(staging, "external");
+                anyhow::bail!("injected failure after source publication")
+            }));
+        });
+
+        let error = manager.install_from_zip(
+            &sample_skill("alpha", "alpha", "one"),
+            &repo_zip(&[("kit-main/alpha/SKILL.md", "download")]),
+        ).unwrap_err();
+        let staging = std::fs::read_dir(&manager.source_dir).unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".staging-alpha-"))
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(staging.join(SKILL_MANIFEST_FILE)).unwrap(), "external");
+        assert!(format!("{error:#}").contains("暂存路径仍存在且未自动清理"));
+        assert!(!manager.source_dir.join("alpha").exists());
+        assert!(!manager.load_state().installed.contains_key("alpha"));
+    }
+
+    #[test]
     fn updating_skill_rolls_back_source_when_state_cannot_be_saved() {
         let temp = tempfile::tempdir().unwrap();
         let manager = manager(&temp);
@@ -2100,6 +3105,593 @@ mod tests {
             writer.finish().unwrap();
         }
         buffer.into_inner()
+    }
+
+    fn guarded_repo(manager: &SkillsManager) -> SkillRepo {
+        let repo = parse_repo_key(&format!("test-{}/kit@main", uuid::Uuid::new_v4())).unwrap();
+        manager.upsert_repo(repo.clone()).unwrap();
+        repo
+    }
+
+    fn zip_skill(repo: &SkillRepo, zip: &[u8], path: &str) -> RemoteSkill {
+        parse_skills_from_zip(repo, zip, &BTreeMap::new()).unwrap()
+            .into_iter().find(|skill| skill.repo_path == path).unwrap()
+    }
+
+    #[test]
+    fn mutations_do_not_replace_corrupt_skill_state_or_existing_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let source = manager.source_dir.join("alpha");
+        let linked = manager.linked_dir().join("alpha");
+        write_skill(&source, "source content");
+        write_skill(&linked, "codex content");
+        write_skill(&temp.path().join("external/beta"), "external content");
+        std::fs::write(&manager.state_path, "{invalid json").unwrap();
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let zip = repo_zip(&[("kit-main/gamma/SKILL.md", "archive content")]);
+        let skill = zip_skill(&repo, &zip, "gamma");
+
+        assert!(manager.upsert_repo(repo.clone()).is_err());
+        assert!(manager.delete_repo(&repo.key()).is_err());
+        assert!(manager.set_enabled("alpha", false).is_err());
+        assert!(manager.set_enabled_for("claude", "alpha", true).is_err());
+        assert!(manager.uninstall("alpha").is_err());
+        assert!(manager.import_from_local_directory("beta", &temp.path().join("external/beta")).is_err());
+        assert!(manager.install_from_zip(&skill, &zip).is_err());
+        assert_eq!(std::fs::read_to_string(&manager.state_path).unwrap(), "{invalid json");
+        assert_eq!(std::fs::read_to_string(source.join(SKILL_MANIFEST_FILE)).unwrap(), "source content");
+        assert_eq!(std::fs::read_to_string(linked.join(SKILL_MANIFEST_FILE)).unwrap(), "codex content");
+    }
+
+    #[test]
+    fn staged_import_does_not_overwrite_a_newer_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = manager(&temp);
+        let initial = repo_zip(&[("kit-main/alpha/SKILL.md", "original")]);
+        first.install_from_zip(&sample_skill("alpha", "alpha", "one"), &initial).unwrap();
+        let external = temp.path().join("external/alpha");
+        write_skill(&external, "import content");
+        let generation = skills_coordination().skill_generation("alpha");
+        let (staging, imported) = first.stage_directory_import("alpha", &external, LOCAL_IMPORT_REPO_KEY).unwrap();
+
+        let updated = repo_zip(&[("kit-main/alpha/SKILL.md", "updated")]);
+        second.install_from_zip(&sample_skill("alpha", "alpha", "two"), &updated).unwrap();
+        assert!(first.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
+        assert_eq!(std::fs::read_to_string(first.source_dir.join("alpha/SKILL.md")).unwrap(), "updated");
+        assert_eq!(first.load_state().installed["alpha"].content_hash, "two");
+    }
+
+    #[test]
+    fn independent_managers_commit_different_downloads_without_losing_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = manager(&temp);
+        let repo = guarded_repo(&first);
+        let zip = repo_zip(&[
+            ("kit-main/alpha/SKILL.md", "alpha"),
+            ("kit-main/beta/SKILL.md", "beta"),
+        ]);
+        let skills = parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(skills.len()));
+        let mut workers = Vec::new();
+        for (manager, skill) in [first.clone(), second].into_iter().zip(skills) {
+            let guard = manager.capture_download_guard(&skill.id, &repo.key(), true).unwrap();
+            assert!(guard.installed.is_none());
+            assert_eq!(guard.repo, repo);
+            let zip = zip.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                manager.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).unwrap();
+                skill
+            }));
+        }
+        let installed: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        let state = first.load_state();
+        for skill in installed {
+            assert_eq!(state.installed[&skill.id].content_hash, skill.content_hash);
+            assert!(first.linked_dir().join(&skill.id).join(SKILL_MANIFEST_FILE).is_file());
+        }
+    }
+
+    #[test]
+    fn download_guard_preserves_latest_skill_and_repo_enabled_states() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = manager(&temp);
+        let mut repo = guarded_repo(&first);
+        let old_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "old")]);
+        let old = zip_skill(&repo, &old_zip, "alpha");
+        first.install_from_zip(&old, &old_zip).unwrap();
+        let guard = first.capture_download_guard(&old.id, &repo.key(), false).unwrap();
+        assert_eq!(guard.installed.as_ref(), first.load_state().installed.get(&old.id));
+        second.set_enabled(&old.id, false).unwrap();
+        repo.enabled = false;
+        second.update_repo_enabled_if_unchanged(&repo, None).unwrap();
+        let new_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "new")]);
+        let new = zip_skill(&repo, &new_zip, "alpha");
+        first.install_downloaded_zip_if_unchanged(&new, &new_zip, &guard).unwrap();
+        assert!(!is_linked(&first.linked_dir().join(&old.id)));
+        assert!(!first.list_repos().iter().find(|item| item.key() == repo.key()).unwrap().enabled);
+
+        let guard = first.capture_download_guard(&old.id, &repo.key(), false).unwrap();
+        second.set_enabled(&old.id, true).unwrap();
+        let newer_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "newer")]);
+        let newer = zip_skill(&repo, &newer_zip, "alpha");
+        first.install_downloaded_zip_if_unchanged(&newer, &newer_zip, &guard).unwrap();
+        assert!(is_linked(&first.linked_dir().join(&old.id)));
+        assert_eq!(first.load_state().installed[&old.id].content_hash, newer.content_hash);
+    }
+
+    #[test]
+    fn download_guard_rejects_uninstall_then_reinstall_of_identical_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = manager(&temp);
+        let repo = guarded_repo(&first);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "same")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        first.install_from_zip(&skill, &zip).unwrap();
+        let guard = first.capture_download_guard(&skill.id, &repo.key(), false).unwrap();
+        second.uninstall(&skill.id).unwrap();
+        second.install_from_zip(&skill, &zip).unwrap();
+        {
+            let _coordination = skills_coordination();
+            let mut state = first.load_state_unlocked();
+            state.installed.insert(skill.id.clone(), guard.installed.clone().unwrap());
+            first.save_state_unlocked(&state).unwrap();
+        }
+        assert_eq!(first.load_state().installed.get(&skill.id), guard.installed.as_ref());
+        assert!(first.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).is_err());
+    }
+
+    #[test]
+    fn download_guard_rejects_repo_delete_and_readd() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = manager(&temp);
+        let repo = guarded_repo(&first);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "alpha")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        let guard = first.capture_download_guard(&skill.id, &repo.key(), true).unwrap();
+        second.delete_repo(&repo.key()).unwrap();
+        second.upsert_repo(repo.clone()).unwrap();
+        assert!(first.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).is_err());
+        assert!(!first.source_dir.join(&skill.id).exists());
+    }
+
+    #[test]
+    fn download_guard_rejects_direct_edits_to_source_and_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let repo = guarded_repo(&manager);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "original")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        manager.install_from_zip(&skill, &zip).unwrap();
+
+        let guard = manager.capture_download_guard(&skill.id, &repo.key(), false).unwrap();
+        std::fs::write(manager.source_dir.join(&skill.id).join(SKILL_MANIFEST_FILE), "source edit").unwrap();
+        assert!(manager.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).is_err());
+        assert_eq!(
+            std::fs::read_to_string(manager.source_dir.join(&skill.id).join(SKILL_MANIFEST_FILE)).unwrap(),
+            "source edit",
+        );
+
+        let link = manager.linked_dir().join(&skill.id);
+        remove_link(&link).unwrap();
+        copy_dir_all(&manager.source_dir.join(&skill.id), &link).unwrap();
+        std::fs::write(link.join(MANAGED_COPY_MARKER), "").unwrap();
+        let guard = manager.capture_download_guard(&skill.id, &repo.key(), false).unwrap();
+        std::fs::write(link.join(SKILL_MANIFEST_FILE), "copy edit").unwrap();
+        assert!(manager.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).is_err());
+        assert_eq!(std::fs::read_to_string(link.join(SKILL_MANIFEST_FILE)).unwrap(), "copy edit");
+    }
+
+    #[test]
+    fn disabling_edited_copy_preserves_content_and_invalidates_download() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = manager(&temp);
+        let repo = guarded_repo(&first);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "original")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        first.install_from_zip(&skill, &zip).unwrap();
+        let link = first.linked_dir().join(&skill.id);
+        remove_link(&link).unwrap();
+        copy_dir_all(&first.source_dir.join(&skill.id), &link).unwrap();
+        std::fs::write(link.join(MANAGED_COPY_MARKER), "").unwrap();
+        let guard = first.capture_download_guard(&skill.id, &repo.key(), false).unwrap();
+        std::fs::write(link.join(SKILL_MANIFEST_FILE), "copy edit").unwrap();
+        second.set_enabled(&skill.id, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(first.source_dir.join(&skill.id).join(SKILL_MANIFEST_FILE)).unwrap(),
+            "copy edit",
+        );
+        assert!(first.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).is_err());
+        let contents: BTreeSet<_> = first.list_backups().iter()
+            .map(|backup| std::fs::read_to_string(first.backups_dir.join(&backup.id).join(SKILL_MANIFEST_FILE)).unwrap())
+            .collect();
+        assert!(contents.contains("original"));
+        assert!(contents.contains("copy edit"));
+    }
+
+    #[test]
+    fn disabling_unchanged_copy_keeps_download_guard_valid() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = manager(&temp);
+        let repo = guarded_repo(&first);
+        let old_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "original")]);
+        let skill = zip_skill(&repo, &old_zip, "alpha");
+        first.install_from_zip(&skill, &old_zip).unwrap();
+        let link = first.linked_dir().join(&skill.id);
+        remove_link(&link).unwrap();
+        copy_dir_all(&first.source_dir.join(&skill.id), &link).unwrap();
+        std::fs::write(link.join(MANAGED_COPY_MARKER), "").unwrap();
+        let guard = first.capture_download_guard(&skill.id, &repo.key(), false).unwrap();
+        second.set_enabled(&skill.id, false).unwrap();
+        let new_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "updated")]);
+        let updated = zip_skill(&repo, &new_zip, "alpha");
+        first.install_downloaded_zip_if_unchanged(&updated, &new_zip, &guard).unwrap();
+        assert!(!is_linked(&link));
+        assert_eq!(first.load_state().installed[&skill.id].content_hash, updated.content_hash);
+    }
+
+    #[test]
+    fn update_backs_up_preexisting_source_and_codex_copy_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let repo = guarded_repo(&manager);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "original")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        manager.install_from_zip(&skill, &zip).unwrap();
+        let source = manager.source_dir.join(&skill.id);
+        let link = manager.linked_dir().join(&skill.id);
+        remove_link(&link).unwrap();
+        std::fs::write(source.join(SKILL_MANIFEST_FILE), "source edit").unwrap();
+        copy_dir_all(&source, &link).unwrap();
+        std::fs::write(link.join(MANAGED_COPY_MARKER), "").unwrap();
+        std::fs::write(link.join(SKILL_MANIFEST_FILE), "codex copy edit").unwrap();
+        let guard = manager.capture_download_guard(&skill.id, &repo.key(), false).unwrap();
+        let updated_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "updated")]);
+        let updated = zip_skill(&repo, &updated_zip, "alpha");
+        manager.install_downloaded_zip_if_unchanged(&updated, &updated_zip, &guard).unwrap();
+        let backups: BTreeSet<_> = manager.list_backups().iter()
+            .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join(SKILL_MANIFEST_FILE)).unwrap())
+            .collect();
+        assert!(backups.contains("source edit"));
+        assert!(backups.contains("codex copy edit"));
+    }
+
+    #[test]
+    fn update_refreshes_agent_copy_created_during_download() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let repo = guarded_repo(&manager);
+        let old_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "original")]);
+        let old = zip_skill(&repo, &old_zip, "alpha");
+        manager.install_from_zip(&old, &old_zip).unwrap();
+        let guard = manager.capture_download_guard(&old.id, &repo.key(), false).unwrap();
+
+        let copy = temp.path().join("claude-skills").join(&old.id);
+        copy_dir_all(&manager.source_dir.join(&old.id), &copy).unwrap();
+        std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+        let new_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "updated")]);
+        let updated = zip_skill(&repo, &new_zip, "alpha");
+        manager.install_downloaded_zip_if_unchanged(&updated, &new_zip, &guard).unwrap();
+        assert_eq!(std::fs::read_to_string(copy.join(SKILL_MANIFEST_FILE)).unwrap(), "updated");
+        assert!(entry(&manager.local_inventory(), &old.id).agents.contains(&"claude".to_string()));
+    }
+
+    #[test]
+    fn modified_agent_copy_prevents_update_and_can_be_backed_up_on_disable() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let repo = guarded_repo(&manager);
+        let old_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "original")]);
+        let old = zip_skill(&repo, &old_zip, "alpha");
+        manager.install_from_zip(&old, &old_zip).unwrap();
+        let guard = manager.capture_download_guard(&old.id, &repo.key(), false).unwrap();
+
+        let copy = temp.path().join("claude-skills").join(&old.id);
+        copy_dir_all(&manager.source_dir.join(&old.id), &copy).unwrap();
+        std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+        std::fs::write(copy.join(SKILL_MANIFEST_FILE), "agent edit").unwrap();
+        let new_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "updated")]);
+        let updated = zip_skill(&repo, &new_zip, "alpha");
+        let error = manager.install_downloaded_zip_if_unchanged(&updated, &new_zip, &guard).unwrap_err();
+        assert!(format!("{error:#}").contains("副本与受控源内容不一致"), "{error:#}");
+        assert_eq!(std::fs::read_to_string(copy.join(SKILL_MANIFEST_FILE)).unwrap(), "agent edit");
+        assert_eq!(std::fs::read_to_string(manager.source_dir.join(&old.id).join(SKILL_MANIFEST_FILE)).unwrap(), "original");
+        assert_eq!(manager.load_state().installed[&old.id].content_hash, old.content_hash);
+        manager.set_enabled_for("claude", &old.id, false).unwrap();
+        assert!(!copy.exists());
+        let backups: BTreeSet<_> = manager.list_backups().iter()
+            .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join(SKILL_MANIFEST_FILE)).unwrap())
+            .collect();
+        assert!(backups.contains("agent edit"));
+        manager.install_downloaded_zip_if_unchanged(&updated, &new_zip, &guard).unwrap();
+    }
+
+    #[test]
+    fn publishing_copy_does_not_replace_a_new_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        write_skill(&source, "managed");
+        write_skill(&target, "external");
+
+        assert!(link_or_copy(&source, &target).is_err());
+        assert_eq!(std::fs::read_to_string(target.join(SKILL_MANIFEST_FILE)).unwrap(), "external");
+        assert_eq!(std::fs::read_to_string(source.join(SKILL_MANIFEST_FILE)).unwrap(), "managed");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn publishing_does_not_remove_an_existing_staging_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        let staging = temp.path().join("staging");
+        write_skill(&source, "managed");
+        write_skill(&staging, "external");
+        let mut published = None;
+
+        assert!(link_or_copy_at(&source, &target, &staging, &mut published, || Ok(())).is_err());
+        assert!(published.is_none());
+        assert_eq!(std::fs::read_to_string(staging.join(SKILL_MANIFEST_FILE)).unwrap(), "external");
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn publication_failure_tracks_the_published_copy_without_cleaning_a_replaced_staging_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        let staging = temp.path().join("staging");
+        write_skill(&source, "managed");
+        let mut published = None;
+
+        let result = link_or_copy_at(&source, &target, &staging, &mut published, || {
+            write_skill(&staging, "external");
+            anyhow::bail!("injected failure after publication")
+        });
+        assert!(result.is_err());
+        let identity = published.expect("published copy must be tracked before the failure");
+        assert_eq!(std::fs::read_to_string(staging.join(SKILL_MANIFEST_FILE)).unwrap(), "external");
+        let recovery = recover_published_path(&target, identity).unwrap().unwrap();
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_to_string(recovery.join(SKILL_MANIFEST_FILE)).unwrap(), "managed");
+    }
+
+    #[test]
+    fn moving_directory_does_not_replace_an_existing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        write_skill(&source, "source");
+        write_skill(&target, "target");
+
+        assert!(move_path_no_replace(&source, &target).is_err());
+        assert_eq!(std::fs::read_to_string(source.join(SKILL_MANIFEST_FILE)).unwrap(), "source");
+        assert_eq!(std::fs::read_to_string(target.join(SKILL_MANIFEST_FILE)).unwrap(), "target");
+    }
+
+    #[test]
+    fn rollback_does_not_move_a_replaced_published_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let published = temp.path().join("published");
+        let owned = temp.path().join("owned");
+        write_skill(&published, "managed");
+        let identity = skill_path_identity(&published).unwrap();
+        move_path_no_replace(&published, &owned).unwrap();
+        write_skill(&published, "external");
+
+        assert!(recover_published_path(&published, identity).is_err());
+        assert_eq!(std::fs::read_to_string(published.join(SKILL_MANIFEST_FILE)).unwrap(), "external");
+        assert_eq!(std::fs::read_to_string(owned.join(SKILL_MANIFEST_FILE)).unwrap(), "managed");
+    }
+
+    #[test]
+    fn rollback_recovers_published_content_on_its_own_volume() {
+        let temp = tempfile::tempdir().unwrap();
+        let published = temp.path().join("agent").join("published");
+        write_skill(&published, "managed");
+        let identity = skill_path_identity(&published).unwrap();
+
+        let recovery = recover_published_path(&published, identity).unwrap().unwrap();
+        assert_eq!(recovery.parent(), published.parent());
+        assert!(!published.exists());
+        assert_eq!(std::fs::read_to_string(recovery.join(SKILL_MANIFEST_FILE)).unwrap(), "managed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires SKILL_TEST_SECOND_VOLUME on a different volume"]
+    fn rollback_recovers_cross_volume_agent_copy() {
+        let local = tempfile::tempdir().unwrap();
+        let second_volume = std::env::var_os("SKILL_TEST_SECOND_VOLUME").unwrap();
+        let remote = tempfile::tempdir_in(second_volume).unwrap();
+        assert_ne!(skill_path_identity(local.path()).unwrap().device, skill_path_identity(remote.path()).unwrap().device);
+        let manager = manager(&local);
+        let published = remote.path().join("published");
+        write_skill(&published, "managed");
+        let identity = skill_path_identity(&published).unwrap();
+
+        assert!(manager.backup_directory("alpha", &published).is_err());
+        let recovery = recover_published_path(&published, identity).unwrap().unwrap();
+        assert_eq!(recovery.parent(), published.parent());
+        assert_eq!(std::fs::read_to_string(recovery.join(SKILL_MANIFEST_FILE)).unwrap(), "managed");
+    }
+
+    #[test]
+    fn checked_backup_rejects_a_replaced_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let source = temp.path().join("source");
+        let previous = temp.path().join("previous");
+        write_skill(&source, "managed");
+        let identity = skill_path_identity(&source).unwrap();
+        move_path_no_replace(&source, &previous).unwrap();
+        write_skill(&source, "external");
+
+        assert!(manager.backup_directory_checked("alpha", &source, identity).is_err());
+        assert_eq!(std::fs::read_to_string(source.join(SKILL_MANIFEST_FILE)).unwrap(), "external");
+        assert_eq!(std::fs::read_to_string(previous.join(SKILL_MANIFEST_FILE)).unwrap(), "managed");
+    }
+
+    #[test]
+    fn new_download_does_not_displace_a_newly_created_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let source = manager.source_dir.join("alpha");
+        let staging = temp.path().join("staging");
+        write_skill(&source, "external");
+        write_skill(&staging, "download");
+        let installed = InstalledSkill {
+            id: "alpha".into(),
+            name: "Alpha".into(),
+            description: String::new(),
+            repo_key: "acme/kit@main".into(),
+            repo_path: "alpha".into(),
+            content_hash: "hash".into(),
+            installed_at: "1".into(),
+        };
+
+        let mut coordination = skills_coordination();
+        assert!(manager.commit_staged_skill_unlocked(
+            &staging, installed, true, true, true, true, &mut coordination,
+        ).is_err());
+        assert_eq!(std::fs::read_to_string(source.join(SKILL_MANIFEST_FILE)).unwrap(), "external");
+        assert!(!manager.state_path.exists());
+    }
+
+    #[test]
+    fn new_download_rejects_an_existing_managed_agent_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let copy = temp.path().join("claude-skills/alpha");
+        let staging = temp.path().join("staging");
+        write_skill(&copy, "existing agent copy");
+        std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+        write_skill(&staging, "download");
+        let installed = InstalledSkill {
+            id: "alpha".into(),
+            name: "Alpha".into(),
+            description: String::new(),
+            repo_key: "acme/kit@main".into(),
+            repo_path: "alpha".into(),
+            content_hash: "hash".into(),
+            installed_at: "1".into(),
+        };
+
+        let mut coordination = skills_coordination();
+        assert!(manager.commit_staged_skill_unlocked(
+            &staging, installed, true, true, true, true, &mut coordination,
+        ).is_err());
+        assert_eq!(std::fs::read_to_string(copy.join(SKILL_MANIFEST_FILE)).unwrap(), "existing agent copy");
+        assert!(!manager.source_dir.join("alpha").exists());
+    }
+
+    #[test]
+    fn rollback_does_not_restore_a_replaced_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let backup = temp.path().join("backup");
+        let previous = temp.path().join("previous");
+        let original = temp.path().join("original");
+        write_skill(&backup, "managed");
+        let identity = skill_path_identity(&backup).unwrap();
+        move_path_no_replace(&backup, &previous).unwrap();
+        write_skill(&backup, "external");
+
+        assert!(restore_skill_backup(&backup, &original, identity).is_err());
+        assert!(!original.exists());
+        assert_eq!(std::fs::read_to_string(backup.join(SKILL_MANIFEST_FILE)).unwrap(), "external");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn moving_directory_supports_long_windows_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut parent = temp.path().to_path_buf();
+        for _ in 0..8 {
+            parent.push("long-directory-name-for-skill-test");
+        }
+        std::fs::create_dir_all(&parent).unwrap();
+        let source = parent.join("source");
+        let target = parent.join("target");
+        assert!(source.to_string_lossy().len() > 260);
+        write_skill(&source, "source");
+
+        move_path_no_replace(&source, &target).unwrap();
+        assert!(!source.exists());
+        assert_eq!(std::fs::read_to_string(target.join(SKILL_MANIFEST_FILE)).unwrap(), "source");
+    }
+
+    #[test]
+    fn shared_source_with_different_state_paths_invalidates_old_download() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = SkillsManager::new(
+            first.source_dir.clone(), first.backups_dir.clone(),
+            temp.path().join("other-skills.json"), first.codex_home.clone(),
+        );
+        let repo = guarded_repo(&first);
+        second.upsert_repo(repo.clone()).unwrap();
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "same")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        first.install_from_zip(&skill, &zip).unwrap();
+        let guard = first.capture_download_guard(&skill.id, &repo.key(), false).unwrap();
+        second.install_from_zip(&skill, &zip).unwrap();
+        assert!(first.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).is_err());
+    }
+
+    #[test]
+    fn repository_fallback_guard_rejects_toggles_and_delete_readd() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = manager(&temp);
+        let second = manager(&temp);
+        let mut repo = guarded_repo(&first);
+        let mut resolved = repo.clone();
+        resolved.branch = "master".into();
+        let guard = first.capture_repo_guard(&repo.key()).unwrap();
+        assert!(first.repo_guard_is_current(&guard).unwrap());
+        repo.enabled = false;
+        second.update_repo_enabled_if_unchanged(&repo, None).unwrap();
+        assert!(!first.repo_guard_is_current(&guard).unwrap());
+        repo.enabled = true;
+        second.update_repo_enabled_if_unchanged(&repo, None).unwrap();
+        assert!(!first.repo_guard_is_current(&guard).unwrap());
+        assert!(!first.save_resolved_repo_if_unchanged(&guard, resolved.clone()).unwrap());
+
+        let guard = first.capture_repo_guard(&repo.key()).unwrap();
+        assert!(first.repo_guard_is_current(&guard).unwrap());
+        second.delete_repo(&repo.key()).unwrap();
+        second.upsert_repo(repo.clone()).unwrap();
+        assert!(!first.repo_guard_is_current(&guard).unwrap());
+        assert!(!first.save_resolved_repo_if_unchanged(&guard, resolved.clone()).unwrap());
+
+        let guard = first.capture_repo_guard(&repo.key()).unwrap();
+        assert!(first.save_resolved_repo_if_unchanged(&guard, resolved.clone()).unwrap());
+        assert!(!first.list_repos().iter().any(|item| item.key() == repo.key()));
+        assert!(first.list_repos().iter().any(|item| item.key() == resolved.key()));
+    }
+
+    #[test]
+    fn guarded_install_requires_matching_mode_path_and_zip_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let repo = guarded_repo(&manager);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "one")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        assert!(manager.capture_download_guard(&skill.id, &repo.key(), false).is_err());
+        let guard = manager.capture_download_guard(&skill.id, &repo.key(), true).unwrap();
+        let other = repo_zip(&[("kit-main/alpha/SKILL.md", "different")]);
+        assert!(manager.install_downloaded_zip_if_unchanged(&skill, &other, &guard).is_err());
+        manager.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).unwrap();
+        assert!(manager.capture_download_guard(&skill.id, &repo.key(), true).is_err());
     }
 
     fn without_github_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -2849,6 +4441,113 @@ mod tests {
         let tree = json!({"tree":[{"type":"blob","path":"alpha/SKILL.md",
             "sha":"ce013625030ba8dba906f756967f9e9ca394464a"}]});
         assert_eq!(zipped[0].content_hash, parse_skills_from_tree(&root, &tree)[0].content_hash);
+    }
+
+    #[test]
+    fn mixed_root_zip_is_rejected_by_both_catalog_and_extraction() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        for files in [
+            [("good-main/alpha/SKILL.md", "good"), ("evil-main/alpha/SKILL.md", "evil")],
+            [("evil-main/alpha/SKILL.md", "evil"), ("good-main/alpha/SKILL.md", "good")],
+        ] {
+            let zip = repo_zip(&files);
+            let error = parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).unwrap_err();
+            assert!(format!("{error:#}").contains("多个根"));
+            let destination = temp.path().join("rejected");
+            let error = extract_skill_subtree(&zip, "alpha", &destination).unwrap_err();
+            assert!(format!("{error:#}").contains("多个根"));
+            assert!(!destination.exists());
+        }
+    }
+
+    #[test]
+    fn zip_paths_that_normalize_to_a_different_tree_are_rejected() {
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let zip = repo_zip(&[
+            ("kit-main/alpha/SKILL.md", "good"),
+            ("kit-main/alpha/./SKILL.md", "different"),
+        ]);
+        assert!(parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).is_err());
+        let temp = tempfile::tempdir().unwrap();
+        assert!(extract_skill_subtree(&zip, "alpha", temp.path()).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_zip_and_skill_name_aliases_are_rejected() {
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let zip = repo_zip(&[
+            ("kit-main/alpha/SKILL.md", "good"),
+            ("kit-main/alpha/skill.md", "different"),
+        ]);
+        assert!(parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).is_ok());
+        let temp = tempfile::tempdir().unwrap();
+        assert!(extract_skill_subtree(&zip, "alpha", temp.path()).is_err());
+        let manager = manager(&temp);
+        write_skill(&manager.source_dir.join("Existing"), "original");
+        assert!(manager.set_enabled("existing", false).is_err());
+        if std::fs::symlink_metadata(manager.source_dir.join("EXISTI~1")).is_ok() {
+            assert!(manager.set_enabled("EXISTI~1", false).is_err());
+        }
+        assert!(manager.source_dir.join("Existing/SKILL.md").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unrelated_tilde_names_do_not_block_skill_operations_or_extraction() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let mut state = SkillsState::default();
+        state.installed.insert(
+            "notes~old".into(),
+            InstalledSkill {
+                id: "notes~old".into(),
+                name: "notes~old".into(),
+                description: String::new(),
+                repo_key: "acme/kit@main".into(),
+                repo_path: "notes~old".into(),
+                content_hash: "old".into(),
+                installed_at: String::new(),
+            },
+        );
+        manager.save_state_unlocked(&state).unwrap();
+        assert!(manager.set_enabled("unrelated", false).is_ok());
+        assert!(validate_skill_id("notes~old").is_ok());
+
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let zip = repo_zip(&[
+            ("kit-main/alpha/SKILL.md", "good"),
+            ("kit-main/notes~1/document.txt", "unrelated"),
+        ]);
+        assert!(parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).is_ok());
+        extract_skill_subtree(&zip, "alpha", &temp.path().join("extracted")).unwrap();
+
+        let ambiguous = repo_zip(&[
+            ("kit-main/alpha/SKILL.md", "good"),
+            ("kit-main/alpha/NOTES~1.txt", "ambiguous"),
+        ]);
+        assert!(extract_skill_subtree(&ambiguous, "alpha", &temp.path().join("rejected")).is_err());
+    }
+
+    #[test]
+    fn zip_read_enforces_actual_and_cumulative_uncompressed_sizes() {
+        let mut total = 0;
+        let mut first = Cursor::new(b"abc");
+        assert_eq!(read_bounded_zip_entry(&mut first, 3, &mut total, 4).unwrap(), b"abc");
+        let mut second = Cursor::new(b"de");
+        assert!(read_bounded_zip_entry(&mut second, 2, &mut total, 4).is_err());
+        let mut forged = Cursor::new(b"extra");
+        assert!(read_bounded_zip_entry(&mut forged, 1, &mut total, 4).is_err());
+        assert_eq!(total, 3);
+
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let mut zip = repo_zip(&[("kit-main/alpha/SKILL.md", "actual content")]);
+        let central = zip.windows(4).position(|bytes| bytes == b"PK\x01\x02").unwrap();
+        zip[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
+        assert!(parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).is_err());
+        let temp = tempfile::tempdir().unwrap();
+        assert!(extract_skill_subtree(&zip, "alpha", temp.path()).is_err());
     }
 
     #[test]

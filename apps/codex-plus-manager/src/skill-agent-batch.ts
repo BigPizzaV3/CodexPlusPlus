@@ -2,6 +2,9 @@ export type SkillAgentState = { installed: boolean; bundled: boolean; enabled: b
 export type SkillBatchOperation = { groupKey: string; agent: string; enabled: boolean; skillIds: string[] };
 export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[]; owner: symbol };
 
+const MAX_SKILL_UPDATES = 4;
+const MAX_SKILL_UPDATES_PER_REPO = 2;
+
 export class SkillBatchRegistry {
   private failures: { count: number; details: { id: string; message: string }[] } | null = null;
   private failureListeners = new Set<() => void>();
@@ -27,6 +30,9 @@ export class SkillBatchRegistry {
     }
   }
   private updates: { id: string; repoKey: string; command: "install_skill" | "update_skill" | "uninstall_skill"; state: "queued" | "running" }[] = [];
+  private pendingUpdates: { id: string; repo: string; work: () => Promise<void> }[] = [];
+  private runningUpdates = 0;
+  private runningByRepo = new Map<string, number>();
   private updateListeners = new Set<() => void>();
   subscribeUpdates = (listener: () => void) => { this.updateListeners.add(listener); return () => { this.updateListeners.delete(listener); }; };
   getUpdates = () => this.updates;
@@ -39,21 +45,40 @@ export class SkillBatchRegistry {
   releaseUninstall(id: string) { this.publishUpdates(this.updates.filter((item) => item.id !== id || item.command !== "uninstall_skill")); }
   enqueueUpdate(id: string, command: "install_skill" | "update_skill", work: () => Promise<void>, repoKey = ""): boolean {
     if (this.updates.some((item) => item.id === id)) return false;
+    // 同一仓库的不同分支和子目录共享限额；空来源也共享一个限额。
+    const repo = repoKey.trim().split("@", 1)[0].toLowerCase();
+    this.pendingUpdates.push({ id, repo, work });
     this.publishUpdates([...this.updates, { id, repoKey, command, state: "queued" }]);
-    void this.run(async () => {
-      this.publishUpdates(this.updates.map((item) => item.id === id ? { ...item, state: "running" } : item));
-      try { await work(); } finally {
-        this.publishUpdates(this.updates.filter((item) => item.id !== id));
-        if (!this.updates.some((item) => item.command !== "uninstall_skill") && this.reportUpdateSummary) {
-          const report = this.reportUpdateSummary;
-          const summary = this.updateSummary;
-          this.reportUpdateSummary = undefined;
-          this.updateSummary = { completed: 0, failed: 0, details: [] };
-          report(summary);
-        }
-      }
-    }).catch(() => {});
+    this.drainUpdates();
     return true;
+  }
+  private drainUpdates() {
+    while (this.runningUpdates < MAX_SKILL_UPDATES) {
+      const index = this.pendingUpdates.findIndex((task) => (this.runningByRepo.get(task.repo) ?? 0) < MAX_SKILL_UPDATES_PER_REPO);
+      if (index < 0) return;
+      const task = this.pendingUpdates.splice(index, 1)[0];
+      this.runningUpdates++;
+      this.runningByRepo.set(task.repo, (this.runningByRepo.get(task.repo) ?? 0) + 1);
+      this.publishUpdates(this.updates.map((item) => item.id === task.id ? { ...item, state: "running" } : item));
+      void Promise.resolve().then(task.work).catch(() => {}).finally(() => {
+        this.runningUpdates--;
+        const remaining = this.runningByRepo.get(task.repo)! - 1;
+        if (remaining) this.runningByRepo.set(task.repo, remaining);
+        else this.runningByRepo.delete(task.repo);
+        try {
+          this.publishUpdates(this.updates.filter((item) => item.id !== task.id));
+          if (!this.updates.some((item) => item.command !== "uninstall_skill") && this.reportUpdateSummary) {
+            const report = this.reportUpdateSummary;
+            const summary = this.updateSummary;
+            this.reportUpdateSummary = undefined;
+            this.updateSummary = { completed: 0, failed: 0, details: [] };
+            report(summary);
+          }
+        } finally {
+          this.drainUpdates();
+        }
+      }).catch(() => {});
+    }
   }
   private operations: PendingSkillBatchOperation[] = [];
   private listeners = new Set<() => void>();

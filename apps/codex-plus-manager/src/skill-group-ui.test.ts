@@ -243,35 +243,106 @@ test("group toolbar icons retain accessible labels and fold or expand groups", a
 
 test("queued updates survive remount and invalidate an older list response", async () => {
   const ui = createHarness();
-  ui.server.skills = [skill("alpha", "a/repo@main"), skill("beta", "a/repo@main")];
+  ui.server.skills = ["alpha", "beta", "gamma"].map((id) => skill(id, "a/repo@main"));
   ui.server.skills.forEach((item) => { item.updateAvailable = true; });
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
-  let finish!: () => void;
+  let finishAlpha!: () => void;
+  let finishBeta!: () => void;
   ui.hooks.mutation = async (_command, args) => {
-    if (args.id === "alpha") await new Promise<void>((resolve) => { finish = resolve; });
+    if (args.id === "alpha") await new Promise<void>((resolve) => { finishAlpha = resolve; });
+    if (args.id === "beta") await new Promise<void>((resolve) => { finishBeta = resolve; });
     const item = ui.server.skills.find((entry) => entry.id === args.id)!;
     item.updateAvailable = false;
     return structuredClone(ui.server);
   };
-  const button = (id: string, label: string) => ui.rowElements("repo:a/repo", "a/repo@main", id).find((node) => node.type === "Button" && node.children.includes(label))!;
-  button("alpha", "更新").props.onClick();
-  button("beta", "更新").props.onClick();
+  const button = (page: typeof ui, id: string, label: string) => {
+    const found = page.rowElements("repo:a/repo", "a/repo@main", id).find((node) => node.type === "Button" && node.children.includes(label));
+    assert.ok(found, `${id} should display ${label}`);
+    return found;
+  };
+  button(ui, "alpha", "更新").props.onClick();
+  button(ui, "beta", "更新").props.onClick();
+  button(ui, "gamma", "更新").props.onClick();
   await tick(); ui.render();
-  assert.equal(button("alpha", "更新中").props.disabled, true);
-  assert.equal(button("beta", "排队中").props.disabled, true);
+  assert.deepEqual(ui.registry.getUpdates().map(({ id, state }) => [id, state]), [
+    ["alpha", "running"], ["beta", "running"], ["gamma", "queued"],
+  ]);
+  assert.equal(button(ui, "alpha", "更新中").props.disabled, true);
+  assert.equal(button(ui, "beta", "更新中").props.disabled, true);
+  assert.equal(button(ui, "gamma", "排队中").props.disabled, true);
   ui.unmount();
+
   const reopened = createHarness("{}", { server: ui.server, registry: ui.registry });
-  let oldList!: (value: any) => void;
+  reopened.render(); await tick(); reopened.render(); reopened.selectTab("已安装");
+  assert.equal(button(reopened, "alpha", "更新中").props.disabled, true);
+  assert.equal(button(reopened, "beta", "更新中").props.disabled, true);
+  assert.equal(button(reopened, "gamma", "排队中").props.disabled, true);
+
   const stale = structuredClone(ui.server);
-  reopened.hooks.list = (command) => command === "list_installed_skills" ? new Promise((resolve) => { oldList = resolve; }) : Promise.resolve(structuredClone(ui.server));
-  reopened.render(); await tick();
+  let oldList!: (value: FixtureServer) => void;
+  reopened.hooks.list = (command) => command === "refresh_skill_catalog" ? new Promise((resolve) => { oldList = resolve; }) : Promise.resolve(structuredClone(ui.server));
+  reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  await tick();
+  assert.equal(typeof oldList, "function");
   reopened.hooks.list = undefined;
-  finish();
+
+  finishBeta();
+  for (let i = 0; i < 20 && ui.registry.getUpdates().length !== 1; i++) await tick();
+  assert.deepEqual(ui.registry.getUpdates().map(({ id, state }) => [id, state]), [["alpha", "running"]]);
+  assert.deepEqual(ui.requests.filter((entry) => entry.command === "update_skill").map((entry) => entry.args.id), ["alpha", "beta", "gamma"]);
+  reopened.render();
+  assert.equal(button(reopened, "alpha", "更新中").props.disabled, true);
+  assert.deepEqual(reopened.group("repo:a/repo").props.group.items.map((item: FixtureSkill) => [item.id, item.updateAvailable]),
+    [["alpha", true], ["beta", false], ["gamma", false]]);
+
+  finishAlpha();
   for (let i = 0; i < 20 && ui.registry.getUpdates().length; i++) await tick();
+  assert.equal(ui.registry.getUpdates().length, 0);
   oldList(stale);
   await tick(); await tick(); reopened.render(); reopened.selectTab("已安装");
-  assert.equal(reopened.rowElements("repo:a/repo", "a/repo@main", "alpha").some((node) => node.type === "Button" && node.children.includes("更新")), false);
-  assert.deepEqual(ui.requests.filter((entry) => entry.command === "update_skill").map((entry) => entry.args.id), ["alpha", "beta"]);
+  assert.deepEqual(reopened.group("repo:a/repo").props.group.items.map((item: FixtureSkill) => [item.id, item.updateAvailable]),
+    [["alpha", false], ["beta", false], ["gamma", false]]);
+  for (const id of ["alpha", "beta", "gamma"]) {
+    assert.equal(reopened.rowElements("repo:a/repo", "a/repo@main", id).some((node) => node.type === "Button" && node.children.includes("更新")), false);
+  }
+  reopened.unmount();
+});
+
+test("an Agent batch can finish while another Skill update is downloading", async () => {
+  const ui = createHarness();
+  ui.server.skills = [skill("alpha", "a/repo@main"), skill("beta", "b/repo@main")];
+  ui.server.skills[0].updateAvailable = true;
+  ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
+  let finish!: () => void;
+  ui.hooks.mutation = async (command, args) => {
+    const item = ui.server.skills.find((entry) => entry.id === args.id)!;
+    if (command === "update_skill") {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      item.updateAvailable = false;
+    } else {
+      assert.equal(command, "set_skill_enabled_for");
+      item.agents = ["codex"];
+      item.enabled = true;
+    }
+    return structuredClone(ui.server);
+  };
+  const update = ui.rowElements("repo:a/repo", "a/repo@main", "alpha")
+    .find((node) => node.type === "Button" && node.children.includes("更新"));
+  assert.ok(update);
+  update.props.onClick();
+  await tick(); ui.render();
+  try {
+    ui.groupSelect("repo:b/repo", "codex").props.onChange(true);
+    for (let i = 0; i < 20 && ui.registry.getSnapshot().length; i++) await tick();
+    assert.equal(ui.registry.getSnapshot().length, 0);
+    assert.equal(ui.server.skills[1].enabled, true);
+    assert.deepEqual(ui.requests.filter((entry) => entry.command === "set_skill_enabled_for").map((entry) => entry.args.id), ["beta"]);
+    assert.deepEqual(ui.registry.getUpdates().map(({ id, state }) => [id, state]), [["alpha", "running"]]);
+  } finally {
+    finish();
+    for (let i = 0; i < 20 && (ui.registry.getUpdates().length || ui.registry.getSnapshot().length); i++) await tick();
+    ui.unmount();
+  }
 });
 
 test("batch selection queues other writes and summarizes a large set of failures", async () => {

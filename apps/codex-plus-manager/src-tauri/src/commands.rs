@@ -6422,24 +6422,45 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
 pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
     let manager = default_skills_manager();
     let repos = manager.list_repos();
-    let mut remote = Vec::new();
     let mut repo_errors = Vec::new();
 
     for repo in repos.iter().filter(|repo| repo.enabled) {
-        let cached = cached_repo_skills(&repo.key());
-        match codex_plus_core::skills::resolve_repo_skills(repo.clone(), &cached).await {
+        let (guard, snapshot) = {
+            let _guard = skills_repo_coordination();
+            let Ok(guard) = manager.capture_repo_guard(&repo.key()) else {
+                continue;
+            };
+            if guard.repo != *repo || !guard.repo.enabled {
+                continue;
+            }
+            (guard, repo_skill_cache_snapshot(&repo.key()))
+        };
+        match codex_plus_core::skills::resolve_repo_skills(repo.clone(), &snapshot.skills).await {
             Ok((resolved, skills)) => {
-                if resolved.key() != repo.key() {
-                    let _ = manager.save_repo(resolved.clone(), Some(&repo.key()));
-                    forget_repo_skills(&repo.key());
+                let _coordination = skills_repo_coordination();
+                if !manager.repo_guard_is_current(&guard).unwrap_or(false) {
+                    continue;
                 }
-                store_repo_skills(&resolved.key(), &skills);
-                remote.extend(skills);
+                if resolved.key() != repo.key() {
+                    match manager.save_resolved_repo_if_unchanged(&guard, resolved.clone()) {
+                        Ok(true) => {
+                            forget_repo_skills(&repo.key());
+                            store_repo_skills(&resolved.key(), &skills);
+                        }
+                        Ok(false) => continue,
+                        Err(error) => {
+                            repo_errors.push(format!("{}/{}：{error:#}", repo.owner, repo.name));
+                        }
+                    }
+                } else {
+                    store_repo_skills_if_current(&resolved.key(), &skills, &snapshot);
+                }
             }
             Err(error) => {
-                repo_errors.push(format!("{}/{}：{error:#}", repo.owner, repo.name));
-                // 拉不动就先用上一次的结果撑着，别让已知的 skill 从列表里消失
-                remote.extend(cached.into_values());
+                let _coordination = skills_repo_coordination();
+                if manager.repo_guard_is_current(&guard).unwrap_or(false) {
+                    repo_errors.push(format!("{}/{}：{error:#}", repo.owner, repo.name));
+                }
             }
         }
     }
@@ -6449,7 +6470,7 @@ pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
     } else {
         format!("Skills 列表已刷新，{} 个仓库拉取失败。", repo_errors.len())
     };
-    let payload = skills_payload(&manager, &remote, repo_errors);
+    let payload = skills_payload(&manager, &all_cached_repo_skills(), repo_errors);
     if payload.repo_errors.is_empty() {
         ok(&message, payload)
     } else {
@@ -6564,12 +6585,12 @@ fn import_local_skills_blocking(path: &str) -> CommandResult<SkillsPayload> {
 
 #[tauri::command]
 pub async fn install_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
-    install_or_update_skill(&repo_key, &id, "Skill 已安装。", "安装 Skill 失败").await
+    install_or_update_skill(&repo_key, &id, "Skill 已安装。", "安装 Skill 失败", true).await
 }
 
 #[tauri::command]
 pub async fn update_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
-    install_or_update_skill(&repo_key, &id, "Skill 已更新。", "更新 Skill 失败").await
+    install_or_update_skill(&repo_key, &id, "Skill 已更新。", "更新 Skill 失败", false).await
 }
 
 fn skill_install_failure_message(failure_prefix: &str, error: &anyhow::Error) -> String {
@@ -6581,59 +6602,40 @@ async fn install_or_update_skill(
     id: &str,
     success_message: &str,
     failure_prefix: &str,
+    install_only: bool,
 ) -> CommandResult<SkillsPayload> {
     let manager = default_skills_manager();
-    let Some(repo) = codex_plus_core::skills::parse_repo_key(repo_key) else {
+    if codex_plus_core::skills::parse_repo_key(repo_key).is_none() {
         return failed(
             &format!("{failure_prefix}：仓库标识无法解析（{repo_key}）。"),
             current_skills_payload(&manager),
         );
-    };
+    }
 
-    // 装之前重新拉一次树，拿到当前的 repo_path 和哈希，避免用陈旧缓存装错版本。
-    let cached = cached_repo_skills(repo_key);
-    let skills = match codex_plus_core::skills::fetch_repo_skills(&repo, &cached).await {
-        Ok(skills) => {
-            store_repo_skills(repo_key, &skills);
-            skills
-        }
-        Err(error) => {
+    let check_manager = manager.clone();
+    let check_id = id.to_string();
+    let check_repo_key = repo_key.to_string();
+    let guard = match tauri::async_runtime::spawn_blocking(move || {
+        check_manager.capture_download_guard(&check_id, &check_repo_key, install_only)
+    })
+    .await
+    {
+        Ok(Ok(guard)) => guard,
+        Ok(Err(error)) => {
             return failed(
                 &skill_install_failure_message(failure_prefix, &error),
                 current_skills_payload(&manager),
             );
         }
+        Err(error) => {
+            return failed(
+                &format!("{failure_prefix}：检查安装状态失败：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
     };
-    let installed = manager.load_state().installed.get(id).cloned();
-    if installed
-        .as_ref()
-        .is_some_and(|item| item.repo_key != repo_key || item.repo_path.is_empty())
-    {
-        return failed(
-            &format!(
-                "{failure_prefix}：旧安装记录缺少来源路径或来源不同，请先备份卸载原项后重新安装。"
-            ),
-            current_skills_payload(&manager),
-        );
-    }
-    let Some(mut skill) = skills
-        .iter()
-        .find(|skill| match &installed {
-            Some(item) => skill.repo_path == item.repo_path,
-            None => skill.id == id,
-        })
-        .cloned()
-    else {
-        return failed(
-            &format!("{failure_prefix}：仓库里没有找到 {id}。"),
-            current_skills_payload(&manager),
-        );
-    };
-    if installed.is_some() {
-        skill.id = id.to_string();
-    }
-
-    let zip = match codex_plus_core::skills::download_repo_zip(&repo).await {
+    let cache_snapshot = repo_skill_cache_snapshot(repo_key);
+    let zip = match codex_plus_core::skills::download_repo_zip(&guard.repo).await {
         Ok(bytes) => bytes,
         Err(error) => {
             return failed(
@@ -6642,13 +6644,63 @@ async fn install_or_update_skill(
             );
         }
     };
-    match manager.install_from_zip(&skill, &zip) {
-        Ok(_) => ok(success_message, current_skills_payload(&manager)),
-        Err(error) => failed(
-            &skill_install_failure_message(failure_prefix, &error),
+
+    let worker_manager = manager.clone();
+    let id = id.to_string();
+    let success_message = success_message.to_string();
+    let failure_prefix = failure_prefix.to_string();
+    let join_failure_prefix = failure_prefix.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let skills = match codex_plus_core::skills::parse_skills_from_zip(
+            &guard.repo,
+            &zip,
+            &cache_snapshot.skills,
+        ) {
+            Ok(skills) => skills,
+            Err(error) => {
+                return failed(
+                    &skill_install_failure_message(&failure_prefix, &error),
+                    current_skills_payload(&worker_manager),
+                );
+            }
+        };
+        let Some(mut skill) = skills
+            .iter()
+            .find(|skill| match &guard.installed {
+                Some(installed) => skill.repo_path == installed.repo_path,
+                None => skill.id == id,
+            })
+            .cloned()
+        else {
+            return failed(
+                &format!("{failure_prefix}：仓库里没有找到 {id}。"),
+                current_skills_payload(&worker_manager),
+            );
+        };
+        let cached_skill = skill.clone();
+        skill.id = id;
+        match worker_manager.install_downloaded_zip_if_unchanged(&skill, &zip, &guard) {
+            Ok(_) => {
+                store_repo_skills_if_current(
+                    &cached_skill.repo_key,
+                    &skills,
+                    &cache_snapshot,
+                );
+                ok(&success_message, current_skills_payload(&worker_manager))
+            }
+            Err(error) => failed(
+                &skill_install_failure_message(&failure_prefix, &error),
+                current_skills_payload(&worker_manager),
+            ),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        failed(
+            &format!("{join_failure_prefix}：处理仓库压缩包失败：{error}"),
             current_skills_payload(&manager),
-        ),
-    }
+        )
+    })
 }
 
 #[tauri::command]
@@ -6715,19 +6767,27 @@ pub async fn upsert_skill_repo(
     previous_key: Option<String>,
 ) -> CommandResult<SkillsPayload> {
     let manager = default_skills_manager();
-    match manager.update_repo_enabled_if_unchanged(&repo, previous_key.as_deref()) {
-        Ok(true) => return ok("仓库启用状态已保存。", current_skills_payload(&manager)),
-        Ok(false) => {}
-        Err(error) => {
-            return failed(
-                &format!("保存仓库状态失败：{error}"),
-                current_skills_payload(&manager),
-            );
-        }
-    }
     let repo_key = repo.key();
-    let cached = cached_repo_skills(&repo_key);
-    let (repo, skills) = match codex_plus_core::skills::resolve_repo_skills(repo, &cached).await {
+    let (repo_guard, snapshot) = {
+        let _coordination = skills_repo_coordination();
+        match manager.update_repo_enabled_if_unchanged(&repo, previous_key.as_deref()) {
+            Ok(true) => return ok("仓库启用状态已保存。", current_skills_payload(&manager)),
+            Ok(false) => {}
+            Err(error) => {
+                return failed(
+                    &format!("保存仓库状态失败：{error}"),
+                    current_skills_payload(&manager),
+                );
+            }
+        }
+        let previous = previous_key.as_deref().unwrap_or(&repo_key);
+        let guard = manager.capture_repo_guard(previous).ok();
+        if previous_key.is_some() && guard.is_none() {
+            return failed("原仓库已不存在，请刷新后重试。", current_skills_payload(&manager));
+        }
+        (guard, repo_skill_cache_snapshot(&repo_key))
+    };
+    let (repo, skills) = match codex_plus_core::skills::resolve_repo_skills(repo, &snapshot.skills).await {
         Ok(result) => result,
         Err(error) => {
             return failed(
@@ -6737,13 +6797,18 @@ pub async fn upsert_skill_repo(
         }
     };
     let resolved_key = repo.key();
-    let old_key = previous_key.as_deref().or_else(|| {
-        manager
-            .list_repos()
-            .iter()
-            .any(|r| r.key() == repo_key)
-            .then_some(repo_key.as_str())
-    });
+    let _coordination = skills_repo_coordination();
+    if let Some(guard) = &repo_guard {
+        if !manager.repo_guard_is_current(guard).unwrap_or(false) {
+            return failed("仓库在验证期间已改变，请重新检查。", current_skills_payload(&manager));
+        }
+    } else if manager.list_repos().iter().any(|item| item.key() == repo_key) {
+        return failed("仓库在验证期间已添加，请刷新后重试。", current_skills_payload(&manager));
+    }
+    let old_key = previous_key.as_deref().or_else(|| repo_guard.as_ref().map(|_| repo_key.as_str()));
+    if skill_repo_target_conflicts(&manager.list_repos(), &resolved_key, old_key) {
+        return failed("目标仓库已存在，请刷新后重试。", current_skills_payload(&manager));
+    }
     match manager.save_repo(repo, old_key) {
         Ok(_) => {
             if let Some(old_key) = old_key {
@@ -6751,7 +6816,11 @@ pub async fn upsert_skill_repo(
                     forget_repo_skills(old_key);
                 }
             }
-            store_repo_skills(&resolved_key, &skills);
+            if resolved_key == repo_key {
+                store_repo_skills_if_current(&resolved_key, &skills, &snapshot);
+            } else {
+                store_repo_skills(&resolved_key, &skills);
+            }
             let count = skills.len();
             ok(
                 &format!("仓库已验证并保存，发现 {count} 个 Skill。"),
@@ -6763,6 +6832,14 @@ pub async fn upsert_skill_repo(
             current_skills_payload(&manager),
         ),
     }
+}
+
+fn skill_repo_target_conflicts(
+    repos: &[codex_plus_core::skills::SkillRepo],
+    resolved_key: &str,
+    previous_key: Option<&str>,
+) -> bool {
+    previous_key != Some(resolved_key) && repos.iter().any(|repo| repo.key() == resolved_key)
 }
 
 #[derive(Serialize)]
@@ -6778,17 +6855,21 @@ pub async fn inspect_skill_repo(
     repo: codex_plus_core::skills::SkillRepo,
 ) -> CommandResult<SkillRepositoryPayload> {
     let manager = default_skills_manager();
-    let cached = cached_repo_skills(&repo.key());
-    match codex_plus_core::skills::resolve_repo_skills(repo.clone(), &cached).await {
+    let (guard, snapshot) = {
+        let _coordination = skills_repo_coordination();
+        (manager.capture_repo_guard(&repo.key()).ok(), repo_skill_cache_snapshot(&repo.key()))
+    };
+    match codex_plus_core::skills::resolve_repo_skills(repo.clone(), &snapshot.skills).await {
         Ok((resolved, skills)) => {
             let count = skills.len();
             // 预览未保存仓库不会修改仓库设置。
-            if manager
-                .list_repos()
-                .iter()
-                .any(|r| r.key() == resolved.key())
             {
-                store_repo_skills(&resolved.key(), &skills);
+                let _coordination = skills_repo_coordination();
+                if resolved.key() == repo.key()
+                    && guard.as_ref().is_some_and(|guard| manager.repo_guard_is_current(guard).unwrap_or(false))
+                {
+                    store_repo_skills_if_current(&resolved.key(), &skills, &snapshot);
+                }
             }
             ok(
                 &format!("已解析仓库，发现 {count} 个 Skill。"),
@@ -6821,6 +6902,7 @@ pub async fn inspect_skill_repo(
 #[tauri::command]
 pub fn delete_skill_repo(key: String) -> CommandResult<SkillsPayload> {
     let manager = default_skills_manager();
+    let _coordination = skills_repo_coordination();
     match manager.delete_repo(key.trim()) {
         Ok(_) => {
             forget_repo_skills(key.trim());
@@ -6857,6 +6939,7 @@ fn skills_payload(
                 .iter()
                 .filter_map(|repo| {
                     cache
+                        .entries
                         .get(&repo.key())
                         .map(|skills| (repo.key(), skills.len()))
                 })
@@ -6950,10 +7033,67 @@ pub fn set_skill_enabled_for(
 ///
 /// 两个用途：拉取时传给 `fetch_repo_skills` 跳过没变的 SKILL.md 请求；
 /// 以及在只读命令里还原出完整视图，不必每次都联网。进程内缓存，重启即失效。
-type RepoSkillCache = std::collections::HashMap<
+fn skills_repo_coordination() -> std::sync::MutexGuard<'static, ()> {
+    static COORDINATION: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    COORDINATION
+        .get_or_init(std::sync::Mutex::default)
+        .lock()
+        .expect("Skill 仓库协调锁中毒")
+}
+
+type RepoSkillEntries = std::collections::HashMap<
     String,
     std::collections::BTreeMap<String, codex_plus_core::skills::RemoteSkill>,
 >;
+
+#[derive(Default)]
+struct RepoSkillCache {
+    entries: RepoSkillEntries,
+    generations: std::collections::HashMap<String, u64>,
+    last_published: std::collections::HashMap<String, u64>,
+    next_request: u64,
+}
+
+struct RepoSkillCacheSnapshot {
+    generation: u64,
+    request: u64,
+    skills: std::collections::BTreeMap<String, codex_plus_core::skills::RemoteSkill>,
+}
+
+impl RepoSkillCache {
+    fn snapshot(&mut self, repo_key: &str) -> RepoSkillCacheSnapshot {
+        self.next_request = self.next_request.saturating_add(1);
+        RepoSkillCacheSnapshot {
+            generation: self.generations.get(repo_key).copied().unwrap_or_default(),
+            request: self.next_request,
+            skills: self.entries.get(repo_key).cloned().unwrap_or_default(),
+        }
+    }
+
+    fn invalidate(&mut self, repo_key: &str) {
+        let generation = self.generations.entry(repo_key.to_string()).or_default();
+        *generation = generation.wrapping_add(1);
+    }
+
+    fn publish_download(
+        &mut self,
+        repo_key: &str,
+        skills: &[codex_plus_core::skills::RemoteSkill],
+        snapshot: &RepoSkillCacheSnapshot,
+    ) -> bool {
+        if self.generations.get(repo_key).copied().unwrap_or_default() != snapshot.generation
+            || self.last_published.get(repo_key).copied().unwrap_or_default() > snapshot.request
+        {
+            return false;
+        }
+        self.entries.insert(
+            repo_key.to_string(),
+            skills.iter().map(|skill| (skill.id.clone(), skill.clone())).collect(),
+        );
+        self.last_published.insert(repo_key.to_string(), snapshot.request);
+        true
+    }
+}
 
 fn repo_skill_cache() -> &'static std::sync::Mutex<RepoSkillCache> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<RepoSkillCache>> =
@@ -6965,7 +7105,10 @@ fn repo_skill_cache() -> &'static std::sync::Mutex<RepoSkillCache> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-        std::sync::Mutex::new(cache)
+        std::sync::Mutex::new(RepoSkillCache {
+            entries: cache,
+            ..Default::default()
+        })
     })
 }
 
@@ -6975,8 +7118,15 @@ fn cached_repo_skills(
     repo_skill_cache()
         .lock()
         .ok()
-        .and_then(|cache| cache.get(repo_key).cloned())
+        .and_then(|cache| cache.entries.get(repo_key).cloned())
         .unwrap_or_default()
+}
+
+fn repo_skill_cache_snapshot(repo_key: &str) -> RepoSkillCacheSnapshot {
+    repo_skill_cache()
+        .lock()
+        .map(|mut cache| cache.snapshot(repo_key))
+        .unwrap_or_else(|_| RepoSkillCache::default().snapshot(repo_key))
 }
 
 fn all_cached_repo_skills() -> Vec<codex_plus_core::skills::RemoteSkill> {
@@ -6985,6 +7135,7 @@ fn all_cached_repo_skills() -> Vec<codex_plus_core::skills::RemoteSkill> {
         .ok()
         .map(|cache| {
             cache
+                .entries
                 .values()
                 .flat_map(|skills| skills.values().cloned())
                 .collect()
@@ -6994,25 +7145,41 @@ fn all_cached_repo_skills() -> Vec<codex_plus_core::skills::RemoteSkill> {
 
 fn store_repo_skills(repo_key: &str, skills: &[codex_plus_core::skills::RemoteSkill]) {
     if let Ok(mut cache) = repo_skill_cache().lock() {
-        cache.insert(
+        cache.invalidate(repo_key);
+        cache.entries.insert(
             repo_key.to_string(),
             skills
                 .iter()
                 .map(|skill| (skill.id.clone(), skill.clone()))
                 .collect(),
         );
-        persist_repo_skill_cache(&cache);
+        persist_repo_skill_cache(&cache.entries);
     }
+}
+
+fn store_repo_skills_if_current(
+    repo_key: &str,
+    skills: &[codex_plus_core::skills::RemoteSkill],
+    snapshot: &RepoSkillCacheSnapshot,
+) -> bool {
+    if let Ok(mut cache) = repo_skill_cache().lock() {
+        if cache.publish_download(repo_key, skills, snapshot) {
+            persist_repo_skill_cache(&cache.entries);
+            return true;
+        }
+    }
+    false
 }
 
 fn forget_repo_skills(repo_key: &str) {
     if let Ok(mut cache) = repo_skill_cache().lock() {
-        cache.remove(repo_key);
-        persist_repo_skill_cache(&cache);
+        cache.invalidate(repo_key);
+        cache.entries.remove(repo_key);
+        persist_repo_skill_cache(&cache.entries);
     }
 }
 
-fn persist_repo_skill_cache(cache: &RepoSkillCache) {
+fn persist_repo_skill_cache(cache: &RepoSkillEntries) {
     if let Ok(bytes) = serde_json::to_vec(cache) {
         let path = codex_plus_core::paths::default_app_state_dir().join("skill-catalog.json");
         let _ = codex_plus_core::settings::atomic_write(&path, &bytes);
@@ -10048,6 +10215,60 @@ mod tests {
             skill_install_failure_message("update failed", &error),
             "update failed：repository context: download context: root cause"
         );
+    }
+
+    #[test]
+    fn skill_repo_fallback_does_not_replace_an_existing_target() {
+        let repo = codex_plus_core::skills::parse_repo_key("acme/kit@master").unwrap();
+        let repos = [repo];
+        assert!(skill_repo_target_conflicts(&repos, "acme/kit@master", None));
+        assert!(skill_repo_target_conflicts(&repos, "acme/kit@master", Some("acme/kit@main")));
+        assert!(!skill_repo_target_conflicts(&repos, "acme/kit@master", Some("acme/kit@master")));
+        assert!(!skill_repo_target_conflicts(&repos, "acme/kit@main", None));
+    }
+
+    #[test]
+    fn skill_catalog_downloads_do_not_replace_newer_or_invalidated_results() {
+        let mut cache = RepoSkillCache::default();
+        let repo_key = "acme/kit@main";
+        let skill = |hash: &str| codex_plus_core::skills::RemoteSkill {
+            id: "alpha".into(),
+            name: "Alpha".into(),
+            description: String::new(),
+            repo_key: repo_key.into(),
+            repo_path: "alpha".into(),
+            content_hash: hash.into(),
+        };
+
+        let older = cache.snapshot(repo_key);
+        let newer = cache.snapshot(repo_key);
+        assert!(cache.publish_download(repo_key, &[skill("newer")], &newer));
+        assert!(!cache.publish_download(repo_key, &[skill("older")], &older));
+        assert_eq!(cache.entries[repo_key]["alpha"].content_hash, "newer");
+
+        let stale = cache.snapshot(repo_key);
+        cache.invalidate(repo_key);
+        cache.entries.remove(repo_key);
+        assert!(!cache.publish_download(repo_key, &[skill("deleted")], &stale));
+        assert!(!cache.entries.contains_key(repo_key));
+    }
+
+    #[test]
+    fn skill_catalog_older_success_is_kept_when_newer_request_fails() {
+        let mut cache = RepoSkillCache::default();
+        let repo_key = "acme/kit@main";
+        let older = cache.snapshot(repo_key);
+        let _failed = cache.snapshot(repo_key);
+        let skill = codex_plus_core::skills::RemoteSkill {
+            id: "alpha".into(),
+            name: "Alpha".into(),
+            description: String::new(),
+            repo_key: repo_key.into(),
+            repo_path: "alpha".into(),
+            content_hash: "older".into(),
+        };
+        assert!(cache.publish_download(repo_key, &[skill], &older));
+        assert_eq!(cache.entries[repo_key]["alpha"].content_hash, "older");
     }
 
     #[test]
