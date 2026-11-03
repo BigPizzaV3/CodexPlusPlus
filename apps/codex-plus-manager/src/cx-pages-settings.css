@@ -533,6 +533,104 @@
   transform: translateX(2px);
 }
 
+/* 其他赞助商：两列小卡片，全部列出。缩略图固定尺寸，标题旁最多两个亮点，说明两行截断。 */
+:root .shell .home-sponsors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+:root .shell .home-sponsor {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  color: hsl(var(--foreground) / 0.9);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+:root .shell .home-sponsor:hover,
+:root .shell .home-sponsor:focus-visible {
+  border-color: hsl(var(--input));
+  background: hsl(var(--accent) / 0.5);
+  outline: none;
+}
+
+:root .shell .home-sponsor-thumb {
+  display: grid;
+  width: 72px;
+  height: 40px;
+  flex: none;
+  overflow: hidden;
+  border-radius: 6px;
+  object-fit: cover;
+  object-position: left center;
+}
+
+:root .shell .home-sponsor-thumb svg {
+  width: 16px;
+  height: 16px;
+}
+
+:root .shell .home-sponsor-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+:root .shell .home-sponsor-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+:root .shell .home-sponsor-head strong {
+  overflow: hidden;
+  flex: none;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+:root .shell .home-sponsor-chip {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.78);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+:root .shell .home-sponsor-text {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+:root .shell .home-sponsor-go {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
 /* 常用入口：三列小卡片，图标 + 名称 + 一行说明。 */
 :root .shell .home-shortcuts {
   display: grid;
@@ -595,33 +693,10 @@
   :root .shell .home-shortcuts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-}
 
-/* ── 推荐列表（首页「更多推荐」） ─────────────────────────────── */
-
-/* 缩略图：原来的大色块横幅缩成 56×32 的小图。 */
-:root .shell .rec-list .cx-row-icon {
-  width: 56px;
-  height: 32px;
-  overflow: hidden;
-  border-radius: 6px;
-}
-
-:root .shell .rec-list .cx-row-icon img.rec-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: left center;
-}
-
-:root .shell .rec-list .cx-row {
-  min-height: 60px;
-}
-
-:root .shell .rec-host {
-  color: hsl(var(--muted-foreground));
-  font-family: var(--font-mono);
-  font-size: 11.5px;
+  :root .shell .home-sponsors {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ── 通用小件：节下面的一行注脚、操作完成的一行提示 ─────────────── */

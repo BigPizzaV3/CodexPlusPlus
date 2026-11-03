@@ -341,7 +341,7 @@ test("代理设置按归属拆开：本地服务与请求避震移到网关设�
   assert.match(functionSource("App"), /<SharedServiceSettings[\s\S]*?form=\{settingsForm\}/);
 });
 
-test("首页：状态、精选推荐、常用入口、更多推荐；广告只在首页，首页是侧栏第一项和启动落脚页", () => {
+test("首页：状态、精选推荐、其他赞助商、常用入口；广告只在首页，首页是侧栏第一项和启动落脚页", () => {
   const app = functionSource("App");
   assert.match(app, /\{route === "home" \? \(\n\s*<HomeScreen\n\s*ads=\{ads\}/);
   assert.equal((text.match(/<HomeScreen\b/g) ?? []).length, 1);
@@ -353,16 +353,17 @@ test("首页：状态、精选推荐、常用入口、更多推荐；广告只�
   assert.match(app, /if \(next === "home"\) await refreshAds\(true\);/);
   assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"recommendations"/);
   const home = functionSource("HomeScreen");
-  // 首页不能全是广告：先是状态，再是精选推荐，然后常用入口，最后更多推荐。
-  const order = ['title={t("状态")}', 'title={t("精选推荐")}', 'title={t("常用")}', 'title={t("更多推荐")}'].map((needle) => home.indexOf(needle));
+  // 首页不能全是广告：先是状态，再是精选推荐和其他赞助商，最后常用入口。
+  const order = ['title={t("状态")}', 'title={t("精选推荐")}', 'title={t("更多赞助商")}', 'title={t("常用")}'].map((needle) => home.indexOf(needle));
   assert.ok(order.every((index, position) => index > 0 && (position === 0 || index > order[position - 1])), String(order));
   // 只管增强时不显示网关一行，入口也按使用模式过滤。
   assert.match(home, /\{enhanceOnly \? null : \(/);
   assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
-  // 推荐：大横幅只用置顶位（最多两张），推荐池的赞助商不能上横幅；其余默认露 3 条；同一家去重；明确标「推广」。
+  // 推荐：大横幅只用置顶位（最多两张），推荐池的赞助商不能上横幅；其他赞助商全部列出不折叠；同一家去重；明确标「推广」。
   assert.match(home, /const heroes = topAds\.slice\(0, 2\);/);
   assert.match(home, /const rest = \[\.\.\.topAds\.slice\(heroes\.length\), \.\.\.pool\.filter\(\(ad\) => ad\.type === "sponsor"\)\];/);
-  assert.match(home, /const shownRest = showAllAds \? rest : rest\.slice\(0, 3\);/);
+  assert.match(home, /\{rest\.map\(\(ad\) => \(/);
+  assert.doesNotMatch(home, /showAllAds|rest\.slice\(0, 3\)/);
   assert.match(home, /!topIdentities\.has\(adIdentity\(ad\)\)/);
   assert.match(home, /\.filter\(\(ad\) => ad\.type === "sponsor"\)/);
   assert.match(home, /t\("推广"\)/);

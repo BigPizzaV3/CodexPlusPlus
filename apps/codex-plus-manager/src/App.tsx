@@ -10986,9 +10986,9 @@ function SessionsScreen({
   );
 }
 
-/// 首页：整个程序的落脚页。上面是各 Agent 与网关的状态，中间是精选推荐，下面是常用入口和更多推荐。
+/// 首页：整个程序的落脚页。上面是各 Agent 与网关的状态，中间是精选推荐和其他赞助商，最下面是常用入口。
 ///
-/// 推荐：大卡片只放置顶位（最多两个），推荐池里的赞助商一行一条，默认只露 3 条。
+/// 推荐：大卡片只放置顶位（最多两个），推荐池里的赞助商全部列出，两列小卡片，紧跟在精选下面。
 /// 置顶位和推荐池里同一家常有两个 id、同一个落地页，按 adIdentity 去重。只展示赞助商，普通推荐不显示。
 function HomeScreen({
   ads,
@@ -11013,7 +11013,6 @@ function HomeScreen({
 }) {
   const gateway = useGatewayPayload(10_000);
   const usage = useTodayUsage();
-  const [showAllAds, setShowAllAds] = useState(false);
   const enhanceOnly = providersHidden(focus);
   const connected = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
 
@@ -11023,7 +11022,6 @@ function HomeScreen({
   // 大横幅只放置顶位（top_ad / topAds），没有置顶位就不显示；推荐池里的赞助商只进下面的列表。
   const heroes = topAds.slice(0, 2);
   const rest = [...topAds.slice(heroes.length), ...pool.filter((ad) => ad.type === "sponsor")];
-  const shownRest = showAllAds ? rest : rest.slice(0, 3);
   const open = (ad: AdItem) => void actions.openExternalUrl(ad.url);
 
   const shortcuts: Array<{ route: Route; label: string; detail: string; icon: LucideIcon }> = [
@@ -11141,6 +11139,34 @@ function HomeScreen({
         </CxSection>
       ) : null}
 
+      {rest.length ? (
+        <CxSection count={rest.length} title={t("更多赞助商")}>
+          <div className="home-sponsors">
+            {rest.map((ad) => (
+              <div
+                className="home-sponsor"
+                key={adIdentity(ad)}
+                onClick={() => open(ad)}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(ad); } }}
+                role="link"
+                tabIndex={0}
+                title={`${ad.description}\n${ad.url}`}
+              >
+                {ad.image ? <img alt="" className="home-sponsor-thumb" loading="lazy" src={ad.image} /> : <span className="home-sponsor-thumb home-hero-placeholder"><Sparkles aria-hidden="true" /></span>}
+                <div className="home-sponsor-body">
+                  <div className="home-sponsor-head">
+                    <strong>{formatAdTitle(ad.title)}</strong>
+                    {(ad.highlights ?? []).filter(Boolean).slice(0, 2).map((item) => <span className="home-sponsor-chip" key={item}>{item}</span>)}
+                  </div>
+                  <p className="home-sponsor-text">{ad.description}</p>
+                </div>
+                <ExternalLink aria-hidden="true" className="home-sponsor-go" />
+              </div>
+            ))}
+          </div>
+        </CxSection>
+      ) : null}
+
       <CxSection title={t("常用")}>
         <div className="home-shortcuts">
           {shortcuts.filter((item) => routeVisible(focus, item.route)).map((item) => {
@@ -11158,19 +11184,6 @@ function HomeScreen({
         </div>
       </CxSection>
 
-      {rest.length ? (
-        <CxSection
-          aside={rest.length > 3 ? (
-            <button className="hub-link" onClick={() => setShowAllAds((current) => !current)} type="button">
-              {showAllAds ? t("收起") : tf("查看全部 {0} 条", [rest.length])}
-            </button>
-          ) : null}
-          count={rest.length}
-          title={t("更多推荐")}
-        >
-          <AdGrid actions={actions} ads={shownRest} empty={t("暂无赞助商推荐。")} />
-        </CxSection>
-      ) : null}
     </div>
   );
 }
@@ -17466,29 +17479,6 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
       /></div>
     ) : null}
     </>
-  );
-}
-
-function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions: Actions }) {
-  // 一行一条：小缩略图、标题 + 域名、一行介绍，亮点做成标题旁的小标签；整行点开落地页。
-  if (!ads.length) return <CxCard><CxEmpty title={empty} /></CxCard>;
-  return (
-    <CxCard className="rec-list">
-      {ads.map((ad) => (
-        <CxRow
-          badges={ad.highlights?.slice(0, 3).map((item) => <CxBadge key={item}>{item}</CxBadge>)}
-          detail={ad.description}
-          icon={ad.image ? <img alt="" className="rec-thumb" loading="lazy" src={ad.image} /> : <ExternalLink />}
-          key={ad.id || `${ad.type}-${ad.title}`}
-          onClick={() => void actions.openExternalUrl(ad.url)}
-          title={formatAdTitle(ad.title)}
-          tooltip={`${ad.description}\n${ad.url}`}
-        >
-          <span className="rec-host">{adHost(ad.url)}</span>
-          <ExternalLink aria-hidden="true" className="cx-set-chevron" />
-        </CxRow>
-      ))}
-    </CxCard>
   );
 }
 

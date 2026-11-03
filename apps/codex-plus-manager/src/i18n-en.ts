@@ -122,6 +122,7 @@ export const EN_PLAIN: Record<string, string> = {
   "了解更多": "Learn more",
   "首页": "Home",
   "常用": "Shortcuts",
+  "更多赞助商": "More sponsors",
   "给 Codex、Claude 加功能的脚本": "Scripts that add features to Codex and Claude",
   "一处管理所有 Agent 的 MCP 和 Skill": "MCP servers and Skills for every agent",
   "找回、继续各 Agent 的本地会话": "Find and resume local agent sessions",
