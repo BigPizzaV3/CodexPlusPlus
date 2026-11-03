@@ -849,3 +849,23 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* 断开预览：没法逐项预览时的「完整切换」说明。 */
+:root .shell .gw-disconnect-switch,
+.gw-disconnect-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.gw-disconnect-switch svg {
+  flex: none;
+  margin-top: 2px;
+}

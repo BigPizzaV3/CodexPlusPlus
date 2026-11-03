@@ -295,6 +295,7 @@ function AgentRow({
           onApply={(previewToken) => disconnectTarget === "disconnect"
             ? run(`disable:${agent.agent}`, "disable_gateway_binding", { agent: agent.agent, previewToken }, t("断开并还原"))
             : run(`own:${agent.agent}`, "use_gateway_own_model", { agent: agent.agent, model: disconnectTarget.model, previewToken }, t("断开并直连"))}
+          onFullSwitch={(previewToken) => run(`disable:${agent.agent}`, "disable_gateway_binding_full_switch", { agent: agent.agent, previewToken }, t("断开并还原"))}
           onClose={() => setDisconnectTarget(null)}
           ownModel={disconnectTarget === "disconnect" ? null : disconnectTarget}
         />

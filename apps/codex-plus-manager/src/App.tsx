@@ -5003,6 +5003,19 @@ export function App() {
               return false;
             }
           }}
+          // 没法逐项预览时（接入前没留下实时存档）：确认后完整切换到预览里写明的直连供应商。
+          onFullSwitch={async (previewToken) => {
+            try {
+              const result = await invoke<GatewayResult>("disable_gateway_binding_full_switch", { agent: "codex", previewToken });
+              publishGatewayPayload(result);
+              await showNotice(result.status === "ok" ? t("已断开网关") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
+              await refreshSettings(true);
+              return result.status === "ok";
+            } catch (error) {
+              await showNotice(t("断开失败"), String(error), "failed");
+              return false;
+            }
+          }}
           onClose={() => setLegacyDisconnectOpen(false)}
         />
       ) : null}

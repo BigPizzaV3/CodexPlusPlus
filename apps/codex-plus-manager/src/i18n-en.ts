@@ -118,6 +118,9 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "完整切换并断开": "Switch fully and disconnect",
+  "Codex 的直连模式里没有别的供应商可切回：先在「连接与供应商」里添加一个直连供应商。": "Codex has no other direct provider to switch back to: add one under Connection & providers first.",
+  "接入前没有留下实时存档（或要切回的是聚合供应商），没法逐项预览改动；断开会把 Codex 完整切换到下面这个直连供应商，切换前会备份当前配置。": "No live snapshot was saved before connecting (or the target is an aggregate provider), so the changes can't be listed one by one. Disconnecting fully switches Codex to the direct provider below, backing up the current config first.",
   "断开网关，还原接入前的直连配置；会先列出要还原的文件，确认后才改": "Disconnect the gateway and restore the direct config from before; lists the files to restore and only changes them after you confirm",
   "先在页面底部「高级」里打开供应商配置切换": "Turn on provider config switching under Advanced at the bottom first",
   "Codex 改走 Codex++ 网关，用供应商池里的模型；新开的会话生效": "Codex goes through the Codex++ gateway and uses models from the provider pool; takes effect in new sessions",
@@ -3332,13 +3335,13 @@ export const EN_PLAIN: Record<string, string> = {
   "恢复存档无法与当前配置安全合并；请先检查配置语法后重新预览。": "The restoration archive cannot be safely merged with the current configuration. Check the configuration syntax and refresh the preview.",
   "网关状态无法读取；无法在隔离环境中精确预演此次还原。": "The gateway state cannot be read, so this restoration cannot be accurately simulated in isolation.",
   "Grok 仍连接网关，但没有可用的恢复存档，当前供应商也没有模型；请在 Grok 供应商页添加并应用一个直连供应商后再断开。": "Grok still points to the gateway, but no usable restoration archive or direct-provider models are available. Add and apply a direct provider on the Grok providers page before disconnecting.",
-  "此次 Codex 断开需要完整供应商切换（无实时恢复存档或涉及聚合）；暂不能生成精确预览，请先在 Codex 供应商页切回直连。": "This Codex disconnect requires a full provider switch because the live restoration archive is missing or an aggregate provider is involved. An accurate preview is not available yet; switch back to a direct connection on the Codex providers page first.",
-  "隔离预演未能完成还原；原配置未被修改，请检查可切回的供应商和恢复存档。": "The isolated restoration simulation did not complete. The original configuration was not changed. Check the available direct providers and restoration archive.",
+    "隔离预演未能完成还原；原配置未被修改，请检查可切回的供应商和恢复存档。": "The isolated restoration simulation did not complete. The original configuration was not changed. Check the available direct providers and restoration archive.",
   "Codex 配置按实时恢复存档计算；正式断开仍需成功切换直连供应商，并更新模型目录、应用状态和备份。供应商校验或写入失败时会中止断开。": "The Codex configuration is calculated from the live restoration archive. Disconnecting still requires switching to the direct provider and updating model catalogs, application state and backups. The disconnect is aborted if provider validation or writing fails.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "确认后 {0} 会完整切换到直连供应商「{1}」：和在供应商列表里切换一样，先备份当前配置、收回借给 {0} 的登录，再写入。": "Once confirmed, {0} fully switches to the direct provider \"{1}\": like switching in the provider list, it backs up the current config and takes back the sign-in lent to {0} before writing.",
   "新版本 {0} 已下载": "Version {0} downloaded",
   "{0} 已下载": "{0} downloaded",
   "正在后台下载 {0}%，下完不会自动安装": "Downloading in the background {0}%; it won't install automatically",
