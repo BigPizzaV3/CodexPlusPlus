@@ -325,7 +325,7 @@ import {
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
-import { CxBanner, CxCard, CxEmpty, CxFilters, CxToolbar } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxToolbar } from "./cx-layout";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
@@ -6399,142 +6399,124 @@ function SharedServiceSettings({
     </label>
   );
   const retry = form.protocolProxyAutoRetry;
+  const retryModeLabel = form.protocolProxyAutoRetryMode === "buffered" ? t("整段缓冲") : form.protocolProxyAutoRetryMode === "streaming-legacy" ? t("流式（旧行为）") : t("流式（推荐）");
+  const sharedHint = t("网关和旧版本地协议代理共用这些设置");
+  // 本地服务一节、请求避震一节。避震的五个参数默认值够用，收进折叠区，摘要里显示当前值。
   return (
     <div className="gw-shared-settings">
-      <SectionLabel aside={autoSave}>{t("本地服务（新旧共用）")}</SectionLabel>
-      <div className="gw-card">
-        {health.map((item) => (
-          <div className="gw-setting-row" key={item.title}>
-            <div>
-              <strong>{item.title}</strong>
-              <small title={item.detail}>{item.detail}</small>
-            </div>
-            <span />
-            <span className="gw-pill" data-tone={tone(item)}>{statusLabel(item.status)}</span>
-          </div>
-        ))}
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("请求体上限")}</strong>
-            <small title={t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}>
-              {t("长上下文会话超过上限会报 413；调大会增加本地服务的内存占用。")}
-            </small>
-          </div>
-          <span />
-          {number(form.helperMaxRequestBodyMib, 32, 512, "MiB", (next) => onFormChange({ ...form, helperMaxRequestBodyMib: next }), 16)}
-        </div>
-      </div>
+      {autoSave ? <TopbarActions><span className="cx-set-autosave">{autoSave}</span></TopbarActions> : null}
+      <CxSection title={<span title={sharedHint}>{t("本地服务")}</span>}>
+        <CxCard>
+          {health.map((item) => (
+            <CxRow detail={item.detail} key={item.title} title={item.title} tooltip={item.detail}>
+              <CxBadge tone={tone(item) === "ok" ? "ok" : tone(item) === "warning" ? "warn" : "neutral"}>{statusLabel(item.status)}</CxBadge>
+            </CxRow>
+          ))}
+          <CxRow
+            detail={t("长上下文会话超过上限会报 413；调大会增加本地服务的内存占用。")}
+            title={t("请求体上限")}
+            tooltip={t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}
+          >
+            {number(form.helperMaxRequestBodyMib, 32, 512, "MiB", (next) => onFormChange({ ...form, helperMaxRequestBodyMib: next }), 16)}
+          </CxRow>
+        </CxCard>
+      </CxSection>
 
-      <SectionLabel>{t("请求避震（新旧共用）")}</SectionLabel>
-      <div className="gw-card">
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("启用请求避震")}</strong>
-            <small>
-              {retry
-                ? t("在本地服务内消化上游过载与限流，尽量不把错误交给 Agent。作用于经过网关和旧版本地协议代理的请求。")
-                : t("已关闭：上游过载或限流时，错误直接交给 Agent。")}
-            </small>
-          </div>
-          <span />
-          <Switch label={t("启用请求避震")} on={retry} onToggle={() => onFormChange({ ...form, protocolProxyAutoRetry: !retry })} />
-        </div>
-        {retry ? (
-          <>
-            <div className="gw-setting-row">
-              <div>
-                <strong>{t("最多自动重试次数")}</strong>
-                <small>{t("0–20 次；次数用尽后把错误交给 Agent。")}</small>
-              </div>
-              <span />
-              {number(form.protocolProxyAutoRetryMaxAttempts, 0, 20, t("次"), (next) => onFormChange({ ...form, protocolProxyAutoRetryMaxAttempts: next }))}
-            </div>
-            <div className="gw-setting-row">
-              <div>
-                <strong>{t("首次重试间隔")}</strong>
-                <small>{t("之后按 2 倍退避，单次最长 30 秒；有 Retry-After 时优先采用。")}</small>
-              </div>
-              <span />
-              {number(form.protocolProxyAutoRetryIntervalSeconds, 0, 30, t("秒"), (next) => onFormChange({ ...form, protocolProxyAutoRetryIntervalSeconds: next }))}
-            </div>
-            <div className="gw-setting-row">
-              <div>
-                <strong>{t("避震模式")}</strong>
-                <small title={t("流式：保留实时输出，正文提交前遇到过载由代理重试，之后交给 Codex；「首字提交延迟」为出现正文后再缓冲的时长，0 表示立即提交。整段缓冲：始终由代理重试，但要等整段生成完才显示。")}>
-                  {form.protocolProxyAutoRetryMode === "buffered"
-                    ? t("始终由代理重试，但要等整段生成完才显示。")
-                    : form.protocolProxyAutoRetryMode === "streaming-legacy"
-                      ? t("旧版流式行为，仅在新版有问题时使用。")
-                      : t("保留实时输出；正文出现前遇到过载由代理重试。")}
-                </small>
-              </div>
-              <span />
-              <AppSelect
-                label={t("避震模式")}
-                onChange={(next) => onFormChange({ ...form, protocolProxyAutoRetryMode: next })}
-                options={[
-                  { value: "streaming", label: t("流式（推荐）"), hint: t("保留实时输出；正文出现前遇到过载由代理重试。") },
-                  { value: "streaming-legacy", label: t("流式（旧行为）"), hint: t("旧版流式行为，仅在新版有问题时使用。") },
-                  { value: "buffered", label: t("整段缓冲"), hint: t("始终由代理重试，但要等整段生成完才显示。") },
-                ]}
-                value={form.protocolProxyAutoRetryMode}
-                menuWidth={300}
-              />
-            </div>
-            {form.protocolProxyAutoRetryMode === "streaming" ? (
-              <div className="gw-setting-row">
-                <div>
-                  <strong>{t("首字提交延迟")}</strong>
-                  <small>{t("出现正文后再缓冲的时长，0 表示立即提交。")}</small>
-                </div>
-                <span />
-                {number(form.protocolProxyAutoRetryCommitDelayMs, 0, 10000, "ms", (next) => onFormChange({ ...form, protocolProxyAutoRetryCommitDelayMs: next }), 100)}
-              </div>
-            ) : null}
-            {/* 状态码编辑不能放进 <label>：WebKit 会把点击转发给第一个按钮，一次删掉两个状态码。 */}
-            <div className="gw-setting-row gw-setting-row-stacked">
-              <div>
-                <strong>{t("重试的 HTTP 状态码")}</strong>
-                <small>{t("命中时退避重发。默认不选；常用 429（限流）和 5xx（服务端故障）。")}</small>
-              </div>
-              <div className="gw-retry-codes" role="group" aria-label={t("重试的 HTTP 状态码")}>
-                {form.protocolProxyAutoRetryStatusCodes.map((status) => (
-                  <button
-                    className="gw-chip gw-retry-code"
-                    key={status}
-                    onClick={() => setRetryStatusCodes(form.protocolProxyAutoRetryStatusCodes.filter((item) => item !== status))}
-                    title={t("点击移除")}
-                    type="button"
-                  >
-                    {status} ×
-                  </button>
-                ))}
-                <input
-                  aria-label={t("输入状态码后回车")}
-                  className="gw-retry-input"
-                  inputMode="numeric"
-                  onChange={(event) => setRetryStatusInput(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      addRetryStatusCodes();
-                    }
-                  }}
-                  placeholder={t("加状态码，回车")}
-                  value={retryStatusInput}
+      <CxSection title={<span title={sharedHint}>{t("请求避震")}</span>}>
+        <CxCard>
+          <CxRow
+            detail={retry
+              ? t("在本地服务内消化上游过载与限流，尽量不把错误交给 Agent。作用于经过网关和旧版本地协议代理的请求。")
+              : t("已关闭：上游过载或限流时，错误直接交给 Agent。")}
+            title={t("启用请求避震")}
+          >
+            <Switch label={t("启用请求避震")} on={retry} onToggle={() => onFormChange({ ...form, protocolProxyAutoRetry: !retry })} />
+          </CxRow>
+          {retry ? (
+            <details className="cx-set-disclosure">
+              <summary>
+                {t("重试参数")}
+                <span className="cx-set-summary-hint">
+                  {[tf("最多 {0} 次", [form.protocolProxyAutoRetryMaxAttempts]), tf("间隔 {0} 秒", [form.protocolProxyAutoRetryIntervalSeconds]), retryModeLabel].join(" · ")}
+                </span>
+              </summary>
+              <CxRow detail={t("0–20 次；次数用尽后把错误交给 Agent。")} title={t("最多自动重试次数")}>
+                {number(form.protocolProxyAutoRetryMaxAttempts, 0, 20, t("次"), (next) => onFormChange({ ...form, protocolProxyAutoRetryMaxAttempts: next }))}
+              </CxRow>
+              <CxRow detail={t("之后按 2 倍退避，单次最长 30 秒；有 Retry-After 时优先采用。")} title={t("首次重试间隔")}>
+                {number(form.protocolProxyAutoRetryIntervalSeconds, 0, 30, t("秒"), (next) => onFormChange({ ...form, protocolProxyAutoRetryIntervalSeconds: next }))}
+              </CxRow>
+              <CxRow
+                detail={form.protocolProxyAutoRetryMode === "buffered"
+                  ? t("始终由代理重试，但要等整段生成完才显示。")
+                  : form.protocolProxyAutoRetryMode === "streaming-legacy"
+                    ? t("旧版流式行为，仅在新版有问题时使用。")
+                    : t("保留实时输出；正文出现前遇到过载由代理重试。")}
+                title={t("避震模式")}
+                tooltip={t("流式：保留实时输出，正文提交前遇到过载由代理重试，之后交给 Codex；「首字提交延迟」为出现正文后再缓冲的时长，0 表示立即提交。整段缓冲：始终由代理重试，但要等整段生成完才显示。")}
+              >
+                <AppSelect
+                  className="cx-set-select"
+                  label={t("避震模式")}
+                  onChange={(next) => onFormChange({ ...form, protocolProxyAutoRetryMode: next })}
+                  options={[
+                    { value: "streaming", label: t("流式（推荐）"), hint: t("保留实时输出；正文出现前遇到过载由代理重试。") },
+                    { value: "streaming-legacy", label: t("流式（旧行为）"), hint: t("旧版流式行为，仅在新版有问题时使用。") },
+                    { value: "buffered", label: t("整段缓冲"), hint: t("始终由代理重试，但要等整段生成完才显示。") },
+                  ]}
+                  size="sm"
+                  value={form.protocolProxyAutoRetryMode}
+                  menuWidth={300}
                 />
+              </CxRow>
+              {form.protocolProxyAutoRetryMode === "streaming" ? (
+                <CxRow detail={t("出现正文后再缓冲的时长，0 表示立即提交。")} title={t("首字提交延迟")}>
+                  {number(form.protocolProxyAutoRetryCommitDelayMs, 0, 10000, "ms", (next) => onFormChange({ ...form, protocolProxyAutoRetryCommitDelayMs: next }), 100)}
+                </CxRow>
+              ) : null}
+              <CxRow detail={t("命中时退避重发。默认不选；常用 429（限流）和 5xx（服务端故障）。")} title={t("重试的 HTTP 状态码")}>
                 <button
-                  className="gw-text-button"
+                  className="cx-secondary"
                   onClick={() => setRetryStatusCodes([...form.protocolProxyAutoRetryStatusCodes, ...COMMON_RETRY_STATUS_CODES])}
                   type="button"
                 >
                   {t("填入常用")}
                 </button>
+              </CxRow>
+              {/* 状态码编辑不能放进 <label>：WebKit 会把点击转发给第一个按钮，一次删掉两个状态码。 */}
+              <div className="cx-set-block">
+                <div className="gw-retry-codes" role="group" aria-label={t("重试的 HTTP 状态码")}>
+                  {form.protocolProxyAutoRetryStatusCodes.map((status) => (
+                    <button
+                      className="gw-chip gw-retry-code"
+                      key={status}
+                      onClick={() => setRetryStatusCodes(form.protocolProxyAutoRetryStatusCodes.filter((item) => item !== status))}
+                      title={t("点击移除")}
+                      type="button"
+                    >
+                      {status} ×
+                    </button>
+                  ))}
+                  <input
+                    aria-label={t("输入状态码后回车")}
+                    className="gw-retry-input"
+                    inputMode="numeric"
+                    onChange={(event) => setRetryStatusInput(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addRetryStatusCodes();
+                      }
+                    }}
+                    placeholder={t("加状态码，回车")}
+                    value={retryStatusInput}
+                  />
+                </div>
               </div>
-            </div>
-          </>
-        ) : null}
-      </div>
+            </details>
+          ) : null}
+        </CxCard>
+      </CxSection>
     </div>
   );
 }
@@ -10891,19 +10873,17 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
   return (
     <div className="tp-page rec-page">
       <TopbarActions>
-        <Button onClick={() => void actions.refreshAds()} size="sm" variant="secondary">
+        <button className="cx-secondary" onClick={() => void actions.refreshAds()} type="button">
           <RefreshCw />
           {t("刷新推荐")}
-        </Button>
+        </button>
       </TopbarActions>
-      {!ads ? <p className="rec-empty">{t("尚未加载推荐内容")}</p> : null}
+      {!ads ? <CxCard><CxEmpty title={t("尚未加载推荐内容")} /></CxCard> : null}
       {ads ? (
-        <section className="tp-page">
-          <div className="tp-section-head"><h3>{t("赞助商推荐")}</h3><span>{tf("{0} 条", [sponsors.length])}</span></div>
+        <CxSection aside={<span>{t("与 Codex 内插件菜单使用同一个远端广告源")}</span>} count={sponsors.length} title={t("赞助商推荐")}>
           <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
-        </section>
+        </CxSection>
       ) : null}
-      <p className="tp-foot">{t("与 Codex 内插件菜单使用同一个远端广告源")}</p>
     </div>
   );
 }
@@ -10928,31 +10908,44 @@ function MaintenanceScreen({
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
+  const takeoverOn = Boolean(settings?.settings.codexAppAutoTakeover);
+  const takeoverStatus = autoTakeover?.state === "degraded" ? "failed" : autoTakeover?.running ? "ok" : "disabled";
+  // 接管状态压成一行：官方 App、调试端口、上次接管；需要注意的情况（出错、本次跳过、平台不支持）优先显示。
+  const takeoverDetail = autoTakeover?.lastError
+    || (autoTakeover?.pausedInstance ? t("本次已跳过自动接管，重启官方 App 后恢复。") : "")
+    || (autoTakeover && !autoTakeover.platformSupported ? t("自动接管目前只支持 macOS 和 Linux。") : "")
+    || [
+      `${t("官方 App")} ${autoTakeover?.appRunning ? t("运行中") : t("未运行")}`,
+      autoTakeover?.actualDebugPort ? `${t("调试端口")} ${autoTakeover.actualDebugPort}` : "",
+      autoTakeover?.lastTakeoverAtMs ? tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()]) : "",
+    ].filter(Boolean).join(" · ");
   return (
     <>
-      <Panel id="codex-settings-check">
-        <CardHead title={t("检查与修复")} detail={t("检查 Codex++ 入口、Codex 应用和开机启动状态")} />
-        <CardContent>
-          <div className="status-table">
-            <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-            <StatusRow title={t("Codex++ 应用入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
-            <StatusRow title={t("开机打开 Codex++")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
-            <StatusRow
-              title={t("自动接管官方 App")}
-              status={settings?.settings.codexAppAutoTakeover && autoTakeover?.running ? "ok" : "disabled"}
-              path={autoTakeover?.lastError ?? autoTakeover?.lastReason ?? null}
-            />
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel id="codex-settings-startup">
-        <CardHead title={t("开机打开 Codex++")} detail={t("登录系统后打开 Codex++ 界面，可选择自动启动 Codex")} />
-        <CardContent>
-          <label className="switch-row">
+      <CxSection
+        aside={
+          <>
+            <button className="cx-secondary" onClick={() => void actions.checkHealth()} type="button"><RefreshCw />{t("检查")}</button>
+            <Menu>
+              <MenuItem onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</MenuItem>
+            </Menu>
+          </>
+        }
+        id="codex-settings-check"
+        title={t("检查与修复")}
+      >
+        <CxCard>
+          <CxRow detail={<code className="cx-set-path">{overview?.codex_app.path || t("未记录路径")}</code>} title={t("Codex 应用")}>
+            <StatusBadge status={overview?.codex_app.status} />
+          </CxRow>
+          <CxRow detail={<code className="cx-set-path">{overview?.management_shortcut.path || t("未记录路径")}</code>} title={t("Codex++ 应用入口")}>
+            <StatusBadge status={overview?.management_shortcut.status} />
+          </CxRow>
+        </CxCard>
+      </CxSection>
+      <CxSection id="codex-settings-startup" title={t("开机启动")}>
+        {/* 「登录时」的两个子选项只在开启登录打开后出现；「打开时启动 Codex」对手动打开也生效，单独一行。 */}
+        <CxCard className="cx-set-switches">
+          <label className="switch-row" title={t("开启后注册系统登录项，关闭时移除；是否自动启动 Codex 由下面的独立开关决定。")}>
             <input
               checked={Boolean(watcher?.enabled)}
               disabled={!watcher}
@@ -10961,11 +10954,41 @@ function MaintenanceScreen({
             />
             <span>
               <strong>{t("登录时自动打开")}</strong>
-              <small>{t("开启后注册系统登录项，关闭时移除；是否自动启动 Codex 由下面的独立开关决定。")}</small>
+              <small>{t("登录系统后打开 Codex++")}</small>
             </span>
             <ToggleVisual />
           </label>
-          <label className="switch-row">
+          {watcher?.enabled ? (
+            <>
+              <label className="switch-row cx-set-sub" title={t("仅登录启动 Codex++ 时自动启动 Codex；手动打开 Codex++ 仍不会自动启动。")}>
+                <input
+                  checked={Boolean(watcher?.start_codex)}
+                  disabled={!watcher}
+                  onChange={(event) => void actions.setWatcherStartCodex(event.currentTarget.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("登录时自动启动 Codex")}</strong>
+                  <small>{t("只在开机登录打开时生效")}</small>
+                </span>
+                <ToggleVisual />
+              </label>
+              <label className="switch-row cx-set-sub" title={t("仅登录启动时隐藏到托盘；手动打开 Codex++ 仍显示主窗口。")}>
+                <input
+                  checked={Boolean(watcher?.start_minimized)}
+                  disabled={!watcher}
+                  onChange={(event) => void actions.setWatcherStartMinimized(event.currentTarget.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("启动时自动最小化")}</strong>
+                  <small>{t("开机登录时只留在托盘")}</small>
+                </span>
+                <ToggleVisual />
+              </label>
+            </>
+          ) : null}
+          <label className="switch-row" title={t("仅手动打开 Codex++ 时生效；已有 Codex 会先恢复，不会重复启动。")}>
             <input
               checked={Boolean(watcher?.start_codex_on_open)}
               disabled={!watcher}
@@ -10974,141 +10997,106 @@ function MaintenanceScreen({
             />
             <span>
               <strong>{t("打开 Codex++ 时自动启动 Codex")}</strong>
-              <small>{t("仅手动打开 Codex++ 时生效；已有 Codex 会先恢复，不会重复启动。")}</small>
+              <small>{t("已有 Codex 会先恢复，不会重复启动")}</small>
             </span>
             <ToggleVisual />
           </label>
-          <label className="switch-row">
+        </CxCard>
+      </CxSection>
+      <CxSection id="codex-settings-takeover" title={t("自动接管官方 App")}>
+        <CxCard className="cx-set-switches">
+          <label
+            className="switch-row"
+            title={`${t("开启后，你自己启动官方 App 时 Codex++ 会自动接管。官方 App 已在运行且没有调试端口时，会先退出再带参数重开（可能中断正在进行的操作）。")}\n${t("仅在 Codex++ 正在运行时生效；建议同时开启上面的「开机打开 Codex++」。")}`}
+          >
             <input
-              checked={Boolean(watcher?.start_codex)}
-              disabled={!watcher}
-              onChange={(event) => void actions.setWatcherStartCodex(event.currentTarget.checked)}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("登录时自动启动 Codex")}</strong>
-              <small>{t("仅登录启动 Codex++ 时自动启动 Codex；手动打开 Codex++ 仍不会自动启动。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
-          <label className="switch-row">
-            <input
-              checked={Boolean(watcher?.start_minimized)}
-              disabled={!watcher}
-              onChange={(event) => void actions.setWatcherStartMinimized(event.currentTarget.checked)}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启动时自动最小化")}</strong>
-              <small>{t("仅登录启动时隐藏到托盘；手动打开 Codex++ 仍显示主窗口。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
-        </CardContent>
-      </Panel>
-      <Panel id="codex-settings-takeover">
-        <CardHead title={t("自动接管官方 App")} detail={t("你自己双击启动官方 App 时，Codex++ 自动接管并注入增强")} />
-        <CardContent>
-          <label className="switch-row">
-            <input
-              checked={Boolean(settings?.settings.codexAppAutoTakeover)}
+              checked={takeoverOn}
               onChange={(event) => void actions.setAutoTakeover(event.currentTarget.checked)}
               type="checkbox"
             />
             <span>
               <strong>{t("开启自动接管")}</strong>
-              <small>{t("开启后，你自己启动官方 App 时 Codex++ 会自动接管。官方 App 已在运行且没有调试端口时，会先退出再带参数重开（可能中断正在进行的操作）。")}</small>
+              <small>{t("你自己双击启动官方 App 时，Codex++ 自动接管并注入增强")}</small>
             </span>
             <ToggleVisual />
           </label>
-          {settings?.settings.codexAppAutoTakeover ? (
-            <>
-              <div className="status-table">
-                <StatusRow
-                  title={t("接管状态")}
-                  status={autoTakeover?.state === "degraded" ? "failed" : autoTakeover?.running ? "ok" : "disabled"}
-                  path={autoTakeover?.state === "degraded" ? t("已降级") : autoTakeover?.running ? t("监听中") : t("未运行")}
-                />
-                <StatusRow title={t("官方 App")} status={autoTakeover?.appRunning ? "ok" : "disabled"} path={autoTakeover?.appRunning ? t("运行中") : t("未运行")} />
-                <StatusRow
-                  title={t("调试端口")}
-                  status={autoTakeover?.actualDebugPort ? "ok" : "not_checked"}
-                  path={autoTakeover?.actualDebugPort ? String(autoTakeover.actualDebugPort) : null}
-                />
-              </div>
-              {autoTakeover?.pausedInstance ? <p className="hint">{t("本次已跳过自动接管，重启官方 App 后恢复。")}</p> : null}
-              {autoTakeover?.lastError ? <p className="hint">{autoTakeover.lastError}</p> : null}
-              {autoTakeover?.lastTakeoverAtMs ? (
-                <p className="hint">{tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()])}</p>
-              ) : null}
-              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS 和 Linux。")}</p>}
-              <p className="hint">{t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}</p>
-              <Toolbar>
-                <Button variant="secondary" onClick={() => void actions.takeOverNow()}>{t("立即接管")}</Button>
-                <Button variant="secondary" onClick={() => void actions.pauseAutoTakeover()}>{t("本次不接管")}</Button>
-                <Button variant="secondary" onClick={() => void actions.refreshAutoTakeover()}>{t("刷新状态")}</Button>
-              </Toolbar>
-            </>
-          ) : (
-            <p className="hint">{t("仅在 Codex++ 正在运行时生效；建议同时开启上面的「开机打开 Codex++」。")}</p>
-          )}
-        </CardContent>
-      </Panel>
-      <Panel id="codex-settings-app-path">
-        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")} />
-        <CardContent>
-          <div className="status-table">
-            <StatusRow title={t("保存路径")} status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
-            <StatusRow title={t("当前识别")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-          </div>
-          <Field label={t("保存的应用路径")}>
-            <Input
-              value={settings?.settings.codexAppPath ?? ""}
-              placeholder={t("选择 Codex.exe、Codex.app、app 目录或解包目录")}
-              readOnly
-            />
-          </Field>
-          <Toolbar>
-            <Button onClick={() => void actions.chooseCodexAppPath("folder")}>{t("选择应用目录")}</Button>
-            <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</Button>
-            <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel id="codex-settings-manual-launch">
-        <CardHead title={t("手动启动")} detail={t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")} />
-        <CardContent>
-          <Field label={t("应用路径覆盖")}>
-            <Input
-              value={launchForm.appPath}
-              onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
-              placeholder={savedCodexAppPath || t("例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app")}
-            />
-          </Field>
-          <div className="form-row">
-            <Field label={t("Debug 端口")}>
+          {takeoverOn ? (
+            <CxRow
+              badges={<StatusBadge status={takeoverStatus} label={autoTakeover?.state === "degraded" ? t("已降级") : autoTakeover?.running ? t("监听中") : t("未运行")} />}
+              detail={takeoverDetail}
+              title={t("接管状态")}
+              tooltip={t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}
+            >
+              <button className="cx-secondary" onClick={() => void actions.takeOverNow()} type="button">{t("立即接管")}</button>
+              <Menu>
+                <MenuItem onClick={() => void actions.pauseAutoTakeover()}>{t("本次不接管")}</MenuItem>
+                <MenuItem onClick={() => void actions.refreshAutoTakeover()}>{t("刷新状态")}</MenuItem>
+              </Menu>
+            </CxRow>
+          ) : null}
+        </CxCard>
+      </CxSection>
+      <CxSection id="codex-settings-app-path" title={t("Codex 应用路径")}>
+        <CxCard>
+          <CxRow
+            detail={<code className="cx-set-path">{savedCodexAppPath || t("未保存，使用自动探测")}</code>}
+            title={t("保存的应用路径")}
+            tooltip={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")}
+          >
+            <button className="cx-secondary" onClick={() => void actions.chooseCodexAppPath("folder")} type="button"><FolderOpen />{t("选择应用目录")}</button>
+            <Menu>
+              <MenuItem onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</MenuItem>
+              <MenuItem danger disabled={!savedCodexAppPath} onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</MenuItem>
+            </Menu>
+          </CxRow>
+          <CxRow detail={<code className="cx-set-path">{overview?.codex_app.path || t("未记录路径")}</code>} title={t("当前识别")}>
+            <StatusBadge status={overview?.codex_app.status} />
+          </CxRow>
+        </CxCard>
+      </CxSection>
+      <CxSection id="codex-settings-manual-launch" title={t("高级")}>
+        <CxCard>
+          {/* 给少数人用：用别的路径或端口启动一次。默认收起。 */}
+          <details className="cx-set-disclosure cx-set-disclosure-first">
+            <summary>{t("手动启动")}<span className="cx-set-summary-hint">{t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")}</span></summary>
+            <CxRow title={t("应用路径覆盖")}>
               <Input
+                className="cx-set-input-wide"
+                value={launchForm.appPath}
+                onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
+                placeholder={savedCodexAppPath || t("例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app")}
+              />
+            </CxRow>
+            <CxRow title={t("Debug 端口")}>
+              <Input
+                className="cx-set-input-port"
                 value={launchForm.debugPort}
                 onChange={(event) => onLaunchFormChange({ ...launchForm, debugPort: event.currentTarget.value })}
               />
-            </Field>
-            <Field label={t("Helper 端口")}>
+            </CxRow>
+            <CxRow title={t("Helper 端口")}>
               <Input
+                className="cx-set-input-port"
                 value={launchForm.helperPort}
                 onChange={(event) => onLaunchFormChange({ ...launchForm, helperPort: event.currentTarget.value })}
               />
-            </Field>
-          </div>
-          <Toolbar>
-            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex")}</Button>
-            <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
-              {t("保存为默认路径")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
+            </CxRow>
+            <div className="cx-set-footer">
+              <button className="cx-secondary" onClick={() => void actions.saveManualCodexAppPath()} type="button">{t("保存为默认路径")}</button>
+              <button className="cx-primary" disabled={launchPending} onClick={() => void actions.launch()} type="button"><Play />{t("启动 Codex")}</button>
+            </div>
+          </details>
+        </CxCard>
+      </CxSection>
     </>
   );
+}
+
+/// 状态小标签：沿用 statusLabel / statusClass 的文案与分级，换成 CxBadge 的四种色调。
+function StatusBadge({ status = "unknown", label }: { status?: string; label?: string }) {
+  const level = statusClass(status);
+  const tone = level === "good" ? "ok" : level === "bad" ? "danger" : level === "idle" ? "neutral" : "warn";
+  return <CxBadge tone={tone}>{label ?? statusLabel(status)}</CxBadge>;
 }
 
 function AboutScreen({
@@ -11130,87 +11118,83 @@ function AboutScreen({
   diagnostics: DiagnosticsResult | null;
   actions: Actions;
 }) {
+  const version = overview?.current_version ?? update?.currentVersion ?? "-";
+  const openUrl = (url: string) => void actions.openExternalUrl(url);
   return (
     <>
-      <Panel id="app-settings-update">
-        <CardHead title={t("版本与更新")} detail={t("从 GitHub Release 下载安装包更新")} />
-        <CardContent>
-          {/* 一行摘要 + 操作；发布说明在下面，下载进度只在下载时出现。 */}
-          <div className="app-update-summary">
-            <div className="app-update-copy">
-              <strong>Codex++ {overview?.current_version ?? update?.currentVersion ?? "-"}</strong>
-              <span data-tone={update?.updateAvailable ? "new" : undefined}>
-                {update?.updateAvailable && update.latestVersion
-                  ? tf("有新版本 {0}", [update.latestVersion])
-                  : update?.latestVersion
-                    ? t("已是最新版本")
-                    : t("尚未检查更新")}
-                {update?.updateAvailable && update.assetName ? ` · ${update.assetName}` : ""}
-              </span>
-            </div>
-            <div className="app-update-actions">
-              <Button onClick={() => void actions.checkUpdate()} variant={update?.updateAvailable ? "secondary" : "default"}>{t("检查更新")}</Button>
+      <div className="cx-set-group" id="app-settings-update">
+        <CxSection>
+          <CxCard>
+            {/* 一行摘要 + 一个操作：有新版本时主按钮是「下载并运行安装包」，检查更新退到旁边。 */}
+            <CxRow
+              badges={update?.updateAvailable && update.latestVersion ? <CxBadge tone="ok">{tf("有新版本 {0}", [update.latestVersion])}</CxBadge> : null}
+              detail={
+                <>
+                  {update?.updateAvailable && update.latestVersion
+                    ? t("从 GitHub Release 下载安装包更新")
+                    : update?.latestVersion
+                      ? t("已是最新版本")
+                      : t("尚未检查更新")}
+                  {update?.updateAvailable && update.assetName ? ` · ${update.assetName}` : ""}
+                </>
+              }
+              icon={<img alt="" src={APP_LOGO_URL} />}
+              title={`Codex++ ${version}`}
+            >
+              <button className="cx-secondary" onClick={() => void actions.checkUpdate()} type="button"><RefreshCw />{t("检查更新")}</button>
               {update?.updateAvailable ? (
-                <Button disabled={updateInstallProgress.active} onClick={() => void actions.performUpdate()}>
+                <button className="cx-primary" disabled={updateInstallProgress.active} onClick={() => void actions.performUpdate()} type="button">
+                  <Download />
                   {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
-                </Button>
-              ) : null}
-            </div>
-          </div>
-          {/* 改的是设置草稿，由同页 GlobalSettingsScreen 的自动保存落盘（#1272）。 */}
-          <div className="global-settings-list app-update-preferences">
-            <div className="global-setting-row">
-              <div className="global-setting-copy">
-                <strong>{t("启动时自动检查更新")}</strong>
-                <span>{t("打开 Codex++ 时及运行期间每隔几小时在后台检查新版本并提示。关闭后不再自动检查，仍可随时点「检查更新」。")}</span>
-              </div>
-              <div className="global-setting-actions">
-                <Switch label={t("启动时自动检查更新")} on={form.updateAutoCheck !== false} onToggle={() => onFormChange({ ...form, updateAutoCheck: form.updateAutoCheck === false })} />
-              </div>
-            </div>
-          </div>
-          {update?.updateAvailable && update.releaseSummary ? (
-            <details className="app-update-notes">
-              <summary>{tf("{0} 更新说明", [update.latestVersion ?? ""])}</summary>
-              <ReleaseNotes markdown={update.releaseSummary} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
-            </details>
-          ) : null}
-          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
-        </CardContent>
-      </Panel>
-      <Panel id="app-settings-about">
-        <CardHead title={t("关于 Codex++")} detail={t("本地 Codex 增强、管理工具和安装包维护")} />
-        <CardContent className="app-about">
-          <dl className="app-about-facts">
-            <div><dt>{t("Codex 版本")}</dt><dd>{overview?.codex_version ?? t("未检测到")}</dd></div>
-            <div>
-              <dt>{t("项目地址")}</dt>
-              <dd>
-                <button className="app-about-link" onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} type="button">
-                  github.com/BigPizzaV3/CodexPlusPlus
-                  <ExternalLink aria-hidden="true" className="h-3 w-3" />
                 </button>
-              </dd>
-            </div>
-          </dl>
-          <div className="app-about-links">
-            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} size="sm" variant="secondary">
-              <ExternalLink className="h-3.5 w-3.5" />
-              {t("反馈问题")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} size="sm" variant="secondary">
-              <MessageCircle className="h-3.5 w-3.5" />
-              Discord
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://t.me/CodexPlusPlus")} size="sm" variant="secondary">
-              <MessageCircle className="h-3.5 w-3.5" />
-              Telegram
-            </Button>
-          </div>
-        </CardContent>
-      </Panel>
-      <div className="app-settings-anchor" id="app-settings-logs"><LogsPanel logs={logs} actions={actions} /></div>
-      <div className="app-settings-anchor" id="app-settings-diagnostics"><DiagnosticsPanel diagnostics={diagnostics} actions={actions} /></div>
+              ) : null}
+            </CxRow>
+            {/* 改的是设置草稿，由同页 GlobalSettingsScreen 的自动保存落盘（#1272）。 */}
+            <CxRow
+              detail={t("打开时及运行期间每隔几小时检查一次")}
+              title={t("启动时自动检查更新")}
+              tooltip={t("打开 Codex++ 时及运行期间每隔几小时在后台检查新版本并提示。关闭后不再自动检查，仍可随时点「检查更新」。")}
+            >
+              <Switch label={t("启动时自动检查更新")} on={form.updateAutoCheck !== false} onToggle={() => onFormChange({ ...form, updateAutoCheck: form.updateAutoCheck === false })} />
+            </CxRow>
+            {update?.updateAvailable && update.releaseSummary ? (
+              <details className="app-update-notes cx-set-disclosure">
+                <summary>{tf("{0} 更新说明", [update.latestVersion ?? ""])}</summary>
+                <div className="cx-set-block"><ReleaseNotes markdown={update.releaseSummary} onOpenUrl={openUrl} /></div>
+              </details>
+            ) : null}
+          </CxCard>
+          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
+        </CxSection>
+      </div>
+      <div className="cx-set-group" id="app-settings-about">
+        <CxSection>
+          <CxCard>
+            <CxRow detail={t("本地 Codex 增强、管理工具和安装包维护")} icon={<img alt="" src={APP_LOGO_URL} />} title={`Codex++ ${version}`} />
+            <CxRow title={t("Codex 版本")}>
+              <span className="cx-set-value">{overview?.codex_version ?? t("未检测到")}</span>
+            </CxRow>
+            <CxRow detail="github.com/BigPizzaV3/CodexPlusPlus" onClick={() => openUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} title={t("项目地址")}>
+              <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+          </CxCard>
+        </CxSection>
+        <CxSection title={t("反馈与社区")}>
+          <CxCard>
+            <CxRow detail={t("在 GitHub Issues 报告问题或提建议")} icon={<Github />} onClick={() => openUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} title={t("反馈问题")}>
+              <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+            <CxRow detail="discord.gg/y96kX7A76v" icon={<MessageCircle />} onClick={() => openUrl("https://discord.gg/y96kX7A76v")} title="Discord">
+              <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+            <CxRow detail="t.me/CodexPlusPlus" icon={<MessageCircle />} onClick={() => openUrl("https://t.me/CodexPlusPlus")} title="Telegram">
+              <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+          </CxCard>
+        </CxSection>
+      </div>
+      <div className="cx-set-group" id="app-settings-logs"><LogsPanel logs={logs} actions={actions} /></div>
+      <div className="cx-set-group" id="app-settings-diagnostics"><DiagnosticsPanel diagnostics={diagnostics} actions={actions} /></div>
     </>
   );
 }
@@ -11235,34 +11219,29 @@ function AgentSettingsScreen({
   actions: Actions;
 }) {
   return (
-    <div className="settings-page">
-      <SettingsAutoSave dirty={dirty} form={form} actions={actions} />
-      <>
-        <Panel id="codex-settings-launch-args">
-          <CardHead title={t("Codex 启动参数")} detail={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
-          <CardContent className="settings-content setting-rows">
-            <SettingRow
-              stacked
-              title={t("额外参数")}
-              description={t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")}
-            >
-              <Textarea
-                className="launch-args-input"
-                placeholder="--force_high_performance_gpu"
-                spellCheck={false}
-                value={codexExtraArgsToInput(form.codexExtraArgs)}
-                onChange={(event) =>
-                  onFormChange({
-                    ...form,
-                    codexExtraArgs: inputToCodexExtraArgs(event.currentTarget.value),
-                  })
-                }
-              />
-            </SettingRow>
-          </CardContent>
-        </Panel>
-      </>
-    </div>
+    <>
+      <TopbarActions><SettingsAutoSave className="cx-set-autosave" dirty={dirty} form={form} actions={actions} /></TopbarActions>
+      <CxSection id="codex-settings-launch-args" title={t("启动参数")}>
+        <CxCard>
+          <CxRow detail={t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")} title={t("额外参数")} tooltip={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
+          <div className="cx-set-block">
+            <Textarea
+              aria-label={t("Codex 启动参数")}
+              className="launch-args-input"
+              placeholder="--force_high_performance_gpu"
+              spellCheck={false}
+              value={codexExtraArgsToInput(form.codexExtraArgs)}
+              onChange={(event) =>
+                onFormChange({
+                  ...form,
+                  codexExtraArgs: inputToCodexExtraArgs(event.currentTarget.value),
+                })
+              }
+            />
+          </div>
+        </CxCard>
+      </CxSection>
+    </>
   );
 }
 
@@ -11333,7 +11312,6 @@ function GlobalSettingsScreen({
   theme,
   themePreference,
   actions,
-  onOpenAgentSettings,
   onOpenTour,
   agentFocus,
   onOpenAgentFocus,
@@ -11352,114 +11330,85 @@ function GlobalSettingsScreen({
   const settingsPath = settings?.settings_path ?? "";
   const trayPanel = useTrayPanelSetting();
   const lightweight = useLightweightModeSetting();
-  // 每一项都是同一种行：左边标题 + 说明，右边操作。路径只在「配置文件路径」里出现一次。
+  const themeOptions: AppSelectOption<ThemePreference>[] = [
+    { value: "system", label: t("跟随系统") },
+    { value: "light", label: t("浅色") },
+    { value: "dark", label: t("深色") },
+  ];
+  // 参照 Cursor 设置页：页面标题就是分类名，每节一个卡片外的小标题 + 一张行卡片；
+  // 说明只写一行，长说明放悬停提示。自动保存状态挂到标题栏，只在保存中 / 出错时出现。
   return (
-    <div className="settings-page global-settings-page">
-      <SettingsAutoSave dirty={dirty} form={form} actions={actions} />
-      <Panel id="app-settings-general">
-        <CardHead title={t("基础设置")} detail="" />
-        <CardContent className="global-settings-list">
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("界面主题")}</strong>
-              <span>{themePreference === "system"
+    <>
+      <TopbarActions><SettingsAutoSave className="cx-set-autosave" dirty={dirty} form={form} actions={actions} /></TopbarActions>
+      <div className="cx-set-group" id="app-settings-general">
+        <CxSection title={t("外观")}>
+          <CxCard>
+            <CxRow
+              title={t("界面主题")}
+              detail={themePreference === "system"
                 ? `${t("跟随系统外观，当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`
-                : `${t("当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`}</span>
-            </div>
-            <div className="global-setting-actions">
-              <div aria-label={t("界面主题")} className="segmented" role="group">
-                {([
-                  ["system", t("跟随系统")],
-                  ["light", t("浅色")],
-                  ["dark", t("深色")],
-                ] as const).map(([value, label]) => (
-                  <button
-                    aria-pressed={themePreference === value}
-                    className={themePreference === value ? "active" : ""}
-                    key={value}
-                    onClick={() => actions.setThemePreference(value)}
-                    type="button"
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("点击托盘图标弹出快捷面板")}</strong>
-              <span>{trayPanel.error || t("面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，网关用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。")}</span>
-            </div>
-            <div className="global-setting-actions">
+                : `${t("当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`}
+            >
+              <AppSelect ariaLabel={t("界面主题")} className="cx-set-select" onChange={(value) => actions.setThemePreference(value)} options={themeOptions} size="sm" value={themePreference} />
+            </CxRow>
+          </CxCard>
+        </CxSection>
+        <CxSection title={t("窗口与托盘")}>
+          <CxCard>
+            <CxRow
+              detail={trayPanel.error || t("单击托盘图标查看状态、启动 Codex、切换供应商")}
+              title={t("点击托盘图标弹出快捷面板")}
+              tooltip={t("面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，网关用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。")}
+            >
               <Switch disabled={trayPanel.enabled === null || trayPanel.saving} label={t("点击托盘图标弹出快捷面板")} on={trayPanel.enabled ?? true} onToggle={() => void trayPanel.toggle()} />
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("关闭窗口后释放界面内存")}</strong>
-              <span>{lightweight.error || t("关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}</span>
-            </div>
-            <div className="global-setting-actions">
+            </CxRow>
+            <CxRow
+              detail={lightweight.error || t("后台服务照常运行，再次打开时重新加载界面")}
+              title={t("关闭窗口后释放界面内存")}
+              tooltip={t("关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}
+            >
               <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("关闭窗口后释放界面内存")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("使用模式")}</strong>
-              <span>{agentFocusDescription(agentFocus)}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={onOpenAgentFocus}>{t("修改")}</Button>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("新手引导")}</strong>
-              <span>{t("完成配置、验证连接并开始使用，也可以查看各个入口的导览。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={onOpenTour}>{t("重新打开引导")}</Button>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("Codex 专属设置")}</strong>
-              <span>{t("启动参数等只作用于 Codex 的选项，在 Codex 菜单的「设置」里。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={onOpenAgentSettings}>{t("打开 Codex 设置")}</Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-      <Panel id="app-settings-config">
-        <CardHead title={t("配置文件")} detail={t("settings.json 的备份、迁移与存放位置")} />
-        <CardContent className="global-settings-list">
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("配置备份与迁移")}</strong>
-              <span>{t("导出文件包含供应商 API Key 等敏感信息；导入只会读入草稿，检查后仍需点击保存设置。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={() => void actions.exportSettings()}>{t("导出完整配置")}</Button>
-              <Button size="sm" variant="secondary" onClick={() => void actions.importSettings()}>{t("导入配置草稿")}</Button>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("配置文件路径")}</strong>
-              <code className="global-setting-path" title={settingsPath}>{settingsPath || "—"}</code>
-              <span>{t("只迁移 settings.json；日志、备份、Skills 和运行状态仍留在原状态目录。更换后建议重新打开管理器。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={() => void actions.chooseSettingsPath()}>{t("选择路径")}</Button>
-              <Button size="sm" variant="secondary" onClick={() => void actions.resetSettingsPath()}>{t("恢复默认路径")}</Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-    </div>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+        <CxSection title={t("入门")}>
+          <CxCard>
+            <CxRow detail={agentFocus === "codex" ? t("只管理 Codex") : agentFocus === "enhance" ? t("只用增强功能") : t("全部功能")} title={t("使用模式")} tooltip={agentFocusDescription(agentFocus)}>
+              <button className="cx-secondary" onClick={onOpenAgentFocus} type="button">{t("修改")}</button>
+            </CxRow>
+            <CxRow detail={t("完成配置、验证连接并开始使用，也可以查看各个入口的导览。")} title={t("新手引导")}>
+              <button className="cx-secondary" onClick={onOpenTour} type="button">{t("重新打开引导")}</button>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+      </div>
+      <div className="cx-set-group" id="app-settings-config">
+        <CxSection title={t("配置备份与迁移")}>
+          <CxCard>
+            <CxRow detail={t("包含供应商 API Key 等敏感信息，请妥善保管")} title={t("导出完整配置")}>
+              <button className="cx-secondary" onClick={() => void actions.exportSettings()} type="button"><Upload />{t("导出")}</button>
+            </CxRow>
+            <CxRow detail={t("读入为草稿，检查无误后自动保存")} title={t("导入配置草稿")} tooltip={t("导出文件包含供应商 API Key 等敏感信息；导入只会读入草稿，检查后仍需点击保存设置。")}>
+              <button className="cx-secondary" onClick={() => void actions.importSettings()} type="button"><Download />{t("导入")}</button>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+        <CxSection title={t("存放位置")}>
+          <CxCard>
+            <CxRow
+              detail={<code className="cx-set-path" title={settingsPath}>{settingsPath || "—"}</code>}
+              title={t("配置文件路径")}
+              tooltip={t("只迁移 settings.json；日志、备份、Skills 和运行状态仍留在原状态目录。更换后建议重新打开管理器。")}
+            >
+              <button className="cx-secondary" onClick={() => void actions.chooseSettingsPath()} type="button">{t("更改…")}</button>
+              <Menu>
+                <MenuItem onClick={() => void actions.resetSettingsPath()}>{t("恢复默认路径")}</MenuItem>
+              </Menu>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+      </div>
+    </>
   );
 }
 
@@ -11470,11 +11419,22 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
       ? tf("日志大小 {0}，仅显示末尾 {1} 行", [formatBytes(logs.fileSize), logs.lines])
       : tf("日志大小 {0}", [formatBytes(logs.fileSize)])
     : "";
+  // 等宽文本卡片：一个主操作（复制），刷新与清理收进三点菜单。
   return (
-    <Panel>
-      <CardHead title={t("最近日志")} detail={logs?.path ?? ""} />
-      <CardContent>
-        {logDetail ? <p className="field-hint">{logDetail}</p> : null}
+    <CxSection
+      aside={
+        <>
+          {logDetail ? <span title={logs?.path ?? ""}>{logDetail}</span> : null}
+          <button className="cx-secondary" onClick={() => void actions.copyLogs()} type="button"><Copy />{t("复制")}</button>
+          <Menu>
+            <MenuItem onClick={() => void actions.refreshLogs()}>{t("刷新")}</MenuItem>
+            <MenuItem danger onClick={() => void actions.clearLogs()}>{t("清理日志")}</MenuItem>
+          </Menu>
+        </>
+      }
+      title={t("最近日志")}
+    >
+      <CxCard className="cx-set-mono-card">
         <div className="log-lines">
           {lines.length ? (
             lines.map((line, index) => (
@@ -11487,34 +11447,29 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
             <div className="empty">{t("暂无日志。")}</div>
           )}
         </div>
-        <Toolbar>
-          <Button onClick={() => void actions.refreshLogs()} size="sm" variant="secondary">{t("刷新")}</Button>
-          <Button size="sm" variant="secondary" onClick={() => void actions.clearLogs()}>
-            {t("清理日志")}
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => void actions.copyLogs()}>
-            {t("复制")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
+      </CxCard>
+      {logs?.path ? <code className="cx-set-caption">{logs.path}</code> : null}
+    </CxSection>
   );
 }
 
 function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
   return (
-    <Panel>
-      <CardHead title={t("诊断报告")} detail={t("包含版本、路径、设置和平台信息")} />
-      <CardContent>
-        <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
-        <Toolbar>
-          <Button onClick={() => void actions.refreshDiagnostics()} size="sm" variant="secondary">{t("重新生成")}</Button>
-          <Button size="sm" variant="secondary" onClick={() => void actions.copyDiagnostics()}>
-            {t("复制报告")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
+    <CxSection
+      aside={
+        <>
+          <button className="cx-secondary" onClick={() => void actions.copyDiagnostics()} type="button"><Copy />{t("复制报告")}</button>
+          <Menu>
+            <MenuItem onClick={() => void actions.refreshDiagnostics()}>{t("重新生成")}</MenuItem>
+          </Menu>
+        </>
+      }
+      title={t("诊断报告")}
+    >
+      <CxCard className="cx-set-mono-card">
+        <Textarea aria-label={t("诊断报告")} className="log-view" readOnly title={t("包含版本、路径、设置和平台信息")} value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
+      </CxCard>
+    </CxSection>
   );
 }
 
@@ -17210,30 +17165,25 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
 }
 
 function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions: Actions }) {
-  if (!ads.length) return <div className="rec-empty">{empty}</div>;
+  // 一行一条：小缩略图、标题 + 域名、一行介绍，亮点做成标题旁的小标签；整行点开落地页。
+  if (!ads.length) return <CxCard><CxEmpty title={empty} /></CxCard>;
   return (
-    <div className="rec-grid">
+    <CxCard className="rec-list">
       {ads.map((ad) => (
-        <button className="tp-card rec-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} title={ad.url} type="button">
-          {ad.image ? <img alt="" className="rec-image" loading="lazy" src={ad.image} /> : null}
-          <div className="rec-body">
-            <div className="rec-title">
-              <strong>{formatAdTitle(ad.title)}</strong>
-              <small>{adHost(ad.url)}</small>
-              <ExternalLink aria-hidden="true" />
-            </div>
-            <p className="rec-desc" title={ad.description}>{ad.description}</p>
-            {ad.highlights?.length ? (
-              <div className="rec-tags">
-                {ad.highlights.map((item) => (
-                  <span key={item}>{item}</span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        </button>
+        <CxRow
+          badges={ad.highlights?.slice(0, 3).map((item) => <CxBadge key={item}>{item}</CxBadge>)}
+          detail={ad.description}
+          icon={ad.image ? <img alt="" className="rec-thumb" loading="lazy" src={ad.image} /> : <ExternalLink />}
+          key={ad.id || `${ad.type}-${ad.title}`}
+          onClick={() => void actions.openExternalUrl(ad.url)}
+          title={formatAdTitle(ad.title)}
+          tooltip={`${ad.description}\n${ad.url}`}
+        >
+          <span className="rec-host">{adHost(ad.url)}</span>
+          <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+        </CxRow>
       ))}
-    </div>
+    </CxCard>
   );
 }
 

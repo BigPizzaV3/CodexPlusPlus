@@ -23,6 +23,41 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "分钟": "min",
+  "未保存的修改会在失焦后保存": "Unsaved edits are saved when you leave the field",
+  "超出时排队，按提交顺序启动": "Extra tasks queue and start in order",
+  "不支持审批卡": "No approval cards",
+  "会退回自动放行": "Falls back to auto-allow",
+  "客户端能力与始终允许的应用": "Client capabilities and always-allowed apps",
+  "屏幕右上角实时显示目标窗口，需要屏幕录制权限": "Shows the target window live in the top-right corner; needs Screen Recording permission",
+  "支持审批卡": "Supports approval cards",
+  "最近连接的客户端": "Last connected client",
+  "浏览器回合钩子": "Browser turn hooks",
+  "装好后无需额外配置，刷新页面即生效。": "No extra setup needed; reload the page once installed.",
+  "重新自检": "Run again",
+  "仅统计": "Stats only",
+  "全部选择（含日志）": "Select all (including logs)",
+  "单独选择": "Opt-in",
+  "网关和旧版本地协议代理共用这些设置": "Shared by the gateway and the legacy local protocol proxy",
+  "重试参数": "Retry parameters",
+  "接入地址": "Endpoints",
+  "只在开机登录打开时生效": "Only when opened at login",
+  "已有 Codex 会先恢复，不会重复启动": "A running Codex is restored instead of launched again",
+  "开机登录时只留在托盘": "Stay in the tray when opened at login",
+  "未保存，使用自动探测": "Not saved; auto-detected",
+  "登录系统后打开 Codex++": "Open Codex++ after you log in",
+  "入门": "Getting started",
+  "包含供应商 API Key 等敏感信息，请妥善保管": "Contains sensitive data such as provider API keys; keep it safe",
+  "单击托盘图标查看状态、启动 Codex、切换供应商": "Click the tray icon to see status, launch Codex and switch providers",
+  "反馈与社区": "Feedback & community",
+  "后台服务照常运行，再次打开时重新加载界面": "Background services keep running; the UI reloads when reopened",
+  "在 GitHub Issues 报告问题或提建议": "Report issues or suggest ideas on GitHub Issues",
+  "存放位置": "Location",
+  "导出": "Export",
+  "打开时及运行期间每隔几小时检查一次": "Checks on launch and every few hours while running",
+  "更改…": "Change…",
+  "窗口与托盘": "Window & tray",
+  "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
   "聚合网关": "Aggregate Gateway",
@@ -3208,6 +3243,12 @@ export const EN_TEMPLATE: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "{0} 可执行文件路径": "{0} executable path",
+  "{0} 模型": "{0} model",
+  "{0} 个应用": "{0} apps",
+  "选择 {0}": "Select {0}",
+  "最多 {0} 次": "Up to {0} tries",
+  "间隔 {0} 秒": "{0}s interval",
   // ----
   "新版本 {0}": "Version {0} available",
   "{0} 个 Agent 已接入": "{0} agents connected",

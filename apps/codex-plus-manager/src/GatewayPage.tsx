@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
-import { AlertTriangle, Asterisk, ChevronDown, ChevronRight, ChevronUp, Plus, RefreshCw, Search, Shuffle, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Asterisk, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Plus, RefreshCw, Search, Shuffle, Waypoints, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
@@ -53,6 +53,9 @@ import { gatewayGeneration, publishGatewayPayload, subscribeGatewayPayload } fro
 import { visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
+import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
+import { Menu, MenuItem } from "./ManagementPages";
+import { AgentGlyph } from "./HubOverview";
 
 type Tab = "agents" | "sessions" | "providers" | "routing" | "usage" | "gateway";
 export type GatewayTab = Tab;
@@ -734,103 +737,112 @@ function GroupEditor({
 
 function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
   const agentFocus = useAgentFocus();
+  // 刚复制的那一行，图标短暂换成对勾。
+  const [copied, setCopied] = useState<string | null>(null);
   if (!payload) return null;
   const mode = payload.gateway.keyPolicy.mode;
   const restoreOnExit = payload.gateway.restoreOnExit;
   const modelSuffix = payload.gateway.modelSuffix !== false;
   const localDiscovery = payload.gateway.localLoginDiscovery === true;
   const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
+  const listen = `http://127.0.0.1:${payload.port}`;
+  const copy = (key: string, value: string) => {
+    void navigator.clipboard?.writeText(value).then(() => {
+      setCopied(key);
+      window.setTimeout(() => setCopied((current) => (current === key ? null : current)), 1500);
+    });
+  };
+  const copyButton = (key: string, value: string) => (
+    <button aria-label={t("复制")} className="cx-set-icon-button" onClick={() => copy(key, value)} title={t("复制")} type="button">
+      {copied === key ? <Check /> : <Copy />}
+    </button>
+  );
+  const keyRotationHint = mode === "roundRobin" ? t("每个请求换下一个 Key，用量更平均，但上游缓存命中会变低。") : t("同一会话固定一个 Key，出错才换；保住上游的提示词缓存。");
+  const restoreHint = restoreOnExit
+    ? t("网关只在 Codex++ 运行时可用。退出时把 Agent 切回直连，下次启动再自动指回网关。")
+    : t("Agent 一直指着网关：退出 Codex++ 后连不上，再打开就恢复。安装更新前照样会切回直连。");
+  const suffixHint = modelSuffix
+    ? t("多家都有的模型，在 Codex 的模型列表和输入框里显示成「GPT-6 Astra（ChatGPT Pro）」，自动组显示「（自动）」。")
+    : t("只显示模型名「GPT-6 Astra」，看不出是哪一家；Codex 选择器里仍按供应商分组。");
+  const discoveryHint = localDiscovery
+    ? t("读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进供应商池。")
+    : t("关着时不读其它客户端的登录文件。打开后，本机已登录的 Kiro、Cursor 等账号会在供应商页提示导入。");
+  // 参照 Cursor 设置页：地址一节、选项一节；每行标题 + 一行说明，右侧控件。地址可复制，token 更换收进三点菜单。
   return (
     <>
-      <SectionLabel>{t("网关")}</SectionLabel>
-      <div className="gw-card">
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("监听地址")}</strong>
-            <small>{t("只监听本机；各 Agent 用自己的路径和 token 接入。")}</small>
-          </div>
-          <code>{`http://127.0.0.1:${payload.port}`}</code>
-          <span className="gw-pill" data-tone={payload.helperRunning ? "ok" : "warning"}>{payload.helperRunning ? t("运行中") : t("未运行")}</span>
-        </div>
-        {visibleAgents(agentFocus, glanceAgents(payload.agents)).map((agent) => {
-          const binding = payload.gateway.bindings[agent.agent];
-          return (
-            <div className="gw-setting-row" key={agent.agent}>
-              <div>
-                <strong>{tf("{0} 接入地址", [agent.name])}</strong>
-                <small>{agent.enabled ? t("已写入该 Agent 的配置") : t("开启后写入该 Agent 的配置")}</small>
-              </div>
-              <code title={agent.baseUrl}>{agent.baseUrl}</code>
-              {binding?.token ? (
-                <button className="gw-text-button" disabled={busy !== null} onClick={() => void run(`rotate:${agent.agent}`, "rotate_gateway_token", { agent: agent.agent }, t("更换 token"))} title={t("换一个新的本地 token，旧 token 立即失效")} type="button">
-                  {t("更换 token")}
-                </button>
-              ) : <span />}
-            </div>
-          );
-        })}
-      </div>
+      <CxSection title={t("接入地址")}>
+        <CxCard>
+          <CxRow
+            badges={<CxBadge tone={payload.helperRunning ? "ok" : "warn"}>{payload.helperRunning ? t("运行中") : t("未运行")}</CxBadge>}
+            detail={<code className="cx-set-path">{listen}</code>}
+            icon={<Waypoints />}
+            title={t("监听地址")}
+            tooltip={t("只监听本机；各 Agent 用自己的路径和 token 接入。")}
+          >
+            {copyButton("listen", listen)}
+          </CxRow>
+          {visibleAgents(agentFocus, glanceAgents(payload.agents)).map((agent) => {
+            const binding = payload.gateway.bindings[agent.agent];
+            return (
+              <CxRow
+                badges={agent.enabled ? null : <CxBadge>{t("未接入")}</CxBadge>}
+                detail={<code className="cx-set-path" title={agent.baseUrl}>{agent.baseUrl}</code>}
+                icon={<AgentGlyph agent={agent.agent} />}
+                key={agent.agent}
+                title={agent.name}
+                tooltip={agent.enabled ? t("已写入该 Agent 的配置") : t("开启后写入该 Agent 的配置")}
+              >
+                {copyButton(agent.agent, agent.baseUrl)}
+                {binding?.token ? (
+                  <Menu>
+                    <MenuItem disabled={busy !== null} onClick={() => void run(`rotate:${agent.agent}`, "rotate_gateway_token", { agent: agent.agent }, t("更换 token"))}>
+                      {t("更换 token")}
+                    </MenuItem>
+                  </Menu>
+                ) : <span className="cx-set-menu-spacer" />}
+              </CxRow>
+            );
+          })}
+        </CxCard>
+      </CxSection>
 
-      <SectionLabel>{t("网关选项")}</SectionLabel>
-      <div className="gw-card">
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("多 Key 轮换")}</strong>
-            <small>{mode === "roundRobin" ? t("每个请求换下一个 Key，用量更平均，但上游缓存命中会变低。") : t("同一会话固定一个 Key，出错才换；保住上游的提示词缓存。")}</small>
-          </div>
-          <span />
-          <AppSelect
-            disabled={busy !== null}
-            label={t("多 Key 轮换")}
-            onChange={(next) => saveOptions(next, restoreOnExit)}
-            options={[
-              { value: "sticky", label: t("会话粘性（推荐）"), hint: t("同一会话固定一个 Key，出错才换") },
-              { value: "roundRobin", label: t("逐请求轮换"), hint: t("每个请求换下一个 Key") },
-            ]}
-            value={mode}
-          />
-        </div>
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("退出 Codex++ 时恢复直连")}</strong>
-            <small>{restoreOnExit
-              ? t("网关只在 Codex++ 运行时可用。退出时把 Agent 切回直连，下次启动再自动指回网关。")
-              : t("Agent 一直指着网关：退出 Codex++ 后连不上，再打开就恢复。安装更新前照样会切回直连。")}</small>
-          </div>
-          <span />
-          <Switch disabled={busy !== null} label={t("退出 Codex++ 时恢复直连")} on={restoreOnExit} onToggle={() => saveOptions(mode, !restoreOnExit)} />
-        </div>
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("模型名后带供应商")}</strong>
-            <small>{modelSuffix
-              ? t("多家都有的模型，在 Codex 的模型列表和输入框里显示成「GPT-6 Astra（ChatGPT Pro）」，自动组显示「（自动）」。")
-              : t("只显示模型名「GPT-6 Astra」，看不出是哪一家；Codex 选择器里仍按供应商分组。")}</small>
-          </div>
-          <span />
-          <Switch
-            disabled={busy !== null}
-            label={t("模型名后带供应商")}
-            on={modelSuffix}
-            onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
-          />
-        </div>
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("发现本机已登录的订阅账号")}</strong>
-            <small>{localDiscovery
-              ? t("读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进供应商池。")
-              : t("关着时不读其它客户端的登录文件。打开后，本机已登录的 Kiro、Cursor 等账号会在供应商页提示导入。")}</small>
-          </div>
-          <span />
-          <Switch
-            disabled={busy !== null}
-            label={t("发现本机已登录的订阅账号")}
-            on={localDiscovery}
-            onToggle={() => void run("local-login-discovery", "save_gateway_local_login_discovery", { enabled: !localDiscovery }, t("保存网关选项"), true)}
-          />
-        </div>
-      </div>
+      <CxSection title={t("网关选项")}>
+        <CxCard>
+          <CxRow detail={keyRotationHint} title={t("多 Key 轮换")} tooltip={keyRotationHint}>
+            <AppSelect
+              className="cx-set-select"
+              disabled={busy !== null}
+              label={t("多 Key 轮换")}
+              onChange={(next) => saveOptions(next, restoreOnExit)}
+              options={[
+                { value: "sticky", label: t("会话粘性（推荐）"), hint: t("同一会话固定一个 Key，出错才换") },
+                { value: "roundRobin", label: t("逐请求轮换"), hint: t("每个请求换下一个 Key") },
+              ]}
+              size="sm"
+              value={mode}
+            />
+          </CxRow>
+          <CxRow detail={restoreHint} title={t("退出 Codex++ 时恢复直连")} tooltip={restoreHint}>
+            <Switch disabled={busy !== null} label={t("退出 Codex++ 时恢复直连")} on={restoreOnExit} onToggle={() => saveOptions(mode, !restoreOnExit)} />
+          </CxRow>
+          <CxRow detail={suffixHint} title={t("模型名后带供应商")} tooltip={suffixHint}>
+            <Switch
+              disabled={busy !== null}
+              label={t("模型名后带供应商")}
+              on={modelSuffix}
+              onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
+            />
+          </CxRow>
+          <CxRow detail={discoveryHint} title={t("发现本机已登录的订阅账号")} tooltip={discoveryHint}>
+            <Switch
+              disabled={busy !== null}
+              label={t("发现本机已登录的订阅账号")}
+              on={localDiscovery}
+              onToggle={() => void run("local-login-discovery", "save_gateway_local_login_discovery", { enabled: !localDiscovery }, t("保存网关选项"), true)}
+            />
+          </CxRow>
+        </CxCard>
+      </CxSection>
     </>
   );
 }

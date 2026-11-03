@@ -262,7 +262,8 @@ test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里�
   assert.doesNotMatch(app, /sections=\{codexSettingsSections\(\)\}/);
   const ids = [...text.slice(text.indexOf("function codexSettingsSections"), text.indexOf("const EXPERIMENTAL_TITLE")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
   assert.ok(ids.length >= 6);
-  for (const id of ids) assert.match(text, new RegExp(`<Panel id="${id}">`));
+  // 每个分组是一节（CxSection），id 挂在节的最外层。
+  for (const id of ids) assert.match(text, new RegExp(`<CxSection(?:(?!<CxSection)[\\s\\S])*?\\bid="${id}"`));
   assert.ok(app.indexOf("<AgentSettingsScreen") < app.indexOf("<MaintenanceScreen"), "设置在上、安装维护在下");
 });
 
@@ -306,8 +307,10 @@ test("导入供应商弹窗：只有文字那块占满宽度，头像（也是 s
 test("代理设置按归属拆开：本地服务与请求避震移到网关设置（新旧共用），旧版页只留旧版专用的两项", () => {
   assert.match(text, /id: "relayEnvironment", get label\(\) \{ return t\("旧版代理设置"\); \}/);
   const shared = functionSource("SharedServiceSettings");
-  assert.match(shared, /t\("本地服务（新旧共用）"\)/);
-  assert.match(shared, /className="gw-setting-row"/);
+  // 两节：本地服务、请求避震；标题悬停说明新旧共用。
+  assert.match(shared, /t\("本地服务"\)/);
+  assert.match(shared, /t\("网关和旧版本地协议代理共用这些设置"\)/);
+  assert.match(shared, /<CxSection /);
   assert.match(shared, /protocolProxyAutoRetry/);
   assert.match(shared, /helperMaxRequestBodyMib/);
   const legacy = functionSource("ProxySettingsScreen");
@@ -441,7 +444,7 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
 test("设置页「版本与更新」：已是最新时不显示旧版本的安装包和说明；有新版本时说明收进可展开区", () => {
   const about = functionSource("AboutScreen");
   assert.match(about, /update\?\.updateAvailable && update\.assetName \?/);
-  assert.match(about, /\{update\?\.updateAvailable && update\.releaseSummary \? \(\n\s*<details className="app-update-notes">/);
+  assert.match(about, /\{update\?\.updateAvailable && update\.releaseSummary \? \(\n\s*<details className="app-update-notes[^"]*">/);
   assert.doesNotMatch(about, /<Metric label=\{t\("状态"\)\}/);
 });
 

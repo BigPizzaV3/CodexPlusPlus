@@ -18,7 +18,7 @@ test("整体设置只放应用级选项，Agent 设置承担工具级选项", ()
   const global = functionSource("GlobalSettingsScreen");
   const agent = functionSource("AgentSettingsScreen");
 
-  for (const copy of ["基础设置", "配置备份与迁移", "配置文件路径"]) {
+  for (const copy of ["界面主题", "配置备份与迁移", "配置文件路径"]) {
     assert.ok(global.includes(`t("${copy}")`), `整体设置应包含 ${copy}`);
   }
   assert.doesNotMatch(global, /Codex 供应商设置|Codex 启动参数/);
