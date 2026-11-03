@@ -525,16 +525,21 @@ mod lifecycle_tests {
         let collector =
             start_provider_collector_with_log(home.clone(), sqlite, settings.clone(), request_log)
                 .unwrap();
-        let mut owned = false;
-        for _ in 0..200 {
-            if matches!(acquire(&home, &settings), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
-            {
-                owned = true;
-                break;
-            }
+        let cache =
+            provider_cache::storage_dir(&home, &settings).join("usage-provider-cache.sqlite");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // 缓存只在采集器持锁后创建，避免测试先抢到锁而触发采集器退避。
+        while !cache.is_file() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(owned, "collector did not acquire its isolated writer lock");
+        assert!(
+            cache.is_file(),
+            "collector did not initialize its isolated cache"
+        );
+        assert!(
+            matches!(acquire(&home, &settings), Err(error) if error.kind() == io::ErrorKind::WouldBlock),
+            "collector did not acquire its isolated writer lock"
+        );
         drop(collector);
         let lock = acquire(&home, &settings).expect("Drop must join before releasing ownership");
         drop(lock);
