@@ -10486,8 +10486,31 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
       <ChevronDown aria-hidden="true" className="session-maintenance-chevron h-4 w-4" />
     </summary>
     <div className="session-maintenance-content">
-          <div className="session-repair-tools">
-            <Field className="session-sync-target" label={t("同步目标")}>
+          {/* 和设置页同一种行：左边标题 + 一行说明，右边控件；开关即改即存（SettingsAutoSave）。 */}
+          <div className="session-repair-rows">
+            <SettingRow title={t(providerSyncItem.title)} description={t(providerSyncItem.description)}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t(providerSyncItem.title)}
+                  checked={form.providerSyncEnabled}
+                  onChange={(event) => onFormChange({ ...form, providerSyncEnabled: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
+            <SettingRow title={t("切换模型后旧会话跟随新默认")} description={t("切换供应商或默认模型后，下次启动前把仍停在旧默认模型的会话改为新默认；手动选过模型的会话不变。保存设置后生效。")}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t("切换模型后旧会话跟随新默认")}
+                  checked={Boolean(form.threadModelFollowSwitchEnabled)}
+                  onChange={(event) => onFormChange({ ...form, threadModelFollowSwitchEnabled: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
+            <SettingRow title={t("同步目标")}>
               <AppSelect
                 disabled={providerSyncProgress.active || !providerTargets.length}
                 value={selectedProviderSyncTarget}
@@ -10508,35 +10531,6 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                     : [{ value: "", label: t("当前配置 provider"), disabled: true }]
                 }
               />
-            </Field>
-
-            <label className="switch-row compact session-auto-repair">
-              <input
-                checked={form.providerSyncEnabled}
-                onChange={(event) => onFormChange({ ...form, providerSyncEnabled: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t(providerSyncItem.title)}</strong>
-                <small>{t(providerSyncItem.description)}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-
-            <label className="switch-row compact session-auto-repair">
-              <input
-                checked={Boolean(form.threadModelFollowSwitchEnabled)}
-                onChange={(event) => onFormChange({ ...form, threadModelFollowSwitchEnabled: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("切换模型后旧会话跟随新默认")}</strong>
-                <small>{t("切换供应商或默认模型后，下次启动前把仍停在旧默认模型的会话改为新默认；手动选过模型的会话不变。保存设置后生效。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-
-            <div className="session-repair-actions">
               <Button
                 disabled={providerSyncProgress.active || sessionIndexRepairActive || !canRepairProviderSessions}
                 onClick={() => void actions.syncProvidersNow()}
@@ -10545,6 +10539,8 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                 <Wrench className="h-4 w-4" />
                 {providerSyncProgress.active ? t("正在修复…") : t("修复历史会话")}
               </Button>
+            </SettingRow>
+            <SettingRow title={t("会话索引")} description={t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}>
               <Button
                 disabled={sessionIndexRepairActive || providerSyncProgress.active}
                 onClick={() => void actions.repairSessionIndex()}
@@ -10553,7 +10549,7 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                 <Wrench className="h-4 w-4" />
                 {sessionIndexRepairActive ? t("正在检查索引…") : t("修复会话索引")}
               </Button>
-            </div>
+            </SettingRow>
             <SettingsAutoSave dirty={dirty} form={form} actions={actions} />
           </div>
 
@@ -10584,7 +10580,7 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
           ) : null}
           {sessionIndexRepairReport ? (
             <div className="provider-sync-progress session-repair-progress" aria-live="polite">
-              <strong>{t("最近一次会话索引修复报告")}</strong>
+              <strong title={`${t("自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}\n${t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}`}>{t("最近一次会话索引修复报告")}</strong>
               <p>{t("最后检查：")}{sessionIndexRepairReport.checkedAtMs ? formatTime(sessionIndexRepairReport.checkedAtMs) : t("旧版报告未记录时间")}</p>
               <p>
                 {t("读取文件")} {sessionIndexRepairReport.scannedFiles} · {t("复用缓存")} {sessionIndexRepairReport.cachedFiles} · {t("耗时")} {(sessionIndexRepairReport.elapsedMs / 1000).toFixed(1)} s
@@ -10604,9 +10600,6 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                   ) : null}
                 </p>
               ) : null}
-              <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
-              <p><small>{t("自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
-              <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>
               {sessionIndexRepairReport.backupPath ? <p className="break-all">{t("修复前备份：")}{sessionIndexRepairReport.backupPath}</p> : null}
               {sessionIndexRepairReport.abortedReason ? (
                 <p role="alert" className="break-all"><strong>{t("修复已中止：")}</strong>{sessionIndexRepairReport.abortedReason}</p>

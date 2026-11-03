@@ -318,3 +318,285 @@
 :root .shell .mg-skills-page .cx-filters-trailing .mg-icon-button {
   color: hsl(var(--muted-foreground));
 }
+
+/* ── 会话 ────────────────────────────────────────────────────── */
+
+/* 多 Agent 会话列表外面还包着网关页的容器：在会话页里收到和其他页同宽，去掉内层滚动的留白。 */
+:root .shell .screen.management-screen > .mg-page.gateway-page {
+  width: min(100%, var(--cx-content));
+}
+
+:root .shell .screen.management-screen > .mg-page.gateway-page > .gw-content {
+  width: 100%;
+  margin-right: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+:root .shell .cx-sessions,
+:root .shell .mg-session-page.cx-page {
+  gap: 16px;
+}
+
+:root .shell .mg-session-page.cx-page {
+  flex: none;
+  min-height: auto;
+}
+
+:root .shell .cx-session-row {
+  min-height: 48px;
+}
+
+:root .shell .cx-session-row .cx-row-main {
+  padding-block: 8px;
+}
+
+:root .shell .cx-session-row .cx-row-icon {
+  background: transparent;
+}
+
+:root .shell .cx-session-row .cx-row-icon img,
+:root .shell .cx-session-row .cx-row-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+:root .shell .cx-session-row .cx-row-icon input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: hsl(var(--foreground));
+}
+
+:root .shell .cx-session-row .cx-row-controls {
+  gap: 2px;
+}
+
+:root .shell .cx-session-time {
+  min-width: 72px;
+  margin-right: 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+:root .shell .cx-session-row .mg-icon-button {
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-session-row .cx-session-delete:hover:not(:disabled) {
+  color: hsl(var(--status-error));
+}
+
+:root .shell .cx-session-path {
+  overflow: hidden;
+  max-width: 420px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-session-more {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  padding: 0 14px 0 56px;
+  border: 0;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-session-more:hover {
+  background: hsl(var(--accent) / 0.35);
+  color: hsl(var(--foreground));
+}
+
+/* 「按项目 / 按时间」：工具条里的两段小切换。 */
+:root .shell .cx-session-mode {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+}
+
+:root .shell .cx-session-mode button {
+  height: 26px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+:root .shell .cx-session-mode button[data-active="true"] {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .mg-session-page .cx-toolbar-actions .cx-secondary {
+  height: 34px;
+  border-radius: 999px;
+}
+
+/* 批量选择时的一条操作栏。 */
+:root .shell .cx-session-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-session-selection .mg-session-selected-count {
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root .shell .cx-session-selection-spacer {
+  flex: 1 1 auto;
+}
+
+:root .shell .cx-session-selection .mg-session-danger:not(:disabled) {
+  border-color: hsl(var(--status-error) / 0.45);
+  color: hsl(var(--status-error));
+}
+
+/* 项目小标题：折叠箭头 + 名字 + 数量 + 路径。 */
+:root .shell .cx-session-group {
+  gap: 8px;
+}
+
+:root .shell .cx-session-group + .cx-session-group {
+  margin-top: 6px;
+}
+
+:root .shell .cx-session-group-head {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px 0 0;
+}
+
+:root .shell .cx-session-group-toggle {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.92);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-session-group-toggle svg {
+  flex: none;
+  align-self: center;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-session-group-toggle strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-session-group-toggle small {
+  overflow: hidden;
+  min-width: 0;
+  margin-left: auto;
+  padding-left: 12px;
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-session-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .cx-session-pagination > span {
+  margin-right: auto;
+}
+
+/* 修复与维护：页面底部一条折叠卡片，平时只占一行。 */
+:root .shell .mg-session-page > .session-maintenance {
+  margin: 0;
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .mg-session-page > .session-maintenance > .session-maintenance-summary {
+  min-height: 48px;
+  padding: 0 14px;
+}
+
+:root .shell .mg-session-page > .session-maintenance > .session-maintenance-content {
+  max-height: none;
+  padding: 4px 16px 16px;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .mg-session-page .session-maintenance-auto-state[data-enabled="true"] {
+  color: hsl(var(--status-success));
+}
+
+:root .shell .mg-session-page .session-maintenance-status {
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .mg-session-page .session-maintenance-status[data-error="true"] {
+  color: hsl(var(--status-warning));
+}
+
+:root .shell .session-repair-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+:root .shell .session-repair-rows .setting-row-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .session-repair-rows .app-select {
+  min-width: 220px;
+}
+
+:root .shell .session-repair-rows > .settings-autosave {
+  justify-content: flex-end;
+  padding-top: 8px;
+}

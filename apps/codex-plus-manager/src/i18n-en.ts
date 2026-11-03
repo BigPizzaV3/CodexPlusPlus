@@ -38,6 +38,8 @@ export const EN_PLAIN: Record<string, string> = {
   "从插件市场索引导入": "Import from a plugin market index",
   "部分仓库读取失败": "Some repositories couldn't be read",
   "启用到 Agent": "Enable for agents",
+  "未知目录": "Unknown folder",
+  "会话索引": "Session index",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
@@ -3227,6 +3229,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已接入 Codex · {0} 个工具": "Connected to Codex · {0} tools",
   "{0} 项不兼容": "{0} incompatible",
   "已启用 {0} 个 Skill": "{0} Skills enabled",
+  "再显示 {0} 个": "Show {0} more",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
