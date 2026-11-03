@@ -281,10 +281,17 @@ test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里�
   // 分类目录交给侧栏，页内不再有左侧目录；分组卡片 id 仍然保留，深链照常。
   assert.doesNotMatch(app, /sections=\{codexSettingsSections\(\)\}/);
   const ids = [...text.slice(text.indexOf("function codexSettingsSections"), text.indexOf("const EXPERIMENTAL_TITLE")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
-  assert.ok(ids.length >= 6);
+  assert.deepEqual(ids, ["codex-settings-check", "codex-settings-startup", "codex-settings-takeover", "codex-settings-manual-launch"]);
   // 每个分组是一节（CxSection），id 挂在节的最外层。
   for (const id of ids) assert.match(text, new RegExp(`<CxSection(?:(?!<CxSection)[\\s\\S])*?\\bid="${id}"`));
-  assert.ok(app.indexOf("<AgentSettingsScreen") < app.indexOf("<MaintenanceScreen"), "设置在上、安装维护在下");
+  // 常用的在上，不常用的额外启动参数放进维护页最后的「高级」卡片，和手动启动在一起。
+  assert.match(app, /<MaintenanceScreen[\s\S]*?advanced=\{\(\n\s*<AgentSettingsScreen/);
+  const maintenance = functionSource("MaintenanceScreen");
+  assert.match(maintenance, /<CxSection id="codex-settings-manual-launch" title=\{t\("高级"\)\}>\n\s*<CxCard>\n\s*\{advanced\}/);
+  // 同一个 Codex 路径只显示一次：换路径、清除保存的路径在「Codex 应用」那一行的菜单里。
+  assert.doesNotMatch(maintenance, /t\("当前识别"\)|t\("保存的应用路径"\)/);
+  assert.match(maintenance, /actions\.chooseCodexAppPath\("folder"\)/);
+  assert.match(maintenance, /actions\.clearCodexAppPath\(\)/);
 });
 
 test("页内目录收成单列：增强页的页签横排成胶囊、分组锚点不再显示；设置模式内容限宽", () => {

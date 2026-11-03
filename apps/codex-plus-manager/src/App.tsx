@@ -5301,12 +5301,7 @@ export function App() {
             // 设置与安装维护合在一页：左侧分类目录，右侧限宽列表。
             <div className="settings-page codex-settings-page">
               <div className="sectioned-body">
-                <AgentSettingsScreen
-                  dirty={settingsDirty}
-                  form={settingsForm}
-                  onFormChange={setSettingsForm}
-                  actions={actions}
-                />
+                {/* 常用的在上：应用与入口、开机启动、自动接管；额外启动参数和手动启动收进最后的「高级」。 */}
                 <MaintenanceScreen
                   overview={overview}
                   launchPending={launchPending}
@@ -5316,6 +5311,14 @@ export function App() {
                   launchForm={launchForm}
                   onLaunchFormChange={setLaunchForm}
                   actions={actions}
+                  advanced={(
+                    <AgentSettingsScreen
+                      dirty={settingsDirty}
+                      form={settingsForm}
+                      onFormChange={setSettingsForm}
+                      actions={actions}
+                    />
+                  )}
                 />
               </div>
             </div>
@@ -11195,6 +11198,7 @@ function MaintenanceScreen({
   launchForm,
   onLaunchFormChange,
   actions,
+  advanced = null,
 }: {
   overview: OverviewResult | null;
   launchPending: boolean;
@@ -11204,6 +11208,8 @@ function MaintenanceScreen({
   launchForm: { appPath: string; debugPort: string; helperPort: string };
   onLaunchFormChange: (next: { appPath: string; debugPort: string; helperPort: string }) => void;
   actions: Actions;
+  /** 「高级」卡片里排在手动启动前面的内容（额外启动参数）。 */
+  advanced?: ReactNode;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
   const takeoverOn = Boolean(settings?.settings.codexAppAutoTakeover);
@@ -11219,24 +11225,31 @@ function MaintenanceScreen({
     ].filter(Boolean).join(" · ");
   return (
     <>
+      {/* Codex 应用一行：识别到的路径 + 状态；换路径、清除保存的路径都在它的菜单里（原来「检查与修复」「应用路径」两节显示同一个路径三次）。 */}
       <CxSection
-        aside={
-          <>
-            <button className="cx-secondary" onClick={() => void actions.checkHealth()} type="button"><RefreshCw />{t("检查")}</button>
-            <Menu>
-              <MenuItem onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</MenuItem>
-            </Menu>
-          </>
-        }
+        aside={<button className="cx-secondary" onClick={() => void actions.checkHealth()} type="button"><RefreshCw />{t("检查")}</button>}
         id="codex-settings-check"
-        title={t("检查与修复")}
+        title={t("应用与入口")}
       >
         <CxCard>
-          <CxRow detail={<code className="cx-set-path">{overview?.codex_app.path || t("未记录路径")}</code>} title={t("Codex 应用")}>
+          <CxRow
+            badges={savedCodexAppPath ? <CxBadge title={savedCodexAppPath}>{t("已手动指定")}</CxBadge> : null}
+            detail={<code className="cx-set-path">{overview?.codex_app.path || savedCodexAppPath || t("未记录路径")}</code>}
+            title={t("Codex 应用")}
+            tooltip={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")}
+          >
             <StatusBadge status={overview?.codex_app.status} />
+            <Menu>
+              <MenuItem onClick={() => void actions.chooseCodexAppPath("folder")}>{t("选择应用目录")}</MenuItem>
+              <MenuItem onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</MenuItem>
+              <MenuItem danger disabled={!savedCodexAppPath} onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</MenuItem>
+            </Menu>
           </CxRow>
           <CxRow detail={<code className="cx-set-path">{overview?.management_shortcut.path || t("未记录路径")}</code>} title={t("Codex++ 应用入口")}>
             <StatusBadge status={overview?.management_shortcut.status} />
+            <Menu>
+              <MenuItem onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</MenuItem>
+            </Menu>
           </CxRow>
         </CxCard>
       </CxSection>
@@ -11334,28 +11347,11 @@ function MaintenanceScreen({
           ) : null}
         </CxCard>
       </CxSection>
-      <CxSection id="codex-settings-app-path" title={t("Codex 应用路径")}>
-        <CxCard>
-          <CxRow
-            detail={<code className="cx-set-path">{savedCodexAppPath || t("未保存，使用自动探测")}</code>}
-            title={t("保存的应用路径")}
-            tooltip={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")}
-          >
-            <button className="cx-secondary" onClick={() => void actions.chooseCodexAppPath("folder")} type="button"><FolderOpen />{t("选择应用目录")}</button>
-            <Menu>
-              <MenuItem onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</MenuItem>
-              <MenuItem danger disabled={!savedCodexAppPath} onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</MenuItem>
-            </Menu>
-          </CxRow>
-          <CxRow detail={<code className="cx-set-path">{overview?.codex_app.path || t("未记录路径")}</code>} title={t("当前识别")}>
-            <StatusBadge status={overview?.codex_app.status} />
-          </CxRow>
-        </CxCard>
-      </CxSection>
       <CxSection id="codex-settings-manual-launch" title={t("高级")}>
         <CxCard>
+          {advanced}
           {/* 给少数人用：用别的路径或端口启动一次。默认收起。 */}
-          <details className="cx-set-disclosure cx-set-disclosure-first">
+          <details className={`cx-set-disclosure ${advanced ? "" : "cx-set-disclosure-first"}`.trim()}>
             <summary>{t("手动启动")}<span className="cx-set-summary-hint">{t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")}</span></summary>
             <CxRow title={t("应用路径覆盖")}>
               <Input
@@ -11539,14 +11535,19 @@ function AgentSettingsScreen({
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
+  const count = form.codexExtraArgs.length;
   return (
     <>
       <TopbarActions><SettingsAutoSave className="cx-set-autosave" dirty={dirty} form={form} actions={actions} /></TopbarActions>
-      <CxSection id="codex-settings-launch-args" title={t("启动参数")}>
-        <CxCard>
-          <CxRow detail={t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")} title={t("额外参数")} tooltip={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
-          <div className="cx-set-block">
-            <Textarea
+      {/* 放在「高级」卡片里，默认收起；填了参数时标题旁显示条数，不用展开也知道有没有设。 */}
+      <details className="cx-set-disclosure cx-set-disclosure-first" open={count > 0 || undefined}>
+        <summary>
+          {t("额外启动参数")}
+          <span className="cx-set-summary-hint">{count ? tf("已设 {0} 个", [count]) : t("启动 Codex App 时追加的命令行参数")}</span>
+        </summary>
+        <CxRow detail={t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")} title={t("额外参数")} tooltip={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
+        <div className="cx-set-block">
+          <Textarea
               aria-label={t("Codex 启动参数")}
               className="launch-args-input"
               placeholder="--force_high_performance_gpu"
@@ -11559,9 +11560,8 @@ function AgentSettingsScreen({
                 })
               }
             />
-          </div>
-        </CxCard>
-      </CxSection>
+        </div>
+      </details>
     </>
   );
 }
@@ -15586,12 +15586,11 @@ function AppSettingsFocus({ focus, onDone }: { focus: string | null; onDone: () 
 /** 设置页（含安装维护）左侧目录的分组，id 对应各张卡片。 */
 function codexSettingsSections() {
   return [
-    { id: "codex-settings-launch-args", label: t("启动参数") },
-    { id: "codex-settings-check", label: t("检查与修复") },
+    { id: "codex-settings-check", label: t("应用与入口") },
     { id: "codex-settings-startup", label: t("开机启动") },
     { id: "codex-settings-takeover", label: t("自动接管") },
-    { id: "codex-settings-app-path", label: t("应用路径") },
-    { id: "codex-settings-manual-launch", label: t("手动启动") },
+    // 额外启动参数和手动启动都在「高级」里。
+    { id: "codex-settings-manual-launch", label: t("高级") },
   ];
 }
 

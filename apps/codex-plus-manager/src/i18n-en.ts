@@ -121,6 +121,10 @@ export const EN_PLAIN: Record<string, string> = {
   "推广": "Sponsored",
   "了解更多": "Learn more",
   "首页": "Home",
+  "应用与入口": "App and entry",
+  "已手动指定": "Set manually",
+  "额外启动参数": "Extra launch arguments",
+  "启动 Codex App 时追加的命令行参数": "Command-line arguments added when launching the Codex app",
   "对话": "Conversation",
   "权限": "Permissions",
   "新会话在这个目录里工作；也可以从已有会话带入它的目录。": "New sessions work in this folder; or take the folder from an existing session.",
@@ -3410,6 +3414,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "已设 {0} 个": "{0} set",
   "查看全部 {0} 条": "Show all {0}",
   "运行中 · 端口 {0}": "Running · port {0}",
   "今日 {0} 次调用": "{0} calls today",
